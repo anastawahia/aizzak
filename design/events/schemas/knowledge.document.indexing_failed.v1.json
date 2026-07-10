@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.platform/knowledge.document.indexing_failed.v1.json",
+  "title": "knowledge.document.indexing_failed.v1 data",
+  "type": "object",
+  "required": ["document_id", "reason"],
+  "properties": {
+    "document_id": { "type": "string", "format": "uuid" },
+    "reason": { "type": "string" }
+  },
+  "additionalProperties": false
+}

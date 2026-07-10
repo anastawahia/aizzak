@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.platform/media.job.generated.v1.json",
+  "title": "media.job.generated.v1 data",
+  "type": "object",
+  "required": ["job_id", "result_file_id"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "result_file_id": { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}
