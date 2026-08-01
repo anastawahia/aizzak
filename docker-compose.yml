@@ -371,6 +371,13 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
+      # The live test harness's bucket + bucket-scoped service account
+      # (bootstrap.sh's second half). Default OFF: a deployment must not mint
+      # test credentials. A developer turns it on in `.env`.
+      MINIO_TEST_ACCOUNT_ENABLED: ${MINIO_TEST_ACCOUNT_ENABLED:-false}
+      MINIO_TEST_BUCKET: ${MINIO_TEST_BUCKET:-aizzak-test}
+      MINIO_TEST_ACCESS_KEY: ${MINIO_TEST_ACCESS_KEY:-aizzak_test}
+      MINIO_TEST_SECRET_KEY: ${MINIO_TEST_SECRET_KEY:-aizzak-test-secret}
     volumes:
       - ./deploy/minio/bootstrap.sh:/bootstrap.sh:ro
     entrypoint: ["/bin/sh", "/bootstrap.sh"]

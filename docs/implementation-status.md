@@ -81,7 +81,7 @@ TEST_OPENAI_API_KEY=… wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/AIZZAK && .ven
 # L5 نموذج مجهول→502 · L6 مفتاح خاطئ→502 بلا تسريب · L7 يسجّل ما يحدث فعلاً لدور tool (القيد د).
 ```
 
-**الاختبارات الحيّة للخدمات (بديل Docker):** `pytest tests/integration/test_redis_cache.py` (يتخطّى إن غاب Redis ‏6379؛ `TEST_REDIS_URL`) · `pytest tests/integration/test_minio_storage.py` (يتخطّى إن غاب MinIO ‏9000؛ `TEST_MINIO_{ENDPOINT,BUCKET,ACCESS_KEY,SECRET_KEY}` — الافتراضي حساب `aizzak_test` المقيّد بدلو `aizzak-test`، §3.19).
+**الاختبارات الحيّة للخدمات (بديل Docker):** `pytest tests/integration/test_redis_cache.py` (يتخطّى إن غاب Redis ‏6379؛ `TEST_REDIS_URL`) · `pytest tests/integration/test_minio_storage.py` (يتخطّى إن غاب MinIO على **العنوان المستعمَل فعلاً** — الافتراضيّ صار `127.0.0.1:19000` حيث تنشر compose، والمجسّ يُشتَقّ من العنوان لا من ثابتٍ منفصل، §3.99؛ `TEST_MINIO_{ENDPOINT,BUCKET,ACCESS_KEY,SECRET_KEY}` — الافتراضي حساب `aizzak_test` المقيّد بدلو `aizzak-test`، §3.19).
 
 **التحقق الحيّ (بديل Docker — العدّة في §3.14):**
 ```bash

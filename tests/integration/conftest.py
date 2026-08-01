@@ -125,11 +125,17 @@ _PROBE_TIMEOUT_S = 1.5
 _REDIS_URL_DEFAULT = "redis://127.0.0.1:6379/0"
 _REDIS_PROBE_PORT = 6379
 
-# Dedicated bucket-scoped MinIO service account (provisioned once via mc --
-# status-doc §3.19; the PG aizzak_owner/app_rw precedent). NEVER the server's
-# root keys: this account can only see/read/write bucket `aizzak-test`.
-_MINIO_ENDPOINT_DEFAULT = "127.0.0.1:9000"
-_MINIO_PROBE_PORT = 9000
+# Dedicated bucket-scoped MinIO service account. NEVER the server's root keys:
+# this account can only see/read/write bucket `aizzak-test`.
+#
+# The account used to be provisioned BY HAND against a native `minio.service`
+# on the canonical port (status-doc §3.19). That service is gone, and the
+# bucket + account are now created by `deploy/minio/bootstrap.sh` against the
+# Compose MinIO -- which publishes on 19000, because 9000 is left free for a
+# native server (`docker-compose.yml`'s own host-offset rule). Hand-provisioned
+# state that no longer matched a rebuilt container is exactly how this suite
+# came to fail with `InvalidAccessKeyId` while looking correctly configured.
+_MINIO_ENDPOINT_DEFAULT = "127.0.0.1:19000"
 _MINIO_ACCESS_DEFAULT = "aizzak_test"
 _MINIO_SECRET_DEFAULT = "aizzak-test-secret"
 _MINIO_BUCKET_DEFAULT = "aizzak-test"
@@ -645,13 +651,23 @@ def live_minio() -> LiveMinio:
     """Probe for a live local MinIO (Phase 2.4's live harness) and hand out
     the bucket-scoped test-account material; skips the ``live_minio`` suite
     when unreachable. No bucket creation/wipe here: the bucket + scoped
-    account are provisioned once (status-doc §3.19) and each test writes
-    only under its own unique object prefix, sweeping it afterwards."""
-    if not _tcp_reachable(_PROBE_HOST, _MINIO_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live MinIO reachable at {_PROBE_HOST}:{_MINIO_PROBE_PORT}")
+    account are provisioned by ``deploy/minio/bootstrap.sh`` and each test
+    writes only under its own unique object prefix, sweeping it afterwards.
+
+    The probe address is DERIVED from the endpoint actually in use rather
+    than read off a second constant. The two drifted apart the moment MinIO
+    moved to Compose: a probe hard-wired to 9000 answered `reachable` because
+    an unrelated stack happened to hold that port, so the suite ran in full
+    against the wrong server instead of skipping honestly. Deriving it means
+    ``TEST_MINIO_ENDPOINT`` moves the probe with it, by construction.
+    """
+    endpoint = os.environ.get("TEST_MINIO_ENDPOINT", _MINIO_ENDPOINT_DEFAULT)
+    host, _, port_text = endpoint.rpartition(":")
+    if not _tcp_reachable(host, int(port_text), _PROBE_TIMEOUT_S):
+        pytest.skip(f"no live MinIO reachable at {endpoint}")
     return LiveMinio(
         settings=MinioSettings(
-            endpoint=os.environ.get("TEST_MINIO_ENDPOINT", _MINIO_ENDPOINT_DEFAULT),
+            endpoint=endpoint,
             bucket=os.environ.get("TEST_MINIO_BUCKET", _MINIO_BUCKET_DEFAULT),
             secure=False,
         ),
