@@ -27,7 +27,7 @@ import pytest
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.storage_handle import StorageHandle
-from app.framework.errors import AppError
+from app.framework.errors import AppError, UnsupportedTypeError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.event_outbox import OutboxRecord
@@ -47,6 +47,7 @@ from app.modules.media.domain.entities import MediaJob
 from app.modules.media.domain.value_objects import AgentKey, GenParams, JobStatus, MediaKind
 from app.workers.bootstrap import (
     Disposable,
+    _embedding_routing,
     build_knowledge_index_handler,
     build_knowledge_register_handler,
     build_knowledge_worker_from_env,
@@ -497,6 +498,134 @@ async def test_index_handler_claim_finalize_and_append_share_the_unit_of_work() 
 
 
 # --------------------------------------------------------------------------- #
+# knowledge: the poisoned-file gap (step 16 · deferred-adapters-plan.md §1-ج) #
+# --------------------------------------------------------------------------- #
+class _ExplodingContentResolver:
+    """A ``DocumentContentResolver`` whose ``resolve`` always raises -- the
+    real one does exactly this for a file no parser routes
+    (``UnsupportedTypeError``) or one that fails to parse
+    (``ValidationError``), and for infrastructure faults (anything else)."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.calls: list[str] = []
+
+    async def resolve(
+        self, ctx: ExecutionContext, *, file_id: str
+    ) -> tuple[ParsedDocument, str, str]:
+        self.calls.append(file_id)
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnsupportedTypeError("unsupported file type: 'contract.docx'"),
+        ValidationError("failed to parse 'broken.pdf': cannot open"),
+    ],
+    ids=["unsupported_type", "parse_failed"],
+)
+async def test_index_handler_lands_an_unparseable_file_in_failed_with_its_event(
+    error: Exception,
+) -> None:
+    """The §1-ج gap, closed. BEFORE this step the exception raised here
+    escaped ``_handle`` entirely -- it is thrown OUTSIDE the broad catch that
+    lives inside ``IndexRegisteredDocument.run`` -- so the engine never
+    ``XACK``\\ ed the message, redelivered it up to ``max_deliveries``, and
+    dropped it in the DLQ. The document stayed ``pending`` FOREVER and not
+    one event ever told the user why.
+
+    The failure mechanism this asserts against is exactly that: the handler
+    must RETURN, having produced a terminal document and its
+    ``indexing_failed`` event. On the old code this test fails by the
+    exception propagating out of ``await handler(...)``.
+    """
+    ctx = _ctx()
+    documents = _FakeDocuments()
+    doc = _pending_document(ctx)
+    documents.added.append(doc)
+    outbox = _FakeOutbox()
+    ledger = _FakeLedger()
+    handler = build_knowledge_index_handler(
+        documents,
+        IndexDocument(_FakeEmbeddings(), _FakeHybridVectors()),
+        _ExplodingContentResolver(error),
+        outbox,
+        _FakeUnitOfWork(),
+        ledger,
+    )
+    envelope = _index_envelope(ctx, doc)
+
+    await handler(ctx, envelope)
+
+    assert doc.status is IndexStatus.FAILED
+    assert doc.error == str(error)
+    (call_ctx, records) = outbox.calls[0]
+    assert call_ctx is ctx
+    assert [r.event_type for r in records] == ["knowledge.document.indexing_failed.v1"]
+    # The terminal write is claimed like any other effect -- a redelivery
+    # that races it must not produce a second failure event.
+    assert ledger.calls == [("cg.knowledge", envelope["id"])]
+    # Nothing was indexed: a document that could not be parsed has no chunks.
+    assert documents.chunks == []
+
+
+async def test_index_handler_still_lets_infrastructure_faults_escape_for_redelivery() -> None:
+    """The other half of the §1-ج decision, and the reason the ``except``
+    names two types instead of catching broadly: a MinIO/Vault/Postgres fault
+    MAY succeed on the next delivery, so it must keep escaping to the engine
+    and be retried. Marking it terminal would burn a user's document on a
+    thirty-second outage."""
+    ctx = _ctx()
+    documents = _FakeDocuments()
+    doc = _pending_document(ctx)
+    documents.added.append(doc)
+    outbox = _FakeOutbox()
+    handler = build_knowledge_index_handler(
+        documents,
+        IndexDocument(_FakeEmbeddings(), _FakeHybridVectors()),
+        _ExplodingContentResolver(AppError("object storage is unreachable")),
+        outbox,
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+
+    with pytest.raises(AppError):
+        await handler(ctx, _index_envelope(ctx, doc))
+
+    assert doc.status is IndexStatus.PENDING
+    assert outbox.calls == []
+
+
+async def test_index_handler_does_not_re_fail_an_already_terminal_document() -> None:
+    """The DD-09 redelivery guard reaches the new path too: a document that
+    already failed must not be failed a second time, nor emit a second
+    event."""
+    ctx = _ctx()
+    documents = _FakeDocuments()
+    doc = _pending_document(ctx)
+    doc.status = IndexStatus.FAILED
+    doc.error = "the original reason"
+    documents.added.append(doc)
+    outbox = _FakeOutbox()
+    ledger = _FakeLedger()
+    handler = build_knowledge_index_handler(
+        documents,
+        IndexDocument(_FakeEmbeddings(), _FakeHybridVectors()),
+        _ExplodingContentResolver(UnsupportedTypeError("unsupported file type: 'x.docx'")),
+        outbox,
+        _FakeUnitOfWork(),
+        ledger,
+    )
+
+    await handler(ctx, _index_envelope(ctx, doc))
+
+    assert doc.error == "the original reason"
+    assert outbox.calls == []
+    assert ledger.calls == []
+
+
+# --------------------------------------------------------------------------- #
 # media: build_media_run_handler                                              #
 # --------------------------------------------------------------------------- #
 class _FakeJobs:
@@ -774,20 +903,24 @@ async def test_memory_index_handler_claim_and_finalize_share_the_unit_of_work() 
 # The honest-failure rule: knowledge/media still raise; memory no longer does #
 # (2.10 closed the EmbeddingProvider gap -- module docstring).                #
 # --------------------------------------------------------------------------- #
-async def test_build_knowledge_worker_from_env_raises_naming_only_document_content_resolver(
+async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """2.10 builds the REAL ``IndexDocument`` pipeline (embeddings + vectors)
-    here; step 15 of ``deferred-adapters-plan.md`` wires REAL storage too --
-    only ``DocumentContentResolver`` remains blocked, and the message must
-    name ONLY that (never ``EmbeddingProvider`` again, the stale gap this
-    used to name).
+    """Step 16 closes the LAST blocked seam: this factory now returns a fully
+    wired worker instead of raising. On the old code it raised an ``AppError``
+    naming ``DocumentContentResolver`` -- the same failure mechanism, from the
+    same call.
 
     Hermetic: ``build_vault``/``bind_minio`` are monkeypatched with fakes --
-    the real ones perform an AppRole login and a live Vault/MinIO read,
-    which this suite must never touch. ``bind_minio`` being actually
-    awaited with the ``StorageHandle`` the factory built is the proof
-    storage is now wired from env, the way it was not before this step."""
+    the real ones perform an AppRole login and a live Vault/MinIO read, which
+    this suite must never touch. Everything else is genuinely constructed:
+    every client factory involved (``create_engine``/``create_qdrant_client``/
+    ``create_embedding_http_client``/``create_redis_client``) is lazy, so not
+    one connection is opened here.
+
+    ``bind_minio`` being awaited with the ``StorageHandle`` the factory built
+    is step 15's proof, kept: storage is wired from env, and it is that same
+    handle the content resolver now fetches bytes through."""
     fake_secrets = object()
     bind_calls: list[tuple[object, object, object]] = []
 
@@ -800,18 +933,44 @@ async def test_build_knowledge_worker_from_env_raises_naming_only_document_conte
     monkeypatch.setattr("app.workers.bootstrap.build_vault", _fake_build_vault)
     monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
 
-    with pytest.raises(AppError) as exc_info:
-        await build_knowledge_worker_from_env()
+    consumer, subscriptions, disposables = await build_knowledge_worker_from_env()
 
-    assert exc_info.value.code == "common.internal"
-    assert "DocumentContentResolver" in str(exc_info.value)
-    assert "EmbeddingProvider" not in str(exc_info.value)
+    assert isinstance(consumer, StreamConsumer)
+    # 04 §4's binding table: ONE `cg.knowledge` group over TWO streams.
+    assert [(s.stream, s.group) for s in subscriptions] == [
+        ("stream.files", "cg.knowledge"),
+        ("stream.knowledge", "cg.knowledge"),
+    ]
+    assert set(subscriptions[0].handlers) == {"files.file.uploaded.v1"}
+    assert set(subscriptions[1].handlers) == {"knowledge.document.registered.v1"}
+    # engine.dispose, qdrant_client.close, embedding_http.aclose,
+    # redis_client.aclose, _close_vault -- the fifth is step 15's, written
+    # then against a function that could not yet reach it.
+    assert len(disposables) == 5
+    for dispose in disposables:
+        disposable: Disposable = dispose
+        assert callable(disposable)
 
     assert len(bind_calls) == 1
     storage, secrets, minio_settings = bind_calls[0]
     assert isinstance(storage, StorageHandle)
     assert secrets is fake_secrets
     assert isinstance(minio_settings, MinioSettings)
+
+
+def test_embedding_routing_drops_llm_and_keeps_everything_else() -> None:
+    """The knowledge worker wires no LLM adapter, so handing its resolver the
+    ``llm`` namespace would refuse construction on a route it never reads.
+    Written as "drop ``llm``" so a MISSPELLED namespace still reaches the
+    strict parse and is refused there, instead of being silently discarded by
+    a keep-list."""
+    embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
+
+    assert _embedding_routing(
+        {"llm": {"default": {"provider": "openai", "model": "gpt"}}, "embedding": embedding}
+    ) == {"embedding": embedding}
+    assert _embedding_routing({}) == {}
+    assert _embedding_routing({"embeddings": embedding}) == {"embeddings": embedding}
 
 
 async def test_build_media_worker_from_env_raises_naming_the_gap() -> None:

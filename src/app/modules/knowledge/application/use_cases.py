@@ -142,6 +142,11 @@ class IndexRegisteredDocument:
     two transactions. ``execute`` composes the two halves with per-call
     transactions — byte-for-byte the pre-split behaviour — for callers that
     have no unit of work to offer.
+
+    **``fail`` (step 16) is a THIRD entry point into the same ``finalize``**,
+    for a failure that happens before ``run`` can be called at all (the
+    file's bytes could not be fetched or parsed, so there is nothing to
+    embed). See its own docstring.
     """
 
     def __init__(self, documents: DocumentRepository, pipeline: IndexDocument) -> None:
@@ -199,6 +204,43 @@ class IndexRegisteredDocument:
             return IndexAttempt(document=doc, outcome=None, error=str(exc))
 
         return IndexAttempt(document=doc, outcome=outcome, error=None)
+
+    async def fail(self, ctx: ExecutionContext, *, document_id: Uuid, reason: str) -> IndexAttempt:
+        """An ``IndexAttempt`` carrying a failure that happened BEFORE the
+        pipeline could run at all — the content could not be fetched or
+        parsed, so there is nothing to embed (deferred-adapters-plan.md step
+        16, §1-ج).
+
+        Without this, such a failure had no terminal path: it was raised out
+        of the worker's ``content.resolve`` call, escaped the handler
+        entirely, and was redelivered until the DLQ swallowed it — leaving
+        the document ``pending`` FOREVER, with not one failure event to tell
+        the user why their upload never became searchable. Routing it through
+        the SAME ``IndexAttempt``/``finalize`` pair the pipeline's own
+        failures already use means one terminal-state path, not two.
+
+        The same DD-09 redelivery guard as ``run``: an already-terminal
+        document is a no-op, never re-failed.
+
+        Unlike ``run``, this does NOT persist the intermediate ``indexing``
+        status. ``run`` writes it because the pipeline's external I/O then
+        happens outside any transaction, and a crash mid-pipeline must leave
+        a claimed document behind; here there is no I/O left to do — the
+        caller's ``finalize`` transaction records ``failed`` immediately — so
+        the transition is taken in memory ONLY, to satisfy INV-K2's
+        ``indexing -> failed`` edge, and a second write is spent on nothing.
+        """
+        doc = await self._documents.get(ctx, document_id)
+        if doc is None:
+            raise NotFoundError("document not found")
+
+        if doc.status in _TERMINAL:
+            return IndexAttempt(document=doc, outcome=None, error=None)
+
+        # Not terminal, so the status is `pending` or `indexing` — exactly
+        # `entities._STARTABLE`, so this transition cannot raise.
+        doc.start_indexing(utc_now())
+        return IndexAttempt(document=doc, outcome=None, error=reason)
 
     async def finalize(
         self, ctx: ExecutionContext, attempt: IndexAttempt

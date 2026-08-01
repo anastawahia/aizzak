@@ -138,12 +138,13 @@ from app.framework.di.lifecycle import Disposable
 from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
-from app.framework.errors import AppError
+from app.framework.errors import AppError, UnsupportedTypeError, ValidationError
 from app.framework.observability import configure_logging, get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
+from app.framework.providers.resolver import SettingsProviderResolver
 from app.framework.settings.settings import DatabaseSettings
 from app.framework.types import Json, Uuid
 from app.infrastructure.ai_providers.embedding.external_embedding import (
@@ -160,6 +161,10 @@ from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelay
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.infrastructure.vector.qdrant_store import QdrantVectorStore, create_qdrant_client
+from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
+from app.modules.credentials.application.use_cases import ResolveCredential
+from app.modules.files.adapters.sql_repository import SqlFileRepository
+from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
 from app.modules.knowledge.application.event_mapping import (
     to_outbox_record as _knowledge_to_outbox_record,
@@ -179,6 +184,7 @@ from app.modules.media.ports.repository import MediaJobRepository
 from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
 from app.modules.memory.application.use_cases import IndexMemoryItem
 from app.modules.memory.ports.repository import MemoryRepository
+from app.workers.content_resolver import WorkerDocumentContentResolver
 
 _logger = get_logger(__name__)
 
@@ -266,6 +272,16 @@ _CG_KNOWLEDGE = "cg.knowledge"
 _CG_MEDIA = "cg.media"
 _CG_MEMORY = "cg.memory"
 
+# Which adapters take no credential at all -- structural, never user-editable
+# configuration (2.9 decision 6). Deliberately the SAME pair
+# `CompositionRoot.from_env` passes its own `SettingsProviderResolver`
+# (`composition_root.py`, `keyless_providers=`): step 16 made the knowledge
+# worker a second builder of that resolver, and the two must agree, or a
+# workspace that resolves fine through the API would be told at INDEX time
+# that it has no credential for a provider that needs none. Drift here fails
+# loudly (`credentials.none_available`), never silently.
+_KEYLESS_PROVIDERS = frozenset({"ollama", "embedding-local"})
+
 
 class ProcessedEventLedger(Protocol):
     """The DD-09 idempotency claim, as each handler closure consumes it
@@ -287,6 +303,20 @@ def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
     return DatabaseSettings(
         url=db.url, pool_size=_WORKER_POOL_SIZE, max_overflow=_WORKER_MAX_OVERFLOW
     )
+
+
+def _embedding_routing(routing: Json) -> Json:
+    """``PROVIDER_ROUTING`` with the ``llm`` namespace dropped -- what the
+    knowledge worker's ``SettingsProviderResolver`` is given (step 16; the
+    factory's docstring argues the narrowing).
+
+    Written as "drop ``llm``" rather than "keep ``embedding``" on purpose:
+    an unknown/misspelled namespace still reaches ``_parse_routing``, which
+    refuses construction naming it. Keeping only a known key would swallow
+    that typo and boot a worker on a routing table its operator believes
+    says something else.
+    """
+    return {namespace: entry for namespace, entry in routing.items() if namespace != "llm"}
 
 
 def _consumer_name(prefix: str) -> str:
@@ -386,16 +416,38 @@ def build_knowledge_index_handler(
     the external I/O now commits atomically or not at all. No transaction at
     all on the idempotent-redelivery no-op path (an already-INDEXED/FAILED
     document short-circuits in ``run``; opening a transaction to claim a
-    no-op would spend a write to record nothing)."""
+    no-op would spend a write to record nothing).
+
+    **Step 16 adds the ``content.resolve`` failure branch** — the poison-pill
+    gap (deferred-adapters-plan.md §1-ج). See the ``except`` clause's own
+    comment for which failures are terminal and why the rest still escape.
+    The terminal write it produces goes through the SAME ``finalize`` +
+    claim + outbox append as every other outcome, so there stays exactly ONE
+    path to a terminal document, not two."""
     index = IndexRegisteredDocument(documents, pipeline)
 
     async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
         data = envelope["data"]
         event_id: str = envelope["id"]
-        parsed, model, api_key = await content.resolve(ctx, file_id=data["file_id"])
-        attempt = await index.run(
-            ctx, document_id=data["document_id"], parsed=parsed, model=model, api_key=api_key
-        )
+        try:
+            parsed, model, api_key = await content.resolve(ctx, file_id=data["file_id"])
+        except (UnsupportedTypeError, ValidationError) as exc:
+            # Step 16 (§1-ج): a file this deployment cannot parse is a
+            # TERMINAL fact about the file, not a transient fault -- and the
+            # ONLY two error types that say so. Everything else raised out of
+            # `resolve` (a Vault/MinIO/Postgres outage, a `NotFoundError`
+            # for a file row that vanished) still escapes to the engine, is
+            # redelivered, and eventually reaches the DLQ, which is correct:
+            # those may succeed on the next try. These two never will, and
+            # before this branch existed they took the same redelivery path
+            # anyway -- so an ordinary user uploading an unparseable file
+            # burned `max_deliveries` attempts and left their document
+            # `pending` forever, with no failure event to explain it.
+            attempt = await index.fail(ctx, document_id=data["document_id"], reason=str(exc))
+        else:
+            attempt = await index.run(
+                ctx, document_id=data["document_id"], parsed=parsed, model=model, api_key=api_key
+            )
         if attempt.is_redelivery_noop:
             return
         async with uow.begin(ctx):
@@ -463,10 +515,12 @@ def build_knowledge_worker(
 async def build_knowledge_worker_from_env() -> tuple[
     StreamConsumer, list[Subscription], list[Disposable]
 ]:
-    """Build everything about the knowledge worker that genuinely IS real
-    from env (2.10 added the ``IndexDocument`` pipeline to this list; step
-    15 of ``deferred-adapters-plan.md`` adds ``storage``), then RAISE naming
-    exactly what remains missing (module docstring's "Honest-failure rule").
+    """Build the knowledge worker exactly as the ``knowledge`` process runs
+    it. **Nothing is blocked any more** (step 16 of
+    ``deferred-adapters-plan.md``): the last seam this function used to raise
+    over, ``DocumentContentResolver``, now has a real adapter --
+    ``WorkerDocumentContentResolver`` (``workers/content_resolver.py``),
+    composed here out of pieces that already existed separately.
 
     **``async def`` since step 15.** Binding MinIO needs an ``await`` (05
     §3's Vault read), and this entrypoint already runs inside
@@ -481,23 +535,39 @@ async def build_knowledge_worker_from_env() -> tuple[
     hook to sequence against ``bind_minio``, so wrapping a list around a
     single ``await`` would be ceremony bought for nothing.
 
-    Real today: ``documents`` (``SqlDocumentRepository``), ``outbox``
-    (``SqlEventOutbox``), ``tenant_session`` (both the ``UnitOfWork`` and
-    the RLS session provider), the Redis client/consumer identity, the full
-    ``IndexDocument`` pipeline (``vectors``/``embeddings``, 2.10), AND --
-    since this step -- ``storage``: a ``StorageHandle`` bound to a REAL
-    MinIO adapter, built the exact same way ``CompositionRoot.connect_storage``
-    builds it (``framework/di/vault_binding.py::build_vault`` +
-    ``framework/di/storage_binding.py::bind_minio`` -- this function is
-    that pair's SECOND caller). NOT real: ``DocumentContentResolver``
-    itself -- the composition that fetches a file THROUGH ``storage``,
-    dispatches it across the five 3.k1 parser adapters, and resolves an
-    embedding model/key, all as the one ``resolve()`` call
-    ``build_knowledge_index_handler`` injects (that Protocol's own
-    docstring). Raising here, rather than wiring a fake in its place, is
-    the design brief's explicit instruction; ``build_knowledge_worker``
-    itself is unaffected -- ``tests/integration/test_e2e_outbox_to_worker.py``
-    calls it directly.
+    Every dependency is real: ``documents``/``files``
+    (``SqlDocumentRepository``/``SqlFileRepository``), ``outbox``
+    (``SqlEventOutbox``), ``tenant_session`` (both the ``UnitOfWork`` and the
+    RLS session provider), the Redis client/consumer identity, the full
+    ``IndexDocument`` pipeline (``vectors``/``embeddings``, 2.10),
+    ``storage`` -- a ``StorageHandle`` bound to a REAL MinIO adapter, built
+    the exact same way ``CompositionRoot.connect_storage`` builds it
+    (``framework/di/vault_binding.py::build_vault`` +
+    ``framework/di/storage_binding.py::bind_minio``, step 15) -- and now the
+    content resolver over all of them.
+
+    **The embedding route is resolved, not assumed (step 16's carrying
+    decision).** This worker builds the SAME ``SettingsProviderResolver`` +
+    ``ResolveCredential`` pair ``CompositionRoot`` builds, over the SAME
+    ``PROVIDER_ROUTING`` entry, rather than reading a model name straight out
+    of ``settings.embedding_service`` the way ``build_memory_worker_from_env``
+    does. The difference is a correctness argument, not a stylistic one:
+    ``memory`` writes AND reads its own vectors through one process's
+    settings, whereas ``knowledge`` is indexed HERE and queried by the API
+    (``POST /search``). Two processes resolving the model two different ways
+    is a config edit away from indexing into one vector space and searching
+    another -- which produces no error at all, just silently empty or
+    nonsensical retrieval.
+
+    **Only the ``embedding`` namespace of the routing table is handed to that
+    resolver.** ``_parse_routing`` refuses construction on any route whose
+    provider has no wired adapter, and this process deliberately wires no LLM
+    adapters -- it never makes an LLM call. Passing the whole table would
+    force the worker to build (and hold open) OpenAI/Ollama clients purely to
+    satisfy a parse of routes it will never read. Narrowing loses nothing
+    that matters: the strictness the plan is buying is over the embedding
+    route, the one both processes must agree on, and that half stays fully
+    strict.
     """
     settings = load_settings()
     configure_logging(settings.log_level)
@@ -507,6 +577,7 @@ async def build_knowledge_worker_from_env() -> tuple[
     sessionmaker = create_sessionmaker(engine)
     tenant_session = TenantSessionFactory(sessionmaker)
     documents = SqlDocumentRepository(tenant_session)
+    files = SqlFileRepository(tenant_session)
     outbox = SqlEventOutbox(tenant_session)
     ledger = SqlProcessedEventLedger(tenant_session)
 
@@ -525,45 +596,55 @@ async def build_knowledge_worker_from_env() -> tuple[
     storage = StorageHandle()
     await bind_minio(storage, secrets, settings.minio)
 
+    # Step 16 -- the embedding route, resolved the SAME way the API resolves
+    # it (see the docstring). `embedding_providers` is keyed by the adapter's
+    # OWN `provider` attribute, never a literal (the `composition_root.py`
+    # precedent), so the strict parse below proves the configured route
+    # points at the very adapter `pipeline` above was built from.
+    providers = SettingsProviderResolver(
+        routing=_embedding_routing(settings.provider_routing),
+        llm_providers={},
+        embedding_providers={embeddings.provider: embeddings},
+        key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
+        keyless_providers=_KEYLESS_PROVIDERS,
+    )
+    content_resolver = WorkerDocumentContentResolver(
+        files, storage, DocumentContentExtractor(), providers
+    )
+
     redis_client = create_redis_client(settings.redis)
     consumer_name = _consumer_name("knowledge")
 
+    consumer, subscriptions = build_knowledge_worker(
+        redis_client=redis_client,
+        documents=documents,
+        pipeline=pipeline,
+        content_resolver=content_resolver,
+        outbox=outbox,
+        uow=tenant_session,
+        ledger=ledger,
+        consumer_name=consumer_name,
+        block_ms=settings.events.consumer_block_ms,
+        batch_count=settings.events.consumer_batch_count,
+        max_deliveries=settings.events.max_retries_before_dlq,
+    )
+
     # `CompositionRoot.disposables()`'s own `_close_vault` precedent -- hvac
     # is synchronous (it wraps a `requests.Session`), so closing it needs the
-    # same `asyncio.to_thread` offload. NOT yet reachable: the raise below is
-    # unconditional until step 16 wires `DocumentContentResolver` and this
-    # function can actually RETURN a `disposables` list instead of raising --
-    # written now so that list needs no rework the day it exists.
+    # same `asyncio.to_thread` offload. Written in step 15 against a function
+    # that could not yet reach it (the raise was unconditional then); step 16
+    # is what makes it reachable, with no rework, exactly as intended.
     async def _close_vault() -> None:
         await asyncio.to_thread(vault_client.adapter.close)
 
-    _logger.error(
-        "knowledge_worker.content_resolver_wiring_blocked",
-        extra={
-            "app_env": settings.app_env,
-            "consumer_name": consumer_name,
-            # Confirms exactly what DID wire successfully before the block --
-            # every name here is a real, connected adapter, not a placeholder.
-            "documents": type(documents).__name__,
-            "outbox": type(outbox).__name__,
-            "ledger": type(ledger).__name__,
-            "redis_client": type(redis_client).__name__,
-            "pipeline": type(pipeline).__name__,
-            "storage": type(storage).__name__,
-        },
-    )
-    raise AppError(
-        "knowledge_worker's index handler needs a DocumentContentResolver "
-        "(the content-extractor DISPATCH composition over the five 3.k1 "
-        "parser adapters is not wired from env today -- a separately "
-        "tracked debt item, not closed by this step); documents/outbox/"
-        "ledger/tenant_session/the Redis client/the IndexDocument pipeline "
-        "(embeddings + vectors)/storage (a bound MinIO StorageHandle) above "
-        "ARE real -- only DocumentContentResolver is blocked. "
-        "build_knowledge_worker itself is unaffected by this gap; see its "
-        "own docstring.",
-        code="common.internal",
-    )
+    disposables: list[Disposable] = [
+        engine.dispose,
+        qdrant_client.close,
+        embedding_http.aclose,
+        redis_client.aclose,
+        _close_vault,
+    ]
+    return consumer, subscriptions, disposables
 
 
 # --------------------------------------------------------------------------- #

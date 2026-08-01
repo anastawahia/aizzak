@@ -237,11 +237,29 @@ class Limits(BaseModel):
     model_config = _FROZEN
 
     max_upload_bytes: int = 52_428_800  # 50 MB
+    # deferred-adapters-plan.md step 16 (§1-ج) reconciled this whitelist with
+    # the ONE thing that actually consumes a `knowledge`-bound upload: the
+    # `_ROUTES` dispatch table in `knowledge/adapters/parsers/extractor.py`.
+    # The two had drifted in BOTH directions, and the gap only became
+    # explosive the day the knowledge worker could boot:
+    #   * DOCX was allowed here and routed NOWHERE (3.k1 deferred it — it
+    #     needs `python-docx`, not an approved dependency), so every accepted
+    #     `.docx` upload was a poison pill: `extract` raises
+    #     `UnsupportedTypeError`, the document never leaves `pending`.
+    #     Dropped. Re-adding it means adding the parser first.
+    #   * `.xlsx`/`.json`/`.csv` have working parsers (excel/json_doc/
+    #     text_plain) that no file could ever reach, because this whitelist
+    #     rejected the upload at `RegisterUpload`. Added.
+    # The poison-pill BEHAVIOUR is fixed independently (the index handler now
+    # lands such a document in `failed` with an event); this list is what
+    # stops a user from being handed the failure in the first place.
     allowed_mime: tuple[str, ...] = (
         "application/pdf",
         "text/plain",
         "text/markdown",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/csv",
+        "application/json",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "image/png",
         "image/jpeg",
         "image/webp",

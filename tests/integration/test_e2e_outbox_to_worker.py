@@ -24,9 +24,11 @@ role (5.1-ب's own least-privilege split, unchanged here).
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
+from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
@@ -36,7 +38,9 @@ from sqlalchemy.pool import NullPool
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.events.envelope import build_envelope
 from app.framework.identifiers import new_uuid7
+from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.event_outbox import OutboxRecord
+from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.infrastructure.messaging.outbox import OutboxRelay
@@ -45,8 +49,21 @@ from app.infrastructure.persistence.database import create_engine
 from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelayStore
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
 from app.infrastructure.persistence.rls import TenantSessionFactory
+from app.infrastructure.storage.minio_storage import MinioStorage
+from app.infrastructure.vector.qdrant_store import QdrantVectorStore
+from app.modules.files.adapters.sql_repository import SqlFileRepository
+from app.modules.files.domain.entities import File
+from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
+from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
-from app.workers.bootstrap import build_knowledge_register_handler
+from app.modules.knowledge.application.indexing import IndexDocument
+from app.modules.knowledge.domain.collections import knowledge_collection
+from app.modules.knowledge.domain.value_objects import IndexStatus
+from app.workers.bootstrap import (
+    build_knowledge_index_handler,
+    build_knowledge_register_handler,
+)
+from app.workers.content_resolver import WorkerDocumentContentResolver
 from tests.integration.conftest import LiveDbDsns
 
 pytestmark = [pytest.mark.live_db, pytest.mark.live_redis]
@@ -319,3 +336,324 @@ async def test_a_double_published_event_registers_exactly_one_document(
         with contextlib.suppress(Exception):
             await redis_client.xgroup_destroy(stream, group)
         await redis_client.delete(stream)
+
+
+# --------------------------------------------------------------------------- #
+# The WHOLE path, live (deferred-adapters-plan.md step 16)                    #
+# --------------------------------------------------------------------------- #
+_TXT_BODY = (
+    b"The knowledge worker fetches this file from object storage, routes it "
+    b"through the parser dispatch table by its extension, chunks what comes "
+    b"back, embeds every chunk, and upserts one hybrid point per chunk."
+)
+
+
+class _StubEmbeddings:
+    """A deterministic ``EmbeddingProvider``.
+
+    The ONE stub in this test, deliberately: the central embedding service is
+    a separate deployable this harness does not run (``live_embedding`` skips
+    without it), and it is not what step 16 built. Everything the step DID
+    build is real here -- the MinIO fetch, the 3.k1 parser dispatch, the
+    Postgres chunk write, the Qdrant upsert.
+    """
+
+    provider = "stub-embedding"
+    _DIM = 8
+
+    async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+        return EmbeddingResult(
+            vectors=[[0.1] * self._DIM for _ in texts],
+            model=model,
+            dimensions=self._DIM,
+            tokens=len(texts),
+        )
+
+    def dimensions(self, model: str) -> int:
+        return self._DIM
+
+
+class _StubProviders:
+    """A ``ProviderResolver`` answering the embedding route only. The real
+    ``SettingsProviderResolver`` needs a credential repository and a
+    Vault-backed ``ResolveCredential``; the wiring that builds it is proven
+    in ``tests/unit/test_workers_bootstrap.py``, and it is not what this
+    test is about."""
+
+    async def resolve_embedding(
+        self, ctx: ExecutionContext, *, model: str | None = None
+    ) -> tuple[object, ResolvedProvider]:
+        resolved = ResolvedProvider(provider="stub-embedding", model="stub-model", api_key="")
+        return object(), resolved
+
+
+def _ready_file(*, workspace_id: str, file_id: str, name: str, storage_key: str) -> File:
+    """The row a completed upload leaves behind (``CompleteUpload``) -- which
+    is exactly the state ``files.file.uploaded.v1`` announces."""
+    now = datetime.now(UTC)
+    return File(
+        id=file_id,
+        workspace_id=workspace_id,
+        name=FileName(name),
+        content_type=ContentType("text/plain"),
+        size_bytes=len(_TXT_BODY),
+        storage_key=StorageKey(storage_key),
+        checksum=None,
+        status=FileStatus.READY,
+        uploaded_by=None,
+        created_at=now,
+        updated_at=now,
+        deleted_at=None,
+        version=1,
+    )
+
+
+async def _retarget_outbox_stream(owner_dsn: str, *, aggregate_id: str, stream: str) -> None:
+    """Point the follow-on ``registered`` row at this test's UNIQUE stream.
+
+    The event mapper hardcodes the production ``stream.knowledge`` (04 §4's
+    binding table), and R6 forbids a test touching a production stream on a
+    shared Redis. Rewriting the row's target BEFORE the relay reads it keeps
+    the relay itself real -- it publishes and marks the row dispatched
+    exactly as it would in production -- while nothing ever lands on
+    ``stream.knowledge``.
+    """
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE platform.outbox SET stream = :stream WHERE aggregate_id = :id "
+                    "AND event_type = 'knowledge.document.registered.v1'"
+                ),
+                {"stream": stream, "id": aggregate_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _read_chunks_as_owner(owner_dsn: str, *, workspace_id: str, doc_id: str) -> list[str]:
+    """``knowledge.chunks`` is FORCE-RLS like ``documents`` -- same GUC dance
+    (``_read_document_as_owner``'s own recorded lesson)."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text("SELECT text FROM knowledge.chunks WHERE document_id = :id ORDER BY seq"),
+                {"id": doc_id},
+            )
+            return [str(value) for value in result.scalars()]
+    finally:
+        await engine.dispose()
+
+
+def _knowledge_subscriptions(
+    tenant_session: TenantSessionFactory,
+    *,
+    documents: SqlDocumentRepository,
+    outbox: SqlEventOutbox,
+    content_resolver: WorkerDocumentContentResolver,
+    vectors: QdrantVectorStore,
+    files_stream: str,
+    knowledge_stream: str,
+    group: str,
+) -> tuple[Subscription, Subscription]:
+    """Both real handler closures, on this test's UNIQUE stream/group pair --
+    ``build_knowledge_worker``'s own two subscriptions, named for a test
+    (R6) instead of for production."""
+    ledger = SqlProcessedEventLedger(tenant_session)
+    register = Subscription(
+        stream=files_stream,
+        group=group,
+        handlers={
+            _EVENT_TYPE: build_knowledge_register_handler(
+                documents, outbox, tenant_session, ledger, consumer_group=group
+            )
+        },
+    )
+    index = Subscription(
+        stream=knowledge_stream,
+        group=group,
+        handlers={
+            "knowledge.document.registered.v1": build_knowledge_index_handler(
+                documents,
+                IndexDocument(_StubEmbeddings(), vectors),
+                content_resolver,
+                outbox,
+                tenant_session,
+                ledger,
+                consumer_group=group,
+            )
+        },
+    )
+    return register, index
+
+
+async def _cleanup_index_run(
+    qdrant_client: AsyncQdrantClient,
+    minio_storage: MinioStorage,
+    redis_client: Redis,
+    *,
+    collection: str,
+    storage_key: str,
+    streams: tuple[str, ...],
+    group: str,
+) -> None:
+    """Leave the three shared local services exactly as they were found --
+    the ``qdrant_collection`` fixture's own "never accumulate suite
+    leftovers" rule, extended to the object and the streams this test also
+    creates."""
+    with contextlib.suppress(Exception):
+        await qdrant_client.delete_collection(collection)
+    with contextlib.suppress(Exception):
+        await minio_storage.delete(storage_key)
+    for stream in streams:
+        with contextlib.suppress(Exception):
+            await redis_client.xgroup_destroy(stream, group)
+        await redis_client.delete(stream)
+
+
+@pytest.mark.anyio
+@pytest.mark.live_minio
+@pytest.mark.live_qdrant
+async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
+    live_db: LiveDbDsns,
+    tenant_session: TenantSessionFactory,
+    relay_sessionmaker: async_sessionmaker[AsyncSession],
+    redis_client: Redis,
+    minio_storage: MinioStorage,
+    qdrant_client: AsyncQdrantClient,
+) -> None:
+    """Step 16's headline proof: ``file.uploaded -> registered -> indexed``
+    over live Postgres + MinIO + Qdrant, with the REAL
+    ``WorkerDocumentContentResolver`` filling the seam that had no adapter at
+    all until this step.
+
+    Both hops run through the real relay and the real consumer engine, so
+    what is exercised is the production wiring, not a hand-called use-case:
+    the register handler mints the ``pending`` document, the follow-on outbox
+    row is relayed, and the index handler -- whose ``content.resolve`` now
+    reaches all the way into MinIO and the parser dispatch -- finalizes the
+    document as ``indexed``.
+    """
+    files_stream = f"stream.test.{new_uuid7()}"
+    knowledge_stream = f"stream.test.{new_uuid7()}"
+    group = f"cg.test.{new_uuid7()}"
+    workspace_id = new_uuid7()
+    file_id = new_uuid7()
+    storage_key = f"{workspace_id}/{file_id}/notes.txt"
+    ctx = _ctx(workspace_id)
+    collection = knowledge_collection(workspace_id)
+
+    documents = SqlDocumentRepository(tenant_session)
+    files = SqlFileRepository(tenant_session)
+    outbox = SqlEventOutbox(tenant_session)
+
+    register, index = _knowledge_subscriptions(
+        tenant_session,
+        documents=documents,
+        outbox=outbox,
+        content_resolver=WorkerDocumentContentResolver(
+            files, minio_storage, DocumentContentExtractor(), _StubProviders()
+        ),
+        vectors=QdrantVectorStore(qdrant_client),
+        files_stream=files_stream,
+        knowledge_stream=knowledge_stream,
+        group=group,
+    )
+    consumer = StreamConsumer(
+        RedisStreamsConsumer(redis_client),
+        consumer_name="e2e-index",
+        block_ms=500,
+        batch_count=10,
+        max_deliveries=5,
+    )
+    relay = OutboxRelay(
+        SqlOutboxRelayStore(relay_sessionmaker),
+        RedisStreamsPublisher(redis_client),
+        batch_size=10,
+        poll_interval_ms=100,
+        max_backoff_ms=1000,
+    )
+
+    try:
+        await consumer.setup([register, index])
+
+        # 0) A real READY file row + its real bytes in MinIO.
+        await files.add(
+            ctx,
+            _ready_file(
+                workspace_id=workspace_id,
+                file_id=file_id,
+                name="notes.txt",
+                storage_key=storage_key,
+            ),
+        )
+        await minio_storage.put(storage_key, _TXT_BODY, "text/plain")
+
+        # 1) files.file.uploaded.v1 -> relay -> register handler.
+        await outbox.append(
+            ctx,
+            [_uploaded_record(stream=files_stream, workspace_id=workspace_id, file_id=file_id)],
+        )
+        assert await relay.run_once() == 1
+        assert await consumer.run_once([register]) == 1
+
+        rows = await _read_document_as_owner(
+            live_db.owner, workspace_id=workspace_id, file_id=file_id
+        )
+        assert len(rows) == 1
+        assert rows[0]["status"] == "pending"
+        document_id = str(rows[0]["id"])
+
+        # 2) The follow-on registered event, relayed onto this test's stream.
+        await _retarget_outbox_stream(
+            live_db.owner, aggregate_id=document_id, stream=knowledge_stream
+        )
+        assert await relay.run_once() == 1
+
+        # 3) The index handler: MinIO fetch + parse + embed + upsert.
+        assert await consumer.run_once([index]) == 1
+
+        # -- Assertions --------------------------------------------------- #
+        indexed = await documents.get(ctx, document_id)
+        assert indexed is not None
+        assert indexed.status is IndexStatus.INDEXED
+        assert indexed.error is None
+        assert indexed.chunk_count >= 1
+
+        # The chunks really landed in Postgres carrying the PARSED text --
+        # the bytes made the whole trip out of MinIO and through the parser,
+        # rather than an empty shell being written.
+        chunk_texts = await _read_chunks_as_owner(
+            live_db.owner, workspace_id=workspace_id, doc_id=document_id
+        )
+        assert len(chunk_texts) == indexed.chunk_count
+        assert all(chunk_texts)
+        assert "parser dispatch table" in " ".join(chunk_texts)
+
+        # And one hybrid point per chunk really landed in Qdrant.
+        info = await qdrant_client.get_collection(collection)
+        assert info.points_count == indexed.chunk_count
+
+        # The terminal event was emitted in the finalizing transaction.
+        done = await _read_outbox_as_owner(
+            live_db.owner, aggregate_id=document_id, event_type="knowledge.document.indexed.v1"
+        )
+        assert len(done) == 1
+
+        pending = await redis_client.xpending(knowledge_stream, group)
+        assert pending["pending"] == 0
+    finally:
+        await _cleanup_index_run(
+            qdrant_client,
+            minio_storage,
+            redis_client,
+            collection=collection,
+            storage_key=storage_key,
+            streams=(files_stream, knowledge_stream),
+            group=group,
+        )
