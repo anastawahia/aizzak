@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.platform/media.job.requested.v1.json",
+  "title": "media.job.requested.v1 data",
+  "type": "object",
+  "required": ["job_id", "kind", "prompt"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "kind": { "type": "string", "enum": ["image", "video"] },
+    "prompt": { "type": "string" },
+    "agent_key": { "type": "string" },
+    "params": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,183 @@
+# import-linter contracts — enforcement of the dependency rules (D-17).
+# Run:  lint-imports
+# Root package is `app` (src/app, installed editable). See docs/design/09-testing-strategy.md.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+# ---------------------------------------------------------------------------
+# 1) Five-layer inward dependency. Higher layers may import lower ones only.
+#    Infrastructure is NOT in this stack — it is governed by contract 6.
+# ---------------------------------------------------------------------------
+[importlinter:contract:layers]
+name = Layered architecture (inward only)
+type = layers
+layers =
+    app.api
+    app.agents
+    app.modules
+    app.framework
+# The Composition Root is the ONE sanctioned inversion of this stack
+# (10-code-standards §4, ARC-11): wiring concrete implementations is precisely
+# its job, and it can only do that by importing the layers above it. Consumed
+# as of Phase 4.7-b-2; kept as narrow as contracts 6/7's twin exceptions —
+# `app.agents.orchestrator`, never `app.agents.**`, so an agent PLUGIN is
+# still reachable only through `PluginLoader`'s runtime importlib (D-13/AC-04).
+ignore_imports =
+    app.framework.di.composition_root -> app.modules.**
+    app.framework.di.composition_root -> app.agents.orchestrator
+
+# ---------------------------------------------------------------------------
+# 2) Domain purity — the domain of every module imports stdlib only.
+#    No framework, no infrastructure, no web/db/tech libraries.
+# ---------------------------------------------------------------------------
+[importlinter:contract:domain-purity]
+name = Domain is pure (no technical imports)
+type = forbidden
+source_modules =
+    app.modules.*.domain
+forbidden_modules =
+    app.framework
+    app.infrastructure
+    app.api
+    app.agents
+    fastapi
+    starlette
+    pydantic
+    sqlalchemy
+    asyncpg
+    redis
+    qdrant_client
+    minio
+    hvac
+allow_indirect_imports = False
+
+# ---------------------------------------------------------------------------
+# 3) Application layer may use domain + framework(ports) only — not FastAPI,
+#    not infrastructure, not other modules' internals.
+# ---------------------------------------------------------------------------
+[importlinter:contract:application-boundaries]
+name = Application depends on domain + framework only
+type = forbidden
+source_modules =
+    app.modules.*.application
+forbidden_modules =
+    app.api
+    app.agents
+    app.infrastructure
+    fastapi
+    starlette
+    sqlalchemy
+    redis
+
+# ---------------------------------------------------------------------------
+# 4) Modules are independent of each other (Modular Monolith boundary).
+#    Cross-module talk only via injected Inbound Ports / events.
+#    The module set is EXTENSIBLE (10 modules in v1 below). The RESERVED 3
+#    (scheduling/sandbox/runs — requirements §12.1) are not built in v1; when
+#    one is built, append its package here so independence stays enforced.
+# ---------------------------------------------------------------------------
+[importlinter:contract:modules-independent]
+name = Business modules do not import each other
+type = independence
+modules =
+    app.modules.workspace
+    app.modules.access
+    app.modules.credentials
+    app.modules.conversations
+    app.modules.memory
+    app.modules.files
+    app.modules.knowledge
+    app.modules.media
+    app.modules.integrations
+    app.modules.usage
+
+# ---------------------------------------------------------------------------
+# 5) Agents are independent plugins; they never import each other or the API.
+# ---------------------------------------------------------------------------
+[importlinter:contract:agents-independent]
+name = Agents do not import each other
+type = independence
+modules =
+    app.agents.rag_agent
+    app.agents.image_agent
+    app.agents.video_agent
+    app.agents.data_analysis_agent
+    app.agents.file_editing_agent
+
+[importlinter:contract:agents-no-api-no-infra]
+name = Agents never import API or Infrastructure
+type = forbidden
+source_modules =
+    app.agents
+forbidden_modules =
+    app.api
+    app.infrastructure
+
+# ---------------------------------------------------------------------------
+# 6) Nobody imports Infrastructure except the Composition Root (and worker
+#    entrypoints, which are composition roots for their process).
+# ---------------------------------------------------------------------------
+[importlinter:contract:infra-only-via-composition-root]
+name = Infrastructure imported only by Composition Root
+type = forbidden
+source_modules =
+    app.api
+    app.agents
+    app.modules
+    app.framework
+forbidden_modules =
+    app.infrastructure
+ignore_imports =
+    app.framework.di.composition_root -> app.infrastructure.**
+    app.framework.di.storage_binding -> app.infrastructure.**
+    app.framework.di.vault_binding -> app.infrastructure.**
+# Composition Root wires adapters incrementally (Phase 1 → 2); the ignore above
+# is intentionally forward-looking, so an as-yet-unmatched entry must not fail.
+# The two narrow entries below (deferred-adapters-plan.md step 15) are NOT a
+# new hole: `storage_binding`/`vault_binding` are EXTRACTIONS OUT OF the
+# Composition Root, holding the same sanctioned wiring exception this
+# contract's own header already names ("and worker entrypoints, which are
+# composition roots for their process") -- the knowledge worker's composition
+# root (`workers/bootstrap.py`) is their second caller, and it needs the same
+# `hvac`/MinIO adapters the Composition Root does, without importing the
+# Composition Root's entire module/agent graph to get them.
+unmatched_ignore_imports_alerting = warn
+
+# ---------------------------------------------------------------------------
+# 7) Framework is the kernel — pure abstractions, imports nothing app-level.
+#    (Composition Root is the sanctioned exception for wiring.)
+# ---------------------------------------------------------------------------
+[importlinter:contract:framework-kernel]
+name = Framework does not import outer layers
+type = forbidden
+source_modules =
+    app.framework
+forbidden_modules =
+    app.api
+    app.agents
+    app.modules
+ignore_imports =
+    app.framework.di.composition_root -> app.modules.**
+    app.framework.di.composition_root -> app.agents.orchestrator
+# Composition Root imports modules once it wires their use-cases — CONSUMED as
+# of Phase 4.7-b-2 (credentials + files), so the first entry is no longer
+# forward-looking.
+#
+# The second entry (4.7-b-2) is the same sanctioned exception applied to the
+# agents layer, and it is deliberately NARROW: `app.agents.orchestrator`, not
+# `app.agents.**` — the Composition Root builds the orchestrator, and must
+# still never import an agent PLUGIN (those are discovered by `PluginLoader`
+# via importlib at runtime, which is the whole point of D-13 and AC-04).
+#
+# Why an exception rather than moving the wiring out: the Composition Root is
+# by definition the one place allowed to know every concrete implementation
+# (10-code-standards §4, ARC-11), and this contract's own header already names
+# it "the sanctioned exception for wiring" — contract 6 above carries the
+# identical exception for `app.infrastructure`. The alternative, letting the
+# API layer assemble the orchestrator, would put wiring logic outside the
+# single Composition Root; and having `app.agents` import the root instead
+# would break contract 6 INDIRECTLY (agents -> composition_root ->
+# app.infrastructure).
+unmatched_ignore_imports_alerting = warn

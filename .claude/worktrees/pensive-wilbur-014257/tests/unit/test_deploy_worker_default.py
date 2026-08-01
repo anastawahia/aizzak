@@ -1,0 +1,135 @@
+"""The `WORKER` default must not drift between the two deployment paths, nor
+between a file and the auto-loaded `.env` that actually overrides it
+(release-blockers-plan.md §3, step 3 · pre-release-review.md P0-4).
+
+The defect this guards: `docker-compose.yml`'s `worker` service defaulted
+`WORKER` to `knowledge`, a value that crash-loops forever under
+`restart: unless-stopped` (it is blocked on `DocumentContentResolver`, a
+separately tracked debt item) -- while `deploy/runpod/entrypoint.sh` defaulted
+the SAME variable to `memory`, the one value that actually boots. An operator
+running `docker compose --profile workers up worker` with no override got a
+different, broken worker than one running the RunPod image unmodified, and
+the crash loop looked like a platform fault rather than the honest, 18-line
+comment sitting right above it explained.
+
+⭐ A SECOND drift, found only by running `docker compose --profile workers
+config` and reading what it actually resolves to (fixing the inline
+`${WORKER:-...}` fallback alone was NOT enough): Compose auto-loads a `.env`
+file from the project root for variable substitution, and `.env.example`
+-- the tracked template every deployment guide has an operator `cp` to
+`.env` as step one (`docs/quickstart.md`, `deploy-linux-server.md`,
+`deploy-runpod.md`) -- carried its own `WORKER=knowledge`. That value, not
+docker-compose.yml's inline fallback, is what a real `.env` makes Compose
+resolve to on every documented deployment; the fallback only ever fires for
+an operator who deletes the line or never runs `cp .env.example .env` at
+all. So this module checks THREE sources, not two.
+
+Same shape as `test_ops_provision.py` (7.1) and `test_api_conventions.py`
+(6.3-ج): documents drifted and nothing compared them. This compares them.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_COMPOSE = _REPO_ROOT / "docker-compose.yml"
+_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
+_ENV_EXAMPLE = _REPO_ROOT / ".env.example"
+
+# `WORKER: ${WORKER:-memory}` under the `worker:` service's `environment:` key.
+_COMPOSE_WORKER_DEFAULT = re.compile(r"\bWORKER:\s*\$\{WORKER:-([a-z_]+)\}")
+# `export WORKER="${WORKER:-memory}"`.
+_ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}"')
+# A plain dotenv assignment: `WORKER=memory`, start of line.
+_ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
+
+# The three names `app/workers/main.py::_RUNNERS` actually dispatches to.
+# `knowledge` and `media` are real, valid names -- they are simply the two
+# that crash-loop today (their own missing adapters, not a deploy defect).
+_VALID_WORKER_NAMES = frozenset({"knowledge", "media", "memory"})
+# The one worker known to boot today (2.10 closed `memory`'s EmbeddingProvider
+# gap; `DocumentContentResolver`/`MediaGenerator` remain open debt for the
+# other two -- see the comment above `worker:` in docker-compose.yml).
+_ONLY_WORKER_THAT_BOOTS_TODAY = "memory"
+
+
+def _compose_worker_default() -> str:
+    text = _COMPOSE.read_text(encoding="utf-8")
+    match = _COMPOSE_WORKER_DEFAULT.search(text)
+    assert match is not None, (
+        "docker-compose.yml: could not find the worker service's "
+        "`WORKER: ${WORKER:-<name>}` line -- did its shape change?"
+    )
+    return match.group(1)
+
+
+def _entrypoint_worker_default() -> str:
+    text = _ENTRYPOINT.read_text(encoding="utf-8")
+    match = _ENTRYPOINT_WORKER_DEFAULT.search(text)
+    assert match is not None, (
+        "deploy/runpod/entrypoint.sh: could not find "
+        '`export WORKER="${WORKER:-<name>}"` -- did its shape change?'
+    )
+    return match.group(1)
+
+
+def _env_example_worker() -> str:
+    text = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    match = _ENV_EXAMPLE_WORKER.search(text)
+    assert match is not None, (
+        ".env.example: could not find a top-level `WORKER=<name>` line -- did its shape change?"
+    )
+    return match.group(1)
+
+
+def test_the_regexes_actually_find_a_default() -> None:
+    """A guard whose regex silently matches nothing would pass forever while
+    guarding nothing (the 3.69 lesson, restated in test_ops_provision.py) --
+    every source must resolve to one of the three real worker names."""
+    assert _compose_worker_default() in _VALID_WORKER_NAMES
+    assert _entrypoint_worker_default() in _VALID_WORKER_NAMES
+    assert _env_example_worker() in _VALID_WORKER_NAMES
+
+
+def test_compose_fallback_and_runpod_defaults_agree() -> None:
+    compose_default = _compose_worker_default()
+    entrypoint_default = _entrypoint_worker_default()
+    assert compose_default == entrypoint_default, (
+        f"docker-compose.yml's inline fallback defaults WORKER to {compose_default!r} but "
+        f"deploy/runpod/entrypoint.sh defaults it to {entrypoint_default!r} -- "
+        "an operator following one deployment path gets a different worker "
+        "than one following the other. Keep them equal, or make one path "
+        "require an explicit value with a clear failure message instead of a "
+        "silent, differing default."
+    )
+
+
+def test_env_example_agrees_with_the_compose_fallback() -> None:
+    """The one that actually matters in practice: Compose auto-loads `.env`,
+    and `.env.example` is what every documented setup copies to `.env` as
+    step one -- so ITS value, not docker-compose.yml's inline fallback, is
+    what a real deployment resolves to. `docker compose --profile workers
+    config` proved this live: fixing the inline fallback alone still
+    resolved `WORKER: knowledge` until this file's `.env.example` line was
+    fixed too."""
+    assert _env_example_worker() == _compose_worker_default(), (
+        f".env.example sets WORKER={_env_example_worker()!r}, which OVERRIDES "
+        f"docker-compose.yml's inline fallback ({_compose_worker_default()!r}) "
+        "for every operator who ran `cp .env.example .env` -- run `docker "
+        "compose --profile workers config` and read what WORKER actually "
+        "resolves to, not just the fallback text, before trusting this."
+    )
+
+
+def test_default_is_the_one_worker_that_boots_today() -> None:
+    """Agreeing with each other is necessary but not sufficient: all three
+    sources could still agree on a NAME THAT CRASH-LOOPS. `knowledge` and
+    `media` are valid worker names (`app/workers/main.py::_RUNNERS`) that
+    nonetheless crash-loop forever under `restart: unless-stopped` today --
+    so the default must specifically be `memory`, not merely a name in the
+    set."""
+    assert _compose_worker_default() == _ONLY_WORKER_THAT_BOOTS_TODAY
+    assert _entrypoint_worker_default() == _ONLY_WORKER_THAT_BOOTS_TODAY
+    assert _env_example_worker() == _ONLY_WORKER_THAT_BOOTS_TODAY

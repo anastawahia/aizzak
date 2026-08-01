@@ -1,0 +1,638 @@
+# AIZZAK deployment topology (7.1 · 08-local-runbook §2, D-26).
+#
+# ── Runs IN PARALLEL with the native services, never instead of them ───────
+# postgresql@16-main, pgbouncer, redis-server and minio are installed as
+# system services on this host and own the canonical ports; the live test
+# harness (tests/integration/) is provisioned against them and must keep
+# working untouched. So: INSIDE this network every service keeps its
+# canonical name and port exactly as 08 §2 specifies (`pgbouncer:6432`,
+# `minio:9000`, ...), and only the HOST publications are offset. Nothing in
+# the application's configuration differs between the two worlds -- the
+# switch is `.env` alone.
+#
+# ── Every image tag is pinned ──────────────────────────────────────────────
+# The two pre-existing ad-hoc containers ran `:latest`. A deploy artifact
+# whose components change underneath it between two `up`s is not one.
+
+name: aizzak
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: aizzak/app:${APP_IMAGE_TAG:-dev}
+
+# Every process built from the ONE image shares this environment; what
+# differs per process is the command and the DATABASE_URL role.
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-development}
+  APP_HOST: 0.0.0.0
+  APP_PORT: "8000"
+  API_PREFIX: ${API_PREFIX:-/api/v1}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  REDIS_URL: redis://redis:6379/0
+  MINIO_ENDPOINT: minio:9000
+  MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
+  MINIO_SECURE: "false"
+  # The address presigned URLs are SIGNED against (7.1). `minio:9000` is
+  # resolvable only inside this network; SigV4 covers the host, so the URL
+  # handed to a browser has to be signed against a host the browser can
+  # reach. Not cosmetic and not fixable in Nginx.
+  MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:19000}
+  MINIO_PUBLIC_SECURE: ${MINIO_PUBLIC_SECURE:-false}
+  QDRANT_URL: http://qdrant:6333
+  # 2.10 -- the central embedding service (internal-only, the SAME trust
+  # boundary as Postgres/Redis/Qdrant above: tenant text crosses the
+  # internal Docker network to reach it, never the public one). Only the
+  # URL is env-editable here (DD-11); model/dimensions/batch/timeout are
+  # pinned adapter-side defaults that must match the image this service
+  # bakes its model into (`services/embedding/Dockerfile`).
+  EMBEDDING_SERVICE_URL: http://embedding:8080
+  VAULT_ADDR: http://vault:8200
+  # ── Vault authentication mode (7.3 · D-22 · 05 §3.3) ───────────────────
+  # THREE variables, and which of them is set decides the mode, because
+  # `create_vault_client` prefers a token whenever one is present:
+  #   VAULT_TOKEN set          -> token auth (local dev-mode root token)
+  #   VAULT_TOKEN empty  AND
+  #   VAULT_ROLE_ID + VAULT_SECRET_ID set -> AppRole login (D-22, MANDATORY
+  #                                          for every non-local deployment)
+  # So `VAULT_TOKEN=` (blank) in .env is not a missing value -- it is the
+  # switch. Left unquoted-empty here rather than defaulted, precisely so a
+  # blank .env entry survives into the container instead of being replaced.
+  VAULT_TOKEN: ${VAULT_TOKEN-}
+  VAULT_ROLE_ID: ${VAULT_ROLE_ID-}
+  # NEVER put this in .env (05 §3.3: "the only sensitive one in the
+  # environment"). It is read from the invoking shell -- Compose
+  # interpolation consults the real environment too, and the shell wins.
+  VAULT_SECRET_ID: ${VAULT_SECRET_ID-}
+  FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+  FIREBASE_JWKS_CACHE_TTL: ${FIREBASE_JWKS_CACHE_TTL:-3600}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  EVENT_STREAM_PREFIX: ${EVENT_STREAM_PREFIX:-stream.}
+  OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
+  CONSUMER_BLOCK_MS: ${CONSUMER_BLOCK_MS:-5000}
+  MAX_RETRIES_BEFORE_DLQ: ${MAX_RETRIES_BEFORE_DLQ:-5}
+  OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-256}
+  CONSUMER_BATCH_COUNT: ${CONSUMER_BATCH_COUNT:-16}
+  # Retained length per stream, `XADD ... MAXLEN ~ N` (7.3). Streams are
+  # append-only -- XACK does not delete -- so without this every
+  # stream.<module> grows forever even with healthy consumers. 0 disables.
+  STREAM_MAXLEN: ${STREAM_MAXLEN:-100000}
+  PROVIDER_ROUTING: ${PROVIDER_ROUTING:-{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}}
+  OAUTH_REDIRECT_BASE_URL: ${OAUTH_REDIRECT_BASE_URL:-http://localhost}
+  MCP_ALLOWED_TRANSPORTS: ${MCP_ALLOWED_TRANSPORTS:-http,sse}
+  OAUTH_REFRESH_SKEW_S: ${OAUTH_REFRESH_SKEW_S:-60}
+  USAGE_ROLLUP_PERIODS: ${USAGE_ROLLUP_PERIODS:-day,month}
+  USAGE_DEFAULT_LIMITS: ${USAGE_DEFAULT_LIMITS:-{"tokens":{"month":5000000},"cost_micros":{"month":50000000}}}
+
+x-app-logging: &app-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# `host.docker.internal` -- which OLLAMA_BASE_URL defaults to above -- is a
+# Docker DESKTOP convenience that does not exist on Linux Docker: the name has
+# no resolver entry inside the container, so every LLM call died with
+# `ConnectError [Errno -2] Name or service not known` while Ollama sat healthy
+# on the host serving gemma3:1b. `host-gateway` is Docker's documented Linux
+# equivalent -- it substitutes the bridge gateway address at container create.
+#
+# Applied to `app` and `worker` only: they are the two services that call an
+# LLM. `migrate` and `outbox-relay` share the same env block but reach nothing
+# outside the Compose network, and a host route they never use is a hole for
+# free.
+x-host-gateway: &host-gateway
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  # ────────────────────────────── data plane ──────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-aizzak}
+      # Consumed by deploy/postgres/initdb/10-roles.sh, which creates the
+      # four application roles. Role creation needs cluster privilege that
+      # aizzak_owner deliberately does not hold, so it belongs to init, not
+      # to a migration and not to app.ops.provision (01 §6).
+      AIZZAK_OWNER_PASSWORD: ${AIZZAK_OWNER_PASSWORD:?set AIZZAK_OWNER_PASSWORD in .env}
+      APP_RW_PASSWORD: ${APP_RW_PASSWORD:?set APP_RW_PASSWORD in .env}
+      OUTBOX_RELAY_PASSWORD: ${OUTBOX_RELAY_PASSWORD:?set OUTBOX_RELAY_PASSWORD in .env}
+      # retention_sweeper (P1-5, p1-hardening-plan.md §3 step 8): SELECT/DELETE
+      # on the three unbounded platform ledgers, nothing else. No standing
+      # service authenticates as this role -- `python -m app.ops.retention` is
+      # a manually-invoked one-shot tool (see 08-local-runbook.md §4.3) -- but
+      # `app.ops.provision`'s own `_require_roles` check (run by the `migrate`
+      # service below) fails fast on it BEFORE any migration if the role does
+      # not already exist, so it must be created here regardless.
+      RETENTION_SWEEPER_PASSWORD: ${RETENTION_SWEEPER_PASSWORD:?set RETENTION_SWEEPER_PASSWORD in .env}
+      # metrics_reader (P1-3, p1-hardening-plan.md §3 step 10): SELECT-only on
+      # platform.outbox, nothing else -- the `/metrics` endpoint's own read.
+      # `app_rw` is INSERT-only there (provision.py), so this is a role of its
+      # own rather than a widened `app_rw` grant. UNLIKE retention_sweeper,
+      # this IS a standing consumer -- the `app` service below, every scrape --
+      # the same footing `outbox_relay` stands on.
+      METRICS_READER_PASSWORD: ${METRICS_READER_PASSWORD:?set METRICS_READER_PASSWORD in .env}
+      # transit_rotator (P1-9, p1-hardening-plan.md §3 step 12): SELECT plus
+      # column-scoped UPDATE (the ciphertext column alone) on the three
+      # Transit-ciphertext-bearing tables, nothing else. No standing service
+      # authenticates as this role -- `python -m app.ops.rotate_transit` is a
+      # manually-invoked one-shot tool, the `retention_sweeper` footing -- but
+      # `app.ops.provision`'s own `_require_roles` check fails fast on it
+      # BEFORE any migration if the role does not already exist, so it must
+      # be created here regardless.
+      TRANSIT_ROTATOR_PASSWORD: ${TRANSIT_ROTATOR_PASSWORD:?set TRANSIT_ROTATOR_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${HOST_PORT_POSTGRES:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_DB:-aizzak}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ⚠️ THE POOLER IS CONFIGURED ENTIRELY FROM THE ENVIRONMENT BELOW. There is
+  # no pgbouncer.ini in this repository, and that is deliberate: edoburu's
+  # entrypoint GENERATES /etc/pgbouncer/pgbouncer.ini from these variables at
+  # container start, so a checked-in file would either be ignored (confusing)
+  # or override them (a second source of truth). 7.3 deleted the 0-byte
+  # `deploy/pgbouncer/pgbouncer.ini` that had sat here since Phase 1 --
+  # referenced by nothing, mounted nowhere, and reading for all the world
+  # like the pooler's configuration while containing none of it.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Transaction pooling (D-21). OPS-02's other half -- asyncpg's
+      # statement_cache_size=0 -- is enforced in create_engine's connect
+      # args for EVERY engine, so it holds for the app, the workers, the
+      # relay and the migrator alike.
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      # This image listens on 5432 by default; 08 §2 fixes the pooler at
+      # 6432 and every DATABASE_URL in this file names that port.
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "25"
+      AUTH_TYPE: scram-sha-256
+      # Named prepared statements are disabled application-side; leaving
+      # this at 0 keeps pgbouncer from pretending otherwise.
+      MAX_PREPARED_STATEMENTS: "0"
+      ADMIN_USERS: ${POSTGRES_SUPERUSER:-postgres}
+      AUTH_USER: ${POSTGRES_SUPERUSER:-postgres}
+      AUTH_QUERY: SELECT usename, passwd FROM pg_shadow WHERE usename=$$1
+      DB_USER: ${POSTGRES_SUPERUSER:-postgres}
+      DB_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+    ports:
+      - "${HOST_PORT_PGBOUNCER:-16432}:6432"
+    restart: unless-stopped
+    <<: *app-logging
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${HOST_PORT_REDIS:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    <<: *app-logging
+
+  minio:
+    # Isolated by construction: its own volume and its own root credentials.
+    # The host's minio.service is a SHARED instance ("MinIO object storage
+    # (avatars)") belonging to another workload, and this stack's objects
+    # have no business living there.
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${HOST_PORT_MINIO:-19000}:9000"
+      - "${HOST_PORT_MINIO_CONSOLE:-19001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    <<: *app-logging
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "${HOST_PORT_QDRANT:-16333}:6333"
+    restart: unless-stopped
+    <<: *app-logging
+
+  # The central embedding service (2.10): loads
+  # sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 ONCE and
+  # serves POST /embed + GET /health over a small internal HTTP API
+  # (services/embedding/app.py). INTERNAL ONLY -- `expose`, not `ports`: it
+  # is never published to the host and never enters an nginx upstream, the
+  # same trust boundary as Postgres/Redis/Qdrant above (tenant text crosses
+  # the internal Docker network to reach it, never the public one).
+  embedding:
+    image: aizzak/embedding:${EMBEDDING_IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: services/embedding/Dockerfile
+    environment:
+      EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      EMBEDDING_DIM: "384"
+      EMB_BATCH: "8"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ⚠️ PERSISTENT `file` storage (release-blockers-plan.md §3 step 1), NOT
+  # `-dev` mode. `-dev` kept KV, Transit and the AppRole entirely in memory --
+  # a restart wiped them, and a regenerated Transit key cannot decrypt
+  # ciphertext produced under the old one (permanent tenant-credential loss,
+  # `CipherRef`/INV-C2/INV-I1). `deploy/vault/start.sh` REPLACES this image's
+  # own entrypoint: it starts `vault server` itself, then drives it through
+  # `operator init`/`operator unseal` in the SAME process tree before the
+  # healthcheck below can ever see success -- see that script's header for
+  # why this can't be done through the stock entrypoint, and for the
+  # single-local-host security trade it documents (the unseal key + root
+  # token live in the `vault-init` volume, plaintext, `chmod 600`; there is
+  # no KMS here to auto-unseal against). NOT acceptable for real production
+  # -- see docs/quickstart.md §5 for the upgrade path.
+  vault:
+    image: hashicorp/vault:1.18
+    entrypoint: ["/bin/sh", "/vault/scripts/start.sh"]
+    environment:
+      # Compose is a multi-container network: the per-service CONTAINER is
+      # the isolation boundary, so Vault binds 0.0.0.0 inside its own
+      # container exactly like every sibling service in this stack does.
+      VAULT_LISTEN_ADDR: 0.0.0.0
+    volumes:
+      - ./deploy/vault/server.hcl:/vault/config/server.hcl:ro
+      - ./deploy/vault/start.sh:/vault/scripts/start.sh:ro
+      - vault-data:/vault/data
+      - vault-init:/vault/init
+    ports:
+      - "${HOST_PORT_VAULT:-18200}:8200"
+    # ⚠️ MEANS "usable", not just "listening" (release-blockers-plan.md §3
+    # step 1 requirement 3). `vault status` -- measured live against this
+    # exact image (hashicorp/vault:1.18) -- exits 1 while nothing is
+    # listening yet, 2 while SEALED (listening, but not usable: exactly the
+    # state right after a `restart` before start.sh re-unseals it), and only
+    # 0 once unsealed. So a sealed Vault genuinely reports unhealthy here,
+    # which is what lets `vault-bootstrap`'s and `app`'s
+    # `depends_on: {condition: service_healthy}` keep meaning what the rest
+    # of this file assumes. `start_period` covers first-boot `operator init`
+    # (a few seconds, measured), not steady-state re-unseal.
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ─────────────────────────── one-shot bootstrap ──────────────────────────
+  # Each runs to completion and exits; `app` waits on both exits. Two
+  # services rather than one because each uses its own vendor's pinned CLI
+  # image -- the alternative was fetching an unversioned binary at boot,
+  # which would defeat the point of pinning everything else.
+  vault-bootstrap:
+    image: hashicorp/vault:1.18
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      # No default here on purpose: the dev root token no longer exists
+      # (persistent Vault -- release-blockers-plan.md §3 step 1). Leave this
+      # BLANK -- the normal case -- and bootstrap.sh reads the real root
+      # token out of the vault-init volume mounted below, which start.sh
+      # wrote there at `operator init` time. Set it only for a manual
+      # operator override (e.g. a token minted for this one run).
+      VAULT_TOKEN: ${VAULT_TOKEN-}
+      AIZZAK_OWNER_PASSWORD: ${AIZZAK_OWNER_PASSWORD}
+      APP_RW_PASSWORD: ${APP_RW_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # Pins the AppRole role_id so .env's VAULT_ROLE_ID cannot drift from
+      # Vault's. Persistent storage means the role (and its role_id) now
+      # SURVIVES a restart on its own; this pin's remaining job is the
+      # first-ever boot (nothing to agree with yet) and recovering cleanly
+      # if the vault-data volume is ever wiped without also editing .env.
+      # role_id is non-secret (05 §2). Unset in a real deployment.
+      AIZZAK_APPROLE_ROLE_ID: ${VAULT_ROLE_ID-}
+    volumes:
+      - ./deploy/vault/bootstrap.sh:/bootstrap.sh:ro
+      - ./deploy/vault/app-policy.hcl:/app-policy.hcl:ro
+      # Read-only: the root token this container needs to authenticate, but
+      # never the unseal key -- bootstrap.sh has no business unsealing Vault.
+      - vault-init:/vault-init:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    restart: "no"
+    <<: *app-logging
+
+  minio-bootstrap:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
+    volumes:
+      - ./deploy/minio/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    restart: "no"
+    <<: *app-logging
+
+  # Migrations + grants (01 §6's operational step). Runs as aizzak_owner,
+  # DIRECTLY against postgres rather than through pgbouncer: DDL under
+  # transaction pooling is a needless hazard, and this is a one-shot process
+  # with exactly one connection.
+  migrate:
+    <<: [*app-image, *app-logging]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql+asyncpg://aizzak_owner:${AIZZAK_OWNER_PASSWORD}@postgres:5432/${POSTGRES_DB:-aizzak}
+    command: ["python", "-m", "app.ops.provision"]
+    restart: "no"
+
+  # ─────────────────────────────── app plane ───────────────────────────────
+  # ── the host's Ollama, made reachable from the Compose network ───────────
+  # WHY THIS EXISTS. Ollama runs as a WINDOWS process bound to 127.0.0.1:11434,
+  # and this WSL instance uses `networkingMode=mirrored`, which shares the
+  # Windows loopback with WSL -- so `curl 127.0.0.1:11434` succeeds from the
+  # WSL shell and looks like the problem is solved. It is not: a container has
+  # its OWN network namespace and is outside that sharing, so `app` reaching
+  # host.docker.internal (172.17.0.1, the docker0 gateway) got `Connection
+  # refused` -- routed correctly, nothing listening. Measured both ways before
+  # this service was written.
+  #
+  # This forwarder joins the WSL host namespace (`network_mode: host`), where
+  # 127.0.0.1 IS the mirrored Windows loopback, and re-publishes Ollama on the
+  # docker0 gateway address that `host.docker.internal` already resolves to.
+  # `app` therefore needs NO url change: OLLAMA_BASE_URL's existing default
+  # keeps working, and it works the same for the `worker` profile.
+  #
+  # `bind=172.17.0.1` is the security-relevant half and is NOT cosmetic: the
+  # obvious `TCP-LISTEN:...` on 0.0.0.0 would, under mirrored networking,
+  # publish an unauthenticated Ollama to the whole LAN. Bound to the bridge
+  # address, only containers on this host can reach it.
+  #
+  # It LISTENS ON 11435, not 11434, and that is forced rather than chosen:
+  # under mirrored networking the Windows listener reserves 11434 across the
+  # shared stack, so binding it here fails `Address in use` even though `ss`
+  # shows no Linux listener at all. 11435 in, 11434 out. `.env` therefore
+  # points OLLAMA_BASE_URL at :11435; the Compose default above stays :11434,
+  # which is the correct value for Docker Desktop or a native Linux Ollama,
+  # where this whole service is unnecessary.
+  ollama-bridge:
+    image: alpine/socat:1.8.0.3
+    network_mode: host
+    command: >-
+      TCP-LISTEN:11435,bind=172.17.0.1,fork,reuseaddr
+      TCP:127.0.0.1:11434
+    <<: *app-logging
+    restart: unless-stopped
+
+  app:
+    <<: [*app-image, *app-logging, *host-gateway]
+    depends_on:
+      ollama-bridge:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      vault-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      # app_rw: NOINHERIT, no BYPASSRLS, not a table owner -- the RLS policy
+      # is what confines it (01 §3). Through pgbouncer, never port 5432.
+      DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      # P1-3 (p1-hardening-plan.md §3 step 10): `/metrics`'s OWN read of
+      # platform.outbox -- app_rw above is INSERT-only there (provision.py),
+      # so this is a SEPARATE, SELECT-only role/connection, never a widened
+      # app_rw grant. Every gunicorn worker sibling (WEB_CONCURRENCY) queries
+      # this independently and gets the identical answer, since it re-reads
+      # Postgres fresh on each scrape rather than caching anything in-process
+      # (docs/log/3.89.md's whole point).
+      METRICS_DATABASE_URL: postgresql+asyncpg://metrics_reader:${METRICS_READER_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # Same image, different command (08 §2/§4). Three Streams consumers, each
+  # its own process so one module's backlog cannot starve another's.
+  #
+  # ⚠️ BEHIND A PROFILE, and that is still a finding, though a narrower one
+  # since 2.10: `WORKER=memory` now boots for real (`build_memory_worker_
+  # from_env` no longer raises -- 2.10 closed its EmbeddingProvider gap).
+  # The other two values still crash-loop on boot, each naming a DIFFERENT
+  # remaining gap:
+  #   knowledge -> DocumentContentResolver (a separately tracked debt item,
+  #                NOT closed by 2.10 -- workers/bootstrap.py's own docstring)
+  #   media     -> MediaGenerator (no adapter exists; media/ports/generation.py
+  #                names it a deferred Phase-5 infra adapter)
+  # -- so with `restart: unless-stopped` a knowledge/media instance would
+  # crash-loop forever and make an otherwise-healthy stack look broken, while
+  # a memory instance now runs cleanly. The topology is declared here,
+  # correct and ready; what blocks the other two is their own missing
+  # ADAPTER, not anything about deployment.
+  #
+  # ⚠️ THE DEFAULT BELOW MATTERS (release-blockers-plan.md §3, step 3 / P0-4
+  # in pre-release-review.md). `WORKER` defaults to `memory` -- the ONE value
+  # that boots -- not `knowledge`. It used to default to `knowledge`, which
+  # crash-loops forever under `restart: unless-stopped` on a plain,
+  # unconfigured `docker compose --profile workers up worker`, making an
+  # otherwise-healthy stack look broken for no reason the operator could see
+  # without reading this comment first. `memory` mirrors
+  # deploy/runpod/entrypoint.sh's own `WORKER="${WORKER:-memory}"`, so the two
+  # deployment paths agree; tests/unit/test_deploy_worker_default.py asserts
+  # that agreement and fails if either one drifts.
+  #
+  # Considered and rejected: no default at all (`${WORKER:?msg}`), forcing an
+  # explicit value on every invocation. Rejected because it would make THIS
+  # path disagree with RunPod's -- entrypoint.sh already defaults silently
+  # and reasonably (its single-container image has no interactive operator to
+  # prompt at boot) -- and because a default that actually boots is worth
+  # more here than forcing a decision nobody using this profile is actually
+  # undecided about. A WRONG explicit value still fails loud, never silently:
+  # `app/workers/main.py::_select_worker`/`run` raise
+  # `SystemExit("unknown worker ... -- valid names: ...")` before touching
+  # any I/O.
+  #   docker compose --profile workers up worker      # boots WORKER=memory
+  worker:
+    profiles: ["workers"]
+    <<: [*app-image, *app-logging, *host-gateway]
+    depends_on:
+      ollama-bridge:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      vault-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      WORKER: ${WORKER:-memory}
+    command: ["python", "-m", "app.workers.main"]
+    restart: unless-stopped
+
+  # SINGLE instance (08 §2), and it starts AFTER the workers: consumer
+  # groups are created at `$` (stream tail), so a group created after the
+  # relay published to a brand-new stream would never see those entries
+  # (08 §4's boot-order rule, the live 5.1-ج lesson).
+  outbox-relay:
+    <<: [*app-image, *app-logging]
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      # NOT `worker` -- it sits behind the `workers` profile (see above), and
+      # a depends_on into a disabled profile is a config error. The boot-order
+      # rule 08 §4 states is real and unchanged: on a BRAND-NEW stream the
+      # consumers must start before the relay, because groups are created at
+      # `$` (stream tail) and a group created after the relay published would
+      # never see those entries. Once the workers can boot, restore the
+      # `worker: {condition: service_started}` edge here.
+    environment:
+      <<: *app-env
+      # The relay's OWN role: SELECT/UPDATE on platform.outbox and nothing
+      # else -- the mirror image of app_rw's INSERT-only grant there.
+      DATABASE_URL: postgresql+asyncpg://outbox_relay:${OUTBOX_RELAY_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+    command: ["python", "-m", "app.workers.outbox_relay"]
+    deploy:
+      replicas: 1
+    restart: unless-stopped
+
+  # ─────────────────────────────── edge ───────────────────────────────────
+  # Local TLS material (7.3). Same one-shot pattern as the vault/minio
+  # bootstraps, on the SAME pinned image that consumes the output -- openssl
+  # ships in nginx:1.27, so this needs nothing installed on the host. Skips
+  # itself when a certificate is already present, which is also how an
+  # operator supplies a real one: drop it in and this stays out of the way.
+  nginx-certs:
+    image: nginx:1.27
+    volumes:
+      - ./deploy/nginx/gen-cert.sh:/gen-cert.sh:ro
+      - ./deploy/nginx/certs:/certs
+    entrypoint: ["/bin/sh", "/gen-cert.sh"]
+    restart: "no"
+    <<: *app-logging
+
+  nginx:
+    image: nginx:1.27
+    depends_on:
+      app:
+        condition: service_started
+      nginx-certs:
+        condition: service_completed_successfully
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/app-locations.conf:/etc/nginx/app-locations.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    ports:
+      - "${HOST_PORT_HTTP:-80}:80"
+      - "${HOST_PORT_HTTPS:-443}:443"
+    # ⚠️ AN EDGE HEALTHCHECK, AND IT IS MANDATORY (7.3, closing a 7.1 loose
+    # end). Every other healthcheck in this file probes a service from INSIDE
+    # itself -- `app`'s curls 127.0.0.1:8000 in its own container. That is
+    # exactly why bug #10 (§3.75 decision (ط)) was so hard to see: nginx was
+    # proxying to a dead address and answering 502 to the world while
+    # `docker compose ps` reported every service healthy and the app's log
+    # was full of 200s. NOTHING observed the link between the two.
+    #
+    # This check crosses that link. It leaves through nginx's own listener,
+    # goes through the proxy configuration, reaches the app and comes back --
+    # so a stale DNS resolution, a broken location block, a bad certificate
+    # or a dead app all surface as an unhealthy EDGE instead of a silent 502.
+    #
+    # Both schemes are probed: :443 has its own certificate and TLS config
+    # that :80 cannot vouch for. `-k` because the local certificate is
+    # self-signed by construction -- this check asserts that TLS terminates
+    # and proxies, not that a development certificate chains to a public CA.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1/health && curl -fsSk https://127.0.0.1/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    <<: *app-logging
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  qdrant-data:
+  # Vault's OWN storage (KV v2 + Transit + AppRole) -- what makes the vault
+  # service survive a restart at all (release-blockers-plan.md §3 step 1).
+  vault-data:
+  # The unseal key + root token `deploy/vault/start.sh` writes at
+  # `operator init` time. DELIBERATELY a separate volume from vault-data:
+  # the data directory stays exactly what Vault itself owns, and this one
+  # stays exactly what the bootstrap/recovery tooling owns.
+  vault-init:

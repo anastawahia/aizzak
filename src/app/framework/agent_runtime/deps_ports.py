@@ -1,0 +1,141 @@
+"""Agent-facing dependency Protocols — the DIP seam between agents and modules
+(the user-chosen resolution for 4.6, "Framework Protocols (DIP)").
+
+Agents coordinate over MODULE inbound ports (knowledge retrieval, media
+requests, file access…). But ``AgentDependencies`` lives in this framework
+kernel, and the ``framework-kernel`` import-linter contract forbids
+``app.framework`` from importing ``app.modules``. So — Dependency Inversion —
+the framework declares the NEUTRAL abstractions it needs from its injected
+collaborators HERE, and the concrete module use-cases satisfy them
+STRUCTURALLY (structural ``Protocol`` typing, no nominal import). The
+Composition Root / orchestrator (4.7) binds a real
+``KnowledgeRetrieval`` instance to a ``KnowledgeAccess``-typed field; mypy
+checks that binding AT THE WIRING SITE, so a module-port shape change turns
+*that* line red — no silent drift. The kernel stays at 8/0 while agents remain
+fully typed.
+
+Everything here imports framework/stdlib only. Grows demand-driven as agents
+appear (the ``AgentDependencies`` doctrine): 4.6-a adds ``ResolvedLLM`` +
+``KnowledgeAccess`` (the RAG agent's needs); 4.6-b/c add the file/media seams.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Protocol
+
+from app.framework.context.execution_context import ExecutionContext
+from app.framework.ports.llm_provider import LLMProvider
+from app.framework.types import Json, Uuid
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedLLM:
+    """A provider-resolved LLM ready to call: the concrete adapter bound to its
+    model + api_key.
+
+    This packs what ``ProviderResolver.resolve_llm`` yields
+    (``tuple[LLMProvider, ResolvedProvider]``) into the single value an agent
+    needs. The orchestrator (4.7) builds one per request after resolving the
+    route + credential; an agent then calls
+    ``binding.provider.stream(messages, LlmParams(model=binding.model, …), binding.api_key)``.
+    A frozen carrier — no behaviour, like every value object in this kernel.
+    """
+
+    provider: LLMProvider
+    model: str
+    api_key: str
+
+
+class RetrievedChunkView(Protocol):
+    """The read shape an agent needs from one retrieved chunk. The knowledge
+    module's ``RetrievedChunk`` (``document_id``/``chunk_id``/``text``/``score``)
+    satisfies this structurally — no framework→module import.
+
+    **Read-only ``@property`` members, not bare annotations** (fixed at the
+    4.7-b-2 wiring site, which is exactly where 4.6-a said this binding would
+    finally be type-checked). A bare ``x: str`` on a Protocol declares a
+    MUTABLE attribute, and every module type that satisfies these seams is a
+    ``frozen=True`` dataclass whose attributes are read-only — so mypy
+    rejected the binding outright. Properties state the truth (an agent only
+    ever reads these) and accept frozen carriers. ``ResolvedKeyView`` in
+    ``framework/providers/resolver.py`` already had it right; these did not.
+    """
+
+    @property
+    def document_id(self) -> str: ...
+    @property
+    def chunk_id(self) -> str: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def score(self) -> float: ...
+
+
+class KnowledgeAccess(Protocol):
+    """The retrieval capability a RAG-style agent needs. Structurally satisfied
+    by ``app.modules.knowledge.ports.inbound.KnowledgeRetrieval.retrieve``; the
+    binding is type-checked at the 4.7 composition site."""
+
+    async def retrieve(
+        self, ctx: ExecutionContext, query: str, k: int
+    ) -> Sequence[RetrievedChunkView]: ...
+
+
+class FileReadView(Protocol):
+    """The read shape an agent needs to fetch a file's bytes: its content type,
+    size, and storage key. Declares only what ``read_text_file`` touches (a
+    subset of the files module's ``FileView``, which satisfies it
+    structurally). Read-only properties for the reason on
+    ``RetrievedChunkView``."""
+
+    @property
+    def content_type(self) -> str: ...
+    @property
+    def size_bytes(self) -> int: ...
+    @property
+    def storage_key(self) -> str: ...
+
+
+class FilesAccess(Protocol):
+    """The workspace-file lookup a data/file agent needs — metadata only, and
+    only for a ``ready`` file (``None`` otherwise). Structurally satisfied by
+    ``app.modules.files.ports.inbound.FilesQuery.get_readable``. The actual
+    bytes are fetched separately via the ``StorageProvider`` framework port,
+    keyed by ``storage_key`` (see ``file_reading.read_text_file``)."""
+
+    async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> FileReadView | None: ...
+
+
+class RequestedMediaView(Protocol):
+    """The handle an agent gets back after queuing a generation job — enough to
+    tell the caller which job to await (delivered later over WebSocket, Phase
+    5). Satisfied structurally by a 4.7 view over the media module's
+    ``MediaJob``. Read-only properties for the reason on
+    ``RetrievedChunkView``."""
+
+    @property
+    def job_id(self) -> str: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def kind(self) -> str: ...
+
+
+class MediaRequesting(Protocol):
+    """Queue ONE heavy media-generation job (D-04 — event-driven; the agent
+    never waits or streams). The 4.6-c media inbound seam (the media module's
+    ``ports/inbound.py`` was deliberately deferred to here). Wired at 4.7 over
+    ``RequestMedia`` + the outbox; ``params`` shape is validated downstream by
+    ``GenParams`` (image: width/height/model · video: duration_seconds/model)."""
+
+    async def request(
+        self,
+        ctx: ExecutionContext,
+        *,
+        agent_key: str,
+        kind: str,
+        prompt: str,
+        params: Json,
+    ) -> RequestedMediaView: ...

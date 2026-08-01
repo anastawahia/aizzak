@@ -1,0 +1,21 @@
+# Pinned dependencies for the embedding SERVICE image ONLY (Phase 2.10).
+#
+# These live HERE, and only here -- do NOT add them to the main project's
+# pyproject.toml/lockfile. torch/sentence-transformers are heavy, native/
+# GPU-capable wheels that must never enter the main `app` package's import
+# graph (`services/embedding/app.py`'s own module docstring: they are
+# imported LAZILY, inside `_load_model`, precisely so this file's absence
+# from the main venv never breaks anything there).
+#
+# torch is pulled from PyTorch's own CPU wheel index; the GPU build is not
+# pinned here because the image this Dockerfile builds runs CPU-only by
+# default -- a CUDA-enabled variant is a separate, deliberately later image
+# (`services/embedding/app.py`'s device-auto policy already supports it: it
+# runs on whichever device `torch.cuda.is_available()` reports).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.5.1
+sentence-transformers==3.3.1
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4

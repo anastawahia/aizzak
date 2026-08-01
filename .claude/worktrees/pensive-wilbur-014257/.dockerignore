@@ -1,0 +1,42 @@
+# Build-context exclusions.
+#
+# Without this file the context handed to `docker build` includes .venv (460
+# MB), .git and every tool cache -- uploaded to the daemon on EVERY build,
+# and on a RunPod deployment that context crosses a home uplink.
+#
+# Mirrors .gitignore where the reasons coincide, and adds the things git
+# tracks but an image must never carry: .env (secrets) and tests/.
+
+# ⚠️ The `**/` prefix is load-bearing. A .dockerignore pattern is matched
+# against the path relative to the CONTEXT ROOT and `*` does not cross `/`,
+# so a bare `__pycache__/` excludes exactly one directory -- the one at the
+# root -- and lets the other 98 under src/ ride along into `COPY src/`.
+.venv/
+venv/
+.git/
+.github/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# ⚠️ Secrets. The image must receive its configuration from the environment,
+# never from a baked file.
+.env
+*.local
+
+# Development TLS material -- regenerated per deployment.
+deploy/nginx/certs/
+
+build/
+dist/
+*.log
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,93 @@
+"""Files aggregate (pure — 06-domain-models §6).
+
+``File`` is a workspace-scoped object descriptor shared among every agent in
+the workspace (INV-F3); its bytes live in MinIO, addressed by ``storage_key``
+(INV-F1). Behaviour lives on the aggregate; mutations touch only state +
+``updated_at``. The optimistic ``version`` is advanced by the repository on
+``save`` (02-port-contracts §2). Identifiers are UUIDv7 text (``str``);
+timestamps are timezone-aware UTC (DD-03).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+
+from app.modules.files.domain.errors import FileStateError
+from app.modules.files.domain.value_objects import (
+    ContentType,
+    FileName,
+    FileStatus,
+    Sha256,
+    StorageKey,
+)
+
+_SCANNABLE = (FileStatus.UPLOADED, FileStatus.SCANNING)
+
+
+@dataclass(slots=True)
+class File:
+    """A shared, workspace-scoped file descriptor."""
+
+    id: str
+    workspace_id: str
+    name: FileName
+    content_type: ContentType
+    size_bytes: int
+    storage_key: StorageKey
+    checksum: Sha256 | None
+    status: FileStatus
+    uploaded_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+    version: int
+
+    def mark_scanning(self, now: datetime) -> None:
+        """``uploaded -> scanning`` once the antivirus scan begins."""
+        self._guard_not_deleted()
+        if self.status is not FileStatus.UPLOADED:
+            raise FileStateError(f"cannot start scanning from status {self.status.value!r}")
+        self.status = FileStatus.SCANNING
+        self.updated_at = now
+
+    def complete(self, checksum: Sha256 | None, now: datetime) -> None:
+        """``uploaded|scanning -> ready`` (INV-F2): the file becomes usable and
+        its checksum is recorded when the caller supplied one.
+
+        ``checksum`` is optional because the wire contract makes it so
+        (03-api-spec §2: ``FileCompleteIn.checksum: str | None = None`` — and
+        the published event schema likewise lists ``checksum`` as optional): a
+        client that cannot hash its upload may still complete it, and a
+        ``ready`` file with ``checksum=None`` is an honest record of that."""
+        self._guard_not_deleted()
+        if self.status not in _SCANNABLE:
+            raise FileStateError(f"cannot complete from status {self.status.value!r}")
+        self.status = FileStatus.READY
+        self.checksum = checksum
+        self.updated_at = now
+
+    def quarantine(self, now: datetime) -> None:
+        """``uploaded|scanning -> quarantined``: the antivirus scan flagged the file."""
+        self._guard_not_deleted()
+        if self.status not in _SCANNABLE:
+            raise FileStateError(f"cannot quarantine from status {self.status.value!r}")
+        self.status = FileStatus.QUARANTINED
+        self.updated_at = now
+
+    def soft_delete(self, now: datetime) -> None:
+        """Soft-delete. Idempotent: deleting an already-deleted file is a no-op."""
+        if self.deleted_at is not None:
+            return
+        self.deleted_at = now
+        self.updated_at = now
+
+    @property
+    def is_ready(self) -> bool:
+        """INV-F2/F3: readable by any agent in the workspace only when ``ready``
+        and not (soft-)deleted — ownership is workspace-level, not agent-level."""
+        return self.status is FileStatus.READY and self.deleted_at is None
+
+    def _guard_not_deleted(self) -> None:
+        if self.deleted_at is not None:
+            raise FileStateError("file is deleted")
