@@ -51,3 +51,10 @@ htmlcov/
 # service (7.3). Never committed: development keys, and a real deployment
 # mounts its own.
 deploy/nginx/certs/
+
+# Claude Code worktrees: a full second copy of this repository lives under
+# .claude/worktrees/<name>/ whenever a worktree session is open. 714 of those
+# files were swallowed by the initial commit -- a nested duplicate of the
+# project, tracked twice. The agent definitions in .claude/agents/ stay
+# tracked; only the worktree copies are ignored.
+.claude/worktrees/
