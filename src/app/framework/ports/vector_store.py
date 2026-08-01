@@ -3,6 +3,13 @@
 Every search ``flt`` MUST carry ``workspace_id`` so vector retrieval respects
 tenant isolation the same way SQL does (DD-04).
 
+Collections are provisioned lazily, at first write. Searching a collection
+that does not exist yet is therefore a NORMAL state (a workspace nobody has
+indexed anything into), not an error: ``search``/``search_sparse`` return an
+empty list for it, and ``delete`` is a no-op. ``upsert`` is the one method
+that still fails — its caller must have run ``ensure_collection``/
+``ensure_hybrid_collection`` first.
+
 ``HybridVectorStore`` (3.k3, docs/migration/refs/retrieval.md §7 risk #1) is
 an additive, knowledge-only superset of ``VectorStore``: a second Protocol
 rather than new methods bolted onto ``VectorStore`` itself, so ``memory``

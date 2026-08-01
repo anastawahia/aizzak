@@ -12,10 +12,11 @@ Behaviours pinned here beyond the plain round-trip: ``ensure_collection``/
 ``search``'s ``flt`` genuinely isolates by ``workspace_id`` (DD-04's
 tenant-isolation contract for vector retrieval -- test 4 is the governing
 security case) and ANDs multiple keys together; ``upsert`` is idempotent by
-id (last write wins); ``delete`` is silently idempotent; a missing
-collection surfaces as ``common.internal`` (not a caller-branchable 404 --
-the opposite of 2.4's ``NoSuchKey``, see the adapter's module docstring for
-why); an empty collection searches clean; a hybrid collection provisions its
+id (last write wins); ``delete`` is silently idempotent; a collection that
+was never created reads as EMPTY (``search``/``search_sparse`` -> no hits,
+``delete`` -> no-op) while ``upsert`` into one still fails as
+``common.internal`` -- see the adapter's module docstring for why; an empty
+collection searches clean; a hybrid collection provisions its
 named ``"text"`` sparse vector with Qdrant's server-side IDF modifier, keeps
 its inherited dense leg working unchanged, and a single point with both legs
 shares one payload and is removed by one ``delete`` call; ``search_sparse``
@@ -211,13 +212,32 @@ async def test_delete_of_absent_ids_is_a_silent_noop(
 # --------------------------------------------------------------------------- #
 # (9)-(10) missing / empty collection                                        #
 # --------------------------------------------------------------------------- #
-async def test_search_on_a_nonexistent_collection_raises_common_internal(
+async def test_search_on_a_nonexistent_collection_returns_no_hits(
     qdrant_store: QdrantVectorStore, qdrant_collection: str
 ) -> None:
-    # qdrant_collection hands out a fresh unique name; this test deliberately
-    # never creates it.
-    with pytest.raises(AppError) as excinfo:
-        await qdrant_store.search(qdrant_collection, [1.0, 0.0, 0.0, 0.0], k=5)
+    """Collections are created lazily at first index, so a workspace nobody
+    has indexed into has none -- and its first query is a normal "no
+    documents yet", not a 500. This is also the live guard on the wording
+    ``_is_missing_collection`` matches: if Qdrant ever rewords its 404, this
+    test goes red instead of production silently regressing to
+    ``common.internal``.
+
+    ``qdrant_collection`` hands out a fresh unique name; this test
+    deliberately never creates it."""
+    assert await qdrant_store.search(qdrant_collection, [1.0, 0.0, 0.0, 0.0], k=5) == []
+    assert (
+        await qdrant_store.search_sparse(
+            qdrant_collection, SparseVector(indices=[1], values=[1.0]), k=5
+        )
+        == []
+    )
+    await qdrant_store.delete(qdrant_collection, [new_uuid7()])  # silent no-op
+
+    with pytest.raises(AppError) as excinfo:  # writes still fail loudly
+        await qdrant_store.upsert(
+            qdrant_collection,
+            [VectorPoint(id=new_uuid7(), vector=[1.0, 0.0, 0.0, 0.0], payload={})],
+        )
 
     assert excinfo.value.code == "common.internal"
     assert excinfo.value.status == 500

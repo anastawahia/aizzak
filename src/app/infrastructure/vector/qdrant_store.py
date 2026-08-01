@@ -24,14 +24,30 @@ this adapter's boundary (from ``knowledge``'s term-frequency pipeline) is
 always a raw term frequency, never pre-weighted (see the port docstring).
 
 Error policy (R6, the same precedent as every other adapter): EVERY driver
-failure -- connection refused, timeout, a missing collection, a malformed
-request Qdrant rejects, ... -- folds into the 500-class ``common.internal``.
-Unlike 2.4's ``NoSuchKey`` -> ``NotFoundError`` split, there is no
-caller-branchable case here: a missing *collection* is an operational/
-provisioning fault (every collection is provisioned once via
-``ensure_collection``/``ensure_hybrid_collection`` before any ``knowledge``/
-``memory`` code ever searches it), not a normal "not found" outcome a caller
-should branch on the way it branches on a missing object or cache key.
+failure -- connection refused, timeout, a malformed request Qdrant rejects,
+... -- folds into the 500-class ``common.internal``. There is still no
+caller-branchable *exception* here (unlike 2.4's ``NoSuchKey`` ->
+``NotFoundError`` split): nothing this adapter raises tells a caller "that
+collection is missing".
+
+The one exception to "every failure is a fault" is the READ path over a
+collection that was never created. Collections here are provisioned lazily
+at first write (``knowledge`` creates ``kn-<workspace_id>`` when it indexes
+a workspace's first document; ``memory`` likewise), so a workspace that has
+simply never indexed anything has no collection -- and asking it a question
+is a normal state, not an internal error. ``search``/``search_sparse``
+therefore answer Qdrant's "collection doesn't exist" 404 with an EMPTY
+result (a search over nothing legitimately finds nothing), and ``delete``
+answers it with a silent no-op (the postcondition -- those ids are not in
+the store -- already holds; the same silently-idempotent delete as
+``storage.delete``/``cache.delete``). ``upsert`` deliberately does NOT get
+that treatment: its caller is contractually required to have called
+``ensure_collection``/``ensure_hybrid_collection`` first, so a missing
+collection there is a real provisioning fault and swallowing it would
+silently drop data. Every OTHER 404, and every other ``UnexpectedResponse``
+status, still translates to ``AppError`` -- a genuinely broken store fails
+loudly.
+
 ``ValidationError`` raised by this module's own pure helpers (an unknown
 ``distance`` name, an unsupported filter-value shape) is a different,
 caller-caused failure and is deliberately NOT part of that translation: it
@@ -85,6 +101,19 @@ _DEFAULT_VECTOR_NAME = ""
 # won a create-race for the same name -- ``ensure_collection``/
 # ``ensure_hybrid_collection`` treat it as success, not a failure.
 _HTTP_CONFLICT = 409
+
+# HTTP Not Found, plus the two phrases Qdrant's own body carries for the one
+# 404 that means "this collection was never created" (measured live against
+# Qdrant 1.x: ``{"status": {"error": "Not found: Collection `kn-...`
+# doesn't exist!"}, ...}``). Matching on the message text is admittedly
+# brittle -- the status code alone is not enough, because a bare 404 also
+# covers other missing entities -- so BOTH the code and the wording must
+# agree before a failure is downgraded to an empty result. The live
+# ``test_qdrant_store.py`` missing-collection tests are this literal's
+# regression guard: if Qdrant ever rewords the message, a fresh workspace
+# starts raising ``common.internal`` again and those tests go red.
+_HTTP_NOT_FOUND = 404
+_MISSING_COLLECTION_PHRASES = ("doesn't exist", "not found")
 
 # Case-insensitive distance-metric name -> Qdrant enum (``VectorStore``'s
 # ``distance: str = "cosine"`` parameter, 02 §1.5).
@@ -209,12 +238,28 @@ def _to_hit(point: models.ScoredPoint) -> VectorHit:
     return VectorHit(id=str(point.id), score=float(point.score), payload=dict(point.payload or {}))
 
 
+def _is_missing_collection(exc: Exception) -> bool:
+    """True ONLY for Qdrant's "that collection does not exist" 404.
+
+    Narrow on purpose (see the module docstring): a 404 whose body does not
+    name a collection, any other status, and every non-HTTP driver failure
+    (connection refused, timeout, ...) all answer ``False`` and keep taking
+    the ``_translate`` -> ``common.internal`` path, so a genuinely broken
+    store still fails loudly instead of masquerading as an empty one.
+    """
+    if not isinstance(exc, UnexpectedResponse) or exc.status_code != _HTTP_NOT_FOUND:
+        return False
+    body = exc.content.decode("utf-8", errors="replace").lower()
+    return "collection" in body and any(phrase in body for phrase in _MISSING_COLLECTION_PHRASES)
+
+
 def _translate(exc: Exception) -> AppError:
     """Map ANY Qdrant driver failure onto the shared framework hierarchy
     (03-api-spec §4, R6) -- ``qdrant_client`` exception types never escape
-    this adapter. See the module docstring for why every case (including a
-    missing collection) folds into ``common.internal`` rather than a
-    caller-branchable 404, the opposite of 2.4's ``NoSuchKey``."""
+    this adapter. Every failure that reaches here folds into
+    ``common.internal`` rather than a caller-branchable 404, the opposite of
+    2.4's ``NoSuchKey``; the sole failure that never reaches here is the
+    missing-collection 404 the read/delete paths absorb (module docstring)."""
     return AppError("vector store operation failed", code="common.internal")
 
 
@@ -283,6 +328,10 @@ class QdrantVectorStore:
                 with_payload=True,
             )
         except (ApiException, QdrantException) as exc:
+            # A never-indexed workspace has no collection yet; searching one
+            # legitimately finds nothing (module docstring).
+            if _is_missing_collection(exc):
+                return []
             raise _translate(exc) from exc
         return [_to_hit(point) for point in response.points]
 
@@ -299,6 +348,8 @@ class QdrantVectorStore:
                 with_payload=True,
             )
         except (ApiException, QdrantException) as exc:
+            if _is_missing_collection(exc):  # same as ``search``, sparse leg
+                return []
             raise _translate(exc) from exc
         return [_to_hit(point) for point in response.points]
 
@@ -312,4 +363,9 @@ class QdrantVectorStore:
                 wait=True,
             )
         except (ApiException, QdrantException) as exc:
+            # No collection -> those ids are already absent: the port's
+            # delete is silently idempotent (module docstring). ``upsert``
+            # above deliberately keeps raising instead.
+            if _is_missing_collection(exc):
+                return
             raise _translate(exc) from exc
