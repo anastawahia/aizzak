@@ -12,7 +12,8 @@ the design wins over the scaffold.
 construction, into typed routes::
 
     {"llm":       {<capability>: {"provider": "...", "model": "..."}},
-     "embedding": {"default":    {"provider": "...", "model": "..."}}}
+     "embedding": {"default":    {"provider": "...", "model": "..."}},
+     "image":     {"default":    {"provider": "...", "model": "..."}}}
 
 Anything malformed refuses to construct (``ValidationError`` naming the broken
 config path). 2.8-a recorded the reason when it refused to put ``base_url`` in
@@ -24,6 +25,21 @@ adapter is not in the injected mapping is the same boot-time error (routing to
 a 500 to discover later). An EMPTY table constructs fine — no routes, every
 resolve fails closed — so the ``from_env`` default (``provider_routing={}``)
 stays bootable.
+
+**The ``image`` namespace** (step 18 of ``deferred-adapters-plan.md``) is
+``embedding``'s literal twin: ``default`` only, because ``ImageProvider``
+carries no capability parameter either, so any other key would be a route
+nothing could ever reach. It is added BEFORE its adapter exists (step 19) on
+purpose, and that ordering costs nothing precisely because the "no wired
+adapter" rule above is not namespace-aware: against an EMPTY
+``image_providers`` mapping, configuring an image route refuses to BOOT and
+names the route. That is the honest answer for a capability this process
+cannot perform — better than booting and discovering it as a 500 at request N.
+**``video`` is deliberately NOT here.** ``VideoResult`` may carry a
+``remote_url`` instead of bytes (``ports/video_provider.py``), so a video route
+implies a fetch step with its own timeout, size cap and failure handling;
+declaring the namespace early would buy only the right to configure something
+no adapter answers — which this same rule would refuse anyway.
 
 **Lookup.** Capability keys are opaque (a capability or an agent key —
 02 §3.5's own words), matched literally first, then the reserved ``default``
@@ -79,6 +95,7 @@ from typing import TYPE_CHECKING, Protocol
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
+from app.framework.ports.image_provider import ImageProvider
 from app.framework.ports.llm_provider import LLMProvider
 from app.framework.types import Json
 
@@ -127,6 +144,10 @@ class ProviderResolver(Protocol):
         self, ctx: ExecutionContext, *, model: str | None = None
     ) -> tuple[EmbeddingProvider, ResolvedProvider]: ...
 
+    async def resolve_image(
+        self, ctx: ExecutionContext, *, model: str | None = None
+    ) -> tuple[ImageProvider, ResolvedProvider]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _Route:
@@ -136,16 +157,33 @@ class _Route:
     model: str
 
 
-_NAMESPACES = ("llm", "embedding")
+_NAMESPACES = ("llm", "embedding", "image")
 _ENTRY_KEYS = frozenset({"provider", "model"})
 _DEFAULT_CAPABILITY = "default"
+
+
+@dataclass(frozen=True, slots=True)
+class _Routes:
+    """The parsed table, one field per namespace.
+
+    A NAMED carrier rather than the tuple this returned while there were two
+    namespaces: all three values have the identical type
+    ``dict[str, _Route]``, so a positional return would let ``embedding`` and
+    ``image`` be swapped at the unpacking site with nothing — not mypy, not a
+    test that only exercises one namespace — noticing.
+    """
+
+    llm: dict[str, _Route]
+    embedding: dict[str, _Route]
+    image: dict[str, _Route]
 
 
 def _parse_routing(
     routing: object,
     llm_wired: Mapping[str, object],
     embedding_wired: Mapping[str, object],
-) -> tuple[dict[str, _Route], dict[str, _Route]]:
+    image_wired: Mapping[str, object],
+) -> _Routes:
     """Validate + parse the WHOLE table from untrusted input, loudly.
 
     Takes ``object``, not ``Json``: the constructor's parameter type documents
@@ -168,11 +206,12 @@ def _parse_routing(
                 f"provider_routing: unknown namespace {namespace!r} "
                 f"(expected one of {list(_NAMESPACES)})"
             )
-    return (
-        _parse_namespace("llm", routing.get("llm", {}), llm_wired, only_default=False),
-        _parse_namespace(
+    return _Routes(
+        llm=_parse_namespace("llm", routing.get("llm", {}), llm_wired, only_default=False),
+        embedding=_parse_namespace(
             "embedding", routing.get("embedding", {}), embedding_wired, only_default=True
         ),
+        image=_parse_namespace("image", routing.get("image", {}), image_wired, only_default=True),
     )
 
 
@@ -240,16 +279,26 @@ class SettingsProviderResolver:
         routing: Json,
         llm_providers: Mapping[str, LLMProvider],
         embedding_providers: Mapping[str, EmbeddingProvider],
+        image_providers: Mapping[str, ImageProvider],
         key_resolver: KeyResolver,
         keyless_providers: frozenset[str],
     ) -> None:
         self._llm_providers = llm_providers
         self._embedding_providers = embedding_providers
+        self._image_providers = image_providers
         self._key_resolver = key_resolver
         self._keyless = keyless_providers
-        self._llm_routes, self._embedding_routes = _parse_routing(
-            routing, llm_providers, embedding_providers
-        )
+        # `image_providers` is REQUIRED, not defaulted to `{}` (step 18):
+        # every construction site is in this repo, and a default would let a
+        # root that builds an image adapter forget to hand it over -- which
+        # surfaces as `provider_routing.image[...]: provider ... has no wired
+        # adapter`, blaming the operator's config for OUR wiring bug. The same
+        # argument the `keyless_providers` paragraph above makes for keeping
+        # structural facts in Composition-Root code.
+        routes = _parse_routing(routing, llm_providers, embedding_providers, image_providers)
+        self._llm_routes = routes.llm
+        self._embedding_routes = routes.embedding
+        self._image_routes = routes.image
 
     async def resolve_llm(
         self, ctx: ExecutionContext, *, capability: str, model: str | None = None
@@ -289,6 +338,19 @@ class SettingsProviderResolver:
             api_key=await self._api_key_for(ctx, route.provider),
         )
         return self._embedding_providers[route.provider], resolved
+
+    async def resolve_image(
+        self, ctx: ExecutionContext, *, model: str | None = None
+    ) -> tuple[ImageProvider, ResolvedProvider]:
+        route = self._image_routes.get(_DEFAULT_CAPABILITY)
+        if route is None:
+            raise ValidationError("no 'default' image route is configured")
+        resolved = ResolvedProvider(
+            provider=route.provider,
+            model=_override_or_routed(model, route),
+            api_key=await self._api_key_for(ctx, route.provider),
+        )
+        return self._image_providers[route.provider], resolved
 
     async def _api_key_for(self, ctx: ExecutionContext, provider: str) -> str:
         """ "" for keyless providers; otherwise the delegated resolution,

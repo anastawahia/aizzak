@@ -37,6 +37,7 @@ from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.event_outbox import OutboxRecord
 from app.framework.ports.vector_store import VectorHit, VectorPoint
+from app.framework.providers.resolver import SettingsProviderResolver
 from app.framework.settings import MinioSettings
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
@@ -288,6 +289,15 @@ class _FakeEmbeddings:
 
     def dimensions(self, model: str) -> int:
         return self.dim
+
+
+class _UnusedKeyResolver:
+    """A ``KeyResolver`` the routing tests must never reach: every provider
+    they route to is keyless, so a call here means key resolution leaked into
+    a path that only parses a table."""
+
+    async def resolve(self, ctx: ExecutionContext, provider: str) -> object:
+        raise AssertionError(f"key resolution is not part of parsing (asked for {provider!r})")
 
 
 class _FakeHybridVectors:
@@ -964,12 +974,12 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     assert isinstance(minio_settings, MinioSettings)
 
 
-def test_embedding_routing_drops_llm_and_keeps_everything_else() -> None:
-    """The knowledge worker wires no LLM adapter, so handing its resolver the
-    ``llm`` namespace would refuse construction on a route it never reads.
-    Written as "drop ``llm``" so a MISSPELLED namespace still reaches the
-    strict parse and is refused there, instead of being silently discarded by
-    a keep-list."""
+def test_embedding_routing_drops_the_foreign_namespaces_and_keeps_everything_else() -> None:
+    """The knowledge worker wires neither an LLM nor an image adapter, so
+    handing its resolver either namespace would refuse construction on a route
+    it never reads. Written as "drop the known-foreign names" so a MISSPELLED
+    namespace still reaches the strict parse and is refused there, instead of
+    being silently discarded by a keep-list."""
     embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
 
     assert _embedding_routing(
@@ -977,6 +987,44 @@ def test_embedding_routing_drops_llm_and_keeps_everything_else() -> None:
     ) == {"embedding": embedding}
     assert _embedding_routing({}) == {}
     assert _embedding_routing({"embeddings": embedding}) == {"embeddings": embedding}
+
+
+def test_an_image_route_does_not_block_the_knowledge_worker() -> None:
+    """Step 18's collateral, caught before it shipped: the moment ``image``
+    became a legal namespace, an operator's image route would have travelled
+    into THIS worker's resolver -- which passes ``image_providers={}`` -- and
+    refused to boot a process that generates no images. The namespace joins
+    ``llm`` in the foreign set for exactly the reason ``llm`` is there.
+
+    The assertion is the whole point of the narrowing, so it is made against
+    the REAL parse, not just the dict shape: the same table that is fine here
+    is deliberately fatal to a root that claims the capability."""
+    routing: Json = {
+        "embedding": {"default": {"provider": "fake", "model": "minilm"}},
+        "image": {"default": {"provider": "openai", "model": "gpt-image"}},
+    }
+    assert "image" not in _embedding_routing(routing)
+
+    embeddings = {"fake": _FakeEmbeddings()}
+    SettingsProviderResolver(
+        routing=_embedding_routing(routing),
+        llm_providers={},
+        embedding_providers=embeddings,
+        image_providers={},
+        key_resolver=_UnusedKeyResolver(),
+        keyless_providers=frozenset({"fake"}),
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        SettingsProviderResolver(
+            routing=routing,
+            llm_providers={},
+            embedding_providers=embeddings,
+            image_providers={},
+            key_resolver=_UnusedKeyResolver(),
+            keyless_providers=frozenset({"fake"}),
+        )
+    assert "provider_routing.image['default']" in str(exc_info.value)
 
 
 async def test_build_media_worker_from_env_raises_naming_the_gap() -> None:

@@ -31,6 +31,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingProvider, EmbeddingResult
+from app.framework.ports.image_provider import ImageProvider, ImageRequest, ImageResult
 from app.framework.ports.llm_provider import (
     LlmChunk,
     LlmMessage,
@@ -97,6 +98,23 @@ class FakeEmbeddingProvider:
         raise AssertionError("the resolver must not call the provider")
 
 
+class FakeImageProvider:
+    """Structurally an ``ImageProvider``; same never-called contract.
+
+    Step 18 wires the NAMESPACE, not an adapter — the real one is step 19's
+    (``external_image.py`` is still 0 bytes). So the only image adapter that
+    exists anywhere is this fake, which is exactly enough to prove the
+    resolver's half: routing, ``default``-only parsing, key resolution and
+    the returned instance.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.provider = name
+
+    async def generate(self, req: ImageRequest, api_key: str) -> ImageResult:
+        raise AssertionError("the resolver must not call the provider")
+
+
 @dataclass(frozen=True, slots=True)
 class _Key:
     """Minimal frozen carrier satisfying ``ResolvedKeyView`` structurally."""
@@ -143,6 +161,7 @@ def make_resolver(
     routing: Json | None = None,
     *,
     embedding: dict[str, EmbeddingProvider] | None = None,
+    image: dict[str, ImageProvider] | None = None,
     key_resolver: KeyResolver | None = None,
     keyless: frozenset[str] = frozenset({"ollama"}),
 ) -> tuple[SettingsProviderResolver, SpyKeyResolver]:
@@ -156,6 +175,7 @@ def make_resolver(
         routing=_DEFAULT_ROUTING if routing is None else routing,
         llm_providers=llm_providers,
         embedding_providers={} if embedding is None else embedding,
+        image_providers={} if image is None else image,
         key_resolver=spy if key_resolver is None else key_resolver,
         keyless_providers=keyless,
     )
@@ -256,12 +276,37 @@ async def test_settings_resolver_is_usable_through_the_port_type() -> None:
             "no wired adapter",
             id="embedding-route-checked-against-embedding-mapping",
         ),
+        # --- step 18: the same battery over the new `image` namespace ---
+        pytest.param({"image": "openai"}, "must be an object of capability", id="image-not-object"),
+        pytest.param(
+            {"image": {"default": {"provider": "openai"}}},
+            "exactly the keys",
+            id="image-missing-model",
+        ),
+        pytest.param(
+            {"image": {"hero": {"provider": "openai", "model": "m"}}},
+            "only the 'default' route",
+            id="image-non-default-capability",
+        ),
+        pytest.param(
+            {"image": {"default": {"provider": "openai", "model": "m"}}},
+            "no wired adapter",
+            id="image-route-checked-against-image-mapping",
+        ),
+        pytest.param(
+            {"video": {"default": {"provider": "openai", "model": "m"}}},
+            "unknown namespace 'video'",
+            id="video-is-still-not-a-namespace",
+        ),
     ],
 )
 def test_a_malformed_routing_table_refuses_to_construct(routing: Json, fragment: str) -> None:
     """Each case is a config mistake that, unguarded, would silently misroute
-    or 500 at request N. The last case proves llm/embedding routes are checked
-    against their OWN adapter mapping ('openai' IS wired as an LLM here)."""
+    or 500 at request N. The `*-checked-against-*-mapping` pair proves each
+    namespace is validated against its OWN adapter mapping ('openai' IS wired
+    as an LLM here, and is still rejected as an embedding or image provider);
+    the final case pins `video`'s deliberate absence (step 18) as a REFUSAL
+    that names the namespace, not a silently ignored key."""
     with pytest.raises(ValidationError) as exc_info:
         make_resolver(routing)
     assert fragment in str(exc_info.value)
@@ -293,6 +338,7 @@ def test_a_non_object_routing_value_refuses_to_construct(routing: object) -> Non
             routing=cast("Json", routing),
             llm_providers={"openai": FakeLLMProvider("openai")},
             embedding_providers={},
+            image_providers={},
             key_resolver=SpyKeyResolver(),
             keyless_providers=frozenset(),
         )
@@ -338,6 +384,7 @@ async def test_an_exact_capability_match_wins_over_default_and_returns_the_injec
         },
         llm_providers={"ollama": ollama, "openai": openai},
         embedding_providers={},
+        image_providers={},
         key_resolver=spy,
         keyless_providers=frozenset({"ollama"}),
     )
@@ -395,12 +442,14 @@ async def test_a_blank_model_override_is_rejected_as_caller_error() -> None:
         pytest.param(3.14, id="float"),
     ],
 )
-async def test_a_non_string_model_override_is_rejected_on_both_ports(model: object) -> None:
+async def test_a_non_string_model_override_is_rejected_on_every_port(model: object) -> None:
     """Root-cause-B regression (2.9 verifier finding, R6 family): ``model=``
     is a CALL-TIME argument no Pydantic layer ever filters; a Phase-4 caller
     forwarding a user-supplied "preferred model" from an ``Any``-typed body
     used to crash as a raw ``AttributeError`` on ``.strip``. The guard is the
-    shared ``_override_or_routed`` — asserted through both port methods."""
+    shared ``_override_or_routed`` — asserted through ALL THREE port methods
+    (step 18 added the third; a new namespace that forgot the shared helper
+    would otherwise inherit the exact 2.9 crash on its own ``model=``)."""
     resolver, _ = make_resolver()
     with pytest.raises(ValidationError) as exc_llm:
         await resolver.resolve_llm(make_ctx(), capability="default", model=cast("str", model))
@@ -411,11 +460,23 @@ async def test_a_non_string_model_override_is_rejected_on_both_ports(model: obje
         routing={"embedding": {"default": {"provider": "e", "model": "m"}}},
         llm_providers={},
         embedding_providers={"e": FakeEmbeddingProvider("e")},
+        image_providers={},
         key_resolver=SpyKeyResolver(),
         keyless_providers=frozenset({"e"}),
     )
     with pytest.raises(ValidationError):
         await embedding_resolver.resolve_embedding(make_ctx(), model=cast("str", model))
+
+    image_resolver = SettingsProviderResolver(
+        routing={"image": {"default": {"provider": "i", "model": "m"}}},
+        llm_providers={},
+        embedding_providers={},
+        image_providers={"i": FakeImageProvider("i")},
+        key_resolver=SpyKeyResolver(),
+        keyless_providers=frozenset({"i"}),
+    )
+    with pytest.raises(ValidationError):
+        await image_resolver.resolve_image(make_ctx(), model=cast("str", model))
 
 
 @pytest.mark.parametrize(
@@ -505,6 +566,7 @@ async def test_resolve_embedding_uses_the_default_route_and_the_embedding_mappin
         routing={"embedding": {"default": {"provider": "openai", "model": "text-emb-test"}}},
         llm_providers={},
         embedding_providers={"openai": emb},
+        image_providers={},
         key_resolver=spy,
         keyless_providers=frozenset(),
     )
@@ -519,6 +581,7 @@ async def test_resolve_embedding_honours_a_model_override() -> None:
         routing={"embedding": {"default": {"provider": "openai", "model": "text-emb-test"}}},
         llm_providers={},
         embedding_providers={"openai": FakeEmbeddingProvider("openai")},
+        image_providers={},
         key_resolver=SpyKeyResolver(),
         keyless_providers=frozenset(),
     )
@@ -541,6 +604,7 @@ async def test_a_keyless_embedding_provider_skips_key_resolution_too() -> None:
         routing={"embedding": {"default": {"provider": "local-emb", "model": "minilm"}}},
         llm_providers={},
         embedding_providers={"local-emb": FakeEmbeddingProvider("local-emb")},
+        image_providers={},
         key_resolver=spy,
         keyless_providers=frozenset({"local-emb"}),
     )
@@ -567,6 +631,7 @@ async def test_embedding_local_the_2_10_composition_root_provider_name_resolves_
         },
         llm_providers={},
         embedding_providers={"embedding-local": FakeEmbeddingProvider("embedding-local")},
+        image_providers={},
         key_resolver=spy,
         keyless_providers=frozenset({"ollama", "embedding-local"}),
     )
@@ -574,6 +639,112 @@ async def test_embedding_local_the_2_10_composition_root_provider_name_resolves_
     assert provider.provider == "embedding-local"
     assert resolved.api_key == ""
     assert spy.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# resolve_image (step 18: embedding's literal twin, over its own mapping)     #
+# --------------------------------------------------------------------------- #
+
+
+async def test_resolve_image_uses_the_default_route_and_the_image_mapping() -> None:
+    """The happy path the namespace exists for. Deliberately provable BEFORE
+    step 19's adapter: what step 18 owns is routing, and routing is complete
+    the moment some ``ImageProvider`` can be handed back — the fake is a
+    legitimate stand-in precisely because the resolver never calls it."""
+    img = FakeImageProvider("openai")
+    spy = SpyKeyResolver()
+    resolver = SettingsProviderResolver(
+        routing={"image": {"default": {"provider": "openai", "model": "gpt-image-test"}}},
+        llm_providers={},
+        embedding_providers={},
+        image_providers={"openai": img},
+        key_resolver=spy,
+        keyless_providers=frozenset(),
+    )
+    provider, resolved = await resolver.resolve_image(make_ctx())
+    assert provider is img
+    assert resolved == ResolvedProvider(provider="openai", model="gpt-image-test", api_key="sk-spy")
+    assert [name for _, name in spy.calls] == ["openai"]
+
+
+async def test_resolve_image_honours_a_model_override() -> None:
+    resolver, _ = make_resolver(
+        {"image": {"default": {"provider": "openai", "model": "gpt-image-test"}}},
+        image={"openai": FakeImageProvider("openai")},
+    )
+    _, resolved = await resolver.resolve_image(make_ctx(), model="gpt-image-hd")
+    assert resolved.model == "gpt-image-hd"
+
+
+async def test_resolve_image_without_a_route_fails_closed() -> None:
+    """The state EVERY deployment is in today (no image route is configurable
+    until step 19 wires an adapter): resolving must be a 422 naming the
+    missing route, not an ``AttributeError`` or a guessed provider."""
+    resolver, _ = make_resolver()  # llm-only routing
+    with pytest.raises(ValidationError) as exc_info:
+        await resolver.resolve_image(make_ctx())
+    assert exc_info.value.status == 422
+    assert "no 'default' image route" in str(exc_info.value)
+
+
+async def test_an_image_route_refuses_to_construct_while_no_adapter_is_wired() -> None:
+    """Step 18's load-bearing claim, stated as its own test rather than left
+    to the parametrized battery: with ``image_providers={}`` — what BOTH
+    production roots pass until step 19 — configuring an image route stops the
+    PROCESS, naming the route. This is why the namespace can ship ahead of its
+    adapter at all; if this ever passes construction, an operator can boot a
+    deployment that 500s the first generation request."""
+    with pytest.raises(ValidationError) as exc_info:
+        make_resolver({"image": {"default": {"provider": "openai", "model": "m"}}})
+    assert "provider_routing.image['default']" in str(exc_info.value)
+    assert "has no wired adapter (wired: [])" in str(exc_info.value)
+    assert exc_info.value.status == 422
+
+
+async def test_a_keyless_image_provider_skips_key_resolution_too() -> None:
+    """``keyless_providers`` is a name set, not a per-namespace feature — the
+    same proof already made for embedding, extended to the third namespace so
+    a future namespace-scoped keyless check goes red here."""
+    resolver, spy = make_resolver(
+        {"image": {"default": {"provider": "local-image", "model": "sdxl"}}},
+        image={"local-image": FakeImageProvider("local-image")},
+        keyless=frozenset({"local-image"}),
+    )
+    _, resolved = await resolver.resolve_image(make_ctx())
+    assert resolved.api_key == ""
+    assert spy.calls == []
+
+
+async def test_the_three_namespaces_never_borrow_each_others_adapters() -> None:
+    """One resolver, one provider NAME wired in all three mappings as three
+    DIFFERENT objects: each port must return its own. A resolver that ever
+    collapsed the mappings (or that unpacked the parsed routes positionally —
+    the reason step 18 replaced the tuple with a named carrier) returns the
+    wrong object here while every single-namespace test above stays green."""
+    llm = FakeLLMProvider("openai")
+    emb = FakeEmbeddingProvider("openai")
+    img = FakeImageProvider("openai")
+    resolver = SettingsProviderResolver(
+        routing={
+            "llm": {"default": {"provider": "openai", "model": "m-llm"}},
+            "embedding": {"default": {"provider": "openai", "model": "m-emb"}},
+            "image": {"default": {"provider": "openai", "model": "m-img"}},
+        },
+        llm_providers={"openai": llm},
+        embedding_providers={"openai": emb},
+        image_providers={"openai": img},
+        key_resolver=SpyKeyResolver(),
+        keyless_providers=frozenset(),
+    )
+    ctx = make_ctx()
+    assert (await resolver.resolve_llm(ctx, capability="default"))[0] is llm
+    assert (await resolver.resolve_embedding(ctx))[0] is emb
+    assert (await resolver.resolve_image(ctx))[0] is img
+    assert [
+        (await resolver.resolve_llm(ctx, capability="default"))[1].model,
+        (await resolver.resolve_embedding(ctx))[1].model,
+        (await resolver.resolve_image(ctx))[1].model,
+    ] == ["m-llm", "m-emb", "m-img"]
 
 
 # --------------------------------------------------------------------------- #
@@ -651,6 +822,7 @@ async def test_the_real_resolve_credential_satisfies_the_key_resolver_seam_end_t
         routing={"llm": {"default": {"provider": "openai", "model": "gpt-test"}}},
         llm_providers={"openai": FakeLLMProvider("openai")},
         embedding_providers={},
+        image_providers={},
         key_resolver=key_resolver,
         keyless_providers=frozenset({"ollama"}),
     )
@@ -671,6 +843,7 @@ async def test_the_real_resolve_credential_no_key_outcome_escapes_untranslated()
         routing={"llm": {"default": {"provider": "openai", "model": "gpt-test"}}},
         llm_providers={"openai": FakeLLMProvider("openai")},
         embedding_providers={},
+        image_providers={},
         key_resolver=ResolveCredential(repo, _StubSecrets()),
         keyless_providers=frozenset(),
     )

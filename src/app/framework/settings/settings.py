@@ -307,6 +307,12 @@ class Settings(BaseModel):
     log_level: str = "INFO"
 
     # Provider routing table (D-16, FR-73): capability/agent -> provider+model.
+    # Namespaces "llm" | "embedding" | "image" ("image" added in step 18 of
+    # deferred-adapters-plan.md). Deliberately stays untyped `Json` here: the
+    # ONE strict parse lives in `SettingsProviderResolver`, which is where the
+    # wired-adapter mappings are -- a shape Pydantic could check, but the
+    # "provider has no wired adapter" half it could not, and two half-validators
+    # drift.
     provider_routing: Json = Field(default_factory=dict)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)

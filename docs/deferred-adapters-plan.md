@@ -12,8 +12,8 @@
 | **الأساس** | `6946e3e` (‏`master`) · [`log/INDEX.md`](log/INDEX.md) حتّى §3.97 · البوّابات الخمس لم تُقَس عند الإنشاء (وثيقةُ تخطيطٍ لا تغيّر كوداً) |
 | **النطاق** | `DocumentContentResolver` (يحجب عامل `knowledge`) · `MediaGenerator` (يحجب عامل `media`) · وثغرةُ الملفّ المسموم المكتشَفة أثناء التخطيط (§1‑ج) |
 | **خارج النطاق** | **`2.8‑ب‑2`** (محوّلات Gemini · Claude · OpenRouter — محجوبةٌ بالمفاتيح، ولا علاقة لها بالعمّال) · **توليد الفيديو** (§6، مؤجَّلٌ بقرارٍ مسجَّل) |
-| **الحالة العامّة** | 🔵 **3 / 6 — الخطوة 17 بانتظار مراجعة المستخدم** · ✅ **المسار (أ) مكتمل 3/3: دَينُ `DocumentContentResolver` أُغلق** |
-| **الخطوة التالية** | **الخطوة 18** — توسيع `ProviderResolver` بفضاء `image` (أوّل خطوات المسار (ب)) |
+| **الحالة العامّة** | 🔵 **4 / 6 — الخطوة 18 بانتظار مراجعة المستخدم** · ✅ **المسار (أ) مكتمل 3/3: دَينُ `DocumentContentResolver` أُغلق** · 🔵 المسار (ب) 1/3 |
+| **الخطوة التالية** | **الخطوة 19** — محوّل `ImageProvider` (OpenAI Images، §6‑أ) + `MediaGenerator` |
 
 ---
 
@@ -94,6 +94,8 @@
 
 **البوّابة قبل الشيفرة.** الخطوة 18 لا تُطلَق قبل أن يكون المزوّد محسوماً (§6‑أ)، لأنّ `_parse_namespace` يرفض البناء أصلاً على فضاءٍ بلا محوّلٍ موصول (`resolver.py:224`).
 
+> 🐛 **تصحيحٌ من تنفيذ الخطوة 18** ([§3.102](log/3.102.md)): هذه البوّابة **لم تكن ملزِمة**، والحجّةُ المكتوبة لها تُثبت عكسها. `_parse_namespace` يرفض البناء على مزوّدٍ بلا محوّل — أي أنّ الفضاء يُعلَن بخريطةٍ **فارغة** بلا ضررٍ إطلاقاً: توجيهُ صورةٍ يبقى مرفوضاً كما كان، وكلُّ ما يتغيّر دقّةُ سبب الرفض. البوّابة الحقيقيّة تخصّ **الخطوة 19** (لا يُبنى محوّلٌ لمزوّدٍ غير محسوم). حُسم المزوّد فعلاً قبل التنفيذ (**OpenAI Images**، 2026‑08‑01) فلم يتغيّر شيءٌ عمليّاً، والنصُّ الأصليّ محفوظٌ سجلّاً.
+
 **الفيديو خارجاً.** `VideoResult` يسمح بـ`remote_url` بدل بايتات (`framework/ports/video_provider.py:24`) ⇒ خطوةُ جلبٍ إضافيّةٌ بمهلةٍ وسقفِ حجمٍ ومعالجةِ فشل. خلطُها بمسار الصورة يضاعف سطح الخطوة 19 بلا داعٍ.
 
 ---
@@ -105,7 +107,7 @@
 | **15** | **ربط MinIO مشترَك + مصنعٌ لا‑متزامن للعامل** | أ | ❌ ملفّات فقط | `implementer` | 🔵 بانتظار مراجعة المستخدم | [§3.98](log/3.98.md) |
 | **16** | **`WorkerDocumentContentResolver` + ثغرة الملفّ المسموم** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.100](log/3.100.md) |
 | **17** | **توثيق: عامل `knowledge` صار يُقلع** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.101](log/3.101.md) |
-| **18** | **توسيع `ProviderResolver` بفضاء `image`** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
+| **18** | **توسيع `ProviderResolver` بفضاء `image`** | ب | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.102](log/3.102.md) |
 | **19** | **محوّل `ImageProvider` + `MediaGenerator`** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
 | **20** | **`build_media_worker_from_env` + توثيق الإغلاق** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
 
@@ -175,7 +177,7 @@
 
 ---
 
-### الخطوة 18 — توسيع `ProviderResolver` بفضاء `image` ⬜
+### الخطوة 18 — توسيع `ProviderResolver` بفضاء `image` 🔵
 
 **المشكلة.** لا توجيه صورةٍ في المنظومة إطلاقاً (§1‑أ).
 
@@ -184,6 +186,10 @@
 **القرار المتّخَذ.** يُضاف فضاء **`image` وحده** و`resolve_image`، على غرار `resolve_embedding` حرفيّاً. فضاء `video` **لا يُضاف** — و**المنع بنيويٌّ مجّاناً**: `_parse_namespace` يرفض البناء على مزوّدٍ بلا محوّلٍ موصول برسالة `provider {...} has no wired adapter` (سطر 224)، فمحاولةُ توجيه فيديو تُوقِف الإقلاع بدل أن تفشل وقت الطلب.
 
 **معيار الإنجاز.** بطاريّة التحليل الصارم القائمة (‏R6) مُوسَّعةٌ على الفضاء الجديد: فضاءٌ مجهول · مدخلةٌ ناقصةُ مفتاح · مزوّدٌ غير موصول — كلّها ترفض البناء بـ422 تُسمّي `provider_routing` نفسه.
+
+✅ **أُنجزت 2026‑08‑02** — [§3.102](log/3.102.md). 12 اختباراً جديداً، والبوّابات الخمس خضراء.
+
+🐛 **ما لم تتوقّعه هذه الخطّة، وكان سيشحن عطباً**: إعلانُ الفضاء كان **سيكسر عامل `knowledge`**. الخطوة 16 كتبت `_embedding_routing` لتحذف `llm` وحده (عمداً: الاسمُ المغلوط يجب أن يصل إلى المحلِّل الصارم فيُرفَض باسمه). فلحظةَ صار `image` شرعيّاً، كان توجيهُ صورةٍ يكتبه المشغّل سيعبر التضييق إلى عاملٍ يمرّر `image_providers={}` فيرفض الإقلاع بسبب **قدرةٍ لا يدّعيها أصلاً**. انضمّ `image` إلى `llm` في `_NAMESPACES_FOREIGN_TO_THIS_WORKER` بالحجّة نفسها، والاختبارُ يبني المحلِّل الحقيقيّ مرّتين على الجدول ذاته. ⇒ الملفّات الفعليّة تجاوزت ما ذُكر أعلاه بـ`workers/bootstrap.py` و`tests/unit/test_workers_bootstrap.py`.
 
 ---
 
@@ -228,6 +234,7 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 | 15 | 2026‑08‑01 | [§3.98](log/3.98.md) | `framework/di/vault_binding.py` + `framework/di/storage_binding.py` (جديدان) · `composition_root.py` (‏`connect_storage` مناديّاً سطرين، `_build_vault` حُذفت) · `.importlinter` (سطران في العقد 6) · `workers/bootstrap.py` (‏`build_knowledge_worker_from_env` صارت `async` وتبني `storage` حقيقيّاً) · `workers/knowledge_worker.py` · `tests/unit/test_workers_bootstrap.py` + `tests/unit/test_storage_binding.py` (جديد) |
 | 16 | 2026‑08‑01 | [§3.100](log/3.100.md) | `workers/content_resolver.py` (**جديد** — `WorkerDocumentContentResolver`) · `workers/bootstrap.py` (‏فرعُ فشلِ `content.resolve` في معالج الفهرسة · `_embedding_routing` + `_KEYLESS_PROVIDERS` · `build_knowledge_worker_from_env` **لم تعد ترفع** وتعيد خمسة `disposables`) · `knowledge/application/use_cases.py` (‏`IndexRegisteredDocument.fail`) · `framework/settings/settings.py` (‏`allowed_mime` صارت مرآةَ `_ROUTES`: DOCX أُسقط، و`csv`/`json`/`xlsx` أُضيفت) · `tests/unit/test_content_resolver.py` (**جديد**، 5) · `tests/unit/test_workers_bootstrap.py` (+5) · `tests/integration/test_e2e_outbox_to_worker.py` (+1 حيّ فوق PG+MinIO+Qdrant+Redis) |
 | 17 | 2026‑08‑02 | [§3.101](log/3.101.md) | **نصٌّ فقط، ولا سطرَ منطقٍ واحد.** كود: `workers/bootstrap.py` (docstringا الوحدة والبروتوكول) · `workers/knowledge_worker.py` · `framework/di/composition_root.py`. نشر: `docker-compose.yml` (‏تعليق `WORKER` **أُعيدت كتابتُه لا حُذف**، والافتراضيّ `memory` كما هو) · `deploy/runpod/entrypoint.sh` · `deploy/runpod/supervisord.conf` · `.env.example`. اختبارات (نصٌّ واسمُ ثابت، بلا تأكيدٍ ولا قيمة): `tests/unit/test_workers_bootstrap.py` · `tests/unit/test_deploy_worker_default.py` (‏`_ONLY_WORKER_THAT_BOOTS_TODAY` ← `_EXPECTED_WORKER_DEFAULT`). وثائق (11): `ROADMAP` · `implementation-status` · `implementation-plan` · `pre-release-review` · `quickstart` · `deploy-linux-server` · `deploy-runpod` · `design/08-local-runbook` · `release-blockers-plan` · `p1-hardening-plan` · `acceptance-report` |
+| 18 | 2026‑08‑02 | [§3.102](log/3.102.md) | `framework/providers/resolver.py` (‏`_NAMESPACES` +`image` · `_Routes` **جديدة** بدل الثلاثيّة · `image_providers` **مُلزِمة** في المُنشئ · `resolve_image` في المنفذ وفي التنفيذ) · `framework/di/composition_root.py` + `workers/bootstrap.py` (‏`image_providers={}`) · 🐛 `workers/bootstrap.py` (‏`_NAMESPACES_FOREIGN_TO_THIS_WORKER` — `image` انضمّ إلى `llm`، وإلّا كسر توجيهُ صورةٍ عاملَ `knowledge`) · `framework/settings/settings.py` + `.env.example` (توثيقٌ فقط؛ **لا توجيه صورةٍ في `PROVIDER_ROUTING`** — يكسر كلَّ إقلاعٍ حتّى الخطوة 19) · `tests/unit/test_provider_resolver.py` (+11) · `tests/unit/test_workers_bootstrap.py` (+1) |
 
 ---
 
@@ -258,6 +265,9 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 
 4. **`api/v1/routers/knowledge.py` ما يزال يقول إنّ `POST /search` يجيب 503 لأنّ «لا محوّل `EmbeddingProvider` بعد».** كذبةٌ من صنف ما كنسته الخطوة 17 بالضبط — لكنّها تخصّ دَيناً **آخر** (‏2.10، أُغلق في [§3.77](log/3.77.md))، ونطاقُ الخطوة كان مسمّىً. تُصحَّح في كنسةٍ صغيرةٍ مستقلّة أو مع الخطوة 20.
 5. **أوّلُ إقلاعٍ حاويٍّ لعامل `knowledge` لم يُجرَّب.** الخطوة 17 وثّقت «موصولٌ لا مُقلَع» عن قصد، والافتراضيّ `WORKER` بقي `memory` لهذا. أوّلُ إقلاعٍ ناجح **يكسب** تغييرَ الافتراضيّ — وهو عملُ تشغيلٍ يغيّر حالة النظام الحيّ، أي **خارج نطاق هذه الخطة كلّها** ويحتاج إذناً منفصلاً.
+6. **`ProviderResolver` صار منفذاً بثلاث دوالّ، وأكثرُ مستهلكيه يحتاج واحدة.** `WorkerDocumentContentResolver` يحتاج `resolve_embedding` وحدها، والمنسّق `resolve_llm` وحدها؛ وكلُّ زائفٍ في الاختبارات يُنفِّذ ما يستعمله فقط (يمرّ لأنّ `mypy` لا يفحص `tests/`). فصلُ المنفذ إلى وجوهٍ ضيّقة — على سابقة `ResolvedKeyView` «المفصولة عمداً» في الملفّ نفسه — قرارُ تصميمٍ مستقلّ، لا من نطاق خطوةٍ تضيف فضاءً. ([§3.102](log/3.102.md))
+7. **`max_image_dim`/`max_video_seconds` سقفان بلا نافذ.** لا موضعَ في الشيفرة يقرؤهما اليوم. الخطوة 19 هي التي يجب أن تصل الأوّل بمحوّل الصورة، وإلّا بقي إعداداً زخرفيّاً — والثاني يبقى معلّقاً ما بقي الفيديو خارج النطاق.
+
 
 ---
 

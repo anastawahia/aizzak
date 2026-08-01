@@ -937,6 +937,13 @@ class CompositionRoot:
             # 2.10 -- keyed by the adapter's OWN `provider` attribute (the
             # `llm_providers` precedent above), never a hardcoded literal.
             embedding_providers={embedding.provider: embedding},
+            # Step 18 -- EMPTY until step 19 builds the image adapter, and
+            # empty is the load-bearing part: it makes an `image` route in
+            # `PROVIDER_ROUTING` refuse to BOOT ("has no wired adapter",
+            # naming the route) instead of booting an API that would 500 the
+            # first generation request. The namespace exists so the refusal
+            # can be specific; the mapping stays empty so it still refuses.
+            image_providers={},
             key_resolver=ResolveCredential(credential_repository, secrets),
             # Composition-Root code on purpose (2.9 decision 6): which adapter
             # takes no credential is a structural property of the adapters

@@ -306,18 +306,31 @@ def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
     )
 
 
-def _embedding_routing(routing: Json) -> Json:
-    """``PROVIDER_ROUTING`` with the ``llm`` namespace dropped -- what the
-    knowledge worker's ``SettingsProviderResolver`` is given (step 16; the
-    factory's docstring argues the narrowing).
+# The namespaces this worker deliberately does not carry an adapter for, and
+# therefore must not be judged on. `image` joined `llm` in step 18, the moment
+# the namespace became legal: this worker passes `image_providers={}`, so
+# leaving an operator's image route in the table would have made a perfectly
+# valid `PROVIDER_ROUTING` refuse to boot the KNOWLEDGE worker -- a process
+# that generates no images and reads no image route.
+_NAMESPACES_FOREIGN_TO_THIS_WORKER = frozenset({"llm", "image"})
 
-    Written as "drop ``llm``" rather than "keep ``embedding``" on purpose:
-    an unknown/misspelled namespace still reaches ``_parse_routing``, which
-    refuses construction naming it. Keeping only a known key would swallow
-    that typo and boot a worker on a routing table its operator believes
-    says something else.
+
+def _embedding_routing(routing: Json) -> Json:
+    """``PROVIDER_ROUTING`` with the namespaces this worker has no adapter for
+    dropped -- what the knowledge worker's ``SettingsProviderResolver`` is
+    given (step 16; the factory's docstring argues the narrowing).
+
+    Written as "drop the known-foreign names" rather than "keep ``embedding``"
+    on purpose: an unknown/misspelled namespace still reaches
+    ``_parse_routing``, which refuses construction naming it. Keeping only a
+    known key would swallow that typo and boot a worker on a routing table its
+    operator believes says something else.
     """
-    return {namespace: entry for namespace, entry in routing.items() if namespace != "llm"}
+    return {
+        namespace: entry
+        for namespace, entry in routing.items()
+        if namespace not in _NAMESPACES_FOREIGN_TO_THIS_WORKER
+    }
 
 
 def _consumer_name(prefix: str) -> str:
@@ -614,6 +627,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         routing=_embedding_routing(settings.provider_routing),
         llm_providers={},
         embedding_providers={embeddings.provider: embeddings},
+        image_providers={},  # step 18 -- and `_embedding_routing` drops the namespace
         key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
         keyless_providers=_KEYLESS_PROVIDERS,
     )
