@@ -105,6 +105,8 @@ docker compose build embedding
 
 ### P0‑4 · عاملان من ثلاثة غير قابلَين للنشر — والافتراضيّ يختار أحدهما
 
+> ✅ **تحديثٌ لاحق (2026‑08‑01، الخطوتان 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) · [§3.98](log/3.98.md) · [§3.100](log/3.100.md)):** نصفُ هذا البند أُغلق — `DocumentContentResolver` صار محوّلاً حقيقيّاً (`workers/content_resolver.py`) و`build_knowledge_worker_from_env` **لم تعد ترفع**، فبقي **عاملٌ واحدٌ من ثلاثة** غير قابلٍ للنشر لا اثنان. ولم يعد الافتراضيّ يختار محجوباً منذ الخطوة 3 من `release-blockers-plan.md`. ما بقي حرفيّاً صحيحاً أدناه: `media`، وأنّ إقلاع `knowledge` **لم يُجرَّب حاويّاً بعد**. النصّ الأصليّ محفوظٌ كما كُتب.
+
 `knowledge` محجوبٌ بـ`DocumentContentResolver`، و`media` بـ`MediaGenerator` (دَينان مُعلَنان). لكنّ ما لم يُلاحَظ:
 
 ```yaml
@@ -168,7 +170,7 @@ WORKER: ${WORKER:-knowledge}     # docker-compose.yml
 
 | البند | الحاجب الحقيقيّ | الأثر |
 |---|---|---|
-| `DocumentContentResolver` | جلب MinIO غير متزامن داخل مصنعٍ متزامن + مستخرِج محتوًى | عامل `knowledge` (‏P0‑4) |
+| ~~`DocumentContentResolver`~~ **✅ أُغلق 2026‑08‑01** | كان: جلب MinIO غير متزامن داخل مصنعٍ متزامن + مستخرِج محتوًى. أُغلق بالخطوتين 15‑16 ([§3.98](log/3.98.md) · [§3.100](log/3.100.md)) | عامل `knowledge` موصولٌ الآن — يبقى إقلاعه الحاويّ الأوّل |
 | `MediaGenerator` | لا محوّل إطلاقاً | عامل `media` (‏P0‑4) |
 | **2.8‑ب‑2** (Gemini · Claude · OpenRouter) | مفاتيح سحابيّة | لا مزوّد LLM سحابيّ |
 | 10 تخطّيات موثَّقة | مفاتيح/بيئة | مطابقةٌ لتقرير القبول تماماً |

@@ -3,9 +3,11 @@ between a file and the auto-loaded `.env` that actually overrides it
 (release-blockers-plan.md §3, step 3 · pre-release-review.md P0-4).
 
 The defect this guards: `docker-compose.yml`'s `worker` service defaulted
-`WORKER` to `knowledge`, a value that crash-loops forever under
-`restart: unless-stopped` (it is blocked on `DocumentContentResolver`, a
-separately tracked debt item) -- while `deploy/runpod/entrypoint.sh` defaulted
+`WORKER` to `knowledge`, a value that crash-looped forever under
+`restart: unless-stopped` (it was blocked on `DocumentContentResolver` back
+then -- a debt since closed by step 16 of `docs/deferred-adapters-plan.md`,
+which changes nothing about this guard: see `_EXPECTED_WORKER_DEFAULT`
+below) -- while `deploy/runpod/entrypoint.sh` defaulted
 the SAME variable to `memory`, the one value that actually boots. An operator
 running `docker compose --profile workers up worker` with no override got a
 different, broken worker than one running the RunPod image unmodified, and
@@ -46,13 +48,17 @@ _ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}
 _ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
 
 # The three names `app/workers/main.py::_RUNNERS` actually dispatches to.
-# `knowledge` and `media` are real, valid names -- they are simply the two
-# that crash-loop today (their own missing adapters, not a deploy defect).
+# `media` is a real, valid name that simply crash-loops today (its own missing
+# `MediaGenerator`, not a deploy defect); `knowledge` stopped crash-looping at
+# step 16 of `docs/deferred-adapters-plan.md`.
 _VALID_WORKER_NAMES = frozenset({"knowledge", "media", "memory"})
-# The one worker known to boot today (2.10 closed `memory`'s EmbeddingProvider
-# gap; `DocumentContentResolver`/`MediaGenerator` remain open debt for the
-# other two -- see the comment above `worker:` in docker-compose.yml).
-_ONLY_WORKER_THAT_BOOTS_TODAY = "memory"
+# The default all three deployment sources must agree on. `memory` is the one
+# worker whose boot is PROVEN live inside containers (2.10 closed its
+# EmbeddingProvider gap; `docs/log/3.83.md` measured the round trip).
+# `knowledge` is wired but never yet booted, and `media` still has no
+# `MediaGenerator` at all -- so the default stays here until a real knowledge
+# boot earns the change (docker-compose.yml's comment argues it in full).
+_EXPECTED_WORKER_DEFAULT = "memory"
 
 
 def _compose_worker_default() -> str:
@@ -123,13 +129,13 @@ def test_env_example_agrees_with_the_compose_fallback() -> None:
     )
 
 
-def test_default_is_the_one_worker_that_boots_today() -> None:
+def test_default_is_the_worker_whose_boot_is_actually_proven() -> None:
     """Agreeing with each other is necessary but not sufficient: all three
-    sources could still agree on a NAME THAT CRASH-LOOPS. `knowledge` and
-    `media` are valid worker names (`app/workers/main.py::_RUNNERS`) that
-    nonetheless crash-loop forever under `restart: unless-stopped` today --
-    so the default must specifically be `memory`, not merely a name in the
-    set."""
-    assert _compose_worker_default() == _ONLY_WORKER_THAT_BOOTS_TODAY
-    assert _entrypoint_worker_default() == _ONLY_WORKER_THAT_BOOTS_TODAY
-    assert _env_example_worker() == _ONLY_WORKER_THAT_BOOTS_TODAY
+    sources could still agree on a NAME THAT CRASH-LOOPS. `media` is a valid
+    worker name (`app/workers/main.py::_RUNNERS`) that nonetheless crash-loops
+    forever under `restart: unless-stopped`, and `knowledge` -- wired since
+    step 16 but never once booted -- is evidence-free either way. So the
+    default must specifically be `memory`, not merely a name in the set."""
+    assert _compose_worker_default() == _EXPECTED_WORKER_DEFAULT
+    assert _entrypoint_worker_default() == _EXPECTED_WORKER_DEFAULT
+    assert _env_example_worker() == _EXPECTED_WORKER_DEFAULT

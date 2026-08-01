@@ -3,14 +3,23 @@
 
 Deliberately thin (``workers/outbox_relay.py``'s own precedent): all
 composition lives in ``workers/bootstrap.py``; this file only sequences
-build → run → teardown. ``build_knowledge_worker_from_env()`` is now
-``async`` (step 15 of ``deferred-adapters-plan.md``: it binds MinIO storage
-the same async way ``CompositionRoot.connect_storage`` does) and still
-raises today (``bootstrap.py``'s "Honest-failure rule" -- the index handler
-needs a ``DocumentContentResolver`` that has no content-extractor DISPATCH
-composition yet, a separately tracked debt item that step 15 does not
-close) — this entrypoint does not catch that, so the process fails fast and
-loudly on boot rather than starting half-wired.
+build → run → teardown. ``build_knowledge_worker_from_env()`` is ``async``
+(step 15 of ``deferred-adapters-plan.md``: it binds MinIO storage the same
+async way ``CompositionRoot.connect_storage`` does) and **no longer raises**
+(step 16, ``docs/log/3.100.md``): ``WorkerDocumentContentResolver``
+(``workers/content_resolver.py``) fills the last seam — file fetch + the
+3.k1 parser dispatch table + embedding-route resolution — so this process
+is wired end to end and nothing about it is deferred any more.
+
+What this entrypoint still deliberately does NOT catch is a genuine boot
+failure: Vault unreachable, a malformed MinIO secret (``bind_minio``'s
+``ValidationError``), a ``PROVIDER_ROUTING`` naming a provider with no wired
+adapter. Those propagate, so the process fails fast and loudly rather than
+starting half-wired.
+
+⚠️ Wired is not the same as *booted*: no ``knowledge`` container has been
+started since step 16 (that needs a separate, explicit go-ahead — the plan's
+own §3 note), so the first live boot is still ahead.
 """
 
 from __future__ import annotations

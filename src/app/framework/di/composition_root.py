@@ -114,9 +114,14 @@ as the record of how:
   workspace chunks instead of running degraded; ``POST /search`` no longer
   answers 503 at the composition level. ``memory`` recall is unblocked by
   the SAME adapter (``workers/bootstrap.py``'s ``build_memory_worker_from_env``);
-  the knowledge WORKER's index handler remains blocked on a separate,
-  still-missing seam (``DocumentContentResolver`` — that module's own
-  docstring).
+  the knowledge WORKER's index handler was blocked on a separate seam,
+  ``DocumentContentResolver``, until steps 15-16 of
+  ``deferred-adapters-plan.md`` closed it (``docs/log/3.100.md``) — and it
+  closed it by REUSING this file: ``build_knowledge_worker_from_env`` binds
+  MinIO through the same ``vault_binding``/``storage_binding`` pair
+  ``connect_storage`` calls, and resolves the embedding model through the
+  same ``SettingsProviderResolver`` built here, so index-time and search-time
+  cannot drift into two different vector spaces.
 * ``storage`` (``deps.storage``) — **no longer ``None`` since 6.1-هـ-1**: it
   is the ``StorageHandle`` described above, live once the startup lifespan has
   run ``connect_storage``. The Data-Analysis and File-Editing agents can read

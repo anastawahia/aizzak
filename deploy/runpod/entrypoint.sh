@@ -167,10 +167,14 @@ export OAUTH_REFRESH_SKEW_S="${OAUTH_REFRESH_SKEW_S:-60}"
 export USAGE_ROLLUP_PERIODS="${USAGE_ROLLUP_PERIODS:-day,month}"
 export USAGE_DEFAULT_LIMITS="${USAGE_DEFAULT_LIMITS:-{\"tokens\":{\"month\":5000000},\"cost_micros\":{\"month\":50000000}}}"
 
-# ⚠️ memory is the ONLY worker that boots today. knowledge needs
-# DocumentContentResolver and media needs MediaGenerator -- both are tracked
-# debt, and either value here produces a process that crash-loops forever and
-# makes a healthy stack look broken.
+# ⚠️ memory stays the default, and the reason narrowed after step 16 of
+# docs/deferred-adapters-plan.md. `knowledge` is no longer adapter-blocked
+# (WorkerDocumentContentResolver exists; the factory no longer raises), but it
+# has never been booted as a process, whereas memory's live container round
+# trip is measured (docs/log/3.83.md). `media` is the one value still missing
+# its adapter (MediaGenerator) -- it crash-loops forever and makes a healthy
+# stack look broken. Keep this in step with docker-compose.yml and
+# .env.example; tests/unit/test_deploy_worker_default.py fails if they drift.
 export WORKER="${WORKER:-memory}"
 
 # The model the routing table names below must be the model pulled at

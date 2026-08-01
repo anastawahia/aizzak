@@ -7,14 +7,19 @@ Hermetic: every handler closure (``build_knowledge_register_handler``/
 use-cases, the same way ``test_media_outbox_seam.py``'s
 ``MediaRequestService`` tests are -- these closures ARE the worker-scoped
 equivalent of that request-scoped seam. ``build_<name>_worker_from_env``'s
-"honest failure" (module docstring) is proven here too, for the two seams
-still genuinely blocked (``DocumentContentResolver``/``MediaGenerator``): no
-live Redis/Postgres needed -- ``create_engine``/``create_redis_client`` are
-both lazy, no connection at construction time. 2.10 closed the THIRD seam
-(``EmbeddingProvider``): ``build_memory_worker_from_env`` no longer raises,
-and is proven here to build a real, working consumer instead -- equally
-hermetic, since ``create_qdrant_client``/``create_embedding_http_client``
-are lazy too.
+"honest failure" (module docstring) is proven here too, for the ONE seam
+still genuinely blocked (``MediaGenerator``): no live Redis/Postgres needed
+-- ``create_engine``/``create_redis_client`` are both lazy, no connection at
+construction time.
+
+The other two ``_from_env`` factories are proven the opposite way, by
+BUILDING: 2.10 unblocked ``build_memory_worker_from_env``
+(``EmbeddingProvider``) and steps 15-16 of ``deferred-adapters-plan.md``
+unblocked ``build_knowledge_worker_from_env`` (``DocumentContentResolver``),
+so each is asserted here to return a real consumer with its real
+subscriptions -- equally hermetic, since
+``create_qdrant_client``/``create_embedding_http_client`` are lazy too and
+``build_vault``/``bind_minio`` are monkeypatched.
 """
 
 from __future__ import annotations
@@ -900,8 +905,9 @@ async def test_memory_index_handler_claim_and_finalize_share_the_unit_of_work() 
 
 
 # --------------------------------------------------------------------------- #
-# The honest-failure rule: knowledge/media still raise; memory no longer does #
-# (2.10 closed the EmbeddingProvider gap -- module docstring).                #
+# The honest-failure rule: only `media` still raises. `memory` stopped in 2.10 #
+# (EmbeddingProvider), `knowledge` in step 16 (DocumentContentResolver) --     #
+# module docstring.                                                            #
 # --------------------------------------------------------------------------- #
 async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_raising(
     monkeypatch: pytest.MonkeyPatch,

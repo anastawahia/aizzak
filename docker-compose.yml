@@ -485,28 +485,39 @@ services:
   # Same image, different command (08 §2/§4). Three Streams consumers, each
   # its own process so one module's backlog cannot starve another's.
   #
-  # ⚠️ BEHIND A PROFILE, and that is still a finding, though a narrower one
-  # since 2.10: `WORKER=memory` now boots for real (`build_memory_worker_
-  # from_env` no longer raises -- 2.10 closed its EmbeddingProvider gap).
-  # The other two values still crash-loop on boot, each naming a DIFFERENT
-  # remaining gap:
-  #   knowledge -> DocumentContentResolver (a separately tracked debt item,
-  #                NOT closed by 2.10 -- workers/bootstrap.py's own docstring)
+  # ⚠️ BEHIND A PROFILE, and that is still a finding -- but a narrower one
+  # again, because TWO of the three values now build a fully wired worker:
+  #   memory    -> boots for real since 2.10 (`build_memory_worker_from_env`
+  #                no longer raises -- its EmbeddingProvider gap is closed),
+  #                and it is the one PROVEN live inside containers (§3.83).
+  #   knowledge -> no longer adapter-blocked since steps 15-16 of
+  #                docs/deferred-adapters-plan.md (docs/log/3.98.md ·
+  #                docs/log/3.100.md): `build_knowledge_worker_from_env`
+  #                binds MinIO from Vault and composes
+  #                WorkerDocumentContentResolver, so it no longer raises.
+  #                NOT yet booted as a container even once, though -- that
+  #                needs a deliberate run, not an assumption.
   #   media     -> MediaGenerator (no adapter exists; media/ports/generation.py
-  #                names it a deferred Phase-5 infra adapter)
-  # -- so with `restart: unless-stopped` a knowledge/media instance would
-  # crash-loop forever and make an otherwise-healthy stack look broken, while
-  # a memory instance now runs cleanly. The topology is declared here,
-  # correct and ready; what blocks the other two is their own missing
-  # ADAPTER, not anything about deployment.
+  #                names it a deferred Phase-5 infra adapter). This is the
+  #                ONE value that still crash-loops on boot by design.
+  # -- so with `restart: unless-stopped` a `media` instance would crash-loop
+  # forever and make an otherwise-healthy stack look broken. The topology is
+  # declared here, correct and ready; what blocks the last one is its own
+  # missing ADAPTER, not anything about deployment.
   #
   # ⚠️ THE DEFAULT BELOW MATTERS (release-blockers-plan.md §3, step 3 / P0-4
-  # in pre-release-review.md). `WORKER` defaults to `memory` -- the ONE value
-  # that boots -- not `knowledge`. It used to default to `knowledge`, which
-  # crash-loops forever under `restart: unless-stopped` on a plain,
-  # unconfigured `docker compose --profile workers up worker`, making an
+  # in pre-release-review.md). `WORKER` defaults to `memory` -- and it STAYS
+  # `memory` after step 16, deliberately. `knowledge` is now wired, but
+  # "builds without raising" and "boots cleanly against a real Vault, MinIO,
+  # Qdrant and embedding service" are different claims, and only `memory` has
+  # the second one measured (§3.83). A default is a promise to an operator
+  # who typed nothing; it should point at the path with live evidence behind
+  # it. Flipping it is a decision for the first successful knowledge boot to
+  # earn, not for this comment to assume. (It used to default to `knowledge`
+  # back when that value crash-looped forever under `restart: unless-stopped`
+  # on a plain `docker compose --profile workers up worker`, making an
   # otherwise-healthy stack look broken for no reason the operator could see
-  # without reading this comment first. `memory` mirrors
+  # without reading this comment first.) `memory` mirrors
   # deploy/runpod/entrypoint.sh's own `WORKER="${WORKER:-memory}"`, so the two
   # deployment paths agree; tests/unit/test_deploy_worker_default.py asserts
   # that agreement and fails if either one drifts.

@@ -12,8 +12,8 @@
 | **الأساس** | `6946e3e` (‏`master`) · [`log/INDEX.md`](log/INDEX.md) حتّى §3.97 · البوّابات الخمس لم تُقَس عند الإنشاء (وثيقةُ تخطيطٍ لا تغيّر كوداً) |
 | **النطاق** | `DocumentContentResolver` (يحجب عامل `knowledge`) · `MediaGenerator` (يحجب عامل `media`) · وثغرةُ الملفّ المسموم المكتشَفة أثناء التخطيط (§1‑ج) |
 | **خارج النطاق** | **`2.8‑ب‑2`** (محوّلات Gemini · Claude · OpenRouter — محجوبةٌ بالمفاتيح، ولا علاقة لها بالعمّال) · **توليد الفيديو** (§6، مؤجَّلٌ بقرارٍ مسجَّل) |
-| **الحالة العامّة** | 🔵 **2 / 6 — الخطوة 16 بانتظار مراجعة المستخدم** (‏المسار (أ) 2/3) |
-| **الخطوة التالية** | **الخطوة 17** — توثيق: عامل `knowledge` صار يُقلع |
+| **الحالة العامّة** | 🔵 **3 / 6 — الخطوة 17 بانتظار مراجعة المستخدم** · ✅ **المسار (أ) مكتمل 3/3: دَينُ `DocumentContentResolver` أُغلق** |
+| **الخطوة التالية** | **الخطوة 18** — توسيع `ProviderResolver` بفضاء `image` (أوّل خطوات المسار (ب)) |
 
 ---
 
@@ -90,7 +90,7 @@
 
 **الثغرة مع فتح العامل لا بعده.** الخطوة 16 تحمل إصلاح §1‑ج في نفس الـPR الذي يفتح المسار، لأنّ الفصل بينهما يعني نافذةً يكون فيها العامل حيّاً وقابلاً للتسميم.
 
-**التوثيق خطوةٌ لا ذيل.** سلاسل «لا محوّل بعد» موزَّعةٌ على **ستّة مواضع في الكود وأربع وثائق** (§4، الخطوة 17). تركُها للاحق يعني مستودعاً يكذب على قارئه التالي — وهو بالضبط ما صحّحه الالتزام `560016d` من قبل.
+**التوثيق خطوةٌ لا ذيل.** سلاسل «لا محوّل بعد» موزَّعةٌ على **ستّة مواضع في الكود وأربع وثائق** (§4، الخطوة 17) — 🐛 **والمسحُ الفعليّ وجدها تسعةً وإحدى عشرة** ([§3.101](log/3.101.md))؛ التقديرُ كُتب قبل المسح، ولهذا كان معيار الإنجاز `grep` لا عدّاداً. تركُها للاحق يعني مستودعاً يكذب على قارئه التالي — وهو بالضبط ما صحّحه الالتزام `560016d` من قبل.
 
 **البوّابة قبل الشيفرة.** الخطوة 18 لا تُطلَق قبل أن يكون المزوّد محسوماً (§6‑أ)، لأنّ `_parse_namespace` يرفض البناء أصلاً على فضاءٍ بلا محوّلٍ موصول (`resolver.py:224`).
 
@@ -104,7 +104,7 @@
 |---|---|---|---|---|---|---|
 | **15** | **ربط MinIO مشترَك + مصنعٌ لا‑متزامن للعامل** | أ | ❌ ملفّات فقط | `implementer` | 🔵 بانتظار مراجعة المستخدم | [§3.98](log/3.98.md) |
 | **16** | **`WorkerDocumentContentResolver` + ثغرة الملفّ المسموم** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.100](log/3.100.md) |
-| **17** | **توثيق: عامل `knowledge` صار يُقلع** | أ | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
+| **17** | **توثيق: عامل `knowledge` صار يُقلع** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.101](log/3.101.md) |
 | **18** | **توسيع `ProviderResolver` بفضاء `image`** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
 | **19** | **محوّل `ImageProvider` + `MediaGenerator`** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
 | **20** | **`build_media_worker_from_env` + توثيق الإغلاق** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
@@ -161,7 +161,7 @@
 
 ---
 
-### الخطوة 17 — توثيق: عامل `knowledge` صار يُقلع ⬜
+### الخطوة 17 — توثيق: عامل `knowledge` صار يُقلع 🔵
 
 **المشكلة.** بعد الخطوة 16 يصير المستودع **يكذب على قارئه**: ستّة مواضع في الكود وأربع وثائق تقول «لا محوّل بعد» عن محوّلٍ صار موجوداً.
 
@@ -170,6 +170,8 @@
 **القرار المتّخَذ.** تعليق `WORKER` في `docker-compose.yml` يُعاد كتابته لا يُحذف: الافتراضيّ يبقى `memory` (‏`tests/unit/test_deploy_worker_default.py` يحرس اتّفاقه مع `deploy/runpod/entrypoint.sh`)، لكنّ نصّه يصير «اثنان من ثلاثة يُقلعان» بدل «قيمةٌ واحدةٌ تُقلع». وتصحيحُ docstring المصنع الذي يزعم غياب تركيب الإرسال (§1‑ب) جزءٌ من هذه الخطوة.
 
 **معيار الإنجاز.** `grep` على «`no adapter`»/«`still-nonexistent`»/«`DocumentContentResolver`» لا يُرجع ادّعاءً باقياً بالغياب، ومدخلةُ سجلٍّ تُسجّل إغلاق نصف الدَّين.
+
+> ✅ **مُنجَزة ([§3.101](log/3.101.md)).** المسحُ وجد **أكثر** ممّا قُدِّر: تسعةُ مواضعَ في الكود والنشر لا ستّة، و**إحدى عشرة وثيقةً لا أربع**. والقرار الحامل: **«موصولٌ» ليست «يقلع»** — الصيغةُ المعتمدة في كلّ موضع «موصولٌ بالكامل، لم يُقلَع بعد»، والافتراضيّ `WORKER=memory` **لم يتغيّر** لأنّه الوحيد المقيسُ حاويّاً (§3.83) لا لأنّ `knowledge` محجوب. البرهانُ بآليّة المعيار نفسه (`git archive HEAD` + `grep` مؤتمَت): **24 ادّعاءَ غيابٍ قبل · 5 بعد**، والخمسةُ كلُّها ماضٍ أو نصٌّ مؤرَّخٌ مُصانٌ فوقه مؤشّرُ إغلاق.
 
 ---
 
@@ -225,6 +227,7 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 |---|---|---|---|
 | 15 | 2026‑08‑01 | [§3.98](log/3.98.md) | `framework/di/vault_binding.py` + `framework/di/storage_binding.py` (جديدان) · `composition_root.py` (‏`connect_storage` مناديّاً سطرين، `_build_vault` حُذفت) · `.importlinter` (سطران في العقد 6) · `workers/bootstrap.py` (‏`build_knowledge_worker_from_env` صارت `async` وتبني `storage` حقيقيّاً) · `workers/knowledge_worker.py` · `tests/unit/test_workers_bootstrap.py` + `tests/unit/test_storage_binding.py` (جديد) |
 | 16 | 2026‑08‑01 | [§3.100](log/3.100.md) | `workers/content_resolver.py` (**جديد** — `WorkerDocumentContentResolver`) · `workers/bootstrap.py` (‏فرعُ فشلِ `content.resolve` في معالج الفهرسة · `_embedding_routing` + `_KEYLESS_PROVIDERS` · `build_knowledge_worker_from_env` **لم تعد ترفع** وتعيد خمسة `disposables`) · `knowledge/application/use_cases.py` (‏`IndexRegisteredDocument.fail`) · `framework/settings/settings.py` (‏`allowed_mime` صارت مرآةَ `_ROUTES`: DOCX أُسقط، و`csv`/`json`/`xlsx` أُضيفت) · `tests/unit/test_content_resolver.py` (**جديد**، 5) · `tests/unit/test_workers_bootstrap.py` (+5) · `tests/integration/test_e2e_outbox_to_worker.py` (+1 حيّ فوق PG+MinIO+Qdrant+Redis) |
+| 17 | 2026‑08‑02 | [§3.101](log/3.101.md) | **نصٌّ فقط، ولا سطرَ منطقٍ واحد.** كود: `workers/bootstrap.py` (docstringا الوحدة والبروتوكول) · `workers/knowledge_worker.py` · `framework/di/composition_root.py`. نشر: `docker-compose.yml` (‏تعليق `WORKER` **أُعيدت كتابتُه لا حُذف**، والافتراضيّ `memory` كما هو) · `deploy/runpod/entrypoint.sh` · `deploy/runpod/supervisord.conf` · `.env.example`. اختبارات (نصٌّ واسمُ ثابت، بلا تأكيدٍ ولا قيمة): `tests/unit/test_workers_bootstrap.py` · `tests/unit/test_deploy_worker_default.py` (‏`_ONLY_WORKER_THAT_BOOTS_TODAY` ← `_EXPECTED_WORKER_DEFAULT`). وثائق (11): `ROADMAP` · `implementation-status` · `implementation-plan` · `pre-release-review` · `quickstart` · `deploy-linux-server` · `deploy-runpod` · `design/08-local-runbook` · `release-blockers-plan` · `p1-hardening-plan` · `acceptance-report` |
 
 ---
 
@@ -250,6 +253,11 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 1. **`NotFoundError` من `content.resolve` تبقى مسارَ إعادة تسليم.** الخطوة 16 أغلقت `UnsupportedTypeError`/`ValidationError` — النوعين اللذين سمّتهما الخطة صراحةً. لكنّ صفَّ ملفٍّ حُذف وسط الطريق لن ينجح بإعادة المحاولة أبداً، فتنتهي الوثيقةُ `pending` بعد DLQ: **نفسُ شكل الثغرة المُغلقة، بسببٍ مختلف**. السؤال «هل غيابُ الملفّ فشلٌ نهائيّ؟» يستحقّ حسماً مستقلّاً.
 2. **`_KEYLESS_PROVIDERS` صارت نسختين** — واحدةٌ في `workers/bootstrap.py` وأخرى مضمّنةٌ في `composition_root.py`. الانجرافُ يفشل **بصوتٍ عالٍ** (`credentials.none_available`) لا صامتاً، لكنّ رفعَها إلى موضعٍ مشترَك واحد — سابقةُ `vault_binding`/`storage_binding` في الخطوة 15 — تنظيفٌ يستحقّ خطوةً صغيرة.
 3. **حالةُ الملفّ لا تُفحَص قبل الفهرسة.** المحوّل يقرأ بايتات أيّ ملفٍّ يجده، ولو كان `quarantined` أو محذوفاً منطقيّاً. لا مسارَ حيّ يضع `quarantined` في v1 (لا فحص مضادّ فيروسات) فالأثرُ اليوم **صفر** — لكنّ يوم يُوصَل الفحص يصير `file.is_ready` شرطاً واجباً هنا.
+
+**من الخطوة 17 ([§3.101](log/3.101.md)):**
+
+4. **`api/v1/routers/knowledge.py` ما يزال يقول إنّ `POST /search` يجيب 503 لأنّ «لا محوّل `EmbeddingProvider` بعد».** كذبةٌ من صنف ما كنسته الخطوة 17 بالضبط — لكنّها تخصّ دَيناً **آخر** (‏2.10، أُغلق في [§3.77](log/3.77.md))، ونطاقُ الخطوة كان مسمّىً. تُصحَّح في كنسةٍ صغيرةٍ مستقلّة أو مع الخطوة 20.
+5. **أوّلُ إقلاعٍ حاويٍّ لعامل `knowledge` لم يُجرَّب.** الخطوة 17 وثّقت «موصولٌ لا مُقلَع» عن قصد، والافتراضيّ `WORKER` بقي `memory` لهذا. أوّلُ إقلاعٍ ناجح **يكسب** تغييرَ الافتراضيّ — وهو عملُ تشغيلٍ يغيّر حالة النظام الحيّ، أي **خارج نطاق هذه الخطة كلّها** ويحتاج إذناً منفصلاً.
 
 ---
 

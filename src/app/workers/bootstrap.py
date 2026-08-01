@@ -77,30 +77,31 @@ file, a per-process composition root exactly like the relay's, and handed to
 the module-agnostic ``StreamConsumer``/``Subscription`` as opaque closures.
 
 **Honest-failure rule for blocked dependencies (the design brief's explicit
-instruction, not a shortcut taken here).** Two seams still have no real
-adapter: ``DocumentContentResolver`` (the knowledge worker's file-fetch +
-content-extraction pipeline -- a separately tracked debt item, NOT closed
-by 2.10) and ``MediaGenerator`` (``media/ports/generation.py``'s own
-docstring: "the deferred, Phase-5 infra adapter"). Rather than silently
-wiring a fake in either's place (fakes exist ONLY in tests), every
-``_from_env`` function below builds everything that genuinely IS real from
-env — repositories, the Outbox, the unit of work, the Redis client — and
-then RAISES a clear ``AppError`` naming exactly what is still missing.
+instruction, not a shortcut taken here).** ONE seam still has no real
+adapter: ``MediaGenerator`` (``media/ports/generation.py``'s own docstring:
+"the deferred, Phase-5 infra adapter"). Rather than silently wiring a fake
+in its place (fakes exist ONLY in tests), ``build_media_worker_from_env``
+builds everything that genuinely IS real from env — repositories, the
+Outbox, the unit of work, the Redis client — and then RAISES a clear
+``AppError`` naming exactly what is still missing.
 ``build_<name>_worker`` itself is never blocked: it is a pure wiring
 function over whatever the caller hands it, which is precisely how the live
 e2e tests exercise the REAL register/run/index handlers today without
-waiting on either gap.
+waiting on that gap.
 
-**2.10 closed the THIRD blocked seam, ``EmbeddingProvider``**
+**Two of the three seams the rule used to cover are now closed, and this
+paragraph shrinks with them.** ``EmbeddingProvider`` went first, in 2.10
 (``infrastructure/ai_providers/embedding/external_embedding.py`` used to be
 0 bytes; ``composition_root.py``'s own module docstring records the
-history). ``build_memory_worker_from_env`` now builds the REAL
-``ExternalEmbeddingProvider`` and returns a fully working consumer — it no
-longer raises. ``build_knowledge_worker_from_env`` builds the REAL
-``IndexDocument`` pipeline (``embeddings`` + ``vectors``) too, but still
-raises: its index handler ALSO needs ``DocumentContentResolver``, which
-2.10 does not build (the design brief's explicit scope line — see that
-function's own docstring).
+history): ``build_memory_worker_from_env`` builds the REAL
+``ExternalEmbeddingProvider`` and returns a fully working consumer.
+``DocumentContentResolver`` went second, in steps 15-16 of
+``deferred-adapters-plan.md`` (``docs/log/3.98.md`` · ``docs/log/3.100.md``):
+``build_knowledge_worker_from_env`` binds MinIO through the same
+``vault_binding``/``storage_binding`` pair ``CompositionRoot`` uses, and
+composes ``WorkerDocumentContentResolver`` (``workers/content_resolver.py``)
+over storage + the 3.k1 parser dispatch table + a ``SettingsProviderResolver``
+— so it no longer raises either. **Only ``media`` still fails honestly.**
 
 ---
 
@@ -338,14 +339,22 @@ class DocumentContentResolver(Protocol):
     generalized to cover fetch + parse too, not just model/key resolution).
 
     A worker-composition-only seam -- not a module port, not a framework
-    port -- because no real implementation is buildable from env today (see
-    ``build_knowledge_worker_from_env``'s docstring). Step 15 of
-    ``deferred-adapters-plan.md`` closed the storage half of that gap --
-    ``StorageHandle``'s MinIO adapter IS now bound from env, the same way
-    ``CompositionRoot.connect_storage`` binds it -- but no content-extractor
-    DISPATCH composition exists yet across the five 3.k1 parser adapters,
-    and nothing yet composes fetch + dispatch + embedding-resolution into
-    the single ``resolve()`` call below. Tests inject a fake.
+    port -- and it STAYS one now that it has a real adapter, for a reason
+    that outlived the gap: its implementation
+    (``WorkerDocumentContentResolver``, ``workers/content_resolver.py``,
+    step 16 of ``deferred-adapters-plan.md``) joins ``files`` and
+    ``knowledge``, which the ``modules-independent`` import contract forbids
+    inside ``app.modules.*``. ``app.workers`` is where that composition is
+    allowed to live, so the Protocol belongs beside its callers rather than
+    in ``framework/ports/``.
+
+    Steps 15-16 built it out of pieces that already existed separately:
+    ``StorageHandle``'s MinIO adapter bound from env exactly the way
+    ``CompositionRoot.connect_storage`` binds it (step 15), the 3.k1 parser
+    dispatch table (``DocumentContentExtractor``), and the same
+    ``SettingsProviderResolver`` the API resolves the embedding route
+    through. Tests still inject fakes -- but only to isolate a branch, not
+    for want of a real implementation.
     """
 
     async def resolve(
