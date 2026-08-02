@@ -3,10 +3,25 @@
 
 Deliberately thin (``workers/outbox_relay.py``'s own precedent): all
 composition lives in ``workers/bootstrap.py``; this file only sequences
-build → run → teardown. ``build_media_worker_from_env()`` raises today
-(``bootstrap.py``'s "Honest-failure rule" -- no real ``MediaGenerator``
-adapter exists yet) — this entrypoint does not catch that, so the process
-fails fast and loudly on boot rather than starting half-wired.
+build → run → teardown. ``build_media_worker_from_env()`` is ``async`` and
+**no longer raises** (step 20 of ``deferred-adapters-plan.md``,
+``docs/log/3.104.md``): it binds MinIO the same async way
+``build_knowledge_worker_from_env`` does, and composes
+``WorkerMediaGenerator`` (``workers/media_generation.py``, step 19) over the
+resolved ``image`` route — so this process is wired end to end and nothing
+about it is deferred any more. It was the last of the three Streams workers
+still blocked; ``bootstrap.py``'s honest-failure rule now covers no builder
+at all.
+
+What this entrypoint still deliberately does NOT catch is a genuine boot
+failure: Vault unreachable, a malformed MinIO secret (``bind_minio``'s
+``ValidationError``), a ``PROVIDER_ROUTING`` whose ``image`` route names a
+provider with no wired adapter. Those propagate, so the process fails fast
+and loudly rather than starting half-wired.
+
+⚠️ Wired is not the same as *booted*: no ``media`` container has been started
+(the plan's §0 forbids changing live system state), so the first live boot
+is still ahead — exactly the state ``knowledge`` has been in since step 16.
 """
 
 from __future__ import annotations
@@ -21,7 +36,7 @@ async def run() -> None:
     resource ``build_media_worker_from_env`` handed back -- ``finally`` so a
     cancellation (graceful shutdown, e.g. SIGTERM under Compose) still tears
     down the engine and the Redis client rather than leaking connections."""
-    consumer, subscriptions, disposables = build_media_worker_from_env()
+    consumer, subscriptions, disposables = await build_media_worker_from_env()
     try:
         await consumer.run(subscriptions)
     finally:

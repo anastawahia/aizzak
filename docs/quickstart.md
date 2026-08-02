@@ -22,10 +22,10 @@
 | خدمة التضمين المركزيّة (`services/embedding`، البند 2.10) | ✅ مبنيّة. `POST /search` يجيب 200 بدل 503 |
 | عامل **`memory`** | ✅ يقلع ويعمل |
 | عامل **`knowledge`** | 🟡 **موصولٌ بالكامل ولم يُقلَع بعد** — `DocumentContentResolver` بُني في الخطوتين 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.100](log/3.100.md))، فلم يعد ينهار لنقصِ محوّل. لكنّ إقلاعه الحاويّ لم يُجرَّب مرّةً — جرّبه بـ`WORKER=knowledge` صراحةً |
-| عامل **`media`** | ⛔ ينهار عند الإقلاع — ينقصه `MediaGenerator` (دَينٌ مسجَّل) |
+| عامل **`media`** | 🟡 **موصولٌ بالكامل ولم يُقلَع بعد** — `WorkerMediaGenerator` بُني ووُصل في الخطوتين 19‑20 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.103](log/3.103.md) · [§3.104](log/3.104.md))، فلم يعد ينهار لنقصِ محوّل. يحتاج توجيه `image` في `PROVIDER_ROUTING` واعتماداً باسم `image:openai`. جرّبه بـ`WORKER=media` صراحةً |
 | مزوّدو LLM السحابيّون (Gemini · Claude · OpenRouter — البند 2.8‑ب‑2) | ⛔ محجوبون بالمفاتيح. المزوّد المحلّي **Ollama** هو المسار العامل |
 
-> ⚠️ ولهذا خدمة `worker` **خلف `profile`** في Compose: `media` وحده اليوم يدور في حلقة انهيارٍ أبديّة لو أُقلع تلقائيّاً فيُظهر مكدّساً سليماً بمظهر المعطوب. الطوبولوجيا مكتوبةٌ وصحيحة؛ ما يعطّله **محوّلٌ ناقصٌ واحد** لا خللٌ في النشر. والافتراضيّ يبقى `memory` لا لأنّ `knowledge` محجوب، بل لأنّ إقلاع `memory` وحده **مقيسٌ حيّاً** ([§3.83](log/3.83.md)).
+> ✅ **ولم يعد أيّ عاملٍ ينهار لنقصِ محوّل** بعد الخطوة 20: خدمة `worker` تبقى خلف `profile` لأنّ اختيار العامل قرارُ نشرٍ صريح، لا لأنّ إحدى القيم مكسورة. والافتراضيّ يبقى `memory` لا لأنّ غيره محجوب، بل لأنّ إقلاع `memory` وحده **مقيسٌ حيّاً** ([§3.83](log/3.83.md)).
 
 > ✅ **مستجدّ (2026‑07‑24): Docker متاحٌ في هذه البيئة** — قِيس: `docker 29.6.1` و`docker compose v5.3.1` داخل `Ubuntu-24.04`. الوثائق الأقدم (‏`docs/log/3.77.md §5`) تقول «لا Docker هنا» وتؤجّل الإثبات الحاويّ للبند 2.10؛ **ذلك الحجب زال**، فمسار §2 أدناه قابلٌ للتنفيذ فعلاً، ومعه الإثبات المؤجَّل (‏`/search` عبر حاوية تضمينٍ مُقلَعة + قياس SLO).
 
@@ -261,7 +261,7 @@ alembic revision -m "..."             # هجرة جديدة (لا FK عابرا�
 ```
 POST /api/v1/files                    → upload_url ← ارفع إلى MinIO ← POST /files/{id}/complete
 POST /api/v1/agents/rag_agent/invoke  (Accept: text/event-stream) → بثّ الردّ
-POST /api/v1/media/jobs               → 202 ثمّ GET /media/jobs/{id} حتّى succeeded   ⛔ محجوب (MediaGenerator)
+POST /api/v1/media/jobs               → 202 ثمّ GET /media/jobs/{id} حتّى succeeded   🟡 يحتاج WORKER=media
 POST /api/v1/integrations/connections → authorize_url ← callback → GET /integrations/tools
 GET  /api/v1/usage                    → ملخّص الاستهلاك
 ```
@@ -289,7 +289,7 @@ GET  /api/v1/usage                    → ملخّص الاستهلاك
 | مهامّ عالقة | نموّ `stream.<m>.dlq`؛ راجع سبب الفشل والمحاولات |
 | رفض اتّصال Postgres | مرَّ عبر PgBouncer (6432) لا 5432؛ حجم التجمّع |
 | `POST /search` يعيد 503 | خدمة `embedding` غير صحيحة — `docker compose ps embedding` وسجلّها |
-| العامل ينهار عند الإقلاع | إن كان `media` فهذا **مقصودٌ ومسجَّل** (§0)، لا عطل. وإن كان `knowledge` فهو **عطلٌ حقيقيٌّ يستحقّ القراءة**: العامل موصولٌ منذ [§3.100](log/3.100.md)، فالانهيار سببه بيئةٌ (‏Vault · سرّ MinIO مشوَّه · `PROVIDER_ROUTING` يسمّي مزوّداً بلا محوّل) لا نقصُ كود — والرسالة تسمّيه |
+| العامل ينهار عند الإقلاع | **عطلٌ حقيقيٌّ يستحقّ القراءة أيّاً كانت قيمة `WORKER`** — العمّال الثلاثة موصولون ([§3.100](log/3.100.md) · [§3.104](log/3.104.md))، فالانهيار سببه بيئةٌ لا نقصُ كود: Vault · سرّ MinIO مشوَّه · `PROVIDER_ROUTING` يسمّي مزوّداً بلا محوّل. والرسالة تسمّيه |
 | رفض عملية بـ429 | تجاوز حصّة — `GET /usage` و`/usage/limits` (`USAGE_DEFAULT_LIMITS`) |
 | `Exec format error` | تُشغّل من Git‑Bash على ويندوز؛ ادخل WSL (§1) |
 

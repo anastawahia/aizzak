@@ -6,20 +6,24 @@ Hermetic: every handler closure (``build_knowledge_register_handler``/
 ``build_memory_index_handler``) is exercised over in-memory fakes/real
 use-cases, the same way ``test_media_outbox_seam.py``'s
 ``MediaRequestService`` tests are -- these closures ARE the worker-scoped
-equivalent of that request-scoped seam. ``build_<name>_worker_from_env``'s
-"honest failure" (module docstring) is proven here too, for the ONE seam
-still genuinely blocked (``MediaGenerator``): no live Redis/Postgres needed
--- ``create_engine``/``create_redis_client`` are both lazy, no connection at
-construction time.
+equivalent of that request-scoped seam.
 
-The other two ``_from_env`` factories are proven the opposite way, by
-BUILDING: 2.10 unblocked ``build_memory_worker_from_env``
-(``EmbeddingProvider``) and steps 15-16 of ``deferred-adapters-plan.md``
+**All THREE ``_from_env`` factories are now proven the same way, by
+BUILDING.** This file used to prove one of them the opposite way -- by
+asserting the "honest failure" ``build_media_worker_from_env`` raised while
+``MediaGenerator`` had no adapter. That assertion is gone with the gap it
+guarded: 2.10 unblocked ``build_memory_worker_from_env``
+(``EmbeddingProvider``), steps 15-16 of ``deferred-adapters-plan.md``
 unblocked ``build_knowledge_worker_from_env`` (``DocumentContentResolver``),
-so each is asserted here to return a real consumer with its real
-subscriptions -- equally hermetic, since
-``create_qdrant_client``/``create_embedding_http_client`` are lazy too and
-``build_vault``/``bind_minio`` are monkeypatched.
+and steps 19-20 unblocked ``build_media_worker_from_env``, so each is
+asserted here to return a real consumer with its real subscriptions.
+
+Hermetic throughout: no live Redis/Postgres/Qdrant/MinIO is needed, because
+every client factory involved (``create_engine``/``create_redis_client``/
+``create_qdrant_client``/``create_embedding_http_client``/
+``create_openai_image_http_client``) is lazy -- not one connection is opened
+at construction time -- and ``build_vault``/``bind_minio``, the only pieces
+that genuinely perform I/O eagerly, are monkeypatched.
 """
 
 from __future__ import annotations
@@ -51,9 +55,12 @@ from app.modules.knowledge.ports.content_extractor import (
 )
 from app.modules.media.domain.entities import MediaJob
 from app.modules.media.domain.value_objects import AgentKey, GenParams, JobStatus, MediaKind
+from app.workers import bootstrap
 from app.workers.bootstrap import (
+    _FOREIGN_TO_KNOWLEDGE,
+    _FOREIGN_TO_MEDIA,
     Disposable,
-    _embedding_routing,
+    _routing_for,
     build_knowledge_index_handler,
     build_knowledge_register_handler,
     build_knowledge_worker_from_env,
@@ -62,6 +69,7 @@ from app.workers.bootstrap import (
     build_memory_index_handler,
     build_memory_worker_from_env,
 )
+from app.workers.media_generation import WorkerMediaGenerator
 
 
 def _ctx(workspace_id: str = "ws-1") -> ExecutionContext:
@@ -974,7 +982,7 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     assert isinstance(minio_settings, MinioSettings)
 
 
-def test_embedding_routing_drops_the_foreign_namespaces_and_keeps_everything_else() -> None:
+def test_routing_for_drops_the_foreign_namespaces_and_keeps_everything_else() -> None:
     """The knowledge worker wires neither an LLM nor an image adapter, so
     handing its resolver either namespace would refuse construction on a route
     it never reads. Written as "drop the known-foreign names" so a MISSPELLED
@@ -982,11 +990,35 @@ def test_embedding_routing_drops_the_foreign_namespaces_and_keeps_everything_els
     being silently discarded by a keep-list."""
     embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
 
-    assert _embedding_routing(
-        {"llm": {"default": {"provider": "openai", "model": "gpt"}}, "embedding": embedding}
+    assert _routing_for(
+        {"llm": {"default": {"provider": "openai", "model": "gpt"}}, "embedding": embedding},
+        foreign=_FOREIGN_TO_KNOWLEDGE,
     ) == {"embedding": embedding}
-    assert _embedding_routing({}) == {}
-    assert _embedding_routing({"embeddings": embedding}) == {"embeddings": embedding}
+    assert _routing_for({}, foreign=_FOREIGN_TO_KNOWLEDGE) == {}
+    assert _routing_for({"embeddings": embedding}, foreign=_FOREIGN_TO_KNOWLEDGE) == {
+        "embeddings": embedding
+    }
+
+
+def test_the_two_workers_narrow_the_routing_table_to_disjoint_halves() -> None:
+    """The narrowing is per-worker, and the pair must not overlap on the one
+    namespace each process actually reads: ``knowledge`` must keep
+    ``embedding`` and drop ``image``, ``media`` the exact reverse. A single
+    shared constant (what this file had until step 20) cannot express that,
+    and getting it backwards would not fail loudly -- it would boot a worker
+    whose resolver has no route for the only call it ever makes."""
+    embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
+    image = {"default": {"provider": "image:openai", "model": "gpt-image-1"}}
+    routing: Json = {
+        "llm": {"default": {"provider": "openai", "model": "gpt"}},
+        "embedding": embedding,
+        "image": image,
+    }
+
+    assert _routing_for(routing, foreign=_FOREIGN_TO_KNOWLEDGE) == {"embedding": embedding}
+    assert _routing_for(routing, foreign=_FOREIGN_TO_MEDIA) == {"image": image}
+    # Neither worker wires an LLM adapter; `llm` is foreign to both.
+    assert "llm" in _FOREIGN_TO_KNOWLEDGE & _FOREIGN_TO_MEDIA
 
 
 def test_an_image_route_does_not_block_the_knowledge_worker() -> None:
@@ -1003,11 +1035,11 @@ def test_an_image_route_does_not_block_the_knowledge_worker() -> None:
         "embedding": {"default": {"provider": "fake", "model": "minilm"}},
         "image": {"default": {"provider": "openai", "model": "gpt-image"}},
     }
-    assert "image" not in _embedding_routing(routing)
+    assert "image" not in _routing_for(routing, foreign=_FOREIGN_TO_KNOWLEDGE)
 
     embeddings = {"fake": _FakeEmbeddings()}
     SettingsProviderResolver(
-        routing=_embedding_routing(routing),
+        routing=_routing_for(routing, foreign=_FOREIGN_TO_KNOWLEDGE),
         llm_providers={},
         embedding_providers=embeddings,
         image_providers={},
@@ -1027,11 +1059,82 @@ def test_an_image_route_does_not_block_the_knowledge_worker() -> None:
     assert "provider_routing.image['default']" in str(exc_info.value)
 
 
-async def test_build_media_worker_from_env_raises_naming_the_gap() -> None:
-    with pytest.raises(AppError) as exc_info:
-        build_media_worker_from_env()
-    assert exc_info.value.code == "common.internal"
-    assert "MediaGenerator" in str(exc_info.value)
+async def test_build_media_worker_from_env_builds_a_real_consumer_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 20 closes the LAST blocked builder in this module. On the old code
+    this same call raised ``AppError``/``common.internal`` naming
+    ``MediaGenerator`` -- the defect's own mechanism, from the same call site,
+    which is why this test replaces that one rather than sitting beside it.
+
+    Hermetic exactly as the knowledge equivalent is: ``build_vault``/
+    ``bind_minio`` are monkeypatched (the real pair performs an AppRole login
+    and a live Vault read), and every client factory involved
+    (``create_engine``/``create_openai_image_http_client``/
+    ``create_redis_client``) is lazy, so not one connection is opened."""
+    fake_secrets = object()
+    bind_calls: list[tuple[object, object, object]] = []
+
+    def _fake_build_vault(settings: object) -> tuple[object, object, object]:
+        return object(), fake_secrets, object()
+
+    async def _fake_bind_minio(storage: object, secrets: object, settings: object) -> None:
+        bind_calls.append((storage, secrets, settings))
+
+    monkeypatch.setattr("app.workers.bootstrap.build_vault", _fake_build_vault)
+    monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
+
+    consumer, subscriptions, disposables = await build_media_worker_from_env()
+
+    assert isinstance(consumer, StreamConsumer)
+    # 04 §4's binding table: ONE `cg.media` group over one stream.
+    assert [(s.stream, s.group) for s in subscriptions] == [("stream.media", "cg.media")]
+    assert set(subscriptions[0].handlers) == {"media.job.requested.v1"}
+    # engine.dispose, image_http.aclose, redis_client.aclose, _close_vault.
+    # No Qdrant and no embedding client: this worker indexes nothing.
+    assert len(disposables) == 4
+    for dispose in disposables:
+        disposable: Disposable = dispose
+        assert callable(disposable)
+
+    # Storage is bound from env into the SAME handle the generator writes the
+    # produced bytes through -- step 15's proof, on the second worker.
+    assert len(bind_calls) == 1
+    storage, secrets, minio_settings = bind_calls[0]
+    assert isinstance(storage, StorageHandle)
+    assert secrets is fake_secrets
+    assert isinstance(minio_settings, MinioSettings)
+
+
+async def test_the_media_worker_is_built_over_the_real_generator_not_a_fake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the previous test cannot see: ``build_media_worker`` takes the
+    generator as an opaque parameter, so a consumer with the right streams
+    and the right disposables would look identical if this builder handed it
+    a stub. The generator is therefore captured at the wiring site and
+    asserted to be the production class -- the one property the honest-failure
+    rule existed to protect ("fakes exist ONLY in tests")."""
+    captured: dict[str, object] = {}
+    real_build_media_worker = bootstrap.build_media_worker
+
+    def _spy(**kwargs: object) -> object:
+        captured["generator"] = kwargs["generator"]
+        return real_build_media_worker(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "app.workers.bootstrap.build_vault", lambda settings: (object(), object(), object())
+    )
+
+    async def _fake_bind_minio(storage: object, secrets: object, settings: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
+    monkeypatch.setattr("app.workers.bootstrap.build_media_worker", _spy)
+
+    await build_media_worker_from_env()
+
+    assert isinstance(captured["generator"], WorkerMediaGenerator)
 
 
 def test_build_memory_worker_from_env_builds_a_real_consumer_without_raising() -> None:

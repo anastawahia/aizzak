@@ -52,6 +52,22 @@ particular, NOT here, and why:
   stay defined per-adapter next to the status vocabulary that actually uses
   them.
 
+**One non-LLM consumer, and why it is not a scope breach** (step 19 of
+``deferred-adapters-plan.md``): ``ai_providers/image/external_image.py``
+imports ``create_llm_http_client``, ``off_contract``, ``parse_json_object``
+and ``translate_http_error``. Those four are not ``LLMProvider`` policy at
+all -- they are TRANSPORT and ERROR-TRANSLATION policy for "an HTTP call to a
+third-party AI vendor", which an image adapter makes in exactly the same
+shape (``trust_env=False`` is the same key-exfiltration defence; a vendor
+failure is the same ``agent.failed``/502; a malformed 200 is the same R6
+hole). The scope rule above is unchanged and still binding: it governs what
+may be ADDED here, and nothing was. What did NOT travel is just as
+deliberate -- ``ROLES``, ``estimate_tokens``/``token_count``/
+``reported_token_count`` and ``neutral_tool_call`` are chat vocabulary an
+image adapter has no use for, and ``_auth_header`` stayed COPIED in each
+adapter rather than hoisted, because one image adapter is N=1 and this
+module exists precisely because N=2 is the threshold.
+
 This module imports ONLY ``httpx``, ``json``, ``app.framework.errors`` and
 ``app.framework.types`` -- it does not import ``llm_provider`` at all, one
 notch more decoupled than either adapter (which import the port's VALUE

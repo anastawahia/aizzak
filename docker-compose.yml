@@ -485,8 +485,9 @@ services:
   # Same image, different command (08 §2/§4). Three Streams consumers, each
   # its own process so one module's backlog cannot starve another's.
   #
-  # ⚠️ BEHIND A PROFILE, and that is still a finding -- but a narrower one
-  # again, because TWO of the three values now build a fully wired worker:
+  # ⚠️ BEHIND A PROFILE, and that is still a finding -- but a much narrower
+  # one now, because ALL THREE values build a fully wired worker. No value of
+  # `WORKER` crash-loops on a missing adapter any more:
   #   memory    -> boots for real since 2.10 (`build_memory_worker_from_env`
   #                no longer raises -- its EmbeddingProvider gap is closed),
   #                and it is the one PROVEN live inside containers (§3.83).
@@ -497,13 +498,19 @@ services:
   #                WorkerDocumentContentResolver, so it no longer raises.
   #                NOT yet booted as a container even once, though -- that
   #                needs a deliberate run, not an assumption.
-  #   media     -> MediaGenerator (no adapter exists; media/ports/generation.py
-  #                names it a deferred Phase-5 infra adapter). This is the
-  #                ONE value that still crash-loops on boot by design.
-  # -- so with `restart: unless-stopped` a `media` instance would crash-loop
-  # forever and make an otherwise-healthy stack look broken. The topology is
-  # declared here, correct and ready; what blocks the last one is its own
-  # missing ADAPTER, not anything about deployment.
+  #   media     -> no longer adapter-blocked since steps 19-20 of the same
+  #                plan (docs/log/3.103.md · docs/log/3.104.md):
+  #                `build_media_worker_from_env` binds the same Vault/MinIO
+  #                pair and composes WorkerMediaGenerator over the resolved
+  #                `image` route. NOT yet booted as a container either.
+  # -- so the topology declared here is correct, ready, and no longer holds a
+  # value that is broken by design. What separates the three is now EVIDENCE,
+  # not capability: only `memory` has a measured live boot.
+  #
+  # ⚠️ `media` needs an `image` route in PROVIDER_ROUTING (see .env.example)
+  # and a stored `image:openai` credential for the workspace. Missing either
+  # is an honest, loud boot failure or a failed job -- not a crash-loop over
+  # code that does not exist.
   #
   # ⚠️ THE DEFAULT BELOW MATTERS (release-blockers-plan.md §3, step 3 / P0-4
   # in pre-release-review.md). `WORKER` defaults to `memory` -- and it STAYS

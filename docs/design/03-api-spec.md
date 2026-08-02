@@ -216,6 +216,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `knowledge.parse_failed` | 422 | تعذّر تحليل المستند |
 | `knowledge.search_unavailable` | 503 | البحث المعرفيّ غير منشور (لا مِحوَل تضمين) |
 | `media.invalid_params` | 422 | معاملات توليد خارج الحدود |
+| `media.unsupported_kind` | 422 | نوع وسائط لا مولّد له بعد (الفيديو) — يظهر في `error` المهمّة لا كردّ مشكلة |
 | `credentials.provider_unknown` | 422 | مزوّد غير مدعوم |
 | `credentials.none_available` | 409 | لا مفتاح مستخدم/منصّة للمزوّد (لا Fallback، D‑16) |
 | `integrations.connector_unknown` | 422 | موصّل غير موجود في الكتالوج |

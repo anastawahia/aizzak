@@ -12,8 +12,8 @@
 | **الأساس** | `6946e3e` (‏`master`) · [`log/INDEX.md`](log/INDEX.md) حتّى §3.97 · البوّابات الخمس لم تُقَس عند الإنشاء (وثيقةُ تخطيطٍ لا تغيّر كوداً) |
 | **النطاق** | `DocumentContentResolver` (يحجب عامل `knowledge`) · `MediaGenerator` (يحجب عامل `media`) · وثغرةُ الملفّ المسموم المكتشَفة أثناء التخطيط (§1‑ج) |
 | **خارج النطاق** | **`2.8‑ب‑2`** (محوّلات Gemini · Claude · OpenRouter — محجوبةٌ بالمفاتيح، ولا علاقة لها بالعمّال) · **توليد الفيديو** (§6، مؤجَّلٌ بقرارٍ مسجَّل) |
-| **الحالة العامّة** | 🔵 **4 / 6 — الخطوة 18 بانتظار مراجعة المستخدم** · ✅ **المسار (أ) مكتمل 3/3: دَينُ `DocumentContentResolver` أُغلق** · 🔵 المسار (ب) 1/3 |
-| **الخطوة التالية** | **الخطوة 19** — محوّل `ImageProvider` (OpenAI Images، §6‑أ) + `MediaGenerator` |
+| **الحالة العامّة** | 🔵 **6 / 6 — الخطوة 20 بانتظار مراجعة المستخدم · الخطّة استُنفدت** · ✅ المسار (أ) 3/3: دَينُ `DocumentContentResolver` أُغلق · ✅ المسار (ب) 3/3: دَينُ `MediaGenerator` أُغلق · **العمّال الثلاثة يُبنَون من البيئة** |
+| **الخطوة التالية** | **لا خطوةَ في نطاق هذه الخطّة.** ما بقي مفتوحاً: **الفيديو** و**`2.8‑ب‑2`** (§6‑ب) + إحدى عشرة ملاحظةً في §6‑ج. 📌 **وأوّلُ فعلٍ تشغيليٍّ مستحقّ: إقلاعُ `knowledge` و`media` حاويّاً** — يغيّر حالة النظام الحيّ فيحتاج إذناً صريحاً |
 
 ---
 
@@ -108,8 +108,8 @@
 | **16** | **`WorkerDocumentContentResolver` + ثغرة الملفّ المسموم** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.100](log/3.100.md) |
 | **17** | **توثيق: عامل `knowledge` صار يُقلع** | أ | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.101](log/3.101.md) |
 | **18** | **توسيع `ProviderResolver` بفضاء `image`** | ب | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.102](log/3.102.md) |
-| **19** | **محوّل `ImageProvider` + `MediaGenerator`** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
-| **20** | **`build_media_worker_from_env` + توثيق الإغلاق** | ب | ❌ ملفّات فقط | `implementer` | ⬜ لم تبدأ | — |
+| **19** | **محوّل `ImageProvider` + `MediaGenerator`** | ب | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.103](log/3.103.md) |
+| **20** | **`build_media_worker_from_env` + توثيق الإغلاق** | ب | ❌ ملفّات فقط | المُنسِّق | 🔵 بانتظار مراجعة المستخدم | [§3.104](log/3.104.md) |
 
 > رموز الحالة: ⬜ لم تبدأ · 🟡 قيد التنفيذ · 🔵 بانتظار مراجعة المستخدم · ✅ مكتملة ومُراجَعة · ⛔ محجوبة (اذكر السبب)
 
@@ -193,7 +193,7 @@
 
 ---
 
-### الخطوة 19 — محوّل `ImageProvider` + `MediaGenerator` ⬜
+### الخطوة 19 — محوّل `ImageProvider` + `MediaGenerator` 🔵
 
 **المشكلة.** الملفّان صفرا بايت، والدرزُ في `media/ports/generation.py:24` بلا محوّل.
 
@@ -213,15 +213,31 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 
 **معيار الإنجاز.** اختبارُ وحدةٍ بمزوّدٍ وتخزينٍ مزيَّفَين (المسار السعيد · فشلُ المزوّد ⇒ `failed` برسالة · `VIDEO` ⇒ `media.unsupported_kind`)، ثمّ استبدالُ `FakeMediaGenerator` في اختبار التكامل الحيّ بالمولّد الحقيقيّ فوق MinIO حيٍّ ومزوّدٍ مُوقَفٍ عند حدود HTTP وحدها. **وإثباتٌ صريح** أنّ توليد صورةٍ لا يُنتِج صفَّ Outbox لـ`files.file.uploaded.v1`.
 
+> ✅ **أُنجزت 2026‑08‑02** — [§3.103](log/3.103.md). المعيار مُستوفًى بحرفه: 39 اختباراً جديداً، و`FakeMediaGenerator` **حُذف** فعلاً (لا أُضيف بجانبه)، والبوّابات الخمس خضراء.
+>
+> 🐛 **تصحيحُ قرارٍ في هذه الفقرة نفسها: `provider = "openai-image"` كان خطأً.** الاسمُ الذي يحمله التوجيه هو نفسُه الذي يبحث به `ResolveCredential`، و`ProviderRef` يقبل مزوّداً أساسيّاً أو مفتاح `<modality>:<name>` (‏06 §3: `embedding:* | image:* | video:*`) — و`openai-image` لا يطابق أيّاً منهما. فكان سيُحلَّل ويُوصَل ويُقلِع **سليماً**، ويعبر البوّابات الخمس كلَّها، ثمّ يُفشِل **كلَّ** توليدٍ حقيقيّ بـ`credentials.provider_unknown`/422. المعتمَد: **`image:openai`**، ومُثبَّتٌ باختبارٍ يمرّ بـ`ProviderRef` الحقيقيّ.
+>
+> 🐛 **ولا حاجة لأن «تصل الخطوةُ 19 سقفَ `max_image_dim`»** كما تقول ملاحظة §6‑ج رقم 7: للسقف نافذٌ منذ 3.12 (‏`RequestMedia._enforce_limits`، رمز `media.invalid_params`، ويحرسه اختباران). مُحقِّقان لسقفٍ واحد ينجرفان — والموضع الصحيح حدُّ الطلب لا حدُّ التنفيذ. الملاحظةُ صُحّحت في موضعها.
+>
+> ⇒ الملفّات الفعليّة تجاوزت ما ذُكر أعلاه بـ`framework/errors.py` (رمز `media.unsupported_kind`) · `framework/di/composition_root.py` (توصيلُ `image_providers` — بدونه يقتل توجيهُ الصورةِ الـAPI) · `.env.example` (التوجيه صار حقيقيّاً) · `ai_providers/llm/shared.py` و`workers/bootstrap.py` (نصٌّ فقط) · `docs/design/03-api-spec.md` · و`tests/unit/test_external_image.py` **جديد**.
+
 ---
 
-### الخطوة 20 — `build_media_worker_from_env` + توثيق الإغلاق ⬜
+### الخطوة 20 — `build_media_worker_from_env` + توثيق الإغلاق 🔵
 
 **الملفّات.** `workers/bootstrap.py` (‏`build_media_worker_from_env`) · `workers/media_worker.py:6` · `modules/media/ports/generation.py:1‑13` · الوثائق الأربع نفسها من الخطوة 17.
 
 **القرار المتّخَذ.** نفسُ نمط الخطوة 15 (لا‑متزامن + خزانة + تخزين) وحذفُ الرفع. والدرزُ في `media/ports/generation.py` **يبقى كما هو** ولا يُلغى: docstring‑ه يعِد بأنّ المولّد يُوصَل خلفه «دون لمس `RunMediaJob`» — وهذه الخطوة تُنفّذ الوعد لا تنقضه.
 
 **معيار الإنجاز.** العمّال الثلاثة يُقلعون، ويُحدَّث [`ROADMAP.md`](ROADMAP.md) بإسقاط الدَّينَين من قائمة «ما بقي مفتوحاً»، مع بقاء الفيديو و`2.8‑ب‑2` مذكورَين صراحةً.
+
+> ✅ **أُنجزت 2026‑08‑02** — [§3.104](log/3.104.md). المعيار مُستوفًى: العمّال الثلاثة يُبنَون من البيئة فعلاً (مطبوعاً، لا استنتاجاً)، و`ROADMAP.md` أسقط الدَّينَين وأضاف **الفيديو** بنداً مُسمًّى بجوار `2.8‑ب‑2`. ⚠️ لكنّ **«يُبنى من البيئة» ليست «أُقلِع»**: لم تُشغَّل عمليّةُ `knowledge` ولا `media` حاويّاً ولا مرّة، وذاك عملُ تشغيلٍ خارج نطاق §0 كلّه.
+>
+> 🐛 **ما لم تتوقّعه هذه الخطّة، وكان سيشحن انجرافاً:** «نفسُ نمط الخطوة 15» صحيحٌ للخزانة والتخزين، لكنّ ما احتاج إعادةَ تشكيلٍ هو نمطُ الخطوة **16**: تضييقُ جدول التوجيه كان ثابتاً واحداً اسمُه `_NAMESPACES_FOREIGN_TO_THIS_WORKER` — واسمٌ كهذا **لا يسمّي شيئاً** حين يُضيّق عاملان تضييقَين متعاكسين (‏`knowledge` يُبقي `embedding` ويُسقط `image`، و`media` العكس تماماً). والنسخُ كان الطريق السهل، وهو بعينه ما حذّرت منه **ملاحظةُ §6‑ج رقم 2** عن `_KEYLESS_PROVIDERS`. ⇒ `_routing_for(..., foreign=)` + جدولان منطوقان، واختبارٌ يؤكّد تعاكسَهما: عكسُهما سهواً **لا يفشل بصوتٍ عال** بل يُقلع عاملاً محلِّلُه بلا توجيهٍ للنداء الوحيد الذي يقوم به.
+>
+> 🐛 **وتنبّؤٌ خاطئ في docstring الدرز نفسه صُحّح:** كان يقول إنّ **جذر التركيب** سيصل المحوّل خلفه — والجذرُ لا يبني `MediaGenerator` إطلاقاً؛ الموضعُ جذرُ تركيب **العامل**. والدرزُ بقي كما نصّت الخطّة، لسببٍ أعمق من الوفاء بوعد: عقد `modules-independent` يمنع المولّد من السكن داخل `app.modules.*`.
+>
+> ⇒ الملفّات الفعليّة تجاوزت ما ذُكر أعلاه بـ`api/v1/routers/knowledge.py` (‏**ملاحظة §6‑ج رقم 4 أُغلقت بإذنها المكتوب**) · أربعةِ ملفّات نشر (`docker-compose.yml` · `entrypoint.sh` · `supervisord.conf` · `.env.example`) · `tests/unit/test_deploy_worker_default.py` · و**تسعِ** وثائق لا أربع — تكرارُ درسِ الخطوة 17 حرفيّاً.
 
 ---
 
@@ -235,6 +251,8 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 | 16 | 2026‑08‑01 | [§3.100](log/3.100.md) | `workers/content_resolver.py` (**جديد** — `WorkerDocumentContentResolver`) · `workers/bootstrap.py` (‏فرعُ فشلِ `content.resolve` في معالج الفهرسة · `_embedding_routing` + `_KEYLESS_PROVIDERS` · `build_knowledge_worker_from_env` **لم تعد ترفع** وتعيد خمسة `disposables`) · `knowledge/application/use_cases.py` (‏`IndexRegisteredDocument.fail`) · `framework/settings/settings.py` (‏`allowed_mime` صارت مرآةَ `_ROUTES`: DOCX أُسقط، و`csv`/`json`/`xlsx` أُضيفت) · `tests/unit/test_content_resolver.py` (**جديد**، 5) · `tests/unit/test_workers_bootstrap.py` (+5) · `tests/integration/test_e2e_outbox_to_worker.py` (+1 حيّ فوق PG+MinIO+Qdrant+Redis) |
 | 17 | 2026‑08‑02 | [§3.101](log/3.101.md) | **نصٌّ فقط، ولا سطرَ منطقٍ واحد.** كود: `workers/bootstrap.py` (docstringا الوحدة والبروتوكول) · `workers/knowledge_worker.py` · `framework/di/composition_root.py`. نشر: `docker-compose.yml` (‏تعليق `WORKER` **أُعيدت كتابتُه لا حُذف**، والافتراضيّ `memory` كما هو) · `deploy/runpod/entrypoint.sh` · `deploy/runpod/supervisord.conf` · `.env.example`. اختبارات (نصٌّ واسمُ ثابت، بلا تأكيدٍ ولا قيمة): `tests/unit/test_workers_bootstrap.py` · `tests/unit/test_deploy_worker_default.py` (‏`_ONLY_WORKER_THAT_BOOTS_TODAY` ← `_EXPECTED_WORKER_DEFAULT`). وثائق (11): `ROADMAP` · `implementation-status` · `implementation-plan` · `pre-release-review` · `quickstart` · `deploy-linux-server` · `deploy-runpod` · `design/08-local-runbook` · `release-blockers-plan` · `p1-hardening-plan` · `acceptance-report` |
 | 18 | 2026‑08‑02 | [§3.102](log/3.102.md) | `framework/providers/resolver.py` (‏`_NAMESPACES` +`image` · `_Routes` **جديدة** بدل الثلاثيّة · `image_providers` **مُلزِمة** في المُنشئ · `resolve_image` في المنفذ وفي التنفيذ) · `framework/di/composition_root.py` + `workers/bootstrap.py` (‏`image_providers={}`) · 🐛 `workers/bootstrap.py` (‏`_NAMESPACES_FOREIGN_TO_THIS_WORKER` — `image` انضمّ إلى `llm`، وإلّا كسر توجيهُ صورةٍ عاملَ `knowledge`) · `framework/settings/settings.py` + `.env.example` (توثيقٌ فقط؛ **لا توجيه صورةٍ في `PROVIDER_ROUTING`** — يكسر كلَّ إقلاعٍ حتّى الخطوة 19) · `tests/unit/test_provider_resolver.py` (+11) · `tests/unit/test_workers_bootstrap.py` (+1) |
+| 19 | 2026‑08‑02 | [§3.103](log/3.103.md) | `infrastructure/ai_providers/image/external_image.py` (**من 0 بايت إلى محوّل كامل** — `create_openai_image_http_client` + `OpenAIImage` بسمة 🐛 `provider = "image:openai"` لا `openai-image`) · `workers/media_generation.py` (**جديد** — `WorkerMediaGenerator`، ويُسقِط حدث `FileUploaded` عمداً) · `framework/errors.py` (`media.unsupported_kind`) · `framework/di/composition_root.py` (`image_http` بـ`media_timeout_s` + توصيل `image_providers` + `aclose`) · `.env.example` (توجيهُ `image` صار حقيقيّاً) · `ai_providers/llm/shared.py` و`workers/bootstrap.py` و`docs/design/03-api-spec.md` (نصٌّ/صفٌّ فقط) · `tests/unit/test_external_image.py` (**جديد**، 29) · `tests/unit/test_media_generation.py` (**جديد**، 10) · `tests/integration/test_media_worker_live.py` (‏`FakeMediaGenerator` **حُذف** — المولّد الحقيقيّ فوق PG+Redis+MinIO حيّة، والمزيَّفُ حدُّ HTTP وحده) |
+| 20 | 2026‑08‑02 | [§3.104](log/3.104.md) | `workers/bootstrap.py` (‏`build_media_worker_from_env` صارت **`async` ولم تعد ترفع**: `build_vault`/`bind_minio` + محلِّلٌ على فضاء `image` وحده + `OpenAIImage` بمهلة `media_timeout_s` + `WorkerMediaGenerator` وأربعةُ `disposables` · 🐛 `_embedding_routing` + `_NAMESPACES_FOREIGN_TO_THIS_WORKER` ⇐ `_routing_for(..., foreign=)` + `_FOREIGN_TO_KNOWLEDGE`/`_FOREIGN_TO_MEDIA` · docstring الوحدة: **قاعدة الفشل الصادق مُسجَّلةٌ لا محذوفة**) · `workers/media_worker.py` (‏`await` + docstring) · `modules/media/ports/generation.py` و`api/v1/routers/knowledge.py` (**نصٌّ فقط** — الدرز يبقى، و🐛 تنبّؤُ «جذر التركيب» صُحّح، وملاحظة §6‑ج رقم 4 أُغلقت) · نشر (4، نصٌّ فقط): `docker-compose.yml` · `deploy/runpod/entrypoint.sh` · `deploy/runpod/supervisord.conf` · `.env.example` · وثائق (9): `ROADMAP` · `implementation-status` · `implementation-plan` · `pre-release-review` · `release-blockers-plan` · `p1-hardening-plan` · `quickstart` · `deploy-linux-server` · `deploy-runpod` · `tests/unit/test_workers_bootstrap.py` (‏اختبارُ الرفع **حُذف** ⇐ بناءٌ حقيقيّ + المولّد الإنتاجيّ + تعاكس التضييقَين) · `tests/unit/test_deploy_worker_default.py` (تعليقان) |
 
 ---
 
@@ -266,7 +284,18 @@ resolve_image → provider.generate → RegisterUpload → storage.put → Compl
 4. **`api/v1/routers/knowledge.py` ما يزال يقول إنّ `POST /search` يجيب 503 لأنّ «لا محوّل `EmbeddingProvider` بعد».** كذبةٌ من صنف ما كنسته الخطوة 17 بالضبط — لكنّها تخصّ دَيناً **آخر** (‏2.10، أُغلق في [§3.77](log/3.77.md))، ونطاقُ الخطوة كان مسمّىً. تُصحَّح في كنسةٍ صغيرةٍ مستقلّة أو مع الخطوة 20.
 5. **أوّلُ إقلاعٍ حاويٍّ لعامل `knowledge` لم يُجرَّب.** الخطوة 17 وثّقت «موصولٌ لا مُقلَع» عن قصد، والافتراضيّ `WORKER` بقي `memory` لهذا. أوّلُ إقلاعٍ ناجح **يكسب** تغييرَ الافتراضيّ — وهو عملُ تشغيلٍ يغيّر حالة النظام الحيّ، أي **خارج نطاق هذه الخطة كلّها** ويحتاج إذناً منفصلاً.
 6. **`ProviderResolver` صار منفذاً بثلاث دوالّ، وأكثرُ مستهلكيه يحتاج واحدة.** `WorkerDocumentContentResolver` يحتاج `resolve_embedding` وحدها، والمنسّق `resolve_llm` وحدها؛ وكلُّ زائفٍ في الاختبارات يُنفِّذ ما يستعمله فقط (يمرّ لأنّ `mypy` لا يفحص `tests/`). فصلُ المنفذ إلى وجوهٍ ضيّقة — على سابقة `ResolvedKeyView` «المفصولة عمداً» في الملفّ نفسه — قرارُ تصميمٍ مستقلّ، لا من نطاق خطوةٍ تضيف فضاءً. ([§3.102](log/3.102.md))
-7. **`max_image_dim`/`max_video_seconds` سقفان بلا نافذ.** لا موضعَ في الشيفرة يقرؤهما اليوم. الخطوة 19 هي التي يجب أن تصل الأوّل بمحوّل الصورة، وإلّا بقي إعداداً زخرفيّاً — والثاني يبقى معلّقاً ما بقي الفيديو خارج النطاق.
+7. ~~**`max_image_dim`/`max_video_seconds` سقفان بلا نافذ.** لا موضعَ في الشيفرة يقرؤهما اليوم. الخطوة 19 هي التي يجب أن تصل الأوّل بمحوّل الصورة، وإلّا بقي إعداداً زخرفيّاً — والثاني يبقى معلّقاً ما بقي الفيديو خارج النطاق.~~ 🐛 **الملاحظة خاطئة، وصُحّحت في الخطوة 19** ([§3.103](log/3.103.md)): للسقفين نافذٌ منذ 3.12 — `RequestMedia._enforce_limits` يفرض كليهما ضدّ `Limits` المحقونة برمز `media.invalid_params` (‏INV‑MJ3، النصف الثاني)، ويحرسه اختباران في `test_media_module.py`. فلم تصلهما الخطوة 19 **عمداً**: مُحقِّقان لسقفٍ واحد ينجرفان، والموضع الصحيح هو حدُّ الطلب لا حدُّ التنفيذ.
+
+**من الخطوة 19 ([§3.103](log/3.103.md)):**
+
+8. **لا كنّاسةَ للملفّ اليتيم.** انهيارٌ بين `RegisterUpload` و`put`/`CompleteUpload` يخلّف صفّاً `uploaded` قد لا تكون بايتاتُه وصلت. البقايا نفسها يخلّفها مستخدمٌ يهجر رفعَه منذ 3.16 — فالمشكلة **ليست من صنع الخطوة 19** — لكنّ توليداً آليّاً يخلقها أسرع من بشر. كنّاسةُ «مرفوعٌ ولم يكتمل بعد N ساعة» عملُ تشغيلٍ مستقلّ.
+9. **بايتاتُ الصورة كلُّها في الذاكرة، مرّتين لحظةَ فكّ base64.** الأثرُ اليوم مقبول (بضعةُ ميغابايتات)، والحدُّ الوحيد الحاكم هو `max_upload_bytes` — ويُفحَص **بعد** أن صارت البايتات في الذاكرة. مسارٌ متدفّق يحتاج تغييراً في المنفذ نفسه (`ImageResult.content: bytes`)، أي قرارُ تصميمٍ مستقلّ.
+
+
+**من الخطوة 20 ([§3.104](log/3.104.md)):**
+
+10. **لا سقفَ استهلاكٍ على مسار الوسائط.** وحدة `media` لا تحمل إشارةً واحدةً إلى `usage`/`quota`، ولم يكن ذلك مهمّاً ما دام المسار لا يُنتج شيئاً ولا يُنفق شيئاً. اليوم `media` **أوّل عاملٍ يُنفق مالاً لكلّ حدث** — كلّ مهمّةٍ نداءُ صورةٍ مدفوع — وسقفُ ما تنفقه مساحةُ عملٍ في يومٍ واحد **غير موجودٍ في هذا المسار**. ربطُه بحدود الاستهلاك القائمة قرارُ تصميمٍ مستقلّ.
+11. **جدولُ توجيهٍ بلا مدخلة `image` يُقلع عامل `media` بنجاح ثمّ يُفشل كلَّ مهمّة.** رفضُ `_parse_routing` يغطّي «مزوّدٌ بلا محوّلٍ موصول» لا «فضاءٌ غائب»، والجدولُ الفارغ يُبنى بنجاح **عمداً** (مُثبَّتٌ منذ الخطوة 18). ⇒ عمليّةٌ صحّتُها خضراء وكلُّ مهمّةٍ فيها `failed` برسالة «لا توجيه `default` للصورة». حارسُ إقلاعٍ يشترط الفضاءَ الذي يقرؤه العامل يخصّ **العمّال الثلاثة** لا `media` وحده.
 
 
 ---

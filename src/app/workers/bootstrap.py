@@ -76,32 +76,35 @@ module-specific use-cases/repositories/event-mappings) are built in this
 file, a per-process composition root exactly like the relay's, and handed to
 the module-agnostic ``StreamConsumer``/``Subscription`` as opaque closures.
 
-**Honest-failure rule for blocked dependencies (the design brief's explicit
-instruction, not a shortcut taken here).** ONE seam still has no real
-adapter: ``MediaGenerator`` (``media/ports/generation.py``'s own docstring:
-"the deferred, Phase-5 infra adapter"). Rather than silently wiring a fake
-in its place (fakes exist ONLY in tests), ``build_media_worker_from_env``
-builds everything that genuinely IS real from env — repositories, the
-Outbox, the unit of work, the Redis client — and then RAISES a clear
-``AppError`` naming exactly what is still missing.
-``build_<name>_worker`` itself is never blocked: it is a pure wiring
-function over whatever the caller hands it, which is precisely how the live
-e2e tests exercise the REAL register/run/index handlers today without
-waiting on that gap.
+**The honest-failure rule is retired: no builder here is blocked any more**
+(step 20 of ``deferred-adapters-plan.md``). The rule — the design brief's
+explicit instruction — said that a builder missing a real adapter must wire
+everything that genuinely IS real, then RAISE a clear ``AppError`` naming
+exactly what is missing, rather than silently substituting a fake (fakes
+exist ONLY in tests). It is recorded here rather than deleted because it
+governed this file for three phases and is what any FUTURE blocked builder
+must do; what changed is only that the three seams it covered are now all
+closed:
 
-**Two of the three seams the rule used to cover are now closed, and this
-paragraph shrinks with them.** ``EmbeddingProvider`` went first, in 2.10
-(``infrastructure/ai_providers/embedding/external_embedding.py`` used to be
-0 bytes; ``composition_root.py``'s own module docstring records the
-history): ``build_memory_worker_from_env`` builds the REAL
-``ExternalEmbeddingProvider`` and returns a fully working consumer.
-``DocumentContentResolver`` went second, in steps 15-16 of
-``deferred-adapters-plan.md`` (``docs/log/3.98.md`` · ``docs/log/3.100.md``):
-``build_knowledge_worker_from_env`` binds MinIO through the same
-``vault_binding``/``storage_binding`` pair ``CompositionRoot`` uses, and
-composes ``WorkerDocumentContentResolver`` (``workers/content_resolver.py``)
-over storage + the 3.k1 parser dispatch table + a ``SettingsProviderResolver``
-— so it no longer raises either. **Only ``media`` still fails honestly.**
+* ``EmbeddingProvider`` first, in 2.10
+  (``infrastructure/ai_providers/embedding/external_embedding.py`` used to be
+  0 bytes; ``composition_root.py``'s own module docstring records the
+  history) — ``build_memory_worker_from_env`` builds the REAL
+  ``ExternalEmbeddingProvider``.
+* ``DocumentContentResolver`` second, in steps 15-16 (``docs/log/3.98.md`` ·
+  ``docs/log/3.100.md``) — ``build_knowledge_worker_from_env`` binds MinIO
+  through the same ``vault_binding``/``storage_binding`` pair
+  ``CompositionRoot`` uses and composes ``WorkerDocumentContentResolver``.
+* ``MediaGenerator`` last, in steps 19-20 (``docs/log/3.103.md`` ·
+  ``docs/log/3.104.md``) — step 19 built the adapter
+  (``workers/media_generation.py`` over ``OpenAIImage``) and step 20 the
+  assembly, so ``build_media_worker_from_env`` returns a real consumer too.
+  **All three Streams workers now build from env.**
+
+``build_<name>_worker`` itself was never blocked at any point: it is a pure
+wiring function over whatever the caller hands it, which is precisely how
+the live e2e tests exercised the REAL register/run/index handlers all along,
+without waiting on any of those gaps.
 
 ---
 
@@ -139,7 +142,7 @@ from app.framework.di.lifecycle import Disposable
 from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
-from app.framework.errors import AppError, UnsupportedTypeError, ValidationError
+from app.framework.errors import UnsupportedTypeError, ValidationError
 from app.framework.observability import configure_logging, get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
@@ -151,6 +154,10 @@ from app.framework.types import Json, Uuid
 from app.infrastructure.ai_providers.embedding.external_embedding import (
     ExternalEmbeddingProvider,
     create_embedding_http_client,
+)
+from app.infrastructure.ai_providers.image.external_image import (
+    OpenAIImage,
+    create_openai_image_http_client,
 )
 from app.infrastructure.cache.redis_cache import create_redis_client
 from app.infrastructure.config import load_settings
@@ -165,6 +172,7 @@ from app.infrastructure.vector.qdrant_store import QdrantVectorStore, create_qdr
 from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
 from app.modules.credentials.application.use_cases import ResolveCredential
 from app.modules.files.adapters.sql_repository import SqlFileRepository
+from app.modules.files.application.use_cases import CompleteUpload, RegisterUpload
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
 from app.modules.knowledge.application.event_mapping import (
@@ -186,6 +194,7 @@ from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
 from app.modules.memory.application.use_cases import IndexMemoryItem
 from app.modules.memory.ports.repository import MemoryRepository
 from app.workers.content_resolver import WorkerDocumentContentResolver
+from app.workers.media_generation import WorkerMediaGenerator
 
 _logger = get_logger(__name__)
 
@@ -306,19 +315,29 @@ def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
     )
 
 
-# The namespaces this worker deliberately does not carry an adapter for, and
-# therefore must not be judged on. `image` joined `llm` in step 18, the moment
-# the namespace became legal: this worker passes `image_providers={}`, so
-# leaving an operator's image route in the table would have made a perfectly
-# valid `PROVIDER_ROUTING` refuse to boot the KNOWLEDGE worker -- a process
-# that generates no images and reads no image route.
-_NAMESPACES_FOREIGN_TO_THIS_WORKER = frozenset({"llm", "image"})
+# The namespaces each worker deliberately carries no adapter for, and
+# therefore must not be judged on. `_parse_routing` refuses construction on a
+# route whose provider has no wired adapter, and that refusal is
+# namespace-blind -- so without this narrowing an operator's PERFECTLY VALID
+# `PROVIDER_ROUTING` would refuse to boot a process over a capability that
+# process never claims and never reads.
+#
+# One table per worker, spelled out rather than derived: the set is a
+# statement about what a process wires, and the honest way to write "the
+# knowledge worker generates no images" is to say so. Step 18 added `image`
+# to the knowledge set the moment the namespace became legal; step 20 adds
+# the media set, which is the reason the pair below stopped being one
+# constant named `..._TO_THIS_WORKER` -- with two workers narrowing
+# differently, "this worker" no longer names anything.
+_FOREIGN_TO_KNOWLEDGE = frozenset({"llm", "image"})
+_FOREIGN_TO_MEDIA = frozenset({"llm", "embedding"})
 
 
-def _embedding_routing(routing: Json) -> Json:
-    """``PROVIDER_ROUTING`` with the namespaces this worker has no adapter for
-    dropped -- what the knowledge worker's ``SettingsProviderResolver`` is
-    given (step 16; the factory's docstring argues the narrowing).
+def _routing_for(routing: Json, *, foreign: frozenset[str]) -> Json:
+    """``PROVIDER_ROUTING`` with the namespaces the calling worker has no
+    adapter for dropped -- what that worker's ``SettingsProviderResolver`` is
+    given (step 16 for ``knowledge``, step 20 for ``media``; each factory's
+    docstring argues its own narrowing).
 
     Written as "drop the known-foreign names" rather than "keep ``embedding``"
     on purpose: an unknown/misspelled namespace still reaches
@@ -326,11 +345,7 @@ def _embedding_routing(routing: Json) -> Json:
     known key would swallow that typo and boot a worker on a routing table its
     operator believes says something else.
     """
-    return {
-        namespace: entry
-        for namespace, entry in routing.items()
-        if namespace not in _NAMESPACES_FOREIGN_TO_THIS_WORKER
-    }
+    return {namespace: entry for namespace, entry in routing.items() if namespace not in foreign}
 
 
 def _consumer_name(prefix: str) -> str:
@@ -624,7 +639,7 @@ async def build_knowledge_worker_from_env() -> tuple[
     # precedent), so the strict parse below proves the configured route
     # points at the very adapter `pipeline` above was built from.
     providers = SettingsProviderResolver(
-        routing=_embedding_routing(settings.provider_routing),
+        routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
         llm_providers={},
         embedding_providers={embeddings.provider: embeddings},
         image_providers={},  # step 18 -- and `_embedding_routing` drops the namespace
@@ -724,9 +739,8 @@ def build_media_worker(
     subscription (04 §4). Every dependency here is a plain parameter -- this
     function is never itself blocked (``build_media_worker_from_env``'s
     docstring) and is exactly what
-    ``tests/integration/test_media_worker_live.py`` calls directly with a
-    ``FakeMediaGenerator`` injected in place of the still-nonexistent real
-    adapter."""
+    ``tests/integration/test_media_worker_live.py`` calls directly -- since
+    step 19, with the REAL ``WorkerMediaGenerator`` rather than a fake."""
     subscriptions = [
         Subscription(
             stream="stream.media",
@@ -748,19 +762,41 @@ def build_media_worker(
     return consumer, subscriptions
 
 
-def build_media_worker_from_env() -> tuple[StreamConsumer, list[Subscription], list[Disposable]]:
-    """Build everything about the media worker that genuinely IS real from
-    env, then RAISE naming exactly what is not (module docstring's
-    "Honest-failure rule").
+async def build_media_worker_from_env() -> tuple[
+    StreamConsumer, list[Subscription], list[Disposable]
+]:
+    """Build the media worker exactly as the ``media`` process runs it.
+    **Nothing is blocked any more** (step 20 of
+    ``deferred-adapters-plan.md``) — this was the LAST builder still raising
+    under the module docstring's honest-failure rule, and with it that rule
+    now covers nothing.
 
-    Real today: ``jobs`` (``SqlMediaJobRepository``), ``outbox``
-    (``SqlEventOutbox``), ``tenant_session``, and the Redis client/consumer
-    identity. NOT real: a ``MediaGenerator`` -- no adapter exists at all
-    (``media/ports/generation.py``'s own docstring: "the deferred, Phase-5
-    infra adapter" combining ``ImageProvider``/``VideoProvider`` with
-    ``files`` storage). ``build_media_worker`` itself is unaffected --
-    ``tests/integration/test_media_worker_live.py`` calls it directly with a
-    ``FakeMediaGenerator``.
+    The gap this closes was never a missing capability, only a missing
+    assembly: step 19 shipped the ``MediaGenerator`` adapter
+    (``workers/media_generation.py`` over ``OpenAIImage``) and every
+    collaborator it needs had existed since step 15 (``build_vault``/
+    ``bind_minio``) and step 18 (the resolver's ``image`` namespace). This
+    function composes them, and composes them the SAME way
+    ``build_knowledge_worker_from_env`` does — one Vault-secret shape
+    validated in one place, not two free to drift.
+
+    **``async def`` for the same one reason knowledge is** (step 15): binding
+    MinIO is an ``await`` (05 §3's Vault read), and ``media_worker.py``'s
+    entrypoint already runs inside ``asyncio.run``.
+
+    **Only the ``image`` namespace of the routing table reaches the
+    resolver**, mirroring the knowledge worker's ``embedding``-only
+    narrowing and for the identical reason: this process wires no LLM and no
+    embedding adapter, so a route it will never read must not be allowed to
+    refuse its boot. The half it DOES read stays fully strict — an image
+    route naming an unwired provider still stops this process dead, which is
+    the point.
+
+    **The generator is handed ``storage`` — the ``StorageHandle``, not the
+    MinIO adapter directly.** Identical to the knowledge worker: the handle
+    is what ``bind_minio`` installs into, and passing it keeps ONE binding
+    step per process rather than a second reference that could be left
+    unbound.
     """
     settings = load_settings()
     configure_logging(settings.log_level)
@@ -770,34 +806,67 @@ def build_media_worker_from_env() -> tuple[StreamConsumer, list[Subscription], l
     sessionmaker = create_sessionmaker(engine)
     tenant_session = TenantSessionFactory(sessionmaker)
     jobs = SqlMediaJobRepository(tenant_session)
+    files = SqlFileRepository(tenant_session)
     outbox = SqlEventOutbox(tenant_session)
     ledger = SqlProcessedEventLedger(tenant_session)
+
+    # Step 15's pair, unchanged -- the generated bytes land in the same
+    # bucket, through the same adapter, as every user upload.
+    vault_client, secrets, _ = build_vault(settings)
+    storage = StorageHandle()
+    await bind_minio(storage, secrets, settings.minio)
+
+    # `media_timeout_s` (300s), not `llm_timeout_s` (60s): image generation is
+    # a minutes-scale call, and this is the SAME choice `CompositionRoot`
+    # makes for its own image client. `image_providers` is keyed by the
+    # adapter's OWN `provider` attribute, never a literal, so the strict
+    # parse below proves the configured route points at the very adapter the
+    # generator will call.
+    image_http = create_openai_image_http_client(timeout_s=settings.limits.media_timeout_s)
+    image_provider = OpenAIImage(image_http)
+    providers = SettingsProviderResolver(
+        routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_MEDIA),
+        llm_providers={},
+        embedding_providers={},
+        image_providers={image_provider.provider: image_provider},
+        key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
+        keyless_providers=_KEYLESS_PROVIDERS,
+    )
+    generator: MediaGenerator = WorkerMediaGenerator(
+        providers,
+        RegisterUpload(files, settings.limits),
+        CompleteUpload(files),
+        storage,
+    )
 
     redis_client = create_redis_client(settings.redis)
     consumer_name = _consumer_name("media")
 
-    _logger.error(
-        "media_worker.generator_wiring_blocked",
-        extra={
-            "app_env": settings.app_env,
-            "consumer_name": consumer_name,
-            # Confirms exactly what DID wire successfully before the block --
-            # every name here is a real, connected adapter, not a placeholder.
-            "jobs": type(jobs).__name__,
-            "outbox": type(outbox).__name__,
-            "ledger": type(ledger).__name__,
-            "redis_client": type(redis_client).__name__,
-        },
+    consumer, subscriptions = build_media_worker(
+        redis_client=redis_client,
+        jobs=jobs,
+        generator=generator,
+        outbox=outbox,
+        uow=tenant_session,
+        ledger=ledger,
+        consumer_name=consumer_name,
+        block_ms=settings.events.consumer_block_ms,
+        batch_count=settings.events.consumer_batch_count,
+        max_deliveries=settings.events.max_retries_before_dlq,
     )
-    raise AppError(
-        "media_worker's handler needs a MediaGenerator, and no adapter for "
-        "it exists yet (media/ports/generation.py's own docstring names it "
-        "a deferred Phase-5 infra adapter); jobs/outbox/ledger/tenant_session/"
-        "the Redis client above ARE real -- only the generator is blocked. "
-        "build_media_worker itself is unaffected by this gap; see its own "
-        "docstring.",
-        code="common.internal",
-    )
+
+    # The knowledge worker's `_close_vault` precedent -- hvac wraps a
+    # synchronous `requests.Session`, so closing it needs the thread offload.
+    async def _close_vault() -> None:
+        await asyncio.to_thread(vault_client.adapter.close)
+
+    disposables: list[Disposable] = [
+        engine.dispose,
+        image_http.aclose,
+        redis_client.aclose,
+        _close_vault,
+    ]
+    return consumer, subscriptions, disposables
 
 
 # --------------------------------------------------------------------------- #

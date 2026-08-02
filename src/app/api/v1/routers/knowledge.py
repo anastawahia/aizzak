@@ -15,17 +15,22 @@ upload completing, and indexing is a worker's (06 §7). The bundle
 start a pipeline» is structural rather than a route someone remembered not to
 add.
 
-**``POST /search`` is built, wired, and currently unavailable in production —
-on purpose, and visibly.** ``KnowledgeRetrievalService`` needs an
-``EmbeddingProvider`` and no adapter exists yet (a Phase-2 scheduling gap, not
-a decision taken here), so the Composition Root passes ``search=None`` and
-this route answers **503 ``knowledge.search_unavailable``**. The alternative —
-not registering the route at all — would have FastAPI answer 404, which says
-"no such capability" about a capability the contract defines and the code
-implements. 503 says the true thing: it exists, this deployment cannot serve
-it yet. The route's own logic is fully exercised by unit tests against a stub
-retrieval; when 2.10 lands, the field is filled and the branch simply stops
-firing.
+**``POST /search`` is built, wired, and served.** ``KnowledgeRetrievalService``
+needs an ``EmbeddingProvider``, which had no adapter when this router was
+written (a Phase-2 scheduling gap, not a decision taken here) — so the
+Composition Root passed ``search=None`` and this route answered **503
+``knowledge.search_unavailable``**. 2.10 filled that field
+(``composition_root.py`` builds a REAL ``KnowledgeRetrievalService`` over
+``ExternalEmbeddingProvider`` + Qdrant, ``docs/log/3.77.md``) and the branch
+simply stopped firing, exactly as predicted here.
+
+**The 503 branch stays anyway, and is not dead code.** ``search`` is still
+``| None`` on the bundle: a deployment can be composed without it (the unit
+suites do precisely that), and the alternative — not registering the route
+when the field is empty — would have FastAPI answer 404, which says "no such
+capability" about a capability the contract defines and the code implements.
+503 says the true thing: it exists, this deployment cannot serve it. What
+changed is only that no supported deployment configuration reaches it today.
 
 **``knowledge.not_indexed`` (409, 03 §4) has no site among these three.** It
 describes retrieving against something not yet indexed, and none of the three

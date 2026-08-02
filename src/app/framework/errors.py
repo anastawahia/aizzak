@@ -121,6 +121,17 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "knowledge.search_unavailable": ProblemSpec(503, "Knowledge search is not available"),
         # -- media ---------------------------------------------------------- #
         "media.invalid_params": ProblemSpec(422, "Invalid generation parameters"),
+        # deferred-adapters-plan.md step 19. Its only site is worker-side
+        # (`workers/media_generation.py`): `RunMediaJob.run` catches it and
+        # stores `str(exc)` as the job's `error`, so it reaches a client
+        # through `GET /media/jobs/{id}`'s body rather than as a problem
+        # response. It is in the catalog anyway, and must be: the catalog is
+        # the enforced list of every code this source can produce
+        # (`test_error_catalog.py`, forward direction), not only the ones an
+        # HTTP handler renders. 422 because a video job IS a request the
+        # platform cannot satisfy as asked -- the same class as
+        # `media.invalid_params`, one step later in the lifecycle.
+        "media.unsupported_kind": ProblemSpec(422, "Unsupported media kind"),
         # -- credentials ----------------------------------------------------- #
         "credentials.provider_unknown": ProblemSpec(422, "Unknown provider"),
         "credentials.none_available": ProblemSpec(409, "No credential available for provider"),

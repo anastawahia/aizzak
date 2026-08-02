@@ -25,7 +25,13 @@ Ollama + OpenAI ``LLMProvider``\ s (2.8-a + 2.8-ب-1 -- ``llm_providers``, a
 attribute rather than a hardcoded literal, with the raw ``ollama_http`` and
 ``openai_http`` clients each exposed for the same shutdown-``aclose()``
 precedent -- a SECOND, deliberately separate client, since OpenAI's
-``base_url`` is entirely different from Ollama's).
+``base_url`` is entirely different from Ollama's). Step 19 of
+``deferred-adapters-plan.md`` adds the OpenAI Images ``ImageProvider``
+(``image_http``/``OpenAIImage``, keyed by the same own-attribute rule) --
+a THIRD OpenAI-hosted client rather than a reuse of ``openai_http``, because
+its timeout budget is a different setting entirely (``media_timeout_s`` 300s
+vs ``llm_timeout_s`` 60s) and sharing one client would force minutes-long
+image work and 60s chat work onto the same deadline.
 
 ``llm_providers`` is a plain injected mapping, not a Service Locator: this
 root builds it once, by construction, and hands the finished ``dict`` to
@@ -205,6 +211,10 @@ from app.framework.workflows.registry import InMemoryWorkflowRegistry, WorkflowR
 from app.infrastructure.ai_providers.embedding.external_embedding import (
     ExternalEmbeddingProvider,
     create_embedding_http_client,
+)
+from app.infrastructure.ai_providers.image.external_image import (
+    OpenAIImage,
+    create_openai_image_http_client,
 )
 from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
 from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
@@ -768,6 +778,9 @@ class CompositionRoot:
     ollama_http: httpx.AsyncClient
     openai_http: httpx.AsyncClient
     embedding_http: httpx.AsyncClient
+    # Step 19 -- the OpenAI Images client, exposed for the same
+    # shutdown-`aclose()` reason as every other raw HTTP client above.
+    image_http: httpx.AsyncClient
     llm_providers: dict[str, LLMProvider]
     # 4.7-b-2 — the application layer, wired on top of the adapters above.
     provider_resolver: ProviderResolver
@@ -897,6 +910,16 @@ class CompositionRoot:
         openai_http = create_openai_http_client(timeout_s=settings.limits.llm_timeout_s)
         openai_llm = OpenAILLM(openai_http)
 
+        # Step 19 -- `media_timeout_s` (300s), NOT `llm_timeout_s` (60s):
+        # image generation is minutes-scale work. This process never
+        # GENERATES an image (that is the media worker's job); it builds the
+        # adapter so the ONE `PROVIDER_ROUTING` table can legally carry an
+        # `image` route at all -- an unwired provider refuses to boot,
+        # namespace-blind, so without this the API would die on a table the
+        # media worker needs. Constructing the client opens no socket.
+        image_http = create_openai_image_http_client(timeout_s=settings.limits.media_timeout_s)
+        openai_image = OpenAIImage(image_http)
+
         # 2.10 — the central embedding service's client + adapter (the SAME
         # client/adapter pairing as every http-backed driven adapter above).
         # Closes the "knowledge"/"memory" scheduling gap the module docstring
@@ -937,13 +960,13 @@ class CompositionRoot:
             # 2.10 -- keyed by the adapter's OWN `provider` attribute (the
             # `llm_providers` precedent above), never a hardcoded literal.
             embedding_providers={embedding.provider: embedding},
-            # Step 18 -- EMPTY until step 19 builds the image adapter, and
-            # empty is the load-bearing part: it makes an `image` route in
-            # `PROVIDER_ROUTING` refuse to BOOT ("has no wired adapter",
-            # naming the route) instead of booting an API that would 500 the
-            # first generation request. The namespace exists so the refusal
-            # can be specific; the mapping stays empty so it still refuses.
-            image_providers={},
+            # Step 19 -- no longer empty. Keyed by the adapter's OWN
+            # `provider` attribute (`image:openai`, 06 §3's modality key),
+            # never a hardcoded literal: the routing table, the wired
+            # mapping, and the credential a tenant stores all have to agree
+            # on one string, and reading it off the adapter is what makes
+            # that impossible to get wrong in two places.
+            image_providers={openai_image.provider: openai_image},
             key_resolver=ResolveCredential(credential_repository, secrets),
             # Composition-Root code on purpose (2.9 decision 6): which adapter
             # takes no credential is a structural property of the adapters
@@ -1160,6 +1183,7 @@ class CompositionRoot:
             ollama_http=ollama_http,
             openai_http=openai_http,
             embedding_http=embedding_http,
+            image_http=image_http,
             llm_providers=llm_providers,
             provider_resolver=provider_resolver,
             agent_registry=agent_registry,
@@ -1278,4 +1302,5 @@ class CompositionRoot:
             self.ollama_http.aclose,
             self.openai_http.aclose,
             self.embedding_http.aclose,
+            self.image_http.aclose,
         ]

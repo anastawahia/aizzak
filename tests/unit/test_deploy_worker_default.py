@@ -47,17 +47,16 @@ _ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}
 # A plain dotenv assignment: `WORKER=memory`, start of line.
 _ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
 
-# The three names `app/workers/main.py::_RUNNERS` actually dispatches to.
-# `media` is a real, valid name that simply crash-loops today (its own missing
-# `MediaGenerator`, not a deploy defect); `knowledge` stopped crash-looping at
-# step 16 of `docs/deferred-adapters-plan.md`.
+# The three names `app/workers/main.py::_RUNNERS` actually dispatches to. All
+# three build a wired worker today: `knowledge` stopped crash-looping at step
+# 16 of `docs/deferred-adapters-plan.md` and `media` at step 20.
 _VALID_WORKER_NAMES = frozenset({"knowledge", "media", "memory"})
 # The default all three deployment sources must agree on. `memory` is the one
 # worker whose boot is PROVEN live inside containers (2.10 closed its
-# EmbeddingProvider gap; `docs/log/3.83.md` measured the round trip).
-# `knowledge` is wired but never yet booted, and `media` still has no
-# `MediaGenerator` at all -- so the default stays here until a real knowledge
-# boot earns the change (docker-compose.yml's comment argues it in full).
+# EmbeddingProvider gap; `docs/log/3.83.md` measured the round trip);
+# `knowledge` and `media` are wired but never yet booted -- so the default
+# stays here until a real boot of one of them earns the change
+# (docker-compose.yml's comment argues it in full).
 _EXPECTED_WORKER_DEFAULT = "memory"
 
 
@@ -131,11 +130,13 @@ def test_env_example_agrees_with_the_compose_fallback() -> None:
 
 def test_default_is_the_worker_whose_boot_is_actually_proven() -> None:
     """Agreeing with each other is necessary but not sufficient: all three
-    sources could still agree on a NAME THAT CRASH-LOOPS. `media` is a valid
-    worker name (`app/workers/main.py::_RUNNERS`) that nonetheless crash-loops
-    forever under `restart: unless-stopped`, and `knowledge` -- wired since
-    step 16 but never once booted -- is evidence-free either way. So the
-    default must specifically be `memory`, not merely a name in the set."""
+    sources could still agree on a name with NO EVIDENCE BEHIND IT. That used
+    to mean a name that crash-loops (`media`, before step 20 wired it); it now
+    means the weaker but still real thing -- `knowledge` and `media` are both
+    wired and neither has ever been booted as a process, so both are
+    evidence-free either way. Only `memory`'s boot is measured
+    (`docs/log/3.83.md`), so the default must specifically be `memory`, not
+    merely a name in the set."""
     assert _compose_worker_default() == _EXPECTED_WORKER_DEFAULT
     assert _entrypoint_worker_default() == _EXPECTED_WORKER_DEFAULT
     assert _env_example_worker() == _EXPECTED_WORKER_DEFAULT
