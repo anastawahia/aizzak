@@ -28,9 +28,17 @@ echo "minio-bootstrap: bucket ${MINIO_BUCKET} ready"
 # `live_minio` suite failed on `InvalidAccessKeyId`.
 #
 # OFF BY DEFAULT. A deployment has no business minting test credentials, so
-# this half runs only when the operator sets MINIO_TEST_ACCOUNT_ENABLED=true --
-# which the local Compose stack does through `.env`, and a real deployment
-# never does.
+# this half runs only when the operator sets MINIO_TEST_ACCOUNT_ENABLED=true.
+# Where that happens is worth stating exactly, because the comment that stood
+# here until plan step أ-1 claimed the local Compose stack already did it
+# "through `.env`" -- a description of an intention, not of the tree: no `.env`
+# and no `.env.example` carried the variable at all, `docker-compose.yml`
+# therefore substituted its `false` default, and this half had never once run
+# from a checkout. The live account existed only inside a volume some earlier
+# session had provisioned by hand, so a `down -v` would have taken the whole
+# live_minio suite with it. Today `.env.example` ships all four MINIO_TEST_*
+# lines with the switch at `false`, and a developer flips it to `true` in their
+# own git-ignored `.env`. No deployment path sets it anywhere.
 if [ "${MINIO_TEST_ACCOUNT_ENABLED:-false}" != "true" ]; then
     exit 0
 fi
