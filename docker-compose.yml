@@ -546,6 +546,10 @@ services:
     depends_on:
       ollama-bridge:
         condition: service_started
+      # This edge was MISSING until §3.111 even though DATABASE_URL below has
+      # named `pgbouncer:6432` all along -- see the note on `outbox-relay`.
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_healthy
       embedding:
@@ -572,6 +576,23 @@ services:
   outbox-relay:
     <<: [*app-image, *app-logging]
     depends_on:
+      # ⚠️ THIS EDGE WAS MISSING (§3.111, discovered live in §3.110 phase A).
+      # DATABASE_URL below has named `pgbouncer:6432` since Phase 1, but the
+      # pooler was never declared here -- so `docker compose up -d
+      # outbox-relay` (08 §3's OWN documented command) started the relay
+      # WITHOUT it and the process crash-looped on `socket.gaierror: Name or
+      # service not known`. A DNS-shaped error for a boot-order cause, which
+      # sends the reader hunting in the network; `restart: unless-stopped`
+      # then heals it silently the moment anything else starts the pooler,
+      # so it reads as intermittent. Harmless on a full `docker compose up
+      # -d` (the pooler boots anyway) -- which is exactly why it survived.
+      # `service_started`, not `_healthy`: the pooler defines no healthcheck,
+      # and `app` has always taken this same edge on the same condition. That
+      # is a real looseness (started != accepting connections), left as-is
+      # deliberately: adding a pgbouncer healthcheck is a separate decision,
+      # not a silent rider on this fix.
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_healthy
       migrate:
