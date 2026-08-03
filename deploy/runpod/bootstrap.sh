@@ -106,13 +106,17 @@ fi
 # POST /search answers 503 until it is ready, so wait rather than race.
 wait_for "embedding service" 90 curl -fsS "http://127.0.0.1:8080/health"
 
-# ── 7. The application plane, in the ONE order that is safe ───────────────
-# ⚠️ WORKERS BEFORE THE RELAY, and this is not stylistic. Redis consumer
-# groups are created at `$` (the stream tail), so a group created AFTER the
-# relay has published to a brand-new stream will never see those entries --
-# they are gone, and the outbox row is already marked published. On an
-# existing stream the order does not matter; on a first boot it is the
-# difference between a working pipeline and silently dropped events.
+# ── 7. The application plane ────────────────────────────────────────────
+# Workers before the relay is retained below as harmless convention only --
+# it is no longer load-bearing for correctness. Redis consumer groups are
+# still created at `$` (the stream tail, redis_streams.py, unchanged), which
+# is why this order used to matter: a group created AFTER the relay had
+# published to a brand-new stream would never see those entries. Since
+# stream-topology-plan.md (log/3.107.md), build_relay_from_env() returns an
+# ensure_topology() closure that outbox_relay.py::run awaits before its own
+# run_forever() -- the same entrypoint this script launches below -- so
+# every group is provisioned before this process's first publish regardless
+# of when `worker` starts relative to it. See design/08-local-runbook.md §4.
 log "starting workers"
 supervisorctl -c /etc/supervisor/supervisord.conf start worker
 sleep 3

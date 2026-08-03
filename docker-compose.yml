@@ -561,10 +561,14 @@ services:
     command: ["python", "-m", "app.workers.main"]
     restart: unless-stopped
 
-  # SINGLE instance (08 §2), and it starts AFTER the workers: consumer
-  # groups are created at `$` (stream tail), so a group created after the
-  # relay published to a brand-new stream would never see those entries
-  # (08 §4's boot-order rule, the live 5.1-ج lesson).
+  # SINGLE instance (08 §2). Consumer groups are still created at `$`
+  # (stream tail, redis_streams.py:235, unchanged) -- that fact is why a
+  # boot-order rule ("workers before the relay") used to be needed here at
+  # all (08 §4's old rule, the live 5.1-ج lesson). It no longer is: since
+  # the stream-topology-plan.md fix (log/3.107.md), build_relay_from_env
+  # returns an ensure_topology() closure that this process awaits before
+  # its own run_forever(), so every group exists before this relay's first
+  # publish -- on Compose, RunPod, and bare `python -m` alike. See 08 §4.
   outbox-relay:
     <<: [*app-image, *app-logging]
     depends_on:
@@ -573,12 +577,14 @@ services:
       migrate:
         condition: service_completed_successfully
       # NOT `worker` -- it sits behind the `workers` profile (see above), and
-      # a depends_on into a disabled profile is a config error. The boot-order
-      # rule 08 §4 states is real and unchanged: on a BRAND-NEW stream the
-      # consumers must start before the relay, because groups are created at
-      # `$` (stream tail) and a group created after the relay published would
-      # never see those entries. Once the workers can boot, restore the
-      # `worker: {condition: service_started}` edge here.
+      # a depends_on into a disabled profile is a config error. This edge was
+      # never added for a different reason too: 08 §4 used to require
+      # workers-before-relay on a brand-new stream (groups born at `$`, the
+      # stream tail), which this depends_on could not have guaranteed anyway
+      # -- a start-order edge races a startup event, it does not sequence
+      # ensure_group() before the first XADD. That rule is gone now (see the
+      # comment on `outbox-relay` above); this edge remains absent simply
+      # because `worker` sits behind a disabled profile.
     environment:
       <<: *app-env
       # The relay's OWN role: SELECT/UPDATE on platform.outbox and nothing
