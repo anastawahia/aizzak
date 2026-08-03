@@ -222,6 +222,10 @@ async def test_disposables_covers_every_raw_client_this_root_owns(
     for client in (
         booted.engine,
         booted.redis_client,
+        # stream-topology-plan.md §3, item 4 — the notify bridge's SECOND
+        # Redis client: exactly the "new client added without a teardown
+        # thunk" shape this tripwire exists to catch.
+        booted.notify_redis_client,
         booted.qdrant_client,
         booted.firebase_http,
         booted.ollama_http,

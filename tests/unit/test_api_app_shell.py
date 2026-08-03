@@ -24,6 +24,8 @@ any real resource router exists.
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from typing import Any
 
@@ -344,6 +346,57 @@ def test_shutdown_disposes_even_when_boot_aborts() -> None:
         pass
 
     assert disposed == ["engine"]
+
+
+# --------------------------------------------------------------------------- #
+# Background task death visibility (stream-topology-plan.md §3, item 5) --    #
+# logging ONLY, no management (see `_log_background_task_death`'s docstring). #
+# --------------------------------------------------------------------------- #
+def test_a_background_task_that_dies_with_an_exception_leaves_an_error_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """§1-أ-2's silent death gets its one line here: the exception text must
+    land in the log once the task's own done-callback has run -- before this
+    step nothing did (the ``finally`` in ``_make_lifespan`` swallows
+    ``BaseException`` and never looks at a task again until shutdown)."""
+
+    async def task() -> None:
+        raise RuntimeError("bridge exploded")
+
+    app = _make_app(background=(task,))
+    with caplog.at_level(logging.ERROR), TestClient(app):
+        time.sleep(0.2)  # let the task raise and its done-callback run
+
+    matches = [
+        record
+        for record in caplog.records
+        if record.name == "app.api.main" and record.levelno >= logging.ERROR
+    ]
+    assert matches
+    assert matches[0].getMessage() == "api.background_task_died"
+    assert "bridge exploded" in caplog.text
+
+
+def test_a_background_task_cancelled_at_clean_shutdown_leaves_no_error_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The real guard, in the plan's own words: cancellation at shutdown is
+    the ORDINARY outcome of every clean stop, and must produce ZERO error
+    lines -- otherwise the new line becomes noise every operator learns to
+    ignore, which destroys the visibility item 5 exists to buy."""
+
+    async def task() -> None:
+        await asyncio.sleep(3600)  # cancelled at shutdown; never dies on its own
+
+    app = _make_app(background=(task,))
+    with caplog.at_level(logging.ERROR), TestClient(app):
+        pass
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "app.api.main" and record.levelno >= logging.ERROR
+    ]
 
 
 # --------------------------------------------------------------------------- #

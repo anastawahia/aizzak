@@ -238,6 +238,8 @@ def _make_lifespan(
             for hook in startup:
                 await hook()
             tasks = [asyncio.create_task(factory()) for factory in background]
+            for task in tasks:
+                task.add_done_callback(_log_background_task_death)
             app.state.ready = True
             yield
         finally:
@@ -250,6 +252,37 @@ def _make_lifespan(
             await dispose_all(shutdown)
 
     return lifespan
+
+
+def _log_background_task_death(task: asyncio.Task[None]) -> None:
+    """Done-callback registered on every lifespan ``background=`` task
+    (stream-topology-plan.md §3, item 5) — VISIBILITY only, never
+    management. This logs one line and does nothing else: no restart, no
+    backoff, no ``ready`` flip, no process exit — those stay out of scope
+    here by design (the plan's §6-د, acceptance criterion #10).
+
+    ``asyncio.CancelledError`` is deliberately EXCLUDED: ``_make_lifespan``'s
+    own ``finally`` cancels every one of these tasks on a normal shutdown, so
+    a cancellation is the expected, intentional outcome, not a death worth a
+    line. A line that fires on every ordinary stop is a line every operator
+    learns to ignore — which would destroy the very visibility this callback
+    exists to buy (§1-أ-2's silent failure is the one thing this closes).
+
+    Any OTHER exception means the task's own unbounded loop
+    (``consumers/engine.py``'s ``run()``, a bare ``while True``) exited
+    without warning — today that has exactly one cause (§1-أ-2's timeout
+    mismatch), but this callback logs whatever it is, not only that one.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    _logger.error(
+        "api.background_task_died",
+        extra={"task_name": task.get_name()},
+        exc_info=exc,
+    )
 
 
 # --------------------------------------------------------------------------- #

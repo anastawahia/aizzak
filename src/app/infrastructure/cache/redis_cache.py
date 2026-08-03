@@ -38,24 +38,72 @@ from app.framework.settings.settings import RedisSettings
 
 # One place to keep the client's socket behaviour: fail fast instead of
 # hanging a request-handling coroutine on a dead cache (07-nfr latency
-# budgets are all sub-second).
+# budgets are all sub-second). This is the READ timeout for the
+# request/response path (``RedisCache`` above, the API's cache client) and
+# the DEFAULT every caller gets unless it opts into a longer one via
+# ``read_timeout_s`` below -- see ``blocking_read_timeout_s`` for the other
+# profile: a consumer that blocks on ``XREADGROUP`` needs a read timeout
+# LONGER than what it waits for, not this one (stream-topology-plan.md
+# §1-أ, §3 "الخطوة 1").
 _SOCKET_TIMEOUT_S = 2.0
+# The CONNECT timeout, not the read timeout -- a different profile entirely.
+# Never raised, for anybody, workers included: failing to *establish* a
+# connection means Redis is absent, not that a caller is waiting on a quiet
+# stream, and turning that into a multi-second freeze on every boot attempt
+# buys nothing (stream-topology-plan.md §3, item 1's warning).
 _CONNECT_TIMEOUT_S = 2.0
 
+# The margin added on top of a consumer's own ``BLOCK`` window (see
+# ``blocking_read_timeout_s``) so the socket timeout is comfortably longer
+# than the wait it wraps, not merely equal to it -- equal values race under
+# real scheduling/network jitter.
+_BLOCKING_READ_MARGIN_S = 1.0
 
-def create_redis_client(settings: RedisSettings) -> Redis:
-    """Build the shared async Redis client (Composition Root only).
+
+def create_redis_client(
+    settings: RedisSettings, *, read_timeout_s: float = _SOCKET_TIMEOUT_S
+) -> Redis:
+    """Build a shared async Redis client (Composition Root only).
 
     ``decode_responses=False`` keeps the ``bytes`` port contract exact;
     pooling is redis-py's built-in connection pool (one client per process,
     shared across coroutines -- the library's intended usage).
+
+    ``read_timeout_s`` is keyword-only and defaults to ``_SOCKET_TIMEOUT_S``
+    (2.0) so every call site that does not pass it behaves byte-for-byte as
+    before. A caller that performs a BLOCKING read (``XREADGROUP ...
+    BLOCK <block_ms>``) must pass ``blocking_read_timeout_s(block_ms)``
+    instead -- see that function's docstring for why a shorter socket
+    timeout than the blocking window it wraps is a deterministic crash, not
+    an edge case (stream-topology-plan.md §1-أ).
     """
     return Redis.from_url(
         settings.url,
         decode_responses=False,
-        socket_timeout=_SOCKET_TIMEOUT_S,
+        socket_timeout=read_timeout_s,
         socket_connect_timeout=_CONNECT_TIMEOUT_S,
     )
+
+
+def blocking_read_timeout_s(block_ms: int) -> float:
+    """Derive a client's read-socket timeout from a consumer's own ``BLOCK``
+    window (``XREADGROUP ... BLOCK <block_ms>``).
+
+    A consumer that blocks asks Redis to hold the socket open, silent, for
+    up to ``block_ms`` while it waits for a new stream entry -- that is the
+    intended, successful case on a quiet stream, not a hang. If the client's
+    read-socket timeout is shorter than that window, a read behaving exactly
+    as asked looks indistinguishable, from the socket's point of view, from
+    a dead connection, and gets cut mid-wait (``redis.exceptions.
+    TimeoutError``) every single cycle the stream stays quiet.
+
+    Deriving the timeout from ``block_ms`` -- rather than hand-picking a
+    second literal beside it -- is the point: a bare constant drifts the
+    moment ``CONSUMER_BLOCK_MS`` changes in ``.env``, silently reopening the
+    exact gap this function exists to close (stream-topology-plan.md §3,
+    item 2).
+    """
+    return (block_ms / 1000) + _BLOCKING_READ_MARGIN_S
 
 
 class RedisCache:

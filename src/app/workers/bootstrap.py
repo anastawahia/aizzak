@@ -133,6 +133,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from redis.asyncio import Redis
@@ -143,6 +144,7 @@ from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
 from app.framework.errors import UnsupportedTypeError, ValidationError
+from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY
 from app.framework.observability import configure_logging, get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
@@ -159,7 +161,7 @@ from app.infrastructure.ai_providers.image.external_image import (
     OpenAIImage,
     create_openai_image_http_client,
 )
-from app.infrastructure.cache.redis_cache import create_redis_client
+from app.infrastructure.cache.redis_cache import blocking_read_timeout_s, create_redis_client
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import EventHandler, StreamConsumer, Subscription
 from app.infrastructure.messaging.outbox import OutboxRelay
@@ -219,12 +221,45 @@ _MAX_BACKOFF_MS = 30_000
 # return `list[Disposable]`, and each worker entrypoint still closes what it
 # was handed.
 
+# `EnsureTopology` -- the closure `build_relay_from_env` now hands back
+# alongside the relay itself (stream-topology-plan.md §3). Defined HERE,
+# next to its only caller, on `Disposable`'s own precedent: that alias moved
+# to `framework/di/lifecycle.py` only once TWO composition roots (this file
+# and `composition_root.py`) needed the identical shape. `EnsureTopology` has
+# exactly one root and one caller so far (`outbox_relay.py::run`) -- moving
+# it into `framework/` now would be speculative sharing, not deduplication.
+EnsureTopology = Callable[[], Awaitable[None]]
 
-def build_relay_from_env() -> tuple[OutboxRelay, list[Disposable]]:
+
+def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable]]:
     """Build one ``OutboxRelay`` wired exactly as the ``outbox_relay``
-    process runs it, plus the resources ``outbox_relay.py``'s entrypoint
-    must close on shutdown (in no particular order -- disposing an engine
-    and closing a Redis client are independent of each other).
+    process runs it, plus an ``ensure_topology`` closure the entrypoint must
+    ``await`` before the relay's first publish, plus the resources
+    ``outbox_relay.py``'s entrypoint must close on shutdown (in no
+    particular order -- disposing an engine and closing a Redis client are
+    independent of each other).
+
+    **Why a relay -- a PRODUCER -- provisions consumer groups.**
+    ``ensure_topology`` walks ``STATIC_CONSUMER_TOPOLOGY``
+    (``framework/events/topology.py``) calling ``RedisStreamsConsumer.
+    ensure_group`` for every ``(stream, group)`` pair, so every consumer
+    group this platform ever reads from exists at the stream's tail
+    (``redis_streams.py``'s ``xgroup_create(..., id="$", mkstream=True)``,
+    unchanged by this step -- stream-topology-plan.md §1-ب) BEFORE this
+    process's first ``XADD``. This is not consumption: it is **topology
+    provisioning**, the same kind of thing ``app.ops.provision`` does to a
+    database schema before anyone writes a row -- a one-time "make the
+    destination exist" step that happens to be owned by the party about to
+    write to it, because the relay is the ONLY producer on these streams
+    (stream-topology-plan.md §1-د) and is therefore the one place a single
+    call sequenced before ``run_forever`` covers every process that ever
+    boots (Compose's ``outbox-relay`` service AND RunPod's
+    ``supervisord.conf``, which run this exact entrypoint --
+    stream-topology-plan.md §1-هـ, no extra line needed in either). The real
+    alternative to provisioning here was never architectural purity; it was
+    a manual ordering rule in a runbook (stream-topology-plan.md §2's
+    rejected alternatives (ب)/(ج)), which a forgotten deploy step could
+    silently violate.
     """
     settings = load_settings()
     configure_logging(settings.log_level)
@@ -246,10 +281,41 @@ def build_relay_from_env() -> tuple[OutboxRelay, list[Disposable]]:
     sessionmaker = create_sessionmaker(engine)
     store = SqlOutboxRelayStore(sessionmaker)
 
+    # NOTE: this client keeps the SAME short `2.0` read timeout every other
+    # client in this file derives away from (`blocking_read_timeout_s`,
+    # `redis_cache.py`), even though `topology_consumer` below wraps it in a
+    # `RedisStreamsConsumer` -- the type that, everywhere else in this
+    # codebase, means "this process runs a BLOCKING `XREADGROUP ... BLOCK
+    # <block_ms>` read". It does NOT here. `ensure_group` below issues one
+    # `XGROUP CREATE`, a call that never blocks; the relay itself never calls
+    # `RedisStreamsConsumer.read` at all -- it only ever polls with a short
+    # `asyncio.sleep` (stream-topology-plan.md §3's coverage rule names this
+    # client the FIFTH, explicit exception -- see also
+    # `test_relay_client_stays_at_exactly_two_seconds`,
+    # `tests/unit/test_redis_blocking_timeouts.py`). **Do not "fix" this by
+    # passing the derived timeout here just because a `RedisStreamsConsumer`
+    # is now involved** -- that consumer-shaped object performs no blocking
+    # read, so there is nothing here for the derived timeout to protect.
     redis_client = create_redis_client(settings.redis)
     # The relay is the ONLY producer on these streams (02 §1.8), so this is
     # the single place the retention bound can be applied at all (7.3).
     publisher = RedisStreamsPublisher(redis_client, maxlen=settings.events.stream_maxlen)
+
+    # Mounted over the SAME `redis_client` as the publisher above -- no
+    # second connection (stream-topology-plan.md §3, guarded by
+    # `test_relay_client_shared_with_topology_consumer` in
+    # `tests/unit/test_relay_topology_provisioning.py`).
+    topology_consumer = RedisStreamsConsumer(redis_client)
+
+    async def ensure_topology() -> None:
+        """Provision every static consumer group at the stream's tail
+        (`STATIC_CONSUMER_TOPOLOGY`) before the relay's own ``run_forever``
+        loop performs its first ``publish`` -- see this function's own
+        docstring for why a producer owns this. Idempotent by construction:
+        ``RedisStreamsConsumer.ensure_group`` swallows ``BUSYGROUP``, so
+        re-running this on every relay restart costs four no-op calls."""
+        for binding in STATIC_CONSUMER_TOPOLOGY:
+            await topology_consumer.ensure_group(binding.stream, binding.group)
 
     relay = OutboxRelay(
         store,
@@ -260,7 +326,7 @@ def build_relay_from_env() -> tuple[OutboxRelay, list[Disposable]]:
     )
 
     disposables: list[Disposable] = [engine.dispose, redis_client.aclose]
-    return relay, disposables
+    return relay, ensure_topology, disposables
 
 
 # --------------------------------------------------------------------------- #
@@ -650,7 +716,10 @@ async def build_knowledge_worker_from_env() -> tuple[
         files, storage, DocumentContentExtractor(), providers
     )
 
-    redis_client = create_redis_client(settings.redis)
+    redis_client = create_redis_client(
+        settings.redis,
+        read_timeout_s=blocking_read_timeout_s(settings.events.consumer_block_ms),
+    )
     consumer_name = _consumer_name("knowledge")
 
     consumer, subscriptions = build_knowledge_worker(
@@ -839,7 +908,10 @@ async def build_media_worker_from_env() -> tuple[
         storage,
     )
 
-    redis_client = create_redis_client(settings.redis)
+    redis_client = create_redis_client(
+        settings.redis,
+        read_timeout_s=blocking_read_timeout_s(settings.events.consumer_block_ms),
+    )
     consumer_name = _consumer_name("media")
 
     consumer, subscriptions = build_media_worker(
@@ -978,7 +1050,10 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
         embedding_http, settings.embedding_service
     )
 
-    redis_client = create_redis_client(settings.redis)
+    redis_client = create_redis_client(
+        settings.redis,
+        read_timeout_s=blocking_read_timeout_s(settings.events.consumer_block_ms),
+    )
     consumer_name = _consumer_name("memory")
 
     consumer, subscriptions = build_memory_worker(

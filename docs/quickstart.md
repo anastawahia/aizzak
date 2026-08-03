@@ -20,8 +20,8 @@
 |---|---|
 | المراحل 0–7 (API · الحافّة · RLS · Vault · الهجرات · مُرحّل Outbox) | ✅ حيّةٌ ومُثبَتة |
 | خدمة التضمين المركزيّة (`services/embedding`، البند 2.10) | ✅ مبنيّة. `POST /search` يجيب 200 بدل 503 |
-| عامل **`memory`** | ✅ يقلع ويعمل |
-| عامل **`knowledge`** | 🟡 **موصولٌ بالكامل ولم يُقلَع بعد** — `DocumentContentResolver` بُني في الخطوتين 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.100](log/3.100.md))، فلم يعد ينهار لنقصِ محوّل. لكنّ إقلاعه الحاويّ لم يُجرَّب مرّةً — جرّبه بـ`WORKER=knowledge` صراحةً |
+| عامل **`memory`** | ✅ **يقلع ويصمد في الهدوء — مقيسٌ حاويّاً: 138 ثانيةً بلا حركةٍ على مجراه و`RestartCount = 0`** (2026‑08‑03، [§3.105](log/3.105.md) §5‑ج). وقبل ذلك اليوم كان يقلع **ثمّ ينهار بعد خمس ثوانٍ** من الهدوء (`redis.exceptions.TimeoutError` ⇐ `AppError: event consume failed`)، إذ `_SOCKET_TIMEOUT_S` (2.0ث) أقصر من `CONSUMER_BLOCK_MS` (5.0ث) — والادّعاء الأقدم «✅ يقلع ويعمل» ([§3.83](log/3.83.md)) كان صحيحاً في نصفه فقط. العلّة أُصلحت في [`stream-topology-plan.md`](stream-topology-plan.md) الخطوة 1 |
+| عامل **`knowledge`** | ✅ **أُقلع حاويّاً لأوّل مرّة وصمد ≥ 5 دقائق بـ`RestartCount = 0`** (2026‑08‑03، [§3.105](log/3.105.md) §5‑ج) — `DocumentContentResolver` بُني في الخطوتين 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.100](log/3.100.md))، ثمّ أزالت الخطوة 1 من [`stream-topology-plan.md`](stream-topology-plan.md) مهلةَ الصمت التي كانت ستقتله بعد خمس ثوانٍ. أقلِعه بـ`WORKER=knowledge` صراحةً |
 | عامل **`media`** | 🟡 **موصولٌ بالكامل ولم يُقلَع بعد** — `WorkerMediaGenerator` بُني ووُصل في الخطوتين 19‑20 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.103](log/3.103.md) · [§3.104](log/3.104.md))، فلم يعد ينهار لنقصِ محوّل. يحتاج توجيه `image` في `PROVIDER_ROUTING` واعتماداً باسم `image:openai`. جرّبه بـ`WORKER=media` صراحةً |
 | مزوّدو LLM السحابيّون (Gemini · Claude · OpenRouter — البند 2.8‑ب‑2) | ⛔ محجوبون بالمفاتيح. المزوّد المحلّي **Ollama** هو المسار العامل |
 

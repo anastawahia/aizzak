@@ -219,7 +219,11 @@ from app.infrastructure.ai_providers.image.external_image import (
 from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
 from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
 from app.infrastructure.auth.firebase_auth import FirebaseAuth, create_firebase_http_client
-from app.infrastructure.cache.redis_cache import RedisCache, create_redis_client
+from app.infrastructure.cache.redis_cache import (
+    RedisCache,
+    blocking_read_timeout_s,
+    create_redis_client,
+)
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
@@ -566,7 +570,7 @@ def _build_metrics_source(
 
 def _build_notify_bridge(
     settings: Settings, redis_client: Redis
-) -> tuple[ConnectionHub, StreamConsumer, list[Subscription]]:
+) -> tuple[ConnectionHub, StreamConsumer, list[Subscription], Redis]:
     """The 5.3 live-streaming pieces — a helper so ``from_env`` stays under
     its statement ceiling, the ``_build_embedding``/``_build_integrations``
     precedent. The hub is shared by the WS endpoint and the notify bridge
@@ -585,28 +589,42 @@ def _build_notify_bridge(
     x replicas" — the same defect root as P0-2 one layer over. The count now
     lives in Redis behind ``WsConnectionRegistry``, bound HERE (only the
     Composition Root may import ``app.infrastructure``) over the SAME shared
-    ``redis_client`` every other Redis-backed collaborator holds: there is no
-    per-role ACL split on the Redis side, so a second client would be a
-    redundant connection for no isolation gained (``_build_metrics_source``'s
-    identical reasoning). The renewal loop that keeps live entries from
-    ageing out is started/stopped by the API lifespan
+    ``redis_client`` every other short-lived Redis call this process makes
+    holds: registry reads/writes are quick, non-blocking round trips, so they
+    belong on the fail-fast client, not the one built for a consumer that
+    parks on a socket for seconds at a time. The renewal loop that keeps live
+    entries from ageing out is started/stopped by the API lifespan
     (``api/main.py::create_production_app``), not here.
+
+    Returns a SEPARATE Redis client too (stream-topology-plan.md §3, item 4),
+    built with ``blocking_read_timeout_s`` and used for nothing but
+    ``build_notification_consumer`` below: the notify bridge is a blocking
+    consumer of the exact shape the three workers are (§1-أ-2), so it needs
+    the same longer read timeout, and it cannot share the socket-level
+    ``2.0`` fail-fast client the request path (``RedisCache``, above) and the
+    registry above depend on to stay fast. ``from_env`` adds it to
+    ``disposables()`` exactly like ``redis_client``, so it is closed the same
+    way — a second connection pool, never a leaked one.
     """
     hub = ConnectionHub(
         max_connections_per_user=settings.limits.ws_connections_per_user,
         registry=RedisWsConnectionRegistry(redis_client),
     )
+    notify_redis_client = create_redis_client(
+        settings.redis,
+        read_timeout_s=blocking_read_timeout_s(settings.events.consumer_block_ms),
+    )
     notify_process_tag = f"{socket.gethostname()}.{os.getpid()}"
     notify_consumer, notify_subscriptions = build_notification_consumer(
         hub,
-        redis_client,
+        notify_redis_client,
         group=f"{_CG_NOTIFY_PREFIX}.{notify_process_tag}",
         consumer_name=f"notify.{notify_process_tag}",
         block_ms=settings.events.consumer_block_ms,
         batch_count=settings.events.consumer_batch_count,
         max_deliveries=settings.events.max_retries_before_dlq,
     )
-    return hub, notify_consumer, notify_subscriptions
+    return hub, notify_consumer, notify_subscriptions, notify_redis_client
 
 
 def _build_integrations(
@@ -761,6 +779,13 @@ class CompositionRoot:
     engine: AsyncEngine
     tenant_session: TenantSessionFactory
     redis_client: Redis
+    # stream-topology-plan.md §3, item 4 — a SECOND client, for the notify
+    # bridge's blocking read alone (``build_notification_consumer`` via
+    # ``_build_notify_bridge``). ``redis_client`` above stays on the 2.0
+    # fail-fast socket timeout every request-path caller needs; this one is
+    # built with ``blocking_read_timeout_s`` because the bridge parks on
+    # ``XREADGROUP ... BLOCK`` exactly like the three workers do (§1-أ-2).
+    notify_redis_client: Redis
     cache: CacheProvider
     qdrant_client: AsyncQdrantClient
     vector_store: HybridVectorStore
@@ -1162,7 +1187,9 @@ class CompositionRoot:
         )
 
         # 5.3 -- the live-streaming pieces (helper above: `_build_notify_bridge`).
-        hub, notify_consumer, notify_subscriptions = _build_notify_bridge(settings, redis_client)
+        hub, notify_consumer, notify_subscriptions, notify_redis_client = _build_notify_bridge(
+            settings, redis_client
+        )
 
         # P1-3 (step 10) -- `/metrics`'s own engine + adapter (helper above).
         metrics_engine, metrics_source = _build_metrics_source(settings, redis_client)
@@ -1172,6 +1199,7 @@ class CompositionRoot:
             engine=engine,
             tenant_session=tenant_session,
             redis_client=redis_client,
+            notify_redis_client=notify_redis_client,
             cache=cache,
             qdrant_client=qdrant_client,
             vector_store=vector_store,
@@ -1296,6 +1324,7 @@ class CompositionRoot:
             self.engine.dispose,
             self.metrics_engine.dispose,
             self.redis_client.aclose,
+            self.notify_redis_client.aclose,
             self.qdrant_client.close,
             _close_vault,
             self.firebase_http.aclose,
