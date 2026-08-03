@@ -1,0 +1,47 @@
+# The live-integration-suite overlay (containerised-test-harness-plan-v2.md
+# step أ-2). NOT merged automatically -- Compose reads `docker-compose.yml` and
+# `docker-compose.override.yml` on its own, never this name. It is asked for:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#
+# THAT is the point of the file existing at all. Publishing the embedding port
+# from `docker-compose.yml` -- as `"${HOST_PORT_EMBEDDING:-8080}:8080"` -- was
+# raised and REJECTED (release-blockers-plan.md ن-3): an optional variable
+# "opens the port permanently the moment a variable is set in `.env` that may
+# be left on by mistake". A `:-8080` default there is worse still, publishing
+# with no variable at all, on every host that boots by deploy-linux-server.md.
+# Here the port is shut BY CONSTRUCTION rather than by a flag someone must
+# remember: the deployment command does not name this file, so the `ports` key
+# below does not exist for it. `docker-compose.yml` is not edited, and ن-3's
+# own remedy -- "let it repeat the override-file approach" -- is what this is,
+# with the file version-controlled instead of improvised outside the repo.
+
+services:
+  # `embedding` is `expose`-only upstream, the same internal trust boundary as
+  # Postgres/Redis/Qdrant, because tenant text reaches it across the internal
+  # Docker network and never the public one. The live suite has to reach it
+  # from the host, so this republishes it -- and `127.0.0.1:` in front is not
+  # cosmetic. Without it Docker binds every interface and its forwarding rules
+  # sit ahead of the host firewall, so the boundary would be crossed by the
+  # very file written to preserve it. ⚠️ The six infrastructure ports already
+  # in `docker-compose.yml` carry no prefix and do publish on 0.0.0.0
+  # (measured: `docker compose port postgres 5432` ⇒ `0.0.0.0:15432`); that is
+  # recorded as ن-و and left alone, editing `docker-compose.yml` being a closed
+  # rejected decision. This overlay ends up the better-hardened of the two.
+  embedding:
+    ports:
+      - "127.0.0.1:${HOST_PORT_EMBEDDING:-8080}:8080"
+
+  # Mounted OUTSIDE /docker-entrypoint-initdb.d, and that is the safety
+  # property: the entrypoint executes what it finds there, and nothing reaches
+  # into /opt. All this mount does is put the script within reach of an
+  # explicit `docker compose exec` -- see its header for the rest.
+  #
+  # ⚠️ Do not "restore" this to the plan's /docker-entrypoint-initdb.d/testdb.
+  # That target is inside a `:ro` bind mount, so runc cannot create the
+  # mountpoint and postgres fails to start at all -- and `docker compose config`
+  # validates it happily, so the error only ever appears at `up`. Measured, with
+  # this exact pair of mounts. ن-ي.
+  postgres:
+    volumes:
+      - ./deploy/postgres/testdb:/opt/aizzak/testdb:ro
