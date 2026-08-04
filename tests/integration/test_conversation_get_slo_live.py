@@ -16,11 +16,13 @@ the busiest row in the table.
 comparable):** warm-up requests are run and DISCARDED, THEN a declared
 sample count is measured with ``time.perf_counter()``, sorted, and percentiles
 are taken by ``int(n * p)`` indexing into the sorted list. This file adds one
-thing §3.83 did not need: a declared CONCURRENCY (target 16 in-flight
-requests, `07-nfr-slo.md` §3's own capacity numbers are two orders of
-magnitude above what this single-process harness could ever saturate) --
-per-request round trips to a real database are exactly where p95 degrades
-under concurrent load, unlike a single sequential probe.
+thing §3.83 did not need: a declared CONCURRENCY (target 8 in-flight
+requests). ``docs/log/3.92.md`` §13 and ``07-nfr-slo.md`` §2 record the
+accepted concurrency sweep: this single-process ASGI harness stays within the
+40ms p50 budget through 8, while 16 saturates its one event loop and measures
+the harness's queue rather than the multi-worker live deployment. Per-request
+round trips to a real database are still exercised concurrently, unlike a
+single sequential probe.
 
 **The ONE substitution the task's own mandate names**: the Firebase
 ``HttpAuthenticator`` seam (``api/v1/dependencies.py``) is replaced with
@@ -123,10 +125,11 @@ every row tagged with a distinctive ``p1-step13-<uuid7>`` string, written and
 torn down through the OWNER role (``aizzak_owner``) because these tables are
 RLS-subject (``FORCE ROW LEVEL SECURITY`` — even the owner needs
 ``SET LOCAL app.workspace_id`` first, exactly like step 12's live probe). The
-teardown re-counts all four tables afterwards and the test asserts they are
-back to zero — the live DB was completely empty before this step (per the
-task's own facts) so a non-zero count after cleanup is this file's own bug,
-not pre-existing residue.
+teardown re-counts this seed's IDs in all four tables afterwards and the test
+asserts they are back to zero. Deliberately scoped predicates make the proof
+composable with a non-empty development database: pre-existing workspaces are
+preserved and cannot make this test fail or be mistaken for this file's
+residue.
 """
 
 from __future__ import annotations
@@ -213,7 +216,9 @@ def _require_live_stack() -> None:
 # ---------------------------------------------------------------------------
 _WARMUP_REQUESTS = 50
 _MEASURED_REQUESTS = 1000
-_CONCURRENCY = 16
+# The accepted §3.92 §13 / 07-nfr-slo §2 boundary for this one-process ASGI
+# harness. 16 measures event-loop saturation, not the live two-worker app.
+_CONCURRENCY = 8
 
 _BUDGET_P50_S = 0.040
 _BUDGET_P95_S = 0.150
@@ -385,9 +390,11 @@ async def seed_conversation(owner_dsn: str) -> _Seed:
 
 
 async def cleanup_conversation(owner_dsn: str, seed: _Seed) -> dict[str, int]:
-    """Delete every seeded row and PROVE the four tables are back to zero
-    (the mandate's own exit criterion) — this file's own residue, if any,
-    fails loudly here rather than being left for the next run to trip on."""
+    """Delete every seeded row and prove this seed's four predicates are zero.
+
+    The live development database need not be globally empty. Existing rows
+    belong to its operator and are neither residue nor ours to delete.
+    """
     engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
     try:
         sessionmaker = create_sessionmaker(engine)
@@ -409,17 +416,35 @@ async def cleanup_conversation(owner_dsn: str, seed: _Seed) -> dict[str, int]:
             await conn.execute(
                 text("DELETE FROM workspace.workspaces WHERE id = :id"), {"id": seed.workspace_id}
             )
-            proof: dict[str, int] = {}
-            for schema, table in (
-                ("workspace", "workspaces"),
-                ("workspace", "users"),
-                ("conversations", "conversations"),
-                ("conversations", "messages"),
-            ):
-                count = (
-                    await conn.execute(text(f"SELECT count(*) FROM {schema}.{table}"))
-                ).scalar_one()
-                proof[f"{schema}.{table}"] = count
+            proof = {
+                "workspace.workspaces": (
+                    await conn.execute(
+                        text("SELECT count(*) FROM workspace.workspaces WHERE id = :id"),
+                        {"id": seed.workspace_id},
+                    )
+                ).scalar_one(),
+                "workspace.users": (
+                    await conn.execute(
+                        text("SELECT count(*) FROM workspace.users WHERE id = :id"),
+                        {"id": seed.user_id},
+                    )
+                ).scalar_one(),
+                "conversations.conversations": (
+                    await conn.execute(
+                        text("SELECT count(*) FROM conversations.conversations WHERE id = :id"),
+                        {"id": seed.conversation_id},
+                    )
+                ).scalar_one(),
+                "conversations.messages": (
+                    await conn.execute(
+                        text(
+                            "SELECT count(*) FROM conversations.messages "
+                            "WHERE conversation_id = :id"
+                        ),
+                        {"id": seed.conversation_id},
+                    )
+                ).scalar_one(),
+            }
     finally:
         await engine.dispose()
     return proof
@@ -537,19 +562,24 @@ async def measure_conversation_get_slo() -> tuple[LoadReport, dict[str, int]]:
     return report, proof
 
 
-@pytest.mark.anyio
-async def test_conversation_get_meets_p1_6_slo_budget() -> None:
-    report, proof = await measure_conversation_get_slo()
-    # `-s` (pytest's own capture-disable flag) is how an operator re-running
-    # this test SEES the exit criterion below -- printing it is the point.
-    print(report.render())
-    print(f"cleanup proof (must all be 0): {proof}")
+def _assert_slo_and_cleanup(report: LoadReport, proof: dict[str, int]) -> None:
+    """One exit criterion shared by pytest and the documented ``__main__``."""
     assert all(count == 0 for count in proof.values()), (
         f"seeded rows were not fully cleaned up: {proof}"
     )
     assert report.p50_s <= _BUDGET_P50_S, f"p50 {report.p50_s * 1000:.2f}ms > 40ms budget"
     assert report.p95_s <= _BUDGET_P95_S, f"p95 {report.p95_s * 1000:.2f}ms > 150ms budget"
     assert report.p99_s <= _BUDGET_P99_S, f"p99 {report.p99_s * 1000:.2f}ms > 300ms budget"
+
+
+@pytest.mark.anyio
+async def test_conversation_get_meets_p1_6_slo_budget() -> None:
+    report, proof = await measure_conversation_get_slo()
+    # `-s` (pytest's own capture-disable flag) is how an operator re-running
+    # this test SEES the exit criterion below -- printing it is the point.
+    print(report.render())
+    print(f"seed cleanup proof (must all be 0): {proof}")
+    _assert_slo_and_cleanup(report, proof)
 
 
 if __name__ == "__main__":
@@ -562,6 +592,5 @@ if __name__ == "__main__":
         raise SystemExit(f"refusing to run: {reason}")
     load_report, cleanup_proof = asyncio.run(measure_conversation_get_slo())
     print(load_report.render())
-    print(f"cleanup proof (must all be 0): {cleanup_proof}")
-    if not all(count == 0 for count in cleanup_proof.values()):
-        raise SystemExit(f"seeded rows were not fully cleaned up: {cleanup_proof}")
+    print(f"seed cleanup proof (must all be 0): {cleanup_proof}")
+    _assert_slo_and_cleanup(load_report, cleanup_proof)

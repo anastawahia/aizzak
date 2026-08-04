@@ -157,6 +157,14 @@ async def measure_nginx_edge_hop() -> EdgeHopReport:
     )
 
 
+def _assert_sanity_ceiling(report: EdgeHopReport) -> None:
+    """One exit criterion shared by pytest and the documented ``__main__``."""
+    ceiling_ms = _SANITY_CEILING_S * 1000
+    assert report.p99_s <= _SANITY_CEILING_S, (
+        f"p99 {report.p99_s * 1000:.2f}ms exceeds the {ceiling_ms:.0f}ms sanity ceiling"
+    )
+
+
 @pytest.mark.anyio
 async def test_nginx_edge_hop_latency_is_measured_separately_and_not_folded_in() -> None:
     report = await measure_nginx_edge_hop()
@@ -164,10 +172,7 @@ async def test_nginx_edge_hop_latency_is_measured_separately_and_not_folded_in()
     print(report.render())
     # A sanity ceiling only — see the module docstring for why this is not
     # checked against `07-nfr-slo.md`'s own budget.
-    ceiling_ms = _SANITY_CEILING_S * 1000
-    assert report.p99_s <= _SANITY_CEILING_S, (
-        f"p99 {report.p99_s * 1000:.2f}ms exceeds the {ceiling_ms:.0f}ms sanity ceiling"
-    )
+    _assert_sanity_ceiling(report)
 
 
 if __name__ == "__main__":
@@ -178,3 +183,4 @@ if __name__ == "__main__":
         raise SystemExit(f"refusing to run: {reason}")
     edge_report = asyncio.run(measure_nginx_edge_hop())
     print(edge_report.render())
+    _assert_sanity_ceiling(edge_report)
