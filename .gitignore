@@ -10,6 +10,9 @@ venv/
 
 # Environment & secrets
 .env
+# Local live-test credentials.  This file contains database passwords and the
+# Vault root token; only the redacted `.env.test.example` belongs in Git.
+.env.test
 # `.env` alone left every hand-made copy exposed: a `.env.bak.<stamp>` written
 # before editing is untracked-but-not-ignored, so one `git add -A` commits all
 # eight passwords. The whole class is ignored, not one stamp.
