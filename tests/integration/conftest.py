@@ -41,6 +41,7 @@ import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import hvac
@@ -94,36 +95,40 @@ from app.ops.provision import (
     run_migrations,
 )
 
-_OWNER_DSN_DEFAULT = "postgresql+asyncpg://aizzak_owner:aizzak_owner@127.0.0.1:5432/aizzak_test"
-_APP_DSN_DEFAULT = "postgresql+asyncpg://app_rw:app_rw@127.0.0.1:5432/aizzak_test"
+# Every default below addresses the COMPOSE stack, on the offset host ports
+# `docker-compose.yml` publishes (15432/16379/16333/18200) rather than the
+# canonical ones the native services hold. The alternative -- leaving the
+# canonical defaults and letting `.env.test` correct them -- is what makes a
+# forgotten `.env.test` a SILENT green run: a wrong default that the probe
+# agrees with skips nothing and tests the wrong server. Pointed here, a
+# forgotten `.env.test` fails audibly instead.
+_OWNER_DSN_DEFAULT = "postgresql+asyncpg://aizzak_owner:aizzak_owner@127.0.0.1:15432/aizzak_test"
+_APP_DSN_DEFAULT = "postgresql+asyncpg://app_rw:app_rw@127.0.0.1:15432/aizzak_test"
 # 5.1-ب: the outbox_relay role's own DSN -- see `_grant_outbox_relay`.
-_RELAY_DSN_DEFAULT = "postgresql+asyncpg://outbox_relay:outbox_relay@127.0.0.1:5432/aizzak_test"
+_RELAY_DSN_DEFAULT = "postgresql+asyncpg://outbox_relay:outbox_relay@127.0.0.1:15432/aizzak_test"
 # P1-5 (docs/p1-hardening-plan.md §3 step 8): the retention sweep's own DSN --
 # see `_create_retention_sweeper_role`/`_grant_retention_sweeper`.
 _RETENTION_DSN_DEFAULT = (
-    "postgresql+asyncpg://retention_sweeper:retention_sweeper@127.0.0.1:5432/aizzak_test"
+    "postgresql+asyncpg://retention_sweeper:retention_sweeper@127.0.0.1:15432/aizzak_test"
 )
 # P1-3 (docs/p1-hardening-plan.md §3 step 10): the `/metrics` endpoint's own
 # DSN -- see `_create_metrics_reader_role`/`_grant_metrics_reader`.
 _METRICS_DSN_DEFAULT = (
-    "postgresql+asyncpg://metrics_reader:metrics_reader@127.0.0.1:5432/aizzak_test"
+    "postgresql+asyncpg://metrics_reader:metrics_reader@127.0.0.1:15432/aizzak_test"
 )
 # P1-9 (docs/p1-hardening-plan.md §3 step 12): the Transit key-rotation
 # sweep's own DSN -- see `_create_transit_rotator_role`/`_grant_transit_rotator`.
 _TRANSIT_ROTATOR_DSN_DEFAULT = (
-    "postgresql+asyncpg://transit_rotator:transit_rotator@127.0.0.1:5432/aizzak_test"
+    "postgresql+asyncpg://transit_rotator:transit_rotator@127.0.0.1:15432/aizzak_test"
 )
 # 5.1-ب: the harness's local Postgres superuser -- the ONE role that can
 # `CREATE ROLE outbox_relay` (`aizzak_owner` is deliberately not CREATEROLE;
 # see the module docstring's "Discovery" paragraph). A separate, already
 # locally-recorded throwaway dev credential, never `aizzak_owner`/`app_rw`.
-_SUPERUSER_DSN_DEFAULT = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/aizzak_test"
-_PROBE_HOST = "127.0.0.1"
-_PROBE_PORT = 5432
+_SUPERUSER_DSN_DEFAULT = "postgresql+asyncpg://postgres:postgres@127.0.0.1:15432/aizzak_test"
 _PROBE_TIMEOUT_S = 1.5
 
-_REDIS_URL_DEFAULT = "redis://127.0.0.1:6379/0"
-_REDIS_PROBE_PORT = 6379
+_REDIS_URL_DEFAULT = "redis://127.0.0.1:16379/0"
 
 # Dedicated bucket-scoped MinIO service account. NEVER the server's root keys:
 # this account can only see/read/write bucket `aizzak-test`.
@@ -140,8 +145,7 @@ _MINIO_ACCESS_DEFAULT = "aizzak_test"
 _MINIO_SECRET_DEFAULT = "aizzak-test-secret"
 _MINIO_BUCKET_DEFAULT = "aizzak-test"
 
-_QDRANT_URL_DEFAULT = "http://127.0.0.1:6333"
-_QDRANT_PROBE_PORT = 6333
+_QDRANT_URL_DEFAULT = "http://127.0.0.1:16333"
 
 # The central embedding service (2.10) is Docker-only (``services/embedding/
 # Dockerfile`` bakes model weights at build time) -- there is no native-run
@@ -152,21 +156,20 @@ _QDRANT_PROBE_PORT = 6333
 # absent Docker (09-testing-strategy §7's own documented limit) it skips in
 # every environment this repo's own gates run in today.
 _EMBEDDING_URL_DEFAULT = "http://127.0.0.1:8080"
-_EMBEDDING_PROBE_PORT = 8080
 
-_VAULT_ADDR_DEFAULT = "http://127.0.0.1:8200"
-_VAULT_PROBE_PORT = 8200
+_VAULT_ADDR_DEFAULT = "http://127.0.0.1:18200"
 _VAULT_CLIENT_TIMEOUT_S = 5.0
-# Dev-mode root token for the local Vault dev server (08-local-runbook §3) --
-# tokens of this kind exist ONLY for a local, in-memory ``vault server -dev``;
-# a real deployment authenticates via AppRole instead (D-22).
-_VAULT_TOKEN_DEFAULT = "aizzak-dev-root"
+# There is deliberately NO token default. The one that used to live here was
+# the root token of a ``vault server -dev`` that no longer exists: Vault is
+# persistent now and its root token is generated at ``operator init`` into the
+# `vault-init` volume. A stale default does not fail at the probe -- it passes
+# it and then fails thirteen times with 403, which reads as broken tests
+# rather than as an unexported secret. Absent, it says so once, in words.
 
 # The platform's sole local LLMProvider (DD-13, 2.8-a): no container, no
 # Docker -- a native Ollama instance reachable from WSL by passthrough
 # (confirmed live: Windows-side ``ollama serve``, port 11434).
 _OLLAMA_BASE_URL_DEFAULT = "http://127.0.0.1:11434"
-_OLLAMA_PROBE_PORT = 11434
 _OLLAMA_MODEL_DEFAULT = "gemma3:1b"
 # Comfortably above the confirmed-live ~43s cold ``load_duration`` for a
 # first call against an unloaded model.
@@ -219,6 +222,50 @@ def _tcp_reachable(host: str, port: int, timeout_s: float) -> bool:
             return True
     except OSError:
         return False
+
+
+# Only the two schemes whose default port is part of the scheme's own meaning.
+# `redis`/`postgresql` are deliberately absent: guessing 6379/5432 for a
+# port-less override would re-create exactly the parallel number this module
+# just deleted, and silently.
+_SCHEME_PORTS = {"http": 80, "https": 443}
+
+
+def _probe_target(address: str) -> tuple[str, int]:
+    """Derive the ``(host, port)`` to probe from the address a fixture is
+    about to CONNECT to -- a SQLAlchemy DSN, a URL, or a bare ``host:port``
+    endpoint, whichever that fixture hands out.
+
+    Every ``live_*`` fixture must probe what it will use. A probe pinned to
+    its own constant is a second source of truth, and the two drift silently:
+    ``live_minio`` already paid for this (see its docstring) -- a probe
+    hard-wired to 9000 answered `reachable` because an unrelated stack
+    happened to hold that port, so the suite ran in full against the wrong
+    server instead of skipping honestly. Deriving means a ``TEST_*`` override
+    moves the probe with the address, by construction rather than by anyone
+    remembering to move a second constant.
+
+    Raises ``ValueError`` on an address with no host or no discoverable port:
+    an unusable override is worth one loud error, never a silent skip.
+    """
+    parts = urlsplit(address if "://" in address else f"//{address}")
+    host = parts.hostname
+    if host is None:
+        raise ValueError(f"probe address carries no host: {address!r}")
+    port = parts.port if parts.port is not None else _SCHEME_PORTS.get(parts.scheme)
+    if port is None:
+        raise ValueError(
+            f"probe address carries no port, and its scheme has no default: {address!r}"
+        )
+    return host, port
+
+
+def _skip_unless_reachable(address: str, service: str) -> None:
+    """Skip the calling ``live_*`` fixture's whole suite unless ``address``
+    itself is TCP-reachable."""
+    host, port = _probe_target(address)
+    if not _tcp_reachable(host, port, _PROBE_TIMEOUT_S):
+        pytest.skip(f"no live {service} reachable at {host}:{port}")
 
 
 async def _rebuild_schema(owner_dsn: str) -> None:
@@ -483,10 +530,9 @@ def live_db() -> Iterator[LiveDbDsns]:
     """Probe for a live local Postgres, rebuild+migrate+grant once per
     session, and hand out all four DSNs. Skips the whole live_db suite
     (rather than erroring) when Postgres is unreachable."""
-    if not _tcp_reachable(_PROBE_HOST, _PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live PostgreSQL reachable at {_PROBE_HOST}:{_PROBE_PORT}")
-
     owner_dsn = os.environ.get("TEST_DATABASE_URL", _OWNER_DSN_DEFAULT)
+    _skip_unless_reachable(owner_dsn, "PostgreSQL")
+
     app_dsn = os.environ.get("TEST_DATABASE_URL_APP", _APP_DSN_DEFAULT)
     relay_dsn = os.environ.get("TEST_DATABASE_URL_RELAY", _RELAY_DSN_DEFAULT)
     retention_dsn = os.environ.get("TEST_DATABASE_URL_RETENTION", _RETENTION_DSN_DEFAULT)
@@ -616,9 +662,9 @@ def live_redis() -> str:
     suite when unreachable. Deliberately NO flush/rebuild here, unlike the
     Postgres harness: the server may hold unrelated data, so every test must
     key under its own unique prefix and clean up after itself."""
-    if not _tcp_reachable(_PROBE_HOST, _REDIS_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live Redis reachable at {_PROBE_HOST}:{_REDIS_PROBE_PORT}")
-    return os.environ.get("TEST_REDIS_URL", _REDIS_URL_DEFAULT)
+    url = os.environ.get("TEST_REDIS_URL", _REDIS_URL_DEFAULT)
+    _skip_unless_reachable(url, "Redis")
+    return url
 
 
 @pytest.fixture
@@ -654,17 +700,14 @@ def live_minio() -> LiveMinio:
     account are provisioned by ``deploy/minio/bootstrap.sh`` and each test
     writes only under its own unique object prefix, sweeping it afterwards.
 
-    The probe address is DERIVED from the endpoint actually in use rather
-    than read off a second constant. The two drifted apart the moment MinIO
-    moved to Compose: a probe hard-wired to 9000 answered `reachable` because
-    an unrelated stack happened to hold that port, so the suite ran in full
-    against the wrong server instead of skipping honestly. Deriving it means
-    ``TEST_MINIO_ENDPOINT`` moves the probe with it, by construction.
+    This fixture is where deriving the probe from the address was first
+    forced -- a probe hard-wired to 9000 answered `reachable` because an
+    unrelated stack happened to hold that port, so the suite ran in full
+    against the wrong server instead of skipping honestly. That cure is now
+    every fixture's, in ``_probe_target``, which carries the full account.
     """
     endpoint = os.environ.get("TEST_MINIO_ENDPOINT", _MINIO_ENDPOINT_DEFAULT)
-    host, _, port_text = endpoint.rpartition(":")
-    if not _tcp_reachable(host, int(port_text), _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live MinIO reachable at {endpoint}")
+    _skip_unless_reachable(endpoint, "MinIO")
     return LiveMinio(
         settings=MinioSettings(
             endpoint=endpoint,
@@ -697,9 +740,9 @@ def live_qdrant() -> str:
     """Probe for a live local Qdrant (Phase 2.5's live harness -- the
     ``live_redis``/``live_minio`` precedent) and hand out its URL; skips the
     ``live_qdrant`` suite when unreachable."""
-    if not _tcp_reachable(_PROBE_HOST, _QDRANT_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live Qdrant reachable at {_PROBE_HOST}:{_QDRANT_PROBE_PORT}")
-    return os.environ.get("TEST_QDRANT_URL", _QDRANT_URL_DEFAULT)
+    url = os.environ.get("TEST_QDRANT_URL", _QDRANT_URL_DEFAULT)
+    _skip_unless_reachable(url, "Qdrant")
+    return url
 
 
 @pytest.fixture
@@ -740,14 +783,15 @@ def live_embedding() -> str:
     precedent) and hand out its URL; skips the ``live_embedding`` suite when
     unreachable -- which, absent Docker, is every environment this repo's
     own gates run in today (module docstring's own constant comment)."""
-    if not _tcp_reachable(_PROBE_HOST, _EMBEDDING_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live embedding service reachable at {_PROBE_HOST}:{_EMBEDDING_PROBE_PORT}")
-    return os.environ.get("TEST_EMBEDDING_URL", _EMBEDDING_URL_DEFAULT)
+    url = os.environ.get("TEST_EMBEDDING_URL", _EMBEDDING_URL_DEFAULT)
+    _skip_unless_reachable(url, "embedding service")
+    return url
 
 
 @dataclass(frozen=True, slots=True)
 class LiveVault:
-    """Connection material for the live Vault harness (dev-mode root token)."""
+    """Connection material for the live Vault harness (the root token from
+    ``operator init``, exported as ``TEST_VAULT_TOKEN``)."""
 
     addr: str
     token: str
@@ -757,14 +801,18 @@ class LiveVault:
 def live_vault() -> LiveVault:
     """Probe for a live local Vault (Phase 2.6's live harness -- the
     ``live_redis``/``live_minio``/``live_qdrant`` precedent) and hand out its
-    address + dev-mode root token; skips the ``live_vault`` suite when
-    unreachable."""
-    if not _tcp_reachable(_PROBE_HOST, _VAULT_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live Vault reachable at {_PROBE_HOST}:{_VAULT_PROBE_PORT}")
-    return LiveVault(
-        addr=os.environ.get("TEST_VAULT_ADDR", _VAULT_ADDR_DEFAULT),
-        token=os.environ.get("TEST_VAULT_TOKEN", _VAULT_TOKEN_DEFAULT),
-    )
+    address + root token; skips the ``live_vault`` suite when unreachable, and
+    equally when no ``TEST_VAULT_TOKEN`` is exported (the ``TEST_MINIO_*``
+    precedent: a missing secret is a skip with a reason, not a 403 storm)."""
+    addr = os.environ.get("TEST_VAULT_ADDR", _VAULT_ADDR_DEFAULT)
+    _skip_unless_reachable(addr, "Vault")
+    token = os.environ.get("TEST_VAULT_TOKEN")
+    if not token:
+        pytest.skip(
+            "no TEST_VAULT_TOKEN exported -- read it from the `vault-init` volume, "
+            "see .env.test.example"
+        )
+    return LiveVault(addr=addr, token=token)
 
 
 @pytest.fixture(scope="session")
@@ -869,10 +917,9 @@ def live_ollama() -> LiveOllama:
 
     ``TEST_OLLAMA_BASE_URL``/``TEST_OLLAMA_MODEL`` override both defaults.
     """
-    if not _tcp_reachable(_PROBE_HOST, _OLLAMA_PROBE_PORT, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live Ollama reachable at {_PROBE_HOST}:{_OLLAMA_PROBE_PORT}")
-
     base_url = os.environ.get("TEST_OLLAMA_BASE_URL", _OLLAMA_BASE_URL_DEFAULT)
+    _skip_unless_reachable(base_url, "Ollama")
+
     model = os.environ.get("TEST_OLLAMA_MODEL", _OLLAMA_MODEL_DEFAULT)
 
     # One sync client (httpx, plain -- no adapter code exists yet to build
