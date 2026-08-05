@@ -167,7 +167,7 @@ Vault ليست البنية التحتية الوحيدة التي يُجهض غ
 ### 3.2‑ب حدّ المعدّل وترويسات الأمان وCORS (P1‑7، خطوة 9)
 - **حدّ المعدّل**: `limit_req_zone`/`limit_conn_zone` في `nginx.conf` (مفتاحٌ `$binary_remote_addr`، مُتحقَّقٌ حيّاً أنّه العنوان الحقيقيّ للعميل الخارجيّ على هذه الطوبولوجيا — اتّصال نفس المضيف فقط يُصاب بـhairpin NAT إلى بوّابة الشبكة الداخليّة `172.18.0.1`). `location /` تحمل `limit_req` (20 طلب/ث، دفعة 40)، `/api/v1/ws` تحمل `limit_conn` فقط (100 اتّصالٍ متزامن/عنوان — اتّصالٌ طويلٌ لا طلبٌ متكرّر)، و`/health` **مُستبعدةٌ كليّاً** من كليهما (فحصٌ كلّ 10 ثوانٍ لا يحتمل حدّاً). رفضٌ عند هذه الحافّة يعيد **429** (`limit_req_status`/`limit_conn_status`) لا 503 الافتراضيّة — لكنّ الجسم صفحة nginx الافتراضيّة لا `problem+json` (هذه الطبقة لا تصل التطبيق فلا تملك `correlation_id`).
 - **ترويسات الأمان**: `X-Content-Type-Options: nosniff` · `Referrer-Policy: strict-origin-when-cross-origin` · `X-Frame-Options: DENY`، على مستوى `http` في `nginx.conf` فتصل كل استجابة عبر الخادمين بلا ازدواج.
-- **CORS**: **لا شيء يُضاف عمداً** — القرار والتعليل الكامل في `03-api-spec.md §5`.
+- **CORS**: nginx تسمح صراحةً بـFirebase Hosting (`aizzak-agent.web.app` و`aizzak-agent.firebaseapp.com`) و`http://localhost:5173` للتطوير، وتردّ على preflight؛ لا wildcard ولا `CORSMiddleware`. التفصيل في `03-api-spec.md §5`.
 - **المساران متّفقان**: `deploy/nginx/{nginx.conf,app-locations.conf}` و`deploy/runpod/nginx.conf` يحملان نفس المناطق والقيم والترويسات (الأخير مكرَّرٌ حرفياً لا `include`، إذ لا ملفٍّ ثانٍ فيه).
 
 ### 3.3 الهجرات والمنح

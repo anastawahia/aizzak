@@ -133,6 +133,11 @@ class ApiAuthenticator:
         # process-wide `CacheProvider` everything else uses.
         self._revocations = revocations
 
+    @property
+    def revocations(self) -> SessionRevocationList:
+        """The shared denylist used by the authenticated session endpoints."""
+        return self._revocations
+
     async def authenticate(self, token: str) -> Principal:
         identity = await self._verifier.verify_token(token)
         if await self._revocations.is_revoked(identity.firebase_uid):
@@ -198,6 +203,8 @@ class ApiAuthenticator:
             workspace_id=provisioned.workspace_id,
             user_id=provisioned.user_id,
             roles=roles,
+            firebase_uid=identity.firebase_uid,
+            token_expires_at=_token_expiry(identity.claims),
         )
 
 
@@ -214,3 +221,9 @@ def _display_name(claims: Json) -> str | None:
     if isinstance(name, str) and name.strip():
         return name
     return None
+
+
+def _token_expiry(claims: Json) -> int | None:
+    """The verified JWT's expiry, if it has the standard numeric claim."""
+    exp = claims.get("exp")
+    return exp if isinstance(exp, int) and not isinstance(exp, bool) else None

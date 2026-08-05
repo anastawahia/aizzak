@@ -93,6 +93,11 @@ class Principal:
     workspace_id: Uuid
     user_id: Uuid
     roles: frozenset[str] = frozenset()
+    # These two facts are intentionally available only after token validation.
+    # `/me/logout` needs the Firebase subject to revoke the actual credential,
+    # and its expiry to bound the denylist entry to the token's remaining life.
+    firebase_uid: str = ""
+    token_expires_at: int | None = None
 
 
 class HttpAuthenticator(Protocol):

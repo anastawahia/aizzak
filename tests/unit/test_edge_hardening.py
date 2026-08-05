@@ -434,31 +434,38 @@ def test_hsts_is_a_real_gated_setting_not_a_literal_or_a_comment() -> None:
         )
 
 
-def test_no_cors_surface_exists_anywhere_under_deploy_or_src() -> None:
-    """The decided-not-built half of P1-7: CORS is a deliberate non-feature
-    (`03-api-spec.md §5`). Adding `CORSMiddleware` or an nginx CORS block
-    "just in case" is exactly the surface that decision closes."""
-    forbidden = ("Access-Control-Allow-Origin", "CORSMiddleware")
-    for root in (_REPO_ROOT / "deploy", _REPO_ROOT / "src"):
-        for candidate in root.rglob("*"):
-            if not candidate.is_file():
-                continue
-            try:
-                text = candidate.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            for token in forbidden:
-                assert token not in text, (
-                    f"{candidate}: contains {token!r} -- CORS is a deliberate non-feature "
-                    "in v1 (03-api-spec.md §5); this is exactly the surface that closes"
-                )
+def test_cors_is_an_edge_allow_list_and_not_application_middleware() -> None:
+    """Firebase Hosting is cross-origin, so nginx owns the narrow policy."""
+    expected = (
+        '"http://localhost:5173" $http_origin;',
+        '"https://aizzak-agent.web.app" $http_origin;',
+        '"https://aizzak-agent.firebaseapp.com" $http_origin;',
+        "add_header Access-Control-Allow-Origin $cors_allow_origin always;",
+        'add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;',
+        'add_header Access-Control-Allow-Methods "GET, POST, PATCH, PUT, DELETE, OPTIONS" always;',
+        "add_header Access-Control-Max-Age 600 always;",
+        "if ($request_method = OPTIONS)",
+        "return 204;",
+    )
+    for label, text in (
+        ("deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()),
+        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
+    ):
+        for token in expected:
+            assert token in text, f"{label}: missing CORS allow-list element {token!r}"
+        assert "Access-Control-Allow-Origin *" not in text, f"{label}: wildcard CORS is forbidden"
+
+    for candidate in (_REPO_ROOT / "src").rglob("*.py"):
+        assert "CORSMiddleware" not in candidate.read_text(encoding="utf-8"), (
+            f"{candidate}: CORS belongs at nginx, not in the API process"
+        )
 
 
 def test_cors_decision_is_documented_in_the_design_and_requirements_docs() -> None:
     api_spec_text = _text(_API_SPEC)
     assert "CORS" in api_spec_text and "Access-Control-Allow-Origin" in api_spec_text, (
         f"{_API_SPEC}: expected an explicit CORS section naming "
-        "`Access-Control-Allow-Origin` and the same-origin assumption (P1-7)"
+        "`Access-Control-Allow-Origin` and the explicit origin allow-list (P1-7)"
     )
 
     requirements_text = _text(_REQUIREMENTS)

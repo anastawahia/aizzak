@@ -467,6 +467,7 @@ def _make_app(authenticator: ApiAuthenticator) -> FastAPI:
         ),
         http_authenticator=authenticator,
         ws_authenticator=authenticator,
+        revocations=authenticator.revocations,
     )
 
     @app.get("/api/v1/_ctx")
@@ -528,3 +529,15 @@ def test_a_refusal_is_still_an_rfc_9457_problem() -> None:
     assert response.status_code == 403
     assert response.headers["content-type"].startswith("application/problem+json")
     assert response.json()["code"] == "authz.forbidden"
+
+
+def test_logout_revokes_the_current_subject_before_local_sign_out() -> None:
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator))
+
+    response = client.post("/api/v1/me/logout", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 204
+    refused = client.get("/api/v1/_ctx", headers={"Authorization": "Bearer t"})
+    assert refused.status_code == 401
+    assert refused.json()["code"] == "auth.invalid_token"

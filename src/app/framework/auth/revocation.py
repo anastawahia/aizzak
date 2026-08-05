@@ -77,14 +77,14 @@ class SessionRevocationList:
         self._cache = cache
         self._ttl_s = _guard_ttl(ttl_s)
 
-    async def revoke(self, subject: str) -> None:
+    async def revoke(self, subject: str, *, ttl_s: int | None = None) -> None:
         """Deny ``subject`` for this list's TTL.
 
         Idempotent by construction: re-revoking simply rewrites the key and
         restarts its TTL, which is the behaviour an operator running the tool
         twice would expect anyway.
         """
-        await self._cache.set(_key_for(subject), _PRESENT, self._ttl_s)
+        await self._cache.set(_key_for(subject), _PRESENT, _guard_ttl(ttl_s or self._ttl_s))
 
     async def is_revoked(self, subject: str) -> bool:
         """Whether ``subject``'s sessions are currently denied.

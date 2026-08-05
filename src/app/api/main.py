@@ -65,6 +65,7 @@ from app.api.v1.routers.files import router as files_router
 from app.api.v1.routers.integrations import router as integrations_router
 from app.api.v1.routers.integrations_public import router as integrations_public_router
 from app.api.v1.routers.knowledge import router as knowledge_router
+from app.api.v1.routers.me import router as me_router
 from app.api.v1.routers.media import router as media_router
 from app.api.v1.routers.usage import router as usage_router
 from app.api.v1.routers.workflows import router as workflows_router
@@ -137,6 +138,7 @@ def create_app(
     # look like a dead Vault credential (`api/metrics.py`'s own guard).
     # `create_production_app` always wires the real `VaultProbe`.
     vault_health: VaultHealth | None = None,
+    revocations: SessionRevocationList | None = None,
 ) -> FastAPI:
     """Assemble the ASGI app around already-built collaborators."""
     app = FastAPI(
@@ -156,6 +158,7 @@ def create_app(
     app.state.http_authenticator = http_authenticator
     app.state.metrics_source = metrics_source
     app.state.vault_health = vault_health
+    app.state.revocations = revocations
     app.state.ready = False
 
     _install_correlation_middleware(app)
@@ -175,6 +178,7 @@ def create_app(
     app.include_router(workflows_router, prefix=prefix)
     app.include_router(files_router, prefix=prefix)
     app.include_router(media_router, prefix=prefix)
+    app.include_router(me_router, prefix=prefix)
     app.include_router(workspace_router, prefix=prefix)
     app.include_router(usage_router, prefix=prefix)
     app.include_router(credentials_router, prefix=prefix)
@@ -538,6 +542,7 @@ def create_production_app() -> FastAPI:
         # never appears and an alert that can never fire, which is exactly
         # the silent-failure shape ن-10 exists to end.
         vault_health=root.vault_health,
+        revocations=authenticator.revocations,
         background=(_run_notify_bridge,),
         # 6.1-هـ-1 — the async half of MinIO's wiring (debt (ز)): the Vault
         # read `from_env` could not await runs here, before traffic. A failure
