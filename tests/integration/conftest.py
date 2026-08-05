@@ -262,10 +262,47 @@ def _probe_target(address: str) -> tuple[str, int]:
 
 def _skip_unless_reachable(address: str, service: str) -> None:
     """Skip the calling ``live_*`` fixture's whole suite unless ``address``
-    itself is TCP-reachable."""
+    itself is TCP-reachable, or fail when the live stack is required."""
     host, port = _probe_target(address)
     if not _tcp_reachable(host, port, _PROBE_TIMEOUT_S):
-        pytest.skip(f"no live {service} reachable at {host}:{port}")
+        _unavailable_live_dependency(f"no live {service} reachable at {host}:{port}")
+
+
+def _unavailable_live_dependency(reason: str) -> None:
+    """Report a missing local live dependency without producing false green.
+
+    An ordinary developer run may omit the Compose stack and skip cleanly.
+    A run that explicitly sets ``REQUIRE_LIVE=1`` promises that the stack was
+    provisioned, so the same absence is a failure.  Callers use this only for
+    local infrastructure; optional paid API keys and opt-in load tests keep
+    their direct ``pytest.skip`` calls.
+    """
+    if os.environ.get("REQUIRE_LIVE") == "1":
+        pytest.fail(reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def _validate_minio_secret_pair() -> None:
+    """Reject drift between provisioning and test MinIO secret variables.
+
+    Compose consumes ``MINIO_TEST_SECRET_KEY`` while the live fixture consumes
+    ``TEST_MINIO_SECRET_KEY``.  Either variable may legitimately be absent
+    from the pytest process, but when both are present they describe one
+    account and must match.  The error deliberately names variables, never
+    their values.
+    """
+    provisioned_secret = os.environ.get("MINIO_TEST_SECRET_KEY")
+    test_secret = os.environ.get("TEST_MINIO_SECRET_KEY")
+    if (
+        provisioned_secret is not None
+        and test_secret is not None
+        and provisioned_secret != test_secret
+    ):
+        pytest.fail(
+            "MINIO_TEST_SECRET_KEY and TEST_MINIO_SECRET_KEY differ; "
+            "both must name the same MinIO test-account secret",
+            pytrace=False,
+        )
 
 
 async def _rebuild_schema(owner_dsn: str) -> None:
@@ -706,6 +743,7 @@ def live_minio() -> LiveMinio:
     against the wrong server instead of skipping honestly. That cure is now
     every fixture's, in ``_probe_target``, which carries the full account.
     """
+    _validate_minio_secret_pair()
     endpoint = os.environ.get("TEST_MINIO_ENDPOINT", _MINIO_ENDPOINT_DEFAULT)
     _skip_unless_reachable(endpoint, "MinIO")
     return LiveMinio(
@@ -808,7 +846,7 @@ def live_vault() -> LiveVault:
     _skip_unless_reachable(addr, "Vault")
     token = os.environ.get("TEST_VAULT_TOKEN")
     if not token:
-        pytest.skip(
+        _unavailable_live_dependency(
             "no TEST_VAULT_TOKEN exported -- read it from the `vault-init` volume, "
             "see .env.test.example"
         )
@@ -938,7 +976,9 @@ def live_ollama() -> LiveOllama:
                     if isinstance(value, str):
                         names.add(value)
         if model not in names:
-            pytest.skip(f"Ollama model {model!r} is not pulled locally (have: {sorted(names)})")
+            _unavailable_live_dependency(
+                f"Ollama model {model!r} is not pulled locally (have: {sorted(names)})"
+            )
 
         warmup = client.post(
             "/api/generate", json={"model": model, "prompt": "", "keep_alive": "30m"}
