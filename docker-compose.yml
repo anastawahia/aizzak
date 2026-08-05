@@ -148,7 +148,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
     ports:
-      - "${HOST_PORT_POSTGRES:-15432}:5432"
+      - "127.0.0.1:${HOST_PORT_POSTGRES:-15432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_DB:-aizzak}"]
       interval: 5s
@@ -193,7 +193,7 @@ services:
       DB_USER: ${POSTGRES_SUPERUSER:-postgres}
       DB_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
     ports:
-      - "${HOST_PORT_PGBOUNCER:-16432}:6432"
+      - "127.0.0.1:${HOST_PORT_PGBOUNCER:-16432}:6432"
     restart: unless-stopped
     <<: *app-logging
 
@@ -203,7 +203,7 @@ services:
     volumes:
       - redis-data:/data
     ports:
-      - "${HOST_PORT_REDIS:-16379}:6379"
+      - "127.0.0.1:${HOST_PORT_REDIS:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -224,8 +224,8 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "${HOST_PORT_MINIO:-19000}:9000"
-      - "${HOST_PORT_MINIO_CONSOLE:-19001}:9001"
+      - "127.0.0.1:${HOST_PORT_MINIO:-19000}:9000"
+      - "127.0.0.1:${HOST_PORT_MINIO_CONSOLE:-19001}:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -239,7 +239,7 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
     ports:
-      - "${HOST_PORT_QDRANT:-16333}:6333"
+      - "127.0.0.1:${HOST_PORT_QDRANT:-16333}:6333"
     restart: unless-stopped
     <<: *app-logging
 
@@ -299,7 +299,7 @@ services:
       - vault-data:/vault/data
       - vault-init:/vault/init
     ports:
-      - "${HOST_PORT_VAULT:-18200}:8200"
+      - "127.0.0.1:${HOST_PORT_VAULT:-18200}:8200"
     # ⚠️ MEANS "usable", not just "listening" (release-blockers-plan.md §3
     # step 1 requirement 3). `vault status` -- measured live against this
     # exact image (hashicorp/vault:1.18) -- exits 1 while nothing is
