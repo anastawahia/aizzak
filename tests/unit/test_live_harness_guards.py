@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tests.integration import conftest as live_harness
+
+
+def test_cluster_role_creation_stays_out_of_the_live_harness() -> None:
+    source = Path(live_harness.__file__).read_text(encoding="utf-8")
+
+    assert "CREATE ROLE" not in source
+    assert "TEST_DATABASE_URL_SUPERUSER" not in source
+    for name in (
+        "_create_outbox_relay_role",
+        "_create_retention_sweeper_role",
+        "_create_metrics_reader_role",
+        "_create_transit_rotator_role",
+    ):
+        assert not hasattr(live_harness, name)
 
 
 def test_missing_live_dependency_skips_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

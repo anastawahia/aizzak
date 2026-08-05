@@ -7,29 +7,20 @@ owns every table, creates RLS policies) and the RLS-*subject* role ``app_rw``
 (``NOINHERIT``, **not** ``BYPASSRLS``, not an owner) that repository tests
 exercise through -- mirroring exactly how the app itself connects.
 
-GRANTs are deliberately not part of any migration (01-data-model §6: seeding
-"الأدوار/الصلاحيات (app_rw)" is a runbook/deploy step, not schema DDL), so
-this conftest reproduces that seeding step itself, once per session, as the
-owner.
+Login roles are cluster-level deployment state, provisioned once by
+``deploy/postgres/initdb/10-roles.sh``. The harness deliberately does not
+create or alter them. This matters for ``retention_sweeper`` and
+``transit_rotator`` in particular: migrations name those roles in RLS
+policies, so a correctly initialized cluster must contain them before the
+test session starts.
 
-**5.1-ب adds a THIRD role, ``outbox_relay``** (SELECT/UPDATE on
-``platform.outbox`` only — the mirror image of ``app_rw``'s INSERT-only
-grant on that same table, reserved by name in this file since §3.40). Unlike
-``aizzak_owner``/``app_rw`` (provisioned once, out of band, before this
-harness's first session — ``docs/log/3.14.md``), ``outbox_relay`` did not
-exist anywhere until this sub-step, so this conftest CREATEs it too, not
-only grants it — see ``_create_outbox_relay_role``/``_grant_outbox_relay``.
-
-**Discovery: ``aizzak_owner`` cannot ``CREATE ROLE``.** It owns every table
-(so it can ``GRANT`` on its own objects, and ``ALTER TABLE ... FORCE ROW
-LEVEL SECURITY``) but is deliberately ``NOSUPERUSER``/not ``CREATEROLE`` —
-role management is cluster-wide, a strictly bigger privilege than owning
-this one test database's objects, and this harness's local ``postgres``
-superuser (a separate, already-recorded throwaway dev credential, distinct
-from ``aizzak_owner``/``app_rw``) is the one role that CAN create a new
-login role. So role CREATION runs under the superuser DSN, once, and the
-SELECT/UPDATE grants still run under ``aizzak_owner`` — the same split
-``_grant_app_rw`` already uses for granting on objects it owns.
+Object GRANTs remain outside migrations (01-data-model §6: seeding
+"الأدوار/الصلاحيات (app_rw)" is a runbook/deploy step, not schema DDL).
+After rebuilding and migrating the test schemas, this conftest reapplies the
+same grant tuples exported by ``app.ops.provision``, under ``aizzak_owner``.
+That owner can grant privileges on its own objects but deliberately remains
+``NOSUPERUSER``/not ``CREATEROLE``; the boundary is now enforced by keeping
+cluster role creation out of the harness entirely.
 """
 
 from __future__ import annotations
@@ -105,25 +96,20 @@ _APP_DSN_DEFAULT = "postgresql+asyncpg://app_rw:app_rw@127.0.0.1:15432/aizzak_te
 # 5.1-ب: the outbox_relay role's own DSN -- see `_grant_outbox_relay`.
 _RELAY_DSN_DEFAULT = "postgresql+asyncpg://outbox_relay:outbox_relay@127.0.0.1:15432/aizzak_test"
 # P1-5 (docs/p1-hardening-plan.md §3 step 8): the retention sweep's own DSN --
-# see `_create_retention_sweeper_role`/`_grant_retention_sweeper`.
+# see `_grant_retention_sweeper`.
 _RETENTION_DSN_DEFAULT = (
     "postgresql+asyncpg://retention_sweeper:retention_sweeper@127.0.0.1:15432/aizzak_test"
 )
 # P1-3 (docs/p1-hardening-plan.md §3 step 10): the `/metrics` endpoint's own
-# DSN -- see `_create_metrics_reader_role`/`_grant_metrics_reader`.
+# DSN -- see `_grant_metrics_reader`.
 _METRICS_DSN_DEFAULT = (
     "postgresql+asyncpg://metrics_reader:metrics_reader@127.0.0.1:15432/aizzak_test"
 )
 # P1-9 (docs/p1-hardening-plan.md §3 step 12): the Transit key-rotation
-# sweep's own DSN -- see `_create_transit_rotator_role`/`_grant_transit_rotator`.
+# sweep's own DSN -- see `_grant_transit_rotator`.
 _TRANSIT_ROTATOR_DSN_DEFAULT = (
     "postgresql+asyncpg://transit_rotator:transit_rotator@127.0.0.1:15432/aizzak_test"
 )
-# 5.1-ب: the harness's local Postgres superuser -- the ONE role that can
-# `CREATE ROLE outbox_relay` (`aizzak_owner` is deliberately not CREATEROLE;
-# see the module docstring's "Discovery" paragraph). A separate, already
-# locally-recorded throwaway dev credential, never `aizzak_owner`/`app_rw`.
-_SUPERUSER_DSN_DEFAULT = "postgresql+asyncpg://postgres:postgres@127.0.0.1:15432/aizzak_test"
 _PROBE_TIMEOUT_S = 1.5
 
 _REDIS_URL_DEFAULT = "redis://127.0.0.1:16379/0"
@@ -376,94 +362,22 @@ async def _execute_all(dsn: str, statements: tuple[str, ...]) -> None:
         await engine.dispose()
 
 
-async def _create_outbox_relay_role(superuser_dsn: str) -> None:
-    """5.1-ب, step 1/2: CREATE the ``outbox_relay`` login role itself.
-
-    Runs under the harness's local Postgres SUPERUSER, not ``aizzak_owner``
-    -- ``CREATE ROLE`` needs ``CREATEROLE``/superuser, a cluster-wide
-    privilege ``aizzak_owner`` deliberately does not have (module docstring's
-    "Discovery" paragraph; confirmed live: ``aizzak_owner`` attempting this
-    statement raises ``InsufficientPrivilegeError``). ``CREATE ROLE`` has no
-    ``IF NOT EXISTS`` clause of its own (unlike ``CREATE SCHEMA``/``CREATE
-    TABLE`` elsewhere in this harness), hence the explicit existence check --
-    this runs once per session and must not fail the SECOND time a
-    session-scoped test run provisions against an already-provisioned
-    cluster.
-    """
-    engine = create_engine(DatabaseSettings(url=superuser_dsn), poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT FROM pg_catalog.pg_roles WHERE rolname = 'outbox_relay'
-                        ) THEN
-                            CREATE ROLE outbox_relay LOGIN PASSWORD 'outbox_relay' NOINHERIT;
-                        END IF;
-                    END
-                    $$;
-                    """
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
 async def _grant_outbox_relay(owner_dsn: str) -> None:
-    """5.1-ب, step 2/2: the relay's OWN least-privilege grants -- SELECT/
+    """5.1-ب: the relay's OWN least-privilege grants -- SELECT/
     UPDATE on ``platform.outbox`` and NOTHING else, the mirror image of
     ``app_rw``'s INSERT-only grant on that same table (``_grant_app_rw``'s
     docstring reserved this role by name since §3.40: "SELECT and UPDATE
     belong to the ``outbox_relay`` role").
 
-    Runs under ``aizzak_owner`` -- unlike role CREATION, granting on an
-    object ``aizzak_owner`` already OWNS needs no elevated cluster privilege,
-    exactly the same footing ``_grant_app_rw`` already stands on for every
-    other table in this file.
+    Runs under ``aizzak_owner``: granting on an object it already owns needs
+    no elevated cluster privilege, exactly the same footing
+    ``_grant_app_rw`` already stands on for every other table in this file.
     """
     await _execute_all(owner_dsn, OUTBOX_RELAY_GRANTS)
 
 
-async def _create_retention_sweeper_role(superuser_dsn: str) -> None:
-    """P1-5 step 8, step 1/3: CREATE the ``retention_sweeper`` login role --
-    the ``_create_outbox_relay_role`` precedent (same superuser DSN, same
-    idempotent existence check; ``aizzak_owner`` still deliberately lacks
-    ``CREATEROLE``, module docstring's "Discovery" paragraph).
-
-    Unlike ``outbox_relay``, this role must exist BEFORE migrations run, not
-    only before its own grants: ``migrations/versions/platform/
-    0003_retention_sweep.py`` issues ``CREATE POLICY ... TO retention_sweeper``,
-    which Alembic validates against `pg_roles` at DDL time -- a role created
-    only after `_run_migrations` would make that migration itself fail.
-    """
-    engine = create_engine(DatabaseSettings(url=superuser_dsn), poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT FROM pg_catalog.pg_roles WHERE rolname = 'retention_sweeper'
-                        ) THEN
-                            CREATE ROLE retention_sweeper LOGIN PASSWORD 'retention_sweeper'
-                                NOINHERIT;
-                        END IF;
-                    END
-                    $$;
-                    """
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
 async def _grant_retention_sweeper(owner_dsn: str) -> None:
-    """P1-5 step 8, step 2/3: the sweeper's OWN least-privilege grants --
+    """P1-5 step 8: the sweeper's OWN least-privilege grants --
     SELECT/DELETE on the three unbounded ledgers and nothing else
     (``app.ops.provision.RETENTION_GRANTS``), never a widened ``app_rw``
     (module docstring's ``_grant_app_rw``, "Neither ``outbox`` nor
@@ -471,83 +385,16 @@ async def _grant_retention_sweeper(owner_dsn: str) -> None:
     await _execute_all(owner_dsn, RETENTION_GRANTS)
 
 
-async def _create_metrics_reader_role(superuser_dsn: str) -> None:
-    """P1-3 step 10, step 1/2: CREATE the ``metrics_reader`` login role --
-    the ``_create_outbox_relay_role``/``_create_retention_sweeper_role``
-    precedent (same superuser DSN, same idempotent existence check). Unlike
-    ``retention_sweeper``, no migration issues a ``CREATE POLICY ... TO
-    metrics_reader`` (``platform.outbox`` carries no RLS policy at all), so
-    this role has no "must exist before migrations" constraint -- it only
-    needs to exist before its own grant, the ``outbox_relay`` precedent.
-    """
-    engine = create_engine(DatabaseSettings(url=superuser_dsn), poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT FROM pg_catalog.pg_roles WHERE rolname = 'metrics_reader'
-                        ) THEN
-                            CREATE ROLE metrics_reader LOGIN PASSWORD 'metrics_reader' NOINHERIT;
-                        END IF;
-                    END
-                    $$;
-                    """
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
 async def _grant_metrics_reader(owner_dsn: str) -> None:
-    """P1-3 step 10, step 2/2: the ``/metrics`` endpoint's OWN least-privilege
+    """P1-3 step 10: the ``/metrics`` endpoint's OWN least-privilege
     grant -- SELECT-only on ``platform.outbox`` and nothing else
     (``app.ops.provision.METRICS_GRANTS``), never a widened ``app_rw``
     (module docstring's ``_grant_app_rw``: ``app_rw`` is INSERT-only there)."""
     await _execute_all(owner_dsn, METRICS_GRANTS)
 
 
-async def _create_transit_rotator_role(superuser_dsn: str) -> None:
-    """P1-9 step 12, step 1/3: CREATE the ``transit_rotator`` login role --
-    the ``_create_retention_sweeper_role`` precedent (same superuser DSN,
-    same idempotent existence check).
-
-    Like ``retention_sweeper``, this role must exist BEFORE migrations run,
-    not only before its own grants: ``migrations/versions/credentials/
-    0002_transit_rotator.py`` and ``migrations/versions/integrations/
-    0002_transit_rotator.py`` both issue ``CREATE POLICY ... TO
-    transit_rotator``, which Alembic validates against `pg_roles` at DDL
-    time -- a role created only after `_run_migrations` would make those
-    migrations themselves fail.
-    """
-    engine = create_engine(DatabaseSettings(url=superuser_dsn), poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT FROM pg_catalog.pg_roles WHERE rolname = 'transit_rotator'
-                        ) THEN
-                            CREATE ROLE transit_rotator LOGIN PASSWORD 'transit_rotator'
-                                NOINHERIT;
-                        END IF;
-                    END
-                    $$;
-                    """
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
 async def _grant_transit_rotator(owner_dsn: str) -> None:
-    """P1-9 step 12, step 2/3: the rotator's OWN least-privilege grants --
+    """P1-9 step 12: the rotator's OWN least-privilege grants --
     SELECT plus column-scoped UPDATE (the ciphertext column alone) on the
     three Transit-ciphertext-bearing tables and nothing else
     (``app.ops.provision.TRANSIT_ROTATOR_GRANTS``), never a widened
@@ -558,7 +405,7 @@ async def _grant_transit_rotator(owner_dsn: str) -> None:
 @pytest.fixture(scope="session")
 def live_db() -> Iterator[LiveDbDsns]:
     """Probe for a live local Postgres, rebuild+migrate+grant once per
-    session, and hand out all four DSNs. Skips the whole live_db suite
+    session, and hand out the least-privilege DSNs. Skips the whole live_db suite
     (rather than erroring) when Postgres is unreachable."""
     owner_dsn = os.environ.get("TEST_DATABASE_URL", _OWNER_DSN_DEFAULT)
     _skip_unless_reachable(owner_dsn, "PostgreSQL")
@@ -570,20 +417,13 @@ def live_db() -> Iterator[LiveDbDsns]:
     transit_rotator_dsn = os.environ.get(
         "TEST_DATABASE_URL_TRANSIT_ROTATOR", _TRANSIT_ROTATOR_DSN_DEFAULT
     )
-    superuser_dsn = os.environ.get("TEST_DATABASE_URL_SUPERUSER", _SUPERUSER_DSN_DEFAULT)
-
     asyncio.run(_rebuild_schema(owner_dsn))
-    # `retention_sweeper`/`transit_rotator` must exist BEFORE migrations run --
-    # see `_create_retention_sweeper_role`'s/`_create_transit_rotator_role`'s
-    # docstrings.
-    asyncio.run(_create_retention_sweeper_role(superuser_dsn))
-    asyncio.run(_create_transit_rotator_role(superuser_dsn))
+    # Cluster roles already exist from `deploy/postgres/initdb/10-roles.sh`;
+    # migrations may therefore name retention_sweeper/transit_rotator in RLS.
     _run_migrations(owner_dsn)
     asyncio.run(_grant_app_rw(owner_dsn))
-    asyncio.run(_create_outbox_relay_role(superuser_dsn))
     asyncio.run(_grant_outbox_relay(owner_dsn))
     asyncio.run(_grant_retention_sweeper(owner_dsn))
-    asyncio.run(_create_metrics_reader_role(superuser_dsn))
     asyncio.run(_grant_metrics_reader(owner_dsn))
     asyncio.run(_grant_transit_rotator(owner_dsn))
 
