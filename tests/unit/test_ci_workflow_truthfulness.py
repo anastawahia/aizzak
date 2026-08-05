@@ -43,10 +43,10 @@ with no services would fail the suite instead of skipping it.
 Same shape as ``test_deploy_worker_default.py`` (step 3): documents drifted
 and nothing compared them. This compares them.
 
-Note the marker-expression check is *vacuously* satisfied today, since the
-surviving ``pytest`` step carries no ``-m`` at all. That is deliberate: it
-stands guard over a re-introduction, and the two checks either side of it
-(orphan markers, live gating) are the ones with teeth right now.
+The quality job still collects the whole suite on a bare runner, while the
+second job deliberately carries a negative ``-m`` expression and stands up
+the local services that remain selected.  The marker-expression check now has
+direct teeth: every name excluded by that job must remain declared and used.
 """
 
 from __future__ import annotations
@@ -315,11 +315,9 @@ def test_push_branches_are_real_branches_of_this_repository() -> None:
     )
 
 
-def test_every_marker_the_workflow_selects_on_is_declared_and_applied() -> None:
-    """`pytest -m <marker>` on a marker nothing applies deselects the entire
-    suite and exits 5. The step then fails for a reason that has nothing to do
-    with the code -- or, if the workflow never fires at all, nobody ever finds
-    out. Either way the job proves nothing about the software."""
+def test_integration_job_selects_real_markers_and_requires_live_dependencies() -> None:
+    """The integration job must fail rather than skip when its local stack is
+    unavailable, and every marker in its selector must name real tests."""
     selected = _markers_selected_in_workflow()
     undeclared = sorted(selected - _declared_markers())
     assert not undeclared, (
@@ -334,6 +332,69 @@ def test_every_marker_the_workflow_selects_on_is_declared_and_applied() -> None:
         "marker to the tests it is meant to select, or delete the step that "
         "selects on it."
     )
+
+    jobs = _workflow().get("jobs")
+    assert isinstance(jobs, dict)
+    integration = jobs.get("integration")
+    assert isinstance(integration, dict), (
+        "ci.yml has no integration job -- the quality job's live tests skip "
+        "on a bare runner, so removing this job removes all live CI coverage."
+    )
+    assert integration.get("needs") == "quality", (
+        "the integration job must run only after all five quality gates pass"
+    )
+    job_env = integration.get("env")
+    assert isinstance(job_env, dict)
+    assert job_env.get("COMPOSE_FILE") == "docker-compose.yml:docker-compose.test.yml", (
+        "the integration job must name docker-compose.test.yml explicitly; "
+        "that opt-in overlay is the only source of the test-database script"
+    )
+
+    steps = integration.get("steps")
+    assert isinstance(steps, list)
+    pytest_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("run"), str) and "pytest" in step["run"]
+    ]
+    assert len(pytest_steps) == 1, (
+        f"expected exactly one pytest step in the integration job, found {len(pytest_steps)}"
+    )
+    pytest_env = pytest_steps[0].get("env")
+    assert isinstance(pytest_env, dict) and str(pytest_env.get("REQUIRE_LIVE")) == "1", (
+        "the integration pytest step must set REQUIRE_LIVE=1; without it an "
+        "unavailable Compose dependency becomes a green skip"
+    )
+
+    scripts = "\n".join(
+        step["run"] for step in steps if isinstance(step, dict) and isinstance(step.get("run"), str)
+    )
+    for required in (
+        "vault-bootstrap",
+        "minio-bootstrap",
+        "migrate",
+        "/opt/aizzak/testdb/20-test-database.sh",
+        ". ./.env.test",
+    ):
+        assert required in scripts, (
+            f"the integration job no longer invokes {required!r}; its live "
+            "tests would be unprovisioned or would read the wrong environment"
+        )
+
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            continue
+        syntax = subprocess.run(
+            ["bash", "-n"],
+            input=step["run"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert syntax.returncode == 0, (
+            f"invalid Bash in integration step {step.get('name')!r}: {syntax.stderr}"
+        )
 
 
 def test_no_declared_marker_is_an_orphan() -> None:
