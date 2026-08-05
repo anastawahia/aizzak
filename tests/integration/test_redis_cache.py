@@ -1,6 +1,6 @@
 """Live-Redis tests for ``RedisCache`` (02-port-contracts §1.7, Phase 2.3).
 
-Runs against a real, local Redis 7 (no Docker -- see
+Runs against the real local Compose Redis 7 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_redis`` when
 unreachable. Unlike the Postgres harness there is NO flush/rebuild: the
 server may hold unrelated data, so every test keys under its own unique

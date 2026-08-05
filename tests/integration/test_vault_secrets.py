@@ -1,6 +1,6 @@
 """Live-Vault tests for ``VaultSecrets`` (02-port-contracts §1.9, Phase 2.6).
 
-Runs against a real, local Vault dev server (no Docker -- see
+Runs against the real persistent local Compose Vault (see
 ``tests/integration/conftest.py``); auto-skips via ``live_vault`` when
 unreachable. ``transit_key``/``kv_path`` hand out fresh, uniquely-named
 per-test artifacts (created/removed through the raw root client, since key

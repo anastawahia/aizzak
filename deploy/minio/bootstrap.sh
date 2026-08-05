@@ -18,7 +18,7 @@ done
 mc mb --ignore-existing "aizzak/${MINIO_BUCKET}" >/dev/null
 echo "minio-bootstrap: bucket ${MINIO_BUCKET} ready"
 
-# ── the live test harness's bucket + scoped account (plan أ-2) ─────────────
+# ── the live test harness's bucket + scoped account (docs/log/3.99.md) ───
 # `tests/integration/test_minio_storage.py` runs against a REAL MinIO through a
 # service account that can see ONE bucket and nothing else -- that blast-radius
 # limit is itself asserted by `test_out_of_scope_bucket_is_denied_not_leaked`.

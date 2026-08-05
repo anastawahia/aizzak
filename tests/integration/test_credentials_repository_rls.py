@@ -2,7 +2,7 @@
 §3), plus the R4 hardening index and the 01 §3.1 platform-credentials-read
 policy.
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. A credential builder mirrors
 ``tests/unit/test_credentials_use_cases.py``, except every id is a *real*

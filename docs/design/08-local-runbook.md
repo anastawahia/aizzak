@@ -24,6 +24,8 @@
 | `minio` | minio | 9000/9001 | تخزين الكائنات |
 | `qdrant` | qdrant | 6333 | مخزن المتجهات |
 | `vault` | hashicorp/vault | 8200 | الأسرار + Transit (تخزين `file` دائم — release-blockers-plan.md §3 خطوة 1) |
+| `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية؛ ينشرها ملف الاختبار على `127.0.0.1:8080` فقط |
+| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | minio/mc | — | إنشاء الدلو |
@@ -44,6 +46,18 @@ cp .env.example .env      # املأ القيم غير السرّية؛ أسرا
 docker compose up -d      # الترتيب كلّه مُرمَّزٌ في depends_on
 ```
 هذا وحده يكفي محليّاً: يرفع البيانات، ثمّ الخدمات الأربع لمرّةٍ واحدة (تهيئة Vault وMinIO والشهادة والهجرات)، ثمّ التطبيق والمُرحّل والحافّة.
+
+**حزام الاختبارات الحيّ** يستعمل المكدّس نفسه، لكنّه يطلب ملف التجاوز صراحةً كي ينشر التضمين ويُحضِر سكربت قاعدة الاختبار:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.test.yml \
+  exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh
+set -a; . ./.env.test; set +a
+REQUIRE_LIVE=1 pytest -rs
+```
+
+`docker-compose.test.yml` لا يُقرأ تلقائياً، ولا ينشئ قاعدة الاختبار عند الرفع: السطر الثاني فعل تزويدٍ صريح قابل لإعادة التشغيل. و`.env.test` ملف محلّي متجاهَل يحمل الاعتمادات الفعلية؛ لا تستبدله بقيم `.env.test.example` النائبة.
 
 > ⚠️ **بين السطرين — قِس أطوال الأسرار الثمانية، ولا تكتفِ بحارس `:?`.** كلمات مرور Postgres السبع (‏المستخدم الخارق + أصحاب الأدوار الستّة) و`MINIO_ROOT_PASSWORD` معها محميّةٌ كلّها في `docker-compose.yml` بـ`${VAR:?...}`، والحارس يرفض **غير المضبوط والفارغ** فقط: قيمة `change-me-*` المنسوخة من `.env.example` تمرّ صامتة. و`10-roles.sh` يعمل **مرّةً واحدةً** عند تهيئة الحجم الأوّل ⇒ ما يُقرأ هنا يُولد به الدور و**يبقى**: لا إصلاحَ بعدها إلّا `ALTER ROLE` يدويّةً بصلاحيّة المستخدم الخارق (‏§3.3‑ب). ‏`MINIO_ROOT_PASSWORD` أهون قليلاً — MinIO يقرأ جذره من البيئة في **كلّ** إقلاع، فتغييرُه لاحقاً يسري بإعادة إنشاء الحاوية — لكنّه يبقى اعتماداً منشوراً حتّى تفعل، و`deploy/vault/bootstrap.sh` يبذر القيمة نفسها في `secret/minio` فيلزم أن يُعاد تشغيله معها. هذا ليس افتراضاً: `TRANSIT_ROTATOR_PASSWORD` وُجد placeholder في `.env` الحيّة يوم §3.97 (الفقرة (هـ))، ولا حارسَ آليّ يكشفه لأنّ `.env` غير متعقَّبةٍ في git. لا تطبع القيمة — الطول وحده:
 

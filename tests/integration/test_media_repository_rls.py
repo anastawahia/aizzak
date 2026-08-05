@@ -2,7 +2,7 @@
 §3: "RLS: ضبط app.workspace_id يعزل الصفوف؛ غياب السياق ⇒ صفر صفوف؛ محاولة
 عبور مستأجر ⇒ لا تسرّب").
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. A job builder mirrors ``tests/unit/test_media_module.py``'s
 ``_job()``, except every id is a *real* ``new_uuid7()`` string rather than an

@@ -1,7 +1,7 @@
 """Live-Postgres tests for ``SqlDocumentRepository`` + RLS
 (09-testing-strategy §3).
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. The two binding behaviours under test beyond the standard
 round-trip/RLS pattern: ``add_chunks``'s idempotent ``ON CONFLICT

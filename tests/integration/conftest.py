@@ -1,8 +1,8 @@
-"""Live-Postgres fixtures (no Docker) for ``pytest.mark.live_db`` tests.
+"""Fixtures for the container-backed local live-integration harness.
 
-Talks to a real, already-provisioned local PostgreSQL 16 (08-local-runbook's
-role/DB topology, adapted to a native WSL harness rather than
-docker-compose): DB ``aizzak_test`` owned by ``aizzak_owner`` (runs Alembic,
+Talks to the real, already-provisioned Compose PostgreSQL 16 described by
+08-local-runbook's role/DB topology: DB ``aizzak_test`` owned by
+``aizzak_owner`` (runs Alembic,
 owns every table, creates RLS policies) and the RLS-*subject* role ``app_rw``
 (``NOINHERIT``, **not** ``BYPASSRLS``, not an owner) that repository tests
 exercise through -- mirroring exactly how the app itself connects.
@@ -96,12 +96,10 @@ from app.ops.provision import (
 )
 
 # Every default below addresses the COMPOSE stack, on the offset host ports
-# `docker-compose.yml` publishes (15432/16379/16333/18200) rather than the
-# canonical ones the native services hold. The alternative -- leaving the
-# canonical defaults and letting `.env.test` correct them -- is what makes a
-# forgotten `.env.test` a SILENT green run: a wrong default that the probe
-# agrees with skips nothing and tests the wrong server. Pointed here, a
-# forgotten `.env.test` fails audibly instead.
+# `docker-compose.yml` publishes (15432/16379/16333/18200), rather than the
+# canonical ports used only inside the Compose network. `.env.test` supplies
+# the real local credentials; if it is forgotten, the probes still address
+# the intended stack and any placeholder-credential mismatch fails audibly.
 _OWNER_DSN_DEFAULT = "postgresql+asyncpg://aizzak_owner:aizzak_owner@127.0.0.1:15432/aizzak_test"
 _APP_DSN_DEFAULT = "postgresql+asyncpg://app_rw:app_rw@127.0.0.1:15432/aizzak_test"
 # 5.1-ب: the outbox_relay role's own DSN -- see `_grant_outbox_relay`.
@@ -136,9 +134,8 @@ _REDIS_URL_DEFAULT = "redis://127.0.0.1:16379/0"
 # The account used to be provisioned BY HAND against a native `minio.service`
 # on the canonical port (status-doc §3.19). That service is gone, and the
 # bucket + account are now created by `deploy/minio/bootstrap.sh` against the
-# Compose MinIO -- which publishes on 19000, because 9000 is left free for a
-# native server (`docker-compose.yml`'s own host-offset rule). Hand-provisioned
-# state that no longer matched a rebuilt container is exactly how this suite
+# Compose MinIO -- which publishes its stable host interface on 19000.
+# Hand-provisioned state that no longer matched a rebuilt container is how this suite
 # came to fail with `InvalidAccessKeyId` while looking correctly configured.
 _MINIO_ENDPOINT_DEFAULT = "127.0.0.1:19000"
 _MINIO_ACCESS_DEFAULT = "aizzak_test"
@@ -147,14 +144,11 @@ _MINIO_BUCKET_DEFAULT = "aizzak-test"
 
 _QDRANT_URL_DEFAULT = "http://127.0.0.1:16333"
 
-# The central embedding service (2.10) is Docker-only (``services/embedding/
-# Dockerfile`` bakes model weights at build time) -- there is no native-run
-# convention for it the way postgresql@16-main/redis-server/minio have. The
-# probe below still follows the ``live_qdrant``/``live_ollama`` precedent
-# exactly (TCP-reachable -> real, unreachable -> clean skip), so it starts
-# working the moment an operator publishes the container's 8080 locally;
-# absent Docker (09-testing-strategy §7's own documented limit) it skips in
-# every environment this repo's own gates run in today.
+# The central embedding service (2.10) is container-only
+# (``services/embedding/Dockerfile`` bakes model weights at build time).
+# ``docker-compose.test.yml`` explicitly publishes it to the host for this
+# harness; the deployment topology keeps it internal. The probe follows the
+# same reachable-or-skip/REQUIRE_LIVE policy as the other local dependencies.
 _EMBEDDING_URL_DEFAULT = "http://127.0.0.1:8080"
 
 _VAULT_ADDR_DEFAULT = "http://127.0.0.1:18200"
@@ -166,9 +160,8 @@ _VAULT_CLIENT_TIMEOUT_S = 5.0
 # it and then fails thirteen times with 403, which reads as broken tests
 # rather than as an unexported secret. Absent, it says so once, in words.
 
-# The platform's sole local LLMProvider (DD-13, 2.8-a): no container, no
-# Docker -- a native Ollama instance reachable from WSL by passthrough
-# (confirmed live: Windows-side ``ollama serve``, port 11434).
+# The platform's sole local LLMProvider (DD-13, 2.8-a): a native WSL systemd
+# service, deliberately outside Compose, listening on port 11434.
 _OLLAMA_BASE_URL_DEFAULT = "http://127.0.0.1:11434"
 _OLLAMA_MODEL_DEFAULT = "gemma3:1b"
 # Comfortably above the confirmed-live ~43s cold ``load_duration`` for a

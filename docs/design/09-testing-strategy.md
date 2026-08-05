@@ -3,7 +3,7 @@
 > الأدوات (`DD‑14`): `pytest` + `pytest-asyncio` + `pytest-cov` · `import-linter` (D‑17) · `mypy --strict` · `Ruff`.
 > عقود الاعتماد التنفيذية في [`../../.importlinter`](../../.importlinter) (الجذر).
 >
-> ⚠️ **تسويةٌ مع الواقع (‏`p1-hardening-plan.md §3` خطوة 14، ن‑5).** هذه الوثيقة كانت تصف `testcontainers` أداةَ اختبارات التكامل منذ `DD‑14`؛ الواقع منذ §3.14 (2026 مبكراً) مختلفٌ عمداً: الحزمة كلّها تعمل على **خدماتٍ محلّيّةٍ أصليّة حيّة** — PostgreSQL 16 · Redis · MinIO · Qdrant · Vault · Ollama، كلّها داخل WSL بلا Docker — بوسوم `pytest.mark.live_*` تسبر الاتّصال وتتخطّى بصدقٍ حين تغيب الخدمة (`tests/integration/conftest.py`). `testcontainers>=4.8` كانت مُعلَنةً في `pyproject.toml` **بلا مستوردٍ واحدٍ حقيقيّ** في المستودع كلّه (تحقُّقٌ بـ`grep` شامل) — فحُذفت من التبعيّات (‏`[project.optional-dependencies].dev` و`[[tool.mypy.overrides]]`) و§1/§3/§6 أدناه صُحِّحت لتصف الواقع الحيّ لا الأداة المهجورة.
+> ✅ **الواقع الحالي (2026‑08‑05).** لا تستعمل الحزمة `testcontainers`: PostgreSQL 16 وRedis وMinIO وQdrant وVault وخدمة التضمين تأتي من مكدّس Compose نفسه، بينما يبقى Ollama خدمة systemd أصليّة داخل WSL. ملف `docker-compose.test.yml` الاختياريّ ينشر التضمين ويُحضِر سكربت قاعدة الاختبار، و`.env.test` يوجّه المحضن إلى منافذ المضيف المزاحة. وسوم `pytest.mark.live_*` تتخطّى افتراضاً عند غياب اعتماد محلّي؛ أمّا التشغيل الذي يعلن `REQUIRE_LIVE=1` فيحوّل الغياب إلى فشلٍ صريح. `testcontainers>=4.8` حُذفت سلفاً لأنّ المستودع لا يستوردها.
 
 > **ملاحظة نطاق:** `Requirements-v1.md` (`ARC‑14`/`AC‑09`) و`implementation-plan.md`/`00-detailed-design-decisions.md`/`12-module-authoring-guide.md`/`ROADMAP.md` ما زالت تسمّي `testcontainers` ضمن أدوات `DD‑14` — لم تُلمَس في هذه الخطوة (نطاقها هذه الوثيقة وحدها)؛ مسجَّلةٌ في `p1-hardening-plan.md §5‑ب` لمن يتولّى تصفيتها لاحقاً.
 
@@ -12,7 +12,7 @@
         ┌───────────────┐
         │  E2E / smoke  │  قليلة — تدفّق كامل عبر HTTP + بنية حقيقية
         ├───────────────┤
-        │  Integration  │  محوّلات فعلية عبر خدماتٍ محلّيّةٍ حيّة، لا Docker (PG16‑WSL/Redis/MinIO/Qdrant/Vault، وسوم `live_*`)
+        │  Integration  │  محوّلات فعلية عبر Compose + Ollama أصلي داخل WSL (وسوم `live_*`)
         ├───────────────┤
         │  Architecture │  import-linter — حدود الطبقات والوحدات (سريعة، بلا I/O)
         ├───────────────┤
@@ -29,7 +29,7 @@
 - الهدف: تغطية عالية للنطاق والتطبيق (≥ 90%).
 
 ## 3) اختبارات التكامل (Integration) — المحوّلات
-عبر خدماتٍ محلّيّةٍ **أصليّة حيّة** (لا Docker، لا `testcontainers`): PostgreSQL 16 · Redis · MinIO · Qdrant · Vault · Ollama داخل WSL، بوسوم `pytest.mark.live_db`/`live_redis`/`live_minio`/`live_qdrant`/`live_vault`/`live_ollama`/`live_embedding` — كلٌّ منها يسبر اتّصال خدمته ويتخطّى بصدقٍ (`skip`، لا فشل) حين تتعذّر (`tests/integration/conftest.py`؛ `pyproject.toml`'s `markers`). ما يُختبَر:
+عبر البنية المحليّة الحقيقية: PostgreSQL 16 · Redis · MinIO · Qdrant · Vault · التضمين من Compose، وOllama أصلي داخل WSL. يوجّه `docker-compose.test.yml` + `.env.test` المحضن إلى هذه الخدمات بوسوم `pytest.mark.live_db`/`live_redis`/`live_minio`/`live_qdrant`/`live_vault`/`live_ollama`/`live_embedding`. كل وسم يسبر عنوانه؛ التشغيل العادي يتخطّى حين يتعذّر، والتشغيل الصارم `REQUIRE_LIVE=1` يفشل كي لا تخضرّ حزمةٌ وعدت ببنيةٍ مزوّدة (`tests/integration/conftest.py`؛ أوصاف `markers` في `pyproject.toml`). ما يُختبَر:
 | المحوّر | ما يُختبر |
 |---------|-----------|
 | SQL Repositories | CRUD + قفل تفاؤلي (`version`) + الترقيم بالمؤشّر |
@@ -48,6 +48,8 @@
 
 > **اختبار العزل حرج:** لكل جدول مستأجَر (يشمل `integrations.*` و`usage.*`)، حالة تُثبت أن مستأجراً لا يرى صفوف آخر (RLS + الترشيح التطبيقي معاً).
 > **مطابقة معايير القبول:** حالات هذه الوثيقة تُغطّي `AC‑05` (عزل المستأجر — القسم 3 · RLS)، `AC‑06` (دورة حياة الوكيل — القسم 2)، `AC‑08` (Idempotency الأحداث — القسمان 3 و5)، إضافةً إلى `AC‑14` (توسّع الوحدات)، `AC‑15` (integrations)، `AC‑16` (usage) من المتطلبات.
+>
+> ⚠️ **حقيقة MinIO ذات الأطراف الثلاثة.** التزويد يقرأ `MINIO_TEST_SECRET_KEY`، والمحضن يقرأ `TEST_MINIO_SECRET_KEY`، و`conftest.py::_MINIO_SECRET_DEFAULT` يبقى `aizzak-test-secret`. الحارس يرفض اختلاف الاسمين حين يكونان مضبوطين معاً، لكنه لا يربطهما بنيوياً. بعد تدوير الحساب، تشغيلٌ بلا `.env.test` يستعمل القيمة النائبة ويصل MinIO ثم يفشل `SignatureDoesNotMatch` بصوتٍ عالٍ؛ لا يتحوّل إلى تخطٍّ.
 
 ## 4) اختبارات المعمارية (Architecture) — الحدود
 `tests/architecture/test_import_contracts.py` يشغّل import-linter برمجياً في CI:
@@ -74,11 +76,10 @@ def test_import_contracts():
 ## 6) بيانات وتهيئة الاختبار
 - Fixtures: `execution_context(workspace_id, roles)` لضبط RLS في اختبارات التكامل.
 - مصنع كيانات (builders) لكل Aggregate.
-- عزل: قاعدة `aizzak_test` (‏PG16 أصليّة، واحدة) لا schema/DB مؤقّتة لكلّ اختبار — العزل عبر معرّفاتٍ/بادئاتٍ فريدة (‏`UUIDv7`) تُكنَس صراحةً في كلّ اختبار، ومعاملاتٌ تُلغى حيث يلائم. الأدوار الستّة (`aizzak_owner` المُهاجِر · `app_rw` الخاضع لـRLS · `outbox_relay` · `retention_sweeper` · `metrics_reader` · `transit_rotator`) ومنحها تُبذَر **مرّةً واحدةً لكلّ جلسة pytest**، كخطوة `conftest` لا هجرة (‏01-data-model §6: منح الأدوار خطوةُ نشرٍ لا DDL).
+- عزل: قاعدة `aizzak_test` الدائمة في PostgreSQL الحاوي، لا schema/DB مؤقّتة لكلّ اختبار — العزل عبر معرّفاتٍ/بادئاتٍ فريدة (‏`UUIDv7`) تُكنَس صراحةً في كلّ اختبار، ومعاملاتٌ تُلغى حيث يلائم. تُنشأ الأدوار الستّة عند تهيئة حجم Postgres، ويعيد المحضن الهجرات والمنح لكلّ جلسة (‏01-data-model §6: منح الأدوار خطوةُ نشرٍ لا DDL).
 
 ## 7) البوّابات (CI Gates)
-`ruff format --check` → `ruff check` → `mypy --strict` → `lint-imports` → `pytest`.
-أي فشل ⇒ كسر البناء. تُشغَّل عقود import-linter مبكراً (سريعة) قبل اختبارات التكامل الأبطأ.
+`quality` يشغّل `ruff format --check` → `ruff check` → `mypy --strict` → `lint-imports` → `pytest -rs`؛ البنية المحليّة غائبة على العدّاء فتظهر تخطّياتها بأسبابها. بعده تشغّل وظيفة `integration` ملف التجاوز وسكربتات التزويد نفسها، ثم تختبر الاعتمادات المحلية المختارة تحت `REQUIRE_LIVE=1`. Ollama/التضمين مستبعدان من الوظيفة البعيدة لحجم النموذج/الصورة، وOpenAI/Exa لاحتياجهما مفاتيح مدفوعة. أي فشل ⇒ كسر البناء.
 
 ## 8) أهداف التغطية
 > تُقاس عبر **`pytest-cov`** (`--cov` + `--cov-report`)، وتُفرض العتبات الرقمية أدناه في CI (مثل `--cov-fail-under`).

@@ -1,7 +1,7 @@
 """Live-Postgres tests for ``SqlRoleAssignmentRepository`` + RLS
 (09-testing-strategy §3).
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. An assignment builder mirrors
 ``tests/unit/test_access_use_cases.py``, except every id is a *real*

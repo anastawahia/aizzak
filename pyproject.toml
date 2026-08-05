@@ -75,9 +75,9 @@ dev = [
     # `testcontainers` was declared here through P1 step 14 -- deliberately
     # dropped (docs/p1-hardening-plan.md §3 step 14, ن-5): a repo-wide `grep`
     # found zero real `import testcontainers` anywhere in `src`/`tests`; the
-    # whole integration suite runs against native local services (PG16/
-    # Redis/MinIO/Qdrant/Vault in WSL, no Docker) gated by `pytest.mark.
-    # live_*` instead (`tests/integration/conftest.py`,
+    # whole integration suite runs against the local Compose infrastructure
+    # (plus native WSL Ollama) gated by `pytest.mark.live_*` instead
+    # (`tests/integration/conftest.py`,
     # `docs/design/09-testing-strategy.md`). Removing the package from
     # `pyproject.toml` does NOT uninstall it from an already-provisioned
     # dev venv -- see that same step's log for why the venv was
@@ -207,13 +207,13 @@ addopts = "-q --strict-markers"
 # honestly when it is unreachable. Guarded by
 # `tests/unit/test_ci_workflow_truthfulness.py`.
 markers = [
-    "live_db: requires a live local PostgreSQL 16 at 127.0.0.1:5432 (no Docker); auto-skips if unreachable",
-    "live_redis: requires a live local Redis at 127.0.0.1:6379 (no Docker); auto-skips if unreachable",
-    "live_minio: requires a live local MinIO at 127.0.0.1:9000 (no Docker); auto-skips if unreachable",
-    "live_qdrant: requires a live local Qdrant at 127.0.0.1:6333 (no Docker); auto-skips if unreachable",
-    "live_vault: requires a live local Vault at 127.0.0.1:8200 (no Docker); auto-skips if unreachable",
-    "live_ollama: requires a live local Ollama at 127.0.0.1:11434 (no Docker); auto-skips if unreachable",
-    "live_embedding: requires a live local central embedding service (2.10) at 127.0.0.1:8080 (Docker-only, services/embedding/Dockerfile); auto-skips if unreachable",
+    "live_db: requires the local Compose PostgreSQL 16 at 127.0.0.1:15432; auto-skips if unreachable",
+    "live_redis: requires the local Compose Redis at 127.0.0.1:16379; auto-skips if unreachable",
+    "live_minio: requires the local Compose MinIO at 127.0.0.1:19000; auto-skips if unreachable",
+    "live_qdrant: requires the local Compose Qdrant at 127.0.0.1:16333; auto-skips if unreachable",
+    "live_vault: requires the persistent local Compose Vault at 127.0.0.1:18200; auto-skips if unreachable",
+    "live_ollama: requires the native WSL Ollama at 127.0.0.1:11434; auto-skips if unreachable",
+    "live_embedding: requires the Compose central embedding service (2.10) published at 127.0.0.1:8080 by docker-compose.test.yml; auto-skips if unreachable",
     "live_openai: exercises the real OpenAI API; requires TEST_OPENAI_API_KEY in the environment; auto-skips otherwise",
     "live_web_search: exercises the real Exa web-search API; requires TEST_EXA_API_KEY in the environment; auto-skips otherwise",
     "live_stack_slo: P1-6 (docs/p1-hardening-plan.md §3 step 13) — drives the real ASGI app against the live docker-compose stack's Postgres/PgBouncer; requires RUN_P1_6_LOAD_TEST=1 AND the aizzak_default network (never auto-run, unlike the other live_* markers above; see tests/integration/test_conversation_get_slo_live.py)",

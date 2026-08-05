@@ -1,7 +1,7 @@
 """Live-Postgres tests for ``SqlConnectionRepository`` +
 ``SqlMcpServerRepository`` + RLS (09-testing-strategy §3).
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. The module-specific behaviour under test beyond the standard
 pattern: ``update_tokens`` is a NARROW hot-path write (INV-I3 lazy refresh,

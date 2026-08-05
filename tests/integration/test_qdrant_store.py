@@ -1,7 +1,7 @@
 """Live-Qdrant tests for ``QdrantVectorStore`` (02-port-contracts §1.5, D-01,
 Phase 2.5).
 
-Runs against a real, local Qdrant (no Docker -- see
+Runs against the real local Compose Qdrant (see
 ``tests/integration/conftest.py``); auto-skips via ``live_qdrant`` when
 unreachable. Every test gets its own fresh, uniquely-named collection
 (``qdrant_collection``), created here (never by the fixture itself) and

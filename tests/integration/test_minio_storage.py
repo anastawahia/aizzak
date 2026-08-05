@@ -1,6 +1,6 @@
 """Live-MinIO tests for ``MinioStorage`` (02-port-contracts §1.6, Phase 2.4).
 
-Runs against a real, local MinIO (no Docker -- see
+Runs against the real local Compose MinIO (see
 ``tests/integration/conftest.py``); auto-skips via ``live_minio`` when
 unreachable. The harness uses a dedicated service account scoped to bucket
 ``aizzak-test`` ONLY (provisioned once, status-doc §3.19 -- the PG

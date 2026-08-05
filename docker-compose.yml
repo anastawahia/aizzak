@@ -1,14 +1,12 @@
 # AIZZAK deployment topology (7.1 · 08-local-runbook §2, D-26).
 #
-# ── Runs IN PARALLEL with the native services, never instead of them ───────
-# postgresql@16-main, pgbouncer, redis-server and minio are installed as
-# system services on this host and own the canonical ports; the live test
-# harness (tests/integration/) is provisioned against them and must keep
-# working untouched. So: INSIDE this network every service keeps its
-# canonical name and port exactly as 08 §2 specifies (`pgbouncer:6432`,
-# `minio:9000`, ...), and only the HOST publications are offset. Nothing in
-# the application's configuration differs between the two worlds -- the
-# switch is `.env` alone.
+# ── One Compose topology for deployment and the live test harness ─────
+# The native PostgreSQL/PgBouncer/Redis/MinIO installations were removed by
+# containerised-test-harness-plan-v2. Inside this network every service keeps
+# its canonical name and port (`pgbouncer:6432`, `minio:9000`, ...); the
+# offset HOST publications are the stable local operator/test interface.
+# `docker-compose.test.yml` is an explicit opt-in overlay: it publishes the
+# otherwise-internal embedding service and mounts the test-database script.
 #
 # ── Every image tag is pinned ──────────────────────────────────────────────
 # The two pre-existing ad-hoc containers ran `:latest`. A deploy artifact
@@ -216,9 +214,8 @@ services:
 
   minio:
     # Isolated by construction: its own volume and its own root credentials.
-    # The host's minio.service is a SHARED instance ("MinIO object storage
-    # (avatars)") belonging to another workload, and this stack's objects
-    # have no business living there.
+    # The opt-in bucket-scoped live-test account is provisioned by
+    # `minio-bootstrap`; it never reuses the root identity.
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -401,20 +398,15 @@ services:
 
   # ─────────────────────────────── app plane ───────────────────────────────
   # ── the host's Ollama, made reachable from the Compose network ───────────
-  # WHY THIS EXISTS. Ollama runs as a WINDOWS process bound to 127.0.0.1:11434,
-  # and this WSL instance uses `networkingMode=mirrored`, which shares the
-  # Windows loopback with WSL -- so `curl 127.0.0.1:11434` succeeds from the
-  # WSL shell and looks like the problem is solved. It is not: a container has
-  # its OWN network namespace and is outside that sharing, so `app` reaching
-  # host.docker.internal (172.17.0.1, the docker0 gateway) got `Connection
-  # refused` -- routed correctly, nothing listening. Measured both ways before
-  # this service was written.
+  # WHY THIS EXISTS. Ollama runs as a native WSL systemd service bound to
+  # 127.0.0.1:11434. A container has its own network namespace, so its
+  # localhost is not the WSL host and it cannot reach that listener directly.
   #
-  # This forwarder joins the WSL host namespace (`network_mode: host`), where
-  # 127.0.0.1 IS the mirrored Windows loopback, and re-publishes Ollama on the
-  # docker0 gateway address that `host.docker.internal` already resolves to.
-  # `app` therefore needs NO url change: OLLAMA_BASE_URL's existing default
-  # keeps working, and it works the same for the `worker` profile.
+  # This forwarder joins the WSL host namespace (`network_mode: host`) and
+  # re-publishes Ollama on the docker0 gateway address that
+  # `host.docker.internal` already resolves to.
+  # The local WSL `.env` points `OLLAMA_BASE_URL` at this bridge; `app` and
+  # every worker consume the same shared environment anchor.
   #
   # `bind=172.17.0.1` is the security-relevant half and is NOT cosmetic: the
   # obvious `TCP-LISTEN:...` on 0.0.0.0 would, under mirrored networking,
@@ -422,12 +414,11 @@ services:
   # address, only containers on this host can reach it.
   #
   # It LISTENS ON 11435, not 11434, and that is forced rather than chosen:
-  # under mirrored networking the Windows listener reserves 11434 across the
-  # shared stack, so binding it here fails `Address in use` even though `ss`
-  # shows no Linux listener at all. 11435 in, 11434 out. `.env` therefore
-  # points OLLAMA_BASE_URL at :11435; the Compose default above stays :11434,
-  # which is the correct value for Docker Desktop or a native Linux Ollama,
-  # where this whole service is unnecessary.
+  # the native WSL listener already owns 11434, so the bridge listens on
+  # 11435 and forwards to 11434. The local `.env` therefore points containers
+  # at `host.docker.internal:11435`; the live harness reaches native Ollama
+  # directly at `127.0.0.1:11434`. The generic Compose fallback remains 11434
+  # for hosts where Ollama is reachable there without this WSL bridge.
   ollama-bridge:
     image: alpine/socat:1.8.0.3
     network_mode: host

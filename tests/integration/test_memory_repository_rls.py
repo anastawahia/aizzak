@@ -1,6 +1,6 @@
 """Live-Postgres tests for ``SqlMemoryRepository`` + RLS (09-testing-strategy §3).
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. Builders mirror ``tests/unit/test_memory_use_cases.py``, except
 every id is a *real* ``new_uuid7()`` string rather than an arbitrary label --

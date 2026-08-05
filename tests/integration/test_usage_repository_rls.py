@@ -1,7 +1,7 @@
 """Live-Postgres tests for ``SqlUsageLedgerRepository`` + RLS
 (09-testing-strategy §3).
 
-Runs against a real, local PostgreSQL 16 (no Docker/testcontainers -- see
+Runs against the real local Compose PostgreSQL 16 (see
 ``tests/integration/conftest.py``); auto-skips via ``live_db`` when
 unreachable. The centrepiece is ``append``'s INV-U1/AC-16 contract: an
 idempotent replay of the same ``operation_id`` must return ``False`` and
