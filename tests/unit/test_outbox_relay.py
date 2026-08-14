@@ -14,6 +14,7 @@ from collections.abc import Sequence
 import pytest
 
 from app.framework.errors import AppError
+from app.framework.observability import Heartbeat
 from app.framework.types import Json
 from app.infrastructure.messaging.outbox import OutboxRelay
 from app.infrastructure.persistence.outbox import OutboxEntry
@@ -106,6 +107,7 @@ def _relay(
     batch_size: int = 10,
     poll_interval_ms: int = 100,
     max_backoff_ms: int = 1000,
+    heartbeat: Heartbeat | None = None,
 ) -> OutboxRelay:
     return OutboxRelay(
         store,  # type: ignore[arg-type]
@@ -113,7 +115,18 @@ def _relay(
         batch_size=batch_size,
         poll_interval_ms=poll_interval_ms,
         max_backoff_ms=max_backoff_ms,
+        heartbeat=heartbeat,
     )
+
+
+class _CountingHeartbeat:
+    """Records beats instead of touching a file (ت-3)."""
+
+    def __init__(self) -> None:
+        self.beats = 0
+
+    def beat(self) -> None:
+        self.beats += 1
 
 
 # --------------------------------------------------------------------------- #
@@ -330,3 +343,59 @@ async def test_run_forever_propagates_cancellation(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(asyncio.CancelledError):
         await relay.run_forever()
+
+
+# --------------------------------------------------------------------------- #
+# Liveness heartbeat (ت-3, docs/operational-findings.md §3)                    #
+# --------------------------------------------------------------------------- #
+async def test_a_clean_cycle_beats_even_when_it_published_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An idle relay -- nothing in the outbox -- is healthy, and beats."""
+    store = _FakeStore(batches=[[], []])
+    publisher = _FakePublisher()
+    beats = _CountingHeartbeat()
+    relay = _relay(store, publisher, poll_interval_ms=100, heartbeat=beats)
+
+    sleeps = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("app.infrastructure.messaging.outbox.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await relay.run_forever()
+
+    assert beats.beats == 2
+
+
+async def test_a_backing_off_relay_never_beats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⭐ THE case ت-3 is about. A relay that cannot publish keeps looping and
+    stays Up forever; if the failure path beat, the container would report
+    healthy while accomplishing nothing -- which is exactly the state nothing
+    in the stack observed before this. Failing cycles must let the stamp go
+    stale."""
+    store = _FakeStore(batches=[[_entry("a")], [_entry("b")]])
+    publisher = _FakePublisher()
+    publisher.fail_always()
+    beats = _CountingHeartbeat()
+    relay = _relay(store, publisher, poll_interval_ms=100, heartbeat=beats)
+
+    sleeps = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("app.infrastructure.messaging.outbox.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await relay.run_forever()
+
+    assert beats.beats == 0

@@ -60,7 +60,7 @@ from __future__ import annotations
 import asyncio
 
 from app.framework.errors import AppError
-from app.framework.observability import get_logger
+from app.framework.observability import Heartbeat, NullHeartbeat, get_logger
 from app.framework.ports.event_publisher import EventPublisher
 from app.framework.types import Uuid
 from app.infrastructure.persistence.outbox import SqlOutboxRelayStore
@@ -80,12 +80,16 @@ class OutboxRelay:
         batch_size: int,
         poll_interval_ms: int,
         max_backoff_ms: int,
+        heartbeat: Heartbeat | None = None,
     ) -> None:
         self._store = store
         self._publisher = publisher
         self._batch_size = batch_size
         self._poll_interval_ms = poll_interval_ms
         self._max_backoff_ms = max_backoff_ms
+        # ت-3 (`docs/operational-findings.md` §3) -- the same optional-with-a-
+        # no-op-default shape `StreamConsumer` carries, for the same reason.
+        self._heartbeat: Heartbeat = NullHeartbeat() if heartbeat is None else heartbeat
 
     async def run_once(self) -> int:
         """One fetch/publish/mark-published cycle; returns the count
@@ -169,6 +173,15 @@ class OutboxRelay:
         entirely: more rows may still be waiting, so the next poll happens
         immediately to drain the backlog instead of idling for
         ``poll_interval_ms`` for no reason.
+
+        **The heartbeat is on the CLEAN-cycle path only (ت-3), deliberately.**
+        A relay that cannot reach Postgres or Redis stays ``Up`` and keeps
+        looping here forever, doubling its backoff and logging
+        ``cycle_failed`` into a stream nobody watches -- the precise shape of
+        "running but accomplishing nothing" that ت-3 says nothing observes
+        today. Beating inside the ``except`` branch would report that state as
+        healthy; not beating there lets the stamp go stale and turns a
+        wedged relay into an unhealthy container.
         """
         backoff_ms = self._poll_interval_ms
         while True:
@@ -188,6 +201,7 @@ class OutboxRelay:
                 continue
 
             backoff_ms = self._poll_interval_ms  # any clean cycle clears the penalty
+            self._heartbeat.beat()
             if published == self._batch_size:
                 continue  # more may be waiting -- drain without sleeping
             await asyncio.sleep(self._poll_interval_ms / 1000)
