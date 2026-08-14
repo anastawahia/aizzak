@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 
 from app.workers.bootstrap import build_knowledge_worker_from_env
+from app.workers.lifecycle import run_worker
 
 
 async def run() -> None:
@@ -37,7 +38,11 @@ async def run() -> None:
     connections."""
     consumer, subscriptions, disposables = await build_knowledge_worker_from_env()
     try:
-        await consumer.run(subscriptions)
+        # ت-2: `run_worker`, not `consumer.run`, so SIGTERM becomes an
+        # ordinary cancellation and this process removes its own Redis
+        # consumer entry on the way out (`workers/lifecycle.py`) -- without
+        # it the `finally` below never ran at all under `docker stop`.
+        await run_worker(consumer, subscriptions)
     finally:
         for dispose in disposables:
             await dispose()

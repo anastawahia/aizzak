@@ -178,6 +178,62 @@ class StreamMessage:
     delivery_count: int = 1
 
 
+@dataclass(frozen=True, slots=True)
+class GroupInfo:
+    """One row of ``XINFO GROUPS``, thinned to what the ت-2 sweepers read:
+    the group's name plus the two counters that decide whether anything is
+    still using it (``consumers``) and whether destroying it would drop
+    bookkeeping (``pending``)."""
+
+    name: str
+    consumers: int
+    pending: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerInfo:
+    """One row of ``XINFO CONSUMERS``: a consumer's name, how many delivered-
+    but-unacked entries it still owns, and how long (ms) since it last
+    interacted with the group.
+
+    ``idle_ms`` is the ONLY liveness evidence available about a consumer from
+    outside its own process, and it is evidence in one direction only: a
+    small value proves something is reading right now (a blocking
+    ``XREADGROUP`` resets it every ``consumer_block_ms``), while a large one
+    means "nothing has read under this name for a while" -- which is a dead
+    container's tombstone in every case measured so far, but is not by itself
+    proof of death. The sweeper's threshold is sized against ``block_ms``
+    accordingly (``consumers/sweeper.py``)."""
+
+    name: str
+    pending: int
+    idle_ms: int
+
+
+def _parse_autoclaim(reply: object) -> tuple[str, list[str]]:
+    """``XAUTOCLAIM``'s reply, normalised. Redis 6.2 answers with two
+    elements (next cursor, claimed) and Redis 7+ with three (a trailing list
+    of ids that no longer exist and were dropped from the PEL); redis-py
+    passes both shapes through as-is. Only the first two matter here, and
+    reading them positionally keeps this adapter working across both server
+    versions rather than pinning one.
+    """
+    parts = cast("Sequence[object]", reply or [])
+    if not parts:
+        return "0-0", []
+    cursor_raw = parts[0]
+    cursor = cursor_raw.decode() if isinstance(cursor_raw, bytes) else str(cursor_raw)
+    ids: list[str] = []
+    if len(parts) > 1:
+        for entry in cast("Sequence[object]", parts[1] or []):
+            # `JUSTID` yields bare ids; a non-`JUSTID` reply would yield
+            # `(id, fields)` tuples -- tolerated so this helper cannot become
+            # the reason a future non-JUSTID caller breaks.
+            raw_id = entry[0] if isinstance(entry, tuple | list) else entry
+            ids.append(raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id))
+    return cursor, ids
+
+
 class RedisStreamsConsumer:
     """``XREADGROUP``/``XACK`` consumer adapter (5.1-ج · 04-event-catalog
     §2/§3 · D-19/20).
@@ -287,6 +343,155 @@ class RedisStreamsConsumer:
         except (RedisError, OSError) as exc:
             raise _translate_consume(exc) from exc
         return [cast(bytes, group["name"]).decode() for group in groups]
+
+    async def group_infos(self, stream: str) -> list[GroupInfo]:
+        """``XINFO GROUPS <stream>`` with the two fields ``list_groups``
+        throws away -- ``consumers`` and ``pending`` (ت-2,
+        ``docs/operational-findings.md`` §2).
+
+        Kept SEPARATE from ``list_groups`` rather than replacing it: the
+        composition root's startup sweep genuinely needs nothing but names,
+        and widening its return type would make every caller carry fields it
+        has no use for. Same ``"no such key"`` -> ``[]`` folding, for the same
+        reason (a stream nobody ever published to has no groups).
+
+        redis-py normalises this reply's KEYS to ``str`` even under this
+        codebase's fixed ``decode_responses=False`` client contract, while
+        ``name``'s VALUE stays ``bytes`` -- the asymmetry ``list_groups``
+        above already depends on, restated here rather than rediscovered.
+        """
+        try:
+            rows = await self._client.xinfo_groups(stream)
+        except ResponseError as exc:
+            if "no such key" in str(exc):
+                return []
+            raise _translate_consume(exc) from exc
+        except (RedisError, OSError) as exc:
+            raise _translate_consume(exc) from exc
+        return [
+            GroupInfo(
+                name=cast(bytes, row["name"]).decode(),
+                consumers=int(row["consumers"]),
+                pending=int(row["pending"]),
+            )
+            for row in rows
+        ]
+
+    async def list_consumers(self, stream: str, group: str) -> list[ConsumerInfo]:
+        """``XINFO CONSUMERS <stream> <group>`` -- who is registered under a
+        group, how much each still owns, and how long since each last spoke.
+
+        **Why this exists (ت-2).** Redis NEVER removes a consumer entry when
+        the process behind it dies; only an explicit ``XGROUP DELCONSUMER``
+        does. So every container recreation leaves a permanent tombstone
+        inside an otherwise healthy group, and ``consumers``/``idle`` -- the
+        measurement this project now relies on to tell a LIVE worker from a
+        wedged one (docs/log/3.134.md) -- silt up until they mean nothing.
+        This method is the read half of the automatic cleanup
+        (``consumers/sweeper.py``); ``delete_consumer`` below is the write
+        half, and ``reclaim`` is the safety step that must precede it.
+
+        Both "the stream does not exist" and "the group does not exist"
+        (``NOGROUP``) fold to ``[]``: neither is a failure for a caller whose
+        question is "who is registered here", and a sweep that runs before a
+        worker has ever booted must not raise.
+        """
+        try:
+            rows = await self._client.xinfo_consumers(stream, group)
+        except ResponseError as exc:
+            text = str(exc)
+            if "no such key" in text or text.startswith("NOGROUP"):
+                return []
+            raise _translate_consume(exc) from exc
+        except (RedisError, OSError) as exc:
+            raise _translate_consume(exc) from exc
+        return [
+            ConsumerInfo(
+                name=cast(bytes, row["name"]).decode(),
+                pending=int(row["pending"]),
+                idle_ms=int(row["idle"]),
+            )
+            for row in rows
+        ]
+
+    async def delete_consumer(self, stream: str, group: str, consumer: str) -> int:
+        """``XGROUP DELCONSUMER`` -- returns the number of pending entries the
+        deleted consumer still owned, which Redis DISCARDS along with it.
+
+        That return value is the whole danger of this command and the reason
+        it is exposed raw rather than wrapped in a decision: entries dropped
+        this way are not redelivered to anyone -- they stay in the stream,
+        unacked and unreachable, invisible to every future ``XPENDING``. The
+        caller (``consumers/sweeper.py``) therefore ``reclaim``s first and
+        only ever calls this on a consumer it has just observed at
+        ``pending == 0``; a non-zero return here means that observation lost
+        a race and is logged as the anomaly it is.
+
+        A missing stream/group is not an error (nothing to delete): the same
+        folding as ``list_consumers`` above, reported as ``0``.
+        """
+        try:
+            return int(await self._client.xgroup_delconsumer(stream, group, consumer))
+        except ResponseError as exc:
+            text = str(exc)
+            if "no such key" in text or text.startswith("NOGROUP"):
+                return 0
+            raise _translate_consume(exc) from exc
+        except (RedisError, OSError) as exc:
+            raise _translate_consume(exc) from exc
+
+    async def reclaim(
+        self,
+        *,
+        stream: str,
+        group: str,
+        consumer: str,
+        min_idle_ms: int,
+        count: int = 100,
+        max_batches: int = 100,
+    ) -> list[str]:
+        """``XAUTOCLAIM ... JUSTID`` in a cursor loop: transfer every entry in
+        ``group``'s pending list that has sat untouched for at least
+        ``min_idle_ms`` to ``consumer``. Returns the transferred entry ids.
+
+        **This is a recovery path, not only a cleanup one.** ``read``'s
+        recovery pass (its own docstring) re-reads ``0`` for the CALLING
+        consumer name -- which is ``<module>.<host>.<pid>`` and therefore
+        changes on every restart. Entries a killed worker left pending are
+        thus owned by a name no live process will ever read under again:
+        without this command they are stuck forever, not merely untidy. The
+        sweeper claims them to a live consumer, whose next ``read`` recovery
+        pass then picks them up and processes them normally.
+
+        ``JUSTID`` returns ids only -- the payload is never fetched, because
+        the claimer's own next ``read`` will fetch it. It also does NOT
+        increment the delivery counter (Redis's documented behaviour for
+        ``JUSTID``), which is deliberate here: a message must not consume its
+        N=5 DLQ budget merely by being moved between consumers.
+
+        The cursor loop is bounded by ``max_batches`` so a pathologically
+        large PEL cannot pin a worker's loop indefinitely -- whatever is left
+        is simply claimed by the next sweep.
+        """
+        claimed: list[str] = []
+        cursor = "0-0"
+        try:
+            for _ in range(max_batches):
+                reply = await self._client.xautoclaim(
+                    stream, group, consumer, min_idle_ms, start_id=cursor, count=count, justid=True
+                )
+                cursor, ids = _parse_autoclaim(reply)
+                claimed.extend(ids)
+                if cursor == "0-0" or not ids:
+                    break
+        except ResponseError as exc:
+            text = str(exc)
+            if "no such key" in text or text.startswith("NOGROUP"):
+                return claimed
+            raise _translate_consume(exc) from exc
+        except (RedisError, OSError) as exc:
+            raise _translate_consume(exc) from exc
+        return claimed
 
     async def read(
         self,

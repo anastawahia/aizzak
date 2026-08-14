@@ -966,7 +966,13 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
         ("stream.knowledge", "cg.knowledge"),
     ]
     assert set(subscriptions[0].handlers) == {"files.file.uploaded.v1"}
-    assert set(subscriptions[1].handlers) == {"knowledge.document.registered.v1"}
+    # Two handlers on `stream.knowledge` since BE-RAG-009, still under the one
+    # `cg.knowledge` group: a summary build is more work for the process that
+    # already owns this stream, not a reason for a second consumer group.
+    assert set(subscriptions[1].handlers) == {
+        "knowledge.document.registered.v1",
+        "knowledge.summary.requested.v1",
+    }
     # engine.dispose, qdrant_client.close, embedding_http.aclose,
     # redis_client.aclose, _close_vault -- the fifth is step 15's, written
     # then against a function that could not yet reach it.
@@ -983,42 +989,60 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
 
 
 def test_routing_for_drops_the_foreign_namespaces_and_keeps_everything_else() -> None:
-    """The knowledge worker wires neither an LLM nor an image adapter, so
-    handing its resolver either namespace would refuse construction on a route
-    it never reads. Written as "drop the known-foreign names" so a MISSPELLED
-    namespace still reaches the strict parse and is refused there, instead of
-    being silently discarded by a keep-list."""
+    """The knowledge worker wires no image adapter, so handing its resolver
+    that namespace would refuse construction on a route it never reads.
+
+    ``llm`` USED to be foreign here too, and BE-RAG-009 removed it: this
+    process now runs the summarisation map-reduce, so it wires the LLM
+    adapters and reads the ``summarize`` route. Keeping it foreign would have
+    meant resolving a model through a table this worker declined to be judged
+    on.
+
+    Written as "drop the known-foreign names" so a MISSPELLED namespace still
+    reaches the strict parse and is refused there, instead of being silently
+    discarded by a keep-list."""
     embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
+    llm = {"summarize": {"provider": "openai", "model": "gpt"}}
 
     assert _routing_for(
-        {"llm": {"default": {"provider": "openai", "model": "gpt"}}, "embedding": embedding},
+        {"llm": llm, "embedding": embedding, "image": {}},
         foreign=_FOREIGN_TO_KNOWLEDGE,
-    ) == {"embedding": embedding}
+    ) == {"llm": llm, "embedding": embedding}
     assert _routing_for({}, foreign=_FOREIGN_TO_KNOWLEDGE) == {}
     assert _routing_for({"embeddings": embedding}, foreign=_FOREIGN_TO_KNOWLEDGE) == {
         "embeddings": embedding
     }
 
 
-def test_the_two_workers_narrow_the_routing_table_to_disjoint_halves() -> None:
-    """The narrowing is per-worker, and the pair must not overlap on the one
-    namespace each process actually reads: ``knowledge`` must keep
-    ``embedding`` and drop ``image``, ``media`` the exact reverse. A single
-    shared constant (what this file had until step 20) cannot express that,
-    and getting it backwards would not fail loudly -- it would boot a worker
-    whose resolver has no route for the only call it ever makes."""
+def test_the_two_workers_narrow_the_routing_table_to_their_own_capabilities() -> None:
+    """The narrowing is per-worker, and neither may drop a namespace its own
+    process actually reads: ``knowledge`` keeps ``embedding`` (it indexes) and
+    ``llm`` (BE-RAG-009 — it summarises) while dropping ``image``; ``media``
+    keeps only ``image``. A single shared constant (what this file had until
+    step 20) cannot express that, and getting it backwards would not fail
+    loudly — it would boot a worker whose resolver has no route for a call it
+    makes.
+
+    The halves stopped being DISJOINT at BE-RAG-009, which is why this test
+    was renamed: ``llm`` is now foreign to ``media`` alone. Disjointness was
+    never the property worth asserting — "each worker keeps exactly what it
+    wires" is, and that survives a second worker needing the same namespace.
+    """
+    llm = {"summarize": {"provider": "openai", "model": "gpt"}}
     embedding = {"default": {"provider": "embedding-local", "model": "minilm"}}
     image = {"default": {"provider": "image:openai", "model": "gpt-image-1"}}
-    routing: Json = {
-        "llm": {"default": {"provider": "openai", "model": "gpt"}},
-        "embedding": embedding,
-        "image": image,
-    }
+    routing: Json = {"llm": llm, "embedding": embedding, "image": image}
 
-    assert _routing_for(routing, foreign=_FOREIGN_TO_KNOWLEDGE) == {"embedding": embedding}
+    assert _routing_for(routing, foreign=_FOREIGN_TO_KNOWLEDGE) == {
+        "llm": llm,
+        "embedding": embedding,
+    }
     assert _routing_for(routing, foreign=_FOREIGN_TO_MEDIA) == {"image": image}
-    # Neither worker wires an LLM adapter; `llm` is foreign to both.
-    assert "llm" in _FOREIGN_TO_KNOWLEDGE & _FOREIGN_TO_MEDIA
+    # The media worker generates images and makes no LLM call; the knowledge
+    # worker is the reverse on both counts.
+    assert "llm" in _FOREIGN_TO_MEDIA
+    assert "llm" not in _FOREIGN_TO_KNOWLEDGE
+    assert "image" in _FOREIGN_TO_KNOWLEDGE
 
 
 def test_an_image_route_does_not_block_the_knowledge_worker() -> None:

@@ -80,11 +80,16 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from time import monotonic
 from typing import cast
 
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.observability import get_logger
+from app.framework.observability import Heartbeat, NullHeartbeat, get_logger
 from app.framework.types import Json
+from app.infrastructure.messaging.consumers.sweeper import (
+    deregister_consumer,
+    sweep_stale_consumers,
+)
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer, StreamMessage
 
 _logger = get_logger(__name__)
@@ -124,17 +129,38 @@ class StreamConsumer:
         block_ms: int,
         batch_count: int,
         max_deliveries: int,
+        heartbeat: Heartbeat | None = None,
+        sweep_interval_s: float = 0.0,
+        stale_idle_ms: int = 0,
     ) -> None:
         self._consumer = consumer
         self._consumer_name = consumer_name
         self._block_ms = block_ms
         self._batch_count = batch_count
+        # ت-3 (`docs/operational-findings.md` §3). Optional with a no-op
+        # default because this engine is generic infrastructure that also runs
+        # under `pytest` and under a bare `python -m app.workers.memory_worker`
+        # -- neither of which has a Docker healthcheck reading the file. The
+        # `worker-*` Compose services always pass a real one
+        # (`workers/bootstrap.py`).
+        self._heartbeat: Heartbeat = NullHeartbeat() if heartbeat is None else heartbeat
         # 04 §3 / NFR-04's N (default 5) -- wired from
         # `EventSettings.max_retries_before_dlq` by every worker bootstrap.
         # Deliberately a REQUIRED parameter with no default here: the engine
         # is generic infrastructure, and the number's one authoritative home
         # is Settings (07 §4's limits table), not a second hardcoded copy.
         self._max_deliveries = max_deliveries
+        # ت-2 (`docs/operational-findings.md` §2). BOTH default to "off", and
+        # that is the honest default for a generic engine: the notify bridge
+        # inside the API process builds a `StreamConsumer` too, and its
+        # `cg.notify.*` family is swept at the GROUP level by a different rule
+        # (`consumers/sweeper.py`'s second half) -- a consumer-level sweep
+        # there could delete a live bridge's registration and make its own
+        # group look orphaned to that other sweeper. Only the three `worker-*`
+        # bootstraps pass real values.
+        self._sweep_interval_s = sweep_interval_s
+        self._stale_idle_ms = stale_idle_ms
+        self._next_sweep_at = 0.0
 
     async def setup(self, subscriptions: Sequence[Subscription]) -> None:
         """``ensure_group`` for every ``(stream, group)`` pair named by
@@ -179,6 +205,16 @@ class StreamConsumer:
         ``RedisStreamsConsumer.read`` call covering every stream that group
         subscribes to, so the knowledge worker's ``cg.knowledge`` (two
         streams) is one blocking read, never two sequential ones.
+
+        **Heartbeat placement (ت-3).** Beats land after every completed
+        ``read`` and after every dispatched message, and NOT once per
+        ``run_once``: a returned ``XREADGROUP`` is the strongest liveness
+        evidence this loop can produce cheaply (it proves a full Redis
+        round-trip, not merely that Python is executing), and the per-message
+        beat is what keeps a long, legitimate BATCH from reading like a wedged
+        loop. What remains uncovered on purpose is a single handler that hangs
+        forever -- which is exactly the failure the staleness threshold
+        (``HealthSettings.heartbeat_max_age_s``) is sized to catch.
         """
         by_group: dict[str, dict[str, Subscription]] = {}
         for subscription in subscriptions:
@@ -193,9 +229,11 @@ class StreamConsumer:
                 count=self._batch_count,
                 block_ms=self._block_ms,
             )
+            self._heartbeat.beat()
             for message in messages:
                 if await self._dispatch(group, by_stream, message):
                     handled += 1
+                self._heartbeat.beat()
         return handled
 
     async def run(self, subscriptions: Sequence[Subscription]) -> None:
@@ -205,10 +243,71 @@ class StreamConsumer:
         ``asyncio.CancelledError`` is a ``BaseException`` and is never caught
         here, so a graceful shutdown (SIGTERM under Compose, 08 §2) always
         propagates out of this loop rather than being swallowed.
+
+        **The sweep rides this same loop (ت-2)** rather than living in a task
+        of its own: it needs exactly what the loop already has (this
+        process's consumer name and its subscriptions), it must never run
+        concurrently with itself, and pacing it off ``run_once`` means it
+        cannot fire while a handler is mid-flight. The cost of that choice is
+        that a totally idle worker sweeps on the first tick after
+        ``block_ms`` elapses past the deadline -- seconds of imprecision on a
+        15-minute cadence, which is not worth a second task to remove.
         """
         await self.setup(subscriptions)
+        self._next_sweep_at = monotonic() + self._sweep_interval_s
         while True:
             await self.run_once(subscriptions)
+            if self._sweep_interval_s > 0 and monotonic() >= self._next_sweep_at:
+                self._next_sweep_at = monotonic() + self._sweep_interval_s
+                await self.sweep_stale(subscriptions)
+
+    async def sweep_stale(self, subscriptions: Sequence[Subscription]) -> list[str]:
+        """Reclaim-then-delete the ghost consumers other processes left in
+        THIS worker's groups (``consumers/sweeper.py`` owns the rule and the
+        safety argument); returns the names deleted.
+
+        Disabled unless both knobs were wired (the constructor's note).
+        Never raises: a Redis failure while tidying bookkeeping must not cost
+        the loop its next ``XREADGROUP``, so everything is caught here and
+        logged. That is also why this is not folded into ``run_once`` -- a
+        caller (and a test) can invoke the sweep on its own and see it fail
+        loudly through the log rather than through the message path.
+        """
+        if self._sweep_interval_s <= 0 or self._stale_idle_ms <= 0:
+            return []
+        try:
+            return await sweep_stale_consumers(
+                self._consumer,
+                pairs=_pairs(subscriptions),
+                live_consumer=self._consumer_name,
+                min_idle_ms=self._stale_idle_ms,
+            )
+        except Exception:
+            _logger.error("consumer_sweep_failed", exc_info=True)
+            return []
+
+    async def deregister(self, subscriptions: Sequence[Subscription]) -> None:
+        """Remove THIS process's own consumer registration from every group
+        it read -- a clean exit's counterpart to ``setup`` (ت-2), and
+        deliberately NOT ``teardown``: a worker's groups are the static
+        topology's own (``cg.knowledge``/``cg.media``/``cg.memory``), which
+        must outlive every process. Destroying one would reset a module's
+        delivery position to the stream tail; removing a consumer entry from
+        it removes only this process's tombstone.
+
+        Skips a group where this process still owns pending entries
+        (``sweeper.deregister_consumer``'s own rule -- those messages must be
+        reclaimed by a live consumer, not dropped at shutdown). Never raises,
+        for the same reason ``sweep_stale`` does not: this runs on the exit
+        path, where an exception would mask whatever is actually shutting the
+        process down.
+        """
+        try:
+            await deregister_consumer(
+                self._consumer, pairs=_pairs(subscriptions), name=self._consumer_name
+            )
+        except Exception:
+            _logger.error("consumer_deregister_failed", exc_info=True)
 
     async def _dispatch(
         self, group: str, by_stream: Mapping[str, Subscription], message: StreamMessage
@@ -320,6 +419,14 @@ class StreamConsumer:
                 "delivery_count": message.delivery_count,
             },
         )
+
+
+def _pairs(subscriptions: Sequence[Subscription]) -> list[tuple[str, str]]:
+    """The DISTINCT ``(stream, group)`` pairs a subscription set covers, in
+    first-seen order -- ``teardown``'s own deduplication (a single group may
+    own several subscriptions across different streams), reused by both ت-2
+    sweeps so they cannot disagree with it."""
+    return list(dict.fromkeys((s.stream, s.group) for s in subscriptions))
 
 
 def _decode(message: StreamMessage) -> Json | None:

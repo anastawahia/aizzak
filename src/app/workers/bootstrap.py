@@ -143,14 +143,15 @@ from app.framework.di.lifecycle import Disposable
 from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
-from app.framework.errors import UnsupportedTypeError, ValidationError
+from app.framework.errors import AppError, ConflictError, UnsupportedTypeError, ValidationError
 from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY
-from app.framework.observability import configure_logging, get_logger
+from app.framework.observability import Heartbeat, build_heartbeat, configure_logging, get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
+from app.framework.ports.llm_provider import LLMProvider
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
-from app.framework.providers.resolver import SettingsProviderResolver
+from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings.settings import DatabaseSettings
 from app.framework.types import Json, Uuid
 from app.infrastructure.ai_providers.embedding.external_embedding import (
@@ -161,6 +162,8 @@ from app.infrastructure.ai_providers.image.external_image import (
     OpenAIImage,
     create_openai_image_http_client,
 )
+from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
+from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
 from app.infrastructure.cache.redis_cache import blocking_read_timeout_s, create_redis_client
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import EventHandler, StreamConsumer, Subscription
@@ -176,17 +179,24 @@ from app.modules.credentials.application.use_cases import ResolveCredential
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import CompleteUpload, RegisterUpload
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
-from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
+from app.modules.knowledge.adapters.sql_repository import (
+    SqlDocumentRepository,
+    SqlSummaryJobRepository,
+    SqlSummaryRepository,
+)
 from app.modules.knowledge.application.event_mapping import (
     to_outbox_record as _knowledge_to_outbox_record,
 )
 from app.modules.knowledge.application.indexing import IndexDocument
+from app.modules.knowledge.application.summarization import SummarizeDocument
 from app.modules.knowledge.application.use_cases import (
+    BuildSummary,
     IndexRegisteredDocument,
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.repository import DocumentRepository
+from app.modules.knowledge.ports.summarization import SUMMARIZE_CAPABILITY, ResolvedSummarizer
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.media.application.event_mapping import to_outbox_record as _media_to_outbox_record
 from app.modules.media.application.use_cases import RunMediaJob
@@ -323,6 +333,10 @@ def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable
         batch_size=settings.events.outbox_relay_batch_size,
         poll_interval_ms=settings.events.outbox_poll_interval_ms,
         max_backoff_ms=_MAX_BACKOFF_MS,
+        # ت-3: the name is the Compose SERVICE's, matching what an operator
+        # sees in `docker compose ps` -- `HEARTBEAT_PROCESS_NAMES` owns the
+        # spelling shared with the checker.
+        heartbeat=build_heartbeat(settings.health.heartbeat_dir, "outbox-relay"),
     )
 
     disposables: list[Disposable] = [engine.dispose, redis_client.aclose]
@@ -395,7 +409,15 @@ def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
 # the media set, which is the reason the pair below stopped being one
 # constant named `..._TO_THIS_WORKER` -- with two workers narrowing
 # differently, "this worker" no longer names anything.
-_FOREIGN_TO_KNOWLEDGE = frozenset({"llm", "image"})
+# BE-RAG-009 REMOVED `llm` from the knowledge set, and that is a real change
+# of fact rather than a loosening. This worker used to make no LLM call at
+# all; it now runs the summarisation map-reduce, so the `summarize` route is
+# one it both reads and depends on. Leaving `llm` foreign would have meant a
+# process that resolves a model through a table it declined to be judged on --
+# exactly the "indexed here, searched there" drift step 16 rejected for
+# embeddings, in the other direction. `image` stays foreign: no summary
+# generates a picture.
+_FOREIGN_TO_KNOWLEDGE = frozenset({"image"})
 _FOREIGN_TO_MEDIA = frozenset({"llm", "embedding"})
 
 
@@ -412,6 +434,25 @@ def _routing_for(routing: Json, *, foreign: frozenset[str]) -> Json:
     operator believes says something else.
     """
     return {namespace: entry for namespace, entry in routing.items() if namespace not in foreign}
+
+
+class _WorkerSummarizerResolver:
+    """Adapts ``SettingsProviderResolver`` to the knowledge module's
+    ``SummarizerResolver`` seam (BE-RAG-009).
+
+    A near-twin of ``composition_root._RoutedSummarizerResolver``, and
+    deliberately a second copy rather than an import: the ``layers`` contract
+    keeps ``app.workers`` off ``app.framework.di``, and this is four lines of
+    delegation. What must not drift is the CAPABILITY string, and it does not
+    — both read ``SUMMARIZE_CAPABILITY`` from the module that owns it.
+    """
+
+    def __init__(self, providers: ProviderResolver) -> None:
+        self._providers = providers
+
+    async def resolve_summarizer(self, ctx: ExecutionContext) -> ResolvedSummarizer:
+        provider, resolved = await self._providers.resolve_llm(ctx, capability=SUMMARIZE_CAPABILITY)
+        return ResolvedSummarizer(provider=provider, model=resolved.model, api_key=resolved.api_key)
 
 
 def _consumer_name(prefix: str) -> str:
@@ -562,12 +603,95 @@ def build_knowledge_index_handler(
     return _handle
 
 
+def build_knowledge_summary_handler(
+    build: BuildSummary,
+    outbox: EventOutbox,
+    uow: UnitOfWork,
+    ledger: ProcessedEventLedger,
+    *,
+    consumer_group: str = _CG_KNOWLEDGE,
+) -> EventHandler:
+    """``knowledge.summary.requested.v1`` -> ``BuildSummary.claim`` (the
+    ``queued → running`` claim + the chunk read + route resolution) ->
+    ``BuildSummary.run`` (the map-reduce's provider calls, all OUTSIDE any
+    transaction — R2) -> ONE ``uow.begin`` block holding the DD-09 claim +
+    ``BuildSummary.finalize`` (the stored summary + the job's terminal state)
+    + the follow-on ``knowledge.summary.built.v1``/``...build_failed.v1``
+    outbox append.
+
+    Structurally the indexing handler (``build_knowledge_index_handler``),
+    because it is the same problem: external I/O that must not hold a
+    transaction, followed by a terminal write that must not be separable from
+    its event. Three branches differ, and each answers a failure that would
+    otherwise be permanent:
+
+    * **``claim`` raising** — no ``summarize`` route resolves a key for this
+      workspace. A terminal fact about the deployment, not a transient fault:
+      redelivering it forever would leave the job ``queued`` and holding
+      ``uq_summary_job_active``, so the user could not even ask again. Routed
+      through ``fail`` into the SAME ``finalize``, so there stays one path to
+      a failed job. ``AppError`` and ``ValueError`` only — a Postgres or
+      Redis outage still escapes and is retried, which is correct, because
+      those may succeed next time.
+    * **``claim`` returning ``None``** — the DD-09 no-op, including a job
+      cancelled before any worker reached it. No transaction is opened to
+      record nothing.
+    * **``finalize`` raising ``ConflictError``** — the document was destroyed
+      by a re-index while this build was running, so ``fk_summary_doc``
+      rejects the summary. The aborted transaction cannot also record that,
+      hence the SECOND ``uow.begin``: without it the handler would redeliver,
+      rebuild, and be rejected again until the DLQ ate it, with the job stuck
+      ``running`` forever.
+    """
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        data = envelope["data"]
+        event_id: str = envelope["id"]
+        job_id: str = data["job_id"]
+        try:
+            plan = await build.claim(ctx, job_id=job_id)
+        except (AppError, ValueError) as exc:
+            attempt = await build.fail(ctx, job_id=job_id, reason=str(exc))
+        else:
+            if plan is None:
+                return  # DD-09 no-op, or a job cancelled before it was claimed.
+            attempt = await build.run(ctx, plan)
+        if attempt is None:
+            return
+
+        try:
+            async with uow.begin(ctx):
+                if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
+                    return  # Duplicate delivery -- clean return, the engine XACKs.
+                _, events = await build.finalize(ctx, attempt)
+                await outbox.append(
+                    ctx, [_knowledge_to_outbox_record(ctx, event) for event in events]
+                )
+        except ConflictError as exc:
+            # The summary's document went away underneath the build. Record
+            # the job's failure in a FRESH transaction -- the one above is
+            # aborted -- so this delivery ends terminally instead of looping.
+            failure = await build.fail(ctx, job_id=job_id, reason=str(exc))
+            if failure is None:
+                return
+            async with uow.begin(ctx):
+                if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
+                    return
+                _, events = await build.finalize(ctx, failure)
+                await outbox.append(
+                    ctx, [_knowledge_to_outbox_record(ctx, event) for event in events]
+                )
+
+    return _handle
+
+
 def build_knowledge_worker(
     *,
     redis_client: Redis,
     documents: DocumentRepository,
     pipeline: IndexDocument,
     content_resolver: DocumentContentResolver,
+    summary_builder: BuildSummary,
     outbox: EventOutbox,
     uow: UnitOfWork,
     ledger: ProcessedEventLedger,
@@ -575,6 +699,9 @@ def build_knowledge_worker(
     block_ms: int,
     batch_count: int,
     max_deliveries: int,
+    heartbeat: Heartbeat | None = None,
+    sweep_interval_s: float = 0.0,
+    stale_idle_ms: int = 0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the knowledge worker's TWO subscriptions under one ``cg.knowledge``
     consumer group (04 §4's binding table, `docs/log/3.45.md`'s recorded
@@ -601,7 +728,13 @@ def build_knowledge_worker(
             handlers={
                 "knowledge.document.registered.v1": build_knowledge_index_handler(
                     documents, pipeline, content_resolver, outbox, uow, ledger
-                )
+                ),
+                # BE-RAG-009 -- the same stream and the same consumer group.
+                # A third subscription would have meant a second group on one
+                # stream, and 04 §4's binding table gives this worker one.
+                "knowledge.summary.requested.v1": build_knowledge_summary_handler(
+                    summary_builder, outbox, uow, ledger
+                ),
             },
         ),
     ]
@@ -611,6 +744,12 @@ def build_knowledge_worker(
         block_ms=block_ms,
         batch_count=batch_count,
         max_deliveries=max_deliveries,
+        heartbeat=heartbeat,
+        # ت-2: both default to 0 (off) so every direct caller of this builder
+        # -- the live integration tests included -- keeps a consumer that only
+        # ever reads, and only the  path below turns the sweep on.
+        sweep_interval_s=sweep_interval_s,
+        stale_idle_ms=stale_idle_ms,
     )
     return consumer, subscriptions
 
@@ -699,6 +838,18 @@ async def build_knowledge_worker_from_env() -> tuple[
     storage = StorageHandle()
     await bind_minio(storage, secrets, settings.minio)
 
+    # BE-RAG-009 -- this worker now makes LLM calls (the summarisation
+    # map-reduce), so it wires the LLM adapters the API wires, keyed by each
+    # adapter's OWN `provider` attribute rather than a literal. Constructing
+    # the clients opens no socket; what it buys is that the `summarize` route
+    # is parsed strictly here too, so a table naming a provider this process
+    # cannot reach refuses to boot instead of failing every build at run time.
+    ollama_llm = OllamaLLM(
+        create_ollama_http_client(settings.ollama, timeout_s=settings.limits.llm_timeout_s)
+    )
+    openai_llm = OpenAILLM(create_openai_http_client(timeout_s=settings.limits.llm_timeout_s))
+    llm_adapters: tuple[LLMProvider, ...] = (ollama_llm, openai_llm)
+
     # Step 16 -- the embedding route, resolved the SAME way the API resolves
     # it (see the docstring). `embedding_providers` is keyed by the adapter's
     # OWN `provider` attribute, never a literal (the `composition_root.py`
@@ -706,14 +857,21 @@ async def build_knowledge_worker_from_env() -> tuple[
     # points at the very adapter `pipeline` above was built from.
     providers = SettingsProviderResolver(
         routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
-        llm_providers={},
+        llm_providers={adapter.provider: adapter for adapter in llm_adapters},
         embedding_providers={embeddings.provider: embeddings},
-        image_providers={},  # step 18 -- and `_embedding_routing` drops the namespace
+        image_providers={},  # step 18 -- and `_routing_for` drops the namespace
         key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
         keyless_providers=_KEYLESS_PROVIDERS,
     )
     content_resolver = WorkerDocumentContentResolver(
         files, storage, DocumentContentExtractor(), providers
+    )
+    summary_builder = BuildSummary(
+        documents,
+        SqlSummaryRepository(tenant_session),
+        SqlSummaryJobRepository(tenant_session),
+        SummarizeDocument(),
+        _WorkerSummarizerResolver(providers),
     )
 
     redis_client = create_redis_client(
@@ -727,6 +885,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         documents=documents,
         pipeline=pipeline,
         content_resolver=content_resolver,
+        summary_builder=summary_builder,
         outbox=outbox,
         uow=tenant_session,
         ledger=ledger,
@@ -734,6 +893,9 @@ async def build_knowledge_worker_from_env() -> tuple[
         block_ms=settings.events.consumer_block_ms,
         batch_count=settings.events.consumer_batch_count,
         max_deliveries=settings.events.max_retries_before_dlq,
+        heartbeat=build_heartbeat(settings.health.heartbeat_dir, "knowledge"),
+        sweep_interval_s=settings.events.consumer_sweep_interval_s,
+        stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
     )
 
     # `CompositionRoot.disposables()`'s own `_close_vault` precedent -- hvac
@@ -803,6 +965,9 @@ def build_media_worker(
     block_ms: int,
     batch_count: int,
     max_deliveries: int,
+    heartbeat: Heartbeat | None = None,
+    sweep_interval_s: float = 0.0,
+    stale_idle_ms: int = 0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the media worker's single ``stream.media``/``cg.media``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -827,6 +992,12 @@ def build_media_worker(
         block_ms=block_ms,
         batch_count=batch_count,
         max_deliveries=max_deliveries,
+        heartbeat=heartbeat,
+        # ت-2: both default to 0 (off) so every direct caller of this builder
+        # -- the live integration tests included -- keeps a consumer that only
+        # ever reads, and only the  path below turns the sweep on.
+        sweep_interval_s=sweep_interval_s,
+        stale_idle_ms=stale_idle_ms,
     )
     return consumer, subscriptions
 
@@ -925,6 +1096,9 @@ async def build_media_worker_from_env() -> tuple[
         block_ms=settings.events.consumer_block_ms,
         batch_count=settings.events.consumer_batch_count,
         max_deliveries=settings.events.max_retries_before_dlq,
+        heartbeat=build_heartbeat(settings.health.heartbeat_dir, "media"),
+        sweep_interval_s=settings.events.consumer_sweep_interval_s,
+        stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
     )
 
     # The knowledge worker's `_close_vault` precedent -- hvac wraps a
@@ -991,6 +1165,9 @@ def build_memory_worker(
     block_ms: int,
     batch_count: int,
     max_deliveries: int,
+    heartbeat: Heartbeat | None = None,
+    sweep_interval_s: float = 0.0,
+    stale_idle_ms: int = 0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the memory worker's single ``stream.memory``/``cg.memory``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -1010,6 +1187,12 @@ def build_memory_worker(
         block_ms=block_ms,
         batch_count=batch_count,
         max_deliveries=max_deliveries,
+        heartbeat=heartbeat,
+        # ت-2: both default to 0 (off) so every direct caller of this builder
+        # -- the live integration tests included -- keeps a consumer that only
+        # ever reads, and only the  path below turns the sweep on.
+        sweep_interval_s=sweep_interval_s,
+        stale_idle_ms=stale_idle_ms,
     )
     return consumer, subscriptions
 
@@ -1069,6 +1252,9 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
         block_ms=settings.events.consumer_block_ms,
         batch_count=settings.events.consumer_batch_count,
         max_deliveries=settings.events.max_retries_before_dlq,
+        heartbeat=build_heartbeat(settings.health.heartbeat_dir, "memory"),
+        sweep_interval_s=settings.events.consumer_sweep_interval_s,
+        stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
     )
     disposables: list[Disposable] = [
         engine.dispose,

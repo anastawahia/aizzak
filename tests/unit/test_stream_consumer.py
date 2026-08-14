@@ -30,9 +30,10 @@ from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.events.envelope import build_envelope
 from app.framework.identifiers import new_uuid7
+from app.framework.observability import Heartbeat
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
-from app.infrastructure.messaging.redis_streams import StreamMessage
+from app.infrastructure.messaging.redis_streams import ConsumerInfo, StreamMessage
 
 
 class InMemoryStreamsConsumer:
@@ -60,6 +61,11 @@ class InMemoryStreamsConsumer:
         # (`StreamMessage.delivery_count`'s docstring): 1 on first delivery,
         # +1 on every recovery re-read of a still-pending entry.
         self.delivery_counts: dict[tuple[str, str], dict[str, int]] = {}
+        # ت-2: Redis's consumer registry per `(stream, group)`, plus what was
+        # deleted from it -- the state both sweeps in `consumers/sweeper.py`
+        # read and write.
+        self.consumers: dict[tuple[str, str], dict[str, ConsumerInfo]] = {}
+        self.deleted_consumers: list[tuple[str, str, str]] = []
         self._cursor: dict[tuple[str, str], int] = {}
         self._next_id = 0
 
@@ -123,6 +129,52 @@ class InMemoryStreamsConsumer:
         self.acked.append((stream, group, entry_id))
         self.pending.get((stream, group), {}).pop(entry_id, None)
 
+    # -- ت-2: the consumer registry the two sweeps read and write ---------- #
+    def register(
+        self, stream: str, group: str, name: str, *, idle_ms: int, pending: int = 0
+    ) -> None:
+        """Seed a consumer entry the way real Redis keeps one: created by a
+        read, and NEVER removed when the process behind it dies."""
+        self.consumers.setdefault((stream, group), {})[name] = ConsumerInfo(
+            name=name, pending=pending, idle_ms=idle_ms
+        )
+
+    async def list_consumers(self, stream: str, group: str) -> list[ConsumerInfo]:
+        return list(self.consumers.get((stream, group), {}).values())
+
+    async def delete_consumer(self, stream: str, group: str, consumer: str) -> int:
+        self.deleted_consumers.append((stream, group, consumer))
+        info = self.consumers.get((stream, group), {}).pop(consumer, None)
+        return 0 if info is None else info.pending
+
+    async def reclaim(
+        self,
+        *,
+        stream: str,
+        group: str,
+        consumer: str,
+        min_idle_ms: int,
+        count: int = 100,
+        max_batches: int = 100,
+    ) -> list[str]:
+        """Move every idle-enough consumer's pending count onto ``consumer``
+        -- the observable effect of ``XAUTOCLAIM``, which is that entries
+        CHANGE OWNER rather than disappearing."""
+        registry = self.consumers.setdefault((stream, group), {})
+        moved = 0
+        for name, info in list(registry.items()):
+            if name == consumer or info.idle_ms < min_idle_ms:
+                continue
+            moved += info.pending
+            registry[name] = ConsumerInfo(name=name, pending=0, idle_ms=info.idle_ms)
+        current = registry.get(consumer)
+        registry[consumer] = ConsumerInfo(
+            name=consumer,
+            pending=(0 if current is None else current.pending) + moved,
+            idle_ms=0,
+        )
+        return [f"claimed-{index}" for index in range(moved)]
+
     async def dead_letter(
         self,
         *,
@@ -170,6 +222,9 @@ def _consumer(
     block_ms: int = 10,
     batch_count: int = 10,
     max_deliveries: int = 5,
+    heartbeat: Heartbeat | None = None,
+    sweep_interval_s: float = 0.0,
+    stale_idle_ms: int = 0,
 ) -> StreamConsumer:
     return StreamConsumer(
         fake,  # type: ignore[arg-type]
@@ -177,7 +232,20 @@ def _consumer(
         block_ms=block_ms,
         batch_count=batch_count,
         max_deliveries=max_deliveries,
+        heartbeat=heartbeat,
+        sweep_interval_s=sweep_interval_s,
+        stale_idle_ms=stale_idle_ms,
     )
+
+
+class CountingHeartbeat:
+    """Records beats instead of touching a file (ت-3)."""
+
+    def __init__(self) -> None:
+        self.beats = 0
+
+    def beat(self) -> None:
+        self.beats += 1
 
 
 # --------------------------------------------------------------------------- #
@@ -683,3 +751,174 @@ async def test_run_calls_setup_once_then_loops_run_once_until_cancelled(
 
     assert fake.groups == {("stream.media", "cg.media")}  # setup() ran
     assert calls["n"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Liveness heartbeat (ت-3, docs/operational-findings.md §3)                    #
+# --------------------------------------------------------------------------- #
+async def test_an_idle_read_still_beats() -> None:
+    """THE point of the heartbeat, and the case a naive "beat when a message
+    is handled" implementation would get wrong: a worker on a quiet stream
+    handles nothing for hours and is perfectly healthy. Beating only on
+    handled messages would report every idle worker as dead."""
+    fake = InMemoryStreamsConsumer()
+    beats = CountingHeartbeat()
+    subs = [Subscription(stream="stream.memory", group="cg.memory", handlers={})]
+
+    handled = await _consumer(fake, heartbeat=beats).run_once(subs)
+
+    assert handled == 0  # nothing to read
+    assert beats.beats == 1  # ...and the completed XREADGROUP still counted
+
+
+async def test_every_message_beats_so_a_long_batch_is_not_read_as_a_wedged_loop() -> None:
+    fake = InMemoryStreamsConsumer()
+    beats = CountingHeartbeat()
+
+    async def handler(ctx: ExecutionContext, envelope: Json) -> None:
+        return None
+
+    sub = Subscription(
+        stream="stream.media", group="cg.media", handlers={"media.job.requested.v1": handler}
+    )
+    for _ in range(3):
+        fake.seed("stream.media", _envelope_bytes("media.job.requested.v1"))
+
+    await _consumer(fake, heartbeat=beats).run_once([sub])
+
+    # One for the read, one per dispatched message.
+    assert beats.beats == 4
+
+
+async def test_a_failing_handler_still_beats() -> None:
+    """Deliberate: a handler that raises is a MESSAGE-level failure (it is
+    logged, retried and eventually dead-lettered by the policy above). The
+    loop itself is turning perfectly, and reporting the container unhealthy
+    for it would conflate a poison payload with a dead consumer."""
+    fake = InMemoryStreamsConsumer()
+    beats = CountingHeartbeat()
+
+    async def handler(ctx: ExecutionContext, envelope: Json) -> None:
+        raise RuntimeError("boom")
+
+    sub = Subscription(
+        stream="stream.memory", group="cg.memory", handlers={"memory.item.stored.v1": handler}
+    )
+    fake.seed("stream.memory", _envelope_bytes("memory.item.stored.v1"))
+
+    await _consumer(fake, heartbeat=beats).run_once([sub])
+
+    assert beats.beats == 2
+
+
+async def test_no_heartbeat_configured_is_a_silent_no_op() -> None:
+    """A bare python -m app.workers.memory_worker and every test in this
+    file construct the engine without one; it must not become required."""
+    fake = InMemoryStreamsConsumer()
+    subs = [Subscription(stream="stream.memory", group="cg.memory", handlers={})]
+
+    assert await _consumer(fake).run_once(subs) == 0  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+# Consumer housekeeping (ت-2, docs/operational-findings.md §2)                 #
+# --------------------------------------------------------------------------- #
+def _memory_sub() -> Subscription:
+    return Subscription(stream="stream.memory", group="cg.memory", handlers={})
+
+
+async def test_the_sweep_is_off_unless_both_knobs_are_wired() -> None:
+    """The default matters as much as the behaviour: the API's own notify
+    bridge builds a `StreamConsumer` too, and a consumer-level sweep there
+    could delete a live bridge's registration -- so "off" must be what an
+    unconfigured engine does, not merely what the workers happen to pass."""
+    fake = InMemoryStreamsConsumer()
+    fake.register("stream.memory", "cg.memory", "memory.deadhost.1", idle_ms=99_999_999)
+
+    assert await _consumer(fake).sweep_stale([_memory_sub()]) == []
+    assert fake.deleted_consumers == []
+
+
+async def test_the_sweep_removes_a_ghost_and_keeps_the_live_reader() -> None:
+    """The measured case (2026-08-13): a dead container's consumer entry
+    sitting beside the live one, inflating `consumers` forever."""
+    fake = InMemoryStreamsConsumer()
+    fake.register("stream.memory", "cg.memory", "test-consumer", idle_ms=12)
+    fake.register("stream.memory", "cg.memory", "memory.deadhost.1", idle_ms=3_600_000)
+
+    swept = await _consumer(fake, sweep_interval_s=1, stale_idle_ms=900_000).sweep_stale(
+        [_memory_sub()]
+    )
+
+    assert swept == ["memory.deadhost.1"]
+    assert list(fake.consumers[("stream.memory", "cg.memory")]) == ["test-consumer"]
+
+
+async def test_a_sweep_failure_never_reaches_the_read_loop() -> None:
+    """Housekeeping must not be able to stop message processing: the sweep
+    rides the same loop as `run_once`, so an exception escaping it would cost
+    the worker its next XREADGROUP."""
+
+    class _Exploding(InMemoryStreamsConsumer):
+        async def list_consumers(self, stream: str, group: str) -> list[ConsumerInfo]:
+            raise RuntimeError("redis is having a moment")
+
+    engine = _consumer(_Exploding(), sweep_interval_s=1, stale_idle_ms=1)
+
+    assert await engine.sweep_stale([_memory_sub()]) == []  # logged, not raised
+
+
+async def test_the_loop_sweeps_on_its_own_schedule() -> None:
+    """The wiring, not just the method: `run` must actually reach the sweep
+    between reads. Driven with a tiny interval and cancelled as soon as the
+    ghost is gone -- the loop itself never terminates by design."""
+
+    class _Yielding(InMemoryStreamsConsumer):
+        """The fake returns instantly, unlike a real blocking ``XREADGROUP``;
+        without a yield the `while True` loop would starve this test's own
+        polling coroutine of the event loop it shares."""
+
+        async def read(self, **kwargs: object) -> list[StreamMessage]:
+            await asyncio.sleep(0.001)
+            return await super().read(**kwargs)  # type: ignore[arg-type]
+
+    fake = _Yielding()
+    fake.register("stream.memory", "cg.memory", "memory.deadhost.1", idle_ms=3_600_000)
+    engine = _consumer(fake, block_ms=1, sweep_interval_s=0.01, stale_idle_ms=1_000)
+
+    task = asyncio.create_task(engine.run([_memory_sub()]))
+    try:
+        async with asyncio.timeout(5):
+            while ("stream.memory", "cg.memory", "memory.deadhost.1") not in fake.deleted_consumers:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+
+    assert fake.deleted_consumers == [("stream.memory", "cg.memory", "memory.deadhost.1")]
+
+
+async def test_deregister_removes_only_this_processs_own_entry() -> None:
+    """A clean exit's counterpart to `setup` -- and deliberately NOT
+    `teardown`: the group itself (`cg.memory`) must survive, or the module's
+    delivery position resets to the stream tail."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    fake.register("stream.memory", "cg.memory", "test-consumer", idle_ms=5)
+    fake.register("stream.memory", "cg.memory", "memory.otherhost.1", idle_ms=5)
+
+    await _consumer(fake).deregister([_memory_sub()])
+
+    assert fake.deleted_consumers == [("stream.memory", "cg.memory", "test-consumer")]
+    assert ("stream.memory", "cg.memory") in fake.groups
+
+
+async def test_deregister_keeps_the_entry_while_it_still_owns_messages() -> None:
+    """Shutting down with unacked entries must not discard them: the
+    tombstone is left for the next boot's sweep, which reclaims them to a
+    live consumer FIRST and only then deletes the name."""
+    fake = InMemoryStreamsConsumer()
+    fake.register("stream.memory", "cg.memory", "test-consumer", idle_ms=5, pending=2)
+
+    await _consumer(fake).deregister([_memory_sub()])
+
+    assert fake.deleted_consumers == []

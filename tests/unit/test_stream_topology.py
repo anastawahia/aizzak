@@ -67,6 +67,7 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
         documents=placeholder,  # type: ignore[arg-type]
         pipeline=IndexDocument(placeholder, placeholder),  # type: ignore[arg-type]
         content_resolver=placeholder,  # type: ignore[arg-type]
+        summary_builder=placeholder,  # type: ignore[arg-type]
         outbox=placeholder,  # type: ignore[arg-type]
         uow=placeholder,  # type: ignore[arg-type]
         ledger=placeholder,  # type: ignore[arg-type]
