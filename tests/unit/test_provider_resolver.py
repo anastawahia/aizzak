@@ -28,7 +28,7 @@ import pytest
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, ValidationError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingProvider, EmbeddingResult
 from app.framework.ports.image_provider import ImageProvider, ImageRequest, ImageResult
@@ -41,6 +41,8 @@ from app.framework.ports.llm_provider import (
 )
 from app.framework.providers import (
     KeyResolver,
+    ModelCatalog,
+    ModelChoice,
     ProviderResolver,
     ResolvedProvider,
     SettingsProviderResolver,
@@ -855,3 +857,102 @@ async def test_the_real_resolve_credential_no_key_outcome_escapes_untranslated()
         ("openai", CredentialScope.USER),
         ("openai", CredentialScope.PLATFORM),
     ]
+
+
+# --------------------------------------------------------------------------- #
+# ModelCatalog — the read-only view of the same table (02 §3.5.1)             #
+# --------------------------------------------------------------------------- #
+
+
+async def test_catalog_lists_every_configured_llm_route_sorted_by_capability() -> None:
+    """The catalogue is the table, not a subset of it, and its order is
+    stable: sorted by capability rather than dict-insertion, so the wire does
+    not reshuffle across boots."""
+    resolver, _ = make_resolver(
+        {
+            "llm": {
+                "rag": {"provider": "ollama", "model": "gemma3:1b"},
+                "default": {"provider": "openai", "model": "gpt-test"},
+            }
+        }
+    )
+    catalog: ModelCatalog = resolver
+    assert await catalog.list_llm_models(make_ctx()) == [
+        ModelChoice(capability="default", provider="openai", model="gpt-test", available=True),
+        ModelChoice(capability="rag", provider="ollama", model="gemma3:1b", available=True),
+    ]
+
+
+async def test_catalog_never_returns_a_key_and_never_asks_for_a_keyless_one() -> None:
+    """No field on ModelChoice can carry a secret — the whole reason the
+    port is separate — and a keyless provider must not touch the credential
+    seam at all (the resolve_llm keyless invariant, held here too)."""
+    resolver, spy = make_resolver({"llm": {"default": {"provider": "ollama", "model": "m"}}})
+    choices = await resolver.list_llm_models(make_ctx())
+    assert [f.name for f in fields(ModelChoice)] == [
+        "capability",
+        "provider",
+        "model",
+        "available",
+    ]
+    assert spy.calls == []
+    assert choices[0].available is True
+
+
+async def test_catalog_resolves_each_provider_once_not_once_per_route() -> None:
+    """Three routes, two providers ⇒ two credential lookups. Each is
+    repository + secrets I/O, so a per-route resolve would make the cost of
+    the catalogue grow with the config rather than with the provider count."""
+    resolver, spy = make_resolver(
+        {
+            "llm": {
+                "default": {"provider": "openai", "model": "a"},
+                "rag": {"provider": "openai", "model": "b"},
+                "local": {"provider": "ollama", "model": "c"},
+            }
+        }
+    )
+    await resolver.list_llm_models(make_ctx())
+    assert [provider for _, provider in spy.calls] == ["openai"]
+
+
+async def test_a_provider_without_a_credential_is_listed_unavailable_not_omitted() -> None:
+    """``credentials.none_available`` is a per-entry FACT, not a failure: the
+    route still appears, flagged, so a UI can show a disabled option instead
+    of leaving the user unable to tell a missing key from a missing feature."""
+    resolver, _ = make_resolver(
+        {
+            "llm": {
+                "cloud": {"provider": "openai", "model": "gpt-test"},
+                "local": {"provider": "ollama", "model": "gemma3:1b"},
+            }
+        },
+        key_resolver=RaisingKeyResolver(),
+    )
+    choices = await resolver.list_llm_models(make_ctx())
+    assert [(c.capability, c.available) for c in choices] == [("cloud", False), ("local", True)]
+
+
+async def test_a_secrets_outage_propagates_instead_of_reading_as_unavailable() -> None:
+    """Only the no-credential code becomes False. Anything else escapes —
+    an unreachable secrets backend must not render as a plausible catalogue of
+    providers that merely need keys."""
+
+    class _BrokenSecrets:
+        async def resolve(self, ctx: ExecutionContext, provider: str) -> _Key:
+            raise AppError("vault unreachable", code="common.internal")
+
+    resolver, _ = make_resolver(
+        {"llm": {"default": {"provider": "openai", "model": "m"}}},
+        key_resolver=_BrokenSecrets(),
+    )
+    with pytest.raises(AppError) as exc_info:
+        await resolver.list_llm_models(make_ctx())
+    assert exc_info.value.code == "common.internal"
+
+
+async def test_an_empty_routing_table_is_an_empty_catalog() -> None:
+    """An operator who configured nothing gets nothing — the honest answer,
+    and the one the router must be able to distinguish from being unwired."""
+    resolver, _ = make_resolver({})
+    assert await resolver.list_llm_models(make_ctx()) == []

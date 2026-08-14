@@ -88,15 +88,26 @@ observe), and any network access.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ValidationError
+from app.framework.errors import AppError, ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.image_provider import ImageProvider
-from app.framework.ports.llm_provider import LLMProvider
+from app.framework.ports.llm_provider import LlmMessage, LlmParams, LLMProvider
+from app.framework.providers.catalog import ModelCatalog, ModelChoice
+from app.framework.providers.inventory import (
+    PROBEABLE_NAMESPACES,
+    ConfiguredProvider,
+    Namespace,
+    ProbeOutcome,
+    ProviderInventory,
+    ProviderProbe,
+    ProviderRoute,
+)
 from app.framework.types import Json
 
 
@@ -157,9 +168,21 @@ class _Route:
     model: str
 
 
+# 03 §4's code for "this provider has no usable credential" — the ONE outcome
+# the catalogue turns into `available: false` rather than an error.
+_NO_CREDENTIAL = "credentials.none_available"
+
 _NAMESPACES = ("llm", "embedding", "image")
 _ENTRY_KEYS = frozenset({"provider", "model"})
 _DEFAULT_CAPABILITY = "default"
+
+# The probe's one call (BE-ADM-012). A fixed, meaningless prompt capped at a
+# single token: the question is whether the credential is accepted, and any
+# larger request would be spending a tenant's quota to learn the same thing.
+# `temperature=0.0` keeps two probes of a working key from differing in cost.
+_PROBE_PROMPT = "ping"
+_PROBE_MAX_TOKENS = 1
+_MS_PER_SECOND = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +375,144 @@ class SettingsProviderResolver:
         )
         return self._image_providers[route.provider], resolved
 
+    async def list_llm_models(self, ctx: ExecutionContext) -> list[ModelChoice]:
+        """The configured LLM routes as a caller may see them (02 §3.5.1).
+
+        This object implements the catalogue rather than a second class,
+        because the catalogue must be *the table resolution will use*: a
+        separate reader of ``provider_routing`` would be a second parser of
+        the same input, free to drift, and the drift would surface as a client
+        pinning a route ``resolve_llm`` then refuses.
+
+        Availability is resolved ONCE PER PROVIDER — routes commonly share
+        one, and each lookup is repository + secrets I/O. Sorted by capability
+        so the wire order is stable across boots (the agents router's
+        ``sorted`` precedent) rather than dict-insertion-dependent.
+
+        Nothing here returns a key. ``_api_key_for`` is deliberately not
+        reused: it RETURNS the secret, and a catalogue that held one — even
+        discarded — would be one refactor away from putting it on the wire.
+        """
+        availability: dict[str, bool] = {}
+        for route in self._llm_routes.values():
+            if route.provider not in availability:
+                availability[route.provider] = await self._provider_is_usable(ctx, route.provider)
+        return [
+            ModelChoice(
+                capability=capability,
+                provider=route.provider,
+                model=route.model,
+                available=availability[route.provider],
+            )
+            for capability, route in sorted(self._llm_routes.items())
+        ]
+
+    def configured_providers(self) -> tuple[ConfiguredProvider, ...]:
+        """The routing table transposed: one entry per provider (BE-ADM-010).
+
+        Built from the SAME parsed routes every resolution walks, for the
+        reason ``list_llm_models`` gives at length — a second reader of
+        ``provider_routing`` would be a second parser free to drift, and the
+        drift would surface as an operator storing a key for a provider this
+        process cannot reach.
+
+        Synchronous and I/O-free on purpose. Whether a provider is
+        CREDENTIALED is a different question, answered by a different port
+        against a different store; folding it in here would have made a
+        configuration read into a database read, and would have put this
+        object one step from the credential lookup it deliberately does not
+        perform on this path.
+        """
+        by_provider: dict[str, list[ProviderRoute]] = {}
+        # Annotated rather than inferred: without it the namespace widens to
+        # `str` and the closed `Namespace` type stops being checked at the one
+        # place it exists to guard.
+        tables: tuple[tuple[Namespace, dict[str, _Route]], ...] = (
+            ("llm", self._llm_routes),
+            ("embedding", self._embedding_routes),
+            ("image", self._image_routes),
+        )
+        for namespace, table in tables:
+            for capability, route in sorted(table.items()):
+                by_provider.setdefault(route.provider, []).append(
+                    ProviderRoute(namespace=namespace, capability=capability, model=route.model)
+                )
+        return tuple(
+            ConfiguredProvider(
+                provider=provider,
+                keyless=provider in self._keyless,
+                probeable=any(route.namespace in PROBEABLE_NAMESPACES for route in routes),
+                routes=tuple(routes),
+            )
+            # Sorted so the wire order is stable across boots rather than
+            # dependent on dict insertion (the `list_llm_models` precedent).
+            for provider, routes in sorted(by_provider.items())
+        )
+
+    async def probe(self, provider: str, api_key: str) -> ProbeOutcome:
+        """Spend one minimal call on ``api_key`` and time it (BE-ADM-012).
+
+        The route is chosen, not supplied: the first configured LLM route for
+        this provider, else its embedding route. Probing a model nobody routed
+        would answer a question nobody asked — and would let a passing probe
+        coexist with a platform that cannot serve a single request, which is
+        the precise failure a probe exists to rule out.
+
+        A provider-side failure is the RESULT, not an exception: ``ok=False``
+        with the adapter's translated reason. Raising instead would make the
+        caller unable to distinguish "the key is bad" (the answer) from "the
+        probe could not run" (a caller mistake) — and the second one is the
+        only case that still raises, before the timer starts.
+        """
+        llm_route = _route_for(self._llm_routes, provider)
+        embedding_route = _route_for(self._embedding_routes, provider)
+        if llm_route is None and embedding_route is None:
+            raise ValidationError(
+                f"provider {provider!r} has no configured llm or embedding route to probe"
+            )
+        started = time.perf_counter()
+        try:
+            if llm_route is not None:
+                await self._llm_providers[provider].complete(
+                    [LlmMessage(role="user", content=_PROBE_PROMPT)],
+                    LlmParams(model=llm_route.model, temperature=0.0, max_tokens=_PROBE_MAX_TOKENS),
+                    api_key,
+                )
+            elif embedding_route is not None:
+                await self._embedding_providers[provider].embed(
+                    [_PROBE_PROMPT], embedding_route.model, api_key
+                )
+        except AppError as error:
+            return ProbeOutcome(ok=False, latency_ms=_elapsed_ms(started), detail=error.detail)
+        return ProbeOutcome(ok=True, latency_ms=_elapsed_ms(started), detail=None)
+
+    async def _provider_is_usable(self, ctx: ExecutionContext, provider: str) -> bool:
+        """Whether a credential resolves — the SAME user→platform lookup the
+        call path takes, so the catalogue cannot promise what resolution would
+        deny.
+
+        Discrimination is by CATALOG CODE, not exception class. "No credential
+        for this provider" is ``credentials.none_available`` (03 §4) — a 409
+        since 6.2, though the class carrying it is the credentials module's
+        business and has already changed once. Matching the code means this
+        keeps working if it changes again, and — more importantly — that a
+        DIFFERENT conflict never reads as "unavailable".
+
+        Everything else PROPAGATES. A secrets backend that is down must not be
+        reported as five providers merely missing their keys: that turns an
+        outage into a plausible-looking catalogue and sends the operator
+        hunting for credentials that are all present.
+        """
+        if provider in self._keyless:
+            return True
+        try:
+            await self._key_resolver.resolve(ctx, provider)
+        except AppError as error:
+            if error.code != _NO_CREDENTIAL:
+                raise
+            return False
+        return True
+
     async def _api_key_for(self, ctx: ExecutionContext, provider: str) -> str:
         """ "" for keyless providers; otherwise the delegated resolution,
         whose errors pass through untranslated (module docstring, Keys)."""
@@ -359,6 +520,25 @@ class SettingsProviderResolver:
             return ""
         resolved = await self._key_resolver.resolve(ctx, provider)
         return resolved.api_key
+
+
+def _route_for(routes: Mapping[str, _Route], provider: str) -> _Route | None:
+    """The first configured route pointing at ``provider``, by capability.
+
+    Sorted rather than insertion-ordered so a provider carrying two routes is
+    probed through the same one on every call — a probe whose model drifted
+    between runs would make two identical requests answer differently.
+    """
+    for _capability, route in sorted(routes.items()):
+        if route.provider == provider:
+            return route
+    return None
+
+
+def _elapsed_ms(started: float) -> int:
+    """Whole milliseconds since ``started`` on the monotonic clock — never the
+    wall clock, which an NTP step could run backwards mid-probe."""
+    return round((time.perf_counter() - started) * _MS_PER_SECOND)
 
 
 def _override_or_routed(model: str | None, route: _Route) -> str:
@@ -384,4 +564,23 @@ if TYPE_CHECKING:
         """mypy-gate structural proof that the concrete class satisfies the
         §3.5 port — the Phase-4 wiring site that would otherwise prove it
         does not exist yet (``layers`` contract)."""
+        return resolver
+
+    def _conforms_inventory(resolver: SettingsProviderResolver) -> ProviderInventory:
+        """BE-ADM-010's narrowing, checked the same way. An
+        ``ProviderInventory``-typed field cannot reach ``resolve_llm`` either,
+        so the admin surface reads the routing table without ever holding the
+        object that can turn a route into a key."""
+        return resolver
+
+    def _conforms_probe(resolver: SettingsProviderResolver) -> ProviderProbe:
+        """BE-ADM-012's narrowing. ``probe`` only ever ACCEPTS a key, so this
+        face lets the admin surface spend one without being able to read one."""
+        return resolver
+
+    def _conforms_catalog(resolver: SettingsProviderResolver) -> ModelCatalog:
+        """The same proof for §3.5.1. Narrowing to ``ModelCatalog`` is what the
+        Composition Root does when it hands this object to the API layer, so
+        the widening direction is checked here too — a ``ModelCatalog``-typed
+        field cannot reach ``resolve_llm`` and therefore cannot reach a key."""
         return resolver
