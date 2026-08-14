@@ -127,6 +127,10 @@ class _SocketSession:
         async with self._lock:
             await self._websocket.send_text(json.dumps(payload, ensure_ascii=False))
 
+    async def close(self, *, code: int, reason: str) -> None:
+        async with self._lock:
+            await self._websocket.close(code=code, reason=reason)
+
 
 def create_ws_router(
     *,

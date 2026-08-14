@@ -62,21 +62,63 @@ _U1 = "018f0000-0000-7000-8000-0000000000u1"
 # the module's write/manage permission — and are pinned here so "the same rule"
 # is a fact about the code rather than a claim about it.
 EXPECTED: dict[tuple[str, str], Permission] = {
+    ("/api/v1/admin/users", "get"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/users/{}", "delete"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/users/{}/status", "patch"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/users/{}/roles/workspace", "patch"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/users/{}/roles/platform-admin", "patch"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/system/stats", "get"): Permission.PLATFORM_ADMIN,
+    # BE-ADM-010/011/012. `platform:admin`, never `credentials:manage`: that
+    # one governs a workspace's own keys, and holding it must not let an
+    # owner rotate the key every OTHER workspace falls back to.
+    ("/api/v1/admin/providers", "get"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/providers/{}/key", "put"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/providers/{}/key", "delete"): Permission.PLATFORM_ADMIN,
+    ("/api/v1/admin/providers/{}/probe", "post"): Permission.PLATFORM_ADMIN,
     ("/api/v1/agents", "get"): Permission.AGENTS_READ,
     ("/api/v1/agents/{}", "get"): Permission.AGENTS_READ,
     ("/api/v1/agents/{}/invoke", "post"): Permission.AGENTS_INVOKE,  # 05 §4
+    # The model catalogue answers "what can this workspace run", the same
+    # question `GET /agents` answers, and the permission catalog is closed
+    # (05 §1.2) — so it reuses `agents:read` rather than minting a permission.
+    ("/api/v1/models", "get"): Permission.AGENTS_READ,
+    # Choosing which CONFIGURED route answers a thread you may already post
+    # turns into is not a privileged act — the set of choices is the
+    # operator's either way — so it takes the same write permission the
+    # rename does, not a management one.
+    ("/api/v1/conversations/{}/model", "put"): Permission.CONVERSATIONS_WRITE,
     ("/api/v1/conversations", "get"): Permission.CONVERSATIONS_READ,
     ("/api/v1/conversations", "post"): Permission.CONVERSATIONS_WRITE,
     ("/api/v1/conversations/{}", "get"): Permission.CONVERSATIONS_READ,
+    # A rename EDITS the title `POST /conversations` authored, so it takes the
+    # same write permission rather than the delete one.
+    ("/api/v1/conversations/{}", "patch"): Permission.CONVERSATIONS_WRITE,
     ("/api/v1/conversations/{}", "delete"): Permission.CONVERSATIONS_DELETE,
     ("/api/v1/conversations/{}/messages", "get"): Permission.CONVERSATIONS_READ,
     ("/api/v1/conversations/{}/messages", "post"): Permission.CONVERSATIONS_WRITE,  # 05 §4
+    # Deleting ONE turn takes the same permission as deleting the thread, not
+    # the write one the rename takes: with `write` here a member could erase a
+    # whole transcript message by message while still being refused the empty
+    # thread — permitting the destructive act and forbidding only the tidy-up.
+    ("/api/v1/conversations/{}/messages/{}", "delete"): Permission.CONVERSATIONS_DELETE,
+    # The thread's retrieval scope (BE-RAG-005). Pinning and un-pinning are
+    # both `write`, like pinning the model: both configure how the thread
+    # answers. Un-pinning is deliberately NOT `delete` — it destroys no file,
+    # no index and no other thread's pin, and requiring `delete` would leave a
+    # member able to pin a file but not to undo their own pin.
+    ("/api/v1/conversations/{}/files", "get"): Permission.CONVERSATIONS_READ,
+    ("/api/v1/conversations/{}/files", "post"): Permission.CONVERSATIONS_WRITE,
+    ("/api/v1/conversations/{}/files/{}", "delete"): Permission.CONVERSATIONS_WRITE,
     ("/api/v1/workflows", "get"): Permission.WORKFLOWS_READ,
     ("/api/v1/workflows/{}/run", "post"): Permission.WORKFLOWS_RUN,  # 05 §4
     ("/api/v1/workflows/runs/{}", "get"): Permission.WORKFLOWS_READ,
     ("/api/v1/files", "post"): Permission.FILES_WRITE,
     ("/api/v1/files", "get"): Permission.FILES_READ,
     ("/api/v1/files/{}", "get"): Permission.FILES_READ,
+    # Rename is `files:write`, not `files:delete`: it destroys nothing, and
+    # gating it on delete would leave a member able to upload a file but not
+    # to correct its name (BE-RAG-006).
+    ("/api/v1/files/{}", "patch"): Permission.FILES_WRITE,
     ("/api/v1/files/{}", "delete"): Permission.FILES_DELETE,  # 05 §4
     ("/api/v1/files/{}/complete", "post"): Permission.FILES_WRITE,
     ("/api/v1/media/jobs", "post"): Permission.MEDIA_CREATE,  # 05 §4
@@ -92,6 +134,30 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/knowledge/search", "post"): Permission.KNOWLEDGE_READ,
     ("/api/v1/knowledge/documents", "get"): Permission.KNOWLEDGE_READ,
     ("/api/v1/knowledge/documents/{}", "get"): Permission.KNOWLEDGE_READ,
+    # BE-RAG-007/008 — the first two uses of `knowledge:manage`, and the first
+    # place this router splits its permission. Starting a rebuild DESTROYS a
+    # working index and spends embedding quota; stopping one ends work the
+    # workspace is paying for. Watching one is reading, so it stays with the
+    # `knowledge:read` a member already has.
+    ("/api/v1/knowledge/reindex", "post"): Permission.KNOWLEDGE_MANAGE,
+    ("/api/v1/knowledge/reindex/{}", "get"): Permission.KNOWLEDGE_READ,
+    ("/api/v1/knowledge/reindex/{}/cancel", "post"): Permission.KNOWLEDGE_MANAGE,
+    # BE-RAG-009/010/011 — the same split for the same reason, one capability
+    # over. Building a summary spends the workspace's MODEL budget (a `full`
+    # one maps over the whole document), and deleting one destroys an artefact
+    # that budget paid for; reading the stored summary and watching a build
+    # are both reading. Note the DELETE: it takes `knowledge:manage` where the
+    # read of the identical path takes `knowledge:read`, because what
+    # separates them is destruction, not the URL.
+    ("/api/v1/knowledge/documents/{}/summary", "post"): Permission.KNOWLEDGE_MANAGE,
+    ("/api/v1/knowledge/documents/{}/summary", "get"): Permission.KNOWLEDGE_READ,
+    ("/api/v1/knowledge/documents/{}/summary", "delete"): Permission.KNOWLEDGE_MANAGE,
+    # The export is `knowledge:read` beside the DELETE's `knowledge:manage`
+    # on a neighbouring path: downloading produces no artefact and spends no
+    # model budget, so a member who may read a summary may save it.
+    ("/api/v1/knowledge/documents/{}/summary/export", "get"): Permission.KNOWLEDGE_READ,
+    ("/api/v1/knowledge/summary-jobs/{}", "get"): Permission.KNOWLEDGE_READ,
+    ("/api/v1/knowledge/summary-jobs/{}/cancel", "post"): Permission.KNOWLEDGE_MANAGE,
     ("/api/v1/integrations/connectors", "get"): Permission.INTEGRATIONS_READ,
     ("/api/v1/integrations/connections", "get"): Permission.INTEGRATIONS_READ,
     ("/api/v1/integrations/connections", "post"): Permission.INTEGRATIONS_MANAGE,  # 05 §4
@@ -115,6 +181,11 @@ UNGUARDED = {
     ("/health/ready", "get"),
     ("/metrics", "get"),
     ("/api/v1/integrations/connections/oauth/callback", "get"),
+    # These session operations authenticate through their router dependency,
+    # but intentionally need no resource permission beyond a valid session.
+    ("/api/v1/me/context", "get"),
+    ("/api/v1/me/heartbeat", "post"),
+    ("/api/v1/me/logout", "post"),
 }
 
 

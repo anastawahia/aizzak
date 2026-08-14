@@ -86,6 +86,15 @@ class SessionRevocationList:
         """
         await self._cache.set(_key_for(subject), _PRESENT, _guard_ttl(ttl_s or self._ttl_s))
 
+    async def clear(self, subject: str) -> None:
+        """Remove a temporary denylist entry after an account is re-enabled.
+
+        This is intentionally an application-only recovery path, not an ops
+        command: it is called only after the durable account status has been
+        changed back to ``active`` and that transition has been audited.
+        """
+        await self._cache.delete(_key_for(subject))
+
     async def is_revoked(self, subject: str) -> bool:
         """Whether ``subject``'s sessions are currently denied.
 

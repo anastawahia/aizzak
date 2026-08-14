@@ -124,6 +124,8 @@ class StreamSession(Protocol):
 
     async def send_json(self, payload: Json) -> None: ...
 
+    async def close(self, *, code: int, reason: str) -> None: ...
+
 
 class _Slot(NamedTuple):
     """What this process must remember about one admitted session to renew
@@ -228,6 +230,26 @@ class ConnectionHub:
                 "hub.registry_unavailable_on_release",
                 extra={"workspace_id": workspace_id},
             )
+
+    async def disconnect_user(self, user_id: Uuid) -> None:
+        """Close every live socket for one user owned by this process.
+
+        The durable account state and shared denylist protect every replica;
+        this local eviction makes an already-open socket stop immediately on
+        the process that handles the admin request. Its normal endpoint
+        teardown unregisters and releases each shared connection slot.
+        """
+        sessions = tuple(
+            session
+            for workspace_sessions in self._by_workspace.values()
+            for session in workspace_sessions
+            if (slot := self._slots.get(id(session))) is not None and slot.user_id == user_id
+        )
+        for session in sessions:
+            try:
+                await session.close(code=1008, reason="account disabled")
+            except Exception:
+                _logger.warning("hub.user_disconnect_failed", extra={"user_id": user_id})
 
     def user_connection_count(self, user_id: Uuid) -> int:
         """Connections THIS process holds for one user — introspection for

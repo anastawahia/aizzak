@@ -60,6 +60,8 @@ from app.framework.types import Uuid
 
 _GUC = "app.workspace_id"
 _PLATFORM_READ_GUC = "app.platform_read"
+_PLATFORM_ADMIN_READ_GUC = "app.platform_admin_read"
+_PLATFORM_ADMIN_WRITE_GUC = "app.platform_admin_write"
 
 # Published only while a `TenantSessionFactory.begin(ctx)` block from THIS
 # instance is active on the current asyncio task (ASGI request tasks and
@@ -83,6 +85,25 @@ async def set_platform_read(session: AsyncSession) -> None:
     of ``session``'s current transaction. Never sets ``app.workspace_id`` —
     this is a platform-wide read escape hatch, not a tenant context."""
     await session.execute(text("SELECT set_config(:guc, 'on', true)"), {"guc": _PLATFORM_READ_GUC})
+
+
+async def set_platform_admin_read(session: AsyncSession) -> None:
+    """Set the separately-audited platform-admin read sentinel."""
+    await session.execute(
+        text("SELECT set_config(:guc, 'on', true)"), {"guc": _PLATFORM_ADMIN_READ_GUC}
+    )
+
+
+async def set_platform_admin_write(session: AsyncSession) -> None:
+    """Set the separately-audited platform-admin write sentinel.
+
+    It must never be shared with the directory's read sentinel: a future
+    read-only route can safely receive ``PlatformAdminSessionFactory`` without
+    accidentally gaining the policy that changes account state.
+    """
+    await session.execute(
+        text("SELECT set_config(:guc, 'on', true)"), {"guc": _PLATFORM_ADMIN_WRITE_GUC}
+    )
 
 
 class TenantSessionFactory:
@@ -183,4 +204,40 @@ class PlatformSessionFactory:
     async def __call__(self) -> AsyncIterator[AsyncSession]:
         async with self._sessionmaker() as session, session.begin():
             await set_platform_read(session)
+            yield session
+
+
+class PlatformAdminSessionFactory:
+    """One read-only platform-directory session per call.
+
+    It deliberately uses a different sentinel from identity lookup.  The
+    migration grants that sentinel SELECT access only to the two tables needed
+    by the user directory; no tenant-scoped write policy accepts it.
+    """
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+    @asynccontextmanager
+    async def __call__(self) -> AsyncIterator[AsyncSession]:
+        async with self._sessionmaker() as session, session.begin():
+            await set_platform_admin_read(session)
+            yield session
+
+
+class PlatformAdminWriteSessionFactory:
+    """One narrowly scoped platform-account write session per call.
+
+    The sentinel only reaches the ``workspace.users`` UPDATE policy added by
+    the account-management migration.  The adapter performs a single state
+    transition plus its audit insert in this one transaction.
+    """
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+    @asynccontextmanager
+    async def __call__(self) -> AsyncIterator[AsyncSession]:
+        async with self._sessionmaker() as session, session.begin():
+            await set_platform_admin_write(session)
             yield session

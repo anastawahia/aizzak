@@ -45,6 +45,9 @@ class _Session:
             raise RuntimeError("socket died")
         self.received.append(payload)
 
+    async def close(self, *, code: int, reason: str) -> None:
+        self.closed = (code, reason)
+
 
 def _hub(cap: int = 5) -> ConnectionHub:
     return ConnectionHub(max_connections_per_user=cap, registry=InMemoryWsConnectionRegistry())
@@ -128,6 +131,18 @@ async def test_unregister_of_an_unknown_session_is_a_noop() -> None:
     await hub.unregister(workspace_id=_W1, session=_Session())
 
     assert hub.workspace_session_count(_W1) == 0
+
+
+async def test_disconnect_user_closes_only_that_users_local_sessions() -> None:
+    hub = _hub()
+    mine, theirs = _Session(), _Session()
+    await hub.try_register(workspace_id=_W1, user_id=_U1, session=mine)
+    await hub.try_register(workspace_id=_W1, user_id=_U2, session=theirs)
+
+    await hub.disconnect_user(_U1)
+
+    assert mine.closed == (1008, "account disabled")
+    assert not hasattr(theirs, "closed")
 
 
 async def test_fanout_iterates_a_snapshot_not_the_live_registry() -> None:
