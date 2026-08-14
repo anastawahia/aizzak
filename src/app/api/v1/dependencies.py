@@ -37,14 +37,19 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.framework.agent_runtime.registry import AgentRegistry
+from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import UnauthorizedError
 from app.framework.ports.idempotency_store import IdempotencyStore
+from app.framework.ports.system_stats import SystemStatsSource
+from app.framework.providers.catalog import ModelCatalog
 from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.types import Uuid
 from app.framework.workflows.registry import WorkflowRegistry
 from app.modules.access.ports.inbound import AuthorizationService
+from app.modules.admin.application.providers import PlatformProviderUseCases
+from app.modules.admin.application.users import PlatformAdminUseCases
 from app.modules.conversations.application.use_cases import ConversationUseCases
 from app.modules.credentials.application.use_cases import CredentialUseCases
 from app.modules.files.application.use_cases import FileUseCases
@@ -52,7 +57,7 @@ from app.modules.integrations.application.use_cases import IntegrationsUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeUseCases
 from app.modules.media.application.use_cases import MediaUseCases
 from app.modules.usage.application.use_cases import UsageUseCases
-from app.modules.workspace.application.use_cases import WorkspaceUseCases
+from app.modules.workspace.application.use_cases import RecordUserPresence, WorkspaceUseCases
 
 # 03 §0: "Authorization: Bearer <Firebase ID Token>" — declared as an OpenAPI
 # security scheme (6.4-أ), not read off the raw header, so the generated
@@ -189,6 +194,41 @@ class ApiServices:
     # layer is its only caller by construction — nothing below this layer knows
     # a request had a header at all.
     idempotency: IdempotencyStore
+    # Optional only for small hermetic applications that predate the platform
+    # directory. Production wiring always supplies it; the route fails closed
+    # if a test application accidentally reaches the admin surface unwired.
+    admin: PlatformAdminUseCases | None = None
+    # A browser heartbeat records only the authenticated caller under the
+    # caller's tenant RLS context. Optional preserves older hermetic apps;
+    # production always wires it and the route fails closed when absent.
+    presence: RecordUserPresence | None = None
+    # The account-status route must revoke an existing Firebase subject after
+    # its state transition commits. Optional preserves small hermetic apps;
+    # production always supplies the shared, process-wide list.
+    session_revocations: SessionRevocationList | None = None
+    # The D-16 routing table, read-only (02 §3.5.1). Typed as the NARROW
+    # catalogue port and never as `ProviderResolver`: the resolver's
+    # `ResolvedProvider` carries a decrypted `api_key`, so holding the wide
+    # port here would undo — for provider keys — exactly what leaving
+    # `ResolveCredential` off the `credentials` bundle achieves for stored
+    # ones. Optional preserves the hermetic applications that predate the
+    # route; production always wires it and `GET /models` fails closed.
+    models: ModelCatalog | None = None
+    # BE-ADM-007 — the System Monitor tab's host telemetry. On this bundle
+    # rather than beside `metrics_source` on `app.state` (where `/metrics`
+    # keeps its own source) because this one is reached through the versioned,
+    # authenticated router and its permission guard, not from an unversioned
+    # endpoint the edge blocks outright. Optional preserves the hermetic
+    # applications that predate the route; production always wires it and the
+    # route fails closed when absent.
+    system_stats: SystemStatsSource | None = None
+    # BE-ADM-010/011/012 — the Service Providers tab. A SEPARATE bundle from
+    # `admin` rather than four more fields on it: that one is built over the
+    # user directory's sessions and answers questions about people, while this
+    # one joins the boot-time routing table to the platform's credentials, and
+    # a test application can wire either without the other. Optional for the
+    # same reason as its neighbours, and the routes fail closed when absent.
+    providers: PlatformProviderUseCases | None = None
 
 
 def get_services(request: Request) -> ApiServices:

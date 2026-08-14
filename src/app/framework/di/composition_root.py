@@ -201,9 +201,13 @@ from app.framework.ports import (
     SecretsProvider,
 )
 from app.framework.ports.connector_provider import ConnectorProvider
+from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.idempotency_store import IdempotencyStore
 from app.framework.ports.metrics_source import MetricsSource
+from app.framework.ports.system_stats import SystemStatsSource
 from app.framework.ports.vault_health import VaultHealth
+from app.framework.providers.catalog import ModelCatalog
+from app.framework.providers.inventory import ProviderInventory, ProviderProbe
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings import DatabaseSettings, Settings
 from app.framework.streaming import ConnectionHub, make_notification_handler
@@ -226,28 +230,65 @@ from app.infrastructure.cache.redis_cache import (
 )
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
+from app.infrastructure.messaging.consumers.sweeper import (
+    destroy_orphan_notify_groups,
+    find_orphan_notify_groups,
+)
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
 from app.infrastructure.monitoring.metrics_source import SqlRedisMetricsSource
+from app.infrastructure.monitoring.system_stats import HostSystemStats
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.idempotency import SqlIdempotencyStore
 from app.infrastructure.persistence.outbox import SqlEventOutbox
-from app.infrastructure.persistence.rls import PlatformSessionFactory, TenantSessionFactory
+from app.infrastructure.persistence.rls import (
+    PlatformAdminSessionFactory,
+    PlatformAdminWriteSessionFactory,
+    PlatformSessionFactory,
+    TenantSessionFactory,
+)
 from app.infrastructure.streaming.redis_connection_registry import RedisWsConnectionRegistry
 from app.infrastructure.vector.qdrant_store import QdrantVectorStore, create_qdrant_client
 from app.modules.access.adapters.sql_repository import SqlRoleAssignmentRepository
 from app.modules.access.application.use_cases import AssignRole, Authorization
 from app.modules.access.ports.inbound import AuthorizationService, RoleSeeding
+from app.modules.admin.adapters.sql_accounts import SqlPlatformAccountManager
+from app.modules.admin.adapters.sql_directory import SqlPlatformUserDirectory
+from app.modules.admin.adapters.sql_providers import SqlPlatformCredentialStore
+from app.modules.admin.adapters.sql_roles import SqlPlatformRoleManager
+from app.modules.admin.application.providers import (
+    ListPlatformProviders,
+    PlatformProviderUseCases,
+    ProbePlatformProvider,
+    RevokePlatformProviderKey,
+    SetPlatformProviderKey,
+)
+from app.modules.admin.application.users import (
+    DeletePlatformUser,
+    ListPlatformUsers,
+    PlatformAdminUseCases,
+    SetPlatformAccountStatus,
+    SetPlatformAdminRole,
+    SetPlatformWorkspaceRole,
+)
+from app.modules.admin.ports.providers import PlatformCredentialStore
 from app.modules.conversations.adapters.sql_repository import SqlConversationRepository
 from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
     ConversationUseCases,
     GetConversation,
+    ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
+    PinConversationFile,
+    PinConversationModel,
+    RenameConversation,
     SoftDeleteConversation,
+    SoftDeleteMessage,
     StartConversation,
+    UnpinConversationFile,
 )
+from app.modules.conversations.ports.files import ReadableFiles
 from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
 from app.modules.credentials.application.use_cases import (
     AddUserCredential,
@@ -264,6 +305,7 @@ from app.modules.files.application.use_cases import (
     FileTransferService,
     FileUseCases,
     RegisterUpload,
+    RenameFile,
     SoftDeleteFile,
     SoftDeleteFileService,
 )
@@ -285,15 +327,39 @@ from app.modules.integrations.application.use_cases import (
     RevokeConnection,
     StartConnection,
 )
-from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
+from app.modules.knowledge.adapters.sql_repository import (
+    SqlDocumentRepository,
+    SqlReindexJobRepository,
+    SqlSummaryJobRepository,
+    SqlSummaryRepository,
+)
+from app.modules.knowledge.adapters.summary_renderer import MarkdownSummaryRenderer
 from app.modules.knowledge.application.retrieval import RetrieveContext
 from app.modules.knowledge.application.use_cases import (
+    CancelReindexJob,
+    CancelReindexJobService,
+    CancelSummaryJob,
+    CancelSummaryJobService,
+    DeleteSummary,
+    ExportSummary,
     GetDocument,
+    GetReindexJob,
+    GetSummary,
+    GetSummaryJob,
     KnowledgeRetrievalService,
     KnowledgeUseCases,
     ListDocuments,
+    ReindexDocuments,
+    ReindexService,
+    RequestSummary,
+    RequestSummaryService,
 )
 from app.modules.knowledge.ports.retrieval import EmbeddingResolver, ResolvedEmbedding
+from app.modules.knowledge.ports.summarization import (
+    SUMMARIZE_CAPABILITY,
+    ResolvedSummarizer,
+    SummarizerResolver,
+)
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.media.application.use_cases import (
     GetJobStatus,
@@ -312,6 +378,7 @@ from app.modules.usage.application.use_cases import (
     UsageEnforcementService,
     UsageUseCases,
 )
+from app.modules.workspace.adapters.sql_presence import SqlUserPresenceStore
 from app.modules.workspace.adapters.sql_repository import (
     SqlUserRepository,
     SqlWorkspaceRepository,
@@ -319,6 +386,7 @@ from app.modules.workspace.adapters.sql_repository import (
 from app.modules.workspace.application.use_cases import (
     GetWorkspace,
     ProvisionUserOnFirstLogin,
+    RecordUserPresence,
     RenameWorkspace,
     WorkspaceUseCases,
 )
@@ -627,6 +695,37 @@ def _build_notify_bridge(
     return hub, notify_consumer, notify_subscriptions, notify_redis_client
 
 
+def _build_platform_providers(
+    *,
+    inventory: ProviderInventory,
+    probe: ProviderProbe,
+    store: PlatformCredentialStore,
+    secrets: SecretsProvider,
+    cache: CacheProvider,
+) -> PlatformProviderUseCases:
+    """The provider-administration bundle (BE-ADM-010/011/012).
+
+    ``inventory`` and ``probe`` are the SAME ``SettingsProviderResolver``
+    instance, narrowed to two different ports at this call site. That is the
+    whole point of building them here: the operator's list has to be the table
+    the fleet resolves against, and the probe has to spend its call through the
+    adapter a real request would, or an operator could be told a key works on a
+    platform that would never use it.
+
+    ``secrets`` is the same Vault Transit provider ``credentials`` holds — the
+    unified ``tenant-secrets`` key (SEC-07) — which is what makes a platform
+    key stored here decryptable by ``ResolveCredential`` later. ``cache`` backs
+    the probe's rate limit, shared so the budget is the platform's rather than
+    each worker's.
+    """
+    return PlatformProviderUseCases(
+        list=ListPlatformProviders(inventory, store),
+        set_key=SetPlatformProviderKey(inventory, store, secrets),
+        revoke_key=RevokePlatformProviderKey(inventory, store),
+        probe=ProbePlatformProvider(inventory, store, secrets, probe, cache),
+    )
+
+
 def _build_integrations(
     settings: Settings,
     cache: CacheProvider,
@@ -703,6 +802,152 @@ def _build_integrations(
     )
 
 
+def _build_conversations(
+    tenant_session: TenantSessionFactory,
+    catalog: ModelCatalog,
+    files: ReadableFiles,
+) -> tuple[ConversationUseCases, ConversationService]:
+    """The conversations module's TWO faces — a helper so ``from_env`` stays
+    under its statement ceiling (the ``_build_integrations`` precedent).
+
+    Returned together, and built here rather than at two call sites, because
+    what makes them correct is that they share state: ONE
+    ``SqlConversationRepository`` behind both (the adapter is stateless, so two
+    would be harmless — but they would misrepresent the wiring: there is one
+    conversations store, reached two ways), and ONE
+    ``ListConversationFiles`` behind both the API's ``GET …/files`` and the
+    orchestrator's scope read, so the orchestrator sees exactly what the API
+    just wrote.
+
+    ``catalog`` is the SAME resolver the orchestrator routes through, narrowed:
+    a second source for "what is routable" would let the API accept a key
+    resolution rejects. ``files`` is the DIP seam
+    ``conversations/ports/files.py`` declares, bound to the files module's own
+    ``FilesQuery`` — mypy checks that binding at this call.
+    """
+    repository = SqlConversationRepository(tenant_session)
+    list_files = ListConversationFiles(repository)
+    use_cases = ConversationUseCases(
+        start=StartConversation(repository),
+        get=GetConversation(repository),
+        list_by_agent=ListConversationsByAgent(repository),
+        list_messages=ListMessages(repository),
+        rename=RenameConversation(repository),
+        pin_model=PinConversationModel(repository, catalog),
+        soft_delete=SoftDeleteConversation(repository),
+        soft_delete_message=SoftDeleteMessage(repository),
+        list_files=list_files,
+        pin_file=PinConversationFile(repository, files),
+        unpin_file=UnpinConversationFile(repository),
+    )
+    threads = ConversationService(
+        StartConversation(repository),
+        AppendMessage(repository),
+        GetConversation(repository),
+        list_files,
+    )
+    return use_cases, threads
+
+
+def _build_knowledge(
+    tenant_session: TenantSessionFactory,
+    *,
+    embedding: ExternalEmbeddingProvider,
+    vectors: HybridVectorStore,
+    resolver: EmbeddingResolver,
+    outbox: EventOutbox,
+) -> KnowledgeUseCases:
+    """The knowledge module's API-facing bundle — a helper so ``from_env``
+    stays under its statement ceiling (the ``_build_conversations``
+    precedent), and so the ONE ``SqlDocumentRepository`` behind five faces is
+    visible in one place.
+
+    That sharing is the point of building it here (6.1-و-3 / 2.10 / BE-RAG-005):
+    the two document reads, the scoped retrieval's "file ⇒ document"
+    translation, and both re-index faces must see exactly the same documents,
+    or a pinned file would resolve differently depending on which face asked.
+
+    ``search`` is real, not ``None``: ``RetrieveContext`` (3.k3) over the SAME
+    ``embedding`` adapter and vector store the root already built, resolved
+    per-call through the ``resolver`` that wraps the SAME ``ProviderResolver``
+    every LLM call routes through — and the very instance handed to
+    ``OrchestratorDependencies`` as the RAG agent's ``KnowledgeAccess``
+    seam, so there is one retrieval path reached two ways.
+
+    Neither ingestion face is built here — a request has no business indexing
+    a document. ``reindex`` is not a hole in that: ``ReindexDocuments`` is
+    the only knowledge face that both writes rows and deletes vectors (hence
+    the direct ``vectors``), but all it produces is a ``pending`` document
+    and the ordinary ``DocumentRegistered`` event a worker acts on. Both
+    write faces are wrapped in one unit of work with the outbox, so that
+    document and the event telling a worker about it can never be written
+    apart.
+    """
+    documents = SqlDocumentRepository(tenant_session)
+    jobs = SqlReindexJobRepository(tenant_session)
+    summaries = SqlSummaryRepository(tenant_session)
+    summary_jobs = SqlSummaryJobRepository(tenant_session)
+    return KnowledgeUseCases(
+        list_documents=ListDocuments(documents),
+        get_document=GetDocument(documents),
+        search=KnowledgeRetrievalService(
+            RetrieveContext(embeddings=embedding, vectors=vectors), resolver, documents
+        ),
+        reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
+        get_job=GetReindexJob(jobs),
+        cancel_job=CancelReindexJobService(
+            CancelReindexJob(documents, jobs), outbox, tenant_session
+        ),
+        # No `BuildSummary` here, for the reason no ingestion face is here:
+        # the API may ask for a summary and watch one being built, never run
+        # the pipeline itself. `BuildSummary` is composed in the WORKER
+        # (`workers/bootstrap.py`), which is the only process that holds a
+        # `SummarizerResolver` and can therefore reach a model.
+        request_summary=RequestSummaryService(
+            RequestSummary(documents, summary_jobs), outbox, tenant_session
+        ),
+        get_summary=GetSummary(summaries),
+        # BE-RAG-012 -- the renderer is a plain construction, not a bound
+        # handle: it opens no socket, holds no credential and reads no
+        # settings, so there is nothing about it to defer to a lifespan hook.
+        export_summary=ExportSummary(summaries, MarkdownSummaryRenderer()),
+        delete_summary=DeleteSummary(summaries),
+        get_summary_job=GetSummaryJob(summary_jobs),
+        cancel_summary_job=CancelSummaryJobService(
+            CancelSummaryJob(summary_jobs), outbox, tenant_session
+        ),
+    )
+
+
+class _RoutedSummarizerResolver:
+    """Adapts the framework ``ProviderResolver`` to the knowledge module's
+    ``SummarizerResolver`` seam — the ``_RoutedEmbeddingResolver`` shape, one
+    capability over.
+
+    It returns the ADAPTER alongside the model and key, where its embedding
+    twin returns only the latter two. That is the routing table's asymmetry
+    rather than an inconsistency: there is one embedding service, so the
+    pipeline holds its provider; which LLM adapter answers a summary depends
+    on what the ``summarize`` route names, so it has to travel with the route
+    it came from.
+
+    ``capability="summarize"`` is the whole of the new configuration this
+    feature needs. The resolver reads its table by key with a ``default``
+    fallback, so a deployment that adds no ``summarize`` entry still resolves
+    — through whatever ``default`` names — and one that wants summaries on a
+    cheaper long-context model adds one line without touching RAG chat.
+    """
+
+    def __init__(self, provider_resolver: ProviderResolver) -> None:
+        self._provider_resolver = provider_resolver
+
+    async def resolve_summarizer(self, ctx: ExecutionContext) -> ResolvedSummarizer:
+        provider, resolved = await self._provider_resolver.resolve_llm(
+            ctx, capability=SUMMARIZE_CAPABILITY
+        )
+        return ResolvedSummarizer(provider=provider, model=resolved.model, api_key=resolved.api_key)
+
+
 class _RoutedEmbeddingResolver:
     """Adapts the framework ``ProviderResolver`` (2.9) to the knowledge
     module's temporary ``EmbeddingResolver`` seam (``ports/retrieval.py``,
@@ -732,6 +977,10 @@ if TYPE_CHECKING:
         satisfies the knowledge module's ``EmbeddingResolver`` seam — the
         ``providers/resolver.py`` ``_conforms`` precedent, applied at the
         one wiring site allowed to import both sides."""
+        return resolver
+
+    def _summarizer_resolver_conforms(resolver: _RoutedSummarizerResolver) -> SummarizerResolver:
+        """The same structural proof for the ``SummarizerResolver`` seam."""
         return resolver
 
 
@@ -809,6 +1058,13 @@ class CompositionRoot:
     llm_providers: dict[str, LLMProvider]
     # 4.7-b-2 — the application layer, wired on top of the adapters above.
     provider_resolver: ProviderResolver
+    # The SAME object, exposed a second time under the narrow read-only port
+    # (02 §3.5.1). Two fields rather than one because the two consumers must
+    # differ: the orchestrator needs `resolve_llm`, whose `ResolvedProvider`
+    # carries a decrypted `api_key`, while `GET /models` needs only the table.
+    # Handing the API layer this field is what makes the key unreachable there
+    # structurally instead of by convention.
+    model_catalog: ModelCatalog
     agent_registry: AgentRegistry
     plugin_report: PluginLoadReport
     orchestrator: AgentOrchestrator
@@ -844,6 +1100,10 @@ class CompositionRoot:
     # alone (INV-U4) — the same `usage_ledger` instance backs both, so the
     # numbers a client reads are the ones enforcement reasons over.
     workspace: WorkspaceUseCases
+    # Server-observed, self-scoped activity heartbeats.  Kept separate from
+    # the workspace bundle because it is neither workspace profile data nor a
+    # tenant-management action.
+    presence: RecordUserPresence
     usage: UsageUseCases
     # 6.1-و-2 — the credentials bundle the API layer consumes. It holds
     # list/add/revoke and NOT `ResolveCredential`: the decrypting face stays
@@ -863,6 +1123,16 @@ class CompositionRoot:
     # public OAuth callback, which و-4-2 mounts on its own unauthenticated
     # route because it takes no `ExecutionContext` at all.
     integrations: IntegrationsUseCases
+    # The platform-only directory is deliberately read-only.  It is exposed
+    # separately from tenant services so cross-tenant access is auditable.
+    admin: PlatformAdminUseCases
+    # BE-ADM-010/011/012 — provider administration. The SAME
+    # `provider_resolver` object built above appears here twice more, narrowed
+    # to `ProviderInventory` and `ProviderProbe`: the inventory must be the
+    # table resolution will use, and the probe must go through the adapter a
+    # request would, or both would be reporting on a platform other than this
+    # one.
+    providers: PlatformProviderUseCases
     # 6.4-أ — the authentication path's three faces, typed as the narrow
     # inbound ports rather than the use-cases behind them. Not part of
     # `ApiServices`: a router must not be able to provision a user or seed a
@@ -892,6 +1162,13 @@ class CompositionRoot:
     # follows (`disposables()`).
     metrics_engine: AsyncEngine
     metrics_source: MetricsSource
+    # BE-ADM-007 — the System Monitor tab's host telemetry. No engine, no
+    # client and no settings of its own: it reads this machine's `/proc` and
+    # shells out to `nvidia-smi`, so there is nothing to configure and nothing
+    # to dispose. Built unconditionally for that reason — a host with neither
+    # a readable `/proc` nor a driver still answers, with each missing section
+    # carrying its own reason (`HostSystemStats`'s own module docstring).
+    system_stats: SystemStatsSource
 
     @classmethod
     def from_env(cls) -> CompositionRoot:
@@ -973,11 +1250,12 @@ class CompositionRoot:
         # be constructed inline in, so the sharing is visible rather than
         # accidental.
         credential_repository = SqlCredentialRepository(tenant_session)
-        # 6.1-و-3 — the knowledge row store, built for the first time here:
-        # until now the module reached the process only through the worker
-        # path, which constructs its own. The API's two document reads need
-        # nothing else — no vector store, no embedding provider.
-        document_repository = SqlDocumentRepository(tenant_session)
+        # BE-RAG-007/008 — the Outbox the whole process shares, built here
+        # rather than beside `media` (where it used to live) simply because
+        # `knowledge` is now the first module that needs it. The SAME
+        # `tenant_session` backs the repositories, the outbox and the unit of
+        # work, which is what makes a row write and its event one transaction.
+        outbox = SqlEventOutbox(tenant_session)
 
         provider_resolver = SettingsProviderResolver(
             routing=settings.provider_routing,
@@ -1053,24 +1331,12 @@ class CompositionRoot:
             revoke=RevokeCredential(credential_repository),
         )
 
-        # 6.1-و-3 / 2.10 — the knowledge bundle, `search` now real:
-        # `RetrieveContext` (3.k3) composed over the SAME `embedding` adapter
-        # and `vector_store` this root already built, resolved per-call
-        # through `_RoutedEmbeddingResolver` over the SAME `provider_resolver`
-        # every LLM call already resolves through. `knowledge.search` (not a
-        # separate local — the statement-ceiling precedent every helper
-        # function above already follows) is the exact same instance handed
-        # to `OrchestratorDependencies` below as the RAG agent's
-        # `KnowledgeAccess.retrieve` seam (module docstring) — one retrieval
-        # path, reached two ways. Neither ingestion face is built here — a
-        # request has no business registering or indexing a document.
-        knowledge = KnowledgeUseCases(
-            list_documents=ListDocuments(document_repository),
-            get_document=GetDocument(document_repository),
-            search=KnowledgeRetrievalService(
-                RetrieveContext(embeddings=embedding, vectors=vector_store),
-                _RoutedEmbeddingResolver(provider_resolver),
-            ),
+        knowledge = _build_knowledge(
+            tenant_session,
+            embedding=embedding,
+            vectors=vector_store,
+            resolver=_RoutedEmbeddingResolver(provider_resolver),
+            outbox=outbox,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which
@@ -1085,7 +1351,9 @@ class CompositionRoot:
         # instance behind every face of each module (the ج-2 one-repository
         # precedent): the adapters are stateless, but two instances would
         # misrepresent the wiring.
-        outbox = SqlEventOutbox(tenant_session)
+        # `outbox` itself is built ABOVE, with the knowledge bundle — the
+        # first module that needed it — and is the one instance every module
+        # here appends through.
         media_jobs = SqlMediaJobRepository(tenant_session)
         media_requests = MediaRequestService(
             RequestMedia(media_jobs, settings.limits),
@@ -1107,18 +1375,19 @@ class CompositionRoot:
         # `POST /workflows/{key}/run` is a truthful `workflow.unknown` 404.
         workflow_registry: WorkflowRegistry = InMemoryWorkflowRegistry()
 
-        # 6.1-ج-2/ج-3 — ONE repository instance behind both faces of the
-        # module: the use-cases the API router calls, and the inbound port the
-        # orchestrator writes turns through. Two instances would be harmless
-        # (the adapter is stateless) but would misrepresent the wiring: there
-        # is one conversations store, reached two ways.
-        conversation_repository = SqlConversationRepository(tenant_session)
-        conversations = ConversationUseCases(
-            start=StartConversation(conversation_repository),
-            get=GetConversation(conversation_repository),
-            list_by_agent=ListConversationsByAgent(conversation_repository),
-            list_messages=ListMessages(conversation_repository),
-            soft_delete=SoftDeleteConversation(conversation_repository),
+        # 6.1-هـ-2 — ONE files repository behind every face of that module.
+        # It is built HERE, ahead of the two bundles that need it, because
+        # BE-RAG-005 gave `conversations` a reader of it too: `files_query` is
+        # the single `FilesQuery` instance shared by the orchestrator's file
+        # seam and by `PinConversationFile`'s existence check, so "is this file
+        # readable?" cannot be answered two different ways in one process.
+        file_repository = SqlFileRepository(tenant_session)
+        files_query = FilesQueryService(file_repository)
+
+        # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
+        # so they share ONE repository instance (see `_build_conversations`).
+        conversations, conversation_threads = _build_conversations(
+            tenant_session, provider_resolver, files_query
         )
 
         # 6.1-هـ-1 — the storage slot, empty here by necessity (module
@@ -1128,12 +1397,10 @@ class CompositionRoot:
         # with no orchestrator rebuild.
         storage = StorageHandle()
 
-        # 6.1-هـ-2 -- the files bundle the API layer consumes. ONE repository
-        # instance behind both faces of the module (the orchestrator's
-        # `FilesQuery` below shares it), and the presigned faces hold the SAME
+        # 6.1-هـ-2 -- the files bundle the API layer consumes, over the
+        # `file_repository` built above. The presigned faces hold the SAME
         # storage handle the agents do: `connect_storage`'s single `bind`
         # lights everything up together.
-        file_repository = SqlFileRepository(tenant_session)
         files_use_cases = FileUseCases(
             transfers=FileTransferService(
                 RegisterUpload(file_repository, settings.limits),
@@ -1143,6 +1410,7 @@ class CompositionRoot:
                 get_ttl_s=settings.minio.presign_get_ttl_s,
             ),
             complete=CompleteUploadService(CompleteUpload(file_repository), outbox, tenant_session),
+            rename=RenameFile(file_repository),
             delete=SoftDeleteFileService(SoftDeleteFile(file_repository), outbox, tenant_session),
         )
 
@@ -1151,17 +1419,14 @@ class CompositionRoot:
                 agents=agent_registry,
                 executor=AgentLifecycleExecutor(),
                 providers=provider_resolver,
-                files=FilesQueryService(file_repository),
+                files=files_query,
                 media=media_requests,
                 usage_enforcement=UsageEnforcementService(
                     EnforceLimit(usage_ledger, settings.usage)
                 ),
                 usage_capture=UsageCaptureService(CaptureUsage(usage_ledger)),
                 workflows=workflow_registry,
-                conversations=ConversationService(
-                    StartConversation(conversation_repository),
-                    AppendMessage(conversation_repository),
-                ),
+                conversations=conversation_threads,
                 # 5.3-أ — the total per-response stream deadline (07 §4).
                 stream_max_duration_s=float(settings.limits.stream_max_duration_s),
                 # 6.1-هـ-1 — the handle, not an adapter: live after startup's
@@ -1214,6 +1479,7 @@ class CompositionRoot:
             image_http=image_http,
             llm_providers=llm_providers,
             provider_resolver=provider_resolver,
+            model_catalog=provider_resolver,
             agent_registry=agent_registry,
             plugin_report=plugin_report,
             orchestrator=orchestrator,
@@ -1225,10 +1491,35 @@ class CompositionRoot:
             files=files_use_cases,
             media=media,
             workspace=workspace,
+            presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),
             usage=usage,
             credentials=credentials,
             knowledge=knowledge,
             integrations=integrations,
+            admin=PlatformAdminUseCases(
+                users=ListPlatformUsers(
+                    SqlPlatformUserDirectory(PlatformAdminSessionFactory(sessionmaker))
+                ),
+                accounts=SetPlatformAccountStatus(
+                    SqlPlatformAccountManager(PlatformAdminWriteSessionFactory(sessionmaker))
+                ),
+                deletions=DeletePlatformUser(
+                    SqlPlatformAccountManager(PlatformAdminWriteSessionFactory(sessionmaker))
+                ),
+                workspace_roles=SetPlatformWorkspaceRole(
+                    SqlPlatformRoleManager(PlatformAdminWriteSessionFactory(sessionmaker))
+                ),
+                platform_roles=SetPlatformAdminRole(
+                    SqlPlatformRoleManager(PlatformAdminWriteSessionFactory(sessionmaker))
+                ),
+            ),
+            providers=_build_platform_providers(
+                inventory=provider_resolver,
+                probe=provider_resolver,
+                store=SqlPlatformCredentialStore(PlatformAdminWriteSessionFactory(sessionmaker)),
+                secrets=secrets,
+                cache=cache,
+            ),
             provisioning=provisioning,
             seeding=seeding,
             authorization=authorization,
@@ -1236,6 +1527,7 @@ class CompositionRoot:
             idempotency=SqlIdempotencyStore(tenant_session),
             metrics_engine=metrics_engine,
             metrics_source=metrics_source,
+            system_stats=HostSystemStats(),
         )
 
     async def connect_storage(self) -> None:
@@ -1277,6 +1569,56 @@ class CompositionRoot:
             _NOTIFY_STREAMS,
             hostname=socket.gethostname(),
         )
+
+    async def sweep_orphan_notify_groups_forever(self) -> None:
+        """Background task (ت-2, ``docs/operational-findings.md`` §2): every
+        ``EventSettings.notify_group_sweep_interval_s``, destroy the
+        ``cg.notify.*`` groups whose owning process is gone -- INCLUDING the
+        ones ``sweep_stale_notify_groups`` above is structurally unable to
+        reach, because their hostname belongs to a container that will never
+        boot again (docs/log/3.135.md).
+
+        **Why a different rule than the startup sweep, and why it is still
+        safe.** Liveness of a pid on ANOTHER host is not decidable from here,
+        which is exactly why the startup sweep restricts itself to its own
+        hostname. What IS decidable is whether anything is currently reading
+        under a group, and ``sweeper.find_orphan_notify_groups`` keys on that
+        instead: zero consumers, zero pending, confirmed by two readings a
+        settle window apart, with this host's own live pids excluded by the
+        same ``os.kill(pid, 0)`` question as before. The settle window is
+        what protects a sibling caught between ``ensure_group`` and its first
+        ``XREADGROUP`` -- the one state in which a live bridge shows no
+        consumer.
+
+        Sleeps BEFORE the first sweep rather than after: at second zero this
+        process's own bridge may not have registered its consumer yet, and
+        the whole point of the interval is that nothing here is urgent (an
+        orphaned group holds no messages -- the rule refuses any group with
+        pending entries). Interval ``0`` disables the task entirely, leaving
+        the startup sweep and ``app.ops.notify_groups`` as the only cleaners.
+
+        Never raises: a background task that dies takes its cleanup with it
+        forever, and this one's failure mode must be "tidies later" rather
+        than "silently stopped tidying". ``CancelledError`` is a
+        ``BaseException`` and is deliberately not caught, so shutdown still
+        works.
+        """
+        interval = self.settings.events.notify_group_sweep_interval_s
+        if interval <= 0:
+            return
+        consumer = RedisStreamsConsumer(self.redis_client)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                orphans = await find_orphan_notify_groups(consumer, tuple(_NOTIFY_STREAMS))
+                if orphans:
+                    await destroy_orphan_notify_groups(consumer, orphans)
+                    _logger.warning(
+                        "composition_root.notify_orphan_groups_swept",
+                        extra={"groups": [group.name for group in orphans]},
+                    )
+            except Exception:
+                _logger.error("composition_root.notify_group_sweep_failed", exc_info=True)
 
     async def teardown_notify_bridge(self) -> None:
         """Shutdown hook (docs/log/3.81.md): ``XGROUP DESTROY`` THIS

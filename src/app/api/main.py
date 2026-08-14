@@ -58,6 +58,7 @@ from app.api.metrics import metrics_router
 from app.api.middleware.auth import ApiAuthenticator
 from app.api.v1.dependencies import ApiServices, HttpAuthenticator
 from app.api.v1.dto.problem import ProblemDetails
+from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.agents import router as agents_router
 from app.api.v1.routers.conversations import router as conversations_router
 from app.api.v1.routers.credentials import router as credentials_router
@@ -67,6 +68,7 @@ from app.api.v1.routers.integrations_public import router as integrations_public
 from app.api.v1.routers.knowledge import router as knowledge_router
 from app.api.v1.routers.me import router as me_router
 from app.api.v1.routers.media import router as media_router
+from app.api.v1.routers.models import router as models_router
 from app.api.v1.routers.usage import router as usage_router
 from app.api.v1.routers.workflows import router as workflows_router
 from app.api.v1.routers.workspace import router as workspace_router
@@ -174,6 +176,8 @@ def create_app(
     app.include_router(metrics_router)
     prefix = services.settings.api_prefix
     app.include_router(agents_router, prefix=prefix)
+    app.include_router(models_router, prefix=prefix)
+    app.include_router(admin_router, prefix=prefix)
     app.include_router(conversations_router, prefix=prefix)
     app.include_router(workflows_router, prefix=prefix)
     app.include_router(files_router, prefix=prefix)
@@ -492,6 +496,7 @@ def create_production_app() -> FastAPI:
     must live in this process, not a separate worker.
     """
     root = CompositionRoot.from_env()
+    session_revocations = SessionRevocationList(root.cache)
     services = ApiServices(
         settings=root.settings,
         orchestrator=root.orchestrator,
@@ -502,12 +507,22 @@ def create_production_app() -> FastAPI:
         files=root.files,
         media=root.media,
         workspace=root.workspace,
+        presence=root.presence,
         usage=root.usage,
         credentials=root.credentials,
         knowledge=root.knowledge,
         integrations=root.integrations,
+        admin=root.admin,
+        session_revocations=session_revocations,
         authorization=root.authorization,
         idempotency=root.idempotency,
+        # Narrowed to `ModelCatalog` at the boundary (see `ApiServices.models`):
+        # the root holds the wide resolver, the API layer never does.
+        models=root.model_catalog,
+        # BE-ADM-007 — host telemetry for the platform-admin System Monitor.
+        system_stats=root.system_stats,
+        # BE-ADM-010/011/012 — the Service Providers tab.
+        providers=root.providers,
     )
 
     async def _run_notify_bridge() -> None:
@@ -527,7 +542,7 @@ def create_production_app() -> FastAPI:
         root.provisioning,
         root.seeding,
         root.authorization,
-        SessionRevocationList(root.cache),
+        session_revocations,
     )
 
     return create_app(
@@ -543,7 +558,13 @@ def create_production_app() -> FastAPI:
         # the silent-failure shape ن-10 exists to end.
         vault_health=root.vault_health,
         revocations=authenticator.revocations,
-        background=(_run_notify_bridge,),
+        # ت-2 — the timed cross-host sweep alongside the bridge it cleans up
+        # after. A `background=` task rather than a `startup=` hook because it
+        # never finishes, and one that the lifespan cancels and reaps like the
+        # bridge's own, so it cannot outlive the `redis_client` it reads
+        # (`sweep_orphan_notify_groups_forever`'s own docstring for the rule
+        # it applies and why the startup sweep above cannot cover it).
+        background=(_run_notify_bridge, root.sweep_orphan_notify_groups_forever),
         # 6.1-هـ-1 — the async half of MinIO's wiring (debt (ز)): the Vault
         # read `from_env` could not await runs here, before traffic. A failure
         # aborts boot (fail-fast), never a half-wired replica.
