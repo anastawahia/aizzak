@@ -32,12 +32,14 @@ exception types never escape this adapter.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import timedelta
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 import urllib3
 from minio import Minio
+from minio.deleteobjects import DeleteObject
 from minio.error import MinioException, S3Error
 
 from app.framework.errors import AppError, NotFoundError
@@ -50,6 +52,15 @@ if TYPE_CHECKING:
 _CONNECT_TIMEOUT_S = 2.0
 _READ_TIMEOUT_S = 10.0
 _RETRIES = 1
+
+# ``app.ops.purge`` (BE-ADM-014)'s own hard guard, matched to INV-F1's exact
+# key shape (``files/domain/value_objects.py::StorageKey.for_file`` --
+# ``f"{workspace_id}/{file_id}"``): a canonical UUID text form, one trailing
+# slash, nothing else. Case-insensitive only because nothing here can prove a
+# UUID was ever lower-cased before it reached this function.
+_WORKSPACE_PREFIX_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/$", re.IGNORECASE
+)
 
 
 def _build(endpoint: str, *, secure: bool, access_key: str, secret_key: str, region: str) -> Minio:
@@ -209,3 +220,71 @@ def _translate(exc: Exception) -> AppError:
     if isinstance(exc, S3Error) and exc.code == "NoSuchKey":
         return NotFoundError("object does not exist in storage")
     return AppError("storage operation failed", code="common.internal")
+
+
+async def delete_prefix(client: Minio, bucket: str, prefix: str, *, dry_run: bool = False) -> int:
+    """Delete every object under a workspace-scoped prefix (``app.ops.purge``,
+    BE-ADM-014, ONLY).
+
+    Deliberately a module-level free function, the ``drop_collection``
+    precedent (``infrastructure/vector/qdrant_store.py``): NOT a
+    ``StorageProvider`` port method, because a port method able to empty a
+    whole prefix in one call would be reachable from every module's use case
+    through dependency injection, and the workspace content-purge sweep is
+    the ONE caller this codebase ever wants to hold that power.
+
+    ``prefix`` MUST be exactly ``"<uuid>/"`` (INV-F1's own key shape --
+    ``StorageKey.for_file``) -- a hard GUARD, not a nicety: a shortened or
+    malformed prefix (``""``, a bare UUID with no trailing slash, a
+    non-UUID string) here would list -- and, without ``dry_run``, delete --
+    the WHOLE bucket rather than one workspace's objects. Raises
+    ``ValueError`` rather than silently truncating or normalising it.
+
+    Batched over ``list_objects(recursive=True)`` + ``remove_objects`` --
+    both already-batching minio-py generators (``remove_objects`` itself
+    submits in chunks of 1000) -- run through ``asyncio.to_thread`` (the
+    module docstring: minio-py is a synchronous client). Returns the object
+    count found under the prefix: the REAL count deleted when ``dry_run`` is
+    ``False``, the count that WOULD be deleted otherwise -- never both (the
+    ``app.ops.retention``/``app.ops.rotate_transit`` dry-run contract).
+    """
+    if not _WORKSPACE_PREFIX_RE.fullmatch(prefix):
+        raise ValueError(
+            f"refusing to delete non-workspace-scoped prefix {prefix!r} -- "
+            "it must be exactly '<uuid>/'"
+        )
+
+    def _list_keys() -> list[str]:
+        return [
+            obj.object_name
+            for obj in client.list_objects(bucket, prefix=prefix, recursive=True)
+            if obj.object_name is not None
+        ]
+
+    try:
+        keys = await asyncio.to_thread(_list_keys)
+    except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+        raise _translate(exc) from exc
+
+    if dry_run or not keys:
+        return len(keys)
+
+    def _remove_keys() -> list[str]:
+        # ``remove_objects`` is itself a generator -- errors, not successes,
+        # are what it yields, so it must be fully consumed for every batch to
+        # actually run.
+        return [
+            str(error) for error in client.remove_objects(bucket, [DeleteObject(k) for k in keys])
+        ]
+
+    try:
+        errors = await asyncio.to_thread(_remove_keys)
+    except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+        raise _translate(exc) from exc
+    if errors:
+        raise AppError(
+            f"failed to delete {len(errors)} of {len(keys)} object(s) under {prefix!r}: "
+            f"{errors[0]}",
+            code="common.internal",
+        )
+    return len(keys)

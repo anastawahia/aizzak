@@ -23,6 +23,7 @@ from app.ops.provision import (
     METRICS_GRANTS,
     MIGRATION_CHAINS,
     OUTBOX_RELAY_GRANTS,
+    PURGE_GRANTS,
     RETENTION_GRANTS,
     TRANSIT_ROTATOR_GRANTS,
 )
@@ -203,6 +204,83 @@ def test_transit_rotator_does_not_widen_app_rws_own_grants() -> None:
         assert " TO app_rw" not in statement
     for statement in APP_RW_GRANTS:
         assert " TO transit_rotator" not in statement
+
+
+def test_purge_role_gets_select_delete_on_every_tenant_table_it_empties() -> None:
+    """BE-ADM-014: the purge sweep must be able to read and delete every row
+    of every table §3.2 names, and nothing else on those tables (no INSERT,
+    no forging a row)."""
+    tables = (
+        "workspace.user_presence",
+        "access.role_assignments",
+        "credentials.credentials",
+        "conversations.conversations",
+        "conversations.messages",
+        "conversations.conversation_files",
+        "memory.memory_items",
+        "files.files",
+        "knowledge.documents",
+        "knowledge.chunks",
+        "knowledge.reindex_jobs",
+        "knowledge.reindex_job_items",
+        "knowledge.summaries",
+        "knowledge.summary_jobs",
+        "media.media_jobs",
+        "integrations.connections",
+        "integrations.mcp_servers",
+        "usage.usage_records",
+        "usage.usage_rollups",
+        "usage.limits",
+    )
+    for table in tables:
+        matches = [s for s in PURGE_GRANTS if f" ON {table} TO " in s]
+        assert len(matches) == 1, f"{table} missing (or duplicated) in PURGE_GRANTS"
+        assert "SELECT" in matches[0] and "DELETE" in matches[0]
+        assert "INSERT" not in matches[0], f"workspace_purger must not INSERT into {table}"
+        assert "UPDATE" not in matches[0], f"workspace_purger must not UPDATE {table}"
+
+
+def test_purge_role_gets_column_scoped_reach_on_workspaces_and_users_only() -> None:
+    """Never a table-wide UPDATE on `workspace.workspaces` (which could
+    rename/resurrect a workspace) and never any column of `workspace.users`
+    beyond bare state -- this role must never read `email`/`display_name`/
+    `firebase_uid`, and must never UPDATE/DELETE `users` at all (the
+    tombstone stays `SqlPlatformAccountManager.delete`'s alone)."""
+    [workspaces_grant] = [s for s in PURGE_GRANTS if " ON workspace.workspaces TO " in s]
+    assert "SELECT (id, owner_user_id, status, purged_at)" in workspaces_grant
+    assert "UPDATE (status, purged_at)" in workspaces_grant
+    assert "DELETE" not in workspaces_grant
+
+    [users_grant] = [s for s in PURGE_GRANTS if " ON workspace.users TO " in s]
+    assert users_grant == (
+        "GRANT SELECT (id, workspace_id, status, deleted_at) ON workspace.users TO workspace_purger"
+    )
+    for leaked in ("email", "display_name", "firebase_uid", "UPDATE", "DELETE", "INSERT"):
+        assert leaked not in users_grant
+
+
+def test_purge_role_gets_select_and_insert_only_on_the_admin_audit_log() -> None:
+    [audit_grant] = [s for s in PURGE_GRANTS if " ON platform.admin_audit_log TO " in s]
+    assert "SELECT" in audit_grant and "INSERT" in audit_grant
+    assert "UPDATE" not in audit_grant and "DELETE" not in audit_grant
+
+
+def test_purge_role_has_no_reach_on_the_three_unbounded_ledgers() -> None:
+    """No grant at all on outbox/processed_events/idempotency_keys -- this
+    role has no business enumerating those (module docstring)."""
+    for table in ("platform.outbox", "platform.processed_events", "platform.idempotency_keys"):
+        assert not any(f" ON {table} TO " in s for s in PURGE_GRANTS)
+
+
+def test_purge_role_does_not_widen_app_rws_own_grants() -> None:
+    """The same architectural tension every other least-privilege role in
+    this module resolves: adding `workspace_purger` must leave `app_rw`'s own
+    grants completely untouched, and the two grant sets must never name each
+    other's role."""
+    for statement in PURGE_GRANTS:
+        assert " TO app_rw" not in statement
+    for statement in APP_RW_GRANTS:
+        assert " TO workspace_purger" not in statement
 
 
 def test_every_alembic_chain_has_a_migration_step() -> None:

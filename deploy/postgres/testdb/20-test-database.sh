@@ -59,13 +59,14 @@ psql -v ON_ERROR_STOP=1 \
     WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = 'aizzak_test')
 \gexec
 
-    -- The five non-migrator roles. `aizzak_owner` is absent deliberately, and
+    -- The six non-migrator roles. `aizzak_owner` is absent deliberately, and
     -- the asymmetry with 10-roles.sh:108 is real rather than an oversight:
     -- there it must be granted CREATE/CONNECT because `aizzak` is owned by the
     -- superuser (measured: datdba=postgres), while here it OWNS the database
     -- and holds every database-level privilege implicitly.
     GRANT CONNECT ON DATABASE aizzak_test
-        TO app_rw, outbox_relay, retention_sweeper, metrics_reader, transit_rotator;
+        TO app_rw, outbox_relay, retention_sweeper, metrics_reader, transit_rotator,
+           workspace_purger;
 EOSQL
 
 # Schema privileges are per-database and are NOT inherited from `aizzak`, so

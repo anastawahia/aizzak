@@ -39,6 +39,27 @@ _logger = get_logger(__name__)
 _MINIO_SECRET_PATH = "secret/data/minio"
 
 
+async def read_minio_credentials(secrets: SecretsProvider) -> tuple[str, str]:
+    """Read + shape-validate the MinIO service account out of Vault
+    (``(access_key, secret_key)``).
+
+    Extracted out of ``bind_minio`` (BE-ADM-014) so a THIRD caller --
+    ``app.ops.purge``'s own composition, which needs a raw ``Minio`` client
+    but has no ``StorageHandle`` to bind into -- shares this exact shape
+    check instead of copying it. Raises ``ValidationError`` (never a driver
+    exception) on a missing/malformed secret, so every caller's own
+    fail-fast boot policy applies unchanged.
+    """
+    secret = await secrets.get_secret(_MINIO_SECRET_PATH)
+    access_key = secret.get("access_key")
+    secret_key = secret.get("secret_key")
+    if not (isinstance(access_key, str) and access_key):
+        raise ValidationError(f"{_MINIO_SECRET_PATH} is missing a non-empty 'access_key'")
+    if not (isinstance(secret_key, str) and secret_key):
+        raise ValidationError(f"{_MINIO_SECRET_PATH} is missing a non-empty 'secret_key'")
+    return access_key, secret_key
+
+
 async def bind_minio(
     storage: StorageHandle, secrets: SecretsProvider, settings: MinioSettings
 ) -> None:
@@ -56,13 +77,7 @@ async def bind_minio(
     """
     if storage.is_bound:
         return
-    secret = await secrets.get_secret(_MINIO_SECRET_PATH)
-    access_key = secret.get("access_key")
-    secret_key = secret.get("secret_key")
-    if not (isinstance(access_key, str) and access_key):
-        raise ValidationError(f"{_MINIO_SECRET_PATH} is missing a non-empty 'access_key'")
-    if not (isinstance(secret_key, str) and secret_key):
-        raise ValidationError(f"{_MINIO_SECRET_PATH} is missing a non-empty 'secret_key'")
+    access_key, secret_key = await read_minio_credentials(secrets)
     client = create_minio_client(settings, access_key=access_key, secret_key=secret_key)
     # 7.1: presigned URLs must be signed against the address the CLIENT
     # will use, which in the Compose topology is not ``minio:9000``.

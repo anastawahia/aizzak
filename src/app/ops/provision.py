@@ -72,6 +72,22 @@ METRICS_ROLE = "metrics_reader"
 # and its own migration-added policies, never a widened `app_rw`. See
 # `TRANSIT_ROTATOR_GRANTS` for what it actually holds.
 TRANSIT_ROTATOR_ROLE = "transit_rotator"
+# BE-ADM-014 (docs/design refs, `app.ops.purge`): the workspace content-purge
+# sweep's own role. A workspace tombstoned by BE-ADM-006 and past its
+# retention window is emptied across ten schemas, and the SAME "RLS wall"
+# `retention_sweeper`/`transit_rotator` hit applies here too -- widening
+# `app_rw` to reach every tenant's rows would undo the isolation guarantee the
+# whole platform stands on. Unlike those two, this role gets NO blanket
+# `USING (true)` RLS carve-out on the tables it deletes from (see
+# `PURGE_GRANTS`'s own docstring): it sets `app.workspace_id` per workspace and
+# relies on each table's ordinary `tenant_isolation` policy, so a forgotten
+# `set_config` fails safe to zero affected rows rather than reaching every
+# tenant at once. The ONE carve-out it does get --
+# `migrations/versions/workspace/0009_workspace_purge.py`'s
+# `workspace_purger_select` policy on `workspace.users` -- is SELECT-only and
+# exists purely so `app.ops.purge.find_candidates` can scan for eligible
+# workspaces cross-tenant before any workspace is chosen to purge.
+PURGE_ROLE = "workspace_purger"
 
 # The platform baseline chain first (it creates every schema and the
 # ``platform`` tables the module chains' triggers reference), then one entry
@@ -97,14 +113,23 @@ MIGRATION_CHAINS: tuple[tuple[str, str | None], ...] = (
 _TENANT_TABLES: tuple[str, ...] = (
     "workspace.workspaces",
     "workspace.users",
+    # The heartbeat upsert runs as `app_rw` under tenant RLS, so it needs the
+    # same CRUD as any other tenant table; the platform directory's read of it
+    # goes through the separate `platform_admin_read` policy, not a grant.
+    "workspace.user_presence",
     "access.role_assignments",
     "credentials.credentials",
     "conversations.conversations",
     "conversations.messages",
+    "conversations.conversation_files",
     "memory.memory_items",
     "files.files",
     "knowledge.documents",
     "knowledge.chunks",
+    "knowledge.reindex_jobs",
+    "knowledge.reindex_job_items",
+    "knowledge.summaries",
+    "knowledge.summary_jobs",
     "media.media_jobs",
     "integrations.connections",
     "integrations.mcp_servers",
@@ -162,6 +187,7 @@ def _app_rw_grants() -> tuple[str, ...]:
     statements.append(f"GRANT USAGE ON SCHEMA platform TO {APP_ROLE}")
     statements.append(f"GRANT INSERT ON platform.outbox TO {APP_ROLE}")
     statements.append(f"GRANT INSERT ON platform.processed_events TO {APP_ROLE}")
+    statements.append(f"GRANT INSERT ON platform.admin_audit_log TO {APP_ROLE}")
     statements.append(
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON platform.idempotency_keys TO {APP_ROLE}"
     )
@@ -230,6 +256,63 @@ TRANSIT_ROTATOR_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, UPDATE (auth_ref) ON integrations.mcp_servers TO {TRANSIT_ROTATOR_ROLE}",
 )
 
+# BE-ADM-014's purge role: USAGE on every schema it reaches (the ten module
+# schemas whose rows it deletes, plus `platform` for `admin_audit_log`), a
+# narrow COLUMN-scoped read/write pair on the two identity tables
+# (`workspace.workspaces`/`workspace.users`), and plain SELECT+DELETE on
+# every tenant table it purges. Deliberately NO grant at all on
+# `platform.outbox`/`processed_events`/`idempotency_keys` -- this role has no
+# business enumerating those, and `usage`'s own three tables are purged WITH
+# the workspace (module docstring's usage-retention REVIEW POINT, resolved
+# for v1: purge, don't roll up).
+#
+# `workspace.users` gets SELECT on `(id, workspace_id, status, deleted_at)`
+# ONLY -- never `email`/`display_name`/`firebase_uid`: this role reads a
+# tombstone's STATE to find eligible workspaces, never the identity it
+# redacted. No UPDATE/DELETE on `users` at all -- the tombstone itself stays
+# `SqlPlatformAccountManager.delete`'s alone; this role only ever empties what
+# is AROUND it. `workspace.workspaces` gets SELECT on the four columns
+# `find_candidates`/`finalize` actually touch, plus UPDATE of exactly the two
+# columns `finalize` writes (`status`, `purged_at`) -- never a table-wide
+# UPDATE, which could otherwise rename or resurrect a workspace.
+PURGE_GRANTS: tuple[str, ...] = (
+    f"GRANT USAGE ON SCHEMA workspace TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA access TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA credentials TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA conversations TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA memory TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA files TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA knowledge TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA media TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA integrations TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA usage TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA platform TO {PURGE_ROLE}",
+    f"GRANT SELECT (id, owner_user_id, status, purged_at), UPDATE (status, purged_at) "
+    f"ON workspace.workspaces TO {PURGE_ROLE}",
+    f"GRANT SELECT (id, workspace_id, status, deleted_at) ON workspace.users TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON workspace.user_presence TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON access.role_assignments TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON credentials.credentials TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON conversations.conversations TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON conversations.messages TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON conversations.conversation_files TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON memory.memory_items TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON files.files TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.documents TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.chunks TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.reindex_jobs TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.reindex_job_items TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.summaries TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.summary_jobs TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON media.media_jobs TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON integrations.connections TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON integrations.mcp_servers TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON usage.usage_records TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON usage.usage_rollups TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON usage.limits TO {PURGE_ROLE}",
+    f"GRANT SELECT, INSERT ON platform.admin_audit_log TO {PURGE_ROLE}",
+)
+
 
 def run_migrations(owner_url: str) -> None:
     """Apply all eleven chains in dependency order (``MIGRATION_CHAINS``)."""
@@ -257,7 +340,10 @@ async def _require_roles(owner_url: str, roles: tuple[str, ...]) -> None:
     ``TRANSIT_ROTATOR_ROLE`` joins it for the identical reason:
     ``migrations/versions/credentials/0002_transit_rotator.py`` and
     ``migrations/versions/integrations/0002_transit_rotator.py`` both issue
-    ``CREATE POLICY ... TO transit_rotator``.
+    ``CREATE POLICY ... TO transit_rotator``. ``PURGE_ROLE`` (BE-ADM-014)
+    joins for the same reason again:
+    ``migrations/versions/workspace/0009_workspace_purge.py`` issues
+    ``CREATE POLICY ... TO workspace_purger``.
     """
     engine = create_engine(DatabaseSettings(url=owner_url), poolclass=NullPool)
     try:
@@ -291,6 +377,7 @@ async def apply_grants(owner_url: str) -> None:
                 *RETENTION_GRANTS,
                 *METRICS_GRANTS,
                 *TRANSIT_ROTATOR_GRANTS,
+                *PURGE_GRANTS,
             ):
                 await conn.execute(text(statement))
     finally:
@@ -308,7 +395,14 @@ def provision(owner_url: str) -> None:
     asyncio.run(
         _require_roles(
             owner_url,
-            (APP_ROLE, RELAY_ROLE, RETENTION_ROLE, METRICS_ROLE, TRANSIT_ROTATOR_ROLE),
+            (
+                APP_ROLE,
+                RELAY_ROLE,
+                RETENTION_ROLE,
+                METRICS_ROLE,
+                TRANSIT_ROTATOR_ROLE,
+                PURGE_ROLE,
+            ),
         )
     )
     run_migrations(owner_url)
@@ -323,6 +417,7 @@ def provision(owner_url: str) -> None:
                 + len(RETENTION_GRANTS)
                 + len(METRICS_GRANTS)
                 + len(TRANSIT_ROTATOR_GRANTS)
+                + len(PURGE_GRANTS)
             ),
         },
     )

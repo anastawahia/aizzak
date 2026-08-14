@@ -72,7 +72,10 @@ from app.modules.integrations.adapters.sql_repository import (
     SqlConnectionRepository,
     SqlMcpServerRepository,
 )
-from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
+from app.modules.knowledge.adapters.sql_repository import (
+    SqlDocumentRepository,
+    SqlReindexJobRepository,
+)
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
@@ -81,6 +84,7 @@ from app.ops.provision import (
     APP_RW_GRANTS,
     METRICS_GRANTS,
     OUTBOX_RELAY_GRANTS,
+    PURGE_GRANTS,
     RETENTION_GRANTS,
     TRANSIT_ROTATOR_GRANTS,
     run_migrations,
@@ -109,6 +113,11 @@ _METRICS_DSN_DEFAULT = (
 # sweep's own DSN -- see `_grant_transit_rotator`.
 _TRANSIT_ROTATOR_DSN_DEFAULT = (
     "postgresql+asyncpg://transit_rotator:transit_rotator@127.0.0.1:15432/aizzak_test"
+)
+# BE-ADM-014: the workspace content-purge sweep's own DSN -- see
+# `_grant_workspace_purger`.
+_PURGER_DSN_DEFAULT = (
+    "postgresql+asyncpg://workspace_purger:workspace_purger@127.0.0.1:15432/aizzak_test"
 )
 _PROBE_TIMEOUT_S = 1.5
 
@@ -185,7 +194,7 @@ _MODULE_SCHEMAS = (
 class LiveDbDsns:
     """The DSNs live_db tests are built around (``relay`` added 5.1-ب,
     ``retention`` added P1-5 step 8, ``metrics`` added P1-3 step 10,
-    ``transit_rotator`` added P1-9 step 12)."""
+    ``transit_rotator`` added P1-9 step 12, ``purger`` added BE-ADM-014)."""
 
     owner: str
     app: str
@@ -193,6 +202,7 @@ class LiveDbDsns:
     retention: str
     metrics: str
     transit_rotator: str
+    purger: str
 
 
 def _tcp_reachable(host: str, port: int, timeout_s: float) -> bool:
@@ -402,6 +412,14 @@ async def _grant_transit_rotator(owner_dsn: str) -> None:
     await _execute_all(owner_dsn, TRANSIT_ROTATOR_GRANTS)
 
 
+async def _grant_workspace_purger(owner_dsn: str) -> None:
+    """BE-ADM-014: the purge sweep's OWN least-privilege grants -- imports
+    ``PURGE_GRANTS`` from ``app.ops.provision`` rather than duplicating the
+    grant list, the ``_grant_retention_sweeper``/``_grant_transit_rotator``
+    precedent applied to a fourth least-privilege role."""
+    await _execute_all(owner_dsn, PURGE_GRANTS)
+
+
 @pytest.fixture(scope="session")
 def live_db() -> Iterator[LiveDbDsns]:
     """Probe for a live local Postgres, rebuild+migrate+grant once per
@@ -417,15 +435,18 @@ def live_db() -> Iterator[LiveDbDsns]:
     transit_rotator_dsn = os.environ.get(
         "TEST_DATABASE_URL_TRANSIT_ROTATOR", _TRANSIT_ROTATOR_DSN_DEFAULT
     )
+    purger_dsn = os.environ.get("TEST_DATABASE_URL_PURGER", _PURGER_DSN_DEFAULT)
     asyncio.run(_rebuild_schema(owner_dsn))
     # Cluster roles already exist from `deploy/postgres/initdb/10-roles.sh`;
-    # migrations may therefore name retention_sweeper/transit_rotator in RLS.
+    # migrations may therefore name retention_sweeper/transit_rotator/
+    # workspace_purger in RLS.
     _run_migrations(owner_dsn)
     asyncio.run(_grant_app_rw(owner_dsn))
     asyncio.run(_grant_outbox_relay(owner_dsn))
     asyncio.run(_grant_retention_sweeper(owner_dsn))
     asyncio.run(_grant_metrics_reader(owner_dsn))
     asyncio.run(_grant_transit_rotator(owner_dsn))
+    asyncio.run(_grant_workspace_purger(owner_dsn))
 
     yield LiveDbDsns(
         owner=owner_dsn,
@@ -434,6 +455,7 @@ def live_db() -> Iterator[LiveDbDsns]:
         retention=retention_dsn,
         metrics=metrics_dsn,
         transit_rotator=transit_rotator_dsn,
+        purger=purger_dsn,
     )
 
 
@@ -519,6 +541,19 @@ async def transit_rotator_engine(live_db: LiveDbDsns) -> AsyncIterator[AsyncEngi
     pooling across independently-awaited test connections/transactions,
     R3)."""
     engine = create_engine(DatabaseSettings(url=live_db.transit_rotator), poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def purger_engine(live_db: LiveDbDsns) -> AsyncIterator[AsyncEngine]:
+    """BE-ADM-014: the ``workspace_purger`` engine -- the ``transit_rotator_
+    engine`` precedent, built inside the test's own event loop (``NullPool``
+    -- no pooling across independently-awaited test connections/
+    transactions, R3)."""
+    engine = create_engine(DatabaseSettings(url=live_db.purger), poolclass=NullPool)
     try:
         yield engine
     finally:
@@ -928,6 +963,11 @@ def repo_knowledge(tenant_session: TenantSessionFactory) -> SqlDocumentRepositor
 
 
 @pytest.fixture
+def repo_reindex_jobs(tenant_session: TenantSessionFactory) -> SqlReindexJobRepository:
+    return SqlReindexJobRepository(tenant_session)
+
+
+@pytest.fixture
 def repo_connections(tenant_session: TenantSessionFactory) -> SqlConnectionRepository:
     return SqlConnectionRepository(tenant_session)
 
@@ -1032,6 +1072,24 @@ async def truncate_tables(live_db: LiveDbDsns) -> AsyncIterator[None]:
     boundary out: ``test_idempotency_live.py`` asserts exact claim outcomes
     per ``(workspace, endpoint, key)``, and a surviving row would turn a later
     test's ``CLAIMED`` into an ``IN_PROGRESS``.
+
+    ``workspace.user_presence`` and ``platform.admin_audit_log`` are not here
+    for isolation but because both carry an FK to ``workspace.users``: a
+    ``TRUNCATE`` that names the referenced table without its referrers is
+    refused OUTRIGHT, so omitting either did not merely leak their rows — it
+    aborted the whole statement and left every table in the list populated.
+    Any future table referencing one of these must join the list for the same
+    reason.
+
+    ``knowledge.summaries``/``knowledge.summary_jobs`` (BE-ADM-014,
+    ``test_purge_ops_live.py`` -- the first live test to populate either)
+    join for the identical FK reason: ``fk_summary_doc`` references
+    ``knowledge.documents``, which IS in this list, so omitting
+    ``summaries`` would abort the whole statement the moment a row exists.
+    ``summary_jobs`` carries no FK to ``documents`` (module docstring of
+    ``migrations/versions/knowledge/0003_summaries.py``) but joins anyway,
+    for the same test-isolation reason ``usage_rollups``/``limits`` already
+    do below.
     """
     yield
     engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
@@ -1040,9 +1098,14 @@ async def truncate_tables(live_db: LiveDbDsns) -> AsyncIterator[None]:
             await conn.execute(
                 text(
                     "TRUNCATE workspace.users, workspace.workspaces, "
+                    "workspace.user_presence, platform.admin_audit_log, "
                     "credentials.credentials, access.role_assignments, media.media_jobs, "
-                    "conversations.messages, conversations.conversations, files.files, "
-                    "memory.memory_items, knowledge.chunks, knowledge.documents, "
+                    "conversations.messages, conversations.conversation_files, "
+                    "conversations.conversations, files.files, "
+                    "memory.memory_items, knowledge.chunks, "
+                    "knowledge.reindex_job_items, knowledge.reindex_jobs, "
+                    "knowledge.summaries, knowledge.summary_jobs, "
+                    "knowledge.documents, "
                     "integrations.connections, integrations.mcp_servers, "
                     "usage.usage_records, usage.usage_rollups, usage.limits, "
                     "platform.outbox, platform.processed_events, "

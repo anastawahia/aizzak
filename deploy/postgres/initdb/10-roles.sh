@@ -1,7 +1,7 @@
 #!/bin/bash
-# Cluster init: create the six application roles (7.1 · 01-data-model §6 ·
+# Cluster init: create the seven application roles (7.1 · 01-data-model §6 ·
 # P1-5/p1-hardening-plan.md §3 step 8 added the fourth · P1-3/step 10 added
-# the fifth · P1-9/step 12 added the sixth).
+# the fifth · P1-9/step 12 added the sixth · BE-ADM-014 added the seventh).
 #
 # Runs ONCE, as the superuser, when the postgres volume is first initialised
 # -- which is the only footing that can do this: CREATE ROLE is a
@@ -58,6 +58,19 @@
 #                         `CREATE POLICY ... TO transit_rotator`, which
 #                         `app.ops.provision`'s `_require_roles` check fails
 #                         fast on BEFORE any migration if the role is absent.
+#   workspace_purger   -- SELECT/DELETE on every tenant table a purged
+#                         workspace's content lives in, plus column-scoped
+#                         SELECT/UPDATE on workspace.workspaces/workspace.users
+#                         and SELECT/INSERT on platform.admin_audit_log --
+#                         the workspace content-purge sweep (`python -m
+#                         app.ops.purge`, BE-ADM-014). Never a standing
+#                         service, the `retention_sweeper`/`transit_rotator`
+#                         footing. MUST still be created here for the same
+#                         reason those two must: `migrations/versions/
+#                         workspace/0009_workspace_purge.py` issues
+#                         `CREATE POLICY ... TO workspace_purger`, which
+#                         `app.ops.provision`'s `_require_roles` check fails
+#                         fast on BEFORE any migration if the role is absent.
 set -euo pipefail
 
 psql -v ON_ERROR_STOP=1 \
@@ -69,7 +82,8 @@ psql -v ON_ERROR_STOP=1 \
      --set relay_password="${OUTBOX_RELAY_PASSWORD}" \
      --set retention_password="${RETENTION_SWEEPER_PASSWORD}" \
      --set metrics_password="${METRICS_READER_PASSWORD}" \
-     --set rotator_password="${TRANSIT_ROTATOR_PASSWORD}" <<-'EOSQL'
+     --set rotator_password="${TRANSIT_ROTATOR_PASSWORD}" \
+     --set purger_password="${WORKSPACE_PURGER_PASSWORD}" <<-'EOSQL'
     -- CREATE ROLE has no IF NOT EXISTS clause of its own.
     DO $$
     BEGIN
@@ -91,6 +105,9 @@ psql -v ON_ERROR_STOP=1 \
         IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'transit_rotator') THEN
             CREATE ROLE transit_rotator LOGIN NOINHERIT;
         END IF;
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'workspace_purger') THEN
+            CREATE ROLE workspace_purger LOGIN NOINHERIT;
+        END IF;
     END
     $$;
 
@@ -103,11 +120,12 @@ psql -v ON_ERROR_STOP=1 \
     ALTER ROLE retention_sweeper PASSWORD :'retention_password';
     ALTER ROLE metrics_reader    PASSWORD :'metrics_password';
     ALTER ROLE transit_rotator   PASSWORD :'rotator_password';
+    ALTER ROLE workspace_purger  PASSWORD :'purger_password';
 
     -- The migrator needs to create schemas in this database; nobody else does.
     GRANT CREATE, CONNECT ON DATABASE :"db_name" TO aizzak_owner;
     GRANT CONNECT ON DATABASE :"db_name" TO app_rw, outbox_relay, retention_sweeper, metrics_reader,
-        transit_rotator;
+        transit_rotator, workspace_purger;
 
     -- PG15+ no longer grants CREATE on public to PUBLIC; make that explicit
     -- rather than relying on the default, and keep app_rw out of it.
@@ -124,4 +142,4 @@ psql -v ON_ERROR_STOP=1 \
     GRANT CREATE, USAGE ON SCHEMA public TO aizzak_owner;
 EOSQL
 
-echo "initdb: roles aizzak_owner / app_rw / outbox_relay / retention_sweeper / metrics_reader / transit_rotator ready"
+echo "initdb: roles aizzak_owner / app_rw / outbox_relay / retention_sweeper / metrics_reader / transit_rotator / workspace_purger ready"

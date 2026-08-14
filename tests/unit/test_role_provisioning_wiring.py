@@ -26,6 +26,7 @@ from pathlib import Path
 from app.ops.provision import (
     APP_ROLE,
     METRICS_ROLE,
+    PURGE_ROLE,
     RELAY_ROLE,
     RETENTION_ROLE,
     TRANSIT_ROTATOR_ROLE,
@@ -36,13 +37,21 @@ _ROLES_SH = _REPO_ROOT / "deploy" / "postgres" / "initdb" / "10-roles.sh"
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 
-# The five LOGIN roles `provision()` verifies exist before running any
+# The six LOGIN roles `provision()` verifies exist before running any
 # migration (`asyncio.run(_require_roles(owner_url, (APP_ROLE, RELAY_ROLE,
-# RETENTION_ROLE, METRICS_ROLE, TRANSIT_ROTATOR_ROLE)))` -- P1-3/step 10 added
-# the fourth, P1-9/step 12 added the fifth). `aizzak_owner` is deliberately
-# NOT here: it is the DSN `provision()` itself connects as, never looked up by
-# name through `_require_roles`, so it has no equivalent entry to drift.
-_CHECKED_ROLES = (APP_ROLE, RELAY_ROLE, RETENTION_ROLE, METRICS_ROLE, TRANSIT_ROTATOR_ROLE)
+# RETENTION_ROLE, METRICS_ROLE, TRANSIT_ROTATOR_ROLE, PURGE_ROLE)))` --
+# P1-3/step 10 added the fourth, P1-9/step 12 added the fifth, BE-ADM-014
+# added the sixth. `aizzak_owner` is deliberately NOT here: it is the DSN
+# `provision()` itself connects as, never looked up by name through
+# `_require_roles`, so it has no equivalent entry to drift.
+_CHECKED_ROLES = (
+    APP_ROLE,
+    RELAY_ROLE,
+    RETENTION_ROLE,
+    METRICS_ROLE,
+    TRANSIT_ROTATOR_ROLE,
+    PURGE_ROLE,
+)
 
 
 def _password_var(role: str) -> str:
@@ -56,8 +65,8 @@ def test_the_checked_roles_are_not_accidentally_empty() -> None:
     """A guard iterating an empty tuple would pass forever while checking
     nothing (the 3.69 lesson, restated in `test_ops_provision.py` and
     `test_deploy_worker_default.py`)."""
-    assert len(_CHECKED_ROLES) == 5
-    assert len(set(_CHECKED_ROLES)) == 5, "the five checked roles must be distinct"
+    assert len(_CHECKED_ROLES) == 6
+    assert len(set(_CHECKED_ROLES)) == 6, "the six checked roles must be distinct"
 
 
 def test_every_required_role_has_a_create_role_statement() -> None:

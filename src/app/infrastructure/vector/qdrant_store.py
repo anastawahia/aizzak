@@ -369,3 +369,30 @@ class QdrantVectorStore:
             if _is_missing_collection(exc):
                 return
             raise _translate(exc) from exc
+
+
+async def drop_collection(client: AsyncQdrantClient, name: str) -> bool:
+    """Drop a WHOLE Qdrant collection (``app.ops.purge``, BE-ADM-014, ONLY).
+
+    Deliberately a module-level free function, NOT a ``QdrantVectorStore``
+    method and NOT added to the ``VectorStore``/``HybridVectorStore`` ports:
+    a port method able to drop an entire collection would be reachable from
+    every module's use case through dependency injection, and the workspace
+    content-purge sweep is the ONE caller this codebase ever wants to hold
+    that power. Reusing ``_is_missing_collection``/``_translate`` here keeps
+    this function's error handling identical to every port method above's,
+    rather than inventing a second convention.
+
+    Returns ``True`` iff the collection existed (and was dropped); a
+    collection that was never created is a silent no-op (``False``) -- the
+    SAME idempotent-delete contract ``QdrantVectorStore.delete`` already
+    gives every OTHER caller (module docstring), so re-running the purge
+    sweep against an already-swept workspace never raises.
+    """
+    try:
+        existed = await client.collection_exists(name)
+        if existed:
+            await client.delete_collection(name)
+        return existed
+    except (ApiException, QdrantException) as exc:
+        raise _translate(exc) from exc
