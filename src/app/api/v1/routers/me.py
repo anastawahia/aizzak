@@ -8,10 +8,51 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from app.api.v1.dependencies import Principal, current_principal
+from app.api.v1.dependencies import Context, Principal, Services, current_principal
+from app.api.v1.dto.me import MeContextOut, MeHeartbeatOut, MeUserOut, MeWorkspaceOut
 from app.framework.auth.revocation import MAX_REVOCATION_TTL_S, SessionRevocationList
+from app.framework.errors import AppError
+from app.modules.access.domain.value_objects import Permission
 
 router = APIRouter(prefix="/me", tags=["session"])
+
+
+@router.get("/context")
+async def get_context(
+    principal: Annotated[Principal, Depends(current_principal)],
+    services: Services,
+) -> MeContextOut:
+    """Return the authenticated caller's tenant and resolved RBAC context.
+
+    Roles come from the same fresh authentication result every protected
+    request uses. Permissions are derived through the authorization port, so
+    this API never duplicates the static role catalog or asks a browser to
+    infer access from a legacy ``is_admin`` flag.
+    """
+    permissions = sorted(
+        permission.value
+        for permission in Permission
+        if services.authorization.is_allowed(principal.roles, permission.value)
+    )
+    return MeContextOut(
+        user=MeUserOut(id=principal.user_id),
+        workspace=MeWorkspaceOut(id=principal.workspace_id),
+        roles=sorted(principal.roles),
+        permissions=permissions,
+    )
+
+
+@router.post("/heartbeat")
+async def heartbeat(services: Services, ctx: Context) -> MeHeartbeatOut:
+    """Record a server-observed activity signal for the authenticated caller.
+
+    The browser emits this once each minute while it has an active verified
+    session.  The endpoint accepts no user or workspace id, so it cannot be
+    used to change another account's presence.
+    """
+    if services.presence is None:
+        raise AppError("user presence is not configured", code="common.internal")
+    return MeHeartbeatOut(last_seen_at=await services.presence.execute(ctx))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

@@ -11,10 +11,11 @@ Phase 5); nothing here performs I/O beyond the injected repositories.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, NotFoundError, ValidationError
+from app.framework.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.types import Uuid
 from app.modules.workspace.domain.entities import User, Workspace
@@ -32,6 +33,7 @@ from app.modules.workspace.domain.value_objects import (
     WorkspaceStatus,
 )
 from app.modules.workspace.ports.inbound import ProvisionedUser
+from app.modules.workspace.ports.presence import UserPresenceStore
 from app.modules.workspace.ports.repository import UserRepository, WorkspaceRepository
 
 _MAX_NAME_LEN = 80
@@ -232,6 +234,18 @@ class ArchiveWorkspace:
             () if already_archived else (WorkspaceArchived(workspace_id, workspace.updated_at),)
         )
         return workspace, events
+
+
+class RecordUserPresence:
+    """Store a server-timestamped heartbeat for the authenticated caller."""
+
+    def __init__(self, presence: UserPresenceStore) -> None:
+        self._presence = presence
+
+    async def execute(self, ctx: ExecutionContext) -> datetime:
+        if ctx.user_id is None:
+            raise AppError("presence requires an authenticated user", code="common.internal")
+        return await self._presence.record_heartbeat(ctx, user_id=ctx.user_id, seen_at=utc_now())
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,10 +29,18 @@ class WorkspaceStatus(StrEnum):
 
 
 class UserStatus(StrEnum):
-    """Lifecycle of a user within a workspace."""
+    """Lifecycle of a user within a workspace.
+
+    ``DELETED`` is terminal and has no transition back: the row it names is a
+    tombstone kept only so the administrative audit ledger keeps referring to
+    something. It is listed here because the login path asks whether the
+    status *is* ``ACTIVE`` — an unlisted value would make hydrating that row
+    raise instead of refusing the sign-in.
+    """
 
     ACTIVE = "active"
     DISABLED = "disabled"
+    DELETED = "deleted"
 
 
 @dataclass(frozen=True, slots=True)
