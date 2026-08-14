@@ -18,6 +18,7 @@ from app.framework.settings.settings import (
     EmbeddingServiceSettings,
     EventSettings,
     FirebaseSettings,
+    HealthSettings,
     IntegrationsSettings,
     MetricsSettings,
     MinioSettings,
@@ -110,6 +111,21 @@ class _EnvSettings(BaseSettings):
     # rather than an empty string keeps the env value a plain integer.
     stream_maxlen: int = Field(100_000, alias="STREAM_MAXLEN", ge=0)
 
+    # ت-2: the two automatic sweeps' knobs (EventSettings' own docstrings
+    # carry the safety relation between `CONSUMER_STALE_IDLE_S` and
+    # `CONSUMER_BLOCK_MS`). `0` disables a sweep rather than meaning "always".
+    consumer_sweep_interval_s: float = Field(300.0, alias="CONSUMER_SWEEP_INTERVAL_S", ge=0)
+    consumer_stale_idle_s: float = Field(900.0, alias="CONSUMER_STALE_IDLE_S", ge=0)
+    notify_group_sweep_interval_s: float = Field(900.0, alias="NOTIFY_GROUP_SWEEP_INTERVAL_S", ge=0)
+
+    # ت-3: where the loop-shaped processes stamp their liveness, and how stale
+    # that stamp may get before `app.ops.healthcheck` calls it dead. Empty
+    # `HEARTBEAT_DIR` disables the file entirely (HealthSettings' own
+    # docstring) -- read as a plain string here, since "" is a MEANINGFUL
+    # value and `None` would just be a second spelling of it.
+    heartbeat_dir: str = Field("/tmp/aizzak-heartbeat", alias="HEARTBEAT_DIR")
+    heartbeat_max_age_s: int = Field(300, alias="HEARTBEAT_MAX_AGE_S", ge=1)
+
     provider_routing: dict[str, Any] = Field(default_factory=dict, alias="PROVIDER_ROUTING")
 
     oauth_redirect_base_url: str | None = Field(default=None, alias="OAUTH_REDIRECT_BASE_URL")
@@ -170,6 +186,13 @@ def load_settings() -> Settings:
             # rather than 0 so the adapter branches on a real absence, not on
             # a magic number it would have to re-interpret at every call.
             stream_maxlen=env.stream_maxlen or None,
+            consumer_sweep_interval_s=env.consumer_sweep_interval_s,
+            consumer_stale_idle_s=env.consumer_stale_idle_s,
+            notify_group_sweep_interval_s=env.notify_group_sweep_interval_s,
+        ),
+        health=HealthSettings(
+            heartbeat_dir=env.heartbeat_dir,
+            heartbeat_max_age_s=env.heartbeat_max_age_s,
         ),
         integrations=IntegrationsSettings(
             oauth_redirect_base_url=env.oauth_redirect_base_url,

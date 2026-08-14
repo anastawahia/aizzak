@@ -209,6 +209,58 @@ class EventSettings(BaseModel):
     # `STREAM_MAXLEN=0` resolves to it.
     stream_maxlen: int | None = Field(default=100_000, ge=1)
 
+    # ت-2 (`docs/operational-findings.md` §2): how often a worker tidies the
+    # tombstones other processes left in its own groups, and how idle a
+    # consumer must be before it counts as one. `0` disables either half.
+    #
+    # ⚠️ `consumer_stale_idle_s` is a DEATH threshold, not a cadence. A live
+    # worker resets its idle clock every `consumer_block_ms` (5 s), so any
+    # value above ~1 min already separates a working sibling from a corpse;
+    # the default is two orders of magnitude above the block interval because
+    # the cost of waiting is only tidiness, while the cost of being wrong is
+    # deleting a live replica's registration. It must stay well ABOVE
+    # `consumer_block_ms` -- that relation, not the absolute number, is what
+    # makes the sweep safe under multiple replicas (`consumers/sweeper.py`).
+    consumer_sweep_interval_s: float = Field(default=300.0, ge=0)
+    consumer_stale_idle_s: float = Field(default=900.0, ge=0)
+    # ت-2's second layer, inside the API process: how often to destroy
+    # `cg.notify.<host>.<pid>` groups whose host no longer exists. Slower
+    # than the consumer sweep on purpose -- an orphaned GROUP holds no
+    # messages (the rule refuses any group with pending entries), so the only
+    # thing urgency would buy is a shorter window of noisy `XINFO GROUPS`
+    # output. `0` disables it, leaving only the startup sweep and the
+    # operator tool (`app.ops.notify_groups`).
+    notify_group_sweep_interval_s: float = Field(default=900.0, ge=0)
+
+
+class HealthSettings(BaseModel):
+    """Liveness reporting for the processes that have no HTTP listener to
+    probe (ت-3, ``docs/operational-findings.md`` §3): the three ``worker-*``
+    consumers and ``outbox-relay``. See
+    ``framework/observability/heartbeat.py`` for why a file's mtime, and
+    ``app/ops/healthcheck.py`` for the reader."""
+
+    model_config = _FROZEN
+
+    # Empty string = disabled, and that is a REAL configuration rather than an
+    # oversight: a `python -m app.workers.memory_worker` run straight from a
+    # developer's shell has no Docker healthcheck watching it, so the file is
+    # pure litter there. `app.ops.healthcheck` refuses to report healthy when
+    # this is empty (exit 2) instead of passing vacuously.
+    heartbeat_dir: str = "/tmp/aizzak-heartbeat"
+    # ⚠️ TOLERANCE, not cadence. A worker beats once per completed cycle --
+    # every `consumer_block_ms` (5 s) when idle -- so any value here above ~15 s
+    # detects a wedged loop; the default is two orders of magnitude larger for
+    # ONE reason: a beat cannot happen while a single handler is still running,
+    # and a legitimate handler may run for `Limits.media_timeout_s` (300 s).
+    # A threshold that flags a worker mid-job as unhealthy would teach
+    # operators to ignore the column -- the same signal-destroying pattern ت-6
+    # records for a permanently non-empty DLQ. Detection is still bounded:
+    # 300 s here plus Compose's `retries x interval` surfaces a dead loop in
+    # about six minutes, against the "never" it replaces. Services whose
+    # handlers cannot run that long may lower it; `worker-media` raises it.
+    heartbeat_max_age_s: int = Field(default=300, ge=1)
+
 
 class IntegrationsSettings(BaseModel):
     model_config = _FROZEN
@@ -325,6 +377,7 @@ class Settings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     embedding_service: EmbeddingServiceSettings = Field(default_factory=EmbeddingServiceSettings)
     events: EventSettings = Field(default_factory=EventSettings)
+    health: HealthSettings = Field(default_factory=HealthSettings)
     integrations: IntegrationsSettings = Field(default_factory=IntegrationsSettings)
     usage: UsageSettings = Field(default_factory=UsageSettings)
     limits: Limits = Field(default_factory=Limits)
