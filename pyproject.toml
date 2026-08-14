@@ -45,6 +45,25 @@ dependencies = [
     # what keeps this correct under gunicorn's multi-worker default without
     # `PROMETHEUS_MULTIPROC_DIR` (see that module's docstring).
     "prometheus-client>=0.20",
+    # BE-RAG-012 -- summary export. Core rather than an extra, unlike
+    # `parsers`: exporting is served by the API process (a summary is small
+    # enough to render inside the request, see `ExportSummary`), so the image
+    # that answers HTTP is the image that needs these.
+    #
+    # WeasyPrint over ReportLab, and the reason is Arabic. This platform's
+    # primary language is right-to-left, and PDF text shaping is exactly where
+    # that breaks: ReportLab is pure Python but needs `arabic-reshaper` +
+    # `python-bidi` driven by hand and has no Markdown notion at all, while
+    # WeasyPrint renders through Pango/HarfBuzz, which shapes and orders
+    # Arabic correctly with no help. The price is paid in the image, not in
+    # the code: `libpango`/`libcairo`/`libharfbuzz` join the runtime stage
+    # (see the Dockerfile), which is a bigger image and a real new build
+    # surface. That trade was taken deliberately -- a PDF whose Arabic is
+    # disconnected letters in reverse order is not an export, it is a bug
+    # with a file extension.
+    "weasyprint>=62",
+    "python-docx>=1.1",
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -90,6 +109,12 @@ dev = [
     # importing is a guard that silently stops guarding.
     "pyyaml>=6.0",
     "types-pyyaml",
+    # BE-RAG-012's export guard reads the PDF it produced back out and checks
+    # the Arabic survived. Declared for the `pyyaml` reason above, and more
+    # sharply: without it the test SKIPS, and it would skip in precisely the
+    # environment where the Pango/HarfBuzz stack is missing — that is, the
+    # one where the export is broken.
+    "pypdf>=5.0",
 ]
 # Document parsers (knowledge module adapters, 3.k1) — a dedicated group so
 # the core app stays light; only the knowledge worker needs these.
@@ -181,6 +206,14 @@ module = [
     "pandas.*",
     "openpyxl.*",
     "PIL.*",
+    # BE-RAG-012 -- the export renderer's three libraries. `weasyprint` ships
+    # no `py.typed`; `docx`/`markdown_it` are only partially annotated. All
+    # three are confined to `infrastructure/rendering/summary_renderer.py`,
+    # whose own boundary IS typed (`SummaryRenderer`), so the untyped surface
+    # ends at one file rather than leaking upward.
+    "weasyprint.*",
+    "docx.*",
+    "markdown_it.*",
 ]
 ignore_missing_imports = true
 

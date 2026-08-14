@@ -4,17 +4,30 @@ Outbound repository contract for the ``Document`` aggregate + its ``Chunk``
 rows. Every method takes ``ExecutionContext`` first so the SQL adapter can
 apply the RLS guard (``SET LOCAL app.workspace_id``) and the ``WHERE
 workspace_id`` filter (DD-04) — the files/memory port precedent.
+
+``ReindexJobRepository`` (BE-RAG-007/008) is the module's second persistence
+port, for the manual-rebuild aggregate. It reads its items' statuses out of
+``documents`` rather than storing them, which is why it can be a read/write
+port with no update method beyond ``mark_cancelled``.
+
+``SummaryRepository``/``SummaryJobRepository`` (BE-RAG-009/010/011) are the
+third and fourth. The job port DOES have a general ``save``, unlike the
+re-index one — the difference is not a style choice: that aggregate stores
+its own progress because nothing else records it (``SummaryJobStatus``), and
+a port with only ``mark_cancelled`` could not write a number down.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.pagination import Page
 from app.framework.types import Uuid
-from app.modules.knowledge.domain.entities import Chunk, Document
+from app.modules.knowledge.domain.entities import Chunk, Document, ReindexJob, Summary, SummaryJob
+from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage, VectorRef
 
 
 class DocumentRepository(Protocol):
@@ -53,6 +66,38 @@ class DocumentRepository(Protocol):
         """
         ...
 
+    async def ids_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Sequence[Uuid]:
+        """The ids of this workspace's documents built from ``file_ids``
+        (BE-RAG-005) — the "file ⇒ document" translation retrieval scoping
+        needs, kept inside this module.
+
+        Callers outside ``knowledge`` pin FILES, because a file is what they
+        uploaded and what they can name; the Qdrant payload, meanwhile, carries
+        ``document_id`` and not ``file_id`` (``indexing._payload``). Someone has
+        to bridge the two, and it is this module: a caller that had to do it
+        would first have to learn that documents exist.
+
+        Unmatched file ids simply do not appear in the result — a file with no
+        document (never indexed, or deleted after it was pinned) is not an
+        error, it is a scope entry with nothing behind it. An EMPTY ``file_ids``
+        returns an empty list rather than every document: "no files" is not
+        "all files", and the caller that means the whole corpus says so by not
+        scoping at all.
+
+        No paging and no status filter. The caller's list is already bounded by
+        what it could pin, and a ``pending`` document belongs in the filter for
+        the same reason it belongs in ``list``: it will have chunks shortly,
+        and excluding it would make the scope silently narrower than the pins.
+
+        ``Sequence[Uuid]`` and not ``list[Uuid]``: inside this class body
+        ``list`` resolves to the METHOD above, so the obvious annotation is a
+        type error rather than the builtin. Sequence is also the honester
+        contract — nothing here mutates the result.
+        """
+        ...
+
     async def add(self, ctx: ExecutionContext, doc: Document) -> None: ...
 
     async def set_status(
@@ -76,5 +121,226 @@ class DocumentRepository(Protocol):
         re-delivering the same batch (a retry after a worker crash) leaves
         the first-written rows' ids untouched instead of duplicating or
         overwriting them.
+        """
+        ...
+
+    async def vector_refs(self, ctx: ExecutionContext, doc_id: Uuid) -> Sequence[VectorRef]:
+        """Where this document's chunks live in the vector store (BE-RAG-007).
+
+        Read from the ``chunks`` rows rather than recomputed from
+        ``chunk_point_id(doc_id, seq)``: the ids are deterministic today, but
+        what must be deleted is what was actually WRITTEN, and only the rows
+        know that. A document with no chunks (``pending``, or a failure before
+        the first batch) yields an empty sequence, which is a normal answer
+        and not an error.
+
+        Always called BEFORE ``purge`` — afterwards nothing remains to say
+        which points to delete.
+        """
+        ...
+
+    async def chunk_texts(self, ctx: ExecutionContext, doc_id: Uuid) -> Sequence[str]:
+        """This document's chunk text in ``seq`` order (BE-RAG-009).
+
+        The summarisation pipeline's input. It reads the chunks rather than
+        re-fetching and re-parsing the file because the parse already happened
+        once, and because a summary built from anything other than the indexed
+        text would describe a document no search can return.
+
+        Ordered by ``seq``, which is the document's own reading order
+        (``chunking.chunk_segments``) — a summary assembled out of order is a
+        summary of a different document. A document with no chunks yields an
+        empty sequence, which the caller turns into a failed job with a reason
+        rather than an empty summary.
+
+        No paging: a document's chunks are bounded by the file it came from,
+        the caller consumes all of them, and a cursor here would only be a
+        place for the reading order to get lost.
+        """
+        ...
+
+    async def purge(self, ctx: ExecutionContext, doc_id: Uuid) -> None:
+        """Destroy a document: its ``summaries``, then its ``chunks`` rows,
+        then its own row (BE-RAG-007 · INV-K4), in ONE transaction — the
+        missing ``ON DELETE`` on ``fk_chunk_doc``/``fk_summary_doc`` makes the
+        order mandatory rather than stylistic.
+
+        Summaries are deleted here and not cascaded for the reason the whole
+        destruction is explicit: re-indexing exists because a file's text may
+        now parse differently, and a summary that outlived the text it was
+        written from would go on being served as current. A cascade would do
+        the same deletion while hiding it from the invariant that documents
+        it.
+
+        The only hard delete in this module, and it exists because a
+        superseded document cannot be allowed to survive: Qdrant point ids
+        derive from the document id, so two live documents over one file
+        would answer every search twice. A soft delete would not help — the
+        vector store has no view of a ``deleted_at`` column.
+
+        Purging a document that is not there is a no-op, not an error: the
+        caller has already read it, and losing a race to another purge is the
+        outcome it wanted anyway.
+        """
+        ...
+
+
+class ReindexJobRepository(Protocol):
+    """Tenant-scoped persistence for the ``ReindexJob`` aggregate + its item
+    rows (02 §2 · BE-RAG-007/008).
+
+    A separate port from ``DocumentRepository`` even though both adapters
+    speak to the ``knowledge`` schema: the two aggregates have separate
+    lifetimes, and a caller that only reads a job's progress has no business
+    holding a handle that can purge a document.
+    """
+
+    async def add(self, ctx: ExecutionContext, job: ReindexJob) -> None:
+        """Persist a job and its items together. Called inside the caller's
+        unit of work, alongside the new documents the items point at — an
+        item whose document was rolled back would report a status nobody can
+        read (``fk_reindex_item_doc`` turns that into a loud failure rather
+        than a dangling row)."""
+        ...
+
+    async def get(self, ctx: ExecutionContext, job_id: Uuid) -> ReindexJob | None:
+        """One job with its items, each item's ``status`` **joined from
+        ``knowledge.documents``** rather than stored (INV-K5).
+
+        That join is the whole progress mechanism: no counter is maintained
+        anywhere, so none can drift, and a worker that dies mid-run leaves the
+        job reporting exactly what the corpus says. Another tenant's job is
+        indistinguishable from a missing one (``None`` either way).
+        """
+        ...
+
+    async def mark_cancelled(self, ctx: ExecutionContext, job_id: Uuid, at: datetime) -> None:
+        """Stamp ``cancelled_at``. Writes unconditionally — the aggregate has
+        already decided whether cancelling changes anything, and a job that
+        was cancelled twice never reaches here a second time."""
+        ...
+
+
+class SummaryRepository(Protocol):
+    """Tenant-scoped persistence for the ``Summary`` aggregate (02 §2 ·
+    BE-RAG-009/010/011)."""
+
+    async def get(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> Summary | None:
+        """The stored summary under this exact key, or ``None``.
+
+        The whole triple is the key — a request for the Arabic overview does
+        not fall back to the English one, or to the full summary, because a
+        fallback here would answer a question the caller did not ask and label
+        it as the answer to the one they did.
+        """
+        ...
+
+    async def upsert(self, ctx: ExecutionContext, summary: Summary) -> None:
+        """Store a summary, REPLACING any previous one under the same key
+        (``uq_summary_key``).
+
+        Replace and not insert-if-absent: a rebuild is the reason this method
+        is ever called twice, and its whole purpose is that the newer text
+        wins. The previous body is not versioned anywhere — a summary is
+        derived data that can be rebuilt from a corpus that still exists,
+        which is precisely what makes keeping its history storage spent on
+        something nobody would read.
+        """
+        ...
+
+    async def delete(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> bool:
+        """Delete one stored summary; returns whether a row was there.
+
+        The boolean is the contract's, not a convenience: BE-RAG-011's delete
+        is idempotent, and the caller answers "deleted: false" for a summary
+        that was already gone rather than 404 — the client asked for a state,
+        and that state now holds.
+        """
+        ...
+
+    async def delete_for_document(self, ctx: ExecutionContext, document_id: Uuid) -> None:
+        """Delete every summary of a document — ``purge``'s first step
+        (INV-K4). Deleting none is a no-op, not an error."""
+        ...
+
+
+class SummaryJobRepository(Protocol):
+    """Tenant-scoped persistence for the ``SummaryJob`` aggregate (02 §2 ·
+    BE-RAG-009/011).
+
+    A separate port from ``SummaryRepository`` for the reason
+    ``ReindexJobRepository`` is separate from ``DocumentRepository``: a caller
+    watching a build's progress has no business holding a handle that can
+    overwrite the artefact.
+    """
+
+    async def add(self, ctx: ExecutionContext, job: SummaryJob) -> None:
+        """Queue a job. Racing another queued/running build of the same
+        ``(document_id, kind, lang)`` violates ``uq_summary_job_active`` and
+        must surface as a conflict rather than a second paid-for build — see
+        ``active_for``, which is the check that turns the race into a 409 in
+        the ordinary case, and this constraint, which catches the two that
+        checked at the same instant."""
+        ...
+
+    async def get(self, ctx: ExecutionContext, job_id: Uuid) -> SummaryJob | None:
+        """One job, or ``None`` — another tenant's is indistinguishable from
+        a missing one."""
+        ...
+
+    async def active_for(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> SummaryJob | None:
+        """The queued/running job for this key, if one exists."""
+        ...
+
+    async def save(self, ctx: ExecutionContext, job: SummaryJob) -> None:
+        """Persist the job's mutable state: status, progress, error and the
+        two instants.
+
+        A whole-row write rather than a set of targeted mutators. The
+        aggregate is the only thing that decides these fields, it decides
+        several of them in one transition (``succeed`` moves status,
+        ``done_chunks`` and ``finished_at``), and a port with one method per
+        column would let a caller persist half a transition.
+
+        Called at exactly two points — the worker's claim and its terminal
+        write — never for progress. See ``record_progress`` for why that
+        separation is load-bearing rather than tidy.
+        """
+        ...
+
+    async def record_progress(self, ctx: ExecutionContext, job_id: Uuid, done_chunks: int) -> None:
+        """Write ONLY ``done_chunks``, and only while the row still says
+        ``running``.
+
+        This exists because ``save`` cannot be used here. A worker holds its
+        job in memory for the whole build; a cancellation arrives as a write
+        to the ROW by another process. If progress were persisted with a
+        whole-row ``save``, the next map step would write that in-memory
+        job — still ``running``, because nothing told it otherwise — straight
+        over the cancellation, and the job would resurrect itself seconds
+        after the user stopped it.
+
+        The ``WHERE status = 'running'`` guard is what makes that structurally
+        impossible rather than a timing question: after a cancellation the
+        progress write matches no row and silently does nothing, which is
+        exactly what a cancelled job's progress should do.
         """
         ...

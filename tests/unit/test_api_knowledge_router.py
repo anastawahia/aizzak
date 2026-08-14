@@ -22,6 +22,7 @@ pin, against 03 §1/§2 and 06 §7:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import replace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -440,3 +441,178 @@ def test_reading_another_tenants_document_is_404_not_403() -> None:
         response = client.get("/api/v1/knowledge/documents/d2", headers=_auth())
     assert response.status_code == 404
     assert response.json()["code"] == "common.not_found"
+
+
+# --------------------------------------------------------------------------- #
+# POST /reindex + GET/POST /reindex/{id} (BE-RAG-007/008)                     #
+# --------------------------------------------------------------------------- #
+def test_reindexing_answers_202_with_the_job() -> None:
+    """202 and not 201: the rebuild has been ACCEPTED, and a worker will do
+    it. 201 would promise a finished index that does not exist yet."""
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1, file_id="f1")
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
+        )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert (body["total"], body["finished"], body["percent"]) == (1, 0, 0)
+    assert body["current_file_id"] is None
+    assert body["cancelled_at"] is None
+    (item,) = body["items"]
+    assert item["source_document_id"] == "d1"
+    assert item["file_id"] == "f1"
+    assert item["status"] == "pending"
+
+
+def test_the_reindexed_file_disappears_from_the_corpus_until_the_worker_runs() -> None:
+    """The cost the contract states out loud: the old document is destroyed
+    up front, so the file answers nothing until the rebuild lands. The listing
+    is where a client can see that, which is why it is asserted here and not
+    only in the module tests."""
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1, file_id="f1", chunk_count=9)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        client.post("/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth())
+        listing = client.get("/api/v1/knowledge/documents", headers=_auth()).json()
+    (row,) = listing["data"]
+    assert row["id"] != "d1"
+    assert (row["status"], row["chunk_count"]) == ("pending", 0)
+
+
+def test_a_job_reports_progress_read_from_its_documents() -> None:
+    app, stack = _make_app()
+    for name in ("d1", "d2"):
+        doc = seed_document(document_id=name, workspace_id=_W1, file_id=f"file-{name}")
+        stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        job = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1", "d2"]}, headers=_auth()
+        ).json()
+        first, second = (item["document_id"] for item in job["items"])
+        stack.repository.rows[first] = seed_document(
+            document_id=first, workspace_id=_W1, status=IndexStatus.INDEXED
+        )
+        stack.repository.rows[second] = seed_document(
+            document_id=second, workspace_id=_W1, file_id="file-d2", status=IndexStatus.INDEXING
+        )
+        response = client.get(f"/api/v1/knowledge/reindex/{job['id']}", headers=_auth())
+    body = response.json()
+    assert (body["status"], body["finished"], body["percent"]) == ("running", 1, 50)
+    assert body["current_file_id"] == "file-d2"
+
+
+def test_cancelling_answers_200_with_the_cancelled_job() -> None:
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        job = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
+        ).json()
+        response = client.post(f"/api/v1/knowledge/reindex/{job['id']}/cancel", headers=_auth())
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "cancelled"
+    assert body["cancelled_at"] is not None
+    assert body["items"][0]["status"] == "failed"
+
+
+def test_cancelling_a_finished_job_is_409() -> None:
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        job = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
+        ).json()
+        done = job["items"][0]["document_id"]
+        stack.repository.rows[done] = seed_document(
+            document_id=done, workspace_id=_W1, status=IndexStatus.INDEXED
+        )
+        response = client.post(f"/api/v1/knowledge/reindex/{job['id']}/cancel", headers=_auth())
+    assert response.status_code == 409
+    assert response.json()["code"] == "common.conflict"
+
+
+def test_reindexing_a_document_that_is_still_indexing_is_409() -> None:
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1, status=IndexStatus.INDEXING)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
+        )
+    assert response.status_code == 409
+    assert stack.repository.rows["d1"].status is IndexStatus.INDEXING
+
+
+def test_reindexing_an_unknown_document_is_404() -> None:
+    app, _stack = _make_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["nope"]}, headers=_auth()
+        )
+    assert response.status_code == 404
+
+
+def test_the_reindex_body_bounds_are_the_dtos() -> None:
+    """422 before a single document is read: an empty rebuild asks for
+    nothing, and an unbounded one would delete an unbounded slice of the
+    corpus."""
+    app, stack = _make_app()
+    with TestClient(app) as client:
+        empty = client.post("/api/v1/knowledge/reindex", json={"document_ids": []}, headers=_auth())
+        too_many = client.post(
+            "/api/v1/knowledge/reindex",
+            json={"document_ids": [f"d{n}" for n in range(51)]},
+            headers=_auth(),
+        )
+    assert (empty.status_code, too_many.status_code) == (422, 422)
+    assert empty.json()["code"] == "common.validation_error"
+    assert stack.repository.purged == []
+
+
+def test_an_idempotent_replay_does_not_rebuild_twice() -> None:
+    """The route this matters most on in the whole API: without the ledger a
+    retried POST destroys and rebuilds a second time, and the workspace pays
+    for the embeddings twice."""
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    headers = {**_auth(), "Idempotency-Key": "retry-1"}
+    body = {"document_ids": ["d1"]}
+    with TestClient(app) as client:
+        first = client.post("/api/v1/knowledge/reindex", json=body, headers=headers).json()
+        second = client.post("/api/v1/knowledge/reindex", json=body, headers=headers).json()
+    assert first == second
+    assert stack.repository.purged == ["d1"]
+
+
+def test_an_unknown_job_is_404_and_another_tenants_job_is_too() -> None:
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        job = client.post(
+            "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
+        ).json()
+        stack.jobs.rows[job["id"]] = replace(stack.jobs.rows[job["id"]], workspace_id=_W2)
+        assert client.get("/api/v1/knowledge/reindex/nope", headers=_auth()).status_code == 404
+        foreign = client.get(f"/api/v1/knowledge/reindex/{job['id']}", headers=_auth())
+    assert foreign.status_code == 404
+
+
+def test_the_reindex_routes_refuse_an_unauthenticated_request() -> None:
+    app, _stack = _make_app()
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}).status_code
+            == 401
+        )
+        assert client.get("/api/v1/knowledge/reindex/j1").status_code == 401
+        assert client.post("/api/v1/knowledge/reindex/j1/cancel").status_code == 401

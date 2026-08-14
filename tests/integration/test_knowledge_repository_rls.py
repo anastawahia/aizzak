@@ -27,10 +27,17 @@ from app.framework.errors import AppError, ConflictError
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.persistence.database import create_engine
-from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
+from app.modules.knowledge.adapters.sql_repository import (
+    SqlDocumentRepository,
+    SqlReindexJobRepository,
+)
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
-from app.modules.knowledge.domain.entities import Chunk, Document
-from app.modules.knowledge.domain.value_objects import IndexStatus, VectorRef
+from app.modules.knowledge.domain.entities import Chunk, Document, ReindexItem, ReindexJob
+from app.modules.knowledge.domain.value_objects import (
+    IndexStatus,
+    ReindexJobStatus,
+    VectorRef,
+)
 from tests.integration.conftest import LiveDbDsns
 
 pytestmark = [pytest.mark.live_db]
@@ -369,3 +376,172 @@ async def test_list_rejects_a_cursor_that_is_not_a_keyset_id(
     with pytest.raises(AppError) as excinfo:
         await repo_knowledge.list(_ctx(new_uuid7()), limit=10, cursor="aGVsbG8")
     assert excinfo.value.code == "common.invalid_cursor"
+
+
+# --------------------------------------------------------------------------- #
+# (7) purge + re-index jobs (BE-RAG-007/008)                                  #
+# --------------------------------------------------------------------------- #
+async def test_vector_refs_returns_what_was_actually_written(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The points a purge must delete are read from the chunk rows, never
+    recomputed: the ids are deterministic today, but what has to go is what
+    was WRITTEN, and only the rows know that."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, status=IndexStatus.INDEXING)
+    await repo_knowledge.add(ctx, doc)
+    chunks = [
+        _chunk(document_id=doc.id, workspace_id=ws, seq=seq, chunk_text=f"body {seq}")
+        for seq in range(3)
+    ]
+    await repo_knowledge.add_chunks(ctx, chunks)
+
+    refs = await repo_knowledge.vector_refs(ctx, doc.id)
+
+    assert {ref.point_id for ref in refs} == {chunk_point_id(doc.id, seq) for seq in range(3)}
+    assert {ref.collection for ref in refs} == {knowledge_collection(ws)}
+
+
+async def test_purge_destroys_the_document_and_its_chunks(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """``fk_chunk_doc`` makes the order mandatory rather than stylistic, and
+    only a live database can prove the statement pair honours it — an
+    in-memory fake deletes a dict entry either way."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, status=IndexStatus.INDEXING)
+    await repo_knowledge.add(ctx, doc)
+    await repo_knowledge.add_chunks(
+        ctx, [_chunk(document_id=doc.id, workspace_id=ws, seq=0, chunk_text="body")]
+    )
+
+    await repo_knowledge.purge(ctx, doc.id)
+
+    assert await repo_knowledge.get(ctx, doc.id) is None
+    assert await _chunk_rows_as_owner(live_db.owner, ws, doc.id) == []
+
+
+async def test_purging_an_absent_document_is_a_no_op(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The caller has already read it, and losing a race to another purge is
+    the outcome it wanted anyway."""
+    await repo_knowledge.purge(_ctx(new_uuid7()), new_uuid7())
+
+
+async def test_purge_cannot_reach_another_tenants_document(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The one hard delete in this module, so the tenant filter matters more
+    here than anywhere: a leak would not be a wrong read, it would be data
+    gone."""
+    owner_ws, intruder_ws = new_uuid7(), new_uuid7()
+    owner_ctx = _ctx(owner_ws)
+    doc = _document(workspace_id=owner_ws)
+    await repo_knowledge.add(owner_ctx, doc)
+
+    await repo_knowledge.purge(_ctx(intruder_ws), doc.id)
+
+    assert await repo_knowledge.get(owner_ctx, doc.id) is not None
+
+
+async def test_a_job_round_trips_with_its_items_status_joined_from_the_documents(
+    repo_knowledge: SqlDocumentRepository, repo_reindex_jobs: SqlReindexJobRepository
+) -> None:
+    """INV-K5 end to end: nothing about progress is stored, so moving the
+    DOCUMENT is what moves the job. This is the assertion no unit test can
+    make — an in-memory fake could report progress from anywhere."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    replacement = _document(workspace_id=ws, status=IndexStatus.PENDING)
+    await repo_knowledge.add(ctx, replacement)
+    job = ReindexJob(
+        id=new_uuid7(),
+        workspace_id=ws,
+        items=(
+            ReindexItem(
+                document_id=replacement.id,
+                file_id=replacement.file_id,
+                source_document_id=new_uuid7(),
+                status=IndexStatus.PENDING,
+            ),
+        ),
+        cancelled_at=None,
+        created_at=utc_now(),
+    )
+
+    await repo_reindex_jobs.add(ctx, job)
+    loaded = await repo_reindex_jobs.get(ctx, job.id)
+    assert loaded is not None
+    assert loaded.status is ReindexJobStatus.RUNNING
+    assert loaded.percent == 0
+
+    await repo_knowledge.set_status(ctx, replacement.id, IndexStatus.INDEXED.value)
+    finished = await repo_reindex_jobs.get(ctx, job.id)
+
+    assert finished is not None
+    assert finished.status is ReindexJobStatus.COMPLETED
+    assert finished.percent == 100
+    assert finished.items[0].source_document_id == job.items[0].source_document_id
+
+
+async def test_marking_a_job_cancelled_persists_and_outranks_completion(
+    repo_knowledge: SqlDocumentRepository, repo_reindex_jobs: SqlReindexJobRepository
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    document = _document(workspace_id=ws, status=IndexStatus.FAILED)
+    await repo_knowledge.add(ctx, document)
+    job = ReindexJob(
+        id=new_uuid7(),
+        workspace_id=ws,
+        items=(
+            ReindexItem(
+                document_id=document.id,
+                file_id=document.file_id,
+                source_document_id=new_uuid7(),
+                status=IndexStatus.FAILED,
+            ),
+        ),
+        cancelled_at=None,
+        created_at=utc_now(),
+    )
+    await repo_reindex_jobs.add(ctx, job)
+    at = utc_now()
+
+    await repo_reindex_jobs.mark_cancelled(ctx, job.id, at)
+    loaded = await repo_reindex_jobs.get(ctx, job.id)
+
+    assert loaded is not None
+    assert loaded.cancelled_at == at
+    # Every item is terminal, yet the job reads `cancelled`: what happened to
+    # it outranks the mechanism that finished it.
+    assert loaded.status is ReindexJobStatus.CANCELLED
+
+
+async def test_another_tenant_cannot_read_a_job(
+    repo_knowledge: SqlDocumentRepository, repo_reindex_jobs: SqlReindexJobRepository
+) -> None:
+    ws, intruder_ws = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    document = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, document)
+    job = ReindexJob(
+        id=new_uuid7(),
+        workspace_id=ws,
+        items=(
+            ReindexItem(
+                document_id=document.id,
+                file_id=document.file_id,
+                source_document_id=new_uuid7(),
+                status=IndexStatus.PENDING,
+            ),
+        ),
+        cancelled_at=None,
+        created_at=utc_now(),
+    )
+    await repo_reindex_jobs.add(ctx, job)
+
+    assert await repo_reindex_jobs.get(_ctx(intruder_ws), job.id) is None

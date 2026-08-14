@@ -1,0 +1,316 @@
+"""``SummarizeDocument`` — the map-reduce summarisation pipeline (06 §7 ·
+BE-RAG-009).
+
+The ``IndexDocument`` shape one capability over, with one deliberate
+difference: that pipeline holds its ``EmbeddingProvider`` for its whole
+lifetime because there is one embedding service, while this one takes the LLM
+adapter per call inside a ``ResolvedSummarizer`` — which adapter answers is
+precisely what the ``summarize`` route decides. Either way one instance
+serves every workspace and no credential is ever captured in a constructor.
+
+**It summarises CHUNKS, not the file.** The text was already fetched,
+decoded and parsed once when the document was indexed, and ``knowledge.chunks``
+holds the result in reading order. Re-fetching the object from MinIO and
+re-running the parser would spend the whole ingestion cost a second time to
+arrive at bytes this module already has — and would quietly disagree with the
+corpus the moment a parser changed, so the summary would describe text no
+search could ever return.
+
+**Both kinds are bounded, and the bound is reported rather than hidden.**
+``overview`` reads the document's opening chunks and makes ONE call —
+"what is this?" is answered by the front of a document, and a reader who
+wanted the whole thing asked for ``full``. ``full`` maps over every chunk in
+batches and reduces the notes into one summary, up to ``_MAX_MAP_CHUNKS``.
+Past that ceiling the pipeline summarises the prefix and sets ``truncated``,
+which travels all the way onto the stored row and into the API response. The
+alternative — an unbounded map — makes the cost of one request a function of
+the largest file anyone ever uploaded, and this is already the most expensive
+call the platform makes.
+
+**Cancellation is checked between batches**, which is the only place it can
+be: an LLM round trip in flight cannot be recalled, and pretending otherwise
+would mean reporting a stop that had not happened. See ``SummaryJob.cancel``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+
+from app.framework.context.execution_context import ExecutionContext
+from app.framework.ports.llm_provider import LlmMessage, LlmParams
+from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
+from app.modules.knowledge.ports.summarization import ResolvedSummarizer
+
+# How many of a document's opening chunks an `overview` reads. An overview
+# answers "what is this document?", which the front of a document answers;
+# reading further would make the cheap kind cost the same as the other one.
+_OVERVIEW_CHUNKS = 8
+
+# Chunks per map call. Small enough that one provider error costs one batch
+# rather than the document, large enough that a 200-chunk file is ~34 calls
+# and not 200.
+_MAP_BATCH = 6
+
+# The ceiling on a `full` map. 40 map calls plus one reduce is already the
+# most expensive request in the API; beyond this the pipeline summarises the
+# prefix and SAYS SO (`truncated`) rather than silently spending more.
+_MAX_MAP_CHUNKS = _MAP_BATCH * 40
+
+# A second guard on the same thing from the other end: chunk sizes are set by
+# the chunker, but a batch of unusually long ones must still not build a
+# prompt no context window accepts. Characters, not tokens, because this is a
+# guard rail and not an accounting -- a tokeniser here would be a dependency
+# bought to make an approximation look precise.
+_MAX_BATCH_CHARS = 24_000
+
+_TEMPERATURE = 0.2
+_MAP_MAX_TOKENS = 600
+_OVERVIEW_MAX_TOKENS = 900
+_REDUCE_MAX_TOKENS = 2_500
+
+_LANGUAGE_INSTRUCTION = {
+    SummaryLanguage.AUTO: ("Write the summary in the same language the source text is written in."),
+    SummaryLanguage.AR: "Write the summary in Arabic (العربية).",
+    SummaryLanguage.EN: "Write the summary in English.",
+}
+
+_MAP_SYSTEM = (
+    "You are extracting notes from one part of a longer document. "
+    "List the concrete facts, claims, figures, names and decisions this "
+    "excerpt contains, as terse bullet points. Do not add an introduction, "
+    "a conclusion, or anything the excerpt does not say. Keep every note in "
+    "the language of the excerpt."
+)
+
+_REDUCE_SYSTEM = (
+    "You are writing the final summary of a document from ordered notes "
+    "taken across its parts. Produce well-structured Markdown with short "
+    "headings and paragraphs. Cover the whole document in proportion, keep "
+    "figures and names exact, and state nothing the notes do not support."
+)
+
+_OVERVIEW_SYSTEM = (
+    "You are writing a brief overview of a document from its opening pages. "
+    "In a few short Markdown paragraphs say what the document is, what it "
+    "covers, and who it appears to be for. Do not speculate about parts you "
+    "were not shown."
+)
+
+_FULL_SYSTEM = (
+    "You are summarising a document. Produce well-structured Markdown with "
+    "short headings and paragraphs, covering the whole text in proportion, "
+    "keeping figures and names exact, and stating nothing the text does not "
+    "support."
+)
+
+
+class SummaryBuildCancelled(Exception):
+    """Raised out of ``SummarizeDocument.execute`` when the caller's
+    ``should_cancel`` said so at a batch boundary.
+
+    An exception rather than a ``SummaryDraft | None`` return: a cancelled
+    build produced nothing, and a return type that can be "nothing" makes
+    every caller destructure a success that may not be one. The worker handler
+    catches this and stops — the job row was already stamped ``cancelled`` by
+    the request that asked, so there is nothing left to record.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryDraft:
+    """What a completed build produced, before it becomes a ``Summary`` row.
+
+    ``source_chunks`` is how many chunks were actually READ, and ``truncated``
+    whether the document had more. Both travel to the stored row: a summary of
+    the first 240 chunks of a 900-chunk document is a true summary of a part,
+    and a reader who is not told which is being misled about the whole.
+
+    ``model`` rides here rather than on the caller's attempt record because
+    this is the layer that knows it was used. A failed build has no draft and
+    therefore no model to report — which is correct: nothing wrote anything,
+    so there is no authorship to record.
+    """
+
+    text: str
+    model: str
+    source_chunks: int
+    truncated: bool
+
+
+# The caller's two hooks. `should_cancel` is re-read from the database at each
+# batch boundary rather than captured once, because the whole point is to
+# observe a write another process made after this build started.
+ProgressHook = Callable[[int], Awaitable[None]]
+CancelHook = Callable[[], Awaitable[bool]]
+
+
+async def _noop_progress(_done: int) -> None:
+    return None
+
+
+async def _never_cancel() -> bool:
+    return False
+
+
+class SummarizeDocument:
+    """Turn a document's ordered chunk text into one summary.
+
+    **Stateless.** The adapter, model and key arrive together per call, as one
+    ``ResolvedSummarizer``, rather than in the constructor the way
+    ``IndexDocument`` holds its ``EmbeddingProvider``. Which adapter answers
+    is exactly what the ``summarize`` route decides, so capturing one at
+    composition time would ignore the configuration this feature exists to
+    honour — and passing the triple as three parameters would let a caller
+    pair one provider's key with another's model, which is the failure the
+    resolver returns them together to prevent.
+    """
+
+    async def execute(
+        self,
+        ctx: ExecutionContext,
+        *,
+        chunks: Sequence[str],
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+        summarizer: ResolvedSummarizer,
+        on_progress: ProgressHook = _noop_progress,
+        should_cancel: CancelHook = _never_cancel,
+    ) -> SummaryDraft:
+        """Summarise ``chunks`` (already in ``seq`` order) into one Markdown
+        body.
+
+        ``ctx`` is accepted and unused, deliberately: every other pipeline in
+        this module takes it, and a signature that drops it would have to be
+        widened again the first time a summary needs the workspace for a
+        prompt or a quota check. It is one parameter against a signature
+        change reaching every caller.
+        """
+        del ctx  # see the docstring
+
+        readable = [text for text in chunks if text.strip()]
+        if not readable:
+            # Phrased for the person who will read it on the failed job, not
+            # for a log: an `indexed` document with no readable chunk is a
+            # real outcome (an empty PDF, a scan with no OCR text), and the
+            # message is the whole explanation they will get. `NO_TEXT_REASON`
+            # in `use_cases` is the same sentence for the same reason.
+            raise ValueError("this document has no indexed text to summarise")
+
+        if kind is SummaryKind.OVERVIEW:
+            window = readable[:_OVERVIEW_CHUNKS]
+            text = await self._call(
+                system=_OVERVIEW_SYSTEM,
+                user=_join(window),
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_OVERVIEW_MAX_TOKENS,
+            )
+            await on_progress(len(window))
+            return SummaryDraft(
+                text=text,
+                model=summarizer.model,
+                source_chunks=len(window),
+                truncated=len(readable) > len(window),
+            )
+
+        window = readable[:_MAX_MAP_CHUNKS]
+        truncated = len(readable) > len(window)
+        batches = _batched(window)
+
+        # One batch means the whole document already fits in one call, so the
+        # map/reduce round trip would spend two calls to reach what one says
+        # better: notes summarised from notes read worse than a summary
+        # written from the text.
+        if len(batches) == 1:
+            text = await self._call(
+                system=_FULL_SYSTEM,
+                user=_join(batches[0]),
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_REDUCE_MAX_TOKENS,
+            )
+            await on_progress(len(window))
+            return SummaryDraft(
+                text=text, model=summarizer.model, source_chunks=len(window), truncated=truncated
+            )
+
+        notes: list[str] = []
+        done = 0
+        for index, batch in enumerate(batches, start=1):
+            if await should_cancel():
+                raise SummaryBuildCancelled
+            note = await self._call(
+                system=_MAP_SYSTEM,
+                user=f"Part {index} of {len(batches)}.\n\n{_join(batch)}",
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_MAP_MAX_TOKENS,
+            )
+            notes.append(f"## Part {index}\n{note}")
+            done += len(batch)
+            await on_progress(done)
+
+        if await should_cancel():
+            raise SummaryBuildCancelled
+
+        text = await self._call(
+            system=_REDUCE_SYSTEM,
+            user="\n\n".join(notes),
+            lang=lang,
+            summarizer=summarizer,
+            max_tokens=_REDUCE_MAX_TOKENS,
+        )
+        return SummaryDraft(
+            text=text, model=summarizer.model, source_chunks=len(window), truncated=truncated
+        )
+
+    async def _call(
+        self,
+        *,
+        system: str,
+        user: str,
+        lang: SummaryLanguage,
+        summarizer: ResolvedSummarizer,
+        max_tokens: int,
+    ) -> str:
+        """One provider round trip.
+
+        The language instruction rides on the SYSTEM message, not the user
+        one: the user message is document text, and an instruction embedded in
+        it is an instruction a document could imitate.
+        """
+        messages = [
+            LlmMessage(role="system", content=f"{system}\n\n{_LANGUAGE_INSTRUCTION[lang]}"),
+            LlmMessage(role="user", content=user),
+        ]
+        params = LlmParams(model=summarizer.model, temperature=_TEMPERATURE, max_tokens=max_tokens)
+        result = await summarizer.provider.complete(messages, params, summarizer.api_key)
+        return result.content.strip()
+
+
+def _join(chunks: Sequence[str]) -> str:
+    return "\n\n".join(chunks)
+
+
+def _batched(chunks: Sequence[str]) -> list[list[str]]:
+    """Group chunks into map batches, breaking early on ``_MAX_BATCH_CHARS``.
+
+    A batch is closed by whichever bound is reached first. The character
+    guard can produce a batch of one — a single chunk longer than the whole
+    budget — which is correct: the alternative is refusing to summarise a
+    document because one of its chunks is large, and the provider's own
+    context error is a better failure than a pipeline that declines to try.
+    """
+    batches: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for chunk in chunks:
+        if current and (len(current) >= _MAP_BATCH or size + len(chunk) > _MAX_BATCH_CHARS):
+            batches.append(current)
+            current, size = [], 0
+        current.append(chunk)
+        size += len(chunk)
+    if current:
+        batches.append(current)
+    return batches

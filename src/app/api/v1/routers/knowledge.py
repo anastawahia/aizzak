@@ -1,19 +1,36 @@
 """The Knowledge router — ``/api/v1/knowledge`` (03-api-spec §1 · 06 §7)
 — Phase 6.1-و-3.
 
-Three routes over ``KnowledgeUseCases``, exactly 03 §1's ``POST /search ·
-GET /documents · GET /documents/{id}``:
+Eleven routes over ``KnowledgeUseCases``:
 
 * ``POST /knowledge/search`` — top-``k`` chunks for a query (API-04 envelope);
 * ``GET /knowledge/documents`` — this workspace's documents, every status;
-* ``GET /knowledge/documents/{id}`` — one document's ingestion state.
+* ``GET /knowledge/documents/{id}`` — one document's ingestion state;
+* ``POST /knowledge/reindex`` — rebuild one or more documents (**202**);
+* ``GET /knowledge/reindex/{id}`` — that rebuild's progress;
+* ``POST /knowledge/reindex/{id}/cancel`` — stop it;
+* ``POST /knowledge/documents/{id}/summary`` — build a summary (**202**);
+* ``GET /knowledge/documents/{id}/summary`` — the stored one, or 404;
+* ``DELETE /knowledge/documents/{id}/summary`` — discard it;
+* ``GET /knowledge/summary-jobs/{id}`` — a build's progress;
+* ``POST /knowledge/summary-jobs/{id}/cancel`` — stop it.
 
-**Reads only, and that is the whole module's shape here.** Nothing in this
-router creates or indexes a document: registration is driven by a file's
-upload completing, and indexing is a worker's (06 §7). The bundle
-``ApiServices`` holds carries neither ingestion face, so «a request cannot
-start a pipeline» is structural rather than a route someone remembered not to
-add.
+**The summary five (BE-RAG-009/010/011) keep the same line the rest do.** A
+request may ASK for a summary; it cannot produce one. ``POST`` queues a job
+and publishes ``knowledge.summary.requested.v1``, and a worker decides when to
+run — exactly what ``reindex`` does for ingestion. The one asymmetry is
+deliberate: ``GET``/``DELETE`` here are shaped by the (document, kind, lang)
+key rather than a job id, because the artefact and the operation that built it
+are different things with different lifetimes.
+
+**The three reads were the whole router until BE-RAG-007/008, and the line
+they drew still holds.** Nothing here indexes a document: registration is
+driven by a file's upload completing, and indexing is a worker's (06 §7). The
+bundle carries no ingestion face, so «a request cannot start a pipeline» is
+structural rather than a route someone remembered not to add — and ``reindex``
+is not the exception it looks like, because all it does is register documents
+and publish the same ``DocumentRegistered`` event an upload publishes. Asking
+for ingestion was always allowed; performing it still is not.
 
 **``POST /search`` is built, wired, and served.** ``KnowledgeRetrievalService``
 needs an ``EmbeddingProvider``, which had no adapter when this router was
@@ -47,15 +64,34 @@ entry whose real site is elsewhere.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Response
 
 from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
-from app.api.v1.dto.knowledge import DocumentOut, KnowledgeSearchIn, RetrievedChunkOut
+from app.api.v1.dto.knowledge import (
+    DocumentOut,
+    ExportFormatIn,
+    KnowledgeSearchIn,
+    ReindexIn,
+    ReindexItemOut,
+    ReindexJobOut,
+    RetrievedChunkOut,
+    SummaryDeletedOut,
+    SummaryIn,
+    SummaryJobOut,
+    SummaryKindIn,
+    SummaryLangIn,
+    SummaryOut,
+)
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
+from app.api.v1.idempotency import IdempotencyKey, idempotent
 from app.framework.errors import AppError
 from app.modules.access.domain.value_objects import Permission
-from app.modules.knowledge.domain.entities import Document
+from app.modules.knowledge.domain.entities import Document, ReindexJob, Summary, SummaryJob
+from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
+from app.modules.knowledge.ports.export import ExportFormat
 
 # Folded into `ERROR_CATALOG` by 6.2, which is also where the 503 now comes
 # from — this raise passes a code and no status. §3.64 minted the code here
@@ -76,6 +112,112 @@ def _to_document_out(document: Document) -> DocumentOut:
         status=document.status.value,
         chunk_count=document.chunk_count,
         created_at=document.created_at,
+    )
+
+
+def _to_job_out(job: ReindexJob) -> ReindexJobOut:
+    current = job.current
+    return ReindexJobOut(
+        id=job.id,
+        status=job.status.value,
+        total=len(job.items),
+        finished=job.finished,
+        percent=job.percent,
+        current_file_id=None if current is None else current.file_id,
+        items=[
+            ReindexItemOut(
+                document_id=item.document_id,
+                file_id=item.file_id,
+                source_document_id=item.source_document_id,
+                status=item.status.value,
+            )
+            for item in job.items
+        ],
+        created_at=job.created_at,
+        cancelled_at=job.cancelled_at,
+    )
+
+
+# The DOCX media type, spelled once (it is long enough that a second copy
+# would eventually differ by a character nobody notices until a download
+# opens in the wrong application).
+_DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# What a download may be called. The client sends the file's own name so the
+# saved document is recognisable, and this is the guard on it: an export
+# filename ends up in a `Content-Disposition` header and then on someone's
+# disk, so path separators, control characters and unbounded length are all
+# refused rather than escaped. 120 characters is well under every filesystem's
+# limit once the extension is added.
+_MAX_FILENAME = 120
+_FILENAME_FORBIDDEN = ("/", "\\", "\r", "\n", "\0", '"')
+_FALLBACK_FILENAME = "summary"
+# Below this codepoint everything is a C0 control character, and a header
+# value is exactly where those do damage.
+_FIRST_PRINTABLE = 32
+
+
+def _export_title(filename: str) -> str:
+    """The heading printed at the top of the exported document.
+
+    The file's own name, cleaned — which is what the person exporting expects
+    to see on the page, and is why the client sends it rather than the server
+    inventing "Summary of document 0195…".
+    """
+    cleaned = _clean_filename(filename)
+    # A name like `report.pdf` becomes `report`: the extension describes the
+    # SOURCE file and would read as nonsense on the first line of a PDF.
+    stem, _, _ = cleaned.rpartition(".")
+    return stem or cleaned
+
+
+def _export_filename(filename: str, fmt: str) -> str:
+    return f"{_export_title(filename)}.{fmt}"
+
+
+def _clean_filename(filename: str) -> str:
+    """Reject rather than escape. A name that has to be rewritten to be safe
+    is a name the client should not have sent, and quietly repairing it means
+    the file saves under something the user did not choose."""
+    candidate = filename.strip()
+    if (
+        not candidate
+        or len(candidate) > _MAX_FILENAME
+        or any(char in candidate for char in _FILENAME_FORBIDDEN)
+        or any(ord(char) < _FIRST_PRINTABLE for char in candidate)
+    ):
+        return _FALLBACK_FILENAME
+    return candidate
+
+
+def _to_summary_out(summary: Summary) -> SummaryOut:
+    return SummaryOut(
+        id=summary.id,
+        document_id=summary.document_id,
+        kind=summary.kind.value,
+        lang=summary.lang.value,
+        text=summary.text,
+        model=summary.model,
+        source_chunks=summary.source_chunks,
+        truncated=summary.truncated,
+        built_at=summary.built_at,
+    )
+
+
+def _to_summary_job_out(job: SummaryJob) -> SummaryJobOut:
+    return SummaryJobOut(
+        id=job.id,
+        document_id=job.document_id,
+        kind=job.kind.value,
+        lang=job.lang.value,
+        status=job.status.value,
+        total_chunks=job.total_chunks,
+        done_chunks=job.done_chunks,
+        percent=job.percent,
+        error=job.error,
+        created_at=job.created_at,
+        finished_at=job.finished_at,
+        cancelled_at=job.cancelled_at,
     )
 
 
@@ -133,3 +275,274 @@ async def get_document(document_id: str, services: Services, ctx: Context) -> Do
     (the §3.55 read precedent — 403 would confirm the id exists)."""
     document = await services.knowledge.get_document.execute(ctx, document_id=document_id)
     return _to_document_out(document)
+
+
+@router.post(
+    "/reindex", status_code=202, dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))]
+)
+async def reindex_documents(
+    body: ReindexIn,
+    services: Services,
+    ctx: Context,
+    idempotency_key: IdempotencyKey = None,
+) -> ReindexJobOut:
+    """Rebuild the index for one or more documents — **202**, like every other
+    route that queues a worker's work (``POST /media/jobs``): 201 would
+    promise a finished rebuild that does not exist yet.
+
+    A replay of the same ``Idempotency-Key`` returns the job AS SUBMITTED, and
+    this is the route where that matters most in the whole API: without it a
+    retried POST destroys and rebuilds a second time, and the workspace pays
+    for the embeddings twice. ``GET /knowledge/reindex/{id}`` is where the
+    current state lives.
+    """
+
+    async def _start() -> ReindexJobOut:
+        job = await services.knowledge.reindex.start(ctx, document_ids=body.document_ids)
+        return _to_job_out(job)
+
+    return await idempotent(
+        services.idempotency,
+        ctx,
+        endpoint="POST /knowledge/reindex",
+        key=idempotency_key,
+        body=body,
+        model=ReindexJobOut,
+        run=_start,
+    )
+
+
+@router.get("/reindex/{job_id}", dependencies=[Depends(require(Permission.KNOWLEDGE_READ))])
+async def get_reindex_job(job_id: str, services: Services, ctx: Context) -> ReindexJobOut:
+    """One job's progress, derived from its documents at read time. Unknown
+    or another tenant's ⇒ 404.
+
+    ``knowledge:read`` and not ``knowledge:manage``: watching a rebuild is
+    reading, and a member who can see the corpus can see what is happening to
+    it — only starting and stopping one is privileged.
+    """
+    job = await services.knowledge.get_job.execute(ctx, job_id=job_id)
+    return _to_job_out(job)
+
+
+@router.post(
+    "/reindex/{job_id}/cancel", dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))]
+)
+async def cancel_reindex_job(job_id: str, services: Services, ctx: Context) -> ReindexJobOut:
+    """Stop a running rebuild, and answer with the job as it now stands.
+
+    ``POST .../cancel`` rather than ``DELETE .../{id}``: nothing is deleted —
+    the job stays readable, which is the whole point of cancelling one rather
+    than forgetting it. Cancelling twice is 200 and writes nothing; a job with
+    nothing left to stop is 409.
+    """
+    job = await services.knowledge.cancel_job.cancel(ctx, job_id=job_id)
+    return _to_job_out(job)
+
+
+@router.post(
+    "/documents/{document_id}/summary",
+    status_code=202,
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))],
+)
+async def build_summary(
+    document_id: str,
+    body: SummaryIn,
+    services: Services,
+    ctx: Context,
+    idempotency_key: IdempotencyKey = None,
+) -> SummaryJobOut:
+    """Build this document's summary — **202**, like every other route that
+    queues a worker's work.
+
+    ``POST`` always builds; there is no ``force``. Reading what is already
+    stored is ``GET`` on this same path, and a flag that meant "actually I
+    wanted the GET" would be a route wearing a boolean's clothes. So this is
+    "summarise" and "rebuild" at once, and the price is stated rather than
+    hidden: a ``full`` summary maps over the whole document, which is the most
+    expensive single call the API makes.
+
+    Which is why ``Idempotency-Key`` matters here as much as it does on
+    ``POST /knowledge/reindex``: a retried POST otherwise buys the same
+    summary twice. A build already queued or running for this exact
+    ``(document, kind, lang)`` is a **409** — the reply says a build is under
+    way and names its job, rather than starting a second one that would race
+    the first to the same row.
+
+    ``knowledge:manage`` and not ``knowledge:read``: this spends the
+    workspace's model budget.
+    """
+
+    async def _start() -> SummaryJobOut:
+        job = await services.knowledge.request_summary.start(
+            ctx,
+            document_id=document_id,
+            kind=SummaryKind(body.kind),
+            lang=SummaryLanguage(body.lang),
+        )
+        return _to_summary_job_out(job)
+
+    return await idempotent(
+        services.idempotency,
+        ctx,
+        endpoint=f"POST /knowledge/documents/{document_id}/summary",
+        key=idempotency_key,
+        body=body,
+        model=SummaryJobOut,
+        run=_start,
+    )
+
+
+@router.get(
+    "/documents/{document_id}/summary",
+    dependencies=[Depends(require(Permission.KNOWLEDGE_READ))],
+)
+async def get_summary(
+    document_id: str,
+    kind: SummaryKindIn,
+    lang: SummaryLangIn,
+    services: Services,
+    ctx: Context,
+) -> SummaryOut:
+    """The stored summary under this exact key, or **404** (BE-RAG-010).
+
+    ``kind`` and ``lang`` are required rather than defaulted: together with
+    the path they ARE the resource's identity, and defaulting half an identity
+    on a read means a client can be handed the Arabic overview while believing
+    it asked for the English full text.
+
+    404 and not ``{has_summary: false}``: a summary either exists under a key
+    or it does not, and a client that has to destructure an optional body to
+    find out has been handed a status code's job.
+    """
+    summary = await services.knowledge.get_summary.execute(
+        ctx,
+        document_id=document_id,
+        kind=SummaryKind(kind),
+        lang=SummaryLanguage(lang),
+    )
+    return _to_summary_out(summary)
+
+
+@router.delete(
+    "/documents/{document_id}/summary",
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))],
+)
+async def delete_summary(
+    document_id: str,
+    kind: SummaryKindIn,
+    lang: SummaryLangIn,
+    services: Services,
+    ctx: Context,
+) -> SummaryDeletedOut:
+    """Delete one stored summary (BE-RAG-011). Idempotent: 200 either way,
+    with ``deleted`` saying whether anything was there.
+
+    Not **204**, which is what a delete usually answers here — the flag is the
+    point. The UI says "deleted" or "there was nothing saved", and both are
+    successes; a 204 would make the client guess which happened, and a 404 on
+    the second call would turn a satisfied request into an error.
+
+    ``knowledge:manage``: this destroys an artefact the workspace paid a model
+    to write.
+    """
+    deleted = await services.knowledge.delete_summary.execute(
+        ctx,
+        document_id=document_id,
+        kind=SummaryKind(kind),
+        lang=SummaryLanguage(lang),
+    )
+    return SummaryDeletedOut(deleted=deleted)
+
+
+@router.get(
+    "/documents/{document_id}/summary/export",
+    dependencies=[Depends(require(Permission.KNOWLEDGE_READ))],
+    response_class=Response,
+    responses={200: {"content": {"application/pdf": {}, _DOCX_TYPE: {}}}},
+)
+async def export_summary(
+    document_id: str,
+    kind: SummaryKindIn,
+    lang: SummaryLangIn,
+    format: ExportFormatIn,
+    services: Services,
+    ctx: Context,
+    filename: str = "summary",
+) -> Response:
+    """Download the stored summary as a PDF or DOCX (BE-RAG-012).
+
+    **A GET returning bytes, not a job.** The plan proposed a pollable export
+    job with an optional synchronous path for small summaries; every summary
+    IS small — the pipeline caps its reduce step — so the machinery a job
+    needs (a row, an event, an object in storage, a presigned URL, a polling
+    loop, an expiry policy) would all exist to manage work that finishes
+    before the client's first poll. This is another representation of a
+    resource that already exists, it changes nothing, and it can be retried
+    freely, which is what GET means.
+
+    The render runs in a worker thread, so one export never becomes every
+    other request's latency (``ExportSummary``).
+
+    ``knowledge:read`` and not ``knowledge:manage``: this produces no new
+    artefact and spends no model budget — it is the same summary the `GET`
+    above returns, in a format a person can file. A member who may read the
+    summary may download it.
+
+    No stored summary under the key ⇒ 404, from the same ``GetSummary`` the
+    JSON read uses: there is one definition of "this summary exists".
+    """
+    rendered = await services.knowledge.export_summary.execute(
+        ctx,
+        document_id=document_id,
+        kind=SummaryKind(kind),
+        lang=SummaryLanguage(lang),
+        fmt=ExportFormat(format),
+        title=_export_title(filename),
+    )
+    return Response(
+        content=rendered.content,
+        media_type=rendered.content_type,
+        headers={
+            # `filename*=UTF-8''…` and not a bare `filename=`: the names here
+            # are Arabic more often than not, and RFC 6266's plain form is
+            # latin-1 only — a browser handed raw Arabic bytes there saves the
+            # file as mojibake or drops the name entirely.
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(_export_filename(filename, format))}"
+            )
+        },
+    )
+
+
+@router.get("/summary-jobs/{job_id}", dependencies=[Depends(require(Permission.KNOWLEDGE_READ))])
+async def get_summary_job(job_id: str, services: Services, ctx: Context) -> SummaryJobOut:
+    """One build's progress. Unknown or another tenant's ⇒ 404.
+
+    ``knowledge:read`` and not ``knowledge:manage``, the same line
+    ``GET /reindex/{id}`` draws: watching is reading, and only starting or
+    stopping is privileged.
+    """
+    job = await services.knowledge.get_summary_job.execute(ctx, job_id=job_id)
+    return _to_summary_job_out(job)
+
+
+@router.post(
+    "/summary-jobs/{job_id}/cancel",
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))],
+)
+async def cancel_summary_job(job_id: str, services: Services, ctx: Context) -> SummaryJobOut:
+    """Stop a build, and answer with the job as it now stands.
+
+    The response says ``cancelled`` the moment the row is stamped, which is
+    when the decision was taken — not when the worker notices. A build already
+    mid-provider-call finishes that call and stops at the next step boundary
+    (``SummaryJob.cancel``); claiming otherwise would be reporting a stop that
+    had not happened.
+
+    Cancelling twice is 200 and writes nothing; a job that already finished is
+    409. A previously stored summary is untouched either way: this abandons
+    the build, not the artefact of the one before it.
+    """
+    job = await services.knowledge.cancel_summary_job.cancel(ctx, job_id=job_id)
+    return _to_summary_job_out(job)

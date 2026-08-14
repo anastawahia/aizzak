@@ -56,8 +56,28 @@ ENV PYTHONUNBUFFERED=1 \
 # Runtime-only OS packages. `tesseract-ocr` backs the knowledge module's OCR
 # adapter (pytesseract is a binding, not an implementation); `curl` is the
 # healthcheck's own probe.
+#
+# BE-RAG-012 adds the Pango/Cairo stack, which WeasyPrint loads through
+# ctypes at import time -- so a missing library is an ImportError on boot,
+# not a failed export at 3am. They are here rather than in the builder stage
+# because they are needed to RUN, not to compile: WeasyPrint ships pure
+# Python and finds these by name at run time.
+#
+# `fonts-dejavu-core` is NOT enough on its own for this platform's primary
+# language -- DejaVu has no Arabic coverage, and a PDF rendered without an
+# Arabic face is a page of empty boxes. `fonts-noto-core` carries Noto Naskh
+# Arabic, and Pango/HarfBuzz do the shaping and bidi ordering from there.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y tesseract-ocr curl \
+    && apt-get install --no-install-recommends -y \
+        tesseract-ocr \
+        curl \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libharfbuzz0b \
+        libcairo2 \
+        libgdk-pixbuf-2.0-0 \
+        fonts-dejavu-core \
+        fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv

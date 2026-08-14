@@ -20,6 +20,8 @@ isolation here is a payload filter, exactly like ``memory.RecallRelevant``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
@@ -58,6 +60,7 @@ class RetrieveContext:
         model: str,
         api_key: str,
         k: int = 5,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
@@ -66,6 +69,23 @@ class RetrieveContext:
 
         collection = knowledge_collection(ctx.workspace_id)
         flt: Json = {"workspace_id": ctx.workspace_id}
+        # BE-RAG-005 — a narrowing scope on TOP of the tenant filter, never in
+        # place of it: `workspace_id` stays on both legs whatever the caller
+        # scoped to (DD-04), so a document id from another tenant would still
+        # match nothing.
+        #
+        # `None` and `[]` are deliberately DIFFERENT here, and the distinction
+        # is load-bearing. `None` means "unscoped" — search the whole workspace
+        # corpus, which is what every caller did before this parameter existed.
+        # `[]` means the caller HAS a scope and it resolved to no documents (it
+        # pinned files that were never indexed), so the honest answer is no
+        # chunks rather than a silent widening back to everything — the pins
+        # would otherwise stop constraining the search precisely when they
+        # matter most.
+        if document_ids is not None:
+            if not document_ids:
+                return []
+            flt["document_id"] = list(document_ids)
 
         embedded = await self._embeddings.embed([query], model, api_key)
         q_vector = embedded.vectors[0]

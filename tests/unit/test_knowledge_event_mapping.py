@@ -21,7 +21,7 @@ import pytest
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Json
 from app.modules.knowledge.application.event_mapping import (
-    AGGREGATE_TYPE,
+    AGGREGATE_DOCUMENT,
     SOURCE,
     STREAM,
     to_outbox_record,
@@ -86,7 +86,7 @@ def test_registered_event_maps_to_the_knowledge_stream_and_aggregate() -> None:
     record = to_outbox_record(_ctx(), _registered(document_id="doc-7"))
 
     assert record.stream == STREAM == "stream.knowledge"
-    assert record.aggregate_type == AGGREGATE_TYPE == "document"
+    assert record.aggregate_type == AGGREGATE_DOCUMENT == "document"
     assert record.aggregate_id == "doc-7"
     assert record.event_type == "knowledge.document.registered.v1"
 

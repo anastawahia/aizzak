@@ -108,7 +108,15 @@ def _seeded_vector(text: str, dim: int) -> list[float]:
 def _payload_matches(payload: Json, flt: Json | None) -> bool:
     if not flt:
         return True
-    return all(payload.get(key) == value for key, value in flt.items())
+    # A LIST value is membership, not equality — mirroring the Qdrant adapter,
+    # which renders a list as `MatchAny` and a scalar as `MatchValue`
+    # (`infrastructure/vector/qdrant_store.py::_build_filter`). Without this
+    # branch the fake would silently match nothing for BE-RAG-005's
+    # `document_id` scope, and a scoping bug would read as an empty result.
+    return all(
+        payload.get(key) in value if isinstance(value, list) else payload.get(key) == value
+        for key, value in flt.items()
+    )
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -243,6 +251,17 @@ class _FakeDocumentRepository:
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
+
+    async def ids_for_files(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> Sequence[str]:
+        # The real predicate: same workspace, `file_id` in the caller's list.
+        # A file with no document contributes nothing, which is what makes a
+        # pin of an unindexed file narrow the scope rather than widen it.
+        wanted = set(file_ids)
+        return [
+            doc.id
+            for doc in self.docs.values()
+            if doc.workspace_id == ctx.workspace_id and doc.file_id in wanted
+        ]
 
 
 class _FakeEmbeddingResolver:
@@ -633,7 +652,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
 
     resolver = _FakeEmbeddingResolver(model="embed-1", api_key="key-1")
     retrieval = RetrieveContext(embeddings, vectors)
-    service = KnowledgeRetrievalService(retrieval, resolver)
+    service = KnowledgeRetrievalService(retrieval, resolver, _FakeDocumentRepository())
 
     # Static-typing assertion: KnowledgeRetrievalService satisfies the
     # KnowledgeRetrieval inbound port -- mypy is the real assertion here.
@@ -651,3 +670,92 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     # == 1 * 3 == 3.
     assert vectors.search_calls[-1][1] == 3
     assert vectors.search_sparse_calls[-1][1] == 3
+    # Unscoped by default: no `document_id` narrowing reaches either leg, so
+    # every caller that predates BE-RAG-005 still searches the whole corpus.
+    assert "document_id" not in (vectors.search_calls[-1][2] or {})
+
+
+async def _indexed_corpus(
+    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+) -> _FakeDocumentRepository:
+    """Two files, two documents, one indexed chunk each — the smallest corpus
+    in which a scope can be wrong in a visible way."""
+    documents = _FakeDocumentRepository()
+    for doc_id, file_id, text in (
+        ("doc-north", "file-north", "quarterly revenue figures for the northern region"),
+        ("doc-south", "file-south", "quarterly revenue figures for the southern region"),
+    ):
+        documents.docs[doc_id] = _document(
+            doc_id=doc_id, file_id=file_id, status=IndexStatus.INDEXED, chunk_count=1
+        )
+        await IndexDocument(embeddings, vectors).execute(
+            ctx,
+            document_id=doc_id,
+            parsed=_parsed_document([_parsed_chunk(text, order=0)]),
+            model="embed-1",
+            api_key="key-1",
+        )
+    return documents
+
+
+async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None:
+    """BE-RAG-005: pinned FILE ids are translated to document ids inside the
+    module, and the translation is what reaches the vector filter."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, ["file-north"])
+
+    assert [chunk.document_id for chunk in results] == ["doc-north"]
+    # FILE ids in, DOCUMENT ids out: the caller never has to know documents
+    # exist, and the payload the filter runs against only knows document ids.
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-north"]}
+    # The tenant filter is never REPLACED by the scope (DD-04).
+    assert vectors.search_sparse_calls[-1][2]["workspace_id"] == "ws1"
+
+
+async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5)
+
+    assert {chunk.document_id for chunk in results} == {"doc-north", "doc-south"}
+
+
+async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everything() -> None:
+    """The load-bearing distinction: a pin that resolves to NO documents is a
+    scope of nothing, not an absent scope.
+
+    Widening back to the whole corpus here would make a thread pinned to a
+    file that failed to index answer from every other document in the
+    workspace — the one moment the pin most needs to hold.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+    searches_before = len(vectors.search_calls)
+
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, ["file-never-indexed"])
+
+    assert results == []
+    # And it short-circuits: no vector round trip is made for a scope that
+    # cannot match anything.
+    assert len(vectors.search_calls) == searches_before
