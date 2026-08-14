@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "statusMessage": "فحص حارس الأحجام (ت-4)",
+            "timeout": 10,
+            "command": "p=$(cat); if printf \"%s\" \"$p\" | grep -Eq \"docker[[:space:]]+(volume|system)[[:space:]]+prune|docker[[:space:]]+compose[^;&|]*[[:space:]]down[^;&|]*([[:space:]]--volumes|[[:space:]]-v($|[^a-zA-Z]))\"; then printf \"%s\" '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"ت-4 حارس الأحجام: هذا الأمر قد يمحو أحجاماً على هذا المضيف. القاعدة: لا prune للأحجام هنا. احذف بالاسم صراحةً عبر docker volume rm NAME. ولتنظيف ذاكرة البناء استعمل docker builder prune وحده فهو لا يمسّ الأحجام. تنبيه مقيس: docker system prune يتجاهل --filter عند ذاكرة البناء. أرشيف أحجام alpha في /home/volume-archive.\"}}'; elif printf \"%s\" \"$p\" | grep -Eq \"docker[[:space:]]+volume[[:space:]]+(rm|remove)[[:space:]]\"; then printf \"%s\" '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"ت-4 حذف حجم بالاسم: هذا هو المسار المسموح، لكن أكّده. تحقّق أوّلاً أنّ الحجم مؤرشف. أحجام alpha مؤرشفة في /home/volume-archive.\"}}'; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
