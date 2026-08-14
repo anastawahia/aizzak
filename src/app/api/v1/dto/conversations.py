@@ -6,9 +6,9 @@ Field-for-field the spec's models. Two notes on what is deliberately NOT here:
   carries them; the wire does not. ``version`` is the optimistic lock, which
   is the repository's business and would invite a client to reason about it;
   a soft-deleted conversation is simply absent from every read route.
-* **No rename DTO.** `03 §1` gives Conversations GET·POST·GET·DELETE plus the
-  two message routes and no rename, so the module's ``RenameConversation``
-  use-case stays unexposed rather than growing a route the contract lacks.
+* **No ``agent_key`` on the patch DTO.** A thread is threaded per
+  ``(workspace, agent)`` by `06 §4`, so re-pointing an existing thread at a
+  different agent is not a rename — it is a different thread.
 
 ``MessageOut.content`` is ``dict[str, Any]`` (the spec's own type) and is
 rendered from the domain's ``MessageContent`` as ``{"text", "attachments"}``
@@ -30,6 +30,11 @@ class ConversationOut(BaseModel):
     agent_key: str
     kind: str
     title: str | None
+    # BE-RAG-003 — the pinned D-16 routing key (a value from
+    # `ModelOut.capability`), or null when the thread routes by agent key.
+    # On the response and not only on the pin route, because a client that can
+    # set it must be able to render it without a second request.
+    model_route: str | None
     created_at: datetime
 
 
@@ -43,6 +48,46 @@ class ConversationCreateIn(BaseModel):
 
     agent_key: str = Field(min_length=1)
     title: str | None = None
+
+
+class ConversationPatchIn(BaseModel):
+    """``PATCH /conversations/{id}`` — the title, and only the title.
+
+    ``title`` is REQUIRED to be present even though its value may be ``null``:
+    with an optional field, "clear the title" and "do not touch the title"
+    would be the same request body, and a client that meant one would silently
+    get the other. Present-and-``null`` clears; present-and-string renames; an
+    empty body is a 422.
+
+    No ``max_length`` although `01 §2.4` types the column ``text``: the create
+    route accepts any title, and a rename stricter than the creation it edits
+    would let a client author a title it could then never modify.
+    """
+
+    title: str | None
+
+
+class ConversationModelIn(BaseModel):
+    """``PUT /conversations/{id}/model`` — which configured route answers here.
+
+    A SEPARATE route rather than a field on ``ConversationPatchIn``, because
+    that DTO's ``title`` is required-to-be-present. A second required-present
+    field would force a client renaming a thread to restate its route (and
+    vice versa), and making this one optional instead would reintroduce, for
+    the route, exactly the "clear vs. do not touch" ambiguity ``title`` is
+    shaped to avoid. Two single-valued sub-resources, two writes.
+
+    ``route`` is likewise required-to-be-present: a string pins,
+    present-and-``null`` unpins, an empty body is a 422.
+
+    The value is a ROUTING KEY — one of ``ModelOut.capability`` from
+    ``GET /models`` — never a model name. `D-16`/`FR-73` put the
+    provider/model pair in configuration, so a free-text model name would name
+    something the platform may not be able to route; the key moves provider and
+    model together and is validated against the live table on the way in.
+    """
+
+    route: str | None
 
 
 class MessageOut(BaseModel):
@@ -67,3 +112,29 @@ class MessageCreateIn(BaseModel):
 
     content: dict[str, Any]
     stream: bool = False
+
+
+class ConversationFileIn(BaseModel):
+    """``POST /conversations/{id}/files`` — pin one workspace file into this
+    thread's retrieval scope (`03 §2`, BE-RAG-005).
+
+    A body rather than a path segment on the POST, so the pin reads as
+    "create this member of the collection" instead of "PUT this id" — and so
+    the 422 for an unreadable file lands on a field the client can point at.
+    """
+
+    file_id: str
+
+
+class ConversationFileOut(BaseModel):
+    """One pin: a REFERENCE, not the file.
+
+    No name, size or status. Those belong to ``FileOut`` (``GET /files``) and
+    the client joins them by id — exactly as it already joins a file to its
+    knowledge-document status. Projecting them here would make the
+    conversations module answer for another module's columns, and would put
+    two sources of truth for a file's name in one screen.
+    """
+
+    file_id: str
+    pinned_at: datetime

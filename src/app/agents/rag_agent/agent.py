@@ -50,8 +50,15 @@ class RagAgent(BaseAgent):
             raise AppError(detail="rag_agent has no LLM bound", code="common.internal", status=500)
         # Knowledge is optional-degrading: with no retrieval seam the agent still
         # answers from the model alone (and cites nothing) rather than failing.
+        # BE-RAG-005 — the thread's pinned retrieval scope, passed straight
+        # through. `()` on the bundle means UNSCOPED, and it is translated to
+        # `None` here rather than forwarded as an empty sequence: one layer
+        # down, an empty list means "a scope that resolved to nothing" and
+        # legitimately retrieves nothing, which is the opposite of what an
+        # un-pinned thread wants.
+        scope = self.deps.knowledge_scope or None
         chunks: Sequence[RetrievedChunkView] = (
-            await self.deps.knowledge.retrieve(self.ctx, query, _TOP_K)
+            await self.deps.knowledge.retrieve(self.ctx, query, _TOP_K, scope)
             if self.deps.knowledge is not None
             else []
         )

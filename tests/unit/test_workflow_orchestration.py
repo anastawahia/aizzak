@@ -67,6 +67,8 @@ from app.framework.workflows import (
 from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
+    GetConversation,
+    ListConversationFiles,
     StartConversation,
 )
 from app.modules.conversations.domain.entities import Conversation, Message
@@ -749,8 +751,16 @@ class _FakeConversationRepo:
 
 def _conversation_service(repo: _FakeConversationRepo) -> ConversationService:
     """The REAL service over a fake repository — `start` + `append` both wired,
-    since the orchestrator now writes turns through the same port."""
-    return ConversationService(StartConversation(repo), AppendMessage(repo))  # type: ignore[arg-type]
+    since the orchestrator now writes turns through the same port, plus `get`
+    for the BE-RAG-003 route read and `list_files` for the BE-RAG-005 scope
+    read (a workflow run pins neither, but the port is one protocol and a
+    partial construction would not satisfy it)."""
+    return ConversationService(  # type: ignore[arg-type]
+        StartConversation(repo),
+        AppendMessage(repo),
+        GetConversation(repo),
+        ListConversationFiles(repo),  # type: ignore[arg-type]
+    )
 
 
 async def test_the_workflow_kind_string_is_the_real_domain_enum() -> None:

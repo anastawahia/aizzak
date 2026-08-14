@@ -94,6 +94,19 @@ class AgentDependencies:
     web_search: WebSearchProvider | None = None
     llm: ResolvedLLM | None = None
     knowledge: KnowledgeAccess | None = None
+    # BE-RAG-005 — the file ids this run's retrieval is scoped to, resolved by
+    # the orchestrator from the thread's pins. A plain tuple and not a port:
+    # it is per-request DATA, like ``llm``'s resolved binding, and the agent
+    # only passes it through to ``knowledge.retrieve``.
+    #
+    # ``()`` and not ``None``: the empty tuple means UNSCOPED here — search
+    # everything — because that is what an un-pinned thread and a caller with
+    # no notion of pins both mean, and giving those two the same value is what
+    # keeps the default (an ``AgentDependencies()`` with nothing set) correct.
+    # The ``None``-vs-``[]`` distinction that matters lives one layer down, in
+    # ``KnowledgeAccess``/``RetrieveContext``, where "pinned files that
+    # resolved to no documents" has to stay distinguishable from "unpinned".
+    knowledge_scope: tuple[Uuid, ...] = ()
     # 4.6-b — the Data-Analysis / File-Editing agents read workspace files:
     # ``files`` (a DIP seam over the files module's ``FilesQuery``) yields
     # metadata + ``storage_key``; ``storage`` (a framework port, so no DIP

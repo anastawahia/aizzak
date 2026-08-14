@@ -912,7 +912,16 @@ class AgentOrchestrator:
         # throttled one), and an unauthorized request must not appear in the
         # usage ledger of a workspace it was never allowed to spend.
         self._authorize(ctx, agent_key)
-        binding = await self._resolve_llm(ctx, agent_key)
+        # BE-RAG-003 — the thread's pin is read BEFORE resolution, because the
+        # thing it changes is which route gets resolved. It sits after
+        # `_authorize` for the same reason everything does: a forbidden caller
+        # must not cause a read of somebody's conversation.
+        route = await self._pinned_route(ctx, req.conversation_id)
+        # BE-RAG-005 — the thread's retrieval scope, read alongside its route
+        # and for the same reason: both are what the thread was configured to
+        # answer with, and both must be known before the agent exists.
+        scope = await self._pinned_scope(ctx, req.conversation_id)
+        binding = await self._resolve_llm(ctx, agent_key, route=route)
         provider_name = binding.provider.provider if binding is not None else _NO_PROVIDER
 
         # Quota BEFORE the run (FR-132, 11 §8.1): a denial must cost nothing,
@@ -920,7 +929,7 @@ class AgentOrchestrator:
         # -- still pre-flight, so Phase 6 answers a real 429.
         await self._enforce(ctx, agent_key, provider_name)
 
-        deps = self._build_dependencies(binding, record.meter)
+        deps = self._build_dependencies(binding, record.meter, scope)
         # Registry raises NotFoundError(404) for an unknown key and
         # ValidationError(422) for a malformed one -- both pass straight
         # through, still pre-flight, still mappable to a response.
@@ -1158,13 +1167,21 @@ class AgentOrchestrator:
         await self._capture(ctx, agent_key, provider, meter)
 
     def _build_dependencies(
-        self, binding: ResolvedLLM | None, meter: _TokenMeter
+        self,
+        binding: ResolvedLLM | None,
+        meter: _TokenMeter,
+        scope: tuple[Uuid, ...] = (),
     ) -> AgentDependencies:
         """Assemble the per-request bundle handed to the agent.
 
         The LLM handed over is WRAPPED in ``_MeteredLLM`` — the agent sees an
         ordinary ``LLMProvider`` and cannot tell, which is the point: metering
         is not something a plugin can forget or opt out of.
+
+        ``scope`` (BE-RAG-005) defaults to ``()`` — unscoped — which is what
+        ``begin_step`` passes: a workflow step runs inside the run's OWN
+        conversation (D-12), created by that run, so there is nothing pinned to
+        it and no user who could have pinned anything.
         """
         metered = (
             ResolvedLLM(
@@ -1182,6 +1199,7 @@ class AgentOrchestrator:
             storage=self._deps.storage,
             media=self._deps.media,
             web_search=self._deps.web_search,
+            knowledge_scope=scope,
         )
 
     async def _enforce(self, ctx: ExecutionContext, agent_key: str, provider: str) -> None:
@@ -1386,9 +1404,66 @@ class AgentOrchestrator:
                 exc_info=exc,
             )
 
-    async def _resolve_llm(self, ctx: ExecutionContext, agent_key: str) -> ResolvedLLM | None:
+    async def _pinned_route(
+        self, ctx: ExecutionContext, conversation_id: Uuid | None
+    ) -> str | None:
+        """The conversation's pinned D-16 route, or ``None`` (BE-RAG-003).
+
+        ``None`` on every path that has no thread to ask: a request opening a
+        FRESH thread cannot carry a pin (there is nothing pinned yet), and an
+        unwired conversations seam degrades to unpinned exactly as
+        ``_open_turn`` degrades to persisting nothing.
+        """
+        if conversation_id is None:
+            return None
+        threads = self._deps.conversations
+        if threads is None:
+            return None
+        return await threads.routed_model(ctx, conversation_id)
+
+    async def _pinned_scope(
+        self, ctx: ExecutionContext, conversation_id: Uuid | None
+    ) -> tuple[Uuid, ...]:
+        """The conversation's pinned retrieval scope, or ``()`` (BE-RAG-005).
+
+        ``()`` on the same three paths ``_pinned_route`` answers ``None`` on —
+        no thread, no conversations seam, nothing pinned — and it means the
+        same thing all three times: this run is unscoped and retrieval sees the
+        whole workspace corpus. That the "not wired" and the "not pinned"
+        answers coincide is deliberate: an orchestrator built without a
+        conversations seam must degrade to the behaviour every thread had
+        before pins existed, never to an empty knowledge base.
+        """
+        if conversation_id is None:
+            return ()
+        threads = self._deps.conversations
+        if threads is None:
+            return ()
+        return await threads.pinned_files(ctx, conversation_id)
+
+    async def _resolve_llm(
+        self, ctx: ExecutionContext, agent_key: str, *, route: str | None = None
+    ) -> ResolvedLLM | None:
         """Resolve this workspace's provider/model/key, or ``None`` for an
         agent that has no use for one.
+
+        ``route`` is the thread's pin and, when present, REPLACES the agent key
+        as the routing capability — that is the whole of BE-RAG-003 at this
+        layer. It never becomes a ``model=`` override: overriding the model
+        inside whatever provider the agent routes to would send an OpenAI model
+        name to Ollama the moment the two routes disagree. Pinning the KEY
+        moves provider and model together, which is why the pin is a routing
+        key and not a model name.
+
+        A pin whose route the operator has since retired misses the table and
+        falls through to the resolver's own ``default`` entry — the same thing
+        that happens to an agent key with no route of its own. Uniform, and
+        strictly better than failing a thread because a config edit no longer
+        mentions it.
+
+        The default is ``None`` so the workflow-step path (which has its own
+        D-12 thread per RUN, not a user-pinned one) keeps resolving by agent
+        key without saying so.
 
         The skip is not an optimisation. Resolving an LLM performs a real
         credential lookup, and the media agents (D-04: they queue a job and
@@ -1401,7 +1476,9 @@ class AgentOrchestrator:
         metadata = self._metadata_for(agent_key)
         if metadata is not None and _LLM_CAPABILITY not in metadata.capabilities:
             return None
-        provider, resolved = await self._deps.providers.resolve_llm(ctx, capability=agent_key)
+        provider, resolved = await self._deps.providers.resolve_llm(
+            ctx, capability=route or agent_key
+        )
         return ResolvedLLM(provider=provider, model=resolved.model, api_key=resolved.api_key)
 
     def _authorize(self, ctx: ExecutionContext, agent_key: str) -> None:

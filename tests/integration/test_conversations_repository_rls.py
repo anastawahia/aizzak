@@ -10,7 +10,7 @@ label -- the underlying Postgres columns are actually typed ``uuid``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -127,10 +127,11 @@ async def _fetch_message_rows_as_owner(
 async def _soft_delete_message_as_owner(owner_dsn: str, workspace_id: str, message_id: str) -> None:
     """Stamp one message's ``deleted_at`` directly, as the table owner.
 
-    ``Message.soft_delete`` is a domain operation with no persistence method
-    behind it yet (the port exposes append + list, `02 §2`), so the row is
-    stamped here rather than pretending a repository call exists. Same FORCE
-    RLS caveat as the readers above — hence setting the GUC first, on the same
+    Kept as raw SQL even though ``save_message`` now exists (BE-RAG-004):
+    a test that needs an already-deleted row as its SETUP must not build it
+    with the code it is about to exercise, or a broken ``save_message`` would
+    silently produce a passing ``list_messages`` test. Same FORCE RLS caveat
+    as the readers above — hence setting the GUC first, on the same
     connection/transaction.
     """
     engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
@@ -527,6 +528,115 @@ async def test_list_messages_rejects_a_cursor_that_does_not_carry_a_seq(
 
 
 # --------------------------------------------------------------------------- #
+# (10e) get_message/save_message: the soft-delete write path (BE-RAG-004)    #
+# --------------------------------------------------------------------------- #
+async def test_get_message_is_scoped_to_its_thread_and_its_tenant(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """The route's ownership check is this predicate. A real message id quoted
+    against another thread — or by another tenant — must be ABSENT, not a row
+    the caller may then delete."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    owner = _conversation(workspace_id=ws_a)
+    other = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, owner)
+    await repo_conversations.add(ctx_a, other)
+    message = owner.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="one"), None, utc_now()
+    )
+    await repo_conversations.append_message(ctx_a, message)
+
+    found = await repo_conversations.get_message(ctx_a, owner.id, message.id)
+    assert found is not None
+    assert (found.id, found.seq, found.content.text) == (message.id, 1, "one")
+
+    assert await repo_conversations.get_message(ctx_a, other.id, message.id) is None
+    assert await repo_conversations.get_message(_ctx(ws_b), owner.id, message.id) is None
+    assert await repo_conversations.get_message(ctx_a, owner.id, new_uuid7()) is None
+
+
+async def test_save_message_stamps_deleted_at_and_leaves_the_thread_untouched(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """Only ``deleted_at`` moves. The parent's ``version`` deliberately does
+    NOT: nothing on its row changed, and bumping it would make a concurrent
+    rename fail with a conflict it never had."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    message = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="one"), None, utc_now()
+    )
+    await repo_conversations.append_message(ctx, message)
+    before = await _fetch_conversation_row_as_owner(live_db.owner, ws, conversation.id)
+    assert before is not None
+    version_before = before["version"]
+
+    message.soft_delete(utc_now())
+    await repo_conversations.save_message(ctx, message)
+
+    rows = await _fetch_message_rows_as_owner(live_db.owner, ws, conversation.id)
+    assert len(rows) == 1  # SOFT: the row survives, so `seq` stays reserved
+    assert rows[0]["deleted_at"] is not None
+    assert rows[0]["content"]["text"] == "one"  # content is not rewritten
+    assert rows[0]["seq"] == 1
+    conv_row = await _fetch_conversation_row_as_owner(live_db.owner, ws, conversation.id)
+    assert conv_row is not None
+    assert conv_row["version"] == version_before
+
+
+async def test_a_soft_deleted_message_is_still_readable_but_no_longer_listed(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """``get_message`` does not filter ``deleted_at`` — that is what keeps the
+    delete idempotent — while ``list_messages`` does (INV-CV3)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    message = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="one"), None, utc_now()
+    )
+    await repo_conversations.append_message(ctx, message)
+    message.soft_delete(utc_now())
+    await repo_conversations.save_message(ctx, message)
+
+    again = await repo_conversations.get_message(ctx, conversation.id, message.id)
+    assert again is not None
+    assert again.deleted_at is not None
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert page.data == []
+    # And the next turn still gets seq 2 — the gap is permanent.
+    reloaded = await repo_conversations.get(ctx, conversation.id)
+    assert reloaded is not None
+    assert reloaded.message_count == 1
+
+
+async def test_save_message_for_another_tenant_raises_conflict(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """RLS plus the explicit ``workspace_id`` filter mean the UPDATE matches no
+    row, which the adapter reports rather than swallowing as a silent no-op."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, conversation)
+    message = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="one"), None, utc_now()
+    )
+    await repo_conversations.append_message(ctx_a, message)
+
+    message.soft_delete(utc_now())
+    with pytest.raises(ConflictError):
+        await repo_conversations.save_message(_ctx(ws_b), message)
+
+    rows = await _fetch_message_rows_as_owner(live_db.owner, ws_a, conversation.id)
+    assert rows[0]["deleted_at"] is None
+
+
+# --------------------------------------------------------------------------- #
 # (11) RLS: no context set at all -> zero rows, no exception                #
 # --------------------------------------------------------------------------- #
 async def test_no_tenant_context_returns_zero_rows(
@@ -633,3 +743,135 @@ async def test_list_by_agent_pages_newest_first(
     )
     assert [c.id for c in second.data] == expected[2:]
     assert second.next_cursor is None
+
+
+# --------------------------------------------------------------------------- #
+# (10f) conversation_files: the thread's retrieval scope (BE-RAG-005)         #
+# --------------------------------------------------------------------------- #
+async def test_pin_file_is_idempotent_and_keeps_the_first_timestamp(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """The composite PRIMARY KEY is the idempotency guarantee, so the second
+    call must be an upsert that CHANGES nothing — not a second row, and not a
+    rewritten ``created_at`` that would reorder the caller's list."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    file_id = new_uuid7()
+
+    first = await repo_conversations.pin_file(ctx, conversation.id, file_id, utc_now())
+    second = await repo_conversations.pin_file(ctx, conversation.id, file_id, utc_now())
+
+    assert second.created_at == first.created_at
+    assert second.workspace_id == ws
+    assert [pin.file_id for pin in await repo_conversations.list_files(ctx, conversation.id)] == [
+        file_id
+    ]
+
+
+async def test_list_files_is_ordered_and_scoped_to_its_own_thread(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    first_thread = _conversation(workspace_id=ws)
+    second_thread = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, first_thread)
+    await repo_conversations.add(ctx, second_thread)
+    older, newer = new_uuid7(), new_uuid7()
+    await repo_conversations.pin_file(ctx, first_thread.id, older, datetime.fromtimestamp(1, UTC))
+    await repo_conversations.pin_file(ctx, first_thread.id, newer, datetime.fromtimestamp(2, UTC))
+    await repo_conversations.pin_file(ctx, second_thread.id, new_uuid7(), utc_now())
+
+    pinned = await repo_conversations.list_files(ctx, first_thread.id)
+
+    assert [pin.file_id for pin in pinned] == [older, newer]
+
+
+async def test_a_pin_is_invisible_to_another_tenant(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """RLS + the explicit ``WHERE workspace_id`` (DD-04), on the new table."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(_ctx(ws_a), conversation)
+    file_id = new_uuid7()
+    await repo_conversations.pin_file(_ctx(ws_a), conversation.id, file_id, utc_now())
+
+    assert await repo_conversations.list_files(_ctx(ws_b), conversation.id) == []
+    # And the neighbour cannot remove it either: the DELETE's own predicate
+    # matches nothing, so this is a silent no-op rather than a cross-tenant
+    # write.
+    await repo_conversations.unpin_file(_ctx(ws_b), conversation.id, file_id)
+    assert len(await repo_conversations.list_files(_ctx(ws_a), conversation.id)) == 1
+
+
+async def test_pinning_into_another_tenants_thread_is_refused_by_the_policy(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """Layer 2 applied to the PARENT, which neither RLS nor the FK provides.
+
+    This test was written expecting the foreign key to stop it, and it did
+    not: Postgres runs an FK check with RLS bypassed, so the constraint found
+    a conversation this tenant cannot see, while the policy's ``WITH CHECK``
+    passed because the new row carries the CALLER's ``workspace_id``. The pin
+    was stored — invisible to the thread's real owner, and unreachable through
+    the use-case, but a row that should not exist. ``pin_file`` selects its
+    parent under the tenant filter for exactly this reason.
+    """
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    conversation = _conversation(workspace_id=ws_b)
+    await repo_conversations.add(_ctx(ws_b), conversation)
+
+    with pytest.raises(AppError) as exc_info:
+        await repo_conversations.pin_file(_ctx(ws_a), conversation.id, new_uuid7(), utc_now())
+
+    assert exc_info.value.status == 409
+    assert await repo_conversations.list_files(_ctx(ws_b), conversation.id) == []
+    assert await repo_conversations.list_files(_ctx(ws_a), conversation.id) == []
+
+
+async def test_unpin_file_is_idempotent_and_leaves_the_thread_untouched(
+    repo_conversations: SqlConversationRepository,
+    live_db: LiveDbDsns,
+) -> None:
+    """Un-pinning must not bump the parent's ``version``: nothing on the
+    conversation row changes, and bumping it would make a concurrent rename
+    fail with a conflict it did not have (the ``save_message`` reasoning)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    file_id = new_uuid7()
+    await repo_conversations.pin_file(ctx, conversation.id, file_id, utc_now())
+    before = await repo_conversations.get(ctx, conversation.id)
+    assert before is not None
+
+    await repo_conversations.unpin_file(ctx, conversation.id, file_id)
+    await repo_conversations.unpin_file(ctx, conversation.id, file_id)
+
+    assert await repo_conversations.list_files(ctx, conversation.id) == []
+    after = await repo_conversations.get(ctx, conversation.id)
+    assert after is not None
+    assert after.version == before.version
+
+
+async def test_a_soft_deleted_thread_still_carries_its_pins(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """No ``deleted_at`` filter and no cascade: a deleted thread's scope is
+    still readable, which is what lets a client open the transcript and see
+    what it was answering from."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    file_id = new_uuid7()
+    await repo_conversations.pin_file(ctx, conversation.id, file_id, utc_now())
+    conversation.soft_delete(utc_now())
+    await repo_conversations.save(ctx, conversation)
+
+    assert [pin.file_id for pin in await repo_conversations.list_files(ctx, conversation.id)] == [
+        file_id
+    ]

@@ -76,10 +76,20 @@ class RetrievedChunkView(Protocol):
 class KnowledgeAccess(Protocol):
     """The retrieval capability a RAG-style agent needs. Structurally satisfied
     by ``app.modules.knowledge.ports.inbound.KnowledgeRetrieval.retrieve``; the
-    binding is type-checked at the 4.7 composition site."""
+    binding is type-checked at the 4.7 composition site.
+
+    ``file_ids`` (BE-RAG-005) is the retrieval SCOPE, in file ids — the
+    vocabulary the caller already has. ``None`` is unscoped (the whole
+    workspace corpus) and stays the default, so an agent that has no notion of
+    a scope keeps calling this exactly as it did.
+    """
 
     async def retrieve(
-        self, ctx: ExecutionContext, query: str, k: int
+        self,
+        ctx: ExecutionContext,
+        query: str,
+        k: int,
+        file_ids: Sequence[Uuid] | None = None,
     ) -> Sequence[RetrievedChunkView]: ...
 
 

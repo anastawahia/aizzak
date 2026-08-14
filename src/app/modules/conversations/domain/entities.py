@@ -46,11 +46,33 @@ class Conversation:
     # it: a soft-deleted message is excluded from retrieval but its ``seq`` is
     # never reused, so the counter never has to "go backwards" (INV-CV3).
     message_count: int
+    # A ROUTING KEY from the D-16 table, never a raw model name (01 §2.4).
+    # ``None`` = not pinned ⇒ the thread resolves by agent key, which is what
+    # every thread did before the column existed. Defaulted, and the ONLY
+    # defaulted field here, because that is the semantics of the rows that
+    # predate it: a construction site that says nothing means "unpinned", and
+    # forcing every one of them to spell it out would add noise without adding
+    # a decision. The domain does not validate the key — valid keys are
+    # whatever the operator configured today, which is not a fact the domain
+    # can hold (``PinConversationModel`` checks it against ``ModelCatalog``).
+    model_route: str | None = None
 
     def rename(self, title: str | None, now: datetime) -> None:
         """Change the display title. Rejected once the conversation is deleted."""
         self._guard_not_deleted()
         self.title = title
+        self.updated_at = now
+
+    def pin_model_route(self, route: str | None, now: datetime) -> None:
+        """Pin (or, with ``None``, unpin) the model route for this thread.
+
+        Rejected once the conversation is deleted, for the same reason
+        ``rename`` is: a deleted thread refuses WRITES rather than denying its
+        own existence, and re-routing one would be a write to something the
+        reads have already stopped returning.
+        """
+        self._guard_not_deleted()
+        self.model_route = route
         self.updated_at = now
 
     def soft_delete(self, now: datetime) -> None:
@@ -112,3 +134,27 @@ class Message:
         if self.deleted_at is not None:
             return
         self.deleted_at = now
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedFile:
+    """One file in a thread's retrieval scope (BE-RAG-005, 01 §2.4).
+
+    ``frozen``, unlike the two above, because it has no lifecycle: a pin is
+    created and dropped, never edited. It is a value object rather than an
+    entity for the same reason — its identity IS ``(conversation_id,
+    file_id)``, which is also its primary key, so there is no surrogate id and
+    nothing to mutate.
+
+    ``file_id`` is a reference into another module's table, not something this
+    module owns or can validate. Whether it names a real, readable file is
+    checked once at the boundary (``PinConversationFile`` against the
+    ``FilesQuery`` seam) and deliberately not re-checked on read: a file
+    deleted after it was pinned leaves the pin standing, and retrieval finds
+    nothing for it — the same outcome as a file that was never indexed.
+    """
+
+    conversation_id: str
+    file_id: str
+    workspace_id: str
+    created_at: datetime

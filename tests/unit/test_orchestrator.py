@@ -393,9 +393,17 @@ class _FakeChunk:
 class _FakeKnowledge:
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.scopes: list[tuple[str, ...] | None] = []
 
-    async def retrieve(self, ctx: ExecutionContext, query: str, k: int) -> Sequence[_FakeChunk]:
+    async def retrieve(
+        self,
+        ctx: ExecutionContext,
+        query: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+    ) -> Sequence[_FakeChunk]:
         self.queries.append(query)
+        self.scopes.append(None if file_ids is None else tuple(file_ids))
         return [_FakeChunk("chunk-a", "The capital of France is Paris.")]
 
 
@@ -984,12 +992,36 @@ class _FakeThreads:
     """A recording ``ConversationThreads``: it is the whole point of these
     tests that the orchestrator writes REAL turns, in order, through the port."""
 
-    def __init__(self, *, fail_on: str | None = None, known: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on: str | None = None,
+        known: str | None = None,
+        pinned: str | None = None,
+        pinned_files: tuple[str, ...] = (),
+    ) -> None:
         self.started: list[tuple[str, str]] = []
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
+        self.route_reads: list[str] = []
+        self.scope_reads: list[str] = []
         self._fail_on = fail_on
         self._known = known
+        self._pinned = pinned
+        self._pinned_files = pinned_files
         self._seq = 0
+
+    async def pinned_files(self, ctx: ExecutionContext, conversation_id: str) -> tuple[str, ...]:
+        """BE-RAG-005. Recorded for the same reason ``routed_model`` is: a
+        request opening a FRESH thread must not ask a thread that does not
+        exist yet what it pinned."""
+        self.scope_reads.append(conversation_id)
+        return self._pinned_files
+
+    async def routed_model(self, ctx: ExecutionContext, conversation_id: str) -> str | None:
+        """BE-RAG-003. Records the read so a test can pin that a request
+        opening a FRESH thread never asks — there is nothing to ask about."""
+        self.route_reads.append(conversation_id)
+        return self._pinned
 
     async def start(
         self, ctx: ExecutionContext, *, agent_key: str, kind: str, title: str | None = None
@@ -1344,3 +1376,176 @@ async def test_an_unknown_agent_is_still_a_404_not_a_403() -> None:
         await orchestrator.invoke(
             _ctx(), "no_such_agent", AgentRequest(conversation_id=None, input={})
         )
+
+
+# --------------------------------------------------------------------------- #
+# Per-conversation model pin (BE-RAG-003)                                     #
+# --------------------------------------------------------------------------- #
+async def test_a_pinned_route_replaces_the_agent_key_as_the_routing_capability() -> None:
+    """The pin is the whole feature at this layer. It becomes the CAPABILITY,
+    never a ``model=`` override: overriding the model inside whatever provider
+    the agent routes to would send one vendor's model name to another the
+    moment the two routes disagree."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1", pinned="fast-local")
+    orchestrator, resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert resolver.calls == [("fast-local", None)]
+
+
+async def test_an_unpinned_thread_still_routes_by_agent_key() -> None:
+    """Null pin ⇒ the behaviour every thread had before the column existed."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1")
+    orchestrator, resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert resolver.calls == [("recording", None)]
+
+
+async def test_a_request_opening_a_fresh_thread_never_reads_a_pin() -> None:
+    """There is nothing to read: the thread does not exist yet. Asking anyway
+    would be a query per invocation for an answer that is always null."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads()
+    orchestrator, resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+    ):
+        pass
+
+    assert threads.route_reads == []
+    assert resolver.calls == [("recording", None)]
+
+
+async def test_an_unwired_conversations_seam_resolves_unpinned() -> None:
+    """Degrade, do not refuse — the same choice ``_open_turn`` makes when the
+    seam is absent."""
+    _RecordingAgent.seen = []
+    orchestrator, resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=None
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert resolver.calls == [("recording", None)]
+
+
+async def test_the_pin_is_read_after_authorization_never_before() -> None:
+    """A forbidden caller must not cause a read of somebody's conversation —
+    the same rule that puts ``_authorize`` ahead of the credential lookup."""
+
+    class _Guarded(BaseAgent):
+        metadata = _metadata(
+            "guarded", capabilities=frozenset({"chat"}), permissions=frozenset({"files:delete"})
+        )
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            raise AssertionError("a refused caller must never reach the agent")
+            yield  # pragma: no cover - unreachable, keeps this an async generator
+
+    threads = _FakeThreads(known="conv-1", pinned="fast-local")
+    orchestrator, resolver = _orchestrator(
+        agents=[(_Guarded.metadata, _Guarded)],
+        conversations=threads,
+        authorization=None,
+    )
+
+    with pytest.raises(AppError):
+        await orchestrator.invoke(
+            _ctx(), "guarded", AgentRequest(conversation_id="conv-1", input={})
+        )
+    assert threads.route_reads == []
+    # And no credential lookup either — the refusal cost nothing at all.
+    assert resolver.calls == []
+
+
+async def test_the_threads_pinned_files_become_the_runs_knowledge_scope() -> None:
+    """BE-RAG-005 at this layer: the orchestrator is the only place that knows
+    which thread a run belongs to, so it is where the pin becomes a scope the
+    agent can act on."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1", pinned_files=("file-a", "file-b"))
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].knowledge_scope == ("file-a", "file-b")
+    assert threads.scope_reads == ["conv-1"]
+
+
+async def test_an_unpinned_thread_gives_the_run_an_empty_scope() -> None:
+    """Empty means UNSCOPED — the whole workspace corpus, which is what every
+    thread did before the table existed."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1")
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].knowledge_scope == ()
+
+
+async def test_a_request_that_opens_a_fresh_thread_never_asks_it_what_it_pinned() -> None:
+    """There is nothing to ask: the thread does not exist until `_open_turn`
+    creates it, and a read against ``None`` would be a fabricated id."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads()
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+    ):
+        pass
+
+    assert threads.scope_reads == []
+    assert _RecordingAgent.seen[0].knowledge_scope == ()
+
+
+async def test_an_orchestrator_with_no_conversations_seam_runs_unscoped() -> None:
+    """The "not wired" and the "not pinned" answers coincide deliberately: an
+    orchestrator built without the seam must degrade to searching everything,
+    never to an empty knowledge base."""
+    _RecordingAgent.seen = []
+    orchestrator, _resolver = _orchestrator(agents=[(_RecordingAgent.metadata, _RecordingAgent)])
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].knowledge_scope == ()

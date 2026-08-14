@@ -94,3 +94,45 @@ class ConversationThreads(Protocol):
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
     ) -> AppendedMessage: ...
+
+    async def routed_model(self, ctx: ExecutionContext, conversation_id: Uuid) -> str | None:
+        """This thread's pinned D-16 routing key, or ``None`` when unpinned.
+
+        The port's first READ, and it earns the widening: without it the pin
+        (BE-RAG-003) would be a column the orchestrator writes nothing to and
+        reads nothing from — a stored preference the platform ignores, which is
+        worse than no preference at all.
+
+        A plain ``str`` crosses, like ``kind`` and ``role`` above: the value is
+        a configuration key, not a domain concept, and typing it would force
+        the agents layer to import something from inside this module.
+
+        Missing or soft-deleted ⇒ ``None``, never an error. The caller reads
+        this before the write that reports either condition properly, and a
+        read-ahead that raised would take that reporting over.
+        """
+        ...
+
+    async def pinned_files(self, ctx: ExecutionContext, conversation_id: Uuid) -> tuple[Uuid, ...]:
+        """The file ids this thread's retrieval is scoped to, or ``()``.
+
+        The port's second READ, and it earns it the way ``routed_model`` did:
+        without it the pin (BE-RAG-005) would be a table the orchestrator
+        writes nothing to and reads nothing from — a stored preference the
+        platform ignores, which is worse than no preference at all.
+
+        **Empty is not "retrieve nothing".** ``()`` means the thread is
+        unscoped and searches the whole workspace corpus, which is what every
+        thread did before the table existed. The orchestrator passes this
+        straight through to the knowledge seam, which reads it the same way.
+
+        Plain ``Uuid`` strings cross, and FILE ids rather than document ids:
+        what a caller pinned is a file, and translating "file ⇒ document" is
+        the knowledge module's own business (`02 §2`). Returning documents here
+        would make the agents layer aware that documents exist at all.
+
+        Missing or soft-deleted ⇒ ``()``, never an error, for ``routed_model``'s
+        reason: this is a read-ahead in front of the write that does the real
+        reporting.
+        """
+        ...

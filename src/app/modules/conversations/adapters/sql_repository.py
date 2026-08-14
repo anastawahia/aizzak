@@ -34,6 +34,16 @@ index-backed. Its codec is ``encode_seq_cursor``/``decode_seq_cursor``
 one, so the keyset a cursor belongs to is visible in the call rather than
 hidden behind a stringified int.
 
+``get_message``/``save_message`` (BE-RAG-004) are that child's write path.
+``get_message`` filters on the CONVERSATION id as well as the message id, so
+the route's ownership check is a SQL predicate rather than a comparison a
+caller must remember; it does NOT filter ``deleted_at``, so a second delete
+finds the row and no-ops instead of 404-ing. ``save_message`` writes
+``deleted_at`` and nothing else -- `06 §4` makes a message immutable except
+for its soft-delete -- and deliberately does not touch the parent's
+``version``: see the method for why bumping it would only manufacture
+conflicts.
+
 ``append_message`` writes the new message row and bumps the parent
 conversation's ``version`` in the SAME transaction (one ``tenant_session``
 call): the concurrency guard for INV-CV1 (gap-free, non-duplicated ``seq``)
@@ -49,6 +59,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 
 from sqlalchemy import (
     Column,
@@ -59,12 +70,15 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    delete,
     func,
     insert,
+    literal,
     select,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,7 +94,7 @@ from app.framework.pagination import (
 )
 from app.framework.types import Json
 from app.framework.types import Uuid as UuidStr
-from app.modules.conversations.domain.entities import Conversation, Message
+from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
 from app.modules.conversations.domain.value_objects import (
     AgentKey,
     ConversationKind,
@@ -103,6 +117,7 @@ conversations = Table(
     Column("agent_key", Text, nullable=False),
     Column("kind", Text, nullable=False),
     Column("title", Text, nullable=True),
+    Column("model_route", Text, nullable=True),
     Column("created_by", _uuid_col, nullable=True),
     Column("created_at", _timestamptz, nullable=False),
     Column("updated_at", _timestamptz, nullable=False),
@@ -123,6 +138,16 @@ messages = Table(
     Column("seq", Integer, nullable=False),
     Column("created_at", _timestamptz, nullable=False),
     Column("deleted_at", _timestamptz, nullable=True),
+    schema="conversations",
+)
+
+conversation_files = Table(
+    "conversation_files",
+    _metadata,
+    Column("conversation_id", _uuid_col, primary_key=True),
+    Column("file_id", _uuid_col, primary_key=True),
+    Column("workspace_id", _uuid_col, nullable=False),
+    Column("created_at", _timestamptz, nullable=False),
     schema="conversations",
 )
 
@@ -169,6 +194,7 @@ class SqlConversationRepository:
             agent_key=conversation.agent_key.value,
             kind=conversation.kind.value,
             title=conversation.title,
+            model_route=conversation.model_route,
             created_by=conversation.created_by,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
@@ -183,9 +209,12 @@ class SqlConversationRepository:
 
     async def save(self, ctx: ExecutionContext, conversation: Conversation) -> None:
         # Optimistic lock: only a row still at `conversation.version` is
-        # updated. Used for rename / soft-delete (02-port-contracts §2) --
-        # both fields are written regardless of which mutation ran, mirroring
-        # `SqlWorkspaceRepository.save` (workspace precedent).
+        # updated. Used for rename / model pin / soft-delete
+        # (02-port-contracts §2) -- ALL mutable fields are written regardless
+        # of which mutation ran, mirroring `SqlWorkspaceRepository.save`
+        # (workspace precedent). Writing the full set is what keeps a new
+        # mutation from needing a new statement, and what makes forgetting to
+        # add a column here a test failure rather than a silent no-op.
         stmt = (
             update(conversations)
             .where(
@@ -195,6 +224,7 @@ class SqlConversationRepository:
             )
             .values(
                 title=conversation.title,
+                model_route=conversation.model_route,
                 deleted_at=conversation.deleted_at,
                 version=conversations.c.version + 1,
             )
@@ -279,6 +309,57 @@ class SqlConversationRepository:
                 f"conversation {message.conversation_id} was not found while appending a message"
             )
 
+    async def get_message(
+        self, ctx: ExecutionContext, conversation_id: UuidStr, message_id: UuidStr
+    ) -> Message | None:
+        # Both ids are in the WHERE clause, so a message paired with the wrong
+        # thread is absent rather than reachable -- the route's ownership check
+        # is this predicate, not a comparison the use-case has to remember.
+        # NO `deleted_at IS NULL` filter, unlike `list_messages`: an
+        # already-deleted row must still come back so the soft-delete stays
+        # idempotent (the DOMAIN's `Message.soft_delete` no-ops on it), exactly
+        # as `get` hands back a soft-deleted conversation.
+        stmt = select(messages).where(
+            messages.c.id == message_id,
+            messages.c.conversation_id == conversation_id,
+            messages.c.workspace_id == ctx.workspace_id,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).mappings().first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return None if row is None else _hydrate_message(row)
+
+    async def save_message(self, ctx: ExecutionContext, message: Message) -> None:
+        # `deleted_at` ONLY: `06 §4` makes a message immutable except for its
+        # soft-delete, so writing the full column set (the `save` above) would
+        # let a mutation this table does not have re-persist content or `seq`.
+        #
+        # No optimistic lock and no parent version bump. There is no `version`
+        # on this table, and the mutation is idempotent-by-value -- two racers
+        # both write a timestamp onto a row that ends up deleted either way.
+        # Bumping `conversations.version` would be worse than useless: nothing
+        # on the parent row changes (`message_count` is MAX(seq), which a
+        # soft-delete deliberately does not move, INV-CV3), so it would only
+        # make a concurrent rename fail with a conflict it did not have.
+        stmt = (
+            update(messages)
+            .where(
+                messages.c.id == message.id,
+                messages.c.workspace_id == ctx.workspace_id,
+            )
+            .values(deleted_at=message.deleted_at)
+            .returning(messages.c.id)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        if row is None:
+            raise ConflictError(f"message {message.id} disappeared before it could be deleted")
+
     async def list_messages(
         self, ctx: ExecutionContext, conversation_id: UuidStr, *, limit: int, cursor: str | None
     ) -> Page[Message]:
@@ -298,6 +379,105 @@ class SqlConversationRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return _paginate(rows, limit, _hydrate_message, next_cursor_of=_seq_cursor_of)
+
+    async def list_files(self, ctx: ExecutionContext, conversation_id: UuidStr) -> list[PinnedFile]:
+        # Ordered by `created_at` so the UI shows pins in the order they were
+        # made; `file_id` breaks the tie, because two pins made inside the same
+        # transaction share a timestamp and an unordered list would reshuffle
+        # itself between reads.
+        stmt = (
+            select(conversation_files)
+            .where(
+                conversation_files.c.conversation_id == conversation_id,
+                conversation_files.c.workspace_id == ctx.workspace_id,
+            )
+            .order_by(conversation_files.c.created_at, conversation_files.c.file_id)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return [_hydrate_pinned_file(row) for row in rows]
+
+    async def pin_file(
+        self, ctx: ExecutionContext, conversation_id: UuidStr, file_id: UuidStr, now: datetime
+    ) -> PinnedFile:
+        # INSERT ... SELECT, not INSERT ... VALUES, and that is Layer 2 (DD-04)
+        # applied to the PARENT rather than only to the row being written.
+        # `fk_convfile_conv` cannot do it: Postgres runs a foreign-key check as
+        # a system trigger with RLS bypassed, so the FK happily finds a
+        # conversation this tenant cannot see, and the policy's `WITH CHECK`
+        # passes because the new row carries the CALLER's `workspace_id`. The
+        # result would be a pin in tenant A's partition naming tenant B's
+        # thread -- invisible to B, and unreachable through the use-case (which
+        # loads the conversation first and 404s), but a row that should not
+        # exist. Selecting the parent under the tenant filter means the INSERT
+        # simply produces no row instead.
+        source = (
+            select(
+                literal(conversation_id, _uuid_col),
+                literal(file_id, _uuid_col),
+                literal(ctx.workspace_id, _uuid_col),
+                literal(now, _timestamptz),
+            )
+            .select_from(conversations)
+            .where(
+                conversations.c.id == conversation_id,
+                conversations.c.workspace_id == ctx.workspace_id,
+            )
+        )
+        # `ON CONFLICT DO NOTHING` + `RETURNING` returns NOTHING when the row
+        # already existed, which is the whole reason for the second SELECT
+        # below rather than a `DO UPDATE`: re-pinning must hand back the
+        # ORIGINAL `created_at`, and `DO UPDATE SET created_at = now` would
+        # silently rewrite it -- turning an idempotent call into a mutation
+        # that reorders the caller's list.
+        stmt = (
+            pg_insert(conversation_files)
+            .from_select(
+                ["conversation_id", "file_id", "workspace_id", "created_at"],
+                source,
+            )
+            .on_conflict_do_nothing(index_elements=["conversation_id", "file_id"])
+            .returning(*conversation_files.c)
+        )
+        existing = select(conversation_files).where(
+            conversation_files.c.conversation_id == conversation_id,
+            conversation_files.c.file_id == file_id,
+            conversation_files.c.workspace_id == ctx.workspace_id,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).mappings().first()
+                if row is None:
+                    # Two ways to get here, and the SELECT tells them apart:
+                    # the pin already existed (return it -- idempotency), or
+                    # the parent was not visible and the INSERT selected no
+                    # source row at all (nothing to return -- raise).
+                    row = (await session.execute(existing)).mappings().first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        if row is None:
+            raise ConflictError(f"conversation {conversation_id} is not available to pin files to")
+        return _hydrate_pinned_file(row)
+
+    async def unpin_file(
+        self, ctx: ExecutionContext, conversation_id: UuidStr, file_id: UuidStr
+    ) -> None:
+        # No `RETURNING` check and no error on zero rows: "this file is not
+        # pinned" is the state the caller asked for, and a pin that was never
+        # there is indistinguishable from one another request just removed.
+        stmt = delete(conversation_files).where(
+            conversation_files.c.conversation_id == conversation_id,
+            conversation_files.c.file_id == file_id,
+            conversation_files.c.workspace_id == ctx.workspace_id,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                await session.execute(stmt)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
 
 
 def _message_count_column() -> ColumnElement[int]:
@@ -351,6 +531,7 @@ def _hydrate_conversation(row: RowMapping) -> Conversation:
         agent_key=AgentKey(row["agent_key"]),
         kind=ConversationKind(row["kind"]),
         title=row["title"],
+        model_route=row["model_route"],
         created_by=row["created_by"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -374,6 +555,15 @@ def _hydrate_message(row: RowMapping) -> Message:
         seq=row["seq"],
         created_at=row["created_at"],
         deleted_at=row["deleted_at"],
+    )
+
+
+def _hydrate_pinned_file(row: RowMapping) -> PinnedFile:
+    return PinnedFile(
+        conversation_id=row["conversation_id"],
+        file_id=row["file_id"],
+        workspace_id=row["workspace_id"],
+        created_at=row["created_at"],
     )
 
 

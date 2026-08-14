@@ -17,6 +17,7 @@ by the same rules.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.pagination import (
@@ -26,18 +27,26 @@ from app.framework.pagination import (
     encode_id_cursor,
     encode_seq_cursor,
 )
+from app.framework.providers.catalog import ModelCatalog, ModelChoice
 from app.framework.types import Uuid
 from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
     ConversationUseCases,
     GetConversation,
+    ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
+    PinConversationFile,
+    PinConversationModel,
+    RenameConversation,
     SoftDeleteConversation,
+    SoftDeleteMessage,
     StartConversation,
+    UnpinConversationFile,
 )
-from app.modules.conversations.domain.entities import Conversation, Message
+from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
+from app.modules.conversations.ports.files import ReadableFile
 
 
 @dataclass
@@ -46,6 +55,7 @@ class InMemoryConversationRepository:
 
     rows: dict[str, Conversation] = field(default_factory=dict)
     messages: dict[str, list[Message]] = field(default_factory=dict)
+    pins: dict[str, list[PinnedFile]] = field(default_factory=dict)
 
     async def get(self, ctx: ExecutionContext, conversation_id: Uuid) -> Conversation | None:
         conversation = self.rows.get(conversation_id)
@@ -88,6 +98,57 @@ class InMemoryConversationRepository:
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None:
         self.messages.setdefault(message.conversation_id, []).append(message)
 
+    async def get_message(
+        self, ctx: ExecutionContext, conversation_id: Uuid, message_id: Uuid
+    ) -> Message | None:
+        # Matches on BOTH ids and does NOT hide a soft-deleted row — the two
+        # properties the delete route's behaviour rests on, exactly as the SQL
+        # adapter's predicate has them.
+        for message in self.messages.get(conversation_id, []):
+            if message.id == message_id and message.workspace_id == ctx.workspace_id:
+                return message
+        return None
+
+    async def save_message(self, ctx: ExecutionContext, message: Message) -> None:
+        # The store already holds the very object the use-case mutated, so
+        # there is nothing to write back; the method exists because the port
+        # declares it, and asserting it was reached is what a caller tests.
+        return None
+
+    async def list_files(self, ctx: ExecutionContext, conversation_id: Uuid) -> list[PinnedFile]:
+        return [
+            pin
+            for pin in self.pins.get(conversation_id, [])
+            if pin.workspace_id == ctx.workspace_id
+        ]
+
+    async def pin_file(
+        self, ctx: ExecutionContext, conversation_id: Uuid, file_id: Uuid, now: datetime
+    ) -> PinnedFile:
+        # The upsert's observable contract, not its SQL: an existing pin is
+        # returned UNCHANGED (original `created_at`), which is what makes the
+        # route idempotent rather than merely non-duplicating.
+        stored = self.pins.setdefault(conversation_id, [])
+        for pin in stored:
+            if pin.file_id == file_id and pin.workspace_id == ctx.workspace_id:
+                return pin
+        pin = PinnedFile(
+            conversation_id=conversation_id,
+            file_id=file_id,
+            workspace_id=ctx.workspace_id,
+            created_at=now,
+        )
+        stored.append(pin)
+        return pin
+
+    async def unpin_file(self, ctx: ExecutionContext, conversation_id: Uuid, file_id: Uuid) -> None:
+        stored = self.pins.get(conversation_id, [])
+        self.pins[conversation_id] = [
+            pin
+            for pin in stored
+            if not (pin.file_id == file_id and pin.workspace_id == ctx.workspace_id)
+        ]
+
     async def list_messages(
         self, ctx: ExecutionContext, conversation_id: Uuid, *, limit: int, cursor: str | None
     ) -> Page[Message]:
@@ -110,23 +171,84 @@ class ConversationsStack:
     """Everything the two faces of the module need, over ONE repository."""
 
     repository: InMemoryConversationRepository
+    files: StubReadableFiles
     use_cases: ConversationUseCases
     service: ConversationService
 
 
-def build_conversations() -> ConversationsStack:
+class StubModelCatalog:
+    """A ``ModelCatalog`` over a fixed route list — enough for the pin's
+    validation, which only ever reads ``capability``.
+
+    Defaults to the two keys the router suites pin against. A suite that needs
+    a different table builds its own; a suite that needs none still gets a
+    catalogue rather than ``None``, because "no routes configured" and "no
+    catalogue wired" must stay distinguishable in tests too.
+    """
+
+    def __init__(self, capabilities: tuple[str, ...] = ("default", "rag_agent")) -> None:
+        self.capabilities = capabilities
+
+    async def list_llm_models(self, ctx: ExecutionContext) -> list[ModelChoice]:
+        return [
+            ModelChoice(capability=key, provider="stub", model=f"{key}-model", available=True)
+            for key in self.capabilities
+        ]
+
+
+@dataclass(frozen=True, slots=True)
+class _StubReadableFile:
+    file_id: str
+
+
+@dataclass
+class StubReadableFiles:
+    """A ``ReadableFiles`` seam over a set of ids that are "ready".
+
+    Everything NOT in ``ready`` answers ``None`` — which is the single answer
+    the seam gives for unknown, deleted, quarantined and still-uploading
+    alike (see ``ports/files.py``), so a suite that wants any of those adds
+    nothing here and simply pins an id it never registered.
+    """
+
+    ready: set[str] = field(default_factory=set)
+
+    async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> ReadableFile | None:
+        return _StubReadableFile(file_id=file_id) if file_id in self.ready else None
+
+
+def build_conversations(
+    catalog: ModelCatalog | None = None, files: StubReadableFiles | None = None
+) -> ConversationsStack:
     """The API-side use-cases and the orchestrator-side inbound port, sharing
     one in-memory store — the same single-repository wiring the Composition
     Root builds for production."""
     repository = InMemoryConversationRepository()
+    readable = files if files is not None else StubReadableFiles()
+    # ONE instance behind both faces, exactly as `_build_conversations` wires
+    # it: a suite that pins through the API must see that pin from the
+    # orchestrator's `pinned_files`.
+    list_files = ListConversationFiles(repository)
     return ConversationsStack(
         repository=repository,
+        files=readable,
         use_cases=ConversationUseCases(
             start=StartConversation(repository),
             get=GetConversation(repository),
             list_by_agent=ListConversationsByAgent(repository),
             list_messages=ListMessages(repository),
+            rename=RenameConversation(repository),
+            pin_model=PinConversationModel(repository, catalog or StubModelCatalog()),
             soft_delete=SoftDeleteConversation(repository),
+            soft_delete_message=SoftDeleteMessage(repository),
+            list_files=list_files,
+            pin_file=PinConversationFile(repository, readable),
+            unpin_file=UnpinConversationFile(repository),
         ),
-        service=ConversationService(StartConversation(repository), AppendMessage(repository)),
+        service=ConversationService(
+            StartConversation(repository),
+            AppendMessage(repository),
+            GetConversation(repository),
+            list_files,
+        ),
     )

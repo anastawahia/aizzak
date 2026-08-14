@@ -58,10 +58,20 @@ class FakeKnowledge:
 
     def __init__(self, chunks: Sequence[FakeChunk]) -> None:
         self._chunks = chunks
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
 
-    async def retrieve(self, ctx: ExecutionContext, query: str, k: int) -> Sequence[FakeChunk]:
-        self.calls.append((query, k))
+    async def retrieve(
+        self,
+        ctx: ExecutionContext,
+        query: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+    ) -> Sequence[FakeChunk]:
+        # The scope is RECORDED, not honoured: this fake is the agent's
+        # counterpart, and what the agent owes is passing the scope through
+        # untouched — resolving it to documents is the knowledge module's job
+        # and is tested there.
+        self.calls.append((query, k, None if file_ids is None else tuple(file_ids)))
         return self._chunks
 
 
@@ -96,13 +106,17 @@ class FakeLLM:
 
 
 def make_deps(
-    *, deltas: Sequence[str] = ("ok",), chunks: Sequence[FakeChunk] | None = None
+    *,
+    deltas: Sequence[str] = ("ok",),
+    chunks: Sequence[FakeChunk] | None = None,
+    scope: tuple[str, ...] = (),
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(chunks if chunks is not None else [])
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
         knowledge=knowledge,
+        knowledge_scope=scope,
     )
     return deps, knowledge, llm
 
@@ -134,7 +148,24 @@ async def test_streams_tokens_then_final_with_citations() -> None:
     assert final.type == "final"
     assert final.data["text"] == "Paris is the capital."
     assert final.data["citations"] == ["c1"]
-    assert knowledge.calls == [("capital of France?", 5)]
+    # `None`, not `()`: an agent with no pinned scope must ask for the WHOLE
+    # workspace corpus. Forwarding the bundle's empty tuple would arrive one
+    # layer down as "a scope that resolved to no documents", which retrieves
+    # nothing (BE-RAG-005).
+    assert knowledge.calls == [("capital of France?", 5, None)]
+
+
+async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
+    """BE-RAG-005: the agent passes the bundle's scope straight through.
+
+    It does NOT resolve, filter or re-order it — the file⇒document translation
+    belongs to the knowledge module, and an agent that pre-processed the scope
+    would be a second place where a pin could silently stop applying.
+    """
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")], scope=("file-a", "file-b"))
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.calls == [("q", 5, ("file-a", "file-b"))]
 
 
 async def test_retrieved_context_is_injected_into_the_system_prompt() -> None:
