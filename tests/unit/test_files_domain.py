@@ -177,3 +177,111 @@ def test_is_ready_true_only_when_ready_and_not_deleted() -> None:
     assert _file(FileStatus.READY).is_ready is True
     assert _file(FileStatus.UPLOADED).is_ready is False
     assert _file(FileStatus.READY, deleted_at=utc_now()).is_ready is False
+
+
+# --------------------------------------------------------------------------- #
+# FileName.extension + File.rename — the BE-RAG-006 policy (INV-F4)            #
+# --------------------------------------------------------------------------- #
+def test_extension_includes_its_dot() -> None:
+    assert FileName("report.pdf").extension == ".pdf"
+
+
+def test_extension_reads_only_the_last_dot() -> None:
+    assert FileName("archive.tar.gz").extension == ".gz"
+
+
+def test_a_dotfile_has_no_extension() -> None:
+    """A LEADING dot is not an extension — `.env` is all stem."""
+    assert FileName(".env").extension == ""
+
+
+def test_a_trailing_dot_is_no_extension() -> None:
+    """`report.` claims no type, so there is nothing to preserve."""
+    assert FileName("report.").extension == ""
+
+
+def test_a_name_without_a_dot_has_no_extension() -> None:
+    assert FileName("README").extension == ""
+
+
+def test_rename_changes_the_stem_and_stamps_updated_at() -> None:
+    file = _file(FileStatus.READY)
+    later = utc_now()
+    file.rename(FileName("Q1 summary.pdf"), later)
+    assert file.name.value == "Q1 summary.pdf"
+    assert file.updated_at == later
+
+
+def test_rename_inherits_the_current_extension_when_the_new_name_has_none() -> None:
+    """What a person renaming `report.pdf` to `Q1 summary` means — and what
+    every file manager does."""
+    file = _file(FileStatus.READY)
+    file.rename(FileName("Q1 summary"), utc_now())
+    assert file.name.value == "Q1 summary.pdf"
+
+
+def test_rename_refuses_a_different_extension() -> None:
+    file = _file(FileStatus.READY)
+    with pytest.raises(InvalidFileInput):
+        file.rename(FileName("report.exe"), utc_now())
+    assert file.name.value == "report.pdf"
+
+
+def test_rename_accepts_a_matching_extension_in_any_case() -> None:
+    """`.PDF` and `.pdf` are the same claim about the same bytes."""
+    file = _file(FileStatus.READY)
+    file.rename(FileName("report.PDF"), utc_now())
+    assert file.name.value == "report.PDF"
+
+
+def test_rename_refuses_adding_an_extension_to_a_name_that_had_none() -> None:
+    """The rule is symmetric: inventing a claim about the bytes is the same
+    lie as changing one."""
+    file = _file(FileStatus.READY)
+    file.name = FileName("README")
+    with pytest.raises(InvalidFileInput):
+        file.rename(FileName("README.md"), utc_now())
+
+
+def test_rename_to_the_same_name_leaves_updated_at_alone() -> None:
+    """A "modified at" that moves when nothing was modified is a false record."""
+    file = _file(FileStatus.READY)
+    stamped = file.updated_at
+    file.rename(FileName("report.pdf"), utc_now())
+    assert file.updated_at == stamped
+
+
+def test_rename_that_only_inherits_back_the_same_name_is_also_a_no_op() -> None:
+    file = _file(FileStatus.READY)
+    stamped = file.updated_at
+    file.rename(FileName("report"), utc_now())  # inherits `.pdf` -> unchanged
+    assert file.name.value == "report.pdf"
+    assert file.updated_at == stamped
+
+
+def test_rename_strips_directory_components_like_registration_does() -> None:
+    file = _file(FileStatus.READY)
+    file.rename(FileName("../../etc/passwd.pdf"), utc_now())
+    assert file.name.value == "passwd.pdf"
+
+
+def test_rename_refuses_a_name_the_inherited_extension_pushes_over_the_limit() -> None:
+    file = _file(FileStatus.READY)
+    with pytest.raises(InvalidFileInput):
+        file.rename(FileName("x" * 255), utc_now())
+
+
+def test_rename_refuses_a_deleted_file() -> None:
+    """A write is a write: the guard every other mutator uses."""
+    file = _file(FileStatus.READY, deleted_at=utc_now())
+    with pytest.raises(FileStateError):
+        file.rename(FileName("late.pdf"), utc_now())
+
+
+def test_rename_works_on_a_quarantined_file() -> None:
+    """The name has no bearing on the status machine, and a flagged file is
+    exactly the one whose name someone may need to correct."""
+    file = _file(FileStatus.QUARANTINED)
+    file.rename(FileName("suspect.pdf"), utc_now())
+    assert file.name.value == "suspect.pdf"
+    assert file.status is FileStatus.QUARANTINED

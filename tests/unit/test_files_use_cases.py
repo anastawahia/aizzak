@@ -29,6 +29,7 @@ from app.modules.files.application.use_cases import (
     FileTransferService,
     ListFiles,
     RegisterUpload,
+    RenameFile,
     SoftDeleteFile,
     SoftDeleteFileService,
 )
@@ -43,6 +44,11 @@ class _FakeFiles:
 
     def __init__(self) -> None:
         self.rows: dict[str, File] = {}
+        # Every id `save` was asked to write, in order. A dict-backed fake
+        # cannot otherwise distinguish "wrote the same row again" from "did
+        # not write", and BE-RAG-006's no-op rename turns on that difference:
+        # the real `save` bumps `version` and `updated_at` unconditionally.
+        self.saved: list[str] = []
 
     async def get(self, ctx: ExecutionContext, file_id: str) -> File | None:
         row = self.rows.get(file_id)
@@ -55,6 +61,7 @@ class _FakeFiles:
 
     async def save(self, ctx: ExecutionContext, file: File) -> None:
         self.rows[file.id] = file
+        self.saved.append(file.id)
 
     async def list(
         self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
@@ -577,3 +584,87 @@ async def test_soft_delete_service_missing_file_is_not_found() -> None:
     service = SoftDeleteFileService(SoftDeleteFile(_FakeFiles()), _FakeOutbox(), _FakeUnitOfWork())
     with pytest.raises(NotFoundError):
         await service.delete(_ctx(), new_uuid7())
+
+
+# --------------------------------------------------------------------------- #
+# RenameFile (BE-RAG-006 — the one mutable field a file has)                   #
+# --------------------------------------------------------------------------- #
+async def test_rename_persists_the_new_name() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)  # `seed.txt`
+
+    renamed = await RenameFile(files).execute(ctx, file.id, name="notes.txt")
+
+    assert renamed.name.value == "notes.txt"
+    assert files.rows[file.id].name.value == "notes.txt"
+    assert files.saved == [file.id]
+
+
+async def test_rename_inherits_the_extension_the_client_left_off() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    renamed = await RenameFile(files).execute(ctx, file.id, name="notes")
+
+    assert renamed.name.value == "notes.txt"
+
+
+async def test_renaming_to_the_current_name_never_writes() -> None:
+    """A no-op must not bump `version`/`updated_at` — but it is still a
+    success, so the file comes back rather than an error."""
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    renamed = await RenameFile(files).execute(ctx, file.id, name="seed.txt")
+
+    assert renamed.name.value == "seed.txt"
+    assert files.saved == []
+
+
+async def test_rename_to_a_different_extension_is_a_422_not_a_409() -> None:
+    """The extension policy rejects INPUT; it says nothing about the file's
+    state, so it must not arrive as a conflict."""
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    with pytest.raises(ValidationError):
+        await RenameFile(files).execute(ctx, file.id, name="notes.exe")
+    assert files.rows[file.id].name.value == "seed.txt"
+    assert files.saved == []
+
+
+async def test_rename_with_an_empty_name_is_rejected() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    with pytest.raises(ValidationError):
+        await RenameFile(files).execute(ctx, file.id, name="   ")
+
+
+async def test_rename_of_a_deleted_file_is_a_conflict() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx, deleted_at=utc_now())
+
+    with pytest.raises(ConflictError):
+        await RenameFile(files).execute(ctx, file.id, name="late.txt")
+
+
+async def test_rename_of_an_unknown_file_is_not_found() -> None:
+    with pytest.raises(NotFoundError):
+        await RenameFile(_FakeFiles()).execute(_ctx(), new_uuid7(), name="x.txt")
+
+
+async def test_rename_cannot_reach_another_tenants_file() -> None:
+    files = _FakeFiles()
+    owner = _ctx("w1")
+    file = _seed_file(files, owner)
+
+    with pytest.raises(NotFoundError):
+        await RenameFile(files).execute(_ctx("w2"), file.id, name="stolen.txt")
+    assert files.rows[file.id].name.value == "seed.txt"

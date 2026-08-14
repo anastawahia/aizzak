@@ -55,6 +55,24 @@ class FileName:
             raise InvalidFileInput("file name must not contain control characters")
         object.__setattr__(self, "value", basename)
 
+    @property
+    def extension(self) -> str:
+        """The extension INCLUDING its dot (``".pdf"``), or ``""`` for a name
+        that has none.
+
+        Structural, like everything else here: it reports what the name *says*
+        and judges nothing. A LEADING dot is not an extension — ``".env"`` is a
+        name whose whole value is its stem, the convention every filesystem
+        uses — and neither is a trailing one, since ``"report."`` claims no
+        type. The rule that this string may not CHANGE across a rename
+        (INV-F4) is the aggregate's, not the value object's: it needs two
+        names to compare, and a value object only ever sees one.
+        """
+        dot = self.value.rfind(".")
+        if dot <= 0 or dot == len(self.value) - 1:
+            return ""
+        return self.value[dot:]
+
 
 @dataclass(frozen=True, slots=True)
 class ContentType:

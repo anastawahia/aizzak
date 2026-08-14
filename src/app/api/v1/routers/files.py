@@ -1,12 +1,13 @@
 """The Files router — ``/api/v1/files`` (03-api-spec §1 · FR-100) — Phase
 6.1-هـ-3.
 
-Five routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
+Six routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 
 * ``POST /files`` — register an upload slot (201 + presigned PUT);
 * ``POST /files/{id}/complete`` — mark the uploaded bytes ready (200);
 * ``GET /files`` — the workspace's active files, paginated (API-04 envelope);
 * ``GET /files/{id}`` — one file, bare;
+* ``PATCH /files/{id}`` — rename (200; the extension is immutable, INV-F4);
 * ``DELETE /files/{id}`` — soft-delete (204, idempotent).
 
 Everything interesting happens BELOW this file, which is the point: presign
@@ -39,7 +40,13 @@ from fastapi import APIRouter, Depends
 
 from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
-from app.api.v1.dto.files import FileCompleteIn, FileOut, FileRegisterIn, FileRegisterOut
+from app.api.v1.dto.files import (
+    FileCompleteIn,
+    FileOut,
+    FileRegisterIn,
+    FileRegisterOut,
+    FileRenameIn,
+)
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
 from app.api.v1.idempotency import IdempotencyKey, idempotent
 from app.modules.access.domain.value_objects import Permission
@@ -137,6 +144,24 @@ async def get_file(file_id: str, services: Services, ctx: Context) -> FileOut:
     (the §3.55 read precedent); not-ready ⇒ 200 with its status."""
     read = await services.files.transfers.get(ctx, file_id)
     return _to_file_out(read)
+
+
+@router.patch("/{file_id}", dependencies=[Depends(require(Permission.FILES_WRITE))])
+async def rename_file(
+    file_id: str, body: FileRenameIn, services: Services, ctx: Context
+) -> FileOut:
+    """Rename a file (BE-RAG-006) — the only field of it that may change.
+
+    ``files:write``, the same permission that registered it: renaming destroys
+    nothing, so requiring ``files:delete`` would leave a member able to upload
+    a file but unable to correct its name. The extension policy (INV-F4)
+    surfaces as the use-case's 422; a soft-deleted file as its 409. The
+    response is the full ``FileOut`` — the client replaces the row it holds
+    rather than patching a name into it — and ``describe`` presigns the
+    download URL from the aggregate the use-case just returned, without a
+    second read (the complete route's reasoning)."""
+    file = await services.files.rename.execute(ctx, file_id, name=body.name)
+    return _to_file_out(await services.files.transfers.describe(file))
 
 
 @router.delete(

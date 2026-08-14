@@ -140,10 +140,13 @@ class SqlFileRepository:
 
     async def save(self, ctx: ExecutionContext, file: File) -> None:
         # Optimistic lock: only a row still at `file.version` is updated.
-        # `name`/`content_type`/`size_bytes`/`storage_key`/`uploaded_by`
-        # never change after creation (no domain mutator touches them) --
-        # only the fields `mark_scanning`/`complete`/`quarantine`/
-        # `soft_delete` can change are written.
+        # `content_type`/`size_bytes`/`storage_key`/`uploaded_by` never change
+        # after creation (no domain mutator touches them), and leaving them
+        # out of the UPDATE is what enforces that at the adapter -- only the
+        # fields `mark_scanning`/`complete`/`quarantine`/`soft_delete`/
+        # `rename` can change are written. `name` joined them in BE-RAG-006:
+        # for every OTHER caller it re-writes the value just hydrated, a
+        # provable no-op, which is why one `save` still serves them all.
         stmt = (
             update(files)
             .where(
@@ -152,6 +155,7 @@ class SqlFileRepository:
                 files.c.version == file.version,
             )
             .values(
+                name=file.name.value,
                 status=file.status.value,
                 checksum=file.checksum.value if file.checksum else None,
                 deleted_at=file.deleted_at,

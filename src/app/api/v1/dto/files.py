@@ -34,6 +34,15 @@ class FileCompleteIn(BaseModel):
     checksum: str | None = None
 
 
+class FileRenameIn(BaseModel):
+    """The one mutable field a file has. Required, not optional: a PATCH body
+    that may legally be empty asks the server to guess what "no change" means,
+    and the sanitation/extension policy that decides what this string becomes
+    lives in the domain (``File.rename``), not in a Pydantic constraint."""
+
+    name: str
+
+
 class FileOut(BaseModel):
     id: str
     name: str

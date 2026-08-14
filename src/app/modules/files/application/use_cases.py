@@ -166,6 +166,55 @@ class ListFiles:
         return await self._files.list(ctx, limit=limit, cursor=cursor)
 
 
+class RenameFile:
+    """Rename a file (BE-RAG-006). The extension policy is the aggregate's
+    (``File.rename``, INV-F4); this service only owns the boundary — the raw
+    string becomes a ``FileName`` here, and the domain's two error kinds are
+    translated into the framework's 422/409.
+
+    **No event, and none is missing.** ``knowledge.documents`` keys on
+    ``file_id`` and stores no name, and the Qdrant point payload carries none
+    either (``knowledge/application/indexing.py``), so nothing downstream can
+    consume a ``FileRenamed`` — publishing one would be the "صفٌّ في الكتالوج
+    وعدٌ بالإصدار" mistake in event form: a promise with no consumer and no way
+    to tell whether it is being honoured. It follows that a rename costs no
+    re-index and cannot change an answer.
+
+    **A no-op rename does not write.** ``File.rename`` returns early when the
+    resulting name is the one it already has; the check below turns that into
+    a skipped ``save``, because ``save`` bumps ``version`` and ``updated_at``
+    unconditionally — a stored "modified at" that moves when nothing was
+    modified is a false record, and the version churn would invalidate other
+    holders of the aggregate for no reason. The caller still gets the file:
+    "the name is already that" is a successful outcome of "make the name
+    that", not a failure.
+    """
+
+    def __init__(self, files: FileRepository) -> None:
+        self._files = files
+
+    async def execute(self, ctx: ExecutionContext, file_id: Uuid, *, name: str) -> File:
+        file = await self._files.get(ctx, file_id)
+        if file is None:
+            raise NotFoundError("file not found")
+        try:
+            new_name = FileName(name)
+        except FileError as exc:
+            raise ValidationError(str(exc)) from exc
+        before = file.name.value
+        try:
+            file.rename(new_name, utc_now())
+        except FileStateError as exc:
+            raise ConflictError(str(exc)) from exc
+        except FileError as exc:
+            # `InvalidFileInput` — the extension policy, or a name pushed past
+            # 255 characters by inheriting the current extension.
+            raise ValidationError(str(exc)) from exc
+        if file.name.value != before:
+            await self._files.save(ctx, file)
+        return file
+
+
 class SoftDeleteFile:
     """Soft-delete a file. Idempotent — re-deleting emits no new event."""
 
@@ -388,8 +437,15 @@ class FileUseCases:
     """The bundle the API layer consumes (the ``ConversationUseCases``
     precedent: the module packages its own faces so ``ApiServices`` grows ONE
     field in 6.1-هـ-3). ``transfers`` covers register/get/list (the presigned
-    faces); ``complete`` and ``delete`` are the two atomic write services."""
+    faces); ``complete`` and ``delete`` are the two atomic write services.
+
+    ``rename`` is deliberately the bare use-case and not a ``…Service``
+    wrapper: the wrappers exist to append events inside one unit of work, and
+    a rename produces none (``RenameFile``'s docstring says why). Wrapping it
+    anyway would ship the ceremony of atomicity around a single statement that
+    has nothing to be atomic with."""
 
     transfers: FileTransferService
     complete: CompleteUploadService
+    rename: RenameFile
     delete: SoftDeleteFileService

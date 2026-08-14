@@ -10,6 +10,9 @@ What these pin, against 03 §1/§2:
   list/get (API-04 envelope; ready-only ``download_url``) → delete (204,
   idempotent, then an honest 404);
 * the limit refusals as their catalog codes (413/415);
+* the rename face (BE-RAG-006): the extension policy over the wire, the whole
+  ``FileOut`` coming back, the new name visible to the list and the read, and
+  422/409/404 landing where they belong;
 * a present-but-not-ready file read as a BODY with its status, not a problem;
 * the media queue: POST answering **202** with the full job face
   (``result_file_id``/``error`` null at queue time), its ``MediaRequested``
@@ -393,6 +396,99 @@ def test_delete_is_204_idempotent_and_the_file_then_reads_404() -> None:
     assert (first.status_code, first.content) == (204, b"")
     assert read_back.status_code == 404  # the §3.55 read precedent
     assert second.status_code == 204  # a retried lost 204 is a 204, not a 409
+
+
+# --------------------------------------------------------------------------- #
+# Files — rename (BE-RAG-006)                                                  #
+# --------------------------------------------------------------------------- #
+def test_rename_returns_the_whole_file_with_the_new_name() -> None:
+    """The response is a full `FileOut`, so the client replaces the row it
+    holds instead of patching a name into a stale one — and everything that
+    describes the BYTES must come back untouched."""
+    app, _ = _make_app()
+    client = TestClient(app)
+    registered = _register(client)
+
+    response = client.patch(
+        f"/api/v1/files/{registered['file_id']}", json={"name": "Q1 summary.pdf"}, headers=_auth()
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["name"] == "Q1 summary.pdf"
+    assert body["content_type"] == "application/pdf"
+    assert body["size_bytes"] == 2048
+
+
+def test_rename_without_an_extension_inherits_the_current_one() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = client.patch(
+        f"/api/v1/files/{file_id}", json={"name": "Q1 summary"}, headers=_auth()
+    )
+
+    assert response.json()["name"] == "Q1 summary.pdf"
+
+
+def test_rename_to_another_extension_is_422_and_changes_nothing() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = client.patch(f"/api/v1/files/{file_id}", json={"name": "x.exe"}, headers=_auth())
+    read_back = client.get(f"/api/v1/files/{file_id}", headers=_auth())
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+    assert read_back.json()["name"] == "report.pdf"
+
+
+def test_the_renamed_name_is_what_the_list_and_the_read_both_show() -> None:
+    """A rename nobody else can see is not a rename."""
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    client.patch(f"/api/v1/files/{file_id}", json={"name": "renamed.pdf"}, headers=_auth())
+    listed = client.get("/api/v1/files", headers=_auth()).json()["data"]
+    read = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
+
+    assert [row["name"] for row in listed if row["id"] == file_id] == ["renamed.pdf"]
+    assert read["name"] == "renamed.pdf"
+
+
+def test_rename_of_a_deleted_file_is_409_not_404() -> None:
+    """A write against a soft-deleted resource is a conflict — the read face's
+    404 belongs to reads."""
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+    client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+
+    response = client.patch(f"/api/v1/files/{file_id}", json={"name": "late.pdf"}, headers=_auth())
+
+    assert response.status_code == 409
+
+
+def test_rename_of_an_unknown_file_is_404() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.patch("/api/v1/files/no-such-file", json={"name": "x.pdf"}, headers=_auth())
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "common.not_found"
+
+
+def test_rename_requires_a_bearer() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.patch("/api/v1/files/anything", json={"name": "x.pdf"})
+
+    assert response.status_code == 401
 
 
 # --------------------------------------------------------------------------- #

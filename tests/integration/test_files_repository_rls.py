@@ -358,3 +358,65 @@ async def test_add_with_forged_workspace_id_is_rejected_by_rls_with_check(
     assert exc_info.value.code == "common.internal"
     assert not isinstance(exc_info.value, ConflictError)
     assert await repo_files.get(_ctx(ws_b), forged_file.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# (12) rename — `save` now writes `name` (BE-RAG-006)                        #
+# --------------------------------------------------------------------------- #
+async def test_save_persists_a_renamed_name(repo_files: SqlFileRepository) -> None:
+    """`name` joined the UPDATE statement in BE-RAG-006. Nothing above the
+    adapter can prove the column is actually written — the in-memory fake
+    stores the same object it was handed — so it is proven here, on a real
+    round trip through Postgres."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    file.rename(FileName("Q1 summary.pdf"), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.name.value == "Q1 summary.pdf"
+    assert reloaded.version == 2
+
+
+async def test_saving_a_rename_leaves_the_byte_facing_columns_alone(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The columns describing the OBJECT — `content_type`, `size_bytes`,
+    `storage_key` — are absent from the UPDATE on purpose; this is the test
+    that notices if one is ever added."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+    before = (file.content_type.value, file.size_bytes, file.storage_key.value)
+
+    file.rename(FileName("renamed.pdf"), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert (
+        reloaded.content_type.value,
+        reloaded.size_bytes,
+        reloaded.storage_key.value,
+    ) == before
+
+
+async def test_a_rename_cannot_reach_another_tenants_file(repo_files: SqlFileRepository) -> None:
+    """Two-layer isolation on the write path (DD-04): the stale-version
+    conflict is what a caller sees, and the row is untouched."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    file = _file(workspace_id=ws_a)
+    await repo_files.add(_ctx(ws_a), file)
+
+    file.rename(FileName("stolen.pdf"), utc_now())
+    with pytest.raises(ConflictError):
+        await repo_files.save(_ctx(ws_b), file)
+
+    reloaded = await repo_files.get(_ctx(ws_a), file.id)
+    assert reloaded is not None
+    assert reloaded.name.value == "report.pdf"

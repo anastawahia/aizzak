@@ -28,6 +28,7 @@ from app.modules.files.application.use_cases import (
     FileTransferService,
     FileUseCases,
     RegisterUpload,
+    RenameFile,
     SoftDeleteFile,
     SoftDeleteFileService,
 )
@@ -46,6 +47,11 @@ class InMemoryFileRepository:
     """A structural ``FileRepository`` over one dict."""
 
     rows: dict[str, File] = field(default_factory=dict)
+    # Every id `save` was called with, in order. A dict-backed fake cannot show
+    # the difference between "wrote the same row again" and "did not write",
+    # and BE-RAG-006's no-op rename turns on exactly that difference (a `save`
+    # bumps `version`/`updated_at` in the real adapter).
+    saved: list[str] = field(default_factory=list)
 
     async def get(self, ctx: ExecutionContext, file_id: str) -> File | None:
         row = self.rows.get(file_id)
@@ -58,6 +64,7 @@ class InMemoryFileRepository:
 
     async def save(self, ctx: ExecutionContext, file: File) -> None:
         self.rows[file.id] = file
+        self.saved.append(file.id)
 
     async def list(
         self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
@@ -191,6 +198,7 @@ def build_files_media(
                 get_ttl_s=minio.presign_get_ttl_s,
             ),
             complete=CompleteUploadService(CompleteUpload(files_repo), outbox, uow),
+            rename=RenameFile(files_repo),
             delete=SoftDeleteFileService(SoftDeleteFile(files_repo), outbox, uow),
         ),
         media=MediaUseCases(
