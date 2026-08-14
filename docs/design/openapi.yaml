@@ -16,6 +16,7 @@ security:
 tags:
   - name: workspace
   - name: agents
+  - name: models
   - name: conversations
   - name: files
   - name: knowledge
@@ -24,9 +25,139 @@ tags:
   - name: credentials
   - name: integrations
   - name: usage
+  - name: admin
+  - name: session
   - name: health
 
 paths:
+  /admin/users:
+    get:
+      tags: [admin]
+      operationId: listPlatformUsers
+      description: "Bounded, read-only cross-tenant directory page. `q` matches a case-insensitive substring of the email or display name, with the operator's own `%` and `_` escaped. Under a search the `stats` counts describe the matching users, not the whole platform, because `total` is also what bounds the offsets this route will serve."
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: q, in: query, required: false, schema: { type: string, maxLength: 200 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformUsersPageOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/users/{user_id}:
+    delete:
+      tags: [admin]
+      operationId: deletePlatformUser
+      description: "Retires one account irreversibly. The row survives ONLY as a tombstone the administrative audit ledger can keep referring to: the email and display name are erased and every role assignment is revoked in the same transaction, and the user's sessions are invalidated. A platform administrator cannot delete their own account, and the last remaining one cannot be deleted. Repeating the call answers `deleted: false` with the original `deleted_at` instead of re-dating a finished event. The deleted user's tenant data is NOT erased here — that sweep does not exist yet."
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformUserDeleteIn" } } } }
+      responses:
+        "200": { description: Account deleted, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformUserDeletionOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/users/{user_id}/status:
+    patch:
+      tags: [admin]
+      operationId: setPlatformUserStatus
+      description: "Changes one account between active and disabled, records an immutable administrative audit row, and invalidates the user's current sessions when disabling. A platform administrator cannot change their own account status."
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformUserStatusIn" } } } }
+      responses:
+        "200": { description: Account status applied, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformUserStatusOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/users/{user_id}/roles/workspace:
+    patch:
+      tags: [admin]
+      operationId: setPlatformWorkspaceRole
+      description: "Grants or revokes one workspace-local role. Revoking the final owner is rejected. This route never grants platform_admin."
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformWorkspaceRoleIn" } } } }
+      responses:
+        "200": { description: Workspace role applied, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformRoleOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/users/{user_id}/roles/platform-admin:
+    patch:
+      tags: [admin]
+      operationId: setPlatformAdminRole
+      description: "Grants or revokes only the cross-tenant platform_admin role; workspace roles use the separate workspace route."
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformAdminRoleIn" } } } }
+      responses:
+        "200": { description: Platform role applied, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformRoleOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/system/stats:
+    get:
+      tags: [admin]
+      operationId: getSystemStats
+      description: "One live sample of the CPU, memory and NVIDIA accelerators of the machine that served this request — which is why `host` and `sampled_at` travel with the reading and not around it. This is not a browser-facing view of `/metrics`: that endpoint is a Prometheus exposition blocked at the edge and answers a different question over Postgres/Redis state. Each of the three sections may be absent with its own `*_error` string while the response is still 200, because a monitoring page that fails whole is blind exactly when it is read; `gpus: []` with no `gpu_error` means the driver answered and this host has no card."
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SystemStatsOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/providers:
+    get:
+      tags: [admin]
+      operationId: listPlatformProviders
+      description: "The providers this deployment can actually route to (the D-16 routing table, not a vocabulary of vendor names), each with the routes pointing at it and the platform key it currently has. There is no enable/disable flag because routing is boot-time configuration a runtime toggle could not change: storing a key IS the enable and revoking it IS the disable. A provider with a null `key` is not unusable — resolution prefers a workspace's own credential and only falls back to the platform's, so a tenant holding its own key is unaffected by anything on this surface."
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProvidersOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/providers/{provider}/key:
+    put:
+      tags: [admin]
+      operationId: putPlatformProviderKey
+      description: "Stores or rotates the platform key for one provider, encrypted at rest through Vault Transit; the secret is never returned by this or any other route. PUT because the resource is singular: a provider has one platform key, and sending a second replaces the first in ONE transaction, so the fleet never sees two active platform keys for one provider. An unconfigured provider is 422 `credentials.provider_unknown`, a keyless one (Ollama) likewise — a key stored for it would never be read. A concurrent rotation of the same provider loses on the unique index and is 409."
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderKeyIn" } } } }
+      responses:
+        "200": { description: Platform key stored, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderKeyChangeOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [admin]
+      operationId: deletePlatformProviderKey
+      description: "Withdraws the platform key for one provider. Revoke, not erase: the row stays with `status: revoked`, which is what lets an operator still explain a provider that went quiet. Idempotent — a provider with no active key answers `changed: false` and writes no second audit row. Carries a body rather than answering 204 because the reason is required like every other administrative mutation, and because \"there was a key and it is gone\" and \"there was none\" are different answers. Workspaces holding their own key for this provider keep working (D-16)."
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderKeyDeleteIn" } } } }
+      responses:
+        "200": { description: Platform key revoked, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderKeyChangeOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/providers/{provider}/probe:
+    post:
+      tags: [admin]
+      operationId: probePlatformProvider
+      description: "Spends ONE minimal live call — a one-token completion, or a one-string embedding — through the same adapter and the same routed model a real request would use, and reports whether the credential was accepted. Cheaper checks (a models list, a HEAD) exercise a different path: keys exist that can list models and still fail every completion. Omit `secret` to probe the STORED platform key (\"why is this failing now\"); supply one to probe a candidate before committing it, in which case nothing is written anywhere. A rejected key is `ok: false` with a reason and HTTP 200 — the error channel is reserved for failures of the probe itself: 422 for an unconfigured or unprobeable provider (an image route would mean generating a billable image), 404 `credentials.none_available` when no stored key exists, 429 when the per-provider budget is spent. The reason is the adapter's own translated message; adapters map failures from the HTTP status and never from the response body, so nothing a vendor echoed back can reach it."
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderProbeIn" } } } }
+      responses:
+        "200": { description: Probe completed, content: { application/json: { schema: { $ref: "#/components/schemas/PlatformProviderProbeOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /me/context:
+    get:
+      tags: [session]
+      operationId: getMyContext
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/MeContextOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /me/logout:
+    post:
+      tags: [session]
+      operationId: logout
+      responses:
+        "204": { description: Logged out }
+        default: { $ref: "#/components/responses/Problem" }
+  /me/heartbeat:
+    post:
+      tags: [session]
+      operationId: recordMyHeartbeat
+      description: "Records a server-observed caller heartbeat. A caller is online when a heartbeat is no older than two minutes."
+      responses:
+        "200": { description: Heartbeat recorded, content: { application/json: { schema: { $ref: "#/components/schemas/MeHeartbeatOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
   /workspace:
     get:
       tags: [workspace]
@@ -72,6 +203,15 @@ paths:
             text/event-stream: { schema: { type: string, description: "SSE: token|tool_call|final|error events" } }
         default: { $ref: "#/components/responses/Problem" }
 
+  /models:
+    get:
+      tags: [models]
+      operationId: listModels
+      description: "The CONFIGURED llm routing table (D-16), not a provider's remote catalogue: every entry is a route resolve_llm can actually take. `available: false` means the route exists but no credential resolves for this caller — never that the model is unknown. Bounded list, so next_cursor is always null."
+      responses:
+        "200": { description: OK, headers: { X-Correlation-Id: { $ref: "#/components/headers/CorrelationId" } }, content: { application/json: { schema: { $ref: "#/components/schemas/ModelPage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
   /conversations:
     get:
       tags: [conversations]
@@ -98,12 +238,31 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [conversations]
+      operationId: renameConversation
+      description: "Rename a thread. `title: null` clears it. A soft-deleted thread is a conflict, not a 404 — the write is refused, not the resource denied."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationPatchIn" } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
     delete:
       tags: [conversations]
       operationId: deleteConversation
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       responses:
         "204": { description: Soft-deleted }
+        default: { $ref: "#/components/responses/Problem" }
+  /conversations/{id}/model:
+    put:
+      tags: [conversations]
+      operationId: pinConversationModel
+      description: "Pin which CONFIGURED route answers this thread. `route` is a ModelOut.capability from GET /models, validated against the live routing table (unknown ⇒ 422); `null` unpins and falls back to the agent's own route. A route whose provider has no credential is accepted — availability is a property of the caller and the moment, not of the route. Soft-deleted thread ⇒ 409, not 404."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationModelIn" } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
   /conversations/{id}/messages:
     get:
@@ -125,6 +284,46 @@ paths:
           content:
             application/json: { schema: { $ref: "#/components/schemas/MessageOut" } }
             text/event-stream: { schema: { type: string } }
+        default: { $ref: "#/components/responses/Problem" }
+  /conversations/{id}/messages/{message_id}:
+    delete:
+      tags: [conversations]
+      operationId: deleteMessage
+      description: "Soft-delete ONE turn: the row leaves every read while its `seq` stays reserved (INV-CV3), so the transcript keeps a gap rather than renumbering. Nested under its thread because a message is a child entity, never an aggregate root — the path IS the ownership check, so a message id paired with the wrong thread is a 404 instead of a cross-thread delete. Idempotent (204 on a second call); soft-deleted thread ⇒ 409, not 404. Permission `conversations:delete`, the same as deleting the thread: erasing a transcript turn by turn must not be permitted where deleting the thread is not."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: message_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Soft-deleted }
+        default: { $ref: "#/components/responses/Problem" }
+  /conversations/{id}/files:
+    get:
+      tags: [conversations]
+      operationId: listConversationFiles
+      description: "The files this thread's retrieval is PINNED to. Files themselves stay workspace-level (uploaded once, indexed once, reusable) — a pin is a retrieval SCOPE, not ownership: with pins, `rag_agent` searches only the documents built from these files; with none, it searches the whole workspace corpus, which is every existing thread's behaviour and stays the default. Returns references (`file_id`) and not file metadata, because the pin belongs to `conversations` and the name/size/status belong to `GET /files` — the client joins them by id, exactly as it already joins knowledge status. The set is bounded, so the page carries every pin and `meta.next_cursor` is always null. Permission `conversations:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationFilePage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [conversations]
+      operationId: pinConversationFile
+      description: "Pin one file into this thread's retrieval scope. The file must exist and be readable (`status=ready`, INV-F2) — pinning an unknown, quarantined, half-uploaded or deleted file is 422, never a stored reference to something retrieval can never reach. Idempotent: re-pinning returns 201 with the ORIGINAL `pinned_at`, so a double-click cannot manufacture a second row. Soft-deleted thread ⇒ 409, not 404. A pinned file that is later deleted is not an error — retrieval simply finds nothing for it, the same as a file that was never indexed. Permission `conversations:write`, the same as pinning the model: both configure how the thread answers."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationFileIn" } } } }
+      responses:
+        "201": { description: Pinned, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationFileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /conversations/{id}/files/{file_id}:
+    delete:
+      tags: [conversations]
+      operationId: unpinConversationFile
+      description: "Remove one pin. Deletes NO file and no index — it only widens this thread's retrieval scope back out, and unpinning the last one returns it to the whole workspace corpus. Idempotent (204 whether or not the pin was there); soft-deleted thread ⇒ 409, not 404. Permission `conversations:write`, not `conversations:delete`: nothing is destroyed."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: file_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Unpinned }
         default: { $ref: "#/components/responses/Problem" }
 
   /files:
@@ -161,6 +360,15 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FileOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [files]
+      operationId: renameFile
+      description: "Rename a file — the ONLY mutable field it has. The bytes, the `content_type`, the `storage_key` and the `size_bytes` are all fixed at registration, and nothing here touches storage or the index: `knowledge.documents` keys on `file_id` and the Qdrant payload carries no name, so a rename costs no re-index and changes no answer. **The extension is immutable**: a name whose extension matches the current one (case-insensitively) is stored as sent; a name with NO extension inherits the current one; a name with a DIFFERENT extension is 422. The extension is the user-visible claim about bytes that cannot change, so letting it change would make the displayed name lie — and hand a download the wrong OS handler. Directory components are stripped and control characters refused (the same `FileName` sanitation as registration). Renaming to the current name is a no-op that still answers 200, WITHOUT bumping `updated_at` or the version. Any status may be renamed — fixing the name of a half-uploaded or quarantined file is exactly when it is wanted — but a soft-deleted file is 409, like every other write. Permission `files:write`, the same as registering."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FileRenameIn" } } } }
+      responses:
+        "200": { description: Renamed, content: { application/json: { schema: { $ref: "#/components/schemas/FileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
     delete:
       tags: [files]
       operationId: deleteFile
@@ -192,6 +400,107 @@ paths:
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/reindex:
+    post:
+      tags: [knowledge]
+      operationId: reindexDocuments
+      description: "Rebuild the index for one or more documents. **Re-indexing never resets a document** (INV-K3): each target is REPLACED by a brand-new `pending` document over the same `file_id`, and the old one — its Qdrant points, its chunk rows, its row — is destroyed first, in that order. Destroying it up front is what keeps the corpus free of duplicates: point ids derive from the document id (`chunk_point_id`), so a second document over the same file would answer every search twice, forever. The cost is stated plainly: **the file is not searchable until the job finishes**, and a job that is cancelled or fails leaves it that way until it is re-indexed again. Only TERMINAL documents (`indexed`/`failed`) may be re-indexed — a `pending`/`indexing` one is 409, both because the rebuild it is asking for is already under way and because deleting a row a worker is mid-pipeline on would break its chunk writes. Unknown or another tenant's id ⇒ 404; the ids are de-duplicated, and 1..50 of them are accepted (a bigger corpus is re-indexed in batches, so one request can never delete an unbounded number of vectors). Answers **202** with the job: the work is a worker's, and 201 would promise a finished rebuild. `Idempotency-Key` is honoured and matters here more than anywhere — a duplicated POST would destroy and rebuild a second time, at the workspace's expense. Permission `knowledge:manage`, not `knowledge:read`: this deletes a working index and spends embedding quota."
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReindexIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/ReindexJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/reindex/{id}:
+    get:
+      tags: [knowledge]
+      operationId: getReindexJob
+      description: "One re-index job's progress. **Nothing about the progress is stored**: the job row carries only its identity and its `cancelled_at`, and every number here is DERIVED by reading the status of the documents the job created. A stored counter would need a writer on the worker's side and would drift the moment one crashed; a derived one cannot disagree with the corpus it describes. `items` is the per-file phase list (one entry per document, bounded by the request's own 50), `percent` counts terminal items, and `current_file_id` names the file whose document is `indexing` right now — a reference, not a name, exactly like the pin list: the client already joins `GET /files` by id. Permission `knowledge:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ReindexJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/reindex/{id}/cancel:
+    post:
+      tags: [knowledge]
+      operationId: cancelReindexJob
+      description: "Stop a running re-index. **Cancellation is a claim on the documents the worker has not started yet**, and it works through the lifecycle that already exists rather than a new one: every `pending` document of this job is moved to `failed` with the reason recorded, which is precisely the terminal state the worker's own DD-09 redelivery guard declines to run against — so the queued event arrives and does nothing, with no worker change and no way to un-publish a message. A document already `indexing` is NOT stopped: its pipeline is mid-flight in another process, it keeps its own outcome, and the response shows it still running so the client is never told a lie. Cancelling twice is a no-op that answers 200 without writing; cancelling a job whose items are all terminal is 409 — the work it asks to stop has already happened. The destroyed original index is NOT restored: cancelling leaves those files unindexed, which is the same cost the POST already stated. Permission `knowledge:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: Cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/ReindexJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/documents/{id}/summary:
+    post:
+      tags: [knowledge]
+      operationId: buildDocumentSummary
+      description: "Build this document's summary (BE-RAG-009). **`POST` always builds; there is no `force` flag.** The plan proposed one, and the two operations it distinguished turned out to be the two verbs already on this path: reading what is stored is `GET`, producing it is `POST`. A boolean meaning \"actually I wanted the GET\" is a route wearing a flag's clothes, and it would have forced one operation to answer under two status codes and two bodies. So \"summarise\" and \"rebuild\" are one thing, and the price is stated rather than hidden: a `full` summary is a map-reduce over the whole document — the most expensive single call this API makes — while an `overview` reads only the document's opening chunks and makes one. Both are bounded, and a `full` build past the map ceiling summarises a PREFIX and says so through `truncated` on the result. The document must be `indexed` (409 otherwise: there is no text to read), and a build already queued or running for the same `(document, kind, lang)` is **409** naming that job rather than a second one racing it to the same row. Unknown or another tenant's document ⇒ 404. Answers **202** with the job: a worker does the work, and 201 would promise a summary that does not exist yet. `Idempotency-Key` is honoured, and matters here for the reason it matters on `/knowledge/reindex` — a retried POST otherwise buys the same summary twice. A build that fails or is cancelled leaves any PREVIOUS summary exactly where it was. Permission `knowledge:manage`, not `knowledge:read`: this spends the workspace's model budget."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      tags: [knowledge]
+      operationId: getDocumentSummary
+      description: "The stored summary under this exact key, or **404** (BE-RAG-010). `kind` and `lang` are REQUIRED rather than defaulted: together with the path they are the resource's identity, and defaulting half an identity on a read lets a client be handed the Arabic overview while believing it asked for the English full text. There is no fallback between keys for the same reason. **404 and not `{has_summary: false}`** — the Alpha contract answered 200 with an existence flag, and mirroring it would make every typed client destructure a body that may describe nothing; a summary either exists under a key or it does not, which is what 404 means. A summary is keyed on the DOCUMENT, so re-indexing a file destroys its summaries along with the document they described (INV-K4) and this answers 404 again until one is rebuilt — a stale summary of text that no longer exists is the outcome that key prevents. `model`, `source_chunks` and `truncated` travel with the text: which model wrote it is the answer to \"why does this read differently from last month's\", and how much of the document it covers is what stops a summary of a prefix being read as a summary of the whole. Permission `knowledge:read`."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [overview, full] } }
+        - { name: lang, in: query, required: true, schema: { type: string, enum: [auto, ar, en] } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [knowledge]
+      operationId: deleteDocumentSummary
+      description: "Discard one stored summary (BE-RAG-011). Idempotent, and **200 rather than 204** — the `deleted` flag is the point: the UI says \"deleted\" or \"there was nothing saved\", both are successes, and a 204 would make the client guess which happened while a 404 on the second call would turn a satisfied request into an error. `kind`/`lang` are required here for the same reason they are on the `GET`, and more so: half an identity on a destructive route is a footgun. Deleting a summary never touches the job that built it — the job records an operation that really happened and what the workspace was charged for, and forgetting it because its output was discarded would erase the only evidence. Permission `knowledge:manage`: this destroys an artefact a model was paid to write."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [overview, full] } }
+        - { name: lang, in: query, required: true, schema: { type: string, enum: [auto, ar, en] } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryDeletedOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/documents/{id}/summary/export:
+    get:
+      tags: [knowledge]
+      operationId: exportDocumentSummary
+      description: "Download the stored summary as a PDF or DOCX (BE-RAG-012). **A GET returning bytes, not a job — a deliberate departure from the plan's own proposal.** BE-RAG-012 asked for a pollable, downloadable export job with an optional synchronous path for small summaries; every summary IS small, because the pipeline caps its reduce step, so the largest body this can be handed is a few tens of kilobytes of Markdown. The job machinery — a row, an event, a worker, an object in MinIO, a presigned URL, a polling loop and an expiry policy — would all exist to manage work that finishes before the client's first poll. Alpha needed it because Alpha's export ran over unbounded text; ours is bounded by contract, so the optional path is the only path. GET is then the honest verb: this is another representation of a resource that already exists, it changes nothing, and it can be retried freely. The render runs in a worker thread, so one export never becomes every other request's latency. `filename` is the source file's own name, sent by the client so the saved document is recognisable and so the exported page can be headed with it; it is REJECTED rather than escaped when it carries a path separator, a control character or more than 120 characters, because a name that has to be rewritten to be safe is a name the client should not have sent. The header uses RFC 6266's `filename*=UTF-8''` form: these names are Arabic more often than not, and the plain form is latin-1 only. Right-to-left layout follows the summary's `lang`, except for `auto`, where the majority script of the text decides — an English summary quoting one Arabic term is an English document. No stored summary under the key ⇒ 404, from the same read the JSON `GET` uses. Permission `knowledge:read`, not `knowledge:manage`: this produces no new artefact and spends no model budget."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [overview, full] } }
+        - { name: lang, in: query, required: true, schema: { type: string, enum: [auto, ar, en] } }
+        - { name: format, in: query, required: true, schema: { type: string, enum: [pdf, docx] } }
+        - { name: filename, in: query, required: false, schema: { type: string, default: summary, maxLength: 120 } }
+      responses:
+        "200":
+          description: The rendered document
+          headers:
+            Content-Disposition:
+              description: "`attachment; filename*=UTF-8''<name>.<format>`"
+              schema: { type: string }
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/summary-jobs/{id}:
+    get:
+      tags: [knowledge]
+      operationId: getSummaryJob
+      description: "One summary build's progress (BE-RAG-009/011). **Unlike a re-index job, every number here is READ FROM THE ROW rather than derived**, and the divergence is deliberate: a re-index derives its progress because the corpus already records it — its items point at documents that carry their own statuses — while a summary has no second witness until it exists, and \"map step 7 of 42\" is known only to the worker doing step 7. There is nothing to derive it from, so the row counts, and the honest cost is stated where the counter lives: a worker that dies mid-run leaves `done_chunks` stale until redelivery restarts the build. `percent` is the aggregate's own, not the client's arithmetic — a succeeded job is 100 even though the reduce step it just finished was never counted in `total_chunks`. `error` IS published, where `DocumentOut` withholds indexing's: a summary failure is a sentence this module wrote for this reader (\"no indexed text\", \"cancelled\"), not a provider's raw output. Unknown or another tenant's ⇒ 404. Permission `knowledge:read` — watching a build is reading; only starting and stopping one is privileged."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /knowledge/summary-jobs/{id}/cancel:
+    post:
+      tags: [knowledge]
+      operationId: cancelSummaryJob
+      description: "Stop a summary build (BE-RAG-011). **Unlike a re-index cancellation, this one needs the worker's cooperation**, and the difference is worth knowing rather than hiding. Cancelling a re-index claims documents the worker has not started, landing them in the terminal state its own redelivery guard already declines — nothing in the worker changed. A summary build is a chain of provider calls inside one handler, so this stamps the row and the worker re-reads it BETWEEN map steps. Two honest consequences: a build still `queued` stops for free (the worker's claim finds a terminal job and declines), and a `running` one stops at the next step boundary — the request already in flight is paid for. The response says `cancelled` the moment the decision is recorded, not when the worker notices; claiming otherwise would report a stop that had not happened. Cancelling twice is 200 and writes nothing (the instant someone stopped it is not re-datable); a job that already finished is 409. A previously stored summary is untouched either way — this abandons the build, not the artefact of the one before it. Permission `knowledge:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: Cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/SummaryJobOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
 
   /media/jobs:
@@ -455,6 +764,216 @@ components:
     PageMeta:
       type: object
       properties: { next_cursor: { type: string, nullable: true, description: "opaque cursor; null on the last (or unbounded) page" }, limit: { type: integer } }
+    MeUserOut:
+      type: object
+      required: [id]
+      properties: { id: { type: string, format: uuid } }
+    MeWorkspaceOut:
+      type: object
+      required: [id]
+      properties: { id: { type: string, format: uuid } }
+    MeContextOut:
+      type: object
+      required: [user, workspace, roles, permissions]
+      properties:
+        user: { $ref: "#/components/schemas/MeUserOut" }
+        workspace: { $ref: "#/components/schemas/MeWorkspaceOut" }
+        roles: { type: array, items: { type: string } }
+        permissions: { type: array, items: { type: string } }
+    MeHeartbeatOut:
+      type: object
+      required: [last_seen_at]
+      properties:
+        last_seen_at: { type: string, format: date-time, pattern: "Z$" }
+    PlatformUserOut:
+      type: object
+      required: [id, workspace_id, email, display_name, status, roles, last_seen_at, online, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        roles: { type: array, items: { type: string } }
+        last_seen_at: { type: string, format: date-time, nullable: true, pattern: "Z$" }
+        online: { type: boolean, description: "True when last_seen_at is within the server-side two-minute window." }
+        created_at: { type: string, format: date-time, pattern: "Z$" }
+    PlatformUserStatsOut:
+      type: object
+      required: [total, active, disabled, online]
+      properties: { total: { type: integer }, active: { type: integer }, disabled: { type: integer }, online: { type: integer } }
+    PlatformUsersPageOut:
+      type: object
+      required: [data, stats, limit, offset, next_offset]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/PlatformUserOut" } }
+        stats: { $ref: "#/components/schemas/PlatformUserStatsOut" }
+        limit: { type: integer }
+        offset: { type: integer }
+        next_offset: { type: integer, nullable: true }
+    PlatformUserStatusIn:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [active, disabled] }
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformUserStatusOut:
+      type: object
+      required: [id, workspace_id, status, changed, audit_id, changed_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, disabled] }
+        changed: { type: boolean, description: "False when the account already had the requested status; no duplicate audit row is written." }
+        audit_id: { type: string, format: uuid, nullable: true }
+        changed_at: { type: string, format: date-time, nullable: true, pattern: "Z$" }
+    PlatformUserDeleteIn:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformUserDeletionOut:
+      type: object
+      required: [id, workspace_id, deleted, roles_revoked, audit_id, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        deleted: { type: boolean, description: "False when the account was already a tombstone; no duplicate audit row is written." }
+        roles_revoked: { type: array, items: { type: string }, description: "Role assignments this call removed. Empty on a repeat." }
+        audit_id: { type: string, format: uuid, nullable: true }
+        deleted_at: { type: string, format: date-time, nullable: true, pattern: "Z$", description: "When the account became a tombstone — the ORIGINAL date, also on a repeat." }
+    SystemCpuOut:
+      type: object
+      required: [usage_percent, cores, interval_seconds, load_average]
+      properties:
+        usage_percent: { type: number, description: "Busy time over elapsed time across all cores, idle and iowait both excluded." }
+        cores: { type: integer }
+        interval_seconds: { type: number, description: "The window `usage_percent` describes. A CPU percentage does not exist without one, so it is published rather than assumed." }
+        load_average: { type: array, items: { type: number }, nullable: true, description: "1/5/15-minute run-queue length. Keeps rising after utilisation saturates at 100%, which is where it starts being the more useful number." }
+    SystemMemoryOut:
+      type: object
+      required: [total_gb, used_gb, available_gb, cached_gb, used_percent, limit_gb]
+      properties:
+        total_gb: { type: number }
+        used_gb: { type: number, description: "Total minus what the kernel reports as available. Reclaimable page cache is NOT counted as used — doing so shows every healthy Linux host at ~100% forever." }
+        available_gb: { type: number }
+        cached_gb: { type: number }
+        used_percent: { type: number }
+        limit_gb: { type: number, nullable: true, description: "The cgroup ceiling on the process that answered, when it has one. The other figures describe the machine — the only scope a GPU reading can have — and this is what stops that from being read as headroom the API can spend." }
+    SystemGpuOut:
+      type: object
+      required: [index, name, utilization_percent, memory_utilization_percent, memory_total_gb, memory_used_gb, memory_used_percent, temperature_celsius, power_watts]
+      properties:
+        index: { type: integer }
+        name: { type: string }
+        utilization_percent: { type: number, description: "Compute occupancy. Routinely disagrees with memory use: a loaded model occupies memory whether or not it is computing." }
+        memory_utilization_percent: { type: number }
+        memory_total_gb: { type: number }
+        memory_used_gb: { type: number }
+        memory_used_percent: { type: number }
+        temperature_celsius: { type: number, nullable: true, description: "Null where the card has no such sensor, which is normal on passively cooled datacentre parts." }
+        power_watts: { type: number, nullable: true }
+    SystemStatsOut:
+      type: object
+      required: [host, sampled_at, cpu, cpu_error, memory, memory_error, gpus, gpu_error]
+      properties:
+        host: { type: string, description: "The machine that took the sample. Unlike every other route here the answer depends on which replica served the request." }
+        sampled_at: { type: string, format: date-time, pattern: "Z$" }
+        cpu: { allOf: [{ $ref: "#/components/schemas/SystemCpuOut" }], nullable: true }
+        cpu_error: { type: string, nullable: true }
+        memory: { allOf: [{ $ref: "#/components/schemas/SystemMemoryOut" }], nullable: true }
+        memory_error: { type: string, nullable: true }
+        gpus: { type: array, items: { $ref: "#/components/schemas/SystemGpuOut" }, description: "One entry per card. Never summed or averaged: the fault this page is opened for is usually one card out of step with its siblings." }
+        gpu_error: { type: string, nullable: true }
+    ProviderRouteOut:
+      type: object
+      required: [namespace, capability, model]
+      properties:
+        namespace: { type: string, enum: [llm, embedding, image] }
+        capability: { type: string, description: "The routing key itself — the identifier resolution takes, and always the literal 'default' in the single-route namespaces." }
+        model: { type: string }
+    PlatformProviderKeyOut:
+      type: object
+      required: [id, label, status, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string, description: "The operator's name for the key, or the masked last four characters. Never the secret: the stored row holds a Vault ciphertext reference, so this is a property of the data model rather than a redaction applied here." }
+        status: { type: string, enum: [active, revoked] }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time, pattern: "Z$" }
+        updated_at: { type: string, format: date-time, pattern: "Z$" }
+    PlatformProviderOut:
+      type: object
+      required: [provider, keyless, probeable, routes, key]
+      properties:
+        provider: { type: string }
+        keyless: { type: boolean, description: "The adapter takes no credential at all (a local model server). A key stored for it would never be read, so storing one is refused." }
+        probeable: { type: boolean, description: "False for a provider whose only routes are image ones: testing an image key means generating a billable image, which is a purchase and not a check." }
+        routes: { type: array, items: { $ref: "#/components/schemas/ProviderRouteOut" }, description: "Why this provider is worth a key. A provider with no route is absent from the listing entirely." }
+        key: { allOf: [{ $ref: "#/components/schemas/PlatformProviderKeyOut" }], nullable: true, description: "The platform's own key, if any. Null does not mean unusable — a workspace with its own credential still resolves." }
+    PlatformProvidersOut:
+      type: object
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/PlatformProviderOut" } }
+    PlatformProviderKeyIn:
+      type: object
+      required: [secret, reason]
+      properties:
+        secret: { type: string, minLength: 1, maxLength: 8192, description: "The raw provider key. It exists in the process only between this body and the Vault encrypt call, and no route ever returns it." }
+        label: { type: string, maxLength: 120, nullable: true, description: "An operator's name for the key. Absent yields the masked last four characters, so a rotation stays distinguishable from the key it replaced." }
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformProviderKeyDeleteIn:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformProviderKeyChangeOut:
+      type: object
+      required: [provider, previous_status, changed, key, audit_id]
+      properties:
+        provider: { type: string }
+        previous_status: { type: string, enum: [absent, active], description: "What the platform supplied before this call — which is how a rotation is told from a first key." }
+        changed: { type: boolean, description: "False only on the idempotent path: revoking a provider that had no active key. No audit row is written, because the ledger records actions and nothing happened." }
+        key: { allOf: [{ $ref: "#/components/schemas/PlatformProviderKeyOut" }], nullable: true }
+        audit_id: { type: string, format: uuid, nullable: true }
+    PlatformProviderProbeIn:
+      type: object
+      properties:
+        secret: { type: string, minLength: 1, maxLength: 8192, nullable: true, description: "A candidate key to test before committing it; nothing is written. Omit to probe the key already stored, which is the only way to answer why a provider is failing right now." }
+    PlatformProviderProbeOut:
+      type: object
+      required: [provider, ok, latency_ms, detail, checked_at]
+      properties:
+        provider: { type: string }
+        ok: { type: boolean }
+        latency_ms: { type: integer, description: "Measured on the monotonic clock, so an NTP step cannot make a probe appear to finish before it started." }
+        detail: { type: string, nullable: true, description: "The adapter's own translated reason on a failure; null on success, where there is nothing to say beyond the latency." }
+        checked_at: { type: string, format: date-time, pattern: "Z$" }
+    PlatformWorkspaceRoleIn:
+      type: object
+      required: [role, enabled, reason]
+      properties:
+        role: { type: string, enum: [owner, admin, member, viewer] }
+        enabled: { type: boolean }
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformAdminRoleIn:
+      type: object
+      required: [enabled, reason]
+      properties:
+        enabled: { type: boolean }
+        reason: { type: string, minLength: 3, maxLength: 500, description: "Operator-supplied audit reason." }
+    PlatformRoleOut:
+      type: object
+      required: [id, workspace_id, role, enabled, changed, audit_id, changed_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        role: { type: string }
+        enabled: { type: boolean }
+        changed: { type: boolean }
+        audit_id: { type: string, format: uuid, nullable: true }
+        changed_at: { type: string, format: date-time, nullable: true, pattern: "Z$" }
     HealthOut:
       type: object
       required: [status]
@@ -477,6 +996,13 @@ components:
         description: {type: string}
         capabilities: { type: array, items: {type: string} }
         required_permissions: { type: array, items: {type: string} }
+    ModelOut:
+      type: object
+      properties:
+        capability: {type: string, description: "The routing key itself — a capability or an agent key. This, not `model`, is what a caller pins."}
+        provider: {type: string}
+        model: {type: string}
+        available: {type: boolean, description: "Keyless provider, or a credential that resolves for this caller."}
     AgentInvokeIn:
       type: object
       required: [input]
@@ -500,11 +1026,20 @@ components:
         agent_key: {type: string}
         kind: {type: string, enum: [agent, workflow]}
         title: {type: string, nullable: true}
+        model_route: {type: string, nullable: true, description: "Pinned D-16 routing key (a ModelOut.capability), or null to route by agent key."}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    ConversationModelIn:
+      type: object
+      required: [route]
+      properties: { route: {type: string, nullable: true, description: "A ModelOut.capability — never a raw model name. null unpins."} }
     ConversationCreateIn:
       type: object
       required: [agent_key]
       properties: { agent_key: {type: string}, title: {type: string, nullable: true} }
+    ConversationPatchIn:
+      type: object
+      required: [title]
+      properties: { title: {type: string, nullable: true} }
     ConversationPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/ConversationOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
@@ -524,6 +1059,18 @@ components:
     MessagePage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/MessageOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    ConversationFileIn:
+      type: object
+      required: [file_id]
+      properties: { file_id: {type: string, format: uuid} }
+    ConversationFileOut:
+      type: object
+      properties:
+        file_id: {type: string, format: uuid}
+        pinned_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    ConversationFilePage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/ConversationFileOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
     FileRegisterIn:
       type: object
       required: [name, content_type, size_bytes]
@@ -534,6 +1081,10 @@ components:
     FileCompleteIn:
       type: object
       properties: { checksum: {type: string, nullable: true} }
+    FileRenameIn:
+      type: object
+      required: [name]
+      properties: { name: {type: string, maxLength: 255} }
     FileOut:
       type: object
       properties:
@@ -565,6 +1116,72 @@ components:
     DocumentPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/DocumentOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    ReindexIn:
+      type: object
+      required: [document_ids]
+      properties:
+        document_ids: {type: array, items: {type: string, format: uuid}, minItems: 1, maxItems: 50}
+    ReindexItemOut:
+      type: object
+      description: "One document the job is rebuilding. `document_id` is the NEW document, `source_document_id` the destroyed one it replaces (a historical id with no row behind it any more), and `status` is that new document's live ingestion status — read from the corpus, not stored on the job."
+      properties:
+        document_id: {type: string, format: uuid}
+        file_id: {type: string, format: uuid}
+        source_document_id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, indexing, indexed, failed]}
+    ReindexJobOut:
+      type: object
+      description: "`status` is derived, never stored: `cancelled` when `cancelled_at` is set (it records what happened, so it outranks the rest), `completed` when every item is terminal, `running` otherwise."
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [running, completed, cancelled]}
+        total: {type: integer}
+        finished: {type: integer, description: "Items in a terminal status (`indexed` or `failed`) — the numerator of `percent`."}
+        percent: {type: integer, minimum: 0, maximum: 100}
+        current_file_id: {type: string, format: uuid, nullable: true, description: "The file whose document is `indexing` right now, or null between documents."}
+        items: { type: array, items: { $ref: "#/components/schemas/ReindexItemOut" } }
+        created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+        cancelled_at: {type: string, format: date-time, nullable: true, pattern: "Z$"}
+    SummaryIn:
+      type: object
+      description: "What to build. Both fields are DEFAULTED here, unlike the same pair on the read routes: this is a request to produce something, and \"the full summary, in whatever language the document is written in\" is what a caller who says nothing else means. On `GET`/`DELETE` the two values are the resource's identity, and half an identity is not a thing to default. There is no `force` — see the `POST` description."
+      properties:
+        kind: {type: string, enum: [overview, full], default: full, description: "`overview` reads the document's opening chunks in one call; `full` maps over all of them and reduces. The difference is how much is read, not how the prompt is worded, which is what keeps each one's cost a property of the contract."}
+        lang: {type: string, enum: [auto, ar, en], default: auto, description: "`auto` is a real member, not a missing value: \"answer in the document's own language\" is a distinct instruction whose output is a distinct artefact from the same document summarised into Arabic. All three are part of the stored key for that reason."}
+    SummaryOut:
+      type: object
+      description: "A stored summary. Keyed on `(document_id, kind, lang)` — on the DOCUMENT and not the file, because a summary is a claim about TEXT, and re-indexing destroys the document whose text it described rather than letting the claim outlive it."
+      properties:
+        id: {type: string, format: uuid}
+        document_id: {type: string, format: uuid}
+        kind: {type: string, enum: [overview, full]}
+        lang: {type: string, enum: [auto, ar, en]}
+        text: {type: string, description: "Markdown."}
+        model: {type: string, description: "Which model wrote it. Published, unlike the indexing `error` DocumentOut withholds, and the difference is what the field IS: an indexing failure's reason could carry anything a parser said, while the model behind a summary is a property of the artefact being read."}
+        source_chunks: {type: integer, description: "How many of the document's chunks were actually read."}
+        truncated: {type: boolean, description: "Whether the document had more than the map ceiling. A `full` summary of a prefix is a true summary of a part, and a reader who is not told will take it for the whole."}
+        built_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    SummaryJobOut:
+      type: object
+      description: "A build's progress. Every number is stored on the row, not derived — see `GET /knowledge/summary-jobs/{id}` for why that diverges from ReindexJobOut deliberately."
+      properties:
+        id: {type: string, format: uuid}
+        document_id: {type: string, format: uuid}
+        kind: {type: string, enum: [overview, full]}
+        lang: {type: string, enum: [auto, ar, en]}
+        status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+        total_chunks: {type: integer, description: "Measured when a worker claims the job; 0 while still queued."}
+        done_chunks: {type: integer}
+        percent: {type: integer, minimum: 0, maximum: 100, description: "A succeeded job is 100 unconditionally: the reduce step that turns the mapped pieces into the summary is real work `total_chunks` does not count, so a job can be at 100% of its chunks and genuinely not done."}
+        error: {type: string, nullable: true, description: "Why the build ended without a summary, including when it was cancelled. A sentence written for this reader, never a provider's raw output."}
+        created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+        finished_at: {type: string, format: date-time, nullable: true, pattern: "Z$"}
+        cancelled_at: {type: string, format: date-time, nullable: true, pattern: "Z$"}
+    SummaryDeletedOut:
+      type: object
+      description: "`false` means nothing was stored under that key — a 200, not a 404: the caller asked for a state and that state now holds."
+      properties:
+        deleted: {type: boolean}
     MediaJobCreateIn:
       type: object
       required: [kind, prompt, agent_key]
@@ -689,6 +1306,9 @@ components:
     AgentPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/AgentOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    ModelPage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/ModelOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
     RetrievedChunkPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/RetrievedChunkOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }

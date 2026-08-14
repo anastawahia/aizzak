@@ -214,6 +214,9 @@ class FileRepository(Protocol):
     async def add(self, ctx, file: File) -> None: ...
     async def list(self, ctx, *, limit: int, cursor: str | None) -> Page[File]: ...
     async def mark_ready(self, ctx, file_id: Uuid, checksum: str) -> None: ...
+    # `save` (قفل تفاؤلي على `version`) يكتب `name` أيضاً منذ BE‑RAG‑006 — الحقل
+    # الوحيد القابل للتعديل بعد التسجيل؛ أمّا content_type/size_bytes/storage_key
+    # فلا مُبدِّل لها في المجال، فبقاؤها خارج جملة UPDATE هو ما يحرسها.
 
 # files/ports/inbound.py  (تستدعيه الوكلاء/knowledge بلا استيراد مباشر للوحدة)
 class FilesQuery(Protocol):
@@ -225,10 +228,27 @@ class DocumentRepository(Protocol):
     async def add(self, ctx, doc: Document) -> None: ...
     async def set_status(self, ctx, doc_id: Uuid, status: str, error: str | None = None) -> None: ...
     async def add_chunks(self, ctx, chunks: Sequence[Chunk]) -> None: ...   # idempotent عبر uq(document_id,seq)
+    # BE-RAG-007: قراءةُ نقاط المستند ثمّ إتلافه. الأولى تسبق الثانية دائماً — بعد
+    # حذف الصفوف لا يبقى ما يدلّ على النقاط التي يجب حذفها من Qdrant.
+    async def vector_refs(self, ctx, doc_id: Uuid) -> Sequence[VectorRef]: ...
+    async def purge(self, ctx, doc_id: Uuid) -> None: ...                   # chunks ثمّ الصفّ
+
+# knowledge/ports/repository.py — BE-RAG-007/008
+# `get` يقرأ حالةَ كلّ وثيقةٍ من جدول المستندات نفسه (لا نسخةَ حالةٍ على صفّ المهمّة):
+# التقدّم مُشتقٌّ بحكم البناء، فلا عدّاد يهجر الحقيقة (INV-K5).
+class ReindexJobRepository(Protocol):
+    async def add(self, ctx, job: ReindexJob) -> None: ...                  # الصفّ وبنودُه معاً
+    async def get(self, ctx, job_id: Uuid) -> ReindexJob | None: ...        # بضمّ البنود إلى المستندات
+    async def mark_cancelled(self, ctx, job_id: Uuid, at: datetime) -> None: ...
 
 # knowledge/ports/inbound.py
+# `file_ids` نطاقُ استرجاع لا مُرشِّحُ ملفات: الوحدة تحوّله داخلياً إلى `document_id`
+# لأن الحمولة في Qdrant تحمل `document_id` لا `file_id` (BE‑RAG‑005). فارغ/None ⇒ النطاق الشامل.
+# يعبر الحدّ كـ`file_id` لأن ما يعرفه المُثبِّت (conversations، والواجهة) هو الملف؛ ترجمةُ
+# «ملف ⇒ مستند» ملكُ knowledge وحدها، فلا يضطر أحدٌ خارجها لمعرفة أنّ للمستند وجوداً.
 class KnowledgeRetrieval(Protocol):
-    async def retrieve(self, ctx, query: str, k: int) -> list[RetrievedChunk]: ...
+    async def retrieve(self, ctx, query: str, k: int,
+                       file_ids: Sequence[Uuid] | None = None) -> list[RetrievedChunk]: ...
 
 # conversations/ports/repository.py
 class ConversationRepository(Protocol):
@@ -236,6 +256,9 @@ class ConversationRepository(Protocol):
     async def add(self, ctx, conv: Conversation) -> None: ...
     async def list_by_agent(self, ctx, agent_key: str, *, limit: int, cursor: str | None) -> Page[Conversation]: ...
     async def append_message(self, ctx, msg: Message) -> None: ...          # يزيد seq بقفل تفاؤلي
+    async def list_files(self, ctx, conv_id: Uuid) -> list[PinnedFile]: ...          # نطاق الاسترجاع المثبَّت
+    async def pin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> PinnedFile: ...   # مثاليّ: يعيد الأصلي
+    async def unpin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> None: ...       # مثاليّ: غيابه ليس خطأ
 
 # access/ports/inbound.py
 class AuthorizationService(Protocol):
@@ -382,3 +405,18 @@ class ProviderResolver(Protocol):         # كل الاختيار من الإع�
                                 model: str | None = None) -> tuple[EmbeddingProvider, ResolvedProvider]: ...
 # جدول التوجيه (capability/agent → provider+model) يُقرأ من Settings؛ المحوّل الملموس يُحقن في Composition Root.
 ```
+
+#### 3.5.1 `ModelCatalog` — العرض القرائيّ لجدول التوجيه (`framework/providers/catalog.py`)
+> **منفذ ضيّق** يُشتَقّ من **نفس** الجدول المُفكَّك في `SettingsProviderResolver`، لا من قراءةٍ ثانيةٍ لـ`Settings`: قراءتان للجدول تنحرفان، فتُعلن الواجهةُ موديلاً لا يستطيع `resolve_llm` توجيهه. ويُفصَل عن `ProviderResolver` لأنّ `ResolvedProvider` يحمل `api_key` **مفكوك التعمية** (`INV‑C2`) — فطبقةُ الـAPI تُمسِك هذا المنفذ الضيّق وحده، ولا تستطيع بناءً على البنية الوصول إلى `resolve_llm` أصلاً.
+```python
+@dataclass(frozen=True, slots=True)
+class ModelChoice:
+    capability: str                       # مفتاح التوجيه نفسه (قدرة أو مفتاح وكيل)
+    provider: str
+    model: str
+    available: bool                       # مزوّدٌ بلا مفتاح، أو مفتاحٌ يُحَلّ فعلاً لهذا المستخدم
+
+class ModelCatalog(Protocol):             # قراءة فقط — لا يُعيد مفتاحاً أبداً
+    async def list_llm_models(self, ctx: ExecutionContext) -> list[ModelChoice]: ...
+```
+> `available` يُحسَب عبر **نفس** `CredentialResolver` الذي سيستعمله التنفيذ (user ثمّ platform، بلا fallback)، ويُحَلّ **مرّةً لكلّ مزوّد** لا مرّةً لكلّ مسار. غياب المفتاح ⇒ `available: false` **لا خطأ**: كتالوجٌ ينهار لأنّ أحد مزوّديه غير مُعتمَد يُخفي المزوّدات المُعتمَدة كلّها.

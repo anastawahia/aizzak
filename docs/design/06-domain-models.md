@@ -133,7 +133,8 @@ EV  FileDeleted(file_id, workspace_id, occurred_at)
 - **INV‑F1:** `storage_key` مسبوق بـ`workspace_id/` (عزل على مستوى الكائن).
 - **INV‑F2:** لا يُتاح ملف للاستخدام إلا بحالة `ready`.
 - **INV‑F3:** أي وكيل داخل الـWorkspace يقرأ أي ملف `ready` (مِلكية على مستوى Workspace لا الوكيل).
-- **Use‑cases:** `RegisterUpload`, `CompleteUpload`, `ListFiles`, `SoftDeleteFile`.
+- **INV‑F4 (‏`BE‑RAG‑006`):** الاسم هو الحقل الوحيد القابل للتعديل بعد التسجيل، و**امتداده ثابت**: `File.rename` يقبل اسماً بامتدادٍ مطابق أو بلا امتداد (فيرث الحاليّ) ويرفض ما عداه. البايتات و`content_type` و`storage_key` و`size_bytes` لا يمسّها شيء، فالامتداد ادّعاءٌ عنها يجب أن يظلّ صادقاً. وإعادة التسمية **لا تبثّ حدثاً**: `knowledge` يفهرس بـ`file_id` ولا يخزّن اسماً، فلا مستهلِك لحدثٍ كهذا.
+- **Use‑cases:** `RegisterUpload`, `CompleteUpload`, `ListFiles`, `RenameFile`, `SoftDeleteFile`.
 
 ---
 
@@ -145,16 +146,56 @@ EV  FileDeleted(file_id, workspace_id, occurred_at)
 AR  Document { id, workspace_id, file_id, status: IndexStatus, chunk_count, error,
                created_at, updated_at, version }
 E   Chunk    { id, document_id, workspace_id, seq: int, text, token_count, vector_ref: VectorRef }
+AR  ReindexJob { id, workspace_id, items: tuple[ReindexItem], cancelled_at, created_at }
+E   ReindexItem { document_id, file_id, source_document_id, status: IndexStatus }
 VO  IndexStatus (pending | indexing | indexed | failed)
+VO  ReindexJobStatus (running | completed | cancelled)   # مُشتقّة لا مخزَّنة
 VO  VectorRef   (collection + point_id في Qdrant)
+AR  Summary    { id, workspace_id, document_id, kind, lang, text, model,
+                 source_chunks, truncated, built_at }        # مُجمَّدة: البناءُ يستبدل
+AR  SummaryJob { id, workspace_id, document_id, kind, lang, status, total_chunks,
+                 done_chunks, error, cancelled_at, finished_at, created_at }
+VO  SummaryKind (overview | full)
+VO  SummaryLanguage (auto | ar | en)                        # `auto` عضوٌ لا قيمةٌ غائبة
+VO  SummaryJobStatus (queued | running | succeeded | failed | cancelled)  # مخزَّنة (INV‑K6)
 EV  DocumentRegistered(document_id, workspace_id, file_id, occurred_at)   # داخلي
 EV  DocumentIndexed(document_id, workspace_id, chunk_count, occurred_at)  # عالمي → إشعار WS
 EV  DocumentIndexingFailed(document_id, workspace_id, reason, occurred_at)
+EV  SummaryRequested(job_id, workspace_id, document_id, kind, lang, occurred_at)  # داخلي
+EV  SummaryBuilt(job_id, workspace_id, document_id, kind, lang, occurred_at)      # عالمي → إشعار WS
+EV  SummaryBuildFailed(job_id, workspace_id, document_id, reason, occurred_at)
 ```
 - **INV‑K1:** `Chunk.seq` فريد داخل الوثيقة (`UNIQUE(document_id, seq)`) — يخدم Idempotency (`DD‑09`).
 - **INV‑K2:** انتقالات الحالة أحادية الاتجاه: `pending → indexing → (indexed | failed)`.
 - **INV‑K3:** إعادة المعالجة بعد `failed` تبدأ وثيقة/إصداراً جديداً منطقياً (لا كتابة فوق chunks قديمة).
-- **Use‑cases:** `RegisterDocumentFromFile`, `IndexDocument` (worker), `RetrieveContext(workspace, query, k)`.
+- **INV‑K4 (‏`BE-RAG-007`):** إعادةُ الفهرسة **تُتلف** الوثيقة القديمة قبل تسجيل الجديدة — نقاط
+  Qdrant ثمّ صفوف `chunks` ثمّ الصفّ — ولا تُبقي الاثنتين معاً أبداً. معرّف النقطة مُشتقٌّ من
+  معرّف الوثيقة (`chunk_point_id`)، فوثيقتان على الملف نفسه تعنيان إجابةً مُكرَّرة لكل بحثٍ
+  إلى الأبد. ويترتّب عليه أنّ **الوثائق الطرفيّة وحدها** (`indexed`/`failed`) قابلةٌ لإعادة
+  الفهرسة: إتلافُ صفٍّ يعمل عليه عاملٌ الآن يكسر كتابةَ مقاطعه (‏`fk_chunk_doc`).
+- **INV‑K5 (‏`BE-RAG-008`):** حالةُ `ReindexJob` وتقدّمُها **مُشتقّان** من حالات وثائقها؛ الصفّ لا
+  يخزّن إلا الهُويّة و`cancelled_at`. والإلغاء **مطالبةٌ بالوثائق التي لم يبدأها العامل**: كلّ
+  `pending` يصير `failed` بسببٍ مسجَّل، وهي بعينها الحالة الطرفيّة التي يمتنع حارسُ إعادة
+  التسليم (`DD‑09`) عن العمل عليها — فالرسالة المنشورة تصل ولا تفعل شيئاً، بلا تعديلٍ في
+  العامل. أمّا `indexing` فلا يُوقَف: خطُّ أنابيبه يجري في عمليةٍ أخرى ويحتفظ بنتيجته.
+- **INV‑K6 (‏`BE-RAG-009`):** الملخّص معلّقٌ بالـ**وثيقة** لا بالملف (`fk_summary_doc`)، ومفتاحُه
+  الثلاثيّ `(document_id, kind, lang)` فريد. فإتلافُ INV‑K4 يأخذ ملخّصاتِ الوثيقة معه، وهذا
+  هو المقصود: الملخّص دعوى عن **نصّ**، وإعادةُ الفهرسة تقع أصلاً لأنّ ذلك النصّ قد تغيّر —
+  فملخّصٌ مفتاحُه الملف كان سيبقى ويستمرّ في وصف مجموعةٍ لم تعد موجودة، بلا قيدٍ يلاحظ ذلك.
+  و`purge` يحذف الملخّصات **صراحةً** قبل المقاطع قبل الصفّ: الشلّال كان سينفّذ الحذف نفسه
+  بينما يخفيه عن الثابت الذي يوثّق ما تُتلفه إعادةُ الفهرسة وبأيّ ترتيب.
+- **INV‑K7 (‏`BE-RAG-009`) — مخالفةٌ موثّقة لـINV‑K5:** حالةُ `SummaryJob` وتقدّمُه **مخزَّنان**.
+  مهمّةُ إعادة الفهرسة تشتقّ لأنّ المتن يسجّل الجواب أصلاً؛ ومهمّةُ التلخيص لا شاهدَ ثانٍ لها —
+  قبل نجاحها لا صفَّ ملخّصٍ إطلاقاً، و«الخطوة 7 من 42» لا يعرفها إلا العاملُ نفسه. فلا شيء
+  يُشتقّ منه. والثمن معلَن: عاملٌ يموت بين خطوتين يترك العدّاد قديماً حتى إعادة التسليم.
+  ويترتّب على ذلك أنّ **الإلغاء تعاونيّ**، بخلاف إلغاء إعادة الفهرسة: الصفُّ يُختَم `cancelled`
+  والعاملُ يعيد قراءته **بين خطوات الخريطة**. فمهمّةٌ `queued` تتوقّف مجّاناً (حارسُ `DD‑09`
+  يرفض الطرفيّ، وهي الآليّة نفسها)، و`running` تتوقّف عند أوّل حدٍّ للخطوة — والنداءُ الجاري
+  مدفوعٌ ثمنُه. والإلغاء **لا يحذف** ملخّصاً خزّنه بناءٌ سابق: هذا هجرٌ للمهمّة لا لأثر سابقتها.
+- **Use‑cases:** `RegisterDocumentFromFile`, `IndexDocument` (worker), `RetrieveContext(workspace, query, k)`,
+  `ReindexDocuments`, `GetReindexJob`, `CancelReindexJob`,
+  `RequestSummary`, `SummarizeDocument` (worker), `BuildSummary` (worker),
+  `GetSummary`, `DeleteSummary`, `GetSummaryJob`, `CancelSummaryJob`.
 
 ---
 

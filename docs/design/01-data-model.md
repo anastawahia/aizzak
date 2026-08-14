@@ -68,10 +68,16 @@ CREATE TABLE workspace.workspaces (
   status        text NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','archived')),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  version       integer NOT NULL DEFAULT 1
+  version       integer NOT NULL DEFAULT 1,
+  purged_at     timestamptz,                     -- BE-ADM-014: set only by `python -m app.ops.purge`
+  CONSTRAINT workspaces_purged_at_check CHECK (purged_at IS NULL OR status = 'archived')
 );
 -- ملاحظة: workspaces جدول جذر المستأجر ⇒ لا RLS بعمود workspace_id (هو المستأجر نفسه)؛
 -- يُقيَّد بالوصول عبر id + AuthZ.
+-- BE-ADM-014: `purged_at` غير NULL يعني أنّ محتوى مساحة العمل (كلّ الجداول المستأجَرة عبر
+-- عشر وحدات، زائدًا Qdrant/MinIO) قد مُحي نهائيًا بعد نافذة احتفاظٍ (30 يومًا افتراضيًا) تلت
+-- تدمير آخر مستخدمٍ فيها (`workspace.users.status='deleted'`)؛ الصفّ نفسه يبقى (لا حذف)
+-- لأنّ `platform.admin_audit_log` يشير إليه.
 
 CREATE TABLE workspace.users (
   id           uuid PRIMARY KEY,                 -- مشتق من firebase_uid عبر جدول ربط
@@ -79,13 +85,23 @@ CREATE TABLE workspace.users (
   firebase_uid text NOT NULL UNIQUE,
   email        text NOT NULL,
   display_name text,
-  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled','deleted')),
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),      -- + trigger touch (قابل للتعديل عبر status)
+  deleted_at   timestamptz,                             -- BE-ADM-006
   version      integer NOT NULL DEFAULT 1,
-  CONSTRAINT fk_user_ws FOREIGN KEY (workspace_id) REFERENCES workspace.workspaces(id)
+  CONSTRAINT fk_user_ws FOREIGN KEY (workspace_id) REFERENCES workspace.workspaces(id),
+  CONSTRAINT users_deleted_at_check CHECK ((status = 'deleted') = (deleted_at IS NOT NULL))
 );
+-- ملاحظة: `deleted` حالةٌ طرفيّة لا رجعة منها، والصفّ **شاهدُ قبرٍ** لا حساب: تُمحى
+-- `email` و`display_name` في المعاملة نفسها وتُسحب كل إسناداته في `access.role_assignments`.
+-- الصفّ يبقى لأن `platform.admin_audit_log` يشير إليه بمفتاحٍ أجنبيّ NOT NULL بلا ON DELETE،
+-- فحذفُه يأخذ معه سجلَّ الحذف ذاته. و`firebase_uid` يبقى عمداً: بدونه يعود صاحبُ الهُويّة
+-- نفسها فيُزوَّد بمساحة عملٍ جديدة، فيصير «الحذف» إعادةَ ضبط.
 CREATE UNIQUE INDEX uq_users_owner ON workspace.users(workspace_id) WHERE status='active';
+-- BE-ADM-014: `app.ops.purge.find_candidates` يمسح هذا العمود بحثًا عن أحدث شاهد قبرٍ
+-- لكلّ مساحة عمل؛ فهرسٌ جزئيّ (الأغلبيّة الساحقة من الصفوف لم تُحذف قط، فلا داعي لفهرستها).
+CREATE INDEX ix_users_deleted_at ON workspace.users(deleted_at) WHERE deleted_at IS NOT NULL;
 ```
 
 ### 2.2 `access`
@@ -138,6 +154,7 @@ CREATE TABLE conversations.conversations (
   agent_key    text NOT NULL,                     -- slug الوكيل أو workflow_key
   kind         text NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','workflow')),
   title        text,
+  model_route  text NULL,                        -- مفتاح توجيه من جدول D‑16 (لا اسم موديل خام)؛ NULL ⇒ يُحلّ بمفتاح الوكيل
   created_by   uuid,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -159,6 +176,19 @@ CREATE TABLE conversations.messages (
   deleted_at      timestamptz NULL,                 -- حذف ناعم على مستوى الرسالة (FR‑81)
   CONSTRAINT fk_msg_conv FOREIGN KEY (conversation_id) REFERENCES conversations.conversations(id),
   CONSTRAINT uq_msg_seq UNIQUE (conversation_id, seq)
+);
+
+-- نطاق استرجاع الخيط: أي مستندات مساحة العمل يُجيب منها هذا الخيط (BE‑RAG‑005).
+-- الصفّ **مرجع** لا امتلاك: الملف يبقى على مستوى مساحة العمل ويُفهرَس مرّة واحدة في
+-- مجموعة Qdrant الواحدة لكل مساحة عمل، و`knowledge.documents` لا يعرف المحادثات (§2.7).
+-- مجموعةٌ فارغة ⇒ النطاق الشامل، وهو سلوك كلّ خيطٍ سبق هذا الجدول (لا backfill).
+CREATE TABLE conversations.conversation_files (
+  conversation_id uuid NOT NULL,
+  file_id         uuid NOT NULL,                     -- مرجع منطقي لـ files.files.id
+  workspace_id    uuid NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, file_id),
+  CONSTRAINT fk_convfile_conv FOREIGN KEY (conversation_id) REFERENCES conversations.conversations(id)
 );
 ```
 
@@ -235,7 +265,103 @@ CREATE TABLE knowledge.chunks (
   CONSTRAINT fk_chunk_doc FOREIGN KEY (document_id) REFERENCES knowledge.documents(id),
   CONSTRAINT uq_chunk_seq UNIQUE (document_id, seq)   -- Idempotency للاستيعاب
 );
+
+-- BE-RAG-007/008: مهمّة إعادة الفهرسة. الصفّ لا يحمل تقدّماً ولا حالةً —
+-- هُويّةً و`cancelled_at` فقط، والباقي يُشتقّ من حالات المستندات التي أنشأتها
+-- (عدّادٌ مخزَّن يحتاج كاتباً في العامل ويهجر الحقيقة عند أوّل انهيار).
+CREATE TABLE knowledge.reindex_jobs (
+  id           uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL,
+  cancelled_at timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  version      integer NOT NULL DEFAULT 1
+);
+CREATE INDEX ix_reindex_jobs_ws ON knowledge.reindex_jobs(workspace_id, id DESC);
+
+CREATE TABLE knowledge.reindex_job_items (
+  job_id             uuid NOT NULL,
+  document_id        uuid NOT NULL,               -- المستند الجديد (INV-K3)
+  workspace_id       uuid NOT NULL,
+  file_id            uuid NOT NULL,               -- مرجع منطقي لـ files.files.id
+  -- المستند المُتلَف الذي حلّ الجديدُ محلّه: سجلٌّ تاريخيّ بلا صفٍّ خلفه، فلا
+  -- مفتاح أجنبيّ له — الـ FK كان سيمنع الإتلاف الذي هو غايةُ العملية نفسها.
+  source_document_id uuid NOT NULL,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (job_id, document_id),
+  CONSTRAINT fk_reindex_item_job FOREIGN KEY (job_id) REFERENCES knowledge.reindex_jobs(id),
+  CONSTRAINT fk_reindex_item_doc FOREIGN KEY (document_id) REFERENCES knowledge.documents(id)
+);
+
+-- BE-RAG-009/010/011: الملخّص ومهمّةُ بنائه.
+-- الملخّص معلّقٌ بالمستند لا بالملف: هو دعوى عن **نصّ**، والنصّ الذي كُتب منه
+-- يخصّ مستنداً واحداً. إعادةُ الفهرسة تُتلف المستند (INV-K4) لأنّ بايتات الملف
+-- قد تُحلَّل الآن تحليلاً آخر، وملخّصٌ مفتاحُه الملف كان سيبقى بعد ذلك الإتلاف
+-- ويستمرّ في وصف مجموعةٍ لم تعد موجودة، بلا قيدٍ واحدٍ يستطيع ملاحظة ذلك.
+CREATE TABLE knowledge.summaries (
+  id            uuid PRIMARY KEY,
+  workspace_id  uuid NOT NULL,
+  document_id   uuid NOT NULL,
+  kind          text NOT NULL CHECK (kind IN ('overview','full')),
+  lang          text NOT NULL CHECK (lang IN ('auto','ar','en')),
+  text          text NOT NULL,
+  model         text NOT NULL,                    -- مَن كتبه (سابقةُ `host` في BE-ADM-007)
+  source_chunks integer NOT NULL,                 -- كم مقطعاً قُرئ فعلاً
+  truncated     boolean NOT NULL DEFAULT false,   -- هل تجاوز المستندُ سقف الخريطة
+  built_at      timestamptz NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  version       integer NOT NULL DEFAULT 1,
+  -- بلا `ON DELETE`، عمداً — سابقةُ `fk_chunk_doc`: `purge` يحذف الملخّصات ثمّ
+  -- المقاطع ثمّ الصفّ، وغيابُ الشلّال هو ما يجعل ذلك الترتيب واجباً لا ذوقاً.
+  CONSTRAINT fk_summary_doc FOREIGN KEY (document_id) REFERENCES knowledge.documents(id),
+  CONSTRAINT uq_summary_key UNIQUE (document_id, kind, lang)
+);
+CREATE INDEX ix_summaries_ws ON knowledge.summaries(workspace_id, document_id);
+
+-- **هذا الجدول يخزّن حالته وتقدّمه، وهي مخالفةٌ موثّقة لـINV-K5 لا سهو.**
+-- مهمّةُ إعادة الفهرسة تشتقّ كلّ رقمٍ لأنّ المتن يسجّله أصلاً: بنودُها تشير إلى
+-- مستنداتٍ تحمل حالاتها بنفسها. أمّا مهمّةُ التلخيص فلا شاهد ثانٍ لها — قبل أن
+-- تنتهي لا وجود لصفّ ملخّصٍ إطلاقاً، و«الخطوة 7 من 42» حقيقةٌ لا يعرفها إلا
+-- العاملُ الذي ينفّذ الخطوة 7. فلا شيء يُشتقّ منه، فيُكتَب؛ والثمن مُعلَن حيث
+-- يعيش العدّاد: عاملٌ يموت بين خطوتين يترك `done_chunks` قديماً حتى تُعيد
+-- الرسالةُ تسليمَه، والرقم في تلك النافذة آخرُ ما كان صادقاً لا ما هو صادق.
+CREATE TABLE knowledge.summary_jobs (
+  id            uuid PRIMARY KEY,
+  workspace_id  uuid NOT NULL,
+  -- بلا مفتاح أجنبيّ، سابقةُ `source_document_id`: المهمّة سجلُّ عمليةٍ وقعت،
+  -- وإعادةُ الفهرسة قد تُتلف المستند تحت بناءٍ جارٍ — والـFK كان سيمنع الإتلاف
+  -- نفسه. البناءُ الذي يحاول عندئذٍ تخزينَ نتيجته يوقفه `fk_summary_doc`، وهو
+  -- الموضع الذي فيه الخطأُ فعلاً، ويحوّله العاملُ إلى مهمّةٍ فاشلةٍ بسبب.
+  document_id   uuid NOT NULL,
+  kind          text NOT NULL CHECK (kind IN ('overview','full')),
+  lang          text NOT NULL CHECK (lang IN ('auto','ar','en')),
+  status        text NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+  total_chunks  integer NOT NULL DEFAULT 0,
+  done_chunks   integer NOT NULL DEFAULT 0,
+  error         text,
+  cancelled_at  timestamptz,
+  finished_at   timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  version       integer NOT NULL DEFAULT 1
+);
+-- درسُ `uq_cred_active_platform` مُطبَّقاً هنا: بلا فهرسٍ فريدٍ جزئيّ على
+-- الحالات غير الطرفيّة، يصطفّ طلبان متزامنان لنفس المفتاح، **يدفعان كلاهما**
+-- ثمن المستند كاملاً، ثمّ يتسابقان إلى صفّ `uq_summary_key` واحد — فيدفع
+-- أحدهما بالكامل ثمّ يفشل عند آخر جملة. الفهرس يحوّل ذلك إلى 409 قبل أوّل رمز.
+CREATE UNIQUE INDEX uq_summary_job_active
+  ON knowledge.summary_jobs(document_id, kind, lang)
+  WHERE status IN ('queued','running');
+CREATE INDEX ix_summary_jobs_ws ON knowledge.summary_jobs(workspace_id, id DESC);
 ```
+
+**إتلافُ المستند القديم جزءٌ من العقد لا أثرٌ جانبيّ.** معرّف نقطة Qdrant مُشتقٌّ من
+معرّف المستند (`chunk_point_id(document_id, seq)`), فمستندٌ ثانٍ على الملف نفسه يعني
+نسختين من كل مقطعٍ في المجموعة **إلى الأبد**. لذلك تحذف إعادةُ الفهرسة نقاطَ المستند
+القديم ثمّ صفوف `chunks` ثمّ صفّه، قبل تسجيل الجديد. والترتيب مقصود: فشلُ حذف النقاط
+يترك كل شيءٍ كما كان، بينما العكس كان سيترك نقاطاً يتيمةً لمستندٍ لا وجود له.
 
 ### 2.8 `media`
 ```sql
@@ -354,6 +480,10 @@ CREATE TABLE usage.limits (
 CREATE INDEX ix_limits_ws ON usage.limits(workspace_id);
 ```
 > **الفرض** (قبل العملية) يقرأ `usage_rollups` مقابل `limits` ويعيد **كائن قرار**؛ عقد المنفذ قابل للتطوّر إلى **reserve/commit** بإضافة عمود `reservation_id`/جدول حجوزات لاحقاً بلا كسر (`FR‑132` — نقطة توسعة). كلا المنفذين يُستدعى من **المُنسِّق** (طبقة الوكلاء) حصراً.
+>
+> **BE-ADM-014**: الجداول الثلاثة هنا تُمحى مع مساحة العمل التي تخصّها عند التطهير (`python -m
+> app.ops.purge`) — قراءةُ عدّادٍ لكلّ مستأجرٍ لا التزامًا ماليًا (الفوترة خارج v1)، فلا تُجمَّع في
+> سجلٍّ عابرٍ للمساحات قبل الحذف؛ REVIEW POINT في نصّ الوحدة نفسها إن ظهر التزام احتفاظٍ فوترةً/ضرائب.
 
 ---
 

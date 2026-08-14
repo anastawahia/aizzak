@@ -19,9 +19,10 @@
 |--------|---------------|----------|
 | Workspace | `/api/v1/workspace` | GET · PATCH |
 | Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` |
-| Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · DELETE · GET/POST `…/messages` |
-| Files | `/api/v1/files` | POST(register) · POST `{id}/complete` · GET(list) · GET · DELETE |
-| Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · GET `/documents/{id}` |
+| Models | `/api/v1/models` | GET(list) |
+| Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
+| Files | `/api/v1/files` | POST(register) · POST `{id}/complete` · GET(list) · GET · PATCH · DELETE |
+| Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
 | Media | `/api/v1/media` | POST `/jobs` · GET `/jobs/{id}` |
 | Workflows | `/api/v1/workflows` | GET(list) · POST `{key}/run` · GET `/runs/{id}` |
 | Credentials | `/api/v1/credentials` | GET · POST · DELETE |
@@ -60,14 +61,51 @@ class AgentInvokeOut(BaseModel):        # عند stream=false
     conversation_id: str; message: MessageOut; usage: Usage
 class Usage(BaseModel): prompt_tokens: int; completion_tokens: int
 
+# Models — كتالوج التوجيه المُعَدّ (02 §3.5.1)، لا كتالوج المزوّد البعيد: ما يُعرَض هنا
+# هو بالضبط ما يستطيع `resolve_llm` توجيهه (D‑16/FR‑73). `capability` هو المُعرِّف —
+# مفتاح التوجيه ذاته — و`available=false` تعني «مُعَدّ لكنّ مفتاحه لا يُحَلّ لك» لا «غير موجود».
+class ModelOut(BaseModel):
+    capability: str; provider: str; model: str; available: bool
+
 # Conversations
 class ConversationOut(BaseModel):
-    id: str; agent_key: str; kind: str; title: str | None; created_at: datetime
+    id: str; agent_key: str; kind: str; title: str | None
+    model_route: str | None                                  # مفتاح توجيه مثبَّت، أو null ⇒ يُحلّ بمفتاح الوكيل
+    created_at: datetime
 class ConversationCreateIn(BaseModel): agent_key: str; title: str | None = None
+# PATCH /conversations/{id} — العنوان وحده قابل للتعديل؛ `title` **مطلوب** الحضور
+# (لا حقل اختياري يجعل «الحذف» و«عدم الذكر» متطابقين): قيمة نصّية تُسمّي، و`null` يمسح.
+class ConversationPatchIn(BaseModel): title: str | None
+# PUT /conversations/{id}/model — مسارٌ فرعيّ مستقلّ لا حقلٌ في الـPATCH: `title` مطلوب الحضور
+# هناك، فحقلٌ ثانٍ مطلوب كان سيُلزم من يُعيد التسمية بإعادة ذكر المسار (والعكس). و`route`
+# **مفتاح توجيه** من `ModelOut.capability` لا اسم موديل (D‑16/FR‑73): يُتحقَّق منه مقابل الجدول
+# الحيّ (مجهول ⇒ 422)، و`null` يفكّ التثبيت. مزوّدٌ بلا مفتاح **يُقبَل**: الإتاحة صفةُ اللحظة لا صفةُ المسار.
+class ConversationModelIn(BaseModel): route: str | None
 class MessageOut(BaseModel):
     id: str; role: str; content: dict[str, Any]; token_count: int | None; seq: int; created_at: datetime
 class MessageCreateIn(BaseModel):
     content: dict[str, Any]; stream: bool = False        # يشغّل الوكيل ويعيد ردّه
+# DELETE /conversations/{id}/messages/{message_id} — حذفٌ ناعم لدورٍ واحد: يخرج من كلّ قراءة
+# ويبقى `seq` محجوزاً (INV‑CV3)، فالنصّ يُظهر فجوة ولا يُعاد ترقيمه. بلا جسدٍ وبلا رَدّ (204).
+# **مُعشَّش تحت خيطه** لأن الرسالة كيانٌ ابن لا جذرَ تجميعة: المسار نفسه هو تحقّق الملكية،
+# فرسالةٌ مقرونة بخيطٍ آخر ⇒ 404 لا حذفٌ عابرٌ للخيوط. مثاليّ (تكرارٌ ⇒ 204)، وخيطٌ محذوف
+# ناعماً ⇒ 409 لا 404 (نفس تباين القراءة/الكتابة في `PATCH`). الصلاحية `conversations:delete`
+# لا `conversations:write`: محوُ نصٍّ دوراً بدور يجب ألّا يُتاح حيث حذفُ الخيط نفسه لا يُتاح.
+
+# `…/files` — **تثبيت نطاق الاسترجاع، لا امتلاك الملف.** الملفّ يبقى على مستوى مساحة العمل
+# (يُرفَع مرّة ويُفهرَس مرّة ويُعاد استخدامه): مجموعة Qdrant واحدة لكل مساحة عمل و`knowledge.documents`
+# لا يعرف المحادثات (01 §2.7). فالتثبيت يقول «أجب من هذه المستندات وحدها»: مع تثبيتٍ يُرشَّح
+# الاسترجاع بـ`document_id` المشتقّ من هذه الملفات، وبلا تثبيت يبقى النطاق الشامل — سلوكُ كلّ
+# خيطٍ قائم اليوم، وهو الافتراضي. لهذا العدّ على بطاقة المحادثة **رقمٌ صادق**: ليس عدد ملفات
+# مساحة العمل مكرَّراً على كل بطاقة، بل ما تُجيب منه هذه المحادثة فعلاً.
+# المُخرَج مرجعٌ (`file_id`) لا وصفٌ للملف: الاسم والحجم والحالة تملكها `GET /files`، وضمّها هنا
+# كان سيجعل `conversations` يُسقِط أعمدة وحدةٍ أخرى. العميل يدمج بالمعرّف كما يدمج حالة المعرفة.
+# التثبيت يتحقّق من أن الملف **قابل للقراءة** (`ready`، INV‑F2): مجهولٌ أو محجورٌ أو نصفُ مرفوع ⇒ 422
+# لا مرجعٌ مخزَّن لا يبلغه الاسترجاع أبداً. مثاليّ: إعادة التثبيت تُعيد `pinned_at` الأصلي لا صفّاً ثانياً.
+# فكّ التثبيت لا يحذف ملفاً ولا فهرساً، فصلاحيته `conversations:write` لا `conversations:delete`؛
+# وكلاهما `write` لأن التثبيت — كتثبيت النموذج — يُعِدّ كيف يُجيب الخيط. خيطٌ محذوف ⇒ 409.
+class ConversationFileIn(BaseModel): file_id: str
+class ConversationFileOut(BaseModel): file_id: str; pinned_at: datetime
 
 # Files
 class FileRegisterIn(BaseModel):
@@ -75,6 +113,12 @@ class FileRegisterIn(BaseModel):
 class FileRegisterOut(BaseModel):
     file_id: str; upload_url: str; expires_in: int       # presigned PUT (MinIO)
 class FileCompleteIn(BaseModel): checksum: str | None = None
+# الاسمُ هو الحقل الوحيد القابل للتعديل في الملف؛ والامتدادُ **غير قابل للتعديل**:
+# مطابقٌ (بلا حساسيةٍ لحالة الأحرف) ⇒ يُخزَّن كما أُرسل · بلا امتداد ⇒ يرث الحاليّ ·
+# مختلفٌ ⇒ 422. الامتداد ادّعاءٌ عن البايتات، والبايتات لا تتغيّر؛ فتغييره يجعل
+# الاسم المعروض كذبةً ويُسلّم التنزيل إلى مُشغّل نظامٍ خاطئ. ولا حدث ولا إعادة فهرسة:
+# `knowledge.documents` يفهرس بـ`file_id` وحمولة Qdrant لا تحمل اسماً أصلاً.
+class FileRenameIn(BaseModel): name: str
 class FileOut(BaseModel):
     id: str; name: str; content_type: str; size_bytes: int
     status: str; download_url: str | None; created_at: datetime   # presigned GET عند ready
@@ -84,6 +128,20 @@ class KnowledgeSearchIn(BaseModel): query: str; k: int = Field(default=5, le=50)
 class RetrievedChunkOut(BaseModel): document_id: str; chunk_id: str; text: str; score: float
 class DocumentOut(BaseModel):
     id: str; file_id: str; status: str; chunk_count: int; created_at: datetime
+# إعادة الفهرسة (BE-RAG-007/008): كل هدفٍ تحلّ محلّه وثيقةٌ جديدةٌ على الملف نفسه
+# (INV-K3) بعد **إتلاف** القديمة — نقاط Qdrant ثمّ المقاطع ثمّ الصفّ (INV-K4)، وإلا
+# أجاب الملفُّ كلَّ بحثٍ مرّتين. الطرفيّة وحدها قابلة (`pending`/`indexing` ⇒ 409)،
+# والمجهولة 404، والعدد 1..50. الردّ 202 لأن العمل عاملٌ لا طلب. والتقدّم **مُشتقّ**
+# من حالات الوثائق (INV-K5) لا مخزَّن؛ و`current_file_id` مرجعٌ يدمجه العميل مع
+# `GET /files` كما يفعل مع التثبيتات. الصلاحية `knowledge:manage` للكتابتين لا
+# `knowledge:read`: هذا يحذف فهرساً عاملاً وينفق حصّة تضمين.
+class ReindexIn(BaseModel): document_ids: list[str] = Field(min_length=1, max_length=50)
+class ReindexItemOut(BaseModel):
+    document_id: str; file_id: str; source_document_id: str; status: str
+class ReindexJobOut(BaseModel):
+    id: str; status: str; total: int; finished: int; percent: int
+    current_file_id: str | None; items: list[ReindexItemOut]
+    created_at: datetime; cancelled_at: datetime | None
 
 # Media
 class MediaJobCreateIn(BaseModel):

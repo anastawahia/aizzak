@@ -105,6 +105,9 @@ sequenceDiagram
 | `knowledge.document.registered.v1` | knowledge → knowledge(worker) | document_id | `{document_id, file_id}` |
 | `knowledge.document.indexed.v1` | knowledge → notify | document_id | `{document_id, chunk_count}` |
 | `knowledge.document.indexing_failed.v1` | knowledge → notify | document_id | `{document_id, reason}` |
+| `knowledge.summary.requested.v1` | knowledge → knowledge(worker) | job_id | `{job_id, document_id, kind, lang}` |
+| `knowledge.summary.built.v1` | knowledge(worker) → notify | job_id | `{job_id, document_id, kind, lang}` |
+| `knowledge.summary.build_failed.v1` | knowledge → notify | job_id | `{job_id, document_id, reason}` |
 | `media.job.requested.v1` | media(API) → media(worker) | job_id | `{job_id, kind, prompt, params}` |
 | `media.job.generated.v1` | media(worker) → notify | job_id | `{job_id, result_file_id}` |
 | `media.job.failed.v1` | media(worker) → notify | job_id | `{job_id, reason}` |
@@ -141,6 +144,9 @@ sequenceDiagram
 - [`events/schemas/knowledge.document.registered.v1.json`](events/schemas/knowledge.document.registered.v1.json)
 - [`events/schemas/knowledge.document.indexed.v1.json`](events/schemas/knowledge.document.indexed.v1.json)
 - [`events/schemas/knowledge.document.indexing_failed.v1.json`](events/schemas/knowledge.document.indexing_failed.v1.json)
+- [`events/schemas/knowledge.summary.requested.v1.json`](events/schemas/knowledge.summary.requested.v1.json)
+- [`events/schemas/knowledge.summary.built.v1.json`](events/schemas/knowledge.summary.built.v1.json)
+- [`events/schemas/knowledge.summary.build_failed.v1.json`](events/schemas/knowledge.summary.build_failed.v1.json)
 - [`events/schemas/media.job.requested.v1.json`](events/schemas/media.job.requested.v1.json)
 - [`events/schemas/media.job.generated.v1.json`](events/schemas/media.job.generated.v1.json)
 - [`events/schemas/media.job.failed.v1.json`](events/schemas/media.job.failed.v1.json)
