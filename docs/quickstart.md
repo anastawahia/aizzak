@@ -21,11 +21,13 @@
 | المراحل 0–7 (API · الحافّة · RLS · Vault · الهجرات · مُرحّل Outbox) | ✅ حيّةٌ ومُثبَتة |
 | خدمة التضمين المركزيّة (`services/embedding`، البند 2.10) | ✅ مبنيّة. `POST /search` يجيب 200 بدل 503 |
 | عامل **`memory`** | ✅ **يقلع ويصمد في الهدوء — مقيسٌ حاويّاً: 138 ثانيةً بلا حركةٍ على مجراه و`RestartCount = 0`** (2026‑08‑03، [§3.105](log/3.105.md) §5‑ج). وقبل ذلك اليوم كان يقلع **ثمّ ينهار بعد خمس ثوانٍ** من الهدوء (`redis.exceptions.TimeoutError` ⇐ `AppError: event consume failed`)، إذ `_SOCKET_TIMEOUT_S` (2.0ث) أقصر من `CONSUMER_BLOCK_MS` (5.0ث) — والادّعاء الأقدم «✅ يقلع ويعمل» ([§3.83](log/3.83.md)) كان صحيحاً في نصفه فقط. العلّة أُصلحت في [`stream-topology-plan.md`](stream-topology-plan.md) الخطوة 1 |
-| عامل **`knowledge`** | ✅ **أُقلع حاويّاً لأوّل مرّة وصمد ≥ 5 دقائق بـ`RestartCount = 0`** (2026‑08‑03، [§3.105](log/3.105.md) §5‑ج) — `DocumentContentResolver` بُني في الخطوتين 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.100](log/3.100.md))، ثمّ أزالت الخطوة 1 من [`stream-topology-plan.md`](stream-topology-plan.md) مهلةَ الصمت التي كانت ستقتله بعد خمس ثوانٍ. أقلِعه بـ`WORKER=knowledge` صراحةً |
-| عامل **`media`** | 🟡 **موصولٌ بالكامل ولم يُقلَع بعد** — `WorkerMediaGenerator` بُني ووُصل في الخطوتين 19‑20 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.103](log/3.103.md) · [§3.104](log/3.104.md))، فلم يعد ينهار لنقصِ محوّل. يحتاج توجيه `image` في `PROVIDER_ROUTING` واعتماداً باسم `image:openai`. جرّبه بـ`WORKER=media` صراحةً |
+| عامل **`knowledge`** | ✅ **أُقلع حاويّاً لأوّل مرّة وصمد ≥ 5 دقائق بـ`RestartCount = 0`** (2026‑08‑03، [§3.105](log/3.105.md) §5‑ج) — `DocumentContentResolver` بُني في الخطوتين 15‑16 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.100](log/3.100.md))، ثمّ أزالت الخطوة 1 من [`stream-topology-plan.md`](stream-topology-plan.md) مهلةَ الصمت التي كانت ستقتله بعد خمس ثوانٍ. **صار يقلع تلقائيّاً مع `docker compose up -d`** ([§3.133](log/3.133.md)) |
+| عامل **`media`** | ✅ **أُقلع حاويّاً لأوّل مرّة وصمد 45 د 46 ث بـ`RestartCount = 0`** (2026‑08‑13، [§3.134](log/3.134.md)) — صفر سطر خطأ، ومستهلكٌ **مسجَّل** على `cg.media` بـ`pending 0` و`idle` ≈ 5 ث ⇒ يستهلك فعلاً لا «حيٌّ فقط». `WorkerMediaGenerator` بُني ووُصل في الخطوتين 19‑20 من [`deferred-adapters-plan.md`](deferred-adapters-plan.md) ([§3.103](log/3.103.md) · [§3.104](log/3.104.md)). **صار يقلع تلقائيّاً مع `docker compose up -d`**. يبقى تنفيذُ **مهمّةٍ** محتاجاً اعتماداً مخزَّناً باسم `image:openai` — غيابُه يُفشل المهمّة لا الإقلاع |
 | مزوّدو LLM السحابيّون (Gemini · Claude · OpenRouter — البند 2.8‑ب‑2) | ⛔ محجوبون بالمفاتيح. المزوّد المحلّي **Ollama** هو المسار العامل |
 
-> ✅ **ولم يعد أيّ عاملٍ ينهار لنقصِ محوّل** بعد الخطوة 20: خدمة `worker` تبقى خلف `profile` لأنّ اختيار العامل قرارُ نشرٍ صريح، لا لأنّ إحدى القيم مكسورة. والافتراضيّ يبقى `memory` لا لأنّ غيره محجوب، بل لأنّ إقلاع `memory` وحده **مقيسٌ حيّاً** ([§3.83](log/3.83.md)).
+> ✅ **العمّال صاروا ثلاث خدماتٍ مستقلّة، وثلاثتهم الآن في الإقلاع الافتراضيّ** ([§3.133](log/3.133.md) ثمّ [§3.134](log/3.134.md)): `docker compose up -d` يقلع `worker-memory` و`worker-knowledge` و`worker-media` معاً، **ولم يبقَ في `docker-compose.yml` مفتاح `profiles:` واحد** ⇒ `--profile workers` بلا أثر. **ما فصلهم كان دليلاً لا قدرة** — الثلاثة موصولون منذ زمنٍ ولا واحد ينهار لنقصِ محوّل، ودخل كلٌّ منهم بعد إقلاعٍ واحدٍ **مقيس** ([§3.105](log/3.105.md) للأوّلَين، [§3.134](log/3.134.md) لـ`media`). ولم يعد لمتغيّر `WORKER` أثرٌ على Compose: كلّ خدمةٍ تحمل قيمتها حرفيّاً.
+>
+> ⭐ **والدليل المقبول ليس `docker ps`**: `XINFO CONSUMERS stream.<وحدة> cg.<وحدة>` هو ما يفرّق بين عمليّةٍ **حيّة** وعمليّةٍ **تستهلك** — مستهلكٌ مسجَّل، `pending 0`، و`idle` بالثواني لا بالساعات.
 
 > ✅ **مستجدّ (2026‑07‑24): Docker متاحٌ في هذه البيئة** — قِيس: `docker 29.6.1` و`docker compose v5.3.1` داخل `Ubuntu-24.04`. الوثائق الأقدم (‏`docs/log/3.77.md §5`) تقول «لا Docker هنا» وتؤجّل الإثبات الحاويّ للبند 2.10؛ **ذلك الحجب زال**، فمسار §2 أدناه قابلٌ للتنفيذ فعلاً، ومعه الإثبات المؤجَّل (‏`/search` عبر حاوية تضمينٍ مُقلَعة + قياس SLO).
 
@@ -137,11 +139,13 @@ docker compose exec -e VAULT_SECRET_ID=<id> app python /app/deploy/smoke/approle
 ## 4) العمّال والمُرحّل
 
 ```bash
-WORKER=memory docker compose --profile workers up -d worker   # ✅ الوحيد الذي يقلع اليوم
-docker compose up -d outbox-relay
+docker compose up -d              # العمّال الثلاثة + outbox-relay مع الجميع
+
+# هل يستهلك فعلاً، أم أنّ الحاوية «Up» وحسب؟
+docker compose exec redis redis-cli XINFO CONSUMERS stream.media cg.media
 ```
 
-> `WORKER` أعلاه صريحٌ عمداً رغم أنّ `docker-compose.yml`/`.env.example` يفترضان `memory` الآن أيضاً (‏release-blockers-plan.md §3 خطوة 3) — التصريح أوضح للقارئ من الاتّكال على افتراضيٍّ قد يتغيّر.
+> ⭐ **لا تُمرّر `WORKER` بعد الآن** ([§3.133](log/3.133.md)). كانت هنا خدمةٌ واحدة `worker` يختار عاملَها المتغيّر، فلا يعمل إلّا مستهلكٌ واحدٌ في المرّة (‏`up -d worker` بقيمةٍ ثانية = **نفس الحاوية يُعاد إنشاؤها**). صارت ثلاث خدماتٍ تحمل قيمها حرفيّاً، فالمتغيّر لا يُقرأ من Compose إطلاقاً — ومعه زال فخُّ «`.env` يغلب الملفّ بصمت» الذي لم يكن يُكشَف إلّا بـ`docker compose config`. يبقى `WORKER` ذا معنىً في مسار RunPod و`python -m` المجرّد.
 
 > ✅ **لم يعد ترتيب الإقلاع قاعدةً يدويّة.** المجموعات ما تزال تُنشأ عند `$` (ذيل المجرى) — والمُرحّل صار يضمنها بنفسه قبل أوّل نشرٍ على أيّ مجرى، لكلّ مسارات الإقلاع (‏[design/08-local-runbook.md §4](design/08-local-runbook.md)، `stream-topology-plan.md`).
 
@@ -266,12 +270,12 @@ alembic revision -m "..."             # هجرة جديدة (لا FK عابرا�
 ```
 POST /api/v1/files                    → upload_url ← ارفع إلى MinIO ← POST /files/{id}/complete
 POST /api/v1/agents/rag_agent/invoke  (Accept: text/event-stream) → بثّ الردّ
-POST /api/v1/media/jobs               → 202 ثمّ GET /media/jobs/{id} حتّى succeeded   🟡 يحتاج WORKER=media
+POST /api/v1/media/jobs               → 202 ثمّ GET /media/jobs/{id} حتّى succeeded   🟡 يحتاج worker-media
 POST /api/v1/integrations/connections → authorize_url ← callback → GET /integrations/tools
 GET  /api/v1/usage                    → ملخّص الاستهلاك
 ```
 
-> 🟡 خطوة الفهرسة (‏`files.file.uploaded.v1` ← عامل المعرفة) **لا تكتمل ما لم تُقلع عامل `knowledge` بنفسك**: العامل صار موصولاً بالكامل ([§3.100](log/3.100.md)) لكنّه ليس ضمن ما يُقلع افتراضيّاً. أقلعه بـ`WORKER=knowledge` تحت `--profile workers`. والمسار كلّه مُثبَتٌ من طرفٍ إلى طرف على خدماتٍ حيّة (PG · MinIO · Qdrant · Redis) في اختبار تكاملٍ حيّ، لا حاويّاً بعد.
+> ✅ خطوة الفهرسة (‏`files.file.uploaded.v1` ← عامل المعرفة) **صارت تكتمل على `docker compose up -d` وحده** ([§3.133](log/3.133.md)): `worker-knowledge` خدمةٌ افتراضيّة الآن. كانت حتّى 2026‑08‑13 تحتاج إقلاعاً يدويّاً، فكان الرفع ينجح والفهرسة **لا تحدث بصمت**. والمسار كلّه مُثبَتٌ من طرفٍ إلى طرف على خدماتٍ حيّة (PG · MinIO · Qdrant · Redis) في اختبار تكاملٍ حيّ، لا حاويّاً بعد.
 
 ---
 
@@ -294,7 +298,7 @@ GET  /api/v1/usage                    → ملخّص الاستهلاك
 | مهامّ عالقة | نموّ `stream.<m>.dlq`؛ راجع سبب الفشل والمحاولات |
 | رفض اتّصال Postgres | مرَّ عبر PgBouncer (6432) لا 5432؛ حجم التجمّع |
 | `POST /search` يعيد 503 | خدمة `embedding` غير صحيحة — `docker compose ps embedding` وسجلّها |
-| العامل ينهار عند الإقلاع | **عطلٌ حقيقيٌّ يستحقّ القراءة أيّاً كانت قيمة `WORKER`** — العمّال الثلاثة موصولون ([§3.100](log/3.100.md) · [§3.104](log/3.104.md))، فالانهيار سببه بيئةٌ لا نقصُ كود: Vault · سرّ MinIO مشوَّه · `PROVIDER_ROUTING` يسمّي مزوّداً بلا محوّل. والرسالة تسمّيه |
+| العامل ينهار عند الإقلاع | **عطلٌ حقيقيٌّ يستحقّ القراءة أيّاً كانت الخدمة `worker-*`** — العمّال الثلاثة موصولون ([§3.100](log/3.100.md) · [§3.104](log/3.104.md))، فالانهيار سببه بيئةٌ لا نقصُ كود: Vault · سرّ MinIO مشوَّه · `PROVIDER_ROUTING` يسمّي مزوّداً بلا محوّل. والرسالة تسمّيه |
 | رفض عملية بـ429 | تجاوز حصّة — `GET /usage` و`/usage/limits` (`USAGE_DEFAULT_LIMITS`) |
 | `Exec format error` | تُشغّل من Git‑Bash على ويندوز؛ ادخل WSL (§1) |
 

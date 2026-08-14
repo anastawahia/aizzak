@@ -76,6 +76,14 @@ x-app-env: &app-env
   # append-only -- XACK does not delete -- so without this every
   # stream.<module> grows forever even with healthy consumers. 0 disables.
   STREAM_MAXLEN: ${STREAM_MAXLEN:-100000}
+  # ت‑3: where the port-less processes stamp their liveness, and how stale
+  # that stamp may get. Listed in the SHARED env block on purpose even though
+  # only four services beat -- `app` and `migrate` ignore it, and the
+  # alternative (two more per-service environment blocks) would be a second
+  # place for the directory to drift out of agreement with the healthcheck
+  # command that reads it.
+  HEARTBEAT_DIR: ${HEARTBEAT_DIR:-/tmp/aizzak-heartbeat}
+  HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S:-300}
   PROVIDER_ROUTING: ${PROVIDER_ROUTING:-{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}}
   OAUTH_REDIRECT_BASE_URL: ${OAUTH_REDIRECT_BASE_URL:-http://localhost}
   MCP_ALLOWED_TRANSPORTS: ${MCP_ALLOWED_TRANSPORTS:-http,sse}
@@ -97,13 +105,96 @@ x-app-logging: &app-logging
 # on the host serving gemma3:1b. `host-gateway` is Docker's documented Linux
 # equivalent -- it substitutes the bridge gateway address at container create.
 #
-# Applied to `app` and `worker` only: they are the two services that call an
-# LLM. `migrate` and `outbox-relay` share the same env block but reach nothing
-# outside the Compose network, and a host route they never use is a hole for
-# free.
+# Applied to `app` and the three `worker-*` services only: they are the
+# processes that call an LLM. `migrate` and `outbox-relay` share the same env
+# block but reach nothing outside the Compose network, and a host route they
+# never use is a hole for free.
 x-host-gateway: &host-gateway
   extra_hosts:
     - "host.docker.internal:host-gateway"
+
+# ── The three Streams consumers (08 §2/§4) ────────────────────────────────
+# Everything the three `worker-*` services share. What differs per service is
+# exactly one environment key (`WORKER`) and, for `media` alone, a profile.
+#
+# ⭐ This used to be ONE service parameterised by `WORKER`, which made the
+# declared topology unreachable: `docker compose up -d worker` twice with two
+# values is the SAME container recreated, so only one consumer could run at a
+# time and "one module's backlog cannot starve another's" was true on paper
+# only. Splitting was tracked as a deferred decision in
+# docs/stream-topology-plan.md §6-أ with one named precondition -- a first
+# MEASURED containerised boot of `knowledge` -- which docs/log/3.105.md met.
+#
+# ⚠️ The depends_on set below is deliberately WIDER than the old `worker`
+# service's, which named neither `minio` nor `vault` even though every worker
+# resolves its MinIO credentials out of Vault, and named no `qdrant` at all.
+# That never showed on a full `docker compose up -d` (those services boot
+# anyway, unasked) and only bites when an operator names ONE service on the
+# command line -- which is exactly the §3.111 defect, found live in §3.110,
+# where `pgbouncer` was missing here for the same reason. The `qdrant` half of
+# that gap in `app` -- flagged here and left unfixed since §3.133 -- is closed
+# in the `app` service below, in the same step that gave `qdrant` a
+# healthcheck to depend on.
+x-worker-service: &worker-service
+  depends_on:
+    ollama-bridge:
+      condition: service_started
+    # This edge was MISSING until §3.111 even though DATABASE_URL has named
+    # `pgbouncer:6432` all along -- see the note on `outbox-relay`.
+    #
+    # `service_healthy` since ت‑3: the pooler had no healthcheck at all, so
+    # `service_started` was the strongest condition expressible here, and
+    # §3.111 recorded that looseness in writing ("started != accepting
+    # connections", "adding a pgbouncer healthcheck is a separate decision").
+    # That decision is now made, so the edge says what it always meant.
+    pgbouncer:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+    # Likewise ت‑3: `service_started` here was never a choice either -- Qdrant
+    # had no healthcheck, and a container whose HTTP port is not open yet
+    # satisfies "started". Every worker writes vectors, so readiness is what
+    # the edge is for.
+    qdrant:
+      condition: service_healthy
+    vault:
+      condition: service_healthy
+    embedding:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+    vault-bootstrap:
+      condition: service_completed_successfully
+  command: ["python", "-m", "app.workers.main"]
+  restart: unless-stopped
+
+# Merged INTO `environment:` (not into the service), alongside *app-env.
+x-worker-env: &worker-env
+  DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+
+# ── liveness for the four processes that expose no port (ت‑3) ──────────────
+# `worker-memory`/`worker-knowledge`/`worker-media`/`outbox-relay` run a
+# blocking loop and listen on nothing, so there is no endpoint to curl. Each
+# stamps a file once per completed cycle and `python -m app.ops.healthcheck
+# <name>` reads its age -- see `framework/observability/heartbeat.py` for why
+# a file rather than a port, and `HealthSettings` for why the default
+# tolerance is 300 s rather than something that looks tighter.
+#
+# Only the TIMING is shared here; each service passes its own name, because a
+# per-process file is precisely what stops a dead process from riding on a
+# live sibling's beat (the ت‑7 orphan, which consumed happily from `cg.memory`
+# while running deleted code).
+#
+# `start_period: 90s` covers the slowest of the four boots (the knowledge
+# worker resolves MinIO credentials out of Vault before its first read), and
+# failures inside it never count toward `retries`.
+x-heartbeat-healthcheck: &heartbeat-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 90s
 
 services:
   # ────────────────────────────── data plane ──────────────────────────────
@@ -144,6 +235,16 @@ services:
       # BEFORE any migration if the role does not already exist, so it must
       # be created here regardless.
       TRANSIT_ROTATOR_PASSWORD: ${TRANSIT_ROTATOR_PASSWORD:?set TRANSIT_ROTATOR_PASSWORD in .env}
+      # workspace_purger (BE-ADM-014): SELECT/DELETE on every tenant table a
+      # purged workspace's content lives in, plus column-scoped SELECT/UPDATE
+      # on workspace.workspaces/workspace.users and SELECT/INSERT on
+      # platform.admin_audit_log. No standing service authenticates as this
+      # role -- `python -m app.ops.purge` is a manually-invoked one-shot tool,
+      # the `retention_sweeper`/`transit_rotator` footing -- but
+      # `app.ops.provision`'s own `_require_roles` check fails fast on it
+      # BEFORE any migration if the role does not already exist, so it must
+      # be created here regardless.
+      WORKSPACE_PURGER_PASSWORD: ${WORKSPACE_PURGER_PASSWORD:?set WORKSPACE_PURGER_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
@@ -194,6 +295,32 @@ services:
       DB_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
     ports:
       - "127.0.0.1:${HOST_PORT_PGBOUNCER:-16432}:6432"
+    # ⚠️ IT CROSSES THE LINK (ت‑3, docs/operational-findings.md §3) -- this is
+    # the `nginx` healthcheck's reasoning applied to the pooler, and it is the
+    # difference that makes the edge below worth upgrading. `pg_isready -p
+    # 6432` was the obvious candidate and was REJECTED after measuring it: it
+    # reports "accepting connections" the moment pgbouncer's own listener is
+    # up, which is barely more than the `service_started` it would replace.
+    # A pooler that accepts clients while it cannot reach Postgres is the
+    # exact 502-shaped failure §3.75's bug #10 taught this file to probe for,
+    # so this opens a REAL server connection through the pool and runs
+    # `select 1` on it.
+    #
+    # The credential is the pooler's OWN `AUTH_USER`/`DB_PASSWORD`, read from
+    # this container's environment at check time -- `$$` keeps Compose from
+    # interpolating it, so nothing sensitive enters the rendered config that
+    # `docker compose config` prints. Only the database NAME is interpolated
+    # here, and it is not a secret.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "PGPASSWORD=\"$$DB_PASSWORD\" psql -h 127.0.0.1 -p 6432 -U \"$$DB_USER\" -d ${POSTGRES_DB:-aizzak} -tAc 'select 1' > /dev/null",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
     <<: *app-logging
 
@@ -240,6 +367,28 @@ services:
       - qdrant-data:/qdrant/storage
     ports:
       - "127.0.0.1:${HOST_PORT_QDRANT:-16333}:6333"
+    # ت‑3 (docs/operational-findings.md §3). `/readyz`, not `/livez`: the
+    # first means "every shard can serve", the second only "the process is
+    # up" -- and it is readiness the `depends_on` edges below now gate on.
+    #
+    # ⚠️ THE SHAPE IS FORCED BY THE IMAGE, not chosen. `qdrant/qdrant:v1.13.4`
+    # ships neither `curl` nor `wget` (measured), so the probe is bash's own
+    # `/dev/tcp` speaking one line of HTTP. `CMD` + explicit `bash`, never
+    # `CMD-SHELL`: that would run `/bin/sh`, and `/dev/tcp` is a bash feature
+    # -- a dash-backed `sh` fails it every time, which would read as an
+    # unhealthy Qdrant rather than as a broken probe.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '^HTTP/1.1 200 OK' <&3",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
     <<: *app-logging
 
@@ -425,6 +574,25 @@ services:
     command: >-
       TCP-LISTEN:11435,bind=172.17.0.1,fork,reuseaddr
       TCP:127.0.0.1:11434
+    # ت‑3 (docs/operational-findings.md §3), and END-TO-END on purpose: it
+    # enters the bridge on 11435 and comes back out of the native Ollama on
+    # 11434. A socat that is listening while its target is dead forwards
+    # nothing, so "the listener is up" (`nc -z`) would report the one state
+    # this service has no other way of announcing as healthy.
+    #
+    # 📌 NOTHING gates on this being healthy, deliberately. `app` and the three
+    # workers keep `condition: service_started` on this service (below):
+    # Ollama is a NATIVE WSL unit outside Compose's lifecycle, and making the
+    # whole stack refuse to boot because a host service is down would trade a
+    # visible degradation for an invisible one. Unhealthy here means "LLM
+    # calls will fail", surfaced in `docker compose ps` instead of only in a
+    # request's error.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://172.17.0.1:11435/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     <<: *app-logging
     restart: unless-stopped
 
@@ -434,10 +602,22 @@ services:
       ollama-bridge:
         condition: service_started
       pgbouncer:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      # ⚠️ THIS EDGE WAS MISSING, declared as a debt in §3.133 and again in the
+      # `x-worker-service` note above ("`app` still carries the `qdrant` half
+      # of that same gap; flagged, not fixed here"). It is the §3.111 shape
+      # exactly: `QDRANT_URL` has named `qdrant:6333` since Phase 1 and the
+      # API's RAG path reads that store, but the pooler-style edge was never
+      # declared -- invisible on a full `up -d`, and a crash-loop the moment
+      # an operator runs `docker compose up -d app` on its own. Closed here
+      # rather than in a later step because ت‑3 is what gave `qdrant` a
+      # healthcheck to depend on; adding the edge and the condition it needs
+      # in two separate changes would have left one of them meaningless.
+      qdrant:
         condition: service_healthy
       vault:
         condition: service_healthy
@@ -473,88 +653,78 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # Same image, different command (08 §2/§4). Three Streams consumers, each
-  # its own process so one module's backlog cannot starve another's.
-  #
-  # ⚠️ BEHIND A PROFILE, and that is still a finding -- but a much narrower
-  # one now, because ALL THREE values build a fully wired worker. No value of
-  # `WORKER` crash-loops on a missing adapter any more:
-  #   memory    -> boots for real since 2.10 (`build_memory_worker_from_env`
-  #                no longer raises -- its EmbeddingProvider gap is closed),
-  #                and it is the one PROVEN live inside containers (§3.83).
-  #   knowledge -> no longer adapter-blocked since steps 15-16 of
-  #                docs/deferred-adapters-plan.md (docs/log/3.98.md ·
-  #                docs/log/3.100.md): `build_knowledge_worker_from_env`
-  #                binds MinIO from Vault and composes
-  #                WorkerDocumentContentResolver, so it no longer raises.
-  #                NOT yet booted as a container even once, though -- that
-  #                needs a deliberate run, not an assumption.
-  #   media     -> no longer adapter-blocked since steps 19-20 of the same
-  #                plan (docs/log/3.103.md · docs/log/3.104.md):
-  #                `build_media_worker_from_env` binds the same Vault/MinIO
-  #                pair and composes WorkerMediaGenerator over the resolved
-  #                `image` route. NOT yet booted as a container either.
-  # -- so the topology declared here is correct, ready, and no longer holds a
-  # value that is broken by design. What separates the three is now EVIDENCE,
-  # not capability: only `memory` has a measured live boot.
-  #
-  # ⚠️ `media` needs an `image` route in PROVIDER_ROUTING (see .env.example)
-  # and a stored `image:openai` credential for the workspace. Missing either
-  # is an honest, loud boot failure or a failed job -- not a crash-loop over
-  # code that does not exist.
-  #
-  # ⚠️ THE DEFAULT BELOW MATTERS (release-blockers-plan.md §3, step 3 / P0-4
-  # in pre-release-review.md). `WORKER` defaults to `memory` -- and it STAYS
-  # `memory` after step 16, deliberately. `knowledge` is now wired, but
-  # "builds without raising" and "boots cleanly against a real Vault, MinIO,
-  # Qdrant and embedding service" are different claims, and only `memory` has
-  # the second one measured (§3.83). A default is a promise to an operator
-  # who typed nothing; it should point at the path with live evidence behind
-  # it. Flipping it is a decision for the first successful knowledge boot to
-  # earn, not for this comment to assume. (It used to default to `knowledge`
-  # back when that value crash-looped forever under `restart: unless-stopped`
-  # on a plain `docker compose --profile workers up worker`, making an
-  # otherwise-healthy stack look broken for no reason the operator could see
-  # without reading this comment first.) `memory` mirrors
-  # deploy/runpod/entrypoint.sh's own `WORKER="${WORKER:-memory}"`, so the two
-  # deployment paths agree; tests/unit/test_deploy_worker_default.py asserts
-  # that agreement and fails if either one drifts.
-  #
-  # Considered and rejected: no default at all (`${WORKER:?msg}`), forcing an
-  # explicit value on every invocation. Rejected because it would make THIS
-  # path disagree with RunPod's -- entrypoint.sh already defaults silently
-  # and reasonably (its single-container image has no interactive operator to
-  # prompt at boot) -- and because a default that actually boots is worth
-  # more here than forcing a decision nobody using this profile is actually
-  # undecided about. A WRONG explicit value still fails loud, never silently:
-  # `app/workers/main.py::_select_worker`/`run` raise
-  # `SystemExit("unknown worker ... -- valid names: ...")` before touching
-  # any I/O.
-  #   docker compose --profile workers up worker      # boots WORKER=memory
-  worker:
-    profiles: ["workers"]
-    <<: [*app-image, *app-logging, *host-gateway]
-    depends_on:
-      ollama-bridge:
-        condition: service_started
-      # This edge was MISSING until §3.111 even though DATABASE_URL below has
-      # named `pgbouncer:6432` all along -- see the note on `outbox-relay`.
-      pgbouncer:
-        condition: service_started
-      redis:
-        condition: service_healthy
-      embedding:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      vault-bootstrap:
-        condition: service_completed_successfully
+  # ── memory ──────────────────────────────────────────────────────────────
+  # In the DEFAULT stack: `docker compose up -d` boots it with everything
+  # else. Measured live, 138 s on an idle stream with RestartCount = 0
+  # (docs/log/3.105.md §5-ب), after the stream-topology-plan.md step-1 fix
+  # removed the 2 s socket timeout that used to kill every consumer at the
+  # 5 s mark of quiet.
+  worker-memory:
+    <<: [*app-image, *app-logging, *host-gateway, *worker-service]
     environment:
-      <<: *app-env
-      DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
-      WORKER: ${WORKER:-memory}
-    command: ["python", "-m", "app.workers.main"]
-    restart: unless-stopped
+      <<: [*app-env, *worker-env]
+      WORKER: memory
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "memory"]
+
+  # ── knowledge ───────────────────────────────────────────────────────────
+  # In the DEFAULT stack too, and this is the change docs/log/3.105.md §5-ج
+  # earned: first containerised boot in the project's history, ≥ 5 minutes
+  # idle with RestartCount = 0. Adapter-complete since steps 15-16 of
+  # docs/deferred-adapters-plan.md (`build_knowledge_worker_from_env` binds
+  # MinIO out of Vault and composes WorkerDocumentContentResolver).
+  #
+  # Until it booted by default, `POST /files` uploaded but never INDEXED on a
+  # plain `up -d` -- the whole RAG path silently ended at the outbox.
+  worker-knowledge:
+    <<: [*app-image, *app-logging, *host-gateway, *worker-service]
+    environment:
+      <<: [*app-env, *worker-env]
+      WORKER: knowledge
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "knowledge"]
+
+  # ── media ───────────────────────────────────────────────────────────────
+  # In the DEFAULT stack since docs/log/3.134.md, and the profile that used to
+  # sit here is gone for exactly the one reason it was ever promised to go:
+  # its first containerised boot in the project's history was measured.
+  # 45 min 46 s on an idle stream, RestartCount = 0, zero error-level lines,
+  # and -- the part `docker ps` cannot tell you -- `XINFO CONSUMERS
+  # stream.media cg.media` showed one registered consumer with `pending 0` and
+  # an `idle` of ~5 s, i.e. a live XREADGROUP cycle, not a wedged process
+  # holding a container `Up`.
+  #
+  # Adapter-complete since steps 19-20 of docs/deferred-adapters-plan.md
+  # (docs/log/3.103.md · docs/log/3.104.md); .env.example's PROVIDER_ROUTING
+  # routes `image` at `image:openai`, which IS wired. That was already true
+  # while it stayed profiled -- capability was never the question, evidence
+  # was, because this repo has twice been wrong about "should boot": `memory`
+  # was documented as working while it died at five seconds of quiet, and
+  # `knowledge` sat "wired" for weeks before anyone ran it.
+  #
+  # A missing per-workspace `image:openai` credential does NOT block the
+  # boot: it is resolved per job by ResolveCredential and fails that job
+  # loudly. An `image` route naming an UNWIRED provider does stop the process
+  # dead at build time, on purpose.
+  worker-media:
+    <<: [*app-image, *app-logging, *host-gateway, *worker-service]
+    environment:
+      <<: [*app-env, *worker-env]
+      WORKER: media
+      # The ONE service that raises the tolerance, and the reason is
+      # structural rather than a fudge: a beat cannot land while a handler is
+      # still running, and one image-generation job may legitimately occupy
+      # this loop for `Limits.media_timeout_s` (300 s). 600 keeps a busy media
+      # worker from being reported unhealthy for doing its job -- a false
+      # alarm here would cost more than the extra five minutes of detection
+      # latency, because an operator who learns to ignore this column loses
+      # the other three checks with it.
+      HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_MEDIA:-600}
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "media"]
 
   # SINGLE instance (08 §2). Consumer groups are still created at `$`
   # (stream tail, redis_streams.py:235, unchanged) -- that fact is why a
@@ -577,13 +747,15 @@ services:
       # then heals it silently the moment anything else starts the pooler,
       # so it reads as intermittent. Harmless on a full `docker compose up
       # -d` (the pooler boots anyway) -- which is exactly why it survived.
-      # `service_started`, not `_healthy`: the pooler defines no healthcheck,
-      # and `app` has always taken this same edge on the same condition. That
-      # is a real looseness (started != accepting connections), left as-is
-      # deliberately: adding a pgbouncer healthcheck is a separate decision,
-      # not a silent rider on this fix.
+      # WAS `service_started`, and the comment here used to explain why: the
+      # pooler defined no healthcheck, so "started" was the strongest thing
+      # this edge could say, and §3.111 refused to smuggle a new healthcheck
+      # in as a rider on a different fix ("adding a pgbouncer healthcheck is a
+      # separate decision"). ت‑3 made that decision on its own terms, so the
+      # looseness §3.111 recorded -- started != accepting connections -- is
+      # gone rather than merely documented.
       pgbouncer:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
       migrate:
@@ -605,6 +777,14 @@ services:
     command: ["python", "-m", "app.workers.outbox_relay"]
     deploy:
       replicas: 1
+    # ت‑3. The relay beats on CLEAN cycles only (`OutboxRelay.run_forever`),
+    # which is the whole point here: a relay that cannot reach Postgres or
+    # Redis keeps looping, doubling its backoff, and staying `Up` forever --
+    # the state that was previously invisible everywhere except in a log line
+    # nobody reads.
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "outbox-relay"]
     restart: unless-stopped
 
   # ─────────────────────────────── edge ───────────────────────────────────

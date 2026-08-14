@@ -31,7 +31,7 @@ export PGHOST=127.0.0.1
 export PGPORT=5432
 export PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD"
 
-# ── 1. Postgres: database + the six roles ─────────────────────────────────
+# ── 1. Postgres: database + the seven roles ───────────────────────────────
 wait_for "PostgreSQL" 60 pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_SUPERUSER"
 
 if ! psql -U "$POSTGRES_SUPERUSER" -d postgres -tAc \
@@ -44,7 +44,7 @@ fi
 # privilege that aizzak_owner deliberately does not hold, which is why role
 # creation is a superuser step here and the GRANTs are a separate step below
 # (they need the tables to exist -- 01 §6).
-log "creating roles aizzak_owner / app_rw / outbox_relay / retention_sweeper / metrics_reader / transit_rotator"
+log "creating roles aizzak_owner / app_rw / outbox_relay / retention_sweeper / metrics_reader / transit_rotator / workspace_purger"
 POSTGRES_USER="$POSTGRES_SUPERUSER" bash /app/deploy/postgres/initdb/10-roles.sh
 
 # ── 2. Vault: engines, seeded secrets, AppRole ────────────────────────────

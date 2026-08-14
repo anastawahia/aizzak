@@ -61,6 +61,7 @@ for required in \
     RETENTION_SWEEPER_PASSWORD \
     METRICS_READER_PASSWORD \
     TRANSIT_ROTATOR_PASSWORD \
+    WORKSPACE_PURGER_PASSWORD \
     MINIO_ROOT_USER \
     MINIO_ROOT_PASSWORD \
     FIREBASE_PROJECT_ID
@@ -120,6 +121,11 @@ export METRICS_DATABASE_URL="postgresql+asyncpg://metrics_reader:${METRICS_READE
 # builds the DSN inline from TRANSIT_ROTATOR_PASSWORD (already required
 # above, so always present) at invocation time -- see
 # 08-local-runbook.md §4.5.
+# No WORKSPACE_PURGER_DATABASE_URL export here either, the identical
+# retention_sweeper/transit_rotator precedent: `python -m app.ops.purge`
+# (BE-ADM-014) is a manually-invoked one-shot tool, not a standing service.
+# An operator builds the DSN inline from WORKSPACE_PURGER_PASSWORD (already
+# required above) at invocation time -- see 08-local-runbook.md §4.6.
 export REDIS_URL="redis://127.0.0.1:6379/0"
 export MINIO_ENDPOINT="127.0.0.1:9000"
 export MINIO_SECURE=false
@@ -167,15 +173,21 @@ export OAUTH_REFRESH_SKEW_S="${OAUTH_REFRESH_SKEW_S:-60}"
 export USAGE_ROLLUP_PERIODS="${USAGE_ROLLUP_PERIODS:-day,month}"
 export USAGE_DEFAULT_LIMITS="${USAGE_DEFAULT_LIMITS:-{\"tokens\":{\"month\":5000000},\"cost_micros\":{\"month\":50000000}}}"
 
-# ⚠️ memory stays the default, and after step 20 of
-# docs/deferred-adapters-plan.md the reason is ONLY evidence. All three
-# workers are now wired: `knowledge` since steps 15-16
-# (WorkerDocumentContentResolver) and `media` since steps 19-20
-# (WorkerMediaGenerator) -- neither factory raises any more. But neither has
-# ever been booted as a process, whereas memory's live container round trip
-# is measured (docs/log/3.83.md), and a default is a promise to an operator
-# who typed nothing. Keep this in step with docker-compose.yml and
-# .env.example; tests/unit/test_deploy_worker_default.py fails if they drift.
+# ⚠️ THIS PATH RUNS EXACTLY ONE WORKER, and that is what still makes this
+# default matter. Compose stopped needing it in docs/log/3.133.md -- its one
+# parameterised `worker` service became `worker-memory`/`worker-knowledge`/
+# `worker-media`, so over there the memory and knowledge consumers simply run
+# side by side. This image cannot do that: it is a single container under
+# supervisord with one [program:worker], so it must pick.
+#
+# It picks `memory` on evidence, not capability. All three workers are wired
+# (`knowledge` since steps 15-16 of docs/deferred-adapters-plan.md, `media`
+# since steps 19-20), and both memory and knowledge now have measured
+# container boots (docs/log/3.105.md); memory simply has the longer record
+# (docs/log/3.83.md too), and a default is a promise to an operator who typed
+# nothing. Keep this in step with .env.example;
+# tests/unit/test_deploy_worker_default.py fails if the two drift, and also
+# fails if this names a worker Compose is unwilling to boot unprofiled.
 export WORKER="${WORKER:-memory}"
 
 # The model the routing table names below must be the model pulled at

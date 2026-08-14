@@ -1,30 +1,44 @@
-"""The `WORKER` default must not drift between the two deployment paths, nor
-between a file and the auto-loaded `.env` that actually overrides it
-(release-blockers-plan.md §3, step 3 · pre-release-review.md P0-4).
+"""The Compose worker topology, and the `WORKER` default RunPod still needs,
+must not drift -- from each other, from the dispatcher that defines the valid
+names, or from the evidence that justifies which workers boot by default
+(release-blockers-plan.md §3, step 3 · pre-release-review.md P0-4 ·
+stream-topology-plan.md §6-أ).
 
-The defect this guards: `docker-compose.yml`'s `worker` service defaulted
-`WORKER` to `knowledge`, a value that crash-looped forever under
-`restart: unless-stopped` (it was blocked on `DocumentContentResolver` back
-then -- a debt since closed by step 16 of `docs/deferred-adapters-plan.md`,
-which changes nothing about this guard: see `_EXPECTED_WORKER_DEFAULT`
-below) -- while `deploy/runpod/entrypoint.sh` defaulted
-the SAME variable to `memory`, the one value that actually boots. An operator
-running `docker compose --profile workers up worker` with no override got a
-different, broken worker than one running the RunPod image unmodified, and
-the crash loop looked like a platform fault rather than the honest, 18-line
-comment sitting right above it explained.
+⭐ RESHAPED when `worker` was split into `worker-memory` / `worker-knowledge` /
+`worker-media` (docs/log/3.133.md). What this file guarded before was a single
+parameterised service whose `WORKER: ${WORKER:-<name>}` fallback had to agree
+with RunPod's. That service is gone, and with it BOTH drift vectors it had:
 
-⭐ A SECOND drift, found only by running `docker compose --profile workers
-config` and reading what it actually resolves to (fixing the inline
-`${WORKER:-...}` fallback alone was NOT enough): Compose auto-loads a `.env`
-file from the project root for variable substitution, and `.env.example`
--- the tracked template every deployment guide has an operator `cp` to
-`.env` as step one (`docs/quickstart.md`, `deploy-linux-server.md`,
-`deploy-runpod.md`) -- carried its own `WORKER=knowledge`. That value, not
-docker-compose.yml's inline fallback, is what a real `.env` makes Compose
-resolve to on every documented deployment; the fallback only ever fires for
-an operator who deletes the line or never runs `cp .env.example .env` at
-all. So this module checks THREE sources, not two.
+  * Compose now hardcodes a literal `WORKER` per service, so the second,
+    subtler defect this file was written for -- Compose auto-loads `.env`, and
+    `.env.example`'s own `WORKER=knowledge` beat the inline `${WORKER:-...}`
+    fallback on every documented deployment, provable only by reading
+    `docker compose config` rather than the file -- cannot recur at all. It is
+    designed out, not merely fixed, and `test_compose_worker_values_are_literal`
+    keeps it that way.
+  * The two deployment paths no longer default to "the same worker" because
+    Compose no longer defaults to ANY worker; it runs all the evidenced ones.
+    The surviving cross-path invariant is weaker but real, and asserted below:
+    RunPod's default must be a name Compose declares AND one Compose is
+    willing to boot unprofiled.
+
+What replaces the old value check is the rule the split was granted under: a
+worker rides in the default `docker compose up -d` **iff** its containerised
+boot has been measured. `memory` (138 s, RestartCount 0) and `knowledge`
+(≥ 5 min, RestartCount 0, its first ever container boot) were measured in
+docs/log/3.105.md; `media` (45 min 46 s, RestartCount 0, one live consumer
+registered on `cg.media`) in docs/log/3.134.md, which is what deleted the last
+`profiles:` key in the file.
+
+⭐ So `_UNMEASURED` is now EMPTY, and it is deliberately not modelled as an
+empty constant with an `else` branch guarding it: a branch nothing can enter is
+not a guard, and this repo's own rule is that every token must be killable.
+What survives is stronger and fully live -- the set of workers Compose boots
+WITHOUT a profile must equal `_MEASURED` exactly, which fails the moment a
+`profiles:` key reappears on any of the three. A future fourth worker that has
+never been run is added to `_RUNNERS` but NOT to `_MEASURED`, and
+`test_the_patterns_actually_find_something` fails until someone decides which
+it is -- that is the branch, and it lives in the ledger, not in an `if`.
 
 Same shape as `test_ops_provision.py` (7.1) and `test_api_conventions.py`
 (6.3-ج): documents drifted and nothing compared them. This compares them.
@@ -35,39 +49,61 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
+_DISPATCHER = _REPO_ROOT / "src" / "app" / "workers" / "main.py"
 
-# `WORKER: ${WORKER:-memory}` under the `worker:` service's `environment:` key.
-_COMPOSE_WORKER_DEFAULT = re.compile(r"\bWORKER:\s*\$\{WORKER:-([a-z_]+)\}")
 # `export WORKER="${WORKER:-memory}"`.
 _ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}"')
 # A plain dotenv assignment: `WORKER=memory`, start of line.
 _ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
+# A `_RUNNERS` entry in the dispatcher: `"knowledge": knowledge_worker.run,`.
+# Read as TEXT on purpose -- importing app.workers.main would drag in every
+# worker module (and its settings) to learn four dictionary keys.
+_RUNNERS_ENTRY = re.compile(r'^\s+"([a-z_]+)":\s+\w+\.run,\s*$', re.MULTILINE)
 
-# The three names `app/workers/main.py::_RUNNERS` actually dispatches to. All
-# three build a wired worker today: `knowledge` stopped crash-looping at step
-# 16 of `docs/deferred-adapters-plan.md` and `media` at step 20.
-_VALID_WORKER_NAMES = frozenset({"knowledge", "media", "memory"})
-# The default all three deployment sources must agree on. `memory` is the one
-# worker whose boot is PROVEN live inside containers (2.10 closed its
-# EmbeddingProvider gap; `docs/log/3.83.md` measured the round trip);
-# `knowledge` and `media` are wired but never yet booted -- so the default
-# stays here until a real boot of one of them earns the change
-# (docker-compose.yml's comment argues it in full).
-_EXPECTED_WORKER_DEFAULT = "memory"
+# `_RUNNERS` also dispatches `outbox_relay`, which 08 §4 lists among "أوامر
+# العمّال" but D-26 runs as its own single-instance service with its own
+# command -- it is not one of the three Streams consumers this topology is
+# about.
+_NOT_A_STREAMS_WORKER = frozenset({"outbox_relay"})
+
+# The ledger: workers whose containerised boot has been MEASURED, and which
+# therefore ride in the default `docker compose up -d`. `memory` + `knowledge`
+# in docs/log/3.105.md, `media` in docs/log/3.134.md. A name is added here by
+# ONE clean measured boot -- logged, with a consumer registration to prove the
+# process is consuming and not merely alive -- and by nothing else.
+_MEASURED = frozenset({"memory", "knowledge", "media"})
+
+# RunPod is ONE container running ONE worker chosen by `WORKER` (supervisord,
+# no Compose), so it still needs a default, and it still must be the worker
+# with live evidence behind it: a default is a promise to an operator who
+# typed nothing.
+_EXPECTED_RUNPOD_DEFAULT = "memory"
 
 
-def _compose_worker_default() -> str:
-    text = _COMPOSE.read_text(encoding="utf-8")
-    match = _COMPOSE_WORKER_DEFAULT.search(text)
-    assert match is not None, (
-        "docker-compose.yml: could not find the worker service's "
-        "`WORKER: ${WORKER:-<name>}` line -- did its shape change?"
+def _compose() -> dict[str, object]:
+    # PyYAML resolves the `<<: [*app-env, *worker-env]` merge keys, so what
+    # comes back per service is what Compose itself resolves -- verified
+    # against `docker compose config` in §3.133.
+    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+
+
+def _compose_worker_services() -> dict[str, dict]:
+    services = _compose()["services"]  # type: ignore[index]
+    return {name: body for name, body in services.items() if name.startswith("worker-")}
+
+
+def _dispatcher_streams_workers() -> frozenset[str]:
+    names = frozenset(_RUNNERS_ENTRY.findall(_DISPATCHER.read_text(encoding="utf-8")))
+    assert names, (
+        "src/app/workers/main.py: could not find any `_RUNNERS` entry -- did its shape change?"
     )
-    return match.group(1)
+    return names - _NOT_A_STREAMS_WORKER
 
 
 def _entrypoint_worker_default() -> str:
@@ -89,54 +125,131 @@ def _env_example_worker() -> str:
     return match.group(1)
 
 
-def test_the_regexes_actually_find_a_default() -> None:
+def test_the_patterns_actually_find_something() -> None:
     """A guard whose regex silently matches nothing would pass forever while
-    guarding nothing (the 3.69 lesson, restated in test_ops_provision.py) --
-    every source must resolve to one of the three real worker names."""
-    assert _compose_worker_default() in _VALID_WORKER_NAMES
-    assert _entrypoint_worker_default() in _VALID_WORKER_NAMES
-    assert _env_example_worker() in _VALID_WORKER_NAMES
+    guarding nothing (the 3.69 lesson, restated in test_ops_provision.py)."""
+    assert _dispatcher_streams_workers() == _MEASURED, (
+        f"app/workers/main.py dispatches {sorted(_dispatcher_streams_workers())} "
+        f"but the measured-boot ledger holds {sorted(_MEASURED)}. If a worker "
+        "was just added: run it once in a container, log the measurement, and "
+        "add it here -- or, if it has NOT been run, reintroduce the profiled "
+        "branch this file dropped in §3.134 rather than widening the ledger."
+    )
+    assert _compose_worker_services()
+    assert _entrypoint_worker_default() in _MEASURED
+    assert _env_example_worker() in _MEASURED
 
 
-def test_compose_fallback_and_runpod_defaults_agree() -> None:
-    compose_default = _compose_worker_default()
-    entrypoint_default = _entrypoint_worker_default()
-    assert compose_default == entrypoint_default, (
-        f"docker-compose.yml's inline fallback defaults WORKER to {compose_default!r} but "
-        f"deploy/runpod/entrypoint.sh defaults it to {entrypoint_default!r} -- "
-        "an operator following one deployment path gets a different worker "
-        "than one following the other. Keep them equal, or make one path "
-        "require an explicit value with a clear failure message instead of a "
-        "silent, differing default."
+def test_compose_declares_one_service_per_streams_worker() -> None:
+    """08 §2 asks for three consumers, "each its own process so one module's
+    backlog cannot starve another's". A single service parameterised by
+    `WORKER` could not deliver that at all -- two `up`s with two values are
+    the same container recreated -- so the declared topology was unreachable
+    until the split (stream-topology-plan.md §6-أ). This asserts it is now
+    reachable: one service per name, no name unserved, none invented."""
+    services = _compose_worker_services()
+    declared = {name: body["environment"]["WORKER"] for name, body in services.items()}
+    assert set(declared.values()) == _dispatcher_streams_workers(), (
+        f"docker-compose.yml declares workers {sorted(declared.values())} but "
+        f"app/workers/main.py::_RUNNERS dispatches "
+        f"{sorted(_dispatcher_streams_workers())} -- a name in the dispatcher "
+        "with no service never runs on Compose; a service naming an unknown "
+        "worker exits with SystemExit at boot."
+    )
+    assert len(declared) == len(set(declared.values())), (
+        f"two Compose services select the same worker: {declared} -- two "
+        "consumers in one group is a valid Streams topology but not one "
+        "anything here declares, so it is far more likely a copy-paste."
+    )
+    for service_name, worker in declared.items():
+        assert service_name == f"worker-{worker}", (
+            f"service {service_name!r} selects worker {worker!r} -- the name "
+            "an operator types must say which worker they get."
+        )
+
+
+def test_compose_worker_values_are_literal() -> None:
+    """The defect that only `docker compose config` revealed, designed out.
+    While the value was `${WORKER:-...}`, Compose's auto-loaded `.env` -- and
+    `.env.example`, which every deployment guide copies to `.env` as step one
+    -- silently won over the file, so what the YAML said and what the stack
+    ran were different things. A literal cannot be overridden by `.env` at
+    all, and the operator who wants another value now names another service
+    instead of mutating a variable."""
+    for service_name, body in _compose_worker_services().items():
+        value = body["environment"]["WORKER"]
+        assert "$" not in str(value), (
+            f"{service_name}: WORKER={value!r} is interpolated. Compose "
+            "auto-loads `.env`, so this file would stop being the truth "
+            "about what runs -- read `docker compose config`, not the YAML, "
+            "before trusting any interpolated value here."
+        )
+
+
+def test_a_worker_boots_unprofiled_iff_its_boot_was_measured() -> None:
+    """The rule the split was granted under, made executable, in the one
+    direction that is still reachable. Evidence, not capability, decides what
+    boots by default -- all three have built a fully wired worker for a long
+    time, and each still had to be run once before it was allowed into
+    `docker compose up -d`. Now that all three are measured, the live content
+    of the rule is that no `profiles:` key may come back: a profiled
+    `knowledge` means `up -d` uploads files and never indexes them, a profiled
+    `media` means image jobs sit in the stream forever, and in both cases
+    nothing in any log says so -- the stack looks entirely healthy."""
+    unprofiled = {
+        body["environment"]["WORKER"]
+        for body in _compose_worker_services().values()
+        if not body.get("profiles")
+    }
+    assert unprofiled == _MEASURED, (
+        f"`docker compose up -d` boots workers {sorted(unprofiled)} but the "
+        f"measured-boot ledger says {sorted(_MEASURED)}. Fewer: a profile came "
+        "back onto a worker that earned its place by measurement, and the jobs "
+        "it consumes will now queue silently. More: an unmeasured worker was "
+        "let into the default stack, where `restart: unless-stopped` turns its "
+        "first crash into a stack that looks broken."
     )
 
 
-def test_env_example_agrees_with_the_compose_fallback() -> None:
-    """The one that actually matters in practice: Compose auto-loads `.env`,
-    and `.env.example` is what every documented setup copies to `.env` as
-    step one -- so ITS value, not docker-compose.yml's inline fallback, is
-    what a real deployment resolves to. `docker compose --profile workers
-    config` proved this live: fixing the inline fallback alone still
-    resolved `WORKER: knowledge` until this file's `.env.example` line was
-    fixed too."""
-    assert _env_example_worker() == _compose_worker_default(), (
-        f".env.example sets WORKER={_env_example_worker()!r}, which OVERRIDES "
-        f"docker-compose.yml's inline fallback ({_compose_worker_default()!r}) "
-        "for every operator who ran `cp .env.example .env` -- run `docker "
-        "compose --profile workers config` and read what WORKER actually "
-        "resolves to, not just the fallback text, before trusting this."
+def test_runpod_default_agrees_with_env_example() -> None:
+    """`.env.example` is what every documented setup copies to `.env` as step
+    one, and RunPod's entrypoint sources it. Two files naming two different
+    workers means the image runs one thing and its own template says another."""
+    assert _env_example_worker() == _entrypoint_worker_default(), (
+        f".env.example sets WORKER={_env_example_worker()!r} but "
+        f"deploy/runpod/entrypoint.sh defaults it to "
+        f"{_entrypoint_worker_default()!r} -- the single-container path runs "
+        "one worker; both files must name the same one."
     )
 
 
-def test_default_is_the_worker_whose_boot_is_actually_proven() -> None:
-    """Agreeing with each other is necessary but not sufficient: all three
-    sources could still agree on a name with NO EVIDENCE BEHIND IT. That used
-    to mean a name that crash-loops (`media`, before step 20 wired it); it now
-    means the weaker but still real thing -- `knowledge` and `media` are both
-    wired and neither has ever been booted as a process, so both are
-    evidence-free either way. Only `memory`'s boot is measured
-    (`docs/log/3.83.md`), so the default must specifically be `memory`, not
-    merely a name in the set."""
-    assert _compose_worker_default() == _EXPECTED_WORKER_DEFAULT
-    assert _entrypoint_worker_default() == _EXPECTED_WORKER_DEFAULT
-    assert _env_example_worker() == _EXPECTED_WORKER_DEFAULT
+def test_runpod_default_is_a_worker_compose_boots_unprofiled() -> None:
+    """The cross-path invariant that SURVIVES the split. Compose no longer
+    has a default worker to agree with -- it runs every evidenced one -- so
+    what must still hold is weaker and still real: the single worker RunPod
+    picks for an operator who typed nothing has to be one Compose declares,
+    and one Compose is willing to boot without an opt-in profile. Anything
+    else means the two deployment paths disagree about which worker is safe
+    to run unattended."""
+    default = _entrypoint_worker_default()
+    unprofiled = {
+        body["environment"]["WORKER"]
+        for body in _compose_worker_services().values()
+        if not body.get("profiles")
+    }
+    assert default in unprofiled, (
+        f"deploy/runpod/entrypoint.sh defaults WORKER to {default!r}, but "
+        f"Compose only boots {sorted(unprofiled)} without an explicit "
+        "profile -- one path is running unattended what the other treats as "
+        "needing a deliberate opt-in."
+    )
+
+
+def test_runpod_default_is_the_worker_whose_boot_is_best_proven() -> None:
+    """Being in the unprofiled set is necessary but not sufficient: RunPod
+    picks exactly ONE worker, and it should be the one with the longest live
+    record, not merely a permissible one. `memory` has been booting in
+    containers since docs/log/3.83.md; `knowledge`'s first container boot was
+    2026-08-03. Changing this is a real decision, not a tidy-up."""
+    assert _entrypoint_worker_default() == _EXPECTED_RUNPOD_DEFAULT
+    assert _env_example_worker() == _EXPECTED_RUNPOD_DEFAULT
