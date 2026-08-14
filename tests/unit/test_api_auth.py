@@ -22,7 +22,9 @@ AROUND it and nowhere else:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -40,11 +42,45 @@ from app.framework.errors import AppError, ForbiddenError, UnauthorizedError
 from app.framework.ports.auth_provider import Identity
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
+from app.framework.ports.system_stats import CpuStats, MemoryStats, SystemStats
+from app.framework.providers.inventory import (
+    ConfiguredProvider,
+    ProbeOutcome,
+    ProviderRoute,
+)
 from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.types import Json, Uuid
 from app.framework.workflows import InMemoryWorkflowRegistry
+from app.modules.access.domain.value_objects import Permission
+from app.modules.admin.application.providers import (
+    ListPlatformProviders,
+    PlatformProviderUseCases,
+    ProbePlatformProvider,
+    RevokePlatformProviderKey,
+    SetPlatformProviderKey,
+)
+from app.modules.admin.application.users import (
+    DeletePlatformUser,
+    ListPlatformUsers,
+    PlatformAdminUseCases,
+    SetPlatformAccountStatus,
+    SetPlatformAdminRole,
+    SetPlatformWorkspaceRole,
+)
+from app.modules.admin.ports.accounts import (
+    AccountStatus,
+    PlatformAccountDeletion,
+    PlatformAccountStatusChange,
+)
+from app.modules.admin.ports.directory import PlatformUser, PlatformUserPage
+from app.modules.admin.ports.providers import (
+    PlatformKeyChange,
+    PlatformProviderKey,
+    StoredCipher,
+)
+from app.modules.admin.ports.roles import PlatformRoleChange, WorkspaceRole
 from app.modules.workspace.ports.inbound import ProvisionedUser
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
@@ -130,6 +166,166 @@ class _FakeAccess:
 
     def is_allowed(self, roles: frozenset[str], permission: str) -> bool:
         raise AssertionError("the authentication path never decides a permission")
+
+
+class _FakePlatformDirectory:
+    """A single deterministic directory row for the platform-admin route."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, str | None]] = []
+
+    async def list_users(
+        self, *, limit: int, offset: int, search: str | None = None
+    ) -> PlatformUserPage:
+        self.calls.append((limit, offset, search))
+        return PlatformUserPage(
+            items=(
+                PlatformUser(
+                    id=_U1,
+                    workspace_id=_W1,
+                    email=_EMAIL,
+                    display_name="Someone",
+                    status="active",
+                    roles=("platform_admin",),
+                    last_seen_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    online=True,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+            ),
+            total=1,
+            active=1,
+            disabled=0,
+            online=1,
+        )
+
+
+class _FakePresence:
+    async def execute(self, ctx: ExecutionContext) -> datetime:
+        assert (ctx.workspace_id, ctx.user_id) == (_W1, _U1)
+        return datetime(2026, 1, 2, tzinfo=UTC)
+
+
+class _FakeSystemStats:
+    """A host whose GPU did not answer while its CPU and memory did — the
+    partial reading the route must still serve as 200."""
+
+    async def read(self) -> SystemStats:
+        return SystemStats(
+            host="gpu-node-1",
+            sampled_at=datetime(2026, 1, 4, tzinfo=UTC),
+            cpu=CpuStats(
+                usage_percent=42.5,
+                cores=8,
+                interval_seconds=5.0,
+                load_average=(1.5, 1.1, 0.9),
+            ),
+            cpu_error=None,
+            memory=MemoryStats(
+                total_gb=16.0,
+                used_gb=8.0,
+                available_gb=8.0,
+                cached_gb=4.0,
+                used_percent=50.0,
+                limit_gb=None,
+            ),
+            memory_error=None,
+            gpus=(),
+            gpu_error="nvidia-smi is not available on this host",
+        )
+
+
+class _FakePlatformAccounts:
+    def __init__(self) -> None:
+        self.status: AccountStatus = "active"
+        self.calls: list[tuple[str, str, AccountStatus, str]] = []
+        self.deletions: list[tuple[str, str, str]] = []
+        self.deleted_at: datetime | None = None
+
+    async def set_status(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        status: AccountStatus,
+        reason: str,
+    ) -> PlatformAccountStatusChange:
+        self.calls.append((actor_user_id, target_user_id, status, reason))
+        previous = self.status
+        self.status = status
+        changed = previous != status
+        return PlatformAccountStatusChange(
+            user_id=target_user_id,
+            workspace_id=_W1,
+            firebase_uid="target-firebase-uid",
+            previous_status=previous,
+            status=status,
+            changed=changed,
+            audit_id="018f0000-0000-7000-8000-0000000000a1" if changed else None,
+            changed_at=datetime(2026, 1, 3, tzinfo=UTC) if changed else None,
+        )
+
+    async def delete(
+        self, *, actor_user_id: str, target_user_id: str, reason: str
+    ) -> PlatformAccountDeletion:
+        self.deletions.append((actor_user_id, target_user_id, reason))
+        first = self.deleted_at is None
+        if first:
+            self.deleted_at = datetime(2026, 1, 4, tzinfo=UTC)
+        return PlatformAccountDeletion(
+            user_id=target_user_id,
+            workspace_id=_W1,
+            firebase_uid="target-firebase-uid",
+            deleted=first,
+            roles_revoked=("owner",) if first else (),
+            audit_id="018f0000-0000-7000-8000-0000000000a3" if first else None,
+            deleted_at=self.deleted_at,
+        )
+
+
+class _FakePlatformRoles:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str, bool, str]] = []
+        self.enabled: set[str] = set()
+
+    async def set_workspace_role(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        role: WorkspaceRole,
+        enabled: bool,
+        reason: str,
+    ) -> PlatformRoleChange:
+        return self._change(actor_user_id, target_user_id, role, enabled, reason)
+
+    async def set_platform_admin(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        enabled: bool,
+        reason: str,
+    ) -> PlatformRoleChange:
+        return self._change(actor_user_id, target_user_id, "platform_admin", enabled, reason)
+
+    def _change(
+        self, actor: str, target: str, role: str, enabled: bool, reason: str
+    ) -> PlatformRoleChange:
+        self.calls.append((actor, target, role, enabled, reason))
+        changed = (role in self.enabled) != enabled
+        if enabled:
+            self.enabled.add(role)
+        else:
+            self.enabled.discard(role)
+        return PlatformRoleChange(
+            user_id=target,
+            workspace_id=_W1,
+            role=role,
+            enabled=enabled,
+            changed=changed,
+            audit_id="018f0000-0000-7000-8000-0000000000a2" if changed else None,
+            changed_at=datetime(2026, 1, 3, tzinfo=UTC) if changed else None,
+        )
 
 
 def _identity(*, email: str | None = _EMAIL, claims: Json | None = None) -> Identity:
@@ -432,10 +628,131 @@ class _FakeResolver:
         raise AssertionError("not exercised")
 
 
-def _make_app(authenticator: ApiAuthenticator) -> FastAPI:
+class _FakeProviderInventory:
+    """One keyed provider with one LLM route — enough for the routes' shape."""
+
+    def configured_providers(self) -> tuple[ConfiguredProvider, ...]:
+        return (
+            ConfiguredProvider(
+                provider="openai",
+                keyless=False,
+                probeable=True,
+                routes=(ProviderRoute(namespace="llm", capability="default", model="gpt-4o"),),
+            ),
+        )
+
+
+class _FakeProviderStore:
+    """A platform key store holding one live key for ``openai``."""
+
+    def __init__(self) -> None:
+        moment = datetime(2026, 1, 4, tzinfo=UTC)
+        self.key = PlatformProviderKey(
+            id="00000000-0000-7000-8000-0000000000aa",
+            provider="openai",
+            label="****1234",
+            status="active",
+            created_by="00000000-0000-7000-8000-0000000000bb",
+            created_at=moment,
+            updated_at=moment,
+        )
+        self.stored: list[str] = []
+
+    async def active_keys(self) -> tuple[PlatformProviderKey, ...]:
+        return (self.key,)
+
+    async def active_cipher(self, provider: str) -> StoredCipher | None:
+        return StoredCipher(ciphertext="vault:sk-stored", key_name="tenant-secrets")
+
+    async def store(
+        self,
+        *,
+        provider: str,
+        ciphertext: str,
+        key_name: str,
+        label: str,
+        actor_user_id: str,
+        reason: str,
+    ) -> PlatformKeyChange:
+        self.stored.append(ciphertext)
+        return PlatformKeyChange(
+            provider=provider,
+            key=self.key,
+            previous_status="active",
+            changed=True,
+            audit_id="00000000-0000-7000-8000-0000000000cc",
+        )
+
+    async def revoke(self, *, provider: str, actor_user_id: str, reason: str) -> PlatformKeyChange:
+        return PlatformKeyChange(
+            provider=provider,
+            key=None,
+            previous_status="absent",
+            changed=False,
+            audit_id=None,
+        )
+
+
+class _FakeProviderSecrets:
+    async def get_secret(self, path: str) -> Json:
+        raise AssertionError("not exercised")
+
+    async def encrypt(self, key_name: str, plaintext: bytes) -> str:
+        return f"vault:{plaintext.decode()}"
+
+    async def decrypt(self, key_name: str, ciphertext: str) -> bytes:
+        return ciphertext.removeprefix("vault:").encode()
+
+
+class _RejectingProbe:
+    """A vendor that answers, and says the key is no good."""
+
+    async def probe(self, provider: str, api_key: str) -> ProbeOutcome:
+        return ProbeOutcome(ok=False, latency_ms=87, detail="openai rejected the api key")
+
+
+class _UnlimitedCache:
+    async def get(self, key: str) -> bytes | None:
+        raise AssertionError("not exercised")
+
+    async def set(self, key: str, value: bytes, ttl_s: int | None = None) -> None:
+        raise AssertionError("not exercised")
+
+    async def delete(self, key: str) -> None:
+        raise AssertionError("not exercised")
+
+    async def incr(self, key: str, amount: int = 1) -> int:
+        return 1
+
+    async def expire(self, key: str, ttl_s: int) -> None:
+        return None
+
+
+def _make_providers(store: _FakeProviderStore) -> PlatformProviderUseCases:
+    inventory, secrets, cache = _FakeProviderInventory(), _FakeProviderSecrets(), _UnlimitedCache()
+    return PlatformProviderUseCases(
+        list=ListPlatformProviders(inventory, store),
+        set_key=SetPlatformProviderKey(inventory, store, secrets),
+        revoke_key=RevokePlatformProviderKey(inventory, store),
+        probe=ProbePlatformProvider(inventory, store, secrets, _RejectingProbe(), cache),
+    )
+
+
+def _make_app(
+    authenticator: ApiAuthenticator,
+    accounts: _FakePlatformAccounts | None = None,
+    roles: _FakePlatformRoles | None = None,
+    directory: _FakePlatformDirectory | None = None,
+    system_stats: _FakeSystemStats | None = None,
+    providers: PlatformProviderUseCases | None = None,
+) -> FastAPI:
     """The real app, wired with the REAL authenticator over fake ports — so
     the header handling under test is FastAPI's own, not a stand-in's."""
     registry = InMemoryAgentRegistry()
+    # One instance behind both use cases: status changes and deletions are the
+    # same account manager, and a second fake would let a test watch a port
+    # nobody called.
+    platform_accounts = accounts or _FakePlatformAccounts()
     conversations = build_conversations()
     files_media = build_files_media()
     workspace_usage = build_workspace_usage()
@@ -464,6 +781,21 @@ def _make_app(authenticator: ApiAuthenticator) -> FastAPI:
             integrations=build_integrations().integrations,
             authorization=build_authorization(),
             idempotency=InMemoryIdempotencyStore(),
+            admin=PlatformAdminUseCases(
+                users=ListPlatformUsers(directory or _FakePlatformDirectory()),
+                accounts=SetPlatformAccountStatus(platform_accounts),
+                deletions=DeletePlatformUser(platform_accounts),
+                workspace_roles=SetPlatformWorkspaceRole(roles or _FakePlatformRoles()),
+                platform_roles=SetPlatformAdminRole(roles or _FakePlatformRoles()),
+            ),
+            presence=_FakePresence(),
+            session_revocations=authenticator.revocations,
+            # Left unwired by default so the fail-closed branch is the one a
+            # test has to opt OUT of, not the one it has to remember.
+            system_stats=system_stats,
+            # Unwired by default for the same reason: the fail-closed branch is
+            # opt-out, never something a test has to remember to exercise.
+            providers=providers,
         ),
         http_authenticator=authenticator,
         ws_authenticator=authenticator,
@@ -520,6 +852,398 @@ def test_the_resolved_principal_becomes_the_request_context() -> None:
     client = TestClient(_make_app(authenticator))
     body = client.get("/api/v1/_ctx", headers={"Authorization": "Bearer t"}).json()
     assert body == {"workspace_id": _W1, "roles": ["member", "owner"]}
+
+
+def test_me_context_returns_the_server_resolved_identity_and_permissions() -> None:
+    """The frontend gate consumes this endpoint instead of deriving admin
+    access from a Firebase custom claim or a client-side database mirror."""
+    authenticator, _provisioning, _access = _build(roles=frozenset({"member"}))
+    client = TestClient(_make_app(authenticator))
+
+    response = client.get("/api/v1/me/context", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user": {"id": _U1},
+        "workspace": {"id": _W1},
+        "roles": ["member", "owner"],
+        "permissions": sorted(
+            permission.value for permission in Permission if permission != Permission.PLATFORM_ADMIN
+        ),
+    }
+
+
+def test_platform_admin_can_read_the_server_backed_user_directory() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator))
+
+    response = client.get("/api/v1/admin/users", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": [
+            {
+                "id": _U1,
+                "workspace_id": _W1,
+                "email": _EMAIL,
+                "display_name": "Someone",
+                "status": "active",
+                "roles": ["platform_admin"],
+                "last_seen_at": "2026-01-01T00:00:00Z",
+                "online": True,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+        "stats": {"total": 1, "active": 1, "disabled": 0, "online": 1},
+        "limit": 20,
+        "offset": 0,
+        "next_offset": None,
+    }
+
+
+def test_the_directory_page_carries_its_bounds_and_search_to_the_port() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    directory = _FakePlatformDirectory()
+    client = TestClient(_make_app(authenticator, directory=directory))
+
+    response = client.get(
+        "/api/v1/admin/users",
+        params={"limit": 5, "offset": 10, "q": "  some  "},
+        headers={"Authorization": "Bearer t"},
+    )
+
+    assert response.status_code == 200
+    # Surrounding whitespace is trimmed, but inner text is the operator's own.
+    assert directory.calls == [(5, 10, "some")]
+    assert (response.json()["limit"], response.json()["offset"]) == (5, 10)
+
+
+def test_a_cleared_search_box_reads_the_unfiltered_directory() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    directory = _FakePlatformDirectory()
+    client = TestClient(_make_app(authenticator, directory=directory))
+
+    blank = client.get(
+        "/api/v1/admin/users", params={"q": "   "}, headers={"Authorization": "Bearer t"}
+    )
+    absent = client.get("/api/v1/admin/users", headers={"Authorization": "Bearer t"})
+
+    assert (blank.status_code, absent.status_code) == (200, 200)
+    # An emptied box is the whole directory, not a search for the empty string.
+    assert directory.calls == [(20, 0, None), (20, 0, None)]
+
+
+def test_tenant_owner_cannot_read_the_platform_user_directory() -> None:
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator))
+
+    response = client.get("/api/v1/admin/users", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "authz.forbidden"
+
+
+def test_platform_admin_disables_an_account_with_audited_reason_and_revokes_it() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+    target = "018f0000-0000-7000-8000-0000000000a1"
+
+    response = client.patch(
+        f"/api/v1/admin/users/{target}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "disabled", "reason": "Confirmed security incident"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": target,
+        "workspace_id": _W1,
+        "status": "disabled",
+        "changed": True,
+        "audit_id": "018f0000-0000-7000-8000-0000000000a1",
+        "changed_at": "2026-01-03T00:00:00Z",
+    }
+    assert accounts.calls == [(_U1, target, "disabled", "Confirmed security incident")]
+    assert asyncio.run(authenticator.revocations.is_revoked("target-firebase-uid"))
+
+
+def test_platform_admin_reenables_an_account_and_clears_its_temporary_revocation() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+    target = "018f0000-0000-7000-8000-0000000000a1"
+
+    disabled = client.patch(
+        f"/api/v1/admin/users/{target}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "disabled", "reason": "Confirmed security incident"},
+    )
+    enabled = client.patch(
+        f"/api/v1/admin/users/{target}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "active", "reason": "Issue resolved"},
+    )
+
+    assert disabled.status_code == enabled.status_code == 200
+    assert enabled.json()["status"] == "active"
+    assert not asyncio.run(authenticator.revocations.is_revoked("target-firebase-uid"))
+
+
+def test_tenant_owner_cannot_change_a_platform_account_status() -> None:
+    authenticator, _provisioning, _access = _build()
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+
+    response = client.patch(
+        "/api/v1/admin/users/018f0000-0000-7000-8000-0000000000a1/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "disabled", "reason": "Confirmed security incident"},
+    )
+
+    assert response.status_code == 403
+    assert accounts.calls == []
+
+
+def test_platform_admin_deletes_an_account_and_cuts_off_the_tokens_it_holds() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+    target = "018f0000-0000-7000-8000-0000000000a1"
+
+    response = client.request(
+        "DELETE",
+        f"/api/v1/admin/users/{target}",
+        headers={"Authorization": "Bearer t"},
+        json={"reason": "Left the company"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": target,
+        "workspace_id": _W1,
+        "deleted": True,
+        "roles_revoked": ["owner"],
+        "audit_id": "018f0000-0000-7000-8000-0000000000a3",
+        "deleted_at": "2026-01-04T00:00:00Z",
+    }
+    assert accounts.deletions == [(_U1, target, "Left the company")]
+    # The tombstone refuses the next sign-in on its own; this is what stops the
+    # token already in the deleted user's hands.
+    assert asyncio.run(authenticator.revocations.is_revoked("target-firebase-uid"))
+
+
+def test_a_repeated_deletion_reports_the_original_date_and_no_new_audit() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+    target = "018f0000-0000-7000-8000-0000000000a1"
+
+    first = client.request(
+        "DELETE",
+        f"/api/v1/admin/users/{target}",
+        headers={"Authorization": "Bearer t"},
+        json={"reason": "Left the company"},
+    )
+    again = client.request(
+        "DELETE",
+        f"/api/v1/admin/users/{target}",
+        headers={"Authorization": "Bearer t"},
+        json={"reason": "Left the company"},
+    )
+
+    assert first.status_code == again.status_code == 200
+    assert again.json()["deleted"] is False
+    assert again.json()["audit_id"] is None
+    assert again.json()["deleted_at"] == first.json()["deleted_at"]
+
+
+def test_tenant_owner_cannot_delete_a_platform_user() -> None:
+    authenticator, _provisioning, _access = _build()
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts))
+
+    response = client.request(
+        "DELETE",
+        "/api/v1/admin/users/018f0000-0000-7000-8000-0000000000a1",
+        headers={"Authorization": "Bearer t"},
+        json={"reason": "Attempted cleanup"},
+    )
+
+    assert response.status_code == 403
+    assert accounts.deletions == []
+
+
+def test_a_partial_system_reading_is_still_a_200_with_its_reason_attached() -> None:
+    """A monitoring page that fails whole goes blind exactly when it is being
+    read, so a dead GPU degrades to a message beside live CPU and memory."""
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator, system_stats=_FakeSystemStats()))
+
+    response = client.get("/api/v1/admin/system/stats", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # The machine that answered is part of the reading: every other route here
+    # answers the same from any replica, and this one cannot.
+    assert body["host"] == "gpu-node-1"
+    assert body["sampled_at"] == "2026-01-04T00:00:00Z"
+    assert body["cpu"] == {
+        "usage_percent": 42.5,
+        "cores": 8,
+        "interval_seconds": 5.0,
+        "load_average": [1.5, 1.1, 0.9],
+    }
+    assert body["cpu_error"] is None
+    assert body["memory"]["used_percent"] == 50.0
+    assert body["gpus"] == []
+    assert body["gpu_error"] == "nvidia-smi is not available on this host"
+
+
+def test_tenant_owner_cannot_read_the_hosts_system_stats() -> None:
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator, system_stats=_FakeSystemStats()))
+
+    response = client.get("/api/v1/admin/system/stats", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "authz.forbidden"
+
+
+def test_an_unwired_system_monitor_fails_closed_rather_than_inventing_a_reading() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator))
+
+    response = client.get("/api/v1/admin/system/stats", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+
+
+def test_the_provider_listing_carries_the_routes_and_the_key_but_never_a_secret() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator, providers=_make_providers(_FakeProviderStore())))
+
+    response = client.get("/api/v1/admin/providers", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    (entry,) = response.json()["data"]
+    assert entry["provider"] == "openai"
+    assert entry["routes"] == [{"namespace": "llm", "capability": "default", "model": "gpt-4o"}]
+    # The label is the masked hint the credential row already holds; there is
+    # no field on this shape that could carry the key itself.
+    assert entry["key"]["label"] == "****1234"
+    assert "secret" not in entry["key"]
+
+
+def test_a_tenant_owner_cannot_read_the_platforms_provider_keys() -> None:
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator, providers=_make_providers(_FakeProviderStore())))
+
+    response = client.get("/api/v1/admin/providers", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "authz.forbidden"
+
+
+def test_an_unwired_provider_surface_fails_closed_rather_than_listing_nothing() -> None:
+    """An empty list would read as "this platform routes to no provider",
+    which is a different and false statement from "this app has no wiring"."""
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator))
+
+    response = client.get("/api/v1/admin/providers", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+
+
+def test_storing_a_platform_key_encrypts_it_and_answers_with_metadata_only() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    store = _FakeProviderStore()
+    client = TestClient(_make_app(authenticator, providers=_make_providers(store)))
+
+    response = client.put(
+        "/api/v1/admin/providers/openai/key",
+        headers={"Authorization": "Bearer t"},
+        json={"secret": "sk-live-9999", "reason": "quarterly rotation"},
+    )
+
+    assert response.status_code == 200
+    assert store.stored == ["vault:sk-live-9999"]
+    body = response.json()
+    assert body["previous_status"] == "active"
+    assert "sk-live-9999" not in response.text
+
+
+def test_a_rejected_key_is_a_200_saying_so_rather_than_an_error_response() -> None:
+    """The request succeeded; its answer is that the credential did not. The
+    error channel stays reserved for failures of the probe itself."""
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    client = TestClient(_make_app(authenticator, providers=_make_providers(_FakeProviderStore())))
+
+    response = client.post(
+        "/api/v1/admin/providers/openai/probe",
+        headers={"Authorization": "Bearer t"},
+        json={},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["detail"] == "openai rejected the api key"
+    assert body["latency_ms"] == 87
+
+
+def test_platform_admin_changes_workspace_and_platform_roles_on_separate_routes() -> None:
+    authenticator, _provisioning, _access = _build(roles=frozenset({"platform_admin"}))
+    roles = _FakePlatformRoles()
+    client = TestClient(_make_app(authenticator, roles=roles))
+    target = "018f0000-0000-7000-8000-0000000000a1"
+
+    workspace = client.patch(
+        f"/api/v1/admin/users/{target}/roles/workspace",
+        headers={"Authorization": "Bearer t"},
+        json={"role": "admin", "enabled": True, "reason": "Support escalation"},
+    )
+    platform = client.patch(
+        f"/api/v1/admin/users/{target}/roles/platform-admin",
+        headers={"Authorization": "Bearer t"},
+        json={"enabled": True, "reason": "Platform support rotation"},
+    )
+
+    assert workspace.status_code == platform.status_code == 200
+    assert workspace.json()["role"] == "admin"
+    assert platform.json()["role"] == "platform_admin"
+    assert roles.calls == [
+        (_U1, target, "admin", True, "Support escalation"),
+        (_U1, target, "platform_admin", True, "Platform support rotation"),
+    ]
+
+
+def test_tenant_owner_cannot_change_platform_roles() -> None:
+    authenticator, _provisioning, _access = _build()
+    roles = _FakePlatformRoles()
+    client = TestClient(_make_app(authenticator, roles=roles))
+
+    response = client.patch(
+        "/api/v1/admin/users/018f0000-0000-7000-8000-0000000000a1/roles/platform-admin",
+        headers={"Authorization": "Bearer t"},
+        json={"enabled": True, "reason": "Attempted escalation"},
+    )
+
+    assert response.status_code == 403
+    assert roles.calls == []
+
+
+def test_heartbeat_records_only_the_authenticated_callers_presence() -> None:
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator))
+
+    response = client.post("/api/v1/me/heartbeat", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    assert response.json() == {"last_seen_at": "2026-01-02T00:00:00Z"}
 
 
 def test_a_refusal_is_still_an_rfc_9457_problem() -> None:
