@@ -702,6 +702,7 @@ def build_knowledge_worker(
     heartbeat: Heartbeat | None = None,
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
+    dlq_watch_interval_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the knowledge worker's TWO subscriptions under one ``cg.knowledge``
     consumer group (04 §4's binding table, `docs/log/3.45.md`'s recorded
@@ -750,6 +751,10 @@ def build_knowledge_worker(
         # ever reads, and only the  path below turns the sweep on.
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
+        # ت-6: same default and the same reason -- a direct caller (a live
+        # integration test) gets a consumer that reads and nothing else, and
+        # only the `_from_env` path below turns the DLQ report on.
+        dlq_watch_interval_s=dlq_watch_interval_s,
     )
     return consumer, subscriptions
 
@@ -896,6 +901,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "knowledge"),
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
+        dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
     )
 
     # `CompositionRoot.disposables()`'s own `_close_vault` precedent -- hvac
@@ -968,6 +974,7 @@ def build_media_worker(
     heartbeat: Heartbeat | None = None,
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
+    dlq_watch_interval_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the media worker's single ``stream.media``/``cg.media``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -998,6 +1005,10 @@ def build_media_worker(
         # ever reads, and only the  path below turns the sweep on.
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
+        # ت-6: same default and the same reason -- a direct caller (a live
+        # integration test) gets a consumer that reads and nothing else, and
+        # only the `_from_env` path below turns the DLQ report on.
+        dlq_watch_interval_s=dlq_watch_interval_s,
     )
     return consumer, subscriptions
 
@@ -1099,6 +1110,7 @@ async def build_media_worker_from_env() -> tuple[
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "media"),
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
+        dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
     )
 
     # The knowledge worker's `_close_vault` precedent -- hvac wraps a
@@ -1168,6 +1180,7 @@ def build_memory_worker(
     heartbeat: Heartbeat | None = None,
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
+    dlq_watch_interval_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the memory worker's single ``stream.memory``/``cg.memory``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -1193,6 +1206,10 @@ def build_memory_worker(
         # ever reads, and only the  path below turns the sweep on.
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
+        # ت-6: same default and the same reason -- a direct caller (a live
+        # integration test) gets a consumer that reads and nothing else, and
+        # only the `_from_env` path below turns the DLQ report on.
+        dlq_watch_interval_s=dlq_watch_interval_s,
     )
     return consumer, subscriptions
 
@@ -1255,6 +1272,7 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "memory"),
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
+        dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
     )
     disposables: list[Disposable] = [
         engine.dispose,

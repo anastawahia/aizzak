@@ -102,11 +102,18 @@ groups:
         annotations:
           summary: "The dead-letter queue has an entry needing operator triage"
           description: >-
-            At least one entry has sat on a <stream>.dlq stream
-            (stream.knowledge.dlq / stream.media.dlq) for 5 minutes.
-            Dead-lettered entries do not self-heal; each one already
-            represents either 5 failed handler attempts
-            (MAX_RETRIES_BEFORE_DLQ) or a malformed/unroutable envelope.
+            At least one entry has sat on a <stream>.dlq stream for 5 minutes
+            -- one per stream in the static consumer topology
+            (stream.files / stream.knowledge / stream.media / stream.memory;
+            the gauge's label carries which). Dead-lettered entries do not
+            self-heal; each one already represents either 5 failed handler
+            attempts (MAX_RETRIES_BEFORE_DLQ) or a malformed/unroutable
+            envelope.
+            NOTE (ت-6, 2026-08-15): this rule listed only knowledge/media
+            until `aizzak_dlq_depth` itself did -- and the one entry on the
+            live stack was on stream.memory.dlq, i.e. on a queue neither the
+            gauge nor this text covered. The metric now derives its stream
+            list from `framework/events/topology.py` instead of a literal.
           reason: >-
             Threshold is `> 0`, not a larger number, because there is no
             "normal" non-zero depth for this queue -- reaching the DLQ at all
@@ -121,6 +128,12 @@ groups:
             (--yes, bookkeeping-only entries) -- see
             08-local-runbook.md §4.2 for the full procedure, including the
             claimed-ledger caveat requeue cannot itself detect.
+            Until a scraper exists to evaluate this rule at all, the same
+            fact reaches an operator as a `dlq.backlog` WARNING logged by the
+            owning worker every DLQ_WATCH_INTERVAL_S
+            (`infrastructure/messaging/consumers/dlq_watch.py`, ت-6) --
+            carrying the depth, the oldest entry's age and its reason.
+            `docker compose logs worker-memory | grep dlq.backlog`.
 
   # A SECOND group rather than a third rule in the one above: `aizzak-outbox-dlq`
   # names exactly what it holds, and this signal is neither an Outbox nor a DLQ

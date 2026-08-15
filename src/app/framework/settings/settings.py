@@ -232,6 +232,20 @@ class EventSettings(BaseModel):
     # operator tool (`app.ops.notify_groups`).
     notify_group_sweep_interval_s: float = Field(default=900.0, ge=0)
 
+    # ت-6 (`docs/operational-findings.md` §6): how often each worker reports
+    # what is parked on the DLQs of the streams it consumes
+    # (`consumers/dlq_watch.py`). `0` disables it, leaving the DLQ observable
+    # only by an operator who thinks to run `python -m app.ops.dlq peek` --
+    # which is precisely the state ت-6 recorded.
+    #
+    # ⚠️ Unlike the two sweeps above, this knob costs nothing to make small
+    # and buys nothing by being large: the read is `XLEN` + a one-entry
+    # `XRANGE` per stream, it deletes nothing, and it logs nothing at all
+    # while the queues are empty (the common case). The default matches the
+    # `for: 5m` on `AizzakDlqNotEmpty` (`deploy/prometheus/alerts.yml`) so the
+    # log line and the future alert describe a backlog on the same cadence.
+    dlq_watch_interval_s: float = Field(default=300.0, ge=0)
+
 
 class HealthSettings(BaseModel):
     """Liveness reporting for the processes that have no HTTP listener to

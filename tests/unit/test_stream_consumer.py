@@ -33,7 +33,7 @@ from app.framework.identifiers import new_uuid7
 from app.framework.observability import Heartbeat
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
-from app.infrastructure.messaging.redis_streams import ConsumerInfo, StreamMessage
+from app.infrastructure.messaging.redis_streams import ConsumerInfo, DlqBacklog, StreamMessage
 
 
 class InMemoryStreamsConsumer:
@@ -192,6 +192,42 @@ class InMemoryStreamsConsumer:
         self.entries.setdefault(f"{stream}.dlq", []).append((entry_id, raw))
         self.pending.get((stream, group), {}).pop(entry_id, None)
 
+    # -- ت-6: what the DLQ report reads -------------------------------------- #
+    async def dlq_backlog(self, stream: str) -> DlqBacklog:
+        """The observable effect of the real adapter's ``XLEN`` + one-entry
+        ``XRANGE`` over ``<stream>.dlq`` -- computed from the SAME in-memory
+        list ``dead_letter`` above appends to, so a test that dead-letters a
+        message then reads the backlog exercises the real sequence a worker
+        performs rather than two disconnected fakes. ``oldest_age_s`` is 0.0
+        here: this fake's ids are not wall-clock stamps (the real derivation
+        is ``redis_streams._entry_id_age_s``, tested in
+        ``tests/unit/test_dlq_watch.py`` against real Streams id shapes)."""
+        entries = self.entries.get(f"{stream}.dlq", [])
+        if not entries:
+            return DlqBacklog(
+                stream=stream,
+                depth=0,
+                oldest_entry_id=None,
+                oldest_age_s=None,
+                oldest_reason=None,
+            )
+        oldest_id = entries[0][0]
+        reason = next(
+            (
+                r
+                for s, _g, entry_id, r, _d in self.dead_lettered
+                if s == stream and entry_id == oldest_id
+            ),
+            None,
+        )
+        return DlqBacklog(
+            stream=stream,
+            depth=len(entries),
+            oldest_entry_id=oldest_id,
+            oldest_age_s=0.0,
+            oldest_reason=reason,
+        )
+
 
 def _envelope_bytes(
     event_type: str,
@@ -225,6 +261,7 @@ def _consumer(
     heartbeat: Heartbeat | None = None,
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
+    dlq_watch_interval_s: float = 0.0,
 ) -> StreamConsumer:
     return StreamConsumer(
         fake,  # type: ignore[arg-type]
@@ -235,6 +272,7 @@ def _consumer(
         heartbeat=heartbeat,
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
+        dlq_watch_interval_s=dlq_watch_interval_s,
     )
 
 
@@ -895,6 +933,77 @@ async def test_the_loop_sweeps_on_its_own_schedule() -> None:
         task.cancel()
 
     assert fake.deleted_consumers == [("stream.memory", "cg.memory", "memory.deadhost.1")]
+
+
+# --------------------------------------------------------------------------- #
+# DLQ reporting (ت-6, docs/operational-findings.md §6)                        #
+# --------------------------------------------------------------------------- #
+async def test_the_dlq_report_is_off_unless_the_knob_is_wired() -> None:
+    """Same reason the sweep defaults to off: this engine also drives the
+    API's notify bridge, whose streams belong to the WORKERS -- a bridge that
+    watched them would report another process's backlog once per API worker
+    process while the owning worker reports it once."""
+    fake = InMemoryStreamsConsumer()
+    fake.entries["stream.memory.dlq"] = [("1-0", b"{}")]
+
+    assert await _consumer(fake).watch_dlq([_memory_sub()]) == []
+
+
+async def test_the_report_names_the_backlog_it_found() -> None:
+    """Reading is the whole feature, so the return value carries the same
+    facts the log line does -- a caller (and this test) asserts on what was
+    found, not on a call count."""
+    fake = InMemoryStreamsConsumer()
+    fake.entries["stream.memory.dlq"] = [("1-0", b"{}"), ("2-0", None)]
+
+    found = await _consumer(fake, dlq_watch_interval_s=60).watch_dlq([_memory_sub()])
+
+    assert [(b.stream, b.depth) for b in found] == [("stream.memory", 2)]
+
+
+async def test_a_dlq_read_failure_never_reaches_the_read_loop() -> None:
+    """Reporting is strictly less important than consuming: an exception
+    escaping the watch would cost the worker its next XREADGROUP over a
+    housekeeping read that the next tick would have retried anyway."""
+
+    class _Exploding(InMemoryStreamsConsumer):
+        async def dlq_backlog(self, stream: str) -> DlqBacklog:
+            raise RuntimeError("redis is having a moment")
+
+    engine = _consumer(_Exploding(), dlq_watch_interval_s=60)
+
+    assert await engine.watch_dlq([_memory_sub()]) == []  # logged, not raised
+
+
+async def test_the_loop_reports_a_backlog_on_its_very_first_pass(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The one behaviour that distinguishes this timer from the sweep's: a
+    DLQ backlog is durable state that predates this process, so an operator
+    restarting a worker must be told about it immediately -- NOT after a full
+    `dlq_watch_interval_s` (300 s by default, and the interval here is long
+    enough that a "wait first" implementation could not pass this test)."""
+
+    class _Yielding(InMemoryStreamsConsumer):
+        async def read(self, **kwargs: object) -> list[StreamMessage]:
+            await asyncio.sleep(0.001)
+            return await super().read(**kwargs)  # type: ignore[arg-type]
+
+    fake = _Yielding()
+    fake.entries["stream.memory.dlq"] = [("1-0", b"{}")]
+    engine = _consumer(fake, block_ms=1, dlq_watch_interval_s=3600)
+
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(engine.run([_memory_sub()]))
+        try:
+            async with asyncio.timeout(5):
+                while not any(r.message == "dlq.backlog" for r in caplog.records):
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+
+    reported = [r for r in caplog.records if r.message == "dlq.backlog"]
+    assert reported and reported[0].depth == 1  # type: ignore[attr-defined]
 
 
 async def test_deregister_removes_only_this_processs_own_entry() -> None:

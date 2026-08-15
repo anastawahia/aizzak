@@ -86,11 +86,16 @@ from typing import cast
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.observability import Heartbeat, NullHeartbeat, get_logger
 from app.framework.types import Json
+from app.infrastructure.messaging.consumers.dlq_watch import report_dlq_backlog
 from app.infrastructure.messaging.consumers.sweeper import (
     deregister_consumer,
     sweep_stale_consumers,
 )
-from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer, StreamMessage
+from app.infrastructure.messaging.redis_streams import (
+    DlqBacklog,
+    RedisStreamsConsumer,
+    StreamMessage,
+)
 
 _logger = get_logger(__name__)
 
@@ -132,6 +137,7 @@ class StreamConsumer:
         heartbeat: Heartbeat | None = None,
         sweep_interval_s: float = 0.0,
         stale_idle_ms: int = 0,
+        dlq_watch_interval_s: float = 0.0,
     ) -> None:
         self._consumer = consumer
         self._consumer_name = consumer_name
@@ -161,6 +167,17 @@ class StreamConsumer:
         self._sweep_interval_s = sweep_interval_s
         self._stale_idle_ms = stale_idle_ms
         self._next_sweep_at = 0.0
+        # ت-6 (`docs/operational-findings.md` §6). Off by default for the same
+        # reason the sweep above is: this engine also drives the API's notify
+        # bridge, and `cg.notify.*` has no DLQ of its own -- the streams it
+        # reads are the WORKERS' streams, so a bridge that watched them would
+        # report another process's backlog twice over (once per API worker
+        # process, `WEB_CONCURRENCY`) while the worker that actually owns the
+        # queue reports it once. Only the three `worker-*` bootstraps pass a
+        # real value, which makes each DLQ the business of exactly the one
+        # process that dead-letters into it.
+        self._dlq_watch_interval_s = dlq_watch_interval_s
+        self._next_dlq_watch_at = 0.0
 
     async def setup(self, subscriptions: Sequence[Subscription]) -> None:
         """``ensure_group`` for every ``(stream, group)`` pair named by
@@ -252,14 +269,28 @@ class StreamConsumer:
         that a totally idle worker sweeps on the first tick after
         ``block_ms`` elapses past the deadline -- seconds of imprecision on a
         15-minute cadence, which is not worth a second task to remove.
+
+        **The DLQ watch (ت-6) rides it too, with one difference: it fires on
+        the FIRST pass, not after a full interval.** Its deadline starts at
+        "now" rather than "now + interval" because a backlog is durable state
+        that was already there before this process booted -- it is exactly
+        what an operator restarting a worker wants told immediately, and the
+        read costs two non-blocking Redis calls against a stream that is
+        almost always empty. A stale-consumer sweep has the opposite shape (it
+        acts on tombstones this run may itself be about to create, and it
+        DELETES), so it keeps waiting out its first full interval.
         """
         await self.setup(subscriptions)
         self._next_sweep_at = monotonic() + self._sweep_interval_s
+        self._next_dlq_watch_at = monotonic()
         while True:
             await self.run_once(subscriptions)
             if self._sweep_interval_s > 0 and monotonic() >= self._next_sweep_at:
                 self._next_sweep_at = monotonic() + self._sweep_interval_s
                 await self.sweep_stale(subscriptions)
+            if self._dlq_watch_interval_s > 0 and monotonic() >= self._next_dlq_watch_at:
+                self._next_dlq_watch_at = monotonic() + self._dlq_watch_interval_s
+                await self.watch_dlq(subscriptions)
 
     async def sweep_stale(self, subscriptions: Sequence[Subscription]) -> list[str]:
         """Reclaim-then-delete the ghost consumers other processes left in
@@ -284,6 +315,27 @@ class StreamConsumer:
             )
         except Exception:
             _logger.error("consumer_sweep_failed", exc_info=True)
+            return []
+
+    async def watch_dlq(self, subscriptions: Sequence[Subscription]) -> list[DlqBacklog]:
+        """Report what is parked on the DLQs of the streams THIS worker
+        consumes (``consumers/dlq_watch.py`` owns the rule and the reason a
+        log line is the right sink); returns the non-empty backlogs found.
+
+        Disabled unless ``dlq_watch_interval_s`` was wired (the constructor's
+        note). Never raises, for the same reason ``sweep_stale`` does not: a
+        Redis hiccup while REPORTING a backlog must not cost the loop its next
+        ``XREADGROUP``. Reporting is strictly less important than consuming,
+        and the next tick tries again.
+        """
+        if self._dlq_watch_interval_s <= 0:
+            return []
+        try:
+            return await report_dlq_backlog(
+                self._consumer, streams=[s.stream for s in subscriptions]
+            )
+        except Exception:
+            _logger.error("dlq_watch_failed", exc_info=True)
             return []
 
     async def deregister(self, subscriptions: Sequence[Subscription]) -> None:

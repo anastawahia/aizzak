@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import time
 from typing import cast
 
 from redis import RedisError, ResponseError
@@ -208,6 +209,61 @@ class ConsumerInfo:
     name: str
     pending: int
     idle_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class DlqBacklog:
+    """What ``<stream>.dlq`` holds right now, as ``dlq_backlog`` reads it --
+    the ت-6 counterpart of ``GroupInfo``/``ConsumerInfo`` above
+    (``docs/operational-findings.md`` §6).
+
+    ``stream`` is the SOURCE stream (``stream.memory``), never the ``.dlq``
+    suffix -- ``ops.dlq``'s own convention, so nothing downstream has to know
+    the derivation to read this.
+
+    **Why the AGE and not only the depth.** A dead-lettered entry never self-
+    heals (``dead_letter``'s own docstring: the only way off that stream is an
+    operator running ``python -m app.ops.dlq``), so a depth that stays ``1``
+    for twelve days and a depth that just became ``1`` are the same number
+    describing two entirely different situations -- and it was precisely the
+    first of those that made "DLQ is not empty" read as normal on the live
+    stack (§6's own measurement: one entry from 2026-08-03, still there on
+    2026-08-15). The age is what stops a backlog from ageing into wallpaper.
+
+    ``oldest_*`` are ``None`` exactly when ``depth == 0`` -- the healthy case,
+    not an error.
+    """
+
+    stream: str
+    depth: int
+    oldest_entry_id: str | None
+    oldest_age_s: float | None
+    oldest_reason: str | None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.depth == 0
+
+
+# One `XRANGE` response entry, always `bytes` keys/values under this codebase's
+# fixed `decode_responses=False` client contract (`_ReadGroupResponse`'s own
+# invariant, restated for the non-group read `dlq_backlog` issues).
+_DlqRangeResponse = Sequence[tuple[bytes, dict[bytes, bytes]]]
+
+
+def _entry_id_age_s(entry_id: str) -> float:
+    """Seconds since Redis stamped ``entry_id``. A Streams id is
+    ``<unix-ms>-<seq>`` and the ms half is the SERVER clock at ``XADD`` time,
+    so an entry needs no separate timestamp field for this to be exact --
+    which matters here because ``dead_letter``'s field layout never wrote one
+    and this must work on entries already sitting on the live stack.
+
+    ``max(0.0, ...)`` guards only against clock skew between this process and
+    Redis (a negative age is never a real value) -- the identical guard, for
+    the identical reason, as ``SqlRedisMetricsSource.
+    outbox_oldest_unpublished_age_seconds``' own Postgres skew clamp.
+    """
+    return max(0.0, time() - int(entry_id.split("-", 1)[0]) / 1000.0)
 
 
 def _parse_autoclaim(reply: object) -> tuple[str, list[str]]:
@@ -626,6 +682,57 @@ class RedisStreamsConsumer:
                 await pipe.execute()
         except (RedisError, OSError) as exc:
             raise _translate_consume(exc) from exc
+
+    async def dlq_backlog(self, stream: str) -> DlqBacklog:
+        """Read ``<stream>.dlq``'s depth plus its OLDEST entry (ت-6) --
+        ``XLEN`` and a one-entry ``XRANGE - + COUNT 1``, and nothing else.
+
+        **Strictly non-consuming, by the same rule ``ops.dlq peek`` follows:**
+        plain ``XRANGE``, never ``XREADGROUP``, no group, no ``XACK``, no
+        delivery-count bump. Looking at a DLQ must never move anything -- an
+        automatic watcher that did would be capable of losing the very entries
+        it exists to report.
+
+        The DLQ name is derived HERE, from the source stream, exactly as
+        ``dead_letter`` above derives it when writing -- the write and the read
+        cannot disagree about where the quarantine stream lives. Both Redis
+        calls answer for a stream that has never existed (``XLEN`` ⇒ 0,
+        ``XRANGE`` ⇒ empty), so a module whose workers have never dead-lettered
+        anything reports a clean, empty backlog rather than an error.
+        """
+        dlq = f"{stream}.dlq"
+        try:
+            depth = int(await self._client.xlen(dlq))
+            rows = cast("_DlqRangeResponse", await self._client.xrange(dlq, count=1) or [])
+        except (RedisError, OSError) as exc:
+            raise _translate_consume(exc) from exc
+
+        if not rows:
+            # `depth` is read a moment before the range, so a purge landing
+            # between the two calls could leave a non-zero depth with no
+            # oldest entry. Reporting the observed emptiness (rather than the
+            # stale count) is the honest answer, and the next tick re-reads
+            # both anyway.
+            return DlqBacklog(
+                stream=stream,
+                depth=0,
+                oldest_entry_id=None,
+                oldest_age_s=None,
+                oldest_reason=None,
+            )
+        entry_id, fields = rows[0]
+        oldest_entry_id = entry_id.decode()
+        reason = fields.get(b"reason")
+        return DlqBacklog(
+            stream=stream,
+            depth=depth,
+            oldest_entry_id=oldest_entry_id,
+            oldest_age_s=_entry_id_age_s(oldest_entry_id),
+            # `dead_letter` always writes `reason`, but this read must survive
+            # an entry some other tool XADDed by hand -- a watcher is not the
+            # place to raise `KeyError` over a missing bookkeeping field.
+            oldest_reason=reason.decode() if reason is not None else None,
+        )
 
 
 # One `XREADGROUP` response, always `bytes` keys/values under this codebase's

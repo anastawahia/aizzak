@@ -118,6 +118,10 @@ class _EnvSettings(BaseSettings):
     consumer_stale_idle_s: float = Field(900.0, alias="CONSUMER_STALE_IDLE_S", ge=0)
     notify_group_sweep_interval_s: float = Field(900.0, alias="NOTIFY_GROUP_SWEEP_INTERVAL_S", ge=0)
 
+    # ت-6: how often a worker reports a non-empty DLQ (`consumers/dlq_watch.py`).
+    # `0` disables the report -- it never disables dead-lettering itself.
+    dlq_watch_interval_s: float = Field(300.0, alias="DLQ_WATCH_INTERVAL_S", ge=0)
+
     # ت-3: where the loop-shaped processes stamp their liveness, and how stale
     # that stamp may get before `app.ops.healthcheck` calls it dead. Empty
     # `HEARTBEAT_DIR` disables the file entirely (HealthSettings' own
@@ -189,6 +193,7 @@ def load_settings() -> Settings:
             consumer_sweep_interval_s=env.consumer_sweep_interval_s,
             consumer_stale_idle_s=env.consumer_stale_idle_s,
             notify_group_sweep_interval_s=env.notify_group_sweep_interval_s,
+            dlq_watch_interval_s=env.dlq_watch_interval_s,
         ),
         health=HealthSettings(
             heartbeat_dir=env.heartbeat_dir,

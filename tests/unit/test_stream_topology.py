@@ -40,6 +40,7 @@ has nowhere to hide.
 from __future__ import annotations
 
 from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY, ConsumerBinding
+from app.infrastructure.monitoring.metrics_source import DLQ_SOURCE_STREAMS
 from app.modules.files.application.event_mapping import STREAM as _FILES_STREAM
 from app.modules.knowledge.application.event_mapping import STREAM as _KNOWLEDGE_STREAM
 from app.modules.knowledge.application.indexing import IndexDocument
@@ -139,6 +140,25 @@ def test_table_matches_exactly_what_the_three_workers_build_no_more_no_less() ->
         f"{sorted(built)} -- missing from the table: {sorted(built - table)}, "
         f"extra in the table: {sorted(table - built)}"
     )
+
+
+def test_the_dlq_gauge_watches_every_stream_the_topology_consumes() -> None:
+    """ت-6's measured defect, guarded so it cannot come back.
+
+    `SqlRedisMetricsSource.DLQ_SOURCE_STREAMS` was a hand-written
+    `("stream.knowledge", "stream.media")` until 2026-08-15 -- while the live
+    stack's ONLY dead-lettered entry sat on `stream.memory.dlq`. The gauge
+    that exists to make a DLQ visible was structurally blind to the one queue
+    that had something in it, and nothing caught that because the alert built
+    on the gauge has no scraper evaluating it yet
+    (`docs/operational-findings.md` §6). It now derives from this table; this
+    test is what keeps the derivation honest if anyone re-hardcodes it.
+    """
+    assert set(DLQ_SOURCE_STREAMS) == {binding.stream for binding in STATIC_CONSUMER_TOPOLOGY}
+    assert _MEMORY_STREAM in DLQ_SOURCE_STREAMS  # the stream that was missing
+    # Deduplicated: `stream.files` and `stream.knowledge` share `cg.knowledge`,
+    # and a stream must be XLEN-ed once however many groups read it.
+    assert len(DLQ_SOURCE_STREAMS) == len(set(DLQ_SOURCE_STREAMS))
 
 
 def test_no_binding_group_is_a_per_process_notify_group() -> None:

@@ -36,15 +36,37 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-# 04 §2's topology table: the two source streams this platform's workers
-# consume today. Hardcoded rather than imported from each module's own
-# `event_mapping.STREAM` -- `app.infrastructure` may not import
-# `app.modules` (import-linter contract 6 runs the other direction too: only
-# the Composition Root may reach across layers), and there is no single
-# canonical stream registry to import instead -- the SAME literal pair
-# `composition_root.py`'s own `_NOTIFY_STREAMS` already hardcodes, for the
-# identical reason.
-DLQ_SOURCE_STREAMS: tuple[str, ...] = ("stream.knowledge", "stream.media")
+from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY
+
+# Every source stream this platform's workers consume, derived from the ONE
+# canonical topology table (`framework/events/topology.py`) rather than typed
+# out again here.
+#
+# ⚠️ **This list was a hardcoded `("stream.knowledge", "stream.media")` until
+# 2026-08-15, and it was WRONG -- measurably, not theoretically.** The live
+# stack's only dead-lettered entry sat on `stream.memory.dlq` (one entry,
+# there since 2026-08-03), and `stream.memory` was not in the pair: the gauge
+# this module exists to publish would have reported a clean `0` for every
+# stream it knew about while the DLQ that actually held something was not
+# read at all. The gap was invisible because the metric's own alert
+# (`AizzakDlqNotEmpty`) has no scraper evaluating it yet, so nothing ever
+# compared the numbers with reality (ت-6, `docs/operational-findings.md` §6).
+#
+# The original comment justified the literal by saying `app.infrastructure`
+# may not import `app.modules` (true, and unchanged) "and there is no single
+# canonical stream registry to import instead" -- which stopped being true
+# when `STATIC_CONSUMER_TOPOLOGY` landed (stream-topology-plan.md §1-ج). That
+# table lives in `app.framework`, which infrastructure may import freely, and
+# it is already the file a new module's stream must be added to for its
+# consumer group to be provisioned at all. Deriving from it means a stream
+# cannot be consumed by this platform and simultaneously unwatched here.
+#
+# `dict.fromkeys` deduplicates while preserving order: the topology binds
+# `stream.files` and `stream.knowledge` to the SAME `cg.knowledge` group, and
+# a stream must be XLEN-ed once no matter how many groups read it.
+DLQ_SOURCE_STREAMS: tuple[str, ...] = tuple(
+    dict.fromkeys(binding.stream for binding in STATIC_CONSUMER_TOPOLOGY)
+)
 
 
 class SqlRedisMetricsSource:
