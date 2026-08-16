@@ -290,6 +290,7 @@ from app.modules.conversations.application.use_cases import (
     UnpinConversationFile,
 )
 from app.modules.conversations.ports.files import ReadableFiles
+from app.modules.conversations.ports.spaces import ActiveSpaces
 from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
 from app.modules.credentials.application.use_cases import (
     AddUserCredential,
@@ -848,6 +849,7 @@ def _build_conversations(
     tenant_session: TenantSessionFactory,
     catalog: ModelCatalog,
     files: ReadableFiles,
+    spaces: ActiveSpaces,
 ) -> tuple[ConversationUseCases, ConversationService]:
     """The conversations module's TWO faces — a helper so ``from_env`` stays
     under its statement ceiling (the ``_build_integrations`` precedent).
@@ -865,12 +867,16 @@ def _build_conversations(
     a second source for "what is routable" would let the API accept a key
     resolution rejects. ``files`` is the DIP seam
     ``conversations/ports/files.py`` declares, bound to the files module's own
-    ``FilesQuery`` — mypy checks that binding at this call.
+    ``FilesQuery`` — mypy checks that binding at this call. ``spaces`` is the
+    SECOND such seam (``ports/spaces.py``, plan step 7), bound to the spaces
+    module's ``SpacesQuery``: the same instance ``RegisterUpload`` proves file
+    spaces through, so "is this space live?" has one answer in this process
+    whichever module asks it.
     """
     repository = SqlConversationRepository(tenant_session)
     list_files = ListConversationFiles(repository)
     use_cases = ConversationUseCases(
-        start=StartConversation(repository),
+        start=StartConversation(repository, spaces),
         get=GetConversation(repository),
         list_by_agent=ListConversationsByAgent(repository),
         list_messages=ListMessages(repository),
@@ -883,7 +889,7 @@ def _build_conversations(
         unpin_file=UnpinConversationFile(repository),
     )
     threads = ConversationService(
-        StartConversation(repository),
+        StartConversation(repository, spaces),
         AppendMessage(repository),
         GetConversation(repository),
         list_files,
@@ -1443,7 +1449,7 @@ class CompositionRoot:
         # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
         # so they share ONE repository instance (see `_build_conversations`).
         conversations, conversation_threads = _build_conversations(
-            tenant_session, provider_resolver, files_query
+            tenant_session, provider_resolver, files_query, spaces_query
         )
 
         # 6.1-هـ-1 — the storage slot, empty here by necessity (module

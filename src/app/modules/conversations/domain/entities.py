@@ -6,6 +6,10 @@ child entity. Behaviour lives on the aggregate; mutations touch only state +
 ``updated_at``. The optimistic ``version`` is advanced by the repository on
 ``save``/``append_message`` (02-port-contracts §2). Identifiers are UUIDv7
 text (``str``); timestamps are timezone-aware UTC (DD-03).
+
+Since the spaces plan's step 7 a ``Conversation`` also carries the
+``space_id`` it was opened in — an opaque ownership axis INSIDE the tenant
+(``docs/spaces-backend-plan.md`` §3.2), never a second security boundary.
 """
 
 from __future__ import annotations
@@ -28,6 +32,28 @@ class Conversation:
 
     id: str
     workspace_id: str
+    # The owning space (`docs/spaces-backend-plan.md` step 7). NOT a second
+    # security boundary -- the workspace stays the only one, and RLS stays on
+    # `workspace_id` alone (§3.2); this is an ownership axis, filtered in the
+    # query. Opaque here: the module stores an id whose meaning it does not
+    # know (`ports/spaces.py` proves it names something real), and decision 1
+    # gives the id its consequence -- a thread retrieves from ITS space's
+    # files, which is what §3.5's pin rule enforces at the boundary.
+    #
+    # `| None` mirrors the column, which stays NULLable until plan row 8-b.
+    # NOT defaulted, deliberately, and for `File.space_id`'s reason: a default
+    # would make a writer that FORGOT its space indistinguishable from one
+    # that decided it has none. The debtors are therefore visible in the
+    # source -- the orchestrator's agent/workflow threads and `POST
+    # /conversations`, both of which get a space when the wire carries one
+    # (step 12).
+    #
+    # There is no mutator for it, matching `File`: decision 3 forbids moving
+    # a file between spaces, and moving a THREAD would be worse -- it would
+    # silently re-point the whole retrieval scope its messages were answered
+    # from. `save` leaves the column out of its UPDATE, so this is unwritable
+    # rather than merely undocumented.
+    space_id: str | None
     agent_key: AgentKey
     kind: ConversationKind
     title: str | None
@@ -147,11 +173,15 @@ class PinnedFile:
     nothing to mutate.
 
     ``file_id`` is a reference into another module's table, not something this
-    module owns or can validate. Whether it names a real, readable file is
-    checked once at the boundary (``PinConversationFile`` against the
-    ``FilesQuery`` seam) and deliberately not re-checked on read: a file
-    deleted after it was pinned leaves the pin standing, and retrieval finds
-    nothing for it — the same outcome as a file that was never indexed.
+    module owns or can validate. Whether it names a real, readable file — and,
+    since the spaces plan's step 7, whether that file lives in this thread's
+    own space (§3.5) — is checked once at the boundary
+    (``PinConversationFile`` against the ``FilesQuery`` seam) and deliberately
+    not re-checked on read: a file deleted after it was pinned leaves the pin
+    standing, and retrieval finds nothing for it — the same outcome as a file
+    that was never indexed. There is no ``space_id`` on the pin itself for the
+    same reason: it would be a copy of a fact that already has one owner (the
+    file's row), and copies of a fact go stale.
     """
 
     conversation_id: str

@@ -150,6 +150,15 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # either: that one is a rate/period budget a client can wait out, and
         # this one will still be exceeded tomorrow.
         "spaces.quota_exceeded": ProblemSpec(409, "Space storage quota reached"),
+        # `spaces-backend-plan.md` step 7 (§3.5). A pin whose file lives in
+        # another space than the thread. 409 and not 422: the request is
+        # well-formed and the file is real and readable -- it is the state of
+        # the two rows that makes the pin impossible, which is what this
+        # catalog means by a conflict. Named rather than folded into
+        # `common.conflict` because the client can act on THIS one: the file
+        # exists, and the fix is to pin it in a thread of its own space (or to
+        # upload a copy into this one, since a file never moves, decision 3).
+        "spaces.cross_space_pin": ProblemSpec(409, "File belongs to another space"),
         # -- credentials ----------------------------------------------------- #
         "credentials.provider_unknown": ProblemSpec(422, "Unknown provider"),
         "credentials.none_available": ProblemSpec(409, "No credential available for provider"),

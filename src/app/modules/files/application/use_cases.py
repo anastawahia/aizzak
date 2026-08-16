@@ -289,6 +289,7 @@ class FilesQueryService:
             return None
         return FileView(
             file_id=file.id,
+            space_id=file.space_id,
             name=file.name.value,
             content_type=file.content_type.value,
             size_bytes=file.size_bytes,

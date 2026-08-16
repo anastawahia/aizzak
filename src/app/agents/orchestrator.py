@@ -964,7 +964,19 @@ class AgentOrchestrator:
             return None
         conversation_id = req.conversation_id
         if conversation_id is None:
-            started = await threads.start(ctx, agent_key=agent_key, kind=_AGENT_KIND)
+            started = await threads.start(
+                ctx,
+                # ⚠️ No space yet, and TYPED rather than defaulted
+                # (`spaces-backend-plan.md` step 7). A thread belongs to the
+                # space the caller was working in, and `AgentInvokeIn` does
+                # not carry one until step 12 -- inventing one here would file
+                # the thread (and, through decision 1, its whole retrieval
+                # scope) under a space the caller never chose. Row 8-b's
+                # `SET NOT NULL` is the check that this was not forgotten.
+                space_id=None,
+                agent_key=agent_key,
+                kind=_AGENT_KIND,
+            )
             conversation_id = started.id
         text, attachments = _turn_content(req.input)
         await threads.append(
@@ -1029,6 +1041,9 @@ class AgentOrchestrator:
         await self._enforce(ctx, workflow_key, _NO_PROVIDER)
         conversation = await threads.start(
             ctx,
+            # ⚠️ No space yet -- `_open_turn`'s reasoning, same debt, same
+            # detector (spaces plan step 7 ⇒ step 12).
+            space_id=None,
             agent_key=workflow_key,
             kind=_WORKFLOW_KIND,
             # The definition's human name, so the thread is legible in a

@@ -54,6 +54,7 @@ def _ctx(workspace_id: str, *, user_id: str | None = None) -> ExecutionContext:
 def _conversation(
     *,
     workspace_id: str,
+    space_id: str | None = None,
     conversation_id: str | None = None,
     agent_key: str = "rag-agent",
     kind: ConversationKind = ConversationKind.AGENT,
@@ -65,6 +66,7 @@ def _conversation(
     return Conversation(
         id=conversation_id or new_uuid7(),
         workspace_id=workspace_id,
+        space_id=space_id,
         agent_key=AgentKey(agent_key),
         kind=kind,
         title=title,
@@ -437,7 +439,9 @@ async def test_list_by_agent_scopes_by_tenant_and_agent_and_excludes_deleted(
     cross_tenant = _conversation(workspace_id=ws_b, agent_key="rag-agent")
     await repo_conversations.add(_ctx(ws_b), cross_tenant)
 
-    page = await repo_conversations.list_by_agent(ctx_a, "rag-agent", limit=10, cursor=None)
+    page = await repo_conversations.list_by_agent(
+        ctx_a, "rag-agent", space_id=None, limit=10, cursor=None
+    )
 
     assert [c.id for c in page.data] == [keep.id]
     assert page.next_cursor is None
@@ -734,15 +738,133 @@ async def test_list_by_agent_pages_newest_first(
         created.append(conversation)
     expected = [c.id for c in reversed(created)]  # UUIDv7 monotonic ⇒ reversed insertion
 
-    first = await repo_conversations.list_by_agent(ctx, "rag-agent", limit=2, cursor=None)
+    first = await repo_conversations.list_by_agent(
+        ctx, "rag-agent", space_id=None, limit=2, cursor=None
+    )
     assert [c.id for c in first.data] == expected[:2]
     assert first.next_cursor is not None
 
     second = await repo_conversations.list_by_agent(
-        ctx, "rag-agent", limit=2, cursor=first.next_cursor
+        ctx, "rag-agent", space_id=None, limit=2, cursor=first.next_cursor
     )
     assert [c.id for c in second.data] == expected[2:]
     assert second.next_cursor is None
+
+
+# --------------------------------------------------------------------------- #
+# (10g) space_id: the ownership axis inside the tenant (plan step 7)          #
+# --------------------------------------------------------------------------- #
+async def test_the_space_a_thread_was_opened_in_round_trips(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """The column is written by ``add`` and hydrated by ``get`` -- asserted on
+    the RAW row as well, because a value that only survives inside the
+    repository's own bookkeeping would satisfy the round trip while the
+    listing (which reads the column in SQL) saw nothing."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws, space_id=space)
+
+    await repo_conversations.add(ctx, conversation)
+
+    fetched = await repo_conversations.get(ctx, conversation.id)
+    assert fetched is not None
+    assert fetched.space_id == space
+    row = await _fetch_conversation_row_as_owner(live_db.owner, ws, conversation.id)
+    assert row is not None
+    assert str(row["space_id"]) == space
+
+
+async def test_a_thread_opened_without_a_space_stores_and_reads_back_null(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """``None`` is a real state until row 8-b, and it must stay one: the
+    orchestrator and ``POST /conversations`` both write it today."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws, space_id=None)
+
+    await repo_conversations.add(ctx, conversation)
+
+    fetched = await repo_conversations.get(ctx, conversation.id)
+    assert fetched is not None
+    assert fetched.space_id is None
+    row = await _fetch_conversation_row_as_owner(live_db.owner, ws, conversation.id)
+    assert row is not None
+    assert row["space_id"] is None
+
+
+async def test_listing_by_space_returns_that_spaces_threads_and_nothing_else(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    ws, space, other = new_uuid7(), new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    mine = _conversation(workspace_id=ws, space_id=space)
+    await repo_conversations.add(ctx, mine)
+    theirs = _conversation(workspace_id=ws, space_id=other)
+    await repo_conversations.add(ctx, theirs)
+    unfiled = _conversation(workspace_id=ws, space_id=None)
+    await repo_conversations.add(ctx, unfiled)
+    deleted = _conversation(workspace_id=ws, space_id=space)
+    await repo_conversations.add(ctx, deleted)
+    deleted.soft_delete(utc_now())
+    await repo_conversations.save(ctx, deleted)
+
+    page = await repo_conversations.list_by_agent(
+        ctx, "rag-agent", space_id=space, limit=10, cursor=None
+    )
+
+    # The space narrows, and the soft-delete predicate still applies -- the
+    # space condition is an EXTRA condition, never a replacement.
+    assert [c.id for c in page.data] == [mine.id]
+
+
+async def test_listing_without_a_space_still_spans_the_whole_workspace(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """``space_id=None`` means EVERY space, not "the threads with no space".
+    Reading it as ``space_id IS NULL`` would keep every other test in this
+    file green -- they all seed rows of one kind -- while quietly turning
+    ``GET /conversations`` into a listing of the unfiled."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    filed = _conversation(workspace_id=ws, space_id=space)
+    await repo_conversations.add(ctx, filed)
+    unfiled = _conversation(workspace_id=ws, space_id=None)
+    await repo_conversations.add(ctx, unfiled)
+
+    page = await repo_conversations.list_by_agent(
+        ctx, "rag-agent", space_id=None, limit=10, cursor=None
+    )
+
+    assert {c.id for c in page.data} == {filed.id, unfiled.id}
+
+
+async def test_a_save_cannot_move_a_thread_into_another_space(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """Decision 3's shape for threads (plan step 7): ``save`` writes every
+    mutable field and ``space_id`` is not one of them, so even an in-memory
+    assignment -- which no domain method can produce -- dies at the adapter.
+    The listing is asserted too: a move that survived would silently re-point
+    the thread's whole retrieval scope."""
+    ws, space, elsewhere = new_uuid7(), new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws, space_id=space)
+    await repo_conversations.add(ctx, conversation)
+
+    conversation.space_id = elsewhere
+    conversation.rename("Renamed", utc_now())
+    await repo_conversations.save(ctx, conversation)
+
+    row = await _fetch_conversation_row_as_owner(live_db.owner, ws, conversation.id)
+    assert row is not None
+    assert str(row["space_id"]) == space
+    assert row["title"] == "Renamed"
+    moved = await repo_conversations.list_by_agent(
+        ctx, "rag-agent", space_id=elsewhere, limit=10, cursor=None
+    )
+    assert moved.data == []
 
 
 # --------------------------------------------------------------------------- #

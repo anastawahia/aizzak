@@ -1001,6 +1001,7 @@ class _FakeThreads:
         pinned_files: tuple[str, ...] = (),
     ) -> None:
         self.started: list[tuple[str, str]] = []
+        self.spaces: list[str | None] = []
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
         self.route_reads: list[str] = []
         self.scope_reads: list[str] = []
@@ -1024,8 +1025,18 @@ class _FakeThreads:
         return self._pinned
 
     async def start(
-        self, ctx: ExecutionContext, *, agent_key: str, kind: str, title: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str | None,
+        agent_key: str,
+        kind: str,
+        title: str | None = None,
     ) -> StartedConversation:
+        # The space is RECORDED, not ignored: the orchestrator has none to
+        # give until step 12, and a fake that swallowed the argument would
+        # hide the day it starts giving one.
+        self.spaces.append(space_id)
         self.started.append((agent_key, kind))
         return StartedConversation(id="conv-new", agent_key=agent_key, kind=kind)
 
@@ -1120,6 +1131,11 @@ async def test_invoke_opens_a_thread_and_writes_both_turns() -> None:
     ]
 
     assert threads.started == [("filer", "agent")]
+    # Spaces plan step 7's stated debt: `AgentInvokeIn` carries no space until
+    # step 12, so the thread is opened with `None` — never with one invented
+    # from whatever this workspace happens to own, which would file the thread
+    # and its whole retrieval scope where nobody put it.
+    assert threads.spaces == [None]
     assert [(row[1], row[2]) for row in threads.appended] == [
         ("user", "hi"),
         ("assistant", "done"),

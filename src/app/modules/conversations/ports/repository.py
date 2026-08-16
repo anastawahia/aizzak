@@ -21,7 +21,12 @@ class ConversationRepository(Protocol):
     """Tenant-scoped persistence for conversations and their messages.
 
     ``save`` uses an optimistic lock on ``version`` (used for rename /
-    soft-delete) — a stale write surfaces as a conflict at the adapter.
+    soft-delete) — a stale write surfaces as a conflict at the adapter. It
+    persists every MUTABLE field, which since the spaces plan's step 7 makes
+    one omission load-bearing: ``add`` writes the aggregate's ``space_id`` and
+    ``save`` deliberately does not, so a thread cannot be moved between spaces
+    (the ``files`` decision 3 applied to the axis's other owner) — and moving
+    one would re-point the retrieval scope its past answers came from.
     ``append_message`` persists the message and bumps ``Conversation.version``
     under that same optimistic lock, with ``UNIQUE(conversation_id, seq)`` at
     the schema level guaranteeing a gap-free, non-duplicated ``seq`` (INV-CV1).
@@ -62,8 +67,28 @@ class ConversationRepository(Protocol):
     async def save(self, ctx: ExecutionContext, conversation: Conversation) -> None: ...
 
     async def list_by_agent(
-        self, ctx: ExecutionContext, agent_key: str, *, limit: int, cursor: str | None
-    ) -> Page[Conversation]: ...
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        *,
+        space_id: Uuid | None,
+        limit: int,
+        cursor: str | None,
+    ) -> Page[Conversation]:
+        """One agent's active threads, newest first.
+
+        ``space_id`` narrows the page to one space's threads; ``None`` returns
+        the workspace's, which is what every caller asked for before the
+        spaces plan and what the router still asks for until ``?space_id=``
+        lands (step 12). ``None`` therefore means "all spaces", NOT "threads
+        with no space" — a distinction the adapter enforces by adding a
+        condition rather than by comparing against ``NULL``.
+
+        It is a REQUIRED keyword with no default, matching
+        ``FileRepository.list``: "all spaces" is then a decision written at
+        the call site rather than one a caller falls into by omission.
+        """
+        ...
 
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None: ...
 

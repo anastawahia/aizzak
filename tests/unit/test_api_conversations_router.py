@@ -817,6 +817,27 @@ def test_pinning_an_unreadable_file_is_a_422_and_stores_nothing() -> None:
     assert stack.repository.pins.get(conversation_id, []) == []
 
 
+def test_pinning_a_file_from_another_space_is_a_409_on_the_wire() -> None:
+    """Spaces plan §3.5, end to end: 409 (not the 422 an unreadable file
+    gets), the catalogued code, and nothing stored. The thread this route
+    opens has no space yet (step 12 brings ``space_id`` onto the body), so a
+    file that HAS one is already a mismatch — which is exactly the state row
+    8-b will make impossible from the other side."""
+    app, stack = _make_app()
+    stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = "018f0000-0000-7000-8000-000000000501"
+    client = TestClient(app)
+    conversation_id = _create(client)
+
+    response = _pin(client, conversation_id, "file-1")
+
+    assert response.status_code == 409
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert response.json()["code"] == "spaces.cross_space_pin"
+    assert _pinned(client, conversation_id) == []
+    assert stack.repository.pins.get(conversation_id, []) == []
+
+
 def test_pinning_the_same_file_twice_is_still_201_and_still_one_pin() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")

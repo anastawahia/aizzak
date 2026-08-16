@@ -158,6 +158,10 @@ class _FakeThreads:
         fail_role: str | None = None,
     ) -> None:
         self.calls: list[tuple[ExecutionContext, str, str, str | None]] = []
+        # The space each thread was opened in — `None` today (step 7's stated
+        # debt), recorded rather than swallowed so the day it stops being
+        # `None` is a day this suite notices.
+        self.spaces: list[str | None] = []
         # 6.1-د-1: the run's transcript, as it was actually written.
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
         self._raises = raises
@@ -169,10 +173,12 @@ class _FakeThreads:
         self,
         ctx: ExecutionContext,
         *,
+        space_id: str | None,
         agent_key: str,
         kind: str,
         title: str | None = None,
     ) -> StartedConversation:
+        self.spaces.append(space_id)
         self.calls.append((ctx, agent_key, kind, title))
         if self._raises is not None:
             raise self._raises
@@ -749,14 +755,38 @@ class _FakeConversationRepo:
         raise AssertionError("not exercised")
 
 
-def _conversation_service(repo: _FakeConversationRepo) -> ConversationService:
+class _NoSpaces:
+    """An ``ActiveSpaces`` seam with NO live space, and a recorder.
+
+    Empty is the honest table for this suite: no space was ever created here,
+    so any lookup that happened would have to fail. ``asked`` staying empty is
+    what says the ``None`` the orchestrator passes was never turned into a
+    lookup for a space named ``None``.
+    """
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    async def get_active(self, ctx: ExecutionContext, space_id: Uuid) -> None:
+        # Always `None` — there is no live space in this suite, by design.
+        self.asked.append(space_id)
+
+
+def _conversation_service(
+    repo: _FakeConversationRepo, spaces: _NoSpaces | None = None
+) -> ConversationService:
     """The REAL service over a fake repository — `start` + `append` both wired,
     since the orchestrator now writes turns through the same port, plus `get`
     for the BE-RAG-003 route read and `list_files` for the BE-RAG-005 scope
     read (a workflow run pins neither, but the port is one protocol and a
     partial construction would not satisfy it)."""
     return ConversationService(  # type: ignore[arg-type]
-        StartConversation(repo),
+        # `_NoSpaces` and not a permissive stub: a workflow run opens its
+        # thread with `space_id=None` (step 7's stated debt), so a seam that
+        # answers "live" for anything would be a seam this path never touches
+        # — and the day the orchestrator does pass a space, the call must be
+        # proven against something that can say no.
+        StartConversation(repo, spaces or _NoSpaces()),
         AppendMessage(repo),
         GetConversation(repo),
         ListConversationFiles(repo),  # type: ignore[arg-type]
@@ -797,13 +827,47 @@ async def test_the_workflow_kind_string_is_the_real_domain_enum() -> None:
     assert result.conversation_id == conversation.id
 
 
+async def test_a_workflow_run_opens_its_thread_with_no_space_and_asks_for_none() -> None:
+    """Spaces plan step 7's stated debt, pinned rather than assumed.
+
+    A run has no space to name until the invoke contract carries one (step
+    12), so the thread is opened with ``space_id=None`` — and ``None`` must
+    reach the row as ``None`` rather than becoming a lookup for a space
+    called ``None`` (which the seam below would refuse, failing the run) or a
+    space invented from whatever this workspace happens to own (which would
+    file the run, and its whole retrieval scope, where nobody put it).
+    """
+    repo = _FakeConversationRepo()
+    spaces = _NoSpaces()
+    registry = InMemoryAgentRegistry()
+    registry.register(_EchoAgent.metadata, _EchoAgent)
+    workflows = InMemoryWorkflowRegistry()
+    workflows.register(_definition("echo_a"))
+    orchestrator = AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=_FakeResolver(),  # type: ignore[arg-type]
+            workflows=workflows,
+            conversations=_conversation_service(repo, spaces),
+            authorization=build_authorization(),
+        )
+    )
+
+    await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+
+    (conversation,) = repo.added
+    assert conversation.space_id is None
+    assert spaces.asked == []
+
+
 async def test_an_invalid_conversation_kind_is_a_422_not_a_500() -> None:
     """``ConversationKind("nope")`` raises a bare ``ValueError`` — a 500 at the
     API edge for what is plainly a caller mistake."""
     service = _conversation_service(_FakeConversationRepo())
 
     with pytest.raises(ValidationError) as excinfo:
-        await service.start(_ctx(), agent_key="wf", kind="nope")
+        await service.start(_ctx(), space_id=None, agent_key="wf", kind="nope")
 
     assert excinfo.value.status == 422
 

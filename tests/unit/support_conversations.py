@@ -75,7 +75,13 @@ class InMemoryConversationRepository:
         self.rows[conversation.id] = conversation
 
     async def list_by_agent(
-        self, ctx: ExecutionContext, agent_key: str, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        *,
+        space_id: Uuid | None,
+        limit: int,
+        cursor: str | None,
     ) -> Page[Conversation]:
         matches = [
             conversation
@@ -83,6 +89,9 @@ class InMemoryConversationRepository:
             if conversation.workspace_id == ctx.workspace_id
             and conversation.agent_key.value == agent_key
             and conversation.deleted_at is None
+            # `None` narrows nothing (every space), exactly as the adapter's
+            # extra condition does — never a match against a NULL space.
+            and (space_id is None or conversation.space_id == space_id)
         ]
         # Newest first, like the SQL adapter (6.3-ب).
         matches.sort(key=lambda conversation: conversation.id, reverse=True)
@@ -172,6 +181,7 @@ class ConversationsStack:
 
     repository: InMemoryConversationRepository
     files: StubReadableFiles
+    spaces: StubActiveSpaces
     use_cases: ConversationUseCases
     service: ConversationService
 
@@ -197,8 +207,29 @@ class StubModelCatalog:
 
 
 @dataclass(frozen=True, slots=True)
+class _StubActiveSpace:
+    space_id: str
+
+
+@dataclass
+class StubActiveSpaces:
+    """An ``ActiveSpaces`` seam over the set of ids that are live.
+
+    Empty by default, which is the honest default for the router suites: they
+    open threads with ``space_id=None``, and a stub that answered "yes" to
+    every id would let a suite pass a space this workspace never had.
+    """
+
+    live: set[str] = field(default_factory=set)
+
+    async def get_active(self, ctx: ExecutionContext, space_id: Uuid) -> _StubActiveSpace | None:
+        return _StubActiveSpace(space_id=space_id) if space_id in self.live else None
+
+
+@dataclass(frozen=True, slots=True)
 class _StubReadableFile:
     file_id: str
+    space_id: str | None
 
 
 @dataclass
@@ -209,22 +240,32 @@ class StubReadableFiles:
     the seam gives for unknown, deleted, quarantined and still-uploading
     alike (see ``ports/files.py``), so a suite that wants any of those adds
     nothing here and simply pins an id it never registered.
+
+    ``spaces`` says which space a ready file is in; an id absent from it is a
+    file with NO space, which is the state every row has until plan row 8-b
+    and the one the router suites (which start their threads spaceless) need.
     """
 
     ready: set[str] = field(default_factory=set)
+    spaces: dict[str, str] = field(default_factory=dict)
 
     async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> ReadableFile | None:
-        return _StubReadableFile(file_id=file_id) if file_id in self.ready else None
+        if file_id not in self.ready:
+            return None
+        return _StubReadableFile(file_id=file_id, space_id=self.spaces.get(file_id))
 
 
 def build_conversations(
-    catalog: ModelCatalog | None = None, files: StubReadableFiles | None = None
+    catalog: ModelCatalog | None = None,
+    files: StubReadableFiles | None = None,
+    spaces: StubActiveSpaces | None = None,
 ) -> ConversationsStack:
     """The API-side use-cases and the orchestrator-side inbound port, sharing
     one in-memory store — the same single-repository wiring the Composition
     Root builds for production."""
     repository = InMemoryConversationRepository()
     readable = files if files is not None else StubReadableFiles()
+    live_spaces = spaces if spaces is not None else StubActiveSpaces()
     # ONE instance behind both faces, exactly as `_build_conversations` wires
     # it: a suite that pins through the API must see that pin from the
     # orchestrator's `pinned_files`.
@@ -232,8 +273,9 @@ def build_conversations(
     return ConversationsStack(
         repository=repository,
         files=readable,
+        spaces=live_spaces,
         use_cases=ConversationUseCases(
-            start=StartConversation(repository),
+            start=StartConversation(repository, live_spaces),
             get=GetConversation(repository),
             list_by_agent=ListConversationsByAgent(repository),
             list_messages=ListMessages(repository),
@@ -246,7 +288,7 @@ def build_conversations(
             unpin_file=UnpinConversationFile(repository),
         ),
         service=ConversationService(
-            StartConversation(repository),
+            StartConversation(repository, live_spaces),
             AppendMessage(repository),
             GetConversation(repository),
             list_files,

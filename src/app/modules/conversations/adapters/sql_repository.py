@@ -114,6 +114,12 @@ conversations = Table(
     _metadata,
     Column("id", _uuid_col, primary_key=True),
     Column("workspace_id", _uuid_col, nullable=False),
+    # `migrations/versions/conversations/0004_conversation_space.py` (§3.142),
+    # written by `add` and filtered on by `list_by_agent` since plan step 7.
+    # Still NULLable until plan row 8-b, because a writer that has no space to
+    # name yet must be visible as such rather than papered over (the entity's
+    # own comment names the two).
+    Column("space_id", _uuid_col, nullable=True),
     Column("agent_key", Text, nullable=False),
     Column("kind", Text, nullable=False),
     Column("title", Text, nullable=True),
@@ -191,6 +197,10 @@ class SqlConversationRepository:
         stmt = insert(conversations).values(
             id=conversation.id,
             workspace_id=conversation.workspace_id,
+            # The ONLY statement in this adapter that writes `space_id`: a
+            # thread is filed into its space when it is opened and never
+            # after (see `save`).
+            space_id=conversation.space_id,
             agent_key=conversation.agent_key.value,
             kind=conversation.kind.value,
             title=conversation.title,
@@ -215,6 +225,13 @@ class SqlConversationRepository:
         # (workspace precedent). Writing the full set is what keeps a new
         # mutation from needing a new statement, and what makes forgetting to
         # add a column here a test failure rather than a silent no-op.
+        #
+        # `space_id` is the deliberate exception, and it is the point rather
+        # than an oversight (plan step 7, decision 3's shape): a thread does
+        # not move between spaces, so the column is absent from this UPDATE
+        # and there is no statement anywhere that can move it. An assignment
+        # to `conversation.space_id` in memory therefore dies here, silently
+        # to the caller and provably in the live suite.
         stmt = (
             update(conversations)
             .where(
@@ -244,7 +261,13 @@ class SqlConversationRepository:
         conversation.version, conversation.updated_at = row
 
     async def list_by_agent(
-        self, ctx: ExecutionContext, agent_key: str, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        *,
+        space_id: UuidStr | None,
+        limit: int,
+        cursor: str | None,
     ) -> Page[Conversation]:
         # Non-deleted only (`ListConversationsByAgent`'s own docstring) --
         # backed by the partial index `ix_conv_ws_agent` (01 §2.4).
@@ -253,6 +276,15 @@ class SqlConversationRepository:
             conversations.c.agent_key == agent_key,
             conversations.c.deleted_at.is_(None),
         ]
+        if space_id is not None:
+            # The space narrowing (step 7) -- backed by `ix_conv_space`
+            # (`conversations/0004_conversation_space.py`), partial on
+            # `deleted_at IS NULL` exactly like the predicate above. Added as
+            # an EXTRA condition, never as a replacement: the workspace filter
+            # stays, because a space is an axis inside the tenant and never a
+            # stand-in for it. `None` adds nothing at all, so it lists every
+            # space rather than the threads whose space is NULL.
+            conditions.append(conversations.c.space_id == space_id)
         # NEWEST FIRST (`framework/pagination`, 6.3-ب): the most recently
         # opened thread is the one a client wants at the top of the list.
         # The message TRANSCRIPT below is the deliberate exception — it reads
@@ -528,6 +560,7 @@ def _hydrate_conversation(row: RowMapping) -> Conversation:
     return Conversation(
         id=row["id"],
         workspace_id=row["workspace_id"],
+        space_id=row["space_id"],
         agent_key=AgentKey(row["agent_key"]),
         kind=ConversationKind(row["kind"]),
         title=row["title"],

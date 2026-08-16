@@ -48,6 +48,7 @@ from app.modules.conversations.domain.value_objects import (
 from app.modules.conversations.ports.files import ReadableFiles
 from app.modules.conversations.ports.inbound import AppendedMessage, StartedConversation
 from app.modules.conversations.ports.repository import ConversationRepository
+from app.modules.conversations.ports.spaces import ActiveSpaces
 
 # How many files one thread may pin into its retrieval scope. See
 # ``PinConversationFile`` for why this is a scope bound rather than a quota,
@@ -56,15 +57,36 @@ MAX_PINNED_FILES = 50
 
 
 class StartConversation:
-    """Start a new conversation thread for an agent (or workflow)."""
+    """Start a new conversation thread for an agent (or workflow).
 
-    def __init__(self, conversations: ConversationRepository) -> None:
+    **``space_id`` is proven before it is stored** (spaces plan step 7, the
+    ``RegisterUpload`` shape). An id that names no live space would open the
+    thread on an axis that does not exist: invisible to every space listing,
+    and — decision 1 — scoped to the files of a space nobody can name. The
+    proof comes from the ``ActiveSpaces`` seam (``ports/spaces.py``), and a
+    404 is the answer for both "unknown" and "deleted", because a caller who
+    cannot write to a space has no right to learn that it exists.
+
+    The check runs BEFORE the row is minted, so a rejected start leaves
+    nothing behind — there is no unit of work around this use-case to roll one
+    back.
+
+    ``space_id`` is required-but-nullable, with no default. ``None`` means "no
+    space", which is a real state until plan row 8-b makes the column
+    ``NOT NULL``; what a default would cost is the entity comment's argument —
+    a caller that forgot its space would be indistinguishable from one that
+    decided it has none.
+    """
+
+    def __init__(self, conversations: ConversationRepository, spaces: ActiveSpaces) -> None:
         self._conversations = conversations
+        self._spaces = spaces
 
     async def execute(
         self,
         ctx: ExecutionContext,
         *,
+        space_id: Uuid | None,
         agent_key: str,
         kind: ConversationKind = ConversationKind.AGENT,
         title: str | None = None,
@@ -74,10 +96,14 @@ class StartConversation:
         except ConversationError as exc:
             raise ValidationError(str(exc)) from exc
 
+        if space_id is not None and await self._spaces.get_active(ctx, space_id) is None:
+            raise NotFoundError("space not found")
+
         now = utc_now()
         conversation = Conversation(
             id=new_uuid7(),
             workspace_id=ctx.workspace_id,
+            space_id=space_id,
             agent_key=key,
             kind=kind,
             title=title,
@@ -134,19 +160,35 @@ class AppendMessage:
 
 
 class ListConversationsByAgent:
-    """List a workspace's (non-deleted) conversations threaded under one agent."""
+    """List one agent's (non-deleted) threads — one space's when ``space_id``
+    is given, the whole workspace's when it is ``None`` (spaces plan step 7).
+
+    ``None`` is "every space", not "the threads with no space": the narrowing
+    is an extra condition in the adapter, never a comparison against ``NULL``.
+    The router still passes ``None`` until ``?space_id=`` lands (step 12), and
+    the keyword is required so that choice is written there rather than
+    inherited from a default.
+    """
 
     def __init__(self, conversations: ConversationRepository) -> None:
         self._conversations = conversations
 
     async def execute(
-        self, ctx: ExecutionContext, agent_key: str, *, limit: int, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        *,
+        space_id: Uuid | None,
+        limit: int,
+        cursor: str | None = None,
     ) -> Page[Conversation]:
         try:
             key = AgentKey(agent_key)
         except ConversationError as exc:
             raise ValidationError(str(exc)) from exc
-        return await self._conversations.list_by_agent(ctx, key.value, limit=limit, cursor=cursor)
+        return await self._conversations.list_by_agent(
+            ctx, key.value, space_id=space_id, limit=limit, cursor=cursor
+        )
 
 
 class GetConversation:
@@ -385,12 +427,24 @@ class PinConversationFile:
     against the live routing table is the same idea against a different
     authority.
 
-    The check is deliberately NOT repeated on read. A file deleted after it was
-    pinned leaves the pin standing (there is no cross-schema FK to cascade,
-    01 §2.4), and retrieval finds nothing for it — the same outcome as a file
-    that was never indexed. Re-validating on every read would turn another
-    module's deletion into this module's error, on a path the caller did not
-    ask to write.
+    **And it must be a file from THIS thread's space** (spaces plan §3.5).
+    Decision 1 scopes a thread to its own space's files, so a pin from another
+    space is a scope entry the retrieval filter can never match: the ``space``
+    and ``document_id`` conditions are ANDed, so the pinned document simply
+    never comes back. That is a safe failure but a silent one — the thread
+    answers from less than the caller believes while the UI shows the file as
+    pinned — and the plan is explicit that a user deserves an error rather
+    than an empty result. Hence a 409 (``spaces.cross_space_pin``), refused
+    here, where both spaces are in hand.
+
+    The check is deliberately NOT repeated on read, and neither is the space
+    one. A file deleted after it was pinned leaves the pin standing (there is
+    no cross-schema FK to cascade, 01 §2.4), and retrieval finds nothing for
+    it — the same outcome as a file that was never indexed. Re-validating on
+    every read would turn another module's deletion into this module's error,
+    on a path the caller did not ask to write. (A file cannot change space
+    after it is pinned: decision 3 makes that unwritable, and the files
+    adapter's ``save`` has no such column.)
 
     Idempotent by primary key, not by read-then-write: the repository upserts
     and returns the stored row, so a double-click yields 201 with the ORIGINAL
@@ -428,8 +482,25 @@ class PinConversationFile:
             raise ValidationError(
                 f"a conversation may pin at most {MAX_PINNED_FILES} files (currently {len(pinned)})"
             )
-        if await self._files.get_readable(ctx, file_id) is None:
+        readable = await self._files.get_readable(ctx, file_id)
+        if readable is None:
             raise ValidationError(f"file {file_id!r} does not exist or is not readable")
+        if readable.space_id != conversation.space_id:
+            # §3.5, and a 409 rather than the 422 above: the file is real and
+            # readable, and nothing about the REQUEST is malformed -- it is
+            # the state of the two rows that makes the pin impossible, which
+            # is what 409 means everywhere else in this catalog.
+            #
+            # Plain inequality, so a spaceless file in a spaceless thread
+            # still pins (both `None`, the only state that exists before the
+            # backfill of step 4 reaches every writer) while every genuine
+            # mismatch -- including a file with no space in a thread that has
+            # one -- is refused. After row 8-b the `None` case stops existing
+            # and this line keeps its meaning unchanged.
+            raise ConflictError(
+                f"file {file_id!r} belongs to another space than this conversation",
+                code="spaces.cross_space_pin",
+            )
         return await self._conversations.pin_file(ctx, conversation_id, file_id, utc_now())
 
 
@@ -605,6 +676,7 @@ class ConversationService:
         self,
         ctx: ExecutionContext,
         *,
+        space_id: Uuid | None,
         agent_key: str,
         kind: str,
         title: str | None = None,
@@ -614,7 +686,7 @@ class ConversationService:
         except ValueError as exc:
             raise ValidationError(f"invalid conversation kind: {kind!r}") from exc
         conversation, _events = await self._start.execute(
-            ctx, agent_key=agent_key, kind=kind_enum, title=title
+            ctx, space_id=space_id, agent_key=agent_key, kind=kind_enum, title=title
         )
         return StartedConversation(
             id=conversation.id,

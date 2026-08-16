@@ -78,6 +78,7 @@ def _conversation(deleted: bool = False) -> Conversation:
     return Conversation(
         id="c1",
         workspace_id="w1",
+        space_id="s1",
         agent_key=AgentKey("rag-agent"),
         kind=ConversationKind.AGENT,
         title=None,
@@ -143,6 +144,22 @@ def test_rename_on_deleted_raises() -> None:
     conv = _conversation(deleted=True)
     with pytest.raises(ConversationDeletedError):
         conv.rename("New title", utc_now())
+
+
+def test_no_mutator_moves_a_thread_between_spaces() -> None:
+    """Decision 3's shape on this aggregate (spaces plan step 7): every
+    behaviour the thread has, run in sequence, and the space is still the one
+    it was opened in. A `move_to_space` added later fails here first — which
+    matters more than the `save` that would refuse to persist it, because a
+    thread whose space changed in memory answers from the wrong scope for the
+    rest of the request."""
+    conv = _conversation()
+    now = utc_now()
+    conv.append_message("m1", MessageRole.USER, MessageContent(text="hi"), None, now)
+    conv.rename("New title", now)
+    conv.pin_model_route("rag_agent", now)
+    conv.soft_delete(now)
+    assert conv.space_id == "s1"
 
 
 # --------------------------------------------------------------------------- #

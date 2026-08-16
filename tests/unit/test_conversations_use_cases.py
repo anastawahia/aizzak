@@ -38,6 +38,13 @@ from app.modules.conversations.domain.events import (
 from app.modules.conversations.domain.value_objects import AgentKey, ConversationKind
 from tests.unit.support_conversations import StubModelCatalog
 
+# The space every thread here is opened in, and the space a ready file is in
+# unless a test says otherwise. A literal rather than a UUID: this module never
+# hands it to a database, and a readable name is what makes the cross-space
+# assertions below legible.
+_SPACE = "sp-1"
+_OTHER_SPACE = "sp-2"
+
 
 class _FakeConversations:
     """In-memory ``ConversationRepository`` — ignores ``ctx`` (no RLS in unit tests).
@@ -70,10 +77,21 @@ class _FakeConversations:
         self.rows[conversation.id] = conversation
 
     async def list_by_agent(
-        self, ctx: ExecutionContext, agent_key: str, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        *,
+        space_id: str | None,
+        limit: int,
+        cursor: str | None,
     ) -> Page[Conversation]:
         matches = [
-            c for c in self.rows.values() if c.agent_key.value == agent_key and c.deleted_at is None
+            c
+            for c in self.rows.values()
+            if c.agent_key.value == agent_key
+            and c.deleted_at is None
+            # `None` narrows nothing — every space, not the spaceless ones.
+            and (space_id is None or c.space_id == space_id)
         ]
         return Page(data=matches[:limit], next_cursor=None, limit=limit)
 
@@ -132,19 +150,50 @@ class _FakeConversations:
 @dataclass(frozen=True, slots=True)
 class _ReadableFile:
     file_id: str
+    space_id: str | None
 
 
 @dataclass
 class _FakeReadableFiles:
     """A ``ReadableFiles`` seam: anything outside ``ready`` is unreadable, and
-    the use-case may not care WHY (``ports/files.py``)."""
+    the use-case may not care WHY (``ports/files.py``).
+
+    A ready file is in ``_SPACE`` by default — the space every seeded thread
+    is opened in here — so a suite that wants a CROSS-space file names it in
+    ``spaces``, and only that suite carries the concept.
+    """
 
     ready: set[str] = field(default_factory=set)
     calls: list[str] = field(default_factory=list)
+    spaces: dict[str, str | None] = field(default_factory=dict)
 
     async def get_readable(self, ctx: ExecutionContext, file_id: str) -> _ReadableFile | None:
         self.calls.append(file_id)
-        return _ReadableFile(file_id) if file_id in self.ready else None
+        if file_id not in self.ready:
+            return None
+        return _ReadableFile(file_id, self.spaces.get(file_id, _SPACE))
+
+
+@dataclass
+class _FakeSpaces:
+    """An ``ActiveSpaces`` seam over the live ids, recording what was asked.
+
+    ``asked`` is what proves the check RAN — a use-case that stored the id
+    without proving it would leave this list empty while every assertion about
+    the stored row still passed.
+    """
+
+    live: set[str] = field(default_factory=lambda: {_SPACE})
+    asked: list[str] = field(default_factory=list)
+
+    async def get_active(self, ctx: ExecutionContext, space_id: str) -> _ActiveSpace | None:
+        self.asked.append(space_id)
+        return _ActiveSpace(space_id) if space_id in self.live else None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveSpace:
+    space_id: str
 
 
 def _ctx(workspace_id: str = "w1") -> ExecutionContext:
@@ -160,6 +209,7 @@ async def _seed_conversation(
     conversations: _FakeConversations,
     *,
     agent_key: str = "rag-agent",
+    space_id: str | None = _SPACE,
     deleted_at: datetime | None = None,
     message_count: int = 0,
 ) -> Conversation:
@@ -167,6 +217,7 @@ async def _seed_conversation(
     conversation = Conversation(
         id=new_uuid7(),
         workspace_id="w1",
+        space_id=space_id,
         agent_key=AgentKey(agent_key),
         kind=ConversationKind.AGENT,
         title=None,
@@ -186,8 +237,8 @@ async def _seed_conversation(
 # --------------------------------------------------------------------------- #
 async def test_start_conversation_creates_and_emits_event() -> None:
     conversations = _FakeConversations()
-    conversation, events = await StartConversation(conversations).execute(
-        _ctx(), agent_key="RAG-Agent", title="First chat"
+    conversation, events = await StartConversation(conversations, _FakeSpaces()).execute(
+        _ctx(), space_id=_SPACE, agent_key="RAG-Agent", title="First chat"
     )
     assert conversation.agent_key.value == "rag-agent"
     assert conversation.kind is ConversationKind.AGENT
@@ -204,9 +255,57 @@ async def test_start_conversation_creates_and_emits_event() -> None:
     assert started.kind == "agent"
 
 
+async def test_the_started_thread_carries_the_space_it_was_opened_in() -> None:
+    """Spaces plan step 7: the space is on the stored row, not merely on the
+    return value — the listing and the pin rule both read it back."""
+    conversations = _FakeConversations()
+    spaces = _FakeSpaces()
+
+    conversation, _events = await StartConversation(conversations, spaces).execute(
+        _ctx(), space_id=_SPACE, agent_key="rag-agent"
+    )
+
+    assert conversation.space_id == _SPACE
+    assert conversations.rows[conversation.id].space_id == _SPACE
+    assert spaces.asked == [_SPACE]
+
+
+async def test_opening_a_thread_in_a_space_that_is_not_live_is_a_404_and_writes_nothing() -> None:
+    """Unknown and soft-deleted are ONE answer (``ports/spaces.py``), and the
+    refusal comes before the row exists: there is no unit of work around this
+    use-case to roll one back."""
+    conversations = _FakeConversations()
+    spaces = _FakeSpaces(live=set())
+
+    with pytest.raises(NotFoundError):
+        await StartConversation(conversations, spaces).execute(
+            _ctx(), space_id=_SPACE, agent_key="rag-agent"
+        )
+
+    assert spaces.asked == [_SPACE]
+    assert conversations.rows == {}
+
+
+async def test_a_thread_opened_without_a_space_never_asks_and_stores_none() -> None:
+    """``None`` is a real state until plan row 8-b — the orchestrator and
+    ``POST /conversations`` both pass it today. It must not be turned into a
+    lookup of ``None``, which no space can satisfy."""
+    conversations = _FakeConversations()
+    spaces = _FakeSpaces()
+
+    conversation, _events = await StartConversation(conversations, spaces).execute(
+        _ctx(), space_id=None, agent_key="rag-agent"
+    )
+
+    assert conversation.space_id is None
+    assert spaces.asked == []
+
+
 async def test_start_conversation_rejects_invalid_agent_key() -> None:
     with pytest.raises(ValidationError):
-        await StartConversation(_FakeConversations()).execute(_ctx(), agent_key="")
+        await StartConversation(_FakeConversations(), _FakeSpaces()).execute(
+            _ctx(), space_id=_SPACE, agent_key=""
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -260,7 +359,9 @@ async def test_list_conversations_by_agent_returns_page() -> None:
     await _seed_conversation(conversations, agent_key="rag-agent")
     await _seed_conversation(conversations, agent_key="other-agent")
 
-    page = await ListConversationsByAgent(conversations).execute(_ctx(), "RAG-Agent", limit=10)
+    page = await ListConversationsByAgent(conversations).execute(
+        _ctx(), "RAG-Agent", space_id=None, limit=10
+    )
 
     assert isinstance(page, Page)
     assert len(page.data) == 2
@@ -270,7 +371,37 @@ async def test_list_conversations_by_agent_returns_page() -> None:
 
 async def test_list_conversations_by_agent_rejects_invalid_agent_key() -> None:
     with pytest.raises(ValidationError):
-        await ListConversationsByAgent(_FakeConversations()).execute(_ctx(), "", limit=10)
+        await ListConversationsByAgent(_FakeConversations()).execute(
+            _ctx(), "", space_id=None, limit=10
+        )
+
+
+async def test_listing_narrows_to_one_space_when_asked() -> None:
+    conversations = _FakeConversations()
+    mine = await _seed_conversation(conversations, space_id=_SPACE)
+    await _seed_conversation(conversations, space_id=_OTHER_SPACE)
+
+    page = await ListConversationsByAgent(conversations).execute(
+        _ctx(), "rag-agent", space_id=_SPACE, limit=10
+    )
+
+    assert [c.id for c in page.data] == [mine.id]
+
+
+async def test_listing_without_a_space_spans_every_space_not_the_spaceless_ones() -> None:
+    """``None`` means "all spaces". Reading it as ``space_id IS NULL`` would
+    silently turn ``GET /conversations`` into a listing of the threads nobody
+    filed — with every existing test still green, because they all seed one
+    kind of row."""
+    conversations = _FakeConversations()
+    filed = await _seed_conversation(conversations, space_id=_SPACE)
+    unfiled = await _seed_conversation(conversations, space_id=None)
+
+    page = await ListConversationsByAgent(conversations).execute(
+        _ctx(), "rag-agent", space_id=None, limit=10
+    )
+
+    assert {c.id for c in page.data} == {filed.id, unfiled.id}
 
 
 # --------------------------------------------------------------------------- #
@@ -683,3 +814,45 @@ async def test_a_deleted_thread_still_lists_its_scope() -> None:
 async def test_listing_the_scope_of_an_unknown_thread_is_a_404() -> None:
     with pytest.raises(NotFoundError):
         await ListConversationFiles(_FakeConversations()).execute(_ctx(), "missing")
+
+
+# --------------------------------------------------------------------------- #
+# §3.5 — a pin never crosses a space boundary                                  #
+# --------------------------------------------------------------------------- #
+async def test_pinning_a_file_from_another_space_is_a_409_and_stores_nothing() -> None:
+    """The plan's §3.5. Retrieval would have ANDed the space filter over the
+    document filter and simply returned nothing — safe, but silent, with the
+    UI still showing the file as pinned."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations, space_id=_SPACE)
+    files = _FakeReadableFiles(ready={"f1"}, spaces={"f1": _OTHER_SPACE})
+
+    with pytest.raises(ConflictError) as exc_info:
+        await PinConversationFile(conversations, files).execute(_ctx(), conversation.id, "f1")
+
+    assert exc_info.value.code == "spaces.cross_space_pin"
+    assert conversations.pins.get(conversation.id, []) == []
+
+
+async def test_a_file_with_no_space_is_refused_by_a_thread_that_has_one() -> None:
+    """Not the same as "unreadable" — the file is perfectly readable, it is
+    simply not in this thread's space, so it answers 409 and not 422."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations, space_id=_SPACE)
+    files = _FakeReadableFiles(ready={"f1"}, spaces={"f1": None})
+
+    with pytest.raises(ConflictError):
+        await PinConversationFile(conversations, files).execute(_ctx(), conversation.id, "f1")
+
+
+async def test_a_spaceless_file_still_pins_into_a_spaceless_thread() -> None:
+    """The state of every row before the writers of steps 7 and 12 exist: two
+    ``None``\\ s match, so the rule adds no refusal the platform cannot yet
+    satisfy. After row 8-b this case stops existing on its own."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations, space_id=None)
+    files = _FakeReadableFiles(ready={"f1"}, spaces={"f1": None})
+
+    pin = await PinConversationFile(conversations, files).execute(_ctx(), conversation.id, "f1")
+
+    assert pin.file_id == "f1"

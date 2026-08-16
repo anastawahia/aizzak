@@ -412,6 +412,25 @@ async def test_files_query_service_returns_none_until_ready() -> None:
     assert view.content_type == "application/pdf"
 
 
+async def test_the_view_carries_the_space_the_file_is_in() -> None:
+    """Spaces plan step 7 (§3.5): ``conversations`` refuses a pin from another
+    space, and this projection is the only way it can learn which space a file
+    is in. A view that dropped the column would make that rule compare
+    ``None`` against ``None`` and permit everything, with no error anywhere.
+    """
+    files = _FakeFiles()
+    ctx = _ctx()
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    )
+    await CompleteUpload(files).execute(ctx, file_id=registered.id, checksum="a" * 64)
+
+    view = await FilesQueryService(files).get_readable(ctx, registered.id)
+
+    assert view is not None
+    assert view.space_id == _SPACE
+
+
 # --------------------------------------------------------------------------- #
 # CompleteUploadService -- the Outbox seam (5.1-أ)                            #
 # --------------------------------------------------------------------------- #

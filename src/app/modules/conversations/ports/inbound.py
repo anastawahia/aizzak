@@ -79,10 +79,24 @@ class ConversationThreads(Protocol):
         self,
         ctx: ExecutionContext,
         *,
+        space_id: Uuid | None,
         agent_key: str,
         kind: str,
         title: str | None = None,
-    ) -> StartedConversation: ...
+    ) -> StartedConversation:
+        """Open a thread inside one space (spaces plan step 7).
+
+        ``space_id`` crosses as a plain ``Uuid`` string — an opaque id, like
+        ``kind`` and ``role``, so no caller has to import anything of this
+        module's or of ``spaces``'. It is REQUIRED and nullable with no
+        default: the orchestrator has no space to name until the invoke
+        contract carries one (step 12), and a default would have hidden that
+        rather than stating it at the call.
+
+        An id that names no live space is a 404 from ``StartConversation``,
+        raised before the thread exists.
+        """
+        ...
 
     async def append(
         self,
