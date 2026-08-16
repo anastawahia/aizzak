@@ -95,6 +95,11 @@ documents = Table(
     _metadata,
     Column("id", _uuid_col, primary_key=True),
     Column("workspace_id", _uuid_col, nullable=False),
+    # `migrations/versions/knowledge/0004_document_space.py` (§3.142), written
+    # by `add` and filtered on by `list` since plan step 8. Still NULLable
+    # until plan row 8-b, because a document built from a file that has no
+    # space yet must be able to say so rather than invent one.
+    Column("space_id", _uuid_col, nullable=True),
     Column("file_id", _uuid_col, nullable=False),
     Column("status", Text, nullable=False),
     Column("chunk_count", Integer, nullable=False),
@@ -221,7 +226,7 @@ class SqlDocumentRepository:
         return None if row is None else _hydrate_document(row)
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None
+        self, ctx: ExecutionContext, *, space_id: UuidStr | None, limit: int, cursor: str | None
     ) -> Page[Document]:
         # Layer 2 on its own reads every status (the port's reasoning): a
         # `pending` or `failed` document is exactly what a client needs to
@@ -233,6 +238,15 @@ class SqlDocumentRepository:
         # `id < cursor` predicate. The two must point the same way — pointing
         # them apart gives a page that is silently empty or never ends.
         conditions = [documents.c.workspace_id == ctx.workspace_id]
+        if space_id is not None:
+            # The space narrowing (step 8) -- backed by `ix_kndoc_space`
+            # (`knowledge/0004_document_space.py`), a FULL index because this
+            # table has no `deleted_at` to make it partial on (§4's 📌).
+            # An EQUALITY on an opaque id: this adapter never joins to
+            # `spaces.spaces`, which it cannot see, and the workspace
+            # condition above stays in place -- a space is an axis inside the
+            # tenant, never a replacement for it.
+            conditions.append(documents.c.space_id == space_id)
         if cursor is not None:
             conditions.append(documents.c.id < decode_id_cursor(cursor))
         stmt = select(documents).where(*conditions).order_by(documents.c.id.desc()).limit(limit + 1)
@@ -277,6 +291,7 @@ class SqlDocumentRepository:
         stmt = insert(documents).values(
             id=doc.id,
             workspace_id=doc.workspace_id,
+            space_id=doc.space_id,
             file_id=doc.file_id,
             status=doc.status.value,
             chunk_count=doc.chunk_count,
@@ -769,6 +784,7 @@ def _hydrate_document(row: RowMapping) -> Document:
     return Document(
         id=row["id"],
         workspace_id=row["workspace_id"],
+        space_id=row["space_id"],
         file_id=row["file_id"],
         status=IndexStatus(row["status"]),
         chunk_count=row["chunk_count"],

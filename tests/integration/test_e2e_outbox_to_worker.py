@@ -80,10 +80,17 @@ def _ctx(workspace_id: str) -> ExecutionContext:
     )
 
 
-def _uploaded_record(*, stream: str, workspace_id: str, file_id: str) -> OutboxRecord:
+def _uploaded_record(
+    *, stream: str, workspace_id: str, file_id: str, space_id: str | None = None
+) -> OutboxRecord:
     """A schema-valid ``files.file.uploaded.v1`` record on a UNIQUE test
     stream -- ``test_outbox_relay_live.py``'s own ``_record`` precedent,
-    this event's shape instead of media's."""
+    this event's shape instead of media's.
+
+    ``space_id`` is OMITTED when there is none (spaces plan step 8), exactly
+    as ``files/application/event_mapping.py`` writes it and as every envelope
+    published before that step already looks.
+    """
     event_id = new_uuid7()
     return OutboxRecord(
         event_id=event_id,
@@ -98,12 +105,22 @@ def _uploaded_record(*, stream: str, workspace_id: str, file_id: str) -> OutboxR
             subject=file_id,
             occurred_at=datetime(2026, 7, 19, 12, 0, tzinfo=UTC),
             workspace_id=workspace_id,
-            data={
-                "file_id": file_id,
-                "content_type": "text/plain",
-                "size_bytes": 42,
-                "storage_key": f"{workspace_id}/{file_id}",
-            },
+            data=(
+                {
+                    "file_id": file_id,
+                    "content_type": "text/plain",
+                    "size_bytes": 42,
+                    "storage_key": f"{workspace_id}/{file_id}",
+                }
+                if space_id is None
+                else {
+                    "file_id": file_id,
+                    "content_type": "text/plain",
+                    "size_bytes": 42,
+                    "storage_key": f"{workspace_id}/{file_id}",
+                    "space_id": space_id,
+                }
+            ),
         ),
     )
 
@@ -387,17 +404,20 @@ class _StubProviders:
         return object(), resolved
 
 
-def _ready_file(*, workspace_id: str, file_id: str, name: str, storage_key: str) -> File:
+def _ready_file(
+    *, workspace_id: str, file_id: str, name: str, storage_key: str, space_id: str | None = None
+) -> File:
     """The row a completed upload leaves behind (``CompleteUpload``) -- which
     is exactly the state ``files.file.uploaded.v1`` announces."""
     now = datetime.now(UTC)
     return File(
         id=file_id,
         workspace_id=workspace_id,
-        # The e2e path is `files -> knowledge`, which never reads the space;
-        # `None` is what this pipeline's own writer (the media worker) still
-        # produces, and the column stays NULLable until plan row 8-b.
-        space_id=None,
+        # The file's space (spaces plan step 8). The pipeline below does not
+        # READ it off this row -- it reads it off the event, which is where
+        # `CompleteUpload` puts it -- but a file row disagreeing with the
+        # event it announced would make the assertions downstream ambiguous.
+        space_id=space_id,
         name=FileName(name),
         content_type=ContentType("text/plain"),
         size_bytes=len(_TXT_BODY),
@@ -496,6 +516,21 @@ def _knowledge_subscriptions(
     return register, index
 
 
+async def _indexed_point_spaces(
+    client: AsyncQdrantClient, collection: str
+) -> tuple[int, set[str | None]]:
+    """How many points a collection holds, and the distinct ``space`` payload
+    keys across them (spaces plan §3.4).
+
+    The count travels back with the spaces on purpose: an EMPTY collection
+    would make a set-equality assertion pass against ``set()`` for the wrong
+    reason, and the two facts are only meaningful together.
+    """
+    info = await client.get_collection(collection)
+    points, _ = await client.scroll(collection, limit=100, with_payload=True)
+    return info.points_count or 0, {(point.payload or {}).get("space") for point in points}
+
+
 async def _cleanup_index_run(
     qdrant_client: AsyncQdrantClient,
     minio_storage: MinioStorage,
@@ -548,6 +583,7 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
     group = f"cg.test.{new_uuid7()}"
     workspace_id = new_uuid7()
     file_id = new_uuid7()
+    space_id = new_uuid7()
     storage_key = f"{workspace_id}/{file_id}/notes.txt"
     ctx = _ctx(workspace_id)
     collection = knowledge_collection(workspace_id)
@@ -594,6 +630,7 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
                 file_id=file_id,
                 name="notes.txt",
                 storage_key=storage_key,
+                space_id=space_id,
             ),
         )
         await minio_storage.put(storage_key, _TXT_BODY, "text/plain")
@@ -601,7 +638,14 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
         # 1) files.file.uploaded.v1 -> relay -> register handler.
         await outbox.append(
             ctx,
-            [_uploaded_record(stream=files_stream, workspace_id=workspace_id, file_id=file_id)],
+            [
+                _uploaded_record(
+                    stream=files_stream,
+                    workspace_id=workspace_id,
+                    file_id=file_id,
+                    space_id=space_id,
+                )
+            ],
         )
         assert await relay.run_once() == 1
         assert await consumer.run_once([register]) == 1
@@ -611,6 +655,11 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
         )
         assert len(rows) == 1
         assert rows[0]["status"] == "pending"
+        # Spaces plan step 8, live: the space rode the event out of `files`
+        # and landed on the `knowledge.documents` row. This is the ONE hop
+        # the column depends on, and nothing else in the system would notice
+        # if it were dropped until row 8-b's `SET NOT NULL`.
+        assert str(rows[0]["space_id"]) == space_id
         document_id = str(rows[0]["id"])
 
         # 2) The follow-on registered event, relayed onto this test's stream.
@@ -639,9 +688,14 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
         assert all(chunk_texts)
         assert "parser dispatch table" in " ".join(chunk_texts)
 
-        # And one hybrid point per chunk really landed in Qdrant.
-        info = await qdrant_client.get_collection(collection)
-        assert info.points_count == indexed.chunk_count
+        # One hybrid point per chunk really landed in Qdrant, each carrying
+        # the `space` payload key (§3.4) — read back out of REAL Qdrant, so
+        # what is asserted is what a search would filter on. The chain proven
+        # end to end is: file event ⇒ document row ⇒ point payload. Break any
+        # link and a space-scoped search silently returns nothing (§5-أ),
+        # which no error anywhere would report.
+        count, spaces = await _indexed_point_spaces(qdrant_client, collection)
+        assert (count, spaces) == (indexed.chunk_count, {space_id})
 
         # The terminal event was emitted in the finalizing transaction.
         done = await _read_outbox_as_owner(

@@ -9,7 +9,12 @@
     "content_type": { "type": "string" },
     "size_bytes": { "type": "integer", "minimum": 0 },
     "storage_key": { "type": "string", "description": "workspace_id/uuid in MinIO" },
-    "checksum": { "type": "string" }
+    "checksum": { "type": "string" },
+    "space_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "the file's owning space; ABSENT when it has none (spaces plan step 8) — an added optional field, so the type stays v1"
+    }
   },
   "additionalProperties": false
 }

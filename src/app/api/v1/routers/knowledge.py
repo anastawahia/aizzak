@@ -238,7 +238,17 @@ async def search_knowledge(
         raise AppError(
             "knowledge search is not available on this deployment", code=_SEARCH_UNAVAILABLE
         )
-    chunks = await retrieval.retrieve(ctx, body.query, body.k)
+    chunks = await retrieval.retrieve(
+        ctx,
+        body.query,
+        body.k,
+        # Still every space: `space_id` is not on `KnowledgeSearchIn` yet
+        # (§3.7 makes `?space_id=` mandatory in step 12), and a route that
+        # guessed one would answer from a corpus the client never named.
+        # Typed rather than defaulted so this route shows up as one of the
+        # callers still owing a space.
+        space_id=None,
+    )
     data = [
         RetrievedChunkOut(
             document_id=chunk.document_id,
@@ -261,8 +271,15 @@ async def list_documents(
     The only listing here that pages: a corpus grows by a row per completed
     upload with no ceiling in the design, while ``POST /search`` is bounded
     by its own ``k`` and has no stable order a cursor could name.
+
+    Still the WHOLE workspace: ``?space_id=`` becomes a mandatory query
+    parameter in step 12 (§3.7), and until it exists on the wire the honest
+    filter is "none" — narrowing to a space the client did not name would
+    hide documents from a listing that promises all of them.
     """
-    page = await services.knowledge.list_documents.execute(ctx, limit=limit, cursor=cursor)
+    page = await services.knowledge.list_documents.execute(
+        ctx, space_id=None, limit=limit, cursor=cursor
+    )
     return Page(
         data=[_to_document_out(document) for document in page.data],
         meta=PageMeta(next_cursor=page.next_cursor, limit=page.limit),

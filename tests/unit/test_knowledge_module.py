@@ -47,6 +47,12 @@ from app.modules.knowledge.ports.content_extractor import (
 from app.modules.knowledge.ports.inbound import KnowledgeRetrieval
 from app.modules.knowledge.ports.retrieval import ResolvedEmbedding
 
+# Two spaces in ONE workspace (spaces plan step 8) -- the axis the tests
+# below narrow along. Opaque strings, exactly as every layer under test
+# treats them.
+_SPACE_A = "space-research"
+_SPACE_B = "space-drafts"
+
 
 # --------------------------------------------------------------------------- #
 # Shared test helpers                                                         #
@@ -61,6 +67,7 @@ def _document(
     *,
     doc_id: str = "doc-1",
     workspace_id: str = "ws1",
+    space_id: str | None = None,
     file_id: str = "file-1",
     status: IndexStatus = IndexStatus.PENDING,
     chunk_count: int = 0,
@@ -70,6 +77,7 @@ def _document(
     return Document(
         id=doc_id,
         workspace_id=workspace_id,
+        space_id=space_id,
         file_id=file_id,
         status=status,
         chunk_count=chunk_count,
@@ -374,7 +382,9 @@ async def test_register_document_from_file_mints_pending_document() -> None:
     documents = _FakeDocumentRepository()
     ctx = _ctx("ws1")
 
-    doc, events = await RegisterDocumentFromFile(documents).execute(ctx, file_id="file-1")
+    doc, events = await RegisterDocumentFromFile(documents).execute(
+        ctx, file_id="file-1", space_id=None
+    )
 
     assert doc.status is IndexStatus.PENDING
     assert doc.chunk_count == 0
@@ -394,7 +404,9 @@ async def test_register_document_from_file_mints_pending_document() -> None:
 
 async def test_register_document_from_file_empty_file_id_raises_validation_error() -> None:
     with pytest.raises(ValidationError):
-        await RegisterDocumentFromFile(_FakeDocumentRepository()).execute(_ctx(), file_id="   ")
+        await RegisterDocumentFromFile(_FakeDocumentRepository()).execute(
+            _ctx(), file_id="   ", space_id=None
+        )
 
 
 async def test_register_document_from_file_allows_duplicate_registrations() -> None:
@@ -404,8 +416,8 @@ async def test_register_document_from_file_allows_duplicate_registrations() -> N
     ctx = _ctx()
     use_case = RegisterDocumentFromFile(documents)
 
-    first, _ = await use_case.execute(ctx, file_id="file-1")
-    second, _ = await use_case.execute(ctx, file_id="file-1")
+    first, _ = await use_case.execute(ctx, file_id="file-1", space_id=None)
+    second, _ = await use_case.execute(ctx, file_id="file-1", space_id=None)
 
     assert first.id != second.id
     assert len(documents.docs) == 2
@@ -645,6 +657,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     await IndexDocument(embeddings, vectors).execute(
         ctx,
         document_id="doc-1",
+        space_id=None,
         parsed=_parsed_document([_parsed_chunk(text, order=0)]),
         model="embed-1",
         api_key="key-1",
@@ -658,7 +671,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     # KnowledgeRetrieval inbound port -- mypy is the real assertion here.
     svc: KnowledgeRetrieval = service
 
-    results = await svc.retrieve(ctx, text, 1)
+    results = await svc.retrieve(ctx, text, 1, space_id=None)
 
     assert resolver.calls == [ctx]
     assert len(results) == 1
@@ -691,6 +704,37 @@ async def _indexed_corpus(
         await IndexDocument(embeddings, vectors).execute(
             ctx,
             document_id=doc_id,
+            space_id=None,
+            parsed=_parsed_document([_parsed_chunk(text, order=0)]),
+            model="embed-1",
+            api_key="key-1",
+        )
+    return documents
+
+
+async def _spaced_corpus(
+    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+) -> _FakeDocumentRepository:
+    """The same two documents, in two DIFFERENT spaces — the smallest corpus
+    in which a space filter can be wrong in a visible way (spaces plan step
+    8). Indexed through the real pipeline, so the payload each point carries
+    is the one production would have written."""
+    documents = _FakeDocumentRepository()
+    for doc_id, space_id, text in (
+        ("doc-research", _SPACE_A, "quarterly revenue figures for the northern region"),
+        ("doc-drafts", _SPACE_B, "quarterly revenue figures for the southern region"),
+    ):
+        documents.docs[doc_id] = _document(
+            doc_id=doc_id,
+            space_id=space_id,
+            file_id=f"file-{doc_id}",
+            status=IndexStatus.INDEXED,
+            chunk_count=1,
+        )
+        await IndexDocument(embeddings, vectors).execute(
+            ctx,
+            document_id=doc_id,
+            space_id=space_id,
             parsed=_parsed_document([_parsed_chunk(text, order=0)]),
             model="embed-1",
             api_key="key-1",
@@ -710,7 +754,9 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
         documents,
     )
 
-    results = await service.retrieve(ctx, "quarterly revenue figures", 5, ["file-north"])
+    results = await service.retrieve(
+        ctx, "quarterly revenue figures", 5, ["file-north"], space_id=None
+    )
 
     assert [chunk.document_id for chunk in results] == ["doc-north"]
     # FILE ids in, DOCUMENT ids out: the caller never has to know documents
@@ -730,7 +776,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
         documents,
     )
 
-    results = await service.retrieve(ctx, "quarterly revenue figures", 5)
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
 
     assert {chunk.document_id for chunk in results} == {"doc-north", "doc-south"}
 
@@ -753,9 +799,210 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
     )
     searches_before = len(vectors.search_calls)
 
-    results = await service.retrieve(ctx, "quarterly revenue figures", 5, ["file-never-indexed"])
+    results = await service.retrieve(
+        ctx, "quarterly revenue figures", 5, ["file-never-indexed"], space_id=None
+    )
 
     assert results == []
     # And it short-circuits: no vector round trip is made for a scope that
     # cannot match anything.
     assert len(vectors.search_calls) == searches_before
+
+
+# --------------------------------------------------------------------------- #
+# The space axis (spaces plan step 8): the column, the payload, the filter    #
+# --------------------------------------------------------------------------- #
+async def test_a_registered_document_is_filed_under_its_file_s_space() -> None:
+    """The whole point of the column: the document the worker mints carries
+    the space the FILE was in, unexamined and unaltered."""
+    documents = _FakeDocumentRepository()
+    ctx = _ctx("ws1")
+
+    doc, _ = await RegisterDocumentFromFile(documents).execute(
+        ctx, file_id="file-1", space_id=_SPACE_A
+    )
+
+    assert doc.space_id == _SPACE_A
+    assert documents.docs[doc.id].space_id == _SPACE_A
+
+
+async def test_a_file_with_no_space_registers_a_document_with_none() -> None:
+    """The state every document has today, and the one row 8-b will find:
+    `None` is written through, never turned into a guess."""
+    documents = _FakeDocumentRepository()
+
+    doc, _ = await RegisterDocumentFromFile(documents).execute(
+        _ctx("ws1"), file_id="file-1", space_id=None
+    )
+
+    assert doc.space_id is None
+
+
+async def test_every_indexed_point_carries_its_document_s_space_in_the_payload() -> None:
+    """§3.4's payload key, written by the REAL pipeline — this is what the
+    retrieval filter matches on, and what step 9 will index."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+
+    await IndexDocument(embeddings, vectors).execute(
+        ctx,
+        document_id="doc-1",
+        space_id=_SPACE_A,
+        parsed=_parsed_document(
+            [_parsed_chunk("first window of text", 0), _parsed_chunk("second window of text", 1)]
+        ),
+        model="embed-1",
+        api_key="key-1",
+    )
+
+    points = list(vectors.points["kn-ws1"].values())
+    assert len(points) == 2
+    assert {point.payload["space"] for point in points} == {_SPACE_A}
+    # The tenant key is not replaced by it (DD-04): a space is an axis INSIDE
+    # the workspace.
+    assert {point.payload["workspace_id"] for point in points} == {"ws1"}
+
+
+async def test_a_spaceless_document_omits_the_payload_key_rather_than_writing_null() -> None:
+    """`null` and "absent" are the same to a `MatchValue` filter but not to a
+    reader: the absent key is what every pre-step-8 point already has, and the
+    adapter cannot render a `None` filter value at all."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+
+    await IndexDocument(embeddings, vectors).execute(
+        ctx,
+        document_id="doc-1",
+        space_id=None,
+        parsed=_parsed_document([_parsed_chunk("a window of text", 0)]),
+        model="embed-1",
+        api_key="key-1",
+    )
+
+    (point,) = vectors.points["kn-ws1"].values()
+    assert "space" not in point.payload
+
+
+async def test_the_worker_takes_the_payload_space_from_the_document_row() -> None:
+    """The link between the column and the payload, over the REAL pipeline.
+
+    ``knowledge.document.registered.v1`` carries no space, so the aggregate
+    ``run`` loads is the only thing that knows one. Pass ``None`` there and
+    every point is indexed spaceless while the row says otherwise — the two
+    disagree, and only a space-scoped search (returning nothing, quietly)
+    would ever say so.
+    """
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    doc = _document(space_id=_SPACE_B, status=IndexStatus.PENDING)
+    documents.docs[doc.id] = doc
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    use_case = IndexRegisteredDocument(documents, IndexDocument(embeddings, vectors))
+
+    await use_case.execute(
+        ctx,
+        document_id=doc.id,
+        parsed=_parsed_document([_parsed_chunk("a window of indexed text", 0)]),
+        model="embed-1",
+        api_key="key-1",
+    )
+
+    (point,) = vectors.points["kn-ws1"].values()
+    assert point.payload["space"] == _SPACE_B
+
+
+async def test_a_space_scoped_retrieval_never_answers_from_another_space() -> None:
+    """The filter, end to end over the real pipeline and the real fusion: two
+    documents, two spaces, one query that matches both texts."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _spaced_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
+
+    assert [chunk.document_id for chunk in results] == ["doc-research"]
+    # A single value ⇒ `MatchValue` at the adapter, ANDed onto the tenant key
+    # on BOTH legs.
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "space": _SPACE_A}
+    assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws1", "space": _SPACE_A}
+
+
+async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_other() -> None:
+    """Both conditions reach the filter and are ANDed (§3.4): a pin does not
+    widen the space, and a space does not drop the pin."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _spaced_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    await service.retrieve(
+        ctx, "quarterly revenue figures", 5, ["file-doc-research"], space_id=_SPACE_A
+    )
+
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-research"],
+        "space": _SPACE_A,
+    }
+
+
+async def test_an_unspaced_retrieval_still_sees_every_space() -> None:
+    """`None` is "all spaces", never "the spaceless ones" — the key is left
+    out of the filter entirely (which the Qdrant adapter also requires: a
+    `None` filter value is a hard error there, not a no-op)."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _spaced_corpus(ctx, embeddings, vectors)
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
+
+    assert {chunk.document_id for chunk in results} == {"doc-research", "doc-drafts"}
+    assert "space" not in (vectors.search_calls[-1][2] or {})
+
+
+async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search() -> None:
+    """§5-أ, made visible instead of discovered in production.
+
+    A point written without the `space` key matches no space filter — no
+    error, no warning, just nothing. This test exists so the mandatory
+    re-index is a documented consequence rather than a surprise.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-old"] = _document(
+        doc_id="doc-old", space_id=_SPACE_A, status=IndexStatus.INDEXED, chunk_count=1
+    )
+    # Indexed as it was BEFORE this step: the row now says which space it is
+    # in, but the point in the store predates the payload key.
+    await IndexDocument(embeddings, vectors).execute(
+        ctx,
+        document_id="doc-old",
+        space_id=None,
+        parsed=_parsed_document([_parsed_chunk("quarterly revenue figures", 0)]),
+        model="embed-1",
+        api_key="key-1",
+    )
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+    )
+
+    assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []
+    # And it is genuinely there, for anyone not asking about a space.
+    assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None) != []

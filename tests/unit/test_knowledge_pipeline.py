@@ -556,7 +556,7 @@ async def test_index_document_ensures_hybrid_collection_and_upserts_hybrid_point
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", parsed=parsed, model="embed-1", api_key="k"
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="embed-1", api_key="k"
     )
 
     assert outcome.collection == "kn-ws1"
@@ -580,8 +580,12 @@ async def test_index_document_point_ids_are_deterministic_across_reindex_runs() 
     ctx = _ctx("ws1")
     parsed = _parsed_document([_parsed_chunk("stable content for reindexing", order=0)])
 
-    first = await use_case.execute(ctx, document_id="doc-1", parsed=parsed, model="m", api_key="k")
-    second = await use_case.execute(ctx, document_id="doc-1", parsed=parsed, model="m", api_key="k")
+    first = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+    second = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
 
     assert [c.chunk_id for c in first.chunks] == [c.chunk_id for c in second.chunks]
     assert first.chunks[0].chunk_id == chunk_point_id("doc-1", 0)
@@ -599,7 +603,7 @@ async def test_index_document_batches_embed_calls_past_128_chunks() -> None:
     parsed = _parsed_document([_parsed_chunk(f"paragraphtoken{i}", order=i) for i in range(130)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 130
@@ -616,7 +620,7 @@ async def test_index_document_empty_parsed_document_upserts_nothing() -> None:
     ctx = _ctx("ws1")
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", parsed=_parsed_document([]), model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=None, parsed=_parsed_document([]), model="m", api_key="k"
     )
 
     assert outcome == IndexOutcome(collection="kn-ws1", dimensions=8, chunks=())
@@ -641,7 +645,7 @@ async def test_index_document_payload_copies_citation_allowlist_keys_when_presen
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
     point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
 
@@ -665,11 +669,16 @@ async def test_index_then_retrieve_round_trip() -> None:
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
     results = await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="quarterly revenue figures for the northern region", model="m", api_key="k", k=1
+        ctx,
+        space_id=None,
+        query="quarterly revenue figures for the northern region",
+        model="m",
+        api_key="k",
+        k=1,
     )
 
     assert len(results) == 1
@@ -685,7 +694,7 @@ async def test_retrieve_context_both_legs_called_with_workspace_filter() -> None
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
     await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="alpha report", model="m", api_key="k"
+        ctx, space_id=None, query="alpha report", model="m", api_key="k"
     )
 
     collection = knowledge_collection("ws1")
@@ -702,7 +711,7 @@ async def test_retrieve_context_query_embed_call_is_exactly_the_query() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
     await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="alpha report", model="m", api_key="k"
+        ctx, space_id=None, query="alpha report", model="m", api_key="k"
     )
 
     assert embeddings.calls == [["alpha report"]]
@@ -723,7 +732,7 @@ async def test_retrieve_context_rrf_fuses_both_legs() -> None:
     )
 
     results = await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="revenue figures quarterly", model="m", api_key="k", k=5
+        ctx, space_id=None, query="revenue figures quarterly", model="m", api_key="k", k=5
     )
 
     assert results[0].chunk_id == chunk_point_id("doc-1", 0)
@@ -756,7 +765,7 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
     )
 
     results = await RetrieveContext(embeddings, vectors).execute(
-        ctx, query=query, model="m", api_key="k", k=1
+        ctx, space_id=None, query=query, model="m", api_key="k", k=1
     )
 
     assert len(results) == 1
@@ -771,7 +780,7 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="document content", model="m", api_key="k", k=0
+        ctx, space_id=None, query="document content", model="m", api_key="k", k=0
     )
 
     # k clamped up to >=1: search_k = clamped_k * _SEARCH_OVERFETCH == 1 * 3 == 3
@@ -786,7 +795,7 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors).execute(
-        ctx, query="document content", model="m", api_key="k", k=1000
+        ctx, space_id=None, query="document content", model="m", api_key="k", k=1000
     )
 
     # k clamped down to <=50: search_k = min(50 * _SEARCH_OVERFETCH, _MAX_SEARCH) == 100
@@ -797,13 +806,13 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
     with pytest.raises(ValidationError):
         await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
-            _ctx(), query="   ", model="m", api_key="k"
+            _ctx(), space_id=None, query="   ", model="m", api_key="k"
         )
 
 
 async def test_retrieve_context_empty_corpus_returns_empty_list() -> None:
     results = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
-        _ctx(), query="anything at all", model="m", api_key="k"
+        _ctx(), space_id=None, query="anything at all", model="m", api_key="k"
     )
     assert results == []
 
@@ -830,7 +839,7 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
     )
 
     results = await RetrieveContext(embeddings, vectors).execute(
-        ctx_b, query=shared_text, model="m", api_key="k"
+        ctx_b, space_id=None, query=shared_text, model="m", api_key="k"
     )
 
     assert len(results) == 1

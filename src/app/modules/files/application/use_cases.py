@@ -179,6 +179,11 @@ class CompleteUpload:
         event = FileUploaded(
             file.id,
             ctx.workspace_id,
+            # The row's space, read back off the aggregate rather than taken
+            # from the request (spaces plan step 8): the file was filed under
+            # it at registration, `save` cannot move it, and `knowledge` files
+            # its document under whatever this says.
+            file.space_id,
             file.content_type.value,
             file.size_bytes,
             file.storage_key.value,

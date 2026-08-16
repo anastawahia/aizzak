@@ -15,6 +15,12 @@ third and fourth. The job port DOES have a general ``save``, unlike the
 re-index one — the difference is not a style choice: that aggregate stores
 its own progress because nothing else records it (``SummaryJobStatus``), and
 a port with only ``mark_cancelled`` could not write a number down.
+
+``add`` persists the document's ``space_id`` and ``set_status`` deliberately
+does not touch it (spaces plan, step 8): a document's space comes from its
+file and a file does not move between spaces (decision 3), so leaving the
+column out of every UPDATE is what makes that true of the database and not
+only of the type — the ``files`` repository's own argument.
 """
 
 from __future__ import annotations
@@ -37,10 +43,18 @@ class DocumentRepository(Protocol):
     async def get(self, ctx: ExecutionContext, doc_id: Uuid) -> Document | None: ...
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None
+        self, ctx: ExecutionContext, *, space_id: Uuid | None, limit: int, cursor: str | None
     ) -> Page[Document]:
         """This workspace's registered documents, newest first — every
         lifecycle status included (6.1-و-3), cursor-paginated (6.3-ب).
+
+        ``space_id`` narrows the page to one space's documents; ``None``
+        returns the workspace's, which is what every caller asked for before
+        the spaces plan and what the router still asks for until ``?space_id=``
+        becomes mandatory on the wire (§3.7, step 12). A REQUIRED keyword with
+        no default, so "all spaces" is a decision written at the call site and
+        never one a caller falls into by omission — the ``FileRepository.list``
+        rule, for the same reason.
 
         A document's whole point is that it has a status: ``pending`` while a
         worker has not reached it, ``failed`` with the reason it could not be

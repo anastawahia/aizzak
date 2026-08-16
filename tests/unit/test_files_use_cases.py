@@ -324,6 +324,11 @@ async def test_complete_upload_transitions_to_ready_and_emits_event() -> None:
     assert event.size_bytes == 2048
     assert event.storage_key == registered.storage_key.value
     assert event.checksum == checksum
+    # Spaces plan step 8: the row's space travels on the event, because the
+    # consumer (`knowledge`) files its document under it and has no other way
+    # to learn it. Read off the AGGREGATE, so it is whatever registration
+    # actually wrote — not what this call thinks it asked for.
+    assert event.space_id == _SPACE
 
 
 async def test_complete_upload_missing_raises_not_found() -> None:
@@ -527,7 +532,14 @@ async def test_complete_upload_service_drops_none_mapped_events_before_appending
         version=1,
     )
     uploaded = FileUploaded(
-        file.id, ctx.workspace_id, "application/pdf", 10, file.storage_key.value, "sig", utc_now()
+        file.id,
+        ctx.workspace_id,
+        _SPACE,
+        "application/pdf",
+        10,
+        file.storage_key.value,
+        "sig",
+        utc_now(),
     )
     deleted = FileDeleted(file.id, ctx.workspace_id, utc_now())
     fixed = _FixedEventsCompleteUpload(file, (uploaded, deleted))

@@ -177,6 +177,20 @@ async def test_reindexing_registers_a_new_pending_document_and_destroys_the_old(
     assert (fresh.file_id, fresh.status, fresh.chunk_count) == ("file-7", IndexStatus.PENDING, 0)
 
 
+async def test_the_replacement_document_stays_in_the_superseded_one_s_space() -> None:
+    """Spaces plan step 8: re-indexing rebuilds the SAME file's content, so
+    the replacement inherits the space rather than deciding one. A rebuild
+    that landed elsewhere — or nowhere — would move content between spaces
+    through the back door decision 3 closes at the front."""
+    stack, ctx = build_knowledge(), _ctx()
+    _seed(stack, "doc-old", space_id="space-research", status=IndexStatus.INDEXED)
+
+    job = await stack.knowledge.reindex.start(ctx, document_ids=["doc-old"])
+
+    (item,) = job.items
+    assert stack.repository.rows[item.document_id].space_id == "space-research"
+
+
 async def test_the_old_documents_points_are_deleted_before_its_rows() -> None:
     """The order is the contract's, not an implementation detail: if the
     vector delete fails, nothing has changed. The reverse would leave points

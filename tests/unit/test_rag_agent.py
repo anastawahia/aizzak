@@ -59,6 +59,9 @@ class FakeKnowledge:
     def __init__(self, chunks: Sequence[FakeChunk]) -> None:
         self._chunks = chunks
         self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
+        # Every space the agent named (spaces plan step 8) — its own log, so
+        # the existing `calls` assertions keep their shape.
+        self.spaces: list[str | None] = []
 
     async def retrieve(
         self,
@@ -66,12 +69,15 @@ class FakeKnowledge:
         query: str,
         k: int,
         file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
     ) -> Sequence[FakeChunk]:
         # The scope is RECORDED, not honoured: this fake is the agent's
         # counterpart, and what the agent owes is passing the scope through
         # untouched — resolving it to documents is the knowledge module's job
         # and is tested there.
         self.calls.append((query, k, None if file_ids is None else tuple(file_ids)))
+        self.spaces.append(space_id)
         return self._chunks
 
 
@@ -166,6 +172,17 @@ async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
     assert knowledge.calls == [("q", 5, ("file-a", "file-b"))]
+
+
+async def test_the_agent_names_its_space_and_has_none_to_name_yet() -> None:
+    """Spaces plan step 8/12: ``AgentDeps`` carries no space until the
+    invocation does, so the agent passes ``None`` — deliberately, and the port
+    forces it to say so rather than let the omission read as an oversight. An
+    agent that invented a space would answer from a corpus nobody chose."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.spaces == [None]
 
 
 async def test_retrieved_context_is_injected_into_the_system_prompt() -> None:

@@ -27,6 +27,14 @@ class KnowledgeRetrieval(Protocol):
 
     Defaulted to ``None`` = unscoped, which keeps every existing caller —
     including ``POST /knowledge/search`` — exactly as it was.
+
+    ``space_id`` (spaces plan §3.4, step 8) is the space to search inside, and
+    is keyword-only WITHOUT a default while ``file_ids`` keeps one. Forgetting
+    a pin narrows nothing; forgetting a space widens the answer across the
+    axis this plan draws — so the caller has to say, and the two callers that
+    cannot say it yet (``POST /knowledge/search`` and the RAG agent, both
+    waiting on step 12) are visible in the source as the ones passing ``None``
+    on purpose.
     """
 
     async def retrieve(
@@ -35,4 +43,6 @@ class KnowledgeRetrieval(Protocol):
         query: str,
         k: int,
         file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
     ) -> list[RetrievedChunk]: ...

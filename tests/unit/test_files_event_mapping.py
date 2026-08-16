@@ -43,10 +43,13 @@ def _ctx(*, workspace_id: str = "ws-1", correlation_id: str = "corr-1") -> Execu
     )
 
 
-def _uploaded(*, file_id: str = "file-1", workspace_id: str = "ws-1") -> FileUploaded:
+def _uploaded(
+    *, file_id: str = "file-1", workspace_id: str = "ws-1", space_id: str | None = None
+) -> FileUploaded:
     return FileUploaded(
         file_id=file_id,
         workspace_id=workspace_id,
+        space_id=space_id,
         content_type="application/pdf",
         size_bytes=2048,
         storage_key=f"{workspace_id}/{file_id}",
@@ -88,7 +91,8 @@ def test_uploaded_payload_validates_against_the_published_envelope_and_data_sche
 def test_uploaded_data_carries_exactly_the_catalogued_fields() -> None:
     """04 §4's catalog-table listing for ``files.file.uploaded.v1`` is
     ``{file_id, content_type, size_bytes, storage_key}`` -- no ``checksum``,
-    even though the domain event itself carries one."""
+    even though the domain event itself carries one. A file with no space
+    adds nothing to that (see below)."""
     record = to_outbox_record(_ctx(), _uploaded(file_id="file-3"))
     assert record is not None
 
@@ -98,6 +102,32 @@ def test_uploaded_data_carries_exactly_the_catalogued_fields() -> None:
         "size_bytes": 2048,
         "storage_key": "ws-1/file-3",
     }
+
+
+def test_uploaded_data_carries_the_files_space_when_it_has_one() -> None:
+    """Spaces plan step 8 — the ONLY way ``knowledge`` learns which space to
+    file its document under. Drop it here and every document is registered
+    spaceless, with nothing failing until row 8-b's ``SET NOT NULL``."""
+    record = to_outbox_record(_ctx(), _uploaded(file_id="file-3", space_id="space-7"))
+    assert record is not None
+
+    assert record.payload["data"]["space_id"] == "space-7"
+    # Still the published contract: an ADDED optional field, so the type stays
+    # v1 (04 §6) and the schema still accepts the payload.
+    jsonschema.Draft202012Validator(_load_schema("files.file.uploaded.v1.json")).validate(
+        record.payload["data"]
+    )
+
+
+def test_a_file_with_no_space_omits_the_key_rather_than_sending_null() -> None:
+    """``additionalProperties: false`` plus a ``string`` type means ``null``
+    would not even validate — and the omission is what every envelope
+    published before step 8 already looks like, so the consumer has ONE shape
+    to handle for "no space" instead of two."""
+    record = to_outbox_record(_ctx(), _uploaded(space_id=None))
+    assert record is not None
+
+    assert "space_id" not in record.payload["data"]
 
 
 def test_envelope_id_is_the_row_id_and_the_idempotency_key() -> None:

@@ -401,6 +401,8 @@ class _FakeKnowledge:
         query: str,
         k: int,
         file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
     ) -> Sequence[_FakeChunk]:
         self.queries.append(query)
         self.scopes.append(None if file_ids is None else tuple(file_ids))

@@ -82,6 +82,11 @@ class KnowledgeAccess(Protocol):
     vocabulary the caller already has. ``None`` is unscoped (the whole
     workspace corpus) and stays the default, so an agent that has no notion of
     a scope keeps calling this exactly as it did.
+
+    ``space_id`` (spaces plan step 8) is keyword-only and NOT defaulted, and
+    the difference from ``file_ids`` is the point: a missing pin narrows
+    nothing, a missing space widens across spaces. An agent that does not know
+    its space has to write that down.
     """
 
     async def retrieve(
@@ -90,6 +95,8 @@ class KnowledgeAccess(Protocol):
         query: str,
         k: int,
         file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
     ) -> Sequence[RetrievedChunkView]: ...
 
 

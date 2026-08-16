@@ -49,9 +49,14 @@ def to_outbox_record(ctx: ExecutionContext, event: FileEvent) -> OutboxRecord | 
     fallthrough): adding a third files event turns this function red under
     mypy instead of silently dropping it. ``data`` mirrors
     ``docs/design/events/schemas/files.file.uploaded.v1.json`` field for
-    field — exactly its four required properties, no more (the schema's
-    optional ``checksum`` is deliberately not propagated here; 04 §4's own
-    catalog entry for this event lists only these four).
+    field — its four required properties plus ``space_id`` when there is one
+    (the schema's optional ``checksum`` is still deliberately not propagated:
+    nothing downstream reads it, and 04 §4's catalog entry does not list it).
+
+    **``space_id`` is OMITTED when the file has none**, never sent as
+    ``null`` (spaces plan step 8). The schema forbids ``null`` for it, and the
+    omission is also what an envelope published before this step looks like —
+    so the consumer has ONE shape to handle for "no space", not two.
     """
     match event:
         case FileUploaded():
@@ -62,6 +67,8 @@ def to_outbox_record(ctx: ExecutionContext, event: FileEvent) -> OutboxRecord | 
                 "size_bytes": event.size_bytes,
                 "storage_key": event.storage_key,
             }
+            if event.space_id is not None:
+                data["space_id"] = event.space_id
         case FileDeleted():
             return None
         case _:  # pragma: no cover - mypy proves this is unreachable

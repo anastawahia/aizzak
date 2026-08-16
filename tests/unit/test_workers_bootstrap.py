@@ -166,12 +166,20 @@ class _FakeDocuments:
         self.chunks.extend(chunks)
 
 
-def _register_envelope(ctx: ExecutionContext, *, file_id: str = "file-1") -> Json:
+def _register_envelope(
+    ctx: ExecutionContext, *, file_id: str = "file-1", space_id: str | None = None
+) -> Json:
+    data: Json = {"file_id": file_id, "content_type": "text/plain", "size_bytes": 10}
+    # ABSENT, not null, when there is no space -- the producer's own shape
+    # (`files/application/event_mapping.py`) and the shape of every envelope
+    # published before the spaces plan's step 8.
+    if space_id is not None:
+        data["space_id"] = space_id
     return {
         "type": "files.file.uploaded.v1",
         "workspaceid": ctx.workspace_id,
         "id": new_uuid7(),
-        "data": {"file_id": file_id, "content_type": "text/plain", "size_bytes": 10},
+        "data": data,
     }
 
 
@@ -191,6 +199,38 @@ async def test_register_handler_creates_a_pending_document_and_appends_its_mappe
     assert call_ctx is ctx
     assert [r.event_type for r in records] == ["knowledge.document.registered.v1"]
     assert records[0].aggregate_id == doc.id
+
+
+async def test_register_handler_files_the_document_under_the_event_s_space() -> None:
+    """Spaces plan step 8 — the one hop that gives ``knowledge.documents`` its
+    ``space_id``: the file's space rides on ``files.file.uploaded.v1`` and
+    lands on the document this handler mints. Drop it and the column is
+    written ``NULL`` forever, with nothing failing until row 8-b."""
+    documents = _FakeDocuments()
+    handler = build_knowledge_register_handler(
+        documents, _FakeOutbox(), _FakeUnitOfWork(), _FakeLedger()
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _register_envelope(ctx, space_id="space-research"))
+
+    assert documents.added[0].space_id == "space-research"
+
+
+async def test_register_handler_accepts_an_envelope_with_no_space_at_all() -> None:
+    """Every envelope published before step 8 has no ``space_id`` key, and a
+    file that has no space still publishes none. Reading it with ``[...]``
+    would turn each of those into a redelivered ``KeyError`` and, eventually,
+    a DLQ entry for an upload that is perfectly fine."""
+    documents = _FakeDocuments()
+    handler = build_knowledge_register_handler(
+        documents, _FakeOutbox(), _FakeUnitOfWork(), _FakeLedger()
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _register_envelope(ctx))
+
+    assert documents.added[0].space_id is None
 
 
 async def test_register_handler_appends_the_outbox_record_inside_the_unit_of_work() -> None:
@@ -370,11 +410,12 @@ def _parsed_document() -> ParsedDocument:
     )
 
 
-def _pending_document(ctx: ExecutionContext) -> Document:
+def _pending_document(ctx: ExecutionContext, *, space_id: str | None = None) -> Document:
     now = utc_now()
     return Document(
         id=new_uuid7(),
         workspace_id=ctx.workspace_id,
+        space_id=space_id,
         file_id="file-1",
         status=IndexStatus.PENDING,
         chunk_count=0,

@@ -527,12 +527,21 @@ def build_knowledge_register_handler(
     register = RegisterDocumentFromFile(documents)
 
     async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
-        file_id = envelope["data"]["file_id"]
+        data = envelope["data"]
+        file_id = data["file_id"]
+        # `spaces-backend-plan.md` step 8 -- the document is filed under the
+        # FILE's space, which rides on this envelope (04 §4). `.get` and not
+        # `[...]`: the key is optional in the published schema, and an
+        # envelope written before step 8 (or by a file with no space) simply
+        # has none. Reading it here rather than querying `files` keeps the
+        # handler's single round trip, and keeps the answer identical to what
+        # the producer committed rather than to what the row says now.
+        space_id = data.get("space_id")
         event_id: str = envelope["id"]
         async with uow.begin(ctx):
             if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
                 return  # Duplicate delivery -- clean return, the engine XACKs.
-            _, events = await register.execute(ctx, file_id=file_id)
+            _, events = await register.execute(ctx, file_id=file_id, space_id=space_id)
             await outbox.append(ctx, [_knowledge_to_outbox_record(ctx, event) for event in events])
 
     return _handle

@@ -211,6 +211,18 @@ def test_search_passes_query_and_k_through_verbatim() -> None:
     assert retrieval.calls == [("  spaced  ", 7)]
 
 
+def test_search_names_its_space_and_that_space_is_still_every_space() -> None:
+    """Spaces plan step 8/12: ``space_id`` is not on ``KnowledgeSearchIn``
+    yet, so the route passes ``None`` — DELIBERATELY, and the port makes it
+    say so. A route that invented one would answer from a corpus the client
+    never named; this test is what turns that invention red."""
+    retrieval = RecordingRetrieval()
+    app, _stack = _make_app(retrieval=retrieval)
+    with TestClient(app) as client:
+        client.post("/api/v1/knowledge/search", json={"query": "q"}, headers=_auth())
+    assert retrieval.spaces == [None]
+
+
 def test_search_defaults_k_to_five() -> None:
     retrieval = RecordingRetrieval()
     app, _stack = _make_app(retrieval=retrieval)
@@ -392,6 +404,23 @@ def test_listing_excludes_another_tenants_documents() -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/knowledge/documents", headers=_auth())
     assert [row["id"] for row in response.json()["data"]] == ["d1"]
+
+
+def test_listing_still_returns_documents_from_every_space() -> None:
+    """Spaces plan step 8: the listing passes ``space_id=None`` until
+    ``?space_id=`` lands on the wire (step 12), and ``None`` means EVERY
+    space — never "the documents that have no space". Reading it as
+    ``IS NULL`` would empty this listing the moment documents start carrying
+    one, which is the same step that makes it possible."""
+    app, stack = _make_app()
+    for doc in (
+        seed_document(document_id="d1", workspace_id=_W1, space_id="space-research"),
+        seed_document(document_id="d2", workspace_id=_W1, space_id=None),
+    ):
+        stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+    assert [row["id"] for row in response.json()["data"]] == ["d2", "d1"]
 
 
 def test_listing_is_newest_first() -> None:

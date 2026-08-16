@@ -20,6 +20,12 @@ The Qdrant point payload only carries a small, explicit citation allowlist
 copied out of each parser's free-form ``ParsedChunk.metadata`` (the payload
 schema is not a decided storage contract — parsers.md §6 risk #4) — not the
 whole metadata dict.
+
+Since the spaces plan's step 8 it also carries ``space`` — the document's
+owning space, the key ``RetrieveContext`` filters on and the one step 9 will
+give an ``is_tenant`` payload index (§3.4). It is the reason §5-أ's re-index
+is mandatory: every point written before this step lacks the key, and Qdrant
+matches no point that is missing a filtered field.
 """
 
 from __future__ import annotations
@@ -82,6 +88,7 @@ class IndexDocument:
         ctx: ExecutionContext,
         *,
         document_id: Uuid,
+        space_id: Uuid | None,
         parsed: ParsedDocument,
         model: str,
         api_key: str,
@@ -109,7 +116,7 @@ class IndexDocument:
             batch = to_index[start : start + _EMBED_BATCH]
             result = await self._embeddings.embed([chunk.text for chunk in batch], model, api_key)
             points = [
-                _build_point(ctx, document_id, chunk, vector)
+                _build_point(ctx, document_id, space_id, chunk, vector)
                 for chunk, vector in zip(batch, result.vectors, strict=True)
             ]
             await self._vectors.upsert(collection, points)
@@ -124,16 +131,26 @@ class IndexDocument:
 
 
 def _build_point(
-    ctx: ExecutionContext, document_id: Uuid, chunk: ChunkToIndex, vector: list[float]
+    ctx: ExecutionContext,
+    document_id: Uuid,
+    space_id: Uuid | None,
+    chunk: ChunkToIndex,
+    vector: list[float],
 ) -> VectorPoint:
     point_id = chunk_point_id(document_id, chunk.seq)
     terms = build_sparse_terms(chunk.text)
     sparse = SparseVector(indices=list(terms.indices), values=list(terms.values))
-    payload = _payload(ctx, document_id, point_id, chunk)
+    payload = _payload(ctx, document_id, space_id, point_id, chunk)
     return VectorPoint(id=point_id, vector=vector, payload=payload, sparse=sparse)
 
 
-def _payload(ctx: ExecutionContext, document_id: Uuid, point_id: str, chunk: ChunkToIndex) -> Json:
+def _payload(
+    ctx: ExecutionContext,
+    document_id: Uuid,
+    space_id: Uuid | None,
+    point_id: str,
+    chunk: ChunkToIndex,
+) -> Json:
     payload: Json = {
         "workspace_id": ctx.workspace_id,
         "document_id": document_id,
@@ -142,6 +159,20 @@ def _payload(ctx: ExecutionContext, document_id: Uuid, point_id: str, chunk: Chu
         "text": chunk.text,
         "kind": chunk.kind,
     }
+    if space_id is not None:
+        # The space partition key (spaces plan §3.4), and the one step 9 will
+        # index with `is_tenant=True`. Named `space`, not `space_id`: it is a
+        # payload partition, and the plan writes the filter that reads it as
+        # `flt["space"]`.
+        #
+        # OMITTED when there is no space, never written as `null`. A point
+        # whose key is absent matches no `MatchValue` filter, which is exactly
+        # right -- unspaced content must not answer a search inside a space --
+        # and it is the same shape every point indexed before this step
+        # already has (§5-أ), so re-indexing an old document and indexing a
+        # spaceless new one produce identical payloads instead of two ways of
+        # meaning "none".
+        payload["space"] = space_id
     for key in _CITATION_KEYS:
         if key in chunk.metadata:
             payload[key] = chunk.metadata[key]

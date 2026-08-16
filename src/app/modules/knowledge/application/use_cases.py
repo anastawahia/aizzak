@@ -137,13 +137,21 @@ class RegisterDocumentFromFile:
     ``files.FileUploaded`` event; duplicate registrations for the same
     ``file_id`` are allowed by design (INV-K3) -- a re-upload becomes a new
     ``Document``, never an update to a prior one.
+
+    **``space_id`` is the FILE's space, carried on that same event** (spaces
+    plan, step 8). This use-case does not choose it and does not verify it:
+    the space was proven to exist when the file was registered
+    (``files/ports/spaces.py``), and re-asking here would be a second
+    authority on a question ``files`` has already answered — the wrong kind of
+    second answer, because the two could disagree. There is no
+    ``spaces``-facing port in this module for exactly that reason.
     """
 
     def __init__(self, documents: DocumentRepository) -> None:
         self._documents = documents
 
     async def execute(
-        self, ctx: ExecutionContext, *, file_id: Uuid
+        self, ctx: ExecutionContext, *, file_id: Uuid, space_id: Uuid | None
     ) -> tuple[Document, tuple[KnowledgeEvent, ...]]:
         if not file_id.strip():
             raise ValidationError("file_id must not be empty")
@@ -152,6 +160,7 @@ class RegisterDocumentFromFile:
         doc = Document(
             id=new_uuid7(),
             workspace_id=ctx.workspace_id,
+            space_id=space_id,
             file_id=file_id,
             status=IndexStatus.PENDING,
             chunk_count=0,
@@ -257,7 +266,17 @@ class IndexRegisteredDocument:
 
         try:
             outcome = await self._pipeline.execute(
-                ctx, document_id=document_id, parsed=parsed, model=model, api_key=api_key
+                ctx,
+                document_id=document_id,
+                # The space comes off the ROW, not off the event that woke
+                # this worker (step 8): `knowledge.document.registered.v1`
+                # carries no space, and the aggregate this method just loaded
+                # is the only thing that knows which one the document was
+                # filed under. It becomes the point payload's `space` key.
+                space_id=doc.space_id,
+                parsed=parsed,
+                model=model,
+                api_key=api_key,
             )
         except Exception as exc:
             # Broad catch is deliberate: ANY pipeline failure (embedding
@@ -453,6 +472,13 @@ class ReindexDocuments:
                     replacement=Document(
                         id=new_uuid7(),
                         workspace_id=ctx.workspace_id,
+                        # The superseded document's space, not a fresh
+                        # decision (step 8): re-indexing rebuilds the SAME
+                        # file's content, and a replacement that landed in
+                        # another space -- or in none -- would move content
+                        # between spaces through the back door decision 3
+                        # closes at the front.
+                        space_id=source.space_id,
                         file_id=source.file_id,
                         status=IndexStatus.PENDING,
                         chunk_count=0,
@@ -1221,15 +1247,20 @@ class ListDocuments:
     Hands the repository's ``Page`` straight back rather than re-wrapping it:
     the use-case adds no rule of its own here, and a second envelope would
     only be a place for the cursor to get lost.
+
+    ``space_id=None`` means EVERY space, never "the documents that have no
+    space" (step 8, the ``files``/``conversations`` rule): the condition is
+    ADDED to the workspace filter, never swapped for a comparison against
+    ``NULL``.
     """
 
     def __init__(self, documents: DocumentRepository) -> None:
         self._documents = documents
 
     async def execute(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
+        self, ctx: ExecutionContext, *, space_id: Uuid | None, limit: int, cursor: str | None = None
     ) -> Page[Document]:
-        return await self._documents.list(ctx, limit=limit, cursor=cursor)
+        return await self._documents.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
 
 
 class GetDocument:
@@ -1270,6 +1301,8 @@ class KnowledgeRetrievalService:
         query: str,
         k: int,
         file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
     ) -> list[RetrievedChunk]:
         """Retrieve the top ``k`` chunks, optionally scoped to ``file_ids``.
 
@@ -1285,6 +1318,18 @@ class KnowledgeRetrievalService:
         NON-empty ``file_ids`` that resolves to no documents stays a scope of
         zero documents rather than collapsing back to ``None``: see
         ``RetrieveContext`` for why widening there would be the wrong answer.
+
+        ``space_id`` is the SECOND, independent narrowing (step 8), and it is
+        keyword-only with no default while ``file_ids`` keeps one. The
+        asymmetry is deliberate: forgetting a pinned scope narrows nothing and
+        answers from more of the caller's OWN workspace, while forgetting a
+        space answers from other spaces — a widening across the very axis this
+        plan exists to draw. The one mistake has to be impossible to make
+        silently, so it is impossible to make at all.
+
+        The two are ANDed one layer down (``RetrieveContext``), not merged
+        here: a pin from another space is already refused at pin time (§3.5),
+        so a scope that survives both conditions is the only honest one.
         """
         resolved = await self._resolver.resolve_embedding(ctx)
         document_ids = (
@@ -1297,6 +1342,7 @@ class KnowledgeRetrievalService:
             api_key=resolved.api_key,
             k=k,
             document_ids=document_ids,
+            space_id=space_id,
         )
 
 

@@ -16,6 +16,11 @@ the only extra work needed.
 Every vector search filter carries ``workspace_id`` on BOTH legs (DD-04) —
 the single per-workspace collection is shared by every document, so tenant
 isolation here is a payload filter, exactly like ``memory.RecallRelevant``.
+
+``space`` (spaces plan §3.4, step 8) rides on the same filter, on both legs,
+and is a narrowing INSIDE that tenant — never a substitute for it: the
+workspace condition stays whatever the caller scoped to, so a space id from
+another tenant still matches nothing.
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ class RetrieveContext:
         api_key: str,
         k: int = 5,
         document_ids: Sequence[str] | None = None,
+        space_id: str | None,
     ) -> list[RetrievedChunk]:
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
@@ -86,6 +92,26 @@ class RetrieveContext:
             if not document_ids:
                 return []
             flt["document_id"] = list(document_ids)
+        # The space narrowing (spaces plan §3.4, step 8) — a SINGLE value, so
+        # the adapter renders `MatchValue`, and ANDed with everything above by
+        # `_build_filter`'s `must`. It reads the `space` key `IndexDocument`
+        # writes.
+        #
+        # `None` is unscoped, and the key is left OUT rather than set to
+        # `None`: the Qdrant adapter rejects a `None` filter value outright
+        # (DD-04 — a filter shape it cannot render must fail loudly, never
+        # degrade to "no filter"), so writing it would turn "search the whole
+        # workspace" into a 400.
+        #
+        # ⚠️ Points indexed BEFORE step 8 carry no `space` key at all, and
+        # Qdrant matches no point that is missing a filtered field — so the
+        # first search that passes a space returns nothing from them, silently
+        # and with no error. That is §5-أ, and the re-index it mandates is the
+        # only cure; there is no `IsEmpty`/`should` branch here to paper over
+        # it, because a filter that fell back to "or has no space" would
+        # quietly leak every other space's older content.
+        if space_id is not None:
+            flt["space"] = space_id
 
         embedded = await self._embeddings.embed([query], model, api_key)
         q_vector = embedded.vectors[0]

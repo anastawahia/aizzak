@@ -66,9 +66,22 @@ class RecordingRetrieval:
 
     chunks: list[RetrievedChunk] = field(default_factory=list)
     calls: list[tuple[str, int]] = field(default_factory=list)
+    # Every `space_id` the route handed down (spaces plan step 8) — a separate
+    # log so a test can assert the route passes one WITHOUT every existing
+    # `calls` assertion having to grow a third tuple element.
+    spaces: list[str | None] = field(default_factory=list)
 
-    async def retrieve(self, ctx: ExecutionContext, query: str, k: int) -> list[RetrievedChunk]:
+    async def retrieve(
+        self,
+        ctx: ExecutionContext,
+        query: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
+    ) -> list[RetrievedChunk]:
         self.calls.append((query, k))
+        self.spaces.append(space_id)
         return list(self.chunks)
 
 
@@ -95,11 +108,24 @@ class InMemoryDocumentRepository:
         return row
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str | None,
+        limit: int,
+        cursor: str | None = None,
     ) -> Page[Document]:
         # Newest-first keyset on `id` through the REAL codec (6.3-ب).
         items = sorted(
-            (row for row in self.rows.values() if row.workspace_id == ctx.workspace_id),
+            (
+                row
+                for row in self.rows.values()
+                if row.workspace_id == ctx.workspace_id
+                # The step-8 narrowing, ADDED to the tenant condition and
+                # never swapping it -- and `None` means every space, not "the
+                # spaceless ones" (the SQL adapter's own rule).
+                and (space_id is None or row.space_id == space_id)
+            ),
             key=lambda row: row.id,
             reverse=True,
         )
@@ -334,14 +360,20 @@ def seed_document(
     *,
     document_id: str,
     workspace_id: str,
+    space_id: str | None = None,
     file_id: str = "file-1",
     status: IndexStatus = IndexStatus.INDEXED,
     chunk_count: int = 3,
     error: str | None = None,
 ) -> Document:
+    # `space_id` DOES default here, unlike every production signature (spaces
+    # plan step 8): a seed helper is not a writer, and its callers are tests
+    # about paging/status/summaries that have no opinion about spaces. The
+    # tests that DO have one pass it.
     return Document(
         id=document_id,
         workspace_id=workspace_id,
+        space_id=space_id,
         file_id=file_id,
         status=status,
         chunk_count=chunk_count,

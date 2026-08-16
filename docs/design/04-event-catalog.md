@@ -101,7 +101,7 @@ sequenceDiagram
 
 | النوع (type) | المنتِج → المستهلك | subject | الحمولة (data) |
 |--------------|--------------------|---------|-----------------|
-| `files.file.uploaded.v1` | files → knowledge | file_id | `{file_id, content_type, size_bytes, storage_key}` |
+| `files.file.uploaded.v1` | files → knowledge | file_id | `{file_id, content_type, size_bytes, storage_key, space_id?}` |
 | `knowledge.document.registered.v1` | knowledge → knowledge(worker) | document_id | `{document_id, file_id}` |
 | `knowledge.document.indexed.v1` | knowledge → notify | document_id | `{document_id, chunk_count}` |
 | `knowledge.document.indexing_failed.v1` | knowledge → notify | document_id | `{document_id, reason}` |

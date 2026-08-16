@@ -64,6 +64,24 @@ class Document:
 
     id: str
     workspace_id: str
+    # The owning space (`docs/spaces-backend-plan.md` step 8), inherited from
+    # the FILE this document was built from and never chosen here: a document
+    # is derived data, and letting it name its own space would create a second
+    # answer to "which space is this file's content in".
+    #
+    # Carried on the row rather than joined for the two readers §3.2 names:
+    # the cascade delete (step 11), which must find a space's documents without
+    # asking `files`, and the listing, which must not have to. It is also what
+    # the Qdrant payload's `space` key is written from (§3.4).
+    #
+    # `| None` mirrors the column, NULLable until plan row 8-b, and it has no
+    # default ON PURPOSE (the `File.space_id` rule): a writer that has no space
+    # must say so in the source rather than inherit one silently.
+    #
+    # No mutator, and `set_status` leaves the column out of its UPDATE --
+    # decision 3 applied to the derived row: content does not move between
+    # spaces, so neither does what was indexed from it.
+    space_id: str | None
     file_id: str
     status: IndexStatus
     chunk_count: int

@@ -58,6 +58,7 @@ def _ctx(workspace_id: str) -> ExecutionContext:
 def _document(
     *,
     workspace_id: str,
+    space_id: str | None = None,
     doc_id: str | None = None,
     status: IndexStatus = IndexStatus.PENDING,
     chunk_count: int = 0,
@@ -67,6 +68,7 @@ def _document(
     return Document(
         id=doc_id or new_uuid7(),
         workspace_id=workspace_id,
+        space_id=space_id,
         file_id=new_uuid7(),
         status=status,
         chunk_count=chunk_count,
@@ -93,6 +95,25 @@ def _chunk(*, document_id: str, workspace_id: str, seq: int, chunk_text: str) ->
             point_id=chunk_point_id(document_id, seq),
         ),
     )
+
+
+async def _document_row_as_owner(owner_dsn: str, workspace_id: str, doc_id: str) -> RowMapping:
+    """The raw ``documents`` row, read outside the repository — the only way
+    to tell "the adapter wrote the column" from "the adapter remembered what
+    I handed it"."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text("SELECT id, space_id, status FROM knowledge.documents WHERE id = :doc"),
+                {"doc": doc_id},
+            )
+            return result.mappings().one()
+    finally:
+        await engine.dispose()
 
 
 async def _chunk_rows_as_owner(
@@ -356,14 +377,14 @@ async def test_list_pages_newest_first_and_stays_tenant_scoped(
     # UUIDv7 ids are monotonic, so insertion order IS id order — reversed.
     expected = [doc.id for doc in reversed(created)]
 
-    page1 = await repo_knowledge.list(ctx, limit=2, cursor=None)
+    page1 = await repo_knowledge.list(ctx, space_id=None, limit=2, cursor=None)
     assert [doc.id for doc in page1.data] == expected[:2]
     assert page1.next_cursor is not None
 
-    page2 = await repo_knowledge.list(ctx, limit=2, cursor=page1.next_cursor)
+    page2 = await repo_knowledge.list(ctx, space_id=None, limit=2, cursor=page1.next_cursor)
     assert [doc.id for doc in page2.data] == expected[2:4]
 
-    page3 = await repo_knowledge.list(ctx, limit=2, cursor=page2.next_cursor)
+    page3 = await repo_knowledge.list(ctx, space_id=None, limit=2, cursor=page2.next_cursor)
     assert [doc.id for doc in page3.data] == expected[4:]
     assert page3.next_cursor is None  # last page, and the other tenant never appears
 
@@ -374,8 +395,110 @@ async def test_list_rejects_a_cursor_that_is_not_a_keyset_id(
     """Well-formed base64 carrying non-UUID text is refused BEFORE it reaches
     the ``uuid`` column — where it used to surface as a 500 (6.3-أ)."""
     with pytest.raises(AppError) as excinfo:
-        await repo_knowledge.list(_ctx(new_uuid7()), limit=10, cursor="aGVsbG8")
+        await repo_knowledge.list(_ctx(new_uuid7()), space_id=None, limit=10, cursor="aGVsbG8")
     assert excinfo.value.code == "common.invalid_cursor"
+
+
+# --------------------------------------------------------------------------- #
+# (6-b) the space column: written, read back, filtered on, and never updated  #
+# --------------------------------------------------------------------------- #
+async def test_the_space_a_document_was_added_under_round_trips(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """``add`` names ``space_id`` in its INSERT and ``_hydrate_document``
+    reads it back (spaces plan step 8). Asserted against the RAW row too:
+    "the repository gives me back what I handed it" is also exactly what an
+    adapter that never wrote the column would look like from the aggregate
+    side."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, space_id=space)
+
+    await repo_knowledge.add(ctx, doc)
+
+    loaded = await repo_knowledge.get(ctx, doc.id)
+    assert loaded is not None
+    assert loaded.space_id == space
+    row = await _document_row_as_owner(live_db.owner, ws, doc.id)
+    assert str(row["space_id"]) == space
+
+
+async def test_a_document_registered_without_a_space_stores_and_reads_back_null(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The transitional state the column is NULLable for (plan row 8-b): a
+    file with no space produces a document with none, and that has to be
+    storable rather than an INSERT that fails inside a worker."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, space_id=None)
+
+    await repo_knowledge.add(ctx, doc)
+
+    loaded = await repo_knowledge.get(ctx, doc.id)
+    assert loaded is not None
+    assert loaded.space_id is None
+
+
+async def test_listing_by_space_returns_that_spaces_documents_and_nothing_else(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The narrowing is an ADDED condition, never a replacement: the
+    workspace filter and the space filter both have to survive, and each row
+    below fails the page for a different one of them."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    mine, sibling = new_uuid7(), new_uuid7()
+
+    keep = _document(workspace_id=ws_a, space_id=mine)
+    await repo_knowledge.add(ctx_a, keep)
+    await repo_knowledge.add(ctx_a, _document(workspace_id=ws_a, space_id=sibling))
+    await repo_knowledge.add(ctx_a, _document(workspace_id=ws_a, space_id=None))
+    # The SAME space id under another tenant: a space id is not a secret, and
+    # RLS plus the WHERE both have to hold for this row to stay invisible.
+    await repo_knowledge.add(_ctx(ws_b), _document(workspace_id=ws_b, space_id=mine))
+
+    page = await repo_knowledge.list(ctx_a, space_id=mine, limit=10, cursor=None)
+
+    assert [doc.id for doc in page.data] == [keep.id]
+
+
+async def test_listing_without_a_space_still_spans_every_space(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """``None`` means EVERY space, never "the documents that have no space".
+    Reading it as ``space_id IS NULL`` would turn ``GET /documents`` into a
+    listing of orphans, and no test whose rows are all of one kind would
+    notice — hence a mixed corpus here."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    spaced = _document(workspace_id=ws, space_id=space)
+    await repo_knowledge.add(ctx, spaced)
+    spaceless = _document(workspace_id=ws, space_id=None)
+    await repo_knowledge.add(ctx, spaceless)
+
+    page = await repo_knowledge.list(ctx, space_id=None, limit=10, cursor=None)
+
+    assert {doc.id for doc in page.data} == {spaced.id, spaceless.id}
+
+
+async def test_a_status_transition_never_moves_a_document_between_spaces(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """Decision 3, applied to the derived row: ``set_status`` writes status,
+    error and chunk_count and NOTHING else. The whole indexing lifecycle runs
+    through it, so a column it touched would drift on every worker pass."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, space_id=space)
+    await repo_knowledge.add(ctx, doc)
+
+    await repo_knowledge.set_status(ctx, doc.id, IndexStatus.INDEXING.value)
+    await repo_knowledge.set_status(ctx, doc.id, IndexStatus.INDEXED.value)
+
+    row = await _document_row_as_owner(live_db.owner, ws, doc.id)
+    assert row["status"] == IndexStatus.INDEXED.value
+    assert str(row["space_id"]) == space
 
 
 # --------------------------------------------------------------------------- #
