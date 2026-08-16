@@ -12,7 +12,7 @@
 | **الأساس** | `f2c4463` (‏`master`) · المكدّس الحاويّ يعمل (14 خدمة صحّية) |
 | **النطاق** | وحدة `spaces` جديدة · أعمدة `space_id` في `files`/`conversations`/`knowledge` · حصّة 1 GiB لكلّ وحدة · تقسيم Qdrant ببطاقة `space` + فهرس `is_tenant` · حذف متسلسل · مسارات HTTP · العقود والوثائق |
 | **خارج النطاق** | تعدّد مساحات العمل · مشاركة وحدة بين مستخدمين · نقل ملف بين الوحدات · حصّة على مستوى مساحة العمل · أي تغيير في RLS |
-| **الحالة** | 🚧 **1/16** — الخطوة ١ مغلقة ([§3.139](log/3.139.md)) |
+| **الحالة** | 🚧 **2/16** — الخطوتان ١ ([§3.139](log/3.139.md)) و٢ ([§3.140](log/3.140.md)) مغلقتان |
 
 ---
 
@@ -131,6 +131,8 @@ CREATE POLICY tenant_isolation ON spaces.spaces
 ```
 
 القالب حرفيًّا من [`files/0001_files.py`](../migrations/versions/files/0001_files.py)، بصيغة `NULLIF` المُقسّاة.
+
+> 📌 **تصحيحٌ من التنفيذ ([§3.140](log/3.140.md)):** «المخطّط» في الخطوة ٢ **ليس** في `spaces/0001_spaces.py` بل في مراجعة منصّةٍ جديدة [`platform/0004_spaces_schema.py`](../migrations/versions/platform/0004_spaces_schema.py). السبب بنيويّ: `alembic` يُنشئ `spaces.alembic_version` **قبل** أن ينفّذ أوّل `upgrade()`، فالسلسلة لا تستطيع أن تُنشئ المخطّط الذي يسكنه جدولُ دفاترها؛ و`MODULE_SCHEMAS` في مراجعة الأساس مُقفلٌ لأنّها مُطبَّقةٌ على كلّ قاعدةٍ قائمة. وللسبب نفسه انتقلت ثلاثةٌ من بنود الخطوة ٣ إلى الخطوة ٢ — حارسا [`test_ops_provision.py`](../tests/unit/test_ops_provision.py) يرفضان جدولًا بلا منحٍ وسلسلةً بلا خطوة.
 
 **RLS تبقى على `workspace_id` وحده — قرارٌ مقصود.** مساحة العمل تُشتقّ من **هويّة** المستخدم بعد المصادقة؛ الوحدة يختارها **الطلب**. وضع قيمة يختارها الطلب في متغيّر أمنيّ لا يضيف أمنًا — التطبيق هو من يضبطها أصلًا — ويحوّل خطأ ترشيح عاديًّا إلى ثغرة صامتة. الترشيح بالوحدة مكانه `WHERE` المستودع.
 
@@ -268,8 +270,8 @@ DeleteSpaceService.execute(ctx, space_id):
 | # | الخطوة | يمسّ | الحالة |
 |---|---|---|---|
 | ١ | وحدة `spaces` (domain · application · ports · adapters) + اختباراتها | جديد | ✅ [§3.139](log/3.139.md) |
-| ٢ | ترحيل `spaces/0001_spaces.py` — مخطّط · جدول · فهرس · trigger · RLS | migrations | 🔲 |
-| ٣ | الصلاحيات: `_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS` · `PURGE_GRANTS` | `ops/provision.py` | 🔲 |
+| ٢ | ترحيل `spaces/0001_spaces.py` — مخطّط · جدول · فهرس · trigger · RLS | migrations | ✅ [§3.140](log/3.140.md) |
+| ٣ | الصلاحيات: ~~`_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS`~~ (‏[§3.140](log/3.140.md)) · **`PURGE_GRANTS`** وتغطية `app.ops.purge` | `ops/provision.py` · `ops/purge.py` | 🔲 |
 | ٤ | ترحيلات `space_id` الثلاثة (`files` · `conversations` · `knowledge`) — بنمط ADD ⇒ backfill ⇒ SET NOT NULL | migrations | 🔲 |
 | ٥ | الحصّة: `max_space_bytes` + فحص `FOR UPDATE` في خدمة التسجيل | settings · files · DI | 🔲 |
 | ٦ | ربط `files`: كيان · مستودع · `ports/spaces.py` · ترشيح | `modules/files` | 🔲 |

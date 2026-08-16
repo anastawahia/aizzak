@@ -14,13 +14,12 @@ every method below. ``list`` additionally filters ``deleted_at IS NULL``;
 ``get`` does not, so a caller holding an id can re-``get`` it after a
 soft-delete (idempotent ``DeleteSpace``).
 
-**The table this adapter targets does not exist yet.** Step 2 of the plan
-writes the migration. That ordering is the module's, not an accident: the DDL
-in §3.2 is fixed and this file is written against it, so the migration has one
-job — to make the database agree with a shape that is already reviewed. Every
-test that exercises this adapter against a real table is therefore step 2's
-(``tests/integration/test_spaces_repository_rls.py``), the same way every
-other module's RLS proof arrived with its migration.
+This file was written BEFORE the table existed (step 1 of the plan, §3.139),
+against the fixed DDL in §3.2 — so the migration that followed in step 2 had
+one job: to make the database agree with a shape already reviewed. Every test
+exercising this adapter against a real table lives in
+``tests/integration/test_spaces_repository_rls.py``, which arrived with that
+migration (§3.140), the same way every other module's RLS proof did.
 """
 
 from __future__ import annotations

@@ -78,6 +78,7 @@ from app.modules.knowledge.adapters.sql_repository import (
 )
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
+from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.workspace.adapters.sql_repository import SqlUserRepository, SqlWorkspaceRepository
 from app.ops.provision import (
@@ -177,6 +178,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # MODULE_SCHEMAS -- `migrations/` is not importable application code, and
 # this tuple only needs to name schemas to drop, not share behaviour.
 _MODULE_SCHEMAS = (
+    # `spaces` is created by migrations/versions/platform/0004_spaces_schema.py
+    # rather than by the baseline's own MODULE_SCHEMAS (that revision is
+    # already applied everywhere), but it is dropped here exactly like the
+    # other ten -- leaving it standing would leave `spaces.alembic_version`
+    # standing with it, and the chain would then be recorded as applied
+    # against a database whose `spaces.spaces` no longer exists.
+    "spaces",
     "workspace",
     "access",
     "credentials",
@@ -953,6 +961,11 @@ def repo_files(tenant_session: TenantSessionFactory) -> SqlFileRepository:
 
 
 @pytest.fixture
+def repo_spaces(tenant_session: TenantSessionFactory) -> SqlSpaceRepository:
+    return SqlSpaceRepository(tenant_session)
+
+
+@pytest.fixture
 def repo_memory(tenant_session: TenantSessionFactory) -> SqlMemoryRepository:
     return SqlMemoryRepository(tenant_session)
 
@@ -1101,7 +1114,7 @@ async def truncate_tables(live_db: LiveDbDsns) -> AsyncIterator[None]:
                     "workspace.user_presence, platform.admin_audit_log, "
                     "credentials.credentials, access.role_assignments, media.media_jobs, "
                     "conversations.messages, conversations.conversation_files, "
-                    "conversations.conversations, files.files, "
+                    "conversations.conversations, files.files, spaces.spaces, "
                     "memory.memory_items, knowledge.chunks, "
                     "knowledge.reindex_job_items, knowledge.reindex_jobs, "
                     "knowledge.summaries, knowledge.summary_jobs, "

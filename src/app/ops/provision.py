@@ -11,9 +11,9 @@ request that touched one. This module is that missing operational artifact,
 and it is the SINGLE source of truth: the live test harness imports the same
 constants rather than keeping its own copy.
 
-**``alembic upgrade head`` is not a command this repository has.** v1 runs
-ELEVEN independent chains (DAT-03: one ``version_table_schema`` per module,
-01 §6), so ``head`` is ambiguous and Alembic refuses it with "Multiple head
+**``alembic upgrade head`` is not a command this repository has.** The
+platform runs TWELVE independent chains (DAT-03: one ``version_table_schema``
+per module, 01 §6), so ``head`` is ambiguous and Alembic refuses it with "Multiple head
 revisions are present". The real invocation is ``platform@head`` followed by
 each module's ``-x vts=<module> upgrade <module>@head`` — the sequence
 ``MIGRATION_CHAINS`` below encodes, and the one 08-local-runbook §3 step 5
@@ -95,6 +95,13 @@ PURGE_ROLE = "workspace_purger"
 # ``-x vts=``, so ``version_table_schema`` stays Alembic's default.
 MIGRATION_CHAINS: tuple[tuple[str, str | None], ...] = (
     ("platform@head", None),
+    # `spaces` comes immediately after the baseline, ahead of every chain that
+    # will grow a `space_id` column (docs/spaces-backend-plan.md step 4): those
+    # migrations backfill against real space rows, so the table they read must
+    # already be there. No FK enforces this order (the plan keeps cross-schema
+    # references logical, `conversation_files`'s precedent) -- which is exactly
+    # why the order is stated here rather than left to Alembic to discover.
+    ("spaces@head", "spaces"),
     ("media@head", "media"),
     ("workspace@head", "workspace"),
     ("credentials@head", "credentials"),
@@ -107,10 +114,11 @@ MIGRATION_CHAINS: tuple[tuple[str, str | None], ...] = (
     ("usage@head", "usage"),
 )
 
-# Every tenant table of all ten v1 modules gets full CRUD: `app_rw` is
+# Every tenant table of all eleven modules gets full CRUD: `app_rw` is
 # NOINHERIT, without BYPASSRLS and not a table owner, so the RLS policy —
 # not the grant — is what confines it to one workspace (01 §3).
 _TENANT_TABLES: tuple[str, ...] = (
+    "spaces.spaces",
     "workspace.workspaces",
     "workspace.users",
     # The heartbeat upsert runs as `app_rw` under tenant RLS, so it needs the
@@ -139,6 +147,7 @@ _TENANT_TABLES: tuple[str, ...] = (
 )
 
 _MODULE_SCHEMAS: tuple[str, ...] = (
+    "spaces",
     "workspace",
     "access",
     "credentials",
@@ -315,7 +324,7 @@ PURGE_GRANTS: tuple[str, ...] = (
 
 
 def run_migrations(owner_url: str) -> None:
-    """Apply all eleven chains in dependency order (``MIGRATION_CHAINS``)."""
+    """Apply all twelve chains in dependency order (``MIGRATION_CHAINS``)."""
     os.environ["DATABASE_URL"] = owner_url
     config = Config(str(_REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
