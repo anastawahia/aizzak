@@ -20,9 +20,13 @@ collection searches clean; a hybrid collection provisions its
 named ``"text"`` sparse vector with Qdrant's server-side IDF modifier, keeps
 its inherited dense leg working unchanged, and a single point with both legs
 shares one payload and is removed by one ``delete`` call; ``search_sparse``
-ranks by term overlap and respects ``flt`` exactly like the dense leg; and
-every driver failure surfaces as the framework's ``common.internal`` --
-never a raw ``qdrant_client`` exception.
+ranks by term overlap and respects ``flt`` exactly like the dense leg; a new
+hybrid collection comes back from the server carrying payload indexes on
+``workspace_id``/``document_id``/``space`` with ``is_tenant`` set on ``space``
+alone (spaces plan step 9), re-asserting one is idempotent, and asking to
+index a collection that was never created fails loudly; and every driver
+failure surfaces as the framework's ``common.internal`` -- never a raw
+``qdrant_client`` exception.
 """
 
 from __future__ import annotations
@@ -397,7 +401,64 @@ async def test_search_sparse_filter_isolates_by_workspace_id(
 
 
 # --------------------------------------------------------------------------- #
-# (16) failure translation: never a raw qdrant_client exception              #
+# (16) payload indexes land on the real server, with the real tenant flag    #
+# --------------------------------------------------------------------------- #
+async def test_ensure_hybrid_collection_provisions_its_payload_indexes(
+    qdrant_store: QdrantVectorStore, qdrant_client: AsyncQdrantClient, qdrant_collection: str
+) -> None:
+    """The unit test pins which calls the adapter MAKES; this pins what the
+    server is left holding -- the two are not the same claim, and until this
+    step the project had no payload index anywhere at all (spaces plan §2-ب).
+
+    ``is_tenant`` read back off the live schema is the point: it is the flag
+    that makes Qdrant lay ``space``'s points out together on disk, and a
+    ``KeywordIndexParams`` built without it would provision an index that
+    looks identical from the call site.
+    """
+    await qdrant_store.ensure_hybrid_collection(qdrant_collection, dim=_DIM)
+
+    info = await qdrant_client.get_collection(qdrant_collection)
+    schema = info.payload_schema
+
+    assert set(schema) == {"space", "workspace_id", "document_id"}
+    assert schema["space"].params is not None
+    assert schema["space"].params.is_tenant is True
+    for plain in ("workspace_id", "document_id"):
+        assert schema[plain].params is not None
+        assert schema[plain].params.is_tenant is False
+
+
+async def test_ensure_payload_index_is_idempotent(
+    qdrant_store: QdrantVectorStore, qdrant_client: AsyncQdrantClient, qdrant_collection: str
+) -> None:
+    """Re-asserting an existing index is a success, not a conflict -- which
+    is what lets ``ensure_hybrid_collection`` call it unconditionally and
+    what will let the step-16 operational pass run over every collection
+    without asking which ones already have it."""
+    await qdrant_store.ensure_hybrid_collection(qdrant_collection, dim=_DIM)
+
+    await qdrant_store.ensure_payload_index(qdrant_collection, "space", tenant=True)
+
+    info = await qdrant_client.get_collection(qdrant_collection)
+    assert info.payload_schema["space"].params is not None
+    assert info.payload_schema["space"].params.is_tenant is True
+
+
+async def test_ensure_payload_index_on_a_never_created_collection_fails_loudly(
+    qdrant_store: QdrantVectorStore,
+) -> None:
+    """Provisioning does NOT get ``search``'s empty-result treatment: asking
+    to index a collection that was never created is a fault, and swallowing
+    it would report success over a collection that stays unindexed."""
+    with pytest.raises(AppError) as excinfo:
+        await qdrant_store.ensure_payload_index(f"never-created-{new_uuid7()}", "space")
+
+    assert excinfo.value.code == "common.internal"
+    assert excinfo.value.status == 500
+
+
+# --------------------------------------------------------------------------- #
+# (17) failure translation: never a raw qdrant_client exception              #
 # --------------------------------------------------------------------------- #
 async def test_connection_failure_surfaces_as_common_internal() -> None:
     # A closed local port refuses instantly (ECONNREFUSED) -- no timeout wait.

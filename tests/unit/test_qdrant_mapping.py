@@ -5,6 +5,12 @@ error-policy branch they drive: a collection that was never created reads as
 EMPTY, everything else still fails loudly. No marker, no Docker, no network:
 plain functions over ``qdrant_client.models`` value objects, plus a
 stub client whose every call raises a chosen driver exception.
+
+Since the spaces plan's step 9 this file also pins the adapter's PROVISIONING
+policy over a recording stub client: which payload keys a new hybrid
+collection is indexed on, which single one carries Qdrant's ``is_tenant``,
+that a lost create-race still ends indexed, and that an already-existing
+collection deliberately gains nothing (the plan's §5-ب, made executable).
 """
 
 from __future__ import annotations
@@ -133,6 +139,9 @@ class _RaisingClient:
     async def query_points(self, **_kwargs: object) -> object:
         raise self._exc
 
+    async def create_payload_index(self, **_kwargs: object) -> None:
+        raise self._exc
+
     async def upsert(self, **_kwargs: object) -> None:
         raise self._exc
 
@@ -207,3 +216,102 @@ async def test_other_qdrant_failures_still_surface_as_common_internal(exc: Excep
 
         assert excinfo.value.code == "common.internal"
         assert excinfo.value.status == 500
+
+
+# --------------------------------------------------------------------------- #
+# payload indexes: what a NEW hybrid collection is provisioned with           #
+# (spaces plan step 9 / §3.4)                                                 #
+# --------------------------------------------------------------------------- #
+# `(field, is_tenant)` -- the whole policy, in the order it is asserted as a
+# SET: the two plain lookup keys, and the one ownership axis Qdrant is asked
+# to lay out on disk.
+_EXPECTED_INDEXES = {("workspace_id", False), ("document_id", False), ("space", True)}
+
+
+class _ProvisioningClient:
+    """Stand-in for ``AsyncQdrantClient`` that records provisioning calls.
+
+    ``exists`` decides which branch ``ensure_hybrid_collection`` takes;
+    ``create_raises`` injects the lost-create-race 409 the adapter swallows.
+    """
+
+    def __init__(self, *, exists: bool = False, create_raises: Exception | None = None) -> None:
+        self._exists = exists
+        self._create_raises = create_raises
+        self.created: list[str] = []
+        self.indexes: list[tuple[str, str, bool]] = []
+
+    async def collection_exists(self, collection_name: str) -> bool:
+        return self._exists
+
+    async def create_collection(self, **kwargs: Any) -> None:
+        if self._create_raises is not None:
+            raise self._create_raises
+        self.created.append(str(kwargs["collection_name"]))
+
+    async def create_payload_index(self, **kwargs: Any) -> None:
+        schema = kwargs["field_schema"]
+        self.indexes.append(
+            (str(kwargs["collection_name"]), str(kwargs["field_name"]), bool(schema.is_tenant))
+        )
+
+
+async def test_a_new_hybrid_collection_is_provisioned_with_its_payload_indexes() -> None:
+    """Every key ``_build_filter`` is ever handed gets an index, and the
+    tenant flag is spent on ``space`` ALONE.
+
+    Asserted as a set of ``(field, is_tenant)`` pairs, so both halves of the
+    policy are pinned by one test: dropping a key fails it, and so does
+    flagging (or forgetting to flag) the wrong one as the tenant axis.
+    """
+    client = _ProvisioningClient()
+    store = QdrantVectorStore(cast(AsyncQdrantClient, client))
+
+    await store.ensure_hybrid_collection("kn-ws-1", dim=4)
+
+    assert client.created == ["kn-ws-1"]
+    assert {(field, tenant) for _, field, tenant in client.indexes} == _EXPECTED_INDEXES
+    assert {collection for collection, _, _ in client.indexes} == {"kn-ws-1"}
+
+
+async def test_an_existing_collection_gains_no_payload_index_here() -> None:
+    """The §5-ب detector, as a test rather than a note in a plan.
+
+    ``ensure_hybrid_collection`` returns early for a collection that already
+    exists -- so every collection created before this code shipped stays
+    unindexed until the one-off operational pass (step 16) runs. This test
+    exists so that limitation is stated somewhere executable: if it ever
+    starts failing, the operational task has become unnecessary, and the plan
+    is the thing that is now wrong.
+    """
+    client = _ProvisioningClient(exists=True)
+    store = QdrantVectorStore(cast(AsyncQdrantClient, client))
+
+    await store.ensure_hybrid_collection("kn-ws-1", dim=4)
+
+    assert client.created == []
+    assert client.indexes == []
+
+
+async def test_a_lost_create_race_still_provisions_the_payload_indexes() -> None:
+    """A concurrent caller won ``create_collection`` (409, swallowed) -- the
+    loser must still assert the indexes, or the interleaving in which the
+    winner's own call has not reached them yet leaves the collection indexed
+    by nobody. Re-creating an index is idempotent, so the cost is a no-op."""
+    client = _ProvisioningClient(create_raises=_response(409, b'{"status":{"error":"exists"}}'))
+    store = QdrantVectorStore(cast(AsyncQdrantClient, client))
+
+    await store.ensure_hybrid_collection("kn-ws-1", dim=4)
+
+    assert {(field, tenant) for _, field, tenant in client.indexes} == _EXPECTED_INDEXES
+
+
+async def test_ensure_payload_index_on_a_missing_collection_raises_common_internal() -> None:
+    """Provisioning is the ``upsert`` policy, not the read paths' one: a
+    collection that does not exist is a real fault here. Absorbing it would
+    leave a collection silently unindexed forever."""
+    with pytest.raises(AppError) as excinfo:
+        await _store(_missing_collection()).ensure_payload_index("kn-ws-1", "space", tenant=True)
+
+    assert excinfo.value.code == "common.internal"
+    assert excinfo.value.status == 500

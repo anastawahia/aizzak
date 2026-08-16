@@ -306,6 +306,11 @@ class RecordingVectorStore:
     ) -> None:
         raise AssertionError("a re-index never provisions a collection")
 
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None:
+        raise AssertionError("a re-index never provisions a collection")
+
     async def upsert(self, collection: str, points: Sequence[object]) -> None:
         raise AssertionError("a re-index never writes points — the worker does")
 

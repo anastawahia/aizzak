@@ -361,6 +361,13 @@ class _FakeHybridVectors:
         self, name: str, dim: int, *, distance: str = "cosine"
     ) -> None: ...
 
+    # The real adapter drives this from `ensure_hybrid_collection` itself
+    # (spaces plan step 9), so no use-case ever calls it -- it is here for the
+    # same reason `search`/`delete` are: the Protocol, satisfied structurally.
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None: ...
+
     async def upsert(self, collection: str, points: Sequence[VectorPoint]) -> None:
         self.upserted.append((collection, list(points)))
 

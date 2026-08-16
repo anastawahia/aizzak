@@ -46,6 +46,9 @@ def test_port_protocols_expose_expected_methods() -> None:
             (
                 "ensure_hybrid_collection",
                 "search_sparse",
+                # spaces plan step 9 -- on the hybrid Protocol, not on
+                # VectorStore: `memory` never asks for a payload index.
+                "ensure_payload_index",
                 "ensure_collection",
                 "upsert",
                 "search",

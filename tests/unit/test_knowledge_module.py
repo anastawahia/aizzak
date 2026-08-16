@@ -197,6 +197,12 @@ class _FakeHybridVectors:
         self.ensured_hybrid.append((name, dim, distance))
         self.points.setdefault(name, {})
 
+    # See `test_knowledge_pipeline.FakeHybridVectors` -- adapter-side concern,
+    # present for the Protocol only.
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None: ...
+
     async def upsert(self, collection: str, points: Sequence[VectorPoint]) -> None:
         bucket = self.points.setdefault(collection, {})
         for point in points:

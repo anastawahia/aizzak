@@ -23,6 +23,14 @@ inside Qdrant at index/query time, so every ``SparseVector.values`` crossing
 this adapter's boundary (from ``knowledge``'s term-frequency pipeline) is
 always a raw term frequency, never pre-weighted (see the port docstring).
 
+Payload indexes at creation: ``ensure_hybrid_collection`` follows its
+``create_collection`` with ``ensure_payload_index`` for ``space`` (as a
+TENANT key), ``workspace_id`` and ``document_id`` -- the three keys
+``_build_filter`` is ever handed. It runs there and not in the caller so no
+provisioning path can forget it; see ``_TENANT_PAYLOAD_KEY`` for why the
+tenant flag is spent on ``space`` alone, and the port docstring for why an
+already-existing collection deliberately does not gain them here.
+
 Error policy (R6, the same precedent as every other adapter): EVERY driver
 failure -- connection refused, timeout, a malformed request Qdrant rejects,
 ... -- folds into the 500-class ``common.internal``. There is still no
@@ -96,6 +104,25 @@ _SPARSE_NAME = "text"
 # ever wrong, dense search against a hybrid collection would start failing
 # loudly, not silently.
 _DEFAULT_VECTOR_NAME = ""
+
+# The payload keys every hybrid collection indexes at creation (spaces plan
+# §3.4). `space` is the TENANT axis -- Qdrant reorders points on disk by it,
+# which is worth paying for at the granularity of a handful of spaces per
+# workspace (and would NOT be at conversation granularity: thousands of
+# tenants fragment storage instead of ordering it). `workspace_id` and
+# `document_id` are plain lookups: every search carries the first (DD-04) and
+# a pinned search carries the second, and until now the project had no
+# payload index at all -- `create_payload_index` was never called anywhere --
+# so both of them were full scans (spaces plan §2-ب).
+#
+# ⚠️ No `m=0` HNSW tuning alongside `is_tenant`, despite Qdrant's own
+# recommendation: that advice assumes EVERY search is pinned to one tenant
+# value. Ours is today, but switching off the global graph would make any
+# future unscoped retrieval (a cross-space summary, a diagnostic) impossible
+# rather than merely slow. The saving is memory; the price is a door that
+# does not reopen (spaces plan §3.4).
+_TENANT_PAYLOAD_KEY = "space"
+_PLAIN_PAYLOAD_KEYS = ("workspace_id", "document_id")
 
 # HTTP Conflict: ``create_collection`` returns this when a concurrent caller
 # won a create-race for the same name -- ``ensure_collection``/
@@ -302,6 +329,59 @@ class QdrantVectorStore:
             except UnexpectedResponse as exc:
                 if exc.status_code != _HTTP_CONFLICT:
                     raise
+        except (ApiException, QdrantException) as exc:
+            raise _translate(exc) from exc
+        # AFTER the collection exists, and deliberately OUTSIDE the try above
+        # -- `ensure_payload_index` does its own translation, so wrapping it
+        # again would only hide which call failed.
+        #
+        # Reached on the lost-create-race path too (the swallowed 409): index
+        # creation is idempotent, so the loser re-asserting what the winner is
+        # concurrently creating costs one no-op round trip and removes the
+        # only ordering in which a collection could end up indexed by nobody.
+        #
+        # ⚠️ NOT reached when the collection already existed -- that is the
+        # early `return` above, and it is why collections created before this
+        # code shipped need the one-off operational pass (spaces plan §5-ب /
+        # step 16). Indexing at creation time is also when it is cheapest:
+        # zero points to reorder.
+        for key in _PLAIN_PAYLOAD_KEYS:
+            await self.ensure_payload_index(name, key)
+        await self.ensure_payload_index(name, _TENANT_PAYLOAD_KEY, tenant=True)
+
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None:
+        """Index ONE payload key (port docstring; spaces plan §3.4).
+
+        A KEYWORD index rather than Qdrant's narrower ``uuid`` one even
+        though all three keys carry UUIDv7 text today: the uuid index refuses
+        a value that will not parse, which would turn "someone indexed a
+        non-uuid payload value" into a failed WRITE rather than a slower
+        read, and a payload key's shape is not something this adapter gets to
+        police. Keyword accepts any string and is what ``MatchValue``/
+        ``MatchAny`` -- the only two conditions ``_build_filter`` ever emits
+        -- are answered from.
+
+        Idempotent (verified live against Qdrant 1.13): re-creating an
+        existing index returns ``completed``, so this is safe to call on
+        every provisioning path and safe to re-run operationally.
+
+        A missing collection is NOT absorbed here, unlike ``search``/
+        ``delete``: this is provisioning, the caller is contractually holding
+        a collection it just created, and swallowing the 404 would leave a
+        collection permanently unindexed with nothing said -- the same
+        argument that keeps ``upsert`` loud.
+        """
+        try:
+            await self._client.create_payload_index(
+                collection_name=collection,
+                field_name=field,
+                field_schema=models.KeywordIndexParams(
+                    type=models.KeywordIndexType.KEYWORD, is_tenant=tenant
+                ),
+                wait=True,
+            )
         except (ApiException, QdrantException) as exc:
             raise _translate(exc) from exc
 

@@ -77,7 +77,30 @@ class VectorStore(Protocol):
 class HybridVectorStore(VectorStore, Protocol):
     """Knowledge-only superset of ``VectorStore`` adding a BM25-sparse search
     leg (3.k3) — see the module docstring for the shared-point/dense-default/
-    sparse-named-``"text"`` convention."""
+    sparse-named-``"text"`` convention.
+
+    ``ensure_payload_index`` provisions a keyword index over ONE payload key
+    so filtered retrieval stops scanning (spaces plan §3.4). It is
+    **idempotent** — re-creating an existing index with the same shape is a
+    success, so callers never have to ask first — and it is a PROVISIONING
+    call, so a collection that does not exist is a real fault here (the
+    ``upsert`` policy, not the read paths' empty-result one).
+
+    ``tenant=True`` asks the store to keep points sharing that key
+    physically together (Qdrant's ``is_tenant``); it is reserved for the
+    ownership axis a query is almost always narrowed by — ``space`` — and
+    left ``False`` for keys that merely need lookup (``workspace_id``,
+    ``document_id``). It stays on the HYBRID Protocol and not on
+    ``VectorStore``: ``memory`` filters one small collection per workspace
+    and asks for nothing here, and the module docstring's Interface
+    Segregation rule is what keeps its narrower contract unchanged.
+
+    An implementation is free to call this itself from
+    ``ensure_hybrid_collection`` (the Qdrant adapter does). It stays on the
+    port regardless, because collections provisioned BEFORE the indexes
+    existed can only gain them through an explicit operational call — see
+    the spaces plan §5-ب.
+    """
 
     async def ensure_hybrid_collection(
         self, name: str, dim: int, *, distance: str = "cosine"
@@ -86,3 +109,7 @@ class HybridVectorStore(VectorStore, Protocol):
     async def search_sparse(
         self, collection: str, sparse: SparseVector, k: int, flt: Json | None = None
     ) -> list[VectorHit]: ...
+
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None: ...

@@ -207,6 +207,13 @@ class FakeHybridVectors:
         self.ensured_hybrid.append((name, dim, distance))
         self.points.setdefault(name, {})
 
+    # Indexes are an adapter-side concern (the real one provisions them from
+    # `ensure_hybrid_collection`, spaces plan step 9); a brute-force fake has
+    # nothing to index, and no use-case calls this.
+    async def ensure_payload_index(
+        self, collection: str, field: str, *, tenant: bool = False
+    ) -> None: ...
+
     async def upsert(self, collection: str, points: Sequence[VectorPoint]) -> None:
         bucket = self.points.setdefault(collection, {})
         for point in points:
