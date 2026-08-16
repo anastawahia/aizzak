@@ -314,3 +314,38 @@ def test_the_platform_baseline_runs_first_and_without_a_version_schema() -> None
     assert first_revision == "platform@head"
     assert first_vts is None
     assert all(vts is not None for _, vts in MIGRATION_CHAINS[1:])
+
+
+def test_a_chain_that_reads_another_chains_table_is_ordered_after_it() -> None:
+    """The `space_id` backfills (docs/spaces-backend-plan.md step 4) read
+    `spaces.spaces` and `workspace.workspaces` from inside the `files` /
+    `conversations` / `knowledge` chains. Nothing in Alembic can enforce that:
+    each chain records its revisions in its own `version_table_schema`, so
+    `depends_on` across chains is unenforceable (`0001_files.py`) -- the order
+    in MIGRATION_CHAINS is the whole mechanism.
+
+    Getting it wrong does not raise. `workspace.workspaces` empty means the
+    backfill loop runs zero times and every row keeps a NULL `space_id`, and
+    the failure only surfaces one step later, as a `SET NOT NULL` that will
+    not take. So the chains are DISCOVERED from the migration text rather
+    than listed here: a fourth chain that grows a backfill tomorrow is
+    ordered by this test without anyone remembering to add it.
+    """
+    order = [revision.split("@")[0] for revision, _ in MIGRATION_CHAINS]
+
+    for provider, table in (("spaces", "spaces.spaces"), ("workspace", "workspace.workspaces")):
+        assert provider in order, f"{provider} is not in MIGRATION_CHAINS at all"
+        for chain_dir in sorted(_MIGRATIONS.iterdir()):
+            if not chain_dir.is_dir() or chain_dir.name == provider:
+                continue
+            readers = [
+                path.name
+                for path in sorted(chain_dir.glob("*.py"))
+                if table in path.read_text(encoding="utf-8")
+            ]
+            if not readers:
+                continue
+            assert order.index(provider) < order.index(chain_dir.name), (
+                f"{chain_dir.name} reads {table} in {readers} but is applied "
+                f"before the {provider} chain that creates it"
+            )

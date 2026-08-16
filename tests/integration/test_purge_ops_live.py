@@ -123,7 +123,12 @@ async def _seed_account_deleted_audit(
 async def _seed_content(
     tenant_session: TenantSessionFactory, ctx: ExecutionContext, user_id: str
 ) -> dict[str, str]:
-    """One row per table §3.2 names, all under ONE workspace (``ctx``).
+    """One row per table §3.2 names, all under ONE workspace (``ctx``) and --
+    since docs/spaces-backend-plan.md step 4 -- all under ONE space. The file,
+    the conversation and the document POINT AT the seeded space rather than
+    merely coexisting with it (the plan's 📌 debt on step 3, §3.141): a space
+    row nothing references would let the purge proof stay green while the
+    column that makes the space mean anything went unswept.
     ``user_id`` MUST already exist in ``workspace.users`` -- both
     ``workspace.user_presence.user_id`` and (informally)
     ``access.role_assignments.user_id`` name it. Returns the generated ids a
@@ -143,10 +148,10 @@ async def _seed_content(
         )
         await session.execute(
             text(
-                "INSERT INTO knowledge.documents (id, workspace_id, file_id) "
-                "VALUES (:id, :ws, :file_id)"
+                "INSERT INTO knowledge.documents (id, workspace_id, file_id, space_id) "
+                "VALUES (:id, :ws, :file_id, :space)"
             ),
-            {"id": document_id, "ws": ws, "file_id": file_id},
+            {"id": document_id, "ws": ws, "file_id": file_id, "space": space_id},
         )
         await session.execute(
             text(
@@ -190,10 +195,10 @@ async def _seed_content(
         )
         await session.execute(
             text(
-                "INSERT INTO conversations.conversations (id, workspace_id, agent_key) "
-                "VALUES (:id, :ws, 'rag_agent')"
+                "INSERT INTO conversations.conversations (id, workspace_id, agent_key, space_id) "
+                "VALUES (:id, :ws, 'rag_agent', :space)"
             ),
-            {"id": conversation_id, "ws": ws},
+            {"id": conversation_id, "ws": ws, "space": space_id},
         )
         await session.execute(
             text(
@@ -228,10 +233,10 @@ async def _seed_content(
         await session.execute(
             text(
                 "INSERT INTO files.files "
-                "(id, workspace_id, name, content_type, size_bytes, storage_key) "
-                "VALUES (:id, :ws, 'a.txt', 'text/plain', 3, :key)"
+                "(id, workspace_id, name, content_type, size_bytes, storage_key, space_id) "
+                "VALUES (:id, :ws, 'a.txt', 'text/plain', 3, :key, :space)"
             ),
-            {"id": file_id, "ws": ws, "key": f"{ws}/{file_id}"},
+            {"id": file_id, "ws": ws, "key": f"{ws}/{file_id}", "space": space_id},
         )
         await session.execute(
             text(
@@ -449,6 +454,29 @@ async def test_purge_all_empties_only_the_eligible_workspace(
     # The other two workspaces are completely untouched.
     await _assert_all_tables_count(purger_engine, inside_window_ws, expected=1)
     await _assert_all_tables_count(purger_engine, still_active_ws, expected=1)
+
+    # And their content still POINTS AT their space (§3.142). `space_id` is
+    # NULLable until plan §4 row 8-b, so nothing but this line would notice a
+    # `_seed_content` that quietly stopped filling it -- and a purge proof run
+    # against three NULL columns proves nothing about the column.
+    async with purger_engine.begin() as conn:
+        for ws in (inside_window_ws, still_active_ws):
+            await conn.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+            for table in (
+                "files.files",
+                "conversations.conversations",
+                "knowledge.documents",
+            ):
+                unlinked = (
+                    await conn.execute(
+                        text(
+                            f"SELECT count(*) FROM {table} "
+                            "WHERE workspace_id = :ws AND space_id IS NULL"
+                        ),
+                        {"ws": ws},
+                    )
+                ).scalar_one()
+                assert unlinked == 0, f"{table} rows for {ws} carry no space_id"
     async with purger_engine.begin() as conn:
         for ws in (inside_window_ws, still_active_ws):
             still = (

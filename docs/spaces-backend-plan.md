@@ -12,7 +12,7 @@
 | **الأساس** | `f2c4463` (‏`master`) · المكدّس الحاويّ يعمل (14 خدمة صحّية) |
 | **النطاق** | وحدة `spaces` جديدة · أعمدة `space_id` في `files`/`conversations`/`knowledge` · حصّة 1 GiB لكلّ وحدة · تقسيم Qdrant ببطاقة `space` + فهرس `is_tenant` · حذف متسلسل · مسارات HTTP · العقود والوثائق |
 | **خارج النطاق** | تعدّد مساحات العمل · مشاركة وحدة بين مستخدمين · نقل ملف بين الوحدات · حصّة على مستوى مساحة العمل · أي تغيير في RLS |
-| **الحالة** | 🚧 **3/16** — الخطوات ١ ([§3.139](log/3.139.md)) و٢ ([§3.140](log/3.140.md)) و٣ ([§3.141](log/3.141.md)) مغلقة |
+| **الحالة** | 🚧 **4/17** — الخطوات ١ ([§3.139](log/3.139.md)) و٢ ([§3.140](log/3.140.md)) و٣ ([§3.141](log/3.141.md)) و٤ ([§3.142](log/3.142.md)) مغلقة · صفٌّ جديد **٨‑ب** |
 
 ---
 
@@ -142,7 +142,7 @@ CREATE POLICY tenant_isolation ON spaces.spaces
 |---|---|---|
 | `files.files` | `space_id uuid NOT NULL` | `ix_files_space` جزئيّ على `deleted_at IS NULL` |
 | `conversations.conversations` | `space_id uuid NOT NULL` | `ix_conv_space` جزئيّ |
-| `knowledge.documents` | `space_id uuid NOT NULL` | `ix_kndoc_space` جزئيّ |
+| `knowledge.documents` | `space_id uuid NOT NULL` | `ix_kndoc_space` ~~جزئيّ~~ **كامل** — لا `deleted_at` في هذا الجدول (📌 §4) |
 
 `knowledge.documents` تحمله أيضًا كي يعمل الحذف المتسلسل والسرد بلا استعلام مُتقاطع بين الوحدات.
 
@@ -272,11 +272,12 @@ DeleteSpaceService.execute(ctx, space_id):
 | ١ | وحدة `spaces` (domain · application · ports · adapters) + اختباراتها | جديد | ✅ [§3.139](log/3.139.md) |
 | ٢ | ترحيل `spaces/0001_spaces.py` — مخطّط · جدول · فهرس · trigger · RLS | migrations | ✅ [§3.140](log/3.140.md) |
 | ٣ | الصلاحيات: ~~`_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS`~~ (‏[§3.140](log/3.140.md)) · **`PURGE_GRANTS`** وتغطية `app.ops.purge` | `ops/provision.py` · `ops/purge.py` | ✅ [§3.141](log/3.141.md) |
-| ٤ | ترحيلات `space_id` الثلاثة (`files` · `conversations` · `knowledge`) — بنمط ADD ⇒ backfill ⇒ SET NOT NULL | migrations | 🔲 |
+| ٤ | ترحيلات `space_id` الثلاثة (`files` · `conversations` · `knowledge`) — ADD (‏`NULL`) ⇒ backfill ⇒ فهرس | migrations | ✅ [§3.142](log/3.142.md) |
 | ٥ | الحصّة: `max_space_bytes` + فحص `FOR UPDATE` في خدمة التسجيل | settings · files · DI | 🔲 |
 | ٦ | ربط `files`: كيان · مستودع · `ports/spaces.py` · ترشيح | `modules/files` | 🔲 |
 | ٧ | ربط `conversations`: كيان · مستودع · `ports/spaces.py` · ترشيح · شرط التثبيت (§3.5) | `modules/conversations` | 🔲 |
 | ٨ | `knowledge`: عمود · بطاقة `space` · مرشِّح الاسترجاع | `modules/knowledge` | 🔲 |
+| ٨‑ب | **تشديد `space_id` إلى `NOT NULL`** — ثلاثة ترحيلات متابعة، بلا backfill جديد | migrations | 🔲 |
 | ٩ | Qdrant: `ensure_payload_index` في المنفذ والمحوّل + استدعاؤها | ports · infrastructure | 🔲 |
 | ١٠ | سدّ تسريب `FilesAccess.get_readable` (النتيجة ٢‑ح) | `agent_runtime` | 🔲 |
 | ١١ | `DeleteSpaceService` — الحذف المتسلسل السبعُ خطوات | DI | 🔲 |
@@ -286,7 +287,11 @@ DeleteSpaceService.execute(ctx, space_id):
 | ١٥ | الوثائق الملزِمة: 01‑data‑model · 02‑port‑contracts · 03‑api‑spec · 07‑nfr‑slo | `docs/design` | 🔲 |
 | ١٦ | مهمّة تشغيليّة لمرّة واحدة: فهارس البطاقة على الصناديق القائمة (§5‑ب) | `ops/` | 🔲 |
 
-> 📌 **الخطوة ٤ لها دَينٌ على هذه الخطوة:** `_seed_content` في [`tests/integration/test_purge_ops_live.py`](../tests/integration/test_purge_ops_live.py) تبذر اليوم صفَّ وحدةٍ واحدًا لكلّ مساحة عمل بلا ربطٍ بأيّ ملفٍّ أو محادثة. حين تصل أعمدة `space_id` يجب أن تُبذَر معها، وإلّا صار برهان الكنس يمرّ على عمودٍ فارغ ([§3.141](log/3.141.md)).
+> ~~📌 **الخطوة ٤ لها دَينٌ على هذه الخطوة:** `_seed_content` في [`tests/integration/test_purge_ops_live.py`](../tests/integration/test_purge_ops_live.py) تبذر اليوم صفَّ وحدةٍ واحدًا لكلّ مساحة عمل بلا ربطٍ بأيّ ملفٍّ أو محادثة.~~ **سُدِّد في الخطوة ٤** ([§3.142](log/3.142.md)): الملفّ والمحادثة والمستند صاروا **يشيرون** إلى الوحدة المبذورة.
+
+> 📌 **الخطوة ٤ انقسمت، والسبب بنيويّ لا تراخٍ.** العمود وُلد `NULL`: لا كاتب يكتب `space_id` قبل الخطوات ٦‑٨، فعمودٌ `NOT NULL` هنا كان يردّ **كلّ** `INSERT` على ثلاثة جداول بـ`23502` طوال أربع خطوات — و§0 تُلزم **كلّ** خطوة بالبوّابات الخمس. فانتقل التشديد إلى صفٍّ خاصّ (**٨‑ب**) بعد أن يصير للعمود كُتّاب. ولا backfill ثانٍ هناك: `NULL` يُعثر عليه حينئذٍ هو كاتبٌ نسيته الخطوات ٦‑٨، وسقوط الترحيل هو الطريقة الصحيحة لسماع ذلك.
+
+> 📌 **`ix_kndoc_space` ليس جزئيًّا، خلافًا لجدول §3.2.** `knowledge.documents` **لا تحمل `deleted_at`** أصلًا (وحدها من الثلاثة بلا حذفٍ ناعم، [`knowledge/0001`](../migrations/versions/knowledge/0001_knowledge.py)) — فالشرط `WHERE deleted_at IS NULL` لا يُصرَّف. الفهرس كامل، والاختبار الحيّ يوكّد **غياب** العمود بجانبه كي لا «يُصلِح» قارئٌ لاحقٌ الفهرسَ إلى خطأ صياغة.
 
 **لا يرتفع إصدار أيّ حدث** — إضافة حقل اختياريّ ⇒ نفس الإصدار ([`04-event-catalog.md:136`](design/04-event-catalog.md#L136)).
 

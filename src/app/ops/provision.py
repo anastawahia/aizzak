@@ -96,13 +96,19 @@ PURGE_ROLE = "workspace_purger"
 MIGRATION_CHAINS: tuple[tuple[str, str | None], ...] = (
     ("platform@head", None),
     # `spaces` comes immediately after the baseline, ahead of every chain that
-    # will grow a `space_id` column (docs/spaces-backend-plan.md step 4): those
+    # grew a `space_id` column (docs/spaces-backend-plan.md step 4): those
     # migrations backfill against real space rows, so the table they read must
     # already be there. No FK enforces this order (the plan keeps cross-schema
     # references logical, `conversation_files`'s precedent) -- which is exactly
     # why the order is stated here rather than left to Alembic to discover.
     ("spaces@head", "spaces"),
     ("media@head", "media"),
+    # `workspace` is the OTHER chain those three backfills read, and for a
+    # sharper reason than convenience: `workspace.workspaces` carries no RLS
+    # (`workspace/0001_workspace.py` R2), so it is the only table a migrator
+    # that is neither superuser nor BYPASSRLS can enumerate before it knows
+    # which workspace to set `app.workspace_id` to. Empty here means every
+    # backfill silently does nothing.
     ("workspace@head", "workspace"),
     ("credentials@head", "credentials"),
     ("access@head", "access"),
