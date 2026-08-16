@@ -84,11 +84,11 @@ files = Table(
     Column("updated_at", _timestamptz, nullable=False),
     Column("deleted_at", _timestamptz, nullable=True),
     Column("version", Integer, nullable=False),
-    # `migrations/versions/files/0002_file_space.py` (§3.142). NULLable until
-    # plan row 8-b, and present here for exactly ONE reader -- the quota sum
-    # below. The `File` aggregate does not carry it yet and no statement in
-    # this adapter writes it; that is plan step 6, and until then a registered
-    # file lands with a NULL space (§3.143 records what that costs).
+    # `migrations/versions/files/0002_file_space.py` (§3.142), written by
+    # `add` and filtered on by `list`/`bytes_in_space` since plan step 6.
+    # Still NULLable until plan row 8-b, because a writer that has no space to
+    # name yet (the media worker) must be able to say so rather than invent
+    # one; 8-b's `SET NOT NULL` is what finds any writer step 6-8 forgot.
     Column("space_id", _uuid_col, nullable=True),
     schema="files",
 )
@@ -127,6 +127,7 @@ class SqlFileRepository:
         stmt = insert(files).values(
             id=file.id,
             workspace_id=file.workspace_id,
+            space_id=file.space_id,
             name=file.name.value,
             content_type=file.content_type.value,
             size_bytes=file.size_bytes,
@@ -147,9 +148,11 @@ class SqlFileRepository:
 
     async def save(self, ctx: ExecutionContext, file: File) -> None:
         # Optimistic lock: only a row still at `file.version` is updated.
-        # `content_type`/`size_bytes`/`storage_key`/`uploaded_by` never change
-        # after creation (no domain mutator touches them), and leaving them
-        # out of the UPDATE is what enforces that at the adapter -- only the
+        # `content_type`/`size_bytes`/`storage_key`/`uploaded_by`/`space_id`
+        # never change after creation (no domain mutator touches them), and
+        # leaving them out of the UPDATE is what enforces that at the adapter
+        # -- for `space_id` that is decision 3, "no moving a file between
+        # spaces", made unwritable rather than merely undocumented. Only the
         # fields `mark_scanning`/`complete`/`quarantine`/`soft_delete`/
         # `rename` can change are written. `name` joined them in BE-RAG-006:
         # for every OTHER caller it re-writes the value just hydrated, a
@@ -181,7 +184,9 @@ class SqlFileRepository:
         # -- write the fresh values back onto the aggregate, media precedent.
         file.version, file.updated_at = row
 
-    async def list(self, ctx: ExecutionContext, *, limit: int, cursor: str | None) -> Page[File]:
+    async def list(
+        self, ctx: ExecutionContext, *, space_id: UuidStr | None, limit: int, cursor: str | None
+    ) -> Page[File]:
         # Active files only (`ListFiles`'s own docstring) -- backed by the
         # partial index `ix_files_ws` (01 §2.6).
         # NEWEST FIRST (`framework/pagination`, 6.3-ب): `id DESC` with an
@@ -189,6 +194,14 @@ class SqlFileRepository:
         # registered first" — what a client opening a file list is asking
         # for, and the direction every other collection already documented.
         conditions = [files.c.workspace_id == ctx.workspace_id, files.c.deleted_at.is_(None)]
+        if space_id is not None:
+            # The space narrowing (step 6) -- backed by `ix_files_space`
+            # (`files/0002_file_space.py`), partial on `deleted_at IS NULL`
+            # exactly like this predicate. Appended as an EQUALITY on an
+            # opaque id: this adapter never joins to `spaces.spaces`, which it
+            # cannot see, and the workspace condition above stays in place --
+            # a space is an axis inside the tenant, never a replacement for it.
+            conditions.append(files.c.space_id == space_id)
         if cursor is not None:
             conditions.append(files.c.id < decode_id_cursor(cursor))
         stmt = select(files).where(*conditions).order_by(files.c.id.desc()).limit(limit + 1)
@@ -252,6 +265,7 @@ def _hydrate(row: RowMapping) -> File:
     return File(
         id=row["id"],
         workspace_id=row["workspace_id"],
+        space_id=row["space_id"],
         name=FileName(row["name"]),
         content_type=ContentType(row["content_type"]),
         size_bytes=row["size_bytes"],

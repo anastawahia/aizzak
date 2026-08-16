@@ -394,6 +394,10 @@ def _ready_file(*, workspace_id: str, file_id: str, name: str, storage_key: str)
     return File(
         id=file_id,
         workspace_id=workspace_id,
+        # The e2e path is `files -> knowledge`, which never reads the space;
+        # `None` is what this pipeline's own writer (the media worker) still
+        # produces, and the column stays NULLable until plan row 8-b.
+        space_id=None,
         name=FileName(name),
         content_type=ContentType("text/plain"),
         size_bytes=len(_TXT_BODY),

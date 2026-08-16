@@ -21,12 +21,11 @@ contract (7) needs no new exception for this module, and it must not gain one.
 **The ceiling is checked, not reserved.** Nothing is written to say "600 MiB
 of this space is spoken for"; the serialisation IS the reservation, and it
 lasts exactly as long as the unit of work. That is sound because the row this
-transaction goes on to insert is itself the record of the spend — but only
-once ``files.files`` actually stores the space (plan step 6). Until then the
-sum reads a column every registered file leaves NULL, so the quota measures a
-real ceiling against a total that is structurally zero. This service is
-correct and provably serialising today; it starts BINDING at step 6, and
-§3.143 says so rather than letting the gap be discovered later.
+transaction goes on to insert is itself the record of the spend — which it
+became at plan step 6, when ``files.files`` started storing the space this
+service hands the registrar. Until then the sum read a column every registered
+file left NULL: a real ceiling against a structurally-zero total (§3.143 said
+so rather than letting the gap be discovered later).
 
 **The lock is held across ``registrar.register``**, which presigns a PUT. In
 the only adapter that exists (MinIO) presigning is local HMAC work, but
@@ -69,7 +68,13 @@ class UploadRegistrar[R](Protocol):
     """
 
     async def register(
-        self, ctx: ExecutionContext, *, name: str, content_type: str, size_bytes: int
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid,
+        name: str,
+        content_type: str,
+        size_bytes: int,
     ) -> R: ...
 
 
@@ -128,6 +133,15 @@ class SpaceQuotaService[R]:
                     code="spaces.quota_exceeded",
                 )
 
+            # The space is passed DOWN, not merely checked here: the row this
+            # insert writes is the record of the spend, so a registration that
+            # landed without its space would be measured by no later sum and
+            # the ceiling above would keep comparing against zero. This is the
+            # line that turned the quota from measured into binding (step 6).
             return await self._registrar.register(
-                ctx, name=name, content_type=content_type, size_bytes=size_bytes
+                ctx,
+                space_id=space_id,
+                name=name,
+                content_type=content_type,
+                size_bytes=size_bytes,
             )

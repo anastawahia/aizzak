@@ -78,13 +78,23 @@ class _FakeRegistrar:
 
     def __init__(self, trace: list[str]) -> None:
         self._trace = trace
-        self.calls: list[tuple[str, str, int]] = []
+        # The SPACE is recorded first, and not by accident: since step 6 the
+        # registrar is what writes it onto the file row, so "which space was
+        # this registered into" is the assertion that keeps the sum above
+        # measuring the same thing the insert below spends.
+        self.calls: list[tuple[str, str, str, int]] = []
 
     async def register(
-        self, ctx: ExecutionContext, *, name: str, content_type: str, size_bytes: int
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str,
+        name: str,
+        content_type: str,
+        size_bytes: int,
     ) -> str:
         self._trace.append("register")
-        self.calls.append((name, content_type, size_bytes))
+        self.calls.append((space_id, name, content_type, size_bytes))
         return f"registered:{name}"
 
 
@@ -122,10 +132,11 @@ async def test_an_upload_that_fits_is_registered_under_the_lock_in_one_unit_of_w
     taking the lock, or registering after the unit of work closed, both leave
     two concurrent 600 MiB uploads reading the same total and both passing."""
     service, registrar, trace = _build(used=100)
+    space = new_uuid7()
 
     result = await service.register(
         _ctx(),
-        space_id=new_uuid7(),
+        space_id=space,
         name="report.pdf",
         content_type="application/pdf",
         size_bytes=2048,
@@ -133,7 +144,11 @@ async def test_an_upload_that_fits_is_registered_under_the_lock_in_one_unit_of_w
 
     assert result == "registered:report.pdf"
     assert trace == ["uow:enter", "lock", "sum", "register", "uow:exit"]
-    assert registrar.calls == [("report.pdf", "application/pdf", 2048)]
+    # The space the caller named reaches the registrar, which is what puts it
+    # on the file row — the step-6 line that turns this ceiling from measured
+    # into binding. Without it the sum above would keep reading NULL and every
+    # space would look empty forever, with no test on the ORDER noticing.
+    assert registrar.calls == [(space, "report.pdf", "application/pdf", 2048)]
 
 
 # --------------------------------------------------------------------------- #
@@ -165,16 +180,17 @@ async def test_filling_the_space_exactly_to_the_ceiling_is_allowed() -> None:
     space exactly 1 GiB is a 1 GiB-minus-one quota, and the off-by-one would
     only ever be found by the one user who hit it."""
     service, registrar, _ = _build(used=_GIB - 2048)
+    space = new_uuid7()
 
     await service.register(
         _ctx(),
-        space_id=new_uuid7(),
+        space_id=space,
         name="last.pdf",
         content_type="application/pdf",
         size_bytes=2048,
     )
 
-    assert registrar.calls == [("last.pdf", "application/pdf", 2048)]
+    assert registrar.calls == [(space, "last.pdf", "application/pdf", 2048)]
 
 
 async def test_one_byte_past_the_ceiling_is_refused() -> None:
@@ -238,15 +254,17 @@ async def test_a_file_larger_than_the_per_file_cap_is_left_to_the_registrar() ->
         used=0, limits=Limits(max_upload_bytes=50, max_space_bytes=100)
     )
 
+    space = new_uuid7()
+
     await service.register(
         _ctx(),
-        space_id=new_uuid7(),
+        space_id=space,
         name="huge.pdf",
         content_type="application/pdf",
         size_bytes=5000,
     )
 
-    assert registrar.calls == [("huge.pdf", "application/pdf", 5000)]
+    assert registrar.calls == [(space, "huge.pdf", "application/pdf", 5000)]
     assert trace == ["uow:enter", "lock", "sum", "register", "uow:exit"]
 
 

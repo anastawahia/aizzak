@@ -51,19 +51,50 @@ from app.modules.files.domain.value_objects import (
 )
 from app.modules.files.ports.inbound import FileView
 from app.modules.files.ports.repository import FileRepository
+from app.modules.files.ports.spaces import ActiveSpaces
 
 
 class RegisterUpload:
     """Register a new upload slot: validates shape + the configured limits and
     mints a ``File`` in ``uploaded`` status. The caller uploads bytes to
-    ``storage_key`` out of band, then calls ``CompleteUpload``."""
+    ``storage_key`` out of band, then calls ``CompleteUpload``.
 
-    def __init__(self, files: FileRepository, limits: Limits) -> None:
+    **``space_id`` is proven before it is stored** (spaces plan step 6). An id
+    that names no live space would file the row under an axis that does not
+    exist: invisible to every listing and uncounted by every quota, with no
+    error anywhere. So a non-``None`` value is checked against the injected
+    ``ActiveSpaces`` seam (``ports/spaces.py``) and a 404 is the answer for
+    unknown, foreign-tenant and deleted alike.
+
+    On the quota path (``framework/di/space_quota.py``) this check runs a
+    second time inside a transaction that already holds the space's row lock,
+    and that redundancy is accepted rather than removed: the lock is the
+    authority on CONCURRENCY, this is the authority on EXISTENCE, and this
+    use-case is also reached directly — by the media worker and by the
+    router — where no lock was ever taken. One extra indexed primary-key read
+    inside an open transaction is a cheap price for a check that does not
+    depend on which caller arrived.
+
+    ``space_id`` is required-but-nullable, with no default. ``None`` means "no
+    space", which is a real state until plan row 8-b makes the column
+    ``NOT NULL``, but it has to be TYPED at the call site: a default would let
+    a writer drop into it silently, and the whole point of the transitional
+    window is that the writers still owing a space are visible.
+    """
+
+    def __init__(self, files: FileRepository, limits: Limits, spaces: ActiveSpaces) -> None:
         self._files = files
         self._limits = limits
+        self._spaces = spaces
 
     async def execute(
-        self, ctx: ExecutionContext, *, name: str, content_type: str, size_bytes: int
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid | None,
+        name: str,
+        content_type: str,
+        size_bytes: int,
     ) -> File:
         try:
             file_name = FileName(name)
@@ -83,6 +114,8 @@ class RegisterUpload:
                 f"file exceeds the {self._limits.max_upload_bytes} byte limit",
                 code="files.too_large",
             )
+        if space_id is not None and await self._spaces.get_active(ctx, space_id) is None:
+            raise NotFoundError("space not found")
         if await self._files.count(ctx) >= self._limits.max_files_per_workspace:
             raise ConflictError(
                 f"workspace has reached the {self._limits.max_files_per_workspace} file limit",
@@ -94,6 +127,7 @@ class RegisterUpload:
         file = File(
             id=file_id,
             workspace_id=ctx.workspace_id,
+            space_id=space_id,
             name=file_name,
             content_type=media_type,
             size_bytes=size_bytes,
@@ -155,15 +189,22 @@ class CompleteUpload:
 
 
 class ListFiles:
-    """List active files in the workspace via keyset pagination on ``id``."""
+    """List active files via keyset pagination on ``id`` — one space's when
+    ``space_id`` is given, the whole workspace's when it is ``None`` (the
+    port's docstring says why that stays sayable, and why it must be said)."""
 
     def __init__(self, files: FileRepository) -> None:
         self._files = files
 
     async def execute(
-        self, ctx: ExecutionContext, *, limit: int = 50, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid | None,
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> Page[File]:
-        return await self._files.list(ctx, limit=limit, cursor=cursor)
+        return await self._files.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
 
 
 class RenameFile:
@@ -396,10 +437,20 @@ class FileTransferService:
         self._get_ttl_s = get_ttl_s
 
     async def register(
-        self, ctx: ExecutionContext, *, name: str, content_type: str, size_bytes: int
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid | None,
+        name: str,
+        content_type: str,
+        size_bytes: int,
     ) -> RegisteredUpload:
         file = await self._register.execute(
-            ctx, name=name, content_type=content_type, size_bytes=size_bytes
+            ctx,
+            space_id=space_id,
+            name=name,
+            content_type=content_type,
+            size_bytes=size_bytes,
         )
         upload_url = await self._storage.presign_put(
             file.storage_key.value, self._put_ttl_s, file.content_type.value
@@ -413,9 +464,14 @@ class FileTransferService:
         return await self.describe(file)
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int = 50, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid | None,
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> Page[ReadFile]:
-        page = await self._files.list(ctx, limit=limit, cursor=cursor)
+        page = await self._files.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
         rows = [await self.describe(file) for file in page.data]
         return Page(data=rows, next_cursor=page.next_cursor, limit=page.limit)
 

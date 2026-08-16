@@ -2,7 +2,9 @@
 
 ``File`` is a workspace-scoped object descriptor shared among every agent in
 the workspace (INV-F3); its bytes live in MinIO, addressed by ``storage_key``
-(INV-F1). Behaviour lives on the aggregate; mutations touch only ``status``,
+(INV-F1). Since the spaces plan's step 6 it also carries the ``space_id`` it is
+owned by — an opaque ownership axis INSIDE the tenant, never a tenant of its
+own. Behaviour lives on the aggregate; mutations touch only ``status``,
 ``checksum``, ``deleted_at``, ``name`` (INV-F4 — the one descriptive field a
 rename may change) and ``updated_at``. Everything that describes the BYTES —
 ``content_type``, ``size_bytes``, ``storage_key`` — has no mutator at all,
@@ -35,6 +37,23 @@ class File:
 
     id: str
     workspace_id: str
+    # The owning space (`docs/spaces-backend-plan.md` step 6). NOT a second
+    # security boundary -- the workspace stays the only one, and RLS stays on
+    # `workspace_id` alone (§3.2); this is an ownership axis, filtered in the
+    # query. Opaque here: the aggregate stores the id and never asks what it
+    # means (`ports/spaces.py` proves it names something real).
+    #
+    # `| None` mirrors the column, which is NULLable until plan row 8-b, and
+    # it has no default ON PURPOSE: every construction site must SAY which
+    # space it files under, so a writer that has none is visible in the source
+    # rather than inheriting one silently. The one such writer today is the
+    # media worker, whose generated file has no space to belong to until
+    # `conversations` carries one (step 7).
+    #
+    # There is no mutator, and that is decision 3: a file does not move
+    # between spaces. `save` leaves the column out of its UPDATE, which is
+    # what enforces this in the database rather than only in the type.
+    space_id: str | None
     name: FileName
     content_type: ContentType
     size_bytes: int

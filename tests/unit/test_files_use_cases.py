@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 
 import pytest
@@ -37,6 +38,9 @@ from app.modules.files.domain.entities import File
 from app.modules.files.domain.events import FileDeleted, FileEvent, FileUploaded
 from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
 
+# The space every test registers into unless it is testing the check itself.
+_SPACE = "sp-1"
+
 
 class _FakeFiles:
     """In-memory ``FileRepository``; ``count`` scopes by ``ctx.workspace_id``
@@ -64,12 +68,19 @@ class _FakeFiles:
         self.saved.append(file.id)
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str | None = None,
+        limit: int,
+        cursor: str | None = None,
     ) -> Page[File]:
         items = [
             row
             for row in self.rows.values()
-            if row.workspace_id == ctx.workspace_id and row.deleted_at is None
+            if row.workspace_id == ctx.workspace_id
+            and row.deleted_at is None
+            and (space_id is None or row.space_id == space_id)
         ]
         return Page(data=items[:limit], next_cursor=None, limit=limit)
 
@@ -79,6 +90,43 @@ class _FakeFiles:
             for row in self.rows.values()
             if row.workspace_id == ctx.workspace_id and row.deleted_at is None
         )
+
+    async def bytes_in_space(self, ctx: ExecutionContext, space_id: str) -> int:
+        return sum(
+            row.size_bytes
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and row.space_id == space_id
+            and row.deleted_at is None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SpaceRow:
+    """``SpaceView``'s shape — what ``ActiveSpaces.get_active`` returns."""
+
+    space_id: str
+
+
+class _FakeSpaces:
+    """In-memory ``files.ports.spaces.ActiveSpaces``: only the ids it was
+    constructed with are live, and it records every id it was asked about, so
+    a test can prove the check was MADE and not merely satisfied."""
+
+    def __init__(self, *active: str) -> None:
+        self.active = set(active)
+        self.asked: list[str] = []
+
+    async def get_active(self, ctx: ExecutionContext, space_id: str) -> _SpaceRow | None:
+        self.asked.append(space_id)
+        return _SpaceRow(space_id) if space_id in self.active else None
+
+
+def _register(files: _FakeFiles, limits: Limits | None = None) -> RegisterUpload:
+    """``RegisterUpload`` over the fakes, with ``_SPACE`` live. Every test that
+    registers goes through here so the existence seam is never bypassed — the
+    tests that care about a MISSING space build their own ``_FakeSpaces``."""
+    return RegisterUpload(files, limits or Limits(), _FakeSpaces(_SPACE))
 
 
 def _ctx(workspace_id: str = "w1") -> ExecutionContext:
@@ -91,7 +139,12 @@ def _ctx(workspace_id: str = "w1") -> ExecutionContext:
 
 
 def _seed_file(
-    files: _FakeFiles, ctx: ExecutionContext, *, deleted_at: datetime | None = None
+    files: _FakeFiles,
+    ctx: ExecutionContext,
+    *,
+    deleted_at: datetime | None = None,
+    space_id: str | None = _SPACE,
+    size_bytes: int = 10,
 ) -> File:
     """Seed a ready file directly into the fake repo (bypassing the use-case)."""
     now = utc_now()
@@ -99,9 +152,10 @@ def _seed_file(
     file = File(
         id=file_id,
         workspace_id=ctx.workspace_id,
+        space_id=space_id,
         name=FileName("seed.txt"),
         content_type=ContentType("text/plain"),
-        size_bytes=10,
+        size_bytes=size_bytes,
         storage_key=StorageKey.for_file(ctx.workspace_id, file_id),
         checksum=None,
         status=FileStatus.UPLOADED,
@@ -121,8 +175,8 @@ def _seed_file(
 async def test_register_upload_happy_path() -> None:
     files = _FakeFiles()
     ctx = _ctx()
-    file = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=1024
+    file = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=1024
     )
     assert file.status is FileStatus.UPLOADED
     assert file.checksum is None
@@ -133,8 +187,9 @@ async def test_register_upload_happy_path() -> None:
 async def test_register_upload_rejects_oversize() -> None:
     files = _FakeFiles()
     with pytest.raises(TooLargeError):
-        await RegisterUpload(files, Limits()).execute(
+        await _register(files).execute(
             _ctx(),
+            space_id=_SPACE,
             name="big.txt",
             content_type="text/plain",
             size_bytes=Limits().max_upload_bytes + 1,
@@ -144,16 +199,24 @@ async def test_register_upload_rejects_oversize() -> None:
 async def test_register_upload_rejects_unsupported_mime() -> None:
     files = _FakeFiles()
     with pytest.raises(UnsupportedTypeError):
-        await RegisterUpload(files, Limits()).execute(
-            _ctx(), name="script.exe", content_type="application/x-msdownload", size_bytes=10
+        await _register(files).execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="script.exe",
+            content_type="application/x-msdownload",
+            size_bytes=10,
         )
 
 
 async def test_register_upload_rejects_negative_size() -> None:
     files = _FakeFiles()
     with pytest.raises(ValidationError):
-        await RegisterUpload(files, Limits()).execute(
-            _ctx(), name="report.pdf", content_type="application/pdf", size_bytes=-1
+        await _register(files).execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="report.pdf",
+            content_type="application/pdf",
+            size_bytes=-1,
         )
 
 
@@ -162,9 +225,79 @@ async def test_register_upload_rejects_over_workspace_cap() -> None:
     ctx = _ctx()
     _seed_file(files, ctx)
     with pytest.raises(ConflictError):
-        await RegisterUpload(files, Limits(max_files_per_workspace=1)).execute(
-            ctx, name="two.txt", content_type="text/plain", size_bytes=10
+        await _register(files, Limits(max_files_per_workspace=1)).execute(
+            ctx, space_id=_SPACE, name="two.txt", content_type="text/plain", size_bytes=10
         )
+
+
+# --------------------------------------------------------------------------- #
+# RegisterUpload — the space (plan step 6)                                     #
+# --------------------------------------------------------------------------- #
+async def test_the_registered_file_carries_the_space_it_was_filed_under() -> None:
+    """The aggregate has to CARRY it, not merely be asked about it: this is the
+    field the adapter's INSERT writes, and the column every later sum, listing
+    and cascade reads."""
+    files = _FakeFiles()
+    ctx = _ctx()
+
+    file = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=1024
+    )
+
+    assert file.space_id == _SPACE
+    assert files.rows[file.id].space_id == _SPACE
+
+
+async def test_registering_into_a_space_that_is_not_live_is_a_404_and_writes_nothing() -> None:
+    """An id naming no live space must not reach the row. A file filed under
+    one would be invisible to every listing and counted by no quota — and
+    nothing downstream would ever raise, which is why the refusal has to
+    happen here."""
+    files = _FakeFiles()
+    spaces = _FakeSpaces()  # nothing is live
+    ctx = _ctx()
+
+    with pytest.raises(NotFoundError):
+        await RegisterUpload(files, Limits(), spaces).execute(
+            ctx, space_id="ghost", name="report.pdf", content_type="application/pdf", size_bytes=10
+        )
+
+    assert spaces.asked == ["ghost"]
+    assert files.rows == {}
+
+
+async def test_a_registration_without_a_space_never_asks_and_stores_none() -> None:
+    """``None`` is a stated absence, not a lookup of a missing space: the media
+    worker has none to name until step 7, and asking ``get_active(None)`` would
+    be a query with no question in it. The stored value is NULL — the state row
+    8-b's ``SET NOT NULL`` exists to find."""
+    files = _FakeFiles()
+    spaces = _FakeSpaces()
+    ctx = _ctx()
+
+    file = await RegisterUpload(files, Limits(), spaces).execute(
+        ctx, space_id=None, name="generated.png", content_type="image/png", size_bytes=10
+    )
+
+    assert file.space_id is None
+    assert spaces.asked == []
+
+
+async def test_the_space_is_checked_before_the_row_is_minted_not_after() -> None:
+    """Order, not outcome: a check that ran after ``add`` would leave the file
+    written and then raise, and every value-based assertion above would still
+    pass."""
+    files = _FakeFiles()
+    ctx = _ctx()
+    _seed_file(files, ctx)
+
+    with pytest.raises(NotFoundError):
+        await RegisterUpload(files, Limits(), _FakeSpaces()).execute(
+            ctx, space_id="ghost", name="report.pdf", content_type="application/pdf", size_bytes=10
+        )
+
+    # Only the seeded row survives: nothing new was added on the way out.
+    assert len(files.rows) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -173,8 +306,8 @@ async def test_register_upload_rejects_over_workspace_cap() -> None:
 async def test_complete_upload_transitions_to_ready_and_emits_event() -> None:
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     checksum = "a" * 64
     completed, events = await CompleteUpload(files).execute(
@@ -201,8 +334,8 @@ async def test_complete_upload_missing_raises_not_found() -> None:
 async def test_complete_upload_already_ready_raises_conflict() -> None:
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     complete = CompleteUpload(files)
     await complete.execute(ctx, file_id=registered.id, checksum="a" * 64)
@@ -218,9 +351,24 @@ async def test_list_files_returns_page() -> None:
     ctx = _ctx()
     _seed_file(files, ctx)
     _seed_file(files, ctx)
-    page = await ListFiles(files).execute(ctx)
+    page = await ListFiles(files).execute(ctx, space_id=None)
     assert isinstance(page, Page)
     assert len(page.data) == 2
+
+
+async def test_list_files_narrows_to_one_space_when_asked() -> None:
+    """``ListFiles`` passes the space through to the repository rather than
+    filtering after the fact — a page that came back full and was then pruned
+    would silently return fewer rows than the limit promised."""
+    files = _FakeFiles()
+    ctx = _ctx()
+    mine = _seed_file(files, ctx, space_id=_SPACE)
+    _seed_file(files, ctx, space_id="sp-other")
+    _seed_file(files, ctx, space_id=None)
+
+    page = await ListFiles(files).execute(ctx, space_id=_SPACE)
+
+    assert [f.id for f in page.data] == [mine.id]
 
 
 # --------------------------------------------------------------------------- #
@@ -250,8 +398,8 @@ async def test_soft_delete_missing_raises_not_found() -> None:
 async def test_files_query_service_returns_none_until_ready() -> None:
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     query = FilesQueryService(files)
     assert await query.get_readable(ctx, registered.id) is None
@@ -311,8 +459,8 @@ class _FixedEventsCompleteUpload:
 async def test_complete_upload_service_completes_and_appends_its_event() -> None:
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     outbox = _FakeOutbox()
     service = CompleteUploadService(CompleteUpload(files), outbox, _FakeUnitOfWork())
@@ -331,8 +479,8 @@ async def test_complete_upload_service_outbox_failure_propagates() -> None:
     ``knowledge``. The failure must roll the aggregate write back too."""
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     service = CompleteUploadService(CompleteUpload(files), _ExplodingOutbox(), _FakeUnitOfWork())
 
@@ -346,6 +494,7 @@ async def test_complete_upload_service_drops_none_mapped_events_before_appending
     file = File(
         id=file_id,
         workspace_id=ctx.workspace_id,
+        space_id=_SPACE,
         name=FileName("report.pdf"),
         content_type=ContentType("application/pdf"),
         size_bytes=10,
@@ -381,8 +530,8 @@ async def test_complete_upload_without_checksum_is_ready_with_none_recorded() ->
     never an invented digest."""
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
 
     completed, events = await CompleteUpload(files).execute(
@@ -400,8 +549,8 @@ async def test_complete_upload_present_checksum_must_still_be_valid() -> None:
     still a 422, not silently dropped."""
     files = _FakeFiles()
     ctx = _ctx()
-    registered = await RegisterUpload(files, Limits()).execute(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
 
     with pytest.raises(ValidationError):
@@ -445,7 +594,7 @@ def _transfers(
     chose."""
     minio = minio or MinioSettings()
     return FileTransferService(
-        RegisterUpload(files, Limits()),
+        _register(files),
         files,
         storage,
         put_ttl_s=minio.presign_put_ttl_s,
@@ -459,7 +608,7 @@ async def test_register_returns_a_presigned_put_for_the_minted_storage_key() -> 
     ctx = _ctx()
 
     registered = await _transfers(files, storage).register(
-        ctx, name="report.pdf", content_type="application/pdf", size_bytes=2048
+        ctx, space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
 
     key = registered.file.storage_key.value
@@ -481,7 +630,7 @@ async def test_configured_ttls_reach_the_signer_and_the_expires_in_it_reports() 
     transfers = _transfers(files, storage, minio=minio)
 
     registered = await transfers.register(
-        _ctx(), name="report.pdf", content_type="application/pdf", size_bytes=2048
+        _ctx(), space_id=_SPACE, name="report.pdf", content_type="application/pdf", size_bytes=2048
     )
     registered.file.status = FileStatus.READY
     read = await transfers.describe(registered.file)
@@ -499,7 +648,11 @@ async def test_register_limit_violations_pass_through_unwrapped() -> None:
 
     with pytest.raises(TooLargeError):
         await _transfers(files, storage).register(
-            _ctx(), name="big.pdf", content_type="application/pdf", size_bytes=10**9
+            _ctx(),
+            space_id=_SPACE,
+            name="big.pdf",
+            content_type="application/pdf",
+            size_bytes=10**9,
         )
     assert storage.presigned_puts == []  # nothing presigned for a refused slot
 
@@ -552,7 +705,7 @@ async def test_list_presigns_only_the_ready_rows() -> None:
     ready.status = FileStatus.READY
     storage = _FakeStorage()
 
-    page = await _transfers(files, storage).list(ctx, limit=10)
+    page = await _transfers(files, storage).list(ctx, space_id=None, limit=10)
 
     by_id = {row.file.id: row for row in page.data}
     assert set(by_id) == {pending.id, ready.id}

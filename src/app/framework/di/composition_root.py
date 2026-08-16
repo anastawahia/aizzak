@@ -370,6 +370,7 @@ from app.modules.media.application.use_cases import (
     RequestMedia,
 )
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
+from app.modules.spaces.application.use_cases import SpacesQueryService
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.usage.application.use_cases import (
     CaptureUsage,
@@ -803,6 +804,44 @@ def _build_integrations(
         disable_mcp_server=DisableMcpServer(servers),
         tools=None,
     )
+
+
+def _build_files_seam(
+    tenant_session: TenantSessionFactory,
+) -> tuple[SqlFileRepository, FilesQueryService]:
+    """The files module's store and the inbound query other modules bind to
+    — a helper so ``from_env`` stays under its statement ceiling (the
+    ``_build_conversations`` precedent), and so the pair cannot be split.
+
+    ONE repository behind every face of the module (6.1-هـ-2), because
+    BE-RAG-005 gave ``conversations`` a reader of it too: the returned
+    ``FilesQuery`` is the single instance shared by the orchestrator's file
+    seam and by ``PinConversationFile``'s existence check, so "is this file
+    readable?" cannot be answered two different ways in one process. The
+    repository comes back alongside it for the callers that legitimately need
+    the aggregate store itself — the files use-cases and the quota's byte sum.
+    """
+    repository = SqlFileRepository(tenant_session)
+    return repository, FilesQueryService(repository)
+
+
+def _build_spaces_seam(
+    tenant_session: TenantSessionFactory,
+) -> tuple[SqlSpaceRepository, SpacesQueryService]:
+    """The spaces module's store and its inbound query — the ``files`` shape,
+    for the same reason and with one of its own (``spaces-backend-plan.md``
+    step 6).
+
+    The two roles this process gives ``spaces`` are asymmetric: the quota
+    service takes a ROW LOCK through the repository (``SpaceLock``), and
+    ``RegisterUpload`` asks an EXISTENCE question through the query
+    (``files.ports.spaces.ActiveSpaces``). Building them from one repository
+    is what keeps "what is a live space" a single answer — the lock refuses a
+    soft-deleted row and so does ``get_active``, and a second adapter instance
+    would be two places for that rule to drift apart.
+    """
+    repository = SqlSpaceRepository(tenant_session)
+    return repository, SpacesQueryService(repository)
 
 
 def _build_conversations(
@@ -1386,14 +1425,20 @@ class CompositionRoot:
         # `POST /workflows/{key}/run` is a truthful `workflow.unknown` 404.
         workflow_registry: WorkflowRegistry = InMemoryWorkflowRegistry()
 
-        # 6.1-هـ-2 — ONE files repository behind every face of that module.
-        # It is built HERE, ahead of the two bundles that need it, because
-        # BE-RAG-005 gave `conversations` a reader of it too: `files_query` is
-        # the single `FilesQuery` instance shared by the orchestrator's file
-        # seam and by `PinConversationFile`'s existence check, so "is this file
-        # readable?" cannot be answered two different ways in one process.
-        file_repository = SqlFileRepository(tenant_session)
-        files_query = FilesQueryService(file_repository)
+        # 6.1-هـ-2 — ONE files repository behind every face of that module,
+        # built HERE, ahead of the two bundles that need it (the helper's
+        # docstring holds the reasoning).
+        file_repository, files_query = _build_files_seam(tenant_session)
+
+        # `spaces-backend-plan.md` step 6 — the spaces store and its query,
+        # built here because BOTH of the files objects below need one of them:
+        # `RegisterUpload` proves the request's `space_id` real through
+        # `spaces_query`, and the quota locks its row through
+        # `space_repository`. The first of those is where `SpacesQuery` is
+        # bound to `files.ports.spaces.ActiveSpaces` — structurally, with mypy
+        # checking the fit at the call, which is the whole reason the two
+        # modules can stay strangers (contract 4).
+        space_repository, spaces_query = _build_spaces_seam(tenant_session)
 
         # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
         # so they share ONE repository instance (see `_build_conversations`).
@@ -1414,7 +1459,7 @@ class CompositionRoot:
         # lights everything up together.
         files_use_cases = FileUseCases(
             transfers=FileTransferService(
-                RegisterUpload(file_repository, settings.limits),
+                RegisterUpload(file_repository, settings.limits, spaces_query),
                 file_repository,
                 storage,
                 put_ttl_s=settings.minio.presign_put_ttl_s,
@@ -1439,7 +1484,7 @@ class CompositionRoot:
         # three, which is the entire mechanism (§3.3).
         space_quota = SpaceQuotaService(
             files_use_cases.transfers,
-            SqlSpaceRepository(tenant_session),
+            space_repository,
             file_repository,
             tenant_session,
             settings.limits,

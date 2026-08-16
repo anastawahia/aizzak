@@ -133,6 +133,16 @@ class WorkerMediaGenerator:
 
         file = await self._register.execute(
             ctx,
+            # ⚠️ No space yet, and it is TYPED rather than defaulted
+            # (`spaces-backend-plan.md` step 6). A generated image belongs to
+            # the space of the conversation that asked for it, and
+            # `conversations` does not carry one until step 7 -- there is
+            # nothing truthful to write here before then, and inventing one
+            # (the workspace's first space, say) would file media under a
+            # space the requester never chose and charge its 1 GiB quota for
+            # it. Row 8-b's `SET NOT NULL` is the check that this was not
+            # simply forgotten.
+            space_id=None,
             name=_generated_name(result.content_type),
             content_type=result.content_type,
             size_bytes=len(result.content),

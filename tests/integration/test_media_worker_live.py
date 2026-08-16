@@ -63,6 +63,8 @@ from app.modules.files.application.use_cases import CompleteUpload, RegisterUplo
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.media.application.event_mapping import to_outbox_record
 from app.modules.media.application.use_cases import RequestMedia
+from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
+from app.modules.spaces.application.use_cases import SpacesQueryService
 from app.workers.bootstrap import build_media_run_handler
 from app.workers.media_generation import WorkerMediaGenerator
 from tests.integration.conftest import LiveDbDsns
@@ -128,7 +130,7 @@ async def _read_outbox_as_owner(
 
 
 def _build_generator(
-    files: SqlFileRepository, storage: MinioStorage
+    files: SqlFileRepository, storage: MinioStorage, spaces: SpacesQueryService
 ) -> tuple[WorkerMediaGenerator, _OpenAIImageStub, httpx.AsyncClient]:
     """The production generator over the production resolver -- stubbed at
     the HTTP boundary alone. Returns the stub and the client so the test can
@@ -147,7 +149,7 @@ def _build_generator(
             key_resolver=_StubKeyResolver(),
             keyless_providers=frozenset(),
         ),
-        RegisterUpload(files, Limits()),
+        RegisterUpload(files, Limits(), spaces),
         CompleteUpload(files),
         storage,
     )
@@ -199,7 +201,9 @@ async def test_a_real_requested_job_flows_through_the_relay_to_the_real_generato
     jobs = SqlMediaJobRepository(tenant_session)
     outbox = SqlEventOutbox(tenant_session)
     files = SqlFileRepository(tenant_session)
-    generator, endpoint, image_http = _build_generator(files, minio_storage)
+    generator, endpoint, image_http = _build_generator(
+        files, minio_storage, SpacesQueryService(SqlSpaceRepository(tenant_session))
+    )
 
     handler = build_media_run_handler(
         jobs,

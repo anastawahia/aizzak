@@ -37,6 +37,7 @@ def _file(*, name: str = "notes.txt", content_type: str = "text/plain") -> File:
     return File(
         id=new_uuid7(),
         workspace_id="ws-1",
+        space_id=None,
         name=FileName(name),
         content_type=ContentType(content_type),
         size_bytes=64,

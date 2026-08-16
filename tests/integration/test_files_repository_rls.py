@@ -52,6 +52,7 @@ def _ctx(workspace_id: str, *, user_id: str | None = None) -> ExecutionContext:
 def _file(
     *,
     workspace_id: str,
+    space_id: str | None = None,
     file_id: str | None = None,
     name: str = "report.pdf",
     content_type: str = "application/pdf",
@@ -69,6 +70,7 @@ def _file(
     return File(
         id=fid,
         workspace_id=workspace_id,
+        space_id=space_id,
         name=FileName(name),
         content_type=ContentType(content_type),
         size_bytes=size_bytes,
@@ -227,7 +229,7 @@ async def test_list_returns_only_this_workspaces_active_files(
     other_tenant = _file(workspace_id=ws_b)
     await repo_files.add(_ctx(ws_b), other_tenant)
 
-    page = await repo_files.list(ctx_a, limit=10, cursor=None)
+    page = await repo_files.list(ctx_a, space_id=None, limit=10, cursor=None)
 
     assert [f.id for f in page.data] == [keep.id]
     assert page.next_cursor is None
@@ -250,15 +252,15 @@ async def test_list_cursor_pagination_pages_do_not_overlap_and_stay_ordered(
     # collection reads NEWEST FIRST (6.3-ب), i.e. reversed.
     expected_order = [f.id for f in reversed(created)]
 
-    page1 = await repo_files.list(ctx, limit=2, cursor=None)
+    page1 = await repo_files.list(ctx, space_id=None, limit=2, cursor=None)
     assert [f.id for f in page1.data] == expected_order[:2]
     assert page1.next_cursor is not None
 
-    page2 = await repo_files.list(ctx, limit=2, cursor=page1.next_cursor)
+    page2 = await repo_files.list(ctx, space_id=None, limit=2, cursor=page1.next_cursor)
     assert [f.id for f in page2.data] == expected_order[2:4]
     assert page2.next_cursor is not None
 
-    page3 = await repo_files.list(ctx, limit=2, cursor=page2.next_cursor)
+    page3 = await repo_files.list(ctx, space_id=None, limit=2, cursor=page2.next_cursor)
     assert [f.id for f in page3.data] == expected_order[4:5]
     assert page3.next_cursor is None
 
@@ -420,3 +422,116 @@ async def test_a_rename_cannot_reach_another_tenants_file(repo_files: SqlFileRep
     reloaded = await repo_files.get(_ctx(ws_a), file.id)
     assert reloaded is not None
     assert reloaded.name.value == "report.pdf"
+
+
+# --------------------------------------------------------------------------- #
+# (13) the space column: written, filtered on, and immovable                  #
+# --------------------------------------------------------------------------- #
+async def test_the_space_a_file_was_added_under_round_trips(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    """``add`` names ``space_id`` in its INSERT and ``_hydrate`` reads it back
+    (plan step 6). Asserted through the aggregate AND against the raw row,
+    because "the repository remembers what I handed it" is also what a
+    repository that never wrote the column would look like from the aggregate
+    side alone."""
+    ws, space = new_uuid7(), new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, space_id=space)
+
+    await repo_files.add(ctx, file)
+
+    fetched = await repo_files.get(ctx, file.id)
+    assert fetched is not None
+    assert fetched.space_id == space
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    assert str(row["space_id"]) == space
+
+
+async def test_a_file_registered_without_a_space_stores_and_reads_back_null(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The transitional state the column is NULLable for (plan row 8-b): the
+    media worker has no space to name until step 7, and "no space" must be
+    storable rather than an insert that fails at 2 a.m. in a worker."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, space_id=None)
+
+    await repo_files.add(ctx, file)
+
+    fetched = await repo_files.get(ctx, file.id)
+    assert fetched is not None
+    assert fetched.space_id is None
+
+
+async def test_listing_by_space_returns_that_spaces_active_files_and_nothing_else(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The narrowing is an ADDED condition, not a replacement: the workspace
+    filter, the soft-delete filter and the space filter all have to survive
+    together, and each row below fails the page for a different one of them.
+    """
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    mine, sibling = new_uuid7(), new_uuid7()
+
+    keep = _file(workspace_id=ws_a, space_id=mine)
+    await repo_files.add(ctx_a, keep)
+    deleted = _file(workspace_id=ws_a, space_id=mine)
+    await repo_files.add(ctx_a, deleted)
+    deleted.soft_delete(utc_now())
+    await repo_files.save(ctx_a, deleted)
+    await repo_files.add(ctx_a, _file(workspace_id=ws_a, space_id=sibling))
+    await repo_files.add(ctx_a, _file(workspace_id=ws_a, space_id=None))
+    # Same space id, other tenant: RLS and the WHERE both have to hold, and a
+    # space id is not a secret -- another workspace could hold the same value.
+    await repo_files.add(_ctx(ws_b), _file(workspace_id=ws_b, space_id=mine))
+
+    page = await repo_files.list(ctx_a, space_id=mine, limit=10, cursor=None)
+
+    assert [f.id for f in page.data] == [keep.id]
+
+
+async def test_listing_without_a_space_still_spans_the_whole_workspace(
+    repo_files: SqlFileRepository,
+) -> None:
+    """``space_id=None`` means "every space", not "the files that have none" —
+    the distinction the router depends on until ``?space_id=`` lands (step 12),
+    and the one an `IS NULL` reading of the same parameter would invert."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    in_space = _file(workspace_id=ws, space_id=new_uuid7())
+    spaceless = _file(workspace_id=ws, space_id=None)
+    await repo_files.add(ctx, in_space)
+    await repo_files.add(ctx, spaceless)
+
+    page = await repo_files.list(ctx, space_id=None, limit=10, cursor=None)
+
+    assert {f.id for f in page.data} == {in_space.id, spaceless.id}
+
+
+async def test_a_save_cannot_move_a_file_into_another_space(
+    repo_files: SqlFileRepository,
+) -> None:
+    """Decision 3 — a file does not move between spaces — enforced by the
+    column's absence from the UPDATE rather than by the aggregate having no
+    mutator. The aggregate's field is assigned directly here precisely BECAUSE
+    that is the one thing no supported code path can do: the test has to reach
+    past the domain to prove the adapter would refuse it anyway.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    original, hijacked = new_uuid7(), new_uuid7()
+    file = _file(workspace_id=ws, space_id=original)
+    await repo_files.add(ctx, file)
+
+    file.space_id = hijacked
+    file.rename(FileName("renamed.pdf"), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.space_id == original
+    assert reloaded.name.value == "renamed.pdf"

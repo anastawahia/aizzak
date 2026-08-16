@@ -205,6 +205,8 @@ from app.modules.media.ports.repository import MediaJobRepository
 from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
 from app.modules.memory.application.use_cases import IndexMemoryItem
 from app.modules.memory.ports.repository import MemoryRepository
+from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
+from app.modules.spaces.application.use_cases import SpacesQueryService
 from app.workers.content_resolver import WorkerDocumentContentResolver
 from app.workers.media_generation import WorkerMediaGenerator
 
@@ -1085,7 +1087,14 @@ async def build_media_worker_from_env() -> tuple[
     )
     generator: MediaGenerator = WorkerMediaGenerator(
         providers,
-        RegisterUpload(files, settings.limits),
+        # `spaces-backend-plan.md` step 6 — the existence seam is wired REAL
+        # even though this process registers with `space_id=None` today and so
+        # never reaches it (`WorkerMediaGenerator.generate` says why it has no
+        # space to name yet). Wiring it now is what makes step 7 a one-line
+        # change here instead of a new dependency to thread through boot.
+        RegisterUpload(
+            files, settings.limits, SpacesQueryService(SqlSpaceRepository(tenant_session))
+        ),
         CompleteUpload(files),
         storage,
     )

@@ -67,7 +67,12 @@ class InMemoryFileRepository:
         self.saved.append(file.id)
 
     async def list(
-        self, ctx: ExecutionContext, *, limit: int, cursor: str | None = None
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str | None = None,
+        limit: int,
+        cursor: str | None = None,
     ) -> Page[File]:
         # Keysets on `id` like the SQL adapter (6.3-أ), NEWEST FIRST like it
         # too (6.3-ب), through the REAL codec: a fake that always answered
@@ -78,7 +83,9 @@ class InMemoryFileRepository:
             (
                 row
                 for row in self.rows.values()
-                if row.workspace_id == ctx.workspace_id and row.deleted_at is None
+                if row.workspace_id == ctx.workspace_id
+                and row.deleted_at is None
+                and (space_id is None or row.space_id == space_id)
             ),
             key=lambda row: row.id,
             reverse=True,
@@ -96,6 +103,38 @@ class InMemoryFileRepository:
             for row in self.rows.values()
             if row.workspace_id == ctx.workspace_id and row.deleted_at is None
         )
+
+    async def bytes_in_space(self, ctx: ExecutionContext, space_id: str) -> int:
+        return sum(
+            row.size_bytes
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and row.space_id == space_id
+            and row.deleted_at is None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceRow:
+    """``SpaceView``'s shape — what ``ActiveSpaces.get_active`` hands back."""
+
+    space_id: str
+
+
+@dataclass
+class InMemorySpaces:
+    """A structural ``files.ports.spaces.ActiveSpaces``.
+
+    Deliberately a SET of live ids rather than a store of spaces: the seam
+    asks one yes/no question, and a fake that modelled names, deletion and
+    versions would be re-implementing the module ``files`` is not allowed to
+    know about.
+    """
+
+    active: set[str] = field(default_factory=set)
+
+    async def get_active(self, ctx: ExecutionContext, space_id: str) -> SpaceRow | None:
+        return SpaceRow(space_id) if space_id in self.active else None
 
 
 @dataclass
@@ -167,6 +206,7 @@ class FilesMediaStack:
     files: FileUseCases
     media: MediaUseCases
     file_repository: InMemoryFileRepository
+    spaces: InMemorySpaces
     media_repository: InMemoryMediaJobRepository
     storage: RecordingStorage
     outbox: RecordingOutbox
@@ -184,6 +224,7 @@ def build_files_media(
     limits = limits or Limits()
     minio = minio or MinioSettings()
     files_repo = InMemoryFileRepository()
+    spaces = InMemorySpaces()
     media_repo = InMemoryMediaJobRepository()
     storage = RecordingStorage()
     outbox = RecordingOutbox()
@@ -191,7 +232,7 @@ def build_files_media(
     return FilesMediaStack(
         files=FileUseCases(
             transfers=FileTransferService(
-                RegisterUpload(files_repo, limits),
+                RegisterUpload(files_repo, limits, spaces),
                 files_repo,
                 storage,
                 put_ttl_s=minio.presign_put_ttl_s,
@@ -206,6 +247,7 @@ def build_files_media(
             get_status=GetJobStatus(media_repo),
         ),
         file_repository=files_repo,
+        spaces=spaces,
         media_repository=media_repo,
         storage=storage,
         outbox=outbox,

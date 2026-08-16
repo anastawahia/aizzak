@@ -15,11 +15,16 @@ not provable there at all, because they are claims about PostgreSQL:
   ``numeric``, so without the adapter's cast this port hands back a
   ``decimal.Decimal`` while type-checking green.
 
-The registrar is a fake here, and deliberately: this file is about the gate,
-not about what happens after it opens, and a real ``FileTransferService``
-would drag MinIO into a database test. Rows are seeded through raw SQL with
-``space_id`` filled in, because no writer fills it yet — that is plan step 6,
-and the quota has to be correct before the column has writers, not after.
+The registrar is a fake in most of this file, and deliberately: those tests
+are about the gate, not about what happens after it opens. Section (5) is the
+exception — since plan step 6 the registrar is what WRITES the space onto the
+file row, so one test runs the real ``FileTransferService`` (over a stub
+presigner, which keeps MinIO out of a database test) and then asks the real
+sum whether it can see what that registration spent. That loop is the whole
+difference between a quota that is measured and a quota that binds.
+
+Rows elsewhere are still seeded through raw SQL, which costs nothing and keeps
+each arithmetic test to the one column it is about.
 """
 
 from __future__ import annotations
@@ -38,7 +43,9 @@ from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import Limits
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.modules.files.adapters.sql_repository import SqlFileRepository
+from app.modules.files.application.use_cases import FileTransferService, RegisterUpload
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
+from app.modules.spaces.application.use_cases import SpacesQueryService
 from app.modules.spaces.domain.entities import Space
 from app.modules.spaces.domain.value_objects import SpaceName
 
@@ -76,9 +83,10 @@ async def _seed_file(
     size_bytes: int,
     deleted: bool = False,
 ) -> str:
-    """One ``files.files`` row with ``space_id`` ALREADY SET — the state plan
-    step 6 will produce. ``SqlFileRepository.add`` cannot make it: the
-    aggregate has no ``space_id`` yet and the INSERT does not name the column.
+    """One ``files.files`` row with ``space_id`` already set — the state a
+    real registration produces since plan step 6, reached by SQL so that a
+    test about the SUM does not have to build a whole registration path to
+    say "there are 1000 bytes in this space".
     """
     file_id = new_uuid7()
     async with sessionmaker() as session, session.begin():
@@ -113,11 +121,19 @@ class _FakeRegistrar:
         self._hold_s = hold_s
         self.trace = trace if trace is not None else []
         self.calls = 0
+        self.spaces: list[str] = []
 
     async def register(
-        self, ctx: ExecutionContext, *, name: str, content_type: str, size_bytes: int
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str,
+        name: str,
+        content_type: str,
+        size_bytes: int,
     ) -> str:
         self.calls += 1
+        self.spaces.append(space_id)
         self.trace.append(f"registering {name}")
         if self._hold_s:
             await asyncio.sleep(self._hold_s)
@@ -415,3 +431,126 @@ async def test_the_lock_is_released_when_the_quota_rejects(
     # into a failing test instead of a suite that never finishes.
     async with asyncio.timeout(5):
         assert await repo_spaces.lock(ctx, space.id) is True
+
+
+# --------------------------------------------------------------------------- #
+# (5) ⭐ the loop closes — what one registration spends, the next one sees     #
+# --------------------------------------------------------------------------- #
+class _StubPresigner:
+    """A ``StorageProvider`` that only signs. ``RegisterUpload`` reaches
+    exactly one method of the port, and the real MinIO adapter's answer to it
+    is local HMAC work — nothing this test asserts depends on it, and pulling
+    in a bucket would make a database test fail for object-storage reasons."""
+
+    async def presign_put(self, key: str, ttl_s: int, content_type: str) -> str:
+        return f"https://put/{key}"
+
+
+def _real_registrar(tenant_session: TenantSessionFactory, limits: Limits) -> FileTransferService:
+    """The production registration path, wired as the Composition Root wires
+    it: one ``SqlFileRepository``, and ``SpacesQueryService`` bound to the
+    ``ActiveSpaces`` seam ``files`` declares for itself."""
+    files = SqlFileRepository(tenant_session)
+    return FileTransferService(
+        RegisterUpload(files, limits, SpacesQueryService(SqlSpaceRepository(tenant_session))),
+        files,
+        _StubPresigner(),
+        put_ttl_s=60,
+        get_ttl_s=60,
+    )
+
+
+async def test_a_registration_this_service_made_is_counted_against_the_next_one(
+    tenant_session: TenantSessionFactory,
+    repo_files: SqlFileRepository,
+    repo_spaces: SqlSpaceRepository,
+) -> None:
+    """⭐ Step 6's whole point, and the one claim §3.143 could not make.
+
+    Until the file row carried its space, this service locked a real row and
+    compared a real ceiling against a total that was structurally zero: every
+    space looked empty forever, and no test in the suite could tell the
+    difference, because each one seeded the bytes it wanted the sum to find.
+
+    So this test seeds NOTHING. The first registration goes through the real
+    ``FileTransferService``, and the second is judged against whatever the
+    first actually left in the database. It fails the moment the space stops
+    being written — by the aggregate, by the INSERT, or by the pass-through in
+    ``SpaceQuotaService`` — and it is the only test here that fails for all
+    three.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    space = _space(ws)
+    await repo_spaces.add(ctx, space)
+
+    limits = Limits(max_space_bytes=1000)
+    service = SpaceQuotaService(
+        _real_registrar(tenant_session, limits),
+        SqlSpaceRepository(tenant_session),
+        SqlFileRepository(tenant_session),
+        tenant_session,
+        limits,
+    )
+
+    registered = await service.register(
+        ctx, space_id=space.id, name="first.pdf", content_type="application/pdf", size_bytes=600
+    )
+
+    # The bytes are in the space because the ROW says so -- read back through
+    # the same sum the quota uses, and through `get` for the column itself.
+    stored = await repo_files.get(ctx, registered.file.id)
+    assert stored is not None
+    assert stored.space_id == space.id
+    assert await repo_files.bytes_in_space(ctx, space.id) == 600
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.register(
+            ctx,
+            space_id=space.id,
+            name="second.pdf",
+            content_type="application/pdf",
+            size_bytes=600,
+        )
+
+    assert exc_info.value.code == "spaces.quota_exceeded"
+    # 400 of 1000 left, and the message says so: the numbers come from the
+    # rows, not from a fixture.
+    assert "400 of 1000" in str(exc_info.value)
+    assert await repo_files.bytes_in_space(ctx, space.id) == 600
+
+
+async def test_a_registration_into_an_unknown_space_never_reaches_the_row(
+    tenant_session: TenantSessionFactory,
+    repo_files: SqlFileRepository,
+    repo_spaces: SqlSpaceRepository,
+) -> None:
+    """``RegisterUpload``'s own existence check, live and on the real path.
+
+    The quota's ``lock`` refuses an unknown space one layer earlier, so this
+    calls the registrar DIRECTLY — which is how the media worker and the files
+    router reach it, with no lock anywhere. A file filed under an id that
+    names nothing would be invisible to every listing and counted by no quota,
+    and nothing downstream would ever raise.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    deleted = _space(ws)
+    await repo_spaces.add(ctx, deleted)
+    deleted.soft_delete(utc_now())
+    await repo_spaces.save(ctx, deleted)
+
+    registrar = _real_registrar(tenant_session, Limits())
+
+    for space_id in (new_uuid7(), deleted.id):
+        with pytest.raises(NotFoundError):
+            await registrar.register(
+                ctx,
+                space_id=space_id,
+                name="orphan.pdf",
+                content_type="application/pdf",
+                size_bytes=1,
+            )
+
+    # Nothing was minted under either id, and the workspace is still empty.
+    assert await repo_files.count(ctx) == 0

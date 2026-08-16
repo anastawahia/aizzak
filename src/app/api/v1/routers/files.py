@@ -92,7 +92,16 @@ async def register_file(
 
     async def _register() -> FileRegisterOut:
         registered = await services.files.transfers.register(
-            ctx, name=body.name, content_type=body.content_type, size_bytes=body.size_bytes
+            ctx,
+            # `space_id` is not on `FileRegisterIn` yet: the wire contract
+            # (§3.7) and the switch to `services.space_quota` are step 12/13,
+            # and a router that guessed a space would be inventing ownership
+            # the client never stated. Typed as `None` rather than defaulted so
+            # this route shows up as one of the writers still owing a space.
+            space_id=None,
+            name=body.name,
+            content_type=body.content_type,
+            size_bytes=body.size_bytes,
         )
         return FileRegisterOut(
             file_id=registered.file.id,
@@ -130,8 +139,13 @@ async def list_files(
     services: Services, ctx: Context, limit: Limit = DEFAULT_LIMIT, cursor: Cursor = None
 ) -> Page[FileOut]:
     """The workspace's active files (API-04 envelope), ready rows carrying
-    their presigned GET."""
-    page = await services.files.transfers.list(ctx, limit=limit, cursor=cursor)
+    their presigned GET.
+
+    Still the WHOLE workspace: ``?space_id=`` becomes a mandatory query
+    parameter in step 12 (§3.7), and until it exists on the wire the honest
+    filter is "none" — narrowing to a space the client did not name would
+    hide files from a listing that promises all of them."""
+    page = await services.files.transfers.list(ctx, space_id=None, limit=limit, cursor=cursor)
     return Page(
         data=[_to_file_out(read) for read in page.data],
         meta=PageMeta(next_cursor=page.next_cursor, limit=page.limit),

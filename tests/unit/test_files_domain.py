@@ -112,6 +112,7 @@ def _file(status: FileStatus = FileStatus.UPLOADED, deleted_at: datetime | None 
     return File(
         id="f1",
         workspace_id="w1",
+        space_id="s1",
         name=FileName("report.pdf"),
         content_type=ContentType("application/pdf"),
         size_bytes=1024,
@@ -285,3 +286,29 @@ def test_rename_works_on_a_quarantined_file() -> None:
     file.rename(FileName("suspect.pdf"), utc_now())
     assert file.name.value == "suspect.pdf"
     assert file.status is FileStatus.QUARANTINED
+
+
+def test_no_mutator_moves_a_file_between_spaces() -> None:
+    """Decision 3: a file does not move between spaces. The aggregate has no
+    ``move``/``reassign``, so this walks the ENTIRE mutation surface — every
+    state transition plus the one descriptive change ``rename`` allows — and
+    asserts the space is the same on the other side. A mutator added later
+    that touches ``space_id`` fails here even if it never touches the adapter.
+    """
+    file = _file(FileStatus.UPLOADED)
+    assert file.space_id == "s1"
+
+    file.mark_scanning(utc_now())
+    file.complete(None, utc_now())
+    file.rename(FileName("renamed.pdf"), utc_now())
+    file.soft_delete(utc_now())
+
+    assert file.space_id == "s1"
+
+
+def test_quarantine_leaves_the_space_alone_too() -> None:
+    """The other terminal transition, which the sequence above cannot reach
+    (a completed file can no longer be quarantined)."""
+    file = _file(FileStatus.SCANNING)
+    file.quarantine(utc_now())
+    assert file.space_id == "s1"

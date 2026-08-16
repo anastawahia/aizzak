@@ -31,7 +31,7 @@ from app.modules.files.application.use_cases import CompleteUpload, RegisterUplo
 from app.modules.files.domain.value_objects import FileStatus
 from app.modules.media.domain.value_objects import GenParams, MediaKind
 from app.workers.media_generation import WorkerMediaGenerator, _generated_name
-from tests.unit.support_files_media import InMemoryFileRepository
+from tests.unit.support_files_media import InMemoryFileRepository, InMemorySpaces
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"pixels"
 _KEY = "sk-fake"
@@ -134,7 +134,11 @@ def _build(
     )
     generator = WorkerMediaGenerator(
         resolver,
-        RegisterUpload(files, limits or Limits()),
+        # The generator registers with `space_id=None` (it has no space to
+        # name until step 7), so the seam is never consulted — wired real
+        # anyway, because a fake that answers "yes" to everything would hide
+        # the day this process DOES start naming one.
+        RegisterUpload(files, limits or Limits(), InMemorySpaces()),
         CompleteUpload(files),
         store,
     )
