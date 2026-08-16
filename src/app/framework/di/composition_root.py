@@ -189,6 +189,7 @@ from app.framework.agent_runtime.plugin_loader import PluginLoader, PluginLoadRe
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.lifecycle import Disposable
+from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
@@ -304,6 +305,7 @@ from app.modules.files.application.use_cases import (
     FilesQueryService,
     FileTransferService,
     FileUseCases,
+    RegisteredUpload,
     RegisterUpload,
     RenameFile,
     SoftDeleteFile,
@@ -367,6 +369,7 @@ from app.modules.media.application.use_cases import (
     MediaUseCases,
     RequestMedia,
 )
+from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.usage.application.use_cases import (
     CaptureUsage,
@@ -1092,6 +1095,14 @@ class CompositionRoot:
     # storage handle below; `media` holds `submit` + the first-ever
     # `GetJobStatus` construction.
     files: FileUseCases
+    # `spaces-backend-plan.md` step 5 — registration gated on the space's 1 GiB
+    # quota, under the space's row lock. Held HERE rather than inside
+    # `FileUseCases`: the bundle is the files module's own packaging, and this
+    # service is deliberately not the files module's (§3.3 — the lock is on a
+    # table `files` may not know about). No router reaches it yet; `?space_id=`
+    # arrives with the routers in plan step 12, and plan step 13 is what
+    # exposes it through `ApiServices`.
+    space_quota: SpaceQuotaService[RegisteredUpload]
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
     # carries ONLY the client-reachable use-cases: `workspace` leaves out
@@ -1414,6 +1425,26 @@ class CompositionRoot:
             delete=SoftDeleteFileService(SoftDeleteFile(file_repository), outbox, tenant_session),
         )
 
+        # `spaces-backend-plan.md` step 5 -- the per-space quota. This IS the
+        # wiring the service was designed around: it declares three structural
+        # Protocols and names no module, so the three concrete objects meet
+        # for the first time HERE, which is the only layer allowed to know all
+        # of them (contract 4 keeps `spaces` and `files` strangers). mypy
+        # checks all three bindings at this call, and infers
+        # `SpaceQuotaService[RegisteredUpload]` from `transfers`.
+        #
+        # `tenant_session` is passed as the UnitOfWork, the same instance the
+        # two atomic files services above hold: the space's row lock, the byte
+        # sum and the INSERT therefore land in ONE transaction rather than
+        # three, which is the entire mechanism (§3.3).
+        space_quota = SpaceQuotaService(
+            files_use_cases.transfers,
+            SqlSpaceRepository(tenant_session),
+            file_repository,
+            tenant_session,
+            settings.limits,
+        )
+
         orchestrator = AgentOrchestrator(
             OrchestratorDependencies(
                 agents=agent_registry,
@@ -1489,6 +1520,7 @@ class CompositionRoot:
             notify_consumer=notify_consumer,
             notify_subscriptions=notify_subscriptions,
             files=files_use_cases,
+            space_quota=space_quota,
             media=media,
             workspace=workspace,
             presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),

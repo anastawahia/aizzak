@@ -99,6 +99,33 @@ class SqlSpaceRepository:
             raise _translate(exc) from exc
         return None if row is None else _hydrate(row)
 
+    async def lock(self, ctx: ExecutionContext, space_id: UuidStr) -> bool:
+        # `SELECT ... FOR UPDATE` -- measured, not assumed, before this method
+        # was written (§3.143): `app_rw` is NOSUPERUSER and not BYPASSRLS, and
+        # `FOR UPDATE` needs the UPDATE privilege, which `_TENANT_TABLES` in
+        # `ops/provision.py` grants because `spaces.spaces` is listed there.
+        # Two concurrent sessions were observed serialising on it (the second
+        # returned only after the first COMMITted), which is the whole point.
+        #
+        # Only the id is selected. The caller is a coordination service that
+        # needs the row HELD, not read, and `select(spaces)` would hand it a
+        # tenant's space name for no reason.
+        stmt = (
+            select(spaces.c.id)
+            .where(
+                spaces.c.id == space_id,
+                spaces.c.workspace_id == ctx.workspace_id,
+                spaces.c.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return row is not None
+
     async def add(self, ctx: ExecutionContext, space: Space) -> None:
         # The aggregate's OWN workspace_id is written (not ctx.workspace_id):
         # a forged/mismatched space.workspace_id is then rejected by the RLS

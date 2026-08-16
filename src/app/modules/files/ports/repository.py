@@ -32,3 +32,22 @@ class FileRepository(Protocol):
     ) -> Page[File]: ...
 
     async def count(self, ctx: ExecutionContext) -> int: ...
+
+    async def bytes_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        """Total ``size_bytes`` of the ACTIVE files owned by one space — the
+        left-hand side of the 1 GiB quota (``docs/spaces-backend-plan.md``
+        §3.3, step 5). ``0`` for an unknown or empty space.
+
+        ``space_id`` is an OPAQUE identifier here: this module does not know
+        what a space is, only that its rows carry one and can be totalled by
+        it. The decision to spend the room belongs to the coordination service
+        that holds the space's row lock (``framework/di/space_quota.py``) —
+        this port answers "how much is stored", never "may I store more".
+
+        Soft-deleted files are excluded, so deleting a file frees its bytes
+        immediately, before the purge sweep ever runs. That is the intended
+        meaning of the quota (a user who deletes must get their space back)
+        and it is why this cannot reuse ``count``'s shape and be an argument
+        away from it.
+        """
+        ...

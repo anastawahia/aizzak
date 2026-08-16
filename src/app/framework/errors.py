@@ -142,6 +142,14 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # "someone else edited this row", which is the generic code's meaning
         # everywhere else in this catalog.
         "spaces.duplicate_name": ProblemSpec(409, "Space name already in use"),
+        # `spaces-backend-plan.md` step 5 (§3.3). 409 and not 413: 413 is what
+        # `files.too_large` says about THIS payload ("shrink the file and it
+        # goes through"), while a full space rejects a payload that is
+        # perfectly legal on its own — the state of the space is the problem,
+        # and the fix is to delete something. Not `usage.quota_exceeded` (429)
+        # either: that one is a rate/period budget a client can wait out, and
+        # this one will still be exceeded tomorrow.
+        "spaces.quota_exceeded": ProblemSpec(409, "Space storage quota reached"),
         # -- credentials ----------------------------------------------------- #
         "credentials.provider_unknown": ProblemSpec(422, "Unknown provider"),
         "credentials.none_available": ProblemSpec(409, "No credential available for provider"),

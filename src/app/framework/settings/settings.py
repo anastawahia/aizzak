@@ -331,6 +331,13 @@ class Limits(BaseModel):
         "image/webp",
     )
     max_files_per_workspace: int = 10_000
+    # `docs/spaces-backend-plan.md` decision 4 / §3.3 -- 1 GiB of BYTES per
+    # SPACE, and deliberately a second limit rather than a replacement for the
+    # count above: `max_files_per_workspace` bounds the row count of a whole
+    # tenant (what protects the table), this bounds the stored volume of one
+    # space (what protects the tenant's own budget). Enforced under a row lock
+    # by `framework/di/space_quota.py`, never by a bare read-then-write.
+    max_space_bytes: int = 1_073_741_824
     max_input_tokens: int = 32_000
     max_output_tokens: int = 4_096
     max_rag_k: int = 50

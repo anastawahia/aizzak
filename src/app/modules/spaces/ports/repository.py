@@ -40,6 +40,28 @@ class SpaceRepository(Protocol):
         """
         ...
 
+    async def lock(self, ctx: ExecutionContext, space_id: Uuid) -> bool:
+        """Take a row-level write lock on ONE ACTIVE space; ``True`` if there
+        was one to lock (``docs/spaces-backend-plan.md`` §3.3, step 5).
+
+        This is the quota's serialisation anchor and nothing else: it returns
+        no aggregate, because the caller that needs it — a cross-module
+        coordination service — must not be handed a ``Space`` it has no
+        business reading. ``get`` above answers "what is this space"; this
+        answers "hold it still while I decide".
+
+        **It is only a lock inside a unit of work.** A row lock lives until
+        its transaction ends, and every method on this port opens its own
+        transaction unless an enclosing ``UnitOfWork.begin(ctx)`` is active —
+        so calling this outside one takes a lock and releases it one statement
+        later, silently. The single caller (``framework/di/space_quota.py``)
+        opens the unit of work first; there is no way for this port to check.
+
+        Unlike ``get``, a soft-deleted space is ``False``, not a row: locking
+        one would serialise writes into a space that must not receive any.
+        """
+        ...
+
     async def add(self, ctx: ExecutionContext, space: Space) -> None: ...
 
     async def save(self, ctx: ExecutionContext, space: Space) -> None: ...

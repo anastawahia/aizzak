@@ -38,6 +38,7 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    cast,
     func,
     insert,
     select,
@@ -83,6 +84,12 @@ files = Table(
     Column("updated_at", _timestamptz, nullable=False),
     Column("deleted_at", _timestamptz, nullable=True),
     Column("version", Integer, nullable=False),
+    # `migrations/versions/files/0002_file_space.py` (§3.142). NULLable until
+    # plan row 8-b, and present here for exactly ONE reader -- the quota sum
+    # below. The `File` aggregate does not carry it yet and no statement in
+    # this adapter writes it; that is plan step 6, and until then a registered
+    # file lands with a NULL space (§3.143 records what that costs).
+    Column("space_id", _uuid_col, nullable=True),
     schema="files",
 )
 
@@ -206,6 +213,30 @@ class SqlFileRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return count
+
+    async def bytes_in_space(self, ctx: ExecutionContext, space_id: UuidStr) -> int:
+        # Active files only -- the port's docstring says why (a deleted file
+        # must give its bytes back before the purge sweep runs).
+        #
+        # The CAST is not decoration. `size_bytes` is `BIGINT`, and PostgreSQL
+        # types `sum(bigint)` as `numeric`, so asyncpg hands back a
+        # `decimal.Decimal` -- measured on the live database (§3.143), not
+        # inferred. A port that promises `int` and returns `Decimal` type-checks
+        # green and then leaks a `Decimal` into every arithmetic and JSON path
+        # downstream, so the conversion happens HERE, in SQL, where the column
+        # it can never overflow is stated. `count(*)` needs none of this:
+        # `count` is already `bigint`.
+        stmt = select(cast(func.coalesce(func.sum(files.c.size_bytes), 0), BigInteger)).where(
+            files.c.workspace_id == ctx.workspace_id,
+            files.c.space_id == space_id,
+            files.c.deleted_at.is_(None),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                total = (await session.execute(stmt)).scalar_one()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return total
 
 
 def _paginate[T](

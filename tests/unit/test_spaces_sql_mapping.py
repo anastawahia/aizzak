@@ -117,5 +117,7 @@ def test_the_adapter_implements_every_method_its_port_declares() -> None:
         for name, value in vars(SpaceRepository).items()
         if not name.startswith("_") and callable(value)
     }
-    assert declared == {"get", "add", "save", "list"}
+    # `lock` joined in plan step 5 (§3.143) — the quota's serialisation
+    # anchor, and the one method on this port whose caller is not a use-case.
+    assert declared == {"get", "lock", "add", "save", "list"}
     assert declared <= {name for name in dir(SqlSpaceRepository) if not name.startswith("_")}
