@@ -211,6 +211,7 @@ def test_purge_role_gets_select_delete_on_every_tenant_table_it_empties() -> Non
     of every table §3.2 names, and nothing else on those tables (no INSERT,
     no forging a row)."""
     tables = (
+        "spaces.spaces",
         "workspace.user_presence",
         "access.role_assignments",
         "credentials.credentials",

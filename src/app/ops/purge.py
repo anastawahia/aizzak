@@ -70,8 +70,11 @@ from ``documents.file_id``/``conversation_files.file_id``/
 ``media_jobs.result_file_id``) -> ``integrations`` (mcp_servers, connections)
 -> ``credentials`` (workspace-scoped rows only -- platform rows with
 ``workspace_id IS NULL`` are structurally unreachable via RLS) -> ``usage``
--> ``access`` -> ``workspace`` (user_presence) -> finalize (own transaction,
-LAST: ``workspace.workspaces`` archived + ``platform.admin_audit_log`` row).
+-> ``access`` -> ``workspace`` (user_presence) -> ``spaces`` (last of the
+row deletions: `files`/`conversations`/`knowledge` grow a LOGICAL, un-FK'd
+``space_id`` in docs/spaces-backend-plan.md step 4, so the space rows they
+name must outlive them) -> finalize (own transaction, LAST:
+``workspace.workspaces`` archived + ``platform.admin_audit_log`` row).
 
 **Out of scope, deliberately:** ``platform.outbox``/``processed_events``/
 ``idempotency_keys`` (no tenant column, or already swept at up to 90/30/2
@@ -336,7 +339,7 @@ async def purge_objects(
 class _SchemaSpec:
     """One schema's tables, in the delete order the module docstring's
     "Order inside Postgres" paragraph fixes -- FK-forced within a schema,
-    and the ten schemas themselves ordered so no later schema's row can
+    and the eleven schemas themselves ordered so no later schema's row can
     dangle a logical reference into an earlier, already-emptied one."""
 
     schema: str
@@ -393,6 +396,14 @@ _SCHEMA_ORDER: tuple[_SchemaSpec, ...] = (
     # needs an explicit delete of its own -- the one schema this sweep
     # empties without a row deletion anywhere upstream causing it for free.
     _SchemaSpec("workspace", ("workspace.user_presence",)),
+    # LAST, and the position is the point (docs/spaces-backend-plan.md step 3).
+    # `files.files`, `conversations.conversations` and `knowledge.documents`
+    # all grow a `space_id` in step 4, and the plan keeps cross-schema
+    # references LOGICAL -- no FK, so Postgres will happily let a space row go
+    # first and leave those columns pointing at nothing. Nothing but this
+    # position enforces "children before parents" here, which is exactly why
+    # it is written down instead of left to the reader to notice.
+    _SchemaSpec("spaces", ("spaces.spaces",)),
 )
 
 

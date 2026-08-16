@@ -12,7 +12,7 @@
 | **الأساس** | `f2c4463` (‏`master`) · المكدّس الحاويّ يعمل (14 خدمة صحّية) |
 | **النطاق** | وحدة `spaces` جديدة · أعمدة `space_id` في `files`/`conversations`/`knowledge` · حصّة 1 GiB لكلّ وحدة · تقسيم Qdrant ببطاقة `space` + فهرس `is_tenant` · حذف متسلسل · مسارات HTTP · العقود والوثائق |
 | **خارج النطاق** | تعدّد مساحات العمل · مشاركة وحدة بين مستخدمين · نقل ملف بين الوحدات · حصّة على مستوى مساحة العمل · أي تغيير في RLS |
-| **الحالة** | 🚧 **2/16** — الخطوتان ١ ([§3.139](log/3.139.md)) و٢ ([§3.140](log/3.140.md)) مغلقتان |
+| **الحالة** | 🚧 **3/16** — الخطوات ١ ([§3.139](log/3.139.md)) و٢ ([§3.140](log/3.140.md)) و٣ ([§3.141](log/3.141.md)) مغلقة |
 
 ---
 
@@ -271,7 +271,7 @@ DeleteSpaceService.execute(ctx, space_id):
 |---|---|---|---|
 | ١ | وحدة `spaces` (domain · application · ports · adapters) + اختباراتها | جديد | ✅ [§3.139](log/3.139.md) |
 | ٢ | ترحيل `spaces/0001_spaces.py` — مخطّط · جدول · فهرس · trigger · RLS | migrations | ✅ [§3.140](log/3.140.md) |
-| ٣ | الصلاحيات: ~~`_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS`~~ (‏[§3.140](log/3.140.md)) · **`PURGE_GRANTS`** وتغطية `app.ops.purge` | `ops/provision.py` · `ops/purge.py` | 🔲 |
+| ٣ | الصلاحيات: ~~`_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS`~~ (‏[§3.140](log/3.140.md)) · **`PURGE_GRANTS`** وتغطية `app.ops.purge` | `ops/provision.py` · `ops/purge.py` | ✅ [§3.141](log/3.141.md) |
 | ٤ | ترحيلات `space_id` الثلاثة (`files` · `conversations` · `knowledge`) — بنمط ADD ⇒ backfill ⇒ SET NOT NULL | migrations | 🔲 |
 | ٥ | الحصّة: `max_space_bytes` + فحص `FOR UPDATE` في خدمة التسجيل | settings · files · DI | 🔲 |
 | ٦ | ربط `files`: كيان · مستودع · `ports/spaces.py` · ترشيح | `modules/files` | 🔲 |
@@ -285,6 +285,8 @@ DeleteSpaceService.execute(ctx, space_id):
 | ١٤ | `.importlinter`: `app.modules.spaces` إلى عقد الاستقلال | `.importlinter` | 🔲 |
 | ١٥ | الوثائق الملزِمة: 01‑data‑model · 02‑port‑contracts · 03‑api‑spec · 07‑nfr‑slo | `docs/design` | 🔲 |
 | ١٦ | مهمّة تشغيليّة لمرّة واحدة: فهارس البطاقة على الصناديق القائمة (§5‑ب) | `ops/` | 🔲 |
+
+> 📌 **الخطوة ٤ لها دَينٌ على هذه الخطوة:** `_seed_content` في [`tests/integration/test_purge_ops_live.py`](../tests/integration/test_purge_ops_live.py) تبذر اليوم صفَّ وحدةٍ واحدًا لكلّ مساحة عمل بلا ربطٍ بأيّ ملفٍّ أو محادثة. حين تصل أعمدة `space_id` يجب أن تُبذَر معها، وإلّا صار برهان الكنس يمرّ على عمودٍ فارغ ([§3.141](log/3.141.md)).
 
 **لا يرتفع إصدار أيّ حدث** — إضافة حقل اختياريّ ⇒ نفس الإصدار ([`04-event-catalog.md:136`](design/04-event-catalog.md#L136)).
 

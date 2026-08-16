@@ -29,6 +29,7 @@ import pytest
 
 from app.infrastructure.storage.minio_storage import delete_prefix
 from app.ops import purge as purge_module
+from app.ops.provision import _TENANT_TABLES, PURGE_GRANTS, PURGE_ROLE
 from app.ops.purge import (
     PURGE_RETENTION,
     PurgeCandidate,
@@ -517,3 +518,77 @@ def test_cli_requires_a_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.argv", ["app.ops.purge"])
     with pytest.raises(SystemExit):
         purge_module.main()
+
+
+# ---------------------------------------------------------------------------
+# `_SCHEMA_ORDER` <-> `PURGE_GRANTS` -- the bidirectional drift guard
+# `tests/unit/test_ops_provision.py`'s docstring argues for, applied to this
+# module's own delete plan (docs/spaces-backend-plan.md step 3).
+# ---------------------------------------------------------------------------
+
+
+def test_every_table_the_sweep_deletes_from_is_granted_to_the_purge_role() -> None:
+    """A table added to ``_SCHEMA_ORDER`` without a matching ``PURGE_GRANTS``
+    line passes every other test in this file -- the fake connection above
+    grants nothing and refuses nothing -- and then dies mid-sweep on
+    ``permission denied`` in production, AFTER the Qdrant collections and the
+    MinIO prefix for that workspace are already destroyed. There is no
+    rollback for those two."""
+    for spec in purge_module._SCHEMA_ORDER:
+        assert f"GRANT USAGE ON SCHEMA {spec.schema} TO {PURGE_ROLE}" in PURGE_GRANTS
+        for table in spec.tables:
+            matches = [s for s in PURGE_GRANTS if f" ON {table} TO {PURGE_ROLE}" in s]
+            assert len(matches) == 1, f"{table} is swept but not granted"
+            assert "SELECT" in matches[0] and "DELETE" in matches[0]
+
+
+def test_spaces_is_emptied_after_every_schema_that_will_reference_it() -> None:
+    """``files``/``conversations``/``knowledge`` grow a ``space_id`` in
+    docs/spaces-backend-plan.md step 4, and the plan keeps cross-schema
+    references LOGICAL -- there is no FK, so Postgres would happily delete
+    the space rows first and leave those columns pointing at nothing. Position
+    in ``_SCHEMA_ORDER`` is the only thing enforcing it, which is why it is
+    asserted rather than assumed."""
+    order = [spec.schema for spec in purge_module._SCHEMA_ORDER]
+    for schema in ("files", "conversations", "knowledge"):
+        assert order.index(schema) < order.index("spaces")
+
+
+def test_every_tenant_table_is_either_swept_or_deliberately_spared() -> None:
+    """The guard the live test structurally cannot be: ``_assert_all_tables_
+    count`` in ``tests/integration/test_purge_ops_live.py`` iterates
+    ``_SCHEMA_ORDER`` itself, so a table missing from the plan is a table the
+    live proof also stops checking -- it goes green while the rows survive.
+    Here the plan is compared against an INDEPENDENT list (``_TENANT_TABLES``,
+    which the migrations' own grant guard keeps honest), so "a tenant table
+    a workspace purge quietly leaves behind" cannot pass unnoticed. That is
+    an erasure failure, not a cosmetic one.
+
+    The two spared tables are spared by the module docstring's own rule: this
+    sweep stops at the tenant root and never removes the workspace or user
+    row itself (``platform.admin_audit_log`` references both, and the
+    tombstone is the whole point of BE-ADM-006)."""
+    spared = frozenset({"workspace.workspaces", "workspace.users"})
+    swept = {table for spec in purge_module._SCHEMA_ORDER for table in spec.tables}
+
+    for table in _TENANT_TABLES:
+        if table in spared:
+            assert table not in swept, f"{table} must never be deleted by the sweep"
+        else:
+            assert table in swept, f"{table} is a tenant table no purge run ever empties"
+
+    assert swept <= set(_TENANT_TABLES), (
+        f"swept but not a tenant table: {swept - set(_TENANT_TABLES)}"
+    )
+
+
+def test_the_purge_role_holds_no_delete_grant_the_sweep_never_uses() -> None:
+    """The other direction: a table dropped from the plan but left in
+    ``PURGE_GRANTS`` leaves a live DELETE privilege behind with nothing in the
+    codebase that would ever exercise -- or notice -- it."""
+    swept = {table for spec in purge_module._SCHEMA_ORDER for table in spec.tables}
+    for statement in PURGE_GRANTS:
+        if not statement.startswith("GRANT SELECT, DELETE ON "):
+            continue
+        table = statement.removeprefix("GRANT SELECT, DELETE ON ").split(" TO ")[0]
+        assert table in swept, f"{table} is granted DELETE but never swept"

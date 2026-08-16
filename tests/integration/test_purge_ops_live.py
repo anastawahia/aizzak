@@ -134,8 +134,13 @@ async def _seed_content(
     reindex_job_id = new_uuid7()
     conversation_id = new_uuid7()
     credential_id = new_uuid7()
+    space_id = new_uuid7()
 
     async with tenant_session(ctx) as session:
+        await session.execute(
+            text("INSERT INTO spaces.spaces (id, workspace_id, name) VALUES (:id, :ws, 'main')"),
+            {"id": space_id, "ws": ws},
+        )
         await session.execute(
             text(
                 "INSERT INTO knowledge.documents (id, workspace_id, file_id) "
@@ -287,7 +292,12 @@ async def _seed_content(
             {"user_id": user_id, "ws": ws, "seen": _NOW},
         )
 
-    return {"file_id": file_id, "document_id": document_id, "credential_id": credential_id}
+    return {
+        "file_id": file_id,
+        "document_id": document_id,
+        "credential_id": credential_id,
+        "space_id": space_id,
+    }
 
 
 async def _table_count(purger_engine: AsyncEngine, table: str, workspace_id: str) -> int:
@@ -393,6 +403,14 @@ async def test_purge_all_empties_only_the_eligible_workspace(
 
     # The eligible workspace is fully emptied across every table §3.2 names.
     await _assert_all_tables_count(purger_engine, eligible_ws, expected=0)
+
+    # `spaces.spaces` named LITERALLY, not through `_SCHEMA_ORDER`: the helper
+    # above iterates the very plan under test, so a table dropped from the
+    # plan silently stops being asserted here too -- measured, not feared
+    # (deleting the `spaces` spec left this whole file green). The general
+    # answer is the unit guard in `tests/unit/test_ops_purge.py`; this is the
+    # local one, for the table this step exists to add.
+    assert await _table_count(purger_engine, "spaces.spaces", eligible_ws) == 0
 
     # Its own status/purged_at are set.
     async with purger_engine.begin() as conn:
@@ -520,6 +538,45 @@ async def test_purger_role_column_grant_blocks_email_but_allows_status(
 
     async with purger_engine.begin() as conn:
         await conn.execute(text("SELECT status FROM workspace.users LIMIT 1"))  # must not raise
+
+
+async def test_purger_role_reads_and_deletes_spaces_but_can_never_write_one(
+    purger_engine: AsyncEngine,
+    three_workspaces: dict[str, dict[str, str]],
+) -> None:
+    """``spaces.spaces`` gets the same SELECT+DELETE ceiling every other
+    swept table gets (``PURGE_GRANTS``): this role empties a space, it never
+    creates or renames one. Proven against the live ACL, not against the
+    string constant -- ``tests/unit/test_ops_purge.py`` asserts the grant's
+    text; only Postgres can say what the grant actually permits."""
+    ws = three_workspaces["still_active"]["workspace_id"]
+
+    async with purger_engine.begin() as conn:
+        await conn.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+        count = (
+            await conn.execute(
+                text("SELECT count(*) FROM spaces.spaces WHERE workspace_id = :ws"), {"ws": ws}
+            )
+        ).scalar_one()
+    assert count == 1
+
+    async with purger_engine.begin() as conn:
+        with pytest.raises(DBAPIError) as update_error:
+            await conn.execute(
+                text("UPDATE spaces.spaces SET name = 'renamed' WHERE workspace_id = :ws"),
+                {"ws": ws},
+            )
+    assert getattr(update_error.value.orig, "sqlstate", None) == "42501"
+
+    async with purger_engine.begin() as conn:
+        with pytest.raises(DBAPIError) as insert_error:
+            await conn.execute(
+                text(
+                    "INSERT INTO spaces.spaces (id, workspace_id, name) VALUES (:id, :ws, 'forged')"
+                ),
+                {"id": new_uuid7(), "ws": ws},
+            )
+    assert getattr(insert_error.value.orig, "sqlstate", None) == "42501"
 
 
 async def test_platform_scope_credential_survives_purging_a_workspace_with_user_scope_credentials(

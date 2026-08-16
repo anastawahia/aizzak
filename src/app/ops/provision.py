@@ -74,7 +74,7 @@ METRICS_ROLE = "metrics_reader"
 TRANSIT_ROTATOR_ROLE = "transit_rotator"
 # BE-ADM-014 (docs/design refs, `app.ops.purge`): the workspace content-purge
 # sweep's own role. A workspace tombstoned by BE-ADM-006 and past its
-# retention window is emptied across ten schemas, and the SAME "RLS wall"
+# retention window is emptied across eleven schemas, and the SAME "RLS wall"
 # `retention_sweeper`/`transit_rotator` hit applies here too -- widening
 # `app_rw` to reach every tenant's rows would undo the isolation guarantee the
 # whole platform stands on. Unlike those two, this role gets NO blanket
@@ -265,7 +265,7 @@ TRANSIT_ROTATOR_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, UPDATE (auth_ref) ON integrations.mcp_servers TO {TRANSIT_ROTATOR_ROLE}",
 )
 
-# BE-ADM-014's purge role: USAGE on every schema it reaches (the ten module
+# BE-ADM-014's purge role: USAGE on every schema it reaches (the eleven module
 # schemas whose rows it deletes, plus `platform` for `admin_audit_log`), a
 # narrow COLUMN-scoped read/write pair on the two identity tables
 # (`workspace.workspaces`/`workspace.users`), and plain SELECT+DELETE on
@@ -285,6 +285,11 @@ TRANSIT_ROTATOR_GRANTS: tuple[str, ...] = (
 # columns `finalize` writes (`status`, `purged_at`) -- never a table-wide
 # UPDATE, which could otherwise rename or resurrect a workspace.
 PURGE_GRANTS: tuple[str, ...] = (
+    # Grant order carries no semantics -- the order rows are actually deleted
+    # in is `app.ops.purge._SCHEMA_ORDER`, where `spaces` comes LAST because
+    # every table that will carry `space_id` (docs/spaces-backend-plan.md
+    # step 4) must be emptied before the space rows they point at.
+    f"GRANT USAGE ON SCHEMA spaces TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA workspace TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA access TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA credentials TO {PURGE_ROLE}",
@@ -296,6 +301,7 @@ PURGE_GRANTS: tuple[str, ...] = (
     f"GRANT USAGE ON SCHEMA integrations TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA usage TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA platform TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON spaces.spaces TO {PURGE_ROLE}",
     f"GRANT SELECT (id, owner_user_id, status, purged_at), UPDATE (status, purged_at) "
     f"ON workspace.workspaces TO {PURGE_ROLE}",
     f"GRANT SELECT (id, workspace_id, status, deleted_at) ON workspace.users TO {PURGE_ROLE}",
