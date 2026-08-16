@@ -12,7 +12,7 @@
 | **الأساس** | `f2c4463` (‏`master`) · المكدّس الحاويّ يعمل (14 خدمة صحّية) |
 | **النطاق** | وحدة `spaces` جديدة · أعمدة `space_id` في `files`/`conversations`/`knowledge` · حصّة 1 GiB لكلّ وحدة · تقسيم Qdrant ببطاقة `space` + فهرس `is_tenant` · حذف متسلسل · مسارات HTTP · العقود والوثائق |
 | **خارج النطاق** | تعدّد مساحات العمل · مشاركة وحدة بين مستخدمين · نقل ملف بين الوحدات · حصّة على مستوى مساحة العمل · أي تغيير في RLS |
-| **الحالة** | 🔲 لم تبدأ |
+| **الحالة** | 🚧 **1/16** — الخطوة ١ مغلقة ([§3.139](log/3.139.md)) |
 
 ---
 
@@ -95,10 +95,12 @@ workspace  (مستأجر — حدّ أمنيّ · RLS)
 ```
 src/app/modules/spaces/
 ├── domain/       entities.py (Space) · value_objects.py (SpaceName) · errors.py · events.py
-├── application/  use_cases.py (Create · Rename · List · Get · Delete)
-├── ports/        inbound.py (SpaceUseCases) · repository.py (SpaceRepository)
+├── application/  use_cases.py (Create · Rename · List · Get · Delete · SpacesQueryService · حزمة SpaceUseCases)
+├── ports/        inbound.py (SpacesQuery + SpaceView) · repository.py (SpaceRepository)
 └── adapters/     sql_repository.py
 ```
+
+> 📌 **تصحيحٌ من التنفيذ ([§3.139](log/3.139.md)):** المنفذ الوارد لِمَن **يربط به غيرُك** — `SpacesQuery`/`SpaceView` على سابقة `FilesQuery` حرفيًّا، وهو ما تحتاجه `files`/`conversations` لتُثبت أنّ `space_id` القادم في الطلب يعني شيئًا. أمّا حزمة `SpaceUseCases` فمكانها التطبيق حيث تسكن `FileUseCases`، لأنّ `10 §3` يجعل طبقة الواجهة تستهلك حالات استخدام الوحدة مباشرةً.
 
 **لا تستورد أيّ وحدة أخرى، ولا تستوردها أيّ وحدة أخرى.** `files` و`conversations` تحملان `space_id` **كمعرّف معتِم** — رقمٌ تحفظه وترشّح به ولا تعرف ماذا يعني — وتتحقّقان منه عبر Protocol تُعلنه كلٌّ منهما لنفسها ويُربط في جذر التركيب. هذا **عكس** [`conversations/ports/files.py`](../src/app/modules/conversations/ports/files.py) القائم: نفس النمط، لا سابقة جديدة.
 
@@ -265,7 +267,7 @@ DeleteSpaceService.execute(ctx, space_id):
 
 | # | الخطوة | يمسّ | الحالة |
 |---|---|---|---|
-| ١ | وحدة `spaces` (domain · application · ports · adapters) + اختباراتها | جديد | 🔲 |
+| ١ | وحدة `spaces` (domain · application · ports · adapters) + اختباراتها | جديد | ✅ [§3.139](log/3.139.md) |
 | ٢ | ترحيل `spaces/0001_spaces.py` — مخطّط · جدول · فهرس · trigger · RLS | migrations | 🔲 |
 | ٣ | الصلاحيات: `_MODULE_SCHEMAS` · `_TENANT_TABLES` · `_MIGRATION_CHAINS` · `PURGE_GRANTS` | `ops/provision.py` | 🔲 |
 | ٤ | ترحيلات `space_id` الثلاثة (`files` · `conversations` · `knowledge`) — بنمط ADD ⇒ backfill ⇒ SET NOT NULL | migrations | 🔲 |

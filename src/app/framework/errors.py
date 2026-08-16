@@ -132,6 +132,16 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # platform cannot satisfy as asked -- the same class as
         # `media.invalid_params`, one step later in the lifecycle.
         "media.unsupported_kind": ProblemSpec(422, "Unsupported media kind"),
+        # -- spaces ----------------------------------------------------------- #
+        # `spaces-backend-plan.md` step 1. Raised by the spaces SQL adapter on
+        # `23505`, which on that table can only be `ux_spaces_ws_name` (§3.2):
+        # the other unique constraint is a primary key on a freshly minted
+        # UUIDv7. Named rather than folded into `common.conflict` for that
+        # reason — the server KNOWS which conflict it is, and a client
+        # renaming a space needs to tell "that name is taken" apart from
+        # "someone else edited this row", which is the generic code's meaning
+        # everywhere else in this catalog.
+        "spaces.duplicate_name": ProblemSpec(409, "Space name already in use"),
         # -- credentials ----------------------------------------------------- #
         "credentials.provider_unknown": ProblemSpec(422, "Unknown provider"),
         "credentials.none_available": ProblemSpec(409, "No credential available for provider"),
