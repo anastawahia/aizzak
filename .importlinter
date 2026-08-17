@@ -74,7 +74,7 @@ forbidden_modules =
 # ---------------------------------------------------------------------------
 # 4) Modules are independent of each other (Modular Monolith boundary).
 #    Cross-module talk only via injected Inbound Ports / events.
-#    The module set is EXTENSIBLE (10 modules in v1 below). The RESERVED 3
+#    The module set is EXTENSIBLE (11 modules in v1 below). The RESERVED 3
 #    (scheduling/sandbox/runs — requirements §12.1) are not built in v1; when
 #    one is built, append its package here so independence stays enforced.
 # ---------------------------------------------------------------------------
@@ -92,6 +92,14 @@ modules =
     app.modules.media
     app.modules.integrations
     app.modules.usage
+    app.modules.spaces
+# `spaces-backend-plan.md` step 14 — the module built in step 1 takes its place
+# here, as the header above requires of every new package. Nothing in the tree
+# violates it today; the entry is what keeps that true. `spaces` is the one
+# module every other module has a reason to reach for (a file, a conversation
+# and a document each carry a `space_id`), and the sanctioned way stays what it
+# is for all the rest: the ports under `files/ports/spaces.py` and
+# `conversations/ports/spaces.py`, bound in the Composition Root.
 
 # ---------------------------------------------------------------------------
 # 5) Agents are independent plugins; they never import each other or the API.
