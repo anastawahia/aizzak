@@ -27,9 +27,12 @@ Payload indexes at creation: ``ensure_hybrid_collection`` follows its
 ``create_collection`` with ``ensure_payload_index`` for ``space`` (as a
 TENANT key), ``workspace_id`` and ``document_id`` -- the three keys
 ``_build_filter`` is ever handed. It runs there and not in the caller so no
-provisioning path can forget it; see ``_TENANT_PAYLOAD_KEY`` for why the
+provisioning path can forget it; see ``HYBRID_PAYLOAD_INDEXES`` for why the
 tenant flag is spent on ``space`` alone, and the port docstring for why an
 already-existing collection deliberately does not gain them here.
+``app.ops.payload_indexes`` -- the one-off pass for collections that predate
+that code -- reads the SAME constant and the ``payload_index_flags`` helper
+below, so the two provisioning paths can never index different key sets.
 
 Error policy (R6, the same precedent as every other adapter): EVERY driver
 failure -- connection refused, timeout, a malformed request Qdrant rejects,
@@ -105,8 +108,14 @@ _SPARSE_NAME = "text"
 # loudly, not silently.
 _DEFAULT_VECTOR_NAME = ""
 
-# The payload keys every hybrid collection indexes at creation (spaces plan
-# §3.4). `space` is the TENANT axis -- Qdrant reorders points on disk by it,
+# The payload keys every hybrid collection indexes, each with its `is_tenant`
+# flag (spaces plan §3.4). PUBLIC, and deliberately ONE tuple rather than the
+# two constants this started as: `ensure_hybrid_collection` indexes a NEW
+# collection and `app.ops.payload_indexes` (step 16) indexes the ones created
+# before that code existed, and two lists would let a fourth key be added to
+# new collections only -- silently, since nothing ever compares them.
+#
+# `space` is the TENANT axis -- Qdrant reorders points on disk by it,
 # which is worth paying for at the granularity of a handful of spaces per
 # workspace (and would NOT be at conversation granularity: thousands of
 # tenants fragment storage instead of ordering it). `workspace_id` and
@@ -121,8 +130,11 @@ _DEFAULT_VECTOR_NAME = ""
 # future unscoped retrieval (a cross-space summary, a diagnostic) impossible
 # rather than merely slow. The saving is memory; the price is a door that
 # does not reopen (spaces plan §3.4).
-_TENANT_PAYLOAD_KEY = "space"
-_PLAIN_PAYLOAD_KEYS = ("workspace_id", "document_id")
+HYBRID_PAYLOAD_INDEXES: tuple[tuple[str, bool], ...] = (
+    ("workspace_id", False),
+    ("document_id", False),
+    ("space", True),
+)
 
 # HTTP Conflict: ``create_collection`` returns this when a concurrent caller
 # won a create-race for the same name -- ``ensure_collection``/
@@ -345,9 +357,8 @@ class QdrantVectorStore:
         # code shipped need the one-off operational pass (spaces plan §5-ب /
         # step 16). Indexing at creation time is also when it is cheapest:
         # zero points to reorder.
-        for key in _PLAIN_PAYLOAD_KEYS:
-            await self.ensure_payload_index(name, key)
-        await self.ensure_payload_index(name, _TENANT_PAYLOAD_KEY, tenant=True)
+        for key, tenant in HYBRID_PAYLOAD_INDEXES:
+            await self.ensure_payload_index(name, key, tenant=tenant)
 
     async def ensure_payload_index(
         self, collection: str, field: str, *, tenant: bool = False
@@ -476,3 +487,33 @@ async def drop_collection(client: AsyncQdrantClient, name: str) -> bool:
         return existed
     except (ApiException, QdrantException) as exc:
         raise _translate(exc) from exc
+
+
+async def payload_index_flags(client: AsyncQdrantClient, name: str) -> dict[str, bool]:
+    """Which payload keys the SERVER currently indexes on ``name``, each
+    mapped to its ``is_tenant`` flag (``app.ops.payload_indexes``, step 16,
+    ONLY).
+
+    A free function for ``drop_collection``'s reason, applied to reading
+    instead of writing: introspecting a collection's provisioning state is an
+    operator's question, and putting it on the port would hand it to every
+    module's use cases through dependency injection for nothing.
+
+    ``PayloadIndexInfo.params`` is ``None`` for an index created through
+    Qdrant's older ``field_schema="keyword"`` shorthand (measured live
+    against 1.13, which is why this reads through ``getattr`` instead of the
+    attribute): such an index carries no tenant flag at all, and reporting it
+    as ``False`` is exactly right -- it is not laid out by tenant, so the
+    step-16 pass re-asserts it. Re-asserting an index with DIFFERENT params
+    is a replacement, not a conflict (also measured live: ``is_tenant`` False
+    -> True comes back True and the call returns ``completed``), so a
+    mis-flagged key is repaired by the ordinary path with nothing dropped.
+    """
+    try:
+        info = await client.get_collection(name)
+    except (ApiException, QdrantException) as exc:
+        raise _translate(exc) from exc
+    return {
+        field: bool(getattr(index.params, "is_tenant", False))
+        for field, index in (info.payload_schema or {}).items()
+    }
