@@ -169,6 +169,29 @@ class InMemoryDocumentRepository:
             self.refs.pop(doc_id, None)
         self.purged.append(doc_id)
 
+    def _in_space(self, ctx: ExecutionContext, space_id: str) -> list[str]:
+        return [
+            row.id
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id and row.space_id == space_id
+        ]
+
+    async def vector_refs_in_space(self, ctx: ExecutionContext, space_id: str) -> list[VectorRef]:
+        # Every ref of every document in the space, flattened — the shape the
+        # SQL adapter's subquery produces (spaces plan step 11).
+        doc_ids = self._in_space(ctx, space_id)
+        return [ref for doc_id in doc_ids for ref in self.refs.get(doc_id, ())]
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: str) -> int:
+        doc_ids = self._in_space(ctx, space_id)
+        for doc_id in doc_ids:
+            del self.rows[doc_id]
+            self.refs.pop(doc_id, None)
+        # NOT appended to `purged`: that list records `purge` calls, and a
+        # cascade reaching one document at a time is precisely the shape this
+        # method exists not to have.
+        return len(doc_ids)
+
 
 @dataclass
 class InMemoryReindexJobRepository:

@@ -158,6 +158,21 @@ class InMemoryConversationRepository:
             if not (pin.file_id == file_id and pin.workspace_id == ctx.workspace_id)
         ]
 
+    async def purge_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        # Threads, messages and pins together, soft-deleted rows included
+        # (spaces plan step 11): the space is gone, so a tombstone under it is
+        # a row nothing can reach.
+        doomed = [
+            conversation.id
+            for conversation in self.rows.values()
+            if conversation.workspace_id == ctx.workspace_id and conversation.space_id == space_id
+        ]
+        for conversation_id in doomed:
+            del self.rows[conversation_id]
+            self.messages.pop(conversation_id, None)
+            self.pins.pop(conversation_id, None)
+        return len(doomed)
+
     async def list_messages(
         self, ctx: ExecutionContext, conversation_id: Uuid, *, limit: int, cursor: str | None
     ) -> Page[Message]:

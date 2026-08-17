@@ -528,6 +528,35 @@ class UnpinConversationFile:
         await self._conversations.unpin_file(ctx, conversation_id, file_id)
 
 
+class PurgeSpaceConversations:
+    """Destroy one space's threads (step 7 of ``docs/spaces-backend-plan.md``
+    §3.6, step 11 — the cascade's last step).
+
+    **Not in ``ConversationUseCases``, for ``PurgeSpaceFiles``' reason**: the
+    bundle is the API's, and no request may empty a space's history without
+    deleting the space. The only caller is the composition-root
+    ``DeleteSpaceService``.
+
+    **No ``get`` first, unlike every other write here.** The others read the
+    aggregate to answer 404/409 about ONE thread the caller named; this one is
+    handed a space and answers about none of its threads individually. There is
+    also nothing to refuse: a soft-deleted thread is deleted too (port
+    docstring), and an unknown space simply owns no threads — which the caller
+    has already turned into a 404 by failing to mark it, three steps earlier.
+
+    Thin to the point of being one line, and it exists anyway: the seam the
+    cascade binds is a use-case in all three modules, so the wiring reads as
+    one shape rather than two conventions with a repository smuggled into the
+    middle slot.
+    """
+
+    def __init__(self, conversations: ConversationRepository) -> None:
+        self._conversations = conversations
+
+    async def execute(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        return await self._conversations.purge_space(ctx, space_id)
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationUseCases:
     """The conversations use-cases the API layer drives (6.1-ج-2).

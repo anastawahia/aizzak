@@ -189,6 +189,7 @@ from app.framework.agent_runtime.plugin_loader import PluginLoader, PluginLoadRe
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.lifecycle import Disposable
+from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
@@ -211,6 +212,7 @@ from app.framework.providers.catalog import ModelCatalog
 from app.framework.providers.inventory import ProviderInventory, ProviderProbe
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings import DatabaseSettings, Settings
+from app.framework.settings.settings import Limits
 from app.framework.streaming import ConnectionHub, make_notification_handler
 from app.framework.workflows.registry import InMemoryWorkflowRegistry, WorkflowRegistry
 from app.infrastructure.ai_providers.embedding.external_embedding import (
@@ -283,6 +285,7 @@ from app.modules.conversations.application.use_cases import (
     ListMessages,
     PinConversationFile,
     PinConversationModel,
+    PurgeSpaceConversations,
     RenameConversation,
     SoftDeleteConversation,
     SoftDeleteMessage,
@@ -306,6 +309,7 @@ from app.modules.files.application.use_cases import (
     FilesQueryService,
     FileTransferService,
     FileUseCases,
+    PurgeSpaceFiles,
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
@@ -352,6 +356,7 @@ from app.modules.knowledge.application.use_cases import (
     KnowledgeRetrievalService,
     KnowledgeUseCases,
     ListDocuments,
+    PurgeSpaceKnowledge,
     ReindexDocuments,
     ReindexService,
     RequestSummary,
@@ -371,7 +376,7 @@ from app.modules.media.application.use_cases import (
     RequestMedia,
 )
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
-from app.modules.spaces.application.use_cases import SpacesQueryService
+from app.modules.spaces.application.use_cases import DeleteSpace, SpacesQueryService
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.usage.application.use_cases import (
     CaptureUsage,
@@ -845,13 +850,61 @@ def _build_spaces_seam(
     return repository, SpacesQueryService(repository)
 
 
+def _build_space_services(
+    tenant_session: TenantSessionFactory,
+    limits: Limits,
+    *,
+    spaces: SqlSpaceRepository,
+    files: SqlFileRepository,
+    transfers: FileTransferService,
+    storage: StorageHandle,
+    knowledge: PurgeSpaceKnowledge,
+    conversations: PurgeSpaceConversations,
+) -> tuple[SpaceQuotaService[RegisteredUpload], DeleteSpaceService]:
+    """The two cross-module space services — ``spaces-backend-plan.md`` steps
+    5 and 11 (§3.3 and §3.6).
+
+    Built here together because they are the same idea twice: an operation that
+    spans modules which may not know each other (import-linter contract 4), so
+    it lives at the root, declares its collaborators as structural
+    ``Protocol``\\ s in ``framework/di/`` and names no module at all. This
+    function is where those protocols meet the concrete objects, and where
+    mypy checks every one of the bindings.
+
+    ``space_quota`` takes ``tenant_session`` as its UnitOfWork — the same
+    instance the atomic files services hold — so the space's row lock, the byte
+    sum and the INSERT land in ONE transaction, which is the whole mechanism
+    (§3.3). ``space_deletion`` deliberately gets no unit of work at all: Qdrant
+    and MinIO sit inside its sequence, and network I/O may not run under an
+    open transaction (R2) — see ``space_deletion.py``.
+
+    The deletion service's three purges are passed as KEYWORDS because it
+    declares ONE protocol for all three: they are interchangeable to the type
+    checker, and swapping two would destroy the same rows in an order whose
+    failure modes §3.6 chose against.
+
+    ``DeleteSpace`` is constructed here rather than taken from a bundle
+    because ``SpaceUseCases`` does not exist yet — it lands with the router in
+    plan step 12, and step 13 is what gives it the same ``spaces`` repository
+    this service already holds. No router reaches EITHER service yet.
+    """
+    quota = SpaceQuotaService(transfers, spaces, files, tenant_session, limits)
+    deletion = DeleteSpaceService(
+        DeleteSpace(spaces),
+        knowledge=knowledge,
+        files=PurgeSpaceFiles(files, storage),
+        conversations=conversations,
+    )
+    return quota, deletion
+
+
 def _build_conversations(
     tenant_session: TenantSessionFactory,
     catalog: ModelCatalog,
     files: ReadableFiles,
     spaces: ActiveSpaces,
-) -> tuple[ConversationUseCases, ConversationService]:
-    """The conversations module's TWO faces — a helper so ``from_env`` stays
+) -> tuple[ConversationUseCases, ConversationService, PurgeSpaceConversations]:
+    """The conversations module's THREE faces — a helper so ``from_env`` stays
     under its statement ceiling (the ``_build_integrations`` precedent).
 
     Returned together, and built here rather than at two call sites, because
@@ -872,6 +925,13 @@ def _build_conversations(
     module's ``SpacesQuery``: the same instance ``RegisterUpload`` proves file
     spaces through, so "is this space live?" has one answer in this process
     whichever module asks it.
+
+    The THIRD face (``spaces-backend-plan.md`` step 11) is the cascade's step
+    7, and it is returned rather than bundled: destroying a space's threads is
+    not something a request may ask for, so it stays out of
+    ``ConversationUseCases`` and reaches only ``DeleteSpaceService``. Built
+    from the SAME repository for this helper's whole reason — the threads the
+    cascade destroys are the ones the API can see.
     """
     repository = SqlConversationRepository(tenant_session)
     list_files = ListConversationFiles(repository)
@@ -894,7 +954,7 @@ def _build_conversations(
         GetConversation(repository),
         list_files,
     )
-    return use_cases, threads
+    return use_cases, threads, PurgeSpaceConversations(repository)
 
 
 def _build_knowledge(
@@ -904,11 +964,11 @@ def _build_knowledge(
     vectors: HybridVectorStore,
     resolver: EmbeddingResolver,
     outbox: EventOutbox,
-) -> KnowledgeUseCases:
-    """The knowledge module's API-facing bundle — a helper so ``from_env``
-    stays under its statement ceiling (the ``_build_conversations``
-    precedent), and so the ONE ``SqlDocumentRepository`` behind five faces is
-    visible in one place.
+) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
+    """The knowledge module's API-facing bundle, plus the one face that is not
+    API-facing — a helper so ``from_env`` stays under its statement ceiling
+    (the ``_build_conversations`` precedent), and so the ONE
+    ``SqlDocumentRepository`` behind six faces is visible in one place.
 
     That sharing is the point of building it here (6.1-و-3 / 2.10 / BE-RAG-005):
     the two document reads, the scoped retrieval's "file ⇒ document"
@@ -930,12 +990,18 @@ def _build_knowledge(
     write faces are wrapped in one unit of work with the outbox, so that
     document and the event telling a worker about it can never be written
     apart.
+
+    ``PurgeSpaceKnowledge`` (``spaces-backend-plan.md`` step 11) is returned
+    OUTSIDE the bundle for the reason no ingestion face is inside it: a request
+    may not destroy a corpus. Its only caller is ``DeleteSpaceService``, and it
+    holds the same ``documents``/``vectors`` pair ``reindex`` does — the two
+    faces that delete points must agree on which points exist.
     """
     documents = SqlDocumentRepository(tenant_session)
     jobs = SqlReindexJobRepository(tenant_session)
     summaries = SqlSummaryRepository(tenant_session)
     summary_jobs = SqlSummaryJobRepository(tenant_session)
-    return KnowledgeUseCases(
+    use_cases = KnowledgeUseCases(
         list_documents=ListDocuments(documents),
         get_document=GetDocument(documents),
         search=KnowledgeRetrievalService(
@@ -965,6 +1031,7 @@ def _build_knowledge(
             CancelSummaryJob(summary_jobs), outbox, tenant_session
         ),
     )
+    return use_cases, PurgeSpaceKnowledge(documents, vectors)
 
 
 class _RoutedSummarizerResolver:
@@ -1148,6 +1215,12 @@ class CompositionRoot:
     # arrives with the routers in plan step 12, and plan step 13 is what
     # exposes it through `ApiServices`.
     space_quota: SpaceQuotaService[RegisteredUpload]
+    # `spaces-backend-plan.md` step 11 — the cascade that empties a deleted
+    # space (§3.6). Held beside `space_quota` and for the same reason: it is
+    # not the files module's, not the spaces module's, and not any one
+    # module's — it is the only object in the process that knows the whole
+    # list. `DELETE /api/v1/spaces/{id}` reaches it in plan step 12.
+    space_deletion: DeleteSpaceService
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
     # carries ONLY the client-reachable use-cases: `workspace` leaves out
@@ -1387,7 +1460,7 @@ class CompositionRoot:
             revoke=RevokeCredential(credential_repository),
         )
 
-        knowledge = _build_knowledge(
+        knowledge, purge_space_knowledge = _build_knowledge(
             tenant_session,
             embedding=embedding,
             vectors=vector_store,
@@ -1448,7 +1521,7 @@ class CompositionRoot:
 
         # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
         # so they share ONE repository instance (see `_build_conversations`).
-        conversations, conversation_threads = _build_conversations(
+        conversations, conversation_threads, purge_space_conversations = _build_conversations(
             tenant_session, provider_resolver, files_query, spaces_query
         )
 
@@ -1476,24 +1549,18 @@ class CompositionRoot:
             delete=SoftDeleteFileService(SoftDeleteFile(file_repository), outbox, tenant_session),
         )
 
-        # `spaces-backend-plan.md` step 5 -- the per-space quota. This IS the
-        # wiring the service was designed around: it declares three structural
-        # Protocols and names no module, so the three concrete objects meet
-        # for the first time HERE, which is the only layer allowed to know all
-        # of them (contract 4 keeps `spaces` and `files` strangers). mypy
-        # checks all three bindings at this call, and infers
-        # `SpaceQuotaService[RegisteredUpload]` from `transfers`.
-        #
-        # `tenant_session` is passed as the UnitOfWork, the same instance the
-        # two atomic files services above hold: the space's row lock, the byte
-        # sum and the INSERT therefore land in ONE transaction rather than
-        # three, which is the entire mechanism (§3.3).
-        space_quota = SpaceQuotaService(
-            files_use_cases.transfers,
-            space_repository,
-            file_repository,
+        # `spaces-backend-plan.md` steps 5 and 11 -- the two cross-module
+        # space services (helper above, which is where the bindings are
+        # explained). Built together because they are the same idea twice.
+        space_quota, space_deletion = _build_space_services(
             tenant_session,
             settings.limits,
+            spaces=space_repository,
+            files=file_repository,
+            transfers=files_use_cases.transfers,
+            storage=storage,
+            knowledge=purge_space_knowledge,
+            conversations=purge_space_conversations,
         )
 
         orchestrator = AgentOrchestrator(
@@ -1572,6 +1639,7 @@ class CompositionRoot:
             notify_subscriptions=notify_subscriptions,
             files=files_use_cases,
             space_quota=space_quota,
+            space_deletion=space_deletion,
             media=media,
             workspace=workspace,
             presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),

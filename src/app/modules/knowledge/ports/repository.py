@@ -198,6 +198,49 @@ class DocumentRepository(Protocol):
         """
         ...
 
+    async def vector_refs_in_space(
+        self, ctx: ExecutionContext, space_id: Uuid
+    ) -> Sequence[VectorRef]:
+        """Where EVERY chunk of one space's documents lives in the vector
+        store — step 2 of the cascade (``docs/spaces-backend-plan.md`` §3.6,
+        step 11).
+
+        ``vector_refs`` above, widened from one document to a space, and for
+        the same reason: what must be deleted is what was actually WRITTEN, and
+        only the ``chunks`` rows know that. Recomputing the ids from
+        ``chunk_point_id(doc_id, seq)`` would miss precisely the points a
+        half-finished indexing run left behind, which are the ones a cascade
+        most needs to reach.
+
+        Read BEFORE ``purge_space``: afterwards nothing remains to say which
+        points were the space's, and a point that outlives its row is
+        unreachable from Postgres yet still answers searches (retrieval filters
+        on the payload and never joins the database).
+        """
+        ...
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        """HARD-delete one space's whole corpus; returns how many DOCUMENTS
+        went (step 4 of the cascade, §3.6).
+
+        ``purge`` above, widened from one document to a space — and widened in
+        what it reaches, not only in how many rows it touches. ``purge`` may
+        leave a ``summary_jobs`` row behind (nothing references it, so nothing
+        breaks); here that row would outlive the space it describes, so this
+        takes it too, along with the ``reindex_job_items`` whose
+        ``fk_reindex_item_doc`` would otherwise refuse the document deletion
+        outright.
+
+        **A ``reindex_jobs`` row is deleted only once it has no items left.**
+        A job is a request, not content, and one request may name documents
+        from two spaces; deleting the job with the first space would erase the
+        other space's progress view. Emptied jobs do go — a job with no items
+        reports on nothing and can never gain another.
+
+        Deleting nothing is a no-op: the cascade must be re-runnable (§3.6).
+        """
+        ...
+
 
 class ReindexJobRepository(Protocol):
     """Tenant-scoped persistence for the ``ReindexJob`` aggregate + its item

@@ -282,6 +282,40 @@ class SoftDeleteFile:
         return file, events
 
 
+class PurgeSpaceFiles:
+    """Destroy one space's files — objects first, then rows (steps 5 and 6 of
+    ``docs/spaces-backend-plan.md`` §3.6, step 11).
+
+    **Not in ``FileUseCases``, and that is the point.** The bundle is what the
+    API layer consumes, and no request deletes a space's files: the only caller
+    is the composition-root ``DeleteSpaceService``, which runs this between the
+    knowledge purge and the conversations one. A face reachable from a router
+    would be a way to empty a space without deleting it.
+
+    **Objects before rows.** A row still names its object, so a failure between
+    the two leaves a file whose bytes are gone — recoverable, because the next
+    run reads the same rows and asks MinIO to delete keys that are already
+    deleted, which is a no-op (204). The reverse order loses the keys forever:
+    nothing else in the platform knows them, and the objects would then sit in
+    the bucket until the whole workspace is purged.
+
+    Deleting every object one call at a time is deliberate, not a placeholder.
+    A bulk ``delete_keys`` would be faster and §3.6 says why it is refused: a
+    PORT that can delete many keys at once becomes injectable into every
+    module, and the whole point of this file is that only the cascade may do
+    this.
+    """
+
+    def __init__(self, files: FileRepository, storage: StorageProvider) -> None:
+        self._files = files
+        self._storage = storage
+
+    async def execute(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        for key in await self._files.storage_keys_in_space(ctx, space_id):
+            await self._storage.delete(key)
+        return await self._files.purge_space(ctx, space_id)
+
+
 class FilesQueryService:
     """Implements the ``FilesQuery`` inbound port (02 §2) over the repository."""
 

@@ -49,6 +49,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     MetaData,
+    Select,
     Table,
     Text,
     Uuid,
@@ -199,6 +200,21 @@ _ACTIVE_JOB_STATUSES = (SummaryJobStatus.QUEUED.value, SummaryJobStatus.RUNNING.
 # ``TenantSessionFactory.__call__`` returns): the adapter depends only on this
 # narrow shape, never on ``infrastructure.persistence`` directly.
 TenantSessionProvider = Callable[[ExecutionContext], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _documents_in_space(ctx: ExecutionContext, space_id: UuidStr) -> Select[tuple[str]]:
+    """The ids of one space's documents, as a SUBQUERY (spaces plan step 11).
+
+    Written once and reused by both space-wide methods so the set they read
+    and the set they delete are defined by the same two predicates. Returned
+    unexecuted on purpose: the ids stay inside the database, where no page
+    size can make the corpus a `vector_refs_in_space` collected differ from
+    the corpus `purge_space` destroys a moment later.
+    """
+    return select(documents.c.id).where(
+        documents.c.workspace_id == ctx.workspace_id,
+        documents.c.space_id == space_id,
+    )
 
 
 class SqlDocumentRepository:
@@ -391,6 +407,94 @@ class SqlDocumentRepository:
                 await session.execute(drop_document)
         except DBAPIError as exc:
             raise _translate(exc) from exc
+
+    async def vector_refs_in_space(
+        self, ctx: ExecutionContext, space_id: UuidStr
+    ) -> Sequence[VectorRef]:
+        # `vector_refs` widened to a space through a subquery on `documents`:
+        # `chunks` carries no `space_id` of its own (only `documents` grew
+        # one, §3.142), and adding one would be a second place for a
+        # document's space to be recorded and to drift.
+        stmt = select(knowledge_chunks.c.collection, knowledge_chunks.c.point_id).where(
+            knowledge_chunks.c.workspace_id == ctx.workspace_id,
+            knowledge_chunks.c.document_id.in_(_documents_in_space(ctx, space_id)),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        # Half-written chunks are skipped for `vector_refs`'s reason: there is
+        # nothing in the vector store to delete for a chunk that never
+        # reached it, and `VectorRef` refuses to be built empty.
+        return [
+            VectorRef(row["collection"], row["point_id"])
+            for row in rows
+            if row["collection"] and row["point_id"]
+        ]
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: UuidStr) -> int:
+        docs = _documents_in_space(ctx, space_id)
+        # Children before parents, and the order is the FK's, not a
+        # preference: `fk_summary_doc`, `fk_chunk_doc` and
+        # `fk_reindex_item_doc` all reference `knowledge.documents(id)` with
+        # no `ON DELETE`, so a document deleted first is a `23503`.
+        #
+        # `summary_jobs` has no FK at all and is deleted anyway: nothing would
+        # break if it stayed, which is exactly why leaving it out would be a
+        # leak nobody notices -- a queued build for a document that no longer
+        # exists, in a space that no longer exists.
+        statements = [
+            delete(summaries).where(
+                summaries.c.workspace_id == ctx.workspace_id,
+                summaries.c.document_id.in_(docs),
+            ),
+            delete(summary_jobs).where(
+                summary_jobs.c.workspace_id == ctx.workspace_id,
+                summary_jobs.c.document_id.in_(docs),
+            ),
+            delete(reindex_job_items).where(
+                reindex_job_items.c.workspace_id == ctx.workspace_id,
+                reindex_job_items.c.document_id.in_(docs),
+            ),
+            delete(knowledge_chunks).where(
+                knowledge_chunks.c.workspace_id == ctx.workspace_id,
+                knowledge_chunks.c.document_id.in_(docs),
+            ),
+        ]
+        # `RETURNING id` rather than a driver `rowcount` -- the count is part
+        # of the port's contract, and `rowcount` is typed `Any`.
+        drop_documents = (
+            delete(documents)
+            .where(
+                documents.c.workspace_id == ctx.workspace_id,
+                documents.c.space_id == space_id,
+            )
+            .returning(documents.c.id)
+        )
+        # LAST, and only the childless ones (port docstring): a job whose
+        # items were all this space's now reports on nothing, but a job that
+        # still has items reports on ANOTHER space's rebuild and must survive.
+        # `NOT EXISTS` asks that question of the rows as they are AFTER the
+        # deletes above, inside the same transaction.
+        drop_empty_jobs = delete(reindex_jobs).where(
+            reindex_jobs.c.workspace_id == ctx.workspace_id,
+            ~select(reindex_job_items.c.job_id)
+            .where(reindex_job_items.c.job_id == reindex_jobs.c.id)
+            .exists(),
+        )
+        try:
+            # ONE transaction for all six: a corpus half-deleted across a
+            # failure is a document whose chunks are gone but whose row still
+            # says `indexed`, which no re-run of the cascade would repair.
+            async with self._tenant_session(ctx) as session:
+                for statement in statements:
+                    await session.execute(statement)
+                deleted = (await session.execute(drop_documents)).scalars().all()
+                await session.execute(drop_empty_jobs)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return len(deleted)
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         if not chunks:

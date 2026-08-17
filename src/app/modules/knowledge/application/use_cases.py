@@ -53,7 +53,7 @@ from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.unit_of_work import UnitOfWork
-from app.framework.ports.vector_store import HybridVectorStore
+from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.types import Uuid
 from app.modules.knowledge.application.event_mapping import to_outbox_record
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
@@ -1279,6 +1279,47 @@ class GetDocument:
         if document is None:
             raise NotFoundError("document not found")
         return document
+
+
+class PurgeSpaceKnowledge:
+    """Destroy one space's corpus — points first, then rows (steps 2, 3 and 4
+    of ``docs/spaces-backend-plan.md`` §3.6, step 11).
+
+    **Not in ``KnowledgeUseCases``, for ``PurgeSpaceFiles``' reason**: no
+    request may empty a space's index without deleting the space. The only
+    caller is the composition-root ``DeleteSpaceService``.
+
+    **Points before rows, and this is the one ordering that cannot be
+    reversed.** ``ReindexDocuments`` already argues it for one document and the
+    argument only gets stronger here: a Qdrant point is reachable by retrieval
+    alone — the payload filter never joins Postgres — so a point whose ``chunks``
+    row is gone is content that answers searches with nothing left in the
+    database to identify it, in a space the user was told is deleted. Deleting
+    the points first inverts the failure: if the vector call dies, every row is
+    still there, the next run of the cascade collects the very same refs, and
+    deleting an already-deleted point is a no-op.
+
+    Grouped by collection for ``_purge_vectors``' reason: every chunk of a
+    workspace lives in ``kn-<workspace_id>`` today, but each ``VectorRef``
+    names its own, and honouring that costs one dict.
+
+    ``VectorStore`` and not ``HybridVectorStore``: this needs ``delete`` and
+    nothing else, and §3.147 spent a step putting the hybrid-only method on the
+    hybrid port. Asking for the wider one here would undo that in the other
+    direction.
+    """
+
+    def __init__(self, documents: DocumentRepository, vectors: VectorStore) -> None:
+        self._documents = documents
+        self._vectors = vectors
+
+    async def execute(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        by_collection: dict[str, list[Uuid]] = {}
+        for ref in await self._documents.vector_refs_in_space(ctx, space_id):
+            by_collection.setdefault(ref.collection, []).append(ref.point_id)
+        for collection, point_ids in by_collection.items():
+            await self._vectors.delete(collection, point_ids)
+        return await self._documents.purge_space(ctx, space_id)
 
 
 class KnowledgeRetrievalService:

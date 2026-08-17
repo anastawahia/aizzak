@@ -39,6 +39,7 @@ from sqlalchemy import (
     Text,
     Uuid,
     cast,
+    delete,
     func,
     insert,
     select,
@@ -250,6 +251,53 @@ class SqlFileRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return total
+
+    async def storage_keys_in_space(
+        self, ctx: ExecutionContext, space_id: UuidStr
+    ) -> Sequence[str]:
+        # NO `deleted_at` predicate, and the port says why: a soft-deleted
+        # file's object is still in MinIO. This is the one read in this
+        # adapter that deliberately looks past the tombstone.
+        stmt = select(files.c.storage_key).where(
+            files.c.workspace_id == ctx.workspace_id,
+            files.c.space_id == space_id,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        # A registered-but-never-completed file still has a key (it is minted
+        # with the row, `RegisterUpload`), so the guard is defensive rather
+        # than expected -- and an empty string handed to `storage.delete`
+        # would be a request to delete the bucket root.
+        return [key for key in rows if key]
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: UuidStr) -> int:
+        # The module's only hard delete (port docstring). Two-layer isolation
+        # as everywhere else: the RLS GUC is Layer 1, the explicit
+        # `workspace_id` predicate here is Layer 2 -- and on a DELETE this
+        # wide, Layer 2 is what stands between one space and a whole tenant.
+        #
+        # `RETURNING id` rather than a driver `rowcount`: the count is part of
+        # this port's contract, and `rowcount` is a DBAPI attribute typed
+        # `Any` -- a number the type checker cannot vouch for is exactly the
+        # kind this platform refuses to let into a signature (`bytes_in_space`
+        # made the same call about `sum()`).
+        stmt = (
+            delete(files)
+            .where(
+                files.c.workspace_id == ctx.workspace_id,
+                files.c.space_id == space_id,
+            )
+            .returning(files.c.id)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                deleted = (await session.execute(stmt)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return len(deleted)
 
 
 def _paginate[T](

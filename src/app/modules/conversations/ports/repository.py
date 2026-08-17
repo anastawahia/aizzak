@@ -113,3 +113,27 @@ class ConversationRepository(Protocol):
     async def unpin_file(
         self, ctx: ExecutionContext, conversation_id: Uuid, file_id: Uuid
     ) -> None: ...
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        """HARD-delete one space's threads with their messages and pins;
+        returns how many CONVERSATIONS went (``docs/spaces-backend-plan.md``
+        §3.6 step 7, the last step of the cascade).
+
+        The module's only hard delete. Everything else here soft-deletes,
+        because a thread is a record a user may want back; a space's deletion
+        is the one act that says they do not (decision 2 — cascade, and no
+        undo).
+
+        Soft-deleted threads and messages go too: ``deleted_at`` marks a row
+        the user stopped wanting, and this deletes the space that owned it.
+        Filtering them out would leave the tombstones of a space that no longer
+        exists, invisible to every listing and impossible to reach.
+
+        ``conversation_files`` has no ``space_id`` of its own — a pin is a
+        narrowing INSIDE a thread (``conversations/0004_conversation_space``),
+        so its space is its thread's — and it is deleted through that thread,
+        which is also the order ``fk_msg_conv`` forces on the messages.
+
+        Deleting nothing is a no-op: the cascade must be re-runnable (§3.6).
+        """
+        ...

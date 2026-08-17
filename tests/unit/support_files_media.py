@@ -113,6 +113,26 @@ class InMemoryFileRepository:
             and row.deleted_at is None
         )
 
+    def _in_space(self, ctx: ExecutionContext, space_id: str) -> list[File]:
+        # NO `deleted_at` filter, unlike `bytes_in_space` right above: a
+        # soft-deleted file has given its bytes back but still owns its object
+        # (spaces plan step 11). The fake keeps that difference because it is
+        # the whole reason the port has two methods.
+        return [
+            row
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id and row.space_id == space_id
+        ]
+
+    async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: str) -> list[str]:
+        return [row.storage_key.value for row in self._in_space(ctx, space_id)]
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: str) -> int:
+        doomed = self._in_space(ctx, space_id)
+        for row in doomed:
+            del self.rows[row.id]
+        return len(doomed)
+
 
 @dataclass(frozen=True, slots=True)
 class SpaceRow:
@@ -162,6 +182,11 @@ class RecordingStorage:
     def __init__(self) -> None:
         self.presigned_puts: list[tuple[str, int, str]] = []
         self.presigned_gets: list[tuple[str, int]] = []
+        # Every key removed, in order (spaces plan step 11). Recorded rather
+        # than refused since the cascade became a caller: "which objects went,
+        # and before or after their rows" is the one thing `PurgeSpaceFiles`
+        # can get wrong without any count changing.
+        self.deleted: list[str] = []
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         raise AssertionError("not exercised by the routers")
@@ -170,7 +195,7 @@ class RecordingStorage:
         raise AssertionError("not exercised by the routers")
 
     async def delete(self, key: str) -> None:
-        raise AssertionError("not exercised by the routers")
+        self.deleted.append(key)
 
     async def presign_get(self, key: str, ttl_s: int) -> str:
         self.presigned_gets.append((key, ttl_s))

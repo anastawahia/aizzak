@@ -15,6 +15,7 @@ and not only of the type — the ``content_type``/``storage_key`` argument.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -64,5 +65,42 @@ class FileRepository(Protocol):
         meaning of the quota (a user who deletes must get their space back)
         and it is why this cannot reuse ``count``'s shape and be an argument
         away from it.
+        """
+        ...
+
+    async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> Sequence[str]:
+        """Every stored object key this space's files name — step 5 of the
+        cascade (``docs/spaces-backend-plan.md`` §3.6, step 11).
+
+        **Soft-deleted files are INCLUDED**, unlike ``bytes_in_space`` right
+        above, and the difference is the whole reason this is a second method
+        rather than an argument on the first. A deleted file has already given
+        its bytes back to the quota, but its OBJECT is still in MinIO — that
+        is what "soft" means — so a purge that skipped it would leave the
+        space's storage behind with no row left to name it, unreachable by
+        anything but ``app.ops.purge`` and only when the whole workspace dies.
+
+        Read BEFORE ``purge_space``, and it must be: afterwards there is no row
+        left to say which objects were the space's.
+        """
+        ...
+
+    async def purge_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
+        """HARD-delete every file row of one space; returns how many went
+        (step 6 of the cascade, §3.6).
+
+        The module's only hard delete, and it is deliberate: a space that was
+        deleted must stop counting against nothing, stop appearing in every
+        listing, and above all stop holding rows that point at objects this
+        cascade has already destroyed. A soft delete would leave exactly that —
+        a ``ready`` file whose bytes are gone, which is worse than either
+        state on its own.
+
+        Soft-deleted rows go too, for the reason ``storage_keys_in_space``
+        keeps them: their objects have just been deleted, so leaving the rows
+        would be leaving a promise the storage can no longer keep.
+
+        Deleting nothing is a no-op, not an error — a re-run of a cascade that
+        died half-way is the case this exists to survive (§3.6).
         """
         ...

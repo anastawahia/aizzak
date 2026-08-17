@@ -511,6 +511,53 @@ class SqlConversationRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
 
+    async def purge_space(self, ctx: ExecutionContext, space_id: UuidStr) -> int:
+        # The space's threads, named once and reused by all three statements
+        # as a subquery rather than fetched into Python: the ids never leave
+        # the database, so no page size and no round trip can put a thread
+        # outside the delete that its own messages are inside.
+        threads = select(conversations.c.id).where(
+            conversations.c.workspace_id == ctx.workspace_id,
+            conversations.c.space_id == space_id,
+        )
+        # Messages, then pins, then the threads themselves -- the order
+        # `fk_msg_conv` forces (it carries no `ON DELETE`, `0001`). Pins have
+        # no FK of their own (`file_id` is a logical reference, DD-01), so
+        # their position is chosen rather than imposed: before the parent, so
+        # the whole thread disappears in one direction.
+        #
+        # NO `deleted_at` predicate anywhere here (port docstring): a
+        # tombstone under a destroyed space is a row nothing can ever reach.
+        drop_messages = delete(messages).where(
+            messages.c.workspace_id == ctx.workspace_id,
+            messages.c.conversation_id.in_(threads),
+        )
+        drop_pins = delete(conversation_files).where(
+            conversation_files.c.workspace_id == ctx.workspace_id,
+            conversation_files.c.conversation_id.in_(threads),
+        )
+        # `RETURNING id` rather than a driver `rowcount` -- the count is part
+        # of the port's contract, and `rowcount` is typed `Any`.
+        drop_threads = (
+            delete(conversations)
+            .where(
+                conversations.c.workspace_id == ctx.workspace_id,
+                conversations.c.space_id == space_id,
+            )
+            .returning(conversations.c.id)
+        )
+        try:
+            # ONE session, so a failure between the three cannot leave a
+            # message whose thread is gone -- `purge`'s own argument in
+            # `knowledge`, applied to the other parent/child pair.
+            async with self._tenant_session(ctx) as session:
+                await session.execute(drop_messages)
+                await session.execute(drop_pins)
+                deleted = (await session.execute(drop_threads)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return len(deleted)
+
 
 def _message_count_column() -> ColumnElement[int]:
     """A correlated scalar subquery: ``COALESCE(MAX(seq), 0)`` over a
