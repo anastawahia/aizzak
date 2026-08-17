@@ -378,7 +378,15 @@ from app.modules.media.application.use_cases import (
     RequestMedia,
 )
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
-from app.modules.spaces.application.use_cases import DeleteSpace, SpacesQueryService
+from app.modules.spaces.application.use_cases import (
+    CreateSpace,
+    DeleteSpace,
+    GetSpace,
+    ListSpaces,
+    RenameSpace,
+    SpacesQueryService,
+    SpaceUseCases,
+)
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.usage.application.use_cases import (
     CaptureUsage,
@@ -835,21 +843,39 @@ def _build_files_seam(
 
 def _build_spaces_seam(
     tenant_session: TenantSessionFactory,
-) -> tuple[SqlSpaceRepository, SpacesQueryService]:
-    """The spaces module's store and its inbound query — the ``files`` shape,
-    for the same reason and with one of its own (``spaces-backend-plan.md``
-    step 6).
+) -> tuple[SqlSpaceRepository, SpacesQueryService, SpaceUseCases]:
+    """The spaces module's store, its inbound query and its API bundle — the
+    ``files`` shape, for the same reason and with one of its own
+    (``spaces-backend-plan.md`` steps 6 and 13).
 
-    The two roles this process gives ``spaces`` are asymmetric: the quota
-    service takes a ROW LOCK through the repository (``SpaceLock``), and
+    The roles this process gives ``spaces`` are asymmetric: the quota
+    service takes a ROW LOCK through the repository (``SpaceLock``),
     ``RegisterUpload`` asks an EXISTENCE question through the query
-    (``files.ports.spaces.ActiveSpaces``). Building them from one repository
+    (``files.ports.spaces.ActiveSpaces``), and ``/api/v1/spaces`` create/rename/
+    list through the bundle. Building all three from one repository
     is what keeps "what is a live space" a single answer — the lock refuses a
     soft-deleted row and so does ``get_active``, and a second adapter instance
     would be two places for that rule to drift apart.
+
+    ``SpaceUseCases.delete`` is the SAME ``DeleteSpace`` the cascade marks
+    with (``_build_space_services`` takes it as its ``mark``), which is step
+    13's own reason for building the bundle here rather than beside the
+    router's other bundles: two instances would type-check and behave
+    identically today, and would be two places for the mark's idempotence rule
+    to be changed in one and not the other. The bundle carries the mark, and
+    nothing but the cascade may spend it — ``ApiServices`` exposes the bundle
+    to a router that never calls ``delete`` on it (``routers/spaces.py`` goes
+    through ``space_deletion``), which is the API-side half of the same rule.
     """
     repository = SqlSpaceRepository(tenant_session)
-    return repository, SpacesQueryService(repository)
+    use_cases = SpaceUseCases(
+        create=CreateSpace(repository),
+        get=GetSpace(repository),
+        list=ListSpaces(repository),
+        rename=RenameSpace(repository),
+        delete=DeleteSpace(repository),
+    )
+    return repository, SpacesQueryService(repository), use_cases
 
 
 def _build_space_services(
@@ -857,6 +883,7 @@ def _build_space_services(
     limits: Limits,
     *,
     spaces: SqlSpaceRepository,
+    mark: DeleteSpace,
     files: SqlFileRepository,
     transfers: FileTransferService,
     storage: StorageHandle,
@@ -885,14 +912,16 @@ def _build_space_services(
     checker, and swapping two would destroy the same rows in an order whose
     failure modes §3.6 chose against.
 
-    ``DeleteSpace`` is constructed here rather than taken from a bundle
-    because ``SpaceUseCases`` does not exist yet — it lands with the router in
-    plan step 12, and step 13 is what gives it the same ``spaces`` repository
-    this service already holds. No router reaches EITHER service yet.
+    ``mark`` is the bundle's OWN ``DeleteSpace`` (plan step 13), no longer a
+    second one constructed here: the marking step the cascade runs and the one
+    the module packages are the same object, so a change to its idempotence
+    cannot land in one and miss the other. It is passed in rather than taken
+    off the bundle because this function must keep naming only what it uses —
+    the cascade marks, it does not create, rename or list.
     """
     quota = SpaceQuotaService(transfers, spaces, files, tenant_session, limits)
     deletion = DeleteSpaceService(
-        DeleteSpace(spaces),
+        mark,
         knowledge=knowledge,
         files=PurgeSpaceFiles(files, storage),
         conversations=conversations,
@@ -1214,19 +1243,27 @@ class CompositionRoot:
     # storage handle below; `media` holds `submit` + the first-ever
     # `GetJobStatus` construction.
     files: FileUseCases
+    # `spaces-backend-plan.md` step 13 — the spaces module's own bundle, the
+    # `files`/`conversations` precedent: one field per module, so `ApiServices`
+    # grows one too. It carries `delete` (the MARK, step 1 of the cascade) and
+    # the router deliberately never calls it — `DELETE /api/v1/spaces/{id}`
+    # goes through `space_deletion` below, because a mark without the other six
+    # steps hides a workspace's data instead of erasing it.
+    spaces: SpaceUseCases
     # `spaces-backend-plan.md` step 5 — registration gated on the space's 1 GiB
     # quota, under the space's row lock. Held HERE rather than inside
     # `FileUseCases`: the bundle is the files module's own packaging, and this
     # service is deliberately not the files module's (§3.3 — the lock is on a
-    # table `files` may not know about). No router reaches it yet; `?space_id=`
-    # arrives with the routers in plan step 12, and plan step 13 is what
-    # exposes it through `ApiServices`.
+    # table `files` may not know about). `POST /api/v1/files` registers through
+    # it since plan step 12, and plan step 13 is what carries it onto
+    # `ApiServices` — until that binding the route failed closed.
     space_quota: SpaceQuotaService[RegisteredUpload]
     # `spaces-backend-plan.md` step 11 — the cascade that empties a deleted
     # space (§3.6). Held beside `space_quota` and for the same reason: it is
     # not the files module's, not the spaces module's, and not any one
     # module's — it is the only object in the process that knows the whole
-    # list. `DELETE /api/v1/spaces/{id}` reaches it in plan step 12.
+    # list. `DELETE /api/v1/spaces/{id}` reaches it through `ApiServices`
+    # (plan step 13).
     space_deletion: DeleteSpaceService
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
@@ -1516,15 +1553,17 @@ class CompositionRoot:
         # docstring holds the reasoning).
         file_repository, files_query = _build_files_seam(tenant_session)
 
-        # `spaces-backend-plan.md` step 6 — the spaces store and its query,
-        # built here because BOTH of the files objects below need one of them:
-        # `RegisterUpload` proves the request's `space_id` real through
-        # `spaces_query`, and the quota locks its row through
-        # `space_repository`. The first of those is where `SpacesQuery` is
-        # bound to `files.ports.spaces.ActiveSpaces` — structurally, with mypy
-        # checking the fit at the call, which is the whole reason the two
-        # modules can stay strangers (contract 4).
-        space_repository, spaces_query = _build_spaces_seam(tenant_session)
+        # `spaces-backend-plan.md` steps 6 and 13 — the spaces store, its query
+        # and its API bundle, built here because BOTH of the files objects
+        # below need one of them: `RegisterUpload` proves the request's
+        # `space_id` real through `spaces_query`, and the quota locks its row
+        # through `space_repository`. The first of those is where `SpacesQuery`
+        # is bound to `files.ports.spaces.ActiveSpaces` — structurally, with
+        # mypy checking the fit at the call, which is the whole reason the two
+        # modules can stay strangers (contract 4); `_build_conversations` below
+        # binds the SAME object to that module's own `ActiveSpaces`, so one
+        # instance answers "is this space live?" for both writers.
+        space_repository, spaces_query, space_use_cases = _build_spaces_seam(tenant_session)
 
         # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
         # so they share ONE repository instance (see `_build_conversations`).
@@ -1568,6 +1607,7 @@ class CompositionRoot:
             tenant_session,
             settings.limits,
             spaces=space_repository,
+            mark=space_use_cases.delete,
             files=file_repository,
             transfers=files_use_cases.transfers,
             storage=storage,
@@ -1650,6 +1690,7 @@ class CompositionRoot:
             notify_consumer=notify_consumer,
             notify_subscriptions=notify_subscriptions,
             files=files_use_cases,
+            spaces=space_use_cases,
             space_quota=space_quota,
             space_deletion=space_deletion,
             media=media,

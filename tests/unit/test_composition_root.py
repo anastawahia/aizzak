@@ -40,6 +40,7 @@ from app.infrastructure.storage.minio_storage import MinioStorage
 from app.modules.files.application.use_cases import FileUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeRetrievalService
 from app.modules.media.application.use_cases import GetJobStatus, MediaUseCases
+from app.modules.spaces.application.use_cases import SpacesQueryService, SpaceUseCases
 
 _ROUTING = '{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}}}'
 
@@ -276,6 +277,57 @@ def test_the_files_and_media_bundles_are_wired_over_the_shared_handle(
     assert isinstance(booted.media.get_status, GetJobStatus)
     # One atomic service behind both media faces (agents + API).
     assert booted.media.requests is booted.orchestrator._deps.media
+
+
+def test_the_spaces_bundle_is_wired_and_shares_its_mark_with_the_cascade(
+    booted: CompositionRoot,
+) -> None:
+    """``spaces-backend-plan.md`` step 13: the module's bundle exists on the
+    root — the ``files``/``media`` precedent — and the cascade marks with the
+    bundle's OWN ``DeleteSpace`` rather than a second one.
+
+    The identity is the point, not the presence. Two ``DeleteSpace`` instances
+    over the same repository behave identically today and would type-check
+    forever, so nothing else in the suite could notice them diverging: the
+    mark's idempotence rule (re-deleting emits no event, which is what makes an
+    interrupted cascade resumable, §3.6) would then live in two places free to
+    be changed in one.
+    """
+    assert isinstance(booted.spaces, SpaceUseCases)
+    assert booted.space_deletion._mark is booted.spaces.delete
+    # One store behind every face of the module (the `_build_conversations`
+    # one-repository precedent): the space `POST /spaces` mints is the one
+    # `GET /spaces` pages and the one the cascade marks.
+    store = booted.spaces.create._spaces
+    assert booted.spaces.list._spaces is store
+    assert booted.spaces.rename._spaces is store
+    assert booted.spaces.get._spaces is store
+    assert booted.spaces.delete._spaces is store
+    # And the quota locks THAT store's rows — the lock and the mark must
+    # refuse/observe the same row, or a space could be emptied while an upload
+    # is being admitted into it.
+    assert booted.space_quota._spaces is store
+
+
+def test_both_active_space_seams_are_bound_to_one_query_instance(
+    booted: CompositionRoot,
+) -> None:
+    """``spaces-backend-plan.md`` steps 6, 7 and 13 — the two ``ActiveSpaces``
+    ports, declared independently by ``files`` and ``conversations`` (§3.1: a
+    module never imports another), bound at this one call site to the SAME
+    ``SpacesQueryService``.
+
+    Two instances would be harmless while ``get_active``'s rule is one line,
+    and that is exactly the failure this pins: "is this space live?" is the
+    question both writers ask before they write a row that no listing would
+    ever reach if the answer were wrong, and one process must not be able to
+    answer it two ways.
+    """
+    files_seam = booted.files.transfers._register._spaces
+    conversations_seam = booted.conversations.start._spaces
+
+    assert isinstance(files_seam, SpacesQueryService)
+    assert files_seam is conversations_seam
 
 
 def test_the_knowledge_bundle_is_wired_with_a_real_search_service(

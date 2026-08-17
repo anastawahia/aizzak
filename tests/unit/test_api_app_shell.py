@@ -687,6 +687,53 @@ def test_production_wiring_starts_and_stops_the_hubs_renewal_loop(
 
 
 # --------------------------------------------------------------------------- #
+# spaces-backend-plan.md step 13: the three space faces reach the API layer    #
+# --------------------------------------------------------------------------- #
+def test_production_wiring_hands_the_api_layer_all_three_space_faces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The renewal-loop guard's shape again, for the defect plan step 12 left
+    behind on purpose (``docs/log/3.150.md``).
+
+    All three fields default to ``None`` on ``ApiServices``, and every route
+    behind them fails CLOSED: the four ``/api/v1/spaces`` routes answer
+    ``common.internal`` without ``spaces``/``space_deletion``, and — the one
+    that matters most — ``POST /api/v1/files`` answers the same without
+    ``space_quota``, because it registers THROUGH the quota rather than
+    falling back to the unmeasured registrar. So a production factory that
+    forgot any of them would ship a deployment where the whole space axis
+    500s and the 1 GiB ceiling (§3.3) is a number nothing reads, with no
+    exception at boot and no other failing test anywhere.
+
+    Identity, not merely non-``None``: the quota must be the root's own
+    instance, since its whole mechanism is that the row lock, the byte sum
+    and the INSERT share ONE transaction over the SAME ``tenant_session``.
+    """
+    captured: dict[str, Any] = {}
+
+    def _capture(services: Any, **kwargs: Any) -> FastAPI:
+        captured["services"] = services
+        return FastAPI()
+
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-project")
+    monkeypatch.setenv(
+        "PROVIDER_ROUTING", '{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}}}'
+    )
+    monkeypatch.setattr(main_module, "create_app", _capture)
+
+    main_module.create_production_app()
+
+    services = captured["services"]
+    assert services.spaces is not None
+    assert services.space_deletion is not None
+    assert services.space_quota is not None
+    # The cascade marks with the very `DeleteSpace` the bundle carries — one
+    # object, so the mark's idempotence rule cannot be changed in one and
+    # missed in the other (`_build_spaces_seam`).
+    assert services.space_deletion._mark is services.spaces.delete
+
+
+# --------------------------------------------------------------------------- #
 # ن-10: the Vault liveness probe is wired by the PRODUCTION factory           #
 # --------------------------------------------------------------------------- #
 def test_production_wiring_passes_the_vault_health_probe(

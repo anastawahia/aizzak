@@ -507,6 +507,17 @@ def create_production_app() -> FastAPI:
         conversations=root.conversations,
         workflows=root.workflow_registry,
         files=root.files,
+        # `spaces-backend-plan.md` step 13 — the three space-shaped fields, and
+        # they arrive together because they fail together: `spaces` and
+        # `space_deletion` are what `/api/v1/spaces` answers with instead of
+        # `common.internal`, and `space_quota` is what `POST /api/v1/files`
+        # registers through since step 12. That last one is the reason this is
+        # not cosmetic wiring — without it the 1 GiB ceiling (§3.3) is a
+        # number no route reads, and the upload route fails CLOSED rather than
+        # falling back to the unmeasured registrar.
+        spaces=root.spaces,
+        space_deletion=root.space_deletion,
+        space_quota=root.space_quota,
         media=root.media,
         workspace=root.workspace,
         presence=root.presence,
