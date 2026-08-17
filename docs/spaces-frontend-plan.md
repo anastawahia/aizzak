@@ -12,7 +12,7 @@
 | **المستودع** | `/home/web_app` — React 19 · Vite · react-router 7 · axios · lucide-react |
 | **النطاق** | صفحة الوحدات · شاشة الوحدة الثلاثيّة · طبقة `api/spaces.ts` · تمرير `spaceId` عبر كلّ نداء قائم · حصّة مرئيّة |
 | **خارج النطاق** | تغيير نظام التصميم · مسارات خارج `/rag` · لوحة الإدارة · **إزالة ميزة التثبيت (تبقى — القرار ٥)** |
-| **الحالة** | 🔲 محجوبة على الباك-اند |
+| **الحالة** | ✅ منفَّذة — 2026‑08‑17 · `npm run build` و`npm run lint` نظيفان |
 
 ---
 
@@ -233,17 +233,28 @@ deleteSpace(id)         // حذف متسلسل
 
 | # | الخطوة | يمسّ | الحالة |
 |---|---|---|---|
-| ١ | تصدير `openapi.json` الجديد + `npm run gen:api` | جذر المستودع | 🔲 |
-| ٢ | `api/spaces.ts` + تصديره في `api/index.ts` | `features/rag/api` | 🔲 |
-| ٣ | `spaceId` عبر `files.ts` و`conversations.ts` | `features/rag/api` | 🔲 |
-| ٤ | حارس العقد | `scripts/` | 🔲 |
-| ٥ | المسارات + تحويل `/rag/:agentId` | `App.jsx` · `Rag.jsx` | 🔲 |
-| ٦ | `SpacesHome` | `features/rag/pages` | 🔲 |
-| ٧ | `ConversationsPanel` (مستخرَج من `RagHome`) | `features/rag/components` | 🔲 |
-| ٨ | `SpaceView` — التخطيط الثلاثيّ + التنقّل | `features/rag/pages` | 🔲 |
-| ٩ | `WorkspaceFiles`: `spaceId` · النصوص · شريط الحصّة | `features/rag/components` | 🔲 |
-| ١٠ | حذف `RagHome` القديم بعد استخراج ما فيه | `features/rag/pages` | 🔲 |
-| ١١ | `npm run build` (السلسلة الأربع) + `npm run lint` | — | 🔲 |
+| ١ | تصدير `openapi.json` الجديد + `npm run gen:api` | جذر المستودع | ✅ |
+| ٢ | `api/spaces.ts` + تصديره في `api/index.ts` | `features/rag/api` | ✅ |
+| ٣ | `spaceId` عبر `files.ts` و`conversations.ts` | `features/rag/api` | ✅ |
+| ٤ | حارس العقد | `scripts/` | ✅ |
+| ٥ | المسارات + تحويل `/rag/:agentId` | `App.jsx` · `Rag.jsx` | ✅ |
+| ٦ | `SpacesHome` | `features/rag/pages` | ✅ |
+| ٧ | `ConversationsPanel` (مستخرَج من `RagHome`) | `features/rag/components` | ✅ |
+| ٨ | `SpaceView` — التخطيط الثلاثيّ + التنقّل | `features/rag/pages` | ✅ |
+| ٩ | `WorkspaceFiles`: `spaceId` · النصوص · شريط الحصّة | `features/rag/components` | ✅ |
+| ١٠ | حذف `RagHome` القديم بعد استخراج ما فيه | `features/rag/pages` | ✅ |
+| ١١ | `npm run build` (السلسلة الأربع) + `npm run lint` | — | ✅ |
+
+### 4.1 انحرافات عن الخطّة — سُجِّلت وقت التنفيذ
+
+| # | الخطّة تقول | الواقع | ما فُعِل |
+|---|---|---|---|
+| أ | «main space» يوفّرها الخادم (§ف‑٤) | **لم تُنفَّذ في الباك-اند** — مسجَّلة فجوةً في [`spaces-backend-plan.md`](spaces-backend-plan.md) §7: «مساحةُ عملٍ جديدة تصنع وحدتها الأولى بـ`POST /spaces`» | `SpacesHome` تعرض حالة الفراغ ودعوةً لإنشاء أوّل وحدة. الخطّة أصلًا تشترط «حالة فراغٍ إن عاد فارغًا فعلًا» — فالسلوك مطابق، والافتراض وحده كان خاطئًا |
+| ب | آخر محادثة بـ`updated_at` تنازليًّا (§ف‑٥) | `ConversationOut` **لا يحمل `updated_at`**؛ الخادم يرتّب بـ`id DESC` (‏UUIDv7) | يُفتَح أحدثُ خيطٍ **إنشاءً** لا أحدثُ نشاطًا. لا مسار في العقد يعطي غير ذلك |
+| ج | «خارج النطاق: مسارات خارج `/rag`» (§0) | الباك-اند جعل `space_id` **إلزاميًّا** على `GET/POST /conversations`، فكسر `listAgents`/`createAgent` في لوحة التحكّم (وكيل الملفّات) — وهو خطأ تصريف لا خيار | حلٌّ مؤقّت موثَّق في [`src/api/index.ts`](../../web_app/src/api/index.ts): خيوط وكيل الملفّات تُنسَب إلى **أقدم وحدة** في مساحة العمل. ⚠️ **أثرٌ مرئيّ**: `conversation_count` على بطاقة تلك الوحدة يعدّ خيوطًا لا يسردها عمودها الأيسر (المُرشَّح بـ`rag_agent`) — فقد تقرأ البطاقة أعلى من اللوحة. يزول متى نالت لوحة التحكّم وحدةً خاصّةً بها |
+| د | ترتيب الأعمدة (§ف‑٥ + §0.3) | — | نُفِّذ حرفيًّا: ترتيب DOM = `WorkspaceFiles` ثمّ المحادثة ثمّ `ConversationsPanel`، أي في RTL: ملفّات يمينًا · محادثات يسارًا. **هذا انقلابٌ عن الشاشة القديمة** حيث كانت المحادثات يمينًا |
+
+> **حصّة الـ1 GiB ليست في العقد.** لا مسار ينشرها (`max_space_bytes` إعداد مشغّل)، فهي ثابتٌ `SPACE_QUOTA_BYTES` في [`api/spaces.ts`](../../web_app/src/features/rag/api/spaces.ts) يقود العرض والرفض الاستباقيّ وحدهما — والحارس الحقيقيّ يبقى الخادم (§ف‑٧).
 
 ---
 
