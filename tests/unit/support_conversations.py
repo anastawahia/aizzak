@@ -16,6 +16,7 @@ by the same rules.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -33,6 +34,7 @@ from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
     ConversationUseCases,
+    CountConversationsBySpace,
     GetConversation,
     ListConversationFiles,
     ListConversationsByAgent,
@@ -157,6 +159,25 @@ class InMemoryConversationRepository:
             for pin in stored
             if not (pin.file_id == file_id and pin.workspace_id == ctx.workspace_id)
         ]
+
+    async def counts_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[Uuid]
+    ) -> dict[Uuid, int]:
+        # Active threads only, and ABSENT rather than zero for a space that
+        # holds none -- the two rules the real `GROUP BY` follows, kept here
+        # because the router's zero-default depends on the second one.
+        wanted = set(space_ids)
+        counts: dict[Uuid, int] = {}
+        for conversation in self.rows.values():
+            if (
+                conversation.workspace_id != ctx.workspace_id
+                or conversation.space_id not in wanted
+                or conversation.deleted_at is not None
+            ):
+                continue
+            assert conversation.space_id is not None
+            counts[conversation.space_id] = counts.get(conversation.space_id, 0) + 1
+        return counts
 
     async def purge_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
         # Threads, messages and pins together, soft-deleted rows included
@@ -301,6 +322,7 @@ def build_conversations(
             list_files=list_files,
             pin_file=PinConversationFile(repository, readable),
             unpin_file=UnpinConversationFile(repository),
+            space_counts=CountConversationsBySpace(repository),
         ),
         service=ConversationService(
             StartConversation(repository, live_spaces),

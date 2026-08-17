@@ -18,6 +18,7 @@ tags:
   - name: agents
   - name: models
   - name: conversations
+  - name: spaces
   - name: files
   - name: knowledge
   - name: media
@@ -218,6 +219,7 @@ paths:
       operationId: listConversations
       parameters:
         - { name: agent_key, in: query, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/SpaceId" }
         - { $ref: "#/components/parameters/Limit" }
         - { $ref: "#/components/parameters/Cursor" }
       responses:
@@ -326,11 +328,46 @@ paths:
         "204": { description: Unpinned }
         default: { $ref: "#/components/responses/Problem" }
 
+  /spaces:
+    get:
+      tags: [spaces]
+      operationId: listSpaces
+      description: "The workspace's active spaces, newest first, each with what it holds. `bytes_used` counts ACTIVE files only and is what the 1 GiB per-space quota is measured against."
+      parameters: [ { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SpacePage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [spaces]
+      operationId: createSpace
+      description: "Mint a space. A name already taken in this workspace is `spaces.duplicate_name`/409, refused by the unique index in the same statement that would have written the row. The counters come back as zeros."
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SpaceCreateIn" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/SpaceOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /spaces/{id}:
+    patch:
+      tags: [spaces]
+      operationId: renameSpace
+      description: "Rename a space - the only mutable field it has. Unknown is 404 and soft-deleted is 409, the read/write asymmetry every other module uses. Renaming to the current name succeeds and writes nothing."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SpaceRenameIn" } } } }
+      responses:
+        "200": { description: Renamed, content: { application/json: { schema: { $ref: "#/components/schemas/SpaceOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [spaces]
+      operationId: deleteSpace
+      description: "Delete a space AND everything it owns: its documents and their vectors, its files and their stored objects, its threads and their messages and pins. There is no undo. Idempotent BY CONSTRUCTION rather than by an `Idempotency-Key` ledger - every step is a no-op when repeated, so retrying REPAIRS a cascade that died half-way, which a replayed response would instead skip."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "204": { description: Deleted with its contents }
+        default: { $ref: "#/components/responses/Problem" }
   /files:
     get:
       tags: [files]
       operationId: listFiles
-      parameters: [ { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      parameters: [ { $ref: "#/components/parameters/SpaceId" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FilePage" } } } }
         default: { $ref: "#/components/responses/Problem" }
@@ -389,7 +426,7 @@ paths:
     get:
       tags: [knowledge]
       operationId: listDocuments
-      parameters: [ { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      parameters: [ { $ref: "#/components/parameters/SpaceId" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentPage" } } } }
         default: { $ref: "#/components/responses/Problem" }
@@ -727,6 +764,11 @@ components:
     AgentKey: { name: agent_key, in: path, required: true, schema: { type: string } }
     Limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Cursor: { name: cursor, in: query, required: false, schema: { type: string } }
+    # spaces-backend-plan.md §3.7 — REQUIRED, not defaulted: a file, a thread and a
+    # document each belong to exactly one space, so an unqualified listing is not a
+    # view the data model offers. An id that names no space answers an empty page
+    # rather than a 404: a listing is not an existence oracle.
+    SpaceId: { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
     CorrelationId: { name: X-Correlation-Id, in: header, required: false, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string } }
   headers:
@@ -1008,6 +1050,11 @@ components:
       required: [input]
       properties:
         conversation_id: { type: string, format: uuid, nullable: true }
+        space_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: "The space a NEW thread is opened in. Optional because a request that names a conversation_id inherits that thread's space and must not restate it; naming NEITHER is a 422."
         input: { type: object, additionalProperties: true }
         stream: { type: boolean, default: false }
     AgentInvokeOut:
@@ -1034,8 +1081,8 @@ components:
       properties: { route: {type: string, nullable: true, description: "A ModelOut.capability — never a raw model name. null unpins."} }
     ConversationCreateIn:
       type: object
-      required: [agent_key]
-      properties: { agent_key: {type: string}, title: {type: string, nullable: true} }
+      required: [space_id, agent_key]
+      properties: { space_id: {type: string, format: uuid, description: "The space this thread belongs to. It decides what the thread's retrieval can see, so a thread without one could see nothing."}, agent_key: {type: string}, title: {type: string, nullable: true} }
     ConversationPatchIn:
       type: object
       required: [title]
@@ -1071,10 +1118,30 @@ components:
     ConversationFilePage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/ConversationFileOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    SpaceCreateIn:
+      type: object
+      required: [name]
+      properties: { name: {type: string, minLength: 1, maxLength: 120} }
+    SpaceRenameIn:
+      type: object
+      required: [name]
+      properties: { name: {type: string, minLength: 1, maxLength: 120} }
+    SpaceOut:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        bytes_used: {type: integer, description: "Total size of the space's ACTIVE files - a soft-deleted file has already given its bytes back to the quota."}
+        file_count: {type: integer}
+        conversation_count: {type: integer}
+        created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    SpacePage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/SpaceOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
     FileRegisterIn:
       type: object
-      required: [name, content_type, size_bytes]
-      properties: { name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0} }
+      required: [space_id, name, content_type, size_bytes]
+      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the 1 GiB quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0} }
     FileRegisterOut:
       type: object
       properties: { file_id: {type: string, format: uuid}, upload_url: {type: string}, expires_in: {type: integer} }
@@ -1204,8 +1271,8 @@ components:
       properties: { key: {type: string}, name: {type: string}, steps: { type: array, items: {type: string} } }
     WorkflowRunIn:
       type: object
-      required: [input]
-      properties: { input: {type: object, additionalProperties: true}, stream: {type: boolean, default: false} }
+      required: [space_id, input]
+      properties: { space_id: {type: string, format: uuid, description: "The space this run's thread is opened in. Required with no nullable case: a run always opens its own thread, so it never has one to inherit a space from."}, input: {type: object, additionalProperties: true}, stream: {type: boolean, default: false} }
     WorkflowRunOut:
       type: object
       properties:

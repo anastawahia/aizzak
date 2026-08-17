@@ -135,7 +135,9 @@ async def run_workflow(
     would hide work the workspace already paid for.
     """
     if wants_sse(request, body.stream):
-        run = await services.orchestrator.invoke_workflow(ctx, key, body.input)
+        run = await services.orchestrator.invoke_workflow(
+            ctx, key, body.input, space_id=body.space_id
+        )
         return StreamingResponse(
             sse_stream(run.events(), correlation_id=ctx.correlation_id),
             media_type=SSE_MEDIA_TYPE,
@@ -143,7 +145,9 @@ async def run_workflow(
         )
 
     async def _collect() -> WorkflowRunOut:
-        run = await services.orchestrator.invoke_workflow(ctx, key, body.input)
+        run = await services.orchestrator.invoke_workflow(
+            ctx, key, body.input, space_id=body.space_id
+        )
         await run.collect()
         return WorkflowRunOut(
             run_id=run.run_id, conversation_id=run.conversation_id, status=run.status

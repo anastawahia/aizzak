@@ -89,9 +89,11 @@ class ConversationThreads(Protocol):
         ``space_id`` crosses as a plain ``Uuid`` string — an opaque id, like
         ``kind`` and ``role``, so no caller has to import anything of this
         module's or of ``spaces``'. It is REQUIRED and nullable with no
-        default: the orchestrator has no space to name until the invoke
-        contract carries one (step 12), and a default would have hidden that
-        rather than stating it at the call.
+        default. Since step 12 the orchestrator DOES have one to name —
+        ``AgentInvokeIn``/``WorkflowRunIn`` carry it — and it refuses to open
+        a thread without it; the nullability survives for the callers that
+        legitimately have none, and the absent default keeps every one of them
+        visible at its call.
 
         An id that names no live space is a 404 from ``StartConversation``,
         raised before the thread exists.

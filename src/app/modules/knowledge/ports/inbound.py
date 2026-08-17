@@ -32,9 +32,17 @@ class KnowledgeRetrieval(Protocol):
     is keyword-only WITHOUT a default while ``file_ids`` keeps one. Forgetting
     a pin narrows nothing; forgetting a space widens the answer across the
     axis this plan draws — so the caller has to say, and the two callers that
-    cannot say it yet (``POST /knowledge/search`` and the RAG agent, both
-    waiting on step 12) are visible in the source as the ones passing ``None``
-    on purpose.
+    still cannot say it (``POST /knowledge/search`` and the RAG agent) are
+    visible in the source as the ones passing ``None`` on purpose.
+
+    ⚠️ **Step 12 did NOT close those two, contrary to what this note used to
+    predict.** It put the space on the wire for the routes §3.7 names, and
+    both of these reach retrieval from somewhere else: the search body is not
+    in that table, and the RAG agent reads its space from ``AgentDeps``, which
+    the orchestrator does not fill yet. Until that lands (recorded in the
+    plan's §7), a thread inside a space still retrieves across every space —
+    which is decision 1 unenforced on the read path, and the reason the entry
+    is written down rather than left to be noticed.
     """
 
     async def retrieve(

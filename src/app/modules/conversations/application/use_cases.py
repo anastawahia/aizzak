@@ -21,6 +21,7 @@ bug 4.7-d-2 fixed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.framework.clock import utc_now
@@ -165,9 +166,9 @@ class ListConversationsByAgent:
 
     ``None`` is "every space", not "the threads with no space": the narrowing
     is an extra condition in the adapter, never a comparison against ``NULL``.
-    The router still passes ``None`` until ``?space_id=`` lands (step 12), and
-    the keyword is required so that choice is written there rather than
-    inherited from a default.
+    The router names a real space from step 12 on (``?space_id=`` is required
+    there), and the keyword stays required so "every space" is written at
+    whichever call site still means it rather than inherited from a default.
     """
 
     def __init__(self, conversations: ConversationRepository) -> None:
@@ -189,6 +190,25 @@ class ListConversationsByAgent:
         return await self._conversations.list_by_agent(
             ctx, key.value, space_id=space_id, limit=limit, cursor=cursor
         )
+
+
+class CountConversationsBySpace:
+    """How many active threads each of several spaces holds — the third number
+    ``GET /api/v1/spaces`` publishes (``docs/spaces-backend-plan.md`` §3.7,
+    step 12).
+
+    The ``SummariseSpaces`` argument in the ``files`` module, applied here:
+    the count is over THIS module's table, so this module answers it, and the
+    spaces router — which holds both bundles — is where the two halves are
+    put beside a name. There is no ``agent_key`` on it, unlike every other
+    listing here: a space's threads are its threads whichever agent runs them.
+    """
+
+    def __init__(self, conversations: ConversationRepository) -> None:
+        self._conversations = conversations
+
+    async def execute(self, ctx: ExecutionContext, space_ids: Sequence[Uuid]) -> Mapping[Uuid, int]:
+        return await self._conversations.counts_by_space(ctx, space_ids)
 
 
 class GetConversation:
@@ -599,6 +619,11 @@ class ConversationUseCases:
     list_files: ListConversationFiles
     pin_file: PinConversationFile
     unpin_file: UnpinConversationFile
+    # `spaces-backend-plan.md` step 12 — the conversations third of `GET
+    # /api/v1/spaces` (§3.7). Here rather than on a spaces bundle for the
+    # reason `SummariseSpaces` is on the files one: the rows are this
+    # module's, and only the router may hold both.
+    space_counts: CountConversationsBySpace
 
 
 class ConversationService:

@@ -78,6 +78,9 @@ from tests.unit.support_access import build_authorization
 
 _WORKSPACE = "018f0000-0000-7000-8000-000000000001"
 _CONVERSATION = "018f0000-0000-7000-8000-0000000000aa"
+# Spaces plan step 12 — `invoke_workflow` REQUIRES a space, because a run
+# always opens its own D-12 thread and so has none to inherit.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 
 
 def _ctx() -> ExecutionContext:
@@ -300,7 +303,7 @@ async def test_a_run_opens_its_own_conversation() -> None:
         agents=[_EchoAgent], definitions=[_definition("echo_a")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     (call,) = threads.calls
     _ctx_seen, agent_key, kind, title = call
@@ -321,7 +324,7 @@ async def test_the_conversation_exists_before_the_first_event() -> None:
         agents=[_EchoAgent], definitions=[_definition("echo_a")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     # Nothing has been iterated yet.
     assert threads.calls, "the thread must be opened during pre-flight"
@@ -335,7 +338,7 @@ async def test_the_run_carries_the_callers_context_to_the_thread() -> None:
     )
     ctx = _ctx()
 
-    await orchestrator.invoke_workflow(ctx, "wf", {})
+    await orchestrator.invoke_workflow(ctx, "wf", {}, space_id=_SPACE)
 
     (seen_ctx, _key, _kind, _title) = threads.calls[0]
     assert seen_ctx is ctx
@@ -352,7 +355,7 @@ async def test_a_thread_that_cannot_be_opened_never_starts_the_run() -> None:
     )
 
     with pytest.raises(AppError):
-        await orchestrator.invoke_workflow(_ctx(), "wf", {})
+        await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     assert _EchoAgent.seen == []
 
@@ -364,7 +367,7 @@ async def test_an_unknown_workflow_raises_workflow_unknown() -> None:
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent])
 
     with pytest.raises(NotFoundError) as excinfo:
-        await orchestrator.invoke_workflow(_ctx(), "nope", {})
+        await orchestrator.invoke_workflow(_ctx(), "nope", {}, space_id=_SPACE)
 
     # 03-api-spec's own code, not the inherited generic `common.not_found`.
     assert excinfo.value.code == "workflow.unknown"
@@ -378,7 +381,7 @@ async def test_an_unknown_workflow_leaves_no_orphan_conversation() -> None:
     orchestrator, _, threads = _orchestrator(agents=[_EchoAgent])
 
     with pytest.raises(NotFoundError):
-        await orchestrator.invoke_workflow(_ctx(), "nope", {})
+        await orchestrator.invoke_workflow(_ctx(), "nope", {}, space_id=_SPACE)
 
     assert threads.calls == []
 
@@ -392,7 +395,7 @@ async def test_an_unwired_workflow_seam_refuses_rather_than_inventing() -> None:
     )
 
     with pytest.raises(AppError) as excinfo:
-        await orchestrator.invoke_workflow(_ctx(), "wf", {})
+        await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     assert excinfo.value.code == "common.internal"
     assert excinfo.value.status == 500
@@ -407,7 +410,7 @@ async def test_result_collects_each_steps_final_in_order() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"seed": 1})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"seed": 1}, space_id=_SPACE)
     await _drain(run)
 
     assert [output["who"] for output in run.result.outputs] == ["echo_a", "echo_b"]
@@ -416,7 +419,7 @@ async def test_result_collects_each_steps_final_in_order() -> None:
 async def test_result_carries_the_workflow_key_and_its_conversation() -> None:
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent], definitions=[_definition("echo_a")])
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     result = await run.collect()
 
     assert result.workflow_key == "wf"
@@ -430,7 +433,7 @@ async def test_collect_drains_the_stream_and_returns_the_result() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     result = await run.collect()
 
     assert [output["who"] for output in result.outputs] == ["echo_a", "echo_b"]
@@ -447,7 +450,7 @@ async def test_result_is_correct_for_an_abandoned_run() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     async for event in run.events():
         if event.type == "final":
             break  # walk away after the FIRST step
@@ -458,7 +461,7 @@ async def test_result_is_correct_for_an_abandoned_run() -> None:
 async def test_result_outputs_cannot_be_mutated_through_the_handle() -> None:
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent], definitions=[_definition("echo_a")])
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await _drain(run)
     run.result.outputs.append({"forged": True})
 
@@ -472,7 +475,7 @@ async def test_a_halted_run_keeps_the_outputs_of_the_steps_that_ran() -> None:
         definitions=[_definition("echo_a", "failing", "echo_b")],
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     events = await _drain(run)
 
     assert any(event.type == "error" for event in events)
@@ -498,7 +501,9 @@ async def test_the_initial_input_is_written_as_the_runs_opening_turn() -> None:
         agents=[_EchoAgent], definitions=[_definition("echo_a")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"text": "summarise this"})
+    run = await orchestrator.invoke_workflow(
+        _ctx(), "wf", {"text": "summarise this"}, space_id=_SPACE
+    )
 
     assert threads.appended == [(_CONVERSATION, "user", "summarise this", (), None)]
     await _drain(run)
@@ -509,7 +514,7 @@ async def test_each_completed_step_is_appended_to_the_thread_in_order() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"text": "go"})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"text": "go"}, space_id=_SPACE)
     await _drain(run)
 
     assert _roles(threads) == ["user", "assistant", "assistant"]
@@ -526,7 +531,7 @@ async def test_a_halted_run_records_only_the_steps_that_produced_output() -> Non
         definitions=[_definition("echo_a", "failing", "echo_b")],
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await _drain(run)
 
     # One completed step ⇒ one assistant turn. The failed step wrote nothing
@@ -545,7 +550,7 @@ async def test_an_abandoned_run_keeps_the_turns_it_already_wrote() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     async for event in run.events():
         if event.type == "final":
             break  # walk away after the FIRST step
@@ -567,7 +572,7 @@ async def test_a_step_write_failure_never_halts_the_run() -> None:
         threads=threads,
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     events = await _drain(run)
 
     assert [event.type for event in events].count("final") == 2
@@ -585,7 +590,7 @@ async def test_an_opening_turn_that_cannot_be_written_never_starts_the_run() -> 
     )
 
     with pytest.raises(ConflictError):
-        await orchestrator.invoke_workflow(_ctx(), "wf", {})
+        await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     assert _EchoAgent.seen == []
 
@@ -596,7 +601,7 @@ async def test_run_id_is_the_conversation_id() -> None:
     could never resolve."""
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent], definitions=[_definition("echo_a")])
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     assert run.run_id == run.conversation_id == _CONVERSATION
     await _drain(run)
@@ -605,7 +610,7 @@ async def test_run_id_is_the_conversation_id() -> None:
 async def test_status_is_running_before_the_stream_ends_and_completed_after() -> None:
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent], definitions=[_definition("echo_a")])
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     assert run.status == "running"
 
     await _drain(run)
@@ -625,7 +630,7 @@ async def test_each_step_resolves_its_own_agent_key() -> None:
         agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await _drain(run)
 
     # Routed by the STEP's agent key — never once by the workflow key.
@@ -643,7 +648,7 @@ async def test_a_step_needing_no_llm_resolves_none() -> None:
         agents=[_Mediaish], definitions=[_definition("mediaish")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await _drain(run)
 
     assert resolver.calls == []
@@ -660,7 +665,7 @@ async def test_a_step_agent_gets_a_metered_llm_like_a_direct_invocation() -> Non
         agents=[_EchoAgent], definitions=[_definition("echo_a")]
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await _drain(run)
 
     ((_key, deps),) = _EchoAgent.seen
@@ -680,7 +685,7 @@ async def test_a_resolution_failure_becomes_a_terminal_event_not_a_raise() -> No
         resolver=_FakeResolver(raises=NotFoundError("no credential")),
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     events = await _drain(run)
 
     assert [event.type for event in events] == ["error"]
@@ -755,25 +760,37 @@ class _FakeConversationRepo:
         raise AssertionError("not exercised")
 
 
-class _NoSpaces:
-    """An ``ActiveSpaces`` seam with NO live space, and a recorder.
+class _SpaceRow:
+    """``SpaceView``'s shape — an id is all ``StartConversation`` reads."""
 
-    Empty is the honest table for this suite: no space was ever created here,
-    so any lookup that happened would have to fail. ``asked`` staying empty is
-    what says the ``None`` the orchestrator passes was never turned into a
-    lookup for a space named ``None``.
+    def __init__(self, space_id: Uuid) -> None:
+        self.space_id = space_id
+
+
+class _Spaces:
+    """An ``ActiveSpaces`` seam over a set of live ids, and a recorder.
+
+    ``_SPACE`` is live and nothing else is, which is what lets this suite
+    prove BOTH halves of step 12's contract with one seam: the space the
+    caller named reaches the row, and a space that is not live would have
+    stopped the run (``test_a_run_into_an_unknown_space_never_starts``).
+
+    Before step 12 this class was ``_NoSpaces`` with an empty table, because a
+    run had no space to name and the interesting claim was that the ``None``
+    never became a lookup. That claim is now the opposite one.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, live: set[str] | None = None) -> None:
+        self.live = live if live is not None else {_SPACE}
         self.asked: list[str] = []
 
-    async def get_active(self, ctx: ExecutionContext, space_id: Uuid) -> None:
-        # Always `None` — there is no live space in this suite, by design.
+    async def get_active(self, ctx: ExecutionContext, space_id: Uuid) -> _SpaceRow | None:
         self.asked.append(space_id)
+        return _SpaceRow(space_id) if space_id in self.live else None
 
 
 def _conversation_service(
-    repo: _FakeConversationRepo, spaces: _NoSpaces | None = None
+    repo: _FakeConversationRepo, spaces: _Spaces | None = None
 ) -> ConversationService:
     """The REAL service over a fake repository — `start` + `append` both wired,
     since the orchestrator now writes turns through the same port, plus `get`
@@ -781,12 +798,11 @@ def _conversation_service(
     read (a workflow run pins neither, but the port is one protocol and a
     partial construction would not satisfy it)."""
     return ConversationService(  # type: ignore[arg-type]
-        # `_NoSpaces` and not a permissive stub: a workflow run opens its
-        # thread with `space_id=None` (step 7's stated debt), so a seam that
-        # answers "live" for anything would be a seam this path never touches
-        # — and the day the orchestrator does pass a space, the call must be
-        # proven against something that can say no.
-        StartConversation(repo, spaces or _NoSpaces()),
+        # `_Spaces` and not a permissive stub: since step 12 a run names a
+        # real space, so the proof has to run against a seam that CAN say no —
+        # otherwise "the space was checked" and "anything is accepted" look
+        # identical from here.
+        StartConversation(repo, spaces or _Spaces()),
         AppendMessage(repo),
         GetConversation(repo),
         ListConversationFiles(repo),  # type: ignore[arg-type]
@@ -815,7 +831,7 @@ async def test_the_workflow_kind_string_is_the_real_domain_enum() -> None:
         )
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     result = await run.collect()
 
     (conversation,) = repo.added
@@ -827,18 +843,19 @@ async def test_the_workflow_kind_string_is_the_real_domain_enum() -> None:
     assert result.conversation_id == conversation.id
 
 
-async def test_a_workflow_run_opens_its_thread_with_no_space_and_asks_for_none() -> None:
-    """Spaces plan step 7's stated debt, pinned rather than assumed.
+async def test_a_workflow_run_opens_its_thread_in_the_space_the_caller_named() -> None:
+    """Spaces plan step 12 paying step 7's stated debt.
 
-    A run has no space to name until the invoke contract carries one (step
-    12), so the thread is opened with ``space_id=None`` — and ``None`` must
-    reach the row as ``None`` rather than becoming a lookup for a space
-    called ``None`` (which the seam below would refuse, failing the run) or a
-    space invented from whatever this workspace happens to own (which would
-    file the run, and its whole retrieval scope, where nobody put it).
+    Until step 12 this test asserted the opposite — ``space_id is None`` and
+    an untouched seam — because ``invoke_workflow`` had no space to name.
+    ``WorkflowRunIn`` carries one now, and both halves have to hold: the id
+    the caller gave reaches the ROW (not some space invented from whatever
+    the workspace happens to own), and it goes through the ``ActiveSpaces``
+    seam on the way, so a run can never be filed under a space that is not
+    live.
     """
     repo = _FakeConversationRepo()
-    spaces = _NoSpaces()
+    spaces = _Spaces()
     registry = InMemoryAgentRegistry()
     registry.register(_EchoAgent.metadata, _EchoAgent)
     workflows = InMemoryWorkflowRegistry()
@@ -854,11 +871,39 @@ async def test_a_workflow_run_opens_its_thread_with_no_space_and_asks_for_none()
         )
     )
 
-    await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     (conversation,) = repo.added
-    assert conversation.space_id is None
-    assert spaces.asked == []
+    assert conversation.space_id == _SPACE
+    assert spaces.asked == [_SPACE]
+
+
+async def test_a_run_into_a_space_that_is_not_live_never_starts() -> None:
+    """The other half of the same seam, and the reason it must be able to
+    refuse: an unknown or deleted space is a 404 raised BEFORE the thread
+    exists, so a run cannot leave an orphan thread under an axis nobody can
+    list."""
+    repo = _FakeConversationRepo()
+    spaces = _Spaces(live=set())
+    registry = InMemoryAgentRegistry()
+    registry.register(_EchoAgent.metadata, _EchoAgent)
+    workflows = InMemoryWorkflowRegistry()
+    workflows.register(_definition("echo_a"))
+    orchestrator = AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=_FakeResolver(),  # type: ignore[arg-type]
+            workflows=workflows,
+            conversations=_conversation_service(repo, spaces),
+            authorization=build_authorization(),
+        )
+    )
+
+    with pytest.raises(NotFoundError):
+        await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
+
+    assert repo.added == []
 
 
 async def test_an_invalid_conversation_kind_is_a_422_not_a_500() -> None:
@@ -1032,7 +1077,7 @@ async def test_each_step_is_charged_under_its_own_agent_and_provider() -> None:
         definition=_definition("consume_a", "consume_b"),
     )
 
-    await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     assert [(c.agent, c.provider, c.tokens) for c in capture.charges] == [
         ("consume_a", "prov-consume_a", 15),
@@ -1052,7 +1097,7 @@ async def test_a_step_is_billed_when_it_ends_not_when_the_run_ends() -> None:
         definition=_definition("consume_a", "consume_b"),
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     seen = [(event.type, len(capture.charges)) async for event in run.events()]
 
     assert seen == [("token", 0), ("final", 0), ("token", 1), ("final", 1)]
@@ -1069,7 +1114,7 @@ async def test_an_abandoned_run_still_bills_the_step_it_was_walked_away_from() -
         definition=_definition("consume_a", "consume_b"),
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     stream = run.events()
     await stream.__anext__()  # mid-step-1: one token delivered
     await stream.aclose()  # type: ignore[attr-defined]  # the client hangs up
@@ -1091,7 +1136,7 @@ async def test_the_run_is_gated_by_quota_before_its_conversation_exists() -> Non
     )
 
     with pytest.raises(RateLimitedError) as excinfo:
-        await orchestrator.invoke_workflow(_ctx(), "wf", {})
+        await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
 
     assert excinfo.value.code == "usage.quota_exceeded"
     assert excinfo.value.status == 429
@@ -1112,7 +1157,7 @@ async def test_an_unknown_workflow_is_404_even_for_a_workspace_over_quota() -> N
     )
 
     with pytest.raises(NotFoundError) as excinfo:
-        await orchestrator.invoke_workflow(_ctx(), "nope", {})
+        await orchestrator.invoke_workflow(_ctx(), "nope", {}, space_id=_SPACE)
 
     assert excinfo.value.code == "workflow.unknown"
     assert enforcement.calls == []
@@ -1127,7 +1172,7 @@ async def test_every_step_is_checked_under_its_own_agent_and_provider() -> None:
         definition=_definition("consume_a", "consume_b"),
     )
 
-    await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     assert enforcement.calls == [
         ("wf", "none", None),
@@ -1147,7 +1192,7 @@ async def test_a_mid_run_denial_halts_the_workflow_and_keeps_what_ran() -> None:
         enforcement=_FakeEnforcement(allow_first=2),  # the run, then step 1
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     events = [event async for event in run.events()]
 
     assert events[-1].type == "error"
@@ -1168,7 +1213,7 @@ async def test_a_step_that_consumes_nothing_leaves_no_ledger_row() -> None:
         definition=_definition("mediaish", "consume_b"),
     )
 
-    await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     assert [c.agent for c in capture.charges] == ["consume_b"]
     assert ("mediaish", "none", None) in enforcement.calls
@@ -1185,7 +1230,7 @@ async def test_a_ledger_outage_never_halts_the_run() -> None:
         capture=_FakeCapture(fails=True),
     )
 
-    result = await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    result = await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     assert [event["who"] for event in result.outputs] == ["consume_a", "consume_b"]
 
@@ -1199,7 +1244,7 @@ async def test_draining_the_run_twice_does_not_double_bill() -> None:
         definition=_definition("consume_a", "consume_b"),
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     await run.collect()
     await run.collect()
 
@@ -1211,7 +1256,7 @@ async def test_an_unmetered_deployment_still_runs_workflows() -> None:
     enforced and nothing is captured, and the run itself is unaffected."""
     orchestrator, _, _ = _orchestrator(agents=[_EchoAgent], definitions=[_definition("echo_a")])
 
-    result = await (await orchestrator.invoke_workflow(_ctx(), "wf", {})).collect()
+    result = await (await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)).collect()
 
     assert len(result.outputs) == 1
 
@@ -1243,7 +1288,7 @@ async def test_an_overrunning_run_halts_with_the_terminal_error_event() -> None:
         stream_max_duration_s=0.05,
     )
 
-    run = await orchestrator.invoke_workflow(_ctx(), "wf", {})
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
     events = await _drain(run)
 
     assert events[-1].type == "error"

@@ -15,13 +15,30 @@ and not only of the type — the ``content_type``/``storage_key`` argument.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.pagination import Page
 from app.framework.types import Uuid
 from app.modules.files.domain.entities import File
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceFileTotals:
+    """What one space's ACTIVE files add up to — the two numbers ``GET
+    /api/v1/spaces`` publishes beside a space's name (§3.7, step 12).
+
+    A read model, not an aggregate: it is computed by the database in a
+    ``GROUP BY`` and never stored, so nothing can go stale and there is no
+    counter for a concurrent write to corrupt. It lives on the PORT rather
+    than in the domain for that reason — ``File`` has no idea how many
+    siblings it has, and a space is not this module's concept at all.
+    """
+
+    bytes_used: int
+    file_count: int
 
 
 class FileRepository(Protocol):
@@ -39,11 +56,12 @@ class FileRepository(Protocol):
         """Active files, newest first, keyset-paginated on ``id``.
 
         ``space_id`` narrows the page to one space's files; ``None`` returns
-        the workspace's, which is what every caller asked for before the
-        spaces plan and what the router still asks for until ``?space_id=``
-        becomes mandatory on the wire (§3.7, step 12). It is a REQUIRED
-        keyword with no default so that "all spaces" is a decision written at
-        the call site, never one a caller falls into by omission.
+        the workspace's. Since step 12 the router always passes one —
+        ``?space_id=`` is mandatory on ``GET /files`` (§3.7) — so ``None`` is
+        no longer any route's answer; it survives for callers with no space to
+        name at all. It is a REQUIRED keyword with no default so that "all
+        spaces" is a decision written at the call site, never one a caller
+        falls into by omission.
         """
         ...
 
@@ -65,6 +83,34 @@ class FileRepository(Protocol):
         meaning of the quota (a user who deletes must get their space back)
         and it is why this cannot reuse ``count``'s shape and be an argument
         away from it.
+        """
+        ...
+
+    async def totals_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, SpaceFileTotals]:
+        """``bytes_used``/``file_count`` for MANY spaces in one read — what a
+        page of ``GET /api/v1/spaces`` needs (§3.7, step 12).
+
+        **Plural on purpose.** ``bytes_in_space`` answers for one space
+        because its caller holds one space's row lock and is deciding about
+        that space alone; this one serves a LISTING, and calling the singular
+        once per row would turn a page of twenty spaces into forty round
+        trips for two columns of decoration. One ``GROUP BY`` costs one.
+
+        Same active-only rule as ``bytes_in_space``, and for the same reason
+        stated once: a soft-deleted file has already given its bytes back, so
+        a listing that still counted it would contradict the quota the same
+        listing is describing.
+
+        **A space with nothing in it is ABSENT from the mapping**, not present
+        with zeros. ``GROUP BY`` returns groups that exist, and inventing rows
+        for ids that matched nothing would be this adapter asserting that
+        those ids name real spaces — which it cannot know, because it never
+        sees ``spaces.spaces``. The caller defaults a miss to zero, which is
+        the same answer with the authority in the right place.
+
+        An empty ``space_ids`` returns an empty mapping without a query.
         """
         ...
 

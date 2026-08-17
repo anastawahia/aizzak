@@ -45,9 +45,18 @@ class AgentInvokeIn(BaseModel):
     thread, and one that names none gets a fresh thread opened for it (the
     reply's ``conversation_id`` is not optional). ``stream`` selects SSE vs.
     the aggregated reply.
+
+    ``space_id`` (spaces plan step 12, §3.7) is the space a NEW thread is
+    opened in. Optional, and the only ``space_id`` this plan left optional:
+    when ``conversation_id`` names a thread, that thread's space already
+    decides what the turn can see (decision 1), and letting a request restate
+    it would let a client claim a different one for a thread it does not own
+    the axis of. Naming neither is a 422 from the orchestrator — that is the
+    one combination that would file a thread nowhere.
     """
 
     conversation_id: str | None = None
+    space_id: str | None = None
     input: dict[str, Any]
     stream: bool = False
 

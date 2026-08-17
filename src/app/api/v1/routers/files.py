@@ -49,6 +49,7 @@ from app.api.v1.dto.files import (
 )
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
 from app.api.v1.idempotency import IdempotencyKey, idempotent
+from app.framework.errors import AppError
 from app.modules.access.domain.value_objects import Permission
 from app.modules.files.application.use_cases import ReadFile
 
@@ -90,15 +91,23 @@ async def register_file(
     original URL anyway.
     """
 
+    # `services.space_quota`, NOT `services.files.transfers` — this is the line
+    # that turns the 1 GiB limit from measured into enforced (spaces plan §3.3,
+    # step 12). The coordination service takes the space's row lock, sums the
+    # space's active bytes and only then calls the very registrar this route
+    # used to call directly, all in one unit of work; calling the registrar
+    # here would leave the ceiling a number nothing consults. It fails closed
+    # when unwired (step 13 binds it) rather than falling back to the
+    # unmetered path — a fallback that skipped the quota is exactly the
+    # silence this check exists to break.
+    quota = services.space_quota
+    if quota is None:
+        raise AppError("space quota is not configured on this deployment", code="common.internal")
+
     async def _register() -> FileRegisterOut:
-        registered = await services.files.transfers.register(
+        registered = await quota.register(
             ctx,
-            # `space_id` is not on `FileRegisterIn` yet: the wire contract
-            # (§3.7) and the switch to `services.space_quota` are step 12/13,
-            # and a router that guessed a space would be inventing ownership
-            # the client never stated. Typed as `None` rather than defaulted so
-            # this route shows up as one of the writers still owing a space.
-            space_id=None,
+            space_id=body.space_id,
             name=body.name,
             content_type=body.content_type,
             size_bytes=body.size_bytes,
@@ -136,16 +145,30 @@ async def complete_file(
 
 @router.get("", dependencies=[Depends(require(Permission.FILES_READ))])
 async def list_files(
-    services: Services, ctx: Context, limit: Limit = DEFAULT_LIMIT, cursor: Cursor = None
+    services: Services,
+    ctx: Context,
+    space_id: str,
+    limit: Limit = DEFAULT_LIMIT,
+    cursor: Cursor = None,
 ) -> Page[FileOut]:
-    """The workspace's active files (API-04 envelope), ready rows carrying
-    their presigned GET.
+    """One space's active files (API-04 envelope), ready rows carrying their
+    presigned GET.
 
-    Still the WHOLE workspace: ``?space_id=`` becomes a mandatory query
-    parameter in step 12 (§3.7), and until it exists on the wire the honest
-    filter is "none" — narrowing to a space the client did not name would
-    hide files from a listing that promises all of them."""
-    page = await services.files.transfers.list(ctx, space_id=None, limit=limit, cursor=cursor)
+    ``space_id`` is a REQUIRED query parameter (§3.7, step 12), the shape
+    ``agent_key`` already has on ``GET /conversations`` and for the same
+    reason: a file belongs to exactly one space (decision 1), so an
+    unqualified "all files" listing is not a view the data model offers any
+    more. Omitting it is a 422 from FastAPI, never a silent whole-workspace
+    read.
+
+    **It is NOT validated against ``spaces.spaces`` here, and that is
+    deliberate.** An unknown or foreign id simply matches no rows and answers
+    an empty page — the same answer a real but empty space gives — so a
+    listing cannot be used to discover which space ids exist. Writes are the
+    ones that prove a space real (``ports/spaces.py``), because a write that
+    guessed wrong would leave a row nothing can ever list.
+    """
+    page = await services.files.transfers.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
     return Page(
         data=[_to_file_out(read) for read in page.data],
         meta=PageMeta(next_cursor=page.next_cursor, limit=page.limit),

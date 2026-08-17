@@ -44,7 +44,11 @@ from app.framework.workflows import (
     WorkflowStep,
 )
 from tests.unit.support_access import build_authorization
-from tests.unit.support_conversations import ConversationsStack, build_conversations
+from tests.unit.support_conversations import (
+    ConversationsStack,
+    StubActiveSpaces,
+    build_conversations,
+)
 from tests.unit.support_credentials import build_credentials
 from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
@@ -62,6 +66,9 @@ _KNOWLEDGE = build_knowledge()
 _INTEGRATIONS = build_integrations()
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+# Spaces plan step 12 -- a run always opens its own D-12 thread, so
+# `WorkflowRunIn.space_id` is required with no `None` case at all.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
 _AUTH = {"Authorization": f"Bearer {_GOOD}"}
@@ -162,7 +169,11 @@ def _make_app(
     workflows = InMemoryWorkflowRegistry()
     for definition in definitions:
         workflows.register(definition)
-    stack = conversations if conversations is not None else build_conversations()
+    stack = (
+        conversations
+        if conversations is not None
+        else build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
+    )
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
             agents=agents,
@@ -244,7 +255,9 @@ def test_running_an_unknown_workflow_is_a_pre_flight_404() -> None:
     app, stack = _make_app()
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/workflows/nope/run", json={"input": {}}, headers=_AUTH)
+        response = client.post(
+            "/api/v1/workflows/nope/run", json={"space_id": _SPACE, "input": {}}, headers=_AUTH
+        )
 
     assert response.status_code == 404
     assert response.json()["code"] == "workflow.unknown"
@@ -258,7 +271,9 @@ def test_a_collected_run_answers_with_its_thread_and_status() -> None:
 
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/workflows/wf/run", json={"input": {"text": "hi"}}, headers=_AUTH
+            "/api/v1/workflows/wf/run",
+            json={"space_id": _SPACE, "input": {"text": "hi"}},
+            headers=_AUTH,
         )
 
     assert response.status_code == 200
@@ -281,7 +296,9 @@ def test_a_failed_run_answers_200_with_the_failure_in_its_status() -> None:
     app, stack = _make_app(definitions=(_definition("step_a", "boom"),))
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/workflows/wf/run", json={"input": {}}, headers=_AUTH)
+        response = client.post(
+            "/api/v1/workflows/wf/run", json={"space_id": _SPACE, "input": {}}, headers=_AUTH
+        )
 
     assert response.status_code == 200
     body = response.json()
@@ -295,7 +312,9 @@ def test_a_run_streams_sse_when_the_body_asks_for_it() -> None:
 
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/workflows/wf/run", json={"input": {"text": "x"}, "stream": True}, headers=_AUTH
+            "/api/v1/workflows/wf/run",
+            json={"space_id": _SPACE, "input": {"text": "x"}, "stream": True},
+            headers=_AUTH,
         )
 
     assert response.status_code == 200
@@ -312,7 +331,7 @@ def test_a_run_streams_on_the_accept_header_alone() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/workflows/wf/run",
-            json={"input": {"text": "x"}},
+            json={"space_id": _SPACE, "input": {"text": "x"}},
             headers={**_AUTH, "Accept": "text/event-stream"},
         )
 
@@ -330,7 +349,7 @@ def test_a_repeated_collected_run_replays_the_first_run_instead_of_starting_a_se
     the store holds one conversation, not two."""
     app, stack = _make_app(definitions=(_definition("step_a"),))
     headers = {**_AUTH, "Idempotency-Key": "wf-1"}
-    body = {"input": {"text": "hi"}}
+    body = {"space_id": _SPACE, "input": {"text": "hi"}}
 
     with TestClient(app) as client:
         first = client.post("/api/v1/workflows/wf/run", json=body, headers=headers)
@@ -346,9 +365,15 @@ def test_a_repeated_run_with_a_different_input_is_a_conflict() -> None:
     headers = {**_AUTH, "Idempotency-Key": "wf-2"}
 
     with TestClient(app) as client:
-        client.post("/api/v1/workflows/wf/run", json={"input": {"text": "a"}}, headers=headers)
+        client.post(
+            "/api/v1/workflows/wf/run",
+            json={"space_id": _SPACE, "input": {"text": "a"}},
+            headers=headers,
+        )
         response = client.post(
-            "/api/v1/workflows/wf/run", json={"input": {"text": "b"}}, headers=headers
+            "/api/v1/workflows/wf/run",
+            json={"space_id": _SPACE, "input": {"text": "b"}},
+            headers=headers,
         )
 
     assert response.status_code == 409
@@ -365,8 +390,12 @@ def test_one_key_on_two_different_workflows_does_not_collide() -> None:
     headers = {**_AUTH, "Idempotency-Key": "shared"}
 
     with TestClient(app) as client:
-        first = client.post("/api/v1/workflows/wf/run", json={"input": {}}, headers=headers)
-        second = client.post("/api/v1/workflows/wf2/run", json={"input": {}}, headers=headers)
+        first = client.post(
+            "/api/v1/workflows/wf/run", json={"space_id": _SPACE, "input": {}}, headers=headers
+        )
+        second = client.post(
+            "/api/v1/workflows/wf2/run", json={"space_id": _SPACE, "input": {}}, headers=headers
+        )
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -381,7 +410,7 @@ def test_the_streamed_answer_is_outside_the_ledger_by_design() -> None:
     claimed nor block the stream — a client asking for events gets events."""
     app, _ = _make_app(definitions=(_definition("step_a"),))
     headers = {**_AUTH, "Idempotency-Key": "wf-3"}
-    body = {"input": {"text": "x"}, "stream": True}
+    body = {"space_id": _SPACE, "input": {"text": "x"}, "stream": True}
 
     with TestClient(app) as client:
         first = client.post("/api/v1/workflows/wf/run", json=body, headers=headers)
@@ -400,9 +429,9 @@ def test_a_finished_run_reads_back_as_completed() -> None:
     app, _ = _make_app(definitions=(_definition("step_a", "step_b"),))
 
     with TestClient(app) as client:
-        run_id = client.post("/api/v1/workflows/wf/run", json={"input": {}}, headers=_AUTH).json()[
-            "run_id"
-        ]
+        run_id = client.post(
+            "/api/v1/workflows/wf/run", json={"space_id": _SPACE, "input": {}}, headers=_AUTH
+        ).json()["run_id"]
         response = client.get(f"/api/v1/workflows/runs/{run_id}", headers=_AUTH)
 
     assert response.status_code == 200
@@ -416,9 +445,9 @@ def test_a_partial_run_reads_back_as_unknown_rather_than_a_guess() -> None:
     app, _ = _make_app(definitions=(_definition("step_a", "boom"),))
 
     with TestClient(app) as client:
-        run_id = client.post("/api/v1/workflows/wf/run", json={"input": {}}, headers=_AUTH).json()[
-            "run_id"
-        ]
+        run_id = client.post(
+            "/api/v1/workflows/wf/run", json={"space_id": _SPACE, "input": {}}, headers=_AUTH
+        ).json()["run_id"]
         response = client.get(f"/api/v1/workflows/runs/{run_id}", headers=_AUTH)
 
     assert response.json()["status"] == "unknown"
@@ -430,9 +459,9 @@ def test_a_retired_definition_leaves_its_old_runs_readable() -> None:
     rather than ``registry.get``."""
     app, stack = _make_app(definitions=(_definition("step_a"),))
     with TestClient(app) as client:
-        run_id = client.post("/api/v1/workflows/wf/run", json={"input": {}}, headers=_AUTH).json()[
-            "run_id"
-        ]
+        run_id = client.post(
+            "/api/v1/workflows/wf/run", json={"space_id": _SPACE, "input": {}}, headers=_AUTH
+        ).json()["run_id"]
 
     retired, _ = _make_app(conversations=stack)  # same store, empty catalog
     with TestClient(retired) as client:
@@ -449,7 +478,7 @@ def test_an_agent_conversation_is_not_a_workflow_run() -> None:
 
     with TestClient(app) as client:
         conversation_id = client.post(
-            "/api/v1/conversations", json={"agent_key": "step_a"}, headers=_AUTH
+            "/api/v1/conversations", json={"space_id": _SPACE, "agent_key": "step_a"}, headers=_AUTH
         ).json()["id"]
         response = client.get(f"/api/v1/workflows/runs/{conversation_id}", headers=_AUTH)
 

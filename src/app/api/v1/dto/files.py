@@ -19,6 +19,18 @@ from pydantic import BaseModel
 
 
 class FileRegisterIn(BaseModel):
+    """``POST /files`` — and since the spaces plan's step 12, ``space_id`` is
+    part of it (§3.7).
+
+    Required, with no default. A file belongs to exactly one space (decision
+    1) and cannot be moved afterwards (decision 3), so the one moment its
+    owner can be stated is this one — and a default would let a client that
+    forgot become a client that chose. It is also what the 1 GiB quota is
+    measured against (§3.3), so an absent space is an upload measured against
+    nothing.
+    """
+
+    space_id: str
     name: str
     content_type: str
     size_bytes: int

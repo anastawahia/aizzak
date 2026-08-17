@@ -142,21 +142,24 @@ async def list_conversations(
     services: Services,
     ctx: Context,
     agent_key: str,
+    space_id: str,
     limit: Limit = DEFAULT_LIMIT,
     cursor: Cursor = None,
 ) -> Page[ConversationOut]:
-    """One agent's threads in this workspace (`03 §1`), newest-cursor paginated.
+    """One agent's threads in ONE space (`03 §1`), newest-cursor paginated.
 
     ``agent_key`` is a REQUIRED query parameter, per the contract: threads are
     threaded per agent, so an unqualified "all conversations" listing is not a
-    view the data model offers.
+    view the data model offers. ``space_id`` became the second required one at
+    the spaces plan's step 12 (§3.7), for the same kind of reason — a thread
+    belongs to exactly one space, and the two narrowings compose (AND) rather
+    than compete.
+
+    An unknown space id answers an empty page rather than a 404: the listing
+    is not an existence oracle (``list_files``' reasoning, verbatim in force).
     """
-    # `space_id=None` is EVERY space, not "the threads with no space" (spaces
-    # plan step 7). The `?space_id=` query parameter the plan makes required is
-    # step 12's, and until then this listing keeps exactly the scope it has
-    # always had.
     page = await services.conversations.list_by_agent.execute(
-        ctx, agent_key, space_id=None, limit=limit, cursor=cursor
+        ctx, agent_key, space_id=space_id, limit=limit, cursor=cursor
     )
     return Page(
         data=[_to_conversation_out(conversation) for conversation in page.data],
@@ -168,14 +171,18 @@ async def list_conversations(
 async def create_conversation(
     body: ConversationCreateIn, services: Services, ctx: Context
 ) -> ConversationOut:
-    """Open a thread under one agent (201 + the bare resource)."""
+    """Open a thread under one agent, inside one space (201 + the bare
+    resource).
+
+    An unknown, foreign or soft-deleted ``space_id`` is refused here and not
+    merely filtered: ``StartConversation`` proves it through the module's own
+    ``ports/spaces.py`` (step 7) before writing, because a thread filed under
+    a space that does not exist would be invisible to every listing forever —
+    the asymmetry the listing route above documents from the other side.
+    """
     conversation, _events = await services.conversations.start.execute(
         ctx,
-        # ⚠️ `space_id` is not in `ConversationCreateIn` yet -- the wire
-        # contract is step 12's (`spaces-backend-plan.md` §3.7). Passed
-        # explicitly rather than defaulted so this route is visibly one of the
-        # writers that still owes a space.
-        space_id=None,
+        space_id=body.space_id,
         agent_key=body.agent_key,
         title=body.title,
     )

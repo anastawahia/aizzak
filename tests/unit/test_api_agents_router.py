@@ -44,7 +44,11 @@ from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
 from tests.unit.support_access import build_authorization
-from tests.unit.support_conversations import ConversationsStack, build_conversations
+from tests.unit.support_conversations import (
+    ConversationsStack,
+    StubActiveSpaces,
+    build_conversations,
+)
 from tests.unit.support_credentials import build_credentials
 from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
@@ -62,6 +66,9 @@ _KNOWLEDGE = build_knowledge()
 _INTEGRATIONS = build_integrations()
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+# Spaces plan step 12 -- an invoke that opens a fresh thread names its space,
+# and the seam behind it is a real one that can refuse an id it never had.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
 
@@ -128,7 +135,10 @@ class _FakeWsAuth:
 
 def _make_app_with_store(*, with_echo: bool = True) -> tuple[FastAPI, ConversationsStack]:
     registry = InMemoryAgentRegistry()
-    conversations = build_conversations()
+    # `_SPACE` is the ONE live space, so a body naming it opens a thread and a
+    # body naming anything else is a 404 from the seam rather than a silent
+    # accept — which is what makes `space_id` on the wire mean something.
+    conversations = build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
     if with_echo:
         registry.register(_ECHO_METADATA, _EchoAgent)
     orchestrator = AgentOrchestrator(
@@ -242,7 +252,7 @@ def test_invoke_streams_sse_frames() -> None:
     response = client.post(
         "/api/v1/agents/echo/invoke",
         headers=_auth(),
-        json={"input": {"text": "مرحبا"}, "stream": True},
+        json={"space_id": _SPACE, "input": {"text": "مرحبا"}, "stream": True},
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -262,7 +272,7 @@ def test_invoke_streams_on_the_accept_header_alone() -> None:
     response = client.post(
         "/api/v1/agents/echo/invoke",
         headers={**_auth(), "Accept": "text/event-stream"},
-        json={"input": {"text": "x"}},
+        json={"space_id": _SPACE, "input": {"text": "x"}},
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -275,13 +285,15 @@ def test_invoke_propagates_stream_flag() -> None:
     # `body.stream` stays false.
     client = TestClient(_make_app())
     on = client.post(
-        "/api/v1/agents/echo/invoke", headers=_auth(), json={"input": {"text": "x"}, "stream": True}
+        "/api/v1/agents/echo/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "x"}, "stream": True},
     )
     assert '"stream":true' in on.text
     off = client.post(
         "/api/v1/agents/echo/invoke",
         headers={**_auth(), "Accept": "text/event-stream"},
-        json={"input": {"text": "x"}},
+        json={"space_id": _SPACE, "input": {"text": "x"}},
     )
     assert '"stream":false' in off.text
 
@@ -293,7 +305,7 @@ def test_invoke_unknown_agent_is_preflight_404() -> None:
     response = client.post(
         "/api/v1/agents/nope/invoke",
         headers=_auth(),
-        json={"input": {"text": "x"}},
+        json={"space_id": _SPACE, "input": {"text": "x"}},
     )
     assert response.status_code == 404
     assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
@@ -302,7 +314,9 @@ def test_invoke_unknown_agent_is_preflight_404() -> None:
 
 def test_invoke_requires_auth() -> None:
     client = TestClient(_make_app())
-    response = client.post("/api/v1/agents/echo/invoke", json={"input": {"text": "x"}})
+    response = client.post(
+        "/api/v1/agents/echo/invoke", json={"space_id": _SPACE, "input": {"text": "x"}}
+    )
     assert response.status_code == 401
     assert response.json()["code"] == "auth.missing_token"
 
@@ -324,7 +338,9 @@ def test_invoke_without_stream_returns_the_persisted_turn() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/v1/agents/echo/invoke", headers=_auth(), json={"input": {"text": "hello"}}
+        "/api/v1/agents/echo/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "hello"}},
     )
 
     assert response.status_code == 200
@@ -349,18 +365,18 @@ def test_invoke_continues_the_thread_it_is_given() -> None:
     app, stack = _make_app_with_store()
     client = TestClient(app)
     opened = client.post(
-        "/api/v1/conversations", headers=_auth(), json={"agent_key": "echo"}
+        "/api/v1/conversations", headers=_auth(), json={"space_id": _SPACE, "agent_key": "echo"}
     ).json()
 
     first = client.post(
         "/api/v1/agents/echo/invoke",
         headers=_auth(),
-        json={"input": {"text": "a"}, "conversation_id": opened["id"]},
+        json={"space_id": _SPACE, "input": {"text": "a"}, "conversation_id": opened["id"]},
     ).json()
     second = client.post(
         "/api/v1/agents/echo/invoke",
         headers=_auth(),
-        json={"input": {"text": "b"}, "conversation_id": opened["id"]},
+        json={"space_id": _SPACE, "input": {"text": "b"}, "conversation_id": opened["id"]},
     ).json()
 
     # No new thread per call, and `seq` keeps climbing across turns.
@@ -375,7 +391,7 @@ def test_invoke_with_an_unknown_conversation_is_a_preflight_404() -> None:
     response = client.post(
         "/api/v1/agents/echo/invoke",
         headers=_auth(),
-        json={"input": {"text": "x"}, "conversation_id": "missing"},
+        json={"space_id": _SPACE, "input": {"text": "x"}, "conversation_id": "missing"},
     )
     assert response.status_code == 404
     # Nothing ran and nothing was written.
@@ -390,7 +406,7 @@ def test_streamed_final_frame_carries_the_persisted_message_and_usage() -> None:
     text = client.post(
         "/api/v1/agents/echo/invoke",
         headers=_auth(),
-        json={"input": {"text": "hi"}, "stream": True},
+        json={"space_id": _SPACE, "input": {"text": "hi"}, "stream": True},
     ).text
     assert '"message_id"' in text
     assert '"prompt_tokens"' in text
@@ -404,7 +420,9 @@ def test_invoke_of_an_unknown_agent_leaves_no_orphan_thread() -> None:
     client = TestClient(app)
     assert (
         client.post(
-            "/api/v1/agents/nope/invoke", headers=_auth(), json={"input": {"text": "x"}}
+            "/api/v1/agents/nope/invoke",
+            headers=_auth(),
+            json={"space_id": _SPACE, "input": {"text": "x"}},
         ).status_code
         == 404
     )

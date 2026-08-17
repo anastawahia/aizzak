@@ -242,11 +242,14 @@ async def search_knowledge(
         ctx,
         body.query,
         body.k,
-        # Still every space: `space_id` is not on `KnowledgeSearchIn` yet
-        # (§3.7 makes `?space_id=` mandatory in step 12), and a route that
-        # guessed one would answer from a corpus the client never named.
-        # Typed rather than defaulted so this route shows up as one of the
-        # callers still owing a space.
+        # Still every space, AFTER step 12 as before it: §3.7's table makes
+        # `?space_id=` mandatory on the three LISTINGS and says nothing about
+        # this body, so adding it here would have been a wire change the plan
+        # did not schedule (§0 rule 1). Typed rather than defaulted so the
+        # route stays visible as one of the two callers owing a space; the
+        # plan's §7 carries the entry, and it matters more than it looks —
+        # a space-scoped thread whose agent searches every space is decision 1
+        # unenforced on the read path.
         space_id=None,
     )
     data = [
@@ -263,22 +266,33 @@ async def search_knowledge(
 
 @router.get("/documents", dependencies=[Depends(require(Permission.KNOWLEDGE_READ))])
 async def list_documents(
-    services: Services, ctx: Context, limit: Limit = DEFAULT_LIMIT, cursor: Cursor = None
+    services: Services,
+    ctx: Context,
+    space_id: str,
+    limit: Limit = DEFAULT_LIMIT,
+    cursor: Cursor = None,
 ) -> Page[DocumentOut]:
-    """The workspace's documents, newest first, every lifecycle status —
+    """ONE space's documents, newest first, every lifecycle status —
     cursor-paginated (6.3-ب).
 
     The only listing here that pages: a corpus grows by a row per completed
     upload with no ceiling in the design, while ``POST /search`` is bounded
     by its own ``k`` and has no stable order a cursor could name.
 
-    Still the WHOLE workspace: ``?space_id=`` becomes a mandatory query
-    parameter in step 12 (§3.7), and until it exists on the wire the honest
-    filter is "none" — narrowing to a space the client did not name would
-    hide documents from a listing that promises all of them.
+    ``space_id`` is a REQUIRED query parameter (§3.7, step 12). A document's
+    space is its FILE's, carried on the ``files.file.uploaded.v1`` envelope
+    rather than asked for at ingest time (step 8) — so this narrowing lists
+    exactly the documents whose files the sibling ``GET /files?space_id=``
+    lists, which is the only way the two views can agree.
+
+    ⚠️ **Documents indexed before the plan carry no space and appear in no
+    space's listing.** That is §5-أ's consequence, and the answer is §5-أ's
+    too: re-index through ``POST /knowledge/reindex``. Falling back to "or has
+    no space" would leak every workspace's pre-plan corpus into every space
+    created after it.
     """
     page = await services.knowledge.list_documents.execute(
-        ctx, space_id=None, limit=limit, cursor=cursor
+        ctx, space_id=space_id, limit=limit, cursor=cursor
     )
     return Page(
         data=[_to_document_out(document) for document in page.data],

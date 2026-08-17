@@ -108,7 +108,12 @@ async def invoke_agent(
     the collected path lets ``invoke_once`` drain the turn and RAISE an in-flight
     failure as the problem it is, since nothing has been written yet.
     """
-    req = AgentRequest(conversation_id=body.conversation_id, input=body.input, stream=body.stream)
+    req = AgentRequest(
+        conversation_id=body.conversation_id,
+        input=body.input,
+        stream=body.stream,
+        space_id=body.space_id,
+    )
     if wants_sse(request, body.stream):
         events = await services.orchestrator.invoke(ctx, key, req)
         return StreamingResponse(

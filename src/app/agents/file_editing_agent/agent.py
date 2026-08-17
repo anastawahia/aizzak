@@ -49,7 +49,8 @@ class FileEditingAgent(BaseAgent):
             file_id,
             max_bytes=_MAX_FILE_BYTES,
             # Spaces plan step 10 — see the twin comment in
-            # `data_analysis_agent`: no space to pass until step 12.
+            # `data_analysis_agent`: still no space to pass, because step 12
+            # put it on the request and not on `AgentDeps` (plan §7).
             space_id=None,
         )
         messages = [

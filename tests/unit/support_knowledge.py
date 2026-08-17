@@ -384,11 +384,17 @@ class KnowledgeStack:
     summary_jobs: InMemorySummaryJobRepository
 
 
+# The space a seeded document lands in unless a test says otherwise (spaces
+# plan step 12). One constant rather than a literal per suite, so a listing
+# test and the row it reads agree by construction.
+SEED_SPACE = "018f0000-0000-7000-8000-0000000000sp"
+
+
 def seed_document(
     *,
     document_id: str,
     workspace_id: str,
-    space_id: str | None = None,
+    space_id: str | None = SEED_SPACE,
     file_id: str = "file-1",
     status: IndexStatus = IndexStatus.INDEXED,
     chunk_count: int = 3,
@@ -398,6 +404,11 @@ def seed_document(
     # plan step 8): a seed helper is not a writer, and its callers are tests
     # about paging/status/summaries that have no opinion about spaces. The
     # tests that DO have one pass it.
+    #
+    # The default became `SEED_SPACE` at step 12 and could not stay `None`:
+    # `GET /knowledge/documents` now REQUIRES `?space_id=`, so a spaceless
+    # seed is a document no listing can reach — which would have quietly
+    # emptied every paging and status test rather than failing one of them.
     return Document(
         id=document_id,
         workspace_id=workspace_id,

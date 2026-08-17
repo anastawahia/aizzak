@@ -73,7 +73,7 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import AppError, ForbiddenError, RateLimitedError
+from app.framework.errors import AppError, ForbiddenError, RateLimitedError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import (
@@ -964,16 +964,21 @@ class AgentOrchestrator:
             return None
         conversation_id = req.conversation_id
         if conversation_id is None:
+            if req.space_id is None:
+                # `space_id` is optional on `AgentRequest` because a request
+                # that CONTINUES a thread inherits that thread's space; a
+                # request that opens one has nothing to inherit from, and
+                # there is no space this layer could honestly invent -- filing
+                # the thread anywhere would file its whole retrieval scope
+                # there too (decision 1). Raised pre-flight, like every other
+                # failure in this method, so the caller meets a 422 while the
+                # HTTP status is still open.
+                raise ValidationError(
+                    "space_id is required when no conversation_id is given",
+                )
             started = await threads.start(
                 ctx,
-                # ⚠️ No space yet, and TYPED rather than defaulted
-                # (`spaces-backend-plan.md` step 7). A thread belongs to the
-                # space the caller was working in, and `AgentInvokeIn` does
-                # not carry one until step 12 -- inventing one here would file
-                # the thread (and, through decision 1, its whole retrieval
-                # scope) under a space the caller never chose. Row 8-b's
-                # `SET NOT NULL` is the check that this was not forgotten.
-                space_id=None,
+                space_id=req.space_id,
                 agent_key=agent_key,
                 kind=_AGENT_KIND,
             )
@@ -985,7 +990,7 @@ class AgentOrchestrator:
         return conversation_id
 
     async def invoke_workflow(
-        self, ctx: ExecutionContext, workflow_key: str, initial_input: Json
+        self, ctx: ExecutionContext, workflow_key: str, initial_input: Json, *, space_id: Uuid
     ) -> WorkflowRun:
         """Start a workflow run: open its conversation (D-12), build a
         per-request engine, and hand back the run handle (4.7-e-1).
@@ -1041,9 +1046,13 @@ class AgentOrchestrator:
         await self._enforce(ctx, workflow_key, _NO_PROVIDER)
         conversation = await threads.start(
             ctx,
-            # ⚠️ No space yet -- `_open_turn`'s reasoning, same debt, same
-            # detector (spaces plan step 7 ⇒ step 12).
-            space_id=None,
+            # REQUIRED here, where `_open_turn` accepts `None` — and the
+            # difference is that a run has no thread to inherit from. Every
+            # workflow run opens its own D-12 thread (that is what makes the
+            # run identifiable at all), so there is never a case where the
+            # space is already known, and an optional parameter would only
+            # describe a call that cannot legitimately happen.
+            space_id=space_id,
             agent_key=workflow_key,
             kind=_WORKFLOW_KIND,
             # The definition's human name, so the thread is legible in a

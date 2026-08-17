@@ -76,7 +76,7 @@ from app.framework.workflows import InMemoryWorkflowRegistry
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
 from tests.unit.support_credentials import build_credentials
-from tests.unit.support_files_media import build_files_media
+from tests.unit.support_files_media import InMemorySpaces, build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
 from tests.unit.support_knowledge import build_knowledge
@@ -84,6 +84,9 @@ from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.support_workspace_usage import build_workspace_usage
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+# Spaces plan step 12 — `POST /files` names its space now, and the seam
+# behind it treats only this id as live.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 
 _VERBS = frozenset({"get", "post", "put", "patch", "delete"})
@@ -145,7 +148,7 @@ def _build_app() -> FastAPI:
     """
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
-    files_media = build_files_media()
+    files_media = build_files_media(spaces=InMemorySpaces(active={_SPACE}))
     workspace_usage = build_workspace_usage()
     return create_app(
         ApiServices(
@@ -164,6 +167,7 @@ def _build_app() -> FastAPI:
             conversations=conversations.use_cases,
             workflows=InMemoryWorkflowRegistry(),
             files=files_media.files,
+            space_quota=files_media.space_quota,
             media=files_media.media,
             workspace=workspace_usage.workspace,
             usage=workspace_usage.usage,
@@ -463,7 +467,12 @@ def test_a_timestamp_on_the_wire_ends_in_z() -> None:
     auth = {"Authorization": "Bearer good"}
     registered = client.post(
         "/api/v1/files",
-        json={"name": "x.pdf", "content_type": "application/pdf", "size_bytes": 10},
+        json={
+            "space_id": _SPACE,
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+        },
         headers=auth,
     )
     assert registered.status_code == 201, registered.text

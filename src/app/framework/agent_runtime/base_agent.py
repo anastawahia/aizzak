@@ -65,6 +65,15 @@ class AgentRequest:
     conversation_id: Uuid | None
     input: Json
     stream: bool = False
+    # `docs/spaces-backend-plan.md` step 12 — the space this invocation is
+    # working in, when it opens a NEW thread. Defaulted (unlike every other
+    # `space_id` this plan added) because it genuinely has a default meaning
+    # here: a request that names a `conversation_id` inherits that thread's
+    # space and must not be able to state a different one, so `None` is the
+    # correct and common value rather than a forgotten one. The orchestrator
+    # refuses the one combination that would file a thread nowhere —
+    # no thread and no space — in `_open_turn`.
+    space_id: Uuid | None = None
 
 
 @dataclass(frozen=True, slots=True)

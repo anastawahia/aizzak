@@ -48,7 +48,11 @@ from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
 from tests.unit.support_access import build_authorization
-from tests.unit.support_conversations import ConversationsStack, build_conversations
+from tests.unit.support_conversations import (
+    ConversationsStack,
+    StubActiveSpaces,
+    build_conversations,
+)
 from tests.unit.support_credentials import build_credentials
 from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
@@ -66,6 +70,9 @@ _KNOWLEDGE = build_knowledge()
 _INTEGRATIONS = build_integrations()
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+# Spaces plan step 12: the space every thread here is opened in, and the only
+# one the seam below treats as live.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
 
@@ -132,7 +139,7 @@ def _make_app() -> tuple[FastAPI, ConversationsStack]:
     was actually persisted, which is the whole point of 6.1-ج-3."""
     registry = InMemoryAgentRegistry()
     registry.register(_ECHO_METADATA, _EchoAgent)
-    conversations = build_conversations()
+    conversations = build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
             agents=registry,
@@ -169,7 +176,9 @@ def _auth(token: str = _GOOD) -> dict[str, str]:
 
 def _create(client: TestClient, *, agent_key: str = "echo", title: str | None = "First") -> str:
     response = client.post(
-        "/api/v1/conversations", headers=_auth(), json={"agent_key": agent_key, "title": title}
+        "/api/v1/conversations",
+        headers=_auth(),
+        json={"space_id": _SPACE, "agent_key": agent_key, "title": title},
     )
     assert response.status_code == 201
     conversation_id: str = response.json()["id"]
@@ -183,7 +192,9 @@ def test_create_conversation_returns_201_and_a_bare_resource() -> None:
     app, _ = _make_app()
     client = TestClient(app)
     response = client.post(
-        "/api/v1/conversations", headers=_auth(), json={"agent_key": "ECHO", "title": "First"}
+        "/api/v1/conversations",
+        headers=_auth(),
+        json={"space_id": _SPACE, "agent_key": "ECHO", "title": "First"},
     )
     assert response.status_code == 201
     body = response.json()
@@ -199,7 +210,9 @@ def test_create_conversation_returns_201_and_a_bare_resource() -> None:
 def test_create_conversation_rejects_a_blank_agent_key() -> None:
     app, _ = _make_app()
     client = TestClient(app)
-    response = client.post("/api/v1/conversations", headers=_auth(), json={"agent_key": ""})
+    response = client.post(
+        "/api/v1/conversations", headers=_auth(), json={"space_id": _SPACE, "agent_key": ""}
+    )
     assert response.status_code == 422
 
 
@@ -212,7 +225,9 @@ def test_list_conversations_wraps_in_the_page_envelope() -> None:
     _create(client)
     _create(client, title="Second")
 
-    response = client.get("/api/v1/conversations", headers=_auth(), params={"agent_key": "echo"})
+    response = client.get(
+        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo", "space_id": _SPACE}
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -236,7 +251,9 @@ def test_list_conversations_pages_with_an_opaque_cursor() -> None:
     # NEWEST FIRST (6.3-ب): the thread just opened is the first row, and the
     # cursor walks BACKWARDS through the workspace's history.
     first = client.get(
-        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo", "limit": 1}
+        "/api/v1/conversations",
+        headers=_auth(),
+        params={"agent_key": "echo", "space_id": _SPACE, "limit": 1},
     ).json()
     assert [row["id"] for row in first["data"]] == [newer_id]
     assert first["meta"]["next_cursor"] is not None
@@ -244,7 +261,12 @@ def test_list_conversations_pages_with_an_opaque_cursor() -> None:
     second = client.get(
         "/api/v1/conversations",
         headers=_auth(),
-        params={"agent_key": "echo", "limit": 1, "cursor": first["meta"]["next_cursor"]},
+        params={
+            "agent_key": "echo",
+            "space_id": _SPACE,
+            "limit": 1,
+            "cursor": first["meta"]["next_cursor"],
+        },
     ).json()
     assert [row["id"] for row in second["data"]] == [older_id]
     assert second["meta"]["next_cursor"] is None
@@ -254,7 +276,9 @@ def test_list_conversations_rejects_a_limit_above_the_contract_ceiling() -> None
     app, _ = _make_app()
     client = TestClient(app)
     response = client.get(
-        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo", "limit": 101}
+        "/api/v1/conversations",
+        headers=_auth(),
+        params={"agent_key": "echo", "space_id": _SPACE, "limit": 101},
     )
     assert response.status_code == 422
 
@@ -295,7 +319,7 @@ def test_delete_is_204_idempotent_and_hides_the_thread_afterwards() -> None:
         client.get(f"/api/v1/conversations/{conversation_id}", headers=_auth()).status_code == 404
     )
     listed = client.get(
-        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo"}
+        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo", "space_id": _SPACE}
     ).json()
     assert listed["data"] == []
 
@@ -321,7 +345,7 @@ def test_rename_returns_the_renamed_thread_and_the_list_agrees() -> None:
     assert "version" not in body
     # Persisted, not merely echoed.
     listed = client.get(
-        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo"}
+        "/api/v1/conversations", headers=_auth(), params={"agent_key": "echo", "space_id": _SPACE}
     ).json()
     assert [row["title"] for row in listed["data"]] == ["Renamed"]
 
@@ -507,7 +531,12 @@ def test_routes_require_a_bearer_token() -> None:
     app, _ = _make_app()
     client = TestClient(app)
     assert client.get("/api/v1/conversations?agent_key=echo").status_code == 401
-    assert client.post("/api/v1/conversations", json={"agent_key": "echo"}).status_code == 401
+    assert (
+        client.post(
+            "/api/v1/conversations", json={"space_id": _SPACE, "agent_key": "echo"}
+        ).status_code
+        == 401
+    )
     assert client.get("/api/v1/conversations/x").status_code == 401
     assert client.delete("/api/v1/conversations/x").status_code == 401
     assert client.get("/api/v1/conversations/x/messages").status_code == 401
@@ -540,7 +569,9 @@ def test_a_fresh_thread_reports_no_pin() -> None:
     app, _ = _make_app()
     client = TestClient(app)
     response = client.post(
-        "/api/v1/conversations", headers=_auth(), json={"agent_key": "echo", "title": "T"}
+        "/api/v1/conversations",
+        headers=_auth(),
+        json={"space_id": _SPACE, "agent_key": "echo", "title": "T"},
     )
     assert response.json()["model_route"] is None
 
@@ -773,6 +804,7 @@ def _pinned(client: TestClient, conversation_id: str) -> list[str]:
 def test_pinning_a_file_returns_201_and_then_lists_it() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = _SPACE
     client = TestClient(app)
     conversation_id = _create(client)
 
@@ -819,13 +851,16 @@ def test_pinning_an_unreadable_file_is_a_422_and_stores_nothing() -> None:
 
 def test_pinning_a_file_from_another_space_is_a_409_on_the_wire() -> None:
     """Spaces plan §3.5, end to end: 409 (not the 422 an unreadable file
-    gets), the catalogued code, and nothing stored. The thread this route
-    opens has no space yet (step 12 brings ``space_id`` onto the body), so a
-    file that HAS one is already a mismatch — which is exactly the state row
-    8-b will make impossible from the other side."""
+    gets), the catalogued code, and nothing stored.
+
+    Since step 12 this is the REAL shape of the rule rather than a stand-in
+    for it: the thread is opened in ``_SPACE`` (``ConversationCreateIn`` now
+    carries the id) and the file lives in a different one, so two real spaces
+    are being compared — not a space against the ``None`` every thread used
+    to have."""
     app, stack = _make_app()
     stack.files.ready.add("file-1")
-    stack.files.spaces["file-1"] = "018f0000-0000-7000-8000-000000000501"
+    stack.files.spaces["file-1"] = "018f0000-0000-7000-8000-000000000501"  # NOT _SPACE
     client = TestClient(app)
     conversation_id = _create(client)
 
@@ -841,6 +876,7 @@ def test_pinning_a_file_from_another_space_is_a_409_on_the_wire() -> None:
 def test_pinning_the_same_file_twice_is_still_201_and_still_one_pin() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = _SPACE
     client = TestClient(app)
     conversation_id = _create(client)
 
@@ -856,6 +892,7 @@ def test_pinning_the_same_file_twice_is_still_201_and_still_one_pin() -> None:
 def test_unpinning_removes_only_that_pin_and_repeats_are_still_204() -> None:
     app, stack = _make_app()
     stack.files.ready.update({"file-1", "file-2"})
+    stack.files.spaces.update({"file-1": _SPACE, "file-2": _SPACE})
     client = TestClient(app)
     conversation_id = _create(client)
     _pin(client, conversation_id, "file-1")
@@ -871,6 +908,7 @@ def test_unpinning_removes_only_that_pin_and_repeats_are_still_204() -> None:
 def test_a_pin_is_confined_to_its_own_thread() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = _SPACE
     client = TestClient(app)
     first_thread = _create(client)
     second_thread = _create(client, title="Second")
@@ -890,6 +928,7 @@ def test_a_pin_is_confined_to_its_own_thread() -> None:
 def test_pinning_and_unpinning_on_a_soft_deleted_thread_are_409() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = _SPACE
     client = TestClient(app)
     conversation_id = _create(client)
     _pin(client, conversation_id, "file-1")
@@ -911,6 +950,7 @@ def test_pinning_and_unpinning_on_a_soft_deleted_thread_are_409() -> None:
 def test_the_scope_of_an_unknown_thread_is_a_404() -> None:
     app, stack = _make_app()
     stack.files.ready.add("file-1")
+    stack.files.spaces["file-1"] = _SPACE
     client = TestClient(app)
 
     assert client.get("/api/v1/conversations/nope/files", headers=_auth()).status_code == 404
@@ -934,6 +974,7 @@ def test_what_the_api_pins_is_what_the_orchestrator_reads_as_the_scope() -> None
     row nothing acts on."""
     app, stack = _make_app()
     stack.files.ready.update({"file-1", "file-2"})
+    stack.files.spaces.update({"file-1": _SPACE, "file-2": _SPACE})
     client = TestClient(app)
     conversation_id = _create(client)
     _pin(client, conversation_id, "file-1")

@@ -52,10 +52,11 @@ class DataAnalysisAgent(BaseAgent):
             file_id,
             max_bytes=_MAX_FILE_BYTES,
             # Spaces plan step 10 — typed as none, not defaulted, on the
-            # `rag_agent` precedent: `AgentDeps` carries no space until the
-            # invocation itself does (step 12). Reading across spaces is the
-            # pre-plan behaviour, kept only until there is a space to read
-            # inside; the check that ends it is already in `read_text_file`.
+            # `rag_agent` precedent, and still none after step 12: the space
+            # reached the REQUEST there, not `AgentDeps`. Reading across
+            # spaces is the pre-plan behaviour; the check that ends it is
+            # already in `read_text_file` and only wants an argument (plan
+            # §7).
             space_id=None,
         )
         messages = [

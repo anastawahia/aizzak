@@ -49,12 +49,11 @@ class DocumentRepository(Protocol):
         lifecycle status included (6.1-و-3), cursor-paginated (6.3-ب).
 
         ``space_id`` narrows the page to one space's documents; ``None``
-        returns the workspace's, which is what every caller asked for before
-        the spaces plan and what the router still asks for until ``?space_id=``
-        becomes mandatory on the wire (§3.7, step 12). A REQUIRED keyword with
-        no default, so "all spaces" is a decision written at the call site and
-        never one a caller falls into by omission — the ``FileRepository.list``
-        rule, for the same reason.
+        returns the workspace's. ``?space_id=`` became mandatory on ``GET
+        /knowledge/documents`` at step 12 (§3.7), so the router names one.
+        A REQUIRED keyword with no default, so "all spaces" is a decision
+        written at the call site and never one a caller falls into by
+        omission — the ``FileRepository.list`` rule, for the same reason.
 
         A document's whole point is that it has a status: ``pending`` while a
         worker has not reached it, ``failed`` with the reason it could not be

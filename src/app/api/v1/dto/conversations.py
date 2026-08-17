@@ -44,8 +44,15 @@ class ConversationCreateIn(BaseModel):
     ``kind`` is absent on purpose: `06 §4` reserves ``workflow`` threads for
     runs the orchestrator opens itself (D-12), so a client-created thread is
     always an ``agent`` one and there is nothing to choose.
+
+    ``space_id`` joined it at the spaces plan's step 12 (§3.7), required and
+    undefaulted. A thread's space decides what its retrieval can SEE
+    (decision 1) — the whole point of the axis — so a thread opened without
+    one would be a thread that can see nothing, and a default would make that
+    the outcome of forgetting rather than of choosing.
     """
 
+    space_id: str = Field(min_length=1)
     agent_key: str = Field(min_length=1)
     title: str | None = None
 

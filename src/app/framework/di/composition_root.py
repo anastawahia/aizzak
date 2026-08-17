@@ -279,6 +279,7 @@ from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
     ConversationUseCases,
+    CountConversationsBySpace,
     GetConversation,
     ListConversationFiles,
     ListConversationsByAgent,
@@ -315,6 +316,7 @@ from app.modules.files.application.use_cases import (
     RenameFile,
     SoftDeleteFile,
     SoftDeleteFileService,
+    SummariseSpaces,
 )
 from app.modules.integrations.adapters.sql_repository import (
     SqlConnectionRepository,
@@ -947,6 +949,11 @@ def _build_conversations(
         list_files=list_files,
         pin_file=PinConversationFile(repository, files),
         unpin_file=UnpinConversationFile(repository),
+        # `spaces-backend-plan.md` step 12 -- the thread count `GET
+        # /api/v1/spaces` shows beside a space's name. Over the SAME
+        # repository as every face above it, so the number equals what
+        # `list_by_agent` would page through.
+        space_counts=CountConversationsBySpace(repository),
     )
     threads = ConversationService(
         StartConversation(repository, spaces),
@@ -1547,6 +1554,11 @@ class CompositionRoot:
             complete=CompleteUploadService(CompleteUpload(file_repository), outbox, tenant_session),
             rename=RenameFile(file_repository),
             delete=SoftDeleteFileService(SoftDeleteFile(file_repository), outbox, tenant_session),
+            # `spaces-backend-plan.md` step 12 -- the bytes/file counts `GET
+            # /api/v1/spaces` shows. The same repository the quota sums, so
+            # the number a client reads is the number the ceiling is measured
+            # against.
+            space_totals=SummariseSpaces(file_repository),
         )
 
         # `spaces-backend-plan.md` steps 5 and 11 -- the two cross-module

@@ -38,8 +38,14 @@ class WorkflowRunIn(BaseModel):
 
     ``input`` is the initial blackboard the first step is projected from — free
     JSON by contract, since every workflow defines its own shape.
+
+    ``space_id`` is REQUIRED (spaces plan step 12, §3.7), and unlike
+    ``AgentInvokeIn``'s it has no ``None`` case at all: a run always opens its
+    own D-12 thread, so there is never an existing thread whose space it could
+    inherit.
     """
 
+    space_id: str = Field(min_length=1)
     input: dict[str, Any] = Field(default_factory=dict)
     stream: bool = False
 

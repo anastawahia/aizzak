@@ -44,7 +44,11 @@ from app.framework.workflows import InMemoryWorkflowRegistry
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
 from tests.unit.support_credentials import build_credentials
-from tests.unit.support_files_media import FilesMediaStack, build_files_media
+from tests.unit.support_files_media import (
+    FilesMediaStack,
+    InMemorySpaces,
+    build_files_media,
+)
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
 from tests.unit.support_knowledge import build_knowledge
@@ -57,6 +61,9 @@ _KNOWLEDGE = build_knowledge()
 _INTEGRATIONS = build_integrations()
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+# Spaces plan step 12: every upload names its space, every listing is scoped
+# to one, and the seam behind both treats only this id as live.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
 _SHA = "a" * 64
@@ -115,7 +122,7 @@ class _FakeWsAuth:
 def _make_app() -> tuple[FastAPI, FilesMediaStack]:
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
-    stack = build_files_media()
+    stack = build_files_media(spaces=InMemorySpaces(active={_SPACE}))
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
             agents=registry,
@@ -134,6 +141,7 @@ def _make_app() -> tuple[FastAPI, FilesMediaStack]:
         workflows=InMemoryWorkflowRegistry(),
         files=stack.files,
         media=stack.media,
+        space_quota=stack.space_quota,
         workspace=_WORKSPACE_USAGE.workspace,
         usage=_WORKSPACE_USAGE.usage,
         credentials=_CREDENTIALS.credentials,
@@ -152,6 +160,7 @@ def _auth(token: str = _GOOD) -> dict[str, str]:
 
 def _register(client: TestClient, **overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
+        "space_id": _SPACE,
         "name": "report.pdf",
         "content_type": "application/pdf",
         "size_bytes": 2048,
@@ -202,12 +211,22 @@ def test_register_refusals_speak_the_catalog() -> None:
 
     unsupported = client.post(
         "/api/v1/files",
-        json={"name": "x.bin", "content_type": "application/x-msdownload", "size_bytes": 10},
+        json={
+            "space_id": _SPACE,
+            "name": "x.bin",
+            "content_type": "application/x-msdownload",
+            "size_bytes": 10,
+        },
         headers=_auth(),
     )
     too_large = client.post(
         "/api/v1/files",
-        json={"name": "x.pdf", "content_type": "application/pdf", "size_bytes": 10**9},
+        json={
+            "space_id": _SPACE,
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10**9,
+        },
         headers=_auth(),
     )
 
@@ -285,7 +304,7 @@ def test_list_wraps_files_in_the_api04_envelope_with_ready_only_urls() -> None:
     ready_id = _register(client, name="other.pdf")["file_id"]
     client.post(f"/api/v1/files/{ready_id}/complete", headers=_auth())
 
-    response = client.get("/api/v1/files", headers=_auth())
+    response = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth())
 
     assert response.status_code == 200
     body = response.json()
@@ -308,15 +327,18 @@ def test_the_cursor_round_trips_through_the_envelope() -> None:
     client = TestClient(app)
     ids = [_register(client, name=f"f{n}.pdf")["file_id"] for n in range(5)]
 
-    first = client.get("/api/v1/files?limit=2", headers=_auth()).json()
+    first = client.get(f"/api/v1/files?space_id={_SPACE}&limit=2", headers=_auth()).json()
     assert first["meta"]["limit"] == 2
     cursor = first["meta"]["next_cursor"]
     assert cursor is not None
     assert str(cursor) not in str(first["data"][-1]["id"])  # opaque, not the raw id
 
-    second = client.get(f"/api/v1/files?limit=2&cursor={cursor}", headers=_auth()).json()
+    second = client.get(
+        f"/api/v1/files?space_id={_SPACE}&limit=2&cursor={cursor}", headers=_auth()
+    ).json()
     third = client.get(
-        f"/api/v1/files?limit=2&cursor={second['meta']['next_cursor']}", headers=_auth()
+        f"/api/v1/files?space_id={_SPACE}&limit=2&cursor={second['meta']['next_cursor']}",
+        headers=_auth(),
     ).json()
 
     seen = [row["id"] for page in (first, second, third) for row in page["data"]]
@@ -337,7 +359,7 @@ def test_a_malformed_cursor_is_a_422_problem_not_a_500() -> None:
     app, _ = _make_app()
     client = TestClient(app)
 
-    response = client.get("/api/v1/files?cursor=!!!!", headers=_auth())
+    response = client.get(f"/api/v1/files?space_id={_SPACE}&cursor=!!!!", headers=_auth())
 
     assert response.status_code == 422
     assert response.headers["content-type"].startswith("application/problem+json")
@@ -350,7 +372,9 @@ def test_a_cursor_minted_for_another_collection_is_refused() -> None:
     app, _ = _make_app()
     client = TestClient(app)
 
-    response = client.get(f"/api/v1/files?cursor={encode_seq_cursor(42)}", headers=_auth())
+    response = client.get(
+        f"/api/v1/files?space_id={_SPACE}&cursor={encode_seq_cursor(42)}", headers=_auth()
+    )
 
     assert response.status_code == 422
     assert response.json()["code"] == "common.invalid_cursor"
@@ -452,7 +476,7 @@ def test_the_renamed_name_is_what_the_list_and_the_read_both_show() -> None:
     file_id = _register(client)["file_id"]
 
     client.patch(f"/api/v1/files/{file_id}", json={"name": "renamed.pdf"}, headers=_auth())
-    listed = client.get("/api/v1/files", headers=_auth()).json()["data"]
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
     read = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
 
     assert [row["name"] for row in listed if row["id"] == file_id] == ["renamed.pdf"]
@@ -601,7 +625,12 @@ def test_registering_twice_with_one_key_creates_one_file() -> None:
     presigned URL — rather than a fresh resource the client never asked for."""
     app, stack = _make_app()
     client = TestClient(app)
-    body = {"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048}
+    body = {
+        "space_id": _SPACE,
+        "name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 2048,
+    }
 
     first = client.post("/api/v1/files", json=body, headers=_idem("k-1"))
     second = client.post("/api/v1/files", json=body, headers=_idem("k-1"))
@@ -621,12 +650,22 @@ def test_the_same_key_with_a_different_body_is_a_conflict() -> None:
 
     client.post(
         "/api/v1/files",
-        json={"name": "a.pdf", "content_type": "application/pdf", "size_bytes": 10},
+        json={
+            "space_id": _SPACE,
+            "name": "a.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+        },
         headers=_idem("k-2"),
     )
     response = client.post(
         "/api/v1/files",
-        json={"name": "b.pdf", "content_type": "application/pdf", "size_bytes": 10},
+        json={
+            "space_id": _SPACE,
+            "name": "b.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+        },
         headers=_idem("k-2"),
     )
 
@@ -638,7 +677,12 @@ def test_the_same_key_with_a_different_body_is_a_conflict() -> None:
 def test_different_keys_create_different_files() -> None:
     app, stack = _make_app()
     client = TestClient(app)
-    body = {"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048}
+    body = {
+        "space_id": _SPACE,
+        "name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 2048,
+    }
 
     first = client.post("/api/v1/files", json=body, headers=_idem("k-3"))
     second = client.post("/api/v1/files", json=body, headers=_idem("k-4"))
@@ -653,7 +697,12 @@ def test_without_the_header_nothing_is_deduplicated_and_the_store_is_untouched()
     trip on a ledger the caller never opted into."""
     app, stack = _make_app()
     client = TestClient(app)
-    body = {"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048}
+    body = {
+        "space_id": _SPACE,
+        "name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 2048,
+    }
 
     client.post("/api/v1/files", json=body, headers=_auth())
     client.post("/api/v1/files", json=body, headers=_auth())
@@ -666,7 +715,12 @@ def test_without_the_header_nothing_is_deduplicated_and_the_store_is_untouched()
 def test_a_blank_key_is_a_422_not_a_silent_pass() -> None:
     app, _ = _make_app()
     client = TestClient(app)
-    body = {"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048}
+    body = {
+        "space_id": _SPACE,
+        "name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 2048,
+    }
 
     response = client.post("/api/v1/files", json=body, headers=_idem("   "))
 
@@ -699,7 +753,12 @@ def test_the_media_and_files_ledgers_do_not_collide_on_one_key() -> None:
 
     file_out = client.post(
         "/api/v1/files",
-        json={"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048},
+        json={
+            "space_id": _SPACE,
+            "name": "report.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 2048,
+        },
         headers=_idem("shared"),
     )
     job_out = client.post("/api/v1/media/jobs", json=_job_body(), headers=_idem("shared"))
@@ -717,8 +776,18 @@ def test_a_failed_create_releases_its_key_so_the_retry_can_proceed() -> None:
     check, not a synthetic exception."""
     app, stack = _make_app()
     client = TestClient(app)
-    too_big = {"name": "big.pdf", "content_type": "application/pdf", "size_bytes": 10**9}
-    ok = {"name": "report.pdf", "content_type": "application/pdf", "size_bytes": 2048}
+    too_big = {
+        "space_id": _SPACE,
+        "name": "big.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 10**9,
+    }
+    ok = {
+        "space_id": _SPACE,
+        "name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 2048,
+    }
 
     failed = client.post("/api/v1/files", json=too_big, headers=_idem("k-5"))
     assert failed.status_code == 413

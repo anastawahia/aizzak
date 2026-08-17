@@ -43,10 +43,11 @@ class Conversation:
     # `| None` mirrors the column, which stays NULLable until plan row 8-b.
     # NOT defaulted, deliberately, and for `File.space_id`'s reason: a default
     # would make a writer that FORGOT its space indistinguishable from one
-    # that decided it has none. The debtors are therefore visible in the
-    # source -- the orchestrator's agent/workflow threads and `POST
-    # /conversations`, both of which get a space when the wire carries one
-    # (step 12).
+    # that decided it has none. Step 12 paid both of the debtors this comment
+    # used to name: `POST /conversations` takes `space_id` in its body, and
+    # the orchestrator's agent/workflow threads take it from
+    # `AgentInvokeIn`/`WorkflowRunIn` and refuse to open without one. What is
+    # left is `WorkerMediaGenerator` (§7), and row 8-b is where it is settled.
     #
     # There is no mutator for it, matching `File`: decision 3 forbids moving
     # a file between spaces, and moving a THREAD would be worse -- it would

@@ -49,6 +49,9 @@ from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from tests.unit.support_access import build_authorization
 
 _WORKSPACE = "018f0000-0000-7000-8000-000000000001"
+# Spaces plan step 12 — a request that opens a FRESH thread has to name the
+# space it opens it in; one that continues a thread inherits that thread's.
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 
 
 def _ctx() -> ExecutionContext:
@@ -177,7 +180,7 @@ async def test_invoke_hands_the_agent_a_resolved_llm() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+            _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -207,7 +210,7 @@ async def test_invoke_passes_the_injected_module_seams_through() -> None:
     )
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -221,7 +224,7 @@ async def test_unwired_seams_stay_none_rather_than_being_invented() -> None:
     orchestrator, _ = _orchestrator(agents=[(_RecordingAgent.metadata, _RecordingAgent)])
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -243,7 +246,7 @@ async def test_provider_is_resolved_with_the_agent_key_as_capability() -> None:
     orchestrator, resolver = _orchestrator(agents=[(_RecordingAgent.metadata, _RecordingAgent)])
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -270,7 +273,7 @@ async def test_an_agent_without_the_chat_capability_resolves_no_llm() -> None:
     orchestrator, resolver = _orchestrator(agents=[(_Mediaish.metadata, _Mediaish)])
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "mediaish", AgentRequest(conversation_id=None, input={})
+        _ctx(), "mediaish", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -290,7 +293,7 @@ async def test_unknown_agent_raises_404_before_any_event() -> None:
 
     with pytest.raises(NotFoundError) as excinfo:
         await orchestrator.invoke(
-            _ctx(), "no-such-agent", AgentRequest(conversation_id=None, input={})
+            _ctx(), "no-such-agent", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
 
     assert excinfo.value.status == 404
@@ -301,7 +304,9 @@ async def test_a_malformed_agent_key_raises_422_before_any_event(bad_key: str) -
     orchestrator, _ = _orchestrator(agents=[(_RecordingAgent.metadata, _RecordingAgent)])
 
     with pytest.raises(ValidationError) as excinfo:
-        await orchestrator.invoke(_ctx(), bad_key, AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), bad_key, AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
     assert excinfo.value.status == 422
 
@@ -315,7 +320,9 @@ async def test_a_provider_resolution_failure_raises_before_any_event() -> None:
     )
 
     with pytest.raises(AppError):
-        await orchestrator.invoke(_ctx(), "recording", AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
 
 async def test_an_in_flight_failure_becomes_a_terminal_error_event_not_a_raise() -> None:
@@ -327,7 +334,7 @@ async def test_an_in_flight_failure_becomes_a_terminal_error_event_not_a_raise()
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "exploding", AgentRequest(conversation_id=None, input={})
+            _ctx(), "exploding", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -438,7 +445,9 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
         async for e in await orchestrator.invoke(
             _ctx(),
             "rag_agent",
-            AgentRequest(conversation_id=None, input={"text": "capital of France?"}),
+            AgentRequest(
+                space_id=_SPACE, conversation_id=None, input={"text": "capital of France?"}
+            ),
         )
     ]
 
@@ -469,7 +478,9 @@ async def test_real_agent_input_validation_still_raises_in_flight_as_an_event() 
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "rag_agent", AgentRequest(conversation_id=None, input={"text": "  "})
+            _ctx(),
+            "rag_agent",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "  "}),
         )
     ]
 
@@ -583,7 +594,7 @@ async def _drain(orchestrator: AgentOrchestrator, key: str = "streamer") -> list
     return [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), key, AgentRequest(conversation_id=None, input={})
+            _ctx(), key, AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -600,7 +611,9 @@ async def test_quota_is_checked_before_the_run_and_denial_raises_429() -> None:
     )
 
     with pytest.raises(RateLimitedError) as excinfo:
-        await orchestrator.invoke(_ctx(), "streamer", AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
     assert excinfo.value.status == 429
     # The reason becomes the CODE (11 §8.2), not a generic rate-limit code:
@@ -617,7 +630,9 @@ async def test_budget_denial_maps_to_its_own_code() -> None:
     )
 
     with pytest.raises(RateLimitedError) as excinfo:
-        await orchestrator.invoke(_ctx(), "streamer", AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
     assert excinfo.value.code == "usage.budget_exceeded"
 
@@ -635,7 +650,9 @@ async def test_the_denials_retry_hint_is_carried_onto_the_error() -> None:
     )
 
     with pytest.raises(RateLimitedError) as excinfo:
-        await orchestrator.invoke(_ctx(), "streamer", AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
     assert excinfo.value.retry_after_s == 3600
 
@@ -649,7 +666,9 @@ async def test_a_denial_without_a_reset_carries_no_retry_hint() -> None:
     )
 
     with pytest.raises(RateLimitedError) as excinfo:
-        await orchestrator.invoke(_ctx(), "streamer", AgentRequest(conversation_id=None, input={}))
+        await orchestrator.invoke(
+            _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
 
     assert excinfo.value.retry_after_s is None
 
@@ -745,7 +764,7 @@ async def test_an_abandoned_stream_is_still_billed() -> None:
     orchestrator, _, capture = _metered_orchestrator(llm=_CountingLLM(prompt=10, completion=5))
 
     events = await orchestrator.invoke(
-        _ctx(), "streamer", AgentRequest(conversation_id=None, input={})
+        _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     )
     agen = events.__aiter__()
     await agen.__anext__()  # take one token, then abandon
@@ -873,7 +892,7 @@ async def test_an_overrunning_stream_ends_with_the_b1_terminal_error_event() -> 
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "staller", AgentRequest(conversation_id=None, input={})
+            _ctx(), "staller", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -891,7 +910,7 @@ async def test_the_cap_disposes_the_cut_agent() -> None:
     orchestrator, _ = _capped_orchestrator(cap_s=0.05)
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "staller", AgentRequest(conversation_id=None, input={})
+        _ctx(), "staller", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -904,7 +923,7 @@ async def test_the_cut_run_is_still_billed_for_what_it_consumed() -> None:
     orchestrator, capture = _capped_orchestrator(cap_s=0.05)
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "staller", AgentRequest(conversation_id=None, input={})
+        _ctx(), "staller", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -941,7 +960,7 @@ async def test_no_cap_means_no_deadline_at_all() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "brief", AgentRequest(conversation_id=None, input={})
+            _ctx(), "brief", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -956,7 +975,7 @@ async def test_a_generous_cap_never_touches_a_healthy_stream() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "streamer", AgentRequest(conversation_id=None, input={})
+            _ctx(), "streamer", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
 
@@ -974,7 +993,7 @@ async def test_a_budget_spent_between_pulls_still_disposes_the_producer() -> Non
     orchestrator, _ = _capped_orchestrator(cap_s=0.05)
 
     agen = await orchestrator.invoke(
-        _ctx(), "staller", AgentRequest(conversation_id=None, input={})
+        _ctx(), "staller", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     )
     first = await agen.__anext__()
     await asyncio.sleep(0.08)  # budget expires while the producer is parked
@@ -1035,9 +1054,9 @@ class _FakeThreads:
         kind: str,
         title: str | None = None,
     ) -> StartedConversation:
-        # The space is RECORDED, not ignored: the orchestrator has none to
-        # give until step 12, and a fake that swallowed the argument would
-        # hide the day it starts giving one.
+        # The space is RECORDED, not ignored: since step 12 the orchestrator
+        # passes the one `AgentInvokeIn` carried, and a fake that swallowed
+        # the argument could not tell that from passing nothing.
         self.spaces.append(space_id)
         self.started.append((agent_key, kind))
         return StartedConversation(id="conv-new", agent_key=agent_key, kind=kind)
@@ -1128,16 +1147,17 @@ async def test_invoke_opens_a_thread_and_writes_both_turns() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "filer", AgentRequest(conversation_id=None, input={"text": "hi"})
+            _ctx(),
+            "filer",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
         )
     ]
 
     assert threads.started == [("filer", "agent")]
-    # Spaces plan step 7's stated debt: `AgentInvokeIn` carries no space until
-    # step 12, so the thread is opened with `None` — never with one invented
-    # from whatever this workspace happens to own, which would file the thread
-    # and its whole retrieval scope where nobody put it.
-    assert threads.spaces == [None]
+    # Spaces plan step 12: the space the REQUEST named reaches the thread —
+    # never one invented from whatever this workspace happens to own, which
+    # would file the thread and its whole retrieval scope where nobody put it.
+    assert threads.spaces == [_SPACE]
     assert [(row[1], row[2]) for row in threads.appended] == [
         ("user", "hi"),
         ("assistant", "done"),
@@ -1165,6 +1185,45 @@ async def test_invoke_reuses_the_thread_it_is_given() -> None:
     assert {row[0] for row in threads.appended} == {"conv-1"}
 
 
+async def test_a_request_naming_neither_a_thread_nor_a_space_is_refused_pre_flight() -> None:
+    """Spaces plan step 12 — the one combination that would file a thread
+    nowhere.
+
+    ``space_id`` is optional on ``AgentRequest`` because a request that
+    CONTINUES a thread inherits that thread's space and must not restate it.
+    That makes "neither" reachable, and it is the shape row 8-b's
+    ``SET NOT NULL`` would meet as a ``23502`` from the database instead of a
+    422 from the request. It is refused pre-flight — before the agent is
+    created and before a single row is written — so nothing is left behind.
+    """
+    threads = _FakeThreads()
+    orchestrator = _turn_orchestrator(_FileAgent, threads)
+
+    with pytest.raises(ValidationError):
+        await orchestrator.invoke(
+            _ctx(), "filer", AgentRequest(conversation_id=None, space_id=None, input={"text": "hi"})
+        )
+
+    assert threads.started == []
+    assert threads.appended == []
+
+
+async def test_a_request_continuing_a_thread_needs_no_space_of_its_own() -> None:
+    """The other side of the same rule: the thread already has a space, so a
+    continuation that names none is perfectly well-formed — and nothing is
+    opened for it to be filed under."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_FileAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "filer", AgentRequest(conversation_id="conv-1", space_id=None, input={"text": "hi"})
+    ):
+        pass
+
+    assert threads.started == []
+    assert threads.spaces == []
+
+
 async def test_an_unknown_thread_raises_pre_flight_before_the_agent_runs() -> None:
     threads = _FakeThreads(known="conv-1")
     orchestrator = _turn_orchestrator(_FileAgent, threads)
@@ -1184,7 +1243,9 @@ async def test_a_textless_final_is_recorded_as_its_own_json() -> None:
     orchestrator = _turn_orchestrator(_JobAgent, threads)
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "job", AgentRequest(conversation_id=None, input={"prompt": "a cat"})
+        _ctx(),
+        "job",
+        AgentRequest(space_id=_SPACE, conversation_id=None, input={"prompt": "a cat"}),
     ):
         pass
 
@@ -1199,7 +1260,9 @@ async def test_an_unwired_conversations_seam_streams_but_persists_nothing() -> N
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "filer", AgentRequest(conversation_id=None, input={"text": "hi"})
+            _ctx(),
+            "filer",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
         )
     ]
 
@@ -1212,7 +1275,9 @@ async def test_invoke_once_refuses_to_invent_a_turn_it_never_persisted() -> None
 
     with pytest.raises(AppError) as excinfo:
         await orchestrator.invoke_once(
-            _ctx(), "filer", AgentRequest(conversation_id=None, input={"text": "hi"})
+            _ctx(),
+            "filer",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
         )
 
     assert excinfo.value.status == 500
@@ -1224,7 +1289,7 @@ async def test_invoke_once_returns_the_persisted_turn() -> None:
     orchestrator = _turn_orchestrator(_FileAgent, threads)
 
     turn = await orchestrator.invoke_once(
-        _ctx(), "filer", AgentRequest(conversation_id=None, input={"text": "hi"})
+        _ctx(), "filer", AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"})
     )
 
     assert turn.conversation_id == "conv-new"
@@ -1241,7 +1306,9 @@ async def test_invoke_once_raises_an_in_flight_failure_as_the_problem_it_is() ->
 
     with pytest.raises(AppError) as excinfo:
         await orchestrator.invoke_once(
-            _ctx(), "boom", AgentRequest(conversation_id=None, input={"text": "hi"})
+            _ctx(),
+            "boom",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
         )
 
     assert excinfo.value.status == 422
@@ -1255,7 +1322,9 @@ async def test_a_failed_reply_write_never_breaks_a_produced_answer() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "filer", AgentRequest(conversation_id=None, input={"text": "hi"})
+            _ctx(),
+            "filer",
+            AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
         )
     ]
 
@@ -1270,7 +1339,9 @@ async def test_the_turn_reports_the_prompt_completion_split() -> None:
     orchestrator._deps = replace(orchestrator._deps, conversations=_FakeThreads())
 
     turn = await orchestrator.invoke_once(
-        _ctx(), "streamer", AgentRequest(conversation_id=None, input={"text": "hi"})
+        _ctx(),
+        "streamer",
+        AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
     )
 
     assert turn.prompt_tokens == 812
@@ -1310,7 +1381,7 @@ async def test_an_agents_declared_permissions_are_enforced_before_it_runs() -> N
 
     with pytest.raises(ForbiddenError) as raised:
         await orchestrator.invoke(
-            _ctx(), "privileged", AgentRequest(conversation_id=None, input={})
+            _ctx(), "privileged", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     assert raised.value.code == "authz.forbidden"
     assert "credentials:manage" in str(raised.value)
@@ -1331,7 +1402,7 @@ async def test_a_refused_agent_costs_no_credential_lookup_and_no_quota_call() ->
 
     with pytest.raises(ForbiddenError):
         await orchestrator.invoke(
-            _ctx(), "privileged", AgentRequest(conversation_id=None, input={})
+            _ctx(), "privileged", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     assert resolver.calls == []
     assert enforcement.calls == []
@@ -1346,7 +1417,7 @@ async def test_an_owner_reaches_the_same_agent() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            ctx, "privileged", AgentRequest(conversation_id=None, input={})
+            ctx, "privileged", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
     assert events[-1].type == "final"
@@ -1362,7 +1433,7 @@ async def test_an_unwired_authorization_seam_refuses_instead_of_allowing() -> No
 
     with pytest.raises(AppError) as raised:
         await orchestrator.invoke(
-            _ctx(), "privileged", AgentRequest(conversation_id=None, input={})
+            _ctx(), "privileged", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     assert raised.value.code == "common.internal"
 
@@ -1379,7 +1450,7 @@ async def test_an_agent_that_declares_nothing_needs_no_decision() -> None:
     events = [
         e
         async for e in await orchestrator.invoke(
-            _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+            _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
     ]
     assert events[-1].type == "final"
@@ -1392,7 +1463,7 @@ async def test_an_unknown_agent_is_still_a_404_not_a_403() -> None:
 
     with pytest.raises(NotFoundError):
         await orchestrator.invoke(
-            _ctx(), "no_such_agent", AgentRequest(conversation_id=None, input={})
+            _ctx(), "no_such_agent", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
         )
 
 
@@ -1444,7 +1515,7 @@ async def test_a_request_opening_a_fresh_thread_never_reads_a_pin() -> None:
     )
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 
@@ -1546,7 +1617,7 @@ async def test_a_request_that_opens_a_fresh_thread_never_asks_it_what_it_pinned(
     )
 
     async for _ in await orchestrator.invoke(
-        _ctx(), "recording", AgentRequest(conversation_id=None, input={})
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
     ):
         pass
 

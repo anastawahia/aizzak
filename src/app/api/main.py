@@ -69,6 +69,7 @@ from app.api.v1.routers.knowledge import router as knowledge_router
 from app.api.v1.routers.me import router as me_router
 from app.api.v1.routers.media import router as media_router
 from app.api.v1.routers.models import router as models_router
+from app.api.v1.routers.spaces import router as spaces_router
 from app.api.v1.routers.usage import router as usage_router
 from app.api.v1.routers.workflows import router as workflows_router
 from app.api.v1.routers.workspace import router as workspace_router
@@ -180,6 +181,7 @@ def create_app(
     app.include_router(admin_router, prefix=prefix)
     app.include_router(conversations_router, prefix=prefix)
     app.include_router(workflows_router, prefix=prefix)
+    app.include_router(spaces_router, prefix=prefix)
     app.include_router(files_router, prefix=prefix)
     app.include_router(media_router, prefix=prefix)
     app.include_router(me_router, prefix=prefix)

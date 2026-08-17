@@ -51,6 +51,7 @@ from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
 from tests.unit.support_knowledge import (
+    SEED_SPACE,
     KnowledgeStack,
     RecordingRetrieval,
     build_knowledge,
@@ -277,7 +278,7 @@ def test_search_returning_nothing_is_an_empty_envelope_not_an_error() -> None:
 def test_listing_is_empty_in_the_envelope_when_nothing_is_registered() -> None:
     app, _stack = _make_app()
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert response.status_code == 200
     # `meta.limit` is the page size ASKED FOR (6.3-أ), so an empty corpus still
     # reports the default — unlike `POST /search` above, whose bound is `k`.
@@ -289,7 +290,7 @@ def test_listing_returns_the_documented_shape() -> None:
     doc = seed_document(document_id="d1", workspace_id=_W1, file_id="f1", chunk_count=4)
     stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert response.json() == {
         "data": [
             {
@@ -315,7 +316,7 @@ def test_listing_includes_every_lifecycle_status() -> None:
         doc = seed_document(document_id=f"d{index}", workspace_id=_W1, status=status)
         stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert {row["status"] for row in response.json()["data"]} == {
         "pending",
         "indexing",
@@ -343,10 +344,13 @@ def test_the_corpus_pages_newest_first() -> None:
         stack.repository.rows[doc.id] = doc
 
     with TestClient(app) as client:
-        first = client.get("/api/v1/knowledge/documents?limit=2", headers=_auth()).json()
+        first = client.get(
+            f"/api/v1/knowledge/documents?space_id={SEED_SPACE}&limit=2", headers=_auth()
+        ).json()
         cursor = first["meta"]["next_cursor"]
         second = client.get(
-            f"/api/v1/knowledge/documents?limit=2&cursor={cursor}", headers=_auth()
+            f"/api/v1/knowledge/documents?space_id={SEED_SPACE}&limit=2&cursor={cursor}",
+            headers=_auth(),
         ).json()
 
     assert [row["id"] for row in first["data"]] == [ids[2], ids[1]]
@@ -358,7 +362,9 @@ def test_the_corpus_pages_newest_first() -> None:
 def test_the_corpus_refuses_a_malformed_cursor() -> None:
     app, _stack = _make_app()
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents?cursor=!!!!", headers=_auth())
+        response = client.get(
+            f"/api/v1/knowledge/documents?space_id={SEED_SPACE}&cursor=!!!!", headers=_auth()
+        )
     assert response.status_code == 422
     assert response.json()["code"] == "common.invalid_cursor"
 
@@ -389,7 +395,7 @@ def test_listing_never_leaks_a_failure_reason() -> None:
     )
     stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert "poppler" not in response.text
     assert "error" not in response.json()["data"][0]
 
@@ -402,25 +408,43 @@ def test_listing_excludes_another_tenants_documents() -> None:
     ):
         stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert [row["id"] for row in response.json()["data"]] == ["d1"]
 
 
-def test_listing_still_returns_documents_from_every_space() -> None:
-    """Spaces plan step 8: the listing passes ``space_id=None`` until
-    ``?space_id=`` lands on the wire (step 12), and ``None`` means EVERY
-    space — never "the documents that have no space". Reading it as
-    ``IS NULL`` would empty this listing the moment documents start carrying
-    one, which is the same step that makes it possible."""
+def test_listing_returns_only_the_named_spaces_documents() -> None:
+    """Spaces plan step 12, and the inversion of what this test asserted at
+    step 8.
+
+    ``?space_id=`` is mandatory now, so the listing shows ONE space — and the
+    two rows it must not show are both here on purpose: a document in another
+    space, and a document with no space at all. The second is §5-أ made
+    visible: everything indexed before the plan carries no space and is
+    reachable from no listing until it is re-indexed. Answering "or has no
+    space" would have leaked every workspace's pre-plan corpus into every
+    space created after it.
+    """
     app, stack = _make_app()
     for doc in (
-        seed_document(document_id="d1", workspace_id=_W1, space_id="space-research"),
-        seed_document(document_id="d2", workspace_id=_W1, space_id=None),
+        seed_document(document_id="d1", workspace_id=_W1),
+        seed_document(document_id="d2", workspace_id=_W1, space_id="space-research"),
+        seed_document(document_id="d3", workspace_id=_W1, space_id=None),
     ):
         stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
+    assert [row["id"] for row in response.json()["data"]] == ["d1"]
+
+
+def test_listing_without_a_space_is_422_not_the_whole_workspace() -> None:
+    """The narrowing is mandatory, not defaulted: a client that forgets it
+    gets a 422, never the workspace-wide corpus the route used to answer."""
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
         response = client.get("/api/v1/knowledge/documents", headers=_auth())
-    assert [row["id"] for row in response.json()["data"]] == ["d2", "d1"]
+    assert response.status_code == 422
 
 
 def test_listing_is_newest_first() -> None:
@@ -429,7 +453,7 @@ def test_listing_is_newest_first() -> None:
         doc = seed_document(document_id=doc_id, workspace_id=_W1)
         stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
-        response = client.get("/api/v1/knowledge/documents", headers=_auth())
+        response = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
     assert [row["id"] for row in response.json()["data"]] == ["d3", "d2", "d1"]
 
 
@@ -507,7 +531,9 @@ def test_the_reindexed_file_disappears_from_the_corpus_until_the_worker_runs() -
     stack.repository.rows[doc.id] = doc
     with TestClient(app) as client:
         client.post("/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth())
-        listing = client.get("/api/v1/knowledge/documents", headers=_auth()).json()
+        listing = client.get(
+            f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth()
+        ).json()
     (row,) = listing["data"]
     assert row["id"] != "d1"
     assert (row["status"], row["chunk_count"]) == ("pending", 0)

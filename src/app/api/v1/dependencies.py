@@ -39,6 +39,8 @@ from app.agents.orchestrator import AgentOrchestrator
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.space_deletion import DeleteSpaceService
+from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.errors import UnauthorizedError
 from app.framework.ports.idempotency_store import IdempotencyStore
 from app.framework.ports.system_stats import SystemStatsSource
@@ -52,10 +54,11 @@ from app.modules.admin.application.providers import PlatformProviderUseCases
 from app.modules.admin.application.users import PlatformAdminUseCases
 from app.modules.conversations.application.use_cases import ConversationUseCases
 from app.modules.credentials.application.use_cases import CredentialUseCases
-from app.modules.files.application.use_cases import FileUseCases
+from app.modules.files.application.use_cases import FileUseCases, RegisteredUpload
 from app.modules.integrations.application.use_cases import IntegrationsUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeUseCases
 from app.modules.media.application.use_cases import MediaUseCases
+from app.modules.spaces.application.use_cases import SpaceUseCases
 from app.modules.usage.application.use_cases import UsageUseCases
 from app.modules.workspace.application.use_cases import RecordUserPresence, WorkspaceUseCases
 
@@ -194,6 +197,30 @@ class ApiServices:
     # layer is its only caller by construction — nothing below this layer knows
     # a request had a header at all.
     idempotency: IdempotencyStore
+    # `spaces-backend-plan.md` step 12 — the two faces `/api/v1/spaces` needs,
+    # and they are two rather than one because they come from opposite sides
+    # of the boundary. `spaces` is the MODULE's own bundle (create/rename/list
+    # — the `FileUseCases` precedent); `space_deletion` is the cross-module
+    # cascade (§3.6), which belongs to no module at all and lives at the
+    # Composition Root. Folding the cascade into `SpaceUseCases` would have
+    # put a service that touches `knowledge`, Qdrant, `files`, MinIO and
+    # `conversations` inside a module forbidden to know any of them exist.
+    #
+    # Both optional and both fail closed, the `admin`/`models` precedent:
+    # plan step 12 is this layer, plan step 13 is the wiring. `DeleteSpace`
+    # (the mark, step 1 of the cascade) is reached THROUGH `space_deletion`
+    # and is deliberately not reachable on its own — a route that could mark a
+    # space deleted without running the other six steps would be a route that
+    # hides a workspace's data instead of erasing it.
+    spaces: SpaceUseCases | None = None
+    space_deletion: DeleteSpaceService | None = None
+    # The third space-shaped field, and the only one an EXISTING route needs:
+    # `POST /files` registers through it instead of through
+    # `files.transfers.register`, so the 1 GiB ceiling (§3.3) is consulted
+    # under the space's row lock. Generic in its result, and the parameter is
+    # `RegisteredUpload` — the concrete type the Composition Root's binding
+    # infers — so this bundle keeps the exact shape the router returns.
+    space_quota: SpaceQuotaService[RegisteredUpload] | None = None
     # Optional only for small hermetic applications that predate the platform
     # directory. Production wiring always supplies it; the route fails closed
     # if a test application accidentally reaches the admin surface unwired.

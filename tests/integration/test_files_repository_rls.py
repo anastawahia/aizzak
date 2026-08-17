@@ -32,6 +32,7 @@ from app.modules.files.domain.value_objects import (
     Sha256,
     StorageKey,
 )
+from app.modules.files.ports.repository import SpaceFileTotals
 from tests.integration.conftest import LiveDbDsns
 
 pytestmark = [pytest.mark.live_db]
@@ -535,3 +536,78 @@ async def test_a_save_cannot_move_a_file_into_another_space(
     assert reloaded is not None
     assert reloaded.space_id == original
     assert reloaded.name.value == "renamed.pdf"
+
+
+async def test_totals_by_space_groups_active_bytes_and_counts_per_space(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The ``GROUP BY`` behind ``GET /api/v1/spaces`` (plan step 12), on a real
+    database — which is the only place three of its four claims can be made.
+
+    ``bytes_used`` comes back as a real ``int``: PostgreSQL types
+    ``sum(bigint)`` as ``numeric`` and asyncpg hands that over as a
+    ``Decimal``, so the adapter casts in SQL. A fake cannot show that, and a
+    port that promised ``int`` and delivered ``Decimal`` would type-check
+    green all the way to the JSON encoder.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    mine, sibling = new_uuid7(), new_uuid7()
+    await repo_files.add(ctx, _file(workspace_id=ws, space_id=mine, size_bytes=100))
+    await repo_files.add(ctx, _file(workspace_id=ws, space_id=mine, size_bytes=250))
+    await repo_files.add(ctx, _file(workspace_id=ws, space_id=sibling, size_bytes=7))
+
+    totals = await repo_files.totals_by_space(ctx, [mine, sibling])
+
+    assert totals[mine].bytes_used == 350
+    assert isinstance(totals[mine].bytes_used, int)
+    assert totals[mine].file_count == 2
+    assert totals[sibling] == SpaceFileTotals(bytes_used=7, file_count=1)
+
+
+async def test_totals_by_space_omits_a_space_that_matched_nothing(
+    repo_files: SqlFileRepository,
+) -> None:
+    """ABSENT, not zero — the router's own default is what puts the ``0`` on
+    the wire, and it only gets to run because this adapter refuses to invent a
+    group for an id it never saw."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+
+    totals = await repo_files.totals_by_space(ctx, [new_uuid7()])
+
+    assert totals == {}
+
+
+async def test_totals_by_space_excludes_soft_deleted_files_and_other_tenants(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The same two predicates ``bytes_in_space`` carries, because the number a
+    client reads and the number the 1 GiB ceiling compares against have to be
+    the same number. The other tenant is here because a space id is not a
+    secret: two workspaces may legitimately hold the same value."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    shared = new_uuid7()
+    await repo_files.add(ctx_a, _file(workspace_id=ws_a, space_id=shared, size_bytes=100))
+    gone = _file(workspace_id=ws_a, space_id=shared, size_bytes=900)
+    await repo_files.add(ctx_a, gone)
+    gone.soft_delete(utc_now())
+    await repo_files.save(ctx_a, gone)
+    await repo_files.add(_ctx(ws_b), _file(workspace_id=ws_b, space_id=shared, size_bytes=5000))
+
+    totals = await repo_files.totals_by_space(ctx_a, [shared])
+
+    assert totals[shared] == SpaceFileTotals(bytes_used=100, file_count=1)
+
+
+async def test_totals_by_space_with_no_ids_answers_empty_without_a_query(
+    repo_files: SqlFileRepository,
+) -> None:
+    """``IN ()`` is a syntax error in PostgreSQL, so the empty guard is not
+    tidiness — without it an empty page of spaces would raise."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    await repo_files.add(ctx, _file(workspace_id=ws, space_id=new_uuid7()))
+
+    assert await repo_files.totals_by_space(ctx, []) == {}

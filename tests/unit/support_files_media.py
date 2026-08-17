@@ -17,8 +17,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.event_outbox import OutboxRecord
 from app.framework.settings.settings import Limits, MinioSettings
@@ -27,12 +29,15 @@ from app.modules.files.application.use_cases import (
     CompleteUploadService,
     FileTransferService,
     FileUseCases,
+    RegisteredUpload,
     RegisterUpload,
     RenameFile,
     SoftDeleteFile,
     SoftDeleteFileService,
+    SummariseSpaces,
 )
 from app.modules.files.domain.entities import File
+from app.modules.files.ports.repository import SpaceFileTotals
 from app.modules.media.application.use_cases import (
     GetJobStatus,
     MediaRequestService,
@@ -113,6 +118,31 @@ class InMemoryFileRepository:
             and row.deleted_at is None
         )
 
+    async def totals_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[str]
+    ) -> dict[str, SpaceFileTotals]:
+        # ABSENT, not zero, for a space that owns nothing -- the real adapter's
+        # `GROUP BY` returns only groups that exist, and a fake that filled in
+        # zeros would let the router's `.get(id, _EMPTY)` default go untested.
+        wanted = set(space_ids)
+        totals: dict[str, SpaceFileTotals] = {}
+        for row in self.rows.values():
+            if (
+                row.workspace_id != ctx.workspace_id
+                or row.space_id not in wanted
+                or row.deleted_at is not None
+            ):
+                continue
+            # `space_id` is narrowed by the membership test above, and mypy
+            # cannot see that through `in`.
+            assert row.space_id is not None
+            seen = totals.get(row.space_id)
+            totals[row.space_id] = SpaceFileTotals(
+                bytes_used=(seen.bytes_used if seen else 0) + row.size_bytes,
+                file_count=(seen.file_count if seen else 0) + 1,
+            )
+        return totals
+
     def _in_space(self, ctx: ExecutionContext, space_id: str) -> list[File]:
         # NO `deleted_at` filter, unlike `bytes_in_space` right above: a
         # soft-deleted file has given its bytes back but still owns its object
@@ -155,6 +185,15 @@ class InMemorySpaces:
 
     async def get_active(self, ctx: ExecutionContext, space_id: str) -> SpaceRow | None:
         return SpaceRow(space_id) if space_id in self.active else None
+
+    async def lock(self, ctx: ExecutionContext, space_id: str) -> bool:
+        # `SpaceQuotaService`'s `SpaceLock`, on the same set. A dict-backed
+        # fake has no rows to lock and no transaction to hold one in, so what
+        # it can be faithful about is the ANSWER: `True` exactly when there
+        # was a live space to lock. The serialisation itself is proved on a
+        # real database (`tests/integration/test_space_quota_live.py`), which
+        # is the only place it can be.
+        return space_id in self.active
 
 
 @dataclass
@@ -231,14 +270,34 @@ class FilesMediaStack:
     files: FileUseCases
     media: MediaUseCases
     file_repository: InMemoryFileRepository
-    spaces: InMemorySpaces
+    spaces: SpaceGate
     media_repository: InMemoryMediaJobRepository
     storage: RecordingStorage
     outbox: RecordingOutbox
+    # `spaces-backend-plan.md` step 12 — what `POST /api/v1/files` now
+    # registers through, so a router test exercises the same quota gate
+    # production does instead of the bare registrar it used to reach.
+    space_quota: SpaceQuotaService[RegisteredUpload]
+
+
+class SpaceGate(Protocol):
+    """The two questions this stack asks about a space: is it live
+    (``ActiveSpaces``, for ``RegisterUpload``) and may I hold it still
+    (``SpaceLock``, for the quota). ``InMemorySpaces`` answers both, and so
+    does ``support_spaces.InMemorySpaceRepository`` — which is what lets a
+    router test create a space through ``POST /spaces`` and then upload into
+    it."""
+
+    async def get_active(self, ctx: ExecutionContext, space_id: str) -> object | None: ...
+
+    async def lock(self, ctx: ExecutionContext, space_id: str) -> bool: ...
 
 
 def build_files_media(
-    limits: Limits | None = None, *, minio: MinioSettings | None = None
+    limits: Limits | None = None,
+    *,
+    minio: MinioSettings | None = None,
+    spaces: SpaceGate | None = None,
 ) -> FilesMediaStack:
     """One repository per module behind every face, one storage handle-alike,
     one outbox — the same single-instance wiring the Composition Root builds.
@@ -249,23 +308,25 @@ def build_files_media(
     limits = limits or Limits()
     minio = minio or MinioSettings()
     files_repo = InMemoryFileRepository()
-    spaces = InMemorySpaces()
+    spaces = spaces if spaces is not None else InMemorySpaces()
     media_repo = InMemoryMediaJobRepository()
     storage = RecordingStorage()
     outbox = RecordingOutbox()
     uow = NoopUnitOfWork()
+    transfers = FileTransferService(
+        RegisterUpload(files_repo, limits, spaces),
+        files_repo,
+        storage,
+        put_ttl_s=minio.presign_put_ttl_s,
+        get_ttl_s=minio.presign_get_ttl_s,
+    )
     return FilesMediaStack(
         files=FileUseCases(
-            transfers=FileTransferService(
-                RegisterUpload(files_repo, limits, spaces),
-                files_repo,
-                storage,
-                put_ttl_s=minio.presign_put_ttl_s,
-                get_ttl_s=minio.presign_get_ttl_s,
-            ),
+            transfers=transfers,
             complete=CompleteUploadService(CompleteUpload(files_repo), outbox, uow),
             rename=RenameFile(files_repo),
             delete=SoftDeleteFileService(SoftDeleteFile(files_repo), outbox, uow),
+            space_totals=SummariseSpaces(files_repo),
         ),
         media=MediaUseCases(
             requests=MediaRequestService(RequestMedia(media_repo, limits), outbox, uow),
@@ -276,4 +337,10 @@ def build_files_media(
         media_repository=media_repo,
         storage=storage,
         outbox=outbox,
+        # The REAL coordination service over the same three collaborators the
+        # bundle above holds, so a `POST /files` in a router test takes the
+        # lock, sums the space and only then registers — the production path.
+        # `NoopUnitOfWork` is what it cannot be faithful about, and that is
+        # the one thing the live test owns.
+        space_quota=SpaceQuotaService(transfers, spaces, files_repo, uow, limits),
     )

@@ -57,7 +57,7 @@ version bump roll back together.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
@@ -303,6 +303,33 @@ class SqlConversationRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return _paginate(rows, limit, _hydrate_conversation, next_cursor_of=_id_cursor_of)
+
+    async def counts_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[UuidStr]
+    ) -> Mapping[UuidStr, int]:
+        # ONE `GROUP BY` for the whole page (port docstring), and the empty
+        # guard is the `files` adapter's: `IN ()` does not exist in
+        # PostgreSQL, and the answer for no ids is already known here.
+        if not space_ids:
+            return {}
+        # Active threads only — the same predicate `list_by_agent` uses, so
+        # the number beside a space equals the number of threads that space's
+        # listings can actually produce.
+        stmt = (
+            select(conversations.c.space_id, func.count().label("threads"))
+            .where(
+                conversations.c.workspace_id == ctx.workspace_id,
+                conversations.c.space_id.in_(space_ids),
+                conversations.c.deleted_at.is_(None),
+            )
+            .group_by(conversations.c.space_id)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return {row["space_id"]: row["threads"] for row in rows}
 
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None:
         # The aggregate's OWN workspace_id is written (not ctx.workspace_id)

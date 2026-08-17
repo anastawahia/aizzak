@@ -39,7 +39,10 @@ from app.framework.agent_runtime.base_agent import AgentRequest
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.composition_root import CompositionRoot
 from app.framework.errors import NotFoundError
+from app.framework.identifiers import new_uuid7
 from app.modules.knowledge.domain.collections import knowledge_collection
+from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
+from app.modules.spaces.application.use_cases import CreateSpace
 from tests.integration.conftest import LiveOllama
 
 pytestmark = [pytest.mark.live_ollama]
@@ -62,6 +65,23 @@ def _ctx() -> ExecutionContext:
         roles=frozenset({"member"}),
         request_id="req-live-1",
     )
+
+
+async def _mint_space(root: CompositionRoot) -> str:
+    """A REAL space row on the live database, minted through the real
+    use-case (spaces plan step 12).
+
+    Every invocation that opens a fresh thread now names a space, and
+    ``StartConversation`` proves it against ``spaces.spaces`` before writing —
+    so a literal id here would make these tests fail with "space not found"
+    instead of exercising what they are about. The name carries a fresh UUID
+    because ``ux_spaces_ws_name`` is a real unique index and this suite runs
+    against a database that is not reset between runs.
+    """
+    space = await CreateSpace(SqlSpaceRepository(root.tenant_session)).execute(
+        _ctx(), name=f"live-orchestrator-{new_uuid7()}"
+    )
+    return space.id
 
 
 @pytest.fixture
@@ -138,6 +158,7 @@ async def test_the_wired_orchestrator_runs_the_rag_agent_against_live_ollama(
 ) -> None:
     """The full 4.7 spine, end to end, with zero test doubles anywhere --
     including retrieval, since 2.10 (module docstring)."""
+    space_id = await _mint_space(root_with_knowledge)
     events = [
         e
         async for e in await root_with_knowledge.orchestrator.invoke(
@@ -145,6 +166,7 @@ async def test_the_wired_orchestrator_runs_the_rag_agent_against_live_ollama(
             "rag_agent",
             AgentRequest(
                 conversation_id=None,
+                space_id=space_id,
                 input={"text": "Reply with the single word: hello"},
             ),
         )
@@ -183,10 +205,12 @@ async def test_a_media_agent_needs_no_llm_credential_on_the_real_container(
     unbound seam — which is itself the proof that the wiring landed: an unwired
     seam could not produce a domain validation error.
 
-    **Still database-free, deliberately**, keeping this module's opening
-    promise: ``RequestMedia`` validates the params BEFORE it persists anything
-    (INV-MJ3), so this request never reaches Postgres. The DB-backed half of the
-    seam is proven in ``test_media_request_seam.py`` under ``live_db``.
+    ``RequestMedia`` validates the params BEFORE it persists anything
+    (INV-MJ3), so the MEDIA half of this request never reaches Postgres; the
+    DB-backed half of that seam is proven in ``test_media_request_seam.py``
+    under ``live_db``. The thread it opens does, and since spaces plan step 12
+    so does the space that thread is filed under — which is what ``_mint_space``
+    is for.
 
     It also pins a real product gap this step made visible for the first time:
     an image request carrying only a prompt is REJECTED, because ``GenParams``
@@ -194,12 +218,15 @@ async def test_a_media_agent_needs_no_llm_credential_on_the_real_container(
     builds the Phase-6 media router (or a natural-language front door) has to
     supply dimensions; the platform will not invent them.
     """
+    space_id = await _mint_space(root)
     events = [
         e
         async for e in await root.orchestrator.invoke(
             _ctx(),
             "image_agent",
-            AgentRequest(conversation_id=None, input={"prompt": "a red bicycle"}),
+            AgentRequest(
+                conversation_id=None, space_id=space_id, input={"prompt": "a red bicycle"}
+            ),
         )
     ]
 

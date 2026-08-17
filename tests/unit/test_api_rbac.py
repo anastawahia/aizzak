@@ -51,10 +51,12 @@ from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
 from tests.unit.support_knowledge import build_knowledge
+from tests.unit.support_spaces import build_spaces
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.support_workspace_usage import build_workspace_usage
 
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
+_SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 
 # 05 §4's map, completed. The twelve rows the design publishes are marked; the
@@ -112,6 +114,16 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/workflows", "get"): Permission.WORKFLOWS_READ,
     ("/api/v1/workflows/{}/run", "post"): Permission.WORKFLOWS_RUN,  # 05 §4
     ("/api/v1/workflows/runs/{}", "get"): Permission.WORKFLOWS_READ,
+    # `spaces-backend-plan.md` §3.7 — two permissions for four routes, so the
+    # DELETE takes the same `spaces:write` the create and rename do. That is
+    # the plan's decision; the matrix is where its cost is paid, by keeping
+    # `spaces:write` off `member` (see `RoleCatalog`). One guard per route is
+    # this suite's own invariant, so a compound "write AND files:delete" guard
+    # was never on the table.
+    ("/api/v1/spaces", "get"): Permission.SPACES_READ,
+    ("/api/v1/spaces", "post"): Permission.SPACES_WRITE,
+    ("/api/v1/spaces/{}", "patch"): Permission.SPACES_WRITE,
+    ("/api/v1/spaces/{}", "delete"): Permission.SPACES_WRITE,
     ("/api/v1/files", "post"): Permission.FILES_WRITE,
     ("/api/v1/files", "get"): Permission.FILES_READ,
     ("/api/v1/files/{}", "get"): Permission.FILES_READ,
@@ -233,8 +245,9 @@ class _RoleAuth:
 
 def _build_app() -> tuple[FastAPI, _RoleAuth]:
     registry = InMemoryAgentRegistry()
-    conversations = build_conversations()
-    files_media = build_files_media()
+    spaces = build_spaces()
+    conversations = build_conversations(spaces=spaces.query)
+    files_media = build_files_media(spaces=spaces.gateway)
     workspace_usage = build_workspace_usage(_W1)
     auth = _RoleAuth()
     app = create_app(
@@ -255,6 +268,8 @@ def _build_app() -> tuple[FastAPI, _RoleAuth]:
             workflows=InMemoryWorkflowRegistry(),
             files=files_media.files,
             media=files_media.media,
+            spaces=spaces.use_cases,
+            space_quota=files_media.space_quota,
             workspace=workspace_usage.workspace,
             usage=workspace_usage.usage,
             credentials=build_credentials().credentials,
@@ -442,11 +457,21 @@ def test_a_member_still_reaches_everything_the_matrix_grants(client: TestClient)
     viewer delete them."""
     _as(RoleName.MEMBER)
     headers = {"Authorization": "Bearer t"}
-    assert client.get("/api/v1/files", headers=headers).status_code == 200
-    threads = client.get("/api/v1/conversations?agent_key=echo", headers=headers)
+    # `?space_id=` is mandatory on both listings since spaces plan step 12, so
+    # these carry one — the point of the assertions is the GUARD, and a 422
+    # about a missing query parameter would stop proving anything about it.
+    assert client.get(f"/api/v1/files?space_id={_SPACE}", headers=headers).status_code == 200
+    threads = client.get(f"/api/v1/conversations?agent_key=echo&space_id={_SPACE}", headers=headers)
     assert threads.status_code == 200
     assert client.get("/api/v1/usage/limits", headers=headers).status_code == 200
     assert client.get("/api/v1/workspace", headers=headers).status_code == 200
+    # A member READS the space structure and may not change it: the delete
+    # behind `spaces:write` cascades over files and conversations, and this
+    # matrix withholds both delete permissions from a member one row at a time.
+    assert client.get("/api/v1/spaces", headers=headers).status_code == 200
+    assert (
+        client.post("/api/v1/spaces", json={"name": "Drafts"}, headers=headers).status_code == 403
+    )
 
 
 def test_the_guard_refuses_before_the_use_case_is_reached(client: TestClient) -> None:

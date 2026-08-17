@@ -8,6 +8,7 @@ the ``WHERE workspace_id`` filter (DD-04).
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -78,15 +79,37 @@ class ConversationRepository(Protocol):
         """One agent's active threads, newest first.
 
         ``space_id`` narrows the page to one space's threads; ``None`` returns
-        the workspace's, which is what every caller asked for before the
-        spaces plan and what the router still asks for until ``?space_id=``
-        lands (step 12). ``None`` therefore means "all spaces", NOT "threads
-        with no space" — a distinction the adapter enforces by adding a
-        condition rather than by comparing against ``NULL``.
+        the workspace's. ``?space_id=`` became mandatory on ``GET
+        /conversations`` at step 12, so the router always names one now.
+        ``None`` still means "all spaces", NOT "threads with no space" — a
+        distinction the adapter enforces by adding a condition rather than by
+        comparing against ``NULL``.
 
         It is a REQUIRED keyword with no default, matching
         ``FileRepository.list``: "all spaces" is then a decision written at
         the call site rather than one a caller falls into by omission.
+        """
+        ...
+
+    async def counts_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, int]:
+        """How many ACTIVE threads each of ``space_ids`` holds — the third
+        number ``GET /api/v1/spaces`` publishes (§3.7, step 12).
+
+        Plural for the reason ``FileRepository.totals_by_space`` is plural: it
+        serves a page of spaces, and one query per row would be twenty round
+        trips for one column.
+
+        Soft-deleted threads are excluded, matching ``list_by_agent``: the
+        count beside a space's name must be the number of threads a user can
+        actually open from it, not the number of rows the table happens to
+        hold.
+
+        A space with no threads is ABSENT from the mapping rather than present
+        with ``0`` — ``GROUP BY`` returns the groups that exist, and this
+        module cannot vouch that an id it never matched names a real space.
+        An empty ``space_ids`` returns an empty mapping without a query.
         """
         ...
 

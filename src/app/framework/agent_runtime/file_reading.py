@@ -65,8 +65,10 @@ def _is_outside(view: FileReadView, space_id: Uuid | None) -> bool:
     """Is this file outside the caller's space?
 
     ``space_id is None`` is UNSCOPED and matches everything — the pre-plan
-    behaviour, kept for callers that have no space to pass yet (step 12). That
-    is why this is not the plain ``!=`` the pin rule uses: there both sides are
+    behaviour, kept for callers that have no space to pass (the three bundled
+    agents, still, after step 12: the space reached the request but not
+    ``AgentDeps`` — plan §7). That is why this is not the plain ``!=`` the pin
+    rule uses: there both sides are
     "the space of a thing", here the left side is a scope, and a scope's
     absence must not be read as "only files that belong to no space".
 

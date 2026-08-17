@@ -26,7 +26,7 @@ wire here.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 
 from sqlalchemy import (
@@ -61,6 +61,7 @@ from app.modules.files.domain.value_objects import (
     Sha256,
     StorageKey,
 )
+from app.modules.files.ports.repository import SpaceFileTotals
 
 _metadata = MetaData()
 
@@ -251,6 +252,41 @@ class SqlFileRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return total
+
+    async def totals_by_space(
+        self, ctx: ExecutionContext, space_ids: Sequence[UuidStr]
+    ) -> Mapping[UuidStr, SpaceFileTotals]:
+        # ONE `GROUP BY` for the whole page (port docstring). The empty guard
+        # is not defensive tidiness: `IN ()` is a syntax error in PostgreSQL,
+        # and SQLAlchemy's expanding-parameter rendering of it emits a
+        # never-true predicate plus a round trip for an answer already known.
+        if not space_ids:
+            return {}
+        # The same `cast(...)` as `bytes_in_space`, for the same measured
+        # reason: `sum(bigint)` comes back from asyncpg as `Decimal`, and this
+        # port promises `int`. `count()` needs none of it.
+        stmt = (
+            select(
+                files.c.space_id,
+                cast(func.coalesce(func.sum(files.c.size_bytes), 0), BigInteger).label("bytes"),
+                func.count().label("files"),
+            )
+            .where(
+                files.c.workspace_id == ctx.workspace_id,
+                files.c.space_id.in_(space_ids),
+                files.c.deleted_at.is_(None),
+            )
+            .group_by(files.c.space_id)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return {
+            row["space_id"]: SpaceFileTotals(bytes_used=row["bytes"], file_count=row["files"])
+            for row in rows
+        }
 
     async def storage_keys_in_space(
         self, ctx: ExecutionContext, space_id: UuidStr

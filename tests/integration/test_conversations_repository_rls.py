@@ -997,3 +997,61 @@ async def test_a_soft_deleted_thread_still_carries_its_pins(
     assert [pin.file_id for pin in await repo_conversations.list_files(ctx, conversation.id)] == [
         file_id
     ]
+
+
+async def test_counts_by_space_groups_active_threads_per_space(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """The third number ``GET /api/v1/spaces`` publishes (plan step 12), on a
+    real database.
+
+    Active threads only, matching ``list_by_agent``: the count beside a
+    space's name has to equal the number of threads that space's listings can
+    actually produce, or the sidebar and the list disagree. And ACROSS agents
+    — a space's threads are its threads whichever agent runs them, which is
+    the one place this read parts company with every other listing here.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    mine, sibling = new_uuid7(), new_uuid7()
+    await repo_conversations.add(ctx, _conversation(workspace_id=ws, space_id=mine))
+    await repo_conversations.add(
+        ctx, _conversation(workspace_id=ws, space_id=mine, agent_key="other-agent")
+    )
+    gone = _conversation(workspace_id=ws, space_id=mine)
+    await repo_conversations.add(ctx, gone)
+    gone.soft_delete(utc_now())
+    await repo_conversations.save(ctx, gone)
+    await repo_conversations.add(ctx, _conversation(workspace_id=ws, space_id=sibling))
+
+    counts = await repo_conversations.counts_by_space(ctx, [mine, sibling])
+
+    assert counts == {mine: 2, sibling: 1}
+
+
+async def test_counts_by_space_omits_an_empty_space_and_another_tenants_threads(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """ABSENT rather than zero for a space that holds nothing — the router's
+    default is what puts the ``0`` on the wire. The other tenant is here
+    because a space id is not a secret: two workspaces may hold the same
+    value, and only RLS plus the explicit predicate keep them apart."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    shared, empty = new_uuid7(), new_uuid7()
+    await repo_conversations.add(_ctx(ws_b), _conversation(workspace_id=ws_b, space_id=shared))
+
+    counts = await repo_conversations.counts_by_space(_ctx(ws_a), [shared, empty])
+
+    assert counts == {}
+
+
+async def test_counts_by_space_with_no_ids_answers_empty_without_a_query(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """``IN ()`` is a syntax error in PostgreSQL — without the empty guard an
+    empty page of spaces would raise instead of answering nothing."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    await repo_conversations.add(ctx, _conversation(workspace_id=ws, space_id=new_uuid7()))
+
+    assert await repo_conversations.counts_by_space(ctx, []) == {}

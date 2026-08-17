@@ -59,11 +59,13 @@ class RagAgent(BaseAgent):
         scope = self.deps.knowledge_scope or None
         chunks: Sequence[RetrievedChunkView] = (
             # Spaces plan step 8 — `space_id` is TYPED as none rather than
-            # defaulted: `AgentDeps` carries no space until the invocation
-            # itself does (step 12), and this call site is one of the two the
-            # port's docstring names as still owing one. Searching every
-            # space is the pre-plan behaviour, kept until there is a space to
-            # search inside; the pins in `scope` already cannot cross one.
+            # defaulted, and it is STILL none after step 12: that step put the
+            # space on the request (`AgentInvokeIn.space_id`) but not onto
+            # `AgentDeps`, so this agent has nothing to read it from. It
+            # remains one of the two call sites the port's docstring names as
+            # owing a space, and the plan's §7 carries the entry. Searching
+            # every space is the pre-plan behaviour; the pins in `scope`
+            # already cannot cross one.
             await self.deps.knowledge.retrieve(self.ctx, query, _TOP_K, scope, space_id=None)
             if self.deps.knowledge is not None
             else []

@@ -20,6 +20,7 @@ applied to ``CompleteUpload``: the first files caller that does not drop
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.framework.clock import utc_now
@@ -50,7 +51,7 @@ from app.modules.files.domain.value_objects import (
     StorageKey,
 )
 from app.modules.files.ports.inbound import FileView
-from app.modules.files.ports.repository import FileRepository
+from app.modules.files.ports.repository import FileRepository, SpaceFileTotals
 from app.modules.files.ports.spaces import ActiveSpaces
 
 
@@ -210,6 +211,32 @@ class ListFiles:
         cursor: str | None = None,
     ) -> Page[File]:
         return await self._files.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
+
+
+class SummariseSpaces:
+    """``bytes_used``/``file_count`` for a page of spaces — the files half of
+    what ``GET /api/v1/spaces`` publishes (``docs/spaces-backend-plan.md``
+    §3.7, step 12).
+
+    **Why this is a files use-case and not a spaces one.** ``ListSpaces`` says
+    it: these are sums over ``files.files``, and a spaces module that could
+    compute them would be a spaces module that reads another module's table.
+    The numbers are answered here, by their owner, and the spaces ROUTER —
+    the one place allowed to hold both modules' faces — puts them side by
+    side.
+
+    It takes opaque ids and returns a mapping keyed by them. This module still
+    does not know what a space is; it knows its rows carry one, and that a
+    caller may hand it several at once.
+    """
+
+    def __init__(self, files: FileRepository) -> None:
+        self._files = files
+
+    async def execute(
+        self, ctx: ExecutionContext, space_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, SpaceFileTotals]:
+        return await self._files.totals_by_space(ctx, space_ids)
 
 
 class RenameFile:
@@ -545,3 +572,8 @@ class FileUseCases:
     complete: CompleteUploadService
     rename: RenameFile
     delete: SoftDeleteFileService
+    # `spaces-backend-plan.md` step 12 — the files half of `GET /api/v1/spaces`
+    # (§3.7). It is on THIS bundle, not on a spaces one, because the numbers
+    # are sums over this module's table; the spaces router holds both bundles
+    # and is the only place the two halves meet.
+    space_totals: SummariseSpaces
