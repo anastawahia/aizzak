@@ -43,7 +43,14 @@ class FileEditingAgent(BaseAgent):
                 status=500,
             )
         content = await read_text_file(
-            self.deps.files, self.deps.storage, self.ctx, file_id, max_bytes=_MAX_FILE_BYTES
+            self.deps.files,
+            self.deps.storage,
+            self.ctx,
+            file_id,
+            max_bytes=_MAX_FILE_BYTES,
+            # Spaces plan step 10 — see the twin comment in
+            # `data_analysis_agent`: no space to pass until step 12.
+            space_id=None,
         )
         messages = [
             LlmMessage(role="system", content=SYSTEM_PROMPT),

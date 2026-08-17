@@ -105,7 +105,20 @@ class FileReadView(Protocol):
     size, and storage key. Declares only what ``read_text_file`` touches (a
     subset of the files module's ``FileView``, which satisfies it
     structurally). Read-only properties for the reason on
-    ``RetrievedChunkView``."""
+    ``RetrievedChunkView``.
+
+    ``space_id`` (spaces plan step 10) is the OWNING space, and it is here so
+    that ``read_text_file`` can refuse a file outside the caller's space —
+    finding 2-ح, the read-any-file-by-id leak. It is a fact ABOUT the file, not
+    a scope the lookup applied: this seam keeps asking "is this file
+    readable?", and who may read it stays the caller's policy, exactly as
+    ``conversations`` decides its own pin rule (§3.5) from the same projected
+    field. One honest port, two consumers, two policies.
+
+    ``str | None`` mirrors the column until plan row 8-b, for the reason
+    ``FileView.space_id`` carries it: a seam that promises ``str`` and hands
+    back ``None`` passes mypy green and lies at runtime.
+    """
 
     @property
     def content_type(self) -> str: ...
@@ -113,6 +126,8 @@ class FileReadView(Protocol):
     def size_bytes(self) -> int: ...
     @property
     def storage_key(self) -> str: ...
+    @property
+    def space_id(self) -> str | None: ...
 
 
 class FilesAccess(Protocol):
@@ -120,7 +135,14 @@ class FilesAccess(Protocol):
     only for a ``ready`` file (``None`` otherwise). Structurally satisfied by
     ``app.modules.files.ports.inbound.FilesQuery.get_readable``. The actual
     bytes are fetched separately via the ``StorageProvider`` framework port,
-    keyed by ``storage_key`` (see ``file_reading.read_text_file``)."""
+    keyed by ``storage_key`` (see ``file_reading.read_text_file``).
+
+    **Reach this only through ``read_text_file``** (enforced by
+    ``test_content_agents.test_no_agent_reads_the_files_seam_directly``): the
+    space check that closes finding 2-ح lives there, so an agent that called
+    this seam itself would be reading by id across spaces again. The lookup is
+    deliberately NOT space-scoped — see ``FileReadView.space_id``.
+    """
 
     async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> FileReadView | None: ...
 

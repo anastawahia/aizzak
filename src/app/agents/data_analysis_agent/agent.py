@@ -46,7 +46,17 @@ class DataAnalysisAgent(BaseAgent):
                 status=500,
             )
         content = await read_text_file(
-            self.deps.files, self.deps.storage, self.ctx, file_id, max_bytes=_MAX_FILE_BYTES
+            self.deps.files,
+            self.deps.storage,
+            self.ctx,
+            file_id,
+            max_bytes=_MAX_FILE_BYTES,
+            # Spaces plan step 10 — typed as none, not defaulted, on the
+            # `rag_agent` precedent: `AgentDeps` carries no space until the
+            # invocation itself does (step 12). Reading across spaces is the
+            # pre-plan behaviour, kept only until there is a space to read
+            # inside; the check that ends it is already in `read_text_file`.
+            space_id=None,
         )
         messages = [
             LlmMessage(role="system", content=SYSTEM_PROMPT),

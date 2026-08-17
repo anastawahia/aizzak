@@ -1,13 +1,19 @@
 """Unit tests for 4.6-b — ``read_text_file`` + the Data-Analysis / File-Editing
 agents (FR-20.2/20.5, 11 §9). Purely hermetic: fake ``FilesAccess`` /
-``StorageProvider`` / ``LLMProvider``."""
+``StorageProvider`` / ``LLMProvider``.
+
+Spaces plan step 10 adds the scope section: ``read_text_file`` now refuses a
+file outside the caller's space (finding 2-ح), and one test guards the shape of
+that fix rather than its behaviour — the seam must keep exactly one caller."""
 
 from __future__ import annotations
 
+import pathlib
 from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
+import app
 from app.agents.data_analysis_agent.agent import DataAnalysisAgent
 from app.agents.file_editing_agent.agent import FileEditingAgent
 from app.framework.agent_runtime import (
@@ -46,11 +52,19 @@ def make_ctx() -> ExecutionContext:
 
 class FakeFileView:
     def __init__(
-        self, *, content_type: str = "text/csv", size_bytes: int = 100, storage_key: str = "k1"
+        self,
+        *,
+        content_type: str = "text/csv",
+        size_bytes: int = 100,
+        storage_key: str = "k1",
+        space_id: str | None = None,
     ) -> None:
         self.content_type = content_type
         self.size_bytes = size_bytes
         self.storage_key = storage_key
+        # Spaces plan step 10 — the owning space, projected by `FileReadView`
+        # so `read_text_file` can refuse a file outside the caller's scope.
+        self.space_id = space_id
 
 
 class FakeFiles:
@@ -141,7 +155,7 @@ async def collect(agent: BaseAgent, req_input: dict[str, object]) -> list:
 async def test_read_text_file_returns_decoded_bytes() -> None:
     files = FakeFiles(FakeFileView(storage_key="k9"))
     storage = FakeStorage(b"hello,world")
-    text = await read_text_file(files, storage, make_ctx(), "f1", max_bytes=1000)
+    text = await read_text_file(files, storage, make_ctx(), "f1", max_bytes=1000, space_id=None)
     assert text == "hello,world"
     assert files.calls == ["f1"]
     assert storage.gets == ["k9"]
@@ -149,7 +163,12 @@ async def test_read_text_file_returns_decoded_bytes() -> None:
 
 async def test_read_text_file_is_lenient_on_bad_utf8() -> None:
     text = await read_text_file(
-        FakeFiles(FakeFileView()), FakeStorage(b"a\xffb"), make_ctx(), "f", max_bytes=1000
+        FakeFiles(FakeFileView()),
+        FakeStorage(b"a\xffb"),
+        make_ctx(),
+        "f",
+        max_bytes=1000,
+        space_id=None,
     )
     assert text.startswith("a") and text.endswith("b")  # invalid byte replaced, no crash
 
@@ -159,33 +178,121 @@ async def test_read_text_file_unwired_is_500(drop: str) -> None:
     files = None if drop == "files" else FakeFiles(FakeFileView())
     storage = None if drop == "storage" else FakeStorage(b"x")
     with pytest.raises(AppError) as excinfo:
-        await read_text_file(files, storage, make_ctx(), "f", max_bytes=1000)
+        await read_text_file(files, storage, make_ctx(), "f", max_bytes=1000, space_id=None)
     assert excinfo.value.status == 500
 
 
 async def test_read_text_file_missing_file_is_404() -> None:
     with pytest.raises(NotFoundError):
-        await read_text_file(FakeFiles(None), FakeStorage(b"x"), make_ctx(), "gone", max_bytes=1000)
+        await read_text_file(
+            FakeFiles(None), FakeStorage(b"x"), make_ctx(), "gone", max_bytes=1000, space_id=None
+        )
 
 
 async def test_read_text_file_non_textual_is_415() -> None:
     files = FakeFiles(FakeFileView(content_type="image/png"))
     with pytest.raises(UnsupportedTypeError):
-        await read_text_file(files, FakeStorage(b"x"), make_ctx(), "f", max_bytes=1000)
+        await read_text_file(
+            files, FakeStorage(b"x"), make_ctx(), "f", max_bytes=1000, space_id=None
+        )
 
 
 async def test_read_text_file_too_large_is_413_and_never_fetches() -> None:
     files = FakeFiles(FakeFileView(size_bytes=5000))
     storage = FakeStorage(b"x")
     with pytest.raises(TooLargeError):
-        await read_text_file(files, storage, make_ctx(), "f", max_bytes=1000)
+        await read_text_file(files, storage, make_ctx(), "f", max_bytes=1000, space_id=None)
     assert storage.gets == []  # bounded on metadata, before any fetch
 
 
 async def test_read_text_file_accepts_application_json() -> None:
     files = FakeFiles(FakeFileView(content_type="application/json"))
-    text = await read_text_file(files, FakeStorage(b'{"a":1}'), make_ctx(), "f", max_bytes=1000)
+    text = await read_text_file(
+        files, FakeStorage(b'{"a":1}'), make_ctx(), "f", max_bytes=1000, space_id=None
+    )
     assert text == '{"a":1}'
+
+
+# --------------------------------------------------------------------------- #
+# The space scope (spaces plan step 10 — finding 2-ح)                          #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_file_from_another_space_is_404_and_is_never_fetched() -> None:
+    """The leak itself: a readable id from a space the caller is not in."""
+    files = FakeFiles(FakeFileView(space_id="space-b", storage_key="k9"))
+    storage = FakeStorage(b"secret")
+    with pytest.raises(NotFoundError):
+        await read_text_file(files, storage, make_ctx(), "f", max_bytes=1000, space_id="space-a")
+    assert storage.gets == []  # refused on metadata — the bytes never move
+
+
+async def test_a_foreign_file_is_indistinguishable_from_a_missing_one() -> None:
+    """Same status AND same detail, so the id is not an existence oracle."""
+    absent = FakeFiles(None)
+    foreign = FakeFiles(FakeFileView(space_id="space-b"))
+    with pytest.raises(NotFoundError) as missing:
+        await read_text_file(
+            absent, FakeStorage(b"x"), make_ctx(), "f", max_bytes=1000, space_id="s"
+        )
+    with pytest.raises(NotFoundError) as outside:
+        await read_text_file(
+            foreign, FakeStorage(b"x"), make_ctx(), "f", max_bytes=1000, space_id="s"
+        )
+    assert (missing.value.status, missing.value.detail) == (
+        outside.value.status,
+        outside.value.detail,
+    )
+
+
+async def test_a_file_in_the_callers_space_is_read() -> None:
+    files = FakeFiles(FakeFileView(space_id="space-a"))
+    text = await read_text_file(
+        files, FakeStorage(b"mine"), make_ctx(), "f", max_bytes=1000, space_id="space-a"
+    )
+    assert text == "mine"
+
+
+async def test_a_spaceless_file_is_refused_to_a_scoped_caller() -> None:
+    """`None` on the FILE is not a wildcard — a file no space owns is not a
+    file every space owns. (Row 8-b removes this state; the rule outlives it.)"""
+    files = FakeFiles(FakeFileView(space_id=None))
+    with pytest.raises(NotFoundError):
+        await read_text_file(
+            files, FakeStorage(b"x"), make_ctx(), "f", max_bytes=1000, space_id="space-a"
+        )
+
+
+@pytest.mark.parametrize("owning", [None, "space-b"])
+async def test_an_unscoped_caller_still_reads_anything(owning: str | None) -> None:
+    """`None` on the CALLER is unscoped — the pre-plan behaviour, kept until
+    step 12 hands agents a space. Asymmetric with the file side on purpose."""
+    files = FakeFiles(FakeFileView(space_id=owning))
+    text = await read_text_file(
+        files, FakeStorage(b"any"), make_ctx(), "f", max_bytes=1000, space_id=None
+    )
+    assert text == "any"
+
+
+def test_no_agent_reads_the_files_seam_directly() -> None:
+    """`read_text_file` holds the only space check, so it must hold the only
+    `FilesAccess` call. An agent reaching `self.deps.files` itself would reopen
+    finding 2-ح without touching a line of the code that closes it."""
+    seam_readers = sorted(
+        path.relative_to(pathlib.Path(app.__file__).parent).as_posix()
+        for path in pathlib.Path(app.__file__).parent.rglob("*.py")
+        if "get_readable" in path.read_text(encoding="utf-8")
+    )
+    assert seam_readers == [
+        "framework/agent_runtime/deps_ports.py",  # declares it
+        "framework/agent_runtime/file_reading.py",  # the one caller
+        "framework/errors.py",  # names it in a comment
+        "modules/conversations/application/use_cases.py",  # its own §3.5 rule
+        "modules/conversations/ports/files.py",
+        "modules/files/adapters/sql_repository.py",
+        "modules/files/application/use_cases.py",
+        "modules/files/ports/inbound.py",
+    ]
 
 
 # --------------------------------------------------------------------------- #
