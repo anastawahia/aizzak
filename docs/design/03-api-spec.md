@@ -18,6 +18,7 @@
 | المورد | المسار الأساس | العمليات |
 |--------|---------------|----------|
 | Workspace | `/api/v1/workspace` | GET · PATCH |
+| Spaces | `/api/v1/spaces` | GET(list) · POST · PATCH `{id}` · DELETE `{id}` |
 | Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` |
 | Models | `/api/v1/models` | GET(list) |
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
@@ -31,6 +32,10 @@
 | Streaming | `/api/v1/ws` (WS) · `Accept: text/event-stream` (SSE) | interactive · single-response |
 | Health | `/health` · `/health/ready` | GET (بلا مصادقة) |
 
+> **الوحدة (space) على السلك — ثلاثة مواضع لا مسارٌ واحد** (‏[`01 §2.11`](01-data-model.md)):
+> ① `?space_id=` **إلزاميّ** على السرود الثلاثة `GET /files` · `GET /conversations` · `GET /knowledge/documents` (بارامتر `SpaceId` في [`openapi.yaml`](openapi.yaml)، `required: true`). ومعرّفٌ لا يسمّي وحدةً يعطي **صفحةً فارغة** لا `404`: الترشيح لا يُثبت، وسردٌ يميّز «غير موجودة» من «فارغة» يصير عرّافَ وجودٍ لمعرّفاتٍ لم يُعطها أحد.
+> ② `space_id` في **جسد** الكتابة: `POST /files` · `POST /conversations` (إلزاميّ) · `POST /agents/{key}/invoke` (اختياريّ) · `POST /workflows/{key}/run` (إلزاميّ). وهذه **تُثبت** الوحدة قبل الكتابة، لأنّ صفًّا يُكتب تحت وحدةٍ غير موجودة لا يراه أيّ سردٍ إلى الأبد.
+> ③ `DELETE /spaces/{id}` **بلا `Idempotency-Key`** خلافاً لبقيّة العمليّات الثقيلة: سلسلة الحذف عديمةُ الأثر عند التكرار **بالبناء**، بالضبط كي تُصلَح سلسلةٌ ماتت في منتصفها بإعادة تشغيلها — ودفترٌ أمامها يعيد الجواب المخزَّن و**يتخطّى** ما بقي، فتبقى الوحدة موسومةً وملفّاتها ونقاطها في مكانها إلى الأبد. وعدُ `§0` يفي به الطريق نفسه، وهو صورته الأقوى.
 > **حدود `usage`:** الفرض (قبل العملية) والالتقاط (بعد العملية) **منفذان واردان داخليّان** يستدعيهما المُنسِّق (طبقة الوكلاء) — **ليسا API عاماً** (`FR‑131/132`)؛ مسارات `/usage` أعلاه للعرض/الإعداد فقط.
 > **MCP:** خوادم MCP **بعيدة (HTTP/SSE) حصراً** في v1؛ لا تسجيل نقل stdio محلي (§6.13).
 
@@ -53,13 +58,28 @@ class WorkspacePatchIn(BaseModel): name: str = Field(min_length=1, max_length=80
 class AgentOut(BaseModel):
     key: str; name: str; version: str; description: str
     capabilities: list[str]; required_permissions: list[str]
+# `space_id` **اختياريّ هنا وحده** بين كتّاب الوحدة، وليس تراخياً: طلبٌ يسمّي
+# `conversation_id` **يرث وحدة ذلك الخيط** ولا يجوز أن يُعيد ذكرها، وإلّا ادّعى عميلٌ
+# وحدةً لخيطٍ لا يملك محورَه. والتركيبة الوحيدة التي تفلت — لا خيط ولا وحدة — ترتدّ
+# `422` **قبل الإقلاع**: قبل إنشاء الوكيل وقبل كتابة صفّ.
 class AgentInvokeIn(BaseModel):
     conversation_id: str | None = None
+    space_id: str | None = None
     input: dict[str, Any]
     stream: bool = False
 class AgentInvokeOut(BaseModel):        # عند stream=false
     conversation_id: str; message: MessageOut; usage: Usage
 class Usage(BaseModel): prompt_tokens: int; completion_tokens: int
+
+# Spaces — محور الملكيّة (01 §2.11). الثلاثة أعمدةٍ في `SpaceOut` **مجاميعُ وحداتٍ أخرى**
+# (`files` و`conversations`)، تُقرأ بالجمع لصفحةٍ كاملة لا بنداءٍ لكلّ صفّ؛ ولا `version`
+# ولا `deleted_at` على السلك: حالةُ القفل التفاؤليّ ليست شأن العميل.
+class SpaceCreateIn(BaseModel): name: str            # لا id ولا حصّة: الأوّل للخادم والثانية ثابتٌ منصّة
+class SpaceRenameIn(BaseModel): name: str            # مطلوب الحضور (سابقة FileRenameIn)
+class SpaceOut(BaseModel):
+    id: str; name: str
+    bytes_used: int; file_count: int; conversation_count: int
+    created_at: datetime
 
 # Models — كتالوج التوجيه المُعَدّ (02 §3.5.1)، لا كتالوج المزوّد البعيد: ما يُعرَض هنا
 # هو بالضبط ما يستطيع `resolve_llm` توجيهه (D‑16/FR‑73). `capability` هو المُعرِّف —
@@ -72,7 +92,7 @@ class ConversationOut(BaseModel):
     id: str; agent_key: str; kind: str; title: str | None
     model_route: str | None                                  # مفتاح توجيه مثبَّت، أو null ⇒ يُحلّ بمفتاح الوكيل
     created_at: datetime
-class ConversationCreateIn(BaseModel): agent_key: str; title: str | None = None
+class ConversationCreateIn(BaseModel): agent_key: str; space_id: str; title: str | None = None
 # PATCH /conversations/{id} — العنوان وحده قابل للتعديل؛ `title` **مطلوب** الحضور
 # (لا حقل اختياري يجعل «الحذف» و«عدم الذكر» متطابقين): قيمة نصّية تُسمّي، و`null` يمسح.
 class ConversationPatchIn(BaseModel): title: str | None
@@ -108,8 +128,11 @@ class ConversationFileIn(BaseModel): file_id: str
 class ConversationFileOut(BaseModel): file_id: str; pinned_at: datetime
 
 # Files
+# `space_id` إلزاميّ: هو الوحدة التي تُحمَّل عليها الحصّة، ويُفحص السقف **قبل توقيع رابط
+# الرفع** لا بعده — تحت قفل صفّ الوحدة، وإلّا مرّ رفعان متزامنان بـ600 MiB لكلٍّ منهما
+# على المجموع نفسه فحملت الوحدة 1.2 GiB. تجاوزٌ ⇒ `spaces.quota_exceeded` (409).
 class FileRegisterIn(BaseModel):
-    name: str; content_type: str; size_bytes: int
+    name: str; content_type: str; size_bytes: int; space_id: str
 class FileRegisterOut(BaseModel):
     file_id: str; upload_url: str; expires_in: int       # presigned PUT (MinIO)
 class FileCompleteIn(BaseModel): checksum: str | None = None
@@ -151,7 +174,9 @@ class MediaJobOut(BaseModel):
 
 # Workflows
 class WorkflowOut(BaseModel): key: str; name: str; steps: list[str]
-class WorkflowRunIn(BaseModel): input: dict[str, Any]; stream: bool = False
+# `space_id` **إلزاميّ** هنا خلافاً لـ`AgentInvokeIn`: الوظيفة تفتح خيطها **دائماً**
+# (وهو ما يجعل الجرية قابلة للتعريف)، فلا خيطَ سابقاً ترث وحدتَه.
+class WorkflowRunIn(BaseModel): space_id: str; input: dict[str, Any]; stream: bool = False
 class WorkflowRunOut(BaseModel): run_id: str; conversation_id: str; status: str
 
 # Credentials
@@ -269,6 +294,9 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `files.too_large` | 413 | تجاوز حجم الرفع |
 | `files.unsupported_type` | 415 | نوع MIME خارج القائمة البيضاء |
 | `files.too_many` | 409 | بلوغ سقف ملفات المساحة |
+| `spaces.duplicate_name` | 409 | اسم وحدةٍ مستعمَل في المساحة (من `23505` على `ux_spaces_ws_name`، لا من قراءةٍ مسبقة) |
+| `spaces.quota_exceeded` | 409 | بلوغ حصّة بايتات الوحدة (1 GiB) عند تسجيل رفع — **لا 413**: الحمولة مشروعة وحالةُ الوحدة هي المانع، والعلاج حذفُ شيء. ولا `usage.quota_exceeded` (429): تلك ميزانيّة فترةٍ تنقضي، وهذه ستبقى متجاوَزةً غداً |
+| `spaces.cross_space_pin` | 409 | تثبيت ملفٍّ من وحدةٍ أخرى في خيطٍ (‏`02 §2`) — **لا 422**: الطلب سليم والملفّ مقروء، والعلاج «ثبِّته في خيطٍ من وحدته أو ارفع **نسخة**» (لا نقل) |
 | `knowledge.unsupported_type` | 415 | امتداد مستند لا مُحلِّل له |
 | `knowledge.empty_content` | 422 | مستند بلا محتوى للتحليل |
 | `knowledge.parse_failed` | 422 | تعذّر تحليل المستند |

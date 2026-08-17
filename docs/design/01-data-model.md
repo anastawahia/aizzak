@@ -5,7 +5,8 @@
 
 ## 0) الاصطلاحات
 
-**Schemas (عشر وحدات v1):** `workspace · access · credentials · conversations · memory · files · knowledge · media · integrations · usage` + `platform` (بنية الأحداث).
+**Schemas (إحدى عشرة وحدة v1):** `spaces · workspace · access · credentials · conversations · memory · files · knowledge · media · integrations · usage` + `platform` (بنية الأحداث).
+> `spaces` أحدثها (‏§2.11، [`spaces-backend-plan.md`](../spaces-backend-plan.md))، وتُذكر **أوّلاً** كما في `_MODULE_SCHEMAS` و`MIGRATION_CHAINS` في [`ops/provision.py`](../../src/app/ops/provision.py): ثلاث سلاسل تملأ `space_id` بالرجوع إلى صفوف هذا الجدول، فوجودُه يسبقها بالضرورة (‏§6).
 > **محجوزة لا مُنشأة في v1** (`FR‑110`, DAT‑01): `scheduling · sandbox · runs` — تُضاف بهجرة مستقلّة عند اعتمادها.
 
 **قالب الأعمدة القياسية** (يُطبَّق حسب `DD‑03`):
@@ -36,6 +37,10 @@ erDiagram
   WORKSPACE ||--o{ ROLE_ASSIGNMENT : scopes
   USER      ||--o{ ROLE_ASSIGNMENT : has
   WORKSPACE ||--o{ CREDENTIAL : holds
+  WORKSPACE ||--o{ SPACE : contains
+  SPACE     ||..o{ FILE : "owns (by id, no FK)"
+  SPACE     ||..o{ CONVERSATION : "owns (by id, no FK)"
+  SPACE     ||..o{ DOCUMENT : "owns (by id, no FK)"
   WORKSPACE ||--o{ CONVERSATION : contains
   CONVERSATION ||--o{ MESSAGE : has
   WORKSPACE ||--o{ MEMORY_ITEM : contains
@@ -51,6 +56,7 @@ erDiagram
   WORKSPACE ||--o{ OUTBOX : emits
 ```
 > `FILE ..o{ DOCUMENT` منقّطة: علاقة **منطقية عبر الوحدات** (بالـ`id`)، بلا FK فيزيائي (`DD‑01`).
+> **`SPACE` ليست مستأجرًا ثانيًا** بل **محور ملكيّة داخل المستأجر**: الأسهم الثلاثة الخارجة منها منقّطة للسبب نفسه (‏`space_id` مرجعٌ منطقيّ عبر المخطّطات)، والمستأجر يبقى `WORKSPACE` وحده — RLS على `workspace_id` وحده، والترشيح بالوحدة تطبيقيّ في `WHERE` (‏§3).
 > `CONNECTION`/`MCP_SERVER` في schema `integrations`؛ `USAGE_RECORD`/`USAGE_LIMIT` في schema `usage`. لا FK بينها وبين بقية الوحدات — المرجعية بالـ`id` فقط (`DAT‑02`).
 
 ---
@@ -151,6 +157,7 @@ CREATE SCHEMA conversations;
 CREATE TABLE conversations.conversations (
   id           uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
+  space_id     uuid NULL,                        -- §2.11 · مرجع منطقي لـ spaces.spaces.id (⇐ NOT NULL في الصفّ ٨‑ب)
   agent_key    text NOT NULL,                     -- slug الوكيل أو workflow_key
   kind         text NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','workflow')),
   title        text,
@@ -163,6 +170,7 @@ CREATE TABLE conversations.conversations (
 );
 CREATE INDEX ix_conv_ws_agent ON conversations.conversations(workspace_id, agent_key)
   WHERE deleted_at IS NULL;
+CREATE INDEX ix_conv_space ON conversations.conversations(space_id) WHERE deleted_at IS NULL;
 
 CREATE TABLE conversations.messages (
   id              uuid PRIMARY KEY,
@@ -218,6 +226,7 @@ CREATE SCHEMA files;
 CREATE TABLE files.files (
   id           uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
+  space_id     uuid NULL,                        -- §2.11 · مرجع منطقي لـ spaces.spaces.id (⇐ NOT NULL في الصفّ ٨‑ب)
   name         text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
   content_type text NOT NULL,
   size_bytes   bigint NOT NULL CHECK (size_bytes >= 0),
@@ -232,7 +241,9 @@ CREATE TABLE files.files (
   version      integer NOT NULL DEFAULT 1
 );
 CREATE INDEX ix_files_ws ON files.files(workspace_id) WHERE deleted_at IS NULL;
+CREATE INDEX ix_files_space ON files.files(space_id) WHERE deleted_at IS NULL;
 ```
+> **`ix_files_space` هو فهرس الحصّة قبل أن يكون فهرس السرد:** مجموع `size_bytes` لوحدةٍ واحدة يُقرأ تحت قفلٍ في مسار **تسجيل كلّ رفع** (‏§2.11 والحدّ في [`07 §4`](07-nfr-slo.md#4-الحدود-الرقمية-limits))، فمسحٌ تتابعيّ هنا يقع على أسخن كتابةٍ في الوحدة لا على قراءةٍ عابرة.
 
 ### 2.7 `knowledge`
 ```sql
@@ -241,6 +252,7 @@ CREATE SCHEMA knowledge;
 CREATE TABLE knowledge.documents (
   id           uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
+  space_id     uuid NULL,                         -- §2.11 · يُورَث من وحدة الملفّ عبر الحدث، لا من طلب (⇐ NOT NULL في ٨‑ب)
   file_id      uuid NOT NULL,                     -- مرجع منطقي لـ files.files.id
   status       text NOT NULL DEFAULT 'pending'
                  CHECK (status IN ('pending','indexing','indexed','failed')),
@@ -251,6 +263,11 @@ CREATE TABLE knowledge.documents (
   version      integer NOT NULL DEFAULT 1
 );
 CREATE INDEX ix_doc_ws_status ON knowledge.documents(workspace_id, status);
+-- ⚠️ `ix_kndoc_space` **كامل لا جزئيّ**، وحده من فهارس الوحدة الثلاثة: هذا الجدول
+-- لا يحمل `deleted_at` أصلاً (المستند يُتلَف صلبًا، INV‑K4)، فشرط `WHERE deleted_at IS NULL`
+-- لا يُصرَّف هنا. والاختبار الحيّ يوكّد **غياب** العمود بجانب الفهرس كي لا «يُصلِح»
+-- قارئٌ لاحقٌ التفاوتَ إلى خطأ صياغة.
+CREATE INDEX ix_kndoc_space ON knowledge.documents(space_id);
 
 CREATE TABLE knowledge.chunks (
   id           uuid PRIMARY KEY,
@@ -485,6 +502,48 @@ CREATE INDEX ix_limits_ws ON usage.limits(workspace_id);
 > app.ops.purge`) — قراءةُ عدّادٍ لكلّ مستأجرٍ لا التزامًا ماليًا (الفوترة خارج v1)، فلا تُجمَّع في
 > سجلٍّ عابرٍ للمساحات قبل الحذف؛ REVIEW POINT في نصّ الوحدة نفسها إن ظهر التزام احتفاظٍ فوترةً/ضرائب.
 
+### 2.11 `spaces` (وحدة v1 — [`spaces-backend-plan.md`](../spaces-backend-plan.md))
+
+**الوحدة (space) محور ملكيّة داخل المستأجر، لا مستأجر ثانٍ.** مساحة العمل تبقى الحدّ الأمنيّ الوحيد؛ الوحدة تقسّم محتواها إلى أقسامٍ يملك كلٌّ منها ملفّاته ومحادثاته ومستنداته. **الرقم يأتي أخيرًا في هذا الترقيم وحده** — تسلسل §2 تاريخيّ، والإشارات إليه (‏`01 §2.7`…) مبثوثةٌ في بقيّة الوثائق فلا تُعاد ترقيمها — أمّا ترتيب الإنشاء الحقيقيّ فهو §6: مباشرةً بعد سلسلة الأساس.
+
+```sql
+CREATE SCHEMA spaces;
+
+CREATE TABLE spaces.spaces (
+  id           uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL,
+  name         text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
+  created_by   uuid,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  deleted_at   timestamptz NULL,
+  version      integer NOT NULL DEFAULT 1
+);
+-- تفرّدٌ **غير حسّاس لحالة الأحرف** وعلى **الحيّ وحده**: «Research» و«research» اسمٌ
+-- واحدٌ لقارئ، ووحدةٌ محذوفةٌ ناعمًا يجب ألّا تحتجز اسمها إلى الأبد. وهذا الفهرس هو
+-- **كامل دفاع الوحدة عن التفرّد**: التطبيق لا يقرأ قبل الكتابة عمدًا (زوج «اقرأ ثمّ أدرج»
+-- خاطئٌ بالضبط حين يتسابق طلبان)، فـ`23505` الصادر من هنا هو ما يصير `spaces.duplicate_name`.
+CREATE UNIQUE INDEX ux_spaces_ws_name
+  ON spaces.spaces(workspace_id, lower(name)) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_touch BEFORE UPDATE ON spaces.spaces
+  FOR EACH ROW EXECUTE FUNCTION platform.touch_updated_at();
+
+ALTER TABLE spaces.spaces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE spaces.spaces FORCE  ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON spaces.spaces
+  USING      (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+  WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
+```
+
+**المخطّط `spaces` نفسه لا تُنشئه هذه السلسلة** بل مراجعةُ منصّةٍ سابقة ([`platform/0004_spaces_schema.py`](../../migrations/versions/platform/0004_spaces_schema.py))، والسبب بنيويّ: Alembic يُنشئ `spaces.alembic_version` **قبل** تنفيذ أوّل `upgrade()`، فلا تستطيع السلسلة أن تُنشئ المخطّط الذي يسكنه جدولُ دفاترها.
+
+**الأعمدة الثلاثة المضافة على الوحدات الأخرى** (‏§2.4 · §2.6 · §2.7) `space_id uuid NULL` اليوم، ونمطُ ترحيلها ADD ⇒ backfill ⇒ فهرس. والتشديد إلى `NOT NULL` **مؤجَّلٌ بقصد** إلى صفٍّ لاحق في الخطّة: عمودٌ إلزاميٌّ قبل أن يصير له كُتّاب كان يردّ `23502` على كلّ إدراجٍ في ثلاثة جداول. آخرُ ما يمنع التشديد اليوم كاتبٌ واحد — **الوسائط المولَّدة**، ووظيفتها لا تحمل خيطًا ولا وحدة.
+
+**لا مفاتيح خارجيّة عبر المخطّطات** (`DD‑01`): `space_id` مرجعٌ منطقيّ، على سابقة `conversation_files.file_id`. ⇒ **إثبات وجود الوحدة قبل الكتابة مسؤوليّة التطبيق** (منفذٌ لكلّ مستهلك، [`02 §2`](02-port-contracts.md))، ولا شيء في القاعدة يمنع صفًّا يشير إلى وحدةٍ غير موجودة. والقراءة **لا تُثبت**: سردٌ بمعرّفٍ لا يسمّي وحدةً يعيد صفحةً فارغة لا `404`، وإلّا صار السرد عرّافَ وجودٍ لمعرّفاتٍ لم يُعطها أحد.
+
+**الحذف حذفٌ متسلسل** يعبر خمس وحدات + Qdrant + MinIO؛ يعيش في **خدمة تنسيق** عند جذر التركيب لا في وحدة (سابقة [`app/ops/purge.py`](../../src/app/ops/purge.py))، بلا وحدة عملٍ جامعة: كلّ خطوةٍ معاملتُها وكلٌّ منها عديمةُ الأثر عند التكرار، فسلسلةٌ انقطعت يُصلحها إعادةُ التشغيل. والوسمُ (‏`deleted_at` على صفّ الوحدة) **أوّلًا** كي لا يرى المستخدم وحدةً نصف-محذوفة.
+
 ---
 
 ## 3) عزل المستأجر — RLS (تنفيذ `DD‑04`, D‑23)
@@ -504,7 +563,8 @@ SET LOCAL app.workspace_id = '018f...';   -- بداية كل معاملة تطب
 ```
 - **دور التطبيق** `app_rw`: `NOINHERIT`, **بلا** `BYPASSRLS`, وليس مالك الجداول ⇒ خاضع للسياسة.
 - **الترشيح التطبيقي** (دفاع ثانٍ): كل Repository يضيف `WHERE workspace_id = :ws` صراحةً.
-- تنطبق نفس السياسة على **كل** الجداول المستأجَرة الجديدة: `integrations.connections`, `integrations.mcp_servers`, `usage.usage_records`, `usage.usage_rollups`, `usage.limits`.
+- تنطبق نفس السياسة على **كل** الجداول المستأجَرة الجديدة: `spaces.spaces`, `integrations.connections`, `integrations.mcp_servers`, `usage.usage_records`, `usage.usage_rollups`, `usage.limits`.
+- **و`space_id` ليست في أيّ سياسة — قرارٌ مقصود، لا سهو.** مساحة العمل تُشتقّ من **هويّة** المستخدم بعد المصادقة؛ الوحدة يختارها **الطلب**. ووضعُ قيمةٍ يختارها الطلب في متغيّرٍ أمنيّ لا يضيف أمنًا — التطبيق هو من يضبطها أصلًا — ويحوّل خطأ ترشيحٍ عاديًّا إلى ثغرةٍ صامتة. الترشيح بالوحدة مكانه `WHERE` المستودع، وهو **دفاعٌ أوّل** لا ثانٍ: لا سياسةَ خلفه تُمسك ما يسقط منه.
 - الجداول غير المستأجَرة (`workspace.workspaces`, كتالوجات المنصّة) تُحمى بالـAuthZ لا بالـRLS.
 - `current_setting(..., true)` يعيد `NULL` عند غياب السياق ⇒ **صفر صفوف** (فشل آمن، لا تسريب).
 - **تصليب `NULLIF` إلزامي (مُثبَت تجريبياً على PG16، 2026‑07‑14):** على الاتصالات المجمّعة، أوّل `SET LOCAL` على الـbackend يجعل قيمة إعادة الضبط للـGUC **سلسلة فارغة `''`** لا «غير مضبوط»؛ فمعاملة لاحقة تنسى `SET LOCAL` تحصل على `''`، و`''::uuid` **يرمي خطأ** (22P02 ⇒ 500) بدل صفر صفوف. صيغة `NULLIF(...,'')::uuid` تُرجِع الفشل الآمن (`''`→`NULL`→صفر صفوف). خلف PgBouncer (D‑21) هذا مسار ساخن لا حالة حدّية.
@@ -597,11 +657,13 @@ CREATE TABLE platform.stream_offsets (
 ## 5) الفهارس والأداء
 - كل مفاتيح البحث الشائعة مفهرسة بـ`(workspace_id, …)` لتوافق مسح RLS.
 - الفهارس الجزئية `WHERE deleted_at IS NULL` تُبقي المسح على الحيّ فقط.
+- **فهارس الوحدة الثلاثة** — `ix_files_space` · `ix_conv_space` (جزئيّان) · `ix_kndoc_space` (كامل، §2.7) — تخدم ثلاث قراءاتٍ لا واحدة: السرودَ الثلاثة (‏`?space_id=` إلزاميّ)، ومجموعَ الحصّة على مسار كلّ رفع، والحذفَ المتسلسل. وفهرسٌ رابع خارج PostgreSQL: بطاقة `space` في Qdrant بـ`is_tenant=True` — إعادةُ ترتيبٍ فيزيائيّ للنقاط، لا تسريعُ مطابقة (‏[`07 §5`](07-nfr-slo.md#5-الأداء-والصيانة-بنيوياً)).
 - `platform.outbox` فهرس جزئي على غير المنشور ⇒ سحب المُرحّل O(الطابور).
 - UUIDv7 يقلّل تضخّم صفحات B‑Tree مقارنةً بـv4 تحت الإدراج.
 
 ## 6) استراتيجية الهجرات (Alembic)
-- **سلسلة هجرات لكل وحدة** (عشر سلاسل v1) ضمن `version_table_schema` منفصل لكل وحدة (`DAT‑03`)، تُدار مركزياً بأمر واحد؛ سلسلة تمهيدية تُنشئ الـschemas والامتدادات وجداول `platform`.
+- **سلسلة هجرات لكل وحدة** (‏**إحدى عشرة سلسلة** v1 + سلسلة الأساس = 12 مدخلة في `MIGRATION_CHAINS`) ضمن `version_table_schema` منفصل لكل وحدة (`DAT‑03`)، تُدار مركزياً بأمر واحد؛ سلسلة تمهيدية تُنشئ الـschemas والامتدادات وجداول `platform`.
+- **`spaces` تلي الأساس مباشرةً وقبل كلّ سلسلةٍ كسبت `space_id`** (‏§2.11): ترحيلات تلك الأعمدة الثلاثة تملأ نفسها بالرجوع إلى صفوف `spaces.spaces`، فالجدول يجب أن يكون موجودًا. **ولا FK يفرض هذا الترتيب** (المرجعيّة منطقيّة، `DD‑01`) — ولهذا بالذات يُكتب الترتيب في `MIGRATION_CHAINS` بدل تركه لـAlembic ليكتشفه. و`workspace` تسبق الثلاثة كذلك، ولسببٍ أحدّ: `workspace.workspaces` بلا RLS (جدولُ جذر المستأجر، §2.1)، فهي الجدول الوحيد الذي يستطيع مُرحِّلٌ ليس superuser ولا `BYPASSRLS` أن يعدّده **قبل** أن يعرف أيّ مساحةٍ يضبط `app.workspace_id` عليها — وفراغُها هناك يعني أنّ كلّ backfill يمرّ ناجحًا وهو لا يفعل شيئًا.
 - `alembic.ini` يوجّه `version_table_schema` لكل وحدة بمعزل ⇒ إضافة وحدة جديدة = **سلسلة هجرات مستقلّة** بلا مساس بالقائم (`FR‑111`).
 - ترتيب البذر: schemas → جداول المنصّة → جداول الوحدات → سياسات RLS → الأدوار/الصلاحيات (`app_rw`).
 - **schemas المحجوزة** (`scheduling · sandbox · runs`) **لا تُنشأ في v1**؛ تُضاف بسلسلة هجرات خاصّة عند اعتمادها.

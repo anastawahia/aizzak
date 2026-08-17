@@ -100,7 +100,9 @@ class VideoProvider(Protocol):
 ### 1.5 `VectorStore` — `vector_store.py` (D‑01 · Qdrant)
 ```python
 @dataclass(frozen=True, slots=True)
-class VectorPoint: id: Uuid; vector: list[float]; payload: Json
+class SparseVector: indices: list[int]; values: list[float]        # مصطلحات متفرّقة (IDF عند الخادم)
+@dataclass(frozen=True, slots=True)
+class VectorPoint: id: Uuid; vector: list[float]; payload: Json; sparse: SparseVector | None = None
 @dataclass(frozen=True, slots=True)
 class VectorHit:   id: Uuid; score: float; payload: Json
 
@@ -110,7 +112,17 @@ class VectorStore(Protocol):
     async def search(self, collection: str, vector: list[float], k: int,
                      flt: Json | None = None) -> list[VectorHit]: ...     # flt يحمل workspace_id دائماً
     async def delete(self, collection: str, ids: Sequence[Uuid]) -> None: ...
+
+# المنفذ الهجين — يرثه المِحوَل نفسه، ويُعلَن منفصلاً لأن `memory` لا تطلب شيئاً منه:
+class HybridVectorStore(VectorStore, Protocol):
+    async def ensure_hybrid_collection(self, name: str, dim: int, *, distance: str = 'cosine') -> None: ...
+    async def search_sparse(self, collection: str, sparse: SparseVector, k: int,
+                            flt: Json | None = None) -> list[VectorHit]: ...
+    async def ensure_payload_index(self, collection: str, field: str, *, tenant: bool = False) -> None: ...
 ```
+> **`ensure_payload_index` على الهجين وحده** (خطّة الوحدات، §3.4): `memory` تكتب وتبحث ولا تطلب فهرس بطاقة، وقاعدة **فصل الواجهات** تمنع تحميلها منفذاً لا تستعمله. `tenant=True` ⇒ `is_tenant` — إعادةُ ترتيبٍ فيزيائيّ للنقاط على القرص بمفتاح الوحدة، لا تسريعُ مطابقةٍ فقط. تُستدعى من `ensure_hybrid_collection` لثلاثة مفاتيح: `workspace_id` و`document_id` عاديّين و`space` بـ`is_tenant`.
+> **والفهرس `KEYWORD` لا `uuid`** رغم أنّ المفاتيح الثلاثة UUIDv7: فهرسُ uuid **يرفض** قيمةً لا تُحلَّل، فيحوّل حمولةً شاذّةً من قراءةٍ أبطأ إلى **كتابةٍ فاشلة**؛ و`KEYWORD` هو ما تُجاب منه `MatchValue`/`MatchAny` — الشرطان الوحيدان اللذان يُصدرهما بانِي المرشِّح.
+> ⚠️ **الصناديق القائمة لا تكسبها**: `ensure_hybrid_collection` تخرج فوراً إن كان الصندوق موجوداً، فالفهارس تُنشأ للجديد وحده — والقديم يحتاج مهمّة تشغيليّة لمرّة واحدة (خطّة الوحدات §5‑ب).
 
 ### 1.6 `StorageProvider` — `storage_provider.py` (MinIO)
 ```python
@@ -208,19 +220,75 @@ class Repository(Protocol[TAggregate]):
 
 **أمثلة منافذ الوحدات (Inbound):**
 ```python
+# ── spaces — محور الملكيّة داخل المستأجر (01 §2.11) ──
+# spaces/ports/repository.py
+class SpaceRepository(Protocol):
+    async def get(self, ctx, space_id: Uuid) -> Space | None: ...     # يشمل المحذوفة ناعماً (سابقة files)
+    async def lock(self, ctx, space_id: Uuid) -> bool: ...            # قفل صفٍّ على وحدة حيّة — مرساة الحصّة
+    async def add(self, ctx, space: Space) -> None: ...
+    async def save(self, ctx, space: Space) -> None: ...              # قفل تفاؤلي على version
+    async def list(self, ctx, *, limit: int, cursor: str | None) -> Page[Space]: ...   # الحيّة وحدها
+# لا `find_by_name`: التفرّد فهرسٌ جزئيّ يُنفَّذ في جملة الكتابة نفسها (01 §2.11)، وزوج
+# «اقرأ ثمّ أدرج» يجيب السؤال نفسه دورةً أبكر ويخطئ بالضبط حين يتسابق طلبان.
+# ولا `count`: لا سقف على عدد الوحدات — الحصّة **بايتات** على `files` لا صفوفٌ هنا.
+# و`lock` يعيد `bool` لا كياناً: مُستدعيه خدمةُ تنسيقٍ عند جذر التركيب، ولا شأن لها
+# بقراءة `Space`. وهو قفلٌ **داخل وحدة عمل فقط** — قفل الصفّ يموت بنهاية معاملته،
+# ونداؤه خارج `UnitOfWork.begin(ctx)` يأخذ القفل ويطلقه بعد جملةٍ واحدة بصمت.
+
+# spaces/ports/inbound.py — الوجه القرائيّ الذي يربطه غيرُك (سابقة FilesQuery)
+@dataclass(frozen=True, slots=True)
+class SpaceView: space_id: str; name: str       # إسقاط أنحف من التجميعة: بلا version/deleted_at
+class SpacesQuery(Protocol):
+    async def get_active(self, ctx, space_id: Uuid) -> SpaceView | None: ...
+# `None` تغطّي «مجهولة» و«محذوفة» معاً بلا تمييز: كلتاهما «لا يُودَع هنا شيء»،
+# وإخبارُ مستدعٍ بأن وحدةً لا يستطيع الكتابة فيها موجودةٌ رغم ذلك إفشاءٌ لا تشخيص.
+
+# files/ports/spaces.py · conversations/ports/spaces.py — **المستهلك يعلن شكله**
+class ActiveSpace(Protocol):
+    @property
+    def space_id(self) -> str: ...
+class ActiveSpaces(Protocol):
+    async def get_active(self, ctx, space_id: Uuid) -> ActiveSpace | None: ...
+# النمط عينه في `conversations/ports/files.py`، والسبب هنا عقد الاستقلال (`.importlinter`):
+# `files`/`conversations` **لا تستوردان** `app.modules.spaces`، فتُعلن كلٌّ منهما الشكل
+# الضيّق الذي تحتاجه ويربطه جذر التركيب بنسخة `SpacesQueryService` **واحدة** — بنيويّاً،
+# وmypy يفحص موضع الربط. الإعلان يتكرّر، والجواب لا (سابقة `AgentKey`).
+# `@property` لا حقل: البروتوكول البنيويّ يطابق الحقل بسمةٍ **قابلة للتعديل**، وهو ما لا
+# يقدّمه `SpaceView` المجمَّد — فالخاصيّة هي ما يجعل الطرفين يلتقيان تحت mypy.
+
 # files/ports/repository.py
 class FileRepository(Protocol):
     async def get(self, ctx, file_id: Uuid) -> File | None: ...
     async def add(self, ctx, file: File) -> None: ...
     async def list(self, ctx, *, limit: int, cursor: str | None) -> Page[File]: ...
     async def mark_ready(self, ctx, file_id: Uuid, checksum: str) -> None: ...
+    # ── ما كسبته من خطّة الوحدات: أربع دوالّ، ثلاثٌ منها **جماعيّة عمداً** ──
+    async def bytes_in_space(self, ctx, space_id: Uuid) -> int: ...              # مجموع الحيّ — بسط الحصّة
+    async def totals_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[str, SpaceFileTotals]: ...
+    async def storage_keys_in_space(self, ctx, space_id: Uuid) -> Sequence[str]: ...  # قبل حذف الصفوف
+    async def purge_space(self, ctx, space_id: Uuid) -> int: ...                 # حذفٌ صلب، يعيد العدد
+    # `totals_by_space` بالجمع لا بالمفرد: `GET /spaces` ينشر `bytes_used`/`file_count`،
+    # ونداءٌ لكلّ صفٍّ يحوّل صفحةً من عشرين وحدة إلى أربعين ذهاباً وإياباً لعمودَي عرض.
+    # و`storage_keys_in_space` تسبق `purge_space` دائماً — بعد حذف الصفوف لا يبقى ما
+    # يدلّ على كائنات MinIO التي يجب حذفها. والمحذوف ناعماً **لا يُتخطّى** هنا خلافاً
+    # لكلّ قراءةٍ أخرى: بايتاته عادت إلى الحصّة وكائنُه ما زال في التخزين.
     # `save` (قفل تفاؤلي على `version`) يكتب `name` أيضاً منذ BE‑RAG‑006 — الحقل
     # الوحيد القابل للتعديل بعد التسجيل؛ أمّا content_type/size_bytes/storage_key
     # فلا مُبدِّل لها في المجال، فبقاؤها خارج جملة UPDATE هو ما يحرسها.
 
 # files/ports/inbound.py  (تستدعيه الوكلاء/knowledge بلا استيراد مباشر للوحدة)
+@dataclass(frozen=True, slots=True)
+class FileView: file_id: str; space_id: str | None; name: str; content_type: str
+                size_bytes: int; storage_key: str; status: str
 class FilesQuery(Protocol):
     async def get_readable(self, ctx, file_id: Uuid) -> FileView | None: ...
+# `space_id` هنا `str | None` لا `str`: العمود ما زال يقبل `NULL` حتّى الصفّ ٨‑ب،
+# ومسربٌ يَعِد بـ`str` ويسلّم `None` يعبر mypy أخضر ثمّ يكذب على كلّ قارئ.
+# **والمنفذ لا يُرشِّح بالوحدة**: مستهلكاه يطبّقان سياستين مختلفتين على الجواب نفسه —
+# قراءةُ وكيلٍ ترفض بـ`404` **بنصّ الملفّ غير الموجود حرفاً بحرف** (تمييزُ «في وحدةٍ أخرى»
+# يُعلن أنّ الملفّ موجود، فيصير المعرّف عرّافَ وجود — وهو أخطر هنا لأنّ `file_id` يصل من
+# مخرَج نموذجٍ لا من سردٍ رآه إنسان)، وتثبيتُ محادثةٍ يرفض بـ`409 spaces.cross_space_pin`.
+# ترشيحٌ داخل `get_readable` كان يبتلع القاعدة الثانية ويحوّل رفضها الصريح إلى صمت.
 
 # knowledge/ports/repository.py
 class DocumentRepository(Protocol):
@@ -232,6 +300,13 @@ class DocumentRepository(Protocol):
     # حذف الصفوف لا يبقى ما يدلّ على النقاط التي يجب حذفها من Qdrant.
     async def vector_refs(self, ctx, doc_id: Uuid) -> Sequence[VectorRef]: ...
     async def purge(self, ctx, doc_id: Uuid) -> None: ...                   # chunks ثمّ الصفّ
+    # نظيرا الاثنين أعلاه على نطاق الوحدة (الحذف المتسلسل، 01 §2.11):
+    async def vector_refs_in_space(self, ctx, space_id: Uuid) -> Sequence[VectorRef]: ...
+    async def purge_space(self, ctx, space_id: Uuid) -> int: ...
+    # الترتيب داخل `purge_space` **شرطُ نجاح لا ذوق**: `fk_reindex_item_doc` بلا `ON DELETE`،
+    # فحذف المستندات قبل بنود مهامّ إعادة الفهرسة يردّ `23503` على السلسلة كلّها. وصفّ
+    # `reindex_jobs` نفسه يُحذف **فارغاً فقط**: المهمّة طلبٌ لا محتوى، وطلبٌ واحد قد يسمّي
+    # مستنداتٍ من وحدتين، فحذفه مع أولاهما يمحو عرضَ تقدّم الأخرى.
 
 # knowledge/ports/repository.py — BE-RAG-007/008
 # `get` يقرأ حالةَ كلّ وثيقةٍ من جدول المستندات نفسه (لا نسخةَ حالةٍ على صفّ المهمّة):
@@ -246,9 +321,15 @@ class ReindexJobRepository(Protocol):
 # لأن الحمولة في Qdrant تحمل `document_id` لا `file_id` (BE‑RAG‑005). فارغ/None ⇒ النطاق الشامل.
 # يعبر الحدّ كـ`file_id` لأن ما يعرفه المُثبِّت (conversations، والواجهة) هو الملف؛ ترجمةُ
 # «ملف ⇒ مستند» ملكُ knowledge وحدها، فلا يضطر أحدٌ خارجها لمعرفة أنّ للمستند وجوداً.
+# `space_id` **بلا قيمة افتراضيّة** (وسيطة مفتاحيّة إلزاميّة): كلّ مُستدعٍ يقول وحدتَه
+# أو يقول `None` صراحةً، فلا يمرّ مسارٌ نسي نطاقَه متخفّياً في هيئة مسارٍ اختار الشمول.
+# ⚠️ ويقولها `None` اليوم كلُّ وكيلٍ ووكلاءُ البحث المعرفيّ: `AgentDependencies` لا تحمل
+# وحدةً بعد ⇒ **خيطٌ داخل وحدةٍ يسترجع من كلّ الوحدات** (القرار ١ غير مُنفَّذٍ على مسار
+# القراءة، مسجَّلٌ في §7 من خطّة الوحدات). الآليّة هنا جاهزة، والناقص وسيطةٌ لا منفذ.
 class KnowledgeRetrieval(Protocol):
     async def retrieve(self, ctx, query: str, k: int,
-                       file_ids: Sequence[Uuid] | None = None) -> list[RetrievedChunk]: ...
+                       file_ids: Sequence[Uuid] | None = None,
+                       *, space_id: Uuid | None) -> list[RetrievedChunk]: ...
 
 # conversations/ports/repository.py
 class ConversationRepository(Protocol):
@@ -259,6 +340,23 @@ class ConversationRepository(Protocol):
     async def list_files(self, ctx, conv_id: Uuid) -> list[PinnedFile]: ...          # نطاق الاسترجاع المثبَّت
     async def pin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> PinnedFile: ...   # مثاليّ: يعيد الأصلي
     async def unpin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> None: ...       # مثاليّ: غيابه ليس خطأ
+    async def counts_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[str, int]: ...  # عمود `GET /spaces`
+    async def purge_space(self, ctx, space_id: Uuid) -> int: ...   # messages + conversation_files + conversations
+
+# conversations/ports/files.py — الملفّ كما تراه المحادثة (لا استيراد لـ`app.modules.files`)
+class ReadableFile(Protocol):
+    @property
+    def file_id(self) -> str: ...
+    @property
+    def space_id(self) -> str | None: ...
+class ReadableFiles(Protocol):
+    async def get_readable(self, ctx, file_id: Uuid) -> ReadableFile | None: ...
+# قاعدة التكامل التي فرضها بقاء التثبيت: **الملفّ المثبَّت في وحدة المحادثة نفسها**،
+# والمقارنة `!=` بسيطةٌ عمداً — `None` في الطرفين يمرّ (الحالة القائمة قبل الصفّ ٨‑ب)،
+# وبعده تختفي الحالة وحدها بلا تعديل سطر. والرفض `409 spaces.cross_space_pin` لا `422`:
+# الطلب سليم والملفّ سليم، والحالة هي المانع. ⚠️ ولو أُهمل الفحص لظلّ الفشل آمناً —
+# مرشِّح الاسترجاع يجمع `space` و`document_id` بـAND فيسقط الغريب — لكنّ السقوط الصامت
+# ليس رفضاً، والمستخدم يستحقّ خطأً لا نتيجةً فارغة.
 
 # access/ports/inbound.py
 class AuthorizationService(Protocol):
