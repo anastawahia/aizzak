@@ -734,7 +734,10 @@ system = f"{SYSTEM_PROMPT}\n\nContext:\n{context}"
 `modules/knowledge/ports/content_extractor.py` · `infrastructure/vector/qdrant_store.py` ·
 `agents/rag_agent/agent.py` · `workers/content_resolver.py`
 
-**مراجع الهجرة الموجودة:** `docs/migration/refs/parsers.md` ·
-`docs/migration/refs/retrieval.md` — تحتوي على تحليل alpha الأصلي وقرارات
-التأجيل الموثَّقة. هذا المستند يتحقّق منها مقابل الشيفرة الفعلية ويكمّلها
-بما جرى بعدها.
+**مراجع الهجرة — ⚠️ خارج المستودع منذ 2026‑08‑19:** كان `docs/migration/refs/parsers.md` ·
+`docs/migration/refs/retrieval.md` يحملان تحليل alpha الأصلي وقرارات التأجيل
+الموثَّقة، وقد حُذفا من المستودع بالكومِت `054bd1a` ضمن تنظيف التوثيق ويحتفظ بهما
+المستخدم **خارج المشروع**. هذا المستند كان يتحقّق منهما مقابل الشيفرة الفعلية
+ويكمّلهما بما جرى بعدها — وهو الآن المرجع القائم بذاته. ما يلزم منهما للتنفيذ
+مُستخرَجٌ في [`rag-gaps-and-ports.md`](rag-gaps-and-ports.md)، ومصدر الخوارزميّات
+الأصليّ (`/home/alpha`) لا يزال متاحًا للرجوع المباشر.
