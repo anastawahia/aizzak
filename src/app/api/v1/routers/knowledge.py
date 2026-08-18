@@ -1,11 +1,12 @@
 """The Knowledge router — ``/api/v1/knowledge`` (03-api-spec §1 · 06 §7)
 — Phase 6.1-و-3.
 
-Eleven routes over ``KnowledgeUseCases``:
+Twelve routes over ``KnowledgeUseCases``:
 
 * ``POST /knowledge/search`` — top-``k`` chunks for a query (API-04 envelope);
 * ``GET /knowledge/documents`` — this workspace's documents, every status;
 * ``GET /knowledge/documents/{id}`` — one document's ingestion state;
+* ``POST /knowledge/documents`` — index an uploaded file (**202**);
 * ``POST /knowledge/reindex`` — rebuild one or more documents (**202**);
 * ``GET /knowledge/reindex/{id}`` — that rebuild's progress;
 * ``POST /knowledge/reindex/{id}/cancel`` — stop it;
@@ -24,13 +25,22 @@ key rather than a job id, because the artefact and the operation that built it
 are different things with different lifetimes.
 
 **The three reads were the whole router until BE-RAG-007/008, and the line
-they drew still holds.** Nothing here indexes a document: registration is
-driven by a file's upload completing, and indexing is a worker's (06 §7). The
-bundle carries no ingestion face, so «a request cannot start a pipeline» is
-structural rather than a route someone remembered not to add — and ``reindex``
-is not the exception it looks like, because all it does is register documents
-and publish the same ``DocumentRegistered`` event an upload publishes. Asking
-for ingestion was always allowed; performing it still is not.
+they drew still holds.** Nothing here indexes a document: indexing is a
+worker's (06 §7). The bundle carries no pipeline face, so «a request cannot
+start a pipeline» is structural rather than a route someone remembered not to
+add — and neither ``POST /documents`` nor ``reindex`` is the exception it
+looks like, because all either does is register a document and publish the
+``DocumentRegistered`` event a worker acts on. Asking for ingestion was always
+allowed; performing it still is not.
+
+**What DID change is who does the asking.** Registration used to be driven by
+a file's upload completing: the knowledge worker consumed
+``files.file.uploaded.v1`` and the corpus grew by itself. It no longer
+subscribes, so an uploaded file is bytes in storage and nothing more until
+``POST /knowledge/documents`` is called for it — one explicit request per
+file, from the person who uploaded it. The cost is stated rather than hidden:
+**a file nobody indexes answers no search, indefinitely, and the API says so
+only through that file's absence from ``GET /knowledge/documents``.**
 
 **``POST /search`` is built, wired, and served.** ``KnowledgeRetrievalService``
 needs an ``EmbeddingProvider``, which had no adapter when this router was
@@ -73,6 +83,7 @@ from app.api.v1.dependencies import Context, Services, current_principal
 from app.api.v1.dto.knowledge import (
     DocumentOut,
     ExportFormatIn,
+    IndexFileIn,
     KnowledgeSearchIn,
     ReindexIn,
     ReindexItemOut,
@@ -306,6 +317,57 @@ async def get_document(document_id: str, services: Services, ctx: Context) -> Do
     (the §3.55 read precedent — 403 would confirm the id exists)."""
     document = await services.knowledge.get_document.execute(ctx, document_id=document_id)
     return _to_document_out(document)
+
+
+@router.post(
+    "/documents", status_code=202, dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))]
+)
+async def index_file(
+    body: IndexFileIn,
+    services: Services,
+    ctx: Context,
+    idempotency_key: IdempotencyKey = None,
+) -> DocumentOut:
+    """Index an uploaded file — **202**, like every other route that queues a
+    worker's work. The body answers with the ``pending`` document that was
+    just registered, not with an indexed one: 201 would promise a corpus entry
+    that does not exist until a worker has embedded it.
+
+    This is the route that replaced automatic ingestion. A file is indexed
+    because somebody asked for this, once, and never because it finished
+    uploading.
+
+    **The refusals are the interesting part**, and both are the use-case's:
+
+    * a file that is not ``ready`` — still uploading, quarantined, deleted, or
+      simply not this tenant's — is a **404**, indistinguishable between those
+      causes on purpose (``ports/files.ReadableFiles``). It is also what makes
+      "wait for the upload to finish" enforced rather than merely advised.
+    * a file that already has a document is a **409**. Not because a second
+      one cannot be minted — INV-K3 says it can — but because two live
+      documents over one file make every search answer from it twice. Rebuild
+      through ``POST /knowledge/reindex``, which destroys what it replaces.
+
+    ``Idempotency-Key`` is accepted for the reason it is on ``reindex``: a
+    retried POST otherwise buys a second document, and the workspace pays for
+    the same embeddings twice. The 409 above already stops the *double click*;
+    the header stops the *retried request*, which never reaches the guard
+    because the first attempt may have committed after the client gave up.
+    """
+
+    async def _start() -> DocumentOut:
+        document = await services.knowledge.index_file.start(ctx, file_id=body.file_id)
+        return _to_document_out(document)
+
+    return await idempotent(
+        services.idempotency,
+        ctx,
+        endpoint="POST /knowledge/documents",
+        key=idempotency_key,
+        body=body,
+        model=DocumentOut,
+        run=_start,
+    )
 
 
 @router.post(

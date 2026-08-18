@@ -430,6 +430,15 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentPage" } } } }
         default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [knowledge]
+      operationId: indexFile
+      description: "Index an uploaded file — **the only way anything is ever indexed**. Completing an upload used to register a document and start the pipeline by itself; it no longer does, so a file sits in storage answering no search until this is called for it, once. The file must be `ready`: a half-uploaded, quarantined, deleted, unknown or another tenant's file is a **404**, undistinguished on purpose, and that is also what makes «wait for the upload to finish» enforced rather than advised. A file that already HAS a document is a **409** — not because a second one cannot exist (INV-K3 says it can, a re-upload mints one) but because two live documents over one file make every search answer from it twice; rebuilding is `POST /knowledge/reindex`, the face that destroys what it supersedes. The document is filed under the FILE's space, read from the file rather than accepted from the caller, so nothing can file content into a space its file does not belong to. Answers **202** with the new `pending` document: the embedding is a worker's, and 201 would promise a corpus entry that does not exist yet. `Idempotency-Key` is honoured — a retried POST would otherwise buy a second document and the same embeddings twice. Permission `knowledge:manage`, like every other face that spends embedding quota."
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/IndexFileIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /knowledge/documents/{id}:
     get:
       tags: [knowledge]
@@ -1183,6 +1192,11 @@ components:
     DocumentPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/DocumentOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    IndexFileIn:
+      type: object
+      required: [file_id]
+      properties:
+        file_id: {type: string, format: uuid, minLength: 1}
     ReindexIn:
       type: object
       required: [document_ids]

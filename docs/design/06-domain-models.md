@@ -192,7 +192,14 @@ EV  SummaryBuildFailed(job_id, workspace_id, document_id, reason, occurred_at)
   والعاملُ يعيد قراءته **بين خطوات الخريطة**. فمهمّةٌ `queued` تتوقّف مجّاناً (حارسُ `DD‑09`
   يرفض الطرفيّ، وهي الآليّة نفسها)، و`running` تتوقّف عند أوّل حدٍّ للخطوة — والنداءُ الجاري
   مدفوعٌ ثمنُه. والإلغاء **لا يحذف** ملخّصاً خزّنه بناءٌ سابق: هذا هجرٌ للمهمّة لا لأثر سابقتها.
-- **Use‑cases:** `RegisterDocumentFromFile`, `IndexDocument` (worker), `RetrieveContext(workspace, query, k)`,
+- **الفهرسة تُطلَب، لا تقع.** إتمام رفع الملف كان يسجّل مستنداً ويبدأ خطَّ الأنابيب بنفسه؛
+  لم يعد كذلك. `IndexFile` هو الوجه الوحيد الذي يسكّ مستنداً أوّليّاً لملف، ويسأل قبل ذلك
+  سؤالين لا يسألهما حدث: هل الملفُّ `ready` (‏أي: هل ثمّة بايتات تُفهرَس أصلاً — عبر منفذ
+  `ports/files.ReadableFiles` المربوط بـ`files.FilesQuery`)، وهل له مستندٌ حيٌّ أصلاً. الثاني
+  ليس نقضاً لـINV‑K3 بل حدُّه العمليّ: التكرار مسموحٌ لأنّ التسليم قد يتكرّر، أمّا زرٌّ يُضغط
+  مرّتين فيُنتج مستندين حيّين على ملفٍ واحد ⇒ كلُّ بحثٍ يجيب منه مرّتين إلى الأبد.
+  والوحدة تُقرأ من الملف نفسه، فلا يقدر متصلٌ على إيداع محتوىً في وحدةٍ لا ينتمي إليها ملفُّه.
+- **Use‑cases:** `RegisterDocumentFromFile`, `IndexFile`, `IndexDocument` (worker), `RetrieveContext(workspace, query, k)`,
   `ReindexDocuments`, `GetReindexJob`, `CancelReindexJob`,
   `RequestSummary`, `SummarizeDocument` (worker), `BuildSummary` (worker),
   `GetSummary`, `DeleteSummary`, `GetSummaryJob`, `CancelSummaryJob`.
@@ -283,7 +290,8 @@ EV  LimitExceeded(workspace_id, scope, metric, occurred_at)                    #
 
 | من | إلى | الآلية |
 |----|-----|--------|
-| `files.FileUploaded` | `knowledge.RegisterDocumentFromFile` | حدث عالمي (Redis Streams) |
+| `files.FileUploaded` | — (بلا مستهلك منذ الفهرسة اليدويّة) | حدث عالمي (Redis Streams) |
+| `knowledge.IndexFile` | `files.FilesQuery` (هل الملفُّ `ready`؟ وأيُّ وحدةٍ يملكه؟) | منفذ وارد محقون (لا استيراد) |
 | `knowledge.DocumentIndexed` | إشعار العميل | حدث عالمي → WebSocket |
 | `media.MediaGenerated` | `files` (حفظ الناتج) + إشعار | حدث عالمي |
 | أي وكيل | `conversations`/`memory`/`files`/`knowledge` | عبر Inbound Port محقون (لا استيراد مباشر) |

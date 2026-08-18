@@ -12,6 +12,15 @@ notes ingestion is a heavy, event-driven operation -- the actual work is
 same ``file_id`` are allowed by design: a re-upload becomes a brand-new
 ``Document``, never an update to a prior one (INV-K3).
 
+``IndexFile``/``IndexFileService`` are the one thing allowed to CALL that
+mint. Completing an upload no longer registers anything (the knowledge worker
+stopped subscribing to ``files.file.uploaded.v1``), so a file sits in storage,
+indexed by nothing, until somebody asks -- and this pair is the asking. It is
+not a hole in "a request may not index a document" for the same reason
+``reindex`` is not: all it produces is a ``pending`` document and the ordinary
+``DocumentRegistered`` event, and a worker still decides when the pipeline
+runs.
+
 ``IndexRegisteredDocument`` is the worker-facing lifecycle wrapper around the
 3.k3 ``IndexDocument`` pipeline (06 §7 "IndexDocument (worker)"): the future
 Phase-5 ``knowledge_worker`` becomes a thin adapter over THIS use-case, not
@@ -91,6 +100,7 @@ from app.modules.knowledge.domain.value_objects import (
 )
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.export import ExportFormat, RenderedSummary, SummaryRenderer
+from app.modules.knowledge.ports.files import ReadableFiles
 from app.modules.knowledge.ports.inbound import KnowledgeRetrieval
 from app.modules.knowledge.ports.repository import (
     DocumentRepository,
@@ -172,6 +182,96 @@ class RegisterDocumentFromFile:
         await self._documents.add(ctx, doc)
         event = DocumentRegistered(doc.id, ctx.workspace_id, doc.file_id, now)
         return doc, (event,)
+
+
+class IndexFile:
+    """Register a file's document **because someone asked for it** — the
+    manual-indexing face (``POST /knowledge/documents``).
+
+    This is the whole of what "indexing is no longer automatic" means. Until
+    this use-case existed, completing an upload published
+    ``files.file.uploaded.v1``, the knowledge worker registered a document off
+    it, and the ``DocumentRegistered`` that registration produced sent the
+    same worker straight into the embedding pipeline: a file was indexed
+    because it had been uploaded, and nobody was ever asked. Now the upload
+    ends at storage, and THIS is the only thing that starts ingestion.
+
+    It composes ``RegisterDocumentFromFile`` rather than re-implementing it,
+    so a ``pending`` ``Document`` is still minted in exactly one place, and
+    adds the two questions a REQUEST has to answer that an event did not:
+
+    * **Are there bytes to index?** ``files.get_readable`` returns a view only
+      for a ``ready`` file (INV-F2), so a file whose PUT never landed, or that
+      was deleted or quarantined, is a 404 here — which is also, exactly, the
+      "only after the upload completes" precondition the button in front of
+      this route is drawn from. ``None`` is not diagnosed further: see
+      ``ports/files.ReadableFiles``.
+
+    * **Is it indexed already?** INV-K3 lets one file own many documents by
+      design (a re-upload mints a new one), and an event stream that can
+      redeliver NEEDS that latitude. A button that can be clicked twice does
+      not: two live documents over one file means every search answers from
+      that file twice, forever — the duplication ``ReindexDocuments`` deletes
+      points up front to avoid. So a file that already has a document is a
+      409 here, and rebuilding one is ``POST /knowledge/reindex``'s job, the
+      face that knows to destroy what it supersedes.
+
+    The space is the FILE's, read off the same view (spaces plan, step 8) and
+    never taken from the caller: a client-supplied space could file a document
+    under a space its file does not belong to, and retrieval would then
+    answer, inside that space, out of content the space cannot see.
+    """
+
+    def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
+        self._documents = documents
+        self._register = RegisterDocumentFromFile(documents)
+        self._files = files
+
+    async def execute(
+        self, ctx: ExecutionContext, *, file_id: Uuid
+    ) -> tuple[Document, tuple[KnowledgeEvent, ...]]:
+        if not file_id.strip():
+            raise ValidationError("file_id must not be empty")
+
+        view = await self._files.get_readable(ctx, file_id)
+        if view is None:
+            raise NotFoundError("file not found")
+
+        # Checked BEFORE the mint, not after: `add` has no uniqueness
+        # constraint to lean on here (INV-K3 forbids one), so this read is the
+        # only thing standing between a double click and a corpus that answers
+        # twice.
+        if await self._documents.ids_for_files(ctx, [file_id]):
+            raise ConflictError(
+                "this file already has a knowledge document;"
+                " rebuild it through POST /knowledge/reindex"
+            )
+
+        return await self._register.execute(ctx, file_id=file_id, space_id=view.space_id)
+
+
+class IndexFileService:
+    """Wraps ``IndexFile`` with the Outbox append inside ONE request-scoped
+    unit of work — the ``ReindexService`` shape, and for its reason.
+
+    The document row and the ``DocumentRegistered`` that tells a worker to
+    index it must commit together or not at all. A row without its event is a
+    file the user asked to index, that reports itself ``pending``, and that no
+    worker was ever told about — indistinguishable from the outside from one
+    merely waiting its turn. So the append is not swallowed: it propagates,
+    and rolls the mint back with it.
+    """
+
+    def __init__(self, index: IndexFile, outbox: EventOutbox, uow: UnitOfWork) -> None:
+        self._index = index
+        self._outbox = outbox
+        self._uow = uow
+
+    async def start(self, ctx: ExecutionContext, *, file_id: Uuid) -> Document:
+        async with self._uow.begin(ctx):
+            document, events = await self._index.execute(ctx, file_id=file_id)
+            await self._outbox.append(ctx, [to_outbox_record(ctx, event) for event in events])
+            return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -1393,20 +1493,22 @@ class KnowledgeUseCases:
     ONE field on ``ApiServices`` per module, matching 03 §1's ``POST /search ·
     GET /documents · GET /documents/{id}``.
 
-    ``RegisterDocumentFromFile``/``IndexRegisteredDocument`` are pointedly
-    absent. Ingestion is event-driven (06 §7): a file's upload completing is
-    what registers a document, and a worker is what indexes it. There is no
-    v1 route for either, and a bundle the API layer holds must not be able to
-    mint a document out of band or re-drive a worker's pipeline from a
-    request.
+    ``IndexRegisteredDocument`` is pointedly absent, and ``IndexFile`` is
+    pointedly not it. A bundle the API layer holds must not be able to re-drive
+    a worker's pipeline from a request — that use-case embeds, writes chunks
+    and closes a document's lifecycle, and it stays where the process that can
+    reach an embedding provider composes it.
 
-    **``reindex`` is not a hole in that rule** (BE-RAG-007/008). It cannot
-    index anything: it registers documents and publishes the same event an
-    upload does, then a worker decides when to run. What a request gains is
-    the ability to ASK for ingestion, which is the one thing the absent pair
-    would have let it do INSTEAD of asking. The three fields are required
-    rather than ``| None`` like ``search``: they need the vector store, which
-    every composed deployment has, and no embedding adapter at all.
+    **``index_file`` and ``reindex`` are not holes in that rule**
+    (BE-RAG-007/008). Neither indexes anything: each registers a ``pending``
+    document and publishes the ordinary ``DocumentRegistered`` event, then a
+    worker decides when to run. What a request gains is the ability to ASK for
+    ingestion — which, since indexing stopped happening automatically on
+    upload, is the ONLY way ingestion is ever asked for. ``index_file`` starts
+    a corpus entry that does not exist yet; ``reindex`` replaces one that does,
+    destroying what it supersedes. The four fields are required rather than
+    ``| None`` like ``search``: they need the vector store, which every
+    composed deployment has, and no embedding adapter at all.
 
     ``search`` is typed ``KnowledgeRetrieval | None`` — the module's INBOUND
     port, not the concrete service — and is genuinely ``None`` in the
@@ -1422,6 +1524,7 @@ class KnowledgeUseCases:
     list_documents: ListDocuments
     get_document: GetDocument
     search: KnowledgeRetrieval | None
+    index_file: IndexFileService
     reindex: ReindexService
     get_job: GetReindexJob
     cancel_job: CancelReindexJobService

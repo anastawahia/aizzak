@@ -40,6 +40,8 @@ from app.modules.knowledge.application.use_cases import (
     GetReindexJob,
     GetSummary,
     GetSummaryJob,
+    IndexFile,
+    IndexFileService,
     KnowledgeUseCases,
     ListDocuments,
     ReindexDocuments,
@@ -152,6 +154,18 @@ class InMemoryDocumentRepository:
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: object) -> None:
         raise AssertionError("the API bundle must never persist chunks")
+
+    async def ids_for_files(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> Sequence[str]:
+        # The real predicate: same workspace, `file_id` in the caller's list.
+        # `IndexFile`'s "is this file indexed already?" guard reads it, so a
+        # fake that answered "nothing, ever" would let the router tests pass
+        # while the 409 they assert had nothing behind it.
+        wanted = set(file_ids)
+        return [
+            row.id
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id and row.file_id in wanted
+        ]
 
     async def vector_refs(self, ctx: ExecutionContext, doc_id: str) -> list[VectorRef]:
         return list(self.refs.get(doc_id, ()))
@@ -382,12 +396,51 @@ class KnowledgeStack:
     outbox: RecordingOutbox
     summaries: InMemorySummaryRepository
     summary_jobs: InMemorySummaryJobRepository
+    files: InMemoryReadableFiles
 
 
 # The space a seeded document lands in unless a test says otherwise (spaces
 # plan step 12). One constant rather than a literal per suite, so a listing
 # test and the row it reads agree by construction.
 SEED_SPACE = "018f0000-0000-7000-8000-0000000000sp"
+
+
+@dataclass(frozen=True, slots=True)
+class ReadableFileView:
+    """What ``IndexFile`` reads off a file — structurally the files module's
+    own ``FileView``, narrowed to the two fields this module's port declares."""
+
+    file_id: str
+    space_id: str | None
+
+
+class InMemoryReadableFiles:
+    """A structural ``ReadableFiles`` (``knowledge/ports/files.py``).
+
+    ``ready`` is the ONLY state it models, because that is the only one the
+    port exposes: the real ``FilesQueryService`` answers ``None`` for every
+    other reason a file cannot be read, so a fake with a ``status`` field
+    would be modelling a distinction the seam deliberately erases.
+    """
+
+    def __init__(self, *, space_id: str | None = SEED_SPACE) -> None:
+        # Seeded with the space a seeded DOCUMENT lands in, so "index this
+        # file" and "list this space's documents" agree without a test
+        # having to say so.
+        self._space_id = space_id
+        self.readable: set[str] = set()
+        self.calls: list[str] = []
+
+    def add(self, file_id: str, *, space_id: str | None = None) -> None:
+        self.readable.add(file_id)
+        if space_id is not None:
+            self._space_id = space_id
+
+    async def get_readable(self, ctx: ExecutionContext, file_id: str) -> ReadableFileView | None:
+        self.calls.append(file_id)
+        if file_id not in self.readable:
+            return None
+        return ReadableFileView(file_id=file_id, space_id=self._space_id)
 
 
 def seed_document(
@@ -434,11 +487,13 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
     uow = NoopUnitOfWork()
     summaries = InMemorySummaryRepository()
     summary_jobs = InMemorySummaryJobRepository()
+    files = InMemoryReadableFiles()
     return KnowledgeStack(
         knowledge=KnowledgeUseCases(
             list_documents=ListDocuments(repository),
             get_document=GetDocument(repository),
             search=retrieval,
+            index_file=IndexFileService(IndexFile(repository, files), outbox, uow),
             reindex=ReindexService(ReindexDocuments(repository, jobs, vectors), outbox, uow),
             get_job=GetReindexJob(jobs),
             cancel_job=CancelReindexJobService(CancelReindexJob(repository, jobs), outbox, uow),
@@ -464,4 +519,5 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
         outbox=outbox,
         summaries=summaries,
         summary_jobs=summary_jobs,
+        files=files,
     )

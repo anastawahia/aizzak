@@ -1,9 +1,8 @@
 """Unit tests for the worker composition roots in ``workers/bootstrap.py``
 (5.1-ج).
 
-Hermetic: every handler closure (``build_knowledge_register_handler``/
-``build_knowledge_index_handler``/``build_media_run_handler``/
-``build_memory_index_handler``) is exercised over in-memory fakes/real
+Hermetic: every handler closure (``build_knowledge_index_handler``/
+``build_media_run_handler``/``build_memory_index_handler``) is exercised over in-memory fakes/real
 use-cases, the same way ``test_media_outbox_seam.py``'s
 ``MediaRequestService`` tests are -- these closures ARE the worker-scoped
 equivalent of that request-scoped seam.
@@ -62,7 +61,6 @@ from app.workers.bootstrap import (
     Disposable,
     _routing_for,
     build_knowledge_index_handler,
-    build_knowledge_register_handler,
     build_knowledge_worker_from_env,
     build_media_run_handler,
     build_media_worker_from_env,
@@ -137,7 +135,7 @@ class _FakeLedger:
 
 
 # --------------------------------------------------------------------------- #
-# knowledge: build_knowledge_register_handler                                 #
+# knowledge: the document repository fake the index handler runs on           #
 # --------------------------------------------------------------------------- #
 class _FakeDocuments:
     """Minimal ``DocumentRepository`` -- records adds, applies status
@@ -164,158 +162,6 @@ class _FakeDocuments:
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
-
-
-def _register_envelope(
-    ctx: ExecutionContext, *, file_id: str = "file-1", space_id: str | None = None
-) -> Json:
-    data: Json = {"file_id": file_id, "content_type": "text/plain", "size_bytes": 10}
-    # ABSENT, not null, when there is no space -- the producer's own shape
-    # (`files/application/event_mapping.py`) and the shape of every envelope
-    # published before the spaces plan's step 8.
-    if space_id is not None:
-        data["space_id"] = space_id
-    return {
-        "type": "files.file.uploaded.v1",
-        "workspaceid": ctx.workspace_id,
-        "id": new_uuid7(),
-        "data": data,
-    }
-
-
-async def test_register_handler_creates_a_pending_document_and_appends_its_mapped_event() -> None:
-    documents = _FakeDocuments()
-    outbox = _FakeOutbox()
-    handler = build_knowledge_register_handler(documents, outbox, _FakeUnitOfWork(), _FakeLedger())
-    ctx = _ctx()
-
-    await handler(ctx, _register_envelope(ctx, file_id="file-77"))
-
-    assert len(documents.added) == 1
-    doc = documents.added[0]
-    assert doc.file_id == "file-77"
-    assert doc.status is IndexStatus.PENDING
-    (call_ctx, records) = outbox.calls[0]
-    assert call_ctx is ctx
-    assert [r.event_type for r in records] == ["knowledge.document.registered.v1"]
-    assert records[0].aggregate_id == doc.id
-
-
-async def test_register_handler_files_the_document_under_the_event_s_space() -> None:
-    """Spaces plan step 8 — the one hop that gives ``knowledge.documents`` its
-    ``space_id``: the file's space rides on ``files.file.uploaded.v1`` and
-    lands on the document this handler mints. Drop it and the column is
-    written ``NULL`` forever, with nothing failing until row 8-b."""
-    documents = _FakeDocuments()
-    handler = build_knowledge_register_handler(
-        documents, _FakeOutbox(), _FakeUnitOfWork(), _FakeLedger()
-    )
-    ctx = _ctx()
-
-    await handler(ctx, _register_envelope(ctx, space_id="space-research"))
-
-    assert documents.added[0].space_id == "space-research"
-
-
-async def test_register_handler_accepts_an_envelope_with_no_space_at_all() -> None:
-    """Every envelope published before step 8 has no ``space_id`` key, and a
-    file that has no space still publishes none. Reading it with ``[...]``
-    would turn each of those into a redelivered ``KeyError`` and, eventually,
-    a DLQ entry for an upload that is perfectly fine."""
-    documents = _FakeDocuments()
-    handler = build_knowledge_register_handler(
-        documents, _FakeOutbox(), _FakeUnitOfWork(), _FakeLedger()
-    )
-    ctx = _ctx()
-
-    await handler(ctx, _register_envelope(ctx))
-
-    assert documents.added[0].space_id is None
-
-
-async def test_register_handler_appends_the_outbox_record_inside_the_unit_of_work() -> None:
-    """Mutation-battery target #5: moving the outbox append OUTSIDE
-    ``uow.begin`` would make ``appended_while_active`` False here."""
-    uow = _TrackingUnitOfWork()
-
-    class _SpyOutbox:
-        def __init__(self) -> None:
-            self.appended_while_active: bool | None = None
-
-        async def append(self, ctx: ExecutionContext, records: Sequence[OutboxRecord]) -> None:
-            self.appended_while_active = uow.active
-
-    outbox = _SpyOutbox()
-    handler = build_knowledge_register_handler(_FakeDocuments(), outbox, uow, _FakeLedger())
-    ctx = _ctx()
-
-    await handler(ctx, _register_envelope(ctx))
-
-    assert outbox.appended_while_active is True
-    assert uow.active is False  # the block closed cleanly afterwards
-
-
-async def test_register_handler_outbox_failure_is_not_swallowed() -> None:
-    """Swallowing would leave a registered document with no event --
-    invisible to this same worker's own index handler (the
-    ``MediaRequestService``/``RememberInteractionService`` precedent)."""
-    handler = build_knowledge_register_handler(
-        _FakeDocuments(), _ExplodingOutbox(), _FakeUnitOfWork(), _FakeLedger()
-    )
-    ctx = _ctx()
-
-    with pytest.raises(RuntimeError, match="outbox is down"):
-        await handler(ctx, _register_envelope(ctx))
-
-
-async def test_register_handler_duplicate_claim_registers_nothing_and_appends_nothing() -> None:
-    """DD-09's «تكرار = تجاهُل»: registration is non-idempotent by design
-    (INV-K3 -- a redelivered ``file.uploaded`` would mint a SECOND document),
-    so the ``False`` claim is the only thing standing between at-least-once
-    delivery and duplicate aggregates. The clean return here is what lets the
-    engine XACK the duplicate."""
-    documents = _FakeDocuments()
-    outbox = _FakeOutbox()
-    ledger = _FakeLedger(result=False)
-    handler = build_knowledge_register_handler(documents, outbox, _FakeUnitOfWork(), ledger)
-    ctx = _ctx()
-    envelope = _register_envelope(ctx)
-
-    await handler(ctx, envelope)
-
-    assert documents.added == []
-    assert outbox.calls == []
-    assert ledger.calls == [("cg.knowledge", envelope["id"])]
-
-
-async def test_register_handler_claims_inside_the_unit_of_work_and_before_the_effect() -> None:
-    """Two mutation targets in one shape: a claim hoisted OUTSIDE
-    ``uow.begin`` would break DD-09's «داخل معاملة الأثر» (crash ⇒ claim
-    committed but effect lost ⇒ redelivery skips forever); a claim moved
-    AFTER the effect could only discover the duplicate having already
-    half-performed it."""
-    uow = _TrackingUnitOfWork()
-    documents = _FakeDocuments()
-
-    class _SpyLedger:
-        def __init__(self) -> None:
-            self.claimed_while_active: bool | None = None
-            self.documents_seen_at_claim: int | None = None
-
-        async def claim(self, ctx: ExecutionContext, *, consumer_group: str, event_id: str) -> bool:
-            self.claimed_while_active = uow.active
-            self.documents_seen_at_claim = len(documents.added)
-            return True
-
-    ledger = _SpyLedger()
-    handler = build_knowledge_register_handler(documents, _FakeOutbox(), uow, ledger)
-    ctx = _ctx()
-
-    await handler(ctx, _register_envelope(ctx))
-
-    assert ledger.claimed_while_active is True
-    assert ledger.documents_seen_at_claim == 0  # claim FIRST, effect second
-    assert len(documents.added) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -1008,16 +854,17 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     consumer, subscriptions, disposables = await build_knowledge_worker_from_env()
 
     assert isinstance(consumer, StreamConsumer)
-    # 04 §4's binding table: ONE `cg.knowledge` group over TWO streams.
+    # 04 §4's binding table, minus the row manual indexing retired: ONE
+    # `cg.knowledge` group over ONE stream. `stream.files` was the other, and
+    # its disappearance IS the feature -- a worker that still subscribed to it
+    # would still be registering a document for every completed upload.
     assert [(s.stream, s.group) for s in subscriptions] == [
-        ("stream.files", "cg.knowledge"),
         ("stream.knowledge", "cg.knowledge"),
     ]
-    assert set(subscriptions[0].handlers) == {"files.file.uploaded.v1"}
     # Two handlers on `stream.knowledge` since BE-RAG-009, still under the one
     # `cg.knowledge` group: a summary build is more work for the process that
     # already owns this stream, not a reason for a second consumer group.
-    assert set(subscriptions[1].handlers) == {
+    assert set(subscriptions[0].handlers) == {
         "knowledge.document.registered.v1",
         "knowledge.summary.requested.v1",
     }

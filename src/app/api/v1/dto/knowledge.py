@@ -57,6 +57,18 @@ class DocumentOut(BaseModel):
     created_at: datetime
 
 
+class IndexFileIn(BaseModel):
+    """The file to index — the whole body of ``POST /knowledge/documents``.
+
+    One file, not a list, and no space: a batch would need a per-entry outcome
+    shape for a call whose only interesting failure is "this one file cannot
+    be indexed", and the space is the file's own (the use-case reads it off
+    the file rather than believing a caller who might name another).
+    """
+
+    file_id: str = Field(min_length=1)
+
+
 class ReindexIn(BaseModel):
     """The documents to rebuild (BE-RAG-007).
 

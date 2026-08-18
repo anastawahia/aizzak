@@ -75,11 +75,20 @@ class ConsumerBinding:
     group: str
 
 
-# The four pairs §1-ج's table names, written literally for the reason (a)
-# above explains -- guarded against drift by
-# `tests/unit/test_stream_topology.py`, not by any import from this file.
+# The pairs §1-ج's table names, written literally for the reason (a) above
+# explains -- guarded against drift by `tests/unit/test_stream_topology.py`,
+# not by any import from this file.
+#
+# `(stream.files, cg.knowledge)` was the first row here and is deliberately
+# gone. The knowledge worker stopped subscribing to `stream.files` when
+# indexing became a request (`workers/bootstrap.py`, the comment standing
+# where its register handler used to be), and a group pre-created for a
+# consumer that never reads it is not harmless bookkeeping: its lag would
+# grow by one on every upload, forever, and the lag of a group nobody reads
+# is exactly the signal an operator has to be able to trust. `stream.files`
+# is still published to -- `XADD` needs no group -- it simply has no reader
+# in this deployment.
 STATIC_CONSUMER_TOPOLOGY: tuple[ConsumerBinding, ...] = (
-    ConsumerBinding(stream="stream.files", group="cg.knowledge"),
     ConsumerBinding(stream="stream.knowledge", group="cg.knowledge"),
     ConsumerBinding(stream="stream.media", group="cg.media"),
     ConsumerBinding(stream="stream.memory", group="cg.memory"),

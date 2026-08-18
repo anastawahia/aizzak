@@ -16,7 +16,10 @@ pin, against 03 §1/§2 and 06 §7:
 * ``DocumentOut`` carries no ``error`` field, so an indexing failure's
   internal reason never reaches a tenant;
 * 404 for an unknown document AND for another tenant's — indistinguishable
-  on purpose.
+  on purpose;
+* **nothing is indexed until ``POST /knowledge/documents`` asks for it** — a
+  completed upload registers no document, and the route that does refuses a
+  file that is not ready and a file that already has one.
 """
 
 from __future__ import annotations
@@ -494,6 +497,96 @@ def test_reading_another_tenants_document_is_404_not_403() -> None:
         response = client.get("/api/v1/knowledge/documents/d2", headers=_auth())
     assert response.status_code == 404
     assert response.json()["code"] == "common.not_found"
+
+
+# --------------------------------------------------------------------------- #
+# POST /knowledge/documents — manual indexing                                 #
+# --------------------------------------------------------------------------- #
+def test_indexing_an_uploaded_file_answers_202_with_a_pending_document() -> None:
+    """202 and not 201: the document is registered, and a worker will embed
+    it. 201 would promise a corpus entry that answers searches, which this one
+    does not until the pipeline has run."""
+    app, stack = _make_app()
+    stack.files.add("f1")
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=_auth()
+        )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["file_id"] == "f1"
+    assert body["status"] == "pending"
+    assert body["chunk_count"] == 0
+    # The document really landed, filed under the file's own space, so the
+    # listing that space's panel reads shows it immediately.
+    (row,) = list(stack.repository.rows.values())
+    assert row.space_id == SEED_SPACE
+    assert stack.outbox.event_types == ["knowledge.document.registered.v1"]
+
+
+def test_uploading_a_file_indexes_nothing_by_itself() -> None:
+    """The whole point of the route above. Nothing in this suite uploads —
+    but nothing anywhere registers a document either, and the corpus a
+    freshly built stack starts with is the proof a client relies on: the
+    file panel shows an un-indexed file, not one quietly being embedded."""
+    app, stack = _make_app()
+    stack.files.add("f1")  # a completed upload, and nothing more
+    with TestClient(app) as client:
+        listing = client.get(f"/api/v1/knowledge/documents?space_id={SEED_SPACE}", headers=_auth())
+    assert listing.status_code == 200
+    assert listing.json()["data"] == []
+    assert stack.outbox.event_types == []
+
+
+def test_indexing_a_file_that_is_not_ready_is_404() -> None:
+    """The "only after the upload completes" precondition, enforced. The seam
+    answers ``None`` for a file still uploading, quarantined, deleted, unknown
+    or another tenant's, and all five are the same 404 on purpose."""
+    app, stack = _make_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=_auth()
+        )
+    assert response.status_code == 404
+    assert stack.repository.rows == {}
+
+
+def test_indexing_a_file_twice_is_409() -> None:
+    """Two live documents over one file make every search answer from it
+    twice, forever. Rebuilding is ``POST /knowledge/reindex``, which destroys
+    what it supersedes; this route only ever starts one that does not exist."""
+    app, stack = _make_app()
+    stack.files.add("f1")
+    with TestClient(app) as client:
+        first = client.post("/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=_auth())
+        second = client.post("/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=_auth())
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["code"] == "common.conflict"
+    assert len(stack.repository.rows) == 1
+
+
+def test_indexing_the_same_file_under_one_idempotency_key_registers_one_document() -> None:
+    """A retried POST must not buy a second document and a second bill for the
+    same embeddings. The 409 above catches the double CLICK; the header
+    catches the retry whose first attempt committed after the client gave up."""
+    app, stack = _make_app()
+    stack.files.add("f1")
+    headers = {**_auth(), "Idempotency-Key": "key-1"}
+    with TestClient(app) as client:
+        first = client.post("/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=headers)
+        replay = client.post("/api/v1/knowledge/documents", json={"file_id": "f1"}, headers=headers)
+    assert (first.status_code, replay.status_code) == (202, 202)
+    assert first.json() == replay.json()
+    assert len(stack.repository.rows) == 1
+
+
+def test_the_index_body_requires_a_file_id() -> None:
+    app, _stack = _make_app()
+    with TestClient(app) as client:
+        missing = client.post("/api/v1/knowledge/documents", json={}, headers=_auth())
+        blank = client.post("/api/v1/knowledge/documents", json={"file_id": ""}, headers=_auth())
+    assert (missing.status_code, blank.status_code) == (422, 422)
 
 
 # --------------------------------------------------------------------------- #

@@ -355,6 +355,8 @@ from app.modules.knowledge.application.use_cases import (
     GetReindexJob,
     GetSummary,
     GetSummaryJob,
+    IndexFile,
+    IndexFileService,
     KnowledgeRetrievalService,
     KnowledgeUseCases,
     ListDocuments,
@@ -364,6 +366,7 @@ from app.modules.knowledge.application.use_cases import (
     RequestSummary,
     RequestSummaryService,
 )
+from app.modules.knowledge.ports.files import ReadableFiles as KnowledgeReadableFiles
 from app.modules.knowledge.ports.retrieval import EmbeddingResolver, ResolvedEmbedding
 from app.modules.knowledge.ports.summarization import (
     SUMMARIZE_CAPABILITY,
@@ -1000,6 +1003,7 @@ def _build_knowledge(
     vectors: HybridVectorStore,
     resolver: EmbeddingResolver,
     outbox: EventOutbox,
+    files: KnowledgeReadableFiles,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1018,14 +1022,24 @@ def _build_knowledge(
     ``OrchestratorDependencies`` as the RAG agent's ``KnowledgeAccess``
     seam, so there is one retrieval path reached two ways.
 
-    Neither ingestion face is built here — a request has no business indexing
-    a document. ``reindex`` is not a hole in that: ``ReindexDocuments`` is
-    the only knowledge face that both writes rows and deletes vectors (hence
-    the direct ``vectors``), but all it produces is a ``pending`` document
-    and the ordinary ``DocumentRegistered`` event a worker acts on. Both
-    write faces are wrapped in one unit of work with the outbox, so that
-    document and the event telling a worker about it can never be written
-    apart.
+    The PIPELINE face is not built here — a request has no business running
+    one. ``index_file`` and ``reindex`` are not holes in that: neither indexes
+    anything, each produces a ``pending`` document plus the ordinary
+    ``DocumentRegistered`` event a worker acts on, and each is wrapped in one
+    unit of work with the outbox, so a document and the event telling a worker
+    about it can never be written apart. ``ReindexDocuments`` is still the only
+    knowledge face that both writes rows and deletes vectors, which is why the
+    direct ``vectors`` is here and why ``index_file`` — which supersedes
+    nothing — does not take it.
+
+    **``files`` is the seam manual indexing runs on.** It is ``files``' own
+    ``FilesQuery``, bound structurally to this module's ``ReadableFiles``
+    (``knowledge/ports/files.py``), the same way ``conversations`` binds it for
+    a pin — and it is the SAME instance, so "is this file readable, and whose
+    space is it in?" has one answer across the process. The import is aliased
+    ``KnowledgeReadableFiles`` because ``conversations`` declares a Protocol of
+    the same name for the same seam: two names for one shape is what Dependency
+    Inversion between siblings looks like, not a duplication to unify.
 
     ``PurgeSpaceKnowledge`` (``spaces-backend-plan.md`` step 11) is returned
     OUTSIDE the bundle for the reason no ingestion face is inside it: a request
@@ -1043,6 +1057,7 @@ def _build_knowledge(
         search=KnowledgeRetrievalService(
             RetrieveContext(embeddings=embedding, vectors=vectors), resolver, documents
         ),
+        index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
         reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
         get_job=GetReindexJob(jobs),
         cancel_job=CancelReindexJobService(
@@ -1504,12 +1519,23 @@ class CompositionRoot:
             revoke=RevokeCredential(credential_repository),
         )
 
+        # 6.1-هـ-2 — ONE files repository behind every face of that module,
+        # built HERE, ahead of the THREE bundles that need it (the helper's
+        # docstring holds the reasoning). It was hoisted above `_build_knowledge`
+        # when manual indexing landed: `IndexFile` has to ask whether a file is
+        # readable before it mints a document for it, so `knowledge` joined
+        # `conversations` and the files bundle itself as a consumer of the same
+        # `FilesQuery` instance — one answer to "is this file readable, and
+        # whose space is it in?" for every module that asks.
+        file_repository, files_query = _build_files_seam(tenant_session)
+
         knowledge, purge_space_knowledge = _build_knowledge(
             tenant_session,
             embedding=embedding,
             vectors=vector_store,
             resolver=_RoutedEmbeddingResolver(provider_resolver),
             outbox=outbox,
+            files=files_query,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which
@@ -1547,11 +1573,6 @@ class CompositionRoot:
         # honest state: `GET /workflows` lists nothing and every
         # `POST /workflows/{key}/run` is a truthful `workflow.unknown` 404.
         workflow_registry: WorkflowRegistry = InMemoryWorkflowRegistry()
-
-        # 6.1-هـ-2 — ONE files repository behind every face of that module,
-        # built HERE, ahead of the two bundles that need it (the helper's
-        # docstring holds the reasoning).
-        file_repository, files_query = _build_files_seam(tenant_session)
 
         # `spaces-backend-plan.md` steps 6 and 13 — the spaces store, its query
         # and its API bundle, built here because BOTH of the files objects

@@ -29,17 +29,18 @@
 ## 2) طوبولوجيا المجاري (D‑20)
 | المجرى (stream) | المنتِج | Consumer Group | العامل |
 |-----------------|---------|----------------|--------|
-| `stream.files` | files | `cg.knowledge` | knowledge_worker (يستوعب الملف) |
+| `stream.files` | files | — | **لا مستهلك** (منذ الفهرسة اليدويّة) |
 | `stream.knowledge` | knowledge | `cg.notify.<host>.<pid>` | جسر الإشعارات → WebSocket |
 | `stream.media` | media (API) | `cg.media` | media_worker (يولّد) |
 | `stream.memory` | memory | `cg.memory` | memory_worker (يفهرس المتجهات) |
 | `*` (فشل) | العامل | — | `stream.<m>.dlq` بعد N محاولات |
 
+- ⚠️ **`stream.files` بلا مجموعةِ استهلاكٍ عمداً منذ صارت الفهرسة يدويّة.** كان `cg.knowledge` يقرؤه ويسجّل مستنداً لكلّ رفعٍ مكتمل — أي أنّ إتمام الرفع كان أمراً بالفهرسة ولم يُسأل أحد. صار التسجيل طلباً صريحاً (`POST /knowledge/documents`) يكتب المستند وحدثه في معاملةٍ واحدة، فلم يبقَ لهذا المجرى قارئ. ولا يُنشأ له صفٌّ في `STATIC_CONSUMER_TOPOLOGY`: مجموعةٌ لا يقرؤها أحد يتضخّم تأخّرها (lag) برفعةٍ كلَّ مرّة إلى الأبد، وتأخّرُ مجموعةٍ مهجورة هو بالضبط الإشارة التي يجب أن يثق بها المشغّل. الحدث **ما يزال يُنشر** (‏`XADD` لا يحتاج مجموعة) لأنّه واقعةٌ صادقة عن مساحة العمل.
 - اسم الإدخال في Redis: `XADD stream.<module> * ce <json>`.
 - كل عامل: `XREADGROUP GROUP cg.<name> <consumer> COUNT k BLOCK <ms>` ثم `XACK` بعد النجاح.
 - ⚠️ **`cg.notify` أسرةُ مجموعاتٍ لكلّ عمليّة، لا مجموعةٌ واحدة** (مُصحَّحٌ في `docs/log/3.81.md`، P0‑2): خلافاً لـ`cg.knowledge`/`cg.media`/`cg.memory` — مجموعةٌ فعليّةٌ واحدة لكلٍّ منها، لأنّ عمّالها عمليّاتٌ مستقلّةٌ عن الـAPI — جسر الإشعارات يعيش **داخل عمليّة الـAPI نفسها**، والافتراضيّ في مساري النشر كليهما `WEB_CONCURRENCY=2` (عدّة عمليّات gunicorn شقيقة لنسخةٍ واحدة). و`ConnectionHub` سجلٌّ **داخل‑العمليّة** (جلسة WebSocket تعيش في عمليّةٍ واحدة فقط)، فمجموعةٌ مشتركةٌ بين الشقائق كانت تُوزِّع كلَّ حدثٍ على **نصفها فقط** ⇒ فقدُ نحو نصف الإشعارات صامتاً (`XACK` بلا خطأ). لذلك تصنع كلّ عمليّة gunicorn شقيقة مجموعتها الخاصّة `cg.notify.<hostname>.<pid>` عند الإقلاع (فترى كلُّ عمليّةٍ كلَّ حدثٍ وتُصفّي بمركز اتّصالها الداخليّ)، وتُتلفها (`XGROUP DESTROY`) عند إغلاقٍ نظيف؛ ومجموعةٌ يتيمة بعد إنهاءٍ غير نظيف (SIGKILL) تُكنَس عند إقلاعٍ تالٍ على المضيف نفسه (`CompositionRoot.sweep_stale_notify_groups`، مضمونةٌ ألّا تلمس مجموعة شقيقٍ حيّ — التفصيل في تلك الدالّة وفي `docs/log/3.81.md`).
 
-> **التمثيل التنفيذيّ لهذا الجدول** (الأزواج الأربعة الساكنة `cg.knowledge`/`cg.media`/`cg.memory` — لا `cg.notify`، الغائبة عمداً أعلاه) هو `STATIC_CONSUMER_TOPOLOGY` في `src/app/framework/events/topology.py`. `tests/unit/test_stream_topology.py` يحرس الاثنين من الانحراف (تطابقٌ تامٌّ مع ثوابت `STREAM` ومع اشتراكات العمّال الثلاثة). ومنذ `stream-topology-plan.md` ([§3.106](../log/3.106.md)–[§3.108](../log/3.108.md))، `build_relay_from_env` (‏`workers/bootstrap.py`) يمرّ على هذا الجدول بعينه مستدعياً `ensure_group` لكلّ زوجٍ **قبل** أوّل نشرٍ لِـ`outbox_relay` — فمجموعات هذا الجدول تُنشأ قبل أن يُنشر أوّل حدثٍ على أيٍّ من مجاريه، لا بعده.
+> **التمثيل التنفيذيّ لهذا الجدول** (الأزواج الساكنة الثلاثة `cg.knowledge`/`cg.media`/`cg.memory` — لا `cg.notify` الغائبة عمداً أعلاه، ولا `stream.files` الذي صار بلا قارئ) هو `STATIC_CONSUMER_TOPOLOGY` في `src/app/framework/events/topology.py`. `tests/unit/test_stream_topology.py` يحرس الاثنين من الانحراف (تطابقٌ تامٌّ مع ثوابت `STREAM` ومع اشتراكات العمّال الثلاثة). ومنذ `stream-topology-plan.md` ([§3.106](../log/3.106.md)–[§3.108](../log/3.108.md))، `build_relay_from_env` (‏`workers/bootstrap.py`) يمرّ على هذا الجدول بعينه مستدعياً `ensure_group` لكلّ زوجٍ **قبل** أوّل نشرٍ لِـ`outbox_relay` — فمجموعات هذا الجدول تُنشأ قبل أن يُنشر أوّل حدثٍ على أيٍّ من مجاريه، لا بعده.
 
 ## 3) دلالات التسليم والمثالية (D‑19, `DD‑09`)
 1. **الإنتاج ذرّي:** الأثر النطاقي + صف Outbox في نفس المعاملة ⇒ لا فقد.
@@ -101,8 +102,8 @@ sequenceDiagram
 
 | النوع (type) | المنتِج → المستهلك | subject | الحمولة (data) |
 |--------------|--------------------|---------|-----------------|
-| `files.file.uploaded.v1` | files → knowledge | file_id | `{file_id, content_type, size_bytes, storage_key, space_id?}` |
-| `knowledge.document.registered.v1` | knowledge → knowledge(worker) | document_id | `{document_id, file_id}` |
+| `files.file.uploaded.v1` | files → — (لا مستهلك) | file_id | `{file_id, content_type, size_bytes, storage_key, space_id?}` |
+| `knowledge.document.registered.v1` | knowledge(API) → knowledge(worker) | document_id | `{document_id, file_id}` |
 | `knowledge.document.indexed.v1` | knowledge → notify | document_id | `{document_id, chunk_count}` |
 | `knowledge.document.indexing_failed.v1` | knowledge → notify | document_id | `{document_id, reason}` |
 | `knowledge.summary.requested.v1` | knowledge → knowledge(worker) | job_id | `{job_id, document_id, kind, lang}` |
@@ -112,6 +113,8 @@ sequenceDiagram
 | `media.job.generated.v1` | media(worker) → notify | job_id | `{job_id, result_file_id}` |
 | `media.job.failed.v1` | media(worker) → notify | job_id | `{job_id, reason}` |
 | `memory.item.stored.v1` | memory → memory(worker) | memory_id | `{memory_id, agent_key, content_ref}` |
+
+> **مَن يُنتج `knowledge.document.registered.v1`؟** الـAPI، منذ صارت الفهرسة يدويّة: `POST /knowledge/documents` (فهرسةٌ أولى، `IndexFileService`) و`POST /knowledge/reindex` (إعادة بناء، `ReindexService`) — كلاهما يسجّل مستنداً `pending` ويُلحِق هذا الحدث في المعاملة نفسها. لم يعد لعامل المعرفة منتِجٌ لهذا الحدث ولا مشترَكٌ في `stream.files`؛ يستهلكه فقط.
 
 ## 5) الأحداث الداخلية (Domain · بالذاكرة، لا تعبر المجاري)
 تُرفع داخل الوحدة عبر `framework/events/event_bus.py` وتُترجَم إلى صفوف Outbox عند الحاجة لنشرها عالمياً.

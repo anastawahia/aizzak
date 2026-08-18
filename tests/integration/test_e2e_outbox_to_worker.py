@@ -1,24 +1,32 @@
-"""The AC-08 proof (5.1-ج): a real ``files.file.uploaded.v1`` outbox row
-survives the WHOLE pipeline -- producer write → ``outbox_relay`` (5.1-ب) →
-the knowledge worker's REAL register handler (5.1-ج) -- against real
-Postgres AND real Redis.
+"""The AC-08 proof (5.1-ج, rewritten when indexing became manual): a file
+goes from bytes-in-storage to a searchable index through the REAL path a
+request takes -- ``IndexFileService`` (the producer write) → ``outbox_relay``
+(5.1-ب) → the knowledge worker's REAL index handler -- against real Postgres
+AND real Redis.
 
-Both ``live_db`` and ``live_redis`` (the seam between the two
-infrastructures IS the point, ``test_outbox_relay_live.py``'s own module
-docstring precedent). The seeded record targets a FRESH, UNIQUE
-``stream.test.<uuid>``/``cg.test.<uuid>`` pair (R6) -- the knowledge
-register HANDLER closure is built directly via ``build_knowledge_register_
-handler`` (not the whole ``build_knowledge_worker``, which also needs the
-still-blocked index handler's dependencies, ``workers/bootstrap.py``'s own
-"Honest-failure rule") and wired into a ``Subscription`` naming the unique
-test stream/group, so this test proves the register handler end to end
-without waiting on gap 2.10.
+**What changed, and why the ``files.file.uploaded.v1`` hop is gone.** This
+file used to begin with that event and the knowledge worker's register
+handler, because a completed upload was what registered a document. It no
+longer is: the worker does not subscribe to ``stream.files`` at all, and
+``POST /knowledge/documents`` mints the document and publishes
+``knowledge.document.registered.v1`` inside ONE request-scoped transaction.
+So the first hop here is now that service, called exactly as the router calls
+it, and the second hop -- relay → index handler → chunks + points -- is
+untouched, because nothing downstream of the event knows which producer wrote
+it.
 
-``app_rw`` composes the register handler's own dependencies
-(``SqlDocumentRepository``/``SqlEventOutbox``/``tenant_session``-as-``uow``)
-exactly as ``build_knowledge_worker`` would in production -- the design
-brief's "on app_rw" instruction. The relay runs as the real ``outbox_relay``
-role (5.1-ب's own least-privilege split, unchanged here).
+Both ``live_db`` and ``live_redis`` (the seam between the two infrastructures
+IS the point, ``test_outbox_relay_live.py``'s own module docstring
+precedent). Everything targets a FRESH, UNIQUE ``stream.test.<uuid>``/
+``cg.test.<uuid>`` pair (R6), so the handler closures are built directly
+rather than through ``build_knowledge_worker``, which names production
+streams.
+
+``app_rw`` composes every dependency (``SqlDocumentRepository``/
+``SqlEventOutbox``/``tenant_session``-as-``uow``) exactly as the Composition
+Root would in production -- the design brief's "on app_rw" instruction. The
+relay runs as the real ``outbox_relay`` role (5.1-ب's own least-privilege
+split, unchanged here).
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import ConflictError
 from app.framework.events.envelope import build_envelope
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingResult
@@ -52,17 +61,16 @@ from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.infrastructure.storage.minio_storage import MinioStorage
 from app.infrastructure.vector.qdrant_store import QdrantVectorStore
 from app.modules.files.adapters.sql_repository import SqlFileRepository
+from app.modules.files.application.use_cases import FilesQueryService
 from app.modules.files.domain.entities import File
 from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
 from app.modules.knowledge.application.indexing import IndexDocument
+from app.modules.knowledge.application.use_cases import IndexFile, IndexFileService
 from app.modules.knowledge.domain.collections import knowledge_collection
 from app.modules.knowledge.domain.value_objects import IndexStatus
-from app.workers.bootstrap import (
-    build_knowledge_index_handler,
-    build_knowledge_register_handler,
-)
+from app.workers.bootstrap import build_knowledge_index_handler
 from app.workers.content_resolver import WorkerDocumentContentResolver
 from tests.integration.conftest import LiveDbDsns
 
@@ -171,54 +179,80 @@ async def _read_document_as_owner(
 
 
 @pytest.mark.anyio
-async def test_a_real_uploaded_event_flows_through_the_relay_to_the_register_handler(
+async def test_indexing_a_file_writes_its_document_and_its_event_in_one_transaction(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
     relay_sessionmaker: async_sessionmaker[AsyncSession],
     redis_client: Redis,
 ) -> None:
+    """The producer half of the pipeline, live: ``IndexFileService`` (what
+    ``POST /knowledge/documents`` calls) writes the ``pending`` document AND
+    its ``knowledge.document.registered.v1`` outbox row through real Postgres,
+    and the real relay publishes that row onto a stream.
+
+    A document without its event would be a file the user asked to index that
+    no worker is ever told about -- reporting itself ``pending`` forever,
+    indistinguishable from one merely waiting its turn. That is what the
+    single ``uow.begin`` block prevents, and only a live database can show
+    both rows landing under it.
+    """
     stream = f"stream.test.{new_uuid7()}"
-    group = f"cg.test.{new_uuid7()}"
     workspace_id = new_uuid7()
     file_id = new_uuid7()
+    space_id = new_uuid7()
     ctx = _ctx(workspace_id)
 
     documents = SqlDocumentRepository(tenant_session)
+    files = SqlFileRepository(tenant_session)
     outbox = SqlEventOutbox(tenant_session)
-    handler = build_knowledge_register_handler(
-        documents,
-        outbox,
-        tenant_session,
-        SqlProcessedEventLedger(tenant_session),
-        # The ledger key must be THE group that owns this subscription
-        # (production builders feed both from one constant); this test's
-        # group is unique per run, so it is passed explicitly.
-        consumer_group=group,
-    )
-    subscription = Subscription(stream=stream, group=group, handlers={_EVENT_TYPE: handler})
-    consumer = StreamConsumer(
-        RedisStreamsConsumer(redis_client),
-        consumer_name="e2e-test",
-        block_ms=500,
-        batch_count=10,
-        max_deliveries=5,
+    service = IndexFileService(
+        IndexFile(documents, FilesQueryService(files)), outbox, tenant_session
     )
 
     try:
-        # 0) setup() FIRST -- ensure_group's own `$` (tail-start) semantics
-        #    (its docstring) mean a group created AFTER an entry already
-        #    exists on the stream never sees that entry; a real worker's
-        #    setup() always runs at process boot, before it consumes
-        #    anything, so this ordering is the realistic one, not a
-        #    test-only convenience.
-        await consumer.setup([subscription])
+        # 0) A real READY file row -- the state `IndexFile` demands, and the
+        #    only one `FilesQueryService.get_readable` answers for.
+        await files.add(
+            ctx,
+            _ready_file(
+                workspace_id=workspace_id,
+                file_id=file_id,
+                name="notes.txt",
+                storage_key=f"{workspace_id}/{file_id}/notes.txt",
+                space_id=space_id,
+            ),
+        )
 
-        # 1) Seed a real outbox row through the real producer-write path
-        #    (SqlEventOutbox, app_rw) -- 04 §3.1's first guarantee.
-        record = _uploaded_record(stream=stream, workspace_id=workspace_id, file_id=file_id)
-        await SqlEventOutbox(tenant_session).append(ctx, [record])
+        document = await service.start(ctx, file_id=file_id)
 
-        # 2) The real relay (5.1-ب), as the real outbox_relay role.
+        # (a) the knowledge.documents row exists (RLS-correct read-back),
+        #     filed under the FILE's space -- read off the file, not supplied
+        #     by the caller.
+        rows = await _read_document_as_owner(
+            live_db.owner, workspace_id=workspace_id, file_id=file_id
+        )
+        assert len(rows) == 1
+        assert rows[0]["status"] == "pending"
+        assert str(rows[0]["id"]) == document.id
+        assert str(rows[0]["space_id"]) == space_id
+
+        # Also provable through the real repository itself (app_rw, RLS on).
+        stored = await documents.get(ctx, document.id)
+        assert stored is not None
+        assert stored.file_id == file_id
+
+        # (b) the mapped event landed in the SAME transaction.
+        follow_on = await _read_outbox_as_owner(
+            live_db.owner,
+            aggregate_id=document.id,
+            event_type="knowledge.document.registered.v1",
+        )
+        assert len(follow_on) == 1
+        assert str(follow_on[0]["workspace_id"]) == workspace_id
+
+        # (c) the real relay publishes it -- the row is not merely written,
+        #     it is deliverable.
+        await _retarget_outbox_stream(live_db.owner, aggregate_id=document.id, stream=stream)
         relay = OutboxRelay(
             SqlOutboxRelayStore(relay_sessionmaker),
             RedisStreamsPublisher(redis_client),
@@ -226,133 +260,56 @@ async def test_a_real_uploaded_event_flows_through_the_relay_to_the_register_han
             poll_interval_ms=100,
             max_backoff_ms=1000,
         )
-        published = await relay.run_once()
-        assert published == 1
-
-        # 3) The real knowledge register handler, on app_rw.
-        handled = await consumer.run_once([subscription])
-        assert handled == 1
-
-        # -- Assertions --------------------------------------------------- #
-        # (a) knowledge.documents row exists (RLS-correct read-back).
-        rows = await _read_document_as_owner(
-            live_db.owner, workspace_id=workspace_id, file_id=file_id
-        )
-        assert len(rows) == 1
-        assert rows[0]["status"] == "pending"
-        document_id = str(rows[0]["id"])
-
-        # Also provable through the real repository itself (app_rw, RLS on).
-        stored = await documents.get(ctx, document_id)
-        assert stored is not None
-        assert stored.file_id == file_id
-
-        # (b) the mapped knowledge.document.registered.v1 follow-on landed.
-        follow_on = await _read_outbox_as_owner(
-            live_db.owner, aggregate_id=document_id, event_type="knowledge.document.registered.v1"
-        )
-        assert len(follow_on) == 1
-        assert str(follow_on[0]["workspace_id"]) == workspace_id
-
-        # (c) the entry is acked -- nothing left pending for this group.
-        pending = await redis_client.xpending(stream, group)
-        assert pending["pending"] == 0
-
-        # (d) a second pass finds nothing new to do.
-        second = await consumer.run_once([subscription])
-        assert second == 0
+        assert await relay.run_once() == 1
+        assert await redis_client.xlen(stream) == 1
     finally:
-        with contextlib.suppress(Exception):
-            await redis_client.xgroup_destroy(stream, group)
         await redis_client.delete(stream)
 
 
 @pytest.mark.anyio
-async def test_a_double_published_event_registers_exactly_one_document(
+async def test_indexing_the_same_file_twice_registers_exactly_one_document(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
-    redis_client: Redis,
 ) -> None:
-    """At-least-once becomes effectively-once, live (5.2-أ · DD-09 · 04 §3).
+    """Live proof of the guard that replaced a delivery guarantee.
 
-    The SAME envelope lands on the stream as TWO entries -- exactly 04
-    §3.2's documented relay behaviour («المُرحّل قد ينشر مرتين عند إعادة
-    المحاولة»), simulated by publishing twice through the real
-    ``RedisStreamsPublisher``. Registration is non-idempotent by design
-    (INV-K3), so before 5.2-أ this scenario minted TWO documents -- the very
-    hazard R3 froze production publishing over. The claim in
-    ``platform.processed_events`` must collapse it to one document, one
-    ledger row, and two acked entries (the duplicate is acked as a clean
-    skip, not retried).
+    Registration is non-idempotent by design (INV-K3 -- a re-upload mints a
+    brand-new document), and while an EVENT drove it, the DD-09 ledger claim
+    was what stopped a redelivery from minting a second one. There is no
+    delivery here any more: the caller is a person pressing a button, so the
+    duplicate this must collapse is a second CALL, and what collapses it is
+    `IndexFile`'s own read of `ids_for_files`. Against the real repository,
+    because that read is a query -- a fake could agree with itself while the
+    SQL filtered by something else.
     """
-    stream = f"stream.test.{new_uuid7()}"
-    group = f"cg.test.{new_uuid7()}"
     workspace_id = new_uuid7()
     file_id = new_uuid7()
+    ctx = _ctx(workspace_id)
 
     documents = SqlDocumentRepository(tenant_session)
-    handler = build_knowledge_register_handler(
-        documents,
+    files = SqlFileRepository(tenant_session)
+    service = IndexFileService(
+        IndexFile(documents, FilesQueryService(files)),
         SqlEventOutbox(tenant_session),
         tenant_session,
-        SqlProcessedEventLedger(tenant_session),
-        consumer_group=group,
     )
-    subscription = Subscription(stream=stream, group=group, handlers={_EVENT_TYPE: handler})
-    consumer = StreamConsumer(
-        RedisStreamsConsumer(redis_client),
-        consumer_name="e2e-dup",
-        block_ms=500,
-        batch_count=10,
-        max_deliveries=5,
+    await files.add(
+        ctx,
+        _ready_file(
+            workspace_id=workspace_id,
+            file_id=file_id,
+            name="notes.txt",
+            storage_key=f"{workspace_id}/{file_id}/notes.txt",
+            space_id=new_uuid7(),
+        ),
     )
 
-    try:
-        await consumer.setup([subscription])
+    await service.start(ctx, file_id=file_id)
+    with pytest.raises(ConflictError):
+        await service.start(ctx, file_id=file_id)
 
-        record = _uploaded_record(stream=stream, workspace_id=workspace_id, file_id=file_id)
-        publisher = RedisStreamsPublisher(redis_client)
-        first_entry = await publisher.publish(stream, record.payload)
-        second_entry = await publisher.publish(stream, record.payload)
-        assert first_entry != second_entry  # two distinct Streams entries
-
-        # One read covers both entries (batch_count=10). BOTH dispatch
-        # cleanly -- the engine cannot tell a first delivery from a
-        # ledger-skipped duplicate, and that blindness is the design
-        # (engine.py's own idempotency comment) -- so both count as handled.
-        handled = await consumer.run_once([subscription])
-        assert handled == 2
-
-        # Exactly ONE document, despite registration being non-idempotent.
-        rows = await _read_document_as_owner(
-            live_db.owner, workspace_id=workspace_id, file_id=file_id
-        )
-        assert len(rows) == 1
-
-        # Exactly ONE ledger row for (group, event_id).
-        engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
-        try:
-            async with engine.begin() as conn:
-                claims = (
-                    await conn.execute(
-                        text(
-                            "SELECT consumer_group FROM platform.processed_events "
-                            "WHERE event_id = :eid"
-                        ),
-                        {"eid": record.event_id},
-                    )
-                ).scalars()
-                assert list(claims) == [group]
-        finally:
-            await engine.dispose()
-
-        # Both entries acked -- the duplicate leaves nothing pending behind.
-        pending = await redis_client.xpending(stream, group)
-        assert pending["pending"] == 0
-    finally:
-        with contextlib.suppress(Exception):
-            await redis_client.xgroup_destroy(stream, group)
-        await redis_client.delete(stream)
+    rows = await _read_document_as_owner(live_db.owner, workspace_id=workspace_id, file_id=file_id)
+    assert len(rows) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -474,31 +431,20 @@ async def _read_chunks_as_owner(owner_dsn: str, *, workspace_id: str, doc_id: st
         await engine.dispose()
 
 
-def _knowledge_subscriptions(
+def _index_subscription(
     tenant_session: TenantSessionFactory,
     *,
     documents: SqlDocumentRepository,
     outbox: SqlEventOutbox,
     content_resolver: WorkerDocumentContentResolver,
     vectors: QdrantVectorStore,
-    files_stream: str,
     knowledge_stream: str,
     group: str,
-) -> tuple[Subscription, Subscription]:
-    """Both real handler closures, on this test's UNIQUE stream/group pair --
-    ``build_knowledge_worker``'s own two subscriptions, named for a test
-    (R6) instead of for production."""
-    ledger = SqlProcessedEventLedger(tenant_session)
-    register = Subscription(
-        stream=files_stream,
-        group=group,
-        handlers={
-            _EVENT_TYPE: build_knowledge_register_handler(
-                documents, outbox, tenant_session, ledger, consumer_group=group
-            )
-        },
-    )
-    index = Subscription(
+) -> Subscription:
+    """The real index handler closure, on this test's UNIQUE stream/group pair
+    -- ``build_knowledge_worker``'s own (now only) subscription, named for a
+    test (R6) instead of for production."""
+    return Subscription(
         stream=knowledge_stream,
         group=group,
         handlers={
@@ -508,12 +454,11 @@ def _knowledge_subscriptions(
                 content_resolver,
                 outbox,
                 tenant_session,
-                ledger,
+                SqlProcessedEventLedger(tenant_session),
                 consumer_group=group,
             )
         },
     )
-    return register, index
 
 
 async def _indexed_point_spaces(
@@ -558,7 +503,7 @@ async def _cleanup_index_run(
 @pytest.mark.anyio
 @pytest.mark.live_minio
 @pytest.mark.live_qdrant
-async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
+async def test_a_real_txt_file_flows_from_requested_all_the_way_to_indexed(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
     relay_sessionmaker: async_sessionmaker[AsyncSession],
@@ -566,19 +511,21 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
     minio_storage: MinioStorage,
     qdrant_client: AsyncQdrantClient,
 ) -> None:
-    """Step 16's headline proof: ``file.uploaded -> registered -> indexed``
-    over live Postgres + MinIO + Qdrant, with the REAL
-    ``WorkerDocumentContentResolver`` filling the seam that had no adapter at
-    all until this step.
+    """Step 16's headline proof, re-cut for manual indexing: ``someone asks
+    -> registered -> indexed`` over live Postgres + MinIO + Qdrant, with the
+    REAL ``WorkerDocumentContentResolver`` filling the seam that had no
+    adapter at all until that step.
 
-    Both hops run through the real relay and the real consumer engine, so
-    what is exercised is the production wiring, not a hand-called use-case:
-    the register handler mints the ``pending`` document, the follow-on outbox
-    row is relayed, and the index handler -- whose ``content.resolve`` now
-    reaches all the way into MinIO and the parser dispatch -- finalizes the
-    document as ``indexed``.
+    The first hop is ``IndexFileService``, called exactly as the router calls
+    it -- the whole feature in one line: the bytes have been in MinIO the
+    entire time and NOTHING indexed them, because nothing indexes anything
+    until this is called. The rest runs through the real relay and the real
+    consumer engine, so what is exercised downstream is production wiring
+    rather than a hand-called use-case: the follow-on outbox row is relayed,
+    and the index handler -- whose ``content.resolve`` reaches all the way
+    into MinIO and the parser dispatch -- finalizes the document as
+    ``indexed``.
     """
-    files_stream = f"stream.test.{new_uuid7()}"
     knowledge_stream = f"stream.test.{new_uuid7()}"
     group = f"cg.test.{new_uuid7()}"
     workspace_id = new_uuid7()
@@ -592,7 +539,7 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
     files = SqlFileRepository(tenant_session)
     outbox = SqlEventOutbox(tenant_session)
 
-    register, index = _knowledge_subscriptions(
+    index = _index_subscription(
         tenant_session,
         documents=documents,
         outbox=outbox,
@@ -600,9 +547,11 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
             files, minio_storage, DocumentContentExtractor(), _StubProviders()
         ),
         vectors=QdrantVectorStore(qdrant_client),
-        files_stream=files_stream,
         knowledge_stream=knowledge_stream,
         group=group,
+    )
+    index_file = IndexFileService(
+        IndexFile(documents, FilesQueryService(files)), outbox, tenant_session
     )
     consumer = StreamConsumer(
         RedisStreamsConsumer(redis_client),
@@ -620,7 +569,7 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
     )
 
     try:
-        await consumer.setup([register, index])
+        await consumer.setup([index])
 
         # 0) A real READY file row + its real bytes in MinIO.
         await files.add(
@@ -635,40 +584,38 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
         )
         await minio_storage.put(storage_key, _TXT_BODY, "text/plain")
 
-        # 1) files.file.uploaded.v1 -> relay -> register handler.
-        await outbox.append(
-            ctx,
-            [
-                _uploaded_record(
-                    stream=files_stream,
-                    workspace_id=workspace_id,
-                    file_id=file_id,
-                    space_id=space_id,
-                )
-            ],
+        # 1) Nothing has been indexed by the upload itself -- the row and
+        #    the bytes are both in place and the corpus is still empty. This
+        #    is the assertion the feature exists for; everything below it is
+        #    what the request then does.
+        assert (
+            await _read_document_as_owner(live_db.owner, workspace_id=workspace_id, file_id=file_id)
+            == []
         )
-        assert await relay.run_once() == 1
-        assert await consumer.run_once([register]) == 1
+
+        # 2) The request: document + `knowledge.document.registered.v1`, one
+        #    transaction.
+        document_id = (await index_file.start(ctx, file_id=file_id)).id
 
         rows = await _read_document_as_owner(
             live_db.owner, workspace_id=workspace_id, file_id=file_id
         )
         assert len(rows) == 1
         assert rows[0]["status"] == "pending"
-        # Spaces plan step 8, live: the space rode the event out of `files`
-        # and landed on the `knowledge.documents` row. This is the ONE hop
-        # the column depends on, and nothing else in the system would notice
-        # if it were dropped until row 8-b's `SET NOT NULL`.
+        # Spaces plan step 8, live: the space is read off the FILE and lands
+        # on the `knowledge.documents` row. This is the ONE hop the column
+        # depends on, and nothing else in the system would notice if it were
+        # dropped until row 8-b's `SET NOT NULL`.
         assert str(rows[0]["space_id"]) == space_id
-        document_id = str(rows[0]["id"])
+        assert str(rows[0]["id"]) == document_id
 
-        # 2) The follow-on registered event, relayed onto this test's stream.
+        # 3) The registered event, relayed onto this test's stream.
         await _retarget_outbox_stream(
             live_db.owner, aggregate_id=document_id, stream=knowledge_stream
         )
         assert await relay.run_once() == 1
 
-        # 3) The index handler: MinIO fetch + parse + embed + upsert.
+        # 4) The index handler: MinIO fetch + parse + embed + upsert.
         assert await consumer.run_once([index]) == 1
 
         # -- Assertions --------------------------------------------------- #
@@ -712,6 +659,6 @@ async def test_a_real_txt_file_flows_from_uploaded_all_the_way_to_indexed(
             redis_client,
             collection=collection,
             storage_key=storage_key,
-            streams=(files_stream, knowledge_stream),
+            streams=(knowledge_stream,),
             group=group,
         )

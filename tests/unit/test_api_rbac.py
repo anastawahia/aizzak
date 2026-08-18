@@ -146,6 +146,12 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/knowledge/search", "post"): Permission.KNOWLEDGE_READ,
     ("/api/v1/knowledge/documents", "get"): Permission.KNOWLEDGE_READ,
     ("/api/v1/knowledge/documents/{}", "get"): Permission.KNOWLEDGE_READ,
+    # Manual indexing. `knowledge:manage` and not the `files:write` that
+    # uploaded the file: the permission follows what the call SPENDS, and this
+    # one spends embedding quota against a shared corpus — the same reason
+    # `reindex` below is not `knowledge:read`. A member who may upload a file
+    # is not thereby a member who may enlarge everyone's index.
+    ("/api/v1/knowledge/documents", "post"): Permission.KNOWLEDGE_MANAGE,
     # BE-RAG-007/008 — the first two uses of `knowledge:manage`, and the first
     # place this router splits its permission. Starting a rebuild DESTROYS a
     # working index and spends embedding quota; stopping one ends work the

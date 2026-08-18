@@ -189,11 +189,7 @@ from app.modules.knowledge.application.event_mapping import (
 )
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.summarization import SummarizeDocument
-from app.modules.knowledge.application.use_cases import (
-    BuildSummary,
-    IndexRegisteredDocument,
-    RegisterDocumentFromFile,
-)
+from app.modules.knowledge.application.use_cases import BuildSummary, IndexRegisteredDocument
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.repository import DocumentRepository
 from app.modules.knowledge.ports.summarization import SUMMARIZE_CAPABILITY, ResolvedSummarizer
@@ -499,52 +495,27 @@ class DocumentContentResolver(Protocol):
     ) -> tuple[ParsedDocument, str, str]: ...
 
 
-def build_knowledge_register_handler(
-    documents: DocumentRepository,
-    outbox: EventOutbox,
-    uow: UnitOfWork,
-    ledger: ProcessedEventLedger,
-    *,
-    consumer_group: str = _CG_KNOWLEDGE,
-) -> EventHandler:
-    """``files.file.uploaded.v1`` -> ``RegisterDocumentFromFile`` -> a
-    ``pending`` ``Document`` row + its mapped ``knowledge.document.
-    registered.v1`` outbox row, ATOMICALLY: the DD-09 claim (5.2-أ, module
-    docstring), the aggregate write (inside ``RegisterDocumentFromFile``,
-    through ``documents``), and the outbox append below all resolve their
-    session through the SAME ``uow.begin(ctx)`` block -- 04 §3.1's "الأثر
-    النطاقي + صف Outbox في نفس المعاملة" guarantee, applied to a
-    WORKER-originated write for the first time (every producer service so
-    far, ``MediaRequestService``/``RememberInteractionService``, has been
-    request-scoped, not event-driven).
-
-    The claim matters MOST here: registration is non-idempotent BY DESIGN
-    (INV-K3 -- a re-upload mints a brand-new document), so unlike the three
-    ``run``/``finalize`` handlers below there is no natural aggregate guard;
-    without the claim, every redelivered ``file.uploaded`` would mint a
-    duplicate document (exactly the hazard 5.1-ج's R3 froze production
-    publishing over)."""
-    register = RegisterDocumentFromFile(documents)
-
-    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
-        data = envelope["data"]
-        file_id = data["file_id"]
-        # `spaces-backend-plan.md` step 8 -- the document is filed under the
-        # FILE's space, which rides on this envelope (04 §4). `.get` and not
-        # `[...]`: the key is optional in the published schema, and an
-        # envelope written before step 8 (or by a file with no space) simply
-        # has none. Reading it here rather than querying `files` keeps the
-        # handler's single round trip, and keeps the answer identical to what
-        # the producer committed rather than to what the row says now.
-        space_id = data.get("space_id")
-        event_id: str = envelope["id"]
-        async with uow.begin(ctx):
-            if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
-                return  # Duplicate delivery -- clean return, the engine XACKs.
-            _, events = await register.execute(ctx, file_id=file_id, space_id=space_id)
-            await outbox.append(ctx, [_knowledge_to_outbox_record(ctx, event) for event in events])
-
-    return _handle
+# ── `files.file.uploaded.v1` has no handler here any more ─────────────────
+#
+# It used to have one: `build_knowledge_register_handler` turned every
+# completed upload into a `pending` `Document` plus the
+# `knowledge.document.registered.v1` that sent this same worker into the
+# embedding pipeline below. Completing an upload was, transitively, an order
+# to index -- and nobody was ever asked.
+#
+# Indexing is now REQUESTED, once, per file: `POST /knowledge/documents`
+# (`IndexFileService`) mints that document and publishes that event inside one
+# request-scoped transaction, which is why nothing was moved here rather than
+# deleted -- the registration this worker used to do still happens, at a
+# different moment and at somebody's asking. The index handler below is
+# untouched and does not know the difference: it consumes
+# `knowledge.document.registered.v1` exactly as before, from whichever
+# producer wrote it.
+#
+# `files.file.uploaded.v1` keeps being PUBLISHED (04 §5 promotes it; a file
+# completing is a true fact about the workspace). It simply has no consumer in
+# this process, and `build_knowledge_worker` no longer subscribes to
+# `stream.files` at all.
 
 
 def build_knowledge_index_handler(
@@ -715,25 +686,23 @@ def build_knowledge_worker(
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
-    """Wire the knowledge worker's TWO subscriptions under one ``cg.knowledge``
+    """Wire the knowledge worker's ONE subscription under the ``cg.knowledge``
     consumer group (04 §4's binding table, `docs/log/3.45.md`'s recorded
-    ``cg.knowledge``-also-on-``stream.knowledge`` sync gap): ``stream.files``
-    for registration, ``stream.knowledge`` for indexing. Every dependency
-    here is a plain parameter -- this function is never itself blocked by
-    the honest-failure rule (``build_knowledge_worker_from_env``'s docstring)
-    and is exactly what ``tests/integration/test_e2e_outbox_to_worker.py``
-    calls directly with real Postgres-backed dependencies.
+    ``cg.knowledge``-also-on-``stream.knowledge`` sync gap): ``stream.knowledge``,
+    for indexing and for summaries. Every dependency here is a plain parameter
+    -- this function is never itself blocked by the honest-failure rule
+    (``build_knowledge_worker_from_env``'s docstring) and is exactly what
+    ``tests/integration/test_e2e_outbox_to_worker.py`` calls directly with
+    real Postgres-backed dependencies.
+
+    **It was two subscriptions until indexing became manual.** The second was
+    ``stream.files``, where a completed upload registered a document and thereby
+    started the pipeline; the API now registers it instead, on request, and the
+    comment above ``build_knowledge_index_handler`` records what moved where.
+    ``documents``/``uow``/``ledger`` are still parameters, all three still used
+    by the handlers below.
     """
     subscriptions = [
-        Subscription(
-            stream="stream.files",
-            group=_CG_KNOWLEDGE,
-            handlers={
-                "files.file.uploaded.v1": build_knowledge_register_handler(
-                    documents, outbox, uow, ledger
-                )
-            },
-        ),
         Subscription(
             stream="stream.knowledge",
             group=_CG_KNOWLEDGE,

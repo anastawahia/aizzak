@@ -107,8 +107,11 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
     return frozenset((s.stream, s.group) for s in all_subscriptions)
 
 
-def test_table_has_exactly_the_four_pairs_named_by_the_plan() -> None:
-    assert len(STATIC_CONSUMER_TOPOLOGY) == 4
+def test_table_has_exactly_the_three_pairs_named_by_the_plan() -> None:
+    """Four until manual indexing retired ``(stream.files, cg.knowledge)``:
+    the knowledge worker no longer reads that stream, and a group provisioned
+    for a reader that never comes back would lag by one per upload forever."""
+    assert len(STATIC_CONSUMER_TOPOLOGY) == 3
     assert all(isinstance(binding, ConsumerBinding) for binding in STATIC_CONSUMER_TOPOLOGY)
     for binding in STATIC_CONSUMER_TOPOLOGY:
         assert binding.stream, "a blank stream would still pass every set-equality check below"
@@ -116,23 +119,25 @@ def test_table_has_exactly_the_four_pairs_named_by_the_plan() -> None:
 
 
 def test_every_table_stream_matches_its_owning_modules_stream_constant() -> None:
-    """`stream.files` (owned by `modules.files`) and `stream.knowledge`
-    (owned by `modules.knowledge`) both feed `cg.knowledge` -- one group, two
-    streams, 04 §4's binding table -- so each `stream` field is checked
-    against the UNION of the four modules' own constants rather than a single
-    module, which would wrongly demand knowledge's stream come from files."""
+    """Each `stream` field is checked against the modules' own constants, so a
+    typo in the table cannot pass as a stream name.
+
+    `_FILES_STREAM` is asserted ABSENT rather than simply left out of the set:
+    `stream.files` is still published to, and the only thing that changed is
+    that nothing consumes it -- so the interesting property is "no group is
+    provisioned on it", not "it is not spelled here"."""
     table_streams = {binding.stream for binding in STATIC_CONSUMER_TOPOLOGY}
     assert table_streams == {
-        _FILES_STREAM,
         _KNOWLEDGE_STREAM,
         _MEDIA_STREAM,
         _MEMORY_STREAM,
     }
+    assert _FILES_STREAM not in table_streams
 
 
 def test_table_matches_exactly_what_the_three_workers_build_no_more_no_less() -> None:
     built = _built_pairs()
-    assert len(built) == 4, f"expected exactly 4 built (stream, group) pairs, got {sorted(built)}"
+    assert len(built) == 3, f"expected exactly 3 built (stream, group) pairs, got {sorted(built)}"
     table = frozenset((binding.stream, binding.group) for binding in STATIC_CONSUMER_TOPOLOGY)
     assert table == built, (
         f"STATIC_CONSUMER_TOPOLOGY {sorted(table)} does not match what "
@@ -156,8 +161,10 @@ def test_the_dlq_gauge_watches_every_stream_the_topology_consumes() -> None:
     """
     assert set(DLQ_SOURCE_STREAMS) == {binding.stream for binding in STATIC_CONSUMER_TOPOLOGY}
     assert _MEMORY_STREAM in DLQ_SOURCE_STREAMS  # the stream that was missing
-    # Deduplicated: `stream.files` and `stream.knowledge` share `cg.knowledge`,
-    # and a stream must be XLEN-ed once however many groups read it.
+    # Deduplicated -- a stream must be XLEN-ed once however many groups read
+    # it. Nothing shares a group across two streams today (`stream.files` and
+    # `stream.knowledge` did, under `cg.knowledge`), and this stays asserted
+    # because the derivation, not the current table, is what has to be right.
     assert len(DLQ_SOURCE_STREAMS) == len(set(DLQ_SOURCE_STREAMS))
 
 

@@ -292,6 +292,13 @@ def test_no_agent_reads_the_files_seam_directly() -> None:
         "modules/files/adapters/sql_repository.py",
         "modules/files/application/use_cases.py",
         "modules/files/ports/inbound.py",
+        # `IndexFile` — manual indexing's own reason to ask, and the second
+        # module to ask after `conversations`. It is not an agent and holds no
+        # space check to duplicate: it asks whether a file is READY (are there
+        # bytes to index?) and takes the file's space as given rather than
+        # comparing it against something.
+        "modules/knowledge/application/use_cases.py",
+        "modules/knowledge/ports/files.py",
     ]
 
 

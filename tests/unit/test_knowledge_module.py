@@ -13,19 +13,22 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 
 import pytest
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import NotFoundError, ValidationError
+from app.framework.errors import ConflictError, NotFoundError, ValidationError
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.retrieval import RetrieveContext
 from app.modules.knowledge.application.use_cases import (
+    IndexFile,
+    IndexFileService,
     IndexRegisteredDocument,
     KnowledgeRetrievalService,
     RegisterDocumentFromFile,
@@ -427,6 +430,169 @@ async def test_register_document_from_file_allows_duplicate_registrations() -> N
 
     assert first.id != second.id
     assert len(documents.docs) == 2
+
+
+# --------------------------------------------------------------------------- #
+# IndexFile / IndexFileService -- the manual-indexing face                     #
+# --------------------------------------------------------------------------- #
+class _FakeReadableFile:
+    def __init__(self, file_id: str, space_id: str | None) -> None:
+        self.file_id = file_id
+        self.space_id = space_id
+
+
+class _FakeReadableFiles:
+    """A structural ``ReadableFiles``. ``None`` for anything not seeded --
+    the real seam collapses "unknown", "deleted", "quarantined" and "still
+    uploading" into exactly that answer."""
+
+    def __init__(self, files: dict[str, str | None] | None = None) -> None:
+        self.files = files or {}
+        self.calls: list[str] = []
+
+    async def get_readable(self, ctx: ExecutionContext, file_id: str) -> _FakeReadableFile | None:
+        self.calls.append(file_id)
+        if file_id not in self.files:
+            return None
+        return _FakeReadableFile(file_id, self.files[file_id])
+
+
+class _TrackingUnitOfWork:
+    def __init__(self) -> None:
+        self.active = False
+
+    @asynccontextmanager
+    async def begin(self, ctx: ExecutionContext) -> AsyncIterator[None]:
+        self.active = True
+        try:
+            yield
+        finally:
+            self.active = False
+
+
+async def test_index_file_mints_a_pending_document_under_the_files_space() -> None:
+    """The space comes off the FILE, never off the caller: a document filed
+    under a space its file does not belong to would answer, inside that space,
+    from content the space cannot see."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    ctx = _ctx("ws1")
+
+    doc, events = await IndexFile(documents, files).execute(ctx, file_id="file-1")
+
+    assert doc.status is IndexStatus.PENDING
+    assert doc.file_id == "file-1"
+    assert doc.space_id == _SPACE_A
+    assert doc.workspace_id == "ws1"
+    assert documents.docs[doc.id] is doc
+    assert [type(event) for event in events] == [DocumentRegistered]
+    assert files.calls == ["file-1"]
+
+
+async def test_index_file_accepts_a_file_that_belongs_to_no_space() -> None:
+    """A spaceless file produces a spaceless document -- the same shape the
+    pre-plan corpus already has. Refusing it here would make a file
+    unindexable for a reason that has nothing to do with indexing."""
+    documents = _FakeDocumentRepository()
+
+    doc, _ = await IndexFile(documents, _FakeReadableFiles({"file-1": None})).execute(
+        _ctx(), file_id="file-1"
+    )
+
+    assert doc.space_id is None
+
+
+async def test_index_file_refuses_a_file_that_is_not_readable() -> None:
+    """This is the whole "only after the upload completes" precondition: the
+    seam answers ``None`` until the bytes are in storage, so a button pressed
+    too early is a 404 rather than a document a worker cannot parse."""
+    documents = _FakeDocumentRepository()
+
+    with pytest.raises(NotFoundError):
+        await IndexFile(documents, _FakeReadableFiles()).execute(_ctx(), file_id="file-1")
+
+    assert documents.docs == {}
+
+
+async def test_index_file_refuses_a_file_that_already_has_a_document() -> None:
+    """The double-click guard. INV-K3 permits a second document over one file
+    and the repository has no constraint against it, so this read is the only
+    thing between two clicks and a corpus that answers from that file twice."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    ctx = _ctx("ws1")
+    use_case = IndexFile(documents, files)
+    await use_case.execute(ctx, file_id="file-1")
+
+    with pytest.raises(ConflictError):
+        await use_case.execute(ctx, file_id="file-1")
+
+    assert len(documents.docs) == 1
+
+
+async def test_index_file_guard_is_scoped_to_the_workspace() -> None:
+    """``ids_for_files`` filters by workspace, so another tenant's document
+    over the same file id must not make this one a 409."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    await IndexFile(documents, files).execute(_ctx("ws1"), file_id="file-1")
+
+    doc, _ = await IndexFile(documents, files).execute(_ctx("ws2"), file_id="file-1")
+
+    assert doc.workspace_id == "ws2"
+
+
+async def test_index_file_empty_file_id_raises_validation_error() -> None:
+    files = _FakeReadableFiles()
+
+    with pytest.raises(ValidationError):
+        await IndexFile(_FakeDocumentRepository(), files).execute(_ctx(), file_id="   ")
+
+    assert files.calls == []  # refused before the seam was even asked
+
+
+async def test_index_file_service_appends_the_event_inside_the_unit_of_work() -> None:
+    """A document without its ``DocumentRegistered`` is a file the user asked
+    to index, reporting itself ``pending``, that no worker was ever told
+    about -- indistinguishable from one merely waiting its turn."""
+    uow = _TrackingUnitOfWork()
+    documents = _FakeDocumentRepository()
+
+    class _SpyOutbox:
+        def __init__(self) -> None:
+            self.appended_while_active: bool | None = None
+            self.event_types: list[str] = []
+
+        async def append(self, ctx: ExecutionContext, records: Sequence[object]) -> None:
+            self.appended_while_active = uow.active
+            self.event_types.extend(record.event_type for record in records)
+
+    spy = _SpyOutbox()
+    service = IndexFileService(
+        IndexFile(documents, _FakeReadableFiles({"file-1": _SPACE_A})), spy, uow
+    )
+
+    document = await service.start(_ctx(), file_id="file-1")
+
+    assert document.status is IndexStatus.PENDING
+    assert spy.appended_while_active is True
+    assert spy.event_types == ["knowledge.document.registered.v1"]
+    assert uow.active is False
+
+
+async def test_index_file_service_outbox_failure_is_not_swallowed() -> None:
+    class _ExplodingOutbox:
+        async def append(self, ctx: ExecutionContext, records: Sequence[object]) -> None:
+            raise RuntimeError("outbox is down")
+
+    service = IndexFileService(
+        IndexFile(_FakeDocumentRepository(), _FakeReadableFiles({"file-1": None})),
+        _ExplodingOutbox(),
+        _TrackingUnitOfWork(),
+    )
+
+    with pytest.raises(RuntimeError, match="outbox is down"):
+        await service.start(_ctx(), file_id="file-1")
 
 
 # --------------------------------------------------------------------------- #

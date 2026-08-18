@@ -23,7 +23,7 @@
 | Models | `/api/v1/models` | GET(list) |
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
 | Files | `/api/v1/files` | POST(register) · POST `{id}/complete` · GET(list) · GET · PATCH · DELETE |
-| Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
+| Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · **POST `/documents`** · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
 | Media | `/api/v1/media` | POST `/jobs` · GET `/jobs/{id}` |
 | Workflows | `/api/v1/workflows` | GET(list) · POST `{key}/run` · GET `/runs/{id}` |
 | Credentials | `/api/v1/credentials` | GET · POST · DELETE |
@@ -151,6 +151,19 @@ class KnowledgeSearchIn(BaseModel): query: str; k: int = Field(default=5, le=50)
 class RetrievedChunkOut(BaseModel): document_id: str; chunk_id: str; text: str; score: float
 class DocumentOut(BaseModel):
     id: str; file_id: str; status: str; chunk_count: int; created_at: datetime
+# الفهرسة **يدويّة**: إتمام الرفع لم يعد يسجّل مستنداً ولا يبدأ خطَّ الأنابيب. الملف يبقى
+# بايتاتٍ في التخزين لا يجيب عن بحث حتى يُطلب `POST /knowledge/documents` له مرّةً واحدة.
+# الملف يجب أن يكون `ready`: نصفُ مرفوعٍ أو محجورٌ أو محذوفٌ أو مجهولٌ أو لمستأجرٍ آخر ⇒ 404
+# واحدة لا تميّز بينها — وهي نفسها شرط «انتظر اكتمال الرفع» مفروضاً لا موصى به. وملفٌّ له
+# مستندٌ أصلاً ⇒ 409: لا لأن مستنداً ثانياً مستحيل (INV-K3 يجيزه — إعادة الرفع تسكّ واحداً)
+# بل لأن مستندين حيّين على ملفٍ واحد يجعلان كلَّ بحثٍ يجيب منه مرّتين؛ إعادةُ البناء وظيفة
+# `POST /knowledge/reindex` وحده، الوجهُ الذي يُتلف ما يستبدله. الوحدة (`space_id`) تُقرأ من
+# **الملف** لا تُقبل من المتصل، وإلّا أُودع محتوىً في وحدةٍ لا ينتمي إليها ملفُّه. الردّ 202
+# بالمستند `pending`: التضمين عملُ عاملٍ، و201 كان سيَعِد بمدخلِ فهرسٍ لا وجود له بعد.
+# `Idempotency-Key` مُكرَّم — إعادةُ إرسالٍ كانت ستشتري مستنداً ثانياً وتضميناً مدفوعاً مرّتين.
+# الصلاحية `knowledge:manage` لا `files:write` التي رفعت الملف: الصلاحية تتبع ما تُنفقه
+# المكالمة، وهذه تنفق حصّة تضمين على فهرسٍ مشترك.
+class IndexFileIn(BaseModel): file_id: str
 # إعادة الفهرسة (BE-RAG-007/008): كل هدفٍ تحلّ محلّه وثيقةٌ جديدةٌ على الملف نفسه
 # (INV-K3) بعد **إتلاف** القديمة — نقاط Qdrant ثمّ المقاطع ثمّ الصفّ (INV-K4)، وإلا
 # أجاب الملفُّ كلَّ بحثٍ مرّتين. الطرفيّة وحدها قابلة (`pending`/`indexing` ⇒ 409)،

@@ -412,8 +412,8 @@ docker compose exec -e DATABASE_URL="postgresql+asyncpg://retention_sweeper:${RE
 
 ```
 aizzak_outbox_oldest_unpublished_age_seconds        # كم ثانيةً مكث أقدم صفٍّ غير منشور (0 إن لم ينتظر شيء)
-aizzak_dlq_depth{stream="stream.files"}              # XLEN لكلّ stream.<وحدة>.dlq — لكلّ مجرًى في الطوبولوجيا الثابتة
-aizzak_dlq_depth{stream="stream.knowledge"}
+aizzak_dlq_depth{stream="stream.knowledge"}          # XLEN لكلّ stream.<وحدة>.dlq — لكلّ مجرًى في الطوبولوجيا الثابتة
+                                                    # (لا stream.files: لا مستهلك له منذ الفهرسة اليدويّة ⇒ لا طابور موتى)
 aizzak_dlq_depth{stream="stream.media"}
 aizzak_dlq_depth{stream="stream.memory"}
 aizzak_vault_authenticated                           # 1 إن كانت هذه العمليّة تستطيع نداء Vault مُصرَّحاً به الآن، 0 خلا ذلك (ن‑10)
@@ -623,7 +623,8 @@ alembic revision -m "..."         # هجرة جديدة (راجع ألا تُن�
 3. جرّب التدفّق الكامل:
    ```
    POST /api/v1/files            → upload_url ثم ارفع إلى MinIO ثم POST /files/{id}/complete
-   (حدث files.file.uploaded.v1 → knowledge_worker يفهرس → knowledge.document.indexed.v1)
+   POST /api/v1/knowledge/documents  {"file_id": "..."}   ← الفهرسة تُطلَب: الرفع وحده لا يفهرس شيئاً
+   (حدث knowledge.document.registered.v1 → knowledge_worker يفهرس → knowledge.document.indexed.v1)
    POST /api/v1/agents/rag_agent/invoke  (Accept: text/event-stream)  → بثّ الردّ
    POST /api/v1/media/jobs        → 202 ثم GET /media/jobs/{id} حتى succeeded
    POST /api/v1/integrations/connections → authorize_url ثم callback (السرّ مُعمّى عبر Transit) → GET /integrations/tools

@@ -56,7 +56,7 @@ class _SpyConsumer:
     it (a fake ``run_forever``'s own ``"publish"`` marker, in tests 1/2) —
     ordering across two different objects is exactly what those tests
     measure. ``fail_on`` (1-indexed call number) lets test 2 simulate a
-    real ``ensure_group`` failure partway through the four pairs without
+    real ``ensure_group`` failure partway through the pairs without
     touching Redis at all.
     """
 
@@ -97,10 +97,10 @@ def _install_spy_consumer(
 
 
 # --------------------------------------------------------------------------- #
-# Test 1: all four `ensure_group` calls happen before the relay's first      #
+# Test 1: every `ensure_group` call happens before the relay's first         #
 # publish -- through `outbox_relay.py::run` itself, not the closure alone.   #
 # --------------------------------------------------------------------------- #
-async def test_ensure_group_for_all_four_pairs_precedes_the_first_publish(
+async def test_ensure_group_for_every_pair_precedes_the_first_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -122,13 +122,16 @@ async def test_ensure_group_for_all_four_pairs_precedes_the_first_publish(
     ensure_group_calls = [c for c in calls if c[0] == "ensure_group"]
     # Guard the guard (§0 bullet in the plan's coverage rule): an empty or
     # short list must not pass silently.
-    assert len(ensure_group_calls) == 4
+    assert len(ensure_group_calls) == len(STATIC_CONSUMER_TOPOLOGY)
+    # Guard against the table itself emptying out: a topology with no rows
+    # would make the equality below vacuously true.
+    assert ensure_group_calls
     assert {(stream, group) for _, stream, group in ensure_group_calls} == {
         (binding.stream, binding.group) for binding in STATIC_CONSUMER_TOPOLOGY
     }
     # `publish` really happened, AND every `ensure_group` call precedes it.
     assert calls[-1] == ("publish",)
-    assert calls[:4] == ensure_group_calls
+    assert calls[: len(ensure_group_calls)] == ensure_group_calls
 
 
 # --------------------------------------------------------------------------- #
