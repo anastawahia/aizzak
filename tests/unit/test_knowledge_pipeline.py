@@ -426,6 +426,278 @@ def test_split_overlap_ratio_is_ten_percent() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# chunking's P-17 multi-signal ordering key (plan §4 step 10)                 #
+#                                                                              #
+# Metadata shapes below are copied verbatim from each real producer's own     #
+# code (not invented): pdf_text.py::_build_metadata, pdf_tables.py::          #
+# _build_metadata, image_ocr.py::_pdf_groups/parse_office_images, docx.py::   #
+# _text_metadata/_table_to_chunk, excel.py::_table_to_chunk. This is what     #
+# lets these tests pin CROSS-PRODUCER ordering, not just chunk_segments'      #
+# own internal windowing mechanics (already covered above).                  #
+# --------------------------------------------------------------------------- #
+def _pdf_block(
+    text: str, *, page_number: int, position_in_doc: int, chunk_index: int, order: int
+) -> SourceSegment:
+    """Mirrors ``pdf_text.py::_build_metadata``."""
+    return _segment(
+        text,
+        order,
+        kind="text",
+        metadata={
+            "page_number": page_number,
+            "position_in_doc": position_in_doc,
+            "chunk_index": chunk_index,
+            "section_type": "paragraph",
+        },
+    )
+
+
+def _pdf_table(text: str, *, page_number: int, order: int) -> SourceSegment:
+    """Mirrors ``pdf_tables.py::_build_metadata`` -- carries `page_number`
+    but deliberately NEVER `position_in_doc`/`chunk_index` (a table is one
+    coarse region, not a positioned paragraph)."""
+    return _segment(
+        text, order, kind="table", metadata={"page_number": page_number, "table_index": 0}
+    )
+
+
+def _pdf_ocr_group(
+    text: str, *, page_number: int, position_in_doc: int, order: int
+) -> SourceSegment:
+    """Mirrors ``image_ocr.py::_pdf_groups`` -- carries `page_number` AND
+    `position_in_doc`, but never `chunk_index`."""
+    return _segment(
+        text,
+        order,
+        kind="ocr",
+        metadata={
+            "page_number": page_number,
+            "position_in_doc": position_in_doc,
+            "section_type": "page_merged_images",
+        },
+    )
+
+
+def _docx_paragraph(text: str, *, paragraph_number: int, position_in_doc: int) -> SourceSegment:
+    """Mirrors ``docx.py::_text_metadata`` -- no `page_number` at all."""
+    return _segment(
+        text,
+        position_in_doc * 1000,
+        kind="text",
+        metadata={"paragraph_number": paragraph_number, "position_in_doc": position_in_doc},
+    )
+
+
+def _docx_table(text: str, *, position_in_doc: int) -> SourceSegment:
+    """Mirrors ``docx.py::_table_to_chunk`` -- `position_in_doc` but no
+    `paragraph_number`, no `page_number`."""
+    return _segment(
+        text, position_in_doc * 1000, kind="table", metadata={"position_in_doc": position_in_doc}
+    )
+
+
+def _excel_table(text: str, *, sheet_index: int, segment_index: int) -> SourceSegment:
+    """Mirrors ``excel.py::_table_to_chunk`` -- none of the four ordering
+    columns at all; only `order` (``sheet_index * 100_000 + segment_index``)."""
+    return _segment(
+        text,
+        sheet_index * 100_000 + segment_index,
+        kind="table",
+        metadata={"sheet_number": sheet_index + 1, "sheet_name": f"Sheet{sheet_index + 1}"},
+    )
+
+
+def _archive_ocr_group(text: str) -> SourceSegment:
+    """Mirrors ``image_ocr.py::parse_office_images`` -- a `.docx`/`.xlsx`
+    archive's whole-file media group: no ordering columns, and a fixed huge
+    `order` (`_MEDIA_ORDER = 1_000_000_000`) so it always trails."""
+    return _segment(text, 1_000_000_000, kind="ocr", metadata={"chunk_type": "docx_media_images"})
+
+
+def test_ordering_key_sorts_pdf_blocks_by_page_then_position_in_doc() -> None:
+    """Two pages of ordinary PDF text blocks, submitted out of order."""
+    p2b0 = _pdf_block(
+        "page two first block text", page_number=2, position_in_doc=3, chunk_index=3, order=1000
+    )
+    p1b1 = _pdf_block(
+        "page one second block text", page_number=1, position_in_doc=1, chunk_index=1, order=1
+    )
+    p1b0 = _pdf_block(
+        "page one first block text", page_number=1, position_in_doc=0, chunk_index=0, order=0
+    )
+    chunks = chunk_segments([p2b0, p1b1, p1b0], max_tokens=100, overlap_tokens=0, min_chars=0)
+    assert [c.text for c in chunks] == [
+        "page one first block text",
+        "page one second block text",
+        "page two first block text",
+    ]
+
+
+def test_ordering_key_resolves_the_pdf_table_vs_block_rank_tie_via_real_position() -> None:
+    """§6 risk 8 / §7's own note: a table and a block can land on the exact
+    same structural `order` (`page * 1000 + index`) on the same page, because
+    `pdf_tables.py` and `pdf_text.py` count independently. The ordering key
+    resolves it via "NULLS LAST" at `position_in_doc` (module docstring): the
+    block carries a real value, the table carries none, so the block --
+    which has more specific positional information -- sorts first. This is a
+    deliberate refinement of the OLD tie-break (insertion/phase order,
+    "tables first") that §7 explicitly hands to this key ("the geometric
+    ordering within the page is step 10's business"), not a reproduction of
+    it -- and it holds even though `page_number` itself ties."""
+    block = _pdf_block(
+        "tied block content text", page_number=3, position_in_doc=9, chunk_index=2, order=2005
+    )
+    table = _pdf_table("tied table content text", page_number=3, order=2005)  # SAME structural rank
+    assert block.order == table.order  # the documented tie
+
+    chunks = chunk_segments([block, table], max_tokens=100, overlap_tokens=0, min_chars=0)
+    assert [c.text for c in chunks] == ["tied block content text", "tied table content text"]
+
+    # Order of the INPUT list must not matter -- it is a real signal, not the
+    # old insertion-order tie-break this key replaces.
+    reversed_chunks = chunk_segments([table, block], max_tokens=100, overlap_tokens=0, min_chars=0)
+    assert [c.text for c in reversed_chunks] == [
+        "tied block content text",
+        "tied table content text",
+    ]
+
+
+def test_ordering_key_a_pdf_page_images_group_outranks_that_pages_table() -> None:
+    """A known, documented limitation (module docstring's "Known
+    limitation" paragraph), pinned rather than left implicit: `pdf_tables.py`
+    chunks NEVER carry `position_in_doc`, while `image_ocr.py`'s per-page OCR
+    group always does (`_pdf_groups`) -- so on the same page, the OCR group's
+    real (if page-index-scaled, not document-counter-scaled) value beats the
+    table's absence at that column every time, regardless of its magnitude.
+    This is the OPPOSITE of `_PAGE_OCR_ORDER_INDEX=999`'s pre-step-10 intent
+    (images last via raw `order`); fixing it needs a genuinely comparable
+    `position_in_doc` for OCR groups in `image_ocr.py`, out of this step's
+    (`domain/chunking.py`-only) scope."""
+    table = _pdf_table("table content on page four", page_number=4, order=3000)
+    ocr = _pdf_ocr_group(
+        "images content on page four", page_number=4, position_in_doc=30, order=3999
+    )
+    chunks = chunk_segments([ocr, table], max_tokens=100, overlap_tokens=0, min_chars=0)
+    assert [c.text for c in chunks] == ["images content on page four", "table content on page four"]
+
+
+def test_ordering_key_sorts_docx_paragraphs_and_tables_by_position_in_doc() -> None:
+    """DOCX carries no `page_number` at all; `position_in_doc` alone (present
+    on BOTH paragraphs and tables, unlike PDF's table/block asymmetry) fully
+    orders a mixed paragraph/table document."""
+    table = _docx_table("the docx table content", position_in_doc=2)
+    para1 = _docx_paragraph("first docx paragraph text", paragraph_number=0, position_in_doc=0)
+    para2 = _docx_paragraph("second docx paragraph text", paragraph_number=1, position_in_doc=1)
+    chunks = chunk_segments([table, para2, para1], max_tokens=100, overlap_tokens=0, min_chars=0)
+    assert [c.text for c in chunks] == [
+        "first docx paragraph text",
+        "second docx paragraph text",
+        "the docx table content",
+    ]
+
+
+def test_ordering_key_sorts_excel_tables_by_their_structural_order_alone() -> None:
+    """No PDF/DOCX signal ever appears in Excel metadata -- every one of the
+    four columns ties (absent on both sides), so ordering falls all the way
+    through to `segment.order` (`sheet_index * 100_000 + segment_index`)."""
+    sheet2 = _excel_table("sheet two, block zero content", sheet_index=1, segment_index=0)
+    sheet1_b1 = _excel_table("sheet one, block one content", sheet_index=0, segment_index=1)
+    sheet1_b0 = _excel_table("sheet one, block zero content", sheet_index=0, segment_index=0)
+    chunks = chunk_segments(
+        [sheet2, sheet1_b1, sheet1_b0], max_tokens=100, overlap_tokens=0, min_chars=0
+    )
+    assert [c.text for c in chunks] == [
+        "sheet one, block zero content",
+        "sheet one, block one content",
+        "sheet two, block zero content",
+    ]
+
+
+def test_ordering_key_sorts_an_archived_ocr_group_last_of_all() -> None:
+    """A `.docx`/`.xlsx` archive's whole-file media group carries none of
+    the four columns AND the fixed trailing `_MEDIA_ORDER`, so it sorts after
+    every positioned DOCX segment regardless of input order."""
+    archive_images = _archive_ocr_group("embedded picture descriptions")
+    para = _docx_paragraph("some body text content", paragraph_number=0, position_in_doc=0)
+    table = _docx_table("a small docx table", position_in_doc=1)
+    chunks = chunk_segments(
+        [archive_images, table, para], max_tokens=100, overlap_tokens=0, min_chars=0
+    )
+    assert [c.text for c in chunks] == [
+        "some body text content",
+        "a small docx table",
+        "embedded picture descriptions",
+    ]
+
+
+def test_ordering_key_is_stamped_after_the_length_split_not_before() -> None:
+    """P-17's own requirement (plan §4 step 10): the split-part index is the
+    LAST column, so a segment split by P-16's length window keeps its parts
+    adjacent and in split order, even sandwiched between two OTHER segments
+    that would otherwise interleave by structural rank alone."""
+    long_block = _pdf_block(
+        " ".join(f"word{i}" for i in range(12)),
+        page_number=1,
+        position_in_doc=1,
+        chunk_index=1,
+        order=1,
+    )
+    before = _pdf_block(
+        "first block text content", page_number=1, position_in_doc=0, chunk_index=0, order=0
+    )
+    after = _pdf_block(
+        "last block text content", page_number=1, position_in_doc=2, chunk_index=2, order=2
+    )
+    chunks = chunk_segments(
+        [after, long_block, before], max_tokens=5, overlap_tokens=1, min_chars=0
+    )
+    assert [c.text for c in chunks] == [
+        "first block text content",
+        "word0 word1 word2 word3 word4",
+        "word4 word5 word6 word7 word8",
+        "word8 word9 word10 word11",
+        "last block text content",
+    ]
+
+
+def test_ordering_key_full_cross_producer_document_scrambled_input() -> None:
+    """One synthetic document mixing every current producer's metadata shape
+    (module comment), submitted in a deliberately scrambled order, must come
+    back out fully re-ordered by `page_number` first (`p2_block` last, the
+    only page-2 item) and then, within page 1, by `position_in_doc` --
+    columns 1-4 alone fully decide this document (`segment.order`, the
+    would-be tie-breaker for `p1_table`/`p1_block_a`'s identical structural
+    rank, is never even reached): every page-1 item that CARRIES
+    `position_in_doc` (both blocks, and the OCR group) sorts by that value
+    ascending, and `p1_table` -- which never carries it -- sorts after all
+    of them ("NULLS LAST", module docstring)."""
+    p1_table = _pdf_table("p1 table content text", page_number=1, order=0)  # tied w/ p1_block_a
+    p1_block_a = _pdf_block(
+        "p1 block a content text", page_number=1, position_in_doc=0, chunk_index=0, order=0
+    )
+    p1_block_b = _pdf_block(
+        "p1 block b content text", page_number=1, position_in_doc=1, chunk_index=1, order=1
+    )
+    p1_ocr = _pdf_ocr_group(
+        "p1 ocr images content text", page_number=1, position_in_doc=2, order=999
+    )
+    p2_block = _pdf_block(
+        "p2 block content text", page_number=2, position_in_doc=3, chunk_index=2, order=1000
+    )
+
+    scrambled = [p2_block, p1_ocr, p1_block_b, p1_table, p1_block_a]
+    chunks = chunk_segments(scrambled, max_tokens=100, overlap_tokens=0, min_chars=0)
+
+    assert [c.text for c in chunks] == [
+        "p1 block a content text",
+        "p1 block b content text",
+        "p1 ocr images content text",
+        "p1 table content text",
+        "p2 block content text",
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # sparse.build_sparse_terms / term_id                                         #
 # --------------------------------------------------------------------------- #
 def test_build_sparse_terms_empty_text_is_empty() -> None:
