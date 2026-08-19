@@ -1500,10 +1500,18 @@ async def test_index_document_large_table_parent_is_header_only() -> None:
     assert outcome.parents[0].text == "Name; Dept"
 
 
-async def test_index_document_table_parent_text_never_reaches_the_qdrant_payload() -> None:
-    """Constraint 1 (plan §3.2): the payload carries only what
-    ``_CITATION_KEYS`` allowlists -- never a parent chunk's text, and never
-    the internal ``_table_parent_key`` scratch metadata either."""
+async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_payload() -> None:
+    """Constraint 1 (plan §3.2), negative half only: the Qdrant payload
+    carries neither a parent chunk's text nor its id (only what
+    ``_CITATION_KEYS`` allowlists), and never the internal
+    ``_table_parent_key`` scratch metadata either. ``IndexDocument.execute``
+    (exercised here) never resolves ``parent_key`` to a minted
+    ``ParentChunk.id`` in the first place -- that resolution, and the
+    positive half of constraint 1 (``parent_id`` IS stored, on
+    ``chunks.parent_id`` in SQL), is pinned by
+    ``test_knowledge_module.py::test_index_registered_document_wires_table_parent_id_end_to_end``,
+    which exercises the full ``IndexRegisteredDocument`` flow and asserts
+    ``chunk.parent_id == parent.id``."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     use_case = IndexDocument(embeddings, vectors)
@@ -1526,6 +1534,7 @@ async def test_index_document_table_parent_text_never_reaches_the_qdrant_payload
         point = vectors.points["kn-ws1"][chunk.chunk_id]
         assert parent_text not in point.payload.values()
         assert "_table_parent_key" not in point.payload
+        assert "parent_id" not in point.payload
 
 
 async def test_index_document_malformed_table_json_falls_back_to_word_window() -> None:
