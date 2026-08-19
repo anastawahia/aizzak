@@ -234,10 +234,16 @@ module = [
     "openpyxl.*",
     "PIL.*",
     # BE-RAG-012 -- the export renderer's three libraries. `weasyprint` ships
-    # no `py.typed`; `docx`/`markdown_it` are only partially annotated. All
-    # three are confined to `infrastructure/rendering/summary_renderer.py`,
-    # whose own boundary IS typed (`SummaryRenderer`), so the untyped surface
-    # ends at one file rather than leaking upward.
+    # no `py.typed` and `markdown_it` is only partially annotated; both are
+    # confined to `modules/knowledge/adapters/summary_renderer.py`, whose own
+    # boundary IS typed (`SummaryRenderer`), so the untyped surface ends at one
+    # file rather than leaking upward.
+    #
+    # `docx` is the exception and is now inert here: python-docx ships
+    # `py.typed`, so mypy reads its real annotations, and the DOCX parser added
+    # in plan step 4 (`P-08`) is type-checked against them like any other
+    # module. The entry stays as a floor in case a future release drops the
+    # marker -- it grants nothing today.
     "weasyprint.*",
     "docx.*",
     "markdown_it.*",

@@ -142,15 +142,17 @@ async def test_resolve_raises_not_found_for_a_file_that_is_not_there() -> None:
 
 
 async def test_resolve_surfaces_the_unsupported_type_the_dispatch_table_raises() -> None:
-    """The real ``_ROUTES`` table has no ``.docx`` entry (3.k1 deferred it),
-    so a DOCX upload raises ``UnsupportedTypeError`` from HERE -- which is
-    exactly the error the index handler now turns into a ``failed`` document
-    instead of a redelivery loop (§1-ج). The route resolution is never
-    reached: no credential lookup is spent on a file that cannot be parsed."""
-    file = _file(
-        name="contract.docx",
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
+    """The real ``_ROUTES`` table has no ``.xls`` entry, so a legacy-Excel
+    upload raises ``UnsupportedTypeError`` from HERE -- which is exactly the
+    error the index handler turns into a ``failed`` document instead of a
+    redelivery loop (§1-ج). The route resolution is never reached: no
+    credential lookup is spent on a file that cannot be parsed.
+
+    ``.xls`` rather than ``.docx``: DOCX was the example while it was merely
+    deferred, and it is routed as of plan step 4 (`P-08`). ``.xls`` belongs to
+    item `P-12`, which decision س-12 dropped in full -- an extension that is
+    meant to stay unroutable, not one waiting for its parser."""
+    file = _file(name="contract.xls", content_type="application/vnd.ms-excel")
     providers = _FakeProviders()
     resolved = _resolver(files=_FakeFiles(file), providers=providers)
 

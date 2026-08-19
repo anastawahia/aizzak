@@ -9,11 +9,13 @@ format-agnostic utilities rather than part of that reader:
 
 - `clean_text` — alpha `rag/utils/text.py::_clean_text` (page-number/noise
   stripping, ASCII+Arabic-only filter, whitespace normalization).
-- `_split_long_text` — alpha `rag/parsers/text_parser.py::_split_long_text`,
-  alpha's generic newline/sentence-aware splitter (used there for DOCX, whose
-  `.docx` path is deferred — parsers.md scope). It is Arabic-punctuation-aware
-  (splits on ``، ؛`` too, not just ``. ! ?``), so it is reused here verbatim
-  for plain text, keyed off the same `DOCX_MAX_CHUNK_CHARS` value (2000).
+- `split_long_text` — alpha `rag/parsers/text_parser.py::_split_long_text`,
+  alpha's generic newline/sentence-aware splitter (written there for DOCX). It
+  is Arabic-punctuation-aware (splits on ``، ؛`` too, not just ``. ! ?``), so
+  it is reused here verbatim for plain text, keyed off the same
+  `DOCX_MAX_CHUNK_CHARS` value (2000). Public since plan step 4 (`P-08`): the
+  DOCX parser alpha wrote it for now needs it as well, and it stays in the
+  module that has always owned it rather than moving under a new caller.
 
 Adapted: the encoding-fallback candidate chain is the same policy applied in
 `json_doc.py` (utf-8-sig/utf-8/utf-16/cp1256/latin-1, ending in a lossless
@@ -48,7 +50,7 @@ def parse_text(data: bytes, ext: str) -> list[ParsedChunk]:
             kind=ParsedChunkKind.TEXT,
             metadata={"source_ext": ext, "split_index": index},
         )
-        for index, piece in enumerate(_split_long_text(cleaned, _MAX_CHUNK_CHARS))
+        for index, piece in enumerate(split_long_text(cleaned, _MAX_CHUNK_CHARS))
     ]
 
 
@@ -74,7 +76,7 @@ def _decode_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _split_long_text(text: str, max_chars: int) -> list[str]:
+def split_long_text(text: str, max_chars: int) -> list[str]:
     """Split at natural boundaries (newlines, then Arabic-aware sentence
     punctuation ``. ! ? ، ؛``) when text exceeds `max_chars` (alpha
     `text_parser.py::_split_long_text`, ported verbatim)."""

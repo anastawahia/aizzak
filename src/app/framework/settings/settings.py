@@ -313,6 +313,10 @@ class Limits(BaseModel):
     #     `.docx` upload was a poison pill: `extract` raises
     #     `UnsupportedTypeError`, the document never leaves `pending`.
     #     Dropped. Re-adding it means adding the parser first.
+    #     **Re-added** by plan step 4 (`P-08`): `adapters/parsers/docx.py`
+    #     exists and `_ROUTES` keys `.docx`, so the condition that dropped it
+    #     is met. Without this line the parser is unreachable — the upload is
+    #     rejected before any of it runs.
     #   * `.xlsx`/`.json`/`.csv` have working parsers (excel/json_doc/
     #     text_plain) that no file could ever reach, because this whitelist
     #     rejected the upload at `RegisterUpload`. Added.
@@ -326,6 +330,7 @@ class Limits(BaseModel):
         "text/csv",
         "application/json",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "image/png",
         "image/jpeg",
         "image/webp",

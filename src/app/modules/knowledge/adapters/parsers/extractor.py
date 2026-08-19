@@ -15,11 +15,12 @@ this is the single seam where alpha's per-parser ``print``/stdout noise
 raise a typed application error" (10-code-standards §5: no silent
 swallowing of a genuine failure; a caller decides whether to keep going).
 
-Deferred (3.k1) — not routed here: ``.xls`` (needs the `xlrd` engine, not an
-approved dependency for this step — see `excel.py`), ``.docx`` (needs
-`python-docx`; DOCX is deferred per this step's scope), and
-``.tif/.tiff/.bmp/.gif`` (alpha's wider `IMAGE_EXTS`; only
-``.png/.jpg/.jpeg/.webp`` are routed).
+Deferred — not routed here: ``.xls`` (needs the `xlrd` engine, not an approved
+dependency — see `excel.py`) and ``.tif/.tiff/.bmp/.gif`` (alpha's wider
+`IMAGE_EXTS`; only ``.png/.jpg/.jpeg/.webp`` are routed). Both belong to item
+`P-12`, **dropped in full** by decision س-12: the formats have no content in
+this system, so the routes stay closed rather than pending. ``.docx`` was
+deferred with them until plan step 4 (`P-08`) and is routed now.
 
 **The PDF route is a multi-pass path** (plan step 3 / `P-07`), and this module
 is where its phases are sequenced — alpha sequences them inside `scanner.py`
@@ -38,6 +39,7 @@ from pathlib import Path
 from app.framework.errors import UnsupportedTypeError, ValidationError
 from app.framework.observability import get_logger
 from app.framework.types import Json
+from app.modules.knowledge.adapters.parsers.docx import classify_docx, parse_docx
 from app.modules.knowledge.adapters.parsers.excel import parse_excel
 from app.modules.knowledge.adapters.parsers.image_ocr import parse_image
 from app.modules.knowledge.adapters.parsers.json_doc import classify_json, parse_json
@@ -97,6 +99,23 @@ def _pdf_file_type(*, table_count: int, block_count: int) -> str:
     return "pdf_text" if block_count else "pdf_empty"
 
 
+def _route_docx(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
+    """One pass, two kinds of chunk: merged text blocks and structured tables.
+
+    Unlike the PDF route there is no sequencing to own here — a DOCX declares
+    its own structure, so paragraphs and tables come out of a single walk of
+    the document (plan step 4 / `P-08`).
+    """
+    chunks = parse_docx(data)
+    table_count = sum(1 for chunk in chunks if chunk.kind is ParsedChunkKind.TABLE)
+    block_count = len(chunks) - table_count
+    return chunks, {
+        "file_type": classify_docx(table_count=table_count, text_count=block_count),
+        "block_count": block_count,
+        "table_count": table_count,
+    }
+
+
 def _route_excel(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
     chunks = parse_excel(data)
     return chunks, {"file_type": "excel_structured" if chunks else "excel_empty"}
@@ -119,10 +138,11 @@ def _route_image(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
     return chunks, {"file_type": "image_ocr" if chunks else "image_empty"}
 
 
-# Deferred (3.k1): .docx (needs python-docx) and .xls (needs xlrd) are not
-# keyed here, so both fall through to UnsupportedTypeError in `extract()`.
+# `.xls` and the wider image extensions are not keyed here, so they fall
+# through to UnsupportedTypeError in `extract()` — see the module docstring.
 _ROUTES: dict[str, _Router] = {
     ".pdf": _route_pdf,
+    ".docx": _route_docx,
     ".xlsx": _route_excel,
     ".json": _route_json,
     ".txt": _route_text,
@@ -138,6 +158,7 @@ _PARSER_NAMES: dict[str, str] = {
     # Two modules answer for a PDF now (tables + text blocks), so the name
     # reports the path, not one of them (plan step 3 / `P-07`).
     ".pdf": "pdf_multipass",
+    ".docx": "docx",
     ".xlsx": "excel",
     ".json": "json",
     ".txt": "text_plain",

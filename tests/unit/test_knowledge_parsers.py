@@ -15,9 +15,13 @@ import fitz
 import openpyxl
 import pytesseract
 import pytest
+from docx import Document as WordDocument
+from docx.document import Document as WordDocumentObject
 from PIL import Image
 
 from app.framework.errors import UnsupportedTypeError, ValidationError
+from app.framework.settings.settings import Limits
+from app.modules.knowledge.adapters.parsers import docx as docx_parser
 from app.modules.knowledge.adapters.parsers import (
     excel,
     image_ocr,
@@ -161,12 +165,12 @@ def test_clean_text_strips_page_numbers_and_noise() -> None:
 
 
 def test_split_long_text_keeps_short_text_as_single_piece() -> None:
-    assert text_plain._split_long_text("short text", max_chars=2000) == ["short text"]
+    assert text_plain.split_long_text("short text", max_chars=2000) == ["short text"]
 
 
 def test_split_long_text_splits_oversized_line_on_arabic_punctuation() -> None:
     line = "جملة أولى، جملة ثانية؛ جملة ثالثة"
-    pieces = text_plain._split_long_text(line, max_chars=15)
+    pieces = text_plain.split_long_text(line, max_chars=15)
     assert pieces == ["جملة أولى،", "جملة ثانية؛", "جملة ثالثة"]
 
 
@@ -249,6 +253,246 @@ def test_parse_excel_multiple_sheets_order_by_sheet_then_segment() -> None:
     assert chunks[0].order < chunks[1].order
     assert chunks[0].metadata["sheet_name"] == "First"
     assert chunks[1].metadata["sheet_name"] == "Second"
+
+
+# --------------------------------------------------------------------------- #
+# docx — heading detection, block merging, tables, document order             #
+# --------------------------------------------------------------------------- #
+def _docx_bytes(build: Callable[[WordDocumentObject], None]) -> bytes:
+    document = WordDocument()
+    build(document)
+    buf = io.BytesIO()
+    document.save(buf)
+    return buf.getvalue()
+
+
+def _add_table(document: WordDocumentObject, rows: list[list[str]]) -> None:
+    table = document.add_table(rows=len(rows), cols=len(rows[0]))
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            table.cell(r, c).text = cell
+
+
+def test_parse_docx_merges_paragraphs_under_their_heading() -> None:
+    """Alpha's merge rule: a heading opens a block and the paragraphs below it
+    join that block, so a section arrives as one coherent chunk."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("Attendance Policy", level=1)
+        document.add_paragraph("Employees must record arrival and departure daily.")
+        document.add_paragraph("- Late arrivals are logged by the system.")
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.kind is ParsedChunkKind.TEXT
+    assert chunk.metadata["title"] == "Attendance Policy"
+    assert chunk.metadata["section_type"] == "section"
+    # The heading is document text, not injected metadata: dropping it here
+    # would keep it out of the index entirely (unlike a PDF table caption,
+    # which the PDF text pass indexes on its own).
+    assert chunk.text.startswith("Attendance Policy\n")
+    assert "Late arrivals" in chunk.text
+
+
+def test_parse_docx_detects_a_heading_by_word_style_in_any_language() -> None:
+    """Decision س-09 = أ: the style is a structural signal, so an Arabic
+    heading is detected exactly as an English one is — which alpha's
+    English-keyword heuristic cannot do (fact ح-١٤)."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("سياسة الحضور والانصراف.", level=2)
+        document.add_paragraph("على الموظّفين تسجيل الحضور والانصراف يوميًّا.")
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["title"] == "سياسة الحضور والانصراف."
+    # The text heuristic alone would have refused it twice over: it ends with
+    # a full stop, and none of its words are in the English keyword list.
+    assert docx_parser._is_title("سياسة الحضور والانصراف.") is False
+
+
+def test_parse_docx_falls_back_to_the_text_heuristic_without_styles() -> None:
+    """An unstyled document still yields sections: the heuristic answers for
+    every paragraph that carries no heading style."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_paragraph("Purpose:")
+        document.add_paragraph("To define how attendance is recorded and reviewed.")
+        document.add_paragraph("2.1 Scope")
+        document.add_paragraph("This section applies to all staff of the company.")
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert [c.metadata["title"] for c in chunks] == ["Purpose:", "2.1 Scope"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Purpose:", True),  # short label ending in a colon
+        ("HR & Admin: the team is responsible for:", False),  # a lead-in, not a heading
+        ("2.3.1 Scope", True),  # multi-level numbering
+        ("Annex 1", True),  # sectioned heading
+        ("responsibilities", True),  # known keyword
+        ("Job Analysis", True),  # short capitalized line
+        ("GENERAL PROVISIONS OF THE POLICY", True),  # ALL CAPS
+        ("Internal and External Communication Guidelines", True),  # Title Case
+        ("Employees must record their arrival time daily.", False),  # a sentence
+        ("Class A1 | 150000 | A", False),  # tabular data
+        ("", False),
+    ],
+)
+def test_is_title_ladder(text: str, expected: bool) -> None:
+    """Alpha's `is_title` ladder, rule by rule — the calibration this port
+    keeps unchanged."""
+    assert docx_parser._is_title(text) is expected
+
+
+def test_parse_docx_keeps_an_unheaded_paragraph_as_its_own_block() -> None:
+    """Body text with no heading above it stands alone rather than joining an
+    unrelated neighbour."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_paragraph("The first standalone sentence of the document.")
+        document.add_paragraph("A second, entirely unrelated standalone sentence.")
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert len(chunks) == 2
+    assert all(c.metadata.get("title") is None for c in chunks)
+    assert all(c.metadata["section_type"] == "paragraph" for c in chunks)
+
+
+def test_parse_docx_stamps_a_block_with_its_own_first_position() -> None:
+    """The divergence from alpha: alpha stamps a block with the position of
+    the heading that ENDED it, which makes `position_in_doc` non-monotonic —
+    and step 10 (`P-17`) consumes it as an ordering signal."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("First Section", level=1)
+        document.add_paragraph("Body of the first section, long enough to matter.")
+        document.add_heading("Second Section", level=1)
+        document.add_paragraph("Body of the second section, also long enough.")
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert [c.metadata["position_in_doc"] for c in chunks] == [0, 2]
+    assert [c.metadata["paragraph_number"] for c in chunks] == [0, 2]
+    assert [c.order for c in chunks] == sorted(c.order for c in chunks)
+
+
+def test_parse_docx_splits_a_long_block_and_repeats_the_heading() -> None:
+    """A block over `MAX_CHUNK_CHARS` is split, and every part carries the
+    heading again: a part retrieved on its own with no section name above it
+    is a part no reader can place."""
+    body = "Every employee is expected to follow the stated procedure. " * 80
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("Procedures", level=1)
+        document.add_paragraph(body.strip())
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+
+    assert len(chunks) > 1
+    assert all(c.text.startswith("Procedures\n") for c in chunks)
+    assert all(len(c.text) <= docx_parser.MAX_CHUNK_CHARS for c in chunks)
+    # Parts stay adjacent on the order axis and never reach the next item.
+    assert [c.metadata["part_index"] for c in chunks] == list(range(len(chunks)))
+    assert [c.order for c in chunks] == [chunks[0].order + i for i in range(len(chunks))]
+    assert all(c.metadata["part_count"] == len(chunks) for c in chunks)
+
+
+def test_parse_docx_extracts_a_table_with_its_heading_breadcrumb() -> None:
+    """A table's title is section + caption, so a generic caption never
+    shadows the policy the table belongs to."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("Attendance Policy", level=1)
+        document.add_paragraph("Quick Reference Table:")
+        _add_table(document, [["Grade", "Allowance"], ["A1", "1500"], ["B2", "900"]])
+
+    chunks = docx_parser.parse_docx(_docx_bytes(build))
+    tables = [c for c in chunks if c.kind is ParsedChunkKind.TABLE]
+
+    assert len(tables) == 1
+    table = tables[0]
+    assert table.metadata["title"] == "Attendance Policy — Quick Reference Table:"
+    assert table.metadata["headers"] == ["Grade", "Allowance"]
+    assert table.metadata["num_rows"] == 2
+    assert table.metadata["num_cols"] == 2
+    assert json.loads(table.text)["rows"] == [
+        {"Grade": "A1", "Allowance": "1500"},
+        {"Grade": "B2", "Allowance": "900"},
+    ]
+
+
+def test_parse_docx_skips_a_table_without_data_rows() -> None:
+    """A header row alone is not a table (alpha drops it too)."""
+
+    def build(document: WordDocumentObject) -> None:
+        _add_table(document, [["Grade", "Allowance"]])
+
+    assert docx_parser.parse_docx(_docx_bytes(build)) == []
+
+
+def test_parse_docx_names_an_empty_header_cell_by_position() -> None:
+    def build(document: WordDocumentObject) -> None:
+        _add_table(document, [["Grade", ""], ["A1", "1500"]])
+
+    table = docx_parser.parse_docx(_docx_bytes(build))[0]
+
+    assert table.metadata["headers"] == ["Grade", "Column_2"]
+    assert json.loads(table.text)["rows"] == [{"Grade": "A1", "Column_2": "1500"}]
+
+
+def test_parse_docx_orders_text_and_tables_in_document_order() -> None:
+    """Paragraphs and tables come out of ONE walk of the document, so a table
+    sorts between the sections it sits between."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("First Section", level=1)
+        document.add_paragraph("Body of the first section, long enough to matter.")
+        _add_table(document, [["Grade", "Allowance"], ["A1", "1500"]])
+        document.add_heading("Second Section", level=1)
+        document.add_paragraph("Body of the second section, also long enough.")
+
+    chunks = sorted(docx_parser.parse_docx(_docx_bytes(build)), key=lambda c: c.order)
+
+    assert [c.kind for c in chunks] == [
+        ParsedChunkKind.TEXT,
+        ParsedChunkKind.TABLE,
+        ParsedChunkKind.TEXT,
+    ]
+    assert [c.metadata["position_in_doc"] for c in chunks] == [0, 2, 3]
+
+
+def test_parse_docx_empty_document_yields_no_chunks() -> None:
+    assert docx_parser.parse_docx(_docx_bytes(lambda document: None)) == []
+
+
+def test_parse_docx_raises_on_bytes_that_are_not_a_word_document() -> None:
+    """Unlike a PDF there is nothing to degrade to: a DOCX opens or it does
+    not, and the extractor turns the failure into a `ValidationError`."""
+    with pytest.raises(Exception):  # noqa: B017 — python-docx raises its own types
+        docx_parser.parse_docx(b"not a word document at all")
+
+
+@pytest.mark.parametrize(
+    ("table_count", "text_count", "expected"),
+    [
+        (0, 0, "docx_empty"),
+        (3, 0, "docx_structured_text"),
+        (0, 3, "docx_unstructured_text"),
+        (7, 2, "docx_structured_text"),
+        (2, 5, "docx_semi_structured_text"),
+        (1, 9, "docx_unstructured_text"),
+    ],
+)
+def test_classify_docx_thresholds(table_count: int, text_count: int, expected: str) -> None:
+    assert docx_parser.classify_docx(table_count=table_count, text_count=text_count) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -752,6 +996,7 @@ def test_parse_image_degrades_gracefully_on_corrupt_bytes() -> None:
         "report.pdf",
         "sheet.xlsx",
         "data.json",
+        "policy.docx",
         "notes.txt",
         "readme.md",
         "table.csv",
@@ -766,7 +1011,7 @@ def test_extractor_supports_every_routed_extension(filename: str) -> None:
     assert extractor.supports(content_type="application/octet-stream", filename=filename) is True
 
 
-@pytest.mark.parametrize("filename", ["archive.xls", "doc.docx", "image.gif", "data.bin"])
+@pytest.mark.parametrize("filename", ["archive.xls", "image.gif", "data.bin"])
 def test_extractor_does_not_support_deferred_or_unknown_extensions(filename: str) -> None:
     extractor = DocumentContentExtractor()
     assert extractor.supports(content_type="application/octet-stream", filename=filename) is False
@@ -873,6 +1118,52 @@ def test_extractor_reports_a_pdf_with_no_tables_as_text_only() -> None:
     assert extracted.metadata["file_type"] == "pdf_text"
     assert extracted.metadata["table_count"] == 0
     assert extracted.metadata["block_count"] == 1
+
+
+def test_extractor_routes_docx_end_to_end() -> None:
+    """Plan step 4 (`P-08`): a DOCX carrying prose and a table reports both
+    counts and classifies on their ratio."""
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_heading("Attendance Policy", level=1)
+        document.add_paragraph("Employees must record arrival and departure daily.")
+        _add_table(document, [["Grade", "Allowance"], ["A1", "1500"]])
+
+    extracted = DocumentContentExtractor().extract(
+        data=_docx_bytes(build),
+        filename="policy.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    assert extracted.source_ext == ".docx"
+    assert extracted.metadata["parser"] == "docx"
+    assert extracted.metadata["file_type"] == "docx_semi_structured_text"
+    assert extracted.metadata["block_count"] == 1
+    assert extracted.metadata["table_count"] == 1
+    # `_enrich` names the table, as it does for every other TABLE-kind chunk.
+    table = next(c for c in extracted.chunks if c.kind is ParsedChunkKind.TABLE)
+    assert table.metadata["table_name"] == "policy__table_0"
+    assert all(c.metadata["source_ext"] == ".docx" for c in extracted.chunks)
+
+
+def test_the_docx_upload_whitelist_matches_the_docx_route() -> None:
+    """A parser no upload can reach is not a parser. `Limits.allowed_mime`
+    dropped the DOCX type while `_ROUTES` had no `.docx` entry (an accepted
+    upload that could never be parsed); plan step 4 (`P-08`) closes the pair
+    from both ends, and this pins them together."""
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    assert mime in Limits().allowed_mime
+    assert DocumentContentExtractor().supports(content_type=mime, filename="policy.docx") is True
+
+
+def test_extractor_raises_validation_error_on_a_broken_docx() -> None:
+    with pytest.raises(ValidationError):
+        DocumentContentExtractor().extract(
+            data=b"not a word document at all",
+            filename="broken.docx",
+            content_type="application/octet-stream",
+        )
 
 
 def test_extractor_routes_text_end_to_end() -> None:
