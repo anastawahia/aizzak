@@ -861,7 +861,11 @@ async def build_knowledge_worker_from_env() -> tuple[
     # sit in `Settings` and mean nothing — the extractor would keep falling
     # back to its own `Limits()` and no deployment could move them.
     content_resolver = WorkerDocumentContentResolver(
-        files, storage, DocumentContentExtractor(limits=settings.limits), providers
+        files,
+        storage,
+        DocumentContentExtractor(limits=settings.limits),
+        providers,
+        timeout_s=settings.limits.parser_timeout_seconds,
     )
     summary_builder = BuildSummary(
         documents,

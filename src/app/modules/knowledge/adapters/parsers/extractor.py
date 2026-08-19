@@ -35,11 +35,27 @@ values, and a router is the layer that holds them: the parsers stay plain
 functions over bytes, and the ONE object that knows the deployment's numbers
 hands them down. Plan step 14 (`P-01` `P-02`) puts the zip-bomb guard's limits
 through the same seam.
+
+**The zip-bomb guard (§3.7, decision س-13) runs BEFORE dispatch, not inside a
+route.** `.docx`/`.xlsx` are OOXML — zip archives — and every parser that
+touches one (`docx.py`'s `python-docx`, `excel.py`'s `pandas`, `image_ocr.py`'s
+own `zipfile.ZipFile` read of `word/media/`/`xl/media/`) would otherwise be the
+first thing to open a hostile archive. Checking once, here, before ANY of them
+runs, means none of those three modules has to defend itself. A trip raises
+`ValidationError` with its own `knowledge.zip_bomb` code — the SAME
+"failed with a message" path a genuine parse failure already takes below, so a
+guard trip needs no new plumbing to reach `status='failed'` (`app.workers.
+bootstrap`'s `except (UnsupportedTypeError, ValidationError)` clause already
+routes both into `IndexRegisteredDocument.fail`). Never a silent skip: alpha's
+own "skip and log" (parsers.md, decision س-13's rejected option ب) would be a
+FALSE SUCCESS with zero chunks in this one-document-per-request model.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import io
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -194,6 +210,77 @@ def _route_image(data: bytes, ext: str, limits: Limits) -> tuple[list[ParsedChun
     return chunks, {"file_type": "image_ocr" if chunks else "image_empty"}
 
 
+# The OOXML formats this router dispatches -- both are zip archives under a
+# different extension, and both are the guard's business (§3.7, س-13). `.json`
+# `.txt`/`.md`/`.csv`/the image formats are never zips, so the guard is a no-op
+# for them (returns immediately, no `zipfile.ZipFile` open spent on bytes that
+# cannot be one).
+_ZIP_BASED_EXTS = (".docx", ".xlsx")
+
+
+def _guard_zip_bomb(data: bytes, ext: str, limits: Limits) -> None:
+    """P-01/P-02 (§3.7, decision س-13): reject a hostile `.docx`/`.xlsx`
+    BEFORE any parser opens it.
+
+    Three failures, each raising `ValidationError` with its own message and
+    the shared `knowledge.zip_bomb` code:
+
+    * the archive does not open at all (`BadZipFile`) — a file that lies
+      about being an Office document under its extension;
+    * its members' SUMMED uncompressed size crosses
+      `parser_max_uncompressed_mb`;
+    * its uncompressed:compressed ratio crosses `parser_max_compression_ratio`
+      — the actual "bomb" signature (a legitimate Office file's own
+      already-compressed XML+media never gets close, §3.7's table).
+
+    A ratio check needs a non-zero denominator; an archive whose members
+    compressed to exactly 0 bytes while still holding uncompressed content IS
+    itself already a ratio of infinity, so that case is folded into "crosses
+    the ratio guard" rather than skipped.
+    """
+    if ext not in _ZIP_BASED_EXTS:
+        return
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            infos = archive.infolist()
+    except zipfile.BadZipFile as exc:
+        raise ValidationError(
+            f"{ext} file is not a valid zip archive: {exc}", code="knowledge.zip_bomb"
+        ) from exc
+
+    uncompressed = sum(info.file_size for info in infos)
+    max_bytes = limits.parser_max_uncompressed_mb * 1024 * 1024
+    if uncompressed > max_bytes:
+        raise ValidationError(
+            f"{ext} archive's uncompressed size ({uncompressed} bytes) exceeds the"
+            f" {limits.parser_max_uncompressed_mb} MB zip-bomb guard",
+            code="knowledge.zip_bomb",
+        )
+
+    compressed = sum(info.compress_size for info in infos)
+    if compressed == 0:
+        # A genuinely empty archive (every member's declared size is 0) has
+        # nothing to expand into and is not a bomb; content that claims a
+        # positive uncompressed size while compressing to nothing IS the
+        # infinite-ratio signature this guard exists to catch.
+        if uncompressed > 0:
+            raise ValidationError(
+                f"{ext} archive compresses {uncompressed} declared bytes into 0 --"
+                " an infinite compression ratio, over the zip-bomb guard",
+                code="knowledge.zip_bomb",
+            )
+        return
+
+    ratio = uncompressed / compressed
+    if ratio > limits.parser_max_compression_ratio:
+        raise ValidationError(
+            f"{ext} archive's compression ratio ({ratio:.0f}:1) exceeds the"
+            f" {limits.parser_max_compression_ratio}:1 zip-bomb guard",
+            code="knowledge.zip_bomb",
+        )
+
+
 # `.xls` and the wider image extensions are not keyed here, so they fall
 # through to UnsupportedTypeError in `extract()` — see the module docstring.
 _ROUTES: dict[str, _Router] = {
@@ -246,10 +333,14 @@ class DocumentContentExtractor:
         return _extension_of(filename) in _ROUTES
 
     def extract(self, *, data: bytes, filename: str, content_type: str) -> ParsedDocument:
-        # Deferred (3.k1): alpha's per-file SIGALRM parse timeout
-        # (`scanner.py::_arm_parse_timeout`) is NOT ported — it is main-thread/
-        # Unix-only and unusable from an async worker; a worker-level
-        # timeout/cancellation replaces it later.
+        # Deferred (3.k1), now landed (plan step 14 / §3.7): alpha's per-file
+        # SIGALRM parse timeout (`scanner.py::_arm_parse_timeout`) is NOT
+        # ported here either — it is main-thread/Unix-only and unusable from
+        # an async worker. Its replacement is `asyncio.wait_for` around the
+        # worker's `asyncio.to_thread` offload of THIS whole method
+        # (`workers/content_resolver.py`), a layer up from this synchronous
+        # port — a timeout has no meaning inside a function with no event
+        # loop to suspend it against.
         ext = _extension_of(filename)
         router = _ROUTES.get(ext)
         if router is None:
@@ -258,6 +349,15 @@ class DocumentContentExtractor:
             )
         if not data:
             raise ValidationError("file has no content to parse", code="knowledge.empty_content")
+
+        # Zip-bomb guard (§3.7, س-13) — BEFORE dispatch, so a hostile
+        # `.docx`/`.xlsx` never reaches `python-docx`/`pandas`/`zipfile` inside
+        # a route. Its own exception, not caught by the `except Exception`
+        # below: `_guard_zip_bomb` already raises the exact `ValidationError`
+        # shape a genuine parse failure gets wrapped into, with a more
+        # specific code and message than a generic `knowledge.parse_failed`
+        # would carry.
+        _guard_zip_bomb(data, ext, self._limits)
 
         try:
             raw_chunks, doc_metadata = router(data, ext, self._limits)

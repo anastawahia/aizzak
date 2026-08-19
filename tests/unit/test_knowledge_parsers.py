@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import zipfile
 from collections.abc import Callable
 
 import fitz
@@ -35,6 +36,7 @@ from app.modules.knowledge.adapters.parsers import (
     pdf_text,
     text_plain,
 )
+from app.modules.knowledge.adapters.parsers import extractor as extractor_module
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.ports.content_extractor import (
@@ -1330,6 +1332,96 @@ def test_extractor_raises_validation_error_on_genuine_parse_failure() -> None:
         extractor.extract(
             data=b"not a real workbook", filename="broken.xlsx", content_type="application/xlsx"
         )
+
+
+# --------------------------------------------------------------------------- #
+# extractor — the zip-bomb guard (§3.7, decision س-13, plan step 14)          #
+# --------------------------------------------------------------------------- #
+def _zip_bytes(entries: dict[str, bytes], *, compression: int = zipfile.ZIP_DEFLATED) -> bytes:
+    """A real, valid zip archive with the given ``{name: content}`` members —
+    the "an ordinary Office file" half of the guard's test matrix."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def test_the_zip_bomb_guard_settings_are_the_values_the_plan_chose() -> None:
+    """§3.7's three numbers, chosen and written down — the ``ocr_*`` precedent
+    (`test_the_ocr_caps_come_from_settings_with_the_values_the_plan_chose`),
+    applied to the guard that runs before any parser touches the bytes."""
+    limits = Limits()
+
+    assert limits.parser_max_uncompressed_mb == 512
+    assert limits.parser_max_compression_ratio == 100
+    assert limits.parser_timeout_seconds == 300
+
+
+@pytest.mark.parametrize("ext", [".docx", ".xlsx"])
+def test_zip_bomb_guard_rejects_a_non_zip_masquerading_as_office(ext: str) -> None:
+    """``BadZipFile`` — a file that lies about being an Office document under
+    its extension never reaches ``python-docx``/``pandas`` at all."""
+    with pytest.raises(ValidationError) as exc_info:
+        extractor_module._guard_zip_bomb(b"not a zip archive at all", ext, Limits())
+
+    assert exc_info.value.code == "knowledge.zip_bomb"
+
+
+def test_zip_bomb_guard_rejects_uncompressed_size_over_the_cap() -> None:
+    data = _zip_bytes({"word/document.xml": b"<w/>" * 1_000})
+    tiny_cap = Limits(parser_max_uncompressed_mb=0)
+
+    with pytest.raises(ValidationError) as exc_info:
+        extractor_module._guard_zip_bomb(data, ".docx", tiny_cap)
+
+    assert exc_info.value.code == "knowledge.zip_bomb"
+    assert "uncompressed size" in str(exc_info.value)
+
+
+def test_zip_bomb_guard_rejects_compression_ratio_over_the_cap() -> None:
+    """A legitimate Office file runs 3:1 to 10:1 (§3.7's own table); a
+    million bytes of one repeated character compresses far past the 100:1
+    bomb threshold while staying well under the (default) size cap."""
+    data = _zip_bytes({"word/document.xml": b"A" * 1_000_000})
+
+    with pytest.raises(ValidationError) as exc_info:
+        extractor_module._guard_zip_bomb(data, ".docx", Limits())
+
+    assert exc_info.value.code == "knowledge.zip_bomb"
+    assert "compression ratio" in str(exc_info.value)
+
+
+def test_zip_bomb_guard_accepts_an_ordinary_office_archive_within_limits() -> None:
+    """The sanity check every rejection test above needs: a real, modestly
+    sized member with ordinary text content trips neither guard."""
+    data = _zip_bytes({"word/document.xml": b"<w:p>Hello, world.</w:p>" * 5})
+
+    extractor_module._guard_zip_bomb(data, ".docx", Limits())  # does not raise
+
+
+@pytest.mark.parametrize("ext", [".pdf", ".json", ".txt", ".png"])
+def test_zip_bomb_guard_is_a_no_op_for_non_office_extensions(ext: str) -> None:
+    """Only ``.docx``/``.xlsx`` are zip archives under this router; every
+    other route is never asked to open one, even under an absurd cap."""
+    extractor_module._guard_zip_bomb(b"anything at all", ext, Limits(parser_max_uncompressed_mb=0))
+
+
+def test_extractor_end_to_end_fails_a_document_whose_docx_trips_the_zip_bomb_guard() -> None:
+    """The guard fires from ``extract()`` itself, before the docx route runs
+    — the same ``ValidationError`` shape a genuine parse failure already
+    raises, so no new handling is needed downstream."""
+    data = _zip_bytes({"word/document.xml": b"A" * 1_000_000})
+    tiny = Limits(parser_max_compression_ratio=10)
+
+    with pytest.raises(ValidationError) as exc_info:
+        DocumentContentExtractor(limits=tiny).extract(
+            data=data,
+            filename="bomb.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    assert exc_info.value.code == "knowledge.zip_bomb"
 
 
 def test_extractor_routes_json_end_to_end() -> None:

@@ -374,6 +374,32 @@ class Limits(BaseModel):
     ocr_min_image_px: int = 200
     ocr_max_images_per_document: int = 40
     ocr_max_images_per_page: int = 8
+    # Zip-bomb guard + parse timeout (rag-indexing-plan.md §3.7, decision
+    # س-13). Plan step 14 (`P-01` `P-02`) reads them here rather than from
+    # the environment: alpha reads the same three knobs
+    # (`PARSER_MAX_UNCOMPRESSED_MB`/`PARSER_MAX_COMPRESSION_RATIO`/
+    # `PARSER_TIMEOUT_SECONDS`) through `os.getenv` and never documents their
+    # default values as a decision anywhere -- the `ocr_*` precedent above,
+    # applied to the guard that runs BEFORE any parser touches the bytes.
+    #   * `parser_max_uncompressed_mb` -- 512 MB. The cap on an Office
+    #     archive's (`.docx`/`.xlsx`) SUMMED uncompressed member size: a
+    #     legitimate upload of this platform's `max_upload_bytes` (50 MB,
+    #     compressed) has no business expanding past this on disk/in memory.
+    #   * `parser_max_compression_ratio` -- 100:1. A genuine Office file
+    #     (already-compressed XML + media) runs 3:1 to 10:1; 100:1 is a BOMB
+    #     threshold, not a usage threshold -- wide margin on purpose, so a
+    #     dense-but-legitimate spreadsheet never trips it.
+    #   * `parser_timeout_seconds` -- 300s. Wall-clock cap on ONE document's
+    #     whole parse (`asyncio.wait_for` around the worker's
+    #     `asyncio.to_thread` offload, §3.7) -- generous enough for a heavy
+    #     PDF under the OCR caps above, the `media_timeout_s` precedent.
+    # A guard trip or a timeout is NEVER a silent skip (decision س-13 = أ):
+    # the document becomes `status='failed'` with an explicit `error` --
+    # alpha's "skip and log" suits a folder scan; in this object model (one
+    # document per request) a skip would be a FALSE SUCCESS with zero chunks.
+    parser_max_uncompressed_mb: int = 512
+    parser_max_compression_ratio: int = 100
+    parser_timeout_seconds: int = 300
     max_input_tokens: int = 32_000
     max_output_tokens: int = 4_096
     max_rag_k: int = 50

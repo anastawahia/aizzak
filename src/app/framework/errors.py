@@ -118,6 +118,14 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "knowledge.unsupported_type": ProblemSpec(415, "Unsupported document type"),
         "knowledge.empty_content": ProblemSpec(422, "Document has no content"),
         "knowledge.parse_failed": ProblemSpec(422, "Document could not be parsed"),
+        # rag-indexing-plan.md §3.7, decision س-13 (plan step 14): a zip-bomb
+        # guard trip (`adapters/parsers/extractor.py::_guard_zip_bomb`) or a
+        # parse timeout (`workers/content_resolver.py`'s `asyncio.wait_for`)
+        # is never a silent skip -- both are raised as `ValidationError` and
+        # land the document `status='failed'` with this explicit message,
+        # the same terminal path `knowledge.parse_failed` already takes.
+        "knowledge.zip_bomb": ProblemSpec(422, "Document archive failed the zip-bomb guard"),
+        "knowledge.parse_timeout": ProblemSpec(422, "Document parsing timed out"),
         "knowledge.search_unavailable": ProblemSpec(503, "Knowledge search is not available"),
         # -- media ---------------------------------------------------------- #
         "media.invalid_params": ProblemSpec(422, "Invalid generation parameters"),
