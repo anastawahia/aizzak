@@ -75,6 +75,7 @@ from app.modules.knowledge.application.summarization import (
 from app.modules.knowledge.domain.entities import (
     Chunk,
     Document,
+    ParentChunk,
     ReindexItem,
     ReindexJob,
     Summary,
@@ -309,7 +310,9 @@ class IndexRegisteredDocument:
     document (``pending → indexing``, its own short transaction) and executes
     the pipeline — embedding-provider and vector-store round trips that must
     never run under an open DB transaction (R2). ``finalize`` persists the
-    terminal outcome: chunks + status + the follow-on event. The worker
+    terminal outcome: parent chunks (P-13, plan §3.3 -- minted and written
+    BEFORE the ``Chunk`` rows that reference them via ``parent_id``) + chunks
+    + status + the follow-on event. The worker
     handler wraps ``finalize`` (plus the outbox append and the DD-09
     ``processed_events`` claim) in ONE ``uow.begin`` block, so «terminal
     state without its event» can no longer be produced by a crash between
@@ -432,6 +435,34 @@ class IndexRegisteredDocument:
         doc = attempt.document
 
         if attempt.outcome is not None:
+            now = utc_now()
+
+            # P-13 (plan §3.3): mint + persist this batch's parent chunks
+            # BEFORE the `Chunk` rows that reference them -- `parent_id`
+            # carries an un-cascaded FK to `parent_chunks(id)`
+            # (`0005_parent_chunks.py`), so the referenced row must already
+            # exist. Id minting happens HERE, one layer above
+            # `IndexDocument`, mirroring where `Chunk.id` itself is minted --
+            # `ParentChunkDraft`'s own docstring.
+            parent_id_by_key: dict[str, str] = {}
+            if attempt.outcome.parents:
+                drafts = sorted(attempt.outcome.parents, key=lambda draft: draft.order)
+                parent_rows = [
+                    ParentChunk(
+                        id=new_uuid7(),
+                        document_id=doc.id,
+                        workspace_id=ctx.workspace_id,
+                        seq=seq,
+                        text=draft.text,
+                        created_at=now,
+                    )
+                    for seq, draft in enumerate(drafts)
+                ]
+                parent_id_by_key = {
+                    draft.key: row.id for draft, row in zip(drafts, parent_rows, strict=True)
+                }
+                await self._documents.add_parent_chunks(ctx, parent_rows)
+
             chunks = [
                 Chunk(
                     id=new_uuid7(),
@@ -441,12 +472,16 @@ class IndexRegisteredDocument:
                     text=indexed_chunk.text,
                     token_count=indexed_chunk.token_count,
                     vector_ref=VectorRef(attempt.outcome.collection, indexed_chunk.chunk_id),
+                    parent_id=(
+                        parent_id_by_key.get(indexed_chunk.parent_key)
+                        if indexed_chunk.parent_key
+                        else None
+                    ),
                 )
                 for indexed_chunk in attempt.outcome.chunks
             ]
             await self._documents.add_chunks(ctx, chunks)
 
-            now = utc_now()
             doc.complete_indexing(len(chunks), now)
             await self._documents.set_status(ctx, doc.id, IndexStatus.INDEXED.value)
 

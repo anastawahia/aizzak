@@ -11,6 +11,7 @@ parser adapters exercised by ``test_knowledge_parsers.py``.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import subprocess
@@ -660,6 +661,150 @@ async def test_index_document_payload_copies_citation_allowlist_keys_when_presen
     assert point.payload["table_name"] == "revenue"
     assert "irrelevant_key" not in point.payload
     assert point.payload["kind"] == "table"
+
+
+# --------------------------------------------------------------------------- #
+# application.indexing.IndexDocument -- P-13 table row explosion (§3.3)       #
+# --------------------------------------------------------------------------- #
+def _table_json(headers: list[str], rows: list[dict[str, object]]) -> str:
+    return json.dumps({"headers": headers, "rows": rows})
+
+
+async def test_index_document_explodes_table_rows_into_one_node_per_row() -> None:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = _table_json(
+        ["Name", "Salary"],
+        [{"Name": "Ahmad", "Salary": "5000"}, {"Name": "Sara", "Salary": "6000"}],
+    )
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(outcome.chunks) == 2
+    texts = {chunk.text for chunk in outcome.chunks}
+    assert texts == {"Name: Ahmad; Salary: 5000", "Name: Sara; Salary: 6000"}
+
+
+async def test_index_document_small_table_parent_is_full_table_text() -> None:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = _table_json(
+        ["Name", "Salary"],
+        [{"Name": "Ahmad", "Salary": "5000"}, {"Name": "Sara", "Salary": "6000"}],
+    )
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == "Name: Ahmad; Salary: 5000\nName: Sara; Salary: 6000"
+
+
+async def test_index_document_large_table_parent_is_header_only() -> None:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    # Two columns so every row's sentence comfortably clears MIN_NODE_CHARS
+    # (P-15, plan step 8) regardless of the row index's digit width.
+    rows = [{"Name": f"person-{i}", "Dept": "engineering"} for i in range(21)]
+    text = _table_json(["Name", "Dept"], rows)
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(outcome.chunks) == 21
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == "Name; Dept"
+
+
+async def test_index_document_table_parent_text_never_reaches_the_qdrant_payload() -> None:
+    """Constraint 1 (plan §3.2): the payload carries only what
+    ``_CITATION_KEYS`` allowlists -- never a parent chunk's text, and never
+    the internal ``_table_parent_key`` scratch metadata either."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    # Two rows, two columns (each row's own sentence clears MIN_NODE_CHARS,
+    # P-15/plan step 8): the parent text (both rows' sentences, newline-
+    # joined) is then necessarily distinct from any single row's own node
+    # text, so the assertion below cannot pass by coincidence.
+    text = _table_json(
+        ["Name", "City"], [{"Name": "Ahmad", "City": "Amman"}, {"Name": "Sara", "City": "Amman"}]
+    )
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    parent_text = outcome.parents[0].text
+    for chunk in outcome.chunks:
+        point = vectors.points["kn-ws1"][chunk.chunk_id]
+        assert parent_text not in point.payload.values()
+        assert "_table_parent_key" not in point.payload
+
+
+async def test_index_document_malformed_table_json_falls_back_to_word_window() -> None:
+    """A TABLE-kind chunk whose text is not the ``{headers, rows}`` shape
+    (parsers.md §7) is a defensive fallback, not a crash: it goes through the
+    ordinary word-window path exactly like before this step."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [_parsed_chunk("not valid json at all", order=0, kind=ParsedChunkKind.TABLE)]
+    )
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(outcome.chunks) == 1
+    assert outcome.chunks[0].text == "not valid json at all"
+    assert outcome.parents == ()
+
+
+async def test_index_document_table_row_hard_cap_truncates_and_declares() -> None:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    # Zero-padded so every row's sentence has a consistent, comfortably-over-
+    # MIN_NODE_CHARS length regardless of the row index's digit width.
+    rows = [{"Name": f"person-{i:04d}"} for i in range(2003)]  # TABLE_ROW_HARD_CAP (2000) + 3
+    text = _table_json(["Name"], rows)
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    # 2000 exploded row nodes + (at least) one overflow node for the last 3
+    assert len(outcome.chunks) >= 2001
+    row_texts = {chunk.text for chunk in outcome.chunks}
+    assert "Name: person-0000" in row_texts
+    assert "Name: person-1999" in row_texts
+    assert "Name: person-2000" not in row_texts  # rows past the cap never get their own node
+    overflow_texts = [c.text for c in outcome.chunks if "person-2000" in c.text]
+    assert (
+        overflow_texts and "person-2001" in overflow_texts[0] and "person-2002" in overflow_texts[0]
+    )
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == "Name"  # still header-only (2003 > TABLE_PARENT_MAX_ROWS)
 
 
 # --------------------------------------------------------------------------- #

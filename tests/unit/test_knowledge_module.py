@@ -12,6 +12,7 @@ just mocked at the boundary.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -34,7 +35,7 @@ from app.modules.knowledge.application.use_cases import (
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id
-from app.modules.knowledge.domain.entities import Chunk, Document
+from app.modules.knowledge.domain.entities import Chunk, Document, ParentChunk
 from app.modules.knowledge.domain.errors import DocumentStateError, InvalidKnowledgeInput
 from app.modules.knowledge.domain.events import (
     DocumentIndexed,
@@ -245,11 +246,13 @@ class _FakeHybridVectors:
 
 class _FakeDocumentRepository:
     """In-memory ``DocumentRepository``; records every ``set_status`` call
-    and flattens every ``add_chunks`` call into ``self.chunks``."""
+    and flattens every ``add_chunks``/``add_parent_chunks`` call into
+    ``self.chunks``/``self.parents``."""
 
     def __init__(self) -> None:
         self.docs: dict[str, Document] = {}
         self.chunks: list[Chunk] = []
+        self.parents: list[ParentChunk] = []
         self.status_calls: list[tuple[str, str, str | None]] = []
 
     async def get(self, ctx: ExecutionContext, doc_id: str) -> Document | None:
@@ -268,6 +271,11 @@ class _FakeDocumentRepository:
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
+
+    async def add_parent_chunks(
+        self, ctx: ExecutionContext, parents: Sequence[ParentChunk]
+    ) -> None:
+        self.parents.extend(parents)
 
     async def ids_for_files(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> Sequence[str]:
         # The real predicate: same workspace, `file_id` in the caller's list.
@@ -729,6 +737,45 @@ async def test_index_registered_document_missing_document_raises_not_found() -> 
         await use_case.execute(
             _ctx(), document_id="missing", parsed=_parsed_document([]), model="m", api_key="k"
         )
+
+
+async def test_index_registered_document_wires_table_parent_id_end_to_end() -> None:
+    """P-13 (plan §3.3) end to end: a small table's rows explode into their
+    own ``Chunk`` rows, a SINGLE ``ParentChunk`` row is minted for the whole
+    table, and every one of those ``Chunk`` rows' ``parent_id`` resolves to
+    that same minted id -- never the table text itself (constraint 1,
+    plan §3.2)."""
+    documents = _FakeDocumentRepository()
+    ctx = _ctx("ws1")
+    doc = _document(doc_id="doc-1", workspace_id="ws1", file_id="file-1")
+    documents.docs[doc.id] = doc
+    use_case = IndexRegisteredDocument(
+        documents, IndexDocument(_FakeEmbeddings(dim=6), _FakeHybridVectors())
+    )
+    table_text = json.dumps(
+        {
+            "headers": ["Name", "Salary"],
+            "rows": [{"Name": "Ahmad", "Salary": "5000"}, {"Name": "Sara", "Salary": "6000"}],
+        }
+    )
+    table_chunk = ParsedChunk(text=table_text, order=0, kind=ParsedChunkKind.TABLE, metadata={})
+    parsed = _parsed_document([table_chunk])
+
+    result, _events = await use_case.execute(
+        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert result.status is IndexStatus.INDEXED
+    assert len(documents.parents) == 1
+    parent = documents.parents[0]
+    assert parent.document_id == doc.id
+    assert parent.workspace_id == "ws1"
+    assert parent.text == "Name: Ahmad; Salary: 5000\nName: Sara; Salary: 6000"
+
+    assert len(documents.chunks) == 2
+    for chunk in documents.chunks:
+        assert chunk.parent_id == parent.id
+        assert chunk.text != parent.text  # the payload/row text, never the parent text
 
 
 async def test_run_persists_no_terminal_outcome_until_finalize() -> None:
