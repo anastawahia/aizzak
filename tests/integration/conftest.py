@@ -75,6 +75,7 @@ from app.modules.integrations.adapters.sql_repository import (
 from app.modules.knowledge.adapters.sql_repository import (
     SqlDocumentRepository,
     SqlReindexJobRepository,
+    SqlSummaryRepository,
 )
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.memory.adapters.sql_repository import SqlMemoryRepository
@@ -978,6 +979,11 @@ def repo_knowledge(tenant_session: TenantSessionFactory) -> SqlDocumentRepositor
 @pytest.fixture
 def repo_reindex_jobs(tenant_session: TenantSessionFactory) -> SqlReindexJobRepository:
     return SqlReindexJobRepository(tenant_session)
+
+
+@pytest.fixture
+def repo_summaries(tenant_session: TenantSessionFactory) -> SqlSummaryRepository:
+    return SqlSummaryRepository(tenant_session)
 
 
 @pytest.fixture

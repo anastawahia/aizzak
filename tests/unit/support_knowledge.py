@@ -280,6 +280,25 @@ class InMemorySummaryRepository:
             return None
         return row
 
+    async def newest_in_other_language(
+        self, ctx: ExecutionContext, document_id: str, kind: SummaryKind, lang: SummaryLanguage
+    ) -> Summary | None:
+        # The SQL adapter's ORDER BY, honoured rather than faked away: a fake
+        # that returned whichever row `dict` happened to yield first would
+        # pass the P-44 tests while hiding the one property that makes a
+        # translated summary reproducible -- the same source every time.
+        candidates = [
+            row
+            for key, row in self.rows.items()
+            if key[0] == document_id
+            and key[1] == kind.value
+            and key[2] != lang.value
+            and row.workspace_id == ctx.workspace_id
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda row: (row.built_at, row.id))
+
     async def upsert(self, ctx: ExecutionContext, summary: Summary) -> None:
         self.rows[(summary.document_id, summary.kind.value, summary.lang.value)] = summary
 

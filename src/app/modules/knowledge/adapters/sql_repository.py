@@ -824,6 +824,38 @@ class SqlSummaryRepository:
             raise _translate(exc) from exc
         return None if row is None else _hydrate_summary(row)
 
+    async def newest_in_other_language(
+        self,
+        ctx: ExecutionContext,
+        document_id: UuidStr,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> Summary | None:
+        # `!=` on `lang` rather than `NOT IN`: `uq_summary_key` makes at most
+        # one row per language, so excluding the requested one is the whole
+        # filter. The ORDER BY is the port's contract, not a preference --
+        # `built_at` first, `id` (UUIDv7, so time-ordered) to settle two rows
+        # stamped in the same transaction -- because a caller that got a
+        # different translation source on a retry would produce a different
+        # summary from an unchanged corpus.
+        stmt = (
+            select(summaries)
+            .where(
+                summaries.c.document_id == document_id,
+                summaries.c.kind == kind.value,
+                summaries.c.lang != lang.value,
+                summaries.c.workspace_id == ctx.workspace_id,
+            )
+            .order_by(summaries.c.built_at.desc(), summaries.c.id.desc())
+            .limit(1)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).mappings().first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return None if row is None else _hydrate_summary(row)
+
     async def upsert(self, ctx: ExecutionContext, summary: Summary) -> None:
         # The aggregate's OWN workspace_id (not ctx's) -- the forged-write
         # guard every write in this adapter uses: a mismatch is rejected by

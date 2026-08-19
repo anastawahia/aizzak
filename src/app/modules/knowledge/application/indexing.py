@@ -727,14 +727,25 @@ def _table_to_segments(
     if not exploded.row_sentences:
         return None
 
+    # `sub_order` carries the ROW's index, for the reason semantic
+    # pre-splitting stamps it (`SourceSegment`'s own docstring): every row of
+    # one table is a finer subdivision of ONE structural position, so all of
+    # them share `chunk.order` and every metadata signal `_order_key`
+    # consults. Without this column their keys would be byte-identical and
+    # `_order_key` would stop being the TOTAL order the chunking module
+    # documents -- row order would survive only as a side effect of
+    # `list.sort` being stable over an insertion order nothing states. The
+    # resulting sequence is the same either way; what changes is whether it
+    # is guaranteed or merely arranged.
     row_segments = [
         SourceSegment(
             text=sentence,
             order=chunk.order,
             kind=str(chunk.kind),
             metadata={**chunk.metadata, _TABLE_PARENT_KEY: parent_key},
+            sub_order=row_index,
         )
-        for sentence in exploded.row_sentences
+        for row_index, sentence in enumerate(exploded.row_sentences)
     ]
     if exploded.truncated:
         log.info(
@@ -752,6 +763,9 @@ def _table_to_segments(
                         _TABLE_PARENT_KEY: parent_key,
                         "table_truncated": True,
                     },
+                    # The overflow notice reads last, after every row it is
+                    # counting -- one past the final row's own index.
+                    sub_order=len(exploded.row_sentences),
                 )
             )
 

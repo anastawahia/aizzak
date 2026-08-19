@@ -481,6 +481,32 @@ def test_content_pipeline_unchanged_is_false_for_a_never_indexed_document() -> N
     )
 
 
+def test_a_documents_content_hash_is_stamped_once_and_can_never_change() -> None:
+    """The tripwire for plan §3.6's summary-invalidation clause (step 15),
+    named in ``domain/pipeline.py``'s own docstring.
+
+    That clause ("a changed ``content_hash`` deletes the document's
+    ``summaries``") has no code path because a stored hash cannot change:
+    ``complete_indexing`` is the column's only writer, it refuses any status
+    but ``indexing``, and INV-K3 forbids a document returning there. So the
+    value goes ``None -> hash`` once, and a summary can never outlive the
+    text it was written from.
+
+    If this test ever fails, that reasoning has been broken — an in-place
+    re-index now exists — and the summary invalidation the plan describes
+    has to be built for real before the change ships.
+    """
+    doc = _document(status=IndexStatus.INDEXING)
+    doc.complete_indexing(2, utc_now(), content_hash="hash-abc", pipeline_version=PIPELINE_VERSION)
+    assert doc.content_hash == "hash-abc"
+
+    with pytest.raises(DocumentStateError):
+        doc.complete_indexing(
+            2, utc_now(), content_hash="hash-xyz", pipeline_version=PIPELINE_VERSION
+        )
+    assert doc.content_hash == "hash-abc"
+
+
 # --------------------------------------------------------------------------- #
 # RegisterDocumentFromFile                                                    #
 # --------------------------------------------------------------------------- #

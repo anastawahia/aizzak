@@ -82,15 +82,22 @@ positional signal is more informative than an arbitrary phase order.
 last three columns because ALL THREE are always present for every producer
 (``sub_order`` defaults to 0, ``SourceSegment``'s own docstring), which is
 what keeps the whole key a total order: two windows can only ever compare
-equal if they belong to the very same split of the very same segment.
+equal if they belong to the very same split of the very same segment. That
+holds only as long as every producer that mints SEVERAL segments from one
+``ParsedChunk`` ranks them with ``sub_order`` — today semantic pre-splitting
+and table-row explosion, both in ``application/indexing.py``, both listed on
+``SourceSegment`` itself. A future producer that mints a family and leaves
+``sub_order`` at 0 would silently demote this key to a partial order whose
+output happens to look right because ``list.sort`` is stable; the sentence
+above is the contract it would be breaking.
 
-``segment.sub_order`` (P-20, plan §4 step 13, §3.4) sits between
-``segment.order`` and the split-part index for exactly one reason: semantic
-pre-splitting (``application/indexing.py``) mints SEVERAL ``SourceSegment``s
-out of one original ``ParsedChunk`` -- one per semantic part -- all sharing
-that chunk's own ``order`` and metadata verbatim (there is only one
-structural position to report; the parts are a finer subdivision of it, not
-new positions). Without a column between them, those parts would only be
+``segment.sub_order`` sits between ``segment.order`` and the split-part
+index for exactly one reason: those producers mint SEVERAL
+``SourceSegment``s out of one original ``ParsedChunk`` -- one per semantic
+part, one per table row -- all sharing that chunk's own ``order`` and
+metadata verbatim (there is only one structural position to report; the
+parts are a finer subdivision of it, not new positions). Without a column
+between them, those parts would only be
 distinguished by their OWN, independently-restarting-at-0 split-part index,
 which does not track reading order across parts (part 2's first window
 would tie, then lose, against part 1's second window). ``sub_order`` is
@@ -195,15 +202,24 @@ _ORDER_SIGNAL_KEYS = ("page_number", "position_in_doc", "paragraph_number", "chu
 class SourceSegment:
     """One structurally-ordered source segment to be split into chunks.
 
-    ``sub_order`` (P-20, plan §4 step 13, §3.4) disambiguates several
-    ``SourceSegment``\\s minted from the SAME original ``ParsedChunk`` after
-    application-layer semantic pre-splitting: the sequential index (0, 1,
-    2, ...) of one semantic part within that original chunk's text, in
-    reading order. It defaults to 0 -- what every OTHER producer implicitly
-    means ("this is the whole chunk, there is no sibling part to rank
-    against") -- so it is a silent no-op for every segment that was never
-    semantically split, and it changes nothing about how those segments
-    compare to each other (module docstring, ``_order_key``).
+    ``sub_order`` disambiguates several ``SourceSegment``\\s minted from the
+    SAME original ``ParsedChunk``: the sequential index (0, 1, 2, ...) of one
+    part within that original chunk's text, in reading order. Two producers
+    in ``application/indexing.py`` mint such families, and both need it for
+    the identical reason — the parts share ONE structural position, so
+    ``segment.order`` and every metadata signal ``_order_key`` consults are
+    byte-identical across them:
+
+    * semantic pre-splitting (P-20, plan §4 step 13, §3.4) — one segment per
+      semantic part of a prose chunk;
+    * table-row explosion (P-13, plan §4 step 7, §3.3) — one segment per row
+      of a table, plus the truncation notice last if the row cap was hit.
+
+    It defaults to 0 -- what every OTHER producer implicitly means ("this is
+    the whole chunk, there is no sibling part to rank against") -- so it is a
+    silent no-op for every segment that was never subdivided, and it changes
+    nothing about how those segments compare to each other (module docstring,
+    ``_order_key``).
     """
 
     text: str
@@ -265,10 +281,12 @@ def chunk_segments(
         for split_part, window in enumerate(windows):
             candidates.append((_order_key(segment, split_part), segment, window))
 
-    # `list.sort` is stable (Python guarantee): two candidates whose keys
-    # compare equal — which `_order_key`'s own docstring says can only happen
-    # for the same split of the same segment — keep their `candidates`
-    # insertion order, i.e. never actually collide in practice.
+    # `list.sort` is stable (Python guarantee), which is a safety net and not
+    # the mechanism: `_order_key` is a TOTAL order (module docstring), so two
+    # candidates can only compare equal if they are the same split of the
+    # same segment -- and then insertion order is the only order there is.
+    # Stability is what keeps the output defined if a future producer ever
+    # breaks that; it is not what makes today's output correct.
     candidates.sort(key=lambda candidate: candidate[0])
 
     chunks: list[ChunkToIndex] = []
@@ -300,10 +318,10 @@ def _order_key(segment: SourceSegment, split_part: int) -> tuple[int, ...]:
     carries that key as an ``int``, ``(1, 0)`` otherwise — so a segment
     missing a column always sorts AFTER one that has it, at that column,
     without ever comparing ``None`` against an ``int``. ``segment.order``,
-    ``segment.sub_order`` (P-20, plan §4 step 13 — see ``SourceSegment``'s
-    docstring), and ``split_part`` close the key as plain ints because all
+    ``segment.sub_order`` (see ``SourceSegment``'s docstring for its two
+    producers), and ``split_part`` close the key as plain ints because all
     three are always present, which is what keeps this a TOTAL order (module
-    docstring).
+    docstring — including the condition that keeps it one).
     """
     signals: list[int] = []
     for key in _ORDER_SIGNAL_KEYS:

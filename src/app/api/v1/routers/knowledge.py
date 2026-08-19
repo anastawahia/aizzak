@@ -329,9 +329,9 @@ async def index_file(
     idempotency_key: IdempotencyKey = None,
 ) -> DocumentOut:
     """Index an uploaded file — **202**, like every other route that queues a
-    worker's work. The body answers with the ``pending`` document that was
-    just registered, not with an indexed one: 201 would promise a corpus entry
-    that does not exist until a worker has embedded it.
+    worker's work. Ordinarily the body answers with the ``pending`` document
+    that was just registered, not with an indexed one: 201 would promise a
+    corpus entry that does not exist until a worker has embedded it.
 
     This is the route that replaced automatic ingestion. A file is indexed
     because somebody asked for this, once, and never because it finished
@@ -347,6 +347,18 @@ async def index_file(
       one cannot be minted — INV-K3 says it can — but because two live
       documents over one file make every search answer from it twice. Rebuild
       through ``POST /knowledge/reindex``, which destroys what it replaces.
+
+    **One exception to both of those, added by plan step 15 (§3.6, decision
+    س-14 = أ):** a file whose document is ALREADY indexed under today's
+    ``PIPELINE_VERSION`` is neither a 409 nor a fresh registration. It answers
+    **202 with that indexed document** — the same status, a different body
+    shape than the paragraph above describes, and no work queued. The reply
+    is honest either way: the client asked for this file to be in the corpus,
+    and it already is, in exactly the shape re-indexing it would produce. A
+    409 there would refuse a request that was already satisfied, and re-doing
+    the embeddings would spend the workspace's budget to arrive at identical
+    rows. The moment a parser changes, ``PIPELINE_VERSION`` is raised and the
+    same call is a 409 again, pointing at ``reindex`` as before.
 
     ``Idempotency-Key`` is accepted for the reason it is on ``reindex``: a
     retried POST otherwise buys a second document, and the workspace pays for

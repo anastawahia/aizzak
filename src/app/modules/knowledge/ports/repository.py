@@ -396,6 +396,40 @@ class SummaryRepository(Protocol):
         """
         ...
 
+    async def newest_in_other_language(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> Summary | None:
+        """The most recently built summary of this document and kind in ANY
+        language OTHER than ``lang``, or ``None`` (plan step 20, `P-44`).
+
+        The one read that makes ``SummarizeDocument.translate`` reachable: a
+        build asked for in a language nothing is stored under can be answered
+        by translating a few kilobytes of already-reduced Markdown instead of
+        mapping and reducing the whole document a second time.
+        ``BuildSummary.claim`` is the caller, and the rule for WHEN
+        translating is allowed lives there rather than here — this method
+        only answers "is there one in another language", never "should you
+        use it".
+
+        This does not contradict ``get``'s no-fallback rule. ``get`` answers
+        a READ, where handing back another language would mislabel the
+        answer; this feeds a BUILD, whose whole job is to produce the
+        requested language and which stores its result under the requested
+        key like any other build.
+
+        "Most recently built" (``built_at``, then ``id`` to break a tie
+        deterministically — ids are UUIDv7, so the later row wins) is a
+        choice rather than an accident of row order: with two other languages
+        stored, the newest is the one whose wording the workspace most
+        recently accepted, and a caller must never get a different source
+        from one claim to the next for the same unchanged corpus.
+        """
+        ...
+
     async def upsert(self, ctx: ExecutionContext, summary: Summary) -> None:
         """Store a summary, REPLACING any previous one under the same key
         (``uq_summary_key``).

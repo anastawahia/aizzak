@@ -21,10 +21,18 @@ they say today).
 **The three inviolable constraints from the plan, carried into the DDL
 verbatim:**
 
-1. Qdrant's payload carries a parent chunk's ID only, never its text (an
+1. Qdrant's payload carries NEITHER a parent chunk's text NOR its id (an
    indexing-time decision this migration does not enforce, but the schema
-   below is what makes the ID meaningful to carry) — the N-way storage
-   blow-up alpha's own comment warns against.
+   below is what makes carrying neither sufficient). Injecting the parent
+   TEXT into every point is the N-way storage blow-up alpha's own comment
+   warns against; the same reasoning drops even the bare id along with it,
+   because duplicating it into every point buys nothing that
+   ``chunk_id -> chunks.parent_id -> parent_chunks`` — one SQL join from a
+   key the payload already holds — does not already reach. Parent expansion
+   at retrieval time is therefore a REPOSITORY lookup (plan §3.2 constraint
+   1, retrieval plan §3.7 `P-34`), never a payload read. See
+   ``domain/entities.py::Chunk.parent_id``, which states the same rule at
+   the other end of the same decision.
 2. ``parent_chunks`` is a genuinely separate table from ``chunks`` — see
    above.
 3. ``fk_parent_chunk_doc`` carries ``ON DELETE CASCADE`` on ``document_id``

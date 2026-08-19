@@ -1217,11 +1217,22 @@ class SummaryBuildPlan:
     The ``ReindexPlan`` precedent — the plan is fully resolved outside the
     work so the work itself makes no decisions, and so a retry of the work
     means the same thing the second time.
+
+    ``translate_from`` is P-44 (plan §4 step 20, §3.10): the stored summary
+    this build will TRANSLATE instead of building from chunks. ``None`` is
+    the ordinary map-reduce build. Which of the two happens is decided in
+    ``claim`` and recorded here rather than re-derived in ``run``, for this
+    dataclass's whole reason: the work must not make decisions, or the same
+    job could take a different path on a redelivery than it took the first
+    time. ``chunks`` is empty exactly when this is set — a translation reads
+    a few kilobytes of stored Markdown and never the corpus, which is the
+    saving the step exists for.
     """
 
     job: SummaryJob
     chunks: tuple[str, ...]
     summarizer: ResolvedSummarizer
+    translate_from: Summary | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1256,6 +1267,14 @@ class BuildSummary:
     also what makes cancelling a ``queued`` build free — the worker's claim
     finds a ``cancelled`` job and declines, with nothing in the worker needing
     to know cancellation exists.
+
+    **This is also P-44's only caller** (plan §4 step 20, §3.10): a build in a
+    language nothing is stored under, for a document that HAS a summary in
+    another one, is answered by translating that row rather than mapping the
+    corpus again. ``claim`` decides it, ``run`` performs it, and ``finalize``
+    stores it under the requested key like any other build — see ``claim``
+    for the rule and ``SummaryBuildPlan.translate_from`` for why the decision
+    is recorded rather than re-derived.
     """
 
     def __init__(
@@ -1293,16 +1312,57 @@ class BuildSummary:
         route names no reachable provider, or a workspace with no key for it.
         That raises out of this method and the handler answers it with
         ``fail``, exactly as the indexing handler answers an unparseable file.
+
+        **This is also where P-44 (plan §4 step 20, §3.10) decides to
+        translate instead of build**, under one rule with two halves:
+
+        * nothing is stored under the requested ``(document, kind, lang)``
+          — an occupied key means the POST was a REBUILD (``RequestSummary``:
+          "POST always builds", there is no ``force`` because ``GET`` is how
+          you read what is stored), and answering a rebuild by re-translating
+          a neighbouring language would quietly make the requested language
+          unrebuildable for as long as any other one exists; AND
+        * a summary of the same document and kind exists in some OTHER
+          language, which is then the source.
+
+        When both hold the corpus is never read: no ``chunk_texts``, and the
+        job's total is the SOURCE's ``source_chunks`` — the number of chunks
+        the text being translated actually stands for. Reporting the
+        document's own chunk count instead would promise a map over the whole
+        document that this build is precisely not doing.
         """
         job = await self._jobs.get(ctx, job_id)
         if job is None or job.is_terminal:
             return None
 
         resolved = await self._resolver.resolve_summarizer(ctx)
+
+        source = await self._translation_source(ctx, job)
+        if source is not None:
+            job.start(source.source_chunks)
+            await self._jobs.save(ctx, job)
+            return SummaryBuildPlan(job=job, chunks=(), summarizer=resolved, translate_from=source)
+
         chunks = tuple(await self._documents.chunk_texts(ctx, job.document_id))
         job.start(len(chunks))
         await self._jobs.save(ctx, job)
         return SummaryBuildPlan(job=job, chunks=chunks, summarizer=resolved)
+
+    async def _translation_source(self, ctx: ExecutionContext, job: SummaryJob) -> Summary | None:
+        """The stored summary P-44 would translate for ``job``, or ``None``
+        for the ordinary map-reduce build — ``claim``'s docstring states the
+        rule; this is it in code, in one place so both halves stay together.
+
+        The ``get`` comes FIRST and short-circuits: the common case by far is
+        a key that is already occupied (every rebuild), and that case must
+        cost one read, not two.
+        """
+        existing = await self._summaries.get(ctx, job.document_id, job.kind, job.lang)
+        if existing is not None:
+            return None
+        return await self._summaries.newest_in_other_language(
+            ctx, job.document_id, job.kind, job.lang
+        )
 
     async def fail(
         self, ctx: ExecutionContext, *, job_id: Uuid, reason: str
@@ -1340,6 +1400,14 @@ class BuildSummary:
         Progress is written through ``record_progress`` and never through
         ``save``: see that port method for why a whole-row write here would
         let a running build overwrite a cancellation it had not noticed yet.
+
+        **A translation (P-44) takes the same three-phase path**, and every
+        guarantee below is the build's own: one provider call inside the same
+        broad catch, the same ``SummaryAttempt`` carried to ``finalize``, the
+        same terminal transaction. It reports no intermediate progress and
+        polls no cancellation, because there is no step boundary to observe
+        one at — a single round trip either returns or fails, exactly like
+        the one-batch ``full`` build and every ``overview``.
         """
         job = plan.job
 
@@ -1352,15 +1420,23 @@ class BuildSummary:
             return fresh is None or fresh.is_terminal
 
         try:
-            draft = await self._pipeline.execute(
-                ctx,
-                chunks=plan.chunks,
-                kind=job.kind,
-                lang=job.lang,
-                summarizer=plan.summarizer,
-                on_progress=_progress,
-                should_cancel=_should_cancel,
-            )
+            if plan.translate_from is not None:
+                draft = await self._pipeline.translate(
+                    ctx,
+                    source=plan.translate_from,
+                    lang=job.lang,
+                    summarizer=plan.summarizer,
+                )
+            else:
+                draft = await self._pipeline.execute(
+                    ctx,
+                    chunks=plan.chunks,
+                    kind=job.kind,
+                    lang=job.lang,
+                    summarizer=plan.summarizer,
+                    on_progress=_progress,
+                    should_cancel=_should_cancel,
+                )
         except SummaryBuildCancelled:
             return SummaryAttempt(job=job, draft=None, error=None, cancelled=True)
         except Exception as exc:

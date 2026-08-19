@@ -18,6 +18,31 @@ are BOTH required, and a caller that forgets to pass the live
 `PIPELINE_VERSION` fails obviously (a `TypeError` on the missing keyword),
 not silently.
 
+**Summary invalidation (§3.6's last clause, plan §4 step 15) — satisfied,
+and NOT by a path in this module.** The plan states it as "a changed
+`content_hash` deletes the document's `summaries` rows", which reads like a
+missing `DELETE`. There is none, because a stored `content_hash` can never
+CHANGE — the three rules that make that true are worth naming here, since
+this is where anyone chasing the clause will look:
+
+1. a file is immutable once `ready` (INV-F4 — only its name may change), so
+   the bytes behind a document never move under it;
+2. `Document.complete_indexing` is the ONLY writer of the column and refuses
+   any status but `indexing`, and INV-K3 forbids a document ever returning
+   to that status — so the value goes `NULL -> hash` exactly once, per
+   document, for the document's whole life;
+3. re-processing content therefore means a NEW document, and the old one is
+   destroyed by `DocumentRepository.purge`, whose FIRST statement deletes
+   that document's summaries (INV-K4).
+
+So "a summary that outlived the text it was written from" is unreachable,
+and an invalidation path keyed on a hash change would be code no input can
+execute. What WOULD make it real is an in-place re-index — a document
+returning to `indexing` and completing a second time. That is the change to
+make this a live requirement again, and `test_a_documents_content_hash_is_
+stamped_once_and_can_never_change` is the tripwire that fails when someone
+tries.
+
 **Why `PIPELINE_VERSION = 2`.** This constant did not exist before this
 plan — there was no prior explicit version to preserve continuity with, so
 "1" is reserved as the IMPLICIT baseline every document indexed before this

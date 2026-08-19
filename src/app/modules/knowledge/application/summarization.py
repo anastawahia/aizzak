@@ -608,12 +608,29 @@ def _glance_sample(readable: Sequence[str]) -> tuple[str, int]:
     trip itself. A document with at most ``_OVERVIEW_CHUNKS`` readable
     chunks is short enough that "sampling" it would just be reading all of
     it, so it is -- with no gaps, since nothing was actually skipped.
+
+    **The sample spans the document END TO END**, first chunk to last. The
+    obvious formula -- ``int(i * len / _OVERVIEW_CHUNKS)`` -- does not: its
+    largest index is ``int(7 * len / 8)``, which never reaches ``len - 1``
+    for any length past ``_OVERVIEW_CHUNKS``, so the document's LAST chunk
+    was never read at any length. Worse, at exactly nine chunks it produces
+    ``{0..7}`` -- the "first 8" this whole step exists to replace -- and
+    stays visibly front-loaded through the low teens. Spacing across
+    ``len - 1`` instead of ``len`` pins both ends and distributes the rest
+    between them, which is what "across the document" has to mean for a
+    conclusion to be a glance at the whole and not at its opening.
     """
     if len(readable) <= _OVERVIEW_CHUNKS:
         return _join(readable), len(readable)
 
-    step = len(readable) / _OVERVIEW_CHUNKS
-    indices = sorted({int(i * step) for i in range(_OVERVIEW_CHUNKS)})
+    # Integer arithmetic with explicit rounding (`+ last // 2`), not float
+    # division: the positions are an index grid, and this keeps them exact
+    # at every length instead of depending on how a ratio happens to round.
+    # `max(..., 1)` guards the denominator only against a hypothetical
+    # `_OVERVIEW_CHUNKS = 1`, which would pick index 0 and be right to.
+    span = len(readable) - 1
+    last = max(_OVERVIEW_CHUNKS - 1, 1)
+    indices = sorted({(i * span + last // 2) // last for i in range(_OVERVIEW_CHUNKS)})
 
     parts: list[str] = []
     previous: int | None = None

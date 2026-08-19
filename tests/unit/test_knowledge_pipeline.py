@@ -30,7 +30,11 @@ from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.types import Json
-from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
+from app.modules.knowledge.application.indexing import (
+    IndexDocument,
+    IndexOutcome,
+    _table_to_segments,
+)
 from app.modules.knowledge.application.retrieval import RetrieveContext
 from app.modules.knowledge.domain.chunking import (
     MIN_NODE_CHARS,
@@ -1921,6 +1925,35 @@ async def test_index_document_table_row_hard_cap_truncates_and_declares() -> Non
     assert len(outcome.parents) == 1
     assert outcome.parents[0].text == "Name"  # still header-only (2003 > TABLE_PARENT_MAX_ROWS)
     assert outcome.parents[0].is_complete is False
+
+
+async def test_index_document_ranks_table_rows_by_sub_order_not_by_sort_stability() -> None:
+    """Every row of one table shares its ``order`` and every metadata signal
+    ``_order_key`` consults, so without ``sub_order`` their keys would be
+    byte-identical and reading order would survive only as a side effect of
+    ``list.sort`` being stable (``domain/chunking.py``'s TOTAL-order
+    contract).
+
+    Asserted by CONSTRUCTION rather than by output: the rows are handed to
+    the chunker in reading order, so the emitted sequence looks the same
+    either way. What this pins is that the ordering key can tell them
+    apart -- feed the same segments in reversed order and the sort must put
+    them back, which a partial order cannot do.
+    """
+    rows = [{"Name": f"person-{i:02d}", "Dept": "engineering"} for i in range(6)]
+    text = _table_json(["Name", "Dept"], rows)
+    chunk = _parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)
+
+    built = _table_to_segments(chunk, parent_key="p-1")
+    assert built is not None
+    segments, _parent = built
+    assert [segment.sub_order for segment in segments] == [0, 1, 2, 3, 4, 5]
+
+    shuffled = list(reversed(segments))
+    restored = chunk_segments(shuffled, max_tokens=64, overlap_tokens=0)
+    assert [node.text for node in restored] == [
+        f"Name: person-{i:02d}; Dept: engineering" for i in range(6)
+    ]
 
 
 # --------------------------------------------------------------------------- #

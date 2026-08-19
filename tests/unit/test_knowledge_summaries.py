@@ -278,21 +278,41 @@ async def test_an_overview_makes_exactly_one_call_and_samples_across_the_whole_d
     document whose opening is a generic cover sheet or table of contents
     gave a worthless glance under the old "first 8" rule. Still exactly ONE
     provider call, regardless of length: sampling is a position choice, not
-    an extra round trip. 40 chunks / 8 samples land on indices
-    0, 5, 10, ..., 35 -- reaching well past the opening (chunk 20, the
-    document's middle) while still stopping short of the end (chunk 39)."""
+    an extra round trip.
+
+    40 chunks / 8 samples span index 0 to index 39 inclusive. Both ENDS are
+    pinned: a glance that stops short of the last chunk is not a glance at
+    the document, and a conclusion is exactly the kind of thing an overview
+    is asked for."""
     llm, draft = await _draft([f"chunk {i}" for i in range(40)], kind=SummaryKind.OVERVIEW)
 
     assert len(llm.calls) == 1
     assert draft.source_chunks == 8  # type: ignore[attr-defined]
     assert draft.truncated is True  # type: ignore[attr-defined]
     content = llm.calls[0][0][1].content
-    assert "chunk 0" in content
-    assert "chunk 20" in content  # a MIDDLE chunk -- proof of a real spread
-    assert "chunk 39" not in content
-    # Non-adjacent picks (chunk 0, then chunk 5) are separated by the marked
-    # gap -- the model is told material was skipped, not left to guess.
+    # Exact picks, not substring probes: "chunk 3" is inside "chunk 33".
+    assert [part for part in content.split("\n\n") if part != "[…]"] == [
+        f"chunk {i}" for i in (0, 6, 11, 17, 22, 28, 33, 39)
+    ]
+    # Non-adjacent picks are separated by the marked gap -- the model is told
+    # material was skipped, not left to guess.
     assert "[…]" in content
+
+
+@pytest.mark.asyncio
+async def test_an_overview_of_nine_chunks_is_not_silently_the_first_eight() -> None:
+    """The narrowest case, and the one the obvious formula gets wrong.
+
+    ``int(i * len / 8)`` over nine chunks yields ``{0..7}`` -- the exact
+    "first 8" P-43 exists to replace, reintroduced silently at the one
+    length where a reader would never think to check. Spacing across
+    ``len - 1`` samples the ends and drops a middle chunk instead."""
+    llm, _ = await _draft([f"chunk {i}" for i in range(9)], kind=SummaryKind.OVERVIEW)
+
+    content = llm.calls[0][0][1].content
+    picked = [part for part in content.split("\n\n") if part != "[…]"]
+    assert picked == [f"chunk {i}" for i in (0, 1, 2, 3, 5, 6, 7, 8)]
+    assert picked != [f"chunk {i}" for i in range(8)]
 
 
 @pytest.mark.asyncio
@@ -977,3 +997,221 @@ async def test_progress_is_written_as_the_map_advances() -> None:
 
     await build.run(_ctx(), plan)
     assert stack.summary_jobs.rows["job-1"].done_chunks == 13
+
+
+# --------------------------------------------------------------------------- #
+# BuildSummary — P-44: translating instead of rebuilding (plan §4 step 20)     #
+# --------------------------------------------------------------------------- #
+
+
+def _stored(
+    *,
+    lang: SummaryLanguage,
+    summary_id: str,
+    text: str,
+    built_at: datetime = _AT,
+    source_chunks: int = 3,
+    truncated: bool = False,
+) -> Summary:
+    return Summary(
+        id=summary_id,
+        workspace_id=_W1,
+        document_id="doc-1",
+        kind=SummaryKind.FULL,
+        lang=lang,
+        text=text,
+        model="previous-model",
+        source_chunks=source_chunks,
+        truncated=truncated,
+        built_at=built_at,
+    )
+
+
+def _translation_stack(
+    *, stored: Sequence[Summary] = (), corpus_chunks: int = 30
+) -> tuple[object, RecordingLLM]:
+    """A stack whose document has a DELIBERATELY large corpus.
+
+    ``corpus_chunks`` is well past ``_MAP_BATCH``, so a build that reads the
+    corpus cannot possibly finish in one provider call — which is what makes
+    "exactly one call" a real assertion about the path taken rather than a
+    coincidence of a short document.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(corpus_chunks)]
+    for summary in stored:
+        stack.summaries.rows[("doc-1", summary.kind.value, summary.lang.value)] = summary
+    llm = RecordingLLM()
+    return stack, llm
+
+
+@pytest.mark.asyncio
+async def test_a_build_translates_a_stored_summary_instead_of_reading_the_corpus() -> None:
+    """P-44's whole point (plan §4 step 20, §3.10): a language nothing is
+    stored under is answered by ONE round trip over a few kilobytes of
+    already-reduced Markdown, not by a second map-reduce over the corpus.
+
+    Before this wiring ``SummarizeDocument.translate`` had no caller anywhere
+    in ``src`` — the method existed and no request could ever reach it.
+    """
+    stack, llm = _translation_stack(
+        stored=[_stored(lang=SummaryLanguage.EN, summary_id="sum-en", text="English body")]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    assert plan.translate_from is not None and plan.translate_from.id == "sum-en"
+    # The corpus is not even read into the plan, which is the saving itself.
+    assert plan.chunks == ()
+
+    job, events = await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    assert job.status is SummaryJobStatus.SUCCEEDED
+    assert [type(event).__name__ for event in events] == ["SummaryBuilt"]
+    assert len(llm.calls) == 1
+    # The one call carries the STORED text, never a corpus chunk.
+    assert llm.calls[0][0][-1].content == "English body"
+    assert stack.summaries.rows[("doc-1", "full", "ar")].text.startswith("SUMMARY")
+
+
+@pytest.mark.asyncio
+async def test_a_translation_carries_the_sources_truth_about_what_it_covers() -> None:
+    """A translated summary of a truncated source is still a summary of a
+    truncated source. ``source_chunks``/``truncated`` come from the row being
+    translated because a translation reads no chunk of its own — recomputing
+    either would be inventing a coverage claim out of nothing."""
+    stack, llm = _translation_stack(
+        stored=[
+            _stored(
+                lang=SummaryLanguage.EN,
+                summary_id="sum-en",
+                text="English body",
+                source_chunks=240,
+                truncated=True,
+            )
+        ]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    # The job's total is the SOURCE's coverage, not the document's 30 chunks:
+    # promising a map over 30 chunks would describe work this build is not
+    # doing, in either direction.
+    assert stack.summary_jobs.rows["job-1"].total_chunks == 240
+
+    await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    stored = stack.summaries.rows[("doc-1", "full", "ar")]
+    assert (stored.source_chunks, stored.truncated) == (240, True)
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_of_an_occupied_key_maps_the_document_instead_of_translating() -> None:
+    """The half of the rule that keeps ``POST`` honest. ``RequestSummary``
+    has no ``force``: reading what is stored is ``GET``, so a POST at a key
+    that already holds a summary IS a rebuild. Translating a neighbouring
+    language there would make the requested language permanently
+    unrebuildable for as long as any other one exists."""
+    stack, llm = _translation_stack(
+        stored=[
+            _stored(lang=SummaryLanguage.AR, summary_id="sum-ar", text="نصّ قديم"),
+            _stored(lang=SummaryLanguage.EN, summary_id="sum-en", text="English body"),
+        ]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    assert plan.translate_from is None
+    assert len(plan.chunks) == 30
+
+    await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    # A real map-reduce: several map calls plus a reduce, none of them the
+    # single translate round trip.
+    assert len(llm.calls) > 1
+    assert stack.summaries.rows[("doc-1", "full", "ar")].text != "نصّ قديم"
+
+
+@pytest.mark.asyncio
+async def test_a_first_build_in_any_language_still_reads_the_corpus() -> None:
+    """The regression guard on the ordinary path: with nothing stored in ANY
+    language there is nothing to translate, and the build must be exactly
+    what it was before P-44 was wired up."""
+    stack, llm = _translation_stack()
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    assert plan.translate_from is None
+    assert len(plan.chunks) == 30
+    assert stack.summary_jobs.rows["job-1"].total_chunks == 30
+
+
+@pytest.mark.asyncio
+async def test_the_translation_source_is_the_most_recently_built_of_the_others() -> None:
+    """Deterministic, and deterministic in a way that means something: with
+    two other languages stored, the newest is the one whose wording the
+    workspace most recently accepted. A source picked by row order would let
+    the same job produce a different summary on a redelivery."""
+    stack, llm = _translation_stack(
+        stored=[
+            _stored(
+                lang=SummaryLanguage.AUTO,
+                summary_id="sum-auto",
+                text="older body",
+                built_at=datetime(2026, 8, 1, tzinfo=UTC),
+            ),
+            _stored(
+                lang=SummaryLanguage.EN,
+                summary_id="sum-en",
+                text="newer body",
+                built_at=datetime(2026, 8, 12, tzinfo=UTC),
+            ),
+        ]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    assert plan.translate_from is not None and plan.translate_from.id == "sum-en"
+
+    await build.run(_ctx(), plan)
+    assert llm.calls[0][0][-1].content == "newer body"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_translation_lands_the_job_in_failed_like_any_other_build() -> None:
+    """A translation is not a privileged path: it runs inside the same broad
+    catch, so a provider that refuses leaves the job ``failed`` with its
+    reason rather than crashing the handler into an endless redelivery."""
+
+    @dataclass
+    class BrokenLLM(RecordingLLM):
+        async def complete(
+            self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+        ) -> LlmResult:
+            raise RuntimeError("provider is down")
+
+    stack, _ = _translation_stack(
+        stored=[_stored(lang=SummaryLanguage.EN, summary_id="sum-en", text="English body")]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(BrokenLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    job, events = await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    assert (job.status, job.error) == (SummaryJobStatus.FAILED, "provider is down")
+    assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
+    # And the source it could not translate is still exactly where it was.
+    assert stack.summaries.rows[("doc-1", "full", "en")].text == "English body"

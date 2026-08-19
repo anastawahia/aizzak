@@ -26,6 +26,8 @@ gone; then ``chunk_texts``'s P-42 parent substitution (plan §4 step 18,
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
@@ -41,6 +43,7 @@ from app.infrastructure.persistence.database import create_engine
 from app.modules.knowledge.adapters.sql_repository import (
     SqlDocumentRepository,
     SqlReindexJobRepository,
+    SqlSummaryRepository,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.entities import (
@@ -49,10 +52,13 @@ from app.modules.knowledge.domain.entities import (
     ParentChunk,
     ReindexItem,
     ReindexJob,
+    Summary,
 )
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     ReindexJobStatus,
+    SummaryKind,
+    SummaryLanguage,
     VectorRef,
 )
 from tests.integration.conftest import LiveDbDsns
@@ -1142,3 +1148,139 @@ async def test_add_parent_chunks_writes_is_complete_as_given(
     rows = await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id)
 
     assert [row["is_complete"] for row in rows] == [True, False]
+
+
+# --------------------------------------------------------------------------- #
+# (10) newest_in_other_language -- P-44's translation source (step 20)        #
+# --------------------------------------------------------------------------- #
+def _summary(
+    *,
+    document_id: str,
+    workspace_id: str,
+    lang: SummaryLanguage,
+    summary_text: str,
+    built_at: datetime,
+    kind: SummaryKind = SummaryKind.FULL,
+) -> Summary:
+    return Summary(
+        id=new_uuid7(),
+        workspace_id=workspace_id,
+        document_id=document_id,
+        kind=kind,
+        lang=lang,
+        text=summary_text,
+        model="stub",
+        source_chunks=3,
+        truncated=False,
+        built_at=built_at,
+    )
+
+
+async def test_newest_in_other_language_returns_the_latest_built_of_the_others(
+    repo_knowledge: SqlDocumentRepository, repo_summaries: SqlSummaryRepository
+) -> None:
+    """The ORDER BY is the port's contract, and only a real query proves it:
+    an in-memory fake can hand back rows in insertion order and look right.
+
+    The OLDER row is inserted FIRST on purpose. A query that dropped its
+    ``ORDER BY`` would return whatever the scan reached first — the older
+    one — so this fails rather than passing by accident."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    base = utc_now()
+    await repo_summaries.upsert(
+        ctx,
+        _summary(
+            document_id=doc.id,
+            workspace_id=ws,
+            lang=SummaryLanguage.AUTO,
+            summary_text="older auto",
+            built_at=base - timedelta(days=3),
+        ),
+    )
+    await repo_summaries.upsert(
+        ctx,
+        _summary(
+            document_id=doc.id,
+            workspace_id=ws,
+            lang=SummaryLanguage.EN,
+            summary_text="newer english",
+            built_at=base,
+        ),
+    )
+
+    found = await repo_summaries.newest_in_other_language(
+        ctx, doc.id, SummaryKind.FULL, SummaryLanguage.AR
+    )
+
+    assert found is not None
+    assert (found.lang, found.text) == (SummaryLanguage.EN, "newer english")
+
+
+async def test_newest_in_other_language_never_returns_the_requested_language(
+    repo_knowledge: SqlDocumentRepository, repo_summaries: SqlSummaryRepository
+) -> None:
+    """Handing back the row under the requested key would turn every rebuild
+    into a translation of itself — a POST that can never replace what it was
+    asked to replace."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    await repo_summaries.upsert(
+        ctx,
+        _summary(
+            document_id=doc.id,
+            workspace_id=ws,
+            lang=SummaryLanguage.AR,
+            summary_text="arabic",
+            built_at=utc_now(),
+        ),
+    )
+
+    assert (
+        await repo_summaries.newest_in_other_language(
+            ctx, doc.id, SummaryKind.FULL, SummaryLanguage.AR
+        )
+        is None
+    )
+
+
+async def test_newest_in_other_language_does_not_cross_kinds_or_tenants(
+    repo_knowledge: SqlDocumentRepository, repo_summaries: SqlSummaryRepository
+) -> None:
+    """``kind`` is part of the key for the reason ``lang`` is: translating an
+    ``overview`` into a ``full`` would answer a question nobody asked. And
+    another tenant's summary is not a source — RLS, proven rather than
+    assumed."""
+    ws = new_uuid7()
+    intruder = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    await repo_summaries.upsert(
+        ctx,
+        _summary(
+            document_id=doc.id,
+            workspace_id=ws,
+            lang=SummaryLanguage.EN,
+            summary_text="english overview",
+            built_at=utc_now(),
+            kind=SummaryKind.OVERVIEW,
+        ),
+    )
+
+    assert (
+        await repo_summaries.newest_in_other_language(
+            ctx, doc.id, SummaryKind.FULL, SummaryLanguage.AR
+        )
+        is None
+    )
+    assert (
+        await repo_summaries.newest_in_other_language(
+            _ctx(intruder), doc.id, SummaryKind.OVERVIEW, SummaryLanguage.AR
+        )
+        is None
+    )
