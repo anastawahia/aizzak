@@ -44,7 +44,14 @@ part, each still subject to the ordinary word-window hard cap (constraint
 TABLE``, the tagging step 7 already attaches) skip this entirely
 (constraint 2: a table row is already the retrieval atom, §3.3) and a
 segment with fewer than two sentences skips it too (constraint 3: nothing
-to compare, no reason to pay for the call).
+to compare, no reason to pay for the call). That pass is BATCHED across the
+document's chunks -- whole chunks packed into calls of at most
+``_EMBED_BATCH`` sentences, the same cap the mandatory node pass uses -- so
+the declared cost really is ONE extra pass over the document's sentences
+rather than one round trip per chunk. A FAILURE of it is never fatal
+either: the affected chunk degrades to its unsplit segment rather than
+failing the whole document, which would undo the isolation step 12
+(`P-19`) added one step earlier -- see ``_apply_semantic_splits``.
 """
 
 from __future__ import annotations
@@ -222,6 +229,19 @@ class IndexOutcome:
     image_chunks: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _SentenceRequest:
+    """One non-table chunk queued for P-20's batched boundary-detection pass
+    (``IndexDocument._apply_semantic_splits``): the already-split
+    ``sentences``, the ``chunk`` they came from, and ``slot`` -- the index in
+    ``execute``'s per-chunk segment list that a successful split replaces.
+    Private to this module: it never leaves ``execute``."""
+
+    chunk: ParsedChunk
+    sentences: list[str]
+    slot: int
+
+
 class IndexDocument:
     """Chunk a parsed document, embed it (dense) and hash it (sparse), and
     upsert one hybrid Qdrant point per chunk."""
@@ -254,8 +274,17 @@ class IndexDocument:
         model: str,
         api_key: str,
     ) -> IndexOutcome:
-        segments: list[SourceSegment] = []
+        # P-20 (plan §4 step 13, §3.4) runs as TWO passes, not one loop. This
+        # first one is PURE -- no `await` anywhere in it -- and only decides
+        # what each chunk needs: table explosion, a plain unsplit segment, or
+        # a place in the ONE batched sentence-embedding pass that follows.
+        # Every slot starts out holding the answer that is always correct
+        # (`_plain_segment`); the semantic pass only ever REPLACES a slot,
+        # never fills a hole -- which is what keeps its failure non-fatal
+        # (`_apply_semantic_splits`).
+        slots: list[list[SourceSegment]] = []
         parent_drafts: list[ParentChunkDraft] = []
+        pending: list[_SentenceRequest] = []
         for index, chunk in enumerate(parsed.chunks):
             if chunk.kind is ParsedChunkKind.TABLE:
                 # P-20 constraint 2 (plan §3.4): a TABLE-kind chunk skips
@@ -265,13 +294,23 @@ class IndexDocument:
                 exploded = _table_to_segments(chunk, parent_key=f"table-{index}")
                 if exploded is not None:
                     table_segments, parent_draft = exploded
-                    segments.extend(table_segments)
+                    slots.append(table_segments)
                     if parent_draft is not None:
                         parent_drafts.append(parent_draft)
                     continue
-                segments.append(_plain_segment(chunk))
+                slots.append([_plain_segment(chunk)])
                 continue
-            segments.extend(await self._semantic_segments(chunk, model, api_key))
+            sentences = _split_sentences(chunk.text)
+            if len(sentences) >= _MIN_SENTENCES_TO_SPLIT:
+                # Queued, not called: constraint 3's "fewer than two
+                # sentences" chunks never reach the provider at all, and the
+                # rest are paid for in one batched pass rather than one call
+                # each.
+                pending.append(_SentenceRequest(chunk, sentences, slot=len(slots)))
+            slots.append([_plain_segment(chunk)])
+
+        await self._apply_semantic_splits(pending, slots, model, api_key, document_id=document_id)
+        segments = [segment for slot in slots for segment in slot]
         to_index = chunk_segments(
             segments, max_tokens=self._max_words, overlap_tokens=self._overlap_words
         )
@@ -385,52 +424,220 @@ class IndexDocument:
             for chunk, point in zip(batch, points, strict=True)
         ]
 
-    async def _semantic_segments(
-        self, chunk: ParsedChunk, model: str, api_key: str
-    ) -> list[SourceSegment]:
+    async def _apply_semantic_splits(
+        self,
+        pending: Sequence[_SentenceRequest],
+        slots: list[list[SourceSegment]],
+        model: str,
+        api_key: str,
+        *,
+        document_id: Uuid,
+    ) -> None:
         """P-20 (plan §4 step 13, §3.4): the I/O half of semantic
-        pre-splitting for one non-table ``ParsedChunk``. Splits ``chunk.text``
-        into sentences, and -- only when there are at least
-        ``_MIN_SENTENCES_TO_SPLIT`` of them (constraint 3: gracefully skipped
-        otherwise) -- calls ``EmbeddingProvider.embed`` on the sentences and
-        hands the resulting vectors to the pure ``domain.chunking.
-        semantic_boundaries`` to decide where to cut.
+        pre-splitting, for the WHOLE document at once. Replaces a queued
+        chunk's slot with one ``SourceSegment`` per semantic part -- each
+        stamped with its own ``sub_order`` (0, 1, 2, ...) so
+        ``domain/chunking.py``'s ordering key keeps them in reading order
+        (``SourceSegment``'s own docstring) -- and leaves the unsplit
+        ``_plain_segment`` already sitting in that slot alone otherwise.
+        Either way every segment still goes through the ordinary word-window
+        hard cap in ``chunk_segments`` afterwards (constraint 1): this pass
+        only decides where the SOFT, topical cuts go.
 
-        Returns one ``SourceSegment`` per semantic part when a genuine
-        boundary was found, each stamped with its own ``sub_order`` (0, 1,
-        2, ...) so ``domain/chunking.py``'s ordering key keeps them in
-        reading order (``SourceSegment``'s own docstring) -- or a single
-        ``SourceSegment`` (``sub_order=0``, the default) covering the whole,
-        unsplit ``chunk.text`` when there was nothing to split (too few
-        sentences) or ``semantic_boundaries`` found no genuine break. Either
-        way, every returned segment still goes through the ordinary
-        word-window hard cap in ``chunk_segments`` afterwards (constraint 1)
-        -- this method only decides where the SOFT, topical cuts go.
+        **ONE batched pass, not one call per chunk.** Constraint 3 declares
+        the cost as "an extra embedding pass over the document's sentences";
+        a call per ``ParsedChunk`` would make it one sequential round trip
+        per chunk instead (a 500-block PDF: 500 of them) -- a different and
+        far slower thing than what the plan declares, and the only path in
+        this module that ignored ``_EMBED_BATCH``. So whole chunks are
+        packed into groups of at most ``_EMBED_BATCH`` sentences -- the SAME
+        cap the mandatory node pass in ``execute`` uses -- and each group is
+        one provider call. A chunk is never spread across two GROUPS
+        (boundary detection needs all of its sentence vectors together); a
+        single chunk holding more sentences than the cap is the one case
+        served by several cap-sized calls, whose vectors concatenate --
+        sound because each sentence's vector does not depend on the call it
+        arrived in.
+
+        **The pass stays failure-isolated, and that is P-19's guarantee
+        (plan §4 step 12) applied to the step right after it.** Semantic
+        pre-splitting is an OPTIONAL refinement: every chunk it touches
+        already has a correct, complete representation without it -- the
+        ``_plain_segment`` in its slot, which the word-window chunker splits
+        anyway. So a provider error never propagates out of ``execute`` to
+        land the WHOLE document in `failed` (`IndexRegisteredDocument.run`'s
+        broad catch), the exact outcome step 12 exists to prevent.
+
+        Batching does not cost that isolation, because the failure path
+        mirrors ``execute``'s own P-19 shape one for one: try the group,
+        then fall back to ONE CHUNK PER CALL, and only a chunk that still
+        fails alone degrades -- its neighbours in the failed group keep
+        their semantic split. The one deliberate difference is the terminal
+        action: ``execute`` RE-RAISES for a lone failing chunk (a node must
+        be embedded or the document is incomplete), this pass DEGRADES (a
+        soft cut is optional). P-19's narrowing is also the only narrowing
+        available here -- retrying a single SENTENCE would compute nothing,
+        since boundary detection needs the whole chunk's sentences at once.
+
+        Nothing is silently skipped (plan §3.7): a degraded chunk is still
+        indexed in full, only without the soft topical cut, and the degrade
+        is logged with ``exc_info`` -- never a swallowed traceback. And a
+        provider that is genuinely down still fails the document rather than
+        passing quietly: the MANDATORY node-embedding pass in ``execute``
+        calls the SAME provider, and a chunk that fails there alone
+        re-raises exactly as before.
         """
-        sentences = _split_sentences(chunk.text)
-        if len(sentences) < _MIN_SENTENCES_TO_SPLIT:
-            return [_plain_segment(chunk)]
+        for group in _pack_sentence_requests(pending):
+            try:
+                replacements = await self._semantic_split_group(group, model, api_key)
+            except Exception:
+                if len(group) == 1:
+                    # Already the narrowest call there is -- no point
+                    # re-sending the identical texts one chunk at a time.
+                    self._log_semantic_degrade(group[0], document_id)
+                    continue
+                log.warning(
+                    "indexing.semantic_batch_failed_retrying_per_chunk",
+                    extra={"document_id": document_id, "batch_size": len(group)},
+                )
+            else:
+                _install_semantic_splits(slots, group, replacements)
+                continue
 
-        result = await self._embeddings.embed(sentences, model, api_key)
-        boundaries = semantic_boundaries(
-            result.vectors,
-            buffer=SEMANTIC_BUFFER,
-            breakpoint_percentile=SEMANTIC_BREAKPOINT_PERCENTILE,
-        )
-        parts = _group_sentences(sentences, boundaries)
-        if len(parts) < _MIN_SEMANTIC_PARTS:
-            return [_plain_segment(chunk)]
+            for request in group:
+                try:
+                    replacements = await self._semantic_split_group([request], model, api_key)
+                except Exception:
+                    self._log_semantic_degrade(request, document_id)
+                    continue
+                _install_semantic_splits(slots, [request], replacements)
 
-        return [
-            SourceSegment(
-                text=part,
-                order=chunk.order,
-                kind=str(chunk.kind),
-                metadata=dict(chunk.metadata),
-                sub_order=part_index,
+    async def _semantic_split_group(
+        self, group: Sequence[_SentenceRequest], model: str, api_key: str
+    ) -> list[list[SourceSegment] | None]:
+        """Embed every sentence in ``group`` -- in as few provider calls as
+        ``_EMBED_BATCH`` allows -- and run the pure boundary math for each
+        request in it, returning one replacement per request in the same
+        order, or ``None`` where the split is not worth acting on (fewer
+        than ``_MIN_SEMANTIC_PARTS`` parts: every sentence landed on the
+        same side of every boundary `semantic_boundaries` considered, or it
+        returned none).
+
+        RAISES rather than degrades -- the caller owns the fallback
+        (``_apply_semantic_splits``). That is also why the pure
+        ``semantic_boundaries``/``_group_sentences`` calls sit in here with
+        the ``await`` instead of outside it: their input IS the provider's
+        response, so a malformed one (ragged vectors -- ``_cosine_distance``
+        zips ``strict=True``) surfaces as an exception raised INSIDE the
+        domain from an I/O-shaped cause, and belongs on the same path.
+        """
+        texts = [sentence for request in group for sentence in request.sentences]
+        vectors: list[Sequence[float]] = []
+        for start in range(0, len(texts), _EMBED_BATCH):
+            result = await self._embeddings.embed(
+                texts[start : start + _EMBED_BATCH], model, api_key
             )
-            for part_index, part in enumerate(parts)
-        ]
+            vectors.extend(result.vectors)
+
+        if len(vectors) != len(texts):
+            # A response carrying a different NUMBER of vectors than the
+            # texts it answers cannot be sliced back per chunk: the offsets
+            # would silently hand one chunk's sentences another chunk's
+            # vectors. Refuse it (the caller degrades) rather than group
+            # sentences against arithmetic that no longer lines up.
+            # Batching is what makes the guard mandatory (the offsets), but
+            # it also closes a mis-split the per-chunk path had all along:
+            # unguarded, N sentences were happily grouped against fewer
+            # than N vectors, and nothing said so.
+            raise ValueError(
+                f"embedding provider returned {len(vectors)} vectors for {len(texts)} sentences"
+            )
+
+        replacements: list[list[SourceSegment] | None] = []
+        offset = 0
+        for request in group:
+            end = offset + len(request.sentences)
+            replacements.append(_semantic_parts(request, vectors[offset:end]))
+            offset = end
+        return replacements
+
+    @staticmethod
+    def _log_semantic_degrade(request: _SentenceRequest, document_id: Uuid) -> None:
+        """The one degrade log line (``_apply_semantic_splits``). WARNING,
+        not ERROR: the document still indexes completely, and the mandatory
+        embedding pass in ``execute`` is what decides whether the provider
+        is actually unusable."""
+        log.warning(
+            "indexing.semantic_split_failed_falling_back_to_plain_segment",
+            extra={"document_id": document_id, "sentence_count": len(request.sentences)},
+            exc_info=True,
+        )
+
+
+def _pack_sentence_requests(pending: Sequence[_SentenceRequest]) -> list[list[_SentenceRequest]]:
+    """Greedy packing of whole ``_SentenceRequest``s into provider-call
+    groups of at most ``_EMBED_BATCH`` sentences (P-20's batched pass --
+    ``IndexDocument._apply_semantic_splits``). A request is never split
+    across two groups: boundary detection needs one chunk's sentence vectors
+    together, and keeping chunks whole is also what makes the failure
+    fallback "one chunk per call". A single request holding more sentences
+    than the cap therefore gets a group to itself -- the one case
+    ``_semantic_split_group`` serves with several calls."""
+    groups: list[list[_SentenceRequest]] = []
+    current: list[_SentenceRequest] = []
+    sentences = 0
+    for request in pending:
+        if current and sentences + len(request.sentences) > _EMBED_BATCH:
+            groups.append(current)
+            current = []
+            sentences = 0
+        current.append(request)
+        sentences += len(request.sentences)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _semantic_parts(
+    request: _SentenceRequest, vectors: Sequence[Sequence[float]]
+) -> list[SourceSegment] | None:
+    """One queued chunk's sentence vectors -> its semantic ``SourceSegment``s,
+    or ``None`` when there is no split worth acting on and the chunk keeps
+    the unsplit ``_plain_segment`` already in its slot. The boundary
+    decision itself belongs to the domain (``semantic_boundaries``); this
+    only turns the returned indices back into segments."""
+    boundaries = semantic_boundaries(
+        vectors,
+        buffer=SEMANTIC_BUFFER,
+        breakpoint_percentile=SEMANTIC_BREAKPOINT_PERCENTILE,
+    )
+    parts = _group_sentences(request.sentences, boundaries)
+    if len(parts) < _MIN_SEMANTIC_PARTS:
+        return None
+    chunk = request.chunk
+    return [
+        SourceSegment(
+            text=part,
+            order=chunk.order,
+            kind=str(chunk.kind),
+            metadata=dict(chunk.metadata),
+            sub_order=part_index,
+        )
+        for part_index, part in enumerate(parts)
+    ]
+
+
+def _install_semantic_splits(
+    slots: list[list[SourceSegment]],
+    group: Sequence[_SentenceRequest],
+    replacements: Sequence[list[SourceSegment] | None],
+) -> None:
+    """Write a group's semantic splits into their chunks' slots -- a ``None``
+    replacement leaves that slot's unsplit ``_plain_segment`` untouched,
+    which is also exactly what a degraded chunk keeps."""
+    for request, replacement in zip(group, replacements, strict=True):
+        if replacement is not None:
+            slots[request.slot] = replacement
 
 
 def _count_by_kind(to_index: Sequence[ChunkToIndex]) -> tuple[int, int, int]:

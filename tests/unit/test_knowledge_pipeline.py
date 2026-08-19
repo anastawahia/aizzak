@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 import subprocess
@@ -1432,6 +1433,334 @@ async def test_index_document_semantic_split_still_hard_caps_a_long_part_by_the_
     # node -- proof the split actually happened WITHIN a semantic part, not
     # just between the two of them.
     assert len(outcome.chunks) > 2
+
+
+async def test_index_document_semantic_pass_failure_degrades_to_the_unsplit_segment(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """P-20's sentence pass is an OPTIONAL refinement, so its failure must
+    not fail the document -- that would undo, one step later, the very
+    isolation P-19 added (plan §4 step 12): one embedding error landing the
+    WHOLE document in `failed`. The chunk still indexes, whole and unsplit,
+    and the degrade is logged rather than swallowed."""
+    sentence1 = "Quarterly revenue climbed sharply this period"
+    sentence2 = "The office cafeteria unveiled a new lunch menu"
+    text = f"{sentence1}. {sentence2}."
+
+    class _FailsTheSentencePass(FakeEmbeddings):
+        """Fails ONLY the boundary-detection call (the sentences), and
+        serves the mandatory node pass normally -- the shape of a provider
+        hiccup on the one extra call P-20 introduced."""
+
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            if texts == [sentence1, sentence2]:
+                raise RuntimeError("simulated sentence-pass failure")
+            return await super().embed(texts, model, api_key)
+
+    embeddings = _FailsTheSentencePass()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    with caplog.at_level(logging.WARNING):
+        outcome = await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+    # Nothing lost: the ORIGINAL text (punctuation and all), as one node --
+    # not the space-joined sentences a successful semantic split produces.
+    assert [chunk.text for chunk in outcome.chunks] == [text]
+    assert len(vectors.points["kn-ws1"]) == 1
+    # only the mandatory pass ever completed
+    assert embeddings.calls == [[text]]
+    assert any(
+        "semantic_split_failed_falling_back_to_plain_segment" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_index_document_semantic_pass_degrades_on_a_malformed_provider_response() -> None:
+    """The guard spans the pure boundary math too, not just the ``await``:
+    ``semantic_boundaries``' input IS the provider's response, so a
+    malformed one (ragged vectors) raises INSIDE the domain from an
+    I/O-shaped cause. Same degrade, same complete document."""
+    sentence1 = "Quarterly revenue climbed sharply this period"
+    sentence2 = "The office cafeteria unveiled a new lunch menu"
+    text = f"{sentence1}. {sentence2}."
+
+    class _RaggedOnTheSentencePass(FakeEmbeddings):
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            if texts == [sentence1, sentence2]:
+                return EmbeddingResult(
+                    vectors=[[1.0, 0.0], [1.0]], model=model, dimensions=2, tokens=2
+                )
+            return await super().embed(texts, model, api_key)
+
+    embeddings = _RaggedOnTheSentencePass()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert [chunk.text for chunk in outcome.chunks] == [text]
+
+
+async def test_index_document_semantic_degrade_does_not_hide_a_provider_that_is_down() -> None:
+    """The degrade must never turn a genuine outage into a quiet success
+    (plan §3.7: no silent skip / no partial index): the MANDATORY node pass
+    calls the SAME provider, and P-19 re-raises once a lone chunk still
+    fails -- so `IndexRegisteredDocument.run` still fails the document."""
+
+    class _AlwaysFails(FakeEmbeddings):
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            raise RuntimeError("provider is down")
+
+    embeddings = _AlwaysFails()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = "Quarterly revenue climbed sharply. The cafeteria unveiled a new menu."
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    with pytest.raises(RuntimeError, match="provider is down"):
+        await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+
+def _two_topic_sentences(prefix: str) -> list[str]:
+    """Four sentences, two per topic -- the exact 2-vectors-per-cluster
+    shape already verified directly against `semantic_boundaries`
+    (buffer=1 default: the boundary lands cleanly before sentence index
+    2), prefixed so several chunks of them stay distinct texts."""
+    return [
+        f"{prefix} quarterly revenue climbed sharply this period",
+        f"{prefix} revenue growth exceeded every prior forecast",
+        f"{prefix} the office cafeteria unveiled a new lunch menu",
+        f"{prefix} lunch service now starts thirty minutes earlier",
+    ]
+
+
+def _two_topic_overrides(sentences: Sequence[str]) -> dict[str, list[float]]:
+    return {
+        sentences[0]: [1.0, 0.0],
+        sentences[1]: [1.0, 0.0],
+        sentences[2]: [0.0, 1.0],
+        sentences[3]: [0.0, 1.0],
+    }
+
+
+def _sentences_to_text(sentences: Sequence[str]) -> str:
+    return ". ".join(sentences) + "."
+
+
+def _two_topic_parts(sentences: Sequence[str]) -> list[str]:
+    return [f"{sentences[0]} {sentences[1]}", f"{sentences[2]} {sentences[3]}"]
+
+
+async def test_index_document_semantic_pass_batches_every_chunks_sentences_into_one_call() -> None:
+    """P-20's declared cost (plan §3.4 constraint 3) is ONE extra embedding
+    pass over the DOCUMENT's sentences -- not one sequential provider round
+    trip per `ParsedChunk`. Three eligible chunks therefore produce exactly
+    two calls: the batched sentence call carrying all twelve sentences in
+    reading order, then the ordinary node pass. Every chunk still gets its
+    OWN boundary math -- the six node texts below are only produced if the
+    boundaries were computed per chunk over its own four vectors, never
+    across the concatenated batch."""
+    groups = [_two_topic_sentences(prefix) for prefix in ("alpha", "bravo", "charlie")]
+    overrides = {
+        text: vector
+        for sentences in groups
+        for text, vector in _two_topic_overrides(sentences).items()
+    }
+    embeddings = FakeEmbeddings(overrides=overrides)
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(_sentences_to_text(sentences), order=order)
+            for order, sentences in enumerate(groups)
+        ]
+    )
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    expected_parts = [part for sentences in groups for part in _two_topic_parts(sentences)]
+    assert len(embeddings.calls) == 2
+    assert embeddings.calls[0] == [sentence for sentences in groups for sentence in sentences]
+    assert embeddings.calls[1] == expected_parts
+    assert [chunk.text for chunk in outcome.chunks] == expected_parts
+
+
+async def test_index_document_sentence_batches_respect_the_embed_batch_cap() -> None:
+    """The batched pass honours the SAME 128-text cap the mandatory node
+    pass uses (`_EMBED_BATCH`), which the per-chunk path ignored entirely:
+    100 two-sentence chunks = 200 sentences packed as whole chunks into
+    exactly two calls of 128 and 72 -- never one 200-text call, and never
+    100 separate ones."""
+    chunk_texts = [
+        f"Sentence one of block {index} carries enough words to survive. "
+        f"Sentence two of block {index} carries enough words as well."
+        for index in range(100)
+    ]
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [_parsed_chunk(text, order=order) for order, text in enumerate(chunk_texts)]
+    )
+
+    await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert [len(call) for call in embeddings.calls[:2]] == [128, 72]
+    assert all(len(call) <= 128 for call in embeddings.calls)
+
+
+async def test_index_document_a_chunk_longer_than_the_cap_is_served_by_several_calls(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A chunk is never spread across two GROUPS (boundary detection needs
+    all of its sentence vectors together), so the one chunk holding more
+    sentences than the cap is the case served by several cap-sized calls
+    whose vectors concatenate -- in order, completely, and without
+    degrading."""
+    sentences = [f"Block sentence number {index} about its own small topic" for index in range(200)]
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk(_sentences_to_text(sentences), order=0)])
+
+    with caplog.at_level(logging.WARNING):
+        outcome = await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+    assert len(embeddings.calls[0]) == 128
+    # the two calls together are the chunk's sentences, whole and in order
+    assert embeddings.calls[0] + embeddings.calls[1] == sentences
+    assert outcome.chunks
+    # concatenation actually worked: a lost/short response would have
+    # tripped the vector-count guard and degraded instead
+    assert not [
+        record
+        for record in caplog.records
+        if "semantic_split_failed_falling_back_to_plain_segment" in record.message
+    ]
+
+
+async def test_index_document_semantic_batch_failure_degrades_only_the_failing_chunk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Batching must not cost P-19's per-chunk isolation. When the batched
+    sentence call fails, the pass narrows to ONE CHUNK PER CALL exactly as
+    `execute` does for nodes, so the damage is contained to the chunk that
+    still fails alone: it keeps its whole, unsplit text while its
+    neighbours in the same failed batch still get their semantic split."""
+    groups = [_two_topic_sentences(prefix) for prefix in ("alpha", "bravo", "charlie")]
+    overrides = {
+        text: vector
+        for sentences in groups
+        for text, vector in _two_topic_overrides(sentences).items()
+    }
+    poison = groups[1][0]
+
+    class _FailsAnyCallTouchingBravo(FakeEmbeddings):
+        """Fails the batched call AND bravo's own narrowed retry -- but not
+        alpha's or charlie's, and not the mandatory node pass."""
+
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            if poison in texts:
+                raise RuntimeError("simulated sentence-pass failure")
+            return await super().embed(texts, model, api_key)
+
+    embeddings = _FailsAnyCallTouchingBravo(overrides=overrides)
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(_sentences_to_text(sentences), order=order)
+            for order, sentences in enumerate(groups)
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        outcome = await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+    assert [chunk.text for chunk in outcome.chunks] == [
+        *_two_topic_parts(groups[0]),
+        _sentences_to_text(groups[1]),
+        *_two_topic_parts(groups[2]),
+    ]
+    # the batch raised, then one call per chunk (bravo's raised again), then
+    # the mandatory node pass -- never a call per chunk in the happy path
+    assert len(embeddings.calls) == 3
+    assert embeddings.calls[0] == groups[0]
+    assert embeddings.calls[1] == groups[2]
+    messages = [record.message for record in caplog.records]
+    assert any("semantic_batch_failed_retrying_per_chunk" in message for message in messages)
+    assert any(
+        "semantic_split_failed_falling_back_to_plain_segment" in message for message in messages
+    )
+
+
+async def test_index_document_semantic_pass_degrades_when_the_provider_returns_too_few_vectors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Batching introduced offset arithmetic that a SHORT response would
+    corrupt silently -- one chunk's sentences grouped against the next
+    chunk's vectors. A response whose vector count does not match the texts
+    it answers is refused outright, and refusal takes the ordinary degrade
+    path (plan §3.4 constraint 4), never a wrong split."""
+    sentences = _two_topic_sentences("alpha")
+
+    class _DropsOneVector(FakeEmbeddings):
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            result = await super().embed(texts, model, api_key)
+            if texts == sentences:
+                return EmbeddingResult(
+                    vectors=result.vectors[:-1],
+                    model=result.model,
+                    dimensions=result.dimensions,
+                    tokens=result.tokens,
+                )
+            return result
+
+    embeddings = _DropsOneVector(overrides=_two_topic_overrides(sentences))
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = _sentences_to_text(sentences)
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    with caplog.at_level(logging.WARNING):
+        outcome = await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+    assert [chunk.text for chunk in outcome.chunks] == [text]
+    assert any(
+        "semantic_split_failed_falling_back_to_plain_segment" in record.message
+        for record in caplog.records
+    )
 
 
 # --------------------------------------------------------------------------- #
