@@ -18,7 +18,14 @@ import pytest
 from PIL import Image
 
 from app.framework.errors import UnsupportedTypeError, ValidationError
-from app.modules.knowledge.adapters.parsers import excel, image_ocr, json_doc, pdf_text, text_plain
+from app.modules.knowledge.adapters.parsers import (
+    excel,
+    image_ocr,
+    json_doc,
+    pdf_tables,
+    pdf_text,
+    text_plain,
+)
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.ports.content_extractor import ContentExtractor, ParsedChunkKind
 
@@ -281,6 +288,156 @@ def test_parse_pdf_text_skips_pages_below_min_block_chars() -> None:
 
 def test_parse_pdf_text_degrades_gracefully_on_corrupt_bytes() -> None:
     assert pdf_text.parse_pdf_text(b"not a pdf") == []
+
+
+# --------------------------------------------------------------------------- #
+# pdf_tables — stream detection, noise guards, cross-page merge, captions      #
+# --------------------------------------------------------------------------- #
+# Camelot's `stream` flavor infers columns from whitespace, so a fixture only
+# has to lay text out in aligned columns. `caption_gap` controls how far above
+# the table the caption sits: too close and `edge_tol=50` swallows it INTO the
+# table (its text becomes row 0, i.e. the headers) — a real property of the
+# flavor, not of this port, and the reason the merge fixture below has no
+# caption at all.
+_TABLE_COLUMN_X = (72, 202, 332)
+
+
+def _table_page(doc: fitz.Document, rows: list[tuple[str, ...]], caption: str | None) -> None:
+    page = doc.new_page()
+    if caption is not None:
+        page.insert_text((72, 100), caption, fontsize=13)
+    y = 200.0
+    for row in rows:
+        for x, cell in zip(_TABLE_COLUMN_X, row, strict=False):
+            page.insert_text((x, y), cell, fontsize=11)
+        y += 22
+
+
+def _table_pdf_bytes(pages: list[list[tuple[str, ...]]], caption: str | None = None) -> bytes:
+    doc = fitz.open()
+    for rows in pages:
+        _table_page(doc, rows, caption)
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+_SALARY_ROWS = [
+    ("Name", "Dept", "Salary"),
+    ("Ali", "Finance", "5000"),
+    ("Sara", "HR", "6200"),
+    ("Omar", "IT", "7100"),
+]
+
+
+def test_parse_pdf_tables_extracts_a_structured_table() -> None:
+    chunks, regions = pdf_tables.parse_pdf_tables(_table_pdf_bytes([_SALARY_ROWS]))
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.kind is ParsedChunkKind.TABLE
+    assert chunk.order == 0
+    assert chunk.metadata["page_number"] == 1
+    assert chunk.metadata["source_ext"] == ".pdf"
+    assert chunk.metadata["section_type"] == "structured_table"
+    assert chunk.metadata["layout_mode"] == "camelot_stream"
+    assert chunk.metadata["is_merged_table"] is False
+    assert chunk.metadata["headers"] == ["Name", "Dept", "Salary"]
+    assert chunk.metadata["total_rows"] == 3
+
+    payload = json.loads(chunk.text)
+    assert payload["headers"] == ["Name", "Dept", "Salary"]
+    assert payload["rows"][0] == {"Name": "Ali", "Dept": "Finance", "Salary": "5000"}
+
+    assert list(regions) == [1]
+    assert regions[1][0].page_number == 1
+    assert len(regions[1][0].bbox) == 4
+
+
+def test_parse_pdf_tables_reads_the_caption_above_the_table_into_title() -> None:
+    data = _table_pdf_bytes([_SALARY_ROWS], caption="Employee Salary Table")
+
+    chunks, _regions = pdf_tables.parse_pdf_tables(data)
+
+    assert len(chunks) == 1
+    # The caption is metadata only — it is deliberately NOT prepended to the
+    # chunk text (plan §7: no metadata injection into node text).
+    assert chunks[0].metadata["title"] == "Employee Salary Table"
+    assert "Employee Salary Table" not in chunks[0].text
+
+
+def test_parse_pdf_tables_merges_a_table_spanning_two_pages() -> None:
+    data = _table_pdf_bytes(
+        [
+            [("Name", "Dept", "Salary"), ("Ali", "Finance", "5000"), ("Sara", "HR", "6200")],
+            [("Name", "Dept", "Salary"), ("Omar", "IT", "7100"), ("Lina", "Legal", "6800")],
+        ]
+    )
+
+    chunks, regions = pdf_tables.parse_pdf_tables(data)
+
+    # One table, not two — the whole point of the cross-page merge.
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.metadata["is_merged_table"] is True
+    assert chunk.metadata["source_pages"] == [1, 2]
+    assert chunk.metadata["total_source_tables"] == 2
+    assert chunk.metadata["headers"] == ["Name", "Dept", "Salary"]
+
+    # The repeated header on page 2 is dropped, not merged in as a data row.
+    names = [row["Name"] for row in json.loads(chunk.text)["rows"]]
+    assert names == ["Ali", "Sara", "Omar", "Lina"]
+
+    # A merged table occupies a region on every page it spans — the text pass
+    # must avoid all of them (plan step 3).
+    assert sorted(regions) == [1, 2]
+
+
+def test_parse_pdf_tables_drops_prose_misdetected_as_a_table() -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 100.0
+    for _ in range(12):
+        page.insert_text(
+            (72, y),
+            "This is an ordinary paragraph of running prose with no table structure.",
+            fontsize=11,
+        )
+        y += 20
+    data = doc.tobytes()
+    doc.close()
+
+    # A single column of prose must not survive as a table: it would be indexed
+    # garbled AND removed from the text pass, which avoids table regions.
+    assert pdf_tables.parse_pdf_tables(data) == ([], {})
+
+
+def test_parse_pdf_tables_skips_an_encrypted_pdf() -> None:
+    doc = fitz.open()
+    _table_page(doc, _SALARY_ROWS, None)
+    data: bytes = doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, user_pw="secret")
+    doc.close()
+
+    assert pdf_tables.parse_pdf_tables(data) == ([], {})
+
+
+def test_parse_pdf_tables_degrades_gracefully_on_corrupt_bytes() -> None:
+    assert pdf_tables.parse_pdf_tables(b"not a pdf") == ([], {})
+
+
+@pytest.mark.parametrize(
+    ("cols1", "cols2", "expected"),
+    [
+        (["Name", "Dept"], ["Name", "Dept"], 1.0),  # identical
+        (["Name", "Dept"], ["name", " dept "], 1.0),  # case/whitespace insensitive
+        (["Name", "Dept"], ["Employee Name", "Dept"], 0.85),  # containment scores 0.7
+        (["Name", "Dept"], ["Salary", "Year"], 0.0),  # unrelated
+        (["Name", "Dept"], ["Name"], 0.0),  # different arity is never a match
+        ([], [], 0.0),
+    ],
+)
+def test_column_similarity_calibration(cols1: list[str], cols2: list[str], expected: float) -> None:
+    assert pdf_tables._column_similarity(cols1, cols2) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------- #

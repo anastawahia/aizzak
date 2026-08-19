@@ -124,6 +124,32 @@ parsers = [
     "openpyxl>=3.1",
     "pillow>=11.0",
     "pytesseract>=0.3.13",
+    # PDF table extraction (docs/rag-indexing-plan.md step 1, P-06). The plan
+    # named `camelot-py[base]`; that extra DOES NOT EXIST, and the dependency
+    # tree was checked before declaring it (plan §6 risk 1):
+    #
+    #   camelot-py[base]         -> pip warns "does not provide the extra
+    #                               'base'" and installs the plain package
+    #   camelot-py[base]==0.11.0 -> ghostscript + opencv-python + pdftopng
+    #                               (the exact opposite of the extra's intent)
+    #   camelot-py>=1.0          -> opencv-python-headless (a CORE dependency,
+    #                               not an extra) + pypdfium2 + tabulate,
+    #                               and NO ghostscript at all
+    #
+    # Decision س-04 dropped camelot's `lattice` flavor because it pulled
+    # ghostscript (**AGPL**) into a `Proprietary` project. That trigger is gone
+    # in this line -- ghostscript is not a dependency of camelot 2.x in any
+    # flavor. What remains is `opencv-python-headless`: Apache-2.0, so no
+    # licence question, and headless, so no GUI system libraries in the image.
+    # Its weight is the accepted cost, and it is confined to this optional
+    # group -- the API image never installs it.
+    #
+    # Floor at 2.0 rather than 1.0: 2.0.0 is the version alpha actually runs
+    # (its `requirements.txt` says `camelot-py[cv]`, its venv says 2.0.0), so
+    # the ported calibration -- `accuracy >= 60`, `edge_tol=50` -- was measured
+    # against this line, and `flavor="stream"` / `.accuracy` / `._bbox` were
+    # verified present on it before this pin was written.
+    "camelot-py>=2.0,<3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -202,6 +228,7 @@ module = [
     "qdrant_client.*",
     "fitz.*",
     "pymupdf.*",
+    "camelot.*",
     "pytesseract.*",
     "pandas.*",
     "openpyxl.*",
