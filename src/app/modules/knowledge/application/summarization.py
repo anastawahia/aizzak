@@ -16,6 +16,18 @@ arrive at bytes this module already has — and would quietly disagree with the
 corpus the moment a parser changed, so the summary would describe text no
 search could ever return.
 
+**As of P-42 (plan §4 step 18, §3.10), one of those "chunks" may be a
+*parent* chunk's text rather than a leaf's own.** ``DocumentRepository.
+chunk_texts`` (the caller's source for this module's ``chunks`` argument,
+``BuildSummary.claim``) resolves each leaf that has a parent (a table row,
+P-13) to that PARENT's coarser text instead, collapsing every row of the same
+table into ONE reading unit — coherent sections read cheaper than the same
+content in fragments. A leaf with no parent is read exactly as before: its
+own text, individually, with no dedup applied. This module itself stays
+unaware of the distinction — it still just reads an ordered ``Sequence[str]``
+— which is what keeps a document with no table an exact behavioural match
+for how this pipeline worked before step 18.
+
 **Both kinds are bounded, and the bound is reported rather than hidden.**
 ``overview`` reads the document's opening chunks and makes ONE call —
 "what is this?" is answered by the front of a document, and a reader who

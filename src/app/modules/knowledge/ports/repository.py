@@ -224,6 +224,16 @@ class DocumentRepository(Protocol):
         once, and because a summary built from anything other than the indexed
         text would describe a document no search can return.
 
+        **P-42 (plan §4 step 18, §3.10): summarises from PARENT chunks, not
+        leaves, wherever one exists.** A chunk with a ``parent_id`` (a table
+        row, P-13) is represented once by its parent's coarser text — several
+        leaf rows collapse to the one section they came from (the plan's own
+        "~40 coherent sections instead of ~240 fragments"). A chunk with no
+        parent falls back to its own leaf text, individually, with no dedup
+        applied to it — the property that makes this a strict superset of the
+        pre-step-18 behaviour: a document with no table (today, the common
+        case) round-trips through this method exactly as before.
+
         Ordered by ``seq``, which is the document's own reading order
         (``chunking.chunk_segments``) — a summary assembled out of order is a
         summary of a different document. A document with no chunks yields an
@@ -238,14 +248,16 @@ class DocumentRepository(Protocol):
 
     async def parent_chunk_texts(self, ctx: ExecutionContext, doc_id: Uuid) -> Sequence[str]:
         """This document's parent-chunk text, in ``seq`` order (P-14, plan
-        §3.2 · P-42's future reader): the ``chunk_texts`` contract, over the
-        coarser-grained table.
+        §3.2): the ``chunk_texts`` contract, over the coarser-grained table.
 
-        Meant for the summarisation pipeline once it moves onto parent
-        chunks (plan step 18): ~40 coherent sections read cheaper than ~240
-        leaf fragments with the same content. A document with no parent
-        chunks yields an empty sequence — a normal answer for a document
-        whose pipeline stage that writes them has not run yet, not an error.
+        Read by the retrieval half's parent-widening lookup (``chunk_id ->
+        chunks.parent_id -> parent_chunks``, rag-retrieval-plan.md §3.7
+        `P-34`), not by ``chunk_texts`` -- that method resolves each chunk's
+        own parent directly with a JOIN (plan step 18, `P-42`) rather than
+        reading every one of a document's parents up front and matching them
+        back up itself. A document with no parent chunks yields an empty
+        sequence — a normal answer for a document with no table (P-13 is the
+        only writer of this table today), not an error.
         """
         ...
 

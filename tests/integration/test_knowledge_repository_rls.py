@@ -12,7 +12,7 @@ redelivery neither duplicates nor overwrites first-written rows) and
 (application-minted UUIDv7) and ``point_id`` (deterministic uuid5) are
 asserted to persist as SEPARATE columns (the 3.k3→3.k4 handoff contract).
 
-The final section covers ``add_parent_chunks``/``parent_chunk_texts`` and
+The final sections cover ``add_parent_chunks``/``parent_chunk_texts`` and
 ``Chunk.parent_id`` (P-14, rag-indexing-plan.md §3.2, step 6,
 ``migrations/versions/knowledge/0005_parent_chunks.py``): the same
 idempotent-upsert/RLS/forged-write behaviours proven above for ``chunks``,
@@ -20,7 +20,8 @@ mirrored onto ``knowledge.parent_chunks``, plus the one thing only a live
 database can show -- that ``purge`` needs no new statement because
 ``fk_parent_chunk_doc ... ON DELETE CASCADE`` removes a document's parent
 rows for free once its ``chunks`` rows (which reference them) are already
-gone.
+gone; then ``chunk_texts``'s P-42 parent substitution (plan §4 step 18,
+§3.10), the LEFT JOIN + consecutive-collapse only a real query can prove.
 """
 
 from __future__ import annotations
@@ -892,3 +893,107 @@ async def test_purging_a_document_cascades_its_parent_chunks_away(
 
     assert await repo_knowledge.get(ctx, doc.id) is None
     assert await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id) == []
+
+
+# --------------------------------------------------------------------------- #
+# chunk_texts's P-42 parent substitution (plan §4 step 18, §3.10)             #
+# --------------------------------------------------------------------------- #
+async def test_chunk_texts_with_no_parent_chunks_is_unchanged_from_before_step_18(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """The common case today (no table in the document, P-13 is the only
+    writer of ``parent_chunks``): every chunk's ``parent_id`` is ``NULL``, so
+    the LEFT JOIN matches nothing and ``chunk_texts`` reads back exactly the
+    leaf text that was written -- byte for byte, in ``seq`` order, same as
+    before this step."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(document_id=doc.id, workspace_id=ws, seq=i, chunk_text=f"leaf {i}")
+            for i in range(3)
+        ],
+    )
+
+    assert await repo_knowledge.chunk_texts(ctx, doc.id) == ["leaf 0", "leaf 1", "leaf 2"]
+
+
+async def test_chunk_texts_collapses_a_tables_rows_into_one_appearance_of_its_parent(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """A table's exploded rows (P-13) are written contiguously and share ONE
+    ``parent_id`` -- ``chunk_texts`` must read that parent's text back only
+    ONCE, not once per row, which is the whole "~40 sections instead of
+    ~240 fragments" win (plan §3.10)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    parent = _parent_chunk(
+        document_id=doc.id, workspace_id=ws, seq=0, parent_text="Name: Ahmad; Salary: 5000"
+    )
+    await repo_knowledge.add_parent_chunks(ctx, [parent])
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=i,
+                chunk_text=f"row {i}",
+                parent_id=parent.id,
+            )
+            for i in range(3)
+        ],
+    )
+
+    texts = await repo_knowledge.chunk_texts(ctx, doc.id)
+
+    assert texts == ["Name: Ahmad; Salary: 5000"]
+    assert "row 0" not in texts and "row 1" not in texts and "row 2" not in texts
+
+
+async def test_chunk_texts_falls_back_to_leaf_text_for_chunks_with_no_parent_and_never_dedups_them(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """P-42's fallback half: a document with a table AND ordinary prose
+    around it must keep every prose chunk -- individually, with no dedup
+    applied between them even when two happen to hold identical text --
+    while the table's rows still collapse to their one parent. Losing the
+    prose here would be exactly the content-loss step 18 must not cause."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    parent = _parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="table body")
+    await repo_knowledge.add_parent_chunks(ctx, [parent])
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(document_id=doc.id, workspace_id=ws, seq=0, chunk_text="intro"),
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=1,
+                chunk_text="row a",
+                parent_id=parent.id,
+            ),
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=2,
+                chunk_text="row b",
+                parent_id=parent.id,
+            ),
+            # Deliberately identical text to another orphan leaf -- "no
+            # dedup" for the fallback path means BOTH survive.
+            _chunk(document_id=doc.id, workspace_id=ws, seq=3, chunk_text="intro"),
+        ],
+    )
+
+    texts = await repo_knowledge.chunk_texts(ctx, doc.id)
+
+    assert texts == ["intro", "table body", "intro"]

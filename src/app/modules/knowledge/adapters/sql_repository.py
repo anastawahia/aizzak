@@ -45,6 +45,11 @@ no new statement for it: ``fk_parent_chunk_doc`` carries ``ON DELETE
 CASCADE`` on ``document_id``, so the existing final ``DELETE`` of the
 document row removes its now-unreferenced parent rows for free (chunks are
 always deleted first, so nothing still points at them by then).
+
+``chunk_texts`` (P-42, plan §4 step 18) resolves each chunk's parent with a
+LEFT JOIN in the SAME query rather than reading ``parent_chunks`` separately
+and matching rows back up in Python -- see its own docstring for the
+consecutive-collapse this makes possible.
 """
 
 from __future__ import annotations
@@ -438,12 +443,29 @@ class SqlDocumentRepository:
 
     async def chunk_texts(self, ctx: ExecutionContext, doc_id: UuidStr) -> Sequence[str]:
         # `seq` ASC is the document's reading order, and the summariser
-        # depends on it -- see the port. Only the text column is selected:
-        # this is the one query in the module that can return an entire
-        # document's body, and dragging the vector refs along with it would
-        # double the row width for a caller that never looks at them.
+        # depends on it -- see the port. `parent_id`/vector refs are the only
+        # other columns dragged along, and only because P-42 (plan §4 step
+        # 18, §3.10) needs the former to decide what to collapse below; this
+        # is still the one query in the module that can return an entire
+        # document's body, so nothing else joins in.
+        #
+        # P-42: a chunk with a parent (a table row, P-13) is represented by
+        # its PARENT's text -- coalesced in SQL rather than fetched
+        # separately, so one query does both jobs. A chunk with none falls
+        # back to its OWN text, unchanged. The LEFT JOIN is what makes a
+        # parentless document (the common case today: only table rows have
+        # one) round-trip byte-for-byte through this method exactly as
+        # before this step.
         stmt = (
-            select(knowledge_chunks.c.text)
+            select(
+                knowledge_chunks.c.parent_id,
+                func.coalesce(parent_chunks.c.text, knowledge_chunks.c.text).label("text"),
+            )
+            .select_from(
+                knowledge_chunks.outerjoin(
+                    parent_chunks, knowledge_chunks.c.parent_id == parent_chunks.c.id
+                )
+            )
             .where(
                 knowledge_chunks.c.document_id == doc_id,
                 knowledge_chunks.c.workspace_id == ctx.workspace_id,
@@ -452,10 +474,29 @@ class SqlDocumentRepository:
         )
         try:
             async with self._tenant_session(ctx) as session:
-                rows = (await session.execute(stmt)).scalars().all()
+                rows = (await session.execute(stmt)).all()
         except DBAPIError as exc:
             raise _translate(exc) from exc
-        return list(rows)
+
+        # Collapse CONSECUTIVE rows that share the same non-null `parent_id`
+        # into one appearance of that parent's text -- a table's exploded
+        # rows are written contiguously (`application/indexing.py`'s own
+        # per-table `seq` run), so this is the whole "~40 sections instead of
+        # ~240 fragments" win (plan §3.10) without a second query or an
+        # in-Python group-by that could reorder anything. Rows with NO
+        # parent (`parent_id IS NULL`) are NEVER collapsed against each
+        # other -- each keeps its own leaf text, on its own line, exactly as
+        # `chunk_texts` already returned it: the "falls back to the leaf
+        # text with no dedup" half of P-42, so a document with no table
+        # never loses a single chunk of content to this change.
+        texts: list[str] = []
+        last_parent_id: str | None = None
+        for parent_id, text in rows:
+            if parent_id is not None and parent_id == last_parent_id:
+                continue
+            texts.append(text)
+            last_parent_id = parent_id
+        return texts
 
     async def purge(self, ctx: ExecutionContext, doc_id: UuidStr) -> None:
         # Summaries, then chunks, then the document -- the missing `ON DELETE`
