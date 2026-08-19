@@ -153,12 +153,23 @@ class _FakeDocuments:
         self.added.append(doc)
 
     async def set_status(
-        self, ctx: ExecutionContext, doc_id: str, status: str, error: str | None = None
+        self,
+        ctx: ExecutionContext,
+        doc_id: str,
+        status: str,
+        error: str | None = None,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
     ) -> None:
         for doc in self.added:
             if doc.id == doc_id:
                 doc.status = IndexStatus(status)
                 doc.error = error
+                if content_hash is not None:
+                    doc.content_hash = content_hash
+                if pipeline_version is not None:
+                    doc.pipeline_version = pipeline_version
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
@@ -242,9 +253,9 @@ class _FakeContentResolver:
 
     async def resolve(
         self, ctx: ExecutionContext, *, file_id: str
-    ) -> tuple[ParsedDocument, str, str]:
+    ) -> tuple[ParsedDocument, str, str, str]:
         self.calls.append(file_id)
-        return self._parsed, self._model, self._api_key
+        return self._parsed, self._model, self._api_key, "hash-abc"
 
 
 def _parsed_document() -> ParsedDocument:
@@ -375,11 +386,25 @@ async def test_index_handler_claim_finalize_and_append_share_the_unit_of_work() 
             await super().add_chunks(ctx, chunks)
 
         async def set_status(
-            self, ctx: ExecutionContext, doc_id: str, status: str, error: str | None = None
+            self,
+            ctx: ExecutionContext,
+            doc_id: str,
+            status: str,
+            error: str | None = None,
+            *,
+            content_hash: str | None = None,
+            pipeline_version: int | None = None,
         ) -> None:
             if status in (IndexStatus.INDEXED.value, IndexStatus.FAILED.value):
                 active_at["terminal_status"] = uow.active
-            await super().set_status(ctx, doc_id, status, error)
+            await super().set_status(
+                ctx,
+                doc_id,
+                status,
+                error,
+                content_hash=content_hash,
+                pipeline_version=pipeline_version,
+            )
 
     class _SpyOutbox:
         async def append(self, ctx: ExecutionContext, records: Sequence[OutboxRecord]) -> None:
@@ -429,7 +454,7 @@ class _ExplodingContentResolver:
 
     async def resolve(
         self, ctx: ExecutionContext, *, file_id: str
-    ) -> tuple[ParsedDocument, str, str]:
+    ) -> tuple[ParsedDocument, str, str, str]:
         self.calls.append(file_id)
         raise self._error
 

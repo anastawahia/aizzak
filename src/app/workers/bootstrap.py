@@ -467,9 +467,12 @@ def _consumer_name(prefix: str) -> str:
 class DocumentContentResolver(Protocol):
     """Resolves everything ``IndexRegisteredDocument`` needs beyond
     ``document_id``: the file's bytes fetched + parsed into a
-    ``ParsedDocument``, plus the embedding model/key to index it with (the
+    ``ParsedDocument``, the embedding model/key to index it with (the
     ``knowledge.EmbeddingResolver`` seam's shape, ``ports/retrieval.py``,
-    generalized to cover fetch + parse too, not just model/key resolution).
+    generalized to cover fetch + parse too, not just model/key resolution),
+    and — plan step 15, §3.6 — the ``sha256`` fingerprint of the SAME bytes
+    that were parsed, computed here because this is the one seam that still
+    holds them (``IndexRegisteredDocument`` itself never sees raw bytes).
 
     A worker-composition-only seam -- not a module port, not a framework
     port -- and it STAYS one now that it has a real adapter, for a reason
@@ -492,7 +495,7 @@ class DocumentContentResolver(Protocol):
 
     async def resolve(
         self, ctx: ExecutionContext, *, file_id: Uuid
-    ) -> tuple[ParsedDocument, str, str]: ...
+    ) -> tuple[ParsedDocument, str, str, str]: ...
 
 
 # ── `files.file.uploaded.v1` has no handler here any more ─────────────────
@@ -556,7 +559,9 @@ def build_knowledge_index_handler(
         data = envelope["data"]
         event_id: str = envelope["id"]
         try:
-            parsed, model, api_key = await content.resolve(ctx, file_id=data["file_id"])
+            parsed, model, api_key, content_hash = await content.resolve(
+                ctx, file_id=data["file_id"]
+            )
         except (UnsupportedTypeError, ValidationError) as exc:
             # Step 16 (§1-ج): a file this deployment cannot parse is a
             # TERMINAL fact about the file, not a transient fault -- and the
@@ -572,7 +577,12 @@ def build_knowledge_index_handler(
             attempt = await index.fail(ctx, document_id=data["document_id"], reason=str(exc))
         else:
             attempt = await index.run(
-                ctx, document_id=data["document_id"], parsed=parsed, model=model, api_key=api_key
+                ctx,
+                document_id=data["document_id"],
+                parsed=parsed,
+                model=model,
+                api_key=api_key,
+                content_hash=content_hash,
             )
         if attempt.is_redelivery_noop:
             return

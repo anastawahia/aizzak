@@ -3,8 +3,9 @@
 
 ``build_knowledge_index_handler`` needs one call that turns a ``file_id``
 into everything ``IndexRegisteredDocument.run`` consumes beyond the document
-id: the file's bytes, fetched and parsed into a ``ParsedDocument``, plus the
-embedding model/key to index it with. Every piece has existed for a while --
+id: the file's bytes, fetched and parsed into a ``ParsedDocument``, the
+embedding model/key to index it with, and (plan step 15, §3.6) the
+``sha256`` fingerprint of those same bytes. Every piece has existed for a while --
 ``SqlFileRepository`` (3.16), the ``MinioStorage`` adapter behind
 ``StorageHandle`` (2.4/step 15), ``DocumentContentExtractor``'s eleven-extension
 dispatch table (3.k1), and ``SettingsProviderResolver`` (2.9/2.10) -- but
@@ -51,6 +52,7 @@ settings on its own.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import NotFoundError, ValidationError
@@ -89,7 +91,7 @@ class WorkerDocumentContentResolver:
 
     async def resolve(
         self, ctx: ExecutionContext, *, file_id: Uuid
-    ) -> tuple[ParsedDocument, str, str]:
+    ) -> tuple[ParsedDocument, str, str, str]:
         """Fetch → parse → resolve the embedding route, in that order.
 
         Order matters in one direction only: parsing is by far the most
@@ -103,6 +105,13 @@ class WorkerDocumentContentResolver:
             raise NotFoundError(f"file {file_id} not found")
 
         data = await self._storage.get(file.storage_key.value)
+        # §3.6 (plan step 15): `sha256(bytes)`, never `mtime` -- the model is
+        # object-based, not file-based (rag-indexing-plan.md's own words).
+        # Computed HERE and nowhere else: this is the one place downstream of
+        # storage that still holds the raw bytes -- `ParsedDocument` never
+        # carries them, and `IndexRegisteredDocument` only ever sees this
+        # fingerprint, not the bytes it was made from.
+        content_hash = hashlib.sha256(data).hexdigest()
 
         # See the module docstring -- the port itself requires this offload,
         # and `wait_for` around it is §3.7's parse timeout (plan step 14).
@@ -130,4 +139,4 @@ class WorkerDocumentContentResolver:
         # points at it. Only the model/key are per-call. (The API path drops
         # it identically, in `_RoutedEmbeddingResolver`.)
         _, resolved = await self._providers.resolve_embedding(ctx)
-        return parsed, resolved.model, resolved.api_key
+        return parsed, resolved.model, resolved.api_key, content_hash

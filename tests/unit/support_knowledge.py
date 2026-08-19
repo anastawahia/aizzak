@@ -142,15 +142,33 @@ class InMemoryDocumentRepository:
         self.rows[doc.id] = doc
 
     async def set_status(
-        self, ctx: ExecutionContext, doc_id: str, status: str, error: str | None = None
+        self,
+        ctx: ExecutionContext,
+        doc_id: str,
+        status: str,
+        error: str | None = None,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
     ) -> None:
         # No longer forbidden: cancelling a re-index claims its own pending
         # documents by driving them terminal (BE-RAG-008). The bundle still
-        # cannot start a pipeline — this only ever writes `failed`.
+        # cannot start a pipeline — this only ever writes `failed`, so
+        # `content_hash`/`pipeline_version` (plan step 15) have no caller
+        # here yet; accepted for structural conformance with
+        # `DocumentRepository`.
         row = self.rows.get(doc_id)
         if row is None or row.workspace_id != ctx.workspace_id:
             return
-        self.rows[doc_id] = replace(row, status=IndexStatus(status), error=error)
+        self.rows[doc_id] = replace(
+            row,
+            status=IndexStatus(status),
+            error=error,
+            content_hash=content_hash if content_hash is not None else row.content_hash,
+            pipeline_version=(
+                pipeline_version if pipeline_version is not None else row.pipeline_version
+            ),
+        )
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: object) -> None:
         raise AssertionError("the API bundle must never persist chunks")

@@ -93,6 +93,15 @@ class Document:
     created_at: datetime
     updated_at: datetime
     version: int
+    # The content fingerprint pair (rag-indexing-plan.md §3.6, decision
+    # س-14, plan step 15 / `P-03`): `sha256(bytes)` of the file this document
+    # was built from, and the `domain/pipeline.py::PIPELINE_VERSION` that was
+    # current the moment this document last completed indexing. Both stay
+    # `None` until `IndexRegisteredDocument.finalize` stamps them alongside
+    # `complete_indexing` (§3.6's "the pair", never one alone — see
+    # `domain/pipeline.py::content_pipeline_unchanged`).
+    content_hash: str | None = None
+    pipeline_version: int | None = None
 
     def start_indexing(self, now: datetime) -> None:
         """``pending|indexing -> indexing``.
@@ -110,17 +119,38 @@ class Document:
         self.status = IndexStatus.INDEXING
         self.updated_at = now
 
-    def complete_indexing(self, chunk_count: int, now: datetime) -> None:
+    def complete_indexing(
+        self,
+        chunk_count: int,
+        now: datetime,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
+    ) -> None:
         """``indexing -> indexed`` (INV-K2): records the final chunk count
         and clears any error left over from... nothing, in practice (a
         document only ever reaches here via ``indexing``), but clearing is
-        cheap insurance against a future relaxation of that rule."""
+        cheap insurance against a future relaxation of that rule.
+
+        ``content_hash``/``pipeline_version`` (plan step 15, §3.6) are stamped
+        in the SAME transition rather than through a separate setter: a
+        document's fingerprint has meaning only as "what `INDEXED` was built
+        from", so it can never be written independently of the completion it
+        describes. Both default to ``None`` for callers that only care about
+        the state machine (the domain's own round-trip tests) — a document
+        that never received a real fingerprint here simply never satisfies
+        ``domain.pipeline.content_pipeline_unchanged`` for anyone comparing
+        against it, which is the correct, safe default (never a false
+        "unchanged").
+        """
         if self.status is not IndexStatus.INDEXING:
             raise DocumentStateError(f"cannot complete indexing from status {self.status.value!r}")
         self.status = IndexStatus.INDEXED
         self.chunk_count = chunk_count
         self.error = None
         self.updated_at = now
+        self.content_hash = content_hash
+        self.pipeline_version = pipeline_version
 
     def fail_indexing(self, reason: str, now: datetime) -> None:
         """``indexing -> failed`` (INV-K2) — a terminal state. INV-K3

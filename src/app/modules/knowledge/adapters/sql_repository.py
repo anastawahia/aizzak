@@ -120,6 +120,15 @@ documents = Table(
     Column("created_at", _timestamptz, nullable=False),
     Column("updated_at", _timestamptz, nullable=False),
     Column("version", Integer, nullable=False),
+    # `migrations/versions/knowledge/0006_content_fingerprint.py` (plan step
+    # 15, §3.6): the content-hash/pipeline-version pair, written together
+    # with the `'indexed'` transition (`set_status`, below) and read by
+    # `IndexFile`'s skip check (`application/use_cases.py::
+    # _reflects_current_pipeline`). Both stay NULLable forever, not just
+    # until a backfill: a `pending`/`indexing`/`failed` document legitimately
+    # has neither.
+    Column("content_hash", Text, nullable=True),
+    Column("pipeline_version", Integer, nullable=True),
     schema="knowledge",
 )
 
@@ -348,6 +357,8 @@ class SqlDocumentRepository:
             created_at=doc.created_at,
             updated_at=doc.updated_at,
             version=doc.version,
+            content_hash=doc.content_hash,
+            pipeline_version=doc.pipeline_version,
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -356,7 +367,14 @@ class SqlDocumentRepository:
             raise _translate(exc) from exc
 
     async def set_status(
-        self, ctx: ExecutionContext, doc_id: UuidStr, status: str, error: str | None = None
+        self,
+        ctx: ExecutionContext,
+        doc_id: UuidStr,
+        status: str,
+        error: str | None = None,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
     ) -> None:
         values: dict[str, object] = {"status": status, "error": error}
         if status == IndexStatus.INDEXED.value:
@@ -365,6 +383,11 @@ class SqlDocumentRepository:
             # scalar subquery in the SAME UPDATE, so it can never drift from
             # (or race against) a separate read-then-write round trip.
             values["chunk_count"] = _chunk_count_subquery()
+            # Plan step 15 (§3.6): the fingerprint pair, written ONLY on this
+            # transition -- see the port docstring for why every other
+            # transition leaves both columns alone.
+            values["content_hash"] = content_hash
+            values["pipeline_version"] = pipeline_version
         stmt = (
             update(documents)
             .where(documents.c.id == doc_id, documents.c.workspace_id == ctx.workspace_id)
@@ -978,6 +1001,8 @@ def _hydrate_document(row: RowMapping) -> Document:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         version=row["version"],
+        content_hash=row["content_hash"],
+        pipeline_version=row["pipeline_version"],
     )
 
 

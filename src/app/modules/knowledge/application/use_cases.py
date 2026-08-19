@@ -91,6 +91,7 @@ from app.modules.knowledge.domain.events import (
     SummaryBuilt,
     SummaryRequested,
 )
+from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     ReindexJobStatus,
@@ -138,6 +139,33 @@ CANCELLED_REASON = "re-indexing was cancelled before this document was processed
 # cancelled build really did end without a summary and a client watching the
 # stream needs to stop waiting for one.
 SUMMARY_CANCELLED_REASON = "the summary build was cancelled"
+
+
+def _reflects_current_pipeline(document: Document) -> bool:
+    """Whether re-indexing ``document`` right now would reproduce output
+    identical to what is already stored (plan §3.6, decision س-14 = أ).
+
+    Files are immutable once ``ready`` (INV-F4 — only the name may ever
+    change), so a document's OWN recorded ``content_hash`` is, by
+    construction, still an accurate fingerprint of its file's current bytes;
+    there is no new hash to fetch and compare here. That collapses
+    ``domain.pipeline.content_pipeline_unchanged``'s "pair" to a comparison
+    against itself for the content half — still called through the SAME
+    general predicate (not a bespoke ``==``) so the ONE rule that decides
+    "unchanged" lives in exactly one place in the domain — while the
+    pipeline-version half stays a REAL comparison against today's
+    ``PIPELINE_VERSION``. A document with no recorded fingerprint at all
+    (``content_hash is None`` — never successfully indexed) is never
+    "unchanged": there is nothing yet to leave alone.
+    """
+    if document.content_hash is None:
+        return False
+    return content_pipeline_unchanged(
+        stored_content_hash=document.content_hash,
+        current_content_hash=document.content_hash,
+        stored_pipeline_version=document.pipeline_version,
+        current_pipeline_version=PIPELINE_VERSION,
+    )
 
 
 class RegisterDocumentFromFile:
@@ -217,6 +245,14 @@ class IndexFile:
       409 here, and rebuilding one is ``POST /knowledge/reindex``'s job, the
       face that knows to destroy what it supersedes.
 
+      **One exception (plan §3.6/step 15, decision س-14 = أ):** if that
+      existing document is already ``indexed`` under TODAY's
+      ``domain.pipeline.PIPELINE_VERSION``, re-indexing it would reproduce
+      output byte-for-byte identical to what is already there — files are
+      immutable once ``ready`` (INV-F4), so nothing changed. That case
+      "returns immediately": the existing ``Document``, no new one minted,
+      no conflict raised. See ``_reflects_current_pipeline``.
+
     The space is the FILE's, read off the same view (spaces plan, step 8) and
     never taken from the caller: a client-supplied space could file a document
     under a space its file does not belong to, and retrieval would then
@@ -242,7 +278,17 @@ class IndexFile:
         # constraint to lean on here (INV-K3 forbids one), so this read is the
         # only thing standing between a double click and a corpus that answers
         # twice.
-        if await self._documents.ids_for_files(ctx, [file_id]):
+        existing_ids = await self._documents.ids_for_files(ctx, [file_id])
+        if existing_ids:
+            existing = await self._documents.get(ctx, existing_ids[0])
+            # §3.6/§4 step 15, decision س-14 = أ: re-indexing a document whose
+            # fingerprint is unchanged returns immediately -- the existing
+            # document, not a new one and not a conflict. See
+            # `_reflects_current_pipeline`'s own docstring for why this is
+            # the pair rule (content_hash AND pipeline_version) even though
+            # only the pipeline half can genuinely differ at THIS call site.
+            if existing is not None and _reflects_current_pipeline(existing):
+                return existing, ()
             raise ConflictError(
                 "this file already has a knowledge document;"
                 " rebuild it through POST /knowledge/reindex"
@@ -286,11 +332,20 @@ class IndexAttempt:
     (so ``execute = run + finalize`` stays total and callers that only want
     the split can skip the terminal transaction entirely via
     ``is_redelivery_noop``).
+
+    ``content_hash`` (plan step 15, §3.6) rides along only on a successful
+    ``outcome`` -- the fingerprint of the bytes that outcome was built from,
+    computed by the caller (``workers/content_resolver.py``, which already
+    holds the raw bytes ``run`` never sees) and carried here so ``finalize``
+    can stamp it on the row alongside ``complete_indexing``. ``None`` for
+    every other case: a redelivery no-op changes nothing to fingerprint, and
+    a failed attempt never produced output worth hashing.
     """
 
     document: Document
     outcome: IndexOutcome | None
     error: str | None
+    content_hash: str | None = None
 
     @property
     def is_redelivery_noop(self) -> bool:
@@ -338,9 +393,15 @@ class IndexRegisteredDocument:
         parsed: ParsedDocument,
         model: str,
         api_key: str,
+        content_hash: str,
     ) -> tuple[Document, tuple[KnowledgeEvent, ...]]:
         attempt = await self.run(
-            ctx, document_id=document_id, parsed=parsed, model=model, api_key=api_key
+            ctx,
+            document_id=document_id,
+            parsed=parsed,
+            model=model,
+            api_key=api_key,
+            content_hash=content_hash,
         )
         return await self.finalize(ctx, attempt)
 
@@ -352,6 +413,7 @@ class IndexRegisteredDocument:
         parsed: ParsedDocument,
         model: str,
         api_key: str,
+        content_hash: str,
     ) -> IndexAttempt:
         doc = await self._documents.get(ctx, document_id)
         if doc is None:
@@ -390,7 +452,7 @@ class IndexRegisteredDocument:
             # carried as data to `finalize` and never re-raised.
             return IndexAttempt(document=doc, outcome=None, error=str(exc))
 
-        return IndexAttempt(document=doc, outcome=outcome, error=None)
+        return IndexAttempt(document=doc, outcome=outcome, error=None, content_hash=content_hash)
 
     async def fail(self, ctx: ExecutionContext, *, document_id: Uuid, reason: str) -> IndexAttempt:
         """An ``IndexAttempt`` carrying a failure that happened BEFORE the
@@ -482,8 +544,25 @@ class IndexRegisteredDocument:
             ]
             await self._documents.add_chunks(ctx, chunks)
 
-            doc.complete_indexing(len(chunks), now)
-            await self._documents.set_status(ctx, doc.id, IndexStatus.INDEXED.value)
+            # §3.6/plan step 15: stamp the content fingerprint pair in the
+            # SAME transition that completes indexing -- see
+            # `Document.complete_indexing`'s own docstring for why it is not
+            # a separate write. `attempt.content_hash` is never `None` here:
+            # `run` only reaches an `outcome` (this branch) by way of the
+            # ONE `IndexAttempt` constructor call that sets it.
+            doc.complete_indexing(
+                len(chunks),
+                now,
+                content_hash=attempt.content_hash,
+                pipeline_version=PIPELINE_VERSION,
+            )
+            await self._documents.set_status(
+                ctx,
+                doc.id,
+                IndexStatus.INDEXED.value,
+                content_hash=attempt.content_hash,
+                pipeline_version=PIPELINE_VERSION,
+            )
 
             indexed_event = DocumentIndexed(
                 doc.id, ctx.workspace_id, doc.file_id, len(chunks), attempt.outcome.collection, now

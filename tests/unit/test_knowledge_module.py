@@ -42,6 +42,7 @@ from app.modules.knowledge.domain.events import (
     DocumentIndexingFailed,
     DocumentRegistered,
 )
+from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
 from app.modules.knowledge.domain.value_objects import IndexStatus, VectorRef
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
@@ -76,6 +77,8 @@ def _document(
     status: IndexStatus = IndexStatus.PENDING,
     chunk_count: int = 0,
     error: str | None = None,
+    content_hash: str | None = None,
+    pipeline_version: int | None = None,
 ) -> Document:
     now = utc_now()
     return Document(
@@ -89,6 +92,8 @@ def _document(
         created_at=now,
         updated_at=now,
         version=1,
+        content_hash=content_hash,
+        pipeline_version=pipeline_version,
     )
 
 
@@ -254,6 +259,10 @@ class _FakeDocumentRepository:
         self.chunks: list[Chunk] = []
         self.parents: list[ParentChunk] = []
         self.status_calls: list[tuple[str, str, str | None]] = []
+        # Plan step 15 (§3.6): every `set_status(..., content_hash=..., pipeline_version=...)`
+        # call, so a test can assert the fingerprint was persisted alongside
+        # `'indexed'` without reaching into the SQL adapter.
+        self.fingerprint_calls: list[tuple[str, str | None, int | None]] = []
 
     async def get(self, ctx: ExecutionContext, doc_id: str) -> Document | None:
         doc = self.docs.get(doc_id)
@@ -265,9 +274,17 @@ class _FakeDocumentRepository:
         self.docs[doc.id] = doc
 
     async def set_status(
-        self, ctx: ExecutionContext, doc_id: str, status: str, error: str | None = None
+        self,
+        ctx: ExecutionContext,
+        doc_id: str,
+        status: str,
+        error: str | None = None,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
     ) -> None:
         self.status_calls.append((doc_id, status, error))
+        self.fingerprint_calls.append((doc_id, content_hash, pipeline_version))
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
@@ -390,6 +407,72 @@ def test_fail_indexing_from_non_indexing_status_raises(status: IndexStatus) -> N
     doc = _document(status=status)
     with pytest.raises(DocumentStateError):
         doc.fail_indexing("boom", utc_now())
+
+
+def test_complete_indexing_stamps_the_content_fingerprint_pair() -> None:
+    """Plan step 15 (§3.6): the fingerprint is written in the SAME transition
+    as completion, never independently of it."""
+    doc = _document(status=IndexStatus.INDEXING)
+    doc.complete_indexing(2, utc_now(), content_hash="hash-abc", pipeline_version=7)
+    assert doc.content_hash == "hash-abc"
+    assert doc.pipeline_version == 7
+
+
+def test_complete_indexing_defaults_the_fingerprint_to_none() -> None:
+    """A caller that only cares about the state machine (every OTHER test in
+    this section) gets `None`/`None` rather than being forced to invent a
+    fingerprint it has no opinion about."""
+    doc = _document(status=IndexStatus.INDEXING)
+    doc.complete_indexing(2, utc_now())
+    assert doc.content_hash is None
+    assert doc.pipeline_version is None
+
+
+# --------------------------------------------------------------------------- #
+# domain/pipeline.py -- the content fingerprint pair (§3.6, decision س-14)    #
+# --------------------------------------------------------------------------- #
+def test_content_pipeline_unchanged_is_true_when_both_halves_match() -> None:
+    assert content_pipeline_unchanged(
+        stored_content_hash="hash-abc",
+        current_content_hash="hash-abc",
+        stored_pipeline_version=PIPELINE_VERSION,
+        current_pipeline_version=PIPELINE_VERSION,
+    )
+
+
+def test_content_pipeline_unchanged_is_false_when_only_the_content_hash_differs() -> None:
+    """Half 1 of the pair: a genuinely different file (a hypothetical content
+    replacement, or two documents compared against each other) never counts
+    as unchanged, even under today's pipeline version."""
+    assert not content_pipeline_unchanged(
+        stored_content_hash="hash-abc",
+        current_content_hash="hash-xyz",
+        stored_pipeline_version=PIPELINE_VERSION,
+        current_pipeline_version=PIPELINE_VERSION,
+    )
+
+
+def test_content_pipeline_unchanged_is_false_when_only_the_pipeline_version_differs() -> None:
+    """Half 2 of the pair, and §6 risk 4's whole point: identical bytes under
+    an OLDER pipeline version must never look unchanged, or a parser upgrade
+    would be silently invisible to every re-index."""
+    assert not content_pipeline_unchanged(
+        stored_content_hash="hash-abc",
+        current_content_hash="hash-abc",
+        stored_pipeline_version=PIPELINE_VERSION - 1,
+        current_pipeline_version=PIPELINE_VERSION,
+    )
+
+
+def test_content_pipeline_unchanged_is_false_for_a_never_indexed_document() -> None:
+    """`stored_content_hash=None`/`stored_pipeline_version=None` (a document
+    that never completed indexing) never equals a real hash/version."""
+    assert not content_pipeline_unchanged(
+        stored_content_hash=None,
+        current_content_hash="hash-abc",
+        stored_pipeline_version=None,
+        current_pipeline_version=PIPELINE_VERSION,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -538,6 +621,77 @@ async def test_index_file_refuses_a_file_that_already_has_a_document() -> None:
     assert len(documents.docs) == 1
 
 
+async def test_index_file_returns_the_existing_document_when_the_fingerprint_is_unchanged() -> None:
+    """Decision س-14 = أ (plan §3.6/step 15): re-indexing a document whose
+    fingerprint is unchanged returns immediately -- the existing INDEXED
+    document, not a 409 and not a second one."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    ctx = _ctx("ws1")
+    existing = _document(
+        doc_id="doc-1",
+        workspace_id="ws1",
+        space_id=_SPACE_A,
+        file_id="file-1",
+        status=IndexStatus.INDEXED,
+        chunk_count=3,
+        content_hash="hash-abc",
+        pipeline_version=PIPELINE_VERSION,
+    )
+    documents.docs[existing.id] = existing
+
+    doc, events = await IndexFile(documents, files).execute(ctx, file_id="file-1")
+
+    assert doc is existing
+    assert events == ()
+    assert len(documents.docs) == 1  # no second document was minted
+
+
+async def test_index_file_still_conflicts_when_the_existing_document_predates_the_pipeline() -> (
+    None
+):
+    """The other half of the pair: an INDEXED document fingerprinted under an
+    OLDER `pipeline_version` is never "unchanged", even though its
+    `content_hash` is set -- decision س-14's whole point (§6 risk 4)."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    ctx = _ctx("ws1")
+    stale = _document(
+        doc_id="doc-1",
+        workspace_id="ws1",
+        space_id=_SPACE_A,
+        file_id="file-1",
+        status=IndexStatus.INDEXED,
+        chunk_count=3,
+        content_hash="hash-abc",
+        pipeline_version=PIPELINE_VERSION - 1,
+    )
+    documents.docs[stale.id] = stale
+
+    with pytest.raises(ConflictError):
+        await IndexFile(documents, files).execute(ctx, file_id="file-1")
+
+    assert len(documents.docs) == 1
+
+
+async def test_index_file_still_conflicts_when_the_existing_document_was_never_fingerprinted() -> (
+    None
+):
+    """A document with no recorded `content_hash` (`pending`/`indexing`, or
+    minted before this plan step) never satisfies the skip -- unindexed is
+    never "unchanged"."""
+    documents = _FakeDocumentRepository()
+    files = _FakeReadableFiles({"file-1": _SPACE_A})
+    ctx = _ctx("ws1")
+    never_indexed = _document(
+        doc_id="doc-1", workspace_id="ws1", space_id=_SPACE_A, file_id="file-1"
+    )
+    documents.docs[never_indexed.id] = never_indexed
+
+    with pytest.raises(ConflictError):
+        await IndexFile(documents, files).execute(ctx, file_id="file-1")
+
+
 async def test_index_file_guard_is_scoped_to_the_workspace() -> None:
     """``ids_for_files`` filters by workspace, so another tenant's document
     over the same file id must not make this one a 409."""
@@ -623,7 +777,12 @@ async def test_index_registered_document_happy_path() -> None:
     )
 
     result, events = await use_case.execute(
-        ctx, document_id=doc.id, parsed=parsed, model="embed-1", api_key="key-1"
+        ctx,
+        document_id=doc.id,
+        parsed=parsed,
+        model="embed-1",
+        api_key="key-1",
+        content_hash="hash-abc",
     )
 
     assert result is doc
@@ -631,6 +790,12 @@ async def test_index_registered_document_happy_path() -> None:
     assert doc.chunk_count == 2
     assert [call[1] for call in documents.status_calls] == ["indexing", "indexed"]
     assert [call[2] for call in documents.status_calls] == [None, None]
+    # Plan step 15 (§3.6): the fingerprint pair is stamped on the SAME
+    # `'indexed'` transition, never on `indexing`.
+    assert documents.fingerprint_calls[-1] == (doc.id, "hash-abc", PIPELINE_VERSION)
+    assert documents.fingerprint_calls[0] == (doc.id, None, None)
+    assert doc.content_hash == "hash-abc"
+    assert doc.pipeline_version == PIPELINE_VERSION
 
     assert len(documents.chunks) == 2
     seen_ids: set[str] = set()
@@ -670,7 +835,7 @@ async def test_index_registered_document_pipeline_failure_marks_document_failed(
     parsed = _parsed_document([_parsed_chunk("some content to embed", order=0)])
 
     result, events = await use_case.execute(
-        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k"
+        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k", content_hash="hash-abc"
     )
 
     assert result is doc
@@ -680,6 +845,10 @@ async def test_index_registered_document_pipeline_failure_marks_document_failed(
     assert [call[1] for call in documents.status_calls] == ["indexing", "failed"]
     assert documents.status_calls[-1][2] == doc.error
     assert documents.chunks == []
+    # A failed attempt never produces output worth fingerprinting (plan
+    # step 15's own `IndexAttempt` docstring).
+    assert doc.content_hash is None
+    assert doc.pipeline_version is None
 
     assert len(events) == 1
     event = events[0]
@@ -698,7 +867,12 @@ async def test_index_registered_document_already_indexed_is_a_noop() -> None:
     use_case = IndexRegisteredDocument(documents, IndexDocument(embeddings, _FakeHybridVectors()))
 
     result, events = await use_case.execute(
-        ctx, document_id=doc.id, parsed=_parsed_document([]), model="m", api_key="k"
+        ctx,
+        document_id=doc.id,
+        parsed=_parsed_document([]),
+        model="m",
+        api_key="k",
+        content_hash="hash-abc",
     )
 
     assert result is doc
@@ -718,7 +892,12 @@ async def test_index_registered_document_already_failed_is_a_noop() -> None:
     use_case = IndexRegisteredDocument(documents, IndexDocument(embeddings, _FakeHybridVectors()))
 
     result, events = await use_case.execute(
-        ctx, document_id=doc.id, parsed=_parsed_document([]), model="m", api_key="k"
+        ctx,
+        document_id=doc.id,
+        parsed=_parsed_document([]),
+        model="m",
+        api_key="k",
+        content_hash="hash-abc",
     )
 
     assert result is doc
@@ -735,7 +914,12 @@ async def test_index_registered_document_missing_document_raises_not_found() -> 
     )
     with pytest.raises(NotFoundError):
         await use_case.execute(
-            _ctx(), document_id="missing", parsed=_parsed_document([]), model="m", api_key="k"
+            _ctx(),
+            document_id="missing",
+            parsed=_parsed_document([]),
+            model="m",
+            api_key="k",
+            content_hash="hash-abc",
         )
 
 
@@ -762,7 +946,7 @@ async def test_index_registered_document_wires_table_parent_id_end_to_end() -> N
     parsed = _parsed_document([table_chunk])
 
     result, _events = await use_case.execute(
-        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k"
+        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k", content_hash="hash-abc"
     )
 
     assert result.status is IndexStatus.INDEXED
@@ -796,7 +980,12 @@ async def test_run_persists_no_terminal_outcome_until_finalize() -> None:
     parsed = _parsed_document([_parsed_chunk("a paragraph worth chunking", order=0)])
 
     attempt = await use_case.run(
-        ctx, document_id=doc.id, parsed=parsed, model="embed-1", api_key="key-1"
+        ctx,
+        document_id=doc.id,
+        parsed=parsed,
+        model="embed-1",
+        api_key="key-1",
+        content_hash="hash-abc",
     )
 
     assert attempt.outcome is not None
@@ -812,6 +1001,8 @@ async def test_run_persists_no_terminal_outcome_until_finalize() -> None:
     assert [call[1] for call in documents.status_calls] == ["indexing", "indexed"]
     assert len(documents.chunks) == 1
     assert [type(event).__name__ for event in events] == ["DocumentIndexed"]
+    assert doc.content_hash == "hash-abc"
+    assert doc.pipeline_version == PIPELINE_VERSION
 
 
 async def test_run_carries_a_pipeline_failure_as_data_for_finalize() -> None:
@@ -827,7 +1018,9 @@ async def test_run_carries_a_pipeline_failure_as_data_for_finalize() -> None:
     )
     parsed = _parsed_document([_parsed_chunk("content that will fail to embed", order=0)])
 
-    attempt = await use_case.run(ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k")
+    attempt = await use_case.run(
+        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k", content_hash="hash-abc"
+    )
 
     assert attempt.outcome is None
     assert attempt.error is not None
@@ -852,7 +1045,12 @@ async def test_run_short_circuits_terminal_documents_and_finalize_passes_through
     use_case = IndexRegisteredDocument(documents, IndexDocument(embeddings, _FakeHybridVectors()))
 
     attempt = await use_case.run(
-        ctx, document_id=doc.id, parsed=_parsed_document([]), model="m", api_key="k"
+        ctx,
+        document_id=doc.id,
+        parsed=_parsed_document([]),
+        model="m",
+        api_key="k",
+        content_hash="hash-abc",
     )
 
     assert attempt.is_redelivery_noop
@@ -1124,6 +1322,7 @@ async def test_the_worker_takes_the_payload_space_from_the_document_row() -> Non
         parsed=_parsed_document([_parsed_chunk("a window of indexed text", 0)]),
         model="embed-1",
         api_key="key-1",
+        content_hash="hash-abc",
     )
 
     (point,) = vectors.points["kn-ws1"].values()

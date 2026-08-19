@@ -127,7 +127,14 @@ class DocumentRepository(Protocol):
     async def add(self, ctx: ExecutionContext, doc: Document) -> None: ...
 
     async def set_status(
-        self, ctx: ExecutionContext, doc_id: Uuid, status: str, error: str | None = None
+        self,
+        ctx: ExecutionContext,
+        doc_id: Uuid,
+        status: str,
+        error: str | None = None,
+        *,
+        content_hash: str | None = None,
+        pipeline_version: int | None = None,
     ) -> None:
         """Persist a ``Document`` status transition (+ optional ``error``),
         RLS-guarded and ``WHERE workspace_id``-filtered like every other
@@ -138,6 +145,16 @@ class DocumentRepository(Protocol):
         ``knowledge.chunks`` rows already persisted (via ``add_chunks``) for
         this document, so the row store's count can never drift from what
         was actually persisted.
+
+        ``content_hash``/``pipeline_version`` (plan step 15, §3.6) are
+        written ONLY on that same ``'indexed'`` transition — the ONE call
+        site that has them (``IndexRegisteredDocument.finalize``, alongside
+        ``Document.complete_indexing``) — and left untouched by every other
+        transition, the same "leave the column out of the UPDATE" rule
+        ``space_id`` already follows on this method (this port's own
+        docstring): a document's fingerprint describes what its ``indexed``
+        row IS, and has no meaning to write on a ``failed``/``indexing``
+        transition that produced no output to fingerprint.
         """
         ...
 
