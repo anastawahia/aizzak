@@ -68,11 +68,38 @@ _TABLE_PARENT_KEY = "_table_parent_key"
 # model (same convention as memory/application/use_cases.py's _MAX_RECALL_K).
 _EMBED_BATCH = 128
 
-# The payload citation allowlist: parser-attached diagnostic keys (see
-# ``ParsedChunk.metadata`` in ``ports/content_extractor.py`` and the parser
-# adapters in 3.k1) worth copying forward for citation rendering. The rest of
-# ``metadata`` is deliberately NOT copied wholesale.
-_CITATION_KEYS = ("page_number", "sheet_name", "section_type", "table_name")
+# The payload citation allowlist (P-18, plan §3.9): parser-attached
+# diagnostic keys (see ``ParsedChunk.metadata`` in ``ports/content_extractor.py``
+# and the parser adapters in 3.k1) worth copying forward for citation
+# rendering. The rest of ``metadata`` is deliberately NOT copied wholesale.
+#
+# ``section`` is handled specially in ``_payload`` below: no parser writes a
+# literal ``"section"`` metadata key today -- ``docx.py``'s heading-breadcrumb
+# and ``pdf_tables.py``'s caption both land under ``"title"`` (parsers.md §6
+# risk #4 -- the payload schema was never a parser contract). ``_payload``
+# falls back from ``"section"`` to ``"title"`` so the plan's exact
+# ``_CITATION_KEYS`` tuple below can stay literal instead of drifting from the
+# design doc, while the value it copies still comes from the field a producer
+# genuinely emits.
+#
+# ``file_name`` (plan §3.9, ح-١٣/ح-١٦): every ``ParsedChunk.metadata``
+# carries it since ``adapters/parsers/extractor.py``'s ``_enrich`` -- the one
+# layer that already receives ``extract()``'s ``filename`` argument -- stamps
+# it on every chunk, for every route (PDF text, PDF tables, DOCX, Excel,
+# JSON, images, OCR alike). Nothing in THIS module resolves the filename
+# itself; ``_payload`` below still just copies whatever ``chunk.metadata``
+# carries, the same as every other key in this tuple -- a chunk that somehow
+# arrives without it (a future producer that forgets to route through
+# ``_enrich``) still degrades to a silently-absent payload key rather than a
+# crash, exactly like any other citation key here.
+_CITATION_KEYS = (
+    "file_name",
+    "page_number",
+    "section",
+    "sheet_name",
+    "section_type",
+    "table_name",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,6 +369,13 @@ def _payload(
         # meaning "none".
         payload["space"] = space_id
     for key in _CITATION_KEYS:
-        if key in chunk.metadata:
+        if key == "section":
+            # See the ``_CITATION_KEYS`` comment: no parser writes a literal
+            # "section" key -- the heading text it names lands under "title"
+            # (docx.py's breadcrumb, pdf_tables.py's caption).
+            section = chunk.metadata.get("section", chunk.metadata.get("title"))
+            if section is not None:
+                payload["section"] = section
+        elif key in chunk.metadata:
             payload[key] = chunk.metadata[key]
     return payload

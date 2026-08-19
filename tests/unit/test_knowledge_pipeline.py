@@ -1067,6 +1067,56 @@ async def test_index_document_payload_copies_citation_allowlist_keys_when_presen
     assert point.payload["kind"] == "table"
 
 
+async def test_index_document_payload_section_falls_back_to_title_metadata_key() -> None:
+    """P-18 (plan §4 step 11, §3.9): no parser writes a literal "section"
+    metadata key -- ``docx.py``'s heading breadcrumb and ``pdf_tables.py``'s
+    caption both land under "title" -- so ``_payload`` falls back to it."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(
+                "responsibilities paragraph text under a heading",
+                order=0,
+                metadata={"title": "Responsibilities"},
+            )
+        ]
+    )
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+    point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
+
+    assert point.payload["section"] == "Responsibilities"
+    assert "title" not in point.payload  # "title" itself is not in the allowlist
+
+
+async def test_index_document_payload_omits_file_name_when_absent_from_metadata() -> None:
+    """``file_name`` is in ``_CITATION_KEYS`` (plan §3.9) and every real
+    producer now supplies it (``extractor.py``'s ``_enrich``) -- but this
+    module's OWN job is only to copy whatever ``chunk.metadata`` carries,
+    the same as every other citation key. This test builds a ``ParsedChunk``
+    directly (bypassing the extractor entirely, as every test in this file
+    does -- see the module docstring), so its metadata genuinely omits
+    ``file_name``: the payload build must never crash on that, just leave
+    the key absent rather than write ``None``."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk("plain paragraph text here", order=0)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+    point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
+
+    assert "file_name" not in point.payload
+
+
 # --------------------------------------------------------------------------- #
 # application.indexing.IndexDocument -- P-13 table row explosion (§3.3)       #
 # --------------------------------------------------------------------------- #
