@@ -483,8 +483,12 @@ class Chunk:
     and defaulted to ``None`` so every existing keyword-argument construction
     site keeps compiling unchanged. It carries no text of its own (the plan's
     first inviolable constraint): the text lives once, on the ``ParentChunk``
-    row, and the Qdrant payload built from a chunk is meant to carry this id
-    alone.
+    row. Parent expansion at retrieval time is a SQL REPOSITORY lookup
+    (``chunk_id -> chunks.parent_id -> parent_chunks``, plan §3.2 constraint
+    1), never a payload read: the Qdrant payload built from a chunk carries
+    neither the parent's text NOR even this column's id, because duplicating
+    either into every point multiplies the store N times over for a value one
+    SQL join already reaches from the ``chunk_id`` the payload holds anyway.
     """
 
     id: str
