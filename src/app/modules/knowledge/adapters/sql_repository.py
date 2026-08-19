@@ -48,8 +48,10 @@ always deleted first, so nothing still points at them by then).
 
 ``chunk_texts`` (P-42, plan §4 step 18) resolves each chunk's parent with a
 LEFT JOIN in the SAME query rather than reading ``parent_chunks`` separately
-and matching rows back up in Python -- see its own docstring for the
-consecutive-collapse this makes possible.
+and matching rows back up in Python, then hands the rows to the pure
+``domain/tables.py::collapse_parent_runs`` -- the query fetches, the domain
+decides which text represents a row and whether a run collapses. See its own
+docstring for why that split is not incidental.
 """
 
 from __future__ import annotations
@@ -92,6 +94,11 @@ from app.modules.knowledge.domain.entities import (
     ReindexJob,
     Summary,
     SummaryJob,
+)
+from app.modules.knowledge.domain.tables import (
+    ChunkParent,
+    ParentedChunkText,
+    collapse_parent_runs,
 )
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
@@ -179,6 +186,11 @@ parent_chunks = Table(
     Column("seq", Integer, nullable=False),
     Column("text", Text, nullable=False),
     Column("created_at", _timestamptz, nullable=False),
+    # `0008_parent_chunk_complete.py` -- does `text` hold every chunk under
+    # this row, or only a heading for them (P-13's header-only parent for a
+    # table past `TABLE_PARENT_MAX_ROWS`)? `chunk_texts` reads it before
+    # letting a parent speak for its rows.
+    Column("is_complete", Boolean, nullable=False),
     schema="knowledge",
 )
 
@@ -443,23 +455,29 @@ class SqlDocumentRepository:
 
     async def chunk_texts(self, ctx: ExecutionContext, doc_id: UuidStr) -> Sequence[str]:
         # `seq` ASC is the document's reading order, and the summariser
-        # depends on it -- see the port. `parent_id`/vector refs are the only
-        # other columns dragged along, and only because P-42 (plan §4 step
-        # 18, §3.10) needs the former to decide what to collapse below; this
-        # is still the one query in the module that can return an entire
-        # document's body, so nothing else joins in.
+        # depends on it -- see the port. The parent columns are the only
+        # others dragged along, and only because P-42 (plan §4 step 18,
+        # §3.10) needs them to decide what a parent may stand for below;
+        # this is still the one query in the module that can return an
+        # entire document's body, so nothing else joins in.
         #
-        # P-42: a chunk with a parent (a table row, P-13) is represented by
-        # its PARENT's text -- coalesced in SQL rather than fetched
-        # separately, so one query does both jobs. A chunk with none falls
-        # back to its OWN text, unchanged. The LEFT JOIN is what makes a
-        # parentless document (the common case today: only table rows have
-        # one) round-trip byte-for-byte through this method exactly as
-        # before this step.
+        # The LEFT JOIN resolves each chunk's parent in the SAME query
+        # rather than a second round trip, and this method's whole job past
+        # that is to hand the rows to `collapse_parent_runs` -- the pure
+        # rule that decides, per row, whether the parent speaks for it. That
+        # decision is NOT made in SQL (no `coalesce`, no `DISTINCT`) for one
+        # concrete reason: a `coalesce(parent.text, chunk.text)` substitutes
+        # the parent's text for EVERY row it matched, which silently
+        # destroys a table's content when the parent is P-13's header-only
+        # shape -- and a rule living in SQL can only be tested against a
+        # live database, which is how that defect stayed invisible. It lives
+        # in `domain/tables.py` beside the ladder that mints both shapes.
         stmt = (
             select(
-                knowledge_chunks.c.parent_id,
-                func.coalesce(parent_chunks.c.text, knowledge_chunks.c.text).label("text"),
+                knowledge_chunks.c.text,
+                parent_chunks.c.id.label("parent_id"),
+                parent_chunks.c.text.label("parent_text"),
+                parent_chunks.c.is_complete.label("parent_is_complete"),
             )
             .select_from(
                 knowledge_chunks.outerjoin(
@@ -478,25 +496,22 @@ class SqlDocumentRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
 
-        # Collapse CONSECUTIVE rows that share the same non-null `parent_id`
-        # into one appearance of that parent's text -- a table's exploded
-        # rows are written contiguously (`application/indexing.py`'s own
-        # per-table `seq` run), so this is the whole "~40 sections instead of
-        # ~240 fragments" win (plan §3.10) without a second query or an
-        # in-Python group-by that could reorder anything. Rows with NO
-        # parent (`parent_id IS NULL`) are NEVER collapsed against each
-        # other -- each keeps its own leaf text, on its own line, exactly as
-        # `chunk_texts` already returned it: the "falls back to the leaf
-        # text with no dedup" half of P-42, so a document with no table
-        # never loses a single chunk of content to this change.
-        texts: list[str] = []
-        last_parent_id: str | None = None
-        for parent_id, text in rows:
-            if parent_id is not None and parent_id == last_parent_id:
-                continue
-            texts.append(text)
-            last_parent_id = parent_id
-        return texts
+        return collapse_parent_runs(
+            ParentedChunkText(
+                text=text,
+                parent=(
+                    ChunkParent(id=parent_id, text=parent_text, is_complete=parent_is_complete)
+                    # `parent_id` is NULL for a chunk with no parent -- the
+                    # common case today, since P-13 is the only writer of
+                    # `parent_chunks` -- and for one whose parent row the
+                    # tenant policy hid, which is a parent this workspace
+                    # may not read either way.
+                    if parent_id is not None
+                    else None
+                ),
+            )
+            for text, parent_id, parent_text, parent_is_complete in rows
+        )
 
     async def purge(self, ctx: ExecutionContext, doc_id: UuidStr) -> None:
         # Summaries, then chunks, then the document -- the missing `ON DELETE`
@@ -1044,6 +1059,7 @@ def _parent_chunk_row(parent: ParentChunk) -> dict[str, object]:
         "seq": parent.seq,
         "text": parent.text,
         "created_at": parent.created_at,
+        "is_complete": parent.is_complete,
     }
 
 

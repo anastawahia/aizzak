@@ -965,6 +965,7 @@ async def test_index_registered_document_wires_table_parent_id_end_to_end() -> N
     assert parent.document_id == doc.id
     assert parent.workspace_id == "ws1"
     assert parent.text == "Name: Ahmad; Salary: 5000\nName: Sara; Salary: 6000"
+    assert parent.is_complete is True
 
     assert len(documents.chunks) == 2
     for chunk in documents.chunks:
@@ -974,6 +975,39 @@ async def test_index_registered_document_wires_table_parent_id_end_to_end() -> N
     # (`_table_to_segments`'s own `kind=str(chunk.kind)`), so they land in
     # `table_chunks`, not `text_chunks`.
     assert (result.text_chunks, result.table_chunks, result.image_chunks) == (0, 2, 0)
+
+
+async def test_index_registered_document_marks_a_header_only_parent_incomplete() -> None:
+    """The same wiring for P-13's OTHER parent shape: a table past
+    ``TABLE_PARENT_MAX_ROWS`` mints a parent holding the header line alone,
+    and ``finalize`` must persist that fact -- it is the only thing standing
+    between P-42's summariser input and a data file summarised as its column
+    names (``domain/tables.py::collapse_parent_runs``)."""
+    documents = _FakeDocumentRepository()
+    ctx = _ctx("ws1")
+    doc = _document(doc_id="doc-1", workspace_id="ws1", file_id="file-1")
+    documents.docs[doc.id] = doc
+    use_case = IndexRegisteredDocument(
+        documents, IndexDocument(_FakeEmbeddings(dim=6), _FakeHybridVectors())
+    )
+    table_text = json.dumps(
+        {
+            "headers": ["Name", "Dept"],
+            "rows": [{"Name": f"person-{i}", "Dept": "engineering"} for i in range(21)],
+        }
+    )
+    table_chunk = ParsedChunk(text=table_text, order=0, kind=ParsedChunkKind.TABLE, metadata={})
+    parsed = _parsed_document([table_chunk])
+
+    result, _events = await use_case.execute(
+        ctx, document_id=doc.id, parsed=parsed, model="m", api_key="k", content_hash="hash-abc"
+    )
+
+    assert result.status is IndexStatus.INDEXED
+    assert len(documents.parents) == 1
+    assert documents.parents[0].text == "Name; Dept"
+    assert documents.parents[0].is_complete is False
+    assert len(documents.chunks) == 21
 
 
 async def test_index_outcome_counts_chunks_by_kind_across_a_mixed_document() -> None:

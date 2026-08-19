@@ -517,6 +517,7 @@ class IndexRegisteredDocument:
                         seq=seq,
                         text=draft.text,
                         created_at=now,
+                        is_complete=draft.is_complete,
                     )
                     for seq, draft in enumerate(drafts)
                 ]

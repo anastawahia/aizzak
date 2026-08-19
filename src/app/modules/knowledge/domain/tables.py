@@ -42,11 +42,20 @@ calls + 5000 Qdrant points + 5000 ``knowledge.chunks`` rows for ONE file;
 the cap trades a declared truncation for a bounded blow-up (§3.3, plan
 risk #6) — truncation that lies about itself is the one thing this
 platform never does.
+
+**The read-back half (P-42, plan §4 step 18, §3.10).** The ladder above is
+also why ``collapse_parent_runs`` lives in THIS module rather than beside
+its only caller (``adapters/sql_repository.py::chunk_texts``): P-13 is the
+only writer of ``parent_chunks``, so "may a parent stand in place of the
+rows under it?" is a question about the ladder, not about SQL. Keeping the
+rule that CONSUMES the header-only parent next to the rung that MINTS it is
+what stops the two halves from drifting apart — they already did once, and
+the summary of every data file silently became a list of column names.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -117,10 +126,20 @@ class ExplodedTable:
     when the table had no rows at all -- nothing to be a parent of).
     ``truncated``/``overflow_text`` carry the declared-not-silent remainder
     past the hard cap (``False``/``""`` when the table never reached it).
+
+    ``parent_is_complete`` says WHICH rung of the ladder minted
+    ``parent_text``: ``True`` only for the ``R <= TABLE_PARENT_MAX_ROWS``
+    whole-table parent, which really does contain every row it parents;
+    ``False`` for the header-only parent, which contains the column names
+    and NOT ONE of the values under them. Every consumer that lets a parent
+    stand IN PLACE OF its rows (``collapse_parent_runs`` below, P-42) must
+    read this bit first -- see that function's docstring for what happens
+    when it does not.
     """
 
     row_sentences: tuple[str, ...]
     parent_text: str
+    parent_is_complete: bool
     truncated: bool
     overflow_text: str
 
@@ -143,10 +162,13 @@ def explode_table(headers: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> 
 
     if total == 0:
         parent_text = ""
+        parent_is_complete = False
     elif total <= TABLE_PARENT_MAX_ROWS:
         parent_text = "\n".join(row_to_sentence(row) for row in rows)
+        parent_is_complete = True
     else:
         parent_text = _header_line(headers)
+        parent_is_complete = False
 
     overflow_text = ""
     if truncated:
@@ -155,6 +177,80 @@ def explode_table(headers: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> 
     return ExplodedTable(
         row_sentences=row_sentences,
         parent_text=parent_text,
+        parent_is_complete=parent_is_complete,
         truncated=truncated,
         overflow_text=overflow_text,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkParent:
+    """The ``parent_chunks`` row a ``Chunk`` was cut from, as
+    ``collapse_parent_runs`` needs to see it: the parent's own ``id`` (the
+    run key), its ``text``, and whether that text is COMPLETE -- i.e.
+    ``ExplodedTable.parent_is_complete``, carried through
+    ``knowledge.parent_chunks.is_complete``."""
+
+    id: str
+    text: str
+    is_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ParentedChunkText:
+    """One ``knowledge.chunks`` row as read back for summarisation: its own
+    leaf ``text``, plus the ``parent`` it hangs under (``None`` for every
+    chunk that never came from a table row explosion -- the common case)."""
+
+    text: str
+    parent: ChunkParent | None = None
+
+
+def collapse_parent_runs(rows: Iterable[ParentedChunkText]) -> list[str]:
+    """P-42 (plan §4 step 18, §3.10): turn a document's chunk rows, in
+    ``seq`` (reading) order, into the coarser text sections a summariser
+    should read -- "~40 coherent sections instead of ~240 fragments".
+
+    A run of CONSECUTIVE rows sharing one COMPLETE parent collapses into a
+    single appearance of that parent's text: the rows of a table are written
+    contiguously (``application/indexing.py``'s per-table ``seq`` run), and
+    a complete parent already holds every one of their sentences, so keeping
+    the leaves too would only repeat the same content twice.
+
+    Everything else keeps its OWN leaf text, on its own line, with NO dedup
+    between rows -- the "falls back to the leaf text so no content is lost"
+    half of P-42, and it covers TWO cases, not one:
+
+    * a chunk with no parent at all (ordinary prose), and
+    * a chunk whose parent is INCOMPLETE (``is_complete=False``) -- the
+      header-only parent of a table with more than ``TABLE_PARENT_MAX_ROWS``
+      rows.
+
+    The second case is the whole reason this function exists rather than a
+    ``coalesce`` + "drop consecutive duplicates" pair in SQL. A header-only
+    parent holds the column names and none of the values: letting it stand
+    in for its rows would feed a 30-row table into the summariser as the
+    single line ``"Name; Salary; Dept"`` and drop all thirty rows -- and
+    since an Excel sheet chunks at up to 500 rows a block, the summary of an
+    ordinary data file would become a list of column headings. Both halves
+    of the rule -- WHICH text represents a row, and WHETHER a run collapses
+    -- therefore turn on ``is_complete``, and both are decided here, once,
+    over a plain LEFT JOIN's rows.
+    """
+    texts: list[str] = []
+    open_parent_id: str | None = None
+    for row in rows:
+        parent = row.parent
+        if parent is None or not parent.is_complete:
+            # No parent, or one that cannot speak for its rows: the leaf's
+            # own text, never collapsed against its neighbours -- including
+            # a neighbour holding byte-identical text (two chunks that
+            # happen to read the same are two chunks).
+            texts.append(row.text)
+            open_parent_id = None
+            continue
+        if parent.id == open_parent_id:
+            continue
+        texts.append(parent.text)
+        open_parent_id = parent.id
+    return texts

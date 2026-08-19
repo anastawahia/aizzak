@@ -1,6 +1,8 @@
 """Unit tests for the knowledge module's P-13 table row explosion (plan
-§3.3): ``domain/tables.py``'s ``row_to_sentence``/``explode_table``. Pure
-domain -- no I/O, no fakes, no event loop.
+§3.3): ``domain/tables.py``'s ``row_to_sentence``/``explode_table``, plus
+the P-42 read-back rule that consumes what the ladder mints
+(``collapse_parent_runs``, plan §4 step 18 / §3.10). Pure domain -- no I/O,
+no fakes, no event loop.
 """
 
 from __future__ import annotations
@@ -8,7 +10,10 @@ from __future__ import annotations
 from app.modules.knowledge.domain.tables import (
     TABLE_PARENT_MAX_ROWS,
     TABLE_ROW_HARD_CAP,
+    ChunkParent,
     ExplodedTable,
+    ParentedChunkText,
+    collapse_parent_runs,
     explode_table,
     row_to_sentence,
 )
@@ -156,7 +161,11 @@ def test_explode_table_exactly_at_hard_cap_is_not_truncated() -> None:
 def test_explode_table_no_rows_returns_empty_result() -> None:
     result = explode_table(["Name"], [])
     assert result == ExplodedTable(
-        row_sentences=(), parent_text="", truncated=False, overflow_text=""
+        row_sentences=(),
+        parent_text="",
+        parent_is_complete=False,
+        truncated=False,
+        overflow_text="",
     )
 
 
@@ -170,3 +179,157 @@ def test_explode_table_row_sentence_uses_the_rows_own_keys_not_headers() -> None
     result = explode_table(headers, rows)
 
     assert result.row_sentences == ("Name: Ahmad; Salary: 5000",)
+
+
+# --------------------------------------------------------------------------- #
+# explode_table's parent_is_complete (the ladder rung, read back by P-42)     #
+# --------------------------------------------------------------------------- #
+def test_explode_table_whole_table_parent_is_marked_complete() -> None:
+    """The ``R <= TABLE_PARENT_MAX_ROWS`` rung really does hold every row it
+    parents -- the only shape allowed to stand in place of those rows."""
+    rows = [_row(f"person-{i}", "1000") for i in range(TABLE_PARENT_MAX_ROWS)]
+
+    result = explode_table(["Name", "Salary"], rows)
+
+    assert result.parent_is_complete is True
+
+
+def test_explode_table_header_only_parent_is_marked_incomplete() -> None:
+    """One row past the threshold and the parent is column NAMES with not a
+    single value under them -- ``is_complete`` is the bit that stops P-42
+    from feeding that line to a summariser as if it were the table."""
+    rows = [_row(f"person-{i}", "1000") for i in range(TABLE_PARENT_MAX_ROWS + 1)]
+
+    result = explode_table(["Name", "Salary"], rows)
+
+    assert result.parent_text == "Name; Salary"
+    assert result.parent_is_complete is False
+
+
+def test_explode_table_hard_cap_parent_is_marked_incomplete() -> None:
+    rows = [{"Name": f"person-{i}"} for i in range(TABLE_ROW_HARD_CAP + 3)]
+
+    result = explode_table(["Name"], rows)
+
+    assert result.truncated is True
+    assert result.parent_is_complete is False
+
+
+def test_explode_table_no_rows_has_no_parent_and_is_not_complete() -> None:
+    """No rows, no parent text -- and ``is_complete`` must not claim
+    otherwise about a parent that will never be written."""
+    result = explode_table(["Name"], [])
+
+    assert result.parent_text == ""
+    assert result.parent_is_complete is False
+
+
+# --------------------------------------------------------------------------- #
+# collapse_parent_runs (P-42, plan §4 step 18 / §3.10)                        #
+# --------------------------------------------------------------------------- #
+def _leaf(text: str) -> ParentedChunkText:
+    return ParentedChunkText(text=text)
+
+
+def _under(parent: ChunkParent, text: str) -> ParentedChunkText:
+    return ParentedChunkText(text=text, parent=parent)
+
+
+def test_collapse_parent_runs_no_rows_is_no_text() -> None:
+    assert collapse_parent_runs([]) == []
+
+
+def test_collapse_parent_runs_keeps_every_parentless_chunk_with_no_dedup() -> None:
+    """The common case (no table in the document): every leaf survives, in
+    order -- including two that happen to hold identical text, which are two
+    chunks and not one."""
+    rows = [_leaf("intro"), _leaf("body"), _leaf("intro")]
+
+    assert collapse_parent_runs(rows) == ["intro", "body", "intro"]
+
+
+def test_collapse_parent_runs_collapses_a_complete_parents_run_into_one_appearance() -> None:
+    """The "~40 sections instead of ~240 fragments" win (§3.10): a table of
+    at most ``TABLE_PARENT_MAX_ROWS`` rows has a parent holding all of them,
+    so the rows themselves would only repeat it."""
+    parent = ChunkParent(id="p1", text="Name: Ahmad; Salary: 5000", is_complete=True)
+    rows = [_under(parent, "row 0"), _under(parent, "row 1"), _under(parent, "row 2")]
+
+    assert collapse_parent_runs(rows) == ["Name: Ahmad; Salary: 5000"]
+
+
+def test_collapse_parent_runs_keeps_every_row_under_an_incomplete_parent() -> None:
+    """**The step 7 x step 18 defect.** A table past ``TABLE_PARENT_MAX_ROWS``
+    gets a HEADER-ONLY parent; collapsing that run would feed the summariser
+    the single line ``"Name; Salary"`` and drop every row's values. P-42's
+    own words: falls back to the leaf text, with no dedup, so no content is
+    lost."""
+    header_parent = ChunkParent(id="p1", text="Name; Salary", is_complete=False)
+    rows = [
+        _under(header_parent, "Name: Ahmad; Salary: 5000"),
+        _under(header_parent, "Name: Sara; Salary: 6000"),
+        _under(header_parent, "Name: Omar; Salary: 7000"),
+    ]
+
+    assert collapse_parent_runs(rows) == [
+        "Name: Ahmad; Salary: 5000",
+        "Name: Sara; Salary: 6000",
+        "Name: Omar; Salary: 7000",
+    ]
+
+
+def test_collapse_parent_runs_never_substitutes_an_incomplete_parents_text() -> None:
+    """Not only "do not collapse": an incomplete parent must not REPLACE a
+    single leaf's text either -- three copies of the header line lose the
+    same content the collapse would, just more verbosely."""
+    header_parent = ChunkParent(id="p1", text="Name; Salary", is_complete=False)
+
+    result = collapse_parent_runs([_under(header_parent, "Name: Ahmad; Salary: 5000")])
+
+    assert result == ["Name: Ahmad; Salary: 5000"]
+    assert "Name; Salary" not in result
+
+
+def test_collapse_parent_runs_keeps_prose_around_a_collapsed_table() -> None:
+    """A document with a table AND prose keeps every prose chunk while the
+    table's rows still collapse -- P-42's two halves in one document."""
+    parent = ChunkParent(id="p1", text="table body", is_complete=True)
+    rows = [_leaf("intro"), _under(parent, "row a"), _under(parent, "row b"), _leaf("intro")]
+
+    assert collapse_parent_runs(rows) == ["intro", "table body", "intro"]
+
+
+def test_collapse_parent_runs_keeps_two_adjacent_tables_apart() -> None:
+    """Two tables back to back are two runs: the key is the parent's id, so
+    neither table's text swallows the other's."""
+    first = ChunkParent(id="p1", text="first table", is_complete=True)
+    second = ChunkParent(id="p2", text="second table", is_complete=True)
+    rows = [_under(first, "a"), _under(first, "b"), _under(second, "c"), _under(second, "d")]
+
+    assert collapse_parent_runs(rows) == ["first table", "second table"]
+
+
+def test_collapse_parent_runs_reopens_a_complete_run_after_an_incomplete_one() -> None:
+    """An incomplete parent's rows pass through as leaves AND close the open
+    run: the complete parent that follows must still appear once, not be
+    mistaken for a continuation of anything before it."""
+    header_parent = ChunkParent(id="p1", text="Name; Salary", is_complete=False)
+    full_parent = ChunkParent(id="p2", text="whole table", is_complete=True)
+    rows = [
+        _under(header_parent, "Name: Ahmad; Salary: 5000"),
+        _under(full_parent, "row a"),
+        _under(full_parent, "row b"),
+    ]
+
+    assert collapse_parent_runs(rows) == ["Name: Ahmad; Salary: 5000", "whole table"]
+
+
+def test_collapse_parent_runs_collapses_only_CONSECUTIVE_rows_of_one_parent() -> None:
+    """The rows of one table are written contiguously (``indexing.py``'s
+    per-table ``seq`` run), so "same parent, not adjacent" is not a shape
+    this pipeline produces -- and if it ever did, reading order wins over
+    de-duplication: nothing is silently dropped from the middle."""
+    parent = ChunkParent(id="p1", text="table body", is_complete=True)
+    rows = [_under(parent, "a"), _leaf("prose"), _under(parent, "b")]
+
+    assert collapse_parent_runs(rows) == ["table body", "prose", "table body"]

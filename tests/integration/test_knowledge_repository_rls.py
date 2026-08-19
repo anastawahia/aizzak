@@ -123,10 +123,19 @@ def _chunk(
 
 
 def _parent_chunk(
-    *, document_id: str, workspace_id: str, seq: int, parent_text: str
+    *,
+    document_id: str,
+    workspace_id: str,
+    seq: int,
+    parent_text: str,
+    is_complete: bool = True,
 ) -> ParentChunk:
     """Mirrors the same application-minting contract as ``_chunk``: ``id``
-    is a fresh UUIDv7, minted before any ``Chunk`` referencing it exists."""
+    is a fresh UUIDv7, minted before any ``Chunk`` referencing it exists.
+
+    ``is_complete`` defaults to the whole-segment parent plan §3.2
+    describes; pass ``False`` for P-13's header-only parent (a table past
+    ``TABLE_PARENT_MAX_ROWS``)."""
     return ParentChunk(
         id=new_uuid7(),
         document_id=document_id,
@@ -134,6 +143,7 @@ def _parent_chunk(
         seq=seq,
         text=parent_text,
         created_at=utc_now(),
+        is_complete=is_complete,
     )
 
 
@@ -189,7 +199,7 @@ async def _parent_chunk_rows_as_owner(
             )
             result = await conn.execute(
                 text(
-                    "SELECT id, document_id, seq, text"
+                    "SELECT id, document_id, seq, text, is_complete"
                     " FROM knowledge.parent_chunks WHERE document_id = :doc ORDER BY seq"
                 ),
                 {"doc": document_id},
@@ -997,3 +1007,138 @@ async def test_chunk_texts_falls_back_to_leaf_text_for_chunks_with_no_parent_and
     texts = await repo_knowledge.chunk_texts(ctx, doc.id)
 
     assert texts == ["intro", "table body", "intro"]
+
+
+async def test_chunk_texts_keeps_every_row_when_the_parent_holds_only_the_header(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """P-13's OTHER parent shape: a table past ``TABLE_PARENT_MAX_ROWS`` gets
+    a parent that is the header line alone. Collapsing that run -- or even
+    substituting its text for a single row -- would hand the summariser
+    ``"Name; Salary"`` and lose every value in the table, which is exactly
+    the content loss P-42 forbids ("falls back to the leaf text with no
+    dedup"). The rows must come back whole, in ``seq`` order, and the header
+    must not appear at all: it is context to widen a RETRIEVED chunk with,
+    never a substitute for the chunk."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    parent = _parent_chunk(
+        document_id=doc.id,
+        workspace_id=ws,
+        seq=0,
+        parent_text="Name; Salary",
+        is_complete=False,
+    )
+    await repo_knowledge.add_parent_chunks(ctx, [parent])
+    rows = ["Name: Ahmad; Salary: 5000", "Name: Sara; Salary: 6000", "Name: Omar; Salary: 7000"]
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=i,
+                chunk_text=row_text,
+                parent_id=parent.id,
+            )
+            for i, row_text in enumerate(rows)
+        ],
+    )
+
+    texts = await repo_knowledge.chunk_texts(ctx, doc.id)
+
+    assert texts == rows
+    assert "Name; Salary" not in texts
+
+
+async def test_chunk_texts_mixes_a_header_parent_and_a_complete_parent_in_one_document(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """One document, both rungs of the §3.3 ladder plus prose: the small
+    table collapses to its complete parent, the large one keeps every row,
+    and the prose between them survives untouched."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    header_parent = _parent_chunk(
+        document_id=doc.id, workspace_id=ws, seq=0, parent_text="Name; Dept", is_complete=False
+    )
+    full_parent = _parent_chunk(
+        document_id=doc.id, workspace_id=ws, seq=1, parent_text="whole small table"
+    )
+    await repo_knowledge.add_parent_chunks(ctx, [header_parent, full_parent])
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=0,
+                chunk_text="Name: Ahmad; Dept: Ops",
+                parent_id=header_parent.id,
+            ),
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=1,
+                chunk_text="Name: Sara; Dept: Eng",
+                parent_id=header_parent.id,
+            ),
+            _chunk(document_id=doc.id, workspace_id=ws, seq=2, chunk_text="prose between"),
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=3,
+                chunk_text="small row a",
+                parent_id=full_parent.id,
+            ),
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=4,
+                chunk_text="small row b",
+                parent_id=full_parent.id,
+            ),
+        ],
+    )
+
+    texts = await repo_knowledge.chunk_texts(ctx, doc.id)
+
+    assert texts == [
+        "Name: Ahmad; Dept: Ops",
+        "Name: Sara; Dept: Eng",
+        "prose between",
+        "whole small table",
+    ]
+
+
+async def test_add_parent_chunks_writes_is_complete_as_given(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """The bit the summariser depends on is a COLUMN, read back outside the
+    repository -- "the adapter wrote it" told apart from "the adapter
+    remembered what I handed it" (``_document_row_as_owner``'s reason)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    await repo_knowledge.add_parent_chunks(
+        ctx,
+        [
+            _parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="whole table"),
+            _parent_chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=1,
+                parent_text="Name; Salary",
+                is_complete=False,
+            ),
+        ],
+    )
+
+    rows = await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id)
+
+    assert [row["is_complete"] for row in rows] == [True, False]

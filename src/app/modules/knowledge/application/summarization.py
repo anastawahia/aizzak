@@ -19,10 +19,12 @@ search could ever return.
 **As of P-42 (plan §4 step 18, §3.10), one of those "chunks" may be a
 *parent* chunk's text rather than a leaf's own.** ``DocumentRepository.
 chunk_texts`` (the caller's source for this module's ``chunks`` argument,
-``BuildSummary.claim``) resolves each leaf that has a parent (a table row,
-P-13) to that PARENT's coarser text instead, collapsing every row of the same
-table into ONE reading unit — coherent sections read cheaper than the same
-content in fragments. A leaf with no parent is read exactly as before: its
+``BuildSummary.claim``) resolves each leaf whose parent actually HOLDS it
+(a small table's rows, P-13) to that PARENT's coarser text instead,
+collapsing every row of the same table into ONE reading unit — coherent
+sections read cheaper than the same content in fragments. A leaf with no
+parent — or with a header-only one, which would have handed this module a
+table's column names in place of its rows — is read exactly as before: its
 own text, individually, with no dedup applied. This module itself stays
 unaware of the distinction — it still just reads an ordered ``Sequence[str]``
 — which is what keeps a document with no table an exact behavioural match

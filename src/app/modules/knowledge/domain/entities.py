@@ -516,6 +516,17 @@ class ParentChunk:
     ``id`` is minted by the APPLICATION layer before this reaches the
     repository (UUIDv7, the non-negotiable rule every other aggregate root
     here already follows) — the adapter never mints identifiers.
+
+    ``is_complete`` (``0008_parent_chunk_complete.py``) says whether ``text``
+    holds every chunk hanging under this row, or only a heading for them —
+    ``domain/tables.py``'s row-count ladder mints both shapes, and a
+    header-only parent (a table past ``TABLE_PARENT_MAX_ROWS``) carries the
+    column names with none of the values. Only a complete parent may be read
+    IN PLACE OF its chunks (``collapse_parent_runs``, P-42); an incomplete
+    one is context to widen a retrieved chunk WITH, never a substitute for
+    it. Defaulted to ``True`` so the segment-shaped parents the plan's §3.2
+    describes — a whole ``SourceSegment``, complete by construction — need
+    no ceremony at their construction sites.
     """
 
     id: str
@@ -524,3 +535,4 @@ class ParentChunk:
     seq: int
     text: str
     created_at: datetime
+    is_complete: bool = True

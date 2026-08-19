@@ -179,11 +179,19 @@ class ParentChunkDraft:
     plan §3.3) -- not yet a persisted ``ParentChunk`` row: id minting +
     the ``add_parent_chunks`` call are the application layer's job one level
     up (``IndexRegisteredDocument.finalize``), mirroring how ``Chunk.id``
-    itself is minted there and not in this module."""
+    itself is minted there and not in this module.
+
+    ``is_complete`` is ``ExplodedTable.parent_is_complete`` carried through
+    (``domain/tables.py``): whether ``text`` holds every row it parents, or
+    only the header line of a table too large for a whole-table parent. It
+    travels all the way to ``knowledge.parent_chunks.is_complete`` because
+    P-42's summariser input (``chunk_texts``) may only let a parent stand in
+    place of its rows when the answer is yes."""
 
     key: str
     order: int
     text: str
+    is_complete: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,7 +549,12 @@ def _table_to_segments(
             )
 
     parent_draft = (
-        ParentChunkDraft(key=parent_key, order=chunk.order, text=exploded.parent_text)
+        ParentChunkDraft(
+            key=parent_key,
+            order=chunk.order,
+            text=exploded.parent_text,
+            is_complete=exploded.parent_is_complete,
+        )
         if exploded.parent_text
         else None
     )

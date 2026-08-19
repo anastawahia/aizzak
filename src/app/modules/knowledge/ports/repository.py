@@ -225,14 +225,24 @@ class DocumentRepository(Protocol):
         text would describe a document no search can return.
 
         **P-42 (plan §4 step 18, §3.10): summarises from PARENT chunks, not
-        leaves, wherever one exists.** A chunk with a ``parent_id`` (a table
-        row, P-13) is represented once by its parent's coarser text — several
-        leaf rows collapse to the one section they came from (the plan's own
-        "~40 coherent sections instead of ~240 fragments"). A chunk with no
-        parent falls back to its own leaf text, individually, with no dedup
-        applied to it — the property that makes this a strict superset of the
-        pre-step-18 behaviour: a document with no table (today, the common
-        case) round-trips through this method exactly as before.
+        leaves, wherever one exists AND holds what it parents.** A chunk
+        whose parent is COMPLETE (``ParentChunk.is_complete``) is represented
+        once by that parent's coarser text — several leaf rows collapse to
+        the one section they came from (the plan's own "~40 coherent sections
+        instead of ~240 fragments").
+
+        Everything else falls back to its own leaf text, individually, with
+        no dedup applied to it — the property that makes this a strict
+        superset of the pre-step-18 behaviour: a document with no table
+        (today, the common case) round-trips through this method exactly as
+        before. That fallback covers a chunk with no parent AND a chunk whose
+        parent is INCOMPLETE — P-13's header-only parent for a table past
+        ``TABLE_PARENT_MAX_ROWS``, which holds the column names and not one
+        value under them. Letting that stand in for its rows would summarise
+        a data file as a list of headings, which is precisely the content
+        loss this method's "no dedup" half exists to prevent. The rule itself
+        is ``domain/tables.py::collapse_parent_runs``, so an adapter cannot
+        implement half of it by accident.
 
         Ordered by ``seq``, which is the document's own reading order
         (``chunking.chunk_segments``) — a summary assembled out of order is a

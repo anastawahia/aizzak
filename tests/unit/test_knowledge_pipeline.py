@@ -1478,6 +1478,9 @@ async def test_index_document_small_table_parent_is_full_table_text() -> None:
 
     assert len(outcome.parents) == 1
     assert outcome.parents[0].text == "Name: Ahmad; Salary: 5000\nName: Sara; Salary: 6000"
+    # The parent really does hold both rows, so P-42 may read it in their
+    # place (`domain/tables.py::collapse_parent_runs`).
+    assert outcome.parents[0].is_complete is True
 
 
 async def test_index_document_large_table_parent_is_header_only() -> None:
@@ -1498,6 +1501,9 @@ async def test_index_document_large_table_parent_is_header_only() -> None:
     assert len(outcome.chunks) == 21
     assert len(outcome.parents) == 1
     assert outcome.parents[0].text == "Name; Dept"
+    # ...and it is marked as NOT holding those 21 rows, which is what stops
+    # `chunk_texts` from summarising this table as its column names alone.
+    assert outcome.parents[0].is_complete is False
 
 
 async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_payload() -> None:
@@ -1585,6 +1591,7 @@ async def test_index_document_table_row_hard_cap_truncates_and_declares() -> Non
     )
     assert len(outcome.parents) == 1
     assert outcome.parents[0].text == "Name"  # still header-only (2003 > TABLE_PARENT_MAX_ROWS)
+    assert outcome.parents[0].is_complete is False
 
 
 # --------------------------------------------------------------------------- #
