@@ -814,7 +814,15 @@ async def build_knowledge_worker_from_env() -> tuple[
     embeddings: EmbeddingProvider = ExternalEmbeddingProvider(
         embedding_http, settings.embedding_service
     )
-    pipeline = IndexDocument(embeddings, vectors)
+    # P-16 (rag-indexing-plan.md §4 step 9): the real per-chunk token budget
+    # comes from `Settings`, not a bare default -- the same `embedding_
+    # service` settings object this worker already resolves the model out of
+    # a few lines above.
+    pipeline = IndexDocument(
+        embeddings,
+        vectors,
+        embedding_max_input_tokens=settings.embedding_service.embedding_max_input_tokens,
+    )
 
     # Step 15 -- the SAME Vault + MinIO wiring `CompositionRoot` uses, so
     # this worker's storage adapter is bound the identical way the API's is

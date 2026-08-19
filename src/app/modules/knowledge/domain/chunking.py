@@ -36,6 +36,13 @@ otherwise cost an embedding call and a Qdrant point for text retrieval
 already has, gaining nothing. ``seq`` is assigned only to the SURVIVORS, so
 it stays the same gap-free 0-based counter INV-K1 promises regardless of how
 many windows a filtering pass removes.
+
+**Real token budget (P-16, rag-indexing-plan.md §4 step 9).**
+``max_words_for_token_limit`` turns ``Settings.embedding_service.
+embedding_max_input_tokens`` (an ``application``-layer concern -- this
+module never imports ``Settings``) into the actual ``max_tokens`` word
+budget ``chunk_segments`` splits against, so an over-long node cannot be
+silently truncated at the embedding HTTP boundary (§3.5's failure mode).
 """
 
 from __future__ import annotations
@@ -51,6 +58,49 @@ from typing import Any
 # split's leftover remainder gets folded into its neighbour before either
 # ever reaches this gate).
 MIN_NODE_CHARS = 15
+
+# P-16 (plan §4 step 9, §3.5 + decision س-11) -- alpha's token-to-word
+# calibration, ported verbatim into ``max_words_for_token_limit`` below.
+#
+# ``_TOKENS_PER_WORD`` is NOT the adapter's own truncation estimate
+# (``external_embedding.py``'s ``len(text)//4`` is a *characters*-per-token
+# guess); it is words-per-token, and Arabic costs MORE sub-word tokens per
+# character than English, so a plain 1.0 (one token per word) would
+# UNDER-count and let a chunk that silently truncates at the embedding HTTP
+# boundary through -- the one failure mode §3.5 calls out by name (the
+# truncated tail is invisible to everyone: the point still gets a vector, it
+# is just a vector for less text than the payload claims). Erring toward
+# FEWER words per chunk is the safe direction, so this factor is a floor, not
+# a target, and MUST NOT be lowered.
+_TOKENS_PER_WORD = 1.3
+# A further 10% safety margin on top of ``_TOKENS_PER_WORD`` -- the same
+# "erring toward fewer words" reasoning one layer further, ported from alpha
+# unchanged.
+_MAX_WORDS_SAFETY_MARGIN = 0.9
+# A hard floor so a pathologically small ``embedding_max_input_tokens`` can
+# never collapse chunking into one-word (or zero-word) windows.
+MIN_MAX_WORDS = 32
+# The 10% overlap alpha applies when a node is split for length (plan §3.5's
+# trailing comment on the formula) -- a fraction OF ``max_words_for_token_
+# limit``'s own result, not of ``embedding_max_input_tokens``.
+SPLIT_OVERLAP_RATIO = 0.1
+
+
+def max_words_for_token_limit(embedding_max_input_tokens: int) -> int:
+    """The real per-chunk word budget for a given embedding token limit
+    (P-16, plan §3.5) -- alpha's formula ported verbatim:
+    ``max(int((embedding_max_input_tokens / 1.3) * 0.9), 32)``.
+
+    Pure and framework-free on purpose (``lint-imports``' "Domain is pure"
+    contract, plan §0): the caller (``application/indexing.py``) is what
+    reads ``Settings.embedding_service.embedding_max_input_tokens`` and
+    passes the plain ``int`` in here -- this function never touches
+    ``Settings``, env, or an ``EmbeddingProvider`` (ح-6/ح-7, plan §2).
+    """
+    return max(
+        int((embedding_max_input_tokens / _TOKENS_PER_WORD) * _MAX_WORDS_SAFETY_MARGIN),
+        MIN_MAX_WORDS,
+    )
 
 
 @dataclass(frozen=True, slots=True)

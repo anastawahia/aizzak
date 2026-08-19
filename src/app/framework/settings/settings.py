@@ -170,6 +170,17 @@ class EmbeddingServiceSettings(BaseModel):
     batch: int = 8
     timeout_s: float = 15.0
     max_retries: int = 2
+    # rag-indexing-plan.md §3.5 + §4 step 9 (`P-16`, decision س-11): the real
+    # token budget a chunk must fit under before embedding, pinned here
+    # rather than read off `EmbeddingProvider` (ح-6/ح-7, plan §2) -- the
+    # adapter only ever estimates `len(text)//4`
+    # (``external_embedding.py``), and one release serves exactly one baked
+    # model (this class's own docstring), so the true limit is a fact about
+    # THIS deployment, same footing as `dimensions` above. `domain/
+    # chunking.py::max_words_for_token_limit` is the pure consumer -- this
+    # value is passed to it as a plain argument, never read from Settings
+    # inside the domain layer.
+    embedding_max_input_tokens: int = 512
 
 
 class EventSettings(BaseModel):

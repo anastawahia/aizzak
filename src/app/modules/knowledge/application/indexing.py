@@ -38,7 +38,13 @@ from app.framework.observability import get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorPoint
 from app.framework.types import Json, Uuid
-from app.modules.knowledge.domain.chunking import ChunkToIndex, SourceSegment, chunk_segments
+from app.modules.knowledge.domain.chunking import (
+    SPLIT_OVERLAP_RATIO,
+    ChunkToIndex,
+    SourceSegment,
+    chunk_segments,
+    max_words_for_token_limit,
+)
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.sparse import build_sparse_terms
 from app.modules.knowledge.domain.tables import explode_table
@@ -125,9 +131,23 @@ class IndexDocument:
     """Chunk a parsed document, embed it (dense) and hash it (sparse), and
     upsert one hybrid Qdrant point per chunk."""
 
-    def __init__(self, embeddings: EmbeddingProvider, vectors: HybridVectorStore) -> None:
+    def __init__(
+        self,
+        embeddings: EmbeddingProvider,
+        vectors: HybridVectorStore,
+        *,
+        embedding_max_input_tokens: int = 512,
+    ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
+        # P-16 (plan §4 step 9, §3.5 + decision س-11): the real token budget
+        # is a `Settings` value (the constructor's own default mirrors
+        # `EmbeddingServiceSettings.embedding_max_input_tokens`'s default),
+        # resolved to a word window ONCE here rather than per `execute` call
+        # -- the pure formula lives in `domain/chunking.py`, this layer only
+        # supplies the argument (ح-6/ح-7, plan §2).
+        self._max_words = max_words_for_token_limit(embedding_max_input_tokens)
+        self._overlap_words = int(self._max_words * SPLIT_OVERLAP_RATIO)
 
     async def execute(
         self,
@@ -153,7 +173,9 @@ class IndexDocument:
                 segments.append(_plain_segment(chunk))
                 continue
             segments.append(_plain_segment(chunk))
-        to_index = chunk_segments(segments)
+        to_index = chunk_segments(
+            segments, max_tokens=self._max_words, overlap_tokens=self._overlap_words
+        )
 
         # Only keep a parent draft that at least one surviving node actually
         # points at (IndexOutcome's own docstring) -- a table exploded above
