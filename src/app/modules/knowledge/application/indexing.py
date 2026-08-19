@@ -31,6 +31,7 @@ matches no point that is missing a filtered field.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.framework.context.execution_context import ExecutionContext
@@ -225,22 +226,46 @@ class IndexDocument:
         indexed: list[IndexedChunk] = []
         for start in range(0, len(to_index), _EMBED_BATCH):
             batch = to_index[start : start + _EMBED_BATCH]
-            result = await self._embeddings.embed([chunk.text for chunk in batch], model, api_key)
-            points = [
-                _build_point(ctx, document_id, space_id, chunk, vector)
-                for chunk, vector in zip(batch, result.vectors, strict=True)
-            ]
-            await self._vectors.upsert(collection, points)
-            indexed.extend(
-                IndexedChunk(
-                    chunk_id=point.id,
-                    seq=chunk.seq,
-                    text=chunk.text,
-                    token_count=chunk.token_count,
-                    parent_key=chunk.metadata.get(_TABLE_PARENT_KEY),
+            try:
+                indexed.extend(
+                    await self._embed_and_upsert(
+                        ctx, document_id, space_id, collection, batch, model, api_key
+                    )
                 )
-                for chunk, point in zip(batch, points, strict=True)
-            )
+            except Exception:
+                # P-19 (plan §4 step 12; alpha `_safe_parse`, plan
+                # §3-rag-pipeline-alpha-vs-aizzak.md line 224: "يجرّب الدفعة
+                # ثم يسقط إلى مستند-بمستند"). One malformed chunk's text can
+                # trip a hard failure in the embedding provider for the WHOLE
+                # HTTP call carrying the other, perfectly fine chunks in this
+                # batch. AIZZAK's atomic unit inside one `execute` call is the
+                # CHUNK (there is no multi-document batch in this
+                # single-document-per-request pipeline, plan §3.7), so the
+                # fallback isolates one chunk per call at a time instead of
+                # one document per call.
+                #
+                # A chunk that STILL fails alone is a genuine failure, not a
+                # batch-size artefact: it re-raises and propagates out of
+                # `execute` exactly as any pipeline failure already did before
+                # this step -- caught by `IndexRegisteredDocument.run`, which
+                # fails the WHOLE document with that reason (`IndexAttempt`
+                # `.error`, plan §3.7's "no silent skip / no partial index"
+                # philosophy: a document is never left `indexed` with a
+                # quietly smaller `chunk_count`). No new mechanism, no new
+                # field -- this reuses the same propagate-and-let-the-caller-
+                # fail-the-document path.
+                if len(batch) == 1:
+                    raise
+                log.warning(
+                    "indexing.embed_batch_failed_retrying_per_chunk",
+                    extra={"document_id": document_id, "batch_size": len(batch)},
+                )
+                for one_chunk in batch:
+                    indexed.extend(
+                        await self._embed_and_upsert(
+                            ctx, document_id, space_id, collection, [one_chunk], model, api_key
+                        )
+                    )
 
         return IndexOutcome(
             collection=collection,
@@ -248,6 +273,36 @@ class IndexDocument:
             chunks=tuple(indexed),
             parents=parents,
         )
+
+    async def _embed_and_upsert(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        space_id: Uuid | None,
+        collection: str,
+        batch: Sequence[ChunkToIndex],
+        model: str,
+        api_key: str,
+    ) -> list[IndexedChunk]:
+        """Embed + upsert exactly the chunks in ``batch`` as one unit -- the
+        granularity ``execute`` retries at when a larger batch fails (P-19,
+        plan §4 step 12)."""
+        result = await self._embeddings.embed([chunk.text for chunk in batch], model, api_key)
+        points = [
+            _build_point(ctx, document_id, space_id, chunk, vector)
+            for chunk, vector in zip(batch, result.vectors, strict=True)
+        ]
+        await self._vectors.upsert(collection, points)
+        return [
+            IndexedChunk(
+                chunk_id=point.id,
+                seq=chunk.seq,
+                text=chunk.text,
+                token_count=chunk.token_count,
+                parent_key=chunk.metadata.get(_TABLE_PARENT_KEY),
+            )
+            for chunk, point in zip(batch, points, strict=True)
+        ]
 
 
 def _plain_segment(chunk: ParsedChunk) -> SourceSegment:

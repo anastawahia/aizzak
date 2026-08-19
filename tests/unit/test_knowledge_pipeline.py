@@ -1025,6 +1025,78 @@ async def test_index_document_batches_embed_calls_past_128_chunks() -> None:
     assert len(embeddings.calls[1]) == 2
 
 
+async def test_index_document_falls_back_to_per_chunk_embedding_when_batch_call_fails() -> None:
+    """P-19 (plan §4 step 12; alpha `_safe_parse`): a batch-level embedding
+    failure (simulating one poison chunk tripping the whole HTTP call) does
+    not lose the OTHER, perfectly fine chunks in that batch -- `execute`
+    retries the failed batch one chunk at a time and still indexes every
+    one of them."""
+    attempts: list[list[str]] = []
+
+    class _FlakyOnBatches(FakeEmbeddings):
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            attempts.append(texts)
+            if len(texts) > 1:
+                raise RuntimeError("simulated batch failure")
+            return await super().embed(texts, model, api_key)
+
+    embeddings = _FlakyOnBatches()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk("first paragraph about revenue growth", order=0),
+            _parsed_chunk("second paragraph about headcount changes", order=1),
+            _parsed_chunk("third paragraph about office relocation", order=2),
+        ]
+    )
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(outcome.chunks) == 3
+    assert len(vectors.points["kn-ws1"]) == 3
+    # one failed batch-of-3 call, then 3 individual per-chunk retries
+    assert len(attempts) == 4
+    assert len(attempts[0]) == 3
+    assert [len(a) for a in attempts[1:]] == [1, 1, 1]
+
+
+async def test_index_document_a_chunk_that_still_fails_alone_still_raises() -> None:
+    """A genuinely bad chunk is never silently dropped (plan §3.7's "no
+    silent skip / no partial index" philosophy, carried into P-19): the
+    whole `execute` call still raises exactly as any pipeline failure did
+    before this step, so the caller (`IndexRegisteredDocument.run`) still
+    fails the WHOLE document rather than leaving it `indexed` with a quietly
+    smaller `chunk_count`."""
+
+    class _AlwaysFailsOnPoison(FakeEmbeddings):
+        async def embed(self, texts: Sequence[str], model: str, api_key: str) -> EmbeddingResult:
+            texts = list(texts)
+            if any("poison" in text for text in texts):
+                raise RuntimeError("simulated embedding failure")
+            return await super().embed(texts, model, api_key)
+
+    embeddings = _AlwaysFailsOnPoison()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk("first paragraph about revenue growth", order=0),
+            _parsed_chunk("poison paragraph that always fails to embed", order=1),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="simulated embedding failure"):
+        await use_case.execute(
+            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        )
+
+
 async def test_index_document_empty_parsed_document_upserts_nothing() -> None:
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
