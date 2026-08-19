@@ -26,11 +26,31 @@ owning space, the key ``RetrieveContext`` filters on and the one step 9 will
 give an ``is_tenant`` payload index (§3.4). It is the reason §5-أ's re-index
 is mandatory: every point written before this step lacks the key, and Qdrant
 matches no point that is missing a filtered field.
+
+**Semantic pre-splitting (P-20, rag-indexing-plan.md §4 step 13, §3.4).**
+Before a non-table ``ParsedChunk`` reaches the pure word-window chunker
+(``domain/chunking.py``'s ``chunk_segments``), ``execute`` splits its text
+into sentences and calls ``EmbeddingProvider.embed`` on THEM -- a SECOND,
+permanent, declared embedding pass over every document's sentences, on top
+of the one every surviving node already pays for (plan §3.4 constraint 3:
+"the extra embedding pass is a permanent, declared operational cost"). The
+resulting per-sentence vectors are handed to pure math, not this module's own:
+``domain/chunking.py``'s ``semantic_boundaries`` decides WHERE the segment
+actually breaks topically; this module only owns the I/O half (splitting
+text into sentences and calling the provider) and the glue that turns
+those boundaries back into several ``SourceSegment``s, one per semantic
+part, each still subject to the ordinary word-window hard cap (constraint
+1) exactly like any other segment. Table-kind chunks (``ParsedChunkKind.
+TABLE``, the tagging step 7 already attaches) skip this entirely
+(constraint 2: a table row is already the retrieval atom, §3.3) and a
+segment with fewer than two sentences skips it too (constraint 3: nothing
+to compare, no reason to pay for the call).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -40,11 +60,14 @@ from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorPoint
 from app.framework.types import Json, Uuid
 from app.modules.knowledge.domain.chunking import (
+    SEMANTIC_BREAKPOINT_PERCENTILE,
+    SEMANTIC_BUFFER,
     SPLIT_OVERLAP_RATIO,
     ChunkToIndex,
     SourceSegment,
     chunk_segments,
     max_words_for_token_limit,
+    semantic_boundaries,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.sparse import build_sparse_terms
@@ -68,6 +91,31 @@ _TABLE_PARENT_KEY = "_table_parent_key"
 # constant so the application layer does not depend on the framework Settings
 # model (same convention as memory/application/use_cases.py's _MAX_RECALL_K).
 _EMBED_BATCH = 128
+
+# P-20 (plan §4 step 13, §3.4) sentence boundaries for Arabic text: the four
+# terminal punctuation marks, a paragraph break, and the dedicated Unicode
+# Arabic full stop (U+06D4, "۔") -- distinct from the plain "." also in this  # noqa: RUF003
+# set. Deliberately NOT `nltk` (plan §3.4's own constraint: "no new
+# dependency") -- alpha's own sentence splitter is this same regex-based
+# approach, just with Latin-only punctuation, which is exactly what plan §2
+# ح-١٤ says does not work unmodified on an Arabic document. One or more
+# consecutive punctuation marks (e.g. "!!" or "؟!") collapse to a single
+# split, and a blank line (two or more consecutive newlines) is its own
+# paragraph-level split.
+_SENTENCE_SPLIT = re.compile(r"[.؟!؛۔]+|\n{2,}")  # noqa: RUF001 -- Arabic full stop U+06D4
+
+# The minimum sentence count semantic splitting needs to do anything useful
+# (plan §3.4 constraint 3: "skipped gracefully when a segment has fewer than
+# two sentences") -- one sentence has no neighbour to compare against, so
+# there is no boundary to find and no reason to pay for the embedding call.
+_MIN_SENTENCES_TO_SPLIT = 2
+
+# The minimum semantic-part count worth returning as SEVERAL SourceSegments
+# rather than the single, unsplit ``_plain_segment`` fallback -- mirrors
+# ``_MIN_SENTENCES_TO_SPLIT``'s reasoning one level up: a lone part (every
+# sentence landed on the same side of every boundary `semantic_boundaries`
+# considered, or it returned none) is not a split worth acting on.
+_MIN_SEMANTIC_PARTS = 2
 
 # The payload citation allowlist (P-18, plan §3.9): parser-attached
 # diagnostic keys (see ``ParsedChunk.metadata`` in ``ports/content_extractor.py``
@@ -191,6 +239,10 @@ class IndexDocument:
         parent_drafts: list[ParentChunkDraft] = []
         for index, chunk in enumerate(parsed.chunks):
             if chunk.kind is ParsedChunkKind.TABLE:
+                # P-20 constraint 2 (plan §3.4): a TABLE-kind chunk skips
+                # semantic pre-splitting entirely, whether or not it actually
+                # explodes into rows below -- the tagging IS `chunk.kind`,
+                # not "did `_table_to_segments` succeed".
                 exploded = _table_to_segments(chunk, parent_key=f"table-{index}")
                 if exploded is not None:
                     table_segments, parent_draft = exploded
@@ -200,7 +252,7 @@ class IndexDocument:
                     continue
                 segments.append(_plain_segment(chunk))
                 continue
-            segments.append(_plain_segment(chunk))
+            segments.extend(await self._semantic_segments(chunk, model, api_key))
         to_index = chunk_segments(
             segments, max_tokens=self._max_words, overlap_tokens=self._overlap_words
         )
@@ -304,17 +356,93 @@ class IndexDocument:
             for chunk, point in zip(batch, points, strict=True)
         ]
 
+    async def _semantic_segments(
+        self, chunk: ParsedChunk, model: str, api_key: str
+    ) -> list[SourceSegment]:
+        """P-20 (plan §4 step 13, §3.4): the I/O half of semantic
+        pre-splitting for one non-table ``ParsedChunk``. Splits ``chunk.text``
+        into sentences, and -- only when there are at least
+        ``_MIN_SENTENCES_TO_SPLIT`` of them (constraint 3: gracefully skipped
+        otherwise) -- calls ``EmbeddingProvider.embed`` on the sentences and
+        hands the resulting vectors to the pure ``domain.chunking.
+        semantic_boundaries`` to decide where to cut.
+
+        Returns one ``SourceSegment`` per semantic part when a genuine
+        boundary was found, each stamped with its own ``sub_order`` (0, 1,
+        2, ...) so ``domain/chunking.py``'s ordering key keeps them in
+        reading order (``SourceSegment``'s own docstring) -- or a single
+        ``SourceSegment`` (``sub_order=0``, the default) covering the whole,
+        unsplit ``chunk.text`` when there was nothing to split (too few
+        sentences) or ``semantic_boundaries`` found no genuine break. Either
+        way, every returned segment still goes through the ordinary
+        word-window hard cap in ``chunk_segments`` afterwards (constraint 1)
+        -- this method only decides where the SOFT, topical cuts go.
+        """
+        sentences = _split_sentences(chunk.text)
+        if len(sentences) < _MIN_SENTENCES_TO_SPLIT:
+            return [_plain_segment(chunk)]
+
+        result = await self._embeddings.embed(sentences, model, api_key)
+        boundaries = semantic_boundaries(
+            result.vectors,
+            buffer=SEMANTIC_BUFFER,
+            breakpoint_percentile=SEMANTIC_BREAKPOINT_PERCENTILE,
+        )
+        parts = _group_sentences(sentences, boundaries)
+        if len(parts) < _MIN_SEMANTIC_PARTS:
+            return [_plain_segment(chunk)]
+
+        return [
+            SourceSegment(
+                text=part,
+                order=chunk.order,
+                kind=str(chunk.kind),
+                metadata=dict(chunk.metadata),
+                sub_order=part_index,
+            )
+            for part_index, part in enumerate(parts)
+        ]
+
 
 def _plain_segment(chunk: ParsedChunk) -> SourceSegment:
     """One ``SourceSegment`` covering the WHOLE of ``chunk.text``, unsplit --
-    used for a TABLE-kind chunk that failed to explode into rows and for
-    every other, non-table chunk."""
+    the fallback every path that skips semantic pre-splitting (P-20, a
+    TABLE-kind chunk, plan §3.4 constraint 2; a chunk with too few sentences
+    to compare, constraint 3; or `semantic_boundaries` finding no genuine
+    break) shares."""
     return SourceSegment(
         text=chunk.text,
         order=chunk.order,
         kind=str(chunk.kind),
         metadata=dict(chunk.metadata),
     )
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Arabic-aware sentence splitting (P-20, plan §3.4): split on one or
+    more of ``.`` ``؟`` ``!`` ``؛``, the dedicated Arabic full stop codepoint
+    (U+06D4), or a paragraph break (two or more consecutive newlines) -- see
+    ``_SENTENCE_SPLIT``'s own comment for why this stays a plain ``re``
+    pattern instead of pulling in ``nltk``. Empty/whitespace-only pieces
+    (a leading/trailing delimiter, or two delimiters back to back) are
+    dropped; every surviving piece is stripped."""
+    return [piece.strip() for piece in _SENTENCE_SPLIT.split(text) if piece.strip()]
+
+
+def _group_sentences(sentences: list[str], boundaries: list[int]) -> list[str]:
+    """Turn ``sentences`` plus ``domain.chunking.semantic_boundaries``'
+    "split before index" list into the joined semantic-part texts
+    (space-joined -- the sentences were split apart on punctuation, so
+    rejoining with a single space is the least lossy plain-text
+    reconstruction available without re-parsing the original whitespace).
+    ``boundaries=[]`` returns the whole of ``sentences`` as one part."""
+    parts: list[str] = []
+    start = 0
+    for boundary in boundaries:
+        parts.append(" ".join(sentences[start:boundary]))
+        start = boundary
+    parts.append(" ".join(sentences[start:]))
+    return parts
 
 
 def _table_to_segments(

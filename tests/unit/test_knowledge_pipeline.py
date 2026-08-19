@@ -11,6 +11,7 @@ parser adapters exercised by ``test_knowledge_parsers.py``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -36,6 +37,7 @@ from app.modules.knowledge.domain.chunking import (
     SourceSegment,
     chunk_segments,
     max_words_for_token_limit,
+    semantic_boundaries,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.intent import Intent, classify_intent
@@ -423,6 +425,93 @@ def test_split_overlap_ratio_is_ten_percent() -> None:
     assert SPLIT_OVERLAP_RATIO == 0.1
     max_words = max_words_for_token_limit(512)
     assert int(max_words * SPLIT_OVERLAP_RATIO) == 35
+
+
+# --------------------------------------------------------------------------- #
+# chunking.semantic_boundaries (P-20, plan §4 step 13, §3.4)                  #
+#                                                                              #
+# Pure math over SYNTHETIC vectors -- no EmbeddingProvider, no network, which #
+# is the stated point of splitting the algorithm out of the application's    #
+# I/O half (§3.4's own words: "the unit test works with no network").        #
+# --------------------------------------------------------------------------- #
+def test_semantic_boundaries_fewer_than_two_vectors_returns_empty() -> None:
+    assert semantic_boundaries([]) == []
+    assert semantic_boundaries([[1.0, 0.0]]) == []
+
+
+def test_semantic_boundaries_identical_vectors_find_no_break() -> None:
+    # Every consecutive distance is 0 -- the 95th-percentile threshold is
+    # also 0, and the ">" comparison (never ">=") means nothing clears it.
+    vectors = [[1.0, 0.0]] * 6
+    assert semantic_boundaries(vectors) == []
+
+
+def test_semantic_boundaries_splits_at_the_one_real_topic_shift_buffer_zero() -> None:
+    """Two clean clusters -- three sentences near (1, 0), three near (0, 1) --
+    with ``buffer=0`` (raw, unsmoothed pairwise distance) so the algorithm is
+    hand-verifiable: distances are [0, 0, 1, 0, 0], the 95th percentile of
+    that distribution sits at 0.8, and only the single 1.0 clears it -- a
+    break BEFORE sentence index 3 (the first sentence of the second
+    cluster)."""
+    vectors = [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]]
+    assert semantic_boundaries(vectors, buffer=0, breakpoint_percentile=95) == [3]
+
+
+def test_semantic_boundaries_splits_at_the_one_real_topic_shift_default_buffer() -> None:
+    """Same two-cluster input, but at the DEFAULT ``buffer=1`` (calibration
+    carried verbatim from alpha, plan §3.4): neighbour-averaging smooths
+    every distance, but the percentile threshold is relative to the smoothed
+    distribution too, so the single genuine transition (between sentence 2
+    and sentence 3) still clears it and nothing else does."""
+    vectors = [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]]
+    assert semantic_boundaries(vectors) == [3]
+
+
+def test_semantic_boundaries_finds_every_genuine_shift_in_three_clusters() -> None:
+    """Three clean clusters -- ``buffer=0``'s raw distances are
+    ``[0, 0, 1, 0, 0, 1, 0, 0]`` (two real transitions, both distance 1.0).
+    ``breakpoint_percentile=80`` (not the default 95) is used deliberately:
+    with two EQUAL maxima, the 95th percentile of this exact synthetic
+    distribution lands exactly ON 1.0 by linear interpolation, and the
+    ">" comparison never admits a distance equal to its own threshold --
+    an artefact of two tied maxima that real embeddings essentially never
+    produce, not a property of the algorithm worth pinning to the default
+    calibration here."""
+    vectors = [
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+    ]
+    boundaries = semantic_boundaries(vectors, buffer=0, breakpoint_percentile=80)
+    assert boundaries == [3, 6]
+
+
+def test_semantic_boundaries_zero_vector_is_maximally_distant_not_a_crash() -> None:
+    # A degenerate all-zero embedding must never raise a division-by-zero;
+    # it is simply treated as maximally distant from its neighbours.
+    vectors = [[1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
+    boundaries = semantic_boundaries(vectors, buffer=0)
+    assert all(isinstance(b, int) for b in boundaries)
+
+
+def test_semantic_boundaries_is_pure_and_deterministic() -> None:
+    vectors = [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]
+    assert semantic_boundaries(vectors) == semantic_boundaries(vectors)
+
+
+def test_semantic_boundaries_default_calibration_matches_the_ported_alpha_values() -> None:
+    # س-06's carried-verbatim calibration (plan §3.4): buffer=1,
+    # breakpoint_percentile=95 -- proof the DEFAULTS are these, not just
+    # that callers can pass them explicitly.
+    sig = inspect.signature(semantic_boundaries)
+    assert sig.parameters["buffer"].default == 1
+    assert sig.parameters["breakpoint_percentile"].default == 95
 
 
 # --------------------------------------------------------------------------- #
@@ -1187,6 +1276,162 @@ async def test_index_document_payload_omits_file_name_when_absent_from_metadata(
     point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
 
     assert "file_name" not in point.payload
+
+
+# --------------------------------------------------------------------------- #
+# application.indexing.IndexDocument -- P-20 semantic pre-splitting          #
+# (plan §4 step 13, §3.4)                                                     #
+# --------------------------------------------------------------------------- #
+async def test_index_document_semantic_split_calls_embed_on_sentences_then_final_nodes() -> None:
+    """A genuine two-topic segment: `execute` first calls `embed` with the
+    FOUR sentences (boundary detection), then -- once `semantic_boundaries`
+    finds the one real transition -- with the TWO resulting semantic-part
+    node texts (the ordinary final embedding pass). The two override
+    clusters below reproduce the exact 2-vector-per-cluster case verified
+    directly against `semantic_boundaries` (buffer=1 default): the
+    boundary lands cleanly before sentence index 2."""
+    sentence1 = "Quarterly revenue climbed sharply this period"
+    sentence2 = "Revenue growth exceeded every prior forecast"
+    sentence3 = "The office cafeteria unveiled a new lunch menu"
+    sentence4 = "Lunch service now starts thirty minutes earlier"
+    overrides = {
+        sentence1: [1.0, 0.0],
+        sentence2: [1.0, 0.0],
+        sentence3: [0.0, 1.0],
+        sentence4: [0.0, 1.0],
+    }
+    embeddings = FakeEmbeddings(overrides=overrides)
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = f"{sentence1}. {sentence2}. {sentence3}. {sentence4}."
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(embeddings.calls) == 2
+    assert embeddings.calls[0] == [sentence1, sentence2, sentence3, sentence4]
+    assert embeddings.calls[1] == [f"{sentence1} {sentence2}", f"{sentence3} {sentence4}"]
+
+    assert len(outcome.chunks) == 2
+    by_seq = {c.seq: c for c in outcome.chunks}
+    assert by_seq[0].text == f"{sentence1} {sentence2}"
+    assert by_seq[1].text == f"{sentence3} {sentence4}"
+
+
+async def test_index_document_single_sentence_segment_skips_the_semantic_embed_call() -> None:
+    """P-20 constraint 3 (plan §3.4): a segment with fewer than two
+    sentences is skipped gracefully -- no boundary-detection `embed` call at
+    all, just the ordinary final one."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = "a single sentence with no terminal punctuation at all"
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(embeddings.calls) == 1
+    assert embeddings.calls[0] == [text]
+    assert len(outcome.chunks) == 1
+    assert outcome.chunks[0].text == text
+
+
+async def test_index_document_table_chunk_skips_semantic_split_even_with_sentence_punctuation() -> (
+    None
+):
+    """P-20 constraint 2 (plan §3.4): TABLE-kind chunks skip semantic
+    pre-splitting entirely -- keyed off `chunk.kind`, not whether the text
+    actually explodes into rows -- even when the (here malformed) table text
+    happens to contain sentence-ending punctuation."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    text = "Not valid table json. It still has two sentences anyway."
+    parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert len(embeddings.calls) == 1
+    assert embeddings.calls[0] == [text]
+    assert len(outcome.chunks) == 1
+
+
+async def test_index_document_semantic_split_splits_arabic_sentences_on_every_separator() -> None:
+    """The exact separator set (plan §3.4): `.` `؟` `!` `؛`, a paragraph
+    break (``\\n\\n``), and the dedicated Arabic full stop codepoint
+    (U+06D4) each end one sentence -- proven by feeding one segment with all
+    six back to back and asserting the boundary-detection `embed` call
+    receives exactly the six resulting sentences, in reading order."""
+    parts = [
+        "الجملة الأولى عن الإيرادات الفصلية",
+        "الجملة الثانية عن عدد الموظفين",
+        "الجملة الثالثة عن مكان العمل",
+        "الجملة الرابعة عن ميزانية العام",
+        "الجملة الخامسة عن خطة التوسع",
+        "الجملة السادسة عن نتائج الفريق",
+    ]
+    text = f"{parts[0]}.{parts[1]}؟{parts[2]}!{parts[3]}؛{parts[4]}\n\n{parts[5]}۔"  # noqa: RUF001
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors)
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert embeddings.calls[0] == parts
+
+
+async def test_index_document_semantic_split_still_hard_caps_a_long_part_by_the_word_window() -> (
+    None
+):
+    """P-20 constraint 1 (plan §3.4): the word window remains a HARD CAP
+    after semantic boundaries -- a semantic PART longer than
+    `embedding_max_input_tokens`'s derived word budget still gets split by
+    the window, exactly as an ordinary (non-semantically-split) segment
+    would. Two 40-word "sentences" per cluster reproduce the same clean
+    boundary already verified against `semantic_boundaries` directly
+    (buffer=1 default: boundary before sentence index 2), so each of the
+    two resulting 80-word semantic parts comfortably exceeds
+    `MIN_MAX_WORDS` (32, `embedding_max_input_tokens=1`'s floor) and MUST
+    itself be split by `chunk_segments`' word window."""
+    sentence1 = " ".join(f"alpha{i}" for i in range(40))
+    sentence2 = " ".join(f"alpha{i}" for i in range(40, 80))
+    sentence3 = " ".join(f"beta{i}" for i in range(40))
+    sentence4 = " ".join(f"beta{i}" for i in range(40, 80))
+    overrides = {
+        sentence1: [1.0, 0.0],
+        sentence2: [1.0, 0.0],
+        sentence3: [0.0, 1.0],
+        sentence4: [0.0, 1.0],
+    }
+    embeddings = FakeEmbeddings(overrides=overrides)
+    vectors = FakeHybridVectors()
+    use_case = IndexDocument(embeddings, vectors, embedding_max_input_tokens=1)
+    ctx = _ctx("ws1")
+    text = f"{sentence1}. {sentence2}. {sentence3}. {sentence4}."
+    parsed = _parsed_document([_parsed_chunk(text, order=0)])
+
+    outcome = await use_case.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert all(chunk.token_count <= 32 for chunk in outcome.chunks)
+    # 2 semantic parts (80 words each), each windowed into more than one
+    # node -- proof the split actually happened WITHIN a semantic part, not
+    # just between the two of them.
+    assert len(outcome.chunks) > 2
 
 
 # --------------------------------------------------------------------------- #

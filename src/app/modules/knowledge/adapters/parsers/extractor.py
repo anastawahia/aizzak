@@ -272,7 +272,7 @@ class DocumentContentExtractor:
                 f"failed to parse {filename!r}: {exc}", code="knowledge.parse_failed"
             ) from exc
 
-        chunks = _enrich(raw_chunks, ext=ext, stem=Path(filename).stem)
+        chunks = _enrich(raw_chunks, ext=ext, filename=filename)
         if not chunks:
             log.info("knowledge.parse_empty", extra={"file_name": filename, "source_ext": ext})
 
@@ -288,15 +288,28 @@ def _extension_of(filename: str) -> str:
     return Path(filename).suffix.lower()
 
 
-def _enrich(chunks: list[ParsedChunk], *, ext: str, stem: str) -> tuple[ParsedChunk, ...]:
-    """Ensure every chunk carries `source_ext`, and every TABLE-kind chunk a
-    `table_name` — this is the one layer that knows the filename, so it is
-    cheaper to guarantee both here than to thread the filename into every
-    format-specific parser."""
+def _enrich(chunks: list[ParsedChunk], *, ext: str, filename: str) -> tuple[ParsedChunk, ...]:
+    """Ensure every chunk carries `source_ext` and `file_name`, and every
+    TABLE-kind chunk a `table_name` too — this is the one layer that knows
+    the filename (`extract()`'s own parameter), so it is cheaper to
+    guarantee all three here than to thread the filename into every
+    format-specific parser (rag-indexing-plan.md §3.9/§4 step 11's carried
+    gap: `_CITATION_KEYS` in `application/indexing.py` has allowlisted
+    `file_name` since step 11, but no producer emitted it until this
+    line -- `_enrich` runs for every route, so this closes the gap for
+    every producer at once: PDF text, PDF tables, DOCX, Excel, JSON, images,
+    OCR).
+
+    `file_name` is stamped unconditionally (not "if absent", unlike
+    `table_name` below): no parser has any legitimate way to know the
+    source filename on its own, so there is nothing for this layer to
+    defer to -- it is the one and only source of truth for it.
+    """
+    stem = Path(filename).stem
     enriched: list[ParsedChunk] = []
     table_index = 0
     for chunk in chunks:
-        metadata: Json = {**chunk.metadata, "source_ext": ext}
+        metadata: Json = {**chunk.metadata, "source_ext": ext, "file_name": filename}
         if chunk.kind is ParsedChunkKind.TABLE and "table_name" not in metadata:
             metadata["table_name"] = f"{stem}__table_{table_index}"
             table_index += 1

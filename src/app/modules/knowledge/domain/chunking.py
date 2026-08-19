@@ -126,6 +126,7 @@ within the split (the key's last column), not by the whole segment's.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -192,12 +193,24 @@ _ORDER_SIGNAL_KEYS = ("page_number", "position_in_doc", "paragraph_number", "chu
 
 @dataclass(frozen=True, slots=True)
 class SourceSegment:
-    """One structurally-ordered source segment to be split into chunks."""
+    """One structurally-ordered source segment to be split into chunks.
+
+    ``sub_order`` (P-20, plan §4 step 13, §3.4) disambiguates several
+    ``SourceSegment``\\s minted from the SAME original ``ParsedChunk`` after
+    application-layer semantic pre-splitting: the sequential index (0, 1,
+    2, ...) of one semantic part within that original chunk's text, in
+    reading order. It defaults to 0 -- what every OTHER producer implicitly
+    means ("this is the whole chunk, there is no sibling part to rank
+    against") -- so it is a silent no-op for every segment that was never
+    semantically split, and it changes nothing about how those segments
+    compare to each other (module docstring, ``_order_key``).
+    """
 
     text: str
     order: int
     kind: str
     metadata: dict[str, Any]
+    sub_order: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,19 +294,21 @@ def chunk_segments(
 def _order_key(segment: SourceSegment, split_part: int) -> tuple[int, ...]:
     """P-17's multi-signal ordering key for one window (module docstring):
     ``page_number -> position_in_doc -> paragraph_number -> chunk_index ->
-    segment.order -> split_part``, "NULLS LAST" at each metadata column.
-    Each of the four metadata columns contributes a ``(present, value)``
-    pair — ``(0, value)`` when the segment's metadata carries that key as an
-    ``int``, ``(1, 0)`` otherwise — so a segment missing a column always
-    sorts AFTER one that has it, at that column, without ever comparing
-    ``None`` against an ``int``. ``segment.order`` and ``split_part`` close
-    the key as plain ints because both are always present, which is what
-    keeps this a TOTAL order (module docstring).
+    segment.order -> segment.sub_order -> split_part``, "NULLS LAST" at each
+    metadata column. Each of the four metadata columns contributes a
+    ``(present, value)`` pair — ``(0, value)`` when the segment's metadata
+    carries that key as an ``int``, ``(1, 0)`` otherwise — so a segment
+    missing a column always sorts AFTER one that has it, at that column,
+    without ever comparing ``None`` against an ``int``. ``segment.order``,
+    ``segment.sub_order`` (P-20, plan §4 step 13 — see ``SourceSegment``'s
+    docstring), and ``split_part`` close the key as plain ints because all
+    three are always present, which is what keeps this a TOTAL order (module
+    docstring).
     """
     signals: list[int] = []
     for key in _ORDER_SIGNAL_KEYS:
         signals.extend(_signal(segment, key))
-    return (*signals, segment.order, split_part)
+    return (*signals, segment.order, segment.sub_order, split_part)
 
 
 def _signal(segment: SourceSegment, key: str) -> tuple[int, int]:
@@ -368,3 +383,122 @@ def _keep_node(text: str, seen_hashes: set[str]) -> bool:
         return False
     seen_hashes.add(digest)
     return True
+
+
+# P-20 (plan §4 step 13, §3.4, decision س-06) -- alpha's `SemanticSplitter
+# NodeParser` calibration, carried verbatim (rag-pipeline-alpha-vs-aizzak.md
+# line 221, rag-gaps-and-ports.md P-20): `buffer=1`, `breakpoint_percentile
+# =95`. MUST NOT be tuned without re-opening س-06.
+SEMANTIC_BUFFER = 1
+SEMANTIC_BREAKPOINT_PERCENTILE = 95
+
+# Fewer than this many vectors leaves nothing to compare (a lone sentence has
+# no neighbour) -- ``semantic_boundaries``' own early-return guard.
+_MIN_VECTORS_TO_COMPARE = 2
+
+
+def semantic_boundaries(
+    vectors: Sequence[Sequence[float]],
+    *,
+    buffer: int = SEMANTIC_BUFFER,
+    breakpoint_percentile: int = SEMANTIC_BREAKPOINT_PERCENTILE,
+) -> list[int]:
+    """Where a sentence-embedded segment breaks semantically (P-20, plan
+    §3.4) -- the split between "the domain gets the pure math" and "the
+    application gets the network call" this step exists to draw:
+    ``application/indexing.py`` splits a segment's text into sentences,
+    calls ``EmbeddingProvider.embed`` on THOSE sentences, and hands the
+    resulting per-sentence ``vectors`` in here -- this function never
+    imports a provider, ``Settings``, or touches the network itself
+    (``lint-imports``'s "Domain is pure" contract, plan §0).
+
+    **Algorithm (alpha's, ported):** each sentence ``i`` is first smoothed
+    into a "sentence group" by averaging it together with its ``buffer``
+    neighbours on each side (clamped at the ends -- the first/last
+    sentences have fewer neighbours, not zero-padded ones), the same
+    noise-reduction alpha's own `buffer_size` parameter names. The cosine
+    DISTANCE (``1 - cosine_similarity``) between each pair of consecutive
+    smoothed groups is then computed, and whichever distances exceed the
+    ``breakpoint_percentile``-th percentile of that whole distribution (alpha
+    ports `numpy.percentile`'s default linear-interpolation method, so this
+    stays a pure top-level dependency-free ``float`` calculation -- no
+    ``numpy`` in the domain) mark a genuine topic shift rather than the
+    ordinary sentence-to-sentence drift every document has -- an adaptive,
+    per-document threshold, not a fixed distance cutoff, which is the whole
+    point of ``SemanticSplitterNodeParser`` over a fixed-window splitter.
+
+    **Return value:** a sorted list of sentence indices to split BEFORE --
+    e.g. ``[3, 7]`` on a 9-sentence input means three semantic parts,
+    ``sentences[0:3]``, ``sentences[3:7]``, ``sentences[7:9]``. Empty when
+    fewer than 2 vectors are given (nothing to compare) or when every
+    consecutive distance sits at or under the threshold (the segment reads
+    as one continuous topic) -- the caller then keeps the segment as a
+    single, unsplit ``SourceSegment`` exactly as it always could (plan
+    §3.4 constraint 3: gracefully skipped, not an error).
+
+    Deliberately silent on ``vectors``' dimensionality or magnitude beyond
+    what plain cosine distance already tolerates (a zero vector is treated
+    as maximally distant from everything, including another zero vector,
+    rather than raising a division-by-zero) -- this function trusts its
+    caller's embedding provider the same way the rest of this module trusts
+    its caller's word-splitting.
+    """
+    count = len(vectors)
+    if count < _MIN_VECTORS_TO_COMPARE:
+        return []
+    groups = [_sentence_group(vectors, index, buffer) for index in range(count)]
+    distances = [_cosine_distance(groups[i], groups[i + 1]) for i in range(count - 1)]
+    threshold = _percentile(distances, breakpoint_percentile)
+    return [index + 1 for index, distance in enumerate(distances) if distance > threshold]
+
+
+def _sentence_group(vectors: Sequence[Sequence[float]], index: int, buffer: int) -> Sequence[float]:
+    """The ``buffer``-smoothed vector for sentence ``index`` (``semantic_
+    boundaries``' docstring): the element-wise mean of ``vectors[index -
+    buffer : index + buffer + 1]``, clamped to the sequence's bounds (a
+    sentence near either edge is smoothed over fewer neighbours, never
+    zero-padded ones, so it is never artificially pulled toward the origin).
+    """
+    start = max(0, index - buffer)
+    end = min(len(vectors), index + buffer + 1)
+    window = vectors[start:end]
+    dimensions = len(window[0])
+    return [sum(vector[d] for vector in window) / len(window) for d in range(dimensions)]
+
+
+def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    """``1 - cosine_similarity(a, b)``. A zero-magnitude vector on either
+    side is treated as maximally distant (``1.0``) from anything, including
+    another zero vector, rather than raising a division-by-zero -- an
+    all-zero embedding is itself degenerate input no genuine provider
+    produces, so this is a defensive floor, not a claim about its meaning.
+    """
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 1.0
+    return 1.0 - dot / (norm_a * norm_b)
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    """``numpy.percentile``'s default ("linear") interpolation method, ported
+    dependency-free (``semantic_boundaries``' docstring): sort ``values``,
+    locate the fractional rank ``(percentile / 100) * (len(values) - 1)``,
+    and linearly interpolate between the two nearest ordered values. A
+    single-element input returns that element (nothing to interpolate
+    between); an empty input returns ``0.0`` (never reached by
+    ``semantic_boundaries`` itself, whose ``count < 2`` guard means
+    ``distances`` is always non-empty by the time this is called, but this
+    function stays total rather than relying on that caller's guarantee).
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (percentile / 100.0) * (len(ordered) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = rank - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction

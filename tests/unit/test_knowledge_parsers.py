@@ -20,8 +20,12 @@ from docx.document import Document as WordDocumentObject
 from openpyxl.drawing.image import Image as WorksheetImage
 from PIL import Image
 
+from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import UnsupportedTypeError, ValidationError
+from app.framework.ports.embedding_provider import EmbeddingResult
+from app.framework.ports.vector_store import VectorPoint
 from app.framework.settings.settings import Limits
+from app.framework.types import Json
 from app.modules.knowledge.adapters.parsers import docx as docx_parser
 from app.modules.knowledge.adapters.parsers import (
     excel,
@@ -32,7 +36,12 @@ from app.modules.knowledge.adapters.parsers import (
     text_plain,
 )
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
-from app.modules.knowledge.ports.content_extractor import ContentExtractor, ParsedChunkKind
+from app.modules.knowledge.application.indexing import IndexDocument
+from app.modules.knowledge.ports.content_extractor import (
+    ContentExtractor,
+    ParsedChunkKind,
+    ParsedDocument,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -1544,3 +1553,164 @@ def test_extractor_classifies_a_scanned_pdf_as_pdf_images(monkeypatch: pytest.Mo
 def test_classify_docx_calls_a_picture_only_document_images_not_empty() -> None:
     assert docx_parser.classify_docx(table_count=0, text_count=0, image_count=2) == "docx_images"
     assert docx_parser.classify_docx(table_count=0, text_count=0, image_count=0) == "docx_empty"
+
+
+# --------------------------------------------------------------------------- #
+# extractor._enrich -- `file_name` on every route (rag-indexing-plan.md      #
+# §3.9/§4 step 11, ح-١٣/ح-١٦: `_CITATION_KEYS` allowlisted `file_name` since  #
+# step 11, but no producer ever emitted it until `_enrich` was closed to     #
+# stamp it -- this is that fix, proven for every real producer.)             #
+# --------------------------------------------------------------------------- #
+def test_extractor_stamps_file_name_on_every_chunk_across_every_text_route() -> None:
+    """PDF text, PDF tables, DOCX text+table, Excel, and JSON all route
+    through `extractor.py`'s `_enrich`, so ALL of them get `file_name`
+    stamped on every chunk -- checked here in one pass rather than editing
+    every existing route test individually."""
+    extractor = DocumentContentExtractor()
+
+    json_doc_ = extractor.extract(
+        data=json.dumps([{"a": 1, "b": 2}, {"a": 3, "b": 4}]).encode(),
+        filename="quarterly-report.json",
+        content_type="application/json",
+    )
+    assert json_doc_.chunks
+    assert all(c.metadata["file_name"] == "quarterly-report.json" for c in json_doc_.chunks)
+
+    text_doc = extractor.extract(
+        data=b"hello world", filename="notes.txt", content_type="text/plain"
+    )
+    assert text_doc.chunks
+    assert all(c.metadata["file_name"] == "notes.txt" for c in text_doc.chunks)
+
+    pdf_text_doc = extractor.extract(
+        data=_blocks_pdf([["A page of ordinary prose with no table on it at all."]]),
+        filename="prose.pdf",
+        content_type="application/pdf",
+    )
+    assert pdf_text_doc.chunks
+    assert all(c.metadata["file_name"] == "prose.pdf" for c in pdf_text_doc.chunks)
+
+    pdf_tables_doc = extractor.extract(
+        data=_table_pdf_bytes([_SALARY_ROWS]),
+        filename="salaries.pdf",
+        content_type="application/pdf",
+    )
+    assert pdf_tables_doc.chunks
+    assert all(c.metadata["file_name"] == "salaries.pdf" for c in pdf_tables_doc.chunks)
+
+    def build_docx(document: WordDocumentObject) -> None:
+        document.add_heading("Attendance Policy", level=1)
+        document.add_paragraph("Employees must record arrival and departure daily.")
+        _add_table(document, [["Grade", "Allowance"], ["A1", "1500"]])
+
+    docx_doc = extractor.extract(
+        data=_docx_bytes(build_docx),
+        filename="policy.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert docx_doc.chunks
+    assert all(c.metadata["file_name"] == "policy.docx" for c in docx_doc.chunks)
+    # A file's TABLE-kind chunk carries BOTH `file_name` and `table_name` --
+    # the two keys never collide or overwrite each other.
+    table = next(c for c in docx_doc.chunks if c.kind is ParsedChunkKind.TABLE)
+    assert table.metadata["table_name"] == "policy__table_0"
+
+    def build_workbook(wb: openpyxl.Workbook) -> None:
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(["ID", "Value"])
+        for i in range(3):
+            ws.append([i, i * 2])
+
+    excel_doc = extractor.extract(
+        data=_workbook_bytes(build_workbook),
+        filename="ledger.xlsx",
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert excel_doc.chunks
+    assert all(c.metadata["file_name"] == "ledger.xlsx" for c in excel_doc.chunks)
+
+
+def test_extractor_stamps_file_name_on_ocr_chunks_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OCR pass (plan step 5) joins the DOCX route's own chunk list, and
+    it is NOT exempt from `_enrich` -- its chunk gets `file_name` exactly
+    like the text chunk next to it."""
+    _stub_ocr(monkeypatch)
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_paragraph("Employees must clock in before 08:00.")
+        document.add_picture(io.BytesIO(_png(400, 400)))
+
+    parsed = DocumentContentExtractor().extract(
+        data=_docx_bytes(build),
+        filename="policy-with-photo.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    ocr_chunk = next(c for c in parsed.chunks if c.kind is ParsedChunkKind.OCR)
+    assert ocr_chunk.metadata["file_name"] == "policy-with-photo.docx"
+
+
+# --------------------------------------------------------------------------- #
+# extractor -> application.indexing.IndexDocument -- `file_name` genuinely   #
+# reaches the built Qdrant payload, not just the citation allowlist          #
+# (rag-indexing-plan.md §3.9, ح-١٣: a filtered key absent from every point   #
+# matches nothing, silently).                                                #
+# --------------------------------------------------------------------------- #
+class _ProbeEmbeddings:
+    """The smallest possible `EmbeddingProvider`: fixed-dimension vectors,
+    no real model call -- this test only cares whether `file_name` reaches
+    the payload, not what the vector looks like."""
+
+    provider = "probe"
+
+    async def embed(self, texts: list[str], model: str, api_key: str) -> EmbeddingResult:
+        return EmbeddingResult(
+            vectors=[[0.1, 0.2] for _ in texts], model=model, dimensions=2, tokens=len(texts)
+        )
+
+    def dimensions(self, model: str) -> int:
+        return 2
+
+
+class _ProbeVectors:
+    """The smallest possible `HybridVectorStore`: records every upserted
+    point's payload for inspection, nothing else."""
+
+    def __init__(self) -> None:
+        self.points: dict[str, VectorPoint] = {}
+
+    async def ensure_hybrid_collection(
+        self, name: str, dim: int, *, distance: str = "cosine"
+    ) -> None: ...
+
+    async def upsert(self, collection: str, points: list[VectorPoint]) -> None:
+        for point in points:
+            self.points[point.id] = point
+
+
+async def test_extractor_output_file_name_reaches_the_built_qdrant_payload() -> None:
+    """The full wiring, end to end: `DocumentContentExtractor.extract` (the
+    real adapter, not a hand-built `ParsedChunk`) feeds `IndexDocument.
+    execute`, and the resulting Qdrant point payload carries the CORRECT
+    `file_name` -- proof it is genuinely present, not merely allowlisted in
+    `_CITATION_KEYS`."""
+    parsed: ParsedDocument = DocumentContentExtractor().extract(
+        data=b"Quarterly headcount and revenue figures for the finance team.",
+        filename="finance-quarterly-notes.txt",
+        content_type="text/plain",
+    )
+    embeddings = _ProbeEmbeddings()
+    vectors = _ProbeVectors()
+    ctx = ExecutionContext(
+        workspace_id="ws1", user_id="u1", correlation_id="corr", roles=frozenset({"member"})
+    )
+
+    outcome = await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert outcome.chunks
+    point = vectors.points[outcome.chunks[0].chunk_id]
+    payload: Json = point.payload
+    assert payload["file_name"] == "finance-quarterly-notes.txt"
