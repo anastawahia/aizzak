@@ -161,6 +161,13 @@ async def _seed_content(
             {"id": new_uuid7(), "doc": document_id, "ws": ws},
         )
         await session.execute(
+            text(
+                "INSERT INTO knowledge.parent_chunks (id, document_id, workspace_id, seq, text) "
+                "VALUES (:id, :doc, :ws, 0, 'parent text')"
+            ),
+            {"id": new_uuid7(), "doc": document_id, "ws": ws},
+        )
+        await session.execute(
             text("INSERT INTO knowledge.reindex_jobs (id, workspace_id) VALUES (:id, :ws)"),
             {"id": reindex_job_id, "ws": ws},
         )

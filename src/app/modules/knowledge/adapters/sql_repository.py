@@ -34,6 +34,17 @@ statement pair in one transaction: chunks then the document, an order
 ``fk_chunk_doc`` enforces. ``SqlReindexJobRepository.get`` stores no progress
 and joins each item onto ``documents`` for its live status (INV-K5) — see its
 own docstring for why that join is INNER.
+
+``add_parent_chunks``/``parent_chunk_texts`` (P-14, rag-indexing-plan.md
+§3.2, ``migrations/versions/knowledge/0005_parent_chunks.py``) are
+``add_chunks``/``chunk_texts`` mirrored onto ``knowledge.parent_chunks``: the
+same idempotent ``ON CONFLICT (document_id, seq) DO NOTHING`` upsert and the
+same ``seq``-ordered read, over the coarser-grained table a matched
+``Chunk`` widens to via ``Chunk.parent_id``. ``purge``/``purge_space`` need
+no new statement for it: ``fk_parent_chunk_doc`` carries ``ON DELETE
+CASCADE`` on ``document_id``, so the existing final ``DELETE`` of the
+document row removes its now-unreferenced parent rows for free (chunks are
+always deleted first, so nothing still points at them by then).
 """
 
 from __future__ import annotations
@@ -71,6 +82,7 @@ from app.framework.types import Uuid as UuidStr
 from app.modules.knowledge.domain.entities import (
     Chunk,
     Document,
+    ParentChunk,
     ReindexItem,
     ReindexJob,
     Summary,
@@ -124,6 +136,27 @@ knowledge_chunks = Table(
     Column("token_count", Integer, nullable=True),
     Column("collection", Text, nullable=True),
     Column("point_id", _uuid_col, nullable=True),
+    Column("created_at", _timestamptz, nullable=False),
+    # P-14 (rag-indexing-plan.md §3.2, `0005_parent_chunks.py`) -- points at
+    # the `parent_chunks` row this window was cut from. NULLable: a chunk
+    # written before that pipeline stage runs has none to carry.
+    Column("parent_id", _uuid_col, nullable=True),
+    schema="knowledge",
+)
+
+# `knowledge.parent_chunks` (P-14, `0005_parent_chunks.py`) -- one row per
+# parsed segment (`SourceSegment`), coarser-grained than `chunks`. Named
+# `parent_chunks` here too: unlike `chunks`/`knowledge_chunks`, no Python
+# identifier collision to dodge (the port method is `add_parent_chunks`, not
+# `add_parents`).
+parent_chunks = Table(
+    "parent_chunks",
+    _metadata,
+    Column("id", _uuid_col, primary_key=True),
+    Column("document_id", _uuid_col, nullable=False),
+    Column("workspace_id", _uuid_col, nullable=False),
+    Column("seq", Integer, nullable=False),
+    Column("text", Text, nullable=False),
     Column("created_at", _timestamptz, nullable=False),
     schema="knowledge",
 )
@@ -514,6 +547,43 @@ class SqlDocumentRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
 
+    async def add_parent_chunks(
+        self, ctx: ExecutionContext, parents: Sequence[ParentChunk]
+    ) -> None:
+        if not parents:
+            return
+        # Every parent's OWN workspace_id is written (not ctx.workspace_id)
+        # -- the same forged-write guard `add`/`add_chunks` use.
+        stmt = (
+            pg_insert(parent_chunks)
+            .values([_parent_chunk_row(parent) for parent in parents])
+            .on_conflict_do_nothing(
+                index_elements=[parent_chunks.c.document_id, parent_chunks.c.seq]
+            )
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                await session.execute(stmt)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
+    async def parent_chunk_texts(self, ctx: ExecutionContext, doc_id: UuidStr) -> Sequence[str]:
+        # `seq` ASC mirrors `chunk_texts`'s own reading-order contract.
+        stmt = (
+            select(parent_chunks.c.text)
+            .where(
+                parent_chunks.c.document_id == doc_id,
+                parent_chunks.c.workspace_id == ctx.workspace_id,
+            )
+            .order_by(parent_chunks.c.seq)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return list(rows)
+
 
 class SqlReindexJobRepository:
     """SQL ``ReindexJobRepository`` adapter (BE-RAG-007/008).
@@ -881,6 +951,18 @@ def _chunk_row(chunk: Chunk) -> dict[str, object]:
         "token_count": chunk.token_count,
         "collection": chunk.vector_ref.collection if chunk.vector_ref else None,
         "point_id": chunk.vector_ref.point_id if chunk.vector_ref else None,
+        "parent_id": chunk.parent_id,
+    }
+
+
+def _parent_chunk_row(parent: ParentChunk) -> dict[str, object]:
+    return {
+        "id": parent.id,
+        "document_id": parent.document_id,
+        "workspace_id": parent.workspace_id,
+        "seq": parent.seq,
+        "text": parent.text,
+        "created_at": parent.created_at,
     }
 
 

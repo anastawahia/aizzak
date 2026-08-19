@@ -9,6 +9,10 @@ transitions are one-way and terminal (INV-K2: ``pending -> indexing ->
 document, so this aggregate deliberately exposes no such method. Identifiers
 are UUIDv7 text; timestamps are timezone-aware UTC (DD-03).
 
+``ParentChunk`` (P-14, rag-indexing-plan.md §3.2) sits beside ``Chunk`` as a
+second, coarser-grained persisted text: one row per parsed segment rather
+than per indexed window, referenced by ``Chunk.parent_id``.
+
 ``ReindexJob`` (+ its ``ReindexItem`` entity) is the second aggregate root
 here, added by BE-RAG-007/008: the record of a manual rebuild. It is the
 aggregate that OBEYS INV-K3 rather than bends it — each target is superseded
@@ -422,7 +426,16 @@ class Chunk:
     """One indexed window of a ``Document`` (06 §7 E ``Chunk``); immutable
     once created. ``token_count``/``vector_ref`` are nullable to match the
     nullable DDL columns (01-data-model §2.7), though the 3.k4 indexing flow
-    always sets both."""
+    always sets both.
+
+    ``parent_id`` points at the ``ParentChunk`` this window was cut from
+    (P-14, ``migrations/versions/knowledge/0005_parent_chunks.py``) — nullable
+    and defaulted to ``None`` so every existing keyword-argument construction
+    site keeps compiling unchanged. It carries no text of its own (the plan's
+    first inviolable constraint): the text lives once, on the ``ParentChunk``
+    row, and the Qdrant payload built from a chunk is meant to carry this id
+    alone.
+    """
 
     id: str
     document_id: str
@@ -431,3 +444,29 @@ class Chunk:
     text: str
     token_count: int | None
     vector_ref: VectorRef | None
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ParentChunk:
+    """One parent-chunk text row (06 §7 · P-14, plan §3.2) — the persisted
+    form of a ``SourceSegment`` (``domain/chunking.py``), which is the
+    natural parent here: ``chunk_segments`` never lets a window cross a
+    segment boundary, so a segment already IS the widened context a matched
+    ``Chunk`` should expand to.
+
+    Immutable once created, the ``Chunk`` precedent: nothing about a
+    document's parsed text changes in place — a re-index destroys the old
+    document (INV-K4) and mints brand-new rows on the new one.
+
+    ``id`` is minted by the APPLICATION layer before this reaches the
+    repository (UUIDv7, the non-negotiable rule every other aggregate root
+    here already follows) — the adapter never mints identifiers.
+    """
+
+    id: str
+    document_id: str
+    workspace_id: str
+    seq: int
+    text: str
+    created_at: datetime

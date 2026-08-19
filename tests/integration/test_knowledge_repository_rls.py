@@ -11,6 +11,16 @@ redelivery neither duplicates nor overwrites first-written rows) and
 ``documents.chunk_count`` from the chunks actually persisted. ``Chunk.id``
 (application-minted UUIDv7) and ``point_id`` (deterministic uuid5) are
 asserted to persist as SEPARATE columns (the 3.k3→3.k4 handoff contract).
+
+The final section covers ``add_parent_chunks``/``parent_chunk_texts`` and
+``Chunk.parent_id`` (P-14, rag-indexing-plan.md §3.2, step 6,
+``migrations/versions/knowledge/0005_parent_chunks.py``): the same
+idempotent-upsert/RLS/forged-write behaviours proven above for ``chunks``,
+mirrored onto ``knowledge.parent_chunks``, plus the one thing only a live
+database can show -- that ``purge`` needs no new statement because
+``fk_parent_chunk_doc ... ON DELETE CASCADE`` removes a document's parent
+rows for free once its ``chunks`` rows (which reference them) are already
+gone.
 """
 
 from __future__ import annotations
@@ -32,7 +42,13 @@ from app.modules.knowledge.adapters.sql_repository import (
     SqlReindexJobRepository,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
-from app.modules.knowledge.domain.entities import Chunk, Document, ReindexItem, ReindexJob
+from app.modules.knowledge.domain.entities import (
+    Chunk,
+    Document,
+    ParentChunk,
+    ReindexItem,
+    ReindexJob,
+)
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     ReindexJobStatus,
@@ -79,7 +95,14 @@ def _document(
     )
 
 
-def _chunk(*, document_id: str, workspace_id: str, seq: int, chunk_text: str) -> Chunk:
+def _chunk(
+    *,
+    document_id: str,
+    workspace_id: str,
+    seq: int,
+    chunk_text: str,
+    parent_id: str | None = None,
+) -> Chunk:
     """Mirrors the application layer's minting contract: ``id`` is a fresh
     UUIDv7 minted per chunk, ``point_id`` the deterministic
     ``uuid5(document_id, seq)`` -- two DIFFERENT identifiers by design."""
@@ -94,6 +117,22 @@ def _chunk(*, document_id: str, workspace_id: str, seq: int, chunk_text: str) ->
             collection=knowledge_collection(workspace_id),
             point_id=chunk_point_id(document_id, seq),
         ),
+        parent_id=parent_id,
+    )
+
+
+def _parent_chunk(
+    *, document_id: str, workspace_id: str, seq: int, parent_text: str
+) -> ParentChunk:
+    """Mirrors the same application-minting contract as ``_chunk``: ``id``
+    is a fresh UUIDv7, minted before any ``Chunk`` referencing it exists."""
+    return ParentChunk(
+        id=new_uuid7(),
+        document_id=document_id,
+        workspace_id=workspace_id,
+        seq=seq,
+        text=parent_text,
+        created_at=utc_now(),
     )
 
 
@@ -127,8 +166,30 @@ async def _chunk_rows_as_owner(
             )
             result = await conn.execute(
                 text(
-                    "SELECT id, document_id, seq, text, token_count, collection, point_id"
+                    "SELECT id, document_id, seq, text, token_count, collection, point_id,"
+                    " parent_id"
                     " FROM knowledge.chunks WHERE document_id = :doc ORDER BY seq"
+                ),
+                {"doc": document_id},
+            )
+            return list(result.mappings().all())
+    finally:
+        await engine.dispose()
+
+
+async def _parent_chunk_rows_as_owner(
+    owner_dsn: str, workspace_id: str, document_id: str
+) -> list[RowMapping]:
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text(
+                    "SELECT id, document_id, seq, text"
+                    " FROM knowledge.parent_chunks WHERE document_id = :doc ORDER BY seq"
                 ),
                 {"doc": document_id},
             )
@@ -668,3 +729,166 @@ async def test_another_tenant_cannot_read_a_job(
     await repo_reindex_jobs.add(ctx, job)
 
     assert await repo_reindex_jobs.get(_ctx(intruder_ws), job.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# (12) parent chunks (P-14, plan §3.2, step 6)                                #
+# --------------------------------------------------------------------------- #
+async def test_add_parent_chunks_round_trips_text_in_seq_order(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    parents = [
+        _parent_chunk(document_id=doc.id, workspace_id=ws, seq=i, parent_text=f"segment {i}")
+        for i in range(2)
+    ]
+
+    await repo_knowledge.add_parent_chunks(ctx, parents)
+
+    texts = await repo_knowledge.parent_chunk_texts(ctx, doc.id)
+    assert list(texts) == ["segment 0", "segment 1"]
+    rows = await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id)
+    assert [str(row["id"]) for row in rows] == [p.id for p in parents]
+
+
+async def test_add_parent_chunks_redelivery_is_idempotent_and_preserves_first_write(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """INV-K1/DD-09, mirrored onto ``parent_chunks``: a redelivered batch
+    (same document_id+seq, fresh id, different text) inserts nothing, raises
+    nothing, overwrites nothing."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    await repo_knowledge.add_parent_chunks(
+        ctx, [_parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="original")]
+    )
+
+    await repo_knowledge.add_parent_chunks(
+        ctx, [_parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="redelivered")]
+    )
+
+    rows = await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id)
+    assert len(rows) == 1
+    assert rows[0]["text"] == "original"
+
+
+async def test_a_document_with_no_parent_chunks_yields_an_empty_sequence(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+
+    assert await repo_knowledge.parent_chunk_texts(ctx, doc.id) == []
+
+
+async def test_a_chunks_parent_id_round_trips_as_a_separate_column(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    parent = _parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="whole segment")
+    await repo_knowledge.add_parent_chunks(ctx, [parent])
+
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(
+                document_id=doc.id,
+                workspace_id=ws,
+                seq=0,
+                chunk_text="a window",
+                parent_id=parent.id,
+            )
+        ],
+    )
+
+    rows = await _chunk_rows_as_owner(live_db.owner, ws, doc.id)
+    assert str(rows[0]["parent_id"]) == parent.id
+
+
+async def test_a_chunk_with_no_parent_stores_and_reads_back_null(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+
+    await repo_knowledge.add_chunks(
+        ctx, [_chunk(document_id=doc.id, workspace_id=ws, seq=0, chunk_text="no parent yet")]
+    )
+
+    rows = await _chunk_rows_as_owner(live_db.owner, ws, doc.id)
+    assert rows[0]["parent_id"] is None
+
+
+async def test_two_tenant_isolation_on_parent_chunks(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a, ctx_b = _ctx(ws_a), _ctx(ws_b)
+    doc_a = _document(workspace_id=ws_a)
+    await repo_knowledge.add(ctx_a, doc_a)
+    await repo_knowledge.add_parent_chunks(
+        ctx_a,
+        [_parent_chunk(document_id=doc_a.id, workspace_id=ws_a, seq=0, parent_text="a-only")],
+    )
+
+    assert await repo_knowledge.parent_chunk_texts(ctx_b, doc_a.id) == []
+    assert await _parent_chunk_rows_as_owner(live_db.owner, ws_b, doc_a.id) == []
+
+
+async def test_forged_cross_tenant_parent_chunk_add_is_rejected(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    ws_victim, ws_attacker = new_uuid7(), new_uuid7()
+    ctx_victim = _ctx(ws_victim)
+    doc = _document(workspace_id=ws_victim)
+    await repo_knowledge.add(ctx_victim, doc)
+    forged = _parent_chunk(
+        document_id=doc.id, workspace_id=ws_victim, seq=0, parent_text="forged payload"
+    )
+
+    with pytest.raises(AppError) as excinfo:
+        await repo_knowledge.add_parent_chunks(_ctx(ws_attacker), [forged])
+
+    assert excinfo.value.code == "common.internal"
+    assert await _parent_chunk_rows_as_owner(live_db.owner, ws_victim, doc.id) == []
+
+
+async def test_purging_a_document_cascades_its_parent_chunks_away(
+    repo_knowledge: SqlDocumentRepository, live_db: LiveDbDsns
+) -> None:
+    """The constraint the migration's docstring is about: ``purge`` deletes
+    ``chunks`` explicitly and never touches ``parent_chunks`` at all -- the
+    final ``DELETE`` of the document row cascades (``fk_parent_chunk_doc ...
+    ON DELETE CASCADE``) and removes the now-unreferenced parent rows for
+    free. Only a live database can show the cascade actually fires."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws, status=IndexStatus.INDEXING)
+    await repo_knowledge.add(ctx, doc)
+    parent = _parent_chunk(document_id=doc.id, workspace_id=ws, seq=0, parent_text="segment")
+    await repo_knowledge.add_parent_chunks(ctx, [parent])
+    await repo_knowledge.add_chunks(
+        ctx,
+        [
+            _chunk(
+                document_id=doc.id, workspace_id=ws, seq=0, chunk_text="window", parent_id=parent.id
+            )
+        ],
+    )
+
+    await repo_knowledge.purge(ctx, doc.id)
+
+    assert await repo_knowledge.get(ctx, doc.id) is None
+    assert await _parent_chunk_rows_as_owner(live_db.owner, ws, doc.id) == []

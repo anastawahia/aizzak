@@ -140,6 +140,11 @@ _TENANT_TABLES: tuple[str, ...] = (
     "files.files",
     "knowledge.documents",
     "knowledge.chunks",
+    # P-14 (rag-indexing-plan.md §3.2, step 6,
+    # `migrations/versions/knowledge/0005_parent_chunks.py`) -- same CRUD as
+    # every other tenant table; RLS, not the grant, confines it to one
+    # workspace.
+    "knowledge.parent_chunks",
     "knowledge.reindex_jobs",
     "knowledge.reindex_job_items",
     "knowledge.summaries",
@@ -321,6 +326,7 @@ PURGE_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, DELETE ON files.files TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON knowledge.documents TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON knowledge.chunks TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON knowledge.parent_chunks TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON knowledge.reindex_jobs TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON knowledge.reindex_job_items TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON knowledge.summaries TO {PURGE_ROLE}",

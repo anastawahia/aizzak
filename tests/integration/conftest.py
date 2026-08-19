@@ -1103,6 +1103,11 @@ async def truncate_tables(live_db: LiveDbDsns) -> AsyncIterator[None]:
     ``migrations/versions/knowledge/0003_summaries.py``) but joins anyway,
     for the same test-isolation reason ``usage_rollups``/``limits`` already
     do below.
+
+    ``knowledge.parent_chunks`` (P-14, rag-indexing-plan.md §3.2, step 6)
+    joins for the same FK reason as ``summaries``: ``fk_parent_chunk_doc``
+    references ``knowledge.documents``, which IS in this list, so omitting
+    it would abort the whole statement the moment a row exists.
     """
     yield
     engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
@@ -1115,7 +1120,7 @@ async def truncate_tables(live_db: LiveDbDsns) -> AsyncIterator[None]:
                     "credentials.credentials, access.role_assignments, media.media_jobs, "
                     "conversations.messages, conversations.conversation_files, "
                     "conversations.conversations, files.files, spaces.spaces, "
-                    "memory.memory_items, knowledge.chunks, "
+                    "memory.memory_items, knowledge.chunks, knowledge.parent_chunks, "
                     "knowledge.reindex_job_items, knowledge.reindex_jobs, "
                     "knowledge.summaries, knowledge.summary_jobs, "
                     "knowledge.documents, "

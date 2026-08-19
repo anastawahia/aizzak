@@ -222,6 +222,7 @@ def test_purge_role_gets_select_delete_on_every_tenant_table_it_empties() -> Non
         "files.files",
         "knowledge.documents",
         "knowledge.chunks",
+        "knowledge.parent_chunks",
         "knowledge.reindex_jobs",
         "knowledge.reindex_job_items",
         "knowledge.summaries",

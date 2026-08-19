@@ -21,6 +21,12 @@ does not touch it (spaces plan, step 8): a document's space comes from its
 file and a file does not move between spaces (decision 3), so leaving the
 column out of every UPDATE is what makes that true of the database and not
 only of the type — the ``files`` repository's own argument.
+
+``add_parent_chunks``/``parent_chunk_texts`` (P-14, rag-indexing-plan.md
+§3.2) are ``add_chunks``/``chunk_texts`` mirrored onto the coarser-grained
+``knowledge.parent_chunks`` table: same idempotent-upsert contract, same
+``seq``-ordered read, over the row a matched ``Chunk`` widens to via
+``Chunk.parent_id`` rather than the window that was actually indexed.
 """
 
 from __future__ import annotations
@@ -32,7 +38,14 @@ from typing import Protocol
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.pagination import Page
 from app.framework.types import Uuid
-from app.modules.knowledge.domain.entities import Chunk, Document, ReindexJob, Summary, SummaryJob
+from app.modules.knowledge.domain.entities import (
+    Chunk,
+    Document,
+    ParentChunk,
+    ReindexJob,
+    Summary,
+    SummaryJob,
+)
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage, VectorRef
 
 
@@ -134,6 +147,29 @@ class DocumentRepository(Protocol):
         re-delivering the same batch (a retry after a worker crash) leaves
         the first-written rows' ids untouched instead of duplicating or
         overwriting them.
+
+        A ``Chunk.parent_id`` (P-14) is written verbatim, including ``None``
+        — a chunk minted before its parent chunk exists (or from a pipeline
+        stage that has none to offer) is a normal shape, not an error.
+        """
+        ...
+
+    async def add_parent_chunks(
+        self, ctx: ExecutionContext, parents: Sequence[ParentChunk]
+    ) -> None:
+        """Idempotently persist ``parents`` (P-14, plan §3.2) — the
+        ``add_chunks`` contract, mirrored: the SQL adapter upserts via
+        ``ON CONFLICT (document_id, seq) DO NOTHING`` against
+        ``uq_parent_seq``, so a redelivered batch after a worker crash leaves
+        the first-written rows' ids untouched rather than duplicating or
+        overwriting them — the same INV-K1/DD-09 reasoning, applied to the
+        coarser-grained table.
+
+        Every ``ParentChunk.id`` here is application-minted (UUIDv7) BEFORE
+        the call: the ``Chunk`` rows referencing it via ``parent_id`` are
+        built from that same id, so the id must already exist when a caller
+        constructs them — the adapter cannot mint it as a side effect of
+        this insert without breaking that ordering.
         """
         ...
 
@@ -169,6 +205,19 @@ class DocumentRepository(Protocol):
         No paging: a document's chunks are bounded by the file it came from,
         the caller consumes all of them, and a cursor here would only be a
         place for the reading order to get lost.
+        """
+        ...
+
+    async def parent_chunk_texts(self, ctx: ExecutionContext, doc_id: Uuid) -> Sequence[str]:
+        """This document's parent-chunk text, in ``seq`` order (P-14, plan
+        §3.2 · P-42's future reader): the ``chunk_texts`` contract, over the
+        coarser-grained table.
+
+        Meant for the summarisation pipeline once it moves onto parent
+        chunks (plan step 18): ~40 coherent sections read cheaper than ~240
+        leaf fragments with the same content. A document with no parent
+        chunks yields an empty sequence — a normal answer for a document
+        whose pipeline stage that writes them has not run yet, not an error.
         """
         ...
 

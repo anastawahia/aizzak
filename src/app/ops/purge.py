@@ -352,6 +352,17 @@ _SCHEMA_ORDER: tuple[_SchemaSpec, ...] = (
         (
             "knowledge.summaries",
             "knowledge.chunks",
+            # P-14 (rag-indexing-plan.md §3.2, step 6): explicitly swept
+            # here rather than left to `fk_parent_chunk_doc ... ON DELETE
+            # CASCADE` firing off the `knowledge.documents` delete below --
+            # this module's own rule (module docstring) is that every
+            # tenant table is emptied by an explicit statement the sweep
+            # can count, never by a cascade nobody here issued. Ordered
+            # after `knowledge.chunks`, whose `parent_id` FK carries no
+            # cascade of its own, for the same reason `chunks` precedes
+            # `documents`: nothing may still reference a row this sweep is
+            # about to delete.
+            "knowledge.parent_chunks",
             "knowledge.reindex_job_items",
             "knowledge.documents",
             "knowledge.reindex_jobs",
