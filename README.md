@@ -17,6 +17,7 @@
 | **أشغّل المنصّة الآن** | [`docs/quickstart.md`](docs/quickstart.md) — دليلٌ عمليّ: إقلاع · فحوص · أعطال |
 | **أنشرها على خادم Linux خاصّ بي** | [`docs/deploy-linux-server.md`](docs/deploy-linux-server.md) — نقلٌ وتشغيلٌ بـ`docker compose` على خادمٍ نظيف، خطوةً بخطوة لمن لا خبرة له |
 | **أنشرها على RunPod** | [`docs/deploy-runpod.md`](docs/deploy-runpod.md) — ⚠️ ‏RunPod لا يشغّل `docker compose`: صورةٌ واحدة شاملة، خطوةً بخطوة |
+| أفهم **المشروع من الصفر بالعربية** | [`docs/project-architecture-guide-ar.md`](docs/project-architecture-guide-ar.md) — شرحٌ مبسّط ومفصّل للبنية والطبقات والوحدات والوكلاء والخدمات والشبكات |
 | أفهم **قرارات التشغيل** وأسبابها (المرجع المُلزِم) | [`docs/design/08-local-runbook.md`](docs/design/08-local-runbook.md) |
 | أعرف **أين وصل البناء** وما الخطوة التالية | [`docs/implementation-status.md`](docs/implementation-status.md) |
 | أقرأ **سجلّ البناء** خطوةً خطوة | [`docs/log/INDEX.md`](docs/log/INDEX.md) |
