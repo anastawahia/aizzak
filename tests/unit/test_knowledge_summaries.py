@@ -272,17 +272,43 @@ async def _draft(
 
 
 @pytest.mark.asyncio
-async def test_an_overview_makes_exactly_one_call_and_reads_only_the_opening() -> None:
-    """ "What is this document?" is answered by the front of a document.
-    Reading further would make the cheap kind cost what the other one costs,
-    and the caller who wanted the whole thing asked for ``full``."""
+async def test_an_overview_makes_exactly_one_call_and_samples_across_the_whole_document() -> None:
+    """P-43 (plan §4 step 19, §3.10): an overview reads a sample spread
+    ACROSS the document, not just its first ``_OVERVIEW_CHUNKS`` -- a
+    document whose opening is a generic cover sheet or table of contents
+    gave a worthless glance under the old "first 8" rule. Still exactly ONE
+    provider call, regardless of length: sampling is a position choice, not
+    an extra round trip. 40 chunks / 8 samples land on indices
+    0, 5, 10, ..., 35 -- reaching well past the opening (chunk 20, the
+    document's middle) while still stopping short of the end (chunk 39)."""
     llm, draft = await _draft([f"chunk {i}" for i in range(40)], kind=SummaryKind.OVERVIEW)
 
     assert len(llm.calls) == 1
     assert draft.source_chunks == 8  # type: ignore[attr-defined]
     assert draft.truncated is True  # type: ignore[attr-defined]
-    assert "chunk 0" in llm.calls[0][0][1].content
-    assert "chunk 39" not in llm.calls[0][0][1].content
+    content = llm.calls[0][0][1].content
+    assert "chunk 0" in content
+    assert "chunk 20" in content  # a MIDDLE chunk -- proof of a real spread
+    assert "chunk 39" not in content
+    # Non-adjacent picks (chunk 0, then chunk 5) are separated by the marked
+    # gap -- the model is told material was skipped, not left to guess.
+    assert "[…]" in content
+
+
+@pytest.mark.asyncio
+async def test_an_overview_of_a_short_document_reads_everything_with_no_gap_marker() -> None:
+    """At or under ``_OVERVIEW_CHUNKS`` readable chunks, "sampling" is just
+    reading everything -- nothing was skipped, so no ``[…]`` marker belongs
+    in the prompt (it would tell the model to imagine a gap that is not
+    there)."""
+    llm, draft = await _draft([f"chunk {i}" for i in range(5)], kind=SummaryKind.OVERVIEW)
+
+    assert len(llm.calls) == 1
+    assert draft.source_chunks == 5  # type: ignore[attr-defined]
+    assert draft.truncated is False  # type: ignore[attr-defined]
+    content = llm.calls[0][0][1].content
+    assert all(f"chunk {i}" in content for i in range(5))
+    assert "[…]" not in content
 
 
 @pytest.mark.asyncio

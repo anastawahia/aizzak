@@ -29,8 +29,10 @@ unaware of the distinction — it still just reads an ordered ``Sequence[str]``
 for how this pipeline worked before step 18.
 
 **Both kinds are bounded, and the bound is reported rather than hidden.**
-``overview`` reads the document's opening chunks and makes ONE call —
-"what is this?" is answered by the front of a document, and a reader who
+``overview`` reads a sample of chunks spread across the WHOLE document
+(``_glance_sample``, P-43) and makes ONE call — "what is this?" is answered
+better by the shape of a document than by its opening alone, which a generic
+cover sheet or table of contents can make a worthless glance; a reader who
 wanted the whole thing asked for ``full``. ``full`` maps over every chunk in
 batches and reduces the notes into one summary, up to ``_MAX_MAP_CHUNKS``.
 Past that ceiling the pipeline summarises the prefix and sets ``truncated``,
@@ -54,10 +56,22 @@ from app.framework.ports.llm_provider import LlmMessage, LlmParams
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
 
-# How many of a document's opening chunks an `overview` reads. An overview
-# answers "what is this document?", which the front of a document answers;
-# reading further would make the cheap kind cost the same as the other one.
+# P-43 (plan §4 step 19, §3.10): how many chunks an `overview` reads --
+# spread ACROSS the document (`_glance_sample`), not just its first
+# `_OVERVIEW_CHUNKS`. "First 8" gave a worthless glance for a document whose
+# opening pages are a generic cover sheet or table of contents; sampling by
+# position instead answers "what is this?" from the whole shape of the
+# document. Still exactly ONE provider call regardless of length -- the
+# chunks read are chosen by position, never by an extra round trip.
 _OVERVIEW_CHUNKS = 8
+
+# The marker `_glance_sample` inserts between two sampled chunks that were
+# NOT adjacent in the document, so the model is TOLD it is reading a sample
+# with real material skipped between the pieces, rather than left to
+# silently infer two unrelated passages are continuous -- the same honesty
+# `truncated` (module docstring) already keeps for `full`, extended here to
+# `overview`'s own kind of incompleteness.
+_GAP_MARKER = "[…]"
 
 # Chunks per map call. Small enough that one provider error costs one batch
 # rather than the document, large enough that a 200-chunk file is ~34 calls
@@ -132,10 +146,13 @@ _FOLD_SYSTEM = (
 )
 
 _OVERVIEW_SYSTEM = (
-    "You are writing a brief overview of a document from its opening pages. "
-    "In a few short Markdown paragraphs say what the document is, what it "
-    "covers, and who it appears to be for. Do not speculate about parts you "
-    "were not shown."
+    "You are writing a brief overview of a document from a sample of excerpts "
+    "taken from across it, in reading order. A marker written exactly as "
+    "'[…]' stands for a real gap between excerpts -- material was skipped "
+    "there, not lost or blank. In a few short Markdown paragraphs say what "
+    "the document is, what it covers, and who it appears to be for. Do not "
+    "speculate about parts you were not shown, and do not mention the "
+    "sampling or the marker itself."
 )
 
 _FULL_SYSTEM = (
@@ -239,20 +256,20 @@ class SummarizeDocument:
             raise ValueError("this document has no indexed text to summarise")
 
         if kind is SummaryKind.OVERVIEW:
-            window = readable[:_OVERVIEW_CHUNKS]
+            sample, sampled = _glance_sample(readable)
             text = await self._call(
                 system=_OVERVIEW_SYSTEM,
-                user=_join(window),
+                user=sample,
                 lang=lang,
                 summarizer=summarizer,
                 max_tokens=_OVERVIEW_MAX_TOKENS,
             )
-            await on_progress(len(window))
+            await on_progress(sampled)
             return SummaryDraft(
                 text=text,
                 model=summarizer.model,
-                source_chunks=len(window),
-                truncated=len(readable) > len(window),
+                source_chunks=sampled,
+                truncated=len(readable) > sampled,
             )
 
         window = readable[:_MAX_MAP_CHUNKS]
@@ -373,6 +390,38 @@ class SummarizeDocument:
 
 def _join(chunks: Sequence[str]) -> str:
     return "\n\n".join(chunks)
+
+
+def _glance_sample(readable: Sequence[str]) -> tuple[str, int]:
+    """P-43 (plan §4 step 19, §3.10): up to ``_OVERVIEW_CHUNKS`` chunks
+    spread evenly ACROSS ``readable``, not its first ``_OVERVIEW_CHUNKS`` --
+    replacing the old "first 8", a worthless glance for a document whose
+    opening pages are a generic cover sheet or table of contents. Returns
+    the joined sample text (non-adjacent picks separated by
+    ``_GAP_MARKER``) and how many chunks were actually included, so the
+    caller can report ``source_chunks``/``truncated`` exactly as it always
+    has.
+
+    Still ONE provider call regardless of document length: this function
+    only picks POSITIONS, evenly spaced by index, and never makes a round
+    trip itself. A document with at most ``_OVERVIEW_CHUNKS`` readable
+    chunks is short enough that "sampling" it would just be reading all of
+    it, so it is -- with no gaps, since nothing was actually skipped.
+    """
+    if len(readable) <= _OVERVIEW_CHUNKS:
+        return _join(readable), len(readable)
+
+    step = len(readable) / _OVERVIEW_CHUNKS
+    indices = sorted({int(i * step) for i in range(_OVERVIEW_CHUNKS)})
+
+    parts: list[str] = []
+    previous: int | None = None
+    for index in indices:
+        if previous is not None and index != previous + 1:
+            parts.append(_GAP_MARKER)
+        parts.append(readable[index])
+        previous = index
+    return "\n\n".join(parts), len(indices)
 
 
 def _batched(chunks: Sequence[str]) -> list[list[str]]:
