@@ -54,6 +54,16 @@ key a summary on the language it was written in, so a translation is simply
 one more row under the same document and kind. Asking for the language a
 stored summary is already in is answered by reusing its text, with no
 provider call spent proving what was already true.
+
+**``refine`` (P-45, plan §4 step 21, §3.10, optional) is a FOURTH shape: an
+alternative to ``execute``'s map-reduce for ``full`` summaries, not a
+replacement for it.** Map-reduce reads every batch in isolation and only
+combines the notes afterwards; refine reads batches in order and keeps one
+summary alive throughout, rewriting it as each new batch arrives, so a later
+part can change how an earlier one reads the way a person reading in order
+would notice that -- at the cost of a call sequence that cannot run in
+parallel the way map-reduce's independent batches can. Both are exposed
+side by side; nothing here prefers one over the other.
 """
 
 from __future__ import annotations
@@ -184,6 +194,28 @@ _TRANSLATE_SYSTEM = (
     "language. Preserve its Markdown structure, headings, figures and names "
     "exactly. Translate the prose faithfully and add or omit nothing the "
     "original does not already say."
+)
+
+# P-45 (plan §4 step 21, §3.10, optional): `refine`'s first call has no prior
+# summary to work from -- its first batch is written exactly the way
+# `execute`'s own single-batch shortcut writes one, from `_FULL_SYSTEM`
+# directly. Naming it separately (rather than reusing `_FULL_SYSTEM` inline)
+# keeps `refine`'s call sequence self-describing at the call site.
+_REFINE_FIRST_SYSTEM = _FULL_SYSTEM
+
+# `refine`'s every call AFTER the first: unlike `_MAP_SYSTEM` (which reads one
+# part in isolation and writes terse NOTES about it) this reads the RUNNING
+# summary together with the next part and rewrites the summary whole, so the
+# result at every step is already a complete, readable summary of everything
+# seen so far -- never notes awaiting a separate reduce.
+_REFINE_SYSTEM = (
+    "You are maintaining a running summary of a document as more of it "
+    "arrives, one part at a time. You will be given the summary written so "
+    "far and the next part of the document. Rewrite the summary so it "
+    "folds in the new part, in well-structured Markdown with short headings "
+    "and paragraphs, covering everything read so far in proportion, keeping "
+    "figures and names exact, and stating nothing the summary-so-far or the "
+    "new part does not support."
 )
 
 
@@ -395,6 +427,93 @@ class SummarizeDocument:
             model=summarizer.model,
             source_chunks=source.source_chunks,
             truncated=source.truncated,
+        )
+
+    async def refine(
+        self,
+        ctx: ExecutionContext,
+        *,
+        chunks: Sequence[str],
+        lang: SummaryLanguage,
+        summarizer: ResolvedSummarizer,
+        on_progress: ProgressHook = _noop_progress,
+        should_cancel: CancelHook = _never_cancel,
+    ) -> SummaryDraft:
+        """P-45 (plan §4 step 21, §3.10, **optional**): the ``refine``
+        alternative to ``execute``'s map-reduce, for ``full`` summaries only
+        -- ``overview`` has no map/reduce/refine choice to make, it is
+        already one call over a sample (``_glance_sample``), so this method
+        takes no ``kind``.
+
+        **Genuinely a different algorithm, not a reshaped map-reduce.**
+        Map-reduce reads every batch in ISOLATION (``_MAP_SYSTEM`` never sees
+        another batch's notes) and only combines them afterwards
+        (``_fold``/``_REDUCE_SYSTEM``). Refine reads batches in ORDER and
+        keeps exactly ONE artefact alive the whole time -- a complete summary
+        that already covers everything read so far -- rewriting it with each
+        new batch (``_REFINE_SYSTEM``) instead of writing notes about the
+        batch alone. There is no reduce step because there is nothing left to
+        combine: the last call's output already IS the finished summary.
+
+        **The trade this buys and the one it spends are both real.** A
+        document whose ending qualifies or reverses something its opening
+        said is read the way a person reads it -- in order, each part able to
+        change how the last part is understood -- where map-reduce's isolated
+        notes cannot express that relationship until the reduce step, if it
+        notices at all. What it spends is concurrency: map-reduce's batches
+        are independent and could run in parallel; refine's calls cannot,
+        because each one needs the last one's output. Neither is
+        strictly better, which is the whole reason this is a CHOICE
+        (P-45's own framing) and not a replacement for ``execute``.
+
+        Bounded the same way ``execute`` is: ``_MAX_MAP_CHUNKS`` caps how much
+        is read, and ``truncated`` says so on the returned draft exactly as it
+        does there.
+        """
+        readable = [text for text in chunks if text.strip()]
+        if not readable:
+            raise ValueError("this document has no indexed text to summarise")
+
+        window = readable[:_MAX_MAP_CHUNKS]
+        truncated = len(readable) > len(window)
+        batches = _batched(window)
+
+        # Cancellation is checked before EVERY batch when there is more than
+        # one, the `execute` map loop's own placement -- including the
+        # first, unlike `translate`'s single call. A document that fits in
+        # one batch skips the check entirely, the same single-batch shortcut
+        # `execute` takes for the same reason: there is nothing after it to
+        # cancel before.
+        if len(batches) > 1 and await should_cancel():
+            raise SummaryBuildCancelled
+
+        running = await self._call(
+            system=_REFINE_FIRST_SYSTEM,
+            user=_join(batches[0]),
+            lang=lang,
+            summarizer=summarizer,
+            max_tokens=_REDUCE_MAX_TOKENS,
+        )
+        done = len(batches[0])
+        await on_progress(done)
+
+        for index, batch in enumerate(batches[1:], start=2):
+            if await should_cancel():
+                raise SummaryBuildCancelled
+            running = await self._call(
+                system=_REFINE_SYSTEM,
+                user=(
+                    f"Summary so far:\n{running}\n\nPart {index} of {len(batches)}:\n{_join(batch)}"
+                ),
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_REDUCE_MAX_TOKENS,
+            )
+            done += len(batch)
+            await on_progress(done)
+
+        return SummaryDraft(
+            text=running, model=summarizer.model, source_chunks=len(window), truncated=truncated
         )
 
     async def _fold(

@@ -540,6 +540,112 @@ async def test_translate_carries_truncated_and_source_chunks_from_the_source_unc
 
 
 # --------------------------------------------------------------------------- #
+# SummarizeDocument.refine — P-45 (plan §4 step 21, §3.10, optional)           #
+# --------------------------------------------------------------------------- #
+
+
+async def _refine_draft(
+    chunks: list[str], *, llm: RecordingLLM | None = None
+) -> tuple[RecordingLLM, object]:
+    provider = llm or RecordingLLM()
+    result = await SummarizeDocument().refine(
+        _ctx(),
+        chunks=chunks,
+        lang=SummaryLanguage.AR,
+        summarizer=ResolvedSummarizer(provider=provider, model="m", api_key="k"),
+    )
+    return provider, result
+
+
+@pytest.mark.asyncio
+async def test_refine_makes_exactly_one_call_per_batch_with_no_separate_reduce() -> None:
+    """13 chunks at 6 per batch is 3 batches. Map-reduce would spend 4 calls
+    (3 map + 1 reduce, the existing test above); refine spends exactly 3 --
+    one per batch and nothing more, because the last call's own output already
+    IS the finished summary."""
+    llm, draft = await _refine_draft([f"chunk {i}" for i in range(13)])
+
+    assert len(llm.calls) == 3
+    assert draft.source_chunks == 13  # type: ignore[attr-defined]
+    assert draft.truncated is False  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_refine_feeds_each_calls_own_output_into_the_next_calls_input() -> None:
+    """Proof this reads in ORDER with one artefact alive throughout, not in
+    isolation like a map batch: the second call's prompt must contain the
+    exact text the first call answered with."""
+    llm, draft = await _refine_draft([f"chunk {i}" for i in range(13)])
+
+    first_reply = "SUMMARY-1"
+    second_system, second_user = llm.calls[1][0]
+    assert first_reply in second_user.content
+    assert "Summary so far" in second_user.content
+    assert "chunk 6" in second_user.content  # the second batch's own text
+    assert "refine" in second_system.content.lower() or "running summary" in second_system.content
+
+    # The draft is the LAST call's own reply -- there is no reduce call
+    # afterwards to read instead.
+    assert draft.text == f"SUMMARY-{len(llm.calls)}"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_refine_summarises_a_short_document_in_one_call() -> None:
+    llm, draft = await _refine_draft(["a", "b", "c"])
+
+    assert len(llm.calls) == 1
+    assert draft.truncated is False  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_refine_truncates_at_the_same_ceiling_map_reduce_does_and_says_so() -> None:
+    _, draft = await _refine_draft([f"chunk {i}" for i in range(300)])
+
+    assert draft.source_chunks == 240  # type: ignore[attr-defined]
+    assert draft.truncated is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_refine_keeps_the_language_instruction_on_the_system_message() -> None:
+    llm, _ = await _refine_draft([f"chunk {i}" for i in range(13)])
+
+    for messages, _params in llm.calls:
+        system, user = messages
+        assert system.role == "system"
+        assert "Arabic" in system.content
+        assert "Arabic" not in user.content
+
+
+@pytest.mark.asyncio
+async def test_refine_is_cancellable_between_batches() -> None:
+    llm = RecordingLLM()
+    calls: list[int] = []
+
+    async def _cancel_after_first() -> bool:
+        calls.append(1)
+        return len(calls) > 1
+
+    with pytest.raises(SummaryBuildCancelled):
+        await SummarizeDocument().refine(
+            _ctx(),
+            chunks=[f"chunk {i}" for i in range(13)],
+            lang=SummaryLanguage.AUTO,
+            summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
+            should_cancel=_cancel_after_first,
+        )
+
+    # The check runs BEFORE the first batch too (there is more than one
+    # batch here), so the first call is paid for and the second never starts.
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_refine_with_no_readable_text_is_refused_with_a_readable_reason() -> None:
+    with pytest.raises(ValueError, match="no indexed text"):
+        await _refine_draft(["", "   "])
+
+
+# --------------------------------------------------------------------------- #
 # RequestSummary / GetSummary / DeleteSummary / CancelSummaryJob               #
 # --------------------------------------------------------------------------- #
 
