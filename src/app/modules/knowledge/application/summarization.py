@@ -44,6 +44,16 @@ call the platform makes.
 **Cancellation is checked between batches**, which is the only place it can
 be: an LLM round trip in flight cannot be recalled, and pretending otherwise
 would mean reporting a stop that had not happened. See ``SummaryJob.cancel``.
+
+**``translate`` (P-44, plan §4 step 20, §3.10) is a THIRD shape beside
+``execute``'s two kinds, and a cheaper one.** It reads no chunk at all — its
+input is an already-built ``Summary`` row, and its output is the same text in
+another ``lang``. No migration was needed to carry a translation: ``lang``
+and ``UNIQUE(document_id, kind, lang)`` (``knowledge.summaries``) already
+key a summary on the language it was written in, so a translation is simply
+one more row under the same document and kind. Asking for the language a
+stored summary is already in is answered by reusing its text, with no
+provider call spent proving what was already true.
 """
 
 from __future__ import annotations
@@ -53,6 +63,7 @@ from dataclasses import dataclass
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
+from app.modules.knowledge.domain.entities import Summary
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
 
@@ -160,6 +171,19 @@ _FULL_SYSTEM = (
     "short headings and paragraphs, covering the whole text in proportion, "
     "keeping figures and names exact, and stating nothing the text does not "
     "support."
+)
+
+# P-44 (plan §4 step 20, §3.10): unlike every system prompt above, this one is
+# not asked to READ source material and produce notes or prose from it -- the
+# "document" it is handed is an already-finished summary, and its only job is
+# to carry that text into another language without changing what it says.
+# Asking it to "summarise" again (`_FULL_SYSTEM`'s wording) would invite a
+# second round of compression on text that was already compressed once.
+_TRANSLATE_SYSTEM = (
+    "You are translating an already-written document summary into another "
+    "language. Preserve its Markdown structure, headings, figures and names "
+    "exactly. Translate the prose faithfully and add or omit nothing the "
+    "original does not already say."
 )
 
 
@@ -315,6 +339,62 @@ class SummarizeDocument:
         text = await self._fold(notes, lang=lang, summarizer=summarizer)
         return SummaryDraft(
             text=text, model=summarizer.model, source_chunks=len(window), truncated=truncated
+        )
+
+    async def translate(
+        self,
+        ctx: ExecutionContext,
+        *,
+        source: Summary,
+        lang: SummaryLanguage,
+        summarizer: ResolvedSummarizer,
+    ) -> SummaryDraft:
+        """P-44 (plan §4 step 20, §3.10): turn an already-built ``Summary``
+        into the SAME text in another language, by reading the STORED row
+        rather than the chunks it was originally built from.
+
+        This is the reason a translation is cheap where a build is not: it
+        spends at most one round trip over a few kilobytes of already-reduced
+        Markdown, never a second map-reduce over the whole document's chunks.
+        ``source`` is read by the caller (``BuildSummary``'s own claim step,
+        the ``DocumentRepository.chunk_texts`` precedent) — this method never
+        touches a repository, the same statelessness ``execute`` keeps.
+
+        **``source.lang == lang`` is reused verbatim, with NO provider
+        call.** The stored text already IS what was asked for, so spending a
+        translation on a no-op would pay for a byte-identical result — the
+        same reasoning ``_a_short_full_summary_skips_the_reduce_round_trip``
+        applies to a redundant reduce, applied here to a redundant call.
+
+        ``source_chunks``/``truncated`` are carried over UNCHANGED in both
+        branches, never recomputed: a translation reads no chunk of its own,
+        so the only honest values are the ones the summary being translated
+        already carries. A translated summary of a truncated source is still
+        a summary of a truncated source, in every language it is ever asked
+        for.
+        """
+        del ctx  # see `execute`'s own docstring for why this stays in the signature
+
+        if source.lang is lang:
+            return SummaryDraft(
+                text=source.text,
+                model=source.model,
+                source_chunks=source.source_chunks,
+                truncated=source.truncated,
+            )
+
+        text = await self._call(
+            system=_TRANSLATE_SYSTEM,
+            user=source.text,
+            lang=lang,
+            summarizer=summarizer,
+            max_tokens=_REDUCE_MAX_TOKENS,
+        )
+        return SummaryDraft(
+            text=text,
+            model=summarizer.model,
+            source_chunks=source.source_chunks,
+            truncated=source.truncated,
         )
 
     async def _fold(

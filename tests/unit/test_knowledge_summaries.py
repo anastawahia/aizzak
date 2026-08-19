@@ -29,7 +29,7 @@ says that where a strict mock only says "something was called".
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 import pytest
@@ -447,6 +447,96 @@ async def test_cancellation_is_observed_between_batches_and_stops_the_build() ->
     # Exactly one map call was paid for: the check runs BEFORE each batch, so
     # the second batch never starts.
     assert len(llm.calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# SummarizeDocument.translate — P-44 (plan §4 step 20, §3.10)                  #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_translate_reuses_the_text_with_no_call_when_the_language_already_matches() -> None:
+    """Asking for the language a stored summary is already in must not spend
+    a round trip proving what was already true."""
+    llm = RecordingLLM()
+    source = _summary(text="already in the requested language")
+
+    draft = await SummarizeDocument().translate(
+        _ctx(),
+        source=source,
+        lang=source.lang,
+        summarizer=ResolvedSummarizer(provider=llm, model="new-model", api_key="k"),
+    )
+
+    assert llm.calls == []
+    assert draft.text == source.text
+    # The model that actually produced this text is still the ORIGINAL one --
+    # nothing new was written, so nothing new gets credited.
+    assert draft.model == source.model
+    assert draft.source_chunks == source.source_chunks
+    assert draft.truncated == source.truncated
+
+
+@pytest.mark.asyncio
+async def test_translate_calls_the_provider_once_when_the_language_differs() -> None:
+    llm = RecordingLLM()
+    source = _summary(text="النص الأصلي")
+
+    draft = await SummarizeDocument().translate(
+        _ctx(),
+        source=source,
+        lang=SummaryLanguage.EN,
+        summarizer=ResolvedSummarizer(provider=llm, model="translator-model", api_key="k"),
+    )
+
+    assert len(llm.calls) == 1
+    # The summary text itself is what gets translated, not chunks -- the
+    # whole reason this is cheap.
+    assert llm.calls[0][0][1].content == source.text
+    assert draft.text == "SUMMARY-1"
+    # A real translation call happened, so the model that produced THIS text
+    # is the one that answered it -- not the source's original model.
+    assert draft.model == "translator-model"
+
+
+@pytest.mark.asyncio
+async def test_translate_keeps_the_language_instruction_on_the_system_message() -> None:
+    """The `_call` mechanism §3.10's ``ما لا يُمسّ`` protects is reused as-is:
+    the instruction rides on the system message, never the user one, which
+    here is a PREVIOUS summary's own text rather than raw document text."""
+    llm = RecordingLLM()
+    source = _summary(text="some text")
+
+    await SummarizeDocument().translate(
+        _ctx(),
+        source=source,
+        lang=SummaryLanguage.AR,
+        summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
+    )
+
+    system, user = llm.calls[0][0]
+    assert system.role == "system"
+    assert "Arabic" in system.content
+    assert "Arabic" not in user.content
+
+
+@pytest.mark.asyncio
+async def test_translate_carries_truncated_and_source_chunks_from_the_source_unchanged() -> None:
+    """A translated summary of a truncated source is still a summary of a
+    truncated source -- truncation honesty survives translation."""
+    llm = RecordingLLM()
+    source = _summary(text="prefix only")
+    source = replace(source, truncated=True, source_chunks=240)
+
+    draft = await SummarizeDocument().translate(
+        _ctx(),
+        source=source,
+        lang=SummaryLanguage.EN,
+        summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
+    )
+
+    assert draft.truncated is True
+    assert draft.source_chunks == 240
 
 
 # --------------------------------------------------------------------------- #
