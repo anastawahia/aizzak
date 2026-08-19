@@ -13,7 +13,7 @@
 | **النطاق** | المراحل **١ · ٢ · ٣ · ٦**: مسح الملفّات وفتحها · المحلّلات · بناء العقد والتضمين · التلخيص |
 | **خارج النطاق** | المرحلتان **٤ · ٥** (النيّة · الاسترجاع · الفلترة والإجابة) و`P-04` — كلّها في [`rag-retrieval-plan.md`](rag-retrieval-plan.md) |
 | **البنود** | **٢٣ بندًا** من ‎`P-01`..`P-45`‎ (‏`P-12` مُسقَط بالقرار س-12) |
-| **الحالة** | 🟨 **5/21** — الخطوات ١ · ٢ · ٣ · ٤ · ٥ ✅ · **المجموعة أ مكتملة** |
+| **الحالة** | 🟨 **16/21** — الخطوات ١ · ٢ · ٣ · ٤ · ٥ ✅ · **المجموعة أ مكتملة** · ٦ · ٧ · ٨ · ٩ · ١٠ · ١١ · ١٢ · ١٣ ✅ · **المجموعة ب مكتملة** · ١٤ · ١٥ · ١٦ ✅ · **المجموعة ج مكتملة** |
 
 ---
 
@@ -252,18 +252,18 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 | ٤ | محلّل DOCX: فقرات + جداول + عناوين بأنماط Word أوّلًا ثمّ الكلمات المفتاحية · `paragraph_number` · `position_in_doc` · `title` | `P-08` | `adapters/parsers/docx.py` جديد (‏`iter_inner_content` تسلسلًا واحدًا · سُلَّم `_is_title` · فُتات العنوان للجداول · سقف `2000`) · `extractor.py` (‏`_route_docx` · `classify_docx` · `_ROUTES` و`_PARSER_NAMES` · شطب `.docx` من المؤجَّل) · `text_plain.py` (‏`split_long_text` صار عامًّا) · `Settings.allowed_mime` (‏نوع DOCX أُعيد — المحلّل بلا هذا السطر لا يبلغه ملفّ) | ✅ |
 | ٥ | OCR الصور المضمَّنة: PDF/DOCX/XLSX · دمج بالصفحة · dedup بـ`sha1` · فلتر الحجم · السقوف · `clean_ocr_text` · `create_page_summary` · النصّ البديل | `P-09` `P-11` | `adapters/parsers/image_ocr.py` (‏`parse_pdf_images` و`parse_office_images` فوق محرّك مجموعات واحد · رتبة `page*1000+999` للـPDF وثابت للأرشيف · `OcrResult` بعلم بتر) · `Limits` (‏`ocr_min_image_px` · `ocr_max_images_per_document` · `ocr_max_images_per_page`) · `extractor.py` (‏المسارات صارت تستقبل `Limits` · `image_count` و`ocr_truncated` · `pdf_images`/`excel_images`) · `docx.py` (‏`classify_docx` صار يعرف `image_count`) · `workers/bootstrap.py` (‏تمرير `settings.limits` — بدونه الإعداد ميّت) | ✅ |
 | **ب — بناء العقد والتخزين** (تغيّر ما يُخزَّن ⇒ §5 بعدها) ||||
-| ٦ | ترحيل `knowledge.parent_chunks` + `chunks.parent_id` — RLS · `ON DELETE CASCADE` · مستودع | `P-14` | `migrations` · `adapters/sql_repository.py` · `ports/repository.py` | ⬜ |
-| ٧ | `domain/tables.py`: تفجير الصفوف · `row_to_sentence` · `_NOISE_HEADERS` · `TABLE_PARENT_MAX_ROWS=20` · سقف `2000` بإعلان بتر | `P-13` | `domain/tables.py` جديد · `application/indexing.py` | ⬜ |
-| ٨ | فلترة العقد: الفارغ · الأقصر من `MIN_NODE_CHARS=15` · **والمكرَّر** بتجزئة النصّ | `P-15` | `domain/chunking.py` | ⬜ |
-| ٩ | `embedding_max_input_tokens` في `Settings` + انقسام الطول بتداخل ١٠٪ | `P-16` | `Settings` · `domain/chunking.py` | ⬜ |
-| ١٠ | مفتاح ترتيب متعدّد الإشارات: `page_number → position_in_doc → paragraph_number → chunk_index → الموضع → جزء الانقسام`، يُختَم **بعد** انقسام الطول | `P-17` | `domain/chunking.py` | ⬜ |
-| ١١ | `file_name` + `page_number` + `section` في `_CITATION_KEYS` | `P-18` | `application/indexing.py` | ⬜ |
-| ١٢ | عزل فشل المستند الواحد: جرّب الدفعة ← اسقط إلى مستند-بمستند | `P-19` | `application/indexing.py` | ⬜ |
-| ١٣ | التقسيم الدلالي: `semantic_boundaries` نقيّة في الدومين + نداء المُضمِّن في التطبيق (§3.4) | `P-20` | `domain/chunking.py` · `application/indexing.py` | ⬜ |
+| ٦ | ترحيل `knowledge.parent_chunks` + `chunks.parent_id` — RLS · `ON DELETE CASCADE` · مستودع | `P-14` | `migrations` · `adapters/sql_repository.py` · `ports/repository.py` | ✅ |
+| ٧ | `domain/tables.py`: تفجير الصفوف · `row_to_sentence` · `_NOISE_HEADERS` · `TABLE_PARENT_MAX_ROWS=20` · سقف `2000` بإعلان بتر | `P-13` | `domain/tables.py` جديد · `application/indexing.py` (‏`ParentChunkDraft` · `IndexedChunk.parent_key` · `IndexOutcome.parents`) · `application/use_cases.py` (‏`finalize` يسكّ `ParentChunk.id` بـ`UUIDv7` ويستدعي `add_parent_chunks` **قبل** `add_chunks` ليحلّ كلّ `Chunk.parent_id`) | ✅ |
+| ٨ | فلترة العقد: الفارغ · الأقصر من `MIN_NODE_CHARS=15` · **والمكرَّر** بتجزئة النصّ | `P-15` | `domain/chunking.py` | ✅ |
+| ٩ | `embedding_max_input_tokens` في `Settings` + انقسام الطول بتداخل ١٠٪ | `P-16` | `Settings` · `domain/chunking.py` | ✅ |
+| ١٠ | مفتاح ترتيب متعدّد الإشارات: `page_number → position_in_doc → paragraph_number → chunk_index → الموضع → جزء الانقسام`، يُختَم **بعد** انقسام الطول — **تُغلَق بها الخطوة ٢** (`ParsedChunk.order` رتبة بلوك) | `P-17` | `domain/chunking.py` | ✅ |
+| ١١ | `file_name` + `page_number` + `section` في `_CITATION_KEYS` | `P-18` | `application/indexing.py` | ✅ |
+| ١٢ | عزل فشل المستند الواحد: جرّب الدفعة ← اسقط إلى مستند-بمستند | `P-19` | `application/indexing.py` | ✅ |
+| ١٣ | التقسيم الدلالي: `semantic_boundaries` نقيّة في الدومين + نداء المُضمِّن في التطبيق (§3.4) | `P-20` | `domain/chunking.py` · `application/indexing.py` | ✅ |
 | **ج — الحراسة** (بعد أ و ب — انظر §6 خطر ٤) ||||
-| ١٤ | حارس قنابل zip: مجموع المفكوك · نسبة الضغط · رفض غير-zip متنكّر (`BadZipFile`) + مهلة `asyncio.wait_for` ⇒ `status='failed'` برسالة صريحة | `P-01` `P-02` | `adapters/parsers/extractor.py` · `Settings` · العامل | ⬜ |
-| ١٥ | `content_hash` + `pipeline_version` (§3.6) + تخطٍّ في `IndexFile` + إبطال `summaries` | `P-03` | `migrations` · `application/indexing.py` · `domain/` | ⬜ |
-| ١٦ | أعمدة الإحصاءات `text_chunks` · `table_chunks` · `image_chunks` + مخرَج `IndexRegisteredDocument` | `P-05` | `migrations` · `application/indexing.py` | ⬜ |
+| ١٤ | حارس قنابل zip: مجموع المفكوك · نسبة الضغط · رفض غير-zip متنكّر (`BadZipFile`) + مهلة `asyncio.wait_for` ⇒ `status='failed'` برسالة صريحة | `P-01` `P-02` | `adapters/parsers/extractor.py` · `Settings` · العامل | ✅ |
+| ١٥ | `content_hash` + `pipeline_version` (§3.6) + تخطٍّ في `IndexFile` + إبطال `summaries` | `P-03` | `migrations` · `application/indexing.py` · `domain/` | ✅ |
+| ١٦ | أعمدة الإحصاءات `text_chunks` · `table_chunks` · `image_chunks` + مخرَج `IndexRegisteredDocument` | `P-05` | `migrations` · `application/indexing.py` | ✅ |
 | **د — التلخيص** ||||
 | ١٧ | الطيّ التعاودي بسقف `_MAX_FOLD_DEPTH=3` | `P-41` | `application/summarization.py` | ⬜ |
 | ١٨ | التلخيص من قطع الأب مع السقوط إلى الورقة بلا dedup | `P-42` | `application/summarization.py` | ⬜ |
@@ -271,7 +271,7 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 | ٢٠ | الترجمة عبر مزوّد LLM في خانات `lang` القائمة + إعادة استخدام النصّ إن طابقت لغته | `P-44` | `application/summarization.py` | ⬜ |
 | ٢١ | `refine` استراتيجية بديلة — **اختياريّة** | `P-45` | `application/summarization.py` | ⬜ |
 
-**الترتيب المُلزِم — ستّة قيود فقط:** ١ قبل ٣ · ٢ قبل ٣ · ٢ لا تُغلَق قبل ١٠ (‏`ParsedChunk.order` يصير رتبة بلوك) · ٦ قبل ٧ (الأب يسبق من يشير إليه) · ٦ قبل ١٨ · **١٥ بعد كلّ خطوات أ و ب** (§6 خطر ٤). ما عدا ذلك قابل لإعادة الترتيب.
+**الترتيب المُلزِم — ستّة قيود فقط:** ١ قبل ٣ · ٢ قبل ٣ · ~~٢ لا تُغلَق قبل ١٠~~ **الخطوة ١٠ أُنجزت فأُغلقت الخطوة ٢ معها** (‏`ParsedChunk.order` يصير رتبة بلوك، ومفتاح الخطوة ١٠ يحكم ترتيبها) · ٦ قبل ٧ (الأب يسبق من يشير إليه) · ٦ قبل ١٨ · **١٥ بعد كلّ خطوات أ و ب** (§6 خطر ٤). ما عدا ذلك قابل لإعادة الترتيب.
 
 ---
 
@@ -304,7 +304,7 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 | ٥ | نشر جزئيّ لمجموعة ب ⇒ نقاط لا تطابق شيئًا بصمت | §5 إلزاميّة، وتُجمَّع مرّة واحدة بعد ب |
 | ٦ | تفجير الصفوف يغرق مساحة العمل | سقف `2000` صفًّا لكلّ جدول + إعلان بتر (§3.3) |
 | ٧ | التقسيم الدلالي يضاعف كلفة الفهرسة | مُعلَن ومقبول (س-06). التخفيف: المقاطع الجدولية تتخطّاه، وهي أكثر المقاطع عددًا في ملفّات البيانات |
-| ٨ | ‏`ParsedChunk.order` يتغيّر معناه للـ PDF فينهار الترتيب | الخطوة ٢ لا تُغلَق قبل الخطوة ١٠ — قيد مُلزِم في §4 |
+| ٨ | ~~‏`ParsedChunk.order` يتغيّر معناه للـ PDF فينهار الترتيب~~ **أُغلق في الخطوة ١٠** | مفتاح `domain/chunking.py::_order_key` (`P-17`) يُشرّح `order` بأربعة أعمدة ميتاداتا إضافية (`page_number → position_in_doc → paragraph_number → chunk_index`) قبل الرجوع إليه، فتعادل جدولٍ وبلوكٍ على رتبة واحدة يُحسَم بإشارة حقيقية (‏`position_in_doc`) لا بترتيب المرحلتين وحده — انظر §4 خطوة ١٠ والتحذير الموثَّق داخل `chunking.py` عن عدم تجانس مقياس `position_in_doc` بين منتِجَي PDF |
 
 ---
 
@@ -317,7 +317,8 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 - **حقن الميتاداتا في نصّ العقدة** — يلوّث التضمين و IDF معًا؛ تسميات المصدر تُضاف **عند العرض** (خطّة الاسترجاع) لا عند الفهرسة.
 - **أمر إعادة فهرسة تشغيليّ** فوق `knowledge.reindex_jobs` — أسقطه القرار س-03 = أ. ⚠️ يعود شرطًا لازمًا لحظة وجود بيانات حقيقية (§5).
 - **حمل إحداثيات البلوك تحت اسم `bbox`** — الخطوة ٢ تُصدرها باسم `block_bbox` عمدًا: `pdf_tables.py` يُصدر `bbox` في فضاء camelot (أصل أسفل-يسار) بينما البلوك في فضاء fitz (أصل أعلى-يسار)، والخطوة ٣ تضع النوعين في مستند واحد. توحيدهما — إن لزم — قرار عرضٍ لاحق.
-- **ترتيب جدولٍ وبلوكٍ داخل الصفحة الواحدة** — المحوران متطابقان (‏`page*1000 + index`)، فيتعادل جدولٌ برتبة ‎n‎ مع البلوك ‎n‎ على الصفحة نفسها، ويحسم التعادلَ ترتيبُ المرحلتين (الجداول أوّلًا) لا الهندسة. الترتيب الهندسيّ داخل الصفحة من شأن مفتاح الخطوة ١٠ (`P-17`) — والفرز في `chunking.py` مستقرّ فلا يضيع شيء.
+- ~~ترتيب جدولٍ وبلوكٍ داخل الصفحة الواحدة~~ **حُسم في الخطوة ١٠:** مفتاح `_order_key` يحسم التعادل بإشارة `position_in_doc` الحقيقية (البلوك يحملها، الجدول لا) بدل ترتيب المرحلتين وحده — والبلوك الآن يسبق الجدول المتعادل معه رتبةً، عكس سلوك ما قبل الخطوة ١٠. ⚠️ **محدودية موثَّقة داخل `chunking.py` نفسها:** `position_in_doc` ليس مقياسًا واحدًا عبر كلّ منتِج PDF — `pdf_text.py`/`docx.py` عدّاد وثيقة-كامل تصاعديّ، بينما `image_ocr.py::_pdf_groups` يضع فيه `page_index` (رقم الصفحة) فقط؛ فمجموعة OCR لصفحة تسبق جدول تلك الصفحة دائمًا (تحمل الإشارة والجدول لا)، وقد تسبق بلوكات تلك الصفحة أيضًا في مستند طويل — عكس مقصد `_PAGE_OCR_ORDER_INDEX=999` القديم (الصور آخرًا). إصلاحه يستلزم تعديل `image_ocr.py` — خارج نطاق الخطوة ١٠ (‏`domain/chunking.py` فقط).
+- **`position_in_doc` ليس على مقياس واحد عبر كلّ منتِج** — `pdf_text.py` و`docx.py` يختمانه عدّاد وثيقة-كامل تصاعديّ، بينما `image_ocr.py::_pdf_groups` يضع فيه `page_index` (رقم صفحة فقط). تحت مفتاح ترتيب الخطوة ١٠ بقاعدة NULLS-LAST، هذا يجعل مجموعة صور-OCR لصفحة PDF **تسبق** جدول تلك الصفحة نفسها، وغالبًا تسبق حتّى بلوكات نصّ تلك الصفحة — عكس مقصد `_PAGE_OCR_ORDER_INDEX = 999` (الصور آخرًا). الإصلاح مكانه `image_ocr.py` (ملفّ من المجموعة أ، مُقفَل ✅ بالفعل) لا `domain/chunking.py`. السلوك الحاليّ مثبَّت باختبار `test_ordering_key_a_pdf_page_images_group_outranks_that_pages_table`.
 - **قاعدة «صفحة الجدول» تُسقط بقايا الصفحة** — منقولة من alpha (‏`MIN_BLOCK_CHARS * 2`) وتعمل **فقط** على صفحة تُجُنِّبت فيها مناطق جداول. على مستند تكون فيه بقايا الخلايا نصًّا مقصودًا، هذه هي المعايرة التي تُراجَع أوّلًا.
 - **مفردات العناوين الإنجليزية وحدها** (‏`_HEADING_KEYWORDS`) — القرار س-09 = أ يجعل نمط Word هو الإشارة الأولى، وهي محايدة لغويًّا، ويُبقي الكلمات المفتاحية سقوطًا كما في alpha. **الأثر المعلَن:** مستند عربيّ كُتب بلا أنماط لا يُكشَف فيه أيّ عنوان (‏`_is_title` يردّ أيضًا كلّ سطر ينتهي بنقطة). المفردات العربية كانت الخيار (ب) ولم يُؤخَذ — وهي أوّل ما يُراجَع إن ظهر محتوى غير مُنسَّق.
 - **صدارة `[Page Context: …]` إنجليزية داخل نصّ العقدة** — `create_page_summary` منقول بحكم ح‑٤ و§3.8، لكنه يصطدم بقاعدة §7 نفسها («حقن الميتاداتا في نصّ العقدة»). التخفيف المُطبَّق: الصدارة تُضاف **فقط** لمجموعة فيها صورة بلا نصّ، فالصفحة النظيفة لا تُحشى بها أبدًا، والملخّص مُكرَّر في `page_summary` بالحمولة ليأخذه العرض بدل النصّ. **وهي أوّل ما يُنقَل إلى الحمولة وحدها إن ظهر أثره في الاسترجاع.**
