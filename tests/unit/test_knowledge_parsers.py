@@ -17,6 +17,7 @@ import pytesseract
 import pytest
 from docx import Document as WordDocument
 from docx.document import Document as WordDocumentObject
+from openpyxl.drawing.image import Image as WorksheetImage
 from PIL import Image
 
 from app.framework.errors import UnsupportedTypeError, ValidationError
@@ -988,6 +989,289 @@ def test_parse_image_degrades_gracefully_on_corrupt_bytes() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# image_ocr — embedded images: grouping, dedup, caps, placeholders (step 5)   #
+# --------------------------------------------------------------------------- #
+_OCR_TEXT = "TOTAL REVENUE FOR 2026 IS 1,240,000 RIYAL"
+
+
+def _png(width: int, height: int, *, tint: int = 255) -> bytes:
+    """A distinct-per-`tint` PNG: two calls with different tints are different
+    bytes, which is what the SHA-1 dedup tests need to control."""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color=(tint, tint, tint)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _stub_ocr(
+    monkeypatch: pytest.MonkeyPatch, *, readable: Callable[[Image.Image], bool] | None = None
+) -> None:
+    """Replace the tesseract call. The binary may be installed without the
+    Arabic language data, so no test here may depend on what it would return —
+    only on what this module does with the result."""
+    decides = readable if readable is not None else (lambda img: True)
+    monkeypatch.setattr(image_ocr, "run_ocr", lambda img: _OCR_TEXT if decides(img) else "")
+
+
+def _image_pdf(pages: list[list[bytes]]) -> bytes:
+    doc = fitz.open()
+    for images in pages:
+        page = doc.new_page()
+        top = 50.0
+        for blob in images:
+            page.insert_image(fitz.Rect(50, top, 250, top + 120), stream=blob)
+            top += 130
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def _image_docx(images: list[bytes]) -> bytes:
+    return _docx_bytes(
+        lambda document: [document.add_picture(io.BytesIO(blob)) for blob in images] and None
+    )
+
+
+def _image_xlsx(images: list[bytes]) -> bytes:
+    def build(workbook: openpyxl.Workbook) -> None:
+        sheet = workbook.active
+        assert sheet is not None
+        for index, blob in enumerate(images):
+            sheet.add_image(WorksheetImage(io.BytesIO(blob)), f"B{2 + index * 20}")
+
+    return _workbook_bytes(build)
+
+
+def test_clean_ocr_text_collapses_the_noise_a_scanner_adds() -> None:
+    raw = "Title\n\n\n\nBody   with    gaps\n______________\nEnd  "
+
+    assert image_ocr.clean_ocr_text(raw) == "Title\n\nBody with gaps\n\nEnd"
+
+
+def test_clean_ocr_text_of_nothing_is_nothing() -> None:
+    assert image_ocr.clean_ocr_text("") == ""
+
+
+def test_create_page_summary_counts_both_kinds_of_image() -> None:
+    images = [{"has_meaningful_text": True}, {"has_meaningful_text": False}]
+
+    summary = image_ocr.create_page_summary(images)
+
+    assert summary == (
+        "This page contains 1 image(s) with extracted text. 1 diagram(s)/chart(s) without text."
+    )
+
+
+def test_create_page_summary_is_empty_without_images() -> None:
+    assert image_ocr.create_page_summary([]) == ""
+
+
+def test_pdf_images_merge_into_one_chunk_per_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page's images are one figure more often than they are several, so the
+    group — not the image — is the chunk. The order is the page-strided axis
+    the other two PDF passes emit on, with 999 as the page's last slot."""
+    _stub_ocr(monkeypatch)
+    data = _image_pdf(
+        [[_png(400, 400, tint=10), _png(400, 400, tint=20)], [_png(400, 400, tint=30)]]
+    )
+
+    result = image_ocr.parse_pdf_images(data)
+
+    assert result.image_count == 3
+    assert result.truncated is False
+    assert [chunk.order for chunk in result.chunks] == [999, 1999]
+    assert [chunk.kind for chunk in result.chunks] == [ParsedChunkKind.OCR] * 2
+    first = result.chunks[0]
+    assert first.metadata["page_number"] == 1
+    assert first.metadata["image_count"] == 2
+    assert first.metadata["section_type"] == "page_merged_images"
+    assert first.text == f"{_OCR_TEXT}\n\n{_OCR_TEXT}"
+
+
+def test_an_image_below_the_size_filter_is_never_ocred(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ocr_min_image_px` is the icon/logo guard (§3.8) — and it runs before
+    OCR, so a rejected image costs a header read, not a tesseract call."""
+    calls: list[int] = []
+    monkeypatch.setattr(image_ocr, "run_ocr", lambda img: calls.append(img.width) or _OCR_TEXT)
+    data = _image_pdf([[_png(150, 150)]])
+
+    result = image_ocr.parse_pdf_images(data)
+
+    assert result.chunks == ()
+    assert result.image_count == 0
+    assert calls == []
+
+
+def test_a_logo_repeated_on_every_page_is_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deduplication is document-wide, not per page — alpha's `seen_hashes`."""
+    _stub_ocr(monkeypatch)
+    logo = _png(400, 400, tint=77)
+
+    result = image_ocr.parse_pdf_images(_image_pdf([[logo], [logo], [logo]]))
+
+    assert result.image_count == 1
+    assert len(result.chunks) == 1
+    assert result.chunks[0].metadata["page_number"] == 1
+
+
+def test_sha1_dedup_spans_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same bytes arriving in a LATER group are dropped there too, which is
+    what makes the guarantee above document-wide rather than page-local."""
+    _stub_ocr(monkeypatch)
+    blob = _png(400, 400)
+    groups = [
+        image_ocr._Group(
+            order=index,
+            metadata={"page_number": index + 1},
+            images=iter([image_ocr._RawImage(data=blob, metadata={})]),
+        )
+        for index in range(2)
+    ]
+
+    result = image_ocr._ocr_groups(groups, caps=image_ocr._caps(None))
+
+    assert result.image_count == 1
+    assert [chunk.metadata["page_number"] for chunk in result.chunks] == [1]
+
+
+def test_a_textless_image_contributes_its_placeholder_and_a_page_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`P-11`'s placeholder is the LIVE branch here (alpha's is dead code under
+    its own default): the merged text says where the figure sits, and the
+    `[Page Context: ...]` prefix says what the page turned out to be."""
+    _stub_ocr(monkeypatch, readable=lambda img: img.width >= 600)
+    data = _image_pdf([[_png(700, 400, tint=10), _png(300, 300, tint=20)]])
+
+    chunk = image_ocr.parse_pdf_images(data).chunks[0]
+
+    assert chunk.text == (
+        "[Page Context: This page contains 1 image(s) with extracted text. "
+        "1 diagram(s)/chart(s) without text.]\n\n"
+        f"{_OCR_TEXT}\n\n[Diagram/Chart 300x300px]"
+    )
+    assert chunk.metadata["images_with_text"] == 1
+    assert chunk.metadata["images_without_text"] == 1
+
+
+def test_a_page_whose_images_all_read_gets_no_page_context_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alpha adds the prefix only when something was lost on THIS page; a clean
+    page is never padded with boilerplate."""
+    _stub_ocr(monkeypatch)
+
+    chunk = image_ocr.parse_pdf_images(_image_pdf([[_png(400, 400)]])).chunks[0]
+
+    assert chunk.text == _OCR_TEXT
+    assert chunk.metadata["images_without_text"] == 0
+
+
+def test_the_per_page_cap_stops_one_page_eating_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ocr(monkeypatch)
+    data = _image_pdf([[_png(400, 400, tint=t) for t in (10, 20, 30)], [_png(400, 400, tint=40)]])
+
+    result = image_ocr.parse_pdf_images(data, limits=Limits(ocr_max_images_per_page=1))
+
+    assert result.image_count == 2  # one per page, not three on the first
+    assert result.truncated is True
+    assert [chunk.metadata["page_number"] for chunk in result.chunks] == [1, 2]
+
+
+def test_the_per_document_cap_truncates_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cap is a cost decision, not a defect (§3.8): the pass stops and
+    DECLARES it rather than failing the document."""
+    _stub_ocr(monkeypatch)
+    data = _image_pdf([[_png(400, 400, tint=10)], [_png(400, 400, tint=20)]])
+
+    result = image_ocr.parse_pdf_images(data, limits=Limits(ocr_max_images_per_document=1))
+
+    assert result.image_count == 1
+    assert result.truncated is True
+    assert len(result.chunks) == 1
+
+
+def test_docx_media_becomes_one_chunk_after_every_positioned_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`word/media/` says nothing about where a picture sits, so the archive's
+    whole media set is one group at a sort-last order."""
+    _stub_ocr(monkeypatch)
+
+    result = image_ocr.parse_office_images(
+        _image_docx([_png(400, 400, tint=10), _png(400, 400, tint=20)]),
+        media=image_ocr.OfficeMedia.DOCX,
+    )
+
+    assert len(result.chunks) == 1
+    chunk = result.chunks[0]
+    assert chunk.order == image_ocr._MEDIA_ORDER
+    assert chunk.kind is ParsedChunkKind.OCR
+    assert chunk.metadata["section_type"] == "embedded_images"
+    assert chunk.metadata["chunk_type"] == "docx_media_images"
+    assert chunk.metadata["image_count"] == 2
+    assert all(
+        record["media_name"].startswith("word/media/") for record in chunk.metadata["images"]
+    )
+
+
+def test_xlsx_media_is_read_from_its_own_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_ocr(monkeypatch)
+
+    result = image_ocr.parse_office_images(
+        _image_xlsx([_png(400, 400)]), media=image_ocr.OfficeMedia.XLSX
+    )
+
+    chunk = result.chunks[0]
+    assert chunk.metadata["chunk_type"] == "xlsx_media_images"
+    assert chunk.metadata["images"][0]["media_name"].startswith("xl/media/")
+
+
+def test_a_docx_without_pictures_yields_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_ocr(monkeypatch)
+    data = _docx_bytes(lambda document: document.add_paragraph("prose only"))
+
+    assert image_ocr.parse_office_images(data, media=image_ocr.OfficeMedia.DOCX).chunks == ()
+
+
+def test_office_images_degrades_on_bytes_that_are_not_an_archive() -> None:
+    result = image_ocr.parse_office_images(b"not a zip", media=image_ocr.OfficeMedia.DOCX)
+
+    assert result == image_ocr.OcrResult(chunks=(), image_count=0, truncated=False)
+
+
+def test_pdf_images_degrades_on_corrupt_bytes() -> None:
+    """Losing a document's figures must never cost it the prose the other two
+    passes already produced."""
+    assert image_ocr.parse_pdf_images(b"%PDF-1.4 broken").chunks == ()
+
+
+def test_parse_image_applies_neither_the_size_filter_nor_the_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standalone image IS the document (divergence 2): a small upload is a
+    deliberate act, and a placeholder as the whole document text is noise."""
+    _stub_ocr(monkeypatch)
+    small = _png(150, 150)
+
+    assert image_ocr.parse_image(small)[0].text == _OCR_TEXT
+
+    monkeypatch.setattr(image_ocr, "run_ocr", lambda img: "")
+    assert image_ocr.parse_image(small) == []
+
+
+def test_the_ocr_caps_come_from_settings_with_the_values_the_plan_chose() -> None:
+    """§3.8's three numbers, chosen and written down — alpha reads eleven such
+    knobs from the environment and documents none of them."""
+    limits = Limits()
+
+    assert (limits.ocr_min_image_px, limits.ocr_max_images_per_document) == (200, 40)
+    assert limits.ocr_max_images_per_page == 8
+    assert image_ocr._caps(None) == image_ocr._caps(limits)
+
+
+# --------------------------------------------------------------------------- #
 # extractor — dispatch, unsupported type, empty guard, end-to-end assembly    #
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
@@ -1180,3 +1464,83 @@ def test_content_extractor_protocol_conformance() -> None:
     # exercised here at runtime.
     extractor: ContentExtractor = DocumentContentExtractor()
     assert extractor.supports(content_type="application/pdf", filename="a.pdf") is True
+
+
+def test_extractor_reports_the_ocr_pass_on_a_docx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The image pass joins the DOCX route's own chunks, and its two facts —
+    how many images were read, and whether a cap cut it short — are reported
+    in-band like every other route's counters."""
+    _stub_ocr(monkeypatch)
+
+    def build(document: WordDocumentObject) -> None:
+        document.add_paragraph("Employees must clock in before 08:00.")
+        document.add_picture(io.BytesIO(_png(400, 400)))
+
+    parsed = DocumentContentExtractor().extract(
+        data=_docx_bytes(build),
+        filename="policy.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    assert parsed.metadata["image_count"] == 1
+    assert parsed.metadata["ocr_truncated"] is False
+    assert [chunk.kind for chunk in parsed.chunks] == [ParsedChunkKind.TEXT, ParsedChunkKind.OCR]
+    assert parsed.chunks[-1].metadata["source_ext"] == ".docx"
+
+
+def test_extractor_passes_its_limits_down_to_the_ocr_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Settings` numbers that never reach a parser are decoration; this is the
+    seam the worker's composition root uses (and step 14 will reuse)."""
+    _stub_ocr(monkeypatch)
+    data = _image_docx([_png(400, 400, tint=10), _png(400, 400, tint=20)])
+
+    extractor = DocumentContentExtractor(limits=Limits(ocr_max_images_per_document=1))
+    parsed = extractor.extract(data=data, filename="many.docx", content_type="x")
+
+    assert parsed.metadata["image_count"] == 1
+    assert parsed.metadata["ocr_truncated"] is True
+
+
+@pytest.mark.parametrize(
+    ("filename", "builder", "expected"),
+    [
+        ("shots.xlsx", _image_xlsx, "excel_images"),
+        ("shots.docx", _image_docx, "docx_images"),
+    ],
+)
+def test_extractor_never_calls_an_image_only_office_file_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    builder: Callable[[list[bytes]], bytes],
+    expected: str,
+) -> None:
+    """A workbook whose only content is a pasted screenshot HAS chunks; calling
+    it `*_empty` would be a lie about the document that reaches storage."""
+    _stub_ocr(monkeypatch)
+
+    parsed = DocumentContentExtractor().extract(
+        data=builder([_png(400, 400)]), filename=filename, content_type="x"
+    )
+
+    assert parsed.metadata["file_type"] == expected
+    assert len(parsed.chunks) == 1
+
+
+def test_extractor_classifies_a_scanned_pdf_as_pdf_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The one case images decide: a PDF with no extractable text and no table
+    used to be reported `pdf_empty`, which is the one thing it never was."""
+    _stub_ocr(monkeypatch)
+
+    parsed = DocumentContentExtractor().extract(
+        data=_image_pdf([[_png(400, 400)]]), filename="scan.pdf", content_type="application/pdf"
+    )
+
+    assert parsed.metadata["file_type"] == "pdf_images"
+    assert parsed.metadata["page_count"] == 1
+
+
+def test_classify_docx_calls_a_picture_only_document_images_not_empty() -> None:
+    assert docx_parser.classify_docx(table_count=0, text_count=0, image_count=2) == "docx_images"
+    assert docx_parser.classify_docx(table_count=0, text_count=0, image_count=0) == "docx_empty"

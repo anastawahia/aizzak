@@ -44,9 +44,12 @@ Two divergences from alpha, both deliberate:
   block the text pass indexes anyway, while a DOCX heading is consumed by this
   merge and would otherwise never reach the index at all.
 
-Not in this step: OCR of the images embedded in a DOCX (step 5 / `P-09`), and
-table-row explosion into one node per row (step 7 / `P-13`) — a table stays one
-coarse chunk here, as it does for Excel and PDF.
+Not in this module: OCR of the images embedded in a DOCX — landed in step 5
+(`P-09`) but in `image_ocr.py`, which reads `word/media/` straight out of the
+OOXML archive, because `python-docx` models a picture as an inline shape and
+never hands over its raster; and table-row explosion into one node per row
+(step 7 / `P-13`) — a table stays one coarse chunk here, as it does for Excel
+and PDF.
 """
 
 from __future__ import annotations
@@ -189,11 +192,16 @@ def parse_docx(data: bytes) -> list[ParsedChunk]:
     return [*_text_chunks(items), *_table_chunks(items)]
 
 
-def classify_docx(*, table_count: int, text_count: int) -> str:
+def classify_docx(*, table_count: int, text_count: int, image_count: int = 0) -> str:
     """File-type classification by table/text ratio (alpha `_classify_text`,
-    with ``docx`` as its ``base_label``)."""
+    with ``docx`` as its ``base_label``).
+
+    ``image_count`` (plan step 5 / `P-09`) decides only the empty case: a
+    document whose words all live inside pictures is not empty, and the ratio
+    bands below are about the text/table mix, which an image does not join.
+    """
     if table_count == 0 and text_count == 0:
-        return "docx_empty"
+        return "docx_images" if image_count else "docx_empty"
     if table_count > 0 and text_count == 0:
         return "docx_structured_text"
     if table_count == 0 and text_count > 0:

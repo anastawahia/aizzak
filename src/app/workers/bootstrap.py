@@ -848,8 +848,12 @@ async def build_knowledge_worker_from_env() -> tuple[
         key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
         keyless_providers=_KEYLESS_PROVIDERS,
     )
+    # `limits` carries the OCR caps of rag-indexing-plan.md §3.8 into the
+    # parser routes (plan step 5 / `P-09` `P-11`). Without it the numbers would
+    # sit in `Settings` and mean nothing — the extractor would keep falling
+    # back to its own `Limits()` and no deployment could move them.
     content_resolver = WorkerDocumentContentResolver(
-        files, storage, DocumentContentExtractor(), providers
+        files, storage, DocumentContentExtractor(limits=settings.limits), providers
     )
     summary_builder = BuildSummary(
         documents,

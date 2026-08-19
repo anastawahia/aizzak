@@ -343,6 +343,26 @@ class Limits(BaseModel):
     # space (what protects the tenant's own budget). Enforced under a row lock
     # by `framework/di/space_quota.py`, never by a bare read-then-write.
     max_space_bytes: int = 1_073_741_824
+    # Embedded-image OCR guardrails (rag-indexing-plan.md §3.8, decision
+    # س-10). Plan step 5 (`P-09` `P-11`) reads them here rather than from the
+    # environment: alpha spreads eleven OCR knobs across `os.getenv` calls and
+    # never writes down what any of them decides, so the values are CHOSEN
+    # here, with their reason, and not copied.
+    #   * `ocr_min_image_px` -- 200x200 (both sides). Icons and logos are the
+    #     most numerous embedded images and the least worth OCRing; alpha's
+    #     100x100 lets a favicon through. Standalone image UPLOADS bypass this
+    #     filter entirely (`image_ocr.py`, divergence 2): there the image is
+    #     the document.
+    #   * `ocr_max_images_per_document` -- the queue guard. A 100-page PDF can
+    #     carry hundreds of images, and OCR is the slowest thing in the
+    #     pipeline.
+    #   * `ocr_max_images_per_page` -- stops ONE page from eating the whole
+    #     document budget, which is what makes the cap above fair across pages.
+    # Passing either cap is DECLARED (`OcrResult.truncated` -> the route's
+    # `ocr_truncated`), never a failure: a cap is a cost decision (§3.8).
+    ocr_min_image_px: int = 200
+    ocr_max_images_per_document: int = 40
+    ocr_max_images_per_page: int = 8
     max_input_tokens: int = 32_000
     max_output_tokens: int = 4_096
     max_rag_k: int = 50

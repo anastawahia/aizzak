@@ -13,7 +13,7 @@
 | **النطاق** | المراحل **١ · ٢ · ٣ · ٦**: مسح الملفّات وفتحها · المحلّلات · بناء العقد والتضمين · التلخيص |
 | **خارج النطاق** | المرحلتان **٤ · ٥** (النيّة · الاسترجاع · الفلترة والإجابة) و`P-04` — كلّها في [`rag-retrieval-plan.md`](rag-retrieval-plan.md) |
 | **البنود** | **٢٣ بندًا** من ‎`P-01`..`P-45`‎ (‏`P-12` مُسقَط بالقرار س-12) |
-| **الحالة** | 🟨 **4/21** — الخطوات ١ · ٢ · ٣ · ٤ ✅ |
+| **الحالة** | 🟨 **5/21** — الخطوات ١ · ٢ · ٣ · ٤ · ٥ ✅ · **المجموعة أ مكتملة** |
 
 ---
 
@@ -248,9 +248,9 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 | **أ — المحلّلات** (الأولوية المُعلَنة) ||||
 | ١ | `pdf_tables.py` جديد: Camelot `stream` · عتبة `60` · `TABLE_MIN_COLUMNS=2` · دمج الجداول عبر الصفحات · التسمية التوضيحية · ملفّ مؤقّت مع `finally` | `P-06` | `adapters/parsers/pdf_tables.py` جديد · `pyproject` (‏`camelot-py>=2.0,<3`) | ✅ |
 | ٢ | بلوكات PDF بإحداثيات: `MIN_BLOCK_CHARS=25` على البلوك · `sort=True` محفوظ · `position_in_doc` | `P-10` | `adapters/parsers/pdf_text.py` · `extractor.py` (‏`page_count` صار يُحصى على الصفحات المتمايزة لا على القطع) | ✅ |
-| ٣ | مسار PDF الثلاثي: الجداول ← التخطيط يتجنّبها بعتبة تداخل `0.5` ← الصور على ما تبقّى | `P-07` | `adapters/parsers/extractor.py` (‏`_route_pdf` صار مرحلتين · `file_type` صار `pdf_mixed`/`pdf_tables` · `table_count` · `parser` = `pdf_multipass`) · `pdf_text.py` (‏`table_regions` · `TABLE_OVERLAP_THRESHOLD=0.5` · قاعدة صفحة-الجدول) · `pdf_tables.py` (توثيق فقط) | ✅ الرِّجل الثالثة (OCR الصور) في الخطوة ٥ |
+| ٣ | مسار PDF الثلاثي: الجداول ← التخطيط يتجنّبها بعتبة تداخل `0.5` ← الصور على ما تبقّى | `P-07` | `adapters/parsers/extractor.py` (‏`_route_pdf` صار مرحلتين · `file_type` صار `pdf_mixed`/`pdf_tables` · `table_count` · `parser` = `pdf_multipass`) · `pdf_text.py` (‏`table_regions` · `TABLE_OVERLAP_THRESHOLD=0.5` · قاعدة صفحة-الجدول) · `pdf_tables.py` (توثيق فقط) | ✅ (الرِّجل الثالثة — OCR الصور — أُنجزت في الخطوة ٥) |
 | ٤ | محلّل DOCX: فقرات + جداول + عناوين بأنماط Word أوّلًا ثمّ الكلمات المفتاحية · `paragraph_number` · `position_in_doc` · `title` | `P-08` | `adapters/parsers/docx.py` جديد (‏`iter_inner_content` تسلسلًا واحدًا · سُلَّم `_is_title` · فُتات العنوان للجداول · سقف `2000`) · `extractor.py` (‏`_route_docx` · `classify_docx` · `_ROUTES` و`_PARSER_NAMES` · شطب `.docx` من المؤجَّل) · `text_plain.py` (‏`split_long_text` صار عامًّا) · `Settings.allowed_mime` (‏نوع DOCX أُعيد — المحلّل بلا هذا السطر لا يبلغه ملفّ) | ✅ |
-| ٥ | OCR الصور المضمَّنة: PDF/DOCX/XLSX · دمج بالصفحة · dedup بـ`sha1` · فلتر الحجم · السقوف · `clean_ocr_text` · `create_page_summary` · النصّ البديل | `P-09` `P-11` | `adapters/parsers/image_ocr.py` · `Settings` | ⬜ |
+| ٥ | OCR الصور المضمَّنة: PDF/DOCX/XLSX · دمج بالصفحة · dedup بـ`sha1` · فلتر الحجم · السقوف · `clean_ocr_text` · `create_page_summary` · النصّ البديل | `P-09` `P-11` | `adapters/parsers/image_ocr.py` (‏`parse_pdf_images` و`parse_office_images` فوق محرّك مجموعات واحد · رتبة `page*1000+999` للـPDF وثابت للأرشيف · `OcrResult` بعلم بتر) · `Limits` (‏`ocr_min_image_px` · `ocr_max_images_per_document` · `ocr_max_images_per_page`) · `extractor.py` (‏المسارات صارت تستقبل `Limits` · `image_count` و`ocr_truncated` · `pdf_images`/`excel_images`) · `docx.py` (‏`classify_docx` صار يعرف `image_count`) · `workers/bootstrap.py` (‏تمرير `settings.limits` — بدونه الإعداد ميّت) | ✅ |
 | **ب — بناء العقد والتخزين** (تغيّر ما يُخزَّن ⇒ §5 بعدها) ||||
 | ٦ | ترحيل `knowledge.parent_chunks` + `chunks.parent_id` — RLS · `ON DELETE CASCADE` · مستودع | `P-14` | `migrations` · `adapters/sql_repository.py` · `ports/repository.py` | ⬜ |
 | ٧ | `domain/tables.py`: تفجير الصفوف · `row_to_sentence` · `_NOISE_HEADERS` · `TABLE_PARENT_MAX_ROWS=20` · سقف `2000` بإعلان بتر | `P-13` | `domain/tables.py` جديد · `application/indexing.py` | ⬜ |
@@ -320,6 +320,10 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 - **ترتيب جدولٍ وبلوكٍ داخل الصفحة الواحدة** — المحوران متطابقان (‏`page*1000 + index`)، فيتعادل جدولٌ برتبة ‎n‎ مع البلوك ‎n‎ على الصفحة نفسها، ويحسم التعادلَ ترتيبُ المرحلتين (الجداول أوّلًا) لا الهندسة. الترتيب الهندسيّ داخل الصفحة من شأن مفتاح الخطوة ١٠ (`P-17`) — والفرز في `chunking.py` مستقرّ فلا يضيع شيء.
 - **قاعدة «صفحة الجدول» تُسقط بقايا الصفحة** — منقولة من alpha (‏`MIN_BLOCK_CHARS * 2`) وتعمل **فقط** على صفحة تُجُنِّبت فيها مناطق جداول. على مستند تكون فيه بقايا الخلايا نصًّا مقصودًا، هذه هي المعايرة التي تُراجَع أوّلًا.
 - **مفردات العناوين الإنجليزية وحدها** (‏`_HEADING_KEYWORDS`) — القرار س-09 = أ يجعل نمط Word هو الإشارة الأولى، وهي محايدة لغويًّا، ويُبقي الكلمات المفتاحية سقوطًا كما في alpha. **الأثر المعلَن:** مستند عربيّ كُتب بلا أنماط لا يُكشَف فيه أيّ عنوان (‏`_is_title` يردّ أيضًا كلّ سطر ينتهي بنقطة). المفردات العربية كانت الخيار (ب) ولم يُؤخَذ — وهي أوّل ما يُراجَع إن ظهر محتوى غير مُنسَّق.
+- **صدارة `[Page Context: …]` إنجليزية داخل نصّ العقدة** — `create_page_summary` منقول بحكم ح‑٤ و§3.8، لكنه يصطدم بقاعدة §7 نفسها («حقن الميتاداتا في نصّ العقدة»). التخفيف المُطبَّق: الصدارة تُضاف **فقط** لمجموعة فيها صورة بلا نصّ، فالصفحة النظيفة لا تُحشى بها أبدًا، والملخّص مُكرَّر في `page_summary` بالحمولة ليأخذه العرض بدل النصّ. **وهي أوّل ما يُنقَل إلى الحمولة وحدها إن ظهر أثره في الاسترجاع.**
+- **صور الأرشيف بلا موضع في المستند** — ‏`word/media/` و`xl/media/` لا يقولان أين تقع الصورة (الموضع في علاقة الرسم داخل `document.xml`)، فمجموعتها واحدة برتبة ثابتة تلي كلّ ما له موضع. قراءة العلاقات لإعطائها موضعًا حقيقيًّا خارج النطاق، وهي ما يُفتَح إن لزم تشابك الصور مع الفقرات.
+- **`parse_image` بلا فلتر حجم وبلا نصّ بديل** — الصورة المرفوعة وحدها **هي** المستند: رفض ‎150×150‎ أو الإجابة عنها بـ`[Diagram/Chart 150x150px]` نصًّا كاملًا ضجيج لا محتوى. الفلتر والنصّ البديل للصور المضمَّنة التي لم يخترها المستخدم.
+- **لغة OCR ثابتة في الوحدة** (‏`ara+eng`) ولم تُرفَع إلى `Settings` — قرار موثَّق (خطر #2 في `parsers.md`) لا معايرة نشر؛ رفعه بندٌ مستقلّ إن ظهرت نشرة بلغة ثالثة.
 - **جداول DOCX تخرج بشكل `{headers, rows}` نفسه** الذي يخرج به Excel وPDF — عمدًا: تفجير الصفوف في الخطوة ٧ (`P-13`) يعمل فوق هذا الشكل، فلا يحتاج DOCX عملًا خاصًّا هناك.
 - **`refine`** (‏`P-45`) اختياريّ: يُنفَّذ آخرًا أو يُترك بلا أثر على بقيّة الخطّة.
 

@@ -6,7 +6,7 @@ into everything ``IndexRegisteredDocument.run`` consumes beyond the document
 id: the file's bytes, fetched and parsed into a ``ParsedDocument``, plus the
 embedding model/key to index it with. Every piece has existed for a while --
 ``SqlFileRepository`` (3.16), the ``MinioStorage`` adapter behind
-``StorageHandle`` (2.4/step 15), ``DocumentContentExtractor``'s ten-extension
+``StorageHandle`` (2.4/step 15), ``DocumentContentExtractor``'s eleven-extension
 dispatch table (3.k1), and ``SettingsProviderResolver`` (2.9/2.10) -- but
 nothing composed them, which is the whole reason the knowledge worker could
 not boot.
