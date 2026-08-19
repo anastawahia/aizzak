@@ -24,25 +24,40 @@ port's contract): it is computed from the block's position on the page, never
 from how many blocks happened to survive the noise filter, so relaxing that
 filter later cannot renumber the blocks that already survived it.
 
-Not in this step: table-region avoidance (`PDF_TABLE_OVERLAP_THRESHOLD`, step
-3 / `P-07`) — every block is still kept, so until step 3 lands a page's tables
-are indexed twice, once structured by `pdf_tables.py` and once as scrambled
-text here; OCR of embedded images (step 5 / `P-09`); and the multi-signal
-ordering key that consumes `position_in_doc` (step 10 / `P-17`) — which is why
-step 2 is not closed before step 10. Left behind, as in alpha: disk-dumping of
+**Table-region avoidance** (plan step 3 / `P-07`). When the table pass has
+already run, the regions it found are handed in here and a block sitting
+inside one is dropped: without that, every table is indexed **twice** — once
+structured by `pdf_tables.py`, and once more as the scrambled prose a table
+reads as when its cells are flattened into a text block. The test is alpha's
+and it is on **area**, not on a mere touch: camelot's bbox is generous, and a
+paragraph brushing a table's edge is still a paragraph. Alpha's "table-only
+page" rule comes with it (`TABLE_PAGE_MIN_TEXT_CHARS`).
+
+Not in this step: OCR of embedded images (step 5 / `P-09`), the third leg of
+the plan's triple PDF path; and the multi-signal ordering key that consumes
+`position_in_doc` (step 10 / `P-17`) — which is why step 2 is not closed
+before step 10. Left behind, as in alpha: disk-dumping of
 chunks and extraction summaries (`PDF_SAVE_TEXT_CHUNKS`), the `PDF_MAX_PAGES`
 cap, and `os.getenv` configuration.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import fitz  # PyMuPDF
 
 from app.framework.observability import get_logger
 from app.framework.types import Json
 from app.modules.knowledge.ports.content_extractor import ParsedChunk, ParsedChunkKind
+
+if TYPE_CHECKING:
+    # Type-only, deliberately: `TableRegion` is a plain record produced by the
+    # table pass, and importing it under `TYPE_CHECKING` keeps this module's
+    # runtime dependency down to PyMuPDF — the caller supplies the regions, so
+    # nothing here needs camelot to be installed to run.
+    from app.modules.knowledge.adapters.parsers.pdf_tables import TableRegion
 
 log = get_logger(__name__)
 
@@ -71,12 +86,47 @@ _IMAGE_BLOCK_TYPE = 1
 # blocks across pages.
 _PAGE_ORDER_STRIDE = 1_000
 
+# Fraction of a block's own area that must fall inside a detected table before
+# the block is treated as that table's text and dropped (alpha
+# `PDF_TABLE_OVERLAP_THRESHOLD`, default 0.5). Dropping on any intersection
+# would cost the paragraph that merely brushes a generous camelot bbox.
+TABLE_OVERLAP_THRESHOLD = 0.5
 
-def parse_pdf_text(data: bytes) -> list[ParsedChunk]:
-    """Extract one chunk per text block from a PDF. Never raises: a corrupt or
-    encrypted PDF, or a single failing page, degrades to fewer (or zero)
-    chunks, logged as a warning — mirroring alpha's per-file/per-page fault
-    tolerance."""
+# On a page whose table regions were avoided, this much surviving text (summed
+# over its blocks) is required before any of it is kept — alpha's "table-only
+# page" rule, `MIN_BLOCK_CHARS * 2`. What is left on such a page is stray cell
+# text that camelot's bbox did not quite cover: it reads as prose block by
+# block, but as a document it is the table again, unstructured. The rule fires
+# ONLY on pages that had tables; an ordinary sparse page keeps its blocks.
+TABLE_PAGE_MIN_TEXT_CHARS = MIN_BLOCK_CHARS * 2
+
+
+class _Block(NamedTuple):
+    """A block that survived the filters, held until its page is judged."""
+
+    text: str
+    raw: Any
+    block_index: int
+    position_in_doc: int
+
+
+def parse_pdf_text(
+    data: bytes,
+    *,
+    table_regions: Mapping[int, Sequence[TableRegion]] | None = None,
+) -> list[ParsedChunk]:
+    """Extract one chunk per text block from a PDF.
+
+    ``table_regions`` is the ``{page_number: [TableRegion, ...]}`` map returned
+    by `pdf_tables.parse_pdf_tables`; blocks falling inside those regions are
+    dropped as the tables' own text (see the module docstring). Omitting it
+    extracts every block — which is what a caller that never ran the table pass
+    wants, and what step 2 did.
+
+    Never raises: a corrupt or encrypted PDF, or a single failing page,
+    degrades to fewer (or zero) chunks, logged as a warning — mirroring alpha's
+    per-file/per-page fault tolerance.
+    """
     try:
         pdf = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
@@ -93,23 +143,41 @@ def parse_pdf_text(data: bytes) -> list[ParsedChunk]:
         # stays a structural position rather than a survivor's index.
         position = 0
         for page_index in range(len(pdf)):
-            for block_index, block in enumerate(_page_blocks(pdf, page_index)):
+            page, blocks = _page_blocks(pdf, page_index)
+            regions = list((table_regions or {}).get(page_index + 1, ()))
+            table_rects = _table_rects(page, regions)
+
+            kept: list[_Block] = []
+            for block_index, block in enumerate(blocks):
                 position_in_doc = position
                 position += 1
                 text = _block_text(block)
                 if len(text) < MIN_BLOCK_CHARS:
                     continue
+                if _overlaps_a_table(block, table_rects):
+                    continue
+                kept.append(_Block(text, block, block_index, position_in_doc))
+
+            if table_rects and sum(len(item.text) for item in kept) < TABLE_PAGE_MIN_TEXT_CHARS:
+                log.info(
+                    "pdf_text.table_only_page",
+                    extra={"page_index": page_index, "tables_avoided": len(table_rects)},
+                )
+                continue
+
+            for item in kept:
                 chunks.append(
                     ParsedChunk(
-                        text=text,
-                        order=_block_order(page_index, block_index),
+                        text=item.text,
+                        order=_block_order(page_index, item.block_index),
                         kind=ParsedChunkKind.TEXT,
                         metadata=_build_metadata(
-                            block=block,
+                            block=item.raw,
                             page_index=page_index,
-                            block_index=block_index,
-                            position_in_doc=position_in_doc,
+                            block_index=item.block_index,
+                            position_in_doc=item.position_in_doc,
                             chunk_index=len(chunks),
+                            tables_avoided=len(table_rects),
                         ),
                     )
                 )
@@ -118,20 +186,60 @@ def parse_pdf_text(data: bytes) -> list[ParsedChunk]:
         pdf.close()
 
 
-def _page_blocks(pdf: Any, page_index: int) -> list[Any]:
-    """One page's blocks in logical reading order, or `[]` if the page fails.
+def _page_blocks(pdf: Any, page_index: int) -> tuple[Any | None, list[Any]]:
+    """One page and its blocks in logical reading order, or `(None, [])`.
 
     A page that cannot be loaded or rendered costs its own blocks and nothing
     else — the rest of the document is still extracted (alpha's per-page
-    tolerance).
+    tolerance). The page itself comes back too: converting a table region into
+    fitz coordinates needs the page's height.
     """
     try:
         page = pdf.load_page(page_index)
         blocks: list[Any] = page.get_text("blocks", sort=True)
     except Exception as exc:
         log.warning("pdf_text.page_failed", extra={"page_index": page_index, "error": str(exc)})
+        return None, []
+    return page, blocks
+
+
+def _table_rects(page: Any | None, regions: Sequence[TableRegion]) -> list[Any]:
+    """The page's table regions as fitz rectangles.
+
+    Camelot reports ``(x1, y1_bottom, x2, y2_top)`` in PDF coordinates (origin
+    bottom-left, y growing upward) while fitz blocks are top-left with y
+    growing downward, so the y axis is flipped around the page height — the
+    conversion `pdf_tables.py` deliberately left to whoever compares the two.
+    """
+    if page is None or not regions:
         return []
-    return blocks
+    height = float(page.rect.height)
+    return [
+        fitz.Rect(
+            float(region.bbox[0]),
+            height - float(region.bbox[3]),  # camelot's top edge -> smaller fitz y
+            float(region.bbox[2]),
+            height - float(region.bbox[1]),  # camelot's bottom edge -> larger fitz y
+        )
+        for region in regions
+    ]
+
+
+def _overlaps_a_table(block: Any, table_rects: list[Any]) -> bool:
+    """Whether enough of the block's area lies inside some table region."""
+    if not table_rects or len(block) < _FITZ_BLOCK_MIN_FIELDS:
+        return False
+    rect = fitz.Rect(block[:4])
+    area = rect.get_area()
+    if area <= 0:
+        return False
+    for table_rect in table_rects:
+        intersection = rect & table_rect
+        if intersection.is_empty:
+            continue
+        if intersection.get_area() / area >= TABLE_OVERLAP_THRESHOLD:
+            return True
+    return False
 
 
 def _block_text(block: Any) -> str:
@@ -155,6 +263,7 @@ def _build_metadata(
     block_index: int,
     position_in_doc: int,
     chunk_index: int,
+    tables_avoided: int,
 ) -> Json:
     """Assemble the block's payload.
 
@@ -173,6 +282,10 @@ def _build_metadata(
         # PDF space (bottom-left origin, y growing upward) and step 3 puts
         # both kinds of chunk in the same document.
         "block_bbox": [float(v) for v in block[:4]],
+        # How many table regions this page's blocks had to dodge (alpha keeps
+        # the same counter): a chunk from a page with tables is a leftover, and
+        # that is worth knowing when its neighbours look truncated.
+        "tables_avoided": tables_avoided,
         "section_type": "paragraph",
         "layout_mode": "pymupdf_blocks",
         "source_ext": ".pdf",

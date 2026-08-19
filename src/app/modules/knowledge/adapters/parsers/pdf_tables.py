@@ -30,11 +30,13 @@ while this port is object-shaped and only ever holds bytes
 (`ports/content_extractor.py`: "never a filesystem path"). The file is written
 and unlinked in a `finally` — an implementation detail, not a design choice.
 
-Not in this step: feeding `table_locations` into the text pass so a table is
-not indexed twice, once structured and once as garbled prose (that is
-`PDF_TABLE_OVERLAP_THRESHOLD`, plan step 3 / P-07); table-row explosion into
-one node per row (plan step 7 / P-13); and routing `.pdf` here at all — the
-extractor still runs the text pass alone until step 3.
+The returned region map is consumed by `pdf_text.py` (wired in plan step 3 /
+P-07): a block overlapping one of these regions is the table's own text, and
+dropping it is what keeps a table from being indexed twice, once structured
+and once as garbled prose.
+
+Not in this step: table-row explosion into one node per row (plan step 7 /
+P-13).
 """
 
 from __future__ import annotations

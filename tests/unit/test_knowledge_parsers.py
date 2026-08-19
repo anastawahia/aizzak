@@ -380,6 +380,116 @@ def test_block_text_rejects_unusable_blocks(block: tuple[object, ...]) -> None:
     assert pdf_text._block_text(block) == ""
 
 
+def _region(page_number: int, rect: fitz.Rect, page_height: float) -> pdf_tables.TableRegion:
+    """A `TableRegion` covering `rect` (given in fitz coordinates), expressed
+    the way camelot reports one: PDF coordinates, origin bottom-left."""
+    return pdf_tables.TableRegion(
+        page_number=page_number,
+        bbox=(rect.x0, page_height - rect.y1, rect.x1, page_height - rect.y0),
+    )
+
+
+def _page_height(data: bytes) -> float:
+    doc = fitz.open(stream=data, filetype="pdf")
+    height = float(doc[0].rect.height)
+    doc.close()
+    return height
+
+
+def _block_rect(data: bytes, block_index: int) -> fitz.Rect:
+    doc = fitz.open(stream=data, filetype="pdf")
+    block = doc[0].get_text("blocks", sort=True)[block_index]
+    doc.close()
+    return fitz.Rect(block[:4])
+
+
+def test_parse_pdf_text_drops_a_block_inside_a_table_region() -> None:
+    """Plan step 3 (`P-07`): the table pass already indexed that region as a
+    structured table, so re-indexing it here as flattened prose would put the
+    same content in the index twice."""
+    data = _blocks_pdf(
+        [
+            [
+                "A paragraph of ordinary prose, well above the threshold.",
+                "Name Dept Salary rows that camelot boxed as a table.",
+            ]
+        ]
+    )
+    regions = {1: [_region(1, _block_rect(data, 1), _page_height(data))]}
+
+    chunks = pdf_text.parse_pdf_text(data, table_regions=regions)
+
+    assert len(chunks) == 1
+    assert chunks[0].text.startswith("A paragraph")
+    assert chunks[0].metadata["tables_avoided"] == 1
+    # Dropping a block never renumbers what survives it: the kept block is
+    # still block 0 at position 0, exactly as with no regions at all.
+    assert chunks[0].order == 0
+    assert chunks[0].metadata["position_in_doc"] == 0
+
+
+def test_parse_pdf_text_keeps_a_block_that_only_grazes_a_table_region() -> None:
+    """The test is on overlapping AREA, not on contact: camelot's bbox is
+    generous, and a paragraph brushing a table's edge is still a paragraph."""
+    data = _blocks_pdf([["A paragraph that merely touches the table's edge and stays prose."]])
+    rect = _block_rect(data, 0)
+    grazing = fitz.Rect(rect.x0, rect.y1 - rect.height * 0.2, rect.x1, rect.y1 + 40)
+    regions = {1: [_region(1, grazing, _page_height(data))]}
+
+    chunks = pdf_text.parse_pdf_text(data, table_regions=regions)
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["tables_avoided"] == 1
+
+
+def test_parse_pdf_text_drops_a_table_only_page_entirely() -> None:
+    """Alpha's "table-only page" rule: what a table's bbox failed to cover is
+    stray cell text, not prose — below `TABLE_PAGE_MIN_TEXT_CHARS` in total it
+    all goes."""
+    data = _blocks_pdf(
+        [
+            [
+                "Name Dept Salary rows that camelot boxed as a table.",
+                "Total: 18300 riyals.",
+            ]
+        ]
+    )
+    regions = {1: [_region(1, _block_rect(data, 0), _page_height(data))]}
+
+    assert pdf_text.parse_pdf_text(data, table_regions=regions) == []
+
+
+def test_parse_pdf_text_keeps_a_sparse_page_that_had_no_tables() -> None:
+    """The table-only rule fires only where tables were avoided — an ordinary
+    page with one short-ish paragraph keeps it."""
+    sparse = "One paragraph, just past the block threshold."
+    assert len(sparse) < pdf_text.TABLE_PAGE_MIN_TEXT_CHARS
+
+    chunks = pdf_text.parse_pdf_text(_blocks_pdf([[sparse]]))
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["tables_avoided"] == 0
+
+
+def test_parse_pdf_text_ignores_regions_on_other_pages() -> None:
+    data = _blocks_pdf(
+        [
+            ["Page one block, comfortably above the threshold, kept as is."],
+            ["Page two block, comfortably above the threshold, kept as is."],
+        ]
+    )
+    # The region is keyed to page 2 and sits low on it, far from either page's
+    # block: page 1 must be untouched, and page 2 must keep the block that does
+    # not overlap it.
+    height = _page_height(data)
+    regions = {2: [_region(2, fitz.Rect(72, height - 200, 400, height - 80), height)]}
+
+    chunks = pdf_text.parse_pdf_text(data, table_regions=regions)
+
+    assert [c.metadata["page_number"] for c in chunks] == [1, 2]
+    assert [c.metadata["tables_avoided"] for c in chunks] == [0, 1]
+
+
 def test_parse_pdf_text_skips_an_encrypted_pdf() -> None:
     doc = fitz.open()
     doc.new_page().insert_text((72, 72), "A secret block, long enough to be kept.")
@@ -718,6 +828,51 @@ def test_extractor_counts_pdf_pages_not_blocks() -> None:
     assert doc.metadata["page_count"] == 2
     assert doc.metadata["block_count"] == 3
     assert len(doc.chunks) == 3
+
+
+def test_extractor_runs_the_table_pass_before_the_text_pass() -> None:
+    """The triple PDF path (plan step 3 / `P-07`): a page carrying a table and
+    a paragraph yields BOTH kinds of chunk, and the table's rows are not
+    indexed a second time as text."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Quarterly headcount by department.", fontsize=11)
+    page.insert_text((72, 118), "Figures are counted at quarter end.", fontsize=11)
+    y = 250.0
+    for row in _SALARY_ROWS:
+        for x, cell in zip(_TABLE_COLUMN_X, row, strict=False):
+            page.insert_text((x, y), cell, fontsize=11)
+        y += 22
+    data = doc.tobytes()
+    doc.close()
+
+    extracted = DocumentContentExtractor().extract(
+        data=data, filename="report.pdf", content_type="application/pdf"
+    )
+
+    kinds = [c.kind for c in extracted.chunks]
+    assert ParsedChunkKind.TABLE in kinds
+    assert ParsedChunkKind.TEXT in kinds
+    assert extracted.metadata["file_type"] == "pdf_mixed"
+    assert extracted.metadata["parser"] == "pdf_multipass"
+    assert extracted.metadata["table_count"] == 1
+    # Tables lead the list, and the table's own rows appear only there.
+    assert extracted.chunks[0].kind is ParsedChunkKind.TABLE
+    text_blob = " ".join(c.text for c in extracted.chunks if c.kind is ParsedChunkKind.TEXT)
+    assert "Finance" not in text_blob
+    assert "headcount" in text_blob
+
+
+def test_extractor_reports_a_pdf_with_no_tables_as_text_only() -> None:
+    extracted = DocumentContentExtractor().extract(
+        data=_blocks_pdf([["A page of ordinary prose with no table on it at all."]]),
+        filename="prose.pdf",
+        content_type="application/pdf",
+    )
+
+    assert extracted.metadata["file_type"] == "pdf_text"
+    assert extracted.metadata["table_count"] == 0
+    assert extracted.metadata["block_count"] == 1
 
 
 def test_extractor_routes_text_end_to_end() -> None:

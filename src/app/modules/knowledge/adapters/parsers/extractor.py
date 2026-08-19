@@ -19,9 +19,14 @@ Deferred (3.k1) — not routed here: ``.xls`` (needs the `xlrd` engine, not an
 approved dependency for this step — see `excel.py`), ``.docx`` (needs
 `python-docx`; DOCX is deferred per this step's scope), and
 ``.tif/.tiff/.bmp/.gif`` (alpha's wider `IMAGE_EXTS`; only
-``.png/.jpg/.jpeg/.webp`` are routed). A PDF image-OCR pass (alpha's
-`iter_pdf_image_documents`, run *after* text extraction) is optional and not
-wired here — `pdf_text.py` covers the PDF route alone for now.
+``.png/.jpg/.jpeg/.webp`` are routed).
+
+**The PDF route is a multi-pass path** (plan step 3 / `P-07`), and this module
+is where its phases are sequenced — alpha sequences them inside `scanner.py`
+for the same reason: only the caller knows that the table pass has to run
+*first*, because its output (where the tables sit) is an input to the text
+pass. The third leg, OCR of embedded images (alpha's
+`iter_pdf_image_documents`), joins here in plan step 5 / `P-09`.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from app.framework.types import Json
 from app.modules.knowledge.adapters.parsers.excel import parse_excel
 from app.modules.knowledge.adapters.parsers.image_ocr import parse_image
 from app.modules.knowledge.adapters.parsers.json_doc import classify_json, parse_json
+from app.modules.knowledge.adapters.parsers.pdf_tables import parse_pdf_tables
 from app.modules.knowledge.adapters.parsers.pdf_text import parse_pdf_text
 from app.modules.knowledge.adapters.parsers.text_plain import parse_text
 from app.modules.knowledge.ports.content_extractor import (
@@ -50,17 +56,45 @@ _Router = Callable[[bytes, str], tuple[list[ParsedChunk], Json]]
 
 
 def _route_pdf(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
-    chunks = parse_pdf_text(data)
+    """Tables first, then the text blocks that are not part of them.
+
+    The order is the whole point (plan step 3 / `P-07`): the table pass reports
+    where its tables sit, and handing those regions to the text pass is what
+    stops a table being indexed twice — once structured, once as the garbled
+    prose its cells flatten into. A failing table pass returns ``([], {})``
+    rather than raising, so the text pass still runs and the document keeps its
+    prose.
+
+    Both passes emit `order` on the same page-strided axis, so the combined
+    list is already one document-wide sequence and `domain/chunking.py` sorts
+    it (stably) without renumbering. Tables lead the list, which is also how
+    ties inside a page resolve; ranking a table against a block by geometry is
+    the multi-signal key's job (step 10 / `P-17`).
+    """
+    table_chunks, table_regions = parse_pdf_tables(data)
+    text_chunks = parse_pdf_text(data, table_regions=table_regions)
+    chunks = [*table_chunks, *text_chunks]
     # A chunk is one text BLOCK now, not a page (plan step 2 / `P-10`), so
-    # `page_count` has to be counted over the distinct pages those blocks came
+    # `page_count` has to be counted over the distinct pages those chunks came
     # from; `len(chunks)` would report blocks as pages. It is still the number
     # of pages that yielded content, not the PDF's total page count.
     pages = {chunk.metadata.get("page_number") for chunk in chunks}
     return chunks, {
-        "file_type": "pdf_text" if chunks else "pdf_empty",
+        "file_type": _pdf_file_type(table_count=len(table_chunks), block_count=len(text_chunks)),
         "page_count": len(pages),
-        "block_count": len(chunks),
+        "block_count": len(text_chunks),
+        "table_count": len(table_chunks),
     }
+
+
+def _pdf_file_type(*, table_count: int, block_count: int) -> str:
+    """Which passes actually produced something — the same in-band
+    ``file_type`` reporting the other routers use."""
+    if table_count and block_count:
+        return "pdf_mixed"
+    if table_count:
+        return "pdf_tables"
+    return "pdf_text" if block_count else "pdf_empty"
 
 
 def _route_excel(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
@@ -101,7 +135,9 @@ _ROUTES: dict[str, _Router] = {
 }
 
 _PARSER_NAMES: dict[str, str] = {
-    ".pdf": "pdf_text",
+    # Two modules answer for a PDF now (tables + text blocks), so the name
+    # reports the path, not one of them (plan step 3 / `P-07`).
+    ".pdf": "pdf_multipass",
     ".xlsx": "excel",
     ".json": "json",
     ".txt": "text_plain",
