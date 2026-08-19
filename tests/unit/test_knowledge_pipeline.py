@@ -30,7 +30,7 @@ from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoin
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
 from app.modules.knowledge.application.retrieval import RetrieveContext
-from app.modules.knowledge.domain.chunking import SourceSegment, chunk_segments
+from app.modules.knowledge.domain.chunking import MIN_NODE_CHARS, SourceSegment, chunk_segments
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
@@ -284,14 +284,14 @@ def test_chunk_segments_seq_is_unique_and_gap_free_across_segments() -> None:
 
 
 def test_chunk_segments_window_and_overlap() -> None:
-    words = [f"w{i}" for i in range(10)]
+    words = [f"word{i}" for i in range(10)]  # 5-char tokens -- windows clear MIN_NODE_CHARS (15)
     text = " ".join(words)
     chunks = chunk_segments([_segment(text, 0)], max_tokens=4, overlap_tokens=2, min_chars=0)
     assert [c.text for c in chunks] == [
-        "w0 w1 w2 w3",
-        "w2 w3 w4 w5",
-        "w4 w5 w6 w7",
-        "w6 w7 w8 w9",
+        "word0 word1 word2 word3",
+        "word2 word3 word4 word5",
+        "word4 word5 word6 word7",
+        "word6 word7 word8 word9",
     ]
     assert [c.token_count for c in chunks] == [4, 4, 4, 4]
 
@@ -306,35 +306,85 @@ def test_chunk_segments_sorts_by_order_not_input_position() -> None:
 
 
 def test_chunk_segments_ties_in_order_keep_original_relative_position() -> None:
-    seg1 = _segment("one", 0, kind="a")
-    seg2 = _segment("two", 0, kind="b")
+    seg1 = _segment("one one one one", 0, kind="a")
+    seg2 = _segment("two two two two", 0, kind="b")
     chunks = chunk_segments([seg1, seg2], max_tokens=10, overlap_tokens=0, min_chars=0)
     assert [c.kind for c in chunks] == ["a", "b"]
 
 
 def test_chunk_segments_merges_short_trailing_window_into_previous() -> None:
-    text = "a b c d e f"
+    text = "aa bb cc dd ee ff"
     chunks = chunk_segments([_segment(text, 0)], max_tokens=5, overlap_tokens=1, min_chars=10)
-    # naive windows: [a,b,c,d,e] then [e,f] ("e f" is 3 chars, < min_chars=10) -> merged
+    # naive windows: [aa,bb,cc,dd,ee] then [ee,ff] ("ee ff" is 5 chars, < min_chars=10) -> merged
     assert len(chunks) == 1
-    assert chunks[0].text == "a b c d e e f"
+    assert chunks[0].text == "aa bb cc dd ee ee ff"
     assert chunks[0].token_count == 7
 
 
 def test_chunk_segments_single_window_segment_is_kept_even_if_shorter_than_min_chars() -> None:
-    chunks = chunk_segments([_segment("hi", 0)], max_tokens=512, overlap_tokens=64, min_chars=100)
+    """The MERGE parameter (``min_chars``) never touches a lone, unsplit
+    segment -- distinct from the P-15 ``MIN_NODE_CHARS`` FILTER below, which
+    this segment's text (19 chars) still comfortably clears."""
+    chunks = chunk_segments(
+        [_segment("a lone segment here", 0)], max_tokens=512, overlap_tokens=64, min_chars=100
+    )
     assert len(chunks) == 1
-    assert chunks[0].text == "hi"
+    assert chunks[0].text == "a lone segment here"
 
 
 def test_chunk_segments_propagates_kind_and_metadata_per_chunk() -> None:
     meta = {"page_number": 3}
     chunks = chunk_segments(
-        [_segment("hello world", 0, kind="table", metadata=meta)], max_tokens=10
+        [_segment("hello world today", 0, kind="table", metadata=meta)], max_tokens=10
     )
     assert chunks[0].kind == "table"
     assert chunks[0].metadata == {"page_number": 3}
     assert chunks[0].metadata is not meta  # shallow-copied per chunk, not aliased
+
+
+# --------------------------------------------------------------------------- #
+# chunking.chunk_segments -- P-15 node filtering (plan §4 step 8)             #
+# --------------------------------------------------------------------------- #
+def test_chunk_segments_drops_nodes_shorter_than_min_node_chars() -> None:
+    # "hi" is 2 chars, well under MIN_NODE_CHARS (15) -- dropped even though
+    # it is the segment's only window (nothing to merge it into).
+    assert chunk_segments([_segment("hi", 0)]) == []
+
+
+def test_chunk_segments_keeps_a_node_at_exactly_min_node_chars() -> None:
+    text = "x" * MIN_NODE_CHARS
+    chunks = chunk_segments([_segment(text, 0)])
+    assert [c.text for c in chunks] == [text]
+
+
+def test_chunk_segments_drops_duplicate_node_text_keeping_first_occurrence() -> None:
+    seg1 = _segment("identical repeated boilerplate text", 0, kind="a")
+    seg2 = _segment("identical repeated boilerplate text", 1, kind="b")
+    chunks = chunk_segments([seg1, seg2], max_tokens=100)
+    assert len(chunks) == 1
+    assert chunks[0].kind == "a"  # first occurrence survives, the later one is dropped
+
+
+def test_chunk_segments_dedup_is_scoped_across_segment_boundaries() -> None:
+    """Duplicate detection is NOT per-segment -- a repeated boilerplate line
+    (a header/footer/disclaimer) recurring across two DIFFERENT segments is
+    still caught."""
+    seg1 = _segment("page footer disclaimer text repeated everywhere", 0)
+    seg2 = _segment("completely unrelated other paragraph content here", 1)
+    seg3 = _segment("page footer disclaimer text repeated everywhere", 2)
+    chunks = chunk_segments([seg1, seg2, seg3], max_tokens=100)
+    assert len(chunks) == 2
+
+
+def test_chunk_segments_seq_stays_gap_free_after_filtering_drops_some_nodes() -> None:
+    segments = [
+        _segment("hi", 0),  # dropped: shorter than MIN_NODE_CHARS
+        _segment("a genuinely long enough segment of text", 1),
+        _segment("identical repeated boilerplate text here", 2),
+        _segment("identical repeated boilerplate text here", 3),  # dropped: duplicate
+    ]
+    chunks = chunk_segments(segments, max_tokens=100)
+    assert [c.seq for c in chunks] == [0, 1]
 
 
 # --------------------------------------------------------------------------- #

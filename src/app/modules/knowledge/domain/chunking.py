@@ -21,13 +21,36 @@ Splitting operates on **whitespace words**, not model tokens: a
 deterministic, model-independent proxy that needs no tokenizer model
 dependency in the domain (``token_count`` is that same whitespace-word
 count, not a true LLM token count).
+
+**Node filtering (P-15, rag-indexing-plan.md §4 step 8).** After windowing,
+every window is put through one more gate before it becomes a
+``ChunkToIndex``: empty (whitespace-only) windows are dropped, windows
+shorter than ``MIN_NODE_CHARS`` are dropped (a node too short to answer
+anything is pure embedding/storage/retrieval-noise cost with no retrieval
+value), and a window whose text is a byte-for-byte duplicate of an
+earlier-surviving window's text is dropped too (the FIRST occurrence
+survives, mirroring ``domain/relevance.py``'s ``filter_relevant`` dedup
+order) -- cheap boilerplate (a repeated header/footer/disclaimer line, or a
+table's own noise-column-only row rendering the same sentence twice) would
+otherwise cost an embedding call and a Qdrant point for text retrieval
+already has, gaining nothing. ``seq`` is assigned only to the SURVIVORS, so
+it stays the same gap-free 0-based counter INV-K1 promises regardless of how
+many windows a filtering pass removes.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
+
+# P-15 (plan §4 step 8): a node shorter than this many characters carries no
+# retrieval value on its own -- dropped entirely, not merged (the
+# ``min_chars`` parameter below is a DIFFERENT, earlier concern: whether a
+# split's leftover remainder gets folded into its neighbour before either
+# ever reaches this gate).
+MIN_NODE_CHARS = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +90,23 @@ def chunk_segments(
     into the previous window of the *same* segment rather than emitted as its
     own tiny chunk (a lone segment that never gets split — its whole text fits
     in one window — is always kept as-is, regardless of length: the merge
-    rule only applies to a split's leftover remainder). ``seq`` is one global
-    0-based counter across every window of every segment, in processing
-    order (INV-K1 — see the module docstring). ``kind``/``metadata`` are
-    propagated verbatim from the owning segment (each chunk gets its own
-    shallow copy of ``metadata``). Segments whose text is empty/whitespace-
-    only contribute no chunks. Empty ``segments`` (or an input where every
-    segment is empty) returns ``[]``.
+    rule only applies to a split's leftover remainder).
+
+    Every resulting window then passes through the P-15 node filter (module
+    docstring): empty, shorter than ``MIN_NODE_CHARS``, or a duplicate of an
+    earlier-surviving window's text is dropped. ``seq`` is one global 0-based
+    counter across every SURVIVING window, in processing order (INV-K1 — see
+    the module docstring) — gap-free regardless of how much filtering
+    removed. ``kind``/``metadata`` are propagated verbatim from the owning
+    segment (each chunk gets its own shallow copy of ``metadata``). Segments
+    whose text is empty/whitespace-only contribute no windows. Empty
+    ``segments`` (or an input where every segment is empty, or where every
+    window is filtered away) returns ``[]``.
     """
     ordered = sorted(segments, key=lambda segment: segment.order)
 
     chunks: list[ChunkToIndex] = []
+    seen_hashes: set[str] = set()
     seq = 0
     for segment in ordered:
         words = segment.text.split()
@@ -86,10 +115,13 @@ def chunk_segments(
         windows = _word_windows(words, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
         windows = _merge_short_trailing_window(windows, min_chars=min_chars)
         for window in windows:
+            text = " ".join(window)
+            if not _keep_node(text, seen_hashes):
+                continue
             chunks.append(
                 ChunkToIndex(
                     seq=seq,
-                    text=" ".join(window),
+                    text=text,
                     token_count=len(window),
                     kind=segment.kind,
                     metadata=dict(segment.metadata),
@@ -133,3 +165,30 @@ def _merge_short_trailing_window(windows: list[list[str]], *, min_chars: int) ->
     if trailing_length >= min_chars:
         return windows
     return [*windows[:-2], [*windows[-2], *windows[-1]]]
+
+
+def _keep_node(text: str, seen_hashes: set[str]) -> bool:
+    """Whether one window's ``text`` survives into the indexed stream (P-15,
+    module docstring): not empty/whitespace-only, at least
+    ``MIN_NODE_CHARS`` long, and not a byte-for-byte duplicate of an
+    earlier-surviving window's text — the FIRST occurrence of a repeated
+    text wins (mirroring ``domain/relevance.py``'s ``filter_relevant`` dedup
+    order), the rest are dropped.
+
+    A ``sha256`` hash of the (already-stripped) text is what actually goes
+    into ``seen_hashes`` rather than the text itself: a hash-set membership
+    check is O(1) regardless of how long a node's text is, and it is the
+    same non-cryptographic-use hashing pattern this module's neighbours
+    (``domain/sparse.py``'s ``term_id``) already use for a stable, cheap
+    dedup key. ``seen_hashes`` is mutated as a side effect — the caller owns
+    one set for the whole ``chunk_segments`` call, so a duplicate is caught
+    across segment boundaries too, not only within one segment.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) < MIN_NODE_CHARS:
+        return False
+    digest = hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+    if digest in seen_hashes:
+        return False
+    seen_hashes.add(digest)
+    return True
