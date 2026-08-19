@@ -555,6 +555,9 @@ class IndexRegisteredDocument:
                 now,
                 content_hash=attempt.content_hash,
                 pipeline_version=PIPELINE_VERSION,
+                text_chunks=attempt.outcome.text_chunks,
+                table_chunks=attempt.outcome.table_chunks,
+                image_chunks=attempt.outcome.image_chunks,
             )
             await self._documents.set_status(
                 ctx,
@@ -562,6 +565,9 @@ class IndexRegisteredDocument:
                 IndexStatus.INDEXED.value,
                 content_hash=attempt.content_hash,
                 pipeline_version=PIPELINE_VERSION,
+                text_chunks=attempt.outcome.text_chunks,
+                table_chunks=attempt.outcome.table_chunks,
+                image_chunks=attempt.outcome.image_chunks,
             )
 
             indexed_event = DocumentIndexed(

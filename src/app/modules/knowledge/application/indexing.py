@@ -195,12 +195,23 @@ class IndexOutcome:
     filtered away to nothing (§3.3's "an entirely noise/empty row") never
     grows an orphan ``parent_chunks`` row nobody's ``Chunk.parent_id`` points
     at.
-    """
+
+    ``text_chunks``/``table_chunks``/``image_chunks`` (plan §4 step 16,
+    `P-05`, decision س-15 = أ) are ``len(chunks)`` broken down by
+    ``ParsedChunkKind`` -- counted over the SAME granularity ``chunk_count``
+    already is (the final, post-window-split, post-table-explosion rows),
+    not the coarser ``ParsedChunk``s a document parsed into, so the three
+    numbers always sum to ``len(chunks)``. ``ParsedChunkKind.JSON`` folds
+    into ``text_chunks``: alpha's own `_classify_text`/`classify_json` treat
+    it as prose, not a fourth bucket the plan never asked for."""
 
     collection: str
     dimensions: int
     chunks: tuple[IndexedChunk, ...]
     parents: tuple[ParentChunkDraft, ...] = ()
+    text_chunks: int = 0
+    table_chunks: int = 0
+    image_chunks: int = 0
 
 
 class IndexDocument:
@@ -272,6 +283,13 @@ class IndexDocument:
         collection = knowledge_collection(ctx.workspace_id)
         await self._vectors.ensure_hybrid_collection(collection, dim, distance="cosine")
 
+        # P-05 (plan §4 step 16, decision س-15 = أ): counted over `to_index`
+        # -- the FINAL rows, at `chunk_count`'s own granularity -- so the
+        # three numbers always sum to `len(chunks)` below, win or lose on the
+        # embed calls that follow (a chunk that fails alone still fails the
+        # WHOLE document, so there is no partial count to get wrong).
+        text_chunks, table_chunks, image_chunks = _count_by_kind(to_index)
+
         if not to_index:
             return IndexOutcome(collection=collection, dimensions=dim, chunks=())
 
@@ -324,6 +342,9 @@ class IndexDocument:
             dimensions=dim,
             chunks=tuple(indexed),
             parents=parents,
+            text_chunks=text_chunks,
+            table_chunks=table_chunks,
+            image_chunks=image_chunks,
         )
 
     async def _embed_and_upsert(
@@ -402,6 +423,25 @@ class IndexDocument:
             )
             for part_index, part in enumerate(parts)
         ]
+
+
+def _count_by_kind(to_index: Sequence[ChunkToIndex]) -> tuple[int, int, int]:
+    """``(text_chunks, table_chunks, image_chunks)`` -- `IndexOutcome`'s own
+    docstring for the bucketing rule. ``ChunkToIndex.kind`` is a plain
+    ``str`` (`domain/chunking.py::SourceSegment.kind`'s own comment: a
+    `StrEnum` value copied verbatim, never re-imported as the enum type), so
+    it is compared against ``ParsedChunkKind``'s OWN values -- a `StrEnum`
+    member equals the plain string it was cast from."""
+    text_chunks = table_chunks = image_chunks = 0
+    for item in to_index:
+        if item.kind == ParsedChunkKind.TABLE:
+            table_chunks += 1
+        elif item.kind == ParsedChunkKind.OCR:
+            image_chunks += 1
+        else:
+            # TEXT and JSON alike -- see the docstring on `IndexOutcome`.
+            text_chunks += 1
+    return text_chunks, table_chunks, image_chunks
 
 
 def _plain_segment(chunk: ParsedChunk) -> SourceSegment:

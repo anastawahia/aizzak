@@ -129,6 +129,13 @@ documents = Table(
     # has neither.
     Column("content_hash", Text, nullable=True),
     Column("pipeline_version", Integer, nullable=True),
+    # `migrations/versions/knowledge/0007_chunk_stats.py` (plan step 16,
+    # `P-05`, decision س-15 = أ): the per-kind breakdown, the `chunk_count`
+    # precedent -- `NOT NULL DEFAULT 0`, written together with the
+    # `'indexed'` transition (`set_status`, below).
+    Column("text_chunks", Integer, nullable=False),
+    Column("table_chunks", Integer, nullable=False),
+    Column("image_chunks", Integer, nullable=False),
     schema="knowledge",
 )
 
@@ -359,6 +366,9 @@ class SqlDocumentRepository:
             version=doc.version,
             content_hash=doc.content_hash,
             pipeline_version=doc.pipeline_version,
+            text_chunks=doc.text_chunks,
+            table_chunks=doc.table_chunks,
+            image_chunks=doc.image_chunks,
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -375,6 +385,9 @@ class SqlDocumentRepository:
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         values: dict[str, object] = {"status": status, "error": error}
         if status == IndexStatus.INDEXED.value:
@@ -388,6 +401,10 @@ class SqlDocumentRepository:
             # transition leaves both columns alone.
             values["content_hash"] = content_hash
             values["pipeline_version"] = pipeline_version
+            # Plan step 16 (`P-05`): the per-kind breakdown, the same rule.
+            values["text_chunks"] = text_chunks
+            values["table_chunks"] = table_chunks
+            values["image_chunks"] = image_chunks
         stmt = (
             update(documents)
             .where(documents.c.id == doc_id, documents.c.workspace_id == ctx.workspace_id)
@@ -1003,6 +1020,9 @@ def _hydrate_document(row: RowMapping) -> Document:
         version=row["version"],
         content_hash=row["content_hash"],
         pipeline_version=row["pipeline_version"],
+        text_chunks=row["text_chunks"],
+        table_chunks=row["table_chunks"],
+        image_chunks=row["image_chunks"],
     )
 
 

@@ -150,13 +150,16 @@ class InMemoryDocumentRepository:
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         # No longer forbidden: cancelling a re-index claims its own pending
         # documents by driving them terminal (BE-RAG-008). The bundle still
         # cannot start a pipeline — this only ever writes `failed`, so
-        # `content_hash`/`pipeline_version` (plan step 15) have no caller
-        # here yet; accepted for structural conformance with
-        # `DocumentRepository`.
+        # `content_hash`/`pipeline_version`/the per-kind counts (plan steps
+        # 15-16) have no caller here yet; accepted for structural
+        # conformance with `DocumentRepository`.
         row = self.rows.get(doc_id)
         if row is None or row.workspace_id != ctx.workspace_id:
             return
@@ -168,6 +171,9 @@ class InMemoryDocumentRepository:
             pipeline_version=(
                 pipeline_version if pipeline_version is not None else row.pipeline_version
             ),
+            text_chunks=text_chunks or row.text_chunks,
+            table_chunks=table_chunks or row.table_chunks,
+            image_chunks=image_chunks or row.image_chunks,
         )
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: object) -> None:

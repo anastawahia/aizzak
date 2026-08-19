@@ -263,6 +263,8 @@ class _FakeDocumentRepository:
         # call, so a test can assert the fingerprint was persisted alongside
         # `'indexed'` without reaching into the SQL adapter.
         self.fingerprint_calls: list[tuple[str, str | None, int | None]] = []
+        # Plan step 16 (`P-05`): the same, for the per-kind breakdown.
+        self.stats_calls: list[tuple[str, int, int, int]] = []
 
     async def get(self, ctx: ExecutionContext, doc_id: str) -> Document | None:
         doc = self.docs.get(doc_id)
@@ -282,9 +284,13 @@ class _FakeDocumentRepository:
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         self.status_calls.append((doc_id, status, error))
         self.fingerprint_calls.append((doc_id, content_hash, pipeline_version))
+        self.stats_calls.append((doc_id, text_chunks, table_chunks, image_chunks))
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
@@ -796,6 +802,10 @@ async def test_index_registered_document_happy_path() -> None:
     assert documents.fingerprint_calls[0] == (doc.id, None, None)
     assert doc.content_hash == "hash-abc"
     assert doc.pipeline_version == PIPELINE_VERSION
+    # Plan step 16 (`P-05`): two plain-text paragraphs, no table, no image --
+    # and the three sum to `chunk_count` (`IndexOutcome`'s own docstring).
+    assert (doc.text_chunks, doc.table_chunks, doc.image_chunks) == (2, 0, 0)
+    assert documents.stats_calls[-1] == (doc.id, 2, 0, 0)
 
     assert len(documents.chunks) == 2
     seen_ids: set[str] = set()
@@ -960,6 +970,43 @@ async def test_index_registered_document_wires_table_parent_id_end_to_end() -> N
     for chunk in documents.chunks:
         assert chunk.parent_id == parent.id
         assert chunk.text != parent.text  # the payload/row text, never the parent text
+    # Plan step 16 (`P-05`): both exploded rows keep their `TABLE` kind
+    # (`_table_to_segments`'s own `kind=str(chunk.kind)`), so they land in
+    # `table_chunks`, not `text_chunks`.
+    assert (result.text_chunks, result.table_chunks, result.image_chunks) == (0, 2, 0)
+
+
+async def test_index_outcome_counts_chunks_by_kind_across_a_mixed_document() -> None:
+    """The full breakdown, all three kinds in one document -- text, a
+    two-row table, and an OCR chunk -- and the three numbers summing to
+    `len(chunks)` (`IndexOutcome`'s own docstring)."""
+    ctx = _ctx("ws1")
+    table_text = json.dumps(
+        {
+            "headers": ["Name", "Salary"],
+            "rows": [{"Name": "Ahmad", "Salary": "5000"}, {"Name": "Sara", "Salary": "6000"}],
+        }
+    )
+    parsed = _parsed_document(
+        [
+            _parsed_chunk("a plain paragraph of prose", order=0),
+            ParsedChunk(text=table_text, order=1, kind=ParsedChunkKind.TABLE, metadata={}),
+            ParsedChunk(
+                text="OCR text lifted from an embedded figure",
+                order=2,
+                kind=ParsedChunkKind.OCR,
+                metadata={},
+            ),
+        ]
+    )
+    pipeline = IndexDocument(_FakeEmbeddings(dim=6), _FakeHybridVectors())
+
+    outcome = await pipeline.execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    assert (outcome.text_chunks, outcome.table_chunks, outcome.image_chunks) == (1, 2, 1)
+    assert outcome.text_chunks + outcome.table_chunks + outcome.image_chunks == len(outcome.chunks)
 
 
 async def test_run_persists_no_terminal_outcome_until_finalize() -> None:

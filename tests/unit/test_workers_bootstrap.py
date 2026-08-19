@@ -161,6 +161,9 @@ class _FakeDocuments:
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         for doc in self.added:
             if doc.id == doc_id:
@@ -170,6 +173,10 @@ class _FakeDocuments:
                     doc.content_hash = content_hash
                 if pipeline_version is not None:
                     doc.pipeline_version = pipeline_version
+                if status == IndexStatus.INDEXED.value:
+                    doc.text_chunks = text_chunks
+                    doc.table_chunks = table_chunks
+                    doc.image_chunks = image_chunks
 
     async def add_chunks(self, ctx: ExecutionContext, chunks: Sequence[Chunk]) -> None:
         self.chunks.extend(chunks)
@@ -394,6 +401,9 @@ async def test_index_handler_claim_finalize_and_append_share_the_unit_of_work() 
             *,
             content_hash: str | None = None,
             pipeline_version: int | None = None,
+            text_chunks: int = 0,
+            table_chunks: int = 0,
+            image_chunks: int = 0,
         ) -> None:
             if status in (IndexStatus.INDEXED.value, IndexStatus.FAILED.value):
                 active_at["terminal_status"] = uow.active
@@ -404,6 +414,9 @@ async def test_index_handler_claim_finalize_and_append_share_the_unit_of_work() 
                 error,
                 content_hash=content_hash,
                 pipeline_version=pipeline_version,
+                text_chunks=text_chunks,
+                table_chunks=table_chunks,
+                image_chunks=image_chunks,
             )
 
     class _SpyOutbox:

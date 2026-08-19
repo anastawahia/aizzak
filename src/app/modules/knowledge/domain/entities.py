@@ -102,6 +102,16 @@ class Document:
     # `domain/pipeline.py::content_pipeline_unchanged`).
     content_hash: str | None = None
     pipeline_version: int | None = None
+    # Explicit per-kind statistics (rag-indexing-plan.md §4 step 16, decision
+    # س-15 = أ, `P-05`): `ParsedChunkKind.TEXT`/`JSON`, `.TABLE` and `.OCR`
+    # counted at the SAME granularity `chunk_count` already is (the final,
+    # post-window-split rows -- `application/indexing.py::_count_by_kind`),
+    # so the three always sum to `chunk_count`. Default `0`, the `chunk_count`
+    # precedent: a document that has not (yet) indexed anything has none of
+    # any kind, which is the truth and not a placeholder.
+    text_chunks: int = 0
+    table_chunks: int = 0
+    image_chunks: int = 0
 
     def start_indexing(self, now: datetime) -> None:
         """``pending|indexing -> indexing``.
@@ -126,6 +136,9 @@ class Document:
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         """``indexing -> indexed`` (INV-K2): records the final chunk count
         and clears any error left over from... nothing, in practice (a
@@ -142,6 +155,10 @@ class Document:
         ``domain.pipeline.content_pipeline_unchanged`` for anyone comparing
         against it, which is the correct, safe default (never a false
         "unchanged").
+
+        ``text_chunks``/``table_chunks``/``image_chunks`` (plan step 16,
+        `P-05`) are the SAME "stamped once, alongside completion" rule
+        applied to the per-kind breakdown -- see the fields' own comments.
         """
         if self.status is not IndexStatus.INDEXING:
             raise DocumentStateError(f"cannot complete indexing from status {self.status.value!r}")
@@ -151,6 +168,9 @@ class Document:
         self.updated_at = now
         self.content_hash = content_hash
         self.pipeline_version = pipeline_version
+        self.text_chunks = text_chunks
+        self.table_chunks = table_chunks
+        self.image_chunks = image_chunks
 
     def fail_indexing(self, reason: str, now: datetime) -> None:
         """``indexing -> failed`` (INV-K2) — a terminal state. INV-K3

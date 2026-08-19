@@ -135,6 +135,9 @@ class DocumentRepository(Protocol):
         *,
         content_hash: str | None = None,
         pipeline_version: int | None = None,
+        text_chunks: int = 0,
+        table_chunks: int = 0,
+        image_chunks: int = 0,
     ) -> None:
         """Persist a ``Document`` status transition (+ optional ``error``),
         RLS-guarded and ``WHERE workspace_id``-filtered like every other
@@ -155,6 +158,14 @@ class DocumentRepository(Protocol):
         docstring): a document's fingerprint describes what its ``indexed``
         row IS, and has no meaning to write on a ``failed``/``indexing``
         transition that produced no output to fingerprint.
+
+        ``text_chunks``/``table_chunks``/``image_chunks`` (plan step 16,
+        `P-05`, decision س-15 = أ) follow the identical rule: written ONLY
+        on ``'indexed'``, from ``IndexOutcome``'s own per-kind breakdown
+        (``application/indexing.py::_count_by_kind``), and left at their
+        column default (``0``) on every other transition — a document that
+        never finished indexing has no breakdown to report, and ``0`` is
+        that truth, not a placeholder.
         """
         ...
 
