@@ -51,9 +51,16 @@ _Router = Callable[[bytes, str], tuple[list[ParsedChunk], Json]]
 
 def _route_pdf(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:
     chunks = parse_pdf_text(data)
-    # `page_count` here is the number of pages that yielded a (non-empty)
-    # chunk, not necessarily the PDF's total page count.
-    return chunks, {"file_type": "pdf_text" if chunks else "pdf_empty", "page_count": len(chunks)}
+    # A chunk is one text BLOCK now, not a page (plan step 2 / `P-10`), so
+    # `page_count` has to be counted over the distinct pages those blocks came
+    # from; `len(chunks)` would report blocks as pages. It is still the number
+    # of pages that yielded content, not the PDF's total page count.
+    pages = {chunk.metadata.get("page_number") for chunk in chunks}
+    return chunks, {
+        "file_type": "pdf_text" if chunks else "pdf_empty",
+        "page_count": len(pages),
+        "block_count": len(chunks),
+    }
 
 
 def _route_excel(data: bytes, ext: str) -> tuple[list[ParsedChunk], Json]:

@@ -252,35 +252,138 @@ def test_parse_excel_multiple_sheets_order_by_sheet_then_segment() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# pdf_text                                                                     #
+# pdf_text — block granularity, structural order, noise guards                 #
 # --------------------------------------------------------------------------- #
-def test_parse_pdf_text_single_page() -> None:
+# Each `insert_text` at its own y position lays out as its own fitz block, so
+# a page's block list is exactly the lines written to it, in that order.
+def _blocks_pdf(pages: list[list[str]]) -> bytes:
     doc = fitz.open()
-    page = doc.new_page()
+    for lines in pages:
+        page = doc.new_page()
+        for index, line in enumerate(lines):
+            page.insert_text((72, 72 + index * 120), line)
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_parse_pdf_text_single_block() -> None:
     text = (
         "Hello world, this is a longer test page with enough characters. "
         "عربي نص تجريبي طويل بما فيه الكفاية."
     )
-    page.insert_text((72, 72), text)
-    data = doc.tobytes()
-    doc.close()
-
-    chunks = pdf_text.parse_pdf_text(data)
+    chunks = pdf_text.parse_pdf_text(_blocks_pdf([[text]]))
 
     assert len(chunks) == 1
     chunk = chunks[0]
     assert chunk.order == 0
     assert chunk.kind is ParsedChunkKind.TEXT
     assert chunk.metadata["page_number"] == 1
+    assert chunk.metadata["position_in_doc"] == 0
     assert chunk.metadata["source_ext"] == ".pdf"
     assert "Hello world" in chunk.text
 
 
-def test_parse_pdf_text_skips_pages_below_min_block_chars() -> None:
+def test_parse_pdf_text_emits_one_chunk_per_block_not_per_page() -> None:
+    """The granularity change of plan step 2 (decision س-08): a page with three
+    paragraphs is three chunks, each carrying only its own paragraph."""
+    chunks = pdf_text.parse_pdf_text(
+        _blocks_pdf(
+            [
+                [
+                    "First paragraph block with plenty of characters here.",
+                    "Second paragraph block, also long enough to survive.",
+                    "Third paragraph block, still well past the threshold.",
+                ]
+            ]
+        )
+    )
+
+    assert len(chunks) == 3
+    assert [c.order for c in chunks] == [0, 1, 2]
+    assert [c.metadata["position_in_doc"] for c in chunks] == [0, 1, 2]
+    assert [c.metadata["chunk_index"] for c in chunks] == [0, 1, 2]
+    assert all(c.metadata["page_number"] == 1 for c in chunks)
+    assert chunks[0].text.startswith("First")
+    assert "Second" not in chunks[0].text
+
+
+def test_parse_pdf_text_orders_blocks_on_a_page_strided_axis() -> None:
+    """`order` is a document-wide block rank: page 2's first block sorts after
+    every block of page 1, on the same axis `pdf_tables.py` emits on."""
+    chunks = pdf_text.parse_pdf_text(
+        _blocks_pdf(
+            [
+                [
+                    "Page one, block one, comfortably above the threshold.",
+                    "Page one, block two, also above the threshold.",
+                ],
+                ["Page two, block one, comfortably above the threshold."],
+            ]
+        )
+    )
+
+    assert [c.order for c in chunks] == [0, 1, 1000]
+    assert [c.metadata["page_number"] for c in chunks] == [1, 1, 2]
+    assert [c.metadata["block_index"] for c in chunks] == [0, 1, 0]
+    assert [c.order for c in chunks] == sorted(c.order for c in chunks)
+
+
+def test_parse_pdf_text_skips_blocks_below_min_block_chars() -> None:
+    """The threshold moved from the page to the block, and dropping a block
+    must NOT renumber the ones that survive it — `order` and `position_in_doc`
+    are structural, so the surviving block keeps the rank of its position."""
+    chunks = pdf_text.parse_pdf_text(
+        _blocks_pdf([["short", "A second block that is long enough to be kept."]])
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].order == 1
+    assert chunks[0].metadata["block_index"] == 1
+    assert chunks[0].metadata["position_in_doc"] == 1
+    assert chunks[0].metadata["chunk_index"] == 0
+
+
+def test_parse_pdf_text_skips_a_page_of_only_short_blocks() -> None:
+    assert pdf_text.parse_pdf_text(_blocks_pdf([["short", "tiny"]])) == []
+
+
+def test_parse_pdf_text_carries_the_block_rectangle_in_fitz_coordinates() -> None:
+    chunks = pdf_text.parse_pdf_text(
+        _blocks_pdf([["A block whose rectangle should be reported back."]])
+    )
+
+    bbox = chunks[0].metadata["block_bbox"]
+    assert len(bbox) == 4
+    assert all(isinstance(v, float) for v in bbox)
+    # fitz origin is top-left with y growing downward, so y0 < y1 and a block
+    # written near the top of the page has a small y0.
+    assert bbox[0] < bbox[2]
+    assert bbox[1] < bbox[3]
+    assert bbox[1] < 100
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param((0.0, 0.0, 1.0, 1.0), id="malformed_tuple_too_short"),
+        pytest.param(
+            (0.0, 0.0, 1.0, 1.0, "<image: DeviceRGB, width 800, height 600, bpc 8>", 0, 1),
+            id="image_block",
+        ),
+    ],
+)
+def test_block_text_rejects_unusable_blocks(block: tuple[object, ...]) -> None:
+    """Both guards are defensive — the pinned PyMuPDF emits neither shape — but
+    an image block's synthetic placeholder is longer than MIN_BLOCK_CHARS and
+    would be indexed as prose if the `blocks` flags ever changed."""
+    assert pdf_text._block_text(block) == ""
+
+
+def test_parse_pdf_text_skips_an_encrypted_pdf() -> None:
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "short")
-    data = doc.tobytes()
+    doc.new_page().insert_text((72, 72), "A secret block, long enough to be kept.")
+    data = doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, owner_pw="owner", user_pw="user")
     doc.close()
 
     assert pdf_text.parse_pdf_text(data) == []
@@ -593,6 +696,28 @@ def test_extractor_routes_json_end_to_end() -> None:
     assert doc.metadata["parser"] == "json"
     assert len(doc.chunks) == 1
     assert doc.chunks[0].metadata["table_name"] == "data__table_0"
+
+
+def test_extractor_counts_pdf_pages_not_blocks() -> None:
+    """Block granularity (plan step 2) would otherwise report three blocks on
+    two pages as a five-page document."""
+    extractor = DocumentContentExtractor()
+    data = _blocks_pdf(
+        [
+            [
+                "Page one, block one, comfortably above the threshold.",
+                "Page one, block two, also above the threshold.",
+            ],
+            ["Page two, block one, comfortably above the threshold."],
+        ]
+    )
+
+    doc = extractor.extract(data=data, filename="report.pdf", content_type="application/pdf")
+
+    assert doc.metadata["file_type"] == "pdf_text"
+    assert doc.metadata["page_count"] == 2
+    assert doc.metadata["block_count"] == 3
+    assert len(doc.chunks) == 3
 
 
 def test_extractor_routes_text_end_to_end() -> None:

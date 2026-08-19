@@ -13,7 +13,7 @@
 | **النطاق** | المراحل **١ · ٢ · ٣ · ٦**: مسح الملفّات وفتحها · المحلّلات · بناء العقد والتضمين · التلخيص |
 | **خارج النطاق** | المرحلتان **٤ · ٥** (النيّة · الاسترجاع · الفلترة والإجابة) و`P-04` — كلّها في [`rag-retrieval-plan.md`](rag-retrieval-plan.md) |
 | **البنود** | **٢٣ بندًا** من ‎`P-01`..`P-45`‎ (‏`P-12` مُسقَط بالقرار س-12) |
-| **الحالة** | 🟨 **1/21** — الخطوة ١ ✅ |
+| **الحالة** | 🟨 **2/21** — الخطوتان ١ · ٢ ✅ |
 
 ---
 
@@ -64,7 +64,7 @@
 | ح‑٢ | `pillow` `pymupdf` `pandas` `openpyxl` `pytesseract` في مجموعة `parsers` الاختيارية | `pyproject.toml` | التبعية الوحيدة الجديدة في الخطّة كلّها هي `camelot-py[base]` |
 | ح‑٣ | `excel.py` و`json_doc.py` منقولان بأمانة كاملة | مقارنة الرموز مع `excel_parser.py` / `json_parser.py` | لا يُمسّان — فجوة المحلّلات محصورة في PDF · DOCX · الصور المضمَّنة |
 | ح‑٤ | `image_ocr.py` ينقصه `clean_ocr_text` و`create_page_summary` | `image_extractor.py:127,139` | تُضافان داخل الخطوة ٥ |
-| ح‑٥ | `pdf_text.py` صفحة = قطعة، و`MIN_BLOCK_CHARS=25` مطبَّق على **الصفحة** | `pdf_text.py:32-78` | الخطوة ٢ **تغيير حبيبة** لا تحسين |
+| ح‑٥ | ~~`pdf_text.py` صفحة = قطعة، و`MIN_BLOCK_CHARS=25` مطبَّق على **الصفحة**~~ | `pdf_text.py:32-78` | ✅ **أُنجزت في الخطوة ٢:** البلوك = قطعة، والعتبة على البلوك، و`order` صار رتبة بلوك `page_index*1000 + block_index` — نفس محور `pdf_tables.py` فيتشابك المرّان بلا إعادة ترقيم |
 | ح‑٦ | `EmbeddingProvider` يعرض `embed()` و`dimensions()` فقط | `framework/ports/embedding_provider.py:18-23` | `P-16` يأخذ حدّه من `Settings` لا من المنفذ |
 | ح‑٧ | المحوّل يقدّر `len(text)//4`، والنشرة تخدم نموذجًا واحدًا | `external_embedding.py:180` | القيمة ثابتة لكلّ نشرة ⇒ `Settings` كافٍ |
 | ح‑٨ | `knowledge.chunks` ملحَق-فقط، بلا `updated_at`، بقيد `UNIQUE(document_id, seq)` | `0001_knowledge.py:59` | يحكم تصميم قطع الأب (الخطوة ٧) |
@@ -247,7 +247,7 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 |---|---|---|---|---|
 | **أ — المحلّلات** (الأولوية المُعلَنة) ||||
 | ١ | `pdf_tables.py` جديد: Camelot `stream` · عتبة `60` · `TABLE_MIN_COLUMNS=2` · دمج الجداول عبر الصفحات · التسمية التوضيحية · ملفّ مؤقّت مع `finally` | `P-06` | `adapters/parsers/pdf_tables.py` جديد · `pyproject` (‏`camelot-py>=2.0,<3`) | ✅ |
-| ٢ | بلوكات PDF بإحداثيات: `MIN_BLOCK_CHARS=25` على البلوك · `sort=True` محفوظ · `position_in_doc` | `P-10` | `adapters/parsers/pdf_text.py` | ⬜ |
+| ٢ | بلوكات PDF بإحداثيات: `MIN_BLOCK_CHARS=25` على البلوك · `sort=True` محفوظ · `position_in_doc` | `P-10` | `adapters/parsers/pdf_text.py` · `extractor.py` (‏`page_count` صار يُحصى على الصفحات المتمايزة لا على القطع) | ✅ |
 | ٣ | مسار PDF الثلاثي: الجداول ← التخطيط يتجنّبها بعتبة تداخل `0.5` ← الصور على ما تبقّى | `P-07` | `adapters/parsers/extractor.py` · `pdf_text.py` | ⬜ |
 | ٤ | محلّل DOCX: فقرات + جداول + عناوين بأنماط Word أوّلًا ثمّ الكلمات المفتاحية · `paragraph_number` · `position_in_doc` · `title` | `P-08` | `adapters/parsers/docx.py` جديد · `_ROUTES` | ⬜ |
 | ٥ | OCR الصور المضمَّنة: PDF/DOCX/XLSX · دمج بالصفحة · dedup بـ`sha1` · فلتر الحجم · السقوف · `clean_ocr_text` · `create_page_summary` · النصّ البديل | `P-09` `P-11` | `adapters/parsers/image_ocr.py` · `Settings` | ⬜ |
@@ -316,6 +316,7 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 - **`rank_bm25`** — إعادة بناء O(الكوربوس) لكلّ إضافة؛ IDF على جانب Qdrant يجعل الفهرسة تزايدية حقًّا.
 - **حقن الميتاداتا في نصّ العقدة** — يلوّث التضمين و IDF معًا؛ تسميات المصدر تُضاف **عند العرض** (خطّة الاسترجاع) لا عند الفهرسة.
 - **أمر إعادة فهرسة تشغيليّ** فوق `knowledge.reindex_jobs` — أسقطه القرار س-03 = أ. ⚠️ يعود شرطًا لازمًا لحظة وجود بيانات حقيقية (§5).
+- **حمل إحداثيات البلوك تحت اسم `bbox`** — الخطوة ٢ تُصدرها باسم `block_bbox` عمدًا: `pdf_tables.py` يُصدر `bbox` في فضاء camelot (أصل أسفل-يسار) بينما البلوك في فضاء fitz (أصل أعلى-يسار)، والخطوة ٣ تضع النوعين في مستند واحد. توحيدهما — إن لزم — قرار عرضٍ لاحق.
 - **`refine`** (‏`P-45`) اختياريّ: يُنفَّذ آخرًا أو يُترك بلا أثر على بقيّة الخطّة.
 
 </div>
