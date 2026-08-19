@@ -64,6 +64,21 @@ _MAX_MAP_CHUNKS = _MAP_BATCH * 40
 # bought to make an approximation look precise.
 _MAX_BATCH_CHARS = 24_000
 
+# P-41 (plan §4 step 17, §3.10): the recursion cap on `_fold`. Without it, a
+# 40-batch `full` build hands ONE reduce call all 40 map notes at once --
+# roughly 40 * `_MAP_MAX_TOKENS` = 24k tokens in a SINGLE request, which is
+# outright failure (not graceful degradation) against an 8k-window model.
+# `_fold` instead groups notes the same way `_batched` groups chunks and
+# recurses on the folded groups, so no single call ever exceeds one batch's
+# worth of notes. The cap is an EXPLICIT termination guarantee, not an
+# implicit one: `_batched` grouping already shrinks the note count on every
+# level it is given (fewer groups than notes, whenever there is more than one
+# group), but stating that recursion cannot exceed 3 levels regardless keeps
+# the guarantee true even if a future change to `_MAP_BATCH`/`_MAX_MAP_CHUNKS`
+# made that shrinkage slower, rather than resting entirely on today's
+# constants happening to converge in time.
+_MAX_FOLD_DEPTH = 3
+
 _TEMPERATURE = 0.2
 _MAP_MAX_TOKENS = 600
 _OVERVIEW_MAX_TOKENS = 900
@@ -88,6 +103,20 @@ _REDUCE_SYSTEM = (
     "taken across its parts. Produce well-structured Markdown with short "
     "headings and paragraphs. Cover the whole document in proportion, keep "
     "figures and names exact, and state nothing the notes do not support."
+)
+
+# P-41's intermediate step: unlike `_REDUCE_SYSTEM`, a fold call does not
+# produce the final answer -- it produces MORE notes, one level coarser, that
+# either get folded again or reach `_REDUCE_SYSTEM` next. Asking for Markdown
+# prose here would waste an intermediate round trip polishing text that is
+# about to be summarised again.
+_FOLD_SYSTEM = (
+    "You are compressing several batches of notes taken from different parts "
+    "of a longer document into ONE shorter set of notes. Keep every concrete "
+    "fact, claim, figure, name and decision the notes contain, as terse "
+    "bullet points. Do not add an introduction or a conclusion, and do not "
+    "state anything the notes do not already say. Keep every note in its "
+    "original language."
 )
 
 _OVERVIEW_SYSTEM = (
@@ -254,16 +283,57 @@ class SummarizeDocument:
         if await should_cancel():
             raise SummaryBuildCancelled
 
-        text = await self._call(
-            system=_REDUCE_SYSTEM,
-            user="\n\n".join(notes),
-            lang=lang,
-            summarizer=summarizer,
-            max_tokens=_REDUCE_MAX_TOKENS,
-        )
+        text = await self._fold(notes, lang=lang, summarizer=summarizer)
         return SummaryDraft(
             text=text, model=summarizer.model, source_chunks=len(window), truncated=truncated
         )
+
+    async def _fold(
+        self,
+        notes: Sequence[str],
+        *,
+        lang: SummaryLanguage,
+        summarizer: ResolvedSummarizer,
+        depth: int = 0,
+    ) -> str:
+        """P-41 (plan §4 step 17, §3.10): collapse ``notes`` into ONE final
+        summary without ever handing a single call more than one batch's
+        worth of them.
+
+        ``_batched`` (already used to group source chunks into map calls)
+        groups these SAME-shaped strings the same way. When that grouping
+        already fits everything in ONE group, the whole-document reduce
+        happens directly -- this is the ordinary case for anything up to
+        ``_MAP_BATCH`` map notes, and the ONLY extra cost over the old
+        unconditional single reduce call. Otherwise each group is folded
+        (``_FOLD_SYSTEM``) into one coarser note and the SAME operation
+        recurses one level up, until it fits or ``_MAX_FOLD_DEPTH`` is
+        reached -- whichever comes first. At the cap, whatever notes remain
+        go into ONE final call regardless of size: the provider's own
+        context-window error there is a better failure than a pipeline that
+        keeps folding past its own stated guarantee (``_batched``'s own
+        reasoning for a single oversized chunk, carried here for notes).
+        """
+        grouped = _batched(list(notes))
+        if len(grouped) == 1 or depth >= _MAX_FOLD_DEPTH - 1:
+            return await self._call(
+                system=_REDUCE_SYSTEM,
+                user="\n\n".join(notes),
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_REDUCE_MAX_TOKENS,
+            )
+        folded = [
+            await self._call(
+                system=_FOLD_SYSTEM,
+                user="\n\n".join(group),
+                lang=lang,
+                summarizer=summarizer,
+                max_tokens=_MAP_MAX_TOKENS,
+            )
+            for group in grouped
+        ]
+        return await self._fold(folded, lang=lang, summarizer=summarizer, depth=depth + 1)
 
     async def _call(
         self,

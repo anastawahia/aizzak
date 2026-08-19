@@ -13,7 +13,7 @@
 | **النطاق** | المراحل **١ · ٢ · ٣ · ٦**: مسح الملفّات وفتحها · المحلّلات · بناء العقد والتضمين · التلخيص |
 | **خارج النطاق** | المرحلتان **٤ · ٥** (النيّة · الاسترجاع · الفلترة والإجابة) و`P-04` — كلّها في [`rag-retrieval-plan.md`](rag-retrieval-plan.md) |
 | **البنود** | **٢٣ بندًا** من ‎`P-01`..`P-45`‎ (‏`P-12` مُسقَط بالقرار س-12) |
-| **الحالة** | 🟨 **16/21** — الخطوات ١ · ٢ · ٣ · ٤ · ٥ ✅ · **المجموعة أ مكتملة** · ٦ · ٧ · ٨ · ٩ · ١٠ · ١١ · ١٢ · ١٣ ✅ · **المجموعة ب مكتملة** · ١٤ · ١٥ · ١٦ ✅ · **المجموعة ج مكتملة** |
+| **الحالة** | 🟨 **17/21** — الخطوات ١ · ٢ · ٣ · ٤ · ٥ ✅ · **المجموعة أ مكتملة** · ٦ · ٧ · ٨ · ٩ · ١٠ · ١١ · ١٢ · ١٣ ✅ · **المجموعة ب مكتملة** · ١٤ · ١٥ · ١٦ ✅ · **المجموعة ج مكتملة** · ١٧ ✅ |
 
 ---
 
@@ -265,7 +265,7 @@ _CITATION_KEYS = ("file_name", "page_number", "section", "sheet_name",
 | ١٥ | `content_hash` + `pipeline_version` (§3.6) + تخطٍّ في `IndexFile` + إبطال `summaries` | `P-03` | `migrations` · `application/indexing.py` · `domain/` | ✅ |
 | ١٦ | أعمدة الإحصاءات `text_chunks` · `table_chunks` · `image_chunks` + مخرَج `IndexRegisteredDocument` | `P-05` | `migrations` · `application/indexing.py` | ✅ |
 | **د — التلخيص** ||||
-| ١٧ | الطيّ التعاودي بسقف `_MAX_FOLD_DEPTH=3` | `P-41` | `application/summarization.py` | ⬜ |
+| ١٧ | الطيّ التعاودي بسقف `_MAX_FOLD_DEPTH=3` | `P-41` | `application/summarization.py` | ✅ |
 | ١٨ | التلخيص من قطع الأب مع السقوط إلى الورقة بلا dedup | `P-42` | `application/summarization.py` | ⬜ |
 | ١٩ | عيّنة النظرة السريعة عبر الملفّ بفجوات `[…]` واستدعاء واحد | `P-43` | `application/summarization.py` | ⬜ |
 | ٢٠ | الترجمة عبر مزوّد LLM في خانات `lang` القائمة + إعادة استخدام النصّ إن طابقت لغته | `P-44` | `application/summarization.py` | ⬜ |

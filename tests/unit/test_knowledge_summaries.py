@@ -37,6 +37,7 @@ import pytest
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError
 from app.framework.ports.llm_provider import LlmMessage, LlmParams, LlmResult
+from app.modules.knowledge.application import summarization as summarization_module
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
     SummaryBuildCancelled,
@@ -303,7 +304,63 @@ async def test_a_long_full_summary_maps_in_batches_then_reduces_once() -> None:
     # 13 chunks at 6 per batch = 3 map calls, plus one reduce.
     assert len(llm.calls) == 4
     assert draft.source_chunks == 13  # type: ignore[attr-defined]
-    # The reduce reads the notes, not the document.
+    # The reduce reads the notes, not the document -- and, with only 3 of
+    # them (well under `_MAP_BATCH`), `_fold` reaches its `len(grouped) == 1`
+    # branch on the FIRST call, going straight to the final reduce exactly
+    # like the pre-P-41 unconditional one did.
+    assert "## Part 3" in llm.calls[-1][0][1].content
+
+
+@pytest.mark.asyncio
+async def test_a_document_with_many_map_batches_folds_notes_recursively_before_reducing() -> None:
+    """P-41 (plan §4 step 17, §3.10): more than one GROUP of map notes
+    (i.e. more than ``_MAP_BATCH`` of them) must never all land in the final
+    reduce call raw -- that is the exact 40-batch/24k-token failure the step
+    exists to fix. 43 chunks map into 8 notes (7 full batches of 6 plus one
+    of 1), which is more than `_MAP_BATCH` notes, so `_fold` must group and
+    fold them (2 groups of ~6/2) BEFORE the final reduce, rather than handing
+    all 8 raw ``## Part N`` notes to one call the way the old unconditional
+    single reduce did."""
+    llm, draft = await _draft([f"chunk {i}" for i in range(43)])
+
+    # 8 map calls + 2 first-level folds (8 notes -> 2 groups) + 1 final
+    # reduce (the 2 folded notes fit in one group) = 11.
+    assert len(llm.calls) == 11
+    assert draft.source_chunks == 43  # type: ignore[attr-defined]
+    assert draft.truncated is False  # type: ignore[attr-defined]
+
+    # An intermediate fold call used `_FOLD_SYSTEM`, not `_REDUCE_SYSTEM`.
+    fold_calls = [call for call in llm.calls if "compressing several batches" in call[0][0].content]
+    assert len(fold_calls) == 2
+
+    # The FINAL call is the reduce: it reads what the folds produced, not the
+    # original per-batch notes -- proof the raw `## Part N` notes never
+    # reached one call together.
+    final_system, final_user = llm.calls[-1][0]
+    assert "final summary" in final_system.content
+    assert "## Part" not in final_user.content
+
+
+@pytest.mark.asyncio
+async def test_max_fold_depth_forces_a_flush_instead_of_folding_further(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The termination guarantee is EXPLICIT, not merely a side effect of
+    ``_batched`` shrinking the note count: capping ``_MAX_FOLD_DEPTH`` at 1
+    forces ``_fold`` to take its single-final-call branch on the very FIRST
+    invocation (``depth=0 >= _MAX_FOLD_DEPTH - 1 == 0``), even though the 8
+    map notes from a 43-chunk document would otherwise need one more level of
+    folding (the previous test). A model that never compressed its notes
+    enough to shrink the group count could not defeat this: the cap is
+    checked before anything about the notes' content is."""
+    monkeypatch.setattr(summarization_module, "_MAX_FOLD_DEPTH", 1)
+
+    llm, draft = await _draft([f"chunk {i}" for i in range(43)])
+
+    # 8 map calls + 1 flushed final reduce over all 8 raw notes -- no
+    # intermediate fold call at all, unlike the depth-3 default (11 calls).
+    assert len(llm.calls) == 9
+    assert draft.source_chunks == 43  # type: ignore[attr-defined]
     assert "## Part 3" in llm.calls[-1][0][1].content
 
 
