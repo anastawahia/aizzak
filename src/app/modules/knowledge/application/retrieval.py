@@ -84,9 +84,19 @@ snapshotted straight off ``dense_hits``/``sparse_hits`` BEFORE
 ``reciprocal_rank_fusion`` ever runs (it only ever reads each hit's ``.id``,
 never its ``.score``, and hands back brand-new RRF scores of its own), so
 this is the one point in the pipeline the raw per-leg scores are still
-visible. No numeric gate is built on them here (س-22 = أ — thresholds stay
-``0.0``/"no results only"); they exist for the structured log (``P-29``, plan
-step 17) and as the ready-made input for any future calibration.
+visible. They exist for the structured log (``P-29``, plan step 17) and as
+the ready-made input for any future calibration.
+
+Per-leg thresholds (plan step 16, ``P-27``; retrieval plan §3.8 — "الآليّة
+تُشحَن والأرقام لا"): ``_MIN_DENSE_SCORE``/``_MIN_BM25_SCORE`` gate each leg's
+hits (``_gate_by_score``) between that snapshot and RRF fusion, and both ship
+at ``0.0`` = **disabled**. Decision س-22 forbids shipping an UNCALIBRATED
+number, not the mechanism, so the knob is wired and the number waits for the
+evaluation set ``P-38`` needs (§7). No answer path changes today: at the
+shipped defaults ``_gate_by_score`` returns its input untouched. The one
+number this step DOES pick is ``_MAX_SPARSE_CANDIDATES`` — a cap on the
+**count** of BM25-sparse candidates, not on any score, which is why س-22
+never reaches it.
 
 ⚠️ **Scale direction is INVERTED from alpha.** alpha's ``best_dense_distance``
 is the LOWEST raw FAISS L2 distance (nearer = smaller = better). AIZZAK's
@@ -168,6 +178,56 @@ _MAX_PARENT_CHUNK_CHARS = 4000
 # budget at all.
 _DEFAULT_MAX_CONTEXT_CHARS = 12_000
 _DEFAULT_MAX_CONTEXT_TOKENS = 3_000
+# Per-leg ABSOLUTE score floors (plan step 16, `P-27`; retrieval plan §3.8).
+#
+# **The mechanism ships; the number does not.** Decision س-22 forbids shipping
+# an UNCALIBRATED threshold, not the knob itself -- so the knob exists here,
+# wired all the way through `_gate_by_score` below, and its value stays `0.0`
+# (= disabled) until the evaluation set `P-38` waits on exists (§7: real
+# documents and 15-30 questions with reference answers -- an input nobody may
+# invent). `domain/relevance.py`'s own `min_score`/`relative_floor` stay `0.0`
+# for the same reason, and its Jaccard dedup stays `0.95` because that one is
+# alpha's single SCALE-INDEPENDENT constant (plan fact ح-17).
+#
+# `0.0` means disabled by an EXPLICIT branch, never by arithmetic: on the
+# dense leg's cosine scale a bare `score >= 0.0` is NOT inert -- cosine spans
+# [-1, 1], so such a comparison would silently drop every negatively
+# correlated hit. That is a real, uncalibrated gate wearing a disabled
+# default's clothes, and it is precisely what س-22 rules out. See
+# `_gate_by_score`.
+#
+# ⚠️ Direction is INVERTED from alpha (retrieval plan header, §3.3, §3.8; §6
+# risk #3). A floor here reads "keep the hit if its score is **>=** the
+# floor", because HIGHER is better on BOTH legs (Qdrant cosine similarity;
+# raw IDF-weighted sparse dot product). alpha's `min_dense_score` is
+# calibrated against FAISS L2 DISTANCE, where lower is nearer, so its
+# comparison is the mirror image of this one -- no alpha number is copied.
+_MIN_DENSE_SCORE = 0.0
+_MIN_BM25_SCORE = 0.0
+# Ceiling on how many BM25-sparse candidates may reach fusion (plan step 16,
+# `P-27`) -- and, unlike the two floors above, this one carries a REAL value.
+# س-22 does not reach it: it caps a **count**, not a **score** (retrieval plan
+# §3.8 says exactly that), so there is nothing here to calibrate and no scale
+# for it to be wrong on. `20` is alpha's own sparse-leg candidate count
+# (`rag-pipeline-alpha-vs-aizzak.md` appendix, "أعلى-k سَبارس | 20") -- a
+# count is the one class of alpha number that survives the L2 -> cosine
+# direction flip untouched, because it is never compared against a score.
+#
+# Why a cap at all: BM25 precision decays fast down its own ranking (deep
+# ranks are chunks sharing a single mid-frequency term), while RRF grants
+# EVERY returned rank non-zero mass -- `_W_BM25 / (_RRF_K + rank)`, still
+# ~0.003 at rank 100. An uncapped sparse fetch therefore injects tail noise
+# into the fused pool that the dense leg never voted for. Applied to the
+# sparse leg's fetch DEPTH (`sparse_k` in `execute`) rather than to the
+# returned list, because asking the store for 100 hits and discarding 80
+# payloads is pure waste; the number of sparse candidates entering fusion is
+# the same either way.
+#
+# `20` is >= `k * _SEARCH_OVERFETCH` for every `k <= 6`, so it does not narrow
+# the default `k = 5` path (`search_k == 15`) at all: it engages exactly where
+# the tail actually grows -- at the `_MAX_K` ceiling it cuts the sparse fetch
+# from 100 down to 20 -- and the dense leg is never capped by it.
+_MAX_SPARSE_CANDIDATES = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +299,11 @@ class RetrieveContext:
             raise ValidationError("retrieval query must not be empty")
         k = max(1, min(k, _MAX_K))
         search_k = min(k * _SEARCH_OVERFETCH, _MAX_SEARCH)
+        # The BM25-sparse candidate ceiling (plan step 16, `P-27`) -- a cap on
+        # the sparse leg ALONE, never on the dense one; see
+        # `_MAX_SPARSE_CANDIDATES` for why a count cap is untouched by س-22 and
+        # why it is spent at fetch depth.
+        sparse_k = min(search_k, _MAX_SPARSE_CANDIDATES)
         # Post-fusion retention (plan step 8, `P-26`) -- see `_FUSION_RETENTION`'s
         # own comment above. Independent of `search_k`: this is how many of
         # the FUSED, ranked candidates survive into `filter_relevant` below,
@@ -305,7 +370,7 @@ class RetrieveContext:
             collection, q_vector, search_k, flt
         )
         sparse_hits: list[VectorHit] = await self._vectors.search_sparse(
-            collection, q_sparse, search_k, flt
+            collection, q_sparse, sparse_k, flt
         )
 
         # Confidence-signal snapshot (retrieval plan §3.3/§3.11, ``P-28``) —
@@ -321,6 +386,25 @@ class RetrieveContext:
         # ``best_dense_distance``.
         best_dense_score = max((hit.score for hit in dense_hits), default=None)
         best_bm25_score = max((hit.score for hit in sparse_hits), default=None)
+
+        # Per-leg absolute floors (plan step 16, `P-27`) -- applied HERE, i.e.
+        # AFTER the confidence snapshot above and BEFORE fusion below.
+        #
+        # After, because the snapshot's documented contract is "the maximum
+        # over EVERY hit that leg returned" (see `RetrievalResult`): a floor
+        # that emptied a leg would otherwise erase the very number that
+        # explains why, leaving the structured log (`P-29`, plan step 17) and
+        # any future calibration blind at the one moment they most need to
+        # see it.
+        #
+        # Before, because a gated-out hit must cast no RRF vote at all -- RRF
+        # reads rank, not score, so a candidate discarded after fusion would
+        # already have shifted every rank below it.
+        #
+        # At the shipped configuration (both floors `0.0`) this pair of lines
+        # is an identity transform; it is the knob, not a behaviour change.
+        dense_hits = _gate_by_score(dense_hits, _MIN_DENSE_SCORE)
+        sparse_hits = _gate_by_score(sparse_hits, _MIN_BM25_SCORE)
 
         # `top_k=retain_k`, NOT `search_k` (plan step 8, `P-26`) -- the fused,
         # ranked list handed to `filter_relevant` below is `3 * k` deep, wider
@@ -375,6 +459,29 @@ class RetrieveContext:
         return RetrievalResult(
             chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
         )
+
+
+def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHit]:
+    """Drop the hits of ONE leg whose raw score falls below ``min_score``
+    (plan step 16, ``P-27``; retrieval plan §3.8).
+
+    ``min_score <= 0.0`` is DISABLED, and that is an explicit early return
+    rather than a comparison that happens to pass everything. On this
+    module's scales it has to be: the dense leg is Qdrant cosine similarity
+    over ``[-1, 1]``, so ``hit.score >= 0.0`` would quietly discard every
+    negatively correlated hit — an uncalibrated gate disguised as a disabled
+    default, exactly what decision س-22 forbids shipping. The shipped
+    defaults (``_MIN_DENSE_SCORE``/``_MIN_BM25_SCORE``, both ``0.0``) take
+    this branch, so the function is inert until somebody sets a number.
+
+    ⚠️ The surviving comparison is ``score >= min_score`` — HIGHER is better
+    on both legs. alpha's floors gate an L2 DISTANCE where lower is nearer,
+    so its comparison runs the other way and none of its numbers transfers
+    (retrieval plan §6 risk #3).
+    """
+    if min_score <= 0.0:
+        return list(hits)
+    return [hit for hit in hits if hit.score >= min_score]
 
 
 def _widen_to_parents(

@@ -2704,7 +2704,164 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
 
     # k clamped down to <=50: search_k = min(50 * _SEARCH_OVERFETCH, _MAX_SEARCH) == 100
     assert vectors.search_calls[-1][1] == 100
-    assert vectors.search_sparse_calls[-1][1] == 100
+    # ... and the SPARSE leg alone is then narrowed again by the candidate
+    # ceiling (plan step 16, `P-27`): min(search_k, _MAX_SPARSE_CANDIDATES).
+    assert vectors.search_sparse_calls[-1][1] == retrieval_module._MAX_SPARSE_CANDIDATES
+
+
+# --------------------------------------------------------------------------- #
+# Per-leg floors + sparse candidate ceiling (plan step 16, `P-27`, §3.8)      #
+# --------------------------------------------------------------------------- #
+def _scored_hit(score: float, point_id: str = "point-1") -> VectorHit:
+    return VectorHit(id=point_id, score=score, payload={})
+
+
+def test_per_leg_score_floors_ship_disabled() -> None:
+    """Retrieval plan §3.8 ("الآليّة تُشحَن والأرقام لا") + decision س-22: the
+    per-leg knobs exist, and every one of them ships at ``0.0`` = disabled
+    until the evaluation set ``P-38`` waits on exists. The one alpha constant
+    that is INDEPENDENT of the score scale -- Jaccard dedup at ``0.95``
+    (plan fact ح-17) -- is the sole gate that stays on."""
+    assert retrieval_module._MIN_DENSE_SCORE == 0.0
+    assert retrieval_module._MIN_BM25_SCORE == 0.0
+
+    floors = inspect.signature(filter_relevant).parameters
+    assert floors["min_score"].default == 0.0
+    assert floors["relative_floor"].default == 0.0
+    assert floors["jaccard_threshold"].default == 0.95
+
+
+def test_gate_by_score_at_the_shipped_default_is_inert_even_for_negative_scores() -> None:
+    """``0.0`` must mean DISABLED, not "keep scores >= 0". The dense leg is
+    cosine similarity over ``[-1, 1]``, so an arithmetic-only "disabled"
+    default would silently drop every negatively correlated hit -- an
+    uncalibrated gate wearing a disabled default's clothes, which is exactly
+    what س-22 forbids."""
+    hits = [_scored_hit(0.9, "a"), _scored_hit(0.0, "b"), _scored_hit(-0.42, "c")]
+
+    assert retrieval_module._gate_by_score(hits, retrieval_module._MIN_DENSE_SCORE) == hits
+    assert retrieval_module._gate_by_score(hits, retrieval_module._MIN_BM25_SCORE) == hits
+    assert retrieval_module._gate_by_score(hits, 0.0) == hits
+
+
+def test_gate_by_score_when_enabled_keeps_scores_at_or_above_the_floor() -> None:
+    """Direction proof (retrieval plan header/§3.3/§3.8, §6 risk #3): AIZZAK
+    scores are cosine / IDF-weighted dot product, where HIGHER is better, so
+    a floor keeps ``score >= floor``. alpha's floors gate an L2 DISTANCE
+    (lower is nearer) and its comparison therefore runs the other way -- no
+    alpha number, and no alpha comparison, is copied."""
+    hits = [_scored_hit(0.61, "above"), _scored_hit(0.60, "exactly"), _scored_hit(0.59, "below")]
+
+    kept = retrieval_module._gate_by_score(hits, 0.60)
+
+    assert [hit.id for hit in kept] == ["above", "exactly"]
+
+
+def test_gate_by_score_preserves_the_legs_own_rank_order() -> None:
+    """RRF downstream reads RANK, not score, so the gate must only remove --
+    never reorder -- what the store returned best-first."""
+    hits = [_scored_hit(0.9, "a"), _scored_hit(0.1, "b"), _scored_hit(0.8, "c")]
+
+    assert [hit.id for hit in retrieval_module._gate_by_score(hits, 0.5)] == ["a", "c"]
+
+
+async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mechanism is genuinely wired (set a floor above every hit and both
+    legs empty), and the ``P-28`` confidence signals are snapshotted BEFORE
+    it: their contract is "the maximum over EVERY hit that leg returned", and
+    a floor that erased them would blind the structured log (``P-29``) and
+    any future calibration at the one moment they matter most."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
+
+    baseline = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k"
+    )
+    assert baseline.chunks  # the SHIPPED configuration retrieves it
+    assert baseline.best_dense_score is not None
+    assert baseline.best_bm25_score is not None
+
+    # Derived from the baseline rather than hard-coded: the dense leg is
+    # cosine (bounded by 1.0) but the sparse leg is a raw IDF-weighted dot
+    # product with NO upper bound -- one more reason the two floors live on
+    # separate scales and neither may be guessed.
+    monkeypatch.setattr(retrieval_module, "_MIN_DENSE_SCORE", baseline.best_dense_score + 1.0)
+    monkeypatch.setattr(retrieval_module, "_MIN_BM25_SCORE", baseline.best_bm25_score + 1.0)
+    gated = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k"
+    )
+
+    assert gated.chunks == []
+    assert gated.best_dense_score == baseline.best_dense_score
+    assert gated.best_bm25_score == baseline.best_bm25_score
+
+
+async def test_retrieve_context_the_two_floors_are_independent_per_leg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``P-27`` is "عتبات مطلقة لكلّ ساق" -- two separate floors, not one
+    shared gate: shutting the dense leg entirely leaves the BM25-sparse leg
+    free to surface the same chunk on lexical recall alone."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
+
+    monkeypatch.setattr(retrieval_module, "_MIN_DENSE_SCORE", 2.0)
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k"
+    )
+
+    assert [chunk.chunk_id for chunk in result.chunks] == [chunk_point_id("doc-1", 0)]
+
+
+def test_sparse_candidate_ceiling_carries_a_real_value_and_spares_the_default_k() -> None:
+    """The other half of ``P-27``, and the half §3.8 grants a REAL number: a
+    cap on the **count** of sparse candidates, not on any score, so س-22
+    never reaches it. Chosen as alpha's own sparse-leg candidate count -- a
+    count is the one class of alpha number that survives the L2 -> cosine
+    direction flip untouched. It sits at or above the default ``k = 5``
+    path's fetch depth, so this step narrows nothing that ships today."""
+    assert retrieval_module._MAX_SPARSE_CANDIDATES == 20
+    assert retrieval_module._MAX_SPARSE_CANDIDATES >= 5 * retrieval_module._SEARCH_OVERFETCH
+
+
+async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None:
+    """The ceiling is spent at the sparse leg's FETCH DEPTH (asking the store
+    for 100 hits and discarding 80 payloads is pure waste), and it touches
+    only that leg -- the dense fetch keeps its full ``search_k``."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
+
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k", k=50
+    )
+
+    assert vectors.search_calls[-1][1] == 100  # dense: uncapped search_k
+    assert vectors.search_sparse_calls[-1][1] == retrieval_module._MAX_SPARSE_CANDIDATES
+
+
+async def test_retrieve_context_sparse_cap_does_not_narrow_the_default_k() -> None:
+    """At the shipped ``k = 5`` the two legs still fetch identically
+    (``search_k == 15``, below the ceiling): the cap is a ceiling against the
+    BM25 tail at large ``k``, not a change to the everyday path."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
+
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k", k=5
+    )
+
+    assert vectors.search_calls[-1][1] == 15
+    assert vectors.search_sparse_calls[-1][1] == 15
 
 
 async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k(
