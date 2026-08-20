@@ -260,13 +260,21 @@ class ActiveSpaces(Protocol):
 class FileRepository(Protocol):
     async def get(self, ctx, file_id: Uuid) -> File | None: ...
     async def add(self, ctx, file: File) -> None: ...
-    async def list(self, ctx, *, limit: int, cursor: str | None) -> Page[File]: ...
-    async def mark_ready(self, ctx, file_id: Uuid, checksum: str) -> None: ...
+    async def save(self, ctx, file: File) -> None: ...                          # قفل تفاؤلي على version
+    async def list(self, ctx, *, space_id: Uuid | None, limit: int, cursor: str | None) -> Page[File]: ...
     # ── ما كسبته من خطّة الوحدات: أربع دوالّ، ثلاثٌ منها **جماعيّة عمداً** ──
     async def bytes_in_space(self, ctx, space_id: Uuid) -> int: ...              # مجموع الحيّ — بسط الحصّة
-    async def totals_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[str, SpaceFileTotals]: ...
+    async def totals_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[Uuid, SpaceFileTotals]: ...
     async def storage_keys_in_space(self, ctx, space_id: Uuid) -> Sequence[str]: ...  # قبل حذف الصفوف
     async def purge_space(self, ctx, space_id: Uuid) -> int: ...                 # حذفٌ صلب، يعيد العدد
+    # ── وما كسبته من مراجعة فرع الاسترجاع §2: قراءةٌ جماعيّةٌ خامسة، على مسارٍ أحرّ ──
+    async def ready_names(self, ctx, file_ids: Sequence[Uuid]) -> Mapping[Uuid, str]: ...
+    # قاعدةُ `get`+`is_ready` نفسها مدفوعةً إلى SQL (`status='ready'` و`deleted_at IS NULL`،
+    # INV-F2/F3): المجهولُ والمحذوفُ والمحجورُ ونصفُ المرفوع **غائبون** من الخريطة لا
+    # حاضرين بنصٍّ فارغ — قاعدةُ `totals_by_space` عينها (الاستعلام يعيد ما وُجد)، وهي ما
+    # يُبقي «لا ملفَّ مقروءاً» متمايزاً عن «ملفٌّ مقروءٌ بلا اسم». والمعرّفات المكرّرة تنطوي،
+    # و`file_ids` فارغةٌ ⇒ خريطةٌ فارغةٌ بلا استعلام. مشيُ الكوربوس في `knowledge` كان يدفع
+    # رحلةً لكلّ معرّف قبل أن يُوجَّه سؤالٌ أصلاً؛ `WHERE id IN (…)` واحدةٌ تكلّف واحدة.
     # `totals_by_space` بالجمع لا بالمفرد: `GET /spaces` ينشر `bytes_used`/`file_count`،
     # ونداءٌ لكلّ صفٍّ يحوّل صفحةً من عشرين وحدة إلى أربعين ذهاباً وإياباً لعمودَي عرض.
     # و`storage_keys_in_space` تسبق `purge_space` دائماً — بعد حذف الصفوف لا يبقى ما
@@ -274,7 +282,12 @@ class FileRepository(Protocol):
     # لكلّ قراءةٍ أخرى: بايتاته عادت إلى الحصّة وكائنُه ما زال في التخزين.
     # `save` (قفل تفاؤلي على `version`) يكتب `name` أيضاً منذ BE‑RAG‑006 — الحقل
     # الوحيد القابل للتعديل بعد التسجيل؛ أمّا content_type/size_bytes/storage_key
-    # فلا مُبدِّل لها في المجال، فبقاؤها خارج جملة UPDATE هو ما يحرسها.
+    # فلا مُبدِّل لها في المجال، فبقاؤها خارج جملة UPDATE هو ما يحرسها. وهو أيضاً
+    # مَن يكتب انتقال الحالة إلى `ready` (‏`File.complete` في المجال) — لا مُبدِّلَ حالةٍ
+    # مستقلّ على المنفذ، فالانتقال قرارُ التجميعة والمستودعُ يحفظه كما يحفظ غيره.
+    # و`space_id` على `list` **مفتاحيّةٌ إلزاميّةٌ بلا افتراضيّ** (خطّة الوحدات، الخطوة ١٢):
+    # «كلّ الوحدات» قرارٌ يُكتب في موضع النداء، لا حالةٌ يقع فيها مَن نسي. والقاعدة عينها
+    # على `ConversationRepository.list_by_agent` و`DocumentRepository.list`.
 
 # files/ports/inbound.py  (تستدعيه الوكلاء/knowledge بلا استيراد مباشر للوحدة)
 @dataclass(frozen=True, slots=True)
@@ -282,6 +295,7 @@ class FileView: file_id: str; space_id: str | None; name: str; content_type: str
                 size_bytes: int; storage_key: str; status: str
 class FilesQuery(Protocol):
     async def get_readable(self, ctx, file_id: Uuid) -> FileView | None: ...
+    async def names_for_files(self, ctx, file_ids: Sequence[Uuid]) -> Mapping[Uuid, str]: ...
 # `space_id` هنا `str | None` لا `str`: العمود ما زال يقبل `NULL` حتّى الصفّ ٨‑ب،
 # ومسربٌ يَعِد بـ`str` ويسلّم `None` يعبر mypy أخضر ثمّ يكذب على كلّ قارئ.
 # **والمنفذ لا يُرشِّح بالوحدة**: مستهلكاه يطبّقان سياستين مختلفتين على الجواب نفسه —
@@ -289,6 +303,15 @@ class FilesQuery(Protocol):
 # يُعلن أنّ الملفّ موجود، فيصير المعرّف عرّافَ وجود — وهو أخطر هنا لأنّ `file_id` يصل من
 # مخرَج نموذجٍ لا من سردٍ رآه إنسان)، وتثبيتُ محادثةٍ يرفض بـ`409 spaces.cross_space_pin`.
 # ترشيحٌ داخل `get_readable` كان يبتلع القاعدة الثانية ويحوّل رفضها الصريح إلى صمت.
+# `names_for_files` (مراجعة فرع الاسترجاع §2) هي السؤالُ نفسُه مطروحاً بحجمٍ آخر: مَشْيُ
+# كوربوسٍ يمسك **صفحةَ** معرّفات ويريد الحقل الوحيد الذي يعرضه، و`get_readable` لكلّ
+# ملفٍّ كانت `D + 50` رحلةً متسلسلةً تُدفَع قبل أن يبدأ الاسترجاع. **الحضورُ يعني ما
+# يعنيه `FileView` غيرُ الـ`None`** — جاهزٌ، غيرُ محذوفٍ ولا محجورٍ ولا نصفَ مرفوع
+# (INV-F2/F3) — وما عدا ذلك **غائبٌ**، لا حاضرٌ بنصٍّ فارغ: `""` تعني «مقروءٌ بلا اسم»
+# وحدها، والتمييز هو ما يُبقي المستهلك يتخطّى ما كان يتخطّاه بالضبط. والاسمُ وحده
+# يُسقَط: مَن احتاج وحدةَ ملفٍّ أو حجمه يقرّر عن **ملفٍّ واحد** وله `get_readable`.
+# ويُعلن `knowledge` الشكلَ نفسه في `knowledge/ports/files.py` (المستهلك يعلن شكله، أعلاه)،
+# ويربطه جذر التركيب بنسخة `FilesQueryService` نفسها — إعلانٌ يتكرّر وجوابٌ لا يتكرّر.
 
 # knowledge/ports/repository.py
 class DocumentRepository(Protocol):
@@ -316,6 +339,17 @@ class ReindexJobRepository(Protocol):
     async def get(self, ctx, job_id: Uuid) -> ReindexJob | None: ...        # بضمّ البنود إلى المستندات
     async def mark_cancelled(self, ctx, job_id: Uuid, at: datetime) -> None: ...
 
+# knowledge/ports/retrieval.py — شكلُ القطعة المسترجَعة، 1:1 مع `RetrievedChunkOut` (03 §2)
+@dataclass(frozen=True, slots=True)
+class RetrievedChunk:
+    document_id: str; chunk_id: str; text: str; score: float
+    file_name: str | None = None; page_number: int | None = None; section: str | None = None
+# الثلاثةُ الأخيرة حقولُ استشهاد (خطّة الاسترجاع §3.1/§3.9، س-19، `P-18`) تكتبها الفهرسةُ
+# أصلاً على حمولة كلّ نقطة في Qdrant. حقولٌ صريحةٌ لا `metadata: Mapping`: المشروع على
+# `mypy --strict` والمنفذ لا يخمّن مفاتيح، والثمنُ المُعلَن أنّ كلّ مفتاح استشهادٍ جديد
+# يكلّف تعديلَ عقد. وكلُّها `| None`: نقطةٌ فُهرِست قبل وجود الحقل، أو محلِّلٌ لم يُصدره
+# (‏DOCX بلا `page_number`)، تنحدر إلى «مجهول» لا إلى انهيار.
+
 # knowledge/ports/inbound.py
 # `file_ids` نطاقُ استرجاع لا مُرشِّحُ ملفات: الوحدة تحوّله داخلياً إلى `document_id`
 # لأن الحمولة في Qdrant تحمل `document_id` لا `file_id` (BE‑RAG‑005). فارغ/None ⇒ النطاق الشامل.
@@ -326,21 +360,58 @@ class ReindexJobRepository(Protocol):
 # ⚠️ ويقولها `None` اليوم كلُّ وكيلٍ ووكلاءُ البحث المعرفيّ: `AgentDependencies` لا تحمل
 # وحدةً بعد ⇒ **خيطٌ داخل وحدةٍ يسترجع من كلّ الوحدات** (القرار ١ غير مُنفَّذٍ على مسار
 # القراءة، مسجَّلٌ في §7 من خطّة الوحدات). الآليّة هنا جاهزة، والناقص وسيطةٌ لا منفذ.
+@dataclass(frozen=True, slots=True)
+class DocumentNames: names: tuple[str, ...]; total: int   # الأسماء مسقوفةٌ عند المُنتِج · total عدد المستودع كلّه
+@dataclass(frozen=True, slots=True)
+class RoutedAnswer:
+    intent: Intent                            # 'content'|'summarize_doc' (‏`knowledge/domain/intent.py`)
+    chunks: tuple[RetrievedChunk, ...]        # مسار CONTENT — عين ما تعيده `retrieve`
+    summary_job_id: Uuid | None               # مسار SUMMARIZE_DOC — إيصالُ مهمّةٍ لا ملخّص
+    clarification_options: tuple[str, ...]    # أسماءُ ملفّاتٍ يُسأل عنها المستخدم · `()` ⇒ لا سؤال
+
 class KnowledgeRetrieval(Protocol):
-    async def retrieve(self, ctx, query: str, k: int,
+    async def retrieve(self, ctx, query: str, k: int | None = None,
                        file_ids: Sequence[Uuid] | None = None,
                        *, space_id: Uuid | None) -> list[RetrievedChunk]: ...
+    async def answer(self, ctx, question: str, k: int | None = None,
+                     file_ids: Sequence[Uuid] | None = None,
+                     *, space_id: Uuid | None) -> RoutedAnswer: ...
+    async def list_document_names(self, ctx, *, limit: int | None = None) -> DocumentNames: ...
+# ثلاثةُ مناهجَ على **بذرةٍ واحدة** لا ثلاثةُ منافذَ محقونة: `rag_agent` يستدعي شيئاً واحداً
+# (ح-11)، والتوجيهُ شأنُ الوحدة لا شأنُ الوكيل (خطّة الاسترجاع §3.4، `P-21`، س-16 = أ).
+# `k` **اختياريّةٌ** منذ الصفّ ١٨ (‏`P-40`، س-24 = أ): حذفُها يطلب ما تُعِدّه النشرةُ لا رقماً
+# يحمله المستدعي (‏`Settings.retrieval.default_k`، يُحَلّ داخل الوحدة في `RetrieveContext`) —
+# وهو الطريقُ الوحيد الذي يبلغ به رقمُ إعدادٍ وكيلاً لا يقرأ إعداداً ولا يستورد شيئاً، وبه
+# سقطت `_TOP_K = 5` منه. وتسميتُها ما تزال جائزةً وتعني ما كانت تعنيه: `POST /knowledge/search`
+# يسمّي `k` لأن حجم النتيجة جزءٌ من عقده المنشور (03 §2) لا مقبضُ معايرةٍ حصرته س-24 في
+# `Settings`. و`limit` على `list_document_names` نفسُ الشكل حرفاً بحرف
+# (‏`Settings.retrieval.max_corpus_names`)، وبها سقطت `_MAX_CORPUS_NAMES = 50` من الوكيل.
+# `answer` تُصنّف ثمّ تُرسل: `SUMMARIZE_DOC` إلى `RequestSummary` فيعود `summary_job_id`،
+# و`CONTENT` إلى `RetrieveContext` فتعود `chunks`. يُملأ أحدُهما لا كلاهما، وهما حقلان لا
+# اتّحادٌ لأن المستدعي يعرضهما مختلفَين. و`intent` تُعلَن **بصدق** حتّى حين لم يجرِ مسارُها:
+# سؤالُ تلخيصٍ لم يُعرَف مستندُه يعود `SUMMARIZE_DOC` بـ`summary_job_id = None` وبقطعِ CONTENT
+# في اليد، وهو ما يجعل السؤال التوضيحيّ ممكناً أصلاً (س-18 = أ) — وجوابٌ يقول `CONTENT` كان
+# سيمحو دليلَه. و`clarification_options` **أسماءُ ملفّاتٍ** لا كائناتِ مرشّحين ولا جملةً
+# مُصاغة: س-18 = أ جعلت التوضيح **نصَّ إجابةٍ عاديّاً** على البثّ القائم، فالصياغةُ ولغتُها
+# للمستدعي، والوحدةُ تدين له بالحقائق وحدها (حدثُ `clarification` مُهيكَلاً مسجَّلٌ في §7 من
+# خطّة الاسترجاع خارج النطاق: يمسّ عقد البثّ، وهذا الحقلُ لا يمسّه).
+# و`answer` وحدها تُقيّد النطاق بملفٍّ يسمّيه السؤال، و**صارمةً** (الصفّ ١٥، `P-25`): ملفٌّ
+# مسمّى لا يحمل شيئاً يعود بـ`chunks` فارغة، ولا يُعاد البحثُ على بقيّة الكوربوس — إجابةٌ
+# من ملفٍّ لم يسأل عنه المستخدم أسوأ من «ليس في ذلك الملفّ». و`retrieve` تبقى بلا تصنيفٍ
+# ولا تقييد: هي البحث الحرفيّ الذي يعنيه `POST /knowledge/search`، وتوجيهُ بحثٍ REST عبر
+# مُصنِّفٍ كان سيُدرِج مهمّةَ تلخيصٍ لم يطلبها أحد.
 
 # conversations/ports/repository.py
 class ConversationRepository(Protocol):
     async def get(self, ctx, conv_id: Uuid) -> Conversation | None: ...
     async def add(self, ctx, conv: Conversation) -> None: ...
-    async def list_by_agent(self, ctx, agent_key: str, *, limit: int, cursor: str | None) -> Page[Conversation]: ...
+    async def list_by_agent(self, ctx, agent_key: str, *, space_id: Uuid | None,
+                            limit: int, cursor: str | None) -> Page[Conversation]: ...
     async def append_message(self, ctx, msg: Message) -> None: ...          # يزيد seq بقفل تفاؤلي
     async def list_files(self, ctx, conv_id: Uuid) -> list[PinnedFile]: ...          # نطاق الاسترجاع المثبَّت
-    async def pin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> PinnedFile: ...   # مثاليّ: يعيد الأصلي
+    async def pin_file(self, ctx, conv_id: Uuid, file_id: Uuid, now: datetime) -> PinnedFile: ...  # مثاليّ: يعيد الأصلي
     async def unpin_file(self, ctx, conv_id: Uuid, file_id: Uuid) -> None: ...       # مثاليّ: غيابه ليس خطأ
-    async def counts_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[str, int]: ...  # عمود `GET /spaces`
+    async def counts_by_space(self, ctx, space_ids: Sequence[Uuid]) -> Mapping[Uuid, int]: ...  # عمود `GET /spaces`
     async def purge_space(self, ctx, space_id: Uuid) -> int: ...   # messages + conversation_files + conversations
 
 # conversations/ports/files.py — الملفّ كما تراه المحادثة (لا استيراد لـ`app.modules.files`)
