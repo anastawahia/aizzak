@@ -13,6 +13,18 @@ CONTENT-only) and no Postgres hydrate — each Qdrant point's payload already
 carries its own ``text`` (written by ``IndexDocument``), so fused ranking is
 the only extra work needed.
 
+Pipeline shape (retrieval plan §3.7, plan step 8, ``P-26``): fusion → **keep
+3x k** → ``filter_relevant`` → (plan step 9's future parent-expansion,
+reserved on the indexing plan) → (plan step 10's future context budget) →
+final ``k``. ``execute`` widens back OUT to ``3 * k`` candidates right after
+RRF fusion (``_FUSION_RETENTION``, decoupled from ``_SEARCH_OVERFETCH`` below
+— see that constant's own comment) — narrowing straight to ``k`` here, before
+``filter_relevant`` even runs, would starve plan step 9's parent-expansion of
+the diversity it needs to fill ``k`` with distinct sections instead of
+collapsing into two parents (§3.7's own stated failure mode). The PUBLIC
+result still honours the caller's ``k`` exactly: only the very last line of
+``execute`` truncates to it.
+
 Every vector search filter carries ``workspace_id`` on BOTH legs (DD-04) —
 the single per-workspace collection is shared by every document, so tenant
 isolation here is a payload filter, exactly like ``memory.RecallRelevant``.
@@ -69,8 +81,21 @@ _MAX_K = 50  # mirrors Settings.Limits.max_rag_k (07-nfr-slo §4)
 _W_DENSE = 0.5
 _W_BM25 = 0.5
 _RRF_K = 60
+# How many raw hits EACH leg (dense, BM25-sparse) fetches from the vector
+# store -- a search-recall concern, unrelated to how many FUSED candidates
+# survive past RRF (see `_FUSION_RETENTION` below).
 _SEARCH_OVERFETCH = 3
 _MAX_SEARCH = 100
+# Diversity retention factor, not a quality threshold (retrieval plan
+# §3.7/§4 step 8, `P-26`; §3.8 keeps every quality threshold at `0.0` until a
+# calibration set exists). Keeping 3x the caller's `k` past RRF fusion gives
+# the future parent-expansion step (plan step 9, `P-34`) enough distinct
+# candidates to fill the final `k` with distinct sections instead of
+# collapsing into two parents (§3.7's stated failure mode). Deliberately its
+# OWN constant, decoupled from `_SEARCH_OVERFETCH` even though both default
+# to 3 today -- plan step 18 (`P-30`) sweeps every module-level knob in this
+# file, including this one, into `Settings` together.
+_FUSION_RETENTION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +141,11 @@ class RetrieveContext:
             raise ValidationError("retrieval query must not be empty")
         k = max(1, min(k, _MAX_K))
         search_k = min(k * _SEARCH_OVERFETCH, _MAX_SEARCH)
+        # Post-fusion retention (plan step 8, `P-26`) -- see `_FUSION_RETENTION`'s
+        # own comment above. Independent of `search_k`: this is how many of
+        # the FUSED, ranked candidates survive into `filter_relevant` below,
+        # not how many raw hits each leg fetches.
+        retain_k = min(k * _FUSION_RETENTION, _MAX_SEARCH)
 
         collection = knowledge_collection(ctx.workspace_id)
         flt: Json = {"workspace_id": ctx.workspace_id}
@@ -183,10 +213,16 @@ class RetrieveContext:
         best_dense_score = max((hit.score for hit in dense_hits), default=None)
         best_bm25_score = max((hit.score for hit in sparse_hits), default=None)
 
+        # `top_k=retain_k`, NOT `search_k` (plan step 8, `P-26`) -- the fused,
+        # ranked list handed to `filter_relevant` below is `3 * k` deep, wider
+        # than the vector-store fetch's own overfetch factor, so a later
+        # narrowing stage (plan step 9's parent expansion) has enough
+        # distinct candidates to work with. Only the FINAL `chunks` line
+        # below narrows back down to the caller's `k`.
         fused = reciprocal_rank_fusion(
             [hit.id for hit in dense_hits],
             [hit.id for hit in sparse_hits],
-            top_k=search_k,
+            top_k=retain_k,
             weight_dense=_W_DENSE,
             weight_bm25=_W_BM25,
             rrf_k=_RRF_K,
@@ -197,6 +233,9 @@ class RetrieveContext:
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
         relevant = filter_relevant(scored)
+        # The ONLY narrowing to the caller's `k` in this whole pipeline (plan
+        # step 8's ordering rule "٨ قبل ٩" -- widen here, narrow later, never
+        # the reverse).
         chunks = [
             _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in relevant[:k]
         ]

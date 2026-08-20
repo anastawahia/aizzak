@@ -30,6 +30,7 @@ from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.types import Json
+from app.modules.knowledge.application import retrieval as retrieval_module
 from app.modules.knowledge.application.indexing import (
     IndexDocument,
     IndexOutcome,
@@ -2178,6 +2179,63 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
     # k clamped down to <=50: search_k = min(50 * _SEARCH_OVERFETCH, _MAX_SEARCH) == 100
     assert vectors.search_calls[-1][1] == 100
     assert vectors.search_sparse_calls[-1][1] == 100
+
+
+async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P-26 (retrieval plan §3.7, plan step 8): the pipeline widens back OUT
+    to ``3 * k`` fused candidates right after RRF fusion -- BEFORE
+    ``filter_relevant`` runs -- so a later narrowing stage (plan step 9's
+    future parent expansion) has enough distinct candidates to fill ``k``
+    with distinct sections instead of collapsing into two parents (§3.7's
+    own stated failure mode). Proven by spying on ``filter_relevant`` itself
+    (the very next stage after fusion in the pipeline diagram): with a
+    fused pool wider than ``k``, strictly MORE than ``k`` candidates must
+    reach it, even though the PUBLIC result still honours ``k`` exactly."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    k = 2
+    # Ten distinct (non-near-duplicate) chunks, each sharing the query's
+    # "quarterly planning" terms so BOTH legs surface a full `search_k`
+    # (== 6, below) worth of hits -- comfortably more than `k`.
+    texts = [
+        "revenue projections for the sales department in quarterly planning",
+        "employee benefits enrollment closes soon per quarterly planning",
+        "office renovation timeline shifts under quarterly planning",
+        "marketing budget allocation grows under quarterly planning",
+        "support ticket volume dropped during quarterly planning",
+        "supply chain delays were flagged in quarterly planning",
+        "software rollout schedule moved after quarterly planning",
+        "training enrollment rose sharply this quarterly planning",
+        "facilities maintenance was prioritized in quarterly planning",
+        "vendor contracts are under review per quarterly planning",
+    ]
+    await _seed_corpus(vectors, ctx, "doc-1", texts)
+
+    seen_candidate_counts: list[int] = []
+    real_filter_relevant = retrieval_module.filter_relevant
+
+    def _spy_filter_relevant(
+        candidates: Sequence[ScoredChunk], **kwargs: float | bool
+    ) -> list[ScoredChunk]:
+        seen_candidate_counts.append(len(candidates))
+        return real_filter_relevant(candidates, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(retrieval_module, "filter_relevant", _spy_filter_relevant)
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=k
+    )
+
+    assert seen_candidate_counts  # filter_relevant was actually reached
+    # min(k * _FUSION_RETENTION, _MAX_SEARCH) == min(2 * 3, 100) == 6 -- both
+    # legs return a full `search_k` (== 6) worth of hits out of the 10-chunk
+    # corpus, so their union is always >= 6.
+    assert seen_candidate_counts[-1] == 6
+    assert seen_candidate_counts[-1] > k  # the widening the step exists for
+    assert len(result.chunks) <= k  # the PUBLIC result still honours k
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
