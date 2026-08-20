@@ -24,6 +24,7 @@ from app.agents.rag_agent.manifest import METADATA
 from app.agents.rag_agent.prompts import SYSTEM_PROMPT
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
 from app.framework.agent_runtime.deps_ports import RetrievedChunkView
+from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.errors import AppError, ValidationError
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
 
@@ -95,7 +96,17 @@ class RagAgent(BaseAgent):
     def _messages(query: str, chunks: Sequence[RetrievedChunkView]) -> list[LlmMessage]:
         system = SYSTEM_PROMPT
         if chunks:
-            context = "\n\n".join(f"[{i + 1}] {c.text}" for i, c in enumerate(chunks))
+            # Retrieval plan §3.2/P-31 — the source label is added HERE, at
+            # display time, above each chunk's own text; the shared unit
+            # (`source_label.format_labeled_chunk`) is the single place that
+            # shape is built, reused later by the internal `context_text`
+            # capability (§3.11, P-39).
+            context = "\n\n".join(
+                format_labeled_chunk(
+                    c.text, file_name=c.file_name, page_number=c.page_number, section=c.section
+                )
+                for c in chunks
+            )
             system = f"{SYSTEM_PROMPT}\n\nContext:\n{context}"
         return [
             LlmMessage(role="system", content=system),

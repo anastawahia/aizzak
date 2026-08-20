@@ -395,6 +395,9 @@ class _FakeChunk:
         self.chunk_id = chunk_id
         self.text = text
         self.score = 0.9
+        self.file_name: str | None = None
+        self.page_number: int | None = None
+        self.section: str | None = None
 
 
 class _FakeKnowledge:

@@ -46,11 +46,23 @@ def make_ctx() -> ExecutionContext:
 class FakeChunk:
     """Structurally satisfies ``RetrievedChunkView``."""
 
-    def __init__(self, chunk_id: str, text: str, *, score: float = 0.9) -> None:
+    def __init__(
+        self,
+        chunk_id: str,
+        text: str,
+        *,
+        score: float = 0.9,
+        file_name: str | None = None,
+        page_number: int | None = None,
+        section: str | None = None,
+    ) -> None:
         self.document_id = "doc-1"
         self.chunk_id = chunk_id
         self.text = text
         self.score = score
+        self.file_name = file_name
+        self.page_number = page_number
+        self.section = section
 
 
 class FakeKnowledge:
@@ -194,6 +206,66 @@ async def test_retrieved_context_is_injected_into_the_system_prompt() -> None:
     assert "Paris is the capital." in system_message.content
     assert llm.stream_calls[0][1].model == "fake-model"
     assert llm.stream_calls[0][2] == "k"
+
+
+# --------------------------------------------------------------------------- #
+# Source labeling (retrieval plan §3.2, row ٢ — P-31)                        #
+# --------------------------------------------------------------------------- #
+
+
+async def test_context_carries_the_full_source_label_above_the_chunk_text() -> None:
+    deps, _knowledge, llm = make_deps(
+        chunks=[
+            FakeChunk(
+                "c1",
+                "Paris is the capital.",
+                file_name="maintenance.pdf",
+                page_number=12,
+                section="المسؤوليات",
+            )
+        ]
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert (
+        "[maintenance.pdf p.12 | section: المسؤوليات]\nParis is the capital."
+        in system_message.content
+    )
+
+
+@pytest.mark.parametrize(
+    ("file_name", "page_number", "section", "expected_label"),
+    [
+        ("maintenance.pdf", 12, "المسؤوليات", "[maintenance.pdf p.12 | section: المسؤوليات]"),
+        ("maintenance.pdf", None, "المسؤوليات", "[maintenance.pdf | section: المسؤوليات]"),
+        ("maintenance.pdf", 12, None, "[maintenance.pdf p.12]"),
+        ("maintenance.pdf", None, None, "[maintenance.pdf]"),
+        (None, 12, "المسؤوليات", "[unknown p.12 | section: المسؤوليات]"),
+        (None, None, None, "[unknown]"),
+    ],
+)
+async def test_the_label_degrades_deterministically_per_missing_field(
+    file_name: str | None,
+    page_number: int | None,
+    section: str | None,
+    expected_label: str,
+) -> None:
+    deps, _knowledge, llm = make_deps(
+        chunks=[
+            FakeChunk(
+                "c1",
+                "chunk body",
+                file_name=file_name,
+                page_number=page_number,
+                section=section,
+            )
+        ]
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert f"{expected_label}\nchunk body" in system_message.content
 
 
 async def test_without_knowledge_still_answers_with_no_citations() -> None:
