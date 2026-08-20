@@ -10,6 +10,7 @@ real ``PluginLoader``, and one full drive through the 4.2 lifecycle executor.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Sequence
 
 import pytest
@@ -27,6 +28,7 @@ from app.framework.agent_runtime import (
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ValidationError
 from app.framework.identifiers import new_uuid7
+from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 
 # --------------------------------------------------------------------------- #
@@ -761,6 +763,128 @@ async def test_a_content_route_answer_takes_the_normal_synthesis_path() -> None:
     assert events[-1].data["citations"] == [
         {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
     ]
+
+
+# --------------------------------------------------------------------------- #
+# The structured answer measurements (plan §3.11/§4 row 17, `P-29`, س-25 = أ) #
+# --------------------------------------------------------------------------- #
+def _answer_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    """The ONE ``rag_agent.answer`` record a turn emits -- the count is part
+    of the assertion: a second record would mean two exits ran, and none
+    would mean a path measures nothing."""
+    records = [record for record in caplog.records if record.getMessage() == "rag_agent.answer"]
+    assert len(records) == 1
+    return records[0]
+
+
+async def test_the_synthesis_path_measures_the_llm_and_the_whole_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retrieval plan §3.11's four measurements, on the path that has all of
+    them: ``llm_ms`` is a real duration (the provider stream ran),
+    ``context_nodes`` is what the model was actually given, and ``total_ms``
+    contains ``llm_ms`` because the turn contains the stream."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=["Paris", " is", " the capital."],
+        chunks=[FakeChunk("c1", "Paris is the capital of France.")],
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    record = _answer_record(caplog)
+    assert record.path == "synthesis"
+    assert record.retrieval_attempted is True
+    assert record.context_nodes == 1
+    assert record.fallback is False
+    assert isinstance(record.llm_ms, int)
+    assert record.llm_ms >= 0
+    assert record.total_ms >= record.llm_ms
+
+
+async def test_the_trust_gate_is_the_one_path_that_logs_fallback_true(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The plan's ``fallback`` measurement means the trust gate fired (plan
+    §3.3/§4 row 5, ``P-33``) -- and its companion is a ``null`` ``llm_ms``,
+    because that branch never calls the model. A `0` there would claim an
+    instantaneous provider instead of an absent one."""
+    deps, _knowledge, llm = make_deps(chunks=[])
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "anything at all?")
+
+    record = _answer_record(caplog)
+    assert record.path == "fallback"
+    assert record.fallback is True
+    assert record.retrieval_attempted is True
+    assert record.context_nodes == 0
+    assert record.llm_ms is None
+    assert llm.stream_calls == []  # the `null` is the truth, not an omission
+
+
+async def test_a_turn_with_no_knowledge_seam_logs_an_unattempted_retrieval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``retrieval_attempted`` separates the two ways a turn can carry no
+    context: nothing was ever asked (the optional-degrading mode), versus a
+    real retrieval that came back empty. Both show ``context_nodes == 0``, and
+    only the second is a ``fallback``."""
+    llm = FakeLLM(["ok"])
+    deps = AgentDependencies(llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"))
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "hi")
+
+    record = _answer_record(caplog)
+    assert record.path == "synthesis"
+    assert record.retrieval_attempted is False
+    assert record.fallback is False
+    assert record.context_nodes == 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_path"),
+    [
+        ({"summary_job_id": "job-1"}, "summary_receipt"),
+        ({"clarification_options": ("a.pdf", "b.pdf")}, "clarification"),
+    ],
+)
+async def test_the_two_no_llm_routes_name_themselves_and_report_a_null_llm_ms(
+    kwargs: dict[str, object], expected_path: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Three of ``run``'s four exits never call the model, so ``path`` is what
+    makes their ``null`` ``llm_ms`` readable -- without it a queued summary
+    and a fallback would be indistinguishable in the log."""
+    deps, _knowledge, llm = make_deps(**kwargs)  # type: ignore[arg-type]
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "لخّص الملف")
+
+    record = _answer_record(caplog)
+    assert record.path == expected_path
+    assert record.llm_ms is None
+    assert record.fallback is False
+    assert llm.stream_calls == []
+
+
+async def test_the_answer_record_carries_no_question_answer_or_document_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """10-code-standards §10: no sensitive user content in logs. Asserted on
+    the RENDERED line (the exact bytes a log sink receives), not on the
+    fields, so a future field cannot smuggle content past this test."""
+    question = "what did the quarterly report say about the northern region?"
+    answer_delta = "Revenue climbed 12% in the north."
+    chunk_text = "Northern region revenue for Q3 was 4.1 million."
+    deps, _knowledge, _llm = make_deps(
+        deltas=[answer_delta],
+        chunks=[FakeChunk("c1", chunk_text, file_name="quarterly-report.pdf")],
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), question)
+
+    rendered = JsonFormatter().format(_answer_record(caplog))
+    assert question not in rendered
+    assert answer_delta not in rendered
+    assert chunk_text not in rendered
+    assert "quarterly-report.pdf" not in rendered
 
 
 # --------------------------------------------------------------------------- #

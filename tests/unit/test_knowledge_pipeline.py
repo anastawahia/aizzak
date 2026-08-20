@@ -31,6 +31,7 @@ import pytest
 from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
+from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.settings.settings import Limits
@@ -3248,3 +3249,337 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
     assert result.chunks[0].chunk_id == chunk_point_id("doc-b", 0)
     assert vectors.search_calls[-1][2] == {"workspace_id": "ws-b"}
     assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws-b"}
+
+
+# --------------------------------------------------------------------------- #
+# The structured stage log (plan §3.11 / §4 row 17, `P-29`, س-25 = أ)          #
+# --------------------------------------------------------------------------- #
+# Every field one `knowledge.retrieval` record carries. Pinned as a SET, and
+# pinned at all, because this is the whole deliverable of row 17: the record
+# IS the interface (س-25 = أ keeps it out of the public contract, so nothing
+# else describes it), and a field silently renamed or dropped breaks a
+# dashboard with no test anywhere else to notice.
+_STAGE_LOG_FIELDS = {
+    "query_chars",
+    "k",
+    "search_k",
+    "sparse_k",
+    "retain_k",
+    "scoped_document_count",
+    "space_scoped",
+    "dense_count",
+    "sparse_count",
+    "dense_scores",
+    "sparse_scores",
+    "best_dense_score",
+    "best_bm25_score",
+    "dense_kept",
+    "sparse_kept",
+    "fused_count",
+    "candidates",
+    "origin_counts",
+    "relevant_count",
+    "widened_count",
+    "budgeted_count",
+    "delivered_chunk_ids",
+    "context_nodes",
+    "fallback",
+    "total_ms",
+}
+_RETRIEVAL_LOGGER = "app.modules.knowledge.application.retrieval"
+
+
+def _stage_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    """The ONE ``knowledge.retrieval`` record a call emits -- the count is
+    part of the assertion: two records would mean a return path logged
+    twice, and none would mean a path measures nothing at all."""
+    records = [r for r in caplog.records if r.getMessage() == "knowledge.retrieval"]
+    assert len(records) == 1
+    return records[0]
+
+
+def _stage_payload(record: logging.LogRecord) -> dict[str, Any]:
+    """The record as a log sink actually receives it -- rendered through the
+    real ``JsonFormatter`` (redaction included), then stripped of the
+    envelope keys every record carries."""
+    payload: dict[str, Any] = json.loads(JsonFormatter().format(record))
+    for envelope in ("time", "level", "logger", "message", "request_id", "correlation_id"):
+        payload.pop(envelope, None)
+    payload.pop("workspace_id", None)
+    return payload
+
+
+async def test_retrieve_context_emits_one_stage_record_carrying_every_stage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Plan §3.11's first requirement -- "عدّ ودرجات كلّ مرحلة": one record
+    per call, with a count for every stage of the pipeline and the two
+    ``P-28`` confidence signals, so a retrieval that returned two chunks can
+    be explained without re-running it."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(
+        vectors,
+        ctx,
+        "doc-1",
+        [
+            "quarterly revenue figures for the northern region",
+            "quarterly revenue commentary for the southern region",
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query="quarterly revenue figures", model="m", api_key="k", k=2
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert set(payload) == _STAGE_LOG_FIELDS
+    assert payload["query_chars"] == len("quarterly revenue figures")
+    assert (payload["k"], payload["search_k"], payload["sparse_k"], payload["retain_k"]) == (
+        2,
+        6,
+        6,
+        6,
+    )
+    assert payload["scoped_document_count"] is None
+    assert payload["space_scoped"] is False
+    # The count chain, stage by stage: nothing appears out of nowhere and the
+    # delivered chunks are what the caller actually got.
+    assert payload["dense_count"] == payload["dense_kept"] == 2
+    assert payload["sparse_count"] == payload["sparse_kept"] == 2
+    assert payload["fused_count"] == 2
+    assert payload["relevant_count"] == payload["widened_count"] == payload["budgeted_count"] == 2
+    assert payload["context_nodes"] == len(result.chunks) == 2
+    assert payload["delivered_chunk_ids"] == [chunk.chunk_id for chunk in result.chunks]
+    assert payload["fallback"] is False
+    assert payload["total_ms"] >= 0
+    # The `P-28` signals ride along, exactly as the plan's §3.11 asks
+    # ("والدرجات الخامّ") -- the same numbers the result carries.
+    assert payload["best_dense_score"] == pytest.approx(result.best_dense_score)
+    assert payload["best_bm25_score"] == pytest.approx(result.best_bm25_score)
+
+
+async def test_retrieve_context_stage_scores_are_the_legs_own_not_rrfs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Plan §3.11's load-bearing detail -- "لقطة **قبل** أن يدهس RRF الدرجات
+    الخامّ". The per-leg scores are captured BEFORE fusion, so they are the
+    store's own cosine numbers; RRF's are a different quantity on a
+    different scale (``Σ w/(60+rank)`` -- thousandths however good the
+    candidate) and live in their own ``rrf_score`` field. Proved by
+    arithmetic rather than by inspection: the raw dense scores here are
+    EXACTLY ``1.0`` and ``-1.0`` (hand-placed vectors), values RRF can never
+    produce."""
+    query = "ZX9000QRS calibration"
+    near_text = "the ZX9000QRS calibration procedure for the north wing"
+    far_text = "an unrelated onboarding checklist for new employees"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await vectors.upsert(
+        knowledge_collection(ctx.workspace_id),
+        [
+            _hand_built_point(ctx, "doc-1", 0, near_text, [1.0, 0.0, 0.0, 0.0]),
+            _hand_built_point(ctx, "doc-1", 1, far_text, [-1.0, 0.0, 0.0, 0.0]),
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query=query, model="m", api_key="k", k=2
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert payload["dense_scores"] == pytest.approx([1.0, -1.0])
+    assert payload["best_dense_score"] == pytest.approx(1.0)
+    # A NEGATIVE score survived into the record: nothing between the store
+    # and the log clipped or re-based the leg's own scale (the shipped floors
+    # are `0.0` = disabled by an explicit branch -- plan step 16).
+    assert min(payload["dense_scores"]) < 0.0
+    # ... and RRF's numbers are demonstrably NOT those: every fused score is
+    # below `_W_DENSE / (_RRF_K + 1)`, the largest value the formula can
+    # award a single-leg rank-1 candidate.
+    rrf_ceiling = (retrieval_module._W_DENSE + retrieval_module._W_BM25) / (
+        retrieval_module._RRF_K + 1
+    )
+    assert [candidate["rrf_score"] for candidate in payload["candidates"]]
+    assert all(candidate["rrf_score"] <= rrf_ceiling for candidate in payload["candidates"])
+    assert all(
+        candidate["rrf_score"] not in payload["dense_scores"] for candidate in payload["candidates"]
+    )
+
+
+async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Plan §3.11's ``retrieval_origin`` tag: ``dense`` / ``bm25`` / ``both``.
+    All three occur here at once -- a chunk both legs voted for, a chunk only
+    the dense leg reached, and a lexically-rescued chunk whose vector is the
+    WORST in the corpus (the hybrid pipeline's own justification, showing up
+    as data)."""
+    query = "ZX9000QRS calibration"
+    both_text = "the ZX9000QRS calibration procedure for the north wing"
+    dense_text = "an onboarding checklist for new employees joining the team"
+    unlisted_text = "cafeteria menu changes announced for the coming month"
+    sparse_text = "refer to the ZX9000QRS calibration steps in appendix B"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await vectors.upsert(
+        knowledge_collection(ctx.workspace_id),
+        [
+            _hand_built_point(ctx, "doc-1", 0, both_text, [1.0, 0.0, 0.0, 0.0]),
+            _hand_built_point(ctx, "doc-1", 1, dense_text, [0.8, 0.6, 0.0, 0.0]),
+            _hand_built_point(ctx, "doc-1", 2, unlisted_text, [0.6, 0.8, 0.0, 0.0]),
+            _hand_built_point(ctx, "doc-1", 3, sparse_text, [-1.0, 0.0, 0.0, 0.0]),
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query=query, model="m", api_key="k", k=1
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    tagged = {
+        candidate["chunk_id"]: candidate["retrieval_origin"] for candidate in payload["candidates"]
+    }
+    assert tagged[chunk_point_id("doc-1", 0)] == "both"
+    assert tagged[chunk_point_id("doc-1", 1)] == "dense"
+    # The dense leg never returned it (its vector is the corpus's worst
+    # match); it is in the pool on lexical recall alone.
+    assert tagged[chunk_point_id("doc-1", 3)] == "bm25"
+    assert payload["origin_counts"] == {"dense": 1, "bm25": 1, "both": 1}
+    assert sum(payload["origin_counts"].values()) == payload["fused_count"]
+
+
+async def test_retrieve_context_logs_fallback_true_when_it_returns_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The plan's ``fallback`` measurement, recorded from the one vantage
+    point that can also say WHY: zero chunks here is the exact condition the
+    honest-fallback trust gate one layer up fires on (plan step 5,
+    ``P-33``), and the stage counts beside it are the explanation."""
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        result = await RetrieveContext(
+            FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()
+        ).execute(_ctx(), space_id=None, query="anything at all", model="m", api_key="k")
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert result.chunks == []
+    assert payload["fallback"] is True
+    assert payload["context_nodes"] == 0
+    assert payload["dense_count"] == payload["sparse_count"] == 0
+    # An empty leg's signal is honestly absent in the log too, never `0.0`
+    # (retrieval plan §3.3) -- a real score on a cosine scale.
+    assert payload["best_dense_score"] is None
+    assert payload["best_bm25_score"] is None
+
+
+async def test_retrieve_context_an_empty_scope_logs_the_same_record_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The early return (a scope that resolved to no documents -- BE-RAG-005)
+    searches nothing, and it is the one outcome nothing downstream could
+    otherwise explain. It emits the SAME field set as a full run, so a log
+    query never has to special-case it: ``scoped_document_count == 0`` beside
+    ``dense_count == 0`` says "a scope resolved to nothing", not "the corpus
+    had nothing to say"."""
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["quarterly revenue figures for the north"])
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
+            ctx,
+            space_id=None,
+            query="quarterly revenue",
+            model="m",
+            api_key="k",
+            document_ids=[],
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert set(payload) == _STAGE_LOG_FIELDS
+    assert payload["scoped_document_count"] == 0
+    assert payload["dense_count"] == 0
+    assert payload["fallback"] is True
+    assert vectors.search_calls == []  # nothing was searched, and the record says so
+
+
+async def test_retrieve_context_stage_record_samples_the_numbers_never_the_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``_LOG_RANKING_SAMPLE`` bounds how deep the record quotes ACTUAL
+    numbers, so a large ``k`` cannot turn one retrieval into a log entry
+    hundreds of scores long. The counts stay EXACT -- they are what the
+    sample is bounded against."""
+    sample = retrieval_module._LOG_RANKING_SAMPLE
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    corpus = [f"quarterly revenue figures for region number {index}" for index in range(sample + 5)]
+    await _seed_corpus(vectors, ctx, "doc-1", corpus)
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query="quarterly revenue figures", model="m", api_key="k", k=50
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert payload["dense_count"] == len(corpus)
+    assert payload["fused_count"] == len(corpus)
+    assert len(payload["dense_scores"]) == sample
+    assert len(payload["sparse_scores"]) <= sample
+    assert len(payload["candidates"]) == sample
+    # The aggregate still covers EVERY candidate, not just the sampled head.
+    assert sum(payload["origin_counts"].values()) == len(corpus)
+
+
+async def test_retrieve_context_stage_record_carries_no_document_or_query_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """10-code-standards §10: no sensitive user content in logs. The record
+    holds counts, scores, ids, origins and durations -- never a chunk's text,
+    never a file name, and never the question, which is present as its LENGTH
+    alone. Asserted on the RENDERED line (the exact bytes a sink receives),
+    so a future field cannot smuggle content past this test."""
+    query = "what did the quarterly report say about the northern region?"
+    chunk_text = "northern region revenue for the third quarter reached four million"
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(
+                chunk_text,
+                order=0,
+                metadata={
+                    "file_name": "quarterly-report.pdf",
+                    "page_number": 4,
+                    "section": "Regional Breakdown",
+                },
+            )
+        ]
+    )
+    await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query=query, model="m", api_key="k", k=1
+        )
+
+    assert result.chunks  # the record below describes a real, non-empty answer
+    record = _stage_record(caplog)
+    rendered = JsonFormatter().format(record)
+    assert query not in rendered
+    assert chunk_text not in rendered
+    assert "quarterly-report.pdf" not in rendered
+    assert "Regional Breakdown" not in rendered
+    # What DOES stand in for the question: its length, which explains a
+    # degenerate embedding or an empty sparse leg without quoting a word.
+    assert _stage_payload(record)["query_chars"] == len(query)

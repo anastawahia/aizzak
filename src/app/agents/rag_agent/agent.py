@@ -67,6 +67,17 @@ the only way that branch can reflect what the corpus holds is to say so in
 the sentence the user actually reads. One shared builder, so the two paths
 can never describe two different corpora.
 
+**Answer measurements (retrieval plan §3.11/§4 row 17, ``P-29``, س-25 = أ):**
+``run`` emits ONE ``rag_agent.answer`` record per turn — ``path`` ·
+``retrieval_attempted`` · ``context_nodes`` · ``fallback`` · ``llm_ms`` ·
+``total_ms`` (see ``_log_answer``). ``llm_ms`` lives HERE and nowhere else:
+the knowledge module's own ``knowledge.retrieval`` record measures retrieval,
+but the provider stream is this agent's, and the three no-LLM branches below
+are the only place that can honestly report ``null`` for it. Nothing of the
+answer, the question or the documents is logged — counts and durations only
+(10-code-standards §10) — and none of it reaches the streaming contract,
+which still carries exactly ``token`` and ``final`` (س-25 = أ, plan §7).
+
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
 at 4.7; usage enforcement/capture, conversation persistence (D-12) and SSE/WS
@@ -79,6 +90,7 @@ directly rather than via a tool.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import AsyncIterator, Sequence
 
 from app.agents.rag_agent.manifest import METADATA
@@ -87,7 +99,10 @@ from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, Bas
 from app.framework.agent_runtime.deps_ports import RetrievedChunkView, RoutedAnswerView
 from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.errors import AppError, ValidationError
+from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
+
+_logger = get_logger(__name__)
 
 _TOP_K = 5
 
@@ -153,6 +168,17 @@ _CORPUS_EMPTY_AR = "لا توجد ملفّات في مساحة العمل بعد
 _CORPUS_LABEL_EN = "Workspace files:"
 _CORPUS_LABEL_AR = "ملفّات مساحة العمل:"
 
+# The `path` field of the `rag_agent.answer` record (retrieval plan §3.11/§4
+# row 17, `P-29`) — which of `run`'s four exits this turn took. It is what
+# makes a `llm_ms` of `null` readable: three of the four never call the model
+# at all, and without the name they would be indistinguishable from a
+# provider that answered instantaneously.
+_PATH_SYNTHESIS = "synthesis"
+_PATH_FALLBACK = "fallback"
+_PATH_SUMMARY_RECEIPT = "summary_receipt"
+_PATH_CLARIFICATION = "clarification"
+_MS_PER_SECOND = 1000
+
 
 class RagAgent(BaseAgent):
     """Retrieval-augmented Q&A over the workspace knowledge base."""
@@ -165,6 +191,12 @@ class RagAgent(BaseAgent):
         return None
 
     async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        # Retrieval plan §3.11 (`P-29`) — the turn's clock, started before any
+        # work so `total_ms` covers routing, retrieval, the corpus listing and
+        # synthesis together. A request that RAISES (no LLM bound, blank
+        # input) emits no record: those are errors, and the error path already
+        # has its own reporting.
+        started = time.perf_counter()
         query = self._query(req)
         binding = self.deps.llm
         if binding is None:
@@ -232,6 +264,14 @@ class RagAgent(BaseAgent):
             # listing the workspace's files back at them would answer a
             # question nobody asked.
             receipt = self._summary_queued_answer(query)
+            self._log_answer(
+                path=_PATH_SUMMARY_RECEIPT,
+                retrieval_attempted=retrieval_attempted,
+                context_nodes=0,
+                fallback=False,
+                llm_ms=None,
+                started=started,
+            )
             yield AgentEvent(type="token", data={"delta": receipt})
             yield AgentEvent(type="final", data={"text": receipt, "citations": []})
             return
@@ -255,6 +295,14 @@ class RagAgent(BaseAgent):
             # whole workspace listing under a question about three specific
             # candidates would bury the choice it is asking the user to make.
             clarification = self._clarification_question(query, routed.clarification_options)
+            self._log_answer(
+                path=_PATH_CLARIFICATION,
+                retrieval_attempted=retrieval_attempted,
+                context_nodes=0,
+                fallback=False,
+                llm_ms=None,
+                started=started,
+            )
             yield AgentEvent(type="token", data={"delta": clarification})
             yield AgentEvent(type="final", data={"text": clarification, "citations": []})
             return
@@ -295,21 +343,91 @@ class RagAgent(BaseAgent):
             fallback = self._fallback_answer(query)
             if corpus_header is not None:
                 fallback = f"{fallback}\n\n{corpus_header}"
+            # The one record whose `fallback` is `True` (retrieval plan
+            # §3.11's own measurement): the trust gate fired, and `llm_ms` is
+            # `null` because this branch never calls the model. The knowledge
+            # module logged `fallback: true` from its side of the same turn
+            # too, with the stage counts that say WHY the chunks were zero.
+            self._log_answer(
+                path=_PATH_FALLBACK,
+                retrieval_attempted=retrieval_attempted,
+                context_nodes=0,
+                fallback=True,
+                llm_ms=None,
+                started=started,
+            )
             yield AgentEvent(type="token", data={"delta": fallback})
             yield AgentEvent(type="final", data={"text": fallback, "citations": []})
             return
         messages = self._messages(query, chunks, corpus_header)
         params = LlmParams(model=binding.model)
         answer: list[str] = []
+        # `llm_ms` (retrieval plan §3.11) — the provider stream's WALL time,
+        # from the request to the last token consumed. Consumer backpressure
+        # is inside it, unavoidably: the tokens are yielded onward as they
+        # arrive (that is what streaming means), so no clock this agent can
+        # read separates the model's time from its reader's.
+        llm_started = time.perf_counter()
         async for chunk in binding.provider.stream(messages, params, binding.api_key):
             if chunk.delta:
                 answer.append(chunk.delta)
                 yield AgentEvent(type="token", data={"delta": chunk.delta})
+        self._log_answer(
+            path=_PATH_SYNTHESIS,
+            retrieval_attempted=retrieval_attempted,
+            context_nodes=len(chunks),
+            fallback=False,
+            llm_ms=_elapsed_ms(llm_started),
+            started=started,
+        )
         yield AgentEvent(
             type="final",
             data={
                 "text": "".join(answer),
                 "citations": [self._citation(c) for c in chunks],
+            },
+        )
+
+    @staticmethod
+    def _log_answer(
+        *,
+        path: str,
+        retrieval_attempted: bool,
+        context_nodes: int,
+        fallback: bool,
+        llm_ms: int | None,
+        started: float,
+    ) -> None:
+        """The turn's one structured record (retrieval plan §3.11/§4 row 17,
+        ``P-29``, س-25 = أ) — emitted from each of ``run``'s four exits,
+        never from a ``finally``: an async generator abandoned mid-stream
+        would otherwise log a turn that never finished, at whatever moment
+        the event loop happened to close it.
+
+        ``llm_ms is None`` means the model was NEVER CALLED, which is a real
+        and frequent outcome here (a queued summary, a clarification
+        question, the honest fallback) — never "we forgot to measure". The
+        pair ``retrieval_attempted`` + ``fallback`` separates the two ways a
+        turn can carry no context: no knowledge seam wired at all (the
+        optional-degrading mode — attempted ``False``), versus a real
+        retrieval that came back empty (attempted ``True``, fallback
+        ``True``).
+
+        Every field is a count, a flag, a duration or a fixed path name. The
+        question, the answer text, the file names and the chunk text are all
+        user content and none of them is here (10-code-standards §10); the
+        chunk IDS that make a retrieval traceable are logged one layer down,
+        by the knowledge module, where they are read from.
+        """
+        _logger.info(
+            "rag_agent.answer",
+            extra={
+                "path": path,
+                "retrieval_attempted": retrieval_attempted,
+                "context_nodes": context_nodes,
+                "fallback": fallback,
+                "llm_ms": llm_ms,
+                "total_ms": _elapsed_ms(started),
             },
         )
 
@@ -452,3 +570,17 @@ class RagAgent(BaseAgent):
         listed = ", ".join(names)
         tail = f", and {remaining} more files." if remaining else "."
         return f"{_CORPUS_LABEL_EN} {listed}{tail}"
+
+
+def _elapsed_ms(started: float) -> int:
+    """Whole milliseconds since ``started`` on the MONOTONIC clock — never the
+    wall clock, which an NTP step could run backwards mid-answer and turn a
+    duration into a negative number.
+
+    A module function rather than a shared ``observability`` helper: this
+    agent imports nothing beyond ``self.deps`` and the framework kernel it
+    already names, and adding an undesigned public helper to that kernel to
+    save one line is a wider change than the duplication it removes (recorded
+    in the plan's §7, alongside the knowledge module's identical copy).
+    """
+    return round((time.perf_counter() - started) * _MS_PER_SECOND)

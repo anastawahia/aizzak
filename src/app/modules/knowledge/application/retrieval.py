@@ -110,16 +110,46 @@ is a MAXIMUM too.
 A leg that returned no hits at all makes its signal honestly absent
 (``None``), never ``0.0`` — on a cosine (or dot-product) scale ``0.0`` is a
 real, meaningful score, not "no data".
+
+**The structured stage log (plan step 17, ``P-29``; retrieval plan §3.11,
+س-25 = أ).** Every call to ``execute`` emits ONE ``knowledge.retrieval``
+record through ``get_logger`` carrying the count and the scores of each
+stage, the per-candidate ``retrieval_origin`` tag, and the
+``total_ms``/``context_nodes``/``fallback`` measurements — see
+``_log_stages`` for the field list and ``_STAGE_LOG_DEFAULTS`` for why every
+path emits the SAME shape. Two properties of it are load-bearing:
+
+* **The per-leg numbers are snapshotted BEFORE fusion.** ``dense_scores`` /
+  ``sparse_scores`` (and the two ``best_*`` signals) are read off
+  ``dense_hits``/``sparse_hits`` at the same point ``P-28``'s snapshot is
+  taken, which is lexically ABOVE the ``reciprocal_rank_fusion`` call.
+  ``FusedChunk.score`` is a brand-new RRF number on a different scale
+  entirely (``Σ w/(60+rank)`` — thousandths, however good the candidate), so
+  a snapshot taken any later would report RRF's arithmetic under the legs'
+  names. The two live side by side in the record, never in the same field:
+  raw per-leg scores in ``dense_scores``/``sparse_scores``, RRF's own in
+  each ``candidates`` entry's ``rrf_score``.
+* **Nothing from the documents themselves is logged** (10-code-standards
+  §10: no sensitive user content). Counts, scores, ids, origins and
+  durations only — never a chunk's text, never a file name, and never the
+  query, which is present as ``query_chars`` (its LENGTH) alone.
+
+This is observability, NOT contract: س-25 = أ keeps ``stages`` out of the
+response models, out of ``openapi.yaml`` and out of the streaming contract
+(the stages expose index structure and would need permission scoping — plan
+§7).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
+from app.framework.observability import get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorHit
 from app.framework.types import Json
@@ -130,6 +160,8 @@ from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import build_sparse_terms
 from app.modules.knowledge.domain.value_objects import ParentChunkText
 from app.modules.knowledge.ports.retrieval import ParentChunkRepository, RetrievedChunk
+
+log = get_logger(__name__)
 
 _MAX_K = 50  # mirrors Settings.Limits.max_rag_k (07-nfr-slo §4)
 # fusion.py does not normalize weights internally (3.k2) -- these already sum
@@ -228,6 +260,57 @@ _MIN_BM25_SCORE = 0.0
 # the tail actually grows -- at the `_MAX_K` ceiling it cuts the sparse fetch
 # from 100 down to 20 -- and the dense leg is never capped by it.
 _MAX_SPARSE_CANDIDATES = 20
+# --------------------------------------------------------------------------- #
+# The structured stage log (plan step 17, `P-29`; retrieval plan §3.11)       #
+# --------------------------------------------------------------------------- #
+# How deep into a ranking the log quotes ACTUAL numbers. The head of a ranking
+# is the part any calibration reads (the floors `P-38` will set live at the
+# TOP of a leg's scores, and `_MIN_BM25_SCORE`'s scale can only be learnt from
+# real values there); the tail is a magnitude, and every `*_count` field
+# carries it EXACTLY. So a `k = 50` request logs a bounded record instead of
+# 100 dense scores + 100 sparse scores + 100 candidate tags, at no cost to
+# anything the numbers are for. Not a `Settings` knob: it is a log-shape
+# constant, and س-24 governs RETRIEVAL tuning, none of which this changes.
+_LOG_RANKING_SAMPLE = 20
+# The three `retrieval_origin` values (retrieval plan §3.11) — which leg(s)
+# voted for a fused candidate. `both` is the interesting one: it is the
+# hybrid pipeline's whole justification showing up as data (a candidate that
+# only the sparse leg saw is `bm25`, and lexical-only recall is exactly what
+# a dense-only retriever would have missed).
+_ORIGIN_DENSE = "dense"
+_ORIGIN_BM25 = "bm25"
+_ORIGIN_BOTH = "both"
+# Unreachable by construction — every fused candidate id came from one of the
+# two leg id lists RRF was handed. It exists because a LOG must never be the
+# thing that raises: a `KeyError` from an observability path would turn a
+# reporting bug into a failed retrieval.
+_ORIGIN_UNKNOWN = "unknown"
+_MS_PER_SECOND = 1000
+# Every field the record can carry, at the value that means "this stage never
+# ran". `execute` starts from a copy and each stage overwrites its own keys in
+# place, so the EARLY return (an empty `document_ids` scope, which searches
+# nothing) emits the same SHAPE as a full run rather than a short record a log
+# query would have to special-case. Ordered as the pipeline runs.
+#
+# A stage REBINDS its key and never mutates a default value in place, so the
+# nested `origin_counts` mapping being shared by every record that never
+# reached fusion is safe — and it is the only mutable default here.
+_STAGE_LOG_DEFAULTS: Mapping[str, object] = {
+    "dense_count": 0,
+    "sparse_count": 0,
+    "dense_scores": (),
+    "sparse_scores": (),
+    "best_dense_score": None,
+    "best_bm25_score": None,
+    "dense_kept": 0,
+    "sparse_kept": 0,
+    "fused_count": 0,
+    "candidates": (),
+    "origin_counts": {_ORIGIN_DENSE: 0, _ORIGIN_BM25: 0, _ORIGIN_BOTH: 0},
+    "relevant_count": 0,
+    "widened_count": 0,
+    "budgeted_count": 0,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +378,7 @@ class RetrieveContext:
         document_ids: Sequence[str] | None = None,
         space_id: str | None,
     ) -> RetrievalResult:
+        started = time.perf_counter()
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
         k = max(1, min(k, _MAX_K))
@@ -309,6 +393,27 @@ class RetrieveContext:
         # the FUSED, ranked candidates survive into `filter_relevant` below,
         # not how many raw hits each leg fetches.
         retain_k = min(k * _FUSION_RETENTION, _MAX_SEARCH)
+
+        # The structured stage log's accumulator (plan step 17, `P-29`) —
+        # filled in place by each stage as it runs and emitted ONCE, on every
+        # return path, by `_log_stages`. A local dict rather than a field:
+        # this use-case is stateless and shared by every workspace, so per-call
+        # measurements may only live on the call's own stack.
+        #
+        # `query_chars` is the QUERY's LENGTH, and it is the only trace of the
+        # question in the whole record: the text itself is user content
+        # (10-code-standards §10) while its length still explains an empty
+        # sparse leg or a degenerate embedding.
+        stages: dict[str, object] = {
+            "query_chars": len(query),
+            "k": k,
+            "search_k": search_k,
+            "sparse_k": sparse_k,
+            "retain_k": retain_k,
+            "scoped_document_count": None if document_ids is None else len(document_ids),
+            "space_scoped": space_id is not None,
+            **_STAGE_LOG_DEFAULTS,
+        }
 
         collection = knowledge_collection(ctx.workspace_id)
         flt: Json = {"workspace_id": ctx.workspace_id}
@@ -338,6 +443,12 @@ class RetrieveContext:
         # (plan step 5, `P-33`), one layer up.
         if document_ids is not None:
             if not document_ids:
+                # Logged like any other outcome, and it is the one outcome
+                # nothing downstream could otherwise explain: zero chunks with
+                # no search behind them. `scoped_document_count == 0` next to
+                # `dense_count == 0` says "a scope resolved to nothing", not
+                # "the corpus had nothing to say".
+                _log_stages(stages, started=started, chunks=[])
                 return RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
             flt["document_id"] = list(document_ids)
         # The space narrowing (spaces plan §3.4, step 8) — a SINGLE value, so
@@ -387,6 +498,27 @@ class RetrieveContext:
         best_dense_score = max((hit.score for hit in dense_hits), default=None)
         best_bm25_score = max((hit.score for hit in sparse_hits), default=None)
 
+        # The stage log's PRE-RRF snapshot (plan step 17, `P-29`; retrieval
+        # plan §3.11 "لقطة قبل أن يدهس RRF الدرجات الخامّ") — the same instant
+        # as the two confidence signals above, and for the same reason
+        # amplified: after `reciprocal_rank_fusion` below there is no raw
+        # per-leg score left anywhere in this function. `FusedChunk.score` is
+        # RRF's own arithmetic (`Σ w/(60+rank)`, thousandths regardless of
+        # candidate quality), so a "dense score" read after fusion would be a
+        # different quantity on a different scale wearing the same name. The
+        # two full counts sit next to the sampled heads: `_LOG_RANKING_SAMPLE`
+        # bounds the NUMBERS, never the counts.
+        stages.update(
+            {
+                "dense_count": len(dense_hits),
+                "sparse_count": len(sparse_hits),
+                "dense_scores": [hit.score for hit in dense_hits[:_LOG_RANKING_SAMPLE]],
+                "sparse_scores": [hit.score for hit in sparse_hits[:_LOG_RANKING_SAMPLE]],
+                "best_dense_score": best_dense_score,
+                "best_bm25_score": best_bm25_score,
+            }
+        )
+
         # Per-leg absolute floors (plan step 16, `P-27`) -- applied HERE, i.e.
         # AFTER the confidence snapshot above and BEFORE fusion below.
         #
@@ -405,6 +537,11 @@ class RetrieveContext:
         # is an identity transform; it is the knob, not a behaviour change.
         dense_hits = _gate_by_score(dense_hits, _MIN_DENSE_SCORE)
         sparse_hits = _gate_by_score(sparse_hits, _MIN_BM25_SCORE)
+        # Counted AFTER the gate and reported beside the pre-gate counts
+        # above: with the shipped `0.0` floors the two pairs are equal, and
+        # the day a floor carries a number the difference between them IS the
+        # gate's effect — the measurement `P-38` has to read to calibrate it.
+        stages.update({"dense_kept": len(dense_hits), "sparse_kept": len(sparse_hits)})
 
         # `top_k=retain_k`, NOT `search_k` (plan step 8, `P-26`) -- the fused,
         # ranked list handed to `filter_relevant` below is `3 * k` deep, wider
@@ -421,11 +558,38 @@ class RetrieveContext:
             rrf_k=_RRF_K,
         )
 
+        # The per-candidate `retrieval_origin` tag (retrieval plan §3.11) —
+        # built from the very id lists RRF was handed, so a hit the per-leg
+        # floor above removed casts no vote here either and is credited to
+        # neither leg. `origin_counts` aggregates the WHOLE fused pool while
+        # `candidates` quotes the head of it (`_LOG_RANKING_SAMPLE`), so the
+        # hybrid split is exact even when the listing is sampled.
+        origins = _retrieval_origins(
+            [hit.id for hit in dense_hits], [hit.id for hit in sparse_hits]
+        )
+        stages.update(
+            {
+                "fused_count": len(fused),
+                "origin_counts": _origin_counts(
+                    origins.get(chunk.chunk_id, _ORIGIN_UNKNOWN) for chunk in fused
+                ),
+                "candidates": [
+                    {
+                        "chunk_id": chunk.chunk_id,
+                        "retrieval_origin": origins.get(chunk.chunk_id, _ORIGIN_UNKNOWN),
+                        "rrf_score": chunk.score,
+                    }
+                    for chunk in fused[:_LOG_RANKING_SAMPLE]
+                ],
+            }
+        )
+
         payload_by_id: dict[str, Json] = {
             hit.id: hit.payload for hit in (*dense_hits, *sparse_hits)
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
         relevant = filter_relevant(scored)
+        stages["relevant_count"] = len(relevant)
 
         # Parent expansion (plan step 9, `P-34`) -- runs over the FULL
         # `relevant` list (up to `retain_k` deep), BEFORE the caller's `k` is
@@ -436,6 +600,12 @@ class RetrieveContext:
             ctx, [candidate.chunk_id for candidate in relevant]
         )
         widened = _widen_to_parents(relevant, parent_texts)
+        # `widened_count` below `relevant_count` is the dedup-BY-PARENT drop
+        # (plan step 9, `P-34`): the gap between the two is how many
+        # candidates collapsed into a section an earlier one already carried —
+        # the number that says whether `_FUSION_RETENTION`'s 3x pool is
+        # actually paying for itself.
+        stages["widened_count"] = len(widened)
 
         # The context budget (plan step 10, `P-35`) -- AFTER the widening
         # above (which is what makes each candidate bigger) and BEFORE the
@@ -451,14 +621,87 @@ class RetrieveContext:
             max_chars=self._max_context_chars,
             max_tokens=self._max_context_tokens,
         )
+        # Below `widened_count` means the DUAL budget cut (plan step 10,
+        # `P-35`); equal to it means the budget was never the binding
+        # constraint. Distinguishing those two is the whole reason this stage
+        # gets a count of its own rather than being read off `context_nodes`,
+        # which the caller's `k` can cap first.
+        stages["budgeted_count"] = len(budgeted)
 
         # The ONLY narrowing to the caller's `k` in this whole pipeline (plan
         # step 8's ordering rule "٨ قبل ٩" -- widen here, narrow later, never
         # the reverse).
         chunks = budgeted[:k]
+        _log_stages(stages, started=started, chunks=chunks)
         return RetrievalResult(
             chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
         )
+
+
+def _log_stages(
+    stages: dict[str, object], *, started: float, chunks: Sequence[RetrievedChunk]
+) -> None:
+    """Close the accumulator with the delivery-side measurements and emit the
+    ONE ``knowledge.retrieval`` record for this call (plan step 17, ``P-29``;
+    retrieval plan §3.11).
+
+    The four terminal fields:
+
+    * ``delivered_chunk_ids`` — WHICH chunks the caller got, so the record
+      joins back to ``candidates`` above it. Not a prefix of that list:
+      relevance filtering, parent dedup and the budget each remove entries
+      from the middle, and seeing which survived is the point.
+    * ``context_nodes`` — how many, the plan's own measurement name.
+    * ``fallback`` — ``True`` exactly when this retrieval returned nothing,
+      which is precisely the condition the honest-fallback trust gate one
+      layer up fires on (plan step 5, ``P-33``): zero chunks after a
+      retrieval that was actually attempted. It is recorded HERE, from the
+      only vantage point that can also say WHY it was empty — the stages
+      above it.
+    * ``total_ms`` — the whole use-case, embedding call and both searches and
+      the parent lookup included, on the monotonic clock.
+
+    ``INFO``, not ``DEBUG``: 10-code-standards §10 puts business events at
+    ``INFO``, and a retrieval that answered (or honestly did not) is the
+    module's business event. Level filtering is the deployment's call; a
+    record that is never emitted cannot be turned on after the fact.
+    """
+    stages["delivered_chunk_ids"] = [chunk.chunk_id for chunk in chunks]
+    stages["context_nodes"] = len(chunks)
+    stages["fallback"] = not chunks
+    stages["total_ms"] = _elapsed_ms(started)
+    log.info("knowledge.retrieval", extra=stages)
+
+
+def _elapsed_ms(started: float) -> int:
+    """Whole milliseconds since ``started`` on the MONOTONIC clock — never the
+    wall clock, which an NTP step could run backwards mid-retrieval and turn
+    a measurement into a negative number."""
+    return round((time.perf_counter() - started) * _MS_PER_SECOND)
+
+
+def _retrieval_origins(dense_ids: Sequence[str], bm25_ids: Sequence[str]) -> dict[str, str]:
+    """Which leg(s) voted for each candidate id — ``dense`` / ``bm25`` /
+    ``both`` (retrieval plan §3.11).
+
+    Takes the two ID lists rather than the hits, because those are exactly
+    what ``reciprocal_rank_fusion`` is handed: a tag derived from anything
+    else could disagree with the fusion the record is describing.
+    """
+    origins = dict.fromkeys(dense_ids, _ORIGIN_DENSE)
+    for chunk_id in bm25_ids:
+        origins[chunk_id] = _ORIGIN_BOTH if chunk_id in origins else _ORIGIN_BM25
+    return origins
+
+
+def _origin_counts(origins: Iterable[str]) -> dict[str, int]:
+    """How the fused pool splits across the three origins, with all three keys
+    ALWAYS present — a missing key and a zero read the same to a human and
+    very differently to a log query."""
+    counts = {_ORIGIN_DENSE: 0, _ORIGIN_BM25: 0, _ORIGIN_BOTH: 0}
+    for origin in origins:
+        counts[origin] = counts.get(origin, 0) + 1
+    return counts
 
 
 def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHit]:
