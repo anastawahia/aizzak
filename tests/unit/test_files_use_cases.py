@@ -4,7 +4,7 @@ Pure: the port is faked, so no infrastructure is exercised."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -23,6 +23,7 @@ from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import OutboxRecord
 from app.framework.settings.settings import Limits, MinioSettings
+from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
     CompleteUpload,
     CompleteUploadService,
@@ -37,6 +38,8 @@ from app.modules.files.application.use_cases import (
 from app.modules.files.domain.entities import File
 from app.modules.files.domain.events import FileDeleted, FileEvent, FileUploaded
 from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
+from app.modules.files.ports.inbound import FilesQuery
+from app.modules.files.ports.repository import FileRepository
 
 # The space every test registers into unless it is testing the check itself.
 _SPACE = "sp-1"
@@ -53,6 +56,11 @@ class _FakeFiles:
         # not write", and BE-RAG-006's no-op rename turns on that difference:
         # the real `save` bumps `version` and `updated_at` unconditionally.
         self.saved: list[str] = []
+        # One entry per `ready_names` ROUND TRIP (branch review §2). The
+        # whole point of that method is how many of these a page of ids
+        # costs, and a fake that only recorded the ids could not tell one
+        # bulk read from a loop over the singular one.
+        self.reads: list[tuple[str, ...]] = []
 
     async def get(self, ctx: ExecutionContext, file_id: str) -> File | None:
         row = self.rows.get(file_id)
@@ -99,6 +107,19 @@ class _FakeFiles:
             and row.space_id == space_id
             and row.deleted_at is None
         )
+
+    async def ready_names(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> dict[str, str]:
+        # `File.is_ready` -- the same rule `get_readable` applies to one
+        # aggregate, which the real adapter writes as
+        # `status = 'ready' AND deleted_at IS NULL`. Anything else is ABSENT,
+        # never `""`.
+        self.reads.append(tuple(file_ids))
+        wanted = set(file_ids)
+        return {
+            row.id: row.name.value
+            for row in self.rows.values()
+            if row.id in wanted and row.workspace_id == ctx.workspace_id and row.is_ready
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +455,123 @@ async def test_the_view_carries_the_space_the_file_is_in() -> None:
 
     assert view is not None
     assert view.space_id == _SPACE
+
+
+async def _ready_file(files: _FakeFiles, ctx: ExecutionContext, name: str) -> File:
+    """A file the whole way through the upload: registered, then completed."""
+    registered = await _register(files).execute(
+        ctx, space_id=_SPACE, name=name, content_type="application/pdf", size_bytes=2048
+    )
+    file, _events = await CompleteUpload(files).execute(
+        ctx, file_id=registered.id, checksum="a" * 64
+    )
+    return file
+
+
+async def test_names_for_files_answers_a_whole_page_of_ids_in_one_read() -> None:
+    """Branch review §2, remedy 1 — the reason this method exists.
+
+    ``knowledge`` walks its corpus holding a page of file ids and wanting a
+    name for each; `get_readable` per id made that one round trip per
+    document. Many ids, one read, and the answer is keyed so the caller can
+    look each name up by the id it already holds.
+    """
+    files = _FakeFiles()
+    ctx = _ctx()
+    first = await _ready_file(files, ctx, "report.pdf")
+    second = await _ready_file(files, ctx, "policy.docx")
+
+    names = await FilesQueryService(files).names_for_files(ctx, [first.id, second.id])
+
+    assert names == {first.id: "report.pdf", second.id: "policy.docx"}
+    assert files.reads == [(first.id, second.id)]
+
+
+async def test_names_for_files_answers_only_for_files_get_readable_would() -> None:
+    """Presence carries exactly what a non-``None`` ``FileView`` carries
+    (INV-F2/F3), because ``knowledge`` uses it for the very same decision: a
+    document whose file is unknown, still uploading or deleted is SKIPPED. A
+    name returned for one of those would name a file to a user that the
+    singular read refuses to name.
+    """
+    files = _FakeFiles()
+    ctx = _ctx()
+    ready = await _ready_file(files, ctx, "report.pdf")
+    uploading = await _register(files).execute(
+        ctx, space_id=_SPACE, name="half.pdf", content_type="application/pdf", size_bytes=2048
+    )
+    deleted = await _ready_file(files, ctx, "gone.pdf")
+    await SoftDeleteFile(files).execute(ctx, deleted.id)
+
+    query = FilesQueryService(files)
+    names = await query.names_for_files(ctx, [ready.id, uploading.id, deleted.id, "unknown"])
+
+    assert names == {ready.id: "report.pdf"}
+    # The same three ids, asked one at a time, agree -- the two faces of this
+    # port answer the same question at two sizes, never two questions.
+    for file_id in (uploading.id, deleted.id, "unknown"):
+        assert await query.get_readable(ctx, file_id) is None
+
+
+async def test_names_for_files_never_crosses_a_workspace() -> None:
+    """Another tenant's id is simply absent, which is the answer
+    ``get_readable`` already gives it — a bulk read must not become the cheap
+    way to learn what another workspace stores."""
+    files = _FakeFiles()
+    mine, theirs = _ctx("w1"), _ctx("w2")
+    ours = await _ready_file(files, mine, "report.pdf")
+    yours = await _ready_file(files, theirs, "secret.pdf")
+
+    assert await FilesQueryService(files).names_for_files(mine, [ours.id, yours.id]) == {
+        ours.id: "report.pdf"
+    }
+
+
+async def test_names_for_no_files_is_empty() -> None:
+    """An empty page has an empty answer. The REAL adapter also spends no
+    query on it (`ready_names`' guard, the `totals_by_space` precedent):
+    `IN ()` is a PostgreSQL syntax error, and the expanding-parameter
+    rendering of it would buy a round trip for an answer already known."""
+    assert await FilesQueryService(_FakeFiles()).names_for_files(_ctx(), []) == {}
+
+
+def test_the_query_service_and_the_sql_adapter_implement_what_their_ports_declare() -> None:
+    """The two seams this module publishes are structural Protocols, matched
+    at the Composition Root and nowhere else. Until it boots, this is the
+    check that ``names_for_files``/``ready_names`` exist under exactly those
+    names on both sides — the `test_spaces_sql_mapping` precedent.
+    """
+    inbound = {
+        name
+        for name, value in vars(FilesQuery).items()
+        if not name.startswith("_") and callable(value)
+    }
+    assert inbound == {"get_readable", "names_for_files"}
+    assert inbound <= {name for name in dir(FilesQueryService) if not name.startswith("_")}
+
+    declared = {
+        name
+        for name, value in vars(FileRepository).items()
+        if not name.startswith("_") and callable(value)
+    }
+    # `ready_names` joined for branch review §2 — the read `names_for_files`
+    # is implemented over, and the only one on this port that answers about
+    # MANY files without hydrating a single aggregate.
+    assert "ready_names" in declared
+    assert declared <= {name for name in dir(SqlFileRepository) if not name.startswith("_")}
+
+
+async def test_the_sql_adapter_spends_no_round_trip_on_an_empty_id_list() -> None:
+    """`ready_names`' empty guard, proven without a database: the session
+    provider explodes if it is ever entered, so an answer that arrives at all
+    is an answer that was computed without one."""
+
+    def _no_session(ctx: ExecutionContext) -> AbstractAsyncContextManager[object]:
+        raise AssertionError("ready_names opened a transaction for zero ids")
+
+    repository = SqlFileRepository(_no_session)  # type: ignore[arg-type]
+
+    assert await repository.ready_names(_ctx(), []) == {}
 
 
 # --------------------------------------------------------------------------- #

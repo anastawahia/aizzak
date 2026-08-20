@@ -143,6 +143,18 @@ class InMemoryFileRepository:
             )
         return totals
 
+    async def ready_names(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> dict[str, str]:
+        # ABSENT, not `""`, for anything that is not READY -- the same
+        # `File.is_ready` rule `get_readable` applies to one file, which is
+        # what lets `knowledge` keep skipping the documents it already
+        # skipped (branch review §2). Another tenant's ids are absent too.
+        wanted = set(file_ids)
+        return {
+            row.id: row.name.value
+            for row in self.rows.values()
+            if row.id in wanted and row.workspace_id == ctx.workspace_id and row.is_ready
+        }
+
     def _in_space(self, ctx: ExecutionContext, space_id: str) -> list[File]:
         # NO `deleted_at` filter, unlike `bytes_in_space` right above: a
         # soft-deleted file has given its bytes back but still owns its object

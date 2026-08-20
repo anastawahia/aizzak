@@ -288,6 +288,32 @@ class SqlFileRepository:
             for row in rows
         }
 
+    async def ready_names(
+        self, ctx: ExecutionContext, file_ids: Sequence[UuidStr]
+    ) -> Mapping[UuidStr, str]:
+        # ONE `IN (…)` for a whole page of ids (port docstring), and the same
+        # empty guard `totals_by_space` explains: `IN ()` is a syntax error in
+        # PostgreSQL, and SQLAlchemy's expanding-parameter rendering of it
+        # spends a round trip on an answer already known.
+        if not file_ids:
+            return {}
+        # `status`/`deleted_at` here are `File.is_ready` written in SQL --
+        # `FilesQueryService.get_readable` applies the identical rule to ONE
+        # hydrated aggregate, and its bulk sibling cannot afford to hydrate
+        # 200 of them to ask the same question. Two columns, no aggregate.
+        stmt = select(files.c.id, files.c.name).where(
+            files.c.workspace_id == ctx.workspace_id,
+            files.c.id.in_(file_ids),
+            files.c.status == FileStatus.READY.value,
+            files.c.deleted_at.is_(None),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return {row["id"]: row["name"] for row in rows}
+
     async def storage_keys_in_space(
         self, ctx: ExecutionContext, space_id: UuidStr
     ) -> Sequence[str]:

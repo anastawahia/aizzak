@@ -15,7 +15,7 @@ import hashlib
 import inspect
 import json
 import math
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
@@ -33,6 +33,7 @@ from app.modules.knowledge.application.retrieval import RetrievalResult, Retriev
 from app.modules.knowledge.application.routing import RouteQuestion
 from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_CORPUS_NAMES,
+    _LIST_PAGE_SIZE,
     IndexFile,
     IndexFileService,
     IndexRegisteredDocument,
@@ -649,9 +650,17 @@ class _FakeReadableFile:
 
 
 class _FakeReadableFiles:
-    """A structural ``ReadableFiles``. ``None`` for anything not seeded --
-    the real seam collapses "unknown", "deleted", "quarantined" and "still
-    uploading" into exactly that answer."""
+    """A structural ``ReadableFiles``. ``None`` (or absence from the mapping,
+    on the bulk read) for anything not seeded -- the real seam collapses
+    "unknown", "deleted", "quarantined" and "still uploading" into exactly
+    that answer.
+
+    **Two counters, and the difference between them is the point** (branch
+    review §2): `calls` is every file id this seam was ASKED about, whichever
+    method asked, and `reads` is one entry per ROUND TRIP. Before the bulk
+    read the two were the same list; now a page of 200 ids is 200 in `calls`
+    and 1 in `reads`, which is exactly the cost that changed.
+    """
 
     def __init__(
         self,
@@ -665,12 +674,28 @@ class _FakeReadableFiles:
         # a file seeded in `files` but absent here just answers `""`.
         self.names = names or {}
         self.calls: list[str] = []
+        self.reads: list[tuple[str, ...]] = []
 
     async def get_readable(self, ctx: ExecutionContext, file_id: str) -> _FakeReadableFile | None:
         self.calls.append(file_id)
+        self.reads.append((file_id,))
         if file_id not in self.files:
             return None
         return _FakeReadableFile(file_id, self.files[file_id], self.names.get(file_id, ""))
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[str]
+    ) -> Mapping[str, str]:
+        # Branch review §2 -- ONE read for many ids, and it answers with the
+        # same rule `get_readable` does: an unseeded file is ABSENT (never
+        # `""`), a seeded one with no name in `names` answers `""`. The real
+        # `SqlFileRepository.ready_names` states that rule as
+        # `status = 'ready' AND deleted_at IS NULL`.
+        self.calls.extend(file_ids)
+        self.reads.append(tuple(file_ids))
+        return {
+            file_id: self.names.get(file_id, "") for file_id in file_ids if file_id in self.files
+        }
 
 
 class _FakeSummaryStarter:
@@ -1689,6 +1714,222 @@ async def test_the_corpus_header_spans_every_space_even_where_candidates_do_not(
     assert header.total == 3
     assert set(header.names) == {"a.pdf", "b.pdf", "c.pdf"}
     assert [candidate.file_name for candidate in candidates] == ["a.pdf"]
+
+
+# --------------------------------------------------------------------------- #
+# The two corpus walks and what they cost (branch review §2)                  #
+# --------------------------------------------------------------------------- #
+def _paged_doc_id(n: int) -> str:
+    """A REAL UUID for the nth document, ordered by `n`.
+
+    The one-page tests above name documents `doc-1`; a walk that crosses a
+    page boundary cannot, because the keyset cursor between pages is a
+    base64-wrapped UUID and `decode_id_cursor` rejects anything else. Fixed
+    width, so lexical order (what the fake and the SQL adapter both sort on)
+    is numeric order.
+    """
+    return f"018f0000-0000-7000-8000-{n:012d}"
+
+
+def _big_corpus(pages: int) -> tuple[_FakeDocumentRepository, _FakeReadableFiles, int]:
+    """A corpus of `pages` FULL pages of `documents.list` plus one document
+    over, so every test below crosses the page boundary the walk pages on
+    rather than one a fake happens to choose."""
+    size = pages * _LIST_PAGE_SIZE + 1
+    documents = _FakeDocumentRepository()
+    names: dict[str, str] = {}
+    for n in range(size):
+        doc_id = _paged_doc_id(n)
+        documents.docs[doc_id] = _document(doc_id=doc_id, file_id=f"file-{n:05d}")
+        names[f"file-{n:05d}"] = f"{n}.pdf"
+    return documents, _FakeReadableFiles(dict.fromkeys(names), names=names), size
+
+
+async def test_file_candidates_read_names_in_bulk_not_once_per_document() -> None:
+    """Branch review §2 — the N+1 the plan's §7 recorded, pinned by counting.
+
+    `ListFileCandidates` used to spend one `get_readable` per document, so a
+    `D`-document repository paid `D` sequential round trips on every content
+    question that was not already pinned to one file. Names now arrive one
+    bulk read per PAGE: the walk costs two round trips per page whatever `D`
+    is, and every id is still asked about exactly once.
+    """
+    ctx = _ctx("ws1")
+    documents, files, size = _big_corpus(pages=2)
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+
+    assert len(candidates) == size
+    # THE assertion of this whole change: round trips, not ids. Three pages
+    # (two full + the one document over), one name read each.
+    assert len(files.reads) == 3
+    # Every document still got its name, asked about exactly once -- fewer
+    # reads, not fewer answers.
+    assert len(files.calls) == size
+    assert sorted(files.calls) == sorted(files.names)
+
+
+async def test_the_corpus_header_reads_names_once_and_stops_at_its_cap() -> None:
+    """The header's walk pays for the names it SHOWS and nothing more.
+
+    Its cap fills inside the first page, so the pages after it are walked for
+    `total` alone and ask for no names at all — one name read for a corpus of
+    any size, against `D`-capped-at-50 before.
+    """
+    ctx = _ctx("ws1")
+    documents, files, size = _big_corpus(pages=2)
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=5)
+
+    assert len(result.names) == 5
+    # `total` is the FULL corpus, not the capped list -- the header's "N more"
+    # tail is computed from it.
+    assert result.total == size
+    assert len(files.reads) == 1
+
+
+async def test_the_corpus_header_keeps_reading_until_its_cap_is_actually_full() -> None:
+    """Skipping is not filling. A page whose files have all been deleted
+    since they were indexed yields no names, so the walk must go on asking on
+    the NEXT page — the `get_readable` loop's "keep going while `len(names) <
+    cap`" rule, preserved through the bulk read.
+    """
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    for n in range(_LIST_PAGE_SIZE + 2):
+        documents.docs[_paged_doc_id(n)] = _document(
+            doc_id=_paged_doc_id(n), file_id=f"file-{n:05d}"
+        )
+    # Only the OLDEST two files survive, and newest-first paging puts them on
+    # the second page: the first page resolves nothing at all.
+    survivors = {"file-00000": "a.pdf", "file-00001": "b.pdf"}
+    files = _FakeReadableFiles(dict.fromkeys(survivors), names=survivors)
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=5)
+
+    assert set(result.names) == {"a.pdf", "b.pdf"}
+    assert result.total == _LIST_PAGE_SIZE + 2
+    # Two pages walked, two name reads: the second one was NOT skipped as
+    # "cap already full", because it was not.
+    assert len(files.reads) == 2
+
+
+async def _names_the_old_way(
+    ctx: ExecutionContext,
+    documents: _FakeDocumentRepository,
+    files: _FakeReadableFiles,
+    *,
+    space_id: str | None,
+    cap: int | None,
+) -> tuple[list[tuple[str, str]], int]:
+    """The walk as it was written before the bulk read: one `get_readable`
+    per document, newest first, cap counted on NAMES.
+
+    Kept here as the reference the two use-cases are compared against —
+    "fewer round trips, identical answers" is only a claim until something
+    computes the old answer and asserts it out loud.
+    """
+    named: list[tuple[str, str]] = []
+    total = 0
+    cursor: str | None = None
+    while True:
+        page = await documents.list(ctx, space_id=space_id, limit=_LIST_PAGE_SIZE, cursor=cursor)
+        for document in page.data:
+            total += 1
+            if cap is None or len(named) < cap:
+                file = await files.get_readable(ctx, document.file_id)
+                if file is not None:
+                    named.append((document.id, file.name))
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return named, total
+
+
+def _mixed_corpus() -> tuple[_FakeDocumentRepository, _FakeReadableFiles]:
+    """One corpus holding every case the two walks treat differently: two
+    spaces and a spaceless document, a file deleted since it was indexed, a
+    readable file whose name is empty, and two documents built from ONE file.
+    """
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-a"] = _document(doc_id="doc-a", file_id="file-a", space_id=_SPACE_A)
+    documents.docs["doc-b"] = _document(doc_id="doc-b", file_id="file-b", space_id=_SPACE_B)
+    documents.docs["doc-c"] = _document(doc_id="doc-c", file_id="file-c", space_id=None)
+    documents.docs["doc-d"] = _document(doc_id="doc-d", file_id="file-gone", space_id=_SPACE_A)
+    documents.docs["doc-e"] = _document(doc_id="doc-e", file_id="file-blank", space_id=_SPACE_A)
+    documents.docs["doc-f"] = _document(doc_id="doc-f", file_id="file-a", space_id=_SPACE_A)
+    files = _FakeReadableFiles(
+        {"file-a": _SPACE_A, "file-b": _SPACE_B, "file-c": None, "file-blank": _SPACE_A},
+        names={"file-a": "a.pdf", "file-b": "b.pdf", "file-c": "c.pdf"},
+    )
+    return documents, files
+
+
+@pytest.mark.parametrize("space_id", [None, _SPACE_A, _SPACE_B])
+async def test_file_candidates_answer_exactly_what_the_per_file_walk_answered(
+    space_id: str | None,
+) -> None:
+    """No behavioural change, only fewer round trips — proven against the old
+    algorithm rather than against a hand-copied expectation. Every difference
+    the two walks care about is in this corpus: a dangling file, an empty
+    name, a file two documents share, and three spaces' worth of narrowing.
+    """
+    ctx = _ctx("ws1")
+    documents, files = _mixed_corpus()
+    expected, _total = await _names_the_old_way(ctx, documents, files, space_id=space_id, cap=None)
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=space_id)
+
+    # The old walk dropped empty names at the same point this assertion does;
+    # everything else -- order, ids, which documents survive -- is compared
+    # exactly as it was produced.
+    assert candidates == tuple(
+        FileCandidate(document_id=doc_id, file_name=name) for doc_id, name in expected if name
+    )
+
+
+@pytest.mark.parametrize("limit", [1, 2, 50])
+async def test_the_corpus_header_answers_exactly_what_the_per_file_walk_answered(
+    limit: int,
+) -> None:
+    """The header's half of the same proof, across a cap that bites, a cap
+    that bites later, and no cap in practice -- `total` included, which is
+    the number the bulk read could most easily have broken."""
+    ctx = _ctx("ws1")
+    documents, files = _mixed_corpus()
+    expected, expected_total = await _names_the_old_way(
+        ctx, documents, files, space_id=None, cap=limit
+    )
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=limit)
+
+    assert result == DocumentNames(names=tuple(name for _, name in expected), total=expected_total)
+
+
+async def test_both_walks_stay_bounded_as_the_corpus_grows() -> None:
+    """The review's own arithmetic, on one turn's worth of walking: candidates
+    plus header used to cost about `D + 50` sequential name reads before
+    retrieval began. Both now cost a number that grows with PAGES, and the
+    header's does not grow at all.
+    """
+    ctx = _ctx("ws1")
+    documents, files, size = _big_corpus(pages=3)
+
+    await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    await ListDocumentNames(documents, files).execute(ctx)
+
+    # The SAME two walks written the old way, on the same corpus, counted by
+    # the same double -- so the number below is measured against the shipped
+    # alternative rather than against a comment.
+    old_documents, per_file, _size = _big_corpus(pages=3)
+    await _names_the_old_way(ctx, old_documents, per_file, space_id=None, cap=None)
+    await _names_the_old_way(
+        ctx, old_documents, per_file, space_id=None, cap=_DEFAULT_MAX_CORPUS_NAMES
+    )
+
+    # 4 pages of candidates + 1 capped header read, against `D + 50`.
+    assert len(files.reads) == 5
+    assert len(per_file.reads) == size + _DEFAULT_MAX_CORPUS_NAMES
 
 
 async def _indexed_corpus(

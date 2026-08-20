@@ -114,6 +114,38 @@ class FileRepository(Protocol):
         """
         ...
 
+    async def ready_names(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, str]:
+        """The display name of every READY file among ``file_ids``, in ONE
+        read — what ``FilesQuery.names_for_files`` is implemented over.
+
+        **Plural for ``totals_by_space``' reason, on a hotter path.** Its
+        caller (``knowledge``' corpus walk) holds a page of file ids and needs
+        a name for each; asking ``get`` once per id turned a 200-row page into
+        200 sequential round trips before a question could even be routed. One
+        ``WHERE id IN (…)`` costs one.
+
+        **Same readability rule as ``get``+``is_ready``, pushed into SQL** —
+        ``status = 'ready'`` and ``deleted_at IS NULL`` (INV-F2/F3). It has to
+        be the same rule and not a wider one: the caller uses PRESENCE in the
+        mapping exactly as it used a non-``None`` ``FileView``, so a name
+        returned here for a quarantined or deleted file would name it to a
+        user the singular read refuses to name.
+
+        **A file that is unknown, deleted, quarantined or still uploading is
+        ABSENT from the mapping**, never present with an empty string — the
+        ``totals_by_space`` rule (a query returns the rows that exist), and
+        the one that keeps "there is no readable file" distinguishable from
+        "the file is readable and its name is empty".
+
+        Duplicate ids collapse: a mapping is keyed by id, and two documents
+        built from one file ask about it once.
+
+        An empty ``file_ids`` returns an empty mapping without a query.
+        """
+        ...
+
     async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> Sequence[str]:
         """Every stored object key this space's files name — step 5 of the
         cascade (``docs/spaces-backend-plan.md`` §3.6, step 11).

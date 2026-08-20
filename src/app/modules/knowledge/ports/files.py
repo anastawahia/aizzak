@@ -31,10 +31,18 @@ corpus-awareness header, and this is the only seam that already turns a
 ``file_id`` into that file's own facts. ``FilesQuery.get_readable``'s
 ``FileView`` already carries ``.name`` — widening the Protocol costs nothing
 at the binding site, it only starts being READ.
+
+``names_for_files`` (branch review §2) is that same name read asked for a
+PAGE of files at once, and it is the reason this port has a second method
+rather than a second caller of the first: a name lookup per document turned
+the two corpus walks into ``D + 50`` sequential round trips on every
+answering turn. ``FilesQuery`` grew the plural read for this consumer, so the
+binding stays one line and one instance.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -71,3 +79,31 @@ class ReadableFiles(Protocol):
     """
 
     async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> ReadableFile | None: ...
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, str]:
+        """The name of every READABLE file among ``file_ids``, in ONE read —
+        what the corpus walks resolve names through (branch review §2).
+
+        **The singular above could not be called in a loop.** Both walks
+        (``ListDocumentNames`` for the header, ``ListFileCandidates`` for the
+        resolver) hold a PAGE of file ids and want a name for each, and
+        ``get_readable`` is one ``SELECT`` per file: for a ``D``-document
+        repository an answering turn paid ``D + 50`` sequential round trips
+        before retrieval began. This is the same authority answering the same
+        question at the size the question is actually asked in.
+
+        **Absence carries exactly what ``None`` carries above** — unknown,
+        deleted, quarantined or still uploading, undistinguished for the same
+        reason — so a caller keeps skipping the documents it already skipped.
+        A file present with an EMPTY name is a different fact (a readable file
+        that is named nothing), and the two stay distinguishable here because
+        ``ListFileCandidates`` drops the second and ``ListDocumentNames`` does
+        not.
+
+        Only the name is projected: readability and the space belong to the
+        one-file question ``IndexFile`` asks, and a walk that showed names has
+        no business acting on either.
+        """
+        ...

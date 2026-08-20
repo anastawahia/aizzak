@@ -53,7 +53,7 @@ derived from the corpus rather than counted anywhere (INV-K5).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -1585,6 +1585,88 @@ _LIST_PAGE_SIZE = 200
 _DEFAULT_MAX_CORPUS_NAMES = 50
 
 
+async def _named_documents(
+    ctx: ExecutionContext,
+    documents: DocumentRepository,
+    files: ReadableFiles,
+    *,
+    space_id: Uuid | None,
+    cap: int | None,
+) -> tuple[list[tuple[Uuid, str]], int]:
+    """ONE corpus walk: every document under ``space_id``, newest first,
+    paired with the name of the file it was built from — plus ``total``, how
+    many documents were walked in all.
+
+    **One walk, written once, because the two use-cases below do the same
+    thing** (branch review §2's «مشيٌ واحد لا اثنان»): the same repository,
+    the same paging, the same every-lifecycle-status rule, and the same "a
+    document whose file can no longer be read is skipped" answer. Everything
+    they shared by coincidence is now shared by construction, so a change to
+    the walk cannot land on one of them alone.
+
+    **What they cannot share is a single EXECUTION of it, and the reason is
+    the space axis rather than an oversight.** ``ListDocumentNames`` walks
+    ``space_id=None`` because a corpus header describes the WHOLE workspace;
+    ``ListFileCandidates`` walks the space the question will be ANSWERED
+    from. Serving the header out of the candidate walk would make it report a
+    corpus smaller than the one the user uploaded (the failure
+    ``test_the_corpus_header_spans_every_space_even_where_candidates_do_not``
+    exists to catch), and serving the candidates out of the header's walk
+    would fetch every space's rows in order to throw most of them away —
+    undoing the ``WHERE space_id`` the review's §7 fix just pushed INTO the
+    query, and growing the per-question walk with the workspace instead of
+    with the space it searches. So the two walks stay two, and what collapses
+    is what actually cost the round trips: the names.
+
+    **Names arrive ONE read per page** (``ReadableFiles.names_for_files``),
+    never one per document — the N+1 the plan's §7 recorded twice. A page of
+    ``_LIST_PAGE_SIZE`` documents costs two round trips (its rows, then its
+    names) instead of ``1 + _LIST_PAGE_SIZE``.
+
+    **``cap`` bounds the NAMES collected, never the documents counted.**
+    ``total`` is the full corpus count whatever the cap is — that number is
+    the whole reason a header can honestly say "and N more" — and a page
+    reached once the cap is full asks for no names at all: it is walked to
+    finish counting and nothing else. ``None`` means uncapped, which is what
+    a resolver needs (a cap there would turn a refusal-to-guess into a
+    confident answer computed over a partial corpus).
+
+    **Presence in the name mapping is the readability answer**, exactly as a
+    non-``None`` ``get_readable`` view was: a document whose file is gone
+    silently misses ``named`` and is still counted in ``total``. An EMPTY
+    name is KEPT here, because dropping it is one caller's rule and not both
+    (``ListFileCandidates``).
+    """
+    named: list[tuple[Uuid, str]] = []
+    total = 0
+    cursor: str | None = None
+    while True:
+        page = await documents.list(ctx, space_id=space_id, limit=_LIST_PAGE_SIZE, cursor=cursor)
+        # Decided BEFORE the page is consumed, so a cap that fills half-way
+        # through does not strand this page's remaining names: they were
+        # already fetched, and the loop below simply stops appending.
+        wanting_names = (cap is None or len(named) < cap) and bool(page.data)
+        names: Mapping[Uuid, str] = (
+            await files.names_for_files(ctx, [document.file_id for document in page.data])
+            if wanting_names
+            else {}
+        )
+        for document in page.data:
+            total += 1
+            if cap is not None and len(named) >= cap:
+                # Counting continues; nothing else does. `continue` rather
+                # than `break`, because `total` is the full corpus count and
+                # the pages after this one are still walked for it.
+                continue
+            name = names.get(document.file_id)
+            if name is not None:
+                named.append((document.id, name))
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return named, total
+
+
 class ListDocumentNames:
     """This workspace's corpus-awareness source (retrieval plan §3.6/§4 row
     6, ``P-36``, decision س-23 = ج): up to ``limit`` document file names,
@@ -1618,15 +1700,18 @@ class ListDocumentNames:
     for them at all, so a slice of it would misreport the corpus as smaller
     than it is — «لا أملك معلومات كافية» about a workspace that is not empty.
 
-    **Names are resolved only for the first ``limit`` documents** — walking
-    every page of ``DocumentRepository.list`` is cheap (row ids only), but
-    ``ReadableFiles.get_readable`` is a per-file round trip, and resolving
-    one for every document in a large corpus to show at most ``limit`` of
-    them would pay for names nobody sees. A document whose file can no
-    longer be read (deleted, quarantined, or otherwise gone since it was
-    indexed) is SKIPPED rather than shown as a bare id — the header names
-    ACTUAL files, and a dangling reference is not one; ``total`` still
-    counts it, so "N more" never silently drops a real document.
+    **Names are resolved ONE read per page, and only until ``limit`` of them
+    are in hand** (``_named_documents``, branch review §2) — walking every
+    page of ``DocumentRepository.list`` is cheap (row ids only), and the names
+    behind a whole page now cost a single ``ReadableFiles.names_for_files``
+    instead of a round trip per document. Pages reached after the cap is full
+    ask for no names at all: they are walked to finish counting ``total``,
+    which stays the FULL corpus count so the header's "N more" tail is
+    honest. A document whose file can no longer be read (deleted,
+    quarantined, or otherwise gone since it was indexed) is SKIPPED rather
+    than shown as a bare id — the header names ACTUAL files, and a dangling
+    reference is not one; ``total`` still counts it, so "N more" never
+    silently drops a real document.
     """
 
     def __init__(
@@ -1645,23 +1730,14 @@ class ListDocumentNames:
         # (`_DEFAULT_MAX_CORPUS_NAMES` above) — resolved HERE, once, so the
         # walk below reads one number whichever way the caller asked.
         cap = self._max_corpus_names if limit is None else limit
-        names: list[str] = []
-        total = 0
-        cursor: str | None = None
-        while True:
-            page = await self._documents.list(
-                ctx, space_id=None, limit=_LIST_PAGE_SIZE, cursor=cursor
-            )
-            for document in page.data:
-                total += 1
-                if len(names) < cap:
-                    file = await self._files.get_readable(ctx, document.file_id)
-                    if file is not None:
-                        names.append(file.name)
-            cursor = page.next_cursor
-            if cursor is None:
-                break
-        return DocumentNames(names=tuple(names), total=total)
+        # `space_id=None` — the whole workspace, written HERE at the one call
+        # site that means it (see the class docstring). The shared walk takes
+        # a space like every other reader of `DocumentRepository.list`; what
+        # makes this the header is that it names none.
+        named, total = await _named_documents(
+            ctx, self._documents, self._files, space_id=None, cap=cap
+        )
+        return DocumentNames(names=tuple(name for _, name in named), total=total)
 
 
 class ListFileCandidates:
@@ -1670,7 +1746,8 @@ class ListFileCandidates:
     the space being searched, paired with the name of the file it was built
     from.
 
-    The same walk ``ListDocumentNames`` does — same repository, same
+    The same walk ``ListDocumentNames`` does — literally the same one
+    (``_named_documents``): same repository, same paging, same
     every-status rule (a ``pending`` document still NAMES a real file; hiding
     it would let a question about it resolve to a different file instead of
     saying the honest thing, and what "the honest thing" is stays
@@ -1698,10 +1775,12 @@ class ListFileCandidates:
     are dropped — an empty name matches nothing lexically but would be shown
     to a user as a blank line in a clarification question.
 
-    ⚠️ The cost is one ``get_readable`` per document per call, and it is only
-    paid on a SUMMARIZE_DOC question whose caller pinned no single document.
-    Removing the N+1 needs either a bulk name lookup on the ``files`` seam or
-    the name carried on the document row; both are recorded in the plan's §7.
+    **The N+1 the plan's §7 recorded twice is gone** (branch review §2,
+    remedy 1): names arrive one bulk ``names_for_files`` per PAGE rather than
+    one ``get_readable`` per document, so a walk over ``D`` documents costs
+    TWO round trips per page instead of one per page plus one per document —
+    ``D = 1000`` falls from 1005 to 10. The WALK is still this use-case's own
+    — ``_named_documents`` says why it cannot also be the header's.
     """
 
     def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
@@ -1711,20 +1790,18 @@ class ListFileCandidates:
     async def execute(
         self, ctx: ExecutionContext, *, space_id: Uuid | None
     ) -> tuple[FileCandidate, ...]:
-        candidates: list[FileCandidate] = []
-        cursor: str | None = None
-        while True:
-            page = await self._documents.list(
-                ctx, space_id=space_id, limit=_LIST_PAGE_SIZE, cursor=cursor
-            )
-            for document in page.data:
-                file = await self._files.get_readable(ctx, document.file_id)
-                if file is not None and file.name:
-                    candidates.append(FileCandidate(document_id=document.id, file_name=file.name))
-            cursor = page.next_cursor
-            if cursor is None:
-                break
-        return tuple(candidates)
+        # `cap=None` — every candidate, for the reason two paragraphs up.
+        named, _total = await _named_documents(
+            ctx, self._documents, self._files, space_id=space_id, cap=None
+        )
+        # The empty-name drop is THIS walk's rule, not the shared walk's: a
+        # blank line is unmatchable lexically and unusable in a clarification
+        # question, while the header counts such a file as one it holds.
+        return tuple(
+            FileCandidate(document_id=document_id, file_name=name)
+            for document_id, name in named
+            if name
+        )
 
 
 class GetDocument:

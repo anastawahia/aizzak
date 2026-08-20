@@ -20,7 +20,7 @@ tested too: ``build_knowledge(retrieval=None)`` is the production shape.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -533,6 +533,18 @@ class InMemoryReadableFiles:
         if file_id not in self.readable:
             return None
         return ReadableFileView(file_id=file_id, space_id=self._space_id)
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[str]
+    ) -> Mapping[str, str]:
+        # Branch review §2 -- the bulk name read the corpus walks resolve
+        # through. This fake models no NAMES (nothing in this bundle asserts
+        # on one), so a readable file answers with its own id: absence still
+        # means "not readable", which is the only distinction the walks act
+        # on. `calls` records each id, as the singular read does, so a test
+        # can still see which files were asked about.
+        self.calls.extend(file_ids)
+        return {file_id: file_id for file_id in file_ids if file_id in self.readable}
 
 
 def seed_document(

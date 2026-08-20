@@ -344,7 +344,9 @@ class PurgeSpaceFiles:
 
 
 class FilesQueryService:
-    """Implements the ``FilesQuery`` inbound port (02 §2) over the repository."""
+    """Implements the ``FilesQuery`` inbound port (02 §2) over the repository —
+    both faces: the single readable view, and the bulk name read a corpus walk
+    needs (branch review §2)."""
 
     def __init__(self, files: FileRepository) -> None:
         self._files = files
@@ -362,6 +364,16 @@ class FilesQueryService:
             storage_key=file.storage_key.value,
             status=file.status.value,
         )
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, str]:
+        # A pass-through, deliberately: the READY rule this port promises is
+        # `File.is_ready`, and the repository states it in SQL rather than
+        # hydrating a page of aggregates to ask each one (adapter comment).
+        # Re-filtering here would be a SECOND home for the rule and the place
+        # the two could drift.
+        return await self._files.ready_names(ctx, file_ids)
 
 
 class CompleteUploadService:
