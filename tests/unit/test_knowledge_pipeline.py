@@ -1,8 +1,9 @@
 """Unit tests for the knowledge module's 3.k3 hybrid (dense + BM25-sparse)
 indexing/retrieval pipeline: the chunker, sparse-term builder, relevance
-filter, and intent classifier (all pure domain), plus the ``IndexDocument``/
-``RetrieveContext`` application use-cases over fake ``EmbeddingProvider``/
-``HybridVectorStore`` ports. Pure unit tests: no markers, no Docker, no
+filter, intent classifier, and file-name resolver (all pure domain), plus the
+``IndexDocument``/``RetrieveContext`` application use-cases over fake
+``EmbeddingProvider``/``HybridVectorStore`` ports. Pure unit tests: no
+markers, no Docker, no
 optional dependencies -- ``ParsedDocument``/``ParsedChunk`` fixtures are
 built directly rather than run through the (optional-dependency-gated) real
 parser adapters exercised by ``test_knowledge_parsers.py``.
@@ -10,6 +11,8 @@ parser adapters exercised by ``test_knowledge_parsers.py``.
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -39,6 +42,7 @@ from app.modules.knowledge.application.indexing import (
     _table_to_segments,
 )
 from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.domain import file_resolution
 from app.modules.knowledge.domain.chunking import (
     MIN_NODE_CHARS,
     SPLIT_OVERLAP_RATIO,
@@ -49,6 +53,15 @@ from app.modules.knowledge.domain.chunking import (
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
 from app.modules.knowledge.domain.context_budget import estimate_tokens
+from app.modules.knowledge.domain.errors import InvalidKnowledgeInput
+from app.modules.knowledge.domain.file_resolution import (
+    AmbiguousFiles,
+    FileCandidate,
+    NoFileMatch,
+    ResolutionMethod,
+    ResolvedFile,
+    resolve_file,
+)
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
@@ -1134,6 +1147,366 @@ def test_arabic_summarize_anchors_still_match_as_substrings(query: str) -> None:
     word boundaries. §3.4 states this is correct and intended; the test
     exists so nobody later "fixes" it into `\\b` and silently loses recall."""
     assert classify_intent(query) is Intent.SUMMARIZE_DOC
+
+
+# --------------------------------------------------------------------------- #
+# file_resolution.resolve_file -- the file-name cascade                       #
+# (retrieval plan §3.5 / §4 row 13, `P-04`)                                   #
+# --------------------------------------------------------------------------- #
+_MAINTENANCE = FileCandidate("doc-maintenance", "تقرير_الصيانة.pdf")
+_POLICY = FileCandidate("doc-policy", "سياسة_الموارد_البشرية.docx")
+_QUARTER = FileCandidate("doc-quarter", "Q3_Report.pdf")
+_CORPUS = (_MAINTENANCE, _POLICY, _QUARTER)
+
+# The semantic layer takes vectors, never an embedding client (the domain is
+# pure), so the fixtures are exact by construction: against `_QUERY_VECTOR`,
+# `_label_at_cosine(c)` scores exactly `c`.
+_QUERY_VECTOR = (1.0, 0.0)
+# A query that DESCRIBES a document instead of naming it — zero lexical
+# overlap with either Latin file name below, so the cascade always falls
+# through layers 1 and 2 and the semantic layer is what is under test.
+_DESCRIBED = "ما الوثيقة التي تشرح إجراءات السلامة؟"
+
+
+def _label_at_cosine(cosine: float) -> tuple[float, float]:
+    return (cosine, math.sqrt(1.0 - cosine * cosine))
+
+
+def test_resolve_file_empty_corpus_is_no_match() -> None:
+    assert resolve_file("لخص تقرير الصيانة", []) == NoFileMatch()
+
+
+def test_resolve_file_exact_name_in_the_query_resolves_at_score_one() -> None:
+    assert resolve_file("لخص تقرير الصيانة", _CORPUS) == ResolvedFile(
+        document_id="doc-maintenance",
+        file_name="تقرير_الصيانة.pdf",
+        method=ResolutionMethod.EXACT,
+        score=1.0,
+    )
+
+
+def test_resolve_file_exact_layer_folds_case_extension_and_separators() -> None:
+    """One test for the three things `_norm_name` does before matching: alpha's
+    `normalize_ar` lower-cases (file names are Latin at least as often as
+    Arabic), the extension is dropped, and `_`/`-`/`.` become spaces — so a
+    file stored as `Q3_Report.pdf` is reachable by typing `q3 report`."""
+    result = resolve_file("summarize the q3 report", _CORPUS)
+
+    assert isinstance(result, ResolvedFile)
+    assert result.document_id == "doc-quarter"
+    assert result.method is ResolutionMethod.EXACT
+
+
+def test_resolve_file_two_exact_hits_do_not_pick_one() -> None:
+    """Ambiguity is decided per LAYER, not at the end: two file names both
+    present in the query is already undecidable, and alpha returns candidates
+    from the exact layer rather than letting the fuzzy scores break the tie."""
+    corpus = (
+        FileCandidate("doc-report", "تقرير.pdf"),
+        FileCandidate("doc-sales", "تقرير المبيعات.pdf"),
+    )
+
+    assert resolve_file("لخص تقرير المبيعات", corpus) == AmbiguousFiles(
+        corpus, ResolutionMethod.EXACT
+    )
+
+
+def test_resolve_file_fuzzy_resolves_a_confident_lone_candidate() -> None:
+    """«ملف الصيانة» names no file exactly, but scores 0.85 against
+    «تقرير_الصيانة.pdf» — above `_HIGH` and alone — via alpha's blend
+    `max(0.6·containment + 0.4·difflib_ratio, jaccard)`."""
+    result = resolve_file("لخص ملف الصيانة", _CORPUS)
+
+    assert isinstance(result, ResolvedFile)
+    assert result.document_id == "doc-maintenance"
+    assert result.method is ResolutionMethod.FUZZY
+    assert result.score == pytest.approx(0.85)
+
+
+def test_resolve_file_a_fuzzy_tie_returns_every_tied_candidate_and_guesses_nothing() -> None:
+    """`P-04`'s headline behaviour and the reason it is worth porting at all
+    (plan §3.5): two sales reports differing only by year are genuinely
+    indistinguishable from «لخص تقرير المبيعات», and "always take the top
+    candidate" would summarize one of them — the WRONG one, half the time,
+    with full confidence and nothing downstream able to notice."""
+    corpus = (
+        FileCandidate("doc-2023", "تقرير_المبيعات_2023.pdf"),
+        FileCandidate("doc-2024", "تقرير_المبيعات_2024.pdf"),
+    )
+
+    result = resolve_file("لخص تقرير المبيعات", corpus)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert result.method is ResolutionMethod.FUZZY
+    assert tuple(candidate.document_id for candidate in result.candidates) == (
+        "doc-2023",
+        "doc-2024",
+    )
+
+
+def test_resolve_file_the_band_admits_only_near_ties_not_the_whole_corpus() -> None:
+    """`_BAND = 0.10` is a TIE window, not "return everything": an unrelated
+    file in the same corpus is not made a candidate by the ambiguity of two
+    others."""
+    corpus = (
+        FileCandidate("doc-2023", "تقرير_المبيعات_2023.pdf"),
+        FileCandidate("doc-2024", "تقرير_المبيعات_2024.pdf"),
+        _POLICY,
+    )
+
+    result = resolve_file("لخص تقرير المبيعات", corpus)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert _POLICY not in result.candidates
+
+
+def test_resolve_file_a_lone_candidate_below_the_confidence_bar_is_still_undecided() -> None:
+    """Ambiguity is not only "several files". A single candidate that clears
+    `_LOW` but not `_HIGH` (here 0.705) is returned as `AmbiguousFiles` with
+    ONE member — alpha's behaviour and the honest one: "did you mean X?" is a
+    different statement from "this is X"."""
+    corpus = (
+        FileCandidate("doc-annual", "تقرير الصيانة السنوي للمباني والمرافق.pdf"),
+        FileCandidate("doc-budget", "الميزانية.pdf"),
+    )
+
+    result = resolve_file("لخص ملف الصيانة", corpus)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert tuple(candidate.document_id for candidate in result.candidates) == ("doc-annual",)
+
+
+def test_resolve_file_caps_the_candidate_list_at_five() -> None:
+    """A user cannot be asked to choose between twenty files. The cap is
+    alpha's `max_candidates=5`, applied in rank order — and the order of
+    equal scores is the order the corpus was given in, so the same corpus
+    always produces the same five."""
+    corpus = tuple(
+        FileCandidate(f"doc-{year}", f"تقرير_المبيعات_{year}.pdf") for year in range(2019, 2025)
+    )
+
+    result = resolve_file("لخص تقرير المبيعات", corpus)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert result.candidates == corpus[:5]
+
+
+def test_resolve_file_below_the_usable_floor_is_no_match_not_a_best_guess() -> None:
+    """No budget file exists in `_CORPUS`. Nothing clears `_LOW`, and the
+    answer is "none" rather than the least-bad of three wrong files."""
+    assert resolve_file("ما هو ملف الميزانية؟", _CORPUS) == NoFileMatch()
+
+
+def test_resolve_file_strips_the_arabic_definite_article_from_long_tokens() -> None:
+    """alpha's own note calls «التقرير» vs «تقرير» "a very common mismatch";
+    stripping «ال» on both sides is what closes it."""
+    result = resolve_file("لخص التقرير", (FileCandidate("doc-report", "تقرير.pdf"),))
+
+    assert isinstance(result, ResolvedFile)
+    assert result.document_id == "doc-report"
+
+
+def test_resolve_file_keeps_the_definite_article_on_a_four_letter_token() -> None:
+    """The strip applies only to tokens LONGER than four characters, so «الرد»
+    survives intact and a query about «رد» does not reach it. Pinned because
+    the bound is the whole safety of the rule: without it every short Arabic
+    word beginning with those two letters would be silently truncated."""
+    assert resolve_file("لخص رد المدير", (FileCandidate("doc-reply", "الرد.pdf"),)) == NoFileMatch()
+
+
+def test_resolve_file_a_query_of_nothing_but_request_words_names_no_file() -> None:
+    """«لخص لي هذا» IS a summarization request — `classify_intent` says so —
+    and identifies no document whatsoever. The resolver refuses instead of
+    falling back on the newest file: this is precisely the query row 14's
+    clarification question exists to answer."""
+    assert classify_intent("لخص لي هذا") is Intent.SUMMARIZE_DOC
+    assert resolve_file("لخص لي هذا", _CORPUS) == NoFileMatch()
+
+
+def test_resolve_file_semantic_layer_runs_only_when_a_query_vector_is_given() -> None:
+    """alpha's `embed_model=None` optionality, minus the I/O: the domain
+    cannot embed anything, so the vectors are passed in. Same query, same
+    corpus — without vectors the cascade ends after FUZZY."""
+    corpus = (
+        FileCandidate("doc-safety", "handbook.pdf", _label_at_cosine(0.70)),
+        FileCandidate("doc-manual", "manual.pdf", _label_at_cosine(0.30)),
+    )
+
+    assert resolve_file(_DESCRIBED, corpus) == NoFileMatch()
+
+    result = resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR)
+    assert isinstance(result, ResolvedFile)
+    assert result.document_id == "doc-safety"
+    assert result.method is ResolutionMethod.SEMANTIC
+    assert result.score == pytest.approx(0.70)
+
+
+def test_resolve_file_semantic_tie_inside_its_band_returns_candidates() -> None:
+    """The refusal to guess is the same at layer 3, on alpha's tighter
+    semantic band (0.05): 0.70 and 0.68 are not a decision."""
+    corpus = (
+        FileCandidate("doc-safety", "handbook.pdf", _label_at_cosine(0.70)),
+        FileCandidate("doc-manual", "manual.pdf", _label_at_cosine(0.68)),
+    )
+
+    result = resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert result.method is ResolutionMethod.SEMANTIC
+    assert len(result.candidates) == 2
+
+
+def test_resolve_file_semantic_lone_candidate_below_its_confidence_bar_is_undecided() -> None:
+    """0.50 clears the semantic floor (0.45) but not the semantic confidence
+    bar (0.60) — usable enough to show, not confident enough to act on."""
+    corpus = (
+        FileCandidate("doc-safety", "handbook.pdf", _label_at_cosine(0.50)),
+        FileCandidate("doc-manual", "manual.pdf", _label_at_cosine(0.30)),
+    )
+
+    result = resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR)
+
+    assert isinstance(result, AmbiguousFiles)
+    assert tuple(candidate.document_id for candidate in result.candidates) == ("doc-safety",)
+
+
+def test_resolve_file_semantic_below_the_floor_is_no_match() -> None:
+    corpus = (
+        FileCandidate("doc-safety", "handbook.pdf", _label_at_cosine(0.40)),
+        FileCandidate("doc-manual", "manual.pdf", _label_at_cosine(0.30)),
+    )
+
+    assert resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR) == NoFileMatch()
+
+
+def test_resolve_file_a_zero_label_vector_scores_zero_instead_of_dividing_by_zero() -> None:
+    """alpha's `1e-8` norm epsilon, ported: a label that embedded to zeros is
+    maximally unrelated, not a crash."""
+    corpus = (FileCandidate("doc-empty", "handbook.pdf", (0.0, 0.0)),)
+
+    assert resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR) == NoFileMatch()
+
+
+def test_resolve_file_a_lexical_decision_is_never_revisited_by_the_semantic_layer() -> None:
+    """The cascade stops at the first layer with an opinion. A perfect label
+    vector on the wrong document does not overturn a confident fuzzy match —
+    file names are lexical by nature, which is why semantics is the LAST
+    resort and not a tiebreaker."""
+    corpus = (
+        FileCandidate("doc-maintenance", "تقرير_الصيانة.pdf", _label_at_cosine(0.10)),
+        FileCandidate("doc-policy", "سياسة_الموارد_البشرية.docx", _label_at_cosine(1.0)),
+    )
+
+    result = resolve_file("لخص ملف الصيانة", corpus, query_vector=_QUERY_VECTOR)
+
+    assert isinstance(result, ResolvedFile)
+    assert result.document_id == "doc-maintenance"
+    assert result.method is ResolutionMethod.FUZZY
+
+
+def test_resolve_file_semantic_layer_refuses_a_partially_embedded_corpus() -> None:
+    """Skipping the un-embedded candidates instead would run the comparison
+    over a silently partial corpus and could return a confident match while
+    the right file sat outside it — the failure this whole module exists to
+    prevent, reintroduced by a convenience. alpha's `except Exception` +
+    `print` (a silent downgrade to "no match") is not ported either."""
+    corpus = (
+        FileCandidate("doc-safety", "handbook.pdf", _label_at_cosine(0.90)),
+        FileCandidate("doc-manual", "manual.pdf"),
+    )
+
+    with pytest.raises(InvalidKnowledgeInput):
+        resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR)
+
+
+def test_resolve_file_semantic_layer_rejects_a_mismatched_vector_dimension() -> None:
+    corpus = (FileCandidate("doc-safety", "handbook.pdf", (1.0, 0.0, 0.0)),)
+
+    with pytest.raises(InvalidKnowledgeInput):
+        resolve_file(_DESCRIBED, corpus, query_vector=_QUERY_VECTOR)
+
+
+def test_resolve_file_semantic_layer_rejects_an_empty_query_vector() -> None:
+    corpus = (FileCandidate("doc-safety", "handbook.pdf", ()),)
+
+    with pytest.raises(InvalidKnowledgeInput):
+        resolve_file(_DESCRIBED, corpus, query_vector=())
+
+
+def test_resolve_file_is_pure_and_deterministic() -> None:
+    assert resolve_file("لخص ملف الصيانة", _CORPUS) == resolve_file("لخص ملف الصيانة", _CORPUS)
+
+
+def test_ambiguous_files_cannot_be_empty() -> None:
+    """An "undecided" outcome with nothing in it is `NoFileMatch` wearing the
+    wrong type, and a caller branching on the union would render an empty
+    question. The invariant is enforced at construction."""
+    with pytest.raises(InvalidKnowledgeInput):
+        AmbiguousFiles((), ResolutionMethod.FUZZY)
+
+
+def test_ambiguous_files_offers_no_way_to_collapse_itself_into_one_answer() -> None:
+    """Plan §3.5's rationale, made structural. `AmbiguousFiles` carries the
+    candidates and the layer that produced them and NOTHING else — no
+    `document_id`, no `best`, no indexing or iteration protocol — so
+    `mypy --strict` rejects `.document_id` on a `FileResolution` that has not
+    been narrowed to `ResolvedFile` first, and there is no accidental one-line
+    path from "undecided" to a single confident answer."""
+    ambiguous = AmbiguousFiles((_MAINTENANCE, _POLICY), ResolutionMethod.FUZZY)
+
+    assert {field.name for field in dataclasses.fields(ambiguous)} == {"candidates", "method"}
+    for attribute in ("document_id", "file_name", "score", "best", "top", "first"):
+        assert not hasattr(ambiguous, attribute)
+    assert not hasattr(type(ambiguous), "__getitem__")
+    assert not hasattr(type(ambiguous), "__iter__")
+
+
+def test_file_resolution_outcomes_are_frozen() -> None:
+    resolved = ResolvedFile("doc-1", "a.pdf", ResolutionMethod.EXACT, 1.0)
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        resolved.document_id = "doc-2"
+
+
+def test_file_resolution_lexical_thresholds_are_alphas_calibration() -> None:
+    """`_BAND = 0.10` is named verbatim in plan §4 row 13. These three grade a
+    token-overlap-and-`difflib` similarity in [0, 1] computed in this very
+    module, so — unlike the L2-calibrated retrieval thresholds the plan's
+    header warns about — they carry over unchanged, the same standing as
+    `relevance.py`'s 0.95 Jaccard constant."""
+    assert file_resolution._BAND == 0.10
+    assert file_resolution._HIGH == 0.75
+    assert file_resolution._LOW == 0.40
+    assert file_resolution._MAX_CANDIDATES == 5
+
+
+def test_file_resolution_module_imports_stdlib_and_sibling_domain_only() -> None:
+    """Plan §3.5: "وحدة دومين نقيّة فوق `ListDocuments` — تُنقَل الخوارزمية لا
+    تخزين JSON الذي يستعمله alpha". Read off the module's own AST: no `os`, no
+    `json`, no repository, and — the one that matters most — no embedding
+    provider. The semantic layer receives vectors; it does not fetch them, and
+    it never could without breaking import-linter contract 2."""
+    tree = ast.parse(inspect.getsource(file_resolution))
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+
+    assert imported == {
+        "__future__",
+        "collections.abc",
+        "dataclasses",
+        "difflib",
+        "enum",
+        "math",
+        "operator",
+        "re",
+        "app.modules.knowledge.domain.errors",
+        "app.modules.knowledge.domain.tokenization",
+    }
 
 
 # --------------------------------------------------------------------------- #
