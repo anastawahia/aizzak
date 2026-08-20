@@ -14,16 +14,41 @@ carries its own ``text`` (written by ``IndexDocument``), so fused ranking is
 the only extra work needed.
 
 Pipeline shape (retrieval plan §3.7, plan step 8's ``P-26`` + plan step 9's
-``P-34`` + plan step 10's ``P-35``): fusion → **keep 3x k** →
-``filter_relevant`` → **replace with parent text, dedup by parent** →
-**context budget** → final ``k``. ``execute`` widens back OUT to ``3 * k``
-candidates right after RRF fusion (``RetrievalTuning.fusion_retention``,
-decoupled from ``.search_overfetch`` even though both ship at 3) — narrowing
-straight to ``k`` here, before ``filter_relevant`` even runs, would starve the
-parent-expansion step below of the diversity it needs to fill ``k`` with
-distinct sections instead of collapsing into two parents (§3.7's own stated
-failure mode). The PUBLIC result still honours the caller's ``k`` exactly:
-only the very last line of ``execute`` truncates to it.
+``P-34`` + plan step 10's ``P-35``, with plan step 20's ``P-23`` on the first
+arrow): fusion → **MMR keeps a diverse 3x k** → ``filter_relevant`` →
+**replace with parent text, dedup by parent** → **context budget** → final
+``k``. ``execute`` widens back OUT to ``3 * k`` candidates right after RRF
+fusion (``RetrievalTuning.fusion_retention``, decoupled from
+``.search_overfetch``) — narrowing straight to ``k`` here, before
+``filter_relevant`` even runs, would starve the parent-expansion step below of
+the diversity it needs to fill ``k`` with distinct sections instead of
+collapsing into two parents (§3.7's own stated failure mode). The PUBLIC
+result still honours the caller's ``k`` exactly: only the very last line of
+``execute`` truncates to it.
+
+**MMR (plan step 20, ``P-23``; retrieval plan §3.9, decision س-20).** WHICH
+``3 * k`` survive that first arrow is a diversity decision, not a rank one.
+RRF fuses two *rankings* and has no notion of how alike two candidates are, so
+"خمس قطع من الفقرة نفسها" — five chunks off one paragraph — is a legitimate
+result it will happily produce. ``reciprocal_rank_fusion`` therefore fuses to
+the WIDER ``mmr_pool_k`` (``RetrievalTuning.mmr_overfetch``, the "``search_k``
+موسَّع" of plan row 20), and ``_mmr_rerank`` selects ``retain_k`` out of it by
+``λ·sim(q,d) - (1-λ)·max sim(d,dⱼ)`` — the PURE ``domain/mmr.py``, stdlib
+only, no I/O of its own. The surplus between the two factors is what lets that
+stage genuinely DISCARD a near-duplicate rather than merely re-order it.
+
+It sits before ``filter_relevant`` and everything after it because all of
+those stages are prefix-sensitive — dedup-by-parent keeps the FIRST candidate
+to reach a parent, the context budget keeps a best-first PREFIX, and the last
+line keeps ``[:k]`` — so a diversity decision taken later would be taken on a
+list three stages had already cut on the undiversified order. MMR's own first
+pick has nothing to be redundant with, so the most relevant chunk is still
+``[#1]`` (§3.7); ``LongContextReorder`` remains a rejected design, never code.
+
+**The declared price** (§3.9, §6 risk #5, accepted by س-20): both legs search
+with ``with_vectors=True``, so every candidate's full dense vector crosses the
+network. The scope is the widened ``search_k``/``sparse_k`` — never the corpus
+— and the vectors are read once here and never stored.
 
 **Parent expansion (plan step 9, ``P-34``) — critical, not an optimisation
 (§3.7 verbatim): with the sentence-window approach excluded, this is the
@@ -185,6 +210,7 @@ from app.framework.types import Json
 from app.modules.knowledge.domain.collections import knowledge_collection
 from app.modules.knowledge.domain.context_budget import fit_to_context_budget
 from app.modules.knowledge.domain.fusion import FusedChunk, reciprocal_rank_fusion
+from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import build_sparse_terms
 from app.modules.knowledge.domain.value_objects import ParentChunkText
@@ -231,7 +257,8 @@ class RetrievalTuning:
     ``weight_dense`` ``weight_bm25`` ``rrf_k`` ``search_overfetch``
     ``max_search_candidates`` ``max_sparse_candidates`` ``fusion_retention``
     ``default_k`` ``min_dense_score`` ``min_bm25_score`` ``min_fused_score``
-    ``relative_floor`` ``jaccard_threshold`` ``max_parent_chunk_chars`` come
+    ``relative_floor`` ``jaccard_threshold`` ``max_parent_chunk_chars``
+    ``mmr_lambda`` ``mmr_overfetch`` come
     from ``Settings.retrieval``; ``max_k`` ``max_context_chars``
     ``max_context_tokens`` come from ``Settings.limits`` (``max_rag_k`` and
     the dual budget are platform GUARDRAILS — 07-nfr-slo §4 — that other
@@ -262,6 +289,8 @@ class RetrievalTuning:
     relative_floor: float = 0.0
     jaccard_threshold: float = 0.95
     max_parent_chunk_chars: int = 4_000
+    mmr_lambda: float = 0.7
+    mmr_overfetch: int = 6
     max_context_chars: int = 12_000
     max_context_tokens: int = 3_000
 
@@ -318,6 +347,11 @@ _STAGE_LOG_DEFAULTS: Mapping[str, object] = {
     "fused_count": 0,
     "candidates": (),
     "origin_counts": {_ORIGIN_DENSE: 0, _ORIGIN_BM25: 0, _ORIGIN_BOTH: 0},
+    # How many candidates MMR (plan step 20, `P-23`) handed on. Below
+    # `fused_count` is the diversity cut: that gap is how many near-duplicates
+    # the widened pool bought the right to discard, the one number that says
+    # whether `mmr_overfetch` is paying for the vectors it puts on the wire.
+    "mmr_count": 0,
     "relevant_count": 0,
     "widened_count": 0,
     "budgeted_count": 0,
@@ -449,7 +483,16 @@ class RetrieveContext:
         # overriding a tuning knob, which is why that stays possible.
         k = tuning.default_k if k is None else k
         k = max(1, min(k, tuning.max_k))
-        search_k = min(k * tuning.search_overfetch, tuning.max_search_candidates)
+        # The "search_k موسَّع" of plan step 20 (`P-23`, §3.9). MMR selects a
+        # DIVERSE `retain_k` out of a pool that has to be wider than
+        # `retain_k`, or there is nothing surplus to discard and the whole
+        # stage collapses into a re-ordering. So the legs fetch at whichever
+        # factor is larger -- `mmr_overfetch` today -- and that single depth
+        # is also the scope `with_vectors=True` pays for on the wire (§6 risk
+        # #5: the widened `search_k`, never the corpus).
+        search_k = min(
+            k * max(tuning.search_overfetch, tuning.mmr_overfetch), tuning.max_search_candidates
+        )
         # The BM25-sparse candidate ceiling (plan step 16, `P-27`) -- a cap on
         # the sparse leg ALONE, never on the dense one. Spent at fetch DEPTH
         # rather than on the returned list, because asking the store for 100
@@ -462,6 +505,13 @@ class RetrieveContext:
         # fetches -- which is why the two factors are separate knobs even
         # though both ship at 3.
         retain_k = min(k * tuning.fusion_retention, tuning.max_search_candidates)
+        # The pool MMR chooses from (plan step 20, `P-23`) -- what RRF fuses
+        # to, in place of the blind `retain_k` truncation it used to do. The
+        # cut from `mmr_pool_k` down to `retain_k` is now a DIVERSITY
+        # decision instead of a rank one; when the two factors are equal, MMR
+        # re-orders the pool and drops nothing, which is the honest
+        # degenerate case rather than a special branch.
+        mmr_pool_k = min(k * tuning.mmr_overfetch, tuning.max_search_candidates)
 
         # The structured stage log's accumulator (plan step 17, `P-29`) —
         # filled in place by each stage as it runs and emitted ONCE, on every
@@ -478,6 +528,7 @@ class RetrieveContext:
             "k": k,
             "search_k": search_k,
             "sparse_k": sparse_k,
+            "mmr_pool_k": mmr_pool_k,
             "retain_k": retain_k,
             "scoped_document_count": None if document_ids is None else len(document_ids),
             "space_scoped": space_id is not None,
@@ -546,11 +597,23 @@ class RetrieveContext:
         q_terms = build_sparse_terms(query)
         q_sparse = SparseVector(indices=list(q_terms.indices), values=list(q_terms.values))
 
+        # `with_vectors=True` on BOTH legs (plan step 20, `P-23`, decision
+        # س-20; §3.9) -- MMR's diversity term is candidate-to-candidate
+        # similarity, and nothing but the candidates' own vectors can supply
+        # it. The declared price is a full float vector per hit crossing the
+        # network (§3.9 "الثمن المُعلَن", §6 risk #5 "مقبول بالقرار س-20"),
+        # and it is bounded by `search_k`/`sparse_k` -- the widened SEARCH,
+        # never the corpus.
+        #
+        # The sparse leg asks too, not just the dense one: a candidate only
+        # BM25 saw is exactly the lexical-recall win the hybrid pipeline
+        # exists for, and leaving it vector-less would let it into the answer
+        # as the one candidate nothing checked for redundancy.
         dense_hits: list[VectorHit] = await self._vectors.search(
-            collection, q_vector, search_k, flt
+            collection, q_vector, search_k, flt, with_vectors=True
         )
         sparse_hits: list[VectorHit] = await self._vectors.search_sparse(
-            collection, q_sparse, sparse_k, flt
+            collection, q_sparse, sparse_k, flt, with_vectors=True
         )
 
         # Confidence-signal snapshot (retrieval plan §3.3/§3.11, ``P-28``) —
@@ -612,16 +675,16 @@ class RetrieveContext:
         # gate's effect — the measurement `P-38` has to read to calibrate it.
         stages.update({"dense_kept": len(dense_hits), "sparse_kept": len(sparse_hits)})
 
-        # `top_k=retain_k`, NOT `search_k` (plan step 8, `P-26`) -- the fused,
-        # ranked list handed to `filter_relevant` below is `3 * k` deep, wider
-        # than the vector-store fetch's own overfetch factor, so the parent-
-        # expansion widening below (plan step 9, `P-34`) has enough distinct
-        # candidates to work with. Only the FINAL `chunks` line below narrows
+        # `top_k=mmr_pool_k`, NOT `search_k` and no longer `retain_k` (plan
+        # step 8, `P-26`, as widened by step 20's `P-23`). The list handed to
+        # MMR below is the widened pool; MMR is what cuts it to the `3 * k`
+        # `filter_relevant` and the parent-expansion widening (plan step 9,
+        # `P-34`) then work over. Only the FINAL `chunks` line below narrows
         # back down to the caller's `k`.
         fused = reciprocal_rank_fusion(
             [hit.id for hit in dense_hits],
             [hit.id for hit in sparse_hits],
-            top_k=retain_k,
+            top_k=mmr_pool_k,
             weight_dense=tuning.weight_dense,
             weight_bm25=tuning.weight_bm25,
             rrf_k=tuning.rrf_k,
@@ -656,7 +719,24 @@ class RetrieveContext:
         payload_by_id: dict[str, Json] = {
             hit.id: hit.payload for hit in (*dense_hits, *sparse_hits)
         }
-        scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
+        # MMR (plan step 20, `P-23`, decision س-20; §3.9) -- placed HERE, on
+        # the arrow §3.7 draws as "الدمج ──► احتفظ بـ 3xk": it IS that
+        # retention now, choosing a DIVERSE `retain_k` out of the widened
+        # fused pool instead of taking RRF's top `retain_k` blindly. Before
+        # `filter_relevant` and everything after it, because every one of
+        # those stages is prefix-sensitive -- dedup-by-parent keeps the FIRST
+        # candidate to reach a parent, the context budget keeps a best-first
+        # PREFIX, and the last line keeps `[:k]` -- so a diversity decision
+        # taken any later would be taken on a list three stages had already
+        # cut on the undiversified order. (It also spares `filter_relevant`'s
+        # O(n²) Jaccard pass the entries MMR just discarded.)
+        vectors_by_id: dict[str, Sequence[float]] = {
+            hit.id: hit.vector for hit in (*dense_hits, *sparse_hits) if hit.vector is not None
+        }
+        ranked = _mmr_rerank(fused, vectors_by_id, top_n=retain_k, lambda_=tuning.mmr_lambda)
+        stages["mmr_count"] = len(ranked)
+
+        scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in ranked]
         # The three relevance gates' numbers are passed EXPLICITLY (plan step
         # 18, `P-30`) rather than left at `filter_relevant`'s own defaults --
         # same values, one home. Both floors are `0.0` = disabled (س-22: the
@@ -786,6 +866,66 @@ def _origin_counts(origins: Iterable[str]) -> dict[str, int]:
     for origin in origins:
         counts[origin] = counts.get(origin, 0) + 1
     return counts
+
+
+def _mmr_rerank(
+    fused: Sequence[FusedChunk],
+    vectors: Mapping[str, Sequence[float]],
+    *,
+    top_n: int,
+    lambda_: float,
+) -> list[FusedChunk]:
+    """Re-rank the fused pool by Maximal Marginal Relevance and cut it to
+    ``top_n`` (plan step 20, ``P-23``; retrieval plan §3.9), keeping the
+    ``FusedChunk`` records the rest of the pipeline reads.
+
+    The pure algorithm (``domain/mmr.py``) speaks in ids, relevance numbers
+    and vectors alone, so this is the whole of the translation: build a
+    candidate per fused chunk the store actually returned a vector for, ask
+    MMR for its selection, and re-order ``fused`` by it.
+
+    ``MmrCandidate.relevance`` is the FUSED RRF score, deliberately — MMR does
+    not recompute a query similarity of its own. Half of this pipeline's
+    ranking comes from a BM25-sparse leg no embedding can see, so a dense
+    ``sim(q, d)`` computed inside MMR would overrule RRF and demote exactly
+    the candidates the sparse leg rescued (``domain/mmr.py``'s own docstring
+    has the argument, and
+    ``test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg``
+    is the case it protects).
+
+    Two honest degradations, both "never dropped, never an error" —
+    ``_widen_to_parents``' rule, for the same reason (a ranking must not be
+    the thing that fails):
+
+    * **No vectors at all.** Nothing to diversify with, so the RRF order is
+      returned, cut to ``top_n`` — exactly what this stage replaced. That is
+      also what makes every store that ignores ``with_vectors`` behave as it
+      did before.
+    * **Some vectors missing.** The candidates MMR could rank come first, in
+      its order; the ones it could not follow in RRF order and are cut by
+      ``top_n`` like anything else. They are never *preferred* over a
+      diversity-checked candidate, and never silently discarded either.
+
+    Note what does NOT move: ``FusedChunk.score`` is still RRF's own number.
+    MMR decides ORDER and MEMBERSHIP, and writing its internal score onto the
+    record would put a cosine-scale value in a field the relevance floors read
+    as an RRF-scale one.
+    """
+    candidates = [
+        MmrCandidate(chunk_id=chunk.chunk_id, relevance=chunk.score, vector=vectors[chunk.chunk_id])
+        for chunk in fused
+        if chunk.chunk_id in vectors
+    ]
+    if not candidates:
+        return list(fused[:top_n])
+    selected = maximal_marginal_relevance(candidates, top_n=top_n, lambda_=lambda_)
+    order = {chunk_id: rank for rank, chunk_id in enumerate(selected)}
+    # `len(fused)` is past every real rank, so an unranked candidate sorts to
+    # the tail; `sorted` is stable, so those keep their RRF order among
+    # themselves.
+    unranked = len(fused)
+    ranked = sorted(fused, key=lambda chunk: order.get(chunk.chunk_id, unranked))
+    return ranked[:top_n]
 
 
 def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHit]:

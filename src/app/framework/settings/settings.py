@@ -394,6 +394,28 @@ class RetrievalSettings(BaseModel):
     # itself. A candidate's own leaf text is never capped (already
     # window-sized).
     max_parent_chunk_chars: int = 4_000
+    # MMR (plan step 20, `P-23`, decision س-20) -- the two fields step 18's §7
+    # entry reserved for it, riding this same seam with no second mechanism.
+    #
+    # `mmr_lambda` weighs relevance against redundancy in
+    # `λ·sim(q,d) - (1-λ)·max sim(d,dⱼ)`. `0.7` SHIPS as a number, and §3.8's
+    # last row says exactly why that does not contradict س-22: it is a
+    # DIVERSITY trade-off, not a "is this good enough" gate -- nothing is
+    # admitted or rejected by comparing a score to it. Higher is more
+    # relevance-led; `1.0` turns diversity off entirely.
+    mmr_lambda: float = 0.7
+    # The "search_k موسَّع" of plan row 20 -- how deep each leg fetches, as a
+    # multiple of `k`, so MMR has a pool WIDER than what it hands on and can
+    # actually DISCARD a near-duplicate instead of merely re-ordering it.
+    # `6` is `2 x fusion_retention`: MMR may drop up to half the fused pool as
+    # redundant and still deliver step 8's full `3 x k` to parent expansion.
+    # A COUNT, like `max_sparse_candidates` -- س-22 governs scores, so it does
+    # not reach this either. It raises the fetch depth to
+    # `max(search_overfetch, mmr_overfetch) * k` (still capped by
+    # `max_search_candidates`), and ⚠️ that depth is also what
+    # `with_vectors=True` now ships over the wire per query -- §3.9's declared
+    # price, §6 risk #5's accepted one.
+    mmr_overfetch: int = 6
 
 
 class Limits(BaseModel):

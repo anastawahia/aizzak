@@ -236,12 +236,24 @@ class _FakeHybridVectors:
         self.upserted.append((collection, list(points)))
 
     async def search(
-        self, collection: str, vector: list[float], k: int, flt: Json | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         return []
 
     async def search_sparse(
-        self, collection: str, sparse: object, k: int, flt: Json | None = None
+        self,
+        collection: str,
+        sparse: object,
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         return []
 

@@ -231,7 +231,13 @@ class _FakeHybridVectors:
             bucket[point.id] = point
 
     async def search(
-        self, collection: str, vector: list[float], k: int, flt: Json | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         self.search_calls.append((collection, k, flt))
         candidates = [
@@ -245,7 +251,13 @@ class _FakeHybridVectors:
         return [VectorHit(id=p.id, score=score, payload=p.payload) for p, score in scored[:k]]
 
     async def search_sparse(
-        self, collection: str, sparse: SparseVector, k: int, flt: Json | None = None
+        self,
+        collection: str,
+        sparse: SparseVector,
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         self.search_sparse_calls.append((collection, k, flt))
         candidates = [
@@ -1317,10 +1329,11 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     assert results[0].text == text
 
     # k propagated all the way through to the underlying search calls:
-    # search_k = k * _SEARCH_OVERFETCH (RetrieveContext's overfetch, 3.k3)
-    # == 1 * 3 == 3.
-    assert vectors.search_calls[-1][1] == 3
-    assert vectors.search_sparse_calls[-1][1] == 3
+    # search_k = k * the widened overfetch (plan row 20's
+    # `max(search_overfetch, mmr_overfetch)`, which MMR needs a surplus from)
+    # == 1 * 6 == 6.
+    assert vectors.search_calls[-1][1] == 6
+    assert vectors.search_sparse_calls[-1][1] == 6
     # Unscoped by default: no `document_id` narrowing reaches either leg, so
     # every caller that predates BE-RAG-005 still searches the whole corpus.
     assert "document_id" not in (vectors.search_calls[-1][2] or {})

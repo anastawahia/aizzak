@@ -49,7 +49,7 @@ from app.modules.knowledge.application.retrieval import (
     RetrievalTuning,
     RetrieveContext,
 )
-from app.modules.knowledge.domain import file_resolution
+from app.modules.knowledge.domain import file_resolution, mmr
 from app.modules.knowledge.domain.chunking import (
     MIN_NODE_CHARS,
     SPLIT_OVERLAP_RATIO,
@@ -70,6 +70,7 @@ from app.modules.knowledge.domain.file_resolution import (
     resolve_file,
 )
 from app.modules.knowledge.domain.intent import Intent, classify_intent
+from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
 from app.modules.knowledge.domain.value_objects import ParentChunkText
@@ -244,6 +245,11 @@ class FakeHybridVectors:
         self.ensured_hybrid: list[tuple[str, int, str]] = []
         self.search_calls: list[tuple[str, int, Json | None]] = []
         self.search_sparse_calls: list[tuple[str, int, Json | None]] = []
+        # Every leg's `with_vectors` flag, in call order (plan row 20,
+        # `P-23`): the fake returns each point's own dense vector only when
+        # asked, so a test can prove BOTH that MMR gets its input and that a
+        # store which never fills `VectorHit.vector` still retrieves.
+        self.with_vectors_calls: list[bool] = []
 
     async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None:
         self.points.setdefault(name, {})
@@ -267,9 +273,16 @@ class FakeHybridVectors:
             bucket[point.id] = point
 
     async def search(
-        self, collection: str, vector: list[float], k: int, flt: Json | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         self.search_calls.append((collection, k, flt))
+        self.with_vectors_calls.append(with_vectors)
         candidates = [
             p for p in self.points.get(collection, {}).values() if _payload_matches(p.payload, flt)
         ]
@@ -278,12 +291,27 @@ class FakeHybridVectors:
             key=lambda item: item[1],
             reverse=True,
         )
-        return [VectorHit(id=p.id, score=score, payload=p.payload) for p, score in scored[:k]]
+        return [
+            VectorHit(
+                id=p.id,
+                score=score,
+                payload=p.payload,
+                vector=list(p.vector) if with_vectors else None,
+            )
+            for p, score in scored[:k]
+        ]
 
     async def search_sparse(
-        self, collection: str, sparse: SparseVector, k: int, flt: Json | None = None
+        self,
+        collection: str,
+        sparse: SparseVector,
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         self.search_sparse_calls.append((collection, k, flt))
+        self.with_vectors_calls.append(with_vectors)
         candidates = [
             p for p in self.points.get(collection, {}).values() if _payload_matches(p.payload, flt)
         ]
@@ -293,7 +321,15 @@ class FakeHybridVectors:
             reverse=True,
         )
         scored = [(p, score) for p, score in scored if score > 0.0]
-        return [VectorHit(id=p.id, score=score, payload=p.payload) for p, score in scored[:k]]
+        return [
+            VectorHit(
+                id=p.id,
+                score=score,
+                payload=p.payload,
+                vector=list(p.vector) if with_vectors else None,
+            )
+            for p, score in scored[:k]
+        ]
 
     async def delete(self, collection: str, ids: Sequence[str]) -> None:
         bucket = self.points.get(collection, {})
@@ -974,6 +1010,173 @@ def test_filter_relevant_dedup_respects_custom_jaccard_threshold() -> None:
     kept_above_threshold = filter_relevant(candidates, jaccard_threshold=0.51)
     assert [c.chunk_id for c in kept_at_threshold] == ["a"]  # 0.5 >= 0.5 -> treated as dup
     assert [c.chunk_id for c in kept_above_threshold] == ["a", "b"]  # 0.5 < 0.51 -> kept separate
+
+
+# --------------------------------------------------------------------------- #
+# mmr.maximal_marginal_relevance (P-23, plan §4 row 20, §3.9 + س-20)          #
+# --------------------------------------------------------------------------- #
+def _mmr(chunk_id: str, relevance: float, vector: list[float]) -> MmrCandidate:
+    return MmrCandidate(chunk_id=chunk_id, relevance=relevance, vector=vector)
+
+
+def test_mmr_returns_nothing_for_an_empty_pool_or_a_non_positive_top_n() -> None:
+    """The two degenerate inputs, answered the same way ``fusion.py`` answers
+    them -- an empty list, never an exception."""
+    candidate = _mmr("a", 1.0, [1.0, 0.0])
+    assert maximal_marginal_relevance([], top_n=5) == []
+    assert maximal_marginal_relevance([candidate], top_n=0) == []
+    assert maximal_marginal_relevance([candidate], top_n=-1) == []
+
+
+def test_mmr_opens_with_the_most_relevant_candidate() -> None:
+    """§3.7's "الأكثر صلة في `[#1]`": the first pick has nothing selected to
+    be redundant with, so the diversity term cannot move it -- whatever the
+    incoming order."""
+    selected = maximal_marginal_relevance(
+        [_mmr("weak", 0.1, [1.0, 0.0]), _mmr("strong", 0.9, [0.0, 1.0])], top_n=2
+    )
+    assert selected[0] == "strong"
+
+
+def test_mmr_demotes_a_near_duplicate_below_a_less_relevant_distinct_chunk() -> None:
+    """§3.9's whole reason to exist, in one assertion: "خمس قطع من الفقرة
+    نفسها نتيجة مشروعة اليوم". Five candidates share one direction in vector
+    space (one paragraph, five near-duplicate chunks) and rank above a sixth
+    that points elsewhere. Ranked by relevance alone the top three would be
+    three copies of the same paragraph; MMR puts the DISTINCT chunk second,
+    even though it is the least relevant candidate in the pool."""
+    duplicates = [_mmr(f"dup-{index}", 1.0 - index * 0.01, [1.0, 0.0]) for index in range(5)]
+    distinct = _mmr("distinct", 0.90, [0.0, 1.0])
+
+    selected = maximal_marginal_relevance([*duplicates, distinct], top_n=3)
+
+    assert selected[0] == "dup-0"
+    assert selected[1] == "distinct"
+    # And the demotion is real, not merely a re-ordering that still ships all
+    # five: at `top_n = 3` only ONE of the five near-duplicates survives.
+    assert sum(1 for chunk_id in selected if chunk_id.startswith("dup-")) == 2
+    assert "dup-4" not in selected
+
+
+def test_mmr_at_lambda_one_is_pure_relevance_and_keeps_every_duplicate() -> None:
+    """The control for the test above, and the knob's own upper end: at
+    ``λ = 1.0`` the diversity term is multiplied by zero, so MMR degenerates
+    to "sort by relevance" and the same pool ships three copies of the same
+    paragraph. This is what the shipped ``0.7`` is buying."""
+    duplicates = [_mmr(f"dup-{index}", 1.0 - index * 0.01, [1.0, 0.0]) for index in range(5)]
+    distinct = _mmr("distinct", 0.90, [0.0, 1.0])
+
+    selected = maximal_marginal_relevance([*duplicates, distinct], top_n=3, lambda_=1.0)
+
+    assert selected == ["dup-0", "dup-1", "dup-2"]
+
+
+def test_mmr_at_lambda_zero_ignores_relevance_entirely() -> None:
+    """The knob's lower end: with ``λ = 0`` only redundancy counts, so after
+    the opening pick (a relevance tie broken by input order) the candidate
+    FARTHEST from what is selected wins, however irrelevant."""
+    selected = maximal_marginal_relevance(
+        [
+            _mmr("first", 1.0, [1.0, 0.0]),
+            _mmr("twin", 0.99, [1.0, 0.0]),
+            _mmr("opposite", 0.01, [-1.0, 0.0]),
+        ],
+        top_n=2,
+        lambda_=0.0,
+    )
+    assert selected == ["first", "opposite"]
+
+
+def test_mmr_clamps_a_lambda_outside_the_unit_interval() -> None:
+    """A misconfigured λ stays extreme rather than turning INVERTED: a
+    negative diversity weight would actively reward repetition, which is
+    never what a number in ``Settings`` meant."""
+    pool = [
+        _mmr("first", 1.0, [1.0, 0.0]),
+        _mmr("twin", 0.99, [1.0, 0.0]),
+        _mmr("other", 0.98, [0.0, 1.0]),
+    ]
+    assert maximal_marginal_relevance(pool, top_n=3, lambda_=5.0) == maximal_marginal_relevance(
+        pool, top_n=3, lambda_=1.0
+    )
+    assert maximal_marginal_relevance(pool, top_n=3, lambda_=-5.0) == maximal_marginal_relevance(
+        pool, top_n=3, lambda_=0.0
+    )
+
+
+def test_mmr_breaks_an_exact_tie_in_the_callers_own_order() -> None:
+    """The ``fusion.py`` determinism rule, for the same reason: identical
+    candidates must not be ordered by anything hash-dependent. Two pools that
+    differ ONLY in input order each keep their own first entry."""
+
+    def pool(first: str, second: str) -> list[MmrCandidate]:
+        return [_mmr(first, 1.0, [1.0, 0.0]), _mmr(second, 1.0, [1.0, 0.0])]
+
+    assert maximal_marginal_relevance(pool("a", "b"), top_n=2) == ["a", "b"]
+    assert maximal_marginal_relevance(pool("b", "a"), top_n=2) == ["b", "a"]
+
+
+def test_mmr_survives_a_zero_vector_without_raising() -> None:
+    """A degenerate embedding has no direction, so it is neither relevant nor
+    redundant -- it must never become a ``ZeroDivisionError`` in the middle of
+    answering a question."""
+    selected = maximal_marginal_relevance(
+        [_mmr("zero", 1.0, [0.0, 0.0]), _mmr("real", 0.5, [1.0, 0.0])], top_n=2
+    )
+    assert sorted(selected) == ["real", "zero"]
+
+
+def test_mmr_relevance_is_read_as_a_fraction_of_the_pool_best_not_min_max() -> None:
+    """The scale decision, pinned. RRF scores are thousandths clustered close
+    together; expressing them as a fraction of the pool's best preserves those
+    ratios, so a pool whose candidates are nearly equally relevant lets the
+    diversity term decide. Min-max normalisation would stretch the SAME pool
+    across the whole ``[0, 1]`` and hand the top candidate's near-twin an
+    unearned 1.0-vs-0.0 advantage.
+
+    Here every candidate is within a hair of the best (RRF's actual
+    behaviour), so the near-duplicate loses to the distinct chunk. Under
+    min-max the distinct chunk -- the pool minimum -- would score 0.0 and
+    could not win at any λ."""
+    selected = maximal_marginal_relevance(
+        [
+            _mmr("best", 0.01639, [1.0, 0.0]),
+            _mmr("twin", 0.01626, [1.0, 0.0]),
+            _mmr("distinct", 0.01613, [0.0, 1.0]),
+        ],
+        top_n=2,
+    )
+    assert selected == ["best", "distinct"]
+
+
+def test_mmr_pool_with_no_positive_relevance_degrades_instead_of_dividing() -> None:
+    """A pool whose best relevance is not positive cannot be expressed as a
+    fraction of it. Unreachable from RRF (its scores are always positive), so
+    this is the corrupt-input path: every relevance term reads ``0.0`` and
+    diversity alone decides, opening at the caller's first entry."""
+    selected = maximal_marginal_relevance(
+        [_mmr("a", 0.0, [1.0, 0.0]), _mmr("b", 0.0, [1.0, 0.0]), _mmr("c", 0.0, [0.0, 1.0])],
+        top_n=2,
+    )
+    assert selected == ["a", "c"]
+
+
+def test_mmr_module_imports_stdlib_only() -> None:
+    """Decision س-20: "خوارزمية نقيّة في `domain/`". Read off the module's own
+    AST, the `file_resolution.py` precedent -- no port, no provider, no
+    vector-store client. MMR RECEIVES vectors; fetching them (and paying
+    §3.9's declared `with_vectors=True` price) is the application layer's job,
+    and it could not do otherwise without breaking import-linter contract 2."""
+    tree = ast.parse(inspect.getsource(mmr))
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+
+    assert imported == {"__future__", "collections.abc", "dataclasses", "math"}
 
 
 # --------------------------------------------------------------------------- #
@@ -2701,9 +2904,10 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
         ctx, space_id=None, query="document content", model="m", api_key="k", k=0
     )
 
-    # k clamped up to >=1: search_k = clamped_k * search_overfetch == 1 * 3 == 3
-    assert vectors.search_calls[-1][1] == 3
-    assert vectors.search_sparse_calls[-1][1] == 3
+    # k clamped up to >=1: search_k = clamped_k * the widened overfetch
+    # (plan row 20 -- `max(search_overfetch, mmr_overfetch)`) == 1 * 6 == 6.
+    assert vectors.search_calls[-1][1] == 6
+    assert vectors.search_sparse_calls[-1][1] == 6
 
 
 async def test_retrieve_context_clamps_k_above_maximum() -> None:
@@ -2877,10 +3081,16 @@ async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None
     assert vectors.search_sparse_calls[-1][1] == _TUNING.max_sparse_candidates
 
 
-async def test_retrieve_context_sparse_cap_does_not_narrow_the_default_k() -> None:
-    """At the shipped ``k = 5`` the two legs still fetch identically
-    (``search_k == 15``, below the ceiling): the cap is a ceiling against the
-    BM25 tail at large ``k``, not a change to the everyday path."""
+async def test_retrieve_context_sparse_cap_now_binds_at_the_default_k() -> None:
+    """⚠️ A behaviour change plan row 20 brought with it, pinned so it cannot
+    happen silently. Plan step 16 shipped ``max_sparse_candidates = 20`` and
+    recorded (§7) that it "does not touch the default path", because
+    ``search_k`` was then ``5 x 3 = 15``. Row 20's widened search makes the
+    dense leg fetch ``5 x 6 = 30``, so the sparse ceiling is now the binding
+    constraint at the SHIPPED ``k``: the dense leg fetches 30 and the BM25 leg
+    stops at 20. That is the cap doing exactly the job step 16 gave it --
+    guarding against the BM25 tail, where its precision collapses -- and it is
+    also why the two legs no longer fetch identically."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -2890,8 +3100,8 @@ async def test_retrieve_context_sparse_cap_does_not_narrow_the_default_k() -> No
         ctx, space_id=None, query="document content", model="m", api_key="k", k=5
     )
 
-    assert vectors.search_calls[-1][1] == 15
-    assert vectors.search_sparse_calls[-1][1] == 15
+    assert vectors.search_calls[-1][1] == 30
+    assert vectors.search_sparse_calls[-1][1] == 20
 
 
 async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k(
@@ -3252,6 +3462,8 @@ def test_retrieval_tuning_defaults_mirror_settings_field_for_field() -> None:
             relative_floor=settings.relative_floor,
             jaccard_threshold=settings.jaccard_threshold,
             max_parent_chunk_chars=settings.max_parent_chunk_chars,
+            mmr_lambda=settings.mmr_lambda,
+            mmr_overfetch=settings.mmr_overfetch,
             max_context_chars=limits.max_context_chars,
             max_context_tokens=limits.max_context_tokens,
         )
@@ -3259,7 +3471,7 @@ def test_retrieval_tuning_defaults_mirror_settings_field_for_field() -> None:
     )
     # Every field of the dataclass is named above -- so a NEW knob cannot be
     # added to one side alone and still pass this test.
-    assert len(dataclasses.fields(RetrievalTuning)) == 17
+    assert len(dataclasses.fields(RetrievalTuning)) == 19
 
 
 def test_retrieval_tuning_is_the_only_configuration_seam_no_getenv_anywhere() -> None:
@@ -3312,12 +3524,14 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="document content", model="m", api_key="k"
     )
-    assert vectors.search_calls[-1][1] == _TUNING.default_k * _TUNING.search_overfetch
+    assert vectors.search_calls[-1][1] == _TUNING.default_k * max(
+        _TUNING.search_overfetch, _TUNING.mmr_overfetch
+    )
 
     await RetrieveContext(
         embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, default_k=2)
     ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
-    assert vectors.search_calls[-1][1] == 2 * _TUNING.search_overfetch
+    assert vectors.search_calls[-1][1] == 2 * max(_TUNING.search_overfetch, _TUNING.mmr_overfetch)
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
@@ -3370,6 +3584,172 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# MMR in the live pipeline (plan §3.9 / §4 row 20, `P-23`, س-20)              #
+# --------------------------------------------------------------------------- #
+# One paragraph said five ways: five chunks a query matches almost identically
+# (the SAME vector direction) but which share few words, so `filter_relevant`'s
+# lexical Jaccard dedup at 0.95 does not touch them -- exactly the case §3.9
+# calls "خمس قطع من الفقرة نفسها نتيجة مشروعة اليوم". Plus two chunks on
+# genuinely other subjects, pointing elsewhere in vector space.
+_PARAPHRASES = (
+    "annual leave accrues monthly for every full-time member of staff",
+    "each permanent employee earns holiday entitlement as the year progresses",
+    "vacation days build up over twelve months across the whole workforce",
+    "paid time off is credited gradually throughout an ordinary working year",
+    "staff accumulate their yearly break allowance on a rolling schedule",
+    "colleagues gather days away steadily during each calendar twelvemonth",
+)
+_OTHER_SUBJECTS = (
+    "reimbursement claims must reach finance within thirty days of travel",
+    "the fire assembly point is the courtyard behind the loading bay",
+)
+
+
+async def _seed_one_paragraph_five_ways(vectors: FakeHybridVectors, ctx: ExecutionContext) -> None:
+    """Six paraphrases on one axis, two other subjects on two more."""
+    await vectors.upsert(
+        knowledge_collection(ctx.workspace_id),
+        [
+            *(
+                _hand_built_point(ctx, "doc-1", index, text, [1.0, 0.0, 0.0, 0.0])
+                for index, text in enumerate(_PARAPHRASES)
+            ),
+            _hand_built_point(ctx, "doc-1", 10, _OTHER_SUBJECTS[0], [0.0, 1.0, 0.0, 0.0]),
+            _hand_built_point(ctx, "doc-1", 11, _OTHER_SUBJECTS[1], [0.0, 0.0, 1.0, 0.0]),
+        ],
+    )
+
+
+async def test_retrieve_context_asks_both_legs_for_the_candidates_vectors() -> None:
+    """§3.9's declared price, paid explicitly: MMR's diversity term is
+    candidate-to-candidate similarity, so both legs -- not just the dense one
+    -- must return each hit's own vector. A sparse-only candidate with no
+    vector would be the one entry nothing checked for redundancy."""
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["quarterly revenue figures for the north"])
+
+    await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="quarterly revenue", model="m", api_key="k"
+    )
+
+    assert vectors.with_vectors_calls == [True, True]
+
+
+async def test_retrieve_context_does_not_deliver_five_chunks_of_one_paragraph() -> None:
+    """The behaviour plan row 20 exists to buy (§3.9). Six chunks say the same
+    thing in different words and are the six best matches for the question;
+    two chunks are about something else entirely and rank last. Ranked by
+    relevance alone the delivered ``k = 3`` would be three retellings of one
+    paragraph -- a legitimate result today, and a useless one. With MMR the
+    caller gets the best of the six PLUS both other subjects."""
+    query = "how does annual leave accrue"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_one_paragraph_five_ways(vectors, ctx)
+
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query=query, model="m", api_key="k", k=3
+    )
+
+    delivered = [chunk.text for chunk in result.chunks]
+    assert delivered[0] == _PARAPHRASES[0]  # the most relevant chunk is still `[#1]` (§3.7)
+    assert set(delivered[1:]) == set(_OTHER_SUBJECTS)
+    # ... and only ONE of the six near-duplicates got a slot.
+    assert sum(1 for text in delivered if text in _PARAPHRASES) == 1
+
+
+async def test_retrieve_context_without_mmr_would_deliver_the_same_paragraph_three_times() -> None:
+    """The control for the test above, on the identical corpus: at
+    ``mmr_lambda = 1.0`` the diversity term is multiplied by zero and the
+    pipeline is exactly what it was before plan row 20. All three delivered
+    chunks are then retellings of one paragraph -- which is what makes the
+    previous test a change in behaviour rather than a restatement of it."""
+    query = "how does annual leave accrue"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_one_paragraph_five_ways(vectors, ctx)
+
+    result = await RetrieveContext(
+        embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, mmr_lambda=1.0)
+    ).execute(ctx, space_id=None, query=query, model="m", api_key="k", k=3)
+
+    assert [chunk.text for chunk in result.chunks] == list(_PARAPHRASES[:3])
+
+
+async def test_retrieve_context_logs_the_mmr_cut(caplog: pytest.LogCaptureFixture) -> None:
+    """The stage log's own entry for row 20 (row 17's shape, one more count --
+    never a second record). ``mmr_count`` below ``fused_count`` IS the
+    diversity cut: the number that says whether the widened pool -- and the
+    vectors it puts on the wire -- is paying for itself."""
+    query = "how does annual leave accrue"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_one_paragraph_five_ways(vectors, ctx)
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+            ctx, space_id=None, query=query, model="m", api_key="k", k=2
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    # `k = 2` -> the legs fetch 12, RRF fuses a pool of 12 and MMR hands on 6.
+    assert (payload["mmr_pool_k"], payload["retain_k"]) == (12, 6)
+    assert payload["fused_count"] == 8
+    assert payload["mmr_count"] == 6
+
+
+async def test_retrieve_context_still_retrieves_from_a_store_that_returns_no_vectors() -> None:
+    """The honest degradation (``_mmr_rerank``): a store that ignores
+    ``with_vectors`` leaves MMR nothing to diversify with, so the RRF order
+    stands and retrieval keeps working exactly as it did before row 20 --
+    never an exception, never an empty result."""
+
+    class _VectorlessStore(FakeHybridVectors):
+        async def search(  # type: ignore[override]
+            self,
+            collection: str,
+            vector: list[float],
+            k: int,
+            flt: Json | None = None,
+            *,
+            with_vectors: bool = False,
+        ) -> list[VectorHit]:
+            hits = await super().search(collection, vector, k, flt, with_vectors=with_vectors)
+            return [replace(hit, vector=None) for hit in hits]
+
+        async def search_sparse(  # type: ignore[override]
+            self,
+            collection: str,
+            sparse: SparseVector,
+            k: int,
+            flt: Json | None = None,
+            *,
+            with_vectors: bool = False,
+        ) -> list[VectorHit]:
+            hits = await super().search_sparse(
+                collection, sparse, k, flt, with_vectors=with_vectors
+            )
+            return [replace(hit, vector=None) for hit in hits]
+
+    query = "how does annual leave accrue"
+    embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
+    vectors = _VectorlessStore()
+    ctx = _ctx("ws1")
+    await _seed_one_paragraph_five_ways(vectors, ctx)
+
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query=query, model="m", api_key="k", k=3
+    )
+
+    # Pure RRF order -- the pre-row-20 behaviour, which is exactly the point.
+    assert [chunk.text for chunk in result.chunks] == list(_PARAPHRASES[:3])
+
+
+# --------------------------------------------------------------------------- #
 # The structured stage log (plan §3.11 / §4 row 17, `P-29`, س-25 = أ)          #
 # --------------------------------------------------------------------------- #
 # Every field one `knowledge.retrieval` record carries. Pinned as a SET, and
@@ -3382,6 +3762,7 @@ _STAGE_LOG_FIELDS = {
     "k",
     "search_k",
     "sparse_k",
+    "mmr_pool_k",
     "retain_k",
     "scoped_document_count",
     "space_scoped",
@@ -3396,6 +3777,7 @@ _STAGE_LOG_FIELDS = {
     "fused_count",
     "candidates",
     "origin_counts",
+    "mmr_count",
     "relevant_count",
     "widened_count",
     "budgeted_count",
@@ -3455,19 +3837,20 @@ async def test_retrieve_context_emits_one_stage_record_carrying_every_stage(
     payload = _stage_payload(_stage_record(caplog))
     assert set(payload) == _STAGE_LOG_FIELDS
     assert payload["query_chars"] == len("quarterly revenue figures")
-    assert (payload["k"], payload["search_k"], payload["sparse_k"], payload["retain_k"]) == (
-        2,
-        6,
-        6,
-        6,
-    )
+    assert (
+        payload["k"],
+        payload["search_k"],
+        payload["sparse_k"],
+        payload["mmr_pool_k"],
+        payload["retain_k"],
+    ) == (2, 12, 12, 12, 6)
     assert payload["scoped_document_count"] is None
     assert payload["space_scoped"] is False
     # The count chain, stage by stage: nothing appears out of nowhere and the
     # delivered chunks are what the caller actually got.
     assert payload["dense_count"] == payload["dense_kept"] == 2
     assert payload["sparse_count"] == payload["sparse_kept"] == 2
-    assert payload["fused_count"] == 2
+    assert payload["fused_count"] == payload["mmr_count"] == 2
     assert payload["relevant_count"] == payload["widened_count"] == payload["budgeted_count"] == 2
     assert payload["context_nodes"] == len(result.chunks) == 2
     assert payload["delivered_chunk_ids"] == [chunk.chunk_id for chunk in result.chunks]
@@ -3531,15 +3914,28 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Plan §3.11's ``retrieval_origin`` tag: ``dense`` / ``bm25`` / ``both``.
-    All three occur here at once -- a chunk both legs voted for, a chunk only
+    All three occur here at once -- a chunk both legs voted for, chunks only
     the dense leg reached, and a lexically-rescued chunk whose vector is the
     WORST in the corpus (the hybrid pipeline's own justification, showing up
-    as data)."""
+    as data).
+
+    The corpus is deliberately DEEPER than the dense leg's fetch (eight points
+    against ``search_k = 1 x 6``, plan row 20's widened overfetch), because
+    that cut is the only thing that can make a chunk sparse-ONLY: a dense leg
+    that reaches every point in the store tags everything it also matched
+    lexically ``both``."""
     query = "ZX9000QRS calibration"
     both_text = "the ZX9000QRS calibration procedure for the north wing"
     dense_text = "an onboarding checklist for new employees joining the team"
-    unlisted_text = "cafeteria menu changes announced for the coming month"
     sparse_text = "refer to the ZX9000QRS calibration steps in appendix B"
+    # Four fillers with no lexical overlap, spread down the cosine ranking so
+    # the dense leg's own top-6 cut falls ABOVE `sparse_text`.
+    fillers = (
+        ("cafeteria menu changes announced for the coming month", [0.6, 0.8, 0.0, 0.0]),
+        ("parking permits renew automatically every summer", [0.4, 0.9, 0.0, 0.0]),
+        ("the annual photography contest opens in autumn", [0.2, 0.98, 0.0, 0.0]),
+        ("library opening hours during public holidays", [0.0, 1.0, 0.0, 0.0]),
+    )
     embeddings = FakeEmbeddings(dim=4, overrides={query: [1.0, 0.0, 0.0, 0.0]})
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -3548,8 +3944,15 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
         [
             _hand_built_point(ctx, "doc-1", 0, both_text, [1.0, 0.0, 0.0, 0.0]),
             _hand_built_point(ctx, "doc-1", 1, dense_text, [0.8, 0.6, 0.0, 0.0]),
-            _hand_built_point(ctx, "doc-1", 2, unlisted_text, [0.6, 0.8, 0.0, 0.0]),
+            # Ranked LAST by cosine, so the dense leg's cut excludes it.
             _hand_built_point(ctx, "doc-1", 3, sparse_text, [-1.0, 0.0, 0.0, 0.0]),
+            *(
+                _hand_built_point(ctx, "doc-1", 4 + index, text, vector)
+                for index, (text, vector) in enumerate(fillers)
+            ),
+            _hand_built_point(
+                ctx, "doc-1", 9, "swimming pool maintenance notice", [-0.5, 0.87, 0.0, 0.0]
+            ),
         ],
     )
 
@@ -3564,10 +3967,12 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
     }
     assert tagged[chunk_point_id("doc-1", 0)] == "both"
     assert tagged[chunk_point_id("doc-1", 1)] == "dense"
-    # The dense leg never returned it (its vector is the corpus's worst
-    # match); it is in the pool on lexical recall alone.
+    # The dense leg never returned it (its vector is the corpus's worst match
+    # and the fetch stops above it); it is in the pool on lexical recall
+    # alone.
     assert tagged[chunk_point_id("doc-1", 3)] == "bm25"
-    assert payload["origin_counts"] == {"dense": 1, "bm25": 1, "both": 1}
+    assert payload["origin_counts"]["both"] == 1
+    assert payload["origin_counts"]["bm25"] == 1
     assert sum(payload["origin_counts"].values()) == payload["fused_count"]
 
 

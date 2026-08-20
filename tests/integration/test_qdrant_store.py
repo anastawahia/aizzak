@@ -24,9 +24,12 @@ ranks by term overlap and respects ``flt`` exactly like the dense leg; a new
 hybrid collection comes back from the server carrying payload indexes on
 ``workspace_id``/``document_id``/``space`` with ``is_tenant`` set on ``space``
 alone (spaces plan step 9), re-asserting one is idempotent, and asking to
-index a collection that was never created fails loudly; and every driver
-failure surfaces as the framework's ``common.internal`` -- never a raw
-``qdrant_client`` exception.
+index a collection that was never created fails loudly; ``with_vectors=True``
+brings each hit's DENSE vector back on both legs of a hybrid collection while
+the default leaves it absent (rag-retrieval-plan.md §3.9, ``P-23`` -- MMR's
+input, and the one thing a unit test cannot prove, since the shape Qdrant
+chooses is the server's decision); and every driver failure surfaces as the
+framework's ``common.internal`` -- never a raw ``qdrant_client`` exception.
 """
 
 from __future__ import annotations
@@ -363,6 +366,45 @@ async def test_dense_search_still_works_on_a_hybrid_collection(
     assert len(hits) == 1
     assert hits[0].id == id_a
     assert hits[0].payload == {"label": "dense-still-works"}
+
+
+# --------------------------------------------------------------------------- #
+# (14b) with_vectors returns the DENSE vector on both legs (P-23, §3.9)      #
+# --------------------------------------------------------------------------- #
+async def test_with_vectors_returns_the_dense_vector_on_both_legs(
+    qdrant_store: QdrantVectorStore, qdrant_collection: str
+) -> None:
+    """MMR's input, proven against the real server (rag-retrieval-plan.md
+    §3.9, ``P-23``, decision س-20). This is exactly the assertion no unit test
+    can make: a HYBRID collection has NAMED vectors, so Qdrant answers
+    ``with_vectors=True`` with a dict keyed by vector name -- not the bare
+    list a plain collection returns -- and which key holds the dense leg is
+    the server's convention, not ours. The sparse leg is asked too, because a
+    candidate only BM25 found still has to be diversity-checked.
+
+    The default is asserted in the same test: leaving ``with_vectors`` alone
+    must return NO vector, so nothing but MMR pays §3.9's declared network
+    price."""
+    await qdrant_store.ensure_hybrid_collection(qdrant_collection, dim=_DIM)
+    point_id = new_uuid7()
+    dense = [1.0, 0.0, 0.0, 0.0]
+    sparse = SparseVector(indices=[1, 2], values=[0.5, 0.25])
+    await qdrant_store.upsert(
+        qdrant_collection,
+        [VectorPoint(id=point_id, vector=dense, payload={"label": "mmr"}, sparse=sparse)],
+    )
+
+    dense_hits = await qdrant_store.search(qdrant_collection, dense, k=1, with_vectors=True)
+    sparse_hits = await qdrant_store.search_sparse(
+        qdrant_collection, sparse, k=1, with_vectors=True
+    )
+
+    assert dense_hits[0].vector == pytest.approx(dense)
+    assert sparse_hits[0].vector == pytest.approx(dense)
+
+    # ... and the default costs nothing on the wire.
+    assert (await qdrant_store.search(qdrant_collection, dense, k=1))[0].vector is None
+    assert (await qdrant_store.search_sparse(qdrant_collection, sparse, k=1))[0].vector is None
 
 
 # --------------------------------------------------------------------------- #

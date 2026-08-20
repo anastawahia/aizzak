@@ -23,6 +23,14 @@ inside Qdrant at index/query time, so every ``SparseVector.values`` crossing
 this adapter's boundary (from ``knowledge``'s term-frequency pipeline) is
 always a raw term frequency, never pre-weighted (see the port docstring).
 
+Vectors on the way back: both search legs take ``with_vectors`` (default
+``False``) and pass it straight to ``query_points``, so a caller that needs
+MMR's candidate-to-candidate similarity (rag-retrieval-plan.md §3.9, ``P-23``)
+gets each hit's dense vector on ``VectorHit.vector``. Qdrant returns it in one
+of two shapes depending on the collection -- a bare list for the unnamed
+default vector, a name-keyed dict for a hybrid collection -- and
+``_dense_vector`` is the one place that difference is resolved.
+
 Payload indexes at creation: ``ensure_hybrid_collection`` follows its
 ``create_collection`` with ``ensure_payload_index`` for ``space`` (as a
 TENANT key), ``workspace_id`` and ``document_id`` -- the three keys
@@ -274,7 +282,36 @@ def _to_hit(point: models.ScoredPoint) -> VectorHit:
     ``point.id``/``.score``/``.payload`` are ``Any`` on mypy's side and would
     otherwise trip ``warn_return_any``.
     """
-    return VectorHit(id=str(point.id), score=float(point.score), payload=dict(point.payload or {}))
+    return VectorHit(
+        id=str(point.id),
+        score=float(point.score),
+        payload=dict(point.payload or {}),
+        vector=_dense_vector(point),
+    )
+
+
+def _dense_vector(point: models.ScoredPoint) -> list[float] | None:
+    """The point's own DENSE vector, or ``None`` when the search did not ask
+    for vectors (``with_vectors=False``, the default -- rag-retrieval-plan.md
+    §3.9's MMR input).
+
+    Two SHAPES arrive here, and both are normal. A plain ``VectorStore``
+    collection (``memory``) has one unnamed vector, so ``point.vector`` is the
+    ``list[float]`` itself. A HYBRID collection has named vectors, so it is a
+    ``dict`` -- ``{_DEFAULT_VECTOR_NAME: [...], _SPARSE_NAME: SparseVector}``
+    -- and only the dense entry under the module's ``_DEFAULT_VECTOR_NAME``
+    literal is a vector MMR can use. Anything else (``None``, a missing dense
+    entry, a multivector's list of lists) answers ``None``: a *ranking* input
+    that arrives in an unexpected shape must degrade to "no vector" -- the
+    port's own documented ``None`` -- rather than raise out of a search that
+    otherwise succeeded.
+    """
+    raw: object = point.vector
+    if isinstance(raw, dict):
+        raw = raw.get(_DEFAULT_VECTOR_NAME)
+    if not isinstance(raw, list) or not all(isinstance(value, (int, float)) for value in raw):
+        return None
+    return [float(value) for value in raw]
 
 
 def _is_missing_collection(exc: Exception) -> bool:
@@ -407,7 +444,13 @@ class QdrantVectorStore:
             raise _translate(exc) from exc
 
     async def search(
-        self, collection: str, vector: list[float], k: int, flt: Json | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         try:
             response = await self._client.query_points(
@@ -417,6 +460,7 @@ class QdrantVectorStore:
                 query_filter=_build_filter(flt),
                 limit=k,
                 with_payload=True,
+                with_vectors=with_vectors,
             )
         except (ApiException, QdrantException) as exc:
             # A never-indexed workspace has no collection yet; searching one
@@ -427,7 +471,13 @@ class QdrantVectorStore:
         return [_to_hit(point) for point in response.points]
 
     async def search_sparse(
-        self, collection: str, sparse: SparseVector, k: int, flt: Json | None = None
+        self,
+        collection: str,
+        sparse: SparseVector,
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]:
         try:
             response = await self._client.query_points(
@@ -437,6 +487,12 @@ class QdrantVectorStore:
                 query_filter=_build_filter(flt),
                 limit=k,
                 with_payload=True,
+                # The SPARSE leg returns the point's DENSE vector too -- the
+                # two legs are two facets of ONE point (the port docstring),
+                # and a candidate only BM25 found still has to be
+                # diversity-checked against the rest or it would re-enter the
+                # answer unexamined (rag-retrieval-plan.md §3.9).
+                with_vectors=with_vectors,
             )
         except (ApiException, QdrantException) as exc:
             if _is_missing_collection(exc):  # same as ``search``, sparse leg

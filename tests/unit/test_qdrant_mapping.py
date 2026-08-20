@@ -11,6 +11,11 @@ policy over a recording stub client: which payload keys a new hybrid
 collection is indexed on, which single one carries Qdrant's ``is_tenant``,
 that a lost create-race still ends indexed, and that an already-existing
 collection deliberately gains nothing (the plan's §5-ب, made executable).
+
+And since the retrieval plan's row 20 (``P-23``) it pins ``_to_hit``'s vector
+translation: Qdrant hands a point's dense vector back in one of two SHAPES
+depending on the collection, and MMR's whole input depends on reading the
+right one.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from app.infrastructure.vector.qdrant_store import (
     _build_filter,
     _is_missing_collection,
     _to_distance,
+    _to_hit,
 )
 
 
@@ -106,6 +112,64 @@ def test_build_filter_unsupported_value_type_raises_validation_error() -> None:
 
     assert excinfo.value.code == "common.validation_error"
     assert excinfo.value.status == 422
+
+
+# --------------------------------------------------------------------------- #
+# _to_hit's dense vector (retrieval plan §3.9 / row 20, `P-23`)               #
+# --------------------------------------------------------------------------- #
+def _scored_point(vector: object) -> models.ScoredPoint:
+    return models.ScoredPoint(
+        id="00000000-0000-0000-0000-000000000001",
+        version=1,
+        score=0.5,
+        payload={"workspace_id": "ws-1"},
+        vector=cast(Any, vector),
+    )
+
+
+def test_to_hit_has_no_vector_when_the_search_did_not_ask_for_one() -> None:
+    """``with_vectors=False`` is the default on both legs, and MEMORY never
+    asks -- so the common path must leave the field ``None`` rather than
+    invent an empty list, which would read as "this point has no vector"."""
+    assert _to_hit(_scored_point(None)).vector is None
+
+
+def test_to_hit_reads_the_unnamed_vector_of_a_plain_collection() -> None:
+    """A ``VectorStore`` collection has one unnamed vector, so the driver
+    hands back the list itself."""
+    assert _to_hit(_scored_point([1.0, 0.0, 0.5, 0.25])).vector == [1.0, 0.0, 0.5, 0.25]
+
+
+def test_to_hit_reads_the_dense_leg_out_of_a_hybrid_collections_named_vectors() -> None:
+    """A HYBRID collection has named vectors, so the driver hands back a dict
+    -- the dense leg under the adapter's ``_DEFAULT_VECTOR_NAME`` ("") literal,
+    the sparse one under ``"text"``. Only the dense entry is a vector MMR can
+    use, and picking the wrong key here would silently disable diversity on
+    the only collection type ``knowledge`` uses."""
+    hit = _to_hit(
+        _scored_point(
+            {"": [1.0, 0.0, 0.0, 0.0], "text": models.SparseVector(indices=[1], values=[1.0])}
+        )
+    )
+    assert hit.vector == [1.0, 0.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        {"text": models.SparseVector(indices=[1], values=[1.0])},  # sparse only, no dense entry
+        {"other": [1.0, 0.0]},  # a named dense vector this adapter never provisions
+        [[1.0, 0.0], [0.0, 1.0]],  # a multivector -- a list, but not of numbers
+    ],
+)
+def test_to_hit_answers_an_unexpected_vector_shape_with_none(vector: object) -> None:
+    """A RANKING input that arrives in a shape the adapter does not recognise
+    degrades to the port's documented ``None`` -- MMR then simply has nothing
+    to diversify with. Raising here would turn an otherwise successful search
+    into a failed retrieval."""
+    hit = _to_hit(_scored_point(vector))
+    assert hit.vector is None
+    assert hit.payload == {"workspace_id": "ws-1"}  # everything else still translated
 
 
 # --------------------------------------------------------------------------- #

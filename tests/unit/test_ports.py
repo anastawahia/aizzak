@@ -17,6 +17,11 @@ def test_port_value_objects_construct() -> None:
 
     hit = ports.VectorHit(id="018f", score=0.9, payload={"workspace_id": "ws"})
     assert hit.payload["workspace_id"] == "ws"
+    # `vector` is the one OPTIONAL field: populated only by a search that
+    # asked for it (`with_vectors=True` -- MMR's input, rag-retrieval-plan.md
+    # §3.9), and absent everywhere else.
+    assert hit.vector is None
+    assert ports.VectorHit(id="018f", score=0.9, payload={}, vector=[1.0]).vector == [1.0]
 
     tokens = ports.OAuthTokens(
         access_token="a", refresh_token=None, expires_in=3600, scopes=("repo",)

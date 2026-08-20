@@ -57,9 +57,22 @@ class VectorPoint:
 
 @dataclass(frozen=True, slots=True)
 class VectorHit:
+    """One search result. ``vector`` is the point's own DENSE vector and is
+    populated ONLY when the search asked for it (``with_vectors=True`` on
+    ``HybridVectorStore``); every other read leaves it ``None``, which is why
+    it is the one optional field here.
+
+    It exists for MMR (rag-retrieval-plan.md §3.9, ``P-23``, decision س-20):
+    the diversity term needs candidate-to-candidate similarity, which nothing
+    but the vectors themselves can give. ``None`` means "not requested" (or a
+    store that does not return vectors), never "this point has no vector" —
+    every indexed point has one.
+    """
+
     id: Uuid
     score: float
     payload: Json
+    vector: list[float] | None = None
 
 
 class VectorStore(Protocol):
@@ -100,14 +113,45 @@ class HybridVectorStore(VectorStore, Protocol):
     port regardless, because collections provisioned BEFORE the indexes
     existed can only gain them through an explicit operational call — see
     the spaces plan §5-ب.
+
+    ``with_vectors`` asks BOTH legs to return each hit's own dense vector
+    (``VectorHit.vector``) alongside its payload — MMR's input
+    (rag-retrieval-plan.md §3.9, ``P-23``, decision س-20). It defaults to
+    ``False`` because it is not free: a full float vector per candidate
+    crosses the network, the price §3.9 declares openly and §6 risk #5
+    accepts, bounded by the widened ``search_k`` and never the corpus.
+
+    This is why ``search`` is REDECLARED here rather than gaining the flag on
+    ``VectorStore`` itself: ``memory`` never asks for a vector back, so its
+    narrower contract stays exactly as it was (the module docstring's
+    Interface Segregation rule). The redeclaration only ADDS an optional
+    keyword, so any implementation of this Protocol still satisfies
+    ``VectorStore`` unchanged — one ``QdrantVectorStore`` continues to serve
+    both.
     """
 
     async def ensure_hybrid_collection(
         self, name: str, dim: int, *, distance: str = "cosine"
     ) -> None: ...
 
+    async def search(
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
+    ) -> list[VectorHit]: ...
+
     async def search_sparse(
-        self, collection: str, sparse: SparseVector, k: int, flt: Json | None = None
+        self,
+        collection: str,
+        sparse: SparseVector,
+        k: int,
+        flt: Json | None = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[VectorHit]: ...
 
     async def ensure_payload_index(

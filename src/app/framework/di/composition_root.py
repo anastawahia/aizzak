@@ -1031,6 +1031,8 @@ def _retrieval_tuning(retrieval: RetrievalSettings, limits: Limits) -> Retrieval
         relative_floor=retrieval.relative_floor,
         jaccard_threshold=retrieval.jaccard_threshold,
         max_parent_chunk_chars=retrieval.max_parent_chunk_chars,
+        mmr_lambda=retrieval.mmr_lambda,
+        mmr_overfetch=retrieval.mmr_overfetch,
         max_context_chars=limits.max_context_chars,
         max_context_tokens=limits.max_context_tokens,
     )

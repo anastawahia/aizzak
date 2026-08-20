@@ -430,12 +430,24 @@ class RecordingVectorStore:
         raise AssertionError("a re-index never writes points — the worker does")
 
     async def search(
-        self, collection: str, vector: list[float], k: int, flt: object = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        flt: object = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[object]:
         raise AssertionError("a re-index never searches")
 
     async def search_sparse(
-        self, collection: str, sparse: object, k: int, flt: object = None
+        self,
+        collection: str,
+        sparse: object,
+        k: int,
+        flt: object = None,
+        *,
+        with_vectors: bool = False,
     ) -> list[object]:
         raise AssertionError("a re-index never searches")
 
