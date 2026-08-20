@@ -144,6 +144,16 @@ class KnowledgeRetrieval(Protocol):
         a second vocabulary for the same three narrowings would be a second
         place for them to drift.
 
+        **One behaviour is not ``retrieve``'s** (retrieval plan §4 row 15,
+        ``P-25``): a question that NAMES one of this workspace's files is
+        retrieved inside that file only, and STRICTLY — if the named file
+        holds nothing, ``chunks`` comes back empty and the search is never
+        re-run across the rest of the corpus, because an answer drawn from a
+        file the user did not ask about is worse than an honest "not in that
+        file" (which the caller renders through the same fallback that
+        already handles an empty result). ``retrieve`` keeps no such
+        behaviour: it is the literal search ``POST /knowledge/search`` means.
+
         ``retrieve`` stays, and stays public: ``POST /knowledge/search`` asks
         for chunks and means chunks — routing a REST search through a
         classifier would let it queue a summary job nobody requested.

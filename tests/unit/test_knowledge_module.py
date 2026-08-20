@@ -1655,6 +1655,9 @@ async def _routing_service(
     embeddings: _FakeEmbeddings,
     vectors: _FakeHybridVectors,
     names: dict[str, str] | None = None,
+    *,
+    documents: _FakeDocumentRepository | None = None,
+    files: _FakeReadableFiles | None = None,
 ) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
     """The service over the REAL `RouteQuestion`, the REAL `RetrieveContext`
     and the REAL `ListFileCandidates`/`resolve_file`, on the two-file corpus
@@ -1665,10 +1668,19 @@ async def _routing_service(
     nothing to match and every summarisation question that is not pinned to
     one document falls through to CONTENT — which is exactly the pre-row-14
     behaviour the tests written before it assert.
+
+    `documents` swaps in a different corpus (row 15 needs a third file that
+    is named but holds nothing), and `files` lets a test keep its OWN
+    reference to the seam so it can count the `get_readable` walk — both
+    keyword-only, both defaulting to what every earlier test already gets.
     """
-    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    if documents is None:
+        documents = await _indexed_corpus(ctx, embeddings, vectors)
     summaries = _FakeSummaryStarter()
-    files = _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
+    if files is None:
+        files = (
+            _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
+        )
     service = KnowledgeRetrievalService(
         RetrieveContext(embeddings, vectors, documents),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
@@ -1684,6 +1696,33 @@ async def _routing_service(
 # enough for another to name both (`_TIED_CORPUS`).
 _NAMED_CORPUS = {"file-north": "التقرير الشمالي.pdf", "file-south": "التقرير الجنوبي.pdf"}
 _TIED_CORPUS = {"file-north": "الميزانية 2024.pdf", "file-south": "الميزانية 2025.pdf"}
+# `_NAMED_CORPUS` plus a third file that is named and registered but has NO
+# points in the index (retrieval plan §4 row 15) — the corpus in which "the
+# file you named holds nothing" and "another file holds the answer" are both
+# true at once.
+_HANDBOOK_CORPUS = {**_NAMED_CORPUS, "file-handbook": "دليل الموظفين.pdf"}
+
+
+async def _corpus_with_an_empty_named_file(
+    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+) -> _FakeDocumentRepository:
+    """`_indexed_corpus`'s two indexed documents plus `doc-handbook`, which
+    is a real, named, INDEXED document with nothing retrievable under it.
+
+    Staged as "no points" rather than "points that do not match" because
+    `_FakeHybridVectors.search` is a brute-force cosine sort with no floor:
+    any point inside the filter comes back, whatever it says. Both stagings
+    reach `RetrieveContext` as the same thing — a filtered search that
+    returned no hit — which is the state row 15 is about.
+    """
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    documents.docs["doc-handbook"] = _document(
+        doc_id="doc-handbook",
+        file_id="file-handbook",
+        status=IndexStatus.INDEXED,
+        chunk_count=0,
+    )
+    return documents
 
 
 async def test_answer_routes_a_content_question_to_retrieval() -> None:
@@ -1891,22 +1930,176 @@ async def test_resolution_cannot_reach_outside_the_callers_pin() -> None:
     assert routed.intent is Intent.SUMMARIZE_DOC
 
 
-async def test_a_content_question_never_resolves_a_file_name() -> None:
-    """The resolver hangs off the SUMMARIZE_DOC branch only. An ordinary
-    content question that happens to mention a file name is answered from
-    chunks, and no clarification is ever attached to it -- row 15 (`P-25`,
-    strict file scoping of retrieval) is the step that owns file names on the
-    CONTENT route, and it has not run.
+# --------------------------------------------------------------------------- #
+# Strict file scoping on the CONTENT route -- صارم                            #
+# (retrieval plan §3.3/§4 row 15 — P-25)                                      #
+# --------------------------------------------------------------------------- #
+async def test_a_content_question_that_names_a_file_is_searched_inside_that_file() -> None:
+    """Row 15's narrowing, and WHERE it happens: the question names the
+    northern report, so the document it resolved to reaches the vector store
+    as a `document_id` condition beside `workspace_id` (plan fact ح-13 —
+    `_build_filter` builds `must` + `MatchValue`/`MatchAny`), on BOTH legs.
+
+    A scope applied to the search is not the same thing as a scope applied to
+    its results: filtering afterwards would spend the whole `k` budget on
+    chunks it then throws away, and the southern report would be competing
+    for slots the northern one needed.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(
+        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, space_id=None
+    )
+
+    assert routed.intent is Intent.CONTENT
+    assert [chunk.document_id for chunk in routed.chunks] == ["doc-north"]
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-north"]}
+    assert vectors.search_sparse_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-north"],
+    }
+    # The CONTENT route stays the CONTENT route: naming a file narrows the
+    # search, it does not queue a summary.
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+
+
+async def test_a_named_file_with_nothing_in_it_never_answers_from_another_file() -> None:
+    """**THE step** (§4 row 15: «ملفّ مسمّى بلا نتائج يُجيب بأمانة بدل السحب
+    من ملفّ آخر»). The same question is asked twice over the same corpus, and
+    the only difference is that the second one names a file:
+
+    * unnamed — the two indexed reports answer it;
+    * naming «دليل الموظفين», which holds nothing — NOTHING comes back.
+
+    Not the reports. A confident answer built out of a document the user did
+    not ask about is undetectable downstream (its citations look exactly like
+    a right answer's), so the empty result stands and the honest-fallback
+    gate of plan step 5 (`P-33`) is what the caller renders — the fallback
+    that already exists, with §3.6's corpus header telling the user which
+    files DO exist.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _corpus_with_an_empty_named_file(ctx, embeddings, vectors)
+    service, _summaries = await _routing_service(
+        ctx, embeddings, vectors, _HANDBOOK_CORPUS, documents=documents
+    )
+
+    wide = await service.answer(ctx, "ما هي أرقام الإيرادات", 5, space_id=None)
+    dense_before, sparse_before = len(vectors.search_calls), len(vectors.search_sparse_calls)
+    strict = await service.answer(ctx, "ما هي أرقام الإيرادات في دليل الموظفين", 5, space_id=None)
+
+    # The corpus DOES answer this question -- when nobody named a file.
+    assert {chunk.document_id for chunk in wide.chunks} == {"doc-north", "doc-south"}
+    # Naming the file that holds nothing answers with nothing.
+    assert strict.chunks == ()
+    # And STRICT means there was no second, wider attempt: every search made
+    # for that question carried the named document's filter. A retry without
+    # it is the one thing this row exists to forbid.
+    searched = [
+        *vectors.search_calls[dense_before:],
+        *vectors.search_sparse_calls[sparse_before:],
+    ]
+    assert searched
+    scoped = {"workspace_id": "ws1", "document_id": ["doc-handbook"]}
+    assert all(call[2] == scoped for call in searched)
+
+
+async def test_an_ambiguous_file_reference_leaves_a_content_search_unscoped() -> None:
+    """The decision row 15 had to make and the plan did not spell out: on the
+    CONTENT route an ambiguous reference narrows NOTHING (see
+    `RouteQuestion`'s docstring for why it is not row 14's question).
+
+    Two files match «الميزانية» equally, so the resolver refuses to choose --
+    and refusing to choose means no file is chosen, not that some file is.
+    The question is answered from the whole corpus, with each chunk labelled
+    by the file it came from, and no clarification is attached: a cited
+    answer beats a round trip when there IS an answer to give.
     """
     ctx = _ctx("ws1")
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
 
-    routed = await service.answer(ctx, "ما هي أرقام الميزانية؟", 5, space_id=None)
+    routed = await service.answer(ctx, "ما هي أرقام الميزانية", 5, space_id=None)
 
     assert routed.intent is Intent.CONTENT
+    assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
+    # Neither guessed at (a scope of one) nor narrowed to the tied pair.
+    assert "document_id" not in vectors.search_calls[-1][2]
     assert routed.clarification_options == ()
     assert summaries.calls == []
+
+
+async def test_a_content_question_cannot_name_its_way_past_the_callers_pin() -> None:
+    """The pin still wins, on this route too (`_candidates`): the question
+    names «دليل الموظفين» while the conversation is pinned to the two
+    reports, and the search stays inside the pin instead of reaching out to
+    the file the question named.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _corpus_with_an_empty_named_file(ctx, embeddings, vectors)
+    service, _summaries = await _routing_service(
+        ctx, embeddings, vectors, _HANDBOOK_CORPUS, documents=documents
+    )
+
+    routed = await service.answer(
+        ctx,
+        "ما هي أرقام الإيرادات في دليل الموظفين",
+        5,
+        ["file-north", "file-south"],
+        space_id=None,
+    )
+
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-north", "doc-south"],
+    }
+    assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
+
+
+async def test_a_pin_of_one_document_resolves_no_names_at_all() -> None:
+    """The short-circuit: a pin that already names one document is as narrow
+    as a file name could make it, so the corpus walk (`ListFileCandidates`,
+    one `get_readable` per document — its own §7 entry) is not paid to
+    re-derive it. Not a behaviour choice: resolution over that single
+    candidate could only return it or fall through to it.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    files = _FakeReadableFiles(dict.fromkeys(_NAMED_CORPUS), names=_NAMED_CORPUS)
+    service, _summaries = await _routing_service(ctx, embeddings, vectors, files=files)
+
+    routed = await service.answer(
+        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, ["file-south"], space_id=None
+    )
+
+    assert files.calls == []
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-south"]}
+    assert [chunk.document_id for chunk in routed.chunks] == ["doc-south"]
+
+
+async def test_a_summarisation_question_that_falls_through_is_not_resolved_twice() -> None:
+    """A SUMMARIZE_DOC question whose target is unidentifiable falls through
+    to CONTENT retrieval (row 11), and the CONTENT route does NOT re-run the
+    resolver over the same candidates: the answer could only be the same
+    `NoFileMatch`, and the corpus walk is one `get_readable` per document.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    files = _FakeReadableFiles(dict.fromkeys(_NAMED_CORPUS), names=_NAMED_CORPUS)
+    service, summaries = await _routing_service(ctx, embeddings, vectors, files=files)
+
+    routed = await service.answer(ctx, "لخص لي أرقام الإيرادات الفصلية", 5, space_id=None)
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert summaries.calls == []
+    # Two documents, two lookups: one walk, not two.
+    assert len(files.calls) == 2
+    assert "document_id" not in vectors.search_calls[-1][2]
 
 
 async def test_answer_is_a_routed_answer_and_retrieve_is_still_plain_retrieval() -> None:

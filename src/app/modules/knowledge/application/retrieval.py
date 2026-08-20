@@ -260,6 +260,17 @@ class RetrieveContext:
         # chunks rather than a silent widening back to everything — the pins
         # would otherwise stop constraining the search precisely when they
         # matter most.
+        #
+        # Since plan step 15 (`P-25`) a scope can also arrive from the
+        # QUESTION's own words — `RouteQuestion._content_scope` resolves a
+        # file name to one document id and passes it here, because this is
+        # where a scope becomes a Qdrant-side `must` condition (plan fact
+        # ح-13) instead of a client-side discard. Nothing below distinguishes
+        # the two origins, and that is the whole of what "صارم" needs from
+        # this file: a scope narrows the search and NOTHING here ever widens
+        # it back, so a named file with no matching chunk yields no chunk —
+        # never another file's. The honest answer to that is the trust gate's
+        # (plan step 5, `P-33`), one layer up.
         if document_ids is not None:
             if not document_ids:
                 return RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
