@@ -1032,6 +1032,110 @@ def test_classify_intent_blank_query_is_content() -> None:
     assert classify_intent("") is Intent.CONTENT
 
 
+# --- The SUMMARIZE_DOC calibration (plan §3.4 / §4 row 12, `P-22`, س-17 = ب) --
+#
+# With two routes the classifier's whole accuracy is SUMMARIZE_DOC's accuracy
+# — CONTENT is a fall-through that cannot be wrong on its own — so these four
+# tests are the calibration's contract, and the three examples §3.4 argues
+# from are quoted here verbatim, shadda and all.
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "لخّص لي هذا",  # §3.4's decisive example, verbatim: names NOTHING
+        "لخّصه",
+        "لخص",
+        "Summarize this",
+        "summarise it please",
+        "Please provide a summary of the report",
+    ],
+)
+def test_an_imperative_summarize_verb_classifies_with_no_object(query: str) -> None:
+    """Rule 1: a REQUEST is taken at its word, unconditionally. «لخّص لي هذا»
+    identifies no document and is still unmistakably a summarization request
+    — precisely the case س-17's rejected option أ (objecthood on *every*
+    pattern) would have handed to CONTENT."""
+    assert classify_intent(query) is Intent.SUMMARIZE_DOC
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "هل يوجد ملخّص تنفيذي في التقرير؟",  # §3.4's decisive counter-example
+        "Is there an executive summary in the report?",
+        "ورد ملخص تنفيذي في الصفحة الأولى",
+    ],
+)
+def test_a_summary_noun_with_no_document_object_is_content(query: str) -> None:
+    """Rule 2: a bare noun is a DESCRIPTION until a document noun turns up as
+    its object. §3.4's counter-example is a question about what a report
+    contains, and the old bare `ملخص`/`summary` anchors misrouted it — a
+    false positive that costs a legitimate content answer (§6 risk 4).
+
+    The Arabic half also pins the one subtlety substring matching creates:
+    «ملخّص» *contains* «لخص», so rule 1's verb must refuse the «م» prefix
+    rather than claim this query before rule 2 ever sees it."""
+    assert classify_intent(query) is Intent.CONTENT
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "ملخص الملف من فضلك",  # ملف
+        "ملخص المستند من فضلك",  # مستند
+        "ملخص الكتاب",  # كتاب
+        "ملخص كتب المحاسبة",  # كتب
+        "تلخيص هذا المرجع",  # مرجع
+        "ملخصات المراجع",  # مراجع
+        "ما هو مستند الجودة؟",  # the descriptive frame, same condition
+        "summary of the book",
+    ],
+)
+def test_a_summary_noun_summarizes_once_a_widened_doc_noun_is_its_object(query: str) -> None:
+    """`_DOC_NOUN` widened to alpha's full stem list `ملف|مستند|كتاب|كتب|مرجع|
+    مراجع` — one query per stem, each with the noun in the object position
+    the rule demands."""
+    assert classify_intent(query) is Intent.SUMMARIZE_DOC
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "ما هو الحدّ الأقصى في ملف السياسات؟",  # §3.4's third example, verbatim
+        "ما هي بنود العقد في المستند الثاني؟",
+        "كم فصلاً في كتاب المحاسبة؟",
+        "كم صفحة في كتب المحاسبة؟",
+        "أين ذُكر المرجع في التقرير؟",
+        "ما هي المراجع المستخدمة في البحث؟",
+        "what is the docker setup in this repo?",
+    ],
+)
+def test_a_widened_doc_noun_that_is_not_the_object_stays_content(query: str) -> None:
+    """The objecthood condition is what makes the widening safe: every query
+    here NAMES a document noun and every one of them is a content question
+    about something else. Widening `_DOC_NOUN` without the condition would
+    convert all six stems into false positives — §3.4 keeps «ما هو الحدّ
+    الأقصى في ملف السياسات؟» as content for exactly this reason."""
+    assert classify_intent(query) is Intent.CONTENT
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "يلخّص المؤلف الفصل الأول",
+        "سألخّص لك ما ورد",
+        "ملخصات هذا الكتاب",
+    ],
+)
+def test_arabic_summarize_anchors_still_match_as_substrings(query: str) -> None:
+    """Arabic is derivational — «لخص» lives inside «يلخّص/سألخّص» and «ملخص»
+    inside «ملخصات» — so the anchors are matched as substrings, never with
+    word boundaries. §3.4 states this is correct and intended; the test
+    exists so nobody later "fixes" it into `\\b` and silently loses recall."""
+    assert classify_intent(query) is Intent.SUMMARIZE_DOC
+
+
 # --------------------------------------------------------------------------- #
 # collections.knowledge_collection / chunk_point_id                           #
 # --------------------------------------------------------------------------- #
