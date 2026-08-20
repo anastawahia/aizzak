@@ -8,11 +8,32 @@ the ``files.FilesQuery`` precedent.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Uuid
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentNames:
+    """This workspace's document file names, newest first — up to the
+    caller's ``limit`` — plus ``total``, the workspace's FULL document count
+    (retrieval plan §3.6/§4 row 6, ``P-36``, decision س-23 = ج).
+
+    ``total`` rides along so a caller can render an honest "and N more
+    files" tail without a second round trip: ``list_document_names`` already
+    has to walk the whole corpus to count it (``ListDocumentNames``), so
+    handing the number back is free once that walk has happened.
+
+    ``names`` is capped at ``limit`` by the producer, never by a caller
+    slicing afterwards — the same "the module decides, the seam just reads"
+    shape ``RetrievedChunk`` already has.
+    """
+
+    names: tuple[str, ...]
+    total: int
 
 
 class KnowledgeRetrieval(Protocol):
@@ -54,3 +75,17 @@ class KnowledgeRetrieval(Protocol):
         *,
         space_id: Uuid | None,
     ) -> list[RetrievedChunk]: ...
+
+    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+        """This workspace's corpus-awareness source (retrieval plan §3.6/§4
+        row 6, ``P-36``): up to ``limit`` document file names plus the
+        workspace's total document count.
+
+        A SECOND method on the SAME seed rather than a second injected port
+        — the RAG agent still calls exactly one thing (``self.deps.knowledge``,
+        fact ح-11) for both retrieval and corpus awareness. ``limit`` is the
+        caller's DISPLAY cap (the agent's ``_MAX_CORPUS_NAMES``), passed as an
+        argument the same way ``retrieve``'s ``k`` is (س-24 — no
+        ``Settings``/``os.getenv`` read inside this port or its implementation).
+        """
+        ...

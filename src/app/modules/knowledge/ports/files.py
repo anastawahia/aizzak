@@ -24,6 +24,13 @@ would mean two answers to one question.
 (spaces plan, step 8) and this module deliberately owns no ``spaces`` port:
 the space was proven real when the file was registered, and re-asking here
 would be a second authority on that too.
+
+``name`` (retrieval plan §3.6, step 6, ``P-36``) rides along for the same
+reason: ``ListDocumentNames`` needs the human-readable file name to build the
+corpus-awareness header, and this is the only seam that already turns a
+``file_id`` into that file's own facts. ``FilesQuery.get_readable``'s
+``FileView`` already carries ``.name`` — widening the Protocol costs nothing
+at the binding site, it only starts being READ.
 """
 
 from __future__ import annotations
@@ -45,6 +52,12 @@ class ReadableFile(Protocol):
     # corpus already looks like (03 §1's `GET /knowledge/documents` note).
     @property
     def space_id(self) -> str | None: ...
+
+    # Retrieval plan §3.6, step 6 (`P-36`) — the display name `IndexFile`
+    # itself never reads (it only checks readability + space), but
+    # `ListDocumentNames` does. One Protocol, one binding, two readers.
+    @property
+    def name(self) -> str: ...
 
 
 class ReadableFiles(Protocol):

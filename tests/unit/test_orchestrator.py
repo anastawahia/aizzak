@@ -400,10 +400,20 @@ class _FakeChunk:
         self.section: str | None = None
 
 
+class _FakeDocumentNames:
+    def __init__(self) -> None:
+        self.names: tuple[str, ...] = ()
+        self.total = 0
+
+
 class _FakeKnowledge:
     def __init__(self) -> None:
         self.queries: list[str] = []
         self.scopes: list[tuple[str, ...] | None] = []
+        # Retrieval plan §3.6/§4 row 6 (`P-36`) -- the real `rag_agent` now
+        # calls this on every request that has a knowledge seam at all, not
+        # only the zero-chunk fallback below.
+        self.name_limit_calls: list[int] = []
 
     async def retrieve(
         self,
@@ -417,6 +427,10 @@ class _FakeKnowledge:
         self.queries.append(query)
         self.scopes.append(None if file_ids is None else tuple(file_ids))
         return [_FakeChunk("chunk-a", "The capital of France is Paris.")]
+
+    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> _FakeDocumentNames:
+        self.name_limit_calls.append(limit)
+        return _FakeDocumentNames()
 
 
 async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree() -> None:

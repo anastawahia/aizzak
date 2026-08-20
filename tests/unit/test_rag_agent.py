@@ -65,15 +65,37 @@ class FakeChunk:
         self.section = section
 
 
+class FakeDocumentNames:
+    """Structurally satisfies ``DocumentNamesView``."""
+
+    def __init__(self, names: Sequence[str], total: int | None = None) -> None:
+        self.names = tuple(names)
+        # Defaults to `len(names)` — the common "no overflow" shape — so a
+        # test that only cares about the listed names does not also have to
+        # spell out a total that agrees with them.
+        self.total = len(names) if total is None else total
+
+
 class FakeKnowledge:
     """Structurally satisfies ``KnowledgeAccess``; records its calls."""
 
-    def __init__(self, chunks: Sequence[FakeChunk]) -> None:
+    def __init__(
+        self,
+        chunks: Sequence[FakeChunk],
+        *,
+        document_names: Sequence[str] = (),
+        document_total: int | None = None,
+    ) -> None:
         self._chunks = chunks
+        self._document_names = FakeDocumentNames(document_names, document_total)
         self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
         # Every space the agent named (spaces plan step 8) — its own log, so
         # the existing `calls` assertions keep their shape.
         self.spaces: list[str | None] = []
+        # Retrieval plan §3.6/§4 row 6 (`P-36`) — every `limit` the agent
+        # asked for, so a test can pin `_MAX_CORPUS_NAMES` without importing
+        # the agent module's private constant.
+        self.name_limit_calls: list[int] = []
 
     async def retrieve(
         self,
@@ -91,6 +113,10 @@ class FakeKnowledge:
         self.calls.append((query, k, None if file_ids is None else tuple(file_ids)))
         self.spaces.append(space_id)
         return self._chunks
+
+    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> FakeDocumentNames:
+        self.name_limit_calls.append(limit)
+        return self._document_names
 
 
 class FakeLLM:
@@ -128,9 +154,15 @@ def make_deps(
     deltas: Sequence[str] = ("ok",),
     chunks: Sequence[FakeChunk] | None = None,
     scope: tuple[str, ...] = (),
+    document_names: Sequence[str] = (),
+    document_total: int | None = None,
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
-    knowledge = FakeKnowledge(chunks if chunks is not None else [])
+    knowledge = FakeKnowledge(
+        chunks if chunks is not None else [],
+        document_names=document_names,
+        document_total=document_total,
+    )
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
         knowledge=knowledge,
@@ -334,17 +366,105 @@ async def test_the_label_degrades_deterministically_per_missing_field(
     assert f"{expected_label}\nchunk body" in system_message.content
 
 
+# --------------------------------------------------------------------------- #
+# Corpus awareness (retrieval plan §3.6/§4 row 6 — P-36, س-23 = ج)            #
+# --------------------------------------------------------------------------- #
+
+
+async def test_corpus_header_is_prepended_to_the_system_prompt_on_the_normal_path() -> None:
+    """س-23 = ج's "always" on the NORMAL synthesis path: the header lands in
+    the system prompt (invisible to the user, read by the model), never in
+    what the model streams back — `final.data["text"]` stays exactly what
+    the (fake) LLM emitted."""
+    deps, _knowledge, llm = make_deps(
+        deltas=["Paris"],
+        chunks=[FakeChunk("c1", "Paris is the capital of France.")],
+        document_names=["a.pdf", "b.docx"],
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert "Workspace files: a.pdf, b.docx." in system_message.content
+    assert events[-1].data["text"] == "Paris"
+
+
+async def test_corpus_header_is_prepended_to_the_fallback_text() -> None:
+    """س-23 = ج's "always" on the FALLBACK path: since the LLM is never
+    called on this branch, the header is prepended straight onto the
+    user-visible text — the only place it can reach the user at all — and
+    both the streamed `delta` and the `final.text` carry it identically."""
+    deps, _knowledge, llm = make_deps(chunks=[], document_names=["a.pdf", "b.docx"])
+    events = await drive_run(RagAgent(make_ctx(), deps), "how many files do you have?")
+
+    assert llm.stream_calls == []  # the trust gate still never calls the LLM
+    final = events[-1]
+    assert "enough information" in final.data["text"]
+    assert "Workspace files: a.pdf, b.docx." in final.data["text"]
+    assert events[0].data["delta"] == final.data["text"]
+
+
+async def test_corpus_header_caps_the_listed_names_with_an_overflow_tail() -> None:
+    """§3.6's declared shape: names up to the cap, then a literal "and N more
+    files" tail computed from `total - len(names)` — `ListDocumentNames`
+    itself (not this agent) is what actually enforces the 50-name cap; this
+    fake simply hands back what a capped module response would look like."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[FakeChunk("c1", "text")],
+        document_names=["a.pdf", "b.pdf"],
+        document_total=52,
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert "Workspace files: a.pdf, b.pdf, and 50 more files." in system_message.content
+
+
+async def test_corpus_header_reports_no_files_for_an_empty_workspace() -> None:
+    deps, _knowledge, llm = make_deps(chunks=[FakeChunk("c1", "text")], document_names=[])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert "There are no files in this workspace yet." in system_message.content
+
+
+async def test_corpus_header_follows_the_query_language_like_the_fallback_does() -> None:
+    """One shared language mechanism (`_ARABIC_CHAR_RE`) drives both the
+    fallback sentence AND the corpus header — no second i18n mechanism."""
+    deps, _knowledge, llm = make_deps(chunks=[], document_names=["a.pdf"])
+    events = await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
+
+    final = events[-1]
+    assert "لا أملك معلومات كافية" in final.data["text"]
+    assert "ملفّات مساحة العمل: a.pdf." in final.data["text"]
+    assert llm.stream_calls == []
+
+
+async def test_the_agent_asks_the_module_for_the_plan_s_fifty_name_display_cap() -> None:
+    """The 50-name display cap (§3.6) lives as a plain module constant in the
+    agent (`_MAX_CORPUS_NAMES`) and is passed as an ARGUMENT to the seam
+    (س-24 — no `Settings`/`os.getenv` inside the module for this), exactly
+    the way `_TOP_K` is already passed into `retrieve`."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.name_limit_calls == [50]
+
+
 async def test_without_knowledge_still_answers_with_no_citations() -> None:
     """No knowledge seam wired at all (`deps.knowledge is None`) is NOT the
     trust gate's "zero chunks" case below — no retrieval was even attempted,
     so there is no retrieval result to gate on, and this stays a plain LLM
-    answer (retrieval plan §3.3/§4 row 5, `P-33`, module docstring)."""
+    answer (retrieval plan §3.3/§4 row 5, `P-33`, module docstring). Nor is
+    there a corpus to describe — retrieval plan §3.6's "always" only ever
+    means "whenever retrieval was attempted at all", so no header text
+    appears here either."""
     llm = FakeLLM(["hi"])
     deps = AgentDependencies(llm=ResolvedLLM(provider=llm, model="m", api_key="k"))
     events = await drive_run(RagAgent(make_ctx(), deps), "hello")
 
     assert [e.data["delta"] for e in events if e.type == "token"] == ["hi"]
     assert events[-1].data["citations"] == []
+    assert "Workspace files:" not in llm.stream_calls[0][0][0].content
 
 
 # --------------------------------------------------------------------------- #

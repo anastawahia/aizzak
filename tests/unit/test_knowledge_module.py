@@ -22,6 +22,7 @@ import pytest
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError, ValidationError
+from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.types import Json
@@ -32,6 +33,7 @@ from app.modules.knowledge.application.use_cases import (
     IndexFileService,
     IndexRegisteredDocument,
     KnowledgeRetrievalService,
+    ListDocumentNames,
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id
@@ -50,7 +52,7 @@ from app.modules.knowledge.ports.content_extractor import (
     ParsedChunkKind,
     ParsedDocument,
 )
-from app.modules.knowledge.ports.inbound import KnowledgeRetrieval
+from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval
 from app.modules.knowledge.ports.retrieval import ResolvedEmbedding
 
 # Two spaces in ONE workspace (spaces plan step 8) -- the axis the tests
@@ -312,6 +314,35 @@ class _FakeDocumentRepository:
             if doc.workspace_id == ctx.workspace_id and doc.file_id in wanted
         ]
 
+    async def list(
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> Page[Document]:
+        # Retrieval plan §3.6, step 6 (`P-36`) -- `ListDocumentNames`' own
+        # walk needs THIS, not `ids_for_files`; newest-first keyset on `id`
+        # through the real codec, the `InMemoryDocumentRepository` precedent
+        # (`tests/unit/support_knowledge.py`).
+        items = sorted(
+            (
+                doc
+                for doc in self.docs.values()
+                if doc.workspace_id == ctx.workspace_id
+                and (space_id is None or doc.space_id == space_id)
+            ),
+            key=lambda doc: doc.id,
+            reverse=True,
+        )
+        if cursor is not None:
+            after = decode_id_cursor(cursor)
+            items = [doc for doc in items if doc.id < after]
+        page, has_more = items[:limit], len(items) > limit
+        next_cursor = encode_id_cursor(page[-1].id) if has_more and page else None
+        return Page(data=page, next_cursor=next_cursor, limit=limit)
+
 
 class _FakeEmbeddingResolver:
     """Records every ``resolve_embedding`` call's ``ctx`` and returns a
@@ -560,9 +591,14 @@ async def test_register_document_from_file_allows_duplicate_registrations() -> N
 # IndexFile / IndexFileService -- the manual-indexing face                     #
 # --------------------------------------------------------------------------- #
 class _FakeReadableFile:
-    def __init__(self, file_id: str, space_id: str | None) -> None:
+    def __init__(self, file_id: str, space_id: str | None, name: str = "") -> None:
         self.file_id = file_id
         self.space_id = space_id
+        # Retrieval plan §3.6, step 6 (`P-36`) -- `IndexFile` never reads
+        # this, only `ListDocumentNames` does; defaults to the empty string
+        # so every pre-existing `_FakeReadableFiles({"file-1": _SPACE_A})`
+        # call (name-blind) keeps compiling and passing unchanged.
+        self.name = name
 
 
 class _FakeReadableFiles:
@@ -570,15 +606,24 @@ class _FakeReadableFiles:
     the real seam collapses "unknown", "deleted", "quarantined" and "still
     uploading" into exactly that answer."""
 
-    def __init__(self, files: dict[str, str | None] | None = None) -> None:
+    def __init__(
+        self,
+        files: dict[str, str | None] | None = None,
+        *,
+        names: dict[str, str] | None = None,
+    ) -> None:
         self.files = files or {}
+        # Retrieval plan §3.6, step 6 (`P-36`) -- a SEPARATE mapping so every
+        # existing `files=` call site (keyed on space, not name) is untouched;
+        # a file seeded in `files` but absent here just answers `""`.
+        self.names = names or {}
         self.calls: list[str] = []
 
     async def get_readable(self, ctx: ExecutionContext, file_id: str) -> _FakeReadableFile | None:
         self.calls.append(file_id)
         if file_id not in self.files:
             return None
-        return _FakeReadableFile(file_id, self.files[file_id])
+        return _FakeReadableFile(file_id, self.files[file_id], self.names.get(file_id, ""))
 
 
 class _TrackingUnitOfWork:
@@ -1190,7 +1235,9 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
 
     resolver = _FakeEmbeddingResolver(model="embed-1", api_key="key-1")
     retrieval = RetrieveContext(embeddings, vectors)
-    service = KnowledgeRetrievalService(retrieval, resolver, _FakeDocumentRepository())
+    service = KnowledgeRetrievalService(
+        retrieval, resolver, _FakeDocumentRepository(), _FakeReadableFiles()
+    )
 
     # Static-typing assertion: KnowledgeRetrievalService satisfies the
     # KnowledgeRetrieval inbound port -- mypy is the real assertion here.
@@ -1211,6 +1258,122 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     # Unscoped by default: no `document_id` narrowing reaches either leg, so
     # every caller that predates BE-RAG-005 still searches the whole corpus.
     assert "document_id" not in (vectors.search_calls[-1][2] or {})
+
+
+# --------------------------------------------------------------------------- #
+# ListDocumentNames / KnowledgeRetrievalService.list_document_names          #
+# (retrieval plan §3.6/§4 row 6 — P-36, س-23 = ج)                            #
+# --------------------------------------------------------------------------- #
+def _seed_three_documents(documents: _FakeDocumentRepository) -> None:
+    """Three documents, newest-first by id: doc-3, doc-2, doc-1."""
+    for doc_id, file_id, status in (
+        ("doc-1", "file-1", IndexStatus.INDEXED),
+        ("doc-2", "file-2", IndexStatus.PENDING),
+        ("doc-3", "file-3", IndexStatus.FAILED),
+    ):
+        documents.docs[doc_id] = _document(doc_id=doc_id, file_id=file_id, status=status)
+
+
+async def test_list_document_names_resolves_up_to_the_cap_newest_first() -> None:
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=2)
+
+    # Newest id first (doc-3 -> doc-2 -> doc-1), the same order `ListDocuments`
+    # returns; capped at `limit=2` even though the workspace has three.
+    assert result == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
+
+
+async def test_list_document_names_counts_every_lifecycle_status() -> None:
+    """The `ListDocuments` rule, reused: a `pending`/`failed` document still
+    names a file the user genuinely uploaded, so `total` must not undercount
+    the corpus by excluding them."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+
+    assert result.total == 3
+    assert set(result.names) == {"a.pdf", "b.pdf", "c.pdf"}
+
+
+async def test_list_document_names_skips_a_document_whose_file_is_unreadable() -> None:
+    """A file deleted/quarantined since it was indexed degrades to being
+    SKIPPED from `names` (never a bare id) — `total` still counts it, so
+    the header's "N more" tail never silently drops a real document."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-1"] = _document(doc_id="doc-1", file_id="file-1")
+    documents.docs["doc-2"] = _document(doc_id="doc-2", file_id="file-gone")
+    # `file-gone` is not seeded at all -- `get_readable` answers `None`.
+    files = _FakeReadableFiles({"file-1": None}, names={"file-1": "a.pdf"})
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+
+    assert result == DocumentNames(names=("a.pdf",), total=2)
+
+
+async def test_list_document_names_spans_every_space_regardless_of_scope() -> None:
+    """`space_id=None` on the internal `documents.list` call — a corpus-aware
+    header describes the WHOLE workspace, not one space's slice of it."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-a"] = _document(doc_id="doc-a", file_id="file-a", space_id=_SPACE_A)
+    documents.docs["doc-b"] = _document(doc_id="doc-b", file_id="file-b", space_id=_SPACE_B)
+    documents.docs["doc-c"] = _document(doc_id="doc-c", file_id="file-c", space_id=None)
+    files = _FakeReadableFiles(
+        {"file-a": _SPACE_A, "file-b": _SPACE_B, "file-c": None},
+        names={"file-a": "a.pdf", "file-b": "b.pdf", "file-c": "c.pdf"},
+    )
+
+    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+
+    assert result.total == 3
+    assert set(result.names) == {"a.pdf", "b.pdf", "c.pdf"}
+
+
+async def test_list_document_names_on_an_empty_workspace() -> None:
+    ctx = _ctx("ws1")
+    result = await ListDocumentNames(_FakeDocumentRepository(), _FakeReadableFiles()).execute(
+        ctx, limit=50
+    )
+
+    assert result == DocumentNames(names=(), total=0)
+
+
+async def test_knowledge_retrieval_service_delegates_list_document_names() -> None:
+    """`KnowledgeRetrievalService.list_document_names` -- the port's second
+    face, over the SAME `documents`/`files` seams `retrieve` already holds."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+        files,
+    )
+
+    svc: KnowledgeRetrieval = service
+    result = await svc.list_document_names(ctx, limit=2)
+
+    assert result == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
 
 
 async def _indexed_corpus(
@@ -1277,6 +1440,7 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     results = await service.retrieve(
@@ -1299,6 +1463,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
@@ -1321,6 +1486,7 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
     searches_before = len(vectors.search_calls)
 
@@ -1590,6 +1756,7 @@ async def test_a_space_scoped_retrieval_never_answers_from_another_space() -> No
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
@@ -1611,6 +1778,7 @@ async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_othe
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     await service.retrieve(
@@ -1635,6 +1803,7 @@ async def test_an_unspaced_retrieval_still_sees_every_space() -> None:
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
@@ -1670,6 +1839,7 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
         RetrieveContext(embeddings, vectors),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
+        _FakeReadableFiles(),
     )
 
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []

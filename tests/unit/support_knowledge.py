@@ -57,6 +57,7 @@ from app.modules.knowledge.domain.value_objects import (
     SummaryLanguage,
     VectorRef,
 )
+from app.modules.knowledge.ports.inbound import DocumentNames
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 SEEDED_CREATED_AT = datetime(2026, 4, 5, 6, 7, 8, tzinfo=UTC)
@@ -72,6 +73,11 @@ class RecordingRetrieval:
     # log so a test can assert the route passes one WITHOUT every existing
     # `calls` assertion having to grow a third tuple element.
     spaces: list[str | None] = field(default_factory=list)
+    # Retrieval plan §3.6/§4 row 6 (`P-36`) — the second face this port now
+    # has. Empty by default: no router test drives this yet, but the class
+    # docstring's "structural KnowledgeRetrieval" claim stays true.
+    document_names: DocumentNames = field(default_factory=lambda: DocumentNames(names=(), total=0))
+    name_limit_calls: list[int] = field(default_factory=list)
 
     async def retrieve(
         self,
@@ -85,6 +91,10 @@ class RecordingRetrieval:
         self.calls.append((query, k))
         self.spaces.append(space_id)
         return list(self.chunks)
+
+    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+        self.name_limit_calls.append(limit)
+        return self.document_names
 
 
 @dataclass

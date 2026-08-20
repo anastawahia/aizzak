@@ -32,7 +32,9 @@ place.
 port (02 §2) over the 3.k3 ``RetrieveContext`` use-case, resolving the
 embedding model/key through the temporary ``EmbeddingResolver`` seam
 (``ports/retrieval.py``) — the ``FilesQueryService`` precedent for an
-inbound-port implementation living alongside the other use-cases.
+inbound-port implementation living alongside the other use-cases. It also
+composes ``ListDocumentNames`` (retrieval plan §3.6/§4 row 6, ``P-36``), the
+port's second face, over the ``files`` seam ``IndexFile`` already uses.
 
 ``ListDocuments``/``GetDocument`` + ``KnowledgeUseCases`` (6.1-و-3) are the
 API-facing surface. The bundle carries the two document reads and the
@@ -103,7 +105,7 @@ from app.modules.knowledge.domain.value_objects import (
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.export import ExportFormat, RenderedSummary, SummaryRenderer
 from app.modules.knowledge.ports.files import ReadableFiles
-from app.modules.knowledge.ports.inbound import KnowledgeRetrieval
+from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval
 from app.modules.knowledge.ports.repository import (
     DocumentRepository,
     ReindexJobRepository,
@@ -1560,6 +1562,63 @@ class ListDocuments:
         return await self._documents.list(ctx, space_id=space_id, limit=limit, cursor=cursor)
 
 
+# The internal pagination batch `ListDocumentNames` walks the corpus with —
+# NOT the caller's display cap (that is `limit`, the agent's
+# `_MAX_CORPUS_NAMES`). A plain module constant: this only bounds how many
+# rows one round trip to `DocumentRepository.list` fetches while counting
+# the FULL corpus, and has no bearing on what ends up on the wire.
+_LIST_PAGE_SIZE = 200
+
+
+class ListDocumentNames:
+    """This workspace's corpus-awareness source (retrieval plan §3.6/§4 row
+    6, ``P-36``, decision س-23 = ج): up to ``limit`` document file names,
+    newest first, plus ``total`` — the workspace's FULL document count, so a
+    caller can render an honest "N more files" tail without a second
+    listing call of its own.
+
+    **Every lifecycle status is walked**, the ``ListDocuments`` rule
+    (``space_id=None`` — every space, for the same reason: a corpus-aware
+    header describes the WHOLE workspace, not one space's slice of it): a
+    ``pending``/``failed`` document still names a file the user genuinely
+    uploaded, and excluding it would silently undercount the corpus a
+    "how many files do you have?" question is asking about.
+
+    **Names are resolved only for the first ``limit`` documents** — walking
+    every page of ``DocumentRepository.list`` is cheap (row ids only), but
+    ``ReadableFiles.get_readable`` is a per-file round trip, and resolving
+    one for every document in a large corpus to show at most ``limit`` of
+    them would pay for names nobody sees. A document whose file can no
+    longer be read (deleted, quarantined, or otherwise gone since it was
+    indexed) is SKIPPED rather than shown as a bare id — the header names
+    ACTUAL files, and a dangling reference is not one; ``total`` still
+    counts it, so "N more" never silently drops a real document.
+    """
+
+    def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
+        self._documents = documents
+        self._files = files
+
+    async def execute(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+        names: list[str] = []
+        total = 0
+        cursor: str | None = None
+        while True:
+            page = await self._documents.list(
+                ctx, space_id=None, limit=_LIST_PAGE_SIZE, cursor=cursor
+            )
+            for document in page.data:
+                total += 1
+                if len(names) < limit:
+                    file = await self._files.get_readable(ctx, document.file_id)
+                    if file is not None:
+                        names.append(file.name)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        return DocumentNames(names=tuple(names), total=total)
+
+
 class GetDocument:
     """One document's ingestion state, or ``NotFoundError`` (6.1-و-3).
 
@@ -1621,17 +1680,26 @@ class PurgeSpaceKnowledge:
 
 class KnowledgeRetrievalService:
     """Implements the ``KnowledgeRetrieval`` inbound port (02 §2) over the
-    3.k3 ``RetrieveContext`` use-case (the ``FilesQueryService`` precedent)."""
+    3.k3 ``RetrieveContext`` use-case (the ``FilesQueryService`` precedent).
+
+    Also composes ``ListDocumentNames`` (retrieval plan §3.6/§4 row 6,
+    ``P-36``) over the SAME ``documents`` repository plus the module's
+    existing ``files`` seam (``ports/files.py``, already injected for
+    ``IndexFile``) — one class, one seed, both capabilities the RAG agent's
+    ``KnowledgeAccess`` needs.
+    """
 
     def __init__(
         self,
         retrieval: RetrieveContext,
         resolver: EmbeddingResolver,
         documents: DocumentRepository,
+        files: ReadableFiles,
     ) -> None:
         self._retrieval = retrieval
         self._resolver = resolver
         self._documents = documents
+        self._names = ListDocumentNames(documents, files)
 
     async def retrieve(
         self,
@@ -1691,6 +1759,14 @@ class KnowledgeRetrievalService:
             space_id=space_id,
         )
         return result.chunks
+
+    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+        """Implements ``KnowledgeRetrieval.list_document_names`` (retrieval
+        plan §3.6/§4 row 6, ``P-36``) — a straight delegation to
+        ``ListDocumentNames``, this port's second face over the same
+        ``documents``/``files`` seams ``retrieve`` already holds.
+        """
+        return await self._names.execute(ctx, limit=limit)
 
 
 @dataclass(frozen=True, slots=True)

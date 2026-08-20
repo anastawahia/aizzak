@@ -85,6 +85,22 @@ class RetrievedChunkView(Protocol):
     def section(self) -> str | None: ...
 
 
+class DocumentNamesView(Protocol):
+    """The read shape an agent needs from a corpus-name listing (retrieval
+    plan §3.6/§4 row 6, ``P-36``, س-23 = ج): up to a caller-chosen cap of
+    this workspace's document file names, plus the workspace's full document
+    count. The knowledge module's ``DocumentNames``
+    (``modules/knowledge/ports/inbound.py``) satisfies this structurally —
+    no framework→module import. Read-only ``@property`` members for the
+    reason on ``RetrievedChunkView`` (frozen carriers only).
+    """
+
+    @property
+    def names(self) -> Sequence[str]: ...
+    @property
+    def total(self) -> int: ...
+
+
 class KnowledgeAccess(Protocol):
     """The retrieval capability a RAG-style agent needs. Structurally satisfied
     by ``app.modules.knowledge.ports.inbound.KnowledgeRetrieval.retrieve``; the
@@ -99,6 +115,13 @@ class KnowledgeAccess(Protocol):
     the difference from ``file_ids`` is the point: a missing pin narrows
     nothing, a missing space widens across spaces. An agent that does not know
     its space has to write that down.
+
+    ``list_document_names`` (retrieval plan §3.6/§4 row 6, ``P-36``, س-23 = ج)
+    is a SECOND method on this SAME seed, not a second injected port — the RAG
+    agent still reaches corpus awareness through the one ``self.deps.knowledge``
+    it already calls for retrieval (ح-11). ``limit`` is the caller's display
+    cap, passed as an argument exactly like ``retrieve``'s ``k`` (س-24 — no
+    ``Settings``/``os.getenv`` on either side of this seam).
     """
 
     async def retrieve(
@@ -110,6 +133,10 @@ class KnowledgeAccess(Protocol):
         *,
         space_id: Uuid | None,
     ) -> Sequence[RetrievedChunkView]: ...
+
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int
+    ) -> DocumentNamesView: ...
 
 
 class FileReadView(Protocol):

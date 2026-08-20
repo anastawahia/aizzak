@@ -1032,14 +1032,18 @@ def _build_knowledge(
     direct ``vectors`` is here and why ``index_file`` — which supersedes
     nothing — does not take it.
 
-    **``files`` is the seam manual indexing runs on.** It is ``files``' own
-    ``FilesQuery``, bound structurally to this module's ``ReadableFiles``
-    (``knowledge/ports/files.py``), the same way ``conversations`` binds it for
-    a pin — and it is the SAME instance, so "is this file readable, and whose
-    space is it in?" has one answer across the process. The import is aliased
-    ``KnowledgeReadableFiles`` because ``conversations`` declares a Protocol of
-    the same name for the same seam: two names for one shape is what Dependency
-    Inversion between siblings looks like, not a duplication to unify.
+    **``files`` is the seam manual indexing runs on** — and, since retrieval
+    plan §3.6/§4 row 6 (``P-36``), the corpus-awareness header's name
+    resolution too (``ListDocumentNames``, composed inside
+    ``KnowledgeRetrievalService``). It is ``files``' own ``FilesQuery``, bound
+    structurally to this module's ``ReadableFiles`` (``knowledge/ports/files.py``),
+    the same way ``conversations`` binds it for a pin — and it is the SAME
+    instance passed to both ``index_file`` and ``search`` below, so "is this
+    file readable, and what is it named?" has one answer across the process.
+    The import is aliased ``KnowledgeReadableFiles`` because ``conversations``
+    declares a Protocol of the same name for the same seam: two names for one
+    shape is what Dependency Inversion between siblings looks like, not a
+    duplication to unify.
 
     ``PurgeSpaceKnowledge`` (``spaces-backend-plan.md`` step 11) is returned
     OUTSIDE the bundle for the reason no ingestion face is inside it: a request
@@ -1055,7 +1059,7 @@ def _build_knowledge(
         list_documents=ListDocuments(documents),
         get_document=GetDocument(documents),
         search=KnowledgeRetrievalService(
-            RetrieveContext(embeddings=embedding, vectors=vectors), resolver, documents
+            RetrieveContext(embeddings=embedding, vectors=vectors), resolver, documents, files
         ),
         index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
         reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
@@ -1665,6 +1669,10 @@ class CompositionRoot:
                 # satisfies `KnowledgeAccess` (`agent_runtime/deps_ports.py`)
                 # verbatim, so no adapter class is needed for this seam. The
                 # RAG agent now RETRIEVES and CITES real workspace chunks.
+                # Retrieval plan §3.6/§4 row 6 (`P-36`) added a SECOND method
+                # to the same seam — `list_document_names` — so the corpus-
+                # awareness header reaches the agent through this identical
+                # binding, with no second port and no second wiring line.
                 knowledge=knowledge.search,
                 # web_search: see the module docstring. Stays None
                 # deliberately — no Exa key — and the agent that needs it

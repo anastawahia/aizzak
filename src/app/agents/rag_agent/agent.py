@@ -28,6 +28,21 @@ threshold: ``RetrievalResult.best_dense_score``/``best_bm25_score`` (step 4,
 risk until an evaluation set exists (§6 risk 2). See ``_fallback_answer`` /
 ``run`` for the branch itself.
 
+**Corpus awareness (retrieval plan §3.6/§4 row 6, ``P-36``, decision س-23 =
+ج):** ``_corpus_header`` builds this workspace's file-name header — up to
+``_MAX_CORPUS_NAMES`` names, then a "و N ملفًا آخر"/"and N more files" tail —
+and it is present on BOTH paths, never one or the other. On the NORMAL
+synthesis path it is prepended to the SYSTEM message (``_messages``),
+invisible to the user but read by the model, so a question like «كم ملفًا
+لديك؟» ("how many files do you have?") — which, excluding ``METADATA``,
+routes to plain ``CONTENT`` and usually finds no matching chunks — can still
+be answered honestly instead of tripping a dry, uninformative fallback. On
+the FALLBACK path above, where the LLM is never called at all, the same
+header is prepended directly to the user-visible ``fallback`` text itself:
+the only way that branch can reflect what the corpus holds is to say so in
+the sentence the user actually reads. One shared builder, so the two paths
+can never describe two different corpora.
+
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
 at 4.7; usage enforcement/capture, conversation persistence (D-12) and SSE/WS
@@ -68,6 +83,23 @@ _ARABIC_CHAR_RE = re.compile("[؀-ۿ]")
 _FALLBACK_ANSWER_EN = "I don't have enough information in the workspace documents to answer that."
 _FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندات مساحة العمل للإجابة عن هذا السؤال."
 
+# Retrieval plan §3.6/§4 row 6 (``P-36``, س-23 = ج) — the corpus-awareness
+# header's display cap. A PLAIN MODULE CONSTANT, not ``Settings`` (س-24's own
+# escape hatch: "a plain module constant is also acceptable for a fixed
+# display cap"). The plan fixes this number itself ("سقف عرض 50 اسمًا") rather
+# than leaving it a per-deployment knob, exactly like ``_TOP_K`` above — and
+# unlike ``_TOP_K``, it is never read from a request either way, so there is
+# nothing here for a per-request override to even attach to.
+_MAX_CORPUS_NAMES = 50
+
+# The corpus-awareness header's four fixed strings (retrieval plan §3.6),
+# picked by the SAME ``_ARABIC_CHAR_RE`` query-language check the fallback
+# sentences above use — one language mechanism, reused, not a second one.
+_CORPUS_EMPTY_EN = "There are no files in this workspace yet."
+_CORPUS_EMPTY_AR = "لا توجد ملفّات في مساحة العمل بعد."
+_CORPUS_LABEL_EN = "Workspace files:"
+_CORPUS_LABEL_AR = "ملفّات مساحة العمل:"
+
 
 class RagAgent(BaseAgent):
     """Retrieval-augmented Q&A over the workspace knowledge base."""
@@ -96,6 +128,11 @@ class RagAgent(BaseAgent):
         # legitimately retrieves nothing, which is the opposite of what an
         # un-pinned thread wants.
         scope = self.deps.knowledge_scope or None
+        # A LOCAL binding, not repeated `self.deps.knowledge` reads: mypy
+        # narrows `is not None` reliably only against a plain local variable,
+        # and this function now needs that narrowing twice (retrieval, then
+        # the corpus header below) rather than once.
+        knowledge = self.deps.knowledge
         # Retrieval plan §3.3/§4 row 5 (`P-33`) — this flag is what tells the
         # trust gate below apart from the "knowledge is optional-degrading"
         # mode just above: a caller with NO knowledge seam wired at all never
@@ -104,7 +141,7 @@ class RagAgent(BaseAgent):
         # `test_without_knowledge_still_answers_with_no_citations` pins. A
         # caller that DID wire a seam and got zero chunks back is the case the
         # gate exists for.
-        retrieval_attempted = self.deps.knowledge is not None
+        retrieval_attempted = knowledge is not None
         chunks: Sequence[RetrievedChunkView] = (
             # Spaces plan step 8 — `space_id` is TYPED as none rather than
             # defaulted, and it is STILL none after step 12: that step put the
@@ -114,10 +151,22 @@ class RagAgent(BaseAgent):
             # owing a space, and the plan's §7 carries the entry. Searching
             # every space is the pre-plan behaviour; the pins in `scope`
             # already cannot cross one.
-            await self.deps.knowledge.retrieve(self.ctx, query, _TOP_K, scope, space_id=None)
-            if self.deps.knowledge is not None
+            await knowledge.retrieve(self.ctx, query, _TOP_K, scope, space_id=None)
+            if knowledge is not None
             else []
         )
+        # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
+        # is fetched whenever retrieval was attempted at all, so it is ready
+        # for BOTH branches below: the trust-gate fallback (prepended to the
+        # user-visible text) and the normal synthesis path (prepended to the
+        # system prompt via `_messages`). No knowledge seam wired at all means
+        # no retrieval was attempted (the optional-degrading mode above), and
+        # there is equally no corpus to describe — `corpus_header` stays
+        # `None` and `_messages` renders exactly as it did before this step.
+        corpus_header: str | None = None
+        if knowledge is not None:
+            corpus = await knowledge.list_document_names(self.ctx, limit=_MAX_CORPUS_NAMES)
+            corpus_header = self._corpus_header(query, corpus.names, corpus.total)
         if retrieval_attempted and not chunks:
             # The trust gate + honest fallback (retrieval plan §3.3, the "most
             # dangerous gap in the whole file": before this branch existed the
@@ -134,14 +183,18 @@ class RagAgent(BaseAgent):
             # fixed local string picked by `_fallback_answer`, so there is
             # nothing in flight the model could improvise an answer for. Row 6
             # (`P-36`, س-23 = ج — "the header always: in the normal path AND
-            # in the fallback path") will later prepend a corpus-awareness
-            # header to this SAME `fallback` string before it is yielded;
-            # nothing about this branch's shape needs to change when it does.
+            # in the fallback path") prepends the corpus-awareness header to
+            # this SAME `fallback` string before it is yielded — the honest
+            # "I don't have enough information" sentence, followed by what the
+            # workspace actually holds, so a question like «كم ملفًا لديك؟»
+            # gets a genuinely useful answer even though the LLM never runs.
             fallback = self._fallback_answer(query)
+            if corpus_header is not None:
+                fallback = f"{fallback}\n\n{corpus_header}"
             yield AgentEvent(type="token", data={"delta": fallback})
             yield AgentEvent(type="final", data={"text": fallback, "citations": []})
             return
-        messages = self._messages(query, chunks)
+        messages = self._messages(query, chunks, corpus_header)
         params = LlmParams(model=binding.model)
         answer: list[str] = []
         async for chunk in binding.provider.stream(messages, params, binding.api_key):
@@ -200,8 +253,18 @@ class RagAgent(BaseAgent):
         }
 
     @staticmethod
-    def _messages(query: str, chunks: Sequence[RetrievedChunkView]) -> list[LlmMessage]:
+    def _messages(
+        query: str, chunks: Sequence[RetrievedChunkView], corpus_header: str | None
+    ) -> list[LlmMessage]:
         system = SYSTEM_PROMPT
+        # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
+        # is ALWAYS in the system prompt when retrieval was attempted at all
+        # (`corpus_header is not None`), independently of whether THIS
+        # request's chunks came back empty or full: the model should know
+        # what the workspace holds on every normal-path answer, not only the
+        # ones that happen to retrieve nothing.
+        if corpus_header is not None:
+            system = f"{system}\n\n{corpus_header}"
         if chunks:
             # Retrieval plan §3.2/P-31 — the source label is added HERE, at
             # display time, above each chunk's own text; the shared unit
@@ -214,8 +277,41 @@ class RagAgent(BaseAgent):
                 )
                 for c in chunks
             )
-            system = f"{SYSTEM_PROMPT}\n\nContext:\n{context}"
+            system = f"{system}\n\nContext:\n{context}"
         return [
             LlmMessage(role="system", content=system),
             LlmMessage(role="user", content=query),
         ]
+
+    @staticmethod
+    def _corpus_header(query: str, names: Sequence[str], total: int) -> str:
+        """The corpus-awareness header text (retrieval plan §3.6/§4 row 6,
+        ``P-36``, س-23 = ج) — this workspace's file names, up to
+        ``_MAX_CORPUS_NAMES`` of them, then a "و N ملفًا آخر"/"and N more
+        files" tail for the rest. Reused verbatim on both the fallback path
+        (prepended to the user-visible text) and the normal path (prepended
+        to the system prompt) — see ``run``.
+
+        Language follows the SAME ``_ARABIC_CHAR_RE`` presence check the
+        fallback sentences use, so a query's language picks one consistent
+        voice across everything this agent says about itself, on either
+        path — no second i18n mechanism.
+
+        ``total`` may exceed ``len(names)`` for two different reasons —
+        ``ListDocumentNames`` capped the resolved names at the caller's
+        `limit`, or it skipped a document whose file could no longer be
+        read — and both collapse to the same honest tail here: "N more"
+        always means ``total - len(names)``, never a distinction the header
+        has no way to explain to a reader anyway.
+        """
+        is_arabic = bool(_ARABIC_CHAR_RE.search(query))
+        if not names:
+            return _CORPUS_EMPTY_AR if is_arabic else _CORPUS_EMPTY_EN
+        remaining = max(0, total - len(names))
+        if is_arabic:
+            listed = "، ".join(names)
+            tail = f"، و {remaining} ملفًا آخر." if remaining else "."
+            return f"{_CORPUS_LABEL_AR} {listed}{tail}"
+        listed = ", ".join(names)
+        tail = f", and {remaining} more files." if remaining else "."
+        return f"{_CORPUS_LABEL_EN} {listed}{tail}"
