@@ -21,11 +21,36 @@ isolation here is a payload filter, exactly like ``memory.RecallRelevant``.
 and is a narrowing INSIDE that tenant — never a substitute for it: the
 workspace condition stays whatever the caller scoped to, so a space id from
 another tenant still matches nothing.
+
+Confidence signals (retrieval plan §3.3/§3.11, س-22, ``P-28``): ``execute``
+returns ``RetrievalResult``, not a bare ``list[RetrievedChunk]``, so it can
+carry ``best_dense_score``/``best_bm25_score`` alongside the chunks —
+snapshotted straight off ``dense_hits``/``sparse_hits`` BEFORE
+``reciprocal_rank_fusion`` ever runs (it only ever reads each hit's ``.id``,
+never its ``.score``, and hands back brand-new RRF scores of its own), so
+this is the one point in the pipeline the raw per-leg scores are still
+visible. No numeric gate is built on them here (س-22 = أ — thresholds stay
+``0.0``/"no results only"); they exist for the structured log (``P-29``, plan
+step 17) and as the ready-made input for any future calibration.
+
+⚠️ **Scale direction is INVERTED from alpha.** alpha's ``best_dense_distance``
+is the LOWEST raw FAISS L2 distance (nearer = smaller = better). AIZZAK's
+dense leg is Qdrant cosine similarity, where HIGHER is better —
+``best_dense_score`` is therefore a MAXIMUM over ``dense_hits``, never a
+minimum, and no alpha number is copied here (retrieval plan §3.3, §6 risk
+#3). The BM25-sparse leg is likewise higher-is-better (a raw, IDF-weighted
+dot product, per ``framework/ports/vector_store.py``), so ``best_bm25_score``
+is a MAXIMUM too.
+
+A leg that returned no hits at all makes its signal honestly absent
+(``None``), never ``0.0`` — on a cosine (or dot-product) scale ``0.0`` is a
+real, meaningful score, not "no data".
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
@@ -48,6 +73,25 @@ _SEARCH_OVERFETCH = 3
 _MAX_SEARCH = 100
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalResult:
+    """``RetrieveContext.execute``'s outcome: the relevance-filtered,
+    top-``k`` ``chunks`` plus the two raw confidence signals (retrieval plan
+    §3.3/§3.11, ``P-28``) — see the module docstring for the pre-RRF
+    snapshot timing and the alpha scale-direction inversion (§6 risk #3).
+
+    ``best_dense_score``/``best_bm25_score`` are independent of ``chunks``:
+    each is the MAXIMUM raw ``VectorHit.score`` seen on its leg's search,
+    over EVERY hit that leg returned — not just the ones that survived
+    relevance-filtering/truncation into ``chunks``. ``None`` means that leg
+    returned no hits at all (an honestly absent signal, never ``0.0``).
+    """
+
+    chunks: list[RetrievedChunk]
+    best_dense_score: float | None
+    best_bm25_score: float | None
+
+
 class RetrieveContext:
     """Embed + hash the query, search both legs of the per-workspace hybrid
     Qdrant collection, fuse with RRF, and relevance-filter down to ``k``
@@ -67,7 +111,7 @@ class RetrieveContext:
         k: int = 5,
         document_ids: Sequence[str] | None = None,
         space_id: str | None,
-    ) -> list[RetrievedChunk]:
+    ) -> RetrievalResult:
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
         k = max(1, min(k, _MAX_K))
@@ -90,7 +134,7 @@ class RetrieveContext:
         # matter most.
         if document_ids is not None:
             if not document_ids:
-                return []
+                return RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
             flt["document_id"] = list(document_ids)
         # The space narrowing (spaces plan §3.4, step 8) — a SINGLE value, so
         # the adapter renders `MatchValue`, and ANDed with everything above by
@@ -125,6 +169,20 @@ class RetrieveContext:
             collection, q_sparse, search_k, flt
         )
 
+        # Confidence-signal snapshot (retrieval plan §3.3/§3.11, ``P-28``) —
+        # taken HERE, straight off each leg's raw ``VectorHit.score``, before
+        # ``reciprocal_rank_fusion`` below ever runs: RRF only ever reads a
+        # hit's ``.id`` (never its ``.score``) and returns brand-new RRF
+        # scores of its own (``FusedChunk.score``), so this is the one place
+        # downstream of the search calls where the raw per-leg scores are
+        # still visible. ``max(..., default=None)`` makes an empty leg an
+        # honest ``None`` rather than a misleading ``0.0`` (a real, meaningful
+        # score on this cosine/dot-product scale) — see the module docstring
+        # for why "best" is a MAXIMUM here, the inverse of alpha's minimum-L2
+        # ``best_dense_distance``.
+        best_dense_score = max((hit.score for hit in dense_hits), default=None)
+        best_bm25_score = max((hit.score for hit in sparse_hits), default=None)
+
         fused = reciprocal_rank_fusion(
             [hit.id for hit in dense_hits],
             [hit.id for hit in sparse_hits],
@@ -139,7 +197,12 @@ class RetrieveContext:
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
         relevant = filter_relevant(scored)
-        return [_to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in relevant[:k]]
+        chunks = [
+            _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in relevant[:k]
+        ]
+        return RetrievalResult(
+            chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
+        )
 
 
 def _to_scored_chunk(chunk: FusedChunk, payload: Json) -> ScoredChunk:

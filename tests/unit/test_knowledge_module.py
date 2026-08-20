@@ -26,7 +26,7 @@ from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument
-from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.retrieval import RetrievalResult, RetrieveContext
 from app.modules.knowledge.application.use_cases import (
     IndexFile,
     IndexFileService,
@@ -43,6 +43,7 @@ from app.modules.knowledge.domain.events import (
     DocumentRegistered,
 )
 from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
+from app.modules.knowledge.domain.sparse import build_sparse_terms
 from app.modules.knowledge.domain.value_objects import IndexStatus, VectorRef
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
@@ -1330,6 +1331,149 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
     assert results == []
     # And it short-circuits: no vector round trip is made for a scope that
     # cannot match anything.
+    assert len(vectors.search_calls) == searches_before
+
+
+# --------------------------------------------------------------------------- #
+# RetrieveContext confidence signals (retrieval plan §3.3/§3.11, P-28,        #
+# step 4) -- best-dense/best-bm25, snapshotted BEFORE RRF, "best" = MAXIMUM   #
+# (the alpha scale-direction inversion, §6 risk #3). RetrieveContext.execute  #
+# is called DIRECTLY here (not through KnowledgeRetrievalService), because    #
+# the port (`KnowledgeRetrieval.retrieve` -> `list[RetrievedChunk]`) never    #
+# carries these signals -- only `RetrievalResult` does (see                   #
+# `application/retrieval.py`'s module docstring).                            #
+# --------------------------------------------------------------------------- #
+async def test_confidence_signals_are_raw_pre_rrf_scores_not_the_chunks_own_rrf_score() -> None:
+    """The decisive proof that the snapshot is taken UPSTREAM of RRF: a
+    query identical to the one indexed chunk's text scores ~1.0 cosine
+    similarity, wildly different from the tiny RRF fraction
+    (0.5 / (60 + rank + 1)) `RetrievedChunk.score` carries."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    text = "quarterly revenue figures for the northern region"
+    await IndexDocument(embeddings, vectors).execute(
+        ctx,
+        document_id="doc-1",
+        space_id=None,
+        parsed=_parsed_document([_parsed_chunk(text, order=0)]),
+        model="embed-1",
+        api_key="key-1",
+    )
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx, query=text, model="embed-1", api_key="key-1", k=5, space_id=None
+    )
+
+    assert isinstance(result, RetrievalResult)
+    assert len(result.chunks) == 1
+    # Raw cosine similarity of a vector against itself: ~1.0.
+    assert result.best_dense_score == pytest.approx(1.0, abs=1e-6)
+    # Raw sparse dot product of the query's own terms against themselves: > 0.
+    assert result.best_bm25_score is not None
+    assert result.best_bm25_score > 0.0
+    # NOT the same scale as the RRF score the returned chunk itself carries
+    # (0.5/61 + 0.5/61 ~= 0.0164 for a chunk ranked first on both legs) --
+    # proof `best_dense_score`/`best_bm25_score` are not just an alias for
+    # `chunks[0].score`.
+    assert result.chunks[0].score < 0.1
+    assert result.best_dense_score > result.chunks[0].score
+
+
+async def test_best_scores_are_the_maximum_across_all_hits_never_the_minimum() -> None:
+    """§6 risk #3: alpha's `best_dense_distance` is a MINIMUM (nearer L2
+    distance = better); AIZZAK's cosine scale is the opposite, and this
+    proves the code takes the MAXIMUM, not alpha's reduction verbatim."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    query_text = "quarterly revenue figures for the northern region"
+    unrelated_text = "a recipe for baking sourdough bread at high altitude"
+    for doc_id, text in (("doc-match", query_text), ("doc-unrelated", unrelated_text)):
+        await IndexDocument(embeddings, vectors).execute(
+            ctx,
+            document_id=doc_id,
+            space_id=None,
+            parsed=_parsed_document([_parsed_chunk(text, order=0)]),
+            model="embed-1",
+            api_key="key-1",
+        )
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx, query=query_text, model="embed-1", api_key="key-1", k=5, space_id=None
+    )
+
+    # The best score is the near-identical match's ~1.0, not the unrelated
+    # document's much lower (or negative) cosine similarity -- a `min()`
+    # instead of `max()` would fail this assertion.
+    assert result.best_dense_score == pytest.approx(1.0, abs=1e-6)
+
+
+async def test_best_bm25_score_is_none_when_the_sparse_leg_returns_no_hits() -> None:
+    """An empty leg is an honest ``None``, never ``0.0`` -- ``0.0`` is a real,
+    meaningful score on this dot-product scale."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    await IndexDocument(embeddings, vectors).execute(
+        ctx,
+        document_id="doc-1",
+        space_id=None,
+        parsed=_parsed_document([_parsed_chunk("quarterly revenue figures", order=0)]),
+        model="embed-1",
+        api_key="key-1",
+    )
+    # Punctuation-only: every tokenizer this module dispatches to strips it
+    # down to zero tokens, so the query's OWN sparse vector is empty --
+    # `search_sparse` then finds nothing to score above `0.0` regardless of
+    # what is indexed (`domain/sparse.py`: "Empty or stopword-only text
+    # returns an empty SparseTerms").
+    query = "!!! ??? ..."
+    assert build_sparse_terms(query).indices == ()
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx, query=query, model="embed-1", api_key="key-1", k=5, space_id=None
+    )
+
+    assert result.best_bm25_score is None
+    # The dense leg is unaffected -- it embeds the raw query text regardless
+    # of tokenization, so it still has a real (if not necessarily large) score.
+    assert result.best_dense_score is not None
+
+
+async def test_both_confidence_signals_are_none_over_an_empty_corpus() -> None:
+    """A workspace nobody has indexed anything into (no Qdrant collection) is
+    a normal state (module docstring, `qdrant_store.py`) -- both legs return
+    no hits, so both signals are honestly absent."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx, query="quarterly revenue figures", model="embed-1", api_key="key-1", k=5, space_id=None
+    )
+
+    assert result == RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
+
+
+async def test_a_scope_of_unindexed_documents_short_circuits_with_none_signals() -> None:
+    """The same BE-RAG-005 short circuit as
+    ``test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everything``,
+    but exercised directly against ``RetrieveContext`` (``document_ids=[]``,
+    its own vocabulary) -- no vector round trip happens at all, so there is
+    no leg to have scored anything."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    await _indexed_corpus(ctx, embeddings, vectors)
+    searches_before = len(vectors.search_calls)
+
+    result = await RetrieveContext(embeddings, vectors).execute(
+        ctx,
+        query="quarterly revenue figures",
+        model="embed-1",
+        api_key="key-1",
+        k=5,
+        document_ids=[],
+        space_id=None,
+    )
+
+    assert result == RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
     assert len(vectors.search_calls) == searches_before
 
 

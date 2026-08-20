@@ -1668,12 +1668,20 @@ class KnowledgeRetrievalService:
         The two are ANDed one layer down (``RetrieveContext``), not merged
         here: a pin from another space is already refused at pin time (§3.5),
         so a scope that survives both conditions is the only honest one.
+
+        ``RetrieveContext.execute`` also returns the two raw confidence
+        signals (retrieval plan §3.3, ``P-28``) alongside its chunks, but
+        THIS port's contract (02 §2) is, and stays, ``list[RetrievedChunk]``
+        — so only ``.chunks`` crosses here. Nothing downstream needs the
+        signals yet (retrieval plan step 5's gate is "no results" only, no
+        threshold on them); a later step decides how/whether they reach a
+        caller of this port.
         """
         resolved = await self._resolver.resolve_embedding(ctx)
         document_ids = (
             None if file_ids is None else await self._documents.ids_for_files(ctx, file_ids)
         )
-        return await self._retrieval.execute(
+        result = await self._retrieval.execute(
             ctx,
             query=query,
             model=resolved.model,
@@ -1682,6 +1690,7 @@ class KnowledgeRetrievalService:
             document_ids=document_ids,
             space_id=space_id,
         )
+        return result.chunks
 
 
 @dataclass(frozen=True, slots=True)

@@ -1973,7 +1973,7 @@ async def test_index_then_retrieve_round_trip() -> None:
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx,
         space_id=None,
         query="quarterly revenue figures for the northern region",
@@ -1982,10 +1982,10 @@ async def test_index_then_retrieve_round_trip() -> None:
         k=1,
     )
 
-    assert len(results) == 1
-    assert results[0].document_id == "doc-1"
-    assert results[0].text == "quarterly revenue figures for the northern region"
-    assert results[0].chunk_id == chunk_point_id("doc-1", 0)
+    assert len(result.chunks) == 1
+    assert result.chunks[0].document_id == "doc-1"
+    assert result.chunks[0].text == "quarterly revenue figures for the northern region"
+    assert result.chunks[0].chunk_id == chunk_point_id("doc-1", 0)
 
 
 async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
@@ -2018,7 +2018,7 @@ async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx,
         space_id=None,
         query="quarterly revenue figures for the northern region",
@@ -2027,10 +2027,10 @@ async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
         k=1,
     )
 
-    assert len(results) == 1
-    assert results[0].file_name == "quarterly-report.pdf"
-    assert results[0].page_number == 4
-    assert results[0].section == "Regional Breakdown"
+    assert len(result.chunks) == 1
+    assert result.chunks[0].file_name == "quarterly-report.pdf"
+    assert result.chunks[0].page_number == 4
+    assert result.chunks[0].section == "Regional Breakdown"
 
 
 async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_to_none() -> None:
@@ -2048,7 +2048,7 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx,
         space_id=None,
         query="cafeteria menu changes for next month",
@@ -2057,10 +2057,10 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
         k=1,
     )
 
-    assert len(results) == 1
-    assert results[0].file_name is None
-    assert results[0].page_number is None
-    assert results[0].section is None
+    assert len(result.chunks) == 1
+    assert result.chunks[0].file_name is None
+    assert result.chunks[0].page_number is None
+    assert result.chunks[0].section is None
 
 
 async def test_retrieve_context_both_legs_called_with_workspace_filter() -> None:
@@ -2107,11 +2107,11 @@ async def test_retrieve_context_rrf_fuses_both_legs() -> None:
         ],
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx, space_id=None, query="revenue figures quarterly", model="m", api_key="k", k=5
     )
 
-    assert results[0].chunk_id == chunk_point_id("doc-1", 0)
+    assert result.chunks[0].chunk_id == chunk_point_id("doc-1", 0)
 
 
 async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() -> None:
@@ -2140,13 +2140,14 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
         ],
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx, space_id=None, query=query, model="m", api_key="k", k=1
     )
 
-    assert len(results) == 1
-    assert results[0].chunk_id == chunk_point_id("doc-1", 1)  # far_text -- the sparse-rescued chunk
-    assert "ZX9000QRS" in results[0].text
+    assert len(result.chunks) == 1
+    # far_text -- the sparse-rescued chunk
+    assert result.chunks[0].chunk_id == chunk_point_id("doc-1", 1)
+    assert "ZX9000QRS" in result.chunks[0].text
 
 
 async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
@@ -2187,10 +2188,14 @@ async def test_retrieve_context_empty_query_raises_validation_error() -> None:
 
 
 async def test_retrieve_context_empty_corpus_returns_empty_list() -> None:
-    results = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
+    result = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
         _ctx(), space_id=None, query="anything at all", model="m", api_key="k"
     )
-    assert results == []
+    assert result.chunks == []
+    # No hits on either leg -- the confidence signals are honestly absent
+    # (retrieval plan §3.3, ``P-28``), never a misleading ``0.0``.
+    assert result.best_dense_score is None
+    assert result.best_bm25_score is None
 
 
 async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
@@ -2214,11 +2219,11 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
         ],
     )
 
-    results = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors).execute(
         ctx_b, space_id=None, query=shared_text, model="m", api_key="k"
     )
 
-    assert len(results) == 1
-    assert results[0].chunk_id == chunk_point_id("doc-b", 0)
+    assert len(result.chunks) == 1
+    assert result.chunks[0].chunk_id == chunk_point_id("doc-b", 0)
     assert vectors.search_calls[-1][2] == {"workspace_id": "ws-b"}
     assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws-b"}
