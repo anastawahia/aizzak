@@ -53,12 +53,13 @@ risk until an evaluation set exists (§6 risk 2). See ``_fallback_answer`` /
 ``run`` for the branch itself.
 
 **Corpus awareness (retrieval plan §3.6/§4 row 6, ``P-36``, decision س-23 =
-ج):** ``_corpus_header`` builds this workspace's file-name header — up to
-``_MAX_CORPUS_NAMES`` names, then a "و N ملفًا آخر"/"and N more files" tail —
-and it is present on BOTH paths, never one or the other. On the NORMAL
-synthesis path it is prepended to the SYSTEM message (``_messages``),
-invisible to the user but read by the model, so a question like «كم ملفًا
-لديك؟» ("how many files do you have?") — which, excluding ``METADATA``,
+ج):** ``_corpus_header`` builds this workspace's file-name header — the names
+the module hands over (however many the deployment shows), then a
+number-agreeing "N more files" tail — and it is present on BOTH paths, never
+one or the other. On the NORMAL synthesis path it is prepended to the SYSTEM
+message (``_messages``), invisible to the user but read by the model, so a
+question like «كم ملفًا لديك؟» ("how many files do you have?") — which,
+excluding ``METADATA``,
 routes to plain ``CONTENT`` and usually finds no matching chunks — can still
 be answered honestly instead of tripping a dry, uninformative fallback. On
 the FALLBACK path above, where the LLM is never called at all, the same
@@ -149,19 +150,24 @@ _CLARIFY_FILE_EN = "Which file do you mean?"
 _CLARIFY_FILE_AR = "أيّ ملفّ تقصد؟"
 _CLARIFY_BULLET = "- "
 
-# Retrieval plan §3.6/§4 row 6 (``P-36``, س-23 = ج) — the corpus-awareness
-# header's display cap, and **the last number left in this agent**.
+# Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus-awareness
+# header's display cap is NOT here, and this comment stands where it used to
+# be (`_MAX_CORPUS_NAMES = 50`) because its absence is the point.
 #
-# A PLAIN MODULE CONSTANT, not ``Settings``, and deliberately NOT swept by
-# plan row 18 (``P-30`` ``P-40``) the way ``_TOP_K`` was: س-24's scope list is
-# the RETRIEVAL knobs (``_W_DENSE`` ``_W_BM25`` ``_RRF_K``
-# ``_SEARCH_OVERFETCH`` ``_TOP_K``), and this is none of them. It is a
-# DISPLAY cap that the plan fixes itself ("سقف عرض 50 اسمًا", §3.6, with the
-# ~500-token-per-request price named and accepted right there) — changing it
-# changes what the header looks like, not how well retrieval answers, so
-# there is no calibration for a deployment to do and nothing for the ``P-38``
-# evaluation set to say about it.
-_MAX_CORPUS_NAMES = 50
+# It was kept as a plain module constant on the grounds that س-24's sweep
+# names the RETRIEVAL knobs (`_W_DENSE` `_W_BM25` `_RRF_K` `_SEARCH_OVERFETCH`
+# `_TOP_K`) and a DISPLAY cap is none of them. True about the number, beside
+# the point about the address: whatever it tuned, it was a tuning number held
+# by an AGENT — the one thing ح-11 says this agent does not do, and the one
+# place `Settings` cannot reach, since an agent reads no configuration and
+# imports nothing. Shortening a header was a code edit in the agents layer.
+#
+# So it moved to the module side in `_TOP_K`'s exact shape (plan row 18,
+# `P-40`): `list_document_names` takes an OPTIONAL `limit`, this agent names
+# none, and `Settings.retrieval.max_corpus_names` is resolved inside
+# `ListDocumentNames`. §3.6 still fixes the shipped value at 50, with its
+# ~500-token-per-request price named and accepted right there — nothing about
+# the header changed, only who owns the number.
 
 # The corpus-awareness header's four fixed strings (retrieval plan §3.6),
 # picked by the SAME ``_ARABIC_CHAR_RE`` query-language check the fallback
@@ -170,6 +176,33 @@ _CORPUS_EMPTY_EN = "There are no files in this workspace yet."
 _CORPUS_EMPTY_AR = "لا توجد ملفّات في مساحة العمل بعد."
 _CORPUS_LABEL_EN = "Workspace files:"
 _CORPUS_LABEL_AR = "ملفّات مساحة العمل:"
+
+# The Arabic overflow tail, in the FOUR forms Arabic number agreement
+# (تمييز العدد) actually has rather than the one this header used to render
+# for every count: «و 5 ملفًّا آخر» is correct from 11 to 99 and from nowhere
+# else. One remaining file names no numeral at all («وملفّ آخر»); two name
+# the dual, and no numeral either («وملفّان آخران»); 3-10 take the broken
+# plural in the genitive («و 5 ملفّات أخرى»); 11 and up take the singular in
+# the accusative («و 50 ملفًّا آخر»). User-visible text on an Arabic-first
+# product, and on the FALLBACK path especially — where the answer is already
+# an apology. Assembled by `_more_files_ar` below.
+#
+# The first two are WHOLE tails, conjunction included, because nothing comes
+# between «و» and the noun; the last two are the noun ALONE, because the
+# numeral does. And all four spell the word «ملفّ» with its shadda, the
+# convention every other user-facing string here already keeps
+# (`_CORPUS_LABEL_AR` «ملفّات مساحة العمل», `_CLARIFY_FILE_AR` «أيّ ملفّ
+# تقصد؟») — the old tail's «ملفًا» was the one exception, and one sentence
+# that spells the same word two ways is exactly the sloppiness this row is
+# about.
+_CORPUS_MORE_AR_ONE = "وملفّ آخر"
+_CORPUS_MORE_AR_TWO = "وملفّان آخران"
+_CORPUS_MORE_AR_FEW = "ملفّات أخرى"
+_CORPUS_MORE_AR_MANY = "ملفًّا آخر"
+# The two boundaries of that agreement, named because they are GRAMMAR and
+# not tuning: the dual is exactly two, and the genitive plural runs to ten.
+_AR_DUAL = 2
+_AR_PLURAL_MAX = 10
 
 # The `path` field of the `rag_agent.answer` record (retrieval plan §3.11/§4
 # row 17, `P-29`) — which of `run`'s four exits this turn took. It is what
@@ -329,7 +362,11 @@ class RagAgent(BaseAgent):
         # `None` and `_messages` renders exactly as it did before this step.
         corpus_header: str | None = None
         if knowledge is not None:
-            corpus = await knowledge.list_document_names(self.ctx, limit=_MAX_CORPUS_NAMES)
+            # No `limit` named, for the reason no `k` is named on `answer`
+            # above and in the same shape (plan row 18, `P-40`): the display
+            # cap is the DEPLOYMENT's (`Settings.retrieval.max_corpus_names`),
+            # resolved inside the module, and this agent holds no number.
+            corpus = await knowledge.list_document_names(self.ctx)
             corpus_header = self._corpus_header(query, corpus.names, corpus.total)
         if retrieval_attempted and not chunks:
             # The trust gate + honest fallback (retrieval plan §3.3, the "most
@@ -557,9 +594,10 @@ class RagAgent(BaseAgent):
     @staticmethod
     def _corpus_header(query: str, names: Sequence[str], total: int) -> str:
         """The corpus-awareness header text (retrieval plan §3.6/§4 row 6,
-        ``P-36``, س-23 = ج) — this workspace's file names, up to
-        ``_MAX_CORPUS_NAMES`` of them, then a "و N ملفًا آخر"/"and N more
-        files" tail for the rest. Reused verbatim on both the fallback path
+        ``P-36``, س-23 = ج) — this workspace's file names, however many the
+        module handed over, then an "and N more files" tail for the rest (in
+        Arabic, whichever of ``_more_files_ar``'s four number-agreeing forms N
+        calls for). Reused verbatim on both the fallback path
         (prepended to the user-visible text) and the normal path (prepended
         to the system prompt) — see ``run``.
 
@@ -569,11 +607,11 @@ class RagAgent(BaseAgent):
         path — no second i18n mechanism.
 
         ``total`` may exceed ``len(names)`` for two different reasons —
-        ``ListDocumentNames`` capped the resolved names at the caller's
-        `limit`, or it skipped a document whose file could no longer be
-        read — and both collapse to the same honest tail here: "N more"
-        always means ``total - len(names)``, never a distinction the header
-        has no way to explain to a reader anyway.
+        ``ListDocumentNames`` capped the resolved names at the deployment's
+        configured display cap, or it skipped a document whose file could no
+        longer be read — and both collapse to the same honest tail here:
+        "N more" always means ``total - len(names)``, never a distinction the
+        header has no way to explain to a reader anyway.
         """
         is_arabic = bool(_ARABIC_CHAR_RE.search(query))
         if not names:
@@ -581,11 +619,44 @@ class RagAgent(BaseAgent):
         remaining = max(0, total - len(names))
         if is_arabic:
             listed = "، ".join(names)
-            tail = f"، و {remaining} ملفًا آخر." if remaining else "."
+            tail = f"، {_more_files_ar(remaining)}." if remaining else "."
             return f"{_CORPUS_LABEL_AR} {listed}{tail}"
         listed = ", ".join(names)
         tail = f", and {remaining} more files." if remaining else "."
         return f"{_CORPUS_LABEL_EN} {listed}{tail}"
+
+
+def _more_files_ar(remaining: int) -> str:
+    """The Arabic "and N more files" tail for ``remaining`` unlisted files, in
+    whichever of the four forms Arabic number agreement (تمييز العدد) calls
+    for — see the ``_CORPUS_MORE_AR_*`` strings for the rule itself.
+
+    A module function beside ``_corpus_header``, the one caller, for
+    ``_elapsed_ms``'s reason: this agent imports nothing beyond ``self.deps``
+    and the framework kernel it already names, and a shared i18n helper is a
+    wider change than the four strings it would carry. It stays next to the
+    header because the header's own language choice (``_ARABIC_CHAR_RE``) is
+    what decides whether it is called at all — there is one voice per query,
+    and no second i18n mechanism.
+
+    ``1`` and ``2`` name NO numeral: the noun's own form carries the count in
+    Arabic, and «و 1 ملفّ آخر» would be as odd to read as "and 1 more
+    files" is in English. From 11 up the singular accusative is the honest
+    form for every count this header can reach — the exact hundreds and
+    thousands take a genitive of their own in careful prose, a refinement
+    this deliberately does not attempt: it would need the number spelled out
+    in words, which a file COUNT is not.
+
+    ``remaining`` is ``total - len(names)`` and therefore never negative (see
+    ``_corpus_header``'s ``max(0, ...)``) and never zero here — a zero tail is
+    the caller's plain full stop, not a form of this sentence.
+    """
+    if remaining == 1:
+        return _CORPUS_MORE_AR_ONE
+    if remaining == _AR_DUAL:
+        return _CORPUS_MORE_AR_TWO
+    noun = _CORPUS_MORE_AR_FEW if remaining <= _AR_PLURAL_MAX else _CORPUS_MORE_AR_MANY
+    return f"و {remaining} {noun}"
 
 
 def _elapsed_ms(started: float) -> int:

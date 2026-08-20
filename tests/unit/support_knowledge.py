@@ -78,7 +78,7 @@ class RecordingRetrieval:
     # has. Empty by default: no router test drives this yet, but the class
     # docstring's "structural KnowledgeRetrieval" claim stays true.
     document_names: DocumentNames = field(default_factory=lambda: DocumentNames(names=(), total=0))
-    name_limit_calls: list[int] = field(default_factory=list)
+    name_limit_calls: list[int | None] = field(default_factory=list)
 
     async def retrieve(
         self,
@@ -117,7 +117,9 @@ class RecordingRetrieval:
             clarification_options=(),
         )
 
-    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int | None = None
+    ) -> DocumentNames:
         self.name_limit_calls.append(limit)
         return self.document_names
 

@@ -12,6 +12,7 @@ just mocked at the boundary.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 from collections.abc import AsyncIterator, Sequence
@@ -25,11 +26,13 @@ from app.framework.errors import ConflictError, NotFoundError, ValidationError
 from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
+from app.framework.settings.settings import RetrievalSettings
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.retrieval import RetrievalResult, RetrieveContext
 from app.modules.knowledge.application.routing import RouteQuestion
 from app.modules.knowledge.application.use_cases import (
+    _DEFAULT_MAX_CORPUS_NAMES,
     IndexFile,
     IndexFileService,
     IndexRegisteredDocument,
@@ -1455,6 +1458,94 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
     result = await svc.list_document_names(ctx, limit=2)
 
     assert result == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
+
+
+async def test_list_document_names_without_a_limit_uses_the_deployment_cap() -> None:
+    """Review §8, in `RetrieveContext`'s `k = None` shape (plan row 18,
+    `P-40`): a caller that names no `limit` gets the DEPLOYMENT's display cap
+    — `Settings.retrieval.max_corpus_names`, injected here as
+    `max_corpus_names` — which is what let the RAG agent drop its own
+    `_MAX_CORPUS_NAMES = 50`.
+
+    Proven by MOVING it, exactly as `default_k` is: an assertion that the
+    shipped value is 50 would pass just as well against a hard-coded literal.
+    `total` is the FULL corpus either way — the cap bounds the names shown,
+    never the count."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+
+    one = await ListDocumentNames(documents, files, max_corpus_names=1).execute(ctx)
+    two = await ListDocumentNames(documents, files, max_corpus_names=2).execute(ctx)
+
+    assert one == DocumentNames(names=("c.pdf",), total=3)
+    assert two == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
+
+
+async def test_an_explicit_limit_still_overrides_the_deployment_cap() -> None:
+    """Naming a `limit` stays allowed and still means what it did — a caller
+    asking for a result-set SIZE, not overriding a deployment knob (the
+    `POST /knowledge/search` `k` rule, س-24). So an explicit `limit` wins over
+    the configured cap in BOTH directions, narrower and wider."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+    names = ListDocumentNames(documents, files, max_corpus_names=2)
+
+    assert (await names.execute(ctx, limit=1)).names == ("c.pdf",)
+    assert (await names.execute(ctx, limit=50)).names == ("c.pdf", "b.pdf", "a.pdf")
+
+
+def test_the_corpus_name_cap_default_mirrors_its_settings_home() -> None:
+    """`_DEFAULT_MAX_CORPUS_NAMES` is declared to mirror
+    `RetrievalSettings.max_corpus_names` byte for byte — the `RetrievalTuning`
+    rule, so a direct construction (a test, a script) gets the SHIPPED number
+    rather than an accidental second configuration. A mirror nobody checks is
+    just a copy, so this is the check; 50 is §3.6's own "سقف عرض 50 اسمًا".
+
+    The optional `limit` is asserted here too, because the mirror is only
+    reachable through it: a `limit` that went back to being required would
+    strand the setting with no caller."""
+    assert _DEFAULT_MAX_CORPUS_NAMES == RetrievalSettings().max_corpus_names == 50
+    assert inspect.signature(ListDocumentNames.execute).parameters["limit"].default is None
+    assert (
+        inspect.signature(KnowledgeRetrievalService.list_document_names).parameters["limit"].default
+        is None
+    )
+
+
+async def test_the_service_hands_the_configured_cap_down_to_the_use_case() -> None:
+    """The Composition Root maps `Settings.retrieval.max_corpus_names` onto
+    this constructor argument (the `tuning` precedent), and the service passes
+    it to the `ListDocumentNames` it composes. Without that hop the setting
+    would be wired to nothing and the port's default would silently be the
+    module constant instead of the deployment's number."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    svc: KnowledgeRetrieval = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors, documents),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+        files,
+        _FakeSummaryStarter(),
+        max_corpus_names=1,
+    )
+
+    assert await svc.list_document_names(ctx) == DocumentNames(names=("c.pdf",), total=3)
 
 
 # --------------------------------------------------------------------------- #

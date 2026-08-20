@@ -20,7 +20,8 @@ from app.modules.knowledge.ports.retrieval import RetrievedChunk
 @dataclass(frozen=True, slots=True)
 class DocumentNames:
     """This workspace's document file names, newest first — up to the
-    caller's ``limit`` — plus ``total``, the workspace's FULL document count
+    caller's ``limit``, or the deployment's configured cap when the caller
+    names none — plus ``total``, the workspace's FULL document count
     (retrieval plan §3.6/§4 row 6, ``P-36``, decision س-23 = ج).
 
     ``total`` rides along so a caller can render an honest "and N more
@@ -28,9 +29,10 @@ class DocumentNames:
     has to walk the whole corpus to count it (``ListDocumentNames``), so
     handing the number back is free once that walk has happened.
 
-    ``names`` is capped at ``limit`` by the producer, never by a caller
-    slicing afterwards — the same "the module decides, the seam just reads"
-    shape ``RetrievedChunk`` already has.
+    ``names`` is capped by the PRODUCER, never by a caller slicing afterwards
+    — the same "the module decides, the seam just reads" shape
+    ``RetrievedChunk`` already has, and the reason a ``limit`` the caller
+    omits can be resolved inside the module at all.
     """
 
     names: tuple[str, ...]
@@ -171,16 +173,28 @@ class KnowledgeRetrieval(Protocol):
         """
         ...
 
-    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int | None = None
+    ) -> DocumentNames:
         """This workspace's corpus-awareness source (retrieval plan §3.6/§4
         row 6, ``P-36``): up to ``limit`` document file names plus the
         workspace's total document count.
 
         A SECOND method on the SAME seed rather than a second injected port
         — the RAG agent still calls exactly one thing (``self.deps.knowledge``,
-        fact ح-11) for both retrieval and corpus awareness. ``limit`` is the
-        caller's DISPLAY cap (the agent's ``_MAX_CORPUS_NAMES``), passed as an
-        argument the same way ``retrieve``'s ``k`` is (س-24 — no
-        ``Settings``/``os.getenv`` read inside this port or its implementation).
+        fact ح-11) for both retrieval and corpus awareness.
+
+        ``limit`` is OPTIONAL for ``k``'s exact reason, and it is the same
+        shape (plan row 18, ``P-40``, س-24 = أ): omitting it asks for however
+        many names the deployment is configured to show
+        (``Settings.retrieval.max_corpus_names``, resolved inside the module by
+        ``ListDocumentNames``). That is what let the RAG agent drop its own
+        ``_MAX_CORPUS_NAMES = 50`` — the display cap was the LAST tuning number
+        left in an agent, and an agent reads no configuration and imports
+        nothing (ح-11), so a default on this seam is the only place a
+        deployment's number could reach it. Naming a ``limit`` is still allowed
+        and still means what it did: a caller asking for a result-set SIZE, not
+        overriding a deployment knob. Either way no ``Settings``/``os.getenv``
+        is read inside this port or its implementation (س-24).
         """
         ...

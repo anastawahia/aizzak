@@ -426,7 +426,7 @@ class _FakeKnowledge:
         # Retrieval plan §3.6/§4 row 6 (`P-36`) -- the real `rag_agent` now
         # calls this on every request that has a knowledge seam at all, not
         # only the zero-chunk fallback below.
-        self.name_limit_calls: list[int] = []
+        self.name_limit_calls: list[int | None] = []
 
     async def retrieve(
         self,
@@ -458,7 +458,9 @@ class _FakeKnowledge:
         chunks = await self.retrieve(ctx, question, k, file_ids, space_id=space_id)
         return _FakeRoutedAnswer(chunks)
 
-    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> _FakeDocumentNames:
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int | None = None
+    ) -> _FakeDocumentNames:
         self.name_limit_calls.append(limit)
         return _FakeDocumentNames()
 

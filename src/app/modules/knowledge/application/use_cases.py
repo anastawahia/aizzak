@@ -1565,11 +1565,24 @@ class ListDocuments:
 
 
 # The internal pagination batch `ListDocumentNames` walks the corpus with —
-# NOT the caller's display cap (that is `limit`, the agent's
-# `_MAX_CORPUS_NAMES`). A plain module constant: this only bounds how many
-# rows one round trip to `DocumentRepository.list` fetches while counting
-# the FULL corpus, and has no bearing on what ends up on the wire.
+# NOT the caller's display cap (that is `limit`). A plain module constant:
+# this only bounds how many rows one round trip to `DocumentRepository.list`
+# fetches while counting the FULL corpus, and has no bearing on what ends up
+# on the wire.
 _LIST_PAGE_SIZE = 200
+
+# The display cap applied when a caller names NO `limit` (retrieval plan
+# §3.6/§4 row 6, `P-36`) — the number that used to be
+# `rag_agent.agent._MAX_CORPUS_NAMES = 50`, one layer out.
+#
+# This default MIRRORS its `Settings` home (`RetrievalSettings.
+# max_corpus_names`) byte for byte, the `RetrievalTuning` rule and for the
+# same reason: a direct construction (a test, a script) must get the SHIPPED
+# number rather than an accidental second configuration. The DEPLOYMENT's
+# number arrives as a constructor ARGUMENT from the Composition Root — this
+# layer reads neither `Settings` nor the environment (س-24 = أ), which is
+# exactly why the agent could not hold the number and be configurable.
+_DEFAULT_MAX_CORPUS_NAMES = 50
 
 
 class ListDocumentNames:
@@ -1578,6 +1591,16 @@ class ListDocumentNames:
     newest first, plus ``total`` — the workspace's FULL document count, so a
     caller can render an honest "N more files" tail without a second
     listing call of its own.
+
+    **``limit`` is OPTIONAL, and ``None`` means the DEPLOYMENT's cap** —
+    ``max_corpus_names``, injected here by the Composition Root from
+    ``Settings.retrieval.max_corpus_names``. It is ``RetrieveContext``'s ``k =
+    None`` in every respect (plan row 18, ``P-40``, س-24 = أ): the only caller
+    that renders this header is the RAG agent, an agent reads no configuration
+    and imports nothing (ح-11), so a default resolved on THIS side of the seam
+    is the one route by which a configured number can reach it. Naming a
+    ``limit`` stays allowed and still means exactly what it did — a caller
+    asking for a result-set SIZE, not overriding a deployment knob.
 
     **Every lifecycle status is walked**, the ``ListDocuments`` rule
     (``space_id=None`` — every space, for the same reason: a corpus-aware
@@ -1606,11 +1629,22 @@ class ListDocumentNames:
     counts it, so "N more" never silently drops a real document.
     """
 
-    def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
+    def __init__(
+        self,
+        documents: DocumentRepository,
+        files: ReadableFiles,
+        *,
+        max_corpus_names: int = _DEFAULT_MAX_CORPUS_NAMES,
+    ) -> None:
         self._documents = documents
         self._files = files
+        self._max_corpus_names = max_corpus_names
 
-    async def execute(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+    async def execute(self, ctx: ExecutionContext, *, limit: int | None = None) -> DocumentNames:
+        # `limit = None` means "however many names this deployment shows"
+        # (`_DEFAULT_MAX_CORPUS_NAMES` above) — resolved HERE, once, so the
+        # walk below reads one number whichever way the caller asked.
+        cap = self._max_corpus_names if limit is None else limit
         names: list[str] = []
         total = 0
         cursor: str | None = None
@@ -1620,7 +1654,7 @@ class ListDocumentNames:
             )
             for document in page.data:
                 total += 1
-                if len(names) < limit:
+                if len(names) < cap:
                     file = await self._files.get_readable(ctx, document.file_id)
                     if file is not None:
                         names.append(file.name)
@@ -1775,11 +1809,18 @@ class KnowledgeRetrievalService:
         documents: DocumentRepository,
         files: ReadableFiles,
         summaries: SummaryStarting,
+        *,
+        max_corpus_names: int = _DEFAULT_MAX_CORPUS_NAMES,
     ) -> None:
         self._retrieval = retrieval
         self._resolver = resolver
         self._documents = documents
-        self._names = ListDocumentNames(documents, files)
+        # Retrieval plan §3.6/§4 row 6 (`P-36`) — the corpus header's display
+        # cap, travelling the way `RetrieveContext`'s `tuning` does: mapped
+        # from `Settings` by the Composition Root and passed in as an
+        # argument. Keyword-only with a mirrored default, so this service
+        # composes in a test exactly as it did before the number moved.
+        self._names = ListDocumentNames(documents, files, max_corpus_names=max_corpus_names)
         # Retrieval plan §3.5/§4 row 14 (`P-04`) — the router's candidate
         # source is composed from the SAME two seams this service already
         # holds for `ListDocumentNames`, so wiring row 14 added no
@@ -1897,11 +1938,21 @@ class KnowledgeRetrievalService:
             space_id=space_id,
         )
 
-    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int | None = None
+    ) -> DocumentNames:
         """Implements ``KnowledgeRetrieval.list_document_names`` (retrieval
         plan §3.6/§4 row 6, ``P-36``) — a straight delegation to
         ``ListDocumentNames``, this port's second face over the same
         ``documents``/``files`` seams ``retrieve`` already holds.
+
+        ``limit = None`` means "however many names this deployment shows"
+        (``Settings.retrieval.max_corpus_names``), exactly as ``k = None``
+        means the deployment's ``k`` on ``retrieve`` above — and it is what
+        the RAG agent passes, which is how it stopped carrying a
+        ``_MAX_CORPUS_NAMES`` of its own. Resolved one layer down, by
+        ``ListDocumentNames``, so the number has one home and this delegation
+        stays a delegation.
         """
         return await self._names.execute(ctx, limit=limit)
 

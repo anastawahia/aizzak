@@ -1078,6 +1078,7 @@ def _build_knowledge(
     outbox: EventOutbox,
     files: KnowledgeReadableFiles,
     tuning: RetrievalTuning,
+    max_corpus_names: int,
     reranker: ExternalRerankProvider | None,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
@@ -1168,6 +1169,15 @@ def _build_knowledge(
             documents,
             files,
             request_summary,
+            # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus
+            # header's display cap, from `Settings.retrieval.max_corpus_names`
+            # and passed as an argument, exactly like `tuning` above. This
+            # line is the whole of what makes it a DEPLOYMENT number: it used
+            # to be `rag_agent.agent._MAX_CORPUS_NAMES = 50`, and the agents
+            # layer is the one layer `Settings` has no route into (ح-11), so
+            # the cap had to move to the module side before this wiring could
+            # exist at all.
+            max_corpus_names=max_corpus_names,
         ),
         index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
         reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
@@ -1664,6 +1674,7 @@ class CompositionRoot:
             outbox=outbox,
             files=files_query,
             tuning=_retrieval_tuning(settings.retrieval, settings.limits),
+            max_corpus_names=settings.retrieval.max_corpus_names,
             reranker=reranker,
         )
 

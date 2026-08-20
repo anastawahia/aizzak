@@ -157,18 +157,24 @@ class KnowledgeAccess(Protocol):
     ``list_document_names`` (retrieval plan §3.6/§4 row 6, ``P-36``, س-23 = ج)
     is a SECOND method on this SAME seed, not a second injected port — the RAG
     agent still reaches corpus awareness through the one ``self.deps.knowledge``
-    it already calls for retrieval (ح-11). ``limit`` is the caller's display
-    cap, passed as an argument exactly like ``retrieve``'s ``k`` (س-24 — no
-    ``Settings``/``os.getenv`` on either side of this seam).
+    it already calls for retrieval (ح-11).
 
     ``k`` is OPTIONAL since retrieval plan §4 row 18 (``P-40``): omitting it
     asks the module for however many chunks the DEPLOYMENT is configured to
     return (``Settings.retrieval.default_k``). This default is the whole
-    mechanism by which a Settings-owned ``k`` can reach an agent at all —
+    mechanism by which a Settings-owned number can reach an agent at all —
     an agent reads no configuration and imports nothing (ح-11), so before it
     existed the RAG agent had no choice but to hold its own ``_TOP_K = 5``.
-    ``limit`` above is unaffected: it is a fixed DISPLAY cap the plan itself
-    fixes (§3.6, "سقف عرض 50 اسمًا"), not a retrieval tuning knob.
+
+    ``limit`` is OPTIONAL for exactly that reason and in exactly that shape.
+    It used to be required, on the argument that a DISPLAY cap the plan itself
+    fixes (§3.6, "سقف عرض 50 اسمًا") is not a retrieval tuning knob — true
+    about the NUMBER, and beside the point about where it lived: the cap sat in
+    the agent as ``_MAX_CORPUS_NAMES = 50``, so shortening a header was a code
+    edit in the agents layer, the one layer ``Settings`` cannot reach. Omitting
+    it now asks the module for the deployment's configured cap
+    (``Settings.retrieval.max_corpus_names``), and no ``Settings``/``os.getenv``
+    is read on either side of this seam (س-24).
 
     ``answer`` (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) is the
     THIRD, and it is the one the RAG agent actually calls: it takes
@@ -202,7 +208,7 @@ class KnowledgeAccess(Protocol):
     ) -> RoutedAnswerView: ...
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int
+        self, ctx: ExecutionContext, *, limit: int | None = None
     ) -> DocumentNamesView: ...
 
 

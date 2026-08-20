@@ -142,9 +142,11 @@ class FakeKnowledge:
         # the existing `calls` assertions keep their shape.
         self.spaces: list[str | None] = []
         # Retrieval plan §3.6/§4 row 6 (`P-36`) — every `limit` the agent
-        # asked for, so a test can pin `_MAX_CORPUS_NAMES` without importing
-        # the agent module's private constant.
-        self.name_limit_calls: list[int] = []
+        # asked for, `None` included: since the display cap moved to the
+        # module side (review §8) `None` is what the agent passes, and
+        # recording it rather than dropping it is what makes "the agent names
+        # no cap" a visible assertion instead of an absence.
+        self.name_limit_calls: list[int | None] = []
 
     async def retrieve(
         self,
@@ -183,7 +185,9 @@ class FakeKnowledge:
             return FakeRoutedAnswer("summarize_doc", (), None, self._clarification_options)
         return FakeRoutedAnswer("content", self._chunks, None)
 
-    async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> FakeDocumentNames:
+    async def list_document_names(
+        self, ctx: ExecutionContext, *, limit: int | None = None
+    ) -> FakeDocumentNames:
         self.name_limit_calls.append(limit)
         return self._document_names
 
@@ -524,6 +528,74 @@ async def test_corpus_header_caps_the_listed_names_with_an_overflow_tail() -> No
     assert "Workspace files: a.pdf, b.pdf, and 50 more files." in system_message.content
 
 
+@pytest.mark.parametrize(
+    ("remaining", "expected_tail"),
+    [
+        (1, "، وملفّ آخر."),
+        (2, "، وملفّان آخران."),
+        (3, "، و 3 ملفّات أخرى."),
+        (10, "، و 10 ملفّات أخرى."),
+        (11, "، و 11 ملفًّا آخر."),
+        (50, "، و 50 ملفًّا آخر."),
+    ],
+)
+async def test_the_arabic_overflow_tail_agrees_with_the_number_it_names(
+    remaining: int, expected_tail: str
+) -> None:
+    """Arabic number agreement (تمييز العدد) has FOUR forms, and this tail used
+    to render one of them for every count — «و 5 ملفًا آخر», which is correct
+    from 11 to 99 and nowhere else. All four are pinned here, plus BOTH sides
+    of the 10/11 boundary, because that boundary is the only one the arithmetic
+    can get wrong silently.
+
+    Asserted on the header the model/user actually receives (the whole tail,
+    its leading «، » and its full stop included) rather than on the private
+    helper, so a caller that stopped calling it would fail this too. The word
+    «ملفّ» carries its shadda in all four, the convention `_CORPUS_LABEL_AR`
+    in the SAME sentence already keeps."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[FakeChunk("c1", "نصّ")],
+        document_names=["a.pdf"],
+        document_total=1 + remaining,
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert f"ملفّات مساحة العمل: a.pdf{expected_tail}" in system_message.content
+
+
+async def test_the_agreeing_tail_reaches_the_user_on_the_fallback_path() -> None:
+    """Where review §9 says the wording matters most: on the fallback the LLM
+    is never called, so the header is prepended straight onto the sentence the
+    user READS — and that sentence is already an apology. Same builder as the
+    system-prompt path above, asserted on `final.text` so the agreement is
+    proven where a human actually sees it."""
+    deps, _knowledge, llm = make_deps(chunks=[], document_names=["a.pdf"], document_total=4)
+    events = await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
+
+    assert llm.stream_calls == []
+    final = events[-1]
+    assert "لا أملك معلومات كافية" in final.data["text"]
+    assert "ملفّات مساحة العمل: a.pdf، و 3 ملفّات أخرى." in final.data["text"]
+    assert events[0].data["delta"] == final.data["text"]
+
+
+async def test_the_arabic_header_ends_in_a_full_stop_when_nothing_remains() -> None:
+    """The zero case is NOT a fifth form: `total == len(names)` means there is
+    nothing more to name, so the sentence closes on the last file name. Pinned
+    beside the four so a future agreement rule cannot start rendering «و 0
+    ملفّات أخرى» for an entirely listed corpus."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[FakeChunk("c1", "نصّ")],
+        document_names=["a.pdf", "b.pdf"],
+        document_total=2,
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert "ملفّات مساحة العمل: a.pdf، b.pdf." in system_message.content
+
+
 async def test_corpus_header_reports_no_files_for_an_empty_workspace() -> None:
     deps, _knowledge, llm = make_deps(chunks=[FakeChunk("c1", "text")], document_names=[])
     await drive_run(RagAgent(make_ctx(), deps), "q")
@@ -544,17 +616,26 @@ async def test_corpus_header_follows_the_query_language_like_the_fallback_does()
     assert llm.stream_calls == []
 
 
-async def test_the_agent_asks_the_module_for_the_plan_s_fifty_name_display_cap() -> None:
-    """The 50-name display cap (§3.6) lives as a plain module constant in the
-    agent (`_MAX_CORPUS_NAMES`) and is passed as an ARGUMENT to the seam
-    (س-24 — no `Settings`/`os.getenv` inside the module for this). It is the
-    LAST number in this agent: plan row 18 (`P-40`) swept `_TOP_K` into
-    `Settings`, and this one stayed because §3.6 fixes it itself and it
-    shapes the header's LOOK, not retrieval's quality."""
+async def test_the_agent_names_no_display_cap_and_holds_no_corpus_number() -> None:
+    """The 50-name display cap (§3.6) used to be `_MAX_CORPUS_NAMES = 50`, a
+    plain module constant in this agent, passed as an argument to the seam.
+    Review §8: whatever it tunes, it was a tuning number held by an AGENT —
+    the one thing ح-11 says this agent does not do, and the one place
+    `Settings` cannot reach, since an agent reads no configuration and imports
+    nothing. So it moved to the module side in `_TOP_K`'s exact shape (plan
+    row 18, `P-40`): the agent names no `limit` at all and
+    `ListDocumentNames` resolves `Settings.retrieval.max_corpus_names`.
+
+    Asserted BOTH ways round, like the `_TOP_K` test below. The call site
+    proves the behaviour; the absent module attribute proves the constant was
+    actually REMOVED rather than merely left unused — the failure a call-site
+    assertion cannot see. That the omitted `limit` yields 50 is the module's
+    own fact and is pinned there, over the real `ListDocumentNames`."""
     deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
-    assert knowledge.name_limit_calls == [50]
+    assert knowledge.name_limit_calls == [None]
+    assert not hasattr(agent_module, "_MAX_CORPUS_NAMES")
 
 
 async def test_without_knowledge_still_answers_with_no_citations() -> None:
@@ -657,9 +738,12 @@ async def test_the_agent_names_no_k_and_holds_no_retrieval_number() -> None:
 
     assert [call[1] for call in knowledge.calls] == [None]
     assert not hasattr(agent_module, "_TOP_K")
-    # ...and the ONE number that legitimately stays is still here, so this is
-    # a proof about `_TOP_K` rather than about the module being empty.
-    assert agent_module._MAX_CORPUS_NAMES == 50
+    # ...and this IS the module under test rather than an empty stand-in, so
+    # `not hasattr` is a proof about `_TOP_K` and not about the import. There
+    # is nothing else to name here any more: `_MAX_CORPUS_NAMES`, the one
+    # number that used to legitimately stay, followed `_TOP_K` out (review
+    # §8), and this agent now holds no tuning number at all.
+    assert agent_module.RagAgent is RagAgent
 
 
 async def test_a_routed_summary_yields_a_receipt_and_never_calls_the_llm() -> None:

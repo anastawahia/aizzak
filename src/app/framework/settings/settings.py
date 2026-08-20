@@ -480,6 +480,21 @@ class RetrievalSettings(BaseModel):
     # (which governs SCORES) does not reach it, and, like them, it is
     # unmeasured: reviewing it needs the evaluation set `P-38` waits for.
     rerank_candidates: int = 20
+    # How many file names the corpus-awareness header shows before it counts
+    # the rest as "N more files" (plan §3.6/§4 row 6, `P-36`, س-23 = ج) — the
+    # `limit` `KnowledgeRetrieval.list_document_names` resolves for a caller
+    # that names none, exactly as `default_k` above is the `k` a caller that
+    # names none gets.
+    #
+    # ⚠️ **A DISPLAY cap, not a quality knob**, and it is here for `default_k`'s
+    # reason rather than س-24's: it used to be `rag_agent.agent.
+    # _MAX_CORPUS_NAMES = 50`, a number in the agent layer, and an agent reads
+    # no configuration and imports nothing (ح-11) — so a default resolved
+    # inside the module is the only route by which a deployment's number can
+    # reach that header at all. §3.6 fixes the value at 50 and names the price
+    # right there ("سقف عرض 50 اسمًا", ~500 tokens on every request), so what
+    # moves it is a shorter prompt budget, never a retrieval measurement.
+    max_corpus_names: int = 50
 
 
 class Limits(BaseModel):
