@@ -139,7 +139,7 @@ class RetrieveContext:
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
         relevant = filter_relevant(scored)
-        return [_to_retrieved_chunk(chunk) for chunk in relevant[:k]]
+        return [_to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in relevant[:k]]
 
 
 def _to_scored_chunk(chunk: FusedChunk, payload: Json) -> ScoredChunk:
@@ -152,10 +152,24 @@ def _to_scored_chunk(chunk: FusedChunk, payload: Json) -> ScoredChunk:
     )
 
 
-def _to_retrieved_chunk(chunk: ScoredChunk) -> RetrievedChunk:
+def _to_retrieved_chunk(chunk: ScoredChunk, payload: Json) -> RetrievedChunk:
+    """Map a relevance-filtered ``ScoredChunk`` onto the port DTO, reading the
+    citation fields (retrieval plan §3.1/§3.9, س-19, ``P-18``) straight out
+    of the SAME Qdrant point payload ``_to_scored_chunk`` already consulted —
+    ``ScoredChunk`` itself stays the four-field shape the relevance algorithm
+    needs and gains no citation fields of its own (``domain/relevance.py``
+    stays pure and unaware of this port's DTO). A point that predates
+    ``indexing._CITATION_KEYS`` (or whose parser never emitted one of these)
+    is simply missing the key, and ``.get`` degrades that to ``None`` rather
+    than raising — the same "unknown, not broken" contract as every OTHER
+    citation key here.
+    """
     return RetrievedChunk(
         document_id=chunk.document_id,
         chunk_id=chunk.chunk_id,
         text=chunk.text,
         score=chunk.score,
+        file_name=payload.get("file_name"),
+        page_number=payload.get("page_number"),
+        section=payload.get("section"),
     )

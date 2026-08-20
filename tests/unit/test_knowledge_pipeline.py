@@ -1988,6 +1988,81 @@ async def test_index_then_retrieve_round_trip() -> None:
     assert results[0].chunk_id == chunk_point_id("doc-1", 0)
 
 
+async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
+    """Retrieval plan §3.1/§3.9 (س-19, ``P-18``), §6 risk 1: the three
+    citation fields must carry REAL values through the WHOLE pipeline --
+    parser metadata -> ``indexing._payload``'s ``_CITATION_KEYS`` -> the
+    Qdrant point payload -> ``RetrieveContext``'s ``_to_retrieved_chunk`` --
+    not merely be present-but-``None``. That silent-``None`` shape is
+    EXACTLY the failure §6 risk 1 warns about: shipping the widened contract
+    before the indexing side actually writes these payload keys (closed by
+    the indexing plan's own step 11, which this round trip proves end to
+    end rather than trusting by inspection)."""
+    embeddings = FakeEmbeddings(dim=6)
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(
+                "quarterly revenue figures for the northern region",
+                order=0,
+                metadata={
+                    "file_name": "quarterly-report.pdf",
+                    "page_number": 4,
+                    "section": "Regional Breakdown",
+                },
+            )
+        ]
+    )
+    await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    results = await RetrieveContext(embeddings, vectors).execute(
+        ctx,
+        space_id=None,
+        query="quarterly revenue figures for the northern region",
+        model="m",
+        api_key="k",
+        k=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].file_name == "quarterly-report.pdf"
+    assert results[0].page_number == 4
+    assert results[0].section == "Regional Breakdown"
+
+
+async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_to_none() -> None:
+    """A chunk whose parser never emitted a citation key (or a point indexed
+    before ``P-18``) must not crash retrieval -- each field degrades to
+    ``None`` rather than a ``KeyError``, the same "unknown, not broken"
+    contract as every other ``_CITATION_KEYS`` entry (mirrors
+    ``test_index_document_payload_omits_file_name_when_absent_from_metadata``
+    one layer up, on the read side)."""
+    embeddings = FakeEmbeddings(dim=6)
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    parsed = _parsed_document([_parsed_chunk("cafeteria menu changes for next month", order=0)])
+    await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    results = await RetrieveContext(embeddings, vectors).execute(
+        ctx,
+        space_id=None,
+        query="cafeteria menu changes for next month",
+        model="m",
+        api_key="k",
+        k=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].file_name is None
+    assert results[0].page_number is None
+    assert results[0].section is None
+
+
 async def test_retrieve_context_both_legs_called_with_workspace_filter() -> None:
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()

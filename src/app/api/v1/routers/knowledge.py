@@ -269,6 +269,9 @@ async def search_knowledge(
             chunk_id=chunk.chunk_id,
             text=chunk.text,
             score=chunk.score,
+            file_name=chunk.file_name,
+            page_number=chunk.page_number,
+            section=chunk.section,
         )
         for chunk in chunks
     ]

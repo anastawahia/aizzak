@@ -186,7 +186,15 @@ def test_search_is_registered_and_answers_503_while_unwired() -> None:
 def test_search_returns_chunks_in_the_envelope_when_retrieval_is_present() -> None:
     retrieval = RecordingRetrieval(
         chunks=[
-            RetrievedChunk(document_id="d1", chunk_id="c1", text="first", score=0.9),
+            RetrievedChunk(
+                document_id="d1",
+                chunk_id="c1",
+                text="first",
+                score=0.9,
+                file_name="refund-policy.pdf",
+                page_number=3,
+                section="Executive Summary",
+            ),
             RetrievedChunk(document_id="d1", chunk_id="c2", text="second", score=0.4),
         ]
     )
@@ -198,8 +206,30 @@ def test_search_returns_chunks_in_the_envelope_when_retrieval_is_present() -> No
     assert response.status_code == 200
     assert response.json() == {
         "data": [
-            {"document_id": "d1", "chunk_id": "c1", "text": "first", "score": 0.9},
-            {"document_id": "d1", "chunk_id": "c2", "text": "second", "score": 0.4},
+            {
+                "document_id": "d1",
+                "chunk_id": "c1",
+                "text": "first",
+                "score": 0.9,
+                # retrieval plan §3.1/§3.9 (س-19, P-18) — the three citation
+                # fields carry the REAL values the port handed the router,
+                # not merely present-but-null (§6 risk 1's test rule).
+                "file_name": "refund-policy.pdf",
+                "page_number": 3,
+                "section": "Executive Summary",
+            },
+            {
+                "document_id": "d1",
+                "chunk_id": "c2",
+                "text": "second",
+                "score": 0.4,
+                # No citation metadata on this chunk (e.g. a pre-P-18 point,
+                # or a parser that never emitted one) degrades honestly to
+                # `null` on the wire rather than being omitted.
+                "file_name": None,
+                "page_number": None,
+                "section": None,
+            },
         ],
         "meta": {"next_cursor": None, "limit": 2},
     }

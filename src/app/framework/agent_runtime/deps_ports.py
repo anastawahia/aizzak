@@ -50,8 +50,9 @@ class ResolvedLLM:
 
 class RetrievedChunkView(Protocol):
     """The read shape an agent needs from one retrieved chunk. The knowledge
-    module's ``RetrievedChunk`` (``document_id``/``chunk_id``/``text``/``score``)
-    satisfies this structurally — no framework→module import.
+    module's ``RetrievedChunk`` (``document_id``/``chunk_id``/``text``/``score``/
+    ``file_name``/``page_number``/``section``) satisfies this structurally —
+    no framework→module import.
 
     **Read-only ``@property`` members, not bare annotations** (fixed at the
     4.7-b-2 wiring site, which is exactly where 4.6-a said this binding would
@@ -61,6 +62,11 @@ class RetrievedChunkView(Protocol):
     rejected the binding outright. Properties state the truth (an agent only
     ever reads these) and accept frozen carriers. ``ResolvedKeyView`` in
     ``framework/providers/resolver.py`` already had it right; these did not.
+
+    ``file_name``/``page_number``/``section`` (retrieval plan §3.1, س-19,
+    ``P-18``) are ``| None`` for the same reason they are on
+    ``RetrievedChunk``: an older point or a parser that never emitted one of
+    these carries no such payload key.
     """
 
     @property
@@ -71,6 +77,12 @@ class RetrievedChunkView(Protocol):
     def text(self) -> str: ...
     @property
     def score(self) -> float: ...
+    @property
+    def file_name(self) -> str | None: ...
+    @property
+    def page_number(self) -> int | None: ...
+    @property
+    def section(self) -> str | None: ...
 
 
 class KnowledgeAccess(Protocol):

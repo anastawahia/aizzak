@@ -13,7 +13,7 @@
 | **النطاق** | المرحلتان **٤ · ٥** (النيّة · الاسترجاع · الفلترة والإجابة) **+ `P-04`** (حلّ اسم الملف — خوارزمية وقت-استعلام) |
 | **خارج النطاق** | المراحل **١ · ٢ · ٣ · ٦** — كلّها في [`rag-indexing-plan.md`](rag-indexing-plan.md) |
 | **البنود** | **٢١ بندًا**: `P-04` · `P-21`..`P-30` · `P-31`..`P-40` |
-| **الحالة** | ⬜ **0/21** — لم تبدأ |
+| **الحالة** | ⬜ **1/21** — قيد التنفيذ |
 
 ---
 
@@ -226,7 +226,7 @@ knowledge/application/routing.py ────┤ classify_intent(question)   ←
 | # | الخطوة | البنود | يمسّ | الحالة |
 |---|---|---|---|---|
 | **أ — العقد والإجابة** (أكبر مكسب مستخدم) ||||
-| ١ | ⚠️ **محجوزة على الفهرسة ١١**: توسيع الطبقات الثلاث بـ`file_name` · `page_number` · `section` + `openapi.yaml` + اختبار مطابقة العقد | `P-18` | `ports/retrieval.py` · `agent_runtime/deps_ports.py` · `api/v1` · `docs/design/03` | ⬜ |
+| ١ | ⚠️ **محجوزة على الفهرسة ١١**: توسيع الطبقات الثلاث بـ`file_name` · `page_number` · `section` + `openapi.yaml` + اختبار مطابقة العقد | `P-18` | `ports/retrieval.py` · `agent_runtime/deps_ports.py` · `api/v1` · `docs/design/03` | ✅ |
 | ٢ | وحدة تنسيق واحدة: تسمية المصدر `[file p.N \| section: S]` فوق نصّ القطعة — تُضاف **عند العرض** | `P-31` | `agents/rag_agent` · وحدة تنسيق مشتركة | ⬜ |
 | ٣ | استشهادات مفهومة `{document_id, file_name, page, chunk_id}` بدل UUID عارٍ | `P-32` | `agents/rag_agent/agent.py` · عقد الاستجابة | ⬜ |
 | ٤ | إعادة إشارتَي الثقة (أفضل كثيفة · أفضل سَبارس) — ⚠️ الاتّجاه منقلب عن alpha | `P-28` | `application/retrieval.py` | ⬜ |

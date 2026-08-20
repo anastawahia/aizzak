@@ -148,7 +148,13 @@ class FileOut(BaseModel):
 
 # Knowledge
 class KnowledgeSearchIn(BaseModel): query: str; k: int = Field(default=5, le=50)
-class RetrievedChunkOut(BaseModel): document_id: str; chunk_id: str; text: str; score: float
+# `file_name`/`page_number`/`section` (retrieval plan §3.1/§3.9, س-19, `P-18`) — الحقول التي
+# يستشهد بها العميل بلا رحلة ثانية. حقول صريحة لا `metadata: Mapping` (mypy --strict لا يخمّن
+# مفاتيح). الثلاثة `| None` وتُنشَر دائماً على السلك (لا تُحذف): نقطة سبقت هذا الحقل، أو محلِّلٌ
+# لم يُصدر إحداها، تنحدر إلى `null` — نفس عُرف `FileOut.download_url`.
+class RetrievedChunkOut(BaseModel):
+    document_id: str; chunk_id: str; text: str; score: float
+    file_name: str | None = None; page_number: int | None = None; section: str | None = None
 class DocumentOut(BaseModel):
     id: str; file_id: str; status: str; chunk_count: int; created_at: datetime
 # الفهرسة **يدويّة**: إتمام الرفع لم يعد يسجّل مستنداً ولا يبدأ خطَّ الأنابيب. الملف يبقى

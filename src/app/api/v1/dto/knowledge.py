@@ -39,12 +39,23 @@ class KnowledgeSearchIn(BaseModel):
 
 
 class RetrievedChunkOut(BaseModel):
-    """One retrieved chunk — 1:1 with the module's ``RetrievedChunk``."""
+    """One retrieved chunk — 1:1 with the module's ``RetrievedChunk``.
+
+    ``file_name``/``page_number``/``section`` (retrieval plan §3.1/§3.9,
+    س-19, ``P-18``) are the citation fields a client needs to render
+    ``[file p.N | section: S]`` without a second round trip. All three are
+    ``| None`` and ALWAYS present on the wire (never omitted) — a point
+    indexed before this field existed, or whose parser never emitted one of
+    these, degrades to ``null``, the same convention as ``FileOut.download_url``.
+    """
 
     document_id: str
     chunk_id: str
     text: str
     score: float
+    file_name: str | None = None
+    page_number: int | None = None
+    section: str | None = None
 
 
 class DocumentOut(BaseModel):

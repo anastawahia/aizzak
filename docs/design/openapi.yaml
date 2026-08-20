@@ -1180,7 +1180,15 @@ components:
       properties: { query: {type: string}, k: {type: integer, maximum: 50, default: 5} }
     RetrievedChunkOut:
       type: object
-      properties: { document_id: {type: string, format: uuid}, chunk_id: {type: string, format: uuid}, text: {type: string}, score: {type: number} }
+      description: "One retrieved chunk. `file_name`/`page_number`/`section` (retrieval plan §3.1/§3.9, P-18) are the citation fields a client needs to render a source label without a second round trip — always present on the wire, `null` when the indexed point predates them or its parser never emitted one."
+      properties:
+        document_id: {type: string, format: uuid}
+        chunk_id: {type: string, format: uuid}
+        text: {type: string}
+        score: {type: number}
+        file_name: {type: string, nullable: true}
+        page_number: {type: integer, nullable: true}
+        section: {type: string, nullable: true}
     DocumentOut:
       type: object
       properties:
