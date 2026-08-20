@@ -27,11 +27,23 @@ only of the type — the ``files`` repository's own argument.
 ``knowledge.parent_chunks`` table: same idempotent-upsert contract, same
 ``seq``-ordered read, over the row a matched ``Chunk`` widens to via
 ``Chunk.parent_id`` rather than the window that was actually indexed.
+
+``parent_texts_for_chunk_ids`` (rag-retrieval-plan.md §3.7, ``P-34``) is the
+retrieval half's OWN parent-widening lookup, and a THIRD method over the same
+table for a reason neither method above can stand in for: it is keyed by the
+Qdrant POINT id (``RetrievedChunk.chunk_id`` / ``chunks.point_id``), never a
+``doc_id``, because ``RetrieveContext`` holds a batch of candidates spanning
+possibly several documents and has no ``chunks.id`` to join with in the first
+place (``domain/collections.py::chunk_point_id`` is deliberately distinct
+from that row-identity column). ``ports/retrieval.py::ParentChunkRepository``
+is the narrower seam ``RetrieveContext`` actually depends on -- this method
+is what makes ``DocumentRepository`` (and therefore ``SqlDocumentRepository``)
+satisfy it structurally, with no adapter of its own.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -46,7 +58,12 @@ from app.modules.knowledge.domain.entities import (
     Summary,
     SummaryJob,
 )
-from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage, VectorRef
+from app.modules.knowledge.domain.value_objects import (
+    ParentChunkText,
+    SummaryKind,
+    SummaryLanguage,
+    VectorRef,
+)
 
 
 class DocumentRepository(Protocol):
@@ -268,6 +285,34 @@ class DocumentRepository(Protocol):
         back up itself. A document with no parent chunks yields an empty
         sequence — a normal answer for a document with no table (P-13 is the
         only writer of this table today), not an error.
+        """
+        ...
+
+    async def parent_texts_for_chunk_ids(
+        self, ctx: ExecutionContext, chunk_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, ParentChunkText]:
+        """The parent-widening lookup itself (retrieval plan §3.7, ``P-34``):
+        for every id in ``chunk_ids`` that names a chunk WITH a parent under
+        this tenant, the resolved ``ParentChunkText``.
+
+        ``chunk_ids`` are Qdrant POINT ids -- ``RetrievedChunk.chunk_id`` /
+        ``chunks.point_id`` -- and NEVER ``chunks.id`` (this port's own
+        module docstring, and ``domain/collections.py::chunk_point_id``): the
+        join this method performs internally is
+        ``chunks.point_id -> chunks.parent_id -> parent_chunks``, one round
+        trip for the whole batch rather than one per candidate.
+
+        A chunk id with no parent (``chunks.parent_id IS NULL`` -- ordinary
+        prose, or a chunk indexed before P-14), or one that simply is not
+        found (predates this feature entirely, or names a chunk this tenant
+        cannot see), is silently ABSENT from the result -- never an error,
+        never a placeholder entry keyed to ``None``. The caller's
+        ``.get(chunk_id)`` is the one honest way to ask "does this chunk have
+        a parent to widen to", and its own fallback (this chunk's OWN text)
+        is what makes that degrade honestly rather than drop the chunk.
+
+        An empty ``chunk_ids`` returns an empty mapping without a query --
+        the ``add_parent_chunks`` precedent, applied to a read.
         """
         ...
 

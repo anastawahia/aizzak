@@ -13,17 +13,39 @@ CONTENT-only) and no Postgres hydrate — each Qdrant point's payload already
 carries its own ``text`` (written by ``IndexDocument``), so fused ranking is
 the only extra work needed.
 
-Pipeline shape (retrieval plan §3.7, plan step 8, ``P-26``): fusion → **keep
-3x k** → ``filter_relevant`` → (plan step 9's future parent-expansion,
-reserved on the indexing plan) → (plan step 10's future context budget) →
+Pipeline shape (retrieval plan §3.7, plan step 8's ``P-26`` + plan step 9's
+``P-34``): fusion → **keep 3x k** → ``filter_relevant`` → **replace with
+parent text, dedup by parent** → (plan step 10's future context budget) →
 final ``k``. ``execute`` widens back OUT to ``3 * k`` candidates right after
 RRF fusion (``_FUSION_RETENTION``, decoupled from ``_SEARCH_OVERFETCH`` below
 — see that constant's own comment) — narrowing straight to ``k`` here, before
-``filter_relevant`` even runs, would starve plan step 9's parent-expansion of
-the diversity it needs to fill ``k`` with distinct sections instead of
+``filter_relevant`` even runs, would starve the parent-expansion step below
+of the diversity it needs to fill ``k`` with distinct sections instead of
 collapsing into two parents (§3.7's own stated failure mode). The PUBLIC
 result still honours the caller's ``k`` exactly: only the very last line of
 ``execute`` truncates to it.
+
+**Parent expansion (plan step 9, ``P-34``) — critical, not an optimisation
+(§3.7 verbatim): with the sentence-window approach excluded, this is the
+ONLY remaining mechanism that widens a matched chunk into its surrounding
+context.** Every relevance-filtered candidate's own leaf text is replaced
+with its ``knowledge.parent_chunks`` row's text (``_widen_to_parents``,
+resolved through ``ParentChunkRepository.parent_texts_for_chunk_ids`` — a
+repository lookup, ``chunk_id -> chunks.parent_id -> parent_chunks``,
+rag-indexing-plan.md §3.2 constraint 1 — never a Qdrant payload read, because
+the payload carries neither a parent's text nor even its id). Two candidates
+that widen to the SAME parent row collapse into ONE surviving entry (dedup
+BY PARENT, keyed on ``ParentChunkText.id``, not on text equality) — the
+mechanism that lets ``_FUSION_RETENTION``'s 3x pool actually pay off: the
+freed slot is filled by the next distinct candidate rather than repeating a
+section already shown. A candidate with no parent (``parent_id`` null, or
+the parent row missing/unreadable) degrades HONESTLY to its own leaf text —
+never dropped, never an error. The substituted parent text is capped at
+``_MAX_PARENT_CHUNK_CHARS`` so one oversized parent cannot swallow the whole
+context by itself; a candidate's OWN leaf text is never capped (it is
+already window-sized). This runs over the FULL ``retain_k``-deep candidate
+list, before the final truncation below — the same reason ``retain_k`` is
+wider than ``k`` in the first place.
 
 Every vector search filter carries ``workspace_id`` on BOTH legs (DD-04) —
 the single per-workspace collection is shared by every document, so tenant
@@ -61,8 +83,8 @@ real, meaningful score, not "no data".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
@@ -73,7 +95,8 @@ from app.modules.knowledge.domain.collections import knowledge_collection
 from app.modules.knowledge.domain.fusion import FusedChunk, reciprocal_rank_fusion
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import build_sparse_terms
-from app.modules.knowledge.ports.retrieval import RetrievedChunk
+from app.modules.knowledge.domain.value_objects import ParentChunkText
+from app.modules.knowledge.ports.retrieval import ParentChunkRepository, RetrievedChunk
 
 _MAX_K = 50  # mirrors Settings.Limits.max_rag_k (07-nfr-slo §4)
 # fusion.py does not normalize weights internally (3.k2) -- these already sum
@@ -89,13 +112,29 @@ _MAX_SEARCH = 100
 # Diversity retention factor, not a quality threshold (retrieval plan
 # §3.7/§4 step 8, `P-26`; §3.8 keeps every quality threshold at `0.0` until a
 # calibration set exists). Keeping 3x the caller's `k` past RRF fusion gives
-# the future parent-expansion step (plan step 9, `P-34`) enough distinct
-# candidates to fill the final `k` with distinct sections instead of
-# collapsing into two parents (§3.7's stated failure mode). Deliberately its
-# OWN constant, decoupled from `_SEARCH_OVERFETCH` even though both default
-# to 3 today -- plan step 18 (`P-30`) sweeps every module-level knob in this
-# file, including this one, into `Settings` together.
+# the parent-expansion step below (plan step 9, `P-34`, `_widen_to_parents`)
+# enough distinct candidates to fill the final `k` with distinct sections
+# instead of collapsing into two parents (§3.7's stated failure mode).
+# Deliberately its OWN constant, decoupled from `_SEARCH_OVERFETCH` even
+# though both default to 3 today -- plan step 18 (`P-30`) sweeps every
+# module-level knob in this file, including this one, into `Settings`
+# together.
 _FUSION_RETENTION = 3
+# Length cap on a SUBSTITUTED parent chunk's text (plan step 9, `P-34`) --
+# NOT a quality threshold, so decision س-22 ("thresholds stay 0.0 until a
+# calibration set exists") does not apply to it (retrieval plan §4 row 9's
+# own instruction). A parent (one parsed `SourceSegment`) can hold several
+# word-windows' worth of text -- unbounded, in principle -- so without a cap
+# a single oversized section could dominate the whole context handed to the
+# final `k`. 4000 was picked to comfortably exceed one leaf window (~512
+# words is roughly 3000 characters, `domain/chunking.py::MIN_NODE_CHARS`'s
+# neighbourhood) so widening is essentially never a no-op shrink, while
+# staying well under the *whole-context* budget plan step 10 (`P-35`) will
+# introduce (its own starting suggestion is 12000 characters across EVERY
+# surviving chunk combined) so one parent cannot pre-empt that stage's job.
+# A candidate's own (un-widened) leaf text is never capped here -- it is
+# already window-sized by construction.
+_MAX_PARENT_CHUNK_CHARS = 4000
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,12 +158,26 @@ class RetrievalResult:
 
 class RetrieveContext:
     """Embed + hash the query, search both legs of the per-workspace hybrid
-    Qdrant collection, fuse with RRF, and relevance-filter down to ``k``
-    chunks (06 §7 ``RetrieveContext(workspace, query, k)``)."""
+    Qdrant collection, fuse with RRF, relevance-filter, and widen each
+    survivor to its parent chunk's text (06 §7 ``RetrieveContext(workspace,
+    query, k)``; plan step 9, ``P-34``).
 
-    def __init__(self, embeddings: EmbeddingProvider, vectors: HybridVectorStore) -> None:
+    ``documents`` is typed against the narrow ``ParentChunkRepository`` seam
+    (``ports/retrieval.py``), not the module's full ``DocumentRepository`` --
+    see that Protocol's own docstring for why. The Composition Root passes
+    the SAME ``SqlDocumentRepository`` it already builds for the module's
+    other faces (structural typing needs no adapter of its own here).
+    """
+
+    def __init__(
+        self,
+        embeddings: EmbeddingProvider,
+        vectors: HybridVectorStore,
+        documents: ParentChunkRepository,
+    ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
+        self._documents = documents
 
     async def execute(
         self,
@@ -215,10 +268,10 @@ class RetrieveContext:
 
         # `top_k=retain_k`, NOT `search_k` (plan step 8, `P-26`) -- the fused,
         # ranked list handed to `filter_relevant` below is `3 * k` deep, wider
-        # than the vector-store fetch's own overfetch factor, so a later
-        # narrowing stage (plan step 9's parent expansion) has enough
-        # distinct candidates to work with. Only the FINAL `chunks` line
-        # below narrows back down to the caller's `k`.
+        # than the vector-store fetch's own overfetch factor, so the parent-
+        # expansion widening below (plan step 9, `P-34`) has enough distinct
+        # candidates to work with. Only the FINAL `chunks` line below narrows
+        # back down to the caller's `k`.
         fused = reciprocal_rank_fusion(
             [hit.id for hit in dense_hits],
             [hit.id for hit in sparse_hits],
@@ -233,15 +286,66 @@ class RetrieveContext:
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
         relevant = filter_relevant(scored)
+
+        # Parent expansion (plan step 9, `P-34`) -- runs over the FULL
+        # `relevant` list (up to `retain_k` deep), BEFORE the caller's `k` is
+        # applied: see the module docstring for why this is critical rather
+        # than an optimisation, and `_widen_to_parents` for the dedup-by-
+        # parent mechanics that let `_FUSION_RETENTION`'s 3x pool pay off.
+        parent_texts = await self._documents.parent_texts_for_chunk_ids(
+            ctx, [candidate.chunk_id for candidate in relevant]
+        )
+        widened = _widen_to_parents(relevant, parent_texts)
+
         # The ONLY narrowing to the caller's `k` in this whole pipeline (plan
         # step 8's ordering rule "٨ قبل ٩" -- widen here, narrow later, never
         # the reverse).
         chunks = [
-            _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in relevant[:k]
+            _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widened[:k]
         ]
         return RetrievalResult(
             chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
         )
+
+
+def _widen_to_parents(
+    candidates: Sequence[ScoredChunk], parents: Mapping[str, ParentChunkText]
+) -> list[ScoredChunk]:
+    """Substitute each candidate's own leaf text with its parent's (plan step
+    9, ``P-34``), deduping by parent, and preserving ``candidates``' own
+    order (best-first — RRF-sorted, and ``filter_relevant`` never re-sorts).
+
+    For each candidate, in order:
+
+    * No entry in ``parents`` (``ParentChunkRepository`` never resolved a
+      parent for this ``chunk_id`` — no ``parent_id``, or the row is
+      missing/unreadable) — kept AS IS, own leaf text untouched. This is the
+      honest degradation the module docstring promises: never dropped, never
+      an error.
+    * A parent WAS resolved, and this is the FIRST candidate seen to widen to
+      that ``ParentChunkText.id`` — kept, with ``text`` replaced by the
+      parent's text, capped at ``_MAX_PARENT_CHUNK_CHARS``.
+    * A parent was resolved, but some EARLIER (higher- or equal-ranked)
+      candidate already widened to the SAME ``id`` — dropped entirely. This
+      is dedup BY PARENT (retrieval plan §3.7): keyed on the parent's ``id``,
+      never on text equality, so two candidates that happen to widen to the
+      identical parent text are recognised as duplicates even before either
+      is truncated. Dropping the whole entry (not merely deduplicating the
+      text) is what frees the slot ``_FUSION_RETENTION``'s 3x pool exists to
+      fill with the next distinct candidate.
+    """
+    widened: list[ScoredChunk] = []
+    seen_parent_ids: set[str] = set()
+    for candidate in candidates:
+        parent = parents.get(candidate.chunk_id)
+        if parent is None:
+            widened.append(candidate)
+            continue
+        if parent.id in seen_parent_ids:
+            continue
+        seen_parent_ids.add(parent.id)
+        widened.append(replace(candidate, text=parent.text[:_MAX_PARENT_CHUNK_CHARS]))
+    return widened
 
 
 def _to_scored_chunk(chunk: FusedChunk, payload: Json) -> ScoredChunk:

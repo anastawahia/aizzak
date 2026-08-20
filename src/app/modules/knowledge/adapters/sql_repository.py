@@ -52,11 +52,17 @@ and matching rows back up in Python, then hands the rows to the pure
 ``domain/tables.py::collapse_parent_runs`` -- the query fetches, the domain
 decides which text represents a row and whether a run collapses. See its own
 docstring for why that split is not incidental.
+
+``parent_texts_for_chunk_ids`` (rag-retrieval-plan.md §3.7, ``P-34``) is a
+THIRD query over the same two tables, an INNER join keyed by
+``knowledge_chunks.point_id`` (the Qdrant point id, never ``chunks.id``) for
+a whole BATCH of candidate ids at once -- one round trip for
+``RetrieveContext``'s widening step, not one per candidate.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
@@ -102,6 +108,7 @@ from app.modules.knowledge.domain.tables import (
 )
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
+    ParentChunkText,
     SummaryJobStatus,
     SummaryKind,
     SummaryLanguage,
@@ -679,6 +686,48 @@ class SqlDocumentRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return list(rows)
+
+    async def parent_texts_for_chunk_ids(
+        self, ctx: ExecutionContext, chunk_ids: Sequence[UuidStr]
+    ) -> Mapping[UuidStr, ParentChunkText]:
+        # Retrieval plan §3.7 (`P-34`) -- keyed by `chunks.point_id` (the
+        # Qdrant point id every `RetrievedChunk.chunk_id` carries), NEVER
+        # `chunks.id` (see the port docstring). An INNER join, deliberately:
+        # a chunk with `parent_id IS NULL` (or naming a row this tenant's RLS
+        # policy hides) simply produces no row, which is exactly "absent from
+        # the result" -- no `CASE`/`COALESCE` needed to turn a NULL join into
+        # a missing dict entry.
+        if not chunk_ids:
+            return {}
+        stmt = (
+            select(
+                knowledge_chunks.c.point_id,
+                parent_chunks.c.id.label("parent_id"),
+                parent_chunks.c.text.label("parent_text"),
+            )
+            .select_from(
+                knowledge_chunks.join(
+                    parent_chunks, knowledge_chunks.c.parent_id == parent_chunks.c.id
+                )
+            )
+            .where(
+                knowledge_chunks.c.point_id.in_(chunk_ids),
+                knowledge_chunks.c.workspace_id == ctx.workspace_id,
+                # Defence in depth (DD-04) on BOTH joined tables, not only the
+                # one `chunk_ids` was scoped against -- the `chunk_texts`/
+                # `vector_refs` precedent throughout this file.
+                parent_chunks.c.workspace_id == ctx.workspace_id,
+            )
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return {
+            point_id: ParentChunkText(id=parent_id, text=parent_text)
+            for point_id, parent_id, parent_text in rows
+        }
 
 
 class SqlReindexJobRepository:

@@ -110,3 +110,24 @@ class VectorRef:
             raise InvalidKnowledgeInput("vector ref collection must not be empty")
         if not self.point_id:
             raise InvalidKnowledgeInput("vector ref point id must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class ParentChunkText:
+    """One ``knowledge.parent_chunks`` row's id + text, as the retrieval
+    half's parent-widening lookup resolves it (rag-retrieval-plan.md §3.7,
+    ``P-34``; ``ports/repository.py::DocumentRepository.
+    parent_texts_for_chunk_ids``).
+
+    ``id`` is the dedup key -- two retrieved (leaf) chunks that widen to the
+    SAME ``parent_chunks`` row must substitute that row's text once, never
+    twice (``application/retrieval.py``'s whole reason for keeping ``id``
+    here at all, since ``text`` alone would make two coincidentally-identical
+    parents indistinguishable from one shared parent). ``text`` is always the
+    row's FULL, uncapped text: ``max_parent_chunk_chars`` truncation is
+    applied by the caller at substitution time, not baked in here, so this
+    value object stays a faithful copy of the row regardless of which caller
+    reads it."""
+
+    id: str
+    text: str

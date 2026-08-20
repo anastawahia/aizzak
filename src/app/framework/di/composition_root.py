@@ -1020,7 +1020,12 @@ def _build_knowledge(
     per-call through the ``resolver`` that wraps the SAME ``ProviderResolver``
     every LLM call routes through — and the very instance handed to
     ``OrchestratorDependencies`` as the RAG agent's ``KnowledgeAccess``
-    seam, so there is one retrieval path reached two ways.
+    seam, so there is one retrieval path reached two ways. ``RetrieveContext``
+    also takes the SAME ``documents`` (retrieval plan §3.7, ``P-34``): its
+    parent-widening lookup is typed against the narrow
+    ``ParentChunkRepository`` seam (``ports/retrieval.py``), and
+    ``SqlDocumentRepository`` satisfies it structurally alongside every other
+    face built from this one instance.
 
     The PIPELINE face is not built here — a request has no business running
     one. ``index_file`` and ``reindex`` are not holes in that: neither indexes
@@ -1059,7 +1064,10 @@ def _build_knowledge(
         list_documents=ListDocuments(documents),
         get_document=GetDocument(documents),
         search=KnowledgeRetrievalService(
-            RetrieveContext(embeddings=embedding, vectors=vectors), resolver, documents, files
+            RetrieveContext(embeddings=embedding, vectors=vectors, documents=documents),
+            resolver,
+            documents,
+            files,
         ),
         index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
         reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),

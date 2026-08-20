@@ -49,6 +49,7 @@ from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_c
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
+from app.modules.knowledge.domain.value_objects import ParentChunkText
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
     ParsedChunkKind,
@@ -267,6 +268,32 @@ class FakeHybridVectors:
         bucket = self.points.get(collection, {})
         for point_id in ids:
             bucket.pop(point_id, None)
+
+
+class FakeParentRepo:
+    """In-memory ``ParentChunkRepository`` fake (plan step 9, ``P-34``):
+    ``parents`` maps a Qdrant point (leaf) ``chunk_id`` straight onto the
+    ``ParentChunkText`` its parent-widening lookup should resolve to -- the
+    same shape the real ``SqlDocumentRepository.parent_texts_for_chunk_ids``
+    returns. Two different keys mapped to ``ParentChunkText`` instances that
+    share the same ``.id`` is how a test seeds "these two leaves share one
+    parent". A ``chunk_id`` absent from ``parents`` is absent from the
+    returned mapping too (the real port's own contract), so the default
+    (empty ``parents``) makes every candidate degrade to its own leaf text --
+    behaviourally a no-op, which is why every PRE-EXISTING test in this file
+    can pass ``FakeParentRepo()`` unchanged."""
+
+    def __init__(self, parents: dict[str, ParentChunkText] | None = None) -> None:
+        self.parents = parents or {}
+        self.calls: list[list[str]] = []
+
+    async def parent_texts_for_chunk_ids(
+        self, ctx: ExecutionContext, chunk_ids: Sequence[str]
+    ) -> dict[str, ParentChunkText]:
+        self.calls.append(list(chunk_ids))
+        return {
+            chunk_id: self.parents[chunk_id] for chunk_id in chunk_ids if chunk_id in self.parents
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -1974,7 +2001,7 @@ async def test_index_then_retrieve_round_trip() -> None:
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
         space_id=None,
         query="quarterly revenue figures for the northern region",
@@ -2019,7 +2046,7 @@ async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
         space_id=None,
         query="quarterly revenue figures for the northern region",
@@ -2049,7 +2076,7 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
         space_id=None,
         query="cafeteria menu changes for next month",
@@ -2070,7 +2097,7 @@ async def test_retrieve_context_both_legs_called_with_workspace_filter() -> None
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
-    await RetrieveContext(embeddings, vectors).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="alpha report", model="m", api_key="k"
     )
 
@@ -2087,7 +2114,7 @@ async def test_retrieve_context_query_embed_call_is_exactly_the_query() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
-    await RetrieveContext(embeddings, vectors).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="alpha report", model="m", api_key="k"
     )
 
@@ -2108,7 +2135,7 @@ async def test_retrieve_context_rrf_fuses_both_legs() -> None:
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="revenue figures quarterly", model="m", api_key="k", k=5
     )
 
@@ -2141,7 +2168,7 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query=query, model="m", api_key="k", k=1
     )
 
@@ -2157,7 +2184,7 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="document content", model="m", api_key="k", k=0
     )
 
@@ -2172,7 +2199,7 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="document content", model="m", api_key="k", k=1000
     )
 
@@ -2186,13 +2213,14 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
 ) -> None:
     """P-26 (retrieval plan §3.7, plan step 8): the pipeline widens back OUT
     to ``3 * k`` fused candidates right after RRF fusion -- BEFORE
-    ``filter_relevant`` runs -- so a later narrowing stage (plan step 9's
-    future parent expansion) has enough distinct candidates to fill ``k``
-    with distinct sections instead of collapsing into two parents (§3.7's
-    own stated failure mode). Proven by spying on ``filter_relevant`` itself
-    (the very next stage after fusion in the pipeline diagram): with a
-    fused pool wider than ``k``, strictly MORE than ``k`` candidates must
-    reach it, even though the PUBLIC result still honours ``k`` exactly."""
+    ``filter_relevant`` runs -- so the later narrowing stage (plan step 9's
+    parent expansion, ``_widen_to_parents``) has enough distinct candidates
+    to fill ``k`` with distinct sections instead of collapsing into two
+    parents (§3.7's own stated failure mode). Proven by spying on
+    ``filter_relevant`` itself (the very next stage after fusion in the
+    pipeline diagram): with a fused pool wider than ``k``, strictly MORE than
+    ``k`` candidates must reach it, even though the PUBLIC result still
+    honours ``k`` exactly."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -2225,7 +2253,7 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
 
     monkeypatch.setattr(retrieval_module, "filter_relevant", _spy_filter_relevant)
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=k
     )
 
@@ -2238,15 +2266,125 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
     assert len(result.chunks) <= k  # the PUBLIC result still honours k
 
 
+async def test_retrieve_context_substitutes_the_parents_text_not_the_leafs() -> None:
+    """Plan step 9 (``P-34``): the surviving candidate's text is REPLACED by
+    its parent's text, not merely accompanied by it -- and everything else
+    about the candidate (its own ``chunk_id``/``document_id``, the citation
+    it carries) still names the original LEAF, only ``text`` changes."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+    point_id = chunk_point_id("doc-1", 0)
+    parent_text = "the full parent section, considerably longer than any one leaf window"
+    parent_repo = FakeParentRepo({point_id: ParentChunkText(id="parent-A", text=parent_text)})
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert len(result.chunks) == 1
+    assert result.chunks[0].text == parent_text
+    assert result.chunks[0].text != leaf_text
+    # Identity fields still belong to the original leaf -- only `text` moved.
+    assert result.chunks[0].chunk_id == point_id
+    assert result.chunks[0].document_id == "doc-1"
+
+
+async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves_share_it() -> None:
+    """Retrieval plan §3.7 (``P-34``): two SURVIVING leaves that widen to the
+    SAME parent collapse into ONE entry -- dedup BY PARENT (keyed on
+    ``ParentChunkText.id``), not by text equality -- freeing the slot
+    ``_FUSION_RETENTION``'s 3x pool exists to let a third, distinct candidate
+    fill instead of the same section appearing twice."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    texts = [
+        "revenue projections for the sales department in quarterly planning",
+        "office renovation timeline shifts under quarterly planning",
+        "training enrollment rose sharply this quarterly planning",
+    ]
+    await _seed_corpus(vectors, ctx, "doc-1", texts)
+    point0 = chunk_point_id("doc-1", 0)
+    point1 = chunk_point_id("doc-1", 1)
+    shared_parent_text = "the one shared parent section both leaves widen to"
+    parent_repo = FakeParentRepo(
+        {
+            point0: ParentChunkText(id="parent-A", text=shared_parent_text),
+            point1: ParentChunkText(id="parent-A", text=shared_parent_text),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    # Only 2 survive: the ONE deduped parent entry + the third leaf's own
+    # text -- never 3, even though 3 distinct leaves matched and k allows 3.
+    assert len(result.chunks) == 2
+    result_texts = [chunk.text for chunk in result.chunks]
+    assert result_texts.count(shared_parent_text) == 1
+    assert texts[2] in result_texts
+
+
+async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk_chars() -> None:
+    """Plan step 9 (``P-34``): ``max_parent_chunk_chars`` is a length cap on
+    the SUBSTITUTED parent text, so one oversized parent cannot swallow the
+    whole context -- proven directly against the module's own constant
+    rather than a hard-coded number, so the test tracks the real cap."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+    point_id = chunk_point_id("doc-1", 0)
+    cap = retrieval_module._MAX_PARENT_CHUNK_CHARS
+    oversized_parent_text = "x" * (cap + 500)
+    parent_repo = FakeParentRepo(
+        {point_id: ParentChunkText(id="parent-A", text=oversized_parent_text)}
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert len(result.chunks) == 1
+    assert len(result.chunks[0].text) == cap
+    assert result.chunks[0].text == oversized_parent_text[:cap]
+
+
+async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() -> None:
+    """A chunk with no resolvable parent (``parent_id`` null, or the parent
+    row missing/unreadable -- ``ParentChunkRepository`` simply omits it from
+    the returned mapping either way) keeps its OWN leaf text -- never
+    dropped, never a crash. The default, parent-less ``FakeParentRepo()`` is
+    exactly this case, and every test above this one in the file already
+    relies on it implicitly; this test pins it explicitly."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert len(result.chunks) == 1
+    assert result.chunks[0].text == leaf_text
+
+
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
     with pytest.raises(ValidationError):
-        await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
+        await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
             _ctx(), space_id=None, query="   ", model="m", api_key="k"
         )
 
 
 async def test_retrieve_context_empty_corpus_returns_empty_list() -> None:
-    result = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors()).execute(
+    result = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
         _ctx(), space_id=None, query="anything at all", model="m", api_key="k"
     )
     assert result.chunks == []
@@ -2277,7 +2415,7 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx_b, space_id=None, query=shared_text, model="m", api_key="k"
     )
 
