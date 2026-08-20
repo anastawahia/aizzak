@@ -128,6 +128,28 @@ its input with everything else waiting on ``P-38``'s evaluation set (plan
 retuning it is a one-line edit, and no behaviour here depends on the raw
 value. The direction needs no measurement: a wrong narrowing is worse than
 no narrowing, which is what the tie case above already decided.
+
+**Both resolutions happen INSIDE the space being searched.** ``space_id`` is
+the second, independent narrowing axis (spaces plan step 8): it reaches
+``RetrieveContext`` as the ``space`` condition on the vector search, and it
+reaches ``_candidates`` as the space whose files a question is allowed to
+NAME. The two have to be the same space, or this router can build a scope
+that nothing in the corpus can satisfy — a question asked in space (أ) that
+names a file living in space (ب) would resolve (a candidate walk that saw
+every space finds it), and ``RetrieveContext`` would then be handed
+``document_ids=[a document in (ب)]`` AND ``space=(أ)``, two conditions ANDed
+inside the same ``must``. Zero chunks, about a file the workspace really
+does hold, and nothing in the answer names what swallowed the question.
+Resolving inside the space turns that into an ordinary ``NoFileMatch``
+instead: the name belongs to no file HERE, so the question is retrieved
+unscoped within its own space and the honest-fallback gate (§3.3) speaks
+about a corpus the user can actually see.
+
+That failure is latent, not live: every caller says ``space_id=None`` today
+(the agent carries no space yet — an open item in the spaces plan's §7), and
+``None`` is "the whole workspace" on BOTH axes, so they agree by being
+absent. The wiring is here so that the day a real space arrives, it arrives
+on the whole path at once rather than on half of it.
 """
 
 from __future__ import annotations
@@ -211,8 +233,8 @@ class SummaryStarting(Protocol):
 
 
 class FileCandidates(Protocol):
-    """The corpus ``resolve_file`` matches against: every document in this
-    workspace paired with the name of the file it was built from
+    """The corpus ``resolve_file`` matches against: every document in the
+    space being searched, paired with the name of the file it was built from
     (``application/use_cases.py::ListFileCandidates``).
 
     A narrow Protocol for ``SummaryStarting``'s two reasons — the
@@ -225,9 +247,18 @@ class FileCandidates(Protocol):
     newest N documents can return a confident ``ResolvedFile`` while the file
     the user actually meant sits at N+1, unseen. A cap here would be that
     failure, wearing the costume of a performance guard.
+
+    **``space_id`` is the one narrowing that IS honoured** (the module
+    docstring's last two paragraphs), and it is a required keyword with no
+    default — the rule every other signature on this axis already follows
+    (``DocumentRepository.list``, ``RetrieveContext.execute``,
+    ``RouteQuestion.execute``): "every space" then reads as a decision
+    written at the call site, and never as a keyword somebody forgot.
     """
 
-    async def execute(self, ctx: ExecutionContext) -> Sequence[FileCandidate]: ...
+    async def execute(
+        self, ctx: ExecutionContext, *, space_id: Uuid | None
+    ) -> Sequence[FileCandidate]: ...
 
 
 class RouteQuestion:
@@ -281,6 +312,11 @@ class RouteQuestion:
         widened: what reaches ``RetrieveContext`` is either the caller's pin
         or one document from inside it.
 
+        ``space_id`` reaches BOTH halves of that sentence: the search it
+        filters and the candidate list the name is resolved against (see the
+        module docstring). It is passed on, never interpreted here — this
+        class holds no opinion about which space a question belongs to.
+
         Errors from the summary route are NOT translated: an already-running
         build for the same key is a ``ConflictError`` and reaches the caller
         as one, exactly as it does on the REST route. Turning it into a
@@ -290,7 +326,9 @@ class RouteQuestion:
         intent = classify_intent(question)
         scope = document_ids
         if intent is Intent.SUMMARIZE_DOC:
-            summarisation = await self._summarisation_route(ctx, question, document_ids)
+            summarisation = await self._summarisation_route(
+                ctx, question, document_ids, space_id=space_id
+            )
             if summarisation is not None:
                 return summarisation
             # Falling through means `_summarisation_route` got `NoFileMatch`
@@ -298,7 +336,7 @@ class RouteQuestion:
             # `_content_scope` could only reach the same verdict — at the
             # price of a second corpus walk. The pin is the scope, unchanged.
         else:
-            scope = await self._content_scope(ctx, question, document_ids)
+            scope = await self._content_scope(ctx, question, document_ids, space_id=space_id)
         result = await self._retrieval.execute(
             ctx,
             query=question,
@@ -320,6 +358,8 @@ class RouteQuestion:
         ctx: ExecutionContext,
         question: str,
         document_ids: Sequence[Uuid] | None,
+        *,
+        space_id: Uuid | None,
     ) -> RoutedAnswer | None:
         """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
         and the question should fall through to CONTENT retrieval.
@@ -331,7 +371,9 @@ class RouteQuestion:
         """
         target = _sole_document(document_ids)
         if target is None:
-            resolution = resolve_file(question, await self._candidates(ctx, document_ids))
+            resolution = resolve_file(
+                question, await self._candidates(ctx, document_ids, space_id=space_id)
+            )
             if isinstance(resolution, AmbiguousFiles):
                 # Plan §4 row 14 / س-18 = أ. The names cross as data and the
                 # caller renders the question — no new event type, no change
@@ -365,10 +407,12 @@ class RouteQuestion:
         ctx: ExecutionContext,
         question: str,
         document_ids: Sequence[Uuid] | None,
+        *,
+        space_id: Uuid | None,
     ) -> Sequence[Uuid] | None:
         """The scope a CONTENT question is retrieved under (plan §4 row 15,
         ``P-25``): the caller's pin, narrowed to ONE document when the
-        question names one of this workspace's files confidently.
+        question names one of the searched SPACE's files confidently.
 
         ``resolve_file`` is row 13's resolver — the same cascade, the same
         candidates, the same refusal to guess — not a second name matcher
@@ -394,18 +438,33 @@ class RouteQuestion:
         """
         if document_ids is not None and len(document_ids) <= 1:
             return document_ids
-        resolution = resolve_file(question, await self._candidates(ctx, document_ids))
+        resolution = resolve_file(
+            question, await self._candidates(ctx, document_ids, space_id=space_id)
+        )
         if isinstance(resolution, ResolvedFile) and _narrows_content_scope(resolution):
             return [resolution.document_id]
         return document_ids
 
     async def _candidates(
-        self, ctx: ExecutionContext, document_ids: Sequence[Uuid] | None
+        self,
+        ctx: ExecutionContext,
+        document_ids: Sequence[Uuid] | None,
+        *,
+        space_id: Uuid | None,
     ) -> Sequence[FileCandidate]:
-        """The files this question is allowed to be about: the workspace's
-        corpus, narrowed to the caller's pin when there is one. Shared by
-        both routes' resolutions — the summarisation target (row 14) and the
-        CONTENT scope (row 15) match against the same candidate list.
+        """The files this question is allowed to be about: the corpus of the
+        space being searched, narrowed further to the caller's pin when there
+        is one. Shared by both routes' resolutions — the summarisation target
+        (row 14) and the CONTENT scope (row 15) match against the same
+        candidate list.
+
+        **The space comes first, and it is the SAME space the answer will be
+        retrieved from** (the module docstring's last two paragraphs). Two
+        narrowings, applied in the order they were decided in: the space is
+        where this conversation lives, the pin is what it is working with
+        inside it. ``space_id=None`` is the whole workspace — matching the
+        ``None`` that reaches the search on the other axis, so the two never
+        disagree about which corpus this question has.
 
         A pin is a statement about which documents this conversation is
         working with, so resolving OUTSIDE it could summarise (or answer
@@ -425,7 +484,7 @@ class RouteQuestion:
         resolved, so the search stays unscoped rather than being narrowed to
         a guess.
         """
-        candidates = await self._files.execute(ctx)
+        candidates = await self._files.execute(ctx, space_id=space_id)
         if document_ids is None:
             return candidates
         pinned = set(document_ids)

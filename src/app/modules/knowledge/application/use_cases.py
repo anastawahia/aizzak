@@ -1586,6 +1586,15 @@ class ListDocumentNames:
     uploaded, and excluding it would silently undercount the corpus a
     "how many files do you have?" question is asking about.
 
+    **That ``None`` is a decision, and it is why this signature takes no
+    ``space_id``** — the one place in this module where the space axis is
+    deliberately not offered. ``ListFileCandidates`` below walks the same
+    rows and DOES narrow by space, because what it produces is matched
+    against a question that will then be answered from one space's chunks.
+    This header is not answering anything: it tells a user which files exist
+    for them at all, so a slice of it would misreport the corpus as smaller
+    than it is — «لا أملك معلومات كافية» about a workspace that is not empty.
+
     **Names are resolved only for the first ``limit`` documents** — walking
     every page of ``DocumentRepository.list`` is cheap (row ids only), but
     ``ReadableFiles.get_readable`` is a per-file round trip, and resolving
@@ -1624,16 +1633,29 @@ class ListDocumentNames:
 class ListFileCandidates:
     """The corpus ``domain/file_resolution.resolve_file`` matches a question
     against (retrieval plan §3.5/§4 rows 13-14, ``P-04``): every document in
-    this workspace, paired with the name of the file it was built from.
+    the space being searched, paired with the name of the file it was built
+    from.
 
     The same walk ``ListDocumentNames`` does — same repository, same
-    ``space_id=None`` (a question can name any file its asker uploaded, and a
-    corpus split by space would make resolution depend on where the thread
-    happens to sit), same every-status rule (a ``pending`` document still
-    NAMES a real file; hiding it would let a question about it resolve to a
-    different file instead of saying the honest thing, and what "the honest
-    thing" is stays ``RequestSummary``'s call — it refuses a document that is
-    not indexed, with the reason).
+    every-status rule (a ``pending`` document still NAMES a real file; hiding
+    it would let a question about it resolve to a different file instead of
+    saying the honest thing, and what "the honest thing" is stays
+    ``RequestSummary``'s call — it refuses a document that is not indexed,
+    with the reason).
+
+    **But NOT the same space**, and that is the one place the two walks part.
+    A header describes the whole workspace (above); a candidate list is
+    matched against a question whose ANSWER will be retrieved under a
+    ``space`` filter, so a name resolved outside that space produces a scope
+    the search can never satisfy — ``document_ids`` from one space ANDed with
+    ``space`` from another, and zero chunks with nothing to explain them
+    (``RouteQuestion``'s module docstring has the whole failure). Resolving
+    inside the searched space makes the miss an ordinary ``NoFileMatch``
+    instead, which the router already knows how to answer honestly.
+
+    ``space_id`` is therefore a required keyword with no default, exactly as
+    it is on ``DocumentRepository.list``: "every space" is a decision written
+    at the call site, never one a caller falls into by omission.
 
     **Two differences, both required by what the resolver is for.** There is
     no display ``limit``: every candidate is resolved, because a cap turns a
@@ -1652,12 +1674,14 @@ class ListFileCandidates:
         self._documents = documents
         self._files = files
 
-    async def execute(self, ctx: ExecutionContext) -> tuple[FileCandidate, ...]:
+    async def execute(
+        self, ctx: ExecutionContext, *, space_id: Uuid | None
+    ) -> tuple[FileCandidate, ...]:
         candidates: list[FileCandidate] = []
         cursor: str | None = None
         while True:
             page = await self._documents.list(
-                ctx, space_id=None, limit=_LIST_PAGE_SIZE, cursor=cursor
+                ctx, space_id=space_id, limit=_LIST_PAGE_SIZE, cursor=cursor
             )
             for document in page.data:
                 file = await self._files.get_readable(ctx, document.file_id)

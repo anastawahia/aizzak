@@ -28,6 +28,7 @@ from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoin
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.retrieval import RetrievalResult, RetrieveContext
+from app.modules.knowledge.application.routing import RouteQuestion
 from app.modules.knowledge.application.use_cases import (
     IndexFile,
     IndexFileService,
@@ -1471,7 +1472,7 @@ async def test_file_candidates_pair_every_document_with_its_file_name() -> None:
         names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
     )
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
 
     assert candidates == (
         FileCandidate(document_id="doc-3", file_name="c.pdf"),
@@ -1493,7 +1494,7 @@ async def test_file_candidates_are_never_capped_at_a_display_limit() -> None:
         documents.docs[f"doc-{n:02d}"] = _document(doc_id=f"doc-{n:02d}", file_id=f"file-{n}")
     files = _FakeReadableFiles(dict.fromkeys(names), names=names)
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
 
     assert len(candidates) == 60
 
@@ -1510,7 +1511,7 @@ async def test_file_candidates_include_a_document_that_is_not_indexed_yet() -> N
     )
     files = _FakeReadableFiles({"file-1": None}, names={"file-1": "fresh.pdf"})
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
 
     assert candidates == (FileCandidate(document_id="doc-1", file_name="fresh.pdf"),)
 
@@ -1527,9 +1528,76 @@ async def test_file_candidates_drop_documents_with_no_readable_name() -> None:
     documents.docs["doc-3"] = _document(doc_id="doc-3", file_id="file-nameless")
     files = _FakeReadableFiles({"file-1": None, "file-nameless": None}, names={"file-1": "a.pdf"})
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
 
     assert candidates == (FileCandidate(document_id="doc-1", file_name="a.pdf"),)
+
+
+def _corpus_across_two_spaces() -> tuple[_FakeDocumentRepository, _FakeReadableFiles]:
+    """Three documents — one in (أ), one in (ب), one in no space at all — and
+    the names they would be resolved by. The smallest corpus in which "every
+    space" and "the space being searched" are different answers.
+    """
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-a"] = _document(doc_id="doc-a", file_id="file-a", space_id=_SPACE_A)
+    documents.docs["doc-b"] = _document(doc_id="doc-b", file_id="file-b", space_id=_SPACE_B)
+    documents.docs["doc-c"] = _document(doc_id="doc-c", file_id="file-c", space_id=None)
+    files = _FakeReadableFiles(
+        {"file-a": _SPACE_A, "file-b": _SPACE_B, "file-c": None},
+        names={"file-a": "a.pdf", "file-b": "b.pdf", "file-c": "c.pdf"},
+    )
+    return documents, files
+
+
+async def test_file_candidates_are_narrowed_to_the_space_being_searched() -> None:
+    """Branch review §7. Unlike the corpus header, this walk DOES carry a
+    space — because what it produces is matched against a question whose
+    ANSWER will be retrieved under a `space` filter. A name resolved outside
+    that space becomes `document_ids` from one space ANDed with `space` from
+    another: zero chunks, about a file the workspace really does hold.
+    """
+    ctx = _ctx("ws1")
+    documents, files = _corpus_across_two_spaces()
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
+
+    # Only (أ)'s file can be named here. `doc-c` is spaceless, which is not
+    # "in every space" -- it is in none, exactly as the search's own `space`
+    # condition reads it (see the payload tests below).
+    assert candidates == (FileCandidate(document_id="doc-a", file_name="a.pdf"),)
+
+
+async def test_file_candidates_span_every_space_when_the_search_does() -> None:
+    """`None` means the whole workspace on THIS axis exactly as it does on the
+    search's, so the two agree by being absent together — which is why the
+    caller that passes `None` today (the agent carries no space yet) sees no
+    change at all.
+    """
+    ctx = _ctx("ws1")
+    documents, files = _corpus_across_two_spaces()
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+
+    assert {candidate.document_id for candidate in candidates} == {"doc-a", "doc-b", "doc-c"}
+
+
+async def test_the_corpus_header_spans_every_space_even_where_candidates_do_not() -> None:
+    """The one place the two walks part (review §7's table), over ONE corpus.
+
+    `ListDocumentNames` takes no `space_id` at all: a corpus-awareness header
+    tells a user which files exist for them AT ALL, and a slice of it would
+    report a corpus smaller than the one they uploaded. `ListFileCandidates`
+    takes one and honours it: it is answering a question, inside a space.
+    """
+    ctx = _ctx("ws1")
+    documents, files = _corpus_across_two_spaces()
+
+    header = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
+
+    assert header.total == 3
+    assert set(header.names) == {"a.pdf", "b.pdf", "c.pdf"}
+    assert [candidate.file_name for candidate in candidates] == ["a.pdf"]
 
 
 async def _indexed_corpus(
@@ -2480,3 +2548,190 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []
     # And it is genuinely there, for anyone not asking about a space.
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None) != []
+
+
+# --------------------------------------------------------------------------- #
+# A named file is resolved INSIDE the space being searched                    #
+# (branch review §7, over the spaces plan's step 8)                           #
+# --------------------------------------------------------------------------- #
+# `_spaced_corpus`'s two documents, NAMED. Three tokens each, so a CONTENT
+# question that names one really does narrow the search (the review §3 bar in
+# `_narrows_content_scope`), and far enough apart that neither resolves to the
+# other: inside one space, the OTHER space's file is a plain `NoFileMatch` —
+# the ordinary miss this router already answers honestly.
+_SPACED_NAMES = {
+    "file-doc-research": "خطة التسويق السنوية.pdf",  # doc-research, space (أ)
+    "file-doc-drafts": "التقرير المالي الفصلي.pdf",  # doc-drafts, space (ب)
+}
+# The same file — the one that lives in (ب) — named on each of the two routes.
+_SUMMARISE_THE_DRAFTS_FILE = "لخص لي التقرير المالي الفصلي"
+_ASK_ABOUT_THE_DRAFTS_FILE = "ما جاء في التقرير المالي الفصلي عن الإيرادات؟"
+
+
+async def _spaced_routing_service(
+    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
+    """The routing service of the tests above, over the two-SPACE corpus of
+    the space tests above: the REAL `RouteQuestion`, the REAL
+    `ListFileCandidates` and the REAL `resolve_file`, so the space is proven
+    across every seam it has to cross rather than at the first one only.
+    """
+    documents = await _spaced_corpus(ctx, embeddings, vectors)
+    return await _routing_service(ctx, embeddings, vectors, _SPACED_NAMES, documents=documents)
+
+
+class _RecordingCandidates:
+    """A structural `FileCandidates` that records the SPACE each walk was
+    asked for — the one thing `RouteQuestion` decides about the corpus its
+    resolver is shown."""
+
+    def __init__(self, candidates: Sequence[FileCandidate] = ()) -> None:
+        self._candidates = tuple(candidates)
+        self.spaces: list[str | None] = []
+
+    async def execute(
+        self, ctx: ExecutionContext, *, space_id: str | None
+    ) -> Sequence[FileCandidate]:
+        self.spaces.append(space_id)
+        return self._candidates
+
+
+@pytest.mark.parametrize(
+    ("question", "intent"),
+    [
+        (_SUMMARISE_THE_DRAFTS_FILE, Intent.SUMMARIZE_DOC),
+        ("quarterly revenue figures", Intent.CONTENT),
+    ],
+)
+async def test_the_router_walks_the_candidates_of_the_space_it_was_asked_about(
+    question: str, intent: Intent
+) -> None:
+    """The wiring itself, on BOTH routes: the space that reaches the candidate
+    walk is the space the question was asked in — not `None`, which is what
+    every one of these walks used to be.
+
+    Both routes resolve names through the same `_candidates`, so both had to
+    receive it; a router that forwarded the space to the SEARCH only would
+    build a scope out of names it found in some other space.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _spaced_corpus(ctx, embeddings, vectors)
+    files = _RecordingCandidates(
+        [FileCandidate(document_id="doc-research", file_name=_SPACED_NAMES["file-doc-research"])]
+    )
+    router = RouteQuestion(
+        RetrieveContext(embeddings, vectors, documents), _FakeSummaryStarter(), files
+    )
+
+    routed = await router.execute(
+        ctx, question=question, model="embed-1", api_key="key-1", space_id=_SPACE_A
+    )
+
+    assert routed.intent is intent
+    assert files.spaces == [_SPACE_A]
+
+
+async def test_a_summarisation_question_resolves_a_name_inside_its_own_space() -> None:
+    """The half that has to keep working: asked in the space that HOLDS the
+    file it names, the question resolves and the build is queued, exactly as
+    it does with no space at all."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, _SUMMARISE_THE_DRAFTS_FILE, 5, space_id=_SPACE_B)
+
+    assert summaries.calls == [("doc-drafts", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    assert routed.summary_job_id == "job-1"
+
+
+async def test_a_question_in_one_space_never_summarises_a_file_from_another() -> None:
+    """**THE trap (review §7).** The question is asked in (أ) and names the
+    file that lives in (ب). Resolved over every space it would resolve — and
+    queue a summary of a document the asker's own search can never reach.
+
+    Resolved inside (أ) it is an ordinary `NoFileMatch`: nothing is queued,
+    the question falls through to CONTENT retrieval with its intent still
+    reported honestly, and the search that runs is (أ)'s own — unscoped
+    within it, never scoped to (ب)'s document.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, _SUMMARISE_THE_DRAFTS_FILE, 5, space_id=_SPACE_A)
+
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    # No clarification either: the name matched nothing in this space, it did
+    # not tie between two things in it.
+    assert routed.clarification_options == ()
+    # And the fall-through search is (أ)'s whole corpus, with no `document_id`
+    # from (ب) ANDed onto it -- the pair that would have returned zero chunks.
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "space": _SPACE_A}
+
+
+async def test_a_content_question_never_narrows_the_search_to_another_spaces_document() -> None:
+    """The same trap on the CONTENT route, where it is quieter still: row 15
+    is STRICT, so a scope narrowed to (ب)'s document would be searched once,
+    return nothing, and reach the honest-fallback gate as «لا أملك معلومات
+    كافية» — about a question (أ) may well answer in a file of its own.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, _ASK_ABOUT_THE_DRAFTS_FILE, 5, space_id=_SPACE_A)
+
+    assert routed.intent is Intent.CONTENT
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "space": _SPACE_A}
+    assert "doc-drafts" not in {chunk.document_id for chunk in routed.chunks}
+
+
+async def test_the_same_content_question_still_narrows_inside_the_space_that_holds_it() -> None:
+    """Not narrowing is not a new refusal to narrow. The identical question,
+    asked in the space the named file actually lives in, still scopes the
+    search to that one document — both conditions ANDed, neither replacing
+    the other."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    await service.answer(ctx, _ASK_ABOUT_THE_DRAFTS_FILE, 5, space_id=_SPACE_B)
+
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-drafts"],
+        "space": _SPACE_B,
+    }
+
+
+async def test_an_unspaced_summarisation_question_still_resolves_across_every_space() -> None:
+    """No regression for the caller there is today: the agent passes
+    `space_id=None`, and `None` still means the whole workspace on this axis —
+    the name resolves wherever in it the file lives, and the build is queued
+    for it."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, _SUMMARISE_THE_DRAFTS_FILE, 5, space_id=None)
+
+    assert summaries.calls == [("doc-drafts", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    assert routed.summary_job_id == "job-1"
+
+
+async def test_an_unspaced_content_question_still_narrows_to_the_file_it_names() -> None:
+    """The other half of the same no-regression: with no space asked for, the
+    CONTENT route narrows to the named document out of ANY space, and the
+    filter carries no `space` key at all (`None` is never written as a
+    condition)."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _spaced_routing_service(ctx, embeddings, vectors)
+
+    await service.answer(ctx, _ASK_ABOUT_THE_DRAFTS_FILE, 5, space_id=None)
+
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-drafts"]}

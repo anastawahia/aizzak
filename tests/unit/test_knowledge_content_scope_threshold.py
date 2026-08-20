@@ -134,7 +134,14 @@ class _Corpus:
         )
         self.calls: list[ExecutionContext] = []
 
-    async def execute(self, ctx: ExecutionContext) -> Sequence[FileCandidate]:
+    async def execute(
+        self, ctx: ExecutionContext, *, space_id: str | None
+    ) -> Sequence[FileCandidate]:
+        # `space_id` is accepted and ignored: this corpus is already the one
+        # space these tests search, and what they grade is the token bar, not
+        # the space axis. That the router forwards the space it was asked for
+        # (branch review §7) is pinned in `test_knowledge_module.py`'s last
+        # section, over the REAL `ListFileCandidates`.
         self.calls.append(ctx)
         return self._candidates
 
