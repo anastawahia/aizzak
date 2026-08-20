@@ -460,7 +460,11 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
     # Token stream, then one final carrying the assembled answer + citations.
     assert [e.type for e in events] == ["token", "token", "final"]
     assert events[-1].data["text"] == "Paris it is"
-    assert events[-1].data["citations"] == ["chunk-a"]
+    # Retrieval plan §3.2/§4 row 3, P-32 — a structured citation, not a bare
+    # `chunk_id` UUID.
+    assert events[-1].data["citations"] == [
+        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "chunk-a"}
+    ]
 
 
 async def test_real_agent_input_validation_still_raises_in_flight_as_an_event() -> None:

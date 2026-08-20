@@ -253,6 +253,13 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 ```
 - ترميز UTF‑8، `Cache-Control: no-cache`، نبضة `:keep-alive` كل 15s.
 - الإنهاء بحدث `final` أو `error` ثم إغلاق التدفّق.
+- **مفاتيح الوكيل الطرفيّة تبقى على `final` إلى جانب ما تضيفه المنصّة** (`message_id`/`content`/`usage`): لكلّ وكيل مفاتيحه الخاصّة (`job_id`, …)، ولا يُسقِطها المنسِّق. `rag_agent` يضيف `citations` — قائمة استشهادات مفهومة (خطّة الاسترجاع §3.2/§4 صفّ ٣، `P-32`) لا UUID عارٍ:
+  ```json
+  "citations": [
+    {"document_id": "018f...", "file_name": "maintenance.pdf", "page": 12, "chunk_id": "018f..."}
+  ]
+  ```
+  `document_id` و`chunk_id` حاضران دائماً؛ `file_name`/`page` **يُعادان دائماً بالمفتاح** ويُصبحان `null` صراحة حين لا يحملهما الشذر المسترجَع نفسه (نقطة سبقت هذا الحقل، أو محلِّلٌ لم يُصدره) — نفس عُرف `RetrievedChunkOut` أعلاه، لا مفتاحٌ يُحذَف.
 
 ### 3.2 WebSocket — التفاعلي `GET /api/v1/ws`
 - المصادقة: `?token=<Firebase ID Token>` عند الـHandshake (يتحقّق قبل القبول)، أو أول رسالة `auth`.
@@ -271,6 +278,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 {"type":"error","conversation_id":"018f...","problem":{...RFC9457...}}
 {"type":"pong"}
 ```
+- `final` هنا يحمل مفاتيح الوكيل الطرفيّة نفسها التي يحملها إطار SSE (§3.1) — بما فيها `citations` لـ`rag_agent` بشكلها المفهوم `{document_id, file_name, page, chunk_id}` — لا مجرّد ما في المثال أعلاه.
 - **الإشعارات غير المتزامنة** (نتائج العمّال: فهرسة/توليد) تُدفع كـ`notification` على اتصال الـWS الحيّ للمستأجر — الجسر: العامل ينشر حدثاً عالمياً ⇒ مُشترِك WS يوجّهه لجلسات الـ`workspace_id`.
 - حدود: رسالة ≤ 64KB، اتصالات متزامنة/مستخدم محدودة (انظر `07`).
 

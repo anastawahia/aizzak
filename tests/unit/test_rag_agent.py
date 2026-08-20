@@ -165,7 +165,13 @@ async def test_streams_tokens_then_final_with_citations() -> None:
     final = events[-1]
     assert final.type == "final"
     assert final.data["text"] == "Paris is the capital."
-    assert final.data["citations"] == ["c1"]
+    # Retrieval plan §3.2/§4 row 3, P-32 — a structured citation, not a bare
+    # `chunk_id` UUID: `document_id`/`file_name`/`page`/`chunk_id`, reusing
+    # step 1's fields verbatim (`file_name`/`page` both `None` here because
+    # this `FakeChunk` set neither).
+    assert final.data["citations"] == [
+        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+    ]
     # `None`, not `()`: an agent with no pinned scope must ask for the WHOLE
     # workspace corpus. Forwarding the bundle's empty tuple would arrive one
     # layer down as "a scope that resolved to no documents", which retrieves
@@ -206,6 +212,66 @@ async def test_retrieved_context_is_injected_into_the_system_prompt() -> None:
     assert "Paris is the capital." in system_message.content
     assert llm.stream_calls[0][1].model == "fake-model"
     assert llm.stream_calls[0][2] == "k"
+
+
+# --------------------------------------------------------------------------- #
+# Structured citations (retrieval plan §3.2, §4 row ٣ — P-32)                #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_citation_carries_the_full_structured_shape() -> None:
+    """`{document_id, file_name, page, chunk_id}` — `page` reuses step 1's
+    `page_number` field verbatim under the shorter wire name the plan names
+    for this shape; nothing is re-derived."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[
+            FakeChunk(
+                "c1",
+                "Paris is the capital.",
+                file_name="maintenance.pdf",
+                page_number=12,
+                section="المسؤوليات",
+            )
+        ]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert events[-1].data["citations"] == [
+        {
+            "document_id": "doc-1",
+            "file_name": "maintenance.pdf",
+            "page": 12,
+            "chunk_id": "c1",
+        }
+    ]
+
+
+async def test_a_citation_represents_missing_file_name_and_page_as_explicit_none() -> None:
+    """A missing `file_name`/`page` is an explicit `None` (⇒ JSON `null`) on
+    an always-present key — never an omitted key, never a placeholder
+    string — the same rule `RetrievedChunkOut` already follows on the wire."""
+    deps, _knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "chunk body")])
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    citation = events[-1].data["citations"][0]
+    assert citation == {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+    assert "file_name" in citation
+    assert "page" in citation
+
+
+async def test_multiple_chunks_each_get_their_own_citation_in_order() -> None:
+    deps, _knowledge, _llm = make_deps(
+        chunks=[
+            FakeChunk("c1", "first", file_name="a.pdf", page_number=1),
+            FakeChunk("c2", "second", file_name="b.pdf", page_number=None),
+        ]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert events[-1].data["citations"] == [
+        {"document_id": "doc-1", "file_name": "a.pdf", "page": 1, "chunk_id": "c1"},
+        {"document_id": "doc-1", "file_name": "b.pdf", "page": None, "chunk_id": "c2"},
+    ]
 
 
 # --------------------------------------------------------------------------- #

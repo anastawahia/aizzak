@@ -7,6 +7,13 @@ build the prompt, and stream the LLM answer as ``token`` events, ending with a
 through ``self.deps`` and imports NO other agent, module, or infrastructure —
 so ``agents-independent`` / ``agents-no-api-no-infra`` hold trivially.
 
+**Citations (retrieval plan §3.2/§4 row 3, ``P-32``):** the ``final`` event's
+``citations`` is a list of ``{document_id, file_name, page, chunk_id}``
+objects — enough for a client to render and act on a source without a second
+round trip — not the bare ``chunk_id`` UUID string it used to be.
+``file_name``/``page`` are carried straight through as ``null`` when the
+retrieved chunk itself has none (see ``_citation``).
+
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
 at 4.7; usage enforcement/capture, conversation persistence (D-12) and SSE/WS
@@ -80,7 +87,10 @@ class RagAgent(BaseAgent):
                 yield AgentEvent(type="token", data={"delta": chunk.delta})
         yield AgentEvent(
             type="final",
-            data={"text": "".join(answer), "citations": [c.chunk_id for c in chunks]},
+            data={
+                "text": "".join(answer),
+                "citations": [self._citation(c) for c in chunks],
+            },
         )
 
     @staticmethod
@@ -91,6 +101,29 @@ class RagAgent(BaseAgent):
         if not isinstance(value, str) or not value.strip():
             raise ValidationError("rag_agent requires a non-empty 'text' input")
         return value
+
+    @staticmethod
+    def _citation(chunk: RetrievedChunkView) -> dict[str, str | int | None]:
+        """One `{document_id, file_name, page, chunk_id}` citation (retrieval
+        plan §3.2/§4 row 3, ``P-32``) — a citation a human can act on,
+        replacing the bare ``chunk_id`` UUID the ``final`` event used to emit.
+
+        ``file_name``/``page`` are REUSED verbatim from the already-retrieved
+        chunk (step 1's fields — ``page`` is ``chunk.page_number`` under the
+        shorter wire name the plan names for this shape), never re-derived
+        from anywhere else. Both stay explicitly ``None`` — a real, always-
+        present JSON key holding ``null``, never an omitted key — exactly
+        when the chunk itself carries no value there (an older Qdrant point,
+        or a parser that never emitted one): the same missing-value story
+        ``RetrievedChunkOut``/``format_labeled_chunk`` already tell, so a
+        client sees ONE degradation rule across the whole citation surface.
+        """
+        return {
+            "document_id": chunk.document_id,
+            "file_name": chunk.file_name,
+            "page": chunk.page_number,
+            "chunk_id": chunk.chunk_id,
+        }
 
     @staticmethod
     def _messages(query: str, chunks: Sequence[RetrievedChunkView]) -> list[LlmMessage]:
