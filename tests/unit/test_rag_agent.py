@@ -367,6 +367,38 @@ async def test_the_label_degrades_deterministically_per_missing_field(
 
 
 # --------------------------------------------------------------------------- #
+# Header instructions (retrieval plan §4 row 7 — P-37)                       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_composed_system_message_carries_all_four_header_instructions() -> None:
+    """§4 row 7 (`P-37`) names four instructions the header must give the
+    model: gather from ALL sections, include EVERY list item, cite the file
+    and section, and don't narrate its reasoning. This drives the agent
+    end-to-end (fake LLM, real chunks) and reads the ACTUAL system message
+    `_messages` composed — not `SYSTEM_PROMPT` the constant — so a future
+    refactor of message composition cannot silently drop one of them."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[FakeChunk("c1", "Paris is the capital.", file_name="a.pdf", page_number=1)]
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    system_message = llm.stream_calls[0][0][0]
+    assert system_message.role == "system"
+    content = system_message.content
+    # 1 — gather from ALL sections, not just the first relevant one.
+    assert "ALL the passages" in content
+    # 2 — a list answer must include EVERY item, never truncated/sampled.
+    assert "EVERY item" in content
+    # 3 — cite the file and section, using the exact label vocabulary
+    # `format_labeled_chunk` puts above each passage (retrieval plan §3.2).
+    assert "Cite the file and section" in content
+    assert "[file p.N | section: S]" in content
+    # 4 — answer, don't narrate the reasoning.
+    assert "do not narrate your reasoning" in content
+
+
+# --------------------------------------------------------------------------- #
 # Corpus awareness (retrieval plan §3.6/§4 row 6 — P-36, س-23 = ج)            #
 # --------------------------------------------------------------------------- #
 
