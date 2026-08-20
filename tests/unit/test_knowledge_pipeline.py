@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from app.framework.agent_runtime.source_label import format_labeled_chunk
+from app.framework.agent_runtime.source_label import format_context_block, format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.observability.logging import JsonFormatter
@@ -44,7 +44,11 @@ from app.modules.knowledge.application.indexing import (
     IndexOutcome,
     _table_to_segments,
 )
-from app.modules.knowledge.application.retrieval import RetrievalTuning, RetrieveContext
+from app.modules.knowledge.application.retrieval import (
+    RetrievalResult,
+    RetrievalTuning,
+    RetrieveContext,
+)
 from app.modules.knowledge.domain import file_resolution
 from app.modules.knowledge.domain.chunking import (
     MIN_NODE_CHARS,
@@ -3695,3 +3699,141 @@ async def test_retrieve_context_stage_record_carries_no_document_or_query_text(
     # What DOES stand in for the question: its length, which explains a
     # degenerate embedding or an empty sparse leg without quoting a word.
     assert _stage_payload(record)["query_chars"] == len(query)
+
+
+# --------------------------------------------------------------------------- #
+# The internal `context_text` capability (plan row ١٩, `P-39`; retrieval plan #
+# §3.2/§3.11, س-25 = أ) — built by the ONE shared formatting unit, ordered    #
+# descending, and absent from every published contract.                       #
+# --------------------------------------------------------------------------- #
+_CONTEXT_CORPUS = (
+    "northern region revenue for the third quarter reached four million",
+    "southern region revenue for the third quarter reached two million",
+    "the maintenance responsibilities are listed in the third quarter annex",
+)
+
+
+async def _context_run(*, k: int = 3) -> RetrievalResult:
+    """One end-to-end retrieval over a small indexed corpus that CARRIES the
+    three citation fields, so the label the shared formatter builds is a real
+    ``[file p.N | section: S]`` rather than the ``[unknown]`` degradation."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(
+                text,
+                order=order,
+                metadata={
+                    "file_name": "quarterly-report.pdf",
+                    "page_number": order + 1,
+                    "section": f"Section {order}",
+                },
+            )
+            for order, text in enumerate(_CONTEXT_CORPUS)
+        ]
+    )
+    await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+    return await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="third quarter revenue", model="m", api_key="k", k=k
+    )
+
+
+async def test_context_text_is_the_delivered_chunks_rendered_by_the_shared_formatter() -> None:
+    """Plan row ١٩ (``P-39``): ``context_text`` is READY, and it is built "بوحدة
+    التنسيق نفسها" — row ٢'s formatter. Asserted against
+    ``format_labeled_chunk``'s OWN output (the per-chunk unit) rather than a
+    hand-copied shape, so a second formatter appearing anywhere on this path
+    fails right here."""
+    result = await _context_run()
+
+    assert result.chunks  # a real, non-empty context to render
+    assert result.context_text == "\n\n".join(
+        format_labeled_chunk(
+            chunk.text,
+            file_name=chunk.file_name,
+            page_number=chunk.page_number,
+            section=chunk.section,
+        )
+        for chunk in result.chunks
+    )
+    # …and it is literally the shared block renderer's output, which is the
+    # exact call the RAG agent's synthesis path makes (see
+    # `test_rag_agent.py`'s drift test for the two being compared directly).
+    assert result.context_text == format_context_block(result.chunks)
+    # The §3.2 shape actually reached the string — not vacuously equal.
+    assert "[quarterly-report.pdf p.1 | section: Section 0]" in result.context_text
+
+
+async def test_context_text_puts_the_most_relevant_chunk_first() -> None:
+    """§3.7's ordering rule: "الترتيب هنا: تنازليّ ثمّ قصّ، والأكثر صلة في
+    ``[#1]``". ``context_text`` renders the delivered prefix in the delivered
+    order — the top-ranked chunk OPENS the block. ``LongContextReorder``,
+    which would move it to the END, is a rejected design note (§3.7/§7) and
+    must never appear as code."""
+    result = await _context_run()
+    passages = result.context_text.split("\n\n")
+
+    assert len(passages) == len(result.chunks)
+    for passage, chunk in zip(passages, result.chunks, strict=True):
+        assert passage.splitlines()[1] == chunk.text
+    # Said once more the blunt way: the FIRST chunk `execute` returned (the
+    # highest-ranked survivor) is the first thing a model would read.
+    assert result.context_text.startswith(
+        format_labeled_chunk(
+            result.chunks[0].text,
+            file_name=result.chunks[0].file_name,
+            page_number=result.chunks[0].page_number,
+            section=result.chunks[0].section,
+        )
+    )
+
+
+async def test_context_text_is_empty_when_retrieval_delivered_nothing() -> None:
+    """The honest empty: a scope that resolved to no documents returns no
+    chunks, and the context is ``""`` — never a manufactured sentence, which
+    would rob the trust gate (plan row 5, ``P-33``) of the very condition it
+    fires on."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="anything", model="m", api_key="k", document_ids=[]
+    )
+
+    assert result.chunks == []
+    assert result.context_text == ""
+
+
+def test_context_text_is_a_computed_property_not_a_carried_field() -> None:
+    """Internal AND cheap: a property on the application-layer result, so a
+    retrieval nobody asks a context for pays nothing, and there is no stored
+    second copy to fall out of step with ``chunks``."""
+    assert isinstance(RetrievalResult.context_text, property)
+    assert "context_text" not in {f.name for f in dataclasses.fields(RetrievalResult)}
+
+
+def test_context_text_never_reaches_a_published_contract() -> None:
+    """س-25 = أ, recorded in the plan's §7: ``context_text`` is an INTERNAL
+    capability — it exposes index structure and would need permission scoping
+    of its own. So it must appear in NO wire DTO, in NO API route module and
+    nowhere in ``openapi.yaml``. Checked as text over the whole API layer
+    rather than on one model, because the rule is about the contract surface,
+    not about one class."""
+    repo_root = pathlib.Path(__file__).parents[2]
+
+    spec = (repo_root / "docs/design/openapi.yaml").read_text(encoding="utf-8")
+    assert "context_text" not in spec
+
+    api_sources = sorted((repo_root / "src/app/api").rglob("*.py"))
+    assert api_sources  # the walk found the layer at all
+    for source in api_sources:
+        assert "context_text" not in source.read_text(encoding="utf-8"), source
+
+    # The port DTO the API renders stays the four+three field shape row 1
+    # fixed (`test_retrieved_chunk_contract.py` pins all three layers to it).
+    assert "context_text" not in {f.name for f in dataclasses.fields(RetrievedChunk)}

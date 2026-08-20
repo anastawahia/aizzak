@@ -29,7 +29,11 @@ from app.framework.agent_runtime.plugin_loader import (
     PluginLoadReport,
 )
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
-from app.framework.agent_runtime.source_label import format_labeled_chunk
+from app.framework.agent_runtime.source_label import (
+    LabeledChunk,
+    format_context_block,
+    format_labeled_chunk,
+)
 
 __all__ = [
     "AgentDependencies",
@@ -44,6 +48,7 @@ __all__ = [
     "FilesAccess",
     "InMemoryAgentRegistry",
     "KnowledgeAccess",
+    "LabeledChunk",
     "MediaRequesting",
     "PluginFailure",
     "PluginLoadReport",
@@ -51,6 +56,7 @@ __all__ = [
     "RequestedMediaView",
     "ResolvedLLM",
     "RetrievedChunkView",
+    "format_context_block",
     "format_labeled_chunk",
     "read_text_file",
 ]

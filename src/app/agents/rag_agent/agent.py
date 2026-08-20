@@ -97,7 +97,7 @@ from app.agents.rag_agent.manifest import METADATA
 from app.agents.rag_agent.prompts import SYSTEM_PROMPT
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
 from app.framework.agent_runtime.deps_ports import RetrievedChunkView, RoutedAnswerView
-from app.framework.agent_runtime.source_label import format_labeled_chunk
+from app.framework.agent_runtime.source_label import format_context_block
 from app.framework.errors import AppError, ValidationError
 from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
@@ -535,15 +535,19 @@ class RagAgent(BaseAgent):
         if chunks:
             # Retrieval plan §3.2/P-31 — the source label is added HERE, at
             # display time, above each chunk's own text; the shared unit
-            # (`source_label.format_labeled_chunk`) is the single place that
-            # shape is built, reused later by the internal `context_text`
-            # capability (§3.11, P-39).
-            context = "\n\n".join(
-                format_labeled_chunk(
-                    c.text, file_name=c.file_name, page_number=c.page_number, section=c.section
-                )
-                for c in chunks
-            )
+            # (`source_label.format_context_block`) is the single place that
+            # shape is built, and since plan row 19 the knowledge module's
+            # internal `context_text` capability (§3.11, P-39) renders the
+            # SAME block through the SAME call. The join moved into that unit
+            # with row 19 for the reason §3.2 gives ("لا صيغتان تنحرفان"): a
+            # separator spelt at this call site would have been a second
+            # format waiting to drift from the module's.
+            #
+            # `chunks` arrives descending and already truncated (§3.7), and
+            # nothing here re-orders it — the most relevant chunk stays
+            # `[#1]`, at the TOP of the context. `LongContextReorder` is a
+            # rejected design, not an omission (§3.7, §7).
+            context = format_context_block(chunks)
             system = f"{system}\n\nContext:\n{context}"
         return [
             LlmMessage(role="system", content=system),

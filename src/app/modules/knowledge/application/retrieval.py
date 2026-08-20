@@ -150,6 +150,20 @@ This is observability, NOT contract: س-25 = أ keeps ``stages`` out of the
 response models, out of ``openapi.yaml`` and out of the streaming contract
 (the stages expose index structure and would need permission scoping — plan
 §7).
+
+**``context_text`` as an INTERNAL capability (plan step 19, ``P-39``;
+retrieval plan §3.11, س-25 = أ).** ``RetrievalResult.context_text`` renders
+this call's delivered ``chunks`` as the one context block a model would be
+sent — through ``format_context_block``, §3.2's single shared formatting
+unit, which is the very same call the RAG agent's synthesis path makes. That
+sharing is the point of the step and of §3.2's "لا صيغتان تنحرفان": there is
+one place the block's shape (label, then text, blank line between chunks)
+is decided, so the internal context and the prompt context cannot drift into
+two formats. It rides the SAME س-25 rule as ``stages`` above — a property on
+an application-layer dataclass that no port returns, absent from every
+response model, from ``openapi.yaml`` and from the ``token``/``final``
+streaming contract — and, like the two confidence signals, it is READY
+rather than consumed: no caller asks for it today.
 """
 
 from __future__ import annotations
@@ -158,7 +172,10 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from app.framework.agent_runtime.source_label import format_labeled_chunk
+from app.framework.agent_runtime.source_label import (
+    format_context_block,
+    format_labeled_chunk,
+)
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.observability import get_logger
@@ -319,11 +336,58 @@ class RetrievalResult:
     over EVERY hit that leg returned — not just the ones that survived
     relevance-filtering/truncation into ``chunks``. ``None`` means that leg
     returned no hits at all (an honestly absent signal, never ``0.0``).
+
+    ``context_text`` is the third thing this carrier exists for (plan row 19,
+    ``P-39``) — see its own docstring. Like the two signals it is INTERNAL:
+    this dataclass is an application-layer type that never crosses the
+    module's inbound port (``KnowledgeRetrievalService.retrieve`` passes on
+    ``.chunks`` and nothing else), which is precisely what makes it the right
+    home for a capability س-25 = أ keeps out of the contract.
     """
 
     chunks: list[RetrievedChunk]
     best_dense_score: float | None
     best_bm25_score: float | None
+
+    @property
+    def context_text(self) -> str:
+        """This result's ``chunks`` rendered as the ONE context block a
+        consumer would send to a model — ``P-39``, plan row 19, §3.11:
+        "``context_text`` جاهز يُبنى بوحدة التنسيق نفسها (§3.2) ويُستعمَل
+        داخل الوحدة — ولا يظهر في ``openapi.yaml``".
+
+        **The same formatting unit, not a second one.** It calls
+        ``format_context_block`` (``framework/agent_runtime/source_label.py``)
+        — the identical function the RAG agent's synthesis path calls to
+        build the ``Context:`` block of its system prompt, over the identical
+        per-chunk ``format_labeled_chunk`` the context budget already
+        measures through ``_labeled_text``. §3.2 asks for one source of truth
+        for the source label so the two paths can never diverge ("لا صيغتان
+        تنحرفان"); one shared call is the only way to make that structurally
+        true rather than a comment two call sites promise to honour.
+
+        **Order: descending, then cut — the most relevant chunk is ``[#1]``**
+        (§3.7). ``chunks`` is already the best-first, budget-fitted,
+        ``k``-truncated prefix ``execute`` returns, and nothing here re-sorts
+        it. ``LongContextReorder`` (which moves the strongest chunk to the
+        END) is an explicitly rejected design that hurts ≤7B models — a
+        design note in §3.7/§7, never code.
+
+        **INTERNAL, and internal by construction** (س-25 = أ): a computed
+        property on an application-layer dataclass that no port returns. It
+        is absent from ``RetrievedChunk``, from ``RetrievedChunkOut``, from
+        ``openapi.yaml`` and from the agent's ``token``/``final`` streaming
+        contract — §7 records the reason (the assembled context exposes index
+        structure and would need permission scoping of its own).
+
+        Computed on demand rather than stored: the two live callers of
+        ``execute`` want ``chunks``, so a retrieval that nobody asks a context
+        for pays nothing, and a stored copy would be a second thing to keep
+        in step with ``chunks``. Empty ``chunks`` gives ``""`` — the honest
+        "no context", which is the trust gate's condition (plan row 5,
+        ``P-33``), never a manufactured sentence.
+        """
+        return format_context_block(self.chunks)
 
 
 class RetrieveContext:
@@ -840,6 +904,13 @@ def _labeled_text(chunk: RetrievedChunk) -> str:
     package both this module and the agents layer may import (its own module
     docstring names this exact second consumer), so there is no second copy
     of the label's shape to drift.
+
+    Per-chunk on purpose, while ``RetrievalResult.context_text`` (plan step
+    19, ``P-39``) renders the whole block: the budget has to measure each
+    candidate SEPARATELY to know where to cut, and the block is what survives
+    that cut. They agree by construction, since ``format_context_block`` is
+    ``format_labeled_chunk`` applied per chunk and joined — so what the
+    budget counted is exactly what the context carries, plus the separators.
     """
     return format_labeled_chunk(
         chunk.text,

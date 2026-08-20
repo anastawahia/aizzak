@@ -31,6 +31,8 @@ from app.framework.errors import AppError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
+from app.modules.knowledge.application.retrieval import RetrievalResult
+from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 # --------------------------------------------------------------------------- #
 # Fakes + builders                                                            #
@@ -969,3 +971,90 @@ async def test_drives_cleanly_through_the_lifecycle_executor() -> None:
     assert any(e.type == "token" for e in events)
     assert events[-1].type == "final"
     assert not any(e.type == "error" for e in events)
+
+
+# --------------------------------------------------------------------------- #
+# One format, two paths (retrieval plan §3.2, rows ٢ + ١٩ — `P-31`/`P-39`)    #
+# --------------------------------------------------------------------------- #
+# §3.2 asks for "وحدة تنسيق واحدة يتقاسمها مسار التوليف ومسار `context_text`
+# الداخليّ — لا صيغتان تنحرفان". The tests below are the enforcement: they put
+# the SAME chunk data through the agent's synthesis path and through the
+# knowledge module's internal `context_text`, and demand the identical string.
+_SHARED_CHUNK_DATA = (
+    # (chunk_id, text, file_name, page_number, section)
+    ("c1", "Paris is the capital of France.", "atlas.pdf", 12, "Capitals"),
+    ("c2", "Lyon is the third largest city.", "atlas.pdf", None, "Cities"),
+    ("c3", "An older point carries no citation fields at all.", None, None, None),
+)
+
+
+async def test_the_prompt_context_and_the_modules_context_text_are_the_same_string() -> None:
+    """The drift guard. The agent renders its ``Context:`` block and
+    ``RetrievalResult.context_text`` renders the internal one — from the same
+    chunks, through the same ``format_context_block``. If either side ever
+    grew a formatter, a separator or a label of its own, these two strings
+    would stop matching and this test would fail. That is the whole of what
+    §3.2's "one source of truth" buys, made checkable.
+
+    Both sides are built from ``_SHARED_CHUNK_DATA``, so the inputs cannot
+    disagree either — only the RENDERINGS are under test."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[
+            FakeChunk(chunk_id, text, file_name=file_name, page_number=page, section=section)
+            for chunk_id, text, file_name, page, section in _SHARED_CHUNK_DATA
+        ]
+    )
+    internal = RetrievalResult(
+        chunks=[
+            RetrievedChunk(
+                document_id="doc-1",
+                chunk_id=chunk_id,
+                text=text,
+                score=0.9,
+                file_name=file_name,
+                page_number=page,
+                section=section,
+            )
+            for chunk_id, text, file_name, page, section in _SHARED_CHUNK_DATA
+        ],
+        best_dense_score=None,
+        best_bm25_score=None,
+    )
+
+    await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    system_content = llm.stream_calls[0][0][0].content
+    _, heading, prompt_context = system_content.partition("\n\nContext:\n")
+
+    assert heading  # the synthesis path really did compose a context block
+    assert prompt_context == internal.context_text
+    # Not vacuous: the §3.2 label shape, including its two degradations, is
+    # actually present in the string both sides produced.
+    assert "[atlas.pdf p.12 | section: Capitals]" in prompt_context
+    assert "[atlas.pdf | section: Cities]" in prompt_context
+    assert "[unknown]" in prompt_context
+    # §3.7 — descending then truncate: the top-ranked chunk opens the context
+    # a model reads. `LongContextReorder` would put it last; it is a rejected
+    # design note (§3.7, §7), never code.
+    assert prompt_context.startswith("[atlas.pdf p.12 | section: Capitals]\nParis is the capital")
+
+
+async def test_the_assembled_context_never_crosses_the_streaming_contract() -> None:
+    """س-25 = أ: ``context_text`` is INTERNAL. The agent may send the block to
+    the MODEL (system prompt), and must never emit it — or a field named for
+    it — on the ``token``/``final`` stream a client reads. §7 records why: an
+    assembled context exposes index structure and would need permission
+    scoping of its own."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=["Paris"],
+        chunks=[FakeChunk("c1", "Paris is the capital of France.", file_name="atlas.pdf")],
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert events[-1].data["text"] == "Paris"  # only what the LLM streamed
+    for event in events:
+        assert "context_text" not in event.data
+        rendered = str(event.data)
+        assert "[atlas.pdf]" not in rendered
+        assert "Paris is the capital of France." not in rendered
