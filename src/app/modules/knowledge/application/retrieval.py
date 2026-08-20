@@ -16,6 +16,7 @@ the only extra work needed.
 Pipeline shape (retrieval plan §3.7, plan step 8's ``P-26`` + plan step 9's
 ``P-34`` + plan step 10's ``P-35``, with plan step 20's ``P-23`` on the first
 arrow): fusion → **MMR keeps a diverse 3x k** → ``filter_relevant`` →
+*(optional cross-encoder rerank — plan step 21, ``P-24``, off as shipped)* →
 **replace with parent text, dedup by parent** → **context budget** → final
 ``k``. ``execute`` widens back OUT to ``3 * k`` candidates right after RRF
 fusion (``RetrievalTuning.fusion_retention``, decoupled from
@@ -49,6 +50,16 @@ pick has nothing to be redundant with, so the most relevant chunk is still
 with ``with_vectors=True``, so every candidate's full dense vector crosses the
 network. The scope is the widened ``search_k``/``sparse_k`` — never the corpus
 — and the vectors are read once here and never stored.
+
+**The reranker (plan step 21, ``P-24``; retrieval plan §3.10, decision
+س-21).** OFF as this ships (``RetrievalTuning.rerank_enabled = False``), and
+when a deployment turns it on it re-orders the ~10-20 candidates that
+survived ``filter_relevant`` with a cross-encoder reached over HTTP —
+``RerankProvider``, whose only adapter keeps its model weights in a separate
+service and out of every image this repository builds. It cannot shorten an
+answer (the ``final_top_n`` guard, ``_apply_rerank``) and it cannot fail one
+(an outage degrades to the unreranked order). ``_rerank`` has the placement
+argument, the guard and the failure behaviour in full.
 
 **Parent expansion (plan step 9, ``P-34``) — critical, not an optimisation
 (§3.7 verbatim): with the sentence-window approach excluded, this is the
@@ -202,9 +213,10 @@ from app.framework.agent_runtime.source_label import (
     format_labeled_chunk,
 )
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ValidationError
+from app.framework.errors import AppError, ValidationError
 from app.framework.observability import get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
+from app.framework.ports.rerank_provider import RerankedDocument, RerankProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorHit
 from app.framework.types import Json
 from app.modules.knowledge.domain.collections import knowledge_collection
@@ -258,7 +270,8 @@ class RetrievalTuning:
     ``max_search_candidates`` ``max_sparse_candidates`` ``fusion_retention``
     ``default_k`` ``min_dense_score`` ``min_bm25_score`` ``min_fused_score``
     ``relative_floor`` ``jaccard_threshold`` ``max_parent_chunk_chars``
-    ``mmr_lambda`` ``mmr_overfetch`` come
+    ``mmr_lambda`` ``mmr_overfetch`` ``rerank_enabled`` ``rerank_candidates``
+    come
     from ``Settings.retrieval``; ``max_k`` ``max_context_chars``
     ``max_context_tokens`` come from ``Settings.limits`` (``max_rag_k`` and
     the dual budget are platform GUARDRAILS — 07-nfr-slo §4 — that other
@@ -291,6 +304,8 @@ class RetrievalTuning:
     max_parent_chunk_chars: int = 4_000
     mmr_lambda: float = 0.7
     mmr_overfetch: int = 6
+    rerank_enabled: bool = False
+    rerank_candidates: int = 20
     max_context_chars: int = 12_000
     max_context_tokens: int = 3_000
 
@@ -353,6 +368,13 @@ _STAGE_LOG_DEFAULTS: Mapping[str, object] = {
     # whether `mmr_overfetch` is paying for the vectors it puts on the wire.
     "mmr_count": 0,
     "relevant_count": 0,
+    # How many candidates the reranker (plan row 21, `P-24`) actually placed.
+    # `0` on every shipped deployment — the stage is OFF by default — and `0`
+    # too when it ran and failed, which is not ambiguous: a failure emits its
+    # own `knowledge.rerank_degraded` warning beside this record, and nothing
+    # emits anything when the switch is off. Below the number of candidates
+    # offered is the starvation guard doing its work (`_apply_rerank`).
+    "rerank_count": 0,
     "widened_count": 0,
     "budgeted_count": 0,
 }
@@ -445,6 +467,14 @@ class RetrieveContext:
     domain (س-24). Construction-time rather than a parameter of ``execute``
     is the shape that decision demands: a per-call argument would BE a
     per-request override, which س-24 rules out (option ب, rejected — plan §7).
+
+    ``reranker`` (plan step 21, ``P-24``, decision س-21) is the optional
+    cross-encoder — see ``_rerank``. ``None`` is the SHIPPED wiring: with
+    ``RetrievalTuning.rerank_enabled`` off, the Composition Root builds no
+    rerank client at all, so a deployment that does not want the latency pays
+    not even a connection for it. A constructor argument for the same reason
+    ``tuning`` is one: enabling a reranker is a DEPLOYMENT's decision, and
+    ``execute`` has no parameter a request could reach it through.
     """
 
     def __init__(
@@ -454,11 +484,13 @@ class RetrieveContext:
         documents: ParentChunkRepository,
         *,
         tuning: RetrievalTuning = _DEFAULT_TUNING,
+        reranker: RerankProvider | None = None,
     ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
         self._documents = documents
         self._tuning = tuning
+        self._reranker = reranker
 
     async def execute(
         self,
@@ -753,6 +785,12 @@ class RetrieveContext:
         )
         stages["relevant_count"] = len(relevant)
 
+        # The cross-encoder reranker (plan step 21, `P-24`, decision س-21) --
+        # OFF unless a deployment turned it on, and a no-op then. See
+        # `_rerank` for the placement argument, the starvation guard and the
+        # degrade-on-outage behaviour.
+        relevant = await self._rerank(relevant, query=query, stages=stages)
+
         # Parent expansion (plan step 9, `P-34`) -- runs over the FULL
         # `relevant` list (up to `retain_k` deep), BEFORE the caller's `k` is
         # applied: see the module docstring for why this is critical rather
@@ -800,6 +838,133 @@ class RetrieveContext:
         return RetrievalResult(
             chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
         )
+
+    async def _rerank(
+        self, candidates: Sequence[ScoredChunk], *, query: str, stages: dict[str, object]
+    ) -> list[ScoredChunk]:
+        """Re-order the surviving candidates with a cross-encoder (plan step
+        21, ``P-24``; retrieval plan §3.10, decision س-21).
+
+        **Off unless a deployment says otherwise.** ``rerank_enabled`` ships
+        ``False`` (س-21: "مطفأ افتراضيًّا كما في alpha"), because the accuracy
+        it buys is paid for in latency on EVERY request — §6 risk ٦, "التفعيل
+        قرار نشر واعٍ بثمنه". The flag is read off the injected
+        ``RetrievalTuning``, so it is a ``Settings`` value (س-24) and there is
+        nothing on ``execute`` a request could flip: §7 records that a
+        per-request toggle "يحتاج قرارًا جديدًا" and is not this step's to
+        invent. ``self._reranker is None`` is checked beside it because the
+        Composition Root does not even build a client for a disabled stage —
+        the two say the same thing from the two ends of the wiring, and
+        neither alone would be honest.
+
+        **Where it sits, and why here.** After ``filter_relevant`` and before
+        parent expansion:
+
+        * **After fusion and MMR**, because §3.10's scope is "أوّل 10-20
+          مرشّحًا بعد الدمج، لا الكوربوس" — a cross-encoder reads every
+          (query, document) pair, so it may only ever see a short list.
+        * **After MMR specifically**, not before it. MMR decides MEMBERSHIP
+          (which candidates survive the widened pool) from the FUSED RRF
+          score, and — by plan step 20's own rule — nothing overwrites
+          ``FusedChunk.score``. A rerank placed before MMR would therefore be
+          erased by it: MMR would re-sort on the RRF numbers the reranker
+          never touched. Reranking after leaves the two stages doing
+          complementary jobs, diversity then precision, neither undoing the
+          other.
+        * **After ``filter_relevant``**, so the near-duplicates the Jaccard
+          gate removes never cross the wire — the cheapest way to spend less
+          of the latency §6 risk ٦ is about.
+        * **Before parent expansion**, because everything from there on is
+          prefix-sensitive: dedup-by-parent keeps the FIRST candidate to
+          reach a parent, the context budget keeps a best-first PREFIX, and
+          the last line keeps ``[:k]``. An ordering decided later would be
+          decided on a list those stages had already cut the other way.
+          Placing it here also means the reranker reads each candidate's own
+          LEAF text — window-sized, which is what a cross-encoder wants —
+          rather than a substituted parent section capped at 4000 characters.
+
+        **The starvation guard (§3.10, ported from alpha): "ألّا يجوّع المُعيد
+        ``final_top_n`` — إن أعاد أقلّ من المطلوب يُكمَّل من ترتيب RRF ولا
+        يُقصَّر الجواب".** This stage NEVER shortens its input: whatever the
+        reranker placed comes first in its order, and every candidate it did
+        not return follows in the order it already had (RRF as re-ordered by
+        MMR — the ranking this pipeline would have used with the reranker
+        off). ``_apply_rerank`` is that rule, and it is a pure function so
+        the property is provable without a network. A reranker that answers
+        with two entries out of fifteen therefore costs the answer nothing:
+        ``k`` chunks still leave ``execute``.
+
+        **An outage costs the improvement, never the answer.** Every failure
+        the adapter can produce — timeout, connection refused, 5xx,
+        off-contract body — arrives here as an ``AppError``
+        (``external_rerank.py`` translates the lot, so no raw ``httpx``
+        exception can slip past this ``except``). It is logged as a WARNING
+        with the code and swallowed, and retrieval carries on with the exact
+        ordering it would have produced with the switch off. The alternative
+        — letting an optional accuracy stage fail a retrieval that had
+        already found its answer — would make enabling the reranker a
+        reduction in availability, which is not what س-21 asked to be able to
+        turn on.
+
+        Note what does NOT move: ``ScoredChunk.score`` keeps its fused RRF
+        value. The cross-encoder's own score is on a third scale entirely,
+        and ``RetrievedChunk.score`` is a PUBLISHED field (03 §2) — writing a
+        different quantity into it would change what every consumer thinks it
+        is reading. Like MMR, this stage decides ORDER.
+        """
+        if not self._tuning.rerank_enabled or self._reranker is None or not candidates:
+            return list(candidates)
+        # §3.10's scope, as a slice: only the head is offered, and whatever
+        # falls past `rerank_candidates` keeps its place after it. The tail is
+        # never dropped -- this stage removes nothing, it only re-orders.
+        scope = list(candidates[: self._tuning.rerank_candidates])
+        tail = list(candidates[len(scope) :])
+        try:
+            ranked = await self._reranker.rerank(query, [chunk.text for chunk in scope])
+        except AppError as exc:
+            # The whole of "a reranker outage cannot take down a retrieval
+            # that would otherwise have answered". `error_code` rather than
+            # `code`: `extra` keys land on the `LogRecord`, and a name of our
+            # own cannot collide with one logging reserves.
+            log.warning(
+                "knowledge.rerank_degraded",
+                extra={"error_code": exc.code, "rerank_candidates": len(scope)},
+            )
+            return list(candidates)
+        stages["rerank_count"] = len(ranked)
+        return _apply_rerank(scope, ranked) + tail
+
+
+def _apply_rerank(
+    candidates: Sequence[ScoredChunk], ranked: Sequence[RerankedDocument]
+) -> list[ScoredChunk]:
+    """Apply a reranker's placements to ``candidates`` WITHOUT losing any of
+    them — the "ألّا يجوّع ``final_top_n``" guard of retrieval plan §3.10, as
+    a pure function.
+
+    The reranked candidates come first, in the reranker's order; every
+    candidate it left unplaced follows in ``candidates``' own order, which is
+    the RRF/MMR ranking the pipeline would have used had the reranker been
+    off. So ``len(result) == len(candidates)`` always, and the stages
+    downstream — parent dedup, the context budget, the final ``[:k]`` — have
+    exactly as much to work with as they did before. "يُكمَّل من ترتيب RRF ولا
+    يُقصَّر الجواب", verbatim.
+
+    Out-of-range and repeated indices are already impossible
+    (``external_rerank._parse_response`` rejects both at the boundary), and
+    they are skipped here anyway: this function is the pipeline's own
+    invariant, and an invariant that depends on a remote service behaving is
+    not one.
+    """
+    reordered: list[ScoredChunk] = []
+    placed: set[int] = set()
+    for document in ranked:
+        if not 0 <= document.index < len(candidates) or document.index in placed:
+            continue
+        placed.add(document.index)
+        reordered.append(candidates[document.index])
+    reordered.extend(candidate for index, candidate in enumerate(candidates) if index not in placed)
+    return reordered
 
 
 def _log_stages(

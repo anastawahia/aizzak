@@ -31,11 +31,23 @@ def test_port_value_objects_construct() -> None:
     sparse = ports.SparseVector(indices=[1], values=[0.5])
     assert (sparse.indices, sparse.values) == ([1], [0.5])
 
+    # rag-retrieval-plan.md §3.10 (`P-24`) -- a placement is an INDEX back
+    # into the caller's own list, never text: the caller keeps its records and
+    # merely re-orders them, which is what makes the "never starve
+    # `final_top_n`" guard expressible on the caller's side.
+    ranked = ports.RerankedDocument(index=2, score=0.87)
+    assert (ranked.index, ranked.score) == (2, 0.87)
+
 
 def test_port_protocols_expose_expected_methods() -> None:
     for proto, methods in (
         (ports.LLMProvider, ("complete", "stream", "supports")),
         (ports.EmbeddingProvider, ("embed", "dimensions")),
+        # rag-retrieval-plan.md §3.10 (`P-24`, س-21) -- ONE method, and no
+        # `model`/`api_key` pair: nothing routes a rerank through
+        # `ProviderResolver`, so DD-13's resolver-driven shape does not apply
+        # (the port's own docstring has the argument).
+        (ports.RerankProvider, ("rerank",)),
         (ports.VectorStore, ("ensure_collection", "upsert", "search", "delete")),
         (ports.StorageProvider, ("put", "get", "delete", "presign_get", "presign_put")),
         (ports.CacheProvider, ("get", "set", "delete", "incr", "expire")),

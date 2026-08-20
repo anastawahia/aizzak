@@ -183,6 +183,46 @@ class EmbeddingServiceSettings(BaseModel):
     embedding_max_input_tokens: int = 512
 
 
+class RerankServiceSettings(BaseModel):
+    """The cross-encoder rerank service (rag-retrieval-plan.md §3.10,
+    ``P-24``, decision س-21): WHERE the reranker is and how patiently to wait
+    for it. WHETHER to use it at all is ``RetrievalSettings.rerank_enabled``
+    below — a retrieval decision, so it rides row 18's tuning seam with every
+    other retrieval knob, while this class is the transport the way
+    ``EmbeddingServiceSettings`` is.
+
+    **Nothing here loads a model.** §3.10's rule is "لا أوزان داخل صورة
+    العامل", and ``url`` is the whole of how it is kept: the reranker is a
+    separate HTTP deployable, reached by ``ExternalRerankProvider`` exactly
+    as ``ollama`` and ``embedding_service`` are reached, so no cross-encoder
+    weight and no torch dependency enters the API or worker image.
+
+    ``model`` is pinned here rather than resolved per call — this deployment
+    talks to exactly one rerank service serving exactly one model, the same
+    fact ``EmbeddingServiceSettings.model``/``.dimensions`` pin, and no
+    ``PROVIDER_ROUTING`` namespace routes a rerank.
+
+    ⚠️ ``timeout_s`` is DELIBERATELY short and ``max_retries`` DELIBERATELY
+    zero, and both are §6 risk ٦ ("مُعيد الترتيب يبطّئ كلّ طلب") answered in
+    numbers. Reranking is an accuracy improvement the pipeline can always do
+    without: a retry would spend a second helping of the user's latency on an
+    OPTIONAL stage, and a long timeout would let a sick service hold every
+    answer hostage. One attempt, briefly, then retrieval carries on with the
+    order it already had (``RetrieveContext._rerank``).
+
+    Not env-editable, like ``RetrievalSettings`` and ``Limits`` beside it —
+    05-rbac-config-secrets §2 owns the flat env-key list and widening it is a
+    configuration-contract decision of its own (recorded in the plan's §7).
+    """
+
+    model_config = _FROZEN
+
+    url: str = "http://rerank:8080"
+    model: str = "BAAI/bge-reranker-v2-m3"
+    timeout_s: float = 5.0
+    max_retries: int = 0
+
+
 class EventSettings(BaseModel):
     model_config = _FROZEN
 
@@ -416,6 +456,30 @@ class RetrievalSettings(BaseModel):
     # `with_vectors=True` now ships over the wire per query -- §3.9's declared
     # price, §6 risk #5's accepted one.
     mmr_overfetch: int = 6
+    # The cross-encoder reranker (plan row 21, `P-24`, decision س-21) — the
+    # deployment switch س-21 asked for in as many words ("مع تفعيل وإيقاف"),
+    # and **OFF as it ships**, "مطفأ افتراضيًّا كما في alpha" (§3.10).
+    #
+    # Turning it on buys accuracy and costs LATENCY ON EVERY REQUEST — §6
+    # risk ٦ — so it is a conscious deployment decision, never a request's.
+    # There is no per-request equivalent and س-24 is why: configuration lives
+    # here and reaches the pipeline as an argument, so `RetrieveContext.
+    # execute` has nothing to toggle. §7 records that a per-request toggle
+    # "يحتاج قرارًا جديدًا" and is not this row's to invent.
+    #
+    # A `bool` among floats and counts, and س-22 does not reach it either: it
+    # admits or rejects a STAGE, not a candidate by comparing a score to a
+    # number nobody calibrated.
+    rerank_enabled: bool = False
+    # How many candidates may cross the wire to the reranker — §3.10's scope,
+    # "أوّل 10-20 مرشّحًا بعد الدمج، لا الكوربوس", as a number. A cross-encoder
+    # reads every (query, document) pair, so this is the cost ceiling of the
+    # whole stage; at the shipped `k` the pipeline offers it ~15 anyway
+    # (`fusion_retention * default_k`) and this caps the tail of a larger `k`.
+    # A COUNT, like `max_sparse_candidates` and `mmr_overfetch` — so س-22
+    # (which governs SCORES) does not reach it, and, like them, it is
+    # unmeasured: reviewing it needs the evaluation set `P-38` waits for.
+    rerank_candidates: int = 20
 
 
 class Limits(BaseModel):
@@ -592,6 +656,13 @@ class Settings(BaseModel):
     firebase: FirebaseSettings = Field(default_factory=FirebaseSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     embedding_service: EmbeddingServiceSettings = Field(default_factory=EmbeddingServiceSettings)
+    # rag-retrieval-plan.md §4 row 21 (`P-24`, س-21) — WHERE the cross-encoder
+    # rerank service is. Beside `embedding_service` because it is the same
+    # kind of thing: a first-party internal HTTP dependency that keeps its
+    # model weights out of this image. WHETHER it is called at all is
+    # `retrieval.rerank_enabled` (`False` as shipped), and while that stays
+    # off nothing here is even read — the Composition Root builds no client.
+    rerank_service: RerankServiceSettings = Field(default_factory=RerankServiceSettings)
     events: EventSettings = Field(default_factory=EventSettings)
     health: HealthSettings = Field(default_factory=HealthSettings)
     integrations: IntegrationsSettings = Field(default_factory=IntegrationsSettings)

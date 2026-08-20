@@ -32,9 +32,10 @@ import pytest
 
 from app.framework.agent_runtime.source_label import format_context_block, format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ValidationError
+from app.framework.errors import AppError, ValidationError
 from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.embedding_provider import EmbeddingResult
+from app.framework.ports.rerank_provider import RerankedDocument
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.settings.settings import Limits, RetrievalSettings
 from app.framework.types import Json
@@ -3464,6 +3465,8 @@ def test_retrieval_tuning_defaults_mirror_settings_field_for_field() -> None:
             max_parent_chunk_chars=settings.max_parent_chunk_chars,
             mmr_lambda=settings.mmr_lambda,
             mmr_overfetch=settings.mmr_overfetch,
+            rerank_enabled=settings.rerank_enabled,
+            rerank_candidates=settings.rerank_candidates,
             max_context_chars=limits.max_context_chars,
             max_context_tokens=limits.max_context_tokens,
         )
@@ -3471,7 +3474,7 @@ def test_retrieval_tuning_defaults_mirror_settings_field_for_field() -> None:
     )
     # Every field of the dataclass is named above -- so a NEW knob cannot be
     # added to one side alone and still pass this test.
-    assert len(dataclasses.fields(RetrievalTuning)) == 19
+    assert len(dataclasses.fields(RetrievalTuning)) == 21
 
 
 def test_retrieval_tuning_is_the_only_configuration_seam_no_getenv_anywhere() -> None:
@@ -3779,6 +3782,7 @@ _STAGE_LOG_FIELDS = {
     "origin_counts",
     "mmr_count",
     "relevant_count",
+    "rerank_count",
     "widened_count",
     "budgeted_count",
     "delivered_chunk_ids",
@@ -4242,3 +4246,327 @@ def test_context_text_never_reaches_a_published_contract() -> None:
     # The port DTO the API renders stays the four+three field shape row 1
     # fixed (`test_retrieved_chunk_contract.py` pins all three layers to it).
     assert "context_text" not in {f.name for f in dataclasses.fields(RetrievedChunk)}
+
+
+# --------------------------------------------------------------------------- #
+# The cross-encoder reranker (plan §3.10 / §4 row 21, `P-24`, س-21)            #
+# --------------------------------------------------------------------------- #
+class SpyReranker:
+    """A structural ``RerankProvider``. ``order`` is the indices it places,
+    best first -- a SHORT list is how a test seeds "the service returned
+    fewer than it was offered", and ``failure`` is how it seeds an outage.
+    Every call's ``(query, documents)`` is recorded, so "was it called at
+    all?" is answerable, which is what the OFF-by-default proof needs."""
+
+    provider = "spy-rerank"
+
+    def __init__(
+        self, order: Sequence[int] | None = None, *, failure: Exception | None = None
+    ) -> None:
+        self._order = list(order or [])
+        self._failure = failure
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def rerank(self, query: str, documents: Sequence[str]) -> list[RerankedDocument]:
+        self.calls.append((query, list(documents)))
+        if self._failure is not None:
+            raise self._failure
+        return [
+            RerankedDocument(index=index, score=1.0 - position / 100.0)
+            for position, index in enumerate(self._order)
+            if index < len(documents)
+        ]
+
+
+class ReverseReranker:
+    """A structural ``RerankProvider`` that simply INVERTS whatever order it
+    is handed -- the least ambiguous way to prove the stage changes the
+    delivered order at all, whatever the corpus scores."""
+
+    provider = "reverse-rerank"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def rerank(self, query: str, documents: Sequence[str]) -> list[RerankedDocument]:
+        self.calls.append((query, list(documents)))
+        return [
+            RerankedDocument(index=index, score=float(index))
+            for index in reversed(range(len(documents)))
+        ]
+
+
+_RERANK_ON = replace(_TUNING, rerank_enabled=True)
+
+_RERANK_TEXTS = (
+    "the annual maintenance policy covers scheduled inspections",
+    "maintenance responsibilities are shared between both parties",
+    "the policy defines an escalation path for urgent repairs",
+    "scheduled inspections happen twice per calendar year",
+)
+
+_RERANK_QUERY = "maintenance policy"
+
+
+async def _rerank_corpus() -> tuple[FakeEmbeddings, FakeHybridVectors]:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    await _seed_corpus(vectors, _ctx("ws1"), "doc-1", _RERANK_TEXTS)
+    return embeddings, vectors
+
+
+async def _retrieve(
+    embeddings: FakeEmbeddings,
+    vectors: FakeHybridVectors,
+    *,
+    tuning: RetrievalTuning = _TUNING,
+    reranker: Any = None,
+    parents: dict[str, ParentChunkText] | None = None,
+) -> RetrievalResult:
+    return await RetrieveContext(
+        embeddings,
+        vectors,
+        FakeParentRepo(parents),
+        tuning=tuning,
+        reranker=reranker,
+    ).execute(_ctx("ws1"), space_id=None, query=_RERANK_QUERY, model="m", api_key="k")
+
+
+def test_the_reranker_ships_off() -> None:
+    """س-21 asked for the ABILITY to switch it on ("مع تفعيل وإيقاف") and
+    §3.10 says which way it ships: "مطفأ افتراضيًّا كما في alpha". Read on
+    both sides of row 18's seam, because the flag has to be off in
+    ``Settings`` (what a deployment gets) AND in the injected value object
+    (what a directly-constructed use-case gets)."""
+    assert RetrievalSettings().rerank_enabled is False
+    assert _TUNING.rerank_enabled is False
+
+
+async def test_a_disabled_reranker_is_never_called_even_when_one_is_injected() -> None:
+    """The switch is honoured by the CODE, not merely by the wiring that
+    usually leaves ``reranker=None``: a use-case handed a reranker under the
+    shipped configuration must still not spend a request on it (§6 risk 6)."""
+    embeddings, vectors = await _rerank_corpus()
+    spy = SpyReranker([3, 2, 1, 0])
+
+    result = await _retrieve(embeddings, vectors, reranker=spy)
+
+    assert spy.calls == []
+    assert result.chunks
+
+
+def test_execute_exposes_no_per_request_rerank_toggle() -> None:
+    """§7, verbatim: "تفعيل مُعيد الترتيب لكلّ طلب ... يحتاج قرارًا جديدًا".
+    س-21 asked for a DEPLOYMENT switch and س-24 confined configuration to
+    ``Settings``, so ``execute`` must offer a caller no way to turn the
+    reranker on or off -- proven on the signature, where such a parameter
+    would have to appear."""
+    parameters = set(inspect.signature(RetrieveContext.execute).parameters)
+
+    assert not {name for name in parameters if "rerank" in name}
+    assert parameters == {
+        "self",
+        "ctx",
+        "query",
+        "model",
+        "api_key",
+        "k",
+        "document_ids",
+        "space_id",
+    }
+
+
+async def test_an_enabled_reranker_reorders_the_delivered_chunks() -> None:
+    """The stage does something: with the same corpus and the same query, a
+    reranker that inverts the order changes what arrives at ``[#1]``. It sits
+    AFTER MMR and ``filter_relevant`` and BEFORE parent expansion, so the
+    order it decides is the one the prefix-sensitive stages below honour."""
+    embeddings, vectors = await _rerank_corpus()
+
+    baseline = await _retrieve(embeddings, vectors)
+    reranked = await _retrieve(embeddings, vectors, tuning=_RERANK_ON, reranker=ReverseReranker())
+
+    assert len(baseline.chunks) > 1
+    assert [c.chunk_id for c in reranked.chunks] == [c.chunk_id for c in reversed(baseline.chunks)]
+
+
+async def test_the_reranker_never_starves_the_final_top_n() -> None:
+    """§3.10's ported guard: "ألّا يجوّع المُعيد `final_top_n` — إن أعاد أقلّ من
+    المطلوب يُكمَّل من ترتيب RRF ولا يُقصَّر الجواب".
+
+    The reranker here places ONE candidate out of everything it is offered.
+    The answer must still carry every chunk it carried with the stage off --
+    the placed one first, the rest topped up from the ordering the pipeline
+    already had -- and not a single chunk fewer."""
+    embeddings, vectors = await _rerank_corpus()
+    starving = SpyReranker([2])
+
+    baseline = await _retrieve(embeddings, vectors)
+    result = await _retrieve(embeddings, vectors, tuning=_RERANK_ON, reranker=starving)
+
+    offered = starving.calls[0][1]
+    assert len(offered) > 1  # the premise: it was given more than it returned
+    assert len(result.chunks) == len(baseline.chunks)
+    assert {c.chunk_id for c in result.chunks} == {c.chunk_id for c in baseline.chunks}
+    # The one placement leads; everything else keeps its pre-rerank order.
+    expected = [c.chunk_id for c in baseline.chunks]
+    promoted = expected.pop(2)
+    assert [c.chunk_id for c in result.chunks] == [promoted, *expected]
+
+
+async def test_a_reranker_that_returns_nothing_changes_no_answer() -> None:
+    """The degenerate end of the same guard: an empty ranking is a no-op, not
+    an empty answer."""
+    embeddings, vectors = await _rerank_corpus()
+
+    baseline = await _retrieve(embeddings, vectors)
+    result = await _retrieve(embeddings, vectors, tuning=_RERANK_ON, reranker=SpyReranker([]))
+
+    assert [c.chunk_id for c in result.chunks] == [c.chunk_id for c in baseline.chunks]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        AppError("rerank service call failed", code="common.internal"),
+        ValidationError("rerank documents must not be empty"),
+    ],
+)
+async def test_a_rerank_outage_costs_the_improvement_and_not_the_answer(
+    failure: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Timeout, connection refused, 5xx, off-contract body -- ``external_
+    rerank.py`` folds every one of them into ``AppError``, and this is what
+    the pipeline does with it: warn, and answer exactly as it would have with
+    the switch off. An optional accuracy stage may not turn enabling the
+    reranker into a loss of availability."""
+    embeddings, vectors = await _rerank_corpus()
+
+    baseline = await _retrieve(embeddings, vectors)
+    with caplog.at_level(logging.WARNING, logger=_RETRIEVAL_LOGGER):
+        result = await _retrieve(
+            embeddings,
+            vectors,
+            tuning=_RERANK_ON,
+            reranker=SpyReranker([0], failure=failure),
+        )
+
+    assert [c.chunk_id for c in result.chunks] == [c.chunk_id for c in baseline.chunks]
+    degraded = [r for r in caplog.records if r.getMessage() == "knowledge.rerank_degraded"]
+    assert len(degraded) == 1
+    assert degraded[0].error_code == failure.code
+
+
+async def test_the_reranker_sees_a_bounded_scope_never_the_corpus() -> None:
+    """§3.10: "النطاق: أوّل 10-20 مرشّحًا بعد الدمج، لا الكوربوس". A
+    cross-encoder costs one forward pass per (query, document) pair, so the
+    stage offers at most ``rerank_candidates`` and everything past that keeps
+    its place BEHIND the reranked head -- capped, never dropped."""
+    embeddings, vectors = await _rerank_corpus()
+    spy = SpyReranker([0])
+
+    baseline = await _retrieve(embeddings, vectors)
+    result = await _retrieve(
+        embeddings,
+        vectors,
+        tuning=replace(_RERANK_ON, rerank_candidates=2),
+        reranker=spy,
+    )
+
+    assert len(baseline.chunks) > 2  # the premise: there was a tail to cap off
+    assert len(spy.calls[0][1]) == 2
+    assert len(result.chunks) == len(baseline.chunks)
+
+
+async def test_the_reranker_reads_leaf_text_not_a_widened_parent() -> None:
+    """Placed BEFORE parent expansion, and this is one reason why: a
+    cross-encoder is trained on passage-sized input, while the widened parent
+    is a whole section capped at 4000 characters. What crosses the wire is
+    the candidate's own window-sized leaf text."""
+    embeddings, vectors = await _rerank_corpus()
+    parent = ParentChunkText(id="p1", text="A WHOLE SECTION " * 50)
+    spy = SpyReranker([0])
+
+    await _retrieve(
+        embeddings,
+        vectors,
+        tuning=_RERANK_ON,
+        reranker=spy,
+        parents={chunk_point_id("doc-1", seq): parent for seq in range(len(_RERANK_TEXTS))},
+    )
+
+    offered = spy.calls[0][1]
+    assert offered
+    assert all(text in _RERANK_TEXTS for text in offered)
+
+
+async def test_the_reranker_leaves_the_published_score_on_its_own_scale() -> None:
+    """Like MMR, this stage decides ORDER. ``RetrievedChunk.score`` is a
+    PUBLISHED field (03 §2) carrying the fused RRF number; a cross-encoder
+    score written into it would silently change what every consumer thinks it
+    is reading (and what ``filter_relevant``'s floors compare against)."""
+    embeddings, vectors = await _rerank_corpus()
+
+    baseline = await _retrieve(embeddings, vectors)
+    result = await _retrieve(embeddings, vectors, tuning=_RERANK_ON, reranker=ReverseReranker())
+
+    assert {c.chunk_id: c.score for c in result.chunks} == {
+        c.chunk_id: c.score for c in baseline.chunks
+    }
+
+
+async def test_the_stage_log_reports_the_rerank_placement_count(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Row 17's shape, one count added (row 20's precedent): ``rerank_count``
+    is how many candidates the reranker placed. ``0`` on every shipped
+    deployment, because the stage does not run there at all."""
+    embeddings, vectors = await _rerank_corpus()
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await _retrieve(embeddings, vectors)
+    assert _stage_record(caplog).rerank_count == 0
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await _retrieve(embeddings, vectors, tuning=_RERANK_ON, reranker=SpyReranker([1, 0]))
+    assert _stage_record(caplog).rerank_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# _apply_rerank -- the starvation guard as a pure function                     #
+# --------------------------------------------------------------------------- #
+def _rerank_docs(*indices: int) -> list[RerankedDocument]:
+    return [RerankedDocument(index=index, score=1.0 - i / 10.0) for i, index in enumerate(indices)]
+
+
+@pytest.mark.parametrize(
+    ("placements", "expected"),
+    [
+        # A full ranking: exactly the reranker's order.
+        ((2, 0, 1), ["c", "a", "b"]),
+        # A SHORT ranking: the placement leads, the rest top up in the order
+        # they already had -- the guard, in one line.
+        ((1,), ["b", "a", "c"]),
+        # Nothing placed at all: an identity transform.
+        ((), ["a", "b", "c"]),
+        # Off-contract input the adapter already rejects, defended again here
+        # because an invariant that depends on a remote service behaving is
+        # not an invariant.
+        ((9, 1), ["b", "a", "c"]),
+        ((0, 0, 2), ["a", "c", "b"]),
+    ],
+)
+def test_apply_rerank_never_loses_a_candidate(
+    placements: tuple[int, ...], expected: list[str]
+) -> None:
+    """The whole of §3.10's "ولا يُقصَّر الجواب": whatever the reranker says,
+    what comes out is a PERMUTATION of what went in -- so every stage below
+    (parent dedup, the context budget, the final ``[:k]``) has exactly as
+    much to work with as it did before."""
+    candidates = [_scored("a", "alpha", 0.3), _scored("b", "beta", 0.2), _scored("c", "gamma", 0.1)]
+
+    applied = retrieval_module._apply_rerank(candidates, _rerank_docs(*placements))
+
+    assert [chunk.chunk_id for chunk in applied] == expected
+    assert len(applied) == len(candidates)

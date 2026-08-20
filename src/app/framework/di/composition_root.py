@@ -225,6 +225,10 @@ from app.infrastructure.ai_providers.image.external_image import (
 )
 from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
 from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
+from app.infrastructure.ai_providers.rerank.external_rerank import (
+    ExternalRerankProvider,
+    create_rerank_http_client,
+)
 from app.infrastructure.auth.firebase_auth import FirebaseAuth, create_firebase_http_client
 from app.infrastructure.cache.redis_cache import (
     RedisCache,
@@ -627,6 +631,31 @@ def _build_embedding(settings: Settings) -> tuple[httpx.AsyncClient, ExternalEmb
     embedding_http = create_embedding_http_client(settings.embedding_service)
     embedding = ExternalEmbeddingProvider(embedding_http, settings.embedding_service)
     return embedding_http, embedding
+
+
+def _build_rerank(
+    settings: Settings,
+) -> tuple[httpx.AsyncClient | None, ExternalRerankProvider | None]:
+    """The cross-encoder rerank client + adapter — or NEITHER (rag-retrieval-
+    plan.md §4 row 21, ``P-24``, decision س-21).
+
+    **``(None, None)`` is what ships.** ``Settings.retrieval.rerank_enabled``
+    is ``False`` by default (س-21: "مطفأ افتراضيًّا"), and this returns early
+    on it, so a default deployment builds no client, opens no connection and
+    validates no URL for a service it will never call. Enabling the flag is
+    the ONLY thing that brings the reranker into existence — §6 risk ٦'s
+    "قرار نشر واعٍ بثمنه", expressed as wiring rather than as a comment.
+
+    The flag is read HERE **and** honoured again inside ``RetrieveContext``
+    (``_rerank``): this decides whether an adapter exists at all, that decides
+    whether an existing one is called. Neither alone would be the whole
+    truth — a use-case constructed directly (a test, a script) can be handed
+    a reranker, and it must still respect the configured switch.
+    """
+    if not settings.retrieval.rerank_enabled:
+        return None, None
+    rerank_http = create_rerank_http_client(settings.rerank_service)
+    return rerank_http, ExternalRerankProvider(rerank_http, settings.rerank_service)
 
 
 def _build_metrics_source(
@@ -1033,6 +1062,8 @@ def _retrieval_tuning(retrieval: RetrievalSettings, limits: Limits) -> Retrieval
         max_parent_chunk_chars=retrieval.max_parent_chunk_chars,
         mmr_lambda=retrieval.mmr_lambda,
         mmr_overfetch=retrieval.mmr_overfetch,
+        rerank_enabled=retrieval.rerank_enabled,
+        rerank_candidates=retrieval.rerank_candidates,
         max_context_chars=limits.max_context_chars,
         max_context_tokens=limits.max_context_tokens,
     )
@@ -1047,6 +1078,7 @@ def _build_knowledge(
     outbox: EventOutbox,
     files: KnowledgeReadableFiles,
     tuning: RetrievalTuning,
+    reranker: ExternalRerankProvider | None,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1127,6 +1159,10 @@ def _build_knowledge(
                 # defaults) is what makes these DEPLOYMENT knobs at all:
                 # without this line the shipped values could never move.
                 tuning=tuning,
+                # Retrieval plan §4 row 21 (`P-24`, س-21) — `None` unless
+                # `Settings.retrieval.rerank_enabled` is on (`_build_rerank`),
+                # which is the shipped state.
+                reranker=reranker,
             ),
             resolver,
             documents,
@@ -1292,6 +1328,12 @@ class CompositionRoot:
     ollama_http: httpx.AsyncClient
     openai_http: httpx.AsyncClient
     embedding_http: httpx.AsyncClient
+    # Retrieval plan §4 row 21 (`P-24`, س-21) -- the rerank service's client,
+    # and the ONE field here that is legitimately absent: it is `None` unless
+    # `Settings.retrieval.rerank_enabled` is on, which it is not by default.
+    # A disabled optional dependency has no client to expose, and `closers()`
+    # skips it rather than the root inventing an idle one to close.
+    rerank_http: httpx.AsyncClient | None
     # Step 19 -- the OpenAI Images client, exposed for the same
     # shutdown-`aclose()` reason as every other raw HTTP client above.
     image_http: httpx.AsyncClient
@@ -1488,7 +1530,18 @@ class CompositionRoot:
         # client/adapter pairing as every http-backed driven adapter above).
         # Closes the "knowledge"/"memory" scheduling gap the module docstring
         # used to record: `external_embedding.py` was 0 bytes until now.
-        embedding_http, embedding = _build_embedding(settings)
+        #
+        # Retrieval plan §4 row 21 (`P-24`, س-21) rides along on the same
+        # statement — the cross-encoder reranker, which is `(None, None)` on
+        # every default deployment because the switch ships OFF, so no client
+        # is built for it (see `_build_rerank`). ONE assignment rather than
+        # two because `from_env` is at the statement ceiling `_build_embedding`
+        # and every other `_build_*` helper exist to keep it under; the two
+        # internal model services are a natural pair to read together.
+        (embedding_http, embedding), (rerank_http, reranker) = (
+            _build_embedding(settings),
+            _build_rerank(settings),
+        )
 
         # Keyed by each adapter's OWN `provider` attribute, never a
         # hardcoded literal -- see the module docstring's `llm_providers`
@@ -1611,6 +1664,7 @@ class CompositionRoot:
             outbox=outbox,
             files=files_query,
             tuning=_retrieval_tuning(settings.retrieval, settings.limits),
+            reranker=reranker,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which
@@ -1777,6 +1831,7 @@ class CompositionRoot:
             ollama_http=ollama_http,
             openai_http=openai_http,
             embedding_http=embedding_http,
+            rerank_http=rerank_http,
             image_http=image_http,
             llm_providers=llm_providers,
             provider_resolver=provider_resolver,
@@ -1966,6 +2021,10 @@ class CompositionRoot:
         async def _close_vault() -> None:
             await asyncio.to_thread(self.vault_client.adapter.close)
 
+        # The rerank client is the one OPTIONAL entry (retrieval plan §4 row
+        # 21): `None` whenever `Settings.retrieval.rerank_enabled` is off,
+        # which is the shipped state, and there is nothing to close then.
+        optional: list[Disposable] = [] if self.rerank_http is None else [self.rerank_http.aclose]
         return [
             self.engine.dispose,
             self.metrics_engine.dispose,
@@ -1978,4 +2037,5 @@ class CompositionRoot:
             self.openai_http.aclose,
             self.embedding_http.aclose,
             self.image_http.aclose,
+            *optional,
         ]
