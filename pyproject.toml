@@ -269,20 +269,25 @@ addopts = "-q --strict-markers"
 # how `integration: exercises real infrastructure via testcontainers` survived
 # here unused while a CI job selected on it and collected `2272 deselected`,
 # green, forever (release-blockers-plan.md §3, step 5). The integration suite
-# is gated by the `live_*` markers instead: each probes its service and skips
-# honestly when it is unreachable. Guarded by
+# is gated by the `live_*` markers instead: each probes its service with a
+# real HANDSHAKE -- connect, then one trivial query/ping through the very
+# factory the fixture will use -- and skips honestly, carrying the underlying
+# error message, when the service cannot actually be used. A port check alone
+# used to let a wrong password through the gate and ERROR 392 setups
+# afterwards (rag-retrieval-plan-review.md §10). `REQUIRE_LIVE=1` turns every
+# one of those skips into a failure. Guarded by
 # `tests/unit/test_ci_workflow_truthfulness.py`.
 markers = [
-    "live_db: requires the local Compose PostgreSQL 16 at 127.0.0.1:15432; auto-skips if unreachable",
-    "live_redis: requires the local Compose Redis at 127.0.0.1:16379; auto-skips if unreachable",
-    "live_minio: requires the local Compose MinIO at 127.0.0.1:19000; auto-skips if unreachable",
-    "live_qdrant: requires the local Compose Qdrant at 127.0.0.1:16333; auto-skips if unreachable",
-    "live_vault: requires the persistent local Compose Vault at 127.0.0.1:18200; auto-skips if unreachable",
-    "live_ollama: requires the native WSL Ollama at 127.0.0.1:11434; auto-skips if unreachable",
-    "live_embedding: requires the Compose central embedding service (2.10) published at 127.0.0.1:8080 by docker-compose.test.yml; auto-skips if unreachable",
-    "live_openai: exercises the real OpenAI API; requires TEST_OPENAI_API_KEY in the environment; auto-skips otherwise",
-    "live_web_search: exercises the real Exa web-search API; requires TEST_EXA_API_KEY in the environment; auto-skips otherwise",
-    "live_stack_slo: P1-6 (docs/p1-hardening-plan.md §3 step 13) — drives the real ASGI app against the live docker-compose stack's Postgres/PgBouncer; requires RUN_P1_6_LOAD_TEST=1 AND the aizzak_default network (never auto-run, unlike the other live_* markers above; see tests/integration/test_conversation_get_slo_live.py)",
+    "live_db: requires the local Compose PostgreSQL 16 at 127.0.0.1:15432; auto-skips unless EVERY role DSN it hands out completes a real connect + `SELECT 1` -- a wrong password skips with the driver's own message, it does not error",
+    "live_redis: requires the local Compose Redis at 127.0.0.1:16379; auto-skips unless it answers a real PING through the adapter's own client factory",
+    "live_minio: requires the local Compose MinIO at 127.0.0.1:19000; auto-skips unless the bucket-scoped test account's SIGNED `bucket_exists` call succeeds (so a rotated key or a missing bucket skips, it does not error)",
+    "live_qdrant: requires the local Compose Qdrant at 127.0.0.1:16333; auto-skips unless a real request (list collections) succeeds",
+    "live_vault: requires the persistent local Compose Vault at 127.0.0.1:18200; auto-skips unless it is UNSEALED and the exported TEST_VAULT_TOKEN is accepted",
+    "live_ollama: requires the native WSL Ollama at 127.0.0.1:11434; auto-skips unless it lists its models over HTTP and the expected model is among them",
+    "live_embedding: requires the Compose central embedding service (2.10) published at 127.0.0.1:8080 by docker-compose.test.yml; auto-skips unless `GET /health` succeeds (that endpoint answers only once the model is loaded)",
+    "live_openai: exercises the real OpenAI API; requires TEST_OPENAI_API_KEY in the environment; auto-skips when it is ABSENT -- there is no local port to probe, and a key the API rejects is a failure, never a skip",
+    "live_web_search: exercises the real Exa web-search API; requires TEST_EXA_API_KEY in the environment; auto-skips when it is ABSENT -- a key the API rejects is a failure, never a skip",
+    "live_stack_slo: P1-6 (docs/p1-hardening-plan.md §3 step 13) — drives the real ASGI app against the live docker-compose stack's Postgres/PgBouncer; requires RUN_P1_6_LOAD_TEST=1 AND the aizzak_default network (never auto-run, unlike the other live_* markers above); its own gate handshakes too -- `SELECT 1` on both DSNs, and one real TLS `GET /health` for the nginx edge hop -- see tests/integration/test_conversation_get_slo_live.py",
 ]
 
 [tool.coverage.run]

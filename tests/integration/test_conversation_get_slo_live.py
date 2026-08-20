@@ -175,6 +175,37 @@ def _tcp_reachable(host: str, port: int, timeout_s: float = _PROBE_TIMEOUT_S) ->
         return False
 
 
+async def _select_one(dsn: str) -> None:
+    engine = create_engine(DatabaseSettings(url=dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    finally:
+        await engine.dispose()
+
+
+def _handshake_failure(dsn: str) -> str | None:
+    """``None`` ⇒ this DSN's role really can log in and query. Anything else
+    ⇒ the driver's own sentence explaining why it cannot.
+
+    A port check is not a credential check: an open port with the wrong
+    password is not "unreachable", and the whole integration suite once
+    ERRORED 392 times on exactly that gap
+    (``rag-retrieval-plan-review.md §10``, cured for the ``live_*`` fixtures
+    in ``tests/integration/conftest.py``). This gate is the same shape, so it
+    gets the same cure: connect + ``SELECT 1`` through the app's own
+    ``create_engine``, and any failure becomes a stated skip reason instead
+    of a seeding traceback.
+    """
+    try:
+        asyncio.run(_select_one(dsn))
+    # Deliberately broad: whatever a real connection attempt raises, the
+    # answer to "can this run" is no, and the reason is worth printing.
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 def _skip_reason() -> str | None:
     """``None`` ⇒ run for real. Anything else ⇒ the exact reason this
     process is not driving real traffic at the live stack."""
@@ -190,8 +221,13 @@ def _skip_reason() -> str | None:
     url = make_url(database_url)
     if url.host is None or url.port is None or not _tcp_reachable(url.host, url.port):
         return f"{url.host}:{url.port} unreachable — run this inside the aizzak_default network"
-    if not os.environ.get(_OWNER_DSN_VAR):
+    owner_dsn = os.environ.get(_OWNER_DSN_VAR)
+    if not owner_dsn:
         return f"{_OWNER_DSN_VAR} is not set — the owner role is needed to seed/clean up"
+    for label, dsn in (("DATABASE_URL", database_url), (_OWNER_DSN_VAR, owner_dsn)):
+        failure = _handshake_failure(dsn)
+        if failure is not None:
+            return f"{label} did not complete a handshake — {failure}"
     return None
 
 

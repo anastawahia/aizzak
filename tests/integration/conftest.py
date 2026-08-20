@@ -30,7 +30,8 @@ import contextlib
 import os
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -95,8 +96,11 @@ from app.ops.provision import (
 # Every default below addresses the COMPOSE stack, on the offset host ports
 # `docker-compose.yml` publishes (15432/16379/16333/18200), rather than the
 # canonical ports used only inside the Compose network. `.env.test` supplies
-# the real local credentials; if it is forgotten, the probes still address
-# the intended stack and any placeholder-credential mismatch fails audibly.
+# the real local credentials (`set -a; . ./.env.test; set +a` --
+# docs/stack-commands.md 29-ب); if it is forgotten, the probes still address
+# the intended stack, and the placeholder credentials they then carry are
+# rejected by the HANDSHAKE below rather than by the first test to run: an
+# unusable dependency skips the suite, with the driver's own sentence.
 _OWNER_DSN_DEFAULT = "postgresql+asyncpg://aizzak_owner:aizzak_owner@127.0.0.1:15432/aizzak_test"
 _APP_DSN_DEFAULT = "postgresql+asyncpg://app_rw:app_rw@127.0.0.1:15432/aizzak_test"
 # 5.1-ب: the outbox_relay role's own DSN -- see `_grant_outbox_relay`.
@@ -122,6 +126,10 @@ _PURGER_DSN_DEFAULT = (
     "postgresql+asyncpg://workspace_purger:workspace_purger@127.0.0.1:15432/aizzak_test"
 )
 _PROBE_TIMEOUT_S = 1.5
+# The handshake that follows the port check talks to a real server and may
+# have to wait for it (an auth rejection comes back fast; a loading model or
+# a busy engine does not), so it gets its own, more patient budget.
+_HANDSHAKE_TIMEOUT_S = 5.0
 
 _REDIS_URL_DEFAULT = "redis://127.0.0.1:16379/0"
 
@@ -222,6 +230,23 @@ def _tcp_reachable(host: str, port: int, timeout_s: float) -> bool:
         return False
 
 
+# One TCP verdict per ``(host, port)``, BENEATH the per-service verdict cache
+# further down. The seven Postgres role DSNs all address ONE socket, and a
+# host that DROPS the SYN rather than refusing it (WSL's default posture for
+# a stopped container) charges the full ``_PROBE_TIMEOUT_S`` for every ask --
+# so asking once per address instead of once per socket would multiply the
+# no-stack run's probe bill by seven for no new information. The credentials
+# still differ per DSN, so the handshakes are NOT shared; only the socket is.
+_reachable_sockets: dict[tuple[str, int], bool] = {}
+
+
+def _reachable_once(host: str, port: int) -> bool:
+    key = (host, port)
+    if key not in _reachable_sockets:
+        _reachable_sockets[key] = _tcp_reachable(host, port, _PROBE_TIMEOUT_S)
+    return _reachable_sockets[key]
+
+
 # Only the two schemes whose default port is part of the scheme's own meaning.
 # `redis`/`postgresql` are deliberately absent: guessing 6379/5432 for a
 # port-less override would re-create exactly the parallel number this module
@@ -258,12 +283,77 @@ def _probe_target(address: str) -> tuple[str, int]:
     return host, port
 
 
-def _skip_unless_reachable(address: str, service: str) -> None:
-    """Skip the calling ``live_*`` fixture's whole suite unless ``address``
-    itself is TCP-reachable, or fail when the live stack is required."""
+class _HandshakeRefused(Exception):
+    """The harness's OWN verdict that a reachable service is unusable -- a
+    bucket that does not exist, a token the server answered ``no`` to.
+
+    Separate from a driver exception only in how the skip reason reads: the
+    message is already a full sentence written here, so it is not prefixed
+    with an exception type nobody needs to see.
+    """
+
+
+# One verdict per ``(service, address)`` for the whole session. Every
+# ``live_*`` fixture is session-scoped, so a handshake is already paid at
+# most once per fixture; this additionally keeps two fixtures aimed at ONE
+# address from paying twice, and makes a re-probe of an already-failed
+# dependency free. NEVER per test.
+_probe_verdicts: dict[tuple[str, str], str | None] = {}
+
+
+def _probe_once(service: str, address: str, handshake: Callable[[], None]) -> str | None:
+    """``None`` ⇒ ``service`` completed a real handshake at ``address``.
+    Anything else ⇒ the exact reason it is not usable, in words.
+
+    A port check alone was never enough. An open port carrying the WRONG
+    PASSWORD is not "unreachable", so `live_db` setup proceeded and the whole
+    integration suite ERRORED -- 392 times, on one
+    ``asyncpg.exceptions.InvalidPasswordError`` -- where ``pyproject.toml``
+    promised it would skip (rag-retrieval-plan-review.md §10). A suite that
+    errors in full reads as a code catastrophe when it is a stale
+    ``.env.test``.
+
+    So the port check is only the fast first half; the second half CONNECTS
+    and issues one trivial query/ping through the very factory the fixture
+    will use, and ANY failure -- credentials included -- becomes a declared
+    skip carrying the underlying message (or a hard failure under
+    ``REQUIRE_LIVE=1``, which promises the stack was provisioned).
+    """
+    key = (service, address)
+    if key in _probe_verdicts:
+        return _probe_verdicts[key]
+    # Outside the try: a malformed override is worth one loud error, never a
+    # silent skip (``_probe_target``'s own docstring).
     host, port = _probe_target(address)
-    if not _tcp_reachable(host, port, _PROBE_TIMEOUT_S):
-        _unavailable_live_dependency(f"no live {service} reachable at {host}:{port}")
+    verdict: str | None
+    if not _reachable_once(host, port):
+        verdict = f"no live {service} reachable at {host}:{port}"
+    else:
+        try:
+            handshake()
+        except _HandshakeRefused as exc:
+            verdict = f"live {service} at {host}:{port} is not usable -- {exc}"
+        # Deliberately broad: a handshake that raises ANYTHING has told us the
+        # dependency is unusable, and the honest report of that is this
+        # exception's own message, not a traceback in 392 test setups.
+        except Exception as exc:
+            verdict = (
+                f"live {service} at {host}:{port} refused the handshake -- "
+                f"{type(exc).__name__}: {exc}"
+            )
+        else:
+            verdict = None
+    _probe_verdicts[key] = verdict
+    return verdict
+
+
+def _skip_unless_live(address: str, service: str, handshake: Callable[[], None]) -> None:
+    """Skip the calling ``live_*`` fixture's whole suite unless ``service``
+    answers a real handshake at ``address``, or fail when the live stack is
+    required (``REQUIRE_LIVE=1``)."""
+    verdict = _probe_once(service, address, handshake)
+    if verdict is not None:
+        _unavailable_live_dependency(verdict)
 
 
 def _unavailable_live_dependency(reason: str) -> None:
@@ -429,43 +519,66 @@ async def _grant_workspace_purger(owner_dsn: str) -> None:
     await _execute_all(owner_dsn, PURGE_GRANTS)
 
 
+async def _postgres_select_one(dsn: str) -> None:
+    engine = create_engine(DatabaseSettings(url=dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    finally:
+        await engine.dispose()
+
+
+def _postgres_handshake(dsn: str) -> None:
+    """Log in as the DSN's own role and run ``SELECT 1`` -- through the SAME
+    ``create_engine`` the fixtures use, so what is proven is exactly what
+    they will do (OPS-02 connect args and all), not a parallel connection."""
+    asyncio.run(_postgres_select_one(dsn))
+
+
 @pytest.fixture(scope="session")
 def live_db() -> Iterator[LiveDbDsns]:
     """Probe for a live local Postgres, rebuild+migrate+grant once per
-    session, and hand out the least-privilege DSNs. Skips the whole live_db suite
-    (rather than erroring) when Postgres is unreachable."""
-    owner_dsn = os.environ.get("TEST_DATABASE_URL", _OWNER_DSN_DEFAULT)
-    _skip_unless_reachable(owner_dsn, "PostgreSQL")
+    session, and hand out the least-privilege DSNs. Skips the whole live_db
+    suite (rather than erroring) when Postgres is unreachable -- or when any
+    of the seven roles cannot actually log in.
 
-    app_dsn = os.environ.get("TEST_DATABASE_URL_APP", _APP_DSN_DEFAULT)
-    relay_dsn = os.environ.get("TEST_DATABASE_URL_RELAY", _RELAY_DSN_DEFAULT)
-    retention_dsn = os.environ.get("TEST_DATABASE_URL_RETENTION", _RETENTION_DSN_DEFAULT)
-    metrics_dsn = os.environ.get("TEST_DATABASE_URL_METRICS", _METRICS_DSN_DEFAULT)
-    transit_rotator_dsn = os.environ.get(
-        "TEST_DATABASE_URL_TRANSIT_ROTATOR", _TRANSIT_ROTATOR_DSN_DEFAULT
+    EVERY DSN handed out is probed, not the owner's alone. The seven login
+    roles are provisioned together by ``deploy/postgres/initdb/10-roles.sh``
+    and a `.env.test` that has drifted for one of them fails exactly the way
+    it fails for all of them -- but a probe that only covered the owner would
+    let the drifted one through the gate and into the tests, which is the
+    ERROR-instead-of-skip shape this whole probe exists to end. Seven
+    handshakes, once per session (``_probe_once`` caches, and this fixture is
+    session-scoped besides), is a cheap price for that.
+    """
+    dsns = LiveDbDsns(
+        owner=os.environ.get("TEST_DATABASE_URL", _OWNER_DSN_DEFAULT),
+        app=os.environ.get("TEST_DATABASE_URL_APP", _APP_DSN_DEFAULT),
+        relay=os.environ.get("TEST_DATABASE_URL_RELAY", _RELAY_DSN_DEFAULT),
+        retention=os.environ.get("TEST_DATABASE_URL_RETENTION", _RETENTION_DSN_DEFAULT),
+        metrics=os.environ.get("TEST_DATABASE_URL_METRICS", _METRICS_DSN_DEFAULT),
+        transit_rotator=os.environ.get(
+            "TEST_DATABASE_URL_TRANSIT_ROTATOR", _TRANSIT_ROTATOR_DSN_DEFAULT
+        ),
+        purger=os.environ.get("TEST_DATABASE_URL_PURGER", _PURGER_DSN_DEFAULT),
     )
-    purger_dsn = os.environ.get("TEST_DATABASE_URL_PURGER", _PURGER_DSN_DEFAULT)
-    asyncio.run(_rebuild_schema(owner_dsn))
+    for field in fields(dsns):
+        dsn: str = getattr(dsns, field.name)
+        _skip_unless_live(dsn, f"PostgreSQL (role {field.name})", partial(_postgres_handshake, dsn))
+
+    asyncio.run(_rebuild_schema(dsns.owner))
     # Cluster roles already exist from `deploy/postgres/initdb/10-roles.sh`;
     # migrations may therefore name retention_sweeper/transit_rotator/
     # workspace_purger in RLS.
-    _run_migrations(owner_dsn)
-    asyncio.run(_grant_app_rw(owner_dsn))
-    asyncio.run(_grant_outbox_relay(owner_dsn))
-    asyncio.run(_grant_retention_sweeper(owner_dsn))
-    asyncio.run(_grant_metrics_reader(owner_dsn))
-    asyncio.run(_grant_transit_rotator(owner_dsn))
-    asyncio.run(_grant_workspace_purger(owner_dsn))
+    _run_migrations(dsns.owner)
+    asyncio.run(_grant_app_rw(dsns.owner))
+    asyncio.run(_grant_outbox_relay(dsns.owner))
+    asyncio.run(_grant_retention_sweeper(dsns.owner))
+    asyncio.run(_grant_metrics_reader(dsns.owner))
+    asyncio.run(_grant_transit_rotator(dsns.owner))
+    asyncio.run(_grant_workspace_purger(dsns.owner))
 
-    yield LiveDbDsns(
-        owner=owner_dsn,
-        app=app_dsn,
-        relay=relay_dsn,
-        retention=retention_dsn,
-        metrics=metrics_dsn,
-        transit_rotator=transit_rotator_dsn,
-        purger=purger_dsn,
-    )
+    yield dsns
 
 
 @pytest.fixture
@@ -569,15 +682,30 @@ async def purger_engine(live_db: LiveDbDsns) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+async def _redis_ping(url: str) -> None:
+    client = create_redis_client(RedisSettings(url=url))
+    try:
+        await client.ping()
+    finally:
+        await client.aclose()
+
+
+def _redis_handshake(url: str) -> None:
+    """``PING`` through the adapter's own factory -- which also exercises the
+    URL's credentials, if it carries any, and its database index."""
+    asyncio.run(_redis_ping(url))
+
+
 @pytest.fixture(scope="session")
 def live_redis() -> str:
     """Probe for a live local Redis (Phase 2.3's live harness -- the
     ``live_db`` precedent) and hand out its URL; skips the ``live_redis``
-    suite when unreachable. Deliberately NO flush/rebuild here, unlike the
-    Postgres harness: the server may hold unrelated data, so every test must
-    key under its own unique prefix and clean up after itself."""
+    suite when it does not answer a ``PING``. Deliberately NO flush/rebuild
+    here, unlike the Postgres harness: the server may hold unrelated data, so
+    every test must key under its own unique prefix and clean up after
+    itself."""
     url = os.environ.get("TEST_REDIS_URL", _REDIS_URL_DEFAULT)
-    _skip_unless_reachable(url, "Redis")
+    _skip_unless_live(url, "Redis", partial(_redis_handshake, url))
     return url
 
 
@@ -606,6 +734,22 @@ class LiveMinio:
     secret_key: str
 
 
+def _minio_handshake(live: LiveMinio) -> None:
+    """A real, SIGNED call: ``bucket_exists`` on the very bucket the tests
+    write to. This is the credential check a port probe cannot make -- the
+    rotated-account story in ``_MINIO_ENDPOINT_DEFAULT``'s comment
+    (``InvalidAccessKeyId``/``SignatureDoesNotMatch``) now ends in a skip
+    with that message rather than in a suite-wide storm of failures -- and it
+    doubles as proof that ``deploy/minio/bootstrap.sh`` has run at all."""
+    client = create_minio_client(
+        live.settings, access_key=live.access_key, secret_key=live.secret_key
+    )
+    if not client.bucket_exists(live.settings.bucket):
+        raise _HandshakeRefused(
+            f"bucket {live.settings.bucket!r} does not exist -- run deploy/minio/bootstrap.sh"
+        )
+
+
 @pytest.fixture(scope="session")
 def live_minio() -> LiveMinio:
     """Probe for a live local MinIO (Phase 2.4's live harness) and hand out
@@ -622,8 +766,7 @@ def live_minio() -> LiveMinio:
     """
     _validate_minio_secret_pair()
     endpoint = os.environ.get("TEST_MINIO_ENDPOINT", _MINIO_ENDPOINT_DEFAULT)
-    _skip_unless_reachable(endpoint, "MinIO")
-    return LiveMinio(
+    live = LiveMinio(
         settings=MinioSettings(
             endpoint=endpoint,
             bucket=os.environ.get("TEST_MINIO_BUCKET", _MINIO_BUCKET_DEFAULT),
@@ -632,6 +775,8 @@ def live_minio() -> LiveMinio:
         access_key=os.environ.get("TEST_MINIO_ACCESS_KEY", _MINIO_ACCESS_DEFAULT),
         secret_key=os.environ.get("TEST_MINIO_SECRET_KEY", _MINIO_SECRET_DEFAULT),
     )
+    _skip_unless_live(endpoint, "MinIO", partial(_minio_handshake, live))
+    return live
 
 
 @pytest.fixture
@@ -650,13 +795,27 @@ def minio_storage(minio_client: Minio, live_minio: LiveMinio) -> MinioStorage:
     return MinioStorage(minio_client, live_minio.settings.bucket)
 
 
+async def _qdrant_list_collections(url: str) -> None:
+    client = create_qdrant_client(QdrantSettings(url=url))
+    try:
+        await client.get_collections()
+    finally:
+        await client.close()
+
+
+def _qdrant_handshake(url: str) -> None:
+    """List collections through the adapter's own factory: one real REST
+    round trip, and the call an API-key-protected server would reject."""
+    asyncio.run(_qdrant_list_collections(url))
+
+
 @pytest.fixture(scope="session")
 def live_qdrant() -> str:
     """Probe for a live local Qdrant (Phase 2.5's live harness -- the
     ``live_redis``/``live_minio`` precedent) and hand out its URL; skips the
-    ``live_qdrant`` suite when unreachable."""
+    ``live_qdrant`` suite when it does not answer a real request."""
     url = os.environ.get("TEST_QDRANT_URL", _QDRANT_URL_DEFAULT)
-    _skip_unless_reachable(url, "Qdrant")
+    _skip_unless_live(url, "Qdrant", partial(_qdrant_handshake, url))
     return url
 
 
@@ -689,6 +848,14 @@ async def qdrant_collection(qdrant_client: AsyncQdrantClient) -> AsyncIterator[s
         await qdrant_client.delete_collection(name)
 
 
+def _embedding_handshake(url: str) -> None:
+    """``GET /health`` (``services/embedding/app.py``) -- which answers only
+    once the model is actually loaded, so an open port on a container still
+    warming up reads as "not ready yet" instead of as a broken suite."""
+    with httpx.Client(base_url=url, timeout=_HANDSHAKE_TIMEOUT_S, trust_env=False) as client:
+        client.get("/health").raise_for_status()
+
+
 @pytest.fixture(scope="session")
 def live_embedding() -> str:
     """Probe for a live local central embedding service (2.10's
@@ -699,7 +866,7 @@ def live_embedding() -> str:
     unreachable -- which, absent Docker, is every environment this repo's
     own gates run in today (module docstring's own constant comment)."""
     url = os.environ.get("TEST_EMBEDDING_URL", _EMBEDDING_URL_DEFAULT)
-    _skip_unless_reachable(url, "embedding service")
+    _skip_unless_live(url, "embedding service", partial(_embedding_handshake, url))
     return url
 
 
@@ -712,6 +879,37 @@ class LiveVault:
     token: str
 
 
+def _vault_seal_handshake(addr: str) -> None:
+    """Read the seal status -- an unauthenticated call, so it separates "no
+    usable Vault here" from "your token is wrong" in the skip reason. A
+    SEALED Vault answers HTTP on its port perfectly and then refuses every
+    single request, which is the port-probe blind spot in its purest form."""
+    client = create_vault_client(VaultSettings(addr=addr), token="")
+    if client.sys.is_sealed():
+        raise _HandshakeRefused(
+            "Vault is sealed -- unseal it with the key in the `vault-init` volume "
+            "(docs/stack-commands.md 22)"
+        )
+
+
+def _vault_token_handshake(addr: str, token: str) -> None:
+    """Prove the exported ``TEST_VAULT_TOKEN`` is actually accepted, instead
+    of discovering it thirteen times as a 403 (this fixture's own docstring).
+
+    ``is_authenticated()`` is deliberately avoided in ``create_vault_client``
+    -- it issues ``auth/token/lookup-self``, which an AppRole token's policy
+    denies, so it returns False for a perfectly good token. That warning does
+    not apply here: this harness authenticates with the ROOT token from
+    ``operator init``, for which ``lookup-self`` is always permitted.
+    """
+    client = create_vault_client(VaultSettings(addr=addr), token=token)
+    if not client.is_authenticated():
+        raise _HandshakeRefused(
+            "TEST_VAULT_TOKEN was rejected -- re-read it from the `vault-init` volume, "
+            "see .env.test.example"
+        )
+
+
 @pytest.fixture(scope="session")
 def live_vault() -> LiveVault:
     """Probe for a live local Vault (Phase 2.6's live harness -- the
@@ -720,13 +918,16 @@ def live_vault() -> LiveVault:
     equally when no ``TEST_VAULT_TOKEN`` is exported (the ``TEST_MINIO_*``
     precedent: a missing secret is a skip with a reason, not a 403 storm)."""
     addr = os.environ.get("TEST_VAULT_ADDR", _VAULT_ADDR_DEFAULT)
-    _skip_unless_reachable(addr, "Vault")
+    _skip_unless_live(addr, "Vault", partial(_vault_seal_handshake, addr))
     token = os.environ.get("TEST_VAULT_TOKEN")
     if not token:
         _unavailable_live_dependency(
             "no TEST_VAULT_TOKEN exported -- read it from the `vault-init` volume, "
             "see .env.test.example"
         )
+    _skip_unless_live(
+        addr, "Vault (TEST_VAULT_TOKEN)", partial(_vault_token_handshake, addr, token)
+    )
     return LiveVault(addr=addr, token=token)
 
 
@@ -815,6 +1016,14 @@ class LiveOllama:
     model: str
 
 
+def _ollama_handshake(base_url: str) -> None:
+    """List the models. Ollama has no credentials to reject, but a port held
+    open by something that is not Ollama -- or by a daemon still starting --
+    is just as unusable, and this is its cheapest real round trip."""
+    with httpx.Client(base_url=base_url, timeout=_HANDSHAKE_TIMEOUT_S, trust_env=False) as client:
+        client.get("/api/tags").raise_for_status()
+
+
 @pytest.fixture(scope="session")
 def live_ollama() -> LiveOllama:
     """Probe for a live local Ollama (the ``live_redis``/``live_minio``/
@@ -833,7 +1042,7 @@ def live_ollama() -> LiveOllama:
     ``TEST_OLLAMA_BASE_URL``/``TEST_OLLAMA_MODEL`` override both defaults.
     """
     base_url = os.environ.get("TEST_OLLAMA_BASE_URL", _OLLAMA_BASE_URL_DEFAULT)
-    _skip_unless_reachable(base_url, "Ollama")
+    _skip_unless_live(base_url, "Ollama", partial(_ollama_handshake, base_url))
 
     model = os.environ.get("TEST_OLLAMA_MODEL", _OLLAMA_MODEL_DEFAULT)
 
@@ -843,6 +1052,10 @@ def live_ollama() -> LiveOllama:
     with httpx.Client(
         base_url=base_url, timeout=_OLLAMA_WARMUP_TIMEOUT_S, trust_env=False
     ) as client:
+        # A second `/api/tags` after the handshake's own, deliberately: the
+        # probe answers "is this Ollama usable", this call answers "which
+        # models does it hold", and keeping them separate keeps the probe
+        # cacheable and stateless. Near-instant, once per session.
         tags = client.get("/api/tags")
         tags.raise_for_status()
         names: set[str] = set()

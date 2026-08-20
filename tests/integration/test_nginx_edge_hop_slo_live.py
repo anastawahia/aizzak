@@ -45,6 +45,9 @@ _PORT_VAR = "LOAD_TEST_NGINX_PORT"
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 443
 _PROBE_TIMEOUT_S = 1.5
+# The gate's handshake talks TLS to a real server, so it gets its own, more
+# patient budget than the bare port check (the conftest precedent).
+_HANDSHAKE_TIMEOUT_S = 5.0
 
 _WARMUP_REQUESTS = 20
 _MEASURED_REQUESTS = 200
@@ -65,6 +68,37 @@ def _tcp_reachable(host: str, port: int, timeout_s: float = _PROBE_TIMEOUT_S) ->
         return False
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Self-signed dev cert (08-local-runbook.md §3.2), ``server_name _;`` on
+    both nginx confs — no real hostname to verify against here, so
+    verification is off exactly the way any local ``curl -k`` probe of this
+    same endpoint already is (never the production posture — the point is the
+    TLS handshake + proxy hop's latency, not certificate trust)."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _handshake_failure(host: str, port: int) -> str | None:
+    """One real request over TLS to the health path this file measures.
+
+    An open 443 proves only that something is listening: nginx with a broken
+    cert, or nginx in front of a dead ``app`` (``502``), passes a port check
+    and then fails every measured request. The ``live_*`` probes in
+    ``tests/integration/conftest.py`` were widened from reachability to a
+    real handshake for that reason (``rag-retrieval-plan-review.md §10``);
+    this gate follows them, so an unusable edge is a stated skip rather than
+    twenty raised-for-status warm-up errors."""
+    try:
+        with httpx.Client(verify=_tls_context(), timeout=_HANDSHAKE_TIMEOUT_S) as client:
+            client.get(f"https://{host}:{port}/health").raise_for_status()
+    # Deliberately broad — see the sibling module's ``_handshake_failure``.
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 def _skip_reason() -> str | None:
     if not os.environ.get(_ENABLE_VAR):
         return f"set {_ENABLE_VAR}=1 to measure the live nginx edge hop (docs/log/3.92.md)"
@@ -72,6 +106,9 @@ def _skip_reason() -> str | None:
     port = int(os.environ.get(_PORT_VAR, str(_DEFAULT_PORT)))
     if not _tcp_reachable(host, port):
         return f"nginx not reachable at {host}:{port} — bring the live stack up first"
+    failure = _handshake_failure(host, port)
+    if failure is not None:
+        return f"nginx at {host}:{port} did not serve /health over TLS — {failure}"
     return None
 
 
@@ -121,16 +158,7 @@ async def measure_nginx_edge_hop() -> EdgeHopReport:
     port = int(os.environ.get(_PORT_VAR, str(_DEFAULT_PORT)))
     url = f"https://{host}:{port}/health"
 
-    # Self-signed dev cert (08-local-runbook.md §3.2), `server_name _;` on
-    # both nginx confs — no real hostname to verify against here, so
-    # verification is off exactly the way any local `curl -k` probe of this
-    # same endpoint already is (never the production posture — the point is
-    # the TLS handshake + proxy hop's latency, not certificate trust).
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
-    async with httpx.AsyncClient(verify=ctx, timeout=10.0) as client:
+    async with httpx.AsyncClient(verify=_tls_context(), timeout=10.0) as client:
         for _ in range(_WARMUP_REQUESTS):
             response = await client.get(url)
             response.raise_for_status()
