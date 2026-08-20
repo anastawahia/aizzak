@@ -50,6 +50,7 @@ from app.modules.knowledge.application.use_cases import (
     RequestSummaryService,
 )
 from app.modules.knowledge.domain.entities import Document, ReindexJob, Summary, SummaryJob
+from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     SummaryJobStatus,
@@ -57,7 +58,7 @@ from app.modules.knowledge.domain.value_objects import (
     SummaryLanguage,
     VectorRef,
 )
-from app.modules.knowledge.ports.inbound import DocumentNames
+from app.modules.knowledge.ports.inbound import DocumentNames, RoutedAnswer
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 SEEDED_CREATED_AT = datetime(2026, 4, 5, 6, 7, 8, tzinfo=UTC)
@@ -91,6 +92,25 @@ class RecordingRetrieval:
         self.calls.append((query, k))
         self.spaces.append(space_id)
         return list(self.chunks)
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
+    ) -> RoutedAnswer:
+        """Retrieval plan §3.4/§4 row 11 (`P-21`) — the port's third face.
+        Routing is the module's own logic and is tested there; what this fake
+        owes the router tests is a structurally complete port, so this records
+        into the SAME `calls`/`spaces` logs `retrieve` uses and always reports
+        the CONTENT route. No router reaches it today (`POST /search` calls
+        `retrieve`, which is the point of keeping both)."""
+        self.calls.append((question, k))
+        self.spaces.append(space_id)
+        return RoutedAnswer(intent=Intent.CONTENT, chunks=tuple(self.chunks), summary_job_id=None)
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
         self.name_limit_calls.append(limit)

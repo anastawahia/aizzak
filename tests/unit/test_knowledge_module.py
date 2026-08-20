@@ -37,22 +37,30 @@ from app.modules.knowledge.application.use_cases import (
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id
-from app.modules.knowledge.domain.entities import Chunk, Document, ParentChunk
+from app.modules.knowledge.domain.entities import Chunk, Document, ParentChunk, SummaryJob
 from app.modules.knowledge.domain.errors import DocumentStateError, InvalidKnowledgeInput
 from app.modules.knowledge.domain.events import (
     DocumentIndexed,
     DocumentIndexingFailed,
     DocumentRegistered,
 )
+from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
 from app.modules.knowledge.domain.sparse import build_sparse_terms
-from app.modules.knowledge.domain.value_objects import IndexStatus, ParentChunkText, VectorRef
+from app.modules.knowledge.domain.value_objects import (
+    IndexStatus,
+    ParentChunkText,
+    SummaryJobStatus,
+    SummaryKind,
+    SummaryLanguage,
+    VectorRef,
+)
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
     ParsedChunkKind,
     ParsedDocument,
 )
-from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval
+from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval, RoutedAnswer
 from app.modules.knowledge.ports.retrieval import ResolvedEmbedding
 
 # Two spaces in ONE workspace (spaces plan step 8) -- the axis the tests
@@ -645,6 +653,40 @@ class _FakeReadableFiles:
         if file_id not in self.files:
             return None
         return _FakeReadableFile(file_id, self.files[file_id], self.names.get(file_id, ""))
+
+
+class _FakeSummaryStarter:
+    """A structural ``SummaryStarting`` (retrieval plan §3.4/§4 row 11,
+    `P-21`): records what a routed summarisation asked for and hands back a
+    queued job, the way the real ``RequestSummaryService`` does once its unit
+    of work commits."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, SummaryKind, SummaryLanguage]] = []
+
+    async def start(
+        self,
+        ctx: ExecutionContext,
+        *,
+        document_id: str,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> SummaryJob:
+        self.calls.append((document_id, kind, lang))
+        return SummaryJob(
+            id=f"job-{len(self.calls)}",
+            workspace_id=ctx.workspace_id,
+            document_id=document_id,
+            kind=kind,
+            lang=lang,
+            status=SummaryJobStatus.QUEUED,
+            total_chunks=0,
+            done_chunks=0,
+            error=None,
+            cancelled_at=None,
+            finished_at=None,
+            created_at=utc_now(),
+        )
 
 
 class _TrackingUnitOfWork:
@@ -1257,7 +1299,9 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     resolver = _FakeEmbeddingResolver(model="embed-1", api_key="key-1")
     documents = _FakeDocumentRepository()
     retrieval = RetrieveContext(embeddings, vectors, documents)
-    service = KnowledgeRetrievalService(retrieval, resolver, documents, _FakeReadableFiles())
+    service = KnowledgeRetrievalService(
+        retrieval, resolver, documents, _FakeReadableFiles(), _FakeSummaryStarter()
+    )
 
     # Static-typing assertion: KnowledgeRetrievalService satisfies the
     # KnowledgeRetrieval inbound port -- mypy is the real assertion here.
@@ -1388,6 +1432,7 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         files,
+        _FakeSummaryStarter(),
     )
 
     svc: KnowledgeRetrieval = service
@@ -1461,6 +1506,7 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     results = await service.retrieve(
@@ -1484,6 +1530,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
@@ -1507,6 +1554,7 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
     searches_before = len(vectors.search_calls)
 
@@ -1518,6 +1566,129 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
     # And it short-circuits: no vector round trip is made for a scope that
     # cannot match anything.
     assert len(vectors.search_calls) == searches_before
+
+
+# --------------------------------------------------------------------------- #
+# RouteQuestion / KnowledgeRetrievalService.answer                            #
+# (retrieval plan §3.4/§4 row 11 -- P-21, س-16 = أ)                           #
+# --------------------------------------------------------------------------- #
+async def _routing_service(
+    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
+    """The service over the REAL `RouteQuestion` and the REAL
+    `RetrieveContext`, on the two-file corpus every scope test above uses."""
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    summaries = _FakeSummaryStarter()
+    service = KnowledgeRetrievalService(
+        RetrieveContext(embeddings, vectors, documents),
+        _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
+        documents,
+        _FakeReadableFiles(),
+        summaries,
+    )
+    return service, summaries
+
+
+async def test_answer_routes_a_content_question_to_retrieval() -> None:
+    """`classify_intent` finally has a live caller (plan fact ح-18): an
+    ordinary question classifies CONTENT and comes back with chunks, and no
+    summary is queued behind the caller's back."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    svc: KnowledgeRetrieval = service
+    routed = await svc.answer(ctx, "quarterly revenue figures", 5, space_id=None)
+
+    assert routed.intent is Intent.CONTENT
+    assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
+    assert routed.summary_job_id is None
+    assert summaries.calls == []
+
+
+async def test_answer_routes_a_summarisation_question_to_request_summary() -> None:
+    """The other route, end to end: a pin naming exactly one FILE is
+    translated to the DOCUMENT the summary is keyed on, and the build is
+    queued instead of a similarity search being run."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+    searches_before = len(vectors.search_calls)
+
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=None)
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    # FILE in, DOCUMENT out -- the same translation `retrieve` does, and the
+    # reason the summarisation route is reachable from a caller that only
+    # ever speaks about files.
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    assert routed.summary_job_id == "job-1"
+    assert routed.chunks == ()
+    # Nothing was retrieved: the two routes are alternatives, not a pipeline.
+    assert len(vectors.search_calls) == searches_before
+
+
+async def test_a_routed_summary_asks_for_a_bounded_overview_in_the_documents_language() -> None:
+    """`OVERVIEW`/`AUTO` are the routed defaults, and the choice is a cost
+    guard: this path can be entered by a regex false positive (§6 risk 4), and
+    `FULL` would answer one of those with a map-reduce over every chunk of the
+    document."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    await service.answer(ctx, "summarize it", 5, ["file-south"], space_id=None)
+
+    (_document_id, kind, lang) = summaries.calls[0]
+    assert kind is SummaryKind.OVERVIEW
+    assert lang is SummaryLanguage.AUTO
+
+
+@pytest.mark.parametrize(
+    "file_ids",
+    [
+        # Unscoped: nothing in the question has been resolved to a document
+        # yet (plan step 13's `P-04` is what will).
+        None,
+        # A scope that resolves to nothing -- it names no document either.
+        ["file-never-indexed"],
+        # Two documents: a router that picked one would be guessing.
+        ["file-north", "file-south"],
+    ],
+)
+async def test_a_summarisation_question_without_one_named_document_never_guesses_one(
+    file_ids: list[str] | None,
+) -> None:
+    """Plan §3.5/س-18: alpha does not guess when the target is ambiguous, and
+    neither does this. Until steps 13/14 land (filename resolution + the
+    clarification question) such a question falls through to CONTENT
+    retrieval -- but its `intent` is reported HONESTLY as SUMMARIZE_DOC, which
+    is the hook step 14 needs to find the case at all."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, "لخص لي أرقام الإيرادات الفصلية", 5, file_ids, space_id=None)
+
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+    assert routed.intent is Intent.SUMMARIZE_DOC
+
+
+async def test_answer_is_a_routed_answer_and_retrieve_is_still_plain_retrieval() -> None:
+    """The port keeps BOTH faces (`ports/inbound.py`): `POST /knowledge/search`
+    asks for chunks and means chunks -- routing a REST search through the
+    classifier would let it queue a summary job nobody requested."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, "quarterly revenue figures", 5, space_id=None)
+    chunks = await service.retrieve(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=None)
+
+    assert isinstance(routed, RoutedAnswer)
+    assert isinstance(chunks, list)
+    assert summaries.calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -1777,6 +1948,7 @@ async def test_a_space_scoped_retrieval_never_answers_from_another_space() -> No
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
@@ -1799,6 +1971,7 @@ async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_othe
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     await service.retrieve(
@@ -1824,6 +1997,7 @@ async def test_an_unspaced_retrieval_still_sees_every_space() -> None:
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
@@ -1860,6 +2034,7 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
+        _FakeSummaryStarter(),
     )
 
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []

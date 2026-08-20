@@ -69,6 +69,7 @@ from app.framework.types import Uuid
 from app.modules.knowledge.application.event_mapping import to_outbox_record
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
 from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.routing import RouteQuestion, SummaryStarting
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
     SummaryBuildCancelled,
@@ -105,7 +106,7 @@ from app.modules.knowledge.domain.value_objects import (
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.export import ExportFormat, RenderedSummary, SummaryRenderer
 from app.modules.knowledge.ports.files import ReadableFiles
-from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval
+from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval, RoutedAnswer
 from app.modules.knowledge.ports.repository import (
     DocumentRepository,
     ReindexJobRepository,
@@ -1687,6 +1688,11 @@ class KnowledgeRetrievalService:
     existing ``files`` seam (``ports/files.py``, already injected for
     ``IndexFile``) — one class, one seed, both capabilities the RAG agent's
     ``KnowledgeAccess`` needs.
+
+    And ``RouteQuestion`` (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ)
+    over that same ``RetrieveContext`` plus the ``summaries`` starter, for
+    the same reason: ONE seed the agent calls, three faces on it, no second
+    injected port to keep in step with this one.
     """
 
     def __init__(
@@ -1695,11 +1701,13 @@ class KnowledgeRetrievalService:
         resolver: EmbeddingResolver,
         documents: DocumentRepository,
         files: ReadableFiles,
+        summaries: SummaryStarting,
     ) -> None:
         self._retrieval = retrieval
         self._resolver = resolver
         self._documents = documents
         self._names = ListDocumentNames(documents, files)
+        self._router = RouteQuestion(retrieval, summaries)
 
     async def retrieve(
         self,
@@ -1759,6 +1767,45 @@ class KnowledgeRetrievalService:
             space_id=space_id,
         )
         return result.chunks
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
+    ) -> RoutedAnswer:
+        """Implements ``KnowledgeRetrieval.answer`` (retrieval plan §3.4/§4
+        row 11, ``P-21``) — the port's third face, over ``RouteQuestion``.
+
+        Everything ``retrieve`` does before delegating happens here FIRST and
+        identically: the embedding provider is resolved for this call, and the
+        pinned ``file_ids`` are translated to document ids inside the module.
+        The translation is what makes the summarisation route reachable at all
+        — a pin is a FILE to its caller, and the summary that route queues is
+        keyed on the DOCUMENT built from it.
+
+        The embedding is resolved even on a question that turns out to be a
+        summarisation: the classifier runs one layer down, and hoisting it up
+        here to save a resolver call would put the routing decision in two
+        places. The resolver is a per-call credential lookup, not a network
+        round trip to the embedding service.
+        """
+        resolved = await self._resolver.resolve_embedding(ctx)
+        document_ids = (
+            None if file_ids is None else await self._documents.ids_for_files(ctx, file_ids)
+        )
+        return await self._router.execute(
+            ctx,
+            question=question,
+            model=resolved.model,
+            api_key=resolved.api_key,
+            k=k,
+            document_ids=document_ids,
+            space_id=space_id,
+        )
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
         """Implements ``KnowledgeRetrieval.list_document_names`` (retrieval

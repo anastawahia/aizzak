@@ -13,6 +13,7 @@ from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Uuid
+from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 
@@ -34,6 +35,32 @@ class DocumentNames:
 
     names: tuple[str, ...]
     total: int
+
+
+@dataclass(frozen=True, slots=True)
+class RoutedAnswer:
+    """What ``answer`` gives back: the ``intent`` the question was classified
+    as, plus whichever of the two routes' outcomes actually ran (retrieval
+    plan §3.4/§4 row 11, ``P-21``, س-16 = أ).
+
+    ``chunks`` carries the CONTENT route's retrieval — the same list
+    ``retrieve`` returns — and ``summary_job_id`` the SUMMARIZE_DOC route's
+    queued build. Exactly one of them is ever populated, but they are two
+    fields rather than a union because a caller renders them differently and
+    a union would make "which one is it?" an ``isinstance`` question at the
+    seam instead of a read.
+
+    ``intent`` is reported HONESTLY even when the route it names could not
+    run: a summarisation question whose target document cannot be identified
+    comes back ``SUMMARIZE_DOC`` with ``summary_job_id=None`` and CONTENT
+    chunks in hand (see ``RouteQuestion``). That is what lets plan step 14
+    (the clarification question, س-18 = أ) recognise the case at all — a
+    result that lied and said CONTENT would have erased the evidence.
+    """
+
+    intent: Intent
+    chunks: tuple[RetrievedChunk, ...]
+    summary_job_id: Uuid | None
 
 
 class KnowledgeRetrieval(Protocol):
@@ -75,6 +102,36 @@ class KnowledgeRetrieval(Protocol):
         *,
         space_id: Uuid | None,
     ) -> list[RetrievedChunk]: ...
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
+    ) -> RoutedAnswer:
+        """Classify ``question`` and dispatch it to the route it belongs to
+        (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) — SUMMARIZE_DOC to
+        the module's ``RequestSummary``, CONTENT to its ``RetrieveContext``.
+
+        A THIRD method on the SAME seed, for the reason ``list_document_names``
+        is a second one: the RAG agent calls exactly one thing (ح-11), and
+        routing is the module's business rather than the agent's — every
+        consumer of this port gets it, not only the agent that asked first.
+
+        The arguments are ``retrieve``'s, unchanged, because the CONTENT route
+        IS ``retrieve``: ``k``, the pinned ``file_ids`` scope and the
+        keyword-only ``space_id`` mean here exactly what they mean there, and
+        a second vocabulary for the same three narrowings would be a second
+        place for them to drift.
+
+        ``retrieve`` stays, and stays public: ``POST /knowledge/search`` asks
+        for chunks and means chunks — routing a REST search through a
+        classifier would let it queue a summary job nobody requested.
+        """
+        ...
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
         """This workspace's corpus-awareness source (retrieval plan §3.6/§4

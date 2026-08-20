@@ -1,26 +1,36 @@
 """Layer-1 (regex-only) query-intent classification — pure algorithm (docs/
 migration/refs/retrieval.md §4.7; 06-domain-models §7; 3.k3).
 
-Ports only alpha's ALWAYS-ON layer 1 of ``intent_router.classify_intent``:
-Arabic+English regex, priority METADATA → SUMMARIZE_DOC → CONTENT, with the
-"topical-condition guard" that demotes a METADATA match back down to CONTENT
-when the query also carries a topical connector (عن/حول/يتحدث/about/
-regarding/mentions...) — e.g. «كم ملف يتحدث عن الرواتب؟» ("how many files
-talk about salaries?") is a content question wearing a METADATA-shaped
-prefix, not a genuine file-count query (retrieval.md §4.7).
+Ports alpha's ALWAYS-ON layer 1 of ``intent_router.classify_intent``:
+Arabic+English regex, priority SUMMARIZE_DOC → CONTENT.
+
+**Two routes, not three (retrieval plan §3.4/§4 row 11, ``P-21``).**
+``Intent.METADATA`` — alpha's corpus-level "how many files do you have?"
+branch — is an EXCLUDED path (plan §7, a locked exclusion), and with it went
+``_METADATA_PATTERNS`` and the "topical-condition guard"
+(``_TOPICAL_GUARD_PATTERNS``). The guard existed ONLY to demote a
+METADATA-shaped match back to CONTENT when the query also carried a topical
+connector (عن/حول/يتحدث/about/regarding/mentions) — «كم ملف يتحدث عن
+الرواتب؟» is a content question wearing a METADATA-shaped prefix — so with
+METADATA gone it has nothing left to guard: those queries reach CONTENT by
+falling through, which is the same answer by a shorter road.
+
+What a corpus-level question gets instead is the corpus-awareness header
+(plan §3.6, ``P-36``, س-23 = ج): «كم ملفًا لديك؟» classifies as CONTENT,
+usually retrieves nothing, and is answered from the file-name header the RAG
+agent puts on BOTH its paths. That is why §3.6 calls the header mandatory
+rather than optional once METADATA is excluded.
+
+The two surviving routes are the two the knowledge module already owns —
+``RetrieveContext`` and ``RequestSummary`` — which is what let the routing
+use-case live inside this module at all (``application/routing.py``, س-16 =
+أ).
 
 Layer 2 (alpha's optional LLM-assisted disambiguation, ``classify_intent_llm``)
 is deliberately NOT ported here: it read the process-global ``Settings.llm``
 instead of the per-conversation client — a documented alpha bug, not a
 decision worth repeating (retrieval.md §4.7, §7 risk #5: "لا يُعاد إنتاجه في
-AIZZAK"). A future LLM-assisted layer, if ever added, belongs in
-``rag_agent`` against its own injected ``LLMProvider``, never here.
-
-**Dormant in v1:** this module is built and unit-tested as a ready building
-block for the Phase-4 ``rag_agent`` (mirrors how ``fusion.py`` shipped one
-step ahead of ``application/retrieval.py`` back in 3.k2) — v1
-``application/retrieval.py`` does not import it; v1 retrieval is
-CONTENT-only (retrieval.md §6.4 option (b)).
+AIZZAK"; retrieval plan §7, same exclusion).
 
 The anchor phrases below are the illustrative examples enumerated in
 retrieval.md §4.7 (alpha's own literal regex source is not part of this
@@ -38,41 +48,13 @@ from enum import StrEnum
 
 
 class Intent(StrEnum):
-    """A query's routing intent (retrieval.md §4.7 ``intent_router.Intent``)."""
+    """A query's routing intent (retrieval.md §4.7 ``intent_router.Intent``),
+    reduced to the two routes that exist in this module (retrieval plan §3.4,
+    ``P-21``)."""
 
     CONTENT = "content"
     SUMMARIZE_DOC = "summarize_doc"
-    METADATA = "metadata"
 
-
-# METADATA anchors: corpus-level questions ("how many files...", "list the
-# files...") that need no similarity search at all (retrieval.md §4.7).
-_METADATA_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"كم\s+عدد",
-        r"كم\s+ملف",
-        r"عدد\s+الملفات",
-        r"اعرض\s+الملفات",
-        r"how\s+many\s+(?:files|documents|docs)",
-        r"list\s+(?:the\s+)?(?:files|documents|docs)",
-    )
-)
-
-# The topical-condition guard: any of these connectors turns a METADATA-
-# shaped match back into an ordinary CONTENT question about what is IN the
-# files, not about the files themselves (retrieval.md §4.7).
-_TOPICAL_GUARD_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"عن\b",
-        r"حول\b",
-        r"يتحدث",
-        r"about\b",
-        r"regarding\b",
-        r"mentions?\b",
-    )
-)
 
 # SUMMARIZE_DOC anchors: explicit summarization verbs, or a phrasing where a
 # named file is the grammatical OBJECT of the question ("what IS file X"),
@@ -98,18 +80,14 @@ def _matches_any(patterns: Sequence[re.Pattern[str]], text: str) -> bool:
 
 def classify_intent(query: str) -> Intent:
     """Classify ``query`` with alpha's always-on layer-1 regex rules,
-    priority METADATA → SUMMARIZE_DOC → CONTENT (retrieval.md §4.7).
+    priority SUMMARIZE_DOC → CONTENT (retrieval.md §4.7; retrieval plan §3.4).
 
-    A METADATA match is demoted to CONTENT when a topical connector is also
-    present (the "topical-condition guard"). Blank input, and any query
-    matching none of the rules, falls through to the CONTENT default.
+    Blank input, and any query matching none of the rules, falls through to
+    the CONTENT default — the honest default, since CONTENT is the route that
+    can answer anything the corpus holds.
     """
     if not query or not query.strip():
         return Intent.CONTENT
-    if _matches_any(_METADATA_PATTERNS, query):
-        if _matches_any(_TOPICAL_GUARD_PATTERNS, query):
-            return Intent.CONTENT
-        return Intent.METADATA
     if _matches_any(_SUMMARIZE_DOC_PATTERNS, query):
         return Intent.SUMMARIZE_DOC
     return Intent.CONTENT

@@ -76,8 +76,28 @@ class FakeDocumentNames:
         self.total = len(names) if total is None else total
 
 
+class FakeRoutedAnswer:
+    """Structurally satisfies ``RoutedAnswerView`` (retrieval plan §3.4/§4 row
+    11, `P-21`)."""
+
+    def __init__(
+        self, intent: str, chunks: Sequence[FakeChunk], summary_job_id: str | None
+    ) -> None:
+        self.intent = intent
+        self.chunks = chunks
+        self.summary_job_id = summary_job_id
+
+
 class FakeKnowledge:
-    """Structurally satisfies ``KnowledgeAccess``; records its calls."""
+    """Structurally satisfies ``KnowledgeAccess``; records its calls.
+
+    ``summary_job_id`` is how a test picks which ROUTE the module took
+    (retrieval plan §3.4): ``None`` is the CONTENT route and returns the
+    canned chunks, a value is the SUMMARIZE_DOC route having queued a build.
+    Which questions take which route is the knowledge module's decision and
+    is tested there — what the agent owes is the right behaviour once the
+    module has decided.
+    """
 
     def __init__(
         self,
@@ -85,10 +105,17 @@ class FakeKnowledge:
         *,
         document_names: Sequence[str] = (),
         document_total: int | None = None,
+        summary_job_id: str | None = None,
     ) -> None:
         self._chunks = chunks
         self._document_names = FakeDocumentNames(document_names, document_total)
+        self._summary_job_id = summary_job_id
         self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
+        # Every DIRECT `retrieve` — which the agent must never make, now that
+        # routing happens inside the module (`answer`). Its own log, so
+        # "the agent asked for retrieval instead of an answer" is a visible
+        # assertion rather than an absence nobody checks.
+        self.retrieve_calls: list[tuple[str, int]] = []
         # Every space the agent named (spaces plan step 8) — its own log, so
         # the existing `calls` assertions keep their shape.
         self.spaces: list[str | None] = []
@@ -106,13 +133,28 @@ class FakeKnowledge:
         *,
         space_id: str | None,
     ) -> Sequence[FakeChunk]:
+        self.retrieve_calls.append((query, k))
+        self.spaces.append(space_id)
+        return self._chunks
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
+    ) -> FakeRoutedAnswer:
         # The scope is RECORDED, not honoured: this fake is the agent's
         # counterpart, and what the agent owes is passing the scope through
         # untouched — resolving it to documents is the knowledge module's job
         # and is tested there.
-        self.calls.append((query, k, None if file_ids is None else tuple(file_ids)))
+        self.calls.append((question, k, None if file_ids is None else tuple(file_ids)))
         self.spaces.append(space_id)
-        return self._chunks
+        if self._summary_job_id is not None:
+            return FakeRoutedAnswer("summarize_doc", (), self._summary_job_id)
+        return FakeRoutedAnswer("content", self._chunks, None)
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> FakeDocumentNames:
         self.name_limit_calls.append(limit)
@@ -156,12 +198,14 @@ def make_deps(
     scope: tuple[str, ...] = (),
     document_names: Sequence[str] = (),
     document_total: int | None = None,
+    summary_job_id: str | None = None,
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
         chunks if chunks is not None else [],
         document_names=document_names,
         document_total=document_total,
+        summary_job_id=summary_job_id,
     )
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
@@ -546,6 +590,82 @@ async def test_a_non_empty_result_takes_the_normal_synthesis_path_not_the_fallba
     assert len(llm.stream_calls) == 1
     assert events[-1].data["text"] == "Paris"
     assert events[-1].data["citations"] != []
+
+
+# --------------------------------------------------------------------------- #
+# Intent routing (retrieval plan §3.4/§4 row 11 — P-21, س-16 = أ)             #
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_agent_asks_the_module_to_answer_and_never_retrieves_directly() -> None:
+    """ح-11 and س-16 = أ, as an assertion: ONE seed, and the call on it is
+    `answer`. Classifying here would mean importing the classifier and then
+    holding a second seam for whichever route it picked — the two things this
+    agent's declared convention rules out."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.calls == [("q", 5, None)]
+    assert knowledge.retrieve_calls == []
+
+
+async def test_a_routed_summary_yields_a_receipt_and_never_calls_the_llm() -> None:
+    """The SUMMARIZE_DOC route: the module queued a build, so there is nothing
+    to synthesise and nothing to cite. The LLM is not reached at all — the
+    receipt is a fixed local string, exactly like the fallback sentence."""
+    deps, _knowledge, llm = make_deps(summary_job_id="job-1")
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize this file")
+
+    assert llm.stream_calls == []
+    assert [e.type for e in events] == ["token", "final"]
+    final = events[-1]
+    assert final.data["citations"] == []
+    assert "being prepared" in final.data["text"]
+    assert events[0].data["delta"] == final.data["text"]
+
+
+async def test_the_summary_receipt_answers_in_arabic_for_an_arabic_query() -> None:
+    """One language mechanism in this agent, reused: the same Arabic-script
+    presence check the fallback sentences and the corpus header use."""
+    deps, _knowledge, llm = make_deps(summary_job_id="job-1")
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخص لي هذا الملف")
+
+    assert llm.stream_calls == []
+    assert "جارٍ إعداد ملخّص" in events[-1].data["text"]
+
+
+async def test_the_summary_receipt_names_no_document_and_lists_no_corpus() -> None:
+    """Two things it must NOT do. It never echoes a file name: the agent knows
+    a job id and nothing else, and naming a document it did not resolve is how
+    an agent starts describing the wrong file with confidence (§3.5/س-18). And
+    it does not carry the corpus header — س-23 = ج puts that on the two
+    ANSWERING paths, and this branch is a receipt for an action on a document
+    the caller already named, so the header is never even fetched."""
+    deps, knowledge, _llm = make_deps(
+        summary_job_id="job-1", document_names=["a.pdf", "b.pdf"], scope=("file-a",)
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize this file")
+
+    text = events[-1].data["text"]
+    assert "a.pdf" not in text
+    assert "job-1" not in text
+    assert knowledge.name_limit_calls == []
+
+
+async def test_a_content_route_answer_takes_the_normal_synthesis_path() -> None:
+    """The other route is the pre-existing behaviour, unchanged: routed chunks
+    feed the same prompt, the same stream and the same citations `retrieve`'s
+    did."""
+    deps, _knowledge, llm = make_deps(
+        deltas=["Paris"], chunks=[FakeChunk("c1", "Paris is the capital of France.")]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert len(llm.stream_calls) == 1
+    assert "Paris is the capital of France." in llm.stream_calls[0][0][0].content
+    assert events[-1].data["citations"] == [
+        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+    ]
 
 
 # --------------------------------------------------------------------------- #

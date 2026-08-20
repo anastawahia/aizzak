@@ -406,6 +406,16 @@ class _FakeDocumentNames:
         self.total = 0
 
 
+class _FakeRoutedAnswer:
+    """Retrieval plan §3.4/§4 row 11 (`P-21`) — what the real seam hands the
+    agent now that classification and dispatch live inside the module."""
+
+    def __init__(self, chunks: Sequence[_FakeChunk]) -> None:
+        self.intent = "content"
+        self.chunks = chunks
+        self.summary_job_id: str | None = None
+
+
 class _FakeKnowledge:
     def __init__(self) -> None:
         self.queries: list[str] = []
@@ -427,6 +437,23 @@ class _FakeKnowledge:
         self.queries.append(query)
         self.scopes.append(None if file_ids is None else tuple(file_ids))
         return [_FakeChunk("chunk-a", "The capital of France is Paris.")]
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str | None,
+    ) -> _FakeRoutedAnswer:
+        """The seam the real ``rag_agent`` calls (retrieval plan §3.4/§4 row
+        11): ONE call, routed inside the module. It records into the SAME
+        ``queries``/``scopes`` logs ``retrieve`` uses, so what this test
+        proves — the question and the pinned scope reach the module intact —
+        is unchanged by which face carries them."""
+        chunks = await self.retrieve(ctx, question, k, file_ids, space_id=space_id)
+        return _FakeRoutedAnswer(chunks)
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> _FakeDocumentNames:
         self.name_limit_calls.append(limit)

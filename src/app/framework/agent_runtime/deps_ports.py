@@ -101,6 +101,32 @@ class DocumentNamesView(Protocol):
     def total(self) -> int: ...
 
 
+class RoutedAnswerView(Protocol):
+    """The read shape an agent needs from a routed question (retrieval plan
+    §3.4/§4 row 11, ``P-21``, س-16 = أ): which intent the question was
+    classified as, the CONTENT route's chunks, and the SUMMARIZE_DOC route's
+    queued job id. The knowledge module's ``RoutedAnswer``
+    (``modules/knowledge/ports/inbound.py``) satisfies this structurally — no
+    framework→module import. Read-only ``@property`` members for the reason on
+    ``RetrievedChunkView`` (frozen carriers only).
+
+    ``intent`` is ``str`` here and a ``StrEnum`` there, which is exactly the
+    widening this seam exists for: the framework must not learn the module's
+    vocabulary as a TYPE, and an agent comparing against a string literal is
+    reading the same value the module wrote. ``summary_job_id`` is ``Uuid |
+    None`` — ``None`` whenever the summarisation route did not run, including
+    when the question WAS classified as a summarisation but its target
+    document could not be identified (plan step 13/14's job).
+    """
+
+    @property
+    def intent(self) -> str: ...
+    @property
+    def chunks(self) -> Sequence[RetrievedChunkView]: ...
+    @property
+    def summary_job_id(self) -> Uuid | None: ...
+
+
 class KnowledgeAccess(Protocol):
     """The retrieval capability a RAG-style agent needs. Structurally satisfied
     by ``app.modules.knowledge.ports.inbound.KnowledgeRetrieval.retrieve``; the
@@ -122,6 +148,16 @@ class KnowledgeAccess(Protocol):
     it already calls for retrieval (ح-11). ``limit`` is the caller's display
     cap, passed as an argument exactly like ``retrieve``'s ``k`` (س-24 — no
     ``Settings``/``os.getenv`` on either side of this seam).
+
+    ``answer`` (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) is the
+    THIRD, and it is the one the RAG agent actually calls: it takes
+    ``retrieve``'s arguments unchanged and returns a ``RoutedAnswerView``,
+    because the classification and the dispatch between the module's two
+    routes are the MODULE's business. An agent that classified for itself
+    would have to import the classifier and then hold a second seam for the
+    route it chose — which is precisely the convention ح-11 records this
+    agent as keeping. ``retrieve`` stays on the seam for callers that mean
+    retrieval and nothing else.
     """
 
     async def retrieve(
@@ -133,6 +169,16 @@ class KnowledgeAccess(Protocol):
         *,
         space_id: Uuid | None,
     ) -> Sequence[RetrievedChunkView]: ...
+
+    async def answer(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        k: int,
+        file_ids: Sequence[Uuid] | None = None,
+        *,
+        space_id: Uuid | None,
+    ) -> RoutedAnswerView: ...
 
     async def list_document_names(
         self, ctx: ExecutionContext, *, limit: int

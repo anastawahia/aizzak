@@ -1061,6 +1061,15 @@ def _build_knowledge(
     jobs = SqlReindexJobRepository(tenant_session)
     summaries = SqlSummaryRepository(tenant_session)
     summary_jobs = SqlSummaryJobRepository(tenant_session)
+    # ONE instance, two faces — the same sharing story as `documents` above.
+    # `request_summary` is the API's summarise route, and it is ALSO the
+    # `SummaryStarting` seam `KnowledgeRetrievalService` routes a
+    # SUMMARIZE_DOC question to (retrieval plan §3.4/§4 row 11, `P-21`), so a
+    # summary asked for in a conversation and one asked for over HTTP take
+    # the same guards, the same unit of work and the same outbox append.
+    request_summary = RequestSummaryService(
+        RequestSummary(documents, summary_jobs), outbox, tenant_session
+    )
     use_cases = KnowledgeUseCases(
         list_documents=ListDocuments(documents),
         get_document=GetDocument(documents),
@@ -1081,6 +1090,7 @@ def _build_knowledge(
             resolver,
             documents,
             files,
+            request_summary,
         ),
         index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
         reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
@@ -1093,9 +1103,7 @@ def _build_knowledge(
         # the pipeline itself. `BuildSummary` is composed in the WORKER
         # (`workers/bootstrap.py`), which is the only process that holds a
         # `SummarizerResolver` and can therefore reach a model.
-        request_summary=RequestSummaryService(
-            RequestSummary(documents, summary_jobs), outbox, tenant_session
-        ),
+        request_summary=request_summary,
         get_summary=GetSummary(summaries),
         # BE-RAG-012 -- the renderer is a plain construction, not a bound
         # handle: it opens no socket, holds no credential and reads no

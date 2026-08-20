@@ -952,9 +952,22 @@ def test_filter_relevant_dedup_respects_custom_jaccard_threshold() -> None:
 # --------------------------------------------------------------------------- #
 # intent.classify_intent                                                      #
 # --------------------------------------------------------------------------- #
+def test_intent_has_exactly_the_two_routes_the_module_owns() -> None:
+    """Retrieval plan §3.4/§4 row 11 (`P-21`): `METADATA` is an EXCLUDED path
+    (§7), so the enum is the two routes `knowledge` actually has —
+    `RetrieveContext` and `RequestSummary`. Pinned as a set membership rather
+    than left implicit, because a third member reappearing is exactly the
+    regression the routing use-case cannot handle."""
+    assert {member.value for member in Intent} == {"content", "summarize_doc"}
+
+
 @pytest.mark.parametrize(
     "query",
     [
+        # Alpha's METADATA anchors, every one of them, now that the route is
+        # excluded: a corpus-level question is answered from the
+        # corpus-awareness header on the CONTENT path (§3.6, `P-36`), not by
+        # a branch of its own.
         "كم عدد الملفات المرفوعة؟",
         "كم ملف لدينا في المساحة؟",
         "عدد الملفات في هذا المشروع",
@@ -965,8 +978,8 @@ def test_filter_relevant_dedup_respects_custom_jaccard_threshold() -> None:
         "List documents",
     ],
 )
-def test_classify_intent_metadata_ar_en(query: str) -> None:
-    assert classify_intent(query) is Intent.METADATA
+def test_classify_intent_corpus_level_questions_are_content_now(query: str) -> None:
+    assert classify_intent(query) is Intent.CONTENT
 
 
 @pytest.mark.parametrize(
@@ -978,7 +991,12 @@ def test_classify_intent_metadata_ar_en(query: str) -> None:
         "How many documents are about marketing?",
     ],
 )
-def test_classify_intent_topical_guard_demotes_metadata_to_content(query: str) -> None:
+def test_classify_intent_topically_conditioned_questions_are_still_content(query: str) -> None:
+    """These are the queries the deleted `_TOPICAL_GUARD_PATTERNS` existed to
+    rescue — a content question wearing a METADATA-shaped prefix. They still
+    land on CONTENT, by falling through instead of being demoted: the guard
+    had exactly one job, and removing METADATA did that job permanently. The
+    cases stay under test so the ANSWER is pinned, not the mechanism."""
     assert classify_intent(query) is Intent.CONTENT
 
 

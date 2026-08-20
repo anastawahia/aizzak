@@ -1,11 +1,24 @@
 """``RagAgent`` — answers from workspace knowledge (FR-20.1, 11 §3).
 
-A thin stateless coordinator: retrieve context from the ``knowledge`` module
-(via the injected ``KnowledgeAccess`` DIP seam — never importing the module),
-build the prompt, and stream the LLM answer as ``token`` events, ending with a
-``final`` carrying the assembled text + citations. It reaches ports ONLY
-through ``self.deps`` and imports NO other agent, module, or infrastructure —
-so ``agents-independent`` / ``agents-no-api-no-infra`` hold trivially.
+A thin stateless coordinator: ask the ``knowledge`` module to answer a
+question (via the injected ``KnowledgeAccess`` DIP seam — never importing the
+module), build the prompt, and stream the LLM answer as ``token`` events,
+ending with a ``final`` carrying the assembled text + citations. It reaches
+ports ONLY through ``self.deps`` and imports NO other agent, module, or
+infrastructure — so ``agents-independent`` / ``agents-no-api-no-infra`` hold
+trivially.
+
+**Intent routing (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ):** the
+one call this agent makes is ``self.deps.knowledge.answer(...)``, not
+``retrieve``. Classifying the question and dispatching it — SUMMARIZE_DOC to
+the module's ``RequestSummary``, CONTENT to its ``RetrieveContext`` — happens
+INSIDE the knowledge module, where both routes already live. That is what
+keeps this agent's declared convention intact (ح-11, §6 risk 7): classifying
+here would mean importing the classifier and then holding a second seam for
+whichever route it picked. When the summarisation route ran, ``run`` yields a
+short receipt and never calls the LLM (see ``_summary_queued_answer``);
+otherwise the routed chunks feed the normal synthesis path below, exactly as
+``retrieve``'s did.
 
 **Citations (retrieval plan §3.2/§4 row 3, ``P-32``):** the ``final`` event's
 ``citations`` is a list of ``{document_id, file_name, page, chunk_id}``
@@ -60,7 +73,7 @@ from collections.abc import AsyncIterator, Sequence
 from app.agents.rag_agent.manifest import METADATA
 from app.agents.rag_agent.prompts import SYSTEM_PROMPT
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
-from app.framework.agent_runtime.deps_ports import RetrievedChunkView
+from app.framework.agent_runtime.deps_ports import RetrievedChunkView, RoutedAnswerView
 from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.errors import AppError, ValidationError
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
@@ -82,6 +95,15 @@ _TOP_K = 5
 _ARABIC_CHAR_RE = re.compile("[؀-ۿ]")
 _FALLBACK_ANSWER_EN = "I don't have enough information in the workspace documents to answer that."
 _FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندات مساحة العمل للإجابة عن هذا السؤال."
+
+# Retrieval plan §3.4/§4 row 11 (`P-21`) — what the SUMMARIZE_DOC route says
+# back. Two fixed sentences picked by the SAME `_ARABIC_CHAR_RE` presence
+# check the fallback pair above uses; one language mechanism in this agent,
+# never a second one. It reports that the build was ACCEPTED and does not
+# promise the summary in this turn, because the build is a worker's job
+# (`SummaryRequested` → `BuildSummary`) and nothing here waits for it.
+_SUMMARY_QUEUED_EN = "A summary of that document is being prepared — it will be available shortly."
+_SUMMARY_QUEUED_AR = "جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل."
 
 # Retrieval plan §3.6/§4 row 6 (``P-36``, س-23 = ج) — the corpus-awareness
 # header's display cap. A PLAIN MODULE CONSTANT, not ``Settings`` (س-24's own
@@ -142,7 +164,14 @@ class RagAgent(BaseAgent):
         # caller that DID wire a seam and got zero chunks back is the case the
         # gate exists for.
         retrieval_attempted = knowledge is not None
-        chunks: Sequence[RetrievedChunkView] = (
+        routed: RoutedAnswerView | None = (
+            # Retrieval plan §3.4/§4 row 11 (`P-21`, س-16 = أ) — ONE call, and
+            # it is `answer`, not `retrieve`: the question is classified and
+            # dispatched INSIDE the knowledge module, so this agent still
+            # imports nothing and still reaches everything through
+            # `self.deps` (ح-11, §6 risk 7). The arguments are the ones
+            # `retrieve` took, unchanged.
+            #
             # Spaces plan step 8 — `space_id` is TYPED as none rather than
             # defaulted, and it is STILL none after step 12: that step put the
             # space on the request (`AgentInvokeIn.space_id`) but not onto
@@ -151,10 +180,31 @@ class RagAgent(BaseAgent):
             # owing a space, and the plan's §7 carries the entry. Searching
             # every space is the pre-plan behaviour; the pins in `scope`
             # already cannot cross one.
-            await knowledge.retrieve(self.ctx, query, _TOP_K, scope, space_id=None)
+            await knowledge.answer(self.ctx, query, _TOP_K, scope, space_id=None)
             if knowledge is not None
-            else []
+            else None
         )
+        if routed is not None and routed.summary_job_id is not None:
+            # The SUMMARIZE_DOC route ran and queued a build (retrieval plan
+            # §3.4). There is nothing to synthesise and nothing to cite: the
+            # summary is produced by a worker and read back through the
+            # summary routes, so the honest thing this turn can say is that
+            # the build was accepted. The LLM is never called, exactly as on
+            # the fallback branch below.
+            #
+            # The corpus-awareness header is deliberately NOT prepended here,
+            # and it is not fetched either. س-23 = ج puts the header on the
+            # two ANSWERING paths — the one that answers from chunks and the
+            # one that admits it has none — because the header is what keeps
+            # "I don't know" from being uninformative. This branch is a
+            # receipt for an action on a document the caller ALREADY named;
+            # listing the workspace's files back at them would answer a
+            # question nobody asked.
+            receipt = self._summary_queued_answer(query)
+            yield AgentEvent(type="token", data={"delta": receipt})
+            yield AgentEvent(type="final", data={"text": receipt, "citations": []})
+            return
+        chunks: Sequence[RetrievedChunkView] = () if routed is None else routed.chunks
         # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
         # is fetched whenever retrieval was attempted at all, so it is ready
         # for BOTH branches below: the trust-gate fallback (prepended to the
@@ -228,6 +278,20 @@ class RagAgent(BaseAgent):
         ``detect_language``.
         """
         return _FALLBACK_ANSWER_AR if _ARABIC_CHAR_RE.search(query) else _FALLBACK_ANSWER_EN
+
+    @staticmethod
+    def _summary_queued_answer(query: str) -> str:
+        """The SUMMARIZE_DOC route's receipt (retrieval plan §3.4/§4 row 11,
+        ``P-21``) — one of two fixed sentences, picked by the same
+        ``_ARABIC_CHAR_RE`` presence check ``_fallback_answer`` uses.
+
+        It names no document. The agent knows a job id and nothing else — the
+        module resolved the target from the caller's pinned scope — and
+        echoing back a name it did not resolve is how an agent starts
+        describing the wrong file with confidence (§3.5, the failure س-18
+        exists to prevent).
+        """
+        return _SUMMARY_QUEUED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_QUEUED_EN
 
     @staticmethod
     def _citation(chunk: RetrievedChunkView) -> dict[str, str | int | None]:
