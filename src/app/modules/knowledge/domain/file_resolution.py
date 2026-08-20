@@ -335,6 +335,30 @@ def resolve_file(
     return _resolve_semantically(candidates, query_vector)
 
 
+def name_token_count(file_name: str) -> int:
+    """How many tokens ``file_name`` normalizes to for matching purposes —
+    the same tokens every layer of the cascade above compares.
+
+    A pure measure of how DISCRIMINATING a name is, offered because the
+    resolution alone does not say: a one-token «تقرير.pdf» and a four-token
+    «تقرير الأداء السنوي 2024.pdf» both come back as ``ResolvedFile`` with
+    ``method=EXACT`` and ``score=1.0``, and the first of those two matches
+    is a far weaker statement about what the user meant — the shorter and
+    commoner the word, the likelier it appeared in the question for its own
+    sake. A caller that pays a HIGH price for a wrong match can ask for more
+    than the cascade's own bar before acting on one
+    (``application/routing.py::_content_scope``), and this is the only
+    honest way to ask: re-tokenizing a name in the application layer would
+    be a second normalizer, free to drift from ``_norm_name`` — which is the
+    one that decided the match in the first place.
+
+    Additive and side-effect free: nothing in the cascade calls it, and no
+    resolution changes because it exists. An empty or extension-only name
+    counts ``0``, the same nothing ``_is_exact`` refuses to match on.
+    """
+    return len(_norm_name(file_name).split())
+
+
 # --------------------------------------------------------------------------- #
 # Layer 1 — exact                                                              #
 # --------------------------------------------------------------------------- #

@@ -63,7 +63,8 @@ citations that look authoritative.
 
 **What an AMBIGUOUS reference does here, and why it differs from row 14.**
 Nothing: the question is retrieved UNSCOPED, exactly as ``NoFileMatch`` is.
-Only a confident single ``ResolvedFile`` narrows a content search.
+Only a confident single ``ResolvedFile`` can narrow a content search — and
+not every one of those does either (the paragraph after next).
 
 *Not* because ambiguity matters less on this route, but because the two
 routes pay opposite prices for the same uncertainty. On SUMMARIZE_DOC there
@@ -83,6 +84,50 @@ it could answer «لا يوجد» for a question the corpus answers elsewhere,
 which is a worse answer than today's. Recorded in the plan's §7 as a
 calibration decision that can be revisited with the evaluation set ``P-38``
 waits on.
+
+**And a CONFIDENT reference is not always enough either — the name that
+matched has to be worth narrowing on.** ``_is_exact`` (row 13) resolves when
+a normalized file name appears ANYWHERE inside the normalized question,
+which is the right test on the route it was written for: a summarisation
+question is ABOUT a file, so the file's name is the only content-bearing
+thing in it. A content question is about a SUBJECT, and there the same test
+reads a subject word as a file reference. A corpus that happens to hold
+«تقرير.pdf» turns «ما هو الحد الأقصى للإجازات حسب تقرير الأداء السنوي؟» into
+``ResolvedFile(method=EXACT, score=1.0)`` — a full-confidence scope on a
+document the question never meant — and the strictness above then guarantees
+there is no second, wider search to recover from it. The user is told «لا
+أملك معلومات كافية» about a question the corpus answers in another file, and
+nothing in that answer names the file that swallowed it, so there is nothing
+to correct on the next turn either. It is the failure §3.5 forbids — the
+wrong file, with full confidence — in its silent form: no file is summarised
+wrongly, the corpus is simply hidden. The shorter and commoner the name, the
+likelier it is: «تقرير» · «سياسات» · «الميزانية» · ``report`` · ``notes``.
+
+So this route asks for MORE before it NARROWS than row 13 asks for before it
+RESOLVES: the match must be ``EXACT`` **and** the matched name must carry
+more than one token (``_MIN_CONTENT_SCOPE_NAME_TOKENS``, measured with
+``file_resolution.name_token_count`` — the resolver's own tokenizer, never a
+second one). Anything else leaves the caller's pin exactly as it arrived,
+which is the same "narrow nothing" the ambiguous case above lands on, for
+the same reason. Requiring ``EXACT`` also retires the FUZZY narrowing this
+route used to do: a 0.75 blended similarity is a fair guess at which file a
+user MEANT when the whole question is a file reference, and a poor reason to
+hide the rest of the corpus from a question that is not one.
+
+**The bar is raised HERE, and the resolver is untouched.** ``_is_exact``
+still behaves exactly as row 13 wrote it, because on the summarisation route
+the substring test is what makes «لخّص تقرير» work at all — and one-token
+names are precisely what a user types there. What differs is the price of
+being wrong: a summarisation that picked the wrong file SHOWS it (the answer
+is that file), while a content search narrowed to the wrong file shows
+nothing at all.
+
+**The number is provisional; the direction is not.** ``> 1 token`` shares
+its input with everything else waiting on ``P-38``'s evaluation set (plan
+§7), so it lives in ONE named constant below and is read nowhere else —
+retuning it is a one-line edit, and no behaviour here depends on the raw
+value. The direction needs no measurement: a wrong narrowing is worse than
+no narrowing, which is what the tie case above already decided.
 """
 
 from __future__ import annotations
@@ -97,7 +142,9 @@ from app.modules.knowledge.domain.entities import SummaryJob
 from app.modules.knowledge.domain.file_resolution import (
     AmbiguousFiles,
     FileCandidate,
+    ResolutionMethod,
     ResolvedFile,
+    name_token_count,
     resolve_file,
 )
 from app.modules.knowledge.domain.intent import Intent, classify_intent
@@ -123,6 +170,19 @@ from app.modules.knowledge.ports.inbound import RoutedAnswer
 # is not a request for a translation.
 _ROUTED_SUMMARY_KIND = SummaryKind.OVERVIEW
 _ROUTED_SUMMARY_LANG = SummaryLanguage.AUTO
+
+# How many tokens the matched file name must carry before an EXACT match is
+# allowed to NARROW a content search (`_narrows_content_scope`; see the
+# module docstring's last three paragraphs for the failure it prevents).
+#
+# THE one place this is tuned. It is a provisional calibration number, not a
+# contract choice like the two above, and it is deliberately not a `Settings`
+# knob: س-24 puts runtime tuning in `Settings`, but this has no reason to
+# differ per deployment — it is one measurement, on the evaluation set `P-38`
+# is waiting for, that should then hold for everybody. Should that
+# measurement ever produce a per-deployment number, this constant is the
+# single seam it has to be injected through.
+_MIN_CONTENT_SCOPE_NAME_TOKENS = 2
 
 
 class SummaryStarting(Protocol):
@@ -312,9 +372,11 @@ class RouteQuestion:
 
         ``resolve_file`` is row 13's resolver — the same cascade, the same
         candidates, the same refusal to guess — not a second name matcher
-        written for this route. Only ``ResolvedFile`` narrows anything:
-        ``AmbiguousFiles`` and ``NoFileMatch`` both return the pin untouched,
-        for the reasons in this module's docstring.
+        written for this route. But not every resolution narrows: this route
+        applies ``_narrows_content_scope`` on top, so an EXACT match on a
+        one-token name (and every FUZZY match) leaves the pin untouched,
+        exactly as ``AmbiguousFiles`` and ``NoFileMatch`` do. The module
+        docstring has the failure that bar exists to stop.
 
         The returned scope is always a SUBSET of what came in, so this can
         only ever narrow. A pin already restricted the candidate list
@@ -333,7 +395,7 @@ class RouteQuestion:
         if document_ids is not None and len(document_ids) <= 1:
             return document_ids
         resolution = resolve_file(question, await self._candidates(ctx, document_ids))
-        if isinstance(resolution, ResolvedFile):
+        if isinstance(resolution, ResolvedFile) and _narrows_content_scope(resolution):
             return [resolution.document_id]
         return document_ids
 
@@ -368,6 +430,29 @@ class RouteQuestion:
             return candidates
         pinned = set(document_ids)
         return [candidate for candidate in candidates if candidate.document_id in pinned]
+
+
+def _narrows_content_scope(resolution: ResolvedFile) -> bool:
+    """Whether ``resolution`` is a strong enough identification to hide the
+    rest of the corpus from a CONTENT question (the module docstring's last
+    three paragraphs).
+
+    Two conditions, and the second is what the first cannot express: the
+    layer that matched must be ``EXACT``, and the name it matched on must
+    discriminate — a single token can be a subject word that merely happens
+    to be somebody's file name («تقرير» inside «تقرير الأداء السنوي»), and
+    the EXACT layer reports that with the same ``score=1.0`` it reports a
+    whole name typed on purpose with.
+
+    Pure, and deliberately outside ``RouteQuestion``: what it answers is a
+    property of the resolution, not of the router's state, so it is decided
+    the same way whatever else a call is doing. Nothing about the
+    SUMMARIZE_DOC route consults it.
+    """
+    return (
+        resolution.method is ResolutionMethod.EXACT
+        and name_token_count(resolution.file_name) >= _MIN_CONTENT_SCOPE_NAME_TOKENS
+    )
 
 
 def _sole_document(document_ids: Sequence[Uuid] | None) -> Uuid | None:
