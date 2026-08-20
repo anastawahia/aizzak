@@ -56,11 +56,28 @@ class RoutedAnswer:
     chunks in hand (see ``RouteQuestion``). That is what lets plan step 14
     (the clarification question, س-18 = أ) recognise the case at all — a
     result that lied and said CONTENT would have erased the evidence.
+
+    ``clarification_options`` (retrieval plan §3.5/§4 row 14, ``P-04``, س-18
+    = أ) is the THIRD outcome, and the only one that is a question rather
+    than an answer: the file names of the documents the question could have
+    meant, when ``resolve_file`` refused to choose between them. Non-empty
+    means "ask the user which of these" — capped by the resolver at five,
+    never re-capped here — and ``()`` means there is nothing to ask.
+
+    **File NAMES, not candidate objects, and no rendered sentence either.**
+    س-18 = أ made the clarification ORDINARY ANSWER TEXT on the existing
+    stream, so the wording and its language are the answering caller's
+    (``RagAgent`` already picks one voice per query for its fallback,
+    receipt and corpus header); the module owes it the facts and no more. A
+    structured ``clarification`` EVENT — which would carry ids and let a UI
+    render buttons — is recorded in the plan's §7 as out of scope: it
+    changes the streaming contract, which this field pointedly does not.
     """
 
     intent: Intent
     chunks: tuple[RetrievedChunk, ...]
     summary_job_id: Uuid | None
+    clarification_options: tuple[str, ...]
 
 
 class KnowledgeRetrieval(Protocol):

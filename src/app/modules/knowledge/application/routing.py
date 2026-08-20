@@ -15,15 +15,29 @@ the agent stays thin and keeps its declared convention of importing no module
 at all (ح-11, §6 risk 7), and every other consumer of the inbound port gets
 the routing too instead of it being re-implemented per caller.
 
-**What SUMMARIZE_DOC still cannot do here, and why that is deliberate.**
-Naming the document to summarise is plan step 13's job (``P-04`` — the exact
-→ fuzzy → semantic filename resolver), and step 14's when the resolution
-ties. Until those land, this use-case will only summarise a document the
-CALLER has already identified unambiguously — a scope pinned to exactly one
-document — and any other summarisation question falls through to CONTENT
-retrieval with its ``intent`` reported honestly, so step 14 can find it. It
-never guesses a document: "summarising the wrong file with confidence" is
-the worst failure available on this path (plan §3.5, س-18 = د rejected).
+**How SUMMARIZE_DOC finds its document (plan §4 rows 13/14, ``P-04``).** Two
+sources, tried in that order and never blended:
+
+1. the CALLER's pin, when it names exactly one document — an identification
+   a human already made, which no algorithm can improve on;
+2. otherwise ``domain/file_resolution.resolve_file`` over the workspace's
+   own file names, which answers with one of three things.
+
+Only ``ResolvedFile`` queues a build. ``AmbiguousFiles`` comes back as
+``RoutedAnswer.clarification_options`` — the names to ask the user about, in
+ordinary answer text (س-18 = أ) — and ``NoFileMatch`` falls through to
+CONTENT retrieval with ``intent`` still reported honestly as SUMMARIZE_DOC.
+There is no fourth branch that picks a best candidate: "summarising the
+wrong file with confidence" is the worst failure available on this path
+(plan §3.5), which is exactly why ``AmbiguousFiles`` exposes no ``.best``
+for this module to reach for.
+
+**Why acting on ``ResolvedFile`` belongs to row 14 and not to a later step.**
+Row 14 owns the tie; but a clarification question is only worth asking if
+ANSWERING it works. A user told «أيّ ملفّ تقصد؟» replies with the file's
+name, that reply resolves EXACT next turn, and a router that still ignored
+it would have asked a question it had no way of hearing. The two halves are
+one behaviour.
 """
 
 from __future__ import annotations
@@ -35,6 +49,12 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Uuid
 from app.modules.knowledge.application.retrieval import RetrieveContext
 from app.modules.knowledge.domain.entities import SummaryJob
+from app.modules.knowledge.domain.file_resolution import (
+    AmbiguousFiles,
+    FileCandidate,
+    ResolvedFile,
+    resolve_file,
+)
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.inbound import RoutedAnswer
@@ -85,6 +105,26 @@ class SummaryStarting(Protocol):
     ) -> SummaryJob: ...
 
 
+class FileCandidates(Protocol):
+    """The corpus ``resolve_file`` matches against: every document in this
+    workspace paired with the name of the file it was built from
+    (``application/use_cases.py::ListFileCandidates``).
+
+    A narrow Protocol for ``SummaryStarting``'s two reasons — the
+    implementation lives in the module that imports this one, and a router
+    should depend on "something that can name this workspace's files", not on
+    the repository walk and the per-file lookup that produce them.
+
+    **Every candidate, never a page of them.** The resolver's entire value is
+    its refusal to answer from a partial view: matching a name against the
+    newest N documents can return a confident ``ResolvedFile`` while the file
+    the user actually meant sits at N+1, unseen. A cap here would be that
+    failure, wearing the costume of a performance guard.
+    """
+
+    async def execute(self, ctx: ExecutionContext) -> Sequence[FileCandidate]: ...
+
+
 class RouteQuestion:
     """Classify ``question`` with the pure domain classifier, then dispatch:
     SUMMARIZE_DOC to ``RequestSummary``, CONTENT to ``RetrieveContext``
@@ -95,9 +135,15 @@ class RouteQuestion:
     carries.
     """
 
-    def __init__(self, retrieval: RetrieveContext, summaries: SummaryStarting) -> None:
+    def __init__(
+        self,
+        retrieval: RetrieveContext,
+        summaries: SummaryStarting,
+        files: FileCandidates,
+    ) -> None:
         self._retrieval = retrieval
         self._summaries = summaries
+        self._files = files
 
     async def execute(
         self,
@@ -115,10 +161,10 @@ class RouteQuestion:
         decision in front of it, not a second retrieval path.
 
         ``document_ids`` does double duty: it is the retrieval scope on the
-        CONTENT route, and the ONLY source of a summarisation target on the
-        other. A scope of exactly one document is an unambiguous target; every
-        other shape (unscoped, or several documents) is not, and falls through
-        to retrieval rather than picking one — see the module docstring.
+        CONTENT route, and the FIRST source of a summarisation target on the
+        other — a scope of exactly one document is an unambiguous target. Any
+        other shape sends the question to ``_summarisation_route``, which
+        reads the target out of the question's own words (plan rows 13/14).
 
         Errors from the summary route are NOT translated: an already-running
         build for the same key is a ``ConflictError`` and reaches the caller
@@ -128,15 +174,9 @@ class RouteQuestion:
         """
         intent = classify_intent(question)
         if intent is Intent.SUMMARIZE_DOC:
-            target = _sole_document(document_ids)
-            if target is not None:
-                job = await self._summaries.start(
-                    ctx,
-                    document_id=target,
-                    kind=_ROUTED_SUMMARY_KIND,
-                    lang=_ROUTED_SUMMARY_LANG,
-                )
-                return RoutedAnswer(intent=intent, chunks=(), summary_job_id=job.id)
+            summarisation = await self._summarisation_route(ctx, question, document_ids)
+            if summarisation is not None:
+                return summarisation
         result = await self._retrieval.execute(
             ctx,
             query=question,
@@ -146,7 +186,84 @@ class RouteQuestion:
             document_ids=document_ids,
             space_id=space_id,
         )
-        return RoutedAnswer(intent=intent, chunks=tuple(result.chunks), summary_job_id=None)
+        return RoutedAnswer(
+            intent=intent,
+            chunks=tuple(result.chunks),
+            summary_job_id=None,
+            clarification_options=(),
+        )
+
+    async def _summarisation_route(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        document_ids: Sequence[Uuid] | None,
+    ) -> RoutedAnswer | None:
+        """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
+        and the question should fall through to CONTENT retrieval.
+
+        Three outcomes, and the missing fourth is the point (plan §3.5):
+        a queued build when the target is identified, a set of names to ask
+        the user about when it is not, ``None`` when the question names
+        nothing in this corpus at all — and never a best guess.
+        """
+        target = _sole_document(document_ids)
+        if target is None:
+            resolution = resolve_file(question, await self._candidates(ctx, document_ids))
+            if isinstance(resolution, AmbiguousFiles):
+                # Plan §4 row 14 / س-18 = أ. The names cross as data and the
+                # caller renders the question — no new event type, no change
+                # to the streaming contract (§7).
+                return RoutedAnswer(
+                    intent=Intent.SUMMARIZE_DOC,
+                    chunks=(),
+                    summary_job_id=None,
+                    clarification_options=tuple(
+                        candidate.file_name for candidate in resolution.candidates
+                    ),
+                )
+            if not isinstance(resolution, ResolvedFile):
+                return None
+            target = resolution.document_id
+        job = await self._summaries.start(
+            ctx,
+            document_id=target,
+            kind=_ROUTED_SUMMARY_KIND,
+            lang=_ROUTED_SUMMARY_LANG,
+        )
+        return RoutedAnswer(
+            intent=Intent.SUMMARIZE_DOC,
+            chunks=(),
+            summary_job_id=job.id,
+            clarification_options=(),
+        )
+
+    async def _candidates(
+        self, ctx: ExecutionContext, document_ids: Sequence[Uuid] | None
+    ) -> Sequence[FileCandidate]:
+        """The files this question is allowed to be about: the workspace's
+        corpus, narrowed to the caller's pin when there is one.
+
+        A pin is a statement about which documents this conversation is
+        working with, so resolving OUTSIDE it could summarise a file the
+        caller had deliberately excluded — the pin's whole purpose, undone by
+        the mechanism meant to honour the question. ``None`` (unscoped) means
+        the whole corpus; a pin that resolved to nothing narrows to nothing
+        and the resolver honestly finds no match, which is the same answer
+        retrieval gives that scope.
+
+        The semantic layer of the cascade is NOT run: it needs an embedding
+        per candidate label, and embedding every file name on every
+        summarisation question is a cost decision (and a caching design) this
+        step does not own — recorded in the plan's §7. Without a
+        ``query_vector`` the cascade ends after FUZZY, exactly as alpha's
+        ``embed_model=None`` did.
+        """
+        candidates = await self._files.execute(ctx)
+        if document_ids is None:
+            return candidates
+        pinned = set(document_ids)
+        return [candidate for candidate in candidates if candidate.document_id in pinned]
 
 
 def _sole_document(document_ids: Sequence[Uuid] | None) -> Uuid | None:

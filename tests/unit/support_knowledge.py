@@ -110,7 +110,12 @@ class RecordingRetrieval:
         `retrieve`, which is the point of keeping both)."""
         self.calls.append((question, k))
         self.spaces.append(space_id)
-        return RoutedAnswer(intent=Intent.CONTENT, chunks=tuple(self.chunks), summary_job_id=None)
+        return RoutedAnswer(
+            intent=Intent.CONTENT,
+            chunks=tuple(self.chunks),
+            summary_job_id=None,
+            clarification_options=(),
+        )
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> DocumentNames:
         self.name_limit_calls.append(limit)

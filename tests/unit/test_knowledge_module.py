@@ -34,6 +34,7 @@ from app.modules.knowledge.application.use_cases import (
     IndexRegisteredDocument,
     KnowledgeRetrievalService,
     ListDocumentNames,
+    ListFileCandidates,
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id
@@ -44,6 +45,7 @@ from app.modules.knowledge.domain.events import (
     DocumentIndexingFailed,
     DocumentRegistered,
 )
+from app.modules.knowledge.domain.file_resolution import FileCandidate
 from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
 from app.modules.knowledge.domain.sparse import build_sparse_terms
@@ -1441,6 +1443,82 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
     assert result == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
 
 
+# --------------------------------------------------------------------------- #
+# ListFileCandidates — the corpus `resolve_file` matches against              #
+# (retrieval plan §3.5/§4 rows ١٣-١٤ — P-04)                                  #
+# --------------------------------------------------------------------------- #
+async def test_file_candidates_pair_every_document_with_its_file_name() -> None:
+    """Newest-first, the `ListDocuments` order, and `document_id` is the
+    DOCUMENT's — the id a summary is keyed on, not the file's."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    _seed_three_documents(documents)
+    files = _FakeReadableFiles(
+        {"file-1": None, "file-2": None, "file-3": None},
+        names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
+    )
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx)
+
+    assert candidates == (
+        FileCandidate(document_id="doc-3", file_name="c.pdf"),
+        FileCandidate(document_id="doc-2", file_name="b.pdf"),
+        FileCandidate(document_id="doc-1", file_name="a.pdf"),
+    )
+
+
+async def test_file_candidates_are_never_capped_at_a_display_limit() -> None:
+    """`ListDocumentNames` takes a `limit` because a header shows at most
+    that many; this takes none, and the difference is the whole point. A cap
+    would let a question resolve CONFIDENTLY against the newest N files while
+    the file the user meant sat at N+1, unseen — a guess wearing the costume
+    of a performance guard (§3.5)."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    names = {f"file-{n}": f"{n}.pdf" for n in range(60)}
+    for n in range(60):
+        documents.docs[f"doc-{n:02d}"] = _document(doc_id=f"doc-{n:02d}", file_id=f"file-{n}")
+    files = _FakeReadableFiles(dict.fromkeys(names), names=names)
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx)
+
+    assert len(candidates) == 60
+
+
+async def test_file_candidates_include_a_document_that_is_not_indexed_yet() -> None:
+    """Every lifecycle status, the `ListDocumentNames` rule. A `pending`
+    document still NAMES a real file: hiding it would let a question about
+    that file resolve to a DIFFERENT one, where offering it means the caller
+    gets `RequestSummary`'s honest "not indexed yet" refusal instead."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-1"] = _document(
+        doc_id="doc-1", file_id="file-1", status=IndexStatus.PENDING
+    )
+    files = _FakeReadableFiles({"file-1": None}, names={"file-1": "fresh.pdf"})
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx)
+
+    assert candidates == (FileCandidate(document_id="doc-1", file_name="fresh.pdf"),)
+
+
+async def test_file_candidates_drop_documents_with_no_readable_name() -> None:
+    """A file deleted since it was indexed (`get_readable` -> `None`) and one
+    whose name came back empty are both dropped: neither can be matched
+    against, and an empty name would reach a user as a blank line in the
+    clarification question."""
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    documents.docs["doc-1"] = _document(doc_id="doc-1", file_id="file-1")
+    documents.docs["doc-2"] = _document(doc_id="doc-2", file_id="file-gone")
+    documents.docs["doc-3"] = _document(doc_id="doc-3", file_id="file-nameless")
+    files = _FakeReadableFiles({"file-1": None, "file-nameless": None}, names={"file-1": "a.pdf"})
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx)
+
+    assert candidates == (FileCandidate(document_id="doc-1", file_name="a.pdf"),)
+
+
 async def _indexed_corpus(
     ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
 ) -> _FakeDocumentRepository:
@@ -1573,20 +1651,39 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
 # (retrieval plan §3.4/§4 row 11 -- P-21, س-16 = أ)                           #
 # --------------------------------------------------------------------------- #
 async def _routing_service(
-    ctx: ExecutionContext, embeddings: _FakeEmbeddings, vectors: _FakeHybridVectors
+    ctx: ExecutionContext,
+    embeddings: _FakeEmbeddings,
+    vectors: _FakeHybridVectors,
+    names: dict[str, str] | None = None,
 ) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
-    """The service over the REAL `RouteQuestion` and the REAL
-    `RetrieveContext`, on the two-file corpus every scope test above uses."""
+    """The service over the REAL `RouteQuestion`, the REAL `RetrieveContext`
+    and the REAL `ListFileCandidates`/`resolve_file`, on the two-file corpus
+    every scope test above uses.
+
+    `names` is what those two files are CALLED (retrieval plan §4 row 14):
+    without it no file in the corpus has a readable name, so the resolver has
+    nothing to match and every summarisation question that is not pinned to
+    one document falls through to CONTENT — which is exactly the pre-row-14
+    behaviour the tests written before it assert.
+    """
     documents = await _indexed_corpus(ctx, embeddings, vectors)
     summaries = _FakeSummaryStarter()
+    files = _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
     service = KnowledgeRetrievalService(
         RetrieveContext(embeddings, vectors, documents),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
-        _FakeReadableFiles(),
+        files,
         summaries,
     )
     return service, summaries
+
+
+# The two files of `_indexed_corpus`, named — distinctly enough for one
+# question to name exactly one of them (`_NAMED_CORPUS`), and identically
+# enough for another to name both (`_TIED_CORPUS`).
+_NAMED_CORPUS = {"file-north": "التقرير الشمالي.pdf", "file-south": "التقرير الجنوبي.pdf"}
+_TIED_CORPUS = {"file-north": "الميزانية 2024.pdf", "file-south": "الميزانية 2025.pdf"}
 
 
 async def test_answer_routes_a_content_question_to_retrieval() -> None:
@@ -1660,10 +1757,13 @@ async def test_a_summarisation_question_without_one_named_document_never_guesses
     file_ids: list[str] | None,
 ) -> None:
     """Plan §3.5/س-18: alpha does not guess when the target is ambiguous, and
-    neither does this. Until steps 13/14 land (filename resolution + the
-    clarification question) such a question falls through to CONTENT
-    retrieval -- but its `intent` is reported HONESTLY as SUMMARIZE_DOC, which
-    is the hook step 14 needs to find the case at all."""
+    neither does this. The pin names no single document, and this corpus has
+    no readable file names for row 14's resolver to match the question
+    against either, so nothing identifies a target and the question falls
+    through to CONTENT retrieval -- with its `intent` still reported HONESTLY
+    as SUMMARIZE_DOC. What row 14 changed is the case where the resolver DOES
+    have names to work with (see below); what it did not change is this: an
+    unidentifiable target is never guessed at."""
     ctx = _ctx("ws1")
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors)
@@ -1673,6 +1773,140 @@ async def test_a_summarisation_question_without_one_named_document_never_guesses
     assert summaries.calls == []
     assert routed.summary_job_id is None
     assert routed.intent is Intent.SUMMARIZE_DOC
+
+
+# --------------------------------------------------------------------------- #
+# The clarification question (retrieval plan §3.5/§4 row ١٤ — P-04, س-18 = أ) #
+# --------------------------------------------------------------------------- #
+async def test_a_summarisation_question_that_names_one_file_resolves_and_queues_it() -> None:
+    """Row 13's resolver, on the live path at last (its §7 entry: "وصل
+    المُحلِّل بمسار حيّ"). The question names «التقرير الشمالي» and no pin says
+    anything, so the EXACT layer identifies one document and the build is
+    queued against THAT document's id -- not the file's, and not the other
+    file that shares the word «التقرير».
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=None)
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    assert routed.summary_job_id == "job-1"
+    assert routed.clarification_options == ()
+
+
+async def test_a_tie_comes_back_as_names_to_ask_the_user_about_and_queues_nothing() -> None:
+    """THE step (س-18 = أ). Two files match «الميزانية» equally well, so the
+    resolver refuses to choose and the router hands its caller the NAMES to
+    ask about instead of an answer. Nothing is queued, nothing is retrieved,
+    and the `intent` stays honest.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+    searches_before = len(vectors.search_calls)
+
+    routed = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+
+    assert set(routed.clarification_options) == {"الميزانية 2024.pdf", "الميزانية 2025.pdf"}
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert routed.summary_job_id is None
+    assert summaries.calls == []
+    # A question is not an answer: there is nothing to synthesise from, so no
+    # similarity search is paid for either.
+    assert routed.chunks == ()
+    assert len(vectors.search_calls) == searches_before
+
+
+async def test_a_tie_never_collapses_into_the_top_candidate() -> None:
+    """The one thing this path must never do (plan §3.5: «أعلى مرشّح دائمًا»
+    أسوأ فشل ممكن هنا). There is no fallback that picks the best candidate
+    when the user says nothing -- asking the same question twice asks TWICE,
+    and never quietly summarises whichever file happened to sort first.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    first = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+    second = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+
+    assert summaries.calls == []
+    assert first.summary_job_id is None and second.summary_job_id is None
+    assert set(first.clarification_options) == set(second.clarification_options)
+
+
+async def test_answering_the_clarification_question_is_what_finally_resolves_it() -> None:
+    """Why acting on `ResolvedFile` belongs to THIS row: the clarification is
+    only worth asking if answering it works. The user is shown two names,
+    replies with one of them, and that reply resolves EXACT and queues the
+    build -- the second half of one behaviour, not a later step.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    asked = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+    reply = await service.answer(ctx, f"لخص {asked.clarification_options[0]}", 5, space_id=None)
+
+    assert reply.summary_job_id is not None
+    assert reply.clarification_options == ()
+    assert len(summaries.calls) == 1
+
+
+async def test_a_pin_naming_one_document_beats_the_question_s_own_words() -> None:
+    """Two sources of a target, tried in order and never blended: a caller
+    who pinned exactly one document has already made the identification, so
+    the resolver is not even consulted -- the question names the NORTHERN
+    report and the pinned SOUTHERN document is what gets summarised.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, ["file-south"], space_id=None)
+
+    assert summaries.calls == [("doc-south", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_resolution_cannot_reach_outside_the_callers_pin() -> None:
+    """A pin is a statement about which documents this conversation works
+    with, so the resolver matches INSIDE it. Here it resolves to no document
+    at all, and a question that names a real file by name still resolves to
+    nothing rather than reaching past the pin to summarise it.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(
+        ctx, "لخّص لي التقرير الشمالي", 5, ["file-never-indexed"], space_id=None
+    )
+
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+    assert routed.clarification_options == ()
+    assert routed.intent is Intent.SUMMARIZE_DOC
+
+
+async def test_a_content_question_never_resolves_a_file_name() -> None:
+    """The resolver hangs off the SUMMARIZE_DOC branch only. An ordinary
+    content question that happens to mention a file name is answered from
+    chunks, and no clarification is ever attached to it -- row 15 (`P-25`,
+    strict file scoping of retrieval) is the step that owns file names on the
+    CONTENT route, and it has not run.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(ctx, "ما هي أرقام الميزانية؟", 5, space_id=None)
+
+    assert routed.intent is Intent.CONTENT
+    assert routed.clarification_options == ()
+    assert summaries.calls == []
 
 
 async def test_answer_is_a_routed_answer_and_retrieve_is_still_plain_retrieval() -> None:

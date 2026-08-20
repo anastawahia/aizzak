@@ -414,6 +414,9 @@ class _FakeRoutedAnswer:
         self.intent = "content"
         self.chunks = chunks
         self.summary_job_id: str | None = None
+        # Retrieval plan §4 row 14 (`P-04`) — nothing to clarify: this fake
+        # always reports the CONTENT route, which never resolves a file name.
+        self.clarification_options: tuple[str, ...] = ()
 
 
 class _FakeKnowledge:

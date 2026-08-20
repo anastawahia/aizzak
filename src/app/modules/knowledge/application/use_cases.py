@@ -94,6 +94,7 @@ from app.modules.knowledge.domain.events import (
     SummaryBuilt,
     SummaryRequested,
 )
+from app.modules.knowledge.domain.file_resolution import FileCandidate
 from app.modules.knowledge.domain.pipeline import PIPELINE_VERSION, content_pipeline_unchanged
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
@@ -1620,6 +1621,54 @@ class ListDocumentNames:
         return DocumentNames(names=tuple(names), total=total)
 
 
+class ListFileCandidates:
+    """The corpus ``domain/file_resolution.resolve_file`` matches a question
+    against (retrieval plan §3.5/§4 rows 13-14, ``P-04``): every document in
+    this workspace, paired with the name of the file it was built from.
+
+    The same walk ``ListDocumentNames`` does — same repository, same
+    ``space_id=None`` (a question can name any file its asker uploaded, and a
+    corpus split by space would make resolution depend on where the thread
+    happens to sit), same every-status rule (a ``pending`` document still
+    NAMES a real file; hiding it would let a question about it resolve to a
+    different file instead of saying the honest thing, and what "the honest
+    thing" is stays ``RequestSummary``'s call — it refuses a document that is
+    not indexed, with the reason).
+
+    **Two differences, both required by what the resolver is for.** There is
+    no display ``limit``: every candidate is resolved, because a cap turns a
+    refusal-to-guess into a confident answer computed over a partial corpus
+    (see ``FileCandidates``). And documents whose file name came back EMPTY
+    are dropped — an empty name matches nothing lexically but would be shown
+    to a user as a blank line in a clarification question.
+
+    ⚠️ The cost is one ``get_readable`` per document per call, and it is only
+    paid on a SUMMARIZE_DOC question whose caller pinned no single document.
+    Removing the N+1 needs either a bulk name lookup on the ``files`` seam or
+    the name carried on the document row; both are recorded in the plan's §7.
+    """
+
+    def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
+        self._documents = documents
+        self._files = files
+
+    async def execute(self, ctx: ExecutionContext) -> tuple[FileCandidate, ...]:
+        candidates: list[FileCandidate] = []
+        cursor: str | None = None
+        while True:
+            page = await self._documents.list(
+                ctx, space_id=None, limit=_LIST_PAGE_SIZE, cursor=cursor
+            )
+            for document in page.data:
+                file = await self._files.get_readable(ctx, document.file_id)
+                if file is not None and file.name:
+                    candidates.append(FileCandidate(document_id=document.id, file_name=file.name))
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        return tuple(candidates)
+
+
 class GetDocument:
     """One document's ingestion state, or ``NotFoundError`` (6.1-و-3).
 
@@ -1707,7 +1756,11 @@ class KnowledgeRetrievalService:
         self._resolver = resolver
         self._documents = documents
         self._names = ListDocumentNames(documents, files)
-        self._router = RouteQuestion(retrieval, summaries)
+        # Retrieval plan §3.5/§4 row 14 (`P-04`) — the router's candidate
+        # source is composed from the SAME two seams this service already
+        # holds for `ListDocumentNames`, so wiring row 14 added no
+        # constructor argument and no second reader of `files`.
+        self._router = RouteQuestion(retrieval, summaries, ListFileCandidates(documents, files))
 
     async def retrieve(
         self,

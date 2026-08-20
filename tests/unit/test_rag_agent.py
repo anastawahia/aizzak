@@ -81,11 +81,20 @@ class FakeRoutedAnswer:
     11, `P-21`)."""
 
     def __init__(
-        self, intent: str, chunks: Sequence[FakeChunk], summary_job_id: str | None
+        self,
+        intent: str,
+        chunks: Sequence[FakeChunk],
+        summary_job_id: str | None,
+        clarification_options: Sequence[str] = (),
     ) -> None:
         self.intent = intent
         self.chunks = chunks
         self.summary_job_id = summary_job_id
+        # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the file names
+        # the module refused to choose between. Defaulted to empty: every
+        # pre-row-14 construction above means "nothing to clarify", and
+        # spelling that out at each of them would say less than it costs.
+        self.clarification_options = clarification_options
 
 
 class FakeKnowledge:
@@ -94,9 +103,11 @@ class FakeKnowledge:
     ``summary_job_id`` is how a test picks which ROUTE the module took
     (retrieval plan §3.4): ``None`` is the CONTENT route and returns the
     canned chunks, a value is the SUMMARIZE_DOC route having queued a build.
-    Which questions take which route is the knowledge module's decision and
-    is tested there — what the agent owes is the right behaviour once the
-    module has decided.
+    ``clarification_options`` is that route's THIRD outcome (row 14): the
+    module classified a summarisation but refused to choose between these
+    files. Which questions take which route is the knowledge module's
+    decision and is tested there — what the agent owes is the right behaviour
+    once the module has decided.
     """
 
     def __init__(
@@ -106,10 +117,12 @@ class FakeKnowledge:
         document_names: Sequence[str] = (),
         document_total: int | None = None,
         summary_job_id: str | None = None,
+        clarification_options: Sequence[str] = (),
     ) -> None:
         self._chunks = chunks
         self._document_names = FakeDocumentNames(document_names, document_total)
         self._summary_job_id = summary_job_id
+        self._clarification_options = clarification_options
         self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
         # Every DIRECT `retrieve` — which the agent must never make, now that
         # routing happens inside the module (`answer`). Its own log, so
@@ -154,6 +167,11 @@ class FakeKnowledge:
         self.spaces.append(space_id)
         if self._summary_job_id is not None:
             return FakeRoutedAnswer("summarize_doc", (), self._summary_job_id)
+        if self._clarification_options:
+            # Retrieval plan §4 row 14 — the honest "I did not decide"
+            # answer: the intent is reported as the summarisation it was, no
+            # job was queued, and no chunks came back either.
+            return FakeRoutedAnswer("summarize_doc", (), None, self._clarification_options)
         return FakeRoutedAnswer("content", self._chunks, None)
 
     async def list_document_names(self, ctx: ExecutionContext, *, limit: int) -> FakeDocumentNames:
@@ -199,6 +217,7 @@ def make_deps(
     document_names: Sequence[str] = (),
     document_total: int | None = None,
     summary_job_id: str | None = None,
+    clarification_options: Sequence[str] = (),
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
@@ -206,6 +225,7 @@ def make_deps(
         document_names=document_names,
         document_total=document_total,
         summary_job_id=summary_job_id,
+        clarification_options=clarification_options,
     )
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
@@ -649,6 +669,81 @@ async def test_the_summary_receipt_names_no_document_and_lists_no_corpus() -> No
     text = events[-1].data["text"]
     assert "a.pdf" not in text
     assert "job-1" not in text
+    assert knowledge.name_limit_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# The clarification question (retrieval plan §3.5/§4 row ١٤ — P-04, س-18 = أ) #
+# --------------------------------------------------------------------------- #
+
+
+async def test_an_undecided_file_asks_the_user_which_one_in_ordinary_text() -> None:
+    """س-18 = أ: the module refused to choose between two files, so the agent
+    ASKS — «أيّ ملفّ تقصد؟» and the names — and the LLM is never called,
+    because every word of the question comes from the module's own list."""
+    deps, _knowledge, llm = make_deps(
+        clarification_options=["الميزانية 2024.pdf", "الميزانية 2025.pdf"]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخص لي ملف الميزانية")
+
+    assert llm.stream_calls == []
+    text = events[-1].data["text"]
+    assert text == "أيّ ملفّ تقصد؟\n- الميزانية 2024.pdf\n- الميزانية 2025.pdf"
+
+
+async def test_the_clarification_travels_on_the_unchanged_streaming_contract() -> None:
+    """The heart of س-18 = أ, and the reason the structured `clarification`
+    event stayed in §7: this is an ORDINARY answer. The same `token` + `final`
+    pair as every other reply, the same keys on each, `citations` empty
+    because a question cites nothing — and no event type a client has to have
+    heard of."""
+    deps, _knowledge, _llm = make_deps(clarification_options=["a.pdf", "b.pdf"])
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize the budget file")
+
+    assert [e.type for e in events] == ["token", "final"]
+    assert events[0].data == {"delta": events[-1].data["text"]}
+    assert set(events[-1].data) == {"text", "citations"}
+    assert events[-1].data["citations"] == []
+
+
+async def test_the_clarification_answers_in_english_for_an_english_query() -> None:
+    """One language mechanism in this agent, reused a fourth time — the same
+    Arabic-script presence check the fallback, receipt and corpus header use.
+    The FILE NAMES are never translated or transliterated: they are the
+    strings the user has to recognise."""
+    deps, _knowledge, _llm = make_deps(clarification_options=["الميزانية.pdf", "budget.pdf"])
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize the budget file")
+
+    text = events[-1].data["text"]
+    assert text.startswith("Which file do you mean?")
+    assert "الميزانية.pdf" in text
+
+
+async def test_the_clarification_lists_every_candidate_and_never_narrows_them() -> None:
+    """The agent echoes the module's list verbatim — no trimming, no
+    re-ordering, no de-duplication. Dropping a candidate would be the agent
+    narrowing a choice it is not the one making, which is exactly the
+    "confident wrong file" failure §3.5 exists to prevent, moved one layer
+    up. The cap is the resolver's (five candidates), not this one's."""
+    options = ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]
+    deps, _knowledge, _llm = make_deps(clarification_options=options)
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize it")
+
+    lines = events[-1].data["text"].splitlines()
+    assert lines[1:] == [f"- {name}" for name in options]
+
+
+async def test_the_clarification_carries_no_corpus_header_and_fetches_none() -> None:
+    """س-23 = ج puts the corpus header on the two ANSWERING paths. This one
+    asks a question about files it has already named, so listing the whole
+    workspace underneath would bury the very choice it wants made — and the
+    listing is not even fetched."""
+    deps, knowledge, _llm = make_deps(
+        clarification_options=["a.pdf", "b.pdf"], document_names=["a.pdf", "b.pdf", "z.pdf"]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize it")
+
+    assert "z.pdf" not in events[-1].data["text"]
     assert knowledge.name_limit_calls == []
 
 

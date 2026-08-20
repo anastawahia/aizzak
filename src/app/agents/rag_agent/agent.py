@@ -20,6 +20,17 @@ short receipt and never calls the LLM (see ``_summary_queued_answer``);
 otherwise the routed chunks feed the normal synthesis path below, exactly as
 ``retrieve``'s did.
 
+**The clarification question (retrieval plan §3.5/§4 row 14, ``P-04``, س-18 =
+أ):** when the module could not decide WHICH file a summarisation question
+named, it hands back the candidate names, and this agent asks the user —
+«أيّ ملفّ تقصد؟» followed by the names — as ORDINARY ANSWER TEXT on the
+existing ``token``/``final`` pair (see ``_clarification_question``). No new
+event type and no change to the streaming contract: the structured
+``clarification`` event is out of scope by س-18 (plan §7), and a client that
+knows nothing about file resolution renders this correctly by doing nothing.
+The LLM is not called here either — every word of it comes from the module's
+list plus one fixed opening line.
+
 **Citations (retrieval plan §3.2/§4 row 3, ``P-32``):** the ``final`` event's
 ``citations`` is a list of ``{document_id, file_name, page, chunk_id}``
 objects — enough for a client to render and act on a source without a second
@@ -104,6 +115,26 @@ _FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندا
 # (`SummaryRequested` → `BuildSummary`) and nothing here waits for it.
 _SUMMARY_QUEUED_EN = "A summary of that document is being prepared — it will be available shortly."
 _SUMMARY_QUEUED_AR = "جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل."
+
+# Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the clarification
+# question's opening line, again picked by the SAME `_ARABIC_CHAR_RE` check;
+# the Arabic form is the plan's own wording («أيّ ملفّ تقصد؟»).
+#
+# It is ORDINARY ANSWER TEXT, and that is the decision, not an implementation
+# detail: س-18 = أ chose text over a structured `clarification` event
+# precisely because the event would change the streaming contract and need a
+# UI that already understood it (plan §7). So this leaves on the same
+# `token` + `final` pair every other answer uses, and a client that has never
+# heard of file resolution renders it correctly by doing nothing.
+#
+# The candidates are listed one per LINE rather than inline as the plan's
+# illustrative «أ / ب / ج»: a file name may itself contain a comma or a
+# slash, and an inline separator would let two names read as three files —
+# in the one sentence whose entire job is to keep the user from picking the
+# wrong file.
+_CLARIFY_FILE_EN = "Which file do you mean?"
+_CLARIFY_FILE_AR = "أيّ ملفّ تقصد؟"
+_CLARIFY_BULLET = "- "
 
 # Retrieval plan §3.6/§4 row 6 (``P-36``, س-23 = ج) — the corpus-awareness
 # header's display cap. A PLAIN MODULE CONSTANT, not ``Settings`` (س-24's own
@@ -204,6 +235,29 @@ class RagAgent(BaseAgent):
             yield AgentEvent(type="token", data={"delta": receipt})
             yield AgentEvent(type="final", data={"text": receipt, "citations": []})
             return
+        if routed is not None and routed.clarification_options:
+            # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the module
+            # resolved the question's file name to SEVERAL documents (or to
+            # one it was not confident about) and refused to choose. The
+            # honest answer this turn is a question back, and it travels as
+            # ORDINARY ANSWER TEXT on the same two events every other answer
+            # uses: no new event type, no change to the streaming contract.
+            #
+            # The LLM is never called, exactly as on the receipt branch above
+            # and the fallback branch below: the sentence is built from the
+            # names the module handed over, so there is nothing for a model
+            # to improvise — and asking one to phrase the question could let
+            # it drop, merge or invent a candidate, which is the failure
+            # (§3.5) this whole path exists to prevent.
+            #
+            # No corpus-awareness header either, for the receipt branch's
+            # reason: this answer already names files, and appending the
+            # whole workspace listing under a question about three specific
+            # candidates would bury the choice it is asking the user to make.
+            clarification = self._clarification_question(query, routed.clarification_options)
+            yield AgentEvent(type="token", data={"delta": clarification})
+            yield AgentEvent(type="final", data={"text": clarification, "citations": []})
+            return
         chunks: Sequence[RetrievedChunkView] = () if routed is None else routed.chunks
         # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
         # is fetched whenever retrieval was attempted at all, so it is ready
@@ -292,6 +346,25 @@ class RagAgent(BaseAgent):
         exists to prevent).
         """
         return _SUMMARY_QUEUED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_QUEUED_EN
+
+    @staticmethod
+    def _clarification_question(query: str, options: Sequence[str]) -> str:
+        """The tie-break question (retrieval plan §3.5/§4 row 14, ``P-04``,
+        س-18 = أ): one fixed opening line — picked by the same
+        ``_ARABIC_CHAR_RE`` presence check every other sentence this agent
+        writes uses — followed by the candidate file names, one per line.
+
+        These names are the ONLY document names this agent ever utters, and
+        the difference from ``_summary_queued_answer`` (which pointedly names
+        nothing) is the whole point: there it would be asserting which file
+        it acted on, here it is asking. It echoes the module's list verbatim
+        and neither trims, re-orders nor de-duplicates it — the resolver
+        already capped it at five, and an agent that dropped a candidate
+        would be narrowing a choice it is not the one making.
+        """
+        head = _CLARIFY_FILE_AR if _ARABIC_CHAR_RE.search(query) else _CLARIFY_FILE_EN
+        listed = "\n".join(f"{_CLARIFY_BULLET}{name}" for name in options)
+        return f"{head}\n{listed}"
 
     @staticmethod
     def _citation(chunk: RetrievedChunkView) -> dict[str, str | int | None]:

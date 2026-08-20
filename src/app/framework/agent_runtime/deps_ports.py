@@ -117,6 +117,16 @@ class RoutedAnswerView(Protocol):
     None`` — ``None`` whenever the summarisation route did not run, including
     when the question WAS classified as a summarisation but its target
     document could not be identified (plan step 13/14's job).
+
+    ``clarification_options`` (retrieval plan §3.5/§4 row 14, ``P-04``, س-18
+    = أ) is that last case made actionable: the file names the question could
+    have meant, when the module's resolver refused to choose between them.
+    Non-empty means the honest answer this turn is a QUESTION back — "which
+    of these did you mean?" — and the agent renders it as ordinary answer
+    text on the existing ``token``/``final`` stream. Nothing about that
+    stream changes; a structured ``clarification`` event is out of scope by
+    س-18 (plan §7), which is why this is a plain sequence of names and not a
+    new event shape sitting on this seam.
     """
 
     @property
@@ -125,6 +135,8 @@ class RoutedAnswerView(Protocol):
     def chunks(self) -> Sequence[RetrievedChunkView]: ...
     @property
     def summary_job_id(self) -> Uuid | None: ...
+    @property
+    def clarification_options(self) -> Sequence[str]: ...
 
 
 class KnowledgeAccess(Protocol):
