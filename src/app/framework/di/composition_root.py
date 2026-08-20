@@ -1004,6 +1004,7 @@ def _build_knowledge(
     resolver: EmbeddingResolver,
     outbox: EventOutbox,
     files: KnowledgeReadableFiles,
+    limits: Limits,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1064,7 +1065,19 @@ def _build_knowledge(
         list_documents=ListDocuments(documents),
         get_document=GetDocument(documents),
         search=KnowledgeRetrievalService(
-            RetrieveContext(embeddings=embedding, vectors=vectors, documents=documents),
+            RetrieveContext(
+                embeddings=embedding,
+                vectors=vectors,
+                documents=documents,
+                # Retrieval plan §3.7/§4 row 10 (`P-35`, س-24) — the dual
+                # context budget's two numbers live in `Settings` and reach
+                # the pure domain algorithm as ARGUMENTS from here. Passing
+                # them explicitly (rather than leaning on the use-case's own
+                # mirrored defaults) is what makes them a DEPLOYMENT knob at
+                # all: without this line the shipped values could never move.
+                max_context_chars=limits.max_context_chars,
+                max_context_tokens=limits.max_context_tokens,
+            ),
             resolver,
             documents,
             files,
@@ -1548,6 +1561,7 @@ class CompositionRoot:
             resolver=_RoutedEmbeddingResolver(provider_resolver),
             outbox=outbox,
             files=files_query,
+            limits=settings.limits,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which

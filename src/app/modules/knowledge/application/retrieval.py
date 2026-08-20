@@ -14,16 +14,16 @@ carries its own ``text`` (written by ``IndexDocument``), so fused ranking is
 the only extra work needed.
 
 Pipeline shape (retrieval plan §3.7, plan step 8's ``P-26`` + plan step 9's
-``P-34``): fusion → **keep 3x k** → ``filter_relevant`` → **replace with
-parent text, dedup by parent** → (plan step 10's future context budget) →
-final ``k``. ``execute`` widens back OUT to ``3 * k`` candidates right after
-RRF fusion (``_FUSION_RETENTION``, decoupled from ``_SEARCH_OVERFETCH`` below
-— see that constant's own comment) — narrowing straight to ``k`` here, before
-``filter_relevant`` even runs, would starve the parent-expansion step below
-of the diversity it needs to fill ``k`` with distinct sections instead of
-collapsing into two parents (§3.7's own stated failure mode). The PUBLIC
-result still honours the caller's ``k`` exactly: only the very last line of
-``execute`` truncates to it.
+``P-34`` + plan step 10's ``P-35``): fusion → **keep 3x k** →
+``filter_relevant`` → **replace with parent text, dedup by parent** →
+**context budget** → final ``k``. ``execute`` widens back OUT to ``3 * k``
+candidates right after RRF fusion (``_FUSION_RETENTION``, decoupled from
+``_SEARCH_OVERFETCH`` below — see that constant's own comment) — narrowing
+straight to ``k`` here, before ``filter_relevant`` even runs, would starve the
+parent-expansion step below of the diversity it needs to fill ``k`` with
+distinct sections instead of collapsing into two parents (§3.7's own stated
+failure mode). The PUBLIC result still honours the caller's ``k`` exactly:
+only the very last line of ``execute`` truncates to it.
 
 **Parent expansion (plan step 9, ``P-34``) — critical, not an optimisation
 (§3.7 verbatim): with the sentence-window approach excluded, this is the
@@ -46,6 +46,27 @@ context by itself; a candidate's OWN leaf text is never capped (it is
 already window-sized). This runs over the FULL ``retain_k``-deep candidate
 list, before the final truncation below — the same reason ``retain_k`` is
 wider than ``k`` in the first place.
+
+**Context budget (plan step 10, ``P-35``)** — the stage between the widening
+above and the final ``k``, and in that order for a reason: parent expansion is
+what makes each candidate BIGGER, so a budget measured before it would measure
+text nobody sends. ``execute`` renders each surviving candidate EXACTLY as the
+consumer will (``format_labeled_chunk`` — §3.2's one shared source-label
+formatter, the same unit the RAG agent's synthesis path joins into its
+prompt), then hands those rendered strings, with the two ceilings, to the pure
+``domain/context_budget.fit_to_context_budget``. The ceilings are DUAL and the
+smaller wins: ``max_context_chars`` is exact, ``max_context_tokens`` is a
+network-free ESTIMATE (``estimate_tokens`` — no ``tiktoken``, no tokenizer
+download), and the cut falls wherever either is breached first. Both are
+constructor-injected from ``Settings.Limits`` (س-24: the values live in
+``Settings`` and are passed as ARGUMENTS into the domain — no ``os.getenv``
+there, and no per-request override anywhere). Order is DESCENDING then cut:
+the survivors are a best-first PREFIX, so the highest-scoring chunk stays
+``[#1]``. ``LongContextReorder`` — which would move it to the END — is an
+explicitly rejected design (§3.7, §7). The budget never returns an empty
+context when candidates exist: see ``fit_to_context_budget`` for why an
+emptiness manufactured here would be misread as the trust gate's "retrieval
+found nothing" (plan step 5, ``P-33``).
 
 Every vector search filter carries ``workspace_id`` on BOTH legs (DD-04) —
 the single per-workspace collection is shared by every document, so tenant
@@ -86,12 +107,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorHit
 from app.framework.types import Json
 from app.modules.knowledge.domain.collections import knowledge_collection
+from app.modules.knowledge.domain.context_budget import fit_to_context_budget
 from app.modules.knowledge.domain.fusion import FusedChunk, reciprocal_rank_fusion
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import build_sparse_terms
@@ -135,6 +158,16 @@ _FUSION_RETENTION = 3
 # A candidate's own (un-widened) leaf text is never capped here -- it is
 # already window-sized by construction.
 _MAX_PARENT_CHUNK_CHARS = 4000
+# Fallback values for the DUAL context budget (plan step 10, `P-35`) when no
+# caller injects them -- they MIRROR `Settings.Limits.max_context_chars` /
+# `.max_context_tokens`, exactly as `_MAX_K` above mirrors
+# `Settings.Limits.max_rag_k`, and the Composition Root passes the real
+# configured values in (س-24: the numbers live in `Settings`). They exist so a
+# test (or any other direct constructor call) gets the shipped budget rather
+# than an unbounded one -- a defaulted-to-infinity budget would silently be no
+# budget at all.
+_DEFAULT_MAX_CONTEXT_CHARS = 12_000
+_DEFAULT_MAX_CONTEXT_TOKENS = 3_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +200,13 @@ class RetrieveContext:
     see that Protocol's own docstring for why. The Composition Root passes
     the SAME ``SqlDocumentRepository`` it already builds for the module's
     other faces (structural typing needs no adapter of its own here).
+
+    ``max_context_chars``/``max_context_tokens`` (plan step 10, ``P-35``) are
+    the DUAL context budget, injected ONCE at construction from
+    ``Settings.Limits`` — never read from a request, and never from the
+    environment inside the domain (س-24). Construction-time rather than a
+    parameter of ``execute`` is the shape that decision demands: a per-call
+    argument would BE a per-request override, which س-24 rules out.
     """
 
     def __init__(
@@ -174,10 +214,15 @@ class RetrieveContext:
         embeddings: EmbeddingProvider,
         vectors: HybridVectorStore,
         documents: ParentChunkRepository,
+        *,
+        max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
+        max_context_tokens: int = _DEFAULT_MAX_CONTEXT_TOKENS,
     ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
         self._documents = documents
+        self._max_context_chars = max_context_chars
+        self._max_context_tokens = max_context_tokens
 
     async def execute(
         self,
@@ -297,12 +342,25 @@ class RetrieveContext:
         )
         widened = _widen_to_parents(relevant, parent_texts)
 
+        # The context budget (plan step 10, `P-35`) -- AFTER the widening
+        # above (which is what makes each candidate bigger) and BEFORE the
+        # caller's `k` below, exactly §3.7's order. The port DTOs are built
+        # FIRST, because the budget must measure the text as it will actually
+        # be shown -- source label and all (`_labeled_text`), and the label is
+        # composed from the citation fields only `_to_retrieved_chunk` reads
+        # out of the payload. Dual ceilings, smaller wins, best-first prefix
+        # kept: see `fit_to_context_budget`.
+        retrieved = [_to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widened]
+        budgeted = fit_to_context_budget(
+            [(chunk, _labeled_text(chunk)) for chunk in retrieved],
+            max_chars=self._max_context_chars,
+            max_tokens=self._max_context_tokens,
+        )
+
         # The ONLY narrowing to the caller's `k` in this whole pipeline (plan
         # step 8's ordering rule "٨ قبل ٩" -- widen here, narrow later, never
         # the reverse).
-        chunks = [
-            _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widened[:k]
-        ]
+        chunks = budgeted[:k]
         return RetrievalResult(
             chunks=chunks, best_dense_score=best_dense_score, best_bm25_score=best_bm25_score
         )
@@ -378,4 +436,28 @@ def _to_retrieved_chunk(chunk: ScoredChunk, payload: Json) -> RetrievedChunk:
         file_name=payload.get("file_name"),
         page_number=payload.get("page_number"),
         section=payload.get("section"),
+    )
+
+
+def _labeled_text(chunk: RetrievedChunk) -> str:
+    """What the context budget MEASURES (plan step 10, ``P-35``): the chunk
+    exactly as a consumer renders it — §3.2's ``[file p.N | section: S]``
+    source label above the text — built by ``format_labeled_chunk``, the ONE
+    shared formatter (``framework/agent_runtime/source_label.py``) the RAG
+    agent's synthesis path already uses.
+
+    Measuring the labelled form rather than the raw ``text`` is what keeps
+    the budget from drifting from what is actually sent: a label is real
+    characters and real tokens in the prompt (tens of each, per chunk), and a
+    budget that ignored them would promise 12000 characters while shipping
+    more. The formatter is reached through ``app.framework`` — the one
+    package both this module and the agents layer may import (its own module
+    docstring names this exact second consumer), so there is no second copy
+    of the label's shape to drift.
+    """
+    return format_labeled_chunk(
+        chunk.text,
+        file_name=chunk.file_name,
+        page_number=chunk.page_number,
+        section=chunk.section,
     )

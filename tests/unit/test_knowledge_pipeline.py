@@ -25,10 +25,12 @@ from typing import Any
 
 import pytest
 
+from app.framework.agent_runtime.source_label import format_labeled_chunk
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
+from app.framework.settings.settings import Limits
 from app.framework.types import Json
 from app.modules.knowledge.application import retrieval as retrieval_module
 from app.modules.knowledge.application.indexing import (
@@ -46,6 +48,7 @@ from app.modules.knowledge.domain.chunking import (
     semantic_boundaries,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
+from app.modules.knowledge.domain.context_budget import estimate_tokens
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
@@ -55,6 +58,7 @@ from app.modules.knowledge.ports.content_extractor import (
     ParsedChunkKind,
     ParsedDocument,
 )
+from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 
 # --------------------------------------------------------------------------- #
@@ -2374,6 +2378,175 @@ async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() 
 
     assert len(result.chunks) == 1
     assert result.chunks[0].text == leaf_text
+
+
+# --------------------------------------------------------------------------- #
+# The dual context budget in the pipeline (retrieval plan §3.7/§4 row 10,     #
+# `P-35`): runs AFTER the parent widening above and BEFORE the caller's `k`,  #
+# on the LABELLED text, with the smaller of the two ceilings winning.         #
+# --------------------------------------------------------------------------- #
+_BUDGET_CORPUS = (
+    "revenue projections for the sales department in quarterly planning",
+    "employee benefits enrollment closes soon per quarterly planning",
+    "office renovation timeline shifts under quarterly planning",
+    "marketing budget allocation grows under quarterly planning",
+    "support ticket volume dropped during quarterly planning",
+)
+
+
+def _labelled(chunk: RetrievedChunk) -> str:
+    """What the budget measures -- the chunk rendered by the ONE shared
+    source-label formatter (retrieval plan §3.2), which is exactly what
+    ``RetrieveContext._labeled_text`` hands to the budget and what the RAG
+    agent later joins into its prompt."""
+    return format_labeled_chunk(
+        chunk.text,
+        file_name=chunk.file_name,
+        page_number=chunk.page_number,
+        section=chunk.section,
+    )
+
+
+async def _budget_run(max_context_chars: int, max_context_tokens: int) -> list[RetrievedChunk]:
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", _BUDGET_CORPUS)
+
+    result = await RetrieveContext(
+        embeddings,
+        vectors,
+        FakeParentRepo(),
+        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+    ).execute(ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=5)
+    return result.chunks
+
+
+async def test_retrieve_context_context_budget_cuts_at_the_character_ceiling() -> None:
+    """Plan step 10 (``P-35``): with the TOKEN ceiling out of the way, the
+    character ceiling alone decides where the ranked list is cut -- and the
+    survivors are the top of that list, not a re-picked subset."""
+    generous = await _budget_run(100_000, 100_000)
+    assert len(generous) == len(_BUDGET_CORPUS)  # the whole seeded corpus survives
+
+    rendered = [_labelled(chunk) for chunk in generous]
+    exactly_two = len(rendered[0]) + len(rendered[1])
+    tight = await _budget_run(exactly_two, 100_000)
+
+    assert [chunk.chunk_id for chunk in tight] == [chunk.chunk_id for chunk in generous[:2]]
+    assert sum(len(_labelled(chunk)) for chunk in tight) <= exactly_two
+    # One character less and even the second no longer fits -- proof the cut
+    # tracks the ceiling rather than landing on a coincidence.
+    assert len(await _budget_run(exactly_two - 1, 100_000)) == 1
+
+
+async def test_retrieve_context_context_budget_cuts_at_the_token_ceiling() -> None:
+    """The same list, cut by the OTHER ceiling: the character ceiling is left
+    wide open and the estimated token count alone decides. `estimate_tokens`
+    is the pure, network-free estimator (no `tiktoken`, no tokenizer
+    download) -- the test computes the ceiling with it rather than hard-coding
+    a number, so it tracks the estimator."""
+    generous = await _budget_run(100_000, 100_000)
+    rendered = [_labelled(chunk) for chunk in generous]
+    exactly_two = estimate_tokens(rendered[0]) + estimate_tokens(rendered[1])
+
+    tight = await _budget_run(100_000, exactly_two)
+
+    assert [chunk.chunk_id for chunk in tight] == [chunk.chunk_id for chunk in generous[:2]]
+    assert len(await _budget_run(100_000, exactly_two - 1)) == 1
+
+
+async def test_retrieve_context_context_budget_keeps_the_best_chunks_first() -> None:
+    """Descending by score, then cut (retrieval plan §3.7): what survives is a
+    PREFIX of the unbudgeted ranking, so the most relevant chunk is still
+    `[#1]` in what the model reads. `LongContextReorder` -- which would move it
+    to the END -- is an explicitly rejected design (§3.7, §7)."""
+    generous = await _budget_run(100_000, 100_000)
+    rendered = [_labelled(chunk) for chunk in generous]
+    tight = await _budget_run(len(rendered[0]) + len(rendered[1]) + len(rendered[2]), 100_000)
+
+    scores = [chunk.score for chunk in tight]
+    assert scores == sorted(scores, reverse=True)
+    assert [chunk.chunk_id for chunk in tight] == [chunk.chunk_id for chunk in generous[:3]]
+    assert tight[0].chunk_id == generous[0].chunk_id  # the best chunk leads, never trails
+
+
+async def test_retrieve_context_context_budget_never_returns_an_empty_context() -> None:
+    """One chunk larger than the WHOLE budget must not empty the context: zero
+    chunks is precisely the signal the trust gate (plan step 5, ``P-33``) reads
+    as "retrieval found nothing", so an emptiness manufactured by a budget
+    would make the agent answer "I don't have enough information" while
+    holding a relevant passage. The best candidate survives whole instead."""
+    generous = await _budget_run(100_000, 100_000)
+
+    starved = await _budget_run(1, 1)
+
+    assert len(starved) == 1
+    assert starved[0].chunk_id == generous[0].chunk_id
+    assert starved[0].text == generous[0].text  # kept WHOLE -- the budget never truncates text
+
+
+async def test_retrieve_context_context_budget_measures_the_labelled_text() -> None:
+    """Retrieval plan §3.2/§3.7, single source of truth: the budget is computed
+    on the text as it will actually be SENT -- source label included -- not on
+    the raw chunk text. Proven with a ceiling that is comfortably above the two
+    chunks' RAW length yet below their LABELLED length: measuring raw would
+    keep both, measuring what the model sees keeps one."""
+    embeddings = FakeEmbeddings(dim=6)
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    citation: Json = {
+        "file_name": "quarterly-report.pdf",
+        "page_number": 4,
+        "section": "Regional Breakdown",
+    }
+    parsed = _parsed_document(
+        [
+            _parsed_chunk("revenue figures for the northern region", order=0, metadata=citation),
+            _parsed_chunk("headcount plans for the southern region", order=1, metadata=citation),
+        ]
+    )
+    await IndexDocument(embeddings, vectors).execute(
+        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+    async def _run(max_chars: int) -> list[RetrievedChunk]:
+        result = await RetrieveContext(
+            embeddings,
+            vectors,
+            FakeParentRepo(),
+            max_context_chars=max_chars,
+            max_context_tokens=100_000,
+        ).execute(
+            ctx,
+            space_id=None,
+            query="revenue figures and headcount plans by region",
+            model="m",
+            api_key="k",
+            k=2,
+        )
+        return result.chunks
+
+    both = await _run(100_000)
+    assert len(both) == 2
+    assert all(chunk.file_name == "quarterly-report.pdf" for chunk in both)
+
+    ceiling = len(_labelled(both[0]))
+    # The premise: raw text alone would have fitted BOTH chunks under this
+    # ceiling -- so a budget that ignored the label would keep two.
+    assert sum(len(chunk.text) for chunk in both) <= ceiling
+
+    assert len(await _run(ceiling)) == 1
+
+
+def test_retrieve_context_budget_defaults_mirror_settings_limits() -> None:
+    """The use-case's fallback numbers are declared to MIRROR
+    ``Settings.Limits`` (the ``_MAX_K`` precedent). A mirror nobody checks is
+    just a copy, so this is the check."""
+    limits = Limits()
+    assert limits.max_context_chars == retrieval_module._DEFAULT_MAX_CONTEXT_CHARS
+    assert limits.max_context_tokens == retrieval_module._DEFAULT_MAX_CONTEXT_TOKENS
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:

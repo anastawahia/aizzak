@@ -1,7 +1,8 @@
-"""Unit tests for the knowledge module's two pure retrieval algorithms (3.k2)
--- Reciprocal Rank Fusion (`domain/fusion.py`) and the BM25 multilingual
-tokenizer (`domain/tokenization.py`). Pure unit tests: no markers, no Docker,
-no optional dependencies.
+"""Unit tests for the knowledge module's pure retrieval algorithms -- 3.k2's
+Reciprocal Rank Fusion (`domain/fusion.py`) and BM25 multilingual tokenizer
+(`domain/tokenization.py`), plus the dual context budget
+(`domain/context_budget.py`, rag-retrieval-plan.md §3.7/§4 row 10, `P-35`).
+Pure unit tests: no markers, no Docker, no optional dependencies.
 
 Most Arabic test fixtures are built from explicit `chr(codepoint)` sequences
 rather than embedded as literal source text -- precise, unambiguous, and
@@ -13,6 +14,8 @@ end-to-end.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import subprocess
 import sys
@@ -20,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from app.modules.knowledge.domain import fusion, tokenization
+from app.modules.knowledge.domain import context_budget, fusion, tokenization
 
 
 # --------------------------------------------------------------------------- #
@@ -352,3 +355,214 @@ def test_tokenize_default_pipeline_on_a_literal_arabic_sentence() -> None:
     removed = set(with_stopwords) - set(without_stopwords)
     assert removed and removed <= tokenization.ARABIC_STOP_WORDS
     assert set(without_stopwords) <= set(with_stopwords)
+
+
+# --------------------------------------------------------------------------- #
+# context_budget -- the dual context budget (retrieval plan §3.7/§4 row 10,    #
+# `P-35`). Pure: every ceiling arrives as an ARGUMENT (س-24), so these tests   #
+# need no Settings, no environment and no network.                            #
+# --------------------------------------------------------------------------- #
+_LATIN_100 = "b" * 100  # 100 chars -> 25 estimated tokens (4 chars/token)
+_ARABIC_100 = chr(0x0645) * 100  # 100 chars -> 50 estimated tokens (2 chars/token)
+
+
+def _pairs(*rendered: str) -> list[tuple[str, str]]:
+    """`(item, rendered)` pairs whose ITEM is a plain name -- so a test can
+    assert on identity/order without the rendered text getting in the way."""
+    return [(f"item-{index}", text) for index, text in enumerate(rendered)]
+
+
+def test_estimate_tokens_is_zero_only_for_the_empty_string() -> None:
+    assert context_budget.estimate_tokens("") == 0
+    assert context_budget.estimate_tokens("a") == 1  # rounded UP, never floored to zero
+
+
+def test_estimate_tokens_latin_uses_the_four_chars_per_token_rate() -> None:
+    assert context_budget.estimate_tokens("b" * 4) == 1
+    assert context_budget.estimate_tokens("b" * 400) == 100
+
+
+def test_estimate_tokens_arabic_costs_more_per_character_than_latin() -> None:
+    """The reason the budget is dual at all: at IDENTICAL character counts
+    Arabic costs roughly twice the tokens (poor BPE coverage), so a
+    single-ceiling budget would be honest in one language and wrong in the
+    other."""
+    assert context_budget.estimate_tokens(_ARABIC_100) == 50
+    assert context_budget.estimate_tokens(_LATIN_100) == 25
+    assert len(_ARABIC_100) == len(_LATIN_100)
+
+
+def test_estimate_tokens_mixed_text_counts_each_script_at_its_own_rate() -> None:
+    mixed = chr(0x0645) * 8 + "b" * 8
+    assert context_budget.estimate_tokens(mixed) == 4 + 2
+
+
+def test_context_budget_cuts_at_the_character_ceiling_when_it_is_the_smaller() -> None:
+    candidates = _pairs(_LATIN_100, _LATIN_100, _LATIN_100)
+
+    kept = context_budget.fit_to_context_budget(candidates, max_chars=250, max_tokens=10_000)
+
+    assert kept == ["item-0", "item-1"]  # 200 chars fit, 300 would not
+    # The CHARACTER ceiling is what did it: widen only that one and the third
+    # candidate comes back.
+    assert context_budget.fit_to_context_budget(candidates, max_chars=300, max_tokens=10_000) == [
+        "item-0",
+        "item-1",
+        "item-2",
+    ]
+
+
+def test_context_budget_cuts_at_the_token_ceiling_when_it_is_the_smaller() -> None:
+    candidates = _pairs(_LATIN_100, _LATIN_100, _LATIN_100)  # 25 tokens apiece
+
+    kept = context_budget.fit_to_context_budget(candidates, max_chars=10_000, max_tokens=60)
+
+    assert kept == ["item-0", "item-1"]  # 50 tokens fit, 75 would not
+    # The TOKEN ceiling is what did it -- the character ceiling never moved.
+    assert context_budget.fit_to_context_budget(candidates, max_chars=10_000, max_tokens=75) == [
+        "item-0",
+        "item-1",
+        "item-2",
+    ]
+
+
+def test_context_budget_takes_whichever_ceiling_is_smaller() -> None:
+    """§3.7's "و يُؤخَذ الأصغر", from both sides: with the SAME candidates, the
+    cut lands at two candidates whichever of the two ceilings is the tight
+    one."""
+    candidates = _pairs(_LATIN_100, _LATIN_100, _LATIN_100, _LATIN_100)
+
+    chars_tight = context_budget.fit_to_context_budget(candidates, max_chars=200, max_tokens=10_000)
+    tokens_tight = context_budget.fit_to_context_budget(candidates, max_chars=10_000, max_tokens=50)
+
+    assert chars_tight == tokens_tight == ["item-0", "item-1"]
+
+
+def test_context_budget_same_length_arabic_is_cut_earlier_than_latin() -> None:
+    """Identical character counts, identical ceilings -- and the Arabic pair
+    is cut where the Latin pair is not, because the TOKEN ceiling is the
+    smaller one for Arabic. This is the dual budget earning its keep."""
+    latin = context_budget.fit_to_context_budget(
+        _pairs(_LATIN_100, _LATIN_100), max_chars=10_000, max_tokens=50
+    )
+    arabic = context_budget.fit_to_context_budget(
+        _pairs(_ARABIC_100, _ARABIC_100), max_chars=10_000, max_tokens=50
+    )
+
+    assert latin == ["item-0", "item-1"]
+    assert arabic == ["item-0"]
+
+
+def test_context_budget_keeps_a_descending_prefix_and_never_reorders() -> None:
+    """The survivors are the best-first PREFIX of the input, in the input's
+    own order: the highest-scoring candidate stays `[#1]`. `LongContextReorder`
+    (best chunk moved to the END of the context) is an explicitly REJECTED
+    design -- retrieval plan §3.7 and §7."""
+    candidates = _pairs(*["b" * 50] * 6)
+
+    kept = context_budget.fit_to_context_budget(candidates, max_chars=150, max_tokens=10_000)
+
+    assert kept == ["item-0", "item-1", "item-2"]
+    assert kept == [item for item, _ in candidates][: len(kept)]  # a prefix, not a subset
+    assert kept[0] == "item-0"  # the best candidate is FIRST, never last
+
+
+def test_context_budget_stops_at_the_first_breach_instead_of_skipping_ahead() -> None:
+    """A cut, not a cherry-pick: a small LOW-ranked candidate is never
+    promoted past a large higher-ranked one that broke the budget, which
+    would silently reorder a descending ranking."""
+    candidates = _pairs("b" * 50, "b" * 5_000, "b")
+
+    kept = context_budget.fit_to_context_budget(candidates, max_chars=100, max_tokens=10_000)
+
+    assert kept == ["item-0"]
+    assert "item-2" not in kept  # it would have fitted -- and is still not taken
+
+
+def test_context_budget_keeps_one_oversized_candidate_rather_than_emptying() -> None:
+    """A single candidate bigger than the whole budget must NOT produce an
+    empty context: zero chunks is exactly the signal the trust gate (plan step
+    5, `P-33`) reads as "retrieval found nothing", so a budget that emptied
+    the context here would make the agent tell the user the workspace has no
+    answer while a real, relevant passage was in hand."""
+    kept = context_budget.fit_to_context_budget(_pairs("b" * 5_000), max_chars=10, max_tokens=1)
+
+    assert kept == ["item-0"]
+
+
+def test_context_budget_oversized_first_candidate_does_not_drag_the_rest_in() -> None:
+    kept = context_budget.fit_to_context_budget(
+        _pairs("b" * 5_000, "b" * 10, "b" * 10), max_chars=10, max_tokens=1
+    )
+
+    assert kept == ["item-0"]  # the guarantee is exactly ONE survivor, not a free pass
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_context_budget_non_positive_ceilings_still_keep_the_best_candidate(
+    ceiling: int,
+) -> None:
+    kept = context_budget.fit_to_context_budget(
+        _pairs("b" * 10, "b" * 10), max_chars=ceiling, max_tokens=ceiling
+    )
+
+    assert kept == ["item-0"]
+
+
+def test_context_budget_empty_input_is_the_only_empty_output() -> None:
+    assert context_budget.fit_to_context_budget([], max_chars=10_000, max_tokens=10_000) == []
+
+
+def test_context_budget_measures_the_rendered_string_not_the_item() -> None:
+    """The budget is computed on the RENDERED text (source label included --
+    the caller pairs each item with it), never on the item itself: a huge item
+    paired with a short rendering costs a short rendering's worth."""
+    huge_item = "x" * 10_000
+
+    kept = context_budget.fit_to_context_budget(
+        [(huge_item, "b" * 10), (huge_item, "b" * 10)], max_chars=20, max_tokens=10_000
+    )
+
+    assert kept == [huge_item, huge_item]
+
+
+def test_context_budget_ceilings_are_required_arguments_with_no_domain_defaults() -> None:
+    """س-24, mechanically: the pure function cannot supply either number
+    itself -- both are REQUIRED keyword-only arguments, so the value can only
+    have come from `Settings` via the caller."""
+    parameters = inspect.signature(context_budget.fit_to_context_budget).parameters
+
+    for name in ("max_chars", "max_tokens"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is inspect.Parameter.empty
+
+
+def test_context_budget_module_reads_no_environment_and_hardcodes_no_budget() -> None:
+    """The other half of س-24, read off the module's own AST rather than a
+    string scan (its prose discusses `os.getenv` precisely to forbid it):
+
+    * the only imports are three stdlib names -- no `os` at all, so there is
+      no environment to read, and no `Settings` to reach behind the caller's
+      back (import-linter contract 2 forbids the latter anyway; this pins the
+      former, which no contract covers);
+    * no numeric literal equals a shipped budget default
+      (`Settings.Limits.max_context_chars` = 12000 / `.max_context_tokens` =
+      3000) -- a duplicated default is a second source of truth that drifts
+      the day one of them moves.
+    """
+    tree = ast.parse(inspect.getsource(context_budget))
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+    assert imported == {"__future__", "math", "re", "collections.abc"}
+
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int | float)
+    }
+    assert not literals & {12_000, 3_000}

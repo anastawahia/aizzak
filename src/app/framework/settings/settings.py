@@ -403,6 +403,29 @@ class Limits(BaseModel):
     max_input_tokens: int = 32_000
     max_output_tokens: int = 4_096
     max_rag_k: int = 50
+    # The DUAL context budget (rag-retrieval-plan.md §3.7 / §4 row 10,
+    # `P-35`, decision س-24) -- a hard character ceiling and an ESTIMATED
+    # token ceiling on the retrieved context handed to the model, of which
+    # the SMALLER always wins. Consumed by `RetrieveContext`, which passes
+    # them as arguments into the pure `domain/context_budget.py` (س-24: the
+    # numbers live here, never in the domain, and there is no per-request
+    # override of either).
+    #   * `max_context_chars` -- 12000, the plan's own starting suggestion.
+    #     Exactly measurable, so it is the floor under an estimate that could
+    #     drift; comfortably above three widened parents
+    #     (`RetrieveContext._MAX_PARENT_CHUNK_CHARS` is 4000 apiece), so a
+    #     normal `k`-sized answer is never trimmed by it.
+    #   * `max_context_tokens` -- 3000, likewise the plan's suggestion, and
+    #     deliberately far under `max_input_tokens` (32000) above: the
+    #     retrieved context is only ONE part of the prompt, which also
+    #     carries the system prompt, the corpus-awareness header (§3.6, up to
+    #     ~500 tokens), the question, and the answer's own headroom.
+    # These are NOT quality thresholds, so decision س-22 ("thresholds stay
+    # 0.0 until a calibration set exists") does not apply: a budget is a cost
+    # decision about how much text is sent, not a judgement about whether a
+    # chunk is good enough to send.
+    max_context_chars: int = 12_000
+    max_context_tokens: int = 3_000
     embedding_batch: int = 128
     max_image_dim: int = 2_048
     max_video_seconds: int = 30
