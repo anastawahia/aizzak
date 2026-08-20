@@ -104,8 +104,6 @@ from app.framework.ports.llm_provider import LlmMessage, LlmParams
 
 _logger = get_logger(__name__)
 
-_TOP_K = 5
-
 # Retrieval plan §3.3/§4 row 5 (``P-33``) — the two fixed fallback sentences,
 # picked by whether the query itself contains any Arabic-script character.
 # This is NOT a new i18n mechanism (no catalog, no locale files): it is the
@@ -152,12 +150,17 @@ _CLARIFY_FILE_AR = "أيّ ملفّ تقصد؟"
 _CLARIFY_BULLET = "- "
 
 # Retrieval plan §3.6/§4 row 6 (``P-36``, س-23 = ج) — the corpus-awareness
-# header's display cap. A PLAIN MODULE CONSTANT, not ``Settings`` (س-24's own
-# escape hatch: "a plain module constant is also acceptable for a fixed
-# display cap"). The plan fixes this number itself ("سقف عرض 50 اسمًا") rather
-# than leaving it a per-deployment knob, exactly like ``_TOP_K`` above — and
-# unlike ``_TOP_K``, it is never read from a request either way, so there is
-# nothing here for a per-request override to even attach to.
+# header's display cap, and **the last number left in this agent**.
+#
+# A PLAIN MODULE CONSTANT, not ``Settings``, and deliberately NOT swept by
+# plan row 18 (``P-30`` ``P-40``) the way ``_TOP_K`` was: س-24's scope list is
+# the RETRIEVAL knobs (``_W_DENSE`` ``_W_BM25`` ``_RRF_K``
+# ``_SEARCH_OVERFETCH`` ``_TOP_K``), and this is none of them. It is a
+# DISPLAY cap that the plan fixes itself ("سقف عرض 50 اسمًا", §3.6, with the
+# ~500-token-per-request price named and accepted right there) — changing it
+# changes what the header looks like, not how well retrieval answers, so
+# there is no calibration for a deployment to do and nothing for the ``P-38``
+# evaluation set to say about it.
 _MAX_CORPUS_NAMES = 50
 
 # The corpus-awareness header's four fixed strings (retrieval plan §3.6),
@@ -235,6 +238,15 @@ class RagAgent(BaseAgent):
             # `self.deps` (ح-11, §6 risk 7). The arguments are the ones
             # `retrieve` took, unchanged.
             #
+            # `k` is NOT passed (retrieval plan §4 row 18, `P-40`, س-24 = أ).
+            # It used to be `_TOP_K = 5`, a retrieval tuning number held by an
+            # agent — the one thing ح-11 says this agent does not do, and the
+            # one place `Settings` could never reach because an agent reads no
+            # configuration and imports nothing. Omitting it asks the module
+            # for the DEPLOYMENT's configured `k`
+            # (`Settings.retrieval.default_k`), which is the same 5 today and
+            # is now movable without touching this file.
+            #
             # Spaces plan step 8 — `space_id` is TYPED as none rather than
             # defaulted, and it is STILL none after step 12: that step put the
             # space on the request (`AgentInvokeIn.space_id`) but not onto
@@ -243,7 +255,7 @@ class RagAgent(BaseAgent):
             # owing a space, and the plan's §7 carries the entry. Searching
             # every space is the pre-plan behaviour; the pins in `scope`
             # already cannot cross one.
-            await knowledge.answer(self.ctx, query, _TOP_K, scope, space_id=None)
+            await knowledge.answer(self.ctx, query, file_ids=scope, space_id=None)
             if knowledge is not None
             else None
         )

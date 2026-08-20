@@ -161,6 +161,15 @@ class KnowledgeAccess(Protocol):
     cap, passed as an argument exactly like ``retrieve``'s ``k`` (س-24 — no
     ``Settings``/``os.getenv`` on either side of this seam).
 
+    ``k`` is OPTIONAL since retrieval plan §4 row 18 (``P-40``): omitting it
+    asks the module for however many chunks the DEPLOYMENT is configured to
+    return (``Settings.retrieval.default_k``). This default is the whole
+    mechanism by which a Settings-owned ``k`` can reach an agent at all —
+    an agent reads no configuration and imports nothing (ح-11), so before it
+    existed the RAG agent had no choice but to hold its own ``_TOP_K = 5``.
+    ``limit`` above is unaffected: it is a fixed DISPLAY cap the plan itself
+    fixes (§3.6, "سقف عرض 50 اسمًا"), not a retrieval tuning knob.
+
     ``answer`` (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) is the
     THIRD, and it is the one the RAG agent actually calls: it takes
     ``retrieve``'s arguments unchanged and returns a ``RoutedAnswerView``,
@@ -176,7 +185,7 @@ class KnowledgeAccess(Protocol):
         self,
         ctx: ExecutionContext,
         query: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,
@@ -186,7 +195,7 @@ class KnowledgeAccess(Protocol):
         self,
         ctx: ExecutionContext,
         question: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,

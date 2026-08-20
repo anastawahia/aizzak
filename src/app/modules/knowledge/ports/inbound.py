@@ -84,6 +84,17 @@ class KnowledgeRetrieval(Protocol):
     """Injected into agents; retrieves the top ``k`` relevant chunks for
     ``query`` within the caller's workspace (02 §2).
 
+    ``k`` is OPTIONAL since retrieval plan §4 row 18 (``P-40``, س-24 = أ):
+    omitting it asks for however many chunks the deployment is configured to
+    return (``Settings.retrieval.default_k``, resolved inside the module by
+    ``RetrieveContext``). That is what let the RAG agent drop its own
+    ``_TOP_K = 5`` — the agent imports nothing and reads no configuration
+    (ح-11), so the only place a deployment's ``k`` could reach it is a
+    default on this seam. Naming a ``k`` is still allowed and still means
+    exactly what it did: ``POST /knowledge/search`` names one, because a
+    request's result-set SIZE is part of that published contract (03 §2) and
+    is not one of the tuning knobs س-24 confined to ``Settings``.
+
     ``file_ids`` (BE-RAG-005) narrows that workspace-wide search to the
     documents built from those files — the retrieval scope a conversation
     pins. It crosses as FILE ids, not document ids, so callers keep speaking
@@ -114,7 +125,7 @@ class KnowledgeRetrieval(Protocol):
         self,
         ctx: ExecutionContext,
         query: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,
@@ -124,7 +135,7 @@ class KnowledgeRetrieval(Protocol):
         self,
         ctx: ExecutionContext,
         question: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,

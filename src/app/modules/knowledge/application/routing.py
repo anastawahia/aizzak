@@ -197,13 +197,18 @@ class RouteQuestion:
         question: str,
         model: str,
         api_key: str,
-        k: int = 5,
+        k: int | None = None,
         document_ids: Sequence[Uuid] | None = None,
         space_id: Uuid | None,
     ) -> RoutedAnswer:
         """Route one question. The arguments are ``RetrieveContext.execute``'s,
         because the CONTENT route is that use-case unchanged — this adds a
         decision in front of it, not a second retrieval path.
+
+        ``k = None`` is that use-case's own "use the configured default"
+        (retrieval plan §4 row 18, ``P-40``, س-24) and is passed straight
+        through: resolving it here would put the deployment's `k` in two
+        places, and this class owns no tuning of its own.
 
         ``document_ids`` does double duty: it is the retrieval scope on the
         CONTENT route, and the FIRST source of a summarisation target on the

@@ -1766,12 +1766,20 @@ class KnowledgeRetrievalService:
         self,
         ctx: ExecutionContext,
         query: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,
     ) -> list[RetrievedChunk]:
         """Retrieve the top ``k`` chunks, optionally scoped to ``file_ids``.
+
+        ``k = None`` means "however many this deployment is configured to
+        return" (retrieval plan §4 row 18, ``P-40``, س-24 = أ) — resolved by
+        ``RetrieveContext`` from ``Settings.retrieval.default_k``, the single
+        home of that number. ``POST /knowledge/search`` still names its own
+        ``k``, because that is a request's result-set SIZE on a published
+        contract (03 §2), not a retrieval tuning override; س-24 rules out the
+        latter, not the former.
 
         **The file ⇒ document translation happens HERE, not in the caller.**
         A conversation pins files (BE-RAG-005) because a file is what its user
@@ -1825,13 +1833,18 @@ class KnowledgeRetrievalService:
         self,
         ctx: ExecutionContext,
         question: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid | None,
     ) -> RoutedAnswer:
         """Implements ``KnowledgeRetrieval.answer`` (retrieval plan §3.4/§4
         row 11, ``P-21``) — the port's third face, over ``RouteQuestion``.
+
+        ``k`` means exactly what it means on ``retrieve`` above, ``None``
+        included — and ``None`` is what the RAG agent passes since plan row 18
+        (``P-40``), which is how it stopped carrying a retrieval number of its
+        own.
 
         Everything ``retrieve`` does before delegating happens here FIRST and
         identically: the embedding provider is resolved for this call, and the

@@ -212,7 +212,7 @@ from app.framework.providers.catalog import ModelCatalog
 from app.framework.providers.inventory import ProviderInventory, ProviderProbe
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings import DatabaseSettings, Settings
-from app.framework.settings.settings import Limits
+from app.framework.settings.settings import Limits, RetrievalSettings
 from app.framework.streaming import ConnectionHub, make_notification_handler
 from app.framework.workflows.registry import InMemoryWorkflowRegistry, WorkflowRegistry
 from app.infrastructure.ai_providers.embedding.external_embedding import (
@@ -343,7 +343,7 @@ from app.modules.knowledge.adapters.sql_repository import (
     SqlSummaryRepository,
 )
 from app.modules.knowledge.adapters.summary_renderer import MarkdownSummaryRenderer
-from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.retrieval import RetrievalTuning, RetrieveContext
 from app.modules.knowledge.application.use_cases import (
     CancelReindexJob,
     CancelReindexJobService,
@@ -996,6 +996,46 @@ def _build_conversations(
     return use_cases, threads, PurgeSpaceConversations(repository)
 
 
+def _retrieval_tuning(retrieval: RetrievalSettings, limits: Limits) -> RetrievalTuning:
+    """Map ``Settings`` onto ``RetrieveContext``'s tuning value object
+    (rag-retrieval-plan.md §4 row 18, ``P-30`` ``P-40``, decision س-24 = أ).
+
+    **This function is the whole of "الضبط وقت التشغيل".** س-24 = أ puts every
+    retrieval knob in ``Settings`` and requires it to reach the code that uses
+    it as an ARGUMENT — so the Composition Root, the one place allowed to know
+    both the configuration contract and the concrete use-case, does the
+    translation here, once, and the application layer never imports
+    ``Settings`` at all. Every field is named on BOTH sides: an implicit
+    ``model_dump()`` splat would silently bind a renamed setting to nothing.
+
+    It reads TWO sub-settings on purpose. ``Settings.retrieval`` holds the
+    tuning proper; ``Settings.limits`` keeps the three retrieval numbers that
+    are platform GUARDRAILS (07-nfr-slo §4) rather than quality knobs —
+    ``max_rag_k`` and the dual context budget — because other layers honour
+    them too (``SearchRequest.k``'s own ``le=50``) and one number must not
+    have two homes.
+    """
+    return RetrievalTuning(
+        weight_dense=retrieval.weight_dense,
+        weight_bm25=retrieval.weight_bm25,
+        rrf_k=retrieval.rrf_k,
+        search_overfetch=retrieval.search_overfetch,
+        max_search_candidates=retrieval.max_search_candidates,
+        max_sparse_candidates=retrieval.max_sparse_candidates,
+        fusion_retention=retrieval.fusion_retention,
+        default_k=retrieval.default_k,
+        max_k=limits.max_rag_k,
+        min_dense_score=retrieval.min_dense_score,
+        min_bm25_score=retrieval.min_bm25_score,
+        min_fused_score=retrieval.min_fused_score,
+        relative_floor=retrieval.relative_floor,
+        jaccard_threshold=retrieval.jaccard_threshold,
+        max_parent_chunk_chars=retrieval.max_parent_chunk_chars,
+        max_context_chars=limits.max_context_chars,
+        max_context_tokens=limits.max_context_tokens,
+    )
+
+
 def _build_knowledge(
     tenant_session: TenantSessionFactory,
     *,
@@ -1004,7 +1044,7 @@ def _build_knowledge(
     resolver: EmbeddingResolver,
     outbox: EventOutbox,
     files: KnowledgeReadableFiles,
-    limits: Limits,
+    tuning: RetrievalTuning,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1078,14 +1118,13 @@ def _build_knowledge(
                 embeddings=embedding,
                 vectors=vectors,
                 documents=documents,
-                # Retrieval plan §3.7/§4 row 10 (`P-35`, س-24) — the dual
-                # context budget's two numbers live in `Settings` and reach
-                # the pure domain algorithm as ARGUMENTS from here. Passing
-                # them explicitly (rather than leaning on the use-case's own
-                # mirrored defaults) is what makes them a DEPLOYMENT knob at
-                # all: without this line the shipped values could never move.
-                max_context_chars=limits.max_context_chars,
-                max_context_tokens=limits.max_context_tokens,
+                # Retrieval plan §4 row 18 (`P-30` `P-40`, س-24) — EVERY
+                # retrieval knob, from `Settings`, as one injected value
+                # object (`_retrieval_tuning` above). Passing it explicitly
+                # (rather than leaning on the use-case's own mirrored
+                # defaults) is what makes these DEPLOYMENT knobs at all:
+                # without this line the shipped values could never move.
+                tuning=tuning,
             ),
             resolver,
             documents,
@@ -1569,7 +1608,7 @@ class CompositionRoot:
             resolver=_RoutedEmbeddingResolver(provider_resolver),
             outbox=outbox,
             files=files_query,
-            limits=settings.limits,
+            tuning=_retrieval_tuning(settings.retrieval, settings.limits),
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which

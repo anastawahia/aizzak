@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
+from app.agents.rag_agent import agent as agent_module
 from app.agents.rag_agent.agent import RagAgent
 from app.framework.agent_runtime import (
     AgentDependencies,
@@ -125,12 +126,16 @@ class FakeKnowledge:
         self._document_names = FakeDocumentNames(document_names, document_total)
         self._summary_job_id = summary_job_id
         self._clarification_options = clarification_options
-        self.calls: list[tuple[str, int, tuple[str, ...] | None]] = []
+        # `k` is `int | None` since retrieval plan §4 row 18 (`P-40`): the
+        # agent stopped naming one, so what this records is a `None` that
+        # means "the deployment's configured `k`". Recording it rather than
+        # dropping it is what makes that a visible assertion.
+        self.calls: list[tuple[str, int | None, tuple[str, ...] | None]] = []
         # Every DIRECT `retrieve` — which the agent must never make, now that
         # routing happens inside the module (`answer`). Its own log, so
         # "the agent asked for retrieval instead of an answer" is a visible
         # assertion rather than an absence nobody checks.
-        self.retrieve_calls: list[tuple[str, int]] = []
+        self.retrieve_calls: list[tuple[str, int | None]] = []
         # Every space the agent named (spaces plan step 8) — its own log, so
         # the existing `calls` assertions keep their shape.
         self.spaces: list[str | None] = []
@@ -143,7 +148,7 @@ class FakeKnowledge:
         self,
         ctx: ExecutionContext,
         query: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
         space_id: str | None,
@@ -156,7 +161,7 @@ class FakeKnowledge:
         self,
         ctx: ExecutionContext,
         question: str,
-        k: int,
+        k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
         space_id: str | None,
@@ -274,7 +279,7 @@ async def test_streams_tokens_then_final_with_citations() -> None:
     # workspace corpus. Forwarding the bundle's empty tuple would arrive one
     # layer down as "a scope that resolved to no documents", which retrieves
     # nothing (BE-RAG-005).
-    assert knowledge.calls == [("capital of France?", 5, None)]
+    assert knowledge.calls == [("capital of France?", None, None)]
 
 
 async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
@@ -287,7 +292,7 @@ async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
     deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")], scope=("file-a", "file-b"))
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
-    assert knowledge.calls == [("q", 5, ("file-a", "file-b"))]
+    assert knowledge.calls == [("q", None, ("file-a", "file-b"))]
 
 
 async def test_the_agent_names_its_space_and_has_none_to_name_yet() -> None:
@@ -540,8 +545,10 @@ async def test_corpus_header_follows_the_query_language_like_the_fallback_does()
 async def test_the_agent_asks_the_module_for_the_plan_s_fifty_name_display_cap() -> None:
     """The 50-name display cap (§3.6) lives as a plain module constant in the
     agent (`_MAX_CORPUS_NAMES`) and is passed as an ARGUMENT to the seam
-    (س-24 — no `Settings`/`os.getenv` inside the module for this), exactly
-    the way `_TOP_K` is already passed into `retrieve`."""
+    (س-24 — no `Settings`/`os.getenv` inside the module for this). It is the
+    LAST number in this agent: plan row 18 (`P-40`) swept `_TOP_K` into
+    `Settings`, and this one stayed because §3.6 fixes it itself and it
+    shapes the header's LOOK, not retrieval's quality."""
     deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
@@ -579,7 +586,7 @@ async def test_zero_chunks_with_knowledge_wired_falls_back_without_calling_the_l
     deps, knowledge, llm = make_deps(chunks=[])
     events = await drive_run(RagAgent(make_ctx(), deps), "what is the capital of France?")
 
-    assert knowledge.calls == [("what is the capital of France?", 5, None)]
+    assert knowledge.calls == [("what is the capital of France?", None, None)]
     assert llm.stream_calls == []  # the LLM provider is never reached
     assert [e.type for e in events] == ["token", "final"]
     final = events[-1]
@@ -627,8 +634,30 @@ async def test_the_agent_asks_the_module_to_answer_and_never_retrieves_directly(
     deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
-    assert knowledge.calls == [("q", 5, None)]
+    assert knowledge.calls == [("q", None, None)]
     assert knowledge.retrieve_calls == []
+
+
+async def test_the_agent_names_no_k_and_holds_no_retrieval_number() -> None:
+    """Retrieval plan §4 row 18 (`P-40`, س-24 = أ): the `k` this agent used to
+    hold as `_TOP_K = 5` is now the DEPLOYMENT's
+    (`Settings.retrieval.default_k`), so the agent passes none at all and the
+    number is gone from this module's source.
+
+    Asserted BOTH ways round on purpose. The call site proves the behaviour;
+    the absent module attribute proves the constant was actually removed
+    rather than merely left unused, which is the failure mode a call-site
+    assertion cannot see. An agent reads no configuration and imports nothing
+    (ح-11), so "omit it and let the module's configured default apply" is the
+    only shape a Settings-owned `k` could ever take here."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert [call[1] for call in knowledge.calls] == [None]
+    assert not hasattr(agent_module, "_TOP_K")
+    # ...and the ONE number that legitimately stays is still here, so this is
+    # a proof about `_TOP_K` rather than about the module being empty.
+    assert agent_module._MAX_CORPUS_NAMES == 50
 
 
 async def test_a_routed_summary_yields_a_receipt_and_never_calls_the_llm() -> None:

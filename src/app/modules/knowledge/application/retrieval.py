@@ -17,8 +17,8 @@ Pipeline shape (retrieval plan §3.7, plan step 8's ``P-26`` + plan step 9's
 ``P-34`` + plan step 10's ``P-35``): fusion → **keep 3x k** →
 ``filter_relevant`` → **replace with parent text, dedup by parent** →
 **context budget** → final ``k``. ``execute`` widens back OUT to ``3 * k``
-candidates right after RRF fusion (``_FUSION_RETENTION``, decoupled from
-``_SEARCH_OVERFETCH`` below — see that constant's own comment) — narrowing
+candidates right after RRF fusion (``RetrievalTuning.fusion_retention``,
+decoupled from ``.search_overfetch`` even though both ship at 3) — narrowing
 straight to ``k`` here, before ``filter_relevant`` even runs, would starve the
 parent-expansion step below of the diversity it needs to fill ``k`` with
 distinct sections instead of collapsing into two parents (§3.7's own stated
@@ -36,16 +36,16 @@ rag-indexing-plan.md §3.2 constraint 1 — never a Qdrant payload read, because
 the payload carries neither a parent's text nor even its id). Two candidates
 that widen to the SAME parent row collapse into ONE surviving entry (dedup
 BY PARENT, keyed on ``ParentChunkText.id``, not on text equality) — the
-mechanism that lets ``_FUSION_RETENTION``'s 3x pool actually pay off: the
-freed slot is filled by the next distinct candidate rather than repeating a
+mechanism that lets ``RetrievalTuning.fusion_retention``'s 3x pool actually
+pay off: the freed slot is filled by the next distinct candidate rather than repeating a
 section already shown. A candidate with no parent (``parent_id`` null, or
 the parent row missing/unreadable) degrades HONESTLY to its own leaf text —
 never dropped, never an error. The substituted parent text is capped at
-``_MAX_PARENT_CHUNK_CHARS`` so one oversized parent cannot swallow the whole
-context by itself; a candidate's OWN leaf text is never capped (it is
-already window-sized). This runs over the FULL ``retain_k``-deep candidate
-list, before the final truncation below — the same reason ``retain_k`` is
-wider than ``k`` in the first place.
+``RetrievalTuning.max_parent_chunk_chars`` so one oversized parent cannot
+swallow the whole context by itself; a candidate's OWN leaf text is never
+capped (it is already window-sized). This runs over the FULL ``retain_k``-deep
+candidate list, before the final truncation below — the same reason
+``retain_k`` is wider than ``k`` in the first place.
 
 **Context budget (plan step 10, ``P-35``)** — the stage between the widening
 above and the final ``k``, and in that order for a reason: parent expansion is
@@ -57,10 +57,11 @@ prompt), then hands those rendered strings, with the two ceilings, to the pure
 ``domain/context_budget.fit_to_context_budget``. The ceilings are DUAL and the
 smaller wins: ``max_context_chars`` is exact, ``max_context_tokens`` is a
 network-free ESTIMATE (``estimate_tokens`` — no ``tiktoken``, no tokenizer
-download), and the cut falls wherever either is breached first. Both are
-constructor-injected from ``Settings.Limits`` (س-24: the values live in
-``Settings`` and are passed as ARGUMENTS into the domain — no ``os.getenv``
-there, and no per-request override anywhere). Order is DESCENDING then cut:
+download), and the cut falls wherever either is breached first. Both ride in
+on the constructor-injected ``RetrievalTuning``, sourced from
+``Settings.Limits`` (س-24: the values live in ``Settings`` and are passed as
+ARGUMENTS into the domain — no ``os.getenv`` there, and no per-request
+override anywhere). Order is DESCENDING then cut:
 the survivors are a best-first PREFIX, so the highest-scoring chunk stays
 ``[#1]``. ``LongContextReorder`` — which would move it to the END — is an
 explicitly rejected design (§3.7, §7). The budget never returns an empty
@@ -88,15 +89,26 @@ visible. They exist for the structured log (``P-29``, plan step 17) and as
 the ready-made input for any future calibration.
 
 Per-leg thresholds (plan step 16, ``P-27``; retrieval plan §3.8 — "الآليّة
-تُشحَن والأرقام لا"): ``_MIN_DENSE_SCORE``/``_MIN_BM25_SCORE`` gate each leg's
+تُشحَن والأرقام لا"): ``min_dense_score``/``min_bm25_score`` gate each leg's
 hits (``_gate_by_score``) between that snapshot and RRF fusion, and both ship
 at ``0.0`` = **disabled**. Decision س-22 forbids shipping an UNCALIBRATED
 number, not the mechanism, so the knob is wired and the number waits for the
 evaluation set ``P-38`` needs (§7). No answer path changes today: at the
-shipped defaults ``_gate_by_score`` returns its input untouched. The one
-number this step DOES pick is ``_MAX_SPARSE_CANDIDATES`` — a cap on the
+shipped configuration ``_gate_by_score`` returns its input untouched. The one
+number that step DID pick is ``max_sparse_candidates`` — a cap on the
 **count** of BM25-sparse candidates, not on any score, which is why س-22
 never reaches it.
+
+**All of those numbers now live in ``Settings`` (plan step 18, ``P-30``
+``P-40``, س-24 = أ).** ``RetrievalTuning`` is the whole set, injected once at
+construction and mapped by the Composition Root from
+``Settings.retrieval``/``Settings.limits``; ``execute`` passes each one on as
+an ARGUMENT to the pure domain algorithm that consumes it. There is no
+``os.getenv`` and no ``Settings`` import anywhere in this module or in
+``knowledge/domain``, and no per-request override path exists — a caller may
+still ask for a ``k`` (that is ``POST /knowledge/search``'s published
+result-set size, 03 §2), and nothing else about retrieval is a request's to
+choose. See ``RetrievalTuning`` for the field-by-field mapping.
 
 ⚠️ **Scale direction is INVERTED from alpha.** alpha's ``best_dense_distance``
 is the LOWEST raw FAISS L2 distance (nearer = smaller = better). AIZZAK's
@@ -163,109 +175,91 @@ from app.modules.knowledge.ports.retrieval import ParentChunkRepository, Retriev
 
 log = get_logger(__name__)
 
-_MAX_K = 50  # mirrors Settings.Limits.max_rag_k (07-nfr-slo §4)
-# fusion.py does not normalize weights internally (3.k2) -- these already sum
-# to 1.0.
-_W_DENSE = 0.5
-_W_BM25 = 0.5
-_RRF_K = 60
-# How many raw hits EACH leg (dense, BM25-sparse) fetches from the vector
-# store -- a search-recall concern, unrelated to how many FUSED candidates
-# survive past RRF (see `_FUSION_RETENTION` below).
-_SEARCH_OVERFETCH = 3
-_MAX_SEARCH = 100
-# Diversity retention factor, not a quality threshold (retrieval plan
-# §3.7/§4 step 8, `P-26`; §3.8 keeps every quality threshold at `0.0` until a
-# calibration set exists). Keeping 3x the caller's `k` past RRF fusion gives
-# the parent-expansion step below (plan step 9, `P-34`, `_widen_to_parents`)
-# enough distinct candidates to fill the final `k` with distinct sections
-# instead of collapsing into two parents (§3.7's stated failure mode).
-# Deliberately its OWN constant, decoupled from `_SEARCH_OVERFETCH` even
-# though both default to 3 today -- plan step 18 (`P-30`) sweeps every
-# module-level knob in this file, including this one, into `Settings`
-# together.
-_FUSION_RETENTION = 3
-# Length cap on a SUBSTITUTED parent chunk's text (plan step 9, `P-34`) --
-# NOT a quality threshold, so decision س-22 ("thresholds stay 0.0 until a
-# calibration set exists") does not apply to it (retrieval plan §4 row 9's
-# own instruction). A parent (one parsed `SourceSegment`) can hold several
-# word-windows' worth of text -- unbounded, in principle -- so without a cap
-# a single oversized section could dominate the whole context handed to the
-# final `k`. 4000 was picked to comfortably exceed one leaf window (~512
-# words is roughly 3000 characters, `domain/chunking.py::MIN_NODE_CHARS`'s
-# neighbourhood) so widening is essentially never a no-op shrink, while
-# staying well under the *whole-context* budget plan step 10 (`P-35`) will
-# introduce (its own starting suggestion is 12000 characters across EVERY
-# surviving chunk combined) so one parent cannot pre-empt that stage's job.
-# A candidate's own (un-widened) leaf text is never capped here -- it is
-# already window-sized by construction.
-_MAX_PARENT_CHUNK_CHARS = 4000
-# Fallback values for the DUAL context budget (plan step 10, `P-35`) when no
-# caller injects them -- they MIRROR `Settings.Limits.max_context_chars` /
-# `.max_context_tokens`, exactly as `_MAX_K` above mirrors
-# `Settings.Limits.max_rag_k`, and the Composition Root passes the real
-# configured values in (س-24: the numbers live in `Settings`). They exist so a
-# test (or any other direct constructor call) gets the shipped budget rather
-# than an unbounded one -- a defaulted-to-infinity budget would silently be no
-# budget at all.
-_DEFAULT_MAX_CONTEXT_CHARS = 12_000
-_DEFAULT_MAX_CONTEXT_TOKENS = 3_000
-# Per-leg ABSOLUTE score floors (plan step 16, `P-27`; retrieval plan §3.8).
-#
-# **The mechanism ships; the number does not.** Decision س-22 forbids shipping
-# an UNCALIBRATED threshold, not the knob itself -- so the knob exists here,
-# wired all the way through `_gate_by_score` below, and its value stays `0.0`
-# (= disabled) until the evaluation set `P-38` waits on exists (§7: real
-# documents and 15-30 questions with reference answers -- an input nobody may
-# invent). `domain/relevance.py`'s own `min_score`/`relative_floor` stay `0.0`
-# for the same reason, and its Jaccard dedup stays `0.95` because that one is
-# alpha's single SCALE-INDEPENDENT constant (plan fact ح-17).
-#
-# `0.0` means disabled by an EXPLICIT branch, never by arithmetic: on the
-# dense leg's cosine scale a bare `score >= 0.0` is NOT inert -- cosine spans
-# [-1, 1], so such a comparison would silently drop every negatively
-# correlated hit. That is a real, uncalibrated gate wearing a disabled
-# default's clothes, and it is precisely what س-22 rules out. See
-# `_gate_by_score`.
-#
-# ⚠️ Direction is INVERTED from alpha (retrieval plan header, §3.3, §3.8; §6
-# risk #3). A floor here reads "keep the hit if its score is **>=** the
-# floor", because HIGHER is better on BOTH legs (Qdrant cosine similarity;
-# raw IDF-weighted sparse dot product). alpha's `min_dense_score` is
-# calibrated against FAISS L2 DISTANCE, where lower is nearer, so its
-# comparison is the mirror image of this one -- no alpha number is copied.
-_MIN_DENSE_SCORE = 0.0
-_MIN_BM25_SCORE = 0.0
-# Ceiling on how many BM25-sparse candidates may reach fusion (plan step 16,
-# `P-27`) -- and, unlike the two floors above, this one carries a REAL value.
-# س-22 does not reach it: it caps a **count**, not a **score** (retrieval plan
-# §3.8 says exactly that), so there is nothing here to calibrate and no scale
-# for it to be wrong on. `20` is alpha's own sparse-leg candidate count
-# (`rag-pipeline-alpha-vs-aizzak.md` appendix, "أعلى-k سَبارس | 20") -- a
-# count is the one class of alpha number that survives the L2 -> cosine
-# direction flip untouched, because it is never compared against a score.
-#
-# Why a cap at all: BM25 precision decays fast down its own ranking (deep
-# ranks are chunks sharing a single mid-frequency term), while RRF grants
-# EVERY returned rank non-zero mass -- `_W_BM25 / (_RRF_K + rank)`, still
-# ~0.003 at rank 100. An uncapped sparse fetch therefore injects tail noise
-# into the fused pool that the dense leg never voted for. Applied to the
-# sparse leg's fetch DEPTH (`sparse_k` in `execute`) rather than to the
-# returned list, because asking the store for 100 hits and discarding 80
-# payloads is pure waste; the number of sparse candidates entering fusion is
-# the same either way.
-#
-# `20` is >= `k * _SEARCH_OVERFETCH` for every `k <= 6`, so it does not narrow
-# the default `k = 5` path (`search_k == 15`) at all: it engages exactly where
-# the tail actually grows -- at the `_MAX_K` ceiling it cuts the sparse fetch
-# from 100 down to 20 -- and the dense leg is never capped by it.
-_MAX_SPARSE_CANDIDATES = 20
+
+@dataclass(frozen=True, slots=True)
+class RetrievalTuning:
+    """Every tunable number this use-case uses, in ONE injected value object
+    (retrieval plan §4 row 18, ``P-30`` ``P-40``, decision س-24 = أ).
+
+    Until this step each of these was a module constant here (and, for
+    ``default_k``, a constant in the RAG agent). س-24 = أ says configuration
+    lives in ``Settings`` and reaches the code that uses it as ARGUMENTS —
+    never an ``os.getenv`` or a ``Settings`` import inside the domain or the
+    application layer — so the Composition Root maps
+    ``Settings.retrieval``/``Settings.limits`` onto this object once, and
+    ``execute`` passes the individual numbers on into the pure domain
+    algorithms (``reciprocal_rank_fusion``, ``filter_relevant``,
+    ``fit_to_context_budget``).
+
+    **A plain frozen dataclass, not the pydantic ``RetrievalSettings``
+    itself.** The application layer stays free of the configuration
+    contract's own type (10-code-standards §4: it consumes injected values,
+    it does not read global config), and one object rather than seventeen
+    keyword arguments is what lets plan row 20 add ``mmr_lambda`` and its
+    widened ``search_k`` by adding a FIELD, with no second injection
+    mechanism invented for them.
+
+    **Every default here MIRRORS its ``Settings`` home byte for byte** — the
+    ``_MAX_K``/``_DEFAULT_MAX_CONTEXT_CHARS`` pattern this replaces, kept for
+    the same reason: a direct construction (a test, a script) must get the
+    SHIPPED numbers rather than an accidental second configuration. The
+    mirror is asserted by a test, because a mirror nobody checks is a
+    duplicate waiting to drift. The reasoning behind each VALUE lives with
+    the value, in ``framework/settings/settings.py``
+    (``RetrievalSettings``/``Limits``), and is deliberately not repeated
+    here.
+
+    The mapping, field by field:
+
+    ``weight_dense`` ``weight_bm25`` ``rrf_k`` ``search_overfetch``
+    ``max_search_candidates`` ``max_sparse_candidates`` ``fusion_retention``
+    ``default_k`` ``min_dense_score`` ``min_bm25_score`` ``min_fused_score``
+    ``relative_floor`` ``jaccard_threshold`` ``max_parent_chunk_chars`` come
+    from ``Settings.retrieval``; ``max_k`` ``max_context_chars``
+    ``max_context_tokens`` come from ``Settings.limits`` (``max_rag_k`` and
+    the dual budget are platform GUARDRAILS — 07-nfr-slo §4 — that other
+    layers also honour, so they keep their existing home rather than being
+    duplicated into a second one).
+
+    ``min_fused_score``/``relative_floor``/``jaccard_threshold`` are
+    ``domain/relevance.filter_relevant``'s three keyword arguments, which
+    ``execute`` used to leave at that function's OWN defaults. Passing them
+    explicitly is what makes §7's promise true — that switching a floor on
+    once ``P-38``'s evaluation set exists is "a configuration line, not a
+    step" — and it changes nothing today: the values passed are exactly the
+    defaults they replace.
+    """
+
+    weight_dense: float = 0.5
+    weight_bm25: float = 0.5
+    rrf_k: int = 60
+    search_overfetch: int = 3
+    max_search_candidates: int = 100
+    max_sparse_candidates: int = 20
+    fusion_retention: int = 3
+    default_k: int = 5
+    max_k: int = 50
+    min_dense_score: float = 0.0
+    min_bm25_score: float = 0.0
+    min_fused_score: float = 0.0
+    relative_floor: float = 0.0
+    jaccard_threshold: float = 0.95
+    max_parent_chunk_chars: int = 4_000
+    max_context_chars: int = 12_000
+    max_context_tokens: int = 3_000
+
+
+# The shipped tuning, as a module-level singleton so it is not rebuilt per
+# construction and so `RetrieveContext.__init__`'s default is a NAME rather
+# than a call (a call in a default argument is evaluated once anyway, but the
+# name says so).
+_DEFAULT_TUNING = RetrievalTuning()
 # --------------------------------------------------------------------------- #
 # The structured stage log (plan step 17, `P-29`; retrieval plan §3.11)       #
 # --------------------------------------------------------------------------- #
 # How deep into a ranking the log quotes ACTUAL numbers. The head of a ranking
 # is the part any calibration reads (the floors `P-38` will set live at the
-# TOP of a leg's scores, and `_MIN_BM25_SCORE`'s scale can only be learnt from
+# TOP of a leg's scores, and `min_bm25_score`'s scale can only be learnt from
 # real values there); the tail is a magnitude, and every `*_count` field
 # carries it EXACTLY. So a `k = 50` request logs a bounded record instead of
 # 100 dense scores + 100 sparse scores + 100 candidate tags, at no cost to
@@ -344,12 +338,15 @@ class RetrieveContext:
     the SAME ``SqlDocumentRepository`` it already builds for the module's
     other faces (structural typing needs no adapter of its own here).
 
-    ``max_context_chars``/``max_context_tokens`` (plan step 10, ``P-35``) are
-    the DUAL context budget, injected ONCE at construction from
-    ``Settings.Limits`` — never read from a request, and never from the
-    environment inside the domain (س-24). Construction-time rather than a
-    parameter of ``execute`` is the shape that decision demands: a per-call
-    argument would BE a per-request override, which س-24 rules out.
+    ``tuning`` (plan step 18, ``P-30`` ``P-40``) is EVERY tunable number this
+    use-case uses — the fusion weights, the RRF constant, both overfetch
+    factors, the per-leg floors, the relevance floors, the parent cap and the
+    dual context budget — injected ONCE at construction from ``Settings``
+    (``RetrievalTuning``'s own docstring has the field-by-field mapping).
+    Never read from a request, and never from the environment inside the
+    domain (س-24). Construction-time rather than a parameter of ``execute``
+    is the shape that decision demands: a per-call argument would BE a
+    per-request override, which س-24 rules out (option ب, rejected — plan §7).
     """
 
     def __init__(
@@ -358,14 +355,12 @@ class RetrieveContext:
         vectors: HybridVectorStore,
         documents: ParentChunkRepository,
         *,
-        max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
-        max_context_tokens: int = _DEFAULT_MAX_CONTEXT_TOKENS,
+        tuning: RetrievalTuning = _DEFAULT_TUNING,
     ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
         self._documents = documents
-        self._max_context_chars = max_context_chars
-        self._max_context_tokens = max_context_tokens
+        self._tuning = tuning
 
     async def execute(
         self,
@@ -374,25 +369,35 @@ class RetrieveContext:
         query: str,
         model: str,
         api_key: str,
-        k: int = 5,
+        k: int | None = None,
         document_ids: Sequence[str] | None = None,
         space_id: str | None,
     ) -> RetrievalResult:
         started = time.perf_counter()
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
-        k = max(1, min(k, _MAX_K))
-        search_k = min(k * _SEARCH_OVERFETCH, _MAX_SEARCH)
+        tuning = self._tuning
+        # `k = None` means "however many this deployment is configured to
+        # return" (plan step 18, `P-40`) -- the number that used to be
+        # `rag_agent.agent._TOP_K = 5` and this signature's own literal
+        # default. A caller that DOES name a `k` is asking for a result-set
+        # size on a published contract (`POST /knowledge/search`, 03 §2), not
+        # overriding a tuning knob, which is why that stays possible.
+        k = tuning.default_k if k is None else k
+        k = max(1, min(k, tuning.max_k))
+        search_k = min(k * tuning.search_overfetch, tuning.max_search_candidates)
         # The BM25-sparse candidate ceiling (plan step 16, `P-27`) -- a cap on
-        # the sparse leg ALONE, never on the dense one; see
-        # `_MAX_SPARSE_CANDIDATES` for why a count cap is untouched by س-22 and
-        # why it is spent at fetch depth.
-        sparse_k = min(search_k, _MAX_SPARSE_CANDIDATES)
-        # Post-fusion retention (plan step 8, `P-26`) -- see `_FUSION_RETENTION`'s
-        # own comment above. Independent of `search_k`: this is how many of
-        # the FUSED, ranked candidates survive into `filter_relevant` below,
-        # not how many raw hits each leg fetches.
-        retain_k = min(k * _FUSION_RETENTION, _MAX_SEARCH)
+        # the sparse leg ALONE, never on the dense one. Spent at fetch DEPTH
+        # rather than on the returned list, because asking the store for 100
+        # hits and discarding 80 payloads is pure waste; the number of sparse
+        # candidates entering fusion is the same either way.
+        sparse_k = min(search_k, tuning.max_sparse_candidates)
+        # Post-fusion retention (plan step 8, `P-26`). Independent of
+        # `search_k`: this is how many of the FUSED, ranked candidates survive
+        # into `filter_relevant` below, not how many raw hits each leg
+        # fetches -- which is why the two factors are separate knobs even
+        # though both ship at 3.
+        retain_k = min(k * tuning.fusion_retention, tuning.max_search_candidates)
 
         # The structured stage log's accumulator (plan step 17, `P-29`) —
         # filled in place by each stage as it runs and emitted ONCE, on every
@@ -535,8 +540,8 @@ class RetrieveContext:
         #
         # At the shipped configuration (both floors `0.0`) this pair of lines
         # is an identity transform; it is the knob, not a behaviour change.
-        dense_hits = _gate_by_score(dense_hits, _MIN_DENSE_SCORE)
-        sparse_hits = _gate_by_score(sparse_hits, _MIN_BM25_SCORE)
+        dense_hits = _gate_by_score(dense_hits, tuning.min_dense_score)
+        sparse_hits = _gate_by_score(sparse_hits, tuning.min_bm25_score)
         # Counted AFTER the gate and reported beside the pre-gate counts
         # above: with the shipped `0.0` floors the two pairs are equal, and
         # the day a floor carries a number the difference between them IS the
@@ -553,9 +558,9 @@ class RetrieveContext:
             [hit.id for hit in dense_hits],
             [hit.id for hit in sparse_hits],
             top_k=retain_k,
-            weight_dense=_W_DENSE,
-            weight_bm25=_W_BM25,
-            rrf_k=_RRF_K,
+            weight_dense=tuning.weight_dense,
+            weight_bm25=tuning.weight_bm25,
+            rrf_k=tuning.rrf_k,
         )
 
         # The per-candidate `retrieval_origin` tag (retrieval plan §3.11) —
@@ -588,22 +593,37 @@ class RetrieveContext:
             hit.id: hit.payload for hit in (*dense_hits, *sparse_hits)
         }
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in fused]
-        relevant = filter_relevant(scored)
+        # The three relevance gates' numbers are passed EXPLICITLY (plan step
+        # 18, `P-30`) rather than left at `filter_relevant`'s own defaults --
+        # same values, one home. Both floors are `0.0` = disabled (س-22: the
+        # mechanism ships, the number waits for `P-38`'s evaluation set) and
+        # they live on a THIRD scale, the fused RRF score, which is why the
+        # settings field is spelt `min_fused_score` next to the two per-leg
+        # ones. `jaccard_threshold` is the one gate shipped ON, at alpha's
+        # single scale-independent constant (plan fact ح-17).
+        relevant = filter_relevant(
+            scored,
+            min_score=tuning.min_fused_score,
+            relative_floor=tuning.relative_floor,
+            jaccard_threshold=tuning.jaccard_threshold,
+        )
         stages["relevant_count"] = len(relevant)
 
         # Parent expansion (plan step 9, `P-34`) -- runs over the FULL
         # `relevant` list (up to `retain_k` deep), BEFORE the caller's `k` is
         # applied: see the module docstring for why this is critical rather
         # than an optimisation, and `_widen_to_parents` for the dedup-by-
-        # parent mechanics that let `_FUSION_RETENTION`'s 3x pool pay off.
+        # parent mechanics that let `RetrievalTuning.fusion_retention`'s 3x pool pay off.
         parent_texts = await self._documents.parent_texts_for_chunk_ids(
             ctx, [candidate.chunk_id for candidate in relevant]
         )
-        widened = _widen_to_parents(relevant, parent_texts)
+        widened = _widen_to_parents(
+            relevant, parent_texts, max_parent_chunk_chars=tuning.max_parent_chunk_chars
+        )
         # `widened_count` below `relevant_count` is the dedup-BY-PARENT drop
         # (plan step 9, `P-34`): the gap between the two is how many
         # candidates collapsed into a section an earlier one already carried —
-        # the number that says whether `_FUSION_RETENTION`'s 3x pool is
+        # the number that says whether `RetrievalTuning.fusion_retention`'s 3x pool is
         # actually paying for itself.
         stages["widened_count"] = len(widened)
 
@@ -618,8 +638,8 @@ class RetrieveContext:
         retrieved = [_to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widened]
         budgeted = fit_to_context_budget(
             [(chunk, _labeled_text(chunk)) for chunk in retrieved],
-            max_chars=self._max_context_chars,
-            max_tokens=self._max_context_tokens,
+            max_chars=tuning.max_context_chars,
+            max_tokens=tuning.max_context_tokens,
         )
         # Below `widened_count` means the DUAL budget cut (plan step 10,
         # `P-35`); equal to it means the budget was never the binding
@@ -714,8 +734,9 @@ def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHi
     over ``[-1, 1]``, so ``hit.score >= 0.0`` would quietly discard every
     negatively correlated hit — an uncalibrated gate disguised as a disabled
     default, exactly what decision س-22 forbids shipping. The shipped
-    defaults (``_MIN_DENSE_SCORE``/``_MIN_BM25_SCORE``, both ``0.0``) take
-    this branch, so the function is inert until somebody sets a number.
+    configuration (``Settings.retrieval.min_dense_score``/``.min_bm25_score``,
+    both ``0.0``) takes this branch, so the function is inert until somebody
+    sets a number.
 
     ⚠️ The surviving comparison is ``score >= min_score`` — HIGHER is better
     on both legs. alpha's floors gate an L2 DISTANCE where lower is nearer,
@@ -728,7 +749,10 @@ def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHi
 
 
 def _widen_to_parents(
-    candidates: Sequence[ScoredChunk], parents: Mapping[str, ParentChunkText]
+    candidates: Sequence[ScoredChunk],
+    parents: Mapping[str, ParentChunkText],
+    *,
+    max_parent_chunk_chars: int,
 ) -> list[ScoredChunk]:
     """Substitute each candidate's own leaf text with its parent's (plan step
     9, ``P-34``), deduping by parent, and preserving ``candidates``' own
@@ -743,14 +767,15 @@ def _widen_to_parents(
       an error.
     * A parent WAS resolved, and this is the FIRST candidate seen to widen to
       that ``ParentChunkText.id`` — kept, with ``text`` replaced by the
-      parent's text, capped at ``_MAX_PARENT_CHUNK_CHARS``.
+      parent's text, capped at ``max_parent_chunk_chars``
+      (``Settings.retrieval``, passed in as an argument — س-24).
     * A parent was resolved, but some EARLIER (higher- or equal-ranked)
       candidate already widened to the SAME ``id`` — dropped entirely. This
       is dedup BY PARENT (retrieval plan §3.7): keyed on the parent's ``id``,
       never on text equality, so two candidates that happen to widen to the
       identical parent text are recognised as duplicates even before either
       is truncated. Dropping the whole entry (not merely deduplicating the
-      text) is what frees the slot ``_FUSION_RETENTION``'s 3x pool exists to
+      text) is what frees the slot ``RetrievalTuning.fusion_retention``'s 3x pool exists to
       fill with the next distinct candidate.
     """
     widened: list[ScoredChunk] = []
@@ -763,7 +788,7 @@ def _widen_to_parents(
         if parent.id in seen_parent_ids:
             continue
         seen_parent_ids.add(parent.id)
-        widened.append(replace(candidate, text=parent.text[:_MAX_PARENT_CHUNK_CHARS]))
+        widened.append(replace(candidate, text=parent.text[:max_parent_chunk_chars]))
     return widened
 
 

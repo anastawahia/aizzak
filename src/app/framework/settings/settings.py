@@ -308,6 +308,94 @@ class UsageSettings(BaseModel):
     )
 
 
+class RetrievalSettings(BaseModel):
+    """Hybrid-retrieval tuning (rag-retrieval-plan.md §4 row 18, `P-30`
+    `P-40`, decision س-24 = أ).
+
+    **Every retrieval knob that used to be a module constant in
+    ``knowledge/application/retrieval.py`` lives here**, and reaches the code
+    that uses it as a plain ARGUMENT: the Composition Root maps this object
+    onto ``RetrieveContext``'s ``RetrievalTuning`` value object, and the
+    use-case passes the individual numbers down into the pure domain
+    algorithms (``reciprocal_rank_fusion``, ``filter_relevant``,
+    ``fit_to_context_budget``). Nothing in ``modules/*/domain`` or
+    ``modules/*/application`` reads ``Settings`` or ``os.environ`` to find
+    them — that is the whole of س-24, and the ``embedding_max_input_tokens``
+    /``ocr_*``/``parser_*`` precedents above are the same shape.
+
+    **There is no per-request override of any of these, by decision** (س-24
+    rejected option ب) and no admin endpoint that writes them live (option ج
+    — writable global state needing RBAC, auditing and tenant isolation;
+    recorded in the plan's §7). Changing one is a redeploy.
+
+    ⚠️ **The two score floors ship DISABLED at ``0.0`` on purpose** (س-22,
+    §3.8 "الآليّة تُشحَن والأرقام لا"): the mechanism is wired, the number
+    waits for the evaluation set `P-38` needs. ``jaccard_threshold`` is the
+    one gate that ships ON, because ``0.95`` is alpha's single
+    SCALE-INDEPENDENT constant (plan fact ح-17) rather than a calibrated
+    score. And ⚠️ **no alpha number transfers to the two floors**: alpha
+    calibrates them against FAISS L2 DISTANCE (lower is nearer) while both
+    legs here are higher-is-better (Qdrant cosine similarity; a raw
+    IDF-weighted sparse dot product) — plan §6 risk #3.
+
+    Not env-editable, exactly like ``Limits`` below: 05-rbac-config-secrets
+    §2 owns the flat env-key list (``infrastructure/config/env_settings.py``
+    is its sole reader), and widening it is a configuration-contract decision
+    of its own rather than part of this sweep.
+    """
+
+    model_config = _FROZEN
+
+    # RRF fusion (`domain/fusion.py` does NOT normalize internally, so these
+    # two already sum to 1.0) and its rank constant.
+    weight_dense: float = 0.5
+    weight_bm25: float = 0.5
+    rrf_k: int = 60
+    # How many raw hits EACH leg fetches from the vector store, as a multiple
+    # of the caller's `k` -- a search-RECALL concern, unrelated to how many
+    # FUSED candidates survive (`fusion_retention` below), which is why the
+    # two are separate knobs even though both default to 3.
+    search_overfetch: int = 3
+    # Absolute ceiling on any single leg's fetch depth, whatever `k *
+    # search_overfetch` works out to.
+    max_search_candidates: int = 100
+    # Ceiling on the BM25-sparse leg's fetch depth ALONE (plan step 16,
+    # `P-27`). A cap on a COUNT, never on a score, so س-22 does not reach it;
+    # `20` is alpha's own sparse candidate count, and a count is the one class
+    # of alpha number that survives the L2 -> cosine direction flip untouched.
+    # The dense leg is deliberately NOT capped in the same way (`P-27` names
+    # the sparse leg only).
+    max_sparse_candidates: int = 20
+    # Diversity retention past RRF, as a multiple of `k` (plan step 8,
+    # `P-26`): keeping 3x gives the parent-expansion step enough distinct
+    # candidates to fill the final `k` with distinct sections.
+    fusion_retention: int = 3
+    # The `k` used when a caller names none (plan step 18, `P-40`) -- the
+    # number that used to be `rag_agent.agent._TOP_K = 5`. `POST
+    # /knowledge/search`'s own `k` is unaffected: that is a request's result
+    # SIZE on a published contract (03 §2), not a retrieval tuning override.
+    default_k: int = 5
+    # Per-leg absolute score floors, on two DIFFERENT scales (plan step 16,
+    # `P-27`): cosine in [-1, 1] for the dense leg, an unbounded IDF-weighted
+    # dot product for the sparse one. `0.0` = disabled by an explicit branch
+    # in `_gate_by_score`, never by arithmetic.
+    min_dense_score: float = 0.0
+    min_bm25_score: float = 0.0
+    # `domain/relevance.py`'s own two floors, on a THIRD scale entirely -- the
+    # FUSED RRF score (`Σ w/(60+rank)`, thousandths however good the
+    # candidate). Named `min_fused_score` rather than `min_score` so the scale
+    # is legible next to the two above; it is `filter_relevant`'s `min_score`.
+    min_fused_score: float = 0.0
+    relative_floor: float = 0.0
+    # Near-duplicate dedup (`domain/relevance.py`) -- the one gate shipped ON.
+    jaccard_threshold: float = 0.95
+    # Length cap on a SUBSTITUTED parent chunk's text (plan step 9, `P-34`),
+    # so one oversized section cannot swallow the whole context budget by
+    # itself. A candidate's own leaf text is never capped (already
+    # window-sized).
+    max_parent_chunk_chars: int = 4_000
+
+
 class Limits(BaseModel):
     """Numeric guardrails (07-nfr-slo §4, approved OQ-02)."""
 
@@ -487,3 +575,13 @@ class Settings(BaseModel):
     integrations: IntegrationsSettings = Field(default_factory=IntegrationsSettings)
     usage: UsageSettings = Field(default_factory=UsageSettings)
     limits: Limits = Field(default_factory=Limits)
+    # rag-retrieval-plan.md §4 row 18 (`P-30` `P-40`, س-24) — the hybrid
+    # retrieval tuning knobs, in ONE place instead of scattered across
+    # `knowledge/application/retrieval.py` as module constants. Kept beside
+    # `limits` rather than inside it because a guardrail and a tuning
+    # parameter are different things: `Limits` bounds what the platform will
+    # accept (07-nfr-slo §4), this shapes how well retrieval answers. The
+    # three retrieval numbers that ARE guardrails — `max_rag_k`,
+    # `max_context_chars`, `max_context_tokens` — deliberately stay in
+    # `Limits`, and the Composition Root reads the tuning from both.
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)

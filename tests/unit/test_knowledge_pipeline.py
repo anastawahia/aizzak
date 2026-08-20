@@ -19,10 +19,12 @@ import json
 import logging
 import math
 import os
+import pathlib
 import subprocess
 import sys
 import uuid
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +36,7 @@ from app.framework.errors import ValidationError
 from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
-from app.framework.settings.settings import Limits
+from app.framework.settings.settings import Limits, RetrievalSettings
 from app.framework.types import Json
 from app.modules.knowledge.application import retrieval as retrieval_module
 from app.modules.knowledge.application.indexing import (
@@ -42,7 +44,7 @@ from app.modules.knowledge.application.indexing import (
     IndexOutcome,
     _table_to_segments,
 )
-from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.retrieval import RetrievalTuning, RetrieveContext
 from app.modules.knowledge.domain import file_resolution
 from app.modules.knowledge.domain.chunking import (
     MIN_NODE_CHARS,
@@ -73,6 +75,13 @@ from app.modules.knowledge.ports.content_extractor import (
     ParsedDocument,
 )
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
+
+# The SHIPPED retrieval configuration (plan step 18, `P-30` `P-40`, س-24) --
+# the same singleton `RetrieveContext` falls back to when no Composition Root
+# injects one, so a test that reads a knob here reads the number that ships.
+# `dataclasses.replace` off it is how a test enables ONE knob without
+# restating the other sixteen.
+_TUNING = retrieval_module._DEFAULT_TUNING
 
 
 # --------------------------------------------------------------------------- #
@@ -2688,7 +2697,7 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
         ctx, space_id=None, query="document content", model="m", api_key="k", k=0
     )
 
-    # k clamped up to >=1: search_k = clamped_k * _SEARCH_OVERFETCH == 1 * 3 == 3
+    # k clamped up to >=1: search_k = clamped_k * search_overfetch == 1 * 3 == 3
     assert vectors.search_calls[-1][1] == 3
     assert vectors.search_sparse_calls[-1][1] == 3
 
@@ -2703,11 +2712,12 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
         ctx, space_id=None, query="document content", model="m", api_key="k", k=1000
     )
 
-    # k clamped down to <=50: search_k = min(50 * _SEARCH_OVERFETCH, _MAX_SEARCH) == 100
+    # k clamped down to <=50: search_k = min(50 * search_overfetch,
+    # max_search_candidates) == 100
     assert vectors.search_calls[-1][1] == 100
     # ... and the SPARSE leg alone is then narrowed again by the candidate
-    # ceiling (plan step 16, `P-27`): min(search_k, _MAX_SPARSE_CANDIDATES).
-    assert vectors.search_sparse_calls[-1][1] == retrieval_module._MAX_SPARSE_CANDIDATES
+    # ceiling (plan step 16, `P-27`): min(search_k, max_sparse_candidates).
+    assert vectors.search_sparse_calls[-1][1] == _TUNING.max_sparse_candidates
 
 
 # --------------------------------------------------------------------------- #
@@ -2723,13 +2733,20 @@ def test_per_leg_score_floors_ship_disabled() -> None:
     until the evaluation set ``P-38`` waits on exists. The one alpha constant
     that is INDEPENDENT of the score scale -- Jaccard dedup at ``0.95``
     (plan fact ح-17) -- is the sole gate that stays on."""
-    assert retrieval_module._MIN_DENSE_SCORE == 0.0
-    assert retrieval_module._MIN_BM25_SCORE == 0.0
+    assert _TUNING.min_dense_score == 0.0
+    assert _TUNING.min_bm25_score == 0.0
+    # Plan step 18 (`P-30`) moved `filter_relevant`'s own three gates into the
+    # same injected tuning, so the shipped configuration has to be asserted
+    # BOTH where the numbers now live and where the algorithm's own defaults
+    # still sit -- they must agree, or one of the two is dead.
+    assert _TUNING.min_fused_score == 0.0
+    assert _TUNING.relative_floor == 0.0
+    assert _TUNING.jaccard_threshold == 0.95
 
     floors = inspect.signature(filter_relevant).parameters
-    assert floors["min_score"].default == 0.0
-    assert floors["relative_floor"].default == 0.0
-    assert floors["jaccard_threshold"].default == 0.95
+    assert floors["min_score"].default == _TUNING.min_fused_score
+    assert floors["relative_floor"].default == _TUNING.relative_floor
+    assert floors["jaccard_threshold"].default == _TUNING.jaccard_threshold
 
 
 def test_gate_by_score_at_the_shipped_default_is_inert_even_for_negative_scores() -> None:
@@ -2740,8 +2757,8 @@ def test_gate_by_score_at_the_shipped_default_is_inert_even_for_negative_scores(
     what س-22 forbids."""
     hits = [_scored_hit(0.9, "a"), _scored_hit(0.0, "b"), _scored_hit(-0.42, "c")]
 
-    assert retrieval_module._gate_by_score(hits, retrieval_module._MIN_DENSE_SCORE) == hits
-    assert retrieval_module._gate_by_score(hits, retrieval_module._MIN_BM25_SCORE) == hits
+    assert retrieval_module._gate_by_score(hits, _TUNING.min_dense_score) == hits
+    assert retrieval_module._gate_by_score(hits, _TUNING.min_bm25_score) == hits
     assert retrieval_module._gate_by_score(hits, 0.0) == hits
 
 
@@ -2766,14 +2783,17 @@ def test_gate_by_score_preserves_the_legs_own_rank_order() -> None:
     assert [hit.id for hit in retrieval_module._gate_by_score(hits, 0.5)] == ["a", "c"]
 
 
-async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_signals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_signals() -> None:
     """The mechanism is genuinely wired (set a floor above every hit and both
     legs empty), and the ``P-28`` confidence signals are snapshotted BEFORE
     it: their contract is "the maximum over EVERY hit that leg returned", and
     a floor that erased them would blind the structured log (``P-29``) and
-    any future calibration at the one moment they matter most."""
+    any future calibration at the one moment they matter most.
+
+    Since plan step 18 (``P-30``) the floors arrive as INJECTED configuration
+    rather than module constants, so enabling one is a constructor argument
+    here instead of a ``monkeypatch`` -- which is itself the proof that the
+    knob is reachable from ``Settings`` at all."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -2790,20 +2810,23 @@ async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_si
     # cosine (bounded by 1.0) but the sparse leg is a raw IDF-weighted dot
     # product with NO upper bound -- one more reason the two floors live on
     # separate scales and neither may be guessed.
-    monkeypatch.setattr(retrieval_module, "_MIN_DENSE_SCORE", baseline.best_dense_score + 1.0)
-    monkeypatch.setattr(retrieval_module, "_MIN_BM25_SCORE", baseline.best_bm25_score + 1.0)
-    gated = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k"
-    )
+    gated = await RetrieveContext(
+        embeddings,
+        vectors,
+        FakeParentRepo(),
+        tuning=replace(
+            _TUNING,
+            min_dense_score=baseline.best_dense_score + 1.0,
+            min_bm25_score=baseline.best_bm25_score + 1.0,
+        ),
+    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
 
     assert gated.chunks == []
     assert gated.best_dense_score == baseline.best_dense_score
     assert gated.best_bm25_score == baseline.best_bm25_score
 
 
-async def test_retrieve_context_the_two_floors_are_independent_per_leg(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_retrieve_context_the_two_floors_are_independent_per_leg() -> None:
     """``P-27`` is "عتبات مطلقة لكلّ ساق" -- two separate floors, not one
     shared gate: shutting the dense leg entirely leaves the BM25-sparse leg
     free to surface the same chunk on lexical recall alone."""
@@ -2812,10 +2835,12 @@ async def test_retrieve_context_the_two_floors_are_independent_per_leg(
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    monkeypatch.setattr(retrieval_module, "_MIN_DENSE_SCORE", 2.0)
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k"
-    )
+    result = await RetrieveContext(
+        embeddings,
+        vectors,
+        FakeParentRepo(),
+        tuning=replace(_TUNING, min_dense_score=2.0),
+    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
 
     assert [chunk.chunk_id for chunk in result.chunks] == [chunk_point_id("doc-1", 0)]
 
@@ -2827,8 +2852,8 @@ def test_sparse_candidate_ceiling_carries_a_real_value_and_spares_the_default_k(
     count is the one class of alpha number that survives the L2 -> cosine
     direction flip untouched. It sits at or above the default ``k = 5``
     path's fetch depth, so this step narrows nothing that ships today."""
-    assert retrieval_module._MAX_SPARSE_CANDIDATES == 20
-    assert retrieval_module._MAX_SPARSE_CANDIDATES >= 5 * retrieval_module._SEARCH_OVERFETCH
+    assert _TUNING.max_sparse_candidates == 20
+    assert _TUNING.max_sparse_candidates >= _TUNING.default_k * _TUNING.search_overfetch
 
 
 async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None:
@@ -2845,7 +2870,7 @@ async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None
     )
 
     assert vectors.search_calls[-1][1] == 100  # dense: uncapped search_k
-    assert vectors.search_sparse_calls[-1][1] == retrieval_module._MAX_SPARSE_CANDIDATES
+    assert vectors.search_sparse_calls[-1][1] == _TUNING.max_sparse_candidates
 
 
 async def test_retrieve_context_sparse_cap_does_not_narrow_the_default_k() -> None:
@@ -2915,7 +2940,7 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
     )
 
     assert seen_candidate_counts  # filter_relevant was actually reached
-    # min(k * _FUSION_RETENTION, _MAX_SEARCH) == min(2 * 3, 100) == 6 -- both
+    # min(k * fusion_retention, max_search_candidates) == min(2 * 3, 100) == 6 -- both
     # legs return a full `search_k` (== 6) worth of hits out of the 10-chunk
     # corpus, so their union is always >= 6.
     assert seen_candidate_counts[-1] == 6
@@ -2953,7 +2978,7 @@ async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves
     """Retrieval plan §3.7 (``P-34``): two SURVIVING leaves that widen to the
     SAME parent collapse into ONE entry -- dedup BY PARENT (keyed on
     ``ParentChunkText.id``), not by text equality -- freeing the slot
-    ``_FUSION_RETENTION``'s 3x pool exists to let a third, distinct candidate
+    ``fusion_retention``'s 3x pool exists to let a third, distinct candidate
     fill instead of the same section appearing twice."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
@@ -2997,7 +3022,7 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
     leaf_text = "quarterly revenue figures for the northern region"
     await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
     point_id = chunk_point_id("doc-1", 0)
-    cap = retrieval_module._MAX_PARENT_CHUNK_CHARS
+    cap = _TUNING.max_parent_chunk_chars
     oversized_parent_text = "x" * (cap + 500)
     parent_repo = FakeParentRepo(
         {point_id: ParentChunkText(id="parent-A", text=oversized_parent_text)}
@@ -3070,8 +3095,11 @@ async def _budget_run(max_context_chars: int, max_context_tokens: int) -> list[R
         embeddings,
         vectors,
         FakeParentRepo(),
-        max_context_chars=max_context_chars,
-        max_context_tokens=max_context_tokens,
+        tuning=replace(
+            _TUNING,
+            max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
+        ),
     ).execute(ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=5)
     return result.chunks
 
@@ -3169,8 +3197,7 @@ async def test_retrieve_context_context_budget_measures_the_labelled_text() -> N
             embeddings,
             vectors,
             FakeParentRepo(),
-            max_context_chars=max_chars,
-            max_context_tokens=100_000,
+            tuning=replace(_TUNING, max_context_chars=max_chars, max_context_tokens=100_000),
         ).execute(
             ctx,
             space_id=None,
@@ -3193,13 +3220,100 @@ async def test_retrieve_context_context_budget_measures_the_labelled_text() -> N
     assert len(await _run(ceiling)) == 1
 
 
-def test_retrieve_context_budget_defaults_mirror_settings_limits() -> None:
-    """The use-case's fallback numbers are declared to MIRROR
-    ``Settings.Limits`` (the ``_MAX_K`` precedent). A mirror nobody checks is
-    just a copy, so this is the check."""
+def test_retrieval_tuning_defaults_mirror_settings_field_for_field() -> None:
+    """Plan step 18 (``P-30`` ``P-40``, س-24): ``RetrievalTuning``'s defaults
+    are declared to MIRROR their ``Settings`` home byte for byte, so a direct
+    construction (a test, a script) gets the SHIPPED numbers rather than a
+    second, accidental configuration. A mirror nobody checks is just a copy,
+    so this is the check -- and it is exhaustive on purpose: a field added to
+    one side and forgotten on the other is exactly the drift the mirror
+    exists to prevent."""
     limits = Limits()
-    assert limits.max_context_chars == retrieval_module._DEFAULT_MAX_CONTEXT_CHARS
-    assert limits.max_context_tokens == retrieval_module._DEFAULT_MAX_CONTEXT_TOKENS
+    settings = RetrievalSettings()
+
+    assert (
+        RetrievalTuning(
+            weight_dense=settings.weight_dense,
+            weight_bm25=settings.weight_bm25,
+            rrf_k=settings.rrf_k,
+            search_overfetch=settings.search_overfetch,
+            max_search_candidates=settings.max_search_candidates,
+            max_sparse_candidates=settings.max_sparse_candidates,
+            fusion_retention=settings.fusion_retention,
+            default_k=settings.default_k,
+            max_k=limits.max_rag_k,
+            min_dense_score=settings.min_dense_score,
+            min_bm25_score=settings.min_bm25_score,
+            min_fused_score=settings.min_fused_score,
+            relative_floor=settings.relative_floor,
+            jaccard_threshold=settings.jaccard_threshold,
+            max_parent_chunk_chars=settings.max_parent_chunk_chars,
+            max_context_chars=limits.max_context_chars,
+            max_context_tokens=limits.max_context_tokens,
+        )
+        == _TUNING
+    )
+    # Every field of the dataclass is named above -- so a NEW knob cannot be
+    # added to one side alone and still pass this test.
+    assert len(dataclasses.fields(RetrievalTuning)) == 17
+
+
+def test_retrieval_tuning_is_the_only_configuration_seam_no_getenv_anywhere() -> None:
+    """س-24 = أ in two halves. First: the values are passed as ARGUMENTS, so
+    the knowledge module reads neither the environment nor ``Settings``
+    itself -- there is no ``os.getenv`` and no ``Settings`` import in the
+    module's application or domain layers (``lint-imports`` guards the
+    domain's purity; this guards the convention for both). Second: there is
+    no PER-REQUEST override -- ``execute`` takes no tuning argument at all,
+    so a request cannot reach one."""
+    module_root = pathlib.Path(retrieval_module.__file__).parents[1]
+    sources = [
+        path for part in ("application", "domain") for path in (module_root / part).rglob("*.py")
+    ]
+    assert sources
+    # Read as SYNTAX, not as text: these files discuss ``os.getenv`` and
+    # ``Settings`` at length in their docstrings (saying exactly why neither is
+    # there), so a substring check would fail on the very prose that documents
+    # the rule. An import is the only way to REACH either, so the imports are
+    # what is asserted.
+    for path in sources:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                assert all(alias.name.split(".")[0] != "os" for alias in node.names), path
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                assert module.split(".")[0] != "os", path
+                assert not module.startswith("app.framework.settings"), path
+
+    execute_params = inspect.signature(RetrieveContext.execute).parameters
+    assert "tuning" not in execute_params
+    assert "tuning" in inspect.signature(RetrieveContext.__init__).parameters
+
+
+async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() -> None:
+    """``P-40``: the ``k`` a caller does not name is the DEPLOYMENT's, which
+    is what let the RAG agent drop its own ``_TOP_K = 5``. Proven by MOVING
+    it — a tuning with a different ``default_k`` changes the fetch depth of a
+    call that names no ``k`` at all — because an assertion that the shipped
+    value is 5 would pass just as well against the hard-coded literal this
+    step removed."""
+    assert inspect.signature(RetrieveContext.execute).parameters["k"].default is None
+    assert _TUNING.default_k == 5
+
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
+
+    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=None, query="document content", model="m", api_key="k"
+    )
+    assert vectors.search_calls[-1][1] == _TUNING.default_k * _TUNING.search_overfetch
+
+    await RetrieveContext(
+        embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, default_k=2)
+    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
+    assert vectors.search_calls[-1][1] == 2 * _TUNING.search_overfetch
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
@@ -3399,11 +3513,9 @@ async def test_retrieve_context_stage_scores_are_the_legs_own_not_rrfs(
     # are `0.0` = disabled by an explicit branch -- plan step 16).
     assert min(payload["dense_scores"]) < 0.0
     # ... and RRF's numbers are demonstrably NOT those: every fused score is
-    # below `_W_DENSE / (_RRF_K + 1)`, the largest value the formula can
+    # below `weight_dense / (rrf_k + 1)`, the largest value the formula can
     # award a single-leg rank-1 candidate.
-    rrf_ceiling = (retrieval_module._W_DENSE + retrieval_module._W_BM25) / (
-        retrieval_module._RRF_K + 1
-    )
+    rrf_ceiling = (_TUNING.weight_dense + _TUNING.weight_bm25) / (_TUNING.rrf_k + 1)
     assert [candidate["rrf_score"] for candidate in payload["candidates"]]
     assert all(candidate["rrf_score"] <= rrf_ceiling for candidate in payload["candidates"])
     assert all(
