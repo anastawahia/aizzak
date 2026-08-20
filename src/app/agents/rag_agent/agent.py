@@ -14,6 +14,20 @@ round trip — not the bare ``chunk_id`` UUID string it used to be.
 ``file_name``/``page`` are carried straight through as ``null`` when the
 retrieved chunk itself has none (see ``_citation``).
 
+**Trust gate + honest fallback (retrieval plan §3.3/§4 row 5, ``P-33``):**
+when a knowledge seam IS wired and retrieval genuinely comes back with zero
+chunks, ``run`` never calls the LLM at all — it yields a fixed, honest
+"I don't have enough information" answer instead. Before this, the "most
+dangerous gap in the whole file" (§3.3, quoted verbatim) was that the path
+fell through to bare ``SYSTEM_PROMPT`` with no context, and the model would
+answer from its OWN parametric knowledge as though it were sourced from the
+user's documents — silent hallucination presented as a sourced fact. س-22 = أ
+closes only this EXPLICIT zero-chunks case, with NO numeric confidence
+threshold: ``RetrievalResult.best_dense_score``/``best_bm25_score`` (step 4,
+``P-28``) are not consumed here, and "weak chunks" stays an accepted open
+risk until an evaluation set exists (§6 risk 2). See ``_fallback_answer`` /
+``run`` for the branch itself.
+
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
 at 4.7; usage enforcement/capture, conversation persistence (D-12) and SSE/WS
@@ -25,6 +39,7 @@ directly rather than via a tool.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Sequence
 
 from app.agents.rag_agent.manifest import METADATA
@@ -36,6 +51,22 @@ from app.framework.errors import AppError, ValidationError
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
 
 _TOP_K = 5
+
+# Retrieval plan §3.3/§4 row 5 (``P-33``) — the two fixed fallback sentences,
+# picked by whether the query itself contains any Arabic-script character.
+# This is NOT a new i18n mechanism (no catalog, no locale files): it is the
+# same "match the question's language" convention ``SYSTEM_PROMPT`` already
+# states for the LLM ("Answer in the same language as the question"), applied
+# here as a plain presence check because this branch never calls the LLM to
+# do that matching itself. It deliberately does not reuse
+# ``knowledge.domain.tokenization.detect_language`` (the ratio-based
+# Arabic/English split the knowledge module already implements): that would
+# cross the import line ``rag_agent`` declares above (and ح-11, §6 risk 7) —
+# "imports nothing beyond ``self.deps`` plus this ``framework`` kernel" — and
+# a binary pick between two fixed sentences does not need that sophistication.
+_ARABIC_CHAR_RE = re.compile("[؀-ۿ]")
+_FALLBACK_ANSWER_EN = "I don't have enough information in the workspace documents to answer that."
+_FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندات مساحة العمل للإجابة عن هذا السؤال."
 
 
 class RagAgent(BaseAgent):
@@ -65,6 +96,15 @@ class RagAgent(BaseAgent):
         # legitimately retrieves nothing, which is the opposite of what an
         # un-pinned thread wants.
         scope = self.deps.knowledge_scope or None
+        # Retrieval plan §3.3/§4 row 5 (`P-33`) — this flag is what tells the
+        # trust gate below apart from the "knowledge is optional-degrading"
+        # mode just above: a caller with NO knowledge seam wired at all never
+        # attempted retrieval, so there is no "retrieval result" to gate on —
+        # that stays a plain LLM answer, exactly as
+        # `test_without_knowledge_still_answers_with_no_citations` pins. A
+        # caller that DID wire a seam and got zero chunks back is the case the
+        # gate exists for.
+        retrieval_attempted = self.deps.knowledge is not None
         chunks: Sequence[RetrievedChunkView] = (
             # Spaces plan step 8 — `space_id` is TYPED as none rather than
             # defaulted, and it is STILL none after step 12: that step put the
@@ -78,6 +118,29 @@ class RagAgent(BaseAgent):
             if self.deps.knowledge is not None
             else []
         )
+        if retrieval_attempted and not chunks:
+            # The trust gate + honest fallback (retrieval plan §3.3, the "most
+            # dangerous gap in the whole file": before this branch existed the
+            # path fell through to bare `SYSTEM_PROMPT` with no context, and
+            # the model would answer from its OWN parametric knowledge as
+            # though it were sourced from the user's documents). س-22 = أ
+            # closes only this EXPLICIT zero-chunks case, with NO numeric
+            # confidence threshold — `RetrievalResult.best_dense_score` /
+            # `best_bm25_score` (step 4, `P-28`) are not read here, and "weak
+            # chunks" stays an accepted open risk until an evaluation set
+            # exists (§6 risk 2).
+            #
+            # The LLM provider is NEVER called on this branch: `fallback` is a
+            # fixed local string picked by `_fallback_answer`, so there is
+            # nothing in flight the model could improvise an answer for. Row 6
+            # (`P-36`, س-23 = ج — "the header always: in the normal path AND
+            # in the fallback path") will later prepend a corpus-awareness
+            # header to this SAME `fallback` string before it is yielded;
+            # nothing about this branch's shape needs to change when it does.
+            fallback = self._fallback_answer(query)
+            yield AgentEvent(type="token", data={"delta": fallback})
+            yield AgentEvent(type="final", data={"text": fallback, "citations": []})
+            return
         messages = self._messages(query, chunks)
         params = LlmParams(model=binding.model)
         answer: list[str] = []
@@ -101,6 +164,17 @@ class RagAgent(BaseAgent):
         if not isinstance(value, str) or not value.strip():
             raise ValidationError("rag_agent requires a non-empty 'text' input")
         return value
+
+    @staticmethod
+    def _fallback_answer(query: str) -> str:
+        """The zero-chunks trust-gate fallback (retrieval plan §3.3/§4 row 5,
+        ``P-33``) — one of two fixed, honest sentences, picked by whether
+        ``query`` contains any Arabic-script character. See the module-level
+        comment above ``_ARABIC_CHAR_RE`` for why this is a presence check
+        rather than a reuse of the knowledge module's ratio-based
+        ``detect_language``.
+        """
+        return _FALLBACK_ANSWER_AR if _ARABIC_CHAR_RE.search(query) else _FALLBACK_ANSWER_EN
 
     @staticmethod
     def _citation(chunk: RetrievedChunkView) -> dict[str, str | int | None]:

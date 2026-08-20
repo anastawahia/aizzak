@@ -335,12 +335,65 @@ async def test_the_label_degrades_deterministically_per_missing_field(
 
 
 async def test_without_knowledge_still_answers_with_no_citations() -> None:
+    """No knowledge seam wired at all (`deps.knowledge is None`) is NOT the
+    trust gate's "zero chunks" case below — no retrieval was even attempted,
+    so there is no retrieval result to gate on, and this stays a plain LLM
+    answer (retrieval plan §3.3/§4 row 5, `P-33`, module docstring)."""
     llm = FakeLLM(["hi"])
     deps = AgentDependencies(llm=ResolvedLLM(provider=llm, model="m", api_key="k"))
     events = await drive_run(RagAgent(make_ctx(), deps), "hello")
 
     assert [e.data["delta"] for e in events if e.type == "token"] == ["hi"]
     assert events[-1].data["citations"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Trust gate + honest fallback (retrieval plan §3.3/§4 row 5 — P-33)          #
+# --------------------------------------------------------------------------- #
+
+
+async def test_zero_chunks_with_knowledge_wired_falls_back_without_calling_the_llm() -> None:
+    """The gate's whole point: a knowledge seam IS wired, retrieval genuinely
+    returns nothing, and the LLM is NEVER called — the fallback text is a
+    fixed local string, not anything the model improvised. Before this step
+    the path fell through to bare `SYSTEM_PROMPT` and the model answered from
+    its own knowledge as though it were sourced from the user's documents."""
+    deps, knowledge, llm = make_deps(chunks=[])
+    events = await drive_run(RagAgent(make_ctx(), deps), "what is the capital of France?")
+
+    assert knowledge.calls == [("what is the capital of France?", 5, None)]
+    assert llm.stream_calls == []  # the LLM provider is never reached
+    assert [e.type for e in events] == ["token", "final"]
+    final = events[-1]
+    assert final.data["citations"] == []
+    assert "enough information" in final.data["text"]
+    assert events[0].data["delta"] == final.data["text"]
+
+
+async def test_the_fallback_answers_in_arabic_for_an_arabic_query() -> None:
+    """The fallback text matches the query's own language (the same
+    convention `SYSTEM_PROMPT` states for the LLM), picked by a plain
+    Arabic-script presence check — no new i18n mechanism."""
+    deps, _knowledge, llm = make_deps(chunks=[])
+    events = await drive_run(RagAgent(make_ctx(), deps), "ما هي عاصمة فرنسا؟")
+
+    assert llm.stream_calls == []
+    final = events[-1]
+    assert final.data["citations"] == []
+    assert "لا أملك معلومات كافية" in final.data["text"]
+
+
+async def test_a_non_empty_result_takes_the_normal_synthesis_path_not_the_fallback() -> None:
+    """A non-empty retrieval result never trips the gate — the pre-existing
+    synthesis path (LLM called, real citations) is unaffected."""
+    deps, _knowledge, llm = make_deps(
+        deltas=["Paris"], chunks=[FakeChunk("c1", "Paris is the capital of France.")]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert len(llm.stream_calls) == 1
+    assert events[-1].data["text"] == "Paris"
+    assert events[-1].data["citations"] != []
 
 
 # --------------------------------------------------------------------------- #
