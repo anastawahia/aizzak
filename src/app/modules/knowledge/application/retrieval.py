@@ -300,7 +300,7 @@ class RetrievalTuning:
     max_search_candidates: int = 100
     max_sparse_candidates: int = 20
     fusion_retention: int = 3
-    default_k: int = 5
+    default_k: int = 20
     max_k: int = 50
     min_dense_score: float = 0.0
     min_bm25_score: float = 0.0

@@ -414,7 +414,36 @@ class RetrievalSettings(BaseModel):
     # number that used to be `rag_agent.agent._TOP_K = 5`. `POST
     # /knowledge/search`'s own `k` is unaffected: that is a request's result
     # SIZE on a published contract (03 §2), not a retrieval tuning override.
-    default_k: int = 5
+    #
+    # ⚠️ **`5` was a PAGE-ERA number and it shipped into a block era**
+    # (rag-answer-quality-regression.md §3 cause 2, decision س-28). `P-40`
+    # moved it out of the agent WITHOUT revisiting the value, while the
+    # indexing plan's steps 2 and 7 shrank the chunk 16x underneath it --
+    # page-as-chunk averaged 1992 chars, block-as-chunk averages 117. Five of
+    # those is 725 characters of evidence, and the measured consequence was
+    # `budgeted_count: 13 -> context_nodes: 5`: eight candidates that had
+    # passed every gate in the pipeline were thrown away by `chunks =
+    # budgeted[:k]`, one of them the very sentence introducing the parameters
+    # the answer was missing.
+    #
+    # `20` and not more, for a reason that is arithmetic rather than taste:
+    # `retain_k = k * fusion_retention` is what MMR SELECTS out of
+    # `mmr_pool_k`, and both are clamped at `max_search_candidates = 100`. At
+    # `k = 20` MMR picks 60 of 100 and genuinely discards 40 as redundant; at
+    # `k = 30` it picks 90 of 100 and the diversity stage collapses into a
+    # re-ordering -- the degenerate case `mmr_overfetch`'s own comment names.
+    # It also covers the diagnosed failure exactly (the GSUT section is 17
+    # chunks), stays under `max_k = 50`, and costs ~2340 of the 12000-char
+    # budget, so `P-35` -- not `k` -- becomes the real limit, which is the
+    # design §3 cause 3 states: `k` is a floor and the budget is the ceiling.
+    #
+    # ⚠️ **It makes `max_sparse_candidates` bind hard**: the dense leg fetches
+    # the full clamped 100 while BM25 stops at 20. That is the same intent
+    # step 16 gave the cap (guarding the BM25 tail) taken further, and
+    # widening it is cause 8's own calibration decision -- wave ج, not this
+    # one. The test pinning the old "the cap spares the default k" invariant
+    # is rewritten rather than deleted, so the reversal is on the record.
+    default_k: int = 20
     # Per-leg absolute score floors, on two DIFFERENT scales (plan step 16,
     # `P-27`): cosine in [-1, 1] for the dense leg, an unbounded IDF-weighted
     # dot product for the sparse one. `0.0` = disabled by an explicit branch

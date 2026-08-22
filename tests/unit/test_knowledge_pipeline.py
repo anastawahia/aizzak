@@ -3054,15 +3054,26 @@ async def test_retrieve_context_the_two_floors_are_independent_per_leg() -> None
     assert [chunk.chunk_id for chunk in result.chunks] == [chunk_point_id("doc-1", 0)]
 
 
-def test_sparse_candidate_ceiling_carries_a_real_value_and_spares_the_default_k() -> None:
+def test_sparse_candidate_ceiling_carries_a_real_value_and_now_binds_the_default_k() -> None:
     """The other half of ``P-27``, and the half §3.8 grants a REAL number: a
     cap on the **count** of sparse candidates, not on any score, so س-22
     never reaches it. Chosen as alpha's own sparse-leg candidate count -- a
     count is the one class of alpha number that survives the L2 -> cosine
-    direction flip untouched. It sits at or above the default ``k = 5``
-    path's fetch depth, so this step narrows nothing that ships today."""
+    direction flip untouched.
+
+    ⚠️ **This test used to assert the opposite** -- that the cap "sits at or
+    above the default ``k = 5`` path's fetch depth, so this step narrows
+    nothing that ships today". Decision س-28 raised ``default_k`` to 20
+    (rag-answer-quality-regression.md §3 cause 2) and that sentence is now
+    false: the sparse leg's own depth would be ``20 x 3 = 60``, three times
+    the ceiling. The reversal is pinned here rather than deleted, because the
+    consequence is a LOPSIDED hybrid -- the dense leg fetches the clamped 100
+    and BM25 stops at 20 -- and cause 8 records that widening the cap is a
+    calibration decision of its own (wave ج), not a side effect of raising
+    ``k``. The day that decision is taken, this assertion is what has to
+    change with it."""
     assert _TUNING.max_sparse_candidates == 20
-    assert _TUNING.max_sparse_candidates >= _TUNING.default_k * _TUNING.search_overfetch
+    assert _TUNING.max_sparse_candidates < _TUNING.default_k * _TUNING.search_overfetch
 
 
 async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None:
@@ -3082,16 +3093,19 @@ async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None
     assert vectors.search_sparse_calls[-1][1] == _TUNING.max_sparse_candidates
 
 
-async def test_retrieve_context_sparse_cap_now_binds_at_the_default_k() -> None:
+async def test_retrieve_context_sparse_cap_binds_even_at_a_small_k() -> None:
     """⚠️ A behaviour change plan row 20 brought with it, pinned so it cannot
     happen silently. Plan step 16 shipped ``max_sparse_candidates = 20`` and
     recorded (§7) that it "does not touch the default path", because
     ``search_k`` was then ``5 x 3 = 15``. Row 20's widened search makes the
-    dense leg fetch ``5 x 6 = 30``, so the sparse ceiling is now the binding
-    constraint at the SHIPPED ``k``: the dense leg fetches 30 and the BM25 leg
-    stops at 20. That is the cap doing exactly the job step 16 gave it --
-    guarding against the BM25 tail, where its precision collapses -- and it is
-    also why the two legs no longer fetch identically."""
+    dense leg fetch ``5 x 6 = 30``, so the sparse ceiling binds even at a
+    ``k`` this small: the dense leg fetches 30 and the BM25 leg stops at 20.
+    That is the cap doing exactly the job step 16 gave it -- guarding against
+    the BM25 tail, where its precision collapses -- and it is also why the two
+    legs no longer fetch identically. ``k = 5`` is passed EXPLICITLY here: it
+    was the shipped default when this test was written and س-28 has since
+    moved the default to 20, where the same asymmetry is wider still (100 vs
+    20, the test above)."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -3593,7 +3607,7 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     value is 5 would pass just as well against the hard-coded literal this
     step removed."""
     assert inspect.signature(RetrieveContext.execute).parameters["k"].default is None
-    assert _TUNING.default_k == 5
+    assert _TUNING.default_k == 20
 
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
@@ -3603,8 +3617,9 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx, space_id=None, query="document content", model="m", api_key="k"
     )
-    assert vectors.search_calls[-1][1] == _TUNING.default_k * max(
-        _TUNING.search_overfetch, _TUNING.mmr_overfetch
+    assert vectors.search_calls[-1][1] == min(
+        _TUNING.default_k * max(_TUNING.search_overfetch, _TUNING.mmr_overfetch),
+        _TUNING.max_search_candidates,
     )
 
     await RetrieveContext(
