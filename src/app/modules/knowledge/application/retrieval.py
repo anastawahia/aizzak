@@ -308,7 +308,7 @@ class RetrievalTuning:
     relative_floor: float = 0.0
     jaccard_threshold: float = 0.95
     max_parent_chunk_chars: int = 4_000
-    mmr_lambda: float = 0.7
+    mmr_lambda: float = 0.87
     mmr_overfetch: int = 6
     rerank_enabled: bool = False
     rerank_candidates: int = 20

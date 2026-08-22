@@ -21,13 +21,44 @@ widened search — is §3.9's own declared cost and §6 risk #5). ``lint-imports
 contract 2 ("Domain is pure") enforces the rule; a test reads this module's own
 AST and pins the import set, the ``file_resolution.py`` precedent.
 
-**λ = 0.7 is shipped, and it is NOT a threshold.** Decision س-22 forbids
-shipping uncalibrated NUMBERS as quality gates; §3.8's last row places λ
-explicitly outside that ban — "مقايضة **تنوّع**، لا بوّابة «هل هذا جيّد كفاية»".
-Nothing is admitted or rejected by comparing a score to λ: it only weighs
-relevance against redundancy between candidates that all already passed every
-gate. The value still arrives as an ARGUMENT (س-24) — the default here mirrors
+**λ is shipped, and it is NOT a threshold.** Decision س-22 forbids shipping
+uncalibrated NUMBERS as quality gates; §3.8's last row places λ explicitly
+outside that ban — "مقايضة **تنوّع**، لا بوّابة «هل هذا جيّد كفاية»". Nothing is
+admitted or rejected by comparing a score to λ: it only weighs relevance
+against redundancy between candidates that all already passed every gate. The
+value still arrives as an ARGUMENT (س-24) — the default here mirrors
 ``Settings.retrieval.mmr_lambda``, it is not a second configuration.
+
+**λ = 0.87 and not 0.7, and the reason is the SCALE below, not a change of
+taste.** Relevance enters as a fraction of the pool's best (next section), and
+that fraction cannot reach 0: it is bounded below by ``rrf_k / (rrf_k +
+pool)``, which for ``rrf_k = 60`` over a pool of 30 is ``0.674``. So the
+relevance term varies over a span of ``0.326`` while the redundancy cosine
+varies over its full unit span, and multiplying each by its weight at λ = 0.7
+gave ``0.228`` of relevance against ``0.300`` of diversity — the number read
+"70% relevance" and behaved diversity-led. ``rag-answer-quality-regression.md``
+§3 cause 6 measures the consequence: rank 1 at similarity 0.90 scoring 0.419
+and losing to rank 12 at similarity 0.30 scoring 0.493, on a question ("give me
+ALL details about X") whose wanted passages are DELIBERATELY alike.
+
+**Raising λ rather than re-normalising the term, because measurement chose
+between them.** The obvious fix is to min-max the relevance term so it spans
+``[0, 1]`` honestly; the report recommended exactly that. Swept across λ, it
+does not work: under min-max the window that preserves this module's founding
+guarantee — a near-duplicate must lose to a distinct chunk, the very first
+paragraph of this docstring — is ``λ <= 0.5``, and the window that fixes the
+duels above is ``λ >= 0.6``. They are DISJOINT; min-max buys the second by
+giving up the first, because it sends the pool's weakest candidate to exactly
+``0.0`` relevance where an exact duplicate near the top can outscore it.
+Keeping ``score / max`` and raising λ has one window that satisfies both,
+``[0.817, 0.917]``, and ``0.87`` sits at its centre. Both scenarios are pinned
+as tests so the window cannot narrow silently.
+
+⚠️ The window is measured against two SYNTHETIC pools, not the evaluation set
+``P-38`` waits for. The honest reading is "0.7 was outside it", never "0.87 is
+optimal". Making λ depend on the question's INTENT — an exhaustive "all/list"
+question wanting no diversity at all, which is the case that exposed this — is
+decision س-31 and is not this module's to invent.
 
 **``sim(q, d)`` is the caller's OWN relevance score, not a dense cosine
 recomputed here — and that is a deliberate deviation from the textbook
@@ -69,9 +100,11 @@ from dataclasses import dataclass
 # Mirrors ``Settings.retrieval.mmr_lambda``/``RetrievalTuning.mmr_lambda``
 # (§3.8's last row). λ = 1.0 is pure relevance (MMR off, order = the caller's
 # own); λ = 0.0 is pure diversity, which would happily open with an irrelevant
-# candidate. 0.7 leans on relevance and spends the remainder on not repeating
-# a paragraph.
-_DEFAULT_LAMBDA = 0.7
+# candidate. 0.87 leans on relevance and spends the remainder on not repeating
+# a paragraph — high because the relevance term's own span is only 0.326 wide
+# against the redundancy cosine's 1.0, so λ is read against a compressed
+# scale (module docstring).
+_DEFAULT_LAMBDA = 0.87
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +177,11 @@ def maximal_marginal_relevance(
     # the whole selection costs one pass of norms plus dot products.
     units = [_unit(candidate.vector) for candidate in candidates]
     # Relevance as a fraction of the pool's best, so it shares the redundancy
-    # term's scale (module docstring). NOT min-max.
+    # term's scale (module docstring). NOT min-max -- and that is now a
+    # MEASURED rejection, not only a reasoned one: min-max has no λ that both
+    # fixes the compressed-span inversion and keeps a near-duplicate losing to
+    # a distinct chunk. ⚠️ The span this produces is `[rrf_k / (rrf_k + pool),
+    # 1.0]`, never `[0, 1]`, which is why λ is 0.87 and not 0.7.
     best_relevance = max(candidate.relevance for candidate in candidates)
     relevance = [
         candidate.relevance / best_relevance if best_relevance > 0.0 else 0.0
