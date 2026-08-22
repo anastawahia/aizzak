@@ -704,6 +704,13 @@ class SqlDocumentRepository:
                 knowledge_chunks.c.point_id,
                 parent_chunks.c.id.label("parent_id"),
                 parent_chunks.c.text.label("parent_text"),
+                # `is_complete` rides along because the caller CANNOT widen
+                # safely without it (`ParentChunkText.is_complete`): a
+                # header-only parent must never stand in for the row it
+                # parents. Selected here rather than in a second query for
+                # the reason the join exists at all -- it is one more column
+                # on a row already being read.
+                parent_chunks.c.is_complete.label("parent_is_complete"),
             )
             .select_from(
                 knowledge_chunks.join(
@@ -725,8 +732,10 @@ class SqlDocumentRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return {
-            point_id: ParentChunkText(id=parent_id, text=parent_text)
-            for point_id, parent_id, parent_text in rows
+            point_id: ParentChunkText(
+                id=parent_id, text=parent_text, is_complete=parent_is_complete
+            )
+            for point_id, parent_id, parent_text, parent_is_complete in rows
         }
 
 

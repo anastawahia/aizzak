@@ -311,6 +311,18 @@ class DocumentRepository(Protocol):
         a parent to widen to", and its own fallback (this chunk's OWN text)
         is what makes that degrade honestly rather than drop the chunk.
 
+        ⚠️ **A resolved parent is not automatically a substitutable one.**
+        The mapping carries ``ParentChunkText.is_complete`` because the
+        widening caller must read it before letting a parent stand in place
+        of its rows (``ChunkParent``'s docstring makes that binding on every
+        such consumer, and ``chunk_texts`` above obeys it for ``P-42``): an
+        INCOMPLETE parent is the header-only row for a table past
+        ``TABLE_PARENT_MAX_ROWS``, and substituting it would replace the
+        retrieved passage with a string that does not contain it. This method
+        returns the row either way — deciding is the caller's, and hiding
+        incomplete parents here would silently make them unresolvable rather
+        than un-substitutable.
+
         An empty ``chunk_ids`` returns an empty mapping without a query --
         the ``add_parent_chunks`` precedent, applied to a read.
         """

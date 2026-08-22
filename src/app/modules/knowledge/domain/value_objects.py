@@ -127,7 +127,23 @@ class ParentChunkText:
     row's FULL, uncapped text: ``max_parent_chunk_chars`` truncation is
     applied by the caller at substitution time, not baked in here, so this
     value object stays a faithful copy of the row regardless of which caller
-    reads it."""
+    reads it.
+
+    ``is_complete`` carries ``knowledge.parent_chunks.is_complete`` --
+    ``ExplodedTable.parent_is_complete`` (``domain/tables.py``) -- and it is
+    NOT optional context: ``ChunkParent``'s own docstring states the rule
+    that "every consumer that lets a parent stand IN PLACE OF its rows must
+    read this bit first", and the parent-widening consumer
+    (``application/retrieval.py::_widen_to_parents``) is exactly such a
+    consumer. ``True`` means the row is the whole-table parent, which really
+    does contain every row it parents; ``False`` means the header-only parent
+    P-13 mints for a table past ``TABLE_PARENT_MAX_ROWS``, which holds the
+    column names and NOT ONE of the values under them. Substituting a
+    ``False`` parent replaces a retrieved passage with a string that does not
+    contain it -- the same content loss ``DocumentRepository.chunk_texts``
+    (``P-42``) already refuses on the summarisation side, which is why this
+    field exists here rather than the caller re-deriving it from the text."""
 
     id: str
     text: str
+    is_complete: bool

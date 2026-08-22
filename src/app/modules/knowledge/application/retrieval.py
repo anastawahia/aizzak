@@ -76,7 +76,13 @@ mechanism that lets ``RetrievalTuning.fusion_retention``'s 3x pool actually
 pay off: the freed slot is filled by the next distinct candidate rather than repeating a
 section already shown. A candidate with no parent (``parent_id`` null, or
 the parent row missing/unreadable) degrades HONESTLY to its own leaf text —
-never dropped, never an error. The substituted parent text is capped at
+never dropped, never an error. ⚠️ **So does a candidate whose parent is
+INCOMPLETE** (``ParentChunkText.is_complete`` false — P-13's header-only
+parent for a table past ``TABLE_PARENT_MAX_ROWS``): substituting it would
+hand the model a passage that no longer contains the text which matched the
+query, so the widening is skipped and the leaf stands. The same rule, for
+the same reason, that ``P-42`` already applies on the summarisation side.
+The substituted parent text is capped at
 ``RetrievalTuning.max_parent_chunk_chars`` so one oversized parent cannot
 swallow the whole context by itself; a candidate's OWN leaf text is never
 capped (it is already window-sized). This runs over the FULL ``retain_k``-deep
@@ -1134,9 +1140,23 @@ def _widen_to_parents(
       missing/unreadable) — kept AS IS, own leaf text untouched. This is the
       honest degradation the module docstring promises: never dropped, never
       an error.
-    * A parent WAS resolved, and this is the FIRST candidate seen to widen to
-      that ``ParentChunkText.id`` — kept, with ``text`` replaced by the
-      parent's text, capped at ``max_parent_chunk_chars``
+    * ⚠️ A parent was resolved but is INCOMPLETE
+      (``ParentChunkText.is_complete`` is ``False``) — kept AS IS too, and
+      NOT registered as a seen parent, because nothing was substituted for
+      it. An incomplete parent is P-13's header-only row for a table past
+      ``TABLE_PARENT_MAX_ROWS``: it holds the column names and not one value
+      under them, so putting it in place of the row that was actually
+      retrieved does not widen the match, it DELETES it — the passage the
+      model is handed no longer contains the text that matched the query.
+      This is the identical rule ``DocumentRepository.chunk_texts`` states
+      for the summarisation side (``P-42``: "letting that stand in for its
+      rows would summarise a data file as a list of headings"), and
+      ``ChunkParent``'s docstring names it as binding on *every* consumer
+      that substitutes a parent for its rows. Widening is an improvement the
+      answer can always do without; losing the evidence is not.
+    * A parent was resolved, is COMPLETE, and this is the FIRST candidate
+      seen to widen to that ``ParentChunkText.id`` — kept, with ``text``
+      replaced by the parent's text, capped at ``max_parent_chunk_chars``
       (``Settings.retrieval``, passed in as an argument — س-24).
     * A parent was resolved, but some EARLIER (higher- or equal-ranked)
       candidate already widened to the SAME ``id`` — dropped entirely. This
@@ -1151,7 +1171,12 @@ def _widen_to_parents(
     seen_parent_ids: set[str] = set()
     for candidate in candidates:
         parent = parents.get(candidate.chunk_id)
-        if parent is None:
+        # `is_complete` is checked with the same `continue` as "no parent at
+        # all" on purpose: both mean THIS candidate keeps its own text, and
+        # neither may mark the parent seen -- a later candidate under the
+        # same incomplete parent carries different text and is not a
+        # duplicate of anything that was substituted, because nothing was.
+        if parent is None or not parent.is_complete:
             widened.append(candidate)
             continue
         if parent.id in seen_parent_ids:

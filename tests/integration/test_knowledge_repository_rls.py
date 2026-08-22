@@ -1284,3 +1284,67 @@ async def test_newest_in_other_language_does_not_cross_kinds_or_tenants(
         )
         is None
     )
+
+
+async def test_parent_texts_for_chunk_ids_reports_is_complete_for_both_rungs(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """⚠️ Regression, found live: the parent-widening lookup must carry
+    ``is_complete``, and carry it CORRECTLY per row.
+
+    ``_widen_to_parents`` (retrieval plan §3.7, ``P-34``) substitutes a
+    parent's text for the leaf that was retrieved. Doing that to an
+    INCOMPLETE parent — §3.3's header-only row for a table past
+    ``TABLE_PARENT_MAX_ROWS`` — replaces the matched passage with a string
+    that does not contain it, the same content loss ``chunk_texts`` already
+    refuses for ``P-42`` above. The caller can only refuse it if this query
+    reports the bit, which it did not until this test existed.
+
+    Both rungs of the §3.3 ladder are seeded in ONE document so the mapping
+    is proven to report them per-row rather than one blanket value — a query
+    that hard-coded either constant would pass a single-rung test."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    doc = _document(workspace_id=ws)
+    await repo_knowledge.add(ctx, doc)
+    header_parent = _parent_chunk(
+        document_id=doc.id, workspace_id=ws, seq=0, parent_text="Name; Dept", is_complete=False
+    )
+    full_parent = _parent_chunk(
+        document_id=doc.id, workspace_id=ws, seq=1, parent_text="the whole small table"
+    )
+    await repo_knowledge.add_parent_chunks(ctx, [header_parent, full_parent])
+    under_header = _chunk(
+        document_id=doc.id,
+        workspace_id=ws,
+        seq=0,
+        chunk_text="Name: Ahmad; Dept: Electrical",
+        parent_id=header_parent.id,
+    )
+    under_full = _chunk(
+        document_id=doc.id,
+        workspace_id=ws,
+        seq=1,
+        chunk_text="Name: Sara; Dept: Civil",
+        parent_id=full_parent.id,
+    )
+    orphan = _chunk(document_id=doc.id, workspace_id=ws, seq=2, chunk_text="ordinary prose")
+    await repo_knowledge.add_chunks(ctx, [under_header, under_full, orphan])
+
+    resolved = await repo_knowledge.parent_texts_for_chunk_ids(
+        ctx,
+        [
+            under_header.vector_ref.point_id,
+            under_full.vector_ref.point_id,
+            orphan.vector_ref.point_id,
+        ],
+    )
+
+    header_hit = resolved[under_header.vector_ref.point_id]
+    assert header_hit.is_complete is False
+    assert header_hit.text == "Name; Dept"
+    full_hit = resolved[under_full.vector_ref.point_id]
+    assert full_hit.is_complete is True
+    assert full_hit.text == "the whole small table"
+    # A parent-less chunk stays ABSENT — never a placeholder entry.
+    assert orphan.vector_ref.point_id not in resolved

@@ -3175,7 +3175,9 @@ async def test_retrieve_context_substitutes_the_parents_text_not_the_leafs() -> 
     await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
     point_id = chunk_point_id("doc-1", 0)
     parent_text = "the full parent section, considerably longer than any one leaf window"
-    parent_repo = FakeParentRepo({point_id: ParentChunkText(id="parent-A", text=parent_text)})
+    parent_repo = FakeParentRepo(
+        {point_id: ParentChunkText(id="parent-A", text=parent_text, is_complete=True)}
+    )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
         ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
@@ -3209,8 +3211,8 @@ async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves
     shared_parent_text = "the one shared parent section both leaves widen to"
     parent_repo = FakeParentRepo(
         {
-            point0: ParentChunkText(id="parent-A", text=shared_parent_text),
-            point1: ParentChunkText(id="parent-A", text=shared_parent_text),
+            point0: ParentChunkText(id="parent-A", text=shared_parent_text, is_complete=True),
+            point1: ParentChunkText(id="parent-A", text=shared_parent_text, is_complete=True),
         }
     )
 
@@ -3240,7 +3242,7 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
     cap = _TUNING.max_parent_chunk_chars
     oversized_parent_text = "x" * (cap + 500)
     parent_repo = FakeParentRepo(
-        {point_id: ParentChunkText(id="parent-A", text=oversized_parent_text)}
+        {point_id: ParentChunkText(id="parent-A", text=oversized_parent_text, is_complete=True)}
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
@@ -3271,6 +3273,80 @@ async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() 
 
     assert len(result.chunks) == 1
     assert result.chunks[0].text == leaf_text
+
+
+async def test_retrieve_context_keeps_the_leaf_when_the_parent_is_incomplete() -> None:
+    """⚠️ Regression, found live: an INCOMPLETE parent must never be
+    substituted for the leaf that was actually retrieved.
+
+    ``ExplodedTable.parent_is_complete`` is ``False`` for P-13's header-only
+    parent — the row a table past ``TABLE_PARENT_MAX_ROWS`` gets, holding the
+    column names and NOT ONE value under them. Widening to it does not give
+    the model more context, it DELETES the passage that matched: the text
+    handed over no longer contains the query's own terms. Measured on a real
+    corpus before this rule existed, 240 of 852 indexed chunks had such a
+    parent and every one of them lost its text on substitution.
+
+    ``ChunkParent``'s docstring already made this binding on "every consumer
+    that lets a parent stand IN PLACE OF its rows", and ``chunk_texts``
+    (``P-42``) already obeyed it on the summarisation side; this is the
+    retrieval side finally reading the same bit."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+    point_id = chunk_point_id("doc-1", 0)
+    header_only_parent = "Region; Column_2; Column_3"
+    parent_repo = FakeParentRepo(
+        {point_id: ParentChunkText(id="parent-A", text=header_only_parent, is_complete=False)}
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert len(result.chunks) == 1
+    # The evidence survives: the leaf's own text, NOT the header line.
+    assert result.chunks[0].text == leaf_text
+    assert result.chunks[0].text != header_only_parent
+
+
+async def test_retrieve_context_keeps_both_leaves_under_one_incomplete_parent() -> None:
+    """Dedup BY PARENT is a consequence of SUBSTITUTION, so it must not fire
+    when no substitution happened: two leaves under the same INCOMPLETE
+    parent carry two different texts and neither is a duplicate of anything.
+
+    Dropping the second would be the header-only bug wearing the dedup's
+    clothes — one retrieved passage silently deleted because another chunk
+    happened to come from the same oversized table."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    texts = [
+        "revenue projections for the sales department in quarterly planning",
+        "office renovation timeline shifts under quarterly planning",
+    ]
+    await _seed_corpus(vectors, ctx, "doc-1", texts)
+    header_only_parent = "Department; Column_2"
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A", text=header_only_parent, is_complete=False
+            ),
+            chunk_point_id("doc-1", 1): ParentChunkText(
+                id="parent-A", text=header_only_parent, is_complete=False
+            ),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    result_texts = [chunk.text for chunk in result.chunks]
+    assert sorted(result_texts) == sorted(texts)
+    assert header_only_parent not in result_texts
 
 
 # --------------------------------------------------------------------------- #
@@ -4484,7 +4560,7 @@ async def test_the_reranker_reads_leaf_text_not_a_widened_parent() -> None:
     is a whole section capped at 4000 characters. What crosses the wire is
     the candidate's own window-sized leaf text."""
     embeddings, vectors = await _rerank_corpus()
-    parent = ParentChunkText(id="p1", text="A WHOLE SECTION " * 50)
+    parent = ParentChunkText(id="p1", text="A WHOLE SECTION " * 50, is_complete=True)
     spy = SpyReranker([0])
 
     await _retrieve(

@@ -467,10 +467,14 @@ async def test_the_composed_system_message_carries_all_four_header_instructions(
     assert "ALL the passages" in content
     # 2 — a list answer must include EVERY item, never truncated/sampled.
     assert "EVERY item" in content
-    # 3 — cite the file and section, using the exact label vocabulary
-    # `format_labeled_chunk` puts above each passage (retrieval plan §3.2).
-    assert "Cite the file and section" in content
-    assert "[file p.N | section: S]" in content
+    # 3 — cite the source by naming its FIELDS (file · page · section), in
+    # the model's own sentences. It deliberately does NOT ask for the
+    # `[file p.N | section: S]` label `format_labeled_chunk` puts above each
+    # passage: instructing a small model to reproduce a shape the context
+    # literally contains made it copy the block instead of answering (see
+    # `test_the_prompt_never_asks_the_model_to_reproduce_the_source_label`).
+    assert "name the file, page and section" in content
+    assert "[file p.N | section: S]" not in content
     # 4 — answer, don't narrate the reasoning.
     assert "do not narrate your reasoning" in content
 
@@ -1142,3 +1146,32 @@ async def test_the_assembled_context_never_crosses_the_streaming_contract() -> N
         rendered = str(event.data)
         assert "[atlas.pdf]" not in rendered
         assert "Paris is the capital of France." not in rendered
+
+
+async def test_the_prompt_never_asks_the_model_to_reproduce_the_source_label() -> None:
+    """⚠️ Regression, found live: `SYSTEM_PROMPT` must not instruct the model
+    to emit the `[file p.N | section: S]` label it is SHOWN.
+
+    `format_labeled_chunk` renders that label as its own LINE above each
+    passage. An instruction to reproduce it verbatim therefore reads, to a
+    small local model, as an OUTPUT TEMPLATE rather than a citation rule —
+    and `gemma3:1b` answered by copying the block instead of the question,
+    returning a label plus one heading line (61 characters) as a whole
+    answer. Measured on the live model against the exact context that
+    produced it: 24 of 40 samples copied a label under the old wording, 2 of
+    40 under this one.
+
+    The guard is deliberately about the INSTRUCTION, not the label: §3.2's
+    format (`P-31`) is untouched and `format_labeled_chunk` still owns it.
+    What the prompt may not do is tell the model to echo it back."""
+    prompt = agent_module.SYSTEM_PROMPT.lower()
+
+    # The bracketed label shape must not appear as something to reproduce.
+    assert "[file p.n" not in prompt
+    assert "label already shown" not in prompt
+    # Row 7 (`P-37`) still stands: the source is still cited, by FIELD name.
+    assert "file" in prompt
+    assert "page" in prompt
+    assert "section" in prompt
+    # And the failure itself is refused outright.
+    assert "never reply with a source label alone" in prompt
