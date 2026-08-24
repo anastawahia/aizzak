@@ -52,6 +52,24 @@ rather than one round trip per chunk. A FAILURE of it is never fatal
 either: the affected chunk degrades to its unsplit segment rather than
 failing the whole document, which would undo the isolation step 12
 (`P-19`) added one step earlier -- see ``_apply_semantic_splits``.
+
+**Page parents for prose (P-34's producer, decision س-27 = أ).** Parent
+widening at retrieval time (``application/retrieval.py::_widen_to_parents``)
+can only widen a match to a section that some INDEXING step actually wrote.
+Until this one, the only writer was the table exploder below, so every prose
+chunk -- PDF, DOCX, plain text, OCR alike -- carried ``parent_id = NULL`` and
+the model kept seeing the isolated block that matched instead of the page it
+came from (rag-answer-quality-regression.md §3-5: 54% of chunks parentless).
+``_attach_text_parents`` closes that: after semantic pre-splitting has decided
+the final segments, every non-table segment is grouped by the page it belongs
+to (``_PARENT_GROUP_KEYS``), the group is packed into parents of at most
+``_TEXT_PARENT_MAX_CHARS``, and each member is stamped with its parent's key
+through the same ``_PARENT_KEY`` scratch channel a table row already used.
+Nothing downstream of this module changes shape: the parent is a
+``ParentChunkDraft`` like any other, ``finalize`` mints its id, and a segment
+that gets no parent (see ``_attach_text_parents``) degrades exactly as an
+unparented chunk always has. It DOES require a full re-index to take effect
+(rag-indexing-plan.md §5) -- a document indexed before it keeps its NULLs.
 """
 
 from __future__ import annotations
@@ -59,7 +77,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.observability import get_logger
@@ -87,12 +105,45 @@ from app.modules.knowledge.ports.content_extractor import (
 
 log = get_logger(__name__)
 
-# The scratch metadata key a table row/overflow ``SourceSegment`` carries its
-# owning table's parent-chunk key under (``_table_to_segments``) -- private
-# to this module: it never survives into a Qdrant payload (``_payload`` only
-# copies ``_CITATION_KEYS``) and it is stripped back out into
-# ``IndexedChunk.parent_key`` before this module returns anything.
-_TABLE_PARENT_KEY = "_table_parent_key"
+# The scratch metadata key a ``SourceSegment`` carries its owning parent
+# chunk's key under -- private to this module: it never survives into a
+# Qdrant payload (``_payload`` only copies ``_CITATION_KEYS``) and it is
+# stripped back out into ``IndexedChunk.parent_key`` before this module
+# returns anything.
+#
+# TWO producers write it, and the key is deliberately shared between them so
+# everything downstream (the ``referenced_keys`` filter in ``execute``,
+# ``_embed_and_upsert``, ``finalize``'s id resolution) stays ONE path:
+# ``_table_to_segments`` (P-13, a table parenting its own rows) and
+# ``_attach_text_parents`` (P-34's missing half, decision س-27 = أ: a page
+# parenting the prose blocks parsed out of it).
+_PARENT_KEY = "_parent_key"
+
+# The char ceiling one TEXT parent chunk may reach (س-27 = أ). It mirrors the
+# DEFAULT of ``RetrievalTuning.max_parent_chunk_chars`` (4000,
+# ``application/retrieval.py``) rather than importing it -- indexing does not
+# depend on retrieval's tuning object -- and the two numbers have to agree
+# for one concrete reason: ``_widen_to_parents`` substitutes
+# ``parent.text[:max_parent_chunk_chars]``, a PREFIX. A parent minted longer
+# than that cut would hand the model a section that need not even contain the
+# sentence that matched, which is worse than not widening at all. So parents
+# are PACKED to this ceiling at build time instead of being truncated at read
+# time. (Tuning the retrieval knob BELOW this constant re-opens that prefix
+# cut -- the same exposure a table parent has always had, now stated.)
+_TEXT_PARENT_MAX_CHARS = 4_000
+
+# The metadata keys naming the "page" a prose chunk came from, most specific
+# first -- the grouping unit س-27 option أ chose. ``page_number`` is carried
+# by every PDF text block (P-10) and every OCR chunk, and is also
+# ``domain/chunking.py``'s FIRST ordering signal, so one page's chunks land
+# contiguously in ``seq``; ``sheet_name`` is the workbook equivalent. A chunk
+# with NEITHER -- DOCX, plain text, JSON: formats that have no page at parse
+# time -- falls into one per-document bucket, which the packing below then
+# cuts into ``_TEXT_PARENT_MAX_CHARS``-sized parents of ADJACENT chunks. That
+# is option أ's own "نافذة انزلاقية من N ورقة متجاورة", applied to exactly the
+# formats that cannot answer "which page".
+_PARENT_GROUP_KEYS = ("page_number", "sheet_name")
+_DOCUMENT_GROUP = "document"
 
 # Mirrors Settings.Limits.embedding_batch (07-nfr-slo §4) -- kept as a local
 # constant so the application layer does not depend on the framework Settings
@@ -165,9 +216,14 @@ class IndexedChunk:
     3.k4's ``IndexRegisteredDocument``). ``text`` is carried because
     ``knowledge.chunks.text`` is ``NOT NULL`` (01-data-model §2.7).
 
-    ``parent_key`` (P-13, plan §3.3) is ``None`` for every chunk that did not
-    come from a table row explosion; for one that did, it is the key of the
-    matching entry in the SAME call's ``IndexOutcome.parents`` -- the caller
+    ``parent_key`` (P-13, plan §3.3; P-34/س-27 = أ for prose) is the key of
+    the matching entry in the SAME call's ``IndexOutcome.parents`` -- the
+    table this chunk is a row of, or the page it was parsed out of. It is
+    ``None`` only for a chunk that got neither: a table too malformed to
+    explode, a lone short chunk whose parent would be a byte-identical copy
+    of itself, or a chunk longer on its own than one parent may be
+    (``_attach_text_parents``). Such a chunk degrades to its own leaf text at
+    retrieval time, which is what ``_widen_to_parents`` already does. The caller
     (``IndexRegisteredDocument.finalize``) mints the real ``ParentChunk.id``
     and resolves this key to it before building the ``Chunk`` row, the same
     way ``Chunk.id`` itself is minted one layer up rather than here.
@@ -182,15 +238,20 @@ class IndexedChunk:
 
 @dataclass(frozen=True, slots=True)
 class ParentChunkDraft:
-    """One parent-chunk candidate produced while exploding a table (P-13,
-    plan §3.3) -- not yet a persisted ``ParentChunk`` row: id minting +
+    """One parent-chunk candidate -- either a table parenting its exploded
+    rows (P-13, plan §3.3) or a page parenting its prose chunks (P-34,
+    decision س-27 = أ) -- not yet a persisted ``ParentChunk`` row: id minting +
     the ``add_parent_chunks`` call are the application layer's job one level
     up (``IndexRegisteredDocument.finalize``), mirroring how ``Chunk.id``
     itself is minted there and not in this module.
 
-    ``is_complete`` is ``ExplodedTable.parent_is_complete`` carried through
-    (``domain/tables.py``): whether ``text`` holds every row it parents, or
-    only the header line of a table too large for a whole-table parent. It
+    ``is_complete`` says whether ``text`` holds every chunk it parents. For a
+    table it is ``ExplodedTable.parent_is_complete`` carried through
+    (``domain/tables.py``): the header line ALONE, for a table too large for
+    a whole-table parent, answers ``False``. For a page parent it is always
+    ``True`` -- ``_attach_text_parents`` builds the text BY JOINING the very
+    chunks that point at it, so completeness is a property of the
+    construction and never a claim about something unseen. It
     travels all the way to ``knowledge.parent_chunks.is_complete`` because
     P-42's summariser input (``chunk_texts``) may only let a parent stand in
     place of its rows when the answer is yes."""
@@ -205,11 +266,11 @@ class ParentChunkDraft:
 class IndexOutcome:
     """The result of one ``IndexDocument.execute`` call.
 
-    ``parents`` (P-13, plan §3.3) holds one draft per table that actually
-    contributed at least one indexed row chunk -- a table whose every row
-    filtered away to nothing (§3.3's "an entirely noise/empty row") never
-    grows an orphan ``parent_chunks`` row nobody's ``Chunk.parent_id`` points
-    at.
+    ``parents`` (P-13, plan §3.3; P-34/س-27 = أ) holds one draft per table
+    AND per page that actually contributed at least one indexed chunk -- a
+    table whose every row filtered away to nothing (§3.3's "an entirely
+    noise/empty row"), or a page whose every block did, never grows an
+    orphan ``parent_chunks`` row nobody's ``Chunk.parent_id`` points at.
 
     ``text_chunks``/``table_chunks``/``image_chunks`` (plan §4 step 16,
     `P-05`, decision س-15 = أ) are ``len(chunks)`` broken down by
@@ -310,7 +371,18 @@ class IndexDocument:
             slots.append([_plain_segment(chunk)])
 
         await self._apply_semantic_splits(pending, slots, model, api_key, document_id=document_id)
+
+        # P-34 / س-27 = أ (module docstring): page parents are attached AFTER
+        # the semantic pass, not inside the pure loop above, for two reasons.
+        # The parent text must be the text of the segments that will actually
+        # point at it -- semantic pre-splitting subdivides a chunk without
+        # changing its text, but it DOES change how many segments a page
+        # holds -- and the "a lone segment is its own parent" skip below can
+        # only be decided once that count is final.
         segments = [segment for slot in slots for segment in slot]
+        segments, text_parents = _attach_text_parents(segments, max_words=self._max_words)
+        parent_drafts.extend(text_parents)
+
         to_index = chunk_segments(
             segments, max_tokens=self._max_words, overlap_tokens=self._overlap_words
         )
@@ -318,11 +390,12 @@ class IndexDocument:
         # Only keep a parent draft that at least one surviving node actually
         # points at (IndexOutcome's own docstring) -- a table exploded above
         # but merged away entirely by `chunk_segments` (an all-empty row
-        # sentence, or a future node filter) must not orphan a parent row.
+        # sentence, or a future node filter) must not orphan a parent row,
+        # and neither must a page whose every block went the same way.
         referenced_keys = {
             key
             for chunk_to_index in to_index
-            if (key := chunk_to_index.metadata.get(_TABLE_PARENT_KEY)) is not None
+            if (key := chunk_to_index.metadata.get(_PARENT_KEY)) is not None
         }
         parents = tuple(draft for draft in parent_drafts if draft.key in referenced_keys)
 
@@ -419,7 +492,7 @@ class IndexDocument:
                 seq=chunk.seq,
                 text=chunk.text,
                 token_count=chunk.token_count,
-                parent_key=chunk.metadata.get(_TABLE_PARENT_KEY),
+                parent_key=chunk.metadata.get(_PARENT_KEY),
             )
             for chunk, point in zip(batch, points, strict=True)
         ]
@@ -700,6 +773,126 @@ def _group_sentences(sentences: list[str], boundaries: list[int]) -> list[str]:
     return parts
 
 
+def _attach_text_parents(
+    segments: Sequence[SourceSegment], *, max_words: int
+) -> tuple[list[SourceSegment], list[ParentChunkDraft]]:
+    """P-34's missing producer (decision س-27 = أ, module docstring): give
+    every non-table segment a parent chunk holding the whole PAGE it was
+    parsed out of, so parent widening at retrieval time has prose to widen
+    TO. Returns the segments again -- each one stamped with its parent's
+    ``_PARENT_KEY``, in the SAME order it arrived -- plus one draft per
+    parent minted.
+
+    **What is grouped.** Segments that already carry a parent key (a table's
+    exploded rows, P-13) and TABLE-kind segments that never exploded (a
+    malformed ``{headers, rows}`` payload falling back to ``_plain_segment``)
+    are both left exactly as they are: a table is its own parent or none, and
+    its JSON text has no business inside a prose page. Everything else --
+    TEXT, JSON, OCR alike -- is grouped by ``_group_of`` and packed, in
+    reading order, into parents of at most ``_TEXT_PARENT_MAX_CHARS``.
+
+    **Reading order is taken from ``order``/``sub_order``, not from the
+    input sequence**, because the input sequence is PRODUCTION order and the
+    two differ: ``extractor.py``'s PDF route emits every table first, then
+    the layout text, then the images. ``order`` is the structural ordinal
+    ``domain/chunking.py``'s own key sorts on, so joining by it is what makes
+    the parent text read like the page rather than like the parser's
+    schedule.
+
+    **Two skips, both of which cost nothing downstream** (an unparented chunk
+    is a shape ``_widen_to_parents`` and ``collapse_parent_runs`` have always
+    handled -- it degrades to its own leaf text):
+
+    * a part holding ONE segment short enough that ``chunk_segments`` will
+      not split it -- its parent would be a byte-identical copy of the single
+      node it parents, so the row would buy nothing and cost a duplicate of
+      the whole corpus in ``knowledge.parent_chunks``;
+    * a part holding one segment LONGER than ``_TEXT_PARENT_MAX_CHARS`` --
+      packing cannot cut a segment in half (a parent must contain the leaf
+      that matched, or widening replaces the match with a section that lacks
+      it), and the ceiling exists precisely so no parent is ever truncated at
+      read time. Such a segment keeps its own text. It is a rare shape: both
+      prose parsers already cap a chunk at 2000 chars.
+    """
+    grouped: dict[str, list[tuple[int, SourceSegment]]] = {}
+    for index, segment in enumerate(segments):
+        if _PARENT_KEY in segment.metadata or segment.kind == ParsedChunkKind.TABLE:
+            continue
+        grouped.setdefault(_group_of(segment), []).append((index, segment))
+
+    drafts: list[ParentChunkDraft] = []
+    key_by_index: dict[int, str] = {}
+    for members in grouped.values():
+        members.sort(key=lambda member: (member[1].order, member[1].sub_order, member[0]))
+        for part in _pack_parent_parts(members):
+            text = "\n".join(segment.text for _index, segment in part)
+            if len(text) > _TEXT_PARENT_MAX_CHARS:
+                continue
+            if len(part) == 1 and len(part[0][1].text.split()) <= max_words:
+                continue
+            key = f"text-{len(drafts)}"
+            drafts.append(
+                ParentChunkDraft(
+                    key=key,
+                    # The first member's structural ordinal: `finalize` sorts
+                    # the drafts by it to assign `parent_chunks.seq`, so a
+                    # parent ranks where its content begins.
+                    order=part[0][1].order,
+                    text=text,
+                    # True BY CONSTRUCTION: `text` is the join of exactly the
+                    # segments stamped below (`ParentChunkDraft`'s docstring).
+                    is_complete=True,
+                )
+            )
+            for index, _segment in part:
+                key_by_index[index] = key
+
+    stamped = [
+        replace(segment, metadata={**segment.metadata, _PARENT_KEY: key_by_index[index]})
+        if index in key_by_index
+        else segment
+        for index, segment in enumerate(segments)
+    ]
+    return stamped, drafts
+
+
+def _group_of(segment: SourceSegment) -> str:
+    """The page a prose segment belongs to, as a grouping token -- the first
+    of ``_PARENT_GROUP_KEYS`` its metadata answers, or ``_DOCUMENT_GROUP``
+    for a format that has no page at parse time (that constant's own
+    comment). The key is namespaced by the metadata key it came from so a
+    sheet named ``"3"`` and page 3 can never collapse into one parent."""
+    for key in _PARENT_GROUP_KEYS:
+        value = segment.metadata.get(key)
+        if value is not None:
+            return f"{key}={value}"
+    return _DOCUMENT_GROUP
+
+
+def _pack_parent_parts(
+    members: Sequence[tuple[int, SourceSegment]],
+) -> list[list[tuple[int, SourceSegment]]]:
+    """Cut one page's segments, already in reading order, into consecutive
+    runs whose joined text fits ``_TEXT_PARENT_MAX_CHARS``. A segment is
+    never split across two runs (``_attach_text_parents``' second skip says
+    why); a segment that exceeds the ceiling ALONE therefore lands in a run
+    of its own, which that skip then drops."""
+    parts: list[list[tuple[int, SourceSegment]]] = []
+    current: list[tuple[int, SourceSegment]] = []
+    length = 0
+    for member in members:
+        # +1 for the "\n" the join adds ahead of every member but the first.
+        size = len(member[1].text) + (1 if current else 0)
+        if current and length + size > _TEXT_PARENT_MAX_CHARS:
+            parts.append(current)
+            current, length, size = [], 0, len(member[1].text)
+        current.append(member)
+        length += size
+    if current:
+        parts.append(current)
+    return parts
+
+
 def _table_to_segments(
     chunk: ParsedChunk, *, parent_key: str
 ) -> tuple[list[SourceSegment], ParentChunkDraft | None] | None:
@@ -742,7 +935,7 @@ def _table_to_segments(
             text=sentence,
             order=chunk.order,
             kind=str(chunk.kind),
-            metadata={**chunk.metadata, _TABLE_PARENT_KEY: parent_key},
+            metadata={**chunk.metadata, _PARENT_KEY: parent_key},
             sub_order=row_index,
         )
         for row_index, sentence in enumerate(exploded.row_sentences)
@@ -760,7 +953,7 @@ def _table_to_segments(
                     kind=str(chunk.kind),
                     metadata={
                         **chunk.metadata,
-                        _TABLE_PARENT_KEY: parent_key,
+                        _PARENT_KEY: parent_key,
                         "table_truncated": True,
                     },
                     # The overflow notice reads last, after every row it is

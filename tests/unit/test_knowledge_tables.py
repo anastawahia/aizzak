@@ -324,12 +324,14 @@ def test_collapse_parent_runs_reopens_a_complete_run_after_an_incomplete_one() -
     assert collapse_parent_runs(rows) == ["Name: Ahmad; Salary: 5000", "whole table"]
 
 
-def test_collapse_parent_runs_collapses_only_CONSECUTIVE_rows_of_one_parent() -> None:
-    """The rows of one table are written contiguously (``indexing.py``'s
-    per-table ``seq`` run), so "same parent, not adjacent" is not a shape
-    this pipeline produces -- and if it ever did, reading order wins over
-    de-duplication: nothing is silently dropped from the middle."""
-    parent = ChunkParent(id="p1", text="table body", is_complete=True)
-    rows = [_under(parent, "a"), _leaf("prose"), _under(parent, "b")]
+def test_collapse_parent_runs_writes_an_interrupted_parent_once() -> None:
+    """ "Same parent, not adjacent" IS a shape this pipeline produces since
+    P-34/س-27 = أ: a PDF page's table and its prose blocks get different
+    parents and interleave in ``seq``. The page's text is written once, at
+    its first chunk -- the second appearance would be the same bytes, so
+    this is de-duplication, not the dropping-from-the-middle a parentless or
+    incomplete-parent chunk is still spared."""
+    parent = ChunkParent(id="p1", text="page body", is_complete=True)
+    rows = [_under(parent, "a"), _leaf("table row"), _under(parent, "b")]
 
-    assert collapse_parent_runs(rows) == ["table body", "prose", "table body"]
+    assert collapse_parent_runs(rows) == ["page body", "table row"]

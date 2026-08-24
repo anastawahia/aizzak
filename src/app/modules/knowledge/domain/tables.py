@@ -211,11 +211,22 @@ def collapse_parent_runs(rows: Iterable[ParentedChunkText]) -> list[str]:
     ``seq`` (reading) order, into the coarser text sections a summariser
     should read -- "~40 coherent sections instead of ~240 fragments".
 
-    A run of CONSECUTIVE rows sharing one COMPLETE parent collapses into a
-    single appearance of that parent's text: the rows of a table are written
-    contiguously (``application/indexing.py``'s per-table ``seq`` run), and
-    a complete parent already holds every one of their sentences, so keeping
-    the leaves too would only repeat the same content twice.
+    Every chunk under one COMPLETE parent collapses into a SINGLE appearance
+    of that parent's text, at the position of the first such chunk: a
+    complete parent already holds every one of their texts, so keeping the
+    leaves too would only repeat the same content twice.
+
+    That rule is keyed on the parent's id for the WHOLE document, not on a
+    consecutive run, since ``P-34``/س-27 = أ made "same parent, not adjacent"
+    a shape this pipeline genuinely produces. A table and the prose blocks
+    around it share a page yet get DIFFERENT parents (a page parent never
+    swallows a table, ``_attach_text_parents``), and both parents' chunks
+    interleave in ``seq``: on a PDF page, a table's structural ordinal and a
+    text block's are drawn from the same per-page stride. Collapsing per run
+    would then write that page's text once per interruption. Nothing is lost
+    by writing it once instead -- the second appearance would be the same
+    bytes as the first, which is exactly why this is de-duplication and not
+    the dropping-from-the-middle the leaf branch below still refuses.
 
     Everything else keeps its OWN leaf text, on its own line, with NO dedup
     between rows -- the "falls back to the leaf text so no content is lost"
@@ -238,7 +249,7 @@ def collapse_parent_runs(rows: Iterable[ParentedChunkText]) -> list[str]:
     over a plain LEFT JOIN's rows.
     """
     texts: list[str] = []
-    open_parent_id: str | None = None
+    written_parents: set[str] = set()
     for row in rows:
         parent = row.parent
         if parent is None or not parent.is_complete:
@@ -247,10 +258,9 @@ def collapse_parent_runs(rows: Iterable[ParentedChunkText]) -> list[str]:
             # a neighbour holding byte-identical text (two chunks that
             # happen to read the same are two chunks).
             texts.append(row.text)
-            open_parent_id = None
             continue
-        if parent.id == open_parent_id:
+        if parent.id in written_parents:
             continue
         texts.append(parent.text)
-        open_parent_id = parent.id
+        written_parents.add(parent.id)
     return texts

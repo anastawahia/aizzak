@@ -2588,7 +2588,7 @@ async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_pa
     """Constraint 1 (plan §3.2), negative half only: the Qdrant payload
     carries neither a parent chunk's text nor its id (only what
     ``_CITATION_KEYS`` allowlists), and never the internal
-    ``_table_parent_key`` scratch metadata either. ``IndexDocument.execute``
+    ``_parent_key`` scratch metadata either. ``IndexDocument.execute``
     (exercised here) never resolves ``parent_key`` to a minted
     ``ParentChunk.id`` in the first place -- that resolution, and the
     positive half of constraint 1 (``parent_id`` IS stored, on
@@ -2617,7 +2617,7 @@ async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_pa
     for chunk in outcome.chunks:
         point = vectors.points["kn-ws1"][chunk.chunk_id]
         assert parent_text not in point.payload.values()
-        assert "_table_parent_key" not in point.payload
+        assert "_parent_key" not in point.payload
         assert "parent_id" not in point.payload
 
 
@@ -2699,6 +2699,228 @@ async def test_index_document_ranks_table_rows_by_sub_order_not_by_sort_stabilit
     assert [node.text for node in restored] == [
         f"Name: person-{i:02d}; Dept: engineering" for i in range(6)
     ]
+
+
+# --------------------------------------------------------------------------- #
+# application.indexing -- page parents for prose (P-34, decision س-27 = أ)     #
+# --------------------------------------------------------------------------- #
+def _page_chunk(text: str, *, page: int, order: int) -> ParsedChunk:
+    """A prose chunk carrying the one metadata key `_group_of` groups on.
+
+    The texts these tests pass carry NO sentence-terminating punctuation, so
+    `_split_sentences` finds a single sentence and semantic pre-splitting
+    (P-20) never runs -- the parent under test is then the page as the
+    parser produced it, not as a boundary search rewrote it.
+    """
+    return _parsed_chunk(text, order=order, metadata={"page_number": page})
+
+
+async def _index(parsed: ParsedDocument) -> IndexOutcome:
+    return await IndexDocument(FakeEmbeddings(), FakeHybridVectors()).execute(
+        _ctx("ws1"), document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+    )
+
+
+async def test_index_document_parents_a_pages_blocks_with_the_whole_page() -> None:
+    """The gap س-27 opened, closed: prose blocks -- not table rows -- come
+    back carrying a parent, and its text is the page they were parsed out
+    of. Without this, `_widen_to_parents` has nothing to widen prose to and
+    the model sees one isolated block (rag-answer-quality-regression.md
+    §3-5)."""
+    outcome = await _index(
+        _parsed_document(
+            [
+                _page_chunk("the northern region opened two branches", page=1, order=0),
+                _page_chunk("staffing rose by eleven people that quarter", page=1, order=1),
+            ]
+        )
+    )
+
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == (
+        "the northern region opened two branches\nstaffing rose by eleven people that quarter"
+    )
+    # Complete by construction -- it is the join of exactly the chunks that
+    # point at it, so P-42 may let it stand in their place.
+    assert outcome.parents[0].is_complete is True
+    keys = {chunk.parent_key for chunk in outcome.chunks}
+    assert keys == {outcome.parents[0].key}
+
+
+async def test_index_document_keeps_two_pages_in_two_parents() -> None:
+    """The grouping unit is the page (option أ), so a match on page 2 widens
+    to page 2 -- never to a section spanning the page break."""
+    outcome = await _index(
+        _parsed_document(
+            [
+                _page_chunk("first page opening paragraph here", page=1, order=0),
+                _page_chunk("first page closing paragraph here", page=1, order=1),
+                _page_chunk("second page opening paragraph here", page=2, order=2),
+                _page_chunk("second page closing paragraph here", page=2, order=3),
+            ]
+        )
+    )
+
+    assert len(outcome.parents) == 2
+    assert [parent.text.count("first page") for parent in outcome.parents] == [2, 0]
+    assert [parent.text.count("second page") for parent in outcome.parents] == [0, 2]
+
+
+async def test_index_document_joins_a_page_in_reading_order_not_production_order() -> None:
+    """`extractor.py`'s PDF route emits tables, then text, then images, so
+    the chunk sequence is production order. The parent text follows
+    `order` -- the structural ordinal `domain/chunking.py` sorts the nodes
+    themselves by -- or the page would read back shuffled."""
+    outcome = await _index(
+        _parsed_document(
+            [
+                _page_chunk("third paragraph of the page", page=1, order=2),
+                _page_chunk("first paragraph of the page", page=1, order=0),
+                _page_chunk("second paragraph of the page", page=1, order=1),
+            ]
+        )
+    )
+
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == (
+        "first paragraph of the page\nsecond paragraph of the page\nthird paragraph of the page"
+    )
+
+
+async def test_index_document_never_folds_a_table_into_its_pages_parent() -> None:
+    """A table already has a parent that speaks for its rows exactly (P-13),
+    and its `{headers, rows}` JSON is not prose: the page parent covers the
+    blocks around it and nothing else. The two parents coexist on one
+    page."""
+    table = _parsed_chunk(
+        _table_json(["Name", "Salary"], [{"Name": "Ahmad", "Salary": "5000"}]),
+        order=1,
+        kind=ParsedChunkKind.TABLE,
+        metadata={"page_number": 1},
+    )
+    outcome = await _index(
+        _parsed_document(
+            [
+                _page_chunk("the salary table for the northern branch", page=1, order=0),
+                table,
+                _page_chunk("figures above exclude seasonal contractors", page=1, order=2),
+            ]
+        )
+    )
+
+    assert len(outcome.parents) == 2
+    texts = {parent.text for parent in outcome.parents}
+    assert "Name: Ahmad; Salary: 5000" in texts
+    page_parent = next(text for text in texts if text.startswith("the salary table"))
+    assert page_parent == (
+        "the salary table for the northern branch\nfigures above exclude seasonal contractors"
+    )
+
+
+async def test_index_document_skips_a_parent_that_would_copy_its_only_node() -> None:
+    """A short lone chunk becomes exactly one node, so its "parent" would be
+    a byte-identical second copy of that node's text -- a `parent_chunks`
+    row that buys no context and duplicates the corpus. It is not minted,
+    and the chunk degrades to its own leaf text exactly as before س-27."""
+    outcome = await _index(
+        _parsed_document([_page_chunk("a single short paragraph on its own page", page=1, order=0)])
+    )
+
+    assert len(outcome.chunks) == 1
+    assert outcome.parents == ()
+    assert outcome.chunks[0].parent_key is None
+
+
+async def test_index_document_parents_a_lone_chunk_that_the_window_will_split() -> None:
+    """...but the same lone chunk DOES get a parent once it is long enough
+    to be split into several word windows: there the parent is the only
+    thing that can put the windows back together for the model."""
+    words = " ".join(f"word{index:03d}" for index in range(500))
+    outcome = await _index(_parsed_document([_page_chunk(words, page=1, order=0)]))
+
+    assert len(outcome.chunks) > 1
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == words
+
+
+async def test_index_document_packs_a_long_page_into_several_capped_parents() -> None:
+    """A page bigger than one parent may be is packed into consecutive
+    parents, each within `_TEXT_PARENT_MAX_CHARS`. The ceiling is what keeps
+    `_widen_to_parents`' `parent.text[:max_parent_chunk_chars]` prefix cut
+    from ever firing -- a truncated parent could omit the very sentence that
+    matched."""
+    blocks = [
+        _page_chunk(f"block {index:02d} " + "filler " * 200, page=1, order=index)
+        for index in range(6)
+    ]
+    outcome = await _index(_parsed_document(blocks))
+
+    assert len(outcome.parents) > 1
+    assert all(len(parent.text) <= 4_000 for parent in outcome.parents)
+    # Every block still landed in exactly one parent: packing cuts BETWEEN
+    # chunks, never inside one.
+    for index in range(6):
+        assert sum(parent.text.count(f"block {index:02d}") for parent in outcome.parents) == 1
+
+
+async def test_index_document_leaves_a_chunk_longer_than_one_parent_unparented() -> None:
+    """Packing cannot cut a chunk in half, and a parent may not exceed the
+    ceiling, so a single oversized chunk gets NO parent rather than one that
+    holds its opening and drops the rest -- the honest degradation
+    `_widen_to_parents` already handles."""
+    huge = "sentence " * 700  # ~6300 chars, well past _TEXT_PARENT_MAX_CHARS
+    outcome = await _index(_parsed_document([_page_chunk(huge, page=1, order=0)]))
+
+    assert outcome.parents == ()
+    assert all(chunk.parent_key is None for chunk in outcome.chunks)
+
+
+async def test_index_document_groups_a_pageless_format_by_adjacency() -> None:
+    """DOCX/plain text have no page at parse time (`_PARENT_GROUP_KEYS`), so
+    their chunks fall into one document bucket that packing then cuts into
+    parents of ADJACENT chunks -- option أ's sliding window over N
+    neighbouring leaves, for exactly the formats that cannot answer "which
+    page"."""
+    outcome = await _index(
+        _parsed_document(
+            [
+                _parsed_chunk("an opening paragraph with no page number", order=0),
+                _parsed_chunk("a second paragraph with no page number", order=1),
+            ]
+        )
+    )
+
+    assert len(outcome.parents) == 1
+    assert outcome.parents[0].text == (
+        "an opening paragraph with no page number\na second paragraph with no page number"
+    )
+
+
+async def test_index_document_page_parent_text_and_key_never_reach_the_qdrant_payload() -> None:
+    """Constraint 1 (plan §3.2) holds for the second producer too: the page
+    parent's text stays in Postgres, and the `_parent_key` scratch metadata
+    that carries it through this module never becomes a payload field."""
+    vectors = FakeHybridVectors()
+    outcome = await IndexDocument(FakeEmbeddings(), vectors).execute(
+        _ctx("ws1"),
+        document_id="doc-1",
+        space_id=None,
+        parsed=_parsed_document(
+            [
+                _page_chunk("the northern region opened two branches", page=1, order=0),
+                _page_chunk("staffing rose by eleven people that quarter", page=1, order=1),
+            ]
+        ),
+        model="m",
+        api_key="k",
+    )
+
+    parent_text = outcome.parents[0].text
+    for chunk in outcome.chunks:
+        point = vectors.points["kn-ws1"][chunk.chunk_id]
+        assert "_parent_key" not in point.payload
+        assert "parent_id" not in point.payload
+        assert parent_text not in point.payload.values()
 
 
 # --------------------------------------------------------------------------- #

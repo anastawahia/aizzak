@@ -56,11 +56,22 @@ whole batch, because §5's clean rebuild does not distinguish "how many
 things changed", only "did anything". Raising it here, to the first value
 past the implicit baseline, is what makes that rebuild (§5) effective: every
 row from before this line differs from `PIPELINE_VERSION` by construction.
+
+**Why it is now 3.** Decision س-27 = أ (rag-answer-quality-regression.md
+§3-5) added the SECOND producer of `knowledge.parent_chunks`:
+`application/indexing.py`'s `_attach_text_parents` now mints a page parent
+for prose, where only the table exploder did before. That changes the stored
+output's shape for every document in the corpus — new `parent_chunks` rows,
+and a `chunks.parent_id` that is no longer null on prose — which is exactly
+the question this constant answers. Without the bump, a re-index of an
+already-indexed document would be SKIPPED on its unchanged `content_hash`
+and would keep its old, parentless rows: the feature would ship and change
+nothing until someone re-uploaded the file.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3
 
 
 def content_pipeline_unchanged(
