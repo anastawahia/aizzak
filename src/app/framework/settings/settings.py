@@ -467,42 +467,12 @@ class RetrievalSettings(BaseModel):
     # entry reserved for it, riding this same seam with no second mechanism.
     #
     # `mmr_lambda` weighs relevance against redundancy in
-    # `λ·sim(q,d) - (1-λ)·max sim(d,dⱼ)`. It SHIPS as a number, and §3.8's
+    # `λ·sim(q,d) - (1-λ)·max sim(d,dⱼ)`. `0.7` SHIPS as a number, and §3.8's
     # last row says exactly why that does not contradict س-22: it is a
     # DIVERSITY trade-off, not a "is this good enough" gate -- nothing is
     # admitted or rejected by comparing a score to it. Higher is more
     # relevance-led; `1.0` turns diversity off entirely.
-    #
-    # ⚠️ **`0.7` did not mean what it read as** (rag-answer-quality-regression
-    # .md §3 cause 6). `domain/mmr.py` expresses relevance as a fraction of
-    # the pool's best, and that fraction is bounded below by `rrf_k / (rrf_k +
-    # pool)` -- with `rrf_k = 60` over a pool of 30 it spans `[0.674, 1.0]`,
-    # just 0.326 wide, while the redundancy cosine keeps its full unit span.
-    # So λ = 0.7 weighted 0.228 of relevance against 0.300 of diversity: the
-    # number read "70% relevance" and behaved diversity-led, and the measured
-    # duels went the wrong way -- rank 1 at similarity 0.90 scored 0.419 while
-    # rank 12 at similarity 0.30 scored 0.493, and the more distant candidate
-    # won. That is the exact opposite of what "give me ALL details about X"
-    # needs, where the wanted passages are deliberately alike.
-    #
-    # `0.87` and not min-max normalisation of the relevance term, which the
-    # report recommended and MEASUREMENT rejected: under min-max the λ window
-    # that keeps `mmr.py`'s founding guarantee (a near-duplicate must lose to
-    # a distinct chunk, §3.9) is `λ <= 0.5`, and the window that fixes the
-    # duels above is `λ >= 0.6` -- disjoint, no value satisfies both. Keeping
-    # `score / max` and raising λ has ONE window that satisfies both,
-    # `[0.817, 0.917]`, and `0.87` sits at its centre with margin on each
-    # side. Both scenarios are pinned as tests, so the window cannot narrow
-    # silently.
-    #
-    # ⚠️ **It is a calibration, and calibration is what س-22 defers**: `0.87`
-    # is measured against two SYNTHETIC pools, not the evaluation set `P-38`
-    # waits for. It survives س-22 only because λ is a trade-off rather than a
-    # gate (§3.8), and the honest reading of the window is "0.7 was outside
-    # it", not "0.87 is optimal". Making λ depend on the question's intent --
-    # an exhaustive "all/list" question wanting no diversity at all -- is
-    # decision س-31 and is not this row's to invent.
-    mmr_lambda: float = 0.87
+    mmr_lambda: float = 0.7
     # The "search_k موسَّع" of plan row 20 -- how deep each leg fetches, as a
     # multiple of `k`, so MMR has a pool WIDER than what it hands on and can
     # actually DISCARD a near-duplicate instead of merely re-ordering it.

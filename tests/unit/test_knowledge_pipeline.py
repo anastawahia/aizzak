@@ -71,11 +71,7 @@ from app.modules.knowledge.domain.file_resolution import (
     resolve_file,
 )
 from app.modules.knowledge.domain.intent import Intent, classify_intent
-from app.modules.knowledge.domain.mmr import (
-    _DEFAULT_LAMBDA,
-    MmrCandidate,
-    maximal_marginal_relevance,
-)
+from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
 from app.modules.knowledge.domain.value_objects import ParentChunkText
@@ -1067,7 +1063,7 @@ def test_mmr_at_lambda_one_is_pure_relevance_and_keeps_every_duplicate() -> None
     """The control for the test above, and the knob's own upper end: at
     ``λ = 1.0`` the diversity term is multiplied by zero, so MMR degenerates
     to "sort by relevance" and the same pool ships three copies of the same
-    paragraph. This is what the shipped λ is buying."""
+    paragraph. This is what the shipped ``0.7`` is buying."""
     duplicates = [_mmr(f"dup-{index}", 1.0 - index * 0.01, [1.0, 0.0]) for index in range(5)]
     distinct = _mmr("distinct", 0.90, [0.0, 1.0])
 
@@ -1129,112 +1125,6 @@ def test_mmr_survives_a_zero_vector_without_raising() -> None:
         [_mmr("zero", 1.0, [0.0, 0.0]), _mmr("real", 0.5, [1.0, 0.0])], top_n=2
     )
     assert sorted(selected) == ["real", "zero"]
-
-
-def test_mmr_shipped_lambda_sits_inside_the_window_that_satisfies_both_duties() -> None:
-    """⚠️ **The λ calibration, pinned from BOTH sides** — the window is narrow
-    and nothing else in the codebase would notice it closing.
-
-    λ has two duties that pull against each other, and the relevance term's
-    compressed span (``score / max`` bottoms out at ``rrf_k / (rrf_k + pool)``
-    = 0.674, never 0) is what makes the balance delicate:
-
-    * **Too low** and the diversity term outweighs a relevance range only
-      0.326 wide, so an "all details about X" question — whose wanted passages
-      are deliberately alike — has its own evidence suppressed. That is the
-      measured regression (rag-answer-quality-regression.md §3 cause 6): at
-      λ = 0.7 rank 1 lost to rank 12.
-    * **Too high** and the diversity term vanishes, so five chunks of one
-      paragraph win five of the caller's ``k`` slots — the failure this module
-      exists to prevent.
-
-    Swept in thousandths over both pools below, the window is
-    ``[0.817, 0.917]`` and the shipped value sits at its centre. The sweep is
-    against two SYNTHETIC pools rather than the evaluation set ``P-38`` waits
-    for, so what this pins is "0.7 was outside the window", never "0.87 is
-    optimal"; س-31 (λ by question intent) is where the real answer lives."""
-    duplicates = [_mmr(f"dup-{index}", 1.0 - index * 0.01, [1.0, 0.0]) for index in range(5)]
-    suppression_pool = [*duplicates, _mmr("distinct", 0.90, [0.0, 1.0])]
-    # An RRF ranking, `1/(60 + rank)`: rank 1 nearly parallel to the winner,
-    # rank 12 pointing elsewhere. The relevance-led answer keeps rank 1.
-    exhaustive_pool = [
-        _mmr("rank0", 1 / 60, [1.0, 0.0]),
-        _mmr("rank1", 1 / 61, [0.978, 0.208]),
-        _mmr("rank12", 1 / 72, [0.309, 0.951]),
-        _mmr("rank29", 1 / 89, [0.0, 1.0]),
-    ]
-
-    def satisfies_both(lambda_: float) -> bool:
-        suppresses = (
-            maximal_marginal_relevance(suppression_pool, top_n=3, lambda_=lambda_)[1] == "distinct"
-        )
-        stays_relevance_led = (
-            maximal_marginal_relevance(exhaustive_pool, top_n=2, lambda_=lambda_)[1] == "rank1"
-        )
-        return suppresses and stays_relevance_led
-
-    window = [n / 1000 for n in range(1001) if satisfies_both(n / 1000)]
-    assert (min(window), max(window)) == (0.817, 0.917)
-    assert satisfies_both(_DEFAULT_LAMBDA)
-    assert _DEFAULT_LAMBDA == 0.87
-    assert _TUNING.mmr_lambda == _DEFAULT_LAMBDA
-
-
-def test_mmr_min_max_normalisation_has_no_lambda_that_serves_both_duties() -> None:
-    """⚠️ **Why the relevance term is still ``score / max``**, kept as an
-    executable record rather than a claim in a docstring. The regression
-    report recommended min-max normalising relevance so its span reaches a
-    true ``[0, 1]`` and λ means what it reads. Re-derived here over the same
-    two pools, min-max sends the pool's WEAKEST candidate to exactly 0.0
-    relevance, which lets an exact duplicate near the top outscore a distinct
-    chunk at the floor: duplicate suppression survives only up to
-    ``λ = 0.52`` and the exhaustive question turns relevance-led only from
-    ``λ = 0.60``. The two windows do not meet — so min-max buys one duty by
-    giving up the other, whatever λ is chosen. The day someone proposes it
-    again, this test is the answer.
-
-    Asserted as an EMPTY INTERSECTION rather than against the two boundary
-    numbers alone, so it keeps meaning if the pools are ever re-derived."""
-
-    def min_max_mmr(pool: list[MmrCandidate], lambda_: float, top_n: int) -> list[str]:
-        """``maximal_marginal_relevance`` with the ONE line changed, so the
-        comparison is of normalisations and nothing else."""
-        best = max(candidate.relevance for candidate in pool)
-        worst = min(candidate.relevance for candidate in pool)
-        span = best - worst
-        rescaled = [
-            MmrCandidate(
-                chunk_id=candidate.chunk_id,
-                # Fed back through `score / max` inside the algorithm, so
-                # pre-scaling to [0, 1] with max = 1.0 leaves it untouched.
-                relevance=((candidate.relevance - worst) / span if span > 0.0 else 0.0),
-                vector=candidate.vector,
-            )
-            for candidate in pool
-        ]
-        return maximal_marginal_relevance(rescaled, top_n=top_n, lambda_=lambda_)
-
-    duplicates = [_mmr(f"dup-{index}", 1.0 - index * 0.01, [1.0, 0.0]) for index in range(5)]
-    suppression_pool = [*duplicates, _mmr("distinct", 0.90, [0.0, 1.0])]
-    exhaustive_pool = [
-        _mmr("rank0", 1 / 60, [1.0, 0.0]),
-        _mmr("rank1", 1 / 61, [0.978, 0.208]),
-        _mmr("rank12", 1 / 72, [0.309, 0.951]),
-        _mmr("rank29", 1 / 89, [0.0, 1.0]),
-    ]
-
-    lambdas = [n / 100 for n in range(101)]
-    suppresses = {
-        lambda_ for lambda_ in lambdas if min_max_mmr(suppression_pool, lambda_, 3)[1] == "distinct"
-    }
-    relevance_led = {
-        lambda_ for lambda_ in lambdas if min_max_mmr(exhaustive_pool, lambda_, 2)[1] == "rank1"
-    }
-
-    assert suppresses and relevance_led
-    assert not (suppresses & relevance_led)
-    assert max(suppresses) < min(relevance_led)
-    assert (max(suppresses), min(relevance_led)) == (0.52, 0.6)
 
 
 def test_mmr_relevance_is_read_as_a_fraction_of_the_pool_best_not_min_max() -> None:
