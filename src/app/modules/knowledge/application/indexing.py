@@ -59,7 +59,7 @@ can only widen a match to a section that some INDEXING step actually wrote.
 Until this one, the only writer was the table exploder below, so every prose
 chunk -- PDF, DOCX, plain text, OCR alike -- carried ``parent_id = NULL`` and
 the model kept seeing the isolated block that matched instead of the page it
-came from (rag-answer-quality-regression.md §3-5: 54% of chunks parentless).
+came from -- 54% of the corpus's chunks carried no parent at all.
 ``_attach_text_parents`` closes that: after semantic pre-splitting has decided
 the final segments, every non-table segment is grouped by the page it belongs
 to (``_PARENT_GROUP_KEYS``), the group is packed into parents of at most

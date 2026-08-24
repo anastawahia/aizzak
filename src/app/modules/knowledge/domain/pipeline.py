@@ -57,8 +57,8 @@ things changed", only "did anything". Raising it here, to the first value
 past the implicit baseline, is what makes that rebuild (§5) effective: every
 row from before this line differs from `PIPELINE_VERSION` by construction.
 
-**Why it is now 3.** Decision س-27 = أ (rag-answer-quality-regression.md
-§3-5) added the SECOND producer of `knowledge.parent_chunks`:
+**Why it is now 3.** Decision س-27 = أ (rag-indexing-plan.md, step 22)
+added the SECOND producer of `knowledge.parent_chunks`:
 `application/indexing.py`'s `_attach_text_parents` now mints a page parent
 for prose, where only the table exploder did before. That changes the stored
 output's shape for every document in the corpus — new `parent_chunks` rows,

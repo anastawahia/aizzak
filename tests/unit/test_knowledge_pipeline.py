@@ -2725,8 +2725,7 @@ async def test_index_document_parents_a_pages_blocks_with_the_whole_page() -> No
     """The gap س-27 opened, closed: prose blocks -- not table rows -- come
     back carrying a parent, and its text is the page they were parsed out
     of. Without this, `_widen_to_parents` has nothing to widen prose to and
-    the model sees one isolated block (rag-answer-quality-regression.md
-    §3-5)."""
+    the model sees one isolated block."""
     outcome = await _index(
         _parsed_document(
             [
