@@ -188,6 +188,7 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.plugin_loader import PluginLoader, PluginLoadReport
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.lifecycle import Disposable
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
@@ -364,6 +365,7 @@ from app.modules.knowledge.application.use_cases import (
     KnowledgeRetrievalService,
     KnowledgeUseCases,
     ListDocuments,
+    PurgeFileKnowledge,
     PurgeSpaceKnowledge,
     ReindexDocuments,
     ReindexService,
@@ -1080,7 +1082,7 @@ def _build_knowledge(
     tuning: RetrievalTuning,
     max_corpus_names: int,
     reranker: ExternalRerankProvider | None,
-) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge]:
+) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge, PurgeFileKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
     (the ``_build_conversations`` precedent), and so the ONE
@@ -1131,6 +1133,13 @@ def _build_knowledge(
     may not destroy a corpus. Its only caller is ``DeleteSpaceService``, and it
     holds the same ``documents``/``vectors`` pair ``reindex`` does — the two
     faces that delete points must agree on which points exist.
+
+    ``PurgeFileKnowledge`` is the third return for the identical reason, at the
+    identical scope one step down (``framework/di/file_deletion.py``): it is
+    what a deleted file finally reaches, its only caller is
+    ``DeleteFileService``, and it holds that SAME pair — so "which points exist
+    for this file" is answered by the same two objects that wrote them, whether
+    the question comes from a re-index, a space deletion or a file deletion.
     """
     documents = SqlDocumentRepository(tenant_session)
     jobs = SqlReindexJobRepository(tenant_session)
@@ -1202,7 +1211,11 @@ def _build_knowledge(
             CancelSummaryJob(summary_jobs), outbox, tenant_session
         ),
     )
-    return use_cases, PurgeSpaceKnowledge(documents, vectors)
+    return (
+        use_cases,
+        PurgeSpaceKnowledge(documents, vectors),
+        PurgeFileKnowledge(documents, vectors),
+    )
 
 
 class _RoutedSummarizerResolver:
@@ -1406,6 +1419,14 @@ class CompositionRoot:
     # list. `DELETE /api/v1/spaces/{id}` reaches it through `ApiServices`
     # (plan step 13).
     space_deletion: DeleteSpaceService
+    # The file cascade — `space_deletion`'s sibling one scope down
+    # (`framework/di/file_deletion.py`). Held here for the identical reason:
+    # deleting a file must also destroy what `knowledge` built from it, which
+    # spans two modules and Qdrant and therefore belongs to neither. `DELETE
+    # /api/v1/files/{id}` reaches it through `ApiServices` and no longer calls
+    # `files.delete` directly — a mark without the purge is exactly the state
+    # where a removed file went on answering searches.
+    file_deletion: DeleteFileService
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
     # carries ONLY the client-reachable use-cases: `workspace` leaves out
@@ -1666,7 +1687,7 @@ class CompositionRoot:
         # whose space is it in?" for every module that asks.
         file_repository, files_query = _build_files_seam(tenant_session)
 
-        knowledge, purge_space_knowledge = _build_knowledge(
+        knowledge, purge_space_knowledge, purge_file_knowledge = _build_knowledge(
             tenant_session,
             embedding=embedding,
             vectors=vector_store,
@@ -1859,6 +1880,21 @@ class CompositionRoot:
             spaces=space_use_cases,
             space_quota=space_quota,
             space_deletion=space_deletion,
+            # The file cascade (`framework/di/file_deletion.py`) — the second
+            # cross-module deletion service, and the reason `DELETE
+            # /files/{id}` finally reaches the index. Constructed inline, like
+            # `presence` and `admin` below, rather than named above: it spans
+            # `files`, `knowledge` and Qdrant, so it belongs to no bundle, and
+            # `from_env` sits on the statement ceiling `_build_space_services`
+            # already names.
+            #
+            # `mark` is the bundle's OWN `delete` — the same atomic
+            # `SoftDeleteFileService` the bundle packages, not a second one
+            # built here (the `_build_space_services` rule for `mark`): the
+            # soft delete the cascade runs and the one the module offers must
+            # be one object, or a change to its idempotence lands in one and
+            # misses the other.
+            file_deletion=DeleteFileService(files_use_cases.delete, knowledge=purge_file_knowledge),
             media=media,
             workspace=workspace,
             presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),

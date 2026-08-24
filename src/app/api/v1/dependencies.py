@@ -39,6 +39,7 @@ from app.agents.orchestrator import AgentOrchestrator
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.errors import UnauthorizedError
@@ -214,6 +215,20 @@ class ApiServices:
     # hides a workspace's data instead of erasing it.
     spaces: SpaceUseCases | None = None
     space_deletion: DeleteSpaceService | None = None
+    # The file cascade (`framework/di/file_deletion.py`) — `space_deletion`'s
+    # sibling, and here for the identical reason: `DELETE /files/{id}` has to
+    # empty the file's corpus as well as mark its row, which spans `files`,
+    # `knowledge` and Qdrant — three things no single module bundle may hold.
+    # `FileUseCases.delete` is still the mark, and is still reachable on the
+    # bundle, because the bundle is what the cascade itself calls; the ROUTE
+    # goes through this field so no request can mark a file deleted while
+    # leaving its points answering searches, which is the whole defect being
+    # repaired.
+    #
+    # Optional and fails closed, the `space_deletion` precedent: hermetic test
+    # applications that predate the cascade keep composing, and a route that
+    # reaches an unwired one is a 500 rather than a silent half-deletion.
+    file_deletion: DeleteFileService | None = None
     # The third space-shaped field, and the only one an EXISTING route needs:
     # `POST /files` registers through it instead of through
     # `files.transfers.register`, so the 1 GiB ceiling (§3.3) is consulted

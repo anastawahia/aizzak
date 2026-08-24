@@ -8,7 +8,7 @@ Six routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 * ``GET /files`` — the workspace's active files, paginated (API-04 envelope);
 * ``GET /files/{id}`` — one file, bare;
 * ``PATCH /files/{id}`` — rename (200; the extension is immutable, INV-F4);
-* ``DELETE /files/{id}`` — soft-delete (204, idempotent).
+* ``DELETE /files/{id}`` — delete it AND its index (204, idempotent).
 
 Everything interesting happens BELOW this file, which is the point: presign
 TTLs, the ready-only download URL, the optional checksum, the atomic
@@ -56,6 +56,8 @@ from app.modules.files.application.use_cases import ReadFile
 # Belt and braces, knowingly (the §3.56 precedent): every route below builds
 # `ctx`, whose chain authenticates anyway. The router-level gate keeps the
 # guarantee structural for any future route that doesn't need a context.
+_UNWIRED = "file deletion is not configured on this deployment"
+
 router = APIRouter(prefix="/files", tags=["files"], dependencies=[Depends(current_principal)])
 
 
@@ -205,7 +207,28 @@ async def rename_file(
     "/{file_id}", status_code=204, dependencies=[Depends(require(Permission.FILES_DELETE))]
 )
 async def delete_file(file_id: str, services: Services, ctx: Context) -> None:
-    """Soft-delete (204, no body). Idempotent by the use-case's contract —
-    the declared ``status_code`` produces the empty 204 (the conversations
-    router's reasoning: one source for one status)."""
-    await services.files.delete.delete(ctx, file_id)
+    """Delete a file AND everything indexed from it — 204, no body.
+
+    Two steps, through the cross-module cascade (``framework/di/
+    file_deletion.py``): the file row is soft-deleted, then its documents,
+    chunks and Qdrant points are destroyed. The route goes through
+    ``services.file_deletion`` and NOT through ``services.files.delete`` — the
+    bundle's own soft delete — because that is precisely the call that used to
+    leave a removed file answering searches: the row went, the corpus stayed
+    ``indexed``, and the agent went on citing a file the user had deleted.
+
+    The corpus goes HARD while the file goes SOFT, and the asymmetry is
+    deliberate: the bytes stay in MinIO and the row keeps a ``deleted_at``, but
+    a Qdrant point has no ``deleted_at`` to respect (``DocumentRepository.
+    purge_file``), so hiding an index is not a thing that can be done.
+
+    Unknown or another tenant's ⇒ 404 from step 1, which is the cascade's only
+    existence check. Re-deleting is another 204: the mark is idempotent, the
+    purge deletes nothing the second time, and a cascade that died between the
+    two steps is repaired by that retry rather than replayed from a ledger. The
+    declared ``status_code`` produces the empty 204 (the conversations router's
+    reasoning: one source for one status)."""
+    deletion = services.file_deletion
+    if deletion is None:
+        raise AppError(_UNWIRED, code="common.internal")
+    await deletion.delete(ctx, file_id)

@@ -12,9 +12,21 @@ the context here rather than left to the adapter.
 **Not every ``FileEvent`` becomes a wire event.** 04 §5 marks ``FileUploaded``
 with a promotion asterisk (*) but ``FileDeleted`` without one — it stays
 internal-only, so ``to_outbox_record`` returns ``None`` for it and callers
-(``CompleteUploadService`` today; a future ``SoftDeleteFile``-backed service)
-must filter ``None`` out before calling ``EventOutbox.append``, exactly the
-way ``RunMediaJob`` already returns zero events for an already-terminal job.
+(``CompleteUploadService`` and ``SoftDeleteFileService``) must filter ``None``
+out before calling ``EventOutbox.append``, exactly the way ``RunMediaJob``
+already returns zero events for an already-terminal job.
+
+⚠️ **``None`` here does NOT mean "a delete propagates nowhere".** It once did,
+and that was a defect rather than a design: a deleted file kept its indexed
+document, its chunks and its Qdrant points, so retrieval went on answering out
+of a file the user had removed — and a delete-then-re-upload left two corpora
+over one file's content. What propagates the deletion now is a CALL, not an
+envelope: ``framework/di/file_deletion.py``'s ``DeleteFileService`` runs the
+soft delete and the knowledge purge in sequence, and its module docstring
+argues at length why a synchronous cascade beats promoting this event to
+``stream.files``. So the ``None`` below is a statement about the WIRE only, and
+the day 04 §5 promotes ``FileDeleted`` this function is still the only place
+that has to change.
 
 **``correlationid`` is set from the context here, not left to the adapter.**
 ``SqlEventOutbox`` writes a ``correlation_id`` COLUMN, but that column is the

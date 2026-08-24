@@ -167,6 +167,10 @@ def _make_app(
         conversations=conversations.use_cases,
         workflows=InMemoryWorkflowRegistry(),
         files=files_media.files,
+        # Always wired, unlike the three space-shaped fields below: the file
+        # cascade has nothing to do with `spaces` being configured, and the
+        # unwired case is exercised where it belongs (the files router).
+        file_deletion=files_media.file_deletion,
         media=files_media.media,
         workspace=build_workspace_usage().workspace,
         usage=build_workspace_usage().usage,

@@ -1863,6 +1863,49 @@ class PurgeSpaceKnowledge:
         return await self._documents.purge_space(ctx, space_id)
 
 
+class PurgeFileKnowledge:
+    """Destroy one FILE's corpus — points first, then rows: step 2 of the file
+    cascade (``framework/di/file_deletion.py``).
+
+    **Why this exists at all.** ``files.FileDeleted`` reached no receiver in
+    this module: a deleted file kept its ``indexed`` document, its chunks and
+    its points, so retrieval went on returning passages from a file the user
+    had removed and the agent went on citing it. It is also how a file came to
+    be indexed twice — delete, re-upload, and the first corpus outlives the
+    file it was built from. This use-case is the receiver, reached
+    SYNCHRONOUSLY through the cascade rather than through an event, and the
+    module docstring of ``file_deletion.py`` argues that choice.
+
+    **Not in ``KnowledgeUseCases``, for ``PurgeSpaceKnowledge``' reason**: no
+    request may destroy a corpus on its own. The only caller is the
+    composition-root ``DeleteFileService``.
+
+    **Points before rows**, which is the one ordering that cannot be reversed —
+    ``PurgeSpaceKnowledge`` makes the whole argument and it is unchanged at this
+    scope: a Qdrant point is reachable by retrieval alone (the payload filter
+    never joins Postgres), so a point whose ``chunks`` row is gone is content
+    answering searches with nothing left in the database to identify it. If the
+    vector call dies first, every row is still there, the next run of the
+    cascade collects the very same refs, and deleting an already-deleted point
+    is a no-op.
+
+    ``VectorStore`` and not ``HybridVectorStore``, for that class's reason too:
+    this needs ``delete`` and nothing else.
+    """
+
+    def __init__(self, documents: DocumentRepository, vectors: VectorStore) -> None:
+        self._documents = documents
+        self._vectors = vectors
+
+    async def execute(self, ctx: ExecutionContext, file_id: Uuid) -> int:
+        by_collection: dict[str, list[Uuid]] = {}
+        for ref in await self._documents.vector_refs_for_file(ctx, file_id):
+            by_collection.setdefault(ref.collection, []).append(ref.point_id)
+        for collection, point_ids in by_collection.items():
+            await self._vectors.delete(collection, point_ids)
+        return await self._documents.purge_file(ctx, file_id)
+
+
 class KnowledgeRetrievalService:
     """Implements the ``KnowledgeRetrieval`` inbound port (02 §2) over the
     3.k3 ``RetrieveContext`` use-case (the ``FilesQueryService`` precedent).

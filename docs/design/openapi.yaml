@@ -410,8 +410,11 @@ paths:
       tags: [files]
       operationId: deleteFile
       parameters: [ { $ref: "#/components/parameters/Id" } ]
+      # يحذف الملفّ حذفاً ليّناً **ويُطهّر فهرسه** (مستنداته وقطعه ونقاط Qdrant)
+      # عبر تسلسل `framework/di/file_deletion.py`. طهارة الفهرس صلبة لا ليّنة:
+      # نقطة المتّجه لا ترى عمود `deleted_at`.
       responses:
-        "204": { description: Soft-deleted }
+        "204": { description: Soft-deleted; its index purged }
         default: { $ref: "#/components/responses/Problem" }
 
   /knowledge/search:

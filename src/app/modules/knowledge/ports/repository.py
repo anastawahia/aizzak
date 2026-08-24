@@ -396,6 +396,63 @@ class DocumentRepository(Protocol):
         """
         ...
 
+    async def vector_refs_for_file(
+        self, ctx: ExecutionContext, file_id: Uuid
+    ) -> Sequence[VectorRef]:
+        """Where EVERY chunk of EVERY document built from one file lives in
+        the vector store — step 2 of the file cascade
+        (``framework/di/file_deletion.py``).
+
+        ``vector_refs_in_space`` narrowed from a space to a single file, and it
+        exists for that method's reason rather than as a convenience over
+        ``ids_for_files`` + ``vector_refs``: the ids must stay inside the
+        database, so the corpus this method collects and the corpus
+        ``purge_file`` destroys a moment later are defined by the same
+        predicate and cannot be split by a re-index landing between the two.
+
+        **Every document of the file, not the newest one.** A re-index leaves
+        the replacement pointing at the same ``file_id``, and a half-finished
+        one can leave two — exactly the "الملفّ مفهرَس مرّتين" shape a delete has
+        to be able to clear. Reading them all is what makes this the LAST
+        thing that can be said about that file's presence in the index.
+
+        A file with nothing indexed yields an empty sequence — a normal
+        answer (never indexed, or indexed and already purged), not an error.
+
+        Read BEFORE ``purge_file``, for ``vector_refs_in_space``'s reason: a
+        point that outlives its row is unreachable from Postgres yet still
+        answers searches, and retrieval filters on the payload without ever
+        joining the database.
+        """
+        ...
+
+    async def purge_file(self, ctx: ExecutionContext, file_id: Uuid) -> int:
+        """HARD-delete every document built from one file; returns how many
+        DOCUMENTS went (step 3 of the file cascade).
+
+        ``purge_space`` narrowed to one file, reaching the same tables in the
+        same FK order — summaries, ``summary_jobs``, ``reindex_job_items``,
+        chunks, documents, then childless ``reindex_jobs``. Narrowing
+        ``purge`` (one document) instead would have been the smaller change
+        and the wrong one twice over: it would leave a ``reindex_job_items``
+        row referencing a document it is about to delete (``fk_reindex_item_doc``
+        carries no ``ON DELETE``, so deleting a re-indexed file would be a
+        ``23503``), and it would run one transaction per document, which for a
+        file with a superseded document and its replacement is the one moment
+        the two must go together.
+
+        **Hard, not soft, and this is not a preference.** ``purge``'s docstring
+        argues it for a superseded document and the argument is the same one
+        here: Qdrant point ids derive from the document id and the vector store
+        has no view of a ``deleted_at`` column, so a corpus "hidden" by a flag
+        goes on answering every search. There is no half-measure available at
+        this boundary.
+
+        Deleting nothing is a no-op: a file that was never indexed is the
+        common case on this path, and the cascade must be re-runnable.
+        """
+        ...
+
 
 class ReindexJobRepository(Protocol):
     """Tenant-scoped persistence for the ``ReindexJob`` aggregate + its item

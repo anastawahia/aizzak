@@ -432,6 +432,17 @@ class SoftDeleteFileService:
     already atomic and nothing at the API layer moves; the alternative (the
     router dropping the use-case's returned events on the floor) is exactly
     the 4.7-d-1 debt shape this platform spent a phase repaying.
+
+    **This is the MARK, not the whole deletion** — and the distinction is the
+    repair of a live defect rather than a note about layering. Emptying the
+    file's index is the second half, and it belongs to no module: ``DELETE
+    /api/v1/files/{id}`` reaches this service THROUGH
+    ``framework/di/file_deletion.py``'s ``DeleteFileService``, which calls it
+    first and then purges the corpus ``knowledge`` built from the file. A
+    caller that holds this service directly performs half a deletion — the row
+    goes, the chunks and Qdrant points stay searchable — which is exactly the
+    state the router was in before the cascade existed. The API bundle still
+    carries it because the cascade is what calls it; no route may.
     """
 
     def __init__(self, delete: SoftDeleteFile, outbox: EventOutbox, uow: UnitOfWork) -> None:

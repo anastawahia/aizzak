@@ -119,7 +119,7 @@ class _FakeWsAuth:
         return WsPrincipal(workspace_id=_W1, user_id=_U1, roles=frozenset({"owner"}))
 
 
-def _make_app() -> tuple[FastAPI, FilesMediaStack]:
+def _make_app(*, file_deletion: bool = True) -> tuple[FastAPI, FilesMediaStack]:
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
     stack = build_files_media(spaces=InMemorySpaces(active={_SPACE}))
@@ -140,6 +140,9 @@ def _make_app() -> tuple[FastAPI, FilesMediaStack]:
         conversations=conversations.use_cases,
         workflows=InMemoryWorkflowRegistry(),
         files=stack.files,
+        # The file cascade — `DELETE /files/{id}` reaches the index through
+        # this and not through `files.delete`, which is the whole repair.
+        file_deletion=stack.file_deletion if file_deletion else None,
         media=stack.media,
         space_quota=stack.space_quota,
         workspace=_WORKSPACE_USAGE.workspace,
@@ -420,6 +423,42 @@ def test_delete_is_204_idempotent_and_the_file_then_reads_404() -> None:
     assert (first.status_code, first.content) == (204, b"")
     assert read_back.status_code == 404  # the §3.55 read precedent
     assert second.status_code == 204  # a retried lost 204 is a 204, not a 409
+
+
+def test_delete_also_purges_the_files_index() -> None:
+    """The defect this route carried: it called the bundle's bare soft delete,
+    so the row went and the corpus stayed — the document kept saying
+    ``indexed``, its chunks stayed joinable and its Qdrant points went on
+    answering searches under a file the user had removed.
+
+    The 204 alone cannot tell the two versions of this route apart, which is
+    why the assertion is on the PURGE having been asked, with the file's own
+    id. The idempotent re-delete is asked a second time for the resume path's
+    reason (``file_deletion.py``): a cascade that died between the two steps is
+    repaired by the retry, so a second call that skipped the purge would strand
+    exactly the points the first run failed to reach."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+    client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+
+    assert stack.knowledge_purge.calls == [file_id, file_id]
+
+
+def test_delete_fails_closed_when_the_cascade_is_unwired() -> None:
+    """A deployment that reached this route with no cascade must NOT fall back
+    to the bare soft delete: that fallback is the defect, and it would be
+    invisible — a 204 whose index survived."""
+    app, _ = _make_app(file_deletion=False)
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
 
 
 # --------------------------------------------------------------------------- #

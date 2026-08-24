@@ -267,6 +267,31 @@ class InMemoryDocumentRepository:
         # method exists not to have.
         return len(doc_ids)
 
+    def _of_file(self, ctx: ExecutionContext, file_id: str) -> list[str]:
+        return [
+            row.id
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id and row.file_id == file_id
+        ]
+
+    async def vector_refs_for_file(self, ctx: ExecutionContext, file_id: str) -> list[VectorRef]:
+        # Every ref of every document built from the file, flattened — the
+        # shape the SQL adapter's subquery produces. EVERY document, not the
+        # newest: a re-index leaves a replacement under the same `file_id`,
+        # and a fake that returned one of them would let a cascade test pass
+        # while the second corpus survived the delete.
+        return [ref for doc_id in self._of_file(ctx, file_id) for ref in self.refs.get(doc_id, ())]
+
+    async def purge_file(self, ctx: ExecutionContext, file_id: str) -> int:
+        doc_ids = self._of_file(ctx, file_id)
+        for doc_id in doc_ids:
+            del self.rows[doc_id]
+            self.refs.pop(doc_id, None)
+        # NOT appended to `purged`, for `purge_space`'s reason: that list
+        # records `purge` calls, and reaching a file's corpus one document at
+        # a time is the shape this method exists not to have.
+        return len(doc_ids)
+
 
 @dataclass
 class InMemoryReindexJobRepository:

@@ -290,6 +290,22 @@ def _documents_in_space(ctx: ExecutionContext, space_id: UuidStr) -> Select[tupl
     )
 
 
+def _documents_of_file(ctx: ExecutionContext, file_id: UuidStr) -> Select[tuple[str]]:
+    """The ids of one FILE's documents, as a SUBQUERY — ``_documents_in_space``
+    at the narrower scope (``framework/di/file_deletion.py``).
+
+    Unexecuted for that helper's reason, and here the race it closes is a real
+    one rather than a theoretical one: a re-index writes a second document over
+    the same ``file_id``, and a Python-side list of ids read a moment earlier
+    would purge the rows it saw while leaving the replacement — and its points —
+    behind under a file the user has just deleted.
+    """
+    return select(documents.c.id).where(
+        documents.c.workspace_id == ctx.workspace_id,
+        documents.c.file_id == file_id,
+    )
+
+
 class SqlDocumentRepository:
     """SQL ``DocumentRepository`` adapter (structural Protocol match — no
     inheritance, per this codebase's Protocol-based ports).
@@ -622,6 +638,95 @@ class SqlDocumentRepository:
         try:
             # ONE transaction for all six: a corpus half-deleted across a
             # failure is a document whose chunks are gone but whose row still
+            # says `indexed`, which no re-run of the cascade would repair.
+            async with self._tenant_session(ctx) as session:
+                for statement in statements:
+                    await session.execute(statement)
+                deleted = (await session.execute(drop_documents)).scalars().all()
+                await session.execute(drop_empty_jobs)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return len(deleted)
+
+    async def vector_refs_for_file(
+        self, ctx: ExecutionContext, file_id: UuidStr
+    ) -> Sequence[VectorRef]:
+        # `vector_refs_in_space` narrowed through the file subquery: `chunks`
+        # carries no `file_id` of its own, and giving it one would be a second
+        # place for a chunk's file to be recorded and to drift from
+        # `documents.file_id`.
+        stmt = select(knowledge_chunks.c.collection, knowledge_chunks.c.point_id).where(
+            knowledge_chunks.c.workspace_id == ctx.workspace_id,
+            knowledge_chunks.c.document_id.in_(_documents_of_file(ctx, file_id)),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).mappings().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        # Half-written chunks are skipped for `vector_refs`' reason: there is
+        # nothing in the vector store to delete for a chunk that never reached
+        # it, and `VectorRef` refuses to be built empty.
+        return [
+            VectorRef(row["collection"], row["point_id"])
+            for row in rows
+            if row["collection"] and row["point_id"]
+        ]
+
+    async def purge_file(self, ctx: ExecutionContext, file_id: UuidStr) -> int:
+        docs = _documents_of_file(ctx, file_id)
+        # Children before parents, and the order is the FK's, not a preference
+        # -- `purge_space`'s comment applies verbatim: `fk_summary_doc`,
+        # `fk_chunk_doc` and `fk_reindex_item_doc` all reference
+        # `knowledge.documents(id)` with no `ON DELETE`.
+        #
+        # `summary_jobs` has no FK and is deleted anyway, for the reason it is
+        # deleted with a space: a queued build for a document that no longer
+        # exists, over a file that no longer exists, is a leak nobody notices.
+        # This is where `purge` (one document) and this method part company --
+        # that one may leave the row because its caller is a RE-INDEX, which
+        # keeps the file and wants the queued build to find the replacement.
+        statements = [
+            delete(summaries).where(
+                summaries.c.workspace_id == ctx.workspace_id,
+                summaries.c.document_id.in_(docs),
+            ),
+            delete(summary_jobs).where(
+                summary_jobs.c.workspace_id == ctx.workspace_id,
+                summary_jobs.c.document_id.in_(docs),
+            ),
+            delete(reindex_job_items).where(
+                reindex_job_items.c.workspace_id == ctx.workspace_id,
+                reindex_job_items.c.document_id.in_(docs),
+            ),
+            delete(knowledge_chunks).where(
+                knowledge_chunks.c.workspace_id == ctx.workspace_id,
+                knowledge_chunks.c.document_id.in_(docs),
+            ),
+        ]
+        # `RETURNING id` rather than a driver `rowcount` -- the count is part
+        # of the port's contract, and `rowcount` is typed `Any`.
+        drop_documents = (
+            delete(documents)
+            .where(
+                documents.c.workspace_id == ctx.workspace_id,
+                documents.c.file_id == file_id,
+            )
+            .returning(documents.c.id)
+        )
+        # LAST, and only the childless ones (`purge_space`'s rule, same
+        # reasoning): a job that still names another file's rebuild reports on
+        # work in progress and must survive; one left with no items reports on
+        # nothing and can never gain another.
+        drop_empty_jobs = delete(reindex_jobs).where(
+            reindex_jobs.c.workspace_id == ctx.workspace_id,
+            ~select(reindex_job_items.c.job_id)
+            .where(reindex_job_items.c.job_id == reindex_jobs.c.id)
+            .exists(),
+        )
+        try:
+            # ONE transaction for all six: a file's corpus half-deleted across
+            # a failure is a document whose chunks are gone but whose row still
             # says `indexed`, which no re-run of the cascade would repair.
             async with self._tenant_session(ctx) as session:
                 for statement in statements:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.event_outbox import OutboxRecord
@@ -275,6 +276,25 @@ class NoopUnitOfWork:
         yield
 
 
+class RecordingFileKnowledgePurge:
+    """The file cascade's knowledge half, recorded rather than run.
+
+    This suite has no in-memory ``knowledge`` stack and needs none: what the
+    files ROUTER owes is that ``DELETE /files/{id}`` reaches the CASCADE at all
+    — the defect being repaired is that it reached only the soft delete — and
+    the purge's own behaviour is pinned where it lives
+    (``test_file_deletion.py``).
+    """
+
+    def __init__(self, documents: int = 0) -> None:
+        self._documents = documents
+        self.calls: list[str] = []
+
+    async def execute(self, ctx: ExecutionContext, file_id: str) -> int:
+        self.calls.append(file_id)
+        return self._documents
+
+
 @dataclass(frozen=True, slots=True)
 class FilesMediaStack:
     """Both bundles plus the fakes a test asserts against."""
@@ -290,6 +310,13 @@ class FilesMediaStack:
     # registers through, so a router test exercises the same quota gate
     # production does instead of the bare registrar it used to reach.
     space_quota: SpaceQuotaService[RegisteredUpload]
+    # The file cascade (`framework/di/file_deletion.py`) — what `DELETE
+    # /api/v1/files/{id}` goes through since the delete started reaching the
+    # index. On the stack rather than built per test file for `space_quota`'s
+    # reason: a router test that wired the bare soft delete instead would pass
+    # while asserting the exact behaviour the cascade exists to prevent.
+    file_deletion: DeleteFileService
+    knowledge_purge: RecordingFileKnowledgePurge
 
 
 class SpaceGate(Protocol):
@@ -332,12 +359,18 @@ def build_files_media(
         put_ttl_s=minio.presign_put_ttl_s,
         get_ttl_s=minio.presign_get_ttl_s,
     )
+    # ONE `SoftDeleteFileService` behind the bundle AND the cascade — the
+    # Composition Root's own `mark` rule (`_build_space_services`): two
+    # instances would let a change to its idempotence land in one and miss the
+    # other.
+    file_delete = SoftDeleteFileService(SoftDeleteFile(files_repo), outbox, uow)
+    knowledge_purge = RecordingFileKnowledgePurge()
     return FilesMediaStack(
         files=FileUseCases(
             transfers=transfers,
             complete=CompleteUploadService(CompleteUpload(files_repo), outbox, uow),
             rename=RenameFile(files_repo),
-            delete=SoftDeleteFileService(SoftDeleteFile(files_repo), outbox, uow),
+            delete=file_delete,
             space_totals=SummariseSpaces(files_repo),
         ),
         media=MediaUseCases(
@@ -355,4 +388,6 @@ def build_files_media(
         # `NoopUnitOfWork` is what it cannot be faithful about, and that is
         # the one thing the live test owns.
         space_quota=SpaceQuotaService(transfers, spaces, files_repo, uow, limits),
+        file_deletion=DeleteFileService(file_delete, knowledge=knowledge_purge),
+        knowledge_purge=knowledge_purge,
     )
