@@ -75,25 +75,79 @@ TABLE_ROW_HARD_CAP = 2000
 # repeated noise, unlike a real data column.
 _NOISE_HEADERS = frozenset({"no.", "no", "row", "#", "index", "id"})
 
+# The strings a cell carries when it was EMPTY in the source rather than when
+# it said anything (port-fidelity audit §3-هـ, restoring alpha
+# ``table_processor.py:47``): a parser that stringified a ``None``/SQL
+# ``NULL`` before this module ever saw the value. Rendering them writes
+# "Notes: None" into an embedded sentence -- a claim the table never made,
+# and one that then competes for retrieval against the rows that did.
+#
+# ⚠️ ``"nan"`` is deliberately NOT in this set, even though every table
+# parser drops it. Each parser drops it where the TYPE is still visible
+# (``excel.py``'s ``math.isnan``, ``pdf_tables.py``'s pandas-rendered
+# ``"nan"``); by the time a value reaches this module it is a bare string,
+# and a chemistry sheet's literal "NaN" reading is then the same three
+# characters as a missing float. Dropping both would delete a measurement in
+# order to tidy a placeholder. ``none``/``null`` carry no such reading.
+_EMPTY_CELL_TEXTS = frozenset({"none", "null"})
+
+
+def _fold_whitespace(text: str) -> str:
+    r"""Collapse every run of whitespace to ONE space and strip the ends.
+
+    ``row_to_sentence`` renders a row as a single LINE (``"; "``-joined), so a
+    newline inside one cell does not merely read untidily -- it breaks the
+    sentence that gets embedded into pieces. Camelot's ``stream`` flavour
+    produces such cells in bulk: a multi-line cell is how it represents a
+    wrapped column. Headers get the same treatment for the same reason, and
+    it matters more there, not less: a wrapped column NAME lands in every
+    single row's sentence, not in one.
+
+    This is alpha's ``str(val).replace("\n", " ")``
+    (``table_processor.py:46``) widened by one step, on purpose. A bare
+    ``replace`` leaves the ``\r`` of a ``\r\n`` standing in the text, and
+    leaves the double space it just created -- it repairs the shape it was
+    aimed at and not the one beside it.
+    """
+    return " ".join(text.split())
+
 
 def _is_noise_header(header: str) -> bool:
-    return header.strip().lower() in _NOISE_HEADERS
+    # Folded, not merely stripped, so this predicate reads the SAME text the
+    # renderers below emit. It decides nothing differently today -- no name in
+    # `_NOISE_HEADERS` contains whitespace, so folding an interior run can
+    # never turn a non-match into a match -- and that is the point: the
+    # normalisation lives in one function rather than being re-chosen at each
+    # of the three call sites, where the next entry added to the set would
+    # find them already agreeing.
+    return _fold_whitespace(header).lower() in _NOISE_HEADERS
 
 
 def _cell_text(value: Any) -> str:
-    """A cell's sentence-ready text, or ``""`` for an empty cell (``None``,
-    an empty string, or a whitespace-only string) -- callers drop the empty
-    ones rather than render ``"Column: "``."""
+    """A cell's sentence-ready text, or ``""`` for an empty cell -- ``None``,
+    an empty or whitespace-only string, or one of ``_EMPTY_CELL_TEXTS``.
+    Callers drop the empty ones rather than render ``"Column: "``.
+
+    Whatever survives is whitespace-FOLDED (``_fold_whitespace``), so one
+    cell contributes exactly one line's worth of text to the sentence it
+    lands in.
+    """
     if value is None:
         return ""
-    return str(value).strip()
+    folded = _fold_whitespace(str(value))
+    return "" if folded.lower() in _EMPTY_CELL_TEXTS else folded
 
 
 def row_to_sentence(row: Mapping[str, Any]) -> str:
     """Render one table row as ``"العمود: القيمة; العمود: القيمة"`` --
     language-neutral (only the punctuation ``": "``/``"; "``, never an
     English connective word), dropping noise-header columns
-    (``_NOISE_HEADERS``, case/whitespace-insensitive) and empty values.
+    (``_NOISE_HEADERS``, case/whitespace-insensitive) and empty values
+    (``_cell_text``, which also decides what "empty" covers).
+
+    The result is ONE line by construction: both halves of every pair are
+    whitespace-folded, so no cell and no column name can split the sentence
+    this row is embedded and retrieved as.
 
     A row that is entirely noise/empty columns renders as ``""`` -- not an
     error, and not this module's job to drop: `domain/chunking.py`'s node
@@ -101,7 +155,7 @@ def row_to_sentence(row: Mapping[str, Any]) -> str:
     stream.
     """
     parts = [
-        f"{header.strip()}: {text}"
+        f"{_fold_whitespace(header)}: {text}"
         for header, value in row.items()
         if not _is_noise_header(header) and (text := _cell_text(value))
     ]
@@ -110,9 +164,13 @@ def row_to_sentence(row: Mapping[str, Any]) -> str:
 
 def _header_line(headers: Sequence[str]) -> str:
     """The header-only parent text (R > ``TABLE_PARENT_MAX_ROWS``): the
-    column names alone, noise columns dropped, joined the same
+    column names alone, noise columns dropped, folded and joined the same
     language-neutral way as a row sentence."""
-    kept = [header.strip() for header in headers if header.strip() and not _is_noise_header(header)]
+    kept = [
+        folded
+        for header in headers
+        if (folded := _fold_whitespace(header)) and not _is_noise_header(header)
+    ]
     return "; ".join(kept)
 
 

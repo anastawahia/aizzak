@@ -43,6 +43,54 @@ def test_row_to_sentence_strips_cell_whitespace() -> None:
     assert row_to_sentence({"Name": "  Ahmad  "}) == "Name: Ahmad"
 
 
+def test_row_to_sentence_folds_a_newline_inside_a_cell_into_one_space() -> None:
+    """§3-هـ (alpha `table_processor.py:46`): a camelot `stream` cell carries
+    the newlines of a wrapped column, and a row sentence is ONE line -- an
+    unfolded cell would split the very text that gets embedded."""
+    assert row_to_sentence({"Address": "12 King St.\nAmman"}) == "Address: 12 King St. Amman"
+
+
+def test_row_to_sentence_folds_every_whitespace_run_not_only_the_newline() -> None:
+    r"""One step past alpha's bare `.replace("\n", " ")`, which would leave
+    the `\r` of a `\r\n` in the text and leave the double space it just
+    made."""
+    assert row_to_sentence({"Note": "a\r\nb\t\tc   d"}) == "Note: a b c d"
+
+
+def test_row_to_sentence_folds_a_wrapped_column_name_too() -> None:
+    """The header lands in EVERY row's sentence, so a wrapped column name is
+    the more damaging of the two, not the lesser."""
+    assert row_to_sentence({"Full\nName": "Ahmad"}) == "Full Name: Ahmad"
+
+
+def test_row_to_sentence_drops_a_stringified_none_or_null() -> None:
+    """§3-هـ (alpha `table_processor.py:47`): a parser that stringified a
+    `None`/SQL `NULL` must not make the table say "Notes: None"."""
+    row = {"Name": "Ahmad", "Notes": "None", "Manager": "null", "City": "NULL"}
+    assert row_to_sentence(row) == "Name: Ahmad"
+
+
+def test_row_to_sentence_drops_none_null_after_folding_not_before() -> None:
+    """The drop is decided on the CLEANED text, so a padded placeholder is
+    still a placeholder."""
+    assert row_to_sentence({"Name": "Ahmad", "Notes": "  none\n "}) == "Name: Ahmad"
+
+
+def test_row_to_sentence_keeps_a_cell_that_merely_contains_the_word_none() -> None:
+    """Only a cell that is ENTIRELY the placeholder is dropped -- "none of
+    the above" is an answer, not a missing value."""
+    assert row_to_sentence({"Answer": "none of the above"}) == "Answer: none of the above"
+
+
+def test_row_to_sentence_keeps_nan_because_the_domain_cannot_read_its_type() -> None:
+    """`nan` is deliberately absent from `_EMPTY_CELL_TEXTS`: every parser
+    resolves a real float NaN where the TYPE is still visible, and by this
+    layer a chemistry sheet's literal "NaN" reading is the same three
+    characters. Dropping both would delete a measurement to tidy a
+    placeholder."""
+    assert row_to_sentence({"Reading": "NaN"}) == "Reading: NaN"
+
+
 def test_row_to_sentence_coerces_non_string_values() -> None:
     assert row_to_sentence({"Count": 5, "Score": 3.5, "Active": True}) == (
         "Count: 5; Score: 3.5; Active: True"
@@ -116,6 +164,18 @@ def test_explode_table_header_parent_drops_noise_headers() -> None:
     result = explode_table(headers, rows)
 
     assert result.parent_text == "Name; Salary"
+
+
+def test_explode_table_header_parent_folds_wrapped_column_names() -> None:
+    """The header-only parent is joined the same one-line way a row sentence
+    is, so a camelot-wrapped column name cannot put a newline into the text
+    a whole table is retrieved by (§3-هـ)."""
+    headers = ["Full\nName", "Monthly\r\nSalary"]
+    rows = [_row(f"person-{i}", "1000") for i in range(TABLE_PARENT_MAX_ROWS + 1)]
+
+    result = explode_table(headers, rows)
+
+    assert result.parent_text == "Full Name; Monthly Salary"
 
 
 def test_explode_table_hard_cap_keeps_first_2000_rows_as_nodes() -> None:

@@ -84,10 +84,13 @@ query, so the widening is skipped and the leaf stands. The same rule, for
 the same reason, that ``P-42`` already applies on the summarisation side.
 The substituted parent text is capped at
 ``RetrievalTuning.max_parent_chunk_chars`` so one oversized parent cannot
-swallow the whole context by itself; a candidate's OWN leaf text is never
-capped (it is already window-sized). This runs over the FULL ``retain_k``-deep
-candidate list, before the final truncation below — the same reason
-``retain_k`` is wider than ``k`` in the first place.
+swallow the whole context by itself, and a cap that actually cut something
+SAYS SO in the delivered text (``_cap_parent_text`` — indexing plan §3.10's
+«صدق البتر», which this was the last place in the module to break); a
+candidate's OWN leaf text is never capped (it is already window-sized). This
+runs over the FULL ``retain_k``-deep candidate list, before the final
+truncation below — the same reason ``retain_k`` is wider than ``k`` in the
+first place.
 
 **Context budget (plan step 10, ``P-35``)** — the stage between the widening
 above and the final ``k``, and in that order for a reason: parent expansion is
@@ -352,6 +355,28 @@ _ORIGIN_BOTH = "both"
 # reporting bug into a failed retrieval.
 _ORIGIN_UNKNOWN = "unknown"
 _MS_PER_SECOND = 1000
+# What a substituted parent's text ends with when `max_parent_chunk_chars`
+# cut it short (port-fidelity audit §3-و). The cut itself is unavoidable — a
+# cap with no ceiling is not a cap — but a SILENT cut is the one thing this
+# pipeline does not do: indexing plan §3.10 raises «صدق البتر» to a rule, and
+# every other truncation in this module already keeps it
+# (`ExplodedTable.truncated` past the table row cap, `SummaryDraft.truncated`
+# past the map ceiling, `_glance_sample`'s marker between non-adjacent
+# excerpts). This was the last silent one.
+#
+# The glyph is `application/summarization.py`'s `_GAP_MARKER`, deliberately:
+# ONE mark in this system means "real material was omitted here", and a
+# second spelling of the same fact is the drift `source_label.py`'s docstring
+# refuses on the label. It is NOT imported from there — reaching across to a
+# sibling application module for four characters buys a dependency to avoid a
+# duplicate a comment can hold — and it is NOT alpha's
+# `"\n…[parent chunk truncated]…"`. That wording is a bracketed English
+# phrase on a line of its own, which is precisely the shape
+# `agents/rag_agent/prompts` measured a small local model copying INTO its
+# answer instead of answering (24 of 40 samples, four questions). `[…]`
+# cannot be read as an output template, and it needs no prompt sentence to
+# explain it — the other thing that file's evidence warns against adding.
+_PARENT_TRUNCATION_MARKER = " […]"
 # Every field the record can carry, at the value that means "this stage never
 # ran". `execute` starts from a copy and each stage overwrites its own keys in
 # place, so the EARLY return (an empty `document_ids` scope, which searches
@@ -1128,6 +1153,35 @@ def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHi
     return [hit for hit in hits if hit.score >= min_score]
 
 
+def _cap_parent_text(text: str, max_chars: int) -> str:
+    """``text`` cut to ``max_chars``, SAYING SO when the cut happened
+    (``_PARENT_TRUNCATION_MARKER``, port-fidelity audit §3-و).
+
+    The marker is charged TO the cap, never added on top of it, so the
+    delivered string is never longer than ``max_chars``. Two sentences
+    elsewhere depend on that being the whole ceiling rather than most of it:
+    ``application/indexing.py`` packs every text parent to exactly this
+    number (mirrored there as ``_TEXT_PARENT_MAX_CHARS``) so the prefix cut
+    below never fires for prose at all, and
+    ``domain/context_budget.fit_to_context_budget`` justifies keeping an
+    over-budget first candidate by noting its text is "already capped
+    upstream", i.e. that the overflow it tolerates is bounded by this exact
+    number.
+
+    A cap with no room for the marker AND some text falls back to the bare
+    prefix. At four characters or fewer there is no evidence left for a
+    marker to qualify, and a string consisting of nothing but the mark of its
+    own truncation says less than the fragment it replaced — a configuration
+    already broken past what honesty about it could repair.
+    """
+    if len(text) <= max_chars:
+        return text
+    room = max_chars - len(_PARENT_TRUNCATION_MARKER)
+    if room <= 0:
+        return text[:max_chars]
+    return text[:room] + _PARENT_TRUNCATION_MARKER
+
+
 def _widen_to_parents(
     candidates: Sequence[ScoredChunk],
     parents: Mapping[str, ParentChunkText],
@@ -1162,7 +1216,8 @@ def _widen_to_parents(
     * A parent was resolved, is COMPLETE, and this is the FIRST candidate
       seen to widen to that ``ParentChunkText.id`` — kept, with ``text``
       replaced by the parent's text, capped at ``max_parent_chunk_chars``
-      (``Settings.retrieval``, passed in as an argument — س-24).
+      (``Settings.retrieval``, passed in as an argument — س-24) and MARKED
+      when that cap actually cut something (``_cap_parent_text``).
     * A parent was resolved, but some EARLIER (higher- or equal-ranked)
       candidate already widened to the SAME ``id`` — dropped entirely. This
       is dedup BY PARENT (retrieval plan §3.7): keyed on the parent's ``id``,
@@ -1187,7 +1242,9 @@ def _widen_to_parents(
         if parent.id in seen_parent_ids:
             continue
         seen_parent_ids.add(parent.id)
-        widened.append(replace(candidate, text=parent.text[:max_parent_chunk_chars]))
+        widened.append(
+            replace(candidate, text=_cap_parent_text(parent.text, max_parent_chunk_chars))
+        )
     return widened
 
 

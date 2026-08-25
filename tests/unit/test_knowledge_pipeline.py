@@ -46,9 +46,11 @@ from app.modules.knowledge.application.indexing import (
     _table_to_segments,
 )
 from app.modules.knowledge.application.retrieval import (
+    _PARENT_TRUNCATION_MARKER,
     RetrievalResult,
     RetrievalTuning,
     RetrieveContext,
+    _cap_parent_text,
 )
 from app.modules.knowledge.domain import file_resolution, mmr
 from app.modules.knowledge.domain.chunking import (
@@ -3477,7 +3479,11 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
     """Plan step 9 (``P-34``): ``max_parent_chunk_chars`` is a length cap on
     the SUBSTITUTED parent text, so one oversized parent cannot swallow the
     whole context -- proven directly against the module's own constant
-    rather than a hard-coded number, so the test tracks the real cap."""
+    rather than a hard-coded number, so the test tracks the real cap.
+
+    The cap is the WHOLE ceiling: the truncation marker is charged to it, not
+    added on top, which is what keeps `fit_to_context_budget`'s "already
+    capped upstream" bound exact rather than approximate."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
@@ -3496,7 +3502,71 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
 
     assert len(result.chunks) == 1
     assert len(result.chunks[0].text) == cap
-    assert result.chunks[0].text == oversized_parent_text[:cap]
+    assert result.chunks[0].text == (
+        oversized_parent_text[: cap - len(_PARENT_TRUNCATION_MARKER)] + _PARENT_TRUNCATION_MARKER
+    )
+
+
+async def test_retrieve_context_marks_a_parent_the_cap_actually_cut() -> None:
+    """Port-fidelity audit §3-و: the substituted text SAYS it was cut. Every
+    other truncation in this module already declares itself
+    (`ExplodedTable.truncated`, `SummaryDraft.truncated`); this was the last
+    silent one, and a passage that ends mid-sentence with no mark is exactly
+    the "البتر الصامت" the indexing plan's §3.10 rule forbids."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+    point_id = chunk_point_id("doc-1", 0)
+    cap = _TUNING.max_parent_chunk_chars
+    parent_repo = FakeParentRepo(
+        {point_id: ParentChunkText(id="parent-A", text="y" * (cap + 1), is_complete=True)}
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert result.chunks[0].text.endswith(_PARENT_TRUNCATION_MARKER)
+
+
+async def test_retrieve_context_does_not_mark_a_parent_that_fits_the_cap() -> None:
+    """The mark means "material was omitted here" and nothing else, so a
+    parent delivered WHOLE -- including one landing exactly on the cap --
+    carries no mark. A marker on an intact passage would be its own lie, and
+    `application/indexing.py` packs every prose parent to exactly this
+    ceiling, so the exact-fit case is the COMMON one, not an edge."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    leaf_text = "quarterly revenue figures for the northern region"
+    await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
+    point_id = chunk_point_id("doc-1", 0)
+    exact = "z" * _TUNING.max_parent_chunk_chars
+    parent_repo = FakeParentRepo(
+        {point_id: ParentChunkText(id="parent-A", text=exact, is_complete=True)}
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+    )
+
+    assert result.chunks[0].text == exact
+
+
+def test_cap_parent_text_falls_back_to_a_bare_prefix_when_the_cap_cannot_hold_the_mark() -> None:
+    """A cap smaller than the marker leaves no evidence for a marker to
+    qualify, so the prefix wins and the cap stays a true ceiling. Called
+    directly: no shipped or reachable `RetrievalTuning` sets a cap this
+    small, and a test that had to build one would be testing the tuning
+    rather than the guard."""
+    tiny = len(_PARENT_TRUNCATION_MARKER) - 1
+
+    capped = _cap_parent_text("abcdefghij", tiny)
+
+    assert capped == "abcdefghij"[:tiny]
+    assert _PARENT_TRUNCATION_MARKER not in capped
 
 
 async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() -> None:

@@ -88,11 +88,29 @@ for a document built by the OLD chunker, and the upgrade ships invisibly --
 §6 risk 4, verbatim. Backward: a clean rebuild would stamp its output `3`,
 the same value already worn by rows the 1.3-factor chunker produced, so the
 one column that exists to tell those two apart would say they are the same.
+
+**Why it is now 5** (rag-fidelity-audit.md §3-هـ, wave ب). ``domain/tables.py``
+restored the two cell cleanings lost in the port from alpha: whitespace
+inside a cell -- and inside a column NAME -- is folded to single spaces, and a
+cell that is nothing but a stringified ``None``/``null`` renders as empty
+instead of as ``"Notes: None"``. Both run through ``row_to_sentence``, which
+IS the text of a table-row chunk and of a header-only parent, so the stored
+``chunks.text``, its vector, its sparse terms and the ``parent_chunks.text``
+above it all change -- for every table in the corpus. Measured on the corpus
+rebuilt 2026-08-25: 792 of 1731 chunks are table rows.
+
+The §3-و half of the same wave -- the truncation marker
+``application/retrieval.py`` appends when ``max_parent_chunk_chars`` actually
+cuts a parent -- is deliberately NOT a reason to raise this. It runs at READ
+time over text already in the database and writes nothing, which is the line
+``content_pipeline_unchanged`` below draws: this constant answers "would
+re-indexing this document produce different ROWS?", and a retrieval change
+never can.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = 4
+PIPELINE_VERSION = 5
 
 
 def content_pipeline_unchanged(

@@ -194,6 +194,28 @@ async def _chunk_rows_as_owner(
         await engine.dispose()
 
 
+async def _count_as_owner(
+    owner_dsn: str, workspace_id: str, table: str, column: str, value: str
+) -> int:
+    """One table's surviving rows, read outside every repository -- the only
+    way to tell "the adapter deleted the row" from "the adapter stopped
+    returning it". ``table``/``column`` are test-authored literals, never
+    request data."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text(f"SELECT count(*) FROM {table} WHERE {column} = :value"),
+                {"value": value},
+            )
+            return int(result.scalar_one())
+    finally:
+        await engine.dispose()
+
+
 async def _parent_chunk_rows_as_owner(
     owner_dsn: str, workspace_id: str, document_id: str
 ) -> list[RowMapping]:
@@ -622,6 +644,101 @@ async def test_purge_destroys_the_document_and_its_chunks(
 
     assert await repo_knowledge.get(ctx, doc.id) is None
     assert await _chunk_rows_as_owner(live_db.owner, ws, doc.id) == []
+
+
+async def test_purge_takes_the_reindex_item_that_names_the_document(
+    repo_knowledge: SqlDocumentRepository,
+    repo_reindex_jobs: SqlReindexJobRepository,
+    live_db: LiveDbDsns,
+) -> None:
+    """The regression this method was missing: ``fk_reindex_item_doc`` carries
+    no ``ON DELETE``, and ``purge``'s only caller is a re-index -- so the
+    document it destroys is routinely one an EARLIER re-index minted, named by
+    that earlier job's item row. Before the fix this raised
+
+        update or delete on table "documents" violates foreign key constraint
+        "fk_reindex_item_doc" on table "reindex_job_items"
+
+    which made the SECOND re-index of any file fail. Unreachable from a unit
+    test: the constraint is the database's, and the in-memory fake deletes a
+    dict entry either way.
+
+    The seeded shape IS the first re-index's output -- an item whose
+    ``document_id`` is the replacement, which is the document a second
+    re-index then purges."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    replacement = _document(workspace_id=ws, status=IndexStatus.INDEXED)
+    await repo_knowledge.add(ctx, replacement)
+    job = ReindexJob(
+        id=new_uuid7(),
+        workspace_id=ws,
+        items=(
+            ReindexItem(
+                document_id=replacement.id,
+                file_id=replacement.file_id,
+                source_document_id=new_uuid7(),
+                status=IndexStatus.INDEXED,
+            ),
+        ),
+        cancelled_at=None,
+        created_at=utc_now(),
+    )
+    await repo_reindex_jobs.add(ctx, job)
+
+    await repo_knowledge.purge(ctx, replacement.id)
+
+    assert await repo_knowledge.get(ctx, replacement.id) is None
+    assert (
+        await _count_as_owner(
+            live_db.owner, ws, "knowledge.reindex_job_items", "document_id", replacement.id
+        )
+        == 0
+    )
+    # The JOB row stays -- the asymmetry with `purge_space`/`purge_file`, and
+    # the contract's own wording: the file lives on as the replacement, and
+    # the job id may still be polled.
+    assert await _count_as_owner(live_db.owner, ws, "knowledge.reindex_jobs", "id", job.id) == 1
+
+
+async def test_a_job_purge_emptied_still_reads_back_as_a_job_over_nothing(
+    repo_knowledge: SqlDocumentRepository, repo_reindex_jobs: SqlReindexJobRepository
+) -> None:
+    """Keeping the ``reindex_jobs`` row is only defensible if reading it is
+    still defined, so that is asserted rather than assumed: an item-less job
+    is ``completed`` at 100% (``ReindexJob.percent``'s empty case), not a 404
+    and not a crash.
+
+    It also shows why deleting the item hides nothing -- the job read INNER
+    JOINs ``documents``, so this is the SAME answer the read already gave
+    while the orphaned item row was still sitting there."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    document = _document(workspace_id=ws, status=IndexStatus.INDEXED)
+    await repo_knowledge.add(ctx, document)
+    job = ReindexJob(
+        id=new_uuid7(),
+        workspace_id=ws,
+        items=(
+            ReindexItem(
+                document_id=document.id,
+                file_id=document.file_id,
+                source_document_id=new_uuid7(),
+                status=IndexStatus.INDEXED,
+            ),
+        ),
+        cancelled_at=None,
+        created_at=utc_now(),
+    )
+    await repo_reindex_jobs.add(ctx, job)
+
+    await repo_knowledge.purge(ctx, document.id)
+
+    emptied = await repo_reindex_jobs.get(ctx, job.id)
+    assert emptied is not None
+    assert emptied.items == ()
+    assert emptied.percent == 100
+    assert emptied.status is ReindexJobStatus.COMPLETED
 
 
 async def test_purging_an_absent_document_is_a_no_op(

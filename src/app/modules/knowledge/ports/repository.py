@@ -329,10 +329,20 @@ class DocumentRepository(Protocol):
         ...
 
     async def purge(self, ctx: ExecutionContext, doc_id: Uuid) -> None:
-        """Destroy a document: its ``summaries``, then its ``chunks`` rows,
-        then its own row (BE-RAG-007 · INV-K4), in ONE transaction — the
-        missing ``ON DELETE`` on ``fk_chunk_doc``/``fk_summary_doc`` makes the
-        order mandatory rather than stylistic.
+        """Destroy a document: its ``summaries``, its ``reindex_job_items``,
+        then its ``chunks`` rows, then its own row (BE-RAG-007 · INV-K4), in
+        ONE transaction — the missing ``ON DELETE`` on ``fk_chunk_doc``/
+        ``fk_summary_doc``/``fk_reindex_item_doc`` makes the order mandatory
+        rather than stylistic.
+
+        **``reindex_job_items`` is part of the contract, not an FK footnote.**
+        The only caller is a re-index, so the document being destroyed is
+        routinely one an EARLIER re-index minted — and that document is named
+        by that earlier job's item row. Leaving the row makes the SECOND
+        re-index of any file a ``23503``. Deleting it hides nothing: the job
+        read joins ``documents`` to derive every number it reports (INV-K5),
+        so an item whose document is gone had already dropped out of the
+        job's view.
 
         Summaries are deleted here and not cascaded for the reason the whole
         destruction is explicit: re-indexing exists because a file's text may
@@ -340,6 +350,15 @@ class DocumentRepository(Protocol):
         written from would go on being served as current. A cascade would do
         the same deletion while hiding it from the invariant that documents
         it.
+
+        Two rows are deliberately LEFT behind, and both times because the
+        caller is a re-index that keeps the file: a ``summary_jobs`` row
+        (nothing references it, and the queued build wants to find the
+        replacement), and the ``reindex_jobs`` row once this was its last
+        item. ``purge_space``/``purge_file`` take both, because a job emptied
+        by a corpus-wide cascade can never report on anything again; here an
+        item-less job is a defined answer (``percent`` 100, ``completed``)
+        over content that still exists under a new document id.
 
         The only hard delete in this module, and it exists because a
         superseded document cannot be allowed to survive: Qdrant point ids

@@ -537,13 +537,42 @@ class SqlDocumentRepository:
         )
 
     async def purge(self, ctx: ExecutionContext, doc_id: UuidStr) -> None:
-        # Summaries, then chunks, then the document -- the missing `ON DELETE`
-        # on `fk_summary_doc`/`fk_chunk_doc` makes the order mandatory. All
-        # three statements run in ONE session/transaction, so a failure
-        # between them cannot leave an orphaned child row behind.
+        # Summaries, then `reindex_job_items`, then chunks, then the document
+        # -- the missing `ON DELETE` on `fk_summary_doc`/`fk_reindex_item_doc`/
+        # `fk_chunk_doc` makes the order mandatory. All four statements run in
+        # ONE session/transaction, so a failure between them cannot leave an
+        # orphaned child row behind.
+        #
+        # `reindex_job_items` is reached for the reason `purge_file` states,
+        # and it is not a hypothetical: this method's only caller is
+        # `ReindexDocuments.commit`, so the document being destroyed is the
+        # one an EARLIER re-index minted -- and that document is named by that
+        # job's item row. Without this statement the SECOND re-index of any
+        # file is a `23503`, which no unit test can see (the fake deletes a
+        # dict entry) and no existing live test provoked.
+        #
+        # Deleting the item row hides nothing that was visible: the job read
+        # (`SqlReindexJobRepository.get`) INNER JOINs `documents`, so an item
+        # whose document is gone had already dropped out of the job's view.
+        # This makes the storage agree with the read rather than changing what
+        # any caller sees.
+        #
+        # **The `reindex_jobs` row itself stays**, and that is where this
+        # parts company with `purge_space`/`purge_file` a second time (the
+        # first being `summary_jobs`, which `purge_file`'s own comment names
+        # as the place the two part company). Those cascades destroy a whole
+        # corpus, so a job emptied by them can never report on anything again;
+        # here the file and its content live on as the replacement document,
+        # the job id may still be polled, and an item-less job is already a
+        # DEFINED answer -- `ReindexJob.percent` is 100 and its status
+        # `completed` -- rather than a broken one.
         drop_summaries = delete(summaries).where(
             summaries.c.document_id == doc_id,
             summaries.c.workspace_id == ctx.workspace_id,
+        )
+        drop_reindex_items = delete(reindex_job_items).where(
+            reindex_job_items.c.document_id == doc_id,
+            reindex_job_items.c.workspace_id == ctx.workspace_id,
         )
         drop_chunks = delete(knowledge_chunks).where(
             knowledge_chunks.c.document_id == doc_id,
@@ -555,6 +584,7 @@ class SqlDocumentRepository:
         try:
             async with self._tenant_session(ctx) as session:
                 await session.execute(drop_summaries)
+                await session.execute(drop_reindex_items)
                 await session.execute(drop_chunks)
                 await session.execute(drop_document)
         except DBAPIError as exc:
