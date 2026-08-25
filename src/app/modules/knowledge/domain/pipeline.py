@@ -67,11 +67,32 @@ the question this constant answers. Without the bump, a re-index of an
 already-indexed document would be SKIPPED on its unchanged `content_hash`
 and would keep its old, parentless rows: the feature would ship and change
 nothing until someone re-uploaded the file.
+
+**Why it is now 4** (rag-fidelity-audit.md §3-د and §3-ج, wave ب items 1-2).
+Two changes landed after the `3` above, and BOTH answer this constant's one
+question with "yes":
+
+1. the embedding service now pins `EMB_MAX_SEQ_LEN = 512` where it silently
+   adopted the checkpoint's own `128` before, so every stored VECTOR changes
+   -- a chunk that reached its vector one quarter at a time now reaches it
+   whole (measured: 79% of a 354-word chunk never got embedded);
+2. `domain/chunking.py`'s `_TOKENS_PER_WORD` was re-measured `1.3` -> `2.4`,
+   which moves `max_words_for_token_limit(512)` from 354 words to 192. That
+   is the chunk BOUNDARY: the same document now yields a different number of
+   `chunks` rows, at different `seq`, carrying different text.
+
+Neither raised this constant when it landed, and that gap is what §5's
+step 3 exists to catch. It matters in two directions. Forward: without the
+bump, `IndexFile` answers "already current" (`_reflects_current_pipeline`)
+for a document built by the OLD chunker, and the upgrade ships invisibly --
+§6 risk 4, verbatim. Backward: a clean rebuild would stamp its output `3`,
+the same value already worn by rows the 1.3-factor chunker produced, so the
+one column that exists to tell those two apart would say they are the same.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = 3
+PIPELINE_VERSION = 4
 
 
 def content_pipeline_unchanged(
