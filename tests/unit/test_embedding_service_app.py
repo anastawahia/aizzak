@@ -29,6 +29,10 @@ class _FakeEncoder:
     def __init__(self, *, dim: int = 4) -> None:
         self.dim = dim
         self.encode_calls: list[dict[str, Any]] = []
+        # Deliberately NOT 512, and not the checkpoint's own 128 either: a
+        # sentinel no code path under test would ever choose, so
+        # `max_seq_length == 512` can only mean the lifespan passed it.
+        self.max_seq_length = -1
 
     def encode(
         self,
@@ -72,7 +76,13 @@ def _reset_state() -> Any:
 
 
 def _fake_loader(fake: _FakeEncoder) -> Any:
-    def _load(model_name: str) -> _FakeEncoder:
+    """Mirrors the real ``_load_model``'s contract, INCLUDING the part this
+    file exists to pin: the loader applies ``max_seq_length`` to the model it
+    is about to hand back (``services/embedding/app.py``'s module docstring
+    -- the checkpoint ships 128, and nothing but this assignment moves it)."""
+
+    def _load(model_name: str, max_seq_length: int) -> _FakeEncoder:
+        fake.max_seq_length = max_seq_length
         return fake
 
     return _load
@@ -97,12 +107,18 @@ def test_health_is_200_with_the_loaded_models_identity_once_started(
     monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
     monkeypatch.setenv("EMBEDDING_MODEL", "test-model")
     monkeypatch.setenv("EMBEDDING_DIM", "4")
+    monkeypatch.delenv("EMB_MAX_SEQ_LEN", raising=False)
 
     with TestClient(service_app.app) as client:
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "model": "test-model", "dimensions": 4}
+    assert response.json() == {
+        "status": "ok",
+        "model": "test-model",
+        "dimensions": 4,
+        "max_seq_length": 512,
+    }
 
 
 def test_health_resets_to_unloaded_after_the_lifespan_shuts_down(
@@ -118,6 +134,66 @@ def test_health_resets_to_unloaded_after_the_lifespan_shuts_down(
     # client now sees the model as unloaded again.
     after = TestClient(service_app.app)
     assert after.get("/health").status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# max_seq_length -- the token at which this service stops reading a text      #
+#                                                                             #
+# The checkpoint's own `sentence_bert_config.json` says 128 and the model's   #
+# `config.json` says its position embeddings reach 512, so a bare             #
+# `SentenceTransformer(...)` embeds a QUARTER of what the model can hold and  #
+# silently drops the rest -- measured at 79% of a full-size Arabic chunk      #
+# lost. These pin the two halves that were missing: that the value is set at  #
+# all, and that it is set to the ceiling rather than to the checkpoint's      #
+# default.                                                                    #
+# --------------------------------------------------------------------------- #
+def test_lifespan_raises_the_models_sequence_length_to_the_pinned_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression proper: the loader must receive -- and apply -- 512,
+    not the 128 the checkpoint would otherwise impose on itself."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.delenv("EMB_MAX_SEQ_LEN", raising=False)
+
+    with TestClient(service_app.app):
+        pass
+
+    assert fake.max_seq_length == 512
+    assert service_app._DEFAULT_MAX_SEQ_LEN == 512
+
+
+def test_max_seq_length_is_env_overridable_at_the_service_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`EMB_MAX_SEQ_LEN` rides the same service-layer seam as
+    `EMBEDDING_MODEL`/`EMBEDDING_DIM`/`EMB_BATCH` -- a model swap has to be
+    able to bring its own ceiling."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setenv("EMB_MAX_SEQ_LEN", "256")
+
+    with TestClient(service_app.app) as client:
+        reported = client.get("/health").json()["max_seq_length"]
+
+    assert fake.max_seq_length == 256
+    assert reported == 256
+
+
+def test_health_reports_the_sequence_length_actually_in_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/health` is the ONLY way to see this number from outside the
+    container, and its absence is why the 128 went unnoticed. So it reports
+    what was applied to the model, never the module default."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setenv("EMB_MAX_SEQ_LEN", "384")
+
+    with TestClient(service_app.app) as client:
+        reported = client.get("/health").json()["max_seq_length"]
+
+    assert reported == fake.max_seq_length == 384
 
 
 # --------------------------------------------------------------------------- #

@@ -408,6 +408,17 @@ services:
       EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
       EMBEDDING_DIM: "384"
       EMB_BATCH: "8"
+      # The token at which the model stops reading a text. Stated here, not
+      # left to the checkpoint: `paraphrase-multilingual-MiniLM-L12-v2` ships
+      # `sentence_bert_config.json: max_seq_length = 128` while its
+      # `config.json` reaches 512, so an unset value embeds a QUARTER of a
+      # full-size chunk and silently discards the rest (measured: 79% of a
+      # 354-word Arabic chunk never reached its vector). Must stay equal to
+      # the adapter-side `EmbeddingServiceSettings.embedding_max_input_tokens`
+      # -- unlike the model name, a drift between them raises nothing; check
+      # it against `GET /health`, which reports the value in force.
+      # ⚠️ Changing this invalidates every vector already indexed.
+      EMB_MAX_SEQ_LEN: "512"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     expose:
