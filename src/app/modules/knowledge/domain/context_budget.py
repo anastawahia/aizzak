@@ -23,8 +23,16 @@ exact but say nothing about what the model actually charges for, while tokens
 are what the model charges for but can only be ESTIMATED without a real
 tokenizer (see `estimate_tokens`). The character cap is the hard, exactly
 measurable floor under an estimate that could drift; the token cap is what
-actually tracks the model's window, and on Arabic text (which costs far more
-tokens per character than English) it is the one that bites first.
+actually tracks the model's window.
+
+Which of the two bites first is a CONFIGURATION property, not a property of
+this function -- and the shipped pair is chosen so that it is always the
+character cap (`Settings.Limits.max_context_tokens` carries the derivation).
+That matters because `estimate_tokens` charges Arabic more than twice what it
+charges English: any pair where the token cap CAN bite first cuts an Arabic
+context short while passing the identical English one, so the ceiling actually
+in force stops being the exactly measurable one and starts depending on the
+script. The pair shipped before 2026-08-25 did exactly that.
 
 **Descending order, then cut -- never a reorder.** `candidates` arrive
 best-first (RRF-sorted; `filter_relevant` and the parent widening both
@@ -43,8 +51,8 @@ workspace has no answer when in truth one relevant-but-large passage was
 found and silently discarded by a budget. Truncating that passage's TEXT is
 not this function's job either -- it is generic over the item type and does not
 know how to rebuild one -- and the leaf/parent texts it sees are already capped
-upstream (`application/retrieval.py::_MAX_PARENT_CHUNK_CHARS`), so the overflow
-is bounded rather than unbounded.
+upstream (`RetrievalTuning.max_parent_chunk_chars`), so the overflow is
+bounded rather than unbounded.
 
 **Measured on the RENDERED text, not the raw text.** Each candidate is handed
 in WITH the exact string that will be shown to the model -- source label

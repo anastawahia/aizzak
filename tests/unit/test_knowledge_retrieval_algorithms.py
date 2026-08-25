@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from app.framework.settings.settings import Limits
 from app.modules.knowledge.domain import context_budget, fusion, tokenization
 
 
@@ -547,7 +548,7 @@ def test_context_budget_module_reads_no_environment_and_hardcodes_no_budget() ->
       former, which no contract covers);
     * no numeric literal equals a shipped budget default
       (`Settings.Limits.max_context_chars` = 12000 / `.max_context_tokens` =
-      3000) -- a duplicated default is a second source of truth that drifts
+      6000) -- a duplicated default is a second source of truth that drifts
       the day one of them moves.
     """
     tree = ast.parse(inspect.getsource(context_budget))
@@ -565,4 +566,30 @@ def test_context_budget_module_reads_no_environment_and_hardcodes_no_budget() ->
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, int | float)
     }
-    assert not literals & {12_000, 3_000}
+    assert not literals & {12_000, 6_000}
+
+
+def test_the_token_ceiling_cannot_bite_before_the_character_ceiling() -> None:
+    """§3-ب, as arithmetic rather than as a pinned number -- the property the
+    `6000` exists to hold, and the one that actually breaks if it is lowered.
+
+    The budget is DUAL and the smaller cap wins. `max_context_chars` is exact;
+    `max_context_tokens` is an estimate. For the exact cap to be the one in
+    force, the estimated cap must be unreachable within it -- and the estimate
+    is at its most expensive on Arabic, which `estimate_tokens` charges at
+    `_ARABIC_CHARS_PER_TOKEN`. So a context filled to the character ceiling
+    with pure Arabic is the worst case the pair can produce, and it must not
+    trip the token ceiling.
+
+    Below that point the behaviour SPLITS BY SCRIPT: the same 12000-character
+    context passes in English and is cut in half in Arabic, and the ceiling
+    actually in force is no longer the auditable one. That is precisely what
+    the plan's carried-over `3000` did.
+    """
+    limits = Limits()
+    # ALEF, via `chr` -- this module's stated convention for Arabic fixtures.
+    worst_case_arabic = chr(0x0627) * limits.max_context_chars
+
+    assert context_budget.estimate_tokens(worst_case_arabic) <= limits.max_context_tokens
+    # And it is the SMALLEST such value: one less, and Arabic is cut first.
+    assert context_budget.estimate_tokens(worst_case_arabic) > limits.max_context_tokens - 1

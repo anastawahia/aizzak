@@ -214,7 +214,7 @@ grep -rln '02-port-contracts' tests/   # لا نتيجة في tests/unit سوى 
 
 | المقبض | القيمة | المصدر |
 |---|---|---|
-| `max_context_tokens` | `3000` | `Limits` ([`settings.py:602`](../src/app/framework/settings/settings.py)) — اقتراح §3.7 |
+| `max_context_tokens` | ~~`3000`~~ **`6000`** | `Limits` ([`settings.py`](../src/app/framework/settings/settings.py)) — ~~اقتراح §3.7~~ **مُشتَقّ: `max_context_chars ÷ 2.0`** (‏[تقرير أمانة النقل](rag-fidelity-audit.md) §3‑ب) |
 | `max_context_chars` | `12000` | `Limits` ([`settings.py:601`](../src/app/framework/settings/settings.py)) — اقتراح §3.7 |
 | `max_parent_chunk_chars` | `4000` | `RetrievalSettings` |
 | `default_k` | `5` | `RetrievalSettings` |
@@ -236,7 +236,7 @@ grep -rln '02-port-contracts' tests/   # لا نتيجة في tests/unit سوى 
 
 يُعالَج **مع** §1 لا قبله، وأحد ثلاثة (والقياس يفصل):
 
-1. رفع `max_context_tokens` إلى ما يوازي `max_context_chars` على المقياس العربيّ (‏‎~6000‎) — فيصير السقف الحرفيّ هو الملزِم في اللغتين بدل أن ينقسم السلوك بينهما.
+1. ✅ **نُفِّذ ‎2026‑08‑25‎** — رفع `max_context_tokens` إلى ما يوازي `max_context_chars` على المقياس العربيّ (‏**`6000` بالضبط**) — فيصير السقف الحرفيّ هو الملزِم في اللغتين بدل أن ينقسم السلوك بينهما.
 2. خفض `max_parent_chunk_chars` إلى ‎~2000‎ ليتّسع السياق لثلاث قطع في العربية.
 3. جعل ميزانية الرموز **نسبةً** من نافذة النموذج المُعدّ لا رقمًا ثابتًا.
 

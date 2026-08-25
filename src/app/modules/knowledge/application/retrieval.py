@@ -313,7 +313,12 @@ class RetrievalTuning:
     rerank_enabled: bool = False
     rerank_candidates: int = 20
     max_context_chars: int = 12_000
-    max_context_tokens: int = 3_000
+    # 6000, not the plan's 3000 -- `Settings.Limits.max_context_tokens`
+    # carries the derivation (below 6000 the token cap bites before the
+    # character cap on Arabic and only on Arabic). That default and this one
+    # are two spellings of ONE number and must agree;
+    # `test_retrieval_tuning_defaults_mirror_settings_field_for_field` says so.
+    max_context_tokens: int = 6_000
 
 
 # The shipped tuning, as a module-level singleton so it is not rebuilt per

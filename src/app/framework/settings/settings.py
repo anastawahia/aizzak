@@ -606,22 +606,43 @@ class Limits(BaseModel):
     # them as arguments into the pure `domain/context_budget.py` (س-24: the
     # numbers live here, never in the domain, and there is no per-request
     # override of either).
-    #   * `max_context_chars` -- 12000, the plan's own starting suggestion.
-    #     Exactly measurable, so it is the floor under an estimate that could
-    #     drift; comfortably above three widened parents
-    #     (`RetrieveContext._MAX_PARENT_CHUNK_CHARS` is 4000 apiece), so a
-    #     normal `k`-sized answer is never trimmed by it.
-    #   * `max_context_tokens` -- 3000, likewise the plan's suggestion, and
-    #     deliberately far under `max_input_tokens` (32000) above: the
-    #     retrieved context is only ONE part of the prompt, which also
-    #     carries the system prompt, the corpus-awareness header (§3.6, up to
-    #     ~500 tokens), the question, and the answer's own headroom.
+    #   * `max_context_chars` -- 12000, the plan's own starting suggestion,
+    #     and alpha's number exactly. Exactly measurable, so it is the floor
+    #     under an estimate that could drift.
+    #     ⚠️ It admits TWO widened parents, not three. A parent is capped at
+    #     `RetrievalTuning.max_parent_chunk_chars` (4000), but what the budget
+    #     measures is the RENDERED string -- §3.2's `[file p.N | section: S]`
+    #     label included -- so three cost 3 x ~4055 = ~12165 and the third is
+    #     cut. Measured, not derived: 12000 is 3 x 4000 with nothing left over
+    #     for a label this pipeline puts on every chunk. Raising it is a
+    #     SEPARATE decision from the token cap below (§3-ب) and is not taken
+    #     here.
+    #   * `max_context_tokens` -- 6000, and this number is DERIVED, not
+    #     suggested. `context_budget.estimate_tokens` charges an Arabic-block
+    #     character 2.0 chars/token, so a context filled to `max_context_chars`
+    #     of pure Arabic estimates at 12000 / 2.0 = 6000 tokens. Any value
+    #     BELOW that makes the token cap bite before the character cap on
+    #     Arabic and only on Arabic -- the behaviour splits by script, and the
+    #     exact, auditable ceiling stops being the one in force. 6000 is the
+    #     smallest value that cannot do that, and it is also alpha's own
+    #     number (whose flat 4.0 rate put its token cap out of reach the same
+    #     way). The plan's `3000` was a suggestion carried over untested; at
+    #     it, an Arabic answer is built from ONE 4000-char parent while the
+    #     identical English one gets two.
+    #     Still far under any prompt ceiling: measured against the deployed
+    #     `gemma3:1b` at `OllamaLlmProvider._NUM_CTX` = 8192, a context filled
+    #     to 12000 chars of real Arabic assembles into a 5086-token prompt,
+    #     system prompt and corpus header included, leaving ~3100 for the
+    #     answer. The estimator over-counts it by ~22%, which is the direction
+    #     it is documented to err in.
     # These are NOT quality thresholds, so decision س-22 ("thresholds stay
     # 0.0 until a calibration set exists") does not apply: a budget is a cost
     # decision about how much text is sent, not a judgement about whether a
     # chunk is good enough to send.
     max_context_chars: int = 12_000
-    max_context_tokens: int = 3_000
+    # ⚠️ MUST equal `max_context_chars` / `context_budget._ARABIC_CHARS_PER_TOKEN`.
+    # `test_the_token_ceiling_cannot_bite_before_the_character_ceiling` pins it.
+    max_context_tokens: int = 6_000
     embedding_batch: int = 128
     max_image_dim: int = 2_048
     max_video_seconds: int = 30
