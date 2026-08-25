@@ -303,6 +303,15 @@ class RetrievalTuning:
     max_search_candidates: int = 100
     max_sparse_candidates: int = 20
     fusion_retention: int = 3
+    # FROZEN by an explicit owner decision (2026-08-25, docs/rag-fidelity-audit.md
+    # §4-أ): `default_k` is 5 and is NEVER to be changed. It was moved to 20 once
+    # (`524ec8f`) and reverted (`0461119`); س-28 is closed by decision, not by a
+    # measurement, so a new measurement does not reopen it. Note this freezes the
+    # whole funnel with it -- `search_k` 30, `sparse_k` 20, `mmr_pool_k` 30,
+    # `retain_k` 15 -- so if the candidate pool ever proves too narrow the knob
+    # is `mmr_overfetch`/`fusion_retention`/`max_sparse_candidates`, never this.
+    # It is the DEFAULT only: `POST /knowledge/search` still takes an explicit
+    # `k` up to `max_k`.
     default_k: int = 5
     max_k: int = 50
     min_dense_score: float = 0.0
@@ -311,6 +320,12 @@ class RetrievalTuning:
     relative_floor: float = 0.0
     jaccard_threshold: float = 0.95
     max_parent_chunk_chars: int = 4_000
+    # FROZEN FOR NOW by an explicit owner decision (2026-08-25,
+    # docs/rag-fidelity-audit.md §4-أ): `mmr_lambda` stays at 0.7 and is not to
+    # be changed at present. A temporary hold, not a closure -- the measured
+    # window is [0.817, 0.917] and 0.7 sits outside it, i.e. the selection leans
+    # to DIVERSITY over relevance deliberately now rather than by oversight.
+    # س-31 stays a live question; do not act on it until the hold is lifted.
     mmr_lambda: float = 0.7
     mmr_overfetch: int = 6
     rerank_enabled: bool = False
