@@ -180,6 +180,13 @@ class EmbeddingServiceSettings(BaseModel):
     # chunking.py::max_words_for_token_limit` is the pure consumer -- this
     # value is passed to it as a plain argument, never read from Settings
     # inside the domain layer.
+    #
+    # This is one HALF of a single ceiling. The other half is the embedding
+    # service's own `EMB_MAX_SEQ_LEN` (`services/embedding/app.py`,
+    # `docker-compose.yml`), the token at which the model stops reading; the
+    # two must stay equal, and NOTHING enforces that -- unlike a model-name
+    # mismatch, which the service answers with a loud 400, a drift here is
+    # silent on both sides. `GET /health` reports the value in force.
     embedding_max_input_tokens: int = 512
 
 

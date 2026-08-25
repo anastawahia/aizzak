@@ -499,14 +499,37 @@ def test_chunk_segments_seq_stays_gap_free_after_filtering_drops_some_nodes() ->
 # --------------------------------------------------------------------------- #
 # chunking.max_words_for_token_limit (P-16, plan §4 step 9, §3.5 + س-11)      #
 # --------------------------------------------------------------------------- #
-def test_max_words_for_token_limit_matches_the_ported_alpha_formula_at_the_default() -> None:
-    # max(int((512 / 1.3) * 0.9), 32) == max(int(354.4615...), 32) == 354
-    assert max_words_for_token_limit(512) == 354
+def test_max_words_for_token_limit_uses_the_measured_factor_not_alphas_unmeasured_one() -> None:
+    """alpha's SHAPE with a re-measured constant: ``2.4``, not ``1.3``.
+
+    ``1.3`` was never measured against this checkpoint; measuring it (see
+    ``_TOKENS_PER_WORD``'s table) put real Arabic prose at 1.77-2.18 tokens
+    per word, so the 354-word window it produced overflowed the model's
+    512-token ceiling on EVERY full-size Arabic chunk -- truncated inside the
+    model, silently. ⚠️ Restoring 1.3 in the name of port fidelity re-opens
+    that defect; the fidelity here is to the formula, not to the number.
+    """
+    # max(int((512 / 2.4) * 0.9), 32) == max(int(192.0), 32) == 192
+    assert max_words_for_token_limit(512) == 192
+
+
+def test_the_derived_window_fits_the_embedding_ceiling_at_the_worst_measured_ratio() -> None:
+    """The property the factor exists to guarantee, as arithmetic rather than
+    as a pinned number -- and the one that actually breaks if it is lowered.
+
+    2.53 is the worst single window measured against the deployed
+    checkpoint's own tokenizer (vocalised Arabic prose, special tokens
+    included). The window derived for a 512-token ceiling must survive it.
+    """
+    worst_measured_tokens_per_word = 2.53
+    embedding_ceiling_tokens = 512
+    window = max_words_for_token_limit(embedding_ceiling_tokens)
+    assert window * worst_measured_tokens_per_word <= embedding_ceiling_tokens
 
 
 def test_max_words_for_token_limit_scales_with_the_configured_ceiling() -> None:
-    assert max_words_for_token_limit(128) == max(int((128 / 1.3) * 0.9), 32)
-    assert max_words_for_token_limit(8192) == max(int((8192 / 1.3) * 0.9), 32)
+    assert max_words_for_token_limit(128) == max(int((128 / 2.4) * 0.9), 32)
+    assert max_words_for_token_limit(8192) == max(int((8192 / 2.4) * 0.9), 32)
 
 
 def test_max_words_for_token_limit_never_drops_below_the_floor() -> None:
@@ -525,7 +548,7 @@ def test_split_overlap_ratio_is_ten_percent() -> None:
     # result -- not to `embedding_max_input_tokens` itself.
     assert SPLIT_OVERLAP_RATIO == 0.1
     max_words = max_words_for_token_limit(512)
-    assert int(max_words * SPLIT_OVERLAP_RATIO) == 35
+    assert int(max_words * SPLIT_OVERLAP_RATIO) == 19
 
 
 # --------------------------------------------------------------------------- #
@@ -1783,9 +1806,9 @@ async def test_index_document_ensures_hybrid_collection_and_upserts_hybrid_point
 async def test_index_document_splits_at_the_real_token_derived_word_budget() -> None:
     """P-16 (plan §4 step 9): the default constructor arg
     (``embedding_max_input_tokens=512``) must actually drive the split --
-    354 words/35-word overlap (``max_words_for_token_limit(512)``), NOT the
+    192 words/19-word overlap (``max_words_for_token_limit(512)``), NOT the
     old bare 512-word/64-word ``chunk_segments`` default this use-case used
-    to fall back to. A 400-word segment sits strictly between 354 and 512:
+    to fall back to. A 400-word segment sits strictly between 192 and 512:
     it only splits at all under the wired-through formula."""
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
@@ -1798,10 +1821,11 @@ async def test_index_document_splits_at_the_real_token_derived_word_budget() -> 
         ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
     )
 
-    assert len(outcome.chunks) == 2
+    assert len(outcome.chunks) == 3
     by_seq = {c.seq: c for c in outcome.chunks}
-    assert by_seq[0].token_count == 354
-    assert by_seq[1].token_count == 81  # 400 - (354 - 35) step
+    assert by_seq[0].token_count == 192
+    assert by_seq[1].token_count == 192  # one 173-word step (192 - 19) along
+    assert by_seq[2].token_count == 54  # 400 - 2 * 173 steps
 
 
 async def test_index_document_embedding_max_input_tokens_is_configurable() -> None:

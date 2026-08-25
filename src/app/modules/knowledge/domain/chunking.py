@@ -145,20 +145,49 @@ from typing import Any
 # ever reaches this gate).
 MIN_NODE_CHARS = 15
 
-# P-16 (plan §4 step 9, §3.5 + decision س-11) -- alpha's token-to-word
-# calibration, ported verbatim into ``max_words_for_token_limit`` below.
+# P-16 (plan §4 step 9, §3.5 + decision س-11) -- the token-to-word calibration
+# behind ``max_words_for_token_limit`` below. The FORMULA is alpha's, ported
+# verbatim; this CONSTANT is not, and that divergence is deliberate and
+# measured. ⚠️ A fidelity pass that "restores" alpha's ``1.3`` in the name of
+# a faithful port re-opens the exact defect this number closes.
 #
 # ``_TOKENS_PER_WORD`` is NOT the adapter's own truncation estimate
 # (``external_embedding.py``'s ``len(text)//4`` is a *characters*-per-token
-# guess); it is words-per-token, and Arabic costs MORE sub-word tokens per
-# character than English, so a plain 1.0 (one token per word) would
-# UNDER-count and let a chunk that silently truncates at the embedding HTTP
-# boundary through -- the one failure mode §3.5 calls out by name (the
-# truncated tail is invisible to everyone: the point still gets a vector, it
-# is just a vector for less text than the payload claims). Erring toward
-# FEWER words per chunk is the safe direction, so this factor is a floor, not
-# a target, and MUST NOT be lowered.
-_TOKENS_PER_WORD = 1.3
+# guess); it is tokens per whitespace WORD -- the factor that turns the
+# embedding model's token ceiling into the word window this module splits
+# against. Set it too low and a window overflows that ceiling and is
+# truncated INSIDE the model: the one failure mode §3.5 calls out by name
+# (the truncated tail is invisible to everyone -- the point still gets a
+# vector, it is just a vector for less text than the payload claims).
+#
+# Measured against the DEPLOYED checkpoint's own tokenizer
+# (``paraphrase-multilingual-MiniLM-L12-v2`` -- XLM-R sentencepiece), by
+# windowing real prose exactly as ``chunk_segments`` does and counting the
+# tokens ``encode`` actually feeds the model, special tokens included:
+#
+#     text                       mean    worst window
+#     English technical prose    1.44        1.86
+#     Arabic, unvocalised        1.77        2.07
+#     Arabic, with tashkeel      2.18        2.53   <- the binding case
+#
+# Arabic sets the ceiling, and tashkeel is what makes it expensive: the
+# combining marks do not ride along inside the vocabulary entry for the bare
+# word, so a vocalised word costs several extra sub-word pieces. At 2.4 the
+# worst window measured (2.53 tokens/word over 192 words) lands at 485 of the
+# 512 available -- inside, with 27 tokens to spare.
+#
+# ONE language-agnostic factor rather than a per-language one, for two
+# reasons: the budget is resolved ONCE per ``IndexDocument`` (see its
+# ``__init__``), before any text has been read, so there is no language to
+# branch on; and a content-dependent window size would make chunk boundaries
+# -- and therefore ``seq`` -- depend on a script heuristic. The cost lands on
+# English, whose windows come out smaller than they strictly need to be; the
+# alternative charges it to Arabic, in silently half-embedded chunks.
+#
+# Erring toward FEWER words per chunk is the safe direction -- an oversized
+# window fails SILENTLY, an undersized one only costs one more chunk -- so
+# this factor is a floor, not a target, and MUST NOT be lowered.
+_TOKENS_PER_WORD = 2.4
 # A further 10% safety margin on top of ``_TOKENS_PER_WORD`` -- the same
 # "erring toward fewer words" reasoning one layer further, ported from alpha
 # unchanged.
@@ -174,8 +203,14 @@ SPLIT_OVERLAP_RATIO = 0.1
 
 def max_words_for_token_limit(embedding_max_input_tokens: int) -> int:
     """The real per-chunk word budget for a given embedding token limit
-    (P-16, plan §3.5) -- alpha's formula ported verbatim:
-    ``max(int((embedding_max_input_tokens / 1.3) * 0.9), 32)``.
+    (P-16, plan §3.5) -- alpha's formula, with a re-measured constant:
+    ``max(int((embedding_max_input_tokens / 2.4) * 0.9), 32)``.
+
+    The SHAPE is alpha's, ported verbatim; the ``2.4`` replaces alpha's
+    ``1.3`` after measuring the deployed checkpoint's own tokenizer on real
+    Arabic and English prose (``_TOKENS_PER_WORD`` above carries the table
+    and the reasoning). At the 512 default that is a 192-word window, not the
+    354 the un-measured factor produced.
 
     Pure and framework-free on purpose (``lint-imports``' "Domain is pure"
     contract, plan §0): the caller (``application/indexing.py``) is what
