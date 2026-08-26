@@ -42,7 +42,10 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    literal,
     select,
+    text,
+    tuple_,
     update,
 )
 from sqlalchemy.engine import RowMapping
@@ -92,6 +95,13 @@ files = Table(
     # name yet (the media worker) must be able to say so rather than invent
     # one; 8-b's `SET NOT NULL` is what finds any writer step 6-8 forgot.
     Column("space_id", _uuid_col, nullable=True),
+    # `migrations/versions/files/0003_file_name_lookup.py` — س-29 rule 1's
+    # lookup key, `lower(normalize(name, NFC))`, GENERATED ALWAYS ... STORED.
+    # Declared here so `live_namesakes` can name it, and written by NOBODY:
+    # it is absent from `add`'s INSERT and from `save`'s UPDATE on purpose,
+    # because PostgreSQL derives it from `name` on every write and a value
+    # supplied here would be rejected (`428C9`) rather than merely redundant.
+    Column("name_key", Text, nullable=True),
     schema="files",
 )
 
@@ -313,6 +323,69 @@ class SqlFileRepository:
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return {row["id"]: row["name"] for row in rows}
+
+    async def live_namesakes(self, ctx: ExecutionContext, file: File) -> Sequence[UuidStr]:
+        # The COLUMN side is the stored generated column, and the ARGUMENT
+        # side is the same expression applied here -- deliberately NOT
+        # normalised in Python. Two reasons, and the second was measured:
+        #
+        # 1. There is then no Python/SQL agreement to drift. `str.lower`,
+        #    `str.casefold` and SQL `lower` under this deployment's collation
+        #    are three different functions, and a key computed by one and
+        #    compared against a column computed by another is a bug nothing
+        #    would report -- it would simply stop finding namesakes.
+        # 2. The planner constant-folds it. `lower`/`normalize` are IMMUTABLE
+        #    and the argument is a bind parameter, so `lower(normalize($1,
+        #    NFC))` collapses to a plain text Const before index matching, and
+        #    the comparison that reaches the index is `name_key = 'report.pdf'`
+        #    -- `texteq`, which IS `LEAKPROOF` and may therefore run before the
+        #    row-security qual. That is the whole reason `name_key` is a stored
+        #    column rather than an index expression: `lower` and `normalize`
+        #    are NOT leakproof, so under `FORCE ROW LEVEL SECURITY` an
+        #    expression index over them can never be a search key. Measured
+        #    both ways -- see the migration.
+        argument_key = func.lower(func.normalize(file.name.value, text("NFC")))
+        # NULL-safe, but SPELLED as a branch rather than as
+        # `IS NOT DISTINCT FROM`. Both say what the port promises -- "no
+        # space" is one bucket and not a wildcard, so `= NULL` (which matches
+        # nothing) would let a spaceless file replace nothing at all. The
+        # difference is that `IS NOT DISTINCT FROM` is not a btree-searchable
+        # operator in PostgreSQL, so it would demote `ix_files_space_name` to
+        # a `workspace_id`-prefix scan with a filter on top. The caller always
+        # holds a concrete row, so which of the two branches applies is known
+        # here and never at run time in SQL.
+        same_space = (
+            files.c.space_id.is_(None)
+            if file.space_id is None
+            else files.c.space_id == file.space_id
+        )
+        stmt = select(files.c.id).where(
+            files.c.workspace_id == ctx.workspace_id,
+            same_space,
+            files.c.name_key == argument_key,
+            files.c.deleted_at.is_(None),
+            # STRICTLY older, as a tuple so ties on `created_at` still order
+            # totally. This is what makes the relation antisymmetric -- two
+            # rows can never each be older than the other -- and antisymmetry
+            # is what lets two concurrent completions run without a lock
+            # without deleting each other (port docstring).
+            # The bind parameters carry the COLUMNS' types, not the ones
+            # SQLAlchemy would infer from a Python `str` and a `datetime`.
+            # Without that, `id` binds as `varchar` and PostgreSQL answers
+            # `operator does not exist: uuid < character varying` -- measured,
+            # not inferred (`tests/integration/test_file_namesakes_live.py`).
+            tuple_(files.c.created_at, files.c.id)
+            < tuple_(
+                literal(file.created_at, files.c.created_at.type),
+                literal(file.id, files.c.id.type),
+            ),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return list(rows)
 
     async def storage_keys_in_space(
         self, ctx: ExecutionContext, space_id: UuidStr

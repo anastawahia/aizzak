@@ -10,6 +10,13 @@ Six routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 * ``PATCH /files/{id}`` — rename (200; the extension is immutable, INV-F4);
 * ``DELETE /files/{id}`` — delete it AND its index (204, idempotent).
 
+**Three of the six routes reach a cross-module cascade rather than the
+``FileUseCases`` bundle** (``framework/di/``): ``POST /files`` registers under
+the space quota's row lock, ``complete``/``PATCH`` replace a file that already
+held the name (س-29 rule 1), and ``DELETE`` destroys the index with the row.
+All three span ``files`` and a module ``files`` may not import, which is why
+none of them is a bundle field.
+
 Everything interesting happens BELOW this file, which is the point: presign
 TTLs, the ready-only download URL, the optional checksum, the atomic
 complete/delete — all live in the module's application services, so this
@@ -57,6 +64,10 @@ from app.modules.files.application.use_cases import ReadFile
 # `ctx`, whose chain authenticates anyway. The router-level gate keeps the
 # guarantee structural for any future route that doesn't need a context.
 _UNWIRED = "file deletion is not configured on this deployment"
+# Deliberately NOT a fallback to `services.files.complete`/`.rename`: those
+# calls still work, and reaching for them here would skip س-29 rule 1 in
+# silence (the `space_quota` reasoning on the register route).
+_UNREPLACED = "file replacement is not configured on this deployment"
 
 router = APIRouter(prefix="/files", tags=["files"], dependencies=[Depends(current_principal)])
 
@@ -138,10 +149,27 @@ async def complete_file(
     """Mark the uploaded bytes ready (INV-F2 — the moment ``knowledge`` may
     index the file). The BODY is optional (openapi.yaml: ``required: false``):
     an absent body and an absent checksum mean the same honest completion.
-    The response renders the file ``CompleteUploadService`` just returned —
-    ``describe`` presigns its download URL without a second read."""
+    The response renders the file the completion just returned — ``describe``
+    presigns its download URL without a second read.
+
+    **The route goes through ``services.file_replacement`` and NOT through
+    ``services.files.complete``** — the ``DELETE`` route's reasoning, at the
+    other end of a file's life. Completing an upload whose name already exists
+    in its space REPLACES the file that had it, index and all (س-29 rule 1,
+    owner decision 2026-08-25), and that spans ``files`` and ``knowledge`` so
+    it belongs to neither: ``framework/di/file_replacement.py``. Calling the
+    bundle's own service here would leave two files with one name, both
+    indexed, answering the same question twice — the shape the audit records
+    as cause #7.
+
+    The response body is unchanged and so is every status: the sweep runs
+    after the completion has succeeded and cannot turn it into a failure (the
+    cascade's docstring says why)."""
+    replacement = services.file_replacement
+    if replacement is None:
+        raise AppError(_UNREPLACED, code="common.internal")
     checksum = None if body is None else body.checksum
-    file = await services.files.complete.complete(ctx, file_id=file_id, checksum=checksum)
+    file = await replacement.complete(ctx, file_id=file_id, checksum=checksum)
     return _to_file_out(await services.files.transfers.describe(file))
 
 
@@ -198,8 +226,19 @@ async def rename_file(
     response is the full ``FileOut`` — the client replaces the row it holds
     rather than patching a name into it — and ``describe`` presigns the
     download URL from the aggregate the use-case just returned, without a
-    second read (the complete route's reasoning)."""
-    file = await services.files.rename.execute(ctx, file_id, name=body.name)
+    second read (the complete route's reasoning).
+
+    **It goes through ``services.file_replacement`` too**, for the reason the
+    complete route gives: a rename can create the very collision an upload
+    can (``RegisterUpload``'s docstring names both paths), and س-29 rule 1
+    owes both. Renaming a file onto a name an OLDER file in the same space
+    already holds replaces that older file; renaming one onto a NEWER file's
+    name replaces nothing, because the rule is that fresh content supersedes
+    stale and never the reverse."""
+    replacement = services.file_replacement
+    if replacement is None:
+        raise AppError(_UNREPLACED, code="common.internal")
+    file = await replacement.rename(ctx, file_id, name=body.name)
     return _to_file_out(await services.files.transfers.describe(file))
 
 

@@ -146,6 +146,64 @@ class FileRepository(Protocol):
         """
         ...
 
+    async def live_namesakes(self, ctx: ExecutionContext, file: File) -> Sequence[Uuid]:
+        """The ids of the ACTIVE files ``file`` REPLACES — same space, same
+        name, registered before it (س-29 rule 1, owner decision 2026-08-25;
+        ``docs/rag-fidelity-audit.md`` §4-هـ-2).
+
+        The whole aggregate is the argument rather than four loose values,
+        for ``add``/``save``' reason: the question is about a file, and every
+        part of the predicate — its space, its name, when it arrived and which
+        row it is — is read off the same row so that no caller can pair one
+        file's name with another's space.
+
+        **"Same name" is ``lower(normalize(name, NFC))``**, and both halves
+        are load-bearing. ``lower`` is ``ux_spaces_ws_name``'s rule ("Report"
+        and "report" are one name to a human); ``normalize(.., NFC)`` is what
+        makes it true of ARABIC, where the same filename typed on two
+        keyboards differs by combining marks and by nothing else.
+
+        It is STORED (``files.name_key``, ``GENERATED ALWAYS ... STORED``)
+        rather than computed in an index expression, and that is a measured
+        constraint rather than a preference: neither function is ``LEAKPROOF``,
+        so under this table's ``FORCE ROW LEVEL SECURITY`` an expression index
+        over them can never be a search key -- the planner is forbidden from
+        evaluating them before the row-security qual and drops them into a
+        filter (``migrations/versions/files/0003_file_name_lookup.py`` records
+        both ``EXPLAIN`` plans). An adapter that spelled this predicate against
+        ``name`` instead would answer the same question by scanning one
+        space's ten thousand files, on every upload completion.
+
+        **Same SPACE, and the scope is the model's rather than a preference**
+        (س-32): spaces are isolated completely, so one space's ``report.pdf``
+        does not replace another's and there is no cross-space branch of this
+        rule to decide. ``space_id`` is compared NULL-safely — two spaceless
+        files still replace each other, because "no space" is one bucket and
+        not a wildcard.
+
+        **OLDER only** — strictly before ``file`` in ``(created_at, id)``, and
+        this asymmetry is the concurrency argument, not a detail. Two uploads
+        of one name can complete at once; because each may only delete rows
+        that arrived before it, the relation is a strict order and no pair can
+        ever delete each other. It converges on the newest arrival without a
+        lock, which matters because the completion path holds none (the space
+        row lock is taken on REGISTER, ``framework/di/space_quota.py``). The
+        loser's own completion then fails honestly on the deleted row rather
+        than resurrecting itself.
+
+        **Soft-deleted rows are excluded** (the ``bytes_in_space`` rule): a
+        deleted file has already given up its name, and re-deleting it would
+        make a second cascade's worth of work out of nothing.
+
+        Status is NOT filtered. An older row still ``uploaded`` holds the name
+        and the space's quota exactly as a ``ready`` one does, and abandoning
+        an upload must not leave a name reserved forever.
+
+        Returns an empty sequence when nothing matches — the ordinary case,
+        and never an error.
+        """
+        ...
+
     async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> Sequence[str]:
         """Every stored object key this space's files name — step 5 of the
         cascade (``docs/spaces-backend-plan.md`` §3.6, step 11).

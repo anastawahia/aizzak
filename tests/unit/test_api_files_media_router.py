@@ -119,7 +119,9 @@ class _FakeWsAuth:
         return WsPrincipal(workspace_id=_W1, user_id=_U1, roles=frozenset({"owner"}))
 
 
-def _make_app(*, file_deletion: bool = True) -> tuple[FastAPI, FilesMediaStack]:
+def _make_app(
+    *, file_deletion: bool = True, file_replacement: bool = True
+) -> tuple[FastAPI, FilesMediaStack]:
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
     stack = build_files_media(spaces=InMemorySpaces(active={_SPACE}))
@@ -143,6 +145,10 @@ def _make_app(*, file_deletion: bool = True) -> tuple[FastAPI, FilesMediaStack]:
         # The file cascade — `DELETE /files/{id}` reaches the index through
         # this and not through `files.delete`, which is the whole repair.
         file_deletion=stack.file_deletion if file_deletion else None,
+        # س-29 rule 1 — `complete`/`PATCH` reach it the way `DELETE` reaches
+        # the cascade above, and for the same reason: a name already held in
+        # the space is a replacement, and the bundle cannot perform one.
+        file_replacement=stack.file_replacement if file_replacement else None,
         media=stack.media,
         space_quota=stack.space_quota,
         workspace=_WORKSPACE_USAGE.workspace,
@@ -456,6 +462,91 @@ def test_delete_fails_closed_when_the_cascade_is_unwired() -> None:
     file_id = _register(client)["file_id"]
 
     response = client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+
+
+# --------------------------------------------------------------------------- #
+# Files — س-29 rule 1: a duplicate name is a replacement                        #
+# --------------------------------------------------------------------------- #
+def test_completing_an_upload_replaces_the_file_that_held_the_name() -> None:
+    """The route-level statement of س-29 rule 1 (owner decision 2026-08-25).
+    `POST /files/{id}/complete` goes through the cascade, so the older
+    `report.pdf` loses its row AND its index — the purge is what makes it a
+    replacement rather than a second copy answering the same question."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client)["file_id"]
+    client.post(f"/api/v1/files/{first}/complete", json={}, headers=_auth())
+    second = _register(client)["file_id"]
+
+    response = client.post(f"/api/v1/files/{second}/complete", json={}, headers=_auth())
+
+    assert response.status_code == 200, response.text
+    assert stack.knowledge_purge.calls == [first]
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
+    assert [row["id"] for row in listed] == [second]
+
+
+def test_registering_a_duplicate_name_destroys_nothing_until_the_bytes_land() -> None:
+    """ "رفعٌ أوّلًا ثمّ حذف" at the route. A registration is a presigned PUT
+    and a promise; a client that registers `report.pdf` and never uploads must
+    leave the `report.pdf` the space already holds exactly where it was."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client)["file_id"]
+    client.post(f"/api/v1/files/{first}/complete", json={}, headers=_auth())
+
+    _register(client)  # registered, never completed
+
+    assert stack.knowledge_purge.calls == []
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
+    assert first in [row["id"] for row in listed]
+
+
+def test_renaming_onto_an_existing_name_replaces_that_file_too() -> None:
+    """`RenameFile` can create the collision after the fact, so `PATCH` owes
+    the same rule and reaches the same cascade."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client)["file_id"]
+    client.post(f"/api/v1/files/{first}/complete", json={}, headers=_auth())
+    second = _register(client, name="draft.pdf")["file_id"]
+    client.post(f"/api/v1/files/{second}/complete", json={}, headers=_auth())
+
+    response = client.patch(f"/api/v1/files/{second}", json={"name": "report.pdf"}, headers=_auth())
+
+    assert response.status_code == 200, response.text
+    assert stack.knowledge_purge.calls == [first]
+
+
+def test_complete_fails_closed_when_the_replacement_is_unwired() -> None:
+    """A deployment that reached this route with no cascade must NOT fall back
+    to `services.files.complete`: that call still works, which is exactly why
+    the fallback would be invisible — a 200 that left two files under one
+    name, both indexed, answering the same question twice (the `space_quota`
+    reasoning on the register route)."""
+    app, _ = _make_app(file_replacement=False)
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = client.post(f"/api/v1/files/{file_id}/complete", json={}, headers=_auth())
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+
+
+def test_rename_fails_closed_when_the_replacement_is_unwired() -> None:
+    """The same guard on the other path — a rename that skipped the sweep
+    would leave the collision it just created."""
+    app, _ = _make_app(file_replacement=False)
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = client.patch(
+        f"/api/v1/files/{file_id}", json={"name": "renamed.pdf"}, headers=_auth()
+    )
 
     assert response.status_code == 500
     assert response.json()["code"] == "common.internal"

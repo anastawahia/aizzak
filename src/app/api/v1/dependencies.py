@@ -40,6 +40,7 @@ from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_deletion import DeleteFileService
+from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.errors import UnauthorizedError
@@ -56,6 +57,7 @@ from app.modules.admin.application.users import PlatformAdminUseCases
 from app.modules.conversations.application.use_cases import ConversationUseCases
 from app.modules.credentials.application.use_cases import CredentialUseCases
 from app.modules.files.application.use_cases import FileUseCases, RegisteredUpload
+from app.modules.files.domain.entities import File
 from app.modules.integrations.application.use_cases import IntegrationsUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeUseCases
 from app.modules.media.application.use_cases import MediaUseCases
@@ -229,6 +231,22 @@ class ApiServices:
     # applications that predate the cascade keep composing, and a route that
     # reaches an unwired one is a 500 rather than a silent half-deletion.
     file_deletion: DeleteFileService | None = None
+    # س-29 rule 1 (`framework/di/file_replacement.py`) — `file_deletion`'s
+    # sibling on the WRITE side, and here for the same three-way reason:
+    # completing an upload (or renaming a file) under a name its space already
+    # holds destroys the older file's corpus as well as its row.
+    #
+    # `FileUseCases.complete`/`.rename` stay reachable on the bundle because
+    # this service is what calls them; both ROUTES go through this field, so
+    # no request can leave a space holding two files with one name, both
+    # indexed, answering the same question twice.
+    #
+    # Optional and FAILS CLOSED — the `space_quota` rule, not the
+    # `file_deletion` one, because the difference matters here: these two
+    # routes worked before the cascade existed, so a fallback to the bundle
+    # would be available and would silently skip the replacement. That is the
+    # silence this check exists to break.
+    file_replacement: ReplaceNamesakesService[File] | None = None
     # The third space-shaped field, and the only one an EXISTING route needs:
     # `POST /files` registers through it instead of through
     # `files.transfers.register`, so the 1 GiB ceiling (§3.3) is consulted

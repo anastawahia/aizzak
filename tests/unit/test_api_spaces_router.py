@@ -171,6 +171,7 @@ def _make_app(
         # cascade has nothing to do with `spaces` being configured, and the
         # unwired case is exercised where it belongs (the files router).
         file_deletion=files_media.file_deletion,
+        file_replacement=files_media.file_replacement,
         media=files_media.media,
         workspace=build_workspace_usage().workspace,
         usage=build_workspace_usage().usage,

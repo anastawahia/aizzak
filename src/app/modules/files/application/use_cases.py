@@ -81,6 +81,46 @@ class RegisterUpload:
     ``NOT NULL``, but it has to be TYPED at the call site: a default would let
     a writer drop into it silently, and the whole point of the transitional
     window is that the writers still owing a space are visible.
+
+    ✅ **A duplicate NAME is a REPLACEMENT, and it deliberately does not
+    happen here** (س-29 rule 1, owner decision 2026-08-25 --
+    docs/rag-fidelity-audit.md §4-هـ-2). The rule: an upload whose name
+    already exists IN THE SAME SPACE replaces that file -- the new one is
+    stored FIRST and the old one is then deleted together with its index,
+    never the other way round, because nothing existing may be destroyed
+    before its replacement is proven. The stated reason is that a file
+    arriving under an existing name is an UPDATED version of it.
+
+    **"Proven" is what puts the sweep at COMPLETION and not here.**
+    Registering mints a row and presigns a PUT; it is a promise that bytes
+    are coming, and a promise is exactly what may not be traded for an
+    existing file. A client that registers ``report.pdf`` and then abandons
+    the upload -- crashes, cancels, loses the network -- must leave the
+    ``report.pdf`` already in the space untouched. So this use-case writes the
+    new row beside the old one and nothing is destroyed; the replacement runs
+    in ``framework/di/file_replacement.py`` once ``CompleteUpload`` has said
+    the bytes landed.
+
+    The scope is the space, and that follows from the model rather than from
+    a preference: spaces are fully isolated -- each has its own files and its
+    own threads, and no search ever spans two (س-32, enforced) -- so there is
+    no cross-space branch of this rule to decide. ``RenameFile`` can create
+    the same collision after the fact, and goes through the same cascade for
+    it. (The sibling rule, for content repeated under a DIFFERENT name, is a
+    retrieval-side guard and is recorded at ``_widen_to_parents``.)
+
+    ⚠️ **The cost of storing first is that BOTH files are counted while the
+    replacement is in flight**, and the two ceilings below see it. A workspace
+    already at ``max_files_per_workspace`` cannot replace a file by
+    re-uploading it -- the count above rejects the registration with
+    ``files.too_many`` before the old one would ever have gone -- and the same
+    holds for the space's byte quota (``framework/di/space_quota.py``), where
+    replacing a file larger than the room left over answers
+    ``spaces.quota_exceeded``. The user's way through is the one they used
+    before this feature existed: delete, then upload. That is a real limit and
+    not an oversight -- the alternative is to free the room by destroying the
+    existing file for an upload that has not happened yet, which is the one
+    thing the decision's order forbids.
     """
 
     def __init__(self, files: FileRepository, limits: Limits, spaces: ActiveSpaces) -> None:
@@ -194,6 +234,39 @@ class CompleteUpload:
         return file, (event,)
 
 
+class FindNamesakes:
+    """The ids of the ACTIVE files one file REPLACES — same space, same name,
+    registered before it (س-29 rule 1, owner decision 2026-08-25;
+    ``docs/rag-fidelity-audit.md`` §4-هـ-2).
+
+    **A read, and only a read.** It does not delete, because it cannot: the
+    replacement destroys the older file's INDEX as well as its row, and the
+    index belongs to ``knowledge``, which no module may import (import-linter
+    contract 4). The cascade that owns both halves is
+    ``framework/di/file_replacement.py``, exactly as ``file_deletion.py``
+    owns the delete half — this use-case is the ``files`` question it asks.
+
+    Splitting it out this way is also what keeps the RULE in one place. Every
+    part of "same name" — the case fold, the Unicode normalisation, the
+    NULL-safe space match, the strict "older" order — lives in
+    ``FileRepository.live_namesakes`` and its index, so the coordinating
+    service upstairs never re-states any of it and cannot drift from it.
+
+    An unknown or foreign id raises ``NotFoundError`` rather than answering
+    "nothing to replace": the caller is about to act on that answer, and
+    silence would be indistinguishable from a file that has no namesakes.
+    """
+
+    def __init__(self, files: FileRepository) -> None:
+        self._files = files
+
+    async def execute(self, ctx: ExecutionContext, file_id: Uuid) -> tuple[Uuid, ...]:
+        file = await self._files.get(ctx, file_id)
+        if file is None:
+            raise NotFoundError("file not found")
+        return tuple(await self._files.live_namesakes(ctx, file))
+
+
 class ListFiles:
     """List active files via keyset pagination on ``id`` — one space's when
     ``space_id`` is given, the whole workspace's when it is ``None`` (the
@@ -252,6 +325,15 @@ class RenameFile:
     وعدٌ بالإصدار" mistake in event form: a promise with no consumer and no way
     to tell whether it is being honoured. It follows that a rename costs no
     re-index and cannot change an answer.
+
+    ⚠️ **That last sentence is true of THIS use-case and no longer of the
+    route.** Since س-29 rule 1, renaming a file onto a name an older file in
+    the same space already holds REPLACES that older file — its row and its
+    index — so ``PATCH /files/{id}`` can change what retrieval returns even
+    though nothing here does. The rename and the replacement are deliberately
+    two objects: this one stays a single statement over one aggregate, and
+    ``framework/di/file_replacement.py`` owns the consequence, because it
+    reaches a module ``files`` may not import.
 
     **A no-op rename does not write.** ``File.rename`` returns early when the
     resulting name is the one it already has; the check below turns that into
@@ -595,6 +677,12 @@ class FileUseCases:
     complete: CompleteUploadService
     rename: RenameFile
     delete: SoftDeleteFileService
+    # س-29 rule 1's `files` half: which live files a given one replaces. It
+    # sits on the bundle rather than beside `delete` because the Composition
+    # Root hands it to `framework/di/file_replacement.py`, which owns the
+    # other half (the delete that also empties the index) and may not import
+    # this module to reach it.
+    namesakes: FindNamesakes
     # `spaces-backend-plan.md` step 12 — the files half of `GET /api/v1/spaces`
     # (§3.7). It is on THIS bundle, not on a spaces one, because the numbers
     # are sums over this module's table; the spaces router holds both bundles

@@ -14,6 +14,7 @@ appends so a test can assert the media POST left its ``MediaRequested`` row.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_deletion import DeleteFileService
+from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.event_outbox import OutboxRecord
@@ -30,6 +32,7 @@ from app.modules.files.application.use_cases import (
     CompleteUploadService,
     FileTransferService,
     FileUseCases,
+    FindNamesakes,
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
@@ -46,6 +49,12 @@ from app.modules.media.application.use_cases import (
     RequestMedia,
 )
 from app.modules.media.domain.entities import MediaJob
+
+
+def _name_key(name: str) -> str:
+    """``lower(normalize(name, NFC))`` in Python — the one expression س-29
+    rule 1's "same name" is defined by (``files/0003_file_name_lookup.py``)."""
+    return unicodedata.normalize("NFC", name).casefold()
 
 
 @dataclass
@@ -166,6 +175,23 @@ class InMemoryFileRepository:
             for row in self.rows.values()
             if row.workspace_id == ctx.workspace_id and row.space_id == space_id
         ]
+
+    async def live_namesakes(self, ctx: ExecutionContext, file: File) -> list[str]:
+        # Faithful to `SqlFileRepository.live_namesakes` clause for clause,
+        # because س-29 rule 1 is a RULE and not a query: a fake that matched
+        # on raw equality would let every router test pass while the product
+        # missed "Report.pdf" vs "report.pdf" and every Arabic name typed on a
+        # second keyboard. `normalize` then `casefold` is the same order as
+        # SQL's `lower(normalize(name, NFC))`.
+        return sorted(
+            row.id
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and row.space_id == file.space_id
+            and _name_key(row.name.value) == _name_key(file.name.value)
+            and row.deleted_at is None
+            and (row.created_at, row.id) < (file.created_at, file.id)
+        )
 
     async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: str) -> list[str]:
         return [row.storage_key.value for row in self._in_space(ctx, space_id)]
@@ -316,6 +342,12 @@ class FilesMediaStack:
     # reason: a router test that wired the bare soft delete instead would pass
     # while asserting the exact behaviour the cascade exists to prevent.
     file_deletion: DeleteFileService
+    # س-29 rule 1 — what `POST /files/{id}/complete` and `PATCH /files/{id}`
+    # go through now that a name already held in the space is a replacement.
+    # On the stack for `file_deletion`'s reason: a router test that wired the
+    # bundle's bare `complete` would pass while asserting exactly the state
+    # the cascade exists to prevent — two files, one name, both indexed.
+    file_replacement: ReplaceNamesakesService[File]
     knowledge_purge: RecordingFileKnowledgePurge
 
 
@@ -365,12 +397,19 @@ def build_files_media(
     # other.
     file_delete = SoftDeleteFileService(SoftDeleteFile(files_repo), outbox, uow)
     knowledge_purge = RecordingFileKnowledgePurge()
+    # The same single-instance rule `file_delete` above follows, one step out:
+    # the cascade wraps the bundle's OWN `complete`/`rename`/`namesakes`.
+    file_complete = CompleteUploadService(CompleteUpload(files_repo), outbox, uow)
+    file_rename = RenameFile(files_repo)
+    namesakes = FindNamesakes(files_repo)
+    file_deletion = DeleteFileService(file_delete, knowledge=knowledge_purge)
     return FilesMediaStack(
         files=FileUseCases(
             transfers=transfers,
-            complete=CompleteUploadService(CompleteUpload(files_repo), outbox, uow),
-            rename=RenameFile(files_repo),
+            complete=file_complete,
+            rename=file_rename,
             delete=file_delete,
+            namesakes=namesakes,
             space_totals=SummariseSpaces(files_repo),
         ),
         media=MediaUseCases(
@@ -388,6 +427,9 @@ def build_files_media(
         # `NoopUnitOfWork` is what it cannot be faithful about, and that is
         # the one thing the live test owns.
         space_quota=SpaceQuotaService(transfers, spaces, files_repo, uow, limits),
-        file_deletion=DeleteFileService(file_delete, knowledge=knowledge_purge),
+        file_deletion=file_deletion,
+        file_replacement=ReplaceNamesakesService(
+            file_complete, file_rename, namesakes=namesakes, erase=file_deletion
+        ),
         knowledge_purge=knowledge_purge,
     )

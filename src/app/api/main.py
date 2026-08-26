@@ -524,6 +524,7 @@ def create_production_app() -> FastAPI:
         # falling back to the bare soft delete, which is the behaviour that
         # left a deleted file's chunks and points answering searches.
         file_deletion=root.file_deletion,
+        file_replacement=root.file_replacement,
         media=root.media,
         workspace=root.workspace,
         presence=root.presence,

@@ -189,6 +189,7 @@ from app.framework.agent_runtime.plugin_loader import PluginLoader, PluginLoadRe
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_deletion import DeleteFileService
+from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.lifecycle import Disposable
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
@@ -315,6 +316,7 @@ from app.modules.files.application.use_cases import (
     FilesQueryService,
     FileTransferService,
     FileUseCases,
+    FindNamesakes,
     PurgeSpaceFiles,
     RegisteredUpload,
     RegisterUpload,
@@ -323,6 +325,7 @@ from app.modules.files.application.use_cases import (
     SoftDeleteFileService,
     SummariseSpaces,
 )
+from app.modules.files.domain.entities import File
 from app.modules.integrations.adapters.sql_repository import (
     SqlConnectionRepository,
     SqlMcpServerRepository,
@@ -912,6 +915,72 @@ def _build_spaces_seam(
     return repository, SpacesQueryService(repository), use_cases
 
 
+def _build_file_services(
+    tenant_session: TenantSessionFactory,
+    settings: Settings,
+    *,
+    files: SqlFileRepository,
+    spaces: SpacesQueryService,
+    storage: StorageHandle,
+    outbox: EventOutbox,
+    knowledge: PurgeFileKnowledge,
+) -> tuple[FileUseCases, DeleteFileService, ReplaceNamesakesService[File]]:
+    """The files bundle (6.1-هـ-2) and the TWO cross-module cascades that
+    spend it — ``file_deletion.py``'s and ``file_replacement.py``'s.
+
+    Built together for ``_build_space_services``' reason, sharpened by a
+    second holder. Both cascades reach into ``knowledge``, so neither may live
+    in a module (import-linter contract 4); and both are built out of the
+    bundle's OWN services rather than fresh ones, so that the soft delete the
+    cascade runs is the soft delete the module offers, and the completion the
+    replacement wraps is the atomic one that appends to the outbox. Two
+    instances of any of those would type-check and behave identically today,
+    and would be two places for one rule to be changed in one and not the
+    other.
+
+    ``file_replacement`` holds ``file_deletion`` itself, not a second cascade
+    beside it: replacing a file destroys exactly what deleting one destroys,
+    and the purge's order — mark first, then empty the index — is a rule that
+    gets one home.
+
+    The bundle carries ``complete``, ``rename`` and ``delete``, and no router
+    may spend any of the three: ``routers/files.py`` reaches all three through
+    a cascade. That is the ``SpaceUseCases.delete`` rule (the bundle carries
+    the mark, nothing but the cascade may spend it) applied to a module whose
+    every write now has a cross-module consequence.
+    """
+    complete = CompleteUploadService(CompleteUpload(files), outbox, tenant_session)
+    rename = RenameFile(files)
+    mark = SoftDeleteFileService(SoftDeleteFile(files), outbox, tenant_session)
+    # س-29 rule 1's `files` half -- which live files a newly completed or
+    # renamed one replaces. Read-only: the delete that goes with it spans
+    # `knowledge` and is `file_replacement.py`'s.
+    namesakes = FindNamesakes(files)
+    bundle = FileUseCases(
+        transfers=FileTransferService(
+            RegisterUpload(files, settings.limits, spaces),
+            files,
+            storage,
+            put_ttl_s=settings.minio.presign_put_ttl_s,
+            get_ttl_s=settings.minio.presign_get_ttl_s,
+        ),
+        complete=complete,
+        rename=rename,
+        delete=mark,
+        namesakes=namesakes,
+        # `spaces-backend-plan.md` step 12 -- the bytes/file counts `GET
+        # /api/v1/spaces` shows. The same repository the quota sums, so the
+        # number a client reads is the number the ceiling is measured against.
+        space_totals=SummariseSpaces(files),
+    )
+    cascade = DeleteFileService(mark, knowledge=knowledge)
+    return (
+        bundle,
+        cascade,
+        ReplaceNamesakesService(complete, rename, namesakes=namesakes, erase=cascade),
+    )
+
+
 def _build_space_services(
     tenant_session: TenantSessionFactory,
     limits: Limits,
@@ -1427,6 +1496,13 @@ class CompositionRoot:
     # `files.delete` directly — a mark without the purge is exactly the state
     # where a removed file went on answering searches.
     file_deletion: DeleteFileService
+    # س-29 rule 1 — `POST /files/{id}/complete` and `PATCH /files/{id}` go
+    # through this instead of through `files.complete`/`files.rename`, so a
+    # name that already exists in the space replaces the file that had it
+    # (`framework/di/file_replacement.py`). Held beside `file_deletion` for
+    # the same reason and over the same two modules: the replacement destroys
+    # the older file's index, which `files` may not reach.
+    file_replacement: ReplaceNamesakesService[File]
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
     # carries ONLY the client-reachable use-cases: `workspace` leaves out
@@ -1760,26 +1836,17 @@ class CompositionRoot:
         # with no orchestrator rebuild.
         storage = StorageHandle()
 
-        # 6.1-هـ-2 -- the files bundle the API layer consumes, over the
-        # `file_repository` built above. The presigned faces hold the SAME
-        # storage handle the agents do: `connect_storage`'s single `bind`
-        # lights everything up together.
-        files_use_cases = FileUseCases(
-            transfers=FileTransferService(
-                RegisterUpload(file_repository, settings.limits, spaces_query),
-                file_repository,
-                storage,
-                put_ttl_s=settings.minio.presign_put_ttl_s,
-                get_ttl_s=settings.minio.presign_get_ttl_s,
-            ),
-            complete=CompleteUploadService(CompleteUpload(file_repository), outbox, tenant_session),
-            rename=RenameFile(file_repository),
-            delete=SoftDeleteFileService(SoftDeleteFile(file_repository), outbox, tenant_session),
-            # `spaces-backend-plan.md` step 12 -- the bytes/file counts `GET
-            # /api/v1/spaces` shows. The same repository the quota sums, so
-            # the number a client reads is the number the ceiling is measured
-            # against.
-            space_totals=SummariseSpaces(file_repository),
+        # 6.1-هـ-2 + the two file cascades -- the helper above, which is where
+        # the bindings are explained. Built together because the cascades hold
+        # the bundle's own services and must hold the SAME instances.
+        files_use_cases, file_deletion, file_replacement = _build_file_services(
+            tenant_session,
+            settings,
+            files=file_repository,
+            spaces=spaces_query,
+            storage=storage,
+            outbox=outbox,
+            knowledge=purge_file_knowledge,
         )
 
         # `spaces-backend-plan.md` steps 5 and 11 -- the two cross-module
@@ -1894,7 +1961,8 @@ class CompositionRoot:
             # soft delete the cascade runs and the one the module offers must
             # be one object, or a change to its idempotence lands in one and
             # misses the other.
-            file_deletion=DeleteFileService(files_use_cases.delete, knowledge=purge_file_knowledge),
+            file_deletion=file_deletion,
+            file_replacement=file_replacement,
             media=media,
             workspace=workspace,
             presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),
