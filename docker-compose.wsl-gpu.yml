@@ -1,0 +1,67 @@
+# WSL2 GPU visibility overlay -- makes the host's NVIDIA card readable from
+# inside `app`, which is what the System Monitor page reports.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app
+#
+# NOT merged automatically, the same deliberate choice as
+# `docker-compose.test.yml`: every path and device named below exists on a WSL2
+# host and on NO other kind of host. Written into `docker-compose.yml` it would
+# turn `up -d` into a hard failure ("no such file or directory: /dev/dxg") on
+# the Linux GPU host the deployment runbook targets and on every CI runner. The
+# overlay is asked for by name, so it does not exist for the hosts it would
+# break.
+#
+# ── Why not `gpus: all` ────────────────────────────────────────────────────
+# `gpus: all` / `deploy.resources.reservations.devices` route through the
+# NVIDIA Container Toolkit, which is NOT installed here (`nvidia-ctk` absent,
+# `docker info` lists only `runc`, /etc/docker/daemon.json does not exist).
+# Adding that key without the toolkit fails the container outright with "could
+# not select device driver". Installing it needs root and a Docker daemon
+# restart; this overlay needs neither, and no image rebuild either.
+#
+# THAT trade is the right one for what this buys: the page wants to READ the
+# card, not compute on it. The mounts below carry the driver's user-space half
+# and the /dev/dxg paravirtual device -- enough for NVML, hence enough for
+# `nvidia-smi`, without granting the container a CUDA context it has no code to
+# use. Should a service ever need to COMPUTE on the GPU, install the toolkit
+# and give that service `gpus: all` -- do not widen this file into a substitute
+# for it.
+#
+# Verified on this host: `nvidia-smi` inside `aizzak/app:dev` answers the exact
+# eight-field query in `system_stats.py` (_NVIDIA_SMI_FIELDS), temperature and
+# power included -- "0, NVIDIA GeForce RTX 4060 Laptop GPU, 0, 12, 8188, 1211,
+# 49, 4.51".
+
+services:
+  app:
+    devices:
+      # The WSL paravirtual GPU device. This, not /dev/nvidia*, is how a WSL2
+      # guest reaches the card at all -- there is no NVIDIA kernel module in
+      # the WSL kernel, the Windows driver sits on the other side of dxgkrnl.
+      - /dev/dxg
+
+    volumes:
+      # ⚠️ The WHOLE of /usr/lib/wsl, not just its lib/. Mounting only lib/ was
+      # tried and nvidia-smi answered "couldn't communicate with the NVIDIA
+      # driver / Driver Not Loaded": libdxcore.so reaches sideways into
+      # /usr/lib/wsl/drivers for the Windows-side driver store, and a mount
+      # that stops at lib/ leaves that lookup resolving to nothing.
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+
+      # nvidia-smi lands on PATH by being BIND-MOUNTED onto a directory the
+      # image already searches, rather than by prepending /usr/lib/wsl/lib to
+      # `PATH:` here. `system_stats.py` finds the binary with
+      # `shutil.which("nvidia-smi")`, so it must be on PATH -- but a PATH
+      # override in this file would have to restate the image's own value in
+      # full, including the `/opt/venv/bin` the Dockerfile prepends. The day
+      # that Dockerfile line changes, the overlay would silently drop the
+      # venv and `gunicorn` would stop being findable: a monitoring nicety
+      # taking down the API. A single-file mount cannot fail that way.
+      - /usr/lib/wsl/lib/nvidia-smi:/usr/local/bin/nvidia-smi:ro
+
+    environment:
+      # libnvidia-ml.so.1 lives only under the WSL mount and is in no ld cache
+      # inside the image. Scoped to this one service and pointed at a directory
+      # holding nothing but the NVIDIA/D3D12 user-space driver, so it shadows
+      # none of the image's own libraries.
+      LD_LIBRARY_PATH: /usr/lib/wsl/lib

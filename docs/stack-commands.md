@@ -77,6 +77,7 @@
 | 34‑ب | `python -m app.ops.notify_groups list` | مجموعات `cg.notify` كلّها مع LIVE/ORPHAN وسببه — **قراءةٌ محضة**. و`sweep --yes` يكنس اليتيمة ([§3.135](log/3.135.md)) |
 | 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
 | 36 | `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` | تزويد `aizzak_test` — **يدويٌّ، مرّةً واحدةً لكلّ حجم**، ولا يُشغَّل تلقائيّاً أبداً. مُعاد التشغيل بأمان |
+| 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
 
 **الأمر الجامع للبوّابات الخمس** (من ويندوز، بمسارات venv اللينكسيّة):
 
@@ -451,6 +452,33 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml exec -T postgres
 set -a; . ./.env.test; set +a
 REQUIRE_LIVE=1 pytest -rs
 ```
+
+---
+
+### 37 · قراءة الـGPU — `docker-compose.wsl-gpu.yml`
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app
+```
+
+**العطل الذي يعالجه:** صفحة System Monitor كانت تعرض `nvidia-smi is not available on this host`. الواجهة سليمة والخادم سليم — [`system_stats.py`](../src/app/infrastructure/monitoring/system_stats.py) يبحث عن `nvidia-smi` بـ`shutil.which` ويُبلِّغ غيابه بدل أن يدّعي «لا بطاقات». البطاقة كانت مرئيّةً في WSL (`NVIDIA GeForce RTX 4060 Laptop GPU`) وغير ممرَّرةٍ إلى الحاوية: `DeviceRequests = null`.
+
+**ولماذا ملفُّ تجاوزٍ لا سطرٌ في `docker-compose.yml`؟** كلُّ ما فيه — `/dev/dxg` و`/usr/lib/wsl` — موجودٌ على مضيف WSL2 **وحده**. كتابته في الملفّ الأصل تجعل `up -d` يفشل فشلاً قاطعاً على مضيف اللينكس الذي يستهدفه [`deploy-linux-server.md`](deploy-linux-server.md) وعلى كلّ عدّاءٍ في CI. وهو النمط نفسه المعتمَد في **35** أعلاه: ملفٌّ لا يُدمَج إلّا بطلبٍ صريح، فلا وجود له عند المضيف الذي يكسره.
+
+**ولماذا لا `gpus: all`؟** لأنّها تمرُّ عبر NVIDIA Container Toolkit، وهي **غير مثبَّتة هنا** (`nvidia-ctk` غائب · `docker info` لا يذكر إلّا `runc` · لا وجود لـ`/etc/docker/daemon.json`)، وإضافةُ المفتاح بدونها تُفشل الحاوية بـ«could not select device driver». تثبيتها يحتاج `root` وإعادة تشغيل عفريت Docker؛ هذا الملفّ لا يحتاج أيّاً منهما ولا إعادة بناءٍ للصورة. والمقايضة صحيحةٌ لما نريده: الصفحة **تقرأ** البطاقة ولا تحسب عليها، والتركيبان أدناه يكفيان NVML — فيكفيان `nvidia-smi` — بلا منح الحاوية سياق CUDA لا شيفرة لديها تستعمله. فإن احتاجت خدمةٌ يوماً أن **تحسب** على البطاقة، فثبِّت العُدّة وامنح تلك الخدمة `gpus: all`؛ ولا يُوسَّع هذا الملفّ ليكون بديلاً عنها.
+
+⚠️ **`/usr/lib/wsl` كاملاً لا `lib/` وحدها.** جُرِّب الاقتصار على `lib/` فأجاب `nvidia-smi` بـ«couldn't communicate with the NVIDIA driver / Driver Not Loaded»: ‏`libdxcore.so` يمدّ يده جانباً إلى `/usr/lib/wsl/drivers` نحو مخزن تعريف ويندوز.
+
+📌 **و`nvidia-smi` يصل إلى `PATH` بتركيبِ ملفٍّ واحدٍ فوق `/usr/local/bin`**، لا بإعادة تعريف `PATH:` في ملفّ التجاوز: إعادة تعريفها كانت ستُعيد كتابة قيمة الصورة كاملةً بما فيها `/opt/venv/bin` الذي يضيفه [`Dockerfile`](../Dockerfile) — ويوم يتغيّر ذلك السطر يسقط الـvenv صامتاً ويصير `gunicorn` غير موجود: رفاهيةُ مراقبةٍ تُسقط الـAPI.
+
+**القياس بعد التطبيق** (‏من داخل `aizzak-app-1`، بمسار الشيفرة نفسه لا بأمرٍ يدويّ):
+
+```
+gpu_error : None
+gpu       : index=0 · NVIDIA GeForce RTX 4060 Laptop GPU · util 0% · mem 1.16/8.0 GB (14.5%) · 50°C · 4.64 W
+```
+
+⚠️ **الملفّ يُسمّى في كلّ `up` لاحق.** `docker compose up -d` مجرَّداً يعيد إنشاء `app` بلا التجاوز فتعود القراءة غائبة. لتثبيته لهذا المضيف وحده: `COMPOSE_FILE=docker-compose.yml:docker-compose.wsl-gpu.yml` في `.env` (‏وهو مُتَجاهَلٌ في git — القاعدة الذهبيّة 7).
 
 ---
 
