@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import Any
@@ -75,6 +76,41 @@ STREAM_MIN_ACCURACY = 60.0
 # index the prose) instead of a *false* one (garbled table, and the text pass
 # skips the region — see plan §6 risk 2).
 TABLE_MIN_COLUMNS = 2
+
+# The false-table guard (decision س-30, docs/rag-fidelity-audit.md §4-هـ-1).
+# A table whose DATA rows are at least half dot-leader rows is a table of
+# contents, and is dropped WHOLE -- not row by row, which would leave a
+# shredded ToC skeleton and its header behind.
+#
+# Measured on the live corpus: the one real ToC scores 92.7% (38 of 41 rows;
+# the other 3 are a page-break header and footer) and every other table in the
+# corpus scores 0%. The gap is total, so 0.5 is a point in empty space rather
+# than a value calibrated on the sample -- which is also why this did not have
+# to wait on `P-38`'s evaluation set. Anything in 0.05..0.90 would classify
+# this corpus identically; 0.5 is chosen for being the least surprising number
+# in that range, not for sitting on a measured boundary.
+#
+# ⚠️ `Column_N` prevalence was TESTED AS A SIGNAL AND REJECTED. It looks like
+# the obvious one (37.3% of chunks carry it) but most of those are legitimate
+# two-column data whose header row was eaten by the running page header --
+# `Definitions and Abbreviations: HMI; Column_2: Human Machine Interface`, 62
+# chunks of that shape alone. A guard on it deletes real content. The 37% is a
+# HEADER-POLLUTION symptom (د-1/د-3/د-4), not a false-table one.
+#
+# Why the ToC is the worst false table there is: its rows are lexically
+# IDENTICAL to what users ask ("3.9 Mine Auxiliary Transformer") and carry a
+# page number instead of an answer -- so they win the sparse leg exactly where
+# it is asked, and return nothing. And they occupy `k` slots that cannot be
+# bought back, because `default_k` is frozen permanently (§4-أ-1).
+_TOC_DOT_LEADER_ROW_RATIO = 0.5
+
+# Six dots is past every ordinary use of the character -- an ellipsis, a
+# decimal chain, a truncation marker -- and short of nothing a real leader
+# draws. ONLY the literal dot is matched, because the dot is what the corpus
+# measurement was taken on: a document that rules its leader with `…` or `·`
+# is not covered, and generalizing to those on the assumption they behave the
+# same is exactly the unmeasured reasoning that made `Column_N` look good.
+_DOT_LEADER = re.compile(r"\.{6,}")
 
 # alpha's `camelot.read_pdf(..., flavor='stream', edge_tol=50)`.
 _STREAM_EDGE_TOL = 50
@@ -213,6 +249,27 @@ def _filter_noise(tables: list[Any]) -> list[Any]:
             extra={"count": len(multi_col) - len(kept), "min_accuracy": STREAM_MIN_ACCURACY},
         )
     return kept
+
+
+def _is_table_of_contents(df: Any) -> bool:
+    """Whether this frame is a table of contents (decision س-30).
+
+    The ratio is taken over DATA rows and **after any cross-page merge**,
+    because that is the unit the 92.7%/0% split was measured on: a ToC broken
+    over a page boundary is one ToC, and judging its fragments one by one would
+    let a fragment diluted by its own preamble rows slip through alone.
+
+    Cells are joined with no separator rather than with a space -- camelot's
+    `stream` flavor can cut a leader at a column edge, and re-joining restores
+    the run it broke. The only false positive that costs anything here is one
+    cell ending in six dots meeting another starting with them, which is a
+    leader.
+    """
+    total = len(df)
+    if not total:
+        return False
+    leaders = sum(1 for _, row in df.iterrows() if _DOT_LEADER.search("".join(str(v) for v in row)))
+    return leaders / total >= _TOC_DOT_LEADER_ROW_RATIO
 
 
 # --------------------------------------------------------------------------- #
@@ -533,6 +590,34 @@ def _build_chunks(
 
             source = sources[0]
             page_number = int(source.page)
+
+            # A merged table occupies a region on EVERY page it spans, and the
+            # text pass must avoid all of them, not just the first. Recorded
+            # BEFORE the false-table guard below, deliberately: see there.
+            for src in sources:
+                regions.setdefault(int(src.page), []).append(
+                    TableRegion(
+                        page_number=int(src.page),
+                        bbox=tuple(float(v) for v in src._bbox),  # type: ignore[arg-type]
+                    )
+                )
+
+            # س-30. Unlike the two guards in `_filter_noise`, this one KEEPS the
+            # region it just recorded, so the text pass skips the ToC as well.
+            # Those guards hand a misdetection back to the text pass because the
+            # content under them is real prose that belongs in the index; a ToC
+            # is not. Its harm is lexical -- rows that read exactly like the
+            # question and answer it with a page number -- and re-indexing it as
+            # paragraphs would carry that harm across intact, merely reshaped.
+            # Nothing is lost: a ToC's titles are already in the body as
+            # headings, and its page numbers were never an answer.
+            if _is_table_of_contents(df):
+                log.info(
+                    "pdf_tables.dropped_table_of_contents",
+                    extra={"table_index": index, "page_number": page_number, "rows": len(df)},
+                )
+                continue
+
             caption = ""
             if caption_doc is not None:
                 caption = _extract_caption(caption_doc[page_number - 1], source._bbox)
@@ -557,15 +642,6 @@ def _build_chunks(
                     ),
                 )
             )
-            # A merged table occupies a region on EVERY page it spans, and the
-            # text pass must avoid all of them, not just the first.
-            for src in sources:
-                regions.setdefault(int(src.page), []).append(
-                    TableRegion(
-                        page_number=int(src.page),
-                        bbox=tuple(float(v) for v in src._bbox),  # type: ignore[arg-type]
-                    )
-                )
         return chunks, regions
     finally:
         if caption_doc is not None:

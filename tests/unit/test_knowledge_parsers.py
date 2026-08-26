@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 import fitz
 import openpyxl
+import pandas as pd
 import pytesseract
 import pytest
 from docx import Document as WordDocument
@@ -879,6 +880,119 @@ def test_parse_pdf_tables_drops_prose_misdetected_as_a_table() -> None:
     # A single column of prose must not survive as a table: it would be indexed
     # garbled AND removed from the text pass, which avoids table regions.
     assert pdf_tables.parse_pdf_tables(data) == ([], {})
+
+
+# --- the false-table guard (decision س-30) --------------------------------- #
+def _toc_pdf_bytes(entries: list[tuple[str, str]]) -> bytes:
+    """A table of contents laid out as camelot sees one: a title column ruled
+    with dot leaders, and a page-number column far enough right that `stream`
+    reads two columns rather than one."""
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 120.0
+    for title, page_no in entries:
+        page.insert_text((72, y), title, fontsize=11)
+        page.insert_text((430, y), page_no, fontsize=11)
+        y += 22
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+_TOC_ENTRIES = [
+    ("Table of Contents", "Page"),
+    ("1. Introduction ...........", "5"),
+    ("2. Scope and Purpose ......", "8"),
+    ("3. Mine Auxiliary Trafo ...", "14"),
+    ("4. Protection Settings ....", "21"),
+    ("5. Commissioning ..........", "30"),
+    ("6. Appendix A .............", "44"),
+]
+
+
+def test_parse_pdf_tables_drops_a_table_of_contents_but_keeps_its_region() -> None:
+    """س-30. A ToC's rows read exactly like the questions users ask and answer
+    them with a page number, so they win the sparse leg where it is asked and
+    return nothing — in `k` slots that are frozen and cannot be bought back.
+
+    The region survives the drop, which is what separates this guard from the
+    two in `_filter_noise`: those hand the page back to the text pass because
+    real prose is underneath, whereas re-indexing a ToC as paragraphs would
+    carry the same lexical harm across merely reshaped.
+    """
+    chunks, regions = pdf_tables.parse_pdf_tables(_toc_pdf_bytes(_TOC_ENTRIES))
+
+    assert chunks == []
+    assert list(regions) == [1]
+    assert regions[1][0].page_number == 1
+
+
+def test_a_table_of_contents_survives_neither_pass() -> None:
+    """Where the guard's value actually is — not in the table pass alone.
+
+    Had the ToC's region been dropped along with its chunk, as the guards in
+    `_filter_noise` drop theirs, `pdf_text` would hand the same lines straight
+    back as prose: the lexical harm intact, merely reshaped. Keeping the region
+    lets the "table-only page" rule finish the job.
+    """
+    data = _toc_pdf_bytes(_TOC_ENTRIES)
+
+    table_chunks, regions = pdf_tables.parse_pdf_tables(data)
+
+    assert table_chunks == []
+    assert pdf_text.parse_pdf_text(data, table_regions=regions) == []
+
+    # The counterfactual, so this test cannot pass for want of any text at all.
+    leaked = pdf_text.parse_pdf_text(data)
+    assert leaked
+    assert any("Mine Auxiliary Trafo" in chunk.text for chunk in leaked)
+
+
+def test_parse_pdf_tables_keeps_a_table_whose_dot_rows_stay_under_the_ratio() -> None:
+    """A dot run is not by itself disqualifying — a placeholder cell in real
+    data must not cost the table."""
+    data = _table_pdf_bytes(
+        [
+            [
+                ("Item", "Notes", "Price"),
+                ("Cable", "..........", "120"),
+                ("Switch", "spare", "340"),
+                ("Panel", "spare", "980"),
+                ("Relay", "spare", "60"),
+            ]
+        ]
+    )
+
+    chunks, _regions = pdf_tables.parse_pdf_tables(data)
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["total_rows"] == 4
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        # A full ToC.
+        ([["1. Intro ........", "5"], ["2. Scope ........", "8"]], True),
+        # Exactly at the ratio: 0.5 drops, the comparison is inclusive.
+        ([["1. Intro ........", "5"], ["Cable", "120"]], True),
+        # One dot row in three is a placeholder, not a ToC.
+        ([["1. Intro ........", "5"], ["Cable", "120"], ["Panel", "980"]], False),
+        # Below six dots is an ellipsis or a decimal chain, not a leader.
+        ([["Ellipsis ...", "5"], ["Rev 1.2.3.4.5.6", "8"]], False),
+        # `stream` cut the leader at the column edge; joining restores it.
+        ([["1. Intro ...", "... 5"], ["2. Scope ...", "... 8"]], True),
+    ],
+)
+def test_is_table_of_contents_ratio(rows: list[list[str]], expected: bool) -> None:
+    df = pd.DataFrame(rows, columns=["title", "page"])
+    assert pdf_tables._is_table_of_contents(df) is expected
+
+
+def test_is_table_of_contents_is_false_for_an_empty_frame() -> None:
+    """No rows is no evidence — and `0/0` must not raise on the way to saying
+    so."""
+    assert pdf_tables._is_table_of_contents(pd.DataFrame()) is False
 
 
 def test_parse_pdf_tables_skips_an_encrypted_pdf() -> None:

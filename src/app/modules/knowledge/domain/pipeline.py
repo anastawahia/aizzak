@@ -106,11 +106,25 @@ time over text already in the database and writes nothing, which is the line
 ``content_pipeline_unchanged`` below draws: this constant answers "would
 re-indexing this document produce different ROWS?", and a retrieval change
 never can.
+
+**Why it is now 6** (rag-fidelity-audit.md §4-هـ-1, decision س-30, wave ب).
+``adapters/parsers/pdf_tables.py`` now drops a table whose data rows are at
+least half dot-leader rows: a table of contents is a FALSE table, and it is
+dropped whole -- with the rows `P-13` would have exploded it into. That is a
+parse-time change that DELETES rows: the corpus's one ToC occupies 41 chunks
+(``seq 27..67``) and the parent above them, and a document re-indexed under
+the guard produces a strictly different set from the one already stored --
+which is this constant's one question, answered "yes".
+
+The guard's other half -- it keeps the table's REGION after dropping its
+chunk, so the text pass does not hand the same lines back as prose -- writes
+no rows of its own. It is not an independent reason to raise this, but it is
+what makes the deletion above stick rather than merely change shape.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = 5
+PIPELINE_VERSION = 6
 
 
 def content_pipeline_unchanged(
