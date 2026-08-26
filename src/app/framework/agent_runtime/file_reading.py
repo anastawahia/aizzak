@@ -64,13 +64,19 @@ def _is_textual(content_type: str) -> bool:
 def _is_outside(view: FileReadView, space_id: Uuid | None) -> bool:
     """Is this file outside the caller's space?
 
-    ``space_id is None`` is UNSCOPED and matches everything — the pre-plan
-    behaviour, kept for callers that have no space to pass (the three bundled
-    agents, still, after step 12: the space reached the request but not
-    ``AgentDeps`` — plan §7). That is why this is not the plain ``!=`` the pin
-    rule uses: there both sides are
-    "the space of a thing", here the left side is a scope, and a scope's
-    absence must not be read as "only files that belong to no space".
+    ``space_id is None`` is UNSCOPED and matches everything. That is why this
+    is not the plain ``!=`` the pin rule uses: there both sides are "the space
+    of a thing", here the left side is a scope, and a scope's absence must not
+    be read as "only files that belong to no space".
+
+    ⚠️ **Since س-32 (owner decision 2026-08-26) no AGENT reaches this with
+    ``None`` on an ordinary turn.** The three bundled agents read
+    ``AgentDependencies.space_id``, which the orchestrator fills from the
+    thread the turn belongs to, so the unscoped branch survives for exactly one
+    shape: an orchestrator with no conversations seam wired, where no space can
+    be known at all. The RAG agent answers that case by not retrieving; these
+    two read the file, because a caller who named a ``file_id`` in a deployment
+    that tracks no threads has named the only scope that deployment has.
 
     A caller that DOES name a space gets the strict reading, ``None`` on the
     file included: a file no space owns is not a file that every space owns.

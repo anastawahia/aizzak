@@ -48,10 +48,17 @@ class FileEditingAgent(BaseAgent):
             self.ctx,
             file_id,
             max_bytes=_MAX_FILE_BYTES,
-            # Spaces plan step 10 — see the twin comment in
-            # `data_analysis_agent`: still no space to pass, because step 12
-            # put it on the request and not on `AgentDeps` (plan §7).
-            space_id=None,
+            # ✅ Spaces plan step 10, closed by س-32 (owner decision
+            # 2026-08-26): the space arrives on `AgentDeps` now, so the
+            # read-any-file-by-id leak (finding 2-ح) is closed on this agent
+            # too. `read_text_file`'s own check does the refusing; all it ever
+            # wanted was this argument.
+            #
+            # `None` still reaches it on the orchestrator's degraded path (no
+            # conversations seam, or a thread that is gone), and `_is_outside`
+            # reads that as unscoped. That is the one remaining widening, and
+            # it is a wiring fact rather than something a caller can ask for.
+            space_id=self.deps.space_id,
         )
         messages = [
             LlmMessage(role="system", content=SYSTEM_PROMPT),

@@ -372,11 +372,12 @@ class RoutedAnswer:
 class KnowledgeRetrieval(Protocol):
     async def retrieve(self, ctx, query: str, k: int | None = None,
                        file_ids: Sequence[Uuid] | None = None,
-                       *, space_id: Uuid | None) -> list[RetrievedChunk]: ...
+                       *, space_id: Uuid) -> list[RetrievedChunk]: ...
     async def answer(self, ctx, question: str, k: int | None = None,
                      file_ids: Sequence[Uuid] | None = None,
-                     *, space_id: Uuid | None) -> RoutedAnswer: ...
-    async def list_document_names(self, ctx, *, limit: int | None = None) -> DocumentNames: ...
+                     *, space_id: Uuid) -> RoutedAnswer: ...
+    async def list_document_names(self, ctx, *, space_id: Uuid,
+                                  limit: int | None = None) -> DocumentNames: ...
 # ثلاثةُ مناهجَ على **بذرةٍ واحدة** لا ثلاثةُ منافذَ محقونة: `rag_agent` يستدعي شيئاً واحداً
 # (ح-11)، والتوجيهُ شأنُ الوحدة لا شأنُ الوكيل (خطّة الاسترجاع §3.4، `P-21`، س-16 = أ).
 # `k` **اختياريّةٌ** منذ الصفّ ١٨ (‏`P-40`، س-24 = أ): حذفُها يطلب ما تُعِدّه النشرةُ لا رقماً
@@ -400,6 +401,14 @@ class KnowledgeRetrieval(Protocol):
 # من ملفٍّ لم يسأل عنه المستخدم أسوأ من «ليس في ذلك الملفّ». و`retrieve` تبقى بلا تصنيفٍ
 # ولا تقييد: هي البحث الحرفيّ الذي يعنيه `POST /knowledge/search`، وتوجيهُ بحثٍ REST عبر
 # مُصنِّفٍ كان سيُدرِج مهمّةَ تلخيصٍ لم يطلبها أحد.
+# ⚠️ **`space_id` إلزاميّةٌ وغيرُ قابلةٍ للعدم على المناهج الثلاثة** (‏س-32، قرار المالك
+# 2026‑08‑26): الفضاءات معزولةٌ عزلاً تامّاً — ملفّاتُها وفهرسُها وصفوفُها — فالبحثُ يقع في
+# فضاءٍ واحدٍ أو لا يقع، ولا قيمةَ على هذا المحور تعني «كلّ الفضاءات». كانت `Uuid | None`
+# ومرّرها مستدعيان بـ`None` عمداً (`POST /knowledge/search` والوكيل)، وذانك بالضبط هما
+# الثقب. والحارسُ الذي ينفّذها `retrieval.require_space_scope` — يرفض قبل أن يُحسَب تضمينٌ
+# واحد. و`list_document_names` أخذتها معها: ترويسةٌ تسمّي ملفّات فضاءٍ لا يستطيع السائل
+# فتحَه هي التسريبُ نفسُه بلسانٍ لطيف — وهذا تعديلٌ صريحٌ لـ«س-23 = ج» التي جعلت الترويسة
+# على مستوى مساحة العمل.
 
 # conversations/ports/repository.py
 class ConversationRepository(Protocol):

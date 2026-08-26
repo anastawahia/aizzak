@@ -145,11 +145,14 @@ instead: the name belongs to no file HERE, so the question is retrieved
 unscoped within its own space and the honest-fallback gate (§3.3) speaks
 about a corpus the user can actually see.
 
-That failure is latent, not live: every caller says ``space_id=None`` today
-(the agent carries no space yet — an open item in the spaces plan's §7), and
-``None`` is "the whole workspace" on BOTH axes, so they agree by being
-absent. The wiring is here so that the day a real space arrives, it arrives
-on the whole path at once rather than on half of it.
+**That day arrived with س-32** (owner decision 2026-08-26). The paragraph
+above used to close by noting the failure was latent because every caller
+said ``space_id=None`` and ``None`` agreed with itself on both axes. There is
+no ``None`` on this path any more: ``space_id`` is a required, non-nullable
+``Uuid`` from ``POST /knowledge/search`` and from ``AgentDependencies.space_id``
+down through here, and ``require_space_scope`` refuses anything else before a
+candidate is walked or an embedding computed. The two axes still have to
+agree, and now they agree on a REAL space rather than on a shared absence.
 """
 
 from __future__ import annotations
@@ -159,7 +162,7 @@ from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Uuid
-from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.retrieval import RetrieveContext, require_space_scope
 from app.modules.knowledge.domain.entities import SummaryJob
 from app.modules.knowledge.domain.file_resolution import (
     AmbiguousFiles,
@@ -249,15 +252,15 @@ class FileCandidates(Protocol):
     failure, wearing the costume of a performance guard.
 
     **``space_id`` is the one narrowing that IS honoured** (the module
-    docstring's last two paragraphs), and it is a required keyword with no
-    default — the rule every other signature on this axis already follows
-    (``DocumentRepository.list``, ``RetrieveContext.execute``,
-    ``RouteQuestion.execute``): "every space" then reads as a decision
-    written at the call site, and never as a keyword somebody forgot.
+    docstring's last two paragraphs), and since س-32 it is a required keyword
+    with no default AND no ``None``: a question may only name files that live
+    in the space it was asked in. "Every space" is not a value this signature
+    can express any more, which is the point — it was expressible, and that is
+    how a name from another space could ever have been resolved.
     """
 
     async def execute(
-        self, ctx: ExecutionContext, *, space_id: Uuid | None
+        self, ctx: ExecutionContext, *, space_id: Uuid
     ) -> Sequence[FileCandidate]: ...
 
 
@@ -290,7 +293,7 @@ class RouteQuestion:
         api_key: str,
         k: int | None = None,
         document_ids: Sequence[Uuid] | None = None,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> RoutedAnswer:
         """Route one question. The arguments are ``RetrieveContext.execute``'s,
         because the CONTENT route is that use-case unchanged — this adds a
@@ -315,7 +318,11 @@ class RouteQuestion:
         ``space_id`` reaches BOTH halves of that sentence: the search it
         filters and the candidate list the name is resolved against (see the
         module docstring). It is passed on, never interpreted here — this
-        class holds no opinion about which space a question belongs to.
+        class holds no opinion about which space a question belongs to — but
+        it is CHECKED here before either half runs (س-32): the candidate walk
+        happens before ``RetrieveContext.execute`` does, so leaving the guard
+        to the search alone would let an unscoped call resolve a file name
+        across every space first and be refused second.
 
         Errors from the summary route are NOT translated: an already-running
         build for the same key is a ``ConflictError`` and reaches the caller
@@ -323,6 +330,7 @@ class RouteQuestion:
         friendly sentence is a rendering decision that belongs to whoever is
         rendering (recorded in the plan's §7).
         """
+        space_id = require_space_scope(space_id)
         intent = classify_intent(question)
         scope = document_ids
         if intent is Intent.SUMMARIZE_DOC:
@@ -359,7 +367,7 @@ class RouteQuestion:
         question: str,
         document_ids: Sequence[Uuid] | None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> RoutedAnswer | None:
         """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
         and the question should fall through to CONTENT retrieval.
@@ -408,7 +416,7 @@ class RouteQuestion:
         question: str,
         document_ids: Sequence[Uuid] | None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> Sequence[Uuid] | None:
         """The scope a CONTENT question is retrieved under (plan §4 row 15,
         ``P-25``): the caller's pin, narrowed to ONE document when the
@@ -450,7 +458,7 @@ class RouteQuestion:
         ctx: ExecutionContext,
         document_ids: Sequence[Uuid] | None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> Sequence[FileCandidate]:
         """The files this question is allowed to be about: the corpus of the
         space being searched, narrowed further to the caller's pin when there
@@ -462,9 +470,10 @@ class RouteQuestion:
         retrieved from** (the module docstring's last two paragraphs). Two
         narrowings, applied in the order they were decided in: the space is
         where this conversation lives, the pin is what it is working with
-        inside it. ``space_id=None`` is the whole workspace — matching the
-        ``None`` that reaches the search on the other axis, so the two never
-        disagree about which corpus this question has.
+        inside it. Since س-32 there is no third possibility: ``space_id`` is a
+        real space or the call never got here (``require_space_scope``), so
+        the corpus a name resolves against and the corpus the answer is drawn
+        from are the same set by construction rather than by agreement.
 
         A pin is a statement about which documents this conversation is
         working with, so resolving OUTSIDE it could summarise (or answer

@@ -423,6 +423,8 @@ class _FakeKnowledge:
     def __init__(self) -> None:
         self.queries: list[str] = []
         self.scopes: list[tuple[str, ...] | None] = []
+        # س-32 — every space the agent named, on every face of this seam.
+        self.spaces: list[str] = []
         # Retrieval plan §3.6/§4 row 6 (`P-36`) -- the real `rag_agent` now
         # calls this on every request that has a knowledge seam at all, not
         # only the zero-chunk fallback below.
@@ -435,10 +437,11 @@ class _FakeKnowledge:
         k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> Sequence[_FakeChunk]:
         self.queries.append(query)
         self.scopes.append(None if file_ids is None else tuple(file_ids))
+        self.spaces.append(space_id)
         return [_FakeChunk("chunk-a", "The capital of France is Paris.")]
 
     async def answer(
@@ -448,7 +451,7 @@ class _FakeKnowledge:
         k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> _FakeRoutedAnswer:
         """The seam the real ``rag_agent`` calls (retrieval plan §3.4/§4 row
         11): ONE call, routed inside the module. It records into the SAME
@@ -459,9 +462,12 @@ class _FakeKnowledge:
         return _FakeRoutedAnswer(chunks)
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: str, limit: int | None = None
     ) -> _FakeDocumentNames:
         self.name_limit_calls.append(limit)
+        # س-32 — the header is space-scoped too, and the space lands in the
+        # same log the two retrieval faces write to.
+        self.spaces.append(space_id)
         return _FakeDocumentNames()
 
 
@@ -485,6 +491,14 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
             executor=AgentLifecycleExecutor(),
             providers=resolver,  # type: ignore[arg-type]
             knowledge=knowledge,  # type: ignore[arg-type]
+            # س-32 — WIRED here, where it used to be absent. The real agent
+            # reads its space off the bundle now and retrieves nothing without
+            # one, so an orchestrator with no thread seam cannot demonstrate
+            # that the retrieval path composes: it would demonstrate the
+            # degradation instead (which
+            # `test_a_run_with_no_thread_seam_gives_the_agent_no_space` covers
+            # on its own).
+            conversations=_FakeThreads(),
             authorization=build_authorization(),
         )
     )
@@ -503,6 +517,9 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
     # The agent key routed the provider lookup, and the retrieval seam was used.
     assert resolver.calls == [("rag_agent", None)]
     assert knowledge.queries == ["capital of France?"]
+    # And it was used INSIDE the request's space, end to end through the real
+    # agent: the answer's space and the corpus header's are the same one.
+    assert knowledge.spaces == [_SPACE, _SPACE]
     # Token stream, then one final carrying the assembled answer + citations.
     assert [e.type for e in events] == ["token", "token", "final"]
     assert events[-1].data["text"] == "Paris it is"
@@ -1062,6 +1079,12 @@ async def test_a_budget_spent_between_pulls_still_disposes_the_producer() -> Non
 # --------------------------------------------------------------------------- #
 # 6.1-ج-3 — the single-agent turn: thread + both messages + the usage split   #
 # --------------------------------------------------------------------------- #
+# س-32 — the space `_FakeThreads` reports for an existing thread. A constant
+# so a test that cares which space reached the agent can compare against it
+# rather than against a literal repeated at both ends.
+_THREAD_SPACE = "space-of-the-thread"
+
+
 class _FakeThreads:
     """A recording ``ConversationThreads``: it is the whole point of these
     tests that the orchestrator writes REAL turns, in order, through the port."""
@@ -1073,17 +1096,30 @@ class _FakeThreads:
         known: str | None = None,
         pinned: str | None = None,
         pinned_files: tuple[str, ...] = (),
+        space: str | None = _THREAD_SPACE,
     ) -> None:
         self.started: list[tuple[str, str]] = []
         self.spaces: list[str | None] = []
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
         self.route_reads: list[str] = []
         self.scope_reads: list[str] = []
+        # س-32 — every read of an EXISTING thread's space, recorded like the
+        # other two pre-flight reads so a test can pin that a request opening a
+        # fresh thread never performs one.
+        self.space_reads: list[str] = []
         self._fail_on = fail_on
         self._known = known
         self._pinned = pinned
         self._pinned_files = pinned_files
+        self._space = space
         self._seq = 0
+
+    async def space_of(self, ctx: ExecutionContext, conversation_id: str) -> str | None:
+        """س-32. The thread's own space — what the orchestrator puts on
+        ``AgentDependencies.space_id`` for every turn that CONTINUES a thread,
+        where ``AgentRequest.space_id`` is ignored by design."""
+        self.space_reads.append(conversation_id)
+        return self._space
 
     async def pinned_files(self, ctx: ExecutionContext, conversation_id: str) -> tuple[str, ...]:
         """BE-RAG-005. Recorded for the same reason ``routed_model`` is: a
@@ -1658,6 +1694,95 @@ async def test_an_unpinned_thread_gives_the_run_an_empty_scope() -> None:
         pass
 
     assert _RecordingAgent.seen[0].knowledge_scope == ()
+
+
+async def test_the_threads_own_space_becomes_the_runs_space() -> None:
+    """س-32 (owner decision 2026-08-26) at this layer, and it is the same
+    argument BE-RAG-005 makes one test up: the orchestrator is the only place
+    that knows which thread a turn belongs to, so it is the only place the
+    thread's space can become the boundary the agent reads and retrieves
+    inside."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1")
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].space_id == _THREAD_SPACE
+    assert threads.space_reads == ["conv-1"]
+
+
+async def test_a_request_may_not_move_an_existing_thread_into_another_space() -> None:
+    """The THREAD's space wins, and the request's is not consulted at all.
+
+    ``_open_turn`` already ignores ``AgentRequest.space_id`` when a
+    ``conversation_id`` is given, so believing it here would hand the agent a
+    scope that disagrees with the row every message is written into — and would
+    let a caller retrieve from another space by naming one on a thread that
+    lives elsewhere. That is the isolation being decided by the request instead
+    of by the data, which is precisely what س-32 forbids.
+    """
+    _RecordingAgent.seen = []
+    threads = _FakeThreads(known="conv-1")
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(),
+        "recording",
+        AgentRequest(space_id="space-somewhere-else", conversation_id="conv-1", input={}),
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].space_id == _THREAD_SPACE
+
+
+async def test_a_fresh_thread_takes_its_space_from_the_request() -> None:
+    """The other half: a turn that OPENS a thread has nothing to inherit from,
+    so the request's space is the only honest source — and it is the same value
+    ``_open_turn`` files the thread under, so the bundle and the row agree from
+    the first turn."""
+    _RecordingAgent.seen = []
+    threads = _FakeThreads()
+    orchestrator, _resolver = _orchestrator(
+        agents=[(_RecordingAgent.metadata, _RecordingAgent)], conversations=threads
+    )
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].space_id == _SPACE
+    assert threads.spaces == [_SPACE]
+    # And no thread was read for it: there was none yet.
+    assert threads.space_reads == []
+
+
+async def test_a_run_with_no_thread_seam_gives_the_agent_no_space() -> None:
+    """The degraded shape, and the direction it degrades in.
+
+    An orchestrator with no conversations seam cannot know which space a turn
+    belongs to. ``None`` reaches the bundle, and every consumer reads that as
+    "read nothing" — the RAG agent does not retrieve, and the corpus header is
+    not fetched. Before س-32 the same unknown silently read across every space,
+    so this is strictly the safer failure.
+    """
+    _RecordingAgent.seen = []
+    orchestrator, _resolver = _orchestrator(agents=[(_RecordingAgent.metadata, _RecordingAgent)])
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "recording", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+    ):
+        pass
+
+    assert _RecordingAgent.seen[0].space_id is None
 
 
 async def test_a_request_that_opens_a_fresh_thread_never_asks_it_what_it_pinned() -> None:

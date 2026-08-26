@@ -149,10 +149,14 @@ class KnowledgeAccess(Protocol):
     workspace corpus) and stays the default, so an agent that has no notion of
     a scope keeps calling this exactly as it did.
 
-    ``space_id`` (spaces plan step 8) is keyword-only and NOT defaulted, and
-    the difference from ``file_ids`` is the point: a missing pin narrows
-    nothing, a missing space widens across spaces. An agent that does not know
-    its space has to write that down.
+    ``space_id`` (spaces plan step 8) is keyword-only, NOT defaulted and — since
+    س-32 (owner decision 2026-08-26) — NOT nullable, and the difference from
+    ``file_ids`` is the point: a missing pin narrows nothing, a missing space
+    widened across spaces. An agent that does not know its space cannot call
+    this at all now, which is the only shape that makes the isolation real: it
+    reads its space from ``AgentDependencies.space_id``, filled by the
+    orchestrator from the thread the turn belongs to, and a turn with no space
+    on the bundle does not retrieve (see the RAG agent).
 
     ``list_document_names`` (retrieval plan §3.6/§4 row 6, ``P-36``, س-23 = ج)
     is a SECOND method on this SAME seed, not a second injected port — the RAG
@@ -165,6 +169,11 @@ class KnowledgeAccess(Protocol):
     mechanism by which a Settings-owned number can reach an agent at all —
     an agent reads no configuration and imports nothing (ح-11), so before it
     existed the RAG agent had no choice but to hold its own ``_TOP_K = 5``.
+
+    ``list_document_names`` takes the SAME required ``space_id`` since س-32:
+    the corpus header it feeds names the files a follow-up question could be
+    answered from, so a header listing another space's files is the same leak
+    as retrieving from one — it just says it in words instead of chunks.
 
     ``limit`` is OPTIONAL for exactly that reason and in exactly that shape.
     It used to be required, on the argument that a DISPLAY cap the plan itself
@@ -194,7 +203,7 @@ class KnowledgeAccess(Protocol):
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> Sequence[RetrievedChunkView]: ...
 
     async def answer(
@@ -204,11 +213,11 @@ class KnowledgeAccess(Protocol):
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> RoutedAnswerView: ...
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: Uuid, limit: int | None = None
     ) -> DocumentNamesView: ...
 
 

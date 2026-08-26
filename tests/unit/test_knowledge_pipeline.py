@@ -22,6 +22,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import unicodedata
 import uuid
 from collections.abc import Sequence
 from dataclasses import replace
@@ -95,6 +96,14 @@ _TUNING = retrieval_module._DEFAULT_TUNING
 # --------------------------------------------------------------------------- #
 # Shared test helpers                                                         #
 # --------------------------------------------------------------------------- #
+# س-32 (owner decision 2026-08-26) — retrieval refuses to run without a space,
+# so every corpus this file seeds lives in one and every search names it. A
+# module constant rather than a literal per test: "which space" is a fact about
+# the fixture, and the tests that care about the axis itself say so by naming a
+# second one.
+SPACE = "space-1"
+
+
 def _ctx(workspace_id: str = "ws1") -> ExecutionContext:
     return ExecutionContext(
         workspace_id=workspace_id, user_id="u1", correlation_id="corr", roles=frozenset({"member"})
@@ -155,6 +164,11 @@ def _hand_built_point(
         "seq": seq,
         "text": text,
         "kind": "text",
+        # The key `IndexDocument` writes and every search now filters on
+        # (س-32). A hand-built point without it is a point no search in the
+        # product can reach — which is §5-أ's pre-spaces content, not a corpus
+        # a retrieval test means to be describing.
+        "space": SPACE,
     }
     return VectorPoint(id=point_id, vector=vector, payload=payload, sparse=sparse)
 
@@ -364,6 +378,14 @@ class FakeParentRepo:
         return {
             chunk_id: self.parents[chunk_id] for chunk_id in chunk_ids if chunk_id in self.parents
         }
+
+
+# An Arabic passage that genuinely differs between NFC and NFD — see the
+# parametrised case in the س-29 rule 2 block for why the letter matters.
+_AR = "يُغلق باب التسجيل يوم الجمعة بإذن الله"
+_AR_NFC = unicodedata.normalize("NFC", _AR)
+_AR_NFD = unicodedata.normalize("NFD", _AR)
+assert _AR_NFC != _AR_NFD, "the fixture no longer exercises normalisation"
 
 
 # --------------------------------------------------------------------------- #
@@ -1788,7 +1810,7 @@ async def test_index_document_ensures_hybrid_collection_and_upserts_hybrid_point
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="embed-1", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="embed-1", api_key="k"
     )
 
     assert outcome.collection == "kn-ws1"
@@ -1820,7 +1842,7 @@ async def test_index_document_splits_at_the_real_token_derived_word_budget() -> 
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 3
@@ -1841,7 +1863,7 @@ async def test_index_document_embedding_max_input_tokens_is_configurable() -> No
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 2
@@ -1858,10 +1880,10 @@ async def test_index_document_point_ids_are_deterministic_across_reindex_runs() 
     parsed = _parsed_document([_parsed_chunk("stable content for reindexing", order=0)])
 
     first = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
     second = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert [c.chunk_id for c in first.chunks] == [c.chunk_id for c in second.chunks]
@@ -1880,7 +1902,7 @@ async def test_index_document_batches_embed_calls_past_128_chunks() -> None:
     parsed = _parsed_document([_parsed_chunk(f"paragraphtoken{i}", order=i) for i in range(130)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 130
@@ -1919,7 +1941,7 @@ async def test_index_document_falls_back_to_per_chunk_embedding_when_batch_call_
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 3
@@ -1958,7 +1980,7 @@ async def test_index_document_a_chunk_that_still_fails_alone_still_raises() -> N
 
     with pytest.raises(RuntimeError, match="simulated embedding failure"):
         await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
 
@@ -1969,7 +1991,12 @@ async def test_index_document_empty_parsed_document_upserts_nothing() -> None:
     ctx = _ctx("ws1")
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=_parsed_document([]), model="m", api_key="k"
+        ctx,
+        document_id="doc-1",
+        space_id=SPACE,
+        parsed=_parsed_document([]),
+        model="m",
+        api_key="k",
     )
 
     assert outcome == IndexOutcome(collection="kn-ws1", dimensions=8, chunks=())
@@ -1994,7 +2021,7 @@ async def test_index_document_payload_copies_citation_allowlist_keys_when_presen
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
     point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
 
@@ -2023,7 +2050,7 @@ async def test_index_document_payload_section_falls_back_to_title_metadata_key()
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
     point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
 
@@ -2047,7 +2074,7 @@ async def test_index_document_payload_omits_file_name_when_absent_from_metadata(
     parsed = _parsed_document([_parsed_chunk("plain paragraph text here", order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
     point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
 
@@ -2084,7 +2111,7 @@ async def test_index_document_semantic_split_calls_embed_on_sentences_then_final
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(embeddings.calls) == 2
@@ -2109,7 +2136,7 @@ async def test_index_document_single_sentence_segment_skips_the_semantic_embed_c
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(embeddings.calls) == 1
@@ -2133,7 +2160,7 @@ async def test_index_document_table_chunk_skips_semantic_split_even_with_sentenc
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(embeddings.calls) == 1
@@ -2163,7 +2190,7 @@ async def test_index_document_semantic_split_splits_arabic_sentences_on_every_se
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert embeddings.calls[0] == parts
@@ -2200,7 +2227,7 @@ async def test_index_document_semantic_split_still_hard_caps_a_long_part_by_the_
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert all(chunk.token_count <= 32 for chunk in outcome.chunks)
@@ -2241,7 +2268,7 @@ async def test_index_document_semantic_pass_failure_degrades_to_the_unsplit_segm
 
     with caplog.at_level(logging.WARNING):
         outcome = await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
     # Nothing lost: the ORIGINAL text (punctuation and all), as one node --
@@ -2281,7 +2308,7 @@ async def test_index_document_semantic_pass_degrades_on_a_malformed_provider_res
     parsed = _parsed_document([_parsed_chunk(text, order=0)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert [chunk.text for chunk in outcome.chunks] == [text]
@@ -2306,7 +2333,7 @@ async def test_index_document_semantic_degrade_does_not_hide_a_provider_that_is_
 
     with pytest.raises(RuntimeError, match="provider is down"):
         await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
 
@@ -2367,7 +2394,7 @@ async def test_index_document_semantic_pass_batches_every_chunks_sentences_into_
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     expected_parts = [part for sentences in groups for part in _two_topic_parts(sentences)]
@@ -2397,7 +2424,7 @@ async def test_index_document_sentence_batches_respect_the_embed_batch_cap() -> 
     )
 
     await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert [len(call) for call in embeddings.calls[:2]] == [128, 72]
@@ -2421,7 +2448,7 @@ async def test_index_document_a_chunk_longer_than_the_cap_is_served_by_several_c
 
     with caplog.at_level(logging.WARNING):
         outcome = await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
     assert len(embeddings.calls[0]) == 128
@@ -2476,7 +2503,7 @@ async def test_index_document_semantic_batch_failure_degrades_only_the_failing_c
 
     with caplog.at_level(logging.WARNING):
         outcome = await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
     assert [chunk.text for chunk in outcome.chunks] == [
@@ -2528,7 +2555,7 @@ async def test_index_document_semantic_pass_degrades_when_the_provider_returns_t
 
     with caplog.at_level(logging.WARNING):
         outcome = await use_case.execute(
-            ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+            ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
         )
 
     assert [chunk.text for chunk in outcome.chunks] == [text]
@@ -2557,7 +2584,7 @@ async def test_index_document_explodes_table_rows_into_one_node_per_row() -> Non
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 2
@@ -2577,7 +2604,7 @@ async def test_index_document_small_table_parent_is_full_table_text() -> None:
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.parents) == 1
@@ -2599,7 +2626,7 @@ async def test_index_document_large_table_parent_is_header_only() -> None:
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 21
@@ -2636,7 +2663,7 @@ async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_pa
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     parent_text = outcome.parents[0].text
@@ -2660,7 +2687,7 @@ async def test_index_document_malformed_table_json_falls_back_to_word_window() -
     )
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     assert len(outcome.chunks) == 1
@@ -2680,7 +2707,7 @@ async def test_index_document_table_row_hard_cap_truncates_and_declares() -> Non
     parsed = _parsed_document([_parsed_chunk(text, order=0, kind=ParsedChunkKind.TABLE)])
 
     outcome = await use_case.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     # 2000 exploded row nodes + (at least) one overflow node for the last 3
@@ -2743,7 +2770,7 @@ def _page_chunk(text: str, *, page: int, order: int) -> ParsedChunk:
 
 async def _index(parsed: ParsedDocument) -> IndexOutcome:
     return await IndexDocument(FakeEmbeddings(), FakeHybridVectors()).execute(
-        _ctx("ws1"), document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        _ctx("ws1"), document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
 
@@ -2929,7 +2956,7 @@ async def test_index_document_page_parent_text_and_key_never_reach_the_qdrant_pa
     outcome = await IndexDocument(FakeEmbeddings(), vectors).execute(
         _ctx("ws1"),
         document_id="doc-1",
-        space_id=None,
+        space_id=SPACE,
         parsed=_parsed_document(
             [
                 _page_chunk("the northern region opened two branches", page=1, order=0),
@@ -2962,12 +2989,12 @@ async def test_index_then_retrieve_round_trip() -> None:
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
-        space_id=None,
+        space_id=SPACE,
         query="quarterly revenue figures for the northern region",
         model="m",
         api_key="k",
@@ -3007,12 +3034,12 @@ async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
-        space_id=None,
+        space_id=SPACE,
         query="quarterly revenue figures for the northern region",
         model="m",
         api_key="k",
@@ -3037,12 +3064,12 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
     ctx = _ctx("ws1")
     parsed = _parsed_document([_parsed_chunk("cafeteria menu changes for next month", order=0)])
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
         ctx,
-        space_id=None,
+        space_id=SPACE,
         query="cafeteria menu changes for next month",
         model="m",
         api_key="k",
@@ -3055,21 +3082,24 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
     assert result.chunks[0].section is None
 
 
-async def test_retrieve_context_both_legs_called_with_workspace_filter() -> None:
+async def test_retrieve_context_both_legs_called_with_workspace_and_space_filter() -> None:
     embeddings = FakeEmbeddings()
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="alpha report", model="m", api_key="k"
+        ctx, space_id=SPACE, query="alpha report", model="m", api_key="k"
     )
 
     collection = knowledge_collection("ws1")
     assert vectors.search_calls[-1][0] == collection
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1"}
+    # BOTH conditions on BOTH legs (DD-04 for the tenant, س-32 for the space):
+    # the space is no longer a narrowing a caller may omit, so its absence from
+    # either filter would be the cross-space search the decision forbids.
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "space": SPACE}
     assert vectors.search_sparse_calls[-1][0] == collection
-    assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws1"}
+    assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws1", "space": SPACE}
 
 
 async def test_retrieve_context_query_embed_call_is_exactly_the_query() -> None:
@@ -3079,7 +3109,7 @@ async def test_retrieve_context_query_embed_call_is_exactly_the_query() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="alpha report", model="m", api_key="k"
+        ctx, space_id=SPACE, query="alpha report", model="m", api_key="k"
     )
 
     assert embeddings.calls == [["alpha report"]]
@@ -3100,7 +3130,7 @@ async def test_retrieve_context_rrf_fuses_both_legs() -> None:
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="revenue figures quarterly", model="m", api_key="k", k=5
+        ctx, space_id=SPACE, query="revenue figures quarterly", model="m", api_key="k", k=5
     )
 
     assert result.chunks[0].chunk_id == chunk_point_id("doc-1", 0)
@@ -3133,7 +3163,7 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query=query, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
     )
 
     assert len(result.chunks) == 1
@@ -3149,7 +3179,7 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k", k=0
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=0
     )
 
     # k clamped up to >=1: search_k = clamped_k * the widened overfetch
@@ -3165,7 +3195,7 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k", k=1000
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=1000
     )
 
     # k clamped down to <=50: search_k = min(50 * search_overfetch,
@@ -3256,7 +3286,7 @@ async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_si
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     baseline = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k"
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k"
     )
     assert baseline.chunks  # the SHIPPED configuration retrieves it
     assert baseline.best_dense_score is not None
@@ -3275,7 +3305,7 @@ async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_si
             min_dense_score=baseline.best_dense_score + 1.0,
             min_bm25_score=baseline.best_bm25_score + 1.0,
         ),
-    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
+    ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
 
     assert gated.chunks == []
     assert gated.best_dense_score == baseline.best_dense_score
@@ -3296,7 +3326,7 @@ async def test_retrieve_context_the_two_floors_are_independent_per_leg() -> None
         vectors,
         FakeParentRepo(),
         tuning=replace(_TUNING, min_dense_score=2.0),
-    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
+    ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
 
     assert [chunk.chunk_id for chunk in result.chunks] == [chunk_point_id("doc-1", 0)]
 
@@ -3322,7 +3352,7 @@ async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k", k=50
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=50
     )
 
     assert vectors.search_calls[-1][1] == 100  # dense: uncapped search_k
@@ -3345,7 +3375,7 @@ async def test_retrieve_context_sparse_cap_now_binds_at_the_default_k() -> None:
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k", k=5
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=5
     )
 
     assert vectors.search_calls[-1][1] == 30
@@ -3398,7 +3428,7 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
     monkeypatch.setattr(retrieval_module, "filter_relevant", _spy_filter_relevant)
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=k
+        ctx, space_id=SPACE, query="quarterly planning review", model="m", api_key="k", k=k
     )
 
     assert seen_candidate_counts  # filter_relevant was actually reached
@@ -3427,7 +3457,7 @@ async def test_retrieve_context_substitutes_the_parents_text_not_the_leafs() -> 
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert len(result.chunks) == 1
@@ -3464,7 +3494,7 @@ async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query="quarterly planning", model="m", api_key="k", k=3
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
     # Only 2 survive: the ONE deduped parent entry + the third leaf's own
@@ -3473,6 +3503,214 @@ async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves
     result_texts = [chunk.text for chunk in result.chunks]
     assert result_texts.count(shared_parent_text) == 1
     assert texts[2] in result_texts
+
+
+# --------------------------------------------------------------------------- #
+# س-29 rule 2 — one passage is delivered once, whatever file it came from      #
+# --------------------------------------------------------------------------- #
+async def test_retrieve_context_delivers_repeated_text_once_across_two_documents() -> None:
+    """س-29 rule 2 (owner decision 2026-08-25): a second file uploaded under a
+    DIFFERENT name may repeat content already indexed, and the guard belongs
+    at the widening.
+
+    The four duplicate guards that ran before it are all keyed on an IDENTITY
+    — `file_id`, the document's own `content_hash`, `chunk_id` in RRF, and
+    `parent.id` at the widening — so two documents carrying the identical
+    passage pass every one of them and spend the context budget twice on one
+    text. Two DIFFERENT parent ids is exactly what makes this the case the
+    parent key cannot see."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    repeated = "the quarterly planning cycle closes on the last friday of the quarter"
+    await _seed_corpus(vectors, ctx, "doc-1", ["revenue quarterly planning figures"])
+    await _seed_corpus(vectors, ctx, "doc-2", ["headcount quarterly planning figures"])
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A", text=repeated, is_complete=True
+            ),
+            chunk_point_id("doc-2", 0): ParentChunkText(
+                id="parent-B", text=repeated, is_complete=True
+            ),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    assert [chunk.text for chunk in result.chunks] == [repeated]
+
+
+async def test_retrieve_context_keeps_the_higher_ranked_of_two_identical_passages() -> None:
+    """The same prefix rule dedup-by-parent already keeps, restated for the
+    text key: the loser is dropped WHOLE rather than blanked, so the entry
+    the reader gets is the best-ranked one and its citation points at the
+    document that actually earned the place."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    repeated = "identical passage carried by both documents word for word"
+    # `doc-1`'s leaf is the closer match, so it is the one RRF ranks first.
+    await _seed_corpus(vectors, ctx, "doc-1", ["quarterly planning quarterly planning"])
+    await _seed_corpus(vectors, ctx, "doc-2", ["unrelated office renovation quarterly"])
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A", text=repeated, is_complete=True
+            ),
+            chunk_point_id("doc-2", 0): ParentChunkText(
+                id="parent-B", text=repeated, is_complete=True
+            ),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    assert len(result.chunks) == 1
+    assert result.chunks[0].document_id == "doc-1"
+
+
+async def test_retrieve_context_deduplicates_unparented_leaves_by_their_own_text() -> None:
+    """Candidates kept AS IS are fingerprinted too, unlike the parent key
+    which deliberately skips them. Nothing was SUBSTITUTED for them, so there
+    is no parent to have been seen — but the TEXT was still delivered, and
+    two identical passages are two identical passages however they got here.
+    """
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    repeated = "quarterly planning closes on the last friday of the quarter"
+    await _seed_corpus(vectors, ctx, "doc-1", [repeated])
+    await _seed_corpus(vectors, ctx, "doc-2", [repeated])
+
+    # No parents at all — every candidate keeps its own leaf text.
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    assert [chunk.text for chunk in result.chunks] == [repeated]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        # Whitespace: a page break or a re-wrapped line changes the spacing of
+        # a passage and not the passage.
+        ("quarterly planning closes friday", "quarterly  planning\ncloses   friday "),
+        # Case: two extractions of one heading can disagree, and no answer
+        # means something different for it.
+        ("Quarterly Planning Closes Friday", "quarterly planning closes friday"),
+        # Unicode NFC: the identical Arabic sentence, composed in one producer
+        # and decomposed in the other. `casefold` does nothing here — this is
+        # the half that carries Arabic, the same half
+        # `files/0003_file_name_lookup.py` normalises for one layer down.
+        # The sentence must contain a letter that actually decomposes (`إ`,
+        # U+0625); plain Arabic letters do not, so a sentence without one is
+        # byte-identical in both forms and asserts nothing. `_AR_*` below
+        # carries the assertion that keeps that true.
+        (_AR_NFC, _AR_NFD),
+    ],
+)
+async def test_retrieve_context_treats_trivially_different_renderings_as_one_passage(
+    first: str, second: str
+) -> None:
+    """The fingerprint is equality UNDER a normalisation. Each case below is
+    one passage that two extractions rendered differently; comparing raw text
+    would call them two answers and spend the budget on both."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["revenue quarterly planning figures"])
+    await _seed_corpus(vectors, ctx, "doc-2", ["headcount quarterly planning figures"])
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A", text=first, is_complete=True
+            ),
+            chunk_point_id("doc-2", 0): ParentChunkText(
+                id="parent-B", text=second, is_complete=True
+            ),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    assert len(result.chunks) == 1
+
+
+async def test_retrieve_context_keeps_two_passages_that_merely_overlap() -> None:
+    """The negative half, and the one that keeps the rule honest: this is
+    EQUALITY under a normalisation, never similarity. A passage that shares
+    most of its words with another is a different passage — near-duplicates
+    are MMR's decision, already taken by the time this stage runs, and a fuzzy
+    key here would take it again with a number nobody chose."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    await _seed_corpus(vectors, ctx, "doc-1", ["revenue quarterly planning figures"])
+    await _seed_corpus(vectors, ctx, "doc-2", ["headcount quarterly planning figures"])
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A",
+                text="the quarterly planning cycle closes on the last friday",
+                is_complete=True,
+            ),
+            chunk_point_id("doc-2", 0): ParentChunkText(
+                id="parent-B",
+                text="the quarterly planning cycle closes on the last friday of March",
+                is_complete=True,
+            ),
+        }
+    )
+
+    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+    )
+
+    assert len(result.chunks) == 2
+
+
+async def test_retrieve_context_counts_the_text_duplicates_it_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`duplicate_text_count` is kept apart from `widened_count` because the
+    two drops mean different things: a parent collapse says the 3x pool is
+    paying for itself, and this one says the corpus holds one passage under
+    two names IN ONE SPACE — an operator's problem, not a tuning one. It is
+    also the ONLY signal that rule 2 ever fired, the corpus holding no such
+    case today."""
+    embeddings = FakeEmbeddings()
+    vectors = FakeHybridVectors()
+    ctx = _ctx("ws1")
+    repeated = "identical passage carried by both documents word for word"
+    await _seed_corpus(vectors, ctx, "doc-1", ["revenue quarterly planning figures"])
+    await _seed_corpus(vectors, ctx, "doc-2", ["headcount quarterly planning figures"])
+    parent_repo = FakeParentRepo(
+        {
+            chunk_point_id("doc-1", 0): ParentChunkText(
+                id="parent-A", text=repeated, is_complete=True
+            ),
+            chunk_point_id("doc-2", 0): ParentChunkText(
+                id="parent-B", text=repeated, is_complete=True
+            ),
+        }
+    )
+
+    with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
+        await RetrieveContext(embeddings, vectors, parent_repo).execute(
+            ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
+        )
+
+    payload = _stage_payload(_stage_record(caplog))
+    assert payload["duplicate_text_count"] == 1
+    assert payload["widened_count"] == 1
 
 
 async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk_chars() -> None:
@@ -3497,7 +3735,7 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert len(result.chunks) == 1
@@ -3525,7 +3763,7 @@ async def test_retrieve_context_marks_a_parent_the_cap_actually_cut() -> None:
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert result.chunks[0].text.endswith(_PARENT_TRUNCATION_MARKER)
@@ -3549,7 +3787,7 @@ async def test_retrieve_context_does_not_mark_a_parent_that_fits_the_cap() -> No
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert result.chunks[0].text == exact
@@ -3583,7 +3821,7 @@ async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() 
     await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert len(result.chunks) == 1
@@ -3618,7 +3856,7 @@ async def test_retrieve_context_keeps_the_leaf_when_the_parent_is_incomplete() -
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query=leaf_text, model="m", api_key="k", k=1
+        ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
     assert len(result.chunks) == 1
@@ -3656,7 +3894,7 @@ async def test_retrieve_context_keeps_both_leaves_under_one_incomplete_parent() 
     )
 
     result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
-        ctx, space_id=None, query="quarterly planning", model="m", api_key="k", k=3
+        ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
     result_texts = [chunk.text for chunk in result.chunks]
@@ -3706,7 +3944,7 @@ async def _budget_run(max_context_chars: int, max_context_tokens: int) -> list[R
             max_context_chars=max_context_chars,
             max_context_tokens=max_context_tokens,
         ),
-    ).execute(ctx, space_id=None, query="quarterly planning review", model="m", api_key="k", k=5)
+    ).execute(ctx, space_id=SPACE, query="quarterly planning review", model="m", api_key="k", k=5)
     return result.chunks
 
 
@@ -3795,7 +4033,7 @@ async def test_retrieve_context_context_budget_measures_the_labelled_text() -> N
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     async def _run(max_chars: int) -> list[RetrievedChunk]:
@@ -3806,7 +4044,7 @@ async def test_retrieve_context_context_budget_measures_the_labelled_text() -> N
             tuning=replace(_TUNING, max_context_chars=max_chars, max_context_tokens=100_000),
         ).execute(
             ctx,
-            space_id=None,
+            space_id=SPACE,
             query="revenue figures and headcount plans by region",
             model="m",
             api_key="k",
@@ -3916,7 +4154,7 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
     await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="document content", model="m", api_key="k"
+        ctx, space_id=SPACE, query="document content", model="m", api_key="k"
     )
     assert vectors.search_calls[-1][1] == _TUNING.default_k * max(
         _TUNING.search_overfetch, _TUNING.mmr_overfetch
@@ -3924,20 +4162,20 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
 
     await RetrieveContext(
         embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, default_k=2)
-    ).execute(ctx, space_id=None, query="document content", model="m", api_key="k")
+    ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
     assert vectors.search_calls[-1][1] == 2 * max(_TUNING.search_overfetch, _TUNING.mmr_overfetch)
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
     with pytest.raises(ValidationError):
         await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
-            _ctx(), space_id=None, query="   ", model="m", api_key="k"
+            _ctx(), space_id=SPACE, query="   ", model="m", api_key="k"
         )
 
 
 async def test_retrieve_context_empty_corpus_returns_empty_list() -> None:
     result = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
-        _ctx(), space_id=None, query="anything at all", model="m", api_key="k"
+        _ctx(), space_id=SPACE, query="anything at all", model="m", api_key="k"
     )
     assert result.chunks == []
     # No hits on either leg -- the confidence signals are honestly absent
@@ -3968,13 +4206,17 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
     )
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx_b, space_id=None, query=shared_text, model="m", api_key="k"
+        ctx_b, space_id=SPACE, query=shared_text, model="m", api_key="k"
     )
 
     assert len(result.chunks) == 1
     assert result.chunks[0].chunk_id == chunk_point_id("doc-b", 0)
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws-b"}
-    assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws-b"}
+    # The space rides ALONGSIDE the tenant condition, never in place of it
+    # (س-32): both workspaces' points sit in the same space id here, and it is
+    # `workspace_id` that keeps `ws-a`'s copy out — a space is a narrowing
+    # INSIDE a tenant, and this is what proves it did not become a substitute.
+    assert vectors.search_calls[-1][2] == {"workspace_id": "ws-b", "space": SPACE}
+    assert vectors.search_sparse_calls[-1][2] == {"workspace_id": "ws-b", "space": SPACE}
 
 
 # --------------------------------------------------------------------------- #
@@ -4024,7 +4266,7 @@ async def test_retrieve_context_asks_both_legs_for_the_candidates_vectors() -> N
     await _seed_corpus(vectors, ctx, "doc-1", ["quarterly revenue figures for the north"])
 
     await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="quarterly revenue", model="m", api_key="k"
+        ctx, space_id=SPACE, query="quarterly revenue", model="m", api_key="k"
     )
 
     assert vectors.with_vectors_calls == [True, True]
@@ -4044,7 +4286,7 @@ async def test_retrieve_context_does_not_deliver_five_chunks_of_one_paragraph() 
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query=query, model="m", api_key="k", k=3
+        ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3
     )
 
     delivered = [chunk.text for chunk in result.chunks]
@@ -4068,7 +4310,7 @@ async def test_retrieve_context_without_mmr_would_deliver_the_same_paragraph_thr
 
     result = await RetrieveContext(
         embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, mmr_lambda=1.0)
-    ).execute(ctx, space_id=None, query=query, model="m", api_key="k", k=3)
+    ).execute(ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3)
 
     assert [chunk.text for chunk in result.chunks] == list(_PARAPHRASES[:3])
 
@@ -4086,7 +4328,7 @@ async def test_retrieve_context_logs_the_mmr_cut(caplog: pytest.LogCaptureFixtur
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query=query, model="m", api_key="k", k=2
+            ctx, space_id=SPACE, query=query, model="m", api_key="k", k=2
         )
 
     payload = _stage_payload(_stage_record(caplog))
@@ -4136,7 +4378,7 @@ async def test_retrieve_context_still_retrieves_from_a_store_that_returns_no_vec
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query=query, model="m", api_key="k", k=3
+        ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3
     )
 
     # Pure RRF order -- the pre-row-20 behaviour, which is exactly the point.
@@ -4175,6 +4417,11 @@ _STAGE_LOG_FIELDS = {
     "relevant_count",
     "rerank_count",
     "widened_count",
+    # س-29 rule 2 — how many candidates were dropped for repeating text an
+    # earlier one had already delivered. Pinned like every other field here:
+    # it is the ONLY place the rule's firing is visible, so a silent rename
+    # would make a guard nobody can tell has stopped guarding.
+    "duplicate_text_count",
     "budgeted_count",
     "delivered_chunk_ids",
     "context_nodes",
@@ -4226,7 +4473,7 @@ async def test_retrieve_context_emits_one_stage_record_carrying_every_stage(
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query="quarterly revenue figures", model="m", api_key="k", k=2
+            ctx, space_id=SPACE, query="quarterly revenue figures", model="m", api_key="k", k=2
         )
 
     payload = _stage_payload(_stage_record(caplog))
@@ -4240,7 +4487,11 @@ async def test_retrieve_context_emits_one_stage_record_carrying_every_stage(
         payload["retain_k"],
     ) == (2, 12, 12, 12, 6)
     assert payload["scoped_document_count"] is None
-    assert payload["space_scoped"] is False
+    # Always true since س-32 — there is no unscoped retrieval left to record.
+    # The field stays in the record because a `false` appearing here again
+    # would be the loudest possible signal that something learned to reach
+    # `execute` past `require_space_scope`.
+    assert payload["space_scoped"] is True
     # The count chain, stage by stage: nothing appears out of nowhere and the
     # delivered chunks are what the caller actually got.
     assert payload["dense_count"] == payload["dense_kept"] == 2
@@ -4284,7 +4535,7 @@ async def test_retrieve_context_stage_scores_are_the_legs_own_not_rrfs(
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query=query, model="m", api_key="k", k=2
+            ctx, space_id=SPACE, query=query, model="m", api_key="k", k=2
         )
 
     payload = _stage_payload(_stage_record(caplog))
@@ -4353,7 +4604,7 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query=query, model="m", api_key="k", k=1
+            ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
         )
 
     payload = _stage_payload(_stage_record(caplog))
@@ -4381,7 +4632,7 @@ async def test_retrieve_context_logs_fallback_true_when_it_returns_nothing(
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         result = await RetrieveContext(
             FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()
-        ).execute(_ctx(), space_id=None, query="anything at all", model="m", api_key="k")
+        ).execute(_ctx(), space_id=SPACE, query="anything at all", model="m", api_key="k")
 
     payload = _stage_payload(_stage_record(caplog))
     assert result.chunks == []
@@ -4410,7 +4661,7 @@ async def test_retrieve_context_an_empty_scope_logs_the_same_record_shape(
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
             ctx,
-            space_id=None,
+            space_id=SPACE,
             query="quarterly revenue",
             model="m",
             api_key="k",
@@ -4441,7 +4692,7 @@ async def test_retrieve_context_stage_record_samples_the_numbers_never_the_count
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query="quarterly revenue figures", model="m", api_key="k", k=50
+            ctx, space_id=SPACE, query="quarterly revenue figures", model="m", api_key="k", k=50
         )
 
     payload = _stage_payload(_stage_record(caplog))
@@ -4481,12 +4732,12 @@ async def test_retrieve_context_stage_record_carries_no_document_or_query_text(
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
         result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=None, query=query, model="m", api_key="k", k=1
+            ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
         )
 
     assert result.chunks  # the record below describes a real, non-empty answer
@@ -4535,10 +4786,10 @@ async def _context_run(*, k: int = 3) -> RetrievalResult:
         ]
     )
     await IndexDocument(embeddings, vectors).execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
     return await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="third quarter revenue", model="m", api_key="k", k=k
+        ctx, space_id=SPACE, query="third quarter revenue", model="m", api_key="k", k=k
     )
 
 
@@ -4602,7 +4853,7 @@ async def test_context_text_is_empty_when_retrieval_delivered_nothing() -> None:
     ctx = _ctx("ws1")
 
     result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=None, query="anything", model="m", api_key="k", document_ids=[]
+        ctx, space_id=SPACE, query="anything", model="m", api_key="k", document_ids=[]
     )
 
     assert result.chunks == []
@@ -4720,7 +4971,7 @@ async def _retrieve(
         FakeParentRepo(parents),
         tuning=tuning,
         reranker=reranker,
-    ).execute(_ctx("ws1"), space_id=None, query=_RERANK_QUERY, model="m", api_key="k")
+    ).execute(_ctx("ws1"), space_id=SPACE, query=_RERANK_QUERY, model="m", api_key="k")
 
 
 def test_the_reranker_ships_off() -> None:

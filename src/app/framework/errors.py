@@ -127,6 +127,13 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "knowledge.zip_bomb": ProblemSpec(422, "Document archive failed the zip-bomb guard"),
         "knowledge.parse_timeout": ProblemSpec(422, "Document parsing timed out"),
         "knowledge.search_unavailable": ProblemSpec(503, "Knowledge search is not available"),
+        # س-32, owner decision 2026-08-26 — the space guard
+        # (`knowledge/application/retrieval.py::require_space_scope`). Its own
+        # code rather than the generic 422 because it names a RULE, not a
+        # malformed field: retrieval happens inside one space or it does not
+        # happen, and an operator who sees this in a log is looking at a caller
+        # that tried to read across the isolation boundary.
+        "knowledge.space_required": ProblemSpec(422, "Retrieval requires a space"),
         # -- media ---------------------------------------------------------- #
         "media.invalid_params": ProblemSpec(422, "Invalid generation parameters"),
         # deferred-adapters-plan.md step 19. Its only site is worker-side

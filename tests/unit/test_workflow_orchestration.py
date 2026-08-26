@@ -676,6 +676,28 @@ async def test_a_step_agent_gets_a_metered_llm_like_a_direct_invocation() -> Non
     assert deps.llm.api_key == "k-123"
 
 
+async def test_every_step_of_a_run_works_inside_the_runs_space() -> None:
+    """س-32 (owner decision 2026-08-26) on the workflow path.
+
+    A step's agent is the same agent a user could invoke directly, so it must
+    get the same isolation by the same field — otherwise a workflow would be
+    the one remaining way to reach an unscoped read, which is exactly the hole
+    the decision closes everywhere else. The run's space is required at
+    ``invoke_workflow`` and is the space its own D-12 thread is filed under, so
+    there is no case where a step legitimately has none.
+    """
+    _EchoAgent.seen = []
+    orchestrator, _resolver, _threads = _orchestrator(
+        agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
+    )
+
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {}, space_id=_SPACE)
+    await _drain(run)
+
+    assert [key for key, _deps in _EchoAgent.seen] == ["echo_a", "echo_b"]
+    assert [deps.space_id for _key, deps in _EchoAgent.seen] == [_SPACE, _SPACE]
+
+
 async def test_a_resolution_failure_becomes_a_terminal_event_not_a_raise() -> None:
     """Resolution is real I/O performed INSIDE the run, so it must fail like a
     step, not detonate out of the generator past the caller's handling."""

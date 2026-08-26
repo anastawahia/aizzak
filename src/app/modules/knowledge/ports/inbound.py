@@ -106,21 +106,26 @@ class KnowledgeRetrieval(Protocol):
     Defaulted to ``None`` = unscoped, which keeps every existing caller —
     including ``POST /knowledge/search`` — exactly as it was.
 
-    ``space_id`` (spaces plan §3.4, step 8) is the space to search inside, and
-    is keyword-only WITHOUT a default while ``file_ids`` keeps one. Forgetting
-    a pin narrows nothing; forgetting a space widens the answer across the
-    axis this plan draws — so the caller has to say, and the two callers that
-    still cannot say it (``POST /knowledge/search`` and the RAG agent) are
-    visible in the source as the ones passing ``None`` on purpose.
+    ``space_id`` (spaces plan §3.4, step 8) is the space to search inside. It
+    is keyword-only, without a default, and **not nullable** — while
+    ``file_ids`` keeps its default and its ``None``. Forgetting a pin narrows
+    nothing; there is no forgetting a space, because there is nothing to
+    forget it to.
 
-    ⚠️ **Step 12 did NOT close those two, contrary to what this note used to
-    predict.** It put the space on the wire for the routes §3.7 names, and
-    both of these reach retrieval from somewhere else: the search body is not
-    in that table, and the RAG agent reads its space from ``AgentDeps``, which
-    the orchestrator does not fill yet. Until that lands (recorded in the
-    plan's §7), a thread inside a space still retrieves across every space —
-    which is decision 1 unenforced on the read path, and the reason the entry
-    is written down rather than left to be noticed.
+    ✅ **س-32, owner decision 2026-08-26 — closed.** Both callers that used to
+    pass ``None`` on purpose now name a space: ``POST /knowledge/search`` takes
+    a REQUIRED ``space_id`` on ``KnowledgeSearchIn``, and the RAG agent reads
+    the thread's space off ``AgentDependencies.space_id``, which the
+    orchestrator fills from the conversation it is answering in. The rule the
+    decision states is that spaces are isolated completely — files, index and
+    rows — so a search spans one space or it does not run; the enforcement is
+    ``retrieval.require_space_scope``, which refuses the call before an
+    embedding is computed. What used to be "decision 1 unenforced on the read
+    path" is now enforced by the type on this line and by that guard behind it.
+
+    ``list_document_names`` takes the same required ``space_id`` for the same
+    reason: a corpus header naming files from a space the asker cannot open is
+    the identical leak, wearing the costume of a helpful answer.
     """
 
     async def retrieve(
@@ -130,7 +135,7 @@ class KnowledgeRetrieval(Protocol):
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> list[RetrievedChunk]: ...
 
     async def answer(
@@ -140,7 +145,7 @@ class KnowledgeRetrieval(Protocol):
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> RoutedAnswer:
         """Classify ``question`` and dispatch it to the route it belongs to
         (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) — SUMMARIZE_DOC to
@@ -174,11 +179,25 @@ class KnowledgeRetrieval(Protocol):
         ...
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: Uuid, limit: int | None = None
     ) -> DocumentNames:
-        """This workspace's corpus-awareness source (retrieval plan §3.6/§4
-        row 6, ``P-36``): up to ``limit`` document file names plus the
-        workspace's total document count.
+        """ONE SPACE's corpus-awareness source (retrieval plan §3.6/§4 row 6,
+        ``P-36``): up to ``limit`` document file names plus that space's total
+        document count.
+
+        ⚠️ **It was the WORKSPACE's until س-32** (owner decision 2026-08-26),
+        on decision س-23 = ج's argument that a header describing a slice would
+        misreport the corpus as smaller than it is. That argument is still
+        sound about a workspace and no longer the question: the decision
+        isolates spaces completely — files, index and rows — so the corpus a
+        thread HAS is its space's, and a header naming files from a space the
+        asker cannot open does not describe their corpus, it describes someone
+        else's. The undercount س-23 feared is now the honest count.
+
+        ``space_id`` is therefore required and non-nullable here exactly as it
+        is on ``retrieve``/``answer``: the header and the answer describe the
+        same corpus, or the header is a list of files no follow-up question
+        can be answered from.
 
         A SECOND method on the SAME seed rather than a second injected port
         — the RAG agent still calls exactly one thing (``self.deps.knowledge``,

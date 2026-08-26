@@ -697,6 +697,22 @@ class ConversationService:
             return ()
         return tuple(pin.file_id for pin in pinned)
 
+    async def space_of(self, ctx: ExecutionContext, conversation_id: Uuid) -> Uuid | None:
+        """The thread's space, or ``None`` when it has none (س-32).
+
+        ``GetConversation`` and not a second repository read: the aggregate is
+        already fetched for ``routed_model`` on the very same pre-flight, and
+        this reads one more field off the same shape. A soft-deleted thread
+        answers with its real space for ``pinned_files``' reason — quietly
+        dropping the scope as a side effect of deletion would change what the
+        thread can see on the one path where nothing should change at all.
+        """
+        try:
+            conversation = await self._get.execute(ctx, conversation_id)
+        except NotFoundError:
+            return None
+        return conversation.space_id
+
     async def append(
         self,
         ctx: ExecutionContext,

@@ -39,6 +39,13 @@ from app.modules.knowledge.ports.retrieval import RetrievedChunk
 # --------------------------------------------------------------------------- #
 
 
+# س-32 (owner decision 2026-08-26) — the space every fixture below runs in.
+# One constant rather than a literal per test: the agent now refuses to
+# retrieve without one, so "which space" is a fact about the harness, and a
+# test that cares about the value says so by naming a different one.
+SPACE = "space-alpha"
+
+
 def make_ctx() -> ExecutionContext:
     return ExecutionContext(
         workspace_id=new_uuid7(),
@@ -140,7 +147,7 @@ class FakeKnowledge:
         self.retrieve_calls: list[tuple[str, int | None]] = []
         # Every space the agent named (spaces plan step 8) — its own log, so
         # the existing `calls` assertions keep their shape.
-        self.spaces: list[str | None] = []
+        self.spaces: list[str] = []
         # Retrieval plan §3.6/§4 row 6 (`P-36`) — every `limit` the agent
         # asked for, `None` included: since the display cap moved to the
         # module side (review §8) `None` is what the agent passes, and
@@ -155,7 +162,7 @@ class FakeKnowledge:
         k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> Sequence[FakeChunk]:
         self.retrieve_calls.append((query, k))
         self.spaces.append(space_id)
@@ -168,7 +175,7 @@ class FakeKnowledge:
         k: int | None = None,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> FakeRoutedAnswer:
         # The scope is RECORDED, not honoured: this fake is the agent's
         # counterpart, and what the agent owes is passing the scope through
@@ -186,9 +193,14 @@ class FakeKnowledge:
         return FakeRoutedAnswer("content", self._chunks, None)
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: str, limit: int | None = None
     ) -> FakeDocumentNames:
         self.name_limit_calls.append(limit)
+        # س-32 — the header is space-scoped too, and it lands in the SAME log
+        # the two retrieval faces write to: the decision is that one turn reads
+        # one space, so a header taken from a different space than the answer
+        # would be the leak in its other costume.
+        self.spaces.append(space_id)
         return self._document_names
 
 
@@ -231,6 +243,7 @@ def make_deps(
     document_total: int | None = None,
     summary_job_id: str | None = None,
     clarification_options: Sequence[str] = (),
+    space_id: str | None = SPACE,
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
@@ -244,6 +257,7 @@ def make_deps(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
         knowledge=knowledge,
         knowledge_scope=scope,
+        space_id=space_id,
     )
     return deps, knowledge, llm
 
@@ -301,15 +315,46 @@ async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
     assert knowledge.calls == [("q", None, ("file-a", "file-b"))]
 
 
-async def test_the_agent_names_its_space_and_has_none_to_name_yet() -> None:
-    """Spaces plan step 8/12: ``AgentDeps`` carries no space until the
-    invocation does, so the agent passes ``None`` — deliberately, and the port
-    forces it to say so rather than let the omission read as an oversight. An
-    agent that invented a space would answer from a corpus nobody chose."""
+async def test_the_agent_names_the_space_its_turn_belongs_to() -> None:
+    """س-32 (owner decision 2026-08-26): ``AgentDeps`` carries the space now —
+    the orchestrator reads it off the turn's thread — and the agent names it on
+    every knowledge call it makes. It was ``None`` on both until this decision,
+    which is what let a thread inside one space answer from all of them."""
     deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
-    assert knowledge.spaces == [None]
+    # Both faces, one space: the answer and the corpus header describe the
+    # same corpus or the header names files the answer may not use.
+    assert knowledge.spaces == [SPACE, SPACE]
+
+
+async def test_without_a_space_the_agent_retrieves_nothing_rather_than_everything() -> None:
+    """س-32's degradation, and the direction is the whole point.
+
+    A bundle with no space is "this turn's space is unknown" — reachable only
+    where the orchestrator has no conversations seam to read a thread from. The
+    agent answers from the model alone, exactly as it does with no knowledge
+    seam wired at all: no retrieval call, no corpus header, no citations. The
+    behaviour it replaces was the opposite one — search every space — which is
+    the hole the decision closes.
+    """
+    # A name nothing else in this file (or in `SYSTEM_PROMPT`, which cites a
+    # `criteria.pdf` of its own) could contribute to the prompt.
+    deps, knowledge, llm = make_deps(
+        chunks=[FakeChunk("c1", "text")], document_names=("ledger-q3.xlsx",), space_id=None
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.calls == []
+    assert knowledge.spaces == []
+    assert knowledge.name_limit_calls == []
+    final = next(event for event in events if event.type == "final")
+    assert final.data["citations"] == []
+    # Not the trust-gate fallback either: nothing was searched, so there is no
+    # zero-result to be honest about — the model answered, as it does when no
+    # knowledge seam is wired.
+    assert "ledger-q3.xlsx" not in llm.stream_calls[0][0][0].content
+    assert final.data["text"] == "ok"
 
 
 async def test_retrieved_context_is_injected_into_the_system_prompt() -> None:
@@ -497,7 +542,7 @@ async def test_corpus_header_is_prepended_to_the_system_prompt_on_the_normal_pat
     events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
 
     system_message = llm.stream_calls[0][0][0]
-    assert "Workspace files: a.pdf, b.docx." in system_message.content
+    assert "Files in this space: a.pdf, b.docx." in system_message.content
     assert events[-1].data["text"] == "Paris"
 
 
@@ -512,7 +557,7 @@ async def test_corpus_header_is_prepended_to_the_fallback_text() -> None:
     assert llm.stream_calls == []  # the trust gate still never calls the LLM
     final = events[-1]
     assert "enough information" in final.data["text"]
-    assert "Workspace files: a.pdf, b.docx." in final.data["text"]
+    assert "Files in this space: a.pdf, b.docx." in final.data["text"]
     assert events[0].data["delta"] == final.data["text"]
 
 
@@ -529,7 +574,7 @@ async def test_corpus_header_caps_the_listed_names_with_an_overflow_tail() -> No
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
     system_message = llm.stream_calls[0][0][0]
-    assert "Workspace files: a.pdf, b.pdf, and 50 more files." in system_message.content
+    assert "Files in this space: a.pdf, b.pdf, and 50 more files." in system_message.content
 
 
 @pytest.mark.parametrize(
@@ -565,7 +610,7 @@ async def test_the_arabic_overflow_tail_agrees_with_the_number_it_names(
     await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
 
     system_message = llm.stream_calls[0][0][0]
-    assert f"ملفّات مساحة العمل: a.pdf{expected_tail}" in system_message.content
+    assert f"ملفّات هذا الفضاء: a.pdf{expected_tail}" in system_message.content
 
 
 async def test_the_agreeing_tail_reaches_the_user_on_the_fallback_path() -> None:
@@ -580,7 +625,7 @@ async def test_the_agreeing_tail_reaches_the_user_on_the_fallback_path() -> None
     assert llm.stream_calls == []
     final = events[-1]
     assert "لا أملك معلومات كافية" in final.data["text"]
-    assert "ملفّات مساحة العمل: a.pdf، و 3 ملفّات أخرى." in final.data["text"]
+    assert "ملفّات هذا الفضاء: a.pdf، و 3 ملفّات أخرى." in final.data["text"]
     assert events[0].data["delta"] == final.data["text"]
 
 
@@ -597,7 +642,7 @@ async def test_the_arabic_header_ends_in_a_full_stop_when_nothing_remains() -> N
     await drive_run(RagAgent(make_ctx(), deps), "كم ملفًا لديك؟")
 
     system_message = llm.stream_calls[0][0][0]
-    assert "ملفّات مساحة العمل: a.pdf، b.pdf." in system_message.content
+    assert "ملفّات هذا الفضاء: a.pdf، b.pdf." in system_message.content
 
 
 async def test_corpus_header_reports_no_files_for_an_empty_workspace() -> None:
@@ -605,7 +650,7 @@ async def test_corpus_header_reports_no_files_for_an_empty_workspace() -> None:
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
     system_message = llm.stream_calls[0][0][0]
-    assert "There are no files in this workspace yet." in system_message.content
+    assert "There are no files in this space yet." in system_message.content
 
 
 async def test_corpus_header_follows_the_query_language_like_the_fallback_does() -> None:
@@ -616,7 +661,7 @@ async def test_corpus_header_follows_the_query_language_like_the_fallback_does()
 
     final = events[-1]
     assert "لا أملك معلومات كافية" in final.data["text"]
-    assert "ملفّات مساحة العمل: a.pdf." in final.data["text"]
+    assert "ملفّات هذا الفضاء: a.pdf." in final.data["text"]
     assert llm.stream_calls == []
 
 
@@ -656,7 +701,7 @@ async def test_without_knowledge_still_answers_with_no_citations() -> None:
 
     assert [e.data["delta"] for e in events if e.type == "token"] == ["hi"]
     assert events[-1].data["citations"] == []
-    assert "Workspace files:" not in llm.stream_calls[0][0][0].content
+    assert "Files in this space:" not in llm.stream_calls[0][0][0].content
 
 
 # --------------------------------------------------------------------------- #

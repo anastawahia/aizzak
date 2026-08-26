@@ -421,6 +421,7 @@ paths:
     post:
       tags: [knowledge]
       operationId: searchKnowledge
+      description: "Top-`k` relevant chunks for a query, **inside one space**. `space_id` rides on the BODY rather than as a `?space_id=` query parameter like the three listings': this is a POST whose whole input is one object, and splitting one of its three narrowings onto the URL would leave a client stating the search in two places. Permission `knowledge:read`."
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSearchIn" } } } }
       responses:
         "200": { description: OK, headers: { X-Correlation-Id: { $ref: "#/components/headers/CorrelationId" } }, content: { application/json: { schema: { $ref: "#/components/schemas/RetrievedChunkPage" } } } }
@@ -1179,8 +1180,9 @@ components:
       properties: { data: { type: array, items: { $ref: "#/components/schemas/FileOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
     KnowledgeSearchIn:
       type: object
-      required: [query]
-      properties: { query: {type: string}, k: {type: integer, maximum: 50, default: 5} }
+      description: "A retrieval request over ONE space's corpus. `space_id` is REQUIRED (س-32, owner decision 2026-08-26): spaces are isolated completely — their files, their index and their rows — so a search spans one space or it does not run. It used to be absent from this body, which made this the one endpoint in the system that retrieved across every space in the workspace; a fidelity-audit measurement taken through it described behaviour no thread in the product can produce and had to be withdrawn. Omitting it (or sending a blank one) is a **422** before anything is embedded. `k` is the published result-set size and keeps its default; the asymmetry is the decision — a missing `k` asks for the deployment's number, a missing space asked for everybody's corpus."
+      required: [query, space_id]
+      properties: { query: {type: string}, k: {type: integer, maximum: 50, default: 5}, space_id: {type: string, format: uuid} }
     RetrievedChunkOut:
       type: object
       description: "One retrieved chunk. `file_name`/`page_number`/`section` (retrieval plan §3.1/§3.9, P-18) are the citation fields a client needs to render a source label without a second round trip — always present on the wire, `null` when the indexed point predates them or its parser never emitted one."

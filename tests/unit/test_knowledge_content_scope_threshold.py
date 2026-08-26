@@ -99,7 +99,7 @@ class _ScopeSpy:
         api_key: str,
         k: int | None = None,
         document_ids: Sequence[str] | None = None,
-        space_id: str | None,
+        space_id: str,
     ) -> RetrievalResult:
         self.scopes.append(document_ids)
         allowed = (
@@ -124,6 +124,11 @@ class _ScopeSpy:
         )
 
 
+# س-32 — the one space these questions are asked in. The router refuses a call
+# without one, and what this file grades is the token bar, not the axis.
+_SPACE = "space-1"
+
+
 class _Corpus:
     """A structural ``FileCandidates``: what this workspace's files are
     called, which is all ``resolve_file`` ever sees."""
@@ -134,9 +139,7 @@ class _Corpus:
         )
         self.calls: list[ExecutionContext] = []
 
-    async def execute(
-        self, ctx: ExecutionContext, *, space_id: str | None
-    ) -> Sequence[FileCandidate]:
+    async def execute(self, ctx: ExecutionContext, *, space_id: str) -> Sequence[FileCandidate]:
         # `space_id` is accepted and ignored: this corpus is already the one
         # space these tests search, and what they grade is the token bar, not
         # the space axis. That the router forwards the space it was asked for
@@ -204,7 +207,7 @@ async def _ask(
         model="embed-1",
         api_key="key-1",
         document_ids=document_ids,
-        space_id=None,
+        space_id=_SPACE,
     )
     return routed.intent, {chunk.document_id for chunk in routed.chunks}
 
@@ -367,7 +370,7 @@ async def test_the_summarisation_route_still_acts_on_a_one_word_name() -> None:
         question="لخص لي تقرير",
         model="embed-1",
         api_key="key-1",
-        space_id=None,
+        space_id=_SPACE,
     )
 
     assert routed.intent is Intent.SUMMARIZE_DOC
@@ -389,7 +392,7 @@ async def test_a_summarisation_question_naming_a_multi_token_file_is_unaffected_
         question="لخص لي سياسة الإجازات السنوية",
         model="embed-1",
         api_key="key-1",
-        space_id=None,
+        space_id=_SPACE,
     )
 
     assert routed.intent is Intent.SUMMARIZE_DOC

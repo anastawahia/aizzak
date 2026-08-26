@@ -90,7 +90,12 @@ def _document(
     *,
     doc_id: str = "doc-1",
     workspace_id: str = "ws1",
-    space_id: str | None = None,
+    # س-32 — every corpus walk in this module filters on a space now (the
+    # header's included), so the DEFAULT document has to live in one or half
+    # these fixtures would describe a corpus nothing can reach. `_SPACE_A` is
+    # that default; a test about the axis itself still names both, and a test
+    # about a spaceless row still passes `space_id=None` explicitly.
+    space_id: str | None = _SPACE_A,
     file_id: str = "file-1",
     status: IndexStatus = IndexStatus.PENDING,
     chunk_count: int = 0,
@@ -1214,7 +1219,7 @@ async def test_index_outcome_counts_chunks_by_kind_across_a_mixed_document() -> 
     pipeline = IndexDocument(_FakeEmbeddings(dim=6), _FakeHybridVectors())
 
     outcome = await pipeline.execute(
-        ctx, document_id="doc-1", space_id=None, parsed=parsed, model="m", api_key="k"
+        ctx, document_id="doc-1", space_id=_SPACE_A, parsed=parsed, model="m", api_key="k"
     )
 
     assert (outcome.text_chunks, outcome.table_chunks, outcome.image_chunks) == (1, 2, 1)
@@ -1333,7 +1338,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     await IndexDocument(embeddings, vectors).execute(
         ctx,
         document_id="doc-1",
-        space_id=None,
+        space_id=_SPACE_A,
         parsed=_parsed_document([_parsed_chunk(text, order=0)]),
         model="embed-1",
         api_key="key-1",
@@ -1350,7 +1355,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     # KnowledgeRetrieval inbound port -- mypy is the real assertion here.
     svc: KnowledgeRetrieval = service
 
-    results = await svc.retrieve(ctx, text, 1, space_id=None)
+    results = await svc.retrieve(ctx, text, 1, space_id=_SPACE_A)
 
     assert resolver.calls == [ctx]
     assert len(results) == 1
@@ -1391,7 +1396,7 @@ async def test_list_document_names_resolves_up_to_the_cap_newest_first() -> None
         names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
     )
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=2)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=2)
 
     # Newest id first (doc-3 -> doc-2 -> doc-1), the same order `ListDocuments`
     # returns; capped at `limit=2` even though the workspace has three.
@@ -1410,7 +1415,7 @@ async def test_list_document_names_counts_every_lifecycle_status() -> None:
         names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
     )
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=50)
 
     assert result.total == 3
     assert set(result.names) == {"a.pdf", "b.pdf", "c.pdf"}
@@ -1427,14 +1432,27 @@ async def test_list_document_names_skips_a_document_whose_file_is_unreadable() -
     # `file-gone` is not seeded at all -- `get_readable` answers `None`.
     files = _FakeReadableFiles({"file-1": None}, names={"file-1": "a.pdf"})
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=50)
 
     assert result == DocumentNames(names=("a.pdf",), total=2)
 
 
-async def test_list_document_names_spans_every_space_regardless_of_scope() -> None:
-    """`space_id=None` on the internal `documents.list` call — a corpus-aware
-    header describes the WHOLE workspace, not one space's slice of it."""
+async def test_list_document_names_names_only_the_space_it_was_asked_about() -> None:
+    """س-32 (owner decision 2026-08-26) — and this test used to assert the
+    reverse.
+
+    ``test_list_document_names_spans_every_space_regardless_of_scope`` pinned
+    ``space_id=None`` on the internal ``documents.list`` call, on decision
+    س-23 = ج's argument that a corpus-aware header describes the WHOLE
+    workspace. The decision isolates spaces completely — files, index and rows
+    — so the corpus a thread HAS is its space's: naming (ب)'s files in a thread
+    that can never retrieve from them told a user about documents no question
+    of theirs could be answered from.
+
+    ``total`` narrows with the names, which is the half that matters most: it
+    is what the "N more files" tail is computed from, so a header that counted
+    three and could reach one would have been a lie with a number on it.
+    """
     ctx = _ctx("ws1")
     documents = _FakeDocumentRepository()
     documents.docs["doc-a"] = _document(doc_id="doc-a", file_id="file-a", space_id=_SPACE_A)
@@ -1445,16 +1463,19 @@ async def test_list_document_names_spans_every_space_regardless_of_scope() -> No
         names={"file-a": "a.pdf", "file-b": "b.pdf", "file-c": "c.pdf"},
     )
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=50)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=50)
 
-    assert result.total == 3
-    assert set(result.names) == {"a.pdf", "b.pdf", "c.pdf"}
+    assert result == DocumentNames(names=("a.pdf",), total=1)
+    # And the spaceless row is not "everyone's" either: a document no space
+    # owns belongs to no space's header, exactly as it matches no space's
+    # search (§5-أ).
+    assert "c.pdf" not in result.names
 
 
 async def test_list_document_names_on_an_empty_workspace() -> None:
     ctx = _ctx("ws1")
     result = await ListDocumentNames(_FakeDocumentRepository(), _FakeReadableFiles()).execute(
-        ctx, limit=50
+        ctx, space_id=_SPACE_A, limit=50
     )
 
     assert result == DocumentNames(names=(), total=0)
@@ -1480,7 +1501,7 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
     )
 
     svc: KnowledgeRetrieval = service
-    result = await svc.list_document_names(ctx, limit=2)
+    result = await svc.list_document_names(ctx, space_id=_SPACE_A, limit=2)
 
     assert result == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
 
@@ -1504,8 +1525,12 @@ async def test_list_document_names_without_a_limit_uses_the_deployment_cap() -> 
         names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
     )
 
-    one = await ListDocumentNames(documents, files, max_corpus_names=1).execute(ctx)
-    two = await ListDocumentNames(documents, files, max_corpus_names=2).execute(ctx)
+    one = await ListDocumentNames(documents, files, max_corpus_names=1).execute(
+        ctx, space_id=_SPACE_A
+    )
+    two = await ListDocumentNames(documents, files, max_corpus_names=2).execute(
+        ctx, space_id=_SPACE_A
+    )
 
     assert one == DocumentNames(names=("c.pdf",), total=3)
     assert two == DocumentNames(names=("c.pdf", "b.pdf"), total=3)
@@ -1525,8 +1550,12 @@ async def test_an_explicit_limit_still_overrides_the_deployment_cap() -> None:
     )
     names = ListDocumentNames(documents, files, max_corpus_names=2)
 
-    assert (await names.execute(ctx, limit=1)).names == ("c.pdf",)
-    assert (await names.execute(ctx, limit=50)).names == ("c.pdf", "b.pdf", "a.pdf")
+    assert (await names.execute(ctx, space_id=_SPACE_A, limit=1)).names == ("c.pdf",)
+    assert (await names.execute(ctx, space_id=_SPACE_A, limit=50)).names == (
+        "c.pdf",
+        "b.pdf",
+        "a.pdf",
+    )
 
 
 def test_the_corpus_name_cap_default_mirrors_its_settings_home() -> None:
@@ -1570,7 +1599,9 @@ async def test_the_service_hands_the_configured_cap_down_to_the_use_case() -> No
         max_corpus_names=1,
     )
 
-    assert await svc.list_document_names(ctx) == DocumentNames(names=("c.pdf",), total=3)
+    assert await svc.list_document_names(ctx, space_id=_SPACE_A) == DocumentNames(
+        names=("c.pdf",), total=3
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1588,7 +1619,7 @@ async def test_file_candidates_pair_every_document_with_its_file_name() -> None:
         names={"file-1": "a.pdf", "file-2": "b.pdf", "file-3": "c.pdf"},
     )
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
     assert candidates == (
         FileCandidate(document_id="doc-3", file_name="c.pdf"),
@@ -1610,7 +1641,7 @@ async def test_file_candidates_are_never_capped_at_a_display_limit() -> None:
         documents.docs[f"doc-{n:02d}"] = _document(doc_id=f"doc-{n:02d}", file_id=f"file-{n}")
     files = _FakeReadableFiles(dict.fromkeys(names), names=names)
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
     assert len(candidates) == 60
 
@@ -1627,7 +1658,7 @@ async def test_file_candidates_include_a_document_that_is_not_indexed_yet() -> N
     )
     files = _FakeReadableFiles({"file-1": None}, names={"file-1": "fresh.pdf"})
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
     assert candidates == (FileCandidate(document_id="doc-1", file_name="fresh.pdf"),)
 
@@ -1644,7 +1675,7 @@ async def test_file_candidates_drop_documents_with_no_readable_name() -> None:
     documents.docs["doc-3"] = _document(doc_id="doc-3", file_id="file-nameless")
     files = _FakeReadableFiles({"file-1": None, "file-nameless": None}, names={"file-1": "a.pdf"})
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
     assert candidates == (FileCandidate(document_id="doc-1", file_name="a.pdf"),)
 
@@ -1683,36 +1714,45 @@ async def test_file_candidates_are_narrowed_to_the_space_being_searched() -> Non
     assert candidates == (FileCandidate(document_id="doc-a", file_name="a.pdf"),)
 
 
-async def test_file_candidates_span_every_space_when_the_search_does() -> None:
-    """`None` means the whole workspace on THIS axis exactly as it does on the
-    search's, so the two agree by being absent together — which is why the
-    caller that passes `None` today (the agent carries no space yet) sees no
-    change at all.
+async def test_file_candidates_never_span_a_second_space() -> None:
+    """س-32 — and this test used to assert the reverse too.
+
+    ``test_file_candidates_span_every_space_when_the_search_does`` pinned
+    ``None`` as "the whole workspace on this axis, exactly as on the search's,
+    so the two agree by being absent together". They agree on a REAL space now,
+    which is the same agreement with the absence removed: a question may only
+    name files that live where it was asked.
     """
     ctx = _ctx("ws1")
     documents, files = _corpus_across_two_spaces()
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
-
-    assert {candidate.document_id for candidate in candidates} == {"doc-a", "doc-b", "doc-c"}
-
-
-async def test_the_corpus_header_spans_every_space_even_where_candidates_do_not() -> None:
-    """The one place the two walks part (review §7's table), over ONE corpus.
-
-    `ListDocumentNames` takes no `space_id` at all: a corpus-awareness header
-    tells a user which files exist for them AT ALL, and a slice of it would
-    report a corpus smaller than the one they uploaded. `ListFileCandidates`
-    takes one and honours it: it is answering a question, inside a space.
-    """
-    ctx = _ctx("ws1")
-    documents, files = _corpus_across_two_spaces()
-
-    header = await ListDocumentNames(documents, files).execute(ctx, limit=50)
     candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
-    assert header.total == 3
-    assert set(header.names) == {"a.pdf", "b.pdf", "c.pdf"}
+    assert {candidate.document_id for candidate in candidates} == {"doc-a"}
+
+
+async def test_the_two_walks_now_describe_the_same_corpus() -> None:
+    """The one place the two walks used to part (review §7's table), over ONE
+    corpus — and they part no longer.
+
+    ``test_the_corpus_header_spans_every_space_even_where_candidates_do_not``
+    asserted the split: the header took no ``space_id`` at all and named every
+    file in the workspace, while the candidate list took one and honoured it.
+    س-32 gives the header the same space, so what a user is TOLD they have and
+    what a question may be answered FROM are the same set. A header that named
+    more than the search could reach was the leak in its politest form.
+
+    The two use-cases still differ — the display cap is the header's, the
+    empty-name drop is the candidates' — which is why they are still two.
+    """
+    ctx = _ctx("ws1")
+    documents, files = _corpus_across_two_spaces()
+
+    header = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=50)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
+
+    assert header.total == 1
+    assert set(header.names) == {"a.pdf"}
     assert [candidate.file_name for candidate in candidates] == ["a.pdf"]
 
 
@@ -1757,7 +1797,7 @@ async def test_file_candidates_read_names_in_bulk_not_once_per_document() -> Non
     ctx = _ctx("ws1")
     documents, files, size = _big_corpus(pages=2)
 
-    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=None)
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
 
     assert len(candidates) == size
     # THE assertion of this whole change: round trips, not ids. Three pages
@@ -1779,7 +1819,7 @@ async def test_the_corpus_header_reads_names_once_and_stops_at_its_cap() -> None
     ctx = _ctx("ws1")
     documents, files, size = _big_corpus(pages=2)
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=5)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=5)
 
     assert len(result.names) == 5
     # `total` is the FULL corpus, not the capped list -- the header's "N more"
@@ -1805,7 +1845,7 @@ async def test_the_corpus_header_keeps_reading_until_its_cap_is_actually_full() 
     survivors = {"file-00000": "a.pdf", "file-00001": "b.pdf"}
     files = _FakeReadableFiles(dict.fromkeys(survivors), names=survivors)
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=5)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=5)
 
     assert set(result.names) == {"a.pdf", "b.pdf"}
     assert result.total == _LIST_PAGE_SIZE + 2
@@ -1898,10 +1938,10 @@ async def test_the_corpus_header_answers_exactly_what_the_per_file_walk_answered
     ctx = _ctx("ws1")
     documents, files = _mixed_corpus()
     expected, expected_total = await _names_the_old_way(
-        ctx, documents, files, space_id=None, cap=limit
+        ctx, documents, files, space_id=_SPACE_A, cap=limit
     )
 
-    result = await ListDocumentNames(documents, files).execute(ctx, limit=limit)
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=limit)
 
     assert result == DocumentNames(names=tuple(name for _, name in expected), total=expected_total)
 
@@ -1915,16 +1955,16 @@ async def test_both_walks_stay_bounded_as_the_corpus_grows() -> None:
     ctx = _ctx("ws1")
     documents, files, size = _big_corpus(pages=3)
 
-    await ListFileCandidates(documents, files).execute(ctx, space_id=None)
-    await ListDocumentNames(documents, files).execute(ctx)
+    await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
+    await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A)
 
     # The SAME two walks written the old way, on the same corpus, counted by
     # the same double -- so the number below is measured against the shipped
     # alternative rather than against a comment.
     old_documents, per_file, _size = _big_corpus(pages=3)
-    await _names_the_old_way(ctx, old_documents, per_file, space_id=None, cap=None)
+    await _names_the_old_way(ctx, old_documents, per_file, space_id=_SPACE_A, cap=None)
     await _names_the_old_way(
-        ctx, old_documents, per_file, space_id=None, cap=_DEFAULT_MAX_CORPUS_NAMES
+        ctx, old_documents, per_file, space_id=_SPACE_A, cap=_DEFAULT_MAX_CORPUS_NAMES
     )
 
     # 4 pages of candidates + 1 capped header read, against `D + 50`.
@@ -1948,7 +1988,7 @@ async def _indexed_corpus(
         await IndexDocument(embeddings, vectors).execute(
             ctx,
             document_id=doc_id,
-            space_id=None,
+            space_id=_SPACE_A,
             parsed=_parsed_document([_parsed_chunk(text, order=0)]),
             model="embed-1",
             api_key="key-1",
@@ -2001,13 +2041,17 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
     )
 
     results = await service.retrieve(
-        ctx, "quarterly revenue figures", 5, ["file-north"], space_id=None
+        ctx, "quarterly revenue figures", 5, ["file-north"], space_id=_SPACE_A
     )
 
     assert [chunk.document_id for chunk in results] == ["doc-north"]
     # FILE ids in, DOCUMENT ids out: the caller never has to know documents
     # exist, and the payload the filter runs against only knows document ids.
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-north"]}
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-north"],
+        "space": _SPACE_A,
+    }
     # The tenant filter is never REPLACED by the scope (DD-04).
     assert vectors.search_sparse_calls[-1][2]["workspace_id"] == "ws1"
 
@@ -2024,7 +2068,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
         _FakeSummaryStarter(),
     )
 
-    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
+    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
 
     assert {chunk.document_id for chunk in results} == {"doc-north", "doc-south"}
 
@@ -2050,7 +2094,7 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
     searches_before = len(vectors.search_calls)
 
     results = await service.retrieve(
-        ctx, "quarterly revenue figures", 5, ["file-never-indexed"], space_id=None
+        ctx, "quarterly revenue figures", 5, ["file-never-indexed"], space_id=_SPACE_A
     )
 
     assert results == []
@@ -2147,7 +2191,7 @@ async def test_answer_routes_a_content_question_to_retrieval() -> None:
     service, summaries = await _routing_service(ctx, embeddings, vectors)
 
     svc: KnowledgeRetrieval = service
-    routed = await svc.answer(ctx, "quarterly revenue figures", 5, space_id=None)
+    routed = await svc.answer(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
 
     assert routed.intent is Intent.CONTENT
     assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
@@ -2164,7 +2208,7 @@ async def test_answer_routes_a_summarisation_question_to_request_summary() -> No
     service, summaries = await _routing_service(ctx, embeddings, vectors)
     searches_before = len(vectors.search_calls)
 
-    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=None)
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
 
     assert routed.intent is Intent.SUMMARIZE_DOC
     # FILE in, DOCUMENT out -- the same translation `retrieve` does, and the
@@ -2186,7 +2230,7 @@ async def test_a_routed_summary_asks_for_a_bounded_overview_in_the_documents_lan
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors)
 
-    await service.answer(ctx, "summarize it", 5, ["file-south"], space_id=None)
+    await service.answer(ctx, "summarize it", 5, ["file-south"], space_id=_SPACE_A)
 
     (_document_id, kind, lang) = summaries.calls[0]
     assert kind is SummaryKind.OVERVIEW
@@ -2220,7 +2264,9 @@ async def test_a_summarisation_question_without_one_named_document_never_guesses
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors)
 
-    routed = await service.answer(ctx, "لخص لي أرقام الإيرادات الفصلية", 5, file_ids, space_id=None)
+    routed = await service.answer(
+        ctx, "لخص لي أرقام الإيرادات الفصلية", 5, file_ids, space_id=_SPACE_A
+    )
 
     assert summaries.calls == []
     assert routed.summary_job_id is None
@@ -2241,7 +2287,7 @@ async def test_a_summarisation_question_that_names_one_file_resolves_and_queues_
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
 
-    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=None)
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
 
     assert routed.intent is Intent.SUMMARIZE_DOC
     assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
@@ -2260,7 +2306,7 @@ async def test_a_tie_comes_back_as_names_to_ask_the_user_about_and_queues_nothin
     service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
     searches_before = len(vectors.search_calls)
 
-    routed = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+    routed = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=_SPACE_A)
 
     assert set(routed.clarification_options) == {"الميزانية 2024.pdf", "الميزانية 2025.pdf"}
     assert routed.intent is Intent.SUMMARIZE_DOC
@@ -2282,8 +2328,8 @@ async def test_a_tie_never_collapses_into_the_top_candidate() -> None:
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
 
-    first = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
-    second = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
+    first = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=_SPACE_A)
+    second = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=_SPACE_A)
 
     assert summaries.calls == []
     assert first.summary_job_id is None and second.summary_job_id is None
@@ -2300,8 +2346,8 @@ async def test_answering_the_clarification_question_is_what_finally_resolves_it(
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
 
-    asked = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=None)
-    reply = await service.answer(ctx, f"لخص {asked.clarification_options[0]}", 5, space_id=None)
+    asked = await service.answer(ctx, "لخص لي ملف الميزانية", 5, space_id=_SPACE_A)
+    reply = await service.answer(ctx, f"لخص {asked.clarification_options[0]}", 5, space_id=_SPACE_A)
 
     assert reply.summary_job_id is not None
     assert reply.clarification_options == ()
@@ -2318,7 +2364,7 @@ async def test_a_pin_naming_one_document_beats_the_question_s_own_words() -> Non
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
 
-    await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, ["file-south"], space_id=None)
+    await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, ["file-south"], space_id=_SPACE_A)
 
     assert summaries.calls == [("doc-south", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
 
@@ -2334,7 +2380,7 @@ async def test_resolution_cannot_reach_outside_the_callers_pin() -> None:
     service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
 
     routed = await service.answer(
-        ctx, "لخّص لي التقرير الشمالي", 5, ["file-never-indexed"], space_id=None
+        ctx, "لخّص لي التقرير الشمالي", 5, ["file-never-indexed"], space_id=_SPACE_A
     )
 
     assert summaries.calls == []
@@ -2363,15 +2409,20 @@ async def test_a_content_question_that_names_a_file_is_searched_inside_that_file
     service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
 
     routed = await service.answer(
-        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, space_id=None
+        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, space_id=_SPACE_A
     )
 
     assert routed.intent is Intent.CONTENT
     assert [chunk.document_id for chunk in routed.chunks] == ["doc-north"]
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-north"]}
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-north"],
+        "space": _SPACE_A,
+    }
     assert vectors.search_sparse_calls[-1][2] == {
         "workspace_id": "ws1",
         "document_id": ["doc-north"],
+        "space": _SPACE_A,
     }
     # The CONTENT route stays the CONTENT route: naming a file narrows the
     # search, it does not queue a summary.
@@ -2401,9 +2452,11 @@ async def test_a_named_file_with_nothing_in_it_never_answers_from_another_file()
         ctx, embeddings, vectors, _HANDBOOK_CORPUS, documents=documents
     )
 
-    wide = await service.answer(ctx, "ما هي أرقام الإيرادات", 5, space_id=None)
+    wide = await service.answer(ctx, "ما هي أرقام الإيرادات", 5, space_id=_SPACE_A)
     dense_before, sparse_before = len(vectors.search_calls), len(vectors.search_sparse_calls)
-    strict = await service.answer(ctx, "ما هي أرقام الإيرادات في دليل الموظفين", 5, space_id=None)
+    strict = await service.answer(
+        ctx, "ما هي أرقام الإيرادات في دليل الموظفين", 5, space_id=_SPACE_A
+    )
 
     # The corpus DOES answer this question -- when nobody named a file.
     assert {chunk.document_id for chunk in wide.chunks} == {"doc-north", "doc-south"}
@@ -2417,7 +2470,7 @@ async def test_a_named_file_with_nothing_in_it_never_answers_from_another_file()
         *vectors.search_sparse_calls[sparse_before:],
     ]
     assert searched
-    scoped = {"workspace_id": "ws1", "document_id": ["doc-handbook"]}
+    scoped = {"workspace_id": "ws1", "document_id": ["doc-handbook"], "space": _SPACE_A}
     assert all(call[2] == scoped for call in searched)
 
 
@@ -2436,7 +2489,7 @@ async def test_an_ambiguous_file_reference_leaves_a_content_search_unscoped() ->
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
 
-    routed = await service.answer(ctx, "ما هي أرقام الميزانية", 5, space_id=None)
+    routed = await service.answer(ctx, "ما هي أرقام الميزانية", 5, space_id=_SPACE_A)
 
     assert routed.intent is Intent.CONTENT
     assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
@@ -2464,12 +2517,13 @@ async def test_a_content_question_cannot_name_its_way_past_the_callers_pin() -> 
         "ما هي أرقام الإيرادات في دليل الموظفين",
         5,
         ["file-north", "file-south"],
-        space_id=None,
+        space_id=_SPACE_A,
     )
 
     assert vectors.search_calls[-1][2] == {
         "workspace_id": "ws1",
         "document_id": ["doc-north", "doc-south"],
+        "space": _SPACE_A,
     }
     assert {chunk.document_id for chunk in routed.chunks} == {"doc-north", "doc-south"}
 
@@ -2487,11 +2541,15 @@ async def test_a_pin_of_one_document_resolves_no_names_at_all() -> None:
     service, _summaries = await _routing_service(ctx, embeddings, vectors, files=files)
 
     routed = await service.answer(
-        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, ["file-south"], space_id=None
+        ctx, "ما هي أرقام الإيرادات في التقرير الشمالي؟", 5, ["file-south"], space_id=_SPACE_A
     )
 
     assert files.calls == []
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-south"]}
+    assert vectors.search_calls[-1][2] == {
+        "workspace_id": "ws1",
+        "document_id": ["doc-south"],
+        "space": _SPACE_A,
+    }
     assert [chunk.document_id for chunk in routed.chunks] == ["doc-south"]
 
 
@@ -2506,7 +2564,7 @@ async def test_a_summarisation_question_that_falls_through_is_not_resolved_twice
     files = _FakeReadableFiles(dict.fromkeys(_NAMED_CORPUS), names=_NAMED_CORPUS)
     service, summaries = await _routing_service(ctx, embeddings, vectors, files=files)
 
-    routed = await service.answer(ctx, "لخص لي أرقام الإيرادات الفصلية", 5, space_id=None)
+    routed = await service.answer(ctx, "لخص لي أرقام الإيرادات الفصلية", 5, space_id=_SPACE_A)
 
     assert routed.intent is Intent.SUMMARIZE_DOC
     assert summaries.calls == []
@@ -2523,8 +2581,8 @@ async def test_answer_is_a_routed_answer_and_retrieve_is_still_plain_retrieval()
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _routing_service(ctx, embeddings, vectors)
 
-    routed = await service.answer(ctx, "quarterly revenue figures", 5, space_id=None)
-    chunks = await service.retrieve(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=None)
+    routed = await service.answer(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
+    chunks = await service.retrieve(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
 
     assert isinstance(routed, RoutedAnswer)
     assert isinstance(chunks, list)
@@ -2551,14 +2609,14 @@ async def test_confidence_signals_are_raw_pre_rrf_scores_not_the_chunks_own_rrf_
     await IndexDocument(embeddings, vectors).execute(
         ctx,
         document_id="doc-1",
-        space_id=None,
+        space_id=_SPACE_A,
         parsed=_parsed_document([_parsed_chunk(text, order=0)]),
         model="embed-1",
         api_key="key-1",
     )
 
     result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=text, model="embed-1", api_key="key-1", k=5, space_id=None
+        ctx, query=text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
     )
 
     assert isinstance(result, RetrievalResult)
@@ -2588,14 +2646,14 @@ async def test_best_scores_are_the_maximum_across_all_hits_never_the_minimum() -
         await IndexDocument(embeddings, vectors).execute(
             ctx,
             document_id=doc_id,
-            space_id=None,
+            space_id=_SPACE_A,
             parsed=_parsed_document([_parsed_chunk(text, order=0)]),
             model="embed-1",
             api_key="key-1",
         )
 
     result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=query_text, model="embed-1", api_key="key-1", k=5, space_id=None
+        ctx, query=query_text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
     )
 
     # The best score is the near-identical match's ~1.0, not the unrelated
@@ -2612,7 +2670,7 @@ async def test_best_bm25_score_is_none_when_the_sparse_leg_returns_no_hits() -> 
     await IndexDocument(embeddings, vectors).execute(
         ctx,
         document_id="doc-1",
-        space_id=None,
+        space_id=_SPACE_A,
         parsed=_parsed_document([_parsed_chunk("quarterly revenue figures", order=0)]),
         model="embed-1",
         api_key="key-1",
@@ -2626,7 +2684,7 @@ async def test_best_bm25_score_is_none_when_the_sparse_leg_returns_no_hits() -> 
     assert build_sparse_terms(query).indices == ()
 
     result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=query, model="embed-1", api_key="key-1", k=5, space_id=None
+        ctx, query=query, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
     )
 
     assert result.best_bm25_score is None
@@ -2643,7 +2701,12 @@ async def test_both_confidence_signals_are_none_over_an_empty_corpus() -> None:
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
 
     result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query="quarterly revenue figures", model="embed-1", api_key="key-1", k=5, space_id=None
+        ctx,
+        query="quarterly revenue figures",
+        model="embed-1",
+        api_key="key-1",
+        k=5,
+        space_id=_SPACE_A,
     )
 
     assert result == RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
@@ -2667,7 +2730,7 @@ async def test_a_scope_of_unindexed_documents_short_circuits_with_none_signals()
         api_key="key-1",
         k=5,
         document_ids=[],
-        space_id=None,
+        space_id=_SPACE_A,
     )
 
     assert result == RetrievalResult(chunks=[], best_dense_score=None, best_bm25_score=None)
@@ -2825,10 +2888,25 @@ async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_othe
     }
 
 
-async def test_an_unspaced_retrieval_still_sees_every_space() -> None:
-    """`None` is "all spaces", never "the spaceless ones" — the key is left
-    out of the filter entirely (which the Qdrant adapter also requires: a
-    `None` filter value is a hard error there, not a no-op)."""
+@pytest.mark.parametrize("missing", [None, "", "   "])
+async def test_an_unspaced_retrieval_is_refused_instead_of_seeing_every_space(
+    missing: str | None,
+) -> None:
+    """The GUARD (س-32, owner decision 2026-08-26) — and the test it replaced
+    said the opposite.
+
+    ``test_an_unspaced_retrieval_still_sees_every_space`` used to pin ``None``
+    as "all spaces", with the ``space`` key left out of the filter entirely.
+    That reading is gone: spaces are isolated completely, so a search spans one
+    of them or it does not run. The refusal is raised before an embedding is
+    computed and before either leg is searched — proven here by both fakes
+    having recorded nothing at all — so an unscoped caller costs a workspace no
+    provider call on its way to a 422.
+
+    The blank strings are the same case wearing a different value: ``" "``
+    would otherwise reach the filter, match no point, and turn a broken caller
+    into an empty result nobody could explain.
+    """
     ctx = _ctx("ws1")
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _spaced_corpus(ctx, embeddings, vectors)
@@ -2840,10 +2918,22 @@ async def test_an_unspaced_retrieval_still_sees_every_space() -> None:
         _FakeSummaryStarter(),
     )
 
-    results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None)
+    embedded_before = len(embeddings.calls)
 
-    assert {chunk.document_id for chunk in results} == {"doc-research", "doc-drafts"}
-    assert "space" not in (vectors.search_calls[-1][2] or {})
+    with pytest.raises(ValidationError) as excinfo:
+        # `type: ignore` on the `None` case: the seam is typed non-nullable
+        # now, and this test is about the callers mypy never sees — the wire,
+        # a stored row, an adapter nobody has written yet.
+        await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=missing)  # type: ignore[arg-type]
+
+    assert excinfo.value.code == "knowledge.space_required"
+    assert excinfo.value.status == 422
+    # Nothing was spent on the way to the refusal. Measured against the
+    # seeding above (`_spaced_corpus` embeds and upserts through these same
+    # fakes), so what is asserted is that the CALL added nothing.
+    assert vectors.search_calls == []
+    assert vectors.search_sparse_calls == []
+    assert len(embeddings.calls) == embedded_before
 
 
 async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search() -> None:
@@ -2878,8 +2968,17 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
     )
 
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []
-    # And it is genuinely there, for anyone not asking about a space.
-    assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=None) != []
+    # And it is genuinely there — the point exists, it simply carries no
+    # `space` key to match. This half used to be asserted by retrieving with
+    # `space_id=None`, the "every space" call س-32 removed; the store is asked
+    # directly now, because there is no longer any caller of this module that
+    # could see the point at all.
+    assert [point.payload["text"] for point in vectors.points["kn-ws1"].values()] == [
+        "quarterly revenue figures"
+    ]
+    # ⇒ §5-أ got STRICTER with the decision, not looser: pre-spaces content is
+    # now unreachable through every face of the module rather than through the
+    # space-scoped ones only. The mandated re-index is the only cure, as it was.
 
 
 # --------------------------------------------------------------------------- #
@@ -3040,30 +3139,31 @@ async def test_the_same_content_question_still_narrows_inside_the_space_that_hol
     }
 
 
-async def test_an_unspaced_summarisation_question_still_resolves_across_every_space() -> None:
-    """No regression for the caller there is today: the agent passes
-    `space_id=None`, and `None` still means the whole workspace on this axis —
-    the name resolves wherever in it the file lives, and the build is queued
-    for it."""
+async def test_an_unspaced_question_is_refused_before_a_name_is_resolved() -> None:
+    """The guard on the ROUTING half (س-32) — and it has to fire here, not
+    only inside the search.
+
+    Two tests used to live at this spot, both pinning the opposite behaviour:
+    an unspaced summarisation question resolved its file name across every
+    space and queued a build for it, and an unspaced content question narrowed
+    to a document out of any space with no ``space`` key on the filter at all.
+    Both are exactly the leak the decision names — a question asked nowhere,
+    answered from a file the asker may not be able to open.
+
+    ``RouteQuestion`` walks the candidate corpus BEFORE it calls
+    ``RetrieveContext``, so a guard living only in the search would let an
+    unscoped question read every space's file NAMES first and be refused
+    second. Proven by the summary starter and both vector legs being untouched.
+    """
     ctx = _ctx("ws1")
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service, summaries = await _spaced_routing_service(ctx, embeddings, vectors)
 
-    routed = await service.answer(ctx, _SUMMARISE_THE_DRAFTS_FILE, 5, space_id=None)
+    searched_before = len(vectors.search_calls)
 
-    assert summaries.calls == [("doc-drafts", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
-    assert routed.summary_job_id == "job-1"
+    with pytest.raises(ValidationError) as excinfo:
+        await service.answer(ctx, _SUMMARISE_THE_DRAFTS_FILE, 5, space_id=None)  # type: ignore[arg-type]
 
-
-async def test_an_unspaced_content_question_still_narrows_to_the_file_it_names() -> None:
-    """The other half of the same no-regression: with no space asked for, the
-    CONTENT route narrows to the named document out of ANY space, and the
-    filter carries no `space` key at all (`None` is never written as a
-    condition)."""
-    ctx = _ctx("ws1")
-    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
-    service, _summaries = await _spaced_routing_service(ctx, embeddings, vectors)
-
-    await service.answer(ctx, _ASK_ABOUT_THE_DRAFTS_FILE, 5, space_id=None)
-
-    assert vectors.search_calls[-1][2] == {"workspace_id": "ws1", "document_id": ["doc-drafts"]}
+    assert excinfo.value.code == "knowledge.space_required"
+    assert summaries.calls == []
+    assert len(vectors.search_calls) == searched_before

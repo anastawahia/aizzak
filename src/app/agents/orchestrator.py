@@ -572,9 +572,18 @@ class _MeteredSteps:
     has already billed steps 1 through 7, each at the moment it ended.
     """
 
-    def __init__(self, orchestrator: AgentOrchestrator, ctx: ExecutionContext) -> None:
+    def __init__(
+        self, orchestrator: AgentOrchestrator, ctx: ExecutionContext, space_id: Uuid
+    ) -> None:
         self._orchestrator = orchestrator
         self._ctx = ctx
+        # س-32 — the run's space, on the constructor for `ctx`'s exact reason:
+        # it belongs to the RUN, not to the step, and the engine's `for_agent`
+        # port hands this object nothing but an `agent_key`. A workflow run
+        # always has one (`invoke_workflow` requires it — the run's own D-12
+        # thread is opened inside it), so unlike the single-agent path there is
+        # no `None` case to describe here.
+        self._space_id = space_id
         self._open: _OpenStep | None = None
 
     async def for_agent(self, agent_key: str) -> AgentDependencies:
@@ -583,7 +592,9 @@ class _MeteredSteps:
         # tokens steps 1 and 2 really consumed.
         await self.close_step()
         meter = _TokenMeter()
-        deps, provider = await self._orchestrator.begin_step(self._ctx, agent_key, meter)
+        deps, provider = await self._orchestrator.begin_step(
+            self._ctx, agent_key, meter, space_id=self._space_id
+        )
         # Recorded only AFTER `begin_step` succeeded: a step the quota denied,
         # or whose provider could not be resolved, never ran and must never
         # produce a charge.
@@ -921,6 +932,12 @@ class AgentOrchestrator:
         # and for the same reason: both are what the thread was configured to
         # answer with, and both must be known before the agent exists.
         scope = await self._pinned_scope(ctx, req.conversation_id)
+        # س-32 — the turn's SPACE, read in the same pre-flight breath and for a
+        # stronger reason than either of the two above: they are preferences,
+        # this is the isolation boundary. It must be known before the agent
+        # exists, because the agent's every read of files and knowledge is
+        # scoped by it.
+        space_id = await self._turn_space(ctx, req)
         binding = await self._resolve_llm(ctx, agent_key, route=route)
         provider_name = binding.provider.provider if binding is not None else _NO_PROVIDER
 
@@ -929,7 +946,7 @@ class AgentOrchestrator:
         # -- still pre-flight, so Phase 6 answers a real 429.
         await self._enforce(ctx, agent_key, provider_name)
 
-        deps = self._build_dependencies(binding, record.meter, scope)
+        deps = self._build_dependencies(binding, record.meter, scope, space_id=space_id)
         # Registry raises NotFoundError(404) for an unknown key and
         # ValidationError(422) for a malformed one -- both pass straight
         # through, still pre-flight, still mappable to a response.
@@ -1089,7 +1106,7 @@ class AgentOrchestrator:
         # named directly rather than injected: D-09 fixes v1 workflows as
         # linear with no alternative driver to choose between, so a factory
         # would be a seam with one implementation and no second caller.
-        steps = _MeteredSteps(self, ctx)
+        steps = _MeteredSteps(self, ctx, space_id)
         engine = SequentialWorkflowEngine(self._deps.agents, self._deps.executor, steps)
 
         async def write_step_output(data: Json) -> None:
@@ -1148,7 +1165,7 @@ class AgentOrchestrator:
             )
 
     async def begin_step(
-        self, ctx: ExecutionContext, agent_key: str, meter: _TokenMeter
+        self, ctx: ExecutionContext, agent_key: str, meter: _TokenMeter, *, space_id: Uuid
     ) -> tuple[AgentDependencies, str]:
         """Start one workflow step: resolve its provider, enforce the quota,
         assemble its bundle — returning the bundle and the provider name the
@@ -1160,7 +1177,8 @@ class AgentOrchestrator:
         a real seam.
 
         Deliberately the SAME three moves in the SAME order as ``invoke``
-        (resolve → enforce → build). The order is load-bearing in both: the
+        (resolve → enforce → build), with the run's ``space_id`` (س-32) riding
+        into the third. The order is load-bearing in both: the
         quota is checked once the provider is known, so an agent-scoped and a
         provider-scoped limit both get their say, and it is checked before the
         agent exists, so a denial costs nothing.
@@ -1176,7 +1194,12 @@ class AgentOrchestrator:
         binding = await self._resolve_llm(ctx, agent_key)
         provider = binding.provider.provider if binding is not None else _NO_PROVIDER
         await self._enforce(ctx, agent_key, provider)
-        return self._build_dependencies(binding, meter), provider
+        # س-32 — the RUN's space reaches every step of it. A step's agent is the
+        # same agent a user could invoke directly, so it gets the same isolation
+        # by the same field; without this a workflow would be the one way to
+        # reach an unscoped read, which is precisely the hole the decision
+        # closes on the direct path.
+        return self._build_dependencies(binding, meter, space_id=space_id), provider
 
     async def finish_step(
         self, ctx: ExecutionContext, agent_key: str, provider: str, meter: _TokenMeter
@@ -1195,6 +1218,8 @@ class AgentOrchestrator:
         binding: ResolvedLLM | None,
         meter: _TokenMeter,
         scope: tuple[Uuid, ...] = (),
+        *,
+        space_id: Uuid | None,
     ) -> AgentDependencies:
         """Assemble the per-request bundle handed to the agent.
 
@@ -1206,6 +1231,19 @@ class AgentOrchestrator:
         ``begin_step`` passes: a workflow step runs inside the run's OWN
         conversation (D-12), created by that run, so there is nothing pinned to
         it and no user who could have pinned anything.
+
+        ``space_id`` (س-32) is the run's isolation boundary. Keyword-only and
+        with NO default, unlike ``scope`` beside it, and the asymmetry is the
+        decision restated at this layer: a forgotten pin narrows nothing, a
+        forgotten space widened across spaces — so both callers have to say.
+        ``_prepare`` names the turn's thread's space, ``begin_step`` the run's.
+
+        Nullable, because there is one shape where no space can honestly be
+        known — an orchestrator with no conversations seam wired. ``None``
+        there means "no space known", never "every space": an agent handed
+        ``None`` reads no file and retrieves nothing. That is strictly safer
+        than the pre-decision behaviour, where the same unknown silently read
+        across all of them.
         """
         metered = (
             ResolvedLLM(
@@ -1224,6 +1262,7 @@ class AgentOrchestrator:
             media=self._deps.media,
             web_search=self._deps.web_search,
             knowledge_scope=scope,
+            space_id=space_id,
         )
 
     async def _enforce(self, ctx: ExecutionContext, agent_key: str, provider: str) -> None:
@@ -1464,6 +1503,33 @@ class AgentOrchestrator:
         if threads is None:
             return ()
         return await threads.pinned_files(ctx, conversation_id)
+
+    async def _turn_space(self, ctx: ExecutionContext, req: AgentRequest) -> Uuid | None:
+        """The space this turn works in (س-32, owner decision 2026-08-26).
+
+        **The thread's space wins, and the request's is only consulted when
+        there is no thread yet.** A request that continues a conversation
+        cannot restate its space — ``_open_turn`` already ignores
+        ``req.space_id`` in that case, so believing it here would hand the
+        agent a scope that disagrees with the row every message is written
+        into, and a caller could move a thread's retrieval into another space
+        just by naming one. Reading the thread is what makes the space a
+        property of the conversation rather than of the request.
+
+        ``None`` on three paths, and it means the same thing on all three: no
+        space is known for this turn. No conversations seam wired (the
+        orchestrator's degraded shape); a thread that is gone; a request that
+        opened no thread and named no space — which ``_open_turn`` refuses a
+        moment later anyway, and would have raised here first if this read
+        owned the reporting. Every consumer of the bundle treats ``None`` as
+        "read nothing", never as "read everything".
+        """
+        threads = self._deps.conversations
+        if threads is None:
+            return None
+        if req.conversation_id is None:
+            return req.space_id
+        return await threads.space_of(ctx, req.conversation_id)
 
     async def _resolve_llm(
         self, ctx: ExecutionContext, agent_key: str, *, route: str | None = None

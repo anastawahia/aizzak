@@ -72,8 +72,9 @@ class RecordingRetrieval:
     calls: list[tuple[str, int]] = field(default_factory=list)
     # Every `space_id` the route handed down (spaces plan step 8) — a separate
     # log so a test can assert the route passes one WITHOUT every existing
-    # `calls` assertion having to grow a third tuple element.
-    spaces: list[str | None] = field(default_factory=list)
+    # `calls` assertion having to grow a third tuple element. Non-nullable
+    # since س-32: the seam has no "every space" value left to record.
+    spaces: list[str] = field(default_factory=list)
     # Retrieval plan §3.6/§4 row 6 (`P-36`) — the second face this port now
     # has. Empty by default: no router test drives this yet, but the class
     # docstring's "structural KnowledgeRetrieval" claim stays true.
@@ -87,7 +88,7 @@ class RecordingRetrieval:
         k: int,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> list[RetrievedChunk]:
         self.calls.append((query, k))
         self.spaces.append(space_id)
@@ -100,7 +101,7 @@ class RecordingRetrieval:
         k: int,
         file_ids: Sequence[str] | None = None,
         *,
-        space_id: str | None,
+        space_id: str,
     ) -> RoutedAnswer:
         """Retrieval plan §3.4/§4 row 11 (`P-21`) — the port's third face.
         Routing is the module's own logic and is tested there; what this fake
@@ -118,9 +119,10 @@ class RecordingRetrieval:
         )
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: str, limit: int | None = None
     ) -> DocumentNames:
         self.name_limit_calls.append(limit)
+        self.spaces.append(space_id)
         return self.document_names
 
 

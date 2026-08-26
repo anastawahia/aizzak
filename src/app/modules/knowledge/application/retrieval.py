@@ -123,6 +123,19 @@ and is a narrowing INSIDE that tenant — never a substitute for it: the
 workspace condition stays whatever the caller scoped to, so a space id from
 another tenant still matches nothing.
 
+**And it is MANDATORY** (س-32, owner decision 2026-08-26): spaces are isolated
+completely — their files, their index and their rows — so there is no search
+that spans two of them and no caller that may ask for one. ``space_id`` is
+typed non-optional the whole way down this path (``KnowledgeRetrieval`` →
+``KnowledgeRetrievalService`` → ``RouteQuestion`` → here), and
+``require_space_scope`` below refuses at runtime what the types cannot see.
+The hole this closed was real and measured: a fidelity-audit number ("51% of
+the context budget on one duplicated page") was taken through the one caller
+that passed ``None`` and described behaviour no thread in the product can
+produce — two copies of a file in two different spaces, which no search can
+ever return together. An interface that breaks the isolation produces
+measurements nobody lives.
+
 Confidence signals (retrieval plan §3.3/§3.11, س-22, ``P-28``): ``execute``
 returns ``RetrievalResult``, not a bare ``list[RetrievedChunk]``, so it can
 carry ``best_dense_score``/``best_bm25_score`` alongside the chunks —
@@ -213,7 +226,9 @@ rather than consumed: no caller asks for it today.
 
 from __future__ import annotations
 
+import hashlib
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
@@ -238,6 +253,50 @@ from app.modules.knowledge.domain.value_objects import ParentChunkText
 from app.modules.knowledge.ports.retrieval import ParentChunkRepository, RetrievedChunk
 
 log = get_logger(__name__)
+
+# The space isolation code (03 §4), raised by `require_space_scope` below.
+# Its own code rather than the generic validation one: a caller that reached
+# retrieval with no space has not made a formatting mistake, it has asked for
+# an answer nobody in the product can ever be shown, and an operator reading
+# the log deserves to see which rule refused it.
+SPACE_REQUIRED = "knowledge.space_required"
+
+
+def require_space_scope(space_id: str | None) -> str:
+    """The space guard (س-32, owner decision 2026-08-26) — the one place the
+    retrieval path refuses to run unscoped.
+
+    **What it enforces.** A search happens inside ONE space or it does not
+    happen. There is no "every space" retrieval, no default space, and no
+    caller-supplied ``None`` that quietly widens across the axis the product
+    draws: spaces are isolated completely — their files, their index and their
+    rows — and a passage from another space is not a weaker answer, it is an
+    answer from a corpus the asker cannot see.
+
+    **Why a runtime guard when the types already say ``str``.** Because the
+    types are only as strong as the layer that checks them. Every seam on this
+    path is typed non-optional now and ``mypy`` holds the in-process callers to
+    it, but the space also arrives from the wire (``KnowledgeSearchIn``), from
+    a thread's stored row (``AgentDependencies.space_id``) and from any future
+    adapter nobody has written — none of which mypy sees. This function is what
+    makes the isolation a PROPERTY of the module rather than a convention its
+    callers keep, and it is deliberately the same shape as the empty-query
+    refusal beside it: a `ValidationError`, raised before an embedding is
+    computed and before a single filter reaches Qdrant.
+
+    A blank string is refused with the same voice as ``None``: ``" "`` would
+    otherwise reach ``flt["space"]`` as a real value, match no point, and turn
+    a broken caller into an empty result nobody could explain.
+
+    Returns the id so a call site can bind the narrowed value in one line and
+    have nothing nullable left in scope.
+    """
+    if space_id is None or not space_id.strip():
+        raise ValidationError(
+            "retrieval requires a space: spaces are isolated and there is no cross-space search",
+            code=SPACE_REQUIRED,
+        )
+    return space_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +486,12 @@ _STAGE_LOG_DEFAULTS: Mapping[str, object] = {
     # offered is the starvation guard doing its work (`_apply_rerank`).
     "rerank_count": 0,
     "widened_count": 0,
+    # How many candidates س-29 rule 2 dropped for repeating text an earlier
+    # one had already delivered. `0` on every corpus that holds no duplicate
+    # under two names, which is every corpus measured so far — the rule is
+    # proactive, and this number is how anyone would ever learn it stopped
+    # being.
+    "duplicate_text_count": 0,
     "budgeted_count": 0,
 }
 
@@ -552,11 +617,17 @@ class RetrieveContext:
         api_key: str,
         k: int | None = None,
         document_ids: Sequence[str] | None = None,
-        space_id: str | None,
+        space_id: str,
     ) -> RetrievalResult:
         started = time.perf_counter()
         if not query.strip():
             raise ValidationError("retrieval query must not be empty")
+        # The space guard (س-32) — beside the empty-query refusal because it is
+        # the same kind of statement: a call that cannot mean anything is
+        # refused before it costs an embedding. `space_id` is typed `str` now,
+        # so every in-process caller is held to it by mypy; this is what holds
+        # the ones mypy never sees. See `require_space_scope`.
+        space_id = require_space_scope(space_id)
         tuning = self._tuning
         # `k = None` means "however many this deployment is configured to
         # return" (plan step 18, `P-40`) -- the number that used to be
@@ -614,7 +685,13 @@ class RetrieveContext:
             "mmr_pool_k": mmr_pool_k,
             "retain_k": retain_k,
             "scoped_document_count": None if document_ids is None else len(document_ids),
-            "space_scoped": space_id is not None,
+            # Kept, and now ALWAYS true (س-32): the field used to record
+            # whether the caller had scoped to a space at all, and there is no
+            # unscoped call left to record. It stays because the log's shape is
+            # read by dashboards that predate the guard, and because a `false`
+            # appearing here again would be the loudest possible signal that
+            # something learned to bypass `require_space_scope`.
+            "space_scoped": True,
             **_STAGE_LOG_DEFAULTS,
         }
 
@@ -659,21 +736,21 @@ class RetrieveContext:
         # `_build_filter`'s `must`. It reads the `space` key `IndexDocument`
         # writes.
         #
-        # `None` is unscoped, and the key is left OUT rather than set to
-        # `None`: the Qdrant adapter rejects a `None` filter value outright
-        # (DD-04 — a filter shape it cannot render must fail loudly, never
-        # degrade to "no filter"), so writing it would turn "search the whole
-        # workspace" into a 400.
+        # **Unconditional since س-32** (owner decision 2026-08-26). It used to
+        # be `if space_id is not None`, and that branch WAS the hole: it made
+        # "no space" a legitimate filter shape — every space at once — reachable
+        # by any caller that simply omitted one. There is no such filter now;
+        # the guard above refused the call long before this line, so the only
+        # search this module can build is one space's.
         #
         # ⚠️ Points indexed BEFORE step 8 carry no `space` key at all, and
-        # Qdrant matches no point that is missing a filtered field — so the
-        # first search that passes a space returns nothing from them, silently
-        # and with no error. That is §5-أ, and the re-index it mandates is the
-        # only cure; there is no `IsEmpty`/`should` branch here to paper over
-        # it, because a filter that fell back to "or has no space" would
-        # quietly leak every other space's older content.
-        if space_id is not None:
-            flt["space"] = space_id
+        # Qdrant matches no point that is missing a filtered field — so a
+        # search returns nothing from them, silently and with no error. That is
+        # §5-أ, and the re-index it mandates is the only cure; there is no
+        # `IsEmpty`/`should` branch here to paper over it, because a filter
+        # that fell back to "or has no space" would quietly leak every other
+        # space's older content — which is the very leak this line now closes.
+        flt["space"] = space_id
 
         embedded = await self._embeddings.embed([query], model, api_key)
         q_vector = embedded.vectors[0]
@@ -850,15 +927,21 @@ class RetrieveContext:
         parent_texts = await self._documents.parent_texts_for_chunk_ids(
             ctx, [candidate.chunk_id for candidate in relevant]
         )
-        widened = _widen_to_parents(
+        widening = _widen_to_parents(
             relevant, parent_texts, max_parent_chunk_chars=tuning.max_parent_chunk_chars
         )
-        # `widened_count` below `relevant_count` is the dedup-BY-PARENT drop
-        # (plan step 9, `P-34`): the gap between the two is how many
-        # candidates collapsed into a section an earlier one already carried —
-        # the number that says whether `RetrievalTuning.fusion_retention`'s 3x pool is
-        # actually paying for itself.
-        stages["widened_count"] = len(widened)
+        # `widened_count` below `relevant_count` is this stage's TWO drops
+        # together (plan step 9, `P-34`, plus س-29 rule 2): how many
+        # candidates collapsed into a section an earlier one already carried,
+        # or repeated text an earlier one already delivered. The first cause
+        # says whether `RetrievalTuning.fusion_retention`'s 3x pool is paying
+        # for itself; the second is kept APART (`_Widening`) because it means
+        # something else entirely — above zero says the corpus holds one
+        # passage under two names IN ONE SPACE, an operator's problem rather
+        # than a tuning one, and it is the only signal that rule 2 ever fired.
+        stages.update(
+            widened_count=len(widening.chunks), duplicate_text_count=widening.duplicate_text
+        )
 
         # The context budget (plan step 10, `P-35`) -- AFTER the widening
         # above (which is what makes each candidate bigger) and BEFORE the
@@ -868,7 +951,9 @@ class RetrieveContext:
         # composed from the citation fields only `_to_retrieved_chunk` reads
         # out of the payload. Dual ceilings, smaller wins, best-first prefix
         # kept: see `fit_to_context_budget`.
-        retrieved = [_to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widened]
+        retrieved = [
+            _to_retrieved_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in widening.chunks
+        ]
         budgeted = fit_to_context_budget(
             [(chunk, _labeled_text(chunk)) for chunk in retrieved],
             max_chars=tuning.max_context_chars,
@@ -1197,12 +1282,30 @@ def _cap_parent_text(text: str, max_chars: int) -> str:
     return text[:room] + _PARENT_TRUNCATION_MARKER
 
 
+@dataclass(frozen=True, slots=True)
+class _Widening:
+    """``_widen_to_parents``' outcome: the surviving candidates, plus how many
+    of them س-29 rule 2 dropped.
+
+    A pair rather than a bare list because the two drops this stage performs
+    have different meanings and must stay distinguishable in the stage log —
+    the ``budgeted_count`` argument, applied one stage earlier. A gap between
+    ``relevant_count`` and ``widened_count`` that is entirely dedup-by-parent
+    says the 3x pool is paying for itself; the same gap caused by repeated
+    TEXT says the corpus holds a duplicate under two names, which is an
+    operator's problem and not a tuning one.
+    """
+
+    chunks: list[ScoredChunk]
+    duplicate_text: int
+
+
 def _widen_to_parents(
     candidates: Sequence[ScoredChunk],
     parents: Mapping[str, ParentChunkText],
     *,
     max_parent_chunk_chars: int,
-) -> list[ScoredChunk]:
+) -> _Widening:
     """Substitute each candidate's own leaf text with its parent's (plan step
     9, ``P-34``), deduping by parent, and preserving ``candidates``' own
     order (best-first — RRF-sorted, and ``filter_relevant`` never re-sorts).
@@ -1241,9 +1344,75 @@ def _widen_to_parents(
       is truncated. Dropping the whole entry (not merely deduplicating the
       text) is what frees the slot ``RetrievalTuning.fusion_retention``'s 3x pool exists to
       fill with the next distinct candidate.
+
+    ✅ **And a SECOND key, on the text itself -- س-29 rule 2** (owner decision
+    2026-08-25, docs/rag-fidelity-audit.md §4-هـ-2). Every entry about to be
+    appended above is fingerprinted by ``_text_fingerprint`` and dropped if an
+    earlier one already delivered that text. The gap it closes: every one of
+    the four duplicate guards on this path is keyed on an IDENTITY and none on
+    the text -- ``file_id`` when a document is registered, ``content_hash``
+    compared against the document's own, ``chunk_id`` in the RRF fusion, and
+    ``parent.id`` right here -- so a second file uploaded under a DIFFERENT
+    name, repeating content already indexed, passes all four and spends the
+    context budget twice on one passage.
+
+    **It is a second key and not a replacement for the parent one.** They
+    catch different things and the parent key is the cheaper of the two: two
+    candidates under one parent are duplicates before either is truncated,
+    which text equality could not see once ``_cap_parent_text`` had cut them
+    to the same prefix for different reasons. Dedup by parent runs first and
+    this runs on what survives.
+
+    **The fingerprint is of the text AS DELIVERED** -- after the parent
+    substitution and after the cap -- because that is what the budget will
+    measure and what the model will read. Fingerprinting the leaf text
+    instead would ask about a string no consumer ever sees.
+
+    **Kept-as-is candidates are fingerprinted too**, unlike the parent key
+    which deliberately skips them. The asymmetry is not an oversight: a
+    missing or incomplete parent means nothing was SUBSTITUTED, so there is
+    no parent to have been seen -- but the text was still delivered, and two
+    identical leaf texts are two identical passages however they got here.
+
+    **The higher-ranked one survives**, the same prefix rule as the parent
+    key, and the loser is dropped whole rather than blanked -- which is what
+    frees the slot ``RetrievalTuning.fusion_retention``'s 3x pool exists to
+    fill with the next distinct candidate.
+
+    ⚠️ **The suppressed twin is NOT recorded on the survivor's citation.** A
+    reader told that a passage came from ``a.pdf`` is not told that ``b.pdf``
+    holds it too. That is the same silence dedup-by-parent has always kept,
+    and it is deliberate rather than pending: naming both would put a second
+    file's name on a citation that points at one file's chunk, and "which
+    other files repeat this" is a corpus question, not an answer's. The
+    dropped candidates are counted in the stage log
+    (``duplicate_text_count``) so the silence is observable.
+
+    The corpus holds no such case today -- 0 duplicate-text groups within
+    each space -- so this is a PROACTIVE rule, not a measured defect; the
+    "51%" figure that once motivated it was withdrawn as an artefact of the
+    unscoped search route (س-32). The sibling rule (a duplicate NAME replaces
+    the older file together with its index) is an ingestion-side decision and
+    is recorded at ``RegisterUpload`` and ``framework/di/file_replacement.py``.
     """
     widened: list[ScoredChunk] = []
     seen_parent_ids: set[str] = set()
+    seen_text: set[str] = set()
+    duplicate_text = 0
+
+    def deliver(entry: ScoredChunk) -> None:
+        """Append `entry` unless its DELIVERED text was already delivered
+        (س-29 rule 2). Every path out of the loop below goes through here, so
+        the text key cannot be forgotten on one branch and applied on another.
+        """
+        nonlocal duplicate_text
+        fingerprint = _text_fingerprint(entry.text)
+        if fingerprint in seen_text:
+            duplicate_text += 1
+            return
+        seen_text.add(fingerprint)
+        widened.append(entry)
+
     for candidate in candidates:
         parent = parents.get(candidate.chunk_id)
         # `is_complete` is checked with the same `continue` as "no parent at
@@ -1252,15 +1421,54 @@ def _widen_to_parents(
         # same incomplete parent carries different text and is not a
         # duplicate of anything that was substituted, because nothing was.
         if parent is None or not parent.is_complete:
-            widened.append(candidate)
+            deliver(candidate)
             continue
         if parent.id in seen_parent_ids:
             continue
+        # Marked seen BEFORE `deliver` may refuse it, and the order matters:
+        # this parent HAS been consumed either way. If a later candidate
+        # widens to it again, the text it would deliver is by definition the
+        # text this one already stands for -- so letting it through on the
+        # grounds that this entry was dropped would re-admit the very
+        # duplicate that was dropped.
         seen_parent_ids.add(parent.id)
-        widened.append(
-            replace(candidate, text=_cap_parent_text(parent.text, max_parent_chunk_chars))
-        )
-    return widened
+        deliver(replace(candidate, text=_cap_parent_text(parent.text, max_parent_chunk_chars)))
+    return _Widening(chunks=widened, duplicate_text=duplicate_text)
+
+
+def _text_fingerprint(text: str) -> str:
+    """The key س-29 rule 2 deduplicates on: one passage, one fingerprint.
+
+    Three normalisations, each closing a way the SAME passage arrives twice
+    looking different, and nothing beyond them:
+
+    * **Unicode NFC.** The identical Arabic sentence extracted from two PDFs
+      can differ by combining marks alone -- composed in one producer,
+      decomposed in the other. This is the same half of "the same name" that
+      ``files/0003_file_name_lookup.py`` normalises for, one layer down.
+    * **Whitespace collapsed and stripped.** A page break, a soft hyphen's
+      line wrap, or a table cell padded differently changes the spacing of a
+      passage and not the passage. Comparing raw text would call those two
+      different answers and spend the budget on both.
+    * **Case folded.** Two extractions of one heading can disagree on case,
+      and no answer means something different for it.
+
+    **And deliberately nothing more.** This is EQUALITY under a normalisation,
+    not similarity: no shingling, no embedding distance, no threshold. A
+    passage that merely OVERLAPS another is a different passage, and MMR (the
+    stage that owns near-duplicates, `λ` frozen at 0.7 by س-31) has already
+    made its diversity cut by the time this runs. A fuzzy key here would take
+    that decision a second time, with a number nobody chose, at a stage whose
+    output is quoted to the user verbatim.
+
+    Hashed rather than kept whole because the values are parent texts -- up to
+    ``max_parent_chunk_chars`` each, tens of them per query -- and a set of
+    digests bounds what the stage holds. ``sha256`` for no security reason:
+    the collision it must not have is between two DIFFERENT passages in one
+    result set, and any modern digest gives that.
+    """
+    collapsed = " ".join(unicodedata.normalize("NFC", text).split())
+    return hashlib.sha256(collapsed.casefold().encode("utf-8")).hexdigest()
 
 
 def _to_scored_chunk(chunk: FusedChunk, payload: Json) -> ScoredChunk:

@@ -50,6 +50,13 @@ def make_ctx() -> ExecutionContext:
     )
 
 
+# س-32 (owner decision 2026-08-26) — the space these agents' turns run in, put
+# on the bundle by the orchestrator from the turn's thread. Both the default
+# bundle and the default file live in it, so a test that means "a file from
+# somewhere else" says so by naming a different space.
+SPACE = "space-a"
+
+
 class FakeFileView:
     def __init__(
         self,
@@ -57,7 +64,7 @@ class FakeFileView:
         content_type: str = "text/csv",
         size_bytes: int = 100,
         storage_key: str = "k1",
-        space_id: str | None = None,
+        space_id: str | None = SPACE,
     ) -> None:
         self.content_type = content_type
         self.size_bytes = size_bytes
@@ -131,14 +138,16 @@ def make_deps(
     deltas: Sequence[str] = ("ok",),
     view: FakeFileView | None = None,
     data: bytes = b"a,b\n1,2\n",
+    space_id: str | None = SPACE,
 ) -> tuple[AgentDependencies, FakeFiles, FakeStorage, FakeLLM]:
-    files = FakeFiles(view if view is not None else FakeFileView())
+    files = FakeFiles(view if view is not None else FakeFileView(space_id=space_id))
     storage = FakeStorage(data)
     llm = FakeLLM(deltas)
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="m", api_key="k"),
         files=files,
         storage=storage,
+        space_id=space_id,
     )
     return deps, files, storage, llm
 
@@ -265,13 +274,49 @@ async def test_a_spaceless_file_is_refused_to_a_scoped_caller() -> None:
 
 @pytest.mark.parametrize("owning", [None, "space-b"])
 async def test_an_unscoped_caller_still_reads_anything(owning: str | None) -> None:
-    """`None` on the CALLER is unscoped — the pre-plan behaviour, kept until
-    step 12 hands agents a space. Asymmetric with the file side on purpose."""
+    """`None` on the CALLER is unscoped, asymmetric with the file side on
+    purpose — and since س-32 no AGENT reaches it that way on an ordinary turn.
+
+    The branch survives for one shape: an orchestrator with no conversations
+    seam, where no space can be known at all. What used to reach it was every
+    turn of both bundled agents, which is finding 2-ح — closed by
+    `test_the_content_agents_read_inside_the_turns_space` below.
+    """
     files = FakeFiles(FakeFileView(space_id=owning))
     text = await read_text_file(
         files, FakeStorage(b"any"), make_ctx(), "f", max_bytes=1000, space_id=None
     )
     assert text == "any"
+
+
+@pytest.mark.parametrize(
+    ("agent_key", "req_input"),
+    [
+        ("data_analysis", {"file_id": "f1"}),
+        ("file_editing", {"file_id": "f1", "instruction": "tidy it"}),
+    ],
+)
+async def test_the_content_agents_read_inside_the_turns_space(
+    agent_key: str, req_input: dict[str, object]
+) -> None:
+    """س-32 — finding 2-ح, closed on both bundled agents at once.
+
+    Both used to pass ``space_id=None`` into ``read_text_file`` with a comment
+    pointing at the missing field on ``AgentDeps``: the check that refuses a
+    foreign file was already written and simply had no argument. The field
+    exists now, so a file belonging to another space is the same 404 an absent
+    one is — never fetched, never handed to the model.
+    """
+    agents = {"data_analysis": DataAnalysisAgent, "file_editing": FileEditingAgent}
+    deps, files, storage, _llm = make_deps(view=FakeFileView(space_id="space-b"))
+
+    with pytest.raises(NotFoundError):
+        await collect(agents[agent_key](make_ctx(), deps), req_input)
+
+    # Refused BEFORE the object was pulled: a foreign file's bytes never leave
+    # storage, so the refusal costs nothing and leaks nothing.
+    assert files.calls == ["f1"]
+    assert storage.gets == []
 
 
 def test_no_agent_reads_the_files_seam_directly() -> None:

@@ -68,7 +68,7 @@ from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.types import Uuid
 from app.modules.knowledge.application.event_mapping import to_outbox_record
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
-from app.modules.knowledge.application.retrieval import RetrieveContext
+from app.modules.knowledge.application.retrieval import RetrieveContext, require_space_scope
 from app.modules.knowledge.application.routing import RouteQuestion, SummaryStarting
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
@@ -1604,19 +1604,16 @@ async def _named_documents(
     they shared by coincidence is now shared by construction, so a change to
     the walk cannot land on one of them alone.
 
-    **What they cannot share is a single EXECUTION of it, and the reason is
-    the space axis rather than an oversight.** ``ListDocumentNames`` walks
-    ``space_id=None`` because a corpus header describes the WHOLE workspace;
-    ``ListFileCandidates`` walks the space the question will be ANSWERED
-    from. Serving the header out of the candidate walk would make it report a
-    corpus smaller than the one the user uploaded (the failure
-    ``test_the_corpus_header_spans_every_space_even_where_candidates_do_not``
-    exists to catch), and serving the candidates out of the header's walk
-    would fetch every space's rows in order to throw most of them away —
-    undoing the ``WHERE space_id`` the review's §7 fix just pushed INTO the
-    query, and growing the per-question walk with the workspace instead of
-    with the space it searches. So the two walks stay two, and what collapses
-    is what actually cost the round trips: the names.
+    **They differed on the space axis until س-32, and no longer do.**
+    ``ListDocumentNames`` used to walk ``space_id=None`` on the argument that a
+    corpus header describes the WHOLE workspace, while ``ListFileCandidates``
+    walked the space the question would be ANSWERED from. The owner decision of
+    2026-08-26 makes both walk the SAME space: the corpus a thread has is its
+    space's, so a header spanning every space named documents no question of
+    that thread could be answered from. The two use-cases stay two — they still
+    differ on the display cap and on the empty-name rule — but the axis that
+    used to separate them now unites them, and the ``WHERE space_id`` the
+    review's §7 fix pushed INTO the query is on both paths instead of one.
 
     **Names arrive ONE read per page** (``ReadableFiles.names_for_files``),
     never one per document — the N+1 the plan's §7 recorded twice. A page of
@@ -1668,11 +1665,11 @@ async def _named_documents(
 
 
 class ListDocumentNames:
-    """This workspace's corpus-awareness source (retrieval plan §3.6/§4 row
-    6, ``P-36``, decision س-23 = ج): up to ``limit`` document file names,
-    newest first, plus ``total`` — the workspace's FULL document count, so a
-    caller can render an honest "N more files" tail without a second
-    listing call of its own.
+    """ONE SPACE's corpus-awareness source (retrieval plan §3.6/§4 row 6,
+    ``P-36``, decision س-23 = ج as amended by س-32): up to ``limit`` document
+    file names, newest first, plus ``total`` — that space's FULL document
+    count, so a caller can render an honest "N more files" tail without a
+    second listing call of its own.
 
     **``limit`` is OPTIONAL, and ``None`` means the DEPLOYMENT's cap** —
     ``max_corpus_names``, injected here by the Composition Root from
@@ -1684,21 +1681,23 @@ class ListDocumentNames:
     ``limit`` stays allowed and still means exactly what it did — a caller
     asking for a result-set SIZE, not overriding a deployment knob.
 
-    **Every lifecycle status is walked**, the ``ListDocuments`` rule
-    (``space_id=None`` — every space, for the same reason: a corpus-aware
-    header describes the WHOLE workspace, not one space's slice of it): a
+    **Every lifecycle status is walked**, the ``ListDocuments`` rule: a
     ``pending``/``failed`` document still names a file the user genuinely
     uploaded, and excluding it would silently undercount the corpus a
     "how many files do you have?" question is asking about.
 
-    **That ``None`` is a decision, and it is why this signature takes no
-    ``space_id``** — the one place in this module where the space axis is
-    deliberately not offered. ``ListFileCandidates`` below walks the same
-    rows and DOES narrow by space, because what it produces is matched
-    against a question that will then be answered from one space's chunks.
-    This header is not answering anything: it tells a user which files exist
-    for them at all, so a slice of it would misreport the corpus as smaller
+    ⚠️ **``space_id`` is REQUIRED here since س-32** (owner decision
+    2026-08-26), and it used to be the one place in this module where the
+    space axis was deliberately not offered. The old argument was that a
+    header describing one space's slice would misreport the corpus as smaller
     than it is — «لا أملك معلومات كافية» about a workspace that is not empty.
+    What the decision changes is which corpus the sentence is about: spaces
+    are isolated completely, so the files a thread HAS are its space's, and
+    naming the rest told a user about documents no question of theirs could
+    ever be answered from. That is not a fuller answer, it is a leak with a
+    helpful tone. ``ListFileCandidates`` below walks the same rows under the
+    same space for the reason it always did, and the two now agree instead of
+    differing by design.
 
     **Names are resolved ONE read per page, and only until ``limit`` of them
     are in hand** (``_named_documents``, branch review §2) — walking every
@@ -1725,17 +1724,22 @@ class ListDocumentNames:
         self._files = files
         self._max_corpus_names = max_corpus_names
 
-    async def execute(self, ctx: ExecutionContext, *, limit: int | None = None) -> DocumentNames:
+    async def execute(
+        self, ctx: ExecutionContext, *, space_id: Uuid, limit: int | None = None
+    ) -> DocumentNames:
         # `limit = None` means "however many names this deployment shows"
         # (`_DEFAULT_MAX_CORPUS_NAMES` above) — resolved HERE, once, so the
         # walk below reads one number whichever way the caller asked.
         cap = self._max_corpus_names if limit is None else limit
-        # `space_id=None` — the whole workspace, written HERE at the one call
-        # site that means it (see the class docstring). The shared walk takes
-        # a space like every other reader of `DocumentRepository.list`; what
-        # makes this the header is that it names none.
+        # The space guard (س-32) on the header too, and not only on the search:
+        # this walk goes through `DocumentRepository.list`, where `space_id=None`
+        # still legitimately means "every space" for the paginated LISTING
+        # route — so an unscoped value arriving here would not fail, it would
+        # quietly answer with the whole workspace. That is exactly the shape
+        # the decision removes.
+        space_id = require_space_scope(space_id)
         named, total = await _named_documents(
-            ctx, self._documents, self._files, space_id=None, cap=cap
+            ctx, self._documents, self._files, space_id=space_id, cap=cap
         )
         return DocumentNames(names=tuple(name for _, name in named), total=total)
 
@@ -1754,19 +1758,19 @@ class ListFileCandidates:
     ``RequestSummary``'s call — it refuses a document that is not indexed,
     with the reason).
 
-    **But NOT the same space**, and that is the one place the two walks part.
-    A header describes the whole workspace (above); a candidate list is
-    matched against a question whose ANSWER will be retrieved under a
-    ``space`` filter, so a name resolved outside that space produces a scope
-    the search can never satisfy — ``document_ids`` from one space ANDed with
-    ``space`` from another, and zero chunks with nothing to explain them
+    **And the SAME space**, which is where the two walks used to part: the
+    header described the whole workspace until س-32 and this list never did.
+    The reason this one never could is unchanged — a candidate list is matched
+    against a question whose ANSWER will be retrieved under a ``space``
+    filter, so a name resolved outside that space produces a scope the search
+    can never satisfy: ``document_ids`` from one space ANDed with ``space``
+    from another, zero chunks, and nothing to explain them
     (``RouteQuestion``'s module docstring has the whole failure). Resolving
     inside the searched space makes the miss an ordinary ``NoFileMatch``
     instead, which the router already knows how to answer honestly.
 
-    ``space_id`` is therefore a required keyword with no default, exactly as
-    it is on ``DocumentRepository.list``: "every space" is a decision written
-    at the call site, never one a caller falls into by omission.
+    ``space_id`` is therefore a required keyword with no default and no
+    ``None``: "every space" is not a thing this signature can say.
 
     **Two differences, both required by what the resolver is for.** There is
     no display ``limit``: every candidate is resolved, because a cap turns a
@@ -1787,9 +1791,7 @@ class ListFileCandidates:
         self._documents = documents
         self._files = files
 
-    async def execute(
-        self, ctx: ExecutionContext, *, space_id: Uuid | None
-    ) -> tuple[FileCandidate, ...]:
+    async def execute(self, ctx: ExecutionContext, *, space_id: Uuid) -> tuple[FileCandidate, ...]:
         # `cap=None` — every candidate, for the reason two paragraphs up.
         named, _total = await _named_documents(
             ctx, self._documents, self._files, space_id=space_id, cap=None
@@ -1954,7 +1956,7 @@ class KnowledgeRetrievalService:
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> list[RetrievedChunk]:
         """Retrieve the top ``k`` chunks, optionally scoped to ``file_ids``.
 
@@ -1979,13 +1981,13 @@ class KnowledgeRetrievalService:
         zero documents rather than collapsing back to ``None``: see
         ``RetrieveContext`` for why widening there would be the wrong answer.
 
-        ``space_id`` is the SECOND, independent narrowing (step 8), and it is
-        keyword-only with no default while ``file_ids`` keeps one. The
-        asymmetry is deliberate: forgetting a pinned scope narrows nothing and
-        answers from more of the caller's OWN workspace, while forgetting a
-        space answers from other spaces — a widening across the very axis this
-        plan exists to draw. The one mistake has to be impossible to make
-        silently, so it is impossible to make at all.
+        ``space_id`` is the SECOND, independent narrowing (step 8), and since
+        س-32 it is keyword-only, undefaulted AND non-nullable while ``file_ids``
+        keeps its default and its ``None``. The asymmetry is deliberate:
+        forgetting a pinned scope narrows nothing and answers from more of the
+        caller's OWN space, while an absent space answered from other spaces —
+        a widening across the very axis the product draws. That mistake had to
+        be impossible to make silently; it is now impossible to express.
 
         The two are ANDed one layer down (``RetrieveContext``), not merged
         here: a pin from another space is already refused at pin time (§3.5),
@@ -2021,7 +2023,7 @@ class KnowledgeRetrievalService:
         k: int | None = None,
         file_ids: Sequence[Uuid] | None = None,
         *,
-        space_id: Uuid | None,
+        space_id: Uuid,
     ) -> RoutedAnswer:
         """Implements ``KnowledgeRetrieval.answer`` (retrieval plan §3.4/§4
         row 11, ``P-21``) — the port's third face, over ``RouteQuestion``.
@@ -2059,12 +2061,17 @@ class KnowledgeRetrievalService:
         )
 
     async def list_document_names(
-        self, ctx: ExecutionContext, *, limit: int | None = None
+        self, ctx: ExecutionContext, *, space_id: Uuid, limit: int | None = None
     ) -> DocumentNames:
         """Implements ``KnowledgeRetrieval.list_document_names`` (retrieval
         plan §3.6/§4 row 6, ``P-36``) — a straight delegation to
         ``ListDocumentNames``, this port's second face over the same
         ``documents``/``files`` seams ``retrieve`` already holds.
+
+        ``space_id`` is required and passed straight down for the reason it is
+        required on ``retrieve`` (س-32): the header names the corpus the next
+        question will be answered from, so the two describe one space or they
+        describe two different things.
 
         ``limit = None`` means "however many names this deployment shows"
         (``Settings.retrieval.max_corpus_names``), exactly as ``k = None``
@@ -2074,7 +2081,7 @@ class KnowledgeRetrievalService:
         ``ListDocumentNames``, so the number has one home and this delegation
         stays a delegation.
         """
-        return await self._names.execute(ctx, limit=limit)
+        return await self._names.execute(ctx, space_id=space_id, limit=limit)
 
 
 @dataclass(frozen=True, slots=True)

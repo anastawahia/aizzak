@@ -116,6 +116,26 @@ class AgentDependencies:
     # ``KnowledgeAccess``/``RetrieveContext``, where "pinned files that
     # resolved to no documents" has to stay distinguishable from "unpinned".
     knowledge_scope: tuple[Uuid, ...] = ()
+    # س-32 (owner decision 2026-08-26) — the SPACE this run is working in,
+    # resolved by the orchestrator from the turn's thread: the thread's own
+    # space when the request continues one, `AgentRequest.space_id` when it
+    # opens one. Per-request DATA like `knowledge_scope`, not a port.
+    #
+    # It is what closed the last three cross-space reads in the agents layer at
+    # once — the RAG agent's retrieval, the corpus header it prepends, and the
+    # file the Data-Analysis / File-Editing agents read — all three of which
+    # passed `space_id=None` because there was nothing on this bundle to read.
+    # The comments at those call sites each pointed here.
+    #
+    # ``None`` and not ``()``'s "unscoped" reading, and the difference from
+    # ``knowledge_scope`` above is the whole of the decision: an absent pin
+    # means "search everything I can see", an absent space means "I do not know
+    # what I can see". The first is a legitimate default; the second is a
+    # question that must not be answered by guessing, so an agent that finds
+    # ``None`` here does not read and does not retrieve. It stays optional on
+    # the dataclass so `AgentDependencies()` keeps constructing for the agents
+    # and tools that touch neither files nor knowledge.
+    space_id: Uuid | None = None
     # 4.6-b — the Data-Analysis / File-Editing agents read workspace files:
     # ``files`` (a DIP seam over the files module's ``FilesQuery``) yields
     # metadata + ``storage_key``; ``storage`` (a framework port, so no DIP

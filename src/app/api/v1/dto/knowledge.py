@@ -32,10 +32,27 @@ ExportFormatIn = Literal["pdf", "docx"]
 
 
 class KnowledgeSearchIn(BaseModel):
-    """A retrieval request over this workspace's indexed corpus."""
+    """A retrieval request over ONE space's indexed corpus.
+
+    ``space_id`` is REQUIRED (س-32, owner decision 2026-08-26). It is the one
+    field on this body with no default and no ``None``, and the asymmetry with
+    ``k`` is the decision itself: a missing ``k`` asks for the deployment's
+    result-set size, while a missing space used to ask for every space in the
+    workspace at once — an answer assembled from corpora the asker cannot open,
+    which no thread in the product can produce and no user can act on. A 422
+    here is the cheapest possible place to say so: nothing is embedded, and the
+    module's own guard (``retrieval.require_space_scope``) never has to fire
+    for a request that came through this route.
+
+    §3.7 put ``?space_id=`` on the three LISTINGS and said nothing about this
+    body, which is why the route carried ``space_id=None`` as a documented
+    deferral rather than a slip. The deferral is over; the wire change it was
+    waiting for is this line.
+    """
 
     query: str = Field(min_length=1)
     k: int = Field(default=5, ge=1, le=50)
+    space_id: str = Field(min_length=1)
 
 
 class RetrievedChunkOut(BaseModel):

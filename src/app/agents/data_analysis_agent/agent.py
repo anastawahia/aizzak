@@ -51,13 +51,17 @@ class DataAnalysisAgent(BaseAgent):
             self.ctx,
             file_id,
             max_bytes=_MAX_FILE_BYTES,
-            # Spaces plan step 10 — typed as none, not defaulted, on the
-            # `rag_agent` precedent, and still none after step 12: the space
-            # reached the REQUEST there, not `AgentDeps`. Reading across
-            # spaces is the pre-plan behaviour; the check that ends it is
-            # already in `read_text_file` and only wants an argument (plan
-            # §7).
-            space_id=None,
+            # ✅ Spaces plan step 10, closed by س-32 (owner decision
+            # 2026-08-26): the space arrives on `AgentDeps` now, so the
+            # read-any-file-by-id leak (finding 2-ح) is closed on this agent
+            # too. `read_text_file`'s own check does the refusing; all it ever
+            # wanted was this argument.
+            #
+            # `None` still reaches it on the orchestrator's degraded path (no
+            # conversations seam, or a thread that is gone), and `_is_outside`
+            # reads that as unscoped. That is the one remaining widening, and
+            # it is a wiring fact rather than something a caller can ask for.
+            space_id=self.deps.space_id,
         )
         messages = [
             LlmMessage(role="system", content=SYSTEM_PROMPT),

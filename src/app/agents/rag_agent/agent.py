@@ -172,10 +172,17 @@ _CLARIFY_BULLET = "- "
 # The corpus-awareness header's four fixed strings (retrieval plan §3.6),
 # picked by the SAME ``_ARABIC_CHAR_RE`` query-language check the fallback
 # sentences above use — one language mechanism, reused, not a second one.
-_CORPUS_EMPTY_EN = "There are no files in this workspace yet."
-_CORPUS_EMPTY_AR = "لا توجد ملفّات في مساحة العمل بعد."
-_CORPUS_LABEL_EN = "Workspace files:"
-_CORPUS_LABEL_AR = "ملفّات مساحة العمل:"
+# ⚠️ **They name the SPACE, not the workspace, since س-32** (owner decision
+# 2026-08-26). The header is rendered from `list_document_names(space_id=...)`,
+# which walks one space's corpus — so «ملفّات مساحة العمل» would have been a
+# sentence that counted one space's files and called them the workspace's. The
+# user-visible half of a data-isolation change is still a data-isolation
+# change: a label that overstates its scope teaches a user to expect files the
+# search can never reach.
+_CORPUS_EMPTY_EN = "There are no files in this space yet."
+_CORPUS_EMPTY_AR = "لا توجد ملفّات في هذا الفضاء بعد."
+_CORPUS_LABEL_EN = "Files in this space:"
+_CORPUS_LABEL_AR = "ملفّات هذا الفضاء:"
 
 # The Arabic overflow tail, in the FOUR forms Arabic number agreement
 # (تمييز العدد) actually has rather than the one this header used to render
@@ -191,7 +198,7 @@ _CORPUS_LABEL_AR = "ملفّات مساحة العمل:"
 # between «و» and the noun; the last two are the noun ALONE, because the
 # numeral does. And all four spell the word «ملفّ» with its shadda, the
 # convention every other user-facing string here already keeps
-# (`_CORPUS_LABEL_AR` «ملفّات مساحة العمل», `_CLARIFY_FILE_AR` «أيّ ملفّ
+# (`_CORPUS_LABEL_AR` «ملفّات هذا الفضاء», `_CLARIFY_FILE_AR` «أيّ ملفّ
 # تقصد؟») — the old tail's «ملفًا» was the one exception, and one sentence
 # that spells the same word two ways is exactly the sloppiness this row is
 # about.
@@ -254,6 +261,22 @@ class RagAgent(BaseAgent):
         # and this function now needs that narrowing twice (retrieval, then
         # the corpus header below) rather than once.
         knowledge = self.deps.knowledge
+        # س-32 (owner decision 2026-08-26) — the space this turn lives in, put
+        # on the bundle by the orchestrator from the turn's own thread. A LOCAL
+        # binding for `knowledge`'s reason: mypy narrows `is not None` against a
+        # plain local, and the module's seam takes a non-nullable `space_id`.
+        #
+        # ⚠️ **No space ⇒ no retrieval.** `None` here is not "search
+        # everything", which is exactly what this line used to do by passing
+        # `space_id=None` down: it is "this turn's space is unknown", and the
+        # only honest answer to an unknown boundary is to stay inside it. The
+        # turn degrades to the SAME shape as a deployment with no knowledge
+        # seam wired at all — a plain LLM answer with no citations and no
+        # corpus header — rather than to an answer drawn from every space in
+        # the workspace. It is reachable only on the orchestrator's degraded
+        # path (no conversations seam) or for a thread that has since gone, and
+        # both of those are wiring facts, not something a caller can ask for.
+        space_id = self.deps.space_id
         # Retrieval plan §3.3/§4 row 5 (`P-33`) — this flag is what tells the
         # trust gate below apart from the "knowledge is optional-degrading"
         # mode just above: a caller with NO knowledge seam wired at all never
@@ -262,7 +285,11 @@ class RagAgent(BaseAgent):
         # `test_without_knowledge_still_answers_with_no_citations` pins. A
         # caller that DID wire a seam and got zero chunks back is the case the
         # gate exists for.
-        retrieval_attempted = knowledge is not None
+        #
+        # A seam wired but no space known is "never attempted" too, and for the
+        # same reason it is for an absent seam: nothing was searched, so there
+        # is no zero-chunk result for the gate to speak about.
+        retrieval_attempted = knowledge is not None and space_id is not None
         routed: RoutedAnswerView | None = (
             # Retrieval plan §3.4/§4 row 11 (`P-21`, س-16 = أ) — ONE call, and
             # it is `answer`, not `retrieve`: the question is classified and
@@ -280,16 +307,12 @@ class RagAgent(BaseAgent):
             # (`Settings.retrieval.default_k`), which is the same 5 today and
             # is now movable without touching this file.
             #
-            # Spaces plan step 8 — `space_id` is TYPED as none rather than
-            # defaulted, and it is STILL none after step 12: that step put the
-            # space on the request (`AgentInvokeIn.space_id`) but not onto
-            # `AgentDeps`, so this agent has nothing to read it from. It
-            # remains one of the two call sites the port's docstring names as
-            # owing a space, and the plan's §7 carries the entry. Searching
-            # every space is the pre-plan behaviour; the pins in `scope`
-            # already cannot cross one.
-            await knowledge.answer(self.ctx, query, file_ids=scope, space_id=None)
-            if knowledge is not None
+            # ✅ Spaces plan step 8, closed by س-32: the space now arrives on
+            # `AgentDeps` and is named here. It was the second of the two call
+            # sites the port's docstring listed as owing one; `POST
+            # /knowledge/search` was the first.
+            await knowledge.answer(self.ctx, query, file_ids=scope, space_id=space_id)
+            if knowledge is not None and space_id is not None
             else None
         )
         if routed is not None and routed.summary_job_id is not None:
@@ -356,17 +379,24 @@ class RagAgent(BaseAgent):
         # is fetched whenever retrieval was attempted at all, so it is ready
         # for BOTH branches below: the trust-gate fallback (prepended to the
         # user-visible text) and the normal synthesis path (prepended to the
-        # system prompt via `_messages`). No knowledge seam wired at all means
-        # no retrieval was attempted (the optional-degrading mode above), and
-        # there is equally no corpus to describe — `corpus_header` stays
-        # `None` and `_messages` renders exactly as it did before this step.
+        # system prompt via `_messages`). No knowledge seam wired at all — or,
+        # since س-32, no space known — means no retrieval was attempted, and
+        # there is equally no corpus to describe: `corpus_header` stays `None`
+        # and `_messages` renders exactly as it did before this step.
         corpus_header: str | None = None
-        if knowledge is not None:
+        if knowledge is not None and space_id is not None:
             # No `limit` named, for the reason no `k` is named on `answer`
             # above and in the same shape (plan row 18, `P-40`): the display
             # cap is the DEPLOYMENT's (`Settings.retrieval.max_corpus_names`),
             # resolved inside the module, and this agent holds no number.
-            corpus = await knowledge.list_document_names(self.ctx)
+            #
+            # The `space_id` IS named, and the header it renders is now that
+            # space's corpus rather than the workspace's (س-32). Same condition
+            # as the retrieval above, deliberately: the header exists to tell a
+            # user what the fallback sentence could not answer FROM, so a header
+            # listing files the search was never allowed to touch would be worse
+            # than none — it would name documents and then refuse to use them.
+            corpus = await knowledge.list_document_names(self.ctx, space_id=space_id)
             corpus_header = self._corpus_header(query, corpus.names, corpus.total)
         if retrieval_attempted and not chunks:
             # The trust gate + honest fallback (retrieval plan §3.3, the "most

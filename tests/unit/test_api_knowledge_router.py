@@ -177,7 +177,9 @@ def test_search_is_registered_and_answers_503_while_unwired() -> None:
     assert stack.knowledge.search is None
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/knowledge/search", json={"query": "how do refunds work"}, headers=_auth()
+            "/api/v1/knowledge/search",
+            json={"query": "how do refunds work", "space_id": SEED_SPACE},
+            headers=_auth(),
         )
     assert response.status_code == 503
     assert response.json()["code"] == "knowledge.search_unavailable"
@@ -201,7 +203,9 @@ def test_search_returns_chunks_in_the_envelope_when_retrieval_is_present() -> No
     app, _stack = _make_app(retrieval=retrieval)
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/knowledge/search", json={"query": "refunds", "k": 2}, headers=_auth()
+            "/api/v1/knowledge/search",
+            json={"query": "refunds", "k": 2, "space_id": SEED_SPACE},
+            headers=_auth(),
         )
     assert response.status_code == 200
     assert response.json() == {
@@ -240,28 +244,63 @@ def test_search_passes_query_and_k_through_verbatim() -> None:
     app, _stack = _make_app(retrieval=retrieval)
     with TestClient(app) as client:
         client.post(
-            "/api/v1/knowledge/search", json={"query": "  spaced  ", "k": 7}, headers=_auth()
+            "/api/v1/knowledge/search",
+            json={"query": "  spaced  ", "k": 7, "space_id": SEED_SPACE},
+            headers=_auth(),
         )
     assert retrieval.calls == [("  spaced  ", 7)]
 
 
-def test_search_names_its_space_and_that_space_is_still_every_space() -> None:
-    """Spaces plan step 8/12: ``space_id`` is not on ``KnowledgeSearchIn``
-    yet, so the route passes ``None`` — DELIBERATELY, and the port makes it
-    say so. A route that invented one would answer from a corpus the client
-    never named; this test is what turns that invention red."""
+def test_search_passes_the_bodys_space_down_verbatim() -> None:
+    """س-32 (owner decision 2026-08-26). This test asserted the opposite until
+    then — ``space_id`` was not on ``KnowledgeSearchIn`` and the route passed
+    ``None`` deliberately, the ONE caller in the system that searched every
+    space at once. The body carries it now, and the route neither invents nor
+    interprets it."""
     retrieval = RecordingRetrieval()
     app, _stack = _make_app(retrieval=retrieval)
     with TestClient(app) as client:
-        client.post("/api/v1/knowledge/search", json={"query": "q"}, headers=_auth())
-    assert retrieval.spaces == [None]
+        client.post(
+            "/api/v1/knowledge/search",
+            json={"query": "q", "space_id": "space-research"},
+            headers=_auth(),
+        )
+    assert retrieval.spaces == ["space-research"]
+
+
+def test_search_without_a_space_is_422_before_retrieval_is_reached() -> None:
+    """The wire half of the guard: a body with no ``space_id`` is refused by
+    the DTO, so nothing is embedded and the module's own
+    ``require_space_scope`` never has to fire for a request that came through
+    this route. A blank one is the same refusal — ``min_length=1`` — because
+    ``" "`` would otherwise reach the filter and match nothing."""
+    retrieval = RecordingRetrieval()
+    app, _stack = _make_app(retrieval=retrieval)
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/v1/knowledge/search", json={"query": "q"}, headers=_auth()
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                "/api/v1/knowledge/search",
+                json={"query": "q", "space_id": ""},
+                headers=_auth(),
+            ).status_code
+            == 422
+        )
+    assert retrieval.calls == []
 
 
 def test_search_defaults_k_to_five() -> None:
     retrieval = RecordingRetrieval()
     app, _stack = _make_app(retrieval=retrieval)
     with TestClient(app) as client:
-        client.post("/api/v1/knowledge/search", json={"query": "q"}, headers=_auth())
+        client.post(
+            "/api/v1/knowledge/search", json={"query": "q", "space_id": SEED_SPACE}, headers=_auth()
+        )
     assert retrieval.calls == [("q", 5)]
 
 
@@ -273,13 +312,17 @@ def test_search_refuses_k_outside_its_bounds_before_reaching_retrieval() -> None
     with TestClient(app) as client:
         assert (
             client.post(
-                "/api/v1/knowledge/search", json={"query": "q", "k": 0}, headers=_auth()
+                "/api/v1/knowledge/search",
+                json={"query": "q", "k": 0, "space_id": SEED_SPACE},
+                headers=_auth(),
             ).status_code
             == 422
         )
         assert (
             client.post(
-                "/api/v1/knowledge/search", json={"query": "q", "k": 51}, headers=_auth()
+                "/api/v1/knowledge/search",
+                json={"query": "q", "k": 51, "space_id": SEED_SPACE},
+                headers=_auth(),
             ).status_code
             == 422
         )
@@ -290,7 +333,9 @@ def test_search_refuses_an_empty_query() -> None:
     retrieval = RecordingRetrieval()
     app, _stack = _make_app(retrieval=retrieval)
     with TestClient(app) as client:
-        response = client.post("/api/v1/knowledge/search", json={"query": ""}, headers=_auth())
+        response = client.post(
+            "/api/v1/knowledge/search", json={"query": "", "space_id": SEED_SPACE}, headers=_auth()
+        )
     assert response.status_code == 422
     assert retrieval.calls == []
 
@@ -300,7 +345,9 @@ def test_search_returning_nothing_is_an_empty_envelope_not_an_error() -> None:
     the reason ``knowledge.not_indexed``/409 is NOT forced onto this route."""
     app, _stack = _make_app(retrieval=RecordingRetrieval())
     with TestClient(app) as client:
-        response = client.post("/api/v1/knowledge/search", json={"query": "q"}, headers=_auth())
+        response = client.post(
+            "/api/v1/knowledge/search", json={"query": "q", "space_id": SEED_SPACE}, headers=_auth()
+        )
     assert response.status_code == 200
     assert response.json() == {"data": [], "meta": {"next_cursor": None, "limit": 0}}
 
@@ -400,6 +447,26 @@ def test_the_corpus_refuses_a_malformed_cursor() -> None:
         )
     assert response.status_code == 422
     assert response.json()["code"] == "common.invalid_cursor"
+
+
+def test_the_published_search_body_requires_a_space() -> None:
+    """س-32 on the WIRE, not only in the handler.
+
+    The isolation is a published fact about this endpoint: a client reading the
+    schema must be able to see that a search names a space, and a future edit
+    that defaulted the field would be a silent return to searching everything.
+    Read off the live app's own OpenAPI, which is generated from the DTO — so
+    this fails on the DTO, not on the document that describes it.
+    """
+    app, _stack = _make_app()
+    schema = app.openapi()["components"]["schemas"]["KnowledgeSearchIn"]
+
+    assert "space_id" in schema["required"]
+    assert "query" in schema["required"]
+    # `k` stays optional, and the asymmetry IS the decision: a missing `k` asks
+    # for the deployment's result-set size, a missing space asked for every
+    # space in the workspace.
+    assert "k" not in schema["required"]
 
 
 def test_search_stays_unpaginated() -> None:

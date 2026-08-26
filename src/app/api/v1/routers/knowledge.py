@@ -236,11 +236,16 @@ def _to_summary_job_out(job: SummaryJob) -> SummaryJobOut:
 async def search_knowledge(
     body: KnowledgeSearchIn, services: Services, ctx: Context
 ) -> Page[RetrievedChunkOut]:
-    """Top-``k`` relevant chunks for ``query``, within this workspace.
+    """Top-``k`` relevant chunks for ``query``, within ONE space.
 
     Wrapped in the API-04 envelope with ``next_cursor: null``: ``k`` is the
     bound, and "the next 5 most relevant" is not a thing a cursor can mean —
     a client that wants more asks for a larger ``k``.
+
+    ``space_id`` is required on the BODY (س-32), not a query parameter like the
+    three listings': this is a POST whose whole input is one object, and
+    splitting one of its three narrowings out onto the URL would leave a client
+    stating the search in two places.
 
     503 while the embedding adapter is missing (module docstring).
     """
@@ -253,15 +258,23 @@ async def search_knowledge(
         ctx,
         body.query,
         body.k,
-        # Still every space, AFTER step 12 as before it: §3.7's table makes
-        # `?space_id=` mandatory on the three LISTINGS and says nothing about
-        # this body, so adding it here would have been a wire change the plan
-        # did not schedule (§0 rule 1). Typed rather than defaulted so the
-        # route stays visible as one of the two callers owing a space; the
-        # plan's §7 carries the entry, and it matters more than it looks —
-        # a space-scoped thread whose agent searches every space is decision 1
-        # unenforced on the read path.
-        space_id=None,
+        # ✅ س-32, CLOSED by owner decision 2026-08-26 (docs/rag-fidelity-audit.md
+        # §4-هـ-3). This line read `space_id=None` from step 8 until then — the
+        # ONE caller in the system that crossed the space boundary, carried as
+        # a documented deferral because §3.7 had scheduled `?space_id=` onto the
+        # three listings and not onto this body.
+        #
+        # What ended the deferral was not the schedule but a measurement: the
+        # audit's "51% of the context budget on one duplicated page" was taken
+        # through this route and attributed to product behaviour, then had to be
+        # withdrawn — the two copies live in two different spaces and no thread
+        # can ever see them together (within each space the corpus holds zero
+        # duplicate-text groups). An endpoint that breaks the isolation produces
+        # measurements nobody lives.
+        #
+        # The body now carries the space and the module refuses a call without
+        # one, so this route can no longer be that endpoint.
+        space_id=body.space_id,
     )
     data = [
         RetrievedChunkOut(

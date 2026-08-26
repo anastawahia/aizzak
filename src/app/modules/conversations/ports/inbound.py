@@ -152,3 +152,28 @@ class ConversationThreads(Protocol):
         reporting.
         """
         ...
+
+    async def space_of(self, ctx: ExecutionContext, conversation_id: Uuid) -> Uuid | None:
+        """The space this thread lives in, or ``None`` when it has none.
+
+        The port's THIRD read, and it earns it the way the first two did — but
+        for a rule rather than a preference (س-32, owner decision 2026-08-26).
+        Spaces are isolated completely: a thread inside one may retrieve from
+        its corpus, name its files and read its uploads, and nothing else. The
+        orchestrator is the only layer that knows which thread a turn belongs
+        to, so it is the only layer that can put that space on
+        ``AgentDependencies`` — and without this read it could only do so for a
+        turn that OPENS a thread (``AgentRequest.space_id``), leaving every
+        continuation of an existing one unscoped. That is the majority of
+        turns.
+
+        A plain ``Uuid`` crosses, like every other id on this port.
+
+        Missing or soft-deleted ⇒ ``None``, never an error, for
+        ``routed_model``'s reason: a read-ahead that raised would take over the
+        reporting of an unknown (404) or deleted (409) thread from the write
+        that does it properly. **``None`` is not "every space" to any caller of
+        this port** — the agents layer reads it as "no space known", and an
+        agent handed no space retrieves nothing rather than everything.
+        """
+        ...
