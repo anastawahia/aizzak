@@ -148,14 +148,31 @@ the ready-made input for any future calibration.
 
 Per-leg thresholds (plan step 16, ``P-27``; retrieval plan §3.8 — "الآليّة
 تُشحَن والأرقام لا"): ``min_dense_score``/``min_bm25_score`` gate each leg's
-hits (``_gate_by_score``) between that snapshot and RRF fusion, and both ship
-at ``0.0`` = **disabled**. Decision س-22 forbids shipping an UNCALIBRATED
-number, not the mechanism, so the knob is wired and the number waits for the
-evaluation set ``P-38`` needs (§7). No answer path changes today: at the
-shipped configuration ``_gate_by_score`` returns its input untouched. The one
-number that step DID pick is ``max_sparse_candidates`` — a cap on the
-**count** of BM25-sparse candidates, not on any score, which is why س-22
-never reaches it.
+hits (``_gate_by_score``) between that snapshot and RRF fusion, and **both
+carry calibrated numbers since 2026-08-27** — ``0.45`` on the dense leg's
+cosine scale and ``25.0`` on the sparse leg's IDF-weighted dot product.
+Decision س-22 forbade shipping an UNCALIBRATED number, not the mechanism;
+``P-38``'s evaluation set supplied the calibration and the owner fixed the
+operating point. ``Settings.RetrievalSettings`` carries the evidence field by
+field. Two consequences are worth naming here, because they change what this
+function DOES rather than what it is configured with:
+
+* **A leg can now come back empty, and both can.** ``reciprocal_rank_fusion``
+  already handles one empty list (it fuses whichever is non-empty); when both
+  empty, ``execute`` returns no chunks — which is exactly the signal the trust
+  gate (plan step 5, ``P-33``) reads as "retrieval found nothing". Measured on
+  the evaluation set: 4 of 12 unanswerable questions now end there, and 0 of
+  30 answerable ones do.
+* **The confidence snapshot above is unaffected, by placement.**
+  ``best_dense_score``/``best_bm25_score`` are read BEFORE these two lines, so
+  a leg the floor emptied still reports the maximum it saw. That was written
+  as a precaution for a future calibration; it is now load-bearing, because it
+  is the only number that explains an empty leg.
+
+The one number step 16 picked WITHOUT waiting was ``max_sparse_candidates`` —
+a cap on the **count** of BM25-sparse candidates, not on any score, which is
+why س-22 never reached it. ``P-38`` measured it too and left it at ``20``:
+depths of 10, 30 and 50 all held 30/30 and none improved precision.
 
 **All of those numbers now live in ``Settings`` (plan step 18, ``P-30``
 ``P-40``, س-24 = أ).** ``RetrievalTuning`` is the whole set, injected once at
@@ -373,8 +390,13 @@ class RetrievalTuning:
     # `k` up to `max_k`.
     default_k: int = 5
     max_k: int = 50
-    min_dense_score: float = 0.0
-    min_bm25_score: float = 0.0
+    # CALIBRATED on `P-38`'s evaluation set (owner decision 2026-08-27,
+    # س-22) -- three scales, three separate answers, and no number moved
+    # between them. `Settings.RetrievalSettings` carries the evidence for
+    # each; the two zeros below are a MEASURED verdict ("the RRF scale
+    # carries no admissibility signal"), not a value still waiting for data.
+    min_dense_score: float = 0.45
+    min_bm25_score: float = 25.0
     min_fused_score: float = 0.0
     relative_floor: float = 0.0
     jaccard_threshold: float = 0.95

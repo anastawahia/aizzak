@@ -10,10 +10,21 @@ Deliberate deviations from alpha:
   FAISS **L2 distance** (smaller = closer) over a 384-dim MiniLM embedding —
   numbers that are meaningless to copy verbatim onto this module's
   cosine-similarity, RRF-fused score scale (retrieval.md §7 risk #6). Both
-  floors still default to ``0.0`` here, but on THIS module's scale that
-  default means "disabled" for a genuinely different reason (an RRF score is
-  always > 0 for any candidate that made it this far) — an explicit,
-  uncalibrated-until-integration note, not a silent copy of alpha's numbers.
+  floors default to ``0.0`` here, and since 2026-08-27 that is a MEASURED
+  verdict rather than a value awaiting one (س-22, closed on ``P-38``'s
+  evaluation set). What the measurement found is that this scale cannot carry
+  a floor at all: the score these two gates compare against is
+  ``Σ w/(rrf_k+rank)``, pure rank arithmetic, bounded into
+  ``[0.008197, 0.016393]`` at the shipped weights however good or bad the
+  candidate. Answerable questions landed in ``[0.008065, 0.016393]`` and
+  questions the corpus could not answer landed in ``[0.008197, 0.016261]`` —
+  the same interval, so any floor keeping the first keeps the second. A floor
+  of ``0.0082`` held English recall at 15/15 and cut Arabic to 7/15, because a
+  cross-lingual question has no both-leg agreement and every candidate it
+  produces sits at the single-leg minimum by construction; ``relative_floor``
+  at ``0.8`` cost two answers for the same reason. The floors that DID
+  calibrate live one stage earlier, per leg, on their own scales
+  (``RetrievalTuning.min_dense_score``/``.min_bm25_score``).
 * The Jaccard near-duplicate dedup threshold (``0.95``) is alpha's one
   metric-independent constant (retrieval.md §4.8: "عتبة ثابتة 0.95 غير
   قابلة للضبط") — ported verbatim, and left the only gate that defaults ON.

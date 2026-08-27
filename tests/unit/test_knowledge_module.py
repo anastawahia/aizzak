@@ -17,6 +17,7 @@ import json
 import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 import pytest
 
@@ -29,7 +30,13 @@ from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoin
 from app.framework.settings.settings import RetrievalSettings
 from app.framework.types import Json
 from app.modules.knowledge.application.indexing import IndexDocument
-from app.modules.knowledge.application.retrieval import RetrievalResult, RetrieveContext
+from app.modules.knowledge.application.retrieval import (
+    _DEFAULT_TUNING as _SHIPPED_TUNING,
+)
+from app.modules.knowledge.application.retrieval import (
+    RetrievalResult,
+    RetrieveContext,
+)
 from app.modules.knowledge.application.routing import RouteQuestion
 from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_CORPUS_NAMES,
@@ -69,6 +76,17 @@ from app.modules.knowledge.ports.content_extractor import (
 )
 from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval, RoutedAnswer
 from app.modules.knowledge.ports.retrieval import ResolvedEmbedding
+
+# The shipped tuning with both per-leg floors off (س-22's numbers were
+# calibrated 2026-08-27 on `P-38`'s evaluation set: 0.45 on the dense leg's
+# cosine scale, 25.0 on the sparse leg's IDF-weighted dot product). Every
+# retrieval in this file is about SCOPE -- which documents, which space, which
+# file a question named -- and the fakes score with synthetic vectors whose
+# magnitudes bear no relation to the scales those two numbers were measured
+# on. Gating them here would assert the fake's arithmetic against a real
+# corpus's calibration; the floors carry their own tests in
+# `test_knowledge_pipeline.py`.
+_UNGATED = replace(_SHIPPED_TUNING, min_dense_score=0.0, min_bm25_score=0.0)
 
 # Two spaces in ONE workspace (spaces plan step 8) -- the axis the tests
 # below narrow along. Opaque strings, exactly as every layer under test
@@ -1346,7 +1364,7 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
 
     resolver = _FakeEmbeddingResolver(model="embed-1", api_key="key-1")
     documents = _FakeDocumentRepository()
-    retrieval = RetrieveContext(embeddings, vectors, documents)
+    retrieval = RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED)
     service = KnowledgeRetrievalService(
         retrieval, resolver, documents, _FakeReadableFiles(), _FakeSummaryStarter()
     )
@@ -1493,7 +1511,7 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
     )
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         files,
@@ -1591,7 +1609,7 @@ async def test_the_service_hands_the_configured_cap_down_to_the_use_case() -> No
     )
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     svc: KnowledgeRetrieval = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         files,
@@ -2033,7 +2051,7 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _indexed_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2061,7 +2079,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _indexed_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2085,7 +2103,7 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _indexed_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2139,7 +2157,7 @@ async def _routing_service(
             _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
         )
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         files,
@@ -2615,9 +2633,9 @@ async def test_confidence_signals_are_raw_pre_rrf_scores_not_the_chunks_own_rrf_
         api_key="key-1",
     )
 
-    result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
-    )
+    result = await RetrieveContext(
+        embeddings, vectors, _FakeDocumentRepository(), tuning=_UNGATED
+    ).execute(ctx, query=text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A)
 
     assert isinstance(result, RetrievalResult)
     assert len(result.chunks) == 1
@@ -2652,9 +2670,9 @@ async def test_best_scores_are_the_maximum_across_all_hits_never_the_minimum() -
             api_key="key-1",
         )
 
-    result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=query_text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
-    )
+    result = await RetrieveContext(
+        embeddings, vectors, _FakeDocumentRepository(), tuning=_UNGATED
+    ).execute(ctx, query=query_text, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A)
 
     # The best score is the near-identical match's ~1.0, not the unrelated
     # document's much lower (or negative) cosine similarity -- a `min()`
@@ -2683,9 +2701,9 @@ async def test_best_bm25_score_is_none_when_the_sparse_leg_returns_no_hits() -> 
     query = "!!! ??? ..."
     assert build_sparse_terms(query).indices == ()
 
-    result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
-        ctx, query=query, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A
-    )
+    result = await RetrieveContext(
+        embeddings, vectors, _FakeDocumentRepository(), tuning=_UNGATED
+    ).execute(ctx, query=query, model="embed-1", api_key="key-1", k=5, space_id=_SPACE_A)
 
     assert result.best_bm25_score is None
     # The dense leg is unaffected -- it embeds the raw query text regardless
@@ -2700,7 +2718,9 @@ async def test_both_confidence_signals_are_none_over_an_empty_corpus() -> None:
     ctx = _ctx("ws1")
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
 
-    result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
+    result = await RetrieveContext(
+        embeddings, vectors, _FakeDocumentRepository(), tuning=_UNGATED
+    ).execute(
         ctx,
         query="quarterly revenue figures",
         model="embed-1",
@@ -2723,7 +2743,9 @@ async def test_a_scope_of_unindexed_documents_short_circuits_with_none_signals()
     await _indexed_corpus(ctx, embeddings, vectors)
     searches_before = len(vectors.search_calls)
 
-    result = await RetrieveContext(embeddings, vectors, _FakeDocumentRepository()).execute(
+    result = await RetrieveContext(
+        embeddings, vectors, _FakeDocumentRepository(), tuning=_UNGATED
+    ).execute(
         ctx,
         query="quarterly revenue figures",
         model="embed-1",
@@ -2847,7 +2869,7 @@ async def test_a_space_scoped_retrieval_never_answers_from_another_space() -> No
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _spaced_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2870,7 +2892,7 @@ async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_othe
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _spaced_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2911,7 +2933,7 @@ async def test_an_unspaced_retrieval_is_refused_instead_of_seeing_every_space(
     embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
     documents = await _spaced_corpus(ctx, embeddings, vectors)
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -2960,7 +2982,7 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
         api_key="key-1",
     )
     service = KnowledgeRetrievalService(
-        RetrieveContext(embeddings, vectors, documents),
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeEmbeddingResolver(model="embed-1", api_key="key-1"),
         documents,
         _FakeReadableFiles(),
@@ -3052,7 +3074,9 @@ async def test_the_router_walks_the_candidates_of_the_space_it_was_asked_about(
         [FileCandidate(document_id="doc-research", file_name=_SPACED_NAMES["file-doc-research"])]
     )
     router = RouteQuestion(
-        RetrieveContext(embeddings, vectors, documents), _FakeSummaryStarter(), files
+        RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
+        _FakeSummaryStarter(),
+        files,
     )
 
     routed = await router.execute(

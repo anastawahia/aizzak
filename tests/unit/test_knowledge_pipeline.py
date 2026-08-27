@@ -91,6 +91,19 @@ from app.modules.knowledge.ports.retrieval import RetrievedChunk
 # `dataclasses.replace` off it is how a test enables ONE knob without
 # restating the other sixteen.
 _TUNING = retrieval_module._DEFAULT_TUNING
+# The shipped tuning with BOTH per-leg floors switched off (س-22's numbers were
+# calibrated 2026-08-27 on `P-38`'s evaluation set: `min_dense_score = 0.45`
+# cosine, `min_bm25_score = 25.0` on the sparse dot product).
+#
+# Every structural test below is about the SHAPE of the pipeline -- fusion
+# order, parent widening, the budget, the stage log -- and the fakes score with
+# synthetic vectors and term overlaps whose MAGNITUDES bear no relation to the
+# scales those two numbers were measured on. Leaving the floors on would make
+# such a test assert the fake's arithmetic against a real corpus's calibration,
+# which is the number-crossing-scales mistake the calibration itself exists to
+# refuse. So the floors are off there and carry their own tests instead, and a
+# test that means to exercise a floor says so by setting one.
+_UNGATED = replace(_TUNING, min_dense_score=0.0, min_bm25_score=0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -251,11 +264,24 @@ class FakeHybridVectors:
     """In-memory ``HybridVectorStore`` fake: brute-force cosine (dense) /
     dot-product (sparse) search over whatever has been upserted, scoped to
     the collection and filtered by an exact-match ``flt`` AND over each
-    point's payload. ``search_sparse`` excludes non-positive dot products --
-    mirroring a real inverted-index sparse engine, which never returns a
-    document with zero matching terms. Records ``(collection, k, flt)`` for
-    every ``search``/``search_sparse`` call for tenant-isolation/clamp
-    assertions."""
+    point's payload. ``search_sparse`` excludes non-positive dot products.
+
+    ⚠️ **That exclusion is an IDEALISATION, and a measured one.** It was
+    written here as "mirroring a real inverted-index sparse engine, which
+    never returns a document with zero matching terms" -- and the live corpus
+    says otherwise: Qdrant answers a FILTERED sparse query whose terms appear
+    nowhere in the corpus with ``k`` arbitrary points scored exactly ``0.0``
+    (``P-38``, 2026-08-27 -- 362 such hits across 42 probes, and for an Arabic
+    question over an English corpus the whole 20-deep leg). Keeping the fake
+    ideal is deliberate: one that returned arbitrary points would make every
+    ordering assertion in this file depend on WHICH ones. But it does mean no
+    test here can see that behaviour -- it is why the defect survived every
+    unit test until a live measurement found it -- so
+    ``test_the_sparse_floor_refuses_the_vote_of_a_hit_that_shares_no_term``
+    asserts the gate directly on the hits instead.
+
+    Records ``(collection, k, flt)`` for every ``search``/``search_sparse``
+    call for tenant-isolation/clamp assertions."""
 
     def __init__(self) -> None:
         self.points: dict[str, dict[str, VectorPoint]] = {}
@@ -2992,7 +3018,7 @@ async def test_index_then_retrieve_round_trip() -> None:
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx,
         space_id=SPACE,
         query="quarterly revenue figures for the northern region",
@@ -3037,7 +3063,7 @@ async def test_index_then_retrieve_round_trip_carries_citation_fields() -> None:
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx,
         space_id=SPACE,
         query="quarterly revenue figures for the northern region",
@@ -3067,7 +3093,7 @@ async def test_index_then_retrieve_round_trip_degrades_missing_citation_fields_t
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx,
         space_id=SPACE,
         query="cafeteria menu changes for next month",
@@ -3088,7 +3114,7 @@ async def test_retrieve_context_both_legs_called_with_workspace_and_space_filter
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="alpha report", model="m", api_key="k"
     )
 
@@ -3108,7 +3134,7 @@ async def test_retrieve_context_query_embed_call_is_exactly_the_query() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["alpha beta gamma report content"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="alpha report", model="m", api_key="k"
     )
 
@@ -3129,7 +3155,7 @@ async def test_retrieve_context_rrf_fuses_both_legs() -> None:
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="revenue figures quarterly", model="m", api_key="k", k=5
     )
 
@@ -3162,7 +3188,7 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
     )
 
@@ -3178,7 +3204,7 @@ async def test_retrieve_context_clamps_k_below_minimum_up_to_one() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=0
     )
 
@@ -3194,7 +3220,7 @@ async def test_retrieve_context_clamps_k_above_maximum() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=1000
     )
 
@@ -3213,39 +3239,92 @@ def _scored_hit(score: float, point_id: str = "point-1") -> VectorHit:
     return VectorHit(id=point_id, score=score, payload={})
 
 
-def test_per_leg_score_floors_ship_disabled() -> None:
-    """Retrieval plan §3.8 ("الآليّة تُشحَن والأرقام لا") + decision س-22: the
-    per-leg knobs exist, and every one of them ships at ``0.0`` = disabled
-    until the evaluation set ``P-38`` waits on exists. The one alpha constant
-    that is INDEPENDENT of the score scale -- Jaccard dedup at ``0.95``
-    (plan fact ح-17) -- is the sole gate that stays on."""
-    assert _TUNING.min_dense_score == 0.0
-    assert _TUNING.min_bm25_score == 0.0
-    # Plan step 18 (`P-30`) moved `filter_relevant`'s own three gates into the
-    # same injected tuning, so the shipped configuration has to be asserted
-    # BOTH where the numbers now live and where the algorithm's own defaults
-    # still sit -- they must agree, or one of the two is dead.
+def test_the_per_leg_floors_ship_the_calibrated_numbers() -> None:
+    """س-22, CLOSED on ``P-38``'s evaluation set (owner decision 2026-08-27) --
+    docs/rag-fidelity-audit.md §4-و.
+
+    Retrieval plan §3.8's rule was "الآليّة تُشحَن والأرقام لا": ship the
+    mechanism, never an uncalibrated number. The evaluation set arrived (15
+    questions with reference answers over a real handbook, asked in both
+    languages, plus 6 the corpus provably cannot answer), the sweep ran, and
+    the owner fixed the operating point. These are those numbers, and the test
+    exists so that moving one is a deliberate act with a measurement behind it
+    rather than a default drifting.
+
+    ⚠️ The two live on DIFFERENT SCALES and neither may be copied onto the
+    other: ``0.45`` is a cosine similarity, ``25.0`` is an unbounded
+    IDF-weighted dot product. ``Settings.RetrievalSettings`` carries the
+    evidence for each separately, for exactly that reason."""
+    assert _TUNING.min_dense_score == 0.45
+    assert _TUNING.min_bm25_score == 25.0
+    assert _TUNING.jaccard_threshold == 0.95
+
+
+def test_the_fused_floors_stay_zero_because_the_rrf_scale_cannot_carry_one() -> None:
+    """The THIRD scale's answer, and it is a measured verdict rather than a
+    number still pending (س-22 / ``P-38``).
+
+    ``filter_relevant``'s two floors compare against the FUSED RRF score,
+    which is rank arithmetic: ``Σ w/(rrf_k + rank)``, bounded into
+    ``[w_min/(rrf_k+1), (w_dense+w_bm25)/(rrf_k+1)]`` no matter how good or
+    bad the candidate is. This test pins that bound off the shipped weights,
+    because it is the whole argument: measured over the evaluation set,
+    answerable questions produced gold scores across that entire interval and
+    unanswerable ones produced maxima across it too, so no floor separates
+    them. The floors that DID calibrate are the per-leg pair above.
+
+    Plan step 18 (`P-30`) moved `filter_relevant`'s own gates into the same
+    injected tuning, so the shipped configuration is asserted BOTH where the
+    numbers live and where the algorithm's defaults sit -- they must agree, or
+    one of the two is dead."""
     assert _TUNING.min_fused_score == 0.0
     assert _TUNING.relative_floor == 0.0
-    assert _TUNING.jaccard_threshold == 0.95
 
     floors = inspect.signature(filter_relevant).parameters
     assert floors["min_score"].default == _TUNING.min_fused_score
     assert floors["relative_floor"].default == _TUNING.relative_floor
     assert floors["jaccard_threshold"].default == _TUNING.jaccard_threshold
 
+    # The bound the argument rests on, derived from the shipped weights rather
+    # than quoted: every RRF score any candidate can ever take lies inside it.
+    best = (_TUNING.weight_dense + _TUNING.weight_bm25) / (_TUNING.rrf_k + 1)
+    worst_at_rank_zero = min(_TUNING.weight_dense, _TUNING.weight_bm25) / (_TUNING.rrf_k + 1)
+    assert (worst_at_rank_zero, best) == pytest.approx((0.008196721, 0.016393442))
 
-def test_gate_by_score_at_the_shipped_default_is_inert_even_for_negative_scores() -> None:
-    """``0.0`` must mean DISABLED, not "keep scores >= 0". The dense leg is
-    cosine similarity over ``[-1, 1]``, so an arithmetic-only "disabled"
-    default would silently drop every negatively correlated hit -- an
-    uncalibrated gate wearing a disabled default's clothes, which is exactly
-    what س-22 forbids."""
+
+def test_gate_by_score_treats_zero_as_disabled_even_for_negative_scores() -> None:
+    """``0.0`` must mean DISABLED, not "keep scores >= 0" -- and that stays
+    true now that both legs carry a real floor, because it is what the two
+    remaining ``0.0`` knobs and every ungated test rely on.
+
+    The dense leg is cosine similarity over ``[-1, 1]``, so an arithmetic-only
+    "disabled" default would silently drop every negatively correlated hit --
+    an uncalibrated gate wearing a disabled default's clothes."""
     hits = [_scored_hit(0.9, "a"), _scored_hit(0.0, "b"), _scored_hit(-0.42, "c")]
 
-    assert retrieval_module._gate_by_score(hits, _TUNING.min_dense_score) == hits
-    assert retrieval_module._gate_by_score(hits, _TUNING.min_bm25_score) == hits
     assert retrieval_module._gate_by_score(hits, 0.0) == hits
+    assert retrieval_module._gate_by_score(hits, -1.0) == hits
+
+
+def test_the_sparse_floor_refuses_the_vote_of_a_hit_that_shares_no_term() -> None:
+    """What ``min_bm25_score`` was actually calibrated to repair (``P-38``,
+    2026-08-27) -- a measured DEFECT, not a quality trade.
+
+    Qdrant answers a FILTERED sparse query whose terms appear nowhere in the
+    corpus with ``k`` arbitrary points scored EXACTLY ``0.0`` (measured live:
+    362 such hits across 42 probes; for an Arabic question over an English
+    corpus the entire 20-deep leg is zeros). RRF reads RANK and not score, so
+    before the floor those zeros voted with exactly the weight of the dense
+    leg's real hits -- and four of the five chunks delivered for one Arabic
+    question came from an unrelated document.
+
+    ⚠️ ``FakeHybridVectors.search_sparse`` cannot reproduce that: it drops
+    non-positive dot products, modelling an IDEALISED inverted index. That
+    idealisation is precisely why no unit test ever saw this, so the gate is
+    asserted here directly on the hits it is given."""
+    hits = [_scored_hit(31.4, "real"), _scored_hit(0.0, "no-shared-term")]
+
+    assert retrieval_module._gate_by_score(hits, _TUNING.min_bm25_score) == [hits[0]]
 
 
 def test_gate_by_score_when_enabled_keeps_scores_at_or_above_the_floor() -> None:
@@ -3285,10 +3364,10 @@ async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_si
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    baseline = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-        ctx, space_id=SPACE, query="document content", model="m", api_key="k"
-    )
-    assert baseline.chunks  # the SHIPPED configuration retrieves it
+    baseline = await RetrieveContext(
+        embeddings, vectors, FakeParentRepo(), tuning=_UNGATED
+    ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
+    assert baseline.chunks  # ungated, the fake corpus retrieves it
     assert baseline.best_dense_score is not None
     assert baseline.best_bm25_score is not None
 
@@ -3301,7 +3380,7 @@ async def test_retrieve_context_floors_gate_the_legs_but_never_the_confidence_si
         vectors,
         FakeParentRepo(),
         tuning=replace(
-            _TUNING,
+            _UNGATED,
             min_dense_score=baseline.best_dense_score + 1.0,
             min_bm25_score=baseline.best_bm25_score + 1.0,
         ),
@@ -3325,7 +3404,7 @@ async def test_retrieve_context_the_two_floors_are_independent_per_leg() -> None
         embeddings,
         vectors,
         FakeParentRepo(),
-        tuning=replace(_TUNING, min_dense_score=2.0),
+        tuning=replace(_UNGATED, min_dense_score=2.0),
     ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
 
     assert [chunk.chunk_id for chunk in result.chunks] == [chunk_point_id("doc-1", 0)]
@@ -3351,7 +3430,7 @@ async def test_retrieve_context_caps_the_sparse_leg_alone_at_a_large_k() -> None
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=50
     )
 
@@ -3374,7 +3453,7 @@ async def test_retrieve_context_sparse_cap_now_binds_at_the_default_k() -> None:
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="document content", model="m", api_key="k", k=5
     )
 
@@ -3427,7 +3506,7 @@ async def test_retrieve_context_widens_past_k_after_fusion_before_narrowing_to_k
 
     monkeypatch.setattr(retrieval_module, "filter_relevant", _spy_filter_relevant)
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning review", model="m", api_key="k", k=k
     )
 
@@ -3456,7 +3535,7 @@ async def test_retrieve_context_substitutes_the_parents_text_not_the_leafs() -> 
         {point_id: ParentChunkText(id="parent-A", text=parent_text, is_complete=True)}
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3493,7 +3572,7 @@ async def test_retrieve_context_widened_parent_text_appears_once_when_two_leaves
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3536,7 +3615,7 @@ async def test_retrieve_context_delivers_repeated_text_once_across_two_documents
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3566,7 +3645,7 @@ async def test_retrieve_context_keeps_the_higher_ranked_of_two_identical_passage
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3588,7 +3667,7 @@ async def test_retrieve_context_deduplicates_unparented_leaves_by_their_own_text
     await _seed_corpus(vectors, ctx, "doc-2", [repeated])
 
     # No parents at all — every candidate keeps its own leaf text.
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3637,7 +3716,7 @@ async def test_retrieve_context_treats_trivially_different_renderings_as_one_pas
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3670,7 +3749,7 @@ async def test_retrieve_context_keeps_two_passages_that_merely_overlap() -> None
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3704,7 +3783,7 @@ async def test_retrieve_context_counts_the_text_duplicates_it_dropped(
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(embeddings, vectors, parent_repo).execute(
+        await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
             ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
         )
 
@@ -3734,7 +3813,7 @@ async def test_retrieve_context_caps_substituted_parent_text_at_max_parent_chunk
         {point_id: ParentChunkText(id="parent-A", text=oversized_parent_text, is_complete=True)}
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3762,7 +3841,7 @@ async def test_retrieve_context_marks_a_parent_the_cap_actually_cut() -> None:
         {point_id: ParentChunkText(id="parent-A", text="y" * (cap + 1), is_complete=True)}
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3786,7 +3865,7 @@ async def test_retrieve_context_does_not_mark_a_parent_that_fits_the_cap() -> No
         {point_id: ParentChunkText(id="parent-A", text=exact, is_complete=True)}
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3820,7 +3899,7 @@ async def test_retrieve_context_degrades_to_leaf_text_when_no_parent_resolves() 
     leaf_text = "quarterly revenue figures for the northern region"
     await _seed_corpus(vectors, ctx, "doc-1", [leaf_text])
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3855,7 +3934,7 @@ async def test_retrieve_context_keeps_the_leaf_when_the_parent_is_incomplete() -
         {point_id: ParentChunkText(id="parent-A", text=header_only_parent, is_complete=False)}
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=leaf_text, model="m", api_key="k", k=1
     )
 
@@ -3893,7 +3972,7 @@ async def test_retrieve_context_keeps_both_leaves_under_one_incomplete_parent() 
         }
     )
 
-    result = await RetrieveContext(embeddings, vectors, parent_repo).execute(
+    result = await RetrieveContext(embeddings, vectors, parent_repo, tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly planning", model="m", api_key="k", k=3
     )
 
@@ -3940,7 +4019,7 @@ async def _budget_run(max_context_chars: int, max_context_tokens: int) -> list[R
         vectors,
         FakeParentRepo(),
         tuning=replace(
-            _TUNING,
+            _UNGATED,
             max_context_chars=max_context_chars,
             max_context_tokens=max_context_tokens,
         ),
@@ -4041,7 +4120,7 @@ async def test_retrieve_context_context_budget_measures_the_labelled_text() -> N
             embeddings,
             vectors,
             FakeParentRepo(),
-            tuning=replace(_TUNING, max_context_chars=max_chars, max_context_tokens=100_000),
+            tuning=replace(_UNGATED, max_context_chars=max_chars, max_context_tokens=100_000),
         ).execute(
             ctx,
             space_id=SPACE,
@@ -4153,7 +4232,7 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["document content about a specific product line"])
 
-    await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="document content", model="m", api_key="k"
     )
     assert vectors.search_calls[-1][1] == _TUNING.default_k * max(
@@ -4161,22 +4240,22 @@ async def test_retrieve_context_default_k_comes_from_the_tuning_not_a_literal() 
     )
 
     await RetrieveContext(
-        embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, default_k=2)
+        embeddings, vectors, FakeParentRepo(), tuning=replace(_UNGATED, default_k=2)
     ).execute(ctx, space_id=SPACE, query="document content", model="m", api_key="k")
     assert vectors.search_calls[-1][1] == 2 * max(_TUNING.search_overfetch, _TUNING.mmr_overfetch)
 
 
 async def test_retrieve_context_empty_query_raises_validation_error() -> None:
     with pytest.raises(ValidationError):
-        await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
-            _ctx(), space_id=SPACE, query="   ", model="m", api_key="k"
-        )
+        await RetrieveContext(
+            FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo(), tuning=_UNGATED
+        ).execute(_ctx(), space_id=SPACE, query="   ", model="m", api_key="k")
 
 
 async def test_retrieve_context_empty_corpus_returns_empty_list() -> None:
-    result = await RetrieveContext(FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo()).execute(
-        _ctx(), space_id=SPACE, query="anything at all", model="m", api_key="k"
-    )
+    result = await RetrieveContext(
+        FakeEmbeddings(), FakeHybridVectors(), FakeParentRepo(), tuning=_UNGATED
+    ).execute(_ctx(), space_id=SPACE, query="anything at all", model="m", api_key="k")
     assert result.chunks == []
     # No hits on either leg -- the confidence signals are honestly absent
     # (retrieval plan §3.3, ``P-28``), never a misleading ``0.0``.
@@ -4205,7 +4284,7 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
         ],
     )
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx_b, space_id=SPACE, query=shared_text, model="m", api_key="k"
     )
 
@@ -4265,7 +4344,7 @@ async def test_retrieve_context_asks_both_legs_for_the_candidates_vectors() -> N
     ctx = _ctx("ws1")
     await _seed_corpus(vectors, ctx, "doc-1", ["quarterly revenue figures for the north"])
 
-    await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
+    await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="quarterly revenue", model="m", api_key="k"
     )
 
@@ -4285,7 +4364,7 @@ async def test_retrieve_context_does_not_deliver_five_chunks_of_one_paragraph() 
     ctx = _ctx("ws1")
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3
     )
 
@@ -4309,7 +4388,7 @@ async def test_retrieve_context_without_mmr_would_deliver_the_same_paragraph_thr
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
     result = await RetrieveContext(
-        embeddings, vectors, FakeParentRepo(), tuning=replace(_TUNING, mmr_lambda=1.0)
+        embeddings, vectors, FakeParentRepo(), tuning=replace(_UNGATED, mmr_lambda=1.0)
     ).execute(ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3)
 
     assert [chunk.text for chunk in result.chunks] == list(_PARAPHRASES[:3])
@@ -4327,7 +4406,7 @@ async def test_retrieve_context_logs_the_mmr_cut(caplog: pytest.LogCaptureFixtur
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
             ctx, space_id=SPACE, query=query, model="m", api_key="k", k=2
         )
 
@@ -4377,7 +4456,7 @@ async def test_retrieve_context_still_retrieves_from_a_store_that_returns_no_vec
     ctx = _ctx("ws1")
     await _seed_one_paragraph_five_ways(vectors, ctx)
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query=query, model="m", api_key="k", k=3
     )
 
@@ -4472,7 +4551,9 @@ async def test_retrieve_context_emits_one_stage_record_carrying_every_stage(
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        result = await RetrieveContext(
+            embeddings, vectors, FakeParentRepo(), tuning=_UNGATED
+        ).execute(
             ctx, space_id=SPACE, query="quarterly revenue figures", model="m", api_key="k", k=2
         )
 
@@ -4534,7 +4615,7 @@ async def test_retrieve_context_stage_scores_are_the_legs_own_not_rrfs(
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
             ctx, space_id=SPACE, query=query, model="m", api_key="k", k=2
         )
 
@@ -4603,7 +4684,7 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
             ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
         )
 
@@ -4659,7 +4740,7 @@ async def test_retrieve_context_an_empty_scope_logs_the_same_record_shape(
     await _seed_corpus(vectors, ctx, "doc-1", ["quarterly revenue figures for the north"])
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo()).execute(
+        await RetrieveContext(FakeEmbeddings(), vectors, FakeParentRepo(), tuning=_UNGATED).execute(
             ctx,
             space_id=SPACE,
             query="quarterly revenue",
@@ -4691,7 +4772,7 @@ async def test_retrieve_context_stage_record_samples_the_numbers_never_the_count
     await _seed_corpus(vectors, ctx, "doc-1", corpus)
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+        await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
             ctx, space_id=SPACE, query="quarterly revenue figures", model="m", api_key="k", k=50
         )
 
@@ -4736,9 +4817,9 @@ async def test_retrieve_context_stage_record_carries_no_document_or_query_text(
     )
 
     with caplog.at_level(logging.INFO, logger=_RETRIEVAL_LOGGER):
-        result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
-            ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1
-        )
+        result = await RetrieveContext(
+            embeddings, vectors, FakeParentRepo(), tuning=_UNGATED
+        ).execute(ctx, space_id=SPACE, query=query, model="m", api_key="k", k=1)
 
     assert result.chunks  # the record below describes a real, non-empty answer
     record = _stage_record(caplog)
@@ -4788,7 +4869,7 @@ async def _context_run(*, k: int = 3) -> RetrievalResult:
     await IndexDocument(embeddings, vectors).execute(
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
-    return await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    return await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="third quarter revenue", model="m", api_key="k", k=k
     )
 
@@ -4852,7 +4933,7 @@ async def test_context_text_is_empty_when_retrieval_delivered_nothing() -> None:
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
 
-    result = await RetrieveContext(embeddings, vectors, FakeParentRepo()).execute(
+    result = await RetrieveContext(embeddings, vectors, FakeParentRepo(), tuning=_UNGATED).execute(
         ctx, space_id=SPACE, query="anything", model="m", api_key="k", document_ids=[]
     )
 
@@ -4938,7 +5019,7 @@ class ReverseReranker:
         ]
 
 
-_RERANK_ON = replace(_TUNING, rerank_enabled=True)
+_RERANK_ON = replace(_UNGATED, rerank_enabled=True)
 
 _RERANK_TEXTS = (
     "the annual maintenance policy covers scheduled inspections",
@@ -4961,7 +5042,7 @@ async def _retrieve(
     embeddings: FakeEmbeddings,
     vectors: FakeHybridVectors,
     *,
-    tuning: RetrievalTuning = _TUNING,
+    tuning: RetrievalTuning = _UNGATED,
     reranker: Any = None,
     parents: dict[str, ParentChunkText] | None = None,
 ) -> RetrievalResult:

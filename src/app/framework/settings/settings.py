@@ -375,15 +375,26 @@ class RetrievalSettings(BaseModel):
     — writable global state needing RBAC, auditing and tenant isolation;
     recorded in the plan's §7). Changing one is a redeploy.
 
-    ⚠️ **The two score floors ship DISABLED at ``0.0`` on purpose** (س-22,
-    §3.8 "الآليّة تُشحَن والأرقام لا"): the mechanism is wired, the number
-    waits for the evaluation set `P-38` needs. ``jaccard_threshold`` is the
-    one gate that ships ON, because ``0.95`` is alpha's single
-    SCALE-INDEPENDENT constant (plan fact ح-17) rather than a calibrated
-    score. And ⚠️ **no alpha number transfers to the two floors**: alpha
-    calibrates them against FAISS L2 DISTANCE (lower is nearer) while both
-    legs here are higher-is-better (Qdrant cosine similarity; a raw
-    IDF-weighted sparse dot product) — plan §6 risk #3.
+    ✅ **The floors carry NUMBERS since 2026-08-27** (س-22 closed by owner
+    decision on `P-38`'s evaluation set — 15 questions with reference answers
+    over a real handbook, asked in both languages, plus 6 questions the corpus
+    provably cannot answer; docs/rag-fidelity-audit.md §4-و). §3.8's rule
+    ("الآليّة تُشحَن والأرقام لا") is satisfied, not waived: the numbers below
+    are measured, and the two that stayed ``0.0`` stayed there BECAUSE the
+    measurement says no number belongs on their scale — not because none was
+    tried.
+
+    ⚠️ **Three scales, three separate calibrations, and no number crosses
+    between them.** The dense leg is Qdrant cosine over ``[-1, 1]``; the
+    sparse leg is an unbounded IDF-weighted dot product; the fused floors live
+    on the RRF score (``Σ w/(60+rank)``). A value measured on one says nothing
+    about another, and that is the same trap alpha fell into by calibrating
+    against FAISS L2 DISTANCE (lower is nearer) — plan §6 risk #3. Each
+    field's own comment carries the evidence for ITS scale and no other.
+
+    ``jaccard_threshold`` is untouched by all of it: ``0.95`` is alpha's
+    single SCALE-INDEPENDENT constant (plan fact ح-17), a set-overlap ratio
+    rather than a score.
 
     Not env-editable, exactly like ``Limits`` below: 05-rbac-config-secrets
     §2 owns the flat env-key list (``infrastructure/config/env_settings.py``
@@ -426,12 +437,64 @@ class RetrievalSettings(BaseModel):
     # `P-27`): cosine in [-1, 1] for the dense leg, an unbounded IDF-weighted
     # dot product for the sparse one. `0.0` = disabled by an explicit branch
     # in `_gate_by_score`, never by arithmetic.
-    min_dense_score: float = 0.0
-    min_bm25_score: float = 0.0
+    #
+    # ── the DENSE floor · cosine ──────────────────────────────────────────
+    # `0.45`, calibrated on `P-38`'s set (2026-08-27) and chosen with MARGIN
+    # rather than at the frontier:
+    #   * the lowest `best_dense_score` any ANSWERABLE question produced is
+    #     0.5243 -- so 0.45 sits 14% below the closest thing to a cliff the
+    #     measurement found;
+    #   * the first FALSE REFUSAL (an answerable question returning zero
+    #     chunks) appears at 0.55, so 0.45 is 18% under the failure itself;
+    #   * at 0.45 the set keeps 30/30 answers and 4 of 12 unanswerable
+    #     questions come back with zero chunks -- which is the trust gate
+    #     (`P-33`) firing for the first time on a non-empty corpus.
+    # The frontier (0.52, closing 7 of 12) was measured and REJECTED: it
+    # touches 0.5243 with no margin at all, and the response surface is not
+    # monotone (one question survives a sparse floor of 21 and 10 but not 15),
+    # so a value fitted to the edge of 30 samples is not a calibration.
+    # ⚠️ Measured on an English corpus asked in BOTH languages, i.e. the
+    # HARDEST case for this floor: a same-language corpus scores higher on
+    # cosine, which widens the margin rather than narrowing it.
+    min_dense_score: float = 0.45
+    # ── the SPARSE floor · IDF-weighted dot product ───────────────────────
+    # `25.0`, and this one repairs a measured DEFECT rather than trading
+    # quality away. Qdrant answers a filtered sparse query whose terms appear
+    # nowhere in the corpus with `k` arbitrary points scored EXACTLY 0.0 --
+    # measured at 362 such hits across 42 probes, and for an Arabic question
+    # over an English corpus the whole 20-deep leg is zeros. RRF reads RANK,
+    # not score, so those zeros used to vote with exactly the weight of the
+    # dense leg's real hits: 4 of the 5 chunks delivered for one Arabic
+    # question came from an unrelated document, one of them a 26-character
+    # fragment. Any floor above 0 removes them and nothing else -- the
+    # smallest POSITIVE score in the whole corpus is 1.406.
+    # 25.0 rather than a token epsilon because the sweep found [21, 30] to be
+    # one stable plateau (identical outcomes at every dense floor tested) and
+    # 25 is its middle, while 15 and 21 sit on edges. It costs no recall: the
+    # two legs back each other up, so emptying the sparse leg of a question
+    # the dense leg answers changes nothing, and 30/30 holds at every sparse
+    # floor from 0.01 to 30.
+    min_bm25_score: float = 25.0
     # `domain/relevance.py`'s own two floors, on a THIRD scale entirely -- the
     # FUSED RRF score (`Σ w/(60+rank)`, thousandths however good the
     # candidate). Named `min_fused_score` rather than `min_score` so the scale
     # is legible next to the two above; it is `filter_relevant`'s `min_score`.
+    #
+    # ⚠️ **Both stay `0.0`, and `P-38` is why -- not what it left undone.**
+    # The RRF score is rank arithmetic: it can only ever land in
+    # `[w_min/(rrf_k+1), (w_dense+w_bm25)/(rrf_k+1)]` = [0.008197, 0.016393]
+    # at the shipped weights, however good or bad the candidate is. Measured
+    # over the evaluation set, answerable questions produced gold scores in
+    # [0.008065, 0.016393] and UNANSWERABLE ones produced maxima in
+    # [0.008197, 0.016261] -- the same interval. So no `min_fused_score` can
+    # keep every real answer and reject anything; a floor at 0.0082 holds
+    # English at 15/15 and drops Arabic to 7/15, because a cross-lingual
+    # question has no both-leg agreement and every one of its candidates sits
+    # at the single-leg floor by construction. `relative_floor` is the same
+    # quantity as a ratio -- 0.8 costs two answers -- and is refused for the
+    # same reason. This is a CLOSED question now, not a deferred one: the
+    # scale carries no admissibility signal, so the two knobs above are where
+    # a floor belongs and these two are where it does not.
     min_fused_score: float = 0.0
     relative_floor: float = 0.0
     # Near-duplicate dedup (`domain/relevance.py`) -- the one gate shipped ON.
