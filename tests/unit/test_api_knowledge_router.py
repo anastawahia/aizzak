@@ -695,6 +695,7 @@ def test_reindexing_answers_202_with_the_job() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1, file_id="f1")
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
@@ -719,6 +720,7 @@ def test_the_reindexed_file_disappears_from_the_corpus_until_the_worker_runs() -
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1, file_id="f1", chunk_count=9)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         client.post("/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth())
         listing = client.get(
@@ -734,6 +736,7 @@ def test_a_job_reports_progress_read_from_its_documents() -> None:
     for name in ("d1", "d2"):
         doc = seed_document(document_id=name, workspace_id=_W1, file_id=f"file-{name}")
         stack.repository.rows[doc.id] = doc
+        stack.files.add(doc.file_id)
     with TestClient(app) as client:
         job = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1", "d2"]}, headers=_auth()
@@ -755,6 +758,7 @@ def test_cancelling_answers_200_with_the_cancelled_job() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         job = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
@@ -771,6 +775,7 @@ def test_cancelling_a_finished_job_is_409() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         job = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
@@ -788,6 +793,7 @@ def test_reindexing_a_document_that_is_still_indexing_is_409() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1, status=IndexStatus.INDEXING)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()
@@ -829,6 +835,7 @@ def test_an_idempotent_replay_does_not_rebuild_twice() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     headers = {**_auth(), "Idempotency-Key": "retry-1"}
     body = {"document_ids": ["d1"]}
     with TestClient(app) as client:
@@ -842,6 +849,7 @@ def test_an_unknown_job_is_404_and_another_tenants_job_is_too() -> None:
     app, stack = _make_app()
     doc = seed_document(document_id="d1", workspace_id=_W1)
     stack.repository.rows[doc.id] = doc
+    stack.files.add(doc.file_id)
     with TestClient(app) as client:
         job = client.post(
             "/api/v1/knowledge/reindex", json={"document_ids": ["d1"]}, headers=_auth()

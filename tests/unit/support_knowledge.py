@@ -635,7 +635,7 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
             get_document=GetDocument(repository),
             search=retrieval,
             index_file=IndexFileService(IndexFile(repository, files), outbox, uow),
-            reindex=ReindexService(ReindexDocuments(repository, jobs, vectors), outbox, uow),
+            reindex=ReindexService(ReindexDocuments(repository, jobs, vectors, files), outbox, uow),
             get_job=GetReindexJob(jobs),
             cancel_job=CancelReindexJobService(CancelReindexJob(repository, jobs), outbox, uow),
             # No `BuildSummary` — the API bundle cannot run the pipeline, the

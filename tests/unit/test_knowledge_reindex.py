@@ -9,6 +9,8 @@ What these pin, against 06 §7 INV-K3/K4/K5:
 * the old document's vector points are deleted, and deleted BEFORE its rows;
 * every target is validated before the first point is deleted, so a request
   naming one bad id destroys nothing;
+* a document whose FILE has been deleted is refused, so no rebuild can put a
+  removed file's content back into retrieval;
 * only terminal documents may be re-indexed;
 * the job stores no progress — moving a document forward moves the job's
   numbers, with nothing written to the job;
@@ -72,9 +74,21 @@ def _job(*items: ReindexItem, cancelled_at: datetime | None = None) -> ReindexJo
     )
 
 
-def _seed(stack: KnowledgeStack, document_id: str, **kwargs: object) -> None:
+def _seed(
+    stack: KnowledgeStack, document_id: str, *, readable: bool = True, **kwargs: object
+) -> None:
+    """Seed a document and, by default, the readable FILE behind it.
+
+    ``readable=True`` is the ordinary state and the default for that reason:
+    a document exists because a file was indexed. ``ReindexDocuments`` now
+    refuses to rebuild a document whose file is gone, so the one test that
+    wants that refusal says ``readable=False`` and every other test keeps
+    describing the case it was written for.
+    """
     document = seed_document(document_id=document_id, workspace_id=_W1, **kwargs)  # type: ignore[arg-type]
     stack.repository.rows[document_id] = document
+    if readable:
+        stack.files.add(document.file_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -292,6 +306,50 @@ async def test_a_document_that_is_not_terminal_cannot_be_reindexed(status: Index
         await stack.knowledge.reindex.start(ctx, document_ids=["doc-busy"])
 
     assert stack.repository.purged == []
+
+
+async def test_a_document_whose_file_was_deleted_cannot_be_reindexed() -> None:
+    """The gap ``framework/di/file_deletion.py`` cannot close from its side.
+
+    That cascade marks the file row and purges the corpus in two SEPARATE
+    transactions and says so out loud; in between, a document over a deleted
+    file exists. A rebuild started from there puts the removed file's content
+    back into retrieval under its own name — and as a NEW document, which the
+    cascade's own retry was never told about.
+
+    404 and not 409: what the caller is being told is that there are no bytes
+    to index, which is what ``IndexFile`` answers to the same question through
+    the same port. Which of "deleted, quarantined, unknown, still uploading"
+    is true of a file they cannot read is a disclosure, not a diagnosis.
+    """
+    stack, ctx = build_knowledge(), _ctx()
+    _seed(stack, "doc-orphan", file_id="file-deleted", readable=False)
+    stack.repository.refs["doc-orphan"] = [VectorRef("c", "p1")]
+
+    with pytest.raises(NotFoundError):
+        await stack.knowledge.reindex.start(ctx, document_ids=["doc-orphan"])
+
+    # The refusal lands in the SAME validation phase an unknown id does —
+    # before the first point goes — so it destroys nothing either.
+    assert stack.vectors.deleted == []
+    assert stack.repository.purged == []
+    assert stack.repository.rows["doc-orphan"].status is IndexStatus.INDEXED
+
+
+async def test_one_deleted_file_in_a_batch_destroys_nothing_at_all() -> None:
+    """The batch rule ``test_an_unknown_id_destroys_nothing_at_all`` pins, at
+    the file guard: one bad target must not half-rebuild the good ones."""
+    stack, ctx = build_knowledge(), _ctx()
+    _seed(stack, "doc-good", file_id="file-live")
+    _seed(stack, "doc-orphan", file_id="file-deleted", readable=False)
+    stack.repository.refs["doc-good"] = [VectorRef("c", "p1")]
+
+    with pytest.raises(NotFoundError):
+        await stack.knowledge.reindex.start(ctx, document_ids=["doc-good", "doc-orphan"])
+
+    assert stack.vectors.deleted == []
+    assert stack.repository.purged == []
+    assert "doc-good" in stack.repository.rows
 
 
 async def test_an_empty_request_is_rejected() -> None:

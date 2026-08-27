@@ -656,6 +656,34 @@ class ReindexDocuments:
     deleting a row a worker is mid-pipeline on would make its ``add_chunks``
     fail against ``fk_chunk_doc`` and its event redeliver until the DLQ ate it.
 
+    **The file behind every target must still be READABLE.** A document
+    whose file was deleted is not a rebuild candidate: rebuilding its corpus
+    puts that file's content back into retrieval under its own name, which is
+    the exact defect ``framework/di/file_deletion.py`` exists to prevent,
+    arriving through the one door that cascade does not watch.
+
+    That door is still open WITH the cascade in place, which is why the check
+    belongs here rather than being left to it. ``DeleteFileService`` marks the
+    row and purges the corpus in SEPARATE transactions (R2 -- the vector store
+    is network I/O and may not run under an open one), and its docstring
+    accepts out loud that an interrupted run "leaves a deleted file with part
+    of its corpus still standing". In that window a document over a
+    soft-deleted file exists, and without this guard a re-index rebuilds it --
+    and unlike the corpus a re-run of ``DELETE /files/{id}`` repairs, the
+    rebuild is a NEW document over the same file, which that re-run does find
+    (``purge_file`` deletes by ``file_id``) but only if someone runs it again
+    knowing it happened.
+
+    ``IndexFile`` asks this same question of this same port for this same
+    reason -- there are no bytes to index -- and the asymmetry between the two
+    was a gap rather than a decision. The read is ONE bulk ``names_for_files``
+    and not ``get_readable`` per target: 50 is the declared ceiling here, and
+    the per-item shape is precisely the N+1 the corpus walks already removed
+    (branch review §2). Absence from that mapping carries what ``None``
+    carries there -- unknown, deleted, quarantined or still uploading,
+    undistinguished -- so this raises ``NotFoundError`` without diagnosing
+    which, exactly as ``IndexFile`` does.
+
     Split into ``prepare`` (reads + the vector deletes) and ``commit`` (the
     row writes) for the reason ``IndexRegisteredDocument`` is: the vector
     store is a network round trip and must not run under an open database
@@ -668,10 +696,12 @@ class ReindexDocuments:
         documents: DocumentRepository,
         jobs: ReindexJobRepository,
         vectors: HybridVectorStore,
+        files: ReadableFiles,
     ) -> None:
         self._documents = documents
         self._jobs = jobs
         self._vectors = vectors
+        self._files = files
 
     async def prepare(self, ctx: ExecutionContext, *, document_ids: Sequence[Uuid]) -> ReindexPlan:
         ids = _unique_ids(document_ids)
@@ -714,6 +744,18 @@ class ReindexDocuments:
                     ),
                 )
             )
+
+        # The file behind every target must still be readable -- ONE bulk
+        # read for up to `_MAX_REINDEX` of them, for the reason the corpus
+        # walks stopped asking per document (branch review §2). Absence is
+        # deliberately not diagnosed (`ports/files.ReadableFiles`): deleted,
+        # quarantined, unknown and still-uploading are one answer here.
+        readable = await self._files.names_for_files(
+            ctx, [target.source.file_id for target in targets]
+        )
+        for target in targets:
+            if target.source.file_id not in readable:
+                raise NotFoundError("file not found")
 
         # Every target is validated BEFORE the first point is deleted: a
         # request that names one bad id destroys nothing at all, rather than

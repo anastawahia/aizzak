@@ -1258,7 +1258,9 @@ def _build_knowledge(
             max_corpus_names=max_corpus_names,
         ),
         index_file=IndexFileService(IndexFile(documents, files), outbox, tenant_session),
-        reindex=ReindexService(ReindexDocuments(documents, jobs, vectors), outbox, tenant_session),
+        reindex=ReindexService(
+            ReindexDocuments(documents, jobs, vectors, files), outbox, tenant_session
+        ),
         get_job=GetReindexJob(jobs),
         cancel_job=CancelReindexJobService(
             CancelReindexJob(documents, jobs), outbox, tenant_session
