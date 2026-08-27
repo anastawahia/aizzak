@@ -13,8 +13,10 @@ from app.modules.knowledge.domain.tables import (
     ChunkParent,
     ExplodedTable,
     ParentedChunkText,
+    _header_line,
     collapse_parent_runs,
     explode_table,
+    placeholder_header,
     row_to_sentence,
 )
 
@@ -395,3 +397,69 @@ def test_collapse_parent_runs_writes_an_interrupted_parent_once() -> None:
     rows = [_under(parent, "a"), _leaf("table row"), _under(parent, "b")]
 
     assert collapse_parent_runs(rows) == ["page body", "table row"]
+
+
+# --------------------------------------------------------------------------- #
+# د-1 (reworded): a `Column_N` placeholder is a NAME to drop, not a pair       #
+# --------------------------------------------------------------------------- #
+def test_a_placeholder_header_renders_its_value_bare() -> None:
+    """THE test د-1 was rewritten around (fidelity audit §4-ج-4).
+
+    `Column_2` is not a column name -- it is `pdf_tables._headers_and_data`
+    recording that the header cell was blank. The value beside it is ordinary
+    content and frequently the answer: 62 chunks of exactly this shape were
+    measured in the corpus. So the label goes and the value stays.
+
+    د-1 as WRITTEN said to add `Column_\\d+` to `_NOISE_HEADERS`, and
+    `row_to_sentence` drops a noise column's value along with its name -- which
+    would have deleted "Human Machine Interface" in order to tidy away the two
+    words in front of it.
+    """
+    sentence = row_to_sentence(
+        {"Definitions and Abbreviations": "HMI", "Column_2": "Human Machine Interface"}
+    )
+
+    assert sentence == "Definitions and Abbreviations: HMI; Human Machine Interface"
+    assert "Column_2" not in sentence
+    assert "Human Machine Interface" in sentence
+
+
+def test_a_placeholder_header_is_not_treated_as_a_noise_header() -> None:
+    """The two rules are different rules, and this is the assertion that keeps
+    them from being collapsed back into one. A NOISE header takes its value
+    with it (`No.: 7` is noise in both halves); a PLACEHOLDER takes only
+    itself."""
+    sentence = row_to_sentence({"No.": "7", "Column_1": "Torque wrench", "Qty": "2"})
+
+    assert sentence == "Torque wrench; Qty: 2"
+
+
+def test_a_placeholder_name_is_dropped_from_the_header_only_parent() -> None:
+    """In a header-only parent there is no value beside the placeholder to
+    keep, so it goes entirely -- and a parent of nothing but placeholders is
+    honestly empty rather than a line reading `Column_1; Column_2`, which
+    describes nothing and is retrieved by nothing."""
+    assert _header_line(["Column_1", "Rating", "Column_3"]) == "Rating"
+    assert _header_line(["Column_1", "Column_2"]) == ""
+
+
+def test_only_the_exact_placeholder_shape_is_recognised() -> None:
+    """A real column a person named is never touched. The pattern is anchored
+    at both ends, so a name that merely CONTAINS the placeholder spelling --
+    and `Column` on its own, which is a perfectly ordinary header -- keeps its
+    label."""
+    assert row_to_sentence({"Column": "A"}) == "Column: A"
+    assert row_to_sentence({"Column_2A": "A"}) == "Column_2A: A"
+    assert row_to_sentence({"Sub Column_2": "A"}) == "Sub Column_2: A"
+    assert row_to_sentence({"Column_2": "A"}) == "A"
+    # Whitespace-folded like every other header predicate here.
+    assert row_to_sentence({" Column_10 ": "A"}) == "A"
+
+
+def test_the_parser_mints_placeholders_through_the_domain_vocabulary() -> None:
+    """`placeholder_header` is the single spelling, and the module that
+    RECOGNISES one is the module that formats it. Two independent f-strings is
+    the drift that would turn a placeholder back into a column somebody appears
+    to have named."""
+    assert placeholder_header(3) == "Column_3"
+    assert row_to_sentence({placeholder_header(3): "value"}) == "value"

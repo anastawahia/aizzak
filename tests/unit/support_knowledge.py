@@ -148,6 +148,16 @@ class InMemoryDocumentRepository:
             return None
         return row
 
+    async def count(self, ctx: ExecutionContext, *, space_id: str | None) -> int:
+        # `list`'s predicate without its keyset (ب-2) -- same tenant, same
+        # optional space narrowing, every lifecycle status.
+        return sum(
+            1
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and (space_id is None or row.space_id == space_id)
+        )
+
     async def list(
         self,
         ctx: ExecutionContext,

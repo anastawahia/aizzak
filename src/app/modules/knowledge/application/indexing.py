@@ -95,7 +95,7 @@ from app.modules.knowledge.domain.chunking import (
     semantic_boundaries,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
-from app.modules.knowledge.domain.sparse import build_sparse_terms
+from app.modules.knowledge.domain.sparse import Bm25Params, build_document_terms
 from app.modules.knowledge.domain.tables import explode_table
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
@@ -149,6 +149,13 @@ _DOCUMENT_GROUP = "document"
 # constant so the application layer does not depend on the framework Settings
 # model (same convention as memory/application/use_cases.py's _MAX_RECALL_K).
 _EMBED_BATCH = 128
+
+# The shipped Okapi parameters, mirroring `SparseSettings`' own defaults so a
+# caller that constructs `IndexDocument` without them indexes identically to
+# one that reads them out of `Settings` (the `embedding_max_input_tokens`
+# precedent immediately below). The numbers and their measurement live in
+# `SparseSettings`; this exists so the default is not a second, drifting set.
+_DEFAULT_BM25 = Bm25Params(k1=1.5, b=0.75, avg_len=32.0)
 
 # P-20 (plan §4 step 13, §3.4) sentence boundaries for Arabic text: the four
 # terminal punctuation marks, a paragraph break, and the dedicated Unicode
@@ -313,9 +320,17 @@ class IndexDocument:
         vectors: HybridVectorStore,
         *,
         embedding_max_input_tokens: int = 512,
+        bm25: Bm25Params = _DEFAULT_BM25,
     ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
+        # §3-ج: Okapi's document-side parameters, resolved ONCE here from
+        # `Settings.sparse` and passed down as a plain value object -- the
+        # `embedding_max_input_tokens` shape exactly (س-24: nothing under
+        # `modules/*` reads `Settings`). The default mirrors
+        # `SparseSettings`', so a caller that omits it indexes identically to
+        # one that passes the shipped numbers.
+        self._bm25 = bm25
         # P-16 (plan §4 step 9, §3.5 + decision س-11): the real token budget
         # is a `Settings` value (the constructor's own default mirrors
         # `EmbeddingServiceSettings.embedding_max_input_tokens`'s default),
@@ -482,7 +497,7 @@ class IndexDocument:
         plan §4 step 12)."""
         result = await self._embeddings.embed([chunk.text for chunk in batch], model, api_key)
         points = [
-            _build_point(ctx, document_id, space_id, chunk, vector)
+            _build_point(ctx, document_id, space_id, chunk, vector, self._bm25)
             for chunk, vector in zip(batch, result.vectors, strict=True)
         ]
         await self._vectors.upsert(collection, points)
@@ -981,9 +996,10 @@ def _build_point(
     space_id: Uuid | None,
     chunk: ChunkToIndex,
     vector: list[float],
+    bm25: Bm25Params,
 ) -> VectorPoint:
     point_id = chunk_point_id(document_id, chunk.seq)
-    terms = build_sparse_terms(chunk.text)
+    terms = build_document_terms(chunk.text, bm25)
     sparse = SparseVector(indices=list(terms.indices), values=list(terms.values))
     payload = _payload(ctx, document_id, space_id, point_id, chunk)
     return VectorPoint(id=point_id, vector=vector, payload=payload, sparse=sparse)

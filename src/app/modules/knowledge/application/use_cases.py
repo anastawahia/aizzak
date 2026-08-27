@@ -1622,11 +1622,25 @@ async def _named_documents(
 
     **``cap`` bounds the NAMES collected, never the documents counted.**
     ``total`` is the full corpus count whatever the cap is — that number is
-    the whole reason a header can honestly say "and N more" — and a page
-    reached once the cap is full asks for no names at all: it is walked to
-    finish counting and nothing else. ``None`` means uncapped, which is what
-    a resolver needs (a cap there would turn a refusal-to-guess into a
-    confident answer computed over a partial corpus).
+    the whole reason a header can honestly say "and N more". ``None`` means
+    uncapped, which is what a resolver needs (a cap there would turn a
+    refusal-to-guess into a confident answer computed over a partial corpus).
+
+    **Once the cap is full the walk STOPS and asks ``count`` instead**
+    (branch review ب-2). It used to keep paging to the end of the corpus for
+    ``total`` alone: one round trip per ``_LIST_PAGE_SIZE`` documents,
+    hydrating whole rows nobody would look at, to arrive at a single integer.
+    One ``COUNT(*)`` IS that integer, and the pages in between are never read.
+    The count runs only when pages actually REMAIN — a cap that fills on the
+    last page returns the number already walked, which is exact and free — so
+    the common small corpus pays nothing for this at all.
+
+    **``count`` may disagree with the walk by a row, and that is the honester
+    number.** They are two queries, so a document registered between them
+    lands in one and not the other. But the walk was never atomic either (it
+    spans one query per page), the old code had exactly the same race spread
+    over more round trips, and of two answers taken at different instants the
+    LATER one is the one a header should show.
 
     **Presence in the name mapping is the readability answer**, exactly as a
     non-``None`` ``get_readable`` view was: a document whose file is gone
@@ -1635,7 +1649,10 @@ async def _named_documents(
     (``ListFileCandidates``).
     """
     named: list[tuple[Uuid, str]] = []
-    total = 0
+    # `walked` and not `total`: it is the count of rows this loop actually
+    # SAW, which is the total only when the loop reaches the end of the
+    # corpus. The ب-2 short-circuit below returns a `count` instead.
+    walked = 0
     cursor: str | None = None
     while True:
         page = await documents.list(ctx, space_id=space_id, limit=_LIST_PAGE_SIZE, cursor=cursor)
@@ -1649,19 +1666,27 @@ async def _named_documents(
             else {}
         )
         for document in page.data:
-            total += 1
+            walked += 1
             if cap is not None and len(named) >= cap:
-                # Counting continues; nothing else does. `continue` rather
-                # than `break`, because `total` is the full corpus count and
-                # the pages after this one are still walked for it.
+                # Counting continues; nothing else does. `continue` and not
+                # `break`, because THIS page's remaining rows are already in
+                # hand and `walked` has to include them for the exact-total
+                # case below (a cap that fills on the last page).
                 continue
             name = names.get(document.file_id)
             if name is not None:
                 named.append((document.id, name))
         cursor = page.next_cursor
         if cursor is None:
-            break
-    return named, total
+            # The corpus ended: `walked` IS the total, exactly, at no extra
+            # cost. Every uncapped walk and every corpus that fits under the
+            # cap leaves here, so neither pays for the query below.
+            return named, walked
+        if cap is not None and len(named) >= cap:
+            # Pages remain and not one name on them would be kept. The only
+            # thing still unknown is `total` — so ask for it (ب-2) instead of
+            # hydrating the rest of the corpus to arrive at the same integer.
+            return named, await documents.count(ctx, space_id=space_id)
 
 
 class ListDocumentNames:

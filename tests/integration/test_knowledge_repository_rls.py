@@ -1465,3 +1465,74 @@ async def test_parent_texts_for_chunk_ids_reports_is_complete_for_both_rungs(
     assert full_hit.text == "the whole small table"
     # A parent-less chunk stays ABSENT — never a placeholder entry.
     assert orphan.vector_ref.point_id not in resolved
+
+
+# --------------------------------------------------------------------------- #
+# `count`: the corpus walk's short-circuit (ب-2)                              #
+# --------------------------------------------------------------------------- #
+# The port's rule is that `count` and `list` count ONE population -- same
+# tenant, same optional space narrowing, every lifecycle status. A divergence
+# raises nothing: the corpus header would just promise "and N more" over rows
+# the next page does not have. So each test below asserts the number against
+# the LISTING itself rather than against a literal, which is the only form of
+# the assertion that a later change to `list` cannot quietly outgrow.
+async def test_count_matches_what_list_actually_pages_over(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """Every lifecycle status is counted, because every one of them is listed
+    -- a `pending` document is part of the corpus a client was told it has."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    for status in IndexStatus:
+        await repo_knowledge.add(ctx, _document(workspace_id=ws, status=status))
+
+    listed = await repo_knowledge.list(ctx, space_id=None, limit=100, cursor=None)
+
+    assert await repo_knowledge.count(ctx, space_id=None) == len(listed.data)
+    assert await repo_knowledge.count(ctx, space_id=None) == len(IndexStatus)
+
+
+async def test_count_narrows_to_one_space_exactly_as_list_does(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """`space_id=None` means "this workspace's", never "the spaceless ones" --
+    the same rule `list` carries, and the one a header spanning the wrong
+    population would break silently."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    space_a, space_b = new_uuid7(), new_uuid7()
+    for _ in range(3):
+        await repo_knowledge.add(ctx, _document(workspace_id=ws, space_id=space_a))
+    await repo_knowledge.add(ctx, _document(workspace_id=ws, space_id=space_b))
+    # Spaceless, and therefore in the workspace's count but in neither space's.
+    await repo_knowledge.add(ctx, _document(workspace_id=ws, space_id=None))
+
+    assert await repo_knowledge.count(ctx, space_id=space_a) == 3
+    assert await repo_knowledge.count(ctx, space_id=space_b) == 1
+    assert await repo_knowledge.count(ctx, space_id=None) == 5
+
+
+async def test_count_cannot_see_another_tenants_documents(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """A space id is not a secret -- two workspaces may hold the same value --
+    so the space narrowing is an axis INSIDE the tenant condition and never a
+    replacement for it. RLS and the explicit `workspace_id` both say so."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    shared_space = new_uuid7()
+    await repo_knowledge.add(_ctx(ws_a), _document(workspace_id=ws_a, space_id=shared_space))
+    for _ in range(4):
+        await repo_knowledge.add(_ctx(ws_b), _document(workspace_id=ws_b, space_id=shared_space))
+
+    assert await repo_knowledge.count(_ctx(ws_a), space_id=shared_space) == 1
+    assert await repo_knowledge.count(_ctx(ws_a), space_id=None) == 1
+
+
+async def test_count_over_an_empty_corpus_is_zero_not_an_error(
+    repo_knowledge: SqlDocumentRepository,
+) -> None:
+    """`COUNT(*)` over no rows is a row containing zero, so `scalar_one` has
+    something to return -- unlike the aggregate-less reads next to it, this one
+    never comes back empty."""
+    assert await repo_knowledge.count(_ctx(new_uuid7()), space_id=None) == 0
+    assert await repo_knowledge.count(_ctx(new_uuid7()), space_id=new_uuid7()) == 0

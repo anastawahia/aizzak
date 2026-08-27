@@ -1920,3 +1920,276 @@ async def test_extractor_output_file_name_reaches_the_built_qdrant_payload() -> 
     point = vectors.points[outcome.chunks[0].chunk_id]
     payload: Json = point.payload
     assert payload["file_name"] == "finance-quarterly-notes.txt"
+
+
+# --------------------------------------------------------------------------- #
+# د-3: the running header/footer band, stripped before camelot parses         #
+# --------------------------------------------------------------------------- #
+_RUNNING_ROWS = [
+    ("Name", "Dept", "Salary"),
+    ("Ali", "Finance", "5000"),
+    ("Sara", "HR", "6200"),
+    ("Omar", "IT", "7100"),
+]
+
+
+def _running_header_pdf(
+    *,
+    pages: int = 3,
+    header: Callable[[int], str] | None = lambda n: f"ACME Handbook   Page {n + 1} of 3",
+    footer: Callable[[int], str] | None = lambda n: f"Confidential  -  {n + 1}",
+    table_y: float = 100.0,
+    page_size: Callable[[int], tuple[float, float]] | None = None,
+) -> bytes:
+    """A multi-page PDF whose running header sits close enough above the table
+    for camelot's `stream` flavour to absorb it -- which is the whole
+    phenomenon د-3 addresses, and which a header parked far up the page does
+    not reproduce."""
+    doc = fitz.open()
+    for n in range(pages):
+        size = page_size(n) if page_size is not None else (595.0, 842.0)
+        page = doc.new_page(width=size[0], height=size[1])
+        if header is not None:
+            page.insert_text((72, 60), header(n), fontsize=9)
+        if footer is not None:
+            page.insert_text((72, size[1] - 42), footer(n), fontsize=9)
+        y = table_y
+        for row in _RUNNING_ROWS:
+            for x, cell in zip(_TABLE_COLUMN_X, row, strict=False):
+                page.insert_text((x, y), cell, fontsize=11)
+            y += 22
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_a_running_page_header_no_longer_becomes_the_table_header() -> None:
+    """THE د-3 test, and the root of the `Column_N` epidemic.
+
+    `stream` infers a table's columns from whitespace gaps in the text it is
+    given. A running page header above a table joins that text and DISPLACES
+    the real header row into the data, and `_headers_and_data` then mints
+    `Column_N` for the blank cells beside it -- 37.3% of the corpus's chunks
+    carry one.
+
+    Measured on this exact fixture before the fix: headers
+    `['ACME Handbook   Page 1 of 3', 'Column_2', 'Column_3']`, 17 rows across
+    the three pages. After: the real headers, and the header lines gone from
+    the data entirely.
+    """
+    chunks, _regions = pdf_tables.parse_pdf_tables(_running_header_pdf())
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["headers"] == ["Name", "Dept", "Salary"]
+    payload = json.loads(chunks[0].text)
+    assert not any(h.startswith("Column_") for h in payload["headers"])
+    assert "ACME Handbook" not in chunks[0].text
+    assert "Confidential" not in chunks[0].text
+
+
+def test_the_running_band_is_measured_at_the_furniture_and_not_past_it() -> None:
+    """The two cuts land on the furniture's own edges, in fitz's top-left
+    coordinates: the header line ends at y≈62.7 and the footer begins at
+    y≈790.3 on an A4 page, and the body between them is untouched."""
+    band = pdf_tables._running_band(_running_header_pdf())
+
+    assert band is not None
+    header_cut, footer_cut = band
+    assert 55.0 < header_cut < 70.0
+    assert 780.0 < footer_cut < 800.0
+
+
+def test_a_repeated_table_header_is_not_mistaken_for_page_furniture() -> None:
+    """The gap rule, and the reason it exists.
+
+    Repetition ALONE cannot tell a running header from body text: this
+    document's `Name Dept Salary` row sits in the top margin and repeats on
+    every page, exactly like furniture. A repetition-only guard cut it off --
+    the precise harm د-3 exists to prevent, committed by د-3's own guard.
+
+    What separates them is typographic: furniture stands alone, a table header
+    touches its first data row (6.9pt here against the header/body 25.5pt). So
+    a document with no furniture yields no band at all, and its table keeps its
+    header.
+    """
+    data = _running_header_pdf(header=None, footer=None)
+
+    assert pdf_tables._running_band(data) is None
+
+    chunks, _regions = pdf_tables.parse_pdf_tables(data)
+    assert chunks[0].metadata["headers"] == ["Name", "Dept", "Salary"]
+
+
+def test_a_page_number_does_not_hide_the_repetition_it_sits_in() -> None:
+    """ "Page 1 of 3" and "Page 2 of 3" are the SAME running header. Folding
+    digit runs is what lets the one part of a header that differs on every page
+    stop concealing the fact that the rest of it does not."""
+    varies_only_by_number = _running_header_pdf(header=lambda n: f"Section 4 -- page {n + 1}")
+    varies_by_words = _running_header_pdf(
+        header=lambda n: f"Chapter {('Alpha', 'Beta', 'Gamma')[n]}"
+    )
+
+    assert pdf_tables._running_band(varies_only_by_number) is not None
+    # Three genuinely different lines are three headings, not one header --
+    # and cutting them would follow the document's content, not its furniture.
+    band = pdf_tables._running_band(varies_by_words)
+    assert band is None or band[0] == 0.0
+
+
+def test_under_three_pages_no_band_is_claimed() -> None:
+    """Two pages sharing a line is a coincidence with one degree of freedom.
+    A short PDF keeps exactly the behaviour it had before د-3 -- including,
+    honestly, the pollution."""
+    assert pdf_tables._running_band(_running_header_pdf(pages=2)) is None
+    assert pdf_tables._running_band(_running_header_pdf(pages=1)) is None
+
+
+def test_mixed_page_sizes_are_left_alone() -> None:
+    """One band is computed for the whole document, so a page of a different
+    size would have it land somewhere else entirely. Cropping nothing is the
+    honest answer."""
+    data = _running_header_pdf(
+        pages=4, page_size=lambda n: (842.0, 595.0) if n == 2 else (595.0, 842.0)
+    )
+
+    assert pdf_tables._running_band(data) is None
+
+
+def test_a_pdf_with_no_running_furniture_is_parsed_exactly_as_before() -> None:
+    """د-3 is a strip, never a rewrite: when there is nothing to strip, the
+    original bytes go to camelot untouched."""
+    plain = _table_pdf_bytes([_SALARY_ROWS, _SALARY_ROWS, _SALARY_ROWS])
+
+    assert pdf_tables._running_band(plain) is None
+
+    chunks, regions = pdf_tables.parse_pdf_tables(plain)
+    assert chunks[0].metadata["headers"] == ["Name", "Dept", "Salary"]
+    assert list(regions) == [1, 2, 3]
+
+
+def test_stripping_the_band_leaves_page_geometry_alone() -> None:
+    """Redaction, not a CropBox. Every coordinate produced downstream -- the
+    `TableRegion` bboxes the text pass avoids, and the caption lookup's fitz
+    rects -- is in original page coordinates, and moving the origin under them
+    would silently misplace all of them at once."""
+    data = _running_header_pdf()
+    band = pdf_tables._running_band(data)
+    assert band is not None
+
+    stripped = pdf_tables._without_running_band(data, band)
+    assert stripped is not None
+    with (
+        fitz.open(stream=data, filetype="pdf") as before,
+        fitz.open(stream=stripped, filetype="pdf") as after,
+    ):
+        assert before.page_count == after.page_count
+        assert before[0].rect == after[0].rect
+        assert "ACME Handbook" in before[0].get_text()
+        assert "ACME Handbook" not in after[0].get_text()
+        # The body is exactly as it was.
+        assert "Finance" in after[0].get_text()
+
+
+# --------------------------------------------------------------------------- #
+# د-4's residue: a stray leader row inside a table that is NOT a ToC          #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # A leader: a label, then dots running out to a page number.
+        ("1. Intro ........", True),
+        ("3.9 Mine Auxiliary Transformer ..........", True),
+        # A PLACEHOLDER: the dots ARE the cell. Dropping its row would delete
+        # the real values beside it -- the trade `Column_N` failed (§4-هـ-1).
+        ("..........", False),
+        ("   ............  ", False),
+        # Under six dots is an ellipsis or a decimal chain, not a leader.
+        ("Ellipsis ...", False),
+        ("Rev 1.2.3.4.5.6", False),
+        # Ordinary content.
+        ("Cable", False),
+        ("", False),
+    ],
+)
+def test_is_leader_cell_separates_a_leader_from_a_dotted_placeholder(
+    value: str, expected: bool
+) -> None:
+    assert pdf_tables._is_leader_cell(value) is expected
+
+
+def test_drop_leader_rows_takes_the_stray_and_leaves_the_table() -> None:
+    """س-30's guard judges a whole frame and drops it whole -- right for a real
+    ToC, and blind to one or two leader rows inside a table that is otherwise
+    real. At two rows in thirty the ratio cannot reach them without also
+    deleting the twenty-eight."""
+    df = pd.DataFrame(
+        [
+            ["Cable", "120"],
+            ["3.9 Mine Auxiliary Transformer .........", "47"],
+            ["Switch", "340"],
+            ["Panel", "980"],
+        ],
+        columns=["Item", "Price"],
+    )
+
+    kept, dropped = pdf_tables._drop_leader_rows(df)
+
+    assert dropped == 1
+    assert list(kept["Item"]) == ["Cable", "Switch", "Panel"]
+    # Re-indexed, so the frame that reaches `_frame_to_rows` is contiguous.
+    assert list(kept.index) == [0, 1, 2]
+
+
+def test_drop_leader_rows_spares_a_row_whose_dots_are_a_placeholder_cell() -> None:
+    """The one case that makes this guard worth having a narrower test than
+    the ratio's: `Cable | .......... | 120` is a product, a price, and a blank
+    between them."""
+    df = pd.DataFrame(
+        [["Cable", "..........", "120"], ["Switch", "spare", "340"]],
+        columns=["Item", "Notes", "Price"],
+    )
+
+    kept, dropped = pdf_tables._drop_leader_rows(df)
+
+    assert dropped == 0
+    assert len(kept) == 2
+
+
+def test_drop_leader_rows_is_a_no_op_on_a_clean_table() -> None:
+    df = pd.DataFrame([["Cable", "120"], ["Switch", "340"]], columns=["Item", "Price"])
+
+    kept, dropped = pdf_tables._drop_leader_rows(df)
+
+    assert dropped == 0
+    assert kept is df
+
+
+def test_drop_leader_rows_on_an_empty_frame_does_not_raise() -> None:
+    kept, dropped = pdf_tables._drop_leader_rows(pd.DataFrame())
+
+    assert dropped == 0
+    assert kept.empty
+
+
+def test_a_stray_leader_row_is_dropped_from_a_real_table_end_to_end() -> None:
+    """The ToC guard runs FIRST and this runs after it, so what reaches here is
+    by definition not a table of contents -- and the log line and reasoning of
+    س-30's guard are not replaced by a row-by-row emptying."""
+    data = _table_pdf_bytes(
+        [
+            [
+                ("Item", "Price"),
+                ("Cable", "120"),
+                ("2. Scope ...........", "8"),
+                ("Switch", "340"),
+                ("Panel", "980"),
+            ]
+        ]
+    )
+
+    chunks, _regions = pdf_tables.parse_pdf_tables(data)
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["total_rows"] == 3
+    assert "2. Scope" not in chunks[0].text
+    assert "Cable" in chunks[0].text

@@ -190,6 +190,7 @@ from app.modules.knowledge.application.event_mapping import (
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.summarization import SummarizeDocument
 from app.modules.knowledge.application.use_cases import BuildSummary, IndexRegisteredDocument
+from app.modules.knowledge.domain.sparse import Bm25Params
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
 from app.modules.knowledge.ports.repository import DocumentRepository
 from app.modules.knowledge.ports.summarization import SUMMARIZE_CAPABILITY, ResolvedSummarizer
@@ -832,6 +833,16 @@ async def build_knowledge_worker_from_env() -> tuple[
         embeddings,
         vectors,
         embedding_max_input_tokens=settings.embedding_service.embedding_max_input_tokens,
+        # §3-ج -- Okapi's document-side parameters, from `Settings` for the
+        # same reason the token budget above is: a deployment fact, resolved
+        # once at the composition edge and handed down as a plain value.
+        # A change here does not reach documents already indexed;
+        # `PIPELINE_VERSION` is what does.
+        bm25=Bm25Params(
+            k1=settings.sparse.bm25_k1,
+            b=settings.sparse.bm25_b,
+            avg_len=settings.sparse.bm25_avg_len,
+        ),
     )
 
     # Step 15 -- the SAME Vault + MinIO wiring `CompositionRoot` uses, so

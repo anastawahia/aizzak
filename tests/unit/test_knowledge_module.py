@@ -322,6 +322,12 @@ class _FakeDocumentRepository:
         # `parent_texts_for_chunk_ids` resolve specific (leaf) chunk ids to
         # a `ParentChunkText` -- see that method's own docstring.
         self.chunk_parent_texts: dict[str, ParentChunkText] = {}
+        # ب-2: how many PAGES the corpus walk actually asked for, and how many
+        # times it took the `count` short-circuit instead of paging on. The
+        # whole point of that change is round trips, so a test that does not
+        # count them cannot see it.
+        self.list_calls = 0
+        self.count_calls = 0
 
     async def get(self, ctx: ExecutionContext, doc_id: str) -> Document | None:
         doc = self.docs.get(doc_id)
@@ -374,6 +380,19 @@ class _FakeDocumentRepository:
             if chunk_id in wanted
         }
 
+    async def count(self, ctx: ExecutionContext, *, space_id: str | None) -> int:
+        # `list`'s predicate without its keyset -- the corpus walk reads THIS
+        # once its cap is full instead of paging to the end of the corpus
+        # (ب-2), and `None` still means "this workspace's", not "the
+        # spaceless ones".
+        self.count_calls += 1
+        return sum(
+            1
+            for doc in self.docs.values()
+            if doc.workspace_id == ctx.workspace_id
+            and (space_id is None or doc.space_id == space_id)
+        )
+
     async def ids_for_files(self, ctx: ExecutionContext, file_ids: Sequence[str]) -> Sequence[str]:
         # The real predicate: same workspace, `file_id` in the caller's list.
         # A file with no document contributes nothing, which is what makes a
@@ -397,6 +416,7 @@ class _FakeDocumentRepository:
         # walk needs THIS, not `ids_for_files`; newest-first keyset on `id`
         # through the real codec, the `InMemoryDocumentRepository` precedent
         # (`tests/unit/support_knowledge.py`).
+        self.list_calls += 1
         items = sorted(
             (
                 doc
@@ -1830,9 +1850,10 @@ async def test_file_candidates_read_names_in_bulk_not_once_per_document() -> Non
 async def test_the_corpus_header_reads_names_once_and_stops_at_its_cap() -> None:
     """The header's walk pays for the names it SHOWS and nothing more.
 
-    Its cap fills inside the first page, so the pages after it are walked for
-    `total` alone and ask for no names at all — one name read for a corpus of
-    any size, against `D`-capped-at-50 before.
+    Its cap fills inside the FIRST page, so the walk stops there: one page,
+    one name read, and one `count` for `total` — for a corpus of any size,
+    against `D`-capped-at-50 name reads before the bulk read and three full
+    pages before ب-2.
     """
     ctx = _ctx("ws1")
     documents, files, size = _big_corpus(pages=2)
@@ -1844,6 +1865,50 @@ async def test_the_corpus_header_reads_names_once_and_stops_at_its_cap() -> None
     # tail is computed from it.
     assert result.total == size
     assert len(files.reads) == 1
+    # THE ب-2 assertion: the two pages after the cap filled were never asked
+    # for. `total` came from one `count`, not from hydrating them.
+    assert documents.list_calls == 1
+    assert documents.count_calls == 1
+
+
+async def test_a_cap_that_fills_on_the_last_page_costs_no_count_at_all() -> None:
+    """ب-2's short-circuit runs only when pages REMAIN.
+
+    The corpus is one page, and the cap fills inside it. There is nothing left
+    to page, so `walked` is already the exact total and asking the database
+    for it again would be a round trip that buys a number we hold.
+    """
+    ctx = _ctx("ws1")
+    documents = _FakeDocumentRepository()
+    names: dict[str, str] = {}
+    for n in range(_LIST_PAGE_SIZE):  # EXACTLY one page: `next_cursor` is None
+        doc_id = _paged_doc_id(n)
+        documents.docs[doc_id] = _document(doc_id=doc_id, file_id=f"file-{n:05d}")
+        names[f"file-{n:05d}"] = f"{n}.pdf"
+    files = _FakeReadableFiles(dict.fromkeys(names), names=names)
+
+    result = await ListDocumentNames(documents, files).execute(ctx, space_id=_SPACE_A, limit=5)
+
+    assert len(result.names) == 5
+    assert result.total == _LIST_PAGE_SIZE
+    assert documents.list_calls == 1
+    assert documents.count_calls == 0
+
+
+async def test_an_uncapped_walk_never_short_circuits_to_count() -> None:
+    """`cap=None` is the resolver's walk: it needs EVERY name, so there is no
+    point at which paging could stop early. `total` stays the number of rows
+    the walk itself saw, and `count` is never called — the short-circuit is
+    guarded on the cap and not merely on "pages remain".
+    """
+    ctx = _ctx("ws1")
+    documents, files, size = _big_corpus(pages=2)
+
+    candidates = await ListFileCandidates(documents, files).execute(ctx, space_id=_SPACE_A)
+
+    assert len(candidates) == size
+    assert documents.list_calls == 3
+    assert documents.count_calls == 0
 
 
 async def test_the_corpus_header_keeps_reading_until_its_cap_is_actually_full() -> None:
@@ -1870,6 +1935,10 @@ async def test_the_corpus_header_keeps_reading_until_its_cap_is_actually_full() 
     # Two pages walked, two name reads: the second one was NOT skipped as
     # "cap already full", because it was not.
     assert len(files.reads) == 2
+    # And for the same reason ب-2's short-circuit never fired: a cap that
+    # never fills is a walk that always runs to the end, where `walked` is
+    # already exact.
+    assert documents.count_calls == 0
 
 
 async def _names_the_old_way(

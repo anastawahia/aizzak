@@ -355,6 +355,68 @@ class UsageSettings(BaseModel):
     )
 
 
+class SparseSettings(BaseModel):
+    """Okapi BM25's shape parameters — the sparse leg's scoring model
+    (rag-fidelity-audit.md §3-ج, closed 2026-08-27).
+
+    **Not in ``RetrievalSettings``, and the distinction is not cosmetic.**
+    Every knob there is read at QUERY time and can be swept by
+    ``tests/eval/run_calibration.py`` against a corpus that never moves.
+    These three are baked into the stored sparse vector at INDEX time
+    (``domain/sparse.py::build_document_terms``), so sweeping them means
+    re-indexing between variants — and filing them next to ``min_bm25_score``
+    would invite exactly the sweep that silently measures nothing.
+    ``PIPELINE_VERSION`` is what makes a change here reach existing documents.
+
+    The query side takes no parameters at all: the whole of ``k1``, ``b`` and
+    ``|d|`` is a property of the document, and Qdrant's ``Modifier.IDF``
+    supplies the only factor neither side computes.
+    """
+
+    model_config = _FROZEN
+
+    # Term-frequency saturation. A term's weight approaches `k1 + 1`, so the
+    # tenth occurrence of a word adds almost nothing over the ninth. Raw `tf`
+    # -- what shipped before -- is `k1 = ∞`, and the audit caught it in the
+    # act: 185 pairs of positive scores in exact whole-number ratios ≥ 2,
+    # `7.800722 = 2 x 3.900361` among them. 1.5 is mid-range of the
+    # 1.2-2.0 the literature settles on.
+    bm25_k1: float = 1.5
+    # Length normalisation, 0 (none, the old behaviour) to 1 (full).
+    # Robertson's 0.75, unmodified: this corpus gave no reason to move it,
+    # and moving an untested default off the field's own value would make a
+    # second thing to explain if the sparse leg misbehaves.
+    bm25_b: float = 0.75
+    # The corpus's mean `|d|` in SPARSE TERMS -- post-tokenisation,
+    # post-stopword, counted with repetition. NOT words and NOT characters:
+    # a 192-word chunk measured 133 terms.
+    #
+    # ⚠️ **MEASURED, and measured on a PROXY.** The 1731-chunk corpus the
+    # audit's §4-و numbers came from was wiped on 2026-08-16, so this was
+    # taken on `docs/hr-no-table.docx` through the real
+    # `parse_docx` -> `chunk_segments` -> `build_sparse_terms` path: 110
+    # prose chunks, mean 34.4 terms (median 29, p90 66, max 114), against a
+    # table-row mean of 8.4. At the audit's measured 45.8% table-row share
+    # that mixes to ~22.5.
+    #
+    # 32.0 and not 22.5 because the error directions are not symmetric.
+    # Too HIGH under-corrects, which is the behaviour that shipped for months;
+    # too LOW over-penalises long prose in a corpus that is nearly half
+    # single-line table rows, which would be a NEW failure. So this sits at
+    # the prose mean, erring toward the known quantity.
+    #
+    # **Re-measure it against the rebuilt corpus, together with
+    # `RetrievalSettings.min_bm25_score`** — they share a scale, and
+    # `Bm25Params.weight` is anchored at 1.0 precisely so that today's floor
+    # keeps the meaning its own sweep measured.
+    #
+    # FastEmbed's 256.0 default is not usable here: a chunk cannot exceed 192
+    # words, so 256 terms is past this pipeline's ceiling and would leave
+    # `|d|/avg_len < 1` for every document in the corpus -- normalisation that
+    # only ever boosts, which is not normalisation.
+    bm25_avg_len: float = 32.0
+
+
 class RetrievalSettings(BaseModel):
     """Hybrid-retrieval tuning (rag-retrieval-plan.md §4 row 18, `P-30`
     `P-40`, decision س-24 = أ).
@@ -784,3 +846,9 @@ class Settings(BaseModel):
     # `max_context_chars`, `max_context_tokens` — deliberately stay in
     # `Limits`, and the Composition Root reads the tuning from both.
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    # rag-fidelity-audit.md §3-ج — Okapi's `k1`/`b` and the length anchor they
+    # normalise against. Beside `retrieval` and deliberately NOT inside it:
+    # these are INDEX-time and reach `IndexDocument`, while everything in
+    # `retrieval` is query-time and reaches `RetrieveContext`. See
+    # `SparseSettings`' own docstring for why the separation is load-bearing.
+    sparse: SparseSettings = Field(default_factory=SparseSettings)

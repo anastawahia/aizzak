@@ -73,6 +73,21 @@ def _fake_nvidia_smi(tmp_path: Path, stdout: str, *, exit_code: int = 0, stderr:
     )
 
 
+def _let_the_baseline_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let two back-to-back ``read()`` calls actually measure against each other.
+
+    The adapter discards a baseline younger than ``_MIN_BASELINE_SECONDS`` and
+    takes its own cold sample instead — and a cold sample reads the fixture
+    twice without it moving in between, which is 0% whatever the fixture says.
+    Whether two calls in a test clear that bar is decided by how long the rest
+    of the first ``read()`` took, and that is dominated by the ``nvidia-smi``
+    subprocess: these tests would pass on a host with a driver and fail on one
+    without, for reasons having nothing to do with the CPU maths they assert.
+    So the bar is lowered rather than raced.
+    """
+    monkeypatch.setattr("app.infrastructure.monitoring.system_stats._MIN_BASELINE_SECONDS", 0.0)
+
+
 def test_the_first_reading_takes_its_own_window_because_it_has_nothing_to_subtract_from(
     tmp_path: Path,
 ) -> None:
@@ -89,7 +104,10 @@ def test_the_first_reading_takes_its_own_window_because_it_has_nothing_to_subtra
     assert stats.cpu.interval_seconds > 0.0
 
 
-def test_a_later_reading_measures_against_the_previous_one(tmp_path: Path) -> None:
+def test_a_later_reading_measures_against_the_previous_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _let_the_baseline_count(monkeypatch)
     proc = _proc(tmp_path)
     source = HostSystemStats(proc_root=proc, cgroup_root=tmp_path / "absent")
     asyncio.run(source.read())
@@ -102,9 +120,10 @@ def test_a_later_reading_measures_against_the_previous_one(tmp_path: Path) -> No
     assert stats.cpu.usage_percent == 25.0
 
 
-def test_iowait_is_not_counted_as_busy(tmp_path: Path) -> None:
+def test_iowait_is_not_counted_as_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A core waiting on a disk is not working; counting it as load is how a
     storage stall gets reported as a CPU problem."""
+    _let_the_baseline_count(monkeypatch)
     proc = _proc(tmp_path)
     source = HostSystemStats(proc_root=proc, cgroup_root=tmp_path / "absent")
     asyncio.run(source.read())

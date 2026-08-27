@@ -1,4 +1,4 @@
-"""The pipeline's output-shape fingerprint (rag-indexing-plan.md §3.6,
+r"""The pipeline's output-shape fingerprint (rag-indexing-plan.md §3.6,
 decision س-14; §6 risk 4).
 
 ``PIPELINE_VERSION`` is a single, hand-raised constant — never derived, never
@@ -120,11 +120,62 @@ The guard's other half -- it keeps the table's REGION after dropping its
 chunk, so the text pass does not hand the same lines back as prose -- writes
 no rows of its own. It is not an independent reason to raise this, but it is
 what makes the deletion above stick rather than merely change shape.
+
+**Why it is now 7** (rag-fidelity-audit.md §4-ج-4, cause 4, 2026-08-27). The
+د-1..د-4 block, which the audit had recorded as one blocked item and which
+decomposed into three landing together. All three rewrite stored rows:
+
+* **د-3 -- the running header/footer band is stripped before camelot parses**
+  (`pdf_tables._running_band` / `_without_running_band`). This is the root of
+  the `Column_N` epidemic and the largest of the three by far. `stream` infers
+  columns from whitespace gaps; a running page header above a table joins that
+  text and DISPLACES the header row, and `_headers_and_data` then mints
+  `Column_N` for every cell of the real header it just pushed into the data.
+  37.3% of the corpus's chunks carry one. Measured on a 3-page fixture, the
+  same table parsed `['ACME Handbook  Page 1 of 3', 'Column_2', 'Column_3']`
+  with 17 rows before and `['Name', 'Dept', 'Salary']` with 9 after: different
+  headers, different row count, therefore different rows in the database.
+
+* **د-1 (REWORDED) -- a `Column_N` header renders its value BARE**
+  (`domain/tables.py::row_to_sentence`). د-1 as written -- add `Column_\d+` to
+  `_NOISE_HEADERS` -- would have deleted the value with the label, and the
+  values behind those labels are answers (62 measured chunks of
+  `"...; Column_2: Human Machine Interface"`). Dropping the invented NAME and
+  keeping the value changes `chunks.text` for every row that carries one.
+
+* **د-4's residue -- a stray leader row inside a table that is not a ToC**
+  (`pdf_tables._drop_leader_rows`). س-30's guard judges a whole frame; this
+  takes the individual row a real table kept. It DELETES rows, the same way
+  the ToC guard does.
+
+* **§3-ج -- the sparse vector now carries Okapi BM25 weights, not raw term
+  counts** (`domain/sparse.py::build_document_terms`). `k1` and `b` were
+  absent, which is BM25 with no saturation and no length normalisation; the
+  audit measured the cost as a x4.0 length bias on the sparse leg against
+  x1.15 on the dense one. This one does not change a row's TEXT -- it changes
+  the VALUES stored in that row's sparse vector, which is the same question
+  answered the same way: a document re-indexed under the new parameters is not
+  the document already stored, and only a re-index can make the two agree.
+
+  ⚠️ And this is the one entry here that also makes an ALREADY-INDEXED corpus
+  internally inconsistent rather than merely stale. Text and vectors are
+  per-document, so a half-migrated corpus is half-old and half-new; sparse
+  WEIGHTS are compared across documents by a single ranking, so until every
+  document is re-indexed the sparse leg is ranking Okapi weights against raw
+  counts on one list. `content_pipeline_unchanged` gates the skip; nothing
+  gates the mixture, so the re-index for this wave wants to be a whole one.
+
+  The query side (`build_query_terms`, 1.0 per term) is NOT a reason to raise
+  this: it runs at read time and writes nothing -- the same line
+  `content_pipeline_unchanged` draws for the truncation marker above.
+
+Four changes, one raise: the constant answers "would re-indexing produce
+different rows?" once, not once per reason.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = 6
+PIPELINE_VERSION = 7
 
 
 def content_pipeline_unchanged(

@@ -14,6 +14,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -25,6 +26,7 @@ from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.persistence.database import create_engine
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.domain.entities import File
+from app.modules.files.domain.errors import InvalidFileInput
 from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
@@ -103,6 +105,30 @@ async def _fetch_row_as_owner(owner_dsn: str, workspace_id: str, file_id: str) -
                 text("SELECT * FROM files.files WHERE id = :id"), {"id": file_id}
             )
             return result.mappings().first()
+    finally:
+        await engine.dispose()
+
+
+async def _write_name_as_owner(owner_dsn: str, workspace_id: str, file_id: str, name: str) -> None:
+    """Force ``files.name`` past the aggregate, as the table owner.
+
+    ``FileName`` refuses an empty name and nothing in the module can produce
+    one — which is precisely why the DATABASE's own guarantee has to be tested
+    from outside the domain. Same GUC-first shape as ``_fetch_row_as_owner``:
+    ``0001_files.py`` uses ``FORCE ROW LEVEL SECURITY``, so the owner is
+    policy-subject too and an unset GUC would make this a no-op that silently
+    "passed".
+    """
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            await conn.execute(
+                text("UPDATE files.files SET name = :name WHERE id = :id"),
+                {"name": name, "id": file_id},
+            )
     finally:
         await engine.dispose()
 
@@ -611,3 +637,175 @@ async def test_totals_by_space_with_no_ids_answers_empty_without_a_query(
     await repo_files.add(ctx, _file(workspace_id=ws, space_id=new_uuid7()))
 
     assert await repo_files.totals_by_space(ctx, []) == {}
+
+
+# --------------------------------------------------------------------------- #
+# (14) `ready_names`: the bulk read the corpus walk runs on (ب-1)             #
+# --------------------------------------------------------------------------- #
+# Branch review §12.3 recorded this method as the one whose rule lived only in
+# SQL and only in a fake: `FilesQuery.names_for_files` is a pass-through, the
+# unit tests reach it through an in-memory double that re-states the predicate
+# in Python, and the four columns of the real `WHERE` had never met a database.
+# The rule is a lifecycle rule -- `status = 'ready' AND deleted_at IS NULL`,
+# `File.is_ready` written in SQL -- so a drift here does not raise anywhere: it
+# NAMES a quarantined or deleted file to a user, inside a corpus header, on the
+# strength of a mapping key. Hence live, and hence one test per predicate.
+async def test_ready_names_returns_only_files_that_are_actually_readable(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The whole lifecycle rule, one workspace, one round trip.
+
+    Four files that are NOT readable, each unreadable for a different reason,
+    and one that is. Presence in the mapping is the answer -- so every absence
+    below is the assertion, not a side effect of one.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+
+    ready = _file(workspace_id=ws, name="handbook.pdf")
+    ready.complete(None, utc_now())
+    await repo_files.add(ctx, ready)
+
+    uploading = _file(workspace_id=ws, name="uploading.pdf", status=FileStatus.UPLOADED)
+    scanning = _file(workspace_id=ws, name="scanning.pdf", status=FileStatus.SCANNING)
+    quarantined = _file(workspace_id=ws, name="virus.pdf", status=FileStatus.QUARANTINED)
+    for pending in (uploading, scanning, quarantined):
+        await repo_files.add(ctx, pending)
+
+    # READY and then soft-deleted: the one case `status` alone would let
+    # through, which is why the predicate carries two columns and not one.
+    deleted = _file(workspace_id=ws, name="gone.pdf")
+    deleted.complete(None, utc_now())
+    await repo_files.add(ctx, deleted)
+    deleted.soft_delete(utc_now())
+    await repo_files.save(ctx, deleted)
+
+    every_id = [ready.id, uploading.id, scanning.id, quarantined.id, deleted.id]
+
+    assert await repo_files.ready_names(ctx, every_id) == {ready.id: "handbook.pdf"}
+
+
+async def test_ready_names_matches_is_ready_state_by_state(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The bulk read and the aggregate answer the SAME question.
+
+    The port's contract is that presence here is exactly a non-``None``
+    ``get_readable``, because the corpus walk swapped one for the other. Two
+    homes for one rule is the drift this pins -- and it pins it by iterating
+    ``FileStatus`` itself rather than a list of states somebody remembered to
+    write down, so a status added later arrives here already covered.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    built: list[File] = []
+
+    for status in FileStatus:
+        file = _file(workspace_id=ws, name=f"{status.value}.pdf", status=status)
+        await repo_files.add(ctx, file)
+        built.append(file)
+
+    soft_deleted = _file(workspace_id=ws, name="deleted.pdf", status=FileStatus.READY)
+    await repo_files.add(ctx, soft_deleted)
+    soft_deleted.soft_delete(utc_now())
+    await repo_files.save(ctx, soft_deleted)
+    built.append(soft_deleted)
+
+    names = await repo_files.ready_names(ctx, [file.id for file in built])
+
+    for file in built:
+        fetched = await repo_files.get(ctx, file.id)
+        assert fetched is not None
+        # `is_ready` is the aggregate's answer; presence is the SQL one.
+        assert (file.id in names) is fetched.is_ready
+
+
+async def test_ready_names_cannot_reach_another_tenants_readable_file(
+    repo_files: SqlFileRepository,
+) -> None:
+    """A file id is not a secret -- it travels in URLs and sits in a knowledge
+    document's `file_id` column. RLS plus the explicit `workspace_id`
+    condition are what stop a forged id from turning into another tenant's
+    file NAME, which is the one thing this method returns."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    theirs = _file(workspace_id=ws_b, name="their-plan.pdf", status=FileStatus.READY)
+    await repo_files.add(_ctx(ws_b), theirs)
+
+    assert await repo_files.ready_names(_ctx(ws_a), [theirs.id]) == {}
+
+
+async def test_ready_names_collapses_duplicate_ids_and_drops_unknown_ones(
+    repo_files: SqlFileRepository,
+) -> None:
+    """Two documents built from one file ask about it once (a mapping is keyed
+    by id), and an id with no row is simply absent -- never an error, and never
+    a key carrying an empty value."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, name="shared.pdf", status=FileStatus.READY)
+    await repo_files.add(ctx, file)
+    unknown = new_uuid7()
+
+    names = await repo_files.ready_names(ctx, [file.id, file.id, unknown])
+
+    assert names == {file.id: "shared.pdf"}
+    assert unknown not in names
+
+
+async def test_ready_names_with_no_ids_answers_empty_without_a_query(
+    repo_files: SqlFileRepository,
+) -> None:
+    """``IN ()`` is a syntax error in PostgreSQL. The unit test proves this
+    guard by refusing the fake a session; this one proves the same guard
+    against the database that would actually raise without it."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    await repo_files.add(ctx, _file(workspace_id=ws, status=FileStatus.READY))
+
+    assert await repo_files.ready_names(ctx, []) == {}
+
+
+# --------------------------------------------------------------------------- #
+# (15) the empty name, pinned on the `files` side (ب-3)                       #
+# --------------------------------------------------------------------------- #
+# The knowledge module's corpus walk carries an explicit empty-name branch --
+# `ListDocumentNames` KEEPS an empty name, `ListFileCandidates` DROPS it -- and
+# `ready_names`' contract says an unreadable file is absent from the mapping
+# "never present with an empty string", so that "there is no readable file"
+# stays distinguishable from "the file is readable and its name is empty".
+#
+# All of it rests on an assumption nothing had ever stated: that the second
+# case cannot occur. These two tests state it, on both sides of the boundary,
+# so the knowledge-side branch is recorded as DEFENSIVE rather than left
+# looking like a live case whose behaviour had drifted untested.
+def test_an_empty_file_name_is_refused_by_the_value_object() -> None:
+    """The domain side. Whitespace counts as empty because `FileName` trims
+    before it checks, and a path whose basename is empty is the same refusal --
+    otherwise `"dir/"` would sanitize its way into a nameless file."""
+    for candidate in ("", "   ", "\t", "dir/", "dir\\"):
+        with pytest.raises(InvalidFileInput):
+            FileName(candidate)
+
+
+async def test_an_empty_file_name_is_refused_by_the_database_too(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    """The storage side, forced past the aggregate as the table owner.
+
+    `0001_files.py` declares `CHECK (char_length(name) BETWEEN 1 AND 255)`, so
+    the guarantee survives a writer that never constructed a `FileName` at all
+    -- a migration, a backfill, a hand-run `UPDATE`. Without this the domain
+    rule would be one refactor away from being the only thing holding it, and
+    the empty-name branch downstream would silently become reachable.
+    """
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, name="handbook.pdf", status=FileStatus.READY)
+    await repo_files.add(ctx, file)
+
+    with pytest.raises(IntegrityError):
+        await _write_name_as_owner(live_db.owner, ws, file.id, "")
+
+    # And the row is untouched: a rejected write is a rejected write, so the
+    # bulk read still answers with the real name.
+    assert await repo_files.ready_names(ctx, [file.id]) == {file.id: "handbook.pdf"}

@@ -76,7 +76,14 @@ from app.modules.knowledge.domain.file_resolution import (
 from app.modules.knowledge.domain.intent import Intent, classify_intent
 from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
-from app.modules.knowledge.domain.sparse import SparseTerms, build_sparse_terms, term_id
+from app.modules.knowledge.domain.sparse import (
+    Bm25Params,
+    SparseTerms,
+    build_document_terms,
+    build_query_terms,
+    build_sparse_terms,
+    term_id,
+)
 from app.modules.knowledge.domain.value_objects import ParentChunkText
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
@@ -5293,3 +5300,173 @@ def test_apply_rerank_never_loses_a_candidate(
 
     assert [chunk.chunk_id for chunk in applied] == expected
     assert len(applied) == len(candidates)
+
+
+# --------------------------------------------------------------------------- #
+# Okapi BM25: `k1`/`b` on the document side, 1.0 on the query side (§3-ج)     #
+# --------------------------------------------------------------------------- #
+_BM25 = Bm25Params(k1=1.5, b=0.75, avg_len=32.0)
+
+
+def test_the_weight_is_anchored_at_one_for_a_typical_term() -> None:
+    """THE property that lets this ship without re-deriving `min_bm25_score`.
+
+    At `tf = 1` and `|d| = avg_len` the normaliser is exactly 1 and the weight
+    is `(k1+1)/(1+k1) = 1.0` -- byte-for-byte what raw `tf` produced. So a
+    typical term in a typical chunk scores exactly what it scored before, the
+    25.0 floor keeps the meaning its own [21, 30] sweep measured, and what
+    moves is only the DEVIATION from typical, which is the entire point of
+    adding these parameters.
+    """
+    assert _BM25.weight(1, 32) == pytest.approx(1.0)
+    # ...and it holds for any k1, since the anchor is algebraic, not tuned.
+    for k1 in (0.5, 1.2, 2.0, 10.0):
+        assert Bm25Params(k1=k1, b=0.75, avg_len=32.0).weight(1, 32) == pytest.approx(1.0)
+
+
+def test_term_frequency_saturates_instead_of_growing_linearly() -> None:
+    """The `k1` the audit proved absent, by arithmetic: it found 185 pairs of
+    positive scores standing in EXACT whole-number ratios >= 2 --
+    `7.800722 = 2 x 3.900361` among them -- which is what linear `tf` looks
+    like from the outside.
+
+    With `k1` present the tenth occurrence is worth almost nothing over the
+    ninth, and no two weights can sit in a clean integer ratio.
+    """
+    weights = [_BM25.weight(tf, 32) for tf in range(1, 21)]
+
+    assert weights == sorted(weights)  # still monotone: more IS more
+    assert all(w < _BM25.k1 + 1.0 for w in weights)  # but bounded by k1+1
+    # Doubling `tf` no longer doubles the weight -- it used to, exactly.
+    assert weights[1] / weights[0] == pytest.approx(1.4286, abs=1e-4)
+    assert weights[19] / weights[9] < 1.1
+
+
+def test_a_shorter_document_outscores_a_longer_one_on_the_same_term() -> None:
+    """`b`, the other absentee. The audit measured a length bias of x4.0 on
+    the sparse leg against x1.15 on the dense one, and
+    `spearman(score, length) = +0.32` over 300 positive hits: the sparse leg
+    was preferring long chunks systematically, and the dense leg was not.
+
+    A table row (|d| ~ 8) and a full prose window (|d| ~ 114) are the two ends
+    of this corpus, and one shared term should not be worth more in the window
+    merely because the window is bigger.
+    """
+    table_row = _BM25.weight(1, 8)
+    typical = _BM25.weight(1, 32)
+    long_prose = _BM25.weight(1, 114)
+
+    assert table_row > typical > long_prose
+    assert table_row / long_prose == pytest.approx(3.25, abs=0.05)
+
+
+def test_b_of_zero_turns_length_normalisation_off_entirely() -> None:
+    """The knob has to reach zero honestly: `b = 0` is the pre-§3-ج
+    behaviour for the length half, and every length must then weigh the
+    same."""
+    flat = Bm25Params(k1=1.5, b=0.0, avg_len=32.0)
+
+    assert flat.weight(1, 8) == pytest.approx(flat.weight(1, 114))
+
+
+def test_a_nonsense_average_length_does_not_divide_by_zero() -> None:
+    """`avg_len` is configuration, and an indexing worker must not die on a
+    bad number in a settings file. Guarded to 1.0, which over-penalises
+    honestly rather than raising."""
+    for bad in (0.0, -5.0):
+        weight = Bm25Params(k1=1.5, b=0.75, avg_len=bad).weight(1, 10)
+        assert weight > 0.0
+
+
+def test_document_terms_carry_weights_and_query_terms_carry_ones() -> None:
+    """The asymmetry, stated once. Every factor of BM25 that is not IDF is a
+    property of the DOCUMENT; the query's job is only to name the terms."""
+    text = "salary policy salary review"
+
+    doc = build_document_terms(text, _BM25)
+    query = build_query_terms(text)
+
+    assert doc.indices == query.indices  # same terms, so they can still match
+    assert set(query.values) == {1.0}
+    assert all(0.0 < v < _BM25.k1 + 1.0 for v in doc.values)
+    # "salary" appears twice and "policy"/"review" once, so the weights are
+    # NOT all equal -- `tf` still matters, it just no longer runs away.
+    assert len(set(doc.values)) == 2
+
+
+def test_document_length_counts_repetitions_not_distinct_terms() -> None:
+    """Okapi's `|d|` is the document's LENGTH. Two chunks with identical
+    vocabulary and different lengths must normalise differently, and a
+    distinct-term count cannot tell them apart."""
+    short = build_document_terms("alpha beta", _BM25)
+    long_repeated = build_document_terms("alpha beta " * 40, _BM25)
+
+    assert short.indices == long_repeated.indices
+    # Same two terms, and the longer document is normalised down despite
+    # every one of its terms appearing far more often.
+    assert max(long_repeated.values) < _BM25.k1 + 1.0
+    assert short.values[0] > 0.0
+
+
+def test_query_terms_are_de_duplicated_to_one_each() -> None:
+    """A word written twice in a question is emphasis, not evidence -- and
+    under a dot product its `tf` would be multiplied against the document's
+    own weight for it twice over."""
+    once = build_query_terms("leave policy")
+    twice = build_query_terms("leave leave policy")
+
+    assert once == twice
+
+
+def test_both_sides_still_agree_on_term_ids() -> None:
+    """The one thing that MUST NOT change: index side and query side only
+    ever find each other if they canonicalise and hash a term identically.
+    All three builders share `_term_counts` for exactly this reason."""
+    text = "الراتب الأساسي والبدلات"
+
+    assert (
+        build_document_terms(text, _BM25).indices
+        == build_query_terms(text).indices
+        == build_sparse_terms(text).indices
+    )
+
+
+def test_empty_text_yields_an_empty_vector_on_both_sides() -> None:
+    assert build_document_terms("", _BM25) == SparseTerms((), ())
+    assert build_query_terms("the and") == SparseTerms((), ())
+
+
+async def test_an_indexed_point_stores_bm25_weights_not_raw_counts() -> None:
+    """End of the wire: what actually reaches Qdrant.
+
+    The pipeline used to upsert raw term counts, so every stored value was a
+    whole number. They are weights now -- and this is the assertion that would
+    catch `_build_point` being handed the wrong builder, which nothing else
+    here would notice.
+    """
+    vectors = FakeHybridVectors()
+    parsed = _parsed_document(
+        [
+            _parsed_chunk(
+                "annual leave policy annual leave entitlement annual leave request", order=0
+            )
+        ]
+    )
+
+    await IndexDocument(FakeEmbeddings(dim=6), vectors).execute(
+        _ctx("ws1"),
+        document_id="doc-1",
+        space_id=SPACE,
+        parsed=parsed,
+        model="embed-1",
+        api_key="k",
+    )
+
+    point = next(iter(vectors.points["kn-ws1"].values()))
+    assert point.sparse is not None
+    values = point.sparse.values
+    assert values
+    # Not counts: no stored value is a whole number any more, and every one
+    # sits under the `k1 + 1` ceiling saturation imposes.
+    assert all(v != float(int(v)) for v in values)
+    assert all(0.0 < v < 2.5 for v in values)

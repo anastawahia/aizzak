@@ -369,6 +369,26 @@ class SqlDocumentRepository:
             limit=limit,
         )
 
+    async def count(self, ctx: ExecutionContext, *, space_id: UuidStr | None) -> int:
+        # `list`'s predicate minus its keyset: the same tenant condition, the
+        # same optional space narrowing over `ix_kndoc_space`, and no status
+        # filter. Written directly ABOVE `list` so the two are read together --
+        # the port's rule is that they count one population, and a divergence
+        # between them is the kind nothing would report: the header would just
+        # promise rows the next page does not have.
+        conditions = [documents.c.workspace_id == ctx.workspace_id]
+        if space_id is not None:
+            conditions.append(documents.c.space_id == space_id)
+        # `COUNT(*)` over the index, no columns selected: nothing here is
+        # hydrated, which is the entire point of not walking.
+        stmt = select(func.count()).select_from(documents).where(*conditions)
+        try:
+            async with self._tenant_session(ctx) as session:
+                total = (await session.execute(stmt)).scalar_one()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return int(total)
+
     async def ids_for_files(
         self, ctx: ExecutionContext, file_ids: Sequence[UuidStr]
     ) -> Sequence[UuidStr]:

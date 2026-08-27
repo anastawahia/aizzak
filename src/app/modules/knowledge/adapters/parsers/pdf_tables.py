@@ -59,6 +59,7 @@ from camelot.io import read_pdf
 
 from app.framework.observability import get_logger
 from app.framework.types import Json
+from app.modules.knowledge.domain.tables import placeholder_header
 from app.modules.knowledge.ports.content_extractor import ParsedChunk, ParsedChunkKind
 
 log = get_logger(__name__)
@@ -114,6 +115,78 @@ _DOT_LEADER = re.compile(r"\.{6,}")
 
 # alpha's `camelot.read_pdf(..., flavor='stream', edge_tol=50)`.
 _STREAM_EDGE_TOL = 50
+
+# --------------------------------------------------------------------------- #
+# د-3: the running header/footer band, excluded BEFORE camelot looks           #
+# --------------------------------------------------------------------------- #
+# The root of the `Column_N` epidemic, and the only one of د-1..د-4 that fixes
+# it at source. `stream` infers a table's columns from the whitespace gaps in
+# whatever text it is given; a running page header sitting above a table joins
+# that text, shifts the row it thinks is the header row, and `_headers_and_data`
+# then mints `Column_N` for every cell of the real header row it just displaced.
+# 37.3% of this corpus's chunks carry one. Nothing downstream can undo it: by
+# then the header row is DATA and the header names are gone.
+#
+# The band is removed from the BYTES, and camelot is handed the result. Neither
+# of camelot's own options does this job, and both were tried:
+#
+# * `table_areas` declares "this rectangle IS one table", which fuses two
+#   independent tables on a page into one frame.
+# * `table_regions` only steers DETECTION. Measured on a 3-page fixture: with
+#   the region set, the detected bbox correctly moved down (842.71 -> 805.72)
+#   and the header was still the header row, because
+#   `Stream._generate_columns_and_rows` re-runs `text_in_bbox` over the FULL
+#   page text inside whatever bbox detection padded its way to. Excluding text
+#   from detection does not exclude it from extraction.
+#
+# Redaction is what د-3 actually asks for -- "exclude the band BEFORE calling
+# camelot" -- and it is immune to camelot's bbox padding because the ink is
+# simply not there any more. Page geometry is untouched, which matters: the
+# `TableRegion` bboxes handed to the text pass, and `_extract_caption`, are all
+# in original page coordinates, and a CropBox would have shifted every one of
+# them. The ORIGINAL bytes are what captions are still read from.
+
+# Under this many pages "repeats on most pages" is not a measurement. Two
+# pages sharing a line is a coincidence with one degree of freedom; three is a
+# pattern. A short PDF simply keeps today's behaviour.
+_BAND_MIN_PAGES = 3
+
+# Only text in the outer 15% of the page height is a band candidate at all --
+# the outer bound on how much this may ever cut, not the cut itself, which the
+# gap rule below decides.
+_BAND_MAX_FRACTION = 0.15
+
+# A line has to repeat on at least this share of pages to count as running.
+# Below it, it is a heading that happens to recur and the cut would follow the
+# document's content rather than its furniture.
+_BAND_PAGE_RATIO = 0.5
+
+# The gap that ENDS the band, and the rule that makes this safe.
+#
+# ⚠️ Repetition alone cannot tell a running header from body text, and a probe
+# on a synthetic 3-page fixture proved it: the table's own `Name Dept Salary`
+# row repeats on every page and sits in the top margin, so a repetition-only
+# rule cut the table's header off -- the exact harm د-3 exists to prevent,
+# committed by د-3's own guard.
+#
+# What separates furniture from body is TYPOGRAPHIC, not statistical: a
+# running header is followed by the page's top whitespace. So the band ends at
+# the last repeated line that has a real gap under it. Inside a table or a
+# paragraph, consecutive line boxes nearly touch -- the synthetic table's rows
+# are 22pt apart with 15pt line boxes, a 6.9pt gap -- while the same fixture's
+# header/body separation measured 25.5pt. 10pt sits well clear of the first
+# and well under the second.
+_BAND_MIN_GAP_PT = 10.0
+
+# camelot applies one region to every page in the call. Pages of differing size
+# would have that region land in a different place on each, so a mixed-size PDF
+# is left alone rather than cropped by a rectangle that fits one page.
+_PAGE_SIZE_TOLERANCE_PT = 1.0
+
+# "Page 3 of 40" and "Page 4 of 40" are the SAME running header. Folding every
+# digit run to one placeholder is what lets the page number -- the thing that
+# makes a header look unique on every page -- stop hiding the repetition.
+_DIGIT_RUN = re.compile(r"\d+")
 
 # Cross-page continuation geometry (alpha `detect_continued_tables`): the two
 # tables must sit at the same horizontal position, within this many points of
@@ -208,12 +281,197 @@ def _is_unreadable(data: bytes) -> bool:
     return False
 
 
+def _band_signature(text: str) -> str:
+    """What makes two lines on two pages "the same line" (د-3).
+
+    Whitespace folded, digits folded, lowercased. The digit fold is the load-
+    bearing one: a page number is precisely the part of a running header that
+    differs on every page, so comparing the raw text would find no repetition
+    at all in the one place repetition is guaranteed.
+    """
+    return _DIGIT_RUN.sub("#", " ".join(text.split())).lower()
+
+
+def _page_lines(page: Any) -> list[tuple[float, float, str]]:
+    """Every text line on ``page`` as ``(y_top, y_bottom, text)``, fitz's
+    top-left origin, sorted down the page.
+
+    LINES and not blocks. fitz groups a column of cells into one block, so a
+    block's bbox can span a running header and the table under it at once --
+    and a band computed from block extents cuts wherever that grouping happened
+    to end. The line bboxes are what actually sit where the ink is.
+    """
+    lines: list[tuple[float, float, str]] = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", ()):
+            text = "".join(span["text"] for span in line.get("spans", ()))
+            if not text.strip():
+                continue
+            bbox = line["bbox"]
+            lines.append((float(bbox[1]), float(bbox[3]), text))
+    lines.sort()
+    return lines
+
+
+def _edge_cut(
+    lines: list[tuple[float, float, str]],
+    running: frozenset[str],
+    *,
+    limit: float,
+    from_top: bool,
+) -> float | None:
+    """How deep this page's running furniture reaches in from one edge, or
+    ``None`` if it reaches nowhere (د-3).
+
+    Walks IN from the edge over lines that are (a) inside ``limit`` and (b) in
+    ``running``, stopping at the first line that is neither -- furniture is
+    contiguous with the page edge, so a repeated line with body text above it
+    is a recurring heading, not a header.
+
+    The cut is then placed at the last line of that run which has at least
+    ``_BAND_MIN_GAP_PT`` of clear space beyond it. That is the rule doing the
+    real work: it is what keeps a repeated TABLE header, which touches its own
+    first data row, from being mistaken for page furniture that stands alone.
+    """
+    ordered = lines if from_top else [(-y1, -y0, t) for y0, y1, t in reversed(lines)]
+    bound = limit if from_top else -limit
+    cut: float | None = None
+    for index, (_y0, y1, text) in enumerate(ordered):
+        inside = y1 <= bound if from_top else y1 <= -bound
+        if not inside or _band_signature(text) not in running:
+            break
+        # The gap AFTER this line: to the next line further in, or -- if this
+        # is the last line on the page -- to nothing, which cannot end a band.
+        if index + 1 >= len(ordered):
+            break
+        if ordered[index + 1][0] - y1 >= _BAND_MIN_GAP_PT:
+            cut = y1
+    return cut
+
+
+def _running_band(data: bytes) -> tuple[float, float] | None:
+    """Where this PDF's running header and footer end, as
+    ``(header_cut, footer_cut)`` in fitz's top-left coordinates -- or ``None``
+    when there is no furniture to cut (د-3).
+
+    Detection, not a constant: a band height guessed once would be wrong for
+    every document but the one it was measured on. A line is running furniture
+    only if it satisfies all three of -- it sits in the outer margin, it
+    repeats (digits folded) on at least half the pages, and it is separated
+    from what follows by real whitespace. No table header, section heading or
+    repeated body row satisfies the three together; see `_BAND_MIN_GAP_PT` for
+    the measurement that made the third one necessary.
+
+    The document-wide cut is the deepest one that at least a quorum of pages
+    SUPPORT, so a title page or a landscape plate with no furniture cannot veto
+    the band, and a single page with an unusually deep header cannot impose it.
+
+    Never raises: a probe that fails is not a verdict, and the caller falls
+    back to parsing the whole page exactly as it did before د-3.
+    """
+    try:
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            pages = doc.page_count
+            if pages < _BAND_MIN_PAGES:
+                return None
+            width, height = float(doc[0].rect.width), float(doc[0].rect.height)
+            if any(
+                abs(float(doc[n].rect.width) - width) > _PAGE_SIZE_TOLERANCE_PT
+                or abs(float(doc[n].rect.height) - height) > _PAGE_SIZE_TOLERANCE_PT
+                for n in range(pages)
+            ):
+                log.info("pdf_tables.band_skipped_mixed_page_sizes", extra={"pages": pages})
+                return None
+
+            per_page = [_page_lines(doc[n]) for n in range(pages)]
+    except Exception as exc:
+        log.warning("pdf_tables.band_probe_failed", extra={"error": str(exc)})
+        return None
+
+    top_limit = height * _BAND_MAX_FRACTION
+    bottom_limit = height * (1.0 - _BAND_MAX_FRACTION)
+    # `max(2, ...)`: on a 3-page PDF half is 1.5, and a line on ONE page is not
+    # running by any reading of the word.
+    quorum = max(2, int(pages * _BAND_PAGE_RATIO))
+
+    seen: dict[str, set[int]] = {}
+    for n, lines in enumerate(per_page):
+        for y0, y1, text in lines:
+            if y1 <= top_limit or y0 >= bottom_limit:
+                seen.setdefault(_band_signature(text), set()).add(n)
+    running = frozenset(key for key, on in seen.items() if len(on) >= quorum)
+    if not running:
+        return None
+
+    header_cuts = sorted(
+        (_edge_cut(lines, running, limit=top_limit, from_top=True) or 0.0 for lines in per_page),
+        reverse=True,
+    )
+    footer_cuts = sorted(
+        -(cut) if (cut := _edge_cut(lines, running, limit=bottom_limit, from_top=False)) else height
+        for lines in per_page
+    )
+    header_cut = header_cuts[quorum - 1]
+    footer_cut = footer_cuts[quorum - 1]
+    if header_cut <= 0.0 and footer_cut >= height:
+        return None
+
+    log.info(
+        "pdf_tables.running_band_detected",
+        extra={"header_cut": header_cut, "footer_cut": footer_cut, "pages": pages},
+    )
+    return header_cut, footer_cut
+
+
+def _without_running_band(data: bytes, band: tuple[float, float]) -> bytes | None:
+    """``data`` with the running header/footer redacted away, or ``None`` if
+    the rewrite fails (د-3).
+
+    Redaction and not a CropBox: it deletes the ink and leaves the page
+    rectangle alone, so every coordinate produced downstream -- camelot's table
+    bboxes, the `TableRegion`s the text pass avoids, the caption lookup's fitz
+    rects -- still means what it meant. A CropBox would have moved the origin
+    under all three at once.
+
+    Images are left in place (`PDF_REDACT_IMAGE_NONE`): the target is a line of
+    running text, and a figure that merely reaches into the margin is content.
+
+    Nothing here can widen the cut into the body. `_edge_cut` only places a cut
+    that has `_BAND_MIN_GAP_PT` of clear space beyond it, so no body line's
+    bbox can intersect the rectangles below.
+    """
+    header_cut, footer_cut = band
+    try:
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            for page in doc:
+                rect = page.rect
+                if header_cut > 0.0:
+                    page.add_redact_annot(fitz.Rect(rect.x0, rect.y0, rect.x1, header_cut))
+                if footer_cut < rect.y1:
+                    page.add_redact_annot(fitz.Rect(rect.x0, footer_cut, rect.x1, rect.y1))
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            stripped: bytes = doc.tobytes()
+        return stripped
+    except Exception as exc:
+        log.warning("pdf_tables.band_strip_failed", extra={"error": str(exc)})
+        return None
+
+
 def _read_stream_tables(data: bytes) -> list[Any]:
-    """Run camelot's `stream` flavor over a temporary copy of the bytes."""
+    """Run camelot's `stream` flavor over a temporary copy of the bytes, with
+    the running header/footer band stripped out first when one was detected
+    (د-3).
+
+    The strip is best-effort in both directions: no band detected, or a rewrite
+    that fails, both fall back to the original bytes and to exactly the
+    behaviour this had before د-3.
+    """
     tmp_path: str | None = None
     try:
+        band = _running_band(data)
+        stripped = _without_running_band(data, band) if band is not None else None
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
-            handle.write(data)
+            handle.write(stripped if stripped is not None else data)
             tmp_path = handle.name
         tables = list(read_pdf(tmp_path, pages="all", flavor="stream", edge_tol=_STREAM_EDGE_TOL))
         log.info("pdf_tables.detected", extra={"table_count": len(tables)})
@@ -270,6 +528,71 @@ def _is_table_of_contents(df: Any) -> bool:
         return False
     leaders = sum(1 for _, row in df.iterrows() if _DOT_LEADER.search("".join(str(v) for v in row)))
     return leaders / total >= _TOC_DOT_LEADER_ROW_RATIO
+
+
+def _is_leader_cell(value: Any) -> bool:
+    """Whether ONE cell is a table-of-contents leader rather than a dotted
+    placeholder -- the distinction the row guard below is built on.
+
+    A leader is a typographic bridge: it has a LABEL and then dots running out
+    to a page number, so the cell reads `"3.9 Mine Auxiliary Transformer
+    ........"`. A placeholder is the whole cell -- `".........."` in a Notes
+    column, a blank somebody is meant to write into -- and it means only that
+    the cell was left open.
+
+    So: dots, AND something else in the same cell. Strip the dot runs and ask
+    whether any text is left.
+
+    ⚠️ This predicate is deliberately NARROWER than `_is_table_of_contents`,
+    which counts any leader anywhere in the joined row. It has to be, because
+    the two guards pay different prices for a mistake. The table-level one
+    drops a frame that is 50% leaders -- at that ratio there is no real table
+    left to lose. This one drops a single row out of a table that is otherwise
+    real, so a false positive here deletes `Cable | .......... | 120`: a
+    product, a price, and a dotted blank between them.
+
+    That is the same trade `Column_N` failed and د-1 was rewritten over
+    (§4-هـ-1): a guard is only worth having if what it deletes is reliably
+    worthless. A cell of pure dots is not a leader, and this returns False for
+    it.
+
+    A leader split across two cells by `stream` (`"1. Intro ..."` + `"... 5"`)
+    is NOT caught -- neither half carries six dots, and re-joining the row to
+    find them would put the placeholder back in range. That is a deliberate
+    miss: a split leader means a real ToC, which the table-level ratio already
+    drops whole, and a stray row is the one case worth conceding to stay off
+    real content.
+    """
+    text = str(value)
+    if not _DOT_LEADER.search(text):
+        return False
+    return bool(_DOT_LEADER.sub(" ", text).strip())
+
+
+def _drop_leader_rows(df: Any) -> tuple[Any, int]:
+    """Drop the individual dot-leader rows a table keeps after SURVIVING the
+    ToC guard (د-4's residue), returning the frame and how many went.
+
+    `_is_table_of_contents` judges a whole frame and drops it whole, which is
+    right for a real ToC and blind to the case underneath it: a legitimate data
+    table carrying one or two leader rows, because a list of contents ran into
+    its top or a section index shares its box. Those rows are the same harm in
+    miniature -- lexically identical to what a user asks, answering with a page
+    number -- and at two rows in thirty the table-level ratio cannot reach them
+    without also deleting the twenty-eight.
+
+    One leader CELL (`_is_leader_cell`, and see there for why that is stricter
+    than the ratio's test) is enough to take its row: a ToC entry puts its
+    label and its leader in one cell and its page number in the next, so the
+    evidence never spans more than the one cell it is asked for.
+    """
+    if df.empty:
+        return df, 0
+    leaders = df.apply(lambda row: any(_is_leader_cell(v) for v in row), axis=1)
+    dropped = int(leaders.sum())
+    if not dropped:
+        return df, 0
+    return df[~leaders].reset_index(drop=True), dropped
 
 
 # --------------------------------------------------------------------------- #
@@ -368,8 +691,13 @@ def _headers_and_data(raw: Any) -> tuple[list[str], Any]:
     if df.empty:
         return [], pd.DataFrame()
 
+    # `placeholder_header` and not a local f-string: `domain/tables.py` has to
+    # RECOGNISE what is minted here in order to render it bare (د-1 reworded),
+    # and two independent spellings of one name is exactly the drift that
+    # would turn a placeholder back into a column somebody appears to have
+    # named.
     headers = [
-        name if (name := str(c).strip()) and name != "nan" else f"Column_{i + 1}"
+        name if (name := str(c).strip()) and name != "nan" else placeholder_header(i + 1)
         for i, c in enumerate(df.iloc[0])
     ]
     if len(df) == 1:
@@ -556,6 +884,52 @@ def _build_metadata(
     return metadata
 
 
+def _surviving_frame(df: Any, *, table_index: int, page_number: int) -> Any | None:
+    """The two false-content guards, in the one order they may run, applied to
+    one already-hydrated frame. ``None`` means "emit no chunk for this table".
+
+    **س-30 first, and this is not arbitrary.** The ToC guard is a verdict on
+    the WHOLE frame; the leader-row drop is a verdict on single rows. Run the
+    row drop first and a real table of contents would be emptied one row at a
+    time and fall out of the caller as merely "empty" -- losing س-30's log
+    line, its rows-dropped count, and the reasoning that distinguishes a false
+    table from a table that parsed to nothing.
+
+    Neither guard touches the REGION the caller has already recorded. That is
+    deliberate for the ToC (the text pass must skip it too, rather than be
+    handed the same lines back as prose) and irrelevant for a leader row, which
+    is a row inside a region that stays either way.
+    """
+    # س-30. Unlike the two guards in `_filter_noise`, this one KEEPS the region
+    # already recorded, so the text pass skips the ToC as well. Those guards
+    # hand a misdetection back to the text pass because the content under them
+    # is real prose that belongs in the index; a ToC is not. Its harm is
+    # lexical -- rows that read exactly like the question and answer it with a
+    # page number -- and re-indexing it as paragraphs would carry that harm
+    # across intact, merely reshaped. Nothing is lost: a ToC's titles are
+    # already in the body as headings, and its page numbers were never an
+    # answer.
+    if _is_table_of_contents(df):
+        log.info(
+            "pdf_tables.dropped_table_of_contents",
+            extra={"table_index": table_index, "page_number": page_number, "rows": len(df)},
+        )
+        return None
+
+    # د-4's residue: what reaches here is by definition not a ToC, so a leader
+    # row in it is a stray and goes on its own.
+    kept, leader_rows = _drop_leader_rows(df)
+    if leader_rows:
+        log.info(
+            "pdf_tables.dropped_leader_rows",
+            extra={"table_index": table_index, "page_number": page_number, "rows": leader_rows},
+        )
+    if kept.empty:
+        log.info("pdf_tables.skipped_all_leader_rows", extra={"table_index": table_index})
+        return None
+    return kept
+
+
 def _build_chunks(
     data: bytes, tables: list[Any], groups: dict[int, list[int]]
 ) -> tuple[list[ParsedChunk], dict[int, list[TableRegion]]]:
@@ -602,20 +976,8 @@ def _build_chunks(
                     )
                 )
 
-            # س-30. Unlike the two guards in `_filter_noise`, this one KEEPS the
-            # region it just recorded, so the text pass skips the ToC as well.
-            # Those guards hand a misdetection back to the text pass because the
-            # content under them is real prose that belongs in the index; a ToC
-            # is not. Its harm is lexical -- rows that read exactly like the
-            # question and answer it with a page number -- and re-indexing it as
-            # paragraphs would carry that harm across intact, merely reshaped.
-            # Nothing is lost: a ToC's titles are already in the body as
-            # headings, and its page numbers were never an answer.
-            if _is_table_of_contents(df):
-                log.info(
-                    "pdf_tables.dropped_table_of_contents",
-                    extra={"table_index": index, "page_number": page_number, "rows": len(df)},
-                )
+            df = _surviving_frame(df, table_index=index, page_number=page_number)
+            if df is None:
                 continue
 
             caption = ""

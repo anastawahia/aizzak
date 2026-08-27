@@ -109,6 +109,34 @@ class DocumentRepository(Protocol):
         """
         ...
 
+    async def count(self, ctx: ExecutionContext, *, space_id: Uuid | None) -> int:
+        """How many documents this workspace has under ``space_id`` — the same
+        population ``list`` pages, counted in one query rather than walked.
+
+        **The number ``list`` cannot give cheaply.** A corpus header shows a
+        handful of names and then "and N more", so its walk needs a full count
+        it never displays. Paging the whole corpus for it spends one round trip
+        per page hydrating rows nobody reads, to arrive at a single integer
+        (branch review ب-2) — this is that integer, priced as one ``COUNT(*)``.
+
+        **The same predicate as ``list``, deliberately**: the same workspace,
+        the same ``space_id`` narrowing with the same ``None`` meaning ("this
+        workspace's", never "the spaceless ones"), and the same
+        every-lifecycle-status rule for the same reason — a ``pending``
+        document is part of the corpus a client was told it has. A count that
+        filtered NARROWER than the listing it accompanies would make the
+        header's "and N more" a promise the next page could not keep.
+
+        ``space_id`` is a REQUIRED keyword with no default, exactly as on
+        ``list``: "every space" is a decision written at the call site and
+        never one a caller falls into by omission.
+
+        No cursor and no cap. A count is not a page — there is nothing to
+        resume, and bounding it would answer a different question than the one
+        the header asks.
+        """
+        ...
+
     async def ids_for_files(
         self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
     ) -> Sequence[Uuid]:

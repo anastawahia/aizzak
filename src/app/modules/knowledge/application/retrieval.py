@@ -265,7 +265,7 @@ from app.modules.knowledge.domain.context_budget import fit_to_context_budget
 from app.modules.knowledge.domain.fusion import FusedChunk, reciprocal_rank_fusion
 from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
-from app.modules.knowledge.domain.sparse import build_sparse_terms
+from app.modules.knowledge.domain.sparse import build_query_terms
 from app.modules.knowledge.domain.value_objects import ParentChunkText
 from app.modules.knowledge.ports.retrieval import ParentChunkRepository, RetrievedChunk
 
@@ -776,7 +776,10 @@ class RetrieveContext:
 
         embedded = await self._embeddings.embed([query], model, api_key)
         q_vector = embedded.vectors[0]
-        q_terms = build_sparse_terms(query)
+        # 1.0 per distinct term, never the query's own `tf` (§3-ج): under
+        # Qdrant's dot product a word written twice in the question would be
+        # multiplied against the document's weight for it twice over.
+        q_terms = build_query_terms(query)
         q_sparse = SparseVector(indices=list(q_terms.indices), values=list(q_terms.values))
 
         # `with_vectors=True` on BOTH legs (plan step 20, `P-23`, decision

@@ -55,6 +55,7 @@ the summary of every data file silently became a list of column names.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -90,6 +91,43 @@ _NOISE_HEADERS = frozenset({"no.", "no", "row", "#", "index", "id"})
 # characters as a missing float. Dropping both would delete a measurement in
 # order to tidy a placeholder. ``none``/``null`` carry no such reading.
 _EMPTY_CELL_TEXTS = frozenset({"none", "null"})
+
+# The name a table parser mints for a column whose header cell was BLANK in
+# the source (`adapters/parsers/pdf_tables.py::_headers_and_data`, which
+# formats it through `placeholder_header` below so the two cannot drift).
+# It is not a column name -- it is the parser saying "this column had none".
+#
+# ⚠️ This is د-1 REWORDED, and the rewording is the whole point (port-fidelity
+# audit §4-ج-4, 2026-08-27). د-1 as written said: add `Column_\d+` to
+# `_NOISE_HEADERS`. That kills the pair, and `row_to_sentence` drops a noise
+# column's VALUE along with its name -- so `"Definitions and Abbreviations:
+# HMI; Column_2: Human Machine Interface"` would have lost
+# "Human Machine Interface" itself, the answer, to tidy away the label in
+# front of it. 62 chunks of exactly that shape were measured; the same
+# reasoning already rejected `Column_N` as a false-table signal (§4-هـ-1).
+#
+# So the placeholder is dropped as a NAME and never as a pair: the value is
+# rendered bare. Nothing is deleted, and the invented token stops entering
+# 37% of this corpus's chunk texts -- where it is pure noise in the embedding
+# and a term with a real IDF in the sparse leg.
+_PLACEHOLDER_HEADER = re.compile(r"^Column_\d+$")
+
+
+def placeholder_header(position: int) -> str:
+    """The name for a blank header cell at 1-based ``position``.
+
+    Lives HERE, next to the pattern that recognises it, because a parser mints
+    these and this module has to know one when it renders it. A parser that
+    invented its own spelling would produce a label nothing downstream could
+    tell apart from a real column named by a person.
+    """
+    return f"Column_{position}"
+
+
+def _is_placeholder_header(header: str) -> bool:
+    # Folded like `_is_noise_header`, and for the same reason: this predicate
+    # reads the text the renderers emit, not the text the parser stored.
+    return bool(_PLACEHOLDER_HEADER.match(_fold_whitespace(header)))
 
 
 def _fold_whitespace(text: str) -> str:
@@ -149,13 +187,19 @@ def row_to_sentence(row: Mapping[str, Any]) -> str:
     whitespace-folded, so no cell and no column name can split the sentence
     this row is embedded and retrieved as.
 
+    A PLACEHOLDER header (``Column_3``, minted for a blank header cell) is
+    dropped as a NAME and the value rendered BARE -- never dropped as a pair
+    the way a noise header is. See ``_PLACEHOLDER_HEADER``: the label carries
+    nothing, the value beside it is often the answer, and treating the two
+    alike would delete real content to tidy an invented token.
+
     A row that is entirely noise/empty columns renders as ``""`` -- not an
     error, and not this module's job to drop: `domain/chunking.py`'s node
     filter (P-15, plan step 8) is what removes an empty node from the
     stream.
     """
     parts = [
-        f"{_fold_whitespace(header)}: {text}"
+        text if _is_placeholder_header(header) else f"{_fold_whitespace(header)}: {text}"
         for header, value in row.items()
         if not _is_noise_header(header) and (text := _cell_text(value))
     ]
@@ -165,11 +209,19 @@ def row_to_sentence(row: Mapping[str, Any]) -> str:
 def _header_line(headers: Sequence[str]) -> str:
     """The header-only parent text (R > ``TABLE_PARENT_MAX_ROWS``): the
     column names alone, noise columns dropped, folded and joined the same
-    language-neutral way as a row sentence."""
+    language-neutral way as a row sentence.
+
+    PLACEHOLDER names go too, and here they go entirely -- unlike in
+    ``row_to_sentence`` there is no value beside them to keep. A parent whose
+    text reads ``"Column_1; Column_2"`` describes nothing and is retrieved by
+    nothing; dropping them can leave this ``""``, which is the honest text for
+    a table whose header row was blank."""
     kept = [
         folded
         for header in headers
-        if (folded := _fold_whitespace(header)) and not _is_noise_header(header)
+        if (folded := _fold_whitespace(header))
+        and not _is_noise_header(header)
+        and not _is_placeholder_header(header)
     ]
     return "; ".join(kept)
 
