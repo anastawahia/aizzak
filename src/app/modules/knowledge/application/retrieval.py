@@ -850,14 +850,24 @@ class RetrieveContext:
         # reads rank, not score, so a candidate discarded after fusion would
         # already have shifted every rank below it.
         #
-        # At the shipped configuration (both floors `0.0`) this pair of lines
-        # is an identity transform; it is the knob, not a behaviour change.
+        # Both floors carry MEASURED numbers since 2026-08-27 (س-22 closed by
+        # owner decision on `P-38`'s evaluation set), so this pair of lines
+        # discards hits on every request instead of passing its input
+        # through: `0.45` on the dense leg's cosine scale, `25.0` on the
+        # sparse leg's IDF-weighted dot product. The consequence that matters
+        # HERE is that either leg can now come back empty, and both can --
+        # `reciprocal_rank_fusion` below already fuses whichever list is
+        # non-empty, and when both are empty `execute` returns no chunks,
+        # which is exactly what the trust gate (`P-33`) reads as "retrieval
+        # found nothing". The evidence for each VALUE lives with the value,
+        # in `Settings.RetrievalSettings`.
         dense_hits = _gate_by_score(dense_hits, tuning.min_dense_score)
         sparse_hits = _gate_by_score(sparse_hits, tuning.min_bm25_score)
         # Counted AFTER the gate and reported beside the pre-gate counts
-        # above: with the shipped `0.0` floors the two pairs are equal, and
-        # the day a floor carries a number the difference between them IS the
-        # gate's effect — the measurement `P-38` has to read to calibrate it.
+        # above, so the difference between the two pairs IS the gate's effect
+        # on this request — the number any RE-calibration reads, and the only
+        # place a leg its own floor emptied is visible at all (past this line
+        # an emptied leg and a leg that never matched look identical).
         stages.update({"dense_kept": len(dense_hits), "sparse_kept": len(sparse_hits)})
 
         # `top_k=mmr_pool_k`, NOT `search_k` and no longer `retain_k` (plan
@@ -924,12 +934,18 @@ class RetrieveContext:
         scored = [_to_scored_chunk(chunk, payload_by_id[chunk.chunk_id]) for chunk in ranked]
         # The three relevance gates' numbers are passed EXPLICITLY (plan step
         # 18, `P-30`) rather than left at `filter_relevant`'s own defaults --
-        # same values, one home. Both floors are `0.0` = disabled (س-22: the
-        # mechanism ships, the number waits for `P-38`'s evaluation set) and
-        # they live on a THIRD scale, the fused RRF score, which is why the
-        # settings field is spelt `min_fused_score` next to the two per-leg
-        # ones. `jaccard_threshold` is the one gate shipped ON, at alpha's
-        # single scale-independent constant (plan fact ح-17).
+        # same values, one home. Both floors are `0.0` = disabled, and since
+        # 2026-08-27 that is a MEASURED verdict rather than a value still
+        # awaiting one (س-22, closed on `P-38`'s set): these two live on a
+        # THIRD scale, the fused RRF score, which is pure rank arithmetic
+        # bounded into `[0.008197, 0.016393]` however good or bad the
+        # candidate, and answerable and unanswerable questions landed in the
+        # SAME interval -- so no floor here separates them. The floors that
+        # DID calibrate are the per-leg pair one stage above, on their own
+        # scales. That third scale is also why the settings field is spelt
+        # `min_fused_score` next to the two per-leg ones.
+        # `jaccard_threshold` is the one gate shipped ON, at alpha's single
+        # scale-independent constant (plan fact ح-17).
         relevant = filter_relevant(
             scored,
             min_score=tuning.min_fused_score,
@@ -1263,10 +1279,12 @@ def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHi
     module's scales it has to be: the dense leg is Qdrant cosine similarity
     over ``[-1, 1]``, so ``hit.score >= 0.0`` would quietly discard every
     negatively correlated hit — an uncalibrated gate disguised as a disabled
-    default, exactly what decision س-22 forbids shipping. The shipped
-    configuration (``Settings.retrieval.min_dense_score``/``.min_bm25_score``,
-    both ``0.0``) takes this branch, so the function is inert until somebody
-    sets a number.
+    default, exactly what decision س-22 forbids shipping. Neither shipped
+    call takes that branch since 2026-08-27: ``min_dense_score`` is ``0.45``
+    and ``min_bm25_score`` is ``25.0`` (س-22 closed on ``P-38``'s evaluation
+    set; ``Settings.RetrievalSettings`` carries the evidence for each). The
+    branch stays because a deployment may still zero a floor — and because
+    zeroing one has to mean "off", never "keep the non-negative half".
 
     ⚠️ The surviving comparison is ``score >= min_score`` — HIGHER is better
     on both legs. alpha's floors gate an L2 DISTANCE where lower is nearer,
