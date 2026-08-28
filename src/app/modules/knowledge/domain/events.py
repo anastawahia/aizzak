@@ -72,6 +72,18 @@ class SummaryRequested:
     stream has to be able to tell WHAT was asked for without a database it may
     not have, which is the same rule ``DocumentRegistered`` follows by
     carrying ``file_id`` next to ``document_id``.
+
+    ``conversation_id`` is the thread the build was asked for INSIDE, or
+    ``None`` when it was asked for outside one (`F-7`). It rides the MESSAGE
+    rather than a column on the job row, for the reason the build key rides
+    it: the worker that finishes the build has to know where the answer is
+    owed, and a column no query would ever filter on is a schema change
+    bought to move a value the message already carries.
+
+    ``None`` is a real value here, not a forgotten one. ``POST
+    /documents/{id}/summary`` has no thread and never will — a build asked
+    for there owes its answer to the route that reads it back, which is
+    exactly what ``AgentRequest.space_id`` means by defaulting.
     """
 
     job_id: str
@@ -79,6 +91,7 @@ class SummaryRequested:
     document_id: str
     kind: str
     lang: str
+    conversation_id: str | None
     occurred_at: datetime
 
 
@@ -90,6 +103,13 @@ class SummaryBuilt:
     Global for the reason ``DocumentIndexed`` is: a full summary takes long
     enough that the tab which asked for it is often not the tab still open,
     and the notification is how the other one learns to stop polling.
+
+    ``conversation_id`` is carried through from ``SummaryRequested`` (`F-7`),
+    not re-derived: the worker reads it off the message it is handling and
+    stamps it here, so the subscriber that appends the finished text to a
+    thread learns which thread from the event rather than from a row nobody
+    wrote it to. A build that had no thread publishes ``None`` and that
+    subscriber has nothing to do.
     """
 
     job_id: str
@@ -97,6 +117,7 @@ class SummaryBuilt:
     document_id: str
     kind: str
     lang: str
+    conversation_id: str | None
     occurred_at: datetime
 
 

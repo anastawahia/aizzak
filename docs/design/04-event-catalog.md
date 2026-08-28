@@ -106,8 +106,8 @@ sequenceDiagram
 | `knowledge.document.registered.v1` | knowledge(API) → knowledge(worker) | document_id | `{document_id, file_id}` |
 | `knowledge.document.indexed.v1` | knowledge → notify | document_id | `{document_id, chunk_count}` |
 | `knowledge.document.indexing_failed.v1` | knowledge → notify | document_id | `{document_id, reason}` |
-| `knowledge.summary.requested.v1` | knowledge → knowledge(worker) | job_id | `{job_id, document_id, kind, lang}` |
-| `knowledge.summary.built.v1` | knowledge(worker) → notify | job_id | `{job_id, document_id, kind, lang}` |
+| `knowledge.summary.requested.v1` | knowledge → knowledge(worker) | job_id | `{job_id, document_id, kind, lang, conversation_id?}` |
+| `knowledge.summary.built.v1` | knowledge(worker) → knowledge(worker) + notify | job_id | `{job_id, document_id, kind, lang, conversation_id?}` |
 | `knowledge.summary.build_failed.v1` | knowledge → notify | job_id | `{job_id, document_id, reason}` |
 | `media.job.requested.v1` | media(API) → media(worker) | job_id | `{job_id, kind, prompt, params}` |
 | `media.job.generated.v1` | media(worker) → notify | job_id | `{job_id, result_file_id}` |
@@ -115,6 +115,8 @@ sequenceDiagram
 | `memory.item.stored.v1` | memory → memory(worker) | memory_id | `{memory_id, agent_key, content_ref}` |
 
 > **مَن يُنتج `knowledge.document.registered.v1`؟** الـAPI، منذ صارت الفهرسة يدويّة: `POST /knowledge/documents` (فهرسةٌ أولى، `IndexFileService`) و`POST /knowledge/reindex` (إعادة بناء، `ReindexService`) — كلاهما يسجّل مستنداً `pending` ويُلحِق هذا الحدث في المعاملة نفسها. لم يعد لعامل المعرفة منتِجٌ لهذا الحدث ولا مشترَكٌ في `stream.files`؛ يستهلكه فقط.
+
+> **لماذا يستهلك عاملُ المعرفة حدثَه `knowledge.summary.built.v1`؟** (‏`F-7`) الملخّص المكتمل يُلحَق رسالةَ مساعِدٍ في المحادثة التي طلبته، وهو إلحاقٌ **دائم** لا إشعارٌ عابر: مجموعةُ `cg.notify.<host>.<pid>` تُنشَأ وتُهدَم مع العمليّة، فلو لم يكن أحدٌ متّصلًا لضاع الملخّص. والمشترِك يعيش في العامل نفسه وتحت `cg.knowledge` نفسها — لا مجموعةَ ثانية على المجرى — لأنّ جدول §4 يعطي هذا العامل واحدة، ولأنّ مجموعةً ثانية كانت ستستقبل كلّ أحداث المعرفة لتردّ على نوعٍ واحد، ومعها قائمةُ معلَّقاتٍ ثانية وطابورُ موتى ثانٍ.
 
 ## 5) الأحداث الداخلية (Domain · بالذاكرة، لا تعبر المجاري)
 تُرفع داخل الوحدة عبر `framework/events/event_bus.py` وتُترجَم إلى صفوف Outbox عند الحاجة لنشرها عالمياً.

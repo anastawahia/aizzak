@@ -39,6 +39,15 @@ name, that reply resolves EXACT next turn, and a router that still ignored
 it would have asked a question it had no way of hearing. The two halves are
 one behaviour.
 
+**How DEEP a routed summarisation reads (plan §3.9, ``F-8``).** ``OVERVIEW``
+by default, ``FULL`` when the question says so — «لخّص هذا الملفّ كاملاً». The
+default is a cost guard and the constants below carry its argument; what
+matters HERE is that the depth is read off the QUESTION while the target is
+not, so a pinned document and a resolved one get the same reading — the user
+said the same thing in both. The reading itself is the domain's
+(``intent.asks_for_full_summary``), which leaves this module the one decision
+it actually owns: what to do when nothing was said.
+
 **A file named in a CONTENT question (plan §4 row 15, ``P-25``) — STRICT.**
 The same resolver, on the other route, doing one thing: when the question
 names one of this workspace's files CONFIDENTLY, that document becomes the
@@ -172,28 +181,47 @@ from app.modules.knowledge.domain.file_resolution import (
     name_token_count,
     resolve_file,
 )
-from app.modules.knowledge.domain.intent import Intent, classify_intent
+from app.modules.knowledge.domain.intent import (
+    Intent,
+    asks_for_full_summary,
+    classify_intent,
+)
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.inbound import RoutedAnswer
 
-# What a routed summarisation asks for. Both are FIXED here rather than
-# guessed from the question, and neither is a `Settings` knob (س-24 keeps
-# runtime tuning in `Settings`, but these are contract choices, not tuning):
+# What a routed summarisation asks for. Neither is a `Settings` knob (س-24
+# keeps runtime tuning in `Settings`, but these are contract choices, not
+# tuning). The LANGUAGE is fixed outright; the KIND has exactly one, narrow
+# way of being overridden.
 #
-# `OVERVIEW`, not `FULL`, because this path can be entered by a REGEX false
-# positive (plan §6 risk 4 — every false SUMMARIZE_DOC damages a legitimate
-# content question). `OVERVIEW` is bounded to the document's opening chunks,
-# `FULL` is a map-reduce over all of them, so a misfire on a 500-page
-# document costs one bounded call instead of a corpus-sized bill. A caller
-# that genuinely wants the map-reduce has `POST /documents/{id}/summary`,
-# where a human named both the document and the depth.
+# `OVERVIEW` is the DEFAULT and stays it (`F-8`, plan §3.9), because this
+# path can be entered by a REGEX false positive (plan §6 risk 4 — every false
+# SUMMARIZE_DOC damages a legitimate content question). `OVERVIEW` is bounded
+# to the document's opening chunks, `FULL` is a map-reduce over all of them,
+# so a misfire on a 500-page document costs one bounded call instead of a
+# corpus-sized bill.
+#
+# `FULL` became reachable from chat when — and only when — the question SAYS
+# so (`_routed_summary_kind`). That does not spend the guard above, it
+# doubles it: a misroute and an explicit depth phrase are independent
+# readings of the sentence, so the expensive call now needs BOTH to be wrong
+# at once, and the second is one a user typed on purpose. What it ends is the
+# silence — «لخّص هذا الملفّ كاملاً» used to be answered with eight chunks
+# and nothing in the answer said that only the opening had been read. A
+# caller who wants the map-reduce WITHOUT saying so still has `POST
+# /documents/{id}/summary`, where a human named both the document and the
+# depth.
 #
 # `AUTO`, because it is a real member and not a missing value (see
 # `SummaryLanguage`): "answer in whatever language the document is written
 # in" is the honest instruction when nobody stated a language — the question
 # is not the document, and a question asked in English about an Arabic report
-# is not a request for a translation.
-_ROUTED_SUMMARY_KIND = SummaryKind.OVERVIEW
+# is not a request for a translation. The DEPTH is read off the question and
+# the LANGUAGE deliberately is not, which is the same distinction: depth is a
+# two-valued property of the REQUEST, language is a property of the DOCUMENT,
+# and only one of those the asker is the authority on.
+_ROUTED_SUMMARY_DEFAULT_KIND = SummaryKind.OVERVIEW
+_ROUTED_SUMMARY_EXPLICIT_KIND = SummaryKind.FULL
 _ROUTED_SUMMARY_LANG = SummaryLanguage.AUTO
 
 # How many tokens the matched file name must carry before an EXACT match is
@@ -201,7 +229,7 @@ _ROUTED_SUMMARY_LANG = SummaryLanguage.AUTO
 # module docstring's last three paragraphs for the failure it prevents).
 #
 # THE one place this is tuned. It is a provisional calibration number, not a
-# contract choice like the two above, and it is deliberately not a `Settings`
+# contract choice like the three above, and it is deliberately not a `Settings`
 # knob: س-24 puts runtime tuning in `Settings`, but this has no reason to
 # differ per deployment — it is one measurement, on the evaluation set `P-38`
 # is waiting for, that should then hold for everybody. Should that
@@ -223,6 +251,12 @@ class SummaryStarting(Protocol):
     wrapping that ``RequestSummaryService`` adds around ``RequestSummary`` is
     exactly the kind of detail a router should not be able to see, let alone
     skip.
+
+    ``conversation_id`` (`F-7`) widens the Protocol by one defaulted keyword,
+    and the router still holds no opinion about it: it hands over the thread
+    it was called from so the build can say where its text is owed, and never
+    reads it back. A default keeps every caller that has no thread — the REST
+    route among them — calling this exactly as before.
     """
 
     async def start(
@@ -232,6 +266,7 @@ class SummaryStarting(Protocol):
         document_id: Uuid,
         kind: SummaryKind,
         lang: SummaryLanguage,
+        conversation_id: Uuid | None = None,
     ) -> SummaryJob: ...
 
 
@@ -294,10 +329,13 @@ class RouteQuestion:
         k: int | None = None,
         document_ids: Sequence[Uuid] | None = None,
         space_id: Uuid,
+        conversation_id: Uuid | None = None,
     ) -> RoutedAnswer:
-        """Route one question. The arguments are ``RetrieveContext.execute``'s,
-        because the CONTENT route is that use-case unchanged — this adds a
-        decision in front of it, not a second retrieval path.
+        """Route one question. The RETRIEVAL arguments are
+        ``RetrieveContext.execute``'s, because the CONTENT route is that use-case
+        unchanged — this adds a decision in front of it, not a second retrieval
+        path. ``conversation_id`` is the one argument that use-case has never had,
+        and the last paragraph says what it is for.
 
         ``k = None`` is that use-case's own "use the configured default"
         (retrieval plan §4 row 18, ``P-40``, س-24) and is passed straight
@@ -329,13 +367,20 @@ class RouteQuestion:
         as one, exactly as it does on the REST route. Turning it into a
         friendly sentence is a rendering decision that belongs to whoever is
         rendering (recorded in the plan's §7).
+
+        ``conversation_id`` reaches ONE of the two routes (`F-7`). It is the
+        thread this question was asked in, and SUMMARIZE_DOC stamps it on the
+        build so the finished summary can be posted back there — the whole
+        point of that route being asynchronous. CONTENT never reads it: that
+        answer is written by the caller, inside the turn, and a thread id
+        would be a value it has no use for.
         """
         space_id = require_space_scope(space_id)
         intent = classify_intent(question)
         scope = document_ids
         if intent is Intent.SUMMARIZE_DOC:
             summarisation = await self._summarisation_route(
-                ctx, question, document_ids, space_id=space_id
+                ctx, question, document_ids, space_id=space_id, conversation_id=conversation_id
             )
             if summarisation is not None:
                 return summarisation
@@ -368,6 +413,7 @@ class RouteQuestion:
         document_ids: Sequence[Uuid] | None,
         *,
         space_id: Uuid,
+        conversation_id: Uuid | None = None,
     ) -> RoutedAnswer | None:
         """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
         and the question should fall through to CONTENT retrieval.
@@ -376,6 +422,11 @@ class RouteQuestion:
         a queued build when the target is identified, a set of names to ask
         the user about when it is not, ``None`` when the question names
         nothing in this corpus at all — and never a best guess.
+
+        The DEPTH comes from ``question`` on every one of those outcomes that
+        queues anything (`F-8`): the pinned path and the resolved path share
+        the one call below, so «كاملاً» means the same thing whether the
+        caller named the document or the question did.
         """
         target = _sole_document(document_ids)
         if target is None:
@@ -400,8 +451,16 @@ class RouteQuestion:
         job = await self._summaries.start(
             ctx,
             document_id=target,
-            kind=_ROUTED_SUMMARY_KIND,
+            # `F-8` — the default depth unless the question asked for the
+            # whole document. Read from the QUESTION, never from the target:
+            # what the user said does not change with how the file was found.
+            kind=_routed_summary_kind(question),
             lang=_ROUTED_SUMMARY_LANG,
+            # `F-7` — the thread that asked, so the build can post its text
+            # back here rather than into a route nobody is watching. The
+            # AMBIGUOUS branch above deliberately passes nothing: it queues no
+            # build, and the question it returns is answered in this same turn.
+            conversation_id=conversation_id,
         )
         return RoutedAnswer(
             intent=Intent.SUMMARIZE_DOC,
@@ -498,6 +557,29 @@ class RouteQuestion:
             return candidates
         pinned = set(document_ids)
         return [candidate for candidate in candidates if candidate.document_id in pinned]
+
+
+def _routed_summary_kind(question: str) -> SummaryKind:
+    """How much of the document a routed summarisation should read: the
+    default, unless ``question`` explicitly asked for the deep one (`F-8`,
+    plan §3.9).
+
+    Two layers, split where the argument for each of them lives. READING the
+    phrase is the domain's (``asks_for_full_summary`` — the same normalizer
+    and the same substring discipline as the classifier that sent the
+    question here, in the one module that owns both); the DEFAULT is this
+    module's, because the cost argument for it is about this route and no
+    other. A domain function that returned a ``SummaryKind`` would have had
+    to carry that default, and then the REST route's depth and the chat
+    route's would be decided in the same place for opposite reasons.
+
+    Pure and outside ``RouteQuestion`` for ``_narrows_content_scope``'s
+    reason: what it answers is a property of the question, not of the
+    router's state.
+    """
+    if asks_for_full_summary(question):
+        return _ROUTED_SUMMARY_EXPLICIT_KIND
+    return _ROUTED_SUMMARY_DEFAULT_KIND
 
 
 def _narrows_content_scope(resolution: ResolvedFile) -> bool:

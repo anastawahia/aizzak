@@ -749,6 +749,10 @@ class _FakeSummaryStarter:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, SummaryKind, SummaryLanguage]] = []
+        # `F-7` — recorded SEPARATELY rather than widened into `calls`: the
+        # thread is not part of the build key, and folding it into the tuple
+        # every existing assertion compares would have said it was.
+        self.threads: list[str | None] = []
 
     async def start(
         self,
@@ -757,8 +761,10 @@ class _FakeSummaryStarter:
         document_id: str,
         kind: SummaryKind,
         lang: SummaryLanguage,
+        conversation_id: str | None = None,
     ) -> SummaryJob:
         self.calls.append((document_id, kind, lang))
+        self.threads.append(conversation_id)
         return SummaryJob(
             id=f"job-{len(self.calls)}",
             workspace_id=ctx.workspace_id,
@@ -2322,6 +2328,123 @@ async def test_a_routed_summary_asks_for_a_bounded_overview_in_the_documents_lan
     (_document_id, kind, lang) = summaries.calls[0]
     assert kind is SummaryKind.OVERVIEW
     assert lang is SummaryLanguage.AUTO
+
+
+async def test_a_routed_summary_carries_the_thread_it_was_asked_in() -> None:
+    """`F-7`: the SUMMARIZE_DOC route is the one caller of ``answer`` that
+    needs to be told where its answer is owed.
+
+    The build finishes minutes after this call returns, so without the thread
+    on it the finished text has nowhere to go — which is exactly the state
+    this route was in: it answered with a receipt and the summary then
+    reached nobody. ``conversation_id`` is recorded SEPARATELY from the build
+    key, because it is not part of it: it changes where the text is
+    delivered, never which row is written."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    await service.answer(
+        ctx, "summarize it", 5, ["file-south"], space_id=_SPACE_A, conversation_id="conv-7"
+    )
+
+    assert summaries.threads == ["conv-7"]
+
+
+async def test_a_summarisation_asked_outside_a_thread_queues_the_same_build_with_none() -> None:
+    """``POST /knowledge/search`` never reaches this route, but the default
+    is what keeps every caller that has no thread — and every test written
+    before `F-7` — calling ``answer`` exactly as it did. ``None`` reads as
+    "nowhere to deliver", and the build itself is unchanged."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    await service.answer(ctx, "summarize it", 5, ["file-south"], space_id=_SPACE_A)
+
+    assert summaries.threads == [None]
+    assert summaries.calls[0][1:] == (SummaryKind.OVERVIEW, SummaryLanguage.AUTO)
+
+
+async def test_a_question_that_asks_for_the_whole_document_queues_a_full_build() -> None:
+    """`F-8`, plan §3.9: «لخّص هذا الملفّ كاملاً» used to be answered with a
+    bounded overview of the document's opening chunks, and nothing in the
+    answer said so.
+
+    The LANGUAGE is unchanged by the same sentence, and that asymmetry is the
+    point: depth is a two-valued property of the REQUEST, which the asker is
+    the authority on, while "which language" is a property of the DOCUMENT,
+    which they are not."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(
+        ctx, "لخّص لي هذا الملفّ كاملاً", 5, ["file-north"], space_id=_SPACE_A
+    )
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert summaries.calls == [("doc-north", SummaryKind.FULL, SummaryLanguage.AUTO)]
+
+
+async def test_the_depth_is_read_off_the_question_when_the_file_was_resolved_by_name() -> None:
+    """One reading for both paths. The pinned case above was told its
+    document by the caller and this one resolves it from the question's own
+    words (row 13), and the depth phrase means the same thing in both —
+    because it is the same user saying it. Reading depth off the TARGET
+    instead would have made «كاملاً» conditional on how the file was
+    found."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    await service.answer(ctx, "لخّص لي التقرير الشمالي كاملاً", 5, space_id=_SPACE_A)
+
+    assert summaries.calls == [("doc-north", SummaryKind.FULL, SummaryLanguage.AUTO)]
+
+
+async def test_an_english_question_asking_for_the_whole_document_queues_a_full_build() -> None:
+    """Both languages reach the same kind, and the English anchor carries a
+    LEFT word boundary it needs: `carefully` ends in `full`."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    await service.answer(
+        ctx, "summarize this document in full", 5, ["file-south"], space_id=_SPACE_A
+    )
+
+    assert summaries.calls == [("doc-south", SummaryKind.FULL, SummaryLanguage.AUTO)]
+
+
+async def test_a_word_that_merely_looks_like_a_depth_phrase_still_gets_the_default() -> None:
+    """The affix trap on the live path: «التكامل» contains «كامل», and this
+    is an ordinary request to summarize the integration file. A map-reduce
+    here would be the cost guard failing in the exact way §6 risk 4 names —
+    a regex reading a word the user did not write."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    await service.answer(ctx, "لخص لي ملف التكامل", 5, ["file-north"], space_id=_SPACE_A)
+
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_an_ambiguous_target_asks_the_user_rather_than_queueing_an_expensive_build() -> None:
+    """Depth does not rescue an unidentified target, and the order the two
+    are decided in is what guarantees it: the AMBIGUOUS branch returns before
+    the `start` call the kind is computed at. «كاملاً» on a question that
+    names no single file buys a clarification question, not the most
+    expensive build available (§3.5 — the missing fourth branch)."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(ctx, "لخص لي ملف الميزانية كاملاً", 5, space_id=_SPACE_A)
+
+    assert set(routed.clarification_options) == {"الميزانية 2024.pdf", "الميزانية 2025.pdf"}
+    assert summaries.calls == []
 
 
 @pytest.mark.parametrize(

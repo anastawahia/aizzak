@@ -146,6 +146,7 @@ class KnowledgeRetrieval(Protocol):
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid,
+        conversation_id: Uuid | None = None,
     ) -> RoutedAnswer:
         """Classify ``question`` and dispatch it to the route it belongs to
         (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) — SUMMARIZE_DOC to
@@ -156,11 +157,21 @@ class KnowledgeRetrieval(Protocol):
         routing is the module's business rather than the agent's — every
         consumer of this port gets it, not only the agent that asked first.
 
-        The arguments are ``retrieve``'s, unchanged, because the CONTENT route
-        IS ``retrieve``: ``k``, the pinned ``file_ids`` scope and the
-        keyword-only ``space_id`` mean here exactly what they mean there, and
-        a second vocabulary for the same three narrowings would be a second
-        place for them to drift.
+        The RETRIEVAL arguments are ``retrieve``'s, unchanged, because the
+        CONTENT route IS ``retrieve``: ``k``, the pinned ``file_ids`` scope
+        and the keyword-only ``space_id`` mean here exactly what they mean
+        there, and a second vocabulary for the same three narrowings would be
+        a second place for them to drift.
+
+        ``conversation_id`` is the one argument that is NOT retrieval's
+        (`F-7`), which is why it lives on this method and not on ``retrieve``.
+        The SUMMARIZE_DOC route queues work that finishes minutes after the
+        call returns, so it has to be told where the answer is owed; the
+        module stamps the id on the build and a subscriber posts the finished
+        text into that thread. CONTENT ignores it entirely — that answer is
+        written by the caller, inside the turn. Defaulted to ``None``, which
+        means "nowhere to deliver" and is the honest state of every caller
+        that has no thread, ``POST /knowledge/search`` included.
 
         **One behaviour is not ``retrieve``'s** (retrieval plan §4 row 15,
         ``P-25``): a question that NAMES one of this workspace's files is

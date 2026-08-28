@@ -69,6 +69,8 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
         pipeline=IndexDocument(placeholder, placeholder),  # type: ignore[arg-type]
         content_resolver=placeholder,  # type: ignore[arg-type]
         summary_builder=placeholder,  # type: ignore[arg-type]
+        summaries=placeholder,  # type: ignore[arg-type]
+        conversation_messages=placeholder,  # type: ignore[arg-type]
         outbox=placeholder,  # type: ignore[arg-type]
         uow=placeholder,  # type: ignore[arg-type]
         ledger=placeholder,  # type: ignore[arg-type]
@@ -110,7 +112,14 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
 def test_table_has_exactly_the_three_pairs_named_by_the_plan() -> None:
     """Four until manual indexing retired ``(stream.files, cg.knowledge)``:
     the knowledge worker no longer reads that stream, and a group provisioned
-    for a reader that never comes back would lag by one per upload forever."""
+    for a reader that never comes back would lag by one per upload forever.
+
+    Still three after `F-7`, and that is the assertion doing the work: the
+    summary-delivery subscriber was added as a HANDLER on the group this
+    worker already holds, not as a group of its own. A second group on
+    ``stream.knowledge`` would show up here as a fourth pair -- and would
+    bring a second pending list and a second dead-letter queue with it, to
+    answer one event type."""
     assert len(STATIC_CONSUMER_TOPOLOGY) == 3
     assert all(isinstance(binding, ConsumerBinding) for binding in STATIC_CONSUMER_TOPOLOGY)
     for binding in STATIC_CONSUMER_TOPOLOGY:

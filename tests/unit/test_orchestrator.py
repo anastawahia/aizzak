@@ -452,6 +452,7 @@ class _FakeKnowledge:
         file_ids: Sequence[str] | None = None,
         *,
         space_id: str,
+        conversation_id: str | None = None,
     ) -> _FakeRoutedAnswer:
         """The seam the real ``rag_agent`` calls (retrieval plan §3.4/§4 row
         11): ONE call, routed inside the module. It records into the SAME

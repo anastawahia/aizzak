@@ -174,6 +174,8 @@ from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelay
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.infrastructure.vector.qdrant_store import QdrantVectorStore, create_qdrant_client
+from app.modules.conversations.adapters.sql_repository import SqlConversationRepository
+from app.modules.conversations.application.use_cases import AppendMessage
 from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
 from app.modules.credentials.application.use_cases import ResolveCredential
 from app.modules.files.adapters.sql_repository import SqlFileRepository
@@ -191,8 +193,9 @@ from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.summarization import SummarizeDocument
 from app.modules.knowledge.application.use_cases import BuildSummary, IndexRegisteredDocument
 from app.modules.knowledge.domain.sparse import Bm25Params
+from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
-from app.modules.knowledge.ports.repository import DocumentRepository
+from app.modules.knowledge.ports.repository import DocumentRepository, SummaryRepository
 from app.modules.knowledge.ports.summarization import SUMMARIZE_CAPABILITY, ResolvedSummarizer
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
 from app.modules.media.application.event_mapping import to_outbox_record as _media_to_outbox_record
@@ -604,6 +607,13 @@ def build_knowledge_index_handler(
 # prints as 1800 and not 1800.0 -- the `content_resolver.py` phrasing.
 _SUMMARY_TIMEOUT_REASON = "building this summary exceeded the {seconds:g}s limit and was stopped"
 
+# `F-7`. A plain string because that is what `AppendMessage` takes: `role`
+# crosses into `conversations` as a `str` and is validated against
+# `MessageRole` on the way in, which is the same discipline
+# `ConversationThreads` states for `kind` -- a caller that imported the enum
+# would be importing another module's domain to say one word.
+_ROLE_ASSISTANT = "assistant"
+
 
 def build_knowledge_summary_handler(
     build: BuildSummary,
@@ -646,6 +656,11 @@ def build_knowledge_summary_handler(
       hence the SECOND ``uow.begin``: without it the handler would redeliver,
       rebuild, and be rejected again until the DLQ ate it, with the job stuck
       ``running`` forever.
+    * **``conversation_id`` on the message** (`F-7`) — carried straight
+      through to ``finalize``, which stamps it on
+      ``knowledge.summary.built.v1``. Nothing here reads it, and that is the
+      point: this handler builds summaries, and where a finished one is owed
+      is the next handler's business.
     * **``run`` outliving ``max_duration_s``** (`F-4`) — a build that is not
       going to finish. Routed through the SAME ``fail`` as the first branch,
       so there is still one path to a failed job, and caught HERE rather than
@@ -671,6 +686,14 @@ def build_knowledge_summary_handler(
         data = envelope["data"]
         event_id: str = envelope["id"]
         job_id: str = data["job_id"]
+        # `F-7` -- read off the MESSAGE, never off the job row, because the
+        # row does not have it: the thread a build owes its answer to is a
+        # property of the request, and this is the request. `.get` and not
+        # `[...]`: a build asked for outside a thread omits the key entirely
+        # (the `space_id` rule in `files`' mapping), and so does every
+        # `knowledge.summary.requested.v1` published before this step -- one
+        # of which may still be pending redelivery when this deploys.
+        conversation_id: str | None = data.get("conversation_id")
         try:
             plan = await build.claim(ctx, job_id=job_id)
         except (AppError, ValueError) as exc:
@@ -696,7 +719,7 @@ def build_knowledge_summary_handler(
             async with uow.begin(ctx):
                 if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
                     return  # Duplicate delivery -- clean return, the engine XACKs.
-                _, events = await build.finalize(ctx, attempt)
+                _, events = await build.finalize(ctx, attempt, conversation_id=conversation_id)
                 await outbox.append(
                     ctx, [_knowledge_to_outbox_record(ctx, event) for event in events]
                 )
@@ -710,10 +733,108 @@ def build_knowledge_summary_handler(
             async with uow.begin(ctx):
                 if not await ledger.claim(ctx, consumer_group=consumer_group, event_id=event_id):
                     return
-                _, events = await build.finalize(ctx, failure)
+                _, events = await build.finalize(ctx, failure, conversation_id=conversation_id)
                 await outbox.append(
                     ctx, [_knowledge_to_outbox_record(ctx, event) for event in events]
                 )
+
+    return _handle
+
+
+def build_knowledge_summary_delivery_handler(
+    summaries: SummaryRepository,
+    conversation_messages: AppendMessage,
+    uow: UnitOfWork,
+    ledger: ProcessedEventLedger,
+    *,
+    consumer_group: str = _CG_KNOWLEDGE,
+) -> EventHandler:
+    """``knowledge.summary.built.v1`` -> the finished text, appended to the
+    thread that asked for it as one assistant message (`F-7`).
+
+    **The missing half of the chat summarisation route.** Asking for a
+    summary in a conversation queues a build and answers with a receipt
+    (``rag_agent``'s ``_summary_queued_answer``); the build then finishes
+    minutes later in this process, and until this handler existed the text it
+    produced reached nobody — the event was minted, published, and consumed
+    by nothing in the platform. Nothing is being ported here: alpha returned
+    the summary SYNCHRONOUSLY inside the answer, which means holding a
+    streaming chat turn open for the length of a map-reduce.
+
+    **A DURABLE group, not the notify family.** ``knowledge.summary.built.v1``
+    already reaches the API's ``cg.notify.<host>.<pid>`` consumers, and
+    leaving the delivery to them would have made whether the summary is ever
+    written depend on whether a browser happened to be connected — those
+    groups are created and torn down with the process. A message in a thread
+    is a stored artefact and needs a group that outlives every reader.
+
+    **The SAME group and the same subscription as the build handler**, for
+    the reason ``build_knowledge_summary_handler`` itself was not given one:
+    04 §4's binding table gives this worker one group on ``stream.knowledge``.
+    A second group would receive EVERY knowledge event in order to answer one
+    type, and would bring a second pending list and a second dead-letter
+    queue with it. The DD-09 ledger is keyed ``(consumer_group, event_id)``
+    and this is a different event id from the request that started the build,
+    so sharing the group costs no idempotency.
+
+    Three quiet returns, none of them an error:
+
+    * **no ``conversation_id``** — the build was asked for through ``POST
+      /documents/{id}/summary``, which reads its result back through ``GET``.
+      There is nowhere to deliver, and that is the normal case for every
+      summary the REST route builds.
+    * **no stored summary** — deleted, or its document re-indexed away,
+      between the build committing and this delivery. The thread is better
+      off with the receipt it already has than with a message about a
+      summary that no longer exists.
+    * **an ``AppError`` from the append** — the thread was deleted or is
+      unknown. Terminal facts, so the delivery ends rather than being
+      redelivered five times into the DLQ; a Postgres or Redis outage is not
+      an ``AppError`` and still escapes to be retried, which is the rule
+      ``build_knowledge_summary_handler`` states for its own broad branch.
+
+    The summary is READ here rather than carried on the event. A summary is
+    thousands of characters and the stream is not where a document's prose
+    belongs — 04 §4's payload for this type is four ids, and the row is one
+    tenant-scoped read away in the process that just wrote it.
+
+    ``AppendMessage`` returns a ``MessageAppended`` this handler drops, the
+    same way ``ConversationService.append`` drops it: 04 §5 lists it among the
+    conversations events that are internal and never promoted to a stream, so
+    there is no outbox record owed for it.
+    """
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        data = envelope["data"]
+        conversation_id: str | None = data.get("conversation_id")
+        if conversation_id is None:
+            return
+        summary = await summaries.get(
+            ctx,
+            data["document_id"],
+            SummaryKind(data["kind"]),
+            SummaryLanguage(data["lang"]),
+        )
+        if summary is None:
+            return
+        try:
+            async with uow.begin(ctx):
+                if not await ledger.claim(
+                    ctx, consumer_group=consumer_group, event_id=envelope["id"]
+                ):
+                    return  # Duplicate delivery -- clean return, the engine XACKs.
+                await conversation_messages.execute(
+                    ctx, conversation_id, role=_ROLE_ASSISTANT, text=summary.text
+                )
+        except AppError as exc:
+            _logger.info(
+                "summary_delivery_declined",
+                extra={
+                    "conversation_id": conversation_id,
+                    "document_id": data["document_id"],
+                    "reason": str(exc),
+                },
+            )
 
     return _handle
 
@@ -725,6 +846,8 @@ def build_knowledge_worker(
     pipeline: IndexDocument,
     content_resolver: DocumentContentResolver,
     summary_builder: BuildSummary,
+    summaries: SummaryRepository,
+    conversation_messages: AppendMessage,
     outbox: EventOutbox,
     uow: UnitOfWork,
     ledger: ProcessedEventLedger,
@@ -753,6 +876,14 @@ def build_knowledge_worker(
     comment above ``build_knowledge_index_handler`` records what moved where.
     ``documents``/``uow``/``ledger`` are still parameters, all three still used
     by the handlers below.
+
+    **`F-7` added a THIRD handler, not a third subscription.** ``summaries``
+    and ``conversation_messages`` are what
+    ``build_knowledge_summary_delivery_handler`` needs to read a finished
+    summary and post it into the thread that asked; both are required
+    parameters, like every other dependency here, because a worker wired
+    without them would still boot and would silently drop every summary a
+    conversation ever asked for.
     """
     subscriptions = [
         Subscription(
@@ -777,6 +908,17 @@ def build_knowledge_worker(
                     ledger,
                     heartbeat=heartbeat,
                     max_duration_s=summarize_max_duration_s,
+                ),
+                # `F-7` -- the worker consuming its own event, exactly as it
+                # already consumes `document.registered.v1` to produce
+                # `document.indexed.v1`. Still ONE subscription and one group;
+                # see the handler's docstring for why a second group would
+                # have been the expensive way to answer one event type.
+                "knowledge.summary.built.v1": build_knowledge_summary_delivery_handler(
+                    summaries,
+                    conversation_messages,
+                    uow,
+                    ledger,
                 ),
             },
         ),
@@ -985,13 +1127,24 @@ async def build_knowledge_worker_from_env() -> tuple[
         providers,
         timeout_s=settings.limits.parser_timeout_seconds,
     )
+    # Hoisted out of `BuildSummary`'s argument list by `F-7`: the delivery
+    # handler reads back the summary the build just wrote, and two adapters
+    # over one session factory would be two objects describing one table.
+    summaries = SqlSummaryRepository(tenant_session)
     summary_builder = BuildSummary(
         documents,
-        SqlSummaryRepository(tenant_session),
+        summaries,
         SqlSummaryJobRepository(tenant_session),
         SummarizeDocument(),
         _WorkerSummarizerResolver(summarize_providers),  # `F-1` -- 300 s, not 60 s
     )
+    # `F-7` -- the ONE conversations capability this process needs, taken
+    # nominally the way `documents`/`pipeline` are: a worker entrypoint is a
+    # composition root for its process, and knowing both modules is what a
+    # composition root is for. The narrower alternative, `ConversationThreads`,
+    # would have meant building three more use-cases to satisfy a Protocol
+    # whose other methods nothing here calls.
+    conversation_messages = AppendMessage(SqlConversationRepository(tenant_session))
 
     redis_client = create_redis_client(
         settings.redis,
@@ -1005,6 +1158,8 @@ async def build_knowledge_worker_from_env() -> tuple[
         pipeline=pipeline,
         content_resolver=content_resolver,
         summary_builder=summary_builder,
+        summaries=summaries,
+        conversation_messages=conversation_messages,
         outbox=outbox,
         uow=tenant_session,
         ledger=ledger,

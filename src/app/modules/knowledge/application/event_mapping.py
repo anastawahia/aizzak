@@ -77,6 +77,14 @@ def to_outbox_record(ctx: ExecutionContext, event: KnowledgeEvent) -> OutboxReco
     that type field for field — deliberately not every field the domain
     event itself carries (``DocumentIndexed`` also has ``file_id``/
     ``collection``, neither of which 04 §4 lists for the wire event).
+
+    **``conversation_id`` is OMITTED from the two summary payloads when the
+    build has no thread**, never sent as ``null`` — the ``space_id`` rule in
+    ``files``' own mapping, applied for the same three reasons: the schema
+    forbids ``null`` for it, the omission is what an envelope published
+    before `F-7` looks like, and a consumer therefore has ONE shape to
+    handle for "no thread" rather than two. It is an ADDED OPTIONAL field, so
+    both types stay ``.v1`` (04 §6).
     """
     match event:
         case DocumentRegistered():
@@ -99,6 +107,8 @@ def to_outbox_record(ctx: ExecutionContext, event: KnowledgeEvent) -> OutboxReco
                 "kind": event.kind,
                 "lang": event.lang,
             }
+            if event.conversation_id is not None:
+                data["conversation_id"] = event.conversation_id
             aggregate_type, aggregate_id = AGGREGATE_SUMMARY_JOB, event.job_id
         case SummaryBuilt():
             event_type = "knowledge.summary.built.v1"
@@ -108,6 +118,8 @@ def to_outbox_record(ctx: ExecutionContext, event: KnowledgeEvent) -> OutboxReco
                 "kind": event.kind,
                 "lang": event.lang,
             }
+            if event.conversation_id is not None:
+                data["conversation_id"] = event.conversation_id
             aggregate_type, aggregate_id = AGGREGATE_SUMMARY_JOB, event.job_id
         case SummaryBuildFailed():
             event_type = "knowledge.summary.build_failed.v1"

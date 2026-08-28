@@ -1568,3 +1568,145 @@ async def test_a_failing_translation_lands_the_job_in_failed_like_any_other_buil
     assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
     # And the source it could not translate is still exactly where it was.
     assert stack.summaries.rows[("doc-1", "full", "en")].text == "English body"
+
+
+# --------------------------------------------------------------------------- #
+# `F-7` — the thread a build owes its answer to                               #
+# --------------------------------------------------------------------------- #
+
+_THREAD = "conv-7"
+
+
+@pytest.mark.asyncio
+async def test_a_build_asked_for_inside_a_thread_says_so_on_its_requested_event() -> None:
+    """`F-7`: the id rides the MESSAGE, because there is no column for it and
+    deliberately so — the worker reads it back off the envelope it is handed,
+    which is the same thing ``SummaryRequested`` already does for the build
+    key it could have loaded from the job row."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+
+    await stack.knowledge.request_summary.start(
+        _ctx(),
+        document_id="doc-1",
+        kind=SummaryKind.OVERVIEW,
+        lang=SummaryLanguage.AUTO,
+        conversation_id=_THREAD,
+    )
+
+    published = stack.outbox.calls[0][0].payload["data"]
+    assert published["conversation_id"] == _THREAD
+
+
+@pytest.mark.asyncio
+async def test_a_build_asked_for_outside_a_thread_omits_the_key_rather_than_nulling_it() -> None:
+    """The ``space_id`` rule in ``files``' own mapping, and the reason is the
+    same: an omitted key is what an envelope published before `F-7` looks
+    like, so a consumer has ONE shape to read for "no thread" instead of two.
+
+    This is the ordinary case, not an edge one — every summary ``POST
+    /documents/{id}/summary`` builds is read back through ``GET`` and has no
+    thread to be delivered to."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+
+    await stack.knowledge.request_summary.start(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AR
+    )
+
+    published = stack.outbox.calls[0][0].payload["data"]
+    assert "conversation_id" not in published
+    # The four fields that were there before `F-7` are untouched, so the
+    # payload of a REST-route build is byte for byte what it always was.
+    assert set(published) == {"job_id", "document_id", "kind", "lang"}
+
+
+@pytest.mark.asyncio
+async def test_the_thread_is_not_part_of_the_key_so_a_second_one_still_gets_the_409() -> None:
+    """Two threads asking for the same overview of the same document in the
+    same language are ONE build, and the second is still refused before a
+    token is spent.
+
+    This is the whole reason ``conversation_id`` is not on the job row and
+    not in ``uq_summary_job_active``: had it been, the guard would have
+    stopped seeing the pair as duplicates and the workspace would pay twice
+    for one artefact — and then the two builds would race to write one
+    ``uq_summary_key`` row."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+
+    await request.execute(
+        _ctx(),
+        document_id="doc-1",
+        kind=SummaryKind.OVERVIEW,
+        lang=SummaryLanguage.AUTO,
+        conversation_id="conv-first",
+    )
+    with pytest.raises(ConflictError, match="already being built"):
+        await request.execute(
+            _ctx(),
+            document_id="doc-1",
+            kind=SummaryKind.OVERVIEW,
+            lang=SummaryLanguage.AUTO,
+            conversation_id="conv-second",
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_finished_build_stamps_the_thread_it_was_handed_on_summary_built() -> None:
+    """The other half of the ride: ``finalize`` takes the id the handler read
+    off the request message and puts it on ``knowledge.summary.built.v1``,
+    which is what lets the delivery subscriber know where to post the text
+    without a second read of anything."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = ["alpha", "beta"]
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    attempt = await build.run(_ctx(), plan)
+    _, events = await build.finalize(_ctx(), attempt, conversation_id=_THREAD)
+
+    assert [type(event).__name__ for event in events] == ["SummaryBuilt"]
+    assert events[0].conversation_id == _THREAD  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_finalizing_without_a_thread_publishes_none_and_not_a_missing_field() -> None:
+    """``None`` on the DOMAIN event, an absent key on the WIRE — the two are
+    different layers saying the same thing, and the mapping is the one place
+    that translates between them."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = ["alpha"]
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    _, events = await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    assert events[0].conversation_id is None  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_build_carries_no_thread_because_nothing_subscribes_to_a_failure() -> None:
+    """``SummaryBuildFailed`` deliberately did not grow the field. Adding it
+    would have been a promise nobody is waiting for — the ``FileRenamed``
+    mistake the event's own docstring names — and the thread that asked
+    already has the receipt it was given when the build was queued."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = []
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    _, events = await build.finalize(_ctx(), await build.run(_ctx(), plan), conversation_id=_THREAD)
+
+    assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
+    assert not hasattr(events[0], "conversation_id")

@@ -36,7 +36,12 @@ import pytest
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.storage_handle import StorageHandle
-from app.framework.errors import AppError, UnsupportedTypeError, ValidationError
+from app.framework.errors import (
+    AppError,
+    NotFoundError,
+    UnsupportedTypeError,
+    ValidationError,
+)
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.event_outbox import OutboxRecord
@@ -47,8 +52,12 @@ from app.framework.types import Json
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.modules.knowledge.application.indexing import IndexDocument
-from app.modules.knowledge.domain.entities import Chunk, Document
-from app.modules.knowledge.domain.value_objects import IndexStatus
+from app.modules.knowledge.domain.entities import Chunk, Document, Summary
+from app.modules.knowledge.domain.value_objects import (
+    IndexStatus,
+    SummaryKind,
+    SummaryLanguage,
+)
 from app.modules.knowledge.ports.content_extractor import (
     ParsedChunk,
     ParsedChunkKind,
@@ -63,6 +72,7 @@ from app.workers.bootstrap import (
     Disposable,
     _routing_for,
     build_knowledge_index_handler,
+    build_knowledge_summary_delivery_handler,
     build_knowledge_summary_handler,
     build_knowledge_worker_from_env,
     build_media_run_handler,
@@ -764,6 +774,7 @@ class _FakeBuildSummary:
         self.on_heartbeat: object = "not-called"
         self.failed: list[str] = []
         self.finalized: list[object] = []
+        self.threads: list[str | None] = []  # `F-7` — what `finalize` was told
         self._run_seconds = run_seconds
 
     async def claim(self, ctx: ExecutionContext, *, job_id: str) -> object:
@@ -783,9 +794,10 @@ class _FakeBuildSummary:
         return _FakeSummaryAttempt(error=reason)
 
     async def finalize(
-        self, ctx: ExecutionContext, attempt: object
+        self, ctx: ExecutionContext, attempt: object, *, conversation_id: str | None = None
     ) -> tuple[object, tuple[object, ...]]:
         self.finalized.append(attempt)
+        self.threads.append(conversation_id)
         return object(), ()
 
 
@@ -1082,12 +1094,16 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     assert [(s.stream, s.group) for s in subscriptions] == [
         ("stream.knowledge", "cg.knowledge"),
     ]
-    # Two handlers on `stream.knowledge` since BE-RAG-009, still under the one
-    # `cg.knowledge` group: a summary build is more work for the process that
-    # already owns this stream, not a reason for a second consumer group.
+    # THREE handlers on `stream.knowledge` since `F-7`, still under the one
+    # `cg.knowledge` group: a summary build -- and the delivery of what it
+    # produced -- is more work for the process that already owns this stream,
+    # not a reason for a second consumer group. The third one consumes an
+    # event this same worker publishes, exactly as the first consumes
+    # `document.registered.v1` to publish `document.indexed.v1`.
     assert set(subscriptions[0].handlers) == {
         "knowledge.document.registered.v1",
         "knowledge.summary.requested.v1",
+        "knowledge.summary.built.v1",
     }
     # engine.dispose, qdrant_client.close, embedding_http.aclose, the FOUR
     # LLM clients, redis_client.aclose, _close_vault -- `_close_vault` is
@@ -1437,3 +1453,227 @@ def test_build_memory_worker_from_env_builds_a_real_consumer_without_raising() -
     for dispose in disposables:
         disposable: Disposable = dispose
         assert callable(disposable)
+
+
+# --------------------------------------------------------------------------- #
+# `F-7`: knowledge.summary.built.v1 -> an assistant message in the thread     #
+# --------------------------------------------------------------------------- #
+_DELIVERY_DOC = "doc-77"
+_DELIVERY_TEXT = "The retrieval policy, in eight paragraphs."
+
+
+class _FakeSummaries:
+    """Minimal ``SummaryRepository`` -- only the exact-key ``get`` the
+    delivery handler calls, keyed the way the real table is."""
+
+    def __init__(self, summary: Summary | None = None) -> None:
+        self.summary = summary
+        self.reads: list[tuple[str, SummaryKind, SummaryLanguage]] = []
+
+    async def get(
+        self,
+        ctx: ExecutionContext,
+        document_id: str,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> Summary | None:
+        self.reads.append((document_id, kind, lang))
+        return self.summary
+
+
+class _FakeAppendMessage:
+    """Minimal ``AppendMessage`` -- records the turn it was asked to write,
+    or raises whatever the test wants the conversations module to raise."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.appended: list[tuple[str, str, str]] = []
+
+    async def execute(
+        self,
+        ctx: ExecutionContext,
+        conversation_id: str,
+        *,
+        role: str,
+        text: str,
+        attachments: tuple[str, ...] = (),
+        token_count: int | None = None,
+    ) -> object:
+        if self.error is not None:
+            raise self.error
+        self.appended.append((conversation_id, role, text))
+        return object()
+
+
+def _summary(text: str = _DELIVERY_TEXT) -> Summary:
+    return Summary(
+        id=new_uuid7(),
+        workspace_id="ws-1",
+        document_id=_DELIVERY_DOC,
+        kind=SummaryKind.OVERVIEW,
+        lang=SummaryLanguage.AUTO,
+        text=text,
+        model="m",
+        source_chunks=3,
+        truncated=False,
+        built_at=utc_now(),
+    )
+
+
+def _built_envelope(ctx: ExecutionContext, *, conversation_id: str | None = "conv-7") -> Json:
+    data: Json = {
+        "job_id": "job-1",
+        "document_id": _DELIVERY_DOC,
+        "kind": "overview",
+        "lang": "auto",
+    }
+    if conversation_id is not None:
+        data["conversation_id"] = conversation_id
+    return {
+        "type": "knowledge.summary.built.v1",
+        "workspaceid": ctx.workspace_id,
+        "id": new_uuid7(),
+        "data": data,
+    }
+
+
+async def test_a_finished_summary_reaches_the_thread_that_asked_for_it() -> None:
+    """`F-7`, the missing half of the chat summarisation route: the build's
+    text arrives in the conversation as one assistant turn.
+
+    Before this handler the event was minted, published, and consumed by
+    nothing in the platform -- the thread kept the receipt it was given when
+    the build was queued and never learned that the build had finished."""
+    summaries = _FakeSummaries(_summary())
+    append = _FakeAppendMessage()
+    ledger = _FakeLedger()
+    handler = build_knowledge_summary_delivery_handler(
+        summaries,  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        ledger,
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    assert append.appended == [("conv-7", "assistant", _DELIVERY_TEXT)]
+    # Read back under the event's own key, never guessed: the triple on the
+    # message is what the build wrote the row under.
+    assert summaries.reads == [(_DELIVERY_DOC, SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    # And the DD-09 claim is taken under the group this worker already holds.
+    assert [group for group, _ in ledger.calls] == ["cg.knowledge"]
+
+
+async def test_a_summary_with_no_thread_is_delivered_nowhere_and_is_not_an_error() -> None:
+    """The ordinary case for every build ``POST /documents/{id}/summary``
+    starts: there is no thread, the result is read back through ``GET``, and
+    this handler has nothing to do. Not even a ledger claim -- an event that
+    causes no effect has no effect to make idempotent."""
+    append = _FakeAppendMessage()
+    ledger = _FakeLedger()
+    summaries = _FakeSummaries(_summary())
+    handler = build_knowledge_summary_delivery_handler(
+        summaries,  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        ledger,
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx, conversation_id=None))
+
+    assert append.appended == []
+    assert summaries.reads == []
+    assert ledger.calls == []
+
+
+async def test_a_summary_deleted_before_its_delivery_leaves_the_thread_alone() -> None:
+    """Deleted, or its document re-indexed away, between the build committing
+    and this delivery. The thread is better off with the receipt it already
+    has than with a message about a summary that no longer exists."""
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(None),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    assert append.appended == []
+
+
+async def test_a_deleted_thread_ends_the_delivery_instead_of_redelivering_it_to_the_dlq() -> None:
+    """A thread that is gone is a TERMINAL fact, and a handler that let it
+    escape would be redelivered five times and dead-lettered for a condition
+    no retry can fix. A Postgres or Redis outage is not an ``AppError`` and
+    still escapes -- the rule ``build_knowledge_summary_handler`` states for
+    its own broad branch, applied here."""
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary()),  # type: ignore[arg-type]
+        _FakeAppendMessage(NotFoundError("conversation not found")),  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))  # nothing escapes
+
+
+async def test_a_duplicate_delivery_writes_the_summary_into_the_thread_only_once() -> None:
+    """DD-09: at-least-once redelivery must not append the same summary
+    twice. The claim is the first statement inside the transaction the append
+    runs in, so a second delivery returns before writing anything."""
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary()),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(result=False),  # already processed
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    assert append.appended == []
+
+
+async def test_the_build_handler_hands_the_message_s_thread_to_finalize() -> None:
+    """`F-7`: the id is read off the envelope being answered, not off the job
+    row -- which does not have it. That is what puts it on
+    ``knowledge.summary.built.v1`` for the delivery handler above."""
+    build = _FakeBuildSummary()
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        _FakeOutbox(),
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+    envelope = _summary_envelope(ctx)
+    envelope["data"]["conversation_id"] = "conv-7"
+
+    await handler(ctx, envelope)
+
+    assert build.threads == ["conv-7"]
+
+
+async def test_a_request_published_before_f7_still_finalizes_with_no_thread() -> None:
+    """An envelope already sitting in the stream when this deploys carries no
+    ``conversation_id`` key at all. ``.get`` rather than ``[...]`` is what
+    keeps that message a normal build instead of a poisoned one."""
+    build = _FakeBuildSummary()
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        _FakeOutbox(),
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _summary_envelope(ctx))
+
+    assert build.threads == [None]

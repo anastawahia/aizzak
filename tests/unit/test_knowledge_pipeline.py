@@ -73,7 +73,11 @@ from app.modules.knowledge.domain.file_resolution import (
     ResolvedFile,
     resolve_file,
 )
-from app.modules.knowledge.domain.intent import Intent, classify_intent
+from app.modules.knowledge.domain.intent import (
+    Intent,
+    asks_for_full_summary,
+    classify_intent,
+)
 from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
 from app.modules.knowledge.domain.relevance import ScoredChunk, filter_relevant
 from app.modules.knowledge.domain.sparse import (
@@ -1445,6 +1449,141 @@ def test_arabic_summarize_anchors_still_match_as_substrings(query: str) -> None:
     word boundaries. §3.4 states this is correct and intended; the test
     exists so nobody later "fixes" it into `\\b` and silently loses recall."""
     assert classify_intent(query) is Intent.SUMMARIZE_DOC
+
+
+# --- Depth: `asks_for_full_summary` (`F-8`, plan §3.9) -----------------------
+#
+# The calibration runs the OTHER way from the one above. There, recall is
+# what matters — CONTENT is a fall-through that cannot be wrong on its own.
+# Here a MISS costs one bounded summary the user can ask for again, and a
+# FALSE FIRE buys a map-reduce over every chunk of the document, so most of
+# these tests are about what must NOT fire.
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "لخّص هذا الملفّ كاملاً",
+        "لخص الملف بالكامل",
+        "أريد ملخصاً مفصّلاً لهذا الملف",
+        "لخّص التقرير بالتفصيل",
+        "لخص لي هذا الكتاب بشكل شامل",
+        "Summarize this document in full",
+        "summarize it fully",
+        "Summarize the report in detail",
+        "Give me a detailed summary of this file",
+        "summarize the complete document",
+    ],
+)
+def test_an_explicit_depth_phrase_asks_for_the_full_summary(query: str) -> None:
+    """The whole of `F-8`: «لخّص هذا الملفّ كاملاً» used to be answered from
+    the document's opening chunks, with nothing in the answer saying that
+    only the opening had been read (§3.9). One phrase per anchor, Arabic and
+    English, in the shapes a user actually types them."""
+    assert asks_for_full_summary(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "لخّص لي هذا",
+        "لخص لي التقرير السنوي",
+        "أريد تلخيص هذا الملف",
+        "ملخص الملف من فضلك",
+        "Summarize this document",
+        "Please provide a summary of the report",
+    ],
+)
+def test_an_ordinary_summarization_request_leaves_the_default_alone(query: str) -> None:
+    """`OVERVIEW` is not something this predicate returns — it is what the
+    router does when this predicate says nothing was asked. These are the
+    questions that must keep saying nothing, because they are the ones the
+    cost guard was written for (§6 risk 4)."""
+    assert asks_for_full_summary(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "لخص لي ملف التكامل",
+        "لخّص مستند التكامل مع المزوّدين",
+        "لخص الحل المتكامل",
+        "summarize this carefully",
+        "summarize the successfully delivered items",
+        "summarize it thoughtfully",
+    ],
+)
+def test_a_word_that_merely_contains_a_depth_stem_does_not_ask_for_one(query: str) -> None:
+    """The affix trap, on both sides, and it is `(?<!م)لخص`'s trap again:
+    Arabic is matched as substrings on purpose, so «التكامل» and «متكامل»
+    carry «كامل» behind a «ت» — «لخص لي ملف التكامل» is an ordinary request
+    to summarize the integration file, and answering it with a map-reduce is
+    the exact failure the guard exists for.
+
+    English has the mirror image and needs the boundary on the LEFT:
+    `carefully`, `successfully` and `thoughtfully` all END in `full`."""
+    assert asks_for_full_summary(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "لخص تفاصيل البند الثالث",
+        "summarize the details of section 3",
+    ],
+)
+def test_a_details_noun_names_what_to_summarize_and_not_how_deeply(query: str) -> None:
+    """Only ADVERBIAL and ADJECTIVAL depth words qualify, which is the same
+    objecthood instinct as rule 2 pointed the other way: «مفصل» describes the
+    summary, «تفاصيل» names its subject. These questions ask for a summary OF
+    one section — a map-reduce over the whole document is both expensive and
+    not what was asked."""
+    assert asks_for_full_summary(query) is False
+
+
+def test_the_depth_phrase_is_read_after_normalization() -> None:
+    """Load-bearing, exactly as it is for the classifier: «مفصّل» carries a
+    shadda and «كاملاً» a tanween, and both are how the words are typed. An
+    unnormalized match would miss the commonest spelling of each."""
+    assert asks_for_full_summary("لخّص الملفّ كاملاً") is True
+    assert asks_for_full_summary("أعطني ملخصاً مفصّلاً") is True
+
+
+def test_a_question_that_says_nothing_about_depth_asks_for_nothing() -> None:
+    """`False` means "the question said nothing", never "brevity was asked
+    for" — the two coincide only because `OVERVIEW` is already the default."""
+    assert asks_for_full_summary("") is False
+    assert asks_for_full_summary("   ") is False
+    assert asks_for_full_summary("ما هي أرباح الشركة هذا العام؟") is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "ملخص كامل للمستند",
+        "ملخص شامل للكتاب",
+        "Give me a full summary of the report",
+        "Give me a comprehensive summary",
+    ],
+)
+def test_a_depth_adjective_can_stop_a_request_reaching_the_route_at_all(query: str) -> None:
+    """A RECORDED GAP (plan §7), pinned here rather than left to be
+    discovered: `F-8` is only ever consulted for a question already routed to
+    SUMMARIZE_DOC, and these never get there.
+
+    Rule 2 wants the document noun ADJACENT to «ملخص» — «ملخص المستند»
+    matches, «ملخص كامل للمستند» does not — and rule 1's English request
+    pattern wants `summary` adjacent to its article. A depth adjective takes
+    exactly that slot in both, so asking for depth in the NOUN form demotes
+    the question to CONTENT. `F-8` makes the shape commoner without causing
+    it; widening the objecthood rules is row 12's calibration to move
+    (س-17 = ب), and it moves the SUMMARIZE_DOC false-positive frontier the
+    whole of §6 risk 4 is about, so it is not done here.
+
+    The imperative forms are unaffected — «لخّص الملفّ كاملاً» classifies and
+    reads as FULL — which is why this is a gap and not a broken feature."""
+    assert asks_for_full_summary(query) is True
+    assert classify_intent(query) is Intent.CONTENT
 
 
 # --------------------------------------------------------------------------- #

@@ -154,6 +154,10 @@ class FakeKnowledge:
         # recording it rather than dropping it is what makes "the agent names
         # no cap" a visible assertion instead of an absence.
         self.name_limit_calls: list[int | None] = []
+        # `F-7` — every thread the agent named, `None` included. Its own log
+        # for `spaces`' reason, and `None` is recorded rather than dropped so
+        # that "a turn with no thread still says so" is a visible assertion.
+        self.threads: list[str | None] = []
 
     async def retrieve(
         self,
@@ -176,6 +180,7 @@ class FakeKnowledge:
         file_ids: Sequence[str] | None = None,
         *,
         space_id: str,
+        conversation_id: str | None = None,
     ) -> FakeRoutedAnswer:
         # The scope is RECORDED, not honoured: this fake is the agent's
         # counterpart, and what the agent owes is passing the scope through
@@ -183,6 +188,7 @@ class FakeKnowledge:
         # and is tested there.
         self.calls.append((question, k, None if file_ids is None else tuple(file_ids)))
         self.spaces.append(space_id)
+        self.threads.append(conversation_id)
         if self._summary_job_id is not None:
             return FakeRoutedAnswer("summarize_doc", (), self._summary_job_id)
         if self._clarification_options:
@@ -262,9 +268,12 @@ def make_deps(
     return deps, knowledge, llm
 
 
-async def drive_run(agent: RagAgent, text: str) -> list:
+async def drive_run(agent: RagAgent, text: str, *, conversation_id: str | None = None) -> list:
     return [
-        event async for event in agent.run(AgentRequest(conversation_id=None, input={"text": text}))
+        event
+        async for event in agent.run(
+            AgentRequest(conversation_id=conversation_id, input={"text": text})
+        )
     ]
 
 
@@ -313,6 +322,33 @@ async def test_a_pinned_scope_is_forwarded_to_retrieval_untouched() -> None:
     await drive_run(RagAgent(make_ctx(), deps), "q")
 
     assert knowledge.calls == [("q", None, ("file-a", "file-b"))]
+
+
+async def test_the_agent_names_the_thread_its_turn_belongs_to() -> None:
+    """`F-7`: the thread travels from ``AgentRequest`` onto the one knowledge
+    call this agent makes, and the agent does nothing else with it.
+
+    It is the only layer that can: the module builds summaries asynchronously
+    and has no idea which conversation asked, and the worker that finishes one
+    is further from the question still. Passing it through is the whole of the
+    agent's part — the same shape as ``knowledge_scope``, which it also
+    forwards untouched."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q", conversation_id="conv-7")
+
+    assert knowledge.threads == ["conv-7"]
+
+
+async def test_a_turn_that_opens_a_thread_reports_no_thread_rather_than_omitting_it() -> None:
+    """A turn with no ``conversation_id`` yet is a real state, not a missing
+    argument: the orchestrator opens the thread AFTER the agent is built for
+    invocations that start one. ``None`` reaches the module as "nowhere to
+    deliver", and a summary asked for on such a turn is still built and still
+    readable through the summary routes."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+    await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert knowledge.threads == [None]
 
 
 async def test_the_agent_names_the_space_its_turn_belongs_to() -> None:

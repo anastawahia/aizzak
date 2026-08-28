@@ -47,6 +47,19 @@ migration's reference material), generalized into concrete, testable
 patterns. Unlike ``fusion.py``'s RRF formula or ``tokenization.py``'s
 stop-word lists — both given verbatim in their reference sections — this is a
 reconstruction from the *documented behaviour*, not a byte-for-byte port.
+**A second question about the same sentence (``F-8``, plan §3.9).**
+``asks_for_full_summary`` reads the DEPTH a question asked for, and it lives
+here for the reason everything else here does: it is a decision about the
+user's words, needing the same normalization and the same substring
+discipline as the rules above, and a second Arabic-matching site in the
+application layer would put one doctrine in two places.
+
+It is deliberately not part of ``classify_intent``. The route and the depth
+are independent readings of one sentence — the router asks for the second
+only after the first said SUMMARIZE_DOC — and folding them into one enum
+would have to invent a third member for a question that is not a third kind
+of question. Nor is it from alpha: alpha has no routed ``FULL`` at all, so
+unlike the rules above this is a decision, not a reconstruction.
 """
 
 from __future__ import annotations
@@ -123,6 +136,45 @@ _SUMMARIZE_DOC_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 
+# =============================================================================
+# Depth (``F-8``, plan §3.9): did the question ask for the EXPENSIVE summary?
+#
+# ``OVERVIEW`` reads a document's opening chunks and ``FULL`` is a map-reduce
+# over all of them, so this predicate is the one thing between a routed
+# question and a corpus-sized bill. Its calibration therefore runs OPPOSITE
+# to ``classify_intent``'s: there recall is what matters, because CONTENT is
+# a fall-through that cannot be wrong on its own; here a MISS costs one
+# bounded summary the user can ask for again — or get in full from `POST
+# /documents/{id}/summary`, where a human names the depth — while a FALSE
+# FIRE spends the map-reduce. Precision first, and the list stays short.
+#
+# Only ADVERBIAL and ADJECTIVAL depth words qualify. «مفصل» and ``detailed``
+# describe the summary; «تفاصيل» and ``details`` are a NOUN naming what to
+# summarize, and «لخص تفاصيل البند الثالث» asks for a summary OF one section
+# — answering it with a map-reduce over the whole document is expensive AND
+# not what was asked. The same objecthood instinct as rule 2 above, pointed
+# the other way.
+#
+# «كامل» carries the one affix trap on this side, and it is `(?<!م)لخص`'s
+# again: «التكامل» · «متكامل» · «تكاملية» all contain «كامل» behind a «ت»,
+# and «لخص لي ملف التكامل» is an ordinary request to summarize the
+# integration file. English needs a LEFT word boundary for the mirror-image
+# reason — ``carefully`` · ``thoughtfully`` · ``successfully`` all END in
+# ``full``.
+# =============================================================================
+_FULL_SUMMARY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?<!ت)كامل",
+        r"مفصل",
+        r"تفصيل",
+        r"شامل",
+        r"\b(?:full|fully|detailed|comprehensive|complete)\b",
+        r"\bin\s+detail\b",
+    )
+)
+
+
 def _matches_any(patterns: Sequence[re.Pattern[str]], text: str) -> bool:
     return any(pattern.search(text) for pattern in patterns)
 
@@ -147,3 +199,34 @@ def classify_intent(query: str) -> Intent:
     if _matches_any(_SUMMARIZE_DOC_PATTERNS, normalize_arabic(query)):
         return Intent.SUMMARIZE_DOC
     return Intent.CONTENT
+
+
+def asks_for_full_summary(query: str) -> bool:
+    """Whether ``query`` explicitly asked for the DEEP summary (``F-8``, plan
+    §3.9) — «لخّص هذا الملفّ كاملاً», ``summarize it in full``.
+
+    Asked only of a question already classified SUMMARIZE_DOC, and answered
+    from the phrasing alone. The DEFAULT is not here: it belongs to the
+    router, which is where the cost argument for it is written down, so this
+    says what was asked and nothing about what happens when nothing was.
+
+    ``False`` therefore means "the question said nothing about depth", never
+    "a brief summary was asked for". The two coincide today only because
+    ``OVERVIEW`` is already the default — which is also why no phrase asking
+    for brevity is matched: detecting one would change nothing.
+
+    Normalized first, for the reason ``classify_intent`` is: «مفصّل» carries
+    a shadda and «كاملاً» a tanween, and both are how the words are actually
+    typed.
+
+    **Two limits it cannot see, both bounded, both recorded in the plan's
+    §7.** A file NAMED «التقرير الكامل» reads as a depth word here, and so
+    would the given name «كامل»; each buys a map-reduce on a document the
+    user really did name — the wrong PRICE for a right answer, not a wrong
+    answer. And a phrase this reads as depth can stop the sentence reaching
+    the route at all: rule 2 above wants the document noun ADJACENT to
+    «ملخص», which is exactly the slot an adjective takes, so «ملخص كامل
+    للمستند» classifies CONTENT. Widening that is row 12's calibration to
+    move, not this predicate's.
+    """
+    return _matches_any(_FULL_SUMMARY_PATTERNS, normalize_arabic(query))

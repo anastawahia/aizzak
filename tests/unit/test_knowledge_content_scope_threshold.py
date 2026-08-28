@@ -163,6 +163,7 @@ class _SummarySpy:
         document_id: str,
         kind: SummaryKind,
         lang: SummaryLanguage,
+        conversation_id: str | None = None,  # `F-7` — accepted, not asserted here
     ) -> SummaryJob:
         self.calls.append((document_id, kind, lang))
         return SummaryJob(

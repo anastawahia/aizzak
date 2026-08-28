@@ -102,6 +102,7 @@ class RecordingRetrieval:
         file_ids: Sequence[str] | None = None,
         *,
         space_id: str,
+        conversation_id: str | None = None,
     ) -> RoutedAnswer:
         """Retrieval plan §3.4/§4 row 11 (`P-21`) — the port's third face.
         Routing is the module's own logic and is tested there; what this fake

@@ -311,7 +311,20 @@ class RagAgent(BaseAgent):
             # `AgentDeps` and is named here. It was the second of the two call
             # sites the port's docstring listed as owing one; `POST
             # /knowledge/search` was the first.
-            await knowledge.answer(self.ctx, query, file_ids=scope, space_id=space_id)
+            await knowledge.answer(
+                self.ctx,
+                query,
+                file_ids=scope,
+                space_id=space_id,
+                # `F-7` — the thread this turn belongs to, passed through and
+                # never read here. A SUMMARIZE_DOC route queues a build that
+                # finishes long after this generator has returned, and this is
+                # what lets the finished text reach the thread instead of
+                # waiting for someone to poll the summary route. `None` on a
+                # turn that opens no thread is a real value, and the module
+                # reads it as "nowhere to deliver".
+                conversation_id=req.conversation_id,
+            )
             if knowledge is not None and space_id is not None
             else None
         )

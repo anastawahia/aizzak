@@ -959,6 +959,19 @@ class RequestSummary:
     under the key. A build that fails or is cancelled must leave the previous
     summary exactly where it was — a rebuild that ends by deleting what it
     could not replace is worse than no rebuild.
+
+    **``conversation_id`` is where the answer is owed** (`F-7`), and it is
+    not part of the key. Two threads asking for the same overview of the same
+    document in the same language are still ONE build and still a 409 for the
+    second — what it changes is only which thread the FIRST build's text is
+    delivered to when it lands. Defaulted to ``None`` because the REST route
+    genuinely has no thread: a build asked for through ``POST /documents/
+    {id}/summary`` is read back through ``GET``, and there is nothing to
+    deliver it to.
+
+    It is not stored on the job. The row records an operation; where its
+    output should be posted is a property of the REQUEST, and it travels on
+    the message the same way the build key does (``SummaryRequested``).
     """
 
     def __init__(
@@ -976,6 +989,7 @@ class RequestSummary:
         document_id: Uuid,
         kind: SummaryKind,
         lang: SummaryLanguage,
+        conversation_id: Uuid | None = None,
     ) -> tuple[SummaryJob, tuple[KnowledgeEvent, ...]]:
         document = await self._documents.get(ctx, document_id)
         if document is None:
@@ -1009,7 +1023,9 @@ class RequestSummary:
             created_at=now,
         )
         await self._jobs.add(ctx, job)
-        event = SummaryRequested(job.id, ctx.workspace_id, document_id, kind.value, lang.value, now)
+        event = SummaryRequested(
+            job.id, ctx.workspace_id, document_id, kind.value, lang.value, conversation_id, now
+        )
         return job, (event,)
 
 
@@ -1036,10 +1052,15 @@ class RequestSummaryService:
         document_id: Uuid,
         kind: SummaryKind,
         lang: SummaryLanguage,
+        conversation_id: Uuid | None = None,
     ) -> SummaryJob:
         async with self._uow.begin(ctx):
             job, events = await self._request.execute(
-                ctx, document_id=document_id, kind=kind, lang=lang
+                ctx,
+                document_id=document_id,
+                kind=kind,
+                lang=lang,
+                conversation_id=conversation_id,
             )
             await self._outbox.append(ctx, [to_outbox_record(ctx, event) for event in events])
             return job
@@ -1606,8 +1627,28 @@ class BuildSummary:
         return SummaryAttempt(job=job, draft=draft, error=None, cancelled=False)
 
     async def finalize(
-        self, ctx: ExecutionContext, attempt: SummaryAttempt
+        self,
+        ctx: ExecutionContext,
+        attempt: SummaryAttempt,
+        *,
+        conversation_id: Uuid | None = None,
     ) -> tuple[SummaryJob, tuple[KnowledgeEvent, ...]]:
+        """Store what the build produced and mint the events that follow it.
+
+        ``conversation_id`` is a PASS-THROUGH (`F-7`): the handler reads it
+        off the ``knowledge.summary.requested.v1`` message it is answering
+        and hands it here, and the only thing done with it is stamping it on
+        ``SummaryBuilt``. It is a parameter rather than a field on
+        ``SummaryAttempt`` because ``claim``/``run`` never need it and an
+        attempt is what the BUILD produced — threading it through both would
+        make two functions carry a value neither reads.
+
+        Defaulted to ``None``, so a build with no thread — and every caller
+        that predates `F-7` — finalizes exactly as it did. It is deliberately
+        NOT stamped on ``SummaryBuildFailed``: nothing subscribes to a
+        failure yet, and a field no consumer reads is a promise nobody is
+        waiting for.
+        """
         job = attempt.job
 
         if attempt.cancelled:
@@ -1640,7 +1681,13 @@ class BuildSummary:
             job.succeed(now)
             await self._jobs.save(ctx, job)
             event = SummaryBuilt(
-                job.id, ctx.workspace_id, job.document_id, job.kind.value, job.lang.value, now
+                job.id,
+                ctx.workspace_id,
+                job.document_id,
+                job.kind.value,
+                job.lang.value,
+                conversation_id,
+                now,
             )
             return job, (event,)
 
@@ -2201,6 +2248,7 @@ class KnowledgeRetrievalService:
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid,
+        conversation_id: Uuid | None = None,
     ) -> RoutedAnswer:
         """Implements ``KnowledgeRetrieval.answer`` (retrieval plan §3.4/§4
         row 11, ``P-21``) — the port's third face, over ``RouteQuestion``.
@@ -2222,6 +2270,14 @@ class KnowledgeRetrievalService:
         here to save a resolver call would put the routing decision in two
         places. The resolver is a per-call credential lookup, not a network
         round trip to the embedding service.
+
+        ``conversation_id`` (`F-7`) is passed straight down and read by
+        exactly one of the two routes: SUMMARIZE_DOC stamps it on the build it
+        queues, so the finished text can be posted back into the thread that
+        asked. CONTENT ignores it — that route answers inside the turn, and
+        the caller writes its own reply. Defaulted to ``None`` for the callers
+        that have no thread (``POST /knowledge/search``), which is the same
+        "a real value, not a forgotten one" ``AgentRequest.space_id`` states.
         """
         resolved = await self._resolver.resolve_embedding(ctx)
         document_ids = (
@@ -2235,6 +2291,7 @@ class KnowledgeRetrievalService:
             k=k,
             document_ids=document_ids,
             space_id=space_id,
+            conversation_id=conversation_id,
         )
 
     async def list_document_names(

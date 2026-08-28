@@ -187,13 +187,24 @@ class KnowledgeAccess(Protocol):
 
     ``answer`` (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) is the
     THIRD, and it is the one the RAG agent actually calls: it takes
-    ``retrieve``'s arguments unchanged and returns a ``RoutedAnswerView``,
+    ``retrieve``'s retrieval arguments unchanged — plus one that is not
+    retrieval's at all (``conversation_id``, below) — and returns a
+    ``RoutedAnswerView``,
     because the classification and the dispatch between the module's two
     routes are the MODULE's business. An agent that classified for itself
     would have to import the classifier and then hold a second seam for the
     route it chose — which is precisely the convention ح-11 records this
     agent as keeping. ``retrieve`` stays on the seam for callers that mean
     retrieval and nothing else.
+
+    ``answer``'s ``conversation_id`` (`F-7`) is the ONE argument on this seam
+    that is not about retrieval, and that is exactly why it sits on ``answer``
+    alone: a summarisation is built by a worker minutes after the turn has
+    ended, so the module has to be told where to deliver it, and the agent is
+    the only layer that knows which thread it is answering in
+    (``AgentRequest.conversation_id``). It is data the agent passes through
+    and never interprets — the ``knowledge_scope`` precedent exactly — and it
+    is defaulted, so a caller with no thread keeps calling this as it did.
     """
 
     async def retrieve(
@@ -214,6 +225,7 @@ class KnowledgeAccess(Protocol):
         file_ids: Sequence[Uuid] | None = None,
         *,
         space_id: Uuid,
+        conversation_id: Uuid | None = None,
     ) -> RoutedAnswerView: ...
 
     async def list_document_names(
