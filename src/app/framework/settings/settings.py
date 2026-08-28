@@ -811,6 +811,13 @@ class Limits(BaseModel):
     # until the DLQ, with the job holding `uq_summary_job_active` throughout
     # so the user cannot even ask again. A timeout converts that into one
     # `failed` job carrying a written reason.
+    #
+    # `F-9`'s ceiling review made the derivation a two-way link: this number
+    # is what actually bounds `_MAX_MAP_CHUNKS` now that `F-2` retired the
+    # cost argument for it, so the two move TOGETHER or not at all. Raising
+    # the chunk ceiling alone turns a declared truncation -- a real summary
+    # of a prefix, saying so -- into a failed job with no summary, for
+    # exactly the long documents the raise was meant to serve.
     summarize_job_max_duration_s: int = 1_800
     # 5.3-أ — TOTAL wall-clock cap for ONE streamed response (a single agent
     # answer or a whole workflow run's stream, SSE and WS alike). The adapters'

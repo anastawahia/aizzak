@@ -52,6 +52,10 @@ from app.framework.types import Json
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.modules.knowledge.application.indexing import IndexDocument
+from app.modules.knowledge.application.use_cases import (
+    SUMMARY_TRUNCATED_NOTICE_AR,
+    SUMMARY_TRUNCATED_NOTICE_EN,
+)
 from app.modules.knowledge.domain.entities import Chunk, Document, Summary
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
@@ -1460,6 +1464,7 @@ def test_build_memory_worker_from_env_builds_a_real_consumer_without_raising() -
 # --------------------------------------------------------------------------- #
 _DELIVERY_DOC = "doc-77"
 _DELIVERY_TEXT = "The retrieval policy, in eight paragraphs."
+_ARABIC_DELIVERY_TEXT = "سياسة الاسترجاع، في ثماني فقرات."
 
 
 class _FakeSummaries:
@@ -1505,17 +1510,22 @@ class _FakeAppendMessage:
         return object()
 
 
-def _summary(text: str = _DELIVERY_TEXT) -> Summary:
+def _summary(
+    text: str = _DELIVERY_TEXT,
+    *,
+    lang: SummaryLanguage = SummaryLanguage.AUTO,
+    truncated: bool = False,
+) -> Summary:
     return Summary(
         id=new_uuid7(),
         workspace_id="ws-1",
         document_id=_DELIVERY_DOC,
         kind=SummaryKind.OVERVIEW,
-        lang=SummaryLanguage.AUTO,
+        lang=lang,
         text=text,
         model="m",
         source_chunks=3,
-        truncated=False,
+        truncated=truncated,
         built_at=utc_now(),
     )
 
@@ -1639,6 +1649,46 @@ async def test_a_duplicate_delivery_writes_the_summary_into_the_thread_only_once
     await handler(ctx, _built_envelope(ctx))
 
     assert append.appended == []
+
+
+async def test_a_truncated_summary_reaches_the_thread_with_the_cut_declared() -> None:
+    """`F-9` (plan §3.10): a build that stopped at the map ceiling summarises
+    the document's BEGINNING. ``SummaryOut.truncated`` tells every REST
+    reader that; a thread message has no field to tell anyone anything, so
+    until this the chat surface presented a prefix as the whole document --
+    the last silent cut in a module that raised «صدق البتر» to a rule."""
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary(lang=SummaryLanguage.EN, truncated=True)),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    delivered = append.appended[0][2]
+    assert delivered == _DELIVERY_TEXT + "\n\n" + SUMMARY_TRUNCATED_NOTICE_EN
+
+
+async def test_the_delivered_notice_speaks_the_summarys_own_language() -> None:
+    """Not the thread's language and not the platform's: the notice sits
+    under the summary and is read with it, so it follows the same ``_is_rtl``
+    rule the export path uses -- here through ``auto``, where the only honest
+    evidence is the body the model actually wrote."""
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary(_ARABIC_DELIVERY_TEXT, truncated=True)),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    assert append.appended[0][2].endswith(SUMMARY_TRUNCATED_NOTICE_AR)
 
 
 async def test_the_build_handler_hands_the_message_s_thread_to_finalize() -> None:

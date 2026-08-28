@@ -144,6 +144,33 @@ CANCELLED_REASON = "re-indexing was cancelled before this document was processed
 # stream needs to stop waiting for one.
 SUMMARY_CANCELLED_REASON = "the summary build was cancelled"
 
+# `F-9` (rag-summarization-fix-plan.md §3.10) — what a DELIVERED summary says
+# when the build stopped at `_MAX_MAP_CHUNKS`. Two fixed sentences, phrased
+# for the same reader as the two above; `delivered_summary_text` picks between
+# them with `_is_rtl`, the one "this summary is Arabic" rule this module owns.
+#
+# PROSE here, not `summarization.py`'s `[...]` marker, and the difference is
+# who reads it. That glyph was chosen over alpha's bracketed English phrase
+# because the text it marks is fed back to a small local model, which
+# `agents/rag_agent/prompts` measured copying such phrases into its answer
+# instead of answering (24 of 40 samples). This sentence is read by a PERSON
+# in their own thread and by no model at all, so the reason to prefer a mark
+# over a sentence does not reach it — and a bare `[...]` would leave
+# reader to guess what was left out.
+#
+# It carries NO NUMBER, deliberately. `source_chunks` is how many chunks were
+# READ and the row stores no total, so a figure here would be a numerator with
+# no denominator, in a unit ("chunks") this reader has never been shown —
+# precise-looking and unusable. What they can act on is the one fact that is
+# certain: the end of the document was not read.
+SUMMARY_TRUNCATED_NOTICE_EN = (
+    "Note: this document is longer than one summary can read. "
+    "The text above covers its beginning, not the whole file."
+)
+SUMMARY_TRUNCATED_NOTICE_AR = (
+    "تنبيه: هذا المستند أطول من أن يُقرأ كاملًا في ملخّصٍ واحد، وما سبق يغطّي أوّله لا الملفّ كلّه."
+)
+
 
 def _reflects_current_pipeline(document: Document) -> bool:
     """Whether re-indexing ``document`` right now would reproduce output
@@ -1232,7 +1259,12 @@ def _is_rtl(summary: Summary) -> bool:
     the request never said, so the only honest source is the text itself —
     which is ``_detects_lang``, the same majority-of-letters rule that gates
     the ``auto`` fallback in ``GetSummary``. One definition of "this text is
-    Arabic", shared by the two places that need one.
+    Arabic", shared by the three places that need one.
+
+    The third (`F-9`, ``delivered_summary_text``) asks it as a LANGUAGE
+    question rather than a layout one — which sentence to append — and
+    is the same question this body answers: the name says what the first two
+    callers do with the answer, not what the answer is.
     """
     if summary.lang is SummaryLanguage.AR:
         return True
@@ -1277,6 +1309,42 @@ def _is_latin(char: str) -> bool:
     """ASCII letters plus Latin-1 Supplement and Latin Extended-A/B
     (U+00C0..U+024F), so "naïve" counts as the Latin it is."""
     return "a" <= char <= "z" or "A" <= char <= "Z" or "À" <= char <= "ɏ"
+
+
+def delivered_summary_text(summary: Summary) -> str:
+    """A summary as the THREAD that asked for it should receive it (`F-9`,
+    plan §3.10): its text, plus one sentence when the build stopped at the
+    map ceiling.
+
+    **The one surface with no field to say it in.** ``truncated`` is stored
+    on the row and published by ``SummaryOut``, so every REST reader can tell
+    that a ``full`` summary of a long document is a true summary of a PREFIX.
+    A conversation message is prose and has no such field, so until now a
+    summary that crossed the ceiling arrived in the thread looking exactly
+    like one that had covered the whole document — the silent cut
+    plan §3.10 raises to a rule against, and the one ``retrieval.py``'s
+    ``_PARENT_TRUNCATION_MARKER`` believed it had closed the last of.
+
+    **The stored row is left alone.** The notice is composed at DELIVERY and
+    never written into ``Summary.text``. A client reading the same summary
+    through ``GET`` already has the flag, so folding the sentence into the
+    artefact would state one fact twice there — and would put prose the
+    model never wrote inside the text field, for every later reader of that
+    row, including ``translate``, whose input is an already-built summary.
+
+    **Appended, not prepended.** The summary is the answer and the notice
+    qualifies it; a caveat placed above would stand between the reader and
+    what they asked for, and read as an error rather than a footnote.
+
+    An untruncated summary — every ``overview``, and every ``full`` build
+    of a document inside the ceiling — is returned UNCHANGED rather than
+    unannotated: nothing is appended and nothing is reformatted, so the
+    ordinary delivery is byte for byte the text that was built.
+    """
+    if not summary.truncated:
+        return summary.text
+    notice = SUMMARY_TRUNCATED_NOTICE_AR if _is_rtl(summary) else SUMMARY_TRUNCATED_NOTICE_EN
+    return f"{summary.text}\n\n{notice}"
 
 
 class GetSummaryJob:

@@ -191,7 +191,11 @@ from app.modules.knowledge.application.event_mapping import (
 )
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.summarization import SummarizeDocument
-from app.modules.knowledge.application.use_cases import BuildSummary, IndexRegisteredDocument
+from app.modules.knowledge.application.use_cases import (
+    BuildSummary,
+    IndexRegisteredDocument,
+    delivered_summary_text,
+)
 from app.modules.knowledge.domain.sparse import Bm25Params
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
@@ -798,6 +802,14 @@ def build_knowledge_summary_delivery_handler(
     belongs — 04 §4's payload for this type is four ids, and the row is one
     tenant-scoped read away in the process that just wrote it.
 
+    **What is appended is ``delivered_summary_text(summary)``, not
+    ``summary.text`` (`F-9`).** A build that ran past the map ceiling
+    produces a true summary of the document's BEGINNING, and every REST
+    reader is told so by ``SummaryOut.truncated``; a thread message has no
+    field to carry a flag in, so this was the one surface where the cut was
+    silent. The sentence is composed here at delivery and never stored —
+    see that function for why the row stays clean.
+
     ``AppendMessage`` returns a ``MessageAppended`` this handler drops, the
     same way ``ConversationService.append`` drops it: 04 §5 lists it among the
     conversations events that are internal and never promoted to a stream, so
@@ -824,7 +836,12 @@ def build_knowledge_summary_delivery_handler(
                 ):
                     return  # Duplicate delivery -- clean return, the engine XACKs.
                 await conversation_messages.execute(
-                    ctx, conversation_id, role=_ROLE_ASSISTANT, text=summary.text
+                    ctx,
+                    conversation_id,
+                    role=_ROLE_ASSISTANT,
+                    # `F-9` -- the summary plus a sentence when it covers only
+                    # the document's beginning. Unchanged text otherwise.
+                    text=delivered_summary_text(summary),
                 )
         except AppError as exc:
             _logger.info(

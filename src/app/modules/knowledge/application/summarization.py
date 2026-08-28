@@ -38,7 +38,9 @@ cover sheet or table of contents can make a worthless glance; a reader who
 wanted the whole thing asked for ``full``. ``full`` maps over every chunk in
 batches and reduces the notes into one summary, up to ``_MAX_MAP_CHUNKS``.
 Past that ceiling the pipeline summarises the prefix and sets ``truncated``,
-which travels all the way onto the stored row and into the API response. The
+which travels all the way onto the stored row, into the API response, and —
+since `F-9` — into the sentence a chat delivery appends for a reader
+who has no field to read a flag in (``use_cases.delivered_summary_text``). The
 alternative — an unbounded map — makes the cost of one request a function of
 the largest file anyone ever uploaded, and this is already the most expensive
 call the platform makes.
@@ -114,7 +116,9 @@ _MAP_BATCH = 20
 
 # The ceiling on a `full` map: 240 chunks, ~110 pages. Beyond this the
 # pipeline summarises the prefix and SAYS SO (`truncated`) rather than
-# silently spending more.
+# silently spending more -- and since `F-9` the chat delivery says so in
+# words too (`use_cases.delivered_summary_text`), which is what finally makes
+# the declared cut declared at the one surface that had no field to hold it.
 #
 # `F-2` made this a LITERAL where it had been `_MAP_BATCH * 40`. The derived
 # form tied how much of a document is READ to how many chunks fit in ONE
@@ -122,6 +126,29 @@ _MAP_BATCH = 20
 # ceiling and a context window -- and raising the batch would have moved the
 # ceiling from 240 chunks to 800 as a silent side effect of a change that
 # says nothing at all about how much of a document to read.
+#
+# `F-9`'s review (plan §3.10, §5.2) KEPT the number and REPLACED the argument
+# for it, which is the part a future reader needs:
+#
+# * The COST argument that set 240 is spent. The build that cost ~50 provider
+#   calls costs 15 since `F-2`, measured.
+# * The CONTEXT argument does not bind either, also measured: re-running the
+#   real ladder at raised ceilings, a 1,920-chunk build still maps at 22,422
+#   characters and folds at 14,914 -- inside both budgets, with no call near
+#   the 8k window. `_fold` absorbs the extra notes rather than passing them on.
+# * What bounds it now is TIME, and the constant that expresses that lives in
+#   another file: `Limits.summarize_job_max_duration_s` (1,800 s) derives
+#   itself from `_MAX_MAP_CHUNKS / _MAP_BATCH` in its own comment. At 240
+#   chunks it grants ~120 s a call; at 480 it grants ~62; at 960, ~31.
+#
+# So the two limits are one limit read from two ends -- and they FAIL
+# DIFFERENTLY. Crossing this one yields a real summary of a prefix that says
+# it is one; crossing that one yields a `failed` job and no summary at all.
+# Raising this ceiling without raising that cap therefore converts declared
+# truncation into outright failure, for exactly the documents the raise was
+# meant to serve. The number that would justify moving both together is the
+# longest single provider call in wall-clock, which plan §5 still lists as
+# unmeasured because it needs a live model.
 _MAX_MAP_CHUNKS = 240
 
 # A second guard on the same thing from the other end: chunk sizes are set by

@@ -48,12 +48,15 @@ from app.modules.knowledge.application.summarization import (
 )
 from app.modules.knowledge.application.use_cases import (
     SUMMARY_CANCELLED_REASON,
+    SUMMARY_TRUNCATED_NOTICE_AR,
+    SUMMARY_TRUNCATED_NOTICE_EN,
     BuildSummary,
     CancelSummaryJob,
     DeleteSummary,
     GetSummary,
     GetSummaryJob,
     RequestSummary,
+    delivered_summary_text,
 )
 from app.modules.knowledge.domain.entities import Summary, SummaryJob
 from app.modules.knowledge.domain.errors import SummaryJobStateError
@@ -162,6 +165,7 @@ def _summary(
     document_id: str = "doc-1",
     text: str = "old text",
     lang: SummaryLanguage = SummaryLanguage.AUTO,
+    truncated: bool = False,
 ) -> Summary:
     return Summary(
         id="sum-1",
@@ -172,7 +176,7 @@ def _summary(
         text=text,
         model="previous-model",
         source_chunks=3,
-        truncated=False,
+        truncated=truncated,
         built_at=_AT,
     )
 
@@ -1710,3 +1714,74 @@ async def test_a_failed_build_carries_no_thread_because_nothing_subscribes_to_a_
 
     assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
     assert not hasattr(events[0], "conversation_id")
+
+
+# --------------------------------------------------------------------------- #
+# delivered_summary_text — `F-9` (plan §3.10): the cut, declared in words      #
+# --------------------------------------------------------------------------- #
+
+_ENGLISH_SUMMARY = "The retrieval policy applies to every workspace document."
+_ARABIC_SUMMARY = "تنطبق سياسة الاسترجاع على كلّ مستندات مساحة العمل."
+
+
+def test_a_summary_that_read_the_whole_document_is_delivered_exactly_as_built() -> None:
+    """The ordinary delivery — every ``overview`` and every ``full`` build
+    inside the ceiling — is byte for byte the text the model wrote. Not
+    "no notice added": nothing at all is appended, trimmed or reflowed, so a
+    thread shows the artefact and a ``GET`` shows the artefact."""
+    summary = _summary(text=_ENGLISH_SUMMARY, truncated=False)
+
+    assert delivered_summary_text(summary) == _ENGLISH_SUMMARY
+
+
+def test_a_truncated_summary_is_delivered_with_a_sentence_saying_it_is_one() -> None:
+    """`F-9`: ``truncated`` is a FIELD on the row and in ``SummaryOut``, and
+    a conversation message has no fields — so this was the one surface where
+    a summary of a document's opening arrived looking like a summary of the
+    whole document."""
+    summary = _summary(text=_ENGLISH_SUMMARY, lang=SummaryLanguage.EN, truncated=True)
+
+    expected = f"{_ENGLISH_SUMMARY}\n\n{SUMMARY_TRUNCATED_NOTICE_EN}"
+    assert delivered_summary_text(summary) == expected
+
+
+@pytest.mark.parametrize(
+    ("lang", "text", "expected"),
+    [
+        (SummaryLanguage.AR, _ENGLISH_SUMMARY, SUMMARY_TRUNCATED_NOTICE_AR),
+        (SummaryLanguage.EN, _ARABIC_SUMMARY, SUMMARY_TRUNCATED_NOTICE_EN),
+        (SummaryLanguage.AUTO, _ARABIC_SUMMARY, SUMMARY_TRUNCATED_NOTICE_AR),
+        (SummaryLanguage.AUTO, _ENGLISH_SUMMARY, SUMMARY_TRUNCATED_NOTICE_EN),
+    ],
+)
+def test_the_notice_speaks_the_language_the_summary_was_asked_for(
+    lang: SummaryLanguage, text: str, expected: str
+) -> None:
+    """One language mechanism, not a second: this is ``_is_rtl``, the rule
+    the export path already uses. A REQUESTED language wins over the text
+    (rows one and two — a summary asked for in ``ar`` is answered in Arabic
+    even where the body is not), and ``auto`` is decided by the body, because
+    ``auto`` never named a language for anything to contradict."""
+    assert delivered_summary_text(_summary(text=text, lang=lang, truncated=True)).endswith(expected)
+
+
+def test_the_notice_follows_the_summary_and_never_stands_in_front_of_it() -> None:
+    """The summary is the answer and the notice qualifies it. Above the text
+    the same sentence reads as an error standing between the reader and what
+    they asked for; below it, it reads as the footnote it is."""
+    delivered = delivered_summary_text(_summary(text=_ENGLISH_SUMMARY, truncated=True))
+
+    assert delivered.startswith(_ENGLISH_SUMMARY)
+    assert _ENGLISH_SUMMARY not in delivered[len(_ENGLISH_SUMMARY) :]
+
+
+def test_composing_a_delivery_leaves_the_stored_summary_alone() -> None:
+    """The notice is composed AT DELIVERY and never written into the row: a
+    ``GET`` reader already has the flag, so storing the sentence would state
+    one fact twice for them and put prose the model never wrote inside the
+    artefact every later reader — ``translate`` included — works from."""
+    summary = _summary(text=_ENGLISH_SUMMARY, truncated=True)
+
+    delivered_summary_text(summary)
+
+    assert summary.text == _ENGLISH_SUMMARY
