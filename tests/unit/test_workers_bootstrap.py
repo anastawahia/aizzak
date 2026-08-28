@@ -27,6 +27,7 @@ that genuinely perform I/O eagerly, are monkeypatched.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
@@ -43,6 +44,7 @@ from app.framework.ports.vector_store import VectorHit, VectorPoint
 from app.framework.providers.resolver import SettingsProviderResolver
 from app.framework.settings import MinioSettings
 from app.framework.types import Json
+from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.domain.entities import Chunk, Document
@@ -61,6 +63,7 @@ from app.workers.bootstrap import (
     Disposable,
     _routing_for,
     build_knowledge_index_handler,
+    build_knowledge_summary_handler,
     build_knowledge_worker_from_env,
     build_media_run_handler,
     build_media_worker_from_env,
@@ -736,6 +739,174 @@ async def test_media_run_handler_claims_nothing_on_the_terminal_noop_path() -> N
 
 
 # --------------------------------------------------------------------------- #
+# knowledge: build_knowledge_summary_handler — `F-4` (plan §4 step 4, §3.5)   #
+# --------------------------------------------------------------------------- #
+class _FakeSummaryAttempt:
+    """Stands in for ``SummaryAttempt`` -- the closure only ever passes it on."""
+
+    def __init__(self, *, error: str | None = None) -> None:
+        self.error = error
+
+
+class _FakeBuildSummary:
+    """A fake shaped like ``BuildSummary``'s claim/run/fail/finalize split.
+
+    ``run`` sleeps for ``run_seconds`` so ``asyncio.timeout`` has something
+    real to interrupt -- the point of `F-4` is what the handler does when a
+    build does not come back, and a fake that returns instantly could not
+    exercise it. It also records the ``on_heartbeat`` it was handed, which is
+    the whole of what the handler owes the heartbeat: WHETHER a build gets
+    one is this closure's decision, what a build then does with it is
+    ``BuildSummary``'s (``test_knowledge_summaries.py`` proves that half)."""
+
+    def __init__(self, *, run_seconds: float = 0.0) -> None:
+        self.run_calls = 0
+        self.on_heartbeat: object = "not-called"
+        self.failed: list[str] = []
+        self.finalized: list[object] = []
+        self._run_seconds = run_seconds
+
+    async def claim(self, ctx: ExecutionContext, *, job_id: str) -> object:
+        return object()  # a plan; the closure only ever hands it to `run`
+
+    async def run(
+        self, ctx: ExecutionContext, plan: object, *, on_heartbeat: object = None
+    ) -> _FakeSummaryAttempt:
+        self.run_calls += 1
+        self.on_heartbeat = on_heartbeat
+        if self._run_seconds:
+            await asyncio.sleep(self._run_seconds)
+        return _FakeSummaryAttempt()
+
+    async def fail(self, ctx: ExecutionContext, *, job_id: str, reason: str) -> _FakeSummaryAttempt:
+        self.failed.append(reason)
+        return _FakeSummaryAttempt(error=reason)
+
+    async def finalize(
+        self, ctx: ExecutionContext, attempt: object
+    ) -> tuple[object, tuple[object, ...]]:
+        self.finalized.append(attempt)
+        return object(), ()
+
+
+class _CountingHeartbeat:
+    """A structural ``Heartbeat``. No ``read`` side, like the real one."""
+
+    def __init__(self) -> None:
+        self.beats = 0
+
+    def beat(self) -> None:
+        self.beats += 1
+
+
+def _summary_envelope(ctx: ExecutionContext) -> Json:
+    return {
+        "type": "knowledge.summary.requested.v1",
+        "workspaceid": ctx.workspace_id,
+        "id": new_uuid7(),
+        "data": {"job_id": "job-1"},
+    }
+
+
+async def test_summary_handler_ends_a_build_that_outruns_its_budget_in_failed_with_a_reason() -> (
+    None
+):
+    """`F-4`: a build that will not finish becomes ONE failed job carrying a
+    sentence, instead of an unhandled exception.
+
+    What it replaces is not a slower success. A handler that never returns is
+    redelivered (DD-09); ``SummaryJob.start`` is re-entrant from ``running``,
+    so the build restarts from the first chunk and meets the same wall --
+    five times, to the DLQ -- with the job holding ``uq_summary_job_active``
+    the whole way, so the user cannot even ask again.
+
+    The timeout is answered HERE and not inside ``run``: ``asyncio.timeout``
+    cancels, and ``run``'s broad ``except Exception`` rightly does not catch
+    a ``CancelledError``. It is routed through the SAME ``fail`` the
+    unresolvable-route branch uses, so there stays one path to a failed job.
+    """
+    build = _FakeBuildSummary(run_seconds=30.0)
+    outbox = _FakeOutbox()
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        outbox,
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+        max_duration_s=0.01,
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _summary_envelope(ctx))  # nothing escapes
+
+    assert build.failed == ["building this summary exceeded the 0.01s limit and was stopped"]
+    # And the failure still takes the terminal transaction every other
+    # outcome takes -- a reason nobody records is a reason nobody reads.
+    assert len(build.finalized) == 1
+
+
+async def test_summary_handler_leaves_the_build_unbounded_when_no_budget_is_configured() -> None:
+    """The default is off, the ``sweep_interval_s`` precedent: every direct
+    caller of this builder -- the live integration tests included -- keeps
+    exactly today's behaviour, and only ``_from_env`` turns the cap on.
+    ``asyncio.timeout(None)`` is the documented no-op, so this costs no
+    branch of its own."""
+    build = _FakeBuildSummary(run_seconds=0.05)
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        _FakeOutbox(),
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _summary_envelope(ctx))
+
+    assert build.failed == []
+    assert build.run_calls == 1
+    assert len(build.finalized) == 1
+
+
+async def test_summary_handler_hands_the_build_the_workers_own_heartbeat() -> None:
+    """`F-4`: the SAME ``Heartbeat`` the consumer loop is given, not a second
+    one -- so a long build beats into the file ``app.ops.healthcheck``
+    actually reads. The engine beats between messages and cannot beat during
+    one, and a summary build is the only handler here long enough for that
+    gap to reach ``heartbeat_max_age_s``."""
+    heartbeat = _CountingHeartbeat()
+    build = _FakeBuildSummary()
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        _FakeOutbox(),
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+        heartbeat=heartbeat,
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _summary_envelope(ctx))
+
+    assert build.on_heartbeat == heartbeat.beat
+
+
+async def test_summary_handler_passes_no_heartbeat_when_it_has_none() -> None:
+    """``None`` travels as ``None`` rather than as a no-op closure: a build
+    given nothing to beat must be able to tell, and ``NullHeartbeat`` already
+    exists for the deployment that genuinely wants a silent one."""
+    build = _FakeBuildSummary()
+    handler = build_knowledge_summary_handler(
+        build,  # type: ignore[arg-type]
+        _FakeOutbox(),
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _summary_envelope(ctx))
+
+    assert build.on_heartbeat is None
+
+
+# --------------------------------------------------------------------------- #
 # memory: build_memory_index_handler                                          #
 # --------------------------------------------------------------------------- #
 class _FakeMemoryAttempt:
@@ -918,10 +1089,13 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
         "knowledge.document.registered.v1",
         "knowledge.summary.requested.v1",
     }
-    # engine.dispose, qdrant_client.close, embedding_http.aclose,
-    # redis_client.aclose, _close_vault -- the fifth is step 15's, written
-    # then against a function that could not yet reach it.
-    assert len(disposables) == 5
+    # engine.dispose, qdrant_client.close, embedding_http.aclose, the FOUR
+    # LLM clients, redis_client.aclose, _close_vault -- `_close_vault` is
+    # step 15's, written then against a function that could not yet reach it.
+    # The LLM clients joined the list at `F-1`: the 60 s pair had been leaking
+    # a connection pool per shutdown since BE-RAG-009 wired it, and `F-1`'s
+    # 300 s pair would have made that two.
+    assert len(disposables) == 9
     for dispose in disposables:
         disposable: Disposable = dispose
         assert callable(disposable)
@@ -931,6 +1105,144 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     assert isinstance(storage, StorageHandle)
     assert secrets is fake_secrets
     assert isinstance(minio_settings, MinioSettings)
+
+
+async def test_the_summarizer_resolves_through_its_own_longer_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`F-1` (rag-summarization-fix-plan.md §3.1): the map-reduce resolves its
+    provider through a SECOND ``SettingsProviderResolver`` whose HTTP clients
+    carry ``summarize_timeout_s`` (300 s), while everything else in this
+    process keeps ``llm_timeout_s`` (60 s).
+
+    The defect this pins is not a slow call, it is a call that could not
+    finish: an httpx timeout is set on the CLIENT, the adapters call
+    ``complete`` (``stream: false``) so a provider emits nothing until the
+    whole generation is done, and 60 s therefore capped an entire map call
+    over ~6,600 characters of document text. Every long document died there.
+
+    Asserted at the two seams that can actually drift -- which factory got
+    which number, and which resolver the summarizer was handed -- rather than
+    by reading a timeout back off a private client attribute. Both spies
+    delegate to the real constructors, so this is still the genuine wiring:
+    two resolvers really are built, over the same routing table.
+    """
+    fake_secrets = object()
+
+    def _fake_build_vault(settings: object) -> tuple[object, object, object]:
+        return object(), fake_secrets, object()
+
+    async def _fake_bind_minio(storage: object, secrets: object, settings: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.workers.bootstrap.build_vault", _fake_build_vault)
+    monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
+
+    ollama_budgets: list[float] = []
+    openai_budgets: list[float] = []
+    resolvers: list[SettingsProviderResolver] = []
+    summarizer_got: list[object] = []
+
+    real_ollama_client = bootstrap.create_ollama_http_client
+    real_openai_client = bootstrap.create_openai_http_client
+    real_resolver = bootstrap.SettingsProviderResolver
+    real_summarizer = bootstrap._WorkerSummarizerResolver
+
+    def _spy_ollama(settings: object, *, timeout_s: float, **kwargs: object) -> object:
+        ollama_budgets.append(timeout_s)
+        return real_ollama_client(settings, timeout_s=timeout_s, **kwargs)  # type: ignore[arg-type]
+
+    def _spy_openai(*, timeout_s: float, **kwargs: object) -> object:
+        openai_budgets.append(timeout_s)
+        return real_openai_client(timeout_s=timeout_s, **kwargs)  # type: ignore[arg-type]
+
+    def _spy_resolver(**kwargs: object) -> SettingsProviderResolver:
+        resolver = real_resolver(**kwargs)  # type: ignore[arg-type]
+        resolvers.append(resolver)
+        return resolver
+
+    def _spy_summarizer(providers: object) -> object:
+        summarizer_got.append(providers)
+        return real_summarizer(providers)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("app.workers.bootstrap.create_ollama_http_client", _spy_ollama)
+    monkeypatch.setattr("app.workers.bootstrap.create_openai_http_client", _spy_openai)
+    monkeypatch.setattr("app.workers.bootstrap.SettingsProviderResolver", _spy_resolver)
+    monkeypatch.setattr("app.workers.bootstrap._WorkerSummarizerResolver", _spy_summarizer)
+
+    settings = load_settings()
+    await build_knowledge_worker_from_env()
+
+    # One client per adapter per budget: the interactive pair first, the
+    # summarisation pair second. Equal numbers would mean the second pair was
+    # never built; a single 300 would mean it replaced the first rather than
+    # joining it.
+    assert ollama_budgets == [settings.limits.llm_timeout_s, settings.limits.summarize_timeout_s]
+    assert openai_budgets == [settings.limits.llm_timeout_s, settings.limits.summarize_timeout_s]
+    assert settings.limits.summarize_timeout_s > settings.limits.llm_timeout_s
+
+    # TWO resolvers, and the summarizer holds the SECOND. If this ever reads
+    # `resolvers[0]` again the whole step is undone silently -- every call
+    # still works, just with the 60 s clients back underneath.
+    assert len(resolvers) == 2
+    assert summarizer_got == [resolvers[1]]
+
+
+async def test_the_summary_handler_is_built_with_the_workers_own_heartbeat_and_duration_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`F-4`: the wiring, not the behaviour -- the two tests above prove what
+    the handler DOES with a heartbeat and a cap, and this one proves it is
+    given them at all.
+
+    Both halves would fail silently otherwise. Drop ``heartbeat=heartbeat``
+    from the call in ``build_knowledge_worker`` and every summary still
+    builds correctly; the only difference is a container declared unhealthy
+    and restarted in the middle of the longest job it runs, which no unit
+    test would have noticed. Drop ``max_duration_s`` and nothing changes
+    until a build hangs, which is the case the whole step exists for.
+
+    ``is`` and not ``==`` on the heartbeat: a SECOND ``FileHeartbeat`` over
+    the same path would compare unequal and would also be a real defect --
+    two objects, two ``_failing`` flags, so the "log the transition, not
+    every repeat" policy would report a write failure twice and a recovery
+    twice."""
+    fake_secrets = object()
+
+    def _fake_build_vault(settings: object) -> tuple[object, object, object]:
+        return object(), fake_secrets, object()
+
+    async def _fake_bind_minio(storage: object, secrets: object, settings: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.workers.bootstrap.build_vault", _fake_build_vault)
+    monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
+
+    heartbeats: list[object] = []
+    captured: dict[str, object] = {}
+    real_heartbeat = bootstrap.build_heartbeat
+    real_handler = bootstrap.build_knowledge_summary_handler
+
+    def _spy_heartbeat(directory: str, name: str) -> object:
+        built = real_heartbeat(directory, name)
+        heartbeats.append(built)
+        return built
+
+    def _spy_handler(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_handler(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("app.workers.bootstrap.build_heartbeat", _spy_heartbeat)
+    monkeypatch.setattr("app.workers.bootstrap.build_knowledge_summary_handler", _spy_handler)
+
+    await build_knowledge_worker_from_env()
+
+    settings = load_settings()
+    assert captured["max_duration_s"] == settings.limits.summarize_job_max_duration_s
+    # ONE heartbeat is built for this process, and the summary handler holds
+    # that very object -- the same file `app.ops.healthcheck knowledge` reads.
+    assert len(heartbeats) == 1
+    assert captured["heartbeat"] is heartbeats[0]
 
 
 def test_routing_for_drops_the_foreign_namespaces_and_keeps_everything_else() -> None:

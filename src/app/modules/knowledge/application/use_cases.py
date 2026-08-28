@@ -53,7 +53,7 @@ derived from the corpus rather than counted anywhere (INV-K5).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -1439,7 +1439,13 @@ class BuildSummary:
             return None
         return SummaryAttempt(job=job, draft=None, error=reason, cancelled=False)
 
-    async def run(self, ctx: ExecutionContext, plan: SummaryBuildPlan) -> SummaryAttempt:
+    async def run(
+        self,
+        ctx: ExecutionContext,
+        plan: SummaryBuildPlan,
+        *,
+        on_heartbeat: Callable[[], None] | None = None,
+    ) -> SummaryAttempt:
         """The provider round trips. Never raises for a build failure — the
         reason is carried as data to ``finalize``, the ``IndexAttempt`` rule.
 
@@ -1454,12 +1460,36 @@ class BuildSummary:
         polls no cancellation, because there is no step boundary to observe
         one at — a single round trip either returns or fails, exactly like
         the one-batch ``full`` build and every ``overview``.
+        **``on_heartbeat`` (`F-4`, plan §3.5) is liveness, not progress.** The
+        worker's loop beats once per completed cycle, so it cannot beat while
+        a handler is still running, and a legitimate map-reduce occupies this
+        one for minutes — long enough that ``HealthSettings.
+        heartbeat_max_age_s`` reports a container busy doing exactly its job
+        as dead, restarts it, and starts the whole build again. Passing the
+        worker's own ``Heartbeat.beat`` here (no new port: it is the same
+        object ``build_knowledge_worker`` already takes) lets a build that IS
+        progressing say so.
+
+        It is called from ``_progress`` and NOWHERE else — that is the
+        guarantee that keeps it honest. A beat placed anywhere a build could
+        reach without advancing would hide the very failure the health check
+        exists to catch; from here, every beat stands behind a
+        ``record_progress`` write that has already happened. A build stuck
+        inside one provider call beats not at all and is caught by the
+        checker, exactly as it should be; a build creeping forward too slowly
+        to finish is caught instead by ``Limits.summarize_job_max_duration_s``
+        in the handler, which is the second guard and the reason one beat per
+        step is safe to give.
         """
         job = plan.job
 
         async def _progress(done: int) -> None:
             job.advance(done)
             await self._jobs.record_progress(ctx, job.id, job.done_chunks)
+            # AFTER the write, never before: a beat is a claim that this build
+            # moved, and until `record_progress` returns nothing has.
+            if on_heartbeat is not None:
+                on_heartbeat()
 
         async def _should_cancel() -> bool:
             fresh = await self._jobs.get(ctx, job.id)

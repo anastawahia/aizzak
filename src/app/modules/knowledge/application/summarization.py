@@ -97,26 +97,63 @@ _OVERVIEW_CHUNKS = 8
 _GAP_MARKER = "[…]"
 
 # Chunks per map call. Small enough that one provider error costs one batch
-# rather than the document, large enough that a 200-chunk file is ~34 calls
-# and not 200.
-_MAP_BATCH = 6
+# rather than the document, large enough that a batch APPROACHES
+# `_MAX_BATCH_CHARS` instead of closing long before it: at the ~1,100
+# characters a chunk the chunker actually produces, 20 chunks is ~22,000
+# characters, just under the character budget, so whichever of the two bounds
+# is tighter for the chunks at hand is the one that binds.
+#
+# `F-2` (rag-summarization-fix-plan.md §3.3) raised this from 6, where the
+# character budget below was DEAD: ~6,600 characters a batch cannot reach
+# 24,000 at any chunk size the chunker emits, so the smaller bound won every
+# time and the larger one was never read. A 240-chunk document cost 40 map
+# calls and, with the folds above them, ~50 provider round trips where the
+# same budgets spend ~15. Nothing about the model changed -- the batch had
+# simply been sized by one of two bounds nobody had compared.
+_MAP_BATCH = 20
 
-# The ceiling on a `full` map. 40 map calls plus one reduce is already the
-# most expensive request in the API; beyond this the pipeline summarises the
-# prefix and SAYS SO (`truncated`) rather than silently spending more.
-_MAX_MAP_CHUNKS = _MAP_BATCH * 40
+# The ceiling on a `full` map: 240 chunks, ~110 pages. Beyond this the
+# pipeline summarises the prefix and SAYS SO (`truncated`) rather than
+# silently spending more.
+#
+# `F-2` made this a LITERAL where it had been `_MAP_BATCH * 40`. The derived
+# form tied how much of a document is READ to how many chunks fit in ONE
+# call, which are unrelated facts answering to unrelated pressures -- a cost
+# ceiling and a context window -- and raising the batch would have moved the
+# ceiling from 240 chunks to 800 as a silent side effect of a change that
+# says nothing at all about how much of a document to read.
+_MAX_MAP_CHUNKS = 240
 
 # A second guard on the same thing from the other end: chunk sizes are set by
 # the chunker, but a batch of unusually long ones must still not build a
 # prompt no context window accepts. Characters, not tokens, because this is a
 # guard rail and not an accounting -- a tokeniser here would be a dependency
 # bought to make an approximation look precise.
+#
+# This is the budget for a call that ANSWERS in `_MAP_MAX_TOKENS`. Reachable
+# since `F-2`, and the bound that binds for unusually long chunks.
 _MAX_BATCH_CHARS = 24_000
 
+# `F-2`: the same guard for a call that answers in `_REDUCE_MAX_TOKENS` --
+# the fold/reduce ladder, `refine`, and `execute`'s one-batch shortcut. It
+# MUST be smaller, and the arithmetic is the whole reason: 24,000 characters
+# is ~6,000 tokens at this module's 4:1 rule of thumb, and 6,000 + 2,500 is
+# 8,500 -- past an 8k window before the system prompt is counted at all. The
+# map path is safe at 24,000 only because it answers in 600. 16,000 (~4,000
+# tokens) plus the same 2,500 leaves room for both halves.
+#
+# Two budgets rather than one conservative number: lowering `_MAX_BATCH_CHARS`
+# to 16,000 would shrink the map batches too, buying back the extra calls
+# `F-2` exists to remove, to respect a limit the map path does not have.
+_MAX_REDUCE_CHARS = 16_000
+
 # P-41 (plan §4 step 17, §3.10): the recursion cap on `_fold`. Without it, a
-# 40-batch `full` build hands ONE reduce call all 40 map notes at once --
-# roughly 40 * `_MAP_MAX_TOKENS` = 24k tokens in a SINGLE request, which is
-# outright failure (not graceful degradation) against an 8k-window model.
+# many-batch `full` build hands ONE reduce call every map note at once --
+# `_MAX_MAP_CHUNKS / _MAP_BATCH` = 12 notes * `_MAP_MAX_TOKENS` = ~7k tokens
+# in a SINGLE request, which is outright failure (not graceful degradation)
+# against an 8k-window model once the 2,500-token answer is counted. It was
+# 40 notes and ~24k tokens before `F-2` cut the batch count; the shape of the
+# failure is unchanged, only its size.
 # `_fold` instead groups notes the same way `_batched` groups chunks and
 # recurses on the folded groups, so no single call ever exceeds one batch's
 # worth of notes. The cap is an EXPLICIT termination guarantee, not an
@@ -260,8 +297,21 @@ class SummaryDraft:
 ProgressHook = Callable[[int], Awaitable[None]]
 CancelHook = Callable[[], Awaitable[bool]]
 
+# `F-3` (rag-summarization-fix-plan.md §3.4): what the FOLD phase reports.
+# It carries no number, unlike `ProgressHook`, because by then there is no
+# number left to carry: the map loop has already advanced the job to
+# `total_chunks` and `SummaryJob.advance` clamps there, so every count a fold
+# could report is the count already stored. What a tick says is that the
+# build is alive and has just finished a step -- which is the whole of what
+# is needed, and is the channel `F-4`'s heartbeat rides on.
+PhaseHook = Callable[[], Awaitable[None]]
+
 
 async def _noop_progress(_done: int) -> None:
+    return None
+
+
+async def _noop_phase() -> None:
     return None
 
 
@@ -338,7 +388,17 @@ class SummarizeDocument:
         # map/reduce round trip would spend two calls to reach what one says
         # better: notes summarised from notes read worse than a summary
         # written from the text.
-        if len(batches) == 1:
+        #
+        # `F-2`: "fits" is measured against `_MAX_REDUCE_CHARS`, NOT the map
+        # budget `batches` above is grouped by, because this shortcut ANSWERS
+        # in `_REDUCE_MAX_TOKENS` -- it is a reduce-sized call and carries the
+        # reduce-sized input budget. A window that fits one MAP batch can
+        # still be half again too large to be answered at 2,500 tokens. The
+        # two never disagreed before only because `_MAP_BATCH = 6` kept every
+        # batch far under both; raising it makes the difference reachable.
+        # The smaller budget also implies `len(batches) == 1`, so this one
+        # check is the whole condition.
+        if len(_batched(window, max_chars=_MAX_REDUCE_CHARS)) == 1:
             text = await self._call(
                 system=_FULL_SYSTEM,
                 user=_join(batches[0]),
@@ -367,10 +427,28 @@ class SummarizeDocument:
             done += len(batch)
             await on_progress(done)
 
-        if await should_cancel():
-            raise SummaryBuildCancelled
+        # `F-3`: the fold phase is the LONGEST unbroken run of provider calls
+        # in the whole build, and until now it reported nothing and observed
+        # nothing -- the last ~10 calls of a long document were invisible, the
+        # interface sat at 99%, and Stop did nothing. Both hooks now go down
+        # with it. The poll that used to stand here is gone rather than
+        # duplicated: `_fold` polls before every call it makes, and its first
+        # one is at exactly this point.
+        async def _reduce_tick() -> None:
+            """One progress write per fold step. The value is always the same
+            (`advance` clamps at `total_chunks`, reached above), so what this
+            moves is the row's `updated_at`, not its count -- reporting the
+            reduce as a PHASE, not as a counter that has nothing left to
+            count."""
+            await on_progress(len(window))
 
-        text = await self._fold(notes, lang=lang, summarizer=summarizer)
+        text = await self._fold(
+            notes,
+            lang=lang,
+            summarizer=summarizer,
+            on_tick=_reduce_tick,
+            should_cancel=should_cancel,
+        )
         return SummaryDraft(
             text=text, model=summarizer.model, source_chunks=len(window), truncated=truncated
         )
@@ -478,7 +556,13 @@ class SummarizeDocument:
 
         window = readable[:_MAX_MAP_CHUNKS]
         truncated = len(readable) > len(window)
-        batches = _batched(window)
+        # `F-2`: the REDUCE budget, like the fold ladder and unlike the map
+        # loop. Every call this method makes answers in `_REDUCE_MAX_TOKENS`,
+        # and from the second one on its prompt carries the running summary
+        # (itself up to `_REDUCE_MAX_TOKENS`) on top of the batch -- so this
+        # path has strictly LESS room for source text than the reduce does,
+        # not more.
+        batches = _batched(window, max_chars=_MAX_REDUCE_CHARS)
 
         # Cancellation is checked before EVERY batch when there is more than
         # one, the `execute` map loop's own placement -- including the
@@ -524,6 +608,8 @@ class SummarizeDocument:
         *,
         lang: SummaryLanguage,
         summarizer: ResolvedSummarizer,
+        on_tick: PhaseHook = _noop_phase,
+        should_cancel: CancelHook = _never_cancel,
         depth: int = 0,
     ) -> str:
         """P-41 (plan §4 step 17, §3.10): collapse ``notes`` into ONE final
@@ -531,7 +617,14 @@ class SummarizeDocument:
         worth of them.
 
         ``_batched`` (already used to group source chunks into map calls)
-        groups these SAME-shaped strings the same way. When that grouping
+        groups these SAME-shaped strings the same way, under
+        ``_MAX_REDUCE_CHARS`` rather than the map budget: what ends this
+        ladder is a call answering in ``_REDUCE_MAX_TOKENS``, so it is that
+        call's room the grouping has to respect (`F-2`). Since `F-2` the
+        character budget is also what SPLITS a group at all --
+        ``_MAX_MAP_CHUNKS / _MAP_BATCH`` is 12 notes at most, always under
+        ``_MAP_BATCH``, so the count bound can no longer be the one that
+        bites here. When that grouping
         already fits everything in ONE group, the whole-document reduce
         happens directly -- this is the ordinary case for anything up to
         ``_MAP_BATCH`` map notes, and the ONLY extra cost over the old
@@ -543,9 +636,22 @@ class SummarizeDocument:
         context-window error there is a better failure than a pipeline that
         keeps folding past its own stated guarantee (``_batched``'s own
         reasoning for a single oversized chunk, carried here for notes).
+
+        **`F-3` (plan §3.4): both hooks reach here, and the placement is the
+        point.** ``should_cancel`` is polled and ``on_tick`` fired
+        IMMEDIATELY BEFORE every provider call, never after -- so the longest
+        stretch in which this pipeline says nothing is exactly ONE call,
+        whatever the shape of the ladder above it. After-the-call reporting
+        would leave the final reduce, the single longest call in the build,
+        as an unannounced silence of its full duration; and a Stop pressed
+        during it could not be observed at all, because the poll would come
+        only once the call it was meant to prevent had already been paid for.
         """
-        grouped = _batched(list(notes))
+        grouped = _batched(list(notes), max_chars=_MAX_REDUCE_CHARS)
         if len(grouped) == 1 or depth >= _MAX_FOLD_DEPTH - 1:
+            if await should_cancel():
+                raise SummaryBuildCancelled
+            await on_tick()
             return await self._call(
                 system=_REDUCE_SYSTEM,
                 user="\n\n".join(notes),
@@ -553,17 +659,31 @@ class SummarizeDocument:
                 summarizer=summarizer,
                 max_tokens=_REDUCE_MAX_TOKENS,
             )
-        folded = [
-            await self._call(
-                system=_FOLD_SYSTEM,
-                user="\n\n".join(group),
-                lang=lang,
-                summarizer=summarizer,
-                max_tokens=_MAP_MAX_TOKENS,
+        # A loop rather than the comprehension this was: a comprehension has
+        # nowhere to put the poll, and the poll between groups is the whole of
+        # what makes Stop work during a long reduce.
+        folded: list[str] = []
+        for group in grouped:
+            if await should_cancel():
+                raise SummaryBuildCancelled
+            await on_tick()
+            folded.append(
+                await self._call(
+                    system=_FOLD_SYSTEM,
+                    user="\n\n".join(group),
+                    lang=lang,
+                    summarizer=summarizer,
+                    max_tokens=_MAP_MAX_TOKENS,
+                )
             )
-            for group in grouped
-        ]
-        return await self._fold(folded, lang=lang, summarizer=summarizer, depth=depth + 1)
+        return await self._fold(
+            folded,
+            lang=lang,
+            summarizer=summarizer,
+            on_tick=on_tick,
+            should_cancel=should_cancel,
+            depth=depth + 1,
+        )
 
     async def _call(
         self,
@@ -642,20 +762,29 @@ def _glance_sample(readable: Sequence[str]) -> tuple[str, int]:
     return "\n\n".join(parts), len(indices)
 
 
-def _batched(chunks: Sequence[str]) -> list[list[str]]:
-    """Group chunks into map batches, breaking early on ``_MAX_BATCH_CHARS``.
+def _batched(chunks: Sequence[str], *, max_chars: int = _MAX_BATCH_CHARS) -> list[list[str]]:
+    """Group chunks into batches, breaking early on ``max_chars``.
 
     A batch is closed by whichever bound is reached first. The character
     guard can produce a batch of one — a single chunk longer than the whole
     budget — which is correct: the alternative is refusing to summarise a
     document because one of its chunks is large, and the provider's own
     context error is a better failure than a pipeline that declines to try.
+
+    ``max_chars`` is a PARAMETER since `F-2` (plan §3.3) because the budget
+    belongs to the CALL being built, not to this grouping: a map call answers
+    in ``_MAP_MAX_TOKENS`` and a fold/reduce/refine call in
+    ``_REDUCE_MAX_TOKENS``, and that difference is most of what the two
+    budgets are. It defaults to the map budget because the map loop is the
+    caller this function was written for and the only one that wants the
+    larger number; every reduce-sized caller passes ``_MAX_REDUCE_CHARS``
+    explicitly, so a call site says which kind of call it is grouping for.
     """
     batches: list[list[str]] = []
     current: list[str] = []
     size = 0
     for chunk in chunks:
-        if current and (len(current) >= _MAP_BATCH or size + len(chunk) > _MAX_BATCH_CHARS):
+        if current and (len(current) >= _MAP_BATCH or size + len(chunk) > max_chars):
             batches.append(current)
             current, size = [], 0
         current.append(chunk)

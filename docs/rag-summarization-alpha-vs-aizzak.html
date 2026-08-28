@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>انحراف مسار التلخيص</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@700;800&display=swap">
+</head>
+<body>
+<style>
+  :root {
+    --ground: #EFF3F1;
+    --surface: #FFFFFF;
+    --surface-sunk: #E6EBE8;
+    --ink: #14201E;
+    --ink-mid: #46554F;
+    --ink-soft: #6E7E78;
+    --rule: #D3DCD7;
+    --rule-soft: #E3E9E6;
+    --accent: #0F6E5F;
+    --accent-wash: #E1EEEA;
+    --critical: #A63D22;
+    --critical-wash: #F6E5DF;
+    --warn: #8A6210;
+    --warn-wash: #F4EBD8;
+    --shadow: 0 1px 2px rgba(20, 32, 30, .05), 0 8px 24px -16px rgba(20, 32, 30, .28);
+
+    --step--1: .8125rem;
+    --step-0: .975rem;
+    --step-1: 1.1rem;
+    --step-2: 1.35rem;
+    --step-3: 1.75rem;
+    --step-4: 2.4rem;
+    --step-5: clamp(2.6rem, 6vw, 3.9rem);
+
+    --sans: "IBM Plex Sans Arabic", "Segoe UI", system-ui, sans-serif;
+    --display: "Noto Kufi Arabic", "IBM Plex Sans Arabic", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0E1513;
+      --surface: #17201E;
+      --surface-sunk: #121A18;
+      --ink: #E4EDE9;
+      --ink-mid: #A5B5AF;
+      --ink-soft: #7E908A;
+      --rule: #26332F;
+      --rule-soft: #1E2926;
+      --accent: #55C3AC;
+      --accent-wash: #122C27;
+      --critical: #E58561;
+      --critical-wash: #331A12;
+      --warn: #D6A441;
+      --warn-wash: #2E2410;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -18px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0E1513;
+    --surface: #17201E;
+    --surface-sunk: #121A18;
+    --ink: #E4EDE9;
+    --ink-mid: #A5B5AF;
+    --ink-soft: #7E908A;
+    --rule: #26332F;
+    --rule-soft: #1E2926;
+    --accent: #55C3AC;
+    --accent-wash: #122C27;
+    --critical: #E58561;
+    --critical-wash: #331A12;
+    --warn: #D6A441;
+    --warn-wash: #2E2410;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -18px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    direction: rtl;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--step-0);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+  }
+
+  .sheet {
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: clamp(1.4rem, 4vw, 3.5rem) clamp(1rem, 4vw, 2.5rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(2.75rem, 5vw, 4.25rem);
+  }
+
+  h1, h2, h3 { font-family: var(--display); font-weight: 700; text-wrap: balance; line-height: 1.35; margin: 0; }
+
+  code, .mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  code {
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-size: .86em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: .08em .38em;
+    white-space: nowrap;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  /* ── masthead ───────────────────────────────────────── */
+  .masthead { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .masthead h1 {
+    font-size: var(--step-5);
+    font-weight: 800;
+    letter-spacing: -.015em;
+  }
+
+  .verdict {
+    font-size: var(--step-1);
+    color: var(--ink-mid);
+    max-width: 60ch;
+    margin: 0;
+  }
+
+  .verdict strong { color: var(--ink); font-weight: 600; }
+
+  .rule-heavy { height: 3px; background: var(--ink); border: 0; margin: 0; }
+
+  .specimens {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .specimen { background: var(--surface); padding: 1rem 1.15rem; display: flex; flex-direction: column; gap: .3rem; }
+  .specimen .k { font-family: var(--mono); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+  .specimen .v { font-family: var(--mono); font-size: .84rem; color: var(--ink); direction: ltr; text-align: right; word-break: break-all; }
+  .specimen .v[lang="ar"] { direction: rtl; font-family: var(--sans); font-size: var(--step-0); }
+
+  /* ── sections ───────────────────────────────────────── */
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .sec-head { display: flex; flex-direction: column; gap: .55rem; padding-bottom: .9rem; border-bottom: 1px solid var(--rule); }
+  .sec-head h2 { font-size: var(--step-3); }
+  .sec-head p { margin: 0; color: var(--ink-mid); max-width: 68ch; }
+
+  /* ── ledger ─────────────────────────────────────────── */
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
+
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: var(--step--1); }
+  thead th {
+    text-align: right;
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: .72rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+    background: var(--surface-sunk);
+  }
+  tbody td { padding: .8rem 1rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; line-height: 1.6; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.id { font-family: var(--mono); font-weight: 600; color: var(--ink-soft); white-space: nowrap; font-size: .8rem; }
+  td.what { min-width: 17rem; }
+
+  /* ── pills ──────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-family: var(--mono); font-size: .7rem; font-weight: 600;
+    letter-spacing: .05em; text-transform: uppercase;
+    padding: .2rem .55rem; border-radius: 2px; white-space: nowrap;
+  }
+  .pill.stop { background: var(--critical-wash); color: var(--critical); }
+  .pill.deg { background: var(--warn-wash); color: var(--warn); }
+  .pill.ok { background: var(--accent-wash); color: var(--accent); }
+
+  /* ── finding cards ──────────────────────────────────── */
+  .findings { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-right: 3px solid var(--rule);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+  }
+  .finding.stop { border-right-color: var(--critical); }
+  .finding.deg { border-right-color: var(--warn); }
+
+  .f-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem 1rem;
+    padding: 1.15rem 1.35rem .9rem;
+  }
+  .f-head .fid { font-family: var(--mono); font-size: .78rem; font-weight: 600; color: var(--ink-soft); }
+  .f-head h3 { font-size: var(--step-2); flex: 1 1 16rem; }
+
+  .f-body { padding: 0 1.35rem 1.35rem; display: flex; flex-direction: column; gap: 1.1rem; }
+  .f-body > p { margin: 0; color: var(--ink-mid); max-width: 72ch; }
+  .f-body > p strong { color: var(--ink); font-weight: 600; }
+
+  .compare {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .side { background: var(--surface-sunk); padding: .9rem 1rem 1rem; display: flex; flex-direction: column; gap: .5rem; }
+  .side .who {
+    font-family: var(--mono); font-size: .7rem; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase;
+    display: flex; align-items: center; gap: .4rem;
+  }
+  .side.ref .who { color: var(--accent); }
+  .side.now .who { color: var(--critical); }
+  .side.now.mild .who { color: var(--warn); }
+  .side p { margin: 0; font-size: var(--step--1); line-height: 1.7; color: var(--ink-mid); }
+  .side .metric { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.45rem; font-weight: 600; color: var(--ink); line-height: 1.2; }
+  .side .src { font-family: var(--mono); font-size: .7rem; color: var(--ink-soft); direction: ltr; text-align: right; word-break: break-all; }
+
+  .note { display: grid; grid-template-columns: auto 1fr; gap: .5rem .9rem; align-items: baseline; font-size: var(--step--1); }
+  .note dt {
+    font-family: var(--mono); font-size: .7rem; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft);
+    white-space: nowrap; padding-top: .1rem;
+  }
+  .note dd { margin: 0; color: var(--ink-mid); }
+  .note dd strong { color: var(--ink); font-weight: 600; }
+  .note .fix { color: var(--ink); }
+
+  /* ── call-count chart ───────────────────────────────── */
+  .chart { display: flex; flex-direction: column; gap: 1.1rem; }
+  .bar-row { display: grid; grid-template-columns: 6.5rem 1fr; gap: 1rem; align-items: center; }
+  .bar-row .label { font-family: var(--mono); font-size: .75rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-mid); text-align: left; direction: ltr; }
+  .track { position: relative; height: 2.1rem; background: var(--surface-sunk); border-radius: 2px; overflow: hidden; }
+  .fill { position: absolute; inset-block: 0; inset-inline-start: 0; display: flex; align-items: center; padding-inline: .6rem; }
+  .fill.ref { background: var(--accent); }
+  .fill.now { background: var(--critical); }
+  .fill span { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: .8rem; font-weight: 600; color: var(--surface); white-space: nowrap; }
+  .chart figcaption { font-size: var(--step--1); color: var(--ink-soft); margin: 0; max-width: 68ch; }
+
+  /* ── timeline of a build ────────────────────────────── */
+  .plan { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; background: var(--surface); }
+  .step { display: grid; grid-template-columns: auto 1fr; gap: 1rem; padding: 1rem 1.2rem; border-bottom: 1px solid var(--rule-soft); }
+  .step:last-child { border-bottom: 0; }
+  .step .ord {
+    font-family: var(--mono); font-size: .8rem; font-weight: 600;
+    color: var(--surface); background: var(--ink);
+    width: 1.7rem; height: 1.7rem; border-radius: 2px;
+    display: grid; place-items: center; margin-top: .15rem;
+  }
+  .step .body { display: flex; flex-direction: column; gap: .3rem; }
+  .step .body b { font-weight: 600; font-size: var(--step-0); }
+  .step .body span { font-size: var(--step--1); color: var(--ink-mid); }
+
+  ul.tight { margin: 0; padding-inline-start: 1.15rem; display: flex; flex-direction: column; gap: .4rem; color: var(--ink-mid); font-size: var(--step--1); }
+  ul.tight strong { color: var(--ink); font-weight: 600; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 1.25rem; font-size: var(--step--1); color: var(--ink-soft); }
+
+  a { color: var(--accent); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .fill { animation: grow .8s cubic-bezier(.2, .7, .3, 1) both; transform-origin: right center; }
+    @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  }
+</style>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="eyebrow">تقرير فروق &middot; alpha ← aizzak</p>
+    <h1>انحراف مسار التلخيص</h1>
+    <hr class="rule-heavy">
+    <p class="verdict">
+      مسار التلخيص في <strong>aizzak</strong> أُعيدت كتابته لا نسخه. المنطق العام محفوظ (map → reduce → حفظ)،
+      لكن <strong>ستة</strong> قرارات مختلفة عن alpha تُنتج بالضبط العَرَضين المُبلَّغ عنهما:
+      بناءٌ يتوقّف في منتصفه، وملخّصٌ لا يبقى.
+    </p>
+
+    <div class="specimens">
+      <div class="specimen"><span class="k">reference</span><span class="v">/home/alpha</span></div>
+      <div class="specimen"><span class="k">under review</span><span class="v">/home/AIZZAK @ retrieval</span></div>
+      <div class="specimen"><span class="k">blocking</span><span class="v" lang="ar">٤ أسباب</span></div>
+      <div class="specimen"><span class="k">degrading</span><span class="v" lang="ar">٥ أسباب</span></div>
+    </div>
+  </header>
+
+  <!-- ─────────────  LEDGER  ───────────── -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">لوحة الفروق</p>
+      <h2>كل فرق، وأيّ عَرَض يُنتجه</h2>
+      <p>مرتَّبة بالأثر. الأعمدة الأربعة الأولى هي سبب التجمّد؛ الباقي سبب ضياع الملخّص أو تدهور جودته.</p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th class="what">الفرق</th>
+            <th>alpha</th>
+            <th>aizzak</th>
+            <th>العَرَض</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="id">F‑1</td>
+            <td class="what">مهلة استدعاء النموذج</td>
+            <td><span class="num">300s</span> + بثّ تدفّقي</td>
+            <td><span class="num">60s</span> بلا بثّ</td>
+            <td><span class="pill stop">تجمّد</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑2</td>
+            <td class="what">عدد استدعاءات LLM لمستند واحد</td>
+            <td>حزم بحدّ <span class="num">24,576</span> حرفًا</td>
+            <td>حزم بحدّ <span class="num">6</span> مقاطع</td>
+            <td><span class="pill stop">تجمّد</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑3</td>
+            <td class="what">التقدّم والإلغاء أثناء الطيّ النهائي</td>
+            <td>يُبلَّغ ويُفحص في كل جولة</td>
+            <td>صامت تمامًا في <code>_fold</code></td>
+            <td><span class="pill stop">تجمّد</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑4</td>
+            <td class="what">أين يعمل البناء</td>
+            <td>عملية <code>jobs.runner</code> مستقلّة</td>
+            <td>داخل حلقة <code>worker-knowledge</code></td>
+            <td><span class="pill stop">تجمّد</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑5</td>
+            <td class="what">مصير الملخّص عند إعادة الفهرسة</td>
+            <td>يبقى (مفتاح ثابت + بصمة)</td>
+            <td>يُحذف مع المستند القديم</td>
+            <td><span class="pill stop">لا يبقى</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑6</td>
+            <td class="what">قراءة ملخّص بلغة مختلفة عن لغة البناء</td>
+            <td>ارتداد ذكي إلى النص المخزَّن</td>
+            <td>مطابقة صارمة ← <span class="num">404</span></td>
+            <td><span class="pill stop">لا يبقى</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑7</td>
+            <td class="what">التلخيص من داخل المحادثة</td>
+            <td>يُعيد الملخّص نصًّا في الردّ</td>
+            <td>يُعيد إيصالًا فقط، بلا متابعة</td>
+            <td><span class="pill deg">تدهور</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑8</td>
+            <td class="what">نوع الملخّص المطلوب من المحادثة</td>
+            <td>الملخّص الكامل</td>
+            <td><code>OVERVIEW</code> من <span class="num">8</span> مقاطع</td>
+            <td><span class="pill deg">تدهور</span></td>
+          </tr>
+          <tr>
+            <td class="id">F‑9</td>
+            <td class="what">سقف حجم المستند</td>
+            <td>بلا سقف — طيّ متكرّر</td>
+            <td>يُبتر بعد <span class="num">240</span> مقطعًا</td>
+            <td><span class="pill deg">تدهور</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─────────────  PROBLEM 1  ───────────── -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">العَرَض الأوّل</p>
+      <h2>التلخيص الكامل يتجمّد في المنتصف</h2>
+      <p>
+        الأسباب الأربعة أدناه تتراكب: الأول يقتل الاستدعاء، والثاني يضاعف عدد الاستدعاءات المعرَّضة له،
+        والثالث يُخفي ما يحدث عن الواجهة، والرابع يجعل الفشل يبدو كتوقّف كامل للنظام لا لمهمّة واحدة.
+      </p>
+    </div>
+
+    <div class="findings">
+
+      <!-- F-1 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑1</span>
+          <h3>مهلة ٦٠ ثانية مفروضة على استدعاء غير تدفّقي</h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            <code>SummarizeDocument._call</code> يستدعي <code>provider.complete()</code> — وهو المسار
+            <strong>غير التدفّقي</strong>. مع <code>stream:false</code> لا يُرسل Ollama أيّ بايت حتى ينتهي التوليد كاملًا،
+            فتصبح مهلة القراءة في httpx مهلةً <strong>للاستدعاء كلّه</strong>، لا مهلةً بين الأجزاء.
+            أي حزمة <code>map</code> يستغرق توليدها أكثر من دقيقة ترمي <code>ReadTimeout</code>.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <span class="metric">300s</span>
+              <p>ومع ذلك يبثّ تدفّقيًّا عبر <code>stream_complete</code>، فالمهلة تُعاد مع كل رمز مولَّد — عمليًّا لا سقف على طول التوليد.</p>
+              <span class="src">rag/core/llm.py:116 · document_summarizer.py:251</span>
+            </div>
+            <div class="side now">
+              <span class="who">aizzak</span>
+              <span class="metric">60s</span>
+              <p>سقف صلب على الاستدعاء بأكمله، ويُطبَّق على كل واحدة من عشرات استدعاءات <code>map</code>.</p>
+              <span class="src">settings.py:779 · llm/shared.py:141 · summarization.py:588</span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>مفارقة</dt>
+            <dd>تعليق <code>stream_max_duration_s</code> في <code>settings.py</code> يشرح بنفسه أن «سقفًا على الاستدعاء كلّه يقطع بثًّا سليمًا في منتصفه» — ومسار التلخيص هو المكان الوحيد الذي يقع فيه هذا بالضبط، لأنه المسار الوحيد الذي لا يبثّ.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">مهلة منفصلة للتلخيص (<span class="num">300–600s</span>)، أو تمرير البناء عبر <code>provider.stream()</code> وتجميع الأجزاء — وهو ما يعيد أيضًا سلوك الإلغاء اللحظي في alpha.</dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-2 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑2</span>
+          <h3>الحزم تُقاس بعدد المقاطع لا بحجم النافذة</h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            alpha يُعيد تجميع المستند من <strong>المقاطع الأصلية للمحلّل</strong> ويعبّئ كل استدعاء حتى ميزانية
+            <code>(8192 − 2048) × 4 = 24,576</code> حرفًا. aizzak يُغلق الحزمة عند <code>_MAP_BATCH = 6</code>
+            مقاطع — والمقطع هنا مقيَّد بـ <code>embedding_max_input_tokens = 512</code>، أي ≈ ١٩٢ كلمة ≈ ١١٠٠ حرف.
+            فحدّ <code>_MAX_BATCH_CHARS = 24,000</code> <strong>لا يُلامَس أبدًا</strong>: الحزمة تُغلق عند ~٦٦٠٠ حرف،
+            أي ربع النافذة المتاحة.
+          </p>
+
+          <figure class="chart">
+            <div class="bar-row">
+              <span class="label">alpha</span>
+              <div class="track"><div class="fill ref" style="width: 30%"><span>‏14 استدعاء</span></div></div>
+            </div>
+            <div class="bar-row">
+              <span class="label">aizzak</span>
+              <div class="track"><div class="fill now" style="width: 100%"><span>‏47 استدعاء</span></div></div>
+            </div>
+            <figcaption>
+              تقدير محسوب من الثوابت لمستند عربي ≈ ١٠٠ صفحة (≈ ٢٥٠ ألف حرف):
+              alpha يُنتج ١١ حزمة + طيّة واحدة + تخفيض؛ aizzak يُنتج ٣٧ حزمة <code>map</code> + ٩ استدعاءات <code>_fold</code> + تخفيض.
+            </figcaption>
+          </figure>
+
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd><strong>٣٫٤× عدد الفرص للاصطدام بمهلة F‑1</strong>، و٣٫٤× زمن الجدار. البناء الذي كان يستغرق دقائق في alpha صار عشرات الدقائق هنا.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">اجعل <code>_MAX_BATCH_CHARS</code> هو الحدّ الفعلي وارفع <code>_MAP_BATCH</code> إلى ما يوازيه (≈ ٢٠ مقطعًا)، أو عبّئ الحزم من <code>parent_chunks</code> كما يفعل alpha بدل مقاطع البحث الصغيرة.</dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-3 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑3</span>
+          <h3><code>_fold</code> لا يُبلِّغ تقدّمًا ولا يفحص إلغاءً</h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            بعد انتهاء حلقة <code>map</code>، يُسلَّم العمل إلى <code>_fold</code> — وهي دالّة تعاودية لا تستدعي
+            <code>on_progress</code> ولا <code>should_cancel</code> ولا مرّة واحدة. في المثال أعلاه هذه
+            <strong>عشرة استدعاءات نموذج متتالية</strong> بلا أي إشارة خارجية.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <p><code>_emit(progress_cb, phase="reducing"…)</code> و<code>_check_cancel</code> قبل كل تخفيض وكل جولة طيّ. لوحة التقدّم تُظهر «round 1»، «round 2»، والإلغاء يستجيب.</p>
+              <span class="src">document_summarizer.py &middot; summarize_nodes</span>
+            </div>
+            <div class="side now">
+              <span class="who">aizzak</span>
+              <p><code>done_chunks</code> يتجمّد عند <code>total_chunks</code>، و<code>percent</code> مقيَّد بـ <span class="num">99</span>. المستخدم يرى ٩٩٪ ثابتة لعشر دقائق، وزرّ الإيقاف لا يفعل شيئًا.</p>
+              <span class="src">summarization.py:521 — <code>_fold</code></span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>هذا هو <strong>التجمّد المرئي</strong> بعينه: البناء حيّ ويعمل، لكن لا شيء في الواجهة يدلّ على ذلك، ولا شيء يستطيع إيقافه.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">مرِّر <code>on_progress</code> و<code>should_cancel</code> إلى <code>_fold</code>، وأضف مرحلةً مُعلَنة (<code>phase</code>) للتخفيض كما في alpha بدل الاكتفاء بعدّاد المقاطع.</dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-4 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑4</span>
+          <h3>البناء يحتجز عامل المعرفة بأكمله</h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            في aizzak يعمل البناء داخل معالِج حدث واحد على حلقة <code>StreamConsumer</code>. لا مهلة على المعالِج،
+            ولا تزامن. فما دام التلخيص جاريًا، لا يفهرس <code>worker-knowledge</code> ملفًّا ولا يعالج أي حدث آخر.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <p>البناء يُزاح إلى عملية <code>jobs.runner</code> مستقلّة عن عمّال الويب، ويُنبض له نبضٌ صريح
+              (<code>_bridge → update_progress</code>) كي لا يُستردّ كمهمّة ميّتة.</p>
+              <span class="src">jobs/runner.py:185 &middot; services/jobs.py:46</span>
+            </div>
+            <div class="side now">
+              <span class="who">aizzak</span>
+              <p>النبض يُكتب بعد كل رسالة مُنجَزة فقط، و<code>heartbeat_max_age_s = 300</code>. بناءٌ يمتدّ ٣٠ دقيقة
+              يجعل الحاوية <code>unhealthy</code> طوال الوقت.</p>
+              <span class="src">consumers/engine.py:249 &middot; settings.py:334</span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>
+              «تجمّد» يبدو أوسع من مهمّة واحدة: الرفع لا يُفهرَس، وكل ملخّص آخر ينتظر في الطابور.
+              وإن أعاد المشرِف تشغيل الحاوية بسبب <code>unhealthy</code>، فإن <code>SummaryJob.start</code>
+              <strong>قابل لإعادة الدخول من حالة <code>running</code></strong> — فيُعاد تسليم الحدث ويبدأ البناء
+              <strong>من المقطع الأول</strong>، ويتكرّر الأمر حتى تبتلعه قائمة DLQ بعد ٥ محاولات، تاركًا المهمّة
+              <code>running</code> إلى الأبد وحاجزةً <code>uq_summary_job_active</code> — فلا يستطيع المستخدم حتى إعادة الطلب.
+            </dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">إمّا مجموعة مستهلِكين/عامل مستقلّ للتلخيص، أو نبض صريح داخل حلقة <code>map</code> ورفع <code>heartbeat_max_age_s</code> لهذا العامل. وفي الحالتين: احفظ الملاحظات المُنجَزة كي لا تُهدَر إعادةُ التسليم كلَّ ما سبق.</dd>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ─────────────  PROBLEM 2  ───────────── -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">العَرَض الثاني</p>
+      <h2>لا يتمّ الاحتفاظ بالتلخيص</h2>
+      <p>
+        ثلاثة مسارات مختلفة تنتهي كلّها إلى «الملخّص اختفى». أوّلها حذفٌ فعليّ من قاعدة البيانات،
+        والثاني ملخّصٌ موجود لكن غير قابل للقراءة بالمفتاح المطلوب، والثالث ملخّصٌ لا يصل إلى المستخدم أصلًا.
+      </p>
+    </div>
+
+    <div class="findings">
+
+      <!-- F-5 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑5</span>
+          <h3>إعادة الفهرسة تمحو كل الملخّصات نهائيًّا</h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            الملخّص في aizzak معلَّق على <code>document_id</code> عبر <code>fk_summary_doc</code>.
+            و<code>ReindexDocuments</code> لا يُحدِّث المستند بل <strong>يُنشئ مستندًا جديدًا بمعرّف جديد ويُدمِّر القديم</strong>،
+            و<code>DocumentRepository.purge</code> يبدأ بحذف <code>summaries</code>.
+            النتيجة: كل إعادة فهرسة — أو إعادة رفع للملف نفسه — تمحو كل ملخّصات ذلك الملف بكل الأنواع وكل اللغات،
+            بلا إعادة اشتقاق وبلا أي فحص لما إذا كان محتوى الملف قد تغيّر أصلًا.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <p>الملخّص يعيش في <code>document_registry.json</code> تحت <code>doc_id</code> <strong>ثابت</strong>، ومعه
+              <code>summary_fingerprint</code>. إن لم تتغيّر بصمة الملف، يُعاد استعمال الملخّص المخزَّن بلا استدعاء واحد.</p>
+              <span class="src">document_registry.py &middot; get_or_build_summary</span>
+            </div>
+            <div class="side now">
+              <span class="who">aizzak</span>
+              <p><code>DELETE FROM knowledge.summaries WHERE document_id = …</code> ثم مستند جديد بمعرّف جديد.
+              لا بصمة، ولا نقل، ولا استرجاع.</p>
+              <span class="src">sql_repository.py:589 &middot; use_cases.py:627</span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>هذا هو التفسير الأرجح لِـ «الملخّص لا يبقى»: يظهر بعد البناء، ثم يختفي عند أول إعادة فهرسة، والعملية <strong>لا تُسجَّل في أي مكان يراه المستخدم</strong>.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">
+              أضف بصمة محتوى على المستند، وفي <code>ReindexDocuments.commit</code> انقل صفوف <code>summaries</code>
+              إلى المستند الجديد عندما تتطابق البصمة بدل حذفها. البديل الأدنى كلفة: أعِد تعليق الملخّص على
+              <code>file_id</code> + بصمة، بدل <code>document_id</code>.
+            </dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-6 -->
+      <article class="finding stop">
+        <div class="f-head">
+          <span class="fid">F‑6</span>
+          <h3>مفتاح اللغة صارم: ملخّص <code>auto</code> غير مرئيّ لطلب <code>ar</code></h3>
+          <span class="pill stop">حاجب</span>
+        </div>
+        <div class="f-body">
+          <p>
+            <code>uq_summary_key</code> يتضمّن <code>lang</code>، و<code>GetSummary</code> يبحث بمطابقة تامّة.
+            ملخّصٌ بُني بـ <code>lang=auto</code> — وهو ما يطلبه مسار المحادثة دائمًا — لن يُعثر عليه أبدًا
+            بطلب <code>lang=ar</code>، حتى لو كان نصّه عربيًّا بالكامل. الردّ <span class="num">404</span>.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <p><code>peek_cached</code> يرتدّ بترتيب: خانة اللغة الصريحة، ثم النص القانوني إن كشف
+              <code>_detect_lang</code> أنه بتلك اللغة أصلًا. لا يُعاد بناء شيء لعرض ما هو موجود.</p>
+              <span class="src">document_summarizer.py &middot; peek_cached</span>
+            </div>
+            <div class="side now mild">
+              <span class="who">aizzak</span>
+              <p>لا ارتداد في القراءة. الارتداد الوحيد الموجود (<code>newest_in_other_language</code>) يعمل فقط
+              أثناء <strong>البناء</strong> ليُترجم — أي يُنفق استدعاء نموذج على نصّ قد يكون باللغة المطلوبة فعلًا.</p>
+              <span class="src">use_cases.py:1048 &middot; sql_repository.py:1027</span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>ملخّص مبنيّ وموجود في الجدول، لكن الواجهة تقول «غير متوفّر». ومع تصميم alpha الذي يُعيد <code>200</code> مع <code>has_summary:false</code>، فإن أي واجهة مُرحَّلة من alpha ستقرأ الـ<span class="num">404</span> كخطأ لا كغياب.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">في <code>GetSummary</code>: إن غاب المفتاح الدقيق، اقرأ صفّ <code>auto</code> وأعِده عندما تُطابق لغتُه المكتشَفة اللغةَ المطلوبة — نفس قاعدة <code>peek_cached</code>.</dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-7 -->
+      <article class="finding deg">
+        <div class="f-head">
+          <span class="fid">F‑7 · F‑8</span>
+          <h3>التلخيص من المحادثة لا يعود إلى المحادثة أبدًا</h3>
+          <span class="pill deg">تدهور</span>
+        </div>
+        <div class="f-body">
+          <p>
+            حين يُصنَّف السؤال <code>SUMMARIZE_DOC</code>، يُدرِج <code>routing.py</code> مهمّة ويُعيد
+            <code>summary_job_id</code>. عندها يُطلق الوكيل جملةً ثابتة — «يجري تحضير ملخّص لهذا المستند» — ثم
+            <code>return</code>. <strong>لا شيء في النظام يُعيد الملخّص إلى المحادثة بعد اكتماله.</strong>
+            وحتى لو عاد، فالمطلوب <code>OVERVIEW</code> من ٨ مقاطع فقط، لا الملخّص الكامل.
+          </p>
+          <div class="compare">
+            <div class="side ref">
+              <span class="who">alpha</span>
+              <p><code>_summarize_doc_flow</code> يستدعي <code>get_or_build_summary</code> ويُرجع النصّ نفسه في
+              <code>"answer"</code> — الملخّص <strong>الكامل</strong>، وبشكل متزامن.</p>
+              <span class="src">rag/retrieval/router.py:117</span>
+            </div>
+            <div class="side now mild">
+              <span class="who">aizzak</span>
+              <p>إيصال فقط. و<code>_ROUTED_SUMMARY_KIND = OVERVIEW</code> يقرأ ٨ مقاطع موزَّعة، أي ~٩ آلاف حرف من مستند قد يبلغ ربع مليون.</p>
+              <span class="src">routing.py:196 &middot; rag_agent/agent.py:318</span>
+            </div>
+          </div>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>من زاوية المستخدم هذا هو «لا يتمّ الاحتفاظ بالتلخيص» حرفيًّا: يطلبه فلا يصل، ولا يبقى في سجلّ المحادثة أثرٌ له.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">إمّا استقصاء المهمّة وبثّ الملخّص عند اكتماله في نفس الجولة، أو حفظه كرسالة لاحقة في المحادثة. والاختيار بين <code>OVERVIEW</code> و<code>FULL</code> يجب أن يتبع صياغة السؤال، لا أن يكون ثابتًا.</dd>
+          </dl>
+        </div>
+      </article>
+
+      <!-- F-9 -->
+      <article class="finding deg">
+        <div class="f-head">
+          <span class="fid">F‑9</span>
+          <h3>بترٌ صامت بعد ٢٤٠ مقطعًا</h3>
+          <span class="pill deg">تدهور</span>
+        </div>
+        <div class="f-body">
+          <p>
+            <code>_MAX_MAP_CHUNKS = 240</code> يعني أن مستندًا يتجاوز ≈ ١١٠ صفحة يُلخَّص أوّله فقط.
+            العَلَم <code>truncated</code> يُحفَظ على الصفّ بأمانة — لكنه علامة على واجهة، لا حلّ.
+            alpha لا يبتر: يطوي الملخّصات الجزئية تعاوديًّا حتى تتّسع، وعند بلوغ سقف الطيّ يُخفّض ما بقي دفعةً واحدة.
+          </p>
+          <dl class="note">
+            <dt>الأثر</dt>
+            <dd>«ملخّص الكتاب» لكتابٍ حقيقيّ يصف ثلثه الأول فقط. مقترنًا بـ F‑7، لا يرى المستخدم علم <code>truncated</code> أساسًا.</dd>
+            <dt class="fix">الإصلاح</dt>
+            <dd class="fix">بعد إصلاح F‑2، يصبح السقف نفسه أوسع بأربعة أضعاف من حيث المحتوى. ارفعه أو استبدله بميزانية أحرف كما في alpha.</dd>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ─────────────  ORDER OF WORK  ───────────── -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">ترتيب المعالجة</p>
+      <h2>خمس خطوات، بهذا الترتيب</h2>
+      <p>الترتيب هنا سببيّ لا تفضيليّ: كل خطوة تُقلّل سطح الخطأ الذي تعمل الخطوة التالية داخله.</p>
+    </div>
+
+    <div class="plan">
+      <div class="step">
+        <span class="ord">١</span>
+        <span class="body">
+          <b>افصل مهلة التلخيص عن <code>llm_timeout_s</code></b>
+          <span>أرخص إصلاح وأكبر أثر. <span class="num">300s</span> على الأقل، ويُفضَّل تحويل <code>_call</code> إلى المسار التدفّقي فتختفي المهلة الصلبة وتعود استجابة الإلغاء اللحظية. — F‑1</span>
+        </span>
+      </div>
+      <div class="step">
+        <span class="ord">٢</span>
+        <span class="body">
+          <b>اجعل الحزمة تملأ النافذة</b>
+          <span>ارفع <code>_MAP_BATCH</code> حتى يصبح <code>_MAX_BATCH_CHARS</code> هو القيد الفعلي. يُسقط عدد الاستدعاءات إلى الثلث ويوسّع سقف <code>_MAX_MAP_CHUNKS</code> ضمنًا. — F‑2 · F‑9</span>
+        </span>
+      </div>
+      <div class="step">
+        <span class="ord">٣</span>
+        <span class="body">
+          <b>أوصِل التقدّم والإلغاء إلى <code>_fold</code></b>
+          <span>يُنهي «التجمّد عند ٩٩٪» ويُعيد لزرّ الإيقاف معناه. تغيير محصور في ملفّ واحد. — F‑3</span>
+        </span>
+      </div>
+      <div class="step">
+        <span class="ord">٤</span>
+        <span class="body">
+          <b>أنقذ الملخّصات من إعادة الفهرسة</b>
+          <span>بصمة محتوى + نقل صفوف <code>summaries</code> إلى المستند الجديد عند التطابق. يحتاج ترحيلًا وقرار تصميم — لذا بعد الثلاثة أعلاه. — F‑5</span>
+        </span>
+      </div>
+      <div class="step">
+        <span class="ord">٥</span>
+        <span class="body">
+          <b>أعِد الملخّص إلى المحادثة، وارتدّ في القراءة</b>
+          <span>ارتداد <code>auto</code> في <code>GetSummary</code>، ثم تسليم الملخّص المكتمل في المحادثة بدل الإيصال. — F‑6 · F‑7 · F‑8</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────  WHAT'S FINE  ───────────── -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">ما لا يحتاج إصلاحًا</p>
+      <h2>الفروق المقصودة</h2>
+    </div>
+    <ul class="tight">
+      <li><strong>غياب <code>force</code></strong> — <code>POST</code> يبني دائمًا و<code>GET</code> يقرأ. تصميم أنظف من علَم alpha، ولا علاقة له بأيّ من العَرَضين.</li>
+      <li><strong>التصدير المتزامن</strong> — alpha احتاج مهمّةً لأن نصّه غير محدود؛ هنا <code>_REDUCE_MAX_TOKENS</code> يحدّه، فالتصدير المباشر صحيح.</li>
+      <li><strong>الحراسة بـ <code>409</code> عبر <code>uq_summary_job_active</code></strong> — أدقّ من فحص alpha في الذاكرة… شريطة ألّا تبقى مهمّة عالقة في <code>running</code> (انظر F‑4).</li>
+      <li><strong>مسار <code>translate</code></strong> — إضافة حقيقية فوق alpha: ترجمة الصفّ المخزَّن بدل إعادة الخريطة على الجسد كلّه.</li>
+      <li><strong>عزل المستأجرين (RLS) على <code>summaries</code></strong> — لا مقابل له في alpha، ويجب أن يبقى.</li>
+    </ul>
+  </section>
+
+  <footer>
+    قُورن مسار التلخيص كاملًا في الطرفين: التجميع والتقطيع، طبقة النقل إلى النموذج، دورة حياة المهمّة،
+    التخزين والقراءة، ومسار المحادثة. المراجع بصيغة <code>ملف:سطر</code> عائدة إلى
+    <code>/home/AIZZAK @ retrieval</code> و<code>/home/alpha</code> كما هما في ٢٧ أغسطس ٢٠٢٦.
+    أرقام الاستدعاءات تقديرات محسوبة من ثوابت الشيفرة، لا قياسات حيّة.
+  </footer>
+
+</div>
+</body>
+</html>

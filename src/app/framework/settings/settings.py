@@ -778,6 +778,40 @@ class Limits(BaseModel):
     heavy_jobs_per_min: int = 30
     llm_timeout_s: int = 60
     media_timeout_s: int = 300
+    # `F-1` (rag-summarization-fix-plan.md §3.1) -- the summarisation
+    # map-reduce's OWN per-call budget, on the `media_timeout_s` precedent
+    # exactly: a class of call that is minutes-scale BY NATURE gets its own
+    # number rather than bending the interactive one.
+    #
+    # `llm_timeout_s` (60 s) is sized for an agent turn, where failing fast
+    # IS the right answer. A map call hands a whole batch of document text to
+    # a local model and routinely runs past a minute -- and because the
+    # adapters call `complete` (`stream: false`), the provider emits no byte
+    # at all until generation ends, so those 60 s cap the ENTIRE call rather
+    # than the gap between chunks. Every long document died on that.
+    #
+    # Raising `llm_timeout_s` instead would have bought this at the price of
+    # letting the interactive cycle hang five times longer, since ONE
+    # `SettingsProviderResolver` serves indexing, summarisation and the agent
+    # loop alike. `workers/bootstrap.py` spends a second pair of HTTP clients
+    # instead, which is what an httpx client-level timeout costs.
+    summarize_timeout_s: int = 300
+    # `F-4` (rag-summarization-fix-plan.md §3.5) -- TOTAL wall-clock cap for
+    # ONE summary build: every provider call of a map-reduce plus the waits
+    # between them, the `stream_max_duration_s` idea applied to a job instead
+    # of a stream. 6 x `summarize_timeout_s`, sized off the worst legitimate
+    # shape the constants allow: `_MAX_MAP_CHUNKS / _MAP_BATCH` = 12 map
+    # calls, ~3 folds and one reduce, ~16 calls, which only reaches 1,800 s if
+    # nearly every one of them runs to a third of its own budget.
+    #
+    # It exists because the alternative to a bounded failure here is not a
+    # slower success, it is an ENDLESS one: a build that never returns is
+    # redelivered (DD-09), `SummaryJob.start` is re-entrant from `running`, so
+    # it restarts from the first chunk and meets the same wall -- five times,
+    # until the DLQ, with the job holding `uq_summary_job_active` throughout
+    # so the user cannot even ask again. A timeout converts that into one
+    # `failed` job carrying a written reason.
+    summarize_job_max_duration_s: int = 1_800
     # 5.3-أ — TOTAL wall-clock cap for ONE streamed response (a single agent
     # answer or a whole workflow run's stream, SSE and WS alike). The adapters'
     # httpx timeout is between-chunk ONLY, deliberately (§3.23: a whole-call

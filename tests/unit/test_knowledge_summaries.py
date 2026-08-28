@@ -41,6 +41,7 @@ from app.modules.knowledge.application import summarization as summarization_mod
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
     SummaryBuildCancelled,
+    _batched,
 )
 from app.modules.knowledge.application.use_cases import (
     SUMMARY_CANCELLED_REASON,
@@ -254,6 +255,27 @@ def test_fail_is_reachable_from_queued_without_a_pointless_running_write() -> No
 # --------------------------------------------------------------------------- #
 
 
+# The batching arithmetic these tests are written against, READ from the
+# module rather than copied into it. `F-2` (rag-summarization-fix-plan.md
+# §3.3) moved `_MAP_BATCH` from 6 to 20, and every hard-coded "13 chunks is
+# 3 batches" in this file stopped meaning what it said the moment it did --
+# silently, because 13 chunks is still a perfectly good document, just one
+# that now takes a different path through `execute`.
+_BATCH = summarization_module._MAP_BATCH
+
+# One map call per batch of a document read all the way to `_MAX_MAP_CHUNKS`.
+_MAP_CALLS_AT_THE_CEILING = -(-summarization_module._MAX_MAP_CHUNKS // _BATCH)
+
+# A note long enough that `_MAX_REDUCE_CHARS` -- not the count bound -- is
+# what splits a fold group. Since `F-2` the COUNT bound cannot split notes at
+# all: a document at the ceiling produces `_MAP_CALLS_AT_THE_CEILING` (12) of
+# them, always under `_MAP_BATCH` (20). Real notes run to `_MAP_MAX_TOKENS`
+# (600), ~2,400 characters; this is that order of magnitude, sized so exactly
+# five fit one group and a sixth does not.
+_NOTE_CHARS = summarization_module._MAX_REDUCE_CHARS // 5 - 100
+_NOTES_PER_FOLD = 5
+
+
 async def _draft(
     chunks: list[str],
     *,
@@ -345,39 +367,54 @@ async def test_a_short_full_summary_skips_the_reduce_round_trip() -> None:
 
 @pytest.mark.asyncio
 async def test_a_long_full_summary_maps_in_batches_then_reduces_once() -> None:
-    llm, draft = await _draft([f"chunk {i}" for i in range(13)])
+    chunks = _BATCH * 3 + 1
 
-    # 13 chunks at 6 per batch = 3 map calls, plus one reduce.
-    assert len(llm.calls) == 4
-    assert draft.source_chunks == 13  # type: ignore[attr-defined]
-    # The reduce reads the notes, not the document -- and, with only 3 of
-    # them (well under `_MAP_BATCH`), `_fold` reaches its `len(grouped) == 1`
-    # branch on the FIRST call, going straight to the final reduce exactly
-    # like the pre-P-41 unconditional one did.
-    assert "## Part 3" in llm.calls[-1][0][1].content
+    llm, draft = await _draft([f"chunk {i}" for i in range(chunks)])
+
+    # Four map batches (three full, one of a single chunk), plus one reduce.
+    assert len(llm.calls) == 5
+    assert draft.source_chunks == chunks  # type: ignore[attr-defined]
+    # The reduce reads the notes, not the document -- and, with only four
+    # short ones, `_fold` reaches its `len(grouped) == 1` branch on the FIRST
+    # call, going straight to the final reduce exactly like the pre-P-41
+    # unconditional one did.
+    assert "## Part 4" in llm.calls[-1][0][1].content
 
 
 @pytest.mark.asyncio
 async def test_a_document_with_many_map_batches_folds_notes_recursively_before_reducing() -> None:
-    """P-41 (plan §4 step 17, §3.10): more than one GROUP of map notes
-    (i.e. more than ``_MAP_BATCH`` of them) must never all land in the final
-    reduce call raw -- that is the exact 40-batch/24k-token failure the step
-    exists to fix. 43 chunks map into 8 notes (7 full batches of 6 plus one
-    of 1), which is more than `_MAP_BATCH` notes, so `_fold` must group and
-    fold them (2 groups of ~6/2) BEFORE the final reduce, rather than handing
-    all 8 raw ``## Part N`` notes to one call the way the old unconditional
-    single reduce did."""
-    llm, draft = await _draft([f"chunk {i}" for i in range(43)])
+    """P-41 (plan §4 step 17, §3.10): more than one GROUP of map notes must
+    never all land in the final reduce call raw -- that is the exact
+    many-batch/over-the-window failure the step exists to fix.
 
-    # 8 map calls + 2 first-level folds (8 notes -> 2 groups) + 1 final
-    # reduce (the 2 folded notes fit in one group) = 11.
-    assert len(llm.calls) == 11
-    assert draft.source_chunks == 43  # type: ignore[attr-defined]
+    **What splits a group changed at `F-2`, and this test changed with it.**
+    It used to be the COUNT bound: 43 chunks at 6 a batch made 8 notes, more
+    than `_MAP_BATCH`. That can no longer happen -- a document read to
+    `_MAX_MAP_CHUNKS` yields 12 notes at 20 chunks a batch, always under
+    `_MAP_BATCH` -- so the split is driven by `_MAX_REDUCE_CHARS` instead,
+    which is what drives it in production too: real notes are 600 tokens of
+    prose, and twelve of them do not fit one 16,000-character reduce.
+
+    A document at the ceiling with notes that size therefore folds in three
+    groups of five/five/two BEFORE the final reduce, rather than handing all
+    twelve raw ``## Part N`` notes to one call the way the old unconditional
+    single reduce did."""
+    chunks = summarization_module._MAX_MAP_CHUNKS
+    llm, draft = await _draft(
+        [f"chunk {i}" for i in range(chunks)], llm=RecordingLLM(reply="x" * _NOTE_CHARS)
+    )
+
+    folds = -(-_MAP_CALLS_AT_THE_CEILING // _NOTES_PER_FOLD)
+    # 12 map calls + 3 first-level folds + 1 final reduce (the 3 folded notes
+    # fit one group) = 16.
+    assert folds == 3
+    assert len(llm.calls) == _MAP_CALLS_AT_THE_CEILING + folds + 1
+    assert draft.source_chunks == chunks  # type: ignore[attr-defined]
     assert draft.truncated is False  # type: ignore[attr-defined]
 
     # An intermediate fold call used `_FOLD_SYSTEM`, not `_REDUCE_SYSTEM`.
     fold_calls = [call for call in llm.calls if "compressing several batches" in call[0][0].content]
-    assert len(fold_calls) == 2
+    assert len(fold_calls) == 3
 
     # The FINAL call is the reduce: it reads what the folds produced, not the
     # original per-batch notes -- proof the raw `## Part N` notes never
@@ -395,18 +432,21 @@ async def test_max_fold_depth_forces_a_flush_instead_of_folding_further(
     ``_batched`` shrinking the note count: capping ``_MAX_FOLD_DEPTH`` at 1
     forces ``_fold`` to take its single-final-call branch on the very FIRST
     invocation (``depth=0 >= _MAX_FOLD_DEPTH - 1 == 0``), even though the 8
-    map notes from a 43-chunk document would otherwise need one more level of
-    folding (the previous test). A model that never compressed its notes
-    enough to shrink the group count could not defeat this: the cap is
+    map notes from a ceiling-length document would otherwise need one more
+    level of folding (the previous test). A model that never compressed its
+    notes enough to shrink the group count could not defeat this: the cap is
     checked before anything about the notes' content is."""
     monkeypatch.setattr(summarization_module, "_MAX_FOLD_DEPTH", 1)
 
-    llm, draft = await _draft([f"chunk {i}" for i in range(43)])
+    chunks = summarization_module._MAX_MAP_CHUNKS
+    llm, draft = await _draft(
+        [f"chunk {i}" for i in range(chunks)], llm=RecordingLLM(reply="x" * _NOTE_CHARS)
+    )
 
-    # 8 map calls + 1 flushed final reduce over all 8 raw notes -- no
-    # intermediate fold call at all, unlike the depth-3 default (11 calls).
-    assert len(llm.calls) == 9
-    assert draft.source_chunks == 43  # type: ignore[attr-defined]
+    # 12 map calls + 1 flushed final reduce over all 12 raw notes -- no
+    # intermediate fold call at all, unlike the depth-3 default (16 calls).
+    assert len(llm.calls) == _MAP_CALLS_AT_THE_CEILING + 1
+    assert draft.source_chunks == chunks  # type: ignore[attr-defined]
     assert "## Part 3" in llm.calls[-1][0][1].content
 
 
@@ -457,7 +497,7 @@ async def test_cancellation_is_observed_between_batches_and_stops_the_build() ->
     with pytest.raises(SummaryBuildCancelled):
         await SummarizeDocument().execute(
             _ctx(),
-            chunks=[f"chunk {i}" for i in range(13)],
+            chunks=[f"chunk {i}" for i in range(_BATCH * 2 + 1)],
             kind=SummaryKind.FULL,
             lang=SummaryLanguage.AUTO,
             summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
@@ -560,6 +600,177 @@ async def test_translate_carries_truncated_and_source_chunks_from_the_source_unc
 
 
 # --------------------------------------------------------------------------- #
+# _fold — `F-3` (plan §4 step 3, §3.4): the fold phase reports and listens    #
+# --------------------------------------------------------------------------- #
+
+
+async def _ceiling_build(
+    *,
+    llm: RecordingLLM,
+    on_progress: object = None,
+    should_cancel: object = None,
+) -> object:
+    """A ``full`` build of a document at ``_MAX_MAP_CHUNKS`` whose notes are
+    long enough to make the fold ladder real: 12 map calls, 3 folds, 1 reduce.
+
+    Both hooks are passed through as given so a test can watch the ORDER of
+    what happens, which is the whole of what `F-3` changed."""
+    hooks: dict[str, object] = {}
+    if on_progress is not None:
+        hooks["on_progress"] = on_progress
+    if should_cancel is not None:
+        hooks["should_cancel"] = should_cancel
+    return await SummarizeDocument().execute(
+        _ctx(),
+        chunks=[f"chunk {i}" for i in range(summarization_module._MAX_MAP_CHUNKS)],
+        kind=SummaryKind.FULL,
+        lang=SummaryLanguage.AUTO,
+        summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
+        **hooks,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_fold_phase_reports_progress_before_every_call_it_makes() -> None:
+    """`F-3`: until now the fold reported nothing at all, so the last calls of
+    a long build were a stretch of total silence -- the interface frozen at
+    99% and, for the health checker `F-4` adds, indistinguishable from a
+    wedged worker.
+
+    The ORDER is the assertion, and reading the call count from inside the
+    progress hook is what makes it visible. A map tick fires AFTER its call
+    (it reports work finished, and the count it carries is real), so the nth
+    map tick sees n calls. A fold tick fires BEFORE its call, so it sees one
+    fewer -- which is the point: what follows a fold tick is the long wait it
+    exists to announce, not a wait already over.
+    """
+    llm = RecordingLLM(reply="x" * _NOTE_CHARS)
+    seen_calls: list[int] = []
+    seen_done: list[int] = []
+
+    async def _progress(done: int) -> None:
+        seen_calls.append(len(llm.calls))
+        seen_done.append(done)
+
+    await _ceiling_build(llm=llm, on_progress=_progress)
+
+    maps = _MAP_CALLS_AT_THE_CEILING
+    folds = -(-maps // _NOTES_PER_FOLD)
+    assert len(llm.calls) == maps + folds + 1
+
+    # 1..12 from the map loop (after each call), then 12, 13, 14, 15 from the
+    # fold ladder (before each of its three folds and its final reduce).
+    assert seen_calls == list(range(1, maps + 1)) + [maps + i for i in range(folds + 1)]
+
+    # And the number a fold tick carries is the total, every time: `advance`
+    # clamps at `total_chunks`, which the map loop already reached. The reduce
+    # is reported as a PHASE, not as a counter with nothing left to count.
+    ceiling = summarization_module._MAX_MAP_CHUNKS
+    assert seen_done[:maps] == [_BATCH * (i + 1) for i in range(maps)]
+    assert seen_done[maps:] == [ceiling] * (folds + 1)
+
+
+@pytest.mark.asyncio
+async def test_stop_pressed_when_the_map_ends_is_observed_before_the_first_fold() -> None:
+    """The button worked during the map and died at the fold boundary -- the
+    exact window in which a long build spends its last minutes. The poll sits
+    BEFORE the call, so the thirteenth round trip is never paid for."""
+    llm = RecordingLLM(reply="x" * _NOTE_CHARS)
+
+    async def _cancel_once_the_map_is_done() -> bool:
+        return len(llm.calls) >= _MAP_CALLS_AT_THE_CEILING
+
+    with pytest.raises(SummaryBuildCancelled):
+        await _ceiling_build(llm=llm, should_cancel=_cancel_once_the_map_is_done)
+
+    assert len(llm.calls) == _MAP_CALLS_AT_THE_CEILING
+
+
+@pytest.mark.asyncio
+async def test_stop_pressed_between_two_fold_groups_is_observed_there_too() -> None:
+    """Not just at the fold's entrance: the poll is INSIDE the loop over the
+    groups, which is what the comprehension this replaced had no room for. A
+    build cancelled after its first fold pays for that one and no more."""
+    llm = RecordingLLM(reply="x" * _NOTE_CHARS)
+
+    async def _cancel_after_the_first_fold() -> bool:
+        return len(llm.calls) > _MAP_CALLS_AT_THE_CEILING
+
+    with pytest.raises(SummaryBuildCancelled):
+        await _ceiling_build(llm=llm, should_cancel=_cancel_after_the_first_fold)
+
+    assert len(llm.calls) == _MAP_CALLS_AT_THE_CEILING + 1
+
+
+# --------------------------------------------------------------------------- #
+# _batched — `F-2` (plan §4 step 2, §3.3): two live bounds, two budgets       #
+# --------------------------------------------------------------------------- #
+
+
+def test_batched_closes_a_batch_on_whichever_bound_is_reached_first() -> None:
+    """BOTH bounds are live since `F-2`. Before it, `_MAP_BATCH = 6` closed
+    every batch at ~6,600 characters, so `_MAX_BATCH_CHARS` (24,000) could not
+    be reached at any chunk size the chunker emits: the character guard read
+    like a guard and was unreachable code."""
+    tiny = [f"chunk {i}" for i in range(_BATCH * 2)]
+    assert [len(batch) for batch in _batched(tiny)] == [_BATCH, _BATCH]
+
+    # Chunks large enough that the CHARACTER bound closes the batch first,
+    # well before `_MAP_BATCH` chunks have accumulated.
+    big = ["x" * (summarization_module._MAX_BATCH_CHARS // 3)] * 7
+    assert [len(batch) for batch in _batched(big)] == [3, 3, 1]
+
+
+def test_batched_gives_a_reduce_sized_call_the_smaller_budget() -> None:
+    """The SAME chunks, grouped for two kinds of call. A map call answers in
+    `_MAP_MAX_TOKENS` (600) and can afford 24,000 characters of input; a
+    fold/reduce/refine call answers in `_REDUCE_MAX_TOKENS` (2,500) and
+    cannot -- 6,000 input tokens plus 2,500 output is 8,500, past an 8k
+    window. That difference is the whole reason `max_chars` is a parameter
+    and not a constant read inside the function."""
+    chunks = ["x" * 4_000] * 6  # exactly `_MAX_BATCH_CHARS` all together
+
+    assert len(_batched(chunks)) == 1
+    assert len(_batched(chunks, max_chars=summarization_module._MAX_REDUCE_CHARS)) == 2
+
+
+def test_batched_lets_a_single_oversized_chunk_through_as_its_own_batch() -> None:
+    """Refusing to summarise a document because ONE of its chunks is larger
+    than the whole budget would be a worse failure than the provider's own
+    context error -- `_batched`'s own reasoning, unchanged by `F-2` giving it
+    a second budget to be asked about."""
+    huge = "x" * (summarization_module._MAX_BATCH_CHARS * 2)
+
+    assert _batched(["small", huge, "small"]) == [["small"], [huge], ["small"]]
+
+
+@pytest.mark.asyncio
+async def test_a_document_that_fits_one_map_batch_but_not_one_reduce_call_still_maps() -> None:
+    """`F-2`, §6 risk 2 -- the defect raising `_MAP_BATCH` would have
+    introduced if the second budget had not landed in the same step.
+
+    ``execute``'s one-call shortcut ANSWERS in ``_REDUCE_MAX_TOKENS``, so it
+    has to clear the REDUCE budget, not the map one it is grouped by. This
+    document is exactly one map batch -- 24,000 characters, ~6,000 tokens --
+    and answering it at 2,500 tokens would ask an 8k-window model for 8,500.
+    So the shortcut must decline it and pay for the map path instead: one map
+    call (safe, because it answers in 600) and one reduce over its single
+    note.
+
+    At `_MAP_BATCH = 6` the two budgets could never disagree, because six
+    chunks never reached either. This is the first document for which they
+    can, which is why the check exists at all."""
+    llm, draft = await _draft(["x" * 4_000] * 6)
+
+    assert len(llm.calls) == 2
+    map_system, map_user = llm.calls[0][0]
+    assert "Part 1 of 1" in map_user.content
+    assert "final summary" not in map_system.content
+    assert "final summary" in llm.calls[-1][0][0].content
+    assert draft.truncated is False  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------- #
 # SummarizeDocument.refine — P-45 (plan §4 step 21, §3.10, optional)           #
 # --------------------------------------------------------------------------- #
 
@@ -579,14 +790,16 @@ async def _refine_draft(
 
 @pytest.mark.asyncio
 async def test_refine_makes_exactly_one_call_per_batch_with_no_separate_reduce() -> None:
-    """13 chunks at 6 per batch is 3 batches. Map-reduce would spend 4 calls
-    (3 map + 1 reduce, the existing test above); refine spends exactly 3 --
+    """`_BATCH * 3 + 1` chunks is 4 batches. Map-reduce would spend 5 calls
+    (4 map + 1 reduce, the existing test above); refine spends exactly 4 --
     one per batch and nothing more, because the last call's own output already
     IS the finished summary."""
-    llm, draft = await _refine_draft([f"chunk {i}" for i in range(13)])
+    chunks = _BATCH * 3 + 1
 
-    assert len(llm.calls) == 3
-    assert draft.source_chunks == 13  # type: ignore[attr-defined]
+    llm, draft = await _refine_draft([f"chunk {i}" for i in range(chunks)])
+
+    assert len(llm.calls) == 4
+    assert draft.source_chunks == chunks  # type: ignore[attr-defined]
     assert draft.truncated is False  # type: ignore[attr-defined]
 
 
@@ -595,13 +808,13 @@ async def test_refine_feeds_each_calls_own_output_into_the_next_calls_input() ->
     """Proof this reads in ORDER with one artefact alive throughout, not in
     isolation like a map batch: the second call's prompt must contain the
     exact text the first call answered with."""
-    llm, draft = await _refine_draft([f"chunk {i}" for i in range(13)])
+    llm, draft = await _refine_draft([f"chunk {i}" for i in range(_BATCH * 3 + 1)])
 
     first_reply = "SUMMARY-1"
     second_system, second_user = llm.calls[1][0]
     assert first_reply in second_user.content
     assert "Summary so far" in second_user.content
-    assert "chunk 6" in second_user.content  # the second batch's own text
+    assert f"chunk {_BATCH}" in second_user.content  # the second batch's own text
     assert "refine" in second_system.content.lower() or "running summary" in second_system.content
 
     # The draft is the LAST call's own reply -- there is no reduce call
@@ -627,7 +840,7 @@ async def test_refine_truncates_at_the_same_ceiling_map_reduce_does_and_says_so(
 
 @pytest.mark.asyncio
 async def test_refine_keeps_the_language_instruction_on_the_system_message() -> None:
-    llm, _ = await _refine_draft([f"chunk {i}" for i in range(13)])
+    llm, _ = await _refine_draft([f"chunk {i}" for i in range(_BATCH * 3 + 1)])
 
     for messages, _params in llm.calls:
         system, user = messages
@@ -648,7 +861,7 @@ async def test_refine_is_cancellable_between_batches() -> None:
     with pytest.raises(SummaryBuildCancelled):
         await SummarizeDocument().refine(
             _ctx(),
-            chunks=[f"chunk {i}" for i in range(13)],
+            chunks=[f"chunk {i}" for i in range(_BATCH * 2 + 1)],
             lang=SummaryLanguage.AUTO,
             summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
             should_cancel=_cancel_after_first,
@@ -913,6 +1126,63 @@ async def test_an_empty_document_fails_through_the_ordinary_path_with_its_event(
 
 
 @pytest.mark.asyncio
+async def test_a_running_build_beats_once_for_every_progress_write_and_never_otherwise() -> None:
+    """`F-4` (plan §4 step 4, §3.5): the heartbeat rides `_progress`, and
+    ONLY `_progress`.
+
+    That placement is the whole safety argument (§6 risk 5). A beat is a
+    claim that this worker is alive and working; put anywhere a build could
+    reach WITHOUT advancing, it would hide exactly the wedged handler the
+    health check exists to catch. From `_progress` every beat stands behind a
+    `record_progress` write that has already returned -- which is what the
+    second assertion here pins: the job's stored `done_chunks` at the moment
+    of each beat, never a number the beat ran ahead of.
+    """
+    chunks = _BATCH * 2 + 1  # three map batches, then a single-group fold
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(chunks)]
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+
+    stored_at_each_beat: list[int] = []
+
+    def _beat() -> None:
+        stored_at_each_beat.append(stack.summary_jobs.rows["job-1"].done_chunks)
+
+    await build.run(_ctx(), plan, on_heartbeat=_beat)
+
+    # Three map steps (20 / 40 / 41 chunks done) and one fold tick, which
+    # reports the total again because `advance` clamps there -- `F-3`'s
+    # "the reduce is a phase, not a counter" seen from the other end.
+    assert stored_at_each_beat == [_BATCH, _BATCH * 2, chunks, chunks]
+
+
+@pytest.mark.asyncio
+async def test_a_build_given_no_heartbeat_still_records_its_progress() -> None:
+    """`on_heartbeat` is optional and its absence changes nothing else: the
+    progress writes an operator and the interface both read are not the
+    heartbeat's to carry."""
+    chunks = _BATCH * 2 + 1
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(chunks)]
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+
+    attempt = await build.run(_ctx(), plan)
+
+    assert attempt.error is None
+    assert stack.summary_jobs.rows["job-1"].done_chunks == chunks
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_build_cannot_resurrect_itself_through_a_progress_write() -> None:
     """**The** test for cooperative cancellation. A worker holds its job in
     memory for the whole build; the cancellation arrives as a write to the
@@ -924,7 +1194,10 @@ async def test_a_cancelled_build_cannot_resurrect_itself_through_a_progress_writ
     """
     stack = build_knowledge()
     stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
-    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(13)]
+    # More than one batch, so there IS a boundary at which cancellation can
+    # be observed: `execute` skips the check entirely for a document that
+    # fits one call, because there is nothing after it to cancel before.
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(_BATCH * 2 + 1)]
     stack.summary_jobs.rows["job-1"] = _job()
     build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
 
@@ -951,7 +1224,7 @@ async def test_a_cancelled_build_leaves_the_previous_summary_where_it_was() -> N
     than no rebuild."""
     stack = build_knowledge()
     stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
-    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(13)]
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(_BATCH * 2 + 1)]
     stack.summaries.rows[("doc-1", "full", "auto")] = _summary()
     stack.summary_jobs.rows["job-1"] = _job()
     build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
@@ -987,16 +1260,17 @@ async def test_progress_is_written_as_the_map_advances() -> None:
     (INV-K7) — so it has to actually be written, not merely computable."""
     stack = build_knowledge()
     stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
-    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(13)]
+    chunks = _BATCH * 2 + 1
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(chunks)]
     stack.summary_jobs.rows["job-1"] = _job()
     build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
 
     plan = await build.claim(_ctx(), job_id="job-1")
     assert plan is not None
-    assert stack.summary_jobs.rows["job-1"].total_chunks == 13
+    assert stack.summary_jobs.rows["job-1"].total_chunks == chunks
 
     await build.run(_ctx(), plan)
-    assert stack.summary_jobs.rows["job-1"].done_chunks == 13
+    assert stack.summary_jobs.rows["job-1"].done_chunks == chunks
 
 
 # --------------------------------------------------------------------------- #
@@ -1028,14 +1302,15 @@ def _stored(
 
 
 def _translation_stack(
-    *, stored: Sequence[Summary] = (), corpus_chunks: int = 30
+    *, stored: Sequence[Summary] = (), corpus_chunks: int = _BATCH * 2 + 1
 ) -> tuple[object, RecordingLLM]:
     """A stack whose document has a DELIBERATELY large corpus.
 
-    ``corpus_chunks`` is well past ``_MAP_BATCH``, so a build that reads the
-    corpus cannot possibly finish in one provider call — which is what makes
-    "exactly one call" a real assertion about the path taken rather than a
-    coincidence of a short document.
+    ``corpus_chunks`` is more than two full ``_MAP_BATCH`` batches, so a
+    build that reads the corpus cannot possibly finish in one provider call —
+    which is what makes "exactly one call" a real assertion about the path
+    taken rather than a coincidence of a short document. Derived from the
+    constant rather than written as a number, because `F-2` moved it.
     """
     stack = build_knowledge()
     stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
@@ -1129,7 +1404,7 @@ async def test_a_rebuild_of_an_occupied_key_maps_the_document_instead_of_transla
     plan = await build.claim(_ctx(), job_id="job-1")
     assert plan is not None
     assert plan.translate_from is None
-    assert len(plan.chunks) == 30
+    assert len(plan.chunks) == _BATCH * 2 + 1
 
     await build.finalize(_ctx(), await build.run(_ctx(), plan))
 
@@ -1151,8 +1426,8 @@ async def test_a_first_build_in_any_language_still_reads_the_corpus() -> None:
     plan = await build.claim(_ctx(), job_id="job-1")
     assert plan is not None
     assert plan.translate_from is None
-    assert len(plan.chunks) == 30
-    assert stack.summary_jobs.rows["job-1"].total_chunks == 30
+    assert len(plan.chunks) == _BATCH * 2 + 1
+    assert stack.summary_jobs.rows["job-1"].total_chunks == _BATCH * 2 + 1
 
 
 @pytest.mark.asyncio

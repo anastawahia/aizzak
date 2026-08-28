@@ -693,6 +693,22 @@ services:
     environment:
       <<: [*app-env, *worker-env]
       WORKER: knowledge
+      # The SECOND service to raise the tolerance, for the reason `worker-
+      # media` raises it and on the same arithmetic. `F-1`
+      # (rag-summarization-fix-plan.md) gave the summarisation map-reduce its
+      # own `Limits.summarize_timeout_s` (300 s), so ONE provider call in a
+      # summary build may legitimately occupy this loop for as long as one
+      # image generation occupies the media loop -- and a beat cannot land
+      # while a handler is running. At 300 s here, a single map call running
+      # to its full budget would be reported unhealthy for finishing exactly
+      # on time.
+      #
+      # It is a tolerance and not a licence: `F-3` makes the build write a
+      # progress row and beat before EVERY provider call, so the longest
+      # legitimate silence is one call rather than a whole build, and
+      # `Limits.summarize_job_max_duration_s` (1,800 s) ends a build that is
+      # genuinely stuck instead of leaving this column to notice it.
+      HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_KNOWLEDGE:-600}
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "knowledge"]

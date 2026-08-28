@@ -596,6 +596,15 @@ def build_knowledge_index_handler(
     return _handle
 
 
+# `F-4` (rag-summarization-fix-plan.md §3.5) -- what a person reads on the
+# job whose build ran out of time. Phrased for them and not for a log, the
+# `SummarizeDocument.execute` "no indexed text" precedent: this sentence is
+# the whole explanation they will get for why the button they pressed ended
+# where it did. `:g` rather than `:d` so a float budget from a direct caller
+# prints as 1800 and not 1800.0 -- the `content_resolver.py` phrasing.
+_SUMMARY_TIMEOUT_REASON = "building this summary exceeded the {seconds:g}s limit and was stopped"
+
+
 def build_knowledge_summary_handler(
     build: BuildSummary,
     outbox: EventOutbox,
@@ -603,6 +612,8 @@ def build_knowledge_summary_handler(
     ledger: ProcessedEventLedger,
     *,
     consumer_group: str = _CG_KNOWLEDGE,
+    heartbeat: Heartbeat | None = None,
+    max_duration_s: float | None = None,
 ) -> EventHandler:
     """``knowledge.summary.requested.v1`` -> ``BuildSummary.claim`` (the
     ``queued → running`` claim + the chunk read + route resolution) ->
@@ -635,7 +646,26 @@ def build_knowledge_summary_handler(
       hence the SECOND ``uow.begin``: without it the handler would redeliver,
       rebuild, and be rejected again until the DLQ ate it, with the job stuck
       ``running`` forever.
+    * **``run`` outliving ``max_duration_s``** (`F-4`) — a build that is not
+      going to finish. Routed through the SAME ``fail`` as the first branch,
+      so there is still one path to a failed job, and caught HERE rather than
+      inside ``run``: ``asyncio.timeout`` cancels, and a ``CancelledError`` is
+      a ``BaseException`` that ``run``'s broad ``except Exception`` correctly
+      declines to swallow. The ``TimeoutError`` it becomes at this boundary is
+      the caller's to answer.
+
+    **The two `F-4` parameters do different jobs and neither replaces the
+    other.** ``heartbeat`` keeps a container healthy while a legitimate build
+    is running (a beat cannot land while a handler is, so a five-minute build
+    otherwise looks exactly like a wedged loop); ``max_duration_s`` ends a
+    build that is genuinely stuck, with a written reason, instead of leaving
+    it to be redelivered until the DLQ. Both default to off, so every direct
+    caller -- the live integration tests included -- keeps today's behaviour,
+    the ``sweep_interval_s`` precedent in ``build_knowledge_worker``.
     """
+    # `Heartbeat` has no `read` side by design, so there is nothing to ask it
+    # here; the whole binding is one bound method handed to `run`.
+    beat = None if heartbeat is None else heartbeat.beat
 
     async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
         data = envelope["data"]
@@ -648,7 +678,17 @@ def build_knowledge_summary_handler(
         else:
             if plan is None:
                 return  # DD-09 no-op, or a job cancelled before it was claimed.
-            attempt = await build.run(ctx, plan)
+            try:
+                # `asyncio.timeout(None)` is the documented no-op, so the
+                # default needs no branch of its own here.
+                async with asyncio.timeout(max_duration_s):
+                    attempt = await build.run(ctx, plan, on_heartbeat=beat)
+            except TimeoutError:
+                attempt = await build.fail(
+                    ctx,
+                    job_id=job_id,
+                    reason=_SUMMARY_TIMEOUT_REASON.format(seconds=max_duration_s),
+                )
         if attempt is None:
             return
 
@@ -693,6 +733,7 @@ def build_knowledge_worker(
     batch_count: int,
     max_deliveries: int,
     heartbeat: Heartbeat | None = None,
+    summarize_max_duration_s: float | None = None,
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
@@ -724,8 +765,18 @@ def build_knowledge_worker(
                 # BE-RAG-009 -- the same stream and the same consumer group.
                 # A third subscription would have meant a second group on one
                 # stream, and 04 §4's binding table gives this worker one.
+                # `F-4`: the SAME `heartbeat` the consumer below is given,
+                # not a second one. The engine beats between messages and
+                # cannot beat during one; a summary build is the one handler
+                # here long enough for that gap to matter, so it beats for
+                # itself, into the same file, through the same object.
                 "knowledge.summary.requested.v1": build_knowledge_summary_handler(
-                    summary_builder, outbox, uow, ledger
+                    summary_builder,
+                    outbox,
+                    uow,
+                    ledger,
+                    heartbeat=heartbeat,
+                    max_duration_s=summarize_max_duration_s,
                 ),
             },
         ),
@@ -858,23 +909,69 @@ async def build_knowledge_worker_from_env() -> tuple[
     # the clients opens no socket; what it buys is that the `summarize` route
     # is parsed strictly here too, so a table naming a provider this process
     # cannot reach refuses to boot instead of failing every build at run time.
-    ollama_llm = OllamaLLM(
-        create_ollama_http_client(settings.ollama, timeout_s=settings.limits.llm_timeout_s)
+    ollama_http = create_ollama_http_client(
+        settings.ollama, timeout_s=settings.limits.llm_timeout_s
     )
-    openai_llm = OpenAILLM(create_openai_http_client(timeout_s=settings.limits.llm_timeout_s))
-    llm_adapters: tuple[LLMProvider, ...] = (ollama_llm, openai_llm)
+    openai_http = create_openai_http_client(timeout_s=settings.limits.llm_timeout_s)
+    llm_adapters: tuple[LLMProvider, ...] = (OllamaLLM(ollama_http), OpenAILLM(openai_http))
+
+    # `F-1` (rag-summarization-fix-plan.md §3.1) -- a SECOND pair of clients
+    # under the SAME two adapter classes, differing in exactly one thing:
+    # `summarize_timeout_s` (300 s) where the pair above carries
+    # `llm_timeout_s` (60 s). httpx sets its timeout on the CLIENT, so "this
+    # one call gets a longer budget" is not expressible on the clients above;
+    # a second pair is what that setting costs, and the `image_http` client
+    # in `build_media_worker_from_env` is the same shape for the same reason.
+    #
+    # Two clients rather than a raised `llm_timeout_s`: ONE number would move
+    # every call in the platform, the agent cycle included, and that cycle is
+    # meant to fail fast. Which calls are minutes-scale is a fact about the
+    # summarisation map-reduce, not about LLM calls.
+    summarize_ollama_http = create_ollama_http_client(
+        settings.ollama, timeout_s=settings.limits.summarize_timeout_s
+    )
+    summarize_openai_http = create_openai_http_client(timeout_s=settings.limits.summarize_timeout_s)
+    summarize_adapters: tuple[LLMProvider, ...] = (
+        OllamaLLM(summarize_ollama_http),
+        OpenAILLM(summarize_openai_http),
+    )
 
     # Step 16 -- the embedding route, resolved the SAME way the API resolves
     # it (see the docstring). `embedding_providers` is keyed by the adapter's
     # OWN `provider` attribute, never a literal (the `composition_root.py`
     # precedent), so the strict parse below proves the configured route
     # points at the very adapter `pipeline` above was built from.
+    #
+    # ONE `key_resolver` instance, shared with the summarisation resolver
+    # below: it holds a repository over the same session factory and the same
+    # Vault handle, so a second copy would resolve the same rows twice and
+    # give the two resolvers two different views of a rotated key.
+    credentials = ResolveCredential(SqlCredentialRepository(tenant_session), secrets)
     providers = SettingsProviderResolver(
         routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
         llm_providers={adapter.provider: adapter for adapter in llm_adapters},
         embedding_providers={embeddings.provider: embeddings},
         image_providers={},  # step 18 -- and `_routing_for` drops the namespace
-        key_resolver=ResolveCredential(SqlCredentialRepository(tenant_session), secrets),
+        key_resolver=credentials,
+        keyless_providers=_KEYLESS_PROVIDERS,
+    )
+    # `F-1` -- the summarisation twin. The SAME routing table, the SAME
+    # embedding adapter, the SAME key resolver, so it boots -- and REFUSES to
+    # boot -- on precisely the arguments the resolver above does: a routing
+    # table this process cannot serve is still caught once, at boot, and
+    # cannot now be caught by one resolver and missed by the other. Only
+    # `llm_providers` differs, and only in which HTTP client sits underneath.
+    #
+    # Handed to `_WorkerSummarizerResolver` and to nothing else. In
+    # particular `content_resolver` below keeps `providers`: a parser's
+    # vision route is one image-to-text call, not a map-reduce, and it is
+    # sized by `parser_timeout_seconds` already.
+    summarize_providers = SettingsProviderResolver(
+        routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
+        llm_providers={adapter.provider: adapter for adapter in summarize_adapters},
+        embedding_providers={embeddings.provider: embeddings},
+        image_providers={},
+        key_resolver=credentials,
         keyless_providers=_KEYLESS_PROVIDERS,
     )
     # `limits` carries the OCR caps of rag-indexing-plan.md §3.8 into the
@@ -893,7 +990,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         SqlSummaryRepository(tenant_session),
         SqlSummaryJobRepository(tenant_session),
         SummarizeDocument(),
-        _WorkerSummarizerResolver(providers),
+        _WorkerSummarizerResolver(summarize_providers),  # `F-1` -- 300 s, not 60 s
     )
 
     redis_client = create_redis_client(
@@ -916,6 +1013,10 @@ async def build_knowledge_worker_from_env() -> tuple[
         batch_count=settings.events.consumer_batch_count,
         max_deliveries=settings.events.max_retries_before_dlq,
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "knowledge"),
+        # `F-4` -- the number stays configuration, not a constant buried in
+        # the handler, because what counts as "too long" is a fact about the
+        # model a deployment runs, not about this code.
+        summarize_max_duration_s=settings.limits.summarize_job_max_duration_s,
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
@@ -929,10 +1030,20 @@ async def build_knowledge_worker_from_env() -> tuple[
     async def _close_vault() -> None:
         await asyncio.to_thread(vault_client.adapter.close)
 
+    # The LLM clients close here too, the way `CompositionRoot.disposables()`
+    # closes its own `ollama_http`/`openai_http`. The 60 s pair had been
+    # absent from this list since BE-RAG-009 first wired it -- one leaked
+    # connection pool per worker shutdown; `F-1`'s second pair would have
+    # made that two, so all four go in together rather than half the list
+    # being right.
     disposables: list[Disposable] = [
         engine.dispose,
         qdrant_client.close,
         embedding_http.aclose,
+        ollama_http.aclose,
+        openai_http.aclose,
+        summarize_ollama_http.aclose,
+        summarize_openai_http.aclose,
         redis_client.aclose,
         _close_vault,
     ]
