@@ -1056,6 +1056,29 @@ class GetSummary:
     absence as absence, exactly as it does for ``GET /documents/{id}``.
 
     Another tenant's summary is indistinguishable from a missing one.
+
+    **One narrow fallback: the ``auto`` row, when its text really is in the
+    language asked for** (`F-6`). The chat path builds under ``lang = auto``
+    (``routing._ROUTED_SUMMARY_LANG``, because the question never named a
+    language), and a client that then reads ``ar`` — the language its reader
+    is in — was told "no summary" for a summary that exists and is written in
+    Arabic. When the requested key is empty, this read tries the ``auto`` row
+    and returns it only if the MAJORITY of its letters are in that language's
+    script (``_detects_lang``).
+
+    That is not a fallback BETWEEN languages, which is what the key exists to
+    prevent. An ``auto`` row in English is never handed to a request for
+    ``ar``: the text has to BE the language asked for, so nobody is given a
+    summary in a language they did not ask for and told it matched. A request
+    for ``auto`` itself stays an exact match — there is nothing for it to fall
+    back TO — and ``kind`` never falls back at all, because the overview and
+    the full summary are different artefacts rather than two spellings of one.
+
+    The 404 contract above is untouched: what changed is which row COUNTS as
+    the match, not what happens when there is none. And the rule lives HERE
+    rather than in ``SummaryRepository.get``, which stays the exact-key read
+    its own docstring describes: a repository that quietly returned a row
+    other than the one asked for would have no way to say that it had.
     """
 
     def __init__(self, summaries: SummaryRepository) -> None:
@@ -1071,8 +1094,32 @@ class GetSummary:
     ) -> Summary:
         summary = await self._summaries.get(ctx, document_id, kind, lang)
         if summary is None:
+            summary = await self._auto_row_written_in(ctx, document_id, kind, lang)
+        if summary is None:
             raise NotFoundError("summary not found")
         return summary
+
+    async def _auto_row_written_in(
+        self,
+        ctx: ExecutionContext,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+    ) -> Summary | None:
+        """The stored ``auto`` summary of this document and kind — but only
+        when its text is written in ``lang``, and never for a request that is
+        already ``auto``, which the exact read above has just answered.
+
+        The second read happens only on a miss, so the ordinary case of an
+        occupied key still costs one query. ``BuildSummary._translation_source``
+        orders its two reads the same way, for the same reason.
+        """
+        if lang is SummaryLanguage.AUTO:
+            return None
+        stored = await self._summaries.get(ctx, document_id, kind, SummaryLanguage.AUTO)
+        if stored is None or not _detects_lang(stored.text, lang):
+            return None
+        return stored
 
 
 class DeleteSummary:
@@ -1161,21 +1208,54 @@ def _is_rtl(summary: Summary) -> bool:
     """Whether this summary should be laid out right to left.
 
     ``ar`` is unambiguous and ``en`` is too. ``auto`` is the interesting one:
-    the request never said, so the only honest source is the text itself, and
-    the test is whether Arabic script is the majority of its LETTERS — not
-    whether any appears. A summary in English quoting one Arabic term is an
-    English document, and laying it out right to left because of that quote
-    would be worse than the mistake it was trying to avoid.
+    the request never said, so the only honest source is the text itself —
+    which is ``_detects_lang``, the same majority-of-letters rule that gates
+    the ``auto`` fallback in ``GetSummary``. One definition of "this text is
+    Arabic", shared by the two places that need one.
     """
     if summary.lang is SummaryLanguage.AR:
         return True
     if summary.lang is SummaryLanguage.EN:
         return False
-    letters = [char for char in summary.text if char.isalpha()]
+    return _detects_lang(summary.text, SummaryLanguage.AR)
+
+
+def _detects_lang(text: str, lang: SummaryLanguage) -> bool:
+    """Whether ``text`` is WRITTEN in ``lang``, judged by the majority of its
+    LETTERS — not by whether one letter of that script appears at all.
+
+    A summary in English quoting one Arabic term is an English document.
+    Laying it out right to left because of that quote, or handing it to a
+    reader who asked for ``ar``, would be worse than the mistake the check
+    exists to avoid. Hence a majority — and hence a POSITIVE test per script
+    rather than "not the other one": a summary in Cyrillic is not English
+    either, and answering an ``en`` read with it would be exactly the
+    mislabelling this rule is here to prevent.
+
+    ``auto`` is never detected. It names an instruction — "whatever language
+    the document is in" — and not a script, so no text can be evidence for
+    it. ``GetSummary`` never asks; this is the second guard.
+    """
+    if lang is SummaryLanguage.AUTO:
+        return False
+    written_in = _is_arabic if lang is SummaryLanguage.AR else _is_latin
+    letters = [char for char in text if char.isalpha()]
     if not letters:
         return False
-    arabic = sum(1 for char in letters if "؀" <= char <= "ۿ")
-    return arabic * 2 > len(letters)
+    return sum(1 for char in letters if written_in(char)) * 2 > len(letters)
+
+
+def _is_arabic(char: str) -> bool:
+    """The Arabic block, U+0600..U+06FF. A range comparison and not
+    ``unicodedata``, which would be a table lookup per letter of every body
+    that is read."""
+    return "؀" <= char <= "ۿ"
+
+
+def _is_latin(char: str) -> bool:
+    """ASCII letters plus Latin-1 Supplement and Latin Extended-A/B
+    (U+00C0..U+024F), so "naïve" counts as the Latin it is."""
+    return "a" <= char <= "z" or "A" <= char <= "Z" or "À" <= char <= "ɏ"
 
 
 class GetSummaryJob:

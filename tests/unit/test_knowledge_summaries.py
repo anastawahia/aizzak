@@ -6,7 +6,10 @@ What these pin, against 06 §7 INV-K6/INV-K7:
 
 * a summary is keyed on ``(document_id, kind, lang)`` and there is **no
   fallback between keys** — asking for the Arabic overview never yields the
-  English full text;
+  English full text. The single exception is `F-6`: a read for ``ar``/``en``
+  is answered by the ``auto`` row when that row's text really IS the language
+  asked for, which is a narrowing of what counts as the key rather than a
+  fallback to another one;
 * ``purge`` destroys a document's summaries, so re-indexing cannot leave one
   describing text that no longer exists (INV-K6);
 * the job **stores** its progress, unlike ``ReindexJob``, and a cancellation
@@ -66,6 +69,10 @@ from tests.unit.support_knowledge import build_knowledge, seed_document
 _W1 = "ws1"
 _W2 = "ws2"
 _AT = datetime(2026, 8, 11, 9, 0, 0, tzinfo=UTC)
+
+# A body whose majority script is Arabic -- what an `auto` build over an
+# Arabic document produces, and the only thing that makes it readable as `ar`.
+_ARABIC_TEXT = "هذا المستند يشرح سياسة الاسترجاع في المنصّة بالتفصيل."
 
 
 def _ctx(workspace_id: str = _W1) -> ExecutionContext:
@@ -150,13 +157,18 @@ def _job(
     )
 
 
-def _summary(*, document_id: str = "doc-1", text: str = "old text") -> Summary:
+def _summary(
+    *,
+    document_id: str = "doc-1",
+    text: str = "old text",
+    lang: SummaryLanguage = SummaryLanguage.AUTO,
+) -> Summary:
     return Summary(
         id="sum-1",
         workspace_id=_W1,
         document_id=document_id,
         kind=SummaryKind.FULL,
-        lang=SummaryLanguage.AUTO,
+        lang=lang,
         text=text,
         model="previous-model",
         source_chunks=3,
@@ -935,11 +947,13 @@ async def test_a_second_build_of_the_same_key_is_refused_before_a_token_is_spent
 
 
 @pytest.mark.asyncio
-async def test_reading_a_summary_never_falls_back_to_another_key() -> None:
+async def test_reading_never_crosses_a_kind_and_never_relabels_a_language() -> None:
     """A fallback would answer a question the caller did not ask and label it
-    as the answer to the one they did."""
+    as the answer to the one they did. `F-6` narrows that rule; it does not
+    lift it, and the two cases below are exactly where the narrowing stops.
+    """
     stack = build_knowledge()
-    stack.summaries.rows[("doc-1", "full", "auto")] = _summary()
+    stack.summaries.rows[("doc-1", "full", "auto")] = _summary()  # "old text": English
     get = GetSummary(stack.summaries)
 
     found = await get.execute(
@@ -948,11 +962,75 @@ async def test_reading_a_summary_never_falls_back_to_another_key() -> None:
     assert found.text == "old text"
 
     for kind, lang in (
+        # `kind` never falls back at all: the overview and the full summary
+        # are different artefacts, not two spellings of one.
         (SummaryKind.OVERVIEW, SummaryLanguage.AUTO),
+        # And an `auto` row written in English is not an Arabic summary --
+        # the fallback reads the TEXT, so it cannot relabel this one.
         (SummaryKind.FULL, SummaryLanguage.AR),
     ):
         with pytest.raises(NotFoundError):
             await get.execute(_ctx(), document_id="doc-1", kind=kind, lang=lang)
+
+
+@pytest.mark.asyncio
+async def test_an_auto_summary_answers_the_language_it_is_actually_written_in() -> None:
+    """The read `F-6` exists for. The chat path builds under `auto` (nobody
+    named a language) and the UI then asks for `ar` — so an exact match on
+    the triple reported "no summary" for a summary that exists and is written
+    in Arabic."""
+    stack = build_knowledge()
+    stack.summaries.rows[("doc-1", "full", "auto")] = _summary(text=_ARABIC_TEXT)
+    get = GetSummary(stack.summaries)
+
+    found = await get.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AR
+    )
+
+    # Returned AS the `auto` row it is: nothing is relabelled, so a client can
+    # always see which summary it was handed.
+    assert found.lang is SummaryLanguage.AUTO
+    assert found.text == _ARABIC_TEXT
+
+    # The same row is no answer to `en` ...
+    with pytest.raises(NotFoundError):
+        await get.execute(
+            _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.EN
+        )
+    # ... and the fallback is a second read through the same tenant-scoped
+    # port, so another workspace still cannot see it.
+    with pytest.raises(NotFoundError):
+        await get.execute(
+            _ctx(_W2), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AR
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_stored_key_wins_over_the_auto_row_and_auto_never_falls_back() -> None:
+    """Two properties of the ORDER of the two reads: the exact key is tried
+    first and short-circuits, and a request for `auto` has nothing to fall
+    back to, so it stays the exact match it always was."""
+    stack = build_knowledge()
+    stack.summaries.rows[("doc-1", "full", "auto")] = _summary(text=_ARABIC_TEXT)
+    stack.summaries.rows[("doc-1", "full", "ar")] = _summary(
+        text="النسخة العربية المطلوبة", lang=SummaryLanguage.AR
+    )
+    get = GetSummary(stack.summaries)
+
+    found = await get.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AR
+    )
+    assert found.lang is SummaryLanguage.AR
+
+    # An `ar` row is not an answer to `auto`: "summarise in whatever language
+    # the document is in" is a different request, not a missing value.
+    stack.summaries.rows[("doc-2", "full", "ar")] = _summary(
+        document_id="doc-2", text=_ARABIC_TEXT, lang=SummaryLanguage.AR
+    )
+    with pytest.raises(NotFoundError):
+        await get.execute(
+            _ctx(), document_id="doc-2", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
 
 
 @pytest.mark.asyncio

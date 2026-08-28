@@ -1,0 +1,557 @@
+<title>أطلس اختبارات AIZZAK</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F3F6F7; --surface:#FFFFFF; --surface-2:#E7EDEF; --surface-3:#DCE4E8;
+  --ink:#111A20; --ink-2:#3E525E; --ink-3:#6E838F;
+  --line:#D3DCE1; --line-2:#BFCBD2;
+  --accent:#2F6F8F; --accent-soft:#DCEAF1; --accent-ink:#1D4E67;
+  --bronze:#79591F; --bronze-soft:#F0E6D2;
+  --ok:#356E4C; --ok-soft:#DCEDE2;
+  --clay:#93402F; --clay-soft:#F5E0DB;
+  --sh:0 1px 2px rgba(17,26,32,.05), 0 8px 24px -18px rgba(17,26,32,.35);
+  --rad:10px;
+  --f-disp:"Readex Pro","IBM Plex Sans Arabic","Segoe UI",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans Arabic","Readex Pro","Segoe UI",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono","Cascadia Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1317; --surface:#141D22; --surface-2:#1B262C; --surface-3:#233039;
+    --ink:#DEE7EB; --ink-2:#9EB1BC; --ink-3:#72868F;
+    --line:#233038; --line-2:#2E3E48;
+    --accent:#6CB2D2; --accent-soft:#17303D; --accent-ink:#9BD0E8;
+    --bronze:#C8A469; --bronze-soft:#2B2417;
+    --ok:#7CBC94; --ok-soft:#15291D;
+    --clay:#D5907F; --clay-soft:#301B16;
+    --sh:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -20px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1317; --surface:#141D22; --surface-2:#1B262C; --surface-3:#233039;
+  --ink:#DEE7EB; --ink-2:#9EB1BC; --ink-3:#72868F;
+  --line:#233038; --line-2:#2E3E48;
+  --accent:#6CB2D2; --accent-soft:#17303D; --accent-ink:#9BD0E8;
+  --bronze:#C8A469; --bronze-soft:#2B2417;
+  --ok:#7CBC94; --ok-soft:#15291D;
+  --clay:#D5907F; --clay-soft:#301B16;
+  --sh:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -20px rgba(0,0,0,.9);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--f-body); font-size:16px; line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{direction:rtl; max-width:1120px; margin:0 auto; padding:0 20px 96px}
+h1,h2,h3{font-family:var(--f-disp); text-wrap:balance; margin:0; font-weight:600; line-height:1.3}
+a{color:var(--accent-ink)}
+code,kbd{font-family:var(--f-mono)}
+
+/* ---------- header ---------- */
+.masthead{padding:56px 0 32px; border-bottom:1px solid var(--line)}
+.eyebrow{
+  font-family:var(--f-mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-3); margin:0 0 14px; direction:ltr; text-align:right;
+}
+.masthead h1{font-size:clamp(30px,5vw,46px); letter-spacing:-.01em}
+.lede{color:var(--ink-2); font-size:17px; max-width:62ch; margin:14px 0 0}
+
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1px;
+  background:var(--line); border:1px solid var(--line); border-radius:var(--rad);
+  overflow:hidden; margin:30px 0 0}
+.stat{background:var(--surface); padding:16px 18px}
+.stat b{display:block; font-family:var(--f-mono); font-variant-numeric:tabular-nums;
+  font-size:26px; font-weight:500; color:var(--accent-ink); line-height:1.2}
+.stat span{display:block; font-size:13px; color:var(--ink-3); margin-top:2px}
+
+/* ---------- sections ---------- */
+section{padding:44px 0 0}
+.sec-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:6px}
+.sec-head h2{font-size:24px}
+.sec-num{font-family:var(--f-mono); font-size:12px; color:var(--accent);
+  border:1px solid var(--line-2); border-radius:99px; padding:2px 9px; letter-spacing:.06em}
+.sec-note{color:var(--ink-2); max-width:66ch; margin:8px 0 22px}
+
+.card{background:var(--surface); border:1px solid var(--line); border-radius:var(--rad);
+  padding:20px 22px; box-shadow:var(--sh); margin-bottom:16px}
+.card h3{font-size:16px; margin-bottom:4px}
+.card p{margin:6px 0 0; color:var(--ink-2); font-size:15px}
+
+pre{margin:12px 0 0; background:var(--surface-2); border:1px solid var(--line);
+  border-radius:8px; padding:12px 14px; overflow-x:auto; direction:ltr; text-align:left}
+pre code{font-size:13px; line-height:1.7; color:var(--ink); white-space:pre}
+p code, td code, li code, summary code{background:var(--surface-2); border:1px solid var(--line);
+  border-radius:5px; padding:1px 5px; font-size:.87em; direction:ltr; display:inline-block}
+
+table{width:100%; border-collapse:collapse; font-size:14.5px}
+.tscroll{overflow-x:auto; border:1px solid var(--line); border-radius:var(--rad); background:var(--surface)}
+th,td{text-align:right; padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-family:var(--f-disp); font-weight:600; font-size:13px; color:var(--ink-3);
+  background:var(--surface-2); letter-spacing:.02em; white-space:nowrap}
+tr:last-child td{border-bottom:none}
+td.num{font-family:var(--f-mono); font-variant-numeric:tabular-nums; white-space:nowrap}
+
+/* ---------- filter bar ---------- */
+.bar{position:sticky; top:0; z-index:5; background:var(--paper);
+  padding:14px 0 12px; border-bottom:1px solid var(--line); margin-bottom:20px}
+.bar-row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+#q{flex:1 1 260px; min-width:200px; font-family:var(--f-body); font-size:15px;
+  padding:9px 13px; border:1px solid var(--line-2); border-radius:8px;
+  background:var(--surface); color:var(--ink)}
+#q:focus-visible, .chip:focus-visible, summary:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.chip{font-family:var(--f-body); font-size:13.5px; padding:7px 13px; border-radius:99px;
+  border:1px solid var(--line-2); background:var(--surface); color:var(--ink-2); cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:#fff}
+:root[data-theme="dark"] .chip[aria-pressed="true"]{color:#0D1317}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .chip[aria-pressed="true"]{color:#0D1317}}
+.count{font-family:var(--f-mono); font-size:13px; color:var(--ink-3); margin-right:auto;
+  font-variant-numeric:tabular-nums}
+
+/* ---------- catalog ---------- */
+.grp{margin:0 0 34px}
+.grp > h3{font-family:var(--f-mono); font-size:13px; letter-spacing:.08em; color:var(--ink-3);
+  text-transform:uppercase; direction:ltr; text-align:right; margin:0 0 10px;
+  padding-bottom:8px; border-bottom:1px solid var(--line)}
+.rows{display:flex; flex-direction:column; gap:8px}
+details.row{background:var(--surface); border:1px solid var(--line); border-radius:var(--rad);
+  overflow:hidden}
+details.row[open]{border-color:var(--line-2); box-shadow:var(--sh)}
+summary{list-style:none; cursor:pointer; padding:12px 16px; display:grid;
+  grid-template-columns:1fr auto; gap:4px 14px; align-items:center}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:var(--surface-2)}
+.path{font-family:var(--f-mono); font-size:13.5px; color:var(--accent-ink); direction:ltr;
+  text-align:right; word-break:break-all; font-weight:500}
+.purpose{grid-column:1/2; font-size:14.5px; color:var(--ink-2); line-height:1.6}
+.meta{grid-row:1/3; grid-column:2/3; display:flex; flex-direction:column; align-items:flex-end; gap:6px}
+.n{font-family:var(--f-mono); font-variant-numeric:tabular-nums; font-size:13px;
+  color:var(--ink-3); white-space:nowrap}
+.n b{color:var(--ink); font-weight:500; font-size:15px}
+.tags{display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end}
+.tag{font-family:var(--f-mono); font-size:10.5px; letter-spacing:.03em; padding:2px 7px;
+  border-radius:99px; border:1px solid transparent; direction:ltr; white-space:nowrap}
+.tag.live{background:var(--bronze-soft); color:var(--bronze); border-color:var(--bronze)}
+.tag.slo{background:var(--clay-soft); color:var(--clay); border-color:var(--clay)}
+.tag.pure{background:var(--ok-soft); color:var(--ok); border-color:var(--ok)}
+.tag.sup{background:var(--surface-2); color:var(--ink-3); border-color:var(--line-2)}
+.body{padding:0 16px 16px; border-top:1px solid var(--line); margin-top:2px}
+.body .lbl{font-family:var(--f-mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--ink-3); margin:14px 0 4px}
+.body p{margin:0; color:var(--ink); font-size:14.5px; line-height:1.75}
+.empty{padding:40px 0; text-align:center; color:var(--ink-3)}
+.foot{margin-top:56px; padding-top:20px; border-top:1px solid var(--line);
+  color:var(--ink-3); font-size:13.5px}
+@media (max-width:640px){
+  summary{grid-template-columns:1fr}
+  .meta{grid-row:auto; grid-column:auto; flex-direction:row; align-items:center;
+    justify-content:space-between; width:100%}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">AIZZAK · branch: retrieval · 2026-08-27</p>
+  <h1>أطلس اختبارات AIZZAK</h1>
+  <p class="lede">فهرسٌ كاملٌ لمجلّد <code>tests/</code>: كلّ ملفٍ، ووظيفته، وما يُثبته، والأمر الذي يُشغّله وحده. الأرقام أدناه هي <b>دوالّ الاختبار</b> كما هي مكتوبةٌ في الملفات — قبل توسيع <code>parametrize</code>، فالعدد المجموع عند التشغيل أكبر.</p>
+  <div class="stats">
+    <div class="stat"><b>201</b><span>ملفّ بايثون في <code>tests/</code></span></div>
+    <div class="stat"><b>183</b><span>ملفّ <code>test_*</code> يجمعه pytest</span></div>
+    <div class="stat"><b>3349</b><span>دالّة اختبار</span></div>
+    <div class="stat"><b>10</b><span>وسوم <code>live_*</code></span></div>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="sec-num">01</span><h2>كيف تُشغَّل</h2></div>
+  <p class="sec-note">الإعداد كلّه في <code>pyproject.toml</code> تحت <code>[tool.pytest.ini_options]</code>: لا يوجد <code>pytest.ini</code>. المسارات <code>testpaths=["tests"]</code>، و<code>pythonpath=["src","."]</code> (النقطة تُتيح استيراد <code>services.embedding.app</code>)، و<code>asyncio_mode="auto"</code> فلا حاجة لوسم <code>asyncio</code>، و<code>addopts="-q --strict-markers"</code> فأيّ وسمٍ غير معلَنٍ يُرفَض.</p>
+
+  <div class="card">
+    <h3>البوّابات الخمس — التشغيل الكامل</h3>
+    <p>الترتيب أرخصُ أوّلاً: تنسيق ← فحص ← أنواع ← حدود الاستيراد ← الاختبارات. هذا نصّ <code>README.md</code> نفسه، ويُشغَّل داخل WSL لأنّ أدوات <code>.venv</code> لينكسيّة.</p>
+    <pre><code>wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/AIZZAK && \
+  .venv/bin/ruff format --check . && \
+  .venv/bin/ruff check . && \
+  .venv/bin/mypy src && \
+  .venv/bin/lint-imports && \
+  .venv/bin/pytest'</code></pre>
+  </div>
+
+  <div class="card">
+    <h3>الحزمة كلّها (وحدة + معمارية + تكامل)</h3>
+    <p>بلا مُرشِّح <code>-m</code>: كلّ ملفات <code>tests/integration/</code> محميّةٌ بوسم <code>live_*</code> يسبر خدمته ويتخطّى بأمانةٍ حين تتعذّر، فتمرّ على جهازٍ بلا بنيةٍ تحتيّة. و<code>-rs</code> يطبع اسم وسبب كلّ تخطٍّ بدل إخفائه خلف علامةٍ خضراء.</p>
+    <pre><code>cd /home/AIZZAK && .venv/bin/pytest -rs</code></pre>
+  </div>
+
+  <div class="card">
+    <h3>الوحدة والمعمارية فقط — سريع، بلا أيّ خدمة</h3>
+    <pre><code>cd /home/AIZZAK && .venv/bin/pytest tests/unit tests/architecture</code></pre>
+    <p>ملاحظة من الذاكرة التشغيليّة: سطر الملخّص النهائيّ لـ<code>pytest</code> يغيب أحياناً في هذه البيئة. للقراءة الموثوقة استعمل تقرير JUnit:</p>
+    <pre><code>cd /home/AIZZAK && .venv/bin/pytest --junit-xml=/tmp/r.xml -q
+python3 -c "import xml.etree.ElementTree as E;print(E.parse('/tmp/r.xml').getroot().attrib)"</code></pre>
+  </div>
+
+  <div class="card">
+    <h3>التكامل الحيّ — يحتاج مكدّس Compose</h3>
+    <p>أقلِع البنية، ثمّ حمّل <code>.env.test</code> في البيئة قبل <code>pytest</code>. نسيان التحميل لم يعد يُنتج أخطاءً منذ <code>b10b53e</code>: كلّ مسبارٍ حيٍّ يُجري مصافحةً حقيقيّة ويتخطّى بصدق.</p>
+    <pre><code>docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+cd /home/AIZZAK && set -a; . ./.env.test; set +a
+.venv/bin/pytest tests/integration -rs</code></pre>
+    <p>ولجعل الغياب فشلاً صريحاً بدل تخطٍّ — وهو ما تفعله CI:</p>
+    <pre><code>REQUIRE_LIVE=1 .venv/bin/pytest -rs \
+  -m "not live_ollama and not live_embedding and not live_openai and not live_web_search"</code></pre>
+  </div>
+
+  <div class="card">
+    <h3>ملفٌّ واحد · اختبارٌ واحد · وسمٌ واحد</h3>
+    <pre><code>.venv/bin/pytest tests/unit/test_rag_agent.py -q
+.venv/bin/pytest tests/unit/test_rag_agent.py::test_streams_tokens_then_final_with_citations
+.venv/bin/pytest -m live_db -rs
+.venv/bin/pytest -m "not live_db and not live_redis"
+.venv/bin/pytest -k "space and quota"</code></pre>
+  </div>
+
+  <div class="card">
+    <h3>حزمة القياس (eval) — ليست اختباراً</h3>
+    <p>لا يجمع pytest شيئاً من <code>tests/eval/</code>: لا ملفّ فيها يبدأ بـ<code>test_</code>. المحضن يحتاج مكدّساً حيّاً وفهرساً مبنيّاً، وذلك خطوة runbook لا مهمّة fixture.</p>
+    <pre><code>docker cp tests/eval aizzak-app-1:/tmp/eval
+docker exec -e EVAL_WORKSPACE=&lt;uuid&gt; -e EVAL_USER=&lt;uuid&gt; -e EVAL_SPACE=&lt;uuid&gt; \
+  -e EVAL_VARIANTS='[{"name":"shipped"},{"name":"floor","min_bm25_score":25.0}]' \
+  aizzak-app-1 python /tmp/eval/run_calibration.py &gt; run.jsonl</code></pre>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">02</span><h2>الوسوم العشرة</h2></div>
+  <p class="sec-note">كلّ وسمٍ يسبر خدمته بمصافحةٍ حقيقيّة — اتّصال ثمّ استعلامٌ تافهٌ عبر المصنع نفسه الذي سيستعمله الاختبار — ويتخطّى حاملاً رسالة الخطأ الأصليّة. فحص المنفَذ وحده كان يُمرّر كلمة سرٍّ خاطئة ثمّ يُنتج مئات أخطاء الإعداد. و<code>REQUIRE_LIVE=1</code> يحوّل كلّ تخطٍّ إلى فشل.</p>
+  <div class="tscroll"><table>
+    <thead><tr><th>الوسم</th><th>الخدمة</th><th>ملفّات</th><th>شرط التخطّي</th></tr></thead>
+    <tbody>
+      <tr><td><code>live_db</code></td><td>Compose PostgreSQL 16 · 127.0.0.1:15432</td><td class="num">30</td><td>ما لم تُكمل <b>كلّ</b> DSN دورٍ اتّصالاً حقيقيّاً و<code>SELECT 1</code></td></tr>
+      <tr><td><code>live_redis</code></td><td>Compose Redis · 127.0.0.1:16379</td><td class="num">13</td><td>ما لم يُجب <code>PING</code> عبر مصنع العميل نفسه</td></tr>
+      <tr><td><code>live_qdrant</code></td><td>Compose Qdrant · 127.0.0.1:16333</td><td class="num">5</td><td>ما لم ينجح طلبٌ حقيقيّ (سرد المجموعات)</td></tr>
+      <tr><td><code>live_minio</code></td><td>Compose MinIO · 127.0.0.1:19000</td><td class="num">4</td><td>ما لم ينجح <code>bucket_exists</code> <b>موقَّعاً</b> بحساب الاختبار</td></tr>
+      <tr><td><code>live_vault</code></td><td>Compose Vault · 127.0.0.1:18200</td><td class="num">1</td><td>ما لم يكن مفكوك الختم ويُقبَل <code>TEST_VAULT_TOKEN</code></td></tr>
+      <tr><td><code>live_ollama</code></td><td>Ollama أصليّ في WSL · 11434</td><td class="num">2</td><td>ما لم يسرد نماذجه ويكن النموذج المتوقَّع بينها</td></tr>
+      <tr><td><code>live_embedding</code></td><td>خدمة التضمين · 127.0.0.1:8080</td><td class="num">2</td><td>ما لم ينجح <code>GET /health</code> (يجيب بعد تحميل النموذج)</td></tr>
+      <tr><td><code>live_openai</code></td><td>OpenAI API الحقيقيّ</td><td class="num">1</td><td>عند <b>غياب</b> <code>TEST_OPENAI_API_KEY</code>؛ ومفتاحٌ مرفوضٌ فشلٌ لا تخطٍّ</td></tr>
+      <tr><td><code>live_web_search</code></td><td>Exa API الحقيقيّ</td><td class="num">1</td><td>عند <b>غياب</b> <code>TEST_EXA_API_KEY</code></td></tr>
+      <tr><td><code>live_stack_slo</code></td><td>المكدّس الكامل + شبكة <code>aizzak_default</code></td><td class="num">2</td><td>لا يعمل تلقائيّاً أبداً: يلزم <code>RUN_P1_6_LOAD_TEST=1</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">03</span><h2>الفهرس الكامل</h2></div>
+  <p class="sec-note">ابحث بالمسار أو بالوصف، أو رشِّح بالمجلّد. انقر أيّ صفٍّ لتفتح «أبرز ما يُثبته» وأمر تشغيله المفرد.</p>
+
+  <div class="bar">
+    <div class="bar-row">
+      <input id="q" type="search" placeholder="ابحث: qdrant · RLS · وكيل · outbox · مفتاح …" aria-label="بحث في الفهرس">
+      <button class="chip" data-f="all" aria-pressed="true">الكلّ</button>
+      <button class="chip" data-f="tests/unit" aria-pressed="false">unit</button>
+      <button class="chip" data-f="tests/integration" aria-pressed="false">integration</button>
+      <button class="chip" data-f="tests/architecture" aria-pressed="false">architecture</button>
+      <button class="chip" data-f="tests/eval" aria-pressed="false">eval</button>
+      <button class="chip" data-f="live" aria-pressed="false">live_* فقط</button>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+
+  <div id="catalog"></div>
+</section>
+
+<p class="foot">مبنيٌّ من قراءةٍ فعليّة لكلّ ملفٍّ في <code>tests/</code> على فرع <code>retrieval</code> بتاريخ 2026-08-27 (AST + سلاسل التوثيق). العدّ الظاهر هو دوالّ الاختبار المكتوبة، لا الحالات المولَّدة من <code>parametrize</code>.</p>
+
+</div>
+
+<script>
+const DATA = [
+{p:"tests/__init__.py",n:0,m:[],k:"sup",d:"ملفّ حزمةٍ فارغ يجعل tests/ قابلةً للاستيراد.",w:"لا يحوي شيئاً. وجوده وحده هو ما يسمح لملفّات الدعم (support_*) بأن تُستورَد بمسارٍ مُنقَّط."},
+{p:"tests/architecture/__init__.py",n:0,m:[],k:"sup",d:"ملفّ حزمةٍ فارغ لمجلّد اختبارات المعمارية.",w:"لا يحوي شيئاً."},
+{p:"tests/architecture/test_import_contracts.py",n:1,m:[],k:"pure",d:"بوّابة المعمارية: تشغيل import-linter برمجيّاً وإفشال البناء عند أيّ خرقٍ للطبقات أو حدود الوحدات (09 §4 · D-17).",w:"اختبارٌ واحد يُنفّذ lint-imports على ملفّ .importlinter الجذر ويؤكّد returncode==0. العقود السبعة: الطبقات الداخليّة api←agents←modules←framework، نقاء النطاق، حدود التطبيق، استقلال الوحدات العشر، استقلال الوكلاء، عزل البنية التحتيّة خلف Composition Root، ونحافة الكِرنل. ساكنٌ بلا I/O فيسبق بقيّة البوّابات."},
+{p:"tests/eval/__init__.py",n:0,m:[],k:"sup",d:"توثيق حزمة القياس: لماذا تعيش مجموعة التقييم بجوار الاختبارات لا تحت docs/.",w:"لأنّها دليلٌ تنفيذيّ لا نثر: كلّ رقمٍ في docs/rag-fidelity-audit.md §4-و خرج من run_calibration.py وهو يقرأ hr_handbook_set.py. لا ملفّ هنا يبدأ بـtest_ فلا يجمع pytest شيئاً."},
+{p:"tests/eval/hr_handbook_set.py",n:0,m:[],k:"sup",d:"مجموعة تقييم الاسترجاع كبيانات (P-38 · قرار س-22): 15 سؤالاً بلغتين بإجاباتٍ مرجعيّة، و6 أسئلةٍ لا يستطيع المتن الإجابة عنها.",w:"الأسئلة حرفيّةٌ من docs/hr-quiz-en.md و docs/hr-quiz.md فوق docs/hr-no-table.docx ولا يجوز إعادة صياغتها. حقل gold تعابير نمطيّة يطابقها متنٌ مفهرَسٌ فعلاً — لا حكمٌ ولا اختراع. اللغتان هما الأسئلة نفسها، وهو ما يجعل نصف كلّ قياسٍ مقارنةً محكومةً عبر اللغات."},
+{p:"tests/eval/run_calibration.py",n:0,m:[],k:"sup",d:"محضن القياس: يُشغّل RetrieveContext.execute الحقيقيّ مرّةً لكلّ (سؤال، لغة، متغيّر ضبط) ويطبع سطر JSON لكلّ مسبار.",w:"لا يُعاد بناء شيءٍ من الاسترجاع هنا؛ الملفّ يملك سباكة القياس فقط: رفع _LOG_RANKING_SAMPLE ليقتبس السجلّ الترتيب كلّه، وHandler يلتقط سجلّ knowledge.retrieval الواحد الذي يحمل كلّ عدّادٍ ودرجةٍ للمرحلة. EVAL_VARIANTS قائمة JSON من تعديلات RetrievalTuning تُطبَّق بـdataclasses.replace فوق الضبط المنشور."},
+
+{p:"tests/integration/__init__.py",n:0,m:[],k:"sup",d:"ملفّ حزمةٍ فارغ لمجلّد اختبارات التكامل.",w:"لا يحوي شيئاً."},
+{p:"tests/integration/conftest.py",n:0,m:[],k:"sup",d:"محضن التكامل كلّه: مسابر live_*، وDSN الأدوار السبعة، وإعادة بناء المخطّطات والهجرات والمنح لكلّ جلسة، وعملاء Redis/MinIO/Qdrant/Vault/Ollama/OpenAI.",w:"يخاطب PostgreSQL 16 الحاويّ بطوبولوجيا 08-local-runbook: قاعدة aizzak_test يملكها aizzak_owner، والاختبارات تمرّ عبر app_rw — دورٌ NOINHERIT بلا BYPASSRLS وليس مالكاً — مرآةً لكيفيّة اتّصال التطبيق نفسه. أدوار الدخول حالة نشرٍ على مستوى العنقود ينشئها deploy/postgres/initdb/10-roles.sh، والمحضن لا ينشئها عمداً. المنح تُعاد من نفس ثلاثيّات app.ops.provision تحت aizzak_owner. كلّ افتراضٍ يخاطب منافذ Compose المُزاحة، و.env.test يوفّر بيانات الاعتماد الحقيقيّة."},
+{p:"tests/integration/test_access_repository_rls.py",n:10,m:["live_db"],k:"live",d:"SqlRoleAssignmentRepository فوق Postgres حقيقيّ مع RLS.",w:"ذهاب وإياب الإسناد، السرد المُرتَّب داخل المستأجر وحده، العدّ حسب الدور، الحذف المتكرّر، رفض الإسناد المكرَّر بـConflict، عزل مستأجرَين، رفض workspace_id مزوَّرٍ بـWITH CHECK، وأنّ غياب السياق يعطي صفر صفوفٍ وأنّ GUC الفارغة صفر صفوفٍ لا استثناء."},
+{p:"tests/integration/test_auth_revocation_live.py",n:3,m:["live_redis"],k:"live",d:"قائمة الحظر auth:revoked:&lt;sub&gt; على Redis حقيقيّ (3.79).",w:"ثلاث دعاوى عن الخادم لا عن منطقنا: أنّ الـTTL انتهاءٌ حقيقيّ من جانب الخادم لا رقمٌ مرّرناه، وأنّ المدخل يختفي فعلاً حين تنقضي مدّته، وأنّ إبطالاً كتبه عميلٌ يراه عميلٌ آخر."},
+{p:"tests/integration/test_blocking_read_timeout_live.py",n:2,m:["live_redis"],k:"live",d:"مهلة القراءة الحاجبة: XREADGROUP ... BLOCK يجب أن تتجاوز مهلة المقبس نفسها.",w:"يُثبت أنّ الاشتقاق الجديد ينجو على تيّارٍ هادئ، ويُعيد إنتاج العطب القديم بالمهلة الافتراضيّة السابقة حيث يُقطَع انتظارٌ يعمل تماماً كما طُلب منه ويظهر كـAppError(event consume failed) في كلّ دورة."},
+{p:"tests/integration/test_conversation_get_slo_live.py",n:1,m:["live_stack_slo"],k:"slo",d:"أوّل SLO زمنيّ مقيسٍ على المنصّة خارج قفزة التضمين (P1-6): GET /api/v1/conversations/{id} بـp50 40ms / p95 150ms / p99 300ms.",w:"يقود التطبيق ASGI الحقيقيّ فوق Postgres/PgBouncer الحيّين على المسار الإنتاجيّ كاملاً: التوجيه ← المصادقة ← حارس RBAC ← حالة الاستخدام ← المستودع. لا يعمل تلقائيّاً: يلزم RUN_P1_6_LOAD_TEST=1 وشبكة aizzak_default."},
+{p:"tests/integration/test_conversations_repository_rls.py",n:36,m:["live_db"],k:"live",d:"أضخم ملفّ RLS: SqlConversationRepository كاملاً فوق Postgres حقيقيّ.",w:"ذهاب وإياب المحادثة مع عدّ الرسائل، إسناد seq متتالٍ بلا فجوات، تصادم الإلحاق المتزامن، القفل التفاؤليّ بـversion، الحذف اللّيّن للخيط وللرسالة، الترقيم بمؤشّر seq ورفض مؤشّرٍ لا يحمله، النطاق (space) الذي فُتح فيه الخيط وامتناع أيّ حفظٍ عن نقله، تثبيت الملفّات (pin) وسلوكه المتكرّر وحدوده بين المستأجرين، والعدّ حسب النطاق."},
+{p:"tests/integration/test_credentials_repository_rls.py",n:11,m:["live_db"],k:"live",d:"SqlCredentialRepository مع RLS + فهرس التقوية R4 + سياسة قراءة اعتمادات المنصّة (01 §3.1).",w:"إيجاد المفتاح الفعّال وتخطّي المُبطَل، تقدّم version عند الإبطال وتصادم النسخة القديمة، رفض workspace_id مزوَّر، ثمّ الحالة الخاصّة: صفوف نطاق platform مرئيّةٌ من المستأجرَين معاً بينما تبقى صفوف المستخدمين معزولة — حتّى مع GUC فارغة."},
+{p:"tests/integration/test_dlq_ops_live.py",n:2,m:["live_redis"],k:"live",d:"أداة المشغّل على صفّ الرسائل الميّتة (app.ops.dlq · P1-4) على Redis حقيقيّ.",w:"إعادة إدخال مدخلٍ ميّتٍ ووصوله فعلاً إلى قراءة مستهلكٍ جديد، ورفض مدخلٍ مشوَّهٍ بلا حمولة CloudEvents بالاسم عند محاولة إعادته. كلّ تيّارٍ ومجموعةٍ باسمٍ فريدٍ لكلّ اختبارٍ مع تنظيفٍ في finally — لا يُلمَس تيّارٌ إنتاجيّ."},
+{p:"tests/integration/test_e2e_outbox_to_worker.py",n:3,m:["live_db","live_redis","live_minio","live_qdrant"],k:"live",d:"إثبات AC-08 من طرفٍ إلى طرف: من بايتاتٍ في التخزين إلى فهرسٍ قابلٍ للبحث عبر المسار الحقيقيّ.",w:"IndexFileService (كتابة المنتِج) ← outbox_relay ← مُعالج الفهرسة الحقيقيّ لعامل knowledge، فوق Postgres وRedis وMinIO وQdrant حقيقيّين. يُثبت أنّ المستند وحدثه يُكتَبان في معاملةٍ واحدة، وأنّ فهرسة الملفّ مرّتين تُسجّل مستنداً واحداً، وأنّ ملفّ .txt حقيقيّاً يسير من requested إلى indexed."},
+{p:"tests/integration/test_embedding_service_live.py",n:3,m:["live_embedding"],k:"live",d:"إثبات أنّ خدمة التضمين المركزيّة تقرأ المقطع كاملاً لا أوّل 128 وحدة رمزيّة.",w:"العطب المُغلَق: SentenceTransformer يتبنّى sentence_bert_config.json الذي يقول max_seq_length:128 بينما النموذج نفسه يحتمل أكثر. يُثبت أنّ /health يُعلن الطول النافذ فعلاً، وأنّ نصّاً طويلاً يُرمَّز إلى ما بعد الافتراض، وأنّ مقطعَين يتشاركان مطلعاً طويلاً لا ينهاران إلى متّجهٍ واحد."},
+{p:"tests/integration/test_exa_web_search.py",n:1,m:["live_web_search"],k:"live",d:"ExaWebSearchAdapter مقابل واجهة Exa الحقيقيّة (4.4).",w:"اختبارٌ واحد يؤكّد أنّ البحث الحيّ يُعيد نتائج بالشكل المتعاقَد عليه. يتخطّى ما لم يُصدِّر المستخدم TEST_EXA_API_KEY في صدفته الخاصّة — السرّ لا يُلصَق في محادثةٍ ولا يقرؤه أحدٌ سوى الاختبار وقت التشغيل."},
+{p:"tests/integration/test_file_cascade_live.py",n:7,m:["live_db"],k:"live",d:"شلّال حذف الملفّ فوق Postgres حقيقيّ: أنّ عبارات purge_file تصل الجداول الصحيحة بترتيبٍ يقبله المحرّك.",w:"ملفّ الوحدة المجاور يُثبت الترتيب فوق مزيّفات؛ ما لا يستطيعه هو قيود المفاتيح الأجنبيّة الحقيقيّة (fk_chunk_doc · fk_summary_doc · fk_reindex_item). هنا: إفراغ كلّ جدول معرفةٍ سمّى الملفّ، بقاء صفّ الملفّ حذفاً ليّناً، ذهاب كلّ مستنداته بما فيها بديل إعادة الفهرسة، سلامة الملفّ المجاور، ونجاة مهمّة إعادة فهرسةٍ تمتدّ لملفّين، وأنّ الشلّال يُعاد تشغيله بأمان، وأنّ ملفّاً غير موجودٍ 404 قبل لمس أيّ شيء."},
+{p:"tests/integration/test_file_namesakes_live.py",n:12,m:["live_db"],k:"live",d:"مُسنَد قاعدة س-29: SqlFileRepository.live_namesakes والفهرس المكتوب من أجله.",w:"أنّ المُسنَد يعمل أصلاً على Postgres، وأنّ الأقدم يجد الأحدث ولا عكس، والمطابقة حتّى حالة الأحرف والتطبيع الموحّد، وأنّ نطاقاً آخر ملفٌّ مختلف، وأنّ ملفَّين بلا نطاقٍ يستبدل أحدهما الآخر، وأنّ المحذوف ليّناً لا يُعاد، وأنّ مساحة عملٍ أخرى لا تُبلَغ أبداً، وأنّ مفتاح الاسم شرطُ فهرسٍ لا مرشّح."},
+{p:"tests/integration/test_files_repository_rls.py",n:30,m:["live_db"],k:"live",d:"SqlFileRepository كاملاً مع RLS فوق Postgres حقيقيّ.",w:"ذهاب وإياب كائنات القيمة حرفيّاً، انتقالات الحالة مع version، الترقيم بالمؤشّر بلا تداخلٍ بين الصفحات، العدّ للنشِط فقط، إعادة التسمية دون لمس أعمدة البايتات ودون بلوغ ملفّ مستأجرٍ آخر، النطاق (space) ذهاباً وإياباً والسرد داخله، مجاميع البايتات لكلّ نطاق، ready_names وما يُعيده فعلاً، وأنّ الاسم الفارغ يرفضه كائن القيمة وقاعدة البيانات معاً."},
+{p:"tests/integration/test_idempotency_live.py",n:6,m:["live_db"],k:"live",d:"سجلّ Idempotency-Key الحقيقيّ: SqlIdempotencyStore فوق platform.idempotency_keys بدور app_rw.",w:"نتائج المطالبة الأربع فوق المفتاح الأساسيّ الحقيقيّ، وأنّ واحدةً فقط من مطالبتَين متزامنتَين تفوز، وأنّ التحرير يُفرِج عن المفتاح لإعادة المحاولة، وأنّ التحرير لا يُلغي مفتاحاً مكتملاً، وأنّ مطالبةً متصادمةً لا تُسمّم المعاملة المحيطة، وأنّ RLS يعزل مفاتيح مساحة عملٍ عن أخرى."},
+{p:"tests/integration/test_integrations_repository_rls.py",n:13,m:["live_db"],k:"live",d:"SqlConnectionRepository + SqlMcpServerRepository مع RLS.",w:"إضافةً إلى النمط القياسيّ: أنّ update_tokens كتابةٌ ضيّقةٌ على المسار الساخن (تجديد INV-I3 الكسول) تتجاهل قِدَم النسخة عمداً، وfind_by_connector، وذهاب وإياب خادم MCP ومرشّح النشِط، ورفض إضافةٍ عابرةٍ للمستأجر في كلا المستودعَين."},
+{p:"tests/integration/test_knowledge_repository_rls.py",n:49,m:["live_db"],k:"live",d:"أكبر ملفّ تكاملٍ في المستودع: SqlDocumentRepository مع RLS، بما فيه المقاطع والمقاطع الأبوين ومهامّ إعادة الفهرسة.",w:"add_chunks متكرّرٌ آمنٌ عبر ON CONFLICT (document_id, seq) DO NOTHING، انتقالات الحالة وتحديث عدّ المقاطع من الصفوف المحفوظة، vector_refs كما كُتِبت فعلاً، purge وتأثيره على المهمّة التي تسمّي المستند، النطاق (space) وثباته عبر انتقالات الحالة، المقاطع الأبوين وتسلسلها وتتالي حذفها، وسلوك chunk_texts في طيّ صفوف الجدول إلى ظهورٍ واحدٍ لأبيها وفي التراجع إلى نصّ الورقة."},
+{p:"tests/integration/test_media_repository_rls.py",n:8,m:["live_db"],k:"live",d:"SqlMediaJobRepository مع RLS.",w:"ذهاب وإياب التجميعة، انتقالات الحالة مع تقدّم version، تصادم النسخة القديمة دون تغيير الصفّ، وأربع دعاوى العزل القياسيّة: غياب السياق صفر صفوف، عزل المستأجرَين، رفض المعرّف المزوَّر، والـGUC الفارغة صفر صفوفٍ لا استثناء."},
+{p:"tests/integration/test_media_request_seam.py",n:3,m:["live_db"],k:"live",d:"مَفصِل طلب الوسائط 4.7-d-2 من طرفٍ إلى طرف، مركّباً كما يركّبه Composition Root.",w:"ما يُثبته التشغيل الحيّ وحده: أنّ نداءً واحداً يترك خلفه الصفَّين معاً — صفّ المهمّة وصفّ حدثها — وأنّ الظرف المخزَّن يصف المهمّة المخزَّنة، وأنّ طلباً مرفوضاً لا يكتب أيّاً منهما."},
+{p:"tests/integration/test_media_worker_live.py",n:1,m:["live_db","live_redis","live_minio"],k:"live",d:"مُعالج التشغيل الحقيقيّ لعامل الوسائط وهو يقود WorkerMediaGenerator الحقيقيّ.",w:"مهمّةٌ حقيقيّةٌ بحالة requested تسير عبر المُرحِّل إلى المولّد الحقيقيّ. المزيّف الذي كان هنا حُذِف: محوّل media/ports/generation.py صار موجوداً، ومزيّفٌ ينوب عن محوّلٍ مشحونٍ يُثبت تقدّماً وهميّاً."},
+{p:"tests/integration/test_memory_repository_rls.py",n:10,m:["live_db"],k:"live",d:"SqlMemoryRepository مع RLS.",w:"ذهاب وإياب مع vector_ref فارغ، ربط المتّجه والنسيان، وأنّ الحفظ المتكرّر لا يتصادم أبداً لغياب عمود version في هذا الجدول، والسرد المحدود بالمستأجر والوكيل مع استبعاد المحذوف، ودعاوى العزل الأربع."},
+{p:"tests/integration/test_metrics_source_live.py",n:5,m:["live_db","live_redis"],k:"live",d:"SqlRedisMetricsSource ونقطة GET /metrics من طرفٍ إلى طرف (P1-3).",w:"معيار الخروج بنصّ الخطّة: الإثبات بالقياس لا بالقراءة. عمر الـoutbox صفرٌ بلا انتظارٍ ويرتفع بصفٍّ مزروع، ويتجاهل الصفوف المنشورة مهما قدُمت؛ وعمق الـDLQ يعكس XADD وXDEL حقيقيَّين؛ ونسختان مستقلّتان تُبلّغان القيمة نفسها؛ وكشطٌ HTTP حقيقيّ يعكس تغيّر الصفّ تحته."},
+{p:"tests/integration/test_minio_storage.py",n:12,m:["live_minio"],k:"live",d:"MinioStorage مقابل MinIO الحاويّ (02 §1.6 · 2.4).",w:"ذهاب وإياب البايتات الخام، الكتابة فوق كائنٍ قائم، حفظ content_type من جانب الخادم، الحذف المتكرّر، المفاتيح المسبوقة بمساحة العمل، ثمّ التوقيع: presign_get يخدم كائناً لعميلٍ غير مصادَق، وينتهي فعلاً، ويُوقَّع لكائنٍ غائبٍ ثمّ يُجيب 404 عند الخدمة، وpresign_put يقبل رفعاً غير مصادَق. وحساب الخدمة محصورٌ في دلوٍ واحدٍ فيُثبَت أنّ دلواً خارج نطاقه يُمنَع لا يُسرَّب."},
+{p:"tests/integration/test_nginx_edge_hop_slo_live.py",n:1,m:["live_stack_slo"],k:"slo",d:"الثغرة الوحيدة التي لا يغطّيها قياس SLO داخل العمليّة: قفزة الحافة nginx ← uvicorn/gunicorn.",w:"الملفّ الآخر يقود التطبيق عبر ASGITransport داخل العمليّة، وفيٌّ لكلّ متعاونٍ على المسار عدا هذه القفزة. هنا تُقاس منفصلةً ولا تُطوى داخل الرقم الآخر. يلزم RUN_P1_6_LOAD_TEST=1."},
+{p:"tests/integration/test_notification_bridge_live.py",n:3,m:["live_redis"],k:"live",d:"جسر الإشعارات كاملاً على Redis حقيقيّ (5.3-د · 03 §3.2 · 04 §2/§4).",w:"حدثٌ عالميٌّ من نتيجة عاملٍ يُضاف إلى تيّار، يقرؤه StreamConsumer العامّ، ويُوزَّع إلى make_notification_handler، ويُدفَع إلى جلسة ConnectionHub الحيّة: يصل إلى مساحة عمله وحدها، ونتيجة مهمّة وسائطٍ تُدفَع كما هي، وحدثٌ لا أحد متّصلٌ له يُؤكَّد استلامه لا يعلق."},
+{p:"tests/integration/test_notify_bridge_per_process_group_live.py",n:4,m:["live_redis"],k:"live",d:"أنّ مجموعة مستهلكي جسر الإشعارات يجب أن تكون لكلّ عمليّة لا مشتركة (P0-2).",w:"يُعيد إنتاج الطوبولوجيا الإنتاجيّة مباشرةً: جسران مستقلّان من نفس دالّة التركيب التي يستدعيها Composition Root مرّةً لكلّ عمليّة. كلاهما يتلقّى الإشعار؛ ومجموعةٌ مشتركةٌ تُسلِّم لواحدٍ فقط؛ والتفكيك يُتلف مجموعة الجسر نفسه ولا يُبقي شيئاً؛ والكنس يزيل مجموعة شقيقٍ ميّتٍ دون مجموعة شقيقٍ حيّ."},
+{p:"tests/integration/test_ollama_llm.py",n:7,m:["live_ollama"],k:"live",d:"OllamaLLM مقابل خادم Ollama محلّيٍّ حقيقيّ (02 §1.1 · D-15 · 2.8-a).",w:"لا نصَّ مثبَّتٌ في أيّ مكان — نموذج بمليار وسيطٍ ليس دالّةً حتميّةً حتّى عند temperature=0. المثبَّت هو الشكل: نتيجةٌ حسنة التكوين، وقطعٌ بسبب الطول عند max_tokens=1، وبثٌّ يعطي دلتاتٍ نصّيّةً وقطعةً نهائيّةً واحدةً بعدّادات وحداتٍ حقيقيّة، ونموذجٌ مجهولٌ يصير agent_failed، وأدواتٌ على نموذجٍ لا يدعمها كذلك، ومفتاحٌ غير فارغٍ يُتجاهَل بصمت."},
+{p:"tests/integration/test_openai_llm.py",n:7,m:["live_openai"],k:"live",d:"OpenAILLM مقابل واجهة OpenAI الحقيقيّة (02 §1.1 · D-15 · 2.8-ب-1).",w:"نفس شكل ملفّ Ollama، زائد: دورة استدعاء أداةٍ كاملةٍ تُخرَّط إلى الشكل المحايد، ورسالة بدور tool تُسجّل ما يحدث فعلاً، ومفتاحٌ خاطئٌ يصير agent_failed ولا يُسرَّب أبداً. يتخطّى ما لم يُصدَّر TEST_OPENAI_API_KEY."},
+{p:"tests/integration/test_orchestrator_live.py",n:3,m:["live_ollama","live_qdrant","live_embedding"],k:"live",d:"إثبات العمود الفقريّ للمرحلة 4.7 على مزوّدٍ حيّ: كلّ شيءٍ في السلسلة حقيقيّ.",w:"CompositionRoot.from_env() يبني الحاوية، وPluginLoader يكتشف الوكلاء المشحونين بـimportlib، وAgentOrchestrator يحلّ المزوّد عبر SettingsProviderResolver ويجمع AgentDependencies، ويعمل rag_agent الحقيقيّ والوحدات الرمزيّة تأتي من Ollama حيّ. ويؤكّد أنّ وكيلاً مجهولاً 404 من الحاوية المركَّبة، وأنّ وكيل وسائطٍ لا يحتاج اعتماد LLM أصلاً."},
+{p:"tests/integration/test_outbox.py",n:6,m:["live_db"],k:"live",d:"SqlEventOutbox فوق Postgres حقيقيّ.",w:"دعويان لا تُثبتان مُحكَماً: أنّ أقلّ الامتيازات قائمٌ فعلاً (app_rw يملك INSERT على platform.outbox ولا شيء غيره، فكلّ تأكيدٍ يقرأ الصفّ عبر دورٍ آخر)، وأنّ الأعمدة التي يملكها المُرحِّل تُترَك لقاعدة البيانات. وإلحاق أحداثٍ متعدّدةٍ يهبط عبارةً واحدة، والتسلسل الفارغ لا يكتب شيئاً، ومعرّف حدثٍ مكرَّرٌ يظهر Conflict لا خطأ محرّك."},
+{p:"tests/integration/test_outbox_relay_live.py",n:4,m:["live_db","live_redis"],k:"live",d:"OutboxRelay على المَفصِل بين Postgres وRedis معاً (5.1-ب).",w:"دورةٌ تنشر الصفوف المزروعة بالترتيب ثمّ لا تجد شيئاً في الثانية؛ وفشل نشرٍ يترك الصفّ غير منشورٍ مع رفع attempts؛ وسورا الامتيازات: app_rw لا يستطيع SELECT ولا UPDATE على الـoutbox، وoutbox_relay لا يستطيع INSERT فيه."},
+{p:"tests/integration/test_payload_indexes_ops_live.py",n:5,m:["live_qdrant"],k:"live",d:"app.ops.payload_indexes مقابل Qdrant حقيقيّ.",w:"أوّلاً أنّ الحالة الابتدائيّة التي وُجدت الخطوة من أجلها حقيقيّة: مجموعةٌ أُنشئت كما أُنشئت كلّ مجموعةٍ قبل الخطوة 9 تعود بلا أيّ فهرس حمولة. ثمّ أنّ المرور يترك الخادم حاملاً كلّ فهرسٍ بعَلَمه الصحيح، وأنّ التشغيل الجافّ لا يغيّر شيئاً، وأنّ المرور الثاني لا عمليّة، وأنّ مجموعة الذاكرة لا تُستهدَف ولا تُمَسّ."},
+{p:"tests/integration/test_pin_space_rule_live.py",n:4,m:["live_db"],k:"live",d:"قاعدة النطاق في التثبيت (pin) فوق Postgres حقيقيّ.",w:"ملفّ الوحدة المجاور يُثبت القاعدة فوق مَفصِلٍ مُصطنَع؛ ما لا يستطيعه هو أنّ النطاقَين المقارَنَين هما اللذان تحملهما قاعدة البيانات فعلاً. هنا: ملفٌّ يُثبَّت في خيط نطاقه، وملفٌّ من نطاقٍ آخر يُرفَض بلا كتابة صفّ تثبيت، وملفٌّ غير مقروءٍ يبقى 422 لا خطأ النطاق، وخيطٌ لا يُفتَح في نطاقٍ غير حيّ."},
+{p:"tests/integration/test_processed_events_live.py",n:4,m:["live_db"],k:"live",d:"سجلّ عدم التكرار DD-09: SqlProcessedEventLedger فوق platform.processed_events.",w:"دلالة المطالبة على المفتاح الأساسيّ الحقيقيّ (الأولى True، والتكرار False، والمجموعة المختلفة مستقلّة)، وأنّ المطالبة تتراجع مع وحدة العمل، وأنّ مطالبةً مكرَّرةً لا تُسمّم المعاملة المحيطة، وأنّ app_rw لا يستطيع قراءة السجلّ ولا حذفه."},
+{p:"tests/integration/test_producer_atomicity.py",n:2,m:["live_db"],k:"live",d:"ذرّيّة وحدة العمل المرتبطة بالطلب (5.1-أ): كتابة التجميعة وإلحاق الـoutbox معاً.",w:"الحالة الموجبة والسالبة فوق Postgres حقيقيّ: صفّ المهمّة وصفّ الـoutbox يلتزمان معاً، وفشلٌ في الـoutbox يتراجع بكتابة التجميعة أيضاً."},
+{p:"tests/integration/test_purge_ops_live.py",n:6,m:["live_db"],k:"live",d:"كنس محتوى مساحة العمل (app.ops.purge · BE-ADM-014) مقابل قاعدة aizzak_test الحقيقيّة.",w:"ثلاث مساحات عملٍ مزروعةٌ بصفوفٍ في كلّ جدولٍ يسمّيه §3.2. يُثبت أنّ الكنس يُفرِغ المؤهَّلة وحدها، وأنّ إعادته لا عمليّة نظيفة، وأنّ دور workspace_purger بلا set_config يفشل بأمانٍ إلى صفر صفوف، وأنّ منح الأعمدة يمنعه من البريد ويُتيح الحالة، وأنّ اعتماداً بنطاق platform ينجو من كنس مساحة عملٍ فيها اعتمادات مستخدمين."},
+{p:"tests/integration/test_purge_stores_live.py",n:5,m:["live_qdrant","live_minio"],k:"live",d:"البدائيّتان اللتان يقوم عليهما الكنس: drop_collection وdelete_prefix.",w:"يستعمل الوسمَين والـfixtures نفسها التي أرستها ملفّات Qdrant/MinIO — لا محضناً مخصّصاً. إسقاط مجموعةٍ قائمة، وصمتٌ على اسمٍ لم يوجد قطّ، وحذف بادئة مساحة عملٍ واحدةٍ فقط، وتشغيلٌ جافٌّ يُعيد عدّاً دقيقاً بلا حذف، ومساحةٌ لم تُملأ قطّ لا عمليّة."},
+{p:"tests/integration/test_qdrant_store.py",n:20,m:["live_qdrant"],k:"live",d:"QdrantVectorStore مقابل Qdrant الحاويّ (02 §1.5 · D-01 · 2.5).",w:"كلّ اختبارٍ يأخذ مجموعةً جديدةً باسمٍ فريدٍ تُكنَس في التفكيك. ensure_collection متكرّرٌ آمن، وذهاب وإياب كثيفٌ بحمولةٍ حرفيّة، وk نتائج بالضبط، وعزل المرشّح بـworkspace_id وعطف مفاتيح متعدّدة، وupsert بنفس المعرّف يُبقي نقطةً واحدة، والبحث على مجموعةٍ غير موجودةٍ أو فارغةٍ بلا نتائج؛ ثمّ الهجين: تزويد sparse بـIDF، ونقطةٌ هجينةٌ بحمولةٍ واحدةٍ يُزيلها حذفٌ واحد، وترتيب الساق المتفرّقة، وفهارس الحمولة وتكرارها الآمن وفشلها الصاخب على مجموعةٍ لم تُنشأ."},
+{p:"tests/integration/test_redis_cache.py",n:12,m:["live_redis"],k:"live",d:"RedisCache مقابل Redis 7 الحاويّ (02 §1.7 · 2.3).",w:"لا مسح ولا إعادة بناءٍ هنا خلافاً لمحضن Postgres: قد يحمل الخادم بياناتٍ غير ذات صلة، فيكتب كلّ اختبارٍ تحت بادئةٍ فريدةٍ ويحذفها. ذهاب وإياب البايتات، الكتابة فوق قيمة، انتهاءٌ من جانب الخادم فعلاً واختفاءٌ بعده، البقاء بلا TTL، الحذف المتكرّر، incr ابتداءً من المقدار وتراكمه وتعامله مع عددٍ كُتب كبايتات، وexpire على مفتاحٍ غائبٍ صمتٌ لا خطأ."},
+{p:"tests/integration/test_relay_ensures_groups_live.py",n:2,m:["live_redis"],k:"live",d:"أنّ build_relay_from_env يُزوِّد كلّ مجموعة مستهلكين ساكنةٍ عند ذيل التيّار قبل أوّل نشر.",w:"اختباران يقابل أحدهما الآخر: ensure_topology ثمّ النشر يُسلِّم المدخلات الثلاثة كلّها؛ والنشر ثمّ ensure_topology لا يُسلِّم شيئاً — وهو العطب القديم مُعاداً إنتاجه بالآليّة الحقيقيّة (مجموعةٌ وُلدت بعد المدخلات لا تراها)."},
+{p:"tests/integration/test_retention_ops_live.py",n:5,m:["live_db"],k:"live",d:"كنس الاحتفاظ (app.ops.retention · P1-5) مقابل قاعدة aizzak_test الحقيقيّة.",w:"معيار الخروج: يحذف ما تجاوز حدّ جدوله ولا يحذف ما لم يتجاوزه — والنصف الثاني هو ما يمسك كنساً جشعاً. الجداول الثلاثة (outbox المنشور، processed_events، idempotency_keys عبر كلّ مساحات العمل)، وتشغيلٌ جافٌّ يعدّ ولا يحذف، وأنّ retention_sweeper لا يستطيع INSERT ولا UPDATE على أيٍّ منها."},
+{p:"tests/integration/test_rotate_transit_ops_live.py",n:5,m:["live_db"],k:"live",d:"مدى RLS والمنح لكنس تدوير مفاتيح Transit (app.ops.rotate_transit · P1-9).",w:"جدار RLS نفسه الذي اصطدم به كنس الاحتفاظ قائمٌ هنا: transit_rotator يبلغ صفّ كلّ مستأجرٍ في مرورٍ واحد. يُثبت حفظ النصّ المُعاد تغليفه عبر كلّ مستأجر، وأمان إعادة التشغيل مع تخطّي الصفوف الحديثة، وبلوغ عمودٍ اختياريٍّ في integrations مع ترك غير المضبوط، وكنس الجداول الثلاثة، وأنّ الدور لا يستطيع الإدراج ولا الحذف ولا لمس أيّ عمودٍ آخر."},
+{p:"tests/integration/test_space_cascade_live.py",n:6,m:["live_db"],k:"live",d:"شلّال حذف النطاق (space) فوق Postgres حقيقيّ.",w:"ملفّ الوحدة يُثبت الترتيب — علامة، ثمّ المعرفة، ثمّ الملفّات، ثمّ المحادثات؛ وهنا يُثبَت أنّ عبارات purge_space الثلاث تصل الجداول الصحيحة بترتيبٍ يقبله المحرّك: إفراغ كلّ جدولٍ سمّى النطاق، سلامة النطاق المجاور، نجاة مهمّة إعادة فهرسةٍ تمتدّ لنطاقَين، ذهاب الملفّ والخيط المحذوفَين ليّناً مع نطاقهما، وإعادة التشغيل الآمنة، و404 قبل لمس أيّ شيء."},
+{p:"tests/integration/test_space_columns_live.py",n:4,m:["live_db"],k:"live",d:"هجرات عمود space_id الثلاث (files · conversations · knowledge).",w:"الشكل يُقرَأ من المخطّط: العمود موجودٌ ونوعه uuid وما زال يقبل NULL ومفهرَسٌ بما تحتمله كلّ طاولة. وما لا يُقرَأ من المخطّط: أنّ جدولَي الحذف اللّيّن يفهرسان الصفوف الحيّة وحدها، وأنّ فهرس المستندات كلّيٌّ لأنّها بلا حذفٍ ليّن، وأنّ الصفوف السابقة للعمود هاجرت إلى نطاقٍ واحدٍ مشترك."},
+{p:"tests/integration/test_space_quota_live.py",n:13,m:["live_db"],k:"live",d:"حصّة النطاق لكلّ مساحة تخزين (spaces step 5 · §3.3) فوق Postgres حقيقيّ.",w:"ملفّ الوحدة يُثبت التسلسل؛ وهذه دعاوى عن PostgreSQL نفسه: أنّ SELECT ... FOR UPDATE يعمل بدور app_rw غير المتفوّق وغير BYPASSRLS، وأنّ نطاقاً محذوفاً ليّناً لا يُقفَل رغم أنّ get ما زال يجده، وأنّ المجموع يغطّي ملفّات هذا النطاق النشِطة وحدها، وأنّ تسجيلَين في نطاقٍ واحدٍ يتسلسلان على صفّه بينما لا يتعارض نطاقان مختلفان، وأنّ القفل يُفرَج عنه حين ترفض الحصّة."},
+{p:"tests/integration/test_spaces_repository_rls.py",n:19,m:["live_db"],k:"live",d:"SqlSpaceRepository وهجرة مخطّط spaces.",w:"إعادة التسمية تُقدّم version ويُحرّك المشغّل updated_at، والحذف اللّيّن يترك المجموعة ويبقى قابلاً للجلب، والاسم المكرَّر يُرفَض بالاسم مع طيّ حالة الأحرف، ونطاقٌ محذوفٌ لا يحتجز اسمه، والاسم نفسه في مساحتَي عملٍ ليس تكراراً، وقيد CHECK يرفض ما يرفضه SpaceName ويقبل الحدّ، ودعاوى العزل — وأخيراً أنّ FORCE ROW LEVEL SECURITY يُلزِم حتّى مالك الجدول."},
+{p:"tests/integration/test_stream_consumer_live.py",n:7,m:["live_redis"],k:"live",d:"RedisStreamsConsumer مقابل XGROUP/XREADGROUP/XACK حقيقيّة (5.1-ج).",w:"مدخلٌ غير مؤكَّدٍ يُعاد تسليمه في القراءة التالية، ومجموعتان على تيّارٍ واحدٍ تتلقّيان المدخل كلٌّ على حدة، والمحرّك يُعيد التسليم لمُعالِجٍ رفع استثناءً أوّل مرّة، وensure_group متكرّرٌ آمن، وعدّاد التسليم ينمو عبر إعادات الاسترداد، ومُعالِجٌ يفشل باستمرارٍ يُنقَل إلى DLQ بعد N محاولات، ومدخلٌ مشوَّهٌ يُنقَل فوراً."},
+{p:"tests/integration/test_usage_repository_rls.py",n:15,m:["live_db"],k:"live",d:"SqlUsageLedgerRepository مع RLS — ومركزه عقد INV-U1/AC-16.",w:"إعادة تشغيلٍ متكرّرةٌ لنفس operation_id تُعيد False وتترك السجلّ والتجميعات كما هما — لا عدّ مزدوج. وإضافةً: إنشاء كلّ سلال التجميع، والتراكم الإضافيّ للعمليّات المختلفة، وأصفارٌ لسلّةٍ لم تُسجَّل قطّ، واستبدال الحدود كاملاً وتفريغها، ودعاوى العزل عبر السجلّات والتجميعات والحدود، وتعايش القيود المقيسة والمقدَّرة مميَّزَين."},
+{p:"tests/integration/test_vault_secrets.py",n:13,m:["live_vault"],k:"live",d:"VaultSecrets مقابل Vault الحاويّ الدائم (02 §1.9 · 2.6).",w:"قراءة سرٍّ كتبه العميل الخام وحفظ JSON المتداخل واليونيكود بلا تسرّب غلاف، وnot_found لمسارٍ لم يُكتَب، وتعمية/فكّ بايتاتٍ ليست UTF-8، وشكل النصّ المُعمَّى على السلك، وأنّ مفتاحاً لا يفكّ تعمية مفتاحٍ آخر، وrewrap عبر تدوير مفتاحٍ حقيقيّ، ورفض أسماء المفاتيح ذات اجتياز المسار قبل أيّ نداء شبكة، ورفض شكل مسار metadata خارج الكتالوج."},
+{p:"tests/integration/test_workspace_repository_rls.py",n:12,m:["live_db"],k:"live",d:"SqlWorkspaceRepository وSqlUserRepository مع RLS، زائد حارس R1 وحارس AuthZ في R2.",w:"جدول workspace.workspaces بلا RLS فيُحرَس تطبيقيّاً: get يرفض سياقاً غير مطابق. وللمستخدمين: ذهاب وإياب عبر firebase_uid، وأنّ SELECT خاماً عابراً للمستأجر يعطي صفر صفوف، ورفض المعرّف المزوَّر، وأنّ GUC فارغةً بلا حارسٍ تعطي صفر صفوفٍ لا استثناء، وأنّ نفس firebase_uid مرّتين Conflict."},
+{p:"tests/integration/test_ws_connection_cap_live.py",n:5,m:["live_redis"],k:"live",d:"أنّ سقف اتّصالات WebSocket لكلّ مستخدمٍ عالميٌّ لا لكلّ عمليّة (P1-8 · 07 §4).",w:"يُعيد إنتاج الطوبولوجيا الإنتاجيّة: ConnectionHub اثنان لكلٍّ سجلّه الخاصّ يتشاركان Redis واحداً — تماماً كما تفعل عمليّتا WEB_CONCURRENCY=2. السقف يُطبَّق عبر المحورَين لا داخل أحدهما، والتسجيلات المتزامنة لا تتجاوزه، ومدخل عمليّةٍ منهارةٍ يشيخ بينما لا يشيخ المُجدَّد، وإلغاء التسجيل يُحرّر الخانة للشقيق، وrenew لا يُحيي مدخلاً مُفرَجاً عنه."},
+{p:"tests/unit/__init__.py",n:0,m:[],k:"sup",d:"ملفّ حزمةٍ فارغ لمجلّد اختبارات الوحدة.",w:"لا يحوي شيئاً."},
+{p:"tests/unit/support_access.py",n:0,m:[],k:"sup",d:"تركيب access في الذاكرة تتشاركه اختبارات الموجّهات — لا يبدأ بـtest_ فلا يجمعه pytest.",w:"يبني كلّ اختبار موجِّهٍ تطبيقاً مساراته محروسةٌ فعلاً بـAuthorization الحقيقيّة لا بقرارٍ مزيّف، فما تُثبته تلك الاختبارات يمرّ عبر الحارس الفعليّ."},
+{p:"tests/unit/support_conversations.py",n:0,m:[],k:"sup",d:"تركيب المحادثات في الذاكرة تتشاركه ثلاثة ملفّات اختبار.",w:"موجودٌ لأنّ اختبارات قشرة التطبيق وموجِّه المحادثات والموجِّهات الأخرى تحتاج المكدّس نفسه؛ ونسخةٌ لكلّ ملفٍّ هي الطريق إلى نسخٍ متباعدة."},
+{p:"tests/unit/support_credentials.py",n:0,m:[],k:"sup",d:"تركيب الاعتمادات في الذاكرة (6.1-و-2).",w:"مزيّفان وفيّان لعقدَيهما: المستودع وSecretsProvider، بحيث تُثبت اختبارات الموجّه التعمية عند التخزين دون Vault."},
+{p:"tests/unit/support_files_media.py",n:0,m:[],k:"sup",d:"تركيب الملفّات والوسائط في الذاكرة (6.1-هـ-3).",w:"أكبر ملفّ دعمٍ بعد المعرفة: مستودع ملفّاتٍ ومهامّ وسائطٍ وتخزينٌ مزيّف. نسخُه خمس مرّاتٍ هو كيف تتباعد خمس نسخ."},
+{p:"tests/unit/support_idempotency.py",n:0,m:[],k:"sup",d:"IdempotencyStore في الذاكرة لأطقم اختبار الموجّهات (3.79).",w:"يُنفّذ دلالة المطالبة الحقيقيّة رباعيّة النتائج لا كعباً يقول دائماً «محاولةٌ أولى» — إذ إنّ النتائج الأربع هي كامل جدوى المنفذ."},
+{p:"tests/unit/support_integrations.py",n:0,m:[],k:"sup",d:"تركيب التكاملات في الذاكرة (6.1-و-4-1 و-4-2).",w:"يخدم موجِّهَي الاتّصالات وخوادم MCP وردّ نداء OAuth العامّ معاً."},
+{p:"tests/unit/support_knowledge.py",n:0,m:[],k:"sup",d:"تركيب المعرفة في الذاكرة (6.1-و-3) — أكبر ملفّ دعم.",w:"InMemoryDocumentRepository بسلوكٍ وفيٍّ للسرد والترقيم، يخدم اختبارات موجِّه المعرفة وإعادة الفهرسة والملخّصات."},
+{p:"tests/unit/support_spaces.py",n:0,m:[],k:"sup",d:"تركيب النطاقات في الذاكرة (spaces step 12).",w:"مخزنٌ واحدٌ خلف أربعة وجوه: InMemorySpaceRepository يُرضي منفذ وحدة spaces ومَفصِل ActiveSpaces الذي تراه files/conversations/knowledge — فلا تتباعد الرؤى."},
+{p:"tests/unit/support_streaming.py",n:0,m:[],k:"sup",d:"بديل اختباريٌّ لسجلّ اتّصالات WebSocket العابر للعمليّات (P1-8).",w:"يعيش في tests/ لا في src/ عمداً: تنفيذٌ داخل العمليّة لهذا المنفذ لو شُحن كشيفرة إنتاجٍ لكان سلاحاً محشوّاً، إذ إنّ كامل جدوى المنفذ أنّه يتجاوز حدود العمليّة."},
+{p:"tests/unit/support_workspace_usage.py",n:0,m:[],k:"sup",d:"تركيب مساحة العمل والاستهلاك في الذاكرة (6.1-و-1).",w:"مزيّفاتٌ وفيّةٌ لعقود المنافذ، تخدم موجِّهَي workspace وusage."},
+{p:"tests/unit/test_access_domain.py",n:7,m:[],k:"pure",d:"نطاق access النقيّ: كتالوج RBAC والقرار الخالص (05 §1.3).",w:"يحرس المصفوفة المعتمدة: المالك يحمل كلّ صلاحيّات المستأجر ولا يحمل platform_admin، والمشرف يفتقد النقل والأرشفة، والمشاهد للقراءة فقط، وplatform_admin لا يرى محتوى المستأجرين، واتّحاد الأدوار، وأنّ قائمة أدوارٍ فارغةٍ تمنع."},
+{p:"tests/unit/test_access_use_cases.py",n:8,m:[],k:"pure",d:"حالات استخدام access فوق مستودعٍ مزيّف.",w:"يغطّي INV-A1 (آخر مالك) وINV-A3 (التفرّد): الإسناد يُنشئ ويُصدر حدثاً وهو متكرّرٌ آمن، وإسناد platform_admin مرفوض، وسحب آخر مالكٍ محجوب بينما يُسمَح به عند وجود مالكٍ ثانٍ، والسحب الغائب لا عمليّة."},
+{p:"tests/unit/test_admin_account_deletion.py",n:9,m:[],k:"pure",d:"ما تكتبه عمليّة حذف الحساب، مقروءاً من SQL المُصدَر نفسه.",w:"المحوّل يعمل فوق جلسةٍ تُجيب كلّ عبارةٍ من حالةٍ صغيرةٍ مكتوبةٍ بدل قاعدة بيانات: العنوان المُمحى، والإسنادات المسحوبة، وشكل صفّ التدقيق، ورفض حذف آخر مشرف منصّة، وامتناع المشرف عن حذف حسابه هو، وأنّ حذفاً بلا سببٍ لا يبلغ قاعدة البيانات، وأنّ السبب يُخزَّن مقصوصاً."},
+{p:"tests/unit/test_admin_directory_search.py",n:4,m:[],k:"pure",d:"مُرشِّح البحث في دليل المنصّة، مقروءاً من SQL المُصدَر.",w:"أيّ مُسنَدٍ يصل أيّ عبارة — قرارٌ يُتَّخذ قبل أن يرى PostgreSQL شيئاً. وأنّ رموز البدل التي يكتبها المشغّل تُطابَق حرفيّاً، وأنّ شواهد القبور غائبةٌ عن الصفحة وعن أعدادها."},
+{p:"tests/unit/test_agent_lifecycle.py",n:16,m:[],k:"pure",d:"AgentLifecycleExecutor — آلة حالات FR-15 (4.2 · AC-06).",w:"مسار النجاح يبثّ الأحداث ثمّ يكمل ويتخلّص، وأسلوبا التأليف يُقادان بالطريقة نفسها، وفشل التهيئة يُنتج خطأً نهائيّاً مع التخلّص، وفشلٌ في منتصف البثّ يُلحِق الخطأ بعد الوحدات المبثوثة، وحدث خطأٍ واحدٌ لا أكثر، وAppError يُخرَّط إلى رمزه وحالته بينما الاستثناء غير المتوقَّع عامٌّ لا يُسرّب رسالته، و<b>dispose يُنفَّذ مرّةً واحدةً على كلّ مسار</b> وفشله يُبتلَع ولا يحجب نجاحاً ولا فشلاً، والإلغاء ينتشر مع التخلّص."},
+{p:"tests/unit/test_agent_runtime.py",n:27,m:[],k:"pure",d:"نواة تشغيل الوكلاء: البيانات الوصفيّة والسجلّ والاكتشاف والعزل (4.1 · 02 §3.2/§3.4 · 11 §5).",w:"الاكتشاف والعزل وإثبات AC-04 للإضافة/الحذف تجري فوق حزم وكلاء <b>مُصطنَعة</b> تُبنى تحت tmp_path. AgentMetadata مجمَّد، والحالات الستّ لـFR-15 بالضبط، وBaseAgent يرفض الإنشاء بلا initialize/run، وAgentDependencies مَفصِلٌ مختومٌ ضدّ السمات المرتجَلة، وcreate يُعيد نسخةً جديدةً لكلّ نداء، والمفتاح المجهول 404 وغير النصّيّ 422، والتسجيل يرفض التكرار والبيانات الفاسدة والمصنع غير القابل للنداء."},
+{p:"tests/unit/test_api_agents_router.py",n:16,m:[],k:"pure",d:"موجِّه الوكلاء عبر TestClient فوق create_app حقيقيّ (6.1-b).",w:"سرد الوكلاء في غلاف الصفحة والسجلّ الفارغ صفحةٌ فارغة، والبيان المفرد عارياً، والوكيل المجهول 404، والاستدعاء يبثّ إطارات SSE — وعلى ترويسة Accept وحدها — ويحترم علم stream، والفشل التمهيديّ 404 قبل أيّ حدث، والاستدعاء بلا بثٍّ يُعيد الدور المحفوظ ويُكمل الخيط المُعطى، وكلّ ذلك خلف المصادقة."},
+{p:"tests/unit/test_api_app_shell.py",n:33,m:[],k:"pure",d:"قشرة تطبيق API (app/api/main.py · 6.1-a) — 03 §0/§1/§4.",w:"/health بلا مصادقة و/health/ready يبقى 503 حتّى تُعلّم دورة الحياة النسخة جاهزة؛ وخطّافات الإقلاع تكتمل قبل المهامّ وقبل الجاهزيّة وخطّافٌ فاشلٌ يُجهض الإقلاع؛ والتخلّص يجري حتّى مع إجهاض الإقلاع؛ ومهمّة خلفيّةٍ تموت باستثناءٍ تترك سطر خطأٍ بينما المُلغاة عند إغلاقٍ نظيفٍ لا تترك شيئاً؛ ومعرّف الارتباط يُولَّد عند الغياب ويُردَّد عند الوجود ويصل السياق؛ وغياب Bearer 401 بشكل problem."},
+{p:"tests/unit/test_api_auth.py",n:42,m:[],k:"pure",d:"مسار المصادقة كاملاً (api/middleware/auth.py · 6.4-أ) فوق منافذ مزيّفة.",w:"أوّل دخولٍ يُزرَع مالكاً لمساحة عملٍ جديدة، والدخول المتكرّر لا يزرع شيئاً، وحسابٌ معطَّلٌ يُرفَض بـ403 لا 401 وبلا تكلفة قراءة أدوار، وحالة الحساب تُقرَأ في <b>كلّ</b> طلب، وهويّةٌ بلا بريدٍ صالحٍ رمزٌ غير صالح، والمُبطَل يُرفَض والقائمة تُستشار كلّ طلبٍ لا مرّة، وانقطاع قائمة الحظر يرفض الطلب بدل تجاهله، وتفصيل 401 لا يسمّي السبب أبداً، وعطبٌ في البنية التحتيّة لا يُلبَّس ثوب الرمز الفاسد."},
+{p:"tests/unit/test_api_conventions.py",n:17,m:[],k:"pure",d:"أعراف API مرآةً للعقد لا نثراً: مقارنة docs/design/openapi.yaml بما يولّده التطبيق فعلاً (6.3-ج · AC-07).",w:"التطبيق ينشر العمليّات التي يُعلنها العقد بالضبط، وكلّ اسم خاصّيّةٍ ومعامِلٍ snake_case، وترويسة Idempotency معلَنةٌ على عمليّات العقد بالضبط، والعمليّات المرقَّمة هي المُعلَنة وتحمل حدود limit وافتراضه وتُعيد صفحة، وما مِن عمليّةٍ تُعيد مصفوفةً عارية، وكلّ غلافٍ data+meta وكلاهما مطلوب، وكلّ مسارٍ مؤرَّخٌ عدا مسبارَي الصحّة، وكلّ ختم وقتٍ UTC ينتهي بـZ."},
+{p:"tests/unit/test_api_conversations_router.py",n:51,m:[],k:"pure",d:"موجِّه المحادثات (6.1-ج-2/ج-3) — أضخم ملفّ موجِّه.",w:"عمليّات CRUD الستّ وأشكالها على السلك: الإنشاء 201 بمَورِدٍ عارٍ ورفض مفتاح وكيلٍ فارغ، والسرد في غلاف الصفحة بمؤشّرٍ معتِمٍ ورفض limit فوق سقف العقد، والحذف 204 متكرّرٌ آمنٌ ويُخفي الخيط بعده، وإعادة التسمية تُعيد الخيط وتوافقها القائمة وnull يُفرِّغ العنوان وغياب الحقل 422، وأنّ إعادة التسمية لا تُعيد توجيه الخيط إلى وكيلٍ آخر."},
+{p:"tests/unit/test_api_credentials_router.py",n:17,m:[],k:"pure",d:"موجِّه الاعتمادات (6.1-و-2) فوق مكدّس support_credentials.",w:"كلّ مسارٍ يرفض غير المصادَق، والإنشاء يخزّن المفتاح مُعمّى ولا يردّده أبداً ويستعمل التسمية المُعطاة فوق القناع، ونطاق platform مرفوضٌ 403 بلا تخزين، والمزوّد المجهول برمز الكتالوج، والسرّ الفارغ يُرفَض عند الـDTO، ومفتاحٌ فعّالٌ ثانٍ لنفس المزوّد مرفوضٌ بينما المُبطَل لا يحجب بديلاً، والسرد يُظهر البيانات الوصفيّة ولا سرَّ ويستبعد المستأجرين الآخرين وصفوف المنصّة، والحذف إبطالٌ لا إزالة."},
+{p:"tests/unit/test_api_errors.py",n:11,m:[],k:"pure",d:"بُناة problem بمعيار RFC 9457 (app/api/errors.py · 5.3-ب · 6.2).",w:"مجموعة حقول 03 §4 بالضبط وأنّ الغائب يُحذَف لا يُصفَّر، ونطاق الأنواع https://errors.platform/&lt;code&gt;، والعناوين من الكتالوج مع عنوانٍ حتّى لرمزٍ غير مُكتلَج، وأنّ AppError يمرّر رمزه وحالته، وأنّ حمولة حدثٍ مشوّهةٍ تتدهور بدل أن ترفع، وأنّ الرمز وحده يُقرّر الحالة ما لم تُذكَر صراحةً."},
+{p:"tests/unit/test_api_files_media_router.py",n:41,m:[],k:"pure",d:"موجِّها الملفّات والوسائط (6.1-هـ-3).",w:"التسجيل 201 مع presigned PUT للمفتاح المسكوك، والإكمال يُعيد الملفّ الجاهز برابط تنزيله ويقبل جسماً غائباً والمجهول 404 والمرّة الثانية 409، والسرد في غلاف API-04 بروابط للجاهز وحده، والمؤشّر يدور عبر الغلاف ومؤشّرٌ مشوَّهٌ 422 لا 500 ومؤشّرٌ سُكّ لمجموعةٍ أخرى يُرفَض، وملفٌّ موجودٌ غير جاهزٍ جسمٌ لا problem، والحذف 204 متكرّرٌ آمن ويكنس فهرس الملفّ أيضاً."},
+{p:"tests/unit/test_api_idempotency.py",n:9,m:[],k:"pure",d:"مَفصِل Idempotency-Key (api/v1/idempotency.py · 3.79) — الجزء الذي لا يستنفده أيّ مسار.",w:"بصمة الطلب: نفس الجسم يُهشَّم بنفس القيمة والمختلف لا، والتهشيم لا يكشف الجسم، وغياب المفتاح يُشغّل العمليّة ولا يلمس المخزن، وإعادةٌ تُعيد بناء الجسم عبر نموذج الاستجابة، ومساحتا عملٍ قد تستعملان المفتاح نفسه، وتكرارٌ أثناء التنفيذ يتصادم بدل أن يعمل مرّتين، وعمليّةٌ مُلغاةٌ تُحرّر مطالبتها، ومفتاحٌ غير صالحٍ 422 قبل أيّ نداء مخزن."},
+{p:"tests/unit/test_api_integrations_callback_router.py",n:11,m:[],k:"pure",d:"ردّ نداء OAuth العامّ (6.1-و-4-2) — المسار الوحيد في /api/v1 الذي يُجيب بلا ترويسة Authorization.",w:"يُجيب بلا أيّ ترويسة، ولا يُطلَب Bearer ولا يُستشار حتّى لو أُرسل، والمصافحة المكتملة تُعيد الصفّ المتّصل، والتبادل يستعمل redirect_uri المخزَّن وقت المصافحة، ومعامِلات الاستعلام التي تسمّي مستأجراً تُتجاهَل كلّيّاً، وstate مزوَّرٌ يُرفَض قبل قراءة أيّ صفٍّ وهو أحاديّ الاستعمال، ورموز المزوّد تُعمّى ولا تبلغ السلك، وفشل المزوّد 502 يترك صفّاً قابلاً للتفسير."},
+{p:"tests/unit/test_api_integrations_mcp_router.py",n:19,m:[],k:"pure",d:"موجِّه التكاملات — خوادم MCP وكتالوج الأدوات (6.1-و-4-3 · 06 §9).",w:"مادّة المصادقة تدخل ولا تخرج أبداً؛ والسرد يُظهر كلّ الحالات الأحدث أوّلاً لهذا المستأجر وحده بلا مادّة مصادقة؛ ونقل stdio مرفوضٌ بالاسم وعنوانٌ غير بعيدٍ مرفوض؛ واسمٌ يحمله خادمٌ فعّالٌ يتصادم واسمٌ يُظلّل مفتاح موصِّلٍ يُرفَض؛ وسقف مساحة العمل مُطبَّق؛ والحذف تعطيلٌ يُبقي الصفّ مسروداً ومتكرّرٌ آمن؛ وإعادة تسجيل اسمٍ معطَّلٍ تُحيي الصفّ نفسه."},
+{p:"tests/unit/test_api_integrations_router.py",n:22,m:[],k:"pure",d:"موجِّه التكاملات — الموصِّلات والاتّصالات (6.1-و-4-1 · 06 §9).",w:"لا مادّة رموزٍ تعبر السلك أبداً — لا نصَّ مُعمّى ولا سبب فشل؛ وكتالوج الموصِّلات فارغٌ ما دام لا محوّل موصِّلٍ موجوداً وشكله شكل المواصفة بالضبط؛ وصفحة الاتّصالات الأحدث أوّلاً مع رفض مؤشّرٍ مشوَّه؛ وإنشاء اتّصالٍ مرفوضٌ بلا موصِّلٍ مضبوط؛ وredirect_uri من التهيئة لا من الطلب؛ وauthorize يُعيد العنوان وstate مربوطاً في الخادم."},
+{p:"tests/unit/test_api_knowledge_router.py",n:42,m:[],k:"pure",d:"موجِّه المعرفة (6.1-و-3 · 06 §7) فوق مكدّس support_knowledge.",w:"الـ503 مسارٌ لا غياب: مع search=None يُسجَّل المسار ويُجيب 503؛ ومع الاسترجاع حاضراً يُعيد المقاطع في الغلاف ويمرّر query وk وspace حرفيّاً؛ والبحث بلا نطاقٍ 422 قبل بلوغ الاسترجاع؛ وk افتراضه خمسة ويُرفَض خارج حدوده قبل الاسترجاع؛ والاستعلام الفارغ مرفوض؛ ونتيجةٌ خاليةٌ غلافٌ فارغٌ لا خطأ؛ والمتن يُرقَّم الأحدث أوّلاً بكلّ حالات دورة الحياة."},
+{p:"tests/unit/test_api_metrics_router.py",n:6,m:[],k:"pure",d:"GET /metrics معزولاً فوق MetricsSource وVaultHealth مزيّفَين (P1-3 · ن-10).",w:"يعرض المقياسَين من المصدر ويعكس تغيّره في الكشط التالي مباشرةً، ومقياس Vault واحدٌ عند المصادقة وصفرٌ عند فقدها ويُحذَف كلّيّاً حين لا مسبار مُوصَل، و503 حين لا مصدر مُوصَل."},
+{p:"tests/unit/test_api_models_router.py",n:7,m:[],k:"pure",d:"موجِّه النماذج فوق SettingsProviderResolver الحقيقيّ مضيَّقاً إلى ModelCatalog.",w:"يُعيد المسارات المضبوطة في غلاف الصفحة، ومسارٌ بلا اعتمادٍ يُسرَد «غير متاح» لا يُحذَف، ولا حقل في الاستجابة يحمل مفتاحاً أبداً، وجدول توجيهٍ فارغٌ صفحةٌ فارغةٌ لا خطأ، وكتالوجٌ غير مُوصَلٍ خطأٌ داخليّ، ورمزٌ فاسدٌ يُرفَض قبل لمس الكتالوج."},
+{p:"tests/unit/test_api_rbac.py",n:14,m:[],k:"pure",d:"حرّاس RBAC على المسارات، والخريطة التي ينفّذونها (6.4-ب · 05 §1.3/§1.4/§4 · SEC-02 · D-24).",w:"ثلاثة أصناف من الدعاوى: <b>الخريطة</b> — كلّ عمليّةٍ تطلب الصلاحيّة التي يسندها التصميم لها بالضبط، وكلّ عمليّةٍ مصادَقةٍ تحمل حارساً واحداً بالضبط، وغير المصادَقة بلا حارسٍ إطلاقاً، وكلّ صلاحيّةٍ مطلوبةٍ موجودةٌ في الكتالوج؛ ثمّ <b>السلوك</b> — المشاهد يقرأ كتالوج الوكلاء ولا يستدعي، والرفض problem يسمّي الصلاحيّة الناقصة، والحارس يرفض قبل بلوغ حالة الاستخدام، ودورٌ خارج الكتالوج لا يمنح شيئاً."},
+{p:"tests/unit/test_api_spaces_router.py",n:21,m:[],k:"pure",d:"موجِّه النطاقات (spaces step 12) بمخزن نطاقاتٍ واحدٍ خلف كلّ وجه.",w:"الإنشاء 201 لنطاقٍ فارغ، والاسم الفارغ 422 بسبب النطاق نفسه، والاسم المكرَّر 409 من الفهرس مع طيّ حالة الأحرف، والسرد في غلاف الصفحة الأحدث أوّلاً بمؤشّرٍ معتِم، ونطاقٌ فارغٌ يُقرَأ صفراً لا يختفي، والعدّادات لهذا النطاق دون غيره، وملفٌّ محذوفٌ ليّناً يُعيد بايتاته إلى السرد."},
+{p:"tests/unit/test_api_workflows_router.py",n:17,m:[],k:"pure",d:"موجِّه مسارات العمل (6.1-د-2) فوق محرّكٍ وسجلٍّ حقيقيَّين.",w:"الكتالوج في غلاف API-04 وفارغه لا شيء لا عنصر نائب، والمجهول 404 تمهيديّاً، وتشغيلٌ مُجمَّعٌ يُجيب بخيطه وحالته وتشغيلٌ فاشلٌ 200 والفشل في حالته، والبثّ عند طلب الجسم أو على ترويسة Accept وحدها، وتشغيلٌ مكرَّرٌ يُعيد بثّ الأوّل بدل بدء ثانٍ بينما مدخلٌ مختلفٌ تصادم."},
+{p:"tests/unit/test_api_workspace_usage_router.py",n:16,m:[],k:"pure",d:"موجِّها مساحة العمل والاستهلاك (6.1-و-1).",w:"GET يُجيب جذر مستأجر صاحب الطلب وبلا صفٍّ 404، وPATCH يحفظ الاسم ويُعيد التجميعة المحفوظة والاسم الفارغ أو المفرط مرفوضٌ بلا تخزين وإعادة تسمية مساحةٍ مؤرشَفةٍ تصادم، والملخّص يُبلّغ المجاميع والتفصيلَين، وquery الفترة يختار أيّ تجميعاتٍ تُقرَأ والفترة المجهولة خطأ تحقّق، والحدود ترتدي غلاف API-04 حتّى فارغة."},
+{p:"tests/unit/test_auth_revocation.py",n:10,m:[],k:"pure",d:"قائمة الحظر auth:revoked:&lt;sub&gt; في ذاتها (framework/auth/revocation.py · 3.79).",w:"المفتاح هو النطاق المحدَّد فوق المُعرَّف، والقيمة المخزَّنة لا تحمل شيئاً عن الجلسة، والمُعرَّف الفارغ يُرفَض بدل أن يُشارَك، والـTTL الافتراضيّ هو ما تبقّى من عمر الرمز والأقصر مسموحٌ والخارج عن المدى يفشل عند الإنشاء، والإبطال المتكرّر آمن، و<b>انقطاع الذاكرة المؤقّتة ينتشر بدل أن يُقرَأ «غير مُبطَل»</b>."},
+{p:"tests/unit/test_ci_workflow_truthfulness.py",n:6,m:["live_db"],k:"live",d:"صدق ملفّ CI: يجب أن يعمل فعلاً، وكلّ وسمٍ يختار عليه يجب أن يوجد فعلاً.",w:"ثلاثة عيوبٍ من عائلةٍ واحدة — سير عملٍ يبدو أخضر ولا يُثبت شيئاً. يؤكّد أنّ المستخرِجات لا تعود فارغة، وأنّ فروع الدفع فروعٌ حقيقيّةٌ لهذا المستودع (كانت main شهوراً والفرع الافتراضيّ master، فلم يعمل السير قطّ)، وأنّ وظيفة التكامل تختار وسوماً حقيقيّةً وتشترط اعتمادات حيّة، و<b>ألّا يكون أيّ وسمٍ معلَنٍ يتيماً</b>، وأنّ السير يُثبِّت كلّ extra تستورده الاختبارات، وأنّ كلّ وحدة تكاملٍ محميّةٌ بوسمٍ حيّ."},
+{p:"tests/unit/test_composition_root.py",n:24,m:[],k:"pure",d:"إقلاع Composition Root (framework/di/composition_root.py).",w:"لم يكن لهذه الوحدة اختبارٌ قطّ حتّى 4.7-b-2 — from_env() لم يُنفَّذ في أيّ مكان. الآن: الإقلاع يبني المنسّق ويسجّل كلّ وكيلٍ مشحونٍ بصفر عزلات، ويفشل صاخباً على مسار مزوّدٍ يسمّي مزوّداً غير مبنيّ، وOllama يُحلّ بلا مفتاحٍ دون لمس مخزن الاعتمادات، والمَفاصِل غير المُوصَلة غائبةٌ لا مزيَّفة، وdisposables تغطّي كلّ عميلٍ خامٍ يملكه الجذر والتخلّص يُغلقها فعلاً."},
+{p:"tests/unit/test_consumer_sweeper.py",n:22,m:[],k:"pure",d:"تنظيف مستهلكي Streams التلقائيّ (ت-2 · consumers/sweeper.py) فوق _StubRedis.",w:"الكانس لا يحذف تسجيله هو أبداً، ومستهلكٌ خاملٌ دون العتبة يُترَك، وشبحٌ خاملٌ فارغٌ يُحذَف، ومدخلات الشبح المعلَّقة تُطالَب قبل حذفه وشبحٌ نجت مدخلاته يُرفَض حذفه، ومجموعةٌ لم توجد بعد تُكنَس إلى لا شيء، وderegister يرفض ما دامت هذه العمليّة تملك رسائل، وعتبة القِدَم تبقى أعلى بكثيرٍ من فترة القراءة الحاجبة، والبادئة توافق Composition Root."},
+{p:"tests/unit/test_content_agents.py",n:22,m:[],k:"pure",d:"read_text_file ووكيلا تحليل البيانات وتحرير الملفّات (4.6-b · FR-20.2/20.5 · 11 §9).",w:"البايتات المفكوكة تُعاد، والتسامح مع UTF-8 الفاسد، وغير المُوصَل 500 والغائب 404 وغير النصّيّ 415 والمفرط 413 <b>قبل الجلب</b>، وapplication/json مقبول؛ وقسم النطاق: ملفٌّ من نطاقٍ آخر 404 <b>ولا يُجلَب أبداً</b>، وملفٌّ أجنبيٌّ لا يُميَّز عن غائب، وملفٌّ في نطاق صاحب الطلب يُقرَأ."},
+{p:"tests/unit/test_content_resolver.py",n:8,m:[],k:"pure",d:"WorkerDocumentContentResolver — الجلب والتحليل والتوجيه في نداءٍ واحد.",w:"المستودع والتخزين والمُحلِّل مزيَّفة، لكنّ <b>المُستخرِج حقيقيّ</b> حيث يكون التأكيد عنه. الملفّ الغائب not_found، والنوع غير المدعوم يظهر من جدول التوزيع، والملفّ الفارغ خطأ تحقّق، و<b>الاستخراج يجري خارج خيط حلقة الأحداث</b>، والتحليل الذي يتجاوز مهلته خطأ تحقّقٍ بينما الذي ينتهي داخلها ينجح، والمهلة الافتراضيّة هي التي اختارتها الخطّة."},
+{p:"tests/unit/test_conversations_domain.py",n:18,m:[],k:"pure",d:"نطاق المحادثات النقيّ: كائنات القيمة والتجميعات والثوابت.",w:"AgentKey يُطبّع الحالة والمسافات ويقبل الحدّ ويرفض الفاسد، وMessageContent يقبل النصّ وحده أو المرفقات وحدها ويرفض الفراغ والمرفق الفارغ، وقيم ConversationKind وMessageRole، وإسناد seq تصاعديّاً عند الإلحاق."},
+{p:"tests/unit/test_conversations_use_cases.py",n:48,m:[],k:"pure",d:"حالات استخدام المحادثات فوق مستودعاتٍ مزيّفة.",w:"البدء يُنشئ ويُصدر حدثاً، والخيط يحمل النطاق الذي فُتح فيه، وفتحه في نطاقٍ غير حيٍّ 404 بلا كتابة، وبلا نطاقٍ لا يسأل ويخزّن None، والمفتاح الفاسد مرفوض؛ والإلحاق يُسنِد seq تصاعديّاً عبر النداءات، والمحادثة الغائبة not_found والمحذوفة Conflict والدور الفاسد مرفوض؛ والسرد حسب الوكيل يُعيد صفحة."},
+{p:"tests/unit/test_credentials_domain.py",n:7,m:[],k:"pure",d:"نطاق الاعتمادات النقيّ: ProviderRef وCipherRef وINV-C1.",w:"المزوّد المعروف يُقبَل والمجهول يُرفَض، وCipherRef يرفض الفراغ، واعتماد المستخدم يشترط مساحة عملٍ واعتماد المنصّة يمنعها، والإبطال متكرّرٌ آمن."},
+{p:"tests/unit/test_credentials_use_cases.py",n:12,m:[],k:"pure",d:"حالات استخدام الاعتمادات فوق مزيّفات.",w:"يغطّي التعمية عند التخزين، وقاعدة «فعّالٌ واحد»، وترتيب الحلّ user ← platform (D-16): resolve يفضّل مفتاح المستخدم ثمّ يتراجع إلى المنصّة، وبلا مفتاحٍ credentials_none_available."},
+{p:"tests/unit/test_deploy_worker_default.py",n:7,m:[],k:"pure",d:"طوبولوجيا عمّال Compose وقيمة WORKER الافتراضيّة التي ما زال RunPod يحتاجها.",w:"ألّا تنحرف عن بعضها ولا عن المُوزِّع الذي يُعرِّف الأسماء الصالحة ولا عن الدليل الذي يبرّر أيّ العمّال يقلعون افتراضاً. الأنماط تجد شيئاً فعلاً، وCompose يُعلن خدمةً لكلّ عامل Streams بقيمٍ حرفيّة، و<b>عاملٌ يقلع بلا profile إذا وفقط إذا قِيس إقلاعه</b>، وافتراض RunPod يوافق .env.example وهو العامل الأفضل إثباتاً."},
+{p:"tests/unit/test_di_lifecycle.py",n:5,m:[],k:"pure",d:"مَفصِل التفكيك المشترك (framework/di/lifecycle.py · 3.79).",w:"dispose_all موجودٌ لسلوكٍ واحدٍ لا تعطيه حلقة for عارية: عميلٌ يرفع close استثناءً يجب ألّا يترك من خلفه عالقين. يتخلّص بالترتيب، وفشلٌ لا يُعطّل البقيّة، والإلغاء يُؤجَّل ثمّ يُعاد رفعه، واستثناءات BaseException الأخرى تنتشر."},
+{p:"tests/unit/test_dlq_watch.py",n:8,m:[],k:"pure",d:"تقرير DLQ التلقائيّ (ت-6) وقراءة dlq_backlog تحته.",w:"DLQ لم يوجد قطّ يُقرَأ تراكماً فارغاً، والتراكم يحمل عمر الأقدم لا العمق وحده، و<b>النظر لا يستهلك شيئاً أبداً</b>، ومدخلٌ بلا حقل سببٍ يُبلَّغ لا يُرفَع، وعطب Redis يُترجَم كأيّ أمرٍ آخر، وDLQ فارغٌ لا يسجّل شيئاً بينما غير الفارغ يُحذّر بأمر الفرز، وتيّارٌ مسمّى مرّتين يُقرَأ ويُبلَّغ مرّة."},
+{p:"tests/unit/test_edge_hardening.py",n:10,m:[],k:"pure",d:"أنّ حافة nginx تُطبّق حدّ معدّلٍ وترويسات أمانٍ وHSTS مضبوطاً — وألّا ينحرف مسارا النشر عن بعضهما.",w:"يقرأ deploy/nginx/{nginx.conf,app-locations.conf} لـCompose وdeploy/runpod/nginx.conf للصورة المفردة: توجيها المنطقة موجودان ومتطابقان، و/health بلا limit_req ولا limit_conn، وWS بـlimit_conn لا limit_req، والجذر بـlimit_req، و/metrics محجوبٌ عند الحافة في المسارَين، وترويسات الأمان في المسارَين، ولا نطاق يُعلن مجموعة add_header جزئيّة، وHSTS إعدادٌ مضبوطٌ حقيقيٌّ لا حرفيٌّ ولا تعليق، وCORS قائمة سماحٍ عند الحافة لا وسيطٌ تطبيقيّ."},
+{p:"tests/unit/test_embedding_service_app.py",n:15,m:[],k:"pure",d:"خدمة التضمين المستقلّة (services/embedding/app.py · 2.10) — قابلٌ للنشر <b>خارج</b> حزمة app.",w:"مُحمِّل النموذج الحقيقيّ مُرقَّعٌ إلى Encoder مزيّف. /health 503 قبل دورة الحياة و200 بهويّة النموذج بعدها ويعود «غير محمَّل» بعد الإغلاق، ودورة الحياة ترفع طول التسلسل إلى السقف المثبَّت والقيمة قابلةٌ للتجاوز بالبيئة، وembed يُعيد الشكل المصمَّم وينادي encode بـnormalize=True وبحجم الدفعة المضبوط، وعدم تطابق النموذج 400 صاخبٌ للكشف عن الانحراف."},
+{p:"tests/unit/test_env_settings_presign_ttl.py",n:5,m:[],k:"pure",d:"ضبط عمر الروابط الموقَّعة (MinioSettings.presign_put_ttl_s / presign_get_ttl_s · 3.79).",w:"كانت ثوابت وحدةٍ داخل حالة استخدام الملفّات؛ وجعلها قابلةً لتحرير المشغّل آمنٌ <b>لأنّ</b> الحدود مفروضة: الافتراضات هي قيم الثوابت السابقة، وكلّ مفتاحٍ يخصّ حقله، وTTL غير موجبٍ يفشل عند الإقلاع، وTTL يتجاوز سقف SigV4 يفشل عند الإقلاع."},
+{p:"tests/unit/test_env_settings_stream_maxlen.py",n:3,m:[],k:"pure",d:"خرط STREAM_MAXLEN (7.3 · infrastructure/config/env_settings.py).",w:"طبقة البيئة تُمثّل السقف int حيث 0 يعني «مُعطَّل»، بينما عقد Settings يمثّله int | None — فهناك ترجمةٌ حقيقيّة: الصفر يصل العقد None، والقيمة الموجبة تمرّ كما هي، والافتراض سقفٌ لا نموٌّ بلا حدّ."},
+{p:"tests/unit/test_error_catalog.py",n:8,m:[],k:"pure",d:"كتالوج الأخطاء مرآةً للسلوك — مفروضاً لا مُدَّعىً نثراً (6.2 · 03 §4 · DD-05).",w:"يمشي على الشيفرة نفسها: كلّ رمزٍ مُصدَرٍ موجودٌ في الكتالوج، وكلّ افتراض صنفٍ موجودٌ وحالته توافق صفّه، وكلّ مدخلٍ في الكتالوج قابلٌ للبلوغ من المصدر، والمداخل المحذوفة تبقى محذوفة، والمواقع التي تختار رمزها ديناميكيّاً هي المعروفة وحدها، ولا رمز مُعرَّفٌ مرّتين تحت اسمَين، ولكلّ مدخلٍ بادئة وحدةٍ وحالةٌ حقيقيّة."},
+{p:"tests/unit/test_evaluation_set.py",n:8,m:[],k:"pure",d:"مجموعة التقييم فِخاخٌ لها مالك، فلها اختبار (P-38).",w:"لا شيء هنا يقيس الاسترجاع — المحضن الذي يفعل يحتاج مكدّساً حيّاً. المحميّ هو <b>المجموعة</b>: حجمها كما طلب القرار، وكلّ سؤالٍ بلغتَين وإجابةٍ مرجعيّة، وأنماط gold تُصرَّف، ومعرّفات الأسئلة فريدةٌ ومتّصلة، و<b>الأسئلة هي اختبار المالك حرفاً بحرف</b> وملفّا الاختبار يسألان نفس الأسئلة، والسلبيّات بلغتَين وبلا إجابةٍ مرجعيّةٍ ولا تُعيد استعمال معرّف."},
+{p:"tests/unit/test_event_envelope.py",n:12,m:[],k:"pure",d:"بانِي ظرف CloudEvents (DD-07 · 04 §1).",w:"المركز أنّ الظرف يُحقَّق مقابل <b>ملفّ المخطّط المنشور نفسه</b> لا مقابل توقّعٍ منسوخٍ يدويّاً. وكلّ حقول القسم 1، وdataschema مشتقٌّ من نوع الحدث، والحمولة تُحقَّق مقابل مخطّطها، وdata آخر مفتاحٍ فيقرأ JSON المخزَّن الظرف ثمّ الحمولة، والوقت يُحوَّل إلى UTC لا يُنسَّق فقط وختمٌ ساذجٌ يُرفَض بدل افتراضه UTC، والامتدادات الاختياريّة تُحذَف لا تُصفَّر."},
+{p:"tests/unit/test_external_embedding.py",n:30,m:[],k:"pure",d:"ExternalEmbeddingProvider (2.10) عبر httpx.MockTransport في مصنعه الخاصّ.",w:"المصنع يُعطّل trust_env ويضبط زوج المهل وbase_url، وحارس العنوان يقبل http/https ويرفض الفارغ وعديم المخطّط ويعمل <b>قبل بناء أيّ عميل</b>؛ وdimensions يُعيد قيمة Settings المثبَّتة مهما كان النموذج؛ وembed يقسّم إلى دفعاتٍ بحجم الإعداد ويسلسل النتائج بالترتيب، ودفعةٌ بطول الإعداد بالضبط نداءٌ واحد."},
+{p:"tests/unit/test_external_image.py",n:12,m:[],k:"pure",d:"OpenAIImage (deferred-adapters step 19) عبر MockTransport.",w:"اسم المزوّد مفتاح اعتمادٍ تستطيع المنصّة تخزينه فعلاً، وgenerate يُرسل الجسم الموثَّق ويُعيد بايتات PNG مفكوكة، والمفتاح يسافر ترويسة Bearer لكلّ طلب، والمصنع يثبّت base_url ويرفض متغيّرات الوسيط المحيطة، وطلبٌ مشوَّهٌ 422 <b>ولا يبلغ الشبكة</b>، ومفتاحٌ فارغٌ 422 لا فشل وكيل، وحارس الجسم قبل حارس المفتاح، وكلّ حالة خطأٍ تصير agent_failed، و<b>ولا مسار خطأٍ يُردّد المفتاح</b>."},
+{p:"tests/unit/test_external_rerank.py",n:20,m:[],k:"pure",d:"ExternalRerankProvider (retrieval plan §4 row 21 · P-24 · قرار س-21) عبر MockTransport.",w:"المصنع يُعطّل trust_env ويضبط زوج مهلٍ قصير وحارسه قبل بناء أيّ عميل، وrerank يُعيد ترتيب الخدمة ويرسل query وdocuments وmodel وtop_n كاملاً، ويقبل جسماً قائمةً عاريةً ويقبل relevance_score اسماً بديلاً للدرجة، وقد يُعيد مداخل أقلّ من المستندات."},
+{p:"tests/unit/test_file_deletion.py",n:10,m:[],k:"pure",d:"شلّال حذف الملفّ (framework/di/file_deletion.py) — الخدمة المنسِّقة وكنس المعرفة الذي تقوده.",w:"العطب المُغلَق: files.FileDeleted لم يكن يبلغ أيّ مستقبِلٍ في knowledge — يُحذَف الملفّ ويبقى متنه مفهرَساً. هنا: العلامة أوّلاً ثمّ إفراغ المتن، وملفٌّ لا تملكه مساحة العمل 404 بلا كنس، وإعادة الحذف تُشغّل الشلّال كلّه ثانيةً، وملفٌّ لم يُفهرَس قطّ يُحذَف نظيفاً، و<b>نقاط المتّجهات تُحذَف قبل الصفوف</b>، وكلّ مستنداته لا الأحدث وحده، ومتن هذا الملفّ وحده."},
+{p:"tests/unit/test_file_replacement.py",n:18,m:[],k:"pure",d:"قاعدة س-29 رقم 1: الاسم المكرَّر استبدال (framework/di/file_replacement.py).",w:"قرار المالك في 2026-08-25. إكمال الرفع يستبدل الأقدم من نفس الاسم، و<b>الاستبدال يجري بعد إثبات الرفع لا قبله</b>، ورفعٌ لم يكتمل يترك القائم وشأنه، والأقدم لا يستبدل الأحدث أبداً ولا يستبدل ملفّان بعضهما، والنطاق الآخر ملفٌّ مختلف، ومساحة عملٍ أخرى لا تُبلَغ، والمطابقة حتّى حالة الأحرف والتطبيع، وكنسٌ فاشلٌ لا يحوّل رفعاً ناجحاً إلى فشل."},
+{p:"tests/unit/test_files_domain.py",n:40,m:[],k:"pure",d:"نطاق الملفّات النقيّ: كائنات القيمة والتجميعة والثوابت.",w:"FileName يجرّد مكوّنات المسار — بأسلوب يونكس وويندوز معاً — ويقصّ المسافات ويقبل الحدّ ويرفض الطويل والفارغ والمسار الذي يؤول إلى فراغٍ وحروف التحكّم؛ وContentType يقبل ما صحّ نحواً ويرفض غيره؛ وبقيّة الأربعين تغطّي انتقالات حالة الملفّ."},
+{p:"tests/unit/test_files_event_mapping.py",n:12,m:[],k:"pure",d:"مَفصِل outbox للملفّات (5.1-أ): خرط حدث النطاق إلى سجلّ صادر.",w:"الأظرفة تُحقَّق مقابل <b>ملفّات المخطّطات المنشورة نفسها</b>. uploaded يُخرَّط إلى تيّار الملفّات وتجميعتها وdeleted إلى None، والحمولة تحمل الحقول المُكتلَجة بالضبط وتحمل نطاق الملفّ حين له نطاق و<b>تحذف المفتاح بدل إرسال null</b> حين لا نطاق، ومعرّف الظرف هو معرّف الصفّ ومفتاح عدم التكرار، ومعرّف الارتباط يسافر داخل الحمولة لا في العمود وحده."},
+{p:"tests/unit/test_files_use_cases.py",n:46,m:[],k:"pure",d:"حالات استخدام الملفّات فوق مستودعٍ مزيّف.",w:"تسجيل الرفع ورفضه للحجم المفرط والنوع غير المدعوم والحجم السالب وتجاوز سقف مساحة العمل، والملفّ يحمل النطاق الذي سُجِّل تحته والتسجيل في نطاقٍ غير حيٍّ 404 بلا كتابة و<b>النطاق يُفحَص قبل سكّ الصفّ لا بعده</b>، وإكمال الرفع ينتقل إلى ready ويُصدر حدثه."},
+{p:"tests/unit/test_firebase_auth.py",n:50,m:[],k:"pure",d:"محوّل AuthProvider لـFirebase (2.7) — إثبات T1..T41 كاملاً مُحكَماً.",w:"مفاتيح RSA 2048 تُولَّد داخل الاختبار وMockTransport يُوصَل في AsyncClient حقيقيٍّ عبر مصنع المحوّل: المسار السعيد يخرط المطالبات إلى هويّة، والمنتهي يُرفَض وداخل السماح يُقبَل، وiat في المستقبل خارج السماح يُرفَض، والجمهور الخاطئ والقائمة يُرفَضان بـaud الصارمة، والمُصدِر الخاطئ يُرفَض، و<b>التوقيع يُتحقَّق مقابل المفتاح المُخبَّأ لا المفتاح الذي يدّعيه kid</b>، وalg:none يرفضه أليست الخوارزميّات."},
+{p:"tests/unit/test_foundation.py",n:15,m:[],k:"pure",d:"أساس المرحلة 1: المعرّفات والترقيم والأخطاء والحجب والتسجيل البنيويّ والإعدادات.",w:"UUIDv7 صالحٌ نسخةً 7 وفريدٌ وقابلٌ للفرز زمنيّاً، ومؤشّرا id/seq يدوران ذهاباً وإياباً والمؤشّر معتِمٌ وآمنٌ في العناوين، وفكّ مؤشّر seq يرفض مؤشّر id ويرفض الحشو، و<b>مؤشّرٌ مُشوَّهٌ يُرفَض بدل أن يُقرَأ بصمتٍ قراءةً أخرى</b>."},
+{p:"tests/unit/test_healthcheck_coverage.py",n:7,m:[],k:"pure",d:"أنّ كلّ خدمة Compose طويلة العمر تُعلن healthcheck، وأنّ كلّ حافةٍ تستطيع انتظار الجاهزيّة تنتظرها (ت-3).",w:"الحالة المقيسة التي يستبدلها: قراءةٌ حيّةٌ في 2026-08-13 وجدت ستّاً من ثلاث عشرة خدمةً عاملةً بلا فحص. الآن: كلّ طويلة عمرٍ تُعلن فحصاً، والخدمات ذات اللقطة الواحدة هي كذلك فعلاً، وفحوص النبض تسمّي عمليّةً ينبض العمّال بها فعلاً، والاعتماديّات المرتبطة بالجاهزيّة ليست مجرّد «مُقلَعة»، وapp يُعلن حافة Qdrant التي كانت ناقصة."},
+{p:"tests/unit/test_heartbeat.py",n:17,m:[],k:"pure",d:"نبض الحياة وفاحصه (ت-3 · framework/observability/heartbeat.py + app/ops/healthcheck.py).",w:"ما يحرسه ليس «انهار عاملٌ» — الانهيار ظاهر؛ بل العامل الحيّ الذي توقّف عن العمل. المسار مجلّدٌ + اسمٌ + لاحقة، ولكلّ عمليّةٍ ملفّها، ومجلّدٌ فارغٌ يُعطّل النبض، وbeat يُنشئ المجلّد والملفّ ويُقدّم mtime، و<b>نبضٌ فاشلٌ يُسجَّل مرّةً ولا يرفع أبداً</b> والتعافي يُسجَّل، وعمر ملفٍّ غائبٍ None لا لانهاية."},
+{p:"tests/unit/test_integrations_module.py",n:68,m:[],k:"pure",d:"وحدة التكاملات كاملة: كائنات القيمة (INV-I2) وتجميعتا Connection/McpServer (INV-I1/I3) وحالات الاستخدام الستّ.",w:"مزيّفاتٌ محلّيّةٌ لا مستوردةٌ من وحدات اختبارٍ أخرى. ConnectorKey يُطبَّع ويرفض الأشكال الفاسدة، وMcpServerName يرفض النقاط، وMcpEndpoint يقبل النقل البعيد ويرفض stdio وغير http، وقيم التعداد توافق DDL؛ وBegin يُعيد بدء مصافحةٍ فاشلةٍ وهو غير قانونيٍّ على متّصلٍ أصلاً. منظَّمٌ في أصنافٍ (TestValueObjects · TestConnectionAggregate · …)."},
+{p:"tests/unit/test_knowledge_content_scope_threshold.py",n:9,m:[],k:"pure",d:"العتبة التي يجب أن يتجاوزها اسم ملفٍّ مذكورٌ قبل أن <b>يُضيّق</b> بحث المحتوى (routing.py::_content_scope · P-25).",w:"اسم ملفٍّ من كلمةٍ واحدةٍ يظهر داخل سؤالٍ موضوعيٍّ لا يُضيّق البحث أبداً، بينما سؤالٌ يسمّي ملفّاً متعدّد الوحدات ما زال يُبحَث داخله؛ والسؤالان لا يختلفان إلّا في عدد وحدات الاسم المطابَق؛ والمطابقة أحاديّة الكلمة تترك تثبيت المُنادي كما وصل؛ وحلٌّ تقريبيٌّ لم يعد يُضيّق؛ ومسار التلخيص ما زال يعمل على اسمٍ من كلمة."},
+{p:"tests/unit/test_knowledge_event_mapping.py",n:9,m:[],k:"pure",d:"مَفصِل outbox للمعرفة (5.1-أ).",w:"مثل مَفصِل الملفّات: الأظرفة تُحقَّق مقابل المخطّطات المنشورة، وregistered يُخرَّط إلى تيّار المعرفة وتجميعتها، وكلّ حدث معرفةٍ يُخرَّط إلى نوعه المنشور، والحمولة تحمل الحقول المُكتلَجة بالضبط، ووقت الظرف هو لحظة النطاق لا لحظة الخرط، وكلّ خرطٍ يسكّ معرّف حدثٍ جديداً."},
+{p:"tests/unit/test_knowledge_module.py",n:110,m:[],k:"pure",d:"دورة حياة 3.k4 للمعرفة: كائنات القيمة ونطاق Document/Chunk وحالات RegisterDocumentFromFile وIndexRegisteredDocument وKnowledgeRetrievalService.",w:"فوق مزيّفاتٍ محلّيّةٍ لـEmbeddingProvider وHybridVectorStore. VectorRef يرفض المجموعة والنقطة الفارغتَين، ودورة pending→indexing→indexed وpending→indexing→failed، وstart_indexing قابلٌ لإعادة الدخول من indexing ويرفع من حالةٍ نهائيّة، وcomplete_indexing يُصفّر الخطأ ويرفع من غير indexing. ثالث أكبر ملفٍّ في المستودع."},
+{p:"tests/unit/test_knowledge_parsers.py",n:132,m:[],k:"pure",d:"مُحلِّلات المستندات (3.k1) — بلا أيّ فِخاخ ثنائيّة مُودَعة.",w:"مدخلات PDF/Excel/الصور تُصطنَع داخل الاختبار عبر PyMuPDF وopenpyxl وPillow. JSON: كائنٌ فارغٌ بلا مقاطع، وقائمة قواميس نمط جدول، وشبكة قوائم نصوص، وأزواج مفتاح/قيمة، وجدولٌ مُضمَّنٌ داخل قيمة نصّيّة، ونصٌّ غير مهيكل، وعتبات التصنيف؛ وفكّ البايتات يدور ذهاباً وإياباً عبر UTF-16 وCP1256 ولا يرفع أبداً على بايتاتٍ تبدو غير قابلةٍ للفكّ. <b>ثاني أكبر ملفّ.</b> يحتاج extra باسم parsers."},
+{p:"tests/unit/test_knowledge_pipeline.py",n:233,m:[],k:"pure",d:"<b>أكبر ملفّ اختبارٍ في المستودع</b>: خطّ الفهرسة والاسترجاع الهجين 3.k3 (كثيف + BM25 متفرّق).",w:"المُقطِّع وبانِي المصطلحات المتفرّقة ومُرشِّح الصلة ومُصنِّف النيّة وحالُّ أسماء الملفّات (نطاقٌ نقيّ كلّه)، زائد حالتَي IndexDocument وRetrieveContext. التقطيع حتميٌّ وseq فريدٌ بلا فجواتٍ عبر المقاطع، والنافذة والتداخل، والفرز حسب order لا حسب موضع الإدخال، ودمج النافذة الأخيرة القصيرة في سابقتها. ⚠️ FakeHybridVectors هنا يُسقِط الجداءات غير الموجبة — وهو نموذجٌ لفهرسٍ مثاليٍّ، ولذلك لم يرَ أيّ اختبار وحدةٍ عطب الأصفار الذي كشفه محضن القياس."},
+{p:"tests/unit/test_knowledge_reindex.py",n:29,m:[],k:"pure",d:"إعادة الفهرسة اليدويّة (BE-RAG-007/008): تجميعة ReindexJob وحالات الاستخدام الثلاث (06 §7 INV-K3/K4/K5).",w:"مهمّةٌ كلّ مستنداتها pending تعمل عند 0٪، والتقدّم يعدّ الحالتَين النهائيّتَين، والمكتملة حين تصير كلّها نهائيّة، وcancelled يعلو completed، وcurrent يسمّي المستند الجاري وNone بينهما، والإلغاء يطالب المُعلَّقة وحدها ومرّتين لا يطالب شيئاً؛ وإعادة الفهرسة <b>تُحلّ محلّ</b> ولا تعدّل: مستندٌ جديدٌ معلَّقٌ يُسجَّل والقديم يُدمَّر ونقاطه تُحذَف قبل صفوفه، والبديل يبقى في نطاق المُستبدَل."},
+{p:"tests/unit/test_knowledge_retrieval_algorithms.py",n:52,m:[],k:"pure",d:"خوارزميّات الاسترجاع النقيّة: RRF (domain/fusion.py) ومُرمِّز BM25 متعدّد اللغات (domain/tokenization.py) وميزانيّة السياق المزدوجة.",w:"قائمتان فارغتان لا شيء، وقائمةٌ واحدةٌ فارغةٌ ما زالت تحسب درجاتٍ ترتيبيّة، والمعرّف المتداخل يجمع مساهماته ويعلو المنفردات، ووزنٌ كثيفٌ خالصٌ يجعل الترتيب الكثيف مهيمناً والعكس، وtop_k يقصّ، وغير الموجب يُعيد فارغاً، و<b>الصيغة الدقيقة محسوبةٌ يدويّاً</b>، والتعادل يُكسَر حتميّاً بمعرّفات الساق الكثيفة أوّلاً."},
+{p:"tests/unit/test_knowledge_summaries.py",n:51,m:[],k:"pure",d:"ملخّصات المستندات (BE-RAG-009/010/011): التجميعتان الجديدتان وخطّ map-reduce وحالات الاستخدام (06 §7 INV-K6/K7).",w:"النسبة صفرٌ ما دامت في الطابور ولا تبلغ 100 قبل النجاح، وstart قابلٌ لإعادة الدخول ويُعيد قياس المجموع، وadvance يقصّ بدل أن يرفع، والمهمّة النهائيّة ترفض كلّ انتقالٍ لاحق، وfail يُبلَغ من الطابور بلا كتابة running عابثة؛ و<b>نظرةٌ عامّةٌ تُجري نداءً واحداً وتأخذ عيّنةً عبر المستند كلّه</b> لا أوّل ثمانية مقاطع، وملخّصٌ قصيرٌ يتخطّى جولة الاختزال."},
+{p:"tests/unit/test_knowledge_summary_export.py",n:10,m:[],k:"pure",d:"تصدير الملخّصات (BE-RAG-012) — المُصيِّر <b>الحقيقيّ</b> مقابل WeasyPrint وpython-docx الحقيقيَّين، بلا كعبٍ عمداً.",w:"الشيء الوحيد المُهمّ الذي قد يُخطئ فيه هذا هو <b>العربيّة</b>: تشكيل نصّ PDF هو بالضبط حيث ينكسر اتّجاه اليمين إلى اليسار. ملخّصٌ عربيٌّ ينجو إلى PDF عربيّاً وإلى DOCX عربيّاً موسوماً RTL بينما الإنجليزيّ لا يُوسَم، وبنية Markdown تصل الـDOCX لا نحوها المصدريّ، والعلامات في المتن تُهرَّب لا تُصيَّر، والملخّص الفارغ ما زال ينتج ملفّاً صالحاً، وauto يقرأ الكتابة الغالبة لا مجرّد وجود حرفٍ عربيّ."},
+{p:"tests/unit/test_knowledge_tables.py",n:46,m:[],k:"pure",d:"تفجير صفوف الجداول P-13 (domain/tables.py) وقاعدة القراءة الرجعيّة P-42 (collapse_parent_runs).",w:"row_to_sentence يحفظ ترتيب الأعمدة ويُسقِط None والفراغ ويقصّ مسافات الخليّة ويطوي كلّ تتابع مسافاتٍ — بما فيه سطرٌ داخل خليّةٍ واسم عمودٍ ملفوف — ويُسقِط «None»/«null» النصّيَّتَين بعد الطيّ لا قبله؛ وexplode_table وcollapse_parent_runs الذي يستهلك ما يسكّه السُّلَّم."},
+{p:"tests/unit/test_live_harness_guards.py",n:5,m:[],k:"pure",d:"حرّاس صدق المحضن الحاويّ — اختبارات انحدار.",w:"أنّ إنشاء أدوار العنقود يبقى <b>خارج</b> المحضن، وأنّ اعتماداً حيّاً غائباً يتخطّى افتراضاً ويفشل عند REQUIRE_LIVE، وأنّ زوج أسرار MinIO المتطابق يُقبَل وغير المتطابق يفشل <b>بلا طباعة القيم</b>."},
+{p:"tests/unit/test_llm_provider_contract.py",n:8,m:[],k:"pure",d:"طقم Liskov المُلزَم في 09 §5: نفس التأكيدات تعمل على كلّ محوّل LLMProvider مشحون.",w:"provider نصٌّ غير فارغ، وsupports يُعيد bool ولا يرفع أبداً، وحارس البثّ يرفع خطأ تحقّقٍ تزامنيّاً، وcomplete برسائل فارغةٍ خطأ تحقّقٍ بصفر طلبات، وعطب النقل agent_failed لا خطأ httpx عارٍ، و200 خارج العقد agent_failed لا استثناءٌ عارٍ، وبثٌّ بلا قطعةٍ نهائيّةٍ يرفع agent_failed، والقطعة النهائيّة تحمل سبب الإنهاء وحدها."},
+{p:"tests/unit/test_llm_shared.py",n:24,m:[],k:"pure",d:"البدائيّات المشتركة لمحوّلات LLM (shared.py · 2.8-ب-1) — استُخرجت حين كرّرها محوّلان مشحونان.",w:"مصنع العميل يُعطّل trust_env ويضبط زوج المهل وbase_url ويقبل نقلاً مُحقَناً، وoff_contract يبني خطأ agent_failed الواحد ويُصدِّره باسم المزوّد المُنادي نفسه، وtranslate_http_error يميّز المهلة عن بقيّة أخطاء HTTP، وparse_json_object يرفض ما ليس JSON وما ليس كائناً وما يحمل مفتاح error."},
+{p:"tests/unit/test_media_agents.py",n:6,m:[],k:"pure",d:"وكيلا الصورة والفيديو + إثبات AC-04 من جهة الإضافة (4.6-c · FR-20.3/20.4 · 11 §9).",w:"وكيل الصورة يضع مهمّةً في الطابور ويُصدر حدثاً نهائيّاً وحده، ووكيل الفيديو يطلب نوع الفيديو بمفتاحه، والموجَّه الفارغ أو غير النصّيّ 422، والمَفصِل غير المربوط 500، ووكيل الصورة يُقاد نظيفاً عبر المُنفِّذ، و<b>الشجرة الحقيقيّة تسجّل وتُنشئ الوكلاء الخمسة كلّهم</b>."},
+{p:"tests/unit/test_media_generation.py",n:10,m:[],k:"pure",d:"WorkerMediaGenerator (workers/media_generation.py · deferred-adapters step 19) — المحوّل الذي ملأ مَفصِل media/ports/generation.py.",w:"المزيّفات تقف عند الحافّتَين الخارجيّتَين حقّاً. صورةٌ مولَّدةٌ تصير ملفّاً جاهزاً يحمل بايتات المزوّد، ونموذجٌ لكلّ مهمّةٍ يعلو المُوجَّه، والمولّد مُوصَلٌ بلا outbox إطلاقاً، ومهمّة فيديو تفشل برمزٍ مصنَّفٍ لا NotImplemented عارٍ، وفشل المزوّد لا يترك صفّ ملفّ، وفشل التخزين يترك الملفّ uploaded لا ready، ونوع محتوىً خارج القائمة البيضاء يُرفَض كأيّ رفع."},
+{p:"tests/unit/test_media_module.py",n:49,m:[],k:"pure",d:"وحدة الوسائط: كائنات القيمة ونطاق MediaJob (INV-MJ1/MJ2/MJ3) وحالات RequestMedia/RunMediaJob/GetJobStatus.",w:"مزيّفاتٌ محلّيّة، لا مستوردة. قيم MediaKind وJobStatus، وAgentKey يُطبَّع ويرفض الفارغ والفاسد، وGenParams تُبنى من قاموسٍ للصورة وللفيديو وترفض مفتاحاً مجهولاً وحقلاً مطلوباً ناقصاً لنوعه وحقول فيديو على نوع صورة."},
+{p:"tests/unit/test_media_outbox_seam.py",n:18,m:[],k:"pure",d:"مَفصِل outbox للوسائط (4.7-d-2) وMediaRequestService فوقه.",w:"الأظرفة تُحقَّق مقابل المخطّطات المنشورة، وrequested يُخرَّط إلى تيّار الوسائط وتجميعتها، ومعرّف الظرف هو معرّف الصفّ ومفتاح عدم التكرار، ومعرّف الارتباط داخل الحمولة، والوقت لحظة النطاق، وكلّ خرطٍ يسكّ معرّفاً جديداً — ثمّ أنّ request يضع المهمّة في الطابور ويُلحِق حدثها معاً."},
+{p:"tests/unit/test_memory_domain.py",n:10,m:[],k:"pure",d:"نطاق الذاكرة النقيّ.",w:"AgentKey وVectorRef صلاحيّةً ورفضاً، وقيم MemoryKind، وattach_vector يضبط المرجع، وforget يختم وقت الحذف وهو متكرّرٌ آمن، و<b>attach_vector يرفع بعد forget</b>."},
+{p:"tests/unit/test_memory_event_mapping.py",n:10,m:[],k:"pure",d:"مَفصِل outbox للذاكرة (5.1-أ).",w:"stored يُخرَّط إلى تيّار الذاكرة وتجميعتها وforgotten إلى None، والحمولة تُحقَّق مقابل المخطّطَين المنشورَين وتحذف content_ref الاختياريّ، وبقيّة دعاوى الظرف كما في مَفاصِل الوحدات الأخرى."},
+{p:"tests/unit/test_memory_use_cases.py",n:27,m:[],k:"pure",d:"حالات استخدام الذاكرة فوق منافذ مزيّفة (المستودع وEmbeddingProvider وVectorStore).",w:"remember يُنشئ عنصراً معلَّقاً وحدثاً ويرفض المحتوى الفارغ والمفتاح والنوع الفاسدَين، وforget يُصدر حدثاً ويحفظ وهو متكرّرٌ آمن والغائب not_found، وrecall يُرطّب النتائج ويرتّبها ويرفض k خارج حدّيه."},
+{p:"tests/unit/test_minio_signing_endpoint.py",n:11,m:[],k:"pure",d:"انقسام عنوان الروابط الموقَّعة (7.1 · 08 §2).",w:"MINIO_ENDPOINT هو حيث يبلغ <b>الخادم</b> MinIO — داخل Compose هو minio:9000 الذي لا يحلّه أيّ متصفّح. وSigV4 يوقّع المضيف، فيلزم عميلٌ ثانٍ مربوطٌ بالعنوان العامّ: العنوان العامّ يُفضَّل حين يوجد ويُتراجَع إلى الأوّل حين لا، وsecure يُورَّث ويُتجاوَز، والعميلان يحملان region صريحة، وpresign_get/put كلاهما يستعمل عميل التوقيع."},
+{p:"tests/unit/test_notifications.py",n:8,m:[],k:"pure",d:"جسر الإشعارات (framework/streaming/notifications.py + build_notification_consumer) مُحكَماً.",w:"المُعالِج يدفع إلى مساحة عمل الحدث، والتوجيه يستعمل مساحة عمل ctx لا قراءةً ثانيةً للظرف، وdata مشوّهةٌ تتدهور إلى فارغٍ بدل أن ترفع وغياب المفتاح كلّيّاً ما زال يدفع فارغاً، و<b>الجسر يغطّي كتالوج الإشعارات بالضبط</b>، وبناؤه يوصل المجموعة المُعطاة على تيّارَين ونداءان بمجموعتَين مختلفتَين يبقيان مستقلَّين."},
+{p:"tests/unit/test_ollama_mapping.py",n:48,m:[],k:"pure",d:"محوّل Ollama (2.8-a): مساعِدات الخرط والحرّاس مباشرةً + إثباتٌ مُحكَمٌ لـcomplete()/stream() عبر MockTransport.",w:"build_chat_body يخرط الرسائل والنموذج وعلم البثّ، ويحمل القيم المثبَّتة دائماً، ويخرط llm_params على options <b>المتداخلة</b> (وهو ما يميّزه عن OpenAI)، ويحذف المفاتيح الاختياريّة عند None ويحذف stop/tools عند القوائم الفارغة، ويرفض الرسائل الفارغة والدور المجهول ويقبل كلّ دورٍ يعرّفه المنفذ."},
+{p:"tests/unit/test_openai_mapping.py",n:86,m:[],k:"pure",d:"محوّل OpenAI (2.8-ب-1) — رابع أكبر ملفٍّ في المستودع.",w:"مثل ملفّ Ollama بنيةً، مع الفروق الجوهريّة مثبَّتةً بالاسم: <b>حقولٌ مسطَّحةٌ لا options المتداخلة</b>، وطلب usage عند البثّ، وألّا يُرسَل stream_options حين لا بثّ. وبقيّة الثمانين تغطّي الأدوات والبثّ وترجمة الأخطاء."},
+{p:"tests/unit/test_ops_dlq.py",n:9,m:[],k:"pure",d:"أداة DLQ للمشغّل (app.ops.dlq · P1-4) فوق _StubRedis.",w:"peek يقرأ بلا استهلاكٍ ويُعلّم الصنفَين، وrequeue ينسخ بايتات CloudEvents حرفيّاً إلى التيّار المصدر ويرفض بالاسم مدخلاً محاسبيّاً بلا حمولة، وpurge يحذف المسمّى وحده ويعدّ أقلّ حين يكون معرّفٌ غائباً، و<b>واجهة الأوامر ترفض purge بلا موافقةٍ صريحة</b> وتشترط أمراً فرعيّاً."},
+{p:"tests/unit/test_ops_notify_groups.py",n:2,m:[],k:"pure",d:"واجهة الأوامر لكنس مجموعات الإشعار اليتيمة — مضيَّقة النطاق عمداً (ت-2).",w:"القاعدة نفسها — أيّ المجموعات يتيمة، ونافذة الاستقرار، وبوّابات الرفض الثلاث — انتقلت إلى الكانس المشترك؛ فبقي هنا أنّ الكنس يرفض العمل بلا موافقةٍ صريحة، وأنّ التيّارات المفحوصة هي تيّارات الطوبولوجيا الساكنة منزوعة التكرار."},
+{p:"tests/unit/test_ops_payload_indexes.py",n:8,m:[],k:"pure",d:"app.ops.payload_indexes — المرور لمرّةٍ واحدةٍ الذي يمنح فهارس الحمولة لمجموعات Qdrant الأقدم من المحوّل.",w:"بلا وسمٍ ولا Docker ولا شبكة: عميلٌ كعبٌ يُجيب. مجموعات المعرفة وحدها تُستهدَف، والتضييق إلى مجموعةٍ خارج المجموعة المستهدَفة يُرفَض، وغير المفهرَسة تكتسب كلّ مفتاحٍ بعَلَم المستأجر الخاصّ به، والتشغيل الجافّ لا يكتب ويُبلّغ الفجوة كلّها، ومفتاح مستأجرٍ مفهرَسٌ بلا عَلَمه يُعاد تأكيده، وفهرسٌ قديمٌ بلا params يُعدّ بلا مستأجر."},
+{p:"tests/unit/test_ops_provision.py",n:20,m:[],k:"pure",d:"ألّا ينحرف أثر التزويد عن الهجرات (7.1) — بمقارنة وثيقتَين في الاتّجاهَين.",w:"الشكل الذي أرسته 6.3 لـopenapi.yaml مُطبَّقاً على المنح: كلّ جدولٍ مُهاجَرٍ إمّا ممنوحٌ أو مستثنىً عمداً، ولا منحةَ تسمّي جدولاً غير موجود، وجداول platform لا تُمنَح CRUD كاملاً — عدا سجلّ عدم التكرار وحده، والمُرحِّل يحمل الصورة المرآة على الـoutbox، وretention_sweeper يأخذ SELECT وDELETE ولا INSERT ولا UPDATE ولا يوسّع منحة app_rw، وmetrics_reader يأخذ SELECT وحدها على الـoutbox."},
+{p:"tests/unit/test_ops_purge.py",n:26,m:[],k:"pure",d:"كنس محتوى مساحة العمل مُحكَماً (app.ops.purge · BE-ADM-014).",w:"بدائل مُصطنَعةٌ لـAsyncConnection/AsyncEngine زائد عملاء Qdrant/MinIO مزيّفين. find_candidates يحسب الحدّ من الاحتفاظ والآن ويربط مرشّح مساحة العمل الاختياريّ ويتخطّى ويحذّر حين لا فاعل، وpurge_vectors يُسقِط مجموعة المعرفة ثمّ الذاكرة وهو آمنٌ على مجموعةٍ غائبة والتشغيل الجافّ لا يُسقِط، وpurge_objects يحذف بادئة مساحة العمل وحدها والجافّ يسرد ولا يزيل."},
+{p:"tests/unit/test_ops_retention.py",n:11,m:[],k:"pure",d:"أداة كنس الاحتفاظ مُحكَمةً (app.ops.retention · P1-5).",w:"نوافذ الاحتفاظ الثلاث كلّها مختلفة، وكنس الـoutbox يُصدر DELETE محدوداً بالصفوف المنشورة وحدها والجافّ يعدّ، وprocessed_events يفتّش على processed_at وidempotency_keys على created_at، وsweep_all يكنس كلّ جدولٍ في معاملته الخاصّة، وواجهة الأوامر تُحلّل الجدول والتجاوز والتشغيل الجافّ معاً وترفض اسم جدولٍ مجهولاً وترفض older_than_days بلا table."},
+{p:"tests/unit/test_ops_revoke.py",n:3,m:[],k:"pure",d:"أمر الإبطال (app.ops.revoke · 3.79) فوق مصنع عميلٍ مُصطنَع.",w:"كلّ مُعرَّفٍ مسمّى يُمنَع تحت المفتاح المحدَّد، و<b>العميل يُغلَق حتّى حين يفشل إبطال</b>، وبلا وسائط يخرج صاخباً بدل أن يُبطل لا شيء. سلوك القائمة نفسها مُثبَّتٌ في ملفّها."},
+{p:"tests/unit/test_ops_rotate_transit.py",n:12,m:[],k:"pure",d:"كنس تدوير مفاتيح Transit مُحكَماً (app.ops.rotate_transit · P1-9).",w:"key_version يُحلّل بادئة Vault على السلك ويرفض ما ليس نصّاً مُعمّى، ومواصفات الجداول الثلاث تسمّي أعمدة النصّ المُعمّى المؤكَّدة بالضبط، والاختيار يقتصر على الصفوف ذات النصّ غير الفارغ، و<b>نصٌّ عند النسخة الحاليّة يُتخطّى لا يُكتَب</b>، والمتغيّر يُحفَظ بحارس التزامن، والتشغيل الجافّ ينادي Vault فعلاً ولا يكتب، وصفٌّ تغيّر تزامنيّاً لا يُعدّ مُعاد التغليف."},
+{p:"tests/unit/test_orchestrator.py",n:63,m:[],k:"pure",d:"المنسّق (app/agents/orchestrator.py · 4.7-b) — منسّق طبقة الوكلاء لكلّ طلب.",w:"مزيّفاتٌ في كلّ مكان: ProviderResolver والسجلّ والوكلاء. الاستدعاء يسلّم الوكيل LLM محلولاً ويمرّر مَفاصِل الوحدات المحقونة، والمَفاصِل غير المُوصَلة تبقى None بدل اختراعها، والمزوّد يُحلّ بمفتاح الوكيل قدرةً، ووكيلٌ بلا قدرة المحادثة لا يُحلّ له LLM، و<b>الوكيل المجهول 404 والمفتاح المشوَّه 422 وفشل حلّ المزوّد — كلّها قبل أيّ حدث</b>، وفشلٌ أثناء التنفيذ يصير حدث خطأٍ نهائيّاً لا رفعاً."},
+{p:"tests/unit/test_outbox_relay.py",n:12,m:[],k:"pure",d:"OutboxRelay مُحكَماً (5.1-ب) فوق مخزنٍ وناشرٍ مزيّفَين.",w:"جلبٌ فارغٌ يُعيد صفراً بلا كتابة، والنجاح الكامل ينشر بالترتيب ويعلّم تلك المعرّفات بالضبط، وفشلٌ يوقف عند أوّله ويعلّم البادئة وحدها وفشلٌ على أوّل مدخلٍ لا يعلّم شيئاً، و<b>run_forever يتراجع أُسّيّاً ثمّ يُصفّر بعد دورةٍ نظيفة ولا ينام أثناء تصريف تراكم</b>، والإلغاء ينتشر."},
+{p:"tests/unit/test_platform_providers.py",n:25,m:[],k:"pure",d:"سطح إدارة المزوّدين (BE-ADM-010/011/012) مُحكَماً.",w:"مفتاح المنصّة يُعمّى تحت مفتاح Transit نفسه الذي تقرؤه الاعتمادات، والجرد هو جدول التوجيه منقولاً على المزوّدين ومزوّدٌ لا يُوجَّه إليه غائبٌ كلّيّاً، و<b>انعدام الحاجة إلى مفتاحٍ يأتي من التركيب لا من جدول التوجيه</b>، ومزوّد صورٍ فقط يُبلَّغ «غير قابلٍ للسبر»، والترتيب ثابتٌ لا تابعٌ لترتيب الإدراج، والسبر ينفق نداءً واحداً مسقوفاً، ومفتاحٌ مرفوضٌ نتيجةٌ لا استثناء."},
+{p:"tests/unit/test_port_contract_doc.py",n:4,m:[],k:"pure",d:"مطابقة العقد: docs/design/02-port-contracts.md §2 مقابل الشيفرة.",w:"الوثيقة <b>مُلزِمة</b>: خطّة الاسترجاع تستشهد بـ«02 §2» عقداً تُنفّذه KnowledgeRetrieval، والمنفذ يستشهد بها بالمقابل. هنا: أسماء الطرق الموثّقة تطابق المنفذ، والتواقيع تطابق، وحقول RetrievedChunk الموثّقة تطابق dataclass المنفذ، وكذلك الأنواع المرافقة."},
+{p:"tests/unit/test_ports.py",n:2,m:[],k:"pure",d:"اختبارا سطحٍ لعقود المنافذ المقودة (02 §1).",w:"المنافذ تجريداتٌ نقيّةٌ ومطابقتها البنيويّة يفرضها mypy؛ فهذان الاختباران يقفلان السطح العامّ فقط: كائنات القيمة تُبنى كما أُعلنت، وطرق Protocol موجودةٌ بأسمائها."},
+{p:"tests/unit/test_prometheus_alert_rules.py",n:5,m:[],k:"pure",d:"أنّ deploy/prometheus/alerts.yml يشير فعلاً إلى أسماء المقاييس التي يُصدرها GET /metrics.",w:"يُعلن الملفّ ثلاث قواعد بالضبط: قاعدة زمن دورة الـoutbox تشير إلى المقياس الحقيقيّ وعتبة SLO، وقاعدة عمق DLQ تشير إلى المقياس الحقيقيّ وأداة الخطوة 7، وقاعدة مصادقة Vault إلى مقياسها وترتيب الإقفال — ولكلّ قاعدةٍ حدٌّ غير فارغٍ ومبرَّرٌ وحقول المشغّل الدنيا."},
+{p:"tests/unit/test_provider_resolver.py",n:36,m:[],k:"pure",d:"framework/providers/resolver.py (2.9 · 02 §3.5) — مُحكَمٌ كلّيّاً بلا أيّ I/O.",w:"ResolvedProvider ثلاثيٌّ مجمَّدٌ بـslots، وجدول توجيهٍ مشوَّهٌ يرفض الإنشاء وقيمةٌ غير كائنٍ كذلك، و<b>شكل .env.example المختصر القديم يُرفَض بالاسم</b>، وجدولٌ فارغٌ يُبنى ويفشل مُغلَقاً وقت النداء، والمطابقة الدقيقة للقدرة تعلو الافتراض وتُعيد النسخة المحقونة، وقدرةٌ غير موجَّهةٍ تتراجع إلى المسار الافتراضيّ."},
+{p:"tests/unit/test_qdrant_mapping.py",n:22,m:[],k:"pure",d:"مساعِدات الترجمة النقيّة لمحوّل Qdrant (_to_distance · _build_filter · _is_missing_collection).",w:"_to_distance يخرط الأسماء المعروفة بلا حساسيّةٍ للحالة ويرفع خطأ تحقّقٍ للمجهول؛ و_build_filter: None أو قاموسٌ فارغٌ لا مرشّح، والقيم القياسيّة شروط حقولٍ في must، والقائمة تصير match_any، والقائمة غير المتجانسة أو العشريّة خطأ تحقّق، ونوعٌ غير مدعومٍ كذلك؛ و_to_hit بلا متّجهٍ حين لم يطلبه البحث."},
+{p:"tests/unit/test_rag_agent.py",n:47,m:[],k:"pure",d:"وكيل RAG (app.agents.rag_agent · 4.6-a · FR-20.1 · 11 §9) فوق منافذ مزيّفة.",w:"يبثّ الوحدات ثمّ النهائيّ بالاستشهادات، والتثبيت المُعطى يُمرَّر إلى الاسترجاع بلا مساس، و<b>الوكيل يسمّي النطاق الذي ينتمي إليه دوره، وبلا نطاقٍ لا يسترجع شيئاً بدل أن يسترجع كلّ شيء</b>، والسياق المسترجَع يُحقَن في موجّه النظام، والاستشهاد يحمل شكله المهيكل كاملاً ويمثّل اسم الملفّ والصفحة الغائبَين None صراحةً، وكلّ مقطعٍ يأخذ استشهاده بالترتيب."},
+{p:"tests/unit/test_redis_blocking_timeouts.py",n:12,m:[],k:"pure",d:"أنّ مهلة القراءة التي تغلّف XREADGROUP ... BLOCK أطول من النافذة التي تغلّفها — في كلّ مكان.",w:"المهلة اشتقاقٌ لا حرفيّةٌ بالثواني، وcreate_redis_client يُعيد الافتراض القديم عند الغياب ويقبل مهلةً صريحة، ثمّ الفحص واحداً واحداً: عميل عامل knowledge وعامل media وعامل memory وجسر الإشعارات — لكلٍّ منها مهلة قراءةٍ فوق block_ms."},
+{p:"tests/unit/test_redis_streams_consumer.py",n:24,m:[],k:"pure",d:"RedisStreamsConsumer مُحكَماً (5.1-ج) فوق مزيّفٍ يسجّل كلّ نداء.",w:"ensure_group يُصدر XGROUP CREATE بمعرّف الذيل وMKSTREAM ويبتلع BUSYGROUP ويترجم غيرها، ويميّز خطأ الاستجابة عن خطأ مستوى الاتّصال؛ وdestroy_group يُصدر XGROUP DESTROY ويبتلع تيّاراً غائباً ويترجم غيره."},
+{p:"tests/unit/test_redis_streams_publisher.py",n:11,m:[],k:"pure",d:"RedisStreamsPublisher مُحكَماً (5.1-ب · 02 §1.8).",w:"النشر يُرسل حقل ce بـJSON مضغوطٍ يحفظ ASCII، و<b>لا يُغيّر الظرف ولا يُعيد بناءه</b>، ويُعيد معرّف المدخل مفكوكاً، وعطب Redis يُترجَم إلى common_internal، و<b>الناشر لا يُعيد المحاولة أبداً</b>، والنشر الدفعيّ يحفظ الترتيب ويُعيد معرّفاً لكلّ عنصرٍ ويَنسب فشلاً جزئيّاً إلى عنصره، وناشرٌ بلا سقفٍ لا يُرسل وسائط تشذيبٍ إطلاقاً."},
+{p:"tests/unit/test_relay_topology_provisioning.py",n:3,m:[],k:"pure",d:"أنّ مُرحِّل الـoutbox يُزوِّد كلّ مجموعةٍ ساكنةٍ قبل أوّل نشرٍ على كلّ مدخلٍ يُشغّله.",w:"ensure_group لكلّ زوجٍ يسبق أوّل نشر، وفشله ينتشر ويحجب أوّل نشر، ومستهلك الطوبولوجيا يشارك عميل Redis الخاصّ بالناشر."},
+{p:"tests/unit/test_repo_hygiene.py",n:5,m:[],k:"pure",d:"ألّا يُتتبَّع في git أيّ ملفٍّ مولَّدٍ أو مُخلَّفٍ آليّاً، وأن تغطّي قواعد التجاهل <b>الصنف كلّه</b> لا المسار الذي تسلّل.",w:"المُطابِق يتعرّف على الملفّات التي كانت متتبَّعةً فعلاً، ولا ملفّ متتبَّعٌ مولَّد، وقائمة الملفّات المتتبَّعة ليست فارغة (وإلّا كان الاختبار يخضرّ على لا شيء)، و.gitignore يغطّي الصنف ولا يبتلع محتوىً حقيقيّاً."},
+{p:"tests/unit/test_retrieved_chunk_contract.py",n:4,m:[],k:"pure",d:"مطابقة العقد عبر ثلاث طبقاتٍ كان يُفترَض أن تتوسّع معاً (retrieval plan §3.1/§3.9 · س-19 · P-18).",w:"أسماء حقول RetrievedChunk تتطابق عبر الطبقات الثلاث — DTO منفذ المعرفة، وProtocol باسم RetrievedChunkView في الكِرنل (وجه الوكيل)، وDTO الـAPI — وأنّ الـProtocol يُرضيه dataclass المنفذ بنيويّاً، وأنّ قيم استشهادٍ حقيقيّةً تنجو من الـdataclass إلى الـDTO بلا تغيير، وأنّ الحقول الغائبة تتدهور إلى None لا إلى انهيار."},
+{p:"tests/unit/test_role_provisioning_wiring.py",n:4,m:[],k:"pure",d:"أنّ كلّ دور قاعدة بياناتٍ يفحصه _require_roles موجودٌ في الأماكن الأربعة نفسها.",w:"اسم الدور في ثوابت app.ops.provision، وCREATE ROLE الفعليّ في deploy/postgres/initdb/10-roles.sh، ومتغيّر كلمة السرّ المطلوب في Compose، وسطره في .env.example — والقائمة المفحوصة ليست فارغةً بالصدفة."},
+{p:"tests/unit/test_source_label.py",n:7,m:[],k:"pure",d:"framework/agent_runtime/source_label.py (retrieval plan §3.2 · P-31 · P-39).",w:"الوسم الكامل يطابق مثال الخطّة حرفاً بحرف، ويتدهور حتميّاً لكلّ حقلٍ غائبٍ على حدة، و<b>يقع دائماً في سطره فوق النصّ</b>، وكتلة السياق هي المُنسِّق لكلّ مقطعٍ موصولاً بسطرٍ فارغ ولا تُعيد ترتيب ترتيب المُنادي أبداً، وترتيبٌ فارغٌ كتلةٌ فارغة."},
+{p:"tests/unit/test_space_deletion.py",n:14,m:[],k:"pure",d:"شلّال حذف النطاق (spaces step 11 · §3.6) — الخدمة المنسِّقة والكنوس الثلاثة التي تقودها.",w:"كلّ مخزنٍ في الذاكرة فلا يُلمَس Postgres ولا Qdrant ولا MinIO. العلامة أوّلاً ثمّ إفراغ كلّ وحدة، ونطاقٌ لا تملكه مساحة العمل 404 بلا تدمير، وإعادة الحذف تُشغّل الشلّال ثانيةً، و<b>نقاط المتّجهات قبل الصفوف</b>، ومتن هذا النطاق وحده، والنقاط مُجمَّعةٌ حسب مجموعتها، و<b>الكائنات قبل الصفوف التي تسمّيها</b>."},
+{p:"tests/unit/test_space_quota.py",n:9,m:[],k:"pure",d:"SpaceQuotaService (spaces step 5 · §3.3) فوق ثلاثة متعاونين مزيّفين.",w:"الحصّة الافتراضيّة هي الغيغابايت الثنائيّ الذي قرّرته الخطّة، ورفعٌ يتّسع يُسجَّل تحت القفل في وحدة عملٍ واحدة، ورفعٌ يتجاوز السقف يُرفَض قبل التسجيل، وملؤه إلى السقف بالضبط مسموحٌ وبايتٌ واحدٌ بعده مرفوض، والسقف هو المضبوط لا غيغابايتٌ مُصلَّبٌ في الشيفرة، ونطاقٌ لا يُقفَل 404 ولا شيء غير ذلك."},
+{p:"tests/unit/test_spaces_domain.py",n:15,m:[],k:"pure",d:"نطاق النطاقات النقيّ: كائن الاسم والتجميعة.",w:"SpaceName يقصّ المسافات ويقبل الحدّ ويرفض ما يزيد عنه بواحدٍ (قيد العمود) ويقيس الطول <b>بعد</b> القصّ ويرفض الفارغ وحروف التحكّم ويُبقي الشُّرَط المائلة، وrename يغيّر الاسم ويختم الوقت."},
+{p:"tests/unit/test_spaces_sql_mapping.py",n:7,m:[],k:"pure",d:"الأجزاء النقيّة من محوّل SQL للنطاقات: ترجمة أخطاء المحرّك وترطيب الصفوف والمطابقة البنيويّة للمنفذ.",w:"بلا قاعدة بيانات: خرق التفرّد يسمّي الاسم المكرَّر، ورفض RLS <b>داخليٌّ لا خطأ عميل</b>، وأيّ عطبٍ آخر ينطوي في داخليّ، و<b>استثناء المحرّك لا يهرب أبداً</b>، وhydrate يُعيد بناء التجميعة عبر كائن قيمتها ويحمل ختم الحذف، والمحوّل يُنفّذ كلّ طريقةٍ يُعلنها منفذه."},
+{p:"tests/unit/test_spaces_use_cases.py",n:21,m:[],k:"pure",d:"حالات استخدام النطاقات فوق مستودعٍ مزيّف.",w:"الإنشاء يسكّ نطاقاً نشِطاً يملكه المُنادي ويكتب <b>مساحة عمل المُنادي لا مزوَّرةً</b>، والاسم الفاسد 422، و<b>الإنشاء لا يفحص التفرّد بنفسه</b> (الفهرس يفعل)، وget يُعيد النطاق و404 للمجهول وللمحذوف وعبر مساحات العمل."},
+{p:"tests/unit/test_sse.py",n:13,m:[],k:"pure",d:"مُرمِّز SSE (app/api/v1/sse.py · 5.3-ب) — اختبارا مولّدٍ واختبارات ASGI.",w:"نحو 03 §3.1 على السلك: الإطار دقيقٌ بايتاً بايتاً، وUTF-8 يركب السلك بلا هروب، وفترة الإبقاء الافتراضيّة تطابق العقد، وبثٌّ كاملٌ يُرمَّز بالترتيب وينتهي بعد final، و<b>لا شيء يُصدَر بعد الحدث النهائيّ</b>، وحدث الخطأ يصل السلك كائن problem، والفجوات الخاملة تُجسَّر بتعليقات إبقاء، ومنتِجٌ ينتهي بلا حدثٍ نهائيٍّ ينتهي فحسب."},
+{p:"tests/unit/test_storage_binding.py",n:4,m:[],k:"pure",d:"bind_minio (framework/di/storage_binding.py · deferred-adapters step 15).",w:"استُخرِج من CompositionRoot.connect_storage ليستطيع مُنادٍ ثانٍ — جذر تركيب عامل knowledge — أن يربط: يربط من سرٍّ حسن التكوين، وهو متكرّرٌ آمنٌ عبر إعادات الدخول، ويرفض مفتاح وصولٍ أو مفتاح سرٍّ مشوَّهاً."},
+{p:"tests/unit/test_storage_handle.py",n:2,m:[],k:"pure",d:"خانة التخزين مؤجَّلة الربط (framework/di/storage_handle.py · 6.1-هـ-1 · الدَّين ز).",w:"ما يمسكه كلّ محتاجٍ للتخزين منذ لحظة from_env، فسلوكاه محمولان على طرفَي الإقلاع: كلّ طريقةٍ في مقبضٍ غير مربوطٍ ترفع common_internal، والمربوط يُفوِّض الوسائط والنتائج حرفيّاً."},
+{p:"tests/unit/test_stream_consumer.py",n:37,m:[],k:"pure",d:"محرّك المستهلك العامّ (consumers/engine.py · 5.1-ج) فوق InMemoryStreamsConsumer.",w:"المزيّف توأمٌ سلوكيٌّ لـRedisStreamsConsumer بتيّاراتٍ ومجموعاتٍ ومدخلاتٍ معلَّقةٍ في الذاكرة. التوزيع حسب النوع وبناء ctx من الظرف، والمُعالِج الناجح يُؤكَّد، ومعرّف الارتباط يتراجع إلى معرّف الظرف عند الغياب، ورفعٌ يترك المدخل غير مؤكَّدٍ فيُعاد تسليمه ويُسجَّل عند error <b>بلا الحمولة</b>، ولا مُعالِج للنوع يُؤكَّد ويُتخطّى، وحقل ce الغائب أو JSON الفاسد يُنقَل إلى DLQ."},
+{p:"tests/unit/test_stream_topology.py",n:5,m:[],k:"pure",d:"حارس انحدارٍ لـSTATIC_CONSUMER_TOPOLOGY (framework/events/topology.py).",w:"الجدول يكتب أزواج (تيّار، مجموعة) حرفيّاً بدل استيرادها من app.modules.*: الأزواج هي التي تسمّيها الخطّة، وكلّ تيّارٍ يطابق ثابت وحدته المالكة، والجدول يطابق ما يبنيه العمّال الثلاثة لا أكثر ولا أقلّ، ومقياس DLQ يراقب كلّ تيّارٍ تستهلكه الطوبولوجيا، ولا مجموعةَ ربطٍ هي مجموعة إشعارٍ لكلّ عمليّة."},
+{p:"tests/unit/test_streaming_hub.py",n:17,m:[],k:"pure",d:"محور الاتّصالات (framework/streaming/hub.py · 5.3-ج · P1-8).",w:"التوجيه بمفتاح مساحة العمل — <b>عزل المستأجر هو التوجيه نفسه</b>: الإشعار يبلغ المساحة المسمّاة وحدها، ومساحةٌ لا أحد فيها لا عمليّة، وكلّ جلسات المساحة تتلقّى الدفع، و<b>مقبسٌ واحدٌ يحتضر لا يُكلِّف الآخرين إشعارهم</b>، وسقف المستخدم يُعدّ عبر مساحات العمل، وإلغاء التسجيل يُحرّر الخانة وهو متكرّرٌ آمنٌ ولجلسةٍ مجهولةٍ لا عمليّة."},
+{p:"tests/unit/test_system_stats_source.py",n:14,m:[],k:"pure",d:"HostSystemStats — محوّل تلمترية المضيف (BE-ADM-007).",w:"التحليل يجري على أشجار /proc و/sys/fs/cgroup <b>مُصطنَعة</b> لا على هذه الآلة، فالتأكيدات أرقامٌ دقيقةٌ لا «بين صفرٍ وواحد». القراءة الأولى تأخذ نافذتها لأنّ لا شيء تطرح منه، واللاحقة تُقاس مقابل سابقتها، و<b>iowait لا يُحسَب انشغالاً</b>، و<b>الذاكرة المؤقّتة القابلة للاسترداد لا تُبلَّغ مستعمَلة</b>، وسقف cgroup دون ذاكرة الآلة يُبلَّغ وغياب السقف None لا المجموع ثانيةً، و/proc ناقصٌ يُدهوِر قسمه وحده."},
+{p:"tests/unit/test_tool_system.py",n:22,m:[],k:"pure",d:"نظام الأدوات (4.3 · 02 §3.1/§3.4 · FR-50/51/52).",w:"ToolSpec مجمَّد، وBaseTool لا يُنشَأ بلا run ويربط حزمة الاعتماديّات، والتسجيل ثمّ الجلب يُعيد الصنف، والاسم المجهول 404 وغير النصّيّ 422، والتسجيل يرفض التكرار ويرفض ما ليس BaseTool. الكتالوج الديناميكيّ يُقاد عبر مزيّفٍ يُرضي منفذ الكِرنل."},
+{p:"tests/unit/test_unit_of_work.py",n:11,m:[],k:"pure",d:"وحدة العمل المرتبطة بالطلب في TenantSessionFactory (5.1-أ · begin(ctx)).",w:"مزيّفٌ ينوب عن sessionmaker فلا يُلمَس SQLAlchemy. نداءٌ خارج أيّ وحدة عملٍ يفتح جلسته ويضبط ويلتزم، ونداءان خارجها جلستان مستقلّتان، ونداءان داخل begin يتشاركان الجلسة <b>بلا التزامٍ داخليّ</b>، وGUC المستأجر يُضبَط مرّةً ولا يكرّرها نداءٌ منضمّ، وbegin يلتزم عند الخروج النظيف ويتراجع عند استثناءٍ داخله — واستثناء نداءٍ منضمٍّ يتراجع بالجلسة المشتركة أيضاً، وContextVar يُصفَّر بعد الخروج النظيف."},
+{p:"tests/unit/test_usage_module.py",n:73,m:[],k:"pure",d:"وحدة الاستهلاك: كائنات القيمة والمساعِدات النقيّة (enforcement.evaluate · periods) وحالات EnforceLimit/CaptureUsage/SetLimits/GetUsageSummary.",w:"UsageCharge افتراضه «مقيس» لا «مقدَّر»، وقيم LimitScope وMetric وPeriod وDenyReason، وLimitRule صالحةً على مستوى مساحة العمل والوكيل والمزوّد. خامس أكبر ملفٍّ في المستودع."},
+{p:"tests/unit/test_vault_health_probe.py",n:7,m:[],k:"pure",d:"VaultProbe — منطق قرار مسبار الحياة (ن-10) فوق SecretsProvider مزيّف.",w:"<b>جوابٌ بـnot_found صحّةٌ</b> (المسبار يسأل عن مسارٍ قد لا يوجد؛ المهمّ أنّ Vault ردّ)، والقراءة الناجحة صحّةٌ أيضاً، وعطب Vault مُترجَمٌ اعتلال، واستثناءٌ اعتباطيٌّ اعتلالٌ لا رفع، وnot_found يُلتقَط قبل شرط AppError، وخطأ التحقّق اعتلالٌ لا انهيار، ومسار المسبار يطابق شكل KV v2 الذي يشترطه المحوّل."},
+{p:"tests/unit/test_vault_mapping.py",n:20,m:[],k:"pure",d:"مساعِدات محوّل Vault النقيّة وسطح ندائه لـhvac بالضبط (2.6).",w:"بلا وسمٍ ولا Docker ولا شبكة. parse_kv_path يقبل شكل الكتالوج الحرفيّ ويرفض كلّ ما عداه، وguard_key_name يقبل الوحدات العارية ويرفض الباقي، والترجمة تخرط دائماً إلى common_internal إلّا مسار KV غير الصالح فـnot_found، وget_secret يُعيد البيانات الداخليّة وحدها بسطح النداء الدقيق."},
+{p:"tests/unit/test_web_search.py",n:28,m:[],k:"pure",d:"العمود الرأسيّ لأداة web_search (4.4) — محوّل Exa عبر MockTransport، بلا شبكة.",w:"WebSearchHit كائن قيمةٍ مجمَّد، وAgentDependencies ما زالت تُبنى فارغةً وتُعطي web_search=None افتراضاً وتحمل المزوّد المحقون <b>وتبقى مجمَّدةً ومختومةً بعد النموّ</b>، والبحث يشكّل النتائج ويرسل طلب Exa المتوقَّع، والإبرازات تُوصَل والنصّ بديلٌ عنها، والنتائج الهزيلة تُسقَط، والنتائج تُنزَع تكراراً حسب العنوان وتُسقَّف عند الحدّ."},
+{p:"tests/unit/test_websocket_endpoint.py",n:16,m:[],k:"pure",d:"بروتوكول نقطة WebSocket التفاعليّة (api/v1/websocket/streaming.py · 5.3-ج · 03 §3.2).",w:"مُحكَمٌ فوق TestClient مقابل AgentOrchestrator <b>حقيقيّ</b> يقود وكلاء اختبارٍ حقيقيّين: رمزٌ صالحٌ في الاستعلام يفتح المقبس والفاسد يُرفَض <b>قبل accept</b>، ومصافحة auth بأوّل رسالةٍ تقبل الاتّصال بلا رمزٍ في العنوان، وأوّل رسالةٍ ليست auth تُغلِق 1008 ورمزٌ فاسدٌ داخل رسالة auth كذلك، والاستدعاء يبثّ الأشكال المسطَّحة، وفشلٌ تمهيديٌّ رسالة خطأٍ لا مقبسٌ ميّت، وcancel يوقف بثّاً جارياً."},
+{p:"tests/unit/test_workers_bootstrap.py",n:22,m:[],k:"pure",d:"جذور تركيب العمّال (workers/bootstrap.py · 5.1-ج) فوق مزيّفاتٍ في الذاكرة.",w:"مُعالِج الفهرسة يفهرس مستنداً مسجَّلاً ويُلحِق حدثه، ولا يُلحِق حدثاً ولا يطالب شيئاً على مسار «لا عمليّة»، ومطالبةٌ مكرَّرةٌ تتخطّى الإنهاء والإلحاق، و<b>المطالبة والإنهاء والإلحاق يتشاركون وحدة العمل</b>، وملفٌّ غير قابلٍ للتحليل يهبط failed مع حدثه بينما <b>أعطال البنية التحتيّة تُترَك تهرب لإعادة التسليم</b>، ولا يُعاد إفشال مستندٍ نهائيٍّ أصلاً؛ ومُعالِج الوسائط يُكمِل المهمّة ويُلحِق حدث generated."},
+{p:"tests/unit/test_workers_main.py",n:6,m:[],k:"pure",d:"المُوزِّع الموحَّد للعمّال (workers/main.py · 5.1-ج).",w:"مداخل _RUNNERS مُرقَّعةٌ بمشتركاتٍ مزيّفةٍ فلا يُبنى عاملٌ فعلاً. select_worker يفضّل متغيّر البيئة على argv ويتراجع إليه عند غيابه، ويرفع SystemExit يسمّي الخيارات الصالحة حين لا يُضبَط أيٌّ منهما، وrun يوزّع إلى العامل المختار وإلى outbox_relay، ويرفع SystemExit لاسمٍ مجهول."},
+{p:"tests/unit/test_workflow_orchestration.py",n:44,m:[],k:"pure",d:"مَفصِل مسارات العمل (4.7-e): invoke_workflow ومقبض WorkflowRun ومحادثة D-12 وAgentDepsProvider لكلّ خطوة وفرض الحصص والتقاط الاستهلاك.",w:"كلّ تشغيلٍ يفتح محادثته الخاصّة و<b>المحادثة موجودةٌ قبل أوّل حدث</b> ويحمل التشغيل سياق المُنادي إلى الخيط، وخيطٌ لا يُفتَح لا يبدأ التشغيل أصلاً، ومسارٌ مجهولٌ يرفع workflow_unknown <b>ولا يترك محادثةً يتيمة</b>، ومَفصِلٌ غير مُوصَلٍ يرفض بدل أن يخترع، والنتيجة تجمع نهائيّ كلّ خطوةٍ بالترتيب."},
+{p:"tests/unit/test_workflows.py",n:29,m:[],k:"pure",d:"framework/workflows/ (4.5 · 02 §3.3/§3.4 · D-04/09/12).",w:"الحوامل مجمَّدة، والتعريف يحمل خطواتٍ مرتَّبة، والتسجيل ثمّ الجلب يدور ذهاباً وإياباً، والسرد مفروزٌ بالمفتاح مستقلٌّ عن ترتيب الإدراج، وعشر خطواتٍ هي الحدّ المقبول، والمفتاح المجهول 404 وغير النصّيّ أو الفارغ 422، والمفتاح المكرَّر مرفوض."},
+{p:"tests/unit/test_workspace_domain.py",n:11,m:[],k:"pure",d:"نطاق مساحة العمل النقيّ.",w:"WorkspaceName يقصّ ويقبل الحدّ ويرفض الفارغ والطويل، وEmail يُطبّع الحالة والمسافات ويرفض الفاسد، وقيم حالة مساحة العمل، وrename يحدّث الاسم."},
+{p:"tests/unit/test_workspace_use_cases.py",n:10,m:[],k:"pure",d:"حالات استخدام مساحة العمل فوق مستودعاتٍ مزيّفة.",w:"التزويد يُنشئ مساحة عملٍ ومستخدماً وهو متكرّرٌ آمنٌ لمُعرَّفٍ معروف ويرفض بريداً فاسداً، و<b>سباق أوّل دخولٍ متزامنٍ يُعيد المستخدم القائم</b> بدل أن يفشل، وإعادة التسمية تحفظ والغائبة not_found والمؤرشَفة Conflict والاسم الفارغ مرفوض."}
+];
+
+const KIND_LABEL = {live:"يحتاج خدمة حيّة", slo:"اختيّاريّ · حِمل", pure:"مُحكَم · بلا خدمات", sup:"لا يجمعه pytest"};
+const GROUPS = [
+  ["tests/unit","tests/unit — اختبارات الوحدة والموجّهات"],
+  ["tests/integration","tests/integration — محوّلات حقيقيّة فوق بنيةٍ حيّة"],
+  ["tests/architecture","tests/architecture — حدود الطبقات"],
+  ["tests/eval","tests/eval — مجموعة القياس (لا يجمعها pytest)"],
+  ["tests/__","tests/ — الجذر"]
+];
+
+const catalog = document.getElementById("catalog");
+const qBox = document.getElementById("q");
+const countBox = document.getElementById("count");
+const chips = Array.from(document.querySelectorAll(".chip"));
+let filter = "all";
+
+function tagsFor(e){
+  const out = [];
+  if (e.k === "sup") out.push('<span class="tag sup">' + KIND_LABEL.sup + '</span>');
+  else if (e.m.length === 0) out.push('<span class="tag pure">hermetic</span>');
+  e.m.forEach(function(m){
+    const cls = m === "live_stack_slo" ? "slo" : "live";
+    out.push('<span class="tag ' + cls + '">' + m + '</span>');
+  });
+  return out.join("");
+}
+
+function rowHtml(e){
+  const cmd = e.k === "sup"
+    ? "# لا يجمعه pytest — وحدة دعمٍ أو بيانات"
+    : ".venv/bin/pytest " + e.p + " -q" + (e.m.length ? " -rs" : "");
+  return '<details class="row"><summary>'
+    + '<span class="path">' + e.p + '</span>'
+    + '<span class="purpose">' + e.d + '</span>'
+    + '<span class="meta"><span class="n">' + (e.k === "sup" ? "—" : "<b>" + e.n + "</b> اختبار")
+    + '</span><span class="tags">' + tagsFor(e) + '</span></span>'
+    + '</summary><div class="body">'
+    + '<p class="lbl">أبرز ما يُثبته</p><p>' + e.w + '</p>'
+    + '<p class="lbl">تشغيله وحده</p><pre><code>' + cmd + '</code></pre>'
+    + '</div></details>';
+}
+
+function matches(e, q){
+  if (filter === "live" && e.m.length === 0) return false;
+  if (filter !== "all" && filter !== "live"){
+    if (filter === "tests/__"){ if (e.p.split("/").length !== 2) return false; }
+    else if (!e.p.startsWith(filter + "/")) return false;
+  }
+  if (!q) return true;
+  const hay = (e.p + " " + e.d + " " + e.w + " " + e.m.join(" ")).toLowerCase();
+  return q.split(/\s+/).every(function(t){ return hay.indexOf(t) !== -1; });
+}
+
+function render(){
+  const q = qBox.value.trim().toLowerCase();
+  const shown = DATA.filter(function(e){ return matches(e, q); });
+  let html = "";
+  GROUPS.forEach(function(g){
+    const pre = g[0];
+    const items = shown.filter(function(e){
+      return pre === "tests/__" ? e.p.split("/").length === 2 : e.p.startsWith(pre + "/");
+    });
+    if (!items.length) return;
+    html += '<div class="grp"><h3>' + g[1] + ' · ' + items.length + '</h3><div class="rows">'
+         + items.map(rowHtml).join("") + '</div></div>';
+  });
+  catalog.innerHTML = html || '<p class="empty">لا ملفّ يطابق هذا البحث.</p>';
+  const total = shown.reduce(function(a,e){ return a + e.n; }, 0);
+  countBox.textContent = shown.length + " ملفّ · " + total + " اختبار";
+}
+
+qBox.addEventListener("input", render);
+chips.forEach(function(c){
+  c.addEventListener("click", function(){
+    filter = c.dataset.f;
+    chips.forEach(function(o){ o.setAttribute("aria-pressed", String(o === c)); });
+    render();
+  });
+});
+render();
+</script>

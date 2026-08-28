@@ -25,7 +25,11 @@ import pytest
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import NotFoundError
 from app.modules.knowledge.adapters.summary_renderer import MarkdownSummaryRenderer
-from app.modules.knowledge.application.use_cases import ExportSummary, _is_rtl
+from app.modules.knowledge.application.use_cases import (
+    ExportSummary,
+    _detects_lang,
+    _is_rtl,
+)
 from app.modules.knowledge.domain.entities import Summary
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.export import ExportFormat
@@ -194,6 +198,33 @@ def test_auto_reads_the_majority_script_not_the_mere_presence_of_arabic() -> Non
     assert _is_rtl(_summary(text=_ARABIC_BODY, lang=SummaryLanguage.AUTO)) is True
     # No letters at all is not a reason to flip the page.
     assert _is_rtl(_summary(text="123 456", lang=SummaryLanguage.AUTO)) is False
+
+
+def test_detecting_a_language_is_a_positive_script_test_not_the_absence_of_the_other() -> None:
+    """The rule `_is_rtl` now delegates to, and the one `GetSummary`'s `auto`
+    read is gated on (`F-6`) — one definition of "this text is Arabic", not
+    two that can drift apart.
+
+    A third script is evidence for NEITHER language. Had `en` been spelled
+    "not Arabic", a Cyrillic summary would have been an English one, and a
+    reader who asked for `en` would have been handed it.
+    """
+    assert _detects_lang(_ARABIC_BODY, SummaryLanguage.AR) is True
+    assert _detects_lang(_ARABIC_BODY, SummaryLanguage.EN) is False
+    assert _detects_lang(_ENGLISH_BODY, SummaryLanguage.EN) is True
+    assert _detects_lang(_ENGLISH_BODY, SummaryLanguage.AR) is False
+
+    cyrillic = "Этот документ описывает политику извлечения на платформе."
+    assert _detects_lang(cyrillic, SummaryLanguage.EN) is False
+    assert _detects_lang(cyrillic, SummaryLanguage.AR) is False
+
+    # Accented Latin is Latin: an English body is not disqualified by "naïve".
+    assert _detects_lang("A naïve résumé of the café's policy.", SummaryLanguage.EN) is True
+
+    # `auto` names an instruction, not a script, so no text is evidence for
+    # it -- and no letters at all is evidence for nothing.
+    assert _detects_lang(_ARABIC_BODY, SummaryLanguage.AUTO) is False
+    assert _detects_lang("123 456", SummaryLanguage.EN) is False
 
 
 # --------------------------------------------------------------------------- #

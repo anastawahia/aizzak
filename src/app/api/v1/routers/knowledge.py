@@ -525,12 +525,19 @@ async def get_summary(
     services: Services,
     ctx: Context,
 ) -> SummaryOut:
-    """The stored summary under this exact key, or **404** (BE-RAG-010).
+    """The stored summary under this key, or **404** (BE-RAG-010).
 
     ``kind`` and ``lang`` are required rather than defaulted: together with
     the path they ARE the resource's identity, and defaulting half an identity
     on a read means a client can be handed the Arabic overview while believing
     it asked for the English full text.
+
+    ``lang`` matches the stored key exactly, with one exception (`F-6`): a
+    request for ``ar`` or ``en`` is also answered by a summary built under
+    ``auto`` when that summary's text really is in the requested language —
+    ``GetSummary`` holds the rule and the reason. The body's ``lang`` still
+    reports what the row was BUILT as, so a client can always tell which of
+    the two it was handed.
 
     404 and not ``{has_summary: false}``: a summary either exists under a key
     or it does not, and a client that has to destructure an optional body to
