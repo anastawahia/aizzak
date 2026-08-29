@@ -145,6 +145,24 @@ class RoutedAnswerView(Protocol):
     name the target — a document whose file is no longer readable. Both
     mean "no name arrived", and the agent's answer to both is its
     existing unnamed wording, never a blank left where a name would go.
+
+    ``summary_blocked`` (scenarios plan section 5, ب-4ب, gap ف-7) is why
+    a build the module was asked for was NOT queued. ``str`` here and a
+    ``StrEnum`` there, for ``intent``'s reason word for word: the
+    framework must not learn the module's vocabulary as a TYPE, and an
+    agent comparing against a string literal reads the same value the
+    module wrote.
+
+    **And the widening buys forward compatibility this field will need.**
+    A reason this agent has no sentence for — a third refusal added on
+    the module side — must degrade to the neutral wording rather than
+    raise or render a blank. Crossing as a string is what makes an
+    unrecognised value merely unrecognised; an imported enum would make
+    the agent's release the thing gating the module's.
+
+    ``None`` on every outcome that was not refused, which is all of them
+    but one. It is never set together with ``summary_job_id``: a build is
+    accepted or refused, not both.
     """
 
     @property
@@ -157,6 +175,8 @@ class RoutedAnswerView(Protocol):
     def clarification_options(self) -> Sequence[str]: ...
     @property
     def summary_target_name(self) -> str | None: ...
+    @property
+    def summary_blocked(self) -> str | None: ...
 
 
 class KnowledgeAccess(Protocol):

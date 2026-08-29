@@ -34,6 +34,7 @@ from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.modules.knowledge.application.retrieval import RetrievalResult
 from app.modules.knowledge.domain.intent import Intent
+from app.modules.knowledge.domain.value_objects import SummaryBlocked
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 # --------------------------------------------------------------------------- #
@@ -101,6 +102,7 @@ class FakeRoutedAnswer:
         summary_job_id: str | None,
         clarification_options: Sequence[str] = (),
         summary_target_name: str | None = None,
+        summary_blocked: str | None = None,
     ) -> None:
         self.intent = intent
         self.chunks = chunks
@@ -117,6 +119,11 @@ class FakeRoutedAnswer:
         # name, so a construction that says nothing here is saying a
         # thing the module actually says.
         self.summary_target_name = summary_target_name
+        # ب-4ب (خطة السيناريوهات §5، ف-7) — the module's classification of a
+        # REFUSED build, as the string the seam carries it as. Defaulted to
+        # `None` for `clarification_options`' reason: nothing was refused on
+        # any construction that does not say so.
+        self.summary_blocked = summary_blocked
 
 
 class FakeKnowledge:
@@ -140,6 +147,7 @@ class FakeKnowledge:
         document_total: int | None = None,
         summary_job_id: str | None = None,
         summary_target_name: str | None = None,
+        summary_blocked: str | None = None,
         clarification_options: Sequence[str] = (),
         routed_intent: str | None = None,
         answer_error: Exception | None = None,
@@ -152,6 +160,12 @@ class FakeKnowledge:
         # Only ever read on the branch that returns a job id: a name
         # without a build is a state the real module cannot produce.
         self._summary_target_name = summary_target_name
+        # ب-4ب — the refusal reason the module reports. It is the ONE input
+        # that produces a routed answer with a `summarize_doc` intent, no job
+        # and no candidates and yet is not the targetless case: a target WAS
+        # resolved, and the build was refused. Set it and this fake takes the
+        # refusal branch; leave it and nothing about the fake changes.
+        self._summary_blocked = summary_blocked
         self._clarification_options = clarification_options
         # ب-3 (خطة الفجوات §3، ف-5) — the intent the module REPORTS on the
         # route that returned no job and no candidates. `None` keeps the
@@ -234,6 +248,18 @@ class FakeKnowledge:
                 self._summary_job_id,
                 summary_target_name=self._summary_target_name,
             )
+        if self._summary_blocked is not None:
+            # ب-4ب — the FOURTH outcome: a resolved target whose build the
+            # module refused. `summary_target_name` rides along because the
+            # real module keeps it here — the refusal is about a document it
+            # named.
+            return FakeRoutedAnswer(
+                "summarize_doc",
+                (),
+                None,
+                summary_target_name=self._summary_target_name,
+                summary_blocked=self._summary_blocked,
+            )
         if self._clarification_options:
             # Retrieval plan §4 row 14 — the honest "I did not decide"
             # answer: the intent is reported as the summarisation it was, no
@@ -297,6 +323,7 @@ def make_deps(
     document_total: int | None = None,
     summary_job_id: str | None = None,
     summary_target_name: str | None = None,
+    summary_blocked: str | None = None,
     clarification_options: Sequence[str] = (),
     space_id: str | None = SPACE,
     routed_intent: str | None = None,
@@ -310,6 +337,7 @@ def make_deps(
         document_total=document_total,
         summary_job_id=summary_job_id,
         summary_target_name=summary_target_name,
+        summary_blocked=summary_blocked,
         clarification_options=clarification_options,
         routed_intent=routed_intent,
         answer_error=answer_error,
@@ -1675,8 +1703,14 @@ async def test_a_summary_conflict_becomes_a_sentence_not_an_error_event() -> Non
     `common.conflict` from TWO places with two meanings (an active build, and a
     document that was never indexed and holds no text at all) under ONE code,
     and this agent cannot tell them apart. "Your summary is still being
-    prepared" would be a plain lie on the second. ب-4ب classifies the reason
-    inside the module and replaces this with two exact sentences."""
+    prepared" would be a plain lie on the second.
+
+    ب-4ب has since classified the reason inside the module, and this sentence
+    is no longer what a refused build normally says — the two exact ones are.
+    What this test now pins is the RESIDUE: a `ConflictError` the module did
+    NOT classify still reaches the agent, and the neutral wording is still the
+    only honest answer to a conflict nobody named. The `answer_error` here is
+    a bare `ConflictError` precisely for that reason."""
     conflict = ConflictError("summary already running for document 0198-…")
     deps, _knowledge, _llm = make_deps(answer_error=conflict)
     events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
@@ -1886,3 +1920,234 @@ async def test_the_unscoped_warning_carries_no_question_text(
     rendered = JsonFormatter().format(_unscoped_warnings(caplog)[0])
     assert question not in rendered
     assert thread in rendered
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 3 · ب-4ب — the refusal, classified (§5، ف-7، ت-3)                    #
+# --------------------------------------------------------------------------- #
+
+
+async def test_an_active_build_is_reported_as_in_progress_not_as_an_error() -> None:
+    """The benign refusal, said benignly: the summary IS coming, and the
+    sentence says where it will arrive.
+
+    This is what the neutral ب-4أ wording could not commit to, because it had
+    to stay true of the other refusal as well."""
+    deps, _knowledge, _llm = make_deps(summary_blocked="in_progress")
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    assert [e.type for e in events] == ["token", "final"]
+    text = events[-1].data["text"]
+    assert text == (
+        "A summary of that file is still being prepared. It will reach you in "
+        "this conversation when it is ready."
+    )
+    assert events[-1].data["citations"] == []
+
+
+async def test_an_unindexed_document_is_not_reported_as_in_progress() -> None:
+    """**The guard this item was born for** (ت-3), on the agent's side.
+
+    The study's original advice was to catch the conflict here and say «ما زال
+    قيد الإعداد». That is a flat lie about a document with no indexed text:
+    nothing is being prepared, nothing will be, and a user told to wait waits
+    forever. The assertions are negative as well as positive — the sentence
+    must be the right one AND must not contain the promise the other one
+    makes."""
+    deps, _knowledge, _llm = make_deps(summary_blocked="not_indexed")
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    text = events[-1].data["text"]
+    assert text == (
+        "That file has not finished being indexed yet, so there is no text in it to summarise."
+    )
+    assert "still being prepared" not in text
+    assert "will reach you" not in text
+
+
+@pytest.mark.parametrize(
+    ("reason", "query", "expected"),
+    [
+        (
+            "in_progress",
+            "summarise the budget file",
+            "A summary of that file is still being prepared.",
+        ),
+        ("in_progress", "لخّص لي ملف الميزانية", "ما زال ملخّص هذا الملفّ قيد الإعداد."),
+        (
+            "not_indexed",
+            "summarise the budget file",
+            "That file has not finished being indexed yet,",
+        ),
+        ("not_indexed", "لخّص لي ملف الميزانية", "هذا الملفّ لم تكتمل فهرستُه بعد،"),
+    ],
+)
+async def test_the_agent_renders_each_blocked_reason_in_both_languages(
+    reason: str, query: str, expected: str
+) -> None:
+    """Four sentences, picked by the SAME `_ARABIC_CHAR_RE` presence check the
+    fallback, the receipt, the clarification and the corpus header all use.
+    One language mechanism in this agent, never a second one."""
+    deps, _knowledge, llm = make_deps(summary_blocked=reason)
+    events = await drive_run(RagAgent(make_ctx(), deps), query)
+
+    assert events[-1].data["text"].startswith(expected)
+    assert llm.stream_calls == []
+
+
+async def test_a_blocked_summary_names_the_file_the_module_named() -> None:
+    """ب-4ب meets ب-7أ. The name arrives across the seam already resolved, so
+    uttering it repeats the module's decision rather than asserting one — the
+    same licence the receipt has.
+
+    A refusal is where the name earns the most: «تعذّر البدء» about no file in
+    particular leaves a user who pinned one document and asked about another
+    with no way to see which one was refused."""
+    name = "التقرير الشمالي.pdf"
+    deps, _knowledge, _llm = make_deps(summary_blocked="in_progress", summary_target_name=name)
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    text = events[-1].data["text"]
+    assert text == f"ما زال ملخّص «{name}» قيد الإعداد. سيصلك في هذه المحادثة عند اكتماله."
+
+
+async def test_the_blocked_sentence_never_invents_a_name_the_module_did_not_send() -> None:
+    """**The containing guard**, and the receipt's guard restated for this
+    branch. The rule is the agent's: never echo a name you did not resolve.
+
+    The question names a file outright; the module sends no name. The answer
+    must fall back to the unnamed wording rather than lift the filename off
+    the query — an agent that repeats the user's phrasing as a resolved
+    filename is asserting a resolution nobody performed."""
+    deps, _knowledge, _llm = make_deps(summary_blocked="not_indexed")
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize budget-2025.xlsx")
+
+    text = events[-1].data["text"]
+    assert "budget-2025.xlsx" not in text
+    assert text.startswith("That file has not finished being indexed yet,")
+
+
+async def test_a_blocked_summary_never_calls_the_llm() -> None:
+    """A fact about a build, not an answer to synthesise — the receipt
+    branch's reason exactly. And no corpus header either: this answer already
+    concerns one named file, and the space's listing would answer a question
+    nobody asked."""
+    deps, knowledge, llm = make_deps(
+        summary_blocked="in_progress", document_names=["a.pdf", "b.pdf"]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    assert llm.stream_calls == []
+    assert knowledge.name_limit_calls == []
+    assert "a.pdf" not in events[-1].data["text"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "path"),
+    [
+        ("in_progress", "summary_blocked_in_progress"),
+        ("not_indexed", "summary_blocked_not_indexed"),
+    ],
+)
+async def test_a_blocked_summary_logs_its_reason_in_the_answer_record(
+    reason: str, path: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two paths, not one path with a flag — and here the argument is
+    unusually literal.
+
+    `summary_conflict` counting both refusals under one name IS gap ف-7
+    reproduced in the measurement (open item م-2). Folding the classified
+    cases back into it would have fixed the sentence a user reads and left the
+    number that says how often each case happens exactly as blind as it was.
+    """
+    deps, _knowledge, _llm = make_deps(summary_blocked=reason)
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    record = _answer_record(caplog)
+    assert record.path == path
+    assert record.llm_ms is None
+    assert record.error_type is None  # an ANSWER, not a failure
+
+
+async def test_a_blocked_summary_is_not_answered_as_a_targetless_one() -> None:
+    """**The containing guard** against ب-3 swallowing this branch.
+
+    A refused answer looks exactly like a targetless one from the outside —
+    intent `summarize_doc`, no job id, no candidates — so before the blocked
+    branch existed this turn would have been answered «Which file would you
+    like me to summarise?» about the one file the module had just named."""
+    deps, knowledge, _llm = make_deps(
+        summary_blocked="not_indexed",
+        summary_target_name="التقرير الشمالي.pdf",
+        document_names=["a.pdf"],
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    text = events[-1].data["text"]
+    assert "أيّ ملفّ تريد تلخيصه؟" not in text
+    assert text.startswith("الملفّ «التقرير الشمالي.pdf» لم تكتمل فهرستُه بعد،")
+    # The corpus listing is the targetless branch's answer, and it is not
+    # fetched here at all.
+    assert knowledge.name_limit_calls == []
+
+
+async def test_an_unrecognised_block_reason_falls_back_to_the_neutral_sentence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The forward-compatibility guard, and the reason `summary_blocked`
+    crosses the seam as a `str` rather than as an imported enum.
+
+    A module that grows a THIRD refusal must not break an agent that predates
+    it. The unknown reason degrades to the ب-4أ sentence — true of every
+    conflict, including ones this file has never heard of — rather than
+    raising or rendering a blank."""
+    deps, _knowledge, llm = make_deps(summary_blocked="some_future_reason")
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    assert llm.stream_calls == []
+    assert events[-1].data["text"].startswith("I couldn't start a summary of that file just now.")
+    # And it lands on `summary_conflict` — the SAME path an unclassified
+    # `ConflictError` lands on. The two ways a refusal can arrive unnamed
+    # count as one thing, which is what makes that number readable.
+    #
+    # ⚠️ It must NOT reach the trust-gate fallback. That was this method's
+    # first shape and it answered «I don't have enough information» to a
+    # refused summary while logging `fallback=True` — inflating §3.11's
+    # measurement of the gate firing with turns where retrieval never ran.
+    record = _answer_record(caplog)
+    assert record.path == "summary_conflict"
+    assert record.fallback is False
+
+
+async def test_an_unrecognised_reason_still_names_the_file_when_the_module_did() -> None:
+    """The name and the reason cross the seam SEPARATELY, so one being
+    unreadable says nothing about the other.
+
+    Withholding a perfectly good name because the reason beside it was
+    unrecognised would lose the one thing that makes «تعذّر البدء» actionable,
+    for no reason but the shape of the fallback."""
+    deps, _knowledge, _llm = make_deps(
+        summary_blocked="some_future_reason", summary_target_name="التقرير الشمالي.pdf"
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["text"] == (
+        "تعذّر بدءُ تلخيص «التقرير الشمالي.pdf» الآن."
+        " إن كان تلخيصٌ له قيد الإعداد فسيصلك في هذه المحادثة عند اكتماله."
+    )
+
+
+def test_the_agents_blocked_literals_match_the_modules_enum() -> None:
+    """**The drift test**, on `_INTENT_SUMMARIZE_DOC`'s exact model. ق-1
+    forbids this agent from importing `SummaryBlocked`, so the values are
+    copied as string literals — and a copy across an architectural boundary is
+    only safe while something compares the two.
+
+    Both directions matter. A renamed enum value would leave the branch
+    silently unreachable; a member with no entry in the agent's table would
+    fall to the neutral sentence forever, which is ف-7 quietly restored."""
+    assert {reason.value for reason in SummaryBlocked} == set(agent_module._SUMMARY_BLOCKED_REASONS)
+    assert SummaryBlocked.IN_PROGRESS.value == agent_module._BLOCKED_IN_PROGRESS
+    assert SummaryBlocked.NOT_INDEXED.value == agent_module._BLOCKED_NOT_INDEXED

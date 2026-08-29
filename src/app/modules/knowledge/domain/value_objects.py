@@ -98,6 +98,35 @@ class SummaryJobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class SummaryBlocked(StrEnum):
+    """WHY a requested summary build was refused (scenarios plan section 5,
+    ب-4ب, gap ف-7).
+
+    Two members because ``RequestSummary`` refuses for exactly two reasons,
+    and until this enum existed a caller could not tell them apart: both
+    arrive as ``ConflictError`` and both carry ``common.conflict``, so the
+    only thing separating "your summary is already being built" from "this
+    document has no text to summarise" was an exception message written for
+    a log. A caller that guessed said «ما زال قيد الإعداد» about a document
+    for which nothing was being prepared and nothing ever would be.
+
+    **A vocabulary, not a status.** Nothing stores this and nothing
+    transitions through it. It names the outcome of ONE call at the moment
+    it was refused, which is why it is not modelled on ``SummaryJobStatus``:
+    ``in_progress`` here is not a job's state but the reason THIS request
+    did not create a second one.
+
+    It is deliberately NOT a second error catalogue entry (ق-6). The wire
+    behaviour of the REST route is unchanged — the refusals stay
+    ``common.conflict``, stay 409, and stay one documented code — because
+    this distinction is for the caller that RENDERS a sentence, not for the
+    client that reads a status line.
+    """
+
+    IN_PROGRESS = "in_progress"
+    NOT_INDEXED = "not_indexed"
+
+
 @dataclass(frozen=True, slots=True)
 class VectorRef:
     """A pointer to an indexed Qdrant point: the owning collection + point id."""

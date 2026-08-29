@@ -41,6 +41,10 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError
 from app.framework.ports.llm_provider import LlmMessage, LlmParams, LlmResult
 from app.modules.knowledge.application import summarization as summarization_module
+from app.modules.knowledge.application.routing import (
+    SummaryBuildInProgress,
+    SummaryTargetNotIndexed,
+)
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
     SummaryBuildCancelled,
@@ -62,6 +66,7 @@ from app.modules.knowledge.domain.entities import Summary, SummaryJob
 from app.modules.knowledge.domain.errors import SummaryJobStateError
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
+    SummaryBlocked,
     SummaryJobStatus,
     SummaryKind,
     SummaryLanguage,
@@ -924,6 +929,80 @@ async def test_an_unindexed_document_is_a_conflict_not_an_empty_summary() -> Non
             _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
         )
     assert stack.outbox.event_types == []
+
+
+@pytest.mark.asyncio
+async def test_the_unindexed_refusal_says_which_refusal_it_is() -> None:
+    """ب-4ب (خطة السيناريوهات §5، ف-7) — the refusal above, typed.
+
+    The test one line up asserts it is a conflict, and that stayed true; this
+    one asserts WHICH conflict, because that is the thing no caller could
+    work out for itself. Both refusals share `ConflictError` and both carry
+    `common.conflict`, so a caller catching the exception knew only that
+    something conflicted -- and then had one sentence to write for two
+    opposite facts.
+
+    Read from the raiser rather than re-derived: a caller that asked "is this
+    document indexed?" for itself would be reading the same state a second
+    time, and getting a different answer whenever indexing finished in
+    between.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(
+        document_id="doc-1", workspace_id=_W1, status=IndexStatus.PENDING
+    )
+
+    with pytest.raises(SummaryTargetNotIndexed) as raised:
+        await stack.knowledge.request_summary.start(
+            _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
+
+    assert raised.value.reason is SummaryBlocked.NOT_INDEXED
+    # And nothing about the wire changed (ق-6).
+    assert isinstance(raised.value, ConflictError)
+    assert raised.value.code == "common.conflict"
+
+
+@pytest.mark.asyncio
+async def test_the_already_building_refusal_says_which_refusal_it_is() -> None:
+    """The other half, and the one whose sentence is a PROMISE: this summary
+    is coming, on the conversation the first request named. Saying that about
+    an unindexed document is the lie ب-4أ's neutral wording existed to
+    avoid."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+
+    await request.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+    with pytest.raises(SummaryBuildInProgress) as raised:
+        await request.execute(
+            _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
+
+    assert raised.value.reason is SummaryBlocked.IN_PROGRESS
+    assert isinstance(raised.value, ConflictError)
+    assert raised.value.code == "common.conflict"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_document_is_still_not_a_refusal() -> None:
+    """**The containing guard.** A document that does not exist is a
+    `NotFoundError` and stays one -- it is not a conflict, it is not a
+    refusal, and it has never been either.
+
+    Worth pinning because the two checks it sits above are now typed: the
+    temptation of a classification is to classify one case too many, and
+    "there is no such document" is a different answer to a different
+    question.
+    """
+    stack = build_knowledge()
+
+    with pytest.raises(NotFoundError):
+        await stack.knowledge.request_summary.start(
+            _ctx(), document_id="doc-missing", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
 
 
 @pytest.mark.asyncio

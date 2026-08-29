@@ -107,7 +107,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from app.agents.rag_agent.manifest import METADATA
@@ -196,10 +196,13 @@ _SUMMARY_TARGET_AR = "أيّ ملفّ تريد تلخيصه؟"
 # where «ما زال قيد الإعداد» would be a flat lie on the second — nothing is
 # being prepared for an unindexed document, and nothing will be.
 #
-# It is deliberately temporary. ب-4ب (الموجة 3) classifies the reason inside
-# the module, where the distinction lives, and replaces this single neutral
-# sentence with two exact ones. Until then a neutral truth beats a precise
-# falsehood.
+# ب-4ب (الموجة 3) has since classified the reason inside the module, where
+# the distinction lives, and this pair is no longer what a refused build
+# normally says — the two exact sentences below are. It stays because the
+# case it covers stays: a `ConflictError` the module did NOT classify still
+# reaches this agent, and a sentence true of every conflict is still the only
+# honest thing to say about one nobody named. It went from being the answer
+# to being the floor under it.
 _SUMMARY_BLOCKED_EN = (
     "I couldn't start a summary of that file just now. If one is already being "
     "prepared, it will reach you in this conversation when it is ready."
@@ -207,6 +210,64 @@ _SUMMARY_BLOCKED_EN = (
 _SUMMARY_BLOCKED_AR = (
     "تعذّر بدءُ تلخيص هذا الملفّ الآن. إن كان تلخيصٌ له قيد الإعداد فسيصلك في هذه المحادثة عند اكتماله."
 )
+# ب-4ب — and its named forms, because the module can now send a name on a
+# refusal it did NOT classify: the reason string crosses the seam unrecognised
+# while `summary_target_name` beside it is perfectly readable. Withholding the
+# name there would lose the one thing that turns «تعذّر البدء» into a sentence
+# a user can act on, for no reason but the shape of the fallback.
+_SUMMARY_BLOCKED_NAMED_EN = (
+    'I couldn\'t start a summary of "{name}" just now. If one is already being '
+    "prepared, it will reach you in this conversation when it is ready."
+)
+_SUMMARY_BLOCKED_NAMED_AR = (
+    "تعذّر بدءُ تلخيص «{name}» الآن. إن كان تلخيصٌ له قيد الإعداد فسيصلك في هذه المحادثة عند اكتماله."
+)
+
+# ب-4ب (خطة السيناريوهات §5، ف-7) — the two exact sentences the neutral pair
+# above was standing in for, now that `RoutedAnswerView.summary_blocked` says
+# which refusal happened.
+#
+# They are OPPOSITE promises, which is why one sentence could never serve
+# both: `in_progress` says the summary is coming and where it will arrive;
+# `not_indexed` says there is no text to summarise and — the part the neutral
+# wording had to leave out — that waiting will not help. A user told «سيصلك
+# عند اكتماله» about an unindexed file waits for something that was never
+# started.
+#
+# Four strings per reason, on `_summary_queued_answer`'s exact shape: a named
+# form and an unnamed one, in each language, the named differing from the
+# unnamed in the NAME and in nothing else. Same reason as there — two
+# wordings that drift become two different promises about the same state —
+# and the same rendering rule: the name is interpolated into a template and
+# quoted, never concatenated onto a prefix, because an Arabic sentence
+# carrying a Latin file name is bidirectional text.
+_BLOCKED_IN_PROGRESS_EN = (
+    "A summary of that file is still being prepared. It will reach you in this "
+    "conversation when it is ready."
+)
+_BLOCKED_IN_PROGRESS_AR = "ما زال ملخّص هذا الملفّ قيد الإعداد. سيصلك في هذه المحادثة عند اكتماله."
+_BLOCKED_IN_PROGRESS_NAMED_EN = (
+    'A summary of "{name}" is still being prepared. It will reach you in this '
+    "conversation when it is ready."
+)
+_BLOCKED_IN_PROGRESS_NAMED_AR = (
+    "ما زال ملخّص «{name}» قيد الإعداد. سيصلك في هذه المحادثة عند اكتماله."
+)
+_BLOCKED_NOT_INDEXED_EN = (
+    "That file has not finished being indexed yet, so there is no text in it to summarise."
+)
+_BLOCKED_NOT_INDEXED_AR = "هذا الملفّ لم تكتمل فهرستُه بعد، فلا نصَّ فيه لتلخيصه."
+_BLOCKED_NOT_INDEXED_NAMED_EN = (
+    'The file "{name}" has not finished being indexed yet, so there is no text in it to summarise.'
+)
+_BLOCKED_NOT_INDEXED_NAMED_AR = "الملفّ «{name}» لم تكتمل فهرستُه بعد، فلا نصَّ فيه لتلخيصه."
+
+# ب-4ب — the module's `SummaryBlocked` values, as LITERALS, for
+# `_INTENT_SUMMARIZE_DOC`'s reason exactly (ق-1: this agent imports no module
+# vocabulary) and guarded by the same kind of drift test
+# (`test_the_agents_blocked_literals_match_the_modules_enum`).
+_BLOCKED_IN_PROGRESS = "in_progress"
+_BLOCKED_NOT_INDEXED = "not_indexed"
 
 # ب-3 — the module's `Intent.SUMMARIZE_DOC` value, as a LITERAL.
 #
@@ -325,24 +386,100 @@ _PATH_EMPTY_COMPLETION = "empty_completion"
 _PATH_SUMMARY_TARGET_UNKNOWN = "summary_target_unknown"
 _PATH_SUMMARY_CONFLICT = "summary_conflict"
 _PATH_ERROR = "error"
+# ب-4ب — and the two the الموجة 3 classification added. They are separate
+# paths for the reason every path above is separate, and here the argument is
+# unusually literal: `summary_conflict` counting both refusals under one name
+# IS gap ف-7 reproduced in the measurement (open item م-2). Folding the
+# classified cases back into it would have fixed the sentence a user reads and
+# left the number that says how often each case happens exactly as blind as it
+# was. The prefix is shared so `summary_blocked_*` reads as one family, and
+# `summary_conflict` now counts only what stayed UNclassified.
+_PATH_SUMMARY_BLOCKED_IN_PROGRESS = "summary_blocked_in_progress"
+_PATH_SUMMARY_BLOCKED_NOT_INDEXED = "summary_blocked_not_indexed"
 _MS_PER_SECOND = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class _BlockedReason:
+    """One classified refusal (ب-4ب): its four sentences and the ``path`` its
+    turns are counted under.
+
+    A table rather than a branch per reason, and the reason is what happens to
+    a value that is NOT in it. ``summary_blocked`` crosses the seam as a
+    ``str`` precisely so the module can grow a third refusal without waiting
+    for this agent, and a lookup that misses is then the whole handling of
+    that case: it falls to the neutral ب-4أ sentence, which is true of every
+    conflict including ones this file has never heard of. An ``if/elif`` chain
+    would need someone to remember to write that last ``else``.
+    """
+
+    path: str
+    en: str
+    ar: str
+    named_en: str
+    named_ar: str
+
+
+_SUMMARY_BLOCKED_REASONS: Mapping[str, _BlockedReason] = {
+    _BLOCKED_IN_PROGRESS: _BlockedReason(
+        path=_PATH_SUMMARY_BLOCKED_IN_PROGRESS,
+        en=_BLOCKED_IN_PROGRESS_EN,
+        ar=_BLOCKED_IN_PROGRESS_AR,
+        named_en=_BLOCKED_IN_PROGRESS_NAMED_EN,
+        named_ar=_BLOCKED_IN_PROGRESS_NAMED_AR,
+    ),
+    _BLOCKED_NOT_INDEXED: _BlockedReason(
+        path=_PATH_SUMMARY_BLOCKED_NOT_INDEXED,
+        en=_BLOCKED_NOT_INDEXED_EN,
+        ar=_BLOCKED_NOT_INDEXED_AR,
+        named_en=_BLOCKED_NOT_INDEXED_NAMED_EN,
+        named_ar=_BLOCKED_NOT_INDEXED_NAMED_AR,
+    ),
+}
+
+# The row for a refusal this agent does NOT recognise — a third
+# `SummaryBlocked` member added on the module side before this file learned
+# it. Its sentences are ب-4أ's neutral pair, which is true of every conflict
+# including ones nobody here has heard of, and its path is
+# `summary_conflict`.
+#
+# **That is what gives `summary_conflict` its lasting meaning.** The two ways
+# a refusal can reach this agent unclassified — as a `ConflictError` the
+# module did not type, and as a reason string this table has no row for —
+# produce the same sentence and land on the same path, so the number counts
+# one thing: refusals nobody could name. A deployment where it stops being
+# near-zero has a real finding in it, and it says the same thing either way.
+_BLOCKED_UNCLASSIFIED = _BlockedReason(
+    path=_PATH_SUMMARY_CONFLICT,
+    en=_SUMMARY_BLOCKED_EN,
+    ar=_SUMMARY_BLOCKED_AR,
+    named_en=_SUMMARY_BLOCKED_NAMED_EN,
+    named_ar=_SUMMARY_BLOCKED_NAMED_AR,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class _FixedReply:
     """A turn answered WITHOUT the model: one fixed sentence and the ``path``
-    that names which of the five such exits produced it.
+    that names which of the six such exits produced it.
 
-    The five (retrieval plan §3.4/§3.5/§3.3, plus ب-3 and ب-4أ of the gap
-    plan): a queued summary's receipt · the clarification question · a
-    summarisation whose target is unknown · a refused build · the trust-gate
-    fallback. They are one TYPE and not five branches-with-their-own-emitter
+    The six (retrieval plan §3.4/§3.5/§3.3, plus ب-3, ب-4أ and ب-4ب of the
+    gap plan): a queued summary's receipt · a build refused for a reason the
+    module NAMED · the clarification question · a summarisation whose target
+    is unknown · a build refused for a reason nobody named · the trust-gate
+    fallback. They are one TYPE and not six branches-with-their-own-emitter
     because they owe the identical two events on the identical contract (ق-4),
     and the way to make that identical rather than merely intended is to give
     them one emit site in ``_answer``.
 
+    The two refusals are one exit each and not one exit with a flag, because
+    ``path`` is a MEASUREMENT: `summary_blocked_*` counts refusals the module
+    classified, `summary_conflict` counts the ones it did not, and a
+    deployment where the second number stops being near-zero has a real
+    finding in it.
+
     ``citations`` is not a field: a sentence this agent wrote itself cites
-    nothing, on all five. ``fallback`` is ``True`` on exactly one — the trust
+    nothing, on all six. ``fallback`` is ``True`` on exactly one — the trust
     gate — because that flag is §3.11's measurement of the gate firing, not a
     synonym for "no model was called".
     """
@@ -537,14 +674,110 @@ class RagAgent(BaseAgent):
         )
         yield AgentEvent(type="final", data={"text": text, "citations": citations})
 
+    def _routed_reply(self, query: str, routed: RoutedAnswerView) -> _FixedReply | None:
+        """The three answers that come from the ROUTING RESULT alone, or
+        ``None`` when this turn is not one of them.
+
+        They are grouped because they share two properties, and the second is
+        the interesting one. They need nothing but ``routed`` and the query's
+        language — no corpus, no chunks, no model. And they are exactly the
+        three that must NOT carry the corpus-awareness header: each already
+        names a file (or a list of them), and appending the whole space's
+        listing under a receipt, a refusal or a "which of these did you mean?"
+        would answer a question nobody asked and bury the one being asked.
+
+        So the split is not tidiness: ``_plan`` fetches the header immediately
+        after this call returns ``None``, and everything below that line is a
+        branch the header belongs to. Reaching this method's answers before
+        the fetch is what keeps that true.
+        """
+        if routed.summary_job_id is not None:
+            # The SUMMARIZE_DOC route ran and queued a build (retrieval plan
+            # §3.4). There is nothing to synthesise and nothing to cite: the
+            # summary is produced by a worker and read back through the
+            # summary routes, so the honest thing this turn can say is that
+            # the build was accepted. The LLM is never called, exactly as on
+            # `_plan`'s fallback branch.
+            #
+            # The corpus-awareness header is deliberately NOT prepended here,
+            # and it is not fetched either. س-23 = ج puts the header on the
+            # two ANSWERING paths — the one that answers from chunks and the
+            # one that admits it has none — because the header is what keeps
+            # "I don't know" from being uninformative. This branch is a
+            # receipt for an action on a document the caller ALREADY named;
+            # listing the workspace's files back at them would answer a
+            # question nobody asked.
+            #
+            # ب-7أ/ب-7ب (ف-2) — and the receipt NAMES the document
+            # now, when the module sent a name. It is the module's
+            # resolution being read back, not a name lifted off the
+            # query: see `_summary_queued_answer`. Without one the
+            # sentence is exactly what it was.
+            return _FixedReply(
+                self._summary_queued_answer(query, routed.summary_target_name),
+                _PATH_SUMMARY_RECEIPT,
+            )
+        blocked = self._blocked_reason(routed.summary_blocked)
+        if blocked is not None:
+            # ب-4ب (خطة السيناريوهات §5، ف-7) — the receipt branch's twin: the
+            # module was asked for a build and REFUSED, and it said which of
+            # its two refusals this was.
+            #
+            # It sits here, above the branches that follow, because a refused
+            # answer looks exactly like a targetless one from the outside —
+            # intent `summarize_doc`, no job id, no candidates — and ب-3 would
+            # answer it with «أيّ ملفّ تريد تلخيصه؟» about a file the module
+            # had just named. Order alone would be enough; `_is_targetless_
+            # summary` excludes it explicitly as well, so the exclusion is
+            # structural and survives someone moving these branches.
+            #
+            # The LLM is never called, for the receipt branch's reason: the
+            # sentence is a fact about a build, and there is nothing to
+            # synthesise. No corpus header either — this answer already names
+            # a file, and the space's listing would answer a question nobody
+            # asked.
+            #
+            # `_plan`'s `except ConflictError` still stands and is NOT dead:
+            # it catches the conflicts the module did not classify, and
+            # answers them in the neutral wording that is true of all of them.
+            # This branch is the precise case; that one is the floor.
+            return _FixedReply(
+                self._summary_blocked_reason_answer(query, blocked, routed.summary_target_name),
+                blocked.path,
+            )
+        if routed.clarification_options:
+            # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the module
+            # resolved the question's file name to SEVERAL documents (or to
+            # one it was not confident about) and refused to choose. The
+            # honest answer this turn is a question back, and it travels as
+            # ORDINARY ANSWER TEXT on the same two events every other answer
+            # uses: no new event type, no change to the streaming contract.
+            #
+            # The LLM is never called, exactly as on the receipt branch above
+            # and the fallback branch below: the sentence is built from the
+            # names the module handed over, so there is nothing for a model
+            # to improvise — and asking one to phrase the question could let
+            # it drop, merge or invent a candidate, which is the failure
+            # (§3.5) this whole path exists to prevent.
+            #
+            # No corpus-awareness header either, for the receipt branch's
+            # reason: this answer already names files, and appending the
+            # whole workspace listing under a question about three specific
+            # candidates would bury the choice it is asking the user to make.
+            question = self._clarification_question(query, routed.clarification_options)
+            return _FixedReply(question, _PATH_CLARIFICATION)
+        return None
+
     async def _plan(self, req: AgentRequest, turn: _TurnRecord) -> _FixedReply | _Synthesis:
         """Route the question and decide what this turn answers WITH — a fixed
         sentence, or a prompt for the model.
 
         Everything that can end a turn without the LLM returns a
-        ``_FixedReply`` from here; the one path that streams returns a
-        ``_Synthesis``. No event is emitted in this function, which is what
-        lets the five fixed replies share one emit site in ``_answer``.
+        ``_FixedReply`` from here — three of them through ``_routed_reply``,
+        which holds the branches answerable from the routing result alone; the
+        one path that streams returns a ``_Synthesis``. No event is emitted in
+        this function, which is what lets the six fixed replies share one emit
+        site in ``_answer``.
         """
         query = self._query(req)
         binding = self.deps.llm
@@ -654,53 +887,10 @@ class RagAgent(BaseAgent):
                 # see `_fetch_corpus_header` for the same rule stated for the
                 # one other call that is allowed to fail quietly.
                 return _FixedReply(self._summary_blocked_answer(query), _PATH_SUMMARY_CONFLICT)
-        if routed is not None and routed.summary_job_id is not None:
-            # The SUMMARIZE_DOC route ran and queued a build (retrieval plan
-            # §3.4). There is nothing to synthesise and nothing to cite: the
-            # summary is produced by a worker and read back through the
-            # summary routes, so the honest thing this turn can say is that
-            # the build was accepted. The LLM is never called, exactly as on
-            # the fallback branch below.
-            #
-            # The corpus-awareness header is deliberately NOT prepended here,
-            # and it is not fetched either. س-23 = ج puts the header on the
-            # two ANSWERING paths — the one that answers from chunks and the
-            # one that admits it has none — because the header is what keeps
-            # "I don't know" from being uninformative. This branch is a
-            # receipt for an action on a document the caller ALREADY named;
-            # listing the workspace's files back at them would answer a
-            # question nobody asked.
-            #
-            # ب-7أ/ب-7ب (ف-2) — and the receipt NAMES the document
-            # now, when the module sent a name. It is the module's
-            # resolution being read back, not a name lifted off the
-            # query: see `_summary_queued_answer`. Without one the
-            # sentence is exactly what it was.
-            return _FixedReply(
-                self._summary_queued_answer(query, routed.summary_target_name),
-                _PATH_SUMMARY_RECEIPT,
-            )
-        if routed is not None and routed.clarification_options:
-            # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the module
-            # resolved the question's file name to SEVERAL documents (or to
-            # one it was not confident about) and refused to choose. The
-            # honest answer this turn is a question back, and it travels as
-            # ORDINARY ANSWER TEXT on the same two events every other answer
-            # uses: no new event type, no change to the streaming contract.
-            #
-            # The LLM is never called, exactly as on the receipt branch above
-            # and the fallback branch below: the sentence is built from the
-            # names the module handed over, so there is nothing for a model
-            # to improvise — and asking one to phrase the question could let
-            # it drop, merge or invent a candidate, which is the failure
-            # (§3.5) this whole path exists to prevent.
-            #
-            # No corpus-awareness header either, for the receipt branch's
-            # reason: this answer already names files, and appending the
-            # whole workspace listing under a question about three specific
-            # candidates would bury the choice it is asking the user to make.
-            question = self._clarification_question(query, routed.clarification_options)
-            return _FixedReply(question, _PATH_CLARIFICATION)
+        if routed is not None:
+            routed_reply = self._routed_reply(query, routed)
+            if routed_reply is not None:
+                return routed_reply
         # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
         # is fetched whenever retrieval was attempted at all, so it is ready
         # for BOTH remaining branches: the trust-gate fallback (prepended to
@@ -775,11 +965,22 @@ class RagAgent(BaseAgent):
         """ب-3 (خطة الفجوات §3، ف-5) — was this a summarisation whose TARGET
         the module could not identify?
 
-        Three conditions, and each one excludes a route that already has its
+        Four conditions, and each one excludes a route that already has its
         own answer: the intent was a summarisation, no build was queued (that
-        is the receipt), and no candidates came back (that is the clarification
-        question). What is left is the case that used to fall silently through
+        is the receipt), no candidates came back (that is the clarification
+        question), and nothing was refused (ب-4ب — that is the blocked
+        branch). What is left is the case that used to fall silently through
         to the content route.
+
+        The fourth was added with ب-4ب because a refused build is INVISIBLE to
+        the other three: the module names a target, asks for a build, is told
+        no, and reports intent `summarize_doc` with no job and no candidates —
+        the exact shape this method was written to recognise. Answering it with
+        «أيّ ملفّ تريد تلخيصه؟» would ask which file the user meant about the
+        one file the module had just named. The blocked branch returns before
+        this method is reached, so this condition is belt to that braces: it
+        makes the exclusion a property of the predicate rather than of where
+        the branches happen to sit.
 
         The intent is matched as a STRING LITERAL rather than by importing
         ``Intent`` (ق-1) — precisely the widening ``RoutedAnswerView``
@@ -795,6 +996,7 @@ class RagAgent(BaseAgent):
             and routed.intent == _INTENT_SUMMARIZE_DOC
             and routed.summary_job_id is None
             and not routed.clarification_options
+            and routed.summary_blocked is None
         )
 
     @staticmethod
@@ -1029,6 +1231,52 @@ class RagAgent(BaseAgent):
         true of both, and which item replaces it with two exact ones.
         """
         return _SUMMARY_BLOCKED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_BLOCKED_EN
+
+    @staticmethod
+    def _blocked_reason(reason: str | None) -> _BlockedReason | None:
+        """The table row to answer a refusal from (ب-4ب), or ``None`` when
+        nothing was refused.
+
+        ``None`` means ONE thing here — no refusal at all — and a reason this
+        agent does not recognise is emphatically not that. It gets
+        ``_BLOCKED_UNCLASSIFIED``: a module that adds a third
+        ``SummaryBlocked`` member must not break an agent that predates it,
+        and the neutral ب-4أ sentence is true of every conflict, which is
+        exactly what makes it safe to fall back to.
+
+        Returning ``None`` for an unknown reason was the first shape of this
+        method and it was wrong in a way worth recording. It sent the turn on
+        through ``_plan``, past a targetless check that (correctly) excludes
+        refusals, and into the TRUST-GATE fallback — so a refused summary was
+        answered «I don't have enough information» and, worse, logged
+        ``fallback=True``, which is §3.11's measurement of the gate firing.
+        An unrecognised refusal would have inflated the one number that says
+        how often retrieval comes back empty.
+        """
+        if reason is None:
+            return None
+        return _SUMMARY_BLOCKED_REASONS.get(reason, _BLOCKED_UNCLASSIFIED)
+
+    @staticmethod
+    def _summary_blocked_reason_answer(
+        query: str, blocked: _BlockedReason, name: str | None = None
+    ) -> str:
+        """One classified refusal's sentence (ب-4ب), picked by the same two
+        checks every other sentence here is picked by: the query's language,
+        and whether the module sent a name.
+
+        The name is the module's own (``summary_target_name``), so uttering it
+        repeats a resolution rather than asserting one — the argument
+        ``_summary_queued_answer`` makes at length, and the reason this method
+        is allowed to name a file at all. A refusal is where naming earns the
+        most, too: «تعذّر البدء» about an unnamed file leaves a user who pinned
+        one document and asked about another with no way to see which one was
+        refused.
+        """
+        if name is not None and name.strip():
+            template = blocked.named_ar if _ARABIC_CHAR_RE.search(query) else blocked.named_en
+            return template.format(name=name.strip())
+        return blocked.ar if _ARABIC_CHAR_RE.search(query) else blocked.en
 
     @staticmethod
     def _clarification_question(query: str, options: Sequence[str]) -> str:

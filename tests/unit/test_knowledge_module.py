@@ -37,7 +37,11 @@ from app.modules.knowledge.application.retrieval import (
     RetrievalResult,
     RetrieveContext,
 )
-from app.modules.knowledge.application.routing import RouteQuestion
+from app.modules.knowledge.application.routing import (
+    RouteQuestion,
+    SummaryBuildInProgress,
+    SummaryTargetNotIndexed,
+)
 from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_CORPUS_NAMES,
     _LIST_PAGE_SIZE,
@@ -64,6 +68,7 @@ from app.modules.knowledge.domain.sparse import build_sparse_terms
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     ParentChunkText,
+    SummaryBlocked,
     SummaryJobStatus,
     SummaryKind,
     SummaryLanguage,
@@ -747,12 +752,17 @@ class _FakeSummaryStarter:
     queued job, the way the real ``RequestSummaryService`` does once its unit
     of work commits."""
 
-    def __init__(self) -> None:
+    def __init__(self, raises: Exception | None = None) -> None:
         self.calls: list[tuple[str, SummaryKind, SummaryLanguage]] = []
         # `F-7` — recorded SEPARATELY rather than widened into `calls`: the
         # thread is not part of the build key, and folding it into the tuple
         # every existing assertion compares would have said it was.
         self.threads: list[str | None] = []
+        # ب-4ب (خطة السيناريوهات §5، ف-7) — how this capability says NO.
+        # `RequestSummary`'s two refusals are the whole subject of that item,
+        # and a router that classifies them can only be tested against a
+        # starter that raises them.
+        self._raises = raises
 
     async def start(
         self,
@@ -765,6 +775,11 @@ class _FakeSummaryStarter:
     ) -> SummaryJob:
         self.calls.append((document_id, kind, lang))
         self.threads.append(conversation_id)
+        # Recorded BEFORE it raises: a refusal is still a request that was
+        # MADE, and a test about classification wants to see the router got
+        # as far as asking.
+        if self._raises is not None:
+            raise self._raises
         return SummaryJob(
             id=f"job-{len(self.calls)}",
             workspace_id=ctx.workspace_id,
@@ -2208,6 +2223,7 @@ async def _routing_service(
     *,
     documents: _FakeDocumentRepository | None = None,
     files: _FakeReadableFiles | None = None,
+    summaries: _FakeSummaryStarter | None = None,
 ) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
     """The service over the REAL `RouteQuestion`, the REAL `RetrieveContext`
     and the REAL `ListFileCandidates`/`resolve_file`, on the two-file corpus
@@ -2220,13 +2236,15 @@ async def _routing_service(
     behaviour the tests written before it assert.
 
     `documents` swaps in a different corpus (row 15 needs a third file that
-    is named but holds nothing), and `files` lets a test keep its OWN
-    reference to the seam so it can count the `get_readable` walk — both
-    keyword-only, both defaulting to what every earlier test already gets.
+    is named but holds nothing), `files` lets a test keep its OWN reference to
+    the seam so it can count the `get_readable` walk, and `summaries` lets one
+    hand over a starter that REFUSES (ب-4ب) — all keyword-only, all defaulting
+    to what every earlier test already gets.
     """
     if documents is None:
         documents = await _indexed_corpus(ctx, embeddings, vectors)
-    summaries = _FakeSummaryStarter()
+    if summaries is None:
+        summaries = _FakeSummaryStarter()
     if files is None:
         files = (
             _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
@@ -2589,6 +2607,183 @@ async def test_a_content_answer_names_no_summary_target() -> None:
 
     assert routed.intent is Intent.CONTENT
     assert routed.summary_target_name is None
+
+
+# ------------------------------------------------------------------ #
+# The REFUSAL, classified (scenarios plan §5, ب-4ب — gap ف-7 in full) #
+# ------------------------------------------------------------------ #
+async def test_an_active_build_is_reported_as_in_progress_not_as_an_error() -> None:
+    """ب-4ب: a second request for a build already running comes back as an
+    ANSWER carrying a reason, not as an exception climbing out of the module.
+
+    The route keeps everything true of the turn — it WAS a summarisation, it
+    IS about this document — and drops only the job id, because no job was
+    made. That is what lets a caller answer the question that was asked
+    instead of rendering a fault.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(SummaryBuildInProgress("already building")),
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.summary_blocked is SummaryBlocked.IN_PROGRESS
+    assert routed.summary_job_id is None
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    # The build WAS asked for -- the refusal is the module's answer to a real
+    # request, not a request the router declined to make.
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_an_unindexed_document_is_not_reported_as_in_progress() -> None:
+    """**The guard this whole item was born for** (ت-3).
+
+    `RequestSummary` refuses from two places under ONE error code, and the
+    study's original advice -- catch the conflict and say «ما زال قيد
+    الإعداد» -- is a flat lie on the second: nothing is being prepared for a
+    document with no indexed text, and nothing ever will be. A user told to
+    wait waits for something that was never started.
+
+    So the assertion is negative as well as positive. `NOT_INDEXED` is right;
+    what matters as much is that it is NOT the other one.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(SummaryTargetNotIndexed("not indexed")),
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.summary_blocked is SummaryBlocked.NOT_INDEXED
+    assert routed.summary_blocked is not SummaryBlocked.IN_PROGRESS
+    assert routed.summary_job_id is None
+
+
+async def test_a_refused_build_still_names_the_document_it_was_about() -> None:
+    """ب-4ب meets ب-7أ: the target's name SURVIVES the refusal.
+
+    It would have been easy to drop with the job id, and dropping it would
+    have cost exactly the case ف-2 is about -- a thread pinned to one file
+    and a user asking about another. «تعذّر البدء» about no file in
+    particular tells that user nothing; «تعذّر بدء تلخيص «التقرير
+    الشمالي»» tells them the module was working on the wrong document.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(SummaryBuildInProgress("already building")),
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.summary_target_name == "التقرير الشمالي.pdf"
+    assert routed.summary_blocked is SummaryBlocked.IN_PROGRESS
+
+
+async def test_a_pinned_refusal_names_its_target_too() -> None:
+    """س-21 at its worst, refused: the pinned path buys its name (ب-7ب)
+    BEFORE the build is asked for, so the name is in hand when the answer
+    turns out to be no."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(SummaryTargetNotIndexed("not indexed")),
+    )
+
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
+
+    assert routed.summary_blocked is SummaryBlocked.NOT_INDEXED
+    assert routed.summary_target_name == "التقرير الشمالي.pdf"
+
+
+async def test_a_conflict_that_is_not_a_summary_refusal_still_escapes() -> None:
+    """**The containing guard.** The catch is `SummaryRefused`, not
+    `ConflictError`, and the difference is the point: a conflict from
+    somewhere else in that call is not a refusal this route can classify, and
+    swallowing it would report `summary_blocked=None` about a turn that
+    genuinely failed.
+
+    Narrowing the catch is what keeps the branch honest -- it reports a
+    reason only when it was HANDED one.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(ConflictError("some other conflict")),
+    )
+
+    with pytest.raises(ConflictError):
+        await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+
+async def test_an_accepted_build_reports_no_blocking_reason() -> None:
+    """The containing guard on the other side: the field says a build was
+    REFUSED, so every outcome that was not carries `None` -- the accepted
+    build, the clarification question, and every CONTENT answer."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    queued = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+    content = await service.answer(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
+
+    assert queued.summary_job_id == "job-1"
+    assert queued.summary_blocked is None
+    assert content.intent is Intent.CONTENT
+    assert content.summary_blocked is None
+
+
+def test_both_refusals_keep_the_one_conflict_error_code() -> None:
+    """ق-6: a new error CODE is a change to a closed catalogue, and ب-4ب
+    deliberately makes none.
+
+    Both refusals stay `ConflictError` and stay `common.conflict`, so the
+    REST route still answers 409 with the code it always answered with, the
+    error catalogue still holds one entry for this, and any `except
+    ConflictError` written before these classes existed still catches both.
+    The distinction is for a caller that renders a SENTENCE, and it cost the
+    wire nothing.
+    """
+    for refusal in (SummaryTargetNotIndexed("x"), SummaryBuildInProgress("y")):
+        assert isinstance(refusal, ConflictError)
+        assert refusal.code == "common.conflict"
+    # And they are genuinely two, not one class read two ways.
+    assert SummaryTargetNotIndexed.reason is not SummaryBuildInProgress.reason
+
+
+def test_every_blocked_reason_has_a_refusal_that_raises_it() -> None:
+    """The vocabulary and the raisers are the same set.
+
+    A `SummaryBlocked` member no exception produces is a reason no caller can
+    ever see; an exception whose reason is not a member could not cross the
+    seam at all. Pinning the two together is what stops a third refusal from
+    being added on one side only.
+    """
+    raised = {cls.reason for cls in (SummaryTargetNotIndexed, SummaryBuildInProgress)}
+    assert raised == set(SummaryBlocked)
 
 
 async def test_a_tie_comes_back_as_names_to_ask_the_user_about_and_queues_nothing() -> None:

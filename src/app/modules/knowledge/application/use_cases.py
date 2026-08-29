@@ -69,7 +69,12 @@ from app.framework.types import Uuid
 from app.modules.knowledge.application.event_mapping import to_outbox_record
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
 from app.modules.knowledge.application.retrieval import RetrieveContext, require_space_scope
-from app.modules.knowledge.application.routing import RouteQuestion, SummaryStarting
+from app.modules.knowledge.application.routing import (
+    RouteQuestion,
+    SummaryBuildInProgress,
+    SummaryStarting,
+    SummaryTargetNotIndexed,
+)
 from app.modules.knowledge.application.summarization import (
     SummarizeDocument,
     SummaryBuildCancelled,
@@ -1041,15 +1046,23 @@ class RequestSummary:
         document = await self._documents.get(ctx, document_id)
         if document is None:
             raise NotFoundError("document not found")
+        # ب-4ب (scenarios plan section 5, gap ف-7) — the two refusals below are
+        # `ConflictError` SUBCLASSES now, and everything about this route is
+        # unchanged by that: both still carry `common.conflict`, both still
+        # answer 409, and the catalogue still holds one entry (ق-6). What is
+        # new is that a caller which renders a SENTENCE can tell them apart
+        # without matching on a message written for a log — and these two
+        # deserve opposite sentences. The order of the checks stays what it
+        # was; the type each one raises is what changed.
         if document.status is not IndexStatus.INDEXED:
-            raise ConflictError(
+            raise SummaryTargetNotIndexed(
                 f"document {document.id} is not indexed (status {document.status.value!r})"
                 " and has no text to summarise"
             )
 
         active = await self._jobs.active_for(ctx, document_id, kind, lang)
         if active is not None:
-            raise ConflictError(
+            raise SummaryBuildInProgress(
                 f"a {kind.value} summary of this document in {lang.value}"
                 f" is already being built (job {active.id})"
             )

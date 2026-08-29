@@ -170,6 +170,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import ConflictError
 from app.framework.types import Uuid
 from app.modules.knowledge.application.retrieval import RetrieveContext, require_space_scope
 from app.modules.knowledge.domain.entities import SummaryJob
@@ -186,7 +187,11 @@ from app.modules.knowledge.domain.intent import (
     asks_for_full_summary,
     classify_intent,
 )
-from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
+from app.modules.knowledge.domain.value_objects import (
+    SummaryBlocked,
+    SummaryKind,
+    SummaryLanguage,
+)
 from app.modules.knowledge.ports.inbound import RoutedAnswer
 
 # What a routed summarisation asks for. Neither is a `Settings` knob (س-24
@@ -257,6 +262,10 @@ class SummaryStarting(Protocol):
     it was called from so the build can say where its text is owed, and never
     reads it back. A default keeps every caller that has no thread — the REST
     route among them — calling this exactly as before.
+
+    **It refuses in two ways, and they are named below** (``SummaryRefused``
+    and its two subclasses, ب-4ب). A Protocol cannot declare what a call
+    raises, so that declaration is those classes sitting beside this one.
     """
 
     async def start(
@@ -268,6 +277,60 @@ class SummaryStarting(Protocol):
         lang: SummaryLanguage,
         conversation_id: Uuid | None = None,
     ) -> SummaryJob: ...
+
+
+class SummaryRefused(ConflictError):
+    """``SummaryStarting.start`` declined to queue a build, and ``reason``
+    says which of its refusals this was (ب-4ب, gap ف-7).
+
+    A Protocol cannot declare what a call raises, so the refusal vocabulary
+    sits beside the Protocol it belongs to. These are the failure modes of
+    ``start``, and the router reads them here for the same reason it depends
+    on ``SummaryStarting`` rather than on ``RequestSummaryService``: what it
+    needs is "how this capability says no", not the use case that says it.
+
+    **Subclasses of ``ConflictError``, and that is the whole compatibility
+    story.** ``code`` is inherited untouched, so every caller that does not
+    know these classes exist keeps behaving exactly as it did: the REST route
+    still answers 409 ``common.conflict``, the error catalogue still has one
+    entry for this (ق-6), and ``except ConflictError`` anywhere still catches
+    both. Nothing was widened except what a caller MAY now know.
+
+    **Read from the raiser, never re-derived.** The alternative was a
+    pre-check — ask whether the document is indexed, ask whether a build is
+    active, then call ``start``. That reads the same state twice and lies
+    when it changes in between: a build that finishes between the check and
+    the call turns "in progress" into a stale answer, and an indexing run
+    that completes turns "not indexed" into one. This class carries the
+    reason the authority itself used, at the instant it decided, and costs
+    nothing on the path where the build is accepted.
+    """
+
+    reason: SummaryBlocked
+
+
+class SummaryTargetNotIndexed(SummaryRefused):
+    """The document has no indexed text, so there is nothing to summarise —
+    and nothing is being prepared (``RequestSummary``'s FIRST refusal).
+
+    The one that made the neutral wording necessary (ب-4أ): a caller
+    reporting this as "still being prepared" is not merely imprecise, it
+    promises an arrival that will never happen.
+    """
+
+    reason = SummaryBlocked.NOT_INDEXED
+
+
+class SummaryBuildInProgress(SummaryRefused):
+    """A build for this exact key is already queued or running, so this
+    request would have been a second one (``RequestSummary``'s SECOND
+    refusal).
+
+    The benign half: the summary the caller asked for IS coming, on the
+    conversation the first request named.
+    """
+
+    reason = SummaryBlocked.IN_PROGRESS
 
 
 class FileCandidates(Protocol):
@@ -362,11 +425,16 @@ class RouteQuestion:
         to the search alone would let an unscoped call resolve a file name
         across every space first and be refused second.
 
-        Errors from the summary route are NOT translated: an already-running
-        build for the same key is a ``ConflictError`` and reaches the caller
-        as one, exactly as it does on the REST route. Turning it into a
-        friendly sentence is a rendering decision that belongs to whoever is
-        rendering (recorded in the plan's §7).
+        Refusals from the summary route are CLASSIFIED but still not
+        TRANSLATED, and the difference is the whole of ب-4ب. A refused build
+        comes back as an ordinary ``RoutedAnswer`` carrying
+        ``summary_blocked`` — the module says WHICH of the two refusals it
+        was, because only the module can (they share ``ConflictError``, they
+        share ``common.conflict``) — and it says nothing about how to word
+        it. Wording stays a rendering decision belonging to whoever renders,
+        exactly as before. Every OTHER error still travels untouched: a
+        ``ConflictError`` that is not a ``SummaryRefused`` reaches the caller
+        as one, exactly as it does on the REST route.
 
         ``conversation_id`` reaches ONE of the two routes (`F-7`). It is the
         thread this question was asked in, and SUMMARIZE_DOC stamps it on the
@@ -410,6 +478,10 @@ class RouteQuestion:
             # the answer was retrieved under, and the citations already
             # say which file every sentence came from.
             summary_target_name=None,
+            # ب-4ب — and nothing was refused either. This route never
+            # asked for a build, which is a different thing from asking
+            # and being told no.
+            summary_blocked=None,
         )
 
     async def _summarisation_route(
@@ -424,10 +496,17 @@ class RouteQuestion:
         """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
         and the question should fall through to CONTENT retrieval.
 
-        Three outcomes, and the missing fourth is the point (plan §3.5):
-        a queued build when the target is identified, a set of names to ask
-        the user about when it is not, ``None`` when the question names
-        nothing in this corpus at all — and never a best guess.
+        Four outcomes, and the one still missing is the point (plan §3.5): a
+        queued build when the target is identified, a REFUSED build when it is
+        identified and the module declined to queue one (ب-4ب), a set of names
+        to ask the user about when it is not identified, ``None`` when the
+        question names nothing in this corpus at all — and never a best guess.
+
+        The refusal joined the other three instead of escaping as an exception
+        because it is an OUTCOME of routing a question, not a failure to route
+        one: the target WAS resolved, and what came back is a fact about that
+        target. Its reason is read off the raiser (``SummaryRefused``), never
+        re-derived from state this frame could query a second time.
 
         The DEPTH comes from ``question`` on every one of those outcomes that
         queues anything (`F-8`): the pinned path and the resolved path share
@@ -473,6 +552,9 @@ class RouteQuestion:
                     # and the names that matter this turn are already
                     # crossing as `clarification_options`.
                     summary_target_name=None,
+                    # ب-4ب — a question, not a refusal. `start` was never
+                    # reached, so there is no reason to report.
+                    summary_blocked=None,
                 )
             if not isinstance(resolution, ResolvedFile):
                 return None
@@ -481,20 +563,52 @@ class RouteQuestion:
             # of the document it chose, so this is a read, not a
             # second lookup and not a derivation.
             target_name = resolution.file_name
-        job = await self._summaries.start(
-            ctx,
-            document_id=target,
-            # `F-8` — the default depth unless the question asked for the
-            # whole document. Read from the QUESTION, never from the target:
-            # what the user said does not change with how the file was found.
-            kind=_routed_summary_kind(question),
-            lang=_ROUTED_SUMMARY_LANG,
-            # `F-7` — the thread that asked, so the build can post its text
-            # back here rather than into a route nobody is watching. The
-            # AMBIGUOUS branch above deliberately passes nothing: it queues no
-            # build, and the question it returns is answered in this same turn.
-            conversation_id=conversation_id,
-        )
+        try:
+            job = await self._summaries.start(
+                ctx,
+                document_id=target,
+                # `F-8` — the default depth unless the question asked for the
+                # whole document. Read from the QUESTION, never from the
+                # target: what the user said does not change with how the file
+                # was found.
+                kind=_routed_summary_kind(question),
+                lang=_ROUTED_SUMMARY_LANG,
+                # `F-7` — the thread that asked, so the build can post its text
+                # back here rather than into a route nobody is watching. The
+                # AMBIGUOUS branch above deliberately passes nothing: it queues
+                # no build, and the question it returns is answered in this
+                # same turn.
+                conversation_id=conversation_id,
+            )
+        except SummaryRefused as refusal:
+            # ب-4ب (scenarios plan section 5, gap ف-7) — the FOURTH outcome,
+            # and the one this route used to have no shape for.
+            #
+            # It is caught HERE and not by the caller because the caller
+            # cannot tell the two refusals apart: they share `ConflictError`,
+            # they share `common.conflict`, and the only other witness is an
+            # exception message. ق-3 puts the classification in the module,
+            # and this is the frame where the module still knows which call
+            # was refused and which document it was for.
+            #
+            # `SummaryRefused` and NOT `ConflictError`: a conflict from
+            # somewhere else in this call is not a summary refusal and must
+            # keep travelling as one, to the caller's own neutral handling.
+            # Narrowing the catch is what keeps this branch honest — it
+            # reports a reason only when it was HANDED one.
+            #
+            # The answer keeps `intent` and `summary_target_name` and drops
+            # only `summary_job_id`, which is the truth of the turn: a
+            # summarisation was asked for, this is the document it was about,
+            # and no build came of it.
+            return RoutedAnswer(
+                intent=Intent.SUMMARIZE_DOC,
+                chunks=(),
+                summary_job_id=None,
+                clarification_options=(),
+                summary_target_name=target_name,
+                summary_blocked=refusal.reason,
+            )
         return RoutedAnswer(
             intent=Intent.SUMMARIZE_DOC,
             chunks=(),
@@ -505,6 +619,8 @@ class RouteQuestion:
             # build it could not name (an unreadable file), never
             # that it did not look.
             summary_target_name=target_name,
+            # ب-4ب — the build was accepted, so nothing is blocking it.
+            summary_blocked=None,
         )
 
     async def _pinned_name(

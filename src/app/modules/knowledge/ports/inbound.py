@@ -14,6 +14,7 @@ from typing import Protocol
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.types import Uuid
 from app.modules.knowledge.domain.intent import Intent
+from app.modules.knowledge.domain.value_objects import SummaryBlocked
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 
@@ -112,6 +113,34 @@ class RoutedAnswer:
     wording forever, which is the exact failure ف-2 is — and it would
     look like the honest "the module could not name it" case. Every
     construction site says which one it means.
+
+    ``summary_blocked`` (scenarios plan section 5, ب-4ب, gap ف-7) is the
+    FOURTH outcome of the summarisation route and the sixth field: the
+    module resolved a target, asked for a build, and was refused — and
+    this says WHICH refusal it was.
+
+    **It exists because the caller cannot work it out.** Both refusals
+    are ``ConflictError`` and both carry ``common.conflict``, so a caller
+    catching the exception knows only that something conflicted. It then
+    has one sentence to write for two opposite facts: a summary that IS
+    coming, and a document that has no text and never will. The neutral
+    wording that covers both (ب-4أ) was the honest answer to that, and
+    this field is what retires it.
+
+    **A REASON, never a sentence.** The module classifies because only
+    the module can; it does not word, because س-18's rule stands — the
+    caller owns the voice, its language and its phrasing. That is the
+    same division ``clarification_options`` draws, one field over.
+
+    ``summary_job_id`` and ``summary_blocked`` are never both set: one
+    says a build was accepted, the other that it was refused. But
+    ``summary_target_name`` survives a refusal and is meant to — the
+    refusal is ABOUT a document, and naming it is what turns «تعذّر
+    البدء» into a sentence a user can act on.
+
+    **No default**, for ``summary_target_name``'s reason exactly: a
+    refusal that forgot to report itself would inherit ``None`` and be
+    indistinguishable from an ordinary answer, which is ف-7 restored.
     """
 
     intent: Intent
@@ -119,6 +148,7 @@ class RoutedAnswer:
     summary_job_id: Uuid | None
     clarification_options: tuple[str, ...]
     summary_target_name: str | None
+    summary_blocked: SummaryBlocked | None
 
 
 class KnowledgeRetrieval(Protocol):
