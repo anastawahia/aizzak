@@ -184,6 +184,26 @@ class RoutedAnswerView(Protocol):
     ``None`` whenever nothing was stored, which is every other outcome —
     including a build that was queued, since a queued build is what "nothing
     was stored" leads to.
+
+    ``best_dense_score``/``best_bm25_score`` (scenarios plan section 8, ب-11,
+    gap ف-6) are the retrieval's own raw confidence, and the only members here
+    an agent is expected to LOG rather than read: the highest score each leg
+    of the search returned, straight off the module's ``RetrievalResult``.
+
+    **Crossing this seam is the whole item, and what does NOT cross with them
+    is half of it.** No threshold arrives, because none is wanted: ق-2 keeps a
+    numeric cut-off out of the agent, and ت-1 showed the cut-offs are already
+    calibrated and applied a layer below. An agent that compared these against
+    a constant of its own would be re-deciding, from the outside and with less
+    information, something the module has already decided — and would pin a
+    tuning number inside a plugin that reads no configuration (ح-11). What the
+    agent adds is the one thing only it has: the turn's OUTCOME, in the same
+    record. The pairing is the measurement.
+
+    ``float | None`` and never a bare ``float``: ``None`` means that leg
+    returned nothing, and it is also what every summarisation outcome carries,
+    having searched nothing at all. An agent that read ``0.0`` there would file
+    turns that ran no query into the distribution of turns that did.
     """
 
     @property
@@ -200,6 +220,10 @@ class RoutedAnswerView(Protocol):
     def summary_blocked(self) -> str | None: ...
     @property
     def stored_summary_text(self) -> str | None: ...
+    @property
+    def best_dense_score(self) -> float | None: ...
+    @property
+    def best_bm25_score(self) -> float | None: ...
 
 
 class KnowledgeAccess(Protocol):

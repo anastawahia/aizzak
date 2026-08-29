@@ -47,10 +47,12 @@ fell through to bare ``SYSTEM_PROMPT`` with no context, and the model would
 answer from its OWN parametric knowledge as though it were sourced from the
 user's documents — silent hallucination presented as a sourced fact. س-22 = أ
 closes only this EXPLICIT zero-chunks case, with NO numeric confidence
-threshold: ``RetrievalResult.best_dense_score``/``best_bm25_score`` (step 4,
-``P-28``) are not consumed here, and "weak chunks" stays an accepted open
-risk until an evaluation set exists (§6 risk 2). See ``_fallback_answer`` /
-``run`` for the branch itself.
+threshold, and ب-11 did not add one: ``best_dense_score``/``best_bm25_score``
+(step 4, ``P-28``) are now READ — onto the turn's record, beside its outcome —
+and still never COMPARED to anything here. "Weak chunks" remains an accepted
+open risk (§6 risk 2), and the item's whole argument is that the way out of it
+is a measured distribution rather than a constant this file invents. See
+``_fallback_answer`` / ``run`` for the branch itself.
 
 **Corpus awareness (retrieval plan §3.6/§4 row 6, ``P-36``, decision س-23 =
 ج):** ``_corpus_header`` builds this workspace's file-name header — the names
@@ -71,7 +73,12 @@ can never describe two different corpora.
 **Answer measurements (retrieval plan §3.11/§4 row 17, ``P-29``, س-25 = أ):**
 ``run`` emits ONE ``rag_agent.answer`` record per turn — ``path`` ·
 ``retrieval_attempted`` · ``context_nodes`` · ``fallback`` · ``llm_ms`` ·
-``total_ms`` · ``error_type`` (see ``_log_answer``). ``llm_ms`` lives HERE and
+``total_ms`` · ``error_type`` · ``best_dense_score`` · ``best_bm25_score``
+(see ``_log_answer``). The last two are ب-11's (§8, gap ف-6) and they are the
+only fields here the module also logs from its own side — deliberately: over
+there they sit beside how the SEARCH went, and here beside what the turn
+finally SAID, which is the pairing neither record could make alone.
+``llm_ms`` lives HERE and
 nowhere else: the knowledge module's own ``knowledge.retrieval`` record
 measures retrieval, but the provider stream is this agent's, and the no-LLM
 branches below are the only place that can honestly report ``null`` for it.
@@ -93,6 +100,12 @@ from a technical error event into a neutral sentence. ب-5 makes a failing turn
 emit a record instead of a silence. ب-6 warns once when a turn runs with no
 space, the safe-but-silent degraded path (ق-7). Each carries its own ``path``
 name so none of them can hide inside a successful one.
+
+**الموجة 6 (§8):** two small additions and no new branch. ب-11 writes the
+retrieval confidence into the turn's record (above), and ب-12 puts an explicit
+one-based ``rank`` on every citation (``_citation``) so a client marking the
+first source reads a number rather than trusting an array's order to survive
+everything between here and a screen. Neither changes what any turn answers.
 
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
@@ -552,6 +565,21 @@ class _TurnRecord:
     before it could ask (a blank query, an unbound LLM) genuinely attempted no
     retrieval, so the default is the truth rather than a placeholder.
 
+    ب-11 (خطة السيناريوهات section 8، ف-6) put the two retrieval confidence
+    scores here for the same reason and by the same route: they are learned in
+    the BODY, off the routed answer, and they are owed to a record emitted one
+    frame out. Carrying them on this class is also what puts them on the ERROR
+    record — a turn that retrieved successfully and then failed in the model
+    reports what retrieval had found, which is exactly the pairing a failure
+    is worth reading against.
+
+    Both default to ``None`` and it is the same ``None`` the seam sends: no
+    search reported a score. A turn that never reached retrieval and a leg
+    that returned no hits are indistinguishable here, deliberately — the
+    difference between them is already carried by ``retrieval_attempted`` and
+    by the ``path``, and inventing a second spelling of "no number" would put
+    a value into the distribution that no search produced.
+
     Not frozen, and it is the only mutable value this agent holds — for one
     turn, on one stack, never shared. Everything else here stays the frozen
     carrier the kernel's convention asks for.
@@ -559,6 +587,8 @@ class _TurnRecord:
 
     started: float
     retrieval_attempted: bool = False
+    best_dense_score: float | None = None
+    best_bm25_score: float | None = None
 
 
 class RagAgent(BaseAgent):
@@ -608,6 +638,12 @@ class RagAgent(BaseAgent):
                 llm_ms=None,
                 started=turn.started,
                 error_type=type(exc).__name__,
+                # ب-11 — whatever retrieval had reported before the turn
+                # broke. `None` when it never got that far, which is itself
+                # the useful reading: a failure before retrieval and a
+                # failure after it are different faults.
+                best_dense_score=turn.best_dense_score,
+                best_bm25_score=turn.best_bm25_score,
             )
             raise
 
@@ -639,6 +675,13 @@ class RagAgent(BaseAgent):
                 fallback=plan.fallback,
                 llm_ms=None,
                 started=turn.started,
+                # ب-11 — and the trust-gate fallback is the single most
+                # valuable row this field has: `path=fallback` with a
+                # `best_dense_score` beside it is a turn that searched, found
+                # something, and still apologised. That pairing is what any
+                # re-calibration would be read off.
+                best_dense_score=turn.best_dense_score,
+                best_bm25_score=turn.best_bm25_score,
             )
             yield AgentEvent(type="token", data={"delta": plan.text})
             final: Json = {"text": plan.text, "citations": []}
@@ -672,7 +715,15 @@ class RagAgent(BaseAgent):
                 yield AgentEvent(type="token", data={"delta": chunk.delta})
         llm_ms = _elapsed_ms(llm_started)
         text = "".join(answer)
-        citations: list[dict[str, str | int | None]] = [self._citation(c) for c in plan.chunks]
+        citations: list[dict[str, str | int | None]] = [
+            # ب-12 (خطة السيناريوهات section 8، ف-12) — the rank is the
+            # ENUMERATION, one-based, over the list exactly as it arrived.
+            # Nothing here sorts: the module hands these over in descending
+            # relevance already, and this agent's not re-ordering them is
+            # pinned by a test older than this item.
+            self._citation(chunk, rank)
+            for rank, chunk in enumerate(plan.chunks, start=1)
+        ]
         path = _PATH_SYNTHESIS
         # `strip()`, not `if not text`: a reply of whitespace alone is as empty
         # as no reply at all, and reaches the orchestrator's JSON fallback by
@@ -714,6 +765,9 @@ class RagAgent(BaseAgent):
             fallback=False,
             llm_ms=llm_ms,
             started=turn.started,
+            # ب-11 — the answered turn's half of the distribution.
+            best_dense_score=turn.best_dense_score,
+            best_bm25_score=turn.best_bm25_score,
         )
         yield AgentEvent(type="final", data={"text": text, "citations": citations})
 
@@ -973,6 +1027,17 @@ class RagAgent(BaseAgent):
                     # it did before this argument existed.
                     pending_candidates=self.deps.pending_clarification,
                 )
+                # ب-11 (ف-6) — read onto the record in the same breath as the
+                # call, before any branch below can end the turn. Every exit
+                # from here on logs them, so the ONE assignment is what makes
+                # "the confidence beside the outcome" true of all of them
+                # rather than of whichever branch remembered.
+                #
+                # Read, never interpreted: no comparison, no threshold, no
+                # rounding (ق-2). This agent is the place these numbers are
+                # REPORTED from, and pointedly not the place they are used.
+                turn.best_dense_score = routed.best_dense_score
+                turn.best_bm25_score = routed.best_bm25_score
             except ConflictError:
                 # ب-4أ (خطة الفجوات §3، ف-7) — `RequestSummary` refuses a second
                 # build for a key one is already running, and that refusal used
@@ -1033,10 +1098,14 @@ class RagAgent(BaseAgent):
             # the model would answer from its OWN parametric knowledge as
             # though it were sourced from the user's documents). س-22 = أ
             # closes only this EXPLICIT zero-chunks case, with NO numeric
-            # confidence threshold — `RetrievalResult.best_dense_score` /
-            # `best_bm25_score` (step 4, `P-28`) are not read here, and "weak
-            # chunks" stays an accepted open risk until an evaluation set
-            # exists (§6 risk 2).
+            # confidence threshold. ب-11 (ف-6) changed what is RECORDED and
+            # nothing about what is decided: `best_dense_score` /
+            # `best_bm25_score` (step 4, `P-28`) are on `turn` by the time
+            # this branch runs and are logged with its `path`, so a fallback
+            # that fired over a strong retrieval becomes countable — but this
+            # branch still reads `chunks`, and only `chunks`. "Weak chunks"
+            # stays an accepted open risk (§6 risk 2), now with the
+            # measurement that would end it being collected.
             #
             # The LLM provider is NEVER called on this branch: the text is a
             # fixed local string picked by `_fallback_answer`, so there is
@@ -1209,6 +1278,8 @@ class RagAgent(BaseAgent):
         fallback: bool,
         llm_ms: int | None,
         started: float,
+        best_dense_score: float | None,
+        best_bm25_score: float | None,
         error_type: str | None = None,
     ) -> None:
         """The turn's one structured record (retrieval plan §3.11/§4 row 17,
@@ -1240,12 +1311,40 @@ class RagAgent(BaseAgent):
         and never the message: ``ConflictError``'s message carries a document
         id, and ق-5 keeps ids and user content out of this record entirely.
 
-        Every field is a count, a flag, a duration, a fixed path name or a
-        type name. The question, the answer text, the file names and the
+        ``best_dense_score``/``best_bm25_score`` (ب-11, ف-6) are the
+        retrieval's raw confidence, carried across the seam and written down
+        BESIDE the outcome. Neither number is new — the knowledge module has
+        logged both from its own side since the retrieval plan — and that is
+        precisely why they are here: over there they sit next to how the
+        SEARCH went, and the one thing that record cannot know is what the
+        turn eventually said. The apology, the answer and the empty
+        completion are decided in this file, so this is the only record where
+        a score and a verdict appear on the same line.
+
+        **Reported, never applied.** Nothing in this agent compares either
+        number to anything (ق-2, and ت-1 for why it need not): the thresholds
+        are calibrated and enforced a layer down. What this pair buys is the
+        distribution — scores over turns that ended in an apology against
+        scores over turns that ended in an answer, gathered from production
+        traffic on a real corpus — which is the material any RE-calibration
+        has to be derived from and the material a fifteen-question evaluation
+        set cannot supply.
+
+        ``None`` means no score, for either of two reasons that are one
+        reason: that leg of the search returned no hits, or no search ran at
+        all (every summarisation outcome, and every turn that failed before
+        retrieval). Never ``0.0`` — a fabricated zero would land inside the
+        distribution and be indistinguishable from a genuinely terrible
+        match.
+
+        Every field is a count, a flag, a duration, a SCORE, a fixed path name
+        or a type name. The question, the answer text, the file names and the
         chunk text are all user content and none of them is here
         (10-code-standards §10); the chunk IDS that make a retrieval
         traceable are logged one layer down, by the knowledge module, where
-        they are read from.
+        they are read from. A float that ranks a match is none of those
+        things — it is a measurement of the search, carrying no fragment of
+        what was searched or found (ق-5).
         """
         _logger.info(
             "rag_agent.answer",
@@ -1257,6 +1356,8 @@ class RagAgent(BaseAgent):
                 "llm_ms": llm_ms,
                 "total_ms": _elapsed_ms(started),
                 "error_type": error_type,
+                "best_dense_score": best_dense_score,
+                "best_bm25_score": best_bm25_score,
             },
         )
 
@@ -1408,10 +1509,11 @@ class RagAgent(BaseAgent):
         return f"{head}\n{listed}"
 
     @staticmethod
-    def _citation(chunk: RetrievedChunkView) -> dict[str, str | int | None]:
-        """One `{document_id, file_name, page, chunk_id}` citation (retrieval
-        plan §3.2/§4 row 3, ``P-32``) — a citation a human can act on,
-        replacing the bare ``chunk_id`` UUID the ``final`` event used to emit.
+    def _citation(chunk: RetrievedChunkView, rank: int) -> dict[str, str | int | None]:
+        """One `{document_id, file_name, page, chunk_id, rank}` citation
+        (retrieval plan §3.2/§4 row 3, ``P-32``) — a citation a human can act
+        on, replacing the bare ``chunk_id`` UUID the ``final`` event used to
+        emit.
 
         ``file_name``/``page`` are REUSED verbatim from the already-retrieved
         chunk (step 1's fields — ``page`` is ``chunk.page_number`` under the
@@ -1422,12 +1524,34 @@ class RagAgent(BaseAgent):
         or a parser that never emitted one): the same missing-value story
         ``RetrievedChunkOut``/``format_labeled_chunk`` already tell, so a
         client sees ONE degradation rule across the whole citation surface.
+
+        ``rank`` (scenarios plan section 8, ب-12, gap ف-12) is the ONE
+        backend half of an item that is otherwise a display decision. The
+        list already arrives in descending relevance and this agent already
+        does not re-order it — both true before ف-12 and both pinned by
+        tests — so nothing about the ORDER changes here. What changes is that
+        the order stops being the only place the meaning lives: a client that
+        wants to mark the strongest source reads a number instead of trusting
+        that whatever produced the array preserved its sequence through
+        serialisation, a store, a re-render and its own list component.
+
+        **One-based**, because it is a rank a person reads and not an index a
+        program dereferences: the first source is "1" in the sentence a UI
+        writes about it, not "0".
+
+        **And what is deliberately NOT here**: which sources the model
+        actually used. That is answerable only by asking the model, and a
+        model asked which of five blocks it drew a sentence from will produce
+        a confident list either way — a fabrication with the authority of a
+        citation on it. ``rank`` says what retrieval ranked, which is a fact
+        this process measured.
         """
         return {
             "document_id": chunk.document_id,
             "file_name": chunk.file_name,
             "page": chunk.page_number,
             "chunk_id": chunk.chunk_id,
+            "rank": rank,
         }
 
     @staticmethod

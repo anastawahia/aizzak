@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -324,6 +325,53 @@ def _pending_options(raw: object) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(item for item in raw if isinstance(item, str) and item.strip())
+
+
+# ب-10 (خطة السيناريوهات section 8، ف-8) — the sentence appended to a reply
+# the PLATFORM cut short, in ق-هـ's wording.
+#
+# A sentence in the body and NOT a field on the message, which is decision 1
+# of the item: `MessageContent` has no structured half (the identical
+# constraint ف-4 and ف-1أ each ran into from their own side), so a flag would
+# mean a column, a migration and a rendering rule in every client — for one
+# bit that a line of text states to every reader that already exists.
+_INCOMPLETE_MARKER_AR = "⚠️ انقطعت الإجابةُ قبل اكتمالها."
+_INCOMPLETE_MARKER_EN = "⚠️ This answer was cut off before it finished."
+# Kept apart from both sentences so neither Arabic literal has to carry an
+# ASCII escape inside it.
+_MARKER_GAP = "\n\n"
+
+# The same Arabic-PRESENCE check the RAG agent picks its own fixed sentences
+# by, deliberately re-stated here rather than shared, for two reasons that
+# point the same way. The orchestrator must not import an agent plugin — it
+# runs whichever agent the registry hands it (D-13), and a plugin it imported
+# would be one it depends on. And the string being tested is different: the
+# agent asks what language the QUESTION was in, this asks what script the
+# REPLY came out in, because the marker is appended to that reply and a note
+# in a script the surrounding text never uses reads as a system malfunction
+# rather than as a remark about this answer.
+_ARABIC_CHAR_RE = re.compile("[؀-ۿ]")
+
+# Which of the three ways a turn can be cut short produced a partial save
+# (ب-10 decision 4). One counter with three values and not three counters:
+# they are one event — "the reader kept a reply the platform could not
+# finish" — and the interesting number is how the three compare. `abandoned`
+# is the one that is NOT guaranteed; see `_persist_partial`.
+_CUT_TIMEOUT = "timeout"
+_CUT_ERROR = "error"
+_CUT_ABANDONED = "abandoned"
+
+
+def _mark_incomplete(text: str) -> str:
+    """``text`` with the cut-off notice appended (ب-10).
+
+    Appended, never prepended: what the user was reading when the stream
+    stopped is the answer, and the notice is a remark about it. A reader
+    returning to the thread sees the text they had, then why it ends where it
+    does.
+    """
+    marker = _INCOMPLETE_MARKER_AR if _ARABIC_CHAR_RE.search(text) else _INCOMPLETE_MARKER_EN
+    return f"{text}{_MARKER_GAP}{marker}"
 
 
 def _turn_content(data: Json) -> tuple[str, tuple[str, ...]]:
@@ -1386,9 +1434,29 @@ class AgentOrchestrator:
         per pull; on expiry the producer is closed explicitly, the B1
         terminal ``error`` event goes out in-band, and ``finally`` still
         bills whatever the run consumed up to the cut.
+
+        ب-10 (خطة السيناريوهات section 8، ف-8) added the third thing this
+        loop does, and it is entirely inside it: the tokens it forwards are
+        also KEPT, so a stream the platform cuts short can leave the reader
+        the half it delivered instead of nothing. The item lives here for the
+        reason the deadline and the persistence do — this is the frame that
+        sees every event, owns the terminal paths, and still runs normally
+        when the turn goes wrong.
         """
         cap_s = self._deps.stream_max_duration_s
         deadline = _deadline(cap_s)
+        # ب-10 (ف-8) — what has actually reached the reader, kept as it goes.
+        # A local and not a field on `_TurnRecord`: this generator is the only
+        # thing that appends to it and the only thing that reads it, and the
+        # record exists for values a CALLER needs after the drain.
+        streamed: list[str] = []
+        # Whether a TERMINAL event was seen — `final` or `error`, and both
+        # for the same reason: this turn ended in a way somebody handled, so
+        # the `finally` below is not looking at an abandoned reader. It also
+        # keeps the partial save out of a COMPLETED turn whose persistence
+        # failed, where `record.message` alone would say "nothing written yet"
+        # and invite a second, wrongly-marked write of a whole answer.
+        terminal = False
         try:
             while True:
                 try:
@@ -1404,9 +1472,48 @@ class AgentOrchestrator:
                         "orchestrator.stream_deadline_exceeded",
                         extra={"agent_key": agent_key, "cap_s": cap_s},
                     )
+                    # ب-10 — BEFORE the terminal event goes out, and that
+                    # ordering is what makes this path a guarantee rather than
+                    # a hope: `invoke_once` RAISES on an in-band error, so the
+                    # consumer may never resume this generator, and anything
+                    # left for the `finally` would then run inside a
+                    # `GeneratorExit` unwind (see `_persist_partial`).
+                    terminal = True
+                    await self._persist_partial(ctx, record, streamed, reason=_CUT_TIMEOUT)
                     yield _timeout_event(cap_s)
                     break
+                except Exception:
+                    # An exception that reached THIS frame, which is the rare
+                    # half of "the run failed": an agent's own raise is caught
+                    # by `AgentLifecycleExecutor` and converted into the
+                    # terminal `error` event handled below (decision B1), so
+                    # what lands here is a failure of the machinery around it.
+                    # Same argument as the timeout above and the same
+                    # guarantee: saved on the way out, from a frame that is
+                    # still running normally.
+                    await self._persist_partial(ctx, record, streamed, reason=_CUT_ERROR)
+                    raise
+                if event.type == "token":
+                    # The text passes through here already — accumulating it
+                    # is the whole cost of the item on the healthy path, and
+                    # the reason the change fits inside this one method.
+                    delta = event.data.get("delta")
+                    if isinstance(delta, str):
+                        streamed.append(delta)
+                if event.type == "error":
+                    terminal = True
+                    # ب-10 — the path a failing AGENT actually takes. The
+                    # executor turns an agent's exception into this event
+                    # rather than letting it fly (decision B1: by the time a
+                    # run can fail, frames have escaped and the HTTP status is
+                    # committed), so this — not the `except` above — is where
+                    # a provider that died mid-answer arrives. Persisted
+                    # BEFORE the event is yielded, for the timeout branch's
+                    # reason exactly: `invoke_once` raises on an in-band
+                    # error and may never resume this generator.
+                    await self._persist_partial(ctx, record, streamed, reason=_CUT_ERROR)
                 if event.type == "final":
+                    terminal = True
                     # ب-9 — BEFORE `_persist_reply`, so the key is off the
                     # frame by the time anything reads its content: the stored
                     # message is rendered from this same payload, and a media
@@ -1416,13 +1523,109 @@ class AgentOrchestrator:
                     event = await self._persist_reply(ctx, record, event)
                 yield event
         finally:
+            # ب-10 — the ABANDONMENT net (س-30), and the one path the item
+            # declares as best effort rather than promising. A reader closing
+            # the page throws `GeneratorExit` at the `yield` above, and an
+            # await inside the unwind that follows may not complete. The
+            # precedent is right here and works — `_capture` has awaited from
+            # this `finally` since 4.7 — but a precedent is not a guarantee,
+            # so this is attempted, measured under its own reason, and never
+            # counted as covered.
+            if not terminal:
+                await self._persist_partial(ctx, record, streamed, reason=_CUT_ABANDONED)
             # `finally` so an abandoned or failed run is still billed: it
             # consumed real provider tokens either way. This is sound ONLY
             # because `_TokenMeter` is kept current as chunks arrive — an
             # end-of-stream tally would still be empty here, since closing
             # this generator does not cascade down to the agent's own inner
             # generators (see `_TokenMeter`'s "eager, not end-of-stream").
+            #
+            # ⚠️ And billing is deliberately NOT reduced for a cut-off turn
+            # (decision 3): those tokens were generated and paid for upstream.
+            # ب-10 reduces what is LOST, never what is owed.
             await self._capture(ctx, agent_key, provider, record.meter)
+
+    async def _persist_partial(
+        self,
+        ctx: ExecutionContext,
+        record: _TurnRecord,
+        streamed: Sequence[str],
+        *,
+        reason: str,
+    ) -> None:
+        """Write what a cut-off turn had already streamed into the thread,
+        marked as incomplete (ب-10, gap ف-8).
+
+        **The gap this closes is a disappearing answer.** Persistence hung on
+        the ``final`` event alone, so a stream that hit the 600-second cap or
+        lost its provider ended in an error event and wrote NOTHING — while
+        the usage capture in the ``finally`` above billed the turn in full.
+        The user had read half an answer on screen; refreshing the page erased
+        it, and the ledger still charged for it. Half an answer kept is worth
+        more than a clean thread, and the sentence appended says which it is.
+
+        **Once, never twice.** Two guards, and they say different things. The
+        caller never calls this for a ``final``: that turn produced a complete
+        answer, and re-saving it under «this answer was cut off» would be a
+        lie about a turn that succeeded — true even when persisting that
+        answer failed, which is why the caller's guard is "a terminal event
+        was seen" and not ``record.message is None``. ``record.message`` is
+        the second guard and stops the explicit saves and the ``finally``'s
+        net from writing two messages for one turn.
+
+        **Nothing streamed, nothing stored.** A turn cut off before its first
+        token has no answer to keep, and a thread ending in a bare warning
+        with no text above it explains nothing that the error event did not
+        already say. Whitespace counts as nothing, exactly as ب-1 reads an
+        all-whitespace completion as no completion.
+
+        **A failed write degrades to a warning**, the third method here to
+        make that trade and for the same reason as the other two: this runs
+        while a turn is already ending badly, and an exception raised out of
+        it would replace a diagnosable failure with a second, unrelated one.
+
+        ``reason`` is decision 4's measurement. ``timeout`` and ``error`` are
+        saved from ordinary running frames and are GUARANTEED; ``abandoned``
+        is attempted from inside a ``GeneratorExit`` unwind, where an await is
+        not certain to finish, and is honestly labelled so nobody reads a
+        thin ``abandoned`` count as evidence that readers rarely leave.
+        """
+        if record.message is not None:
+            return
+        text = "".join(streamed)
+        if not text.strip():
+            return
+        threads = self._deps.conversations
+        if threads is None or record.conversation_id is None:
+            return
+        completion = record.meter.completion_total
+        try:
+            message = await threads.append(
+                ctx,
+                record.conversation_id,
+                role=_ROLE_ASSISTANT,
+                text=_mark_incomplete(text),
+                # A cut-off stream produced text and nothing else: an
+                # attachment is announced on the `final` frame that never
+                # came.
+                attachments=(),
+                token_count=completion or None,
+            )
+        except Exception as exc:  # never mask the failure that got us here
+            _logger.warning(
+                "orchestrator.partial_reply_persist_failed",
+                extra={"conversation_id": record.conversation_id, "reason": reason},
+                exc_info=exc,
+            )
+            return
+        record.message = message
+        # ق-5 — a count and a fixed reason name. `chars` and not the text:
+        # what is useful is how much was rescued, and the answer itself is
+        # user content that belongs in the thread and nowhere else.
+        _logger.info(
+            "orchestrator.partial_reply_persisted",
+            extra={"reason": reason, "chars": len(text)},
+        )
 
     async def _settle_clarification(
         self, ctx: ExecutionContext, record: _TurnRecord, event: AgentEvent

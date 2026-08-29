@@ -20,7 +20,14 @@ from typing import ClassVar
 
 import pytest
 
-from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies, _TokenMeter
+from app.agents.orchestrator import (
+    _CUT_ABANDONED,
+    _CUT_ERROR,
+    _CUT_TIMEOUT,
+    AgentOrchestrator,
+    OrchestratorDependencies,
+    _TokenMeter,
+)
 from app.framework.agent_runtime.base_agent import (
     AgentDependencies,
     AgentEvent,
@@ -425,6 +432,11 @@ class _FakeRoutedAnswer:
         self.summary_target_name: str | None = None
         self.summary_blocked: str | None = None
         self.stored_summary_text: str | None = None
+        # ب-11 — and the two confidence signals, carried for the same reason:
+        # the agent READS them off this view to log them, so a fake missing
+        # them fails where the real seam would not.
+        self.best_dense_score: float | None = None
+        self.best_bm25_score: float | None = None
 
 
 class _FakeKnowledge:
@@ -539,9 +551,15 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
     assert [e.type for e in events] == ["token", "token", "final"]
     assert events[-1].data["text"] == "Paris it is"
     # Retrieval plan §3.2/§4 row 3, P-32 — a structured citation, not a bare
-    # `chunk_id` UUID.
+    # `chunk_id` UUID, carrying ب-12's `rank` through the real plugin tree.
     assert events[-1].data["citations"] == [
-        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "chunk-a"}
+        {
+            "document_id": "doc-1",
+            "file_name": None,
+            "page": None,
+            "chunk_id": "chunk-a",
+            "rank": 1,
+        }
     ]
 
 
@@ -2148,3 +2166,397 @@ async def test_a_workflow_step_is_never_waiting_on_an_answer() -> None:
     )
 
     assert deps.pending_clarification == ()
+
+
+# --------------------------------------------------------------------------- #
+# ب-10 (خطة السيناريوهات §8، ف-8) — the partial answer is kept                #
+# --------------------------------------------------------------------------- #
+# The gap: persistence hung on the `final` event alone, so a stream the
+# platform cut short — the 600s cap, a provider that died mid-answer — ended
+# in an error event and wrote NOTHING, while the `finally` billed the turn in
+# full. The user had read half an answer; refreshing the page erased it, and
+# the ledger still charged for it.
+#
+# Three ways a turn is cut and they are NOT equal, which is the item's own
+# decision 4: `timeout` and `error` are saved from ordinary running frames and
+# are guaranteed; `abandoned` is attempted from inside a `GeneratorExit`
+# unwind, where an await may not finish, and is measured under its own name so
+# nobody reads a thin count there as evidence that readers rarely leave.
+_ENGLISH_MARKER = "This answer was cut off"
+_ARABIC_MARKER = "انقطعت"
+
+
+class _CutOffAgent(BaseAgent):
+    """Streams two real tokens, then stalls past any test cap."""
+
+    metadata = _metadata("cutoff", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "Paris is "})
+        yield AgentEvent(type="token", data={"delta": "the capital"})
+        await asyncio.sleep(3)
+        yield AgentEvent(type="final", data={"text": "unreachable"})
+
+
+class _ArabicCutOffAgent(BaseAgent):
+    """The same shape, answering in Arabic."""
+
+    metadata = _metadata("cutoff-ar", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "عاصمة فرنسا هي "})
+        await asyncio.sleep(3)
+        yield AgentEvent(type="final", data={"text": "unreachable"})
+
+
+class _SilentCutOffAgent(BaseAgent):
+    """Cut off before it said anything — the case with nothing to keep."""
+
+    metadata = _metadata("silent-cutoff", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        await asyncio.sleep(3)
+        yield AgentEvent(type="final", data={"text": "unreachable"})
+
+
+class _HalfAnswerThenFailAgent(BaseAgent):
+    """Streams a real half-answer and then loses its provider."""
+
+    metadata = _metadata("half-boom", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "half an answer"})
+        raise ConflictError("the provider went away")
+
+
+def _cut_orchestrator(
+    agent: type[BaseAgent],
+    threads: _FakeThreads,
+    *,
+    cap_s: float | None = 0.05,
+    capture: _FakeCapture | None = None,
+) -> AgentOrchestrator:
+    """A `_turn_orchestrator` that also has a deadline and a usage capture —
+    the two halves ب-10 has to hold together: what is KEPT and what is BILLED."""
+    registry = InMemoryAgentRegistry()
+    registry.register(agent.metadata, agent)
+    return AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=_FakeResolver(),  # type: ignore[arg-type]
+            conversations=threads,
+            usage_capture=capture,
+            stream_max_duration_s=cap_s,
+            authorization=build_authorization(),
+        )
+    )
+
+
+def _assistant_messages(threads: _FakeThreads) -> list[str]:
+    return [text for _cid, role, text, _att, _tok in threads.appended if role == "assistant"]
+
+
+async def _drive(orchestrator: AgentOrchestrator, key: str) -> list[AgentEvent]:
+    return [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), key, AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+        )
+    ]
+
+
+async def test_a_timed_out_stream_persists_what_it_streamed() -> None:
+    """⚠️ The item itself. Before ب-10 this thread ended with the user's own
+    message and nothing else: the two tokens the reader had already seen were
+    on their screen and nowhere else, and a refresh erased them."""
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert [e.type for e in events] == ["token", "token", "error"]
+    (kept,) = _assistant_messages(threads)
+    assert kept.startswith("Paris is the capital")
+
+
+async def test_the_partial_reply_is_marked_as_incomplete() -> None:
+    """ق-هـ's sentence, appended and never prepended: what the user was
+    reading is the answer, and the notice is a remark about it."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    (kept,) = _assistant_messages(threads)
+    assert _ENGLISH_MARKER in kept
+    assert kept.index("Paris") < kept.index(_ENGLISH_MARKER)
+
+
+async def test_the_marker_speaks_the_script_the_answer_was_written_in() -> None:
+    """The check reads the REPLY, not the question, and that is the whole
+    reason it is restated in the orchestrator rather than borrowed from the
+    RAG agent: a notice in a script the surrounding text never uses reads as a
+    system malfunction instead of a remark about this answer."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_ArabicCutOffAgent, threads), "cutoff-ar")
+
+    (kept,) = _assistant_messages(threads)
+    assert _ARABIC_MARKER in kept
+    assert _ENGLISH_MARKER not in kept
+
+
+async def test_a_failing_stream_persists_what_it_streamed() -> None:
+    """The second guaranteed path. A provider that dies mid-answer is the
+    commoner cut of the two, and the save happens on the way out of an
+    ordinary frame — before the exception leaves this generator."""
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive(_cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
+
+    assert [e.type for e in events] == ["token", "error"]
+    (kept,) = _assistant_messages(threads)
+    assert kept.startswith("half an answer")
+    assert _ENGLISH_MARKER in kept
+
+
+async def test_an_abandoned_stream_keeps_what_it_streamed() -> None:
+    """The BEST-EFFORT path (س-30, decision 4). A reader closing the page
+    throws `GeneratorExit` at the yield, and the save is attempted from the
+    `finally` that unwinds. It works here and the item still refuses to
+    promise it: what this test pins is that the attempt is made."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _cut_orchestrator(_CutOffAgent, threads, cap_s=None)
+
+    stream = await orchestrator.invoke(
+        _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+    assert (await stream.__anext__()).type == "token"
+    await stream.aclose()
+
+    (kept,) = _assistant_messages(threads)
+    assert kept.startswith("Paris is ")
+    assert _ENGLISH_MARKER in kept
+
+
+async def test_a_stream_cut_before_it_said_anything_stores_nothing() -> None:
+    """A thread ending in a bare warning with no text above it explains
+    nothing the error event did not already say — and would put an empty
+    assistant turn into every conversation a slow provider touched."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_SilentCutOffAgent, threads), "silent-cutoff")
+
+    assert _assistant_messages(threads) == []
+
+
+async def test_a_partial_reply_is_persisted_once_not_twice() -> None:
+    """The timeout branch saves explicitly and the `finally` net runs
+    afterwards on the same turn. `record.message` is what stops the second
+    write — without it every timed-out turn would leave two assistant
+    messages saying the same half-answer."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert len(_assistant_messages(threads)) == 1
+
+
+async def test_a_completed_stream_persists_no_trailing_marker() -> None:
+    """⚠️ The CONTAINING guard. A healthy turn must be untouched by all of
+    this: one assistant message, its own text, no notice appended and no
+    second write behind it."""
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive(_cut_orchestrator(_RecordingAgent, threads, cap_s=30.0), "recording")
+
+    assert [e.type for e in events] == ["final"]
+    (kept,) = _assistant_messages(threads)
+    assert _ENGLISH_MARKER not in kept
+    assert _ARABIC_MARKER not in kept
+
+
+async def test_a_completed_turn_whose_write_failed_is_not_saved_as_a_partial(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """⚠️ The subtle one, and the reason the guard is a `final`-was-seen flag
+    and not `record.message is None`. A complete answer whose persistence lost
+    a race has no message either — and re-saving it under «this answer was cut
+    off» would be a lie about a turn that succeeded."""
+    threads = _FakeThreads(known="conv-1", fail_on="assistant")
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+
+    await _drive(_cut_orchestrator(_RecordingAgent, threads, cap_s=30.0), "recording")
+
+    assert _assistant_messages(threads) == []
+    messages = [record.message for record in caplog.records]
+    assert "orchestrator.reply_persist_failed" in messages
+    assert "orchestrator.partial_reply_persist_failed" not in messages
+
+
+async def test_a_timed_out_stream_still_bills_in_full() -> None:
+    """Decision 3, as a guard rather than a claim: those tokens were generated
+    and are owed. ب-10 reduces what is LOST, never what is billed."""
+    threads = _FakeThreads(known="conv-1")
+    capture = _FakeCapture()
+    resolver = _FakeResolver()
+    resolver.llm = _CountingLLM(prompt=10, completion=5)
+    registry = InMemoryAgentRegistry()
+    registry.register(_StallingAgent.metadata, _StallingAgent)
+    orchestrator = AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=resolver,  # type: ignore[arg-type]
+            conversations=threads,
+            usage_capture=capture,
+            stream_max_duration_s=0.05,
+            authorization=build_authorization(),
+        )
+    )
+
+    await _drive(orchestrator, "staller")
+
+    (charge,) = capture.charges
+    assert charge.tokens == 15
+    assert charge.estimated is False
+    # And the answer that cost them is in the thread rather than nowhere.
+    (kept,) = _assistant_messages(threads)
+    assert kept.startswith("hello there")
+
+
+async def test_the_partial_carries_the_completion_it_cost(caplog: pytest.LogCaptureFixture) -> None:
+    """The stored message's `token_count` is the COMPLETION half, exactly as a
+    finished reply's is — the turn is half an answer, not a different kind of
+    thing — and the record beside it counts CHARACTERS, never the text (ق-5)."""
+    threads = _FakeThreads(known="conv-1")
+    caplog.set_level("INFO", logger="app.agents.orchestrator")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    (saved,) = [entry for entry in threads.appended if entry[1] == "assistant"]
+    assert saved[4] is None  # no metered completion on this agent's fake LLM
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.partial_reply_persisted"]
+    assert record.reason == _CUT_TIMEOUT  # type: ignore[attr-defined]
+    assert record.chars == len("Paris is the capital")  # type: ignore[attr-defined]
+    assert not hasattr(record, "text")
+
+
+@pytest.mark.parametrize(
+    ("agent", "key", "reason"),
+    [
+        (_CutOffAgent, "cutoff", _CUT_TIMEOUT),
+        (_HalfAnswerThenFailAgent, "half-boom", _CUT_ERROR),
+    ],
+)
+async def test_the_record_says_which_cut_produced_the_save(
+    agent: type[BaseAgent],
+    key: str,
+    reason: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Decision 4's measurement. One counter with three values, because the
+    interesting number is how the three COMPARE — and because `abandoned` is
+    the one that is not guaranteed, so it must never be summed with the two
+    that are."""
+    threads = _FakeThreads(known="conv-1")
+    caplog.set_level("INFO", logger="app.agents.orchestrator")
+
+    await _drive(_cut_orchestrator(agent, threads), key)
+
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.partial_reply_persisted"]
+    assert record.reason == reason  # type: ignore[attr-defined]
+
+
+async def test_a_failed_partial_write_never_masks_the_failure_that_caused_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The third method here to degrade a failed write to a warning, and for
+    the sharpest version of the reason: this runs while a turn is ALREADY
+    ending badly, and raising would replace a diagnosable cut with a second,
+    unrelated exception."""
+    threads = _FakeThreads(known="conv-1", fail_on="assistant")
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+
+    events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert [e.type for e in events] == ["token", "token", "error"]
+    assert events[-1].data["code"] == "agent.failed"
+    assert "orchestrator.partial_reply_persist_failed" in [r.message for r in caplog.records]
+
+
+async def test_an_unwired_conversations_seam_still_streams_a_cut_turn() -> None:
+    """The degraded deployment keeps degrading the way it did: nothing to
+    persist into, so nothing is persisted, and the stream is unaffected."""
+    registry = InMemoryAgentRegistry()
+    registry.register(_CutOffAgent.metadata, _CutOffAgent)
+    orchestrator = AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=_FakeResolver(),  # type: ignore[arg-type]
+            stream_max_duration_s=0.05,
+            authorization=build_authorization(),
+        )
+    )
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "cutoff", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
+    ]
+
+    assert [e.type for e in events] == ["token", "token", "error"]
+
+
+async def test_the_abandoned_save_is_labelled_as_the_one_that_is_not_promised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """⚠️ Decision 4's honesty, pinned. This reason is the one path the item
+    declines to guarantee, so it must never be summable with the two that are:
+    a thin `abandoned` count is as likely to mean "the await did not finish"
+    as "readers rarely leave"."""
+    threads = _FakeThreads(known="conv-1")
+    caplog.set_level("INFO", logger="app.agents.orchestrator")
+    orchestrator = _cut_orchestrator(_CutOffAgent, threads, cap_s=None)
+
+    stream = await orchestrator.invoke(
+        _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+    await stream.__anext__()
+    await stream.aclose()
+
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.partial_reply_persisted"]
+    assert record.reason == _CUT_ABANDONED  # type: ignore[attr-defined]
+
+
+async def test_a_non_streaming_caller_keeps_the_half_answer_it_never_delivered() -> None:
+    """⚠️ The ordering the item depends on. `invoke_once` RAISES on an in-band
+    error, so it may never resume the metered generator — anything left for
+    the `finally` would then run inside a `GeneratorExit` unwind, which is the
+    one place ب-10 refuses to promise. Saving BEFORE the terminal event is
+    yielded is what makes this path a guarantee, and this turn — where the
+    caller receives an exception and no answer at all — is where the saved
+    text is the only surviving copy."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _cut_orchestrator(_HalfAnswerThenFailAgent, threads)
+
+    with pytest.raises(AppError):
+        await orchestrator.invoke_once(
+            _ctx(), "half-boom", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+        )
+
+    (kept,) = _assistant_messages(threads)
+    assert kept.startswith("half an answer")

@@ -104,6 +104,8 @@ class FakeRoutedAnswer:
         summary_target_name: str | None = None,
         summary_blocked: str | None = None,
         stored_summary_text: str | None = None,
+        best_dense_score: float | None = None,
+        best_bm25_score: float | None = None,
     ) -> None:
         self.intent = intent
         self.chunks = chunks
@@ -131,6 +133,13 @@ class FakeRoutedAnswer:
         # agent is expected to emit it and add nothing, which is why this fake
         # carries a whole text rather than a flag.
         self.stored_summary_text = stored_summary_text
+        # ب-11 (خطة السيناريوهات section 8، ف-6) — the retrieval's own raw
+        # confidence. Defaulted to `None` because that is what the REAL module
+        # sends on every outcome that ran no query, which is every outcome but
+        # one: a construction that says nothing here is saying something the
+        # module actually says.
+        self.best_dense_score = best_dense_score
+        self.best_bm25_score = best_bm25_score
 
 
 class FakeKnowledge:
@@ -160,6 +169,8 @@ class FakeKnowledge:
         routed_intent: str | None = None,
         answer_error: Exception | None = None,
         names_error: Exception | None = None,
+        best_dense_score: float | None = None,
+        best_bm25_score: float | None = None,
     ) -> None:
         self._chunks = chunks
         self._document_names = FakeDocumentNames(document_names, document_total)
@@ -188,6 +199,13 @@ class FakeKnowledge:
         # for — a summarisation whose target the module could not identify,
         # which used to fall silently through to the content route.
         self._routed_intent = routed_intent
+        # ب-11 (خطة السيناريوهات section 8، ف-6) — the retrieval's own raw
+        # confidence, reported ONLY on the branch that ran a query. The real
+        # module sends `None` on every summarisation outcome because none of
+        # them searched, and a fake that leaked a number onto those branches
+        # would let an agent test pass on input the module cannot produce.
+        self._best_dense_score = best_dense_score
+        self._best_bm25_score = best_bm25_score
         # ب-4أ / ب-2 / ب-5 — what each of the two seam calls does INSTEAD of
         # answering. A raising dependency is the entire subject of those three
         # items, and the difference between them is which call fails and
@@ -300,7 +318,13 @@ class FakeKnowledge:
             # answer: the intent is reported as the summarisation it was, no
             # job was queued, and no chunks came back either.
             return FakeRoutedAnswer("summarize_doc", (), None, self._clarification_options)
-        return FakeRoutedAnswer(self._routed_intent or "content", self._chunks, None)
+        return FakeRoutedAnswer(
+            self._routed_intent or "content",
+            self._chunks,
+            None,
+            best_dense_score=self._best_dense_score,
+            best_bm25_score=self._best_bm25_score,
+        )
 
     async def list_document_names(
         self, ctx: ExecutionContext, *, space_id: str, limit: int | None = None
@@ -366,6 +390,8 @@ def make_deps(
     answer_error: Exception | None = None,
     names_error: Exception | None = None,
     pending: tuple[str, ...] = (),
+    best_dense_score: float | None = None,
+    best_bm25_score: float | None = None,
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
@@ -380,6 +406,8 @@ def make_deps(
         routed_intent=routed_intent,
         answer_error=answer_error,
         names_error=names_error,
+        best_dense_score=best_dense_score,
+        best_bm25_score=best_bm25_score,
     )
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
@@ -426,9 +454,9 @@ async def test_streams_tokens_then_final_with_citations() -> None:
     # Retrieval plan §3.2/§4 row 3, P-32 — a structured citation, not a bare
     # `chunk_id` UUID: `document_id`/`file_name`/`page`/`chunk_id`, reusing
     # step 1's fields verbatim (`file_name`/`page` both `None` here because
-    # this `FakeChunk` set neither).
+    # this `FakeChunk` set neither) — plus ب-12's one-based `rank`.
     assert final.data["citations"] == [
-        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1", "rank": 1}
     ]
     # `None`, not `()`: an agent with no pinned scope must ask for the WHOLE
     # workspace corpus. Forwarding the bundle's empty tuple would arrive one
@@ -558,6 +586,7 @@ async def test_a_citation_carries_the_full_structured_shape() -> None:
             "file_name": "maintenance.pdf",
             "page": 12,
             "chunk_id": "c1",
+            "rank": 1,
         }
     ]
 
@@ -570,7 +599,13 @@ async def test_a_citation_represents_missing_file_name_and_page_as_explicit_none
     events = await drive_run(RagAgent(make_ctx(), deps), "q")
 
     citation = events[-1].data["citations"][0]
-    assert citation == {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+    assert citation == {
+        "document_id": "doc-1",
+        "file_name": None,
+        "page": None,
+        "chunk_id": "c1",
+        "rank": 1,
+    }
     assert "file_name" in citation
     assert "page" in citation
 
@@ -585,8 +620,8 @@ async def test_multiple_chunks_each_get_their_own_citation_in_order() -> None:
     events = await drive_run(RagAgent(make_ctx(), deps), "q")
 
     assert events[-1].data["citations"] == [
-        {"document_id": "doc-1", "file_name": "a.pdf", "page": 1, "chunk_id": "c1"},
-        {"document_id": "doc-1", "file_name": "b.pdf", "page": None, "chunk_id": "c2"},
+        {"document_id": "doc-1", "file_name": "a.pdf", "page": 1, "chunk_id": "c1", "rank": 1},
+        {"document_id": "doc-1", "file_name": "b.pdf", "page": None, "chunk_id": "c2", "rank": 2},
     ]
 
 
@@ -1165,7 +1200,7 @@ async def test_a_content_route_answer_takes_the_normal_synthesis_path() -> None:
     assert len(llm.stream_calls) == 1
     assert "Paris is the capital of France." in llm.stream_calls[0][0][0].content
     assert events[-1].data["citations"] == [
-        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1"}
+        {"document_id": "doc-1", "file_name": None, "page": None, "chunk_id": "c1", "rank": 1}
     ]
 
 
@@ -2496,3 +2531,222 @@ async def test_an_answered_clarification_is_an_ordinary_receipt() -> None:
 
     assert "الميزانية 2025.pdf" in events[-1].data["text"]
     assert "pending_clarification" not in events[-1].data
+
+
+# --------------------------------------------------------------------------- #
+# ب-11 (خطة السيناريوهات §8، ف-6) — the retrieval confidence enters the record #
+# --------------------------------------------------------------------------- #
+# ت-1 corrected the review here before a line was written: the evaluation set
+# EXISTS and the thresholds are calibrated and applied one layer down. So this
+# item invents no threshold. What was missing was a VIEW — no record anywhere
+# paired a turn's OUTCOME with the confidence retrieval had in it, so the score
+# distribution over turns that ended in an apology, against turns that ended in
+# an answer, could only be guessed at.
+async def test_the_answer_record_carries_the_retrieval_confidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The acceptance test of §12's tracking table. Both signals land on the
+    turn's own record, beside the path that says how the turn ended."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[FakeChunk("c1", "Paris is the capital.")],
+        best_dense_score=0.81,
+        best_bm25_score=12.5,
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    record = _answer_record(caplog)
+    assert record.best_dense_score == 0.81
+    assert record.best_bm25_score == 12.5
+    assert record.path == "synthesis"
+
+
+async def test_the_confidence_is_a_number_and_never_a_chunk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ق-5's guard, applied to the two fields this wave adds. A float that
+    ranks a match carries no fragment of what was searched or found; the
+    chunk text, the file names and the question stay out of this record as
+    they always have."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[FakeChunk("c1", "الميزانية بلغت مليونًا", file_name="الميزانية 2025.pdf")],
+        best_dense_score=0.77,
+        best_bm25_score=3.0,
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "كم بلغت الميزانية؟")
+
+    record = _answer_record(caplog)
+    assert isinstance(record.best_dense_score, float)
+    assert isinstance(record.best_bm25_score, float)
+    written = " ".join(str(value) for value in vars(record).values())
+    assert "الميزانية" not in written
+    assert "c1" not in written
+
+
+async def test_the_fallback_records_the_confidence_it_apologised_over(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """⚠️ The most valuable row this field has. `path=fallback` with a real
+    `best_dense_score` beside it is a turn that searched, found something, and
+    apologised anyway — which is the pairing any re-calibration would be read
+    off, and which no record could state before this wave."""
+    deps, _knowledge, llm = make_deps(chunks=[], best_dense_score=0.62, best_bm25_score=8.0)
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "anything at all?")
+
+    record = _answer_record(caplog)
+    assert record.path == "fallback"
+    assert record.fallback is True
+    assert record.best_dense_score == 0.62
+    # And the model was never asked: the gate is unchanged, only measured.
+    assert llm.stream_calls == []
+
+
+async def test_a_strong_retrieval_with_no_chunks_still_falls_back() -> None:
+    """⚠️ The CONTAINING guard, and the one that says ب-11 added no threshold.
+    A very high score with zero chunks must reach the SAME honest apology it
+    reached before this wave: the gate reads `chunks`, and only `chunks`
+    (ق-2). If a number ever starts deciding here, this test is what fails."""
+    deps, _knowledge, llm = make_deps(chunks=[], best_dense_score=0.99, best_bm25_score=99.0)
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "anything at all?")
+
+    assert llm.stream_calls == []
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_summarisation_outcome_reports_no_confidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`None` and never `0.0`. A receipt is a fact about a document, not the
+    result of a search — a fabricated zero here would land inside the very
+    distribution the field exists to make readable."""
+    deps, _knowledge, _llm = make_deps(summary_job_id="job-1")
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "لخّص تقرير الأداء")
+
+    record = _answer_record(caplog)
+    assert record.path == "summary_receipt"
+    assert record.best_dense_score is None
+    assert record.best_bm25_score is None
+
+
+async def test_a_failed_turn_still_reports_what_retrieval_had_found(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The reason the two scores live on `_TurnRecord` rather than on a local
+    in `_answer`: ب-5's error record is emitted one frame OUT, and a turn that
+    retrieved well and then broke in the model is a different fault from one
+    that broke before it could ask."""
+
+    class _ExplodingLLM(FakeLLM):
+        """Retrieval succeeded; the model is what died."""
+
+        def stream(
+            self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+        ) -> AsyncIterator[LlmChunk]:
+            async def gen() -> AsyncIterator[LlmChunk]:
+                raise RuntimeError("the provider went away")
+                yield LlmChunk(delta="")  # pragma: no cover - unreachable
+
+            return gen()
+
+    knowledge = FakeKnowledge([FakeChunk("c1", "body")], best_dense_score=0.9, best_bm25_score=4.0)
+    deps = AgentDependencies(
+        llm=ResolvedLLM(provider=_ExplodingLLM([]), model="m", api_key="k"),
+        knowledge=knowledge,
+        space_id=SPACE,
+    )
+    with (
+        caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"),
+        pytest.raises(RuntimeError),
+    ):
+        await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    record = _answer_record(caplog)
+    assert record.path == "error"
+    assert record.best_dense_score == 0.9
+
+
+async def test_a_turn_that_never_retrieved_reports_no_confidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No seam wired at all — the optional-degrading mode. Nothing searched,
+    so there is nothing to report, and `retrieval_attempted` is what already
+    tells that apart from a search that came back empty."""
+    deps = AgentDependencies(llm=ResolvedLLM(provider=FakeLLM(["hi"]), model="m", api_key="k"))
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    record = _answer_record(caplog)
+    assert record.retrieval_attempted is False
+    assert record.best_dense_score is None
+    assert record.best_bm25_score is None
+
+
+async def test_the_confidence_never_reaches_the_streaming_contract() -> None:
+    """س-25 = أ, restated for this wave: a measurement is a measurement. The
+    two events a turn owes carry exactly what they carried."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[FakeChunk("c1", "body")], best_dense_score=0.81, best_bm25_score=12.5
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert [e.type for e in events] == ["token", "final"]
+    assert set(events[-1].data) == {"text", "citations"}
+
+
+# --------------------------------------------------------------------------- #
+# ب-12 (خطة السيناريوهات §8، ف-12) — the first source is nameable             #
+# --------------------------------------------------------------------------- #
+# The citations were ALREADY ordered correctly and this agent already did not
+# re-order them — both true before ف-12 and both pinned by tests older than
+# it. So this item is display, and its one backend half is that the order
+# stops being the only place the meaning lives.
+async def test_every_citation_carries_its_rank() -> None:
+    """One-based, because it is a rank a person reads and not an index a
+    program dereferences."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[
+            FakeChunk("c1", "first", file_name="a.pdf"),
+            FakeChunk("c2", "second", file_name="b.pdf"),
+            FakeChunk("c3", "third", file_name="c.pdf"),
+        ]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert [c["rank"] for c in events[-1].data["citations"]] == [1, 2, 3]
+
+
+async def test_the_rank_follows_the_module_order_and_never_a_sort() -> None:
+    """The rank ENUMERATES what arrived; it does not impose an order. The
+    module hands these over in descending relevance and this agent's not
+    re-ordering them is pinned separately — so a rank that disagreed with the
+    array's position would mean something here had started sorting."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[
+            FakeChunk("c-weak", "weakest", file_name="z.pdf"),
+            FakeChunk("c-strong", "strongest", file_name="a.pdf"),
+        ]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    citations = events[-1].data["citations"]
+    assert [c["chunk_id"] for c in citations] == ["c-weak", "c-strong"]
+    assert [c["rank"] for c in citations] == [1, 2]
+
+
+async def test_a_reply_that_cites_nothing_carries_no_ranks() -> None:
+    """The seven model-free replies cite nothing, so there is nothing to rank
+    — and neither does the empty completion (ب-1), whose citations were
+    dropped precisely because an answer that was never written rests on
+    nothing."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=[""], chunks=[FakeChunk("c1", "body", file_name="a.pdf")]
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "q")
+
+    assert events[-1].data["citations"] == []

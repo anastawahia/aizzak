@@ -171,6 +171,35 @@ class RoutedAnswer:
     **No default**, for the reason above it: a path that reads a stored
     summary and forgets to carry it would queue a rebuild that the read had
     just proven unnecessary, silently, which is ف-3 restored.
+
+    ``best_dense_score``/``best_bm25_score`` (scenarios plan section 8,
+    ب-11, gap ف-6) are the eighth and ninth fields, and the only two that
+    describe the SEARCH rather than the answer: the maximum raw
+    ``VectorHit.score`` each leg returned, over every hit it returned —
+    before relevance filtering, before diversity, before truncation to ``k``.
+    They are ``RetrievalResult``'s own two signals, passed on unchanged.
+
+    **They cross to be MEASURED, never to be gated**, and the distinction is
+    the whole of the item. ق-2 keeps a numeric threshold out of the agent,
+    and ت-1 is why it can stay out: thresholds exist here, they are
+    calibrated, and they are applied one layer down. What was missing was not
+    a knob but a VIEW — no record anywhere paired a turn's OUTCOME with the
+    confidence retrieval had in it, so the score distribution over turns that
+    ended in an apology, against turns that ended in an answer, could only be
+    guessed at. Carried across, it is collected from production for free, on
+    a real corpus instead of a fifteen-question set, and it is the material
+    any RE-calibration would be derived from.
+
+    ``None`` is an honestly absent signal and never ``0.0``: that leg
+    returned no hits at all. Both are ``None`` on every outcome of the
+    summarisation route, which ran no query — a receipt, a refusal, a stored
+    summary and a clarification question are facts about documents, not
+    results of a search, and reporting ``0.0`` for them would put a fabricated
+    zero into the very distribution this field exists to make readable.
+
+    **No default**, for ``stored_summary_text``'s reason exactly: a route that
+    searched and forgot to report its confidence would be indistinguishable
+    from one that never searched, which is the blindness ف-6 names.
     """
 
     intent: Intent
@@ -180,6 +209,8 @@ class RoutedAnswer:
     summary_target_name: str | None
     summary_blocked: SummaryBlocked | None
     stored_summary_text: str | None
+    best_dense_score: float | None
+    best_bm25_score: float | None
 
 
 class KnowledgeRetrieval(Protocol):

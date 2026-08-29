@@ -120,6 +120,14 @@ class RecordingRetrieval:
             # ب-7أ — the CONTENT route queues no build, so there is
             # no target for a name to be about.
             summary_target_name=None,
+            # ب-4ب / ب-8 — nothing refused and nothing read from the store,
+            # for the same reason: this fake only ever reports CONTENT.
+            summary_blocked=None,
+            stored_summary_text=None,
+            # ب-11 — and no confidence, because this fake runs no search: it
+            # returns a fixed chunk list rather than retrieving one.
+            best_dense_score=None,
+            best_bm25_score=None,
         )
 
     async def list_document_names(

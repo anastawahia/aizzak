@@ -592,6 +592,13 @@ class RouteQuestion:
             # route asked for none. A CONTENT answer is written from
             # chunks, in this turn, and has no stored artefact behind it.
             stored_summary_text=None,
+            # ب-11 (خطة السيناريوهات section 8، ف-6) — the ONE outcome that
+            # ran a query, so the one that has a confidence to report. Read
+            # off `RetrievalResult` and passed on unchanged: the numbers are
+            # measured where the search happens, and nothing on this path
+            # interprets, rounds or thresholds them (ق-2).
+            best_dense_score=result.best_dense_score,
+            best_bm25_score=result.best_bm25_score,
         )
 
     async def _answered_clarification(
@@ -740,6 +747,12 @@ class RouteQuestion:
                     # of the candidates would answer with a summary of
                     # a file the user has not yet chosen.
                     stored_summary_text=None,
+                    # ب-11 — no query ran, so there is no confidence. This
+                    # branch walked file NAMES and refused to choose between
+                    # them; a `0.0` here would file a turn that never
+                    # searched into the distribution of turns that did.
+                    best_dense_score=None,
+                    best_bm25_score=None,
                 )
             if not isinstance(resolution, ResolvedFile):
                 return None
@@ -856,6 +869,9 @@ class RouteQuestion:
                 # summary is the opposite of a blocked one.
                 summary_blocked=None,
                 stored_summary_text=stored,
+                # ب-11 — answered from the store, with no search behind it.
+                best_dense_score=None,
+                best_bm25_score=None,
             )
         try:
             job = await self._summaries.start(
@@ -902,6 +918,10 @@ class RouteQuestion:
                 # `start` was called at all. A refusal reached here only
                 # because there was no stored text to return instead.
                 stored_summary_text=None,
+                # ب-11 — a refusal is a fact about a document this route
+                # RESOLVED by name; no retrieval was attempted for it.
+                best_dense_score=None,
+                best_bm25_score=None,
             )
         return RoutedAnswer(
             intent=Intent.SUMMARIZE_DOC,
@@ -918,6 +938,9 @@ class RouteQuestion:
             # ب-8 — and nothing was stored, so a build is what this turn
             # can honestly offer. The read above ran and missed.
             stored_summary_text=None,
+            # ب-11 — a receipt for a build, not the result of a search.
+            best_dense_score=None,
+            best_bm25_score=None,
         )
 
     async def _pinned_name(
