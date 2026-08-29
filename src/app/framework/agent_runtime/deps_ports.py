@@ -163,6 +163,27 @@ class RoutedAnswerView(Protocol):
     ``None`` on every outcome that was not refused, which is all of them
     but one. It is never set together with ``summary_job_id``: a build is
     accepted or refused, not both.
+
+    ``stored_summary_text`` (scenarios plan section 6, ب-8, gap ف-3) is the
+    summary this question asked for, ALREADY BUILT and read back in the turn
+    that asked — the one routed outcome that carries an answer rather than a
+    fact about a build.
+
+    **It arrives rendered, and that is deliberate.** Everything else on this
+    seam is deliberately raw, because س-18 puts the wording with whoever
+    speaks; this is not the module wording anything, it is the artefact
+    itself, framed the way the same artefact is framed when a worker delivers
+    it into a thread. An agent that composed that framing itself would be
+    writing the second of two deliveries of one stored row, and the two would
+    drift.
+
+    So the agent EMITS it and does not edit it: no corpus header, no
+    prefix, no truncation notice of its own — the notice, when the build hit
+    the map ceiling, is already inside this string.
+
+    ``None`` whenever nothing was stored, which is every other outcome —
+    including a build that was queued, since a queued build is what "nothing
+    was stored" leads to.
     """
 
     @property
@@ -177,6 +198,8 @@ class RoutedAnswerView(Protocol):
     def summary_target_name(self) -> str | None: ...
     @property
     def summary_blocked(self) -> str | None: ...
+    @property
+    def stored_summary_text(self) -> str | None: ...
 
 
 class KnowledgeAccess(Protocol):

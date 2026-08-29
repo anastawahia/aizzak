@@ -396,6 +396,13 @@ _PATH_ERROR = "error"
 # `summary_conflict` now counts only what stayed UNclassified.
 _PATH_SUMMARY_BLOCKED_IN_PROGRESS = "summary_blocked_in_progress"
 _PATH_SUMMARY_BLOCKED_NOT_INDEXED = "summary_blocked_not_indexed"
+# ب-8 — the الموجة 4 exit, and the one whose COUNT is the item's own case for
+# itself. Every turn on this path is a map-reduce that did not run: the answer
+# came out of the store, in the turn that asked, for zero tokens. Folded into
+# `summary_receipt` it would be invisible — the two look alike from outside
+# (a summarisation, no synthesis, no citations) and mean opposite things: one
+# says the work is starting, this one says the work was already done.
+_PATH_SUMMARY_CACHED = "summary_cached"
 _MS_PER_SECOND = 1000
 
 
@@ -460,17 +467,23 @@ _BLOCKED_UNCLASSIFIED = _BlockedReason(
 
 @dataclass(frozen=True, slots=True)
 class _FixedReply:
-    """A turn answered WITHOUT the model: one fixed sentence and the ``path``
-    that names which of the six such exits produced it.
+    """A turn answered WITHOUT the model: one fixed text and the ``path``
+    that names which of the seven such exits produced it.
 
-    The six (retrieval plan §3.4/§3.5/§3.3, plus ب-3, ب-4أ and ب-4ب of the
-    gap plan): a queued summary's receipt · a build refused for a reason the
-    module NAMED · the clarification question · a summarisation whose target
-    is unknown · a build refused for a reason nobody named · the trust-gate
-    fallback. They are one TYPE and not six branches-with-their-own-emitter
-    because they owe the identical two events on the identical contract (ق-4),
-    and the way to make that identical rather than merely intended is to give
-    them one emit site in ``_answer``.
+    The seven (retrieval plan §3.4/§3.5/§3.3, plus ب-3, ب-4أ, ب-4ب and ب-8 of
+    the gap plan): an ALREADY-BUILT summary read back out of the store · a
+    queued summary's receipt · a build refused for a reason the module NAMED ·
+    the clarification question · a summarisation whose target is unknown · a
+    build refused for a reason nobody named · the trust-gate fallback.
+
+    "Fixed" means "not generated in this turn", not "short": ب-8's text is a
+    whole summary. What the seven share is that no model produced them here,
+    which is the property the one emit site depends on.
+
+    They are one TYPE and not seven branches-with-their-own-emitter because
+    they owe the identical two events on the identical contract (ق-4), and the
+    way to make that identical rather than merely intended is to give them one
+    emit site in ``_answer``.
 
     The two refusals are one exit each and not one exit with a flag, because
     ``path`` is a MEASUREMENT: `summary_blocked_*` counts refusals the module
@@ -478,8 +491,10 @@ class _FixedReply:
     deployment where the second number stops being near-zero has a real
     finding in it.
 
-    ``citations`` is not a field: a sentence this agent wrote itself cites
-    nothing, on all six. ``fallback`` is ``True`` on exactly one — the trust
+    ``citations`` is not a field: none of the seven has any. Six are sentences
+    this agent wrote itself, and the seventh (ب-8) is a stored summary — text
+    derived from a document rather than retrieved from one, with no chunk ids
+    behind it to point at. ``fallback`` is ``True`` on exactly one — the trust
     gate — because that flag is §3.11's measurement of the gate firing, not a
     synonym for "no model was called".
     """
@@ -675,22 +690,56 @@ class RagAgent(BaseAgent):
         yield AgentEvent(type="final", data={"text": text, "citations": citations})
 
     def _routed_reply(self, query: str, routed: RoutedAnswerView) -> _FixedReply | None:
-        """The three answers that come from the ROUTING RESULT alone, or
+        """The four answers that come from the ROUTING RESULT alone, or
         ``None`` when this turn is not one of them.
 
         They are grouped because they share two properties, and the second is
         the interesting one. They need nothing but ``routed`` and the query's
         language — no corpus, no chunks, no model. And they are exactly the
-        three that must NOT carry the corpus-awareness header: each already
-        names a file (or a list of them), and appending the whole space's
-        listing under a receipt, a refusal or a "which of these did you mean?"
-        would answer a question nobody asked and bury the one being asked.
+        ones that must NOT carry the corpus-awareness header: each already
+        names a file (or a list of them, or summarises one at length), and
+        appending the whole space's listing under a stored summary, a receipt,
+        a refusal or a "which of these did you mean?" would answer a question
+        nobody asked and bury the one being asked.
 
         So the split is not tidiness: ``_plan`` fetches the header immediately
         after this call returns ``None``, and everything below that line is a
         branch the header belongs to. Reaching this method's answers before
         the fetch is what keeps that true.
         """
+        if routed.stored_summary_text is not None:
+            # ب-8 (خطة السيناريوهات §6، ف-3) — the summary was ALREADY built,
+            # and the module read it back rather than queueing a second
+            # map-reduce over the same document. This turn is the answer, not
+            # a receipt for one.
+            #
+            # It sits ABOVE the receipt branch because it is the better half
+            # of the same question: both are the summarisation route reporting
+            # what it did, and when there is stored text there is no job id to
+            # report anyway. Order here follows the module's — it reads before
+            # it starts — so the two agree on which outcome wins.
+            #
+            # **Emitted verbatim.** The text arrived through
+            # `delivered_summary_text`, the same composer the worker's own
+            # delivery uses, so the truncation notice and the file-name header
+            # are already in this string, already in the right order and
+            # already in the summary's own language. Anything added here would
+            # be a second framing of one artefact.
+            #
+            # No corpus header, for the receipt branch's reason and one more:
+            # this answer IS about a specific file, at length, and appending
+            # the workspace listing under it would read as though the summary
+            # had not been enough.
+            #
+            # The LLM is never called — the strongest instance of that on this
+            # method, since here a model WOULD have had something to say. The
+            # summary is a finished artefact; asking a model to re-word it
+            # would spend tokens to make it less faithful.
+            #
+            # Citations are empty, for the receipt branch's reason exactly:
+            # this text came from a stored summary and not from retrieved
+            # chunks, and there are no chunk ids behind it to cite.
+            return _FixedReply(routed.stored_summary_text, _PATH_SUMMARY_CACHED)
         if routed.summary_job_id is not None:
             # The SUMMARIZE_DOC route ran and queued a build (retrieval plan
             # §3.4). There is nothing to synthesise and nothing to cite: the
@@ -773,11 +822,11 @@ class RagAgent(BaseAgent):
         sentence, or a prompt for the model.
 
         Everything that can end a turn without the LLM returns a
-        ``_FixedReply`` from here — three of them through ``_routed_reply``,
+        ``_FixedReply`` from here — four of them through ``_routed_reply``,
         which holds the branches answerable from the routing result alone; the
         one path that streams returns a ``_Synthesis``. No event is emitted in
-        this function, which is what lets the six fixed replies share one emit
-        site in ``_answer``.
+        this function, which is what lets the seven fixed replies share one
+        emit site in ``_answer``.
         """
         query = self._query(req)
         binding = self.deps.llm
@@ -965,12 +1014,19 @@ class RagAgent(BaseAgent):
         """ب-3 (خطة الفجوات §3، ف-5) — was this a summarisation whose TARGET
         the module could not identify?
 
-        Four conditions, and each one excludes a route that already has its
-        own answer: the intent was a summarisation, no build was queued (that
+        Five conditions, and each one excludes a route that already has its
+        own answer: the intent was a summarisation, no summary came back from
+        the store (ب-8 — that is the cached branch), no build was queued (that
         is the receipt), no candidates came back (that is the clarification
         question), and nothing was refused (ب-4ب — that is the blocked
         branch). What is left is the case that used to fall silently through
         to the content route.
+
+        The ب-8 condition is belt to the same braces as ب-4ب's, and it guards
+        a shape just as confusable: a stored summary comes back with intent
+        `summarize_doc`, no job id and no candidates — asking «أيّ ملفّ تريد
+        تلخيصه؟» under a summary of that very file would be the item's own
+        failure, restored one branch later.
 
         The fourth was added with ب-4ب because a refused build is INVISIBLE to
         the other three: the module names a target, asks for a build, is told
@@ -994,6 +1050,7 @@ class RagAgent(BaseAgent):
         return (
             routed is not None
             and routed.intent == _INTENT_SUMMARIZE_DOC
+            and routed.stored_summary_text is None
             and routed.summary_job_id is None
             and not routed.clarification_options
             and routed.summary_blocked is None

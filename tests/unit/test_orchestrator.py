@@ -417,13 +417,14 @@ class _FakeRoutedAnswer:
         # Retrieval plan §4 row 14 (`P-04`) — nothing to clarify: this fake
         # always reports the CONTENT route, which never resolves a file name.
         self.clarification_options: tuple[str, ...] = ()
-        # ب-7أ / ب-4ب — and for the same reason, no build to name and no
-        # refusal to report. Both are carried anyway rather than left off:
-        # this class exists to BE a `RoutedAnswerView`, and a view missing a
-        # member the agent reads is a fake that fails where the real seam
-        # would not.
+        # ب-7أ / ب-4ب / ب-8 — and for the same reason, no build to name, no
+        # refusal to report and no stored summary read back. All three are
+        # carried anyway rather than left off: this class exists to BE a
+        # `RoutedAnswerView`, and a view missing a member the agent reads is a
+        # fake that fails where the real seam would not.
         self.summary_target_name: str | None = None
         self.summary_blocked: str | None = None
+        self.stored_summary_text: str | None = None
 
 
 class _FakeKnowledge:

@@ -59,6 +59,7 @@ from app.modules.knowledge.application.use_cases import (
     DeleteSummary,
     GetSummary,
     GetSummaryJob,
+    ReadStoredSummary,
     RequestSummary,
     delivered_summary_text,
 )
@@ -72,7 +73,11 @@ from app.modules.knowledge.domain.value_objects import (
     SummaryLanguage,
 )
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
-from tests.unit.support_knowledge import build_knowledge, seed_document
+from tests.unit.support_knowledge import (
+    InMemorySummaryRepository,
+    build_knowledge,
+    seed_document,
+)
 
 _W1 = "ws1"
 _W2 = "ws2"
@@ -1030,6 +1035,42 @@ async def test_a_second_build_of_the_same_key_is_refused_before_a_token_is_spent
 
 
 @pytest.mark.asyncio
+async def test_the_rest_post_still_always_builds() -> None:
+    """**The containing guard of ب-8**, and the item's governing constraint
+    written as a test (خطة السيناريوهات §6, ف-3).
+
+    A stored summary now short-circuits the CHAT path — and it must not
+    short-circuit this one. `RequestSummary`'s contract is argued and stays:
+    «`POST` builds always», because REST has a second verb for reading and a
+    request that sometimes built and sometimes returned yesterday's text would
+    make «summarise» and «rebuild» stop being two operations. `POST` IS the
+    rebuild route, and it is the only one there is until an explicit «أعِد
+    التلخيص» intent exists.
+
+    So: a summary already sitting under the exact key, and the build is queued
+    regardless. The read the router does lives in the ROUTER — the one layer
+    that knows its call came from a conversation — and nothing about this
+    use-case moved to make room for it.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    await stack.summaries.upsert(_ctx(), _summary(text=_ENGLISH_SUMMARY))
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+
+    job, _events = await request.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+
+    assert job.status is SummaryJobStatus.QUEUED
+    assert job.document_id == "doc-1"
+    # And the stored row is untouched — a rebuild replaces it when it
+    # finishes, not when it is asked for.
+    assert (
+        await stack.summaries.get(_ctx(), "doc-1", SummaryKind.FULL, SummaryLanguage.AUTO)
+    ) is not None
+
+
+@pytest.mark.asyncio
 async def test_reading_never_crosses_a_kind_and_never_relabels_a_language() -> None:
     """A fallback would answer a question the caller did not ask and label it
     as the answer to the one they did. `F-6` narrows that rule; it does not
@@ -1929,3 +1970,117 @@ def test_an_unnameable_file_is_delivered_exactly_as_it_was_before(name: str | No
     summary = _summary(text=_ENGLISH_SUMMARY, truncated=False)
 
     assert delivered_summary_text(summary, name) == _ENGLISH_SUMMARY
+
+
+# --------------------------------------------------------------------------- #
+# ReadStoredSummary — ب-8 (خطة السيناريوهات §6، الفجوة ف-3)                     #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_stored_summary_is_read_back_with_the_delivery_framing_a_worker_gives_it() -> None:
+    """Decision 3: the text comes back through `delivered_summary_text`, the
+    SAME composer the worker's own delivery uses.
+
+    A summary read out of the store and one a worker has just finished have to
+    reach a thread looking alike — the file-name header prepended, the
+    truncation notice appended — or the stored copy becomes a visibly
+    second-class delivery of one artefact. That is what this class is FOR: the
+    router could have called the repository itself, and then there would be
+    two composers of one delivery, one turn apart.
+    """
+    ctx = _ctx()
+    summaries = InMemorySummaryRepository()
+    await summaries.upsert(ctx, _summary(text=_ENGLISH_SUMMARY, truncated=True))
+
+    text = await ReadStoredSummary(summaries).stored_text(
+        ctx,
+        document_id="doc-1",
+        kind=SummaryKind.FULL,
+        lang=SummaryLanguage.AUTO,
+        file_name="quarterly.pdf",
+    )
+
+    assert text is not None
+    assert _ENGLISH_SUMMARY in text
+    # `F-9` — a summary of a PREFIX must not arrive looking like a summary of
+    # the whole book, on this delivery any more than on the worker's.
+    assert SUMMARY_TRUNCATED_NOTICE_EN in text
+    # ب-7ج — the header above the body, the notice below it.
+    assert text.index("quarterly.pdf") < text.index(_ENGLISH_SUMMARY)
+    assert text.index(_ENGLISH_SUMMARY) < text.index(SUMMARY_TRUNCATED_NOTICE_EN)
+    # And it is byte for byte what the worker would have delivered.
+    assert text == delivered_summary_text(
+        _summary(text=_ENGLISH_SUMMARY, truncated=True), "quarterly.pdf"
+    )
+
+
+async def test_an_unstored_summary_reads_as_absent_rather_than_as_an_error() -> None:
+    """`ReadStoredSummary` returns `None` where `GetSummary` raises, and that
+    is the first of the two reasons it is not `GetSummary`.
+
+    A document nobody has summarised yet is the ORDINARY case on the chat
+    path, and the answer to it is the build the router goes on to queue — not
+    a `NotFoundError` to unwind through a route with a perfectly good next
+    step.
+    """
+    assert (
+        await ReadStoredSummary(InMemorySummaryRepository()).stored_text(
+            _ctx(), document_id="doc-1", kind=SummaryKind.OVERVIEW, lang=SummaryLanguage.AUTO
+        )
+        is None
+    )
+
+
+async def test_the_stored_read_never_falls_back_across_the_key() -> None:
+    """The whole triple is the key, and `SummaryRepository.get`'s no-fallback
+    rule is exactly what this caller wants unchanged.
+
+    An OVERVIEW is not a FULL summary and an Arabic one is not an English one.
+    A read that widened here would answer «لخّص هذا كاملاً» with the opening
+    chunks of a document and say nothing about the substitution — which is the
+    depth control `F-8` built, undone one layer down.
+    """
+    ctx = _ctx()
+    summaries = InMemorySummaryRepository()
+    await summaries.upsert(ctx, _summary(text=_ENGLISH_SUMMARY))
+    read = ReadStoredSummary(summaries)
+
+    assert (
+        await read.stored_text(
+            ctx, document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
+        is not None
+    )
+    assert (
+        await read.stored_text(
+            ctx, document_id="doc-1", kind=SummaryKind.OVERVIEW, lang=SummaryLanguage.AUTO
+        )
+        is None
+    )
+    assert (
+        await read.stored_text(
+            ctx, document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AR
+        )
+        is None
+    )
+
+
+async def test_another_tenants_stored_summary_is_not_read_back_into_a_chat() -> None:
+    """The tenant guard, restated on the new reader rather than assumed from
+    the old one.
+
+    `GetSummary` has this and it is load-bearing there; this class is a second
+    door onto the same rows, opened for a caller — a conversation — that never
+    names a workspace at all. Its scoping is the `ExecutionContext`'s, and a
+    test that did not say so would leave the claim resting on a repository
+    detail nobody re-checks.
+    """
+    summaries = InMemorySummaryRepository()
+    await summaries.upsert(_ctx(_W1), _summary(text=_ENGLISH_SUMMARY))
+
+    assert (
+        await ReadStoredSummary(summaries).stored_text(
+            _ctx(_W2), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+        )
+        is None
+    )

@@ -333,6 +333,58 @@ class SummaryBuildInProgress(SummaryRefused):
     reason = SummaryBlocked.IN_PROGRESS
 
 
+class SummaryReading(Protocol):
+    """The second summarisation capability this router needs: the text of a
+    summary that is ALREADY built, as the thread that asked for it should
+    receive it (ب-8, gap ف-3).
+
+    A narrow Protocol for ``SummaryStarting``'s two reasons, unchanged: the
+    implementation lives in the module that imports this one, and routing
+    depends on "something that can read a stored summary", not on the
+    repository read and the delivery composition behind it.
+
+    **Why a READ lives here at all, when ``POST`` deliberately has none.**
+    ``RequestSummary``'s contract is that a build request always builds, and
+    it is right where it was written: REST separates the two verbs, so a
+    caller who wants the stored text asks ``GET`` for it and one who wants a
+    fresh build asks ``POST`` — «summarise» and «rebuild» stay two operations
+    because the protocol has two names for them. **Chat has no ``GET``.**
+    «لخّص هذا الملفّ» is the only sentence a user has there, and it has to
+    mean both; so the read that REST puts in a second ROUTE goes here, in the
+    one layer that knows its call came from a conversation. Nothing in
+    ``RequestSummary`` moves and ``POST`` still always builds — the choice is
+    made by the caller that has a choice to make.
+
+    **It hands back DELIVERED text, not a ``Summary``.** The truncation
+    notice and the file-name header are composed at delivery
+    (``use_cases.delivered_summary_text``), and a summary read out of the
+    store has to arrive in a thread looking exactly like one a worker has
+    just finished putting there — same notice, same header, same order.
+    Composing it on the far side of this Protocol is what keeps that ONE code
+    path rather than two that must be kept in step, and it keeps this module
+    from having to know what ``truncated`` means.
+
+    ``file_name`` is that delivery framing and nothing else: the name the
+    router has ALREADY resolved this target to, handed over so the header can
+    be written from it. ``None`` means the corpus could not name the file —
+    the same case, and the same wording, the worker's own delivery has for it.
+
+    ``None`` back is "nothing is stored under this key", never an error. A
+    document nobody has summarised yet is the ordinary case, and the answer
+    to it is the build this router goes on to queue.
+    """
+
+    async def stored_text(
+        self,
+        ctx: ExecutionContext,
+        *,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+        file_name: str | None = None,
+    ) -> str | None: ...
+
+
 class FileCandidates(Protocol):
     """The corpus ``resolve_file`` matches against: every document in the
     space being searched, paired with the name of the file it was built from
@@ -377,10 +429,16 @@ class RouteQuestion:
         retrieval: RetrieveContext,
         summaries: SummaryStarting,
         files: FileCandidates,
+        stored: SummaryReading,
     ) -> None:
         self._retrieval = retrieval
         self._summaries = summaries
         self._files = files
+        # ب-8 (خطة السيناريوهات section 6, gap ف-3) — the READ that now
+        # happens before the write. Undefaulted, like every other seam on this
+        # class: a router built without one would queue a map-reduce for every
+        # repeat request and never say it had, which IS the gap.
+        self._stored = stored
 
     async def execute(
         self,
@@ -424,6 +482,14 @@ class RouteQuestion:
         happens before ``RetrieveContext.execute`` does, so leaving the guard
         to the search alone would let an unscoped call resolve a file name
         across every space first and be refused second.
+
+        A summarisation question can now be ANSWERED here rather than only
+        acknowledged (ب-8): when the summary it asks for is already stored
+        under the key this path writes, its text comes back on
+        ``stored_summary_text`` in the same turn. That is a decision this
+        layer is uniquely able to make — ``RequestSummary``'s "always build"
+        contract is untouched and right, and what changes is that the caller
+        which has no ``GET`` to reach for now has the read made on its behalf.
 
         Refusals from the summary route are CLASSIFIED but still not
         TRANSLATED, and the difference is the whole of ب-4ب. A refused build
@@ -482,6 +548,10 @@ class RouteQuestion:
             # asked for a build, which is a different thing from asking
             # and being told no.
             summary_blocked=None,
+            # ب-8 — no summary was read, for the same reason: this
+            # route asked for none. A CONTENT answer is written from
+            # chunks, in this turn, and has no stored artefact behind it.
+            stored_summary_text=None,
         )
 
     async def _summarisation_route(
@@ -496,11 +566,20 @@ class RouteQuestion:
         """The SUMMARIZE_DOC route, or ``None`` when it has nothing to act on
         and the question should fall through to CONTENT retrieval.
 
-        Four outcomes, and the one still missing is the point (plan §3.5): a
-        queued build when the target is identified, a REFUSED build when it is
-        identified and the module declined to queue one (ب-4ب), a set of names
-        to ask the user about when it is not identified, ``None`` when the
-        question names nothing in this corpus at all — and never a best guess.
+        Five outcomes, and the one still missing is the point (plan §3.5): the
+        STORED summary when one is already built for this exact key (ب-8), a
+        queued build when the target is identified and none is, a REFUSED
+        build when the module declined to queue one (ب-4ب), a set of names to
+        ask the user about when the target is not identified, ``None`` when
+        the question names nothing in this corpus at all — and never a best
+        guess.
+
+        The stored read comes FIRST among the three that need a target,
+        because it is the only one that can end the turn with the answer the
+        user actually asked for. The order is a cost decision and a truth
+        decision at once: a build queued on top of a finished summary spends a
+        map-reduce to produce text that already existed, and it answers «I
+        have started working on it» to a question that was already answerable.
 
         The refusal joined the other three instead of escaping as an exception
         because it is an OUTCOME of routing a question, not a failure to route
@@ -555,6 +634,12 @@ class RouteQuestion:
                     # ب-4ب — a question, not a refusal. `start` was never
                     # reached, so there is no reason to report.
                     summary_blocked=None,
+                    # ب-8 — and no stored text either. A summary is
+                    # stored per DOCUMENT, and this branch is the one
+                    # that has not settled on a document: reading one
+                    # of the candidates would answer with a summary of
+                    # a file the user has not yet chosen.
+                    stored_summary_text=None,
                 )
             if not isinstance(resolution, ResolvedFile):
                 return None
@@ -563,15 +648,66 @@ class RouteQuestion:
             # of the document it chose, so this is a read, not a
             # second lookup and not a derivation.
             target_name = resolution.file_name
+        # `F-8` — the default depth unless the question asked for the whole
+        # document. Read from the QUESTION, never from the target: what the
+        # user said does not change with how the file was found.
+        #
+        # ب-8 — and read ONCE, into a name both the read below and the build
+        # after it use. The key that is looked up has to be the key that would
+        # have been written, and the only way to be sure of that is for there
+        # to be one expression producing it. Two calls to the same pure
+        # function would be correct today and one edit away from a read that
+        # misses every time it matters.
+        kind = _routed_summary_kind(question)
+        # ب-8 (خطة السيناريوهات section 6, gap ف-3) — the read BEFORE the
+        # build, and the whole of this item.
+        #
+        # `POST` builds unconditionally and should: there the reader has `GET`
+        # and says which of the two it wants. A conversation has ONE sentence
+        # for both, so a user asking about a summary built yesterday used to
+        # pay a full map-reduce and wait minutes for text that was already
+        # stored. The existing guard did not catch it and was never meant to —
+        # it looks for an ACTIVE build, and a finished one is the opposite of
+        # active.
+        #
+        # `lang` is `_ROUTED_SUMMARY_LANG` for the plainest possible reason:
+        # it is what this path WRITES, so it is what this path can read. There
+        # is no fallback across the language axis here and none is wanted —
+        # `GetSummary`'s `auto` widening exists for a reader who asked for
+        # `ar` explicitly, and nobody on this path ever does.
+        stored = await self._stored.stored_text(
+            ctx,
+            document_id=target,
+            kind=kind,
+            lang=_ROUTED_SUMMARY_LANG,
+            # ب-7ج — the delivery framing, so a summary read out of the store
+            # reaches the thread in the shape a delivered one does.
+            file_name=target_name,
+        )
+        if stored is not None:
+            # The FIFTH outcome: answered from what was already built, in this
+            # turn, with nothing queued and nothing spent.
+            #
+            # `summary_job_id` stays `None` and that is not an omission — no
+            # job exists, and inventing one so the shape looked familiar would
+            # hand the caller an id that resolves to nothing. What says this
+            # turn produced an answer is the text itself.
+            return RoutedAnswer(
+                intent=Intent.SUMMARIZE_DOC,
+                chunks=(),
+                summary_job_id=None,
+                clarification_options=(),
+                summary_target_name=target_name,
+                # Nothing was refused: the request was ANSWERED. A stored
+                # summary is the opposite of a blocked one.
+                summary_blocked=None,
+                stored_summary_text=stored,
+            )
         try:
             job = await self._summaries.start(
                 ctx,
                 document_id=target,
-                # `F-8` — the default depth unless the question asked for the
-                # whole document. Read from the QUESTION, never from the
-                # target: what the user said does not change with how the file
-                # was found.
-                kind=_routed_summary_kind(question),
+                kind=kind,
                 lang=_ROUTED_SUMMARY_LANG,
                 # `F-7` — the thread that asked, so the build can post its text
                 # back here rather than into a route nobody is watching. The
@@ -608,6 +744,10 @@ class RouteQuestion:
                 clarification_options=(),
                 summary_target_name=target_name,
                 summary_blocked=refusal.reason,
+                # ب-8 — the read above found nothing, which is exactly why
+                # `start` was called at all. A refusal reached here only
+                # because there was no stored text to return instead.
+                stored_summary_text=None,
             )
         return RoutedAnswer(
             intent=Intent.SUMMARIZE_DOC,
@@ -621,6 +761,9 @@ class RouteQuestion:
             summary_target_name=target_name,
             # ب-4ب — the build was accepted, so nothing is blocking it.
             summary_blocked=None,
+            # ب-8 — and nothing was stored, so a build is what this turn
+            # can honestly offer. The read above ran and missed.
+            stored_summary_text=None,
         )
 
     async def _pinned_name(

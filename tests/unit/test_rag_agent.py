@@ -103,6 +103,7 @@ class FakeRoutedAnswer:
         clarification_options: Sequence[str] = (),
         summary_target_name: str | None = None,
         summary_blocked: str | None = None,
+        stored_summary_text: str | None = None,
     ) -> None:
         self.intent = intent
         self.chunks = chunks
@@ -124,6 +125,12 @@ class FakeRoutedAnswer:
         # `None` for `clarification_options`' reason: nothing was refused on
         # any construction that does not say so.
         self.summary_blocked = summary_blocked
+        # ب-8 (خطة السيناريوهات §6، ف-3) — an ALREADY-BUILT summary, arriving
+        # as the module delivers it: through `delivered_summary_text`, so the
+        # header and any truncation notice are already inside the string. The
+        # agent is expected to emit it and add nothing, which is why this fake
+        # carries a whole text rather than a flag.
+        self.stored_summary_text = stored_summary_text
 
 
 class FakeKnowledge:
@@ -148,6 +155,7 @@ class FakeKnowledge:
         summary_job_id: str | None = None,
         summary_target_name: str | None = None,
         summary_blocked: str | None = None,
+        stored_summary_text: str | None = None,
         clarification_options: Sequence[str] = (),
         routed_intent: str | None = None,
         answer_error: Exception | None = None,
@@ -166,6 +174,12 @@ class FakeKnowledge:
         # resolved, and the build was refused. Set it and this fake takes the
         # refusal branch; leave it and nothing about the fake changes.
         self._summary_blocked = summary_blocked
+        # ب-8 — the stored summary the module read back instead of queueing a
+        # build. Set it and this fake takes the cached branch, which is the
+        # FIRST of the routed outcomes: the module reads before it starts, and
+        # a fake that ordered them the other way would test an agent the
+        # module can never produce input for.
+        self._stored_summary_text = stored_summary_text
         self._clarification_options = clarification_options
         # ب-3 (خطة الفجوات §3، ف-5) — the intent the module REPORTS on the
         # route that returned no job and no candidates. `None` keeps the
@@ -241,6 +255,19 @@ class FakeKnowledge:
         # failing seam still wants to see that the agent asked.
         if self._answer_error is not None:
             raise self._answer_error
+        if self._stored_summary_text is not None:
+            # ب-8 — the FIFTH outcome and the only one carrying an ANSWER: the
+            # summary existed, so nothing was queued and there is no job id to
+            # report. `summary_target_name` rides along because the real module
+            # keeps it — the read is about a document it named, and the name is
+            # already inside the delivered text as its header.
+            return FakeRoutedAnswer(
+                "summarize_doc",
+                (),
+                None,
+                summary_target_name=self._summary_target_name,
+                stored_summary_text=self._stored_summary_text,
+            )
         if self._summary_job_id is not None:
             return FakeRoutedAnswer(
                 "summarize_doc",
@@ -324,6 +351,7 @@ def make_deps(
     summary_job_id: str | None = None,
     summary_target_name: str | None = None,
     summary_blocked: str | None = None,
+    stored_summary_text: str | None = None,
     clarification_options: Sequence[str] = (),
     space_id: str | None = SPACE,
     routed_intent: str | None = None,
@@ -338,6 +366,7 @@ def make_deps(
         summary_job_id=summary_job_id,
         summary_target_name=summary_target_name,
         summary_blocked=summary_blocked,
+        stored_summary_text=stored_summary_text,
         clarification_options=clarification_options,
         routed_intent=routed_intent,
         answer_error=answer_error,
@@ -2151,3 +2180,190 @@ def test_the_agents_blocked_literals_match_the_modules_enum() -> None:
     assert {reason.value for reason in SummaryBlocked} == set(agent_module._SUMMARY_BLOCKED_REASONS)
     assert SummaryBlocked.IN_PROGRESS.value == agent_module._BLOCKED_IN_PROGRESS
     assert SummaryBlocked.NOT_INDEXED.value == agent_module._BLOCKED_NOT_INDEXED
+
+
+# --------------------------------------------------------------------------- #
+# ب-8 — الملخّصُ المخزَّن يُقرأ في مسار الدردشة (خطة السيناريوهات §6، ف-3)        #
+# --------------------------------------------------------------------------- #
+
+# What the module hands over on that branch: a whole summary, already framed by
+# `delivered_summary_text` — header, body, and any truncation notice — because
+# the composition happened on the module side and this agent adds nothing.
+_STORED_SUMMARY_AR = "\n\n".join(
+    ("ملخّص الملفّ «التقرير الشمالي.pdf»:", "الإيرادات ارتفعت بنسبة ١٢٪.")
+)
+
+
+async def test_a_stored_summary_is_answered_in_the_turn_that_asked_for_it() -> None:
+    """**The item** (ف-3). The summary exists, so the answer IS the summary.
+
+    Before this branch the same turn produced «بدأت العمل عليه» — a receipt for
+    a map-reduce over a document that had already been summarised. The user
+    waited minutes, and the workspace paid twice, for text that was sitting in
+    the store.
+    """
+    deps, _knowledge, _llm = make_deps(stored_summary_text=_STORED_SUMMARY_AR)
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["text"] == _STORED_SUMMARY_AR
+    # Not the receipt. That sentence promises an arrival, and nothing is
+    # arriving — this turn already delivered.
+    assert "بدأت العمل" not in events[-1].data["text"]
+
+
+async def test_a_stored_summary_is_emitted_exactly_as_the_module_delivered_it() -> None:
+    """The text arrives ALREADY framed and leaves untouched.
+
+    `delivered_summary_text` composed the header and the truncation notice on
+    the module side, on purpose: a summary read out of the store must reach a
+    thread looking exactly like one a worker just finished putting there. An
+    agent that prefixed, suffixed or re-wrapped it would be the second of two
+    deliveries of one artefact, and the two would drift.
+
+    Byte for byte, and asserted as equality rather than containment — the
+    difference is the whole claim.
+    """
+    truncated = "\n\n".join((_STORED_SUMMARY_AR, "⚠️ هذا الملخّص يغطّي جزءاً من المستند."))
+    deps, _knowledge, _llm = make_deps(stored_summary_text=truncated)
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["text"] == truncated
+
+
+async def test_a_stored_summary_never_calls_the_llm() -> None:
+    """The strongest instance of the "no model on a fixed reply" rule, because
+    here a model would have had something to say.
+
+    The summary is a finished artefact; asking one to re-word it would spend
+    tokens to make it less faithful — and would put prose no summariser wrote
+    into an answer the user will read as the summary.
+    """
+    deps, _knowledge, llm = make_deps(stored_summary_text=_STORED_SUMMARY_AR)
+
+    await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert llm.stream_calls == []
+
+
+async def test_a_stored_summary_cites_nothing() -> None:
+    """Decision 4, first half. This text came from a stored summary, not from
+    retrieved chunks — there are no chunk ids behind it to point at, and
+    citations invented for it would attribute a paragraph to a passage nobody
+    retrieved."""
+    deps, _knowledge, _llm = make_deps(
+        stored_summary_text=_STORED_SUMMARY_AR, chunks=[FakeChunk("c1", "text")]
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_stored_summary_logs_its_own_path(caplog: pytest.LogCaptureFixture) -> None:
+    """Decision 4, second half — and the item's own case for itself.
+
+    Every turn on `summary_cached` is a map-reduce that did NOT run. Folded
+    into `summary_receipt` the saving would be unmeasurable: the two look alike
+    from outside (a summarisation, no synthesis, no citations) and mean
+    opposite things — one says the work is starting, this one says the work was
+    already done.
+    """
+    deps, _knowledge, _llm = make_deps(stored_summary_text=_STORED_SUMMARY_AR)
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    record = _answer_record(caplog)
+    assert record.path == "summary_cached"
+    # No model was called, so there is no duration to report — and the path is
+    # what makes that `None` readable rather than a provider that answered
+    # instantaneously.
+    assert record.llm_ms is None
+    # An ANSWER, and the most complete one this agent gives without a model.
+    assert record.error_type is None
+    assert record.fallback is False
+
+
+async def test_a_stored_summary_carries_no_corpus_header(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """س-23 = ج puts the header on the two ANSWERING paths, and this is not one
+    of them in the sense that rule means: the header exists so «I don't know»
+    is not uninformative, and this turn knows a great deal.
+
+    Appending the workspace listing under a full summary would read as though
+    the summary had not been enough. The listing is not even fetched.
+    """
+    deps, knowledge, _llm = make_deps(
+        stored_summary_text=_STORED_SUMMARY_AR, document_names=["a.pdf", "b.pdf"]
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["text"] == _STORED_SUMMARY_AR
+    assert knowledge.name_limit_calls == []
+
+
+async def test_a_stored_summary_is_not_answered_as_a_targetless_one() -> None:
+    """**The containing guard** against ب-3 swallowing this branch, the twin of
+    ب-4ب's.
+
+    A stored summary comes back with intent `summarize_doc`, no job id and no
+    candidates — the exact shape `_is_targetless_summary` recognises. Asking
+    «أيّ ملفّ تريد تلخيصه؟» under a summary of that very file would be this
+    item's own failure, restored one branch later.
+    """
+    deps, _knowledge, _llm = make_deps(
+        stored_summary_text=_STORED_SUMMARY_AR, document_names=["a.pdf"]
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert "أيّ ملفّ تريد تلخيصه؟" not in events[-1].data["text"]
+    assert events[-1].data["text"] == _STORED_SUMMARY_AR
+
+
+def test_a_stored_summary_excludes_the_targetless_case_structurally() -> None:
+    """And the exclusion is a property of the PREDICATE, not of where the
+    branches happen to sit.
+
+    Order alone would be enough today. It stops being enough the moment
+    somebody moves a branch, which is exactly the kind of edit that looks safe
+    — so `_is_targetless_summary` is asked directly, with no agent around it.
+    """
+    routed = FakeRoutedAnswer("summarize_doc", (), None, stored_summary_text=_STORED_SUMMARY_AR)
+
+    assert agent_module.RagAgent._is_targetless_summary(routed) is False
+
+
+async def test_an_english_summary_is_delivered_in_its_own_language(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The one branch with NO language decision to make, and that is the point.
+
+    Every other fixed reply picks Arabic or English off the query
+    (`_ARABIC_CHAR_RE`). This one picks nothing: the summary is written in the
+    document's language (`SummaryLanguage.AUTO`), which is neither the
+    question's language nor a choice this agent gets to second-guess. An
+    English question about an Arabic report is not a request for a translation.
+    """
+    english = "Summary of «north-report.pdf»:\n\nRevenue rose 12%."
+    deps, _knowledge, _llm = make_deps(stored_summary_text=english)
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي هذا الملف")
+
+    assert events[-1].data["text"] == english
+    assert _answer_record(caplog).path == "summary_cached"
+
+
+async def test_a_stored_summary_still_streams_the_two_events_every_answer_owes() -> None:
+    """ق-4: the streaming contract is untouched. A seventh fixed reply is a
+    seventh `_FixedReply`, sharing the one emit site — not a new event type and
+    not a new shape on `final`."""
+    deps, _knowledge, _llm = make_deps(stored_summary_text=_STORED_SUMMARY_AR)
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert [event.type for event in events] == ["token", "final"]
+    assert events[0].data["delta"] == _STORED_SUMMARY_AR

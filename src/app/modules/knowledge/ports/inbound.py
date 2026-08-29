@@ -141,6 +141,36 @@ class RoutedAnswer:
     **No default**, for ``summary_target_name``'s reason exactly: a
     refusal that forgot to report itself would inherit ``None`` and be
     indistinguishable from an ordinary answer, which is ف-7 restored.
+
+    ``stored_summary_text`` (scenarios plan section 6, ب-8, gap ف-3) is the
+    FIFTH outcome and the seventh field: the summarisation this question
+    asked for was ALREADY BUILT, and this is its text — answered in the turn
+    that asked, with nothing queued.
+
+    **It is text and not an id because there is no job.** Every other
+    outcome of that route reports a build: accepted (``summary_job_id``),
+    refused (``summary_blocked``), or not yet targeted. This one reports an
+    ANSWER, and the only honest carrier for an answer is the answer.
+
+    **The one field on this record that is not a fact but a rendering**, and
+    the exception is argued rather than assumed. س-18 gives the caller the
+    voice, and it still has it: this text is not the module's wording of
+    anything — it is the summary the model wrote, framed exactly as the
+    worker frames the same artefact when it delivers one to a thread
+    (``delivered_summary_text``: the truncation notice, the file-name
+    header). Handing over a ``Summary`` instead would move that framing to
+    the caller and give the same stored row two different shapes depending on
+    whether a worker or a reader delivered it — which is the failure, not the
+    principle.
+
+    ``None`` on every other outcome, including the one that queues a build:
+    nothing was stored, which is precisely why a build was queued. It is
+    never set together with ``summary_job_id`` or ``summary_blocked`` — a
+    request is answered from the store, or accepted, or refused.
+
+    **No default**, for the reason above it: a path that reads a stored
+    summary and forgets to carry it would queue a rebuild that the read had
+    just proven unnecessary, silently, which is ف-3 restored.
     """
 
     intent: Intent
@@ -149,6 +179,7 @@ class RoutedAnswer:
     clarification_options: tuple[str, ...]
     summary_target_name: str | None
     summary_blocked: SummaryBlocked | None
+    stored_summary_text: str | None
 
 
 class KnowledgeRetrieval(Protocol):

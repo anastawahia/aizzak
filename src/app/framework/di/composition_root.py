@@ -1247,6 +1247,17 @@ def _build_knowledge(
             documents,
             files,
             request_summary,
+            # ب-8 (خطة السيناريوهات §6، ف-3) — the SAME `summaries` repository
+            # `SummarizeDocumentService` writes finished summaries through, now
+            # also read by the chat route before it queues a build. One store,
+            # the writer and the reader agreeing on it by construction.
+            #
+            # `POST /documents/{id}/summary` is unaffected and that is the
+            # governing constraint of the item: it goes through
+            # `request_summary` above, whose "a build request builds" contract
+            # is untouched. The read is wired into the ROUTER only — the one
+            # caller that has a single sentence for both verbs.
+            summaries,
             # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus
             # header's display cap, from `Settings.retrieval.max_corpus_names`
             # and passed as an argument, exactly like `tuning` above. This

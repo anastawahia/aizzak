@@ -1401,6 +1401,64 @@ def delivered_summary_text(summary: Summary, file_name: str | None = None) -> st
     return f"{header.format(name=file_name.strip())}\n\n{body}"
 
 
+class ReadStoredSummary:
+    """The already-built summary under one exact key, delivered the way a
+    thread receives one — or ``None`` (ب-8, gap ف-3).
+
+    Satisfies ``routing.SummaryReading`` structurally, which is why its method
+    is ``stored_text`` rather than this layer's usual ``execute``: it is the
+    ONE capability the router asked for, named for what the router needs, the
+    way ``RequestSummaryService.start`` is.
+
+    **Why not ``GetSummary``.** That use-case answers a REST read, and it
+    carries two behaviours this caller must not have. It raises
+    ``NotFoundError`` on a miss — but a document nobody has summarised yet is
+    the ordinary case here, and the answer to it is the build the router goes
+    on to queue, not an error to unwind. And it falls back to the ``auto`` row
+    when the requested language is empty (`F-6`), a widening that exists for a
+    reader who asked for ``ar`` EXPLICITLY; the chat path asks for ``auto``
+    itself (``routing._ROUTED_SUMMARY_LANG``), so it is already reading the
+    row that fallback leads to. Reusing it would have meant borrowing an
+    exception and a fallback and then working around both.
+
+    **Why not the repository directly.** Because of the last line of this
+    class: ``delivered_summary_text``. A summary read out of the store must
+    reach a thread in the same shape as one a worker has just finished putting
+    there — the truncation notice appended, the file-name header prepended,
+    in that order. That composition already exists and already has one home;
+    what this class does is put the read and that home together, so the router
+    can depend on "a stored summary, ready to say" and never learn what
+    ``truncated`` means.
+
+    The stored row is untouched, as ever: the framing is composed at delivery
+    and never written back.
+    """
+
+    def __init__(self, summaries: SummaryRepository) -> None:
+        self._summaries = summaries
+
+    async def stored_text(
+        self,
+        ctx: ExecutionContext,
+        *,
+        document_id: Uuid,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+        file_name: str | None = None,
+    ) -> str | None:
+        """The exact-key read, and nothing wrapped around it.
+
+        ``SummaryRepository.get``'s whole-triple rule is the contract this
+        caller wants unchanged: an overview is not a full summary and an
+        English one is not an Arabic one, so a miss here means a miss and the
+        router queues the build the user asked for.
+        """
+        summary = await self._summaries.get(ctx, document_id, kind, lang)
+        if summary is None:
+            return None
+        return delivered_summary_text(summary, file_name)
+
+
 class GetSummaryJob:
     """One summary build's progress, or ``NotFoundError`` (BE-RAG-009/011)."""
 
@@ -2318,6 +2376,15 @@ class KnowledgeRetrievalService:
     over that same ``RetrieveContext`` plus the ``summaries`` starter, for
     the same reason: ONE seed the agent calls, three faces on it, no second
     injected port to keep in step with this one.
+
+    ``stored_summaries`` (ب-8, gap ف-3) is the sixth seed and the router's
+    READ. It is the ``SummaryRepository`` rather than a use-case because this
+    class composes ``ReadStoredSummary`` over it here, exactly as it composes
+    ``ListDocumentNames`` and ``ListFileCandidates`` over the seeds beside it
+    — the Composition Root passes the repository it already holds, and the
+    only object that knows a stored read is wanted is this one. ``summaries``
+    stays a use-case for the reason it always was: a BUILD needs the atomic
+    outbox and unit of work wrapped around it, and a read needs neither.
     """
 
     def __init__(
@@ -2327,6 +2394,7 @@ class KnowledgeRetrievalService:
         documents: DocumentRepository,
         files: ReadableFiles,
         summaries: SummaryStarting,
+        stored_summaries: SummaryRepository,
         *,
         max_corpus_names: int = _DEFAULT_MAX_CORPUS_NAMES,
     ) -> None:
@@ -2343,7 +2411,20 @@ class KnowledgeRetrievalService:
         # source is composed from the SAME two seams this service already
         # holds for `ListDocumentNames`, so wiring row 14 added no
         # constructor argument and no second reader of `files`.
-        self._router = RouteQuestion(retrieval, summaries, ListFileCandidates(documents, files))
+        # ب-8 (خطة السيناريوهات section 6, gap ف-3) — the router's READ,
+        # composed here over the repository seed for `ListFileCandidates`'
+        # reason: the router is owed a capability, not a store.
+        #
+        # Positional and undefaulted, which is the whole guard. A default
+        # would let a deployment compose this service without a reader and
+        # get the pre-ب-8 behaviour — every repeat request rebuilding — with
+        # nothing in the code or the logs saying so.
+        self._router = RouteQuestion(
+            retrieval,
+            summaries,
+            ListFileCandidates(documents, files),
+            ReadStoredSummary(stored_summaries),
+        )
 
     async def retrieve(
         self,

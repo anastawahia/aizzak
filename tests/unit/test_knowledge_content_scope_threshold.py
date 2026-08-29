@@ -182,6 +182,27 @@ class _SummarySpy:
         )
 
 
+class _NothingStored:
+    """A structural ``SummaryReading`` over an EMPTY store (ب-8, gap ف-3).
+
+    Every test in this file is about the content-scope threshold, and none of
+    them is about the stored read; an empty store is what they all assumed
+    before that seam existed — nothing is built, so a summarisation question
+    queues a build and the assertions below still speak about the same turn.
+    """
+
+    async def stored_text(
+        self,
+        ctx: ExecutionContext,
+        *,
+        document_id: str,
+        kind: SummaryKind,
+        lang: SummaryLanguage,
+        file_name: str | None = None,
+    ) -> str | None:
+        return None
+
+
 def _router(
     corpus: dict[str, str] | None = None,
 ) -> tuple[RouteQuestion, _ScopeSpy, _Corpus, _SummarySpy]:
@@ -193,7 +214,7 @@ def _router(
     # `retrieval`/`summaries`/`files` are structural stand-ins for the three
     # collaborators; two of the three are already Protocols on the router's
     # constructor, and the third is called through one method.
-    router = RouteQuestion(retrieval, summaries, files)  # type: ignore[arg-type]
+    router = RouteQuestion(retrieval, summaries, files, _NothingStored())  # type: ignore[arg-type]
     return router, retrieval, files, summaries
 
 

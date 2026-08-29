@@ -54,7 +54,13 @@ from app.modules.knowledge.application.use_cases import (
     RegisterDocumentFromFile,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id
-from app.modules.knowledge.domain.entities import Chunk, Document, ParentChunk, SummaryJob
+from app.modules.knowledge.domain.entities import (
+    Chunk,
+    Document,
+    ParentChunk,
+    Summary,
+    SummaryJob,
+)
 from app.modules.knowledge.domain.errors import DocumentStateError, InvalidKnowledgeInput
 from app.modules.knowledge.domain.events import (
     DocumentIndexed,
@@ -796,6 +802,54 @@ class _FakeSummaryStarter:
         )
 
 
+class _FakeStoredSummaries:
+    """A recording, structural `SummaryRepository` holding the summaries that
+    are ALREADY built (ب-8, gap ف-3).
+
+    The REPOSITORY and not the reader, because that is what the service is
+    given: `KnowledgeRetrievalService` composes the real `ReadStoredSummary`
+    over it, so these tests exercise the real read AND the real
+    `delivered_summary_text` composition rather than a fake standing where
+    both used to be.
+
+    `stored` is `(document_id, kind, lang) -> text`, the whole triple, because
+    the row this stands in for is keyed by the whole triple: an OVERVIEW is
+    not a FULL summary, and a fake laxer than `uq_summary_key` would let a
+    read that fudges the key pass.
+
+    `calls` records what was looked up -- the only way a test can assert that
+    the key READ is the key this path WRITES, which is the difference between
+    a read that works and one that misses every single time while looking
+    perfectly wired.
+    """
+
+    def __init__(
+        self, stored: dict[tuple[str, SummaryKind, SummaryLanguage], str] | None = None
+    ) -> None:
+        self._stored = stored or {}
+        self.calls: list[tuple[str, SummaryKind, SummaryLanguage]] = []
+
+    async def get(
+        self, ctx: ExecutionContext, document_id: str, kind: SummaryKind, lang: SummaryLanguage
+    ) -> Summary | None:
+        self.calls.append((document_id, kind, lang))
+        text = self._stored.get((document_id, kind, lang))
+        if text is None:
+            return None
+        return Summary(
+            id=f"sum-{len(self.calls)}",
+            workspace_id=ctx.workspace_id,
+            document_id=document_id,
+            kind=kind,
+            lang=lang,
+            text=text,
+            model="summariser-1",
+            source_chunks=3,
+            truncated=False,
+            built_at=utc_now(),
+        )
+
+
 class _TrackingUnitOfWork:
     def __init__(self) -> None:
         self.active = False
@@ -1407,7 +1461,12 @@ async def test_knowledge_retrieval_service_resolves_embedding_and_delegates() ->
     documents = _FakeDocumentRepository()
     retrieval = RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED)
     service = KnowledgeRetrievalService(
-        retrieval, resolver, documents, _FakeReadableFiles(), _FakeSummaryStarter()
+        retrieval,
+        resolver,
+        documents,
+        _FakeReadableFiles(),
+        _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     # Static-typing assertion: KnowledgeRetrievalService satisfies the
@@ -1557,6 +1616,7 @@ async def test_knowledge_retrieval_service_delegates_list_document_names() -> No
         documents,
         files,
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     svc: KnowledgeRetrieval = service
@@ -1655,6 +1715,7 @@ async def test_the_service_hands_the_configured_cap_down_to_the_use_case() -> No
         documents,
         files,
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
         max_corpus_names=1,
     )
 
@@ -2146,6 +2207,7 @@ async def test_a_file_scope_narrows_retrieval_to_that_file_s_documents() -> None
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     results = await service.retrieve(
@@ -2174,6 +2236,7 @@ async def test_an_unscoped_retrieval_still_sees_the_whole_corpus() -> None:
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
@@ -2198,6 +2261,7 @@ async def test_a_scope_of_unindexed_files_retrieves_nothing_rather_than_everythi
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
     searches_before = len(vectors.search_calls)
 
@@ -2224,6 +2288,7 @@ async def _routing_service(
     documents: _FakeDocumentRepository | None = None,
     files: _FakeReadableFiles | None = None,
     summaries: _FakeSummaryStarter | None = None,
+    stored: _FakeStoredSummaries | None = None,
 ) -> tuple[KnowledgeRetrievalService, _FakeSummaryStarter]:
     """The service over the REAL `RouteQuestion`, the REAL `RetrieveContext`
     and the REAL `ListFileCandidates`/`resolve_file`, on the two-file corpus
@@ -2240,11 +2305,18 @@ async def _routing_service(
     the seam so it can count the `get_readable` walk, and `summaries` lets one
     hand over a starter that REFUSES (ب-4ب) — all keyword-only, all defaulting
     to what every earlier test already gets.
+
+    `stored` is ب-8's seam: the summaries that already EXIST. Its default is an
+    empty store, which is what every test written before that item assumed
+    without being able to say so -- nothing is built, so every summarisation
+    question queues a build.
     """
     if documents is None:
         documents = await _indexed_corpus(ctx, embeddings, vectors)
     if summaries is None:
         summaries = _FakeSummaryStarter()
+    if stored is None:
+        stored = _FakeStoredSummaries()
     if files is None:
         files = (
             _FakeReadableFiles(dict.fromkeys(names), names=names) if names else _FakeReadableFiles()
@@ -2255,6 +2327,7 @@ async def _routing_service(
         documents,
         files,
         summaries,
+        stored,
     )
     return service, summaries
 
@@ -2784,6 +2857,223 @@ def test_every_blocked_reason_has_a_refusal_that_raises_it() -> None:
     """
     raised = {cls.reason for cls in (SummaryTargetNotIndexed, SummaryBuildInProgress)}
     assert raised == set(SummaryBlocked)
+
+
+# ب-8 (خطة السيناريوهات §6، الفجوة ف-3) — the stored summary read on the CHAT
+# path. `POST` builds unconditionally and keeps doing so; what changes is that
+# a conversation, which has no `GET` to reach for, gets the read made for it.
+_STORED_NORTH_OVERVIEW = "ملخّصٌ موجزٌ للتقرير الشمالي: الإيرادات ارتفعت."
+
+
+async def test_a_second_chat_summary_request_returns_the_stored_text_without_queueing() -> None:
+    """**The item** (ف-3). The summary exists; the answer is the summary.
+
+    Before this, the second «لخّص لي التقرير الشمالي» in a thread queued a
+    second map-reduce over a document already summarised and answered «بدأت
+    العمل عليه» -- minutes of waiting and a full bill for text that was
+    sitting in the store. The read costs one keyed lookup and ends the turn.
+
+    The assertion that carries the item is the LAST one: `summaries.calls` is
+    empty. Not "a job was queued and also the text came back" -- nothing was
+    queued at all.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): _STORED_NORTH_OVERVIEW}
+    )
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert routed.stored_summary_text is not None
+    assert _STORED_NORTH_OVERVIEW in routed.stored_summary_text
+    # No build, no job, no refusal -- the request was ANSWERED.
+    assert routed.summary_job_id is None
+    assert routed.summary_blocked is None
+    assert summaries.calls == []
+
+
+async def test_the_stored_read_uses_the_key_the_chat_path_writes() -> None:
+    """Decision 1: the key READ is the key that would have been WRITTEN.
+
+    A read on a key this path never writes misses every single time and is
+    indistinguishable, from outside, from a store that is simply empty -- the
+    worst shape of this bug, because the feature looks wired and does nothing.
+    So the assertion is on the lookup itself: the document the router
+    resolved, the kind it would have asked for, and `AUTO`, which is the one
+    language a chat build ever writes under (`_ROUTED_SUMMARY_LANG`).
+
+    `GetSummary`'s `auto` widening (`F-6`) is deliberately NOT reused here.
+    That exists for a reader who asked for `ar` explicitly; this path asks for
+    `auto` itself, so it is already reading the row that fallback leads to.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries()
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert stored.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+    # And the store was empty, so the build went ahead -- under the SAME key.
+    assert summaries.calls == stored.calls
+
+
+async def test_a_full_summary_request_does_not_return_the_stored_overview() -> None:
+    """Decision 2: `kind` is read from the question, never assumed.
+
+    «لخّص هذا كاملاً» and «لخّص هذا» are two different artefacts (`F-8`), and
+    answering the first with the second would be the item quietly undoing the
+    depth control الموجة before it built: a user who asked for the whole
+    document would be handed the opening chunks and told nothing.
+
+    So the stored OVERVIEW is invisible to a FULL request, and the build is
+    queued as it should be.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): _STORED_NORTH_OVERVIEW}
+    )
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي كاملاً", 5, space_id=_SPACE_A)
+
+    assert routed.stored_summary_text is None
+    assert routed.summary_job_id == "job-1"
+    assert stored.calls == [("doc-north", SummaryKind.FULL, SummaryLanguage.AUTO)]
+    assert summaries.calls == [("doc-north", SummaryKind.FULL, SummaryLanguage.AUTO)]
+
+
+async def test_a_pinned_repeat_request_reads_the_store_too() -> None:
+    """س-21's path gets the saving as well.
+
+    A thread pinned to one file never reaches the resolver, and it would have
+    been easy to put the read on the resolved branch only -- where the test
+    above would still pass and every pinned repeat would still pay for a
+    rebuild. The read sits after BOTH branches have settled on a target, which
+    is what makes that impossible.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): _STORED_NORTH_OVERVIEW}
+    )
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
+
+    assert routed.stored_summary_text is not None
+    assert summaries.calls == []
+
+
+async def test_the_returned_summary_is_headed_with_the_name_the_module_resolved() -> None:
+    """ب-7ج meets ب-8: the stored delivery names its file, from the name the
+    MODULE resolved -- the same one a receipt would have named.
+
+    The router already holds it by the time it reads (from the resolver on one
+    branch, from `_pinned_name` on the other), so this costs nothing and is
+    what keeps a summary read out of the store from arriving as a wall of text
+    with no title where a delivered one has one.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): _STORED_NORTH_OVERVIEW}
+    )
+    service, _summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    text = routed.stored_summary_text
+    assert text is not None
+    assert "التقرير الشمالي.pdf" in text
+    assert text.index("التقرير الشمالي.pdf") < text.index(_STORED_NORTH_OVERVIEW)
+
+
+async def test_a_tie_reads_no_stored_summary() -> None:
+    """The containing guard on the other side: a summary is stored per
+    DOCUMENT, and the clarification branch is the one that has not settled on
+    a document.
+
+    Reading one of the candidates would answer with a summary of a file the
+    user has not chosen yet -- «summarising the wrong file with confidence»,
+    which is the failure the whole resolver exists to refuse.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries()
+    service, _summaries = await _routing_service(
+        ctx, embeddings, vectors, _TIED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "لخّص لي الميزانية", 5, space_id=_SPACE_A)
+
+    assert routed.clarification_options
+    assert routed.stored_summary_text is None
+    assert stored.calls == []
+
+
+async def test_a_content_question_reads_no_stored_summary() -> None:
+    """And the CONTENT route touches the store not at all. The field is
+    `None` on every outcome that did not read one, which is all of them but
+    the fifth."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries()
+    service, _summaries = await _routing_service(
+        ctx, embeddings, vectors, _NAMED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
+
+    assert routed.intent is Intent.CONTENT
+    assert routed.stored_summary_text is None
+    assert stored.calls == []
+
+
+async def test_a_refused_build_was_asked_for_only_because_nothing_was_stored() -> None:
+    """The read runs BEFORE the refusal can happen, so ب-4ب's two refusals are
+    now reachable only when there is genuinely nothing to return.
+
+    That is a real improvement to the ب-4ب wording and not a side effect: «ما
+    زال قيد الإعداد» about a document whose PREVIOUS summary is sitting in the
+    store is technically true and useless -- the user asked for a summary, one
+    exists, and they were told to wait for a different one.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): _STORED_NORTH_OVERVIEW}
+    )
+    service, summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _NAMED_CORPUS,
+        summaries=_FakeSummaryStarter(SummaryBuildInProgress("already building")),
+        stored=stored,
+    )
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    # The stored text wins: there IS an answer, so «ما زال قيد الإعداد» is not
+    # what this turn owes.
+    assert routed.stored_summary_text is not None
+    assert routed.summary_blocked is None
+    assert summaries.calls == []
 
 
 async def test_a_tie_comes_back_as_names_to_ask_the_user_about_and_queues_nothing() -> None:
@@ -3347,6 +3637,7 @@ async def test_a_space_scoped_retrieval_never_answers_from_another_space() -> No
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     results = await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A)
@@ -3370,6 +3661,7 @@ async def test_a_space_and_a_pin_narrow_together_rather_than_replacing_each_othe
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     await service.retrieve(
@@ -3411,6 +3703,7 @@ async def test_an_unspaced_retrieval_is_refused_instead_of_seeing_every_space(
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     embedded_before = len(embeddings.calls)
@@ -3460,6 +3753,7 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
         documents,
         _FakeReadableFiles(),
         _FakeSummaryStarter(),
+        _FakeStoredSummaries(),
     )
 
     assert await service.retrieve(ctx, "quarterly revenue figures", 5, space_id=_SPACE_A) == []
@@ -3550,6 +3844,7 @@ async def test_the_router_walks_the_candidates_of_the_space_it_was_asked_about(
         RetrieveContext(embeddings, vectors, documents, tuning=_UNGATED),
         _FakeSummaryStarter(),
         files,
+        _FakeStoredSummaries(),
     )
 
     routed = await router.execute(
