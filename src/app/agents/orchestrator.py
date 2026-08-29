@@ -1479,7 +1479,7 @@ class AgentOrchestrator:
                     # left for the `finally` would then run inside a
                     # `GeneratorExit` unwind (see `_persist_partial`).
                     terminal = True
-                    await self._persist_partial(ctx, record, streamed, reason=_CUT_TIMEOUT)
+                    await self._settle_cut(ctx, record, streamed, reason=_CUT_TIMEOUT)
                     yield _timeout_event(cap_s)
                     break
                 except Exception:
@@ -1491,7 +1491,7 @@ class AgentOrchestrator:
                     # Same argument as the timeout above and the same
                     # guarantee: saved on the way out, from a frame that is
                     # still running normally.
-                    await self._persist_partial(ctx, record, streamed, reason=_CUT_ERROR)
+                    await self._settle_cut(ctx, record, streamed, reason=_CUT_ERROR)
                     raise
                 if event.type == "token":
                     # The text passes through here already — accumulating it
@@ -1511,7 +1511,7 @@ class AgentOrchestrator:
                     # BEFORE the event is yielded, for the timeout branch's
                     # reason exactly: `invoke_once` raises on an in-band
                     # error and may never resume this generator.
-                    await self._persist_partial(ctx, record, streamed, reason=_CUT_ERROR)
+                    await self._settle_cut(ctx, record, streamed, reason=_CUT_ERROR)
                 if event.type == "final":
                     terminal = True
                     # ب-9 — BEFORE `_persist_reply`, so the key is off the
@@ -1532,7 +1532,7 @@ class AgentOrchestrator:
             # so this is attempted, measured under its own reason, and never
             # counted as covered.
             if not terminal:
-                await self._persist_partial(ctx, record, streamed, reason=_CUT_ABANDONED)
+                await self._settle_cut(ctx, record, streamed, reason=_CUT_ABANDONED)
             # `finally` so an abandoned or failed run is still billed: it
             # consumed real provider tokens either way. This is sound ONLY
             # because `_TokenMeter` is kept current as chunks arrive — an
@@ -1544,6 +1544,52 @@ class AgentOrchestrator:
             # (decision 3): those tokens were generated and paid for upstream.
             # ب-10 reduces what is LOST, never what is owed.
             await self._capture(ctx, agent_key, provider, record.meter)
+
+    async def _settle_cut(
+        self,
+        ctx: ExecutionContext,
+        record: _TurnRecord,
+        streamed: Sequence[str],
+        *,
+        reason: str,
+    ) -> None:
+        """Everything a turn the platform CUT owes its thread: keep the half
+        that reached the reader, and forget the question the last turn asked.
+
+        **Why forgetting is the right answer and not a loss.** ب-9's rule is
+        that what is stored is what is outstanding NOW, and after a cut turn
+        the honest answer is "nothing": no ``final`` frame was produced, so no
+        question was declared. The turn that was cut had already CONSUMED the
+        outstanding one — the pre-flight read handed it to the agent, which
+        resolved «الثاني» against it and was answering when the stream died.
+        Leaving it standing lets a brand-new question be read as an answer to
+        a question that was answered a turn ago, which is precisely the
+        failure ``Conversation.expect_clarification`` calls impossible.
+
+        ⚠️ **And it costs something real**: a user who retypes «الأوّل» after
+        a cut is now answered as if they had asked a new question, and gets
+        the fallback instead of their file. That is the trade taken
+        deliberately, because the two failures are not equally visible —
+        forgetting fails LOUDLY, in a sentence the user can see and correct
+        by naming the file; remembering fails SILENTLY, by summarising the
+        wrong document and saying nothing about why.
+
+        **One method rather than two calls at four sites**, and that is most
+        of its reason to exist. The healthy path settles in two steps
+        (``_settle_clarification`` then ``_persist_reply``) because each reads
+        the ``final`` frame differently; a cut path has no frame to read, so
+        what it owes is fixed. Pairing it here is what stops a fifth cut path,
+        added later, from doing half the job — and doing half the job is
+        exactly the defect this method was written to repair.
+
+        **The text goes first.** On the abandonment path both awaits run
+        inside a ``GeneratorExit`` unwind that may not finish, so the order is
+        the order of value: streamed text is unrecoverable once lost, while a
+        clarification left standing is bounded — the next turn that reaches
+        ``final`` overwrites it either way.
+        """
+        await self._persist_partial(ctx, record, streamed, reason=reason)
+        await self._write_pending(ctx, record, ())
 
     async def _persist_partial(
         self,
@@ -1643,13 +1689,6 @@ class AgentOrchestrator:
         contract (``token`` then ``final``, never a third) for a UI that has
         no use for it.
 
-        **One write, and it both sets and clears.** What is stored is what is
-        outstanding NOW, so a turn that asked nothing erases whatever the last
-        turn asked, and the pending intent cannot survive two turns. It is
-        skipped entirely when nothing changed, which is almost every turn:
-        the comparison is against what the pre-flight READ, so "no question
-        before, no question now" costs no statement at all.
-
         **The key never reaches the client** (ق-د = أ). It is stripped here,
         on every path including the degraded ones, and not only where the
         write succeeds: a deployment with no conversations seam must not start
@@ -1659,11 +1698,11 @@ class AgentOrchestrator:
         TEXT, where a client that has never heard of file resolution renders
         them by doing nothing.
 
-        **A failed write degrades to a warning**, exactly as ``_persist_reply``
-        does and for the same reason: the answer has been produced and
-        streamed, and raising here would replace it with an error the client
-        cannot act on. What is lost is one turn's memory — the next turn is
-        read as an ordinary question, which is what it was before ب-9.
+        **This is the ``final`` path's half of it, and not the whole rule.**
+        What a turn leaves outstanding is written by ``_write_pending``,
+        which the cut paths reach through ``_settle_cut`` — because a turn
+        that produced no ``final`` still ends, and still has to say that it
+        left nothing behind.
         """
         raw = event.data.get(_PENDING_KEY)
         if raw is None:
@@ -1671,10 +1710,44 @@ class AgentOrchestrator:
         else:
             data = {key: value for key, value in event.data.items() if key != _PENDING_KEY}
             event = AgentEvent(type=event.type, data=data)
-        options = _pending_options(raw)
+        await self._write_pending(ctx, record, _pending_options(raw))
+        return event
+
+    async def _write_pending(
+        self, ctx: ExecutionContext, record: _TurnRecord, options: tuple[str, ...]
+    ) -> None:
+        """Record what is outstanding on this thread NOW — the names this turn
+        asked the user to choose between, or ``()`` for nothing (ب-9, ف-1أ).
+
+        **One write, and it both sets and clears.** What is stored is what is
+        outstanding after THIS turn, so a turn that asked nothing erases
+        whatever the last turn asked, and the pending intent cannot survive
+        two turns.
+
+        ⚠️ **Which is why every ending calls it, not only the good one.** The
+        rule reads as an invariant and is stated as one on
+        ``Conversation.expect_clarification``, but nothing about the DATA
+        enforces it: it holds exactly as far as the paths that remember to
+        write. It was true of `final` alone until ب-10 gave a turn four more
+        ways to end, and false the moment one of them was taken — the answer
+        to a clarification could be cut mid-stream, and the question it had
+        already consumed stayed on the thread to be re-answered by whatever
+        the user said next. ``_settle_cut`` is those four paths' way here.
+
+        **Skipped entirely when nothing changed**, which is almost every turn:
+        the comparison is against what the pre-flight READ, so "no question
+        before, no question now" costs no statement at all — and a cut turn on
+        an ordinary thread costs nothing either.
+
+        **A failed write degrades to a warning**, exactly as ``_persist_reply``
+        does and for the same reason: the answer has been produced and
+        streamed, and raising here would replace it with an error the client
+        cannot act on. What is lost is one turn's memory — the next turn is
+        read as an ordinary question, which is what it was before ب-9.
+        """
         threads = self._deps.conversations
         if threads is None or record.conversation_id is None or options == record.pending:
-            return event
+            return
         try:
             await threads.expect_clarification(ctx, record.conversation_id, options)
         except Exception as exc:  # never mask a produced answer
@@ -1683,7 +1756,6 @@ class AgentOrchestrator:
                 extra={"conversation_id": record.conversation_id, "options": len(options)},
                 exc_info=exc,
             )
-        return event
 
     async def _persist_reply(
         self, ctx: ExecutionContext, record: _TurnRecord, event: AgentEvent

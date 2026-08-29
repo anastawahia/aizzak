@@ -2560,3 +2560,113 @@ async def test_a_non_streaming_caller_keeps_the_half_answer_it_never_delivered()
 
     (kept,) = _assistant_messages(threads)
     assert kept.startswith("half an answer")
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 with ب-10 — a cut turn also forgets what the last turn asked           #
+# --------------------------------------------------------------------------- #
+# ⚠️ Found by the final review of the six waves, and by neither wave's own:
+# it exists only once both are in. ب-9 promised that a pending clarification
+# lives exactly one turn, and `Conversation.expect_clarification` states that
+# as an invariant — "impossible rather than merely discouraged". But the write
+# that enforced it happened on the `final` event alone, and ب-10 gave a turn
+# four more ways to end. So the answer to a clarification could be cut
+# mid-stream, and the question it had ALREADY consumed stayed on the thread
+# for whatever the user said next to be read against.
+#
+# The blast radius was small and the broken guarantee was not: the stale list
+# is overwritten by the next turn that reaches `final`, and only a reply that
+# reads as a name, an ordinal or a fragment resolves against it at all. What
+# had to be fixed is that a docstring stated a rule the code did not keep.
+
+
+async def test_a_cut_off_turn_forgets_the_question_the_last_turn_asked() -> None:
+    """⚠️ The defect itself. Before this, the turn READ the pending question,
+    spent itself answering it, died — and left it standing, so a brand-new
+    «الثاني» a turn later resolved against a list that had been answered and
+    was never shown again."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf", "b.pdf"))
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert threads.pending_reads == ["conv-1"]
+    assert threads.pending_writes == [("conv-1", ())]
+
+
+async def test_a_cut_turn_that_kept_no_text_still_forgets_the_question() -> None:
+    """⚠️ The reason the forgetting is not folded INTO the partial save. A
+    turn cut before its first token stores no message — and had still consumed
+    the question, so it owes the thread the erasure exactly as much as a turn
+    that streamed half a page."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf", "b.pdf"))
+
+    await _drive(_cut_orchestrator(_SilentCutOffAgent, threads), "silent-cutoff")
+
+    assert _assistant_messages(threads) == []
+    assert threads.pending_writes == [("conv-1", ())]
+
+
+async def test_every_way_a_turn_is_cut_forgets_it() -> None:
+    """The failing agent's path, which is the commonest cut of the three: a
+    provider that dies arrives as the terminal `error` event (B1), not as an
+    exception, and that branch has to erase like the others."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf",))
+
+    await _drive(_cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
+
+    assert threads.pending_writes == [("conv-1", ())]
+
+
+async def test_an_abandoned_turn_forgets_it_too() -> None:
+    """The best-effort path (س-30). Attempted from inside the `GeneratorExit`
+    unwind and AFTER the text, which is the order of value: the streamed
+    answer cannot be recovered, a stale question is overwritten by the next
+    turn that finishes."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf",))
+    orchestrator = _cut_orchestrator(_CutOffAgent, threads, cap_s=None)
+
+    stream = await orchestrator.invoke(
+        _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+    await stream.__anext__()
+    await stream.aclose()
+
+    (kept,) = _assistant_messages(threads)
+    assert _ENGLISH_MARKER in kept
+    assert threads.pending_writes == [("conv-1", ())]
+
+
+async def test_a_cut_turn_on_an_ordinary_thread_writes_nothing() -> None:
+    """The skip guard, unchanged and now load-bearing on four more paths:
+    almost every thread has nothing pending, and «nothing before, nothing now»
+    must not turn every timeout into a database statement."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert threads.pending_writes == []
+
+
+async def test_a_failed_forget_never_masks_the_cut_that_caused_it() -> None:
+    """The same trade `_persist_partial` and `_persist_reply` make. This runs
+    while a turn is already ending badly; raising out of it would replace a
+    diagnosable failure with an unrelated one, and the stream still owes its
+    reader the terminal event."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf",), fail_on=_PENDING_WRITE)
+
+    events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert [e.type for e in events] == ["token", "token", "error"]
+    (kept,) = _assistant_messages(threads)
+    assert _ENGLISH_MARKER in kept
+
+
+async def test_a_completed_turn_still_writes_only_what_it_asked() -> None:
+    """The healthy path is untouched: `final` still settles through the same
+    one place, so a turn that declares a question stores that question rather
+    than the erasure a cut turn writes."""
+    threads = _FakeThreads(known="conv-1", pending=("old.pdf",))
+
+    await _drive(_cut_orchestrator(_AskingAgent, threads, cap_s=30.0), "asking")
+
+    assert threads.pending_writes == [("conv-1", ("a.pdf", "b.pdf"))]

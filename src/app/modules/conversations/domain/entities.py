@@ -144,6 +144,14 @@ class Conversation:
         anyone can write is what keeps that impossible rather than merely
         discouraged.
 
+        ⚠️ **What this shape cannot do is make a caller write at all**, and
+        the distinction is not academic: the rule held only as far as the
+        paths that remembered to call, and a turn cut mid-stream did not — it
+        consumed the question it was answering and left it standing. The
+        orchestrator's ``_write_pending`` is now the single place every ending
+        goes through, which is where an invariant this entity can state but
+        not enforce actually gets kept.
+
         Copied into a tuple, not aliased: the caller's list must not stay a
         live handle on the aggregate's state.
 
