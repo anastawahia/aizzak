@@ -1,0 +1,821 @@
+<title>سلوك وكيل RAG في المحادثة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root{
+    direction: rtl;
+
+    --sans: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+    --serif: "Amiri", "Times New Roman", serif;
+    --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+
+    --ground:#f3f5f7;
+    --surface:#ffffff;
+    --surface-2:#eaeef2;
+    --ink:#15202a;
+    --ink-2:#3d4c5a;
+    --muted:#6b7b8a;
+    --rule:#d7dee5;
+    --rule-strong:#b5c1cb;
+    --rubric:#a81f2b;
+    --rubric-soft:#f7e5e7;
+    --lapis:#1a4d97;
+    --lapis-soft:#e2ebf8;
+  }
+
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#11161b;
+      --surface:#171e25;
+      --surface-2:#1e262e;
+      --ink:#e6ecf2;
+      --ink-2:#c2ccd6;
+      --muted:#8f9daa;
+      --rule:#2a343d;
+      --rule-strong:#3f4c58;
+      --rubric:#f0737d;
+      --rubric-soft:#2e1a1d;
+      --lapis:#7cabf5;
+      --lapis-soft:#16273f;
+    }
+  }
+
+  :root[data-theme="dark"]{
+    --ground:#11161b;
+    --surface:#171e25;
+    --surface-2:#1e262e;
+    --ink:#e6ecf2;
+    --ink-2:#c2ccd6;
+    --muted:#8f9daa;
+    --rule:#2a343d;
+    --rule-strong:#3f4c58;
+    --rubric:#f0737d;
+    --rubric-soft:#2e1a1d;
+    --lapis:#7cabf5;
+    --lapis-soft:#16273f;
+  }
+
+  *{ box-sizing: border-box; }
+
+  body{
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, .mono{
+    font-family: var(--mono);
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  code{
+    font-size: .84em;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .06em .38em;
+    color: var(--ink-2);
+  }
+
+  .page{
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: clamp(28px, 5vw, 64px) clamp(18px, 4vw, 40px) 96px;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead{
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 34px;
+    margin-bottom: 42px;
+  }
+  .eyebrow{
+    font-size: 12.5px;
+    letter-spacing: .1em;
+    color: var(--rubric);
+    font-weight: 600;
+    margin: 0 0 14px;
+  }
+  h1{
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: clamp(28px, 6.2vw, 56px);
+    line-height: 1.25;
+    letter-spacing: -.01em;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  .lede{
+    font-size: clamp(17px, 2.2vw, 19px);
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+    line-height: 1.8;
+  }
+
+  .stats{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 34px;
+  }
+  .stat{
+    background: var(--surface);
+    padding: 18px 18px 20px;
+  }
+  .stat b{
+    display: block;
+    font-family: var(--serif);
+    font-size: 40px;
+    line-height: 1;
+    font-weight: 700;
+    color: var(--rubric);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+  }
+  .stat span{
+    display: block;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+
+  /* ---------- sections ---------- */
+
+  section{ margin-top: 64px; }
+
+  .stage-head{
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 12px;
+    margin-bottom: 26px;
+  }
+  .stage-num{
+    font-family: var(--serif);
+    font-size: 42px;
+    line-height: .9;
+    font-weight: 700;
+    color: var(--rubric);
+    flex: none;
+  }
+  .stage-head h2{
+    font-family: var(--serif);
+    font-size: clamp(20px, 3.6vw, 31px);
+    font-weight: 700;
+    line-height: 1.3;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .stage-head .where{
+    margin-inline-start: auto;
+    font-family: var(--mono);
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-size: 11.5px;
+    color: var(--muted);
+    letter-spacing: .01em;
+    flex: none;
+  }
+
+  h3{
+    font-size: 17px;
+    font-weight: 600;
+    margin: 34px 0 12px;
+    color: var(--ink);
+  }
+
+  p{ max-width: 66ch; margin: 0 0 16px; }
+  .note{ color: var(--muted); font-size: 14.5px; max-width: 66ch; }
+
+  /* ---------- ordered steps ---------- */
+
+  ol.steps{
+    list-style: none;
+    counter-reset: step;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  ol.steps > li{
+    counter-increment: step;
+    background: var(--surface);
+    padding: 16px 20px 17px 20px;
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  ol.steps > li::before{
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--rubric);
+    background: var(--rubric-soft);
+    border-radius: 3px;
+    text-align: center;
+    line-height: 24px;
+    height: 24px;
+    margin-top: 4px;
+  }
+  ol.steps > li > div > b{
+    display: block;
+    font-weight: 600;
+    font-size: 15.5px;
+    margin-bottom: 2px;
+  }
+  ol.steps p{ margin: 0; font-size: 15px; color: var(--ink-2); max-width: 72ch; }
+
+  /* ---------- figures ---------- */
+
+  figure{
+    margin: 34px 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: clamp(14px, 3vw, 26px);
+  }
+  .scroller{ overflow-x: auto; }
+  figure svg{ display: block; width: 100%; min-width: 620px; height: auto; }
+  figcaption{
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--muted);
+    max-width: 80ch;
+  }
+
+  .dg text{ font-family: var(--sans); fill: var(--ink); }
+  .dg .box{ fill: var(--surface); stroke: var(--rule-strong); stroke-width: 1; }
+  .dg .band{ fill: var(--surface-2); stroke: var(--rule); stroke-width: 1; }
+  .dg .hero{ fill: var(--surface); stroke: var(--lapis); stroke-width: 1.75; }
+  .dg .flow{ stroke: var(--rule-strong); stroke-width: 1.25; fill: none; }
+  .dg .dashed{ stroke: var(--rule-strong); stroke-width: 1.25; fill: none; stroke-dasharray: 4 4; }
+  .dg .head{ fill: var(--rule-strong); }
+  .dg .t-title{ font-size: 13px; font-weight: 600; }
+  .dg .t-sub{ font-size: 11px; fill: var(--muted); }
+  .dg .t-lbl{ font-size: 11.5px; fill: var(--ink-2); }
+  .dg .t-mono{ font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .dg .t-mono-lg{ font-family: var(--mono); font-size: 12.5px; fill: var(--ink); }
+  .dg .pill-quiet{ fill: var(--surface-2); stroke: var(--rule-strong); stroke-width: 1; }
+  .dg .pill-live{ fill: var(--lapis-soft); stroke: var(--lapis); stroke-width: 1; }
+  .dg .t-quiet{ font-size: 10.5px; fill: var(--muted); }
+  .dg .t-live{ font-size: 10.5px; fill: var(--lapis); font-weight: 600; }
+
+  /* ---------- path cards ---------- */
+
+  .paths{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin: 28px 0;
+  }
+  .path{
+    background: var(--surface);
+    padding: 20px 20px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .path .name{
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .path .key{
+    font-family: var(--mono);
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: .02em;
+    margin-top: -8px;
+  }
+  .path .when{
+    font-size: 14px;
+    color: var(--ink-2);
+    line-height: 1.7;
+  }
+  .path .says{
+    font-size: 14px;
+    line-height: 1.7;
+    border-inline-start: 2px solid var(--rule-strong);
+    padding-inline-start: 12px;
+    color: var(--ink);
+  }
+  .spec{
+    margin: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    font-size: 13px;
+    border-top: 1px solid var(--rule);
+    padding-top: 12px;
+  }
+  .spec dt{ color: var(--muted); }
+  .spec dd{ margin: 0; color: var(--ink-2); }
+  .spec dd.no{ color: var(--muted); }
+  .spec dd.yes{ color: var(--lapis); font-weight: 600; }
+  .path .why{
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.7;
+    margin: 0;
+  }
+
+  /* ---------- messages card ---------- */
+
+  .msgs{
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    margin: 24px 0;
+  }
+  .msg{
+    display: grid;
+    grid-template-columns: 82px 1fr;
+    gap: 16px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+    align-items: start;
+    font-size: 14.5px;
+    line-height: 1.7;
+  }
+  .msg:last-child{ border-bottom: 0; }
+  .msg .role{
+    font-family: var(--mono);
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-size: 11.5px;
+    color: var(--lapis);
+    background: var(--lapis-soft);
+    border-radius: 3px;
+    padding: 2px 0;
+    text-align: center;
+    margin-top: 3px;
+  }
+  .msg.ghost{ background: var(--surface-2); }
+  .msg.ghost .role{ color: var(--muted); background: transparent; border: 1px dashed var(--rule-strong); }
+  .msg.ghost span:last-child{ color: var(--muted); }
+
+  /* ---------- callout ---------- */
+
+  .callout{
+    border: 1px solid var(--rubric);
+    background: var(--rubric-soft);
+    padding: 20px 22px;
+    margin: 28px 0;
+  }
+  .callout > b{
+    display: block;
+    font-weight: 600;
+    color: var(--rubric);
+    margin-bottom: 6px;
+    font-size: 15px;
+  }
+  .callout p{ margin: 0; font-size: 14.5px; line-height: 1.75; color: var(--ink-2); max-width: 74ch; }
+
+  /* ---------- traits ---------- */
+
+  .traits{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .traits li{
+    background: var(--surface);
+    padding: 18px 22px;
+    display: grid;
+    grid-template-columns: minmax(120px, 170px) 1fr;
+    gap: 6px 22px;
+    align-items: baseline;
+  }
+  .traits strong{
+    font-family: var(--serif);
+    font-size: 21px;
+    font-weight: 700;
+    color: var(--rubric);
+    line-height: 1.3;
+  }
+  .traits span{ font-size: 15px; color: var(--ink-2); line-height: 1.75; }
+
+  @media (max-width: 720px){
+    .traits li{ grid-template-columns: 1fr; }
+    .msg{ grid-template-columns: 1fr; gap: 6px; }
+    .msg .role{ width: 82px; }
+    .spec{ grid-template-columns: 1fr; }
+    .spec dt{ margin-top: 6px; }
+    .spec dt:first-child{ margin-top: 0; }
+    .stats{ grid-template-columns: repeat(2, 1fr); }
+    ol.steps > li{ grid-template-columns: 24px 1fr; padding-inline: 14px; }
+    .stage-head{ flex-wrap: wrap; }
+    .stage-head h2{ flex-basis: 100%; order: 3; }
+    .stage-head .where{ margin-inline-start: 0; }
+  }
+
+  @media (max-width: 420px){
+    .stats{ grid-template-columns: 1fr; }
+  }
+
+  /* ---------- limits ---------- */
+
+  ul.plain{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 14px;
+  }
+  ul.plain li{
+    position: relative;
+    padding-inline-start: 20px;
+    font-size: 15px;
+    color: var(--ink-2);
+    line-height: 1.8;
+    max-width: 74ch;
+  }
+  ul.plain li::before{
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    top: 12px;
+    width: 6px;
+    height: 6px;
+    background: var(--rubric);
+    border-radius: 50%;
+  }
+
+  /* ---------- footer ---------- */
+
+  footer{
+    margin-top: 72px;
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 2;
+  }
+  footer .files{
+    display: grid;
+    gap: 4px;
+    margin-top: 10px;
+  }
+  footer .files span{
+    font-family: var(--mono);
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+
+  :focus-visible{ outline: 2px solid var(--lapis); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce){ *{ animation: none !important; transition: none !important; } }
+</style>
+
+<div class="page" lang="ar" dir="rtl">
+
+  <header class="masthead">
+    <p class="eyebrow">وكيل RAG · دورة حياة الدور الواحد</p>
+    <h1>سلوك وكيل RAG في المحادثة</h1>
+    <p class="lede">منسّق يهيّئ الأرضية، ثمّ وكيل رقيق بلا حالة يسأل سؤالًا واحدًا ويخرج من أحد أربعة أبواب — ثلاثة منها لا تستدعي نموذج اللغة إطلاقًا. هذا ما يحدث فعليًّا بين وصول الرسالة وظهور الإجابة.</p>
+
+    <div class="stats">
+      <div class="stat"><b>1</b><span>نداء واحد إلى وحدة المعرفة في كلّ دور</span></div>
+      <div class="stat"><b>4</b><span>مخارج ممكنة، بعقد بثّ واحد مشترك</span></div>
+      <div class="stat"><b>3</b><span>منها لا تستدعي النموذج أصلًا</span></div>
+      <div class="stat"><b>0</b><span>رسائل سابقة تُرسل مع السؤال</span></div>
+    </div>
+  </header>
+
+  <figure>
+    <div class="scroller">
+      <svg class="dg" viewBox="0 0 900 664" role="img" aria-label="مخطّط: الدور الواحد يمرّ بالمنسّق ثمّ الوكيل، ثمّ نداء واحد إلى وحدة المعرفة، ثمّ يخرج من أحد أربعة مخارج — إيصال تلخيص، سؤال توضيحي، بوابة ثقة، تركيب إجابة — ثلاثة منها بلا استدعاء نموذج، وكلّها تنتهي بالحدثين token ثمّ final.">
+        <defs>
+          <marker id="arw-main" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto">
+            <polygon class="head" points="0,0 10,4 0,8"></polygon>
+          </marker>
+        </defs>
+
+        <rect class="box" x="330" y="16" width="240" height="42"></rect>
+        <text class="t-title" x="450" y="42" text-anchor="middle">رسالة المستخدم في خيط</text>
+
+        <line class="flow" x1="450" y1="58" x2="450" y2="84" marker-end="url(#arw-main)"></line>
+
+        <rect class="band" x="30" y="88" width="840" height="62"></rect>
+        <text class="t-title" x="450" y="112" text-anchor="middle">المنسّق — تهيئة كاملة قبل إنشاء الوكيل</text>
+        <text class="t-sub" x="450" y="133" text-anchor="middle">تفويض · تثبيتات الخيط · الفضاء · النموذج · الحصّة · حفظ رسالة المستخدم</text>
+
+        <line class="flow" x1="450" y1="150" x2="450" y2="176" marker-end="url(#arw-main)"></line>
+
+        <rect class="box" x="300" y="180" width="300" height="52"></rect>
+        <text class="t-title" x="450" y="203" text-anchor="middle">الوكيل: تحقّق، ثمّ تحديد الحدود</text>
+        <text class="t-sub" x="450" y="222" text-anchor="middle">نصّ · نموذج مربوط · نطاق مثبّت · فضاء</text>
+
+        <line class="flow" x1="450" y1="232" x2="450" y2="256" marker-end="url(#arw-main)"></line>
+
+        <rect class="hero" x="255" y="260" width="390" height="60"></rect>
+        <text class="t-mono-lg" x="450" y="285" text-anchor="middle" direction="ltr">knowledge.answer(...)</text>
+        <text class="t-sub" x="450" y="306" text-anchor="middle">النداء الوحيد — التصنيف والتوجيه داخل وحدة المعرفة</text>
+
+        <line class="flow" x1="450" y1="320" x2="450" y2="344"></line>
+        <line class="flow" x1="125" y1="344" x2="770" y2="344"></line>
+
+        <line class="flow" x1="770" y1="344" x2="770" y2="362"></line>
+        <text class="t-lbl" x="770" y="382" text-anchor="middle">مهمّة تلخيص مُدرجة</text>
+        <line class="flow" x1="770" y1="392" x2="770" y2="412" marker-end="url(#arw-main)"></line>
+        <rect class="box" x="680" y="416" width="180" height="112"></rect>
+        <text class="t-title" x="770" y="442" text-anchor="middle">إيصال تلخيص</text>
+        <text class="t-mono" x="770" y="460" text-anchor="middle" direction="ltr">summary_receipt</text>
+        <text class="t-sub" x="770" y="484" text-anchor="middle">نصّ ثابت، بلا اسم ملفّ</text>
+        <rect class="pill-quiet" x="718" y="496" width="104" height="22" rx="11"></rect>
+        <text class="t-quiet" x="770" y="511" text-anchor="middle">بلا نموذج</text>
+
+        <line class="flow" x1="555" y1="344" x2="555" y2="362"></line>
+        <text class="t-lbl" x="555" y="382" text-anchor="middle">مرشّحون متعدّدون</text>
+        <line class="flow" x1="555" y1="392" x2="555" y2="412" marker-end="url(#arw-main)"></line>
+        <rect class="box" x="465" y="416" width="180" height="112"></rect>
+        <text class="t-title" x="555" y="442" text-anchor="middle">سؤال توضيحي</text>
+        <text class="t-mono" x="555" y="460" text-anchor="middle" direction="ltr">clarification</text>
+        <text class="t-sub" x="555" y="484" text-anchor="middle">أسماء المرشّحين</text>
+        <rect class="pill-quiet" x="503" y="496" width="104" height="22" rx="11"></rect>
+        <text class="t-quiet" x="555" y="511" text-anchor="middle">بلا نموذج</text>
+
+        <line class="flow" x1="340" y1="344" x2="340" y2="362"></line>
+        <text class="t-lbl" x="340" y="382" text-anchor="middle">صفر مقاطع</text>
+        <line class="flow" x1="340" y1="392" x2="340" y2="412" marker-end="url(#arw-main)"></line>
+        <rect class="box" x="250" y="416" width="180" height="112"></rect>
+        <text class="t-title" x="340" y="442" text-anchor="middle">بوابة الثقة</text>
+        <text class="t-mono" x="340" y="460" text-anchor="middle" direction="ltr">fallback</text>
+        <text class="t-sub" x="340" y="484" text-anchor="middle">اعتذار + ترويسة الفضاء</text>
+        <rect class="pill-quiet" x="288" y="496" width="104" height="22" rx="11"></rect>
+        <text class="t-quiet" x="340" y="511" text-anchor="middle">بلا نموذج</text>
+
+        <line class="flow" x1="125" y1="344" x2="125" y2="362"></line>
+        <text class="t-lbl" x="125" y="382" text-anchor="middle">عادت مقاطع</text>
+        <line class="flow" x1="125" y1="392" x2="125" y2="412" marker-end="url(#arw-main)"></line>
+        <rect class="hero" x="35" y="416" width="180" height="112"></rect>
+        <text class="t-title" x="125" y="442" text-anchor="middle">تركيب الإجابة</text>
+        <text class="t-mono" x="125" y="460" text-anchor="middle" direction="ltr">synthesis</text>
+        <text class="t-sub" x="125" y="484" text-anchor="middle">إجابة + استشهادات</text>
+        <rect class="pill-live" x="73" y="496" width="104" height="22" rx="11"></rect>
+        <text class="t-live" x="125" y="511" text-anchor="middle">يستدعي النموذج</text>
+
+        <line class="flow" x1="770" y1="528" x2="770" y2="556"></line>
+        <line class="flow" x1="555" y1="528" x2="555" y2="556"></line>
+        <line class="flow" x1="340" y1="528" x2="340" y2="556"></line>
+        <line class="flow" x1="125" y1="528" x2="125" y2="556"></line>
+        <line class="flow" x1="125" y1="556" x2="770" y2="556"></line>
+        <line class="flow" x1="450" y1="556" x2="450" y2="582" marker-end="url(#arw-main)"></line>
+
+        <rect class="box" x="245" y="586" width="410" height="54"></rect>
+        <text class="t-mono-lg" x="450" y="610" text-anchor="middle" direction="ltr">token ... token &#8594; final</text>
+        <text class="t-sub" x="450" y="630" text-anchor="middle">العقد نفسه في المسارات الأربعة</text>
+      </svg>
+    </div>
+    <figcaption>مسار الدور الواحد. النداء إلى وحدة المعرفة يحدث مرّة واحدة، والوكيل لا يصنّف نيّة السؤال بنفسه. المخارج الأربعة تختلف في كلّ شيء إلّا في عقد البثّ: الجميع يخرج بـ <code>token</code> ثمّ <code>final</code> — والاستشهادات غير فارغة في مسار التركيب وحده.</figcaption>
+  </figure>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">١</span>
+      <h2>قبل أن يستيقظ الوكيل</h2>
+      <span class="where">orchestrator.py</span>
+    </div>
+
+    <p>الوكيل لا يستقبل الطلب من الشبكة. المنسّق يقوم بستّ خطوات <b>قبل</b> إنشاء الوكيل، وترتيبها مقصود: أيّ فشل هنا يخرج كخطأ HTTP نظيف، لا كبثّ مكسور في منتصفه.</p>
+
+    <ol class="steps">
+      <li><div><b>التفويض أوّلًا</b><p>هل يُسمح لهذا المستخدم باستدعاء الوكيل؟ الرفض يجب ألّا يكلّف شيئًا: لا قراءة محادثة، ولا بحث عن مفتاح مزوّد، ولا سطر في دفتر الاستهلاك.</p></div></li>
+      <li><div><b>قراءة تثبيتات الخيط</b><p>ثلاثة أشياء مخزّنة على المحادثة نفسها: المسار المثبّت (أي نموذج ثبّته المستخدم لهذا الخيط)، ونطاق الاسترجاع المثبّت (هل ثُبِّت البحث على ملفات بعينها؟)، و<b>الفضاء</b> — وهذا الأخير حدّ عزل لا مجرّد تفضيل.</p></div></li>
+      <li><div><b>حلّ نموذج اللغة</b><p>مزوّد + موديل + مفتاح، بحسب المسار المثبّت على الخيط.</p></div></li>
+      <li><div><b>فحص الحصّة</b><p>قبل التشغيل لا بعده، فالرفض بـ <code>429</code> يجب ألّا يستهلك شيئًا.</p></div></li>
+      <li><div><b>بناء حزمة الاعتماديات</b><p>وهنا تفصيلة مهمّة: نموذج اللغة يُغلَّف بعدّاد توكنات. الوكيل يظنّه مزوّدًا عاديًّا ولا يستطيع التمييز — وهذا هو المقصود: المحاسبة ليست شيئًا يستطيع مُلحَق أن ينساه أو يتهرّب منه.</p></div></li>
+      <li><div><b>فتح الخيط وكتابة رسالة المستخدم</b><p>إن لم يُذكر معرّف محادثة يُنشأ خيط جديد (ويُشترط حينها ذكر الفضاء). خيط محذوف أو مجهول يظهر هنا كـ <code>404</code>/<code>409</code> بينما حالة الاستجابة ما زالت مفتوحة.</p></div></li>
+    </ol>
+
+    <p class="note">ثم يُنشأ الوكيل ويُسلَّم لمشغّل دورة الحياة: <code>initialize</code> ← بثّ <code>run</code> ← <code>Completed</code>. أيّ استثناء يتحوّل إلى حدث <code>error</code> نهائي بدل الانهيار، و<code>dispose</code> تعمل دائمًا.</p>
+  </section>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">٢</span>
+      <h2>داخل الوكيل</h2>
+      <span class="where">rag_agent/agent.py</span>
+    </div>
+
+    <p>الوكيل <b>رقيق وبلا حالة</b>: دالّة التهيئة لا تحمّل شيئًا، ولا يحتفظ بأيّ ذاكرة بين الأدوار. كلّ ما يصله يصله عبر حزمة الاعتماديات، ولا يستورد أيّ وحدة أخرى.</p>
+
+    <ol class="steps">
+      <li><div><b>يشغّل ساعة ويتحقّق من المدخلات</b><p>يبدأ عدّاد وقت الدور. نصّ فارغ أو غير نصّي ⇒ خطأ تحقّق <code>422</code>. لا نموذج لغة مربوط ⇒ خطأ داخلي <code>500</code> — لا إجابة فارغة صامتة.</p></div></li>
+      <li><div><b>يحدّد حدوده قبل أن يسأل</b><p>قاعدتان صريحتان: <b>لا فضاء ⇒ لا استرجاع</b> — لا يبحث في كلّ الفضاءات، بل يتصرّف كأنّ المعرفة غير مربوطة أصلًا. و<b>المعرفة تتدهور بلطف</b> — غياب سيم المعرفة لا يُفشل الطلب، بل يجعله يجيب بلا استشهادات.</p></div></li>
+      <li><div><b>نداء واحد، وهو أهمّ قرار في تصميمه</b><p>الوكيل <b>لا يصنّف نيّة السؤال بنفسه</b>: لا يقرّر «أهذا طلب تلخيص أم سؤال محتوى؟». التصنيف والتوجيه يحدثان داخل وحدة المعرفة، لأنّ التصنيف هنا يعني استيراد المصنِّف وإمساك سيم ثانٍ — وهذا يكسر قاعدته المعلنة. ولا يمرّر عدد المقاطع ولا حدّ عرض الأسماء: الوكيل لا يملك أيّ رقم ضبط.</p></div></li>
+      <li><div><b>يتفرّع إلى أحد أربعة مخارج</b><p>تفصيلها في البطاقات أدناه. ثلاثة منها تُنهي الدور دون أن يُستدعى النموذج ولو مرّة.</p></div></li>
+      <li><div><b>يبني ترويسة «ما الذي أملكه؟»</b><p>سطر مثل «ملفّات هذا الفضاء: أ، ب، ج، و 5 ملفّات أخرى». يُبنى مرّة واحدة ويُستعمل على المسارين المجيبين فقط — انظر البطاقات.</p></div></li>
+      <li><div><b>يبني رسالتين للنموذج، لا أكثر</b><p>رسالة نظام ورسالة مستخدم. لا تاريخ محادثة إطلاقًا — انظر البطاقة التالية.</p></div></li>
+      <li><div><b>يبثّ</b><p>يمرّر كلّ جزء نصّ فور وصوله كحدث <code>token</code> ويجمعه في الوقت نفسه، ثمّ يُصدر <code>final</code> يحمل النصّ الكامل والاستشهادات.</p></div></li>
+      <li><div><b>يكتب سجلّ قياس واحدًا</b><p>سجلّ <code>rag_agent.answer</code> واحد لكلّ دور: المسار · هل جرى استرجاع · عدد المقاطع · هل كان اعتذارًا · زمن النموذج · الزمن الكلّي. <b>لا يُسجَّل أيّ محتوى</b> — لا السؤال ولا الإجابة ولا أسماء المستندات، أرقام وأزمنة فقط. و<code>llm_ms = null</code> تعني أنّ النموذج لم يُستدعَ أصلًا.</p></div></li>
+    </ol>
+
+    <h3>المخارج الأربعة، بالتفصيل</h3>
+
+    <div class="paths">
+      <div class="path">
+        <div class="name">إيصال تلخيص</div>
+        <div class="key">summary_receipt</div>
+        <div class="when">وحدة المعرفة صنّفت السؤال كطلب تلخيص مستند، وأدرجت مهمّة بناء.</div>
+        <div class="says">«جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل.»</div>
+        <dl class="spec">
+          <dt>النموذج</dt><dd class="no">لا يُستدعى</dd>
+          <dt>ترويسة الفضاء</dt><dd class="no">لا تُضاف</dd>
+          <dt>الاستشهادات</dt><dd class="no">فارغة</dd>
+        </dl>
+        <p class="why">لا يذكر اسم الملفّ. الوكيل يعرف رقم المهمّة فقط، ولو ردّد اسمًا لم يحلّه بنفسه لبدأ يصف الملفّ الخطأ بثقة.</p>
+      </div>
+
+      <div class="path">
+        <div class="name">سؤال توضيحي</div>
+        <div class="key">clarification</div>
+        <div class="when">اسم الملفّ في السؤال طابق عدّة مستندات، فرفضت الوحدة أن تختار.</div>
+        <div class="says">«أيّ ملفّ تقصد؟» ثمّ أسماء المرشّحين، اسمًا في كلّ سطر.</div>
+        <dl class="spec">
+          <dt>النموذج</dt><dd class="no">لا يُستدعى</dd>
+          <dt>ترويسة الفضاء</dt><dd class="no">لا تُضاف</dd>
+          <dt>الاستشهادات</dt><dd class="no">فارغة</dd>
+        </dl>
+        <p class="why">المكان الوحيد الذي ينطق فيه الوكيل بأسماء ملفّات، وينسخ قائمة الوحدة حرفيًّا: لا يحذف ولا يعيد ترتيبًا ولا يدمج — لأنّه ليس هو من يختار. الأسماء في أسطر منفصلة لا مفصولة بفواصل، لأنّ اسم ملفّ قد يحوي فاصلة فيُقرأ اسمان كثلاثة.</p>
+      </div>
+
+      <div class="path">
+        <div class="name">بوابة الثقة</div>
+        <div class="key">fallback</div>
+        <div class="when">جرى استرجاع فعليّ، وعاد بصفر مقاطع.</div>
+        <div class="says">اعتذار صريح: «لا أملك معلومات كافية…» متبوعًا بترويسة ملفّات الفضاء.</div>
+        <dl class="spec">
+          <dt>النموذج</dt><dd class="no">لا يُستدعى</dd>
+          <dt>ترويسة الفضاء</dt><dd>تُضاف إلى النصّ المرئي</dd>
+          <dt>الاستشهادات</dt><dd class="no">فارغة</dd>
+        </dl>
+        <p class="why">الترويسة هنا هي ما يمنع «لا أعرف» من أن تكون بلا فائدة: هذا المسار لا يستدعي نموذجًا، فالسبيل الوحيد ليعكس ما يملكه الفضاء هو أن يقوله في الجملة التي يقرأها المستخدم.</p>
+      </div>
+
+      <div class="path">
+        <div class="name">تركيب الإجابة</div>
+        <div class="key">synthesis</div>
+        <div class="when">عادت مقاطع من الاسترجاع.</div>
+        <div class="says">إجابة مبنيّة على المقاطع وحدها، بلغة السؤال.</div>
+        <dl class="spec">
+          <dt>النموذج</dt><dd class="yes">يُستدعى ويُبثّ</dd>
+          <dt>ترويسة الفضاء</dt><dd>تُضاف إلى رسالة النظام</dd>
+          <dt>الاستشهادات</dt><dd class="yes">ملفّ · صفحة · مستند · مقطع</dd>
+        </dl>
+        <p class="why">الاستشهاد صار مصدرًا يستطيع المستخدم فتحه فعليًّا، لا مجرّد معرّف مقطع. والحقول الناقصة تبقى <code>null</code> صراحةً بدل أن تُحذف، فيرى العميل قاعدة تدهور واحدة.</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <b>لماذا بوابة الثقة هي أهمّ سطر في الملفّ</b>
+      <p>قبل وجودها كان الصفر مقاطع يمرّ إلى النموذج بلا سياق، فيجيب من معرفته الذاتية وكأنّها مأخوذة من مستندات المستخدم — هلوسة معروضة كحقيقة موثّقة. الآن: صفر مقاطع ⇒ النموذج لا يُستدعى أصلًا، والجملة نصّ ثابت لا شيء فيه ليرتجله أحد. لكن انتبه: لا توجد عتبة ثقة رقمية؛ البوابة تعمل عند <b>الصفر الصريح</b> فقط، والمقاطع الضعيفة ما زالت تمرّ.</p>
+    </div>
+
+    <h3>ما يصل النموذج فعليًّا: رسالتان</h3>
+
+    <div class="msgs">
+      <div class="msg"><span class="role">system</span><span>التوجيه الأساسي · ترويسة «ملفّات هذا الفضاء» · كتلة السياق: المقاطع مرتّبة تنازليًّا، وفوق كلّ مقطع سطر مصدره</span></div>
+      <div class="msg"><span class="role">user</span><span>سؤال المستخدم كما هو، بلا إعادة صياغة</span></div>
+      <div class="msg ghost"><span class="role">—</span><span>الرسائل السابقة في الخيط: لا تُرسَل. كلّ دور يبدأ من الصفر.</span></div>
+    </div>
+
+    <p>هذه أبرز نقطة سلوكية في الوكيل كلّه: <b>المحادثة تُحفظ للعرض والسجلّ، لا للسياق</b>. عمليًّا، سؤال متابعة مثل «وماذا عن الفقرة التالية؟» لن يفهمه الوكيل، لأنّه لم يرَ ما قبله.</p>
+
+    <p>ونقطة ثانية: <b>لا يعيد ترتيب المقاطع</b>. أعلى مقطع صلة يبقى في أعلى السياق — قرار مقصود لا سهو.</p>
+
+    <p class="note">في التوجيه نفسه أربع تعليمات مقصودة: اجمع من <b>كلّ</b> المقاطع لا من أوّلها، لا تختصر القوائم، اذكر الملفّ والصفحة والقسم <b>بكلماتك</b> لا بنسخ شكل الوسم، وأجب بلغة السؤال. الجملة الخاصّة بالاستشهاد كُتبت بعد قياس فعليّ: الصياغة القديمة كانت تجعل النماذج الصغيرة تنسخ الوسم بدل الإجابة في 24 من 40 عيّنة، والحالية في 2 من 40.</p>
+  </section>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">٣</span>
+      <h2>بعد أن ينتهي الوكيل</h2>
+      <span class="where">orchestrator.py</span>
+    </div>
+
+    <p>المنسّق يلتقط البثّ في طريقه إلى العميل ويضيف عليه ثلاثة أشياء:</p>
+
+    <ul class="plain">
+      <li><b>حدّ زمني للبثّ كلّه.</b> عند تجاوزه يُغلَق الوكيل صراحةً ويُرسَل حدث <code>error</code> نهائي — لا بثّ معلّق إلى الأبد.</li>
+      <li><b>حفظ ردّ المساعد في الخيط عند <code>final</code>،</b> ثمّ إثراء الحدث بـ <code>message_id</code> و<code>content</code> و<code>usage</code>. وإن فشل الحفظ تُسلَّم الإجابة كما هي: لا يُستبدل جواب صحيح برسالة خطأ لا يستطيع العميل التصرّف بها.</li>
+      <li><b>تسجيل الاستهلاك في <code>finally</code>،</b> حتى لو تُرك البثّ في منتصفه — التوكنات صُرفت فعلًا، والعدّاد يبقى محدّثًا أوّلًا بأوّل لا في نهاية البثّ.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">٤</span>
+      <h2>الملخّص الذي يصل متأخّرًا</h2>
+      <span class="where">workers/bootstrap.py</span>
+    </div>
+
+    <p>إن خرج الدور بـ«إيصال تلخيص» فالقصّة لم تنتهِ. الوكيل يمرّر معرّف المحادثة في ندائه الوحيد رغم أنّه لا يقرأه أبدًا — وهو العنوان الذي سيُسلَّم إليه الملخّص لاحقًا. المستخدم يرى ردّين في الخيط نفسه، يفصل بينهما وقت البناء.</p>
+
+    <figure>
+      <div class="scroller">
+        <svg class="dg" viewBox="0 0 880 210" role="img" aria-label="مخطّط زمني: سؤال تلخيص، ثمّ إيصال فوري في الخيط خلال ثوانٍ، ثمّ عامل خلفي يبني الملخّص خلال دقائق، ثمّ رسالة مساعد جديدة تُضاف إلى الخيط نفسه؛ ومعرّف المحادثة يُمرَّر من البداية إلى النهاية دون أن يقرأه الوكيل.">
+          <defs>
+            <marker id="arw-time" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto">
+              <polygon class="head" points="0,0 10,4 0,8"></polygon>
+            </marker>
+          </defs>
+
+          <path class="dashed" d="M 780 106 C 780 44, 105 44, 105 106" marker-end="url(#arw-time)"></path>
+          <text class="t-lbl" x="442" y="34" text-anchor="middle">عنوان التسليم يُمرَّر مع الطلب دون أن يقرأه الوكيل</text>
+
+          <rect class="box" x="695" y="110" width="170" height="54"></rect>
+          <text class="t-title" x="780" y="133" text-anchor="middle">«لخّص لي هذا المستند»</text>
+          <text class="t-sub" x="780" y="152" text-anchor="middle">سؤال في الخيط</text>
+
+          <line class="flow" x1="693" y1="137" x2="642" y2="137" marker-end="url(#arw-time)"></line>
+          <text class="t-sub" x="667" y="182" text-anchor="middle">ثوانٍ</text>
+
+          <rect class="box" x="470" y="110" width="170" height="54"></rect>
+          <text class="t-title" x="555" y="133" text-anchor="middle">إيصال فوريّ</text>
+          <text class="t-sub" x="555" y="152" text-anchor="middle">الدور ينتهي هنا</text>
+
+          <line class="flow" x1="468" y1="137" x2="417" y2="137" marker-end="url(#arw-time)"></line>
+          <text class="t-sub" x="442" y="182" text-anchor="middle">دقائق</text>
+
+          <rect class="band" x="245" y="110" width="170" height="54"></rect>
+          <text class="t-title" x="330" y="133" text-anchor="middle">عامل خلفيّ يبني</text>
+          <text class="t-sub" x="330" y="152" text-anchor="middle">خارج دورة الطلب</text>
+
+          <line class="flow" x1="243" y1="137" x2="192" y2="137" marker-end="url(#arw-time)"></line>
+          <text class="t-sub" x="217" y="182" text-anchor="middle">عند الاكتمال</text>
+
+          <rect class="hero" x="20" y="110" width="170" height="54"></rect>
+          <text class="t-title" x="105" y="133" text-anchor="middle">رسالة مساعد جديدة</text>
+          <text class="t-sub" x="105" y="152" text-anchor="middle">في الخيط نفسه</text>
+        </svg>
+      </div>
+      <figcaption>تسليم الملخّص المتأخّر. الوكيل يمرّر <code>conversation_id</code> ولا يقرأه؛ العامل الخلفيّ هو من يستعمله عنوانًا. وثلاث حالات صمت مقصودة هنا ليست أخطاء: طلب بلا محادثة (جاء من مسار REST)، أو ملخّص حُذف قبل التسليم، أو خيط لم يعد موجودًا.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">٥</span>
+      <h2>خلاصة شخصيّته</h2>
+    </div>
+
+    <ul class="traits">
+      <li><strong>رقيق ومنضبط</strong><span>لا يستورد شيئًا، ولا يملك رقم ضبط واحدًا، ولا يقرّر التصنيف. يسأل سؤالًا واحدًا ويتصرّف بحسب ما يعود إليه.</span></li>
+      <li><strong>جبان بحساب</strong><span>في ثلاث حالات من أربع لا يستدعي النموذج إطلاقًا، لأنّ الكلام المؤلَّف في تلك المواضع خطر بلا فائدة.</span></li>
+      <li><strong>صادق عن حدوده</strong><span>إن لم يجد شيئًا قالها صراحةً، وأرفق ما يملكه فعلًا من ملفّات بدل اعتذار جافّ.</span></li>
+      <li><strong>بلا ذاكرة</strong><span>كلّ دور يبدأ من الصفر. أبرز قيد سلوكيّ يستحقّ الانتباه عند تجربة أسئلة المتابعة.</span></li>
+      <li><strong>يتكلّم لغة السؤال</strong><span>بفحص بسيط لوجود حرف عربيّ في السؤال، لا بآلية تعريب كاملة — آلية واحدة تحكم كلّ جملة يكتبها بنفسه.</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="stage-head">
+      <span class="stage-num">٦</span>
+      <h2>حدود معلومة</h2>
+    </div>
+
+    <ul class="plain">
+      <li><b>لا يفهم أسئلة المتابعة.</b> لا تاريخ محادثة يصل النموذج، فكلّ سؤال يُقرأ وحده.</li>
+      <li><b>لا عتبة ثقة رقمية.</b> بوابة الثقة تعمل عند صفر مقاطع فقط؛ المقاطع الضعيفة تمرّ إلى التركيب، وهذا خطر مفتوح معلَن حتى تتوفّر مجموعة تقييم.</li>
+      <li><b>لا فضاء ⇒ لا استرجاع.</b> الدور يتدهور إلى إجابة بلا مصادر بدل البحث عبر كلّ الفضاءات — أكثر أمانًا، لكنّه يعني أنّ خطأ ربط قد يظهر كإجابة عامّة بلا استشهادات بدل أن يظهر كخطأ.</li>
+    </ul>
+  </section>
+
+  <footer>
+    الملفّات التي يصفها هذا الشرح:
+    <div class="files">
+      <span>src/app/agents/rag_agent/agent.py</span>
+      <span>src/app/agents/rag_agent/prompts/__init__.py</span>
+      <span>src/app/agents/orchestrator.py</span>
+      <span>src/app/framework/agent_runtime/executor.py</span>
+      <span>src/app/workers/bootstrap.py</span>
+    </div>
+  </footer>
+
+</div>

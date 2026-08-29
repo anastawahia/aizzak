@@ -1,0 +1,1459 @@
+<title>مسار الاسترجاع</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:      #F6F7F9;
+    --surface:     #FFFFFF;
+    --surface-2:   #EFF2F5;
+    --line:        #DCE2E8;
+    --line-strong: #C3CCD6;
+    --ink:         #131920;
+    --ink-2:       #48545F;
+    --ink-3:       #6F7C89;
+
+    --dense:       #1B5C87;
+    --dense-soft:  #E4EEF5;
+    --sparse:      #A8511F;
+    --sparse-soft: #F7EAE1;
+    --both:        #5D4A80;
+    --both-soft:   #ECE8F4;
+    --off:         #7E6416;
+    --off-soft:    #F5EEDA;
+
+    --shadow: 0 1px 2px rgba(19, 25, 32, .05), 0 8px 24px -12px rgba(19, 25, 32, .14);
+
+    --display: "Readex Pro", "IBM Plex Sans Arabic", system-ui, sans-serif;
+    --body:    "IBM Plex Sans Arabic", "Readex Pro", system-ui, sans-serif;
+    --mono:    "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
+
+    --col: 70ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1319;
+      --surface:     #151C24;
+      --surface-2:   #1D262F;
+      --line:        #27333D;
+      --line-strong: #3A4855;
+      --ink:         #E3E9EF;
+      --ink-2:       #A6B3BF;
+      --ink-3:       #7C8B98;
+
+      --dense:       #6FB3DC;
+      --dense-soft:  #16303F;
+      --sparse:      #E0946A;
+      --sparse-soft: #3A2418;
+      --both:        #A997D6;
+      --both-soft:   #262039;
+      --off:         #D6B85C;
+      --off-soft:    #322A12;
+
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1319;
+    --surface:     #151C24;
+    --surface-2:   #1D262F;
+    --line:        #27333D;
+    --line-strong: #3A4855;
+    --ink:         #E3E9EF;
+    --ink-2:       #A6B3BF;
+    --ink-3:       #7C8B98;
+
+    --dense:       #6FB3DC;
+    --dense-soft:  #16303F;
+    --sparse:      #E0946A;
+    --sparse-soft: #3A2418;
+    --both:        #A997D6;
+    --both-soft:   #262039;
+    --off:         #D6B85C;
+    --off-soft:    #322A12;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16.5px;
+    line-height: 1.75;
+    direction: rtl;
+    text-align: right;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+  }
+
+  .col { max-width: var(--col); }
+
+  code, .mono { font-family: var(--mono); font-size: .87em; direction: ltr; unicode-bidi: isolate; }
+
+  code.k {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .08em .38em;
+    white-space: nowrap;
+  }
+
+  a { color: var(--dense); }
+
+  /* ---------- masthead ---------- */
+
+  header.top {
+    padding: 72px 0 40px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 56px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    direction: ltr;
+    text-align: right;
+    margin: 0 0 20px;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(34px, 5.4vw, 54px);
+    line-height: 1.18;
+    letter-spacing: -.01em;
+    margin: 0 0 22px;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 19px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0 0 32px;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 28px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-3);
+    direction: ltr;
+    justify-content: flex-end;
+  }
+  .meta-row span { white-space: nowrap; }
+  .meta-row b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- section furniture ---------- */
+
+  section { margin-bottom: 76px; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 27px;
+    line-height: 1.35;
+    margin: 0 0 8px;
+    text-wrap: balance;
+  }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 28px;
+    padding-bottom: 14px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .sec-head .num {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-3);
+    direction: ltr;
+  }
+
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 19px;
+    margin: 40px 0 10px;
+  }
+
+  p { margin: 0 0 16px; }
+  .col p, .col ul, .col ol { max-width: var(--col); }
+
+  ul, ol { margin: 0 0 18px; padding-inline-start: 22px; }
+  li { margin-bottom: 8px; }
+
+  .lede { color: var(--ink-2); }
+
+  /* ---------- entry points ---------- */
+
+  .entries {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+
+  .entry {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+  }
+  .entry h4 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 10px;
+    color: var(--dense);
+    direction: ltr;
+    text-align: right;
+  }
+  .entry p { font-size: 14.5px; color: var(--ink-2); margin: 0; line-height: 1.65; }
+
+  /* ---------- the funnel ---------- */
+
+  .funnel {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .stage {
+    display: grid;
+    grid-template-columns: 62px 1fr 168px;
+    align-items: stretch;
+    border-bottom: 1px solid var(--line);
+  }
+  .stage:last-child { border-bottom: 0; }
+
+  .stage-n {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    background: var(--surface-2);
+    border-inline-start: 1px solid var(--line);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 19px;
+    direction: ltr;
+  }
+
+  .stage-body { padding: 17px 20px 18px; min-width: 0; }
+
+  .stage-title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 16px;
+    margin: 0 0 2px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-wrap: wrap;
+  }
+
+  .stage-where {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    direction: ltr;
+    text-align: right;
+    margin: 0 0 9px;
+    word-break: break-all;
+  }
+
+  .stage-body p { font-size: 14.5px; line-height: 1.68; color: var(--ink-2); margin: 0; max-width: 64ch; }
+  .stage-body p + p { margin-top: 9px; }
+
+  .stage-knobs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 11px;
+  }
+  .knob {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    direction: ltr;
+    white-space: nowrap;
+  }
+  .knob b { color: var(--ink); font-weight: 600; }
+
+  /* live-count gauge */
+  .gauge {
+    border-inline-end: 1px solid var(--line);
+    padding: 17px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 7px;
+    background: linear-gradient(to left, var(--surface-2), transparent 70%);
+  }
+  .gauge-num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--ink);
+    direction: ltr;
+    text-align: right;
+  }
+  .gauge-num small { font-size: 11px; font-weight: 400; color: var(--ink-3); }
+  .gauge-label { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
+  .bar {
+    height: 7px;
+    border-radius: 4px;
+    background: var(--line);
+    overflow: hidden;
+    display: flex;
+    flex-direction: row-reverse;
+  }
+  .bar i { display: block; height: 100%; }
+  .bar .b-dense  { background: var(--dense); }
+  .bar .b-sparse { background: var(--sparse); }
+  .bar .b-both   { background: var(--both); }
+
+  /* leg tags */
+  .tag {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .04em;
+    padding: 1px 7px;
+    border-radius: 20px;
+    font-weight: 500;
+    direction: ltr;
+    white-space: nowrap;
+  }
+  .t-dense  { background: var(--dense-soft);  color: var(--dense); }
+  .t-sparse { background: var(--sparse-soft); color: var(--sparse); }
+  .t-both   { background: var(--both-soft);   color: var(--both); }
+  .t-off    { background: var(--off-soft);    color: var(--off); }
+
+  /* ---------- callouts ---------- */
+
+  .note {
+    border-inline-start: 3px solid var(--line-strong);
+    background: var(--surface);
+    border-radius: 0 8px 8px 0;
+    padding: 15px 18px;
+    margin: 22px 0;
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    max-width: var(--col);
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+  .note.warn { border-inline-start-color: var(--off); background: var(--off-soft); }
+  .note.warn strong { color: var(--ink); }
+  .note p:last-child { margin-bottom: 0; }
+
+  /* ---------- settings table ---------- */
+
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  table { border-collapse: collapse; width: 100%; min-width: 900px; }
+
+  thead th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    text-align: right;
+    padding: 13px 16px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line-strong);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+
+  tbody td {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    font-size: 14.5px;
+    line-height: 1.62;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  td.name {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink);
+    direction: ltr;
+    text-align: right;
+    white-space: nowrap;
+  }
+  td.val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dense);
+    font-weight: 600;
+    direction: ltr;
+    text-align: right;
+    white-space: nowrap;
+  }
+  td.where {
+    font-size: 12.5px;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  td.what { color: var(--ink-2); min-width: 340px; }
+  td.what strong { color: var(--ink); font-weight: 600; }
+
+  tr.group td {
+    background: var(--surface-2);
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--ink);
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  tr.group td .sub {
+    font-family: var(--mono);
+    font-weight: 400;
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin-inline-start: 10px;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+
+  .pill {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    direction: ltr;
+    display: inline-block;
+  }
+  .p-frozen { background: var(--off-soft); color: var(--off); }
+  .p-cal    { background: var(--dense-soft); color: var(--dense); }
+
+  /* ---------- worked example ---------- */
+
+  .worked {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 8px 4px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+  .worked ol {
+    list-style: none;
+    margin: 0;
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 560px;
+  }
+  .worked li {
+    display: grid;
+    grid-template-columns: 210px 1fr 66px;
+    align-items: center;
+    gap: 14px;
+    margin: 0;
+    padding: 7px 0;
+    border-bottom: 1px dashed var(--line);
+  }
+  .worked li:last-child { border-bottom: 0; }
+  .worked .w-label { font-size: 14px; color: var(--ink-2); }
+  .worked .w-label b { color: var(--ink); font-weight: 600; }
+  .worked .w-bar { height: 12px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; flex-direction: row-reverse; }
+  .worked .w-bar i { display: block; height: 100%; }
+  .worked .w-n {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    direction: ltr;
+    text-align: left;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin: 18px 0 0;
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 24px;
+    font-size: 13.5px;
+    color: var(--ink-3);
+    max-width: var(--col);
+  }
+  footer code { font-size: 12.5px; }
+
+  @media (max-width: 720px) {
+    .stage { grid-template-columns: 44px 1fr; }
+    .gauge {
+      grid-column: 1 / -1;
+      border-inline-end: 0;
+      border-top: 1px solid var(--line);
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 18px;
+    }
+    .gauge .bar { flex: 1; }
+    .worked li { grid-template-columns: 150px 1fr 52px; }
+    header.top { padding-top: 48px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">AIZZAK · knowledge · branch <span class="mono">retrieval</span></p>
+    <h1>مسار الاسترجاع، من السؤال إلى الجواب</h1>
+    <p class="standfirst">
+      شرحٌ خطوةً بخطوة لما يحدث فعليًّا داخل <code class="k">RetrieveContext.execute</code> —
+      أربع عشرة مرحلة بين لحظة كتابة السؤال ولحظة تسليم النصّ إلى النموذج — يليه
+      جدول بكل إعداد يؤثّر في هذا المسار، وموقعه بالضبط منه.
+    </p>
+    <div class="meta-row">
+      <span><b>14</b> stage</span>
+      <span><b>38</b> knob</span>
+      <span>src/app/modules/knowledge/</span>
+      <span>2026-08-27</span>
+    </div>
+  </header>
+
+  <!-- ══════════ 1. المدخلان ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>من أين يدخل السؤال</h2>
+      <span class="num">§1</span>
+    </div>
+
+    <div class="col">
+      <p class="lede">
+        للاسترجاع مدخلان اثنان لا ثالث لهما، وكلاهما ينتهي إلى الدالّة نفسها.
+        الفرق بينهما أنّ أحدهما يمرّ بمرحلة تصنيفٍ للسؤال أوّلًا، والآخر لا.
+      </p>
+    </div>
+
+    <div class="entries">
+      <div class="entry">
+        <h4>POST /knowledge/search</h4>
+        <p>
+          طلبٌ مباشر. جسمه ثلاثة حقول: <code class="k">query</code> و<code class="k">k</code>
+          (افتراضيًّا ٥، وبين ١ و٥٠) و<code class="k">space_id</code> — وهذا الأخير <em>إلزاميّ</em>
+          بلا قيمة افتراضيّة. يذهب رأسًا إلى محرّك الاسترجاع بلا تصنيف.
+        </p>
+      </div>
+      <div class="entry">
+        <h4>rag_agent → knowledge.answer()</h4>
+        <p>
+          الوكيل المحادثي. لا يمرّر <code class="k">k</code> إطلاقًا — فيأخذ رقم النشر
+          (<code class="k">default_k</code>) — ويمرّ أوّلًا بـ<code class="k">RouteQuestion</code>
+          الذي يقرّر: تلخيص مستند أم بحث في المحتوى؟
+        </p>
+      </div>
+    </div>
+
+    <div class="note warn">
+      <p>
+        <strong>لا مساحة ⇒ لا بحث.</strong> قبل أن يُحسب أيّ تضمين، تمرّ كلّ مكالمة على
+        <code class="k">require_space_scope</code>. المساحة <span class="mono">None</span> أو نصّ فارغ
+        تعني رفضًا فوريًّا بـ<code class="k">ValidationError</code>، لا بحثًا في كلّ المساحات.
+        المساحات معزولة تمامًا، ولا يوجد بحثٌ يعبر اثنتين منها.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══════════ 2. القمع ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>المسار: أربع عشرة مرحلة</h2>
+      <span class="num">§2</span>
+    </div>
+
+    <div class="col">
+      <p class="lede">
+        الفكرة الحاكمة للترتيب كلّه جملةٌ واحدة: <strong>وسّع أوّلًا، ثمّ ضيّق</strong>.
+        المسار يجلب مرشّحين أكثر بكثير ممّا سيسلّمه، ثمّ يُسقط منهم على مراحل — كلّ مرحلة
+        تُسقط لسببٍ مختلف — ولا يقصّ إلى عدد الطالب <code class="k">k</code> إلّا في السطر الأخير.
+      </p>
+      <p>
+        العمود الأيسر في كلّ صفٍّ أدناه يبيّن كم مرشّحًا لا يزال حيًّا عند تلك النقطة،
+        بالأرقام الفعليّة عند <code class="k">k = 5</code> (الإعداد المشحون).
+      </p>
+    </div>
+
+    <div class="funnel">
+
+      <!-- 1 -->
+      <div class="stage">
+        <div class="stage-n">01</div>
+        <div class="stage-body">
+          <div class="stage-title">تصنيف نيّة السؤال</div>
+          <p class="stage-where">domain/intent.py · classify_intent()</p>
+          <p>
+            قواعد <span class="mono">regex</span> خالصة، بلا نموذج لغويّ. يُطبَّع النصّ العربيّ أوّلًا
+            (<code class="k">normalize_arabic</code>) لأنّ «لخّص» تحمل شدّة، ومطابقةً بلا تطبيع تُخطئ
+            أشيع صيغة للأمر. إن طابق السؤالُ أنماطَ التلخيص ذهب إلى مسارٍ آخر تمامًا
+            (يُجدوَل بناء ملخّص ولا يُسترجَع شيء)؛ وإلّا فالمحتوى — وهو الافتراض الأمين.
+          </p>
+          <p>
+            على مسار المحتوى قد يُضيَّق النطاق من كلمات السؤال نفسه: إن ذكر السؤال اسم ملفّ،
+            حوّله <code class="k">_content_scope</code> إلى معرّف مستندٍ واحد. تضييقٌ فقط، لا توسيع أبدًا.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">—</div>
+          <div class="gauge-label">لم يبدأ البحث بعد</div>
+        </div>
+      </div>
+
+      <!-- 2 -->
+      <div class="stage">
+        <div class="stage-n">02</div>
+        <div class="stage-body">
+          <div class="stage-title">حساب الأعماق</div>
+          <p class="stage-where">application/retrieval.py · execute() — head</p>
+          <p>
+            قبل أيّ عملٍ فعليّ تُحسَب أربعة أرقام من <code class="k">k</code> وحده. هي التي
+            تحدّد اتّساع القمع كلّه:
+          </p>
+          <div class="stage-knobs">
+            <span class="knob">search_k = min(k × max(3, 6), 100) → <b>30</b></span>
+            <span class="knob">sparse_k = min(search_k, 20) → <b>20</b></span>
+            <span class="knob">mmr_pool_k = min(k × 6, 100) → <b>30</b></span>
+            <span class="knob">retain_k = min(k × 3, 100) → <b>15</b></span>
+          </div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">—</div>
+          <div class="gauge-label">حسابٌ فقط</div>
+        </div>
+      </div>
+
+      <!-- 3 -->
+      <div class="stage">
+        <div class="stage-n">03</div>
+        <div class="stage-body">
+          <div class="stage-title">بناء المرشِّح</div>
+          <p class="stage-where">execute() → qdrant_store.py · _build_filter()</p>
+          <p>
+            ثلاثة شروط تُدمَج بـ <span class="mono">AND</span> وتُرسَل مع كلّ ساقٍ من ساقَي البحث:
+            <code class="k">workspace_id</code> (عزل المستأجر — لا يسقط أبدًا)،
+            و<code class="k">space</code> (عزل المساحة — بلا شرط)،
+            و<code class="k">document_id</code> اختياريًّا إن كان هناك تضييق.
+          </p>
+          <p>
+            التمييز هنا دقيق ومقصود: <span class="mono">None</span> تعني «بلا تضييق، ابحث في كلّ
+            مستندات المساحة»، بينما <span class="mono">[]</span> تعني «هناك تضييق وقد أفضى إلى لا شيء»
+            — فيعود المسار بصفر قطعٍ فورًا، دون أن يسأل قاعدة المتّجهات أصلًا.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">—</div>
+          <div class="gauge-label">الفلتر جاهز</div>
+        </div>
+      </div>
+
+      <!-- 4 -->
+      <div class="stage">
+        <div class="stage-n">04</div>
+        <div class="stage-body">
+          <div class="stage-title">
+            تمثيل السؤال مرّتين
+            <span class="tag t-dense">dense</span>
+            <span class="tag t-sparse">sparse</span>
+          </div>
+          <p class="stage-where">ports/embedding · domain/sparse.py · build_query_terms()</p>
+          <p>
+            <strong>كثيف:</strong> يُرسَل السؤال إلى خدمة التضمين فيعود متّجهًا من ٣٨٤ بُعدًا
+            (<span class="mono">paraphrase-multilingual-MiniLM-L12-v2</span>) — هذا ما يمسك
+            <em>المعنى</em>، ويعبر اللغات: سؤالٌ بالعربيّة يجد فقرةً بالإنجليزيّة.
+          </p>
+          <p>
+            <strong>متناثر:</strong> يُقطَّع السؤال إلى كلمات، تُطبَّع، تُحذَف الكلمات الشائعة،
+            ثمّ تُهشَّم إلى أرقام. الوزن <span class="mono">1.0</span> لكلّ كلمةٍ مميّزة —
+            <em>لا</em> تكرارها في السؤال، لأنّ الضرب النقطيّ في Qdrant سيضاعف وزن المستند مرّتين لو فعلنا.
+            هذا ما يمسك <em>اللفظ</em>: رقم منتج، اسم علم، مصطلح لا يعرفه التضمين.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">2</div>
+          <div class="gauge-label">تمثيلان للسؤال ذاته</div>
+        </div>
+      </div>
+
+      <!-- 5 -->
+      <div class="stage">
+        <div class="stage-n">05</div>
+        <div class="stage-body">
+          <div class="stage-title">
+            البحث بساقين
+            <span class="tag t-dense">30</span>
+            <span class="tag t-sparse">20</span>
+          </div>
+          <p class="stage-where">HybridVectorStore.search() + .search_sparse()</p>
+          <p>
+            بحثان متوازيان في <em>المجموعة نفسها</em> — لا مجموعتين. الساق الكثيفة تجلب
+            <span class="mono">search_k = 30</span> بمقياس جيب التمام، والمتناثرة
+            <span class="mono">sparse_k = 20</span> بضربٍ نقطيّ موزون بـ<span class="mono">IDF</span>.
+            في المقياسين معًا: الأعلى أفضل.
+          </p>
+          <p>
+            كلتاهما تطلب <code class="k">with_vectors=True</code> — أي أنّ متّجه كلّ مرشّحٍ كاملًا يعبر
+            الشبكة. هذا هو الثمن المُعلَن لمرحلة التنويع (٠٧)، ونطاقه عمق البحث لا الكوربوس.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">50 <small>خام</small></div>
+          <div class="bar"><i class="b-dense" style="width:60%"></i><i class="b-sparse" style="width:40%"></i></div>
+          <div class="gauge-label">٣٠ كثيفة + ٢٠ متناثرة</div>
+        </div>
+      </div>
+
+      <!-- 6 -->
+      <div class="stage">
+        <div class="stage-n">06</div>
+        <div class="stage-body">
+          <div class="stage-title">لقطة الثقة، ثمّ أرضيّة كلّ ساق</div>
+          <p class="stage-where">execute() · _gate_by_score()</p>
+          <p>
+            <strong>أوّلًا اللقطة:</strong> يُؤخَذ أعلى درجةٍ في كلّ ساقٍ
+            (<code class="k">best_dense_score</code> / <code class="k">best_bm25_score</code>)
+            <em>قبل</em> أيّ فلترة. ساقٌ فارغة تُبلّغ <span class="mono">None</span> صراحةً، لا
+            <span class="mono">0.0</span> — فالصفر درجةٌ حقيقيّة على هذين المقياسين، لا «لا بيانات».
+          </p>
+          <p>
+            <strong>ثمّ الأرضيّة:</strong> تُحذَف من كلّ ساقٍ نتائجُها دون الحدّ —
+            <span class="mono">0.45</span> للكثيفة و<span class="mono">25.0</span> للمتناثرة.
+            الترتيب مقصود: بعد اللقطة كي لا يُمحى الرقم الذي يفسّر الفراغ، وقبل الدمج لأنّ الدمج
+            يقرأ <em>الرتبة</em> لا الدرجة — فمرشّحٌ يُحذف بعد الدمج يكون قد أزاح كلّ رتبةٍ تحته.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 50</div>
+          <div class="bar"><i class="b-dense" style="width:52%"></i><i class="b-sparse" style="width:22%"></i></div>
+          <div class="gauge-label">ساقٌ كاملة قد تفرغ هنا</div>
+        </div>
+      </div>
+
+      <!-- 7 -->
+      <div class="stage">
+        <div class="stage-n">07</div>
+        <div class="stage-body">
+          <div class="stage-title">
+            الدمج بالرتبة المتبادلة
+            <span class="tag t-both">RRF</span>
+          </div>
+          <p class="stage-where">domain/fusion.py · reciprocal_rank_fusion()</p>
+          <p>
+            الساقان لا تتحدّثان اللغة نفسها: جيب تمامٍ في <span class="mono">[-1, 1]</span> مقابل ضربٍ
+            نقطيٍّ غير محدود. فلا تُجمَع درجاتهما — بل <em>رتبهما</em>. مرشّحٌ في الرتبة
+            <span class="mono">r</span> يأخذ <span class="mono">w / (60 + r + 1)</span>، ومن ظهر في
+            الساقين جمع النصيبين معًا، وهذا وحده يجعل الاتّفاق بينهما يرفع المرشّح إلى القمّة.
+          </p>
+          <p>
+            النتيجة درجةٌ جديدة على <em>مقياسٍ ثالث</em> تمامًا، محصورة رياضيًّا بين
+            <span class="mono">0.0082</span> و<span class="mono">0.0164</span> مهما كان المرشّح جيّدًا.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">30</div>
+          <div class="bar"><i class="b-both" style="width:60%"></i></div>
+          <div class="gauge-label">mmr_pool_k — قائمة موحّدة</div>
+        </div>
+      </div>
+
+      <!-- 8 -->
+      <div class="stage">
+        <div class="stage-n">08</div>
+        <div class="stage-body">
+          <div class="stage-title">التنويع — MMR</div>
+          <p class="stage-where">domain/mmr.py · maximal_marginal_relevance()</p>
+          <p>
+            الدمج يرتّب، ولا يعرف شيئًا عن التشابه بين مرشّحَين. فـ«خمس قطعٍ من الفقرة نفسها»
+            نتيجةٌ مشروعة عنده. هنا تُختار ١٥ من الـ٣٠ بمعادلة
+            <span class="mono">λ·sim(q,d) − (1−λ)·max sim(d,dⱼ)</span>: كلّ اختيارٍ يوازن بين
+            قربه من السؤال وبُعده عمّا اختير قبله.
+          </p>
+          <p>
+            الفائض بين ٣٠ و١٥ هو ما يسمح لهذه المرحلة أن <em>تحذف</em> شبيهًا فعلًا بدل أن تعيد
+            ترتيبه. وموقعها هنا — قبل كلّ ما بعدها — لأنّ كلّ المراحل التالية حسّاسة للبادئة.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">15</div>
+          <div class="bar"><i class="b-both" style="width:30%"></i></div>
+          <div class="gauge-label">retain_k — متنوّعة</div>
+        </div>
+      </div>
+
+      <!-- 9 -->
+      <div class="stage">
+        <div class="stage-n">09</div>
+        <div class="stage-body">
+          <div class="stage-title">مرشّح الصلة</div>
+          <p class="stage-where">domain/relevance.py · filter_relevant()</p>
+          <p>
+            ثلاث بوّابات متتالية: أرضيّة مطلقة، وأرضيّة نسبيّة (كسرٌ من أعلى درجةٍ باقية)،
+            وإزالة المكرّرات المتقاربة بمعامل <span class="mono">Jaccard</span> على مجموعات الكلمات.
+          </p>
+          <p>
+            الأوليان <strong>معطّلتان بقرار</strong> (<span class="mono">0.0</span>): مقياس الدمج
+            لا يحمل إشارة قبولٍ أصلًا — الأسئلة المُجابة والأسئلة المستحيلة أنتجت درجاتٍ في
+            <em>المجال نفسه</em>. الثالثة وحدها تعمل، عند <span class="mono">0.95</span>.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 15</div>
+          <div class="bar"><i class="b-both" style="width:29%"></i></div>
+          <div class="gauge-label">Jaccard فقط فعّال</div>
+        </div>
+      </div>
+
+      <!-- 10 -->
+      <div class="stage">
+        <div class="stage-n">10</div>
+        <div class="stage-body">
+          <div class="stage-title">
+            إعادة الترتيب بمشفّرٍ متقاطع
+            <span class="tag t-off">مطفأة</span>
+          </div>
+          <p class="stage-where">application/retrieval.py · _rerank()</p>
+          <p>
+            مطفأة كما تُشحَن (<code class="k">rerank_enabled = False</code>)، وحين يشغّلها نشرٌ ما
+            تُعيد ترتيب المرشّحين الناجين عبر خدمة <span class="mono">HTTP</span> منفصلة لا تدخل
+            أوزانُها أيّ صورةٍ يبنيها هذا المستودع.
+          </p>
+          <p>
+            ضمانتان: لا تستطيع <em>تقصير</em> الجواب (حارس <code class="k">final_top_n</code>)،
+            ولا تستطيع <em>إفشاله</em> — انقطاع الخدمة يتدهور إلى الترتيب غير المُعاد.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 15</div>
+          <div class="bar"><i class="b-both" style="width:29%"></i></div>
+          <div class="gauge-label">تمريرٌ بلا تغيير</div>
+        </div>
+      </div>
+
+      <!-- 11 -->
+      <div class="stage">
+        <div class="stage-n">11</div>
+        <div class="stage-body">
+          <div class="stage-title">التوسيع إلى الفقرة الأب</div>
+          <p class="stage-where">_widen_to_parents() → SQL: chunk_id → parent_id → parent_chunks</p>
+          <p>
+            <strong>هذه المرحلة حرجة لا تحسينيّة.</strong> ما طابق السؤال قطعةٌ صغيرة، والجواب
+            يحتاج ما حولها — وهذه هي الآليّة الوحيدة الباقية لتوسيع القطعة إلى سياقها. نصّ كلّ
+            مرشّحٍ يُستبدَل بنصّ فقرته الأب، مقروءًا من قاعدة البيانات (لا من حمولة Qdrant، فهي
+            لا تحمل نصّ الأب ولا حتّى معرّفه).
+          </p>
+          <p>
+            ومرشّحان يتوسّعان إلى <em>الأب نفسه</em> ينهاران إلى واحد — وهذا ما يجعل بركة الـ3×
+            تؤتي ثمرها: المكان الذي تحرّر يملؤه مرشّحٌ من قسمٍ مختلف. ثلاث حالات تتدهور بأمانة
+            ولا تُسقط المرشّح: لا أب، أو أبٌ ناقص (رأس جدولٍ بلا صفوفه)، أو صفٌّ غير مقروء —
+            في كلّها يبقى نصّ القطعة الأصليّ. والأب المُستبدَل مقصوصٌ عند ٤٠٠٠ حرف،
+            و<em>يقول إنّه قُصّ</em> بعلامة <span class="mono">[…]</span> محسوبةٍ من السقف لا مضافةٍ إليه.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 15</div>
+          <div class="bar"><i class="b-both" style="width:24%"></i></div>
+          <div class="gauge-label">أكبر حجمًا، أقلّ عددًا</div>
+        </div>
+      </div>
+
+      <!-- 12 -->
+      <div class="stage">
+        <div class="stage-n">12</div>
+        <div class="stage-body">
+          <div class="stage-title">وسم المصدر</div>
+          <p class="stage-where">framework/agent_runtime/source_label.py · format_labeled_chunk()</p>
+          <p>
+            كلّ قطعةٍ تُصاغ بالشكل الذي سيراه النموذج تمامًا: سطر
+            <span class="mono">[file p.N | section: S]</span> ثمّ النصّ. الحقول الثلاثة كتبها
+            جانبُ الفهرسة في حمولة النقطة، وكلٌّ منها قد يكون غائبًا (مستندٌ فُهرِس قبل وجود الحقل،
+            أو محلّلٌ لا يُخرج أرقام صفحات) — فيتدهور الاستشهاد إلى «غير معروف»، لا إلى عطل.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 15</div>
+          <div class="bar"><i class="b-both" style="width:24%"></i></div>
+          <div class="gauge-label">نصٌّ جاهز للقياس</div>
+        </div>
+      </div>
+
+      <!-- 13 -->
+      <div class="stage">
+        <div class="stage-n">13</div>
+        <div class="stage-body">
+          <div class="stage-title">ميزانيّة السياق — سقفان، والأصغر يفوز</div>
+          <p class="stage-where">domain/context_budget.py · fit_to_context_budget()</p>
+          <p>
+            تُقاس النصوص <em>الموسومة</em> (لا الخام) مقابل سقفين: <span class="mono">12000</span> حرف
+            — رقمٌ مضبوط تمامًا — و<span class="mono">6000</span> رمز، وهو <em>تقدير</em> حسابيّ بحت
+            بلا مُرمِّز وبلا شبكة: حرفٌ عربيّ بـ٢، وغيره بـ٤. القصّ يقع حيث يُخرَق أيّهما أوّلًا.
+          </p>
+          <p>
+            والنتيجة <em>بادئة</em> من ترتيبٍ تنازليّ، لا انتقاءً: يُتوقَّف عند أوّل مرشّحٍ يتجاوز،
+            فلا تُرقَّى قطعةٌ صغيرة ضعيفة فوق كبيرةٍ قويّة. والمرشّح الأوّل ينجو دائمًا ولو خرق
+            السقفين وحده — لأنّ فراغًا مصنوعًا هنا سيُقرأ خطأً على أنّه «لم يجد الاسترجاع شيئًا».
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">2–3</div>
+          <div class="bar"><i class="b-both" style="width:6%"></i></div>
+          <div class="gauge-label">هنا يقع القصّ الحقيقيّ</div>
+        </div>
+      </div>
+
+      <!-- 14 -->
+      <div class="stage">
+        <div class="stage-n">14</div>
+        <div class="stage-body">
+          <div class="stage-title">القصّ إلى k، والسجلّ</div>
+          <p class="stage-where">execute() — <span class="mono">chunks = budgeted[:k]</span></p>
+          <p>
+            السطر الوحيد في المسار كلّه الذي يضيّق إلى عدد الطالب. ثمّ يُطلَق سجلٌّ مبنيّ واحد
+            (<code class="k">knowledge.retrieval</code>) بعدد كلّ مرحلةٍ ودرجاتها ومصدر كلّ مرشّح
+            وزمنه الكلّيّ — ولا شيء من <em>محتوى</em> المستندات فيه، فقط طول السؤال بالأحرف.
+          </p>
+          <p>
+            ويعود المسار بـ<code class="k">RetrievalResult</code>، لا بقائمة قطعٍ عارية: فهو يحمل
+            معه درجتَي الثقة المأخوذتين في المرحلة ٠٦.
+          </p>
+        </div>
+        <div class="gauge">
+          <div class="gauge-num">≤ 5</div>
+          <div class="bar"><i class="b-both" style="width:10%"></i></div>
+          <div class="gauge-label">k — ما يطلبه المتّصل</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ══════════ 3. الجواب ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>ومن القطع إلى الجواب</h2>
+      <span class="num">§3</span>
+    </div>
+
+    <div class="col">
+      <p class="lede">
+        ما سبق ينتهي عند القطع. الوكيل هو من يحوّلها إلى جملة، وأمامه فرعان لا ثالث لهما.
+      </p>
+
+      <h3>الفرع الأوّل: بوّابة الثقة</h3>
+      <p>
+        إن عاد الاسترجاع بصفر قطعٍ <em>وقد جرى فعلًا</em>، لا يُستدعى النموذج اللغويّ إطلاقًا.
+        يُردّ بجملةٍ ثابتة واحدة، تُختار عربيّةً أو إنجليزيّة بفحص وجود حرفٍ عربيّ في السؤال:
+        «لا أملك معلومات كافية في مستندات مساحة العمل للإجابة عن هذا السؤال.»
+      </p>
+      <p>
+        والتمييز هنا لازم: نشرٌ بلا وصلة معرفةٍ أصلًا لم يحاول الاسترجاع، فيجيب إجابةً لغويّة
+        عاديّة بلا استشهادات — وهذا ليس ما تتحدّث عنه البوّابة.
+      </p>
+
+      <h3>الفرع الثاني: التوليف</h3>
+      <p>
+        القطع تُجمَع بـ<code class="k">format_context_block</code> — الوحدة نفسها التي قاستها
+        الميزانيّة، حرفًا بحرف — وتوضع تحت عنوان <span class="mono">Context:</span> في رسالة النظام،
+        ومعها ترويسة وعيٍ بالكوربوس تسرد حتّى ٥٠ اسم ملفّ. الترتيب يُحفَظ كما جاء: الأقوى في
+        <span class="mono">[#1]</span>، ولا تُعاد قطعةٌ ولا تُسقَط ولا تُعاد درجتها.
+      </p>
+
+      <div class="note">
+        <p>
+          <strong>ترويسة الكوربوس تظهر على المسارين المُجيبَين معًا</strong> — الذي يجيب من القطع
+          والذي يعترف بأنّه لا يملكها — وهي بالضبط ما يمنع «لا أعرف» من أن تكون بلا فائدة:
+          القارئ يرى ما الذي كان متاحًا للبحث أصلًا.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 4. القمع بالأرقام ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>القمع بالأرقام</h2>
+      <span class="num">§4</span>
+    </div>
+
+    <div class="col">
+      <p class="lede">
+        سؤالٌ واحد عند الإعداد المشحون، <code class="k">k = 5</code>، من الجلب إلى التسليم.
+      </p>
+    </div>
+
+    <div class="worked">
+      <ol>
+        <li>
+          <span class="w-label"><b>جلب كثيف</b> — search_k</span>
+          <span class="w-bar"><i class="b-dense" style="width:100%"></i></span>
+          <span class="w-n">30</span>
+        </li>
+        <li>
+          <span class="w-label"><b>جلب متناثر</b> — sparse_k</span>
+          <span class="w-bar"><i class="b-sparse" style="width:66.7%"></i></span>
+          <span class="w-n">20</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد الأرضيّتين</b> — 0.45 / 25.0</span>
+          <span class="w-bar"><i class="b-dense" style="width:83%"></i><i class="b-sparse" style="width:40%"></i></span>
+          <span class="w-n">≤50</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد الدمج</b> — RRF</span>
+          <span class="w-bar"><i class="b-both" style="width:100%"></i></span>
+          <span class="w-n">30</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد التنويع</b> — MMR</span>
+          <span class="w-bar"><i class="b-both" style="width:50%"></i></span>
+          <span class="w-n">15</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد مرشّح الصلة</b></span>
+          <span class="w-bar"><i class="b-both" style="width:49%"></i></span>
+          <span class="w-n">≤15</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد التوسيع للأب</b> — دمج المكرّر</span>
+          <span class="w-bar"><i class="b-both" style="width:40%"></i></span>
+          <span class="w-n">≤15</span>
+        </li>
+        <li>
+          <span class="w-label"><b>بعد الميزانيّة</b> — 12000 / 6000</span>
+          <span class="w-bar"><i class="b-both" style="width:9%"></i></span>
+          <span class="w-n">2–3</span>
+        </li>
+        <li>
+          <span class="w-label"><b>التسليم</b> — [:k]</span>
+          <span class="w-bar"><i class="b-both" style="width:9%"></i></span>
+          <span class="w-n">2–3</span>
+        </li>
+      </ol>
+    </div>
+
+    <div class="legend">
+      <span><i style="background: var(--dense)"></i> الساق الكثيفة</span>
+      <span><i style="background: var(--sparse)"></i> الساق المتناثرة</span>
+      <span><i style="background: var(--both)"></i> بعد الدمج</span>
+    </div>
+
+    <div class="note warn" style="margin-top: 26px;">
+      <p>
+        <strong>القيد الفعليّ ليس <span class="mono">k</span>، بل الميزانيّة.</strong>
+        الأب مقصوصٌ عند ٤٠٠٠ حرف، والمقاس هو النصّ <em>الموسوم</em>، فثلاثة آباءٍ موسَّعين
+        يكلّفون ٣ × ‏~٤٠٥٥ ≈ ‏١٢١٦٥ حرفًا — والثالث يُقصّ. أي أنّ سقف الـ١٢٠٠٠ يقبل
+        <strong>أبوين اثنين</strong> عمليًّا، لا ثلاثة. فطلب <span class="mono">k = 5</span>
+        نادرًا ما يُسلَّم خمس قطع.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══════════ 5. الإعدادات ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>كلّ إعداد، وموقعه من المسار</h2>
+      <span class="num">§5</span>
+    </div>
+
+    <div class="col">
+      <p class="lede">
+        ثمانية وثلاثون إعدادًا موزّعة على خمس مجموعات. القاعدة الحاكمة لها جميعًا واحدة:
+        القيم تعيش في <code class="k">Settings</code>، وجذر التركيب وحده يترجمها إلى
+        <code class="k">RetrievalTuning</code> عند البناء، ثمّ تصل الخوارزميّة كـ<em>وسائط</em>.
+        لا <code class="k">os.getenv</code> في طبقة النطاق ولا في طبقة التطبيق، ولا تجاوزٌ لأيّ
+        منها من طلبٍ واحد — تغييرُ أيّ رقمٍ هنا إعادةُ نشر.
+      </p>
+      <p>
+        عمود «الموقع» يشير إلى رقم المرحلة في §2.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>الإعداد</th>
+            <th>القيمة</th>
+            <th>الموقع</th>
+            <th>ماذا يفعل</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr class="group"><td colspan="4">أوزان الدمج وأعماق الجلب <span class="sub">Settings.retrieval</span></td></tr>
+
+          <tr>
+            <td class="name">weight_dense</td>
+            <td class="val">0.5</td>
+            <td class="where">٠٧</td>
+            <td class="what">وزن صوت الساق الكثيفة في الدمج. لا تُطبَّع داخليًّا — المجموع مع أختها يجب أن يساوي ١ يدويًّا.</td>
+          </tr>
+          <tr>
+            <td class="name">weight_bm25</td>
+            <td class="val">0.5</td>
+            <td class="where">٠٧</td>
+            <td class="what">وزن صوت الساق المتناثرة. التساوي يعني أنّ المعنى واللفظ لهما القول نفسه.</td>
+          </tr>
+          <tr>
+            <td class="name">rrf_k</td>
+            <td class="val">60</td>
+            <td class="where">٠٧</td>
+            <td class="what">ثابت التخميد في <span class="mono">w/(k+r+1)</span>. كبرُه يقارب بين الرتب المتجاورة، فيقلّ أثر فارق رتبةٍ واحدة داخل الساق ويزيد أثر <strong>الاتّفاق بين الساقين</strong>.</td>
+          </tr>
+          <tr>
+            <td class="name">search_overfetch</td>
+            <td class="val">3</td>
+            <td class="where">٠٢ · ٠٥</td>
+            <td class="what">مضاعف عمق الجلب لكلّ ساق. <strong>مغلوبٌ حاليًّا</strong> بـ<span class="mono">mmr_overfetch</span> لأنّ العمق الفعليّ هو الأكبر منهما.</td>
+          </tr>
+          <tr>
+            <td class="name">mmr_overfetch</td>
+            <td class="val">6</td>
+            <td class="where">٠٢ · ٠٥ · ٠٨</td>
+            <td class="what">مضاعف بركة التنويع، وهو العمق الحاكم فعليًّا. <span class="mono">2 × fusion_retention</span>: يسمح لـ<span class="mono">MMR</span> بإسقاط نصف البركة تكرارًا مع تسليم الـ<span class="mono">3k</span> كاملة.</td>
+          </tr>
+          <tr>
+            <td class="name">fusion_retention</td>
+            <td class="val">3</td>
+            <td class="where">٠٢ · ٠٨</td>
+            <td class="what">كم مرشّحًا مدمَجًا ينجو إلى ما بعد التنويع، كمضاعفٍ لـ<span class="mono">k</span>. هذا هو الفائض الذي يعوّض ما يبتلعه دمجُ الآباء.</td>
+          </tr>
+          <tr>
+            <td class="name">max_search_candidates</td>
+            <td class="val">100</td>
+            <td class="where">٠٢</td>
+            <td class="what">سقفٌ مطلق على عمق أيّ ساقٍ مهما بلغ حاصل <span class="mono">k × المضاعف</span>.</td>
+          </tr>
+          <tr>
+            <td class="name">max_sparse_candidates</td>
+            <td class="val">20</td>
+            <td class="where">٠٢ · ٠٥</td>
+            <td class="what">سقفٌ على <strong>عمق الساق المتناثرة وحدها</strong>. عدد لا درجة، ولذلك لم يشمله تجميد س-٢٢. قيست أعماق ١٠ و٣٠ و٥٠ فلم يتحسّن شيء.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">حجم النتيجة <span class="sub">Settings.retrieval · Settings.limits</span></td></tr>
+
+          <tr>
+            <td class="name">default_k</td>
+            <td class="val">5 <span class="pill p-frozen">مجمّد</span></td>
+            <td class="where">٠٢</td>
+            <td class="what">عدد القطع حين لا يسمّي المتّصل عددًا. <strong>مجمّد بقرار مالك</strong> (٢٠٢٥-٠٨-٢٥): نُقل إلى ٢٠ مرّةً ورُدّ. تجميده يجمّد القمع كلّه معه — ٣٠ و٢٠ و٣٠ و١٥.</td>
+          </tr>
+          <tr>
+            <td class="name">max_rag_k</td>
+            <td class="val">50</td>
+            <td class="where">٠٢</td>
+            <td class="what">سقف <span class="mono">k</span> المطلق، يصل كـ<span class="mono">RetrievalTuning.max_k</span>. حارس منصّة لا مقبض جودة، ولذلك يسكن <span class="mono">Limits</span>؛ ويكرّره العقد على الشبكة (<span class="mono">le=50</span>).</td>
+          </tr>
+          <tr>
+            <td class="name">KnowledgeSearchIn.k</td>
+            <td class="val">5 · 1–50</td>
+            <td class="where">مدخل</td>
+            <td class="what">حجم النتيجة على العقد المنشور. الشيء الوحيد في الاسترجاع كلّه الذي يملك الطلبُ أن يختاره.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">أرضيّات القبول — ثلاثة مقاييس، ثلاث معايرات منفصلة <span class="sub">Settings.retrieval</span></td></tr>
+
+          <tr>
+            <td class="name">min_dense_score</td>
+            <td class="val">0.45 <span class="pill p-cal">معايَر</span></td>
+            <td class="where">٠٦</td>
+            <td class="what">أدنى جيب تمامٍ تقبله الساق الكثيفة. <strong>اختير بهامش لا عند الحافّة:</strong> أدنى درجةٍ أنتجها سؤالٌ مُجاب هي ٠٫٥٢٤، وأوّل رفضٍ كاذب يظهر عند ٠٫٥٥. الحافّة (٠٫٥٢) قيست ورُفضت.</td>
+          </tr>
+          <tr>
+            <td class="name">min_bm25_score</td>
+            <td class="val">25.0 <span class="pill p-cal">معايَر</span></td>
+            <td class="where">٠٦</td>
+            <td class="what"><strong>يصلح عيبًا مقيسًا، لا يقايض جودة.</strong> Qdrant يردّ على استعلامٍ متناثرٍ لا توجد كلماته في الكوربوس بنقاطٍ عشوائيّة درجتها صفرٌ تمامًا — والدمج يقرأ الرتبة، فكانت تصوّت بوزن نتائج الساق الأخرى الحقيقيّة. أصغر درجةٍ موجبةٍ في الكوربوس ١٫٤٠٦، فأيّ حدٍّ فوق الصفر يزيلها وحدها.</td>
+          </tr>
+          <tr>
+            <td class="name">min_fused_score</td>
+            <td class="val">0.0</td>
+            <td class="where">٠٩</td>
+            <td class="what"><strong>سؤالٌ مغلق، لا مؤجَّل.</strong> درجة الدمج حسابُ رتبٍ محصورٌ في <span class="mono">[0.0082, 0.0164]</span>، والمقيس أنّ الأسئلة المُجابة والمستحيلة تقع في المجال نفسه — فلا حدَّ يُبقي كلّ جوابٍ حقيقيّ ويرفض شيئًا.</td>
+          </tr>
+          <tr>
+            <td class="name">relative_floor</td>
+            <td class="val">0.0</td>
+            <td class="where">٠٩</td>
+            <td class="what">الكميّة نفسها كنسبةٍ من أعلى درجةٍ باقية. مرفوض للسبب نفسه: ٠٫٨ يكلّف جوابين.</td>
+          </tr>
+          <tr>
+            <td class="name">jaccard_threshold</td>
+            <td class="val">0.95</td>
+            <td class="where">٠٩</td>
+            <td class="what">البوّابة الوحيدة المشحونة <strong>فعّالة</strong>. نسبة تقاطعٍ على مجموعات الكلمات، مستقلّة عن أيّ مقياس درجات — ولذلك نجت من التجميد. تقارنٌ ثنائيّ <span class="mono">O(n²)</span> يُبقي الأعلى درجةً من كلّ زوج.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">التنويع <span class="sub">Settings.retrieval</span></td></tr>
+
+          <tr>
+            <td class="name">mmr_lambda</td>
+            <td class="val">0.7 <span class="pill p-frozen">مجمّد مؤقّتًا</span></td>
+            <td class="where">٠٨</td>
+            <td class="what">ميزان الصلة مقابل التكرار. <span class="mono">1.0</span> يطفئ التنويع تمامًا. النافذة المقيسة <span class="mono">[0.817, 0.917]</span> و٠٫٧ خارجها — أي أنّ الاختيار يميل إلى <strong>التنويع</strong> عمدًا الآن لا سهوًا. تعليقٌ مؤقّت، لا إغلاق.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">التوسيع والميزانيّة <span class="sub">Settings.retrieval · Settings.limits</span></td></tr>
+
+          <tr>
+            <td class="name">max_parent_chunk_chars</td>
+            <td class="val">4 000</td>
+            <td class="where">١١</td>
+            <td class="what">سقف نصّ الأب المُستبدَل، كي لا يبتلع قسمٌ واحد الميزانيّة كلّها. نصّ القطعة الأصليّ <strong>لا يُقصّ أبدًا</strong> (فهو بحجم النافذة أصلًا)، وعلامة القصّ محسوبةٌ من السقف لا مضافةٌ إليه.</td>
+          </tr>
+          <tr>
+            <td class="name">max_context_chars</td>
+            <td class="val">12 000</td>
+            <td class="where">١٣</td>
+            <td class="what">السقف <strong>المضبوط</strong> على النصّ المسلَّم — الأرضيّة تحت تقديرٍ قد ينحرف. يقبل أبوين موسَّعين لا ثلاثة، لأنّ المقاس يشمل سطر الوسم.</td>
+          </tr>
+          <tr>
+            <td class="name">max_context_tokens</td>
+            <td class="val">6 000</td>
+            <td class="where">١٣</td>
+            <td class="what">السقف <strong>المقدَّر</strong>، والأصغر منهما هو النافذ. <span class="mono">6000 = 12000 ÷ 2.0</span> بالضبط، وهذا لازم: أيّ قيمةٍ أدنى تجعل سقف الرموز يعضّ قبل سقف الأحرف <em>في العربيّة وحدها</em> — فينقسم السلوك بحسب الحروف.</td>
+          </tr>
+          <tr>
+            <td class="name">estimate_tokens — عربيّ</td>
+            <td class="val">2.0</td>
+            <td class="where">١٣</td>
+            <td class="what">حرفان لكلّ رمز. ثابت نطاقٍ لا إعداد. العربيّة ضعيفة التغطية في مفردات <span class="mono">BPE</span> السائدة، فتتفتّت كلماتها.</td>
+          </tr>
+          <tr>
+            <td class="name">estimate_tokens — غير عربيّ</td>
+            <td class="val">4.0</td>
+            <td class="where">١٣</td>
+            <td class="what">أربعة أحرفٍ لكلّ رمز. معدّلان لا واحد، لأنّ معدّلًا واحدًا يظلم إحدى اللغتين. لا <span class="mono">tiktoken</span> ولا تنزيل مُرمِّز ولا شبكة.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">إعادة الترتيب — مطفأة كما تُشحَن <span class="sub">Settings.retrieval · Settings.rerank_service</span></td></tr>
+
+          <tr>
+            <td class="name">rerank_enabled</td>
+            <td class="val">false</td>
+            <td class="where">١٠</td>
+            <td class="what">مفتاح النشر. مطفأً لا يُبنى عميلٌ أصلًا، فلا يدفع النشر حتّى ثمن اتّصال. تشغيله يشتري دقّةً بزمنٍ على <strong>كلّ طلب</strong>.</td>
+          </tr>
+          <tr>
+            <td class="name">rerank_candidates</td>
+            <td class="val">20</td>
+            <td class="where">١٠</td>
+            <td class="what">سقف من يعبر الشبكة إلى المشفّر المتقاطع. المشفّر يقرأ كلّ زوج (سؤال، مستند)، فهذا سقف كلفة المرحلة كلّها.</td>
+          </tr>
+          <tr>
+            <td class="name">rerank_service.url</td>
+            <td class="val">http://rerank:8080</td>
+            <td class="where">١٠</td>
+            <td class="what">أين يقيم المشفّر. وجود عنوانٍ بدل تحميل أوزانٍ هو كلّ ما يبقي أوزان النموذج خارج كلّ صورةٍ يبنيها المستودع.</td>
+          </tr>
+          <tr>
+            <td class="name">rerank_service.model</td>
+            <td class="val">BAAI/bge-reranker-v2-m3</td>
+            <td class="where">١٠</td>
+            <td class="what">مثبّت هنا لا يُحلّ لكلّ مكالمة: النشر يخاطب خدمةً واحدة تخدم نموذجًا واحدًا.</td>
+          </tr>
+          <tr>
+            <td class="name">rerank_service.timeout_s</td>
+            <td class="val">5.0</td>
+            <td class="where">١٠</td>
+            <td class="what">مهلة قصيرة <strong>عمدًا</strong>: هذه مرحلةٌ تحسينيّة، والجواب صالحٌ بدونها.</td>
+          </tr>
+          <tr>
+            <td class="name">rerank_service.max_retries</td>
+            <td class="val">0</td>
+            <td class="where">١٠</td>
+            <td class="what">صفر إعادات <strong>عمدًا</strong>: إعادةٌ تنفق حصّةً ثانية من زمن المستخدم على مرحلةٍ يمكن ببساطة تخطّيها.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">خدمة التضمين — تمثيل السؤال <span class="sub">Settings.embedding_service</span></td></tr>
+
+          <tr>
+            <td class="name">embedding_service.url</td>
+            <td class="val">http://embedding:8080</td>
+            <td class="where">٠٤</td>
+            <td class="what">الحقل الوحيد القابل للتعديل من البيئة في هذه المجموعة.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_service.model</td>
+            <td class="val">paraphrase-multilingual-MiniLM-L12-v2</td>
+            <td class="where">٠٤</td>
+            <td class="what">النموذج المخبوز في الصورة نفسها. تعدّده اللغويّ هو ما يجعل سؤالًا عربيًّا يجد فقرةً إنجليزيّة.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_service.dimensions</td>
+            <td class="val">384</td>
+            <td class="where">٠٤</td>
+            <td class="what">مثبّت ولا يُعدَّل من البيئة عمدًا: قيمةٌ مختلفة تكسر <strong>بصمت</strong> كلّ مجموعةٍ زُوِّدت على أساسه.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_service.batch</td>
+            <td class="val">8</td>
+            <td class="where">٠٤</td>
+            <td class="what">حجم الدفعة. لا أثر له هنا فعليًّا — الاسترجاع يضمّن نصًّا واحدًا.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_service.timeout_s</td>
+            <td class="val">15.0</td>
+            <td class="where">٠٤</td>
+            <td class="what">مهلة المكالمة. أطول من مهلة المشفّر بكثير، لأنّ هذه المرحلة <strong>ليست</strong> اختياريّة.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_service.max_retries</td>
+            <td class="val">2</td>
+            <td class="where">٠٤</td>
+            <td class="what">إعادتان، للسبب نفسه معكوسًا: فشلها يعني لا استرجاع أصلًا.</td>
+          </tr>
+          <tr>
+            <td class="name">embedding_max_input_tokens</td>
+            <td class="val">512</td>
+            <td class="where">فهرسة</td>
+            <td class="what">ميزانيّة الرموز التي يجب أن تدخل تحتها القطعة. نصفُ سقفٍ واحد — النصف الآخر <span class="mono">EMB_MAX_SEQ_LEN</span> في الخدمة نفسها، ولا شيء يفرض تساويهما.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">‏BM25 — تُقرأ وقت <strong>الفهرسة</strong> لا وقت السؤال <span class="sub">Settings.sparse</span></td></tr>
+
+          <tr>
+            <td class="name">bm25_k1</td>
+            <td class="val">1.5</td>
+            <td class="where">فهرسة</td>
+            <td class="what">إشباع تكرار الكلمة: وزنُها يقترب من <span class="mono">k1+1</span>، فالتكرار العاشر لا يكاد يضيف شيئًا فوق التاسع. ما شُحن قبلها كان <span class="mono">tf</span> خامًا — أي <span class="mono">k1 = ∞</span> — وضبطه التدقيق متلبّسًا: ١٨٥ زوج درجاتٍ بنسبٍ صحيحةٍ تامّة.</td>
+          </tr>
+          <tr>
+            <td class="name">bm25_b</td>
+            <td class="val">0.75</td>
+            <td class="where">فهرسة</td>
+            <td class="what">تطبيع الطول، من ٠ (بلا) إلى ١ (كامل). قيمة روبرتسون بلا تعديل.</td>
+          </tr>
+          <tr>
+            <td class="name">bm25_avg_len</td>
+            <td class="val">32.0</td>
+            <td class="where">فهرسة</td>
+            <td class="what">متوسّط طول المستند <strong>بالمصطلحات</strong> بعد التقطيع وحذف الشائع — لا بالكلمات ولا بالأحرف. <strong>مقيسٌ على بديل</strong> بعد مسح الكوربوس الأصليّ، ومرفوعٌ عمدًا فوق المتوسّط المخلوط (٢٢٫٥) لأنّ اتّجاهَي الخطأ غير متماثلين.</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">العرض والرصد <span class="sub">Settings.retrieval · ثوابت وحدة</span></td></tr>
+
+          <tr>
+            <td class="name">max_corpus_names</td>
+            <td class="val">50</td>
+            <td class="where">جواب</td>
+            <td class="what">كم اسم ملفٍّ تعرض ترويسة الوعي بالكوربوس قبل أن تعدّ الباقي «و‏N ملفًّا آخر». سقف <strong>عرض</strong> لا مقبض جودة، وثمنه ~٥٠٠ رمزٍ على كلّ طلب — فما يحرّكه ميزانيّةُ نصٍّ أقصر، لا قياسُ استرجاع.</td>
+          </tr>
+          <tr>
+            <td class="name">_LOG_RANKING_SAMPLE</td>
+            <td class="val">20</td>
+            <td class="where">١٤</td>
+            <td class="what">كم درجةً <strong>فعليّة</strong> يقتبس السجلّ من رأس كلّ ترتيب. ثابت شكل سجلٍّ لا إعداد استرجاع. الأعداد الكاملة تُسجَّل دائمًا بالضبط — العيّنة تحدّ الأرقام لا العدّ.</td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════ 6. ملاحظات ══════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>ثلاث ملاحظات تستحقّ التسجيل</h2>
+      <span class="num">§6</span>
+    </div>
+
+    <div class="col">
+      <h3>اتّجاه المقياس معكوسٌ عن alpha</h3>
+      <p>
+        في alpha كانت الدرجة مسافة <span class="mono">L2</span> من <span class="mono">FAISS</span>:
+        الأصغر أقرب. هنا الدرجة جيب تمام: <strong>الأكبر أفضل</strong>. لذلك
+        <code class="k">best_dense_score</code> أعلى قيمةٍ لا أدناها، والمقارنة في الأرضيّة
+        <span class="mono">score &gt;= min_score</span> لا العكس — ولا يُنقَل رقمٌ من alpha إلى هنا أبدًا.
+      </p>
+
+      <h3>نقطةٌ فُهرِست قبل ٢٠٢٦-٠٨ لا تُرى إطلاقًا</h3>
+      <p>
+        النقاط التي فُهرِست قبل إضافة المساحات لا تحمل مفتاح <code class="k">space</code> أصلًا،
+        وQdrant لا يطابق نقطةً ينقصها حقلٌ مُرشَّح. فهي غائبةٌ عن كلّ بحث،
+        <strong>بصمتٍ وبلا خطأ</strong>. لا يوجد فرع <span class="mono">IsEmpty</span> يداري ذلك —
+        لأنّه كان سيسرّب محتوى المساحات الأخرى القديم. إعادة الفهرسة هي العلاج الوحيد.
+      </p>
+
+      <h3>تعليقان في الشيفرة تخلّفا عن المعايرة</h3>
+      <p>
+        الأرضيّتان أخذتا رقمين في ٢٠٢٦-٠٨-٢٧، لكنّ تعليقين لا يزالان يصفانهما بـ<span class="mono">0.0</span>:
+        <code class="k">retrieval.py:853</code> («تحويلٌ محايد عند الإعداد المشحون») و<code class="k">retrieval.py:1268</code>
+        («الدالّة خاملة حتّى يضع أحدهم رقمًا»). الشيفرة صحيحة والتوثيق متأخّر عنها —
+        وهذا النوع من الانحراف مضلّلٌ تحديدًا في وحدةٍ يقرأ الناس تعليقاتها بدل قراءة قيمها.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      المصادر: <code>src/app/modules/knowledge/application/retrieval.py</code> ·
+      <code>domain/{fusion,mmr,relevance,context_budget,sparse,intent}.py</code> ·
+      <code>framework/settings/settings.py</code> ·
+      <code>framework/di/composition_root.py</code> ·
+      <code>agents/rag_agent/agent.py</code>
+    </p>
+  </footer>
+
+</div>
