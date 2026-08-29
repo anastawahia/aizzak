@@ -124,7 +124,7 @@ conversations = Table(
     Column("kind", Text, nullable=False),
     Column("title", Text, nullable=True),
     Column("model_route", Text, nullable=True),
-    # `migrations/versions/conversations/0005_conversation_pending_clarification.py`
+    # `migrations/versions/conversations/0005_conversation_clarification.py`
     # (ب-9) -- the file names the thread's last turn asked the user to choose
     # between. Written by BOTH `add` and `save`, unlike `space_id` above: this
     # is a value whose whole purpose is to change, and to change back, on

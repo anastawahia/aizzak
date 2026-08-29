@@ -47,7 +47,7 @@ changes without a migration; the read path is written to tolerate a name whose
 file has since gone (it simply resolves nothing and the turn is answered as an
 ordinary question).
 
-Revision ID: 0005_conversation_pending_clarification
+Revision ID: 0005_conversation_clarification
 Revises: 0004_conversation_space
 """
 
@@ -55,7 +55,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0005_conversation_pending_clarification"
+revision = "0005_conversation_clarification"
 down_revision = "0004_conversation_space"
 branch_labels = None
 depends_on = None

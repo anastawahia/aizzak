@@ -320,7 +320,7 @@ ruff format --check . && ruff check . && mypy src && lint-imports && pytest
 
 | # | الطبقة | ما صار |
 |---|---|---|
-| ١ | **هجرة** [`0005_conversation_pending_clarification.py`](../migrations/versions/conversations/0005_conversation_pending_clarification.py) | عمودُ `jsonb NULL` على `conversations.conversations` · بلا فهرسٍ وبلا CHECK وبلا تعبئةٍ رجعيّة |
+| ١ | **هجرة** [`0005_conversation_clarification.py`](../migrations/versions/conversations/0005_conversation_clarification.py) | عمودُ `jsonb NULL` على `conversations.conversations` · بلا فهرسٍ وبلا CHECK وبلا تعبئةٍ رجعيّة |
 | ٢ | **الكيان** [`entities.py`](../src/app/modules/conversations/domain/entities.py) | `pending_clarification: tuple[str, ...] = ()` + `expect_clarification` — **الضبطُ والمحوُ نداءٌ واحد** |
 | ٣ | **المستودع** [`sql_repository.py`](../src/app/modules/conversations/adapters/sql_repository.py) | عمودٌ يُكتب في `add` **و**`save` — لا استثناءَ `space_id`: قيمةٌ غايتُها أن تتغيّر وتعود |
 | ٤ | **السيم** [`ports/inbound.py`](../src/app/modules/conversations/ports/inbound.py) | قراءةٌ **رابعة** `pending_clarification` + أوّلُ **كتابةٍ** ليست رسالة: `expect_clarification` |
