@@ -71,13 +71,28 @@ can never describe two different corpora.
 **Answer measurements (retrieval plan §3.11/§4 row 17, ``P-29``, س-25 = أ):**
 ``run`` emits ONE ``rag_agent.answer`` record per turn — ``path`` ·
 ``retrieval_attempted`` · ``context_nodes`` · ``fallback`` · ``llm_ms`` ·
-``total_ms`` (see ``_log_answer``). ``llm_ms`` lives HERE and nowhere else:
-the knowledge module's own ``knowledge.retrieval`` record measures retrieval,
-but the provider stream is this agent's, and the three no-LLM branches below
-are the only place that can honestly report ``null`` for it. Nothing of the
-answer, the question or the documents is logged — counts and durations only
+``total_ms`` · ``error_type`` (see ``_log_answer``). ``llm_ms`` lives HERE and
+nowhere else: the knowledge module's own ``knowledge.retrieval`` record
+measures retrieval, but the provider stream is this agent's, and the no-LLM
+branches below are the only place that can honestly report ``null`` for it.
+Nothing of the answer, the question or the documents is logged — counts,
+durations, fixed path names and one exception CLASS name only
 (10-code-standards §10) — and none of it reaches the streaming contract,
 which still carries exactly ``token`` and ``final`` (س-25 = أ, plan §7).
+
+**The الموجة 1 guards (``docs/rag-agent-scenarios-implementation-plan.md``
+§3):** six gaps the scenario review found, all of them closed in this file and
+its test alone — no seam widened, no contract touched. ب-1 refuses to emit an
+empty ``final``, which the orchestrator would otherwise serialise into the
+user's thread as raw JSON. ب-2 wraps the corpus listing so a cosmetic header
+can no longer sink an answer that was already retrieved and paid for. ب-3 adds
+the fifth branch: a summarisation whose target could not be identified asks
+WHICH FILE — with the space's listing beneath it — instead of falling silently
+into the content route and apologising. ب-4أ turns a refused summary build
+from a technical error event into a neutral sentence. ب-5 makes a failing turn
+emit a record instead of a silence. ب-6 warns once when a turn runs with no
+space, the safe-but-silent degraded path (ق-7). Each carries its own ``path``
+name so none of them can hide inside a successful one.
 
 **Scope note (4.6):** the concrete ``deps`` (a ``ProviderResolver``-resolved
 ``ResolvedLLM``, the real ``KnowledgeRetrieval``) is wired by the orchestrator
@@ -93,15 +108,22 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 
 from app.agents.rag_agent.manifest import METADATA
 from app.agents.rag_agent.prompts import SYSTEM_PROMPT
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
-from app.framework.agent_runtime.deps_ports import RetrievedChunkView, RoutedAnswerView
+from app.framework.agent_runtime.deps_ports import (
+    KnowledgeAccess,
+    ResolvedLLM,
+    RetrievedChunkView,
+    RoutedAnswerView,
+)
 from app.framework.agent_runtime.source_label import format_context_block
-from app.framework.errors import AppError, ValidationError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
+from app.framework.types import Uuid
 
 _logger = get_logger(__name__)
 
@@ -129,6 +151,55 @@ _FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندا
 # (`SummaryRequested` → `BuildSummary`) and nothing here waits for it.
 _SUMMARY_QUEUED_EN = "A summary of that document is being prepared — it will be available shortly."
 _SUMMARY_QUEUED_AR = "جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل."
+
+# ب-3 (خطة الفجوات §3، ف-5) — the fifth branch's question: a summarisation
+# was asked and its TARGET is unknown. Two fixed sentences picked by the same
+# `_ARABIC_CHAR_RE` presence check every other sentence in this agent uses —
+# still one language mechanism, never a second one.
+#
+# It is a QUESTION, and that is the item: this case used to fall through to
+# the content route, retrieve nothing and end in the fallback apology, so the
+# most natural phrasing a user can reach for («لخّص لي هذا») produced the
+# least useful answer the agent has. An apology is not a form of this reply —
+# the agent knows exactly what was asked and is missing exactly one name.
+#
+# Unlike the receipt and the clarification, this one CARRIES the corpus
+# header (see `run`): those two already name files, this one names none, and
+# the space's listing is the menu that makes the question answerable.
+_SUMMARY_TARGET_EN = "Which file would you like me to summarise?"
+_SUMMARY_TARGET_AR = "أيّ ملفّ تريد تلخيصه؟"
+
+# ب-4أ (خطة الفجوات §3، ف-7) — what a refused summary build says. The module
+# raises `common.conflict` from TWO places under ONE code: a build already
+# running for this key, and a document that was never indexed and holds no
+# text to summarise at all. This agent cannot tell them apart, so the sentence
+# is written to be TRUE OF BOTH: «تعذّر البدء الآن» is honest either way,
+# where «ما زال قيد الإعداد» would be a flat lie on the second — nothing is
+# being prepared for an unindexed document, and nothing will be.
+#
+# It is deliberately temporary. ب-4ب (الموجة 3) classifies the reason inside
+# the module, where the distinction lives, and replaces this single neutral
+# sentence with two exact ones. Until then a neutral truth beats a precise
+# falsehood.
+_SUMMARY_BLOCKED_EN = (
+    "I couldn't start a summary of that file just now. If one is already being "
+    "prepared, it will reach you in this conversation when it is ready."
+)
+_SUMMARY_BLOCKED_AR = (
+    "تعذّر بدءُ تلخيص هذا الملفّ الآن. إن كان تلخيصٌ له قيد الإعداد فسيصلك في هذه المحادثة عند اكتماله."
+)
+
+# ب-3 — the module's `Intent.SUMMARIZE_DOC` value, as a LITERAL.
+#
+# Importing the enum would cross the line this agent's docstring and the
+# `agents-independent` contract both draw (ق-1), and this is precisely the
+# widening `RoutedAnswerView` was documented for: "`intent` is `str` here and
+# a `StrEnum` there… an agent comparing against a string literal is reading
+# the same value the module wrote". The copy is guarded by a drift test
+# (`test_the_agents_intent_literal_matches_the_modules_enum`) rather than by
+# hope: the test layer may import both sides, and that is where the two are
+# compared.
+_INTENT_SUMMARIZE_DOC = "summarize_doc"
 
 # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the clarification
 # question's opening line, again picked by the SAME `_ARABIC_CHAR_RE` check;
@@ -220,7 +291,89 @@ _PATH_SYNTHESIS = "synthesis"
 _PATH_FALLBACK = "fallback"
 _PATH_SUMMARY_RECEIPT = "summary_receipt"
 _PATH_CLARIFICATION = "clarification"
+# The four the الموجة 1 guards added. Each is its own name for the reason the
+# first four are: a path that folded into an existing one would stop being
+# countable, and every one of these exists because a case was invisible in the
+# measurements before it.
+#
+# `empty_completion` (ب-1) is the odd one and deliberately so — it is the ONLY
+# no-answer path that reports a real `llm_ms`, because the model was called and
+# did spend that time before returning nothing.
+# `summary_target_unknown` (ب-3) and `summary_conflict` (ب-4أ) never call it.
+# `error` (ب-5) is the exit that used to log nothing at all, which is why the
+# turn failure rate had to be inferred from missing lines rather than read.
+_PATH_EMPTY_COMPLETION = "empty_completion"
+_PATH_SUMMARY_TARGET_UNKNOWN = "summary_target_unknown"
+_PATH_SUMMARY_CONFLICT = "summary_conflict"
+_PATH_ERROR = "error"
 _MS_PER_SECOND = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class _FixedReply:
+    """A turn answered WITHOUT the model: one fixed sentence and the ``path``
+    that names which of the five such exits produced it.
+
+    The five (retrieval plan §3.4/§3.5/§3.3, plus ب-3 and ب-4أ of the gap
+    plan): a queued summary's receipt · the clarification question · a
+    summarisation whose target is unknown · a refused build · the trust-gate
+    fallback. They are one TYPE and not five branches-with-their-own-emitter
+    because they owe the identical two events on the identical contract (ق-4),
+    and the way to make that identical rather than merely intended is to give
+    them one emit site in ``_answer``.
+
+    ``citations`` is not a field: a sentence this agent wrote itself cites
+    nothing, on all five. ``fallback`` is ``True`` on exactly one — the trust
+    gate — because that flag is §3.11's measurement of the gate firing, not a
+    synonym for "no model was called".
+    """
+
+    text: str
+    path: str
+    fallback: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Synthesis:
+    """A turn that goes to the model: the prompt, and what the answer will be
+    described by.
+
+    ``chunks`` is carried for the citations and the ``context_nodes`` count;
+    ``query`` and ``corpus_header`` for the one case where a synthesis turn
+    still ends in a fixed sentence — ب-1's empty completion, which needs the
+    same apology and the same header the trust gate would have used.
+    """
+
+    binding: ResolvedLLM
+    query: str
+    messages: list[LlmMessage]
+    chunks: Sequence[RetrievedChunkView]
+    corpus_header: str | None
+
+
+@dataclass(slots=True)
+class _TurnRecord:
+    """The two facts ب-5's error record needs, and that only the turn's BODY
+    can learn: when the turn started, and whether retrieval was ever attempted.
+
+    ``run`` is a frame around ``_answer`` (see ``run``), so the ``except`` that
+    logs a failed turn sits one call OUTSIDE the function that discovers those
+    two things. A mutable carrier is how the frame reads what the body got as
+    far as learning — the alternative was indenting the whole body under a
+    ``try`` inside ``run``, which buys the same two values and costs the
+    function's readability.
+
+    ``retrieval_attempted`` starts ``False`` and MEANS it: a turn that failed
+    before it could ask (a blank query, an unbound LLM) genuinely attempted no
+    retrieval, so the default is the truth rather than a placeholder.
+
+    Not frozen, and it is the only mutable value this agent holds — for one
+    turn, on one stack, never shared. Everything else here stays the frozen
+    carrier the kernel's convention asks for.
+    """
+
+    started: float
+    retrieval_attempted: bool = False
 
 
 class RagAgent(BaseAgent):
@@ -234,12 +387,146 @@ class RagAgent(BaseAgent):
         return None
 
     async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
-        # Retrieval plan §3.11 (`P-29`) — the turn's clock, started before any
-        # work so `total_ms` covers routing, retrieval, the corpus listing and
-        # synthesis together. A request that RAISES (no LLM bound, blank
-        # input) emits no record: those are errors, and the error path already
-        # has its own reporting.
-        started = time.perf_counter()
+        """One turn, wrapped in the record that ب-5 (خطة الفجوات §3، ف-14) owed
+        the measurements.
+
+        The body is ``_answer``; this is only the frame around it. A turn that
+        RAISED used to emit no ``rag_agent.answer`` line at all, so the failure
+        rate of this agent had to be inferred from the ABSENCE of records
+        rather than read from their presence — and the reason a turn failed was
+        nowhere at all. This logs one record and RE-RAISES: the item is
+        measurement, not handling, and swallowing the exception would turn a
+        fault into a silence, which is the very thing it is fixing.
+
+        ``except Exception``, never ``BaseException``, and that IS the item's
+        substance. An abandoned generator ends in ``GeneratorExit`` and a
+        cancelled turn in ``CancelledError`` — both ``BaseException`` — so
+        neither is caught here, and the guarantee ``_log_answer`` documents
+        ("emitted from each of ``run``'s exits, never from a ``finally``")
+        survives verbatim: a stream the reader walked away from still logs
+        nothing. A ``finally`` would have broken it, which is why this is not
+        one.
+        """
+        turn = _TurnRecord(started=time.perf_counter())
+        try:
+            async for event in self._answer(req, turn):
+                yield event
+        except Exception as exc:
+            # Only the exception's CLASS NAME (ق-5): a message can carry a
+            # document id or a fragment of the question — `ConflictError`'s
+            # does — while a type name is a name and nothing else.
+            self._log_answer(
+                path=_PATH_ERROR,
+                retrieval_attempted=turn.retrieval_attempted,
+                context_nodes=0,
+                fallback=False,
+                llm_ms=None,
+                started=turn.started,
+                error_type=type(exc).__name__,
+            )
+            raise
+
+    async def _answer(self, req: AgentRequest, turn: _TurnRecord) -> AsyncIterator[AgentEvent]:
+        """The turn itself: decide what this reply IS (``_plan``), then emit it.
+
+        The split is not tidying. Five of this agent's exits answer WITHOUT
+        calling the model — a queued summary's receipt, a clarification
+        question, a summarisation with no known target (ب-3), a refused build
+        (ب-4أ) and the trust-gate fallback — and they all owe the identical
+        pair of events on the identical contract (ق-4: ``token`` then
+        ``final``, never a third type). Deciding in a plain function and
+        emitting in ONE place is what makes that identical rather than merely
+        intended: a new fixed reply is a new ``_FixedReply``, and there is no
+        second emit site for it to diverge from.
+
+        Only the synthesis path streams, so only it stays here.
+        """
+        plan = await self._plan(req, turn)
+        if isinstance(plan, _FixedReply):
+            # `llm_ms` is `None` and `context_nodes` is `0` for every one of
+            # these: nothing was synthesised and nothing was given to a model.
+            # `fallback` is `True` on exactly one of them — the trust gate —
+            # and the `path` is what tells the other four apart in the logs.
+            self._log_answer(
+                path=plan.path,
+                retrieval_attempted=turn.retrieval_attempted,
+                context_nodes=0,
+                fallback=plan.fallback,
+                llm_ms=None,
+                started=turn.started,
+            )
+            yield AgentEvent(type="token", data={"delta": plan.text})
+            yield AgentEvent(type="final", data={"text": plan.text, "citations": []})
+            return
+        params = LlmParams(model=plan.binding.model)
+        answer: list[str] = []
+        # `llm_ms` (retrieval plan §3.11) — the provider stream's WALL time,
+        # from the request to the last token consumed. Consumer backpressure
+        # is inside it, unavoidably: the tokens are yielded onward as they
+        # arrive (that is what streaming means), so no clock this agent can
+        # read separates the model's time from its reader's.
+        llm_started = time.perf_counter()
+        stream = plan.binding.provider.stream(plan.messages, params, plan.binding.api_key)
+        async for chunk in stream:
+            if chunk.delta:
+                answer.append(chunk.delta)
+                yield AgentEvent(type="token", data={"delta": chunk.delta})
+        llm_ms = _elapsed_ms(llm_started)
+        text = "".join(answer)
+        citations: list[dict[str, str | int | None]] = [self._citation(c) for c in plan.chunks]
+        path = _PATH_SYNTHESIS
+        # `strip()`, not `if not text`: a reply of whitespace alone is as empty
+        # as no reply at all, and reaches the orchestrator's JSON fallback by
+        # exactly the same route.
+        if not text.strip():
+            # ب-1 (خطة الفجوات §3، ف-4) — the model streamed nothing. An empty
+            # reply is not a different SHAPE of answer, it is the ABSENCE of
+            # one, and letting it through wrote a literal
+            # `{"citations": [...], "text": ""}` into the user's own thread:
+            # `_turn_content` (the orchestrator) finds neither text nor
+            # attachment on the `final` and serialises the payload as the
+            # message body. That JSON fallback is correct and deliberate for
+            # the media agents, whose `final` is structured and carries no text
+            # at all — this agent's is textual, and an empty text on it is a
+            # fault. The one who knows the difference is the agent, so the
+            # guard lives here and not in the orchestrator.
+            #
+            # It is treated exactly as "no chunks": the same trust-gate
+            # sentence and the same corpus header that branch would have
+            # carried, so what the user reads is one thing whether it was
+            # retrieval that fell silent or the model.
+            text = self._with_corpus(self._fallback_answer(plan.query), plan.corpus_header)
+            # An answer that was never written rests on nothing. Showing five
+            # sources beneath an apology tells the user the apology is sourced.
+            citations = []
+            # Its own path, never `synthesis` — and `llm_ms` stays MEASURED,
+            # because the model genuinely was called and genuinely spent that
+            # time. That pairing (a real duration on a no-answer path) is what
+            # makes this case countable instead of hiding inside a successful
+            # one. `fallback` stays `False`: that flag means the trust gate
+            # fired on zero chunks, and this turn HAD chunks — the path name is
+            # what separates the two.
+            path = _PATH_EMPTY_COMPLETION
+            yield AgentEvent(type="token", data={"delta": text})
+        self._log_answer(
+            path=path,
+            retrieval_attempted=turn.retrieval_attempted,
+            context_nodes=len(plan.chunks),
+            fallback=False,
+            llm_ms=llm_ms,
+            started=turn.started,
+        )
+        yield AgentEvent(type="final", data={"text": text, "citations": citations})
+
+    async def _plan(self, req: AgentRequest, turn: _TurnRecord) -> _FixedReply | _Synthesis:
+        """Route the question and decide what this turn answers WITH — a fixed
+        sentence, or a prompt for the model.
+
+        Everything that can end a turn without the LLM returns a
+        ``_FixedReply`` from here; the one path that streams returns a
+        ``_Synthesis``. No event is emitted in this function, which is what
+        lets the five fixed replies share one emit site in ``_answer``.
+        """
         query = self._query(req)
         binding = self.deps.llm
         if binding is None:
@@ -258,8 +545,8 @@ class RagAgent(BaseAgent):
         scope = self.deps.knowledge_scope or None
         # A LOCAL binding, not repeated `self.deps.knowledge` reads: mypy
         # narrows `is not None` reliably only against a plain local variable,
-        # and this function now needs that narrowing twice (retrieval, then
-        # the corpus header below) rather than once.
+        # and this function needs that narrowing twice (retrieval, then the
+        # corpus header below) rather than once.
         knowledge = self.deps.knowledge
         # س-32 (owner decision 2026-08-26) — the space this turn lives in, put
         # on the bundle by the orchestrator from the turn's own thread. A LOCAL
@@ -277,6 +564,7 @@ class RagAgent(BaseAgent):
         # path (no conversations seam) or for a thread that has since gone, and
         # both of those are wiring facts, not something a caller can ask for.
         space_id = self.deps.space_id
+        self._warn_if_unscoped(req, knowledge, space_id)
         # Retrieval plan §3.3/§4 row 5 (`P-33`) — this flag is what tells the
         # trust gate below apart from the "knowledge is optional-degrading"
         # mode just above: a caller with NO knowledge seam wired at all never
@@ -289,45 +577,64 @@ class RagAgent(BaseAgent):
         # A seam wired but no space known is "never attempted" too, and for the
         # same reason it is for an absent seam: nothing was searched, so there
         # is no zero-chunk result for the gate to speak about.
-        retrieval_attempted = knowledge is not None and space_id is not None
-        routed: RoutedAnswerView | None = (
-            # Retrieval plan §3.4/§4 row 11 (`P-21`, س-16 = أ) — ONE call, and
-            # it is `answer`, not `retrieve`: the question is classified and
-            # dispatched INSIDE the knowledge module, so this agent still
-            # imports nothing and still reaches everything through
-            # `self.deps` (ح-11, §6 risk 7). The arguments are the ones
-            # `retrieve` took, unchanged.
-            #
-            # `k` is NOT passed (retrieval plan §4 row 18, `P-40`, س-24 = أ).
-            # It used to be `_TOP_K = 5`, a retrieval tuning number held by an
-            # agent — the one thing ح-11 says this agent does not do, and the
-            # one place `Settings` could never reach because an agent reads no
-            # configuration and imports nothing. Omitting it asks the module
-            # for the DEPLOYMENT's configured `k`
-            # (`Settings.retrieval.default_k`), which is the same 5 today and
-            # is now movable without touching this file.
-            #
-            # ✅ Spaces plan step 8, closed by س-32: the space now arrives on
-            # `AgentDeps` and is named here. It was the second of the two call
-            # sites the port's docstring listed as owing one; `POST
-            # /knowledge/search` was the first.
-            await knowledge.answer(
-                self.ctx,
-                query,
-                file_ids=scope,
-                space_id=space_id,
-                # `F-7` — the thread this turn belongs to, passed through and
-                # never read here. A SUMMARIZE_DOC route queues a build that
-                # finishes long after this generator has returned, and this is
-                # what lets the finished text reach the thread instead of
-                # waiting for someone to poll the summary route. `None` on a
-                # turn that opens no thread is a real value, and the module
-                # reads it as "nowhere to deliver".
-                conversation_id=req.conversation_id,
-            )
-            if knowledge is not None and space_id is not None
-            else None
-        )
+        #
+        # It is written onto `turn` rather than kept as a local because ب-5's
+        # error record is emitted one frame up, in `run`, out of whatever this
+        # turn had managed to learn before it failed.
+        turn.retrieval_attempted = knowledge is not None and space_id is not None
+        routed: RoutedAnswerView | None = None
+        if knowledge is not None and space_id is not None:
+            try:
+                # Retrieval plan §3.4/§4 row 11 (`P-21`, س-16 = أ) — ONE call,
+                # and it is `answer`, not `retrieve`: the question is classified
+                # and dispatched INSIDE the knowledge module, so this agent
+                # still imports nothing and still reaches everything through
+                # `self.deps` (ح-11, §6 risk 7). The arguments are the ones
+                # `retrieve` took, unchanged.
+                #
+                # `k` is NOT passed (retrieval plan §4 row 18, `P-40`, س-24 =
+                # أ). It used to be `_TOP_K = 5`, a retrieval tuning number
+                # held by an agent — the one thing ح-11 says this agent does
+                # not do, and the one place `Settings` could never reach
+                # because an agent reads no configuration and imports nothing.
+                # Omitting it asks the module for the DEPLOYMENT's configured
+                # `k` (`Settings.retrieval.default_k`), which is the same 5
+                # today and is now movable without touching this file.
+                #
+                # ✅ Spaces plan step 8, closed by س-32: the space now arrives
+                # on `AgentDeps` and is named here. It was the second of the
+                # two call sites the port's docstring listed as owing one;
+                # `POST /knowledge/search` was the first.
+                routed = await knowledge.answer(
+                    self.ctx,
+                    query,
+                    file_ids=scope,
+                    space_id=space_id,
+                    # `F-7` — the thread this turn belongs to, passed through and
+                    # never read here. A SUMMARIZE_DOC route queues a build that
+                    # finishes long after this generator has returned, and this is
+                    # what lets the finished text reach the thread instead of
+                    # waiting for someone to poll the summary route. `None` on a
+                    # turn that opens no thread is a real value, and the module
+                    # reads it as "nowhere to deliver".
+                    conversation_id=req.conversation_id,
+                )
+            except ConflictError:
+                # ب-4أ (خطة الفجوات §3، ف-7) — `RequestSummary` refuses a second
+                # build for a key one is already running, and that refusal used
+                # to travel up as an UNTRANSLATED `AppError`: the executor
+                # rendered it as a technical error event, so a user who asked
+                # for a summary twice was shown a fault instead of an answer.
+                # The original decision (wording belongs to whoever displays)
+                # is right — and the thing displaying here IS this agent.
+                #
+                # `ConflictError` ALONE, never the general `AppError`: a broken
+                # store is not a message for a user, and a `NotFoundError` on a
+                # deleted document is a different state deserving a different
+                # sentence. The catch wraps THIS CALL only, never the body —
+                # see `_fetch_corpus_header` for the same rule stated for the
+                # one other call that is allowed to fail quietly.
+                return _FixedReply(self._summary_blocked_answer(query), _PATH_SUMMARY_CONFLICT)
         if routed is not None and routed.summary_job_id is not None:
             # The SUMMARIZE_DOC route ran and queued a build (retrieval plan
             # §3.4). There is nothing to synthesise and nothing to cite: the
@@ -344,18 +651,7 @@ class RagAgent(BaseAgent):
             # receipt for an action on a document the caller ALREADY named;
             # listing the workspace's files back at them would answer a
             # question nobody asked.
-            receipt = self._summary_queued_answer(query)
-            self._log_answer(
-                path=_PATH_SUMMARY_RECEIPT,
-                retrieval_attempted=retrieval_attempted,
-                context_nodes=0,
-                fallback=False,
-                llm_ms=None,
-                started=started,
-            )
-            yield AgentEvent(type="token", data={"delta": receipt})
-            yield AgentEvent(type="final", data={"text": receipt, "citations": []})
-            return
+            return _FixedReply(self._summary_queued_answer(query), _PATH_SUMMARY_RECEIPT)
         if routed is not None and routed.clarification_options:
             # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the module
             # resolved the question's file name to SEVERAL documents (or to
@@ -375,43 +671,42 @@ class RagAgent(BaseAgent):
             # reason: this answer already names files, and appending the
             # whole workspace listing under a question about three specific
             # candidates would bury the choice it is asking the user to make.
-            clarification = self._clarification_question(query, routed.clarification_options)
-            self._log_answer(
-                path=_PATH_CLARIFICATION,
-                retrieval_attempted=retrieval_attempted,
-                context_nodes=0,
-                fallback=False,
-                llm_ms=None,
-                started=started,
-            )
-            yield AgentEvent(type="token", data={"delta": clarification})
-            yield AgentEvent(type="final", data={"text": clarification, "citations": []})
-            return
-        chunks: Sequence[RetrievedChunkView] = () if routed is None else routed.chunks
+            question = self._clarification_question(query, routed.clarification_options)
+            return _FixedReply(question, _PATH_CLARIFICATION)
         # Retrieval plan §3.6/§4 row 6 (`P-36`, س-23 = ج) — the corpus header
         # is fetched whenever retrieval was attempted at all, so it is ready
-        # for BOTH branches below: the trust-gate fallback (prepended to the
-        # user-visible text) and the normal synthesis path (prepended to the
-        # system prompt via `_messages`). No knowledge seam wired at all — or,
-        # since س-32, no space known — means no retrieval was attempted, and
-        # there is equally no corpus to describe: `corpus_header` stays `None`
-        # and `_messages` renders exactly as it did before this step.
-        corpus_header: str | None = None
-        if knowledge is not None and space_id is not None:
-            # No `limit` named, for the reason no `k` is named on `answer`
-            # above and in the same shape (plan row 18, `P-40`): the display
-            # cap is the DEPLOYMENT's (`Settings.retrieval.max_corpus_names`),
-            # resolved inside the module, and this agent holds no number.
+        # for BOTH remaining branches: the trust-gate fallback (prepended to
+        # the user-visible text) and the normal synthesis path (prepended to
+        # the system prompt via `_messages`).
+        #
+        # ب-3 moved this line ABOVE the summarisation-without-a-target branch
+        # that follows it. There the listing is not decoration but the ANSWER —
+        # it is the menu the user picks a file from — so the fetch has to have
+        # happened by the time that branch runs. The two branches that must NOT
+        # see a header (the receipt and the clarification) return above this
+        # line, so the move changed nothing for them: they still never fetch one.
+        corpus_header = await self._fetch_corpus_header(query, knowledge, space_id)
+        if self._is_targetless_summary(routed):
+            # ب-3 (خطة الفجوات §3، ف-5) — the fifth branch. «لخّص لي هذا»
+            # ("summarise this for me") is classified as a summarisation
+            # correctly, matches no file name, and then falls SILENTLY through
+            # to the content route, where it retrieves nothing and ends in «لا
+            # أملك معلومات كافية». The most natural phrasing a user can reach
+            # for produced the least useful answer the agent has.
             #
-            # The `space_id` IS named, and the header it renders is now that
-            # space's corpus rather than the workspace's (س-32). Same condition
-            # as the retrieval above, deliberately: the header exists to tell a
-            # user what the fallback sentence could not answer FROM, so a header
-            # listing files the search was never allowed to touch would be worse
-            # than none — it would name documents and then refuse to use them.
-            corpus = await knowledge.list_document_names(self.ctx, space_id=space_id)
-            corpus_header = self._corpus_header(query, corpus.names, corpus.total)
-        if retrieval_attempted and not chunks:
+            # A summarisation was asked and its target is unknown: the honest
+            # reply is the QUESTION, and an apology is not one of its forms —
+            # the agent knows exactly what was requested and is missing exactly
+            # one name, a name the user can supply in a word.
+            #
+            # The header IS attached here, unlike on the two branches above,
+            # and their reason for withholding it does not apply: they already
+            # name files, this one names none, and the space's listing is the
+            # only material that turns the question into something answerable.
+            target = self._with_corpus(self._summary_target_question(query), corpus_header)
+            return _FixedReply(target, _PATH_SUMMARY_TARGET_UNKNOWN)
+        chunks: Sequence[RetrievedChunkView] = () if routed is None else routed.chunks
+        if turn.retrieval_attempted and not chunks:
             # The trust gate + honest fallback (retrieval plan §3.3, the "most
             # dangerous gap in the whole file": before this branch existed the
             # path fell through to bare `SYSTEM_PROMPT` with no context, and
@@ -423,62 +718,147 @@ class RagAgent(BaseAgent):
             # chunks" stays an accepted open risk until an evaluation set
             # exists (§6 risk 2).
             #
-            # The LLM provider is NEVER called on this branch: `fallback` is a
+            # The LLM provider is NEVER called on this branch: the text is a
             # fixed local string picked by `_fallback_answer`, so there is
             # nothing in flight the model could improvise an answer for. Row 6
             # (`P-36`, س-23 = ج — "the header always: in the normal path AND
-            # in the fallback path") prepends the corpus-awareness header to
-            # this SAME `fallback` string before it is yielded — the honest
-            # "I don't have enough information" sentence, followed by what the
-            # workspace actually holds, so a question like «كم ملفًا لديك؟»
-            # gets a genuinely useful answer even though the LLM never runs.
-            fallback = self._fallback_answer(query)
-            if corpus_header is not None:
-                fallback = f"{fallback}\n\n{corpus_header}"
-            # The one record whose `fallback` is `True` (retrieval plan
-            # §3.11's own measurement): the trust gate fired, and `llm_ms` is
-            # `null` because this branch never calls the model. The knowledge
-            # module logged `fallback: true` from its side of the same turn
-            # too, with the stage counts that say WHY the chunks were zero.
-            self._log_answer(
-                path=_PATH_FALLBACK,
-                retrieval_attempted=retrieval_attempted,
-                context_nodes=0,
-                fallback=True,
-                llm_ms=None,
-                started=started,
+            # in the fallback path") puts the corpus-awareness header beneath
+            # that SAME string — the honest "I don't have enough information"
+            # sentence, followed by what the space actually holds, so a
+            # question like «كم ملفًا لديك؟» gets a genuinely useful answer
+            # even though the LLM never runs.
+            #
+            # This is the one `_FixedReply` whose `fallback` is `True`
+            # (retrieval plan §3.11's own measurement): the trust gate fired.
+            # The knowledge module logged `fallback: true` from its side of the
+            # same turn too, with the stage counts that say WHY chunks were zero.
+            apology = self._with_corpus(self._fallback_answer(query), corpus_header)
+            return _FixedReply(apology, _PATH_FALLBACK, fallback=True)
+        return _Synthesis(
+            binding=binding,
+            query=query,
+            messages=self._messages(query, chunks, corpus_header),
+            chunks=chunks,
+            corpus_header=corpus_header,
+        )
+
+    @staticmethod
+    def _is_targetless_summary(routed: RoutedAnswerView | None) -> bool:
+        """ب-3 (خطة الفجوات §3، ف-5) — was this a summarisation whose TARGET
+        the module could not identify?
+
+        Three conditions, and each one excludes a route that already has its
+        own answer: the intent was a summarisation, no build was queued (that
+        is the receipt), and no candidates came back (that is the clarification
+        question). What is left is the case that used to fall silently through
+        to the content route.
+
+        The intent is matched as a STRING LITERAL rather than by importing
+        ``Intent`` (ق-1) — precisely the widening ``RoutedAnswerView``
+        documents: "``intent`` is ``str`` here and a ``StrEnum`` there… an
+        agent comparing against a string literal is reading the same value the
+        module wrote". The copy is held to the enum by a drift test
+        (``test_the_agents_intent_literal_matches_the_modules_enum``), which
+        lives in the test layer because that is the only layer allowed to
+        import both sides.
+        """
+        return (
+            routed is not None
+            and routed.intent == _INTENT_SUMMARIZE_DOC
+            and routed.summary_job_id is None
+            and not routed.clarification_options
+        )
+
+    @staticmethod
+    def _warn_if_unscoped(
+        req: AgentRequest, knowledge: KnowledgeAccess | None, space_id: Uuid | None
+    ) -> None:
+        """ب-6 (خطة الفجوات §3، ف-9) — one warning for a turn that runs with a
+        knowledge seam wired and NO space known.
+
+        That path is safe by construction (ق-7: an unknown boundary is stayed
+        inside, never widened) and it was also completely SILENT: the model
+        answers alone, with no retrieval, no citations and no corpus header —
+        the exact shape of answer the trust gate exists to prevent, arriving
+        through a different door. ``retrieval_attempted=False`` cannot tell it
+        apart from "no seam wired at all", and those are two different
+        diagnoses.
+
+        A warning and not a refusal. ق-أ (§9 of the plan) records why: refusing
+        the turn is a VISIBLE behaviour change on a path whose frequency nobody
+        has measured yet, so the order is illuminate → measure → decide, with a
+        written re-open criterion instead of a guess.
+
+        The ``conversation_id`` is an IDENTIFIER, not content (ق-5): it is what
+        makes one warning traceable to one thread without putting a single word
+        of the question into a log.
+        """
+        if knowledge is not None and space_id is None:
+            _logger.warning(
+                "rag_agent.unscoped_turn",
+                extra={"conversation_id": req.conversation_id},
             )
-            yield AgentEvent(type="token", data={"delta": fallback})
-            yield AgentEvent(type="final", data={"text": fallback, "citations": []})
-            return
-        messages = self._messages(query, chunks, corpus_header)
-        params = LlmParams(model=binding.model)
-        answer: list[str] = []
-        # `llm_ms` (retrieval plan §3.11) — the provider stream's WALL time,
-        # from the request to the last token consumed. Consumer backpressure
-        # is inside it, unavoidably: the tokens are yielded onward as they
-        # arrive (that is what streaming means), so no clock this agent can
-        # read separates the model's time from its reader's.
-        llm_started = time.perf_counter()
-        async for chunk in binding.provider.stream(messages, params, binding.api_key):
-            if chunk.delta:
-                answer.append(chunk.delta)
-                yield AgentEvent(type="token", data={"delta": chunk.delta})
-        self._log_answer(
-            path=_PATH_SYNTHESIS,
-            retrieval_attempted=retrieval_attempted,
-            context_nodes=len(chunks),
-            fallback=False,
-            llm_ms=_elapsed_ms(llm_started),
-            started=started,
-        )
-        yield AgentEvent(
-            type="final",
-            data={
-                "text": "".join(answer),
-                "citations": [self._citation(c) for c in chunks],
-            },
-        )
+
+    async def _fetch_corpus_header(
+        self, query: str, knowledge: KnowledgeAccess | None, space_id: Uuid | None
+    ) -> str | None:
+        """This space's corpus-awareness header (retrieval plan §3.6/§4 row 6,
+        ``P-36``, س-23 = ج), or ``None`` when there is none to build — and
+        since ب-2, also when building it FAILED.
+
+        No ``limit`` is named, for the reason no ``k`` is named on ``answer``
+        and in the same shape (plan row 18, ``P-40``): the display cap is the
+        DEPLOYMENT's (``Settings.retrieval.max_corpus_names``), resolved inside
+        the module, and this agent holds no number. The ``space_id`` IS named
+        (س-32): the header exists to tell a user what the fallback sentence
+        could not answer FROM, so one listing files the search was never
+        allowed to touch would be worse than none — it would name documents and
+        then refuse to use them.
+
+        **ب-2 (خطة الفجوات §3، ف-10) — the guard.** This call had none, and it
+        runs BEFORE synthesis, so a transient fault in the file seam sank the
+        whole turn: a perfectly good retrieval, already paid for, thrown away
+        for a header whose only job is to phrase the answer better. ``None`` is
+        a state both callers already know and handle, so the failure degrades
+        to exactly what a turn looked like before the header existed — not to a
+        new branch.
+
+        ⚠️ The wrap is on THIS call and nowhere else. ``answer`` is deliberately
+        left bare (س-28): with no context there is no answer, and catching a
+        retrieval failure would produce a confident reply from the model's own
+        parametric knowledge with no citations — precisely what the trust gate
+        was built to prevent.
+
+        ``Exception`` rather than ``AppError``: what is expected here is a
+        network fault or a driver timeout, and most of those are not
+        ``AppError``s. It does not catch ``CancelledError`` (a
+        ``BaseException``), so cancellation still propagates untouched. And the
+        record is a WARNING, not an info line — a dependency that failed belongs
+        on a dashboard even when the user never notices it.
+        """
+        if knowledge is None or space_id is None:
+            return None
+        try:
+            corpus = await knowledge.list_document_names(self.ctx, space_id=space_id)
+        except Exception as exc:
+            _logger.warning("rag_agent.corpus_header_unavailable", exc_info=exc)
+            return None
+        return self._corpus_header(query, corpus.names, corpus.total)
+
+    @staticmethod
+    def _with_corpus(text: str, corpus_header: str | None) -> str:
+        """``text`` with the corpus-awareness header beneath it, or ``text``
+        alone when there is no header (retrieval plan §3.6/§4 row 6).
+
+        One spelling of the join for the three user-visible paths that carry it
+        — the trust-gate fallback, the empty completion (ب-1) and the
+        targetless summarisation (ب-3) — for the reason ``_corpus_header``
+        itself is one builder: three call sites spelling their own separator is
+        three sentences waiting to drift apart. The normal synthesis path joins
+        it into the SYSTEM prompt instead, and that spelling lives in
+        ``_messages``, where the reader is a model rather than a person.
+        """
+        return text if corpus_header is None else f"{text}\n\n{corpus_header}"
 
     @staticmethod
     def _log_answer(
@@ -489,27 +869,43 @@ class RagAgent(BaseAgent):
         fallback: bool,
         llm_ms: int | None,
         started: float,
+        error_type: str | None = None,
     ) -> None:
         """The turn's one structured record (retrieval plan §3.11/§4 row 17,
-        ``P-29``, س-25 = أ) — emitted from each of ``run``'s four exits,
-        never from a ``finally``: an async generator abandoned mid-stream
-        would otherwise log a turn that never finished, at whatever moment
-        the event loop happened to close it.
+        ``P-29``, س-25 = أ) — emitted from each of ``run``'s exits, never
+        from a ``finally``: an async generator abandoned mid-stream would
+        otherwise log a turn that never finished, at whatever moment the
+        event loop happened to close it. ب-5 added the eighth exit (the
+        error path) and kept that guarantee by catching ``Exception``, which
+        ``GeneratorExit`` and ``CancelledError`` are not.
 
         ``llm_ms is None`` means the model was NEVER CALLED, which is a real
         and frequent outcome here (a queued summary, a clarification
-        question, the honest fallback) — never "we forgot to measure". The
-        pair ``retrieval_attempted`` + ``fallback`` separates the two ways a
-        turn can carry no context: no knowledge seam wired at all (the
+        question, a summarisation with no known target, a blocked build, the
+        honest fallback) — never "we forgot to measure". The one place a
+        ``path`` reports no answer WITH a real ``llm_ms`` is
+        ``empty_completion`` (ب-1): the model ran, spent that time and
+        returned nothing.
+
+        The pair ``retrieval_attempted`` + ``fallback`` separates the two
+        ways a turn can carry no context: no knowledge seam wired at all (the
         optional-degrading mode — attempted ``False``), versus a real
         retrieval that came back empty (attempted ``True``, fallback
         ``True``).
 
-        Every field is a count, a flag, a duration or a fixed path name. The
-        question, the answer text, the file names and the chunk text are all
-        user content and none of them is here (10-code-standards §10); the
-        chunk IDS that make a retrieval traceable are logged one layer down,
-        by the knowledge module, where they are read from.
+        ``error_type`` (ب-5, ف-14) is the exception's CLASS NAME on the error
+        path and ``None`` everywhere else — present on every record for
+        ``llm_ms``'s reason: a field that is always there and sometimes null
+        is readable, one that appears only sometimes is not. The class name
+        and never the message: ``ConflictError``'s message carries a document
+        id, and ق-5 keeps ids and user content out of this record entirely.
+
+        Every field is a count, a flag, a duration, a fixed path name or a
+        type name. The question, the answer text, the file names and the
+        chunk text are all user content and none of them is here
+        (10-code-standards §10); the chunk IDS that make a retrieval
+        traceable are logged one layer down, by the knowledge module, where
+        they are read from.
         """
         _logger.info(
             "rag_agent.answer",
@@ -520,6 +916,7 @@ class RagAgent(BaseAgent):
                 "fallback": fallback,
                 "llm_ms": llm_ms,
                 "total_ms": _elapsed_ms(started),
+                "error_type": error_type,
             },
         )
 
@@ -556,6 +953,33 @@ class RagAgent(BaseAgent):
         exists to prevent).
         """
         return _SUMMARY_QUEUED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_QUEUED_EN
+
+    @staticmethod
+    def _summary_target_question(query: str) -> str:
+        """The targetless-summarisation question (ب-3, ف-5) — one of two fixed
+        sentences, picked by the same ``_ARABIC_CHAR_RE`` presence check
+        ``_fallback_answer`` uses.
+
+        It names no file, because none was resolved — the same rule
+        ``_summary_queued_answer`` keeps. The difference from
+        ``_clarification_question`` is that there the module handed over a
+        SHORTLIST it refused to choose from, and here it matched nothing at
+        all: the caller ``run`` answers that by attaching the space's corpus
+        header beneath this line, so the user has the menu without this
+        sentence ever asserting a name.
+        """
+        return _SUMMARY_TARGET_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_TARGET_EN
+
+    @staticmethod
+    def _summary_blocked_answer(query: str) -> str:
+        """The refused-build sentence (ب-4أ, ف-7) — one of two fixed
+        sentences, picked by the same ``_ARABIC_CHAR_RE`` presence check.
+
+        Neutral by construction: see the ``_SUMMARY_BLOCKED_*`` strings for
+        why one error code covering two different states forces a sentence
+        true of both, and which item replaces it with two exact ones.
+        """
+        return _SUMMARY_BLOCKED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_BLOCKED_EN
 
     @staticmethod
     def _clarification_question(query: str, options: Sequence[str]) -> str:

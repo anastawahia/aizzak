@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
+from app.agents.orchestrator import _turn_content
 from app.agents.rag_agent import agent as agent_module
 from app.agents.rag_agent.agent import RagAgent
 from app.framework.agent_runtime import (
@@ -27,11 +28,12 @@ from app.framework.agent_runtime import (
     ResolvedLLM,
 )
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import AppError, ValidationError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability.logging import JsonFormatter
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.modules.knowledge.application.retrieval import RetrievalResult
+from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
 
 # --------------------------------------------------------------------------- #
@@ -130,11 +132,30 @@ class FakeKnowledge:
         document_total: int | None = None,
         summary_job_id: str | None = None,
         clarification_options: Sequence[str] = (),
+        routed_intent: str | None = None,
+        answer_error: Exception | None = None,
+        names_error: Exception | None = None,
     ) -> None:
         self._chunks = chunks
         self._document_names = FakeDocumentNames(document_names, document_total)
         self._summary_job_id = summary_job_id
         self._clarification_options = clarification_options
+        # ب-3 (خطة الفجوات §3، ف-5) — the intent the module REPORTS on the
+        # route that returned no job and no candidates. `None` keeps the
+        # pre-existing `"content"`, so every construction above still means
+        # what it did; `"summarize_doc"` is the case the fifth branch exists
+        # for — a summarisation whose target the module could not identify,
+        # which used to fall silently through to the content route.
+        self._routed_intent = routed_intent
+        # ب-4أ / ب-2 / ب-5 — what each of the two seam calls does INSTEAD of
+        # answering. A raising dependency is the entire subject of those three
+        # items, and the difference between them is which call fails and
+        # whether the turn survives it: `answer` raising `ConflictError` is a
+        # sentence (ب-4أ), `answer` raising anything else is still a failed
+        # turn (the containing guard), and `list_document_names` raising is
+        # never allowed to sink the answer at all (ب-2).
+        self._answer_error = answer_error
+        self._names_error = names_error
         # `k` is `int | None` since retrieval plan §4 row 18 (`P-40`): the
         # agent stopped naming one, so what this records is a `None` that
         # means "the deployment's configured `k`". Recording it rather than
@@ -189,6 +210,10 @@ class FakeKnowledge:
         self.calls.append((question, k, None if file_ids is None else tuple(file_ids)))
         self.spaces.append(space_id)
         self.threads.append(conversation_id)
+        # Recorded BEFORE it raises: the call was made, and a test about a
+        # failing seam still wants to see that the agent asked.
+        if self._answer_error is not None:
+            raise self._answer_error
         if self._summary_job_id is not None:
             return FakeRoutedAnswer("summarize_doc", (), self._summary_job_id)
         if self._clarification_options:
@@ -196,7 +221,7 @@ class FakeKnowledge:
             # answer: the intent is reported as the summarisation it was, no
             # job was queued, and no chunks came back either.
             return FakeRoutedAnswer("summarize_doc", (), None, self._clarification_options)
-        return FakeRoutedAnswer("content", self._chunks, None)
+        return FakeRoutedAnswer(self._routed_intent or "content", self._chunks, None)
 
     async def list_document_names(
         self, ctx: ExecutionContext, *, space_id: str, limit: int | None = None
@@ -207,6 +232,11 @@ class FakeKnowledge:
         # one space, so a header taken from a different space than the answer
         # would be the leak in its other costume.
         self.spaces.append(space_id)
+        # Recorded first, for `answer`'s reason: ب-2's whole claim is that the
+        # listing was ATTEMPTED and its failure absorbed, which an assertion
+        # can only see if the attempt is logged before it raises.
+        if self._names_error is not None:
+            raise self._names_error
         return self._document_names
 
 
@@ -250,6 +280,9 @@ def make_deps(
     summary_job_id: str | None = None,
     clarification_options: Sequence[str] = (),
     space_id: str | None = SPACE,
+    routed_intent: str | None = None,
+    answer_error: Exception | None = None,
+    names_error: Exception | None = None,
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
@@ -258,6 +291,9 @@ def make_deps(
         document_total=document_total,
         summary_job_id=summary_job_id,
         clarification_options=clarification_options,
+        routed_intent=routed_intent,
+        answer_error=answer_error,
+        names_error=names_error,
     )
     deps = AgentDependencies(
         llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"),
@@ -1256,3 +1292,505 @@ async def test_the_prompt_never_asks_the_model_to_reproduce_the_source_label() -
     assert "section" in prompt
     # And the failure itself is refused outright.
     assert "never reply with a source label alone" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-1 — the empty-completion guard (خطة الفجوات §3، ف-4، س-8)       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_an_empty_completion_falls_back_instead_of_emitting_empty_text() -> None:
+    """The bug the user SEES: the provider streams nothing, the `final` carries
+    `text: ""`, and the orchestrator — finding neither text nor attachment —
+    serialises the whole payload into the thread as raw JSON.
+
+    An empty reply is not a different shape of answer; it is the absence of
+    one. It is treated exactly as "no chunks": the same honest sentence the
+    trust gate would have used."""
+    deps, _knowledge, llm = make_deps(
+        deltas=[], chunks=[FakeChunk("c1", "Paris is the capital of France.")]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert len(llm.stream_calls) == 1  # the model WAS called; it said nothing
+    assert [e.type for e in events] == ["token", "final"]
+    final = events[-1]
+    assert final.data["text"].strip()
+    assert "enough information" in final.data["text"]
+    assert events[0].data["delta"] == final.data["text"]
+
+
+async def test_an_empty_completion_carries_no_citations() -> None:
+    """An answer that was never written rests on nothing. Showing the five
+    sources the retrieval found beneath an apology tells the user the apology
+    is sourced — which is the trust failure this agent's whole citation
+    surface exists to prevent, arriving from the other end."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=[], chunks=[FakeChunk("c1", "text", file_name="a.pdf", page_number=3)]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_whitespace_only_completion_is_treated_as_empty() -> None:
+    """`strip()`, not `if not text`: a reply of blanks reaches the
+    orchestrator's JSON fallback by exactly the route an empty one does, and
+    reads to a human as exactly the same nothing."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=["   ", "\n "], chunks=[FakeChunk("c1", "Paris is the capital.")]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    final = events[-1]
+    assert "enough information" in final.data["text"]
+    assert final.data["citations"] == []
+
+
+async def test_an_empty_completion_logs_its_own_path_with_a_measured_llm_ms(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Its own `path`, and the ONE combination no other exit produces: a real
+    `llm_ms` on a turn that answered nothing. The model was called and did
+    spend that time — which is exactly what makes this case countable instead
+    of hiding inside `synthesis`.
+
+    `fallback` stays `False`: that flag measures the trust gate firing on zero
+    chunks, and this turn HAD chunks. The path name is what separates them."""
+    deps, _knowledge, _llm = make_deps(deltas=[], chunks=[FakeChunk("c1", "text")])
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    record = _answer_record(caplog)
+    assert record.path == "empty_completion"
+    assert isinstance(record.llm_ms, int)
+    assert record.llm_ms >= 0
+    assert record.fallback is False
+    assert record.context_nodes == 1
+
+
+async def test_an_empty_completion_never_reaches_the_orchestrators_json_fallback() -> None:
+    """The acceptance criterion, asserted against the actual code that produced
+    the symptom: `_turn_content` is what writes a conversation message out of a
+    `final` payload, and its JSON branch is correct and deliberate for the
+    MEDIA agents (whose `final` is structured and carries no text at all).
+
+    This agent's payload is textual, so reaching that branch is the fault. No
+    input may take it there."""
+    deps, _knowledge, _llm = make_deps(deltas=[], chunks=[FakeChunk("c1", "text")])
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    text, attachments = _turn_content(events[-1].data)
+    assert attachments == ()
+    assert text == events[-1].data["text"]
+    assert not text.lstrip().startswith("{")
+    assert "citations" not in text
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-2 — the corpus-listing guard (خطة الفجوات §3، ف-10، س-27)       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_failing_corpus_listing_does_not_sink_a_good_answer() -> None:
+    """The listing runs BEFORE synthesis and had no guard, so a transient fault
+    in the file seam threw away a retrieval that had already succeeded and
+    already been paid for — for the sake of a header whose only job is to
+    phrase the answer better."""
+    deps, knowledge, llm = make_deps(
+        deltas=["Paris"],
+        chunks=[FakeChunk("c1", "Paris is the capital of France.")],
+        document_names=["a.pdf", "b.pdf"],
+        names_error=RuntimeError("document store unreachable"),
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert knowledge.name_limit_calls == [None]  # it was attempted...
+    assert len(llm.stream_calls) == 1  # ...and the turn carried on regardless
+    assert events[-1].data["text"] == "Paris"
+    assert events[-1].data["citations"] != []
+
+
+async def test_a_failing_corpus_listing_degrades_the_header_to_absent() -> None:
+    """`corpus_header = None` is a state both call sites already knew, so the
+    failure degrades to what this turn looked like BEFORE the header existed —
+    not to some new third shape. Asserted on the composed system message: the
+    prompt resumes at `Context:` with nothing spliced between."""
+    deps, _knowledge, llm = make_deps(
+        deltas=["Paris"],
+        chunks=[FakeChunk("c1", "Paris is the capital of France.")],
+        # A name `SYSTEM_PROMPT` itself cannot contain: its citation example
+        # mentions `criteria.pdf`, and asserting on `a.pdf` would have been an
+        # assertion about that example rather than about the header.
+        document_names=["budget-2025.xlsx"],
+        names_error=RuntimeError("document store unreachable"),
+    )
+    await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    system = llm.stream_calls[0][0][0].content
+    assert system.startswith(f"{agent_module.SYSTEM_PROMPT}\n\nContext:\n")
+    assert "Files in this space:" not in system
+    assert "budget-2025.xlsx" not in system
+
+
+async def test_a_failing_corpus_listing_on_the_fallback_path_still_apologises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other call site. Zero chunks AND a failing listing is the worst
+    combination available, and it still ends in the honest sentence — bare,
+    without the header it could not build — rather than in an error event."""
+    deps, _knowledge, llm = make_deps(
+        chunks=[], document_names=["a.pdf"], names_error=RuntimeError("store down")
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "what is in the report?")
+
+    assert llm.stream_calls == []
+    assert [e.type for e in events] == ["token", "final"]
+    assert "enough information" in events[-1].data["text"]
+    assert "Files in this space:" not in events[-1].data["text"]
+    assert _answer_record(caplog).path == "fallback"
+
+
+async def test_a_failing_retrieval_still_fails_the_turn() -> None:
+    """**The containing guard.** The wrap is on the corpus listing and NOWHERE
+    else. `answer` stays bare deliberately (س-28): with no context there is no
+    answer, and absorbing a retrieval failure here would produce a confident
+    reply from the model's own parametric knowledge with no citations —
+    precisely what the trust gate was built to prevent."""
+    boom = RuntimeError("vector store unreachable")
+    deps, _knowledge, llm = make_deps(deltas=["Paris"], answer_error=boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert excinfo.value is boom
+    assert llm.stream_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-3 — summarisation with no known target (§3، ف-5، س-15)         #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_targetless_summarisation_asks_which_file_instead_of_apologising() -> None:
+    """«لخّص لي هذا» — classified as a summarisation correctly, matching no
+    file name — used to fall SILENTLY through to the content route, retrieve
+    nothing and end in «لا أملك معلومات كافية». The most natural phrasing a
+    user can reach for produced the least useful answer the agent has.
+
+    The honest reply is the QUESTION. The agent knows exactly what was asked
+    and is missing exactly one name."""
+    deps, _knowledge, _llm = make_deps(
+        chunks=[], routed_intent="summarize_doc", document_names=["الميزانية.pdf"]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي هذا")
+
+    text = events[-1].data["text"]
+    assert text.startswith("أيّ ملفّ تريد تلخيصه؟")
+    assert "لا أملك معلومات كافية" not in text
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_targetless_summarisation_lists_the_space_corpus() -> None:
+    """The header IS attached here, unlike on the receipt and clarification
+    branches, and their reason for withholding it does not apply: those two
+    already name files, this one names none, and the space's listing is the
+    only material that turns the question into something the user can answer.
+    It is the menu, not decoration."""
+    deps, knowledge, _llm = make_deps(
+        chunks=[], routed_intent="summarize_doc", document_names=["a.pdf", "b.pdf"]
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarise this for me")
+
+    text = events[-1].data["text"]
+    assert text.startswith("Which file would you like me to summarise?")
+    assert "Files in this space: a.pdf, b.pdf." in text
+    assert knowledge.name_limit_calls == [None]
+
+
+async def test_a_targetless_summarisation_never_calls_the_llm() -> None:
+    """Every word of the reply is a fixed sentence plus the module's own list,
+    so there is nothing for a model to improvise — and a model asked to phrase
+    it could drop, merge or invent a file name, which is the failure this
+    branch's neighbours already exist to prevent."""
+    deps, _knowledge, llm = make_deps(chunks=[], routed_intent="summarize_doc")
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي هذا")
+
+    assert llm.stream_calls == []
+    assert [e.type for e in events] == ["token", "final"]
+    assert events[0].data["delta"] == events[-1].data["text"]
+
+
+async def test_a_targetless_summarisation_logs_its_own_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Its own name in the log, for the reason the other no-LLM exits have
+    theirs: folded into `fallback` this case would be invisible, and its whole
+    problem was that it was invisible — an apology that looked like every other
+    apology."""
+    deps, _knowledge, _llm = make_deps(chunks=[], routed_intent="summarize_doc")
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "لخّص لي هذا")
+
+    record = _answer_record(caplog)
+    assert record.path == "summary_target_unknown"
+    assert record.llm_ms is None
+    assert record.fallback is False
+    assert record.context_nodes == 0
+
+
+async def test_a_content_intent_with_zero_chunks_still_apologises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """**The containing guard.** The fifth branch keys on the INTENT, not on
+    "zero chunks", so the trust-gate fallback — the path every ordinary
+    unanswerable question takes — is untouched by it."""
+    deps, _knowledge, llm = make_deps(chunks=[])
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "what is the capital of France?")
+
+    assert llm.stream_calls == []
+    assert "enough information" in events[-1].data["text"]
+    assert "Which file" not in events[-1].data["text"]
+    assert _answer_record(caplog).path == "fallback"
+
+
+def test_the_agents_intent_literal_matches_the_modules_enum() -> None:
+    """**The drift test.** ق-1 forbids this agent from importing `Intent`, so
+    the value is copied as a string literal — which is exactly the widening
+    `RoutedAnswerView` was documented for ("`intent` is `str` here and a
+    `StrEnum` there").
+
+    A copy across an architectural boundary is only safe while something
+    compares the two, and the TEST layer is the one layer allowed to import
+    both sides. Renaming the enum's value without this would leave the fifth
+    branch silently unreachable — the same silence ب-3 was written to end."""
+    assert Intent.SUMMARIZE_DOC.value == agent_module._INTENT_SUMMARIZE_DOC
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-4أ — a refused summary build (§3، ف-7، س-17)                   #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_summary_conflict_becomes_a_sentence_not_an_error_event() -> None:
+    """`RequestSummary` refuses a second build for a key one is already
+    running. That refusal used to travel up untranslated and reach the user as
+    a technical error event — for asking twice.
+
+    ⚠️ The sentence is deliberately NEUTRAL. The module raises
+    `common.conflict` from TWO places with two meanings (an active build, and a
+    document that was never indexed and holds no text at all) under ONE code,
+    and this agent cannot tell them apart. "Your summary is still being
+    prepared" would be a plain lie on the second. ب-4ب classifies the reason
+    inside the module and replaces this with two exact sentences."""
+    conflict = ConflictError("summary already running for document 0198-…")
+    deps, _knowledge, _llm = make_deps(answer_error=conflict)
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    assert [e.type for e in events] == ["token", "final"]
+    text = events[-1].data["text"]
+    assert text.startswith("I couldn't start a summary of that file just now.")
+    assert "still being prepared" not in text
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_summary_conflict_never_calls_the_llm() -> None:
+    """A fixed sentence, like every other no-LLM exit — and picked by the same
+    Arabic-script presence check the fallback, the receipt, the clarification
+    and the corpus header all use. One language mechanism in this agent."""
+    deps, _knowledge, llm = make_deps(answer_error=ConflictError("in progress"))
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي ملف الميزانية")
+
+    assert llm.stream_calls == []
+    assert events[-1].data["text"].startswith("تعذّر بدءُ تلخيص هذا الملفّ الآن.")
+
+
+async def test_a_non_conflict_failure_still_fails_the_turn() -> None:
+    """**The containing guard.** `ConflictError` ALONE, never the general
+    `AppError`: a broken store is not a message for a user, and a
+    `NotFoundError` on a deleted document is a different state deserving a
+    different sentence — not this one, and not silence."""
+    boom = AppError(detail="store exploded", code="common.internal", status=500)
+    deps, _knowledge, _llm = make_deps(answer_error=boom)
+
+    with pytest.raises(AppError) as excinfo:
+        await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    assert excinfo.value is boom
+
+
+async def test_a_summary_conflict_logs_its_own_path(caplog: pytest.LogCaptureFixture) -> None:
+    """Without its own path the case would vanish from the measurements
+    entirely — it is neither an error any more nor any of the four answers."""
+    deps, _knowledge, _llm = make_deps(answer_error=ConflictError("in progress"))
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "summarise the budget file")
+
+    record = _answer_record(caplog)
+    assert record.path == "summary_conflict"
+    assert record.llm_ms is None
+    assert record.error_type is None  # it is an ANSWER now, not a failure
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-5 — the error path measures itself (§3، ف-14، س-33)            #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_failing_turn_still_emits_one_answer_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`rag_agent.answer` was written from the answering exits only, so a
+    failed turn produced no record at all: the failure rate had to be inferred
+    from the ABSENCE of lines rather than read from their presence, and the
+    reason was nowhere."""
+    deps, _knowledge, _llm = make_deps(answer_error=RuntimeError("vector store unreachable"))
+    with (
+        caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"),
+        pytest.raises(RuntimeError),
+    ):
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    record = _answer_record(caplog)
+    assert record.path == "error"
+    assert record.retrieval_attempted is True
+    assert record.llm_ms is None
+    assert record.total_ms >= 0
+
+
+async def test_the_error_record_names_the_exception_class_and_no_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ق-5 — the CLASS name, never the message. `ConflictError`'s own message
+    carries a document id, and other exceptions carry fragments of the input,
+    so a record that logged `str(exc)` would be a content leak wearing a
+    diagnostics costume. Asserted on the RENDERED line, so a future field
+    cannot smuggle it past."""
+    deps, _knowledge, _llm = make_deps(
+        answer_error=RuntimeError("document 'quarterly-report.pdf' is corrupt")
+    )
+    with (
+        caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"),
+        pytest.raises(RuntimeError),
+    ):
+        await drive_run(RagAgent(make_ctx(), deps), "what did the report say?")
+
+    record = _answer_record(caplog)
+    assert record.error_type == "RuntimeError"
+    rendered = JsonFormatter().format(record)
+    assert "quarterly-report.pdf" not in rendered
+    assert "what did the report say?" not in rendered
+
+
+async def test_an_abandoned_stream_logs_no_record(caplog: pytest.LogCaptureFixture) -> None:
+    """**The whole reason this is `except Exception` and not `finally`.** A
+    reader that walks away mid-answer closes the generator, which raises
+    `GeneratorExit` — a `BaseException` — at the suspended `yield`. A `finally`
+    would have logged a turn that never finished, at whatever moment the event
+    loop happened to close it; `except Exception` does not catch it, so the
+    guarantee `_log_answer` documents survives verbatim."""
+    deps, _knowledge, _llm = make_deps(
+        deltas=["Paris", " is", " the capital."], chunks=[FakeChunk("c1", "text")]
+    )
+    agent = RagAgent(make_ctx(), deps)
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = agent.run(AgentRequest(conversation_id=None, input={"text": "capital?"}))
+        first = await anext(events)
+        assert first.type == "token"
+        await events.aclose()
+
+    assert [r for r in caplog.records if r.getMessage() == "rag_agent.answer"] == []
+
+
+async def test_a_failing_turn_re_raises_for_the_lifecycle_executor() -> None:
+    """The item is MEASUREMENT, not handling: the record is a side effect and
+    the exception continues on its way to the 4.2 executor, which owns the
+    error event. Swallowing it would turn a fault into a silence — the very
+    thing this item exists to end."""
+    boom = RuntimeError("vector store unreachable")
+    deps, _knowledge, _llm = make_deps(answer_error=boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert excinfo.value is boom
+
+
+async def test_a_blank_query_is_measured_too(caplog: pytest.LogCaptureFixture) -> None:
+    """A turn that fails BEFORE it can ask anything still gets its record, and
+    `retrieval_attempted` reports `False` because that is the truth — nothing
+    was searched — not because the field was never reached."""
+    deps, _knowledge, _llm = make_deps()
+    with (
+        caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"),
+        pytest.raises(ValidationError),
+    ):
+        await drive_run(RagAgent(make_ctx(), deps), "   ")
+
+    record = _answer_record(caplog)
+    assert record.path == "error"
+    assert record.error_type == "ValidationError"
+    assert record.retrieval_attempted is False
+
+
+# --------------------------------------------------------------------------- #
+# الموجة 1 · ب-6 — a turn with no space is lit up (§3، ف-9، س-26)             #
+# --------------------------------------------------------------------------- #
+
+
+def _unscoped_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "rag_agent.unscoped_turn"]
+
+
+async def test_a_turn_without_a_space_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    """The degraded path is SAFE (ق-7: an unknown boundary is stayed inside,
+    never widened) and it was also completely silent — the model answers alone,
+    with no retrieval, no citations and no header, which is the shape of answer
+    the trust gate exists to prevent arriving through a different door.
+
+    A warning, not a refusal: ق-أ records why. Refusing is a visible behaviour
+    change on a path nobody has measured, so the order is illuminate → measure
+    → decide."""
+    deps, knowledge, llm = make_deps(space_id=None, deltas=["Paris"])
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        events = await drive_run(RagAgent(make_ctx(), deps), "capital of France?")
+
+    assert len(_unscoped_warnings(caplog)) == 1
+    assert knowledge.calls == []  # ق-7 holds: nothing was searched
+    assert len(llm.stream_calls) == 1  # and the turn still answered
+    assert events[-1].data["citations"] == []
+
+
+async def test_a_turn_without_a_knowledge_seam_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The distinction the warning exists to draw. `retrieval_attempted=False`
+    covers BOTH "no seam wired at all" and "a seam wired but no space known",
+    and they are two different diagnoses: the first is a deployment answering
+    from the model on purpose, the second is a turn that lost its thread."""
+    llm = FakeLLM(["ok"])
+    deps = AgentDependencies(llm=ResolvedLLM(provider=llm, model="fake-model", api_key="k"))
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), "hi")
+
+    assert _unscoped_warnings(caplog) == []
+
+
+async def test_the_unscoped_warning_carries_no_question_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ق-5 applies to this line as much as to the answer record: the
+    `conversation_id` is an IDENTIFIER, which is what makes one warning
+    traceable to one thread without putting a single word of the question into
+    a log."""
+    question = "what did the quarterly report say about the northern region?"
+    thread = new_uuid7()
+    deps, _knowledge, _llm = make_deps(space_id=None, deltas=["ok"])
+    with caplog.at_level(logging.INFO, logger="app.agents.rag_agent.agent"):
+        await drive_run(RagAgent(make_ctx(), deps), question, conversation_id=thread)
+
+    rendered = JsonFormatter().format(_unscoped_warnings(caplog)[0])
+    assert question not in rendered
+    assert thread in rendered
