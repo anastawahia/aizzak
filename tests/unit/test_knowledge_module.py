@@ -2505,6 +2505,92 @@ async def test_a_summarisation_question_that_names_one_file_resolves_and_queues_
     assert routed.clarification_options == ()
 
 
+# ----------------------------------------------------------------- #
+# The resolved target's NAME (scenarios plan §4, ب-7أ/ب-7ب — gap ف-2) #
+# ----------------------------------------------------------------- #
+async def test_a_resolved_summary_carries_its_target_name_across_the_seam() -> None:
+    """ب-7أ: the receipt can say WHICH file it queued, because the
+    module that resolved the file says so.
+
+    Free (ت-2): `resolve_file` already returns the name of the
+    document it chose, so this is a read of `ResolvedFile.file_name`
+    rather than a lookup. And it is the module's OWN resolution
+    travelling, never the question's wording — which is why the
+    agent may utter it at all (`RagAgent._summary_queued_answer`).
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(ctx, "لخّص لي التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.summary_job_id == "job-1"
+    # The name of the document actually queued -- «الشمالي», not the
+    # other file that shares the word «التقرير» with the question.
+    assert routed.summary_target_name == "التقرير الشمالي.pdf"
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_a_pinned_summary_carries_its_target_name_too() -> None:
+    """ب-7ب: the PINNED path buys the corpus walk it used to skip.
+
+    This is the case س-21 makes worst: a thread pinned to one file, a
+    user asking about another, and the pinned one summarised without
+    a word. `_sole_document` short-circuits the resolver entirely
+    here, so before this the receipt for the most misleading turn on
+    the route was the one turn that could name nothing.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
+
+    assert routed.summary_job_id == "job-1"
+    assert routed.summary_target_name == "التقرير الشمالي.pdf"
+    # The pin decided the target, exactly as before -- the walk bought
+    # the NAME and changed no routing.
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_an_unnameable_target_yields_none_rather_than_a_blank() -> None:
+    """`None`, never `""`. A document whose file can no longer be read
+    has no name to give, and the two are not the same fact: `None`
+    sends the caller back to its unnamed wording, while `""` would put
+    a receipt naming an empty string in front of a user.
+
+    The build is still queued. The summary is built from chunks stored
+    at index time and stays deliverable long after the bytes it was
+    built from are gone -- so a missing name degrades the sentence,
+    never the work.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    # The corpus is indexed; the files seam knows nothing of either file.
+    service, summaries = await _routing_service(ctx, embeddings, vectors)
+
+    routed = await service.answer(ctx, "لخص لي هذا الملف", 5, ["file-north"], space_id=_SPACE_A)
+
+    assert routed.summary_job_id == "job-1"
+    assert routed.summary_target_name is None
+    assert summaries.calls == [("doc-north", SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
+
+
+async def test_a_content_answer_names_no_summary_target() -> None:
+    """The containing guard for both items above: the field is about a
+    QUEUED BUILD, so every outcome that queued none carries `None` --
+    including a CONTENT question narrowed to exactly one document,
+    whose citations already say which file each sentence came from."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(ctx, embeddings, vectors, _NAMED_CORPUS)
+
+    routed = await service.answer(ctx, "أرقام الإيرادات في التقرير الشمالي", 5, space_id=_SPACE_A)
+
+    assert routed.intent is Intent.CONTENT
+    assert routed.summary_target_name is None
+
+
 async def test_a_tie_comes_back_as_names_to_ask_the_user_about_and_queues_nothing() -> None:
     """THE step (س-18 = أ). Two files match «الميزانية» equally well, so the
     resolver refuses to choose and the router hands its caller the NAMES to

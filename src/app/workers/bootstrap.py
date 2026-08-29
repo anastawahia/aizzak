@@ -179,7 +179,11 @@ from app.modules.conversations.application.use_cases import AppendMessage
 from app.modules.credentials.adapters.sql_repository import SqlCredentialRepository
 from app.modules.credentials.application.use_cases import ResolveCredential
 from app.modules.files.adapters.sql_repository import SqlFileRepository
-from app.modules.files.application.use_cases import CompleteUpload, RegisterUpload
+from app.modules.files.application.use_cases import (
+    CompleteUpload,
+    FilesQueryService,
+    RegisterUpload,
+)
 from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtractor
 from app.modules.knowledge.adapters.sql_repository import (
     SqlDocumentRepository,
@@ -193,12 +197,14 @@ from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.summarization import SummarizeDocument
 from app.modules.knowledge.application.use_cases import (
     BuildSummary,
+    GetDocumentFileName,
     IndexRegisteredDocument,
     delivered_summary_text,
 )
 from app.modules.knowledge.domain.sparse import Bm25Params
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.content_extractor import ParsedDocument
+from app.modules.knowledge.ports.files import ReadableFiles
 from app.modules.knowledge.ports.repository import DocumentRepository, SummaryRepository
 from app.modules.knowledge.ports.summarization import SUMMARIZE_CAPABILITY, ResolvedSummarizer
 from app.modules.media.adapters.sql_repository import SqlMediaJobRepository
@@ -745,11 +751,41 @@ def build_knowledge_summary_handler(
     return _handle
 
 
+async def _summary_file_name(
+    ctx: ExecutionContext, document_names: GetDocumentFileName, document_id: str
+) -> str | None:
+    """The name of the file a finished summary is about, or ``None``
+    when it cannot be read (ب-7ج, scenarios plan §4).
+
+    **A header is cosmetic; a summary is what the user asked for.**
+    A build that took minutes of provider calls must not be
+    dropped because a name lookup failed — the same rule ب-2 states
+    for the RAG agent's corpus header, and the same shape:
+    ``Exception``, logged with its traceback, degraded to
+    "no name" rather than to a blank.
+
+    The catch is broad because everything under it is one optional
+    read whose every failure has the same answer. It wraps THIS
+    call and nothing else, so a fault in the append below still
+    fails the delivery and is still retried.
+    """
+    try:
+        return await document_names.execute(ctx, document_id=document_id)
+    except Exception as exc:
+        _logger.warning(
+            "summary_delivery_name_unavailable",
+            exc_info=exc,
+            extra={"document_id": document_id},
+        )
+        return None
+
+
 def build_knowledge_summary_delivery_handler(
     summaries: SummaryRepository,
     conversation_messages: AppendMessage,
     uow: UnitOfWork,
     ledger: ProcessedEventLedger,
+    document_names: GetDocumentFileName,
     *,
     consumer_group: str = _CG_KNOWLEDGE,
 ) -> EventHandler:
@@ -810,6 +846,24 @@ def build_knowledge_summary_delivery_handler(
     silent. The sentence is composed here at delivery and never stored —
     see that function for why the row stays clean.
 
+    **And it NAMES the file** (ب-7ج, scenarios plan §4, gap ف-2). The
+    receipt this message finally answers can name the document
+    (``RoutedAnswer.summary_target_name``); without a name here, a
+    thread that acknowledged «الميزانية» minutes ago and now
+    receives a wall of prose is still asking its reader to assume
+    the two are about one file — and messages about other things
+    may sit between them. ``document_names`` reads it from the
+    ``files`` seam AT DELIVERY rather than carrying it on the
+    event: a name is the one thing about a file that may change
+    (INV-F4), and an event minted at build time would deliver the
+    name the file had then.
+
+    **A failed name lookup is SWALLOWED, never a failed delivery** —
+    ``_fetch_corpus_header``'s rule in ``rag_agent``, and ب-2's: a
+    header is cosmetic and a summary is what was asked for. The
+    catch is deliberately broad because everything under it is one
+    optional read, and it wraps THAT CALL only, never the append.
+
     ``AppendMessage`` returns a ``MessageAppended`` this handler drops, the
     same way ``ConversationService.append`` drops it: 04 §5 lists it among the
     conversations events that are internal and never promoted to a stream, so
@@ -829,6 +883,11 @@ def build_knowledge_summary_delivery_handler(
         )
         if summary is None:
             return
+        # ب-7ج -- outside the transaction below on purpose: it is a
+        # read, it is optional, and a name lookup that opened the
+        # unit of work would make a cosmetic header share a fate
+        # with the append that is the actual delivery.
+        file_name = await _summary_file_name(ctx, document_names, data["document_id"])
         try:
             async with uow.begin(ctx):
                 if not await ledger.claim(
@@ -840,8 +899,9 @@ def build_knowledge_summary_delivery_handler(
                     conversation_id,
                     role=_ROLE_ASSISTANT,
                     # `F-9` -- the summary plus a sentence when it covers only
-                    # the document's beginning. Unchanged text otherwise.
-                    text=delivered_summary_text(summary),
+                    # the document's beginning. ب-7ج -- prefixed by the file's
+                    # name when one could be read. Unchanged text otherwise.
+                    text=delivered_summary_text(summary, file_name),
                 )
         except AppError as exc:
             _logger.info(
@@ -860,6 +920,7 @@ def build_knowledge_worker(
     *,
     redis_client: Redis,
     documents: DocumentRepository,
+    files: ReadableFiles,
     pipeline: IndexDocument,
     content_resolver: DocumentContentResolver,
     summary_builder: BuildSummary,
@@ -901,6 +962,15 @@ def build_knowledge_worker(
     parameters, like every other dependency here, because a worker wired
     without them would still boot and would silently drop every summary a
     conversation ever asked for.
+
+    **``files`` is ب-7ج's (scenarios plan §4)**, and it is a
+    parameter for the same reason rather than a seam composed
+    inside: the delivery names the file its summary is about, and
+    a worker wired without a way to read names would deliver
+    every summary untitled — the exact state ف-2 describes, and
+    silent again. Paired with ``documents`` (already here) into
+    ``GetDocumentFileName`` at the handler below, so the two
+    readers of a file's name in this process stay one.
     """
     subscriptions = [
         Subscription(
@@ -936,6 +1006,11 @@ def build_knowledge_worker(
                     conversation_messages,
                     uow,
                     ledger,
+                    # ب-7ج -- composed HERE, out of two seams this
+                    # function already takes, so naming the delivered
+                    # summary cost this builder one parameter rather
+                    # than two.
+                    GetDocumentFileName(documents, files),
                 ),
             },
         ),
@@ -1172,6 +1247,12 @@ async def build_knowledge_worker_from_env() -> tuple[
     consumer, subscriptions = build_knowledge_worker(
         redis_client=redis_client,
         documents=documents,
+        # ب-7ج -- the `files` seam, bound the way every other
+        # knowledge seam in this process is: `FilesQueryService`
+        # over the repository already built above, satisfying
+        # `ReadableFiles` structurally. One instance, and the
+        # `names_for_files` read both corpus walks use.
+        files=FilesQueryService(files),
         pipeline=pipeline,
         content_resolver=content_resolver,
         summary_builder=summary_builder,

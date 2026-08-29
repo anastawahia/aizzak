@@ -404,6 +404,12 @@ class RouteQuestion:
             chunks=tuple(result.chunks),
             summary_job_id=None,
             clarification_options=(),
+            # ب-7أ — no build was queued, so there is no target to name.
+            # A CONTENT question that NARROWED to one document
+            # (`_content_scope`) still names nothing: that scope is what
+            # the answer was retrieved under, and the citations already
+            # say which file every sentence came from.
+            summary_target_name=None,
         )
 
     async def _summarisation_route(
@@ -429,7 +435,26 @@ class RouteQuestion:
         caller named the document or the question did.
         """
         target = _sole_document(document_ids)
-        if target is None:
+        target_name: str | None = None
+        if target is not None:
+            # ب-7ب (scenarios plan §4) — the pinned path BUYS the name,
+            # with the corpus walk `_content_scope`'s short-circuit
+            # exists to avoid.
+            #
+            # The short-circuit is right where it was written and
+            # wrong here, and the difference is what the walk is
+            # bought FOR. There it sits on EVERY pinned CONTENT
+            # question, to re-derive a scope the caller already
+            # stated — a walk that changes no answer. Here it sits on
+            # a pinned SUMMARISATION request only, a turn that queues
+            # a map-reduce over a whole document behind it: one name
+            # lookup is noise beside that, and what it buys is س-21,
+            # the worst shape of ف-2 — a thread pinned to one file,
+            # a user asking about another, and the pinned one
+            # summarised without a word. Named in the receipt, that
+            # turn is self-correcting in the same breath.
+            target_name = await self._pinned_name(ctx, target, space_id=space_id)
+        else:
             resolution = resolve_file(
                 question, await self._candidates(ctx, document_ids, space_id=space_id)
             )
@@ -444,10 +469,18 @@ class RouteQuestion:
                     clarification_options=tuple(
                         candidate.file_name for candidate in resolution.candidates
                     ),
+                    # No build was queued, so there is nothing to name —
+                    # and the names that matter this turn are already
+                    # crossing as `clarification_options`.
+                    summary_target_name=None,
                 )
             if not isinstance(resolution, ResolvedFile):
                 return None
             target = resolution.document_id
+            # ب-7أ — free (ت-2): the resolver already carries the name
+            # of the document it chose, so this is a read, not a
+            # second lookup and not a derivation.
+            target_name = resolution.file_name
         job = await self._summaries.start(
             ctx,
             document_id=target,
@@ -467,7 +500,38 @@ class RouteQuestion:
             chunks=(),
             summary_job_id=job.id,
             clarification_options=(),
+            # ف-2 — the one outcome that HAS a target, so the one
+            # that names it. `None` here means the module queued a
+            # build it could not name (an unreadable file), never
+            # that it did not look.
+            summary_target_name=target_name,
         )
+
+    async def _pinned_name(
+        self, ctx: ExecutionContext, target: Uuid, *, space_id: Uuid
+    ) -> str | None:
+        """The file name of a PINNED summarisation target (ب-7ب), or
+        ``None`` when this corpus cannot name it.
+
+        Matched against ``_candidates`` rather than read through a
+        one-document lookup, so the name a receipt utters comes from
+        exactly the list a RESOLVED target's name comes from: the same
+        walk, the same space narrowing, the same "a document whose file
+        is no longer readable is not a candidate" rule
+        (``ListFileCandidates``). A second reader would be a second
+        answer to "what is this document called".
+
+        ``None`` on a miss, and it is not an error: a pin names a
+        document, and a document whose file was deleted or quarantined
+        since it was indexed is still summarisable from the chunks
+        already stored. The build is queued either way — the receipt
+        simply falls back to its unnamed wording, which is what it
+        said for every pinned request before this method existed.
+        """
+        for candidate in await self._candidates(ctx, [target], space_id=space_id):
+            if candidate.document_id == target:
+                return candidate.file_name
+        return None
 
     async def _content_scope(
         self,

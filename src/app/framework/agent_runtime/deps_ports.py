@@ -127,6 +127,24 @@ class RoutedAnswerView(Protocol):
     stream changes; a structured ``clarification`` event is out of scope by
     س-18 (plan §7), which is why this is a plain sequence of names and not a
     new event shape sitting on this seam.
+
+    ``summary_target_name`` (scenarios plan §4, ب-7أ, gap ف-2) is the
+    file name behind ``summary_job_id`` — what the module RESOLVED the
+    build to, so a receipt can say which document it accepted.
+
+    **It is the reason an agent may utter this name at all.** An agent
+    reading a file name off the user's own question and echoing it back
+    would be asserting a resolution nobody performed; that is why the
+    receipt named nothing before this field. A name that arrived ACROSS
+    this seam is different in kind — the module ran its resolver, chose
+    one document, and is reporting its own choice. The agent repeats what
+    it was told and still resolves nothing itself.
+
+    ``None`` whenever there is no build to name (every CONTENT answer,
+    every clarification) and whenever the module queued one but could not
+    name the target — a document whose file is no longer readable. Both
+    mean "no name arrived", and the agent's answer to both is its
+    existing unnamed wording, never a blank left where a name would go.
     """
 
     @property
@@ -137,6 +155,8 @@ class RoutedAnswerView(Protocol):
     def summary_job_id(self) -> Uuid | None: ...
     @property
     def clarification_options(self) -> Sequence[str]: ...
+    @property
+    def summary_target_name(self) -> str | None: ...
 
 
 class KnowledgeAccess(Protocol):

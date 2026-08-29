@@ -171,6 +171,26 @@ SUMMARY_TRUNCATED_NOTICE_AR = (
     "تنبيه: هذا المستند أطول من أن يُقرأ كاملًا في ملخّصٍ واحد، وما سبق يغطّي أوّله لا الملفّ كلّه."
 )
 
+# ب-7ج (scenarios plan §4, gap ف-2) — which FILE the text below is a
+# summary of. The receipt that accepted the build can name the
+# document now (`RoutedAnswer.summary_target_name`), and this is the
+# other half of the same sentence: a thread whose receipt said
+# "«الميزانية»" and whose summary said nothing was still asking its
+# reader to assume the two are about one file. Minutes of unrelated
+# messages may sit between them.
+#
+# PREPENDED, where the truncation notice is appended, and the two
+# rules agree rather than conflicting: a caveat qualifies the answer
+# and belongs after it; a title says what is being read and is
+# useless after it has been read. This is the one line that turns a
+# wall of prose arriving unannounced into an identified artefact.
+#
+# It carries no id, no status and no timestamp. The reader asked
+# about a file by name, and the name is the only part of a build
+# they have a way to recognise.
+SUMMARY_DELIVERY_HEADER_EN = 'Summary of "{name}":'
+SUMMARY_DELIVERY_HEADER_AR = "ملخّص «{name}»:"
+
 
 def _reflects_current_pipeline(document: Document) -> bool:
     """Whether re-indexing ``document`` right now would reproduce output
@@ -1311,10 +1331,11 @@ def _is_latin(char: str) -> bool:
     return "a" <= char <= "z" or "A" <= char <= "Z" or "À" <= char <= "ɏ"
 
 
-def delivered_summary_text(summary: Summary) -> str:
+def delivered_summary_text(summary: Summary, file_name: str | None = None) -> str:
     """A summary as the THREAD that asked for it should receive it (`F-9`,
     plan §3.10): its text, plus one sentence when the build stopped at the
-    map ceiling.
+    map ceiling, plus a line naming the file when the caller could name
+    it (ب-7ج, gap ف-2).
 
     **The one surface with no field to say it in.** ``truncated`` is stored
     on the row and published by ``SummaryOut``, so every REST reader can tell
@@ -1336,15 +1357,35 @@ def delivered_summary_text(summary: Summary) -> str:
     qualifies it; a caveat placed above would stand between the reader and
     what they asked for, and read as an error rather than a footnote.
 
-    An untruncated summary — every ``overview``, and every ``full`` build
-    of a document inside the ceiling — is returned UNCHANGED rather than
-    unannotated: nothing is appended and nothing is reformatted, so the
-    ordinary delivery is byte for byte the text that was built.
+    An untruncated summary of a file that could not be named — every
+    ``overview``, and every ``full`` build inside the ceiling — is
+    returned UNCHANGED rather than unannotated: nothing is added and
+    nothing is reformatted, so the plainest delivery is byte for byte
+    the text that was built.
+
+    **``file_name`` obeys every rule above, which is why it is a
+    parameter here and not a second composer at the call site**
+    (ب-7ج): the header is composed at DELIVERY and never written into
+    ``Summary.text``, so ``GET`` sees the artefact and not a thread's
+    framing of it, and ``translate`` still reads a summary rather
+    than a summary wearing a title. Prepended, where the truncation
+    notice is appended — see the constants for why the two
+    directions agree.
+
+    ``None`` means the caller could not name the file (deleted,
+    quarantined, or a name read that failed), and it delivers the
+    text exactly as it delivered it before this parameter existed. A
+    blank name is the same case: a header reading ``Summary of "":``
+    tells the reader their file is called nothing.
     """
-    if not summary.truncated:
-        return summary.text
-    notice = SUMMARY_TRUNCATED_NOTICE_AR if _is_rtl(summary) else SUMMARY_TRUNCATED_NOTICE_EN
-    return f"{summary.text}\n\n{notice}"
+    body = summary.text
+    if summary.truncated:
+        notice = SUMMARY_TRUNCATED_NOTICE_AR if _is_rtl(summary) else SUMMARY_TRUNCATED_NOTICE_EN
+        body = f"{body}\n\n{notice}"
+    if file_name is None or not file_name.strip():
+        return body
+    header = SUMMARY_DELIVERY_HEADER_AR if _is_rtl(summary) else SUMMARY_DELIVERY_HEADER_EN
+    return f"{header.format(name=file_name.strip())}\n\n{body}"
 
 
 class GetSummaryJob:
@@ -2096,6 +2137,56 @@ class ListFileCandidates:
             for document_id, name in named
             if name
         )
+
+
+class GetDocumentFileName:
+    """The name of the file ONE document was built from, or ``None``
+    (ب-7ج, scenarios plan §4, gap ف-2).
+
+    **The one-document read the two corpus walks are not.**
+    ``ListDocumentNames`` and ``ListFileCandidates`` answer "what
+    is in this space", walk every page and are asked once per
+    answering turn. This answers "what is this one document
+    called", is asked by a worker delivering one finished summary
+    into a thread, and knows the id already — walking a space to
+    find a document that was named to us would be a corpus scan
+    per delivery.
+
+    ``None`` covers every reason a name cannot be produced, and
+    they are the same reasons ``ReadableFiles`` already refuses
+    to distinguish (its docstring): an unknown or deleted
+    document, and a file that is gone, quarantined or was never
+    ready. The caller wanted a title for a message, so "there is
+    no name to show" is one answer and needs no cascade.
+
+    A document is a real thing whose file has been deleted more
+    often than anywhere else in this module: the summary was
+    built from chunks stored at index time, and it stays
+    deliverable long after the bytes it was built from are gone.
+    That case is why this returns ``None`` rather than raising —
+    the summary is still owed to the thread that asked.
+    """
+
+    def __init__(self, documents: DocumentRepository, files: ReadableFiles) -> None:
+        self._documents = documents
+        self._files = files
+
+    async def execute(self, ctx: ExecutionContext, *, document_id: Uuid) -> str | None:
+        document = await self._documents.get(ctx, document_id)
+        if document is None:
+            return None
+        # The bulk read asked for one file: `names_for_files` is the
+        # seam both corpus walks already resolve names through, so
+        # this is the same authority answering the same question at
+        # the size it is actually asked in. `get_readable` would
+        # answer it too, and would make this the second reader of a
+        # file's name in the module.
+        names = await self._files.names_for_files(ctx, [document.file_id])
+        name = names.get(document.file_id)
+        # `ListFileCandidates`' empty-name rule, for its reason: a
+        # readable file named nothing is a real state, and a header
+        # reading `Summary of "":` shows it to a user as a defect.
+        return name or None
 
 
 class GetDocument:

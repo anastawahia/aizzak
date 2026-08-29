@@ -152,6 +152,25 @@ _FALLBACK_ANSWER_AR = "لا أملك معلومات كافية في مستندا
 _SUMMARY_QUEUED_EN = "A summary of that document is being prepared — it will be available shortly."
 _SUMMARY_QUEUED_AR = "جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل."
 
+# ب-7أ (scenarios plan §4, gap ف-2) — the same receipt for the turn where
+# the module RESOLVED the build's target and said which file it is.
+# One pair, differing from the one above in the name and in nothing
+# else, so the two cannot drift into two different promises about
+# when the summary arrives.
+#
+# The agent still resolves nothing: the name arrives across the seam
+# (`RoutedAnswerView.summary_target_name`) already chosen by the
+# resolver, so uttering it repeats the module's decision rather than
+# asserting one. Without a name the pair above is used unchanged —
+# never this one with a blank where the file should be.
+#
+# The name is INTERPOLATED into a template, never concatenated onto a
+# prefix, and it is QUOTED: an Arabic sentence carrying a Latin file
+# name is bidirectional text, and the marks are what keep a name like
+# `budget-2025.xlsx` from running into the punctuation around it.
+_SUMMARY_QUEUED_NAMED_EN = 'A summary of "{name}" is being prepared — it will be available shortly.'
+_SUMMARY_QUEUED_NAMED_AR = "جارٍ إعداد ملخّص «{name}»، وسيكون متاحًا بعد قليل."
+
 # ب-3 (خطة الفجوات §3، ف-5) — the fifth branch's question: a summarisation
 # was asked and its TARGET is unknown. Two fixed sentences picked by the same
 # `_ARABIC_CHAR_RE` presence check every other sentence in this agent uses —
@@ -651,7 +670,16 @@ class RagAgent(BaseAgent):
             # receipt for an action on a document the caller ALREADY named;
             # listing the workspace's files back at them would answer a
             # question nobody asked.
-            return _FixedReply(self._summary_queued_answer(query), _PATH_SUMMARY_RECEIPT)
+            #
+            # ب-7أ/ب-7ب (ف-2) — and the receipt NAMES the document
+            # now, when the module sent a name. It is the module's
+            # resolution being read back, not a name lifted off the
+            # query: see `_summary_queued_answer`. Without one the
+            # sentence is exactly what it was.
+            return _FixedReply(
+                self._summary_queued_answer(query, routed.summary_target_name),
+                _PATH_SUMMARY_RECEIPT,
+            )
         if routed is not None and routed.clarification_options:
             # Retrieval plan §3.5/§4 row 14 (`P-04`, س-18 = أ) — the module
             # resolved the question's file name to SEVERAL documents (or to
@@ -941,17 +969,38 @@ class RagAgent(BaseAgent):
         return _FALLBACK_ANSWER_AR if _ARABIC_CHAR_RE.search(query) else _FALLBACK_ANSWER_EN
 
     @staticmethod
-    def _summary_queued_answer(query: str) -> str:
+    def _summary_queued_answer(query: str, name: str | None = None) -> str:
         """The SUMMARIZE_DOC route's receipt (retrieval plan §3.4/§4 row 11,
         ``P-21``) — one of two fixed sentences, picked by the same
-        ``_ARABIC_CHAR_RE`` presence check ``_fallback_answer`` uses.
+        ``_ARABIC_CHAR_RE`` presence check ``_fallback_answer`` uses,
+        naming the document when the module sent a name (ب-7أ, ف-2).
 
-        It names no document. The agent knows a job id and nothing else — the
-        module resolved the target from the caller's pinned scope — and
-        echoing back a name it did not resolve is how an agent starts
-        describing the wrong file with confidence (§3.5, the failure س-18
-        exists to prevent).
+        **It still names nothing the agent resolved**, which is the rule
+        this method kept when it named nothing at all: an agent that
+        echoed a filename out of the QUERY would be asserting a
+        resolution nobody performed. ``name`` is not from the query. It
+        crossed the seam from the module that ran ``resolve_file``,
+        chose one document and refused every alternative, so saying it
+        repeats that choice back rather than inventing one.
+
+        **And that is what makes a wrong choice visible.** A FUZZY match
+        at 0.78 over a 0.75 threshold used to be invisible until a
+        summary of the wrong document arrived minutes later — or, when a
+        thread was pinned to another file (س-21), never. Named here, it
+        is contradictable in the same breath as the acceptance.
+
+        ``None`` — no build to name, or a target this corpus cannot name
+        — falls back to the unnamed wording verbatim. A blank is never
+        interpolated: a receipt reading «ملخّص «»» is worse than one that
+        names no file, because it looks like a name that came out empty.
         """
+        if name is not None and name.strip():
+            template = (
+                _SUMMARY_QUEUED_NAMED_AR
+                if _ARABIC_CHAR_RE.search(query)
+                else _SUMMARY_QUEUED_NAMED_EN
+            )
+            return template.format(name=name.strip())
         return _SUMMARY_QUEUED_AR if _ARABIC_CHAR_RE.search(query) else _SUMMARY_QUEUED_EN
 
     @staticmethod

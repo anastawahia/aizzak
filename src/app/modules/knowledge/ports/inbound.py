@@ -74,12 +74,51 @@ class RoutedAnswer:
     structured ``clarification`` EVENT — which would carry ids and let a UI
     render buttons — is recorded in the plan's §7 as out of scope: it
     changes the streaming contract, which this field pointedly does not.
+
+    ``summary_target_name`` (scenarios plan §4, ب-7أ, gap ف-2) is the
+    file name of the document a queued build is ABOUT — the fifth
+    field, and the one that makes ``summary_job_id`` legible to the
+    person who asked. It is populated exactly when a build was queued,
+    and it names the document THIS module resolved rather than
+    whatever the question happened to say.
+
+    **The rule it looks like it breaks, it does not.** "Never echo a
+    name you did not resolve" is the RAG agent's rule
+    (``_summary_queued_answer``) and it is right: an agent that repeats
+    the user's phrasing back as a filename is asserting a resolution it
+    never performed. That argument has no purchase HERE, because this
+    module IS the resolver — ``resolve_file`` ran, chose one document
+    and refused every alternative, and this field carries that choice's
+    own ``ResolvedFile.file_name``. The agent still names nothing it
+    was not told; it is simply told now.
+
+    **Why it earns its place on the seam:** a FUZZY resolution at 0.78
+    against a 0.75 threshold is a guess that looked confident, and
+    until this field existed the user learned which file it picked
+    only minutes later, when a summary of the wrong document arrived
+    — or, on the pinned path (س-21), never. Named in the receipt, a
+    mis-resolution is visible in the same breath as the acceptance.
+
+    ``None`` is honest and stays reachable: a document whose file is
+    no longer readable has no name to give (``ListFileCandidates``
+    drops exactly those), and the caller falls back to its unnamed
+    wording rather than to a blank. It is also ``None`` on every
+    outcome that queued nothing — CONTENT, clarification, no match —
+    because there is no build for a name to be about.
+
+    **No default**, the ``Document.space_id`` rule applied to a field
+    that is read out loud: a route that queues a build and forgets the
+    name would inherit ``None`` silently and answer in the unnamed
+    wording forever, which is the exact failure ف-2 is — and it would
+    look like the honest "the module could not name it" case. Every
+    construction site says which one it means.
     """
 
     intent: Intent
     chunks: tuple[RetrievedChunk, ...]
     summary_job_id: Uuid | None
     clarification_options: tuple[str, ...]
+    summary_target_name: str | None
 
 
 class KnowledgeRetrieval(Protocol):

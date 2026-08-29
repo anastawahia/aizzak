@@ -66,6 +66,7 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
     _, knowledge_subscriptions = build_knowledge_worker(
         redis_client=placeholder,  # type: ignore[arg-type]
         documents=placeholder,  # type: ignore[arg-type]
+        files=placeholder,  # type: ignore[arg-type]
         pipeline=IndexDocument(placeholder, placeholder),  # type: ignore[arg-type]
         content_resolver=placeholder,  # type: ignore[arg-type]
         summary_builder=placeholder,  # type: ignore[arg-type]

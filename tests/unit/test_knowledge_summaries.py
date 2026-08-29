@@ -1779,9 +1779,74 @@ def test_composing_a_delivery_leaves_the_stored_summary_alone() -> None:
     """The notice is composed AT DELIVERY and never written into the row: a
     ``GET`` reader already has the flag, so storing the sentence would state
     one fact twice for them and put prose the model never wrote inside the
-    artefact every later reader — ``translate`` included — works from."""
+    artefact every later reader — ``translate`` included — works from.
+
+    ب-7ج put a SECOND composed line on this path, and it obeys the
+    same rule for a sharper reason: a name is a fact about a FILE, and
+    freezing it into a summary row would make the artefact disagree
+    with the file the day it is renamed (INV-F4 permits exactly that)."""
     summary = _summary(text=_ENGLISH_SUMMARY, truncated=True)
 
-    delivered_summary_text(summary)
+    delivered_summary_text(summary, "retrieval-policy.pdf")
 
     assert summary.text == _ENGLISH_SUMMARY
+
+
+# ------------------------------------------------------------- #
+# delivered_summary_text — ب-7ج (scenarios plan §4, gap ف-2): which file #
+# ------------------------------------------------------------- #
+
+
+def test_a_named_delivery_says_which_file_it_summarises() -> None:
+    """ب-7ج: the receipt that accepted the build can name the document
+    (``RoutedAnswer.summary_target_name``), and this is the other half of
+    the same sentence — a thread told «التقرير الشمالي» minutes ago and
+    then handed a wall of prose was still asking its reader to assume the
+    two are about one file."""
+    delivered = delivered_summary_text(
+        _summary(text=_ENGLISH_SUMMARY, truncated=False), "retrieval-policy.pdf"
+    )
+
+    assert delivered == f'Summary of "retrieval-policy.pdf":\n\n{_ENGLISH_SUMMARY}'
+
+
+def test_the_header_stands_above_the_summary_and_the_notice_below_it() -> None:
+    """The two composed lines do not compete. A title says what is
+    being read and is useless after it has been read; a caveat qualifies
+    the answer and belongs after it. So a truncated, named delivery
+    carries both, in that order, with the body between them."""
+    delivered = delivered_summary_text(
+        _summary(text=_ENGLISH_SUMMARY, lang=SummaryLanguage.EN, truncated=True),
+        "retrieval-policy.pdf",
+    )
+
+    assert delivered == (
+        f'Summary of "retrieval-policy.pdf":\n\n{_ENGLISH_SUMMARY}\n\n{SUMMARY_TRUNCATED_NOTICE_EN}'
+    )
+
+
+def test_the_header_speaks_the_language_the_notice_speaks() -> None:
+    """One language mechanism for both composed lines — ``_is_rtl``,
+    the rule the export path already uses. They are read together, so a
+    header in one script over a notice in another would be two voices
+    around one summary."""
+    delivered = delivered_summary_text(
+        _summary(text=_ARABIC_SUMMARY, lang=SummaryLanguage.AUTO, truncated=True),
+        "التقرير الشمالي.pdf",
+    )
+
+    assert delivered.startswith("ملخّص «التقرير الشمالي.pdf»:")
+    assert delivered.endswith(SUMMARY_TRUNCATED_NOTICE_AR)
+
+
+@pytest.mark.parametrize("name", [None, "", "   "])
+def test_an_unnameable_file_is_delivered_exactly_as_it_was_before(name: str | None) -> None:
+    """``None`` means the caller could not read a name — deleted,
+    quarantined, or a lookup that failed — and it delivers byte for
+    byte what this function delivered before the parameter existed.
+
+    A blank is the same answer for a sharper reason: a message headed
+    ``Summary of "":`` tells a reader their file is called nothing."""
+    summary = _summary(text=_ENGLISH_SUMMARY, truncated=False)
+
+    assert delivered_summary_text(summary, name) == _ENGLISH_SUMMARY

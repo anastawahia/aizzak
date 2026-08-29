@@ -100,6 +100,7 @@ class FakeRoutedAnswer:
         chunks: Sequence[FakeChunk],
         summary_job_id: str | None,
         clarification_options: Sequence[str] = (),
+        summary_target_name: str | None = None,
     ) -> None:
         self.intent = intent
         self.chunks = chunks
@@ -109,6 +110,13 @@ class FakeRoutedAnswer:
         # pre-row-14 construction above means "nothing to clarify", and
         # spelling that out at each of them would say less than it costs.
         self.clarification_options = clarification_options
+        # ب-7أ (خطة السيناريوهات §4، ف-2) — the name of the file a queued
+        # build is about. Defaulted to `None` for the reason above and
+        # one more: `None` is what the REAL module sends whenever it
+        # queued nothing, and whenever it queued a build it could not
+        # name, so a construction that says nothing here is saying a
+        # thing the module actually says.
+        self.summary_target_name = summary_target_name
 
 
 class FakeKnowledge:
@@ -131,6 +139,7 @@ class FakeKnowledge:
         document_names: Sequence[str] = (),
         document_total: int | None = None,
         summary_job_id: str | None = None,
+        summary_target_name: str | None = None,
         clarification_options: Sequence[str] = (),
         routed_intent: str | None = None,
         answer_error: Exception | None = None,
@@ -139,6 +148,10 @@ class FakeKnowledge:
         self._chunks = chunks
         self._document_names = FakeDocumentNames(document_names, document_total)
         self._summary_job_id = summary_job_id
+        # ب-7أ — the name the module resolved the build's target to.
+        # Only ever read on the branch that returns a job id: a name
+        # without a build is a state the real module cannot produce.
+        self._summary_target_name = summary_target_name
         self._clarification_options = clarification_options
         # ب-3 (خطة الفجوات §3، ف-5) — the intent the module REPORTS on the
         # route that returned no job and no candidates. `None` keeps the
@@ -215,7 +228,12 @@ class FakeKnowledge:
         if self._answer_error is not None:
             raise self._answer_error
         if self._summary_job_id is not None:
-            return FakeRoutedAnswer("summarize_doc", (), self._summary_job_id)
+            return FakeRoutedAnswer(
+                "summarize_doc",
+                (),
+                self._summary_job_id,
+                summary_target_name=self._summary_target_name,
+            )
         if self._clarification_options:
             # Retrieval plan §4 row 14 — the honest "I did not decide"
             # answer: the intent is reported as the summarisation it was, no
@@ -278,6 +296,7 @@ def make_deps(
     document_names: Sequence[str] = (),
     document_total: int | None = None,
     summary_job_id: str | None = None,
+    summary_target_name: str | None = None,
     clarification_options: Sequence[str] = (),
     space_id: str | None = SPACE,
     routed_intent: str | None = None,
@@ -290,6 +309,7 @@ def make_deps(
         document_names=document_names,
         document_total=document_total,
         summary_job_id=summary_job_id,
+        summary_target_name=summary_target_name,
         clarification_options=clarification_options,
         routed_intent=routed_intent,
         answer_error=answer_error,
@@ -892,22 +912,94 @@ async def test_the_summary_receipt_answers_in_arabic_for_an_arabic_query() -> No
     assert "جارٍ إعداد ملخّص" in events[-1].data["text"]
 
 
-async def test_the_summary_receipt_names_no_document_and_lists_no_corpus() -> None:
-    """Two things it must NOT do. It never echoes a file name: the agent knows
-    a job id and nothing else, and naming a document it did not resolve is how
-    an agent starts describing the wrong file with confidence (§3.5/س-18). And
-    it does not carry the corpus header — س-23 = ج puts that on the two
-    ANSWERING paths, and this branch is a receipt for an action on a document
-    the caller already named, so the header is never even fetched."""
+async def test_the_receipt_never_invents_a_name_the_module_did_not_send() -> None:
+    """**The containing guard for ب-7أ.** The rule «لا تردّد اسمًا لم
+    تحلَّه» is the agent's and it survives the name crossing the
+    seam: what changed is that the module now SENDS one, not that
+    the agent started deriving one.
+
+    So with no name sent, nothing is named — not the corpus this
+    workspace holds, not the file the QUERY mentions, not the job
+    id. An agent that filled the gap from any of those would be
+    asserting a resolution nobody performed, which is the failure
+    §3.5/س-18 exists to prevent.
+
+    And the corpus header is still absent AND unfetched: س-23 = ج
+    puts it on the two ANSWERING paths, and this branch is a
+    receipt for an action on a document the module already
+    identified.
+    """
     deps, knowledge, _llm = make_deps(
         summary_job_id="job-1", document_names=["a.pdf", "b.pdf"], scope=("file-a",)
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "summarize budget-2025.xlsx")
+
+    text = events[-1].data["text"]
+    assert "a.pdf" not in text
+    # The query named a file. The module resolved nothing, so neither
+    # does the answer — the whole distinction ب-7أ rests on.
+    assert "budget-2025.xlsx" not in text
+    assert "job-1" not in text
+    assert knowledge.name_limit_calls == []
+
+
+async def test_the_receipt_names_the_file_it_queued() -> None:
+    """ب-7أ (ف-2): the module resolved the target and said which
+    file it is, so the receipt says it too.
+
+    Before this, three sound decisions composed into a user who
+    could not tell WHICH file was being summarised — and a FUZZY
+    match at 0.78 over a 0.75 threshold announced itself only
+    minutes later, when a summary of the wrong document arrived.
+    """
+    deps, _knowledge, llm = make_deps(
+        summary_job_id="job-1", summary_target_name="التقرير الشمالي.pdf"
+    )
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخص لي هذا الملف")
+
+    # Still no LLM: naming the file is a template fill, not synthesis.
+    assert llm.stream_calls == []
+    text = events[-1].data["text"]
+    assert "التقرير الشمالي.pdf" in text
+    assert "جارٍ إعداد ملخّص" in text
+    # And still one emit site: token then final, the same text.
+    assert [e.type for e in events] == ["token", "final"]
+    assert events[0].data["delta"] == text
+
+
+async def test_the_named_receipt_answers_in_the_querys_language() -> None:
+    """One language mechanism, and the name does not change it: the
+    file is named in both sentences, and which sentence is used is
+    still the `_ARABIC_CHAR_RE` presence check every other fixed
+    sentence in this agent uses.
+
+    The name itself is copied verbatim whatever script it is in —
+    an Arabic file name inside the English sentence is what the
+    file is actually called."""
+    deps, _knowledge, _llm = make_deps(
+        summary_job_id="job-1", summary_target_name="التقرير الشمالي.pdf"
     )
     events = await drive_run(RagAgent(make_ctx(), deps), "summarize this file")
 
     text = events[-1].data["text"]
-    assert "a.pdf" not in text
-    assert "job-1" not in text
-    assert knowledge.name_limit_calls == []
+    assert "being prepared" in text
+    assert "التقرير الشمالي.pdf" in text
+
+
+async def test_the_receipt_falls_back_to_its_unnamed_wording_without_a_name() -> None:
+    """A target the module could not name (`None`) delivers the
+    sentence exactly as it read before ب-7أ — never that sentence
+    with a blank where the file should be.
+
+    A blank-looking name is the same case for the same reason: a
+    receipt reading «ملخّص «»» tells a user their file is called
+    nothing, which is worse than one that names no file at all."""
+    for name in (None, "   "):
+        deps, _knowledge, _llm = make_deps(summary_job_id="job-1", summary_target_name=name)
+        events = await drive_run(RagAgent(make_ctx(), deps), "لخص لي هذا الملف")
+
+        text = events[-1].data["text"]
+        assert text == "جارٍ إعداد ملخّص المستند المطلوب، وسيكون متاحًا بعد قليل."
 
 
 # --------------------------------------------------------------------------- #

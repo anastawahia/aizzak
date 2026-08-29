@@ -117,6 +117,9 @@ class RecordingRetrieval:
             chunks=tuple(self.chunks),
             summary_job_id=None,
             clarification_options=(),
+            # ب-7أ — the CONTENT route queues no build, so there is
+            # no target for a name to be about.
+            summary_target_name=None,
         )
 
     async def list_document_names(

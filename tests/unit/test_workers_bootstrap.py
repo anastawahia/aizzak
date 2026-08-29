@@ -1464,6 +1464,10 @@ def test_build_memory_worker_from_env_builds_a_real_consumer_without_raising() -
 # --------------------------------------------------------------------------- #
 _DELIVERY_DOC = "doc-77"
 _DELIVERY_TEXT = "The retrieval policy, in eight paragraphs."
+# ب-7ج -- the file the delivered summary is about. Distinctive
+# enough that a test asserting the header cannot pass on a
+# substring of the body.
+_DELIVERY_FILE = "retrieval-policy.pdf"
 _ARABIC_DELIVERY_TEXT = "سياسة الاسترجاع، في ثماني فقرات."
 
 
@@ -1508,6 +1512,23 @@ class _FakeAppendMessage:
             raise self.error
         self.appended.append((conversation_id, role, text))
         return object()
+
+
+class _FakeDocumentNames:
+    """Minimal ``GetDocumentFileName`` (ب-7ج) -- hands back one name,
+    or ``None`` for the document whose file can no longer be read,
+    or raises whatever the test wants the files seam to raise."""
+
+    def __init__(self, name: str | None = _DELIVERY_FILE, error: Exception | None = None) -> None:
+        self.name = name
+        self.error = error
+        self.asked: list[str] = []
+
+    async def execute(self, ctx: ExecutionContext, *, document_id: str) -> str | None:
+        self.asked.append(document_id)
+        if self.error is not None:
+            raise self.error
+        return self.name
 
 
 def _summary(
@@ -1557,17 +1578,26 @@ async def test_a_finished_summary_reaches_the_thread_that_asked_for_it() -> None
     summaries = _FakeSummaries(_summary())
     append = _FakeAppendMessage()
     ledger = _FakeLedger()
+    names = _FakeDocumentNames()
     handler = build_knowledge_summary_delivery_handler(
         summaries,  # type: ignore[arg-type]
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         ledger,
+        names,  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
     await handler(ctx, _built_envelope(ctx))
 
-    assert append.appended == [("conv-7", "assistant", _DELIVERY_TEXT)]
+    # ب-7ج -- and it says WHICH file it summarises. The receipt the
+    # thread already holds names the same document; without this
+    # line the two were joined only by the reader's assumption,
+    # across however many unrelated messages sat between them.
+    assert append.appended == [
+        ("conv-7", "assistant", f'Summary of "{_DELIVERY_FILE}":\n\n{_DELIVERY_TEXT}')
+    ]
+    assert names.asked == [_DELIVERY_DOC]
     # Read back under the event's own key, never guessed: the triple on the
     # message is what the build wrote the row under.
     assert summaries.reads == [(_DELIVERY_DOC, SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
@@ -1588,6 +1618,7 @@ async def test_a_summary_with_no_thread_is_delivered_nowhere_and_is_not_an_error
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         ledger,
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
@@ -1608,6 +1639,7 @@ async def test_a_summary_deleted_before_its_delivery_leaves_the_thread_alone() -
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         _FakeLedger(),
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
@@ -1627,6 +1659,7 @@ async def test_a_deleted_thread_ends_the_delivery_instead_of_redelivering_it_to_
         _FakeAppendMessage(NotFoundError("conversation not found")),  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         _FakeLedger(),
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
@@ -1643,6 +1676,7 @@ async def test_a_duplicate_delivery_writes_the_summary_into_the_thread_only_once
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         _FakeLedger(result=False),  # already processed
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
@@ -1663,13 +1697,21 @@ async def test_a_truncated_summary_reaches_the_thread_with_the_cut_declared() ->
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         _FakeLedger(),
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
     await handler(ctx, _built_envelope(ctx))
 
     delivered = append.appended[0][2]
-    assert delivered == _DELIVERY_TEXT + "\n\n" + SUMMARY_TRUNCATED_NOTICE_EN
+    # Header above, notice below, body between -- the two additions
+    # are composed by one function and neither displaces the other.
+    assert delivered == (
+        f'Summary of "{_DELIVERY_FILE}":\n\n'
+        + _DELIVERY_TEXT
+        + "\n\n"
+        + SUMMARY_TRUNCATED_NOTICE_EN
+    )
 
 
 async def test_the_delivered_notice_speaks_the_summarys_own_language() -> None:
@@ -1683,12 +1725,85 @@ async def test_the_delivered_notice_speaks_the_summarys_own_language() -> None:
         append,  # type: ignore[arg-type]
         _FakeUnitOfWork(),
         _FakeLedger(),
+        _FakeDocumentNames(),  # type: ignore[arg-type]
     )
     ctx = _ctx()
 
     await handler(ctx, _built_envelope(ctx))
 
     assert append.appended[0][2].endswith(SUMMARY_TRUNCATED_NOTICE_AR)
+
+
+async def test_a_failing_name_lookup_still_delivers_the_summary() -> None:
+    """ب-7ج: a header is cosmetic; a summary is what was asked for.
+
+    The same rule ب-2 states for the RAG agent's corpus header, on
+    the one other read allowed to fail quietly in this codebase: a
+    build that took minutes of provider calls must not be dropped
+    because a name lookup failed. The message arrives untitled --
+    which is exactly what it looked like before ب-7ج -- and the
+    failure is logged rather than raised.
+    """
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary()),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+        _FakeDocumentNames(error=RuntimeError("files seam down")),  # type: ignore[arg-type]
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))  # nothing escapes
+
+    assert append.appended == [("conv-7", "assistant", _DELIVERY_TEXT)]
+
+
+async def test_an_unnameable_document_delivers_the_summary_untitled() -> None:
+    """`None` is an ordinary answer, not a failure: a summary is
+    built from chunks stored at index time and stays deliverable
+    long after the file it was built from is deleted or
+    quarantined.
+
+    A blank name is the same case for a different reason -- a
+    message headed `Summary of "":` shows a user that their file
+    is called nothing -- and both deliver the body alone.
+    """
+    for name in (None, "   "):
+        append = _FakeAppendMessage()
+        handler = build_knowledge_summary_delivery_handler(
+            _FakeSummaries(_summary()),  # type: ignore[arg-type]
+            append,  # type: ignore[arg-type]
+            _FakeUnitOfWork(),
+            _FakeLedger(),
+            _FakeDocumentNames(name),  # type: ignore[arg-type]
+        )
+        ctx = _ctx()
+
+        await handler(ctx, _built_envelope(ctx))
+
+        assert append.appended == [("conv-7", "assistant", _DELIVERY_TEXT)]
+
+
+async def test_the_delivery_header_speaks_the_summarys_own_language() -> None:
+    """The header follows the body, exactly as the truncation
+    notice does and for the same reason: both are read WITH the
+    summary, so both take their language from it -- here through
+    `auto`, where the only honest evidence is what the model
+    actually wrote."""
+    append = _FakeAppendMessage()
+    handler = build_knowledge_summary_delivery_handler(
+        _FakeSummaries(_summary(_ARABIC_DELIVERY_TEXT)),  # type: ignore[arg-type]
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        _FakeLedger(),
+        _FakeDocumentNames(),  # type: ignore[arg-type]
+    )
+    ctx = _ctx()
+
+    await handler(ctx, _built_envelope(ctx))
+
+    assert append.appended[0][2].startswith(f"ملخّص «{_DELIVERY_FILE}»:")
 
 
 async def test_the_build_handler_hands_the_message_s_thread_to_finalize() -> None:
