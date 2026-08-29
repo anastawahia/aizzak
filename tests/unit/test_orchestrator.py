@@ -20,7 +20,7 @@ from typing import ClassVar
 
 import pytest
 
-from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
+from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies, _TokenMeter
 from app.framework.agent_runtime.base_agent import (
     AgentDependencies,
     AgentEvent,
@@ -437,6 +437,10 @@ class _FakeKnowledge:
         # calls this on every request that has a knowledge seam at all, not
         # only the zero-chunk fallback below.
         self.name_limit_calls: list[int | None] = []
+        # ب-9 — what the agent forwarded from the thread. Recorded, not
+        # ignored: a fake that swallowed the argument could not tell "the
+        # pending intent reached the module" from "nothing was pending".
+        self.pending: list[tuple[str, ...]] = []
 
     async def retrieve(
         self,
@@ -461,12 +465,14 @@ class _FakeKnowledge:
         *,
         space_id: str,
         conversation_id: str | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> _FakeRoutedAnswer:
         """The seam the real ``rag_agent`` calls (retrieval plan §3.4/§4 row
         11): ONE call, routed inside the module. It records into the SAME
         ``queries``/``scopes`` logs ``retrieve`` uses, so what this test
         proves — the question and the pinned scope reach the module intact —
         is unchanged by which face carries them."""
+        self.pending.append(tuple(pending_candidates))
         chunks = await self.retrieve(ctx, question, k, file_ids, space_id=space_id)
         return _FakeRoutedAnswer(chunks)
 
@@ -1092,6 +1098,10 @@ async def test_a_budget_spent_between_pulls_still_disposes_the_producer() -> Non
 # so a test that cares which space reached the agent can compare against it
 # rather than against a literal repeated at both ends.
 _THREAD_SPACE = "space-of-the-thread"
+# ب-9 — `fail_on` names a ROLE for the message writes; the pending write has
+# no role, so it gets a sentinel of its own that no role string can collide
+# with.
+_PENDING_WRITE = "<pending>"
 
 
 class _FakeThreads:
@@ -1106,6 +1116,7 @@ class _FakeThreads:
         pinned: str | None = None,
         pinned_files: tuple[str, ...] = (),
         space: str | None = _THREAD_SPACE,
+        pending: tuple[str, ...] = (),
     ) -> None:
         self.started: list[tuple[str, str]] = []
         self.spaces: list[str | None] = []
@@ -1116,6 +1127,13 @@ class _FakeThreads:
         # other two pre-flight reads so a test can pin that a request opening a
         # fresh thread never performs one.
         self.space_reads: list[str] = []
+        # ب-9 — the pending-clarification read and its WRITE. The write is
+        # recorded as a list rather than as a final value on purpose: what
+        # this item promises is that the intent lives exactly one turn, and
+        # only the sequence of writes can show that.
+        self.pending_reads: list[str] = []
+        self.pending_writes: list[tuple[str, tuple[str, ...]]] = []
+        self._pending = pending
         self._fail_on = fail_on
         self._known = known
         self._pinned = pinned
@@ -1136,6 +1154,27 @@ class _FakeThreads:
         exist yet what it pinned."""
         self.scope_reads.append(conversation_id)
         return self._pinned_files
+
+    async def pending_clarification(
+        self, ctx: ExecutionContext, conversation_id: str
+    ) -> tuple[str, ...]:
+        """ب-9. Recorded like the three reads beside it, so a test can pin
+        that a request opening a FRESH thread never asks a thread that does
+        not exist yet what it was waiting for."""
+        self.pending_reads.append(conversation_id)
+        return self._pending
+
+    async def expect_clarification(
+        self, ctx: ExecutionContext, conversation_id: str, options: Sequence[str]
+    ) -> None:
+        """ب-9. The port's one non-message write. It mutates `_pending` too,
+        so a fake threaded through two consecutive turns behaves the way the
+        real store does — otherwise "the intent was erased" would be a claim
+        about a list this object ignored."""
+        if self._fail_on == _PENDING_WRITE:
+            raise ConflictError("pending write lost a race")
+        self._pending = tuple(options)
+        self.pending_writes.append((conversation_id, tuple(options)))
 
     async def routed_model(self, ctx: ExecutionContext, conversation_id: str) -> str | None:
         """BE-RAG-003. Records the read so a test can pin that a request
@@ -1825,3 +1864,287 @@ async def test_an_orchestrator_with_no_conversations_seam_runs_unscoped() -> Non
         pass
 
     assert _RecordingAgent.seen[0].knowledge_scope == ()
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the pending clarification on the thread    #
+# --------------------------------------------------------------------------- #
+class _AskingAgent(BaseAgent):
+    """An agent that ASKS: a `final` declaring which files it offered."""
+
+    metadata = _metadata("asking", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(
+            type="final",
+            data={"text": "which one?", "pending_clarification": ["a.pdf", "b.pdf"]},
+        )
+
+
+class _PendingReadingAgent(BaseAgent):
+    """An agent that records what the bundle told it was outstanding."""
+
+    metadata = _metadata("pending-reader", capabilities=frozenset())
+    seen: ClassVar[list[tuple[str, ...]]] = []
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        _PendingReadingAgent.seen.append(self.deps.pending_clarification)
+        yield AgentEvent(type="final", data={"text": "answered"})
+
+
+async def test_the_threads_pending_question_reaches_the_agents_bundle() -> None:
+    """The read half. An agent cannot ask a thread anything — it holds no seam
+    to conversations (D-12) — so the one layer that knows which thread this
+    turn belongs to reads it and puts it on the bundle, exactly as it does for
+    the pinned scope and the space."""
+    _PendingReadingAgent.seen = []
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf", "b.pdf"))
+    orchestrator = _turn_orchestrator(_PendingReadingAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "pending-reader", AgentRequest(conversation_id="conv-1", input={"text": "الثاني"})
+    ):
+        pass
+
+    assert threads.pending_reads == ["conv-1"]
+    assert _PendingReadingAgent.seen == [("a.pdf", "b.pdf")]
+
+
+async def test_a_request_opening_a_fresh_thread_asks_no_thread_what_it_was_waiting_for() -> None:
+    """There is nothing to ask: the thread does not exist yet, so nobody has
+    been asked anything in it. The same rule the route and scope reads keep."""
+    _PendingReadingAgent.seen = []
+    threads = _FakeThreads()
+    orchestrator = _turn_orchestrator(_PendingReadingAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(),
+        "pending-reader",
+        AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "hi"}),
+    ):
+        pass
+
+    assert threads.pending_reads == []
+    assert _PendingReadingAgent.seen == [()]
+
+
+async def test_an_orchestrator_with_no_conversations_seam_reads_nothing_pending() -> None:
+    """The degraded shape, and it degrades to the behaviour every thread had
+    before the column existed: no memory, every turn an ordinary question."""
+    _PendingReadingAgent.seen = []
+    orchestrator = _turn_orchestrator(_PendingReadingAgent, None)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "pending-reader", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    ):
+        pass
+
+    assert _PendingReadingAgent.seen == [()]
+
+
+async def test_what_the_agent_asked_is_written_onto_the_thread() -> None:
+    """The write half. The agent states what it asked about on its own `final`;
+    this is the layer that turns that into a fact about a thread."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_AskingAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+    ):
+        pass
+
+    assert threads.pending_writes == [("conv-1", ("a.pdf", "b.pdf"))]
+
+
+async def test_a_clarification_key_never_reaches_the_client() -> None:
+    """⚠️ ق-د = أ. The key is a message to the platform, not to a client, and
+    letting it through would be a structured clarification event in all but
+    name — which س-18 put out of scope.
+
+    Stripped on the way past, so the `final` a caller sees carries the answer
+    text (where the names already are, readably) and the three keys `03 §3.1`
+    adds, and nothing else.
+    """
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_AskingAgent, threads)
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+        )
+    ]
+
+    assert "pending_clarification" not in events[-1].data
+    assert events[-1].data["text"] == "which one?"
+
+
+async def test_the_key_is_stripped_even_when_nothing_can_store_it() -> None:
+    """And stripped on the degraded path too: a deployment with no
+    conversations seam must not start emitting an internal key just because
+    nothing is able to act on it."""
+    orchestrator = _turn_orchestrator(_AskingAgent, None)
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+        )
+    ]
+
+    assert "pending_clarification" not in events[-1].data
+
+
+async def test_the_stored_message_carries_no_internal_key_either() -> None:
+    """The strip happens BEFORE the reply is persisted, which is why the key
+    cannot leak into the thread: a message is rendered from this same payload,
+    and a `final` with no text is serialised whole."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_AskingAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+    ):
+        pass
+
+    assert [row[2] for row in threads.appended] == ["summarise", "which one?"]
+
+
+async def test_a_pending_clarification_survives_one_turn_and_no_more() -> None:
+    """⚠️ Decision 1, and the reason there is no TTL and no counter. An intent
+    that lived two turns would read a brand-new question as an answer to a
+    forgotten one — a stranger failure than the one being fixed.
+
+    Two turns on one thread: the first asks and stores, the second answers and
+    erases. The erasure is not a separate step anybody could forget — it is
+    the same write, carrying what is outstanding NOW.
+    """
+    threads = _FakeThreads(known="conv-1")
+    asking = _turn_orchestrator(_AskingAgent, threads)
+    answering = _turn_orchestrator(_PendingReadingAgent, threads)
+    _PendingReadingAgent.seen = []
+
+    async for _ in await asking.invoke(
+        _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+    ):
+        pass
+    async for _ in await answering.invoke(
+        _ctx(), "pending-reader", AgentRequest(conversation_id="conv-1", input={"text": "الثاني"})
+    ):
+        pass
+
+    # The second turn SAW it...
+    assert _PendingReadingAgent.seen == [("a.pdf", "b.pdf")]
+    # ...and left nothing behind for a third.
+    assert threads.pending_writes == [("conv-1", ("a.pdf", "b.pdf")), ("conv-1", ())]
+
+    _PendingReadingAgent.seen = []
+    async for _ in await answering.invoke(
+        _ctx(), "pending-reader", AgentRequest(conversation_id="conv-1", input={"text": "و بعد؟"})
+    ):
+        pass
+
+    assert _PendingReadingAgent.seen == [()]
+
+
+async def test_an_unrelated_next_turn_clears_the_pending_intent_and_is_answered_normally() -> None:
+    """Decision 3 at this layer: the erasure does not depend on the answer
+    having WORKED. A user who ignored the question and asked something else is
+    answered — and the question is over either way."""
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf", "b.pdf"))
+    orchestrator = _turn_orchestrator(_FileAgent, threads)
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "filer", AgentRequest(conversation_id="conv-1", input={"text": "how many?"})
+        )
+    ]
+
+    assert threads.pending_writes == [("conv-1", ())]
+    assert events[-1].data["text"] == "done"
+
+
+async def test_a_turn_that_changes_nothing_writes_nothing() -> None:
+    """The cost guard. Almost every turn has no question before it and asks
+    none, and the write is skipped for all of them — the comparison is against
+    what the pre-flight read, so nothing is a statement about a row nobody
+    touched."""
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_FileAgent, threads)
+
+    async for _ in await orchestrator.invoke(
+        _ctx(), "filer", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    ):
+        pass
+
+    assert threads.pending_writes == []
+
+
+async def test_a_failed_pending_write_never_sinks_a_delivered_answer() -> None:
+    """The same trade `_persist_reply` and `_capture` make, and the same
+    warning: by the time a `final` is in hand the answer has been produced and
+    streamed. What is lost is one turn's memory — the next turn is read as an
+    ordinary question, which is what it was before this item existed."""
+    threads = _FakeThreads(known="conv-1", fail_on=_PENDING_WRITE)
+    orchestrator = _turn_orchestrator(_AskingAgent, threads)
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "asking", AgentRequest(conversation_id="conv-1", input={"text": "summarise"})
+        )
+    ]
+
+    assert events[-1].data["text"] == "which one?"
+    assert events[-1].data["message_id"] == "msg-2"
+    assert "pending_clarification" not in events[-1].data
+
+
+async def test_a_malformed_declaration_is_read_as_asking_nothing() -> None:
+    """A plugin nobody in this repository wrote can put anything under this
+    key. The safe direction is `()` — "this turn asked nothing" — which is
+    also what the key's absence means, so a malformed declaration ends the
+    previous question rather than starting an unreadable one."""
+
+    class _JunkAgent(BaseAgent):
+        metadata = _metadata("junk", capabilities=frozenset())
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            yield AgentEvent(
+                type="final", data={"text": "hm", "pending_clarification": {"not": "a list"}}
+            )
+
+    threads = _FakeThreads(known="conv-1", pending=("a.pdf",))
+    orchestrator = _turn_orchestrator(_JunkAgent, threads)
+
+    events = [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(), "junk", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+        )
+    ]
+
+    assert threads.pending_writes == [("conv-1", ())]
+    assert "pending_clarification" not in events[-1].data
+
+
+async def test_a_workflow_step_is_never_waiting_on_an_answer() -> None:
+    """A workflow step runs inside the run's OWN conversation, created by that
+    run — so no user has ever been asked anything in it, and there is nothing
+    for a step's input to be the answer to."""
+    orchestrator = _turn_orchestrator(_PendingReadingAgent, _FakeThreads(pending=("a.pdf",)))
+    deps, _provider = await orchestrator.begin_step(
+        _ctx(), "pending-reader", _TokenMeter(), space_id=_SPACE
+    )
+
+    assert deps.pending_clarification == ()

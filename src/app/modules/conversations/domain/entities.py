@@ -14,6 +14,7 @@ Since the spaces plan's step 7 a ``Conversation`` also carries the
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -83,6 +84,33 @@ class Conversation:
     # whatever the operator configured today, which is not a fact the domain
     # can hold (``PinConversationModel`` checks it against ``ModelCatalog``).
     model_route: str | None = None
+    # ب-9 (خطة السيناريوهات §7, gap ف-1أ) — the file names this thread's LAST
+    # turn asked the user to choose between, in the order they were shown.
+    # `()` = nothing pending, which is what every turn that asked no question
+    # means and what every row predating the column means.
+    #
+    # The SECOND defaulted field here, and it shares `model_route`'s reason
+    # exactly: a construction site that says nothing means "this thread is not
+    # waiting on an answer", which is true of almost every one of them, and
+    # forcing all of them to spell it out would add noise without adding a
+    # decision. (`space_id` above is undefaulted for the opposite reason: a
+    # forgotten space is indistinguishable from a decided absence, and the
+    # consequence is a thread filed nowhere. A forgotten pending list is
+    # simply a thread with no question outstanding.)
+    #
+    # NAMES and not document ids, and the domain is where that has to be
+    # stated because it is the domain that makes the value meaningful: what
+    # the user was shown is names, the answer is about what was shown, and
+    # «الثاني» is only readable against the list that was actually displayed.
+    # Ids would make the ordinal answerable only by re-deriving a display
+    # order from somewhere else. This module never resolves them — it holds
+    # them, and the module that offered them reads them back.
+    #
+    # Not validated, deliberately. These are strings another module minted and
+    # this one only remembers; a rule here about what a "valid" candidate name
+    # is would be this module inventing an opinion about a vocabulary it does
+    # not own.
+    pending_clarification: tuple[str, ...] = ()
 
     def rename(self, title: str | None, now: datetime) -> None:
         """Change the display title. Rejected once the conversation is deleted."""
@@ -100,6 +128,31 @@ class Conversation:
         """
         self._guard_not_deleted()
         self.model_route = route
+        self.updated_at = now
+
+    def expect_clarification(self, options: Sequence[str], now: datetime) -> None:
+        """Record (or, with an empty sequence, forget) the file names this
+        thread has just asked the user to choose between (ب-9).
+
+        **Setting and clearing are the same call, and that is the decision.**
+        The pending intent lives for exactly one turn: the next turn reads it,
+        acts on it or does not, and then writes whatever THAT turn left
+        outstanding — which is nothing, almost always. A separate ``clear``
+        would make the erasure an extra step a caller could omit, and an
+        intent that survives two turns reads a brand-new question as an answer
+        to a forgotten one. Making "what is outstanding now" the only thing
+        anyone can write is what keeps that impossible rather than merely
+        discouraged.
+
+        Copied into a tuple, not aliased: the caller's list must not stay a
+        live handle on the aggregate's state.
+
+        Rejected once the conversation is deleted, for ``pin_model_route``'s
+        reason: a deleted thread refuses writes rather than denying its own
+        existence.
+        """
+        self._guard_not_deleted()
+        self.pending_clarification = tuple(options)
         self.updated_at = now
 
     def soft_delete(self, now: datetime) -> None:

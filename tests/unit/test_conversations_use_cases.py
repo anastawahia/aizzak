@@ -17,6 +17,9 @@ from app.framework.providers.catalog import ModelChoice
 from app.modules.conversations.application.use_cases import (
     MAX_PINNED_FILES,
     AppendMessage,
+    ConversationService,
+    ExpectClarification,
+    GetConversation,
     ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
@@ -65,6 +68,10 @@ class _FakeConversations:
         # idempotent path is defined by still reaching the repository, which
         # is not observable from the returned entity alone.
         self.saved_message_ids: list[str] = []
+        # Conversation ids handed to `save`, in order. `get` hands back the
+        # stored object itself, so a use-case that mutated the aggregate and
+        # FORGOT to persist it would be invisible without this.
+        self.saved_ids: list[str] = []
         self.pins: dict[str, list[PinnedFile]] = {}
 
     async def get(self, ctx: ExecutionContext, conversation_id: str) -> Conversation | None:
@@ -74,6 +81,7 @@ class _FakeConversations:
         self.rows[conversation.id] = conversation
 
     async def save(self, ctx: ExecutionContext, conversation: Conversation) -> None:
+        self.saved_ids.append(conversation.id)
         self.rows[conversation.id] = conversation
 
     async def list_by_agent(
@@ -856,3 +864,110 @@ async def test_a_spaceless_file_still_pins_into_a_spaceless_thread() -> None:
     pin = await PinConversationFile(conversations, files).execute(_ctx(), conversation.id, "f1")
 
     assert pin.file_id == "f1"
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the pending clarification                  #
+# --------------------------------------------------------------------------- #
+def _threads(conversations: _FakeConversations) -> ConversationService:
+    """The inbound port over the fake store — the two faces ب-9 added and the
+    collaborators the protocol needs to be satisfied at all."""
+    return ConversationService(  # type: ignore[arg-type]
+        StartConversation(conversations, _FakeSpaces()),  # type: ignore[arg-type]
+        AppendMessage(conversations),  # type: ignore[arg-type]
+        GetConversation(conversations),  # type: ignore[arg-type]
+        ListConversationFiles(conversations),  # type: ignore[arg-type]
+        ExpectClarification(conversations),  # type: ignore[arg-type]
+    )
+
+
+async def test_a_new_thread_is_waiting_for_nothing() -> None:
+    """The state every row predating the column is in, and the state almost
+    every thread is in at any moment."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    assert await _threads(conversations).pending_clarification(_ctx(), conversation.id) == ()
+
+
+async def test_what_was_asked_is_what_comes_back_in_order() -> None:
+    """Order is part of the value: it is what an ordinal answer indexes on the
+    next turn, so nothing in this module may sort or de-duplicate it."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    threads = _threads(conversations)
+
+    await threads.expect_clarification(_ctx(), conversation.id, ["b.pdf", "a.pdf", "b.pdf"])
+
+    assert await threads.pending_clarification(_ctx(), conversation.id) == (
+        "b.pdf",
+        "a.pdf",
+        "b.pdf",
+    )
+
+
+async def test_the_same_call_that_asks_is_the_call_that_forgets() -> None:
+    """Decision 1's shape at this layer: there is no `clear`, so the erasure
+    cannot be the step somebody forgot. Writing what is outstanding NOW is the
+    only thing anyone can do."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    threads = _threads(conversations)
+    await threads.expect_clarification(_ctx(), conversation.id, ["a.pdf"])
+
+    await threads.expect_clarification(_ctx(), conversation.id, [])
+
+    assert await threads.pending_clarification(_ctx(), conversation.id) == ()
+
+
+async def test_a_missing_thread_reads_no_pending_intent_rather_than_failing() -> None:
+    """Decision 4, and the rule the port's other three reads already keep: a
+    read-ahead that raised would take the reporting of an unknown (404) or
+    deleted (409) thread away from the write that does it properly."""
+    assert await _threads(_FakeConversations()).pending_clarification(_ctx(), "missing") == ()
+
+
+async def test_a_deleted_thread_reads_as_waiting_for_nothing() -> None:
+    """Through the same `GetConversation` as `routed_model` and `space_of`, so
+    a deleted thread reads exactly as a missing one does. Nothing is lost by
+    forgetting its outstanding question: the write that would answer it
+    refuses on the very same thread (the next test but one)."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    threads = _threads(conversations)
+    await threads.expect_clarification(_ctx(), conversation.id, ["a.pdf"])
+    conversation.deleted_at = utc_now()
+
+    assert await threads.pending_clarification(_ctx(), conversation.id) == ()
+
+
+async def test_writing_a_pending_intent_onto_an_unknown_thread_is_a_404() -> None:
+    """⚠️ The one method on this port that RAISES where its neighbours answer
+    neutrally, and the asymmetry is the read/write one: a WRITE is the thing
+    that is supposed to report these two states."""
+    with pytest.raises(NotFoundError):
+        await _threads(_FakeConversations()).expect_clarification(_ctx(), "missing", ["a.pdf"])
+
+
+async def test_writing_a_pending_intent_onto_a_deleted_thread_is_a_409() -> None:
+    """A deleted thread refuses writes rather than denying its own existence —
+    `rename` and `pin_model_route`'s rule, and this is a write."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations, deleted_at=utc_now())
+
+    with pytest.raises(ConflictError):
+        await _threads(conversations).expect_clarification(_ctx(), conversation.id, ["a.pdf"])
+
+
+async def test_the_pending_write_is_persisted_and_not_only_mutated() -> None:
+    """It goes through `save`, like every other mutation on this aggregate —
+    which is what puts it behind the optimistic lock. The value is disposable,
+    but a lost update leaves the thread waiting for an answer to whichever
+    question lost the race: the exact "answering a forgotten question" failure
+    the single-turn lifetime exists to prevent."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    await _threads(conversations).expect_clarification(_ctx(), conversation.id, ["a.pdf"])
+
+    assert conversations.saved_ids == [conversation.id]

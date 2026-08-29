@@ -247,6 +247,7 @@ class KnowledgeRetrieval(Protocol):
         *,
         space_id: Uuid,
         conversation_id: Uuid | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> RoutedAnswer:
         """Classify ``question`` and dispatch it to the route it belongs to
         (retrieval plan §3.4/§4 row 11, ``P-21``, س-16 = أ) — SUMMARIZE_DOC to
@@ -262,6 +263,32 @@ class KnowledgeRetrieval(Protocol):
         and the keyword-only ``space_id`` mean here exactly what they mean
         there, and a second vocabulary for the same three narrowings would be
         a second place for them to drift.
+
+        ``pending_candidates`` (ب-9, gap ف-1أ) is the SECOND argument that is
+        not retrieval's, and the only one that can answer a question before it
+        is classified: the file names the caller's LAST turn asked the user to
+        choose between, in the order they were shown. A question that chooses
+        one of them is a summarisation of that document, and is answered as
+        one.
+
+        It closes the far end of a path this port already had. When the
+        resolver refuses to choose, ``RoutedAnswer.clarification_options``
+        comes back and the caller asks the user — and until ب-9 nothing on
+        this port could receive the reply, so every one of those questions
+        ended in a content search. The names cross OUT here and now they cross
+        back IN.
+
+        NAMES cross, not document ids, and the same reason holds on both
+        directions of the trip: what was displayed is what is being answered,
+        and a position («the second one») is only readable against the list
+        that was actually shown. The caller stores what it displayed and hands
+        it back; this module does the resolving, exactly as ق-3 has it — the
+        caller never matches a name itself.
+
+        Defaulted to ``()``, so a caller with no notion of a previous turn
+        (``POST /knowledge/search``) keeps calling this as it did, and an
+        empty value costs nothing at all: nothing is walked and nothing is
+        matched.
 
         ``conversation_id`` is the one argument that is NOT retrieval's
         (`F-7`), which is why it lives on this method and not on ``retrieve``.

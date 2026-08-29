@@ -78,8 +78,9 @@ EV  CredentialRevoked(credential_id, occurred_at)
 المحادثة تتبع **الوكيل** بمفتاح `(workspace + agent_key)`؛ وللـWorkflow محادثته الخاصة.
 
 ```text
-AR  Conversation { id, workspace_id, agent_key: AgentKey, kind: ConversationKind,
-                   title, created_by, created_at, updated_at, deleted_at, version }
+AR  Conversation { id, workspace_id, space_id, agent_key: AgentKey, kind: ConversationKind,
+                   title, model_route, pending_clarification, created_by,
+                   created_at, updated_at, deleted_at, version }
 E   Message      { id, conversation_id, workspace_id, role: MessageRole, content: MessageContent,
                    token_count, seq: int, created_at, deleted_at }
 VO  AgentKey         (slug الوكيل من الـManifest؛ أو workflow_key عند kind=workflow)
@@ -89,10 +90,13 @@ VO  MessageContent   (نص + مرفقات اختيارية: قائمة file_id �
 EV  ConversationStarted(conversation_id, workspace_id, agent_key, kind, occurred_at)
 EV  MessageAppended(message_id, conversation_id, role, seq, occurred_at)
 ```
+- **`space_id`** (‏خطّة المساحات §3.2): المساحةُ التي فُتح فيها الخيط. محورُ ملكيّةٍ **داخل** المستأجر لا حدُّ أمانٍ ثانٍ، وبلا مُبدِّل: نقلُ خيطٍ بين المساحات يُعيد توجيه نطاقِ استرجاع كلِّ رسائله بصمت.
+- **`model_route`** (‏`BE‑RAG‑003`): مفتاحُ توجيهٍ من جدول D‑16، لا اسمَ موديلٍ خام. `None` ⇒ يُحلّ بمفتاح الوكيل.
+- **`pending_clarification`** (‏ب‑9، ف‑1أ): أسماءُ الملفّات التي سألها الدورُ السابق «أيّ ملفّ تقصد؟» **بترتيب عرضها**، و`()` ⇒ لا سؤالَ معلَّق. **أسماءٌ لا مُعرِّفات**، لأنّ المعروضَ أسماءٌ والجوابَ عن معروض، و«الثاني» لا يُقرأ إلّا على القائمة التي عُرضت. وتعيش **دوراً واحداً**: `expect_clarification` هي الضبطُ والمحوُ معاً، فلا يصير المحوُ خطوةً يمكن إغفالُها — ونيّةٌ تعيش دورين تقرأ سؤالاً جديداً تماماً جواباً على سؤالٍ منسيّ.
 - **INV‑CV1:** `seq` متتابع تصاعدي داخل المحادثة (منع الفجوات/التكرار عبر قفل تفاؤلي على `Conversation.version`).
 - **INV‑CV2:** المرفقات تُشار إليها بـ`file_id` فقط (مِلكية المحتوى لوحدة `files`) — لا نسخ محتوى.
 - **INV‑CV3:** لا إلحاق برسائل محادثة `deleted_at IS NOT NULL`. الحذف الناعم متاح على مستويين: المحادثة (`Conversation.deleted_at`) والرسالة المفردة (`Message.deleted_at`)؛ رسالة محذوفة ناعماً تُستبعَد من الاسترجاع دون تغيير `seq` (لا فجوات في العدّاد).
-- **Use‑cases:** `StartConversation`, `AppendMessage`, `ListConversationsByAgent`, `RenameConversation`, `SoftDeleteConversation`.
+- **Use‑cases:** `StartConversation`, `AppendMessage`, `ListConversationsByAgent`, `RenameConversation`, `SoftDeleteConversation`, `PinConversationModel`, `ExpectClarification`.
 
 ---
 

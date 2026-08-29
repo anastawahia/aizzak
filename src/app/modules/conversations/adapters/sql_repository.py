@@ -124,6 +124,12 @@ conversations = Table(
     Column("kind", Text, nullable=False),
     Column("title", Text, nullable=True),
     Column("model_route", Text, nullable=True),
+    # `migrations/versions/conversations/0005_conversation_pending_clarification.py`
+    # (ب-9) -- the file names the thread's last turn asked the user to choose
+    # between. Written by BOTH `add` and `save`, unlike `space_id` above: this
+    # is a value whose whole purpose is to change, and to change back, on
+    # consecutive turns.
+    Column("pending_clarification", JSONB, nullable=True),
     Column("created_by", _uuid_col, nullable=True),
     Column("created_at", _timestamptz, nullable=False),
     Column("updated_at", _timestamptz, nullable=False),
@@ -205,6 +211,7 @@ class SqlConversationRepository:
             kind=conversation.kind.value,
             title=conversation.title,
             model_route=conversation.model_route,
+            pending_clarification=_pending_to_json(conversation.pending_clarification),
             created_by=conversation.created_by,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
@@ -242,6 +249,12 @@ class SqlConversationRepository:
             .values(
                 title=conversation.title,
                 model_route=conversation.model_route,
+                # ب-9 -- and this is the ONE mutation for which the "write
+                # every mutable field" rule above is load-bearing rather than
+                # tidy: the pending intent is written by one turn and erased
+                # by the next, so a `save` that skipped it would leave a
+                # thread answering questions nobody is still asking.
+                pending_clarification=_pending_to_json(conversation.pending_clarification),
                 deleted_at=conversation.deleted_at,
                 version=conversations.c.version + 1,
             )
@@ -606,6 +619,18 @@ def _content_to_json(content: MessageContent) -> Json:
     return {"text": content.text, "attachments": list(content.attachments)}
 
 
+def _pending_to_json(options: tuple[str, ...]) -> list[str] | None:
+    """ب-9 -- the pending candidates as the column holds them: a JSON array,
+    or NULL when there is nothing pending.
+
+    ``None`` and not ``[]`` for the empty case, so "no question outstanding"
+    has exactly ONE spelling in the table. Two would be two things every
+    future predicate has to test for, and one of them would eventually be
+    forgotten in the query that mattered.
+    """
+    return list(options) if options else None
+
+
 def _id_cursor_of(row: RowMapping) -> str:
     return encode_id_cursor(str(row["id"]))
 
@@ -639,6 +664,11 @@ def _hydrate_conversation(row: RowMapping) -> Conversation:
         kind=ConversationKind(row["kind"]),
         title=row["title"],
         model_route=row["model_route"],
+        # NULL and `[]` both arrive as "nothing pending" -- the column is
+        # written as NULL for an empty list (`_pending_to_json`), and reading
+        # the other spelling anyway costs one `or` and removes a way for a
+        # hand-written row to behave differently from an adapter-written one.
+        pending_clarification=tuple(row["pending_clarification"] or ()),
         created_by=row["created_by"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],

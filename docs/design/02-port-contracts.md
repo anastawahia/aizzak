@@ -403,7 +403,8 @@ class KnowledgeRetrieval(Protocol):
     async def answer(self, ctx, question: str, k: int | None = None,
                      file_ids: Sequence[Uuid] | None = None,
                      *, space_id: Uuid,
-                     conversation_id: Uuid | None = None) -> RoutedAnswer: ...
+                     conversation_id: Uuid | None = None,
+                     pending_candidates: Sequence[str] = ()) -> RoutedAnswer: ...
     async def list_document_names(self, ctx, *, space_id: Uuid,
                                   limit: int | None = None) -> DocumentNames: ...
 # ثلاثةُ مناهجَ على **بذرةٍ واحدة** لا ثلاثةُ منافذَ محقونة: `rag_agent` يستدعي شيئاً واحداً
@@ -414,7 +415,15 @@ class KnowledgeRetrieval(Protocol):
 # سقطت `_TOP_K = 5` منه. وتسميتُها ما تزال جائزةً وتعني ما كانت تعنيه: `POST /knowledge/search`
 # يسمّي `k` لأن حجم النتيجة جزءٌ من عقده المنشور (03 §2) لا مقبضُ معايرةٍ حصرته س-24 في
 # `Settings`. و`limit` على `list_document_names` نفسُ الشكل حرفاً بحرف
-# و`conversation_id` (‏`F-7`) هي الوسيطةُ الوحيدةُ هنا التي ليست عن الاسترجاع، ولذلك هي على `answer` وحدها: مسارُ التلخيص يُنتِج نصَّه بعد انتهاء الدورة بدقائق، فيلزم أن تُخبَر الوحدةُ أين يُسلَّم — والوكيلُ وحده يعرف المحادثة التي يجيب فيها (‏`AgentRequest.conversation_id`). ومسارُ المحتوى يتجاهلها: جوابُه يُكتَب داخل الدورة نفسها. افتراضُها `None` قيمةٌ حقيقيّة لا منسيّة — `POST /knowledge/search` بلا محادثةٍ أصلاً
+# و`pending_candidates` (‏ب-9، ف-1أ) هي الوسيطةُ الثانيةُ التي ليست عن الاسترجاع — وهي الوحيدةُ
+# التي تستطيع أن **تُجيب سؤالاً قبل تصنيفه**: أسماءُ الملفّات التي سأل عنها الدورُ السابق. ورحلتُها
+# دائريّة: تخرج على `RoutedAnswer.clarification_options`، يعرضها الوكيلُ سؤالاً، وتعود هنا في الدور
+# التالي. وبدونها كان ذلك السؤالُ **طريقاً مسدوداً**: «الثاني» و«2025» و«تقرير الأداء 2025.pdf» ثلاثتُها
+# تُصنَّف `content`، فينتهي كلُّ سؤال توضيحٍ إلى بحثٍ في المحتوى. **أسماءٌ لا مُعرِّفات**: المعروضُ
+# أسماءٌ، والجوابُ عن معروض، و«الثاني» لا يُقرأ إلّا على القائمة التي عُرضت فعلاً — والوحدةُ وحدَها
+# تحسم الاسم (‏ق-3)، فالوكيلُ لا يطابق اسمَ ملفٍّ أبداً. وافتراضُها `()` يعني «لا سؤالَ معلَّق»، ولا
+# يكلّف شيئاً: لا مشيةَ مرشّحين ولا مطابقة
+# و`conversation_id` (‏`F-7`) هي الوسيطةُ الأولى التي ليست عن الاسترجاع، ولذلك هي على `answer` وحدها: مسارُ التلخيص يُنتِج نصَّه بعد انتهاء الدورة بدقائق، فيلزم أن تُخبَر الوحدةُ أين يُسلَّم — والوكيلُ وحده يعرف المحادثة التي يجيب فيها (‏`AgentRequest.conversation_id`). ومسارُ المحتوى يتجاهلها: جوابُه يُكتَب داخل الدورة نفسها. افتراضُها `None` قيمةٌ حقيقيّة لا منسيّة — `POST /knowledge/search` بلا محادثةٍ أصلاً
 # (‏`Settings.retrieval.max_corpus_names`)، وبها سقطت `_MAX_CORPUS_NAMES = 50` من الوكيل.
 # `answer` تُصنّف ثمّ تُرسل: `SUMMARIZE_DOC` إلى `RequestSummary` فيعود `summary_job_id`،
 # و`CONTENT` إلى `RetrieveContext` فتعود `chunks`. يُملأ أحدُهما لا كلاهما، وهما حقلان لا

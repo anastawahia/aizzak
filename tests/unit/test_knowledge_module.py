@@ -3959,3 +3959,276 @@ async def test_an_unspaced_question_is_refused_before_a_name_is_resolved() -> No
     assert excinfo.value.code == "knowledge.space_required"
     assert summaries.calls == []
     assert len(vectors.search_calls) == searched_before
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the answer to the clarification question    #
+# --------------------------------------------------------------------------- #
+async def test_the_three_answers_the_review_measured_all_resolve() -> None:
+    """⚠️ The item, literally. The review asked «أيّ ملفّ تقصد؟» over these two
+    files, tried the three replies a user can give, and measured `content`
+    three times out of three — a similarity search where a summary was asked
+    for, and a clarification path that always ended in nothing.
+
+    Here the same three replies, over the same corpus, each queue the build
+    for the file they name. Nothing about the resolver changed; what changed
+    is that the names the previous turn offered come back in.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+
+    # The turn that ASKS. Its options are what the next turn is answering, and
+    # they are read off the module rather than written by hand: the order the
+    # user is shown is the order an ordinal indexes.
+    service, _asking = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+    asked = await service.answer(ctx, "لخّص لي ملف الميزانية", 5, space_id=_SPACE_A)
+    offered = asked.clarification_options
+    assert set(offered) == {"الميزانية 2024.pdf", "الميزانية 2025.pdf"}
+
+    second = offered[1]
+    year = second.split()[1].removesuffix(".pdf")
+    expected = "doc-north" if second.endswith("2024.pdf") else "doc-south"
+
+    for reply in (second, "الثاني", year):
+        service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+        routed = await service.answer(ctx, reply, 5, space_id=_SPACE_A, pending_candidates=offered)
+
+        assert routed.intent is Intent.SUMMARIZE_DOC, reply
+        assert routed.summary_job_id is not None, reply
+        assert summaries.calls == [(expected, SummaryKind.OVERVIEW, SummaryLanguage.AUTO)], reply
+        assert routed.summary_target_name == second, reply
+
+
+async def test_an_answered_clarification_never_classifies_the_reply() -> None:
+    """Why the read runs BEFORE the classifier and not after it. «الثاني» is a
+    perfectly good CONTENT question on its own terms — it says nothing about
+    summarising anything — so by the time `classify_intent` has spoken, the
+    fact that it was an answer is gone and unrecoverable."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+    searches_before = len(vectors.search_calls)
+
+    routed = await service.answer(
+        ctx,
+        "الثاني",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert routed.intent is Intent.SUMMARIZE_DOC
+    assert routed.chunks == ()
+    # No search ran at all: the two routes are alternatives, and this turn
+    # took the one the previous turn was asking about.
+    assert len(vectors.search_calls) == searches_before
+    assert len(summaries.calls) == 1
+
+
+async def test_a_reply_that_answers_nothing_is_answered_as_a_new_question() -> None:
+    """Decision 3. A user who ignored the clarification and asked something
+    else has asked something else — and gets it answered, with no apology, no
+    re-asked question and no summary of a file they never chose."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(
+        ctx,
+        "quarterly revenue figures",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert routed.intent is Intent.CONTENT
+    assert routed.chunks
+    assert summaries.calls == []
+
+
+async def test_a_turn_with_nothing_pending_behaves_exactly_as_it_did() -> None:
+    """The containing guard for every caller that has no previous turn
+    (`POST /knowledge/search`, and every ordinary chat turn): an empty
+    `pending_candidates` is the default, and it changes nothing."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(ctx, "الثاني", 5, space_id=_SPACE_A)
+
+    assert routed.intent is Intent.CONTENT
+    assert summaries.calls == []
+
+
+async def test_an_answer_never_reaches_a_file_outside_the_questions_space() -> None:
+    """⚠️ س-32 holds across the turn boundary. The offer is a list of NAMES
+    from a past turn, and a name is not a permission: it is proved against the
+    candidate walk of THIS call, with the same space narrowing every other
+    resolution here gets. A name that belongs to another space resolves to
+    nothing rather than to a document this conversation may not see."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    documents = await _indexed_corpus(ctx, embeddings, vectors)
+    documents.docs["doc-south"].space_id = _SPACE_B
+    files = _FakeReadableFiles({"file-north": _SPACE_A, "file-south": _SPACE_B}, names=_TIED_CORPUS)
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, documents=documents, files=files
+    )
+
+    routed = await service.answer(
+        ctx,
+        "الميزانية 2025.pdf",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2025.pdf",),
+    )
+
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+
+
+async def test_an_answer_never_reaches_outside_the_callers_pin() -> None:
+    """And the pin narrows across the turn boundary too, for the same reason
+    and by the same walk: a thread pinned to one file cannot be talked into
+    summarising another by naming it in a reply."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(
+        ctx,
+        "الميزانية 2025.pdf",
+        5,
+        ["file-north"],
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    # The pinned file is `file-north` (2024); the reply names 2025, which is
+    # outside the pin and therefore not a candidate. Nothing is answered from
+    # it — and the pinned document is not summarised in its place either.
+    assert summaries.calls == []
+    assert routed.summary_job_id is None
+
+
+async def test_an_answered_clarification_reads_the_store_before_it_builds() -> None:
+    """The answered path is the SAME path (`_summarise`), which is the whole
+    reason it was extracted: «الثاني» reaches the stored summary exactly as
+    naming the file reaches it. A copy would have agreed on the day it was
+    written and drifted on the first change to either."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    stored = _FakeStoredSummaries(
+        {("doc-south", SummaryKind.OVERVIEW, SummaryLanguage.AUTO): "خلاصةٌ محفوظة."}
+    )
+    service, summaries = await _routing_service(
+        ctx, embeddings, vectors, _TIED_CORPUS, stored=stored
+    )
+
+    routed = await service.answer(
+        ctx,
+        "الميزانية 2025.pdf",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert routed.stored_summary_text is not None
+    assert "خلاصةٌ محفوظة." in routed.stored_summary_text
+    assert summaries.calls == []
+
+
+async def test_an_answered_clarification_reports_a_refusal_the_same_way() -> None:
+    """And the third outcome of `_summarise` too: a build refused for a
+    classified reason is classified whether the target was named or chosen."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, _summaries = await _routing_service(
+        ctx,
+        embeddings,
+        vectors,
+        _TIED_CORPUS,
+        summaries=_FakeSummaryStarter(raises=SummaryTargetNotIndexed("not indexed")),
+    )
+
+    routed = await service.answer(
+        ctx,
+        "الثاني",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert routed.summary_blocked is SummaryBlocked.NOT_INDEXED
+    assert routed.summary_job_id is None
+    assert routed.summary_target_name == "الميزانية 2025.pdf"
+
+
+async def test_the_depth_is_read_from_the_turn_that_answers() -> None:
+    """`F-8`'s rule reaching the new path unchanged: what the user said is
+    read from what the user JUST said. «الثاني كاملاً» is not a bare pointing
+    gesture, so it is not read as one — the deep read is asked for by naming
+    the file and the depth together."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    routed = await service.answer(
+        ctx,
+        "لخّص الميزانية 2025.pdf كاملاً",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert routed.summary_job_id is not None
+    assert summaries.calls == [("doc-south", SummaryKind.FULL, SummaryLanguage.AUTO)]
+
+
+async def test_an_answered_clarification_stamps_the_thread_it_was_asked_in() -> None:
+    """`F-7` across the new path: the build queued by an ANSWER still knows
+    where to deliver its text, because it goes through the one call that
+    stamps it."""
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    service, summaries = await _routing_service(ctx, embeddings, vectors, _TIED_CORPUS)
+
+    await service.answer(
+        ctx,
+        "الثاني",
+        5,
+        space_id=_SPACE_A,
+        conversation_id="conv-9",
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert summaries.threads == ["conv-9"]
+
+
+async def test_an_answered_clarification_walks_the_corpus_once_not_twice() -> None:
+    """The cost guard, stated as the thing that could actually go wrong.
+
+    The answer-reading walk does not ADD to the summarisation route's walk; it
+    REPLACES it. A reply that resolves carries its target and its name out of
+    the one walk it did, so `_summarise` never looks the corpus up again — the
+    turn costs exactly what the same question would have cost if the user had
+    typed the file name in the first place.
+    """
+    ctx = _ctx("ws1")
+    embeddings, vectors = _FakeEmbeddings(dim=6), _FakeHybridVectors()
+    files = _FakeReadableFiles(dict.fromkeys(_TIED_CORPUS), names=_TIED_CORPUS)
+    service, summaries = await _routing_service(ctx, embeddings, vectors, files=files)
+    reads_before = len(files.reads)
+
+    routed = await service.answer(
+        ctx,
+        "الثاني",
+        5,
+        space_id=_SPACE_A,
+        pending_candidates=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    assert len(summaries.calls) == 1
+    assert routed.summary_target_name == "الميزانية 2025.pdf"
+    assert len(files.reads) - reads_before == 1

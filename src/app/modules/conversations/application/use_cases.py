@@ -347,6 +347,48 @@ class PinConversationModel:
             raise ValidationError(f"unknown model route {route!r} (configured: {sorted(known)})")
 
 
+class ExpectClarification:
+    """Record on a thread which file names its last turn asked the user to
+    choose between — or, with an empty sequence, that it is asking nothing
+    (ب-9, خطة السيناريوهات §7).
+
+    **Not in ``ConversationUseCases``**, and the omission is the same one
+    ``PurgeSpaceConversations`` earns: `03 §2` publishes no route that sets
+    this, and it is not something a request may ask for. It is a fact the
+    ORCHESTRATOR states about a turn it just ran, reaching this module through
+    ``ConversationService`` and nowhere else. Putting it in the API bundle
+    would be contract surface for an operation no client can perform.
+
+    Loads and saves through the same optimistic lock every other mutation
+    uses. That is deliberate even though the value is disposable: a concurrent
+    write means two turns raced on one thread, and letting this one silently
+    win would leave the thread waiting for an answer to whichever question
+    lost — which is exactly the "answering a forgotten question" failure the
+    single-turn lifetime exists to prevent.
+
+    No event, for ``PinConversationModel``'s reason word for word: `04 §5`
+    keeps this module's events internal and in-memory, and minting a catalog
+    entry for a state change nothing subscribes to is contract surface with
+    nothing under it.
+    """
+
+    def __init__(self, conversations: ConversationRepository) -> None:
+        self._conversations = conversations
+
+    async def execute(
+        self, ctx: ExecutionContext, conversation_id: Uuid, options: Sequence[str]
+    ) -> Conversation:
+        conversation = await self._conversations.get(ctx, conversation_id)
+        if conversation is None:
+            raise NotFoundError("conversation not found")
+        try:
+            conversation.expect_clarification(options, utc_now())
+        except ConversationDeletedError as exc:
+            raise ConflictError(str(exc)) from exc
+        await self._conversations.save(ctx, conversation)
+        return conversation
+
+
 class SoftDeleteConversation:
     """Soft-delete a conversation. Idempotent — deleting twice emits no new event."""
 
@@ -651,11 +693,17 @@ class ConversationService:
         append: AppendMessage,
         get: GetConversation,
         list_files: ListConversationFiles,
+        expect: ExpectClarification,
     ) -> None:
         self._start = start
         self._append = append
         self._get = get
         self._list_files = list_files
+        # ب-9 -- the port's first non-message WRITE. Undefaulted like every
+        # collaborator above it: a service built without one could still read
+        # a pending intent and would never be able to erase it, and a thread
+        # that cannot forget a question is worse than one that never asked.
+        self._expect = expect
 
     async def routed_model(self, ctx: ExecutionContext, conversation_id: Uuid) -> str | None:
         """The thread's pinned route, or ``None`` when it is not pinned.
@@ -712,6 +760,44 @@ class ConversationService:
         except NotFoundError:
             return None
         return conversation.space_id
+
+    async def pending_clarification(
+        self, ctx: ExecutionContext, conversation_id: Uuid
+    ) -> tuple[str, ...]:
+        """The names this thread's last turn asked about, or ``()`` (ب-9).
+
+        ``GetConversation`` and not a fourth repository read, for
+        ``space_of``'s reason: the aggregate is already fetched on this very
+        pre-flight and this reads one more field off the same shape.
+
+        A tuple of plain strings, not the aggregate — the handle discipline
+        the three reads above keep.
+
+        Missing OR soft-deleted ⇒ ``()``, for ``routed_model``'s reason and
+        through the same ``GetConversation``. Unlike ``pinned_files``, the two
+        coinciding costs nothing here: what is lost by forgetting a deleted
+        thread's outstanding question is a turn nobody can take, because the
+        write that would answer it refuses on the same thread.
+        """
+        try:
+            conversation = await self._get.execute(ctx, conversation_id)
+        except NotFoundError:
+            return ()
+        return conversation.pending_clarification
+
+    async def expect_clarification(
+        self, ctx: ExecutionContext, conversation_id: Uuid, options: Sequence[str]
+    ) -> None:
+        """Record what this turn is waiting on, or clear it with ``()`` (ب-9).
+
+        The one method on this port that RAISES on a missing or deleted
+        thread while its neighbours answer neutrally, and the port's docstring
+        argues the asymmetry: this is a write, and a write is the thing that
+        is supposed to report those two states rather than swallow them.
+        Nothing is translated here — ``ExpectClarification`` already raises
+        the framework errors (404/409) the API edge maps.
+        """
+        await self._expect.execute(ctx, conversation_id, options)
 
     async def append(
         self,

@@ -173,6 +173,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError
 from app.framework.types import Uuid
 from app.modules.knowledge.application.retrieval import RetrieveContext, require_space_scope
+from app.modules.knowledge.domain.clarification import resolve_clarification_reply
 from app.modules.knowledge.domain.entities import SummaryJob
 from app.modules.knowledge.domain.file_resolution import (
     AmbiguousFiles,
@@ -451,6 +452,7 @@ class RouteQuestion:
         document_ids: Sequence[Uuid] | None = None,
         space_id: Uuid,
         conversation_id: Uuid | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> RoutedAnswer:
         """Route one question. The RETRIEVAL arguments are
         ``RetrieveContext.execute``'s, because the CONTENT route is that use-case
@@ -502,6 +504,31 @@ class RouteQuestion:
         ``ConflictError`` that is not a ``SummaryRefused`` reaches the caller
         as one, exactly as it does on the REST route.
 
+        ``pending_candidates`` (ب-9, gap ف-1أ) is the OTHER argument that is
+        not about retrieval, and it is the one that can stop this method
+        before it classifies anything: the file names the LAST turn asked the
+        user to choose between. When they are present, this question is first
+        read as an ANSWER to that question, and a reply that chooses one of
+        them is summarised on the spot — the same stored read, the same
+        refusal classification and the same named receipt a question that
+        NAMED the file would have got.
+
+        **It has to run before classification, not after**, which is the
+        whole shape of this argument. «الثاني» and «2025» classify as CONTENT
+        — correctly, on their own terms, since neither says anything about
+        summarising — and by the time the classifier has spoken the fact that
+        they were answers is gone. Before ب-9 that was the end of the road: a
+        clarification path built the whole way down (the resolver's refusal,
+        the names crossing the seam, the question rendered in two languages,
+        tests guarding all of it) always terminated in a content search,
+        because nothing on the other side of the exchange existed.
+
+        Empty is the ordinary case and costs nothing: no candidate walk
+        happens and this method behaves exactly as it did. A reply that
+        chooses nothing costs one walk and then classifies normally — a user
+        who ignored the question and asked something else is ANSWERED, not
+        corrected.
+
         ``conversation_id`` reaches ONE of the two routes (`F-7`). It is the
         thread this question was asked in, and SUMMARIZE_DOC stamps it on the
         build so the finished summary can be posted back there — the whole
@@ -510,6 +537,19 @@ class RouteQuestion:
         would be a value it has no use for.
         """
         space_id = require_space_scope(space_id)
+        # ب-9 — before the classifier, for the reason the docstring gives: a
+        # reply to «أيّ ملفّ تقصد؟» classifies as CONTENT on its own terms,
+        # and after classification the fact that it was an answer is gone.
+        answered = await self._answered_clarification(
+            ctx,
+            question,
+            pending_candidates,
+            document_ids,
+            space_id=space_id,
+            conversation_id=conversation_id,
+        )
+        if answered is not None:
+            return answered
         intent = classify_intent(question)
         scope = document_ids
         if intent is Intent.SUMMARIZE_DOC:
@@ -554,6 +594,66 @@ class RouteQuestion:
             stored_summary_text=None,
         )
 
+    async def _answered_clarification(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        pending_candidates: Sequence[str],
+        document_ids: Sequence[Uuid] | None,
+        *,
+        space_id: Uuid,
+        conversation_id: Uuid | None,
+    ) -> RoutedAnswer | None:
+        """This question read as an ANSWER to the one the last turn asked, or
+        ``None`` when it is not one (ب-9, plan §7).
+
+        Three shapes of answer resolve, and the domain decides which (see
+        ``resolve_clarification_reply``): the whole name, a position
+        («الثاني»), a fragment of a name («2025»). The review measured all
+        three failing; they are one call here because they are one question —
+        "did the user choose?" — and splitting them across this layer would
+        put three-quarters of a matching algorithm in an application class.
+
+        **The candidate walk is the same one everything else in this class
+        uses**, with the same space narrowing and the same pin narrowing. That
+        matters beyond tidiness: it is what stops a stored name from
+        outliving the rule that produced it. A file that has left this space,
+        or fallen outside the caller's pin, or become unreadable since the
+        question was asked is not a candidate — so a name offered last turn
+        that no longer qualifies resolves to nothing rather than to a document
+        this conversation is no longer allowed to see.
+
+        The walk is paid for ONLY when something is pending, which is the
+        turn after a clarification and no other. It is the same walk the
+        summarisation route would have done anyway on that turn.
+
+        ``None`` is the ordinary answer and means "not an answer, classify it
+        normally" — never an apology and never a re-asked question. A user who
+        ignored the clarification and asked something else has asked something
+        else, and the previous question is simply over: the caller erases the
+        pending intent whatever this returns.
+        """
+        if not pending_candidates:
+            return None
+        chosen = resolve_clarification_reply(
+            question,
+            pending_candidates,
+            await self._candidates(ctx, document_ids, space_id=space_id),
+        )
+        if chosen is None:
+            return None
+        # The name comes off the CANDIDATE and not off `pending_candidates`,
+        # even though the two agree today. The candidate is what the corpus
+        # says the document is called now; the offer is what it was called
+        # when the question was asked, which is a fact about a past turn.
+        return await self._summarise(
+            ctx,
+            question,
+            target=chosen.document_id,
+            target_name=chosen.file_name,
+            conversation_id=conversation_id,
+        )
+
     async def _summarisation_route(
         self,
         ctx: ExecutionContext,
@@ -574,22 +674,22 @@ class RouteQuestion:
         the question names nothing in this corpus at all — and never a best
         guess.
 
-        The stored read comes FIRST among the three that need a target,
-        because it is the only one that can end the turn with the answer the
-        user actually asked for. The order is a cost decision and a truth
-        decision at once: a build queued on top of a finished summary spends a
-        map-reduce to produce text that already existed, and it answers «I
-        have started working on it» to a question that was already answerable.
+        **What this method decides is the TARGET**; the three outcomes that
+        follow from having one — stored, refused, queued — moved to
+        ``_summarise`` in ب-9, because a second caller now arrives there with
+        a target in hand (a reply that chose a file off the list this method's
+        AMBIGUOUS branch offered). What is left here is the two answers only
+        this frame can give: the names to ask about, and ``None``.
 
-        The refusal joined the other three instead of escaping as an exception
-        because it is an OUTCOME of routing a question, not a failure to route
-        one: the target WAS resolved, and what came back is a fact about that
-        target. Its reason is read off the raiser (``SummaryRefused``), never
-        re-derived from state this frame could query a second time.
+        And the AMBIGUOUS branch is no longer a dead end. Its names are
+        remembered on the thread by the caller, come back on the next turn as
+        ``pending_candidates``, and are read as an answer before this method
+        is reached at all — so the question this branch asks now has somewhere
+        to be answered.
 
-        The DEPTH comes from ``question`` on every one of those outcomes that
-        queues anything (`F-8`): the pinned path and the resolved path share
-        the one call below, so «كاملاً» means the same thing whether the
+        The DEPTH comes from ``question`` on every outcome that queues
+        anything (`F-8`): the pinned path and the resolved path share the one
+        ``_summarise`` call, so «كاملاً» means the same thing whether the
         caller named the document or the question did.
         """
         target = _sole_document(document_ids)
@@ -648,6 +748,60 @@ class RouteQuestion:
             # of the document it chose, so this is a read, not a
             # second lookup and not a derivation.
             target_name = resolution.file_name
+        return await self._summarise(
+            ctx,
+            question,
+            target=target,
+            target_name=target_name,
+            conversation_id=conversation_id,
+        )
+
+    async def _summarise(
+        self,
+        ctx: ExecutionContext,
+        question: str,
+        *,
+        target: Uuid,
+        target_name: str | None,
+        conversation_id: Uuid | None,
+    ) -> RoutedAnswer:
+        """Everything that happens once a summarisation target is KNOWN: read
+        what is already stored, and failing that queue a build and report what
+        came of the attempt.
+
+        Three outcomes, and never a fourth: the STORED summary when one is
+        already built for this exact key (ب-8), a REFUSED build when the
+        module declined to queue one (ب-4ب), a queued build otherwise.
+
+        **The stored read comes first**, and the order is a cost decision and
+        a truth decision at once: a build queued on top of a finished summary
+        spends a map-reduce to produce text that already existed, and it
+        answers «I have started working on it» to a question that was already
+        answerable.
+
+        The refusal is an OUTCOME here rather than an exception escaping,
+        because it is a fact about a target that WAS resolved, not a failure
+        to resolve one. Its reason is read off the raiser
+        (``SummaryRefused``), never re-derived from state this frame could
+        query a second time.
+
+        Split out for ب-9. Two paths now arrive here with a target in hand —
+        the question that named one (``_summarisation_route``) and the reply
+        that CHOSE one out of a list the previous turn offered
+        (``_answered_clarification``) — and they have to behave identically
+        past this point or the clarification path becomes a second, quieter
+        summarisation route. Answering «الثاني» must reach the stored summary,
+        the classified refusal and the named receipt by the same code that
+        answering «تقرير الأداء 2025.pdf» reaches them by; a copy would agree
+        on the day it was written and diverge on the first change to either.
+
+        ``question`` still decides the DEPTH, which is why it is a parameter
+        rather than something the caller resolves: on the clarification path
+        the question is the ANSWER turn («الثاني»), so a user who wants the
+        deep read says so in the turn they are speaking — the same rule as
+        everywhere else, that what the user said is read from what the user
+        just said.
+        """
         # `F-8` — the default depth unless the question asked for the whole
         # document. Read from the QUESTION, never from the target: what the
         # user said does not change with how the file was found.

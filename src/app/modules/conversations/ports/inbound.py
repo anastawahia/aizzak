@@ -26,6 +26,7 @@ boundary rather than a bad row.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -175,5 +176,70 @@ class ConversationThreads(Protocol):
         that does it properly. **``None`` is not "every space" to any caller of
         this port** — the agents layer reads it as "no space known", and an
         agent handed no space retrieves nothing rather than everything.
+        """
+        ...
+
+    async def pending_clarification(
+        self, ctx: ExecutionContext, conversation_id: Uuid
+    ) -> tuple[str, ...]:
+        """The file names this thread's last turn asked the user to choose
+        between, in the order they were shown, or ``()`` (ب-9, gap ف-1أ).
+
+        The port's FOURTH read, and the first that is neither a preference
+        (``routed_model``, ``pinned_files``) nor a boundary (``space_of``): it
+        is the other half of a conversation. An agent that asks «which file do
+        you mean?» and lists three of them gets an answer on the next turn —
+        and without this read that answer is classified from scratch, matches
+        nothing, and the summary the user asked for is never built. The whole
+        clarification path terminates in silence, which is what makes this the
+        widest of the scenario gaps.
+
+        Plain ``str``s cross, and NAMES rather than document ids, for the
+        reason the column holds names: what was displayed is what is being
+        answered, and «the second one» is only readable against the list that
+        was actually shown. The knowledge module translates a chosen name back
+        to a document itself, so no id ever crosses a turn boundary.
+
+        **Order is part of the value**, not an incidental property of a
+        sequence. It is what an ordinal answer indexes, so a caller that
+        re-sorted or de-duplicated this would silently change which file "the
+        second one" names.
+
+        Missing or soft-deleted ⇒ ``()``, never an error, for
+        ``routed_model``'s reason exactly: this is a read-ahead in front of
+        the write that does the real reporting. ``()`` is also what a thread
+        with no question outstanding answers, and the two coincide
+        deliberately — a caller can act on neither.
+        """
+        ...
+
+    async def expect_clarification(
+        self, ctx: ExecutionContext, conversation_id: Uuid, options: Sequence[str]
+    ) -> None:
+        """Record what this turn is waiting for an answer to — or, with an
+        empty sequence, that it is waiting for nothing (ب-9).
+
+        The port's first WRITE that is not a message, and the counterpart of
+        the read above. Setting and clearing are ONE call because the pending
+        intent lives exactly one turn: the caller reads it before the turn and
+        writes what the turn left outstanding after it. A separate ``clear``
+        would make the erasure a step somebody could omit, and an intent that
+        survives two turns reads a brand-new question as an answer to a
+        forgotten one — a stranger failure than the one this closes.
+
+        **The orchestrator is the caller, never the agent**, and it has to be:
+        agents hold no seam to this module at all (the module docstring's
+        D-12 rule), and the layer that knows which thread a turn belongs to is
+        the layer that opened it. The agent states what it is asking about on
+        its own ``final`` frame; this is what turns that into a fact about a
+        thread.
+
+        A missing or soft-deleted thread RAISES here, unlike every read on
+        this port, and the asymmetry is the one those docstrings already name:
+        a read-ahead that raised would take the reporting of a 404/409 away
+        from the write that does it properly — and this IS that write. Its
+        caller is expected to treat a failure the way it treats a failed reply
+        persist: the answer has already been delivered, so a bookkeeping fault
+        is logged, not shown to a user.
         """
         ...

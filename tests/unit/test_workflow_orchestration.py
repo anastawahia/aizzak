@@ -67,6 +67,7 @@ from app.framework.workflows import (
 from app.modules.conversations.application.use_cases import (
     AppendMessage,
     ConversationService,
+    ExpectClarification,
     GetConversation,
     ListConversationFiles,
     StartConversation,
@@ -828,6 +829,11 @@ def _conversation_service(
         AppendMessage(repo),
         GetConversation(repo),
         ListConversationFiles(repo),  # type: ignore[arg-type]
+        # ب-9 — wired for the same reason `list_files` is: a workflow run has
+        # no pending clarification and never will (nobody is asked anything
+        # inside one), but the port is ONE protocol and a partial construction
+        # would not satisfy it.
+        ExpectClarification(repo),
     )
 
 

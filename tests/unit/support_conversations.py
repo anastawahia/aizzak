@@ -35,6 +35,7 @@ from app.modules.conversations.application.use_cases import (
     ConversationService,
     ConversationUseCases,
     CountConversationsBySpace,
+    ExpectClarification,
     GetConversation,
     ListConversationFiles,
     ListConversationsByAgent,
@@ -329,5 +330,6 @@ def build_conversations(
             AppendMessage(repository),
             GetConversation(repository),
             list_files,
+            ExpectClarification(repository),
         ),
     )

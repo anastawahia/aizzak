@@ -286,6 +286,7 @@ from app.modules.conversations.application.use_cases import (
     ConversationService,
     ConversationUseCases,
     CountConversationsBySpace,
+    ExpectClarification,
     GetConversation,
     ListConversationFiles,
     ListConversationsByAgent,
@@ -1092,6 +1093,11 @@ def _build_conversations(
         AppendMessage(repository),
         GetConversation(repository),
         list_files,
+        # ب-9 -- the pending-clarification write, over the SAME repository as
+        # every face above it. It reaches only this seam and never
+        # `ConversationUseCases`: no published route sets it, and it is a fact
+        # the orchestrator states about a turn it just ran.
+        ExpectClarification(repository),
     )
     return use_cases, threads, PurgeSpaceConversations(repository)
 

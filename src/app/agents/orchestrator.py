@@ -297,6 +297,35 @@ def _file_refs(data: Json) -> tuple[str, ...]:
     return (file_id,) if isinstance(file_id, str) and file_id.strip() else ()
 
 
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the key an agent puts on its terminal
+# frame to say "I have asked the user to choose between these files". It rides
+# the `final` payload rather than arriving as a new event type: ق-4 fixes the
+# streaming contract at `token` then `final`, and `_persist_reply` already
+# keeps an agent's own terminal keys deliberately. The orchestrator reads it,
+# stores it on the thread, and STRIPS it before the frame goes anywhere
+# (ق-د = أ) -- see `_settle_clarification`.
+_PENDING_KEY = "pending_clarification"
+
+
+def _pending_options(raw: object) -> tuple[str, ...]:
+    """The candidate names a ``final`` frame declares, cleaned (ب-9).
+
+    Defensive in ``_file_refs``' exact shape and for the same reason: what
+    arrives is an agent's JSON, not a typed value, and a plugin nobody in this
+    repository wrote can put anything under this key. A malformed declaration
+    reads as ``()`` -- "this turn asked nothing" -- which is the same thing
+    the absence of the key means and the safe direction: the next turn is
+    answered as an ordinary question.
+
+    ORDER is preserved and duplicates are NOT collapsed. Position is what an
+    ordinal answer indexes, so the list stored has to be the list shown; a
+    de-duplication here would silently renumber the user's choices.
+    """
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, str) and item.strip())
+
+
 def _turn_content(data: Json) -> tuple[str, tuple[str, ...]]:
     """One payload (a request ``input`` or a terminal ``final``) → the
     ``(text, attachments)`` a conversation message is made of.
@@ -804,6 +833,13 @@ class _TurnRecord:
     meter: _TokenMeter
     conversation_id: Uuid | None = None
     message: AppendedMessage | None = None
+    # ب-9 — what the thread was waiting for an answer to when this turn
+    # STARTED. Kept because the write at the end of the turn needs it: the
+    # pending intent is erased by writing what is outstanding NOW, and knowing
+    # what was outstanding before is what lets that write be skipped when
+    # nothing changed. It is read once, in the pre-flight, exactly like the
+    # route and the scope; nothing here re-reads it mid-turn.
+    pending: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,6 +974,13 @@ class AgentOrchestrator:
         # exists, because the agent's every read of files and knowledge is
         # scoped by it.
         space_id = await self._turn_space(ctx, req)
+        # ب-9 (خطة السيناريوهات §7، ف-1أ) — the question this thread is
+        # waiting for an answer to, read in the same pre-flight breath as the
+        # three above and for a reason none of them has: this turn's INPUT may
+        # not be a question at all. «الثاني» is an answer, and the agent has
+        # to know that before it classifies anything.
+        pending = await self._pending_clarification(ctx, req.conversation_id)
+        record.pending = pending
         binding = await self._resolve_llm(ctx, agent_key, route=route)
         provider_name = binding.provider.provider if binding is not None else _NO_PROVIDER
 
@@ -946,7 +989,9 @@ class AgentOrchestrator:
         # -- still pre-flight, so Phase 6 answers a real 429.
         await self._enforce(ctx, agent_key, provider_name)
 
-        deps = self._build_dependencies(binding, record.meter, scope, space_id=space_id)
+        deps = self._build_dependencies(
+            binding, record.meter, scope, space_id=space_id, pending=pending
+        )
         # Registry raises NotFoundError(404) for an unknown key and
         # ValidationError(422) for a malformed one -- both pass straight
         # through, still pre-flight, still mappable to a response.
@@ -1220,6 +1265,7 @@ class AgentOrchestrator:
         scope: tuple[Uuid, ...] = (),
         *,
         space_id: Uuid | None,
+        pending: tuple[str, ...] = (),
     ) -> AgentDependencies:
         """Assemble the per-request bundle handed to the agent.
 
@@ -1231,6 +1277,12 @@ class AgentOrchestrator:
         ``begin_step`` passes: a workflow step runs inside the run's OWN
         conversation (D-12), created by that run, so there is nothing pinned to
         it and no user who could have pinned anything.
+
+        ``pending`` (ب-9) defaults to ``()`` for ``scope``'s reason, and
+        ``begin_step`` passes nothing for a sharper version of it: a workflow
+        step runs inside the run's OWN conversation, created by that run, so
+        no user has ever been asked a question in it and there is nothing for
+        this turn to be the answer to.
 
         ``space_id`` (س-32) is the run's isolation boundary. Keyword-only and
         with NO default, unlike ``scope`` beside it, and the asymmetry is the
@@ -1263,6 +1315,7 @@ class AgentOrchestrator:
             web_search=self._deps.web_search,
             knowledge_scope=scope,
             space_id=space_id,
+            pending_clarification=pending,
         )
 
     async def _enforce(self, ctx: ExecutionContext, agent_key: str, provider: str) -> None:
@@ -1354,6 +1407,12 @@ class AgentOrchestrator:
                     yield _timeout_event(cap_s)
                     break
                 if event.type == "final":
+                    # ب-9 — BEFORE `_persist_reply`, so the key is off the
+                    # frame by the time anything reads its content: the stored
+                    # message is rendered from this same payload, and a media
+                    # agent's `final` is serialised whole when it carries no
+                    # text (`_turn_content`).
+                    event = await self._settle_clarification(ctx, record, event)
                     event = await self._persist_reply(ctx, record, event)
                 yield event
         finally:
@@ -1364,6 +1423,64 @@ class AgentOrchestrator:
             # this generator does not cascade down to the agent's own inner
             # generators (see `_TokenMeter`'s "eager, not end-of-stream").
             await self._capture(ctx, agent_key, provider, record.meter)
+
+    async def _settle_clarification(
+        self, ctx: ExecutionContext, record: _TurnRecord, event: AgentEvent
+    ) -> AgentEvent:
+        """Take the agent's ``pending_clarification`` key off the ``final``
+        frame, write what it says onto the thread, and return the event
+        without it (ب-9, gap ف-1أ).
+
+        **The agent states it, the orchestrator stores it**, and the split is
+        forced rather than chosen: an agent holds no seam to conversations
+        (D-12), and this layer is the only one that knows which thread the
+        turn belongs to. The signal rides the ``final`` payload because
+        ``_persist_reply`` already keeps the agent's own terminal keys
+        deliberately — and because a new EVENT TYPE would break ق-4's
+        contract (``token`` then ``final``, never a third) for a UI that has
+        no use for it.
+
+        **One write, and it both sets and clears.** What is stored is what is
+        outstanding NOW, so a turn that asked nothing erases whatever the last
+        turn asked, and the pending intent cannot survive two turns. It is
+        skipped entirely when nothing changed, which is almost every turn:
+        the comparison is against what the pre-flight READ, so "no question
+        before, no question now" costs no statement at all.
+
+        **The key never reaches the client** (ق-د = أ). It is stripped here,
+        on every path including the degraded ones, and not only where the
+        write succeeds: a deployment with no conversations seam must not start
+        emitting an internal key just because nothing can act on it. Letting
+        it through would be a structured clarification event in all but name,
+        and س-18 put that out of scope — the names are already in the answer
+        TEXT, where a client that has never heard of file resolution renders
+        them by doing nothing.
+
+        **A failed write degrades to a warning**, exactly as ``_persist_reply``
+        does and for the same reason: the answer has been produced and
+        streamed, and raising here would replace it with an error the client
+        cannot act on. What is lost is one turn's memory — the next turn is
+        read as an ordinary question, which is what it was before ب-9.
+        """
+        raw = event.data.get(_PENDING_KEY)
+        if raw is None:
+            data = event.data
+        else:
+            data = {key: value for key, value in event.data.items() if key != _PENDING_KEY}
+            event = AgentEvent(type=event.type, data=data)
+        options = _pending_options(raw)
+        threads = self._deps.conversations
+        if threads is None or record.conversation_id is None or options == record.pending:
+            return event
+        try:
+            await threads.expect_clarification(ctx, record.conversation_id, options)
+        except Exception as exc:  # never mask a produced answer
+            _logger.warning(
+                "orchestrator.pending_clarification_persist_failed",
+                extra={"conversation_id": record.conversation_id, "options": len(options)},
+                exc_info=exc,
+            )
+        return event
 
     async def _persist_reply(
         self, ctx: ExecutionContext, record: _TurnRecord, event: AgentEvent
@@ -1503,6 +1620,27 @@ class AgentOrchestrator:
         if threads is None:
             return ()
         return await threads.pinned_files(ctx, conversation_id)
+
+    async def _pending_clarification(
+        self, ctx: ExecutionContext, conversation_id: Uuid | None
+    ) -> tuple[str, ...]:
+        """The file names this thread's last turn asked the user to choose
+        between, or ``()`` (ب-9, gap ف-1أ).
+
+        ``()`` on the same three paths ``_pinned_scope`` answers ``()`` on —
+        no thread, no conversations seam, nothing pending — and it means the
+        same thing on all three: this turn is not an answer to anything, and
+        is read as an ordinary question. That the "not wired" and the "nothing
+        asked" answers coincide is deliberate and safe here in a way it is not
+        for a space: an orchestrator with no conversations seam degrades to
+        exactly the behaviour every thread had before this column existed.
+        """
+        if conversation_id is None:
+            return ()
+        threads = self._deps.conversations
+        if threads is None:
+            return ()
+        return await threads.pending_clarification(ctx, conversation_id)
 
     async def _turn_space(self, ctx: ExecutionContext, req: AgentRequest) -> Uuid | None:
         """The space this turn works in (س-32, owner decision 2026-08-26).

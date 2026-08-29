@@ -2502,6 +2502,7 @@ class KnowledgeRetrievalService:
         *,
         space_id: Uuid,
         conversation_id: Uuid | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> RoutedAnswer:
         """Implements ``KnowledgeRetrieval.answer`` (retrieval plan §3.4/§4
         row 11, ``P-21``) — the port's third face, over ``RouteQuestion``.
@@ -2545,6 +2546,7 @@ class KnowledgeRetrievalService:
             document_ids=document_ids,
             space_id=space_id,
             conversation_id=conversation_id,
+            pending_candidates=pending_candidates,
         )
 
     async def list_document_names(

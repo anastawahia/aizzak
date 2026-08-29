@@ -136,6 +136,24 @@ class AgentDependencies:
     # the dataclass so `AgentDependencies()` keeps constructing for the agents
     # and tools that touch neither files nor knowledge.
     space_id: Uuid | None = None
+    # ب-9 (خطة السيناريوهات §7, gap ف-1أ) — the file names the PREVIOUS turn
+    # of this thread asked the user to choose between, in the order they were
+    # shown. Per-request DATA like `knowledge_scope` and `space_id`, not a
+    # port: the orchestrator reads it off the thread and the agent passes it
+    # through to the knowledge seam without ever matching a name itself
+    # (ق-3 — resolving a file name is the module's job).
+    #
+    # `()` and not `None`, and it means the same as `knowledge_scope`'s `()`
+    # rather than `space_id`'s `None`: "nothing is outstanding" is a complete,
+    # correct and overwhelmingly common answer, not an unknown. Almost every
+    # turn has no question waiting on it, and a bundle built by a caller with
+    # no notion of threads at all (`AgentDependencies()`, a workflow step)
+    # means exactly that too.
+    #
+    # ORDER is part of the value: it is what an ordinal answer («الثاني»)
+    # indexes, so nothing between the thread and the module may sort or
+    # de-duplicate this.
+    pending_clarification: tuple[str, ...] = ()
     # 4.6-b — the Data-Analysis / File-Editing agents read workspace files:
     # ``files`` (a DIP seam over the files module's ``FilesQuery``) yields
     # metadata + ``storage_key``; ``storage`` (a framework port, so no DIP

@@ -162,6 +162,7 @@ CREATE TABLE conversations.conversations (
   kind         text NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','workflow')),
   title        text,
   model_route  text NULL,                        -- مفتاح توجيه من جدول D‑16 (لا اسم موديل خام)؛ NULL ⇒ يُحلّ بمفتاح الوكيل
+  pending_clarification jsonb NULL,               -- ب‑9 · أسماءُ الملفّات التي سألها الدورُ السابق **بترتيب عرضها**؛ NULL ⇒ لا سؤالَ معلَّق
   created_by   uuid,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -171,6 +172,16 @@ CREATE TABLE conversations.conversations (
 CREATE INDEX ix_conv_ws_agent ON conversations.conversations(workspace_id, agent_key)
   WHERE deleted_at IS NULL;
 CREATE INDEX ix_conv_space ON conversations.conversations(space_id) WHERE deleted_at IS NULL;
+-- `pending_clarification` (‏ب‑9، ف‑1أ): الوكيل يسأل «أيّ ملفّ تقصد؟» ويعدّد المرشّحين، ثمّ **لا يسمع
+-- الجواب** — فالدورُ التالي يُصنَّف من الصفر، والردودُ الثلاثة الممكنة كلُّها `content`. هذا العمود هو
+-- الطرفُ الآخر من الحوار. **أسماءٌ لا مُعرِّفات**: المعروضُ أسماءٌ، والجوابُ عن معروض، و«الثاني» لا
+-- يُقرأ إلّا على القائمة التي عُرضت فعلاً — ولذلك **الترتيبُ جزءٌ من القيمة**. ولماذا عمودٌ لا رسالةٌ
+-- سابقة: `MessageContent` بلا نصفٍ مُهيكَل (‏§2.4 هنا و06 §4)، فاستخراجُ المرشّحين منها تحليلُ نثرٍ
+-- عربيٍّ حرٍّ يُعيد الوكيلُ صياغتَه — في الموضع الوحيد الذي يُنتج فيه سوءُ التحليل **الملفَّ الخطأ**.
+-- NULL وحدَه يعني «لا سؤالَ معلَّق» (‏لا `[]` بجانبه: تهجئتان لحالةٍ واحدة تُنسى إحداهما في الاستعلام
+-- الذي يهمّ). لا فهرس — العمودُ إسقاطٌ لا شرط. ولا CHECK: ما يجعل الاسمَ ذا معنًى وجودُ ملفٍّ بهذا
+-- الاسم في المتن، وهي حقيقةٌ في schema أخرى تتغيّر بلا هجرة، ومسارُ القراءة يحتمل اسماً اختفى ملفُّه.
+-- والنيّةُ **تعيش دوراً واحداً**: الدورُ التالي يقرؤها ثمّ يكتب ما بقي معلَّقاً — ولا شيءَ عادةً.
 
 CREATE TABLE conversations.messages (
   id              uuid PRIMARY KEY,

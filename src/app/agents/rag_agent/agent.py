@@ -123,7 +123,7 @@ from app.framework.agent_runtime.source_label import format_context_block
 from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
-from app.framework.types import Uuid
+from app.framework.types import Json, Uuid
 
 _logger = get_logger(__name__)
 
@@ -502,6 +502,20 @@ class _FixedReply:
     text: str
     path: str
     fallback: bool = False
+    # ب-9 (خطة السيناريوهات §7، ف-1أ) — the file names THIS reply is asking
+    # the user to choose between, when it is asking. Exactly one of the seven
+    # ever sets it (the clarification question); the rest are answers, not
+    # questions, and an answer leaves nothing outstanding.
+    #
+    # It is on this class and not decided at the emit site because only the
+    # branch that built the question knows what it asked about — and putting
+    # it here is what keeps the seven sharing ONE emit site: the alternative
+    # is a second `yield` for the one reply that carries an extra key, which
+    # is precisely the divergence this type exists to prevent.
+    #
+    # A tuple, in the module's own order. See `AgentDependencies.
+    # pending_clarification`: position is what an ordinal answer indexes.
+    pending: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,7 +641,21 @@ class RagAgent(BaseAgent):
                 started=turn.started,
             )
             yield AgentEvent(type="token", data={"delta": plan.text})
-            yield AgentEvent(type="final", data={"text": plan.text, "citations": []})
+            final: Json = {"text": plan.text, "citations": []}
+            if plan.pending:
+                # ب-9 — the ONE reply that adds a key, and it adds it only
+                # when there is something to add: an absent key and an empty
+                # list would mean the same thing to the orchestrator, and the
+                # absent one says it without putting an internal name on six
+                # frames that have no question in them.
+                #
+                # The orchestrator writes it onto the thread and strips it
+                # before the frame is sent (ق-د = أ), so this is a message to
+                # ONE layer of the platform, not a change to what a client
+                # receives. The names are already in `plan.text`, which is
+                # where a user reads them.
+                final["pending_clarification"] = list(plan.pending)
+            yield AgentEvent(type="final", data=final)
             return
         params = LlmParams(model=plan.binding.model)
         answer: list[str] = []
@@ -813,8 +841,23 @@ class RagAgent(BaseAgent):
             # reason: this answer already names files, and appending the
             # whole workspace listing under a question about three specific
             # candidates would bury the choice it is asking the user to make.
+            #
+            # ب-9 (ف-1أ) — and the question is now REMEMBERED. The names are
+            # declared on this reply, the orchestrator writes them onto the
+            # thread, and the next turn arrives with them on
+            # `deps.pending_clarification` — where the module reads it as an
+            # answer before it classifies it as anything. Until that existed
+            # this branch was the end of the road: every one of these
+            # questions was asked and none of them was ever heard.
+            #
+            # The module's list, verbatim, exactly as the sentence above
+            # renders it. Same order, no trimming, no de-duplication — what
+            # is stored has to be what was shown, or «الثاني» means one file
+            # to the user and another to the module.
             question = self._clarification_question(query, routed.clarification_options)
-            return _FixedReply(question, _PATH_CLARIFICATION)
+            return _FixedReply(
+                question, _PATH_CLARIFICATION, pending=tuple(routed.clarification_options)
+            )
         return None
 
     async def _plan(self, req: AgentRequest, turn: _TurnRecord) -> _FixedReply | _Synthesis:
@@ -919,6 +962,16 @@ class RagAgent(BaseAgent):
                     # turn that opens no thread is a real value, and the module
                     # reads it as "nowhere to deliver".
                     conversation_id=req.conversation_id,
+                    # ب-9 (ف-1أ) — what the LAST turn of this thread asked
+                    # the user to choose between, carried through and never
+                    # read here. The module matches the name (ق-3); this
+                    # agent has never resolved a file name and does not start
+                    # now — see `deps_ports.KnowledgeAccess`.
+                    #
+                    # `()` on almost every turn, and it costs nothing: no
+                    # candidate walk happens and the call behaves exactly as
+                    # it did before this argument existed.
+                    pending_candidates=self.deps.pending_clarification,
                 )
             except ConflictError:
                 # ب-4أ (خطة الفجوات §3، ف-7) — `RequestSummary` refuses a second

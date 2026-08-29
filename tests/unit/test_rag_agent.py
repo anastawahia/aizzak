@@ -220,6 +220,12 @@ class FakeKnowledge:
         # for `spaces`' reason, and `None` is recorded rather than dropped so
         # that "a turn with no thread still says so" is a visible assertion.
         self.threads: list[str | None] = []
+        # ب-9 (ف-1أ) — every pending-clarification list the agent forwarded,
+        # `()` included. Its own log for the same reason: what the agent owes
+        # here is carrying the names through UNTOUCHED, and a fake that
+        # dropped the argument could not tell that from an agent that never
+        # sent it.
+        self.pending: list[tuple[str, ...]] = []
 
     async def retrieve(
         self,
@@ -243,6 +249,7 @@ class FakeKnowledge:
         *,
         space_id: str,
         conversation_id: str | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> FakeRoutedAnswer:
         # The scope is RECORDED, not honoured: this fake is the agent's
         # counterpart, and what the agent owes is passing the scope through
@@ -251,6 +258,7 @@ class FakeKnowledge:
         self.calls.append((question, k, None if file_ids is None else tuple(file_ids)))
         self.spaces.append(space_id)
         self.threads.append(conversation_id)
+        self.pending.append(tuple(pending_candidates))
         # Recorded BEFORE it raises: the call was made, and a test about a
         # failing seam still wants to see that the agent asked.
         if self._answer_error is not None:
@@ -357,6 +365,7 @@ def make_deps(
     routed_intent: str | None = None,
     answer_error: Exception | None = None,
     names_error: Exception | None = None,
+    pending: tuple[str, ...] = (),
 ) -> tuple[AgentDependencies, FakeKnowledge, FakeLLM]:
     llm = FakeLLM(deltas)
     knowledge = FakeKnowledge(
@@ -377,6 +386,10 @@ def make_deps(
         knowledge=knowledge,
         knowledge_scope=scope,
         space_id=space_id,
+        # ب-9 — what the orchestrator read off the thread. `()` on almost
+        # every turn, which is why it defaults to it: every test written
+        # before this item keeps meaning exactly what it meant.
+        pending_clarification=pending,
     )
     return deps, knowledge, llm
 
@@ -1081,15 +1094,21 @@ async def test_an_undecided_file_asks_the_user_which_one_in_ordinary_text() -> N
 async def test_the_clarification_travels_on_the_unchanged_streaming_contract() -> None:
     """The heart of س-18 = أ, and the reason the structured `clarification`
     event stayed in §7: this is an ORDINARY answer. The same `token` + `final`
-    pair as every other reply, the same keys on each, `citations` empty
-    because a question cites nothing — and no event type a client has to have
-    heard of."""
+    pair as every other reply, `citations` empty because a question cites
+    nothing — and no event type a client has to have heard of.
+
+    ب-9 added ONE key to the `final` payload and no event type, which is
+    exactly the shape ق-4 allows: `_persist_reply` already keeps an agent's own
+    terminal keys, and the orchestrator strips this one before the frame is
+    sent (`test_a_clarification_key_never_reaches_the_client`). What a client
+    sees is unchanged; what the platform learns is which files were offered.
+    """
     deps, _knowledge, _llm = make_deps(clarification_options=["a.pdf", "b.pdf"])
     events = await drive_run(RagAgent(make_ctx(), deps), "summarize the budget file")
 
     assert [e.type for e in events] == ["token", "final"]
     assert events[0].data == {"delta": events[-1].data["text"]}
-    assert set(events[-1].data) == {"text", "citations"}
+    assert set(events[-1].data) == {"text", "citations", "pending_clarification"}
     assert events[-1].data["citations"] == []
 
 
@@ -2367,3 +2386,113 @@ async def test_a_stored_summary_still_streams_the_two_events_every_answer_owes()
 
     assert [event.type for event in events] == ["token", "final"]
     assert events[0].data["delta"] == _STORED_SUMMARY_AR
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the clarification is remembered            #
+# --------------------------------------------------------------------------- #
+async def test_a_clarification_final_carries_its_candidates_for_the_platform() -> None:
+    """The near end of the fix: the agent declares what it just asked about.
+
+    It is a message to ONE layer — the orchestrator, which alone knows which
+    thread this turn belongs to and alone holds a seam to write on it. The
+    names are the module's own list, verbatim and in order, because the order
+    is what «الثاني» will index on the next turn.
+    """
+    options = ["الميزانية 2024.pdf", "الميزانية 2025.pdf"]
+    deps, _knowledge, _llm = make_deps(clarification_options=options)
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي الميزانية")
+
+    assert events[-1].data["pending_clarification"] == options
+
+
+async def test_the_clarification_event_types_are_unchanged() -> None:
+    """⚠️ The containing guard. ق-4 fixes this agent's contract at `token`
+    then `final` and nothing else, and ب-9 could very easily have been a third
+    event type — «here are your choices, structured» is the obvious shape and
+    the wrong one (س-18 put it out of scope in the retrieval plan, and §7 of
+    this plan keeps it there).
+
+    So the signal rides the payload of a frame that already exists. Both ends
+    of the round trip are checked here: the turn that asks, and the turn that
+    answers what it asked.
+    """
+    options = ["الميزانية 2024.pdf", "الميزانية 2025.pdf"]
+    asking, _k1, _l1 = make_deps(clarification_options=options)
+    answering, _k2, _l2 = make_deps(summary_job_id="job-1", pending=tuple(options))
+
+    asked = await drive_run(RagAgent(make_ctx(), asking), "لخّص لي الميزانية")
+    answered = await drive_run(RagAgent(make_ctx(), answering), "الثاني")
+
+    assert [e.type for e in asked] == ["token", "final"]
+    assert [e.type for e in answered] == ["token", "final"]
+
+
+async def test_no_other_reply_declares_a_pending_clarification() -> None:
+    """The key appears on exactly one of the seven fixed replies. The other
+    six are ANSWERS, and an answer leaves nothing outstanding — so the absence
+    of the key is what erases whatever the last turn asked."""
+    for kwargs in (
+        {"summary_job_id": "job-1"},
+        {"stored_summary_text": "خلاصة."},
+        {"summary_blocked": "in_progress"},
+        {"routed_intent": "summarize_doc"},
+        {"chunks": []},
+    ):
+        deps, _knowledge, _llm = make_deps(**kwargs)  # type: ignore[arg-type]
+
+        events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي الميزانية")
+
+        assert "pending_clarification" not in events[-1].data, kwargs
+
+
+async def test_a_synthesised_answer_declares_no_pending_clarification() -> None:
+    """And neither does the streaming path — the one reply that is not a
+    `_FixedReply` at all."""
+    deps, _knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "what is the revenue?")
+
+    assert "pending_clarification" not in events[-1].data
+
+
+async def test_the_pending_candidates_reach_the_module_untouched() -> None:
+    """The far end: what the thread remembered is carried to the module as it
+    was stored. This agent does not read it, does not trim it and does not
+    match against it — resolving a file name is the module's job (ق-3), and
+    an agent that decided for itself which candidate a reply meant would be
+    doing the one thing this whole path exists to prevent."""
+    options = ("الميزانية 2024.pdf", "الميزانية 2025.pdf")
+    deps, knowledge, _llm = make_deps(summary_job_id="job-1", pending=options)
+
+    await drive_run(RagAgent(make_ctx(), deps), "الثاني")
+
+    assert knowledge.pending == [options]
+
+
+async def test_a_turn_with_nothing_pending_says_so_rather_than_omitting_it() -> None:
+    """`()` is a real value on this seam, not a forgotten one — the same rule
+    `space_id` and `conversation_id` state at their own call sites."""
+    deps, knowledge, _llm = make_deps(chunks=[FakeChunk("c1", "text")])
+
+    await drive_run(RagAgent(make_ctx(), deps), "what is the revenue?")
+
+    assert knowledge.pending == [()]
+
+
+async def test_an_answered_clarification_is_an_ordinary_receipt() -> None:
+    """What the user reads on the answering turn. Once the module has resolved
+    the reply to a document there is nothing special about this turn at all:
+    it is the receipt (ب-7أ), naming the file the module chose — which is what
+    makes the exchange self-correcting if the wrong one was picked."""
+    deps, _knowledge, _llm = make_deps(
+        summary_job_id="job-1",
+        summary_target_name="الميزانية 2025.pdf",
+        pending=("الميزانية 2024.pdf", "الميزانية 2025.pdf"),
+    )
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "الثاني")
+
+    assert "الميزانية 2025.pdf" in events[-1].data["text"]
+    assert "pending_clarification" not in events[-1].data

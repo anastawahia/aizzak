@@ -260,9 +260,30 @@ class KnowledgeAccess(Protocol):
     agent as keeping. ``retrieve`` stays on the seam for callers that mean
     retrieval and nothing else.
 
+    ``answer``'s ``pending_candidates`` (scenarios plan §7, ب-9, gap ف-1أ) is
+    the file names the LAST turn asked the user to choose between, handed back
+    so this turn can be read as the ANSWER to that question before it is
+    classified as anything else. It is the return leg of
+    ``clarification_options``: those names leave the module on one turn, the
+    agent renders them as a question, and they come back here on the next one.
+
+    **The agent carries them and never interprets them** — the
+    ``knowledge_scope`` precedent again, and it matters more here than there.
+    Matching a name is the module's job (ق-3); an agent that decided for
+    itself which candidate a reply meant would be resolving a file name, which
+    is the one thing this whole path exists to keep it from doing.
+
+    They reach the agent on ``AgentDependencies.pending_clarification``, put
+    there by the orchestrator from the thread the turn belongs to — the same
+    shape ``knowledge_scope`` and ``space_id`` arrive in, and for the same
+    reason: an agent holds no seam to conversations and cannot read a thread.
+
+    Defaulted to ``()``, so a caller with no previous turn calls this exactly
+    as before.
+
     ``answer``'s ``conversation_id`` (`F-7`) is the ONE argument on this seam
-    that is not about retrieval, and that is exactly why it sits on ``answer``
-    alone: a summarisation is built by a worker minutes after the turn has
+    that is not about retrieval either, and that is exactly why it sits on
+    ``answer`` alone: a summarisation is built by a worker minutes after the turn has
     ended, so the module has to be told where to deliver it, and the agent is
     the only layer that knows which thread it is answering in
     (``AgentRequest.conversation_id``). It is data the agent passes through
@@ -289,6 +310,7 @@ class KnowledgeAccess(Protocol):
         *,
         space_id: Uuid,
         conversation_id: Uuid | None = None,
+        pending_candidates: Sequence[str] = (),
     ) -> RoutedAnswerView: ...
 
     async def list_document_names(

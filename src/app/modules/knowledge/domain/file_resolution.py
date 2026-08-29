@@ -360,6 +360,99 @@ def name_token_count(file_name: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Ordinals (NOT alpha's — see `read_ordinal`)                                  #
+# --------------------------------------------------------------------------- #
+# Position words, written in the form `_query_core` produces: Arabic
+# normalized, lower-cased, and with the definite article stripped from tokens
+# longer than four characters («الثاني» ⇒ «ثاني», «الأولى» ⇒ «اولي»). Written
+# that way for `_REQUEST_WORDS`' reason exactly — they are compared against
+# normalized output, never against raw input, and a raw «الثاني» here would
+# simply never match.
+#
+# Feminine forms are listed beside masculine ones because the thing being
+# pointed at is a file and Arabic speakers gender it both ways
+# («الثاني»/«الثانية» for «الملفّ»/«الوثيقة»).
+#
+# Capped at five, and not because five is a round number: `_MAX_CANDIDATES` is
+# how many candidates are ever shown, so a sixth ordinal could only ever name
+# a position nobody was offered.
+_ORDINALS: dict[str, int] = {
+    "اول": 1,
+    "اولي": 1,
+    "first": 1,
+    "ثاني": 2,
+    "ثانيه": 2,
+    "second": 2,
+    "ثالث": 3,
+    "ثالثه": 3,
+    "third": 3,
+    "رابع": 4,
+    "رابعه": 4,
+    "fourth": 4,
+    "خامس": 5,
+    "خامسه": 5,
+    "fifth": 5,
+}
+
+# The only words allowed to keep an ordinal company. Everything a user
+# normally says AROUND a position — «the», «file», «give me» — is already
+# dropped by `_query_core`'s request-word list; these are what is left, and
+# the set is deliberately tiny.
+#
+# **Anything outside it makes the reply an ordinary question again**, and that
+# is the guard rather than a limitation: «ما هو الفصل الثالث؟» contains a
+# position word, and reading it as "the third file, please" would summarise a
+# document instead of answering the question that was asked. Requiring the
+# reply to be a POINTING GESTURE and nothing else is what keeps the ordinal
+# layer from firing on prose that merely counts something.
+_ORDINAL_COMPANIONS: frozenset[str] = frozenset({"one", "option", "choice", "رقم", "خيار"})
+
+
+def read_ordinal(reply: str, count: int) -> int | None:
+    """The 1-based position ``reply`` points at within a list of ``count``
+    items, or ``None`` when it points at no position at all.
+
+    NOT part of alpha's cascade and not called by ``resolve_file``: this
+    answers a different question. The cascade asks "which of these files does
+    this text NAME"; this asks "which of these files does it POINT AT" — and
+    «الثاني» names nothing, matches nothing, and scores 0.04 against every
+    candidate in the corpus. It lives in this module rather than beside its
+    one caller for ``name_token_count``'s reason: it has to normalize the way
+    the matcher normalizes, and a second normalizer in the application layer
+    would be free to drift from the one that decides every other match.
+
+    **A position is only readable against a list somebody was shown**, which
+    is why ``count`` is an argument and not something this function could
+    discover. Out of range ⇒ ``None``, and that bound is doing real work: it
+    is the whole reason «2025» comes back as "no position" rather than as an
+    absurd one, and is then free to be read as the name fragment it is.
+
+    ``None`` on anything ambiguous — two different positions named, a stray
+    word that is not a companion, an empty reply. Every one of those falls
+    back to ordinary matching, so the failure direction is a question answered
+    normally, never a file chosen wrongly.
+    """
+    if count <= 0:
+        return None
+    positions: set[int] = set()
+    for token in _query_core(reply).split():
+        position = _ORDINALS.get(token)
+        if position is None and token.isdecimal():
+            # `isdecimal` and not `isdigit`, so «٢» counts (Arabic-Indic
+            # digits are decimal) while superscripts and other digit-like
+            # code points do not.
+            position = int(token)
+        if position is not None:
+            positions.add(position)
+        elif token not in _ORDINAL_COMPANIONS:
+            return None
+    if len(positions) != 1:
+        return None
+    position = positions.pop()
+    return position if 1 <= position <= count else None
+
+
+# --------------------------------------------------------------------------- #
 # Layer 1 — exact                                                              #
 # --------------------------------------------------------------------------- #
 def _is_exact(candidate: FileCandidate, *, query_norm: str, core: str) -> bool:

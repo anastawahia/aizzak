@@ -183,3 +183,69 @@ def test_message_soft_delete_is_idempotent() -> None:
     marker = message.deleted_at
     message.soft_delete(utc_now())
     assert message.deleted_at == marker
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 (خطة السيناريوهات §7، ف-1أ) — the pending clarification                  #
+# --------------------------------------------------------------------------- #
+def test_a_thread_starts_waiting_for_nothing() -> None:
+    """The default, and the semantics of every row that predates the column:
+    no question outstanding. It is the SECOND defaulted field on this
+    aggregate, beside `model_route`, and for the same reason — a construction
+    site that says nothing means this, which is almost all of them."""
+    assert _conversation().pending_clarification == ()
+
+
+def test_the_names_a_thread_asked_about_round_trip_in_order() -> None:
+    """⚠️ Order is part of the value, not an incidental property of a
+    sequence: it is what «الثاني» indexes on the next turn, so nothing here
+    sorts, trims or de-duplicates it."""
+    conv = _conversation()
+
+    conv.expect_clarification(["b.pdf", "a.pdf", "b.pdf"], utc_now())
+
+    assert conv.pending_clarification == ("b.pdf", "a.pdf", "b.pdf")
+
+
+def test_the_same_call_that_asks_is_the_call_that_forgets() -> None:
+    """Decision 1 made structural. There is no `clear`, so the erasure cannot
+    be a step somebody omits: the only thing anyone can write is what is
+    outstanding NOW, and an intent that survived two turns would read a
+    brand-new question as an answer to a forgotten one."""
+    conv = _conversation()
+    conv.expect_clarification(["a.pdf"], utc_now())
+
+    conv.expect_clarification([], utc_now())
+
+    assert conv.pending_clarification == ()
+
+
+def test_the_stored_list_is_not_a_live_handle_on_the_callers_own() -> None:
+    """Copied, not aliased: a caller that kept mutating its list would
+    otherwise be editing this thread's memory of what it asked."""
+    options = ["a.pdf"]
+    conv = _conversation()
+    conv.expect_clarification(options, utc_now())
+
+    options.append("b.pdf")
+
+    assert conv.pending_clarification == ("a.pdf",)
+
+
+def test_asking_a_question_stamps_the_thread_as_touched() -> None:
+    """`rename` and `pin_model_route`'s rule: a mutation moves `updated_at`."""
+    conv = _conversation()
+    later = utc_now()
+
+    conv.expect_clarification(["a.pdf"], later)
+
+    assert conv.updated_at == later
+
+
+def test_a_deleted_thread_refuses_to_be_asked_anything() -> None:
+    """A deleted thread refuses WRITES rather than denying its own existence —
+    the guard `rename` and `pin_model_route` keep, and this is a write."""
+    conv = _conversation(deleted=True)
+
+    with pytest.raises(ConversationDeletedError):
+        conv.expect_clarification(["a.pdf"], utc_now())
