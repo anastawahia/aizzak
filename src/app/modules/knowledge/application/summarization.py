@@ -58,16 +58,6 @@ key a summary on the language it was written in, so a translation is simply
 one more row under the same document and kind. Asking for the language a
 stored summary is already in is answered by reusing its text, with no
 provider call spent proving what was already true.
-
-**``refine`` (P-45, plan §4 step 21, §3.10, optional) is a FOURTH shape: an
-alternative to ``execute``'s map-reduce for ``full`` summaries, not a
-replacement for it.** Map-reduce reads every batch in isolation and only
-combines the notes afterwards; refine reads batches in order and keeps one
-summary alive throughout, rewriting it as each new batch arrives, so a later
-part can change how an earlier one reads the way a person reading in order
-would notice that -- at the cost of a call sequence that cannot run in
-parallel the way map-reduce's independent batches can. Both are exposed
-side by side; nothing here prefers one over the other.
 """
 
 from __future__ import annotations
@@ -76,10 +66,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.observability import get_logger
 from app.framework.ports.llm_provider import LlmMessage, LlmParams
 from app.modules.knowledge.domain.entities import Summary
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
+
+log = get_logger(__name__)
 
 # P-43 (plan §4 step 19, §3.10): how many chunks an `overview` reads --
 # spread ACROSS the document (`_glance_sample`), not just its first
@@ -162,7 +155,7 @@ _MAX_MAP_CHUNKS = 240
 _MAX_BATCH_CHARS = 24_000
 
 # `F-2`: the same guard for a call that answers in `_REDUCE_MAX_TOKENS` --
-# the fold/reduce ladder, `refine`, and `execute`'s one-batch shortcut. It
+# the fold/reduce ladder and `execute`'s one-batch shortcut. It
 # MUST be smaller, and the arithmetic is the whole reason: 24,000 characters
 # is ~6,000 tokens at this module's 4:1 rule of thumb, and 6,000 + 2,500 is
 # 8,500 -- past an 8k window before the system prompt is counted at all. The
@@ -196,6 +189,20 @@ _TEMPERATURE = 0.2
 _MAP_MAX_TOKENS = 600
 _OVERVIEW_MAX_TOKENS = 900
 _REDUCE_MAX_TOKENS = 2_500
+
+# `F-10`/`F-9`: the closed vocabulary `_call`'s `step` is drawn from -- one
+# name per place in the ladder a provider call can be made. It exists as a
+# constant, rather than six literals at the call sites, for two reasons: it
+# is what makes `step` safe to log at all (10 §10 admits a path name from a
+# closed set, never a free string), and it is what a drift test can compare a
+# real build's calls against, so a seventh call site added later without a
+# name of its own fails a test rather than logging one of the other six.
+#
+# The three ceilings above are NOT one per step -- `overview` answers in 900,
+# `map`/`fold` in 600, the rest in 2,500 -- which is exactly why the
+# truncation warning carries both: which step hit its ceiling, and which
+# ceiling that was.
+_STEPS = frozenset({"overview", "full_single_batch", "map", "fold", "reduce", "translate"})
 
 _LANGUAGE_INSTRUCTION = {
     SummaryLanguage.AUTO: ("Write the summary in the same language the source text is written in."),
@@ -260,28 +267,6 @@ _TRANSLATE_SYSTEM = (
     "language. Preserve its Markdown structure, headings, figures and names "
     "exactly. Translate the prose faithfully and add or omit nothing the "
     "original does not already say."
-)
-
-# P-45 (plan §4 step 21, §3.10, optional): `refine`'s first call has no prior
-# summary to work from -- its first batch is written exactly the way
-# `execute`'s own single-batch shortcut writes one, from `_FULL_SYSTEM`
-# directly. Naming it separately (rather than reusing `_FULL_SYSTEM` inline)
-# keeps `refine`'s call sequence self-describing at the call site.
-_REFINE_FIRST_SYSTEM = _FULL_SYSTEM
-
-# `refine`'s every call AFTER the first: unlike `_MAP_SYSTEM` (which reads one
-# part in isolation and writes terse NOTES about it) this reads the RUNNING
-# summary together with the next part and rewrites the summary whole, so the
-# result at every step is already a complete, readable summary of everything
-# seen so far -- never notes awaiting a separate reduce.
-_REFINE_SYSTEM = (
-    "You are maintaining a running summary of a document as more of it "
-    "arrives, one part at a time. You will be given the summary written so "
-    "far and the next part of the document. Rewrite the summary so it "
-    "folds in the new part, in well-structured Markdown with short headings "
-    "and paragraphs, covering everything read so far in proportion, keeping "
-    "figures and names exact, and stating nothing the summary-so-far or the "
-    "new part does not support."
 )
 
 
@@ -398,6 +383,7 @@ class SummarizeDocument:
                 lang=lang,
                 summarizer=summarizer,
                 max_tokens=_OVERVIEW_MAX_TOKENS,
+                step="overview",
             )
             await on_progress(sampled)
             return SummaryDraft(
@@ -432,6 +418,7 @@ class SummarizeDocument:
                 lang=lang,
                 summarizer=summarizer,
                 max_tokens=_REDUCE_MAX_TOKENS,
+                step="full_single_batch",
             )
             await on_progress(len(window))
             return SummaryDraft(
@@ -449,6 +436,7 @@ class SummarizeDocument:
                 lang=lang,
                 summarizer=summarizer,
                 max_tokens=_MAP_MAX_TOKENS,
+                step="map",
             )
             notes.append(f"## Part {index}\n{note}")
             done += len(batch)
@@ -528,105 +516,13 @@ class SummarizeDocument:
             lang=lang,
             summarizer=summarizer,
             max_tokens=_REDUCE_MAX_TOKENS,
+            step="translate",
         )
         return SummaryDraft(
             text=text,
             model=summarizer.model,
             source_chunks=source.source_chunks,
             truncated=source.truncated,
-        )
-
-    async def refine(
-        self,
-        ctx: ExecutionContext,
-        *,
-        chunks: Sequence[str],
-        lang: SummaryLanguage,
-        summarizer: ResolvedSummarizer,
-        on_progress: ProgressHook = _noop_progress,
-        should_cancel: CancelHook = _never_cancel,
-    ) -> SummaryDraft:
-        """P-45 (plan §4 step 21, §3.10, **optional**): the ``refine``
-        alternative to ``execute``'s map-reduce, for ``full`` summaries only
-        -- ``overview`` has no map/reduce/refine choice to make, it is
-        already one call over a sample (``_glance_sample``), so this method
-        takes no ``kind``.
-
-        **Genuinely a different algorithm, not a reshaped map-reduce.**
-        Map-reduce reads every batch in ISOLATION (``_MAP_SYSTEM`` never sees
-        another batch's notes) and only combines them afterwards
-        (``_fold``/``_REDUCE_SYSTEM``). Refine reads batches in ORDER and
-        keeps exactly ONE artefact alive the whole time -- a complete summary
-        that already covers everything read so far -- rewriting it with each
-        new batch (``_REFINE_SYSTEM``) instead of writing notes about the
-        batch alone. There is no reduce step because there is nothing left to
-        combine: the last call's output already IS the finished summary.
-
-        **The trade this buys and the one it spends are both real.** A
-        document whose ending qualifies or reverses something its opening
-        said is read the way a person reads it -- in order, each part able to
-        change how the last part is understood -- where map-reduce's isolated
-        notes cannot express that relationship until the reduce step, if it
-        notices at all. What it spends is concurrency: map-reduce's batches
-        are independent and could run in parallel; refine's calls cannot,
-        because each one needs the last one's output. Neither is
-        strictly better, which is the whole reason this is a CHOICE
-        (P-45's own framing) and not a replacement for ``execute``.
-
-        Bounded the same way ``execute`` is: ``_MAX_MAP_CHUNKS`` caps how much
-        is read, and ``truncated`` says so on the returned draft exactly as it
-        does there.
-        """
-        readable = [text for text in chunks if text.strip()]
-        if not readable:
-            raise ValueError("this document has no indexed text to summarise")
-
-        window = readable[:_MAX_MAP_CHUNKS]
-        truncated = len(readable) > len(window)
-        # `F-2`: the REDUCE budget, like the fold ladder and unlike the map
-        # loop. Every call this method makes answers in `_REDUCE_MAX_TOKENS`,
-        # and from the second one on its prompt carries the running summary
-        # (itself up to `_REDUCE_MAX_TOKENS`) on top of the batch -- so this
-        # path has strictly LESS room for source text than the reduce does,
-        # not more.
-        batches = _batched(window, max_chars=_MAX_REDUCE_CHARS)
-
-        # Cancellation is checked before EVERY batch when there is more than
-        # one, the `execute` map loop's own placement -- including the
-        # first, unlike `translate`'s single call. A document that fits in
-        # one batch skips the check entirely, the same single-batch shortcut
-        # `execute` takes for the same reason: there is nothing after it to
-        # cancel before.
-        if len(batches) > 1 and await should_cancel():
-            raise SummaryBuildCancelled
-
-        running = await self._call(
-            system=_REFINE_FIRST_SYSTEM,
-            user=_join(batches[0]),
-            lang=lang,
-            summarizer=summarizer,
-            max_tokens=_REDUCE_MAX_TOKENS,
-        )
-        done = len(batches[0])
-        await on_progress(done)
-
-        for index, batch in enumerate(batches[1:], start=2):
-            if await should_cancel():
-                raise SummaryBuildCancelled
-            running = await self._call(
-                system=_REFINE_SYSTEM,
-                user=(
-                    f"Summary so far:\n{running}\n\nPart {index} of {len(batches)}:\n{_join(batch)}"
-                ),
-                lang=lang,
-                summarizer=summarizer,
-                max_tokens=_REDUCE_MAX_TOKENS,
-            )
-            done += len(batch)
-            await on_progress(done)
-
-        return SummaryDraft(
-            text=running, model=summarizer.model, source_chunks=len(window), truncated=truncated
         )
 
     async def _fold(
@@ -685,6 +581,7 @@ class SummarizeDocument:
                 lang=lang,
                 summarizer=summarizer,
                 max_tokens=_REDUCE_MAX_TOKENS,
+                step="reduce",
             )
         # A loop rather than the comprehension this was: a comprehension has
         # nowhere to put the poll, and the poll between groups is the whole of
@@ -701,6 +598,7 @@ class SummarizeDocument:
                     lang=lang,
                     summarizer=summarizer,
                     max_tokens=_MAP_MAX_TOKENS,
+                    step="fold",
                 )
             )
         return await self._fold(
@@ -720,12 +618,20 @@ class SummarizeDocument:
         lang: SummaryLanguage,
         summarizer: ResolvedSummarizer,
         max_tokens: int,
+        step: str,
     ) -> str:
         """One provider round trip.
 
         The language instruction rides on the SYSTEM message, not the user
         one: the user message is document text, and an instruction embedded in
         it is an instruction a document could imitate.
+
+        ``step`` names WHICH call in the ladder this is, from the closed
+        vocabulary in ``_STEPS``. It is carried for the two guards below and
+        for nothing else: both of them report a fault whose only useful
+        question is "where", and neither the system prompt (content, and a
+        string no dashboard groups by) nor the caller's line number answers
+        it. One parameter buys both.
         """
         messages = [
             LlmMessage(role="system", content=f"{system}\n\n{_LANGUAGE_INSTRUCTION[lang]}"),
@@ -733,7 +639,53 @@ class SummarizeDocument:
         ]
         params = LlmParams(model=summarizer.model, temperature=_TEMPERATURE, max_tokens=max_tokens)
         result = await summarizer.provider.complete(messages, params, summarizer.api_key)
-        return result.content.strip()
+
+        if result.finish_reason == "length":
+            # `F-10`: the answer stopped because it ran out of room, not
+            # because it was finished -- a summary cut mid-sentence, stored as
+            # though it were whole. MEASUREMENT ONLY in this wave: how often
+            # this happens, and at which of the three ceilings, is what
+            # decides whether the fix is a second flag on the row or simply a
+            # larger number, and neither is worth six layers of migration for
+            # a rate nobody has counted yet.
+            #
+            # `truncated` on the draft is NOT this and must never be widened
+            # to cover it: that flag says the INPUT was cut at
+            # `_MAX_MAP_CHUNKS` ("I read the first part of the document"),
+            # and it is published in `SummaryOut` and spoken aloud in
+            # `delivered_summary_text` with exactly that meaning. This says
+            # the OUTPUT was cut ("I wrote half an answer"). One sentence
+            # cannot honestly carry both.
+            #
+            # A count and a path name from a closed vocabulary -- 10 §10: not
+            # a character of the document, of the prompt, or of the reply.
+            log.warning(
+                "summarization.output_truncated",
+                extra={"step": step, "max_tokens": max_tokens},
+            )
+
+        text = result.content.strip()
+        if not text:
+            # `F-9`: phrased for the person who will read it on the failed
+            # job, not for a log -- this sentence is all they will get, the
+            # same reason `execute`'s "no indexed text to summarise" above is
+            # written the way it is.
+            #
+            # Raised HERE rather than in the four callers: one guard covers
+            # every step of every shape, where four would drift. A plain
+            # `ValueError` because the whole delivery path already exists for
+            # one -- `BuildSummary.run` catches it into
+            # `SummaryAttempt(error=...)`, `finalize` fails the job with it,
+            # and `SummaryJobOut.error` publishes it.
+            #
+            # An empty MAP note fails the whole build rather than being
+            # skipped, deliberately: skipping it would produce a summary of a
+            # document with a silent hole in it -- twenty sections nothing was
+            # read about, and no way for the reader to know. A job that failed
+            # for a stated reason is more honest than a summary that looks
+            # complete and is not.
+            raise ValueError(f"the model returned an empty response at the {step} step")
+        return text
 
 
 def _join(chunks: Sequence[str]) -> str:
@@ -800,7 +752,7 @@ def _batched(chunks: Sequence[str], *, max_chars: int = _MAX_BATCH_CHARS) -> lis
 
     ``max_chars`` is a PARAMETER since `F-2` (plan §3.3) because the budget
     belongs to the CALL being built, not to this grouping: a map call answers
-    in ``_MAP_MAX_TOKENS`` and a fold/reduce/refine call in
+    in ``_MAP_MAX_TOKENS`` and a fold/reduce call in
     ``_REDUCE_MAX_TOKENS``, and that difference is most of what the two
     budgets are. It defaults to the map budget because the map loop is the
     caller this function was written for and the only one that wants the

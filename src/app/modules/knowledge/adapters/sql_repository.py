@@ -545,10 +545,12 @@ class SqlDocumentRepository:
                 parent=(
                     ChunkParent(id=parent_id, text=parent_text, is_complete=parent_is_complete)
                     # `parent_id` is NULL for a chunk with no parent -- the
-                    # common case today, since P-13 is the only writer of
-                    # `parent_chunks` -- and for one whose parent row the
-                    # tenant policy hid, which is a parent this workspace
-                    # may not read either way.
+                    # LESS common case since `P-34` gave prose a page parent
+                    # of its own (`indexing._attach_text_parents`, the SECOND
+                    # writer of `parent_chunks` beside the table exploder) --
+                    # and for one whose parent row the tenant policy hid,
+                    # which is a parent this workspace may not read either
+                    # way.
                     if parent_id is not None
                     else None
                 ),

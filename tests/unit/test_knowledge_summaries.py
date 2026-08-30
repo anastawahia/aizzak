@@ -31,6 +31,7 @@ says that where a strict mock only says "something was called".
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -75,6 +76,7 @@ from app.modules.knowledge.domain.value_objects import (
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
 from tests.unit.support_knowledge import (
     InMemorySummaryRepository,
+    KnowledgeStack,
     build_knowledge,
     seed_document,
 )
@@ -111,13 +113,32 @@ class RecordingLLM:
     reply: str = "SUMMARY"
     calls: list[tuple[list[LlmMessage], LlmParams]] = field(default_factory=list)
 
+    # `F-9`/`F-10`: the two fields the guards in `_call` actually read.
+    #
+    # ``replies`` scripts the content per call — the Nth call gets the Nth
+    # entry and the last entry repeats — where ``reply`` alone serves every
+    # other test in this file. It exists because an empty answer at ONE step
+    # of a many-step build is a different case from an empty answer
+    # everywhere, and only the scripted form can tell them apart.
+    #
+    # ``finish_reason`` is what says an answer stopped because it ran out of
+    # room rather than because it was finished. It is a field and not a
+    # constant for exactly one reason: nothing else in the pipeline reads it,
+    # so nothing else could ever have caught it being ignored.
+    replies: Sequence[str] | None = None
+    finish_reason: str = "stop"
+
     async def complete(
         self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
     ) -> LlmResult:
         self.calls.append((list(messages), params))
         return LlmResult(
-            content=f"{self.reply}-{len(self.calls)}",
-            finish_reason="stop",
+            content=(
+                f"{self.reply}-{len(self.calls)}"
+                if self.replies is None
+                else self.replies[min(len(self.calls) - 1, len(self.replies) - 1)]
+            ),
+            finish_reason=self.finish_reason,
             prompt_tokens=1,
             completion_tokens=1,
         )
@@ -750,7 +771,7 @@ def test_batched_closes_a_batch_on_whichever_bound_is_reached_first() -> None:
 def test_batched_gives_a_reduce_sized_call_the_smaller_budget() -> None:
     """The SAME chunks, grouped for two kinds of call. A map call answers in
     `_MAP_MAX_TOKENS` (600) and can afford 24,000 characters of input; a
-    fold/reduce/refine call answers in `_REDUCE_MAX_TOKENS` (2,500) and
+    fold/reduce call answers in `_REDUCE_MAX_TOKENS` (2,500) and
     cannot -- 6,000 input tokens plus 2,500 output is 8,500, past an 8k
     window. That difference is the whole reason `max_chars` is a parameter
     and not a constant read inside the function."""
@@ -797,111 +818,260 @@ async def test_a_document_that_fits_one_map_batch_but_not_one_reduce_call_still_
 
 
 # --------------------------------------------------------------------------- #
-# SummarizeDocument.refine — P-45 (plan §4 step 21, §3.10, optional)           #
+# _call — the two guards every provider round trip passes (`F-9`, `F-10`)      #
 # --------------------------------------------------------------------------- #
 
 
-async def _refine_draft(
-    chunks: list[str], *, llm: RecordingLLM | None = None
-) -> tuple[RecordingLLM, object]:
-    provider = llm or RecordingLLM()
-    result = await SummarizeDocument().refine(
-        _ctx(),
-        chunks=chunks,
-        lang=SummaryLanguage.AR,
-        summarizer=ResolvedSummarizer(provider=provider, model="m", api_key="k"),
+async def _run_build(
+    *,
+    llm: RecordingLLM,
+    chunks: int = _BATCH * 2 + 1,
+    stored: Sequence[Summary] = (),
+    kind: SummaryKind = SummaryKind.FULL,
+    lang: SummaryLanguage = SummaryLanguage.AUTO,
+) -> tuple[KnowledgeStack, SummaryJob]:
+    """One whole build, claim through finalize, over a corpus big enough to
+    need several calls.
+
+    The LIFECYCLE and not the pipeline, because what `F-9` is about is the
+    row: a pipeline-level ``pytest.raises`` proves an exception was raised
+    and says nothing about whether the job ended ``failed``, whether the
+    sentence reached ``job.error``, or — the whole point — whether a blank
+    summary row was written anyway.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = [f"chunk {i}" for i in range(chunks)]
+    for summary in stored:
+        stack.summaries.rows[("doc-1", summary.kind.value, summary.lang.value)] = summary
+    stack.summary_jobs.rows["job-1"] = replace(_job(), kind=kind, lang=lang)
+
+    build = _builder(stack, StubSummarizerResolver(llm))
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    job, _events = await build.finalize(_ctx(), await build.run(_ctx(), plan))
+    return stack, job
+
+
+@pytest.mark.asyncio
+async def test_an_empty_completion_fails_the_build_instead_of_storing_a_blank_summary() -> None:
+    """`F-9`: an empty model reply used to reach ``Summary(text="")`` and
+    ``job.succeed()`` — a job at 100% holding ``uq_summary_key`` with nothing
+    in it. The row is the reason this is worse than a failure: the next
+    request reads the empty row back out of ``GET``, and a chat delivery
+    hands it over in the same turn for zero calls, so the defect outlives the
+    call that caused it. ``finalize``'s own "produced no text" branch could
+    never fire here — its condition is ``draft is None``, and this draft
+    exists with an empty ``text``."""
+    stack, job = await _run_build(llm=RecordingLLM(replies=[""]))
+
+    assert job.status is SummaryJobStatus.FAILED
+    assert job.error is not None and "empty response" in job.error
+    assert stack.summaries.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_completion_is_treated_as_empty() -> None:
+    """``strip()`` runs BEFORE the check, not after: a reply of two newlines
+    is a blank summary by every measure that matters to a reader."""
+    _stack, job = await _run_build(llm=RecordingLLM(replies=["  \n\t "]))
+
+    assert job.status is SummaryJobStatus.FAILED
+    assert job.error is not None and "empty response" in job.error
+
+
+@pytest.mark.asyncio
+async def test_the_empty_completion_reason_names_the_step_it_failed_at() -> None:
+    """The sentence is written for the person who will read it on the failed
+    job, and "the model returned nothing" without saying WHERE leaves them
+    with an unactionable fact. ``job.error`` — the field ``SummaryJobOut``
+    publishes — is where it has to be legible, not a log line."""
+    # First call empty: a multi-batch document's first call is a map call.
+    _stack, mapped = await _run_build(llm=RecordingLLM(replies=[""]))
+
+    # Three map calls answered, the fourth (the reduce) empty. `replies`
+    # repeats its last entry, and there is no fifth call to repeat it into.
+    _stack, reduced = await _run_build(
+        llm=RecordingLLM(replies=["note", "note", "note", ""]),
     )
-    return provider, result
+
+    _stack, translated = await _run_build(
+        llm=RecordingLLM(replies=[""]),
+        stored=[_summary(lang=SummaryLanguage.EN, text="English body")],
+        lang=SummaryLanguage.AR,
+    )
+
+    assert mapped.error is not None and "at the map step" in mapped.error
+    assert reduced.error is not None and "at the reduce step" in reduced.error
+    assert translated.error is not None and "at the translate step" in translated.error
 
 
 @pytest.mark.asyncio
-async def test_refine_makes_exactly_one_call_per_batch_with_no_separate_reduce() -> None:
-    """`_BATCH * 3 + 1` chunks is 4 batches. Map-reduce would spend 5 calls
-    (4 map + 1 reduce, the existing test above); refine spends exactly 4 --
-    one per batch and nothing more, because the last call's own output already
-    IS the finished summary."""
-    chunks = _BATCH * 3 + 1
+async def test_an_empty_map_note_fails_the_build_rather_than_being_skipped() -> None:
+    """Pinned so it is not undone in good faith later: skipping the empty
+    note and folding the rest would produce a summary of a document with a
+    SILENT HOLE in it — one batch nothing was read about, and no field on the
+    row for the reader to learn that from. A build that failed for a stated
+    reason is the honest outcome; the price is a rebuild, and that price is
+    named (`F-8`)."""
+    llm = RecordingLLM(replies=["note", "", "note", "reduced"])
+    _stack, job = await _run_build(llm=llm)
 
-    llm, draft = await _refine_draft([f"chunk {i}" for i in range(chunks)])
-
-    assert len(llm.calls) == 4
-    assert draft.source_chunks == chunks  # type: ignore[attr-defined]
-    assert draft.truncated is False  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_refine_feeds_each_calls_own_output_into_the_next_calls_input() -> None:
-    """Proof this reads in ORDER with one artefact alive throughout, not in
-    isolation like a map batch: the second call's prompt must contain the
-    exact text the first call answered with."""
-    llm, draft = await _refine_draft([f"chunk {i}" for i in range(_BATCH * 3 + 1)])
-
-    first_reply = "SUMMARY-1"
-    second_system, second_user = llm.calls[1][0]
-    assert first_reply in second_user.content
-    assert "Summary so far" in second_user.content
-    assert f"chunk {_BATCH}" in second_user.content  # the second batch's own text
-    assert "refine" in second_system.content.lower() or "running summary" in second_system.content
-
-    # The draft is the LAST call's own reply -- there is no reduce call
-    # afterwards to read instead.
-    assert draft.text == f"SUMMARY-{len(llm.calls)}"  # type: ignore[attr-defined]
+    assert job.status is SummaryJobStatus.FAILED
+    # It stopped AT the empty note. The third map call and the reduce that
+    # would have papered over the hole were never paid for.
+    assert len(llm.calls) == 2
 
 
 @pytest.mark.asyncio
-async def test_refine_summarises_a_short_document_in_one_call() -> None:
-    llm, draft = await _refine_draft(["a", "b", "c"])
+async def test_an_empty_translation_fails_rather_than_storing_an_empty_row() -> None:
+    """The translate path reaches ``_call`` too, so one guard covers it. It
+    matters here more than anywhere: a translation writes a SECOND row under
+    a key of its own, so an unguarded empty answer would leave the document
+    with a good English summary and a blank Arabic one, both ``succeeded``."""
+    stack, job = await _run_build(
+        llm=RecordingLLM(replies=[""]),
+        stored=[_summary(lang=SummaryLanguage.EN, text="English body")],
+        lang=SummaryLanguage.AR,
+    )
 
-    assert len(llm.calls) == 1
-    assert draft.truncated is False  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_refine_truncates_at_the_same_ceiling_map_reduce_does_and_says_so() -> None:
-    _, draft = await _refine_draft([f"chunk {i}" for i in range(300)])
-
-    assert draft.source_chunks == 240  # type: ignore[attr-defined]
-    assert draft.truncated is True  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_refine_keeps_the_language_instruction_on_the_system_message() -> None:
-    llm, _ = await _refine_draft([f"chunk {i}" for i in range(_BATCH * 3 + 1)])
-
-    for messages, _params in llm.calls:
-        system, user = messages
-        assert system.role == "system"
-        assert "Arabic" in system.content
-        assert "Arabic" not in user.content
+    assert job.status is SummaryJobStatus.FAILED
+    assert ("doc-1", "full", "ar") not in stack.summaries.rows
+    # The source it was translating from is untouched, as any failed build
+    # leaves any previous summary.
+    assert stack.summaries.rows[("doc-1", "full", "en")].text == "English body"
 
 
 @pytest.mark.asyncio
-async def test_refine_is_cancellable_between_batches() -> None:
+async def test_a_normal_completion_is_returned_unchanged() -> None:
+    """The containing guard: neither of the two checks touches the happy
+    path. A build whose model answers normally still succeeds, still stores
+    its text, and still spends exactly the calls the ladder asks for."""
     llm = RecordingLLM()
-    calls: list[int] = []
+    stack, job = await _run_build(llm=llm)
 
-    async def _cancel_after_first() -> bool:
-        calls.append(1)
-        return len(calls) > 1
+    assert job.status is SummaryJobStatus.SUCCEEDED
+    assert stack.summaries.rows[("doc-1", "full", "auto")].text.startswith("SUMMARY")
+    assert len(llm.calls) == 4  # three map batches and one reduce
 
-    with pytest.raises(SummaryBuildCancelled):
-        await SummarizeDocument().refine(
-            _ctx(),
-            chunks=[f"chunk {i}" for i in range(_BATCH * 2 + 1)],
-            lang=SummaryLanguage.AUTO,
-            summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
-            should_cancel=_cancel_after_first,
+
+@pytest.mark.asyncio
+async def test_a_length_finish_reason_is_logged_with_the_step_that_hit_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`F-10`: ``finish_reason`` was received on every result and read by
+    nothing, so an answer that stopped because it ran out of room was stored
+    as though it had finished. Measurement only in this wave — which is why
+    the build still SUCCEEDS here: the second flag on the row costs six
+    layers, and nothing yet says how often this happens or at which of the
+    three ceilings."""
+    with caplog.at_level(logging.WARNING):
+        _stack, job = await _run_build(llm=RecordingLLM(finish_reason="length"))
+
+    truncations = [
+        record for record in caplog.records if record.message == "summarization.output_truncated"
+    ]
+    assert job.status is SummaryJobStatus.SUCCEEDED
+    assert len(truncations) == 4
+    assert {record.step for record in truncations} == {"map", "reduce"}  # type: ignore[attr-defined]
+    # Both ceilings appear, which is the pair the log exists to separate: the
+    # map calls answer in 600 and the reduce in 2,500.
+    assert {record.max_tokens for record in truncations} == {  # type: ignore[attr-defined]
+        summarization_module._MAP_MAX_TOKENS,
+        summarization_module._REDUCE_MAX_TOKENS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_stop_finish_reason_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    """The containing guard. A warning on every ordinary call would make the
+    signal worthless the day someone looked for it."""
+    with caplog.at_level(logging.WARNING):
+        await _run_build(llm=RecordingLLM())
+
+    assert [
+        record for record in caplog.records if record.message == "summarization.output_truncated"
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_the_truncation_log_carries_no_document_or_summary_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """10 §10: counts, durations and path names from a closed vocabulary —
+    never a character of the document, the prompt or the reply. The obvious
+    way to say "which call was this?" is the system prompt, and that is
+    content."""
+    secret = "CONFIDENTIAL SALARY TABLE"
+    with caplog.at_level(logging.WARNING):
+        await _run_build(
+            llm=RecordingLLM(reply=secret, finish_reason="length"),
+            chunks=1,
         )
 
-    # The check runs BEFORE the first batch too (there is more than one
-    # batch here), so the first call is paid for and the second never starts.
-    assert len(llm.calls) == 1
+    truncations = [
+        record for record in caplog.records if record.message == "summarization.output_truncated"
+    ]
+    assert truncations
+    for record in truncations:
+        rendered = str(record.__dict__)
+        assert secret not in rendered
+        assert "chunk 0" not in rendered
+        assert record.step in summarization_module._STEPS  # type: ignore[attr-defined]
+        assert isinstance(record.max_tokens, int)  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_refine_with_no_readable_text_is_refused_with_a_readable_reason() -> None:
-    with pytest.raises(ValueError, match="no indexed text"):
-        await _refine_draft(["", "   "])
+async def test_every_call_site_passes_its_own_step_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The drift test. Every branch of the ladder is driven once and the
+    ``step`` names it logged are collected: the union must be exactly
+    ``_STEPS``, which fails in BOTH directions — a seventh call site added
+    without a name of its own, and a name left in ``_STEPS`` after the call
+    site that used it was deleted (`refine` was one, and this is what would
+    have caught it)."""
+    with caplog.at_level(logging.WARNING):
+        # An overview: one call over a sample.
+        await _run_build(llm=RecordingLLM(finish_reason="length"), kind=SummaryKind.OVERVIEW)
+        # A document short enough to be answered whole, skipping map/reduce.
+        await _run_build(llm=RecordingLLM(finish_reason="length"), chunks=1)
+        # Long enough that the notes cannot be reduced in one call, so the
+        # fold rung above the reduce is reached as well.
+        await _ceiling_build(llm=RecordingLLM(reply="x" * _NOTE_CHARS, finish_reason="length"))
+        # A translation off a stored row.
+        await _run_build(
+            llm=RecordingLLM(finish_reason="length"),
+            stored=[_summary(lang=SummaryLanguage.EN, text="English body")],
+            lang=SummaryLanguage.AR,
+        )
+
+    logged = {
+        record.step  # type: ignore[attr-defined]
+        for record in caplog.records
+        if record.message == "summarization.output_truncated"
+    }
+    assert logged == summarization_module._STEPS
+
+
+@pytest.mark.asyncio
+async def test_the_published_truncated_flag_still_means_the_input_was_cut() -> None:
+    """The containing guard for the meaning `F-10` must NOT borrow.
+    ``truncated`` says the INPUT was cut at ``_MAX_MAP_CHUNKS`` — it is
+    published in ``SummaryOut`` and spoken aloud by
+    ``delivered_summary_text`` with that meaning. An output that ran out of
+    room is a different fact and does not move this flag."""
+    llm = RecordingLLM(finish_reason="length")
+    _, short = await _draft([f"chunk {i}" for i in range(_BATCH * 2 + 1)], llm=llm)
+    _, long_ = await _draft(
+        [f"chunk {i}" for i in range(summarization_module._MAX_MAP_CHUNKS + 1)],
+        llm=RecordingLLM(finish_reason="length"),
+    )
+
+    # Every call in both builds ran out of room; only the one whose INPUT was
+    # cut says `truncated`.
+    assert short.truncated is False  # type: ignore[attr-defined]
+    assert long_.truncated is True  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------- #

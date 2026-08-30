@@ -311,8 +311,11 @@ class DocumentRepository(Protocol):
         own parent directly with a JOIN (plan step 18, `P-42`) rather than
         reading every one of a document's parents up front and matching them
         back up itself. A document with no parent chunks yields an empty
-        sequence — a normal answer for a document with no table (P-13 is the
-        only writer of this table today), not an error.
+        sequence rather than an error — a normal answer, and a RARER one than
+        it was: the table exploder (P-13) was the only writer of this table
+        until `P-34` gave prose a page parent of its own
+        (``application/indexing.py::_attach_text_parents``), so coming back
+        empty now takes a document with no table AND no prose.
         """
         ...
 

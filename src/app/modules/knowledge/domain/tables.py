@@ -45,12 +45,20 @@ platform never does.
 
 **The read-back half (P-42, plan §4 step 18, §3.10).** The ladder above is
 also why ``collapse_parent_runs`` lives in THIS module rather than beside
-its only caller (``adapters/sql_repository.py::chunk_texts``): P-13 is the
-only writer of ``parent_chunks``, so "may a parent stand in place of the
-rows under it?" is a question about the ladder, not about SQL. Keeping the
-rule that CONSUMES the header-only parent next to the rung that MINTS it is
-what stops the two halves from drifting apart — they already did once, and
-the summary of every data file silently became a list of column names.
+its only caller (``adapters/sql_repository.py::chunk_texts``): "may a parent
+stand in place of the rows under it?" is a question about the LADDER, not
+about SQL — the answer turns on whether the parent HOLDS what its children
+say (the row-count rung above), which is a rule this module owns and a
+query cannot see. Keeping the rule that CONSUMES the header-only parent next
+to the rung that MINTS it is what stops the two halves from drifting apart —
+they already did once, and the summary of every data file silently became a
+list of column names.
+
+That argument was originally written as "P-13 is the only writer of
+``parent_chunks``", which stopped being true when `P-34` gave prose a page
+parent of its own (``application/indexing.py::_attach_text_parents``, the
+second writer). The placement holds anyway, and holds for the better reason:
+it is a ladder rule whether one rung mints parents or two.
 """
 
 from __future__ import annotations
