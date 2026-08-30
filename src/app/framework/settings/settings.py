@@ -852,6 +852,23 @@ class Limits(BaseModel):
     # of a prefix, saying so -- into a failed job with no summary, for
     # exactly the long documents the raise was meant to serve.
     summarize_job_max_duration_s: int = 1_800
+    # ب-10 (خطة السيناريوهات §7، gap ف-7) — how many summary builds ONE
+    # workspace may hold queued or running at once.
+    #
+    # The guard that existed was per KEY: a second build of the same document,
+    # kind and language is a 409. Nothing bounded a workspace with fifty
+    # documents queueing fifty legitimate builds, and each of them is minutes
+    # of provider calls on a worker every tenant shares. `F-5`'s
+    # one-message-at-a-time read does not change that either — what serialises
+    # builds is a single loop in a single process, not the batch size, so the
+    # fifty do not run at once, they run one after another for hours while
+    # every other tenant's indexing waits behind them.
+    #
+    # Three, and not a sacred three (ق-د): it is how many builds may be in
+    # flight before the next asker is told to wait, not a quota anyone bought,
+    # and a busy tenant raises it. A per-workspace number would need a table,
+    # which is not the gap this closes.
+    max_active_summary_jobs_per_workspace: int = 3
     # 5.3-أ — TOTAL wall-clock cap for ONE streamed response (a single agent
     # answer or a whole workflow run's stream, SSE and WS alike). The adapters'
     # httpx timeout is between-chunk ONLY, deliberately (§3.23: a whole-call

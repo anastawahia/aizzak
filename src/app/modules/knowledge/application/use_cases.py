@@ -74,8 +74,10 @@ from app.modules.knowledge.application.routing import (
     SummaryBuildInProgress,
     SummaryStarting,
     SummaryTargetNotIndexed,
+    SummaryWorkspaceBusy,
 )
 from app.modules.knowledge.application.summarization import (
+    SUMMARY_NO_INDEXED_TEXT_REASON,
     SummarizeDocument,
     SummaryBuildCancelled,
     SummaryDraft,
@@ -159,6 +161,64 @@ SUMMARY_ABANDONED_REASON = (
     "the summary build stopped before it finished and was released so it can be asked for again"
 )
 
+# `finalize`'s answer to a pipeline that returned nothing and raised nothing.
+# A constant since ب-11ب, for `SUMMARY_NO_INDEXED_TEXT_REASON`'s reason: the
+# set below can only hold sentences that have a name.
+SUMMARY_EMPTY_BUILD_REASON = "the summary build produced no text"
+
+# ب-11ب (خطة السيناريوهات §7، ف-3) — the reasons a THREAD may be shown
+# verbatim, and the reason there has to be a set at all.
+#
+# The item's own decision reads: `reason` is displayed and not translated,
+# because the three possible reasons are all sentences this module wrote for
+# this reader. The first half is kept and the second is not true. `reason`
+# reaches this event from six places, and three of them carry
+# `str(exc)`: `run`'s broad `except Exception` around the whole provider
+# pipeline, `claim`'s `(AppError, ValueError)` in the handler, and the
+# `ConflictError` branch after it. What those produce is an httpx connect
+# error naming an internal host, a JSON decode error, or whatever a provider
+# SDK puts in `str()` — text written for a log, about to be appended to a
+# user's conversation as an assistant message.
+#
+# So the set is the whitelist, and everything outside it gets
+# `SUMMARY_FAILURE_RETRY_*` instead: one sentence that is true of every
+# failure. Nothing is lost by that, because the reasons it hides all mean the
+# same actionable thing — it failed, ask again — and the one that means
+# something else is in the set.
+#
+# Two members can no longer reach a thread at all (a cancellation and ب-9's
+# release both publish `conversation_id=None`), and they are in it anyway:
+# this is "sentences this module wrote for this reader", which is a property
+# of the sentence, not of today's routing.
+SUMMARY_DELIVERABLE_REASONS: frozenset[str] = frozenset(
+    {
+        SUMMARY_NO_INDEXED_TEXT_REASON,
+        SUMMARY_CANCELLED_REASON,
+        SUMMARY_ABANDONED_REASON,
+        SUMMARY_EMPTY_BUILD_REASON,
+    }
+)
+
+# ب-11ب — what a thread is told when the build it was promised will not
+# arrive, on `SUMMARY_DELIVERY_HEADER_*`'s shape: a named form and an unnamed
+# one, in each language, differing in the NAME and nothing else.
+#
+# ق-ز's wording, with its «س» filled by the same `document_names` lookup the
+# delivery uses. No trailing stop on the notices: the composer decides the
+# punctuation, because the two endings are different sentences — a reason
+# follows a colon, and the retry line follows a full stop.
+SUMMARY_FAILURE_NOTICE_EN = "The summary could not be prepared"
+SUMMARY_FAILURE_NOTICE_AR = "تعذّر إعدادُ الملخّص"
+SUMMARY_FAILURE_NOTICE_NAMED_EN = 'The summary of "{name}" could not be prepared'
+SUMMARY_FAILURE_NOTICE_NAMED_AR = "تعذّر إعدادُ ملخّص «{name}»"
+
+# Said only when the reason is NOT shown, and that is the whole of its job.
+# Every hidden reason means "it failed, ask again"; the one shown reason that
+# would contradict it -- there is no indexed text -- is in the set above, and
+# telling that reader to ask again would send them round the same loop.
+SUMMARY_FAILURE_RETRY_EN = "You can ask for it again."
+SUMMARY_FAILURE_RETRY_AR = "يمكنك طلبُه مرّةً أخرى."
+
 # The staleness bound ب-9 measures against, mirroring
 # `Limits.summarize_job_max_duration_s` rather than importing it: this module
 # takes its configuration as ARGUMENTS and imports no `Settings` anywhere in
@@ -167,6 +227,13 @@ SUMMARY_ABANDONED_REASON = (
 # nobody says otherwise, exactly as `summarization._DEFAULT_CALL_TIMEOUT_S`
 # mirrors its own sibling.
 _DEFAULT_MAX_BUILD_DURATION_S = 1_800.0
+
+# ب-10's ceiling, mirroring `Limits.max_active_summary_jobs_per_workspace` for
+# the reason the bound above mirrors its own sibling: this module's
+# application and domain layers import no `Settings` (س-24), so a second
+# configured number arrives as a second ARGUMENT and this is what it is when
+# nobody says otherwise.
+_DEFAULT_MAX_ACTIVE_JOBS = 3
 
 # `F-9` (rag-summarization-fix-plan.md §3.10) — what a DELIVERED summary says
 # when the build stopped at `_MAX_MAP_CHUNKS`. Two fixed sentences, phrased
@@ -1081,6 +1148,12 @@ class RequestSummary:
     ``failed``, with a written reason, inside the unit of work this call
     already runs in — releases the key at the moment somebody needs it, which
     is the one moment a periodic sweeper cannot pick.
+
+    **And the workspace has a ceiling of its own** (ب-10, gap ف-7). The
+    guards above are about one KEY; nothing bounded a tenant with fifty
+    documents from queueing fifty builds that are each individually legal,
+    every one of them minutes of provider calls on a worker every tenant
+    shares. That check is last, deliberately: see ``execute``.
     """
 
     def __init__(
@@ -1089,10 +1162,12 @@ class RequestSummary:
         jobs: SummaryJobRepository,
         *,
         max_build_duration_s: float = _DEFAULT_MAX_BUILD_DURATION_S,
+        max_active_jobs: int = _DEFAULT_MAX_ACTIVE_JOBS,
     ) -> None:
         self._documents = documents
         self._jobs = jobs
         self._max_build_duration_s = max_build_duration_s
+        self._max_active_jobs = max_active_jobs
 
     async def execute(
         self,
@@ -1141,6 +1216,13 @@ class RequestSummary:
                         ctx.workspace_id,
                         active.document_id,
                         SUMMARY_ABANDONED_REASON,
+                        # ب-11أ — no thread, and not for want of one to hand
+                        # over: `conversation_id` is in scope right here. It
+                        # belongs to the request being served, and that
+                        # request is about to get its own receipt in that same
+                        # thread. The thread owed this news is the one that
+                        # asked for the DEAD build, and no row records it.
+                        None,
                         now,
                     )
                 )
@@ -1149,6 +1231,27 @@ class RequestSummary:
                     f"a {kind.value} summary of this document in {lang.value}"
                     f" is already being built (job {active.id})"
                 )
+
+        # ب-10 (gap ف-7) — the workspace's ceiling, read LAST of the three
+        # guards and after ب-9's release, both for reasons that would be
+        # wrong the other way round.
+        #
+        # After the key check (decision 3): a caller re-asking for a file that
+        # is already being built deserves «هذا قيد الإعداد» — true, specific,
+        # and about their own request — not «مساحتك مشغولة», which is true of
+        # the workspace and unhelpful about the file. The narrower answer wins
+        # whenever both hold.
+        #
+        # After the release: a job ب-9 just failed is no longer active, and
+        # the count must see that. Inside `RequestSummaryService`'s unit of
+        # work every adapter call joins one session (`rls` docstring), so the
+        # UPDATE above is visible to this SELECT — the freed slot is freed
+        # for the very request that freed it, not for the one after.
+        if await self._jobs.count_active(ctx) >= self._max_active_jobs:
+            raise SummaryWorkspaceBusy(
+                f"this workspace already has {self._max_active_jobs} summary builds"
+                " queued or running; ask again when one of them finishes"
+            )
 
         job = SummaryJob(
             id=new_uuid7(),
@@ -1488,6 +1591,58 @@ def delivered_summary_text(summary: Summary, file_name: str | None = None) -> st
     return f"{header.format(name=file_name.strip())}\n\n{body}"
 
 
+def delivered_failure_text(reason: str, file_name: str | None = None) -> str:
+    """A failed build as the THREAD that asked for it should hear about it
+    (ب-11ب, gap ف-3).
+
+    **The half of `F-7` that was never built.** A finished summary reaches
+    its thread; a build that failed reached nobody, so a conversation that
+    was told «سيصلك عند اكتماله» waited for a message that would never come
+    and had no way to learn that. The receipt is a promise, and this is the
+    only place that promise can be withdrawn.
+
+    Composed HERE and not in the worker, exactly as ``delivered_summary_text``
+    is: what a thread receives is this module's prose, and the worker's job is
+    to append it. Nothing is written to the row — the job's ``error`` column
+    already holds the reason, and the framing is for one reader.
+
+    **The reason is shown only if this module wrote it**
+    (``SUMMARY_DELIVERABLE_REASONS``, where the argument is). Everything else
+    is a provider's ``str(exc)``, which belongs in a log and not in somebody's
+    conversation.
+
+    **The language follows the text the message will carry.** That is the
+    whole rule, and it is picked with ``_detects_lang`` — the module's one
+    "is this Arabic" test, the same one ``delivered_summary_text`` uses. When
+    a reason is shown, the reason decides, so the sentence cannot end up an
+    Arabic frame around an English clause; when it is not, the file's name
+    decides, since that is then the only text in the message the user wrote.
+    Neither available means English.
+
+    A real limit, stated rather than hidden: ق-ز asks for the language of the
+    QUESTION, and no worker has one — the query lives in the turn that asked,
+    minutes ago and in another process. What is here is the best signal that
+    exists at delivery, and it is a signal about the text, not about the
+    reader.
+    """
+    shown = reason if reason in SUMMARY_DELIVERABLE_REASONS else None
+    named = file_name is not None and bool(file_name.strip())
+    probe = shown if shown is not None else (file_name or "")
+    arabic = _detects_lang(probe, SummaryLanguage.AR)
+
+    if named:
+        template = SUMMARY_FAILURE_NOTICE_NAMED_AR if arabic else SUMMARY_FAILURE_NOTICE_NAMED_EN
+        # `file_name` is not None wherever `named` is true; mypy needs saying.
+        notice = template.format(name=(file_name or "").strip())
+    else:
+        notice = SUMMARY_FAILURE_NOTICE_AR if arabic else SUMMARY_FAILURE_NOTICE_EN
+
+    if shown is not None:
+        return f"{notice}: {shown}."
+    retry = SUMMARY_FAILURE_RETRY_AR if arabic else SUMMARY_FAILURE_RETRY_EN
+    return f"{notice}. {retry}"
+
+
 class ReadStoredSummary:
     """The already-built summary under one exact key, delivered the way a
     thread receives one — or ``None`` (ب-8, gap ف-3).
@@ -1602,7 +1757,17 @@ class CancelSummaryJob:
         job.cancel(SUMMARY_CANCELLED_REASON, now)
         await self._jobs.save(ctx, job)
         event = SummaryBuildFailed(
-            job.id, ctx.workspace_id, job.document_id, SUMMARY_CANCELLED_REASON, now
+            # ب-11أ — `None`, and the item says so out loud rather than
+            # leaving it to be discovered: this use case holds a `job_id` and
+            # nothing else, and the thread that asked lives on the request
+            # message. The recommendation is not to chase it — whoever pressed
+            # Stop knows they pressed it (§9's deferral, with its criterion).
+            job.id,
+            ctx.workspace_id,
+            job.document_id,
+            SUMMARY_CANCELLED_REASON,
+            None,
+            now,
         )
         return job, (event,)
 
@@ -1933,10 +2098,16 @@ class BuildSummary:
         make two functions carry a value neither reads.
 
         Defaulted to ``None``, so a build with no thread — and every caller
-        that predates `F-7` — finalizes exactly as it did. It is deliberately
-        NOT stamped on ``SummaryBuildFailed``: nothing subscribes to a
-        failure yet, and a field no consumer reads is a promise nobody is
-        waiting for.
+        that predates `F-7` — finalizes exactly as it did.
+
+        **It is stamped on ``SummaryBuildFailed`` too now** (ب-11أ, gap ف-3).
+        It was not, and the reason given was that nothing subscribed to a
+        failure — true when it was written, and ب-11ب is what makes it false:
+        the same worker that delivers a finished summary into its thread now
+        delivers the news that there will not be one. A thread told «سيصلك
+        عند اكتماله» and then left silent forever is the outcome this closes,
+        and it is the SAME value on both events because it is the same
+        question — where is this build's answer owed.
         """
         job = attempt.job
 
@@ -1980,8 +2151,10 @@ class BuildSummary:
             )
             return job, (event,)
 
-        reason = attempt.error or "the summary build produced no text"
-        return job, await self._settle_failure(ctx, job, reason, now=now)
+        reason = attempt.error or SUMMARY_EMPTY_BUILD_REASON
+        return job, await self._settle_failure(
+            ctx, job, reason, now=now, conversation_id=conversation_id
+        )
 
     async def _settle_failure(
         self,
@@ -1990,6 +2163,7 @@ class BuildSummary:
         reason: str,
         *,
         now: datetime | None = None,
+        conversation_id: Uuid | None = None,
     ) -> tuple[KnowledgeEvent, ...]:
         """Land a job in ``failed`` with its reason, and mint the event.
 
@@ -2007,7 +2181,11 @@ class BuildSummary:
         except SummaryJobStateError:
             return ()
         await self._jobs.save(ctx, job)
-        return (SummaryBuildFailed(job.id, ctx.workspace_id, job.document_id, reason, at),)
+        return (
+            SummaryBuildFailed(
+                job.id, ctx.workspace_id, job.document_id, reason, conversation_id, at
+            ),
+        )
 
 
 def _unique_ids(document_ids: Sequence[Uuid]) -> list[Uuid]:

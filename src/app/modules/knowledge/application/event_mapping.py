@@ -128,6 +128,12 @@ def to_outbox_record(ctx: ExecutionContext, event: KnowledgeEvent) -> OutboxReco
                 "document_id": event.document_id,
                 "reason": event.reason,
             }
+            # ب-11أ — omitted when absent, `SummaryBuilt`'s rule above and
+            # `files`' `space_id` rule before it: the schema declares it
+            # optional, so a build with no thread publishes a payload
+            # byte-identical to the one it published before this item.
+            if event.conversation_id is not None:
+                data["conversation_id"] = event.conversation_id
             aggregate_type, aggregate_id = AGGREGATE_SUMMARY_JOB, event.job_id
         case _:  # pragma: no cover - mypy proves this is unreachable
             assert_never(event)

@@ -334,6 +334,31 @@ class SummaryBuildInProgress(SummaryRefused):
     reason = SummaryBlocked.IN_PROGRESS
 
 
+class SummaryWorkspaceBusy(SummaryRefused):
+    """This workspace already has as many builds in flight as it may
+    (``Limits.max_active_summary_jobs_per_workspace``) — ``RequestSummary``'s
+    THIRD refusal (ب-10, gap ف-7).
+
+    The one that is not about the document. Its file may be perfectly
+    indexed and have no build of its own running; what is full is the
+    workspace, and the two sentences above would both be false about it —
+    «قيد الإعداد» promises an arrival for THIS file that nothing is
+    preparing, and «لا نصَّ فيه» blames a file whose text is fine.
+
+    Benign and self-clearing, which is what its sentence must say: nothing
+    is wrong, something is merely ahead in the queue, and the ask succeeds
+    once one of them lands.
+
+    Still a ``ConflictError`` carrying ``common.conflict`` and still a 409,
+    like its two siblings (ق-4). ``files.too_many`` and
+    ``integrations.too_many`` are the catalogue's precedent for "this
+    workspace reached its limit" and both are 409s; 429 is for a rate over
+    TIME, which this is not.
+    """
+
+    reason = SummaryBlocked.WORKSPACE_BUSY
+
+
 class SummaryReading(Protocol):
     """The second summarisation capability this router needs: the text of a
     summary that is ALREADY built, as the thread that asked for it should

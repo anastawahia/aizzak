@@ -54,8 +54,10 @@ from app.modules.knowledge.application import summarization as summarization_mod
 from app.modules.knowledge.application.routing import (
     SummaryBuildInProgress,
     SummaryTargetNotIndexed,
+    SummaryWorkspaceBusy,
 )
 from app.modules.knowledge.application.summarization import (
+    SUMMARY_NO_INDEXED_TEXT_REASON,
     SummarizeDocument,
     SummaryBuildCancelled,
     _batched,
@@ -64,6 +66,9 @@ from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_BUILD_DURATION_S,
     SUMMARY_ABANDONED_REASON,
     SUMMARY_CANCELLED_REASON,
+    SUMMARY_EMPTY_BUILD_REASON,
+    SUMMARY_FAILURE_RETRY_AR,
+    SUMMARY_FAILURE_RETRY_EN,
     SUMMARY_TRUNCATED_NOTICE_AR,
     SUMMARY_TRUNCATED_NOTICE_EN,
     BuildSummary,
@@ -74,6 +79,7 @@ from app.modules.knowledge.application.use_cases import (
     ReadStoredSummary,
     RequestSummary,
     _is_abandoned,
+    delivered_failure_text,
     delivered_summary_text,
 )
 from app.modules.knowledge.domain.entities import Summary, SummaryJob
@@ -1761,14 +1767,25 @@ def _row(**overrides: object) -> dict[str, object]:
     return {**row, **overrides}
 
 
+@dataclass(frozen=True, slots=True)
+class _CapturedScalar:
+    """What a read gets back from a session that runs nothing."""
+
+    value: int = 0
+
+    def scalar_one(self) -> int:
+        return self.value
+
+
 class _CapturingSession:
     """Records the statements a repository method executes, and runs none."""
 
     def __init__(self) -> None:
         self.statements: list[object] = []
 
-    async def execute(self, statement: object) -> None:
+    async def execute(self, statement: object) -> _CapturedScalar:
         self.statements.append(statement)
+        return _CapturedScalar()
 
 
 def _capturing_repository() -> tuple[SqlSummaryJobRepository, _CapturingSession]:
@@ -1854,6 +1871,34 @@ async def test_the_saved_row_is_never_told_when_it_last_moved() -> None:
     assert "done_chunks" in written
 
 
+@pytest.mark.asyncio
+async def test_the_active_count_names_the_tenant_in_its_own_where_clause() -> None:
+    """ب-10, on the statement rather than on a database — because a database
+    cannot answer this one.
+
+    RLS filters `summary_jobs` by the session's `app.workspace_id`, so
+    deleting this predicate leaves every live test green: the count comes back
+    right for the reason the policy exists. That is why the guard is here and
+    not in `tests/integration` — the mutation is invisible there, exactly as
+    ب-8's `save` mutation was.
+
+    What the predicate buys is that the statement means what its CALLER said.
+    A tenant session joins the ambient unit of work when one is open, and the
+    GUC on that session was set from the context that OPENED the block — so a
+    count issued with one context inside a block opened with another would
+    silently be answered for the other. Every sibling method on this adapter
+    names the workspace for that reason; this one is not the exception.
+    """
+    repository, session = _capturing_repository()
+
+    await repository.count_active(_ctx())
+
+    written = str(session.statements[0])
+    assert "workspace_id" in written
+    # Not vacuous: the other half of the same WHERE is in the same string.
+    assert "status" in written
+
+
 # --------------------------------------------------------------------------- #
 # ب-9 — the abandoned job is released when its key is asked for               #
 # --------------------------------------------------------------------------- #
@@ -1868,8 +1913,12 @@ def _holding_the_key(stack: KnowledgeStack, job: SummaryJob) -> SummaryJob:
     return job
 
 
-async def _request(stack: KnowledgeStack) -> tuple[SummaryJob, tuple[object, ...]]:
-    request = RequestSummary(stack.repository, stack.summary_jobs)
+async def _request(
+    stack: KnowledgeStack,
+    *,
+    max_active_jobs: int = Limits().max_active_summary_jobs_per_workspace,
+) -> tuple[SummaryJob, tuple[object, ...]]:
+    request = RequestSummary(stack.repository, stack.summary_jobs, max_active_jobs=max_active_jobs)
     return await request.execute(
         _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
     )
@@ -2669,6 +2718,150 @@ async def test_a_failing_translation_lands_the_job_in_failed_like_any_other_buil
 # `F-7` — the thread a build owes its answer to                               #
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# ب-10 — سقفٌ لكلّ مساحة عمل (خطة السيناريوهات §7، الفجوة ف-7)                   #
+# --------------------------------------------------------------------------- #
+#
+# The guard that existed is per KEY. Nothing bounded a tenant with fifty
+# documents from queueing fifty individually-legal builds, each of them
+# minutes of provider calls on a worker every tenant shares.
+
+
+def _busy(stack: KnowledgeStack, count: int, *, workspace_id: str = _W1) -> list[str]:
+    """`count` active jobs, each on its OWN document.
+
+    Separate documents on purpose: a shared one would make the key check the
+    thing that refuses the next request, and then every test below would pass
+    without ب-10 existing at all.
+    """
+    ids = [f"busy-{workspace_id}-{index}" for index in range(count)]
+    for index, job_id in enumerate(ids):
+        stack.summary_jobs.rows[job_id] = _job(
+            job_id=job_id,
+            workspace_id=workspace_id,
+            document_id=f"other-{index}",
+            status=SummaryJobStatus.RUNNING,
+        )
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_a_fourth_concurrent_build_is_refused_before_a_token_is_spent() -> None:
+    """**The item** (ف-7). Three builds are in flight for this workspace; the
+    fourth is refused, and refused HERE — before a job row, before an outbox
+    record, before a worker ever reads a chunk."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    held = _busy(stack, 3)
+
+    with pytest.raises(SummaryWorkspaceBusy) as raised:
+        await _request(stack, max_active_jobs=3)
+
+    assert raised.value.reason is SummaryBlocked.WORKSPACE_BUSY
+    # Nothing was written: the three that were there are the three that are.
+    assert set(stack.summary_jobs.rows) == set(held)
+
+
+@pytest.mark.asyncio
+async def test_the_cap_counts_only_this_workspaces_active_jobs() -> None:
+    """Another tenant sitting at its own ceiling is not this tenant's
+    problem, and a count that crossed the line would make one workspace's
+    activity refuse another's — the exact failure RLS exists to prevent,
+    reintroduced in application code."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    _busy(stack, 5, workspace_id=_W2)
+
+    job, _ = await _request(stack, max_active_jobs=3)
+
+    assert job.status is SummaryJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_a_finished_job_does_not_count_against_the_cap() -> None:
+    """The ceiling is on builds IN FLIGHT, not on builds ever asked for.
+
+    Counting terminal rows would make the cap a lifetime quota that a
+    workspace reaches once and never leaves — three summaries and the feature
+    is over — which is not a limit anybody would have written down.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    for job_id in _busy(stack, 3):
+        stack.summary_jobs.rows[job_id].fail("done with", utc_now())
+
+    job, _ = await _request(stack, max_active_jobs=3)
+
+    assert job.status is SummaryJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_the_key_conflict_is_reported_before_the_workspace_cap() -> None:
+    """Decision 3, and it is about which SENTENCE the user reads.
+
+    A caller re-asking for a file that is already being built deserves «هذا
+    قيد الإعداد» — true, specific, and about their own request, with the
+    summary genuinely on its way. «مساحتُك مشغولة» is also true and tells
+    them nothing about the thing they asked for.
+    """
+    stack = build_knowledge()
+    _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=utc_now()))
+    _busy(stack, 3)
+
+    with pytest.raises(SummaryBuildInProgress) as raised:
+        await _request(stack, max_active_jobs=3)
+
+    assert raised.value.reason is SummaryBlocked.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_the_released_key_frees_a_slot_for_the_request_that_freed_it() -> None:
+    """ب-9 and ب-10 in one call, and the ORDER of the two is what this pins.
+
+    The workspace is at its ceiling, and one of the jobs holding it is the
+    abandoned build for the very document being asked about. Releasing it
+    frees the key AND a slot — so the request that did the work is the one
+    that benefits. Counting before the release would have refused it and
+    handed the freed slot to whoever asked next, which is the one outcome
+    nobody would call correct.
+    """
+    stack = build_knowledge()
+    dead = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+    _busy(stack, 2)
+
+    job, events = await _request(stack, max_active_jobs=3)
+
+    assert dead.status is SummaryJobStatus.FAILED
+    assert job.status is SummaryJobStatus.QUEUED
+    assert [type(event).__name__ for event in events] == ["SummaryBuildFailed", "SummaryRequested"]
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_is_the_configured_number_and_not_a_written_three() -> None:
+    """The derivation, not today's value (the plan's second pattern). A
+    deployment that raises `max_active_summary_jobs_per_workspace` gets a
+    workspace that may hold that many builds — with the SAME code path — and
+    a hard-coded three would ignore the raise silently."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    _busy(stack, 4)
+
+    # A fourth build the DEFAULT three would have refused, accepted because
+    # this deployment says five.
+    job, _ = await _request(stack, max_active_jobs=5)
+    assert job.status is SummaryJobStatus.QUEUED
+
+    # And the raised number still bites, one higher up. A separate stack, so
+    # the refusal below can only be the ceiling: asking twice for the same
+    # document would be refused by the KEY, which proves nothing about this.
+    full = build_knowledge()
+    full.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    _busy(full, 5)
+
+    with pytest.raises(SummaryWorkspaceBusy):
+        await _request(full, max_active_jobs=5)
+
+
 _THREAD = "conv-7"
 
 
@@ -2788,11 +2981,15 @@ async def test_finalizing_without_a_thread_publishes_none_and_not_a_missing_fiel
 
 
 @pytest.mark.asyncio
-async def test_a_failed_build_carries_no_thread_because_nothing_subscribes_to_a_failure() -> None:
-    """``SummaryBuildFailed`` deliberately did not grow the field. Adding it
-    would have been a promise nobody is waiting for — the ``FileRenamed``
-    mistake the event's own docstring names — and the thread that asked
-    already has the receipt it was given when the build was queued."""
+async def test_a_failed_build_carries_the_thread_that_asked_for_it() -> None:
+    """**ب-11أ** (خطة السيناريوهات §7، ف-3). The field exists now, and the
+    reason it did not is exactly the reason it does.
+
+    "A promise nobody is waiting for" was true while no subscriber existed;
+    ب-11ب is the subscriber. Without this field the thread that was told
+    «سيصلك عند اكتماله» has no way to be told otherwise — the worker holds
+    the conversation id while it builds and drops it the moment the build
+    fails, which is the moment it is worth the most."""
     stack = build_knowledge()
     stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
     stack.repository.texts["doc-1"] = []
@@ -2804,7 +3001,82 @@ async def test_a_failed_build_carries_no_thread_because_nothing_subscribes_to_a_
     _, events = await build.finalize(_ctx(), await build.run(_ctx(), plan), conversation_id=_THREAD)
 
     assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
-    assert not hasattr(events[0], "conversation_id")
+    assert events[0].conversation_id == _THREAD  # type: ignore[union-attr]
+    # The SAME value the success path stamps: it answers one question — where
+    # is this build's answer owed — and the answer does not depend on how the
+    # build ended.
+    assert events[0].reason == SUMMARY_NO_INDEXED_TEXT_REASON  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_build_with_no_thread_still_fails_with_no_thread() -> None:
+    """The REST case, unchanged by ب-11أ: `POST /documents/{id}/summary`
+    names no conversation, so its failure names none either and ب-11ب has
+    nothing to deliver. The field is optional on the wire for this reason."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.repository.texts["doc-1"] = []
+    stack.summary_jobs.rows["job-1"] = _job()
+    build = _builder(stack, StubSummarizerResolver(RecordingLLM()))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    _, events = await build.finalize(_ctx(), await build.run(_ctx(), plan))
+
+    assert events[0].conversation_id is None  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_is_not_announced_in_the_thread() -> None:
+    """**The item's stated LIMIT, pinned rather than left to be noticed**
+    (ب-11أ's ⚠️, §9's deferral).
+
+    ``CancelSummaryJob`` holds a ``job_id`` and nothing else. The thread that
+    asked lives on the REQUEST message, by a written decision — the row
+    records an operation, and where its output goes is a property of the
+    asking — so carrying it here would take a migration that reverses that
+    decision. It is not worth one: whoever pressed Stop knows they pressed
+    it, and §9 records the single case that would reopen this (a supervisor
+    cancelling somebody else's build)."""
+    stack = build_knowledge()
+    stack.summary_jobs.rows["job-1"] = _job(status=SummaryJobStatus.RUNNING)
+
+    _, events = await CancelSummaryJob(stack.summary_jobs).execute(_ctx(), job_id="job-1")
+
+    assert [type(event).__name__ for event in events] == ["SummaryBuildFailed"]
+    assert events[0].conversation_id is None  # type: ignore[union-attr]
+    assert events[0].reason == SUMMARY_CANCELLED_REASON  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_a_released_abandoned_build_is_not_announced_in_the_new_thread() -> None:
+    """ب-9's release publishes no thread either, and this one had a thread
+    in scope to publish.
+
+    `RequestSummary.execute` is holding the ``conversation_id`` of the
+    request being served — and that request is about to receive its own
+    receipt in that same thread. Announcing a stranger's dead build there
+    would put two messages about two different builds in one turn. The thread
+    that deserved the news is the one that asked for the ABANDONED build, and
+    nothing records it."""
+    stack = build_knowledge()
+    dead = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+
+    _, events = await request.execute(
+        _ctx(),
+        document_id="doc-1",
+        kind=SummaryKind.FULL,
+        lang=SummaryLanguage.AUTO,
+        conversation_id=_THREAD,
+    )
+
+    assert [type(event).__name__ for event in events] == ["SummaryBuildFailed", "SummaryRequested"]
+    assert events[0].conversation_id is None  # type: ignore[union-attr]
+    # And the new build's own event DOES carry it: the thread hears about the
+    # build it asked for, and about that one only.
+    assert events[1].conversation_id == _THREAD  # type: ignore[union-attr]
+    assert dead.status is SummaryJobStatus.FAILED
 
 
 # --------------------------------------------------------------------------- #
@@ -2941,6 +3213,90 @@ def test_an_unnameable_file_is_delivered_exactly_as_it_was_before(name: str | No
     summary = _summary(text=_ENGLISH_SUMMARY, truncated=False)
 
     assert delivered_summary_text(summary, name) == _ENGLISH_SUMMARY
+
+
+# --------------------------------------------------------------------------- #
+# delivered_failure_text — ب-11ب (خطة السيناريوهات §7، ف-3)                     #
+# --------------------------------------------------------------------------- #
+
+_RAW_PROVIDER_ERROR = (
+    "ConnectError: [Errno -2] Name or service not known: POST http://llm.internal:8080/v1/chat"
+)
+
+
+def test_a_reason_this_module_wrote_reaches_the_thread_word_for_word() -> None:
+    """Decision 1's kept half. «لا نصَّ مفهرس» is a sentence written for this
+    reader, and it is the one failure whose reason says something the neutral
+    line cannot: waiting will not help, the file has to be indexed first."""
+    delivered = delivered_failure_text(SUMMARY_NO_INDEXED_TEXT_REASON)
+
+    assert delivered == f"The summary could not be prepared: {SUMMARY_NO_INDEXED_TEXT_REASON}."
+    # And it does NOT invite a retry, because a retry is exactly what will not
+    # work here.
+    assert SUMMARY_FAILURE_RETRY_EN not in delivered
+
+
+def test_a_providers_raw_error_is_replaced_by_a_sentence_meant_for_a_reader() -> None:
+    """**Decision 1's other half, which the item had wrong** — and it is the
+    difference between a message and a leak.
+
+    The item counts three possible reasons and calls them all module prose.
+    `reason` reaches this event from six places and three carry `str(exc)`:
+    `run`'s broad `except Exception` around the whole provider pipeline,
+    `claim`'s `(AppError, ValueError)` in the handler, and the `ConflictError`
+    branch after it. Displayed verbatim, that puts an httpx error naming an
+    internal host into a user's conversation as an assistant message.
+    """
+    delivered = delivered_failure_text(_RAW_PROVIDER_ERROR)
+
+    assert "llm.internal" not in delivered
+    assert delivered == f"The summary could not be prepared. {SUMMARY_FAILURE_RETRY_EN}"
+
+
+def test_a_failure_message_names_the_file_when_the_delivery_could_read_it() -> None:
+    """ب-7ج's argument, at the other end of the same route: a thread that
+    acknowledged «الميزانية» minutes ago and now reads «تعذّر الإعداد» is
+    still being asked to assume the two are about one file, and unrelated
+    messages may sit between them."""
+    delivered = delivered_failure_text(SUMMARY_EMPTY_BUILD_REASON, "الميزانية.pdf")
+
+    expected = (
+        f'The summary of "الميزانية.pdf" could not be prepared: {SUMMARY_EMPTY_BUILD_REASON}.'
+    )
+    assert delivered == expected
+
+
+@pytest.mark.parametrize("name", [None, "", "   "])
+def test_an_unnameable_file_still_gets_its_failure_delivered(name: str | None) -> None:
+    """A name that could not be read is cosmetic; the news is not. Blank is
+    the same case as absent — a message headed ``The summary of "":`` tells a
+    reader their file is called nothing."""
+    delivered = delivered_failure_text(SUMMARY_EMPTY_BUILD_REASON, name)
+
+    assert delivered.startswith("The summary could not be prepared")
+
+
+def test_the_failure_message_is_written_in_the_language_of_the_text_it_carries() -> None:
+    """The one rule, and it is what stops an Arabic frame from ending in an
+    English clause.
+
+    When a reason is shown the reason decides, so the sentence is one voice.
+    When it is not, the file's name decides — the only text left in the
+    message that this user wrote. ق-ز asks for the language of the QUESTION,
+    and no worker has one: the query lives in a turn that ended minutes ago
+    in another process.
+    """
+    arabic_named = delivered_failure_text(_RAW_PROVIDER_ERROR, "التقرير الشمالي.pdf")
+
+    assert arabic_named == (f"تعذّر إعدادُ ملخّص «التقرير الشمالي.pdf». {SUMMARY_FAILURE_RETRY_AR}")
+    # A shown reason overrules the name, because the reason is IN the message
+    # and a frame in the other script would read as two voices.
+    english_reason = (
+        f'The summary of "التقرير الشمالي.pdf" could not be prepared: {SUMMARY_CANCELLED_REASON}.'
+    )
+    assert delivered_failure_text(SUMMARY_CANCELLED_REASON, "التقرير الشمالي.pdf") == (
+        english_reason
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -1158,6 +1158,7 @@ def _build_knowledge(
     max_corpus_names: int,
     reranker: ExternalRerankProvider | None,
     max_build_duration_s: float,
+    max_active_summary_jobs: int,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge, PurgeFileKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1234,7 +1235,16 @@ def _build_knowledge(
         # same value the worker ends a too-long build with, which is what
         # makes "has not moved in longer than that" mean "no live worker is
         # coming back for it".
-        RequestSummary(documents, summary_jobs, max_build_duration_s=max_build_duration_s),
+        RequestSummary(
+            documents,
+            summary_jobs,
+            max_build_duration_s=max_build_duration_s,
+            # ب-10's ceiling, a NUMBER for the same reason (س-24). A second
+            # scalar rather than the `Limits` object the two are read off,
+            # because what this use case needs is two quantities and not a
+            # settings tree it could reach anything else through.
+            max_active_jobs=max_active_summary_jobs,
+        ),
         outbox,
         tenant_session,
     )
@@ -1802,6 +1812,7 @@ class CompositionRoot:
             max_corpus_names=settings.retrieval.max_corpus_names,
             reranker=reranker,
             max_build_duration_s=settings.limits.summarize_job_max_duration_s,
+            max_active_summary_jobs=settings.limits.max_active_summary_jobs_per_workspace,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which

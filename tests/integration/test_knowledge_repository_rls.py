@@ -1641,3 +1641,42 @@ async def test_another_tenant_cannot_read_a_summary_job(
 
     assert await repo_summary_jobs.get(_ctx(owner), job.id) is not None
     assert await repo_summary_jobs.get(_ctx(stranger), job.id) is None
+
+
+async def test_the_active_count_sees_only_this_tenants_jobs(
+    repo_summary_jobs: SqlSummaryJobRepository,
+) -> None:
+    """ب-10's count, on a real table with RLS on.
+
+    A cap that counted across tenants would make one workspace's activity
+    refuse another's — the failure RLS exists to prevent, reintroduced in
+    application code. The in-memory fake filters on `workspace_id` because it
+    was written to; here the filter is the POLICY, and this is the only place
+    that can be shown.
+    """
+    owner, stranger = new_uuid7(), new_uuid7()
+    for _ in range(3):
+        await repo_summary_jobs.add(_ctx(owner), _summary_job(_ctx(owner)))
+    await repo_summary_jobs.add(_ctx(stranger), _summary_job(_ctx(stranger)))
+
+    assert await repo_summary_jobs.count_active(_ctx(owner)) == 3
+    assert await repo_summary_jobs.count_active(_ctx(stranger)) == 1
+
+
+async def test_a_settled_job_leaves_the_active_count(
+    repo_summary_jobs: SqlSummaryJobRepository,
+) -> None:
+    """The ceiling is on builds IN FLIGHT, and `_ACTIVE_JOB_STATUSES` is the
+    same constant `active_for` filters on — so a job that can no longer
+    collide on the key can no longer occupy a slot either. Proven against the
+    real `status` column rather than against a fake that agrees by
+    construction."""
+    ctx = _ctx(new_uuid7())
+    job = _summary_job(ctx)
+    await repo_summary_jobs.add(ctx, job)
+    assert await repo_summary_jobs.count_active(ctx) == 1
+
+    job.fail("nothing to summarise", utc_now())
+    await repo_summary_jobs.save(ctx, job)
+
+    assert await repo_summary_jobs.count_active(ctx) == 0

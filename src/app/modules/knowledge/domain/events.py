@@ -131,12 +131,32 @@ class SummaryBuildFailed:
     "cancelled" event type would be a third schema with the same consumer and
     the same handling, which is the ``FileRenamed`` mistake in another
     costume: a promise no one is waiting for.
+
+    ``conversation_id`` is ``SummaryBuilt``'s field, on this event for the
+    same purpose and by the same route (ب-11أ, gap ف-3): the worker reads it
+    off the request it is answering and stamps it here, so the subscriber
+    that writes the bad news into a thread learns which thread from the
+    event. Until this item a build that FAILED reached nobody — the thread
+    had been promised «سيصلك عند اكتماله» and then went silent forever,
+    which is the one outcome worse than a refusal.
+
+    **Two of its three emitters publish ``None``, and both are deliberate.**
+    A cancellation cannot carry a thread: the id lives on the request
+    message, not on the row, and ``CancelSummaryJob`` has only a ``job_id`` —
+    so honouring it would take a migration that reverses a written decision,
+    for a reader who pressed Stop themselves and already knows. ب-9's release
+    could reach the thread that is asking NOW, and must not: that thread is
+    about to receive a receipt for its OWN build, and a message about a
+    stranger's dead one is noise. The thread that asked for the abandoned
+    build is the one that deserved the news, and it is the one nothing here
+    knows.
     """
 
     job_id: str
     workspace_id: str
     document_id: str
     reason: str
+    conversation_id: str | None
     occurred_at: datetime
 
 

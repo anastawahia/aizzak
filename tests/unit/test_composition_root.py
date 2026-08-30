@@ -296,6 +296,38 @@ def test_the_abandoned_build_bound_is_wired_from_limits(
     assert request._max_build_duration_s == 999
 
 
+def test_the_workspace_build_ceiling_is_wired_from_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ب-10 (خطة السيناريوهات §7): the SECOND number this use case takes, and
+    the second it takes as a scalar rather than as `Limits`.
+
+    س-24 is why: the knowledge module's application and domain layers import
+    no `Settings` at all, and a test parses their trees to say so. So each
+    configured quantity crosses as its own argument, and each needs its own
+    proof that the root still passes it — a default of three on this side and
+    three on the other would let a root that had dropped the argument pass
+    happily.
+    """
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-project")
+    monkeypatch.setenv("PROVIDER_ROUTING", _ROUTING)
+    base = load_settings()
+    raised = base.model_copy(
+        update={
+            "limits": base.limits.model_copy(update={"max_active_summary_jobs_per_workspace": 17})
+        }
+    )
+    monkeypatch.setattr("app.framework.di.composition_root.load_settings", lambda: raised)
+
+    root = CompositionRoot.from_env()
+
+    request = root.knowledge.request_summary._request  # type: ignore[attr-defined]
+    assert raised.limits.max_active_summary_jobs_per_workspace != (
+        base.limits.max_active_summary_jobs_per_workspace
+    )
+    assert request._max_active_jobs == 17
+
+
 def test_the_files_and_media_bundles_are_wired_over_the_shared_handle(
     booted: CompositionRoot,
 ) -> None:

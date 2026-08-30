@@ -445,6 +445,14 @@ class InMemorySummaryJobRepository:
             None,
         )
 
+    async def count_active(self, ctx: ExecutionContext) -> int:
+        return sum(
+            1
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and row.status in (SummaryJobStatus.QUEUED, SummaryJobStatus.RUNNING)
+        )
+
     async def save(self, ctx: ExecutionContext, job: SummaryJob) -> None:
         self.rows[job.id] = job
         self.saved.append(job.id)

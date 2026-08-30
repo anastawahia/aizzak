@@ -31,6 +31,7 @@ from app.modules.knowledge.domain.events import (
     DocumentIndexingFailed,
     DocumentRegistered,
     KnowledgeEvent,
+    SummaryBuildFailed,
 )
 
 _SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "docs" / "design" / "events" / "schemas"
@@ -80,6 +81,59 @@ def _indexing_failed(
         reason="unsupported file type",
         occurred_at=_OCCURRED_AT,
     )
+
+
+def _build_failed(
+    *, conversation_id: str | None = None, reason: str = "the summary build produced no text"
+) -> SummaryBuildFailed:
+    return SummaryBuildFailed(
+        job_id="job-1",
+        workspace_id="ws-1",
+        document_id="doc-1",
+        reason=reason,
+        conversation_id=conversation_id,
+        occurred_at=_OCCURRED_AT,
+    )
+
+
+def test_the_failure_event_schema_accepts_the_conversation_id() -> None:
+    """**ب-11أ** (خطة السيناريوهات §7). The schema is
+    ``"additionalProperties": false``, so a field added to the event and
+    forgotten in the contract does not publish a wrong document quietly — it
+    fails validation here, which is the detection the item was designed
+    around.
+
+    Validated against the PUBLISHED file, not a hand-copied expectation: this
+    test is red if either side moves alone.
+    """
+    record = to_outbox_record(_ctx(), _build_failed(conversation_id="conv-7"))
+
+    jsonschema.Draft202012Validator(
+        _load_schema("knowledge.summary.build_failed.v1.json")
+    ).validate(record.payload["data"])
+    assert record.payload["data"]["conversation_id"] == "conv-7"
+
+
+def test_a_failure_with_no_thread_publishes_the_payload_it_always_did() -> None:
+    """The key is OMITTED, not null — ``SummaryBuilt``'s rule and ``files``'
+    ``space_id`` rule before it.
+
+    That is what makes the field an addition rather than a change: every
+    failure published before ب-11أ, and every one after it that has no thread
+    (a cancellation, ب-9's release, and every REST build), carries a payload
+    byte for byte identical to the old one. The type stays ``v1`` because
+    nothing a consumer read has moved.
+    """
+    record = to_outbox_record(_ctx(), _build_failed())
+
+    jsonschema.Draft202012Validator(
+        _load_schema("knowledge.summary.build_failed.v1.json")
+    ).validate(record.payload["data"])
+    assert record.payload["data"] == {
+        "job_id": "job-1",
+        "document_id": "doc-1",
+        "reason": "the summary build produced no text",
+    }
 
 
 def test_registered_event_maps_to_the_knowledge_stream_and_aggregate() -> None:

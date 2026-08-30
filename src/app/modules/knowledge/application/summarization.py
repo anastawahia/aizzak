@@ -304,6 +304,19 @@ _TRANSLATE_SYSTEM = (
 )
 
 
+# ب-11ب (خطة السيناريوهات §7، ف-3) — a literal until this item, and promoted
+# because it is now DELIVERED: it travels as the `ValueError`'s message into
+# `SummaryJob.error`, onto `SummaryBuildFailed.reason`, and from there into the
+# thread that asked. `SUMMARY_DELIVERABLE_REASONS` is the closed set a thread
+# may be shown verbatim, and a set cannot hold a sentence that lives as an
+# inline argument.
+#
+# It is the ONE deliverable reason that says something the neutral sentence
+# cannot: every other failure means "try again", and this one means waiting
+# will not help — index the file first.
+SUMMARY_NO_INDEXED_TEXT_REASON = "this document has no indexed text to summarise"
+
+
 class SummaryBuildCancelled(Exception):
     """Raised out of ``SummarizeDocument.execute`` when the caller's
     ``should_cancel`` said so at a batch boundary.
@@ -431,7 +444,7 @@ class SummarizeDocument:
             # real outcome (an empty PDF, a scan with no OCR text), and the
             # message is the whole explanation they will get. `NO_TEXT_REASON`
             # in `use_cases` is the same sentence for the same reason.
-            raise ValueError("this document has no indexed text to summarise")
+            raise ValueError(SUMMARY_NO_INDEXED_TEXT_REASON)
 
         if kind is SummaryKind.OVERVIEW:
             sample, sampled = _glance_sample(readable)

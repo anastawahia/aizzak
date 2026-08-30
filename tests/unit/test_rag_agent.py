@@ -2130,6 +2130,12 @@ async def test_a_blocked_summary_never_calls_the_llm() -> None:
     [
         ("in_progress", "summary_blocked_in_progress"),
         ("not_indexed", "summary_blocked_not_indexed"),
+        # ب-10 (خطة السيناريوهات §7، ف-7) — the third refusal gets a third
+        # path for the reason the first two got separate ones: folding "this
+        # workspace is at its ceiling" in with "this file is already being
+        # built" would leave the number unable to tell one tenant asking too
+        # fast from one document being busy.
+        ("workspace_busy", "summary_blocked_workspace_busy"),
     ],
 )
 async def test_a_blocked_summary_logs_its_reason_in_the_answer_record(
@@ -2462,6 +2468,110 @@ async def test_the_clarification_event_types_are_unchanged() -> None:
 
     assert [e.type for e in asked] == ["token", "final"]
     assert [e.type for e in answered] == ["token", "final"]
+
+
+async def test_the_workspace_ceiling_gets_a_sentence_of_its_own() -> None:
+    """**ب-10** (خطة السيناريوهات §7، ف-7) — and it is not the optional
+    polish the item took it for.
+
+    The item reasons that this agent degrades neutrally for a
+    `SummaryBlocked` member it has never heard of, and it does: at RUNTIME,
+    `_blocked_reason` falls to `_BLOCKED_UNCLASSIFIED`. But
+    `test_the_agents_blocked_literals_match_the_modules_enum` asserts set
+    equality in both directions, and says why in its own words — a member
+    with no row here "would fall to the neutral sentence forever, which is
+    ف-7 quietly restored". The fifth gate makes the third sentence mandatory,
+    which is also what makes it right.
+
+    Its sentence is the only one of the three that is not about the FILE:
+    «قيد الإعداد» would promise this document an arrival nothing is
+    preparing, and «لا نصَّ فيه» would blame a file whose text is fine.
+    """
+    deps, _knowledge, llm = make_deps(summary_blocked="workspace_busy")
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    text = events[-1].data["text"]
+    assert text == agent_module._BLOCKED_WORKSPACE_BUSY_AR
+    # Distinct from all three sentences it could have degraded into. That is
+    # the property, not the wording: routing this reason to any of them says
+    # something false about the file.
+    assert text not in {
+        agent_module._BLOCKED_IN_PROGRESS_AR,
+        agent_module._BLOCKED_NOT_INDEXED_AR,
+        agent_module._SUMMARY_BLOCKED_AR,
+    }
+    # And it names no number: three is a deployment's setting (ق-د), so a
+    # sentence quoting it would be wrong wherever it was raised.
+    assert "٣" not in text and "3" not in text
+    assert llm.stream_calls == []
+
+
+async def test_an_agent_that_does_not_know_the_third_reason_degrades_neutrally() -> None:
+    """⚠️ **The containing guard** for ب-10, and it is the half of the item's
+    decision 1 that IS true.
+
+    The gate forces this repository's agent to know `workspace_busy`. It does
+    not force a DEPLOYED agent that predates the module's next member to know
+    that one — and the fallback is what keeps such a pair working: an
+    unrecognised reason is answered with ب-4أ's neutral sentence, which is
+    true of every conflict, and counted on `summary_conflict`, which is the
+    number that says how often this happens.
+    """
+    deps, _knowledge, _llm = make_deps(summary_blocked="a_fourth_reason_not_yet_written")
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["text"] == agent_module._SUMMARY_BLOCKED_AR
+
+
+async def test_the_receipt_declares_its_job_id_on_the_final_event() -> None:
+    """**ب-11ج** (خطة السيناريوهات §7، ف-3). The id already crossed the seam
+    and was already read here — as a BOOLEAN. `summary_job_id is not None`
+    selects this branch and the value was dropped, so a turn that said «بدأت
+    العمل عليه» named no build and nothing downstream could refer to the one
+    it had just started.
+
+    ق-هـ = أ, inherited without argument: the orchestrator writes it onto the
+    thread and strips it before the frame is sent, so this is a message to one
+    layer and not a change to what a client receives. Stopping a build is
+    `POST /knowledge/summary-jobs/{id}/cancel`, which exists and works.
+    """
+    deps, _knowledge, _llm = make_deps(summary_job_id="job-42")
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert events[-1].data["summary_job_id"] == "job-42"
+    # The prose is untouched: a user reads a sentence, and this key is for the
+    # layer that stores the turn.
+    assert "job-42" not in events[-1].data["text"]
+
+
+async def test_no_other_reply_declares_a_job_id() -> None:
+    """The key appears on exactly one of the seven fixed replies — the
+    receipt. The other six have no build behind them to name, and an absent
+    key says that without putting an internal name on six frames."""
+    for deps, _knowledge, _llm in (
+        make_deps(summary_blocked="in_progress"),
+        make_deps(stored_summary_text="ملخّصٌ مخزَّن."),
+        make_deps(clarification_options=["a.pdf", "b.pdf"]),
+    ):
+        events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي الميزانية")
+
+        assert "summary_job_id" not in events[-1].data
+
+
+async def test_the_agent_event_types_are_unchanged() -> None:
+    """⚠️ **The containing guard for ب-11ج.** ق-4 fixes this agent's contract
+    at `token` then `final`, and "the receipt should carry its job id" is
+    exactly the shape that grows a third event type. It rides the payload of
+    a frame that already exists instead, so the streaming contract is what it
+    was."""
+    deps, _knowledge, _llm = make_deps(summary_job_id="job-42")
+
+    events = await drive_run(RagAgent(make_ctx(), deps), "لخّص لي التقرير الشمالي")
+
+    assert [event.type for event in events] == ["token", "final"]
 
 
 async def test_no_other_reply_declares_a_pending_clarification() -> None:

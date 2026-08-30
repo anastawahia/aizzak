@@ -50,9 +50,15 @@ from app.framework.providers.resolver import SettingsProviderResolver
 from app.framework.settings import MinioSettings, Settings
 from app.framework.types import Json
 from app.infrastructure.config import load_settings
-from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
+from app.infrastructure.messaging.consumers.engine import (
+    EventHandler,
+    StreamConsumer,
+    Subscription,
+)
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.use_cases import (
+    SUMMARY_EMPTY_BUILD_REASON,
+    SUMMARY_FAILURE_RETRY_EN,
     SUMMARY_TRUNCATED_NOTICE_AR,
     SUMMARY_TRUNCATED_NOTICE_EN,
 )
@@ -78,6 +84,7 @@ from app.workers.bootstrap import (
     _routing_for,
     build_knowledge_index_handler,
     build_knowledge_summary_delivery_handler,
+    build_knowledge_summary_failure_handler,
     build_knowledge_summary_handler,
     build_knowledge_worker_from_env,
     build_media_run_handler,
@@ -1100,16 +1107,21 @@ async def test_build_knowledge_worker_from_env_builds_a_real_consumer_without_ra
     assert [(s.stream, s.group) for s in subscriptions] == [
         ("stream.knowledge", "cg.knowledge"),
     ]
-    # THREE handlers on `stream.knowledge` since `F-7`, still under the one
+    # FOUR handlers on `stream.knowledge` since ب-11ب, still under the one
     # `cg.knowledge` group: a summary build -- and the delivery of what it
-    # produced -- is more work for the process that already owns this stream,
-    # not a reason for a second consumer group. The third one consumes an
-    # event this same worker publishes, exactly as the first consumes
-    # `document.registered.v1` to publish `document.indexed.v1`.
+    # produced, and the news when it produced nothing -- is more work for the
+    # process that already owns this stream, not a reason for a second
+    # consumer group. Two of the four consume events this same worker
+    # publishes, exactly as the first consumes `document.registered.v1` to
+    # publish `document.indexed.v1`.
+    #
+    # **This is ب-11's containing guard**, together with the group assertion
+    # above: a fourth event TYPE, and still one group on one stream.
     assert set(subscriptions[0].handlers) == {
         "knowledge.document.registered.v1",
         "knowledge.summary.requested.v1",
         "knowledge.summary.built.v1",
+        "knowledge.summary.build_failed.v1",
     }
     # engine.dispose, qdrant_client.close, embedding_http.aclose, the FOUR
     # LLM clients, redis_client.aclose, _close_vault -- `_close_vault` is
@@ -2048,6 +2060,171 @@ async def test_the_delivery_header_speaks_the_summarys_own_language() -> None:
     await handler(ctx, _built_envelope(ctx))
 
     assert append.appended[0][2].startswith(f"ملخّص «{_DELIVERY_FILE}»:")
+
+
+# --------------------------------------------------------------------------- #
+# ب-11ب — الدردشةُ تُخبر بالفشل (خطة السيناريوهات §7، ف-3)                       #
+# --------------------------------------------------------------------------- #
+#
+# The other half of the delivery above. A build that FAILED reached nobody:
+# the thread had been told «سيصلك عند اكتماله» and then went silent forever.
+
+_RAW_PROVIDER_ERROR = "ConnectError: Name or service not known: POST http://llm.internal:8080"
+
+
+def _failed_envelope(
+    ctx: ExecutionContext,
+    *,
+    conversation_id: str | None = "conv-7",
+    reason: str = SUMMARY_EMPTY_BUILD_REASON,
+) -> Json:
+    data: Json = {"job_id": "job-1", "document_id": _DELIVERY_DOC, "reason": reason}
+    if conversation_id is not None:
+        data["conversation_id"] = conversation_id
+    return {
+        "type": "knowledge.summary.build_failed.v1",
+        "workspaceid": ctx.workspace_id,
+        "id": new_uuid7(),
+        "data": data,
+    }
+
+
+def _failure_handler(
+    append: _FakeAppendMessage,
+    *,
+    ledger: _FakeLedger | None = None,
+    names: _FakeDocumentNames | None = None,
+) -> EventHandler:
+    return build_knowledge_summary_failure_handler(
+        append,  # type: ignore[arg-type]
+        _FakeUnitOfWork(),
+        ledger if ledger is not None else _FakeLedger(),
+        names if names is not None else _FakeDocumentNames(),  # type: ignore[arg-type]
+    )
+
+
+async def test_a_failed_build_reaches_the_thread_that_asked_for_it() -> None:
+    """**The item** (ف-3). The receipt is a promise, and this is the only
+    place it can be withdrawn.
+
+    Before this handler the thread that asked was told the build had started
+    and never told anything else — no message, no id to ask about, no reason
+    to stop waiting. `knowledge.summary.build_failed.v1` was published and
+    consumed by nothing durable."""
+    append = _FakeAppendMessage()
+    ledger = _FakeLedger()
+    names = _FakeDocumentNames()
+    handler = _failure_handler(append, ledger=ledger, names=names)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx))
+
+    assert append.appended == [
+        (
+            "conv-7",
+            "assistant",
+            f'The summary of "{_DELIVERY_FILE}" could not be prepared:'
+            f" {SUMMARY_EMPTY_BUILD_REASON}.",
+        )
+    ]
+    # The DD-09 claim is taken under the group this worker already holds, not
+    # a second one -- and under THIS event's id, which is not the build
+    # request's, so sharing the group costs no idempotency.
+    assert [group for group, _ in ledger.calls] == ["cg.knowledge"]
+
+
+async def test_a_failed_build_with_no_thread_writes_nothing() -> None:
+    """The common case, not the exception: every `POST /documents/{id}/summary`
+    failure, every cancellation, and every ب-9 release publishes no
+    `conversation_id` — the last two because neither knows one. Not even a
+    ledger claim: an event that causes no effect has no effect to make
+    idempotent."""
+    append = _FakeAppendMessage()
+    ledger = _FakeLedger()
+    handler = _failure_handler(append, ledger=ledger)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx, conversation_id=None))
+
+    assert append.appended == []
+    assert ledger.calls == []
+
+
+async def test_a_failure_message_names_the_file_when_it_can() -> None:
+    """ب-7ج's argument at the other end of the same route: a thread that
+    acknowledged one file minutes ago, with other messages since, should not
+    have to assume which file this is about."""
+    append = _FakeAppendMessage()
+    names = _FakeDocumentNames()
+    handler = _failure_handler(append, names=names)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx))
+
+    assert names.asked == [_DELIVERY_DOC]
+    assert f'"{_DELIVERY_FILE}"' in append.appended[0][2]
+
+
+async def test_a_failing_name_lookup_still_delivers_the_failure() -> None:
+    """The swallow is inherited whole: a header is cosmetic and the news is
+    not. `_summary_file_name` catches broadly because everything under it is
+    one optional read, and it wraps THAT call only — a fault in the append
+    still fails the delivery and is still retried."""
+    append = _FakeAppendMessage()
+    names = _FakeDocumentNames(error=RuntimeError("files seam is down"))
+    handler = _failure_handler(append, names=names)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx))
+
+    assert append.appended[0][2] == (
+        f"The summary could not be prepared: {SUMMARY_EMPTY_BUILD_REASON}."
+    )
+
+
+async def test_a_deleted_thread_ends_the_failure_delivery_instead_of_dead_lettering_it() -> None:
+    """A thread that is gone is a TERMINAL fact, and letting it escape would
+    redeliver five times into the DLQ for a condition no retry can fix. The
+    delivery handler's rule, applied to its twin."""
+    append = _FakeAppendMessage(NotFoundError("conversation not found"))
+    handler = _failure_handler(append)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx))
+
+    assert append.appended == []
+
+
+async def test_a_providers_raw_error_never_reaches_the_thread() -> None:
+    """**The finding this item turned up**, guarded where it would land.
+
+    `reason` is not always module prose: `run`'s broad `except Exception`
+    around the whole provider pipeline puts `str(exc)` on it, and so do
+    `claim`'s `(AppError, ValueError)` and the `ConflictError` branch after
+    it. Displayed verbatim that appends an httpx error naming an internal
+    host to a user's conversation as an assistant message. The module filters
+    it; this pins that the worker does not route around the filter."""
+    append = _FakeAppendMessage()
+    handler = _failure_handler(append)
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx, reason=_RAW_PROVIDER_ERROR))
+
+    assert "llm.internal" not in append.appended[0][2]
+    assert append.appended[0][2].endswith(SUMMARY_FAILURE_RETRY_EN)
+
+
+async def test_a_duplicate_failure_delivery_writes_one_message() -> None:
+    """DD-09: the ledger declines the second claim and the handler returns
+    cleanly, so a redelivered failure does not put the same sentence in the
+    thread twice."""
+    append = _FakeAppendMessage()
+    handler = _failure_handler(append, ledger=_FakeLedger(result=False))
+    ctx = _ctx()
+
+    await handler(ctx, _failed_envelope(ctx))
+
+    assert append.appended == []
 
 
 async def test_the_build_handler_hands_the_message_s_thread_to_finalize() -> None:

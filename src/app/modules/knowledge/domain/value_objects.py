@@ -102,13 +102,21 @@ class SummaryBlocked(StrEnum):
     """WHY a requested summary build was refused (scenarios plan section 5,
     ب-4ب, gap ف-7).
 
-    Two members because ``RequestSummary`` refuses for exactly two reasons,
-    and until this enum existed a caller could not tell them apart: both
-    arrive as ``ConflictError`` and both carry ``common.conflict``, so the
-    only thing separating "your summary is already being built" from "this
-    document has no text to summarise" was an exception message written for
-    a log. A caller that guessed said «ما زال قيد الإعداد» about a document
-    for which nothing was being prepared and nothing ever would be.
+    One member per way ``RequestSummary`` says no, and until this enum
+    existed a caller could not tell them apart: they all arrive as
+    ``ConflictError`` and all carry ``common.conflict``, so the only thing
+    separating "your summary is already being built" from "this document has
+    no text to summarise" was an exception message written for a log. A caller
+    that guessed said «ما زال قيد الإعداد» about a document for which nothing
+    was being prepared and nothing ever would be.
+
+    **It was written to grow, and ب-10 is the growth** (gap ف-7). The third
+    member is the workspace's own ceiling on concurrent builds: not a fact
+    about THIS document — which may be perfectly summarisable and have nothing
+    running — but about how much the workspace already has in flight. It
+    deserves its own sentence for the same reason the first two do: «قيد
+    الإعداد» about a build nobody started is the exact error this enum exists
+    to stop, and so is «لا نصَّ فيه» about a file whose text is fine.
 
     **A vocabulary, not a status.** Nothing stores this and nothing
     transitions through it. It names the outcome of ONE call at the moment
@@ -125,6 +133,7 @@ class SummaryBlocked(StrEnum):
 
     IN_PROGRESS = "in_progress"
     NOT_INDEXED = "not_indexed"
+    WORKSPACE_BUSY = "workspace_busy"
 
 
 @dataclass(frozen=True, slots=True)

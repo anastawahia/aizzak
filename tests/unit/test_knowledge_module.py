@@ -40,7 +40,9 @@ from app.modules.knowledge.application.retrieval import (
 from app.modules.knowledge.application.routing import (
     RouteQuestion,
     SummaryBuildInProgress,
+    SummaryRefused,
     SummaryTargetNotIndexed,
+    SummaryWorkspaceBusy,
 )
 from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_CORPUS_NAMES,
@@ -2841,11 +2843,44 @@ def test_both_refusals_keep_the_one_conflict_error_code() -> None:
     The distinction is for a caller that renders a SENTENCE, and it cost the
     wire nothing.
     """
-    for refusal in (SummaryTargetNotIndexed("x"), SummaryBuildInProgress("y")):
+    for refusal in (
+        SummaryTargetNotIndexed("x"),
+        SummaryBuildInProgress("y"),
+        SummaryWorkspaceBusy("z"),
+    ):
         assert isinstance(refusal, ConflictError)
         assert refusal.code == "common.conflict"
-    # And they are genuinely two, not one class read two ways.
-    assert SummaryTargetNotIndexed.reason is not SummaryBuildInProgress.reason
+    # And they are genuinely distinct, not one class read three ways.
+    assert len({cls.reason for cls in _REFUSALS}) == len(_REFUSALS)
+
+
+def test_the_workspace_refusal_keeps_the_published_conflict_code() -> None:
+    """**The containing guard for ب-10** (ق-4, خطة السيناريوهات §7).
+
+    The third refusal is where a new error code would have been easiest to
+    justify — "this workspace is at its limit" is a different KIND of no from
+    the two above it, and the catalogue has `files.too_many` and
+    `integrations.too_many` for exactly that shape. Both of those are 409s,
+    which is the point: 429 is a rate over TIME, and a count of builds in
+    flight is not one.
+
+    So nothing on the wire moves. `test_error_catalog.py` verifies the
+    catalogue in both directions — a code with no raise site fails the gate,
+    and a raise site with no code fails it too — and ب-10 crosses it by
+    adding neither.
+    """
+    refusal = SummaryWorkspaceBusy("full")
+
+    assert refusal.code == "common.conflict"
+    assert isinstance(refusal, ConflictError)
+    # And a caller written before ب-10 catches it unchanged, which is the
+    # whole of the compatibility story.
+    assert isinstance(refusal, SummaryRefused)
+
+
+# ب-10 — the refusals in one tuple, so the two guards that read them cannot
+# fall out of step while a fourth is added.
+_REFUSALS = (SummaryTargetNotIndexed, SummaryBuildInProgress, SummaryWorkspaceBusy)
 
 
 def test_every_blocked_reason_has_a_refusal_that_raises_it() -> None:
@@ -2856,8 +2891,7 @@ def test_every_blocked_reason_has_a_refusal_that_raises_it() -> None:
     seam at all. Pinning the two together is what stops a third refusal from
     being added on one side only.
     """
-    raised = {cls.reason for cls in (SummaryTargetNotIndexed, SummaryBuildInProgress)}
-    assert raised == set(SummaryBlocked)
+    assert {cls.reason for cls in _REFUSALS} == set(SummaryBlocked)
 
 
 # ب-8 (خطة السيناريوهات §6، الفجوة ف-3) — the stored summary read on the CHAT

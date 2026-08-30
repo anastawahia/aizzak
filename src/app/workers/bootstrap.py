@@ -199,6 +199,7 @@ from app.modules.knowledge.application.use_cases import (
     BuildSummary,
     GetDocumentFileName,
     IndexRegisteredDocument,
+    delivered_failure_text,
     delivered_summary_text,
 )
 from app.modules.knowledge.domain.sparse import Bm25Params
@@ -916,6 +917,98 @@ def build_knowledge_summary_delivery_handler(
     return _handle
 
 
+def build_knowledge_summary_failure_handler(
+    conversation_messages: AppendMessage,
+    uow: UnitOfWork,
+    ledger: ProcessedEventLedger,
+    document_names: GetDocumentFileName,
+    *,
+    consumer_group: str = _CG_KNOWLEDGE,
+) -> EventHandler:
+    """``knowledge.summary.build_failed.v1`` -> the news, appended to the
+    thread that asked for the summary as one assistant message (ب-11ب,
+    scenarios plan §7, gap ف-3).
+
+    **The promise this withdraws is one the platform makes out loud.** Asking
+    for a summary in a conversation answers «يجري إعدادُ ملخّص… سيصلك عند
+    اكتماله» — and if the build then failed, that was the last thing the
+    thread ever said about it. The user was left waiting for a message that
+    would never arrive, with no id to ask about and no reason to stop
+    waiting. Its sibling below delivers the summaries that DO arrive; this
+    one closes the other branch.
+
+    **The fourth handler on one subscription, not a second group.** The
+    argument is ``build_knowledge_summary_delivery_handler``'s, unchanged and
+    not weakened by being made twice: 04 §4's binding table gives this worker
+    one group on ``stream.knowledge``, and a second would receive every
+    knowledge event in order to answer one type, bringing a second pending
+    list and a second dead-letter queue. The DD-09 ledger is keyed
+    ``(consumer_group, event_id)`` and this is a different event id from the
+    build's own, so sharing the group costs no idempotency.
+
+    **A durable group and not the notify family**, for that handler's reason
+    exactly: a message in a thread is a stored artefact, and the
+    ``cg.notify.<host>.<pid>`` consumers live and die with a process, so
+    whether the user was ever told would have depended on whether a browser
+    happened to be open.
+
+    The three quiet returns are the same three, minus the one that does not
+    apply — there is no summary to read here, which is the point:
+
+    * **no ``conversation_id``** — a build asked for through ``POST
+      /documents/{id}/summary``, whose failure is read back through ``GET``.
+      It is also every CANCELLATION and every ب-9 release, neither of which
+      knows a thread (``SummaryBuildFailed``'s own docstring says why), so
+      this branch is the common one rather than the exception.
+    * **an ``AppError`` from the append** — the thread was deleted or is
+      unknown. Terminal facts, so the delivery ends rather than being
+      redelivered five times into the DLQ; a Postgres or Redis outage is not
+      an ``AppError`` and still escapes to be retried.
+    * **a failed name lookup** — swallowed by ``_summary_file_name``, never a
+      failed delivery. A header is cosmetic and the news is not.
+
+    What is appended is ``delivered_failure_text(reason, file_name)``, and the
+    module composes it for ``delivered_summary_text``'s reason: the prose a
+    thread receives is the module's, and this file appends it. That function
+    is also where the reason is filtered — only sentences the module WROTE
+    are shown, because ``reason`` can be a provider's ``str(exc)`` and a
+    conversation is not a log.
+    """
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        data = envelope["data"]
+        conversation_id: str | None = data.get("conversation_id")
+        if conversation_id is None:
+            return
+        # Outside the transaction below, `_summary_file_name`'s own rule: an
+        # optional read must not share a fate with the append that is the
+        # actual delivery.
+        file_name = await _summary_file_name(ctx, document_names, data["document_id"])
+        try:
+            async with uow.begin(ctx):
+                if not await ledger.claim(
+                    ctx, consumer_group=consumer_group, event_id=envelope["id"]
+                ):
+                    return  # Duplicate delivery -- clean return, the engine XACKs.
+                await conversation_messages.execute(
+                    ctx,
+                    conversation_id,
+                    role=_ROLE_ASSISTANT,
+                    text=delivered_failure_text(data["reason"], file_name),
+                )
+        except AppError as exc:
+            _logger.info(
+                "summary_failure_delivery_declined",
+                extra={
+                    "conversation_id": conversation_id,
+                    "document_id": data["document_id"],
+                    "reason": str(exc),
+                },
+            )
+
+    return _handle
+
+
 def build_knowledge_worker(
     *,
     redis_client: Redis,
@@ -962,6 +1055,14 @@ def build_knowledge_worker(
     parameters, like every other dependency here, because a worker wired
     without them would still boot and would silently drop every summary a
     conversation ever asked for.
+
+    **ب-11ب added a FOURTH, on the same terms** (scenarios plan §7, gap ف-3):
+    a build that FAILED is the other half of that delivery, and it reached no
+    thread at all. It needs no new dependency — the same
+    ``conversation_messages``, the same ledger, the same pair behind
+    ``GetDocumentFileName`` — which is the clearest evidence that one
+    subscription was the right shape: a fourth event type cost this builder
+    nothing but a fourth entry.
 
     **``files`` is ب-7ج's (scenarios plan §4)**, and it is a
     parameter for the same reason rather than a seam composed
@@ -1010,6 +1111,16 @@ def build_knowledge_worker(
                     # function already takes, so naming the delivered
                     # summary cost this builder one parameter rather
                     # than two.
+                    GetDocumentFileName(documents, files),
+                ),
+                # ب-11ب (خطة السيناريوهات §7، ف-3) -- the FOURTH handler on
+                # this one subscription, and the other half of the branch
+                # above: that one delivers the summaries that arrive, this
+                # one says so when none will. Still one group on one stream.
+                "knowledge.summary.build_failed.v1": build_knowledge_summary_failure_handler(
+                    conversation_messages,
+                    uow,
+                    ledger,
                     GetDocumentFileName(documents, files),
                 ),
             },

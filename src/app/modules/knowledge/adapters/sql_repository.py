@@ -1223,6 +1223,24 @@ class SqlSummaryJobRepository:
             raise _translate(exc) from exc
         return None if row is None else _hydrate_summary_job(row)
 
+    async def count_active(self, ctx: ExecutionContext) -> int:
+        # The SAME `_ACTIVE_JOB_STATUSES` the key check above filters on, and
+        # that shared constant is the whole reason the two agree by
+        # construction rather than by review.
+        stmt = (
+            select(func.count())
+            .select_from(summary_jobs)
+            .where(
+                summary_jobs.c.status.in_(_ACTIVE_JOB_STATUSES),
+                summary_jobs.c.workspace_id == ctx.workspace_id,
+            )
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                return int((await session.execute(stmt)).scalar_one())
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
     async def save(self, ctx: ExecutionContext, job: SummaryJob) -> None:
         stmt = (
             update(summary_jobs)

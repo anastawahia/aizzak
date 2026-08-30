@@ -663,6 +663,22 @@ class SummaryJobRepository(Protocol):
         """The queued/running job for this key, if one exists."""
         ...
 
+    async def count_active(self, ctx: ExecutionContext) -> int:
+        """How many queued/running jobs this workspace holds, over every
+        document and every key (ب-10, gap ف-7).
+
+        The whole-workspace counterpart to ``active_for``, reading the same
+        two statuses: a job counted here is exactly a job that could collide
+        there. Keeping the two definitions of "active" identical is the point
+        of saying so — a cap that counted a wider set than the key check would
+        refuse builds for jobs the key check considers finished.
+
+        A count rather than a list. The caller compares it with a ceiling and
+        has no use for a row, and the rows it would otherwise load are other
+        documents' builds it has no business holding in memory.
+        """
+        ...
+
     async def save(self, ctx: ExecutionContext, job: SummaryJob) -> None:
         """Persist the job's mutable state: status, progress, error and the
         two instants.

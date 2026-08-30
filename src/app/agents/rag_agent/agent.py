@@ -274,6 +274,32 @@ _BLOCKED_NOT_INDEXED_NAMED_EN = (
     'The file "{name}" has not finished being indexed yet, so there is no text in it to summarise.'
 )
 _BLOCKED_NOT_INDEXED_NAMED_AR = "الملفّ «{name}» لم تكتمل فهرستُه بعد، فلا نصَّ فيه لتلخيصه."
+# ب-10 (خطة السيناريوهات §7، ف-7) — the third refusal, and the first that is
+# not about the FILE at all. Its two siblings describe the document: one is
+# being summarised already, the other has no text. This one describes the
+# WORKSPACE, and both of their sentences are false about it — «قيد الإعداد»
+# promises this file an arrival nothing is preparing, and «لا نصَّ فيه» blames
+# a file whose text is fine.
+#
+# So it says the two things that are true and actionable: nothing is wrong,
+# and asking again works. It names no number — three is a deployment's
+# setting (ق-د) and a sentence quoting it would be wrong wherever it was
+# raised, for a reader who cannot act on the figure either way.
+_BLOCKED_WORKSPACE_BUSY_EN = (
+    "This workspace already has as many summaries being prepared as it can at once. "
+    "Ask again once one of them is done."
+)
+_BLOCKED_WORKSPACE_BUSY_AR = (
+    "تُعِدُّ مساحةُ العمل هذه أكبرَ عددٍ من الملخّصات يمكنها إعدادُه في وقتٍ واحد. أعد الطلب متى انتهى أحدُها."
+)
+_BLOCKED_WORKSPACE_BUSY_NAMED_EN = (
+    'Summarising "{name}" has not started: this workspace already has as many summaries '
+    "being prepared as it can at once. Ask again once one of them is done."
+)
+_BLOCKED_WORKSPACE_BUSY_NAMED_AR = (
+    "لم يبدأ تلخيصُ «{name}»: تُعِدُّ مساحةُ العمل هذه أكبرَ عددٍ من الملخّصات يمكنها"
+    " إعدادُه في وقتٍ واحد. أعد الطلب متى انتهى أحدُها."
+)
 
 # ب-4ب — the module's `SummaryBlocked` values, as LITERALS, for
 # `_INTENT_SUMMARIZE_DOC`'s reason exactly (ق-1: this agent imports no module
@@ -281,6 +307,7 @@ _BLOCKED_NOT_INDEXED_NAMED_AR = "الملفّ «{name}» لم تكتمل فهر�
 # (`test_the_agents_blocked_literals_match_the_modules_enum`).
 _BLOCKED_IN_PROGRESS = "in_progress"
 _BLOCKED_NOT_INDEXED = "not_indexed"
+_BLOCKED_WORKSPACE_BUSY = "workspace_busy"
 
 # ب-3 — the module's `Intent.SUMMARIZE_DOC` value, as a LITERAL.
 #
@@ -409,6 +436,11 @@ _PATH_ERROR = "error"
 # `summary_conflict` now counts only what stayed UNclassified.
 _PATH_SUMMARY_BLOCKED_IN_PROGRESS = "summary_blocked_in_progress"
 _PATH_SUMMARY_BLOCKED_NOT_INDEXED = "summary_blocked_not_indexed"
+# ب-10 — its own path, on the rule the two above state: `path` is a
+# MEASUREMENT, and folding a workspace that is at its ceiling in with a
+# document that is already being built would make the number blind to the
+# difference between "one tenant is asking too fast" and "this file is busy".
+_PATH_SUMMARY_BLOCKED_WORKSPACE_BUSY = "summary_blocked_workspace_busy"
 # ب-8 — the الموجة 4 exit, and the one whose COUNT is the item's own case for
 # itself. Every turn on this path is a map-reduce that did not run: the answer
 # came out of the store, in the turn that asked, for zero tokens. Folded into
@@ -454,6 +486,13 @@ _SUMMARY_BLOCKED_REASONS: Mapping[str, _BlockedReason] = {
         ar=_BLOCKED_NOT_INDEXED_AR,
         named_en=_BLOCKED_NOT_INDEXED_NAMED_EN,
         named_ar=_BLOCKED_NOT_INDEXED_NAMED_AR,
+    ),
+    _BLOCKED_WORKSPACE_BUSY: _BlockedReason(
+        path=_PATH_SUMMARY_BLOCKED_WORKSPACE_BUSY,
+        en=_BLOCKED_WORKSPACE_BUSY_EN,
+        ar=_BLOCKED_WORKSPACE_BUSY_AR,
+        named_en=_BLOCKED_WORKSPACE_BUSY_NAMED_EN,
+        named_ar=_BLOCKED_WORKSPACE_BUSY_NAMED_AR,
     ),
 }
 
@@ -529,6 +568,21 @@ class _FixedReply:
     # A tuple, in the module's own order. See `AgentDependencies.
     # pending_clarification`: position is what an ordinal answer indexes.
     pending: tuple[str, ...] = ()
+    # ب-11ج (خطة السيناريوهات §7، ف-3) — the build THIS receipt is a receipt
+    # for. Exactly one of the seven ever sets it, the queued receipt, and the
+    # other six have no build behind them to name.
+    #
+    # The id already crosses the seam and is already read here — but only as a
+    # BOOLEAN: `routed.summary_job_id is not None` is what selects the receipt
+    # branch, and the value itself was dropped on the floor. So a turn that
+    # said «بدأت العمل عليه» named no build, and nothing downstream could
+    # refer to the one it had just started.
+    #
+    # On this class and not decided at the emit site, `pending`'s reason
+    # exactly: only the branch that has the id knows it, and putting it here
+    # is what keeps the seven sharing ONE emit site rather than growing a
+    # second `yield` for the one reply that carries an extra key.
+    summary_job_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,6 +752,20 @@ class RagAgent(BaseAgent):
                 # receives. The names are already in `plan.text`, which is
                 # where a user reads them.
                 final["pending_clarification"] = list(plan.pending)
+            if plan.summary_job_id is not None:
+                # ب-11ج — declared on `final` beside the text, on
+                # `pending_clarification`'s shape above and for the same
+                # reason: an absent key and a null say the same thing, and the
+                # absent one says it without putting an internal name on the
+                # six frames that have no build behind them.
+                #
+                # ق-هـ = أ, inherited without argument: the orchestrator
+                # writes this onto the thread and strips it before the frame
+                # is sent, so it is a message to ONE layer of the platform and
+                # not a change to the streaming contract. What a user has for
+                # stopping a build is `POST /knowledge/summary-jobs/{id}/
+                # cancel`, which exists and works.
+                final["summary_job_id"] = plan.summary_job_id
             yield AgentEvent(type="final", data=final)
             return
         params = LlmParams(model=plan.binding.model)
@@ -847,6 +915,11 @@ class RagAgent(BaseAgent):
             return _FixedReply(
                 self._summary_queued_answer(query, routed.summary_target_name),
                 _PATH_SUMMARY_RECEIPT,
+                # ب-11ج — the id this branch already tested for truthiness,
+                # carried instead of discarded. The sentence above is
+                # unchanged: a user reads prose, and this is for the layer
+                # that stores the turn.
+                summary_job_id=routed.summary_job_id,
             )
         blocked = self._blocked_reason(routed.summary_blocked)
         if blocked is not None:
