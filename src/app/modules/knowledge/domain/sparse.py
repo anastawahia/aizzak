@@ -99,10 +99,16 @@ class Bm25Params:
         ``|d| = avg_len`` the normaliser is exactly 1 and this returns
         ``(k1+1)/(1+k1) = 1.0`` -- the same value raw ``tf`` produced. So a
         typical term in a typical chunk scores exactly what it scored before,
-        and ``RetrievalSettings.min_bm25_score`` (25.0, the middle of a
-        measured [21, 30] plateau) keeps the meaning it was measured with.
-        What moves is only the DEVIATION from typical, which is the whole
-        point of adding these.
+        and ``RetrievalSettings.min_bm25_score`` keeps the meaning it was
+        measured with. What moves is only the DEVIATION from typical, which
+        is the whole point of adding these.
+
+        ⚠️ That floor is ``0.0`` (disabled) since 2026-08-30. The anchor
+        property above is unaffected — it is algebra, not tuning — but the
+        reason the floor was withdrawn is worth reading beside it: a raw
+        BM25 score is a function of the corpus's IDF and ``avg_len``, so an
+        absolute floor on this scale does not survive the corpus changing
+        underneath it.
 
         ``avg_len`` is guarded rather than trusted: a zero or negative value
         would divide by zero or invert the normalisation, and neither should

@@ -395,8 +395,16 @@ class RetrievalTuning:
     # between them. `Settings.RetrievalSettings` carries the evidence for
     # each; the two zeros below are a MEASURED verdict ("the RRF scale
     # carries no admissibility signal"), not a value still waiting for data.
-    min_dense_score: float = 0.45
-    min_bm25_score: float = 25.0
+    #
+    # ⚠️ The two PER-LEG floors ship DISABLED again (owner decision
+    # 2026-08-30): the corpus they were fitted on no longer exists, and on
+    # the one that replaced it both gated every hit of both legs and turned
+    # answerable questions into `P-33` refusals. `Settings.RetrievalSettings`
+    # carries the measurement and the reasoning; these two must mirror it
+    # field for field (`test_retrieval_tuning_defaults_mirror_settings_
+    # field_for_field`), so they move together or not at all.
+    min_dense_score: float = 0.0
+    min_bm25_score: float = 0.0
     min_fused_score: float = 0.0
     relative_floor: float = 0.0
     jaccard_threshold: float = 0.95
@@ -1279,12 +1287,14 @@ def _gate_by_score(hits: Sequence[VectorHit], min_score: float) -> list[VectorHi
     module's scales it has to be: the dense leg is Qdrant cosine similarity
     over ``[-1, 1]``, so ``hit.score >= 0.0`` would quietly discard every
     negatively correlated hit — an uncalibrated gate disguised as a disabled
-    default, exactly what decision س-22 forbids shipping. Neither shipped
-    call takes that branch since 2026-08-27: ``min_dense_score`` is ``0.45``
-    and ``min_bm25_score`` is ``25.0`` (س-22 closed on ``P-38``'s evaluation
-    set; ``Settings.RetrievalSettings`` carries the evidence for each). The
-    branch stays because a deployment may still zero a floor — and because
-    zeroing one has to mean "off", never "keep the non-negative half".
+    default, exactly what decision س-22 forbids shipping. BOTH shipped calls
+    take that branch again as of 2026-08-30: ``min_dense_score`` and
+    ``min_bm25_score`` are back to ``0.0`` because the corpus س-22
+    calibrated them on was replaced by the very document they had been
+    fitted to reject (``Settings.RetrievalSettings`` carries the
+    measurement). The branch was always going to matter — it is what makes
+    "off" mean off rather than "keep the non-negative half" — and it is now
+    what runs.
 
     ⚠️ The surviving comparison is ``score >= min_score`` — HIGHER is better
     on both legs. alpha's floors gate an L2 DISTANCE where lower is nearer,

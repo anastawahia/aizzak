@@ -42,6 +42,24 @@ docker exec \
 read out of `Settings`, so anything a variant does not name keeps its deployed
 value.
 
+> ⚠️ **The two per-leg floors below were withdrawn on 2026-08-30 and both
+> ship at `0.0` again.** Nothing in the measurement was wrong; the corpus it
+> was measured on is gone. The space now holds `criteria.pdf` **alone**
+> (re-indexed to 771 chunks) — the *distractor* of the very corpus described
+> above, with the handbook it was meant to distract from no longer indexed.
+> So the only document left is the one both floors were fitted to reject, and
+> every question about it scores in the band this sweep recorded for
+> *unanswerable* questions. Measured live on 2026-08-30: `best_dense_score`
+> 0.40547 against the 0.45 floor and `best_bm25_score` 6.30028 against the
+> 25.0 one — both legs gated to zero, `fused_count` 0, and an answerable
+> question refused by the `P-33` trust gate.
+>
+> The numbers below therefore stand as the record of what was measured **on
+> that corpus**, and re-running this harness on the corpus that is actually
+> indexed is what would restore a floor. Note that `min_bm25_score` will not
+> transfer even then: a raw BM25 score is a function of the corpus's own IDF
+> and mean document length.
+
 ## What it measured, and what each ladder answered
 
 Three scales, three separate calibrations, and **no number crosses between

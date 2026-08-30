@@ -102,9 +102,12 @@ from app.modules.knowledge.ports.retrieval import RetrievedChunk
 # `dataclasses.replace` off it is how a test enables ONE knob without
 # restating the other sixteen.
 _TUNING = retrieval_module._DEFAULT_TUNING
-# The shipped tuning with BOTH per-leg floors switched off (س-22's numbers were
-# calibrated 2026-08-27 on `P-38`'s evaluation set: `min_dense_score = 0.45`
-# cosine, `min_bm25_score = 25.0` on the sparse dot product).
+# The shipped tuning with BOTH per-leg floors switched off. Since 2026-08-30
+# that is what ships anyway (س-22's calibrated 0.45/25.0 were withdrawn when
+# their corpus was replaced -- `Settings.RetrievalSettings`), so this is a
+# no-op replace today. It is kept, and kept explicit, because these tests must
+# not silently start depending on the floors being off: the numbers are
+# expected back once a re-calibration runs on the corpus that is now indexed.
 #
 # Every structural test below is about the SHAPE of the pipeline -- fusion
 # order, parent widening, the budget, the stage log -- and the fakes score with
@@ -3398,11 +3401,21 @@ def test_the_per_leg_floors_ship_the_calibrated_numbers() -> None:
     rather than a default drifting.
 
     ⚠️ The two live on DIFFERENT SCALES and neither may be copied onto the
-    other: ``0.45`` is a cosine similarity, ``25.0`` is an unbounded
-    IDF-weighted dot product. ``Settings.RetrievalSettings`` carries the
-    evidence for each separately, for exactly that reason."""
-    assert _TUNING.min_dense_score == 0.45
-    assert _TUNING.min_bm25_score == 25.0
+    other: a cosine similarity and an unbounded IDF-weighted dot product.
+    ``Settings.RetrievalSettings`` carries the evidence for each separately,
+    for exactly that reason.
+
+    ⚠️ **Both per-leg floors are back to ``0.0`` (owner decision
+    2026-08-30), and this assertion is still the same guard.** س-22's
+    numbers were 0.45 and 25.0; the corpus they were measured on was
+    replaced by the distractor document they had been fitted to reject, and
+    on that corpus both gated every hit of both legs — an answerable
+    question refused by the `P-33` trust gate with `fused_count` 0. So the
+    operating point moved by the same kind of deliberate act this test
+    exists to require, and what is pinned is that it takes one.
+    ``jaccard_threshold`` did not move; it is the gate that ships ON."""
+    assert _TUNING.min_dense_score == 0.0
+    assert _TUNING.min_bm25_score == 0.0
     assert _TUNING.jaccard_threshold == 0.95
 
 
@@ -3467,10 +3480,24 @@ def test_the_sparse_floor_refuses_the_vote_of_a_hit_that_shares_no_term() -> Non
     ⚠️ ``FakeHybridVectors.search_sparse`` cannot reproduce that: it drops
     non-positive dot products, modelling an IDEALISED inverted index. That
     idealisation is precisely why no unit test ever saw this, so the gate is
-    asserted here directly on the hits it is given."""
+    asserted here directly on the hits it is given.
+
+    ⚠️ **The floor is at ``0.0`` since 2026-08-30, so this defect is LIVE in
+    the shipped pipeline** — the floor that repaired it was calibrated on a
+    corpus that has since been replaced, and on its successor it gated away
+    every real hit as well (``Settings.RetrievalSettings``). The floor is
+    therefore named EXPLICITLY here rather than read off ``_TUNING``: what
+    this test pins is that any positive floor removes the zero-scored vote
+    and keeps the real one, which is the property a re-calibration on the
+    current corpus has to preserve. Reading the shipped value would have
+    turned this into an assertion that the defect is fixed, which today it
+    is not."""
     hits = [_scored_hit(31.4, "real"), _scored_hit(0.0, "no-shared-term")]
 
-    assert retrieval_module._gate_by_score(hits, _TUNING.min_bm25_score) == [hits[0]]
+    assert retrieval_module._gate_by_score(hits, 0.01) == [hits[0]]
+    assert retrieval_module._gate_by_score(hits, 25.0) == [hits[0]]
+    # ...and with the floor as it actually ships, the zero votes again.
+    assert retrieval_module._gate_by_score(hits, _TUNING.min_bm25_score) == hits
 
 
 def test_gate_by_score_when_enabled_keeps_scores_at_or_above_the_floor() -> None:
@@ -5452,10 +5479,15 @@ def test_the_weight_is_anchored_at_one_for_a_typical_term() -> None:
 
     At `tf = 1` and `|d| = avg_len` the normaliser is exactly 1 and the weight
     is `(k1+1)/(1+k1) = 1.0` -- byte-for-byte what raw `tf` produced. So a
-    typical term in a typical chunk scores exactly what it scored before, the
-    25.0 floor keeps the meaning its own [21, 30] sweep measured, and what
-    moves is only the DEVIATION from typical, which is the entire point of
-    adding these parameters.
+    typical term in a typical chunk scores exactly what it scored before, a
+    floor on this scale keeps whatever meaning its own sweep measured, and
+    what moves is only the DEVIATION from typical, which is the entire point
+    of adding these parameters.
+
+    The property outlives the floor it was written for: `min_bm25_score` is
+    back to `0.0` since 2026-08-30, and this anchor is what will let a
+    re-calibration on the current corpus be compared against the old sweep
+    at all.
     """
     assert _BM25.weight(1, 32) == pytest.approx(1.0)
     # ...and it holds for any k1, since the anchor is algebraic, not tuned.

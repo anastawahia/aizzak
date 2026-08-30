@@ -500,6 +500,37 @@ class RetrievalSettings(BaseModel):
     # dot product for the sparse one. `0.0` = disabled by an explicit branch
     # in `_gate_by_score`, never by arithmetic.
     #
+    # ⚠️ **BOTH SHIP DISABLED AGAIN as of 2026-08-30 (owner decision), and
+    # the evidence below is kept as the RECORD OF A MEASUREMENT, not as a
+    # description of what runs.** The numbers were sound; the corpus they
+    # were measured on is gone. `tests/eval/README.md` names it: ONE space
+    # holding `hr-no-table.docx` (221 chunks, the answerable document) plus
+    # `criteria.pdf` (811 chunks) as the deliberate DISTRACTOR. That space
+    # now holds `criteria.pdf` alone, re-indexed to 771 chunks — so the only
+    # document left is the one both floors were fitted to REJECT, and every
+    # question about it lands in the band the sweep recorded for
+    # unanswerable questions (dense `[0.2623, 0.6492]`). Measured live on
+    # 2026-08-30: `best_dense_score` 0.40547 against a 0.45 floor and
+    # `best_bm25_score` 6.30028 against a 25.0 one, both legs gated to zero
+    # hits, `fused_count` 0, and the `P-33` trust gate answering a perfectly
+    # answerable question with «I don't have enough information».
+    #
+    # The sparse floor could not have survived the corpus change in any
+    # case, and that is the more general lesson: a raw BM25 score is a
+    # function of the corpus's own IDF and mean document length, so 25.0 is
+    # not a quantity that TRANSFERS. On 771 chunks the largest reachable IDF
+    # is about `ln(1 + 771/1.5) ≈ 6.2`, which even at the `k1 + 1 = 2.5`
+    # weight ceiling caps a single rare term near 15.6 — under the floor
+    # before the query is even asked. `SparseSettings.bm25_avg_len`'s own
+    # note ("re-measure it against the rebuilt corpus, together with
+    # `min_bm25_score` — they share a scale") predicted exactly this.
+    #
+    # ⚠️ Disabling the sparse floor REINSTATES the defect it repaired: the
+    # zero-scored padding hits described below vote in RRF with the weight
+    # of a real hit. That cost is accepted here with open eyes; the fix for
+    # it is a floor calibrated on the corpus that is actually indexed, not
+    # this one.
+    #
     # ── the DENSE floor · cosine ──────────────────────────────────────────
     # `0.45`, calibrated on `P-38`'s set (2026-08-27) and chosen with MARGIN
     # rather than at the frontier:
@@ -518,7 +549,8 @@ class RetrievalSettings(BaseModel):
     # ⚠️ Measured on an English corpus asked in BOTH languages, i.e. the
     # HARDEST case for this floor: a same-language corpus scores higher on
     # cosine, which widens the margin rather than narrowing it.
-    min_dense_score: float = 0.45
+    # ⚠️ 0.0 (disabled) since 2026-08-30 — see the block above.
+    min_dense_score: float = 0.0
     # ── the SPARSE floor · IDF-weighted dot product ───────────────────────
     # `25.0`, and this one repairs a measured DEFECT rather than trading
     # quality away. Qdrant answers a filtered sparse query whose terms appear
@@ -536,7 +568,8 @@ class RetrievalSettings(BaseModel):
     # two legs back each other up, so emptying the sparse leg of a question
     # the dense leg answers changes nothing, and 30/30 holds at every sparse
     # floor from 0.01 to 30.
-    min_bm25_score: float = 25.0
+    # ⚠️ 0.0 (disabled) since 2026-08-30 — see the block above.
+    min_bm25_score: float = 0.0
     # `domain/relevance.py`'s own two floors, on a THIRD scale entirely -- the
     # FUSED RRF score (`Σ w/(60+rank)`, thousandths however good the
     # candidate). Named `min_fused_score` rather than `min_score` so the scale
