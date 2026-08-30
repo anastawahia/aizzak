@@ -47,9 +47,13 @@ Same shape as `test_ops_provision.py` (7.1) and `test_api_conventions.py`
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
+
+from app.framework.settings import EventSettings, Limits
+from app.infrastructure.config import load_settings
+from app.workers.bootstrap import knowledge_stale_idle_ms
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -78,6 +82,34 @@ _NOT_A_STREAMS_WORKER = frozenset({"outbox_relay"})
 # ONE clean measured boot -- logged, with a consumer registration to prove the
 # process is consuming and not merely alive -- and by nothing else.
 _MEASURED = frozenset({"memory", "knowledge", "media"})
+
+# The SECOND ledger, and the one wave 6 of
+# `summarization-scenarios-implementation-plan.md` added: how many replicas
+# each worker runs, listing only those that run more than one. The owner's
+# answer to that plan's §10 ق-و was (ب) -- a second hand on the knowledge
+# loop rather than a fourth worker on a stream of its own.
+#
+# **The rule for adding a name here.** A worker may run more than one replica
+# only when its longest LEGITIMATE handler cannot outlive its own death
+# threshold. Rule 2 of `consumers/sweeper.py` lets any consumer reclaim the
+# messages of a sibling that has been idle past that threshold, and a
+# consumer's idle clock runs for the whole of a handler (the engine beats
+# between messages, never during one). For the knowledge worker that reclaim
+# would start a SECOND build of a summary already being built, which nothing
+# downstream refuses -- `SummaryJob.start` is deliberately re-entrant.
+#
+# `knowledge` clears the rule because `F-4` derived its threshold from the
+# build cap instead of leaving it on the shared 900 s -- asserted below, and
+# by calculation over five configurations in `test_workers_bootstrap.py`.
+# `media` and `memory` still read the shared number and their longest
+# handlers sit well under it (`media_timeout_s` is 300 s, memory's is
+# shorter), so replicating either would probably be safe too and is
+# deliberately still a decision rather than a default.
+_REPLICATED = {"knowledge": 2}
+
+# `${HEARTBEAT_DIR:-/tmp/aizzak-heartbeat}` -- what Compose resolves with no
+# `.env` present, which is what the shipped file promises.
+_INTERPOLATED_DEFAULT = re.compile(r"^\$\{[A-Z_]+:-(.*)\}$")
 
 # RunPod is ONE container running ONE worker chosen by `WORKER` (supervisord,
 # no Compose), so it still needs a default, and it still must be the worker
@@ -123,6 +155,32 @@ def _env_example_worker() -> str:
         ".env.example: could not find a top-level `WORKER=<name>` line -- did its shape change?"
     )
     return match.group(1)
+
+
+def _replicated_services() -> dict[str, dict]:
+    return {
+        name: body
+        for name, body in _compose_worker_services().items()
+        if int(body.get("deploy", {}).get("replicas", 1)) > 1
+    }
+
+
+def _heartbeat_dir(body: dict) -> str:
+    raw = str(body["environment"]["HEARTBEAT_DIR"])
+    match = _INTERPOLATED_DEFAULT.match(raw)
+    return match.group(1) if match else raw
+
+
+def _mount_targets(body: dict) -> list[str]:
+    """Where this service mounts something, in either Compose spelling."""
+    targets: list[str] = []
+    for entry in body.get("volumes", ()):
+        if isinstance(entry, str):
+            parts = entry.split(":")
+            targets.append(parts[1] if len(parts) > 1 else parts[0])
+        else:
+            targets.append(str(entry.get("target", "")))
+    return targets
 
 
 def test_the_patterns_actually_find_something() -> None:
@@ -208,6 +266,93 @@ def test_a_worker_boots_unprofiled_iff_its_boot_was_measured() -> None:
         "it consumes will now queue silently. More: an unmeasured worker was "
         "let into the default stack, where `restart: unless-stopped` turns its "
         "first crash into a stack that looks broken."
+    )
+
+
+def test_only_a_ledgered_worker_runs_more_than_one_replica() -> None:
+    """A replica count is not a tuning knob here: it is a claim that this
+    worker's messages may be reclaimed by a sibling without harm. The ledger
+    above carries the rule; this asserts nothing has been replicated past
+    it, in either direction -- a count dropped back to one would silently
+    restore the head-of-line blocking wave 6 exists to lift."""
+    running = {
+        body["environment"]["WORKER"]: int(body["deploy"]["replicas"])
+        for body in _replicated_services().values()
+    }
+    assert running == _REPLICATED, (
+        f"docker-compose.yml runs more than one replica of {sorted(running)} "
+        f"but the ledger allows {sorted(_REPLICATED)}. Adding a worker: check "
+        "its longest handler against the threshold its own `stale_idle_ms` "
+        "is built from, exactly as `F-4` had to for `knowledge`, and only "
+        "then widen the ledger. Removing one: a worker back at a single "
+        "replica has a single loop again, and one long handler blocks "
+        "everything else on its stream for as long as it runs."
+    )
+
+
+def test_a_replicated_worker_declares_nothing_that_forbids_a_second_container() -> None:
+    """Two keys make `replicas` a lie rather than an error: `container_name`
+    (Compose refuses to scale a service that names its container) and a
+    published `ports` mapping (the second container would collide on the
+    host port). Neither is here today, and both are the kind of thing added
+    for a good local reason by someone not thinking about the replica."""
+    for service_name, body in _replicated_services().items():
+        assert "container_name" not in body, (
+            f"{service_name}: a service that names its container cannot be "
+            "scaled -- Compose fails the `up` outright."
+        )
+        assert not body.get("ports"), (
+            f"{service_name}: publishing a host port and running two "
+            "replicas cannot both be true; the second container fails to "
+            "bind. Workers listen on nothing, which is why this is free."
+        )
+
+
+def test_a_replicated_worker_keeps_its_heartbeat_off_a_shared_mount() -> None:
+    """The failure this one exists for is silent, which is why it is a test
+    and not a comment. Each replica's beat file must stay in its own
+    writable layer (`framework/observability/heartbeat.py`: "never a
+    mount"), because the healthcheck reads a PATH, not a process -- put that
+    path on a shared volume and a dead replica's check passes on its live
+    sibling's beat, which is ت-7's orphan exactly: a container reported
+    healthy while running nothing."""
+    for service_name, body in _replicated_services().items():
+        beat = PurePosixPath(_heartbeat_dir(body))
+        for target in _mount_targets(body):
+            mount = PurePosixPath(target)
+            assert mount != beat and mount not in beat.parents, (
+                f"{service_name}: {target!r} mounts the heartbeat directory "
+                f"({beat}) into more than one container, so a dead replica "
+                "would be reported healthy on a live one's beat."
+            )
+
+
+def test_the_replicated_workers_build_cannot_be_stolen_by_its_sibling() -> None:
+    """The property that licenses the whole key, asserted from the deploy
+    side rather than only from the code side. `test_workers_bootstrap.py`
+    proves the derivation holds across configurations; what is asserted HERE
+    is that the shipped defaults would NOT have held without it -- 900 s
+    shared against a build allowed 1,800 s. That gap is not a margin, it is
+    the sweep window: for the last fifteen minutes of every long build the
+    sibling would have been entitled to claim the message and build the same
+    summary again.
+
+    Imported rather than read as text, unlike the dispatcher above: what is
+    under test is an arithmetic relation between two settings, and only the
+    function that computes it can answer for it.
+    """
+    assert "knowledge" in _REPLICATED
+
+    settings = load_settings()
+    assert knowledge_stale_idle_ms(settings) > settings.limits.summarize_job_max_duration_s * 1000
+
+    shipped_shared_ms = int(EventSettings().consumer_stale_idle_s * 1000)
+    shipped_cap_ms = Limits().summarize_job_max_duration_s * 1000
+    assert shipped_shared_ms < shipped_cap_ms, (
+        "the shared stale threshold now clears the build cap on its own, so "
+        "this test no longer proves the derivation is load-bearing -- check "
+        "whether `F-4`'s derivation is still what protects the replica "
+        "before trusting the pair."
     )
 
 

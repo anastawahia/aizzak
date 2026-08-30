@@ -709,6 +709,60 @@ services:
       # `Limits.summarize_job_max_duration_s` (1,800 s) ends a build that is
       # genuinely stuck instead of leaving this column to notice it.
       HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_KNOWLEDGE:-600}
+    # ⭐ TWO, and the only worker here that runs more than one. This is the
+    # owner's answer to `summarization-scenarios-implementation-plan.md` §10
+    # ق-و -- option (ب), the cheap half of `F-1` -- and it is the whole of
+    # it: no second stream, no fourth worker, no change to the event
+    # catalogue's binding table.
+    #
+    # **The defect.** `cg.knowledge` is consumed by ONE process running ONE
+    # loop that handles one message at a time, and the summary handler is
+    # the only handler in any of the three workers that may legitimately
+    # occupy that loop for `Limits.summarize_job_max_duration_s` (1,800 s).
+    # For that whole half hour nothing else on `stream.knowledge` is
+    # handled -- so a file uploaded meanwhile is registered, is never
+    # indexed, and is absent from every search that follows, while this
+    # container stays `Up` and this healthcheck stays green (`F-3` beats
+    # before every provider call, which is exactly what keeps the column
+    # honest about the PROCESS while the QUEUE starves).
+    #
+    # **Why a replica is enough, and why it is safe here and would not have
+    # been a year ago.** Redis distributes a group's entries ACROSS its
+    # consumers, so the second process reads the next message while the
+    # first is mid-build. Four properties have to hold, and each is a fact
+    # about code elsewhere rather than a hope about this key:
+    #
+    #   1. Distinct identity. `workers/bootstrap._consumer_name` is
+    #      `<prefix>.<hostname>.<pid>`, and Compose gives each replica its
+    #      own container and hostname -- two consumers, not one name read
+    #      twice.
+    #   2. No stolen build. `knowledge_stale_idle_ms` (`F-4`) raises THIS
+    #      worker's death threshold above the longest legitimate build, so a
+    #      sibling's sweep cannot call a busy replica a corpse and
+    #      `XAUTOCLAIM` its message: the double build that would otherwise
+    #      follow is refused by nothing downstream (`SummaryJob.start` is
+    #      deliberately re-entrant).
+    #   3. No double work on redelivery. The idempotency claim is keyed
+    #      `(consumer_group, event_id)` -- the GROUP, which both replicas
+    #      share -- so an entry reclaimed by the other one is a clean
+    #      return, not a second build.
+    #   4. Independent health. The heartbeat file lives in the container's
+    #      own writable layer and is never a mount
+    #      (`framework/observability/heartbeat.py` says why), so each
+    #      replica is judged on its own beat. A shared path would let a dead
+    #      replica ride a live sibling's -- the ت-7 orphan, restored.
+    #
+    # `F-5` is the other precondition: at `count=1` a replica takes one
+    # message and leaves the rest READABLE. Reading ten would have left the
+    # sibling nothing to read and made this key decorative.
+    #
+    # **What it does not buy: isolation.** Two concurrent builds block
+    # indexing exactly as one did. (أ) -- a dedicated stream and worker --
+    # is the answer to THAT, and ق-و's own criterion for buying it is an
+    # indexing lag past two minutes with both replicas active; 08 §2 carries
+    # the command that reads it.
+    deploy:
+      replicas: 2
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "knowledge"]
