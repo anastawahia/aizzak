@@ -31,16 +31,19 @@ says that where a strict mock only says "something was called".
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from time import monotonic
 
 import pytest
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError
-from app.framework.ports.llm_provider import LlmMessage, LlmParams, LlmResult
+from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
+from app.framework.settings import Limits
 from app.modules.knowledge.application import summarization as summarization_module
 from app.modules.knowledge.application.routing import (
     SummaryBuildInProgress,
@@ -101,17 +104,45 @@ def _ctx(workspace_id: str = _W1) -> ExecutionContext:
 
 @dataclass
 class RecordingLLM:
-    """A structural ``LLMProvider`` that records every completion.
+    """A structural ``LLMProvider`` that records every call and STREAMS its
+    answer back.
 
-    ``provider``/``stream``/``supports`` exist to satisfy the Protocol
-    structurally; only ``complete`` is ever reached, because summarisation
-    never streams — a summary is read when it is finished, and streaming one
-    would be a progress bar spelled out in tokens.
+    **The direction of the guard is inverted since ب-6**, and this paragraph
+    is the previous one turned inside out. It used to say ``stream`` existed
+    only to satisfy the Protocol structurally, that ``complete`` was the sole
+    path, and that a summary is never streamed. All three are now false: the
+    pipeline reaches ``stream`` and nothing else, because streaming is what
+    gives a call points at which a Stop can be noticed. ``complete`` raises
+    for exactly the reason ``stream`` used to — so a call site quietly left
+    on the old path fails loudly here instead of passing by coincidence.
+
+    ``calls`` is appended to in ``stream`` itself, synchronously, NOT inside
+    the generator it returns: the adapters' own ``stream`` is a plain ``def``
+    that validates and returns (``openai_llm.OpenAILLM.stream``), and doing
+    the same keeps ``len(llm.calls)`` incrementing at the same moment it did
+    when ``complete`` recorded it — which is what leaves 40-odd assertions
+    across this file, and the hooks that read the count mid-build, saying
+    what they said before.
     """
 
     provider: str = "fake"
     reply: str = "SUMMARY"
     calls: list[tuple[list[LlmMessage], LlmParams]] = field(default_factory=list)
+    # Every delta this fake actually emitted, across every call: what proves
+    # an answer was delivered in PIECES and reassembled without loss.
+    deltas: list[str] = field(default_factory=list)
+    # How many pieces one answer is cut into. Three is enough for
+    # concatenation to be a real claim and small enough that a 240-chunk
+    # ceiling build stays cheap.
+    chunks: int = 3
+    # True from the moment the terminal chunk is HANDED OVER -- so it is
+    # already true at the first poll that could follow it, which is exactly
+    # the poll `_call` must not make. It is what lets a test place a
+    # cancellation strictly after an answer is complete (`س-9`) rather than
+    # merely late in it. Setting it after the terminal `yield` instead would
+    # flip it only once the generator resumed, by which time the loop has
+    # ended -- and the test would pass with or without the guard it is for.
+    answer_complete: bool = False
 
     # `F-9`/`F-10`: the two fields the guards in `_call` actually read.
     #
@@ -131,23 +162,47 @@ class RecordingLLM:
     async def complete(
         self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
     ) -> LlmResult:
+        raise AssertionError("a summary is never completed")
+
+    def stream(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> AsyncIterator[LlmChunk]:
         self.calls.append((list(messages), params))
-        return LlmResult(
-            content=(
-                f"{self.reply}-{len(self.calls)}"
-                if self.replies is None
-                else self.replies[min(len(self.calls) - 1, len(self.replies) - 1)]
-            ),
-            finish_reason=self.finish_reason,
-            prompt_tokens=1,
-            completion_tokens=1,
+        return self._emit(
+            f"{self.reply}-{len(self.calls)}"
+            if self.replies is None
+            else self.replies[min(len(self.calls) - 1, len(self.replies) - 1)]
         )
 
-    def stream(self, messages: object, params: object, api_key: str) -> object:
-        raise AssertionError("a summary is never streamed")
+    async def _emit(self, reply: str) -> AsyncIterator[LlmChunk]:
+        """``reply`` in ``chunks`` pieces, then a terminal chunk.
+
+        ``finish_reason`` rides the LAST chunk and no other, which is the
+        port's own contract — and the only shape under which the ``length``
+        guard in ``_call`` is being tested for what it will actually meet.
+        An empty ``reply`` yields no piece at all, so an empty answer is a
+        stream of one terminal chunk carrying nothing: exactly what the
+        model that returns nothing looks like from here.
+        """
+        for piece in _pieces(reply, self.chunks):
+            self.deltas.append(piece)
+            yield LlmChunk(delta=piece)
+        self.answer_complete = True
+        yield LlmChunk(
+            delta="", finish_reason=self.finish_reason, prompt_tokens=1, completion_tokens=1
+        )
 
     def supports(self, capability: str) -> bool:
         return False
+
+
+def _pieces(text: str, count: int) -> list[str]:
+    """``text`` cut into at most ``count`` non-empty pieces of near-equal
+    size. Empty text gives no pieces, never one empty one."""
+    if not text:
+        return []
+    size = max(1, -(-len(text) // count))
+    return [text[at : at + size] for at in range(0, len(text), size)]
 
 
 @dataclass
@@ -1075,6 +1130,473 @@ async def test_the_published_truncated_flag_still_means_the_input_was_cut() -> N
 
 
 # --------------------------------------------------------------------------- #
+# _call — ب-6 (scenarios plan §5, gap ف-2): Stop is heard INSIDE a call       #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _SlowLLM:
+    """A provider whose single answer arrives as ``total`` chunks, ``delay_s``
+    apart, and which counts what it emitted and notices being closed.
+
+    A separate fake from ``RecordingLLM`` on purpose: what these tests are
+    about is the SHAPE of a stream — how many pieces, how far apart, and
+    whether it was abandoned partway — and none of that belongs in the object
+    ninety other tests read call arguments off.
+    """
+
+    total: int = 1_000
+    delay_s: float = 0.0
+    provider: str = "fake"
+    emitted: int = 0
+    closed: bool = False
+
+    async def complete(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> LlmResult:
+        raise AssertionError("a summary is never completed")
+
+    def stream(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> AsyncIterator[LlmChunk]:
+        return self._emit()
+
+    async def _emit(self) -> AsyncIterator[LlmChunk]:
+        try:
+            for _ in range(self.total):
+                if self.delay_s:
+                    await asyncio.sleep(self.delay_s)
+                self.emitted += 1
+                yield LlmChunk(delta="x")
+            yield LlmChunk(delta="", finish_reason="stop")
+        finally:
+            # Reached on `aclose`, which is the only thing that runs a
+            # generator's `finally` while it sits suspended at a `yield`.
+            self.closed = True
+
+    def supports(self, capability: str) -> bool:
+        return False
+
+
+async def _one_call(
+    llm: object,
+    *,
+    should_cancel: object = None,
+    timeout_s: float = summarization_module._DEFAULT_CALL_TIMEOUT_S,
+) -> object:
+    """An ``overview`` build: exactly ONE provider call, with no batch
+    boundary before it or after it.
+
+    That shape is what makes these tests unambiguous. Every poll observed
+    here came from inside the call, because there is nowhere else in an
+    ``overview`` for one to come from — which is also why an ``overview``
+    could not be stopped at all before ب-6.
+    """
+    hooks: dict[str, object] = {}
+    if should_cancel is not None:
+        hooks["should_cancel"] = should_cancel
+    return await SummarizeDocument(timeout_s=timeout_s).execute(
+        _ctx(),
+        chunks=["the only chunk"],
+        kind=SummaryKind.OVERVIEW,
+        lang=SummaryLanguage.AUTO,
+        summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),  # type: ignore[arg-type]
+        **hooks,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_build_streams_instead_of_completing() -> None:
+    """`LLMProvider.stream` was defined on the port and implemented by all
+    five adapters, and this path used none of it.
+
+    The fake's ``complete`` raises, so a build that succeeds is a build that
+    never touched it — and the second assertion pins that guard, so this test
+    cannot start passing because the fake got softened."""
+    llm = RecordingLLM()
+    _stack, job = await _run_build(llm=llm)
+
+    assert job.status is SummaryJobStatus.SUCCEEDED
+    assert len(llm.calls) == 4  # three map batches and one reduce, unchanged
+    with pytest.raises(AssertionError):
+        await llm.complete([], LlmParams(model="m"), "k")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_pressed_mid_call_is_observed_within_the_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**The item, literally.** A Stop pressed a second into a call used to
+    wait for the whole call — up to ``summarize_timeout_s``, five minutes
+    since `F-1` raised it — because ``complete()`` gave control back exactly
+    once, at the end.
+
+    The interval is shortened here so a unit test need not sit through the
+    shipped two seconds; what it is shortened to is still a real duration, so
+    the comparison being exercised is the time one, not a special case of it.
+    ``polls == 1`` is the whole point: an ``overview`` has no batch boundary,
+    so that read happened inside a call that had already started."""
+    monkeypatch.setattr(summarization_module, "_CANCEL_POLL_INTERVAL_S", 0.01)
+    llm = _SlowLLM(total=1_000, delay_s=0.001)
+    polls = 0
+
+    async def _stop_now() -> bool:
+        nonlocal polls
+        polls += 1
+        return True
+
+    with pytest.raises(SummaryBuildCancelled):
+        await _one_call(llm, should_cancel=_stop_now)
+
+    assert polls == 1
+    # Abandoned partway, which is the saving: the remaining chunks were never
+    # waited for, and the response was closed rather than left to a collector.
+    assert llm.emitted < llm.total
+    assert llm.closed is True
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_poll_is_throttled_not_per_token() -> None:
+    """The other half of the trade, and the one the study left out.
+    ``should_cancel`` is a row read from the database, so a poll per chunk
+    would spend a thousand reads inside this one call — a cost every build
+    pays to serve the rare one that is stopped.
+
+    The shipped ``_CANCEL_POLL_INTERVAL_S`` is deliberately NOT patched here:
+    what is being pinned is that the number is a real throttle at the value
+    the worker actually runs with."""
+    llm = _SlowLLM(total=1_000, delay_s=0.0)
+    polls = 0
+
+    async def _never() -> bool:
+        nonlocal polls
+        polls += 1
+        return False
+
+    await _one_call(llm, should_cancel=_never)
+
+    assert llm.emitted == 1_000
+    assert polls < 10
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_stream_is_cut_at_the_per_call_timeout() -> None:
+    """**Without this the item would be a regression**, and it is the part
+    the study never mentioned.
+
+    The 300 s cap was never in this function: it is an httpx client timeout,
+    and under ``complete()`` (``stream: false``) no byte arrives until
+    generation ends, so it governed the whole call by accident of shape.
+    Streaming turns that same timeout into a BETWEEN-CHUNK one — under which
+    this provider, which yields once and then never again, would run until
+    ``summarize_job_max_duration_s`` half an hour later."""
+
+    @dataclass
+    class _StalledLLM(_SlowLLM):
+        async def _emit(self) -> AsyncIterator[LlmChunk]:
+            try:
+                self.emitted += 1
+                yield LlmChunk(delta="the beginning of an answer")
+                # Long enough to be forever against a 0.05 s budget, short
+                # enough that a run with the timeout REMOVED still ends -- a
+                # mutation whose evidence is a hung suite proves nothing
+                # anyone will sit through.
+                await asyncio.sleep(30)
+                yield LlmChunk(delta="", finish_reason="stop")
+            finally:
+                self.closed = True
+
+    llm = _StalledLLM()
+    started = monotonic()
+
+    with pytest.raises(TimeoutError):
+        await _one_call(llm, timeout_s=0.05)
+
+    # Cut at the CALL's budget, nowhere near the job's: the point of the two
+    # numbers is that the smaller one still bites.
+    assert monotonic() - started < 5
+    assert llm.emitted == 1
+
+
+@pytest.mark.asyncio
+async def test_the_streamed_text_is_the_concatenated_deltas() -> None:
+    """No piece lost, none repeated, nothing reordered — the property that
+    makes "the text is the same, only the timing changed" a claim rather than
+    a hope."""
+    llm = RecordingLLM(reply="A LONG ENOUGH REPLY TO SPLIT", chunks=4)
+
+    _provider, draft = await _draft(["the only chunk"], kind=SummaryKind.OVERVIEW, llm=llm)
+
+    assert draft.text == "A LONG ENOUGH REPLY TO SPLIT-1"  # type: ignore[attr-defined]
+    # And it really did arrive in pieces: one delta would make the assertion
+    # above true for the wrong reason.
+    assert len(llm.deltas) > 1
+    assert "".join(llm.deltas) == draft.text  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_the_terminal_chunks_finish_reason_still_reaches_the_truncation_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """**The containing guard**: `F-10` still works.
+
+    ``finish_reason`` used to be read off one ``LlmResult``; it now rides the
+    terminal chunk of a stream, and every chunk before it carries ``None``.
+    A reader that took the LAST value it saw rather than the last non-``None``
+    one would log nothing at all here, and an answer cut mid-sentence would go
+    back to being stored as though it were whole."""
+    llm = RecordingLLM(finish_reason="length", chunks=5)
+
+    with caplog.at_level(logging.WARNING):
+        await _draft(["the only chunk"], kind=SummaryKind.OVERVIEW, llm=llm)
+
+    truncations = [
+        record for record in caplog.records if record.message == "summarization.output_truncated"
+    ]
+    assert len(truncations) == 1
+    assert truncations[0].step == "overview"  # type: ignore[attr-defined]
+    # Five ordinary pieces carrying nothing preceded the one that carried it.
+    assert len(llm.deltas) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_arriving_after_the_last_chunk_still_stores_the_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**The containing guard**: `س-9` survives the poll moving inside the
+    call.
+
+    A stop that arrives once the answer is complete must not throw that
+    answer away — the call was paid for in full, and discarding it stores
+    nothing while costing everything. The interval is patched to zero so the
+    poll fires on EVERY chunk, which is the harshest possible setting for
+    this property; what protects it is that ``_call`` stops polling once a
+    terminal chunk has been seen."""
+    monkeypatch.setattr(summarization_module, "_CANCEL_POLL_INTERVAL_S", 0.0)
+    llm = RecordingLLM()
+    polls = 0
+
+    async def _cancel_once_the_answer_has_arrived() -> bool:
+        nonlocal polls
+        polls += 1
+        return llm.answer_complete
+
+    draft = await _one_call(llm, should_cancel=_cancel_once_the_answer_has_arrived)
+
+    assert draft.text == "SUMMARY-1"  # type: ignore[attr-defined]
+    # The hook was really consulted, repeatedly, and still said no in time.
+    assert polls > 1
+
+
+@pytest.mark.asyncio
+async def test_the_batch_boundary_polls_are_unchanged() -> None:
+    """**The containing guard**: the three polls at batch boundaries stay
+    where they are.
+
+    They are cheaper than the in-call poll — one read per batch, not one
+    every two seconds — and strictly stronger, because they stop a build
+    BEFORE the next call is paid for. Zero calls is the assertion only a
+    boundary poll can satisfy: a poll inside a call needs a call to have
+    started."""
+    llm = RecordingLLM()
+
+    async def _already_cancelled() -> bool:
+        return True
+
+    with pytest.raises(SummaryBuildCancelled):
+        await SummarizeDocument().execute(
+            _ctx(),
+            chunks=[f"chunk {i}" for i in range(_BATCH * 2 + 1)],
+            kind=SummaryKind.FULL,
+            lang=SummaryLanguage.AUTO,
+            summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),
+            should_cancel=_already_cancelled,
+        )
+
+    assert llm.calls == []
+
+
+def test_the_default_call_timeout_is_the_shipped_setting() -> None:
+    """The pipeline holds a number the composition root normally passes it,
+    and a default for callers who pass nothing. These are two statements of
+    one fact, and this is what stops them becoming two different facts."""
+    assert Limits().summarize_timeout_s == summarization_module._DEFAULT_CALL_TIMEOUT_S
+
+
+# --------------------------------------------------------------------------- #
+# translate — ب-7 (scenarios plan §5, gap ف-11): the silent path speaks       #
+# --------------------------------------------------------------------------- #
+
+
+async def _translate(
+    llm: object,
+    *,
+    lang: SummaryLanguage = SummaryLanguage.EN,
+    source: Summary | None = None,
+    on_tick: object = None,
+    should_cancel: object = None,
+) -> object:
+    hooks: dict[str, object] = {}
+    if on_tick is not None:
+        hooks["on_tick"] = on_tick
+    if should_cancel is not None:
+        hooks["should_cancel"] = should_cancel
+    return await SummarizeDocument().translate(
+        _ctx(),
+        source=source if source is not None else _summary(text="النص الأصلي"),
+        lang=lang,
+        summarizer=ResolvedSummarizer(provider=llm, model="m", api_key="k"),  # type: ignore[arg-type]
+        **hooks,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_translation_reports_one_tick_before_its_call() -> None:
+    """Before, for `_fold`'s reason: a tick after the call would announce a
+    wait already over and leave the only call this path makes as an
+    unannounced silence of its own full length.
+
+    Reading the call count from inside the hook is what makes the ORDER
+    visible — the same technique
+    ``test_the_fold_phase_reports_progress_before_every_call_it_makes`` uses
+    one shape over."""
+    llm = RecordingLLM()
+    seen_calls: list[int] = []
+
+    async def _tick() -> None:
+        seen_calls.append(len(llm.calls))
+
+    await _translate(llm, on_tick=_tick)
+
+    assert seen_calls == [0]
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_translation_is_cancellable_mid_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reason recorded against this path — "there is no step boundary to
+    observe one at" — was true and is not any more: ب-6 put the boundary
+    inside the call, and a translation is exactly one call."""
+    monkeypatch.setattr(summarization_module, "_CANCEL_POLL_INTERVAL_S", 0.01)
+    llm = _SlowLLM(total=1_000, delay_s=0.001)
+
+    async def _stop_now() -> bool:
+        return True
+
+    with pytest.raises(SummaryBuildCancelled):
+        await _translate(llm, should_cancel=_stop_now)
+
+    assert llm.emitted < llm.total
+    assert llm.closed is True
+
+
+@pytest.mark.asyncio
+async def test_a_translation_beats_the_workers_heartbeat() -> None:
+    """**The effect that matters most, and it is not the progress bar.**
+
+    ``on_heartbeat`` hangs off ``_progress`` and off nothing else, so a
+    translation used to beat NOT ONCE — the single path in the module that
+    was, to the health checker, indistinguishable from a wedged worker for
+    its whole duration. It sat under the call timeout and below the heartbeat
+    threshold, so the danger was bounded; it was bounded by two numbers
+    nobody had tied together, either of which could move.
+
+    The count it reports is the one the job already holds: a translation
+    reads no chunk, so a beat that moved the bar would be claiming work that
+    is not being done."""
+    stack, llm = _translation_stack(
+        stored=[_stored(lang=SummaryLanguage.EN, summary_id="sum-en", text="English body")]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+    build = _builder(stack, StubSummarizerResolver(llm))
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+
+    beats: list[int] = []
+
+    def _beat() -> None:
+        beats.append(stack.summary_jobs.rows["job-1"].done_chunks)
+
+    job, _events = await build.finalize(_ctx(), await build.run(_ctx(), plan, on_heartbeat=_beat))
+
+    assert beats == [0]
+    assert job.status is SummaryJobStatus.SUCCEEDED
+    # No invented progress: the row says what it said, and the write's value
+    # was never the point -- `updated_at` and the beat were.
+    assert stack.summaries.rows[("doc-1", "full", "ar")].text.startswith("SUMMARY")
+
+
+@pytest.mark.asyncio
+async def test_a_translation_stopped_from_the_api_ends_the_job_as_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hook reaching ``translate`` from the USE-CASE, end to end — the
+    half a pipeline-level test cannot see.
+
+    A Stop pressed here is a write to the job row by another request; what
+    this build does about it is read that row back mid-stream, stop, and let
+    ``finalize`` write nothing at all. The cancelling write is made from
+    inside the stream, which is the only place it could arrive from in a test
+    that has one process and one call."""
+    monkeypatch.setattr(summarization_module, "_CANCEL_POLL_INTERVAL_S", 0.0)
+    stack, _llm = _translation_stack(
+        stored=[_stored(lang=SummaryLanguage.EN, summary_id="sum-en", text="English body")]
+    )
+    stack.summary_jobs.rows["job-1"] = replace(_job(), lang=SummaryLanguage.AR)
+
+    @dataclass
+    class _CancellingLLM(_SlowLLM):
+        async def _emit(self) -> AsyncIterator[LlmChunk]:
+            try:
+                self.emitted += 1
+                yield LlmChunk(delta="the beginning of a translation")
+                stack.summary_jobs.rows["job-1"].cancel(SUMMARY_CANCELLED_REASON, _AT)
+                for _ in range(self.total):
+                    self.emitted += 1
+                    yield LlmChunk(delta="x")
+                yield LlmChunk(delta="", finish_reason="stop")
+            finally:
+                self.closed = True
+
+    llm = _CancellingLLM(total=1_000)
+    build = _builder(stack, StubSummarizerResolver(llm))  # type: ignore[arg-type]
+
+    plan = await build.claim(_ctx(), job_id="job-1")
+    assert plan is not None
+    attempt = await build.run(_ctx(), plan)
+
+    assert attempt.cancelled is True
+    assert attempt.draft is None
+    assert llm.emitted < llm.total
+    # Nothing was written under the language that was asked for and then
+    # unasked: a cancelled build stores no summary, in any language.
+    assert ("doc-1", "full", "ar") not in stack.summaries.rows
+
+
+@pytest.mark.asyncio
+async def test_a_same_language_translation_still_spends_no_call_and_no_tick() -> None:
+    """**The containing guard**: the shortcut keeps its whole saving.
+
+    The tick sits BELOW the same-language branch, not above it. A tick there
+    would announce a phase that never happens — a write, and a beat, for a
+    path that returns stored text without touching a provider."""
+    llm = RecordingLLM()
+    source = _summary(text="already in the requested language")
+    ticks = 0
+
+    async def _tick() -> None:
+        nonlocal ticks
+        ticks += 1
+
+    draft = await _translate(llm, lang=source.lang, source=source, on_tick=_tick)
+
+    assert llm.calls == []
+    assert ticks == 0
+    assert draft.text == source.text  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------- #
 # RequestSummary / GetSummary / DeleteSummary / CancelSummaryJob               #
 # --------------------------------------------------------------------------- #
 
@@ -1843,9 +2365,12 @@ async def test_a_failing_translation_lands_the_job_in_failed_like_any_other_buil
 
     @dataclass
     class BrokenLLM(RecordingLLM):
-        async def complete(
+        # ب-6 moved the failure onto `stream`: a provider that refuses now
+        # refuses where the pipeline actually calls it, and overriding
+        # `complete` here would have tested a path nothing takes.
+        def stream(
             self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
-        ) -> LlmResult:
+        ) -> AsyncIterator[LlmChunk]:
             raise RuntimeError("provider is down")
 
     stack, _ = _translation_stack(

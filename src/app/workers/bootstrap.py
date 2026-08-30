@@ -1306,7 +1306,12 @@ async def build_knowledge_worker_from_env() -> tuple[
         documents,
         summaries,
         SqlSummaryJobRepository(tenant_session),
-        SummarizeDocument(),
+        # ب-6 -- the SAME 300 s the two HTTP clients below are built with, and
+        # deliberately so. While the pipeline called `complete()` the httpx
+        # timeout capped the whole call on its own; now that it streams, that
+        # timeout is between-chunk only and this one is what still bounds the
+        # call end to end. Two places reading one setting, not two numbers.
+        SummarizeDocument(timeout_s=settings.limits.summarize_timeout_s),
         _WorkerSummarizerResolver(summarize_providers),  # `F-1` -- 300 s, not 60 s
     )
     # `F-7` -- the ONE conversations capability this process needs, taken

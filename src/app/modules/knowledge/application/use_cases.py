@@ -1737,10 +1737,17 @@ class BuildSummary:
         **A translation (P-44) takes the same three-phase path**, and every
         guarantee below is the build's own: one provider call inside the same
         broad catch, the same ``SummaryAttempt`` carried to ``finalize``, the
-        same terminal transaction. It reports no intermediate progress and
-        polls no cancellation, because there is no step boundary to observe
-        one at — a single round trip either returns or fails, exactly like
-        the one-batch ``full`` build and every ``overview``.
+        same terminal transaction. **Since ب-7 it also reports and listens
+        like one.** It used to do neither, and the reason recorded here was
+        that a single round trip has no step boundary to observe anything at
+        — true until ب-6 moved the cancellation poll INSIDE a call. What a
+        translation gets is one phase tick before its one call (never a
+        count: it reads no chunk, and ``claim`` already fixed
+        ``total_chunks`` at the source summary's own coverage) and the same
+        ``_should_cancel`` every other shape passes down. The tick matters
+        most for what rides on it: this was the ONLY path that beat not once,
+        so a translation slow enough to matter was indistinguishable from a
+        wedged worker to the health checker below.
         **``on_heartbeat`` (`F-4`, plan §3.5) is liveness, not progress.** The
         worker's loop beats once per completed cycle, so it cannot beat while
         a handler is still running, and a legitimate map-reduce occupies this
@@ -1776,6 +1783,19 @@ class BuildSummary:
             fresh = await self._jobs.get(ctx, job.id)
             return fresh is None or fresh.is_terminal
 
+        async def _translation_tick() -> None:
+            """ب-7: what a translation has where a map-reduce has progress.
+
+            It re-reports the count the job ALREADY holds rather than a new
+            one. A translation reads no chunk, so there is no second step for
+            a number to move between, and reporting anything else would be
+            inventing coverage — the row would claim work that is not being
+            done. What the write moves is the row's ``updated_at``, and what
+            it fires is the heartbeat above it, which is the whole of what
+            this path was missing.
+            """
+            await _progress(job.done_chunks)
+
         try:
             if plan.translate_from is not None:
                 draft = await self._pipeline.translate(
@@ -1783,6 +1803,8 @@ class BuildSummary:
                     source=plan.translate_from,
                     lang=job.lang,
                     summarizer=plan.summarizer,
+                    on_tick=_translation_tick,
+                    should_cancel=_should_cancel,
                 )
             else:
                 draft = await self._pipeline.execute(

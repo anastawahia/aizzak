@@ -45,9 +45,18 @@ alternative — an unbounded map — makes the cost of one request a function of
 the largest file anyone ever uploaded, and this is already the most expensive
 call the platform makes.
 
-**Cancellation is checked between batches**, which is the only place it can
-be: an LLM round trip in flight cannot be recalled, and pretending otherwise
-would mean reporting a stop that had not happened. See ``SummaryJob.cancel``.
+**Cancellation is checked between batches AND inside every call** (ب-6).
+Between batches was once the only place it could be, and the reason given was
+that a round trip in flight cannot be recalled — true of a round trip that
+answers all at once, which is what ``complete()`` makes of every call.
+``stream()`` does not: the answer arrives in pieces, so the pipeline gets the
+control back thousands of times inside one call and can ask whether Stop was
+pressed at any of them (``_CANCEL_POLL_INTERVAL_S`` decides how often it is
+worth asking). Abandoning a stream costs the tokens already generated and
+recalls nothing that was not going to be paid for anyway. The batch-boundary
+polls stay exactly where they were: they are cheaper, and they stop a build
+BEFORE the next call is spent, which no poll inside a started call can do.
+See ``SummaryJob.cancel``.
 
 **``translate`` (P-44, plan §4 step 20, §3.10) is a THIRD shape beside
 ``execute``'s two kinds, and a cheaper one.** It reads no chunk at all — its
@@ -62,12 +71,15 @@ provider call spent proving what was already true.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
+from time import monotonic
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.observability import get_logger
-from app.framework.ports.llm_provider import LlmMessage, LlmParams
+from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams
 from app.modules.knowledge.domain.entities import Summary
 from app.modules.knowledge.domain.value_objects import SummaryKind, SummaryLanguage
 from app.modules.knowledge.ports.summarization import ResolvedSummarizer
@@ -189,6 +201,28 @@ _TEMPERATURE = 0.2
 _MAP_MAX_TOKENS = 600
 _OVERVIEW_MAX_TOKENS = 900
 _REDUCE_MAX_TOKENS = 2_500
+
+# ب-6 (summarization-scenarios-implementation-plan.md §5): how often a call
+# in flight stops to ask whether Stop was pressed.
+#
+# NOT once per chunk, and that is the whole trade this number expresses.
+# `should_cancel` is a ROW READ from the database (`use_cases.BuildSummary.
+# run._should_cancel`), so polling per token would spend thousands of reads
+# inside a single call on a button nobody pressed -- a price paid by every
+# build to serve the rare one that is stopped. Two seconds turns the worst
+# wait between a press and its effect from a whole call (`timeout_s`, 300 s
+# in the deployed worker) into two, for about half a read a second while a
+# build is actually running, and none at all when it is not.
+_CANCEL_POLL_INTERVAL_S = 2.0
+
+# The per-call wall-clock cap used when a caller says nothing. The real number
+# is `Limits.summarize_timeout_s`, wired in `workers/bootstrap.py` where this
+# pipeline is built; this default is what a direct `SummarizeDocument()` gets,
+# so a caller who never heard of the setting is bounded rather than unbounded.
+# The two are held equal by
+# `test_the_default_call_timeout_is_the_shipped_setting`, which is what stops
+# them drifting into two different answers to one question.
+_DEFAULT_CALL_TIMEOUT_S = 300.0
 
 # `F-10`/`F-9`: the closed vocabulary `_call`'s `step` is drawn from -- one
 # name per place in the ladder a provider call can be made. It exists as a
@@ -342,7 +376,31 @@ class SummarizeDocument:
     honour — and passing the triple as three parameters would let a caller
     pair one provider's key with another's model, which is the failure the
     resolver returns them together to prevent.
+
+    **``timeout_s`` does not break that** (ب-6): stateless here has always
+    meant no DEPENDENCY is captured — no provider, no key, no model — and a
+    number is none of those. It cannot be resolved per workspace, it cannot
+    be paired wrongly with anything, and it is the same for every call this
+    instance ever makes. See ``__init__`` for why the number has to be held
+    at all now that the pipeline streams.
     """
+
+    def __init__(self, *, timeout_s: float = _DEFAULT_CALL_TIMEOUT_S) -> None:
+        """``timeout_s`` bounds ONE provider call, end to end.
+
+        ب-6 is what makes it necessary, and it restores a bound rather than
+        adding one. While this pipeline called ``complete()`` the cap was
+        already there and invisible: the summarisation adapters' httpx client
+        is built with ``Limits.summarize_timeout_s`` (``workers/bootstrap.
+        py``), and with ``stream: false`` a provider emits no byte until
+        generation ends — so that one timeout governed the WHOLE call.
+        Streaming turns the very same httpx timeout into a BETWEEN-CHUNK one,
+        under which a model dribbling a token every ten seconds runs forever
+        and nothing stops it short of ``Limits.summarize_job_max_duration_s``
+        half an hour later. Without this parameter ب-6 would be a regression
+        wearing a feature's clothes.
+        """
+        self._timeout_s = timeout_s
 
     async def execute(
         self,
@@ -384,6 +442,11 @@ class SummarizeDocument:
                 summarizer=summarizer,
                 max_tokens=_OVERVIEW_MAX_TOKENS,
                 step="overview",
+                # ب-6: an `overview` is ONE call with no batch boundary before
+                # or after it, so until now Stop could not be observed on this
+                # shape at all -- the hook was accepted and never read. The
+                # poll inside the call is the only one it will ever have.
+                should_cancel=should_cancel,
             )
             await on_progress(sampled)
             return SummaryDraft(
@@ -419,6 +482,9 @@ class SummarizeDocument:
                 summarizer=summarizer,
                 max_tokens=_REDUCE_MAX_TOKENS,
                 step="full_single_batch",
+                # The same as `overview` above: one call, no boundary, and
+                # the reduce-sized budget makes it the longer of the two.
+                should_cancel=should_cancel,
             )
             await on_progress(len(window))
             return SummaryDraft(
@@ -437,6 +503,11 @@ class SummarizeDocument:
                 summarizer=summarizer,
                 max_tokens=_MAP_MAX_TOKENS,
                 step="map",
+                # BESIDE the boundary poll above, not instead of it: that one
+                # is cheaper and stronger (one read per batch, and it stops
+                # the build BEFORE the call is paid for). This one covers the
+                # minutes inside a batch the boundary cannot see.
+                should_cancel=should_cancel,
             )
             notes.append(f"## Part {index}\n{note}")
             done += len(batch)
@@ -475,6 +546,8 @@ class SummarizeDocument:
         source: Summary,
         lang: SummaryLanguage,
         summarizer: ResolvedSummarizer,
+        on_tick: PhaseHook = _noop_phase,
+        should_cancel: CancelHook = _never_cancel,
     ) -> SummaryDraft:
         """P-44 (plan §4 step 20, §3.10): turn an already-built ``Summary``
         into the SAME text in another language, by reading the STORED row
@@ -499,6 +572,18 @@ class SummarizeDocument:
         already carries. A translated summary of a truncated source is still
         a summary of a truncated source, in every language it is ever asked
         for.
+
+        **``on_tick``/``should_cancel`` (ب-7).** This was the one path in the
+        module that emitted nothing and listened to nothing, and the reason
+        recorded for it was true: a single round trip has no step boundary to
+        observe anything at. ب-6 is what retires that reason — the poll now
+        lives INSIDE the call, so a translation has the points it never had.
+        A ``PhaseHook`` and not a ``ProgressHook`` because there is no count
+        to carry: a translation reads no chunk of its own, and its job's
+        ``total_chunks`` is the SOURCE summary's coverage, fixed at ``claim``.
+        What the tick says is that the build is alive — which is exactly what
+        ``_reduce_tick`` says one shape over, and exactly what the worker's
+        heartbeat rides on.
         """
         del ctx  # see `execute`'s own docstring for why this stays in the signature
 
@@ -510,6 +595,22 @@ class SummarizeDocument:
                 truncated=source.truncated,
             )
 
+        # ONE tick, BEFORE the call and BELOW the shortcut above.
+        #
+        # Before, for `_fold`'s reason stated in full there: reporting after
+        # the call would leave the only call this path makes as an unannounced
+        # silence of its own full length, which is precisely the silence worth
+        # announcing. Below the shortcut, because a same-language
+        # "translation" spends no call and so has no silence to announce --
+        # ticking there would report a phase that never happens.
+        #
+        # No poll of `should_cancel` stands here, unlike `_fold`'s boundaries.
+        # A boundary poll earns its read by saving the call that follows it,
+        # and this one could not: it would read a row the caller's own `claim`
+        # wrote moments earlier, in the same handler, with nothing in between
+        # that could have changed it.
+        await on_tick()
+
         text = await self._call(
             system=_TRANSLATE_SYSTEM,
             user=source.text,
@@ -517,6 +618,7 @@ class SummarizeDocument:
             summarizer=summarizer,
             max_tokens=_REDUCE_MAX_TOKENS,
             step="translate",
+            should_cancel=should_cancel,
         )
         return SummaryDraft(
             text=text,
@@ -582,6 +684,9 @@ class SummarizeDocument:
                 summarizer=summarizer,
                 max_tokens=_REDUCE_MAX_TOKENS,
                 step="reduce",
+                # The single longest call in the whole build, and the last:
+                # after it there is no boundary left to observe a Stop at.
+                should_cancel=should_cancel,
             )
         # A loop rather than the comprehension this was: a comprehension has
         # nowhere to put the poll, and the poll between groups is the whole of
@@ -599,6 +704,7 @@ class SummarizeDocument:
                     summarizer=summarizer,
                     max_tokens=_MAP_MAX_TOKENS,
                     step="fold",
+                    should_cancel=should_cancel,
                 )
             )
         return await self._fold(
@@ -619,8 +725,9 @@ class SummarizeDocument:
         summarizer: ResolvedSummarizer,
         max_tokens: int,
         step: str,
+        should_cancel: CancelHook = _never_cancel,
     ) -> str:
-        """One provider round trip.
+        """One provider round trip, STREAMED (ب-6).
 
         The language instruction rides on the SYSTEM message, not the user
         one: the user message is document text, and an instruction embedded in
@@ -632,15 +739,60 @@ class SummarizeDocument:
         question is "where", and neither the system prompt (content, and a
         string no dashboard groups by) nor the caller's line number answers
         it. One parameter buys both.
+
+        **The text this returns is what ``complete()`` returned; what changed
+        is when control comes back.** ``LLMProvider.stream`` was defined on
+        the port and implemented by all five adapters, and this path never
+        used it — so a call, once started, held the pipeline until it
+        finished, and a Stop pressed a second in could not be noticed for up
+        to ``self._timeout_s``. The answer arriving in pieces is what creates
+        points INSIDE one round trip at which this pipeline can look up.
+
+        ``should_cancel`` defaults to ``_never_cancel`` so the two properties
+        the guards below pin stay testable in isolation, and every caller in
+        this module passes the real hook down.
         """
         messages = [
             LlmMessage(role="system", content=f"{system}\n\n{_LANGUAGE_INSTRUCTION[lang]}"),
             LlmMessage(role="user", content=user),
         ]
         params = LlmParams(model=summarizer.model, temperature=_TEMPERATURE, max_tokens=max_tokens)
-        result = await summarizer.provider.complete(messages, params, summarizer.api_key)
 
-        if result.finish_reason == "length":
+        parts: list[str] = []
+        finish: str | None = None
+        now = monotonic()
+        deadline = now + self._timeout_s
+        next_poll = now + _CANCEL_POLL_INTERVAL_S
+
+        chunks = summarizer.provider.stream(messages, params, summarizer.api_key)
+        try:
+            while True:
+                now = monotonic()
+                # `finish is None` -- once the answer is COMPLETE, stop asking.
+                # A stream can carry frames PAST its terminal chunk (the
+                # OpenAI adapter reads a trailing usage frame there), and a
+                # Stop observed in that window would throw away an answer that
+                # had already fully arrived: the call paid for in full and
+                # nothing stored. Cancelling is for work still ahead.
+                if finish is None and now >= next_poll:
+                    next_poll = now + _CANCEL_POLL_INTERVAL_S
+                    if await should_cancel():
+                        raise SummaryBuildCancelled
+                try:
+                    chunk = await _next_chunk_before(chunks, deadline)
+                except StopAsyncIteration:
+                    break
+                parts.append(chunk.delta)
+                if chunk.finish_reason is not None:
+                    # The port puts it on the TERMINAL chunk, so this holds
+                    # the last one that carried it -- `LlmResult.
+                    # finish_reason` reached by another route, which is what
+                    # leaves the `length` guard below meaning what it meant.
+                    finish = chunk.finish_reason
+        finally:
+            await _close_quietly(chunks)
+
+        if finish == "length":
             # `F-10`: the answer stopped because it ran out of room, not
             # because it was finished -- a summary cut mid-sentence, stored as
             # though it were whole. MEASUREMENT ONLY in this wave: how often
@@ -664,7 +816,7 @@ class SummarizeDocument:
                 extra={"step": step, "max_tokens": max_tokens},
             )
 
-        text = result.content.strip()
+        text = "".join(parts).strip()
         if not text:
             # `F-9`: phrased for the person who will read it on the failed
             # job, not for a log -- this sentence is all they will get, the
@@ -690,6 +842,60 @@ class SummarizeDocument:
 
 def _join(chunks: Sequence[str]) -> str:
     return "\n\n".join(chunks)
+
+
+async def _next_chunk_before(chunks: AsyncIterator[LlmChunk], deadline: float) -> LlmChunk:
+    """``anext(chunks)``, never past ``deadline``.
+
+    ب-6: the timeout is re-armed PER PULL from one shared deadline, rather
+    than declared once around the whole loop. Both give the same TOTAL bound
+    on a call — they differ only in what gets cancelled when it expires. A
+    timeout spanning the loop keeps ticking through the loop's body too, so
+    an expiry landing while ``_call`` is awaiting the caller's
+    ``should_cancel`` would cancel THAT: a database read, mid-query, on the
+    very session the resulting failure is about to be written through. Here
+    the cancellation can only ever land on the provider's own await, which is
+    the one await that opted into it.
+
+    ``agents.orchestrator._next_before`` is the same reasoning applied to an
+    agent stream and states it at length; it cannot be imported from here
+    (contract 3 — an application layer never imports ``app.agents``), so the
+    rule is restated rather than shared.
+
+    Raises ``TimeoutError`` when the budget is spent, including one that
+    expired between pulls, and lets ``StopAsyncIteration`` fly for a stream
+    that ends in time.
+    """
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    async with asyncio.timeout(remaining):
+        return await anext(chunks)
+
+
+async def _close_quietly(chunks: AsyncIterator[LlmChunk]) -> None:
+    """Best-effort ``aclose``, so the adapter's own ``async with`` — the HTTP
+    response the stream is reading — unwinds NOW rather than whenever the
+    generator happens to be collected.
+
+    ب-6 is what makes this matter. Before it a call either returned or
+    raised, and there was never a half-read response to leave behind; now
+    ``_call`` abandons a stream mid-body BY DESIGN, on every Stop pressed
+    during a call and on every per-call timeout.
+
+    Tolerant of an iterator with no ``aclose`` — the port promises
+    ``AsyncIterator``, not ``AsyncGenerator`` — and of a close that itself
+    fails: cleanup must never mask the cancellation or timeout the caller is
+    already on their way to seeing. ``asyncio.CancelledError`` is a
+    ``BaseException`` and so passes through ``suppress(Exception)``
+    untouched, which is what keeps this from swallowing a real cancellation.
+    The ``orchestrator._close_quietly`` precedent.
+    """
+    aclose = getattr(chunks, "aclose", None)
+    if aclose is None:
+        return
+    with suppress(Exception):
+        await aclose()
 
 
 def _glance_sample(readable: Sequence[str]) -> tuple[str, int]:

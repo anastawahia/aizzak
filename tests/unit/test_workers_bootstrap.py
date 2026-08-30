@@ -1671,6 +1671,38 @@ async def test_the_media_and_memory_workers_keep_the_configured_batch_count(
     assert captured["memory"]["batch_count"] == settings.events.consumer_batch_count
 
 
+async def test_the_summarisation_pipeline_is_given_the_configured_call_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ب-6 (scenarios plan §5): the per-call cap the streaming pipeline now
+    holds is READ from `Limits.summarize_timeout_s` here, the same number the
+    two summarisation HTTP clients are built with -- not left on the
+    application layer's own default.
+
+    Until ب-6 the httpx client timeout capped a whole call by itself, because
+    ``complete()`` (``stream: false``) returns no byte before the end. Now
+    that the pipeline streams, that same timeout is between-chunk only and
+    this one is what bounds the call end to end -- so the two have to be one
+    number, and this is where they are joined.
+
+    The setting is moved to something the application default is NOT, which
+    is the whole method: with both sitting at 300 the assertion would pass
+    just as happily for a call that had dropped the argument entirely.
+    """
+    base = load_settings()
+    raised = base.model_copy(
+        update={"limits": base.limits.model_copy(update={"summarize_timeout_s": 777})}
+    )
+    monkeypatch.setattr("app.workers.bootstrap.load_settings", lambda: raised)
+
+    captured = await _worker_wiring(monkeypatch)
+
+    builder = captured["knowledge"]["summary_builder"]
+    pipeline = builder._pipeline  # type: ignore[attr-defined]
+    assert raised.limits.summarize_timeout_s != base.limits.summarize_timeout_s
+    assert pipeline._timeout_s == raised.limits.summarize_timeout_s
+
+
 # --------------------------------------------------------------------------- #
 # `F-7`: knowledge.summary.built.v1 -> an assistant message in the thread     #
 # --------------------------------------------------------------------------- #
