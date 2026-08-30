@@ -204,6 +204,11 @@ class SummaryJobOut(BaseModel):
     A summary failure is a message this module wrote for this reader — "no
     indexed text", "cancelled" — not a provider's raw output, and it is the
     entire explanation the person who pressed the button will get.
+
+    ``updated_at`` is what makes the rest of these numbers readable. A
+    ``running`` job at 40% whose worker died reports exactly what a healthy
+    build reports, and this is the only field that separates them: a client
+    that sees it twenty minutes behind ``now`` knows to stop waiting.
     """
 
     id: str
@@ -216,6 +221,7 @@ class SummaryJobOut(BaseModel):
     percent: int
     error: str | None
     created_at: datetime
+    updated_at: datetime
     finished_at: datetime | None
     cancelled_at: datetime | None
 

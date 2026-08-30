@@ -158,14 +158,15 @@ VO  VectorRef   (collection + point_id في Qdrant)
 AR  Summary    { id, workspace_id, document_id, kind, lang, text, model,
                  source_chunks, truncated, built_at }        # مُجمَّدة: البناءُ يستبدل
 AR  SummaryJob { id, workspace_id, document_id, kind, lang, status, total_chunks,
-                 done_chunks, error, cancelled_at, finished_at, created_at }
+                 done_chunks, error, cancelled_at, finished_at, created_at, updated_at }
 VO  SummaryKind (overview | full)
 VO  SummaryLanguage (auto | ar | en)                        # `auto` عضوٌ لا قيمةٌ غائبة
 VO  SummaryJobStatus (queued | running | succeeded | failed | cancelled)  # مخزَّنة (INV‑K6)
 EV  DocumentRegistered(document_id, workspace_id, file_id, occurred_at)   # داخلي
 EV  DocumentIndexed(document_id, workspace_id, chunk_count, occurred_at)  # عالمي → إشعار WS
 EV  DocumentIndexingFailed(document_id, workspace_id, reason, occurred_at)
-EV  SummaryRequested(job_id, workspace_id, document_id, kind, lang, occurred_at)  # داخلي
+EV  SummaryRequested(job_id, workspace_id, document_id, kind, lang, conversation_id,
+                    occurred_at)                                          # داخلي
 EV  SummaryBuilt(job_id, workspace_id, document_id, kind, lang, occurred_at)      # عالمي → إشعار WS
 EV  SummaryBuildFailed(job_id, workspace_id, document_id, reason, occurred_at)
 ```

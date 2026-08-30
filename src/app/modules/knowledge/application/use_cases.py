@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
@@ -148,6 +148,25 @@ CANCELLED_REASON = "re-indexing was cancelled before this document was processed
 # cancelled build really did end without a summary and a client watching the
 # stream needs to stop waiting for one.
 SUMMARY_CANCELLED_REASON = "the summary build was cancelled"
+
+# ب-9 (scenarios plan section 6, gap ف-6) — written into a job no worker is
+# coming back to, and carried on the `SummaryBuildFailed` it provokes. The
+# reader is the person who pressed the button, got a 409 for a build that
+# had already died, and is now being told in one sentence both that it
+# ended and that they may ask again — which is more than the fifteen-minute
+# ghost sweep ever told them.
+SUMMARY_ABANDONED_REASON = (
+    "the summary build stopped before it finished and was released so it can be asked for again"
+)
+
+# The staleness bound ب-9 measures against, mirroring
+# `Limits.summarize_job_max_duration_s` rather than importing it: this module
+# takes its configuration as ARGUMENTS and imports no `Settings` anywhere in
+# its application or domain layers (س-24, and a test enforces it). The
+# composition root passes the live value; this is what the number is when
+# nobody says otherwise, exactly as `summarization._DEFAULT_CALL_TIMEOUT_S`
+# mirrors its own sibling.
+_DEFAULT_MAX_BUILD_DURATION_S = 1_800.0
 
 # `F-9` (rag-summarization-fix-plan.md §3.10) — what a DELIVERED summary says
 # when the build stopped at `_MAX_MAP_CHUNKS`. Two fixed sentences, phrased
@@ -984,6 +1003,35 @@ class CancelReindexJobService:
             return job
 
 
+def _is_abandoned(job: SummaryJob, now: datetime, max_build_duration_s: float) -> bool:
+    """Whether a job holding the active key can no longer be finished by anyone.
+
+    The bound is DERIVED, not a second number to keep in step:
+    ``max_build_duration_s`` is ``Limits.summarize_job_max_duration_s``, the
+    cap the worker's own message handler ends a long build at. A job that has
+    passed it and is still not terminal is therefore one whose keeper is gone
+    — a live worker would have ended it itself. Whoever raises that setting
+    moves this with it, which is the point of deriving the bound rather than
+    writing a second number next to it.
+
+    ``running`` only, and the narrowing is deliberate. A ``queued`` job's
+    wait is bounded by the QUEUE, not by the build, and those are different
+    quantities: the three knowledge handlers share one consumer loop, so a
+    job can sit queued behind a build that is itself allowed to run for the
+    whole cap — and failing it there would kill a job a worker is still
+    coming for. Nothing is lost by excluding it: a queued job's
+    ``SummaryRequested`` cannot go silently missing, because the row and the
+    outbox record are written in ONE transaction (``RequestSummaryService``)
+    and a message whose consumer died is redelivered by the ghost sweep.
+
+    ``updated_at`` is what makes the question askable at all, and it only
+    reaches this layer because of ب-8.
+    """
+    if job.status is not SummaryJobStatus.RUNNING:
+        return False
+    return now - job.updated_at > timedelta(seconds=max_build_duration_s)
+
+
 class RequestSummary:
     """Queue a build of one document's summary (06 §7 · BE-RAG-009).
 
@@ -1024,15 +1072,27 @@ class RequestSummary:
     It is not stored on the job. The row records an operation; where its
     output should be posted is a property of the REQUEST, and it travels on
     the message the same way the build key does (``SummaryRequested``).
+
+    **The 409 has one exception, and it is where the key is freed** (ب-9).
+    A build whose worker died stays ``running`` and keeps
+    ``uq_summary_job_active`` forever, so every later request for that key is
+    refused for a build that is not happening. The check for that costs
+    nothing here: the row was read on the line above. Ending it — in
+    ``failed``, with a written reason, inside the unit of work this call
+    already runs in — releases the key at the moment somebody needs it, which
+    is the one moment a periodic sweeper cannot pick.
     """
 
     def __init__(
         self,
         documents: DocumentRepository,
         jobs: SummaryJobRepository,
+        *,
+        max_build_duration_s: float = _DEFAULT_MAX_BUILD_DURATION_S,
     ) -> None:
         self._documents = documents
         self._jobs = jobs
+        self._max_build_duration_s = max_build_duration_s
 
     async def execute(
         self,
@@ -1060,14 +1120,36 @@ class RequestSummary:
                 " and has no text to summarise"
             )
 
+        now = utc_now()
+        events: list[KnowledgeEvent] = []
         active = await self._jobs.active_for(ctx, document_id, kind, lang)
         if active is not None:
-            raise SummaryBuildInProgress(
-                f"a {kind.value} summary of this document in {lang.value}"
-                f" is already being built (job {active.id})"
-            )
+            if _is_abandoned(active, now, self._max_build_duration_s):
+                # ب-9 — the key is held by a job nobody is holding. Ending it
+                # here frees `uq_summary_job_active` AND gives the asker an
+                # answer; the ghost sweep gives neither, because it was built
+                # to reclaim dead Redis consumers and re-delivers a message
+                # rather than settling a row. Everything below lands in the
+                # transaction `RequestSummaryService` already opened: the
+                # release, its event, the new job and its event are one write
+                # (ق-1 — a guard inside the first phase, not a fourth phase).
+                active.fail(SUMMARY_ABANDONED_REASON, now)
+                await self._jobs.save(ctx, active)
+                events.append(
+                    SummaryBuildFailed(
+                        active.id,
+                        ctx.workspace_id,
+                        active.document_id,
+                        SUMMARY_ABANDONED_REASON,
+                        now,
+                    )
+                )
+            else:
+                raise SummaryBuildInProgress(
+                    f"a {kind.value} summary of this document in {lang.value}"
+                    f" is already being built (job {active.id})"
+                )
 
-        now = utc_now()
         job = SummaryJob(
             id=new_uuid7(),
             workspace_id=ctx.workspace_id,
@@ -1081,12 +1163,17 @@ class RequestSummary:
             cancelled_at=None,
             finished_at=None,
             created_at=now,
+            # Its birth value, and the last one this layer ever authors: from
+            # the INSERT on, `trg_touch` owns the column (entity docstring).
+            updated_at=now,
         )
         await self._jobs.add(ctx, job)
-        event = SummaryRequested(
-            job.id, ctx.workspace_id, document_id, kind.value, lang.value, conversation_id, now
+        events.append(
+            SummaryRequested(
+                job.id, ctx.workspace_id, document_id, kind.value, lang.value, conversation_id, now
+            )
         )
-        return job, (event,)
+        return job, tuple(events)
 
 
 class RequestSummaryService:

@@ -34,16 +34,22 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from time import monotonic
 
 import pytest
 
+from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.settings import Limits
+from app.modules.knowledge.adapters.sql_repository import (
+    SqlSummaryJobRepository,
+    _hydrate_summary_job,
+)
 from app.modules.knowledge.application import summarization as summarization_module
 from app.modules.knowledge.application.routing import (
     SummaryBuildInProgress,
@@ -55,6 +61,8 @@ from app.modules.knowledge.application.summarization import (
     _batched,
 )
 from app.modules.knowledge.application.use_cases import (
+    _DEFAULT_MAX_BUILD_DURATION_S,
+    SUMMARY_ABANDONED_REASON,
     SUMMARY_CANCELLED_REASON,
     SUMMARY_TRUNCATED_NOTICE_AR,
     SUMMARY_TRUNCATED_NOTICE_EN,
@@ -65,10 +73,12 @@ from app.modules.knowledge.application.use_cases import (
     GetSummaryJob,
     ReadStoredSummary,
     RequestSummary,
+    _is_abandoned,
     delivered_summary_text,
 )
 from app.modules.knowledge.domain.entities import Summary, SummaryJob
 from app.modules.knowledge.domain.errors import SummaryJobStateError
+from app.modules.knowledge.domain.events import SummaryBuildFailed, SummaryRequested
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     SummaryBlocked,
@@ -229,6 +239,7 @@ def _job(
     status: SummaryJobStatus = SummaryJobStatus.QUEUED,
     total: int = 0,
     done: int = 0,
+    updated_at: datetime | None = None,
 ) -> SummaryJob:
     return SummaryJob(
         id=job_id,
@@ -243,6 +254,7 @@ def _job(
         cancelled_at=None,
         finished_at=None,
         created_at=_AT,
+        updated_at=_AT if updated_at is None else updated_at,
     )
 
 
@@ -1724,6 +1736,270 @@ async def test_a_second_build_of_the_same_key_is_refused_before_a_token_is_spent
     await request.execute(
         _ctx(), document_id="doc-1", kind=SummaryKind.OVERVIEW, lang=SummaryLanguage.AUTO
     )
+
+
+# --------------------------------------------------------------------------- #
+# ب-8 — `updated_at` crosses four layers                                      #
+# --------------------------------------------------------------------------- #
+def _row(**overrides: object) -> dict[str, object]:
+    """One `knowledge.summary_jobs` row as the driver hands it over."""
+    row: dict[str, object] = {
+        "id": "job-1",
+        "workspace_id": _W1,
+        "document_id": "doc-1",
+        "kind": "full",
+        "lang": "auto",
+        "status": "running",
+        "total_chunks": 4,
+        "done_chunks": 2,
+        "error": None,
+        "cancelled_at": None,
+        "finished_at": None,
+        "created_at": _AT,
+        "updated_at": _AT + timedelta(minutes=3),
+    }
+    return {**row, **overrides}
+
+
+class _CapturingSession:
+    """Records the statements a repository method executes, and runs none."""
+
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+
+    async def execute(self, statement: object) -> None:
+        self.statements.append(statement)
+
+
+def _capturing_repository() -> tuple[SqlSummaryJobRepository, _CapturingSession]:
+    session = _CapturingSession()
+
+    @asynccontextmanager
+    async def provider(ctx: ExecutionContext) -> AsyncIterator[_CapturingSession]:
+        yield session
+
+    return SqlSummaryJobRepository(provider), session  # type: ignore[arg-type]
+
+
+def test_a_summary_job_row_hydrates_when_it_last_moved() -> None:
+    """ب-8, layer 3. The column has existed since `0003_summaries.py` and has
+    been dropped on the floor by the hydrator ever since; the query never
+    changed, because `select(summary_jobs)` was already selecting it."""
+    job = _hydrate_summary_job(_row())  # type: ignore[arg-type]
+
+    assert job.updated_at == _AT + timedelta(minutes=3)
+    # And it is a SEPARATE reading from `created_at` -- a hydrator that
+    # aliased one onto the other would pass every test that only checks it
+    # is not None.
+    assert job.created_at == _AT
+
+
+@pytest.mark.asyncio
+async def test_a_summary_job_reports_when_it_last_moved() -> None:
+    """ب-8, layers 1 and 2: the field exists on the aggregate and is stamped
+    at birth, so a job that has never moved still answers the question."""
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+
+    job, _events = await request.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+    read = await GetSummaryJob(stack.summary_jobs).execute(_ctx(), job_id=job.id)
+
+    assert job.updated_at == job.created_at
+    assert read.updated_at == job.updated_at
+
+
+def test_the_aggregate_never_authors_its_own_updated_at() -> None:
+    """**The guard on ب-8's one decision.** `updated_at` is the ROW's word
+    about itself: `platform.touch_updated_at` writes it and this layer only
+    reads it back.
+
+    Two halves, because a transition and a write are two ways to break it.
+    Every transition here is driven and the field must not move -- an
+    aggregate that stamped its own would report the moment the OBJECT changed
+    in memory, which for a build is the moment before the write that may
+    never land. And `save`'s `SET` must not name the column: a job held since
+    before the last write would then stamp an older instant over the row's
+    own record of when it last moved, which is precisely what ب-9 reads.
+    """
+    driven = _job(status=SummaryJobStatus.QUEUED)
+    driven.start(4)
+    driven.advance(2)
+    driven.succeed(_AT + timedelta(hours=1))
+    assert driven.updated_at == _AT
+
+    failed = _job(status=SummaryJobStatus.RUNNING)
+    failed.fail("boom", _AT + timedelta(hours=1))
+    assert failed.updated_at == _AT
+
+    cancelled = _job(status=SummaryJobStatus.RUNNING)
+    cancelled.cancel(SUMMARY_CANCELLED_REASON, _AT + timedelta(hours=1))
+    assert cancelled.updated_at == _AT
+
+
+@pytest.mark.asyncio
+async def test_the_saved_row_is_never_told_when_it_last_moved() -> None:
+    """The second half of the decision above, read off the statement itself
+    rather than off a database that is not here."""
+    repository, session = _capturing_repository()
+
+    await repository.save(_ctx(), _job(status=SummaryJobStatus.RUNNING))
+
+    written = str(session.statements[0])
+    assert "updated_at" not in written
+    # Not vacuous: the columns this write DOES own are in the same string.
+    assert "status" in written
+    assert "done_chunks" in written
+
+
+# --------------------------------------------------------------------------- #
+# ب-9 — the abandoned job is released when its key is asked for               #
+# --------------------------------------------------------------------------- #
+def _stale() -> datetime:
+    """Last moved longer ago than the longest build anyone is allowed."""
+    return utc_now() - timedelta(seconds=Limits().summarize_job_max_duration_s + 60)
+
+
+def _holding_the_key(stack: KnowledgeStack, job: SummaryJob) -> SummaryJob:
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+    stack.summary_jobs.rows[job.id] = job
+    return job
+
+
+async def _request(stack: KnowledgeStack) -> tuple[SummaryJob, tuple[object, ...]]:
+    request = RequestSummary(stack.repository, stack.summary_jobs)
+    return await request.execute(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_running_job_is_failed_and_its_key_released() -> None:
+    """**The item.** A build whose worker died holds `uq_summary_job_active`
+    for as long as the row exists, and every later request for that key is
+    refused for a build that is not happening. Asking for the key is what
+    frees it -- which is the one moment a periodic sweeper cannot pick."""
+    stack = build_knowledge()
+    dead = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+
+    job, _events = await _request(stack)
+
+    assert dead.status is SummaryJobStatus.FAILED
+    # WRITTEN, not merely settled in memory: a release that is never saved
+    # leaves the row `running` and the key still held, which is the whole
+    # defect wearing the fix's clothes.
+    assert stack.summary_jobs.saved == [dead.id]
+    assert job.id != dead.id
+    assert job.status is SummaryJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_a_freshly_moving_job_is_still_a_conflict() -> None:
+    """**The containing guard.** A build that reported progress a moment ago
+    is a build in progress, and the 409 it earns is the entire reason the key
+    exists: without it two clicks pay for the same document twice. ب-9
+    releases the dead, never the slow."""
+    stack = build_knowledge()
+    alive = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=utc_now()))
+
+    with pytest.raises(SummaryBuildInProgress):
+        await _request(stack)
+
+    assert alive.status is SummaryJobStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_a_queued_job_is_never_released_by_the_staleness_check() -> None:
+    """**The containing guard on the narrowing.** A queued job's wait is
+    bounded by the QUEUE, not by the build: the three knowledge handlers
+    share one consumer loop, so a job can legitimately sit queued behind a
+    build that is allowed to run for the whole cap. Failing it there would
+    kill a job a worker is still coming for."""
+    stack = build_knowledge()
+    waiting = _holding_the_key(stack, _job(status=SummaryJobStatus.QUEUED, updated_at=_stale()))
+
+    with pytest.raises(SummaryBuildInProgress):
+        await _request(stack)
+
+    assert waiting.status is SummaryJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_the_abandoned_job_carries_a_written_reason() -> None:
+    """`SummaryJobOut.error` publishes this field, so the sentence IS the
+    explanation the person gets. `cancelled_at` stays empty on purpose: this
+    build was not stopped by anyone, and saying it was would name a decision
+    nobody made."""
+    stack = build_knowledge()
+    dead = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+
+    await _request(stack)
+
+    assert dead.error == SUMMARY_ABANDONED_REASON
+    assert dead.error != SUMMARY_CANCELLED_REASON
+    assert dead.finished_at is not None
+    assert dead.cancelled_at is None
+
+
+@pytest.mark.asyncio
+async def test_releasing_an_abandoned_key_emits_its_failure_event() -> None:
+    """A release with no event frees the key and tells nobody -- and ب-11ب
+    will read exactly this event to write the sentence into the thread that
+    asked. The failure comes FIRST: it is what made room for the request."""
+    stack = build_knowledge()
+    dead = _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+
+    _job_out, events = await _request(stack)
+
+    assert [type(event) for event in events] == [SummaryBuildFailed, SummaryRequested]
+    failure = events[0]
+    assert isinstance(failure, SummaryBuildFailed)
+    assert failure.job_id == dead.id
+    assert failure.reason == SUMMARY_ABANDONED_REASON
+
+
+@pytest.mark.asyncio
+async def test_the_release_and_the_new_job_share_one_transaction() -> None:
+    """Decision 2, and it is not decoration: a release whose event was lost
+    would leave a `failed` row nobody was told about, while a new job whose
+    event was lost would sit at 0% holding the key it just took. One `append`
+    inside the unit of work `RequestSummaryService` already opens."""
+    stack = build_knowledge()
+    _holding_the_key(stack, _job(status=SummaryJobStatus.RUNNING, updated_at=_stale()))
+
+    await stack.knowledge.request_summary.start(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+
+    assert len(stack.outbox.calls) == 1
+    assert stack.outbox.event_types == [
+        "knowledge.summary.build_failed.v1",
+        "knowledge.summary.requested.v1",
+    ]
+
+
+def test_the_staleness_bound_is_the_build_cap_not_a_second_number() -> None:
+    """Decision 1, arithmetically. The threshold is
+    `summarize_job_max_duration_s` -- the cap the worker's own handler ends a
+    long build at -- so a job that passed it and is still not terminal is one
+    whose keeper is gone. Raise the setting and the same job is alive again;
+    a number written here instead would have to be remembered separately, and
+    the two would drift the first time one moved."""
+    now = utc_now()
+    cap = Limits().summarize_job_max_duration_s
+    inside = _job(status=SummaryJobStatus.RUNNING, updated_at=now - timedelta(seconds=cap - 60))
+    outside = _job(status=SummaryJobStatus.RUNNING, updated_at=now - timedelta(seconds=cap + 60))
+
+    assert not _is_abandoned(inside, now, float(cap))
+    assert _is_abandoned(outside, now, float(cap))
+    assert not _is_abandoned(outside, now, float(cap * 2))
+    # And the module's own default IS that setting, so the composition
+    # root is the only thing standing between them -- the ب-6 pin, for
+    # the reason ب-6 needed one: a mirrored constant that drifts is
+    # worse than no constant at all.
+    assert Limits().summarize_job_max_duration_s == _DEFAULT_MAX_BUILD_DURATION_S
 
 
 @pytest.mark.asyncio

@@ -1270,6 +1270,7 @@ components:
         percent: {type: integer, minimum: 0, maximum: 100, description: "A succeeded job is 100 unconditionally: the reduce step that turns the mapped pieces into the summary is real work `total_chunks` does not count, so a job can be at 100% of its chunks and genuinely not done."}
         error: {type: string, nullable: true, description: "Why the build ended without a summary, including when it was cancelled. A sentence written for this reader, never a provider's raw output."}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+        updated_at: {type: string, format: date-time, description: "When the row last moved. The only evidence a build is still alive: a job whose worker died stays `running` at the percentage it reached, and a client that sees this far behind `now` knows to stop waiting. UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
         finished_at: {type: string, format: date-time, nullable: true, pattern: "Z$"}
         cancelled_at: {type: string, format: date-time, nullable: true, pattern: "Z$"}
     SummaryDeletedOut:

@@ -414,6 +414,11 @@ class InMemorySummaryJobRepository:
     """
 
     rows: dict[str, SummaryJob] = field(default_factory=dict)
+    #: The ids `save` was called with, in order. A test cannot see a missing
+    #: write by looking at the rows: this store holds the caller's own object,
+    #: so a mutation made and never saved is indistinguishable from one that
+    #: was. A real table tells them apart; this is how a fake does.
+    saved: list[str] = field(default_factory=list)
 
     async def add(self, ctx: ExecutionContext, job: SummaryJob) -> None:
         self.rows[job.id] = job
@@ -442,6 +447,7 @@ class InMemorySummaryJobRepository:
 
     async def save(self, ctx: ExecutionContext, job: SummaryJob) -> None:
         self.rows[job.id] = job
+        self.saved.append(job.id)
 
     async def record_progress(self, ctx: ExecutionContext, job_id: str, done_chunks: int) -> None:
         row = self.rows.get(job_id)

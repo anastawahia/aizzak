@@ -1157,6 +1157,7 @@ def _build_knowledge(
     tuning: RetrievalTuning,
     max_corpus_names: int,
     reranker: ExternalRerankProvider | None,
+    max_build_duration_s: float,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge, PurgeFileKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1227,7 +1228,15 @@ def _build_knowledge(
     # summary asked for in a conversation and one asked for over HTTP take
     # the same guards, the same unit of work and the same outbox append.
     request_summary = RequestSummaryService(
-        RequestSummary(documents, summary_jobs), outbox, tenant_session
+        # ب-9's staleness bound, as a NUMBER rather than as `Limits`: this
+        # module reads no `Settings` at all (س-24), so its configuration
+        # arrives the way `tuning` and `max_corpus_names` above do. It is the
+        # same value the worker ends a too-long build with, which is what
+        # makes "has not moved in longer than that" mean "no live worker is
+        # coming back for it".
+        RequestSummary(documents, summary_jobs, max_build_duration_s=max_build_duration_s),
+        outbox,
+        tenant_session,
     )
     use_cases = KnowledgeUseCases(
         list_documents=ListDocuments(documents),
@@ -1792,6 +1801,7 @@ class CompositionRoot:
             tuning=_retrieval_tuning(settings.retrieval, settings.limits),
             max_corpus_names=settings.retrieval.max_corpus_names,
             reranker=reranker,
+            max_build_duration_s=settings.limits.summarize_job_max_duration_s,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which

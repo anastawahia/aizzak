@@ -43,6 +43,7 @@ from app.infrastructure.persistence.database import create_engine
 from app.modules.knowledge.adapters.sql_repository import (
     SqlDocumentRepository,
     SqlReindexJobRepository,
+    SqlSummaryJobRepository,
     SqlSummaryRepository,
 )
 from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
@@ -53,10 +54,12 @@ from app.modules.knowledge.domain.entities import (
     ReindexItem,
     ReindexJob,
     Summary,
+    SummaryJob,
 )
 from app.modules.knowledge.domain.value_objects import (
     IndexStatus,
     ReindexJobStatus,
+    SummaryJobStatus,
     SummaryKind,
     SummaryLanguage,
     VectorRef,
@@ -1536,3 +1539,105 @@ async def test_count_over_an_empty_corpus_is_zero_not_an_error(
     never comes back empty."""
     assert await repo_knowledge.count(_ctx(new_uuid7()), space_id=None) == 0
     assert await repo_knowledge.count(_ctx(new_uuid7()), space_id=new_uuid7()) == 0
+
+
+# --------------------------------------------------------------------------- #
+# ب-8 — `summary_jobs.updated_at`, which only a real trigger can prove         #
+# --------------------------------------------------------------------------- #
+def _summary_job(ctx: ExecutionContext) -> SummaryJob:
+    """Born an hour in the past, so any instant the SERVER stamps is
+    unambiguously later than the one this process wrote -- the assertions
+    below are then about the trigger, not about clock skew between a test
+    runner and a container."""
+    born = utc_now() - timedelta(hours=1)
+    return SummaryJob(
+        id=new_uuid7(),
+        workspace_id=ctx.workspace_id,
+        document_id=new_uuid7(),
+        kind=SummaryKind.FULL,
+        lang=SummaryLanguage.EN,
+        status=SummaryJobStatus.QUEUED,
+        total_chunks=0,
+        done_chunks=0,
+        error=None,
+        cancelled_at=None,
+        finished_at=None,
+        created_at=born,
+        updated_at=born,
+    )
+
+
+async def test_a_progress_write_moves_the_rows_updated_at(
+    repo_summary_jobs: SqlSummaryJobRepository,
+) -> None:
+    """ب-8's one claim no unit test can settle: the column moves BY ITSELF.
+    No statement in the adapter names it -- `trg_touch` does the writing --
+    so what proves it is a real `BEFORE UPDATE` trigger on a real table.
+
+    This is what the whole item is for: a build reporting progress is what
+    makes its row say it is still alive, and ب-9 reads exactly that.
+    """
+    ctx = _ctx(new_uuid7())
+    job = _summary_job(ctx)
+    await repo_summary_jobs.add(ctx, job)
+
+    born = await repo_summary_jobs.get(ctx, job.id)
+    assert born is not None
+    # The INSERT writes both columns explicitly, so a fresh job has never moved.
+    assert born.updated_at == born.created_at
+
+    job.start(4)
+    await repo_summary_jobs.save(ctx, job)
+    claimed = await repo_summary_jobs.get(ctx, job.id)
+    assert claimed is not None
+    assert claimed.updated_at > born.updated_at
+    assert claimed.created_at == born.created_at
+
+    await repo_summary_jobs.record_progress(ctx, job.id, 2)
+    stepped = await repo_summary_jobs.get(ctx, job.id)
+    assert stepped is not None
+    assert stepped.done_chunks == 2
+    assert stepped.updated_at > claimed.updated_at
+
+
+async def test_a_save_never_writes_back_the_jobs_stale_updated_at(
+    repo_summary_jobs: SqlSummaryJobRepository,
+) -> None:
+    """The cost the entity's docstring names, shown to be harmless where it
+    would hurt.
+
+    An instance held across a write carries the value from BEFORE that write,
+    and saving it a second time must not stamp that older instant back over
+    the row. It cannot: `save`'s `SET` does not name the column at all.
+    """
+    ctx = _ctx(new_uuid7())
+    job = _summary_job(ctx)
+    await repo_summary_jobs.add(ctx, job)
+    job.start(4)
+    await repo_summary_jobs.save(ctx, job)
+
+    # The in-memory aggregate is an hour behind the row it just wrote.
+    assert job.updated_at == job.created_at
+    first = await repo_summary_jobs.get(ctx, job.id)
+    assert first is not None
+    assert first.updated_at > job.updated_at
+
+    job.advance(2)
+    await repo_summary_jobs.save(ctx, job)
+    second = await repo_summary_jobs.get(ctx, job.id)
+
+    assert second is not None
+    assert second.updated_at > first.updated_at
+
+
+async def test_another_tenant_cannot_read_a_summary_job(
+    repo_summary_jobs: SqlSummaryJobRepository,
+) -> None:
+    """The standard RLS pairing for a newly-fixtured repository: the column
+    ب-8 publishes is tenant-scoped like every other one on the row."""
+    owner, stranger = new_uuid7(), new_uuid7()
+    job = _summary_job(_ctx(owner))
+    await repo_summary_jobs.add(_ctx(owner), job)
+
+    assert await repo_summary_jobs.get(_ctx(owner), job.id) is not None
+    assert await repo_summary_jobs.get(_ctx(stranger), job.id) is None

@@ -227,6 +227,7 @@ def _to_summary_job_out(job: SummaryJob) -> SummaryJobOut:
         percent=job.percent,
         error=job.error,
         created_at=job.created_at,
+        updated_at=job.updated_at,
         finished_at=job.finished_at,
         cancelled_at=job.cancelled_at,
     )

@@ -36,6 +36,7 @@ from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LLMProvider
 from app.framework.providers.resolver import ResolvedProvider
+from app.infrastructure.config import load_settings
 from app.infrastructure.storage.minio_storage import MinioStorage
 from app.modules.files.application.use_cases import FileUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeRetrievalService
@@ -262,6 +263,37 @@ def test_the_stream_deadline_is_wired_from_limits(booted: CompositionRoot) -> No
 
     assert deps.stream_max_duration_s == float(booted.settings.limits.stream_max_duration_s)
     assert deps.stream_max_duration_s == 600.0
+
+
+def test_the_abandoned_build_bound_is_wired_from_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ب-9 (خطة السيناريوهات §6): the request path is where an abandoned
+    build's key is released, and the staleness bound it measures against is
+    `Limits.summarize_job_max_duration_s` — the same number the worker ends a
+    too-long build with. That identity is the whole argument for the
+    derivation: a job that passed the longest build allowed and is still not
+    terminal is one no live worker was going to finish, and this is the one
+    place the two are joined.
+
+    The setting is moved off the application layer's own default, for the
+    reason ب-6's sibling test moves its own: with both sitting at 1,800 the
+    assertion would pass just as happily for a root that had stopped passing
+    it at all.
+    """
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-project")
+    monkeypatch.setenv("PROVIDER_ROUTING", _ROUTING)
+    base = load_settings()
+    raised = base.model_copy(
+        update={"limits": base.limits.model_copy(update={"summarize_job_max_duration_s": 999})}
+    )
+    monkeypatch.setattr("app.framework.di.composition_root.load_settings", lambda: raised)
+
+    root = CompositionRoot.from_env()
+
+    request = root.knowledge.request_summary._request  # type: ignore[attr-defined]
+    assert raised.limits.summarize_job_max_duration_s != base.limits.summarize_job_max_duration_s
+    assert request._max_build_duration_s == 999
 
 
 def test_the_files_and_media_bundles_are_wired_over_the_shared_handle(

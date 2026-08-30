@@ -869,3 +869,24 @@ def test_the_reindex_routes_refuse_an_unauthenticated_request() -> None:
         )
         assert client.get("/api/v1/knowledge/reindex/j1").status_code == 401
         assert client.post("/api/v1/knowledge/reindex/j1/cancel").status_code == 401
+
+
+def test_the_dto_publishes_when_the_job_last_moved() -> None:
+    """ب-8, layers 4 and 5 (خطة السيناريوهات §6).
+
+    Without this field a client polling a build cannot tell a dead one from a
+    live one: a job whose worker died reports `running` at the percentage it
+    reached, and every other field in the body is identical to a healthy
+    build's. A fresh job has never moved, so it reports its own birth.
+    """
+    app, stack = _make_app()
+    doc = seed_document(document_id="d1", workspace_id=_W1)
+    stack.repository.rows[doc.id] = doc
+    with TestClient(app) as client:
+        response = client.post("/api/v1/knowledge/documents/d1/summary", json={}, headers=_auth())
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["updated_at"] == body["created_at"]
+    # DAT-06, and the contract's `pattern: Z$` accepts only this spelling.
+    assert body["updated_at"].endswith("Z")

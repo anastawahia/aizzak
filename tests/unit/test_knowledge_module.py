@@ -799,6 +799,7 @@ class _FakeSummaryStarter:
             cancelled_at=None,
             finished_at=None,
             created_at=utc_now(),
+            updated_at=utc_now(),
         )
 
 

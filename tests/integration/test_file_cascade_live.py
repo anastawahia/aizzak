@@ -228,6 +228,7 @@ async def _indexed_document(
             cancelled_at=None,
             finished_at=None,
             created_at=now,
+            updated_at=now,
         ),
     )
     return document.id

@@ -1234,6 +1234,11 @@ class SqlSummaryJobRepository:
                 error=job.error,
                 cancelled_at=job.cancelled_at,
                 finished_at=job.finished_at,
+                # No `updated_at` in this SET, on purpose: `trg_touch` moves
+                # it for this very statement, and naming it here would let a
+                # job held in memory since before the write stamp an older
+                # instant over the row's own record of when it last moved --
+                # which is the one thing ب-9 reads it for.
                 version=summary_jobs.c.version + 1,
             )
         )
@@ -1359,6 +1364,7 @@ def _hydrate_summary_job(row: RowMapping) -> SummaryJob:
         cancelled_at=row["cancelled_at"],
         finished_at=row["finished_at"],
         created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 

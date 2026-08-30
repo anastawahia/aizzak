@@ -456,6 +456,30 @@ def test_the_contract_pins_utc_on_every_timestamp_it_publishes() -> None:
     assert unpinned == []
 
 
+def test_the_contract_publishes_every_field_of_the_job_a_client_polls() -> None:
+    """ب-8 (خطة السيناريوهات §6) — the guard the item BELIEVED was already
+    here, made real.
+
+    Nothing else in this file compares a schema's properties with the live
+    model's: the checks around it are about shape conventions — envelopes,
+    casing, `Z$`, pagination — so a field added to a DTO and forgotten in
+    `openapi.yaml` published a document that was quietly wrong and passed
+    every gate. `SummaryJobOut` is where that would hurt most immediately,
+    because the field ب-8 adds is the one a polling client needs in order to
+    tell a dead build from a live one.
+
+    Scoped to this one schema rather than to all of them on purpose. The
+    general form holds today for 75 of the 76 shared schemas, and closing it
+    means arguing about the 76th — a separate change with its own case to
+    make, not a rider on this one.
+    """
+    contract = SPEC["components"]["schemas"]["SummaryJobOut"]["properties"]
+    published = LIVE["components"]["schemas"]["SummaryJobOut"]["properties"]
+
+    assert set(contract) == set(published)
+    assert "updated_at" in contract
+
+
 def test_a_timestamp_on_the_wire_ends_in_z() -> None:
     """The serialized form, not the declared one.
 

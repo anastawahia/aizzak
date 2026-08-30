@@ -349,6 +349,21 @@ class SummaryJob:
     — the request already in flight is paid for. What cancelling never does is
     delete a summary that a previous build stored: this job is abandoned, not
     the artefact of the one before it.
+
+    ``updated_at`` is the ROW's word about itself, not this aggregate's.
+    Every other timestamp here is written by a transition; this one is
+    written by ``platform.touch_updated_at`` on every write to the row and
+    only READ back -- which is why ``start`` still takes no instant and
+    ``SqlSummaryJobRepository.save`` still leaves the column out of its
+    ``SET``. The cost is stated rather than hidden: an instance held across a
+    ``save`` carries the value from BEFORE that write. Nobody reads it there.
+    Both readers -- the API's ``SummaryJobOut``, and ``RequestSummary``'s
+    staleness check -- read a row they have just loaded.
+
+    It is here because it is the only evidence that a build is still alive.
+    A job whose worker died stays ``running`` at whatever percentage it had
+    reached, and to a client polling it that is indistinguishable from a
+    build working through a long document right now.
     """
 
     id: str
@@ -363,6 +378,7 @@ class SummaryJob:
     cancelled_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    updated_at: datetime
 
     @property
     def is_terminal(self) -> bool:
