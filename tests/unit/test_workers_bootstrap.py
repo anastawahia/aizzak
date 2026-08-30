@@ -28,7 +28,7 @@ that genuinely perform I/O eagerly, are monkeypatched.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
@@ -47,7 +47,7 @@ from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.event_outbox import OutboxRecord
 from app.framework.ports.vector_store import VectorHit, VectorPoint
 from app.framework.providers.resolver import SettingsProviderResolver
-from app.framework.settings import MinioSettings
+from app.framework.settings import MinioSettings, Settings
 from app.framework.types import Json
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
@@ -73,6 +73,7 @@ from app.workers import bootstrap
 from app.workers.bootstrap import (
     _FOREIGN_TO_KNOWLEDGE,
     _FOREIGN_TO_MEDIA,
+    _KNOWLEDGE_BATCH_COUNT,
     Disposable,
     _routing_for,
     build_knowledge_index_handler,
@@ -83,6 +84,7 @@ from app.workers.bootstrap import (
     build_media_worker_from_env,
     build_memory_index_handler,
     build_memory_worker_from_env,
+    knowledge_stale_idle_ms,
 )
 from app.workers.media_generation import WorkerMediaGenerator
 
@@ -1457,6 +1459,216 @@ def test_build_memory_worker_from_env_builds_a_real_consumer_without_raising() -
     for dispose in disposables:
         disposable: Disposable = dispose
         assert callable(disposable)
+
+
+# --------------------------------------------------------------------------- #
+# `F-4`/`F-1`: the two numbers this worker no longer shares with the others   #
+# --------------------------------------------------------------------------- #
+def _settings_with(base: Settings, *, cap_s: int, block_ms: int, idle_s: float) -> Settings:
+    """``base`` with the three numbers the derivation reads replaced.
+
+    ``model_copy`` twice, rather than constructing ``Settings(...)``: both
+    models are frozen and ``extra="forbid"``, and rebuilding either from
+    scratch would mean restating every unrelated field -- which is how a test
+    starts asserting against a configuration no deployment has.
+    """
+    return base.model_copy(
+        update={
+            "limits": base.limits.model_copy(update={"summarize_job_max_duration_s": cap_s}),
+            "events": base.events.model_copy(
+                update={"consumer_block_ms": block_ms, "consumer_stale_idle_s": idle_s},
+            ),
+        }
+    )
+
+
+async def _worker_wiring(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, object]]:
+    """What each ``build_*_worker_from_env`` actually hands its builder.
+
+    All three are booted for real -- every client factory in them is lazy, and
+    ``build_vault``/``bind_minio``, the only eager I/O in the module, are faked
+    exactly as the three ``..._builds_a_real_consumer_without_raising`` tests
+    above fake them. The builders themselves still run, so what is captured is
+    the production wiring and not a stub's account of it.
+
+    The three real builders are read out of the module BEFORE the loop
+    replaces any of them -- the tuple below is fully evaluated first, so no
+    spy ever wraps another spy.
+    """
+    monkeypatch.setattr(
+        "app.workers.bootstrap.build_vault", lambda settings: (object(), object(), object())
+    )
+
+    async def _fake_bind_minio(storage: object, secrets: object, settings: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.workers.bootstrap.bind_minio", _fake_bind_minio)
+
+    captured: dict[str, dict[str, object]] = {}
+
+    def _spy(name: str, real: Callable[..., object]) -> Callable[..., object]:
+        def _wrapped(**kwargs: object) -> object:
+            captured[name] = dict(kwargs)
+            return real(**kwargs)
+
+        return _wrapped
+
+    builders = (
+        ("knowledge", bootstrap.build_knowledge_worker),
+        ("media", bootstrap.build_media_worker),
+        ("memory", bootstrap.build_memory_worker),
+    )
+    for name, real in builders:
+        monkeypatch.setattr(f"app.workers.bootstrap.build_{name}_worker", _spy(name, real))
+
+    await build_knowledge_worker_from_env()
+    await build_media_worker_from_env()
+    build_memory_worker_from_env()
+    return captured
+
+
+def test_the_knowledge_death_threshold_exceeds_its_longest_legitimate_build() -> None:
+    """`F-4`'s acceptance, stated as the invariant and not as today's number:
+    there is no valid configuration in which this worker is declared dead
+    while a build it is still allowed to be running is running.
+
+    Asserted by CALCULATION over a spread of configurations, on the pattern of
+    ``test_the_token_ceiling_cannot_bite_before_the_character_ceiling``. A
+    single assertion on the shipped defaults would pass just as happily for a
+    hand-picked constant that happens to clear 1,800 s today.
+
+    The margin is a whole read cycle and not a token: the idle clock is reset
+    by the engine's next ``read``, so a threshold merely EQUAL to the build cap
+    leaves a live worker looking dead for the ``consumer_block_ms`` it then
+    spends blocking on Redis -- which is the whole window the sweeper needs to
+    hand its message to a sibling.
+    """
+    base = load_settings()
+    configurations = (
+        # What this deployment actually runs.
+        (
+            base.limits.summarize_job_max_duration_s,
+            base.events.consumer_block_ms,
+            base.events.consumer_stale_idle_s,
+        ),
+        (1, 1, 0.0),  # the smallest of everything, sweep disabled
+        (60, 5_000, 900.0),  # a cap well under the shared threshold
+        (7_200, 30_000, 900.0),  # a cap far over it, on a slow read cycle
+        (1_800, 5_000, 86_400.0),  # an operator who already waits a day
+    )
+    for cap_s, block_ms, idle_s in configurations:
+        settings = _settings_with(base, cap_s=cap_s, block_ms=block_ms, idle_s=idle_s)
+        threshold_ms = knowledge_stale_idle_ms(settings)
+        assert threshold_ms >= cap_s * 1000 + block_ms, (
+            f"a build may legitimately run {cap_s}s, but a worker running one counts as a "
+            f"corpse after {threshold_ms / 1000}s"
+        )
+
+
+def test_raising_the_build_cap_raises_the_death_threshold_with_it() -> None:
+    """The guard the item was born for.
+
+    ``summarize_job_max_duration_s`` is named as a candidate for raising
+    whenever ``_MAX_MAP_CHUNKS`` is, by the text of its own comment -- and a
+    hand-written threshold, 2,400 s or any other, would sit still while that
+    number moved and reopen `F-4` in silence.
+
+    The assertion is the RELATION and not the result: the threshold moves by
+    exactly what the cap moved by. Every fixed number fails it.
+    """
+    base = load_settings()
+    cap_s = base.limits.summarize_job_max_duration_s
+    block_ms = base.events.consumer_block_ms
+    idle_s = base.events.consumer_stale_idle_s
+
+    settings = _settings_with(base, cap_s=cap_s, block_ms=block_ms, idle_s=idle_s)
+    raised = _settings_with(base, cap_s=cap_s * 2, block_ms=block_ms, idle_s=idle_s)
+
+    assert knowledge_stale_idle_ms(raised) - knowledge_stale_idle_ms(settings) == cap_s * 1000
+    assert knowledge_stale_idle_ms(raised) > raised.limits.summarize_job_max_duration_s * 1000
+
+
+def test_an_operator_raised_idle_threshold_is_not_lowered_by_the_derivation() -> None:
+    """``max``, not replacement.
+
+    A deployment that has already chosen to wait LONGER than the derivation
+    keeps its own number -- the derivation states a floor, not a target. One
+    that asks to wait less than the longest build it also permits is overruled
+    instead, because that pair of settings has no consistent reading: it says
+    both "this build is legitimate" and "a worker running it is dead".
+    """
+    base = load_settings()
+    cap_s = base.limits.summarize_job_max_duration_s
+    block_ms = base.events.consumer_block_ms
+    derived_ms = knowledge_stale_idle_ms(base)
+
+    generous = _settings_with(base, cap_s=cap_s, block_ms=block_ms, idle_s=derived_ms / 1000 * 2)
+    assert knowledge_stale_idle_ms(generous) == derived_ms * 2
+
+    tightened = _settings_with(base, cap_s=cap_s, block_ms=block_ms, idle_s=60.0)
+    assert knowledge_stale_idle_ms(tightened) == derived_ms
+
+
+async def test_the_media_and_memory_workers_keep_the_shared_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The containing guard: `F-4` raised ONE worker's threshold, and the other
+    two still read ``consumer_stale_idle_s`` exactly as they did.
+
+    Raising it for everyone would have been the smaller diff and the wrong
+    change. ``media``'s longest handler is bounded by ``media_timeout_s``
+    (300 s) and ``memory``'s is shorter still, so both already clear 900 s --
+    the only thing a global raise buys them is a longer wait before a real
+    corpse's registration is swept.
+
+    The knowledge assertion is against the FUNCTION, not against a number:
+    that is what catches the call site being reverted to the shared
+    expression, in every configuration where the two differ (and where they do
+    not, the revert is harmless by construction).
+    """
+    captured = await _worker_wiring(monkeypatch)
+    settings = load_settings()
+    shared_ms = int(settings.events.consumer_stale_idle_s * 1000)
+
+    assert captured["media"]["stale_idle_ms"] == shared_ms
+    assert captured["memory"]["stale_idle_ms"] == shared_ms
+    assert captured["knowledge"]["stale_idle_ms"] == knowledge_stale_idle_ms(settings)
+
+
+async def test_the_knowledge_worker_reads_one_message_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`F-1`, the half of it this wave buys.
+
+    One ``XREADGROUP`` used to reserve sixteen messages in this consumer's
+    pending list, and the engine then walked them one at a time -- so a
+    half-hour summary build sat on fifteen others, most of them indexing
+    requests, which no sibling could take and which a crash would strand until
+    the ghost sweep.
+
+    ``1`` is asserted literally as well as through the constant: the constant
+    is the wiring, the literal is the decision. Renaming or reusing the
+    constant must not be able to quietly change what it holds.
+    """
+    captured = await _worker_wiring(monkeypatch)
+
+    assert _KNOWLEDGE_BATCH_COUNT == 1
+    assert captured["knowledge"]["batch_count"] == _KNOWLEDGE_BATCH_COUNT
+
+
+async def test_the_media_and_memory_workers_keep_the_configured_batch_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The containing guard for `F-1`'s half: the drop to one is this worker's
+    alone, and ``EventSettings.consumer_batch_count`` still means what it says
+    for the other two. Neither has a handler that runs for minutes, so a batch
+    of sixteen there is one round trip saved and nothing held hostage.
+    """
+    captured = await _worker_wiring(monkeypatch)
+    settings = load_settings()
+
+    assert captured["media"]["batch_count"] == settings.events.consumer_batch_count
+    assert captured["memory"]["batch_count"] == settings.events.consumer_batch_count
 
 
 # --------------------------------------------------------------------------- #

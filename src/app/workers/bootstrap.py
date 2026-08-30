@@ -152,7 +152,7 @@ from app.framework.ports.llm_provider import LLMProvider
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
-from app.framework.settings.settings import DatabaseSettings
+from app.framework.settings.settings import DatabaseSettings, Settings
 from app.framework.types import Json, Uuid
 from app.infrastructure.ai_providers.embedding.external_embedding import (
     ExternalEmbeddingProvider,
@@ -1035,6 +1035,85 @@ def build_knowledge_worker(
     return consumer, subscriptions
 
 
+# `F-1`, the cheap half of it. The full fix is a stream and a worker of this
+# handler's own; this reduces the damage without removing it, and its limits
+# are written down here rather than left to be discovered.
+#
+# WHAT IT DOES. It stops one busy consumer from reserving sixteen messages in
+# its own pending list. `EventSettings.consumer_batch_count` (16) is the
+# `COUNT` of a single `XREADGROUP`, and the engine then walks what it read
+# SEQUENTIALLY (`for message in messages: await self._dispatch(...)`,
+# `consumers/engine.py`) -- so a half-hour summary build leaves fifteen
+# messages, most of them indexing requests, held in the hand of a process
+# that will not look at them for half an hour. If it dies mid-build, ONE
+# message is stranded until the ghost sweep rather than sixteen. And it is
+# what makes a second replica of this worker actually useful: the messages
+# stay in the stream, where a sibling can take them, instead of being
+# reserved by the first.
+#
+# WHAT IT DOES NOT DO. It speeds nothing up today, at one replica. The next
+# message waits for the current one either way -- the blocking comes from
+# `for message in messages` inside one loop in one process, not from the
+# batch size. Indexing stays queued behind a long build until that separate
+# stream and worker exist.
+#
+# The cost is one `XREADGROUP` round trip per message instead of one per
+# sixteen, on a read that already spins every `consumer_block_ms` anyway.
+#
+# A constant here and not an `EventSettings` field: widening the flat env-key
+# list is a configuration-contract decision `05-rbac-config-secrets §2` owns,
+# and one taken in writing rather than in passing -- the precedent is
+# recorded on `RerankSettings` (`settings.py`). For THIS worker alone;
+# neither `media` nor `memory` has a handler that comes near this length.
+_KNOWLEDGE_BATCH_COUNT = 1
+
+
+def knowledge_stale_idle_ms(settings: Settings) -> int:
+    """The knowledge worker's death threshold -- DERIVED, not written down.
+
+    The rule: the threshold must exceed the longest LEGITIMATE run of a
+    single handler, plus one whole read cycle. Only the summary handler
+    needs that, because it is the only handler in any of the three workers
+    that goes minutes without touching Redis -- the engine's loop beats
+    after each `read` and between messages (`consumers/engine.py`), never
+    DURING a handler, so the idle clock runs for the whole build.
+
+    Left on the shared number, the two disagree with nothing to reconcile
+    them: `consumer_stale_idle_s` (900 s) calls a consumer a corpse while a
+    perfectly legitimate build is still allowed to run for
+    `summarize_job_max_duration_s` (1,800 s). A sibling then applies rule 2
+    of `consumers/sweeper.py` fifteen minutes in, claims the live worker's
+    message, and builds the SAME summary in parallel -- and nothing
+    downstream refuses it: `running` is not terminal and `SummaryJob.start`
+    is deliberately re-entrant (`knowledge/domain/entities.py`).
+
+    Derived rather than written as a third number because both numbers it
+    relates move. Raising `summarize_job_max_duration_s` alone -- a
+    candidate for raising whenever `_MAX_MAP_CHUNKS` is, by the text of its
+    own comment -- would silently reopen this gap. This is the same
+    discipline that already ties `_MAX_MAP_CHUNKS` to that ceiling from the
+    other end, and the same one `blocking_read_timeout_s` applies to a
+    socket timeout and the `BLOCK` window it wraps.
+
+    `max` and not replacement: a deployment that raises
+    `consumer_stale_idle_s` above the derivation is still obeyed.
+
+    For THIS worker alone. The setting is shared by all three, `media`'s
+    longest handler is bounded by `media_timeout_s` (300 s) and `memory`'s
+    is shorter still, so both sit safely under 900 -- raising it for
+    everyone would only slow the tidying of their ghosts, for nothing.
+    """
+    # Compared in MILLISECONDS rather than in seconds scaled at the end.
+    # Both terms of the floor are already `int` here, so it is exact, whereas
+    # `(cap_s + block_ms / 1000) * 1000` can truncate to one millisecond BELOW
+    # `cap_s * 1000 + block_ms` on binary rounding -- a floor one millisecond
+    # short of the rule this docstring states.
+    floor_ms = (
+        settings.limits.summarize_job_max_duration_s * 1000 + settings.events.consumer_block_ms
+    )
+    return max(int(settings.events.consumer_stale_idle_s * 1000), floor_ms)
+
+
 async def build_knowledge_worker_from_env() -> tuple[
     StreamConsumer, list[Subscription], list[Disposable]
 ]:
@@ -1263,7 +1342,9 @@ async def build_knowledge_worker_from_env() -> tuple[
         ledger=ledger,
         consumer_name=consumer_name,
         block_ms=settings.events.consumer_block_ms,
-        batch_count=settings.events.consumer_batch_count,
+        # `F-1`, half of it -- see `_KNOWLEDGE_BATCH_COUNT` above for what
+        # this buys and, just as explicitly, what it does not.
+        batch_count=_KNOWLEDGE_BATCH_COUNT,
         max_deliveries=settings.events.max_retries_before_dlq,
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "knowledge"),
         # `F-4` -- the number stays configuration, not a constant buried in
@@ -1271,7 +1352,11 @@ async def build_knowledge_worker_from_env() -> tuple[
         # model a deployment runs, not about this code.
         summarize_max_duration_s=settings.limits.summarize_job_max_duration_s,
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
-        stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
+        # `F-4` -- NOT `consumer_stale_idle_s` as the other two workers pass
+        # it: a build of up to `summarize_job_max_duration_s` never touches
+        # Redis, so the shared 900 s would have a sibling sweep a live worker
+        # mid-build. `knowledge_stale_idle_ms` above says why it is derived.
+        stale_idle_ms=knowledge_stale_idle_ms(settings),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
     )
 
