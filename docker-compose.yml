@@ -654,6 +654,19 @@ services:
       # Postgres fresh on each scrape rather than caching anything in-process
       # (docs/log/3.89.md's whole point).
       METRICS_DATABASE_URL: postgresql+asyncpg://metrics_reader:${METRICS_READER_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      # Wave 0 step 0.2 (docs/capacity-plan.md). Set HERE and not in the
+      # shared `x-app-env` block, deliberately: this switches
+      # `prometheus_client` into multiprocess mode for whatever process reads
+      # it, and only `app` runs several siblings behind one scrape target. The
+      # four workers and the relay expose no HTTP listener at all, so the same
+      # variable there would buy mmap files nobody ever reads and a directory
+      # that grows for the life of the container.
+      #
+      # A path under /tmp, never a volume: the files describe THIS container's
+      # living processes, and `deploy/gunicorn.conf.py` wipes the directory at
+      # arbiter boot precisely so a restart cannot serve the sum of this run
+      # and the last one.
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/aizzak-prom}
     expose:
       - "8000"
     healthcheck:

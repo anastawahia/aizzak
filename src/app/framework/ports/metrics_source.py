@@ -37,6 +37,22 @@ by construction rather than by coordination.
   app.ops.dlq requeue``/``purge`` (step 7) by hand, so ANY non-zero depth is
   already an anomaly worth a look, not merely a big number.
 
+* ``stream_lag_seconds`` — Wave 0 step 0.2 of ``docs/capacity-plan.md``: how
+  far BEHIND THE HEAD each consumer group is, in seconds, for every
+  ``(stream, group)`` pair in ``STATIC_CONSUMER_TOPOLOGY``. Seconds rather
+  than the entry count Redis reports directly (``XINFO GROUPS``' ``lag``),
+  because the acceptance gate is written in time — §7 item 5, "تأخّرُ المجاري
+  مستقرٌّ دون دقيقتين" — and an entry count cannot answer it: a thousand
+  entries behind is a second on a quiet stream and an hour on a busy one.
+  Measured as the gap between the stream's ``last-generated-id`` and the
+  group's ``last-delivered-id``, both of which carry a millisecond timestamp
+  in the id itself, so a fully caught-up group reads ``0.0`` no matter how old
+  the last entry is. It is also the ONE reading that can see ``ح-17``
+  approaching: ``XADD MAXLEN ~`` trims by length with no regard for the
+  slowest group's position, so a group whose lag is climbing is a group whose
+  unread entries are on their way to being deleted with no error, no alert and
+  no log line anywhere.
+
 Implemented by ``infrastructure.monitoring.metrics_source.SqlRedisMetricsSource``
 (the Composition Root's only caller); a fake substitutes it in
 ``tests/unit/test_api_metrics_router.py`` so the rendering logic can be
@@ -52,3 +68,5 @@ class MetricsSource(Protocol):
     async def outbox_oldest_unpublished_age_seconds(self) -> float: ...
 
     async def dlq_depths(self) -> dict[str, int]: ...
+
+    async def stream_lag_seconds(self) -> dict[tuple[str, str], float]: ...

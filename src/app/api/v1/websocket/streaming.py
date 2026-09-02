@@ -66,6 +66,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
+from app.framework.observability.metrics import ws_connections
 from app.framework.settings import Limits
 from app.framework.streaming import ConnectionHub
 from app.framework.types import Json
@@ -208,9 +209,21 @@ class _Connection:
             # meet at a genuine cap hit.
             await self._websocket.close(code=_POLICY_VIOLATION, reason="connection limit reached")
             return
+        # Wave 0 step 0.2 -- `aizzak_ws_connections`, incremented only AFTER
+        # the hub accepted the session, so a socket refused at the
+        # per-user ceiling is never counted as one this process holds. A
+        # per-process gauge summed across live processes (`livesum`) rather
+        # than a Redis-wide count: the registry is keyed per user, so a global
+        # total would cost a SCAN on every scrape, and the sum of what each
+        # process holds is the same number without one.
+        ws_connections.inc()
         try:
             await self._serve(principal)
         finally:
+            # The decrement leads the teardown: every path out of `_serve`
+            # passes here, and a gauge that is only decremented after two
+            # awaits is a gauge that drifts upward on cancellation.
+            ws_connections.dec()
             # Teardown order matters: unregister FIRST so the notify path
             # stops targeting a dying socket, then cancel the run tasks —
             # each cancellation unwinds its metered stream, which is what

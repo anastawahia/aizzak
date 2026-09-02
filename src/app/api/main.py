@@ -56,6 +56,7 @@ from app.api.errors import problem, problem_from_error
 from app.api.health import health_router
 from app.api.metrics import metrics_router
 from app.api.middleware.auth import ApiAuthenticator
+from app.api.middleware.metrics import RedMetricsMiddleware
 from app.api.v1.dependencies import ApiServices, HttpAuthenticator
 from app.api.v1.dto.problem import ProblemDetails
 from app.api.v1.routers.admin import router as admin_router
@@ -80,6 +81,10 @@ from app.framework.di.lifecycle import Disposable, dispose_all
 from app.framework.errors import ERROR_CATALOG, AppError, RateLimitedError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
+from app.framework.observability.metrics import (
+    rate_limit_rejections_total,
+    sample_process_metrics,
+)
 from app.framework.ports.metrics_source import MetricsSource
 from app.framework.ports.vault_health import VaultHealth
 from app.framework.types import Json
@@ -90,6 +95,11 @@ _logger = get_logger(__name__)
 CORRELATION_HEADER = "X-Correlation-Id"
 # RFC 9457's media type (03 §4). Every problem body carries it.
 PROBLEM_MEDIA_TYPE = "application/problem+json"
+# Wave 0 step 0.2 -- the one status `aizzak_rate_limit_rejections_total`
+# counts. Named rather than compared inline: §7 item 4 makes this number
+# structurally different from every other status the handler sees, and a
+# bare literal in that comparison would read like an ordinary error code.
+RATE_LIMITED_STATUS = 429
 
 # The `default` response every operation declares (6.2-ب). FastAPI renders a
 # `model` under `application/json`, so `_retype_problem_responses` moves it to
@@ -164,6 +174,13 @@ def create_app(
     app.state.revocations = revocations
     app.state.ready = False
 
+    # Wave 0 step 0.2. Installed FIRST, which in Starlette's stack means
+    # OUTERMOST: the duration it records is then what the caller waited for,
+    # correlation-id generation and problem rendering included. A layer that
+    # measured only what was inside it would report a budget nobody
+    # experiences. It reads `app.routes` lazily on first request, since the
+    # routers below have not been included yet at this line.
+    app.add_middleware(RedMetricsMiddleware, routed=app)
     _install_correlation_middleware(app)
     _install_problem_handlers(app)
     _install_problem_media_type(app)
@@ -435,6 +452,15 @@ def _install_problem_handlers(app: FastAPI) -> None:
         # `LimitDecision.retry_after_s`) can say when. Every other `AppError`
         # answers exactly as before.
         retry_after_s = exc.retry_after_s if isinstance(exc, RateLimitedError) else None
+        if exc.status == RATE_LIMITED_STATUS:
+            # Wave 0 step 0.2. Counted by STATUS rather than by type, because
+            # this metric answers "how much load was shed", and a 429 raised
+            # as a plain `AppError` with a catalog code sheds exactly as much
+            # as a `RateLimitedError` does. The label is the stable error code
+            # (`ERROR_CATALOG`), so the series set is bounded by the catalog.
+            # §7 item 4 keeps these OUT of the error budget; they are counted
+            # here so they can be read beside it.
+            rate_limit_rejections_total.labels(reason=exc.code).inc()
         return _problem_response(body, exc.status, correlation_id, retry_after_s=retry_after_s)
 
     @app.exception_handler(RequestValidationError)
@@ -548,6 +574,13 @@ def create_production_app() -> FastAPI:
     async def _run_notify_bridge() -> None:
         await root.notify_consumer.run(root.notify_subscriptions)
 
+    async def _sample_saturation() -> None:
+        # `sync_engine.pool` rather than a typed accessor: `pool_stats_of`
+        # reads it structurally and answers `None` for a pool that cannot
+        # report (NullPool/StaticPool), so no engine configuration can turn a
+        # gauge into a boot failure.
+        await sample_process_metrics(root.engine.sync_engine.pool)
+
     # 6.4-أ — ONE verifier, handed to BOTH seams. Not two instances: the 2.7
     # adapter's JWKS cache, refresh budget and lock all live on the instance, so
     # a second one would mean a socket verifying against a key set the HTTP path
@@ -584,7 +617,19 @@ def create_production_app() -> FastAPI:
         # bridge's own, so it cannot outlive the `redis_client` it reads
         # (`sweep_orphan_notify_groups_forever`'s own docstring for the rule
         # it applies and why the startup sweep above cannot cover it).
-        background=(_run_notify_bridge, root.sweep_orphan_notify_groups_forever),
+        # Wave 0 step 0.2 -- this process's own saturation gauges (event-loop
+        # lag, the SQLAlchemy pool). A `background=` task for the same reason
+        # the two beside it are: it never finishes, and the lifespan cancels
+        # and reaps it before `disposables()` closes the engine under it.
+        # Sampled on a timer rather than at scrape time because a gauge
+        # written only while answering a scrape is written by exactly one
+        # gunicorn sibling, and the `livesum` across the rest would then read
+        # values they never wrote (see the metrics module's own docstring).
+        background=(
+            _run_notify_bridge,
+            root.sweep_orphan_notify_groups_forever,
+            _sample_saturation,
+        ),
         # 6.1-هـ-1 — the async half of MinIO's wiring (debt (ز)): the Vault
         # read `from_env` could not await runs here, before traffic. A failure
         # aborts boot (fail-fast), never a half-wired replica.

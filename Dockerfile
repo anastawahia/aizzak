@@ -90,9 +90,22 @@ WORKDIR /app
 COPY alembic.ini ./alembic.ini
 COPY migrations/ ./migrations/
 COPY src/ ./src/
+# Wave 0 step 0.2 (docs/capacity-plan.md). ONE file out of `deploy/`,
+# named explicitly rather than `COPY deploy/`: that directory also holds
+# the Vault policy and the development TLS material, and an image is the
+# last place either belongs. `gunicorn.conf.py` owns the lifecycle of the
+# PROMETHEUS_MULTIPROC_DIR the /metrics endpoint aggregates from.
+COPY deploy/gunicorn.conf.py ./deploy/gunicorn.conf.py
 
-# Non-root. The app writes nothing to the filesystem -- objects go to MinIO,
-# state to Postgres/Redis -- so it needs no writable mount at all.
+# Non-root. The app writes no PLATFORM state to the filesystem -- objects go
+# to MinIO, state to Postgres/Redis -- so it needs no writable mount.
+#
+# It does write one thing, and only since Wave 0 step 0.2: the
+# `prometheus_client` mmap files under PROMETHEUS_MULTIPROC_DIR (a /tmp path,
+# see docker-compose.yml). That is scratch belonging to this container's own
+# processes, wiped at arbiter boot and gone with the container -- deliberately
+# NOT a volume, and it does not make the statement above any less true of the
+# platform's data.
 RUN useradd --create-home --uid 10001 aizzak \
     && chown -R aizzak:aizzak /app
 USER aizzak
@@ -103,6 +116,7 @@ EXPOSE 8000
 # The trailing `()` is how GUNICORN spells "this is a factory, call it" --
 # `--factory` is uvicorn's flag and gunicorn rejects it outright.
 CMD ["gunicorn", "app.api.main:create_production_app()", \
+     "--config", "/app/deploy/gunicorn.conf.py", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--access-logfile", "-", \

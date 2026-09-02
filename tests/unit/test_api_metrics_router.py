@@ -34,6 +34,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from app.api.metrics import (
     DLQ_DEPTH_METRIC,
     OUTBOX_AGE_METRIC,
+    STREAM_LAG_METRIC,
     VAULT_AUTH_METRIC,
     metrics_router,
 )
@@ -43,15 +44,29 @@ class _FakeMetricsSource:
     """A ``MetricsSource`` whose return values a test can change BETWEEN
     calls — see the module docstring's "what this proves" paragraph."""
 
-    def __init__(self, *, outbox_age: float, dlq_depths: dict[str, int]) -> None:
+    def __init__(
+        self,
+        *,
+        outbox_age: float,
+        dlq_depths: dict[str, int],
+        stream_lag: dict[tuple[str, str], float] | None = None,
+    ) -> None:
         self.outbox_age = outbox_age
         self.dlq_depths_value = dlq_depths
+        # Wave 0 step 0.2's fourth live gauge. Defaulted to empty so every
+        # pre-existing construction of this fake keeps working unchanged, and
+        # because "no stream has been published to yet" is a real state the
+        # adapter reports the same way (see its own docstring).
+        self.stream_lag_value = stream_lag or {}
 
     async def outbox_oldest_unpublished_age_seconds(self) -> float:
         return self.outbox_age
 
     async def dlq_depths(self) -> dict[str, int]:
         return dict(self.dlq_depths_value)
+
+    async def stream_lag_seconds(self) -> dict[tuple[str, str], float]:
+        return dict(self.stream_lag_value)
 
 
 class _FakeVaultHealth:
@@ -178,3 +193,35 @@ def test_metrics_answers_503_when_no_source_is_wired() -> None:
     response = client.get("/metrics")
 
     assert response.status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# Wave 0 step 0.2 (docs/capacity-plan.md) — the stream-lag gauge              #
+# --------------------------------------------------------------------------- #
+def test_stream_lag_renders_one_series_per_stream_and_group() -> None:
+    source = _FakeMetricsSource(
+        outbox_age=0.0,
+        dlq_depths={},
+        stream_lag={("stream.knowledge", "cg.knowledge"): 12.5, ("stream.media", "cg.media"): 0.0},
+    )
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert STREAM_LAG_METRIC in _metric_names(body)
+    assert 'stream="stream.knowledge"' in body
+    assert 'group="cg.knowledge"' in body
+    assert "12.5" in body
+
+
+def test_a_caught_up_group_renders_zero_and_an_unpublished_stream_renders_nothing() -> None:
+    """The distinction the adapter pays for: `0.0` means measured-and-caught-up,
+    and ABSENCE means no such stream exists yet. Collapsing them would assert a
+    healthy consumer for a stream nothing has ever published to."""
+    source = _FakeMetricsSource(
+        outbox_age=0.0, dlq_depths={}, stream_lag={("stream.memory", "cg.memory"): 0.0}
+    )
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert 'stream="stream.memory"' in body
+    assert 'stream="stream.media"' not in body
