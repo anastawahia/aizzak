@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Copy to deploy/load/tokens.json (gitignored) and fill with REAL Firebase ID",
+    "tokens. Condition (1) of docs/capacity-plan.md §0.1: a stub authenticator",
+    "reproduces 07-nfr-slo §2's existing number and measures nothing, because the",
+    "auth path IS bottleneck ح‑2.",
+    "",
+    "`stub` is a declaration, not a switch. Setting it true does not change what",
+    "the harness sends; it marks the archived result invalid so a harness smoke",
+    "run can never be mistaken for a baseline.",
+    "",
+    "Size the pool from the profile: peak holds 1,500 sockets and §0 derives them",
+    "as 500 users x 3 tabs, so a peak run needs at least 500 distinct users.",
+    "`lib/profile.js`'s guard refuses a pool that would exceed 3 sockets per user."
+  ],
+  "stub": true,
+  "minted_at": "1970-01-01T00:00:00Z",
+  "tokens": [
+    {
+      "workspace": "ws-0001",
+      "space_id": "00000000-0000-0000-0000-000000000000",
+      "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.PLACEHOLDER.PLACEHOLDER"
+    }
+  ]
+}

@@ -61,3 +61,9 @@ deploy/nginx/certs/
 # project, tracked twice. The agent definitions in .claude/agents/ stay
 # tracked; only the worktree copies are ignored.
 .claude/worktrees/
+
+# Load-harness artifacts (docs/capacity-plan.md 0.1). The token file holds
+# REAL Firebase ID tokens -- credentials, not fixtures -- and the results
+# directory is per-run output that belongs in an archive, not in history.
+deploy/load/tokens.json
+deploy/load/results/
