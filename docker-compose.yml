@@ -940,6 +940,213 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
+  # ── Observability (Wave 0 step 0.3, docs/capacity-plan.md) ───────────────
+  # `deploy/prometheus/alerts.yml` was written on 2026-07-30 and its own
+  # header states the gap this block closes: "This is still NOT wired into
+  # any running Prometheus/Alertmanager service -- no such service exists in
+  # `docker-compose.yml`". Three reasoned thresholds and nothing evaluating
+  # them, which is how ت-6 happened -- a DLQ gauge reading the wrong streams
+  # for six weeks, invisible because nothing read the gauge.
+  #
+  # Five services, and only ONE publishes a host port. The trust boundary is
+  # the same one `embedding` draws and `src/app/api/metrics.py`'s docstring
+  # argues for: Prometheus holds operator information about the Outbox, the
+  # DLQ and now every request this platform serves, so it stays on the
+  # internal network with `expose`, never `ports`, and the nginx edge already
+  # 404s `/metrics` before the catch-all proxy can reach it.
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # 15 days. Step 0.5's baseline is an 8-hour soak plus a 30-minute peak
+      # run, and every later wave's acceptance criterion compares against it
+      # -- so the window has to outlive the gap between running the baseline
+      # and running the wave that cites it, while still being a bound rather
+      # than the unlimited growth a default would give a machine that is
+      # somebody's laptop.
+      - "--storage.tsdb.retention.time=15d"
+      # The rules are the point of this service; reloading them without
+      # restarting it (POST /-/reload) is how an operator edits a threshold
+      # during a load run without losing the series already collected.
+      - "--web.enable-lifecycle"
+    expose:
+      - "9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ⚠️ THE ONE SERVICE IN THIS BLOCK WITH A HOST PORT, and the deviation is
+  # deliberate rather than drift. Step 0.3's text asks for both services to
+  # be internal ("داخليّتان: `expose` لا `ports`"), which is exactly right
+  # for Prometheus -- Grafana proxies it, and its /targets page is one
+  # `docker compose exec` away. Applied to Grafana it would produce a
+  # dashboard nobody can open, which is not a dashboard.
+  #
+  # So this follows the pattern this file already established for every
+  # operator interface it has (postgres, pgbouncer, redis, minio, qdrant,
+  # vault): bound to 127.0.0.1 with an offset port, never 0.0.0.0. That is
+  # not the public edge -- the concern behind the plan's sentence -- it is
+  # the "stable local operator/test interface" this file's own header names.
+  # Recorded as a decision in docs/capacity-status.md, not left implicit.
+  grafana:
+    image: grafana/grafana:13.0.8
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # Defaults to Grafana's own `admin`, which is fine for a loopback-only
+      # binding on a developer machine and NOT fine anywhere else. Set it in
+      # .env before this is reachable from anything but 127.0.0.1.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # This platform is offline by construction elsewhere (HF_HUB_OFFLINE,
+      # TRANSFORMERS_OFFLINE on `embedding`); a metrics UI that phones
+      # grafana.com on every start is an outbound call nobody asked for, and
+      # on an air-gapped host it is a slow start-up for no benefit.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${HOST_PORT_GRAFANA:-13000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ح-3's direct evidence, and the reason step 0.2 deferred `cl_waiting` and
+  # `sv_active` rather than reading them from the app: they live behind
+  # pgbouncer's ADMIN console, which `admin_users` restricts to the Postgres
+  # superuser. Putting that credential into the app container would undo the
+  # whole point of `app_rw` (NOINHERIT, no BYPASSRLS, confined by RLS policy)
+  # for the sake of two numbers. A sidecar that holds nothing else and talks
+  # to nothing else is where a superuser credential can live honestly.
+  #
+  # It reaches the SAME admin console the pooler's own healthcheck already
+  # uses, with the same identity -- no new grant, no new role, no widening of
+  # anything that exists.
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:v0.12.1
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    environment:
+      # ⚠️ `PGBOUNCER_EXPORTER_CONNECTION_STRING`, not `DATA_SOURCE_NAME`.
+      # The latter is what most Prometheus exporters use and what this
+      # service was first written with; v0.12.1 ignores it silently, keeps
+      # its own default of `postgres://postgres:@localhost:6543/pgbouncer`,
+      # and reports `pgbouncer_up 0` while logging "dial tcp [::1]:6543:
+      # connect: connection refused" -- indistinguishable from a genuinely
+      # dead pooler unless you read the address in the error. Caught by
+      # bringing the service up rather than by reading about it; the flag's
+      # own help text (`--pgBouncer.connectionString`) is the authority.
+      #
+      # `pgbouncer` at the end is the pooler's own virtual ADMIN database,
+      # not a real one -- SHOW POOLS / SHOW STATS are answered by the pooler
+      # itself and never reach Postgres.
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgres://${POSTGRES_SUPERUSER:-postgres}:${POSTGRES_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer?sslmode=disable
+    expose:
+      - "9127"
+    # ⚠️ Probes the EXPORTER, deliberately not the pooler behind it. This
+    # endpoint answers 200 with `pgbouncer_up 0` when pgbouncer is gone
+    # (measured during step 0.3's acceptance run), and that is what has to
+    # keep happening: a check that went unhealthy with the pooler would have
+    # Compose restart this container mid-outage, and `AizzakPgbouncerDown`
+    # reads a metric that only exists while it is running.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9127/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # Redis holds the rate limiter's windows (wave 1), the WebSocket session
+  # registry and every Stream in §7's topology. `maxmemory` is unset in this
+  # deployment, so the interesting number is not "how full" but whether a key
+  # was ever EVICTED -- silent data loss that surfaces much later as an
+  # unexplained miss, and which nothing in this codebase currently notices.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.90.0-alpine
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    expose:
+      - "9121"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9121/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # ⚠️ OPT-IN, AND THE PROFILE IS A SECURITY DECISION rather than a
+  # convenience. cAdvisor needs `/var/run/docker.sock` to name containers,
+  # which is root-equivalent access to this host: anything that can talk to
+  # that socket can start a privileged container. Step 0.5's 8-hour soak
+  # genuinely needs per-container memory to see a leak's slope --
+  # `process_resident_memory_bytes` is unavailable once
+  # PROMETHEUS_MULTIPROC_DIR is set, by prometheus_client's design, so the
+  # slope is only visible from OUTSIDE the process -- so the capability has
+  # to exist. It is granted for the duration of a measurement:
+  #
+  #     docker compose --profile container-metrics up -d cadvisor
+  #
+  # and stopped again afterwards. `prometheus.yml` labels this target
+  # `tier: optional` so its ordinary absence does not hold a target-down
+  # alert firing forever.
+  cadvisor:
+    profiles: ["container-metrics"]
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    command:
+      # Everything except memory/cpu is off: this exists for one panel, and
+      # the disk/network collectors are what make cAdvisor expensive enough
+      # to distort the very soak it is measuring.
+      - "--docker_only=true"
+      - "--housekeeping_interval=10s"
+      - "--disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,process,referenced_memory,resctrl,sched,tcp,udp"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
 volumes:
   postgres-data:
   redis-data:
@@ -948,6 +1155,16 @@ volumes:
   # Vault's OWN storage (KV v2 + Transit + AppRole) -- what makes the vault
   # service survive a restart at all (release-blockers-plan.md §3 step 1).
   vault-data:
+  # Prometheus's TSDB. A named volume and not a bind: the series ARE the
+  # baseline once step 0.5 runs, and 15 days of them must survive a
+  # `docker compose up -d --force-recreate` that nobody thought of as
+  # destructive.
+  prometheus-data:
+  # Grafana's own SQLite (users, sessions, starred dashboards). The
+  # dashboards themselves are NOT here -- they are provisioned read-only
+  # from deploy/grafana/dashboards, so losing this volume loses a password,
+  # never a panel.
+  grafana-data:
   # The unseal key + root token `deploy/vault/start.sh` writes at
   # `operator init` time. DELIBERATELY a separate volume from vault-data:
   # the data directory stays exactly what Vault itself owns, and this one

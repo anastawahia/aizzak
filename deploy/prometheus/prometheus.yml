@@ -1,0 +1,105 @@
+# The scraper that finally evaluates `alerts.yml` -- Wave 0 step 0.3,
+# `docs/capacity-plan.md`.
+#
+# ── What this file changes about the rules next to it ──────────────────────
+# `alerts.yml` has existed since 2026-07-30 and its own header says so
+# plainly: "This is still NOT wired into any running Prometheus/Alertmanager
+# service -- no such service exists in `docker-compose.yml`". Three carefully
+# reasoned thresholds, none of them ever compared against a number. ت-6 is
+# the measured cost of that: the DLQ gauge was reading the wrong set of
+# streams for six weeks and nothing noticed, because nothing was reading the
+# gauge. This file is what makes the rules ARM.
+#
+# ── No Alertmanager, and that is a stated gap, not an oversight ────────────
+# Prometheus evaluates rules on its own; `ALERTS`/`/api/v1/alerts` go to
+# `firing` with no Alertmanager anywhere, which is exactly what step 0.3's
+# acceptance criterion asks for ("التنبيهات تُقيَّم فعلاً"). ROUTING a firing
+# alert to a human is a different job, and it needs something this repository
+# cannot invent: a destination. An Alertmanager with no receiver configured
+# would be the "إنذارٌ يُرى لا يُستجاب له" `alerts.yml` already refuses --
+# one more service, still nobody paged. Recorded as an open debt in
+# `docs/capacity-status.md` rather than half-built here.
+#
+# ── Scrape interval, and why the acceptance criterion depends on it ────────
+# 15s, with `evaluation_interval` matched to it. Step 0.3's acceptance is
+# "إسقاط `pgbouncer` يُشعل تنبيهاً خلال دقيقة" -- a minute, end to end. That
+# budget is spent as: up to 15s until the first scrape that sees the failure,
+# plus the rule's own `for: 30s` hysteresis, plus up to 15s until the next
+# evaluation confirms it. ~45-60s, deliberately sized against the criterion
+# rather than left at the 1m default that would blow it on the first term
+# alone.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: aizzak
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Prometheus scrapes itself: without this, `up` exists for every target
+  # EXCEPT the one process whose silence would hide all the others.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  # ⚠️ `app:8000` DIRECTLY, never through nginx, and this is enforced on both
+  # sides. `deploy/nginx/app-locations.conf` answers `/metrics` with a local
+  # 404 before the catch-all proxy sees it (P1-3's mzalaq #2 --
+  # `src/app/api/metrics.py`'s module docstring), so the edge cannot serve
+  # this path at all; the Compose-internal address is the only way in, and a
+  # scraper on the internal network is precisely who is meant to use it.
+  #
+  # One target for `WEB_CONCURRENCY` sibling processes, and that is correct
+  # rather than a sampling error: the external-state gauges are recomputed
+  # from Postgres/Redis on every scrape (so every sibling answers
+  # identically), and the RED family is aggregated across siblings out of
+  # `PROMETHEUS_MULTIPROC_DIR` (step 0.2). Whichever worker gunicorn hands
+  # the scrape to returns the same numbers.
+  - job_name: aizzak-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]
+
+  # ح-3's direct evidence. `cl_waiting` (clients queued for a server
+  # connection) and `sv_active` are the two numbers that separate "the pooler
+  # is the constraint" from "the pooler is fine and something downstream is
+  # slow" -- §3's connection budget is unfalsifiable without them.
+  #
+  # A SIDECAR and not the app, deliberately: reading them means logging into
+  # pgbouncer's admin console, which `admin_users` restricts to the Postgres
+  # SUPERUSER. That credential must not enter the app container, whose whole
+  # design is a least-privileged `app_rw` confined by RLS. Step 0.2 deferred
+  # this item for exactly that reason and named this as the shape it would
+  # take.
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ["pgbouncer-exporter:9127"]
+
+  # `maxmemory` policy, eviction count and keyspace size. Redis is the store
+  # behind the rate limiter (wave 1), the WS registry and every Stream in
+  # §7's topology; an eviction there is silent data loss that shows up much
+  # later as an unexplained miss.
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # ── Optional target: NOT started by a default `docker compose up` ─────────
+  # `tier: optional` is read by `alerts.yml`'s `AizzakScrapeTargetDown` rule,
+  # which excludes it. Without that label an absent cAdvisor would hold a
+  # target-down alert firing forever, and an alert that is always firing is
+  # an alert nobody reads -- which would break the other four rules by
+  # habituation rather than by any fault of their own.
+  #
+  # It is behind the `container-metrics` Compose profile because it needs the
+  # Docker socket, i.e. root-equivalent access to this host. Step 0.5's
+  # 8-hour soak needs per-container memory to see a leak's slope
+  # (`process_resident_memory_bytes` is unavailable in multiprocess mode by
+  # design), so the capability has to exist -- but it is opted into for the
+  # duration of a measurement, not granted to every `up`.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          tier: optional

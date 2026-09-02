@@ -4,6 +4,14 @@ justification for each of the two P1-3 signals (``docs/p1-hardening-plan.md``
 §3 step 10) and for the Vault-authentication gauge ن-10 added — not merely
 exist as a file nobody checks against the endpoint it is meant to alert on.
 
+Since Wave 0 step 0.3 (``docs/capacity-plan.md``) the file also carries two
+rules of a second kind — ``up`` and ``pgbouncer_up``, about whether the
+measurement apparatus itself is intact rather than about a platform number —
+and a Prometheus service that actually evaluates all five. The wiring between
+this file, ``prometheus.yml``, the Grafana dashboards and
+``docker-compose.yml`` is guarded next door, in
+``test_observability_stack_wiring.py``.
+
 **Why this guard, not just "the file parses as YAML".** A rules file that
 parses cleanly but names a metric ``/metrics`` never emits (a typo, or a
 rename on one side that forgot the other) is a silent alert that can never
@@ -49,29 +57,122 @@ def _rule_for(rules: list[dict[str, Any]], metric: str) -> dict[str, Any]:
     return matches[0]
 
 
-def test_the_file_declares_exactly_three_rules() -> None:
+# Every alert the file is allowed to declare, by name. An exact SET rather
+# than the bare count this guard used to carry: a count says "three" and lets
+# a rule be quietly swapped for a different one, while this says which three
+# -- and a rename now fails here instead of passing silently.
+EXPECTED_ALERTS = frozenset(
+    {
+        # P1-3 step 10 -- the two 07-nfr-slo §7 platform-state signals.
+        "AizzakOutboxCycleTimeHigh",
+        "AizzakDlqNotEmpty",
+        # ن-10, after the outage in docs/log/3.94.md.
+        "AizzakVaultAuthFailing",
+        # Wave 0 step 0.3 (docs/capacity-plan.md) -- the first two rules about
+        # the measurement apparatus rather than about the platform.
+        "AizzakScrapeTargetDown",
+        "AizzakPgbouncerDown",
+    }
+)
+
+
+def test_the_file_declares_exactly_the_expected_alerts() -> None:
     """The scope guard -- the 3.69 "an empty/oversized set passes forever"
     lesson applied to a rules file instead of a role tuple.
 
-    **The number moved from 2 to 3 on purpose, once, and this docstring is the
-    record of why.** The original limit came from step 10's own brief ("مقياسان
-    فقط ... مقياسٌ لكلّ شيء هو ما أجّل هذا البند أصلاً") and held exactly as
-    intended for the two 07-nfr-slo §7 platform-state signals. ن-10 added a
-    third of a DIFFERENT kind: ``aizzak_vault_authenticated``, a
-    dependency-liveness probe, added after the failure it detects actually
-    happened in production (``docs/log/3.94.md``) rather than because a metric
-    seemed nice to have. That is the bar this guard is really enforcing —
-    growth by a justified, logged decision, never by drift — so bumping the
-    number without a matching entry in ``docs/p1-hardening-plan.md`` and a
-    ``docs/log/`` write-up is the thing to refuse, not growth as such.
+    **The set has grown twice, both times on purpose, and this docstring is
+    the record.** The original limit was two, from step 10's own brief
+    ("مقياسان فقط ... مقياسٌ لكلّ شيء هو ما أجّل هذا البند أصلاً"). ن-10 added
+    a third of a different kind -- ``aizzak_vault_authenticated``, a
+    dependency-liveness probe -- after the failure it detects actually
+    happened (``docs/log/3.94.md``). Wave 0 step 0.3 adds the fourth and
+    fifth, and they are different again: every rule before them thresholds a
+    number ``GET /metrics`` emits, while these two threshold whether the
+    measurement apparatus itself is intact. They could not have existed
+    earlier, because until 0.3 there was no Prometheus and therefore no
+    ``up`` series to alert on.
+
+    That is the bar this guard enforces -- growth by a justified, logged
+    decision, never by drift -- so a sixth entry needs its own written
+    reason (a ``docs/log/`` write-up, or a named step in
+    ``docs/capacity-plan.md``) first, not just a name added here.
+
+    **And note what growth is still refused.** Step 0.2 added RED and
+    saturation metrics and step 0.3 plots all of them, but no latency,
+    error-rate or ``cl_waiting`` rule appears in this set. Every such rule
+    needs a threshold, and the only honest source for one is step 0.5's
+    measured baseline, which does not exist yet.
     """
     rules = _load_rules()
-    assert len(rules) == 3, (
-        f"{_ALERTS_YML}: expected exactly 3 alert rules (one per metric GET /metrics "
-        f"emits), found {len(rules)} -- this file is scoped to the Outbox age + DLQ "
-        "depth signals (P1-3, step 10) plus the Vault-authentication gauge (ن-10). "
-        "A fourth rule needs its own logged justification first, not just a bumped "
-        "number here."
+    names = {rule["alert"] for rule in rules}
+    assert len(names) == len(rules), (
+        f"{_ALERTS_YML}: two rules share an alert name -- Prometheus allows it, but the "
+        "two are then indistinguishable in ALERTS and in any receiver downstream"
+    )
+    assert names == EXPECTED_ALERTS, (
+        f"{_ALERTS_YML}: the declared alerts drifted from the expected set.\n"
+        f"  unexpected: {sorted(names - EXPECTED_ALERTS)}\n"
+        f"  missing:    {sorted(EXPECTED_ALERTS - names)}\n"
+        "This file is scoped to the Outbox age + DLQ depth signals (P1-3, step 10), the "
+        "Vault-authentication gauge (ن-10) and the two scrape-health rules (capacity-plan "
+        "Wave 0 step 0.3). A new rule needs its own logged justification first, not just a "
+        "name added to EXPECTED_ALERTS."
+    )
+
+
+def test_scrape_target_down_rule_excludes_the_optional_tier() -> None:
+    """Without the exclusion this rule fires forever in the ordinary case.
+
+    cAdvisor sits behind the ``container-metrics`` Compose profile because it
+    needs the Docker socket, so a default ``docker compose up`` leaves that
+    target down by design (``deploy/prometheus/prometheus.yml`` labels it
+    ``tier: optional`` for this rule to read). A rule that is permanently
+    firing is worse than a missing one: it trains its reader to skip the
+    whole file, which silently disarms the four rules that DO mean something.
+    """
+    rule = _rule_for(_load_rules(), "up{")
+    assert 'tier!="optional"' in rule["expr"], (
+        f'{_ALERTS_YML}: the target-down rule must exclude `tier="optional"` -- the '
+        "cAdvisor target is absent from a default `up` on purpose, and an always-firing "
+        "alert disarms the rest of this file by habituation"
+    )
+    assert rule["for"] == "30s", (
+        f"{_ALERTS_YML}: the target-down rule's `for:` drifted from the documented "
+        "30-second window (two consecutive failed evaluations at a 15s "
+        "evaluation_interval)"
+    )
+
+
+def test_pgbouncer_rule_thresholds_the_exporter_verdict_not_the_scrape() -> None:
+    """``pgbouncer_up`` and ``up`` are different failures, and confusing them
+    makes this alert unable to fire at all.
+
+    The exporter is its own container. Stopping ``pgbouncer`` leaves it
+    answering scrapes perfectly well -- measured: ``up{job="pgbouncer"}``
+    stayed 1 throughout while ``pgbouncer_up`` went to 0 -- so a rule written
+    against ``up`` would sleep through exactly the outage step 0.3's
+    acceptance criterion names.
+
+    The ``for:`` is also load-bearing rather than stylistic. That criterion
+    is "إسقاط `pgbouncer` يُشعل تنبيهاً خلال دقيقة", and the budget is spent
+    as ≤15s to the first failing scrape + 15s of hysteresis + ≤15s to the
+    confirming evaluation. Measured end to end at 34s.
+    """
+    rule = _rule_for(_load_rules(), "pgbouncer_up")
+    assert rule["expr"].strip() == "pgbouncer_up == 0", (
+        f"{_ALERTS_YML}: the pooler rule must threshold the exporter's own 1/0 login "
+        "verdict; `up` cannot see this failure, since the exporter container survives "
+        "the pooler it reports on"
+    )
+    assert rule["for"] == "15s", (
+        f"{_ALERTS_YML}: the pooler rule's `for:` drifted from 15s -- step 0.3's "
+        "acceptance criterion budgets one minute end to end, and the other two terms "
+        "(scrape + confirming evaluation) already cost up to 30s of it"
+    )
+    assert rule["labels"]["severity"] == "critical", (
+        f"{_ALERTS_YML}: the pooler rule must be `critical` -- every DATABASE_URL in "
+        "docker-compose.yml routes through pgbouncer:6432 and Postgres is reachable no "
+        "other way, so this is total loss of the data path, not a backlog"
     )
 
 

@@ -1,0 +1,31 @@
+# Grafana's ONE datasource, provisioned rather than clicked -- Wave 0 step
+# 0.3, `docs/capacity-plan.md`.
+#
+# `uid` is fixed and referenced verbatim by every panel in
+# `deploy/grafana/dashboards/*.json`. Left unset, Grafana mints a random uid
+# at first start, the committed dashboards point at a uid that exists on
+# nobody else's machine, and every panel renders "Datasource not found" --
+# the failure that makes checked-in dashboards feel not worth checking in.
+#
+# No credentials here and none needed: Prometheus is `expose`-only on the
+# Compose network with no authentication of its own, on the same trust
+# boundary as `embedding` and the app's `/metrics` (which the nginx edge
+# 404s before it can leave). Anything that can reach `prometheus:9090` is
+# already inside.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: aizzak-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches `prometheus.yml`'s own `scrape_interval`. Grafana uses this
+      # as the floor for `$__rate_interval`, so a rate() over a window
+      # shorter than one scrape -- which silently returns nothing -- cannot
+      # be produced by dragging the time picker narrow.
+      timeInterval: 15s
+      httpMethod: POST

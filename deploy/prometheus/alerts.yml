@@ -210,3 +210,138 @@ groups:
             (4) `docker compose up -d --force-recreate --no-deps app` --
             `start` reuses the container's baked-in environment and never sees
             the updated .env. Full procedure: 08-local-runbook.md §3.1.
+
+  # ── A THIRD group, added by Wave 0 step 0.3 (docs/capacity-plan.md) ───────
+  # The two rules here are of a kind the file could not hold before
+  # 2026-09-02, and the reason is the same fact that makes this whole file
+  # different now: until step 0.3 there was no Prometheus, so there were no
+  # `up` series and no exporters to have opinions about. Every rule above
+  # thresholds a number `GET /metrics` emits; these two threshold whether the
+  # measurement apparatus ITSELF is intact. That is a genuinely separate
+  # concern -- a stalled Outbox is a platform fact, a dead scrape target is
+  # the absence of any fact at all -- so it earns its own group rather than
+  # widening `aizzak-outbox-dlq` past what its name says.
+  #
+  # ⚠️ AND NOTE WHAT IS NOT HERE: no latency rule, no error-rate rule, no
+  # `cl_waiting` threshold -- even though step 0.2 added the metrics and the
+  # dashboard next to this file plots all three. Every such rule needs a
+  # number, and the only honest source for that number is step 0.5's measured
+  # baseline, which does not exist yet. Inventing one now is م-8 exactly
+  # ("يبدأ التنفيذُ قبل الموجة 0 لأنّ الاختناقات «واضحة»") in the one file
+  # where a wrong number is hardest to notice: an alert calibrated against a
+  # guess either never fires or always does, and both look like a working
+  # alert from the outside.
+  - name: aizzak-scrape
+    rules:
+      # ── Target down ──────────────────────────────────────────────────────
+      # `up` is Prometheus's own synthetic per-target gauge: 1 if the last
+      # scrape succeeded, 0 if it did not. A 0 here means this rules file has
+      # stopped being able to evaluate ANY rule about that target -- not that
+      # something is wrong with the target's numbers, but that there are no
+      # numbers. The three gauges above would all read "no data", which
+      # Prometheus does NOT treat as an alertable condition: a rule whose
+      # expression matches no series is simply inactive. So without this rule
+      # the failure mode is total silence, indistinguishable from health.
+      #
+      # `tier!="optional"` excludes cAdvisor, which is behind the
+      # `container-metrics` Compose profile and therefore absent from a
+      # default `up` on purpose (`prometheus.yml`'s own note). An alert that
+      # fires permanently in the normal case trains its reader to ignore the
+      # rest of the file.
+      #
+      # `for: 30s` rather than the 15s below: losing sight of a target is not
+      # itself an outage, and a target legitimately disappears for a few
+      # seconds whenever an operator recreates a container. Two consecutive
+      # failed evaluations is the smallest window that still refuses to fire
+      # on one.
+      - alert: AizzakScrapeTargetDown
+        expr: up{tier!="optional"} == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "A Prometheus scrape target has stopped answering ({{ $labels.job }})"
+          description: >-
+            Prometheus could not scrape {{ $labels.job }} at
+            {{ $labels.instance }} for at least 30 seconds. Every alert rule
+            about that target is now inactive rather than firing -- an
+            expression matching no series does not alert -- so this rule is
+            the only thing standing between a dead exporter and silence that
+            reads exactly like health.
+          reason: >-
+            Threshold is `== 0` on Prometheus's own synthetic `up` gauge;
+            there is no partial state to calibrate. 30s = two consecutive
+            failed evaluations at the 15s evaluation_interval, the smallest
+            window that does not fire on a single container recreate.
+            `tier!="optional"` excludes the cAdvisor target, which the
+            `container-metrics` profile leaves stopped by default.
+          response: >-
+            `docker compose ps` for the target's own service, then
+            `docker compose logs prometheus` -- a target that is UP but
+            unscrapeable is usually a changed port or a metrics_path, not a
+            dead process. The scrape configuration is
+            `deploy/prometheus/prometheus.yml`; the targets and their last
+            error are at http://prometheus:9090/targets inside the Compose
+            network (the service is `expose`-only, so reach it with
+            `docker compose exec prometheus wget -qO- 127.0.0.1:9090/...`
+            or through the Grafana container, never a published port).
+
+      # ── PgBouncer unreachable ────────────────────────────────────────────
+      # `pgbouncer_up` is the exporter's own 1/0 verdict on whether it could
+      # log into the pooler's admin console for THIS scrape. It is not `up`:
+      # the exporter is a separate container that keeps answering scrapes
+      # perfectly well while the pooler behind it is gone, which is precisely
+      # why the rule above cannot cover this case and why both exist.
+      #
+      # `severity: critical`, and this is the platform's shortest path to a
+      # total outage. Every DATABASE_URL in docker-compose.yml names
+      # `pgbouncer:6432` -- the app, all four workers, the relay, the
+      # migrator, and `/metrics`'s own metrics_reader connection. Postgres
+      # itself is reachable only through it. So a dead pooler is not degraded
+      # service, it is every request that touches data failing at once, and
+      # unlike the Outbox and DLQ backlogs above there is no queue quietly
+      # holding the work for later.
+      #
+      # `for: 15s` -- half the window of the rule above, because there is
+      # nothing to wait out. The pooler does not have a slow-but-recovering
+      # state this could false-alarm on: the exporter either completed an
+      # admin-console login in the last scrape or it did not. This is also
+      # step 0.3's own acceptance criterion, sized against its clock:
+      # ≤15s to the first failing scrape + 15s of `for` + ≤15s to the
+      # confirming evaluation = under a minute in the worst case.
+      - alert: AizzakPgbouncerDown
+        expr: pgbouncer_up == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "PgBouncer is not answering its admin console -- every DB path is down"
+          description: >-
+            The pgbouncer-exporter sidecar could not log into
+            pgbouncer:6432's admin console for 15 consecutive seconds. Every
+            DATABASE_URL in this deployment routes through that pooler (app,
+            worker-memory/knowledge/media, outbox-relay, migrate, and the
+            metrics_reader connection behind GET /metrics); Postgres is not
+            reachable any other way. Expect 500s on every data path, not
+            degradation.
+          reason: >-
+            Threshold is `== 0` on the exporter's own 1/0 login verdict, not
+            on `up` -- the exporter is a separate container and keeps
+            answering scrapes while the pooler behind it is gone, so
+            AizzakScrapeTargetDown cannot see this failure at all. 15s is
+            deliberately half that rule's window: a pooler has no
+            slow-but-recovering state to wait out, and step 0.3's acceptance
+            criterion budgets one minute end to end for exactly this alert.
+          response: >-
+            `docker compose ps pgbouncer` first. If it is down,
+            `docker compose up -d pgbouncer` -- it holds no state of its own.
+            If it is UP and this is still firing, the failure is the admin
+            login rather than the pooler: check that POSTGRES_SUPERUSER /
+            POSTGRES_SUPERUSER_PASSWORD still match, since `admin_users` in
+            the generated pgbouncer.ini is that superuser and the exporter
+            authenticates as it. Verify by hand with
+            `docker compose exec pgbouncer psql -h 127.0.0.1 -p 6432 -U
+            "$DB_USER" -d pgbouncer -c 'SHOW POOLS;'`. A healthy pooler that
+            refuses the exporter is a credential problem, and the platform
+            itself is fine -- the app authenticates through AUTH_QUERY, a
+            different path entirely.
