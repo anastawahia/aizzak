@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from redis.exceptions import ResponseError
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.middleware.metrics import RedMetricsMiddleware
 from app.framework.observability.metrics import (
@@ -72,18 +74,49 @@ def _duration_count(route: str, method: str) -> float:
     return 0.0 if value is None else value
 
 
-def _build_app() -> FastAPI:
-    app = FastAPI()
-    app.add_middleware(RedMetricsMiddleware, routed=app)
+def _duration_sum(route: str, method: str) -> float:
+    value = REGISTRY.get_sample_value(
+        HTTP_DURATION_METRIC + "_sum", {"route": route, "method": method}
+    )
+    return 0.0 if value is None else value
 
-    @app.get("/things/{thing_id}")
+
+# The real app mounts every versioned router under `settings.api_prefix`.
+# Spelled out here rather than left at "" so a label that silently loses
+# its prefix -- two routers with the same relative path collapsing into one
+# series -- fails a test instead of quietly halving the route dimension.
+_PREFIX = "/api/v1"
+
+
+def _build_app() -> FastAPI:
+    """An app shaped like the real one: every handler reached through
+    ``include_router`` with a prefix, not the ``@app.get`` decorator.
+
+    **The shape is the test.** The first version of this suite registered its
+    handlers with the decorator, which lands them directly in ``app.routes``,
+    and it passed while the production app labelled every single request
+    ``<unmatched>`` -- because ``create_app`` uses ``include_router`` for all
+    of them, and FastAPI 0.139 keeps an included router as one opaque
+    ``_IncludedRouter`` node instead of flattening its routes. A test app that
+    is easier to build than the real one is a test app that can agree with a
+    broken production app.
+    """
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.get("/things/{thing_id}")
     async def _get_thing(thing_id: str) -> dict[str, str]:
         return {"id": thing_id}
 
-    @app.get("/boom")
+    @router.get("/boom")
     async def _boom() -> dict[str, str]:
         raise RuntimeError("deliberate")
 
+    app.include_router(router, prefix=_PREFIX)
+    # Added AFTER the routers, exactly as `create_app` does, because
+    # `add_middleware` inserts at position 0 -- the last layer added is the
+    # outermost one a request meets.
+    app.add_middleware(RedMetricsMiddleware)
     return app
 
 
@@ -93,15 +126,15 @@ def _build_app() -> FastAPI:
 def test_ten_distinct_ids_produce_one_time_series_not_ten() -> None:
     """The whole cardinality argument, as an assertion rather than a comment."""
     app = _build_app()
-    before = _requests("/things/{thing_id}", "GET", "200")
+    before = _requests(_PREFIX + "/things/{thing_id}", "GET", "200")
 
     with TestClient(app) as client:
         for i in range(10):
-            assert client.get(f"/things/id-{i}").status_code == 200
+            assert client.get(f"{_PREFIX}/things/id-{i}").status_code == 200
 
-    assert _requests("/things/{thing_id}", "GET", "200") - before == 10
+    assert _requests(_PREFIX + "/things/{thing_id}", "GET", "200") - before == 10
     # And the raw paths minted nothing of their own.
-    assert _requests("/things/id-0", "GET", "200") == 0.0
+    assert _requests(_PREFIX + "/things/id-0", "GET", "200") == 0.0
 
 
 def test_an_unrouted_path_is_labelled_once_however_many_urls_are_guessed() -> None:
@@ -115,30 +148,127 @@ def test_an_unrouted_path_is_labelled_once_however_many_urls_are_guessed() -> No
     assert _requests(UNMATCHED_ROUTE, "GET", "404") - before == 5
 
 
+def test_two_routers_sharing_a_relative_path_stay_two_series() -> None:
+    """The regression that produced ``<unmatched>`` on the live stack, and the
+    subtler half of it.
+
+    ``scope["route"].path`` is relative to the router that owns the route, so
+    ``/api/v1/things/{id}`` and ``/internal/things/{id}`` both report
+    ``/things/{id}``. Reading it without restoring the prefix does not fail
+    loudly -- it silently merges two unrelated routes into one time series, and
+    a p95 computed over the union is a number for a route nobody serves.
+    """
+    app = FastAPI()
+    for prefix in ("/api/v1", "/internal"):
+        router = APIRouter()
+
+        @router.get("/things/{thing_id}")
+        async def _get(thing_id: str) -> dict[str, str]:
+            return {"id": thing_id}
+
+        app.include_router(router, prefix=prefix)
+    app.add_middleware(RedMetricsMiddleware)
+
+    before_public = _requests("/api/v1/things/{thing_id}", "GET", "200")
+    before_internal = _requests("/internal/things/{thing_id}", "GET", "200")
+
+    with TestClient(app) as client:
+        assert client.get("/api/v1/things/x").status_code == 200
+        assert client.get("/internal/things/x").status_code == 200
+
+    assert _requests("/api/v1/things/{thing_id}", "GET", "200") - before_public == 1
+    assert _requests("/internal/things/{thing_id}", "GET", "200") - before_internal == 1
+    # And neither of them fell into the router-relative label they would share.
+    assert _requests("/things/{thing_id}", "GET", "200") == 0.0
+
+
+def test_a_nested_include_keeps_both_prefixes() -> None:
+    """``include_router`` nests, and the label has to survive every level --
+    the real app reaches some handlers through two of them."""
+    app = FastAPI()
+    inner = APIRouter()
+
+    @inner.get("/leaf/{leaf_id}")
+    async def _leaf(leaf_id: str) -> dict[str, str]:
+        return {"id": leaf_id}
+
+    outer = APIRouter()
+    outer.include_router(inner, prefix="/branch")
+    app.include_router(outer, prefix="/api/v1")
+    app.add_middleware(RedMetricsMiddleware)
+
+    before = _requests("/api/v1/branch/leaf/{leaf_id}", "GET", "200")
+    with TestClient(app) as client:
+        assert client.get("/api/v1/branch/leaf/z").status_code == 200
+    assert _requests("/api/v1/branch/leaf/{leaf_id}", "GET", "200") - before == 1
+
+
+def test_the_duration_includes_the_middleware_layered_beneath_it() -> None:
+    """Ordering, as a measurement rather than a comment.
+
+    ``create_app`` adds this layer LAST so it ends up OUTERMOST, because the
+    number worth having is what the caller waited for -- correlation-id
+    generation and problem rendering included. That claim is easy to invert by
+    accident (``add_middleware`` inserts at position 0, so reading order and
+    nesting order are opposites), and inverting it produces a plausible number
+    that is quietly too small. So this asserts the property directly: a slow
+    layer added BEFORE this one must show up inside the recorded duration.
+    """
+    delay_s = 0.05
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.get("/slow")
+    async def _slow() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    app.include_router(router, prefix=_PREFIX)
+
+    async def _sleepy(request: Request, call_next: Any) -> Any:
+        await asyncio.sleep(delay_s)
+        return await call_next(request)
+
+    app.add_middleware(BaseHTTPMiddleware, dispatch=_sleepy)
+    app.add_middleware(RedMetricsMiddleware)
+
+    before_sum = _duration_sum(_PREFIX + "/slow", "GET")
+    before_count = _duration_count(_PREFIX + "/slow", "GET")
+    with TestClient(app) as client:
+        assert client.get(f"{_PREFIX}/slow").status_code == 200
+
+    assert _duration_count(_PREFIX + "/slow", "GET") - before_count == 1
+    observed = _duration_sum(_PREFIX + "/slow", "GET") - before_sum
+    assert observed >= delay_s, (
+        f"the recorded duration ({observed:.3f}s) excludes the {delay_s}s layer beneath "
+        "this middleware -- RedMetricsMiddleware is no longer outermost, so every latency "
+        "number it reports is smaller than what the caller actually waited for"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Failures are the point of an error budget                                   #
 # --------------------------------------------------------------------------- #
 def test_a_handler_that_raises_is_counted_as_a_500() -> None:
     app = _build_app()
-    before = _requests("/boom", "GET", "500")
+    before = _requests(_PREFIX + "/boom", "GET", "500")
 
     with TestClient(app, raise_server_exceptions=False) as client:
-        assert client.get("/boom").status_code == 500
+        assert client.get(f"{_PREFIX}/boom").status_code == 500
 
-    assert _requests("/boom", "GET", "500") - before == 1
+    assert _requests(_PREFIX + "/boom", "GET", "500") - before == 1
 
 
 def test_every_counted_request_is_also_timed() -> None:
     """The two families must not drift: a count without a duration would make
     every percentile a percentile of the subset that happened to be timed."""
     app = _build_app()
-    before = _duration_count("/things/{thing_id}", "GET")
+    before = _duration_count(_PREFIX + "/things/{thing_id}", "GET")
 
     with TestClient(app) as client:
-        client.get("/things/x")
-        client.get("/things/y")
+        client.get(f"{_PREFIX}/things/x")
+        client.get(f"{_PREFIX}/things/y")
 
-    assert _duration_count("/things/{thing_id}", "GET") - before == 2
+    assert _duration_count(_PREFIX + "/things/{thing_id}", "GET") - before == 2
 
 
 # --------------------------------------------------------------------------- #

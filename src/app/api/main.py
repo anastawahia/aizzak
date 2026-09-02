@@ -174,16 +174,19 @@ def create_app(
     app.state.revocations = revocations
     app.state.ready = False
 
-    # Wave 0 step 0.2. Installed FIRST, which in Starlette's stack means
-    # OUTERMOST: the duration it records is then what the caller waited for,
-    # correlation-id generation and problem rendering included. A layer that
-    # measured only what was inside it would report a budget nobody
-    # experiences. It reads `app.routes` lazily on first request, since the
-    # routers below have not been included yet at this line.
-    app.add_middleware(RedMetricsMiddleware, routed=app)
     _install_correlation_middleware(app)
     _install_problem_handlers(app)
     _install_problem_media_type(app)
+    # Wave 0 step 0.2, and it must be added LAST to be OUTERMOST.
+    # `add_middleware` does `user_middleware.insert(0, ...)` and the stack is
+    # built by wrapping in reverse, so the last layer added is the first a
+    # request meets -- the opposite of what the reading order here suggests,
+    # and measured (`tests/unit/test_capacity_metrics.py`) rather than
+    # assumed. Outermost is what makes the recorded duration the one the
+    # caller experienced: correlation-id generation and problem rendering are
+    # inside it, and a layer that timed only what was inside itself would
+    # report a budget nobody ever waits for.
+    app.add_middleware(RedMetricsMiddleware)
 
     # Health + metrics at the ROOT (unversioned, unauthenticated); everything
     # else under the configured prefix so the wire path is `/api/v1/...` (03
