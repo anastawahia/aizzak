@@ -261,10 +261,24 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
 
     # Loopback only. Nothing outside this Pod may speak to Postgres, and the
     # absence of a listener is a stronger statement than a firewall rule.
+    #
+    # The three pg_stat_statements lines are capacity step 0.4, and they are
+    # the Compose `postgres` command's three `-c` overrides said in this
+    # deployment's own idiom -- an operator must be able to run `python -m
+    # app.ops.slow_queries` on a Pod, not only on the Compose stack. Like
+    # every other line in this block they apply to a NEWLY initialised
+    # cluster only; a Pod whose volume predates them keeps its own
+    # postgresql.conf, which is the same asymmetry `10-roles.sh` has for
+    # roles added after a cluster's first boot. Nothing else from step 2.1's
+    # tuning list belongs here for the reason step 0.4 states: the baseline
+    # is measured on an untuned server or it proves nothing later.
     {
         echo "listen_addresses = '127.0.0.1'"
         echo "password_encryption = scram-sha-256"
         echo "max_connections = 200"
+        echo "shared_preload_libraries = 'pg_stat_statements'"
+        echo "pg_stat_statements.max = 10000"
+        echo "pg_stat_statements.track = top"
     } >> "$PGDATA/postgresql.conf"
     echo "host all all 127.0.0.1/32 scram-sha-256" >> "$PGDATA/pg_hba.conf"
     log "cluster initialised"

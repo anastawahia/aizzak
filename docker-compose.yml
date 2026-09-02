@@ -200,6 +200,39 @@ services:
   # ────────────────────────────── data plane ──────────────────────────────
   postgres:
     image: postgres:16
+    # ⚠️ THREE OVERRIDES, ALL THREE ABOUT OBSERVING THE SERVER, NONE ABOUT
+    # TUNING IT (capacity step 0.4, docs/capacity-plan.md §5 Wave 0). The
+    # plan's step 2.1 will set shared_buffers/work_mem/max_wal_size and the
+    # rest from a COMPOSED config file and delete this `command:`; those knobs
+    # are deliberately absent here, because risk `م‑8` is "tuning starts
+    # before the baseline exists" and a baseline measured on an already-tuned
+    # server cannot answer whether the tuning helped. The instrument goes in
+    # first; the knobs it justifies are turned in 2.1.
+    #
+    # shared_preload_libraries is a START-time setting -- a running cluster
+    # does not pick it up on reload, so an existing deployment needs
+    # `docker compose up -d postgres` (a restart) after this change, and then
+    # `CREATE EXTENSION` once (deploy/postgres/initdb/20-extensions.sh runs
+    # only on a fresh volume; `python -m app.ops.slow_queries` prints the
+    # exact one-liner for an existing one).
+    #
+    # max=10000 rather than the 5000 default: 10 module schemas' SQL adapters
+    # plus Alembic's own DDL plus the smoke/live suites is already thousands
+    # of distinct statements, and an overflow does not fail loudly -- it
+    # silently discards the least-executed entries and the report reads as if
+    # complete. `pg_stat_statements_info.dealloc` is what catches that, and
+    # `slow_queries top` prints it on every report for exactly this reason.
+    # track=top (the default, stated rather than inherited): nested statements
+    # inside functions are not this codebase's cost -- every query comes from
+    # a SQLAlchemy adapter at the top level.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=top
     environment:
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}

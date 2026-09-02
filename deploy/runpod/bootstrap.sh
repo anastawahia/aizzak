@@ -47,6 +47,15 @@ fi
 log "creating roles aizzak_owner / app_rw / outbox_relay / retention_sweeper / metrics_reader / transit_rotator / workspace_purger"
 POSTGRES_USER="$POSTGRES_SUPERUSER" bash /app/deploy/postgres/initdb/10-roles.sh
 
+# The repository's own extension script, verbatim, for the same reason and on
+# the same footing: CREATE EXTENSION pg_stat_statements is superuser-only (the
+# extension is not trusted), so it can be neither a migration nor an
+# aizzak_owner step. It must run AFTER 10-roles.sh -- it grants
+# `pg_read_all_stats` to `aizzak_owner`, which does not exist until then --
+# and it is idempotent, so a Pod restart re-runs it harmlessly.
+log "creating extension pg_stat_statements (capacity step 0.4)"
+POSTGRES_USER="$POSTGRES_SUPERUSER" bash /app/deploy/postgres/initdb/20-extensions.sh
+
 # ── 2. Vault: engines, seeded secrets, AppRole ────────────────────────────
 # Vault persists now (release-blockers-plan.md §3 step 1): `[program:vault]`
 # runs `deploy/vault/start.sh`, which drives it through `operator init`

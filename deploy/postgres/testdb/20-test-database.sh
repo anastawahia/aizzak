@@ -81,11 +81,22 @@ EOSQL
 # intention rather than to inherit it silently from a version default. The pair
 # reproduces the ACL measured in `aizzak` exactly:
 #   {pg_database_owner=UC/…, =U/…, aizzak_owner=UC/…}
+#
+# `pg_stat_statements` is created here for the same reason it is created in
+# `aizzak` by initdb/20-extensions.sh (capacity step 0.4): the extension's
+# VIEW is per-database even though its statistics are one cluster-wide hash
+# table, so a connection to `aizzak_test` cannot read it unless it exists
+# here too -- and `tests/integration/test_slow_queries_ops_live.py` proves
+# `app.ops.slow_queries` against real Postgres over exactly that connection.
+# `pg_stat_statements_reset` is deliberately NOT granted here (unlike
+# 20-extensions.sh): the reset is cluster-wide, so a test suite allowed to
+# call it could erase an operator's in-flight measurement on the same server.
 psql -v ON_ERROR_STOP=1 \
      --username "${POSTGRES_USER}" \
      --dbname aizzak_test <<-'EOSQL'
     REVOKE CREATE ON SCHEMA public FROM PUBLIC;
     GRANT CREATE, USAGE ON SCHEMA public TO aizzak_owner;
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 EOSQL
 
 echo "testdb: database aizzak_test ready (owner aizzak_owner)"
