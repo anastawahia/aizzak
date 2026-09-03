@@ -1299,6 +1299,108 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
+  # ── The load generator (capacity 0.1, blocker د‑3) ───────────────────────
+  # `deploy/load/` was written before anything could run it: k6 is a Go binary,
+  # not a dependency this project can vendor, and it did not exist on the
+  # machine that wrote the harness. That single absence held the acceptance of
+  # 0.1, the peak-load half of 0.4 and ALL of 0.5 -- five scenarios, a token
+  # pool, a million-row seed and a threshold sheet, none of which had ever been
+  # executed once.
+  #
+  # A profile, not a default service: this exists to be run by hand for thirty
+  # minutes and then to go away again.
+  #
+  #     deploy/load/run.sh peak          # picks host k6 if present, else this
+  #     LOAD_K6=docker deploy/load/run.sh peak
+  #
+  # ⚠️ It measures the platform from INSIDE the platform's own machine, which
+  # a generator on separate hardware would not. Two consequences belong in
+  # every report taken this way: the generator competes with the services for
+  # the same CPU (a true remote client would not), and reaching `nginx`
+  # directly skips the published-port hop -- the same edge, the same TLS
+  # termination, one userland proxy less. Neither invalidates a baseline; both
+  # change what the numbers are a baseline OF, so `run.sh` stamps which
+  # generator produced each result.
+  k6:
+    profiles: ["load"]
+    # Pinned like every other image here, and the pin is load-bearing: the
+    # WebSocket scenarios import `k6/experimental/websockets`, and which name
+    # that module answers to is a property of the binary, not of the script.
+    # The harness imported the graduated `k6/net/websockets` for months on the
+    # strength of a changelog; no released k6 provides it, and the whole run
+    # aborts at init with `unknown module`. Verified against THIS tag.
+    image: grafana/k6:1.3.0
+    depends_on:
+      # Readiness, not "started" -- the edge healthcheck crosses nginx INTO
+      # the app, so a run that starts here cannot begin against a stack that
+      # answers 502. The first minute of a 30-minute profile is the most
+      # expensive place to discover that.
+      nginx:
+        condition: service_healthy
+    # The same finding as `qdrant` above, for the opposite side of the wire:
+    # `peak` holds 1,500 WebSockets open while driving 300 rps, and every one
+    # of those is a file descriptor. Docker's inherited soft limit is 1024 --
+    # the generator would shed load at roughly two thirds of the target and
+    # the report would blame the platform.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
+    # And its other half. The first smoke run put 37,283 iterations through
+    # this container in 20 seconds and started answering `dial tcp
+    # 172.18.0.6:443: connect: cannot assign requested address` -- EADDRNOTAVAIL,
+    # the generator running out of SOURCE PORTS in its own network namespace,
+    # not the platform refusing anything. Docker's default ephemeral range is
+    # ~28,000 ports and a closed socket holds one for the TIME_WAIT interval.
+    # Both settings are net-namespaced, so neither touches the host.
+    sysctls:
+      net.ipv4.ip_local_port_range: "10000 65535"
+      net.ipv4.tcp_fin_timeout: "15"
+    # ONE directory, read-write, and nothing else of this repository: the
+    # scripts, `tokens.json` (real credentials) and `results/`. `run.sh`
+    # refuses a `LOAD_OUT` outside it rather than writing somewhere the
+    # operator did not ask for.
+    volumes:
+      - ./deploy/load:/load
+    working_dir: /load
+    environment:
+      # Inside this network the edge is `nginx`; `localhost` here is the
+      # generator's own loopback. `run.sh` refuses the latter outright.
+      LOAD_BASE_URL: ${LOAD_BASE_URL:-https://nginx}
+      LOAD_TOKEN_FILE: ${LOAD_TOKEN_FILE:-/load/tokens.json}
+      LOAD_OUT: ${LOAD_OUT-}
+      LOAD_DURATION_S: ${LOAD_DURATION_S-}
+      LOAD_WS_VUS: ${LOAD_WS_VUS-}
+      LOAD_AGENT_KEY: ${LOAD_AGENT_KEY-}
+      LOAD_PROMPT: ${LOAD_PROMPT-}
+      LOAD_VERBOSE: ${LOAD_VERBOSE-}
+      LOAD_ALLOW_PLAINTEXT: ${LOAD_ALLOW_PLAINTEXT-}
+      LOAD_P95_GENERATION_S: ${LOAD_P95_GENERATION_S-}
+      LOAD_STREAM_TIMEOUT_MS: ${LOAD_STREAM_TIMEOUT_MS-}
+      LOAD_INDEX_POLL_S: ${LOAD_INDEX_POLL_S-}
+      LOAD_INDEX_TIMEOUT_S: ${LOAD_INDEX_TIMEOUT_S-}
+      LOAD_WS_HOLD_MS: ${LOAD_WS_HOLD_MS-}
+      LOAD_WS_PING_MS: ${LOAD_WS_PING_MS-}
+      # The seed declaration §0.1 condition (3) asks for. Empty is not a
+      # default: `lib/config.js` marks the whole result invalid when these are
+      # unstated, which is the point.
+      LOAD_SEED_ID: ${LOAD_SEED_ID-}
+      LOAD_SEED_MESSAGES: ${LOAD_SEED_MESSAGES-}
+      LOAD_SEED_FILES: ${LOAD_SEED_FILES-}
+      LOAD_SEED_VECTORS: ${LOAD_SEED_VECTORS-}
+      LOAD_SEED_WORKSPACES: ${LOAD_SEED_WORKSPACES-}
+      # Provenance `run.sh` computes on the host, where git and the Docker
+      # socket are.
+      RUN_COMMIT: ${RUN_COMMIT-}
+      RUN_DIRTY: ${RUN_DIRTY-}
+      RUN_IMAGES: ${RUN_IMAGES-}
+      RUN_K6_VERSION: ${RUN_K6_VERSION-}
+      RUN_HOST: ${RUN_HOST-}
+    # A load run ends. `restart: "no"` is also what exempts it from the
+    # healthcheck rule in `tests/unit/test_healthcheck_coverage.py`: a probe
+    # on a container that exits by design reports on nothing.
+    restart: "no"
+    <<: *app-logging
 volumes:
   postgres-data:
   redis-data:

@@ -77,6 +77,7 @@
 | 34‑ب | `python -m app.ops.notify_groups list` | مجموعات `cg.notify` كلّها مع LIVE/ORPHAN وسببه — **قراءةٌ محضة**. و`sweep --yes` يكنس اليتيمة ([§3.135](log/3.135.md)) |
 | 34‑ج | `python -m app.ops.slow_queries top` | أغلى الاستعلامات بالزمن التراكميّ من `pg_stat_statements` (خطّة السعة `0.4`) — **قراءةٌ محضة**؛ و`reset --yes` يصفّر العنقودَ كلَّه |
 | 34‑د | `python -m app.ops.load_seed run` | بذرةُ الحمل الواقعيّة (خطّة السعة `0.1` الشرط ٣): مليونُ رسالةٍ و100 ألف ملفٍّ ومليونُ متّجهٍ على 200 مساحةِ عمل، **عبر RLS**. و`plan` جفافٌ، و`status --export` يُخرج `LOAD_SEED_*`، و`purge --yes` يسترجع |
+| 34‑هـ | `deploy/load/run.sh peak` · `deploy/load/smoke.sh` | مولّدُ الحمل (خطّة السعة `0.1`): k6 من المضيف إن وُجد وإلّا من `--profile load` (`grafana/k6:1.3.0`)، و`LOAD_K6=host\|docker` يُلزم أحدَهما. و`smoke.sh` يُثبت الهيكلَ في نصف دقيقةٍ ببِركةٍ صناعيّة — 401 وعتبةٌ مُخفَقةٌ **بالتصميم** |
 | 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
 | 36 | `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` | تزويد `aizzak_test` — **يدويٌّ، مرّةً واحدةً لكلّ حجم**، ولا يُشغَّل تلقائيّاً أبداً. مُعاد التشغيل بأمان |
 | 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
@@ -425,6 +426,19 @@ python -m app.ops.load_seed purge  --seed-id dev-2026-09-03 --yes
 بذرةُ الحمل التي تطلبها خطّةُ السعة `0.1` شرطاً ثالثاً: **مليونُ رسالةٍ · 100 ألف ملفّ · مليونُ متّجه · 200 مساحةَ عمل**، مكتوبةً **عبر** سياسات الصفوف لا حولها — والأداةُ ترفض العملَ بدورٍ `SUPERUSER` أو `BYPASSRLS`. حتميّةٌ ومُستأنَفة: إعادةُ التشغيل بعد انقطاعٍ تُكمل ولا تُضاعف.
 
 > ⚠️ `DATABASE_URL` لهذه العمليّة دورُ `app_rw` **مباشرةً إلى `postgres:5432`** لا عبر المجمّع (‏`MAX_CLIENT_CONN` هو `ح‑3` نفسُه، وأداةُ قياسٍ تحتلّ مقعداً ممّا تقيسه تُفسد القياس). ومن المضيف: `PROVIDER_ROUTING` و`USAGE_DEFAULT_LIMITS` في `.env` **بلا اقتباس**، فـ`. ./.env` يُتلفهما — أعِد تصديرَهما خامَّين. التفصيل في [`08-local-runbook §4.10`](design/08-local-runbook.md).
+
+### 34‑هـ · مولّدُ الحمل — `deploy/load/run.sh` و`--profile load`
+
+```bash
+deploy/load/smoke.sh                      # ~30 ث: يُثبت الهيكلَ لا المنصّة
+deploy/load/run.sh peak                   # k6 من المضيف إن وُجد، وإلّا الحاوية
+LOAD_K6=docker deploy/load/run.sh peak    # الصورةُ المثبَّتة قسراً
+docker compose --profile load run --rm k6 version
+```
+
+‏k6 ثنائيّةُ Go لا مكتبةٌ تُضَمّ، وغيابُها كان الحاجبَ `د‑3`. صارت خدمةَ Compose مثبَّتةَ الوسم ترى `deploy/load/` وحدَها، و`LOAD_BASE_URL` فيها `https://nginx` — و`localhost` هناك حلقةُ المولّد نفسِه فيُرفض صراحةً.
+
+> ⚠️ **تشغيلٌ من مضيفٍ واحدٍ لا يتجاوز 22 طلباً/ث مهما قال الملفّ.** الحافّةُ تحدُّ على `$binary_remote_addr` (`limit_req rate=20r/s burst=40`، و`limit_conn ws_conn 100` للمقابس). مُقاس: عُرض **300.1 طلب/ث** فقُبل **22.0** ورُدّ 429 على **92.7٪**. اقرأ `counters.aizzak_rate_limited_total` في الملفّ المؤرشَف **قبل** أيّ مئينٍ فيه. التفصيل في [`08-local-runbook §4.11`](design/08-local-runbook.md) و`docs/capacity-status.md` (`د‑8`).
 
 ### 35 · الحزمة الاختباريّة — `docker-compose.test.yml`
 

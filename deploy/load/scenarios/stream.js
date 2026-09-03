@@ -17,7 +17,13 @@
 // `README.md` §5 says so plainly rather than leaving it looking covered.
 
 import http from 'k6/http';
-import { WebSocket } from 'k6/net/websockets';
+// ⚠️ `k6/experimental/websockets`, NOT `k6/net/websockets` -- MEASURED, not
+// assumed. Both files here imported the latter until the generator was first
+// actually executed (capacity blocker د‑3): every k6 in the 1.x line, 1.3.0
+// included, answers `GoError: unknown module: k6/net/websockets` and aborts
+// the run at init. The graduated name does not exist yet; the experimental
+// one is what ships. `k6/timers` IS graduated and is imported as such.
+import { WebSocket } from 'k6/experimental/websockets';
 import { clearTimeout, setTimeout } from 'k6/timers';
 import { API, WS_URL } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';

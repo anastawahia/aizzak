@@ -15,7 +15,13 @@
 import { SharedArray } from 'k6/data';
 import encoding from 'k6/encoding';
 
-const TOKEN_FILE = __ENV.LOAD_TOKEN_FILE || './tokens.json';
+// `open()` resolves a relative path against THIS MODULE, not the working
+// directory -- so the obvious `./tokens.json` looked for `lib/tokens.json`
+// and reported `no such file or directory` for a pool that was sitting
+// exactly where README §2 says to put it. Measured on the first execution
+// (capacity blocker د‑3); `run.sh` passes an absolute path, which is why
+// only a bare `k6 run` ever saw it.
+const TOKEN_FILE = __ENV.LOAD_TOKEN_FILE || '../tokens.json';
 
 // `SharedArray` is not an optimisation here, it is a requirement: at 1,500 WS
 // VUs a per-VU copy of the pool is 1,500 copies of every token in memory, and

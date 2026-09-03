@@ -9,7 +9,13 @@
 // The executor is `constant-vus`, not an arrival rate: the quantity under
 // test is a POPULATION, and one VU holds one socket for the whole run.
 
-import { WebSocket } from 'k6/net/websockets';
+// ⚠️ `k6/experimental/websockets`, NOT `k6/net/websockets` -- MEASURED, not
+// assumed. Both files here imported the latter until the generator was first
+// actually executed (capacity blocker د‑3): every k6 in the 1.x line, 1.3.0
+// included, answers `GoError: unknown module: k6/net/websockets` and aborts
+// the run at init. The graduated name does not exist yet; the experimental
+// one is what ships. `k6/timers` IS graduated and is imported as such.
+import { WebSocket } from 'k6/experimental/websockets';
 import { clearInterval, setInterval, setTimeout } from 'k6/timers';
 import { WS_URL } from '../lib/config.js';
 import { tokenForVu } from '../lib/auth.js';

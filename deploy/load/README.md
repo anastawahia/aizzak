@@ -52,6 +52,14 @@ correctly refuse a third of them, and the report would show a WebSocket
 failure rate that is the limiter working. `lib/profile.js` refuses to start
 above 3 sockets per user for exactly that reason.
 
+**A pool you do not have to mint.** `deploy/load/smoke.sh` writes four
+synthetic tokens, runs twenty seconds of the full peak mix and deletes them
+again. Every request 401s and the error-rate threshold fails by design — what
+it proves is that the harness *runs*: scripts parse, scenarios execute at
+their stated rates, thresholds evaluate, the archive is written with
+`valid: false` in it. Run it after every edit to this directory; §5 lists the
+three bugs its first execution found.
+
 **Tokens live one hour.** The 30-minute `peak` profile fits inside one
 minting; the 8-hour `average` profile does not, and the harness refuses to
 start rather than let hour two report a 100% error rate that is the harness.
@@ -120,9 +128,34 @@ and the file says so in a field rather than in a memory.
 ## 4. Running
 
 ```bash
+deploy/load/smoke.sh          # ~30 s   (the harness itself, §2)
 deploy/load/run.sh peak       # 30 min  (§7 item 1)
 deploy/load/run.sh average    # 8 hours (§7 item 2)
 ```
+
+**k6 does not have to be installed.** It is a Go binary, not something this
+project can vendor, and its absence was capacity blocker `د‑3` — it held the
+acceptance of `0.1`, the peak-load half of `0.4` and the whole of `0.5`. So
+the generator is also a pinned Compose service, `grafana/k6:1.3.0` under
+`--profile load`, and `run.sh` chooses:
+
+| `LOAD_K6` | behaviour |
+|---|---|
+| `auto` (default) | a host `k6` if one is installed, otherwise the container |
+| `host` | refuse rather than silently containerise |
+| `docker` | the pinned image even where a host k6 exists |
+
+Both paths run the same scripts against the same edge, and both stamp the k6
+version into the archived result. Two things differ and belong in any report
+taken from the container: it reaches `nginx` **inside** the Compose network,
+which is the same TLS termination one userland proxy hop earlier, and it
+competes with the platform for the same CPU — as a host binary does too, and
+a generator on separate hardware would not.
+
+The container sees exactly `deploy/load/` and nothing else, so a `LOAD_OUT`
+or `LOAD_TOKEN_FILE` outside that directory is refused rather than quietly
+redirected. `LOAD_BASE_URL` defaults to `https://nginx` there; `localhost`
+would be the generator's own loopback, and is refused for the same reason.
 
 `run.sh` supplies what k6 cannot see from inside a script — commit SHA, image
 digests, k6 version, host — and archives to
@@ -159,7 +192,24 @@ not meant to; what is being measured is the cost of TLS termination.
   descriptor limit (`ulimit -n 65535`), watch the generator's own CPU, and
   treat `dropped_iterations > 0` in the summary as invalidating the rate the
   report claims — k6 drops iterations rather than queueing them when it runs
-  out of VUs.
+  out of VUs. **Measured, not theoretical:** the first smoke run put 37,283
+  iterations through the container in 20 s and began answering `connect:
+  cannot assign requested address` — the generator out of *source ports* in
+  its own namespace, ~28,000 of them held in `TIME_WAIT`. The service widens
+  `ip_local_port_range` and shortens `tcp_fin_timeout` for that; a host k6
+  needs the same two sysctls.
+
+- **The reach of a single source IP, which is now the binding limit.** The
+  edge rate-limits on `$binary_remote_addr`: `limit_req zone=api_req
+  rate=20r/s burst=40 nodelay`, plus `limit_conn ws_conn 100`. A generator is
+  one address. The smoke run offered **300.1 rps** — §0's target, exactly —
+  and the edge admitted **22.0**, returning 429 to 92.7% of them; 1,500 WS
+  VUs would likewise be met with 100 admitted sockets. Nothing here is
+  broken: `limit_req` is P1-7's deliberate pre-auth line and it is doing its
+  job. But a peak run from one host measures that limiter and not the
+  platform, so `0.1`'s acceptance needs the generator's address exempted at
+  the edge, or generators on several addresses — a decision recorded in
+  `docs/capacity-status.md`, not taken here.
 
 ---
 
@@ -180,13 +230,22 @@ metric and per scenario), `counters`, and the raw k6 metrics underneath.
 Two fields are worth reading before the percentiles:
 
 - `counters.aizzak_rate_limited_total` — intended 429s, which §7 item 4
-  excludes from the error budget. Today this should be **zero**: `ح‑7` says
-  `api_rate_per_min` is defined and never read. A non-zero value before
-  Wave 1 lands means something else is shedding load.
+  excludes from the error budget. **This paragraph used to say the value
+  should be zero, and that was wrong** — written from `ح‑7` ("`api_rate_per_min`
+  is defined and never read") on the assumption that the app was the only
+  thing that could 429. The first run measured 5,561 of 6,001 requests
+  rejected, all of them by nginx's `limit_req`, which has been at the edge
+  all along. Read it against §5's last bullet: a large value from a
+  single-source run is the per-IP limiter, and until the generator is
+  exempted it is the ceiling on every number in the file.
 - `assumptions.p95_generation_s` — the stream arrival rate is derived from it
   through §3's provider equation, and nothing has measured it yet. Step 0.5
   replaces the assumption; until then it is stated in every result rather
   than buried in a default.
 
-Requirements: **k6 ≥ 0.59** (`k6/net/websockets`, `k6/timers`), Python 3 for
-`run.sh`'s two JSON helpers, and a running stack.
+Requirements: **k6 1.x**, either installed or via `--profile load` (pinned at
+`grafana/k6:1.3.0`); Python 3 for `run.sh`'s two JSON helpers; and a running
+stack. The WebSocket scenarios import `k6/experimental/websockets` — *not*
+`k6/net/websockets`, which this file claimed for months and which no released
+k6 provides; the graduated name does not exist yet. `k6/timers` is graduated
+and imported as such.

@@ -39,7 +39,10 @@ _COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 # healthcheck on a RUNNING container, so a check on a one-shot service is
 # unobservable by construction -- their contract is the exit code, which
 # `depends_on: {condition: service_completed_successfully}` already gates on.
-_ONE_SHOT = frozenset({"migrate", "vault-bootstrap", "minio-bootstrap", "nginx-certs"})
+# `k6` joins them for a different reason than the four bootstraps: it is not
+# part of `up` at all (`profiles: ["load"]`), it is started by hand for one
+# 30-minute measurement and exits with the threshold verdict as its status.
+_ONE_SHOT = frozenset({"migrate", "vault-bootstrap", "minio-bootstrap", "nginx-certs", "k6"})
 
 # The four processes whose liveness is a heartbeat file rather than a port:
 # Compose service name -> the process name passed to `app.ops.healthcheck`.

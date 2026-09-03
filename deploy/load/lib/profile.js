@@ -20,7 +20,7 @@ import { assertTokensCoverRun, poolSize } from './auth.js';
 const TREND_STATS = ['min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max', 'avg', 'count'];
 
 export function buildOptions({ scale, durationS, wsVus }) {
-  const s = (n) => round2(n * scale);
+  const s = (n) => n * scale;
   const duration = `${durationS}s`;
 
   return {
@@ -95,12 +95,42 @@ export function guard({ durationS, wsVus }) {
   return { started_at: new Date().toISOString(), ws_sockets_per_user: round2(perUser) };
 }
 
-function arrival(exec, rate, duration, preAllocatedVUs, maxVUs) {
+// ⚠️ k6 takes an INTEGER `rate` over a `timeUnit`, and a fractional one is not
+// rounded -- it is REFUSED at init, before any load, with a message about
+// unmarshalling a number into an int64 that names neither the scenario nor the
+// field. MEASURED the first time the harness was ever executed (capacity
+// blocker د‑3), and it made BOTH profiles unrunnable: §0's own arithmetic is
+// fractional per second (100 index jobs a MINUTE is 1.67/s, and browse takes
+// the remainder of 300 rps), and the average profile then divides all of it by
+// six.
+//
+// So the rate is expressed in the finest unit that makes it a whole number:
+// 1.67/s becomes exactly `100` per `1m`, which is also how §0 states it. When
+// nothing divides evenly the per-hour form is used, where rounding costs at
+// most half an arrival an hour -- far below the noise of any run, and visible
+// in the archived options rather than silently applied.
+function toIntegerRate(perSecond) {
+  for (const [timeUnit, factor] of [
+    ['1s', 1],
+    ['1m', 60],
+    ['1h', 3600],
+  ]) {
+    const scaled = perSecond * factor;
+    const rounded = Math.round(scaled);
+    if (rounded >= 1 && Math.abs(scaled - rounded) <= scaled * 1e-9) {
+      return { rate: rounded, timeUnit };
+    }
+  }
+  return { rate: Math.max(1, Math.round(perSecond * 3600)), timeUnit: '1h' };
+}
+
+function arrival(exec, perSecond, duration, preAllocatedVUs, maxVUs) {
+  const { rate, timeUnit } = toIntegerRate(perSecond);
   return {
     executor: 'constant-arrival-rate',
     exec,
     rate,
-    timeUnit: '1s',
+    timeUnit,
     duration,
     // k6 warns and DROPS iterations when it runs out of VUs, which silently
     // turns a 300 rps profile into whatever the pool could sustain. `maxVUs`
