@@ -67,3 +67,8 @@ deploy/nginx/certs/
 # directory is per-run output that belongs in an archive, not in history.
 deploy/load/tokens.json
 deploy/load/results/
+# `app.ops.load_seed` writes one manifest per seed run: it describes the state
+# of ONE machine's database (which workspace ids exist, how many rows each
+# holds), so it is a local fact with the lifetime of that database, not a
+# repository artifact. `status --export` reads it back.
+deploy/load/seeds/

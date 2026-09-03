@@ -75,6 +75,8 @@
 | 33 | `python -m app.ops.retention` | مكنسة الاحتفاظ — تشغيلٌ **يدويّ**، لا خدمةٌ دائمة |
 | 34 | `python -m app.ops.rotate_transit` | تدوير مفتاح Vault Transit — تشغيلٌ **يدويّ** بدور مقصورٍ على `ciphertext_ref` |
 | 34‑ب | `python -m app.ops.notify_groups list` | مجموعات `cg.notify` كلّها مع LIVE/ORPHAN وسببه — **قراءةٌ محضة**. و`sweep --yes` يكنس اليتيمة ([§3.135](log/3.135.md)) |
+| 34‑ج | `python -m app.ops.slow_queries top` | أغلى الاستعلامات بالزمن التراكميّ من `pg_stat_statements` (خطّة السعة `0.4`) — **قراءةٌ محضة**؛ و`reset --yes` يصفّر العنقودَ كلَّه |
+| 34‑د | `python -m app.ops.load_seed run` | بذرةُ الحمل الواقعيّة (خطّة السعة `0.1` الشرط ٣): مليونُ رسالةٍ و100 ألف ملفٍّ ومليونُ متّجهٍ على 200 مساحةِ عمل، **عبر RLS**. و`plan` جفافٌ، و`status --export` يُخرج `LOAD_SEED_*`، و`purge --yes` يسترجع |
 | 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
 | 36 | `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` | تزويد `aizzak_test` — **يدويٌّ، مرّةً واحدةً لكلّ حجم**، ولا يُشغَّل تلقائيّاً أبداً. مُعاد التشغيل بأمان |
 | 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
@@ -407,10 +409,22 @@ python -m app.ops.notify_groups sweep --yes
 يكنس مجموعات `cg.notify.<مضيف>.<pid>` التي لا يملك أحدٌ في المنظومة كنسها ([§3.135](log/3.135.md)): كانس الإقلاع محصورٌ في مضيفه **عمداً**، فمجموعات حاويةٍ أُعيد إنشاؤها تبقى إلى الأبد — 4 لكلّ إعادة إنشاء، و**20** منها قِيست هنا.
 
 > ⚠️ `sweep` لا رجعة فيه ويرفض بلا `--yes`؛ شغّل `list` أوّلاً. ثلاث بوّابات أمان (`consumers = 0` · `pending = 0` · ليست PID حيّاً على هذا المضيف) **زائد قراءتين يفصلهما 5 ث** — لأنّ جسراً بين `ensure_group` وأوّل `XREADGROUP` يُظهر صفر مستهلكين للحظة، وتدميرُ مجموعته حينها يُفشل قراءته التالية بـ`NOGROUP`. ولا تمسّ الأداة `cg.knowledge`/`cg.media`/`cg.memory` إطلاقاً.
+
 >
 > 📌 **من مضيف WSL** مرّر `REDIS_URL=redis://127.0.0.1:16379/0` أمام الأمر — ولا تُصدِّر `.env` بـ`set -a` قبله: الصدفة تجرّد اقتباس JSON في `PROVIDER_ROUTING` فيفشل التحميل بـ`SettingsError`.
 >
 > ✅ **والقاعدة نفسها تعمل الآن بلا مشغّل** ([§3.137](log/3.137.md)): مهمّةٌ خلفيّةٌ في API كلّ `NOTIFY_GROUP_SWEEP_INTERVAL_S` (‏افتراضيّ 900 ث · `0` يُعطّل)، **بالنصّ نفسه لا بنسخةٍ منه** — انتقلت القاعدة إلى `consumers/sweeper.py` وبقي هذا الأمر غلافاً فوقها. تُستعمل الأداة حين لا يُنتظَر المؤقّت، أو من خارج الحاوية. **العشرون المقيسة أعلاه كُنِست فعلاً** (قياسٌ لاحق: صفر يتيمة).
+
+```bash
+python -m app.ops.load_seed plan   --seed-id dev-2026-09-03
+python -m app.ops.load_seed run    --seed-id dev-2026-09-03
+python -m app.ops.load_seed status --seed-id dev-2026-09-03 --export
+python -m app.ops.load_seed purge  --seed-id dev-2026-09-03 --yes
+```
+
+بذرةُ الحمل التي تطلبها خطّةُ السعة `0.1` شرطاً ثالثاً: **مليونُ رسالةٍ · 100 ألف ملفّ · مليونُ متّجه · 200 مساحةَ عمل**، مكتوبةً **عبر** سياسات الصفوف لا حولها — والأداةُ ترفض العملَ بدورٍ `SUPERUSER` أو `BYPASSRLS`. حتميّةٌ ومُستأنَفة: إعادةُ التشغيل بعد انقطاعٍ تُكمل ولا تُضاعف.
+
+> ⚠️ `DATABASE_URL` لهذه العمليّة دورُ `app_rw` **مباشرةً إلى `postgres:5432`** لا عبر المجمّع (‏`MAX_CLIENT_CONN` هو `ح‑3` نفسُه، وأداةُ قياسٍ تحتلّ مقعداً ممّا تقيسه تُفسد القياس). ومن المضيف: `PROVIDER_ROUTING` و`USAGE_DEFAULT_LIMITS` في `.env` **بلا اقتباس**، فـ`. ./.env` يُتلفهما — أعِد تصديرَهما خامَّين. التفصيل في [`08-local-runbook §4.10`](design/08-local-runbook.md).
 
 ### 35 · الحزمة الاختباريّة — `docker-compose.test.yml`
 
