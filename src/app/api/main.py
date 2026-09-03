@@ -81,6 +81,7 @@ from app.framework.di.lifecycle import Disposable, dispose_all
 from app.framework.errors import ERROR_CATALOG, AppError, RateLimitedError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
+from app.framework.observability.context import correlation_id_var, request_id_var
 from app.framework.observability.metrics import (
     rate_limit_rejections_total,
     sample_process_metrics,
@@ -93,6 +94,11 @@ _logger = get_logger(__name__)
 
 # 03 §0: the correlation header, returned on every response and error body.
 CORRELATION_HEADER = "X-Correlation-Id"
+# The edge's own per-hop id (capacity 0.6). nginx sets it from `$request_id`
+# on every proxied request and logs the same value, which is what lets a line
+# in the access log and a line in the app log be recognised as the same hop.
+# Read only -- this app never mints one, see the middleware for why.
+REQUEST_ID_HEADER = "X-Request-Id"
 # RFC 9457's media type (03 §4). Every problem body carries it.
 PROBLEM_MEDIA_TYPE = "application/problem+json"
 # Wave 0 step 0.2 -- the one status `aizzak_rate_limit_rejections_total`
@@ -363,6 +369,28 @@ def _install_correlation_middleware(app: FastAPI) -> None:
     ) -> Response:
         correlation_id = request.headers.get(CORRELATION_HEADER) or new_uuid7()
         request.state.correlation_id = correlation_id
+        # Capacity 0.6. The id was stamped on `request.state` (which only code
+        # holding the `Request` can read) and returned to the caller, and went
+        # NOWHERE NEAR the log lines this request produced -- so an operator
+        # holding the correlation id from a failed response had no way to find
+        # the lines that explained it. Binding the two ambient variables is
+        # what turns `07 §7`'s promise into a query.
+        #
+        # A plain `set()`, not `log_context`: each request already runs in its
+        # own context copy, so there is nothing to restore and no leak across
+        # requests. The worker loop is the opposite shape and uses the
+        # restoring helper -- see `observability/context.py`.
+        correlation_id_var.set(correlation_id)
+        # `X-Request-Id` is the EDGE's per-request id (nginx `$request_id`),
+        # distinct from the correlation id on purpose: one client-supplied
+        # correlation id may span several requests, while this names exactly
+        # one hop through exactly one nginx. Absent when nothing proxies us --
+        # a direct `app:8000` call in a test or from Prometheus -- and simply
+        # missing from the line rather than invented, because a request id
+        # nginx never issued cannot be found in nginx's access log.
+        request_id = request.headers.get(REQUEST_ID_HEADER)
+        if request_id:
+            request_id_var.set(request_id)
         response = await call_next(request)
         response.headers[CORRELATION_HEADER] = correlation_id
         return response

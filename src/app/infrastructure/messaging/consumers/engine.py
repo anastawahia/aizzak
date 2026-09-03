@@ -84,7 +84,7 @@ from time import monotonic
 from typing import cast
 
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.observability import Heartbeat, NullHeartbeat, get_logger
+from app.framework.observability import Heartbeat, NullHeartbeat, get_logger, log_context
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.dlq_watch import report_dlq_backlog
 from app.infrastructure.messaging.consumers.sweeper import (
@@ -413,40 +413,59 @@ class StreamConsumer:
             roles=frozenset(),
             request_id=None,
         )
-        try:
-            # Idempotency (5.2-أ, DD-09) lives INSIDE the handler, not here:
-            # each closure built by `workers/bootstrap.py` claims
-            # (consumer_group, event_id) in `platform.processed_events` as
-            # the first statement of its own effect transaction, and a
-            # duplicate claim returns cleanly -- so to this engine a
-            # redelivered-already-processed message is indistinguishable
-            # from a success and is XACKed below. The engine stays blind to
-            # Postgres by construction (module docstring).
-            await handler(ctx, envelope)
-        except Exception as exc:
-            _logger.error(
-                "handler_failed",
-                extra={
-                    "entry_id": message.entry_id,
-                    "stream": message.stream,
-                    "type": event_type,
-                    "delivery_count": message.delivery_count,
-                },
-                exc_info=True,
-            )
-            if message.delivery_count >= self._max_deliveries:
-                # 04 §3's «بعد N=5 ⇒ يُنقل إلى stream.<m>.dlq مع سبب»: this
-                # was attempt N -- transfer instead of another redelivery.
-                # The reason names the exception the way `handler_failed`'s
-                # own exc_info already does (same exposure surface, 10 §10),
-                # truncated so a pathological message cannot bloat the DLQ.
-                reason = f"handler_failed: {type(exc).__name__}: {exc}"[:500]
-                await self._dead_letter(group, message, reason=reason)
-                return False
-            return False  # NO ack -- policy 4's redelivery path.
+        # Capacity 0.6, the third of the three log-binding sites. Without it
+        # `handler_failed` and `dead_lettered` -- the two lines an operator
+        # actually goes looking for -- carried an entry id and a stream name
+        # and NOTHING that ties them to the request that caused the event, so
+        # the aggregated store could show the API's 500 and the worker's
+        # traceback and no query could put them side by side. The correlation
+        # id came off the envelope from the moment this engine was written;
+        # only the binding was missing.
+        #
+        # The RESTORING helper, not a bare `set()`: this coroutine is called
+        # in a loop by one long-lived task, so an unrestored binding would
+        # stamp the previous message's ids on every line emitted between
+        # deliveries -- including the poll-loop's own.
+        with log_context(
+            correlation_id=correlation_id,
+            workspace_id=workspace_id,
+            event_id=event_id,
+        ):
+            try:
+                # Idempotency (5.2-أ, DD-09) lives INSIDE the handler, not
+                # here: each closure built by `workers/bootstrap.py` claims
+                # (consumer_group, event_id) in `platform.processed_events` as
+                # the first statement of its own effect transaction, and a
+                # duplicate claim returns cleanly -- so to this engine a
+                # redelivered-already-processed message is indistinguishable
+                # from a success and is XACKed below. The engine stays blind to
+                # Postgres by construction (module docstring).
+                await handler(ctx, envelope)
+            except Exception as exc:
+                _logger.error(
+                    "handler_failed",
+                    extra={
+                        "entry_id": message.entry_id,
+                        "stream": message.stream,
+                        "type": event_type,
+                        "delivery_count": message.delivery_count,
+                    },
+                    exc_info=True,
+                )
+                if message.delivery_count >= self._max_deliveries:
+                    # 04 §3's «بعد N=5 ⇒ يُنقل إلى stream.<m>.dlq مع سبب»:
+                    # this was attempt N -- transfer instead of another
+                    # redelivery. The reason names the exception the way
+                    # `handler_failed`'s own exc_info already does (same
+                    # exposure surface, 10 §10), truncated so a pathological
+                    # message cannot bloat the DLQ.
+                    reason = f"handler_failed: {type(exc).__name__}: {exc}"[:500]
+                    await self._dead_letter(group, message, reason=reason)
+                    return False
+                return False  # NO ack -- policy 4's redelivery path.
 
-        await self._consumer.ack(message.stream, group, message.entry_id)
-        return True
+            await self._consumer.ack(message.stream, group, message.entry_id)
+            return True
 
     async def _dead_letter(self, group: str, message: StreamMessage, *, reason: str) -> None:
         """Transfer + XACK through the adapter (which owns the wire shape --

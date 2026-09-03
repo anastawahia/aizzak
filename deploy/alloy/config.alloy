@@ -1,0 +1,188 @@
+// Grafana Alloy -- the collector half of capacity step 0.6.
+//
+// It reads every container's log file off the Docker json-file driver, labels
+// each line with the Compose service that wrote it, lifts the correlation ids
+// out of the JSON payload, and pushes to Loki.
+//
+// ── ⚠️ WHY THERE IS NO DOCKER SOCKET HERE ─────────────────────────────────
+// Every published recipe for this job mounts /var/run/docker.sock so the
+// collector can call the Docker API and learn each container's NAME. That
+// socket is root on the host -- the exact capability that put `cadvisor`
+// behind an opt-in profile in step 0.3 ("القدرةُ تُمنَح لمدّة قياس لا لكلّ
+// up"). But 0.6 cannot live behind a profile: a log store that is off by
+// default is not aggregation, it is a switch someone forgets before the
+// incident.
+//
+// So the service identity is carried IN THE LOG FILE instead. Docker's
+// json-file driver accepts a `labels` log-opt naming label keys to stamp on
+// every line as an `attrs` object, and Compose already labels every container
+// it creates with `com.docker.compose.service`. `x-app-logging` in
+// docker-compose.yml asks for those two keys and this file reads them back --
+// so this container needs a READ-ONLY bind of the log directory and NOTHING
+// else. Measured before it was designed around: a probe container written with
+// that log-opt produced
+//   {"log":"…","stream":"stdout","attrs":{"com.docker.compose.service":"…"},"time":"…"}
+// read out of /var/lib/docker/containers with no socket in sight.
+//
+// The one thing the socket would still buy is discovery of containers created
+// AFTER Alloy started, refreshed by API rather than by re-globbing a
+// directory. `local.file_match` polls the glob (`sync_period` below) and picks
+// them up anyway, a few seconds later. That delay is the entire price.
+
+// ── Discovery ──────────────────────────────────────────────────────────────
+// Every container on this host, not only this project's. The `attrs` object
+// carries the project name too, and the `stage.match` below drops anything
+// that is not ours -- filtering AFTER parsing rather than by path, because a
+// path is a container id and tells us nothing about who owns it.
+local.file_match "container_logs" {
+	path_targets = [{
+		__path__ = "/var/lib/docker/containers/*/*-json.log",
+		// A constant label on every target, so a query can address the whole
+		// stack at once: `{stack="aizzak"}` is the first half of 0.6's
+		// acceptance query.
+		stack    = "aizzak",
+	}]
+	sync_period = "10s"
+}
+
+loki.source.file "containers" {
+	targets    = local.file_match.container_logs.targets
+	forward_to = [loki.process.docker_json.receiver]
+	// Alloy remembers how far it read in each file across restarts; without a
+	// positions file every restart re-ships the entire retained history and
+	// the store fills with duplicates.
+	// (The path is inside the container's own volume -- see docker-compose.yml.)
+}
+
+// ── Parsing ────────────────────────────────────────────────────────────────
+loki.process "docker_json" {
+	forward_to = [loki.write.default.receiver]
+
+	// 1. The json-file envelope Docker itself wrote.
+	//    `attrs` keys contain dots, so they are quoted JMESPath identifiers --
+	//    unquoted, `attrs.com.docker.compose.service` parses as five nested
+	//    fields that do not exist and every line arrives unlabelled.
+	stage.json {
+		expressions = {
+			log       = "log",
+			stream    = "stream",
+			timestamp = "time",
+			service   = "attrs.\"com.docker.compose.service\"",
+			project   = "attrs.\"com.docker.compose.project\"",
+		}
+	}
+
+	// 2. Docker's own timestamp, not the moment Alloy read the file. Under
+	//    load these differ by seconds, and a store that orders lines by read
+	//    time cannot answer "what happened just before the 500".
+	stage.timestamp {
+		source = "timestamp"
+		format = "RFC3339Nano"
+	}
+
+	// 3. Labels -- and ONLY these. All three are bounded: one value per Compose
+	//    service (about twenty), two stream values, one project. `0.2`'s rule
+	//    («كلُّ عَلَمٍ منخفضُ التعدّد») is the same rule here for the same
+	//    reason: a label is an index key, and an unbounded one takes the
+	//    store down.
+	//
+	//    `project` joins them only so the next stage can select on it, and is
+	//    removed again immediately after -- a label that exists to serve one
+	//    filter is not a label anyone should be able to query by.
+	stage.labels {
+		values = {
+			service = "service",
+			stream  = "stream",
+			project = "project",
+		}
+	}
+
+	// 4. Everything that is not this project -- a developer's unrelated
+	//    container on the same host must not land in the store a capacity
+	//    baseline is read out of.
+	//
+	//    ⚠️ Expressed as a NEGATIVE LABEL MATCHER and not as a `stage.drop`
+	//    regex, and that is forced rather than stylistic: Alloy compiles these
+	//    with Go's RE2, which has no negative lookahead at all. The obvious
+	//    `^(?!aizzak$).*` is not a slow regex here, it is a config the collector
+	//    REFUSES TO LOAD -- measured, as a crash loop on this file's first start.
+	//
+	//    The empty-project case (any container Compose did not create) falls on
+	//    the drop side too, which is correct: it carries no service name either.
+	stage.match {
+		selector            = "{stack=\"aizzak\", project!=\"aizzak\"}"
+		action              = "drop"
+		drop_counter_reason = "not_this_project"
+	}
+
+	stage.label_drop {
+		values = ["project"]
+	}
+
+	// 5. The line itself becomes the payload; the envelope is discarded.
+	stage.output {
+		source = "log"
+	}
+
+	// 6. The correlation ids, lifted from the services that emit JSON -- the
+	//    app, the three workers, the relay, the migrator, and (since 0.6) the
+	//    nginx access log, whose `log_format aizzak_json` was shaped to carry
+	//    the same three field names on purpose.
+	//
+	//    ⚠️ Scoped by `stage.match`, not applied to everything: postgres,
+	//    redis, minio, qdrant and vault write their own non-JSON formats, and
+	//    running a JSON stage over them would log a parse warning per line --
+	//    turning the collector into the loudest producer in the store.
+	stage.match {
+		selector = "{service=~\"app|worker-.*|outbox-relay|migrate|nginx\"}"
+
+		stage.json {
+			expressions = {
+				level          = "level",
+				correlation_id = "correlation_id",
+				request_id     = "request_id",
+				event_id       = "event_id",
+				workspace_id   = "workspace_id",
+			}
+		}
+
+		// `level` IS bounded (five values) and is what a "show me only the
+		// errors" filter needs to stay fast, so it earns a label.
+		stage.labels {
+			values = {
+				level = "level",
+			}
+		}
+
+		// The four ids are NOT bounded -- `correlation_id` has one distinct
+		// value per request. Structured metadata is exactly the Loki 3.x
+		// feature for this: stored and filterable
+		// (`| correlation_id="…"`) without minting a stream per value.
+		// This line is what makes 0.6's acceptance query a single query.
+		stage.structured_metadata {
+			values = {
+				correlation_id = "correlation_id",
+				request_id     = "request_id",
+				event_id       = "event_id",
+				workspace_id   = "workspace_id",
+			}
+		}
+	}
+}
+
+// ── Shipping ───────────────────────────────────────────────────────────────
+loki.write "default" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+	external_labels = {}
+}
+
+// Alloy's own /metrics, so `prometheus` can scrape the collector. A collector
+// that quietly stops shipping looks exactly like a quiet system -- the failure
+// mode `0.3`'s two meta-rules exist to catch, and the reason this endpoint is
+// not optional.
+logging {
+	level  = "warn"
+	format = "logfmt"
+}

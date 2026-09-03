@@ -115,9 +115,20 @@ EXPOSE 8000
 # Default command = the API. Overridden per service in docker-compose.yml.
 # The trailing `()` is how GUNICORN spells "this is a factory, call it" --
 # `--factory` is uvicorn's flag and gunicorn rejects it outright.
+#
+# ⚠️ `--access-logfile` is GONE since Wave 0 step 0.6 because it never did
+# anything here -- measured, not assumed. Under `UvicornWorker` the access line
+# is emitted by uvicorn's OWN `uvicorn.access` logger, not by gunicorn's; the
+# flag set `cfg.accesslog` and nothing read it. Removing it changed the output
+# by exactly zero lines, which is the proof. The access line itself is still
+# there, and since 0.6 it is JSON carrying `correlation_id` and `request_id`
+# like every other line -- see `observability/logging.py`'s `_ADOPTED_LOGGERS`,
+# which is the change that actually mattered.
+#
+# `--error-logfile` stays and is NOT inert: gunicorn's arbiter writes worker
+# lifecycle through it, and nothing else reports that.
 CMD ["gunicorn", "app.api.main:create_production_app()", \
      "--config", "/app/deploy/gunicorn.conf.py", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-", \
      "--error-logfile", "-"]

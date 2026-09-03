@@ -1,0 +1,355 @@
+{
+  "uid": "aizzak-logs",
+  "title": "AIZZAK — logs (Wave 0)",
+  "description": "The searchable half of Wave 0 step 0.6. When p99 rises for two minutes the metric says THAT it happened and only the log says WHY -- `aizzak-capacity` is the first dashboard, this is the second. Provisioned from deploy/grafana/dashboards/aizzak-logs.json and not editable in the browser (step 0.5's baseline has to be reproducible from a commit). Every panel's description names the plan item it exists for.",
+  "tags": [
+    "aizzak",
+    "capacity",
+    "wave-0",
+    "logs"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "correlation_id",
+        "label": "correlation_id",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The id from the failing response's X-Correlation-Id header or its RFC 9457 problem body. Empty means no filter."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "طلبٌ واحد، من الحافّة إلى العامل — معيار القبول لـ0.6",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "كلّ أسطر الطلب — $correlation_id",
+      "description": "THE acceptance criterion of capacity step 0.6, as one query: «استعلامٌ واحد يجمع كلّ أسطر طلبٍ فاشلٍ عبر الحافّة والتطبيق والعامل بـcorrelation_id واحد». Paste a correlation id into the variable above -- it is the `X-Correlation-Id` header on every response and the `correlation_id` field of every RFC 9457 problem body, so a user reporting a failure can hand you one. `correlation_id` is STRUCTURED METADATA, not a label: it has one value per request, and a label with that cardinality would take Loki down long before the platform (the same rule 0.2 applied to metrics). Leave the variable empty to see the whole stack unfiltered.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Ascending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "{stack=\"aizzak\"} | correlation_id=`$correlation_id`",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "row",
+      "title": "ما الذي يفشل الآن",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "أخطاء كلّ الخدمات",
+      "description": "Every ERROR line the stack has emitted, newest last. `level` IS a label (five bounded values), so this filter is an index lookup rather than a scan -- which is what makes it usable while a load run is in flight.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 14,
+        "x": 0,
+        "y": 15
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Ascending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "{stack=\"aizzak\", level=\"ERROR\"}",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "معدّل الأسطر لكلّ خدمة",
+      "description": "Lines per second by service. Reading it as VOLUME is the point: a service that goes silent under load has either stopped working or stopped being collected, and both look identical on a metrics dashboard. The `alloy`/`loki` series are the pipeline reporting on itself.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 10,
+        "x": 14,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "sum by (service) (rate({stack=\"aizzak\"}[$__auto]))",
+          "legendFormat": "{{service}}",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "الحافّة",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "طلبات الحافّة حسب الحالة",
+      "description": "nginx's own access log, counted by status class. Deliberately NOT the same number as `aizzak_http_requests_total` (step 0.2): that one is what the APP served, this one is what the EDGE answered -- and the gap between them is exactly the `limit_req` rejections and the 404s the edge answers locally, which never reach the app to be counted.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "sum by (status) (rate({stack=\"aizzak\", service=\"nginx\"} | json | __error__=`` [$__auto]))",
+          "legendFormat": "{{status}}",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "أبطأ ما مرّ بالحافّة (> 1s)",
+      "description": "Edge lines whose total `duration_s` exceeded one second -- the budget `07 §2` sets for a synchronous read is 150ms p95, so anything here is far outside it. Each line carries the `correlation_id` that the panel at the top of this dashboard takes.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Ascending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "{stack=\"aizzak\", service=\"nginx\"} | json | duration_s > 1",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "المسار غير المتزامن",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "فشلُ المعالجات والرسائل الميتة",
+      "description": "The two lines an operator goes looking for when an event never produced its effect: `handler_failed` (the handler raised; the entry stays pending and is redelivered) and `dead_lettered` (attempt N=5; the entry moved to `<stream>.dlq`). Since 0.6 both carry the `correlation_id` of the REQUEST that produced the event -- so a worker traceback and the API 500 that caused it are one query apart.",
+      "datasource": {
+        "type": "loki",
+        "uid": "aizzak-loki"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Ascending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "aizzak-loki"
+          },
+          "expr": "{stack=\"aizzak\", service=~\"worker-.*|outbox-relay\"} |~ \"handler_failed|dead_lettered|malformed_envelope|unroutable_envelope\"",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}

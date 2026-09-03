@@ -85,6 +85,25 @@ scrape_configs:
     static_configs:
       - targets: ["redis-exporter:9121"]
 
+  # ── The log pipeline (capacity 0.6) ──────────────────────────────────────
+  # A collector that quietly stops shipping looks EXACTLY like a quiet
+  # system -- the same failure `AizzakScrapeTargetDown` and
+  # `AizzakPgbouncerDown` were written for in 0.3, now applied to the
+  # pipeline that 0.6's whole acceptance criterion depends on. Both are
+  # ordinary (non-`optional`) targets, so `AizzakScrapeTargetDown` covers
+  # them the moment either dies.
+  #
+  # `alloy` also exports `loki_source_file_*` and the drop counters this
+  # repo's own `stage.drop` names (`not_this_project`), which is how a
+  # sudden gap in the store is told apart from a sudden quiet in the stack.
+  - job_name: alloy
+    static_configs:
+      - targets: ["alloy:12345"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
   # ── Optional target: NOT started by a default `docker compose up` ─────────
   # `tier: optional` is read by `alerts.yml`'s `AizzakScrapeTargetDown` rule,
   # which excludes it. Without that label an absent cAdvisor would hold a

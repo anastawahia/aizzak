@@ -1,0 +1,114 @@
+# Loki -- the searchable store capacity step 0.6 asks for.
+#
+# «مجمَّعةٌ في مخزنٍ واحدٍ قابلٍ للبحث» (docs/capacity-plan.md, 0.6), and the
+# reason the step sits in the MEASUREMENT wave rather than a later one: when
+# p99 rises for two minutes the metric says «حدث» and only the log says
+# «لماذا», and without aggregation that diagnosis is `docker logs` against
+# eighteen containers whose timestamps do not line up.
+#
+# ── Deployment shape: single binary, filesystem, no object store ───────────
+# `-target=all` in one container with a local volume. This is Loki's own
+# "monolithic" mode and it is the honest fit for what §0 targets: 500 users on
+# ONE host (`ق-2` is not even signed yet). The alternative -- the read/write/
+# backend split against S3 -- buys horizontal scale nothing here needs and
+# costs three more services plus a MinIO bucket to keep alive during exactly
+# the load runs whose failures we are trying to read about.
+#
+# ⚠️ NOT a durability tier. This store is for diagnosis, not for the audit
+# trail: `platform.audit_log` in Postgres is the record of who did what
+# (01 §4), replicated and backed up with the database. Losing this volume
+# loses the ability to investigate last week's incident, not the evidence of
+# it. That is why retention below is short and why nothing consults Loki to
+# make a decision.
+
+auth_enabled: false
+# ⚠️ Deliberate, and bounded by the network -- the same boundary `prometheus`
+# already draws (`docker-compose.yml`, and the `expose:`-not-`ports:` argument
+# in `api/metrics.py`'s docstring). Loki's multi-tenancy is a header
+# (`X-Scope-OrgID`), not an authentication mechanism; turning it on here would
+# add a header to every write and every query and authenticate nobody.
+# Anything that can reach `loki:3100` on the Compose network is already inside.
+
+server:
+  http_listen_port: 3100
+  # Loki logs one line per HTTP request at INFO by default -- and Alloy pushes
+  # continuously, so at INFO this container's OWN logs become a meaningful
+  # share of what it is being asked to store. A log collector that is a top
+  # producer of logs is a collector measuring itself.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    # TSDB + schema v13 -- the only combination Loki 3.x accepts for a new
+    # deployment, and the one that makes structured metadata (below) possible.
+    # `from` is the date this schema became active; it must never move
+    # backwards past data already written under it.
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # ── The two limits that actually bite on a load run ──────────────────────
+  # A k6 peak profile is 300 rps through the edge, and every request produces
+  # an nginx line plus one or more app lines. Loki's defaults (4MB/s ingestion,
+  # 6MB burst) are sized for a quiet service and would start returning 429 to
+  # Alloy in the middle of exactly the run being measured -- which shows up as
+  # gaps in the store rather than as an error anyone notices.
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+
+  # ⚠️ REJECTS OLD LINES, and this is the setting that silently eats a
+  # backfill. Alloy replays a container's whole log file when it first sees it
+  # (there is no saved read position on a fresh volume), so on the very first
+  # start every line older than this window is dropped with
+  # `entry too far behind`. 168h is one week: long enough that a first start
+  # ingests the history that is actually on disk (the json-file driver keeps
+  # 3 x 10MB per container), short enough that a clock skew cannot inject
+  # month-old lines into a live query.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+  # Retention. 336h = 14 days, chosen against `§7` item 2's eight-hour average
+  # profile: an investigation into a run has to survive the weekend after it,
+  # and nothing here is the system of record (see the header). The compactor
+  # below is what makes this number take effect -- without it this line is
+  # decoration and the volume grows forever.
+  retention_period: 336h
+
+  # Structured metadata is how a high-cardinality field (`correlation_id`,
+  # one distinct value PER REQUEST) is stored without becoming a label. This
+  # is the same discipline `0.2` wrote into the metrics: «كلُّ عَلَمٍ منخفضُ
+  # التعدّد» -- a correlation-id LABEL would mint a new Loki stream per
+  # request and take the store down long before the platform.
+  allow_structured_metadata: true
+
+compactor:
+  working_directory: /loki/compactor
+  # `retention_enabled` is off by default, which makes `retention_period`
+  # above a promise nothing keeps. Both lines are required; either alone is a
+  # misconfiguration that looks correct.
+  retention_enabled: true
+  delete_request_store: filesystem
+
+# Loki phones grafana.com on start unless told not to. The same posture the
+# `grafana` service already takes (`GF_ANALYTICS_*`) and the `embedding`
+# service takes (`HF_HUB_OFFLINE`): this platform makes no outbound call
+# nobody asked for, and on an air-gapped host it is a slow start for nothing.
+analytics:
+  reporting_enabled: false

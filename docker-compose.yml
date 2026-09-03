@@ -97,6 +97,26 @@ x-app-logging: &app-logging
     options:
       max-size: "10m"
       max-file: "3"
+      # ── Capacity 0.6: the service name, carried INSIDE the log file ───────
+      # The json-file driver stamps the named container labels onto every line
+      # it writes, as `"attrs":{…}` next to `log`/`stream`/`time` (measured on
+      # this host before the collector was designed around it). Compose already
+      # applies both of these labels to every container it creates, so this ONE
+      # line -- in the anchor every service in this file merges -- is what lets
+      # `alloy` label each line with the service that wrote it while holding
+      # nothing but a READ-ONLY bind of the log directory.
+      #
+      # ⚠️ The alternative is the published recipe: mount /var/run/docker.sock
+      # into the collector so it can ask the API for container names. That is
+      # root on the host, the same capability step 0.3 put `cadvisor` behind an
+      # opt-in profile to avoid granting for free -- and 0.6, unlike container
+      # metrics, cannot be opt-in. See `deploy/alloy/config.alloy`'s header.
+      #
+      # ⚠️ Changing a `logging:` option requires RECREATING a container; a
+      # running one keeps the options it was created with. `docker compose up
+      # -d` does that, `restart` does not -- a stack restarted rather than
+      # recreated ships lines with no `attrs` and lands them all unlabelled.
+      labels: "com.docker.compose.service,com.docker.compose.project"
 
 # `host.docker.internal` -- which OLLAMA_BASE_URL defaults to above -- is a
 # Docker DESKTOP convenience that does not exist on Linux Docker: the name has
@@ -1180,6 +1200,89 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
+  # ── The log store and its collector (capacity 0.6) ────────────────────────
+  # «سجلٌّ بصيغة JSON لكلّ خدمة … مجمَّعةٌ في مخزنٍ واحدٍ قابلٍ للبحث», and the
+  # reason it is in the MEASUREMENT wave: when p99 rises for two minutes the
+  # metric says THAT it happened and only the log says WHY, and without a
+  # store that diagnosis is `docker logs` against eighteen containers whose
+  # timestamps do not line up.
+  #
+  # Loki is `expose`-only, on the same trust boundary as `prometheus` and for
+  # the same reason -- and one step stronger here, because these lines carry
+  # far more than a counter does. Grafana proxies it; nothing else needs it.
+  loki:
+    image: grafana/loki:3.5.7
+    command:
+      - "-config.file=/etc/loki/loki.yml"
+    volumes:
+      - ./deploy/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    expose:
+      - "3100"
+    healthcheck:
+      # `/ready` and NOT `/metrics` or the root: Loki answers HTTP long before
+      # its ingester has joined the ring, and a collector that starts pushing
+      # into that window gets 5xx it will not retry forever.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # The collector. Reads every container's json-file log off a READ-ONLY bind
+  # and pushes to Loki -- with NO Docker socket, which is the whole design and
+  # is argued in full in deploy/alloy/config.alloy's header (short version: the
+  # socket is root on the host, 0.3 put cadvisor behind an opt-in profile
+  # rather than grant it for free, and 0.6 cannot be opt-in).
+  alloy:
+    image: grafana/alloy:v1.10.2
+    depends_on:
+      loki:
+        condition: service_healthy
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    volumes:
+      - ./deploy/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # ⚠️ READ-ONLY, and the only host path this container sees. Docker writes
+      # every container's log to <id>/<id>-json.log under here; the service
+      # name rides inside each line as `attrs` (see `x-app-logging` above), so
+      # nothing needs to be asked of the Docker API.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # Read positions. Without a persisted cursor, every restart re-ships the
+      # whole retained history of every container and the store fills with
+      # duplicates of lines it already holds.
+      - alloy-data:/var/lib/alloy/data
+    expose:
+      - "12345"
+    healthcheck:
+      # ⚠️ `bash` and `/dev/tcp`, not `wget` -- the Alloy image ships NEITHER
+      # wget NOR curl NOR nc (measured: the first version of this healthcheck
+      # failed with `exec: "wget": executable file not found`, so the container
+      # ran perfectly and reported itself unhealthy forever). `bash` IS there,
+      # and its `/dev/tcp` pseudo-device is what turns it into an HTTP client;
+      # `CMD-SHELL` would not work either, because /bin/sh here is dash and
+      # /dev/tcp is a bash feature.
+      #
+      # `/-/ready` and not a bare TCP connect: Alloy binds the port before its
+      # components have loaded, and a config it refuses to parse leaves a
+      # process that accepts connections and collects nothing.
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/127.0.0.1/12345 && printf 'GET /-/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    <<: *app-logging
+
 volumes:
   postgres-data:
   redis-data:
@@ -1198,6 +1301,14 @@ volumes:
   # from deploy/grafana/dashboards, so losing this volume loses a password,
   # never a panel.
   grafana-data:
+  # Loki's chunks + index (capacity 0.6). A named volume for the same reason
+  # `prometheus-data` is one: the lines explaining a failed load run must
+  # survive the `docker compose up -d --force-recreate` that nobody thought of
+  # as destructive. NOT a durability tier all the same -- see deploy/loki/loki.yml.
+  loki-data:
+  # Alloy's read positions, one entry per log file. Losing it is not data loss;
+  # it is every line being shipped a second time.
+  alloy-data:
   # The unseal key + root token `deploy/vault/start.sh` writes at
   # `operator init` time. DELIBERATELY a separate volume from vault-data:
   # the data directory stays exactly what Vault itself owns, and this one

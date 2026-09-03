@@ -122,6 +122,24 @@ def _bind_target(service: dict[str, Any], host_path: str) -> str | None:
     return None
 
 
+def _provisioned_datasource_uids() -> set[str]:
+    """Every uid Grafana will actually mint, across all provisioning files.
+
+    One file per datasource is this repo's shape (``prometheus.yml``,
+    ``loki.yml``); globbing rather than naming them keeps a third from being
+    added without this guard noticing.
+    """
+    uids: set[str] = set()
+    files = sorted(_DATASOURCES.glob("*.yml"))
+    assert files, f"{_DATASOURCES}: no datasource provisioning -- every panel would be unwired"
+    for path in files:
+        for source in _load_yaml(path)["datasources"]:
+            uid = source.get("uid")
+            assert uid, f"{path.name}: datasource {source.get('name')!r} has no pinned uid"
+            uids.add(uid)
+    return uids
+
+
 # ── prometheus.yml against the Compose topology ────────────────────────────
 
 
@@ -225,7 +243,16 @@ def test_the_scraper_and_exporters_publish_no_host_port() -> None:
     every request this platform serves; the exporters hold a Postgres
     superuser session. None of it belongs on a host interface."""
     services = _compose()["services"]
-    for name in ("prometheus", "pgbouncer-exporter", "redis-exporter", "cadvisor"):
+    for name in (
+        "prometheus",
+        "pgbouncer-exporter",
+        "redis-exporter",
+        "cadvisor",
+        # Added by 0.6, and the boundary matters MORE here than for a counter:
+        # these two hold the log lines themselves.
+        "loki",
+        "alloy",
+    ):
         assert not services[name].get("ports"), (
             f"{_COMPOSE.name}: `{name}` must be `expose`-only -- publishing it puts "
             "operator information (or, for the exporters, a superuser session) on a host "
@@ -271,12 +298,13 @@ def test_every_panel_points_at_the_provisioned_datasource_uid() -> None:
     """Left unset, Grafana mints a RANDOM datasource uid at first start, and
     the committed dashboards then reference a uid that exists on nobody
     else's machine -- every panel renders "Datasource not found". Pinning the
-    uid is only half the fix; this is the half that keeps it pinned."""
-    sources = _load_yaml(_DATASOURCES / "prometheus.yml")["datasources"]
-    uids = {source["uid"] for source in sources}
-    assert len(sources) == 1, (
-        f"{_DATASOURCES}: expected exactly one datasource; the dashboards name a single uid"
-    )
+    uid is only half the fix; this is the half that keeps it pinned.
+
+    Across EVERY provisioned datasource since 0.6, not just the scraper: the
+    log dashboard's panels name ``aizzak-loki`` and would have been exempt
+    from this guard entirely if it kept reading one file.
+    """
+    uids = _provisioned_datasource_uids()
     for path, dashboard in _dashboards():
         for panel in _panels(dashboard):
             for holder in [panel, *panel.get("targets", [])]:

@@ -44,6 +44,7 @@ from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.errors import UnauthorizedError
+from app.framework.observability.context import workspace_id_var
 from app.framework.ports.idempotency_store import IdempotencyStore
 from app.framework.ports.system_stats import SystemStatsSource
 from app.framework.providers.catalog import ModelCatalog
@@ -352,6 +353,14 @@ def current_context(
     route ran, so it is always present here.
     """
     correlation_id: Uuid = request.state.correlation_id
+    # Capacity 0.6: the second of the three log-binding sites. It is HERE and
+    # not in the auth middleware because this is the first point at which the
+    # tenant is both known and authoritative -- `authenticate` mints its own
+    # provisioning correlation id and returns a `Principal`, but the decision
+    # that this request runs as this workspace is made on the line below. The
+    # formatter pseudonymises the value before it is ever written
+    # (`observability/pseudonymity.py`); nothing here is logged raw.
+    workspace_id_var.set(principal.workspace_id)
     return ExecutionContext(
         workspace_id=principal.workspace_id,
         user_id=principal.user_id,

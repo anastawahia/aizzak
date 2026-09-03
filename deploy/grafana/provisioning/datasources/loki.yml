@@ -1,0 +1,40 @@
+# Grafana's second datasource -- the log store (capacity 0.6).
+#
+# The same rules `prometheus.yml` beside this file argues for, and for the same
+# reasons: a FIXED `uid`, because `deploy/grafana/dashboards/*.json` reference
+# it verbatim and a random one would make every checked-in log panel render
+# "Datasource not found" on everyone else's machine; and no credentials,
+# because Loki is `expose`-only on the Compose network with `auth_enabled:
+# false` and anything that can reach `loki:3100` is already inside.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: aizzak-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    # Prometheus keeps `isDefault`. A panel that forgets to name its datasource
+    # should fall back to metrics, which is what most panels in this repo are.
+    isDefault: false
+    editable: false
+    jsonData:
+      # ── The link that makes a metric spike clickable ──────────────────────
+      # A trace/correlation id in a log line becomes a link to every OTHER line
+      # sharing it. This is the acceptance criterion of 0.6 -- «استعلامٌ واحد
+      # يجمع كلّ أسطر طلبٍ فاشلٍ» -- wired as a click instead of a query
+      # somebody has to type from memory at 3am.
+      #
+      # `datasourceUid` points back at THIS datasource: the join is log-to-log
+      # (edge → app → worker), not log-to-trace. There is no tracing backend in
+      # this stack and pointing a derived field at one that does not exist
+      # produces a link that silently 404s.
+      derivedFields:
+        - name: correlation_id
+          # Matches the field as the app's JSON formatter writes it and as
+          # nginx's `log_format aizzak_json` writes it -- one regex for both,
+          # which is why the two formats were given the same field name.
+          matcherRegex: '"correlation_id":"([^"]+)"'
+          datasourceUid: aizzak-loki
+          url: '{stack="aizzak"} | correlation_id=`$${__value.raw}`'
+          urlDisplayLabel: "كلّ أسطر هذا الطلب"
