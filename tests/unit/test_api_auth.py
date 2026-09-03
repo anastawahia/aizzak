@@ -36,6 +36,7 @@ from app.api.middleware.auth import ApiAuthenticator
 from app.api.v1.dependencies import ApiServices, Context
 from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
+from app.framework.auth.principal_cache import CachedPrincipal, PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ForbiddenError, UnauthorizedError
@@ -93,6 +94,9 @@ from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.support_workspace_usage import build_workspace_usage
 
 _UID = "firebase-uid-1"
+# The uid of the account the platform-admin routes act ON — never the
+# caller's own, which those routes refuse by name.
+_TARGET_UID = "target-firebase-uid"
 _W1 = "018f0000-0000-7000-8000-0000000000w1"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _EMAIL = "someone@example.com"
@@ -320,6 +324,7 @@ class _FakePlatformRoles:
         return PlatformRoleChange(
             user_id=target,
             workspace_id=_W1,
+            firebase_uid=_TARGET_UID,
             role=role,
             enabled=enabled,
             changed=changed,
@@ -344,8 +349,10 @@ def _build(
     active: bool = True,
     roles: frozenset[str] = frozenset(),
     revocations: SessionRevocationList | None = None,
+    principals: PrincipalCache | None = None,
+    identities: dict[str, Identity] | None = None,
 ) -> tuple[ApiAuthenticator, _FakeProvisioning, _FakeAccess]:
-    verifier = _FakeVerifier({"t": identity or _identity()}, failure)
+    verifier = _FakeVerifier(identities or {"t": identity or _identity()}, failure)
     provisioning = _FakeProvisioning(active=active)
     access = _FakeAccess(roles)
     authenticator = ApiAuthenticator(
@@ -354,6 +361,10 @@ def _build(
         access,
         access,
         revocations or SessionRevocationList(DictCache()),
+        # Default OFF, exactly as the constructor's default is: every test
+        # written before capacity-plan 1.1 asserts the uncached behaviour,
+        # and those assertions must keep meaning what they meant.
+        principals,
     )
     return authenticator, provisioning, access
 
@@ -790,6 +801,11 @@ def _make_app(
             ),
             presence=_FakePresence(),
             session_revocations=authenticator.revocations,
+            # The SAME object the authenticator reads, so a route's
+            # invalidation and the next authentication meet in one store —
+            # which is the only wiring in which 1.1's security criterion
+            # can be observed at all.
+            principal_cache=authenticator.principals,
             # Left unwired by default so the fail-closed branch is the one a
             # test has to opt OUT of, not the one it has to remember.
             system_stats=system_stats,
@@ -1265,3 +1281,274 @@ def test_logout_revokes_the_current_subject_before_local_sign_out() -> None:
     refused = client.get("/api/v1/_ctx", headers={"Authorization": "Bearer t"})
     assert refused.status_code == 401
     assert refused.json()["code"] == "auth.invalid_token"
+
+
+# --------------------------------------------------------------------------- #
+# The principal cache — capacity-plan wave 1, step 1.1                        #
+#                                                                             #
+# Everything above this line asserts the UNCACHED path, and keeps doing so:   #
+# `_build` leaves the cache off by default exactly as the constructor does,   #
+# so those assertions still mean what they meant. What follows is the cached  #
+# path, and it is written around the two acceptance criteria the plan states  #
+# for this step — the load one (how many database round trips an              #
+# authenticated request costs) and the security one (that a role withdrawal   #
+# or an account disable still bites on the very next request).                #
+# --------------------------------------------------------------------------- #
+def _target_identity() -> Identity:
+    """A SECOND subject — the account a platform-admin route acts on.
+
+    The routes refuse an administrator acting on their own account by name, so
+    every invalidation test needs two identities: the caller, and the one whose
+    next request has to see the change.
+    """
+    return Identity(
+        firebase_uid=_TARGET_UID,
+        email="target@example.com",
+        email_verified=True,
+        claims={"sub": _TARGET_UID},
+    )
+
+
+def _cached_build(
+    *, roles: frozenset[str] = frozenset(), ttl_s: int = 60
+) -> tuple[ApiAuthenticator, _FakeProvisioning, _FakeAccess, PrincipalCache]:
+    principals = PrincipalCache(DictCache(), ttl_s=ttl_s)
+    authenticator, provisioning, access = _build(
+        roles=roles,
+        principals=principals,
+        identities={"t": _identity(), "u": _target_identity()},
+    )
+    return authenticator, provisioning, access, principals
+
+
+# --- the load criterion ----------------------------------------------------- #
+async def test_a_repeat_request_costs_no_database_round_trip_at_all() -> None:
+    """`ح-2`, and the whole reason this step exists: the two reads below ran on
+    EVERY request, before any of the work the caller asked for. Ten
+    authentications now cost the one pair the first of them paid — which is the
+    plan's "≥2 → ≤0.05" expressed as a count instead of an average."""
+    authenticator, provisioning, access, _principals = _cached_build()
+
+    for _ in range(10):
+        await authenticator.authenticate("t")
+
+    assert provisioning.calls == 1
+    assert len(access.reads) == 1
+
+
+async def test_a_cache_hit_returns_the_principal_the_database_had_resolved() -> None:
+    """A cheaper answer that is a DIFFERENT answer is not a cache."""
+    authenticator, _provisioning, _access, _principals = _cached_build(roles=frozenset({"member"}))
+
+    first = await authenticator.authenticate("t")
+    second = await authenticator.authenticate("t")
+
+    assert first == second
+
+
+async def test_the_first_login_still_seeds_its_owner_before_anything_is_cached() -> None:
+    """The cache is consulted BEFORE provisioning, so a bug that stored an
+    entry too eagerly would skip the owner grant and leave a brand-new user
+    refused by every guard. The miss path has to run whole."""
+    authenticator, _provisioning, access, _principals = _cached_build()
+
+    principal = await authenticator.authenticate("t")
+
+    assert access.seeded == [(_W1, _U1)]
+    assert principal.roles == frozenset({"owner"})
+
+
+async def test_nothing_is_cached_when_the_deployment_wires_no_cache() -> None:
+    """`AUTH_PRINCIPAL_CACHE_TTL_S=0` builds no cache, and the path must then
+    cost not even a Redis round trip — a baseline measured with the
+    optimisation half-installed answers nothing (`م-8`)."""
+    authenticator, provisioning, access = _build()
+
+    await authenticator.authenticate("t")
+    await authenticator.authenticate("t")
+
+    assert (provisioning.calls, len(access.reads)) == (2, 2)
+
+
+# --- the security criterion: what a cache hit does NOT skip ----------------- #
+async def test_a_revoked_subject_is_refused_even_with_a_warm_cache() -> None:
+    """The ordering that makes every other claim here safe: the denylist runs
+    BEFORE the cache is consulted, so `python -m app.ops.revoke` — and the
+    admin routes that call it — still cut a session off on its next request,
+    whatever is warm in Redis."""
+    revocations = SessionRevocationList(DictCache())
+    principals = PrincipalCache(DictCache())
+    authenticator, _provisioning, _access = _build(revocations=revocations, principals=principals)
+    await authenticator.authenticate("t")  # warms the entry
+
+    await revocations.revoke(_UID)
+
+    with pytest.raises(UnauthorizedError) as raised:
+        await authenticator.authenticate("t")
+    assert raised.value.code == "auth.invalid_token"
+
+
+async def test_a_cached_inactive_principal_is_still_a_403() -> None:
+    """An entry stored by a replica that DID see a disabled account must refuse
+    here too — otherwise the cache would be a way to launder a 403 into a 200.
+    Written directly into the store, because no code path in THIS version
+    produces one: the miss path raises before it caches."""
+    authenticator, _provisioning, _access, principals = _cached_build()
+    await principals.put(
+        _UID,
+        CachedPrincipal(workspace_id=_W1, user_id=_U1, roles=frozenset(), active=False),
+    )
+
+    with pytest.raises(ForbiddenError):
+        await authenticator.authenticate("t")
+
+
+async def test_a_disabled_account_is_never_written_to_the_cache() -> None:
+    """The refusal happens before the write, so a 403 leaves nothing behind
+    that a later request could read back."""
+    principals = PrincipalCache(DictCache())
+    authenticator, _provisioning, _access = _build(active=False, principals=principals)
+
+    with pytest.raises(ForbiddenError):
+        await authenticator.authenticate("t")
+
+    assert await principals.get(_UID) is None
+
+
+async def test_one_subject_holds_one_principal_across_two_authentications() -> None:
+    """ "لا يعبر بين مساحتَي عمل" — the plan's own words. There is one key per
+    subject and it carries the workspace it was resolved with, so a second
+    identity cannot be served the first one's tenant."""
+    authenticator, _provisioning, _access, _principals = _cached_build()
+
+    caller = await authenticator.authenticate("t")
+    target = await authenticator.authenticate("u")
+
+    assert caller.firebase_uid == _UID
+    assert target.firebase_uid == _TARGET_UID
+
+
+# --- the security criterion, through the real routes ------------------------ #
+def test_a_role_change_takes_effect_on_the_targets_very_next_request() -> None:
+    """1.1's security criterion, end to end and through the REAL route.
+
+    The route is the only place this is enforced: nothing else on the
+    role-change path writes anything the authentication path re-reads, so
+    without its `invalidate` call a demotion would wait out the TTL. That is
+    the difference between a cache and a hole.
+    """
+    authenticator, _provisioning, access, _principals = _cached_build(
+        roles=frozenset({"platform_admin"})
+    )
+    client = TestClient(_make_app(authenticator, roles=_FakePlatformRoles()))
+    target_id = "018f0000-0000-7000-8000-0000000000a1"
+
+    asyncio.run(authenticator.authenticate("t"))  # the administrator, warm
+    before = asyncio.run(authenticator.authenticate("u"))
+    access.roles = frozenset({"viewer"})  # what the route's own write just did
+    response = client.patch(
+        f"/api/v1/admin/users/{target_id}/roles/workspace",
+        headers={"Authorization": "Bearer t"},
+        json={"role": "admin", "enabled": True, "reason": "Support escalation"},
+    )
+    after = asyncio.run(authenticator.authenticate("u"))
+
+    assert response.status_code == 200
+    # The shared role store hands both identities the same set (see
+    # `_FakeAccess`); what matters is that the target's SECOND read saw the
+    # change and its first did not.
+    assert before.roles == frozenset({"owner", "platform_admin"})
+    assert after.roles == frozenset({"viewer"})
+
+
+def test_without_that_invalidation_the_stale_roles_would_have_survived() -> None:
+    """The control for the test above. It asserts the cache is REAL — that the
+    fresh roles in that test came from the route's invalidation and not from a
+    cache that never held anything."""
+    authenticator, _provisioning, access, _principals = _cached_build()
+
+    before = asyncio.run(authenticator.authenticate("u"))
+    access.roles = frozenset({"viewer"})
+    after = asyncio.run(authenticator.authenticate("u"))
+
+    assert before.roles == after.roles == frozenset({"owner"})
+
+
+def test_disabling_an_account_still_bites_on_its_next_request() -> None:
+    """The other half of 1.1's security criterion — and the reason `active`
+    may be cached at all. The guarantee is not carried by the freshness of
+    that flag; it is carried by the denylist the route writes in the same
+    handler, which step 1b checks uncached before the cache is consulted."""
+    authenticator, _provisioning, _access, _principals = _cached_build(
+        roles=frozenset({"platform_admin"})
+    )
+    client = TestClient(_make_app(authenticator, accounts=_FakePlatformAccounts()))
+    target_id = "018f0000-0000-7000-8000-0000000000a1"
+
+    asyncio.run(authenticator.authenticate("u"))  # a warm entry for the victim
+    response = client.patch(
+        f"/api/v1/admin/users/{target_id}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "disabled", "reason": "Confirmed security incident"},
+    )
+
+    assert response.status_code == 200
+    with pytest.raises(UnauthorizedError):
+        asyncio.run(authenticator.authenticate("u"))
+
+
+def test_re_enabling_an_account_restores_it_on_its_next_request() -> None:
+    """Re-enable is the branch that NEEDS the cache invalidation rather than
+    the denylist: `clear` un-blocks the subject, and an entry cached during
+    the disabled window would otherwise keep answering for the rest of the
+    TTL."""
+    authenticator, _provisioning, _access, principals = _cached_build(
+        roles=frozenset({"platform_admin"})
+    )
+    accounts = _FakePlatformAccounts()
+    client = TestClient(_make_app(authenticator, accounts=accounts))
+    target_id = "018f0000-0000-7000-8000-0000000000a1"
+    asyncio.run(
+        principals.put(
+            _TARGET_UID,
+            CachedPrincipal(workspace_id=_W1, user_id=_U1, roles=frozenset(), active=False),
+        )
+    )
+
+    disabled = client.patch(
+        f"/api/v1/admin/users/{target_id}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "disabled", "reason": "Confirmed security incident"},
+    )
+    enabled = client.patch(
+        f"/api/v1/admin/users/{target_id}/status",
+        headers={"Authorization": "Bearer t"},
+        json={"status": "active", "reason": "Issue resolved"},
+    )
+
+    assert disabled.status_code == enabled.status_code == 200
+    assert asyncio.run(principals.get(_TARGET_UID)) is None
+    # And resolving again succeeds rather than replaying the stored `false`.
+    assert asyncio.run(authenticator.authenticate("u")).user_id == _U1
+
+
+def test_deleting_an_account_leaves_no_principal_behind_in_the_store() -> None:
+    """The denylist already refuses this subject, so this changes no outcome —
+    it stops a tombstoned user's workspace and roles from sitting in Redis
+    with no reader for the rest of the TTL."""
+    authenticator, _provisioning, _access, principals = _cached_build(
+        roles=frozenset({"platform_admin"})
+    )
+    client = TestClient(_make_app(authenticator, accounts=_FakePlatformAccounts()))
+    target_id = "018f0000-0000-7000-8000-0000000000a1"
+    asyncio.run(authenticator.authenticate("u"))
+
+    response = client.request(
+        "DELETE",
+        f"/api/v1/admin/users/{target_id}",
+        headers={"Authorization": "Bearer t"},
+        json={"reason": "Account closure requested"},
+    )
+
+    assert response.status_code == 200
+    assert asyncio.run(principals.get(_TARGET_UID)) is None

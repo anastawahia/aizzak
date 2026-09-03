@@ -37,6 +37,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.framework.agent_runtime.registry import AgentRegistry
+from app.framework.auth.principal_cache import PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_deletion import DeleteFileService
@@ -267,6 +268,16 @@ class ApiServices:
     # its state transition commits. Optional preserves small hermetic apps;
     # production always supplies the shared, process-wide list.
     session_revocations: SessionRevocationList | None = None
+    # capacity-plan 1.1. The four platform-admin routes that can change a role
+    # or an account's state drop the caller's cached principal after the
+    # database commits, so the change is seen on the caller's NEXT request
+    # rather than at the end of a TTL. `None` here is BOTH a hermetic app and
+    # a production deployment running `AUTH_PRINCIPAL_CACHE_TTL_S=0` — in
+    # neither is there anything to invalidate, which is why the routes may
+    # skip it without failing closed the way `session_revocations` does. The
+    # asymmetry is deliberate: a missing denylist would silently stop denying;
+    # a missing cache silently stops caching.
+    principal_cache: PrincipalCache | None = None
     # The D-16 routing table, read-only (02 §3.5.1). Typed as the NARROW
     # catalogue port and never as `ProviderResolver`: the resolver's
     # `ResolvedProvider` carries a decrypted `api_key`, so holding the wide

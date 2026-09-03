@@ -75,6 +75,7 @@ from app.api.v1.routers.usage import router as usage_router
 from app.api.v1.routers.workflows import router as workflows_router
 from app.api.v1.routers.workspace import router as workspace_router
 from app.api.v1.websocket.streaming import WsAuthenticator, create_ws_router
+from app.framework.auth.principal_cache import PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.di.composition_root import CompositionRoot
 from app.framework.di.lifecycle import Disposable, dispose_all
@@ -556,6 +557,17 @@ def create_production_app() -> FastAPI:
     """
     root = CompositionRoot.from_env()
     session_revocations = SessionRevocationList(root.cache)
+    # capacity-plan wave 1 step 1.1. Built HERE beside the denylist rather
+    # than inside `CompositionRoot`, for the reason the denylist is: both are
+    # thin objects over `root.cache` that only the API process has a use for.
+    # `0` builds NOTHING — see `AuthSettings`: a baseline run must not pay
+    # even a Redis round trip for an optimisation it is measuring the absence
+    # of.
+    principal_cache = (
+        PrincipalCache(root.cache, ttl_s=root.settings.auth.principal_cache_ttl_s)
+        if root.settings.auth.principal_cache_ttl_s > 0
+        else None
+    )
     services = ApiServices(
         settings=root.settings,
         orchestrator=root.orchestrator,
@@ -591,6 +603,7 @@ def create_production_app() -> FastAPI:
         integrations=root.integrations,
         admin=root.admin,
         session_revocations=session_revocations,
+        principal_cache=principal_cache,
         authorization=root.authorization,
         idempotency=root.idempotency,
         # Narrowed to `ModelCatalog` at the boundary (see `ApiServices.models`):
@@ -627,6 +640,7 @@ def create_production_app() -> FastAPI:
         root.seeding,
         root.authorization,
         session_revocations,
+        principal_cache,
     )
 
     return create_app(

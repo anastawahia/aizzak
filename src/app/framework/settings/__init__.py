@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.framework.settings.settings import (
+    AuthSettings,
     DatabaseSettings,
     EventSettings,
     FirebaseSettings,
@@ -19,6 +20,7 @@ from app.framework.settings.settings import (
 )
 
 __all__ = [
+    "AuthSettings",
     "DatabaseSettings",
     "EventSettings",
     "FirebaseSettings",

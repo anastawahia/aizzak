@@ -68,6 +68,7 @@ DB_POOL_OVERFLOW_METRIC = "aizzak_db_pool_overflow"
 EVENT_LOOP_LAG_METRIC = "aizzak_event_loop_lag_seconds"
 RATE_LIMIT_REJECTIONS_METRIC = "aizzak_rate_limit_rejections_total"
 WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
+AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -152,6 +153,16 @@ ws_connections = Gauge(
     WS_CONNECTIONS_METRIC,
     "WebSocket sessions this process currently holds open.",
     multiprocess_mode="livesum",
+)
+
+auth_principal_cache_total = Counter(
+    AUTH_PRINCIPAL_CACHE_METRIC,
+    "Principal resolutions on the authentication path, by cache result. A "
+    "`miss` is exactly the request that paid the auth path's two database "
+    "round trips, so `rate(miss) / rate(hit+miss)` IS capacity-plan step "
+    "1.1's acceptance number -- database transactions per authenticated "
+    "request -- read off the platform rather than inferred from a pool gauge.",
+    ["result"],
 )
 
 

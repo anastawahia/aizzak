@@ -141,6 +141,26 @@ class FirebaseSettings(BaseModel):
     jwks_cache_ttl: int = 3600
 
 
+class AuthSettings(BaseModel):
+    """The authentication PATH's own knobs — not the identity provider's.
+
+    Separate from ``FirebaseSettings`` because that models the external issuer
+    (which project, how long its keys are cached) while this models what THIS
+    platform does with a verified identity. A deployment could swap the issuer
+    and keep every number here.
+
+    ``principal_cache_ttl_s`` is capacity-plan step 1.1's knob. **Zero means
+    the cache is not built at all** — not "a zero-second TTL": the Composition
+    Root wires ``None`` and the authentication path makes no Redis call for it
+    whatsoever, which is what a baseline run needs (`م-8` — a measurement taken
+    with the optimisation half-installed answers nothing).
+    """
+
+    model_config = _FROZEN
+
+    principal_cache_ttl_s: int = 60
+
+
 class OllamaSettings(BaseModel):
     model_config = _FROZEN
 
@@ -913,6 +933,9 @@ class Settings(BaseModel):
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     vault: VaultSettings = Field(default_factory=VaultSettings)
     firebase: FirebaseSettings = Field(default_factory=FirebaseSettings)
+    # capacity-plan wave 1 step 1.1 — the authentication PATH's knobs,
+    # beside the issuer's rather than inside them (see `AuthSettings`).
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     embedding_service: EmbeddingServiceSettings = Field(default_factory=EmbeddingServiceSettings)
     # rag-retrieval-plan.md §4 row 21 (`P-24`, س-21) — WHERE the cross-encoder

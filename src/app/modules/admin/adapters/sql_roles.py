@@ -28,6 +28,11 @@ users = Table(
     _metadata,
     Column("id", _uuid_col, primary_key=True),
     Column("workspace_id", _uuid_col, nullable=False),
+    # capacity-plan 1.1 — read for the SAME reason `sql_accounts.py` already
+    # reads it: it is what the caller needs to invalidate the sessions this
+    # change makes stale. The platform-admin write role already holds SELECT
+    # on it (`app.ops.provision`), so this adds no grant.
+    Column("firebase_uid", Text, nullable=False),
     schema="workspace",
 )
 role_assignments = Table(
@@ -118,7 +123,7 @@ class SqlPlatformRoleManager:
             target = (
                 (
                     await session.execute(
-                        select(users.c.id, users.c.workspace_id)
+                        select(users.c.id, users.c.workspace_id, users.c.firebase_uid)
                         .where(users.c.id == target_user_id)
                         .with_for_update()
                     )
@@ -129,6 +134,7 @@ class SqlPlatformRoleManager:
             if target is None:
                 raise AppError("platform user not found", code="common.not_found")
             workspace_id = target["workspace_id"]
+            firebase_uid = target["firebase_uid"]
             existing = (
                 (
                     await session.execute(
@@ -149,6 +155,7 @@ class SqlPlatformRoleManager:
                 return PlatformRoleChange(
                     user_id=target_user_id,
                     workspace_id=workspace_id,
+                    firebase_uid=firebase_uid,
                     role=role,
                     enabled=enabled,
                     changed=False,
@@ -210,6 +217,7 @@ class SqlPlatformRoleManager:
             return PlatformRoleChange(
                 user_id=target_user_id,
                 workspace_id=workspace_id,
+                firebase_uid=firebase_uid,
                 role=role,
                 enabled=enabled,
                 changed=True,

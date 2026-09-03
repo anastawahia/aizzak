@@ -14,6 +14,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.framework.settings.settings import (
+    AuthSettings,
     DatabaseSettings,
     EmbeddingServiceSettings,
     EventSettings,
@@ -91,6 +92,12 @@ class _EnvSettings(BaseSettings):
 
     firebase_project_id: str = Field("", alias="FIREBASE_PROJECT_ID")
     firebase_jwks_cache_ttl: int = Field(3600, alias="FIREBASE_JWKS_CACHE_TTL")
+
+    # capacity-plan 1.1. `0` does not mean a zero-second TTL -- it means the
+    # Composition Root builds NO principal cache, so a baseline run pays not
+    # even a Redis round trip for it. The upper bound is the contract's
+    # (`MAX_PRINCIPAL_CACHE_TTL_S`), stated once there and not repeated here.
+    auth_principal_cache_ttl_s: int = Field(60, alias="AUTH_PRINCIPAL_CACHE_TTL_S", ge=0)
 
     ollama_base_url: str = Field("http://ollama:11434", alias="OLLAMA_BASE_URL")
 
@@ -177,6 +184,7 @@ def load_settings() -> Settings:
             project_id=env.firebase_project_id,
             jwks_cache_ttl=env.firebase_jwks_cache_ttl,
         ),
+        auth=AuthSettings(principal_cache_ttl_s=env.auth_principal_cache_ttl_s),
         ollama=OllamaSettings(base_url=env.ollama_base_url),
         embedding_service=EmbeddingServiceSettings(url=env.embedding_service_url),
         events=EventSettings(

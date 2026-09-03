@@ -22,16 +22,33 @@ this order, on every single request:
 2. **Mirror the identity** — ``UserProvisioning.provision_on_login`` (05 §1.5),
    idempotent, which on a FIRST login mints the workspace and the user.
 3. **Refuse a disabled account** — the compensating control for v1's deliberate
-   "no revocation check" decision (``firebase_auth.py`` D7): the account's state
-   is read from the database on EVERY request with no cache whatsoever, so a
-   disabled account is locked out at once regardless of how much life its token
-   has left. This is the one alpha behaviour explicitly carried over
-   (``refs/auth-firebase.md`` §9: "يُعاد استخدامه — ضابط تعويضي يبقى صالحاً
-   مهما كوشِفت المفاتيح").
-4. **Resolve roles** — ``AuthorizationService.roles_of``, read fresh for the
-   same reason, and seeded with ``owner`` on the login that created the
-   workspace (``RoleSeeding``, 05 §1.5). Those roles ride the ``Principal`` into
-   ``ExecutionContext.roles``, which is what 6.4-ب's guards decide on.
+   "no revocation check" decision (``firebase_auth.py`` D7). This is the one
+   alpha behaviour explicitly carried over (``refs/auth-firebase.md`` §9:
+   "يُعاد استخدامه — ضابط تعويضي يبقى صالحاً مهما كوشِفت المفاتيح").
+4. **Resolve roles** — ``AuthorizationService.roles_of``, and seeded with
+   ``owner`` on the login that created the workspace (``RoleSeeding``, 05 §1.5).
+   Those roles ride the ``Principal`` into ``ExecutionContext.roles``, which is
+   what 6.4-ب's guards decide on.
+
+**Steps 2-4 are cached; step 1b is not, and that division is the whole design**
+(capacity plan wave 1, step 1.1 — bottleneck `ح-2`). Until this step, steps 2
+and 4 were two database round trips on every single request, spent before any
+of the work the caller asked for — the largest avoidable load on the connection
+pool at the plan's `§0` target. They now go through
+``framework/auth/principal_cache.py``, keyed by the Firebase subject, with an
+explicit invalidation from every platform-admin route that can change what they
+answer.
+
+Read literally, that gives up the sentence this docstring used to carry —
+"read from the database on EVERY request with no cache whatsoever". Read
+carefully, it does not, because since 3.79 the control that sentence describes
+is no longer the one enforcing it: the routes that disable and delete an
+account (``routers/admin.py``) write ``auth:revoked:<sub>`` in the same
+handler, and step **1b** — the denylist — is checked uncached on every request
+and runs BEFORE the cache is even consulted. An account disabled through the
+platform's own surface is therefore still refused on the very next request. An
+account disabled by a direct SQL write, around the API, is not: that is the one
+thing this step trades away, and it is traded knowingly (``docs/capacity-status.md``).
 
 **401 versus 403 is the whole error contract here**, inherited deliberately from
 alpha (``refs/auth-firebase.md`` §4): 401 is "we do not know who you are" — the
@@ -85,12 +102,14 @@ is reachable un-guarded.
 from __future__ import annotations
 
 from app.api.v1.dependencies import Principal
+from app.framework.auth.principal_cache import CachedPrincipal, PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ForbiddenError, UnauthorizedError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
-from app.framework.ports.auth_provider import AuthProvider
+from app.framework.observability.metrics import auth_principal_cache_total
+from app.framework.ports.auth_provider import AuthProvider, Identity
 from app.framework.types import Json
 from app.modules.access.ports.inbound import AuthorizationService, RoleSeeding
 from app.modules.workspace.ports.inbound import UserProvisioning
@@ -122,6 +141,7 @@ class ApiAuthenticator:
         seeding: RoleSeeding,
         authorization: AuthorizationService,
         revocations: SessionRevocationList,
+        principals: PrincipalCache | None = None,
     ) -> None:
         self._verifier = verifier
         self._provisioning = provisioning
@@ -132,11 +152,23 @@ class ApiAuthenticator:
         # deployment forgot. The Composition Root builds it from the same
         # process-wide `CacheProvider` everything else uses.
         self._revocations = revocations
+        # OPTIONAL, and the asymmetry with the line above is the point: this is
+        # a performance cache, not a control. `None` is a deployment that has
+        # set `AUTH_PRINCIPAL_CACHE_TTL_S=0` — and it must cost not even a
+        # Redis round trip, because a baseline is measured on it (`م-8`).
+        # Nothing about the platform's REFUSALS changes with it absent or
+        # present; that is the property step 1.1's security tests assert.
+        self._principals = principals
 
     @property
     def revocations(self) -> SessionRevocationList:
         """The shared denylist used by the authenticated session endpoints."""
         return self._revocations
+
+    @property
+    def principals(self) -> PrincipalCache | None:
+        """The shared principal cache the platform-admin routes invalidate."""
+        return self._principals
 
     async def authenticate(self, token: str) -> Principal:
         identity = await self._verifier.verify_token(token)
@@ -155,6 +187,18 @@ class ApiAuthenticator:
             # sending garbage", while the caller learns neither.
             _logger.warning("auth.identity_without_email", extra={"uid": identity.firebase_uid})
             raise UnauthorizedError(_INVALID_TOKEN_DETAIL, code="auth.invalid_token")
+
+        # Capacity plan 1.1. The two database round trips below are `ح-2`, and
+        # they resolve facts that change perhaps once a month. AFTER the two
+        # refusals above, never before: the denylist check is what makes a
+        # cached principal safe (`principal_cache.py`'s own docstring), so it
+        # can never be the thing the cache skips.
+        if self._principals is not None:
+            cached = await self._principals.get(identity.firebase_uid)
+            if cached is not None:
+                auth_principal_cache_total.labels(result="hit").inc()
+                return self._from_cache(cached, identity)
+            auth_principal_cache_total.labels(result="miss").inc()
 
         # Minted, not threaded through: `authenticate` is transport-agnostic and
         # the WebSocket handshake has no correlation id at all at this point
@@ -199,10 +243,48 @@ class ApiAuthenticator:
             await self._seeding.seed_owner(ctx, provisioned.user_id)
 
         roles = await self._authorization.roles_of(ctx, provisioned.user_id)
+        if self._principals is not None:
+            # Written only on the path that reached here — i.e. an ACTIVE
+            # account, since a disabled one raised above. So the cache holds
+            # only principals that were allowed to act, and `active` in an
+            # entry is always `True` in this version. It is stored anyway, and
+            # read back below, because the flag is what a future write path
+            # (or a `false` written by an older or newer replica) would use to
+            # refuse from cache — a reader that ASSUMED `True` would ignore it.
+            await self._principals.put(
+                identity.firebase_uid,
+                CachedPrincipal(
+                    workspace_id=provisioned.workspace_id,
+                    user_id=provisioned.user_id,
+                    roles=roles,
+                    active=provisioned.active,
+                ),
+            )
         return Principal(
             workspace_id=provisioned.workspace_id,
             user_id=provisioned.user_id,
             roles=roles,
+            firebase_uid=identity.firebase_uid,
+            token_expires_at=_token_expiry(identity.claims),
+        )
+
+    def _from_cache(self, cached: CachedPrincipal, identity: Identity) -> Principal:
+        """The same ``Principal`` the four steps above would have built.
+
+        The disabled branch is repeated rather than skipped: an entry stored
+        by a replica that DID see an inactive account must refuse here too, or
+        the cache would be a way to launder a 403 into a 200. It raises the
+        identical ``ForbiddenError`` for the identical reason, and logs
+        without a correlation id because none was minted — no provisioning
+        call happened on this path.
+        """
+        if not cached.active:
+            _logger.warning("auth.disabled_account", extra={"user_id": cached.user_id})
+            raise ForbiddenError("account is disabled")
+        return Principal(
+            workspace_id=cached.workspace_id,
+            user_id=cached.user_id,
+            roles=cached.roles,
             firebase_uid=identity.firebase_uid,
             token_expires_at=_token_expiry(identity.claims),
         )

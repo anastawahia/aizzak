@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from app.api.middleware.rbac import require
-from app.api.v1.dependencies import Context, Services, current_principal
+from app.api.v1.dependencies import ApiServices, Context, Services, current_principal
 from app.api.v1.dto.admin import (
     PlatformAdminRoleIn,
     PlatformProviderKeyChangeOut,
@@ -118,6 +118,13 @@ async def patch_platform_user_status(
         # token's one-hour denylist TTL. The account is active in PostgreSQL
         # before this delete, so a failed delete remains fail-closed.
         await services.session_revocations.clear(change.firebase_uid)
+    # capacity-plan 1.1, and on BOTH branches. Disabling is already immediate
+    # through the denylist above; this is what keeps RE-enabling immediate,
+    # since a principal cached while the account was still active would
+    # otherwise outlive the `clear` that just un-blocked it — and, worse, an
+    # entry written by a replica DURING the disable carries `active: false`
+    # and would keep refusing a user the operator has just restored.
+    await _forget_cached_principal(services, change.firebase_uid)
     return PlatformUserStatusOut(
         id=change.user_id,
         workspace_id=change.workspace_id,
@@ -155,6 +162,11 @@ async def delete_platform_user(
     # denylist is what invalidates the tokens already issued.
     await services.session_revocations.revoke(deletion.firebase_uid)
     await services.hub.disconnect_user(deletion.user_id)
+    # Belt and braces (capacity-plan 1.1): the denylist above already refuses
+    # this subject on its next request, so this changes no outcome — it stops
+    # a tombstoned user's workspace and roles from sitting in Redis for the
+    # rest of the TTL, which is data with no reader and no reason to persist.
+    await _forget_cached_principal(services, deletion.firebase_uid)
     return PlatformUserDeletionOut(
         id=deletion.user_id,
         workspace_id=deletion.workspace_id,
@@ -187,6 +199,13 @@ async def patch_platform_workspace_role(
     )
     if change.changed:
         await services.hub.disconnect_user(change.user_id)
+        # capacity-plan 1.1's second security criterion, and the ONE place it
+        # is enforced: roles are cached, and nothing else on this path writes
+        # anything the authentication path re-reads. Without this line a
+        # demotion would take up to `AUTH_PRINCIPAL_CACHE_TTL_S` to bite —
+        # the difference between a cache and a hole. After the commit, for
+        # the ordering reason the status route above states.
+        await _forget_cached_principal(services, change.firebase_uid)
     return _to_role_out(change)
 
 
@@ -211,6 +230,13 @@ async def patch_platform_admin_role(
     )
     if change.changed:
         await services.hub.disconnect_user(change.user_id)
+        # capacity-plan 1.1's second security criterion, and the ONE place it
+        # is enforced: roles are cached, and nothing else on this path writes
+        # anything the authentication path re-reads. Without this line a
+        # demotion would take up to `AUTH_PRINCIPAL_CACHE_TTL_S` to bite —
+        # the difference between a cache and a hole. After the commit, for
+        # the ordering reason the status route above states.
+        await _forget_cached_principal(services, change.firebase_uid)
     return _to_role_out(change)
 
 
@@ -414,6 +440,24 @@ def _to_key_change_out(change: PlatformKeyChange) -> PlatformProviderKeyChangeOu
         key=_to_key_out(change.key),
         audit_id=change.audit_id,
     )
+
+
+async def _forget_cached_principal(services: ApiServices, firebase_uid: str) -> None:
+    """Drop one subject's cached principal, if this deployment caches at all.
+
+    The ``None`` branch is not a fallback — it is the deployment that set
+    ``AUTH_PRINCIPAL_CACHE_TTL_S=0``, plus every hermetic test application. In
+    both, the authentication path reads the database on every request and
+    there is nothing here that could be stale, so a silent skip is the whole
+    truth rather than a swallowed failure. When there IS a cache, a Redis
+    outage propagates as ``common.internal``/500 — deliberately, and after
+    the durable write: an operator whose demotion did not reach the cache
+    must be told, not left believing a role was revoked while requests keep
+    arriving with it.
+    """
+    if services.principal_cache is None:
+        return
+    await services.principal_cache.invalidate(firebase_uid)
 
 
 def _to_role_out(change: PlatformRoleChange) -> PlatformRoleOut:
