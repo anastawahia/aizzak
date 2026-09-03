@@ -1396,6 +1396,35 @@ services:
       RUN_IMAGES: ${RUN_IMAGES-}
       RUN_K6_VERSION: ${RUN_K6_VERSION-}
       RUN_HOST: ${RUN_HOST-}
+      # How many source addresses this generator claims (capacity blocker
+      # د‑8), and who owns the files it writes. Both are read by
+      # `deploy/load/entrypoint.sh`, which explains the whole mechanism.
+      LOAD_SRC_IPS: ${LOAD_SRC_IPS:-32}
+      LOAD_UID: ${LOAD_UID-}
+      LOAD_GID: ${LOAD_GID-}
+    # ── The generator's own addresses (د‑8) ─────────────────────────────
+    # The edge meters on `$$binary_remote_addr`, so a generator on ONE address
+    # is metered as ONE client: the first honest peak run offered 300.1 rps and
+    # the edge admitted 22.0, rejecting 92.7% with 429. That measured nginx's
+    # `limit_req`, not this platform.
+    #
+    # `entrypoint.sh` therefore adds N secondary addresses and hands k6
+    # `--local-ips`, so 300 rps from "hundreds of users" arrives from hundreds
+    # of users' worth of addresses -- and NOTHING in `deploy/nginx/` changes,
+    # which is what `م‑8` requires before a baseline exists. `ip addr add`
+    # needs CAP_NET_ADMIN, which no unprivileged uid in this image has; the
+    # entrypoint chowns `results/` back to `LOAD_UID` on the way out so the
+    # bind mount is not left root-owned.
+    #
+    # Set LOAD_SRC_IPS=0 to run without any of it (and see the 22 rps again).
+    #
+    # `user: "0:0"` overrides the image's own `USER k6` (uid 12345): a granted
+    # capability is only in the BOUNDING set for an unprivileged uid, so
+    # `cap_add` alone still answers `RTNETLINK: Operation not permitted`.
+    cap_add:
+      - NET_ADMIN
+    user: "0:0"
+    entrypoint: ["/load/entrypoint.sh"]
     # A load run ends. `restart: "no"` is also what exempts it from the
     # healthcheck rule in `tests/unit/test_healthcheck_coverage.py`: a probe
     # on a container that exits by design reports on nothing.

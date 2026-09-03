@@ -145,6 +145,11 @@ the generator is also a pinned Compose service, `grafana/k6:1.3.0` under
 | `host` | refuse rather than silently containerise |
 | `docker` | the pinned image even where a host k6 exists |
 
+`LOAD_SRC_IPS` (default **32**, container only) is how many source addresses
+the generator claims — 300 rps over 32 addresses is 9.4 r/s each against the
+edge's 20, and 1,500 sockets is 47 each against its 100. `0` disables it and
+reproduces the pre-`د‑8` ceiling. §5's last bullet has the measurement.
+
 Both paths run the same scripts against the same edge, and both stamp the k6
 version into the archived result. Two things differ and belong in any report
 taken from the container: it reaches `nginx` **inside** the Compose network,
@@ -199,17 +204,30 @@ not meant to; what is being measured is the cost of TLS termination.
   `ip_local_port_range` and shortens `tcp_fin_timeout` for that; a host k6
   needs the same two sysctls.
 
-- **The reach of a single source IP, which is now the binding limit.** The
-  edge rate-limits on `$binary_remote_addr`: `limit_req zone=api_req
-  rate=20r/s burst=40 nodelay`, plus `limit_conn ws_conn 100`. A generator is
-  one address. The smoke run offered **300.1 rps** — §0's target, exactly —
-  and the edge admitted **22.0**, returning 429 to 92.7% of them; 1,500 WS
-  VUs would likewise be met with 100 admitted sockets. Nothing here is
-  broken: `limit_req` is P1-7's deliberate pre-auth line and it is doing its
-  job. But a peak run from one host measures that limiter and not the
-  platform, so `0.1`'s acceptance needs the generator's address exempted at
-  the edge, or generators on several addresses — a decision recorded in
-  `docs/capacity-status.md`, not taken here.
+- **The reach of a single source IP — was the binding limit, and is no longer
+  (`د‑8`).** The edge rate-limits on `$binary_remote_addr`: `limit_req
+  zone=api_req rate=20r/s burst=40 nodelay`, plus `limit_conn ws_conn 100`. A
+  generator is one address, so the first smoke run offered **300.1 rps** —
+  §0's target, exactly — and the edge admitted **22.0**, returning 429 to
+  92.7% of them. Nothing was broken: `limit_req` is P1-7's deliberate pre-auth
+  line and it was doing its job. But the number measured the limiter, not the
+  platform.
+
+  The container now claims `LOAD_SRC_IPS` secondary addresses (default 32) off
+  the top of its own subnet and passes k6 `--local-ips`, so §0's "hundreds of
+  users" arrive from hundreds of users' worth of addresses. **Nothing in
+  `deploy/nginx/` changed** — which is what `م‑8` demands before a baseline
+  exists, and is the whole reason this option was taken over loosening the
+  limit. Re-measured on the same 20 s peak mix: **7,539 requests offered at
+  300 rps, 0 rejected** (against 5,561 of 6,001 before). `deploy/load/entrypoint.sh`
+  carries the arithmetic and the full measurement table.
+
+  ⚠️ **This raises nothing about the platform's real ceiling.** One NATed
+  office still gets 20 r/s from this edge. Whether per-IP metering is the
+  right primitive, or whether the per-**user** limiter of step `1.2` should
+  carry it, is a live design question — not something this harness settled.
+  And a **host** k6 still runs from one address: `run.sh` says so out loud
+  before a `peak` run rather than let the ceiling be rediscovered.
 
 ---
 
@@ -235,9 +253,11 @@ Two fields are worth reading before the percentiles:
   is defined and never read") on the assumption that the app was the only
   thing that could 429. The first run measured 5,561 of 6,001 requests
   rejected, all of them by nginx's `limit_req`, which has been at the edge
-  all along. Read it against §5's last bullet: a large value from a
-  single-source run is the per-IP limiter, and until the generator is
-  exempted it is the ceiling on every number in the file.
+  all along. Read it against §5's last bullet: a large value is the per-IP
+  limiter, which since `د‑8` should only appear when `LOAD_SRC_IPS=0` or a
+  host k6 produced the run. A non-zero value in a container run with
+  addresses claimed means the block was too small for the offered rate —
+  divide the rate by 20 r/s for the minimum.
 - `assumptions.p95_generation_s` — the stream arrival rate is derived from it
   through §3's provider equation, and nothing has measured it yet. Step 0.5
   replaces the assumption; until then it is stated in every result rather

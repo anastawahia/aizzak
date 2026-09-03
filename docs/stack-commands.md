@@ -433,12 +433,13 @@ python -m app.ops.load_seed purge  --seed-id dev-2026-09-03 --yes
 deploy/load/smoke.sh                      # ~30 ث: يُثبت الهيكلَ لا المنصّة
 deploy/load/run.sh peak                   # k6 من المضيف إن وُجد، وإلّا الحاوية
 LOAD_K6=docker deploy/load/run.sh peak    # الصورةُ المثبَّتة قسراً
+LOAD_SRC_IPS=0 deploy/load/run.sh peak    # بعنوانٍ واحد — يقيس `limit_req` لا المنصّة
 docker compose --profile load run --rm k6 version
 ```
 
 ‏k6 ثنائيّةُ Go لا مكتبةٌ تُضَمّ، وغيابُها كان الحاجبَ `د‑3`. صارت خدمةَ Compose مثبَّتةَ الوسم ترى `deploy/load/` وحدَها، و`LOAD_BASE_URL` فيها `https://nginx` — و`localhost` هناك حلقةُ المولّد نفسِه فيُرفض صراحةً.
 
-> ⚠️ **تشغيلٌ من مضيفٍ واحدٍ لا يتجاوز 22 طلباً/ث مهما قال الملفّ.** الحافّةُ تحدُّ على `$binary_remote_addr` (`limit_req rate=20r/s burst=40`، و`limit_conn ws_conn 100` للمقابس). مُقاس: عُرض **300.1 طلب/ث** فقُبل **22.0** ورُدّ 429 على **92.7٪**. اقرأ `counters.aizzak_rate_limited_total` في الملفّ المؤرشَف **قبل** أيّ مئينٍ فيه. التفصيل في [`08-local-runbook §4.11`](design/08-local-runbook.md) و`docs/capacity-status.md` (`د‑8`).
+> ⭐ **الحاويةُ تطالب بـ32 عنواناً مصدريّاً (`LOAD_SRC_IPS`) لأنّ الحافّةَ تحدُّ على `$binary_remote_addr`** (`limit_req rate=20r/s burst=40`، و`limit_conn ws_conn 100` للمقابس). بعنوانٍ واحدٍ عُرض **300.1 طلب/ث** فقُبل **22.0** ورُدّ 429 على **92.7٪**؛ وبـ32 عنواناً: **7,539 طلباً بمعدّل 300/ث، صفرُ رفض**. ‏`LOAD_SRC_IPS=0` يُعيد السقفَ القديم، و**ثنائيّةُ المضيف عنوانٌ واحدٌ دائماً** (‏`run.sh` ينبّه). ولم يتغيّر في `deploy/nginx/` حرفٌ — `م‑8`. اقرأ `counters.aizzak_rate_limited_total` في الملفّ المؤرشَف **قبل** أيّ مئينٍ فيه. التفصيل في [`08-local-runbook §4.11`](design/08-local-runbook.md) و`docs/capacity-status.md` (`د‑8`).
 
 ### 35 · الحزمة الاختباريّة — `docker-compose.test.yml`
 

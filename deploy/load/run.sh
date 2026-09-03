@@ -17,7 +17,8 @@
 #
 # Optional: LOAD_BASE_URL (default https://localhost, or https://nginx in a
 # container) · LOAD_TOKEN_FILE · LOAD_DURATION_S · LOAD_WS_VUS · LOAD_OUT ·
-# LOAD_K6 (auto|host|docker).
+# LOAD_K6 (auto|host|docker) · LOAD_SRC_IPS (how many source addresses the
+# container claims; see `entrypoint.sh` and capacity blocker د‑8).
 set -euo pipefail
 
 profile="${1:-peak}"
@@ -154,17 +155,42 @@ if [ "$k6_mode" = docker ]; then
     esac
   fi
 
+  # `LOAD_SRC_IPS=0`: a version probe has no reason to claim 32 addresses.
   export RUN_K6_VERSION="$(
-    docker compose --profile load run --rm --no-deps -T k6 version 2>/dev/null | head -1 || echo ''
+    LOAD_SRC_IPS=0 docker compose --profile load run --rm --no-deps -T k6 version 2>/dev/null | head -1 || echo ''
   )"
+
+  # ── The generator's source addresses (capacity blocker د‑8) ─────────────
+  # The edge meters per source address, so one container is one client and a
+  # 300 rps run is answered 429 for 92.7% of it. The generator claims a block
+  # of addresses instead and spreads its VUs across them, which changes
+  # nothing at all about the system under test -- see `entrypoint.sh` for the
+  # measurement, and for why the alternative (loosening `limit_req`) is
+  # forbidden here by `م‑8`.
+  export LOAD_SRC_IPS="${LOAD_SRC_IPS:-32}"
+  # The container runs k6 as root to get CAP_NET_ADMIN; these say who should
+  # own the results it leaves behind.
+  export LOAD_UID="$(id -u)"
+  export LOAD_GID="$(id -g)"
 else
   export LOAD_OUT="${LOAD_OUT:-$results_dir/$out_name}"
   host_out="$LOAD_OUT"
   export RUN_K6_VERSION="$(k6 version 2>/dev/null | head -1 || echo '')"
+  # A host k6 reaches the edge from ONE address too, and this script has no
+  # business adding addresses to the operator's own machine behind their back.
+  # So host mode still meets `limit_req`'s 20 r/s per address unless the
+  # operator supplies the addresses themselves -- said out loud, because a
+  # peak run that silently measured the limiter is exactly how د‑8 was missed.
+  export LOAD_SRC_IPS=0
+  if [ "$profile" = peak ]; then
+    echo "⚠️  LOAD_K6=host: the edge meters per source address (20 r/s, burst 40)." >&2
+    echo "    A single-address peak run measures nginx's limiter, not the platform." >&2
+    echo "    Use the container (unset LOAD_K6), or pass k6 your own --local-ips." >&2
+  fi
 fi
 
 echo "profile   : $profile"
-echo "generator : $k6_mode  ${RUN_K6_VERSION:-<unknown>}"
+echo "generator : $k6_mode  ${RUN_K6_VERSION:-<unknown>}  src-addrs=${LOAD_SRC_IPS:-0}"
 echo "commit    : ${RUN_COMMIT:-<none>}${RUN_DIRTY:+ (dirty=$RUN_DIRTY)}"
 echo "edge      : ${LOAD_BASE_URL:-https://localhost}"
 echo "seed      : ${LOAD_SEED_ID:-<UNSTATED — this run cannot be a baseline>}"
@@ -175,11 +201,11 @@ set +e
 if [ "$k6_mode" = host ]; then
   k6 run "deploy/load/$profile.js"
 else
-  # `--user`: the image runs as uid 12345, and `handleSummary` writes the
-  # archive into a bind mount owned by the operator. Without this the whole
-  # 30-minute run ends in a permission denied on its own result.
+  # No `--user`: the entrypoint needs root for CAP_NET_ADMIN (د‑8) and hands
+  # `results/` back to LOAD_UID:LOAD_GID when the run ends. The image's own uid
+  # is 12345, so without one of the two the whole 30-minute run would end in a
+  # permission denied writing its own archive.
   docker compose --profile load run --rm -T \
-    --user "$(id -u):$(id -g)" \
     k6 run "/load/$profile.js"
 fi
 k6_status=$?
