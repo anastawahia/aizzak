@@ -175,6 +175,13 @@ class RateLimitSettings(BaseModel):
     both buckets because they are one atomic call — a "user bucket only" mode
     would measure a shape the platform never runs in.
 
+    **It governs step 1.3's heavy-job ceiling as well**, which is a separate
+    call on separate routes, so that reason does not carry and a different one
+    does: a baseline taken with half the guard installed answers nothing at
+    all, and a second flag is exactly how a deployment ends up in that state.
+    The number it switches on is ``Limits.heavy_jobs_per_min`` (30), 07 §4's
+    own and not env-editable, on the ``api_rate_per_min`` precedent.
+
     ``workspace_per_min`` is the TENANT ceiling, and its number is derived
     rather than chosen. `§0` targets 300 rps of peak API traffic across 200-400
     workspaces; 2,400/min is 40 rps, about an eighth of that peak, so seven

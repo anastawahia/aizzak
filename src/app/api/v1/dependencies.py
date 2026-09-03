@@ -36,7 +36,7 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
-from app.api.middleware.rate_limit import ApiRateLimiter
+from app.api.middleware.rate_limit import ApiRateLimiter, HeavyJobRateLimiter
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.principal_cache import PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
@@ -288,6 +288,16 @@ class ApiServices:
     # protection and nothing else. `api/middleware/rate_limit.py` argues the
     # policy; nginx's per-IP ceiling is underneath either way.
     rate_limiter: ApiRateLimiter | None = None
+    # capacity-plan 1.3 — 07 §4's "30 job/min", consulted by
+    # `api/middleware/heavy_jobs.py` on the four operations that answer 202.
+    # A SECOND field rather than a second ceiling folded into `rate_limiter`
+    # because the two are charged to different populations at different
+    # moments: that one on every authenticated request, this one only on a
+    # submission that puts work on a stream. `None` for the same two
+    # populations as its neighbour and with the same consequence — the routes
+    # behave exactly as they did before 1.3, since a missing capacity control
+    # costs throughput protection and nothing else.
+    heavy_job_limiter: HeavyJobRateLimiter | None = None
     # The D-16 routing table, read-only (02 §3.5.1). Typed as the NARROW
     # catalogue port and never as `ProviderResolver`: the resolver's
     # `ResolvedProvider` carries a decrypted `api_key`, so holding the wide

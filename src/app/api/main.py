@@ -63,7 +63,7 @@ from app.api.metrics import metrics_router
 from app.api.middleware.auth import ApiAuthenticator
 from app.api.middleware.inflight import InFlightLimitMiddleware
 from app.api.middleware.metrics import RedMetricsMiddleware
-from app.api.middleware.rate_limit import ApiRateLimiter
+from app.api.middleware.rate_limit import ApiRateLimiter, HeavyJobRateLimiter
 from app.api.v1.dependencies import ApiServices, HttpAuthenticator
 from app.api.v1.dto.problem import ProblemDetails
 from app.api.v1.routers.admin import router as admin_router
@@ -611,6 +611,18 @@ def create_production_app() -> FastAPI:
         if root.settings.rate_limit.enabled
         else None
     )
+    # capacity-plan wave 1 step 1.3 — 07 §4's other declared-and-unread number,
+    # over the SAME Redis adapter and behind the SAME switch. One switch rather
+    # than a second `HEAVY_JOB_LIMIT_ENABLED`, on the argument
+    # `RateLimitSettings.enabled` already makes for its own two buckets: a
+    # baseline taken with half the guard installed measures a shape the
+    # platform never runs in, and a second flag is precisely how a deployment
+    # ends up in one.
+    heavy_job_limiter = (
+        HeavyJobRateLimiter(root.rate_limiter, jobs_per_min=root.settings.limits.heavy_jobs_per_min)
+        if root.settings.rate_limit.enabled
+        else None
+    )
     services = ApiServices(
         settings=root.settings,
         orchestrator=root.orchestrator,
@@ -648,6 +660,7 @@ def create_production_app() -> FastAPI:
         session_revocations=session_revocations,
         principal_cache=principal_cache,
         rate_limiter=rate_limiter,
+        heavy_job_limiter=heavy_job_limiter,
         authorization=root.authorization,
         idempotency=root.idempotency,
         # Narrowed to `ModelCatalog` at the boundary (see `ApiServices.models`):

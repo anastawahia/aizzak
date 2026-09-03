@@ -35,8 +35,11 @@ from collections.abc import AsyncIterator
 import pytest
 from redis.asyncio import Redis
 
+from app.api.middleware.rate_limit import HeavyJobRateLimiter
+from app.framework.errors import RateLimitedError
 from app.framework.identifiers import new_uuid7
 from app.framework.ports.rate_limiter import RateBucket
+from app.framework.settings import Limits
 from app.framework.settings.settings import RedisSettings
 from app.infrastructure.cache.redis_cache import create_redis_client
 from app.infrastructure.cache.redis_rate_limiter import RedisRateLimiter
@@ -227,3 +230,56 @@ async def test_two_limiters_over_two_clients_share_one_ceiling(
         assert not (await second.try_consume([bucket])).allowed
     finally:
         await other_client.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# Capacity-plan 1.3 — the heavy-job ceiling over the real engine              #
+#                                                                             #
+# The port and the script are 1.2's and unchanged; what is new is a POLICY    #
+# that composes ONE bucket over them. These two prove the half the hermetic   #
+# suite models rather than measures: that the number 07 §4 declares           #
+# survives the trip to a real server, and that it survives under the          #
+# concurrency the ceiling exists for.                                         #
+# --------------------------------------------------------------------------- #
+async def test_the_thirty_first_job_is_refused_by_a_real_server(
+    redis_client: Redis, prefix: str
+) -> None:
+    """The declared ceiling, end to end: `Limits.heavy_jobs_per_min`
+    composed into a bucket, written to Redis, evicted on the SERVER's clock,
+    and refusing on the thirty-first real attempt rather than the
+    thirty-first modelled one."""
+    policy = HeavyJobRateLimiter(
+        RedisRateLimiter(redis_client, key_prefix=prefix),
+        jobs_per_min=Limits().heavy_jobs_per_min,
+    )
+    user = new_uuid7()
+
+    for _ in range(30):
+        await policy.check(user_id=user)
+
+    with pytest.raises(RateLimitedError) as refusal:
+        await policy.check(user_id=user)
+    assert 1 <= refusal.value.retry_after_s <= 60
+
+
+async def test_a_burst_of_submissions_admits_exactly_the_job_ceiling(
+    redis_client: Redis, prefix: str
+) -> None:
+    """Forty submissions genuinely in flight against a ceiling of ten -- 1.2's
+    own atomicity assertion, restated for the bucket 1.3 adds, because a
+    policy is free to stop being atomic in a way the port test would never
+    see: two `try_consume` calls where there was one would pass every
+    hermetic test in the suite and overshoot here."""
+    policy = HeavyJobRateLimiter(RedisRateLimiter(redis_client, key_prefix=prefix), jobs_per_min=10)
+    user = new_uuid7()
+
+    async def submit() -> bool:
+        try:
+            await policy.check(user_id=user)
+        except RateLimitedError:
+            return False
+        return True
+
+    admitted = await asyncio.gather(*(submit() for _ in range(40)))
+
+    assert sum(admitted) == 10

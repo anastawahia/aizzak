@@ -78,6 +78,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Response
 
+from app.api.middleware.heavy_jobs import heavy_job
 from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
 from app.api.v1.dto.knowledge import (
@@ -337,7 +338,13 @@ async def get_document(document_id: str, services: Services, ctx: Context) -> Do
 
 
 @router.post(
-    "/documents", status_code=202, dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))]
+    "/documents",
+    status_code=202,
+    # capacity-plan 1.3, and on all three of this router's 202s: each
+    # publishes an event a worker acts on, and 202 is how this API says so.
+    # AFTER the permission guard -- `api/middleware/heavy_jobs.py` argues the
+    # order, and what is left uncharged.
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE)), Depends(heavy_job)],
 )
 async def index_file(
     body: IndexFileIn,
@@ -400,7 +407,9 @@ async def index_file(
 
 
 @router.post(
-    "/reindex", status_code=202, dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))]
+    "/reindex",
+    status_code=202,
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE)), Depends(heavy_job)],
 )
 async def reindex_documents(
     body: ReindexIn,
@@ -465,7 +474,7 @@ async def cancel_reindex_job(job_id: str, services: Services, ctx: Context) -> R
 @router.post(
     "/documents/{document_id}/summary",
     status_code=202,
-    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE))],
+    dependencies=[Depends(require(Permission.KNOWLEDGE_MANAGE)), Depends(heavy_job)],
 )
 async def build_summary(
     document_id: str,

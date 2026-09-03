@@ -70,6 +70,7 @@ RATE_LIMIT_REJECTIONS_METRIC = "aizzak_rate_limit_rejections_total"
 WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
 AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
 API_RATE_LIMIT_METRIC = "aizzak_api_rate_limit_total"
+HEAVY_JOB_LIMIT_METRIC = "aizzak_heavy_job_limit_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -176,6 +177,22 @@ api_rate_limit_total = Counter(
     "refused at theirs is not. `unavailable` is the fail-open path: Redis "
     "did not answer and the request was admitted UNCOUNTED, so a rise here "
     "means the ceilings are not being enforced at all.",
+    ["outcome"],
+)
+
+heavy_job_limit_total = Counter(
+    HEAVY_JOB_LIMIT_METRIC,
+    "Heavy-job ceiling decisions, by outcome (capacity-plan 1.3). SEPARATE "
+    "from `aizzak_api_rate_limit_total` rather than a third `outcome` on it, "
+    "because the two count different populations: that one fires once per "
+    "authenticated request, this one once per SUBMISSION on the four "
+    "operations that answer 202, and folding them together would both "
+    "double-count a job and make its `allowed` mean two things at once. The "
+    "denominator is the point -- a refusal rate is only meaningful against "
+    "job submissions, not against all API traffic. `unavailable` is the "
+    "fail-open path, and it is here for the reason its neighbour is: a "
+    "ceiling that stopped being enforced looks, from every other metric, "
+    "exactly like one nobody is reaching.",
     ["outcome"],
 )
 

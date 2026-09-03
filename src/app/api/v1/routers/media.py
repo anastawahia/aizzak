@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from app.api.middleware.heavy_jobs import heavy_job
 from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
 from app.api.v1.dto.media import MediaJobCreateIn, MediaJobOut
@@ -56,7 +57,15 @@ def _to_job_out(job: MediaJob) -> MediaJobOut:
     )
 
 
-@router.post("/jobs", status_code=202, dependencies=[Depends(require(Permission.MEDIA_CREATE))])
+@router.post(
+    "/jobs",
+    status_code=202,
+    # capacity-plan 1.3. AFTER the permission guard, and the order is the
+    # contract: a caller without `media:create` learns which permission it
+    # lacks rather than being told to slow down and retry something that can
+    # never succeed.
+    dependencies=[Depends(require(Permission.MEDIA_CREATE)), Depends(heavy_job)],
+)
 async def create_media_job(
     body: MediaJobCreateIn,
     services: Services,
