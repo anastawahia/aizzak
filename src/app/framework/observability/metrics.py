@@ -69,6 +69,7 @@ EVENT_LOOP_LAG_METRIC = "aizzak_event_loop_lag_seconds"
 RATE_LIMIT_REJECTIONS_METRIC = "aizzak_rate_limit_rejections_total"
 WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
 AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
+API_RATE_LIMIT_METRIC = "aizzak_api_rate_limit_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -163,6 +164,19 @@ auth_principal_cache_total = Counter(
     "1.1's acceptance number -- database transactions per authenticated "
     "request -- read off the platform rather than inferred from a pool gauge.",
     ["result"],
+)
+
+api_rate_limit_total = Counter(
+    API_RATE_LIMIT_METRIC,
+    "Rate-limit decisions on the API path, by outcome. Distinct from "
+    "`aizzak_rate_limit_rejections_total`, which counts how much load was "
+    "shed across the whole platform: this one says WHY, and it is the only "
+    "place the two capacity-plan 1.2 buckets are told apart -- a tenant "
+    "refused at its workspace ceiling is a capacity conversation, one user "
+    "refused at theirs is not. `unavailable` is the fail-open path: Redis "
+    "did not answer and the request was admitted UNCOUNTED, so a rise here "
+    "means the ceilings are not being enforced at all.",
+    ["outcome"],
 )
 
 

@@ -33,6 +33,9 @@ from fastapi.testclient import TestClient
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
 from app.api.main import create_app
 from app.api.middleware.auth import ApiAuthenticator
+from app.api.middleware.inflight import InFlightLimitMiddleware
+from app.api.middleware.metrics import RedMetricsMiddleware
+from app.api.middleware.rate_limit import ApiRateLimiter
 from app.api.v1.dependencies import ApiServices, Context
 from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
@@ -50,7 +53,7 @@ from app.framework.providers.inventory import (
     ProviderRoute,
 )
 from app.framework.providers.resolver import ResolvedProvider
-from app.framework.settings import Settings
+from app.framework.settings import RateLimitSettings, Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.types import Json, Uuid
 from app.framework.workflows import InMemoryWorkflowRegistry
@@ -90,6 +93,7 @@ from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import DictCache, build_integrations
 from tests.unit.support_knowledge import build_knowledge
+from tests.unit.support_rate_limit import InMemoryRateLimiter
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.support_workspace_usage import build_workspace_usage
 
@@ -756,6 +760,8 @@ def _make_app(
     directory: _FakePlatformDirectory | None = None,
     system_stats: _FakeSystemStats | None = None,
     providers: PlatformProviderUseCases | None = None,
+    rate_limiter: ApiRateLimiter | None = None,
+    settings: Settings | None = None,
 ) -> FastAPI:
     """The real app, wired with the REAL authenticator over fake ports — so
     the header handling under test is FastAPI's own, not a stand-in's."""
@@ -769,7 +775,7 @@ def _make_app(
     workspace_usage = build_workspace_usage()
     app = create_app(
         ApiServices(
-            settings=Settings(),
+            settings=settings or Settings(),
             orchestrator=AgentOrchestrator(
                 OrchestratorDependencies(
                     agents=registry,
@@ -806,6 +812,10 @@ def _make_app(
             # which is the only wiring in which 1.1's security criterion
             # can be observed at all.
             principal_cache=authenticator.principals,
+            # capacity-plan 1.2. `None` by default so every test written
+            # before it keeps asserting the unlimited behaviour it was
+            # written against.
+            rate_limiter=rate_limiter,
             # Left unwired by default so the fail-closed branch is the one a
             # test has to opt OUT of, not the one it has to remember.
             system_stats=system_stats,
@@ -1552,3 +1562,164 @@ def test_deleting_an_account_leaves_no_principal_behind_in_the_store() -> None:
 
     assert response.status_code == 200
     assert asyncio.run(principals.get(_TARGET_UID)) is None
+
+
+# --------------------------------------------------------------------------- #
+# Capacity-plan 1.2 — the two request ceilings, through the REAL routes        #
+#                                                                              #
+# The policy itself is unit-tested in `test_rate_limiter.py` and the Lua        #
+# engine live in `tests/integration/test_rate_limiter_live.py`. What is proven  #
+# HERE is the part neither of those can see: that the ceiling is actually       #
+# reached on the authenticated path, that a refusal arrives as the wire         #
+# contract's 429 rather than as an exception, and that it happens AFTER the     #
+# authentication rather than instead of it.                                     #
+# --------------------------------------------------------------------------- #
+_BEARER = {"Authorization": "Bearer t"}
+
+
+def _rate_limited_app(
+    *,
+    user_per_min: int = 120,
+    workspace_per_min: int = 2400,
+    identities: dict[str, Identity] | None = None,
+) -> tuple[TestClient, InMemoryRateLimiter]:
+    fake = InMemoryRateLimiter()
+    authenticator, _provisioning, _access = _build(identities=identities)
+    app = _make_app(
+        authenticator,
+        rate_limiter=ApiRateLimiter(
+            fake, user_per_min=user_per_min, workspace_per_min=workspace_per_min
+        ),
+    )
+    return TestClient(app), fake
+
+
+def test_the_hundred_and_twenty_first_request_in_a_minute_is_refused() -> None:
+    """1.2's acceptance criterion, at the default ceiling and through the real
+    router: `Limits.api_rate_per_min` has been declared since 07 §4 and read by
+    nothing, and this is the assertion that says it is read."""
+    client, _fake = _rate_limited_app()
+
+    for _ in range(120):
+        assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+
+    assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 429
+
+
+def test_the_refusal_is_the_wire_contracts_429_with_a_retry_after() -> None:
+    """RFC 9457 body, RFC 9110 header. A rate limit that answered a bare 429
+    with no body would be indistinguishable from the edge's own refusal."""
+    client, _fake = _rate_limited_app(user_per_min=1)
+    assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+
+    response = client.get("/api/v1/_ctx", headers=_BEARER)
+
+    assert response.status_code == 429
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert 1 <= int(response.headers["Retry-After"]) <= 60
+    body = response.json()
+    assert body["code"] == "common.rate_limited"
+    assert body["correlation_id"]
+
+
+def test_a_second_user_is_refused_at_the_workspaces_ceiling_not_at_their_own() -> None:
+    """The bucket 07 §4 never declared, and the reason 1.2 insists on two:
+    fifty users each inside their personal limit reach 6,000 requests a minute
+    between them, and every one of those is a request the neighbour tenant
+    waits behind."""
+    other = Identity(
+        firebase_uid="firebase-uid-2",
+        email="second@example.com",
+        email_verified=True,
+        claims={"sub": "firebase-uid-2"},
+    )
+    client, _fake = _rate_limited_app(
+        user_per_min=100,
+        workspace_per_min=1,
+        identities={"t": _identity(), "t2": other},
+    )
+    assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+
+    # A different subject entirely -- one request old, nowhere near its own
+    # ceiling -- refused because the workspace it shares is at the tenant one.
+    response = client.get("/api/v1/_ctx", headers={"Authorization": "Bearer t2"})
+
+    assert response.status_code == 429
+    assert "workspace" in response.json()["detail"]
+
+
+def test_an_unwired_limiter_leaves_the_platform_unlimited() -> None:
+    """`API_RATE_LIMIT_ENABLED=false` builds nothing (`م-8`: a baseline taken
+    with the guard half-installed answers nothing), and every test written
+    before 1.2 runs in exactly that shape."""
+    authenticator, _provisioning, _access = _build()
+    client = TestClient(_make_app(authenticator))
+
+    for _ in range(200):
+        assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+
+
+def test_a_store_outage_serves_the_request_instead_of_refusing_it() -> None:
+    """⚠️ Fail OPEN, end to end. The policy is argued in
+    `api/middleware/rate_limit.py`; this is the route proving that a Redis the
+    limiter cannot reach costs throughput protection and NOT availability."""
+    client, fake = _rate_limited_app(user_per_min=1)
+    fake.failure = AppError("redis is unreachable", code="common.internal")
+
+    for _ in range(5):
+        assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+
+
+def test_an_exhausted_ceiling_does_not_turn_a_bad_credential_into_a_429() -> None:
+    """The order is the contract: authenticate, THEN charge. A 401 that became
+    a 429 once someone else filled the bucket would tell an unauthenticated
+    caller that the subject exists, and would leave a client with an expired
+    token retrying instead of refreshing it."""
+    client, fake = _rate_limited_app(user_per_min=1)
+    assert client.get("/api/v1/_ctx", headers=_BEARER).status_code == 200
+    spent = len(fake.calls)
+
+    assert client.get("/api/v1/_ctx").status_code == 401
+    assert client.get("/api/v1/_ctx", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+    # And neither of them was charged to anybody's window.
+    assert len(fake.calls) == spent
+
+
+def test_the_in_flight_guard_is_installed_by_the_app_factory() -> None:
+    """The third guard is transport-level, so it is wired as middleware rather
+    than as a dependency -- and it is installed BEFORE the metrics layer,
+    which is what puts it INSIDE it (`add_middleware` inserts at position 0)."""
+    authenticator, _provisioning, _access = _build()
+
+    app = _make_app(authenticator)
+
+    installed = [layer.cls for layer in app.user_middleware]
+    assert InFlightLimitMiddleware in installed
+    assert installed.index(RedMetricsMiddleware) < installed.index(InFlightLimitMiddleware)
+
+
+def test_a_zero_ceiling_installs_no_in_flight_guard_at_all() -> None:
+    """`MAX_IN_FLIGHT_REQUESTS=0` is the `م-8` switch again: not a zero-slot
+    ceiling that would refuse every request, but a layer that is not there."""
+    authenticator, _provisioning, _access = _build()
+
+    app = _make_app(
+        authenticator,
+        settings=Settings(rate_limit=RateLimitSettings(max_in_flight=0)),
+    )
+
+    assert InFlightLimitMiddleware not in [layer.cls for layer in app.user_middleware]
+
+
+def test_a_request_is_charged_to_its_ceilings_exactly_once() -> None:
+    """A real router carries `Depends(current_principal)` at the router level
+    AND reaches it again through `Context`/`require(...)` in the handler. If
+    FastAPI's dependency cache did not collapse the two, every announced
+    ceiling would silently be half of what 07 §4 declares -- and nothing in a
+    response would say so."""
+    client, fake = _rate_limited_app()
+
+    client.get("/api/v1/agents", headers=_BEARER)
+
+    assert len(fake.calls) == 1

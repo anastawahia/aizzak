@@ -52,11 +52,18 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
-from app.api.errors import problem, problem_from_error
+from app.api.errors import (
+    CORRELATION_HEADER,
+    PROBLEM_MEDIA_TYPE,
+    problem,
+    problem_from_error,
+)
 from app.api.health import health_router
 from app.api.metrics import metrics_router
 from app.api.middleware.auth import ApiAuthenticator
+from app.api.middleware.inflight import InFlightLimitMiddleware
 from app.api.middleware.metrics import RedMetricsMiddleware
+from app.api.middleware.rate_limit import ApiRateLimiter
 from app.api.v1.dependencies import ApiServices, HttpAuthenticator
 from app.api.v1.dto.problem import ProblemDetails
 from app.api.v1.routers.admin import router as admin_router
@@ -93,15 +100,17 @@ from app.framework.types import Json
 
 _logger = get_logger(__name__)
 
-# 03 §0: the correlation header, returned on every response and error body.
-CORRELATION_HEADER = "X-Correlation-Id"
+# 03 §0's correlation header and RFC 9457's media type are DEFINED in
+# `api/errors.py` and re-exported here: 1.2's in-flight guard renders a
+# problem response from outside the handler stack, so the contract constants
+# had to live somewhere both it and this module can reach without a cycle.
+# Every `from app.api.main import CORRELATION_HEADER` still resolves.
+
 # The edge's own per-hop id (capacity 0.6). nginx sets it from `$request_id`
 # on every proxied request and logs the same value, which is what lets a line
 # in the access log and a line in the app log be recognised as the same hop.
 # Read only -- this app never mints one, see the middleware for why.
 REQUEST_ID_HEADER = "X-Request-Id"
-# RFC 9457's media type (03 §4). Every problem body carries it.
-PROBLEM_MEDIA_TYPE = "application/problem+json"
 # Wave 0 step 0.2 -- the one status `aizzak_rate_limit_rejections_total`
 # counts. Named rather than compared inline: §7 item 4 makes this number
 # structurally different from every other status the handler sees, and a
@@ -193,6 +202,18 @@ def create_app(
     # caller experienced: correlation-id generation and problem rendering are
     # inside it, and a layer that timed only what was inside itself would
     # report a budget nobody ever waits for.
+    # Capacity 1.2's burst guard, added BEFORE the metrics layer and therefore
+    # installed INSIDE it: a refusal is counted and timed like any other
+    # response, while everything it protects -- correlation binding, routing,
+    # authentication, the dependency graph -- is never entered. `0` installs
+    # nothing at all (`RateLimitSettings.max_in_flight`), which is the `م-8`
+    # baseline switch and also what keeps a test app that wants no ceiling
+    # from having to reason about one.
+    if services.settings.rate_limit.max_in_flight > 0:
+        app.add_middleware(
+            InFlightLimitMiddleware,
+            max_in_flight=services.settings.rate_limit.max_in_flight,
+        )
     app.add_middleware(RedMetricsMiddleware)
 
     # Health + metrics at the ROOT (unversioned, unauthenticated); everything
@@ -568,6 +589,28 @@ def create_production_app() -> FastAPI:
         if root.settings.auth.principal_cache_ttl_s > 0
         else None
     )
+    # capacity-plan wave 1 step 1.2, beside 1.1 and for the same reasons: a
+    # thin object over a client the root already owns, useful only to the API
+    # process. `enabled=false` builds NOTHING -- not a limiter with generous
+    # numbers -- so a baseline run makes no Redis call on the request path at
+    # all. The per-user ceiling is 07 §4's own `Limits.api_rate_per_min`,
+    # declared since long before anything read it; the tenant ceiling is the
+    # number 07 §4 never declared (`RateLimitSettings.workspace_per_min`).
+    #
+    # `root.rate_limiter` is the Redis adapter the Composition Root built --
+    # the API layer may not import `app.infrastructure` (contract 6), and this
+    # is the same seam `metrics_source` and the WS registry come through. The
+    # POLICY over it is here, because it is API policy: which two buckets
+    # exist, in which order, and what happens when Redis does not answer.
+    rate_limiter = (
+        ApiRateLimiter(
+            root.rate_limiter,
+            user_per_min=root.settings.limits.api_rate_per_min,
+            workspace_per_min=root.settings.rate_limit.workspace_per_min,
+        )
+        if root.settings.rate_limit.enabled
+        else None
+    )
     services = ApiServices(
         settings=root.settings,
         orchestrator=root.orchestrator,
@@ -604,6 +647,7 @@ def create_production_app() -> FastAPI:
         admin=root.admin,
         session_revocations=session_revocations,
         principal_cache=principal_cache,
+        rate_limiter=rate_limiter,
         authorization=root.authorization,
         idempotency=root.idempotency,
         # Narrowed to `ModelCatalog` at the boundary (see `ApiServices.models`):

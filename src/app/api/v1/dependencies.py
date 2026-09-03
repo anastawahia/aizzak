@@ -36,6 +36,7 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
+from app.api.middleware.rate_limit import ApiRateLimiter
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.principal_cache import PrincipalCache
 from app.framework.auth.revocation import SessionRevocationList
@@ -278,6 +279,15 @@ class ApiServices:
     # asymmetry is deliberate: a missing denylist would silently stop denying;
     # a missing cache silently stops caching.
     principal_cache: PrincipalCache | None = None
+    # capacity-plan 1.2 — the per-user and per-workspace request ceilings,
+    # consulted in `current_principal` below. `None` for the same two
+    # populations as `principal_cache`: a hermetic test app, and a deployment
+    # running `API_RATE_LIMIT_ENABLED=false` for a `م-8` baseline. And for the
+    # same reason it may be `None` without failing closed — a rate limiter is
+    # a capacity control, not a security one, so its absence costs throughput
+    # protection and nothing else. `api/middleware/rate_limit.py` argues the
+    # policy; nginx's per-IP ceiling is underneath either way.
+    rate_limiter: ApiRateLimiter | None = None
     # The D-16 routing table, read-only (02 §3.5.1). Typed as the NARROW
     # catalogue port and never as `ProviderResolver`: the resolver's
     # `ResolvedProvider` carries a decrypted `api_key`, so holding the wide
@@ -343,11 +353,34 @@ def _bearer_token(credentials: HTTPAuthorizationCredentials | None) -> str:
 
 async def current_principal(
     authenticator: Annotated[HttpAuthenticator, Depends(get_authenticator)],
+    services: Annotated[ApiServices, Depends(get_services)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
 ) -> Principal:
-    """Authenticate the request — the dependency every protected route hangs the
-    ``Depends`` on (directly or through ``current_context``)."""
-    return await authenticator.authenticate(_bearer_token(credentials))
+    """Authenticate the request, then charge it to its ceilings — the dependency
+    every protected route hangs the ``Depends`` on (directly or through
+    ``current_context``).
+
+    **The rate check is HERE, and after the authentication, for two reasons.**
+    It is a per-user ceiling, so it cannot be applied before the user is known;
+    and every protected router carries a router-level
+    ``dependencies=[Depends(current_principal)]``, which makes this function
+    the single gate an authenticated request already passes — a limit enforced
+    per-router would be a limit a future router can forget. What that leaves
+    outside is unauthenticated traffic, deliberately: nginx's per-IP
+    ``limit_req`` shields the front door, and 1.2's own burst guard
+    (``api/middleware/inflight.py``) sits above everything including this.
+
+    A 429 raised here has ALREADY spent the authentication path, cache hit
+    included. That is the honest order — charging a request to a user before
+    knowing which user it is would mean charging it to the wrong one — and it
+    is cheap after 1.1, which is why 1.1 came first.
+    """
+    principal = await authenticator.authenticate(_bearer_token(credentials))
+    if services.rate_limiter is not None:
+        await services.rate_limiter.check(
+            user_id=principal.user_id, workspace_id=principal.workspace_id
+        )
+    return principal
 
 
 def current_context(

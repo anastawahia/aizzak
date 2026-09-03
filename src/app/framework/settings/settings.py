@@ -161,6 +161,43 @@ class AuthSettings(BaseModel):
     principal_cache_ttl_s: int = 60
 
 
+class RateLimitSettings(BaseModel):
+    """Capacity-plan step 1.2's knobs — how the declared ceilings are DEPLOYED.
+
+    The per-user ceiling itself is not here: it is ``Limits.api_rate_per_min``,
+    declared by 07 §4 since long before anything read it, and this step's whole
+    point is that it is finally read. What belongs here is everything that is a
+    deployment decision rather than a platform guarantee.
+
+    ``enabled`` is the `م-8` off switch, on the ``principal_cache_ttl_s``
+    precedent exactly: **false builds no limiter at all**, so a baseline run
+    makes not even a Redis round trip on the request path. It is one switch for
+    both buckets because they are one atomic call — a "user bucket only" mode
+    would measure a shape the platform never runs in.
+
+    ``workspace_per_min`` is the TENANT ceiling, and its number is derived
+    rather than chosen. `§0` targets 300 rps of peak API traffic across 200-400
+    workspaces; 2,400/min is 40 rps, about an eighth of that peak, so seven
+    such tenants can be at their ceiling simultaneously before the platform is.
+    It is also deliberately BELOW the 6,000/min that 1.2's own worked example
+    reaches (fifty users x 120, every one of them inside their personal
+    limit) — a tenant ceiling above that number would never bind, which is the
+    same as not having one.
+
+    ``max_in_flight`` is the per-PROCESS burst guard (``api/middleware/
+    inflight.py``), and **zero means it is not installed**, the `م-8` switch
+    again. 64 is double the worst concurrency `§1` measured (throughput peaks
+    at 4 and still holds 162 rps at 32), so it refuses only load already well
+    past the point where admitting more finishes less.
+    """
+
+    model_config = _FROZEN
+
+    enabled: bool = True
+    workspace_per_min: int = 2400
+    max_in_flight: int = 64
+
+
 class OllamaSettings(BaseModel):
     model_config = _FROZEN
 
@@ -936,6 +973,12 @@ class Settings(BaseModel):
     # capacity-plan wave 1 step 1.1 — the authentication PATH's knobs,
     # beside the issuer's rather than inside them (see `AuthSettings`).
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    # Capacity 1.2. Beside `auth` rather than inside `limits` because
+    # `Limits` is the DECLARED 07 §4 guardrail table (no deployment reads
+    # or overrides it), while every field here is a deployment decision:
+    # whether the ceilings are installed at all, and the two numbers 07 §4
+    # never declared.
+    rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     embedding_service: EmbeddingServiceSettings = Field(default_factory=EmbeddingServiceSettings)
     # rag-retrieval-plan.md §4 row 21 (`P-24`, س-21) — WHERE the cross-encoder

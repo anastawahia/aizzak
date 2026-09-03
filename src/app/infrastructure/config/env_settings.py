@@ -25,6 +25,7 @@ from app.framework.settings.settings import (
     MinioSettings,
     OllamaSettings,
     QdrantSettings,
+    RateLimitSettings,
     RedisSettings,
     Settings,
     UsageSettings,
@@ -98,6 +99,16 @@ class _EnvSettings(BaseSettings):
     # even a Redis round trip for it. The upper bound is the contract's
     # (`MAX_PRINCIPAL_CACHE_TTL_S`), stated once there and not repeated here.
     auth_principal_cache_ttl_s: int = Field(60, alias="AUTH_PRINCIPAL_CACHE_TTL_S", ge=0)
+
+    # capacity-plan 1.2. `false` builds NO limiter (the `م-8` baseline switch,
+    # the same shape as the line above); the two numbers are bounded here
+    # rather than in the model because a `0` reaching either one would refuse
+    # every request in the platform with a well-formed 429 -- except
+    # `MAX_IN_FLIGHT_REQUESTS`, where `0` legitimately means "do not install
+    # the burst guard at all" and the middleware is simply not added.
+    api_rate_limit_enabled: bool = Field(True, alias="API_RATE_LIMIT_ENABLED")
+    workspace_rate_per_min: int = Field(2400, alias="WORKSPACE_RATE_PER_MIN", ge=1)
+    max_in_flight_requests: int = Field(64, alias="MAX_IN_FLIGHT_REQUESTS", ge=0)
 
     ollama_base_url: str = Field("http://ollama:11434", alias="OLLAMA_BASE_URL")
 
@@ -185,6 +196,11 @@ def load_settings() -> Settings:
             jwks_cache_ttl=env.firebase_jwks_cache_ttl,
         ),
         auth=AuthSettings(principal_cache_ttl_s=env.auth_principal_cache_ttl_s),
+        rate_limit=RateLimitSettings(
+            enabled=env.api_rate_limit_enabled,
+            workspace_per_min=env.workspace_rate_per_min,
+            max_in_flight=env.max_in_flight_requests,
+        ),
         ollama=OllamaSettings(base_url=env.ollama_base_url),
         embedding_service=EmbeddingServiceSettings(url=env.embedding_service_url),
         events=EventSettings(

@@ -26,6 +26,22 @@ from app.framework.types import Json
 # The problem `type` namespace, verbatim from every 03 §4 example.
 PROBLEM_TYPE_BASE = "https://errors.platform/"
 
+# RFC 9457's media type (03 §4). Every problem body is served under it.
+#
+# Here rather than in `api/main.py` (which re-exports it, so every existing
+# `from app.api.main import PROBLEM_MEDIA_TYPE` still resolves) because it is
+# a fact about the CONTRACT this module builds for, and main.py is no longer
+# its only renderer: capacity-plan 1.2's in-flight guard refuses a request
+# before the exception handlers are reachable at all, and it owes the caller
+# the same media type.
+PROBLEM_MEDIA_TYPE = "application/problem+json"
+
+# 03 §0: the correlation header, returned on every response and every error
+# body. Beside the media type and re-exported by `api/main.py` for the same
+# reason -- a layer that renders a problem outside the handler stack has to
+# echo the same header, and two spellings of it would be two contracts.
+CORRELATION_HEADER = "X-Correlation-Id"
+
 # What a malformed in-band error payload degrades to. Our own executor always
 # emits well-formed B1 events, so reaching these means a foreign/buggy
 # producer — degrade to the catalog's "unexpected" entry rather than crash

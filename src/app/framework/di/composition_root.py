@@ -208,6 +208,7 @@ from app.framework.ports.connector_provider import ConnectorProvider
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.idempotency_store import IdempotencyStore
 from app.framework.ports.metrics_source import MetricsSource
+from app.framework.ports.rate_limiter import RateLimiter
 from app.framework.ports.system_stats import SystemStatsSource
 from app.framework.ports.vault_health import VaultHealth
 from app.framework.providers.catalog import ModelCatalog
@@ -237,6 +238,7 @@ from app.infrastructure.cache.redis_cache import (
     blocking_read_timeout_s,
     create_redis_client,
 )
+from app.infrastructure.cache.redis_rate_limiter import RedisRateLimiter
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.infrastructure.messaging.consumers.sweeper import (
@@ -1442,6 +1444,14 @@ class CompositionRoot:
     # ``XREADGROUP ... BLOCK`` exactly like the three workers do (§1-أ-2).
     notify_redis_client: Redis
     cache: CacheProvider
+    # capacity-plan 1.2. Over the SAME `redis_client` as everything else on
+    # the request path, and NOT over `cache`: the two ceilings are held in one
+    # atomic Lua script and `CacheProvider` deliberately exposes no way to run
+    # one -- the same reason `RedisWsConnectionRegistry` takes the raw client.
+    # Built unconditionally; WHETHER the API installs a limiter over it is
+    # `RateLimitSettings.enabled`, decided in `api/main.py` where the rest of
+    # that policy lives.
+    rate_limiter: RateLimiter
     qdrant_client: AsyncQdrantClient
     vector_store: HybridVectorStore
     vault_client: hvac.Client
@@ -1960,6 +1970,10 @@ class CompositionRoot:
             redis_client=redis_client,
             notify_redis_client=notify_redis_client,
             cache=cache,
+            # Inline rather than a local: this method is already at the
+            # statement ceiling `ruff` enforces, and a one-argument adapter
+            # over a client three lines above reads no worse here.
+            rate_limiter=RedisRateLimiter(redis_client),
             qdrant_client=qdrant_client,
             vector_store=vector_store,
             vault_client=vault_client,

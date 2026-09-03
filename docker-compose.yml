@@ -71,6 +71,14 @@ x-app-env: &app-env
   # only how long an invalidation that FAILED may keep being wrong. `0` builds
   # NO cache at all, which is what a baseline run needs.
   AUTH_PRINCIPAL_CACHE_TTL_S: ${AUTH_PRINCIPAL_CACHE_TTL_S:-60}
+  # capacity-plan wave 1 step 1.2 -- the two request ceilings (per user, per
+  # workspace) over Redis, plus the per-process in-flight guard. `false` and
+  # `0` respectively build nothing, which is what a baseline run needs. The
+  # per-user number is `Limits.api_rate_per_min`: a declared 07 §4 guardrail,
+  # not a deployment knob, so it is deliberately absent here.
+  API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED:-true}
+  WORKSPACE_RATE_PER_MIN: ${WORKSPACE_RATE_PER_MIN:-2400}
+  MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-64}
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   EVENT_STREAM_PREFIX: ${EVENT_STREAM_PREFIX:-stream.}
   OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
