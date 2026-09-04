@@ -595,11 +595,26 @@ async def test_real_agent_input_validation_still_raises_in_flight_as_an_event() 
 # 4.7-c-2 -- quota enforcement (before) + usage capture (after)               #
 # --------------------------------------------------------------------------- #
 class _FakeEnforcement:
-    """Records every check; answers with a canned decision."""
+    """Records every ask; answers with a canned decision.
+
+    capacity-plan 2.7 -- a single-agent turn ADMITS itself (``reserve``) rather
+    than merely asking, and owes the slot back through ``commit`` (it spent) or
+    ``release`` (it did not). ``commit`` goes THROUGH the capture fake, exactly
+    as the real ``CommitReservation`` is ``CaptureUsage`` plus a release in one
+    transaction — so every ledger assertion in this file keeps measuring what
+    was actually billed.
+    """
 
     def __init__(self, decision: LimitDecision | None = None) -> None:
         self.decision = decision or LimitDecision(allowed=True)
         self.calls: list[tuple[str, str, int | None]] = []
+        self.reserved: list[str] = []
+        self.committed: list[tuple[str, UsageCharge]] = []
+        self.released: list[str] = []
+        self._capture: _FakeCapture | None = None
+
+    def bind_capture(self, capture: _FakeCapture) -> None:
+        self._capture = capture
 
     async def check(
         self,
@@ -610,6 +625,39 @@ class _FakeEnforcement:
     ) -> LimitDecision:
         self.calls.append((agent, provider, estimated_tokens))
         return self.decision
+
+    async def reserve(
+        self,
+        ctx: ExecutionContext,
+        agent: str,
+        provider: str,
+        estimated_tokens: int | None = None,
+    ) -> LimitDecision:
+        self.calls.append((agent, provider, estimated_tokens))
+        if not self.decision.allowed:
+            return self.decision
+        reservation_id = f"res-{len(self.reserved) + 1}"
+        self.reserved.append(reservation_id)
+        return LimitDecision(
+            allowed=True,
+            remaining=self.decision.remaining,
+            reservation_id=reservation_id,
+            retry_after_s=self.decision.retry_after_s,
+        )
+
+    async def commit(self, ctx: ExecutionContext, reservation_id: str, charge: UsageCharge) -> None:
+        self.committed.append((reservation_id, charge))
+        if self._capture is not None:
+            await self._capture.record(ctx, charge)
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        self.released.append(reservation_id)
+
+    @property
+    def outstanding(self) -> list[str]:
+        """Slots reserved and neither committed nor released."""
+        settled = {rid for rid, _ in self.committed} | set(self.released)
+        return [rid for rid in self.reserved if rid not in settled]
 
 
 class _FakeCapture:
@@ -682,6 +730,9 @@ def _metered_orchestrator(
     resolver.llm = llm
     used_enforcement = enforcement or _FakeEnforcement()
     used_capture = capture or _FakeCapture()
+    # 2.7 -- the enforcement fake commits THROUGH the capture fake, mirroring
+    # `CommitReservation` over `CaptureUsage` at the Composition Root.
+    used_enforcement.bind_capture(used_capture)
     deps = OrchestratorDependencies(
         agents=registry,
         executor=AgentLifecycleExecutor(),
@@ -2161,7 +2212,7 @@ async def test_a_workflow_step_is_never_waiting_on_an_answer() -> None:
     run — so no user has ever been asked anything in it, and there is nothing
     for a step's input to be the answer to."""
     orchestrator = _turn_orchestrator(_PendingReadingAgent, _FakeThreads(pending=("a.pdf",)))
-    deps, _provider = await orchestrator.begin_step(
+    deps, _provider, _reservation = await orchestrator.begin_step(
         _ctx(), "pending-reader", _TokenMeter(), space_id=_SPACE
     )
 
@@ -2670,3 +2721,43 @@ async def test_a_completed_turn_still_writes_only_what_it_asked() -> None:
     await _drive(_cut_orchestrator(_AskingAgent, threads, cap_s=30.0), "asking")
 
     assert threads.pending_writes == [("conv-1", ("a.pdf", "b.pdf"))]
+
+
+# --------------------------------------------------------------------------- #
+# capacity-plan 2.7 -- the admitted turn that dies before it can be billed    #
+# --------------------------------------------------------------------------- #
+async def test_a_turn_that_dies_after_admission_hands_its_quota_slot_straight_back() -> None:
+    """The one window where an admitted turn has no `_metered` to bill it.
+
+    Quota is reserved BEFORE the agent is created (a denial must cost nothing,
+    FR-132), so an unknown agent key raises its 404 with a slot already held —
+    and nothing would ever call `_capture` for a turn that never started. The
+    slot expires eventually, but a client hammering a bad key would cost the
+    workspace one slot per attempt for a whole stream deadline until it did.
+    """
+    orchestrator, enforcement, _capture = _metered_orchestrator(llm=_FakeLLM())
+
+    with pytest.raises(NotFoundError):
+        await orchestrator.invoke(
+            _ctx(), "no-such-agent", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
+
+    assert enforcement.reserved, "the turn was never admitted -- the test proves nothing"
+    assert enforcement.released == enforcement.reserved
+    assert enforcement.outstanding == []
+
+
+async def test_a_delivered_turn_settles_its_slot_with_the_charge_not_a_release() -> None:
+    """The ordinary path, stated so the guard above cannot be satisfied by
+    releasing everything: a turn that spent tokens COMMITS its slot, and the
+    commit is what carries the ledger row."""
+    orchestrator, enforcement, capture = _metered_orchestrator(
+        llm=_CountingLLM(prompt=7, completion=11)
+    )
+
+    await _drain(orchestrator)
+
+    assert enforcement.released == []
+    assert [rid for rid, _ in enforcement.committed] == enforcement.reserved
+    assert [c.tokens for c in capture.charges] == [18]
+    assert enforcement.outstanding == []

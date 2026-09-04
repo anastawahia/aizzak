@@ -64,6 +64,7 @@ from app.modules.knowledge.application.summarization import (
 )
 from app.modules.knowledge.application.use_cases import (
     _DEFAULT_MAX_BUILD_DURATION_S,
+    ACTIVE_SUMMARY_JOB_CEILING,
     SUMMARY_ABANDONED_REASON,
     SUMMARY_CANCELLED_REASON,
     SUMMARY_EMPTY_BUILD_REASON,
@@ -3411,3 +3412,26 @@ async def test_another_tenants_stored_summary_is_not_read_back_into_a_chat() -> 
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_ceiling_is_counted_under_the_workspaces_quota_lock() -> None:
+    """capacity-plan 2.7 — ب-10's ceiling is a count followed by an insert, and
+    READ COMMITTED lets every concurrent asker read the same count: three slots
+    admitted as many builds as the process had spare connections.
+
+    The lock is taken by ``RequestSummaryService`` because the unit of work is
+    the service's — a transaction-scoped lock taken anywhere else is released
+    before the count it protects — and this asserts the two facts a hermetic
+    test can hold: that it is asked for at all, and under the constant that IS
+    the lock's identity. That it then serialises anything is a claim about
+    PostgreSQL, proven in ``tests/integration/test_quota_races_live.py``.
+    """
+    stack = build_knowledge()
+    stack.repository.rows["doc-1"] = seed_document(document_id="doc-1", workspace_id=_W1)
+
+    await stack.knowledge.request_summary.start(
+        _ctx(), document_id="doc-1", kind=SummaryKind.FULL, lang=SummaryLanguage.AUTO
+    )
+
+    assert stack.quota_lock.held == [(_W1, ACTIVE_SUMMARY_JOB_CEILING)]

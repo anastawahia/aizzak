@@ -537,10 +537,25 @@ CREATE TABLE usage.limits (
   CONSTRAINT uq_limit UNIQUE (workspace_id, scope, scope_key, metric, period)
 );
 CREATE INDEX ix_limits_ws ON usage.limits(workspace_id);
+
+-- capacity-plan 2.7 — الحجوزات: القبول قبل التشغيل، لا الشحن بعده.
+CREATE TABLE usage.reservations (
+  id            uuid PRIMARY KEY,
+  workspace_id  uuid NOT NULL,
+  agent_key     text NOT NULL,
+  provider      text NOT NULL,
+  tokens        bigint NOT NULL DEFAULT 0 CHECK (tokens >= 0),
+  cost_micros   bigint NOT NULL DEFAULT 0 CHECK (cost_micros >= 0),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at    timestamptz NOT NULL
+);
+CREATE INDEX ix_usage_reservations_ws_live ON usage.reservations(workspace_id, expires_at);
 ```
-> **الفرض** (قبل العملية) يقرأ `usage_rollups` مقابل `limits` ويعيد **كائن قرار**؛ عقد المنفذ قابل للتطوّر إلى **reserve/commit** بإضافة عمود `reservation_id`/جدول حجوزات لاحقاً بلا كسر (`FR‑132` — نقطة توسعة). كلا المنفذين يُستدعى من **المُنسِّق** (طبقة الوكلاء) حصراً.
+> **الفرض** (قبل العملية) يقرأ `usage_rollups` مقابل `limits` ويعيد **كائن قرار**؛ كلا المنفذين يُستدعى من **المُنسِّق** (طبقة الوكلاء) حصراً.
 >
-> **BE-ADM-014**: الجداول الثلاثة هنا تُمحى مع مساحة العمل التي تخصّها عند التطهير (`python -m
+> **capacity-plan 2.7 — `reserve`/`commit` مُفعَّلةٌ الآن، والجدولُ أعلاه هو «جدول الحجوزات لاحقاً» الذي أعلنته هذه الفقرةُ نقطةَ توسعة.** السببُ مُقاس: الفرضُ **قراءةٌ**، ومئةُ قارئٍ متزامنين يرون الحصّةَ نفسَها — مساحةُ عملٍ يتبقّى في حصّتها رمزٌ واحدٌ قبلت **46** من مئةٍ وانتهى دفترُها عند 55 مقابل حدٍّ 10. **والصفُّ هو القبول**: يُكتب تحت قفلِ مساحةِ العمل الاستشاريّ في المعاملة التي تقرأ المجاميع، ويحسبه كلُّ قارئٍ بعده لأنّ `EnforceLimit` يجمع الحجوزاتِ الحيّةَ إلى `current` — فلا عدّادَ ولا إنقاصَ ولا رقمَ ينحرف عن الصفوف. **و`tokens` هنا ما حُجز لا ما أُنفق**: الإنفاقُ صفُّ الدفتر، ولا يجتمعان في صفٍّ واحد. **و`expires_at` حارسٌ للطلب الذي لا يعود** (عاملٌ قُتل، بثٌّ قُطع) وقيمتُه مهلةُ البثّ نفسُها (`Limits.stream_max_duration_s`) يمرّرها جذرُ التركيب؛ القارئُ **يُرشِّحه** فيكفّ المهجورُ عن كلفة الحصّة لحظةَ انتهائه، والحذفُ تنظيفٌ انتهازيٌّ يجريه الحاجزُ التاليُ لنفس المساحة تحت القفل نفسِه — فلا كانسَ ولا مهمّةَ دوريّة. ولا `updated_at` ولا `trg_touch`: الحجزُ يُنشَأ ثمّ يُحذَف بالتزامه أو ينتهي، ولا يُعدَّل.
+>
+> **BE-ADM-014**: الجداول الأربعة هنا تُمحى مع مساحة العمل التي تخصّها عند التطهير (`python -m
 > app.ops.purge`) — قراءةُ عدّادٍ لكلّ مستأجرٍ لا التزامًا ماليًا (الفوترة خارج v1)، فلا تُجمَّع في
 > سجلٍّ عابرٍ للمساحات قبل الحذف؛ REVIEW POINT في نصّ الوحدة نفسها إن ظهر التزام احتفاظٍ فوترةً/ضرائب.
 

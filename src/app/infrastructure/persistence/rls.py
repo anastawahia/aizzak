@@ -73,6 +73,23 @@ _active_session: ContextVar[AsyncSession | None] = ContextVar("_active_session",
 _active_workspace_id: ContextVar[Uuid | None] = ContextVar("_active_workspace_id", default=None)
 
 
+def in_unit_of_work() -> bool:
+    """Is a ``TenantSessionFactory.begin(ctx)`` block active on this task?
+
+    Published for ONE caller (``persistence/quota_lock.py``) and for one
+    reason: a transaction-scoped advisory lock taken in a transaction of its
+    own is acquired and released in the same round trip, which looks exactly
+    like a lock and serialises nothing. The ceiling guard has to be able to
+    refuse that, and this is the only honest way to ask -- the ``ContextVar``
+    is module-private, so the question cannot be answered from outside.
+
+    It says nothing about WHICH workspace's unit of work is active;
+    ``__call__`` already refuses a cross-tenant join with a loud error, so a
+    second check here would only duplicate it.
+    """
+    return _active_session.get() is not None
+
+
 async def set_tenant(session: AsyncSession, workspace_id: Uuid) -> None:
     """Set the RLS GUC for the remainder of ``session``'s current transaction."""
     await session.execute(

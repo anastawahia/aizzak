@@ -607,6 +607,12 @@ class _OpenStep:
     agent_key: str
     provider: str
     meter: _TokenMeter
+    # 2.7 — the step's own quota slot. Per STEP and not per run, for the same
+    # reason the charge is: each step reserves under the agent that actually
+    # runs and the provider it actually resolved, so a run's steps take and
+    # give back N slots rather than one slot that could only be a lie about
+    # N-1 of them.
+    reservation_id: Uuid | None = None
 
 
 class _MeteredSteps:
@@ -669,13 +675,19 @@ class _MeteredSteps:
         # tokens steps 1 and 2 really consumed.
         await self.close_step()
         meter = _TokenMeter()
-        deps, provider = await self._orchestrator.begin_step(
+        deps, provider, reservation_id = await self._orchestrator.begin_step(
             self._ctx, agent_key, meter, space_id=self._space_id
         )
         # Recorded only AFTER `begin_step` succeeded: a step the quota denied,
         # or whose provider could not be resolved, never ran and must never
-        # produce a charge.
-        self._open = _OpenStep(agent_key=agent_key, provider=provider, meter=meter)
+        # produce a charge -- and a denied step holds no slot to give back
+        # either, since `reserve` writes nothing on a denial.
+        self._open = _OpenStep(
+            agent_key=agent_key,
+            provider=provider,
+            meter=meter,
+            reservation_id=reservation_id,
+        )
         return deps
 
     async def close_step(self) -> None:
@@ -688,7 +700,9 @@ class _MeteredSteps:
         # boundary reaches this from both sides, and billing the same step
         # twice would double-charge a workspace for tokens it spent once.
         self._open = None
-        await self._orchestrator.finish_step(self._ctx, step.agent_key, step.provider, step.meter)
+        await self._orchestrator.finish_step(
+            self._ctx, step.agent_key, step.provider, step.meter, step.reservation_id
+        )
 
 
 class WorkflowRun:
@@ -888,6 +902,13 @@ class _TurnRecord:
     # nothing changed. It is read once, in the pre-flight, exactly like the
     # route and the scope; nothing here re-reads it mid-turn.
     pending: tuple[str, ...] = ()
+    # capacity-plan 2.7 — the quota slot this turn was ADMITTED against, held
+    # from the pre-flight `_enforce` until `_capture` replaces it with the real
+    # charge (or hands it straight back). `None` means no enforcement is wired,
+    # or the workspace was denied and the turn never started. Kept on the
+    # record for the reason everything else here is: the pre-flight knows it
+    # and the end of the stream needs it, and re-deriving it is impossible.
+    reservation_id: Uuid | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1035,19 +1056,46 @@ class AgentOrchestrator:
         # Quota BEFORE the run (FR-132, 11 §8.1): a denial must cost nothing,
         # so this precedes agent creation, and it raises rather than yielding
         # -- still pre-flight, so Phase 6 answers a real 429.
-        await self._enforce(ctx, agent_key, provider_name)
+        #
+        # 2.7 -- and it RESERVES rather than merely asking, so the hundredth
+        # concurrent request on the last token of a workspace's headroom is
+        # refused instead of being told the same "yes" as the first.
+        record.reservation_id = await self._admit(ctx, agent_key, provider_name)
 
-        deps = self._build_dependencies(
-            binding, record.meter, scope, space_id=space_id, pending=pending
-        )
-        # Registry raises NotFoundError(404) for an unknown key and
-        # ValidationError(422) for a malformed one -- both pass straight
-        # through, still pre-flight, still mappable to a response.
-        agent = self._deps.agents.create(agent_key, ctx, deps)
-        record.conversation_id = await self._open_turn(ctx, agent_key, req)
+        # ⚠️ Everything from here to the `return` is the ONE window where an
+        # admitted turn can die before `_metered` exists to bill it -- an
+        # unknown agent key (404), a malformed one (422), a deleted thread
+        # (409) -- and nothing else would ever call `_capture` for it, so the
+        # slot would sit held until it expired. Bounded rather than permanent
+        # even then, but a client hammering a bad agent key would still cost a
+        # workspace one slot per attempt for a whole stream deadline. Once
+        # `_metered` is handed back the generator's own `finally` owns the
+        # slot, which is why this guard stops exactly there.
+        try:
+            deps = self._build_dependencies(
+                binding, record.meter, scope, space_id=space_id, pending=pending
+            )
+            # Registry raises NotFoundError(404) for an unknown key and
+            # ValidationError(422) for a malformed one -- both pass straight
+            # through, still pre-flight, still mappable to a response.
+            agent = self._deps.agents.create(agent_key, ctx, deps)
+            record.conversation_id = await self._open_turn(ctx, agent_key, req)
+        except Exception:
+            await self._give_back(ctx, record.reservation_id)
+            raise
         return record, self._metered(
             ctx, agent_key, provider_name, record, self._deps.executor.drive(agent, req)
         )
+
+    async def _give_back(self, ctx: ExecutionContext, reservation_id: Uuid | None) -> None:
+        """Release a slot when there is one and something to release it to —
+        the two ``None`` cases (no enforcement wired, no admission taken) are
+        the same "nothing to do" and are handled here rather than at each of
+        the callers that would otherwise repeat the pair of checks."""
+        enforcement = self._deps.usage_enforcement
+        if enforcement is None or reservation_id is None:
+            return
+        await self._release(ctx, enforcement, reservation_id)
 
     async def _open_turn(
         self, ctx: ExecutionContext, agent_key: str, req: AgentRequest
@@ -1259,10 +1307,11 @@ class AgentOrchestrator:
 
     async def begin_step(
         self, ctx: ExecutionContext, agent_key: str, meter: _TokenMeter, *, space_id: Uuid
-    ) -> tuple[AgentDependencies, str]:
-        """Start one workflow step: resolve its provider, enforce the quota,
-        assemble its bundle — returning the bundle and the provider name the
-        eventual charge must carry (4.7-e-1; enforcement added 4.7-e-2).
+    ) -> tuple[AgentDependencies, str, Uuid | None]:
+        """Start one workflow step: resolve its provider, RESERVE the quota,
+        assemble its bundle — returning the bundle, the provider name the
+        eventual charge must carry, and the quota slot ``finish_step`` owes
+        back (4.7-e-1; enforcement added 4.7-e-2, the reservation 2.7).
 
         Public, with ``finish_step``, because ``_MeteredSteps`` is their only
         caller and this IS the orchestrator's contract with the workflow
@@ -1286,25 +1335,32 @@ class AgentOrchestrator:
         """
         binding = await self._resolve_llm(ctx, agent_key)
         provider = binding.provider.provider if binding is not None else _NO_PROVIDER
-        await self._enforce(ctx, agent_key, provider)
+        reservation_id = await self._admit(ctx, agent_key, provider)
         # س-32 — the RUN's space reaches every step of it. A step's agent is the
         # same agent a user could invoke directly, so it gets the same isolation
         # by the same field; without this a workflow would be the one way to
         # reach an unscoped read, which is precisely the hole the decision
         # closes on the direct path.
-        return self._build_dependencies(binding, meter, space_id=space_id), provider
+        return self._build_dependencies(binding, meter, space_id=space_id), provider, reservation_id
 
     async def finish_step(
-        self, ctx: ExecutionContext, agent_key: str, provider: str, meter: _TokenMeter
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        provider: str,
+        meter: _TokenMeter,
+        reservation_id: Uuid | None = None,
     ) -> None:
         """Bill one finished workflow step — the same capture, and the same two
         deliberate silences, as a single-agent request (see ``_capture``).
 
         In particular a step that consumed nothing writes nothing: a media step
         inside a pipeline (D-04) leaves no zero-token row, exactly as the same
-        agent invoked directly leaves none.
+        agent invoked directly leaves none — and 2.7's reservation is still
+        handed back for it, which is why the slot is passed here rather than
+        being released by whoever decides there is nothing to bill.
         """
-        await self._capture(ctx, agent_key, provider, meter)
+        await self._capture(ctx, agent_key, provider, meter, reservation_id)
 
     def _build_dependencies(
         self,
@@ -1366,8 +1422,50 @@ class AgentOrchestrator:
             pending_clarification=pending,
         )
 
+    async def _admit(self, ctx: ExecutionContext, agent_key: str, provider: str) -> Uuid | None:
+        """RESERVE the workspace's quota; raise 429 when denied, and return
+        the slot the caller now owes a ``commit`` or a ``release`` for
+        (FR-132; capacity-plan 2.7).
+
+        **Why this is no longer ``check``.** A check is a read, and a hundred
+        simultaneous readers all see the same headroom: measured on the live
+        stack, a workspace with ONE token left admitted 46 of 100 concurrent
+        requests and finished 45 tokens over its limit. ``reserve`` takes the
+        slot in the same transaction that reads the totals, so the hundredth
+        caller sees the first caller's admission whether or not it has spent
+        anything yet.
+
+        ⚠️ **And this is where ``estimated_tokens`` still is not supplied.**
+        The old objection stands unchanged — nothing can know a request's token
+        cost before running it, and inventing a number here would silently
+        shrink every workspace's headroom by that guess. What the reservation
+        holds instead is the module's floor of ONE token, which invents
+        nothing: it is the smallest true statement about a request that runs,
+        and ``commit`` replaces it with the measured charge a moment later.
+
+        ``None`` when no enforcement is wired — the unchanged "unwired is
+        unlimited" behaviour, and the value every caller then carries through
+        to a ``_capture`` that has nothing to give back.
+        """
+        return await self._decide(ctx, agent_key, provider, reserve=True)
+
     async def _enforce(self, ctx: ExecutionContext, agent_key: str, provider: str) -> None:
-        """Check the workspace's quota; raise 429 when denied (FR-132).
+        """Ask the workspace's quota WITHOUT taking a slot; raise 429 when
+        denied.
+
+        The run-level workflow gate and nothing else (capacity-plan 2.7): a
+        workflow run is not itself charged — every one of its steps reserves
+        and commits under its own agent and provider — so a reservation here
+        would be a slot nobody ever gives back except by expiry. What this
+        gate is for is refusing a workspace that is ALREADY over before a
+        thread is opened for it, and a read answers that exactly.
+        """
+        await self._decide(ctx, agent_key, provider, reserve=False)
+
+    async def _decide(
+        self, ctx: ExecutionContext, agent_key: str, provider: str, *, reserve: bool
+    ) -> Uuid | None:
+        """The shared body of the two above (FR-132).
 
         The decision OBJECT is what the port returns (never a bare bool), and
         its ``reason`` selects the error code — ``usage.quota_exceeded`` /
@@ -1383,10 +1481,12 @@ class AgentOrchestrator:
         catalogued generic: a denial with an unrecognised reason is still a
         truthful 429, just a less specific one.
 
-        ``estimated_tokens`` is deliberately not supplied: nothing can know a
-        request's token cost before running it, and inventing a number here
-        would silently shrink every workspace's headroom by that guess. The
-        port makes it optional for exactly this reason.
+        ``estimated_tokens`` is deliberately not supplied on EITHER call:
+        nothing can know a request's token cost before running it, and
+        inventing a number here would silently shrink every workspace's
+        headroom by that guess. The port makes it optional for exactly this
+        reason, and 2.7's reservation floor of one token is what fills the gap
+        without inventing anything (``_admit``).
 
         ``retry_after_s`` is CARRIED, not computed (3.79). This method is the
         natural producer of the 429 but the wrong place to reason about when a
@@ -1397,10 +1497,11 @@ class AgentOrchestrator:
         """
         enforcement = self._deps.usage_enforcement
         if enforcement is None:
-            return
-        decision = await enforcement.check(ctx, agent_key, provider)
+            return None
+        ask = enforcement.reserve if reserve else enforcement.check
+        decision = await ask(ctx, agent_key, provider)
         if decision.allowed:
-            return
+            return decision.reservation_id
         reason = decision.reason or _DEFAULT_DENIAL
         raise RateLimitedError(
             f"usage limit reached for this workspace ({reason})",
@@ -1543,7 +1644,7 @@ class AgentOrchestrator:
             # ⚠️ And billing is deliberately NOT reduced for a cut-off turn
             # (decision 3): those tokens were generated and paid for upstream.
             # ب-10 reduces what is LOST, never what is owed.
-            await self._capture(ctx, agent_key, provider, record.meter)
+            await self._capture(ctx, agent_key, provider, record.meter, record.reservation_id)
 
     async def _settle_cut(
         self,
@@ -1817,10 +1918,16 @@ class AgentOrchestrator:
         )
 
     async def _capture(
-        self, ctx: ExecutionContext, agent_key: str, provider: str, meter: _TokenMeter
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        provider: str,
+        meter: _TokenMeter,
+        reservation_id: Uuid | None = None,
     ) -> None:
         """Record consumption after the run (FR-131/134) — synchronous, no
-        Streams, idempotent on ``operation_id``.
+        Streams, idempotent on ``operation_id`` — and give 2.7's quota slot
+        back, either replaced by the charge or empty-handed.
 
         Two deliberate silences:
 
@@ -1828,34 +1935,64 @@ class AgentOrchestrator:
           at all (the media agents, D-04) would otherwise write a zero-token
           ledger row per request — pure noise in an append-only table. The
           generation those agents queue is metered by the Phase-5 worker that
-          actually performs it.
+          actually performs it. ⚠️ **The reservation is still released on that
+          path**, which is why the two are one method: a run that spent nothing
+          is exactly the run whose held slot has no charge coming to replace
+          it, and returning early without releasing would have made "wrote no
+          ledger row" mean "kept a slot for the next ten minutes".
         * **A capture failure never fails the request.** The answer has
           already been delivered in full by the time this runs; raising here
           would turn a successful, already-streamed response into an error the
           client cannot act on. Logged at warning instead — the same
           reasoning as the executor's swallowed ``dispose`` (decision E), and
           the same trade-off recorded honestly: a lost capture is lost
-          revenue, so this log is the operator's signal to investigate.
+          revenue, so this log is the operator's signal to investigate. A
+          swallowed failure here leaves the slot held, and that is bounded
+          rather than permanent: it expires on the request's own deadline.
         """
+        enforcement = self._deps.usage_enforcement
         capture = self._deps.usage_capture
-        if capture is None or meter.total <= 0:
+        billable = capture is not None and meter.total > 0
+        if not billable:
+            await self._give_back(ctx, reservation_id)
             return
+        assert capture is not None  # narrowed by `billable`
+        charge = UsageCharge(
+            agent=agent_key,
+            provider=provider,
+            tokens=meter.total,
+            cost_micros=_V1_COST_MICROS,
+            operation_id=new_uuid7(),
+            estimated=meter.estimated,
+        )
         try:
-            await capture.record(
-                ctx,
-                UsageCharge(
-                    agent=agent_key,
-                    provider=provider,
-                    tokens=meter.total,
-                    cost_micros=_V1_COST_MICROS,
-                    operation_id=new_uuid7(),
-                    estimated=meter.estimated,
-                ),
-            )
+            if enforcement is not None and reservation_id is not None:
+                # ONE transaction for the release and the append (2.7): the
+                # workspace is never briefly charged twice for this request,
+                # nor briefly charged for neither.
+                await enforcement.commit(ctx, reservation_id, charge)
+            else:
+                await capture.record(ctx, charge)
         except Exception as exc:  # never mask a delivered answer
             _logger.warning(
                 "orchestrator.usage_capture_failed",
                 extra={"agent_key": agent_key, "provider": provider, "tokens": meter.total},
+                exc_info=exc,
+            )
+
+    async def _release(
+        self, ctx: ExecutionContext, enforcement: UsageEnforcement, reservation_id: Uuid
+    ) -> None:
+        """Hand a quota slot back, and never fail a delivered answer for it —
+        ``_capture``'s second silence, applied to the half of it that writes
+        nothing. An unreleased slot expires; a raised exception here would
+        surface as an error on a request that already succeeded."""
+        try:
+            await enforcement.release(ctx, reservation_id)
+        except Exception as exc:
+            _logger.warning(
+                "orchestrator.usage_release_failed",
+                extra={"reservation_id": reservation_id},
                 exc_info=exc,
             )
 

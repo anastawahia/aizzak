@@ -63,6 +63,7 @@ from app.framework.errors import ConflictError, NotFoundError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import EventOutbox
+from app.framework.ports.quota_lock import QuotaLock
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.types import Uuid
@@ -234,6 +235,13 @@ _DEFAULT_MAX_BUILD_DURATION_S = 1_800.0
 # configured number arrives as a second ARGUMENT and this is what it is when
 # nobody says otherwise.
 _DEFAULT_MAX_ACTIVE_JOBS = 3
+
+# The `QuotaLock` name for the ceiling above (capacity-plan 2.7). Public
+# because the transaction that must hold it belongs to `RequestSummaryService`
+# below and not to `RequestSummary`, and a constant rather than a literal
+# because the string IS the lock's identity -- two spellings are two locks that
+# serialise against nobody.
+ACTIVE_SUMMARY_JOB_CEILING = "knowledge.max_active_summary_jobs"
 
 # `F-9` (rag-summarization-fix-plan.md §3.10) — what a DELIVERED summary says
 # when the build stopped at `_MAX_MAP_CHUNKS`. Two fixed sentences, phrased
@@ -1290,10 +1298,17 @@ class RequestSummaryService:
     having failed outright, which is what rolling both back produces.
     """
 
-    def __init__(self, request: RequestSummary, outbox: EventOutbox, uow: UnitOfWork) -> None:
+    def __init__(
+        self,
+        request: RequestSummary,
+        outbox: EventOutbox,
+        uow: UnitOfWork,
+        lock: QuotaLock,
+    ) -> None:
         self._request = request
         self._outbox = outbox
         self._uow = uow
+        self._lock = lock
 
     async def start(
         self,
@@ -1305,6 +1320,14 @@ class RequestSummaryService:
         conversation_id: Uuid | None = None,
     ) -> SummaryJob:
         async with self._uow.begin(ctx):
+            # capacity-plan 2.7 -- `RequestSummary`'s ب-10 ceiling counts
+            # active jobs and then inserts one, and READ COMMITTED lets every
+            # concurrent asker read the same count: three slots admitted as
+            # many builds as the process had spare connections. The count below
+            # is inside THIS transaction (the ب-10 comment says why it must
+            # be), so holding the workspace's lock here is what makes it a
+            # count nothing can invalidate before it is acted on.
+            await self._lock.hold(ctx, ACTIVE_SUMMARY_JOB_CEILING)
             job, events = await self._request.execute(
                 ctx,
                 document_id=document_id,

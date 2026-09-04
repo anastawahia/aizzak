@@ -233,6 +233,7 @@ def test_purge_role_gets_select_delete_on_every_tenant_table_it_empties() -> Non
         "usage.usage_records",
         "usage.usage_rollups",
         "usage.limits",
+        "usage.reservations",
     )
     for table in tables:
         matches = [s for s in PURGE_GRANTS if f" ON {table} TO " in s]

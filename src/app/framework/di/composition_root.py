@@ -251,6 +251,7 @@ from app.infrastructure.monitoring.system_stats import HostSystemStats
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.idempotency import SqlIdempotencyStore
 from app.infrastructure.persistence.outbox import SqlEventOutbox
+from app.infrastructure.persistence.quota_lock import AdvisoryQuotaLock
 from app.infrastructure.persistence.rls import (
     PlatformAdminSessionFactory,
     PlatformAdminWriteSessionFactory,
@@ -405,9 +406,12 @@ from app.modules.spaces.application.use_cases import (
 from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
 from app.modules.usage.application.use_cases import (
     CaptureUsage,
+    CommitReservation,
     EnforceLimit,
     GetUsageSummary,
     ListLimits,
+    ReleaseReservation,
+    ReserveQuota,
     SetLimits,
     UsageCaptureService,
     UsageEnforcementService,
@@ -814,6 +818,43 @@ def _build_platform_providers(
     )
 
 
+def _usage_enforcement(
+    ledger: SqlUsageLedgerRepository,
+    settings: Settings,
+    tenant_session: TenantSessionFactory,
+) -> UsageEnforcementService:
+    """The quota seam the orchestrator holds — four use-cases behind one port
+    (capacity-plan 2.7).
+
+    A helper rather than four nested constructor calls inline, for the reason
+    every other ``_build_*`` here is one: the orchestrator's argument list is
+    already at its readable limit, and this one has a NUMBER in it that has to
+    be justified where it is passed.
+
+    **That number: the reservation's TTL is the caller's own stream deadline.**
+    ``Limits.stream_max_duration_s`` (600 s) is the total wall-clock cap on one
+    streamed response (5.3-أ), so a request cannot outlive it — which makes a
+    reservation older than it the property of a request that is already over,
+    by construction rather than by estimate. Reading it here rather than
+    declaring a second ``USAGE_RESERVATION_TTL_S`` beside it is what keeps the
+    two from drifting: there is only one value, and raising the deadline
+    raises the expiry with it automatically.
+    """
+    enforce = EnforceLimit(ledger, settings.usage)
+    return UsageEnforcementService(
+        enforce,
+        ReserveQuota(
+            enforce,
+            ledger,
+            tenant_session,
+            AdvisoryQuotaLock(tenant_session),
+            settings.limits.stream_max_duration_s,
+        ),
+        CommitReservation(ledger, CaptureUsage(ledger), tenant_session),
+        ReleaseReservation(ledger),
+    )
+
+
 def _build_integrations(
     settings: Settings,
     cache: CacheProvider,
@@ -1053,7 +1094,13 @@ def _build_space_services(
     off the bundle because this function must keep naming only what it uses —
     the cascade marks, it does not create, rename or list.
     """
-    quota = SpaceQuotaService(transfers, spaces, files, tenant_session, limits)
+    # capacity-plan 2.7 -- the workspace file cap's lock. `tenant_session`
+    # plays all three roles here (session factory, `UnitOfWork`, and now the
+    # lock's transport), which is exactly what makes the lock land in the
+    # same transaction as the count it protects.
+    quota = SpaceQuotaService(
+        transfers, spaces, files, tenant_session, limits, AdvisoryQuotaLock(tenant_session)
+    )
     deletion = DeleteSpaceService(
         mark,
         knowledge=knowledge,
@@ -1277,6 +1324,11 @@ def _build_knowledge(
         ),
         outbox,
         tenant_session,
+        # capacity-plan 2.7 -- ب-10's ceiling is a count followed by an insert,
+        # and READ COMMITTED lets every concurrent asker read the same count.
+        # The lock is taken by the service because the unit of work is the
+        # service's; `RequestSummary` keeps owning the number.
+        AdvisoryQuotaLock(tenant_session),
     )
     use_cases = KnowledgeUseCases(
         list_documents=ListDocuments(documents),
@@ -1949,9 +2001,7 @@ class CompositionRoot:
                 providers=provider_resolver,
                 files=files_query,
                 media=media_requests,
-                usage_enforcement=UsageEnforcementService(
-                    EnforceLimit(usage_ledger, settings.usage)
-                ),
+                usage_enforcement=_usage_enforcement(usage_ledger, settings, tenant_session),
                 usage_capture=UsageCaptureService(CaptureUsage(usage_ledger)),
                 workflows=workflow_registry,
                 conversations=conversation_threads,

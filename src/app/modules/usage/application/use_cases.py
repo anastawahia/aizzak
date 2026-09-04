@@ -8,6 +8,12 @@ precedent).
 
 ``EnforceLimit``/``CaptureUsage`` are the pure-slice use-cases behind
 02-port-contracts §2's ``UsageEnforcement``/``UsageCapture`` inbound ports;
+``ReserveQuota``/``CommitReservation``/``ReleaseReservation`` (capacity-plan
+2.7) are the reserve/commit flow the same section declared as an extension
+point — the answer to the fact that ``EnforceLimit`` is a READ and a hundred
+simultaneous readers all see the same headroom (measured: one token of
+headroom admitted 46 of 100 concurrent requests, and 46 was the size of the
+connection pool);
 ``UsageEnforcementService``/``UsageCaptureService`` below implement those
 ports over them (the ``KnowledgeRetrievalService`` precedent for an
 inbound-port implementation living alongside the other use-cases). Both
@@ -30,15 +36,17 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
+from app.framework.ports.quota_lock import QuotaLock
+from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.settings.settings import UsageSettings
 from app.modules.usage.domain.enforcement import LimitCheck, evaluate
-from app.modules.usage.domain.entities import UsageLimit
+from app.modules.usage.domain.entities import Reservation, UsageLimit
 from app.modules.usage.domain.errors import UsageError
 from app.modules.usage.domain.events import LimitExceeded, UsageEvent, UsageRecorded
 from app.modules.usage.domain.periods import period_reset_at
@@ -48,6 +56,30 @@ from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from app.modules.usage.ports.repository import UsageLedgerRepository
 
 _WILDCARD = "*"
+
+# The ``QuotaLock`` name for the token/cost quota (capacity-plan 2.7). A
+# constant rather than a literal because the string IS the lock's identity --
+# two spellings are two locks, and two locks serialise nobody.
+USAGE_QUOTA_CEILING = "usage.workspace_quota"
+
+# What ``ReserveQuota`` holds for a caller that supplied no estimate.
+#
+# ⚠️ NOT a guess about the request's cost, and the distinction is the reason
+# this number is allowed to exist at all. ``orchestrator._enforce`` argued --
+# correctly -- that inventing a per-request token figure would silently shrink
+# every workspace's headroom by that invention. One token invents nothing: it
+# is the smallest true statement about a request that runs, it is replaced by
+# the measured charge at ``commit``, and it is what turns "a hundred callers
+# and one token of headroom" into one admission instead of a hundred.
+_MIN_RESERVED_TOKENS = 1
+
+# ⚠️ Reservations carry NO cost estimate, and the ``COST_MICROS`` limit is
+# therefore admission-controlled by the ledger alone. That is not an oversight
+# to be fixed by inventing a price: v1 charges ``_V1_COST_MICROS = 0`` for
+# every operation (``agents/orchestrator.py``), so a cost reservation would be
+# a number with no producer on either side of it. The moment a real price
+# exists, this is the line that changes.
+_RESERVED_COST_MICROS = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +117,11 @@ class EnforceLimit:
         relevant = [rule for rule in rules if _governs(rule, agent, provider)]
 
         totals: dict[tuple[str, str, str], tuple[int, int]] = {}
+        # In-flight totals are NOT period-keyed, and the separate cache is
+        # what says so: a reservation is live NOW, so it belongs to the day's
+        # bucket and the month's alike, and re-asking per period would be the
+        # same rows counted twice under two names.
+        held: dict[tuple[str, str], tuple[int, int]] = {}
         checks: list[LimitCheck] = []
         for rule in relevant:
             bucket = _bucket_for(rule.scope, agent, provider)
@@ -92,8 +129,22 @@ class EnforceLimit:
             if totals_key not in totals:
                 result = await self._ledger.rollup(ctx, bucket[0], bucket[1], rule.period.value)
                 totals[totals_key] = (result.tokens, result.cost_micros)
+            if bucket not in held:
+                # capacity-plan 2.7 -- what is ALREADY admitted and not yet
+                # charged. Counted by `check` as well as by `reserve`, and
+                # deliberately: "is this workspace over?" has one answer, and a
+                # reader that ignored in-flight work would give the optimistic
+                # one to the workflow run-level gate while every step of that
+                # run reserved against the honest one.
+                in_flight = await self._ledger.reserved(ctx, bucket[0], bucket[1])
+                held[bucket] = (in_flight.tokens, in_flight.cost_micros)
             tokens_total, cost_total = totals[totals_key]
-            current = tokens_total if rule.metric is Metric.TOKENS else cost_total
+            tokens_held, cost_held = held[bucket]
+            current = (
+                tokens_total + tokens_held
+                if rule.metric is Metric.TOKENS
+                else cost_total + cost_held
+            )
             checks.append(
                 LimitCheck(rule.scope, rule.metric, rule.period, rule.limit_value, current)
             )
@@ -118,6 +169,120 @@ class EnforceLimit:
         return decision, events
 
 
+class ReserveQuota:
+    """Admit one operation against the workspace's quota and hold its slot —
+    the atomic half of `FR-132` that `02 §2` declared as an extension point and
+    capacity-plan 2.7 built (`INV-U3`).
+
+    **Why ``EnforceLimit`` alone could not do this.** Its body is a READ. Under
+    concurrency every caller that arrives before the first charge lands reads a
+    total that excludes every other caller, so all of them are told yes.
+    Measured on the live stack against a workspace with **one** token of
+    headroom: 46 of 100 concurrent requests admitted, ledger at 55 against a
+    limit of 10 — and the 46 was the width of the connection pool, not a
+    property of the quota (``pool_size=5`` admitted 5).
+
+    **What makes this one atomic.** The whole body is ONE unit of work holding
+    the workspace's ``QuotaLock``, so the totals read and the reservation
+    written cannot be interleaved by a second admission. Contention is scoped
+    to one ceiling of one workspace: two tenants never wait for each other,
+    and neither does a file registration waiting on its own lock.
+
+    **The reservation is counted by the very next reader**, because
+    ``EnforceLimit`` adds ``reserved`` into ``current``. That is the entire
+    mechanism — no counter, no decrement, no number that can drift from the
+    rows it summarises.
+    """
+
+    def __init__(
+        self,
+        enforce: EnforceLimit,
+        ledger: UsageLedgerRepository,
+        uow: UnitOfWork,
+        lock: QuotaLock,
+        ttl_s: int,
+    ) -> None:
+        self._enforce = enforce
+        self._ledger = ledger
+        self._uow = uow
+        self._lock = lock
+        self._ttl_s = ttl_s
+
+    async def execute(
+        self,
+        ctx: ExecutionContext,
+        *,
+        agent: str,
+        provider: str,
+        estimated_tokens: int | None = None,
+    ) -> tuple[Decision, tuple[UsageEvent, ...]]:
+        tokens = max(estimated_tokens or 0, _MIN_RESERVED_TOKENS)
+        async with self._uow.begin(ctx):
+            await self._lock.hold(ctx, USAGE_QUOTA_CEILING)
+            # `estimated_tokens=tokens` is what makes the request count
+            # against itself: `evaluate`'s overshoot rule denies a check whose
+            # `current + estimated` would pass the cap, so the last token of
+            # headroom is taken by the first caller and refused to the rest.
+            decision, events = await self._enforce.execute(
+                ctx, agent=agent, provider=provider, estimated_tokens=tokens
+            )
+            if not decision.allowed:
+                return decision, events
+
+            now = utc_now()
+            reservation = Reservation(
+                id=new_uuid7(),
+                workspace_id=ctx.workspace_id,
+                agent_key=agent,
+                provider=provider,
+                tokens=tokens,
+                cost_micros=_RESERVED_COST_MICROS,
+                created_at=now,
+                expires_at=now + timedelta(seconds=self._ttl_s),
+            )
+            await self._ledger.reserve(ctx, reservation)
+            return replace(decision, reservation_id=reservation.id), events
+
+
+class CommitReservation:
+    """Replace a held reservation with what the operation actually spent.
+
+    ONE unit of work for the release and the ledger append: a workspace must
+    never be briefly charged twice for one request (slot still held, charge
+    already landed) nor briefly charged for neither. The append keeps its own
+    idempotency (`INV-U1`) — a replayed ``operation_id`` still writes nothing,
+    and the reservation is still given back, which is the right outcome for a
+    retry of a capture that already succeeded.
+    """
+
+    def __init__(
+        self, ledger: UsageLedgerRepository, capture: CaptureUsage, uow: UnitOfWork
+    ) -> None:
+        self._ledger = ledger
+        self._capture = capture
+        self._uow = uow
+
+    async def execute(
+        self, ctx: ExecutionContext, reservation_id: str, charge: UsageCharge
+    ) -> tuple[bool, tuple[UsageEvent, ...]]:
+        async with self._uow.begin(ctx):
+            await self._ledger.release(ctx, reservation_id)
+            return await self._capture.execute(ctx, charge)
+
+
+class ReleaseReservation:
+    """Hand a slot back, charging nothing — the admitted operation that
+    consumed no tokens at all (a media agent, `D-04`), and the one that died
+    before it could. No unit of work: a single DELETE is already atomic, and
+    wrapping it would only add a transaction to say so."""
+
+    def __init__(self, ledger: UsageLedgerRepository) -> None:
+        self._ledger = ledger
+
+    async def execute(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        await self._ledger.release(ctx, reservation_id)
+
+
 class UsageEnforcementService:
     """Implements ``UsageEnforcement`` (02 §2) over ``EnforceLimit``. Domain
     events returned by ``EnforceLimit`` are intentionally dropped here:
@@ -126,8 +291,17 @@ class UsageEnforcementService:
     ``LimitDecision``.
     """
 
-    def __init__(self, enforce: EnforceLimit) -> None:
+    def __init__(
+        self,
+        enforce: EnforceLimit,
+        reserve: ReserveQuota,
+        commit: CommitReservation,
+        release: ReleaseReservation,
+    ) -> None:
         self._enforce = enforce
+        self._reserve = reserve
+        self._commit = commit
+        self._release = release
 
     async def check(
         self,
@@ -139,13 +313,28 @@ class UsageEnforcementService:
         decision, _events = await self._enforce.execute(
             ctx, agent=agent, provider=provider, estimated_tokens=estimated_tokens
         )
-        return LimitDecision(
-            allowed=decision.allowed,
-            reason=decision.reason.value if decision.reason is not None else None,
-            remaining=decision.remaining,
-            reservation_id=None,
-            retry_after_s=decision.retry_after_s,
+        # `reservation_id=None` is a STATEMENT here, not a leftover: `check`
+        # holds nothing, so a caller must never be able to mistake its answer
+        # for an admission it owes a `commit` or a `release` for.
+        return _decision_out(decision, reservation_id=None)
+
+    async def reserve(
+        self,
+        ctx: ExecutionContext,
+        agent: str,
+        provider: str,
+        estimated_tokens: int | None = None,
+    ) -> LimitDecision:
+        decision, _events = await self._reserve.execute(
+            ctx, agent=agent, provider=provider, estimated_tokens=estimated_tokens
         )
+        return _decision_out(decision, reservation_id=decision.reservation_id)
+
+    async def commit(self, ctx: ExecutionContext, reservation_id: str, charge: UsageCharge) -> None:
+        await self._commit.execute(ctx, reservation_id, charge)
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        await self._release.execute(ctx, reservation_id)
 
 
 class CaptureUsage:
@@ -311,6 +500,20 @@ class UsageUseCases:
     summary: GetUsageSummary
     list_limits: ListLimits
     set_limits: SetLimits
+
+
+def _decision_out(decision: Decision, *, reservation_id: str | None) -> LimitDecision:
+    """Project the domain ``Decision`` onto the inbound port's
+    ``LimitDecision``. One function so ``check`` and ``reserve`` can never
+    drift in what they translate — the difference between them is the
+    ``reservation_id`` argument and nothing else."""
+    return LimitDecision(
+        allowed=decision.allowed,
+        reason=decision.reason.value if decision.reason is not None else None,
+        remaining=decision.remaining,
+        reservation_id=reservation_id,
+        retry_after_s=decision.retry_after_s,
+    )
 
 
 def _seconds_until(reset_at: datetime, now: datetime) -> int:

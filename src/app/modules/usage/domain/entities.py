@@ -51,6 +51,45 @@ class UsageRecord:
             raise InvalidUsageInput("cost_micros must be >= 0")
 
 
+@dataclass(frozen=True, slots=True)
+class Reservation:
+    """One request's in-flight admission (capacity-plan 2.7 — the
+    ``reserve``/``commit`` extension `FR-132`/INV-U3 declared and 01 §2.10
+    named a table for).
+
+    It is NOT a ledger row and must never be mistaken for one: ``tokens`` is
+    what the request was ADMITTED against, the ledger's is what it actually
+    spent, and the two never live in the same row. A reservation's whole life
+    is between the check and the charge — deleted by ``commit``/``release``,
+    and ignored by every reader once ``expires_at`` has passed.
+
+    ``expires_at`` is a backstop for the request that never comes back (a
+    killed worker, a severed stream), not a policy: its value is the caller's
+    own stream deadline, so a reservation older than it belongs to a request
+    that is already over by construction.
+    """
+
+    id: str
+    workspace_id: str
+    agent_key: str
+    provider: str
+    tokens: int
+    cost_micros: int
+    created_at: datetime
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.tokens < 0:
+            raise InvalidUsageInput("tokens must be >= 0")
+        if self.cost_micros < 0:
+            raise InvalidUsageInput("cost_micros must be >= 0")
+        if self.expires_at <= self.created_at:
+            # An already-expired reservation is counted by nobody, so a caller
+            # that built one would be admitted against a ceiling it never
+            # actually took a slot in -- silently, and only under load.
+            raise InvalidUsageInput("expires_at must be after created_at")
+
+
 @dataclass(slots=True)
 class UsageLimit:
     """A configured quota/budget limit (06 §10 AR ``UsageLimit``).

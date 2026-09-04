@@ -42,7 +42,8 @@ DPA/privacy notice ever names a different erasure deadline, THAT number wins
 and this constant must be revisited.
 
 CONFIRMED 2026-08-12 (human review): ``usage``
-(``usage.usage_records``/``usage_rollups``/``limits``) is purged WITH the
+(``usage.usage_records``/``usage_rollups``/``limits``/``reservations``, the
+last added by capacity-plan 2.7) is purged WITH the
 workspace, not rolled into a workspace-less aggregate first. It is a
 per-workspace meter reading, not a financial obligation (billing is out of
 v1 scope) -- DAT-07's "append-only, no deleted_at" governs the module's own
@@ -399,6 +400,10 @@ _SCHEMA_ORDER: tuple[_SchemaSpec, ...] = (
             "usage.usage_records",
             "usage.usage_rollups",
             "usage.limits",
+            # 2.7 -- an in-flight admission belongs to the workspace being
+            # purged exactly as its ledger does, and it expires on its own
+            # anyway; leaving it would keep a purged tenant's rows behind.
+            "usage.reservations",
         ),
     ),
     _SchemaSpec("access", ("access.role_assignments",)),

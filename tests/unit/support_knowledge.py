@@ -539,6 +539,24 @@ class NoopUnitOfWork:
         yield
 
 
+class RecordingQuotaLock:
+    """A ``QuotaLock`` that records instead of locking.
+
+    The real one is a PostgreSQL advisory lock and cannot exist in a hermetic
+    test; what a hermetic test CAN prove is that the ceiling asked for it, in
+    the right transaction and before the count -- which is what ``held``
+    preserves. The live proof that the lock actually serialises anything is in
+    ``tests/integration`` (capacity-plan 2.7), where a hundred callers race for
+    one slot.
+    """
+
+    def __init__(self) -> None:
+        self.held: list[tuple[str, str]] = []
+
+    async def hold(self, ctx: ExecutionContext, ceiling: str) -> None:
+        self.held.append((ctx.workspace_id, ceiling))
+
+
 @dataclass(frozen=True, slots=True)
 class KnowledgeStack:
     """The bundle plus the fakes a test asserts against."""
@@ -552,6 +570,10 @@ class KnowledgeStack:
     summaries: InMemorySummaryRepository
     summary_jobs: InMemorySummaryJobRepository
     files: InMemoryReadableFiles
+    # capacity-plan 2.7 -- exposed so a test can assert that ب-10's ceiling
+    # asked for the workspace's lock before counting. The advisory lock itself
+    # is proven in `tests/integration/test_quota_races_live.py`.
+    quota_lock: RecordingQuotaLock
 
 
 # The space a seeded document lands in unless a test says otherwise (spaces
@@ -652,6 +674,7 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
     vectors = RecordingVectorStore()
     outbox = RecordingOutbox()
     uow = NoopUnitOfWork()
+    quota_lock = RecordingQuotaLock()
     summaries = InMemorySummaryRepository()
     summary_jobs = InMemorySummaryJobRepository()
     files = InMemoryReadableFiles()
@@ -667,7 +690,7 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
             # No `BuildSummary` — the API bundle cannot run the pipeline, the
             # same line that keeps ingestion out of it (BE-RAG-009).
             request_summary=RequestSummaryService(
-                RequestSummary(repository, summary_jobs), outbox, uow
+                RequestSummary(repository, summary_jobs), outbox, uow, quota_lock
             ),
             get_summary=GetSummary(summaries),
             # The REAL renderer, not a stub. It needs nothing from the
@@ -687,4 +710,5 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
         summaries=summaries,
         summary_jobs=summary_jobs,
         files=files,
+        quota_lock=quota_lock,
     )

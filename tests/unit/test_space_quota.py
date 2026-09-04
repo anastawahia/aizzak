@@ -51,6 +51,22 @@ class _RecordingUnitOfWork:
             self._trace.append("uow:exit")
 
 
+class _TracingQuotaLock:
+    """The workspace-scoped ``QuotaLock`` (capacity-plan 2.7), recorded rather
+    than taken. An advisory lock has no hermetic equivalent -- what a unit
+    test can pin is that it was asked for, under the right ceiling name, and
+    BEFORE the space row is touched; that it actually serialises anything is
+    proven in ``tests/integration/test_quota_races_live.py``."""
+
+    def __init__(self, trace: list[str]) -> None:
+        self._trace = trace
+        self.held: list[str] = []
+
+    async def hold(self, ctx: ExecutionContext, ceiling: str) -> None:
+        self._trace.append("quota-lock")
+        self.held.append(ceiling)
+
+
 class _FakeSpaces:
     def __init__(self, trace: list[str], *, lockable: bool = True) -> None:
         self._trace = trace
@@ -109,6 +125,7 @@ def _build(
         _FakeFiles(trace, used=used),
         _RecordingUnitOfWork(trace),
         limits or Limits(),
+        _TracingQuotaLock(trace),
     )
     return service, registrar, trace
 
@@ -143,7 +160,7 @@ async def test_an_upload_that_fits_is_registered_under_the_lock_in_one_unit_of_w
     )
 
     assert result == "registered:report.pdf"
-    assert trace == ["uow:enter", "lock", "sum", "register", "uow:exit"]
+    assert trace == ["uow:enter", "quota-lock", "lock", "sum", "register", "uow:exit"]
     # The space the caller named reaches the registrar, which is what puts it
     # on the file row — the step-6 line that turns this ceiling from measured
     # into binding. Without it the sum above would keep reading NULL and every
@@ -172,7 +189,7 @@ async def test_an_upload_that_would_cross_the_ceiling_is_refused_before_it_is_re
     # and the unit of work still closed (its rollback is what makes the lock
     # a lock rather than a leak).
     assert registrar.calls == []
-    assert trace == ["uow:enter", "lock", "sum", "uow:exit"]
+    assert trace == ["uow:enter", "quota-lock", "lock", "sum", "uow:exit"]
 
 
 async def test_filling_the_space_exactly_to_the_ceiling_is_allowed() -> None:
@@ -239,7 +256,7 @@ async def test_a_space_that_cannot_be_locked_is_a_404_and_nothing_else_happens()
         )
 
     assert registrar.calls == []
-    assert trace == ["uow:enter", "lock", "uow:exit"]
+    assert trace == ["uow:enter", "quota-lock", "lock", "uow:exit"]
 
 
 # --------------------------------------------------------------------------- #
@@ -265,7 +282,7 @@ async def test_a_file_larger_than_the_per_file_cap_is_left_to_the_registrar() ->
     )
 
     assert registrar.calls == [(space, "huge.pdf", "application/pdf", 5000)]
-    assert trace == ["uow:enter", "lock", "sum", "register", "uow:exit"]
+    assert trace == ["uow:enter", "quota-lock", "lock", "sum", "register", "uow:exit"]
 
 
 async def test_a_file_at_the_per_file_cap_is_still_judged_against_the_space() -> None:

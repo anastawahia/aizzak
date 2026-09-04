@@ -302,6 +302,24 @@ class NoopUnitOfWork:
         yield
 
 
+class RecordingQuotaLock:
+    """A ``QuotaLock`` that records instead of locking.
+
+    The real one is a PostgreSQL advisory lock and cannot exist in a hermetic
+    test; what a hermetic test CAN prove is that the ceiling asked for it, in
+    the right transaction and before the count -- which is what ``held``
+    preserves. The live proof that the lock actually serialises anything is in
+    ``tests/integration`` (capacity-plan 2.7), where a hundred callers race for
+    one slot.
+    """
+
+    def __init__(self) -> None:
+        self.held: list[tuple[str, str]] = []
+
+    async def hold(self, ctx: ExecutionContext, ceiling: str) -> None:
+        self.held.append((ctx.workspace_id, ceiling))
+
+
 class RecordingFileKnowledgePurge:
     """The file cascade's knowledge half, recorded rather than run.
 
@@ -426,7 +444,9 @@ def build_files_media(
         # lock, sums the space and only then registers — the production path.
         # `NoopUnitOfWork` is what it cannot be faithful about, and that is
         # the one thing the live test owns.
-        space_quota=SpaceQuotaService(transfers, spaces, files_repo, uow, limits),
+        space_quota=SpaceQuotaService(
+            transfers, spaces, files_repo, uow, limits, RecordingQuotaLock()
+        ),
         file_deletion=file_deletion,
         file_replacement=ReplaceNamesakesService(
             file_complete, file_rename, namesakes=namesakes, erase=file_deletion

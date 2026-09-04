@@ -155,6 +155,12 @@ _TENANT_TABLES: tuple[str, ...] = (
     "usage.usage_records",
     "usage.usage_rollups",
     "usage.limits",
+    # capacity-plan 2.7 -- the in-flight admission a quota check takes out
+    # (`migrations/versions/usage/0003_usage_reservations.py`). Full CRUD
+    # like every other tenant table: `app_rw` INSERTs its own reservation
+    # and DELETEs it when the charge lands, and RLS -- not the grant --
+    # confines both to one workspace.
+    "usage.reservations",
 )
 
 _MODULE_SCHEMAS: tuple[str, ...] = (
@@ -337,6 +343,7 @@ PURGE_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, DELETE ON usage.usage_records TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON usage.usage_rollups TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON usage.limits TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON usage.reservations TO {PURGE_ROLE}",
     f"GRANT SELECT, INSERT ON platform.admin_audit_log TO {PURGE_ROLE}",
 )
 

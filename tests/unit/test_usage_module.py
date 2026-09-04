@@ -13,6 +13,8 @@ Unlike media/knowledge, ``usage``'s domain events (``UsageRecorded``/
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
@@ -23,16 +25,20 @@ from app.framework.errors import ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import UsageSettings
 from app.modules.usage.application.use_cases import (
+    USAGE_QUOTA_CEILING,
     CaptureUsage,
+    CommitReservation,
     EnforceLimit,
     GetUsageSummary,
     LimitSpec,
+    ReleaseReservation,
+    ReserveQuota,
     SetLimits,
     UsageCaptureService,
     UsageEnforcementService,
 )
 from app.modules.usage.domain.enforcement import LimitCheck, evaluate
-from app.modules.usage.domain.entities import UsageLimit, UsageRecord
+from app.modules.usage.domain.entities import Reservation, UsageLimit, UsageRecord
 from app.modules.usage.domain.errors import InvalidUsageInput
 from app.modules.usage.domain.events import LimitExceeded, UsageRecorded
 from app.modules.usage.domain.periods import period_reset_at, period_start, rollup_buckets
@@ -52,6 +58,49 @@ from app.modules.usage.ports.repository import UsageTotals
 # --------------------------------------------------------------------------- #
 # Shared test helpers                                                         #
 # --------------------------------------------------------------------------- #
+class _NoopUnitOfWork:
+    """A no-op transaction boundary. The real one is a PostgreSQL transaction;
+    what these tests own is the SEQUENCE, and the live proof that the
+    transaction is what makes the sequence atomic is in
+    ``tests/integration/test_quota_races_live.py`` (capacity-plan 2.7)."""
+
+    @asynccontextmanager
+    async def begin(self, ctx: ExecutionContext) -> AsyncIterator[None]:
+        yield
+
+
+class _RecordingQuotaLock:
+    """A ``QuotaLock`` that records instead of locking — an advisory lock has
+    no hermetic equivalent, but "the ceiling asked for it, under this
+    workspace, by this name" is exactly what a unit test can pin."""
+
+    def __init__(self) -> None:
+        self.held: list[tuple[str, str]] = []
+
+    async def hold(self, ctx: ExecutionContext, ceiling: str) -> None:
+        self.held.append((ctx.workspace_id, ceiling))
+
+
+def _enforcement(
+    ledger: _FakeUsageLedger,
+    *,
+    usage_settings: UsageSettings | None = None,
+    lock: _RecordingQuotaLock | None = None,
+    ttl_s: int = 600,
+) -> UsageEnforcementService:
+    """The whole quota seam over one fake ledger — what the Composition Root's
+    ``_usage_enforcement`` builds, with the transaction and the lock replaced
+    by doubles."""
+    enforce = EnforceLimit(ledger, usage_settings or UsageSettings())
+    uow = _NoopUnitOfWork()
+    return UsageEnforcementService(
+        enforce,
+        ReserveQuota(enforce, ledger, uow, lock or _RecordingQuotaLock(), ttl_s),
+        CommitReservation(ledger, CaptureUsage(ledger), uow),
+        ReleaseReservation(ledger),
+    )
+
+
 def _ctx(workspace_id: str = "ws1") -> ExecutionContext:
     return ExecutionContext(
         workspace_id=workspace_id, user_id="u1", correlation_id="corr", roles=frozenset({"member"})
@@ -136,6 +185,10 @@ class _FakeUsageLedger:
         self.rollups: dict[tuple[str, str, str, str, date], tuple[int, int]] = {}
         self.limits: dict[str, list[UsageLimit]] = {}
         self.rollup_calls: list[tuple[str, str, str, str]] = []
+        # capacity-plan 2.7 -- the in-flight admissions, keyed by id, with the
+        # same bucket fan-out the SQL adapter reads them back through.
+        self.reservations: dict[str, Reservation] = {}
+        self.reserved_calls: list[tuple[str, str, str]] = []
 
     async def append(self, ctx: ExecutionContext, charge: UsageCharge) -> bool:
         key = (ctx.workspace_id, charge.operation_id)
@@ -158,6 +211,26 @@ class _FakeUsageLedger:
         rkey = (ctx.workspace_id, agent, provider, period, bucket_start)
         tokens, cost = self.rollups.get(rkey, (0, 0))
         return UsageTotals(tokens, cost)
+
+    async def reserved(self, ctx: ExecutionContext, agent: str, provider: str) -> UsageTotals:
+        self.reserved_calls.append((ctx.workspace_id, agent, provider))
+        tokens = cost = 0
+        for row in self.reservations.values():
+            if row.workspace_id != ctx.workspace_id or row.expires_at <= self.now:
+                continue
+            if agent not in ("*", row.agent_key):
+                continue
+            if provider not in ("*", row.provider):
+                continue
+            tokens += row.tokens
+            cost += row.cost_micros
+        return UsageTotals(tokens, cost)
+
+    async def reserve(self, ctx: ExecutionContext, reservation: Reservation) -> None:
+        self.reservations[reservation.id] = reservation
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        self.reservations.pop(reservation_id, None)
 
     async def get_limits(self, ctx: ExecutionContext) -> list[UsageLimit]:
         return list(self.limits.get(ctx.workspace_id, []))
@@ -717,7 +790,7 @@ async def test_usage_enforcement_service_threads_estimated_tokens() -> None:
         _usage_limit(scope=LimitScope.WORKSPACE, metric=Metric.TOKENS, limit_value=100)
     ]
     ledger.seed_rollup("ws1", "*", "*", "month", tokens=95)
-    service = UsageEnforcementService(EnforceLimit(ledger, UsageSettings()))
+    service = _enforcement(ledger)
 
     allowed = await service.check(_ctx("ws1"), "agent-1", "openai", estimated_tokens=5)
     assert allowed.allowed is True
@@ -732,7 +805,7 @@ async def test_usage_enforcement_service_converts_decision_to_limit_decision() -
         _usage_limit(scope=LimitScope.WORKSPACE, metric=Metric.TOKENS, limit_value=10)
     ]
     ledger.seed_rollup("ws1", "*", "*", "month", tokens=10)
-    service = UsageEnforcementService(EnforceLimit(ledger, UsageSettings()))
+    service = _enforcement(ledger)
 
     result = await service.check(_ctx("ws1"), "agent-1", "openai")
 
@@ -900,3 +973,137 @@ async def test_get_usage_summary_defaults_to_month() -> None:
     summary = await GetUsageSummary(ledger).execute(_ctx("ws1"))
     assert summary.tokens == 42
     assert summary.period is Period.MONTH
+
+
+# --------------------------------------------------------------------------- #
+# capacity-plan 2.7 -- reserve / commit / release                             #
+# --------------------------------------------------------------------------- #
+async def test_reserve_holds_the_workspace_quota_lock_by_name() -> None:
+    """The SEQUENCE a unit test can own: the admission asks for the workspace's
+    quota lock, under the constant that IS the lock's identity. That it then
+    serialises anything is a claim about PostgreSQL, proven in
+    ``tests/integration/test_quota_races_live.py``."""
+    ledger = _FakeUsageLedger()
+    lock = _RecordingQuotaLock()
+    service = _enforcement(ledger, lock=lock)
+
+    await service.reserve(_ctx(), "rag_agent", "openai")
+
+    assert lock.held == [("ws1", USAGE_QUOTA_CEILING)]
+
+
+async def test_check_takes_no_lock_and_holds_no_slot() -> None:
+    """The two questions are not the same question. ``check`` is a read: it
+    must not serialise anyone, and its answer must never look like an
+    admission a caller owes a commit for."""
+    ledger = _FakeUsageLedger()
+    lock = _RecordingQuotaLock()
+
+    decision = await _enforcement(ledger, lock=lock).check(_ctx(), "rag_agent", "openai")
+
+    assert decision.allowed is True
+    assert decision.reservation_id is None
+    assert lock.held == []
+    assert ledger.reservations == {}
+
+
+async def test_a_reservation_is_counted_by_the_next_caller() -> None:
+    """The entire mechanism: the slot is counted because ``EnforceLimit`` adds
+    ``reserved`` into ``current``. No counter, no decrement, nothing that can
+    drift from the rows it summarises."""
+    ledger = _FakeUsageLedger()
+    ledger.limits["ws1"] = [
+        _usage_limit(scope=LimitScope.WORKSPACE, metric=Metric.TOKENS, limit_value=2)
+    ]
+    service = _enforcement(ledger)
+
+    first = await service.reserve(_ctx(), "rag_agent", "openai")
+    second = await service.reserve(_ctx(), "rag_agent", "openai")
+    third = await service.reserve(_ctx(), "rag_agent", "openai")
+
+    assert [first.allowed, second.allowed, third.allowed] == [True, True, False]
+    assert third.reason == DenyReason.QUOTA_EXCEEDED.value
+    # And the READ agrees with the admissions -- the run-level gate must not be
+    # optimistic about work that is already in flight.
+    assert (await service.check(_ctx(), "rag_agent", "openai")).allowed is False
+
+
+async def test_a_denied_reservation_writes_nothing() -> None:
+    """«لا حصّةً سالبة»: a refusal must leave no row behind, or a workspace
+    would lose headroom to the requests it was never given."""
+    ledger = _FakeUsageLedger()
+    ledger.limits["ws1"] = [
+        _usage_limit(scope=LimitScope.WORKSPACE, metric=Metric.TOKENS, limit_value=1)
+    ]
+    ledger.seed_rollup("ws1", "*", "*", "month", tokens=1)
+
+    assert (await _enforcement(ledger).reserve(_ctx(), "rag_agent", "openai")).allowed is False
+    assert ledger.reservations == {}
+
+
+async def test_the_reservation_floor_is_one_token_and_an_estimate_beats_it() -> None:
+    """⚠️ The floor is not a guess about cost -- it is the smallest true
+    statement about a request that runs, which is why it is allowed to exist
+    where an invented per-request figure is not. A caller that DOES know its
+    worst case holds that instead."""
+    ledger = _FakeUsageLedger()
+    service = _enforcement(ledger)
+    ctx = _ctx()
+
+    await service.reserve(ctx, "rag_agent", "openai")
+    assert [row.tokens for row in ledger.reservations.values()] == [1]
+
+    await service.reserve(ctx, "rag_agent", "openai", 900)
+    assert sorted(row.tokens for row in ledger.reservations.values()) == [1, 900]
+
+
+async def test_a_reservation_expires_on_the_injected_deadline() -> None:
+    """The TTL is the caller's own stream deadline, passed in rather than
+    declared here -- a request cannot outlive the bound that already stops it,
+    so a reservation older than that belongs to nobody."""
+    ledger = _FakeUsageLedger()
+    ctx = _ctx()
+
+    await _enforcement(ledger, ttl_s=600).reserve(ctx, "rag_agent", "openai")
+
+    row = next(iter(ledger.reservations.values()))
+    assert (row.expires_at - row.created_at) == timedelta(seconds=600)
+
+
+async def test_commit_replaces_the_slot_with_the_real_charge() -> None:
+    """One transaction for the release and the append: a workspace is never
+    briefly charged twice for one request, nor briefly charged for neither."""
+    ledger = _FakeUsageLedger()
+    service = _enforcement(ledger)
+    ctx = _ctx()
+
+    decision = await service.reserve(ctx, "rag_agent", "openai")
+    assert decision.reservation_id is not None
+    charge = _charge(tokens=1_300, cost_micros=0)
+    await service.commit(ctx, decision.reservation_id, charge)
+
+    assert ledger.reservations == {}
+    assert (await ledger.rollup(ctx, "*", "*", "month")).tokens == 1_300
+
+
+async def test_release_hands_the_slot_back_and_charges_nothing() -> None:
+    """The admitted operation that consumed no tokens at all (a media agent,
+    D-04) gives its slot back rather than making the next caller wait out the
+    expiry."""
+    ledger = _FakeUsageLedger()
+    service = _enforcement(ledger)
+    ctx = _ctx()
+
+    decision = await service.reserve(ctx, "rag_agent", "openai")
+    assert decision.reservation_id is not None
+    await service.release(ctx, decision.reservation_id)
+
+    assert ledger.reservations == {}
+    assert (await ledger.rollup(ctx, "*", "*", "month")).tokens == 0
+
+
+async def test_releasing_a_slot_that_is_already_gone_is_silent() -> None:
+    """It may have expired and been swept, and a request trying to give its
+    slot back must never fail for having been beaten to it."""
+    ledger = _FakeUsageLedger()
+    await _enforcement(ledger).release(_ctx(), new_uuid7())

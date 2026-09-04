@@ -552,12 +552,22 @@ class LimitDecision:                        # كائن قرار — لا bool م
     allowed: bool
     reason: str | None = None              # 'quota_exceeded'|'budget_exceeded'|None
     remaining: int | None = None
-    reservation_id: Uuid | None = None     # يبقى None في v1؛ حقل تطوّر reserve/commit بلا كسر عقد
+    reservation_id: Uuid | None = None     # يملؤه reserve وحدَه (2.7)؛ None من check دائماً
 
-class UsageEnforcement(Protocol):          # قبل العملية
+class UsageEnforcement(Protocol):          # قبل العملية — سؤالان لا سؤال (2.7)
     async def check(self, ctx, agent: str, provider: str,
                     estimated_tokens: int | None = None) -> LimitDecision: ...
-    # نقاط توسعة (غير مُفعّلة v1، تُضاف دون كسر): reserve(...) -> LimitDecision ثم commit(ctx, reservation_id, UsageCharge)
+    # قراءةٌ لا تمسك شيئاً: «هل تجاوزت هذه المساحةُ حصّتَها؟» — بوّابةُ التشغيل الكامل للسير،
+    # حيث لا شحنَ للتشغيل نفسِه وكلُّ خطوةٍ تحجز تحت وكيلها ومزوّدها بعدها.
+    async def reserve(self, ctx, agent: str, provider: str,
+                      estimated_tokens: int | None = None) -> LimitDecision: ...
+    # قبولٌ يمسك مقعداً: عند السماح يعود بـ`reservation_id` غيرِ فارغ، ويَلزم المُنادِيَ
+    # بعدَه `commit` (أنفق) أو `release` (لم يُنفق). ومقدارُ الحجز رمزٌ واحدٌ حين لا
+    # تقديرَ — أصغرُ قولٍ صادقٍ عن طلبٍ يعمل، لا تخمينٌ لكلفته.
+    async def commit(self, ctx, reservation_id: Uuid, charge: UsageCharge) -> None: ...
+    # التحريرُ والإلحاقُ في معاملةٍ واحدة: لا شحنَ مزدوجٌ لحظةً، ولا صفرُ شحنٍ لحظةً.
+    async def release(self, ctx, reservation_id: Uuid) -> None: ...
+    # المقبولُ الذي لم يستهلك شيئاً (وكلاءُ الوسائط، D-04) يعيد مقعدَه فوراً لا بالانتهاء.
 
 class UsageCapture(Protocol):              # بعد العملية — إلحاق متزامن idempotent
     async def record(self, ctx, charge: UsageCharge) -> None: ...            # تكرار operation_id ⇒ تجاهُل بهدوء

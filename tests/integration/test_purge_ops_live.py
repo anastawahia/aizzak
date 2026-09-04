@@ -291,6 +291,17 @@ async def _seed_content(
         )
         await session.execute(
             text(
+                # capacity-plan 2.7 -- an in-flight admission. Seeded FAR in
+                # the future deliberately: the purge must remove it because it
+                # belongs to the workspace, not because it happened to expire.
+                "INSERT INTO usage.reservations "
+                "(id, workspace_id, agent_key, provider, tokens, expires_at) "
+                "VALUES (:id, :ws, 'rag_agent', 'openai', 1, :expires_at)"
+            ),
+            {"id": new_uuid7(), "ws": ws, "expires_at": _NOW + timedelta(days=365)},
+        )
+        await session.execute(
+            text(
                 "INSERT INTO access.role_assignments (id, workspace_id, user_id, role) "
                 "VALUES (:id, :ws, :user_id, 'owner')"
             ),

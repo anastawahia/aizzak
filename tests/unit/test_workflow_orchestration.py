@@ -1006,12 +1006,41 @@ class _CountingResolver:
 
 
 class _FakeEnforcement:
-    """Records every check; allows the first ``allow_first`` and denies after."""
+    """Records every ask; allows the first ``allow_first`` and denies after.
 
-    def __init__(self, *, allow_first: int | None = None, reason: str = "quota_exceeded") -> None:
+    capacity-plan 2.7 -- ``calls`` records BOTH questions, because the run-level
+    gate asks ``check`` (nothing is charged for a run) and every step asks
+    ``reserve`` (each one is). ``reservations`` is what the orchestrator is
+    then obliged to give back: a step that ends must ``commit`` its slot or
+    ``release`` it, and a leak here would mean a workspace losing headroom to
+    requests that finished.
+    """
+
+    def __init__(
+        self,
+        *,
+        allow_first: int | None = None,
+        reason: str = "quota_exceeded",
+        capture: _FakeCapture | None = None,
+    ) -> None:
         self.calls: list[tuple[str, str, int | None]] = []
+        self.reserved: list[str] = []
+        self.committed: list[tuple[str, UsageCharge]] = []
+        self.released: list[str] = []
         self._allow_first = allow_first
         self._reason = reason
+        # `commit` goes THROUGH the capture fake, mirroring the real
+        # `CommitReservation`, which is `CaptureUsage` plus a release in one
+        # transaction. Without that the ledger assertions in this file would
+        # quietly stop seeing the charges the moment enforcement was wired --
+        # which is exactly the kind of silence 2.7 exists to remove.
+        self._capture = capture
+
+    def _decide(self, agent: str, provider: str, estimated_tokens: int | None) -> LimitDecision:
+        self.calls.append((agent, provider, estimated_tokens))
+        if self._allow_first is None or len(self.calls) <= self._allow_first:
+            return LimitDecision(allowed=True)
+        return LimitDecision(allowed=False, reason=self._reason, remaining=0)
 
     async def check(
         self,
@@ -1020,10 +1049,41 @@ class _FakeEnforcement:
         provider: str,
         estimated_tokens: int | None = None,
     ) -> LimitDecision:
-        self.calls.append((agent, provider, estimated_tokens))
-        if self._allow_first is None or len(self.calls) <= self._allow_first:
-            return LimitDecision(allowed=True)
-        return LimitDecision(allowed=False, reason=self._reason, remaining=0)
+        return self._decide(agent, provider, estimated_tokens)
+
+    async def reserve(
+        self,
+        ctx: ExecutionContext,
+        agent: str,
+        provider: str,
+        estimated_tokens: int | None = None,
+    ) -> LimitDecision:
+        decision = self._decide(agent, provider, estimated_tokens)
+        if not decision.allowed:
+            return decision
+        reservation_id = f"res-{len(self.reserved) + 1}"
+        self.reserved.append(reservation_id)
+        return LimitDecision(allowed=True, reservation_id=reservation_id)
+
+    async def commit(self, ctx: ExecutionContext, reservation_id: str, charge: UsageCharge) -> None:
+        self.committed.append((reservation_id, charge))
+        if self._capture is not None:
+            await self._capture.record(ctx, charge)
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        self.released.append(reservation_id)
+
+    def bind_capture(self, capture: _FakeCapture) -> None:
+        """Point ``commit`` at the ledger fake — done by the builder rather
+        than the constructor so a test can hand in a pre-configured
+        enforcement (``allow_first=...``) and still get the real wiring."""
+        self._capture = capture
+
+    @property
+    def outstanding(self) -> list[str]:
+        """Slots reserved and neither committed nor released."""
+        settled = {rid for rid, _ in self.committed} | set(self.released)
+        return [rid for rid in self.reserved if rid not in settled]
 
 
 class _FakeCapture:
@@ -1078,8 +1138,11 @@ def _billed_orchestrator(
         registry.register(agent_cls.metadata, agent_cls)
     workflows = InMemoryWorkflowRegistry()
     workflows.register(definition)
-    used_enforcement = enforcement if enforcement is not None else _FakeEnforcement()
     used_capture = capture if capture is not None else _FakeCapture()
+    # 2.7 -- the enforcement fake commits THROUGH the capture fake, the way the
+    # Composition Root builds `CommitReservation` over `CaptureUsage`.
+    used_enforcement = enforcement if enforcement is not None else _FakeEnforcement()
+    used_enforcement.bind_capture(used_capture)
     used_threads = _FakeThreads()
     deps = OrchestratorDependencies(
         agents=registry,

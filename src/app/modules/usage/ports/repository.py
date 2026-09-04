@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
-from app.modules.usage.domain.entities import UsageLimit
+from app.modules.usage.domain.entities import Reservation, UsageLimit
 from app.modules.usage.domain.read_models import UsageRollup
 from app.modules.usage.ports.inbound import UsageCharge
 
@@ -68,6 +68,39 @@ class UsageLedgerRepository(Protocol):
         """Read the current totals for one ``(agent, provider, period)``
         bucket as of "now" (``domain.periods.period_start``) — ``UsageTotals
         (0, 0)`` if no rollup row exists yet for this bucket."""
+        ...
+
+    async def reserved(self, ctx: ExecutionContext, agent: str, provider: str) -> UsageTotals:
+        """The totals still RESERVED but not yet charged for one rollup
+        bucket — capacity-plan 2.7's other half of ``current``.
+
+        A live reservation contributes to exactly the buckets
+        ``domain.periods.rollup_buckets`` fans its ``(agent, provider)`` out
+        to, so ``('*','*')`` sums every live row, ``(agent,'*')`` sums that
+        agent's and ``('*',provider)`` that provider's.
+
+        Deliberately NOT keyed by period, unlike ``rollup``: a reservation is
+        in flight NOW, so it belongs to every period bucket that contains now
+        — the day's and the month's alike — and asking for one would mean
+        answering the same question twice with the same rows.
+
+        Rows whose ``expires_at`` has passed are excluded, so an abandoned
+        reservation stops costing a tenant headroom the moment it expires,
+        whether or not anything has deleted it yet.
+        """
+        ...
+
+    async def reserve(self, ctx: ExecutionContext, reservation: Reservation) -> None:
+        """Insert one reservation. Called ONLY inside a unit of work that
+        already holds the workspace's quota lock and has just read the totals
+        above — the insert is the second half of an atomic admission, and on
+        its own it decides nothing."""
+        ...
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        """Drop a reservation, by id. Silent when the row is not there: it may
+        have expired and been swept, and a request that is trying to give its
+        slot back must never fail for having been beaten to it."""
         ...
 
     async def get_limits(self, ctx: ExecutionContext) -> list[UsageLimit]:

@@ -41,6 +41,7 @@ from app.framework.di.space_quota import SpaceQuotaService
 from app.framework.errors import ConflictError, NotFoundError
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import Limits
+from app.infrastructure.persistence.quota_lock import AdvisoryQuotaLock
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import FileTransferService, RegisterUpload
@@ -152,6 +153,7 @@ def _service(
         SqlFileRepository(tenant_session),
         tenant_session,
         limits,
+        AdvisoryQuotaLock(tenant_session),
     )
 
 
@@ -366,18 +368,35 @@ async def test_two_registrations_into_one_space_serialise_on_its_row(
     ]
 
 
-async def test_registrations_into_two_different_spaces_do_not_block_each_other(
+async def test_two_spaces_of_one_workspace_now_serialise_and_two_workspaces_do_not(
     tenant_session: TenantSessionFactory,
     repo_spaces: SqlSpaceRepository,
 ) -> None:
-    """The counterpart, and the reason the anchor is the SPACE's row rather
-    than anything coarser: a quota that serialises a whole workspace would be
-    correct and unusable."""
-    ws = new_uuid7()
-    ctx = _ctx(ws)
-    one, two = _space(ws, "One"), _space(ws, "Two")
-    await repo_spaces.add(ctx, one)
-    await repo_spaces.add(ctx, two)
+    """⚠️ **This test asserted the opposite until capacity-plan 2.7, and the
+    reversal is the honest price of a workspace ceiling that binds.**
+
+    Its old claim was that two spaces of one workspace never wait for each
+    other — true of the SPACE's byte quota, and the reason that anchor is a
+    space row. But ``RegisterUpload`` also enforces
+    ``Limits.max_files_per_workspace`` one call below, and a lock on one space
+    cannot serialise a registration into another: measured with one slot left
+    under a cap of 10, a hundred concurrent registrations into a hundred
+    distinct spaces produced **30 files** — the width of the connection pool,
+    not the cap (``test_quota_races_live.py``). So registrations into one
+    WORKSPACE now serialise for the length of one registrar call, which is the
+    same window the space lock already held and the module docstring already
+    documented.
+
+    What is NOT paid: two different workspaces still overlap completely, which
+    is the property that keeps the ceiling usable on a multi-tenant stack.
+    """
+    one_ws, other_ws = new_uuid7(), new_uuid7()
+    one_ctx, other_ctx = _ctx(one_ws), _ctx(other_ws)
+    one, two = _space(one_ws, "One"), _space(one_ws, "Two")
+    elsewhere = _space(other_ws, "Elsewhere")
+    await repo_spaces.add(one_ctx, one)
+    await repo_spaces.add(one_ctx, two)
+    await repo_spaces.add(other_ctx, elsewhere)
 
     trace: list[str] = []
     slow = _service(tenant_session, _FakeRegistrar(hold_s=0.75, trace=trace), Limits())
@@ -385,23 +404,36 @@ async def test_registrations_into_two_different_spaces_do_not_block_each_other(
 
     async def first() -> None:
         await slow.register(
-            ctx, space_id=one.id, name="first", content_type="application/pdf", size_bytes=1
+            one_ctx, space_id=one.id, name="first", content_type="application/pdf", size_bytes=1
         )
 
-    async def second() -> None:
+    async def sibling_space() -> None:
         await asyncio.sleep(0.2)
         await quick.register(
-            ctx, space_id=two.id, name="second", content_type="application/pdf", size_bytes=1
+            one_ctx, space_id=two.id, name="sibling", content_type="application/pdf", size_bytes=1
         )
 
-    await asyncio.gather(first(), second())
+    async def other_tenant() -> None:
+        await asyncio.sleep(0.2)
+        await quick.register(
+            other_ctx,
+            space_id=elsewhere.id,
+            name="stranger",
+            content_type="application/pdf",
+            size_bytes=1,
+        )
 
-    # "second" finishes while "first" is still holding its own space's row.
+    await asyncio.gather(first(), sibling_space(), other_tenant())
+
+    # The other tenant is through while "first" still holds its workspace's
+    # ceiling; the sibling space waits for it.
     assert trace == [
         "registering first",
-        "registering second",
-        "registered second",
+        "registering stranger",
+        "registered stranger",
         "registered first",
+        "registering sibling",
+        "registered sibling",
     ]
 
 
@@ -491,6 +523,7 @@ async def test_a_registration_this_service_made_is_counted_against_the_next_one(
         SqlFileRepository(tenant_session),
         tenant_session,
         limits,
+        AdvisoryQuotaLock(tenant_session),
     )
 
     registered = await service.register(

@@ -67,7 +67,23 @@ class LimitDecision:
 
 
 class UsageEnforcement(Protocol):
-    """Called before an operation."""
+    """Called before an operation.
+
+    **Two questions, not one (capacity-plan 2.7).** ``check`` asks "is this
+    workspace already over?" and changes nothing; ``reserve`` asks "admit me"
+    and takes a slot. The distinction is the whole fix: a pure read cannot
+    stop a hundred simultaneous callers from each seeing the same headroom and
+    all being told yes. Measured on the live stack before ``reserve`` existed,
+    on a workspace with **one** token of headroom: 46 of 100 concurrent
+    requests were admitted and the ledger finished at 55 against a limit of 10.
+
+    ``reserve``/``commit`` are the extension points 02 §2 declared and
+    01 §2.10 named a table for ("جدول حجوزات لاحقاً"); ``release`` is their
+    necessary third, for the admitted request that ends up spending nothing.
+    ``check`` is unchanged and still the right call wherever no charge will
+    follow — the workflow RUN-level pre-flight gate, where every step reserves
+    under its own agent and provider a moment later.
+    """
 
     async def check(
         self,
@@ -77,8 +93,47 @@ class UsageEnforcement(Protocol):
         estimated_tokens: int | None = None,
     ) -> LimitDecision: ...
 
-    # Extension points (unused/unactivated in v1, additive): reserve(...) ->
-    # LimitDecision, then commit(ctx, reservation_id, UsageCharge).
+    async def reserve(
+        self,
+        ctx: ExecutionContext,
+        agent: str,
+        provider: str,
+        estimated_tokens: int | None = None,
+    ) -> LimitDecision:
+        """Admit this operation and hold its slot, or deny it.
+
+        On an ALLOW the returned ``LimitDecision.reservation_id`` is not
+        ``None``, and the caller owes exactly one ``commit`` (it spent) or
+        ``release`` (it did not). A caller that does neither is not a
+        correctness problem — the reservation expires — but it costs the
+        workspace one slot's headroom until it does.
+
+        ``estimated_tokens`` is the caller's own worst case when it has one.
+        When it has none the reservation is ONE token, which is not a guess
+        about the request's cost but the smallest true statement about it: a
+        request that runs spends at least one token. That floor is what turns
+        "a hundred callers, one token of headroom" into one admission, and it
+        is released or replaced by the real charge within the request's own
+        deadline, so it never shrinks a workspace's headroom by more than the
+        number of requests genuinely in flight.
+        """
+        ...
+
+    async def commit(
+        self, ctx: ExecutionContext, reservation_id: Uuid, charge: UsageCharge
+    ) -> None:
+        """Replace a held reservation with what the operation actually spent —
+        the release and the ledger append in ONE transaction, so a workspace is
+        never briefly charged twice for the same request nor briefly charged
+        for neither."""
+        ...
+
+    async def release(self, ctx: ExecutionContext, reservation_id: Uuid) -> None:
+        """Give a reservation back, charging nothing. The admitted request
+        that consumed no tokens at all (a media agent, D-04) and the one that
+        died before it could — both hand the slot straight back rather than
+        making the next caller wait out the expiry."""
+        ...
 
 
 class UsageCapture(Protocol):

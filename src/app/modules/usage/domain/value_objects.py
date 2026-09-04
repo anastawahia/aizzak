@@ -79,9 +79,11 @@ class LimitRule:
 @dataclass(frozen=True, slots=True)
 class Decision:
     """The enforcement outcome (06 §10 VO ``Decision``) — an object, never a
-    bare ``bool`` (INV-U3). ``reservation_id`` stays ``None`` in v1: a
-    forward-compatible field for a future reserve/commit flow (FR-132),
-    never populated by ``enforcement.evaluate``.
+    bare ``bool`` (INV-U3). ``reservation_id`` is filled by ``ReserveQuota``
+    (capacity-plan 2.7) and by nothing else — ``enforcement.evaluate`` is pure
+    and clockless and mints no identity, so a ``Decision`` it returns always
+    carries ``None`` there, exactly as it did when the field was reserved for
+    a flow that did not exist yet (FR-132).
 
     ``retry_after_s`` (3.79) is the seconds until the BINDING limit's period
     rolls over — the honest ``Retry-After`` value 03 §4 recorded as missing.

@@ -55,6 +55,7 @@ from sqlalchemy import (
     Text,
     Uuid,
     delete,
+    func,
     insert,
     select,
 )
@@ -68,7 +69,7 @@ from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ConflictError
 from app.framework.identifiers import new_uuid7
-from app.modules.usage.domain.entities import UsageLimit
+from app.modules.usage.domain.entities import Reservation, UsageLimit
 from app.modules.usage.domain.periods import period_start, rollup_buckets
 from app.modules.usage.domain.read_models import UsageRollup
 from app.modules.usage.domain.value_objects import LimitScope, Metric, Period
@@ -76,6 +77,12 @@ from app.modules.usage.ports.inbound import UsageCharge
 from app.modules.usage.ports.repository import UsageTotals
 
 _metadata = MetaData()
+
+# The rollup-bucket wildcard, spelled here as it is in
+# `domain/periods.rollup_buckets` and `application/use_cases` -- three
+# declarations of one character, because this adapter imports neither of the
+# other two and a shared constant would be a dependency for a `"*"`.
+_WILDCARD = "*"
 
 # UUIDv7 identifiers round-trip as plain `str` (`as_uuid=False`, matching
 # `app.framework.types.Uuid`); timestamps are always timezone-aware.
@@ -111,6 +118,24 @@ usage_rollups = Table(
     Column("tokens_sum", BigInteger, nullable=False),
     Column("cost_micros_sum", BigInteger, nullable=False),
     Column("updated_at", _timestamptz, nullable=False),
+    schema="usage",
+)
+
+# capacity-plan 2.7 -- the in-flight admissions a quota check takes out
+# (`migrations/versions/usage/0003_usage_reservations.py`). No `updated_at`
+# column and so no `trg_touch`: a reservation is created, then either deleted
+# by its commit or left to expire; it is never edited.
+usage_reservations = Table(
+    "reservations",
+    _metadata,
+    Column("id", _uuid_col, primary_key=True),
+    Column("workspace_id", _uuid_col, nullable=False),
+    Column("agent_key", Text, nullable=False),
+    Column("provider", Text, nullable=False),
+    Column("tokens", BigInteger, nullable=False),
+    Column("cost_micros", BigInteger, nullable=False),
+    Column("created_at", _timestamptz, nullable=False),
+    Column("expires_at", _timestamptz, nullable=False),
     schema="usage",
 )
 
@@ -222,6 +247,84 @@ class SqlUsageLedgerRepository:
         if row is None:
             return UsageTotals(0, 0)
         return UsageTotals(tokens=row.tokens_sum, cost_micros=row.cost_micros_sum)
+
+    async def reserved(self, ctx: ExecutionContext, agent: str, provider: str) -> UsageTotals:
+        now = utc_now()
+        # `coalesce(sum(...), 0)`: an empty bucket must read as zero, not as
+        # `None`, because the caller adds it to a rollup total. And `sum` over
+        # `bigint` is typed `numeric` by PostgreSQL, so the cast is what keeps
+        # this port's `int` contract from silently becoming `Decimal` -- the
+        # `bytes_in_space` lesson (`test_space_quota_live.py`), same trap.
+        # The bucket fan-out of `domain.periods.rollup_buckets`, read backwards:
+        # `('*','*')` matches every live row of the workspace, `(agent,'*')`
+        # only that agent's, `('*',provider)` only that provider's. A wildcard
+        # adds NO predicate rather than a tautological one -- `agent_key = '*'`
+        # would match nothing at all, since no reservation is ever written
+        # under the wildcard key.
+        conditions = [
+            usage_reservations.c.workspace_id == ctx.workspace_id,
+            usage_reservations.c.expires_at > now,
+        ]
+        if agent != _WILDCARD:
+            conditions.append(usage_reservations.c.agent_key == agent)
+        if provider != _WILDCARD:
+            conditions.append(usage_reservations.c.provider == provider)
+        stmt = select(
+            func.coalesce(func.sum(usage_reservations.c.tokens), 0).cast(BigInteger),
+            func.coalesce(func.sum(usage_reservations.c.cost_micros), 0).cast(BigInteger),
+        ).where(*conditions)
+        try:
+            async with self._tenant_session(ctx) as session:
+                row = (await session.execute(stmt)).first()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        if row is None:  # pragma: no cover -- an aggregate always returns a row
+            return UsageTotals(0, 0)
+        return UsageTotals(tokens=int(row[0]), cost_micros=int(row[1]))
+
+    async def reserve(self, ctx: ExecutionContext, reservation: Reservation) -> None:
+        # Housekeeping first, under whatever lock the caller is already
+        # holding: the next reserver of a workspace is the only party that
+        # both cares about its expired rows and is already serialised against
+        # everyone else who does. That is why this chain adds no sweeper --
+        # `reserved` above already ignores expired rows, so this DELETE is
+        # about table size and nothing else, and a workspace that never
+        # reserves again is emptied by `app.ops.purge` with the rest of it.
+        sweep = delete(usage_reservations).where(
+            usage_reservations.c.workspace_id == ctx.workspace_id,
+            usage_reservations.c.expires_at <= reservation.created_at,
+        )
+        # The reservation's OWN workspace_id is written, not `ctx`'s -- the
+        # `replace_limits`/media `add()` forged-write precedent: a mismatched
+        # one is rejected by the RLS `WITH CHECK` clause rather than silently
+        # persisted under this context's tenant.
+        stmt = insert(usage_reservations).values(
+            id=reservation.id,
+            workspace_id=reservation.workspace_id,
+            agent_key=reservation.agent_key,
+            provider=reservation.provider,
+            tokens=reservation.tokens,
+            cost_micros=reservation.cost_micros,
+            created_at=reservation.created_at,
+            expires_at=reservation.expires_at,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                await session.execute(sweep)
+                await session.execute(stmt)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
+    async def release(self, ctx: ExecutionContext, reservation_id: str) -> None:
+        stmt = delete(usage_reservations).where(
+            usage_reservations.c.workspace_id == ctx.workspace_id,
+            usage_reservations.c.id == reservation_id,
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                await session.execute(stmt)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
 
     async def get_limits(self, ctx: ExecutionContext) -> list[UsageLimit]:
         stmt = select(usage_limits).where(usage_limits.c.workspace_id == ctx.workspace_id)

@@ -18,6 +18,22 @@ where mypy checks the binding at the call — the ``conversations/ports/
 files.py`` pattern applied outward instead of sideways. So the framework-kernel
 contract (7) needs no new exception for this module, and it must not gain one.
 
+**Two ceilings, two locks, and the second one arrived late (capacity-plan
+2.7).** The space's byte quota is held still by the space's own row; the
+WORKSPACE's file cap (``Limits.max_files_per_workspace``, enforced inside
+``RegisterUpload`` one call below) is not, and a row lock on ONE space cannot
+serialise two registrations into two DIFFERENT spaces of the same workspace.
+Measured on the live stack with one slot left under the cap: 100 concurrent
+registrations into 100 distinct spaces produced **30** files against a cap of
+10 -- and 30 was the size of the connection pool, not of anything anyone
+configured (``pool_size=5`` produced 5; ``pool_size=30`` produced 29). So this
+service now takes a workspace-scoped ``QuotaLock`` FIRST, in the same unit of
+work, and the count one call below is finally a count nothing can invalidate
+before it is acted on. The lock is taken here rather than inside
+``RegisterUpload`` because the unit of work is here: a lock taken in a
+transaction of its own is released before the count it protects (the port's
+adapter refuses to take one).
+
 **The ceiling is checked, not reserved.** Nothing is written to say "600 MiB
 of this space is spoken for"; the serialisation IS the reservation, and it
 lasts exactly as long as the unit of work. That is sound because the row this
@@ -33,6 +49,13 @@ the only adapter that exists (MinIO) presigning is local HMAC work, but
 widening of the window: two registrations into the SAME space serialise for
 the length of one presign call. The alternative is to release the lock before
 the insert, which is the exact race the lock exists to prevent.
+
+⚠️ **And 2.7 widened WHO waits, not how long.** The window is unchanged — one
+registrar call — but the contention set is now the WORKSPACE rather than the
+space, because the file cap is a workspace ceiling. Two spaces of one tenant
+serialise where they used to overlap; two tenants still never wait for each
+other. ``test_space_quota_live.py`` asserted the old behaviour and now asserts
+this one, deliberately and by name.
 """
 
 from __future__ import annotations
@@ -41,9 +64,18 @@ from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError
+from app.framework.ports.quota_lock import QuotaLock
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.settings.settings import Limits
 from app.framework.types import Uuid
+
+# The ``QuotaLock`` name for ``Limits.max_files_per_workspace``. Declared HERE,
+# beside the only transaction that can hold it, and not in
+# ``files/application/use_cases.py`` where the ceiling itself lives: this file
+# imports no ``app.modules`` at all (see the module docstring), and that rule
+# is worth more than co-location. It is a constant rather than a literal
+# because the string IS the lock's identity -- two spellings are two locks.
+_FILE_COUNT_CEILING = "files.max_files_per_workspace"
 
 
 class SpaceLock(Protocol):
@@ -93,12 +125,14 @@ class SpaceQuotaService[R]:
         files: SpaceBytesUsed,
         uow: UnitOfWork,
         limits: Limits,
+        lock: QuotaLock,
     ) -> None:
         self._registrar = registrar
         self._spaces = spaces
         self._files = files
         self._uow = uow
         self._limits = limits
+        self._lock = lock
 
     async def register(
         self,
@@ -110,6 +144,13 @@ class SpaceQuotaService[R]:
         size_bytes: int,
     ) -> R:
         async with self._uow.begin(ctx):
+            # 2.7 -- BEFORE the space's own row lock, and the order is the
+            # ordinary deadlock discipline rather than a preference: every
+            # contender for the workspace's file cap must take these two locks
+            # in the same order, and this one is the coarser of the two. Taking
+            # the space row first would let two registrations into two spaces
+            # hold each other's next lock.
+            await self._lock.hold(ctx, _FILE_COUNT_CEILING)
             if not await self._spaces.lock(ctx, space_id):
                 # Missing, or belonging to another tenant, or soft-deleted —
                 # one answer for all three. A caller that cannot write to a
