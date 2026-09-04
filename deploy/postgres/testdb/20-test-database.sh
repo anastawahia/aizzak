@@ -64,9 +64,15 @@ psql -v ON_ERROR_STOP=1 \
     -- there it must be granted CREATE/CONNECT because `aizzak` is owned by the
     -- superuser (measured: datdba=postgres), while here it OWNS the database
     -- and holds every database-level privilege implicitly.
+    -- `backup_operator` (capacity step 2.5) joins them: it is cluster-wide by
+    -- nature (REPLICATION, BYPASSRLS, pg_read_all_data), but CONNECT is
+    -- per-database like every other privilege here, and
+    -- `tests/integration/test_backup_live.py` opens its own connection as
+    -- this role to prove the thing no catalogue read can -- that it SEES
+    -- tenant rows a non-bypassing role cannot.
     GRANT CONNECT ON DATABASE aizzak_test
         TO app_rw, outbox_relay, retention_sweeper, metrics_reader, transit_rotator,
-           workspace_purger;
+           workspace_purger, backup_operator;
 EOSQL
 
 # Schema privileges are per-database and are NOT inherited from `aizzak`, so

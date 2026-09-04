@@ -232,8 +232,37 @@ x-heartbeat-healthcheck: &heartbeat-healthcheck
 
 services:
   # ────────────────────────────── data plane ──────────────────────────────
+  # A named volume's mount point is created root:root when the path does not
+  # already exist inside the image -- which `/var/lib/postgresql/wal-archive`
+  # does not. MEASURED on the first run of step 2.5: Postgres came up healthy,
+  # `archive_mode` read `on`, and the archiver could not write a byte; the
+  # only symptom would have been `pg_stat_archiver.failed_count` climbing
+  # while `docker compose ps` stayed green and pg_wal grew.
+  #
+  # A one-shot on the SAME pinned image as the server (the `nginx-certs` /
+  # `minio-bootstrap` pattern), because the postgres entrypoint chowns
+  # `$PGDATA` and `/var/run/postgresql` and nothing else, and `command:`
+  # cannot chown anything at all.
+  wal-archive-init:
+    image: postgres:16
+    user: root
+    volumes:
+      - wal-archive:/var/lib/postgresql/wal-archive
+    # 0750: the server (999) writes, the shipper (999, see `wal-shipper`)
+    # deletes, and nothing else on the host or in another container reads
+    # transaction logs that carry every tenant's rows.
+    entrypoint:
+      - sh
+      - -c
+      - chown 999:999 /var/lib/postgresql/wal-archive && chmod 0750 /var/lib/postgresql/wal-archive
+    restart: "no"
+    <<: *app-logging
+
   postgres:
     image: postgres:16
+    depends_on:
+      wal-archive-init:
+        condition: service_completed_successfully
     # ⚠️ THREE OVERRIDES, ALL THREE ABOUT OBSERVING THE SERVER, NONE ABOUT
     # TUNING IT (capacity step 0.4, docs/capacity-plan.md §5 Wave 0). The
     # plan's step 2.1 will set shared_buffers/work_mem/max_wal_size and the
@@ -267,6 +296,62 @@ services:
       - pg_stat_statements.max=10000
       - -c
       - pg_stat_statements.track=top
+      # ── capacity step 2.5: durability, NOT tuning ───────────────────────
+      # `hba_file` points at a REVIEWED file instead of the one initdb wrote
+      # into the data volume. `pg_basebackup` opens a physical replication
+      # connection, and in pg_hba.conf the keyword `all` in the database
+      # column does not match one -- only the literal `replication` does. The
+      # generated file has that keyword for the Unix socket and 127.0.0.1
+      # only, and it is written ONCE on a fresh volume, so there is no way to
+      # add the rule from the environment. See deploy/postgres/pg_hba.conf,
+      # which reproduces every line initdb produces and adds exactly one.
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      # Archiving. `archive_mode` is a START-time setting, so an existing
+      # deployment needs a restart (`docker compose up -d postgres`) -- the
+      # same asymmetry `shared_preload_libraries` above has.
+      #
+      # ⚠️ NOT a knob risk `م-8` covers, and the distinction is not a
+      # loophole: 2.1 sets shared_buffers/work_mem/effective_cache_size/
+      # max_wal_size, which make the server FASTER and therefore make a
+      # baseline measured after them unable to prove anything. Archiving
+      # makes it slower, and it is what production runs with. A 0.5 baseline
+      # taken on a cluster that does not archive its WAL is a baseline of a
+      # deployment nobody would operate. `tests/unit/test_ops_slow_queries.py
+      # ::test_compose_does_not_smuggle_wave_2_tuning_into_wave_0` still
+      # guards the four knobs that matter, and still passes.
+      - -c
+      - archive_mode=on
+      #
+      # ⚠️ INVOKED THROUGH `sh`, NOT EXECUTED. A bind mount carries the HOST's
+      # permission bits, and a checkout that did not preserve the executable
+      # bit (a Windows share, a `umask`, an archive export -- this repository
+      # is developed on WSL) turns archiving off with a message that names
+      # neither the mount nor the mode:
+      #
+      #     sh: 1: /usr/local/bin/archive_wal.sh: Permission denied
+      #     FATAL:  archive command failed with exit code 126
+      #
+      # MEASURED here on the first run. Worse than the failure is what the
+      # instrument said about it: after SIX consecutive failures,
+      # `pg_stat_archiver` still read `archived_count=0, failed_count=0,
+      # last_failed_wal=NULL` -- the exec failure never reaches the counter an
+      # operator or an exporter would watch. That is why `app.ops.backup
+      # status` reports `archived_count`/`last_archived_wal` and the spool
+      # depth rather than `failed_count`, and why this line names `sh`: the
+      # same precedent `nginx-certs` (`entrypoint: ["/bin/sh", "/gen-cert.sh"]`)
+      # and `runpod/bootstrap.sh` (`bash /app/deploy/...`) already follow for
+      # every mode-0644 script in this repository.
+      - -c
+      - archive_command=/bin/sh /usr/local/bin/archive_wal.sh %p %f
+      # The RPO knob, and the only number here an operator should expect to
+      # change. A segment is archived when it FILLS; on a quiet cluster the
+      # last one can sit unarchived indefinitely, so this forces a switch --
+      # bounding data loss at five minutes and costing one 16MB segment per
+      # five minutes of idleness (compressed to a few KB by the shipper,
+      # which is why the cost is bounded in object storage and not here).
+      - -c
+      - archive_timeout=300
     environment:
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
@@ -312,9 +397,27 @@ services:
       # BEFORE any migration if the role does not already exist, so it must
       # be created here regardless.
       WORKSPACE_PURGER_PASSWORD: ${WORKSPACE_PURGER_PASSWORD:?set WORKSPACE_PURGER_PASSWORD in .env}
+      # backup_operator (capacity step 2.5): the eighth role, and the only one
+      # holding REPLICATION and BYPASSRLS. `python -m app.ops.backup` is a
+      # one-shot tool on the `retention_sweeper` footing, but the `wal-shipper`
+      # service below IS standing -- it authenticates as nothing, though: it
+      # only moves files from a volume to object storage. UNLIKE the six roles
+      # above, this one is NOT in `app.ops.provision._require_roles`: no
+      # migration names it in a policy, so its absence fails the backup tool
+      # (by name, in `preflight`) and never a migration.
+      BACKUP_OPERATOR_PASSWORD: ${BACKUP_OPERATOR_PASSWORD:?set BACKUP_OPERATOR_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      # Read-only: the server reads its own auth rules, and a Postgres that
+      # could rewrite them is a Postgres that can grant itself anything.
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./deploy/postgres/archive_wal.sh:/usr/local/bin/archive_wal.sh:ro
+      # The spool `archive_command` writes into and `wal-shipper` drains. A
+      # named volume rather than a bind: these segments are the difference
+      # between "restore to last night" and "restore to 60 seconds ago", and
+      # a bind mount would put them on whatever the host happens to offer.
+      - wal-archive:/var/lib/postgresql/wal-archive
     ports:
       - "127.0.0.1:${HOST_PORT_POSTGRES:-15432}:5432"
     healthcheck:
@@ -611,6 +714,10 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
+      # Capacity step 2.5: the versioned backup bucket. A SEPARATE bucket, so
+      # that whatever empties the file bucket cannot empty its backups too.
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-aizzak-backups}
+      BACKUP_NONCURRENT_DAYS: ${BACKUP_NONCURRENT_DAYS:-30}
       # The live test harness's bucket + bucket-scoped service account
       # (bootstrap.sh's second half). Default OFF: a deployment must not mint
       # test credentials. A developer turns it on in `.env`.
@@ -963,6 +1070,99 @@ services:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "outbox-relay"]
     restart: unless-stopped
+
+  # ────────────────────────────── backup ──────────────────────────────────
+  # Capacity step 2.5 (`ح-13`). Both services run the APPLICATION image --
+  # "one image, several commands" (Dockerfile) -- which since 2.5 also
+  # carries the PostgreSQL 16 client binaries, because `python -m
+  # app.ops.backup` shells out to `pg_basebackup`/`pg_dump`/`pg_restore` and
+  # a client older than the server refuses to dump it.
+  #
+  # ⚠️ `user: "999:999"` ON BOTH, and it is not a preference. `postgres`
+  # writes the spool as ITS uid (999); the shipper must DELETE from that
+  # directory once a segment is safely in object storage, and deleting needs
+  # write permission on the DIRECTORY, not on the file. The alternatives were
+  # a world-writable volume or a `chmod` in the archive command -- both of
+  # them widen the permissions of live WAL to make a container's identity
+  # convenient. Matching the uid instead changes nothing about the files.
+  #
+  # ⚠️ NEITHER goes through pgbouncer, and neither CAN. `pg_basebackup`
+  # speaks the replication protocol, which the pooler does not implement;
+  # `pg_dump` holds one repeatable-read snapshot across hundreds of
+  # statements, which transaction pooling breaks by design. Both fail loudly
+  # rather than producing a short artifact, but the DSN says `postgres:5432`
+  # so neither ever has to.
+
+  # The standing half: drains the spool into object storage. Standing rather
+  # than an operator habit because the failure mode of NOT draining is not a
+  # missing backup -- it is Postgres holding every unarchived segment in
+  # pg_wal until the data volume fills, which is an outage of the whole
+  # platform caused by the backup system.
+  wal-shipper:
+    <<: [*app-image, *app-logging]
+    user: "999:999"
+    depends_on:
+      # NOT `postgres`. This service holds no database credential and opens no
+      # database connection -- `wal` reads a directory and writes objects --
+      # and the reason is the hour it exists for: if Postgres is in trouble,
+      # its WAL still has to reach object storage. A shipper that could not
+      # start without a database password would be unavailable in exactly that
+      # hour, and would be carrying a credential it never uses in every other.
+      minio:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+      wal-archive-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-aizzak-backups}
+      BACKUP_SPOOL_DIR: /var/lib/postgresql/wal-archive
+    volumes:
+      - wal-archive:/var/lib/postgresql/wal-archive
+    command:
+      - python
+      - -m
+      - app.ops.backup
+      - wal
+      - --follow
+      - --interval
+      - ${BACKUP_WAL_INTERVAL_S:-30}
+    # ت-3, and this loop is the clearest case for the heartbeat there is: its
+    # failure mode is not an error but a SILENCE. A stopped shipper keeps
+    # `archive_command` succeeding into a spool nobody drains, and the first
+    # symptom is a full data volume taking the platform down -- caused by the
+    # backup system. `Up` says nothing about that; a beat per completed
+    # shipping cycle does.
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "wal-shipper"]
+    restart: unless-stopped
+
+  # The one-shot half: base backups, dumps, Qdrant snapshots, status, prune.
+  # Behind a profile (the `k6` precedent from step 0.1) because it is an
+  # operator command, not a service -- `docker compose up -d` must not start
+  # a container whose whole job is to exit.
+  backup:
+    <<: [*app-image, *app-logging]
+    profiles: ["backup"]
+    user: "999:999"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      BACKUP_DATABASE_URL: postgresql://backup_operator:${BACKUP_OPERATOR_PASSWORD}@postgres:5432/${POSTGRES_DB:-aizzak}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-aizzak-backups}
+      BACKUP_SPOOL_DIR: /var/lib/postgresql/wal-archive
+    volumes:
+      - wal-archive:/var/lib/postgresql/wal-archive
+    command: ["python", "-m", "app.ops.backup", "status"]
+    restart: "no"
 
   # ─────────────────────────────── edge ───────────────────────────────────
   # Local TLS material (7.3). Same one-shot pattern as the vault/minio
@@ -1446,6 +1646,12 @@ services:
     <<: *app-logging
 volumes:
   postgres-data:
+  # WAL segments between `archive_command` and object storage (capacity 2.5).
+  # Shared by exactly two services: `postgres` writes, `wal-shipper` deletes.
+  # It is a SPOOL and not an archive -- a segment lives here for seconds, and
+  # a depth that grows is the shipper being down, which `python -m
+  # app.ops.backup status` reports as `spool.files`.
+  wal-archive:
   redis-data:
   minio-data:
   qdrant-data:

@@ -42,7 +42,24 @@ _COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 # `k6` joins them for a different reason than the four bootstraps: it is not
 # part of `up` at all (`profiles: ["load"]`), it is started by hand for one
 # 30-minute measurement and exits with the threshold verdict as its status.
-_ONE_SHOT = frozenset({"migrate", "vault-bootstrap", "minio-bootstrap", "nginx-certs", "k6"})
+#
+# Capacity step 2.5 adds two more: `wal-archive-init` chowns a volume and
+# exits (the `nginx-certs` shape exactly), and `backup` is an OPERATOR
+# command behind `profiles: ["backup"]` -- `docker compose up -d` never starts
+# it, and its contract is the exit code of one `base`/`dump`/`status` run.
+# `wal-shipper` is deliberately NOT here: it is the standing half, and it
+# declares a heartbeat below.
+_ONE_SHOT = frozenset(
+    {
+        "migrate",
+        "vault-bootstrap",
+        "minio-bootstrap",
+        "nginx-certs",
+        "k6",
+        "wal-archive-init",
+        "backup",
+    }
+)
 
 # The four processes whose liveness is a heartbeat file rather than a port:
 # Compose service name -> the process name passed to `app.ops.healthcheck`.
@@ -51,6 +68,11 @@ _HEARTBEAT_SERVICES = {
     "worker-knowledge": "knowledge",
     "worker-media": "media",
     "outbox-relay": "outbox-relay",
+    # Capacity step 2.5. Same shape as the four above -- a loop with no
+    # listener -- and the sharpest consequence: a shipper that has stopped
+    # leaves `archive_command` writing into a spool nobody drains until the
+    # data volume fills.
+    "wal-shipper": "wal-shipper",
 }
 
 

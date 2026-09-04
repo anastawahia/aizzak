@@ -116,6 +116,22 @@ _ENTRYPOINT_POOLS: Mapping[str, tuple[int, int]] = {
 # docstring's "WHAT IS DELIBERATELY NOT COUNTED".
 _PRE_FLIGHT_MODULES = frozenset({"app.ops.provision"})
 
+# Operator commands that happen to have a Compose service (capacity step 2.5).
+# `app.ops.retention`, `rotate_transit`, `purge`, `slow_queries` and
+# `load_seed` are the same class and never appeared here, simply because none
+# of them has a service definition -- 08 §4 invokes them with `exec`.
+# `app.ops.backup` is the first that does, so the ledger needs the category
+# rather than an exception.
+#
+# THREE PROPERTIES EARN THE EXCLUSION, AND `test_the_manual_tools_really_are_
+# out_of_the_standing_budget` ASSERTS ALL THREE rather than trusting this
+# comment: the service sits behind a `profiles:` key (so `docker compose up
+# -d` never starts it), the module opens `NullPool` engines (one backend at a
+# time, from the thirty this ledger already reserves for administration), and
+# its DSN goes DIRECT to Postgres -- so it occupies no MAX_CLIENT_CONN seat in
+# front of the pooler at all.
+_MANUAL_MODULES = frozenset({"app.ops.backup"})
+
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?)([^}]*))?\}")
 _DSN_PATTERN = re.compile(
     r"^postgresql\+asyncpg://(?P<role>[^:]+):[^@]*@(?P<endpoint>[^/]+)/",
@@ -270,7 +286,7 @@ def _compose_topology() -> _Topology:
         if not dsn_keys:
             continue
         module = _module_of(service.get("command"))
-        if module in _PRE_FLIGHT_MODULES:
+        if module in _PRE_FLIGHT_MODULES or module in _MANUAL_MODULES:
             continue
         replicas = int((service.get("deploy") or {}).get("replicas", 1))
         if module is None:
@@ -417,6 +433,32 @@ def _highest_fitting_web_concurrency(
 
 
 # ---------------------------------------------------------- what is counted --
+
+
+def test_the_manual_tools_really_are_out_of_the_standing_budget() -> None:
+    """`_MANUAL_MODULES` is an exclusion, and an exclusion nobody checks is a
+    hole. Each of its services must be behind a profile (so `up -d` never
+    starts it), and must reach Postgres DIRECTLY -- a manual tool pointed at
+    the pooler would take a MAX_CLIENT_CONN seat this ledger did not count."""
+    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    excluded: set[str] = set()
+    for name, service in sorted(compose["services"].items()):
+        module = _module_of(service.get("command"))
+        env = service.get("environment") or {}
+        dsn_keys = [key for key in env if key.endswith("DATABASE_URL")]
+        # Only a service that actually carries a DSN is excluded BY this set;
+        # `wal-shipper` runs the same module and holds no database credential
+        # at all, so the topology walk drops it one line earlier.
+        if module not in _MANUAL_MODULES or not dsn_keys:
+            continue
+        excluded.add(module)
+        assert service.get("profiles"), f"{name} must sit behind a profile to be excluded"
+        for key in dsn_keys:
+            assert _POOLER_ENDPOINT not in str(env[key]), (
+                f"{name}'s {key} goes through the pooler, so it DOES take a client seat"
+            )
+
+    assert excluded == set(_MANUAL_MODULES)
 
 
 def test_every_database_touching_service_is_accounted_for() -> None:

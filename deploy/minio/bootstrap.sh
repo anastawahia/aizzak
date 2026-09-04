@@ -18,6 +18,35 @@ done
 mc mb --ignore-existing "aizzak/${MINIO_BUCKET}" >/dev/null
 echo "minio-bootstrap: bucket ${MINIO_BUCKET} ready"
 
+# ── the backup bucket (capacity step 2.5, `ح-13`) ────────────────────────
+# A SEPARATE bucket, and the separation is the point: a lifecycle rule, a
+# policy or a mistaken `mc rm --recursive` aimed at the file bucket must not
+# be able to take the backups of that bucket with it. `python -m
+# app.ops.backup` refuses to run at all if this bucket is absent rather than
+# creating it on the fly -- a backup tool that provisions its own destination
+# will happily write a perfect backup into a brand-new empty bucket after
+# somebody deletes the real one.
+backup_bucket="${BACKUP_BUCKET:-aizzak-backups}"
+mc mb --ignore-existing "aizzak/${backup_bucket}" >/dev/null
+
+# VERSIONING. What it defends against is narrow and real: an overwrite or a
+# delete of an object that is still needed. `archive_wal.sh` refuses to
+# overwrite a WAL segment and `app.ops.backup` never rewrites a set, so the
+# realistic source of both is a HAND at a console during an incident -- which
+# is exactly when the object being deleted is the one that mattered.
+#
+# It is NOT a substitute for `app.ops.backup prune`, and the division is
+# strict: prune owns CURRENT versions (it is the only thing that knows a WAL
+# segment is still needed by the oldest surviving base backup, which no
+# date-based rule can know), and the rule below bounds the NONCURRENT ones
+# it leaves behind. Two authorities over the same objects would eventually
+# disagree, and the one that "wins" would be whichever ran last.
+mc version enable "aizzak/${backup_bucket}" >/dev/null
+mc ilm rule add --noncurrent-expire-days "${BACKUP_NONCURRENT_DAYS:-30}" \
+    "aizzak/${backup_bucket}" >/dev/null 2>&1 \
+    || echo "minio-bootstrap: noncurrent-version rule already present on ${backup_bucket}"
+echo "minio-bootstrap: bucket ${backup_bucket} ready (versioned)"
+
 # ── the live test harness's bucket + scoped account (docs/log/3.99.md) ───
 # `tests/integration/test_minio_storage.py` runs against a REAL MinIO through a
 # service account that can see ONE bucket and nothing else -- that blast-radius

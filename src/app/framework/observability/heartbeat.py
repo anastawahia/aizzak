@@ -62,7 +62,15 @@ _SUFFIX = ".heartbeat"
 # `outbox-relay` is spelled with the hyphen its Compose SERVICE uses, not the
 # underscore of `app.workers.outbox_relay`, because the operator reading
 # `docker compose ps` sees the former.
-HEARTBEAT_PROCESS_NAMES = ("memory", "knowledge", "media", "outbox-relay")
+#
+# `wal-shipper` (capacity step 2.5) is the fifth, and it is the clearest case
+# of all for this mechanism: it is a loop with no listener whose failure mode
+# is not an error but a SILENCE. If it stops, `archive_command` keeps
+# succeeding into a spool nobody drains, the spool grows without limit, and
+# the first symptom anyone sees is a full data volume taking the whole
+# platform down -- caused by the backup system. "The container is Up" says
+# nothing about that; a beat per completed shipping cycle does.
+HEARTBEAT_PROCESS_NAMES = ("memory", "knowledge", "media", "outbox-relay", "wal-shipper")
 
 
 class Heartbeat(Protocol):

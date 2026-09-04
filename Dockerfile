@@ -80,6 +80,37 @@ RUN apt-get update \
         fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
+# The PostgreSQL 16 client binaries -- capacity step 2.5's `python -m
+# app.ops.backup` shells out to pg_basebackup, pg_dump and pg_restore.
+#
+# WHY THE PGDG REPOSITORY AND NOT DEBIAN'S OWN. Bookworm ships
+# postgresql-client-15. `pg_dump` refuses to dump a server NEWER than itself
+# ("server version 16.x; pg_dump version 15.x"), and a base backup taken by a
+# mismatched pg_basebackup is a data directory the server may not accept --
+# so the client major MUST track the server major, which docker-compose.yml
+# pins at `postgres:16`. This is the same version-pinning discipline the base
+# images get, applied to a package.
+#
+# WHY IN THE APPLICATION IMAGE AND NOT A SECOND ONE. `postgres:16` carries
+# the binaries but is Debian 13 (trixie) against this image's Debian 12
+# (bookworm), so copying them across is a glibc mismatch, and building a
+# SECOND image with this repository's source in it would break the one
+# property the header of this file states: every process is provably running
+# the same code. ~4 MB of binaries is the cheaper half of that trade.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates gnupg \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y postgresql-client-16 \
+    && apt-get purge --yes gnupg \
+    && apt-get autoremove --yes \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
@@ -90,12 +121,26 @@ WORKDIR /app
 COPY alembic.ini ./alembic.ini
 COPY migrations/ ./migrations/
 COPY src/ ./src/
-# Wave 0 step 0.2 (docs/capacity-plan.md). ONE file out of `deploy/`,
-# named explicitly rather than `COPY deploy/`: that directory also holds
-# the Vault policy and the development TLS material, and an image is the
-# last place either belongs. `gunicorn.conf.py` owns the lifecycle of the
-# PROMETHEUS_MULTIPROC_DIR the /metrics endpoint aggregates from.
+# Wave 0 step 0.2 (docs/capacity-plan.md). Named paths out of `deploy/`,
+# never `COPY deploy/`: that directory also holds the Vault policy and the
+# development TLS material, and an image is the last place either belongs.
+# `gunicorn.conf.py` owns the lifecycle of the PROMETHEUS_MULTIPROC_DIR the
+# /metrics endpoint aggregates from.
 COPY deploy/gunicorn.conf.py ./deploy/gunicorn.conf.py
+# The live proofs, and they were NOT here until capacity step 2.5 -- which
+# means `docker compose exec app python /app/deploy/smoke/stack_smoke.py`,
+# documented in 08-local-runbook §5.1 and in stack_smoke.py's own header as
+# the way to run it, has never once worked from a built image:
+#
+#     python: can't open file '/app/deploy/smoke/stack_smoke.py':
+#     [Errno 2] No such file or directory
+#
+# Found because 2.5's acceptance criterion is "a RESTORED database passes the
+# live proofs in deploy/smoke/", so something finally had to run them the
+# documented way. These three files are proofs meant to execute INSIDE the
+# container, against the real wiring -- the one part of `deploy/` that
+# belongs in the image by nature.
+COPY deploy/smoke/ ./deploy/smoke/
 
 # Non-root. The app writes no PLATFORM state to the filesystem -- objects go
 # to MinIO, state to Postgres/Redis -- so it needs no writable mount.

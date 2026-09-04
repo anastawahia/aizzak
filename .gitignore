@@ -72,3 +72,10 @@ deploy/load/results/
 # holds), so it is a local fact with the lifetime of that database, not a
 # repository artifact. `status --export` reads it back.
 deploy/load/seeds/
+
+# Restore-drill working directories (docs/capacity-plan.md 2.5). Each holds a
+# downloaded base backup and the WAL shelf beside it -- measured, 822 MB for
+# one run of this stack -- so this is not a "keep the tree tidy" ignore: it is
+# a full copy of every tenant's data, per drill. `drill.json` inside each is
+# the part worth keeping, and it is small enough to paste.
+deploy/backup/results/
