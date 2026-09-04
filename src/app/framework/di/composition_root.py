@@ -666,6 +666,18 @@ def _build_rerank(
     return rerank_http, ExternalRerankProvider(rerank_http, settings.rerank_service)
 
 
+# The `/metrics` engine's pool, named rather than inlined at the `create_engine`
+# call below -- capacity step 2.3 (`docs/design/08-local-runbook.md` §2-ب)
+# adds up every pool this deployment opens, and a number it cannot read is a
+# term missing from that sum. `tests/unit/test_connection_budget.py` reads
+# THESE, so the ledger and the process can never disagree about them.
+#
+# 2/2 rather than the app's own 10/20: a scrape is infrequent and quick, and
+# this connection has no other caller to share a bigger pool with.
+_METRICS_POOL_SIZE = 2
+_METRICS_MAX_OVERFLOW = 2
+
+
 def _build_metrics_source(
     settings: Settings, redis_client: Redis
 ) -> tuple[AsyncEngine, SqlRedisMetricsSource]:
@@ -679,10 +691,12 @@ def _build_metrics_source(
     ``MetricsSettings``'s own docstring for why: ``app_rw`` is INSERT-only on
     ``platform.outbox`` (``app.ops.provision``'s deliberate grant), so
     reading it at all needs a role that never otherwise exists in this
-    process. Small pool (``pool_size=2, max_overflow=2``) rather than the
-    app's own ``db.pool_size``/``db.max_overflow`` -- a scrape is infrequent
-    and quick, and this connection has no other caller to share a bigger
-    pool with.
+    process. Small pool (``_METRICS_POOL_SIZE``/``_METRICS_MAX_OVERFLOW``,
+    2 and 2) rather than the app's own ``db.pool_size``/``db.max_overflow``
+    -- a scrape is infrequent and quick, and this connection has no other
+    caller to share a bigger pool with. It is a SECOND pool inside every
+    gunicorn sibling all the same, which is why capacity step 2.3's
+    connection ledger counts it as its own term.
 
     ``redis_client`` is the SAME shared client every other Redis-backed
     collaborator in this root already holds -- there is no per-role ACL
@@ -691,7 +705,11 @@ def _build_metrics_source(
     (``SqlRedisMetricsSource``'s own module docstring).
     """
     metrics_engine = create_engine(
-        DatabaseSettings(url=settings.metrics.database_url, pool_size=2, max_overflow=2)
+        DatabaseSettings(
+            url=settings.metrics.database_url,
+            pool_size=_METRICS_POOL_SIZE,
+            max_overflow=_METRICS_MAX_OVERFLOW,
+        )
     )
     return metrics_engine, SqlRedisMetricsSource(metrics_engine, redis_client)
 
