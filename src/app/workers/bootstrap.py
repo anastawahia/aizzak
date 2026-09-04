@@ -230,6 +230,29 @@ _logger = get_logger(__name__)
 _RELAY_POOL_SIZE = 2
 _RELAY_MAX_OVERFLOW = 0
 
+# ── The BACKGROUND transaction budget (capacity step 2.6) ────────────────────
+# One set of numbers for the relay and all three Streams workers, because the
+# reason is one: nothing interactive is waiting on any of them. The pool SIZES
+# differ from the API server's (2+0 above, for a process that runs one
+# statement at a time); the budget differs from the API server's for the other
+# reason -- a request that has spent five seconds in Postgres has no caller
+# left, while a worker re-indexing a document has only itself to answer to.
+#
+# They are constants and not env keys, exactly like `_WORKER_POOL_SIZE` and
+# `_RELAY_POOL_SIZE`: a background process's budget is a property of what that
+# process does, not a deployment dial. `_BACKGROUND_STATEMENT_TIMEOUT_MS` is
+# still a bound and not a shrug -- a worker statement that has run for thirty
+# seconds is holding one of the pooler's 25 `app_rw` server slots (`ح-3`) and
+# is a bug, whether or not anyone is watching.
+#
+# ⚠️ Both stay UNDER the pooler's own `idle_transaction_timeout` (120s,
+# `docker-compose.yml`), which is the backstop for clients that carry no
+# budget at all. `tests/unit/test_connection_timeouts.py` is what keeps that
+# ordering true when either number moves.
+_BACKGROUND_POOL_TIMEOUT_S = 15.0
+_BACKGROUND_STATEMENT_TIMEOUT_MS = 30_000
+_BACKGROUND_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
+
 # See the module docstring's "`max_backoff_ms` has no `Settings` field"
 # paragraph -- 30s is a conventional outer ceiling for exponential backoff:
 # long enough that a flapping dependency is not hammered, short enough that
@@ -299,6 +322,10 @@ def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable
         url=settings.database.url,
         pool_size=_RELAY_POOL_SIZE,
         max_overflow=_RELAY_MAX_OVERFLOW,
+        pool_timeout_s=_BACKGROUND_POOL_TIMEOUT_S,
+        pool_recycle_s=settings.database.pool_recycle_s,
+        statement_timeout_ms=_BACKGROUND_STATEMENT_TIMEOUT_MS,
+        idle_in_transaction_timeout_ms=_BACKGROUND_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     )
     engine = create_engine(relay_db)
     sessionmaker = create_sessionmaker(engine)
@@ -401,10 +428,23 @@ class ProcessedEventLedger(Protocol):
 
 
 def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
-    """Same ``DATABASE_URL``, a worker-sized pool -- the ``build_relay_from_env``
-    precedent (its own ``relay_db`` local), applied to each Streams worker."""
+    """Same ``DATABASE_URL``, a worker-sized pool and the background
+    transaction budget -- the ``build_relay_from_env`` precedent (its own
+    ``relay_db`` local), applied to each Streams worker.
+
+    ``pool_recycle_s`` alone is carried over from ``db`` rather than
+    overridden: it is the one of the four that answers to something OUTSIDE
+    this process (PgBouncer's ``client_idle_timeout``), so it must be the same
+    number everywhere the pooler is the same pooler.
+    """
     return DatabaseSettings(
-        url=db.url, pool_size=_WORKER_POOL_SIZE, max_overflow=_WORKER_MAX_OVERFLOW
+        url=db.url,
+        pool_size=_WORKER_POOL_SIZE,
+        max_overflow=_WORKER_MAX_OVERFLOW,
+        pool_timeout_s=_BACKGROUND_POOL_TIMEOUT_S,
+        pool_recycle_s=db.pool_recycle_s,
+        statement_timeout_ms=_BACKGROUND_STATEMENT_TIMEOUT_MS,
+        idle_in_transaction_timeout_ms=_BACKGROUND_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     )
 
 

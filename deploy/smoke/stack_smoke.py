@@ -29,6 +29,7 @@ import asyncio
 
 from sqlalchemy import text
 
+from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.config import load_settings
 from app.infrastructure.config.vault_auth import load_vault_auth
 from app.infrastructure.persistence.database import create_engine
@@ -45,7 +46,15 @@ _INTERNAL_HOST = "minio:9000"
 async def check_pgbouncer() -> None:
     db = load_settings().database
     print(f"[1] database url host: {db.url.split('@')[-1]}")
-    engine = create_engine(db)
+    # ⚠️ The deployed DSN, but NOT the deployed request-path budget (capacity
+    # step 2.6). This script is an operator tool invoked by hand, the
+    # `app.ops.*` footing -- and it was measured being broken by the other
+    # reading: with the API's own 5s `statement_timeout` inherited, check [2]
+    # below failed with `57014` on a COLD buffer cache and passed on a warm
+    # one. A proof whose verdict depends on what Postgres happens to have in
+    # memory is not a proof, and the number it was failing against was chosen
+    # for HTTP requests, which this is not.
+    engine = create_engine(DatabaseSettings(url=db.url))
     try:
         # Several separate transactions: under transaction pooling each may
         # land on a different backend, and a re-prepared named statement is
@@ -59,13 +68,24 @@ async def check_pgbouncer() -> None:
         print("[1] OPS-02: 5 transactions through pgbouncer, no prepared-statement clash  OK")
 
         # RLS fails closed: no app.workspace_id => zero rows, not an error.
+        #
+        # ⚠️ `LIMIT 1` inside, and that is the claim itself rather than a
+        # weakening of it: "no row is visible" is exactly what fail-closed
+        # means, and it is what a bare `count(*)` was spending a full scan of
+        # `conversations.messages` to establish. Since the load-test corpus
+        # (`0.1`) that table holds 1,000,024 rows, and the aggregate was
+        # measured at 1.58s warm on a plan whose cost is 101,558 -- for an
+        # answer that is always zero. The bounded probe takes 0.15s and cannot
+        # drift with the corpus.
         async with engine.begin() as conn:
             rows = (
-                await conn.execute(text("SELECT count(*) FROM conversations.messages"))
+                await conn.execute(
+                    text("SELECT count(*) FROM (SELECT 1 FROM conversations.messages LIMIT 1) p")
+                )
             ).scalar_one()
         if rows != 0:
             raise SystemExit(
-                f"FAIL: RLS did not fail closed -- {rows} rows without a workspace context"
+                "FAIL: RLS did not fail closed -- a row is visible without a workspace context"
             )
         print("[2] RLS fails closed without app.workspace_id (0 rows)  OK")
     finally:

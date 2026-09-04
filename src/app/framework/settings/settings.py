@@ -29,6 +29,37 @@ class DatabaseSettings(BaseModel):
     max_overflow: int = 20
     statement_cache_size: int = 0
 
+    # ── Capacity step 2.6: the four timeouts of one connection's life ──────
+    # Each names a DIFFERENT phase, and a phase with no bound is a phase in
+    # which a request waits forever. Ordered here as a call passes through
+    # them; `create_engine` installs them and
+    # `tests/unit/test_connection_timeouts.py` guards their ordering against
+    # the pooler's own ceilings.
+    #
+    # `pool_timeout_s` -- waiting for a slot in THIS process's pool. Not a
+    # new bound: SQLAlchemy's own default is 30s, which is 120x the p95 write
+    # budget of `07 §2` and 200x the read one. A request that has queued for
+    # 30s has no caller left to answer; 5s is already far past the point
+    # where failing is the honest reply (`ق-6`).
+    pool_timeout_s: float = 5.0
+    # `pool_recycle_s` -- how long a pooled connection may live before it is
+    # replaced. It exists to stay UNDER whatever drops idle client
+    # connections underneath us; through PgBouncer that is
+    # `client_idle_timeout`, which this repository sets explicitly for the
+    # first time in 2.6 (it had been `0` -- disabled -- so the step's own
+    # rationale named a timeout that was not switched on).
+    pool_recycle_s: int = 900
+    # `statement_timeout_ms` / `idle_in_transaction_timeout_ms` -- server-side
+    # execution, and holding a server connection open with nothing running on
+    # it. BOTH default to `0` (Postgres's own "no limit"), and that default is
+    # load-bearing: `app.ops.*` build a bare `DatabaseSettings(url=...)` and
+    # legitimately run statements for minutes (`load_seed`'s 591-second
+    # corpus, `explain_hot_paths`'s `EXPLAIN (ANALYZE)` over a million rows).
+    # The request path opts IN through `DB_STATEMENT_TIMEOUT_MS`; background
+    # processes opt in through their own constants in `workers/bootstrap.py`.
+    statement_timeout_ms: int = 0
+    idle_in_transaction_timeout_ms: int = 0
+
 
 class RedisSettings(BaseModel):
     model_config = _FROZEN

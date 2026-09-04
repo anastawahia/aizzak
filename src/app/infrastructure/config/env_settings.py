@@ -58,6 +58,25 @@ class _EnvSettings(BaseSettings):
     db_pool_size: int = Field(10, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(20, alias="DB_MAX_OVERFLOW")
 
+    # capacity-plan 2.6 -- the REQUEST path's four connection timeouts. The
+    # contract's own defaults are deliberately looser than these (`0` for both
+    # server-side budgets, so `app.ops.*` keep running statements for minutes
+    # -- see `DatabaseSettings`); what an API/worker process gets is decided
+    # HERE, and only background processes override it, from their own
+    # constants in `workers/bootstrap.py`.
+    #
+    # `ge=0` and not `ge=1`: `0` is Postgres's own spelling of "no limit" on
+    # both server-side GUCs and the value that switches the `begin` listener
+    # off entirely, so it has to remain expressible. The pool bounds get
+    # `gt=0` instead -- a zero-second checkout wait is not a policy, it is a
+    # pool that refuses every request the moment two arrive together.
+    db_pool_timeout_s: float = Field(5.0, alias="DB_POOL_TIMEOUT_S", gt=0)
+    db_pool_recycle_s: int = Field(900, alias="DB_POOL_RECYCLE_S", gt=0)
+    db_statement_timeout_ms: int = Field(5_000, alias="DB_STATEMENT_TIMEOUT_MS", ge=0)
+    db_idle_in_transaction_timeout_ms: int = Field(
+        10_000, alias="DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", ge=0
+    )
+
     redis_url: str = Field("redis://redis:6379/0", alias="REDIS_URL")
 
     # P1-3 (docs/p1-hardening-plan.md §3 step 10): the `/metrics` endpoint's
@@ -177,6 +196,10 @@ def load_settings() -> Settings:
             url=env.database_url,
             pool_size=env.db_pool_size,
             max_overflow=env.db_max_overflow,
+            pool_timeout_s=env.db_pool_timeout_s,
+            pool_recycle_s=env.db_pool_recycle_s,
+            statement_timeout_ms=env.db_statement_timeout_ms,
+            idle_in_transaction_timeout_ms=env.db_idle_in_transaction_timeout_ms,
         ),
         redis=RedisSettings(url=env.redis_url),
         metrics=MetricsSettings(database_url=env.metrics_database_url),

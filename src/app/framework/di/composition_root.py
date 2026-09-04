@@ -704,11 +704,21 @@ def _build_metrics_source(
     client here would be a redundant connection for no isolation gained
     (``SqlRedisMetricsSource``'s own module docstring).
     """
+    # The four 2.6 timeouts are COPIED from `settings.database` rather than
+    # given numbers of their own: a scrape is on a request path too (it is
+    # Prometheus's `scrape_timeout` waiting, not a person), so the operator
+    # who lowers the API's budget should not have to discover a second copy
+    # here to lower with it. Only the pool SIZE differs, and it differs for
+    # the reason named above.
     metrics_engine = create_engine(
         DatabaseSettings(
             url=settings.metrics.database_url,
             pool_size=_METRICS_POOL_SIZE,
             max_overflow=_METRICS_MAX_OVERFLOW,
+            pool_timeout_s=settings.database.pool_timeout_s,
+            pool_recycle_s=settings.database.pool_recycle_s,
+            statement_timeout_ms=settings.database.statement_timeout_ms,
+            idle_in_transaction_timeout_ms=settings.database.idle_in_transaction_timeout_ms,
         )
     )
     return metrics_engine, SqlRedisMetricsSource(metrics_engine, redis_client)

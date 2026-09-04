@@ -28,6 +28,14 @@ x-app-env: &app-env
   APP_PORT: "8000"
   API_PREFIX: ${API_PREFIX:-/api/v1}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # capacity 2.6 -- the ONE of the four connection timeouts that is shared by
+  # every process here, because it is the only one that answers to something
+  # outside them: it must stay under the pooler's `client_idle_timeout`
+  # (1800s), and the pooler is the same pooler for all of them. The other
+  # three are the API server's alone (see the `app` service) -- the relay and
+  # the three workers carry a background budget from their own constants in
+  # `app/workers/bootstrap.py`.
+  DB_POOL_RECYCLE_S: ${DB_POOL_RECYCLE_S:-900}
   REDIS_URL: redis://redis:6379/0
   MINIO_ENDPOINT: minio:9000
   MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
@@ -458,6 +466,49 @@ services:
       # Named prepared statements are disabled application-side; leaving
       # this at 0 keeps pgbouncer from pretending otherwise.
       MAX_PREPARED_STATEMENTS: "0"
+      # ── The pooler's own ceilings (capacity step 2.6) ──────────────────
+      # The image's generated ini files these under a header it writes
+      # itself: "# Dangerous timeouts". They are dangerous unset, which is
+      # how they were: every one of the three below was at a default nobody
+      # in this repository had chosen.
+      #
+      # These are BACKSTOPS, not the platform's budget. Every client that
+      # goes through this pooler carries its own, tighter, per-path bound
+      # (`DatabaseSettings`' four 2.6 fields, installed by `create_engine`);
+      # what fires here is a client that has none -- a `psql`, an `app.ops.*`
+      # tool, a service written next year. That ordering matters because a
+      # timeout that fires HERE tells the operator almost nothing: measured
+      # against a deliberately lowered ceiling, PgBouncer ends the wait by
+      # closing the client socket, and asyncpg reports "connection was closed
+      # in the middle of operation" -- true, and useless as a diagnosis.
+      # `tests/unit/test_connection_timeouts.py` guards the ordering.
+      #
+      # `query_wait_timeout` is the ONE phase no client-side bound covers:
+      # time spent waiting for a free SERVER slot, before any backend has
+      # seen the query. `statement_timeout` cannot bound it -- measured, with
+      # all 25 `app_rw` slots busy, a 26th client carrying a 5s statement
+      # budget waited 7.85s and then SUCCEEDED. Nothing else cuts that wait
+      # short of the edge's own `proxy_read_timeout` (300s, sized for SSE),
+      # so 120s of it is a request that is gone twice over. 20s is still far
+      # above every per-path EXECUTION budget, so this never pre-empts a
+      # guard that could name the cause better.
+      QUERY_WAIT_TIMEOUT: "20"
+      # `client_idle_timeout` was `0` -- disabled -- which is why step 2.6's
+      # own wording ("`pool_recycle` shorter than PgBouncer's idle timeout")
+      # named a timeout that did not exist. Now it does, and `pool_recycle_s`
+      # (900) is half of it by construction. It also closes a real leak on
+      # `MAX_CLIENT_CONN`: an abandoned client session held one of the 500
+      # forever.
+      CLIENT_IDLE_TIMEOUT: "1800"
+      # The backstop for a connection held open with a transaction on it and
+      # nothing running -- the pooler-wide twin of
+      # `idle_in_transaction_session_timeout`. Above the background path's
+      # 60s so a worker's own bound is what fires first.
+      IDLE_TRANSACTION_TIMEOUT: "120"
+      # ⚠️ `query_timeout` stays OFF (0), deliberately. It would duplicate
+      # `statement_timeout` one layer higher and worse: PgBouncer kills the
+      # client connection, Postgres cancels the statement and returns
+      # SQLSTATE 57014 that every adapter's `_translate` already understands.
       ADMIN_USERS: ${POSTGRES_SUPERUSER:-postgres}
       AUTH_USER: ${POSTGRES_SUPERUSER:-postgres}
       AUTH_QUERY: SELECT usename, passwd FROM pg_shadow WHERE usename=$$1
@@ -835,6 +886,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      # capacity 2.6 -- the REQUEST path's budget, here for the same reason
+      # `DB_POOL_SIZE` is: the workers and the relay do not read it. A
+      # statement on this path is a person waiting, and `07 §2` gives that
+      # person 150ms (read) / 250ms (write); five seconds is already twenty
+      # times over, which is why it is the point at which failing is the
+      # honest answer rather than a number tuned to anything.
+      DB_POOL_TIMEOUT_S: ${DB_POOL_TIMEOUT_S:-5}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
+      DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: ${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:-10000}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       # P1-3 (p1-hardening-plan.md §3 step 10): `/metrics`'s OWN read of
       # platform.outbox -- app_rw above is INSERT-only there (provision.py),

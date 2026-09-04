@@ -139,6 +139,23 @@ export DB_POOL_SIZE="${DB_POOL_SIZE:-10}"
 export DB_MAX_OVERFLOW="${DB_MAX_OVERFLOW:-20}"
 export WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}"
 
+# capacity step 2.6 -- the same four connection timeouts the Compose stack
+# gets, exported here for the same reason DB_POOL_SIZE is: this deployment
+# does not read that stack's .env, and a default that only one of the two
+# deployments applies is a bound that the other one silently lacks.
+#
+# ⚠️ AND THEY MATTER MORE HERE, not less. This deployment has NO POOLER
+# (08 §2: a direct connection on 127.0.0.1:5432), so every backstop that
+# `docker-compose.yml` sets on `pgbouncer` -- query_wait_timeout,
+# client_idle_timeout, idle_transaction_timeout -- simply does not exist on
+# this side. What the process carries is ALL there is. DB_POOL_RECYCLE_S
+# keeps its value all the same: with no pooler to answer to it bounds
+# connection age alone, which is the only job it has left.
+export DB_POOL_TIMEOUT_S="${DB_POOL_TIMEOUT_S:-5}"
+export DB_POOL_RECYCLE_S="${DB_POOL_RECYCLE_S:-900}"
+export DB_STATEMENT_TIMEOUT_MS="${DB_STATEMENT_TIMEOUT_MS:-5000}"
+export DB_IDLE_IN_TRANSACTION_TIMEOUT_MS="${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:-10000}"
+
 # ── PUBLIC addresses, derived from the Pod's own identity ─────────────────
 # RunPod injects RUNPOD_POD_ID into every Pod, and its HTTP proxy answers at
 # https://<POD_ID>-<INTERNAL_PORT>.proxy.runpod.net. Deriving these means the
