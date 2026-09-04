@@ -41,6 +41,7 @@ from sqlalchemy.pool import NullPool
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.persistence.database import create_engine
+from app.ops.provision import APP_RW_GRANTS
 from tests.integration.conftest import LiveDbDsns
 
 pytestmark = pytest.mark.live_db
@@ -61,6 +62,26 @@ def _move(owner_dsn: str, chain: str, target: str, *, down: bool) -> None:
     config.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
     config.cmd_opts = Namespace(x=[f"vts={chain}"])
     (command.downgrade if down else command.upgrade)(config, f"{chain}@{target}")
+
+
+def _regrant(owner_dsn: str) -> None:
+    """Re-issue ``app_rw``'s grants after a chain has been cycled.
+
+    **A dropped table takes its grants with it, and a recreated one comes back
+    without them.** The ``knowledge`` downgrade target below (``0003_summaries``)
+    sits UNDER ``0005_parent_chunks``, so cycling this chain drops
+    ``knowledge.parent_chunks`` and creates it again -- and ``conftest``'s
+    ``_grant_app_rw`` ran once, at session setup, on the table that no longer
+    exists. Every later test in the SESSION that writes that table as ``app_rw``
+    then fails with ``permission denied``, in a file that did nothing wrong,
+    for a reason nothing in its own failure names.
+
+    It stayed invisible until capacity step 2.4 added the first live test that
+    inserts parent chunks as ``app_rw``
+    (``test_hot_path_plans_live.py``). The test that removes the grants is the
+    one that restores them.
+    """
+    asyncio.run(_run(owner_dsn, [(statement, {}) for statement in APP_RW_GRANTS]))
 
 
 async def _run(
@@ -141,7 +162,22 @@ async def test_all_three_tables_carry_a_uuid_space_id(live_db: LiveDbDsns) -> No
 
 
 async def test_the_two_soft_deleted_tables_index_live_rows_only(live_db: LiveDbDsns) -> None:
-    for schema, name in (("files", "ix_files_space"), ("conversations", "ix_conv_space")):
+    """The property is unchanged; the two index NAMES are not.
+
+    Capacity step 2.4 (``files/0004_space_quota_covering``,
+    ``conversations/0006_space_count_covering``) gave both of these the
+    ``workspace_id`` that every predicate on ``space_id`` in this repository
+    already carries beside it (DD-04 layer 2), so ``ix_files_space`` and
+    ``ix_conv_space`` were REPLACED rather than joined -- the single-column
+    versions could not lead any real predicate, and each one was still paid
+    for on every insert. The partial predicate this test exists for survived
+    the rename verbatim, which is the whole reason the assertion below is
+    about ``WHERE (deleted_at IS NULL)`` and not about a name.
+    """
+    for schema, name in (
+        ("files", "ix_files_space_name"),
+        ("conversations", "ix_conv_ws_space"),
+    ):
         indexdef = await _indexdef(live_db.owner, schema, name)
         assert indexdef is not None, f"{name} is missing"
         assert "space_id" in indexdef
@@ -229,6 +265,7 @@ def test_rows_that_predate_the_column_are_migrated_into_one_shared_space(
 
         for chain, _ in _SPACE_MIGRATIONS:
             _move(owner, chain, "head", down=False)
+        _regrant(owner)
 
         migrated = asyncio.run(
             _run(
@@ -267,6 +304,7 @@ def test_rows_that_predate_the_column_are_migrated_into_one_shared_space(
     finally:
         for chain, _ in _SPACE_MIGRATIONS:
             _move(owner, chain, "head", down=False)
+        _regrant(owner)
         asyncio.run(
             _run(
                 owner,

@@ -290,9 +290,10 @@ class SqlConversationRepository:
             conversations.c.deleted_at.is_(None),
         ]
         if space_id is not None:
-            # The space narrowing (step 7) -- backed by `ix_conv_space`
-            # (`conversations/0004_conversation_space.py`), partial on
-            # `deleted_at IS NULL` exactly like the predicate above. Added as
+            # The space narrowing (step 7) -- backed by `ix_conv_ws_space`
+            # (`conversations/0006_space_count_covering.py`, which superseded
+            # `0004_conversation_space.py`'s `space_id`-only index), partial
+            # on `deleted_at IS NULL` exactly like the predicate above. Added as
             # an EXTRA condition, never as a replacement: the workspace filter
             # stays, because a space is an axis inside the tenant and never a
             # stand-in for it. `None` adds nothing at all, so it lists every

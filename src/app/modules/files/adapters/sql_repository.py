@@ -207,9 +207,12 @@ class SqlFileRepository:
         # for, and the direction every other collection already documented.
         conditions = [files.c.workspace_id == ctx.workspace_id, files.c.deleted_at.is_(None)]
         if space_id is not None:
-            # The space narrowing (step 6) -- backed by `ix_files_space`
-            # (`files/0002_file_space.py`), partial on `deleted_at IS NULL`
-            # exactly like this predicate. Appended as an EQUALITY on an
+            # The space narrowing (step 6) -- backed by the
+            # `(workspace_id, space_id)` prefix of `ix_files_space_name`
+            # (`files/0004_space_quota_covering.py`, which superseded
+            # `0002_file_space.py`'s `space_id`-only index), partial on
+            # `deleted_at IS NULL` exactly like this predicate. Appended as
+            # an EQUALITY on an
             # opaque id: this adapter never joins to `spaces.spaces`, which it
             # cannot see, and the workspace condition above stays in place --
             # a space is an axis inside the tenant, never a replacement for it.

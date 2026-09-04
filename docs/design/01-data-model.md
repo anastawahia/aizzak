@@ -171,7 +171,12 @@ CREATE TABLE conversations.conversations (
 );
 CREATE INDEX ix_conv_ws_agent ON conversations.conversations(workspace_id, agent_key)
   WHERE deleted_at IS NULL;
-CREATE INDEX ix_conv_space ON conversations.conversations(space_id) WHERE deleted_at IS NULL;
+-- خطّةُ السعة `2.4`: كان `ix_conv_space(space_id)` وحدَه، فكان `counts_by_space` يعيد
+-- فحصَ كلّ صفٍّ على الكومة لأجل `workspace_id` (‏4,253 صفّاً · 173 مخزناً على المستأجر
+-- الأكبر). والمستأجرُ يتصدّر لأنّ كلّ مسندٍ على `space_id` في كلّ محوّلٍ يحمله بجانبه
+-- (‏DD‑04 الطبقة 2) — بديلٌ لا إضافة.
+CREATE INDEX ix_conv_ws_space ON conversations.conversations(workspace_id, space_id)
+  WHERE deleted_at IS NULL;
 -- `pending_clarification` (‏ب‑9، ف‑1أ): الوكيل يسأل «أيّ ملفّ تقصد؟» ويعدّد المرشّحين، ثمّ **لا يسمع
 -- الجواب** — فالدورُ التالي يُصنَّف من الصفر، والردودُ الثلاثة الممكنة كلُّها `content`. هذا العمود هو
 -- الطرفُ الآخر من الحوار. **أسماءٌ لا مُعرِّفات**: المعروضُ أسماءٌ، والجوابُ عن معروض، و«الثاني» لا
@@ -252,19 +257,24 @@ CREATE TABLE files.files (
   version      integer NOT NULL DEFAULT 1
 );
 CREATE INDEX ix_files_ws ON files.files(workspace_id) WHERE deleted_at IS NULL;
-CREATE INDEX ix_files_space ON files.files(space_id) WHERE deleted_at IS NULL;
 ALTER TABLE files.files                                          -- س-29 القاعدة ١
   ADD COLUMN name_key text
     GENERATED ALWAYS AS (lower(normalize(name, NFC))) STORED;
+-- خطّةُ السعة `2.4`: `INCLUDE (size_bytes)` يجعل مجموعَ الحصّة مسحاً فهرسيّاً فقط
+-- (‏754 مخزناً ← 95)، و`ix_files_space(space_id)` حُذف لأنّ بادئةَ هذا الفهرس تخدمه
+-- وتخدمه أفضل. **والحمولةُ تركب هذا الفهرس ولا تُعطى فهرساً منافساً**: فهرسٌ أضيقُ
+-- يتشارك البادئةَ `(workspace_id, space_id)` يسرق خطّةَ بحثِ الأسماء فيسقط `name_key`
+-- من `Index Cond` إلى `Filter` — مُقاسٌ، وأمسكه حارسُ الخطّة الحيّ.
 CREATE INDEX ix_files_space_name
   ON files.files(workspace_id, space_id, name_key)
+  INCLUDE (size_bytes)
   WHERE deleted_at IS NULL;
 ```
 > **`ix_files_space_name` فهرسُ بحثٍ لا قيدُ تفرّد، وهذا فرقٌ في القرار لا في المخطّط.** للوحدات الاسمُ المكرَّر **خطأ** (`ux_spaces_ws_name` ⇒ `23505` ⇒ `spaces.duplicate_name`)، وللملفّات هو **استبدال** (‏س-29 القاعدة ١، قرار المالك 2026‑08‑25): الجديد يُرفع أوّلًا ثمّ يُحذف القديم بفهرسه. وبين الإدراج والوسم يكون **كلاهما حيًّا** — فقيدُ التفرّد كان سيرفض الإدراج الذي يأمر به القرار. فالتفرّد **حالةٌ يتقارب إليها التطبيق** لا لازمةٌ تؤكّدها القاعدة.
 > ونصفا التعبير لازمان: `lower` قاعدةُ `ux_spaces_ws_name` («‏Report» و«‏report» اسمٌ واحدٌ لإنسان)، و`normalize(.., NFC)` هو ما يجعلها صحيحةً **للعربيّة** — الاسمُ نفسه على لوحتَي مفاتيح يختلف بعلامات التركيب وحدها، و`lower` لا تفعل له شيئًا.
 > **‏و**عمودٌ مولَّدٌ مخزَّن لا فهرسُ تعبير، وهذا قياسٌ لا تفضيل**: `lower` و`normalize` `IMMUTABLE` لكنّهما **ليستا `LEAKPROOF`**، والمخطِّط لا يُقيّم دالّةً غير آمنة التسرّب قبل شرط أمن الصفّ — فعلى جدولٍ `FORCE ROW LEVEL SECURITY` **لا يصير تعبيرُ الفهرس مفتاحَ بحثٍ أبدًا**، بل مُرشِّحًا بعد الحاجز (‏مقيسًا بـ`EXPLAIN` على الوجهين). والعمودُ المخزَّن يحوّل المقارنة إلى `texteq` وهي `LEAKPROOF`، فتعود شرطَ فهرس.** وهي القاعدةُ نفسها على كلّ جدولٍ ذي RLS في هذا المخطّط، لا خصوصيّةَ هنا. والأثرُ عمليٌّ لا نظريّ: `max_files_per_workspace = 10_000`، والشرطُ يجري على **كلّ إتمام رفعٍ وكلّ إعادة تسمية**.
 > و`GENERATED ALWAYS … STORED` يعني أنّ PostgreSQL يشتقّه لا التطبيق، فلا ينحرف عن الاسم الذي يلخّصه؛ و`SqlFileRepository` لا يذكره في `INSERT` ولا في `UPDATE`. والوسيطُ يُطبَّع في **SQL** أيضًا (`name_key = lower(normalize($1, NFC))`، يطويه المخطِّط ثابتًا) — فلا اتّفاقَ بين بايثون وSQL يمكن أن ينحرف.
-> **`ix_files_space` هو فهرس الحصّة قبل أن يكون فهرس السرد:** مجموع `size_bytes` لوحدةٍ واحدة يُقرأ تحت قفلٍ في مسار **تسجيل كلّ رفع** (‏§2.11 والحدّ في [`07 §4`](07-nfr-slo.md#4-الحدود-الرقمية-limits))، فمسحٌ تتابعيّ هنا يقع على أسخن كتابةٍ في الوحدة لا على قراءةٍ عابرة.
+> **`ix_files_space_name` هو فهرس الحصّة قبل أن يكون فهرس السرد:** مجموع `size_bytes` لوحدةٍ واحدة يُقرأ **تحت قفلٍ** في مسار **تسجيل كلّ رفع** (‏§2.11 والحدّ في [`07 §4`](07-nfr-slo.md#4-الحدود-الرقمية-limits))، فمدّتُه مدّةُ قفل. وقبل خطوة السعة `2.4` كان `size_bytes` في غير فهرسٍ على هذا الجدول، فكان المجموعُ يجلب **كلَّ** صفوف الوحدة من الكومة لإنتاج رقمٍ واحد (‏8,506 صفّاً · 754 مخزناً على المستأجر الأكبر). و`INCLUDE (size_bytes)` يجعله مسحاً فهرسيّاً فقط بـ95 مخزناً. **ويبقى O(ملفّات الوحدة)**: الحمولةُ تجعل القراءةَ رخيصةً لا ثابتة، والشكلُ الثابت عدّادٌ مخزَّن يرفضه [`07 §4`](07-nfr-slo.md#4-الحدود-الرقمية-limits) صراحةً.
 
 ### 2.7 `knowledge`
 ```sql
@@ -289,6 +299,12 @@ CREATE INDEX ix_doc_ws_status ON knowledge.documents(workspace_id, status);
 -- لا يُصرَّف هنا. والاختبار الحيّ يوكّد **غياب** العمود بجانب الفهرس كي لا «يُصلِح»
 -- قارئٌ لاحقٌ التفاوتَ إلى خطأ صياغة.
 CREATE INDEX ix_kndoc_space ON knowledge.documents(space_id);
+-- خطّةُ السعة `2.4`: `ids_for_files` يحلّ معرّفاتِ ملفّاتِ المتّصل إلى مستندات **قبل** بحث
+-- المتّجهات (مسار RAG المقيَّد بملفّات) وعلى كلّ تسجيلِ مستند. ولم يكن `file_id` مفهرساً،
+-- فكان أقربُ ما يجده المخطِّطُ هو `ix_doc_ws_status` — أي مجموعةُ مستندات المستأجر كاملةً
+-- ثمّ ترشيح: 17,012 صفّاً لأجل 20 على المستأجر الأكبر. وليس فهرسَ تفرّدٍ: `INV‑K3` يرفض
+-- ذلك أصلاً (ملفٌّ له أكثرُ من مستندٍ عبر إعادة الفهرسة).
+CREATE INDEX ix_doc_ws_file ON knowledge.documents(workspace_id, file_id);
 
 CREATE TABLE knowledge.chunks (
   id           uuid PRIMARY KEY,
@@ -303,6 +319,11 @@ CREATE TABLE knowledge.chunks (
   CONSTRAINT fk_chunk_doc FOREIGN KEY (document_id) REFERENCES knowledge.documents(id),
   CONSTRAINT uq_chunk_seq UNIQUE (document_id, seq)   -- Idempotency للاستيعاب
 );
+-- ⚠️ خطّةُ السعة `2.4`، وهو أكبرُ ما وجدَته: توسيعُ الآباء (`P‑34`) على **المسار المتزامن
+-- للإجابة** يحلّ كلَّ `point_id` أعادَه Qdrant إلى مقطعه، و`point_id` لم يكن في أيّ فهرس —
+-- فكان **مسحاً تتابعيّاً متوازياً لهذا الجدول كلِّه** في كلّ استرجاع: 1,000,758 صفّاً
+-- و125,390 مخزناً و111 ms لتُعيد الخمسين المطلوبة. الفهرسُ يجعلها 0.142 ms و51 مخزناً.
+CREATE INDEX ix_chunks_ws_point ON knowledge.chunks(workspace_id, point_id);
 
 -- BE-RAG-007/008: مهمّة إعادة الفهرسة. الصفّ لا يحمل تقدّماً ولا حالةً —
 -- هُويّةً و`cancelled_at` فقط، والباقي يُشتقّ من حالات المستندات التي أنشأتها
@@ -678,7 +699,7 @@ CREATE TABLE platform.stream_offsets (
 ## 5) الفهارس والأداء
 - كل مفاتيح البحث الشائعة مفهرسة بـ`(workspace_id, …)` لتوافق مسح RLS.
 - الفهارس الجزئية `WHERE deleted_at IS NULL` تُبقي المسح على الحيّ فقط.
-- **فهارس الوحدة الثلاثة** — `ix_files_space` · `ix_conv_space` (جزئيّان) · `ix_kndoc_space` (كامل، §2.7) — تخدم ثلاث قراءاتٍ لا واحدة: السرودَ الثلاثة (‏`?space_id=` إلزاميّ)، ومجموعَ الحصّة على مسار كلّ رفع، والحذفَ المتسلسل. ويقف بجوارها رابعٌ في PostgreSQL منذ س-29: `ix_files_space_name` (§2.6)، وهو قراءةٌ على مسار **كلّ إتمام رفعٍ وكلّ إعادة تسمية**. وفهرسٌ رابع خارج PostgreSQL: بطاقة `space` في Qdrant بـ`is_tenant=True` — إعادةُ ترتيبٍ فيزيائيّ للنقاط، لا تسريعُ مطابقة (‏[`07 §5`](07-nfr-slo.md#5-الأداء-والصيانة-بنيوياً)).
+- **فهارس الوحدة الثلاثة** — `ix_files_space_name` · `ix_conv_ws_space` (جزئيّان) · `ix_kndoc_space` (كامل، §2.7) — تخدم ثلاث قراءاتٍ لا واحدة: السرودَ الثلاثة (‏`?space_id=` إلزاميّ)، ومجموعَ الحصّة على مسار كلّ رفع، والحذفَ المتسلسل. **وكلُّها تتصدّرها `workspace_id` منذ خطّة السعة `2.4`** — عدا `ix_kndoc_space` — لأنّ كلَّ مسندٍ على `space_id` في كلّ محوّلٍ يحمل الوحدةَ ومساحةَ العمل معاً (‏DD‑04 الطبقة 2)، ففهرسٌ على `space_id` وحدَه يُجبر إعادةَ فحصٍ على الكومة ولا يقود مسنداً واحداً. ولا فهرسَ رابعاً على `files.files` بعد ذلك: الحصّةُ تركب `ix_files_space_name` نفسَه بـ`INCLUDE (size_bytes)` — فهرسٌ منافسٌ يتشارك البادئةَ كان سيسرق خطّةَ بحث الأسماء (§2.6). وفهرسٌ رابع خارج PostgreSQL: بطاقة `space` في Qdrant بـ`is_tenant=True` — إعادةُ ترتيبٍ فيزيائيّ للنقاط، لا تسريعُ مطابقة (‏[`07 §5`](07-nfr-slo.md#5-الأداء-والصيانة-بنيوياً)).
 - `platform.outbox` فهرس جزئي على غير المنشور ⇒ سحب المُرحّل O(الطابور).
 - UUIDv7 يقلّل تضخّم صفحات B‑Tree مقارنةً بـv4 تحت الإدراج.
 
