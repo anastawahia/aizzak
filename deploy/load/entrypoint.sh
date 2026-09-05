@@ -3,8 +3,13 @@
 #
 # The edge meters per SOURCE ADDRESS, and it is right to:
 #
-#   limit_req_zone  $binary_remote_addr zone=api_req:10m rate=20r/s;   (burst 40)
-#   limit_conn_zone $binary_remote_addr zone=ws_conn:10m;              (limit 100)
+#   limit_req_zone  $binary_remote_addr zone=api_req:10m rate=200r/s;  (burst 400)
+#   limit_conn_zone $binary_remote_addr zone=ws_conn:10m;              (limit 500)
+#
+# (Those were 20r/s / burst 40 / 100 when the measurements below were taken;
+# capacity 3.1 raised all three. It did NOT retire this mechanism -- spreading
+# VUs across addresses is what makes the generator resemble what it simulates,
+# never a trick played on a ceiling that has since grown.)
 #
 # §0's target is 300 rps and 1,500 WebSockets from HUNDREDS OF USERS, which in
 # production arrive from hundreds of addresses. A k6 container is one address,
@@ -14,9 +19,12 @@
 #
 # Two ways out, and only one of them is honest:
 #
-#   * raise or exempt the limit at the edge -- that is TUNING `ح‑9`, it belongs
-#     to wave 3, and `م‑8` forbids it before a baseline exists. A baseline taken
-#     on an already-loosened edge can never answer "did loosening it help?".
+#   * raise or exempt the limit at the edge -- that was TUNING `ح‑9`, it belongs
+#     to wave 3, and `م‑8` forbade it AT THAT POINT IN THE ORDER. (Wave 3 has
+#     since arrived and step 3.1 took it, on the measured ground that at 32
+#     addresses §0's peak is 9.4 rps each and the old ceiling rejected zero --
+#     so a limiter that refuses nothing at the profile's own rate cannot move a
+#     percentile the profile records.)
 #   * make the generator look like what it is simulating: many clients, many
 #     addresses. Nothing about the system under test changes.
 #
@@ -30,10 +38,12 @@
 #    32 addresses· 300 rps offered ->      0 rejected  (3,001 of 3,001 admitted)
 #
 # ⚠️ THIS DOES NOT RAISE THE PLATFORM'S REAL CEILING, and no report may read it
-# that way. A single NATed office still gets 20 r/s from this edge. That is a
-# genuine design question -- per-IP metering versus the per-USER limiter that
-# step `1.2` is supposed to build -- and it is recorded as such, not silently
-# fixed here.
+# that way. A single NATed office gets whatever this edge's per-address limit
+# is -- 20 r/s when the table above was measured, 200 r/s since 3.1. The design
+# question behind that number (per-IP metering versus the per-USER limiter of
+# step 1.2) was recorded here rather than silently fixed, and 1.2 then answered
+# it: the per-user buckets carry fairness, and this edge went back to being a
+# flood shield alone.
 #
 # Why root, and why NET_ADMIN: `ip addr add` needs CAP_NET_ADMIN, and no file
 # capability on /sbin/ip grants it to an unprivileged uid. The container is a

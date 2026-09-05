@@ -205,8 +205,10 @@ not meant to; what is being measured is the cost of TLS termination.
   needs the same two sysctls.
 
 - **The reach of a single source IP — was the binding limit, and is no longer
-  (`د‑8`).** The edge rate-limits on `$binary_remote_addr`: `limit_req
-  zone=api_req rate=20r/s burst=40 nodelay`, plus `limit_conn ws_conn 100`. A
+  (`د‑8`).** The edge rate-limits on `$binary_remote_addr`, and at the time of this
+  measurement that was `limit_req zone=api_req rate=20r/s burst=40 nodelay`
+  plus `limit_conn ws_conn 100` (capacity 3.1 has since moved all three to
+  200r/s, `burst=400` and 500 — see the last bullet). A
   generator is one address, so the first smoke run offered **300.1 rps** —
   §0's target, exactly — and the edge admitted **22.0**, returning 429 to
   92.7% of them. Nothing was broken: `limit_req` is P1-7's deliberate pre-auth
@@ -223,9 +225,18 @@ not meant to; what is being measured is the cost of TLS termination.
   carries the arithmetic and the full measurement table.
 
   ⚠️ **This raises nothing about the platform's real ceiling.** One NATed
-  office still gets 20 r/s from this edge. Whether per-IP metering is the
-  right primitive, or whether the per-**user** limiter of step `1.2` should
-  carry it, is a live design question — not something this harness settled.
+  office got 20 r/s from this edge — capacity 3.1 made it 200, and settled the
+  question this paragraph left open by answering it rather than widening it:
+  per-IP metering was doing two jobs because nothing else did the second, and
+  step `1.2` built the second (two Redis buckets, post-auth, per user). So the
+  edge limiter went back to one job — a flood shield ahead of authentication,
+  not a fairness accountant. `limit_conn ws_conn` moved 100 → 500 for the same
+  reason: §0's office behind one NAT is one address holding 1,500 sockets.
+
+  ⚠️ **And 3.1 did not retire this mechanism.** Spreading VUs across addresses
+  is what makes the generator resemble the thing it claims to simulate; it was
+  never a trick played on a limit that has since grown. A `peak` run still
+  wants `LOAD_SRC_IPS`.
   And a **host** k6 still runs from one address: `run.sh` says so out loud
   before a `peak` run rather than let the ceiling be rediscovered.
 

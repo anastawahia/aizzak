@@ -287,6 +287,7 @@ markers = [
     "live_embedding: requires the Compose central embedding service (2.10) published at 127.0.0.1:8080 by docker-compose.test.yml; auto-skips unless `GET /health` succeeds (that endpoint answers only once the model is loaded)",
     "live_openai: exercises the real OpenAI API; requires TEST_OPENAI_API_KEY in the environment; auto-skips when it is ABSENT -- there is no local port to probe, and a key the API rejects is a failure, never a skip",
     "live_web_search: exercises the real Exa web-search API; requires TEST_EXA_API_KEY in the environment; auto-skips when it is ABSENT -- a key the API rejects is a failure, never a skip",
+    "live_edge: capacity 3.1 — offers simultaneous WebSocket upgrades to the RUNNING nginx edge on 127.0.0.1:80 to measure `limit_conn ws_conn`, the one number the config files cannot prove is in force; requires RUN_EDGE_CAPACITY_TEST=1 AND the live stack (never auto-run — it holds real sockets for the app's 10s tokenless-auth window), see tests/integration/test_edge_socket_capacity_live.py",
     "live_stack_slo: P1-6 (docs/p1-hardening-plan.md §3 step 13) — drives the real ASGI app against the live docker-compose stack's Postgres/PgBouncer; requires RUN_P1_6_LOAD_TEST=1 AND the aizzak_default network (never auto-run, unlike the other live_* markers above); its own gate handshakes too -- `SELECT 1` on both DSNs, and one real TLS `GET /health` for the nginx edge hop -- see tests/integration/test_conversation_get_slo_live.py",
 ]
 
