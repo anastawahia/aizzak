@@ -61,6 +61,69 @@ class DatabaseSettings(BaseModel):
     idle_in_transaction_timeout_ms: int = 0
 
 
+class MigrationSettings(BaseModel):
+    """The two waits a schema change can impose on a running platform
+    (capacity step 2.9, ``ح-18``).
+
+    They are NOT in ``DatabaseSettings`` and that separation is the point.
+    2.6's four timeouts bound one *request's* connection; these two bound a
+    *deploy*, they are read by exactly two processes (``app.ops.provision``
+    and ``migrations/env.py``), and one of them is deliberately three orders
+    of magnitude larger than anything on the request path. Filing them beside
+    ``statement_timeout_ms`` would invite a future edit to "make the timeouts
+    consistent", which is exactly the mistake the measurement below rules out.
+
+    **``lock_timeout_ms`` — what a migration may freeze, measured.** A DDL
+    statement that cannot get its ``ACCESS EXCLUSIVE`` lock does not wait
+    politely off to one side: its request sits at the head of the table's lock
+    queue, and every later arrival queues BEHIND it, including readers that
+    are perfectly compatible with whatever is actually held. Measured on this
+    stack -- one open transaction holding ``ACCESS SHARE`` for 8 s, an
+    ``ALTER TABLE`` arriving at t+1, and a plain ``SELECT count(*)`` arriving
+    at t+2::
+
+        no lock_timeout:   the innocent SELECT waited 6.57 s
+        lock_timeout 3 s:  the ALTER failed at 3.46 s (55P03), SELECT waited 2.46 s
+
+    So this number is not "how long the migration may wait". It is **how long
+    the migration is allowed to freeze a hot table**, and the reader pays every
+    millisecond of it. It is set BELOW ``DB_STATEMENT_TIMEOUT_MS`` (2.6's 5 s
+    request budget) on purpose: a blocked request must be released by the
+    migration giving up, not by its own budget running out -- the first is a
+    deploy that failed loudly, the second is a user-visible 500 with no
+    migration in the error message. ``tests/unit/test_zero_downtime_
+    migrations.py`` fails the build if that ordering is ever inverted.
+
+    **``provision_lock_wait_ms`` — the OTHER wait, and it must not share the
+    number.** ``app.ops.provision`` serialises replicas on a session-level
+    advisory lock, and a replica that arrives second must wait for the FIRST
+    replica's entire migration run, not for one statement. Measured: a
+    from-scratch provision of all twelve chains takes 2.27 s on an empty
+    database, and a chain that backfills or indexes a real table takes as long
+    as that table needs. 15 minutes is therefore a stuck-holder ceiling, not
+    an expected wait -- a deploy still holding the lock after it wants a human,
+    not a longer timeout.
+
+    **And ``lock_timeout`` is what bounds BOTH, which is the trap.** Measured:
+    ``SET lock_timeout='2s'`` DOES cancel a waiting ``pg_advisory_lock``
+    (55P03 at 2.44 s) -- it is not table-locks-only, as its name suggests. One
+    process setting one ``lock_timeout`` for everything would therefore either
+    make the second replica give up in three seconds, or put the DDL convoy
+    back. The two waits live on two different connections with two different
+    values because they are two different questions.
+    """
+
+    model_config = _FROZEN
+
+    lock_timeout_ms: int = 3_000
+    provision_lock_wait_ms: int = 900_000
+    # The advisory-lock key, hashed IN SQL by `provision` for the same reason
+    # `AdvisoryQuotaLock` hashes there: Python's `hash()` is randomised per
+    # process, so two replicas would compute two keys for this one string and
+    # serialise against nobody -- a lock that reads as a lock and is not one.
+    provision_lock_key: str = "aizzak:provision"
+
+
 class RedisSettings(BaseModel):
     model_config = _FROZEN
 
@@ -1002,6 +1065,10 @@ class Settings(BaseModel):
     provider_routing: Json = Field(default_factory=dict)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    # capacity-plan 2.9 -- the deploy's two waits, beside `database` rather
+    # than inside it: `MigrationSettings`'s own docstring says why they must
+    # not be read as a fifth and sixth connection timeout.
+    migrations: MigrationSettings = Field(default_factory=MigrationSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
     minio: MinioSettings = Field(default_factory=MinioSettings)

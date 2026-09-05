@@ -27,6 +27,35 @@ superuser in the test harness. This module verifies the roles exist and
 fails with a message naming that step, rather than failing statement by
 statement halfway through.
 
+**Every replica runs this, and until capacity step 2.9 that was a race**
+(``ح-18``). Measured on this stack, three simultaneous ``python -m
+app.ops.provision`` against one database:
+
+* against an EMPTY database, two of the three die immediately --
+  ``UniqueViolationError`` on ``pg_type_typname_nsp_index``, key
+  ``(alembic_version, 2200)``: all three try to create the version table.
+* against an ALREADY-MIGRATED database -- the ordinary rolling-deploy case,
+  where there is nothing at all to migrate -- one of the three still dies, and
+  it dies in ``apply_grants``: ``tuple concurrently updated`` (``XX000``) on
+  ``GRANT USAGE ON SCHEMA spaces TO app_rw``. Two concurrent ``GRANT`` statements on
+  one catalog row is an internal error, not a serialisation failure, so no
+  ordinary retry rule would even recognise it as retryable.
+
+The second measurement is the one that matters, and it falsifies a sentence
+that used to stand a few lines below this one: ``apply_grants`` called itself
+"idempotent ... safe on every deploy". It is idempotent for ONE runner and
+unsafe for two, and repeated grants were never the hazard -- concurrent ones
+were. Since ``migrate`` is a ``service_completed_successfully`` dependency of
+every long-running service, a replica whose provisioning step exits non-zero
+never starts at all; that is why ``ح-18`` says this alone makes step 7.2
+impossible.
+
+The fix is one session-level advisory lock held across all three phases (see
+``_hold_provision_lock``). Losers WAIT rather than skip: a replica that
+skipped could start serving against a schema the winner has not finished
+migrating, which is the failure the lock exists to prevent, wearing a
+different hat.
+
 Run as ``aizzak_owner``: ``DATABASE_URL`` for THIS process is the owner DSN,
 the same per-process convention ``workers/bootstrap.py`` already documents
 for the relay's own role.
@@ -38,15 +67,20 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from argparse import Namespace
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.pool import NullPool
 
-from app.framework.settings.settings import DatabaseSettings
+from app.framework.settings.settings import DatabaseSettings, MigrationSettings
 from app.infrastructure.config import load_settings
 from app.infrastructure.persistence.database import create_engine
 
@@ -364,15 +398,32 @@ PURGE_GRANTS: tuple[str, ...] = (
 
 
 def run_migrations(owner_url: str) -> None:
-    """Apply all twelve chains in dependency order (``MIGRATION_CHAINS``)."""
+    """Apply all twelve chains in dependency order (``MIGRATION_CHAINS``).
+
+    The root log level is saved and restored around the Alembic run, and that
+    is not cosmetic: ``migrations/env.py`` calls ``fileConfig`` on
+    ``alembic.ini``, whose ``[logger_root] level = WARNING`` REPLACES whatever
+    ``main`` configured. Every ``INFO`` this module emits after the first
+    chain was therefore swallowed -- including ``provision.complete``, the one
+    line that tells an operator the step finished. That was tolerable while
+    provisioning was a single process; with capacity 2.9's lock it is not,
+    because a replica queued behind another one now has a legitimate reason to
+    sit silent for a while, and "no output" must not mean both "waiting" and
+    "finished".
+    """
     os.environ["DATABASE_URL"] = owner_url
     config = Config(str(_REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
 
-    for revision, vts in MIGRATION_CHAINS:
-        config.cmd_opts = None if vts is None else Namespace(x=[f"vts={vts}"])
-        _logger.info("provision.migrating", extra={"revision": revision, "version_schema": vts})
-        command.upgrade(config, revision)
+    root_level = logging.getLogger().level
+    try:
+        for revision, vts in MIGRATION_CHAINS:
+            config.cmd_opts = None if vts is None else Namespace(x=[f"vts={vts}"])
+            _logger.info("provision.migrating", extra={"revision": revision, "version_schema": vts})
+            command.upgrade(config, revision)
+            logging.getLogger().setLevel(root_level)
+    finally:
+        logging.getLogger().setLevel(root_level)
 
 
 async def _require_roles(owner_url: str, roles: tuple[str, ...]) -> None:
@@ -415,8 +466,17 @@ async def _require_roles(owner_url: str, roles: tuple[str, ...]) -> None:
 
 
 async def apply_grants(owner_url: str) -> None:
-    """Run every grant. Idempotent: re-granting a privilege a role already
-    holds is a no-op in Postgres, so this is safe on every deploy."""
+    """Run every grant. Re-granting a privilege a role already holds is a
+    no-op in Postgres, so running this again on a later deploy is free.
+
+    It is NOT safe to run twice AT ONCE, and the old wording here claimed it
+    was. Two sessions issuing the same ``GRANT`` update the same catalog row,
+    and PostgreSQL answers the loser with ``tuple concurrently updated``
+    (``XX000``) -- measured on this stack in the module docstring, on a
+    database with nothing left to migrate. Idempotent and concurrency-safe are
+    different properties; only the first one was ever true here. What makes
+    the deploy safe is that ``provision`` holds the advisory lock across this
+    call, so there is never a second session in it."""
     engine = create_engine(DatabaseSettings(url=owner_url), poolclass=NullPool)
     try:
         async with engine.begin() as conn:
@@ -433,29 +493,132 @@ async def apply_grants(owner_url: str) -> None:
         await engine.dispose()
 
 
-def provision(owner_url: str) -> None:
-    """Deliberately SYNCHRONOUS, with three separate ``asyncio.run`` calls.
+PROVISION_ROLES: tuple[str, ...] = (
+    APP_ROLE,
+    RELAY_ROLE,
+    RETENTION_ROLE,
+    METRICS_ROLE,
+    TRANSIT_ROTATOR_ROLE,
+    PURGE_ROLE,
+)
 
-    ``run_migrations`` cannot be awaited from inside a running loop:
-    ``migrations/env.py`` drives the async engine with its own
-    ``asyncio.run``, so nesting it raises "asyncio.run() cannot be called
-    from a running event loop". Same shape the live harness uses.
+# One `int8` key, hashed IN SQL. `AdvisoryQuotaLock` hashes in SQL for the
+# same reason and says it at length: Python's `hash()` is randomised per
+# process (`PYTHONHASHSEED`), so three replicas would compute three keys for
+# this one string and serialise against nobody -- a lock that reads as a lock
+# in the source and is not one.
+_PROVISION_LOCK_SQL = text("SELECT pg_advisory_lock(hashtextextended(:key, 0))")
+
+# `lock_timeout`'s own SQLSTATE. Postgres spells the advisory-lock wait the
+# same way it spells a table-lock wait, which is the whole reason the wait
+# here can be bounded at all -- see `_hold_provision_lock`.
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+async def _hold_provision_lock(conn: AsyncConnection, settings: MigrationSettings) -> None:
+    """Take the whole-provisioning advisory lock, or die saying who holds it.
+
+    **Session-level (``pg_advisory_lock``), not transaction-level.** The three
+    phases it covers span many transactions and one whole Alembic run, so
+    ``pg_advisory_xact_lock`` -- the form ``AdvisoryQuotaLock`` uses -- would
+    release at the first COMMIT and guard nothing. The session form releases
+    when the SESSION ends, which is also the recovery path: a ``migrate``
+    container that is killed mid-migration drops its connection, and the
+    backend exit frees the lock. There is no lease to expire and no stale row
+    to clean up.
+
+    **On its own connection, in AUTOCOMMIT, and that is load-bearing.** Held
+    on a connection with an open transaction, this lock would pin the
+    database's ``xmin`` horizon for the entire migration -- and a transaction
+    that stays open across a long deploy is precisely what stops autovacuum
+    from removing dead tuples, which is the defect step 2.8 just finished
+    removing on these same tables. The lock holder must be idle, not
+    idle-in-transaction.
+
+    **The wait is bounded by ``lock_timeout``, and its number is NOT the
+    migration's.** Measured: ``SET lock_timeout='2s'`` does cancel a waiting
+    ``pg_advisory_lock`` (``55P03`` after 2.44 s), so despite the name it is
+    not table-locks-only. That is what makes this bound expressible at all --
+    and also why the two numbers must not be shared: this connection waits out
+    another replica's ENTIRE migration run, while a migration connection may
+    freeze a hot table for only ``MIGRATION_LOCK_TIMEOUT_MS``. See
+    ``MigrationSettings``.
+
+    **This connection must be a direct one.** A session-level lock taken
+    through PgBouncer in transaction pooling would ride on a server connection
+    handed to somebody else at the next COMMIT, so the lock would be held by,
+    and released by, the wrong client. The ``migrate`` service points at
+    ``postgres:5432`` and not at the pooler for exactly this reason;
+    ``tests/unit/test_zero_downtime_migrations.py`` fails the build if that is
+    ever changed.
     """
-    asyncio.run(
-        _require_roles(
-            owner_url,
-            (
-                APP_ROLE,
-                RELAY_ROLE,
-                RETENTION_ROLE,
-                METRICS_ROLE,
-                TRANSIT_ROTATOR_ROLE,
-                PURGE_ROLE,
-            ),
-        )
+    await conn.execute(text(f"SET lock_timeout = {int(settings.provision_lock_wait_ms)}"))
+    started = time.monotonic()
+    try:
+        await conn.execute(_PROVISION_LOCK_SQL, {"key": settings.provision_lock_key})
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+            raise
+        raise SystemExit(
+            "provisioning aborted: another replica has held the provisioning lock "
+            f"({settings.provision_lock_key!r}) for more than "
+            f"{settings.provision_lock_wait_ms} ms. This is a stuck-holder ceiling, "
+            "not a normal wait -- find the holder with: SELECT pid, query_start FROM "
+            "pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory';"
+        ) from exc
+    waited_ms = (time.monotonic() - started) * 1000.0
+    _logger.info(
+        "provision.lock_acquired",
+        extra={"key": settings.provision_lock_key, "waited_ms": round(waited_ms, 1)},
     )
-    run_migrations(owner_url)
-    asyncio.run(apply_grants(owner_url))
+
+
+@asynccontextmanager
+async def provision_lock(
+    owner_url: str, settings: MigrationSettings
+) -> AsyncIterator[AsyncConnection]:
+    """Hold the provisioning lock for the body, on a connection of its own.
+
+    Public because the live tests take it the same way ``provision`` does: a
+    guard that asserts a property of a connection the tests built themselves
+    proves nothing about the one the deploy uses.
+    """
+    engine = create_engine(DatabaseSettings(url=owner_url), poolclass=NullPool)
+    autocommit = engine.execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        async with autocommit.connect() as lock_conn:
+            await _hold_provision_lock(lock_conn, settings)
+            yield lock_conn
+    finally:
+        await engine.dispose()
+
+
+async def _provision_locked(owner_url: str, settings: MigrationSettings) -> None:
+    """The three phases, under the lock, on one connection that outlives them.
+
+    ``run_migrations`` goes through ``asyncio.to_thread`` rather than being
+    awaited: ``migrations/env.py`` drives its own engine with ``asyncio.run``,
+    which refuses to start inside a running loop. A worker thread has no loop,
+    so the same synchronous Alembic driver this module has always used runs
+    unchanged -- and the lock-holding connection stays alive in this loop
+    while it does.
+    """
+    async with provision_lock(owner_url, settings):
+        await _require_roles(owner_url, PROVISION_ROLES)
+        await asyncio.to_thread(run_migrations, owner_url)
+        await apply_grants(owner_url)
+
+
+def provision(owner_url: str, settings: MigrationSettings | None = None) -> None:
+    """Deliberately SYNCHRONOUS, and now with exactly ONE ``asyncio.run``.
+
+    It used to be three, because ``run_migrations`` could not be awaited from
+    inside a running loop. That is still true -- and it is now handled by
+    ``asyncio.to_thread`` inside ``_provision_locked`` instead, because the
+    advisory lock has to be held across all three phases and a lock taken in
+    one ``asyncio.run`` is dropped by the connection that call closes.
+    """
+    asyncio.run(_provision_locked(owner_url, settings or MigrationSettings()))
     _logger.info(
         "provision.complete",
         extra={
@@ -474,7 +637,8 @@ def provision(owner_url: str) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    provision(load_settings().database.url)
+    settings = load_settings()
+    provision(settings.database.url, settings.migrations)
 
 
 if __name__ == "__main__":

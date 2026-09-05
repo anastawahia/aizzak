@@ -13,6 +13,21 @@ Per-module migration chains each record their applied revisions in their OWN
 CLI flag, e.g. ``alembic -x vts=knowledge upgrade knowledge@head``; with no
 ``-x vts=`` (the platform baseline chain's own commands), ``version_table_schema``
 stays ``None`` — Alembic's own default — so existing behavior is unchanged.
+
+Every migration connection carries a short ``lock_timeout`` (capacity step
+2.9, ``ح-18``). It is set through asyncpg's ``server_settings`` — i.e. in the
+connection's own startup packet — rather than with a ``SET`` statement, and
+that is not a style choice: Alembic runs each revision inside a transaction it
+opens itself, so a ``SET`` issued here would either have to fight that
+transaction for the connection or land inside it and be rolled back with the
+first revision that fails. A startup-packet GUC is in force before Alembic's
+first statement and survives every rollback.
+
+What the number means, and why it is NOT "how long a migration may wait", is
+in ``MigrationSettings``'s docstring, with the measurement: a DDL statement
+waiting for a lock parks every later reader behind it, so this is the freeze
+the deploy is allowed to impose on the request path — 6.57 s of blocked
+``SELECT`` without it, 2.46 s with it, on the same 8-second contender.
 """
 
 from __future__ import annotations
@@ -46,6 +61,11 @@ def _database_url() -> str:
     return load_settings().database.url
 
 
+def _lock_timeout_ms() -> int:
+    """The migration session's ``lock_timeout``, in milliseconds."""
+    return load_settings().migrations.lock_timeout_ms
+
+
 def _version_table_schema() -> str | None:
     """The per-module ``version_table_schema`` requested via ``-x vts=<schema>``,
     or ``None`` (Alembic's own default) when the flag is absent -- the
@@ -65,6 +85,10 @@ def run_migrations_offline() -> None:
         version_table_schema=_version_table_schema(),
     )
     with context.begin_transaction():
+        # Offline mode emits a script an operator pipes into psql, so the
+        # guard has to be IN the script -- a generated file that freezes a hot
+        # table is the same defect as a connection that does.
+        context.execute(f"SET lock_timeout = {_lock_timeout_ms()}")
         context.run_migrations()
 
 
@@ -80,7 +104,11 @@ def _do_run_migrations(connection: Connection) -> None:
 
 async def run_migrations_online() -> None:
     """Run migrations against a live async connection."""
-    connect_args: dict[str, Any] = {"statement_cache_size": 0}
+    connect_args: dict[str, Any] = {
+        "statement_cache_size": 0,
+        # In the startup packet, not a `SET` -- see the module docstring.
+        "server_settings": {"lock_timeout": str(_lock_timeout_ms())},
+    }
     engine = create_async_engine(
         _database_url(),
         poolclass=pool.NullPool,

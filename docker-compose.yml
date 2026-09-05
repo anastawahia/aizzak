@@ -827,6 +827,15 @@ services:
   # DIRECTLY against postgres rather than through pgbouncer: DDL under
   # transaction pooling is a needless hazard, and this is a one-shot process
   # with exactly one connection.
+  #
+  # `postgres:5432` in the DSN below is now load-bearing rather than merely
+  # sensible (capacity 2.9, `ح-18`). `app.ops.provision` holds a SESSION-level
+  # advisory lock across the whole run so three replicas cannot race; through
+  # PgBouncer in transaction pooling that lock would ride on a server
+  # connection handed to another client at the next COMMIT, so it would be
+  # held by, and released by, the wrong session -- a lock that reads as a lock
+  # and guards nothing. `tests/unit/test_zero_downtime_migrations.py` fails
+  # the build if this DSN is ever pointed at the pooler.
   migrate:
     <<: [*app-image, *app-logging]
     depends_on:
@@ -835,6 +844,19 @@ services:
     environment:
       <<: *app-env
       DATABASE_URL: postgresql+asyncpg://aizzak_owner:${AIZZAK_OWNER_PASSWORD}@postgres:5432/${POSTGRES_DB:-aizzak}
+      # Capacity 2.9's two waits. They are two numbers and not one because
+      # they answer two questions: how long a DDL statement may FREEZE a hot
+      # table (every later reader queues behind its lock request -- measured
+      # at 6.57s of blocked SELECT with no bound, 2.46s with this one), and
+      # how long a second replica may WAIT for the first replica's entire
+      # migration run. `MigrationSettings` carries both measurements.
+      #
+      # The first is deliberately BELOW `DB_STATEMENT_TIMEOUT_MS` (5000): a
+      # request blocked behind a migration must be released by the migration
+      # giving up, not by its own budget expiring -- one is a deploy that
+      # failed loudly, the other is a 500 with no migration in the message.
+      MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-3000}
+      PROVISION_LOCK_WAIT_MS: ${PROVISION_LOCK_WAIT_MS:-900000}
     command: ["python", "-m", "app.ops.provision"]
     restart: "no"
 

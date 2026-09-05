@@ -88,10 +88,11 @@ append-only ledger needs is deferred by its own size.
   need"), and range-partitioning by ``created_at`` would turn the retention
   sweep into a ``DROP TABLE`` that produces no dead tuples at all. It is the
   right end state and it is not this migration: it rewrites the table under a
-  lock this repository cannot yet take safely (step 2.9's ``lock_timeout`` and
-  expand/contract are not built), and the measurement below decides whether it
-  is needed at all. ``docs/capacity-status.md`` records the number that would
-  reopen it.
+  lock this repository could not yet take safely when this was written (step
+  2.9's ``lock_timeout``, advisory lock and expand/contract landed the day
+  after, in ``app.ops.online_ddl``), and the measurement below decides whether
+  it is needed at all. ``docs/capacity-status.md`` records the number that
+  would reopen it.
 * No grants. Grants never live in a migration here (01 §6); they are
   ``app.ops.provision``'s.
 

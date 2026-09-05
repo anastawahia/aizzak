@@ -22,6 +22,7 @@ from app.framework.settings.settings import (
     HealthSettings,
     IntegrationsSettings,
     MetricsSettings,
+    MigrationSettings,
     MinioSettings,
     OllamaSettings,
     QdrantSettings,
@@ -76,6 +77,14 @@ class _EnvSettings(BaseSettings):
     db_idle_in_transaction_timeout_ms: int = Field(
         10_000, alias="DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", ge=0
     )
+
+    # capacity-plan 2.9 -- the DEPLOY's two waits, not a fifth and sixth
+    # connection timeout; `MigrationSettings` carries the measurement that
+    # says why they must not share a number with each other or with the
+    # request path. `gt=0` on both: `0` here would mean "wait forever", which
+    # is the behaviour `ح-18` exists to remove, so it stays inexpressible.
+    migration_lock_timeout_ms: int = Field(3_000, alias="MIGRATION_LOCK_TIMEOUT_MS", gt=0)
+    provision_lock_wait_ms: int = Field(900_000, alias="PROVISION_LOCK_WAIT_MS", gt=0)
 
     redis_url: str = Field("redis://redis:6379/0", alias="REDIS_URL")
 
@@ -200,6 +209,10 @@ def load_settings() -> Settings:
             pool_recycle_s=env.db_pool_recycle_s,
             statement_timeout_ms=env.db_statement_timeout_ms,
             idle_in_transaction_timeout_ms=env.db_idle_in_transaction_timeout_ms,
+        ),
+        migrations=MigrationSettings(
+            lock_timeout_ms=env.migration_lock_timeout_ms,
+            provision_lock_wait_ms=env.provision_lock_wait_ms,
         ),
         redis=RedisSettings(url=env.redis_url),
         metrics=MetricsSettings(database_url=env.metrics_database_url),
