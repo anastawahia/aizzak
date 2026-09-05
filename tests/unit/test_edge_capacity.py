@@ -50,6 +50,50 @@ A warning, and nginx starts anyway. `nginx -t` does not print it at all, because
 the check runs at worker init and not at config parse -- so a config promising
 sixteen thousand connections against a thousand descriptors passes every syntax
 gate this repository owns.
+
+────────────────────────────────────────────────────────────────────────────
+CAPACITY 3.2 ADDED THE SECOND HALF: THE EDGE IS A CLIENT TOO.
+
+3.1 counted the descriptors nginx needs to ACCEPT §0's sockets. 3.2 counted the
+source ports it needs to OPEN them, and found the same shape one layer over.
+`app-locations.conf` proxies to a variable so the name is re-resolved per
+request, which means no `upstream` block, which means no keepalive pool at all:
+every proxied request is a fresh TCP connection from an ephemeral port that is
+then held sixty seconds in TIME_WAIT. Measured at §0's 300 rps through the real
+edge: 15,782 TIME_WAIT sockets and ZERO established -- 55.9% of Docker's default
+28,232-port range spent to serve the target rate, implying a ceiling near 537
+rps. It was then reached deliberately at 700 rps, and the edge answered
+
+    [crit] connect() to ...:8000 failed (99: Cannot assign requested address)
+
+4,090 times -- 5.84% of 70,001 requests -- with 94.1% of the range in TIME_WAIT.
+
+⭐ AND AGAIN THE REPOSITORY HAD ALREADY FIXED IT ON THE OTHER SIDE OF THE WIRE.
+The `k6` service carries `net.ipv4.ip_local_port_range` with a comment naming
+this exact error from a real run ("the generator running out of SOURCE PORTS in
+its own network namespace"). The thing that measures the platform was hardened;
+the thing measured, which opens one connection per REQUEST rather than one per
+iteration, was not.
+
+⚠️ AND THE PLAN'S OWN REMEDY POINTED AT THE WRONG MACHINE. 3.2 option (أ) and
+step 3.5 put `ip_local_port_range`/`tcp_tw_reuse` in `deploy/host-tuning.sh`.
+Both are NETWORK-NAMESPACED: the host's range on the measured box is 4,096
+ports, six times narrower than the container's default, and setting it there
+changes nothing inside while reading like a fix. Same lesson as 3.1's `nofile`
+-- the number belongs where the process lives.
+
+⚠️ THE THIRD FINDING WAS NOT ABOUT PORTS AT ALL. `proxy_set_header` obeys the
+same array-inheritance rule this repository documented at length for
+`add_header`: a level that declares one replaces the whole inherited set. Both
+publishers' `/api/v1/ws` locations declared two (Upgrade, Connection), so every
+WebSocket handshake reached the app with no X-Real-IP, no X-Forwarded-For, no
+X-Forwarded-Proto, no X-Correlation-Id, no X-Request-Id and `Host` defaulted to
+`$proxy_host`. Measured against the repository's own files, unmodified. That
+defeats capacity 0.6 precisely where 0.6 is worth most -- the edge line and the
+app line for the same 1,500-socket population could not be joined -- and
+`test_the_edge_passes_both_ids_upstream` passed the whole time, because it
+asserts the DIRECTIVE IS IN THE FILE and nginx applying it is a different
+claim.
 """
 
 from __future__ import annotations
@@ -87,6 +131,31 @@ _EDGE_COST_PER_SOCKET = 2
 # is one a SINGLE worker can meet alone.
 _EDGE_FLOOR = _WS_TARGET * _EDGE_COST_PER_SOCKET
 _APP_FLOOR = _WS_TARGET
+
+# §0's other target, and the one 3.2 is about.
+_RPS_TARGET = 300
+
+# Linux holds a closed socket in TIME_WAIT for `TCP_TIMEWAIT_LEN`, a
+# COMPILE-TIME constant of 60 seconds. MEASURED rather than looked up, because
+# the `k6` service's own comment implies otherwise: one client-closed socket
+# watched out of /proc/net/tcp lived 60.8s at `tcp_fin_timeout=5` and 60.7s at
+# `tcp_fin_timeout=60`. No sysctl shortens it -- `tcp_fin_timeout` bounds
+# FIN_WAIT_2 -- so the port range is the only knob that buys headroom outright.
+_TIME_WAIT_S = 60
+
+# One proxied request = one source port, held for the interval above. With no
+# keepalive pool that is the edge's steady-state port bill at the target rate,
+# and it is the floor the range has to clear on its own. `tcp_tw_reuse` raises
+# the ceiling far past this by recycling sockets older than a second, but it is
+# the SECOND line: a budget that only works because the kernel is recycling
+# under pressure is a budget nobody has sized.
+_SOURCE_PORT_FLOOR = _RPS_TARGET * _TIME_WAIT_S
+
+# gunicorn's default when no `--keep-alive` is passed, which is the situation on
+# both publishers until capacity 3.3. An upstream keepalive pool that holds a
+# socket LONGER than the app will is a 502 waiting for a request nginx is not
+# allowed to retry.
+_GUNICORN_DEFAULT_KEEPALIVE_S = 2
 
 
 def _directive(text: str, name: str) -> int | None:
@@ -270,3 +339,246 @@ def test_the_descriptor_guards_can_actually_fail() -> None:
 
     assert _nofile_soft({"image": "x"}) is None
     assert _nofile_soft({"ulimits": {"nofile": {"soft": 65536, "hard": 1048576}}}) == 65536
+
+
+def _sysctl(service: dict[str, object], key: str) -> str | None:
+    sysctls = service.get("sysctls")
+    if not isinstance(sysctls, dict):
+        return None
+    value = sysctls.get(key)
+    return str(value) if value is not None else None
+
+
+def _seconds(value: str) -> float:
+    """nginx's time suffixes, for the two directives this module reads."""
+    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    for suffix, scale in sorted(units.items(), key=lambda kv: -len(kv[0])):
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * scale
+    return float(value)
+
+
+def _proxy_headers(text: str) -> set[str]:
+    """The header NAMES a chunk of nginx config sets, lower-cased.
+
+    Names, not values: the two publishers legitimately differ on
+    `X-Forwarded-Proto` ($scheme behind Compose's two server blocks, pinned
+    `https` behind RunPod's single one, which sits behind RunPod's own TLS
+    proxy). What may never differ is WHICH headers are sent."""
+    return {
+        m.group(1).lower()
+        for m in re.finditer(r"^\s*proxy_set_header\s+([A-Za-z0-9-]+)", text, flags=re.MULTILINE)
+    }
+
+
+def _ws_location(text: str) -> str:
+    """The body of `location /api/v1/ws { ... }`, brace-matched.
+
+    Brace-matched rather than regex-bounded because the block contains an
+    `if`-less but comment-heavy body, and a lazy `.*?}` would stop at the first
+    closing brace inside a comment."""
+    start = text.index("location /api/v1/ws")
+    depth = 0
+    for i in range(text.index("{", start), len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise AssertionError("unterminated `location /api/v1/ws` block")
+
+
+def _gunicorn_keepalive_s() -> float:
+    """What the app will actually hold an idle upstream socket for.
+
+    Read from the command lines rather than assumed, so that the day capacity
+    3.3 adds `--keep-alive 65` this guard loosens itself instead of having to
+    be edited."""
+    sources = [
+        (_REPO_ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        _RUNPOD_SUPERVISOR.read_text(encoding="utf-8"),
+        (_REPO_ROOT / "deploy" / "gunicorn.conf.py").read_text(encoding="utf-8"),
+    ]
+    found = [
+        float(m.group(1))
+        for text in sources
+        for m in re.finditer(r"--keep-alive[= ](\d+)|^keepalive\s*=\s*(\d+)", text)
+        if m.group(1)
+    ]
+    return min(found) if found else float(_GUNICORN_DEFAULT_KEEPALIVE_S)
+
+
+def test_the_edge_declares_a_source_port_budget() -> None:
+    """The half of the edge nobody had counted: nginx as a CLIENT.
+
+    With no upstream keepalive pool -- and `app-locations.conf` gives up the
+    pool on purpose, to keep per-request DNS resolution -- every proxied request
+    burns one ephemeral port for sixty seconds. Measured at 300 rps: 15,782 of
+    Docker's default 28,232 in TIME_WAIT, and at 700 rps the edge answered
+    `(99: Cannot assign requested address)` 4,090 times. Both settings are
+    net-namespaced, so `deploy/host-tuning.sh` cannot reach them."""
+    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    nginx = compose["services"]["nginx"]
+
+    port_range = _sysctl(nginx, "net.ipv4.ip_local_port_range")
+    assert port_range is not None, (
+        "docker-compose.yml's `nginx` service declares no "
+        "`net.ipv4.ip_local_port_range`, so it inherits Docker's 32768-60999. "
+        "The `k6` service already carries this setting for the SAME failure "
+        "seen from the other end of the wire."
+    )
+    low, high = (int(part) for part in port_range.split())
+    assert high - low + 1 >= _SOURCE_PORT_FLOOR, (
+        f"{high - low + 1} source ports against a floor of {_SOURCE_PORT_FLOOR} "
+        f"({_RPS_TARGET} rps x {_TIME_WAIT_S}s of TIME_WAIT). Linux fixes the "
+        "TIME_WAIT interval at 60s in `TCP_TIMEWAIT_LEN`; no sysctl shortens it."
+    )
+
+    reuse = _sysctl(nginx, "net.ipv4.tcp_tw_reuse")
+    assert reuse == "1", (
+        f"`net.ipv4.tcp_tw_reuse` is {reuse!r}. The kernel's default of 2 means "
+        "'loopback only', which is why `deploy/runpod/nginx.conf` -- proxying "
+        "to a literal 127.0.0.1:8000 -- was never exposed and the Compose "
+        "bridge always was. MEASURED, paced 300 conn/s into a 1,000-port range: "
+        "tw_reuse=2 to a bridge peer connected 999 of 6,000; tw_reuse=1 "
+        "connected 6,000 of 6,000."
+    )
+
+
+def test_only_the_publisher_with_nothing_to_resolve_pools_upstream() -> None:
+    """An anti-regression, because `keepalive` is the obvious thing to add here
+    and it is a 502 on one of the two paths.
+
+    RE-CONFIRMED LIVE in 3.2 rather than inherited from 7.1: with the app forced
+    onto a new address and no edge restarted, the variable edge answered 200 and
+    an otherwise identical `upstream`-block edge answered 502 permanently. The
+    trap is that a plain `docker compose up -d --force-recreate app` left the
+    address unchanged and BOTH answered 200 -- so the failure passes every test
+    this repository runs and waits for a deploy nobody is watching."""
+    compose_edge = _EDGE.read_text(encoding="utf-8")
+    compose_locations = _EDGE_LOCATIONS.read_text(encoding="utf-8")
+    for name, text in (
+        ("deploy/nginx/nginx.conf", compose_edge),
+        ("deploy/nginx/app-locations.conf", compose_locations),
+    ):
+        assert not re.search(r"^\s*upstream\s+\w+\s*\{", text, flags=re.MULTILINE), (
+            f"{name} declares an `upstream` block. nginx resolves its server "
+            "ONCE at config load and caches it for the process lifetime; on "
+            "Compose the app's address moves and every request 502s until nginx "
+            "is restarted, while `docker compose ps` reports it healthy. The "
+            "keepalive this buys is paid for in `sysctls:` instead."
+        )
+    assert "$aizzak_app" in compose_locations, (
+        "the variable destination is what forces per-request resolution; "
+        "without it the `resolver` in nginx.conf has nothing to do."
+    )
+
+
+def test_the_runpod_pool_never_outlives_the_app_that_feeds_it() -> None:
+    """RunPod CAN pool -- it proxies to a literal loopback address, so there is
+    no name to go stale -- and the pool has exactly one way to hurt: holding a
+    socket the app has already closed. nginx does not replay a POST by default,
+    so that lands as a 502 on a request nobody can retry.
+
+    The bound is read from the gunicorn command lines, not hard-coded, so
+    capacity 3.3's `--keep-alive 65` loosens this guard by itself."""
+    runpod = _RUNPOD_EDGE.read_text(encoding="utf-8")
+    pool = re.search(r"^\s*keepalive\s+(\d+)\s*;", runpod, flags=re.MULTILINE)
+    if pool is None:
+        return
+
+    idle = re.search(r"^\s*keepalive_timeout\s+(\S+)\s*;", runpod, flags=re.MULTILINE)
+    assert idle is not None, (
+        "deploy/runpod/nginx.conf pools upstream connections but sets no "
+        "`keepalive_timeout`, so it keeps them for nginx's 60s default while "
+        "gunicorn drops them after its own `--keep-alive`."
+    )
+    app_side = _gunicorn_keepalive_s()
+    assert _seconds(idle.group(1)) < app_side, (
+        f"the pool holds an idle socket for {idle.group(1)} while the app closes "
+        f"it after {app_side}s. Raise gunicorn's `--keep-alive` (capacity 3.3) "
+        "in the same change, never this alone."
+    )
+    assert 'proxy_set_header Connection       "";' in runpod, (
+        "`keepalive` without an empty `Connection` header pools nothing at all "
+        "-- measured: 0 established upstream sockets with `close` left in place."
+    )
+
+
+def test_the_websocket_handshake_still_carries_the_shared_proxy_headers() -> None:
+    """The `add_header` trap, one directive over, found live in 3.2.
+
+    `proxy_set_header` is an inherited ARRAY: a level that declares one replaces
+    all of it. Both `/api/v1/ws` locations declared Upgrade and Connection, and
+    therefore sent NONE of the six the server level declares. Measured against
+    these files unmodified: `host=app:8000 | xff= | corr=` on the WebSocket
+    path against `host=aizzak.test | xff=127.0.0.1 | corr=<minted>` on `/`.
+
+    Asserted as a SUPERSET of whatever the shared level carries, so a seventh
+    shared header added later cannot quietly skip this location."""
+    for name, shared_text, whole_text in (
+        (
+            "deploy/nginx/app-locations.conf",
+            _EDGE_LOCATIONS.read_text(encoding="utf-8"),
+            _EDGE_LOCATIONS.read_text(encoding="utf-8"),
+        ),
+        (
+            "deploy/runpod/nginx.conf",
+            _RUNPOD_EDGE.read_text(encoding="utf-8"),
+            _RUNPOD_EDGE.read_text(encoding="utf-8"),
+        ),
+    ):
+        ws = _ws_location(whole_text)
+        shared = _proxy_headers(shared_text.replace(ws, ""))
+        assert shared, f"{name}: found no shared `proxy_set_header` directives."
+        missing = shared - _proxy_headers(ws)
+        assert not missing, (
+            f"{name}: `location /api/v1/ws` declares `proxy_set_header` of its "
+            f"own and therefore inherits NOTHING, so it drops {sorted(missing)}. "
+            "nginx offers no way to add to an inherited set from a nested level "
+            "-- the list has to be repeated in full."
+        )
+        assert "upgrade" in _proxy_headers(ws)
+
+
+def test_the_websocket_header_set_is_the_same_on_both_publishers() -> None:
+    """Names only. The two legitimately differ on `X-Forwarded-Proto`'s VALUE
+    ($scheme behind Compose's two server blocks, pinned `https` behind RunPod's
+    single one), and on `Connection` at the shared level, which is half of
+    RunPod's keepalive pool and measurably wrong on Compose."""
+    compose_ws = _proxy_headers(_ws_location(_EDGE_LOCATIONS.read_text(encoding="utf-8")))
+    runpod_ws = _proxy_headers(_ws_location(_RUNPOD_EDGE.read_text(encoding="utf-8")))
+    assert compose_ws == runpod_ws, (
+        f"the two WebSocket locations send different headers: "
+        f"only Compose {sorted(compose_ws - runpod_ws)}, "
+        f"only RunPod {sorted(runpod_ws - compose_ws)}."
+    )
+
+
+def test_the_source_port_guards_can_actually_fail() -> None:
+    """Exercised against the shapes they exist to reject, the pattern
+    `test_ops_slow_queries.py` set for a tuning gate."""
+    assert _sysctl({"image": "x"}, "net.ipv4.tcp_tw_reuse") is None
+    assert _sysctl({"sysctls": {"net.ipv4.tcp_tw_reuse": 1}}, "net.ipv4.tcp_tw_reuse") == "1"
+
+    assert _seconds("1s") == 1.0
+    assert _seconds("500ms") == 0.5
+    assert _seconds("1m") == 60.0
+    assert _seconds("65") == 65.0
+
+    # The exact shape that was shipping: a location declaring two headers of its
+    # own, which silently discards the six above it.
+    broken = (
+        "proxy_set_header Host $host;\n"
+        "proxy_set_header X-Correlation-Id $id;\n"
+        "location /api/v1/ws {\n"
+        "    proxy_set_header Upgrade $http_upgrade;\n"
+        "}\n"
+    )
+    ws = _ws_location(broken)
+    assert _proxy_headers(broken.replace(ws, "")) == {"host", "x-correlation-id"}
+    assert _proxy_headers(ws) == {"upgrade"}
+
+    # And a comment mentioning a directive is not the directive.
+    assert _proxy_headers("# proxy_set_header Host $host;\n") == set()

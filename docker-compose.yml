@@ -1373,6 +1373,76 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
+    # ── The SOURCE-PORT budget (capacity 3.2) ────────────────────────────────
+    # ⚠️ THE EDGE IS A CLIENT TOO, and this is the half of that sentence this
+    # file had not paid for. `app-locations.conf` proxies to a VARIABLE so the
+    # name is re-resolved per request (see its header -- an `upstream` block
+    # caches one address for the process lifetime and 502s forever once the app
+    # moves; re-confirmed live in 3.2, below). The price of that decision is
+    # that nginx has NO upstream keepalive pool at all: every proxied request is
+    # its own TCP connection, opened from an ephemeral port in THIS container's
+    # network namespace, and a closed one is held in TIME_WAIT for sixty
+    # seconds.
+    #
+    # MEASURED on this stack, 300 rps (§0's target) through the real edge for
+    # two minutes: 15,782 sockets in TIME_WAIT toward app:8000 and ZERO
+    # ESTABLISHED at any instant -- 55.9% of Docker's default 32768-60999 range
+    # (28,232 ports) consumed to serve the target rate. The ceiling that implies
+    # is ~537 rps, i.e. 1.79x §0's target, and it was then reached on purpose:
+    # 700 rps for 100s answered
+    #
+    #     [crit] connect() to 172.18.0.26:8000 failed
+    #            (99: Cannot assign requested address) while connecting to upstream
+    #
+    # 4,090 times across 700 client connections -- 5.84% of 70,001 requests
+    # failed, with 26,556 of 28,232 ports (94.1%) in TIME_WAIT. That is the
+    # EADDRNOTAVAIL named in capacity 3.2's own acceptance criterion, on the
+    # edge rather than on the generator.
+    #
+    # ⭐ AND THE GENERATOR ALREADY CARRIES THIS FIX -- see the `k6` service
+    # below, whose comment describes the identical failure ("the generator
+    # running out of SOURCE PORTS in its own network namespace") from a real
+    # run. The thing that MEASURES the platform was hardened against port
+    # exhaustion; the thing being measured, which opens one outbound connection
+    # per request instead of one per iteration, was not.
+    #
+    # `tcp_tw_reuse` is what actually closes it, and 1 vs the kernel's default
+    # of 2 is the whole point: 2 means "reuse TIME_WAIT sockets for LOOPBACK
+    # only". MEASURED, paced at 300 conn/s for 20s into a deliberately narrow
+    # 1,000-port range:
+    #
+    #     tw_reuse=2, loopback destination   6,000 of 6,000 connected
+    #     tw_reuse=2, bridge destination       999 of 6,000  (5,001 EADDRNOTAVAIL)
+    #     tw_reuse=1, bridge destination     6,000 of 6,000
+    #     tw_reuse=0, loopback destination   1,007 of 6,000  (control)
+    #
+    # So `deploy/runpod/nginx.conf`, which proxies to a LITERAL 127.0.0.1:8000,
+    # has been immune to this since before it was written -- and the Compose
+    # path, which cannot use a literal address, never was. Reuse is gated on the
+    # TIME_WAIT socket being older than one second, so this raises the recycle
+    # ceiling from range/60s to roughly range/1s; it is safe because TCP
+    # timestamps are on by default at both ends and it applies to OUTGOING
+    # connections only (`tcp_tw_recycle`, the dangerous one, was deleted from
+    # Linux in 4.12).
+    #
+    # ⚠️ AND NEITHER OF THESE MAY GO IN `deploy/host-tuning.sh` (step 3.5, and
+    # option (أ) of 3.2 as written): both are NETWORK-NAMESPACED. The host's own
+    # range on the measured machine is 56905-61000 -- 4,096 ports, SIX TIMES
+    # NARROWER than the default this container already had -- and setting it
+    # there would have changed nothing here while reading like a fix. Same
+    # shape as 3.1's `nofile`: the number has to be written where the process
+    # actually lives.
+    #
+    # ⚠️ `net.ipv4.tcp_fin_timeout` is deliberately NOT set here, unlike the k6
+    # service. MEASURED: a TIME_WAIT entry lived 60.8s at fin_timeout=5 and
+    # 60.7s at fin_timeout=60. `tcp_fin_timeout` bounds FIN_WAIT_2, not
+    # TIME_WAIT, which Linux fixes at 60s in `TCP_TIMEWAIT_LEN`; the k6 service
+    # sets it under a comment about the TIME_WAIT interval, and it does nothing
+    # for that. Left there rather than silently removed -- it is harmless, and
+    # the correction belongs next to it.
+    sysctls:
+      net.ipv4.ip_local_port_range: "10000 65535"
+      net.ipv4.tcp_tw_reuse: "1"
     restart: unless-stopped
     <<: *app-logging
 
@@ -1720,6 +1790,15 @@ services:
     # not the platform refusing anything. Docker's default ephemeral range is
     # ~28,000 ports and a closed socket holds one for the TIME_WAIT interval.
     # Both settings are net-namespaced, so neither touches the host.
+    #
+    # ⚠️ CORRECTED IN CAPACITY 3.2, not deleted: `tcp_fin_timeout` does NOT
+    # shorten the TIME_WAIT interval the line above describes. MEASURED, one
+    # client-closed socket watched out of /proc/net/tcp: the entry lived 60.8s
+    # at fin_timeout=5 and 60.7s at fin_timeout=60. It bounds FIN_WAIT_2; Linux
+    # fixes TIME_WAIT at 60s in `TCP_TIMEWAIT_LEN`, and no sysctl moves it. So
+    # the widened RANGE above is what actually kept this generator alive, alone.
+    # The setting is harmless and is left in place; what it is NOT is a second
+    # half of the fix, and the `nginx` service therefore does not copy it.
     sysctls:
       net.ipv4.ip_local_port_range: "10000 65535"
       net.ipv4.tcp_fin_timeout: "15"

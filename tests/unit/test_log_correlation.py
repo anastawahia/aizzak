@@ -278,9 +278,34 @@ def test_the_edge_never_logs_a_query_string() -> None:
 
 
 def test_the_edge_passes_both_ids_upstream() -> None:
+    """⚠️ THIS TEST PASSED WHILE THE WEBSOCKET PATH SENT NEITHER ID, for two
+    months, and the second half exists because of it (capacity 3.2).
+
+    A directive's presence in a file is not the claim "nginx applies it to this
+    request". ``proxy_set_header`` is an inherited ARRAY: a level declaring even
+    one replaces the whole inherited set, exactly as ``add_header`` does.
+    ``location /api/v1/ws`` declared ``Upgrade`` and ``Connection``, so it sent
+    neither id -- measured against these files, unmodified, proxied to a
+    header-echoing upstream: ``corr=`` and ``reqid=`` empty on the WebSocket
+    path while ``/`` carried both. For 1,500 concurrent sockets that is the
+    exact failure 0.6 was built to prevent, on the path where it is worth most.
+    ``tests/unit/test_edge_capacity.py`` holds the general form of the rule.
+    """
     conf = _text(_NGINX_LOCATIONS)
-    assert f"proxy_set_header {CORRELATION_HEADER} $aizzak_correlation_id;" in conf
-    assert f"proxy_set_header {REQUEST_ID_HEADER}     $request_id;" in conf
+    for header, value in (
+        (CORRELATION_HEADER, "$aizzak_correlation_id"),
+        (REQUEST_ID_HEADER, "$request_id"),
+    ):
+        pattern = rf"^\s*proxy_set_header\s+{header}\s+{re.escape(value)};"
+        assert re.search(pattern, conf, re.M)
+
+    ws = conf[conf.index("location /api/v1/ws") :]
+    for header in (CORRELATION_HEADER, REQUEST_ID_HEADER):
+        assert re.search(rf"^\s*proxy_set_header\s+{header}\s", ws, re.M), (
+            f"`location /api/v1/ws` does not send {header}. It declares "
+            "`proxy_set_header` directives of its own, so it inherits none of "
+            "the ones above it -- the list has to be repeated in full."
+        )
 
 
 def test_the_runpod_edge_says_all_of_it_again() -> None:
@@ -294,6 +319,14 @@ def test_the_runpod_edge_says_all_of_it_again() -> None:
     assert f"proxy_set_header {CORRELATION_HEADER} $aizzak_correlation_id;" in conf
     assert f"proxy_set_header {REQUEST_ID_HEADER}     $request_id;" in conf
     assert "access_log  /dev/stdout  aizzak_json;" in conf
+
+    # And the same WebSocket location that was dropping both on Compose --
+    # this file had the identical shape (capacity 3.2).
+    ws = conf[conf.index("location /api/v1/ws") :]
+    for header in (CORRELATION_HEADER, REQUEST_ID_HEADER):
+        assert re.search(rf"^\s*proxy_set_header\s+{header}\s", ws, re.M), (
+            f"the Pod's `location /api/v1/ws` does not send {header}."
+        )
 
 
 # ── The pipeline: collection ───────────────────────────────────────────────

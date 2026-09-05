@@ -204,6 +204,24 @@ not meant to; what is being measured is the cost of TLS termination.
   `ip_local_port_range` and shortens `tcp_fin_timeout` for that; a host k6
   needs the same two sysctls.
 
+  ⚠️ **Corrected by capacity 3.2, and only half of that sentence was true.**
+  `tcp_fin_timeout` does not shorten `TIME_WAIT` — measured, one client-closed
+  socket watched out of `/proc/net/tcp`: 60.8 s at `fin_timeout=5` and 60.7 s
+  at `fin_timeout=60`. It bounds `FIN_WAIT_2`; Linux fixes `TIME_WAIT` at 60 s
+  in `TCP_TIMEWAIT_LEN` and no sysctl moves it. The widened *range* is what
+  kept this generator alive, by itself. The setting is left in place because
+  it is harmless, not because it helps.
+
+  ⭐ **And this bullet described the platform too, exactly as the `nofile` one
+  did.** The edge opens a new upstream connection per PROXIED REQUEST — it has
+  no keepalive pool, because `keepalive` requires an `upstream` block and
+  `app-locations.conf` refuses one to keep per-request DNS resolution — so it
+  inherited the same ~28,000-port default: 15,782 in `TIME_WAIT` at 300 rps and
+  4,090 `[crit] ... Cannot assign requested address` lines at 700 rps. Capacity
+  3.2 gave the `nginx` service its own `ip_local_port_range` plus
+  `tcp_tw_reuse: "1"` (the kernel default of 2 covers loopback only, which is
+  why the RunPod publisher was never exposed and this bridge always was).
+
 - **The reach of a single source IP — was the binding limit, and is no longer
   (`د‑8`).** The edge rate-limits on `$binary_remote_addr`, and at the time of this
   measurement that was `limit_req zone=api_req rate=20r/s burst=40 nodelay`
