@@ -240,11 +240,26 @@ OUTBOX_RELAY_GRANTS: tuple[str, ...] = (
 # `migrations/versions/platform/0003_retention_sweep.py`
 # (`retention_sweeper_select`/`retention_sweeper_delete`) -- the grant alone
 # would still leave the role bound to `tenant_isolation` like any other.
+#
+# Capacity step 2.8 (`ح-16`) adds a FOURTH target, `usage.usage_records`: the
+# append-only metering ledger, the one of 2.8's three named tables that had no
+# retention policy of any kind. Its reach is cross-tenant only through the
+# role-scoped policies `migrations/versions/usage/0004_usage_autovacuum.py`
+# adds (the `0003_retention_sweep.py` mechanism, applied to a second schema) --
+# every `usage` table is under FORCE ROW LEVEL SECURITY, so the grant alone
+# would leave this role confined to `tenant_isolation` like any other.
+#
+# `usage.usage_rollups` is deliberately NOT granted. It is the aggregate the
+# quota check reads (step 2.7's `reserve`), so deleting a row there does not
+# age out history -- it hands a workspace back headroom it already spent. The
+# ledger is the detail and can expire; the rollup is the balance and cannot.
 RETENTION_GRANTS: tuple[str, ...] = (
     f"GRANT USAGE ON SCHEMA platform TO {RETENTION_ROLE}",
     f"GRANT SELECT, DELETE ON platform.outbox TO {RETENTION_ROLE}",
     f"GRANT SELECT, DELETE ON platform.processed_events TO {RETENTION_ROLE}",
     f"GRANT SELECT, DELETE ON platform.idempotency_keys TO {RETENTION_ROLE}",
+    f"GRANT USAGE ON SCHEMA usage TO {RETENTION_ROLE}",
+    f"GRANT SELECT, DELETE ON usage.usage_records TO {RETENTION_ROLE}",
 )
 
 # P1-3's `/metrics` role (docs/p1-hardening-plan.md §3 step 10,

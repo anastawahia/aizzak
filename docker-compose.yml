@@ -271,6 +271,47 @@ services:
     depends_on:
       wal-archive-init:
         condition: service_completed_successfully
+    # ── capacity step 2.8 (`ح-16`): /dev/shm, and why it is not tuning ──
+    # Docker gives every container a 64 MB `/dev/shm`, and PostgreSQL's
+    # `dynamic_shared_memory_type = posix` allocates every PARALLEL worker's
+    # segment from it. `maintenance_work_mem` is the size parallel VACUUM asks
+    # for, and its default is 64 MB -- so the request can never fit the ceiling
+    # it is drawn from, at any table size large enough to recruit a worker.
+    #
+    # MEASURED on this stack, on `platform.outbox` at 2,000,000 rows:
+    #
+    #     VACUUM (ANALYZE) platform.outbox;
+    #     ERROR: could not resize shared memory segment "/PostgreSQL.3044006814"
+    #            to 67128960 bytes: No space left on device
+    #
+    # 67,128,960 = maintenance_work_mem (65,536 kB) + 20,096 bytes of header,
+    # against a 64 MB tmpfs: arithmetic, not luck. The same VACUUM with
+    # `max_parallel_maintenance_workers = 0` finished in 2.36 s.
+    #
+    # What makes this a step-2.8 blocker and not a curiosity: the failure is
+    # invisible until the table is big, autovacuum is exempt (it never
+    # parallelises index cleanup) and therefore keeps working, and the ONE
+    # thing an operator reaches for when a table has bloated -- a manual
+    # VACUUM -- is the thing that fails. A step whose whole subject is keeping
+    # three write-heavy tables from bloating cannot leave the remedy
+    # inoperable at the size where it is needed.
+    #
+    # ⚠️ NOT a knob risk `م-8` covers, on the same footing 2.5's `archive_mode`
+    # already argued: `shm_size` is a CONTAINER resource ceiling, not a
+    # PostgreSQL setting. It changes no plan, no cache and no cost estimate, so
+    # a 0.5 baseline taken with it is the same baseline -- it only stops
+    # Postgres's own configured limits from being silently cut off below their
+    # value. `test_compose_does_not_smuggle_wave_2_tuning_into_wave_0` guards
+    # the four knobs that do flatter a baseline, and still passes.
+    #
+    # 1g rather than 128m (which would clear today's 64 MB request): step 2.1
+    # declares `maintenance_work_mem=1GB`, and the rule above says the segment
+    # is sized to that value. Leaving room only for today's default would make
+    # 2.1 reintroduce this exact failure, and it would reintroduce it as a
+    # regression nobody attributes to a memory knob. The rule is written in
+    # `08-local-runbook §2-هـ`: shm_size > maintenance_work_mem + headroom.
+    # tmpfs pages are allocated on use, so this reserves nothing.
+    shm_size: 1gb
     # ⚠️ THREE OVERRIDES, ALL THREE ABOUT OBSERVING THE SERVER, NONE ABOUT
     # TUNING IT (capacity step 0.4, docs/capacity-plan.md §5 Wave 0). The
     # plan's step 2.1 will set shared_buffers/work_mem/max_wal_size and the

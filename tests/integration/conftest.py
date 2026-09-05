@@ -488,10 +488,15 @@ async def _grant_outbox_relay(owner_dsn: str) -> None:
 
 async def _grant_retention_sweeper(owner_dsn: str) -> None:
     """P1-5 step 8: the sweeper's OWN least-privilege grants --
-    SELECT/DELETE on the three unbounded ledgers and nothing else
+    SELECT/DELETE on the unbounded ledgers and nothing else
     (``app.ops.provision.RETENTION_GRANTS``), never a widened ``app_rw``
     (module docstring's ``_grant_app_rw``, "Neither ``outbox`` nor
-    ``processed_events`` grow a DELETE grant here...")."""
+    ``processed_events`` grow a DELETE grant here...").
+
+    Capacity step 2.8 (``ح-16``) added ``usage.usage_records`` as a fourth
+    target, so this now grants across TWO schemas. Read from the same tuple the
+    runbook applies rather than restated here, which is why the addition needed
+    no edit to this function at all."""
     await _execute_all(owner_dsn, RETENTION_GRANTS)
 
 

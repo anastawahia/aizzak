@@ -137,10 +137,17 @@ async def test_sweep_all_sweeps_every_table_each_in_its_own_transaction() -> Non
 
     results = await sweep_all(engine, dry_run=False)
 
-    assert [r.table for r in results] == ["outbox", "processed_events", "idempotency_keys"]
+    # `usage_records` joined in capacity step 2.8 (`ح-16`): the one of the
+    # step's three named tables that no sweep, in any schema, reached at all.
+    assert [r.table for r in results] == [
+        "outbox",
+        "processed_events",
+        "idempotency_keys",
+        "usage_records",
+    ]
     assert all(r.affected == 1 for r in results)
-    # Three DELETEs, one per table, each on the SAME (stubbed) connection.
-    assert len(conn.calls) == 3
+    # One DELETE per table, each on the SAME (stubbed) connection.
+    assert len(conn.calls) == len(retention_module._TABLES)
 
 
 def test_cli_parses_table_and_override_and_dry_run_together() -> None:

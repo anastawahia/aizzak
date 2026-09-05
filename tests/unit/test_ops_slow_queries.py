@@ -18,6 +18,7 @@ stub structurally cannot make, and lives in
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -399,19 +400,41 @@ def test_compose_does_not_smuggle_wave_2_tuning_into_wave_0() -> None:
     """Risk ``م-8``, guarded mechanically: a baseline measured on an
     already-tuned server cannot answer whether the tuning helped. Step 2.1
     sets these from a composed config file, and this guard is what makes
-    adding one early a failing test rather than a quiet head start."""
+    adding one early a failing test rather than a quiet head start.
+
+    **Matched as an ARGUMENT line, not as free text, and capacity step 2.8
+    found out why the difference matters.** The first version of this guard
+    searched the whole file for the substring ``work_mem=``, which is (a)
+    satisfied by any COMMENT that names the knob -- 2.8's ``shm_size``
+    paragraph has to name ``maintenance_work_mem`` to explain the number it
+    chose -- and (b) a substring of ``maintenance_work_mem=`` itself, so the
+    two knobs were never distinguishable. Postgres settings reach this server
+    only as ``- <knob>=<value>`` items under the service's ``command:``, so
+    that is what is matched: a comment can discuss a knob, and only an argument
+    can turn one."""
     compose = _COMPOSE.read_text(encoding="utf-8")
     premature = [
         knob
-        for knob in ("shared_buffers=", "work_mem=", "effective_cache_size=", "max_wal_size=")
-        if knob in compose
+        for knob in ("shared_buffers", "work_mem", "effective_cache_size", "max_wal_size")
+        if re.search(rf"^\s*-\s*{knob}=", compose, flags=re.MULTILINE)
     ]
 
     assert not premature, (
-        f"{premature} appear in docker-compose.yml, but Postgres tuning is capacity step 2.1 "
-        "(Wave 2) and the 0.5 baseline must be measured on an UNTUNED server -- otherwise no "
-        "later wave can prove it improved anything."
+        f"{premature} are passed to the postgres server in docker-compose.yml, but Postgres "
+        "tuning is capacity step 2.1 (Wave 2) and the 0.5 baseline must be measured on an "
+        "UNTUNED server -- otherwise no later wave can prove it improved anything."
     )
+
+
+def test_the_tuning_guard_can_actually_fail() -> None:
+    """A guard that has only ever passed is a guard nobody has tested. Both
+    halves of the matcher are exercised: an argument line trips it, and the
+    comment that necessarily names the same knob does not."""
+    argument = "    command:\n      - -c\n      - work_mem=16MB\n"
+    comment = "    # 2.1 declares maintenance_work_mem=1GB, so shm_size must clear it\n"
+
+    assert re.search(r"^\s*-\s*work_mem=", argument, flags=re.MULTILINE)
+    assert not re.search(r"^\s*-\s*work_mem=", comment, flags=re.MULTILINE)
 
 
 def test_initdb_creates_the_extension_and_grants_the_reader_its_stats() -> None:

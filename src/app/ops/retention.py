@@ -1,9 +1,21 @@
-"""Age-based retention sweep for three ``platform`` ledgers that grow without
-bound (P1-5, ``docs/p1-hardening-plan.md`` §3 step 8): published rows of
-``platform.outbox``, all of ``platform.processed_events``, and all of
-``platform.idempotency_keys``. None of the three has a cron job, a sweep, or
-a runbook paragraph today (01-data-model §4.2/§4.2-ب name this explicitly:
-"لا سياسة احتفاظٍ في v1"); growth is slow but strictly one-directional.
+"""Age-based retention sweep for the ledgers that grow without bound (P1-5,
+``docs/p1-hardening-plan.md`` §3 step 8; extended by capacity step 2.8,
+``ح-16``): published rows of ``platform.outbox``, all of
+``platform.processed_events``, all of ``platform.idempotency_keys``, and —
+added by 2.8 — all of ``usage.usage_records``. None of them has a cron job,
+a sweep, or a runbook paragraph today (01-data-model §4.2/§4.2-ب name this
+explicitly: "لا سياسة احتفاظٍ في v1"); growth is slow but strictly
+one-directional.
+
+**Capacity step 2.8 added the fourth target and the first floor.** 2.8 names
+three write-heavy tables — ``outbox``, ``processed_events`` and ``usage`` —
+and asks for "a retention policy executed by step 5.7". Two of the three were
+already here; ``usage`` was not swept by anything, in any schema, by any role.
+It is also the first target outside ``platform``, which is why it needed a
+migration of its own rather than a GRANT: every ``usage`` table is under FORCE
+ROW LEVEL SECURITY, so a cross-tenant age sweep is confined to one workspace
+(i.e. to none) until a role-scoped policy says otherwise. See
+``sweep_usage_records`` and ``processed_events_floor``.
 
 **The architectural tension this module is built around, resolved rather
 than papered over.** ``app.ops.provision``'s own docstring grants ``app_rw``
@@ -48,6 +60,18 @@ by a single "sane default" applied uniformly:
   hand (``python -m app.ops.dlq requeue``, step 7) may do so long after the
   original failure — 30 days is a generous "the on-call operator got to the
   backlog eventually" margin, still finite.
+* ``USAGE_RECORDS_RETENTION`` (90 days) — the append-only metering ledger.
+  Three full ``Period.MONTH`` enforcement windows, which is what makes a
+  disputed month reconstructible from the detail rows and not only from the
+  rollup. It can expire at all only because the number quota enforcement reads
+  lives in ``usage_rollups`` (2.7's ``reserve``), which is NOT swept: deleting
+  a rollup row would hand a workspace back headroom it already spent, while
+  deleting a ledger row loses only the itemisation. And it may expire at all
+  only because of a decision already recorded in ``app.ops.purge``'s docstring
+  (CONFIRMED 2026-08-12, human review): usage here is "a per-workspace meter
+  reading, not a financial obligation (billing is out of v1 scope)". If a
+  billing or tax retention duty is ever asserted, THAT wins and this number
+  must be revisited — the same sentence ``purge`` already carries.
 * ``OUTBOX_RETENTION`` (90 days), published rows only — unlike the two
   above, a row here still carries the FULL CloudEvents payload plus
   ``correlation_id``/``causation_id`` (01 §4.1): real incident-forensics
@@ -60,17 +84,19 @@ would be data loss for a message the relay has not gotten to yet, not
 retention. ``sweep_outbox`` filters ``published_at IS NOT NULL`` before it
 ever looks at the age at all.
 
-Three verbs, exactly ``app.ops.dlq``'s shape (no HTTP surface, no periodic
+Four verbs, exactly ``app.ops.dlq``'s shape (no HTTP surface, no periodic
 scheduling built here — metrics/scheduling are LATER steps):
 
-* ``sweep`` (no ``--table``) — sweeps all three, each at its OWN default
+* ``sweep`` (no ``--table``) — sweeps all four, each at its OWN default
   retention, each in its OWN transaction (independent tables, independent
   windows — no reason to couple their commits).
 * ``sweep --table <name> [--older-than-days N]`` — sweeps exactly one table,
   optionally overriding ITS OWN window. ``--older-than-days`` REQUIRES
   ``--table``: there is deliberately no single override that would apply the
-  same number to all three windows above, which would erase the very
-  distinction this module's docstring just spent three paragraphs making.
+  same number to all four windows above, which would erase the very
+  distinction this module's docstring just spent four paragraphs making. An
+  override is additionally refused below a table's safe floor where one can be
+  derived — see ``processed_events_floor``.
 * ``--dry-run`` (either form) — counts what a real sweep WOULD delete
   (``SELECT count(*)`` under the identical predicate) and deletes nothing;
   the safe way to see the number before trusting it.
@@ -101,19 +127,71 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.pool import NullPool
 
-from app.framework.settings.settings import DatabaseSettings
+from app.framework.settings.settings import DatabaseSettings, EventSettings
 from app.infrastructure.config import load_settings
 from app.infrastructure.persistence.database import create_engine
 
 _logger = logging.getLogger(__name__)
 
-# See the module docstring's per-table paragraph for why these three numbers
+# See the module docstring's per-table paragraph for why these four numbers
 # differ, and why none of them is invented without a reason attached.
 IDEMPOTENCY_KEYS_RETENTION = timedelta(days=2)
 PROCESSED_EVENTS_RETENTION = timedelta(days=30)
 OUTBOX_RETENTION = timedelta(days=90)
+USAGE_RECORDS_RETENTION = timedelta(days=90)
 
-_TABLES: tuple[str, ...] = ("outbox", "processed_events", "idempotency_keys")
+_TABLES: tuple[str, ...] = (
+    "outbox",
+    "processed_events",
+    "idempotency_keys",
+    "usage_records",
+)
+
+#: Fully-qualified names, because two schemas are swept now and the table
+#: argument is a bare word. `app.ops.table_growth` imports this mapping rather
+#: than repeating either half.
+QUALIFIED: dict[str, str] = {
+    "outbox": "platform.outbox",
+    "processed_events": "platform.processed_events",
+    "idempotency_keys": "platform.idempotency_keys",
+    "usage_records": "usage.usage_records",
+}
+
+
+def processed_events_floor(events: EventSettings | None = None) -> timedelta:
+    """The shortest retention that CANNOT resurrect a duplicate effect --
+    derived from the redelivery mechanics, never written as a number.
+
+    Capacity step 2.8's warning ("no row is deleted from ``processed_events``
+    before the retry window has fully elapsed -- deleting one early revives the
+    duplicate effect the table exists to prevent") was, until now, a paragraph.
+    A paragraph does not stop ``--older-than-days 0``, which is one keystroke
+    from ``--older-than-days 30`` and deletes the entire ledger.
+
+    Two spans compose the window the CODE guarantees, and both come out of
+    ``EventSettings``:
+
+    * ``consumer_stale_idle_s`` -- how long a message may sit pending against a
+      dead consumer before ``consumers/sweeper.py`` reclaims it. Nothing has
+      re-delivered it yet, and its dedup row must still be there when something
+      does.
+    * ``consumer_block_ms x max_retries_before_dlq`` -- the automatic retry
+      ladder that follows, before the message is routed to the DLQ.
+
+    **What this floor deliberately does NOT cover, stated rather than implied.**
+    The 30-day default is not set by these mechanics -- it is set by the
+    OPERATOR replay path (``python -m app.ops.dlq requeue``), which can re-
+    deliver an event weeks after the original failure. That window has no
+    mechanical end, and its length lives in Redis (the DLQ's own depth and age),
+    which this process does not connect to. So the floor below is the provable
+    half only: under it, a duplicate effect is certain; over it and under the
+    default, it depends on whether the DLQ is empty. Lowering the window is
+    therefore allowed above the floor and refused below it, and the operator
+    who lowers it is the one who has to know the DLQ is drained.
+    """
+    settings = events or EventSettings()
+    ladder = (settings.consumer_block_ms / 1000.0) * settings.max_retries_before_dlq
+    return timedelta(seconds=settings.consumer_stale_idle_s + ladder)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,17 +296,76 @@ async def sweep_idempotency_keys(
     )
 
 
+async def sweep_usage_records(
+    conn: AsyncConnection,
+    *,
+    retention: timedelta = USAGE_RECORDS_RETENTION,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> SweepResult:
+    """Deletes metering ledger rows older than ``retention``, across EVERY
+    workspace at once -- reachable only because ``retention_sweeper`` holds the
+    cross-tenant carve-out ``migrations/versions/usage/0004_usage_autovacuum.py``
+    adds, the same mechanism ``0003_retention_sweep.py`` added for
+    ``idempotency_keys``. Every ``usage`` table is under FORCE ROW LEVEL
+    SECURITY, so the GRANT alone would leave this sweep confined to one
+    workspace -- which for an age-based sweep means none.
+
+    **``usage_rollups`` is not swept and must not be.** It is the aggregate the
+    quota check reads (step 2.7's ``reserve``), so deleting a row there does not
+    age out history -- it hands a workspace back headroom it already spent. The
+    ledger is the detail and expires; the rollup is the balance and does not.
+    The role has no GRANT on it either, so this is enforced by the database and
+    not only by this module's choice of statement."""
+    cutoff = (now or datetime.now(UTC)) - retention
+    return await _sweep(
+        conn,
+        table="usage_records",
+        delete_sql="DELETE FROM usage.usage_records WHERE created_at < :cutoff",
+        count_sql="SELECT count(*) FROM usage.usage_records WHERE created_at < :cutoff",
+        cutoff=cutoff,
+        dry_run=dry_run,
+    )
+
+
 _SweepFn = Callable[..., Awaitable[SweepResult]]
 _SWEEPERS: dict[str, _SweepFn] = {
     "outbox": sweep_outbox,
     "processed_events": sweep_processed_events,
     "idempotency_keys": sweep_idempotency_keys,
+    "usage_records": sweep_usage_records,
 }
 _DEFAULT_RETENTION: dict[str, timedelta] = {
     "outbox": OUTBOX_RETENTION,
     "processed_events": PROCESSED_EVENTS_RETENTION,
     "idempotency_keys": IDEMPOTENCY_KEYS_RETENTION,
+    "usage_records": USAGE_RECORDS_RETENTION,
 }
+
+#: Only one table has a floor the code can prove; the others' windows are
+#: policy, and a policy this module cannot check is not one it pretends to.
+_MIN_RETENTION: dict[str, Callable[[], timedelta]] = {
+    "processed_events": processed_events_floor,
+}
+
+
+def check_retention_floor(table: str, retention: timedelta) -> None:
+    """Raises ``ValueError`` when ``retention`` is short enough to break a
+    guarantee, rather than letting the sweep quietly break it (step 2.8's
+    warning, made mechanical). Tables with no provable floor pass unchanged."""
+    floor_of = _MIN_RETENTION.get(table)
+    if floor_of is None:
+        return
+    floor = floor_of()
+    if retention < floor:
+        raise ValueError(
+            f"--older-than-days is below {table}'s safe floor: "
+            f"{retention.total_seconds():.0f}s requested, {floor.total_seconds():.0f}s "
+            "is the redelivery window derived from EventSettings "
+            "(consumer_stale_idle_s + consumer_block_ms x max_retries_before_dlq). "
+            "Deleting a dedup row inside that window revives the duplicate effect "
+            "the table exists to prevent."
+        )
 
 
 async def sweep_all(engine: AsyncEngine, *, dry_run: bool = False) -> list[SweepResult]:
@@ -262,6 +399,9 @@ async def _run_cli(args: argparse.Namespace) -> int:
                 if args.older_than_days is not None
                 else _DEFAULT_RETENTION[args.table]
             )
+            # Checked BEFORE the engine does any work, so a refused sweep costs
+            # a connection and not a transaction.
+            check_retention_floor(args.table, retention)
             async with engine.begin() as conn:
                 result = await _SWEEPERS[args.table](
                     conn, retention=retention, dry_run=args.dry_run
@@ -313,7 +453,7 @@ def main() -> None:
     if args.older_than_days is not None and args.table is None:
         raise SystemExit(
             "--older-than-days requires --table -- there is no single retention window "
-            "for all three tables (module docstring's whole point)."
+            "for all four tables (module docstring's whole point)."
         )
     raise SystemExit(asyncio.run(_run_cli(args)))
 
