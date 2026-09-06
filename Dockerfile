@@ -172,8 +172,80 @@ EXPOSE 8000
 #
 # `--error-logfile` stays and is NOT inert: gunicorn's arbiter writes worker
 # lifecycle through it, and nothing else reports that.
+#
+# ── The three explicit flags (capacity 3.3) ───────────────────────────────────
+# Until this step this line ended at `--bind` while `deploy/runpod/supervisord.
+# conf` passed `--timeout 120 --graceful-timeout 30`: one repository, one
+# process, two different servers. Both publishers now carry the same three, and
+# each number is written because it was measured, not because it is a default.
+#
+# `--timeout 30` IS NOT A REQUEST TIMEOUT, and this is the flag the step's own
+# acceptance criterion is easiest to misread. Under `UvicornWorker` the worker
+# heartbeat is a TIMER -- uvicorn's `on_tick` calls `callback_notify` every
+# `timeout/2` seconds regardless of what any request is doing. MEASURED on this
+# exact command line before the flag existed (default 30): a 300-second SSE
+# response delivered 300 of 300 chunks over 299.8s, same worker pid, zero
+# `WORKER TIMEOUT` lines. The criterion "an SSE stream survives 300s" already
+# passed, and `--timeout` was never what made it pass.
+#
+# ⚠️ SO THE PLAN'S 120 GOES THE WRONG WAY, and 30 is deliberate. What the flag
+# ACTUALLY catches is a blocked event loop. MEASURED, a 90s blocking call in a
+# handler: at `--timeout 30` the arbiter logged `[CRITICAL] WORKER TIMEOUT` and
+# replaced the worker (pid 2449 -> 2471); at `--timeout 120` the same block
+# survived to a 200 after 90.1s on the same pid. Raising 30 to 120 buys nothing
+# measured and quadruples how long a wedged worker keeps its share of §0's 1,500
+# WebSockets -- and `ح-5` in docs/capacity-plan.md is that exact failure mode,
+# already written down for the embedding service ("even its health check
+# freezes"). §1 of that document is what makes 30 safe here: every blocking I/O
+# on this path is already off the loop via `asyncio.to_thread`.
+#
+# ⚠️ AND IT DOES NOT BOUND WORKER BOOT, which is the one argument that could
+# have justified a large number -- this app's workers take 12s to reach
+# "Application startup complete" (measured from this stack's own log), 40% of
+# the budget. MEASURED: a worker needing 40s to load under `--timeout 30` was
+# never killed. The reason is in gunicorn's own source: `WorkerTmp` is created
+# by `mkstemp` with a WALL-CLOCK mtime while `murder_workers` compares it
+# against `time.monotonic()`, so the difference stays hugely negative until the
+# worker's first `notify()`. Boot is simply not charged against this number.
+#
+# `--graceful-timeout 30` is gunicorn's own default made explicit, and it is the
+# sum of the budgets step 2.6 set for ONE request still in flight when the
+# SIGTERM lands: `DB_POOL_TIMEOUT_S` 5 + pgbouncer's `QUERY_WAIT_TIMEOUT` 20 +
+# `DB_STATEMENT_TIMEOUT_MS` 5. ⚠️ It is only reachable because the same step
+# raised `stop_grace_period` on the `app` service ABOVE it -- see the comment
+# there. The WebSocket half of the criterion is NOT this flag's doing and is
+# already true: measured, SIGTERM closed a held socket with code 1012 after
+# 0.10s and the arbiter exited at 0.45s, because `api/v1/websocket/streaming.py`
+# returns on `WebSocketDisconnect`.
+#
+# `--keep-alive 65` is the flag `deploy/runpod/nginx.conf` has been waiting for
+# by name since 3.2. MEASURED app-side: an idle upstream connection is dropped
+# after 2.0s at gunicorn's default and 65.0s with this flag. ⚠️ It is INERT on
+# this publisher and shipped anyway: the Compose edge sends `Connection: close`
+# (it refuses an `upstream` block, 3.2's resolver decision) and holds no
+# persistent upstream socket at all -- measured live, 60 requests through the
+# real edge left 124 sockets in TIME_WAIT and 0 ESTABLISHED. It governs RunPod's
+# pool, and the two command lines must not drift again to say so.
+#
+# ⚠️ `--max-requests` IS DELIBERATELY ABSENT. The plan asks for `--max-requests
+# 2000 --max-requests-jitter 200` against an UNMEASURED memory leak, and its
+# cost is measured: a recycle closes every WebSocket the worker is holding with
+# code 1012 (measured directly, `Maximum request limit of 20 exceeded`). Only
+# HTTP responses count toward it (`total_requests` increments in uvicorn's
+# `on_response_complete`; the WebSocket implementation never touches it), so at
+# §0's 300 rps peak 2,000 requests is 13.3s per worker today and 80s after step
+# 3.4's twelve processes -- 125 sockets dropped per worker per recycle, roughly
+# 94 forced reconnects a second platform-wide, each re-running the auth path. A
+# REQUEST COUNTER CANNOT EXPRESS "recycle rarely" on a platform whose rate
+# varies 6x by design (§0's peak factor) and whose process count is about to
+# change 6x. Recorded as an open debt with the measurement that would settle it
+# (a soak plus a per-worker RSS metric), not shipped as a guess with a known
+# user-visible price. `tests/unit/test_gunicorn_flags.py` holds the arithmetic.
 CMD ["gunicorn", "app.api.main:create_production_app()", \
      "--config", "/app/deploy/gunicorn.conf.py", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
+     "--timeout", "30", \
+     "--graceful-timeout", "30", \
+     "--keep-alive", "65", \
      "--error-logfile", "-"]

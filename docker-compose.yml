@@ -1012,6 +1012,33 @@ services:
       nofile:
         soft: 65536
         hard: 1048576
+    # ⚠️ THE SHUTDOWN WINDOWS WERE NESTED THE WRONG WAY ROUND (capacity 3.3),
+    # and this is the half that makes that step's acceptance criterion true.
+    # gunicorn's graceful window is 30s -- its own default, so this was already
+    # the case before 3.3 made the flag explicit -- and Docker's default stop
+    # window is 10s. MEASURED: `docker stop` on a process that ignores SIGTERM
+    # took 10.43s, and `docker inspect` on this container reported
+    # `StopTimeout=<nil>` because nothing here declared one.
+    #
+    # So the process that knew what it was still waiting for was given a third
+    # of the time of the one that did not, and the SIGKILL always came from
+    # Docker. MEASURED consequence with a response in flight: at the graceful
+    # deadline the stream ended in a `RemoteProtocolError` rather than an
+    # ending; under the 10s outer window that lands on EVERY request still in
+    # flight, mid-write, on every `up -d`.
+    #
+    # 45 = gunicorn's 30 plus margin. The arbiter was measured exiting 30.1-30.3s
+    # after SIGTERM in the worst case and 0.45s with nothing in flight, which is
+    # what a deploy actually costs: this window is only spent when there is
+    # something to wait for. The same number is `stopwaitsecs=45` in
+    # `deploy/runpod/supervisord.conf`, whose own default was also 10 (read out
+    # of supervisor's source), and `tests/unit/test_gunicorn_flags.py` fails the
+    # build if either publisher's outer window drops back below the inner one.
+    #
+    # ⚠️ Scoped to `app` on purpose. The workers and the relay have their own
+    # in-flight semantics (a message half-handled is not a response half-written)
+    # and their shutdown budget belongs to Wave 5, not here.
+    stop_grace_period: 45s
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 10s
