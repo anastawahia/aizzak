@@ -1012,6 +1012,40 @@ services:
       nofile:
         soft: 65536
         hard: 1048576
+    # ── The ACCEPT QUEUE (capacity 3.5) ──────────────────────────────────────
+    # `listen(backlog)` is not the backlog. The kernel silently clamps it to
+    # `net.core.somaxconn`, and that value is NAMESPACED -- a container carries
+    # its own copy, and the host's is never consulted. MEASURED, by connecting
+    # until the kernel started dropping and reading `TcpExtListenOverflows` on
+    # either side:
+    #
+    #     somaxconn=4096   listen( 511) queued  512   listen(2048) queued 2049
+    #     somaxconn=128    listen( 511) queued  129   listen(2048) queued  129
+    #
+    # gunicorn asks for 2048 (its default; nothing in this repository states
+    # it). The kernel's own default for `somaxconn` has been 4096 only since
+    # Linux 5.4 -- before that it was 128, and on such a host the line above
+    # says exactly what this listener would become: a queue of 129 for a
+    # platform whose §0 target is 1,500 sockets and a x6 login peak, with no
+    # log line anywhere, because an overflowing accept queue does not refuse
+    # the client. It drops the final ACK and lets the server retransmit its
+    # SYN-ACK on the 1s/2s/4s schedule, so the symptom is a latency tail.
+    #
+    # So the number is WRITTEN rather than inherited -- the same correction 3.1
+    # made to `worker_connections` (1024 x host cores, a capacity that changed
+    # with the machine) and 3.1 again to `nofile`.
+    #
+    # ⚠️ AND IT CANNOT GO IN `deploy/host-tuning.sh`. Measured both ways:
+    # `docker run --sysctl net.core.somaxconn=1024` is accepted while
+    # `--sysctl vm.overcommit_memory=1` is refused outright ("is not allowed"),
+    # and `/proc/sys/net/core/` inside a container holds seven entries with
+    # `somaxconn` among them. That script sets only what a container cannot.
+    #
+    # MEASURED at this setting, through the real edge and directly at this
+    # listener: 6,000 and 3,000 simultaneous connections respectively, zero
+    # ListenOverflows on either, p50 0.5ms and max 5.6ms to establish.
+    sysctls:
+      net.core.somaxconn: "4096"
     # ⚠️ THE SHUTDOWN WINDOWS WERE NESTED THE WRONG WAY ROUND (capacity 3.3),
     # and this is the half that makes that step's acceptance criterion true.
     # gunicorn's graceful window is 30s -- its own default, so this was already
@@ -1467,7 +1501,23 @@ services:
     # sets it under a comment about the TIME_WAIT interval, and it does nothing
     # for that. Left there rather than silently removed -- it is harmless, and
     # the correction belongs next to it.
+    #
+    # ── The ACCEPT QUEUE (capacity 3.5) ──────────────────────────────────────
+    # `net.core.somaxconn` is namespaced too, and it is stated here for the
+    # reason the `app` service's copy of this note gives in full: nginx asks
+    # the kernel for a backlog of 511 (its built-in default; no `listen
+    # ... backlog=` in `deploy/nginx/nginx.conf` states one), and on any kernel
+    # older than 5.4 the container default would clamp that to 128 without a
+    # word in any log. MEASURED here at 4096: four processes opening 1,500
+    # connections each -- 6,000 at once, four times §0's socket target --
+    # established every one with ZERO ListenOverflows, p50 0.6ms, max 5.6ms.
+    #
+    # 511 is deliberately NOT raised. It is the number the measurement above
+    # ran against, and nothing in this stack has been shown to overflow it;
+    # this line makes sure the resource behind that promise is stated, which is
+    # the half 3.1 found missing on `worker_connections`.
     sysctls:
+      net.core.somaxconn: "4096"
       net.ipv4.ip_local_port_range: "10000 65535"
       net.ipv4.tcp_tw_reuse: "1"
     restart: unless-stopped
