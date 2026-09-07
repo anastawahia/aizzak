@@ -173,14 +173,31 @@ class _Pool:
 
 @dataclass(frozen=True)
 class _Runner:
-    """One kind of process, and how many of it run."""
+    """One kind of process, and how many of it run.
+
+    ⚠️ `processes` is the count PER CONTAINER and `replicas` is how many
+    containers there are; the product is what the sums below multiply by. They
+    were one field until capacity 3.4 gave `app` three replicas, and collapsing
+    them is not a simplification -- `with_web_concurrency` substitutes the
+    sibling count, and substituting into a product silently DROPS the other
+    factor. `د-22` is that bug, found by 3.5 while it was measuring 3.4's
+    blocker: with `replicas: 3` the written ceiling stayed at the 14 it had
+    with one container, while 14 x 3 = 42 processes = 1,428 client seats
+    against a `MAX_CLIENT_CONN` of 500.
+    """
 
     name: str
     processes: int
+    replicas: int
     pools: tuple[_Pool, ...]
 
+    @property
+    def instances(self) -> int:
+        """Every OS process of this kind that is alive at once."""
+        return self.processes * self.replicas
+
     def clients(self, endpoint: str) -> int:
-        return self.processes * sum(p.connections for p in self.pools if p.endpoint == endpoint)
+        return self.instances * sum(p.connections for p in self.pools if p.endpoint == endpoint)
 
 
 @dataclass(frozen=True)
@@ -189,9 +206,15 @@ class _Topology:
     unaccounted: tuple[str, ...]
 
     def with_web_concurrency(self, processes: int) -> _Topology:
-        """The same stack with the API server's sibling count changed -- what
-        `test_raising_web_concurrency_*` needs in order to prove the guard
-        BITES rather than merely passing on today's values."""
+        """The same stack with the API server's PER-CONTAINER sibling count
+        changed -- what `test_raising_web_concurrency_*` needs in order to
+        prove the guard BITES rather than merely passing on today's values.
+
+        ⚠️ `processes` only, never `instances`: `WEB_CONCURRENCY` is what an
+        operator edits, `deploy.replicas` is what this step set, and the answer
+        this returns is the value for the FORMER with the latter left standing.
+        Writing to a single combined field here is exactly `د-22`.
+        """
         return replace(
             self,
             runners=tuple(
@@ -299,7 +322,7 @@ def _compose_topology() -> _Topology:
         else:
             unaccounted.append(f"{name} ({module})")
             continue
-        runners.append(_Runner(name=name, processes=processes * replicas, pools=pools))
+        runners.append(_Runner(name=name, processes=processes, replicas=replicas, pools=pools))
 
     return _Topology(runners=tuple(runners), unaccounted=tuple(unaccounted))
 
@@ -348,7 +371,11 @@ def _runpod_topology() -> _Topology:
         else:
             unaccounted.append(f"{match.group('name')} ({module})")
             continue
-        runners.append(_Runner(name=match.group("name"), processes=processes, pools=pools))
+        # RunPod is supervisord on one host: no replicas exist there at all,
+        # which is half of why its ceiling is the tighter one.
+        runners.append(
+            _Runner(name=match.group("name"), processes=processes, replicas=1, pools=pools)
+        )
 
     return _Topology(runners=tuple(runners), unaccounted=tuple(unaccounted))
 
@@ -387,7 +414,7 @@ def _demand_by_role(topology: _Topology) -> dict[str, int]:
         for pool in runner.pools:
             if pool.endpoint != _POOLER_ENDPOINT:
                 continue
-            demand[pool.role] = demand.get(pool.role, 0) + runner.processes * pool.connections
+            demand[pool.role] = demand.get(pool.role, 0) + runner.instances * pool.connections
     return demand
 
 
@@ -412,7 +439,7 @@ def _server_backends(topology: _Topology, default_pool_size: int) -> int:
 def _direct_backends(topology: _Topology) -> int:
     """RunPod has no pooler, so every pool slot is a backend."""
     return sum(
-        runner.processes * sum(pool.connections for pool in runner.pools)
+        runner.instances * sum(pool.connections for pool in runner.pools)
         for runner in topology.runners
     )
 
@@ -571,7 +598,32 @@ def test_app_rw_is_the_role_the_pooler_actually_throttles() -> None:
     far more concurrent transactions than `DEFAULT_POOL_SIZE` grants, and every
     one over the line waits. This is what makes 2.2 a real step and not a
     round-number bump -- and what makes `QUERY_WAIT_TIMEOUT` matter, since the
-    waiting is silent today."""
+    waiting is silent today.
+
+    ⭐ THIS TEST USED TO ASSERT THAT `app_rw` WAS THE **ONLY** OVER-SUBSCRIBED
+    ROLE, AND THAT SENTENCE IS WHAT `3.5` READ AS "3.4 IS BLOCKED BY 2.2". It
+    was not a ceiling; it was a description of a stack with one `app`
+    container. With three, `metrics_reader` crosses `DEFAULT_POOL_SIZE` too
+    (12 processes x 4 = 48 against 25) and the old assertion failed -- while
+    BOTH real ceilings held with room: 420 client seats of 500, and 53 backends
+    of 97.
+
+    ⚠️ And it failed by reasoning from MAXIMA, which is the one unit this
+    module's own `_server_backends` docstring says cannot answer a question
+    like this: "summing the maxima would report 175 against a ceiling of 97 and
+    declare a stack broken that cannot reach a quarter of that". 48 is what
+    `metrics_reader` would hold if all twelve siblings ran four simultaneous
+    metrics transactions each. MEASURED on the live stack instead: Prometheus
+    opens ONE per scrape per container, `pgbouncer_pools_client_active` read 5
+    for that role and `pgbouncer_pools_server_active` read **0**.
+
+    So what is asserted now is the thing that is actually load-bearing --
+    `outbox_relay` must NOT queue, because it is one replica by design and its
+    cycle time has an alert on it (`AizzakOutboxCycleTimeHigh`) -- plus `ح-3`'s
+    own claim, that `app_rw` is the most over-subscribed role by a wide margin.
+    The ceilings are judged by the two tests above this one, which is where a
+    ceiling belongs.
+    """
     topology = _compose_topology()
     default_pool_size = int(_pgbouncer_env()["DEFAULT_POOL_SIZE"])
     demand = _demand_by_role(topology)
@@ -583,11 +635,15 @@ def test_app_rw_is_the_role_the_pooler_actually_throttles() -> None:
         "app_rw no longer over-subscribes its pool -- ح-3 has stopped being the "
         "binding constraint and 08 §2-ب's ledger needs rewriting, not patching"
     )
-    for role in ("metrics_reader", "outbox_relay"):
-        assert demand[role] <= default_pool_size, (
-            f"`{role}` now over-subscribes the pool too; the ledger names app_rw as the "
-            "only over-subscribed role"
-        )
+    assert demand["app_rw"] == max(demand.values()), (
+        f"`app_rw` is no longer the most over-subscribed role ({demand}); ح-3 names it "
+        "as the binding one and 08 §2-ب's ledger is written around that"
+    )
+    assert demand["outbox_relay"] <= default_pool_size, (
+        "the outbox relay now has to WAIT for a server connection. It is one replica by "
+        "design and `AizzakOutboxCycleTimeHigh` fires at 3s of publish lag, so queueing "
+        "here turns into a firing alert rather than into slower requests."
+    )
 
 
 # ------------------------------------------ ceiling three: RunPod, no pooler --
@@ -606,32 +662,59 @@ def test_the_runpod_image_stays_inside_its_own_max_connections() -> None:
     )
 
 
-def test_raising_web_concurrency_bites_five_turns_sooner_on_runpod() -> None:
-    """⭐ The finding this step exists to make visible. The same knob, in the
-    same repository, has an order of magnitude more room on one deployment than
-    the other -- because Compose puts a pooler between the app and Postgres and
-    the RunPod image does not. `deploy/runpod/entrypoint.sh` invites an
-    operator to override `WEB_CONCURRENCY` and states no ceiling; this is the
-    ceiling, and 08 §2-ب writes both numbers down."""
+def test_the_same_knob_has_a_different_ceiling_on_each_publisher() -> None:
+    """⭐ The finding 2.3 existed to make visible -- and 3.4 REVERSED IT.
+
+    The same knob, in the same repository, has different room on the two
+    deployments, because Compose puts a pooler between the app and Postgres and
+    the RunPod image does not. 2.3 measured that and 08 §2-ب wrote it down with
+    RunPod as the tighter one, "the one an operator must budget against".
+
+    ⚠️ THAT SENTENCE IS NOW FALSE, and by exactly the thing 3.4 changed:
+    replicas multiply the Compose side and RunPod has none (supervisord on one
+    host). MEASURED both ways at each candidate:
+
+        wc=4:  compose  420 clients / 500      runpod  140 backends / 197
+        wc=5:  compose  522 clients / 500      runpod  174 backends / 197
+        wc=6:  compose  624 clients / 500      runpod  208 backends / 197
+
+    So the ceilings are **Compose 4, RunPod 5** and the tighter deployment is
+    now the one with the pooler in it. This test therefore no longer asserts
+    WHICH is tighter -- that is a fact about today's replica count and it has
+    already flipped once. It asserts that the two are DIFFERENT, that each
+    publisher's shipped default fits its own ceiling, and that both ceilings
+    can still be exceeded (a ceiling nothing can cross is not one).
+    """
     compose = _compose_topology()
     runpod = _runpod_topology()
     declared = _RUNPOD_MAX_CONNECTIONS.search(_RUNPOD_ENTRYPOINT.read_text(encoding="utf-8"))
     assert declared is not None
+    runpod_ceiling = int(declared.group("value")) - _PG_SUPERUSER_RESERVED
+    client_ceiling = int(_pgbouncer_env()["MAX_CLIENT_CONN"])
 
-    compose_room = _highest_fitting_web_concurrency(
-        compose, int(_pgbouncer_env()["MAX_CLIENT_CONN"]), _pooler_clients
-    )
-    runpod_room = _highest_fitting_web_concurrency(
-        runpod, int(declared.group("value")) - _PG_SUPERUSER_RESERVED, _direct_backends
-    )
+    compose_room = _highest_fitting_web_concurrency(compose, client_ceiling, _pooler_clients)
+    runpod_room = _highest_fitting_web_concurrency(runpod, runpod_ceiling, _direct_backends)
 
-    assert runpod_room < compose_room, (
-        "the RunPod image is no longer the tighter of the two deployments; 08 §2-ب "
-        "presents it as the one an operator must budget against"
+    assert compose_room != runpod_room, (
+        "the two publishers now have the SAME WEB_CONCURRENCY ceiling. That is the one "
+        "outcome 08 §2-ب's two-number ledger would stop being worth its length for -- "
+        "check it rather than deleting this test."
     )
-    assert (
-        _direct_backends(runpod.with_web_concurrency(runpod_room + 1))
-        > int(declared.group("value")) - _PG_SUPERUSER_RESERVED
+    # Both ceilings BITE: one turn past each, the sum leaves its own bound.
+    assert _pooler_clients(compose.with_web_concurrency(compose_room + 1)) > client_ceiling
+    assert _direct_backends(runpod.with_web_concurrency(runpod_room + 1)) > runpod_ceiling
+
+    # And each publisher's shipped default is inside its own ceiling -- the
+    # mistake this whole module exists to catch is a default nobody re-derived
+    # after changing something else, which is precisely what 3.4 did.
+    assert int(_env_example()["WEB_CONCURRENCY"]) <= compose_room, (
+        f".env.example ships WEB_CONCURRENCY={_env_example()['WEB_CONCURRENCY']} against a "
+        f"Compose ceiling of {compose_room}. With `deploy.replicas` on `app` this knob "
+        "multiplies by the replica count, so the ceiling moved when 3.4 did."
+    )
+    assert int(_runpod_exports()["WEB_CONCURRENCY"]) <= runpod_room, (
+        f"deploy/runpod/entrypoint.sh ships WEB_CONCURRENCY="
+        f"{_runpod_exports()['WEB_CONCURRENCY']} against a ceiling of {runpod_room}"
     )
 
 
@@ -651,11 +734,29 @@ def _written_ledger() -> dict[str, int]:
     """The `key = value` block inside 08 §2-ب. A parsed block rather than a
     substring search over the prose: looking for "5" in a page that also says
     "5432" passes for the wrong reason, and a guard that can pass vacuously is
-    the failure mode this whole module exists to remove."""
+    the failure mode this whole module exists to remove.
+
+    ⚠️ The slice ends at the next heading of ANY level, and it used to end only
+    at the next `## `. That was over-broad from the day it was written and
+    harmless until 3.4: §2-ج through §2-و are all `###`, so the "§2-ب block"
+    silently ran to the end of section 2 and simply happened to contain no
+    other `key.name = number` line. 3.4's §2-ز resource ledger is written in
+    the same notation, so it was swallowed whole and this comparison started
+    failing with four keys it had never heard of. A parser that reads past its
+    own section is not scoped by luck the next time either.
+    """
     text = _RUNBOOK.read_text(encoding="utf-8")
     start = text.index(_LEDGER_HEADING)
-    section = text[start : text.index("\n## ", start)]
-    return {m.group("key"): int(m.group("value")) for m in _LEDGER_LINE.finditer(section)}
+    after = start + len(_LEDGER_HEADING)
+    end = min(
+        (
+            index
+            for index in (text.find(f"\n{'#' * level} ", after) for level in (2, 3, 4))
+            if index != -1
+        ),
+        default=len(text),
+    )
+    return {m.group("key"): int(m.group("value")) for m in _LEDGER_LINE.finditer(text[start:end])}
 
 
 def test_the_runbook_ledger_carries_the_numbers_this_module_computes() -> None:

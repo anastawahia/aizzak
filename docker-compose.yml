@@ -11,6 +11,40 @@
 # ── Every image tag is pinned ──────────────────────────────────────────────
 # The two pre-existing ad-hoc containers ran `:latest`. A deploy artifact
 # whose components change underneath it between two `up`s is not one.
+#
+# ── Every service carries `deploy.resources.limits` (capacity 3.4) ─────────
+# Until this step NO service had a ceiling: an indexing worker that opened a
+# 50 MB file could starve Postgres on the same host. The numbers come from
+# `docs/capacity-plan.md` §6, RECONCILED against what this stack was measured
+# using -- because §6's table does not add up to what its own total row
+# claims, and does not fit the host it names:
+#
+#     §6's fifteen rows sum to    34 vCPU / 67.75 GB
+#     §6's own total row says    ~31 vCPU / ~59 GB
+#     §6's reference host is      32 vCPU / 64 GB
+#
+# So the budget as written over-commits its own host by 2 vCPU and 3.75 GB,
+# and the total row that would have shown it understates the rows by 3 vCPU
+# and 8.75 GB. §6 also names fifteen services for a file that has TWENTY-NINE.
+# The ledger this file now carries is in `08-local-runbook §2-ج`, recomputed
+# from these keys by `tests/unit/test_resource_budget.py`.
+#
+# ⚠️ **A CPU limit and a memory limit are not the same kind of promise, and
+# the ledger treats them differently.** `cpus` is a CEILING on a share the
+# scheduler hands out; several services capped at 2 on a 4-core host still
+# get isolation, because no one of them can take more than its cap. `memory`
+# is a KILL THRESHOLD on a cgroup, and it isolates NOTHING once the sum passes
+# host RAM: the kernel's OOM killer fires host-wide, by RSS, long before any
+# cgroup reaches its own limit. So the standing memory total is a HARD
+# requirement against the host (50.5 GB of 64) and the CPU total is reported
+# as an oversubscription ratio (31.5 of 32).
+#
+# ⚠️ **AND DOCKER WILL NOT TELL YOU.** Measured on this machine (10 vCPU,
+# 12.67 GB): `deploy.resources.limits: {cpus: "6.0", memory: 20G}` was
+# accepted in full -- `HostConfig.Memory=21474836480`, `NanoCpus=6000000000`
+# -- with no warning on stdout, no log line, and no failure. A budget written
+# for a host you do not have looks exactly like a budget that fits.
+# `deploy/resource-budget.sh` is what says it out loud.
 
 name: aizzak
 
@@ -252,6 +286,11 @@ services:
   # `$PGDATA` and `/var/run/postgresql` and nothing else, and `command:`
   # cannot chown anything at all.
   wal-archive-init:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
     image: postgres:16
     user: root
     volumes:
@@ -267,6 +306,19 @@ services:
     <<: *app-logging
 
   postgres:
+    deploy:
+      resources:
+        limits:
+          # §6 says 20 GB "with shared_buffers=8GB". DERIVED from that same
+          # proposal instead of copied: 8 (shared_buffers) + 1
+          # (maintenance_work_mem) + 300 x 16 MB (work_mem at 2.1's own
+          # max_connections, the pessimistic bound) = 13.8. MEASURED today,
+          # before 2.1 has run: 44 MiB, because shared_buffers is still the
+          # 128 MB default ح-4 describes. The 6 GB this returns to the budget
+          # is what lets the total fit §6's own reference host, which §6 as
+          # written does not.
+          cpus: "6.0"
+          memory: 14g
     image: postgres:16
     depends_on:
       wal-archive-init:
@@ -486,6 +538,11 @@ services:
   # referenced by nothing, mounted nowhere, and reading for all the world
   # like the pooler's configuration while containing none of it.
   pgbouncer:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256m
     image: edoburu/pgbouncer:v1.23.1-p2
     depends_on:
       postgres:
@@ -587,6 +644,18 @@ services:
     <<: *app-logging
 
   redis:
+    deploy:
+      resources:
+        limits:
+          # ONE row, not two. §6 budgets `redis-stream` 4 GB and `redis-cache`
+          # 3 GB because ق-4 recommends splitting them -- unsigned, so one
+          # process does both jobs here, and one heap serving two roles does
+          # not need the sum of two independent maxima. What actually bounds
+          # this is `maxmemory` (ح-10, wave 5), which nothing sets yet;
+          # MEASURED today: 10.5 MiB. The day ق-4 splits the service, this row
+          # divides -- it does not double.
+          cpus: "2.0"
+          memory: 5g
     image: redis:7
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -602,6 +671,11 @@ services:
     <<: *app-logging
 
   minio:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
     # Isolated by construction: its own volume and its own root credentials.
     # The opt-in bucket-scoped live-test account is provisioned by
     # `minio-bootstrap`; it never reuses the root identity.
@@ -624,6 +698,16 @@ services:
     <<: *app-logging
 
   qdrant:
+    deploy:
+      resources:
+        limits:
+          # §6 says 10 GB and annotates it "awaiting 4.4's measurement".
+          # MEASURED at 5.497 GiB on an idle stack carrying the full
+          # 200-workspace seed -- the LARGEST consumer here by a wide margin
+          # and the only row §6 is not generous about. 8 GB keeps ~45% headroom
+          # over that; 4.4 is what replaces the estimate with a number.
+          cpus: "3.0"
+          memory: 8g
     image: qdrant/qdrant:v1.13.4
     volumes:
       - qdrant-data:/qdrant/storage
@@ -678,6 +762,11 @@ services:
   # same trust boundary as Postgres/Redis/Qdrant above (tenant text crosses
   # the internal Docker network to reach it, never the public one).
   embedding:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
     image: aizzak/embedding:${EMBEDDING_IMAGE_TAG:-dev}
     build:
       context: .
@@ -724,6 +813,11 @@ services:
   # no KMS here to auto-unseal against). NOT acceptable for real production
   # -- see docs/quickstart.md §5 for the upgrade path.
   vault:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
     image: hashicorp/vault:1.18
     entrypoint: ["/bin/sh", "/vault/scripts/start.sh"]
     environment:
@@ -763,6 +857,11 @@ services:
   # image -- the alternative was fetching an unversioned binary at boot,
   # which would defeat the point of pinning everything else.
   vault-bootstrap:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256m
     image: hashicorp/vault:1.18
     depends_on:
       vault:
@@ -798,6 +897,11 @@ services:
     <<: *app-logging
 
   minio-bootstrap:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256m
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       minio:
@@ -838,6 +942,11 @@ services:
   # the build if this DSN is ever pointed at the pooler.
   migrate:
     <<: [*app-image, *app-logging]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     depends_on:
       postgres:
         condition: service_healthy
@@ -884,6 +993,11 @@ services:
   # directly at `127.0.0.1:11434`. The generic Compose fallback remains 11434
   # for hosts where Ollama is reachable there without this WSL bridge.
   ollama-bridge:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     image: alpine/socat:1.8.0.3
     network_mode: host
     command: >-
@@ -913,6 +1027,30 @@ services:
 
   app:
     <<: [*app-image, *app-logging, *host-gateway]
+    # ⭐ خطوة السعة 3.4 — ثلاثُ نسخٍ × `WEB_CONCURRENCY=4` = اثنتا عشرةَ
+    # عمليّة. والرقمان ليسا اختياراً مريحاً بل **سقفُ الدفتر بالضبط**: حارسُ
+    # `2.3` يحسب 3 × 4 × (30 عميلاً لـ`app_rw` + 4 لـ`metrics_reader`) + 12
+    # للبقيّة = **420 مقعداً من 500** (`MAX_CLIENT_CONN`)، و`WEB_CONCURRENCY=5`
+    # تعطي **522** أي فوق السقف. فالخامسةُ ممنوعةٌ حتّى ترفع `2.2` السقف، لا
+    # مؤجَّلةٌ بذوق.
+    #
+    # ⚠️ **و`.env` يهزم هذا الافتراض بصمت.** Compose يحمّل `.env` تلقائيّاً
+    # وقيمتُه تتقدّم على `${WEB_CONCURRENCY:-4}` أدناه؛ فمضيفٌ يحمل
+    # `WEB_CONCURRENCY=2` في ملفّه يبقى عند ستّ عمليّات ولا شيءَ يقول ذلك.
+    # `.env.example` رُفعت معها، والحارسُ يقرأ الملفَّين.
+    #
+    # ⚠️ **ولا `container_name` ولا `ports:` على هذه الخدمة** — وكلاهما شرطٌ
+    # للنسخ: الأوّلُ اسمٌ لا يقبل التكرار، والثاني منفذُ مضيفٍ لا يقبل
+    # ثلاثةَ حاجزين. الخدمةُ `expose`-only منذ البداية، والحافّةُ تصلها
+    # بالاسم عبر `resolver` لا عبر `upstream` — وهو القرارُ الذي اتُّخذ في
+    # `7.1` وأُعيد تأكيدُه في `3.2`، والذي جعل هذه الخطوةَ ممكنةً بلا لمسِ
+    # حرفٍ في `deploy/nginx/`.
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
     depends_on:
       ollama-bridge:
         condition: service_started
@@ -958,7 +1096,7 @@ services:
       DB_POOL_TIMEOUT_S: ${DB_POOL_TIMEOUT_S:-5}
       DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
       DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: ${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:-10000}
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
       # P1-3 (p1-hardening-plan.md §3 step 10): `/metrics`'s OWN read of
       # platform.outbox -- app_rw above is INSERT-only there (provision.py),
       # so this is a SEPARATE, SELECT-only role/connection, never a widened
@@ -1089,6 +1227,11 @@ services:
   # 5 s mark of quiet.
   worker-memory:
     <<: [*app-image, *app-logging, *host-gateway, *worker-service]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     environment:
       <<: [*app-env, *worker-env]
       WORKER: memory
@@ -1179,6 +1322,10 @@ services:
     # indexing lag past two minutes with both replicas active; 08 §2 carries
     # the command that reads it.
     deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
       replicas: 2
     healthcheck:
       <<: *heartbeat-healthcheck
@@ -1208,6 +1355,11 @@ services:
   # dead at build time, on purpose.
   worker-media:
     <<: [*app-image, *app-logging, *host-gateway, *worker-service]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
     environment:
       <<: [*app-env, *worker-env]
       WORKER: media
@@ -1274,6 +1426,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://outbox_relay:${OUTBOX_RELAY_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
     command: ["python", "-m", "app.workers.outbox_relay"]
     deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
       replicas: 1
     # ت‑3. The relay beats on CLEAN cycles only (`OutboxRelay.run_forever`),
     # which is the whole point here: a relay that cannot reach Postgres or
@@ -1314,6 +1470,11 @@ services:
   # platform caused by the backup system.
   wal-shipper:
     <<: [*app-image, *app-logging]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     user: "999:999"
     depends_on:
       # NOT `postgres`. This service holds no database credential and opens no
@@ -1361,6 +1522,11 @@ services:
   # a container whose whole job is to exit.
   backup:
     <<: [*app-image, *app-logging]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     profiles: ["backup"]
     user: "999:999"
     depends_on:
@@ -1385,6 +1551,11 @@ services:
   # itself when a certificate is already present, which is also how an
   # operator supplies a real one: drop it in and this stays out of the way.
   nginx-certs:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
     image: nginx:1.27
     volumes:
       - ./deploy/nginx/gen-cert.sh:/gen-cert.sh:ro
@@ -1394,6 +1565,11 @@ services:
     <<: *app-logging
 
   nginx:
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512m
     image: nginx:1.27
     depends_on:
       app:
@@ -1538,6 +1714,11 @@ services:
   # internal network with `expose`, never `ports`, and the nginx edge already
   # 404s `/metrics` before the catch-all proxy can reach it.
   prometheus:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
     image: prom/prometheus:v3.13.2
     depends_on:
       app:
@@ -1585,6 +1766,11 @@ services:
   # the "stable local operator/test interface" this file's own header names.
   # Recorded as a decision in docs/capacity-status.md, not left implicit.
   grafana:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 512m
     image: grafana/grafana:13.0.8
     depends_on:
       prometheus:
@@ -1630,6 +1816,11 @@ services:
   # uses, with the same identity -- no new grant, no new role, no widening of
   # anything that exists.
   pgbouncer-exporter:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
     image: prometheuscommunity/pgbouncer-exporter:v0.12.1
     depends_on:
       pgbouncer:
@@ -1672,6 +1863,11 @@ services:
   # was ever EVICTED -- silent data loss that surfaces much later as an
   # unexplained miss, and which nothing in this codebase currently notices.
   redis-exporter:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
     image: oliver006/redis_exporter:v1.90.0-alpine
     depends_on:
       redis:
@@ -1705,6 +1901,11 @@ services:
   # `tier: optional` so its ordinary absence does not hold a target-down
   # alert firing forever.
   cadvisor:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
     profiles: ["container-metrics"]
     image: gcr.io/cadvisor/cadvisor:v0.55.1
     command:
@@ -1741,6 +1942,11 @@ services:
   # the same reason -- and one step stronger here, because these lines carry
   # far more than a counter does. Grafana proxies it; nothing else needs it.
   loki:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1g
     image: grafana/loki:3.5.7
     command:
       - "-config.file=/etc/loki/loki.yml"
@@ -1767,6 +1973,11 @@ services:
   # socket is root on the host, 0.3 put cadvisor behind an opt-in profile
   # rather than grant it for free, and 0.6 cannot be opt-in).
   alloy:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 512m
     image: grafana/alloy:v1.10.2
     depends_on:
       loki:
@@ -1836,6 +2047,11 @@ services:
   # change what the numbers are a baseline OF, so `run.sh` stamps which
   # generator produced each result.
   k6:
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
     profiles: ["load"]
     # Pinned like every other image here, and the pin is load-bearing: the
     # WebSocket scenarios import `k6/experimental/websockets`, and which name

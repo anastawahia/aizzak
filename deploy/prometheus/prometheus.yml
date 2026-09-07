@@ -51,16 +51,63 @@ scrape_configs:
   # this path at all; the Compose-internal address is the only way in, and a
   # scraper on the internal network is precisely who is meant to use it.
   #
-  # One target for `WEB_CONCURRENCY` sibling processes, and that is correct
-  # rather than a sampling error: the external-state gauges are recomputed
-  # from Postgres/Redis on every scrape (so every sibling answers
-  # identically), and the RED family is aggregated across siblings out of
-  # `PROMETHEUS_MULTIPROC_DIR` (step 0.2). Whichever worker gunicorn hands
-  # the scrape to returns the same numbers.
+  # ⭐ ONE TARGET PER CONTAINER, DISCOVERED BY DNS -- capacity step 3.4, and
+  # the paragraph that used to stand here was RIGHT until that step and wrong
+  # the moment it shipped. It said: "One target for `WEB_CONCURRENCY` sibling
+  # processes, and that is correct rather than a sampling error", because the
+  # RED family is aggregated across siblings out of `PROMETHEUS_MULTIPROC_DIR`
+  # and the external-state gauges are recomputed from Postgres/Redis on every
+  # scrape. Both halves of that hold ACROSS SIBLINGS IN ONE CONTAINER. Neither
+  # holds across three containers, and `app` now has three.
+  #
+  # ⚠️ WHAT A SINGLE `static_configs: ["app:8000"]` DID WITH THREE REPLICAS.
+  # Docker's embedded DNS returns all three addresses and Prometheus connects
+  # to one of them per scrape, so ONE time series was fed by three independent
+  # counters in rotation. MEASURED on the live stack, the `/metrics` route's
+  # own request counter, one sample per 15s scrape:
+  #
+  #     335 336   1   2   3   1   4  337 337
+  #
+  # Prometheus reads every drop as a counter reset and adds the new value, so
+  # each hop back to the busy container manufactures a spike. Measured against
+  # a truth of exactly one request per 15s (0.067/s):
+  #
+  #     rate(...[1m])  0.061 0.061 0.044 0.031 0.020 0.027 0.104 7.025 6.660
+  #                                                              ^^^^^ 105x
+  #
+  # No gap, no `up == 0`, no error: the failure is a SPIKE, in the direction
+  # that reads as load. Every RED panel, every histogram quantile and every
+  # later step's acceptance criterion reads through this job.
+  #
+  # DNS A records rather than `static_configs`, because Compose assigns the
+  # addresses and nothing else here knows them. `refresh_interval` matched to
+  # the scrape interval so a recreated replica is discovered within one scrape.
+  #
+  # ⚠️ AND THE REPAIR HAS ITS OWN COST, WHICH IS PAID IN `alerts.yml` AND THE
+  # DASHBOARD, NOT HERE. Splitting the target splits BOTH metric families, and
+  # they need opposite aggregations:
+  #
+  #   * process-owned (`aizzak_http_*`, `aizzak_db_pool_*`,
+  #     `aizzak_ws_connections`, ...) -- each container reports its own share,
+  #     so the fleet number is `sum()`. Every panel already summed, for the
+  #     multiprocess reason, and keeps reading correctly.
+  #   * external state (`aizzak_dlq_depth`, `aizzak_stream_lag_seconds`,
+  #     `aizzak_outbox_oldest_unpublished_age_seconds`,
+  #     `aizzak_vault_authenticated`) -- every container recomputes the SAME
+  #     fact from Postgres/Redis, so `sum()` multiplies it by the replica
+  #     count. MEASURED: `sum(aizzak_dlq_depth)` read 90 for a real backlog of
+  #     30, and `sum(max by (stream) (aizzak_dlq_depth))` read 30.
+  #
+  # The two families are indistinguishable by metric name, which is why
+  # `tests/unit/test_metrics_topology.py` holds the list and checks every
+  # query in both files against it.
   - job_name: aizzak-app
     metrics_path: /metrics
-    static_configs:
-      - targets: ["app:8000"]
+    dns_sd_configs:
+      - names: ["app"]
+        type: A
+        port: 8000
+        refresh_interval: 15s
 
   # ح-3's direct evidence. `cl_waiting` (clients queued for a server
   # connection) and `sv_active` are the two numbers that separate "the pooler

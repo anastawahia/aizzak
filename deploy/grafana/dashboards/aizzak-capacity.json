@@ -387,7 +387,7 @@
             "uid": "aizzak-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(aizzak_dlq_depth)",
+          "expr": "sum(max by (stream) (aizzak_dlq_depth))",
           "legendFormat": "entries",
           "range": false,
           "instant": true,
@@ -1207,7 +1207,7 @@
             "uid": "aizzak-prometheus"
           },
           "editorMode": "code",
-          "expr": "aizzak_stream_lag_seconds",
+          "expr": "max by (stream, group) (aizzak_stream_lag_seconds)",
           "legendFormat": "{{stream}} / {{group}}",
           "range": true,
           "instant": false,
@@ -1277,7 +1277,7 @@
             "uid": "aizzak-prometheus"
           },
           "editorMode": "code",
-          "expr": "aizzak_dlq_depth",
+          "expr": "max by (stream) (aizzak_dlq_depth)",
           "legendFormat": "{{stream}}",
           "range": true,
           "instant": false,

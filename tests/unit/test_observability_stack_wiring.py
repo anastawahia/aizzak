@@ -143,22 +143,57 @@ def _provisioned_datasource_uids() -> set[str]:
 # ── prometheus.yml against the Compose topology ────────────────────────────
 
 
+def _scraped_hosts(job: dict) -> list[str]:
+    """Every Compose hostname this job scrapes, however it finds them.
+
+    ⚠️ Until capacity 3.4 every job here used `static_configs`, and these tests
+    read that key directly. `app` now runs three replicas behind three scrape
+    targets that only DNS knows the addresses of (`dns_sd_configs`), because a
+    single static target for three containers is one time series fed by three
+    counters in rotation -- measured at 105x the true rate, and detailed in
+    `deploy/prometheus/prometheus.yml`'s own comment and in
+    `tests/unit/test_metrics_topology.py`. What the assertions below actually
+    mean -- "the name resolves to a service Compose creates", "the app is never
+    reached through the edge" -- is unchanged by how the target is discovered,
+    so the accessor is what moved rather than the properties.
+    """
+    hosts = [
+        target.rsplit(":", 1)[0]
+        for static in job.get("static_configs", ())
+        for target in static["targets"]
+    ]
+    hosts += [name for discovery in job.get("dns_sd_configs", ()) for name in discovery["names"]]
+    return hosts
+
+
+def _labelled_static_hosts(job: dict, label: str, value: str) -> set[str]:
+    """Hosts carrying a given target label. Only `static_configs` can carry one
+    inline; a discovered target gets labels through `relabel_configs`, and
+    nothing here uses those -- so a job that grows them without this helper
+    learning about them is a gap, which `test_the_optional_target_*` closes by
+    comparing against the profiled set rather than against a literal."""
+    return {
+        target.rsplit(":", 1)[0]
+        for static in job.get("static_configs", ())
+        if static.get("labels", {}).get(label) == value
+        for target in static["targets"]
+    }
+
+
 def test_every_scrape_target_names_a_service_that_exists() -> None:
     """A target pointing at a hostname Compose never creates yields a
     permanently-down target, which the ``AizzakScrapeTargetDown`` rule then
     reports forever -- and an always-firing alert disarms the whole file."""
     services = set(_compose()["services"])
     for job in _prom()["scrape_configs"]:
-        for static in job["static_configs"]:
-            for target in static["targets"]:
-                host = target.rsplit(":", 1)[0]
-                if host == "127.0.0.1":
-                    # Prometheus scraping itself; there is no service name here.
-                    continue
-                assert host in services, (
-                    f"{_PROM_YML}: job {job['job_name']!r} scrapes {target!r}, but "
-                    f"{host!r} is not a service in {_COMPOSE.name}"
-                )
+        for host in _scraped_hosts(job):
+            if host == "127.0.0.1":
+                # Prometheus scraping itself; there is no service name here.
+                continue
+            assert host in services, (
+                f"{_PROM_YML}: job {job['job_name']!r} scrapes {host!r}, but it "
+                f"is not a service in {_COMPOSE.name}"
+            )
 
 
 def test_the_app_is_scraped_directly_and_never_through_the_edge() -> None:
@@ -168,10 +203,19 @@ def test_the_app_is_scraped_directly_and_never_through_the_edge() -> None:
     through ``nginx`` would either break -- or, far worse, be made to work by
     someone relaxing that 404."""
     jobs = {job["job_name"]: job for job in _prom()["scrape_configs"]}
-    targets = [t for sc in jobs["aizzak-app"]["static_configs"] for t in sc["targets"]]
-    assert targets == ["app:8000"], (
-        f"{_PROM_YML}: the app must be scraped at its Compose-internal address, not "
-        f"through the edge -- found {targets}"
+    job = jobs["aizzak-app"]
+    assert _scraped_hosts(job) == ["app"], (
+        f"{_PROM_YML}: the app must be scraped at its Compose-internal name, not "
+        f"through the edge -- found {_scraped_hosts(job)}"
+    )
+    ports = {str(discovery["port"]) for discovery in job.get("dns_sd_configs", ())} or {
+        target.rsplit(":", 1)[1]
+        for static in job.get("static_configs", ())
+        for target in static["targets"]
+    }
+    assert ports == {"8000"}, (
+        f"{_PROM_YML}: the app's scrape port is {ports}; 8000 is the container port the "
+        "`app` service exposes, and any other number is either the edge or nothing"
     )
 
 
@@ -214,17 +258,10 @@ def test_the_optional_target_is_the_one_behind_a_compose_profile() -> None:
     compose = _compose()
     optional_hosts: set[str] = set()
     for job in _prom()["scrape_configs"]:
-        for static in job["static_configs"]:
-            if static.get("labels", {}).get("tier") == "optional":
-                optional_hosts.update(t.rsplit(":", 1)[0] for t in static["targets"])
+        optional_hosts |= _labelled_static_hosts(job, "tier", "optional")
 
     profiled = {name for name, service in compose["services"].items() if service.get("profiles")}
-    scraped = {
-        t.rsplit(":", 1)[0]
-        for job in _prom()["scrape_configs"]
-        for static in job["static_configs"]
-        for t in static["targets"]
-    }
+    scraped = {host for job in _prom()["scrape_configs"] for host in _scraped_hosts(job)}
     assert optional_hosts == profiled & scraped, (
         f"{_PROM_YML}: the targets labelled `tier: optional` ({sorted(optional_hosts)}) must "
         f"be exactly the scraped services behind a Compose profile "

@@ -52,8 +52,20 @@ groups:
       # the WHOLE batch, never one poisoned row -- there is no "slow but
       # otherwise healthy" steady state this threshold could mistake for an
       # outage).
+      #
+      # ⚠️ `max(...)` SINCE CAPACITY 3.4, and the wrapper is not cosmetic. This
+      # gauge is EXTERNAL STATE: every `app` container recomputes the identical
+      # number from Postgres on every scrape, and `app` now has three of them
+      # behind three scrape targets. Bare, this expression matched three series
+      # describing ONE outbox and fired three alert instances for it. `max()`
+      # is the right collapse rather than `avg()` for the same reason
+      # `multiprocess_mode="max"` is right for event-loop lag: the question is
+      # whether the oldest row anywhere is past budget, and averaging is what
+      # hides it. `sum()` would have been the wrong collapse in the other
+      # direction -- it would treble the age and fire at a third of the
+      # threshold.
       - alert: AizzakOutboxCycleTimeHigh
-        expr: aizzak_outbox_oldest_unpublished_age_seconds > 3
+        expr: max(aizzak_outbox_oldest_unpublished_age_seconds) > 3
         for: 2m
         labels:
           severity: warning
@@ -94,8 +106,20 @@ groups:
       # fluctuation. So the threshold is deliberately `> 0`, not some larger
       # "how much backlog is normal" number: there IS no normal non-zero
       # backlog for this queue.
+      #
+      # ⚠️ `sum(max by (stream) (...))` SINCE CAPACITY 3.4, and the inner
+      # `max by (stream)` is what makes the outer `sum` mean what it says. The
+      # sum across STREAMS is the intent -- one alert for the whole DLQ, the
+      # ت-6 correction -- but with three `app` replicas each reporting the same
+      # per-stream depth, a bare `sum()` adds the same entries once per
+      # container. MEASURED on the live stack: a real backlog of 30 read as 90.
+      # This rule's `> 0` threshold survives that (three times zero is still
+      # zero, and it fires either way when there is anything at all), but the
+      # DESCRIPTION an operator reads carries the number, and so does the
+      # dashboard panel next to it. `max by (stream)` collapses the replicas
+      # and keeps the streams.
       - alert: AizzakDlqNotEmpty
-        expr: sum(aizzak_dlq_depth) > 0
+        expr: sum(max by (stream) (aizzak_dlq_depth)) > 0
         for: 5m
         labels:
           severity: warning
