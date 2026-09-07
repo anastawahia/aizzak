@@ -55,7 +55,7 @@ real admission control without a live Redis.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from app.framework.types import Uuid
@@ -72,17 +72,37 @@ class WsConnectionRegistry(Protocol):
         blocks a live user beyond that bound."""
         ...
 
-    async def renew(self, *, user_id: Uuid, connection_ids: Sequence[Uuid], ttl_s: int) -> None:
-        """Reset the age of the named STILL-HELD entries, evicting anything
-        already older than ``ttl_s`` first. An id that is no longer registered
-        — released, or aged out — is not resurrected: renewal keeps a live
-        entry young, it never re-admits a lost one past the cap.
+    async def renew(self, *, entries: Mapping[Uuid, Sequence[Uuid]], ttl_s: int) -> None:
+        """Reset the age of the named STILL-HELD entries of EVERY user in
+        ``entries``, evicting anything already older than ``ttl_s`` first. An
+        id that is no longer registered — released, or aged out — is not
+        resurrected: renewal keeps a live entry young, it never re-admits a
+        lost one past the cap.
 
         Evicting here is what makes renewal double as the SWEEP: nothing else
         in this system runs periodically over these entries, so a crashed
         process's leftovers are reclaimed on the next tick of any live
         caller's loop rather than lingering until someone happens to acquire
-        or count."""
+        or count.
+
+        **The whole tick is ONE call, and that is the signature's point (3.6).**
+        This used to take a single ``user_id``, so ``ConnectionHub``'s renewal
+        loop issued one awaited round trip PER USER — measured at 1,500 live
+        sockets held by 1,500 users: **489 ms** of sequential round trips every
+        tick, against **16.5 ms** for the same work batched. Nothing about that
+        cost was visible in the old signature, because the fan-out lived in the
+        caller's ``for`` loop; a batched signature makes "one tick, one
+        conversation with the registry" the shape an implementation is asked
+        for, and leaves it free to pipeline (the Redis adapter does, in bounded
+        chunks — see its ``_RENEW_CHUNK``).
+
+        Atomicity is NOT owed here, unlike ``try_acquire``. Each user's entries
+        are an independent key and renewal is idempotent (it only moves a
+        timestamp forward), so a batch that is applied in pieces — or half
+        applied, if the connection dies mid-flight — leaves exactly the state a
+        partial sequence of the old per-user calls left: some entries young,
+        the rest a tick older. The next tick catches them, and ``ttl_s`` is
+        several ticks wide precisely so it can."""
         ...
 
     async def release(self, *, user_id: Uuid, connection_id: Uuid) -> None:

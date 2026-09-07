@@ -47,7 +47,7 @@ admission, swallow on release) — see its docstring.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from redis import RedisError
@@ -111,6 +111,26 @@ return redis.call('ZCARD', key)
 """
 )
 
+# How many users' renewals ride ONE pipeline (3.6). Not a tuning knob for
+# throughput -- both ends of the range are measured, and the cost being
+# balanced is what the burst does to every OTHER caller of this Redis (the
+# rate limiter, the session store, the streams). At 1,500 sockets held by
+# 1,500 users, with a neighbour issuing a small GET every 2 ms throughout:
+#
+#     users/pipeline    round trips    tick        neighbour p95
+#     1 (ships before)        1,500    489-527 ms         0.56 ms
+#     50                         30       47.5 ms         0.89 ms
+#     100                        15       35.5 ms         1.08 ms
+#     500                         3       20.3 ms         1.78 ms
+#     1,500 ("one pipeline")      1       20.0 ms         2.08 ms
+#
+# The plan asked for "one pipeline"; one pipeline turns a 500 ms drizzle into
+# a 20 ms blockade, and the neighbour's tail grows with the burst it has to
+# queue behind. 100 keeps 93% of the win at a tail indistinguishable from
+# idle, so the number is a CEILING on the burst, not a batch target.
+_RENEW_CHUNK = 100
+
+
 # KEYS[1] = the user's set · ARGV = ttl_ms. Counting EVICTS first rather than
 # merely filtering, so the shared state self-heals on a read too -- a user who
 # is only ever counted (never admitted) still sheds a crashed process's entry.
@@ -156,13 +176,28 @@ class RedisWsConnectionRegistry:
             raise _translate(exc) from exc
         return int(cast("Any", admitted)) == 1
 
-    async def renew(self, *, user_id: Uuid, connection_ids: Sequence[Uuid], ttl_s: int) -> None:
-        if not connection_ids:
-            # No entries to keep young: a round-trip that would touch nothing
-            # but would still PEXPIRE a key this process no longer holds.
+    async def renew(self, *, entries: Mapping[Uuid, Sequence[Uuid]], ttl_s: int) -> None:
+        held = {user_id: ids for user_id, ids in entries.items() if ids}
+        if not held:
+            # No entries to keep young: round trips that would touch nothing
+            # but would still PEXPIRE keys this process no longer holds.
             return
+        ttl_ms = _ms(ttl_s)
+        users = list(held)
         try:
-            await self._renew(keys=[self.key_for(user_id)], args=[_ms(ttl_s), *connection_ids])
+            for start in range(0, len(users), _RENEW_CHUNK):
+                pipe = self._client.pipeline(transaction=False)
+                for user_id in users[start : start + _RENEW_CHUNK]:
+                    # Buffers `EVALSHA` onto the pipeline instead of sending it
+                    # (`AsyncScript.__call__` with `client=` a pipeline queues,
+                    # and `register_script`'s NOSCRIPT fallback still applies to
+                    # the batch).
+                    await self._renew(
+                        keys=[self.key_for(user_id)],
+                        args=[ttl_ms, *held[user_id]],
+                        client=pipe,
+                    )
+                await pipe.execute()
         except RedisError as exc:
             raise _translate(exc) from exc
 

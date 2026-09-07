@@ -63,6 +63,7 @@ async def test_the_handler_pushes_to_the_events_workspace() -> None:
         _ctx(_W1),
         _envelope("knowledge.document.indexed.v1", _W1, {"document_id": "d1", "chunk_count": 3}),
     )
+    await hub.deliver_pending()
 
     assert session.received == [
         {
@@ -102,6 +103,7 @@ async def test_a_malformed_data_degrades_to_empty_rather_than_raising() -> None:
     for bad in (None, "a string", [1, 2], 42):
         session.received.clear()
         await handler(_ctx(_W1), _envelope("media.job.failed.v1", _W1, bad))
+        await hub.deliver_pending()
         assert session.received == [
             {"type": "notification", "event": "media.job.failed.v1", "data": {}}
         ]
@@ -114,6 +116,7 @@ async def test_missing_data_key_entirely_still_pushes_empty() -> None:
     handler = make_notification_handler(hub)
 
     await handler(_ctx(_W1), {"type": "media.job.generated.v1", "workspaceid": _W1, "id": "e"})
+    await hub.deliver_pending()
 
     assert session.received[0]["data"] == {}
 

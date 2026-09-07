@@ -6,6 +6,15 @@ the 07 §4 per-user cap counted across workspaces, idempotent unregistration
 during teardown, snapshot fan-out that survives mid-broadcast mutation, and
 the rule that one dying session never costs the others their notification.
 
+**3.6 moved delivery off ``notify``'s own call stack**, so every test here
+that asserts what a session RECEIVED now awaits ``deliver_pending`` first —
+the hub enqueues into one bounded outbox per session and a per-session task
+does the awaiting (``hub.py``'s "Concurrency model" argues why, with the
+measurement that forced it). What this suite gains from that is the pair of
+properties the queues exist for, pinned in
+``tests/unit/test_slow_consumer_policy.py``: one stalled peer costs no other
+session its notification, and a stalled peer's backlog is BOUNDED.
+
 **P1-8 adds the admission half's new home.** The cap is no longer counted on
 this process's heap; it lives behind ``WsConnectionRegistry``. What that makes
 testable here, hermetically: the registry-outage policy (fail CLOSED on
@@ -61,6 +70,8 @@ async def test_notify_reaches_only_the_named_workspace() -> None:
 
     await hub.notify(_W1, "knowledge.document.indexed.v1", {"document_id": "d1"})
 
+    await hub.deliver_pending()
+
     assert mine.received == [
         {
             "type": "notification",
@@ -83,6 +94,8 @@ async def test_every_session_of_the_workspace_receives_the_push() -> None:
 
     await hub.notify(_W1, "media.job.generated.v1", {"job_id": "j1"})
 
+    await hub.deliver_pending()
+
     assert len(first.received) == 1
     assert len(second.received) == 1
 
@@ -94,6 +107,8 @@ async def test_one_dying_socket_never_costs_the_others_their_notification() -> N
     await hub.try_register(workspace_id=_W1, user_id=_U2, session=healthy)
 
     await hub.notify(_W1, "media.job.failed.v1", {"job_id": "j1", "reason": "boom"})
+
+    await hub.deliver_pending()
 
     assert len(healthy.received) == 1
 
@@ -160,6 +175,8 @@ async def test_fanout_iterates_a_snapshot_not_the_live_registry() -> None:
     await hub.try_register(workspace_id=_W1, user_id=_U2, session=bystander)
 
     await hub.notify(_W1, "knowledge.document.indexed.v1", {"document_id": "d1"})
+
+    await hub.deliver_pending()
 
     assert len(bystander.received) == 1
     assert hub.workspace_session_count(_W1) == 1  # only the bystander remains

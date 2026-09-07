@@ -12,8 +12,9 @@ Root; this double is importable only from tests
 (the ``support_access``/``support_conversations`` convention).
 
 It is a FAITHFUL double, not a stub: it evicts by ``ttl_s`` on the same
-boundary the Lua script does, ``renew`` refuses to resurrect a released id
-(``ZADD XX``'s semantics), and ``release`` is silently idempotent. Unit tests
+boundary the Lua script does, ``renew`` takes a whole tick's entries at once
+(3.6) and refuses to resurrect a released id (``ZADD XX``'s semantics), and
+``release`` is silently idempotent. Unit tests
 of the hub and the WebSocket endpoint therefore exercise real admission
 control — a stub that always admitted would turn every cap test into
 theatre.
@@ -26,7 +27,7 @@ sleeping.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from app.framework.errors import AppError
 from app.framework.types import Uuid
@@ -64,13 +65,14 @@ class InMemoryWsConnectionRegistry:
         held[connection_id] = self._now()
         return True
 
-    async def renew(self, *, user_id: Uuid, connection_ids: Sequence[Uuid], ttl_s: int) -> None:
+    async def renew(self, *, entries: Mapping[Uuid, Sequence[Uuid]], ttl_s: int) -> None:
         self._guard()
-        held = self._live(user_id, ttl_s)
         stamp = self._now()
-        for connection_id in connection_ids:
-            if connection_id in held:  # `ZADD XX`: never resurrect a released id
-                held[connection_id] = stamp
+        for user_id, connection_ids in entries.items():
+            held = self._live(user_id, ttl_s)
+            for connection_id in connection_ids:
+                if connection_id in held:  # `ZADD XX`: never resurrect a released id
+                    held[connection_id] = stamp
 
     async def release(self, *, user_id: Uuid, connection_id: Uuid) -> None:
         self._guard()

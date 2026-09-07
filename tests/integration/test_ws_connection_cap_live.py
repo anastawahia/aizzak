@@ -246,7 +246,7 @@ async def test_renew_never_resurrects_a_released_entry(redis_client: Redis) -> N
         await registry.release(user_id=user_id, connection_id=connection_id)
         await registry.release(user_id=user_id, connection_id=connection_id)  # idempotent
 
-        await registry.renew(user_id=user_id, connection_ids=[connection_id], ttl_s=60)
+        await registry.renew(entries={user_id: [connection_id]}, ttl_s=60)
 
         assert await registry.count(user_id=user_id, ttl_s=60) == 0
     finally:
