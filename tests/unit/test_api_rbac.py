@@ -197,6 +197,19 @@ EXPECTED: dict[tuple[str, str], Permission] = {
 UNGUARDED = {
     ("/health", "get"),
     ("/health/ready", "get"),
+    # ⚠️ THE ONLY UNGUARDED VERB IN THIS SET, and it earns the place the same
+    # way `/metrics` does rather than by being harmless -- capacity step 7.2.
+    # It takes a replica out of rotation and closes every WebSocket on it, and
+    # it stays unauthenticated because its caller is `deploy/rolling-deploy.sh`,
+    # which runs before any credential is in scope and has to address ONE
+    # replica over loopback inside the container. What keeps it safe is
+    # therefore NOT a guard but the trust boundary: the edge answers this path
+    # with 404 instead of proxying it, asserted in
+    # `test_rolling_deploy.py::test_the_edge_answers_the_drain_path_itself_and_never_proxies_it`.
+    # A guard here would be worse than useless: it would make the deploy script
+    # need a token, and a deploy that cannot run when auth is down is a deploy
+    # that cannot fix auth.
+    ("/health/drain", "post"),
     ("/metrics", "get"),
     ("/api/v1/integrations/connections/oauth/callback", "get"),
     # These session operations authenticate through their router dependency,

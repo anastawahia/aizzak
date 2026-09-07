@@ -153,6 +153,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
+from collections.abc import Callable
 from typing import NamedTuple, Protocol
 
 from app.framework.errors import AppError
@@ -195,6 +197,23 @@ _OVERFLOW_CLOSE_CODE = 1013
 # overflowed it, so every close this class initiates is bounded. Generous next
 # to a healthy close (sub-millisecond on loopback), short next to `entry_ttl_s`.
 _CLOSE_TIMEOUT_S = 5.0
+
+# RFC 6455 1012 "Service Restart" — capacity step 7.2. A DIFFERENT statement
+# from 1013 above, and the difference is what the client does with it: 1013
+# ("Try Again Later") says *this* connection fell behind, 1012 says the SERVER
+# is going away and every socket on it is going with it. Both mean reconnect;
+# only one of them means "and so will everyone else on this replica", which is
+# the fact `drain` exists to spread out. It is also the code uvicorn already
+# sends on shutdown (measured in 3.3: 1012 at 0.10s), so a client that handles
+# a rolling deploy at all already handles this one.
+_RESTART_CLOSE_CODE = 1012
+
+# How long a draining session is given to flush what it has already been
+# handed, before the close frame goes out regardless. This is the "drain
+# timeout" of step 7.2's own sequence, per session rather than global: a peer
+# that stopped reading must not hold the deploy open, and a peer that is
+# reading normally empties a 64-slot queue in microseconds.
+_DRAIN_FLUSH_TIMEOUT_S = 2.0
 
 
 class StreamSession(Protocol):
@@ -373,6 +392,98 @@ class ConnectionHub:
                 )
             except (Exception, TimeoutError):
                 _logger.warning("hub.user_disconnect_failed", extra={"user_id": user_id})
+
+    async def drain(
+        self,
+        *,
+        window_s: float,
+        jitter: Callable[[], float] | None = None,
+    ) -> int:
+        """Ask every socket this process holds to come back later, SPREAD OVER
+        ``window_s`` — capacity step 7.2, and the half its own text says is the
+        one that gets forgotten.
+
+        Returns immediately with the number of sessions scheduled; the closes
+        themselves run as background tasks. That is deliberate: the caller is a
+        deploy script holding an HTTP request open, and a drain that only
+        answers once the last slow peer has gone would make the script's own
+        timeout the real drain window.
+
+        ⭐ WHY SPREADING IS THE WHOLE POINT, AND WHY IT IS NOT COSMETIC. A
+        replica carrying five hundred sockets that closes them in one tick
+        produces five hundred simultaneous reconnects, and they do not arrive
+        at the replica that just left — they arrive at the ones still serving.
+        The next replica in the rollout then meets that herd on top of its own
+        share of traffic, fails or slows, sheds ITS sockets, and the herd grows.
+        Step 7.2's acceptance criterion names exactly this ("no reconnect peak
+        exceeding accept capacity"), and `3.5` measured what the accept queue
+        does when it is exceeded: it does not refuse, it silently drops the
+        final ACK, so the herd shows up as latency nobody can attribute.
+
+        ⚠️ UNIFORM RANDOM DELAYS, NOT AN EVENLY SPACED COMB. A comb is easy to
+        write and is the wrong shape: every client here reconnects on the same
+        exponential backoff, so a deterministic spacing can line up with it and
+        rebuild the very peak it was meant to break. Drawing each session's
+        delay independently from ``[0, window_s)`` gives an arrival process
+        with no period for a backoff to resonate with. ``jitter`` is injectable
+        for exactly one reason — a test that must assert the ORDER of the three
+        steps below cannot also be asking a random number generator what it
+        will do.
+
+        The per-session order is `_evict`'s, for `_evict`'s reasons, plus one
+        step that is only correct here:
+
+        1. **Flush first, bounded.** The session keeps receiving notifications
+           for its whole delay — a socket that is going to be asked to
+           reconnect in eight seconds should still get the eight seconds of
+           events it would otherwise have got. Only then is what it has already
+           been handed given ``_DRAIN_FLUSH_TIMEOUT_S`` to reach the wire.
+           `_evict` cannot do this: there the queue is full BECAUSE the peer
+           stopped reading, so waiting on it is waiting forever.
+        2. **Stop routing, then cancel the sender**, so nothing new is queued
+           and the API adapter's single send/close lock is free.
+        3. **Close 1012, bounded**, in the caller's own task rather than a
+           detached one — this coroutine IS the detached task.
+        """
+        sessions = tuple(
+            (workspace_id, session)
+            for workspace_id, workspace_sessions in self._by_workspace.items()
+            for session in workspace_sessions
+        )
+        if not sessions:
+            return 0
+        draw = random.random if jitter is None else jitter
+        for workspace_id, session in sessions:
+            delay = max(0.0, window_s) * draw()
+            task = asyncio.create_task(self._drain_one(workspace_id, session, delay))
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
+        _logger.info(
+            "hub.drain_started",
+            extra={"sessions": len(sessions), "window_s": window_s},
+        )
+        return len(sessions)
+
+    async def _drain_one(self, workspace_id: Uuid, session: StreamSession, delay: float) -> None:
+        """One session's share of the drain. Every await here is bounded, and
+        every failure is swallowed: a deploy must not be held up, nor aborted,
+        by one peer that has stopped reading its socket."""
+        await asyncio.sleep(delay)
+        outbox = self._outboxes.get(id(session))
+        if outbox is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(outbox.queue.join(), timeout=_DRAIN_FLUSH_TIMEOUT_S)
+        self._drop_from_routing(workspace_id, session)
+        self._close_outbox(session)
+        try:
+            await asyncio.wait_for(
+                session.close(code=_RESTART_CLOSE_CODE, reason="server restarting"),
+                timeout=_CLOSE_TIMEOUT_S,
+            )
+        except (Exception, TimeoutError):
+            # The endpoint's own `finally` owns the registry slot either way,
+            # and the process is about to exit regardless.
+            _logger.warning("hub.drain_close_failed", extra={"workspace_id": workspace_id})
 
     def user_connection_count(self, user_id: Uuid) -> int:
         """Connections THIS process holds for one user — introspection for

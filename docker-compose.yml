@@ -1388,8 +1388,27 @@ services:
     # in-flight semantics (a message half-handled is not a response half-written)
     # and their shutdown budget belongs to Wave 5, not here.
     stop_grace_period: 45s
+    # ⭐ `/health/ready`, NOT `/health` — capacity step 7.2, and `api/health.py`
+    # had said so since it was written ("readiness here is 'startup done',
+    # which is the signal a rolling deploy actually needs") while this line
+    # asked for the other one. `/health` is LIVENESS: it answers 200 from a
+    # process that has bound its socket and finished nothing else, so a
+    # container reported healthy on it may still be seconds away from serving
+    # a request -- which is the state this whole step is about.
+    #
+    # ⚠️ It also means a DRAINING replica reports unhealthy, and that is
+    # correct rather than a side effect: `POST /health/drain` flips readiness
+    # false precisely to say "stop sending me work". Nothing acts on unhealthy
+    # here (`restart:` reacts to exit, not to health), so the effect is that
+    # `docker compose ps` tells an operator the truth during a deploy instead
+    # of showing three healthy replicas while one of them is leaving.
+    #
+    # ⚠️ AND IT DOES NOT MAKE THE EDGE ROUTE AROUND ANYTHING. Docker's embedded
+    # DNS publishes a container at `running` and does not consult health at all
+    # (measured: 6-7s of in-rotation-but-starting), so this probe informs the
+    # operator and `deploy/rolling-deploy.sh`, not nginx. See `د-29`.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 12

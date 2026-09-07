@@ -96,6 +96,7 @@ from app.framework.observability.metrics import (
 )
 from app.framework.ports.metrics_source import MetricsSource
 from app.framework.ports.vault_health import VaultHealth
+from app.framework.streaming import ConnectionHub
 from app.framework.types import Json
 
 _logger = get_logger(__name__)
@@ -168,6 +169,12 @@ def create_app(
     # `create_production_app` always wires the real `VaultProbe`.
     vault_health: VaultHealth | None = None,
     revocations: SessionRevocationList | None = None,
+    # Capacity step 7.2. `None` by default for the same reason as the three
+    # above: a router test builds an app with no hub and `POST /health/drain`
+    # answers "nothing to drain" rather than 500. `create_production_app`
+    # always wires the real one -- it is the object that owns this process's
+    # sockets, so it is the only thing that can spread their closes out.
+    hub: ConnectionHub | None = None,
 ) -> FastAPI:
     """Assemble the ASGI app around already-built collaborators."""
     app = FastAPI(
@@ -189,6 +196,13 @@ def create_app(
     app.state.vault_health = vault_health
     app.state.revocations = revocations
     app.state.ready = False
+    app.state.hub = hub
+    # 7.2 — distinct from `ready` on purpose. `ready` goes false at BOTH ends
+    # of a process's life, so it cannot answer "has a drain already started?";
+    # `POST /health/drain` needs that answer to stay idempotent, and a replica
+    # that is merely still booting has not drained anything.
+    app.state.draining = False
+    app.state.drain_scheduled = 0
 
     _install_correlation_middleware(app)
     _install_problem_handlers(app)
@@ -763,4 +777,8 @@ def create_production_app() -> FastAPI:
         # `disposables()` for the identical reason: it cancels AND reaps a
         # loop whose in-flight call is on that same `redis_client`.
         shutdown=(root.teardown_notify_bridge, root.hub.stop_renewal, *root.disposables()),
+        # 7.2 — the same object `background=`'s notify bridge pushes into, so
+        # `POST /health/drain` closes the sockets this process is actually
+        # serving rather than a second registry that happens to agree.
+        hub=root.hub,
     )

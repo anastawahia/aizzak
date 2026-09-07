@@ -441,6 +441,12 @@ def test_every_path_is_versioned_except_the_health_probes() -> None:
     # The probes a load balancer calls, and only those: a readiness check that
     # had to be updated for `/api/v2` would be a deployment hazard, not a
     # versioning nicety.
+    #
+    # ⚠️ `/health/drain` (capacity 7.2) is unversioned too and is deliberately
+    # NOT here: like `/metrics`, it is `include_in_schema=False`, so it is not
+    # a published operation and this test cannot see it. That is the right
+    # answer for the same reason -- it is operator tooling the edge answers
+    # with 404 -- and `test_rolling_deploy.py` is what guards it instead.
     assert unversioned == {"/health", "/health/ready"}
 
 

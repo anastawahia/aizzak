@@ -34,7 +34,11 @@ import pytest
 
 from app.framework.errors import AppError
 from app.framework.streaming import ConnectionHub
-from app.framework.streaming.hub import DEFAULT_ENTRY_TTL_S, DEFAULT_RENEW_INTERVAL_S
+from app.framework.streaming.hub import (
+    DEFAULT_ENTRY_TTL_S,
+    DEFAULT_RENEW_INTERVAL_S,
+    DEFAULT_SESSION_QUEUE_SIZE,
+)
 from app.framework.types import Json
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 
@@ -335,3 +339,137 @@ class _Clock:
 
     def advance(self, seconds: float) -> None:
         self._t += seconds
+
+
+# ------------------------------------------------- draining (capacity 7.2) --
+#
+# The half step 7.2's own text calls the one that gets forgotten. What is under
+# test is not "sockets close" -- `disconnect_user` already closes sockets -- but
+# that they close SPREAD OUT, in the right order, and bounded.
+
+
+class _DrainSession(_Session):
+    """Records WHEN it was closed relative to the drain, not just that it was.
+    A spread is a property of the times; a test that only checked the codes
+    would pass on the burst this step exists to prevent."""
+
+    def __init__(self, *, stalls: bool = False) -> None:
+        super().__init__()
+        self.closed: tuple[int, str] | None = None
+        self.closed_at: float | None = None
+        self.received_at_close: int = 0
+        self._stalls = stalls
+
+    async def send_json(self, payload: Json) -> None:
+        if self._stalls:
+            await asyncio.Event().wait()  # a peer that stopped reading
+        self.received.append(payload)
+
+    async def close(self, *, code: int, reason: str) -> None:
+        self.closed = (code, reason)
+        self.closed_at = asyncio.get_running_loop().time()
+        self.received_at_close = len(self.received)
+
+
+async def test_drain_asks_every_socket_to_come_back_and_says_how_many() -> None:
+    hub = _hub(cap=10)
+    sessions = [_DrainSession() for _ in range(4)]
+    for index, session in enumerate(sessions):
+        assert await hub.try_register(
+            workspace_id=_W1 if index % 2 else _W2, user_id=_U1, session=session
+        )
+
+    assert await hub.drain(window_s=0.0, jitter=lambda: 0.0) == 4
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert all(session.closed == (1012, "server restarting") for session in sessions)
+
+
+async def test_drain_closes_1012_not_1013_and_the_difference_is_the_point() -> None:
+    """1013 says THIS connection fell behind; 1012 says the server is going
+    away. Both mean reconnect, and only one of them tells a client that every
+    other socket on the replica is reconnecting too -- which is the fact a
+    client's backoff needs in order to spread itself."""
+    hub = _hub()
+    stalled, leaving = _DrainSession(stalls=True), _DrainSession()
+    assert await hub.try_register(workspace_id=_W1, user_id=_U1, session=stalled)
+    assert await hub.try_register(workspace_id=_W2, user_id=_U2, session=leaving)
+
+    # Overflow the stalled peer: 64 payloads it will never read, plus one more.
+    for _ in range(DEFAULT_SESSION_QUEUE_SIZE + 2):
+        await hub.notify(_W1, "knowledge.document.indexed.v1", {})
+    await hub.drain(window_s=0.0, jitter=lambda: 0.0)
+    for _ in range(6):
+        await asyncio.sleep(0)
+
+    assert stalled.closed is not None and stalled.closed[0] == 1013
+    assert leaving.closed is not None and leaving.closed[0] == 1012
+
+
+async def test_drain_spreads_the_closes_across_the_window() -> None:
+    """The whole point, asserted on the TIMES. `jitter` is injected so the
+    spread is a fact about this code rather than about a random draw: three
+    sessions asked for 0.0, 0.5 and 1.0 of a window must close in that order
+    and that far apart."""
+    hub = _hub(cap=10)
+    sessions = [_DrainSession() for _ in range(3)]
+    for session in sessions:
+        assert await hub.try_register(workspace_id=_W1, user_id=_U1, session=session)
+
+    fractions = iter((0.0, 0.5, 1.0))
+    started = asyncio.get_running_loop().time()
+    assert await hub.drain(window_s=0.4, jitter=lambda: next(fractions)) == 3
+    await asyncio.sleep(0.55)
+
+    offsets = [session.closed_at - started for session in sessions if session.closed_at is not None]
+    assert len(offsets) == 3, "a session was never closed"
+    assert offsets[0] < offsets[1] < offsets[2], f"closes were not spread: {offsets}"
+    assert offsets[2] - offsets[0] >= 0.35, f"the spread collapsed: {offsets}"
+
+
+async def test_a_draining_session_keeps_receiving_until_its_own_close() -> None:
+    """`drain` is not `disconnect`. A socket that will be asked to reconnect in
+    eight seconds should still get the eight seconds of events it would have
+    got -- so routing is dropped at each session's OWN close moment, not for
+    everyone at the start."""
+    hub = _hub(cap=10)
+    early, late = _DrainSession(), _DrainSession()
+    assert await hub.try_register(workspace_id=_W1, user_id=_U1, session=early)
+    assert await hub.try_register(workspace_id=_W1, user_id=_U2, session=late)
+
+    fractions = iter((0.0, 1.0))
+    await hub.drain(window_s=0.3, jitter=lambda: next(fractions))
+    await asyncio.sleep(0.05)
+    await hub.notify(_W1, "knowledge.document.indexed.v1", {"after": "the first close"})
+    await asyncio.sleep(0.4)
+
+    assert early.received_at_close == 0, "the early session was sent an event after its close"
+    assert late.received_at_close == 1, (
+        "the late session lost the notification it was still entitled to -- routing was "
+        "dropped for everyone at the start of the drain instead of per session"
+    )
+
+
+async def test_one_peer_that_stopped_reading_cannot_hold_the_drain_open() -> None:
+    """Every await in the drain path is bounded, and this is why: a deploy that
+    waited for the slowest socket would be a deploy whose window is set by
+    whichever client walked into a tunnel."""
+    hub = _hub(cap=10)
+    stalled, healthy = _DrainSession(stalls=True), _DrainSession()
+    assert await hub.try_register(workspace_id=_W1, user_id=_U1, session=stalled)
+    assert await hub.try_register(workspace_id=_W2, user_id=_U2, session=healthy)
+    await hub.notify(_W1, "knowledge.document.indexed.v1", {})
+
+    await hub.drain(window_s=0.0, jitter=lambda: 0.0)
+    await asyncio.sleep(0.05)
+
+    assert healthy.closed == (1012, "server restarting"), (
+        "a healthy socket's close waited on a peer that had stopped reading"
+    )
+
+
+async def test_draining_an_empty_process_is_a_successful_drain() -> None:
+    """A replica serving no WebSockets is the common case for a rolling
+    deploy, and it must not be a special case for the caller."""
+    assert await _hub().drain(window_s=5.0) == 0
