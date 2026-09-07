@@ -396,11 +396,29 @@ def test_compose_starts_postgres_with_the_extension_preloaded() -> None:
     assert "pg_stat_statements.max=" in compose
 
 
-def test_compose_does_not_smuggle_wave_2_tuning_into_wave_0() -> None:
-    """Risk ``م-8``, guarded mechanically: a baseline measured on an
-    already-tuned server cannot answer whether the tuning helped. Step 2.1
-    sets these from a composed config file, and this guard is what makes
-    adding one early a failing test rather than a quiet head start.
+def test_the_tuning_stays_out_of_the_command_that_carries_the_instrument() -> None:
+    """Risk ``م-8``, still guarded mechanically -- but the thing it guards
+    MOVED, and step 2.1 is why.
+
+    ⭐ WHAT THIS TEST USED TO SAY. Until 2.1 it was
+    ``test_compose_does_not_smuggle_wave_2_tuning_into_wave_0``, and it asserted
+    that these four knobs reached the server NOWHERE, because a baseline
+    measured on an already-tuned server cannot answer whether the tuning
+    helped. That was the right guard while 2.1 was unbuilt and the wrong one
+    the moment it shipped: it would have made shipping the step a failing test.
+
+    ⭐ WHAT MAKES SHIPPING IT SAFE, AND WHAT THIS TEST GUARDS NOW. The tuning
+    is REVERSIBLE -- ``POSTGRES_CONFIG_FILE`` points the server back at the
+    data directory's own postgresql.conf and the knobs are simply not read
+    (``test_postgres_tuning.py`` guards both positions). What must NOT happen
+    is the tuning migrating into the ``command:``, because a ``-c`` argument
+    outranks the config file and would therefore survive the off switch -- an
+    un-turn-off-able optimisation is exactly the state ``م-8`` describes. The
+    ``command:`` carries 0.4's instrument and 2.5's durability, which ``م-8``
+    does not cover and which must NOT be reversible. Same matcher, opposite
+    direction, and the reason it is the same matcher is that "a Postgres knob
+    reaches this server as ``- <knob>=<value>``" is still the only mechanism
+    there is.
 
     **Matched as an ARGUMENT line, not as free text, and capacity step 2.8
     found out why the difference matters.** The first version of this guard
@@ -408,21 +426,20 @@ def test_compose_does_not_smuggle_wave_2_tuning_into_wave_0() -> None:
     satisfied by any COMMENT that names the knob -- 2.8's ``shm_size``
     paragraph has to name ``maintenance_work_mem`` to explain the number it
     chose -- and (b) a substring of ``maintenance_work_mem=`` itself, so the
-    two knobs were never distinguishable. Postgres settings reach this server
-    only as ``- <knob>=<value>`` items under the service's ``command:``, so
-    that is what is matched: a comment can discuss a knob, and only an argument
-    can turn one."""
+    two knobs were never distinguishable."""
     compose = _COMPOSE.read_text(encoding="utf-8")
-    premature = [
+    unreversible = [
         knob
         for knob in ("shared_buffers", "work_mem", "effective_cache_size", "max_wal_size")
         if re.search(rf"^\s*-\s*{knob}=", compose, flags=re.MULTILINE)
     ]
 
-    assert not premature, (
-        f"{premature} are passed to the postgres server in docker-compose.yml, but Postgres "
-        "tuning is capacity step 2.1 (Wave 2) and the 0.5 baseline must be measured on an "
-        "UNTUNED server -- otherwise no later wave can prove it improved anything."
+    assert not unreversible, (
+        f"{unreversible} are passed to the postgres server as command-line arguments in "
+        "docker-compose.yml. A `-c` argument OUTRANKS the config file, so these would "
+        "survive POSTGRES_CONFIG_FILE -- the `م-8` off switch that lets the 0.5 baseline "
+        "still be measured on an untuned server. Capacity step 2.1's tuning belongs in "
+        "deploy/postgres/postgresql.conf, which that switch can turn off."
     )
 
 

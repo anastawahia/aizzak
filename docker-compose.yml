@@ -309,16 +309,37 @@ services:
     deploy:
       resources:
         limits:
-          # §6 says 20 GB "with shared_buffers=8GB". DERIVED from that same
-          # proposal instead of copied: 8 (shared_buffers) + 1
-          # (maintenance_work_mem) + 300 x 16 MB (work_mem at 2.1's own
-          # max_connections, the pessimistic bound) = 13.8. MEASURED today,
-          # before 2.1 has run: 44 MiB, because shared_buffers is still the
-          # 128 MB default ح-4 describes. The 6 GB this returns to the budget
-          # is what lets the total fit §6's own reference host, which §6 as
-          # written does not.
+          # §6 says 20 GB "with shared_buffers=8GB". DERIVED from 2.1's own
+          # shipped knobs (deploy/postgres/postgresql.conf) instead of copied,
+          # and RE-DERIVED here because 3.4's version of this sum -- 8 + 1 +
+          # 300 x 16 MB = 13.8 -- was wrong in two terms at once, and 2.1 is
+          # the step that makes both of them real:
+          #
+          #   8.00  shared_buffers
+          #   3.00  autovacuum: maintenance_work_mem x autovacuum_max_workers.
+          #         MEASURED: `autovacuum_work_mem` is -1 ("use
+          #         maintenance_work_mem") and `autovacuum_max_workers` is 3,
+          #         so 2.1's 1 GB is 3 GB standing. 3.4 counted it once; §6
+          #         did not count it at all.
+          #   1.00  one manual VACUUM/REINDEX on top of the daemon's three
+          #   5.03  work_mem. NOT `max_connections x work_mem`: the grant is
+          #         PER NODE and again per parallel worker, so that product is
+          #         a floor. MEASURED: four simultaneous grants in one
+          #         ordinary query, six once parallelism is on. The bound that
+          #         holds is `backends x work_mem x nodes`, with the parallel
+          #         term capped server-wide by `max_worker_processes` (8) --
+          #         161 backends (2.2's ceiling, test_connection_budget) x
+          #         16 MB x 2 full grants.
+          #   0.50  ~3 MB of backend overhead x 161
+          #   ----
+          #  17.53 -> 18g
+          #
+          # MEASURED today, with 2.1 shipped but this host at 12.67 GB: the
+          # server starts anyway and reports nothing (see the `shared_buffers`
+          # note in the config file). The cgroup limit never fires here
+          # because it is above the host's own memory -- that is `د-25`.
           cpus: "6.0"
-          memory: 14g
+          memory: 18g
     image: postgres:16
     depends_on:
       wal-archive-init:
@@ -353,25 +374,46 @@ services:
     # PostgreSQL setting. It changes no plan, no cache and no cost estimate, so
     # a 0.5 baseline taken with it is the same baseline -- it only stops
     # Postgres's own configured limits from being silently cut off below their
-    # value. `test_compose_does_not_smuggle_wave_2_tuning_into_wave_0` guards
-    # the four knobs that do flatter a baseline, and still passes.
+    # value. `test_the_tuning_stays_out_of_the_command_that_carries_the`
+    # `_instrument` guards the four knobs that do flatter a baseline: since
+    # 2.1 they live in deploy/postgres/postgresql.conf, where
+    # `POSTGRES_CONFIG_FILE` can switch them off, and that guard keeps them
+    # from drifting back to a `-c` argument the switch could not reach.
     #
     # 1g rather than 128m (which would clear today's 64 MB request): step 2.1
-    # declares `maintenance_work_mem=1GB`, and the rule above says the segment
-    # is sized to that value. Leaving room only for today's default would make
-    # 2.1 reintroduce this exact failure, and it would reintroduce it as a
-    # regression nobody attributes to a memory knob. The rule is written in
-    # `08-local-runbook §2-هـ`: shm_size > maintenance_work_mem + headroom.
-    # tmpfs pages are allocated on use, so this reserves nothing.
+    # declares `maintenance_work_mem=1GB`, and leaving room only for today's
+    # default would make 2.1 reintroduce this exact failure as a regression
+    # nobody attributes to a memory knob. tmpfs pages are allocated on use, so
+    # this reserves nothing.
+    #
+    # ⚠️ AND THE RULE THIS COMMENT USED TO STATE FOR THE NUMBER IS WRONG --
+    # measured by 2.1, the step that made it operative. It read "the segment is
+    # sized to maintenance_work_mem, so shm_size > maintenance_work_mem +
+    # headroom". MEASURED at `maintenance_work_mem=1GB` with `shm_size=64m`:
+    # parallel VACUUM on a 460 MB heap with three indexes asked for
+    # 105,858,080 bytes -- 101 MB, not 1 GB. The size is
+    # `min(maintenance_work_mem, ~1798 bytes x relpages)`, so the real bound is
+    # on TABLE SIZE: 1gb holds until a heap passes roughly 4.5 GB and then this
+    # failure returns. The direction was right and 1gb is still the right
+    # number; what was wrong is what it GUARANTEES. `08-local-runbook §2-هـ`
+    # carries the corrected rule and the `relpages` query that warns first.
     shm_size: 1gb
     # ⚠️ THREE OVERRIDES, ALL THREE ABOUT OBSERVING THE SERVER, NONE ABOUT
     # TUNING IT (capacity step 0.4, docs/capacity-plan.md §5 Wave 0). The
-    # plan's step 2.1 will set shared_buffers/work_mem/max_wal_size and the
-    # rest from a COMPOSED config file and delete this `command:`; those knobs
-    # are deliberately absent here, because risk `م‑8` is "tuning starts
-    # before the baseline exists" and a baseline measured on an already-tuned
-    # server cannot answer whether the tuning helped. The instrument goes in
-    # first; the knobs it justifies are turned in 2.1.
+    # tuning arrived in step 2.1 and it is in a FILE, not here --
+    # deploy/postgres/postgresql.conf, selected by the `config_file` argument
+    # below.
+    #
+    # ⭐ AND 2.1 DID NOT "DELETE THIS `command:`", WHICH IS WHAT ITS OWN TEXT
+    # ASKED FOR. Everything under `command:` is either 0.4's instrument or
+    # 2.5's durability, and `م-8` covers neither: a 0.5 baseline taken without
+    # pg_stat_statements cannot be read, and one taken on a cluster that does
+    # not archive its WAL is a baseline of a deployment nobody would operate.
+    # Folding the three classes into one file gives them ONE switch, and the
+    # switch `م-8` needs would then also turn archiving off. They stay here,
+    # where a command-line `-c` additionally OUTRANKS the file -- measured:
+    # `pg_settings.source` reads `command line` for these and `configuration
+    # file` for 2.1's eight knobs.
     #
     # shared_preload_libraries is a START-time setting -- a running cluster
     # does not pick it up on reload, so an existing deployment needs
@@ -391,6 +433,23 @@ services:
     # a SQLAlchemy adapter at the top level.
     command:
       - postgres
+      # ── capacity step 2.1: the tuning, and its `م-8` off switch ──────────
+      # ⭐ `POSTGRES_CONFIG_FILE` IS WHAT UNBLOCKS THIS STEP. Risk `م-8` is
+      # "tuning starts before the baseline exists", and it was recorded as a
+      # BLOCKER on 2.1 because a tuned server cannot answer whether the tuning
+      # helped. It is a blocker only while the tuning is irreversible. Point
+      # this at the data directory's own postgresql.conf --
+      #
+      #   POSTGRES_CONFIG_FILE=/var/lib/postgresql/data/postgresql.conf
+      #
+      # -- and the server comes up on image defaults with archiving and
+      # pg_stat_statements still on, which is exactly the state the 0.5
+      # baseline has to be measured in. Same shape as every other `م-8`
+      # subject already in this repository: `API_RATE_LIMIT_ENABLED=false`,
+      # `AUTH_PRINCIPAL_CACHE_TTL_S=0`, `MAX_IN_FLIGHT_REQUESTS=0`.
+      # `tests/unit/test_postgres_tuning.py` guards both positions.
+      - -c
+      - config_file=${POSTGRES_CONFIG_FILE:-/etc/postgresql/postgresql.conf}
       - -c
       - shared_preload_libraries=pg_stat_statements
       - -c
@@ -419,8 +478,10 @@ services:
       # makes it slower, and it is what production runs with. A 0.5 baseline
       # taken on a cluster that does not archive its WAL is a baseline of a
       # deployment nobody would operate. `tests/unit/test_ops_slow_queries.py
-      # ::test_compose_does_not_smuggle_wave_2_tuning_into_wave_0` still
-      # guards the four knobs that matter, and still passes.
+      # ::test_the_tuning_stays_out_of_the_command_that_carries_the_instrument`
+      # still guards the four knobs that matter -- since 2.1 it guards that
+      # they stay REVERSIBLE rather than absent, which is the distinction
+      # that step turned on.
       - -c
       - archive_mode=on
       #
@@ -513,6 +574,11 @@ services:
       # Read-only: the server reads its own auth rules, and a Postgres that
       # could rewrite them is a Postgres that can grant itself anything.
       - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      # Read-only for the same reason pg_hba.conf is, and mounted
+      # UNCONDITIONALLY: the `م-8` switch above changes which file the server
+      # READS, not whether this one is present. A switch that removed the
+      # mount would be a second thing to remember.
+      - ./deploy/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./deploy/postgres/archive_wal.sh:/usr/local/bin/archive_wal.sh:ro
       # The spool `archive_command` writes into and `wal-shipper` drains. A
       # named volume rather than a bind: these segments are the difference
@@ -537,12 +603,40 @@ services:
   # `deploy/pgbouncer/pgbouncer.ini` that had sat here since Phase 1 --
   # referenced by nothing, mounted nowhere, and reading for all the world
   # like the pooler's configuration while containing none of it.
+  #
+  # ⭐ STEP 2.2's "VERIFY FIRST" IS VERIFIED, AND IT COMES OUT IN THIS
+  # ARRANGEMENT'S FAVOUR. The plan warned that the image "does not necessarily
+  # pass every key" and that the fallback would be a mounted ini -- "a
+  # deliberate reversal of the comment above, documented there". No reversal
+  # was needed: the entrypoint's template carries `${MAX_DB_CONNECTIONS:+...}`,
+  # `${RESERVE_POOL_SIZE:+...}` and `${RESERVE_POOL_TIMEOUT:+...}` lines, and
+  # MEASURED in the generated file, all three landed. The comment stands.
+  #
+  # ⚠️ BUT THE GENERATION IS `if [ ! -f pgbouncer.ini ]`, AND THE FILE LIVES
+  # IN THE CONTAINER'S WRITABLE LAYER (this service mounts nothing). So
+  # `docker compose restart pgbouncer` -- the obvious way to apply a change to
+  # the block below -- reuses the container, finds the OLD ini, and starts the
+  # pooler on it. Nothing errors and `SHOW CONFIG` reports the stale values.
+  # Applying anything here is `docker compose up -d pgbouncer`, which
+  # RECREATES. Worth knowing before reading a measurement off this pooler.
   pgbouncer:
     deploy:
       resources:
         limits:
           cpus: "1.0"
           memory: 256m
+    # ⭐ THE HALF OF STEP 3.1 THAT DID NOT REACH THIS SERVICE, AND THE HALF
+    # STEP 2.2 CANNOT SHIP WITHOUT. Docker's inherited soft `nofile` is 1024;
+    # every client connection, every server connection and every listener is
+    # one descriptor. See `MAX_CLIENT_CONN` below for the measurement -- the
+    # short version is that at 1024 the ceiling does not refuse, it accepts
+    # into the kernel's backlog and never answers. The numbers are 3.1's own,
+    # written rather than inherited for the same reason `app`, `qdrant` and
+    # `k6` carry them.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
     image: edoburu/pgbouncer:v1.23.1-p2
     depends_on:
       postgres:
@@ -558,8 +652,79 @@ services:
       # 6432 and every DATABASE_URL in this file names that port.
       LISTEN_PORT: "6432"
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: "500"
-      DEFAULT_POOL_SIZE: "25"
+      # ── capacity step 2.2: the pooler's capacity, and its refusals ────────
+      # 500 -> 2000. It was not arbitrary slack: MEASURED client demand is
+      # 420 of the old 500 (test_connection_budget), because 3.4 put three
+      # `app` replicas x 4 gunicorn siblings behind it. 84% of a ceiling is
+      # not a ceiling, and the next `WEB_CONCURRENCY` bump crosses it.
+      #
+      # ⚠️ AND THIS NUMBER IS A LIE WITHOUT THE `ulimits:` BLOCK ABOVE --
+      # MEASURED, AND IT IS STEP 3.1'S FINDING FOR THE THIRD TIME. PgBouncer
+      # says so itself, in a LOG line at start-up that nothing reads:
+      #
+      #   LOG kernel file descriptor limit: 1024 (hard: 1048576);
+      #       max_client_conn: 2000, max expected fd use: 2012
+      #
+      # 3.1 found Docker's inherited soft `nofile` of 1024 binding on `app`,
+      # `qdrant` and `k6` and wrote the number down on each. The pooler was
+      # missed, and it was missed BECAUSE it fit: at 500 the same line read
+      # "max expected fd use: 512". 2.2 is the step that walks it over.
+      #
+      # ⭐ WHAT HAPPENS AT THE WALL IS THE OPPOSITE OF WHAT THIS STEP IS FOR.
+      # MEASURED against a pooler left at 1024: 1,400 client sockets all
+      # connected -- `connect()` returned in 2.4 ms, zero refusals -- because
+      # the KERNEL completes the handshake into the listen backlog. PgBouncer
+      # logged `ERROR accept() failed: No file descriptors available` and a
+      # fresh client then sat with a successful connection and NO SERVER BYTE
+      # for as long as it waited. Not a refusal: a hang, one layer BELOW
+      # every timeout on this service, where the pooler does not know the
+      # client exists and `query_wait_timeout` cannot apply. And the operator
+      # loses the diagnosis with it -- `SHOW CLIENTS` on the admin console
+      # needs an fd too, and timed out.
+      MAX_CLIENT_CONN: "2000"
+      # 25 -> 100. `ح-3` by the number: MEASURED `app_rw` demand is 368 client
+      # slots against 25 server slots, so the pooler was serialising the
+      # platform's whole write path through a quarter of one replica's worth
+      # of concurrency.
+      #
+      # ⚠️ AND 2.3'S RECORDED WARNING ABOUT THIS CHANGE HAS EXPIRED. It read:
+      # "raising DEFAULT_POOL_SIZE to 100 alone moves nothing -- app_rw demand
+      # is 68, min(68, 100) = 68, so the constraint just moves into the app".
+      # That was measured on a ONE-REPLICA stack. 3.4 made it three replicas
+      # x 4 siblings and demand is 368, so `min(368, 100) = 100`: the pooler
+      # is still the binding constraint after this change, and the change is
+      # worth four times what it was worth when that sentence was written.
+      DEFAULT_POOL_SIZE: "100"
+      # Peak absorption, ON TOP of default_pool_size rather than inside it --
+      # so the real per-pool maximum is 110 and that is the number the
+      # connection budget adds up (test_connection_budget._server_backends).
+      # 3s rather than the plan's silence: this is the queue-jump for a burst,
+      # and a reserve slot handed out after a long wait is just a slower
+      # version of the wait.
+      RESERVE_POOL_SIZE: "10"
+      RESERVE_POOL_TIMEOUT: "3"
+      # ⚠️ MEASURED: THIS IS PER DATABASE, NOT A TOTAL -- WHICH IS THE ONE
+      # THING STEP 2.2 ASKS IT TO BE ("a total ceiling that stops the pools'
+      # sum exceeding max_connections however many roles there are"). It does
+      # bound roles: `max_db_connections` ignores the user. It does not bound
+      # DATABASES, and `[databases]` here is the `*` wildcard, so the dbname
+      # is the CLIENT's choice and each distinct one gets its own autodb with
+      # its own copy of this ceiling. MEASURED at `MAX_DB_CONNECTIONS=2`: two
+      # backends held on `aizzak` and two more on `aizzak_test` at the same
+      # instant -- four, for a ceiling written as two.
+      #
+      # 297 is still the right number for the database that matters:
+      # `max_connections` (300, step 2.1) minus `superuser_reserved_connections`
+      # (3, measured on the running server) -- the plan's 2.3 note has this
+      # arithmetic and 2.2's own text gives no number at all. The residual
+      # exposure is recorded as a debt rather than closed here: nothing in
+      # this repository reaches another database THROUGH the pooler (every
+      # `aizzak_test` DSN in `.env.test.example` and `tests/integration/`
+      # names port 15432, which is Postgres directly), and the fix -- naming
+      # `aizzak` explicitly instead of `*` -- needs the mounted-ini fallback
+      # this service deliberately does not use. `max_connections` is the
+      # backstop under it, and it refuses loudly.
+      MAX_DB_CONNECTIONS: "297"
       AUTH_TYPE: scram-sha-256
       # Named prepared statements are disabled application-side; leaving
       # this at 0 keeps pgbouncer from pretending otherwise.
@@ -590,6 +755,18 @@ services:
       # so 120s of it is a request that is gone twice over. 20s is still far
       # above every per-path EXECUTION budget, so this never pre-empts a
       # guard that could name the cause better.
+      #
+      # ⚠️ STEP 2.2 NAMES 15 AND THIS STAYS 20, DELIBERATELY. 2.6 chose this
+      # number against the measured per-path budgets it was installing on the
+      # other side of the pooler; 2.2's 15 was written before any of those
+      # existed and nothing measures in its favour. What 2.2 asked this knob
+      # for IS delivered and was MEASURED at a deliberately lowered ceiling: a
+      # saturated pool errored at 5.15s against `QUERY_WAIT_TIMEOUT=5` -- fast,
+      # not a hang. ⚠️ Fast but NOT loud, which is the half 2.6 already
+      # recorded: the error the client sees is asyncpg's "connection was closed
+      # in the middle of operation", because the way PgBouncer ends the wait is
+      # by closing the socket. True, and useless as a diagnosis. The loudness
+      # has to come from `aizzak_db_pool_*` and the pooler exporter, not here.
       QUERY_WAIT_TIMEOUT: "20"
       # `client_idle_timeout` was `0` -- disabled -- which is why step 2.6's
       # own wording ("`pool_recycle` shorter than PgBouncer's idle timeout")

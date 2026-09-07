@@ -73,11 +73,17 @@ _RUNPOD_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _RUNPOD_SUPERVISORD = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
 _RUNBOOK = _REPO_ROOT / "docs" / "design" / "08-local-runbook.md"
 
-# Postgres's own defaults, restated here because NEITHER deployment's Compose
-# service sets them and a ceiling nobody wrote down is still a ceiling. If 2.1
-# ever adds `max_connections` to the `postgres` command, `_pg_max_connections`
-# below reads it from there instead and this constant stops being consulted.
+# Postgres's own default, restated here because a ceiling nobody wrote down is
+# still a ceiling. Step 2.1 has since written one down -- in
+# `deploy/postgres/postgresql.conf`, NOT in the `postgres` service's command,
+# which is where the note this replaces expected to find it. That distinction
+# is load-bearing rather than cosmetic: 2.1 kept the `command:` for the
+# settings risk `م-8` does not cover (0.4's instrument, 2.5's durability) and
+# put the tuning in a file precisely so the tuning alone could be switched off
+# for a baseline run. A reader that looked only at the command would see 100
+# and pass a stack whose real ceiling is 300. `_pg_max_connections` reads both.
 _PG_DEFAULT_MAX_CONNECTIONS = 100
+_PG_TUNING_CONF = _REPO_ROOT / "deploy" / "postgres" / "postgresql.conf"
 # `superuser_reserved_connections`, also a default. It matters to the sum: the
 # three application roles are NOT superusers, so the slots they may compete for
 # is `max_connections` MINUS this, and budgeting against the raw number
@@ -386,14 +392,43 @@ def _pgbouncer_env() -> dict[str, str]:
 
 
 def _pg_max_connections() -> int:
-    """Read from the `postgres` service's own command if 2.1 has set it there,
-    and from Postgres's default if not -- so this ledger follows that step
-    rather than having to be edited by it."""
+    """Read from wherever the server is actually told, and from Postgres's own
+    default if nowhere -- so this ledger follows step 2.1 rather than having to
+    be edited by it.
+
+    Two places, and the ORDER is the precedence Postgres itself applies: a
+    command-line `-c` outranks a configuration file. Today only the file sets
+    this; the command is checked first anyway, because the day someone pins it
+    on the command line is the day a file-only reader starts reporting a
+    ceiling the server is not running with.
+    """
     compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
     for token in compose["services"]["postgres"].get("command", []):
         if str(token).startswith("max_connections="):
             return int(str(token).split("=", 1)[1])
+    if _PG_TUNING_CONF.exists():
+        found = re.search(
+            r"^\s*max_connections\s*=\s*(\d+)",
+            _PG_TUNING_CONF.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        if found is not None:
+            return int(found.group(1))
     return _PG_DEFAULT_MAX_CONNECTIONS
+
+
+def _pool_ceiling() -> int:
+    """What ONE pool may actually open, which is not `DEFAULT_POOL_SIZE`.
+
+    ⚠️ `reserve_pool_size` is ADDITIVE. PgBouncer hands a reserve slot to a
+    client that has already waited `reserve_pool_timeout`, and it does so ON
+    TOP of the pool's normal size -- so step 2.2's 100 + 10 is a per-pool
+    maximum of 110, and a budget that added up the 100s would understate the
+    ceiling by one reserve pool per role at exactly the moment the platform is
+    under the burst the reserve exists for.
+    """
+    env = _pgbouncer_env()
+    return int(env["DEFAULT_POOL_SIZE"]) + int(env.get("RESERVE_POOL_SIZE", 0))
 
 
 # ---------------------------------------------------------------- the sums --
@@ -418,10 +453,12 @@ def _demand_by_role(topology: _Topology) -> dict[str, int]:
     return demand
 
 
-def _server_backends(topology: _Topology, default_pool_size: int) -> int:
+def _server_backends(topology: _Topology, pool_ceiling: int) -> int:
     """The backends the pooler can have open at once.
 
-    ⚠️ `min(demand, DEFAULT_POOL_SIZE)` per (role, database) pool, NOT the sum
+    ⚠️ `min(demand, DEFAULT_POOL_SIZE + RESERVE_POOL_SIZE)` per (role, database)
+    pool -- see `_pool_ceiling` for why the reserve is a term and not a
+    rounding error -- and NOT the sum
     of the pool maxima. Under transaction pooling a server connection exists
     only for a client inside a transaction, so a pool never opens more backends
     than it has clients -- summing the maxima would report 175 against a
@@ -431,7 +468,7 @@ def _server_backends(topology: _Topology, default_pool_size: int) -> int:
     to answer and which 08 §2-ب states rather than asserts.
     """
     return (
-        sum(min(demand, default_pool_size) for demand in _demand_by_role(topology).values())
+        sum(min(demand, pool_ceiling) for demand in _demand_by_role(topology).values())
         + _POOLER_HEALTHCHECK_CLIENTS
     )
 
@@ -581,9 +618,8 @@ def test_the_pooler_cannot_ask_postgres_for_more_backends_than_it_has() -> None:
     nothing about it: the pooler will happily accept five hundred clients and
     then discover that Postgres takes ninety-seven."""
     topology = _compose_topology()
-    default_pool_size = int(_pgbouncer_env()["DEFAULT_POOL_SIZE"])
     ceiling = _pg_max_connections() - _PG_SUPERUSER_RESERVED
-    backends = _server_backends(topology, default_pool_size)
+    backends = _server_backends(topology, _pool_ceiling())
 
     assert backends <= ceiling, (
         f"the pooler can open {backends} backends against a server that allows {ceiling} "
@@ -773,9 +809,7 @@ def test_the_runbook_ledger_carries_the_numbers_this_module_computes() -> None:
 
     computed = {
         "compose.pooler_clients": _pooler_clients(compose),
-        "compose.postgres_backends": _server_backends(
-            compose, int(_pgbouncer_env()["DEFAULT_POOL_SIZE"])
-        ),
+        "compose.postgres_backends": _server_backends(compose, _pool_ceiling()),
         "compose.app_rw_demand": _demand_by_role(compose)["app_rw"],
         "compose.web_concurrency_max": _highest_fitting_web_concurrency(
             compose, client_ceiling, _pooler_clients
