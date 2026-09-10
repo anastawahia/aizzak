@@ -591,15 +591,33 @@ def create_production_app() -> FastAPI:
     must live in this process, not a separate worker.
     """
     root = CompositionRoot.from_env()
+    # ⭐ capacity 5.2 — THESE TWO LINES TAKE DIFFERENT REDIS SERVERS, and the
+    # difference is the whole of that step. `root.cache` is `noeviction`;
+    # `root.evictable_cache` is `allkeys-lru`. Both are `CacheProvider`, which
+    # says nothing about eviction — the guarantee is in the server behind it,
+    # so the only place it can be applied is here, at the wiring.
+    #
+    # The denylist stays on the retained instance because a MISS on it means
+    # "not revoked" (`framework/auth/revocation.py`'s own docstring), so an
+    # evicted entry re-validates a revoked token until its `exp` — and the
+    # entry most likely to be evicted is exactly the dangerous one, since a
+    # subject revoked before their stolen token is used is a key nobody reads.
     session_revocations = SessionRevocationList(root.cache)
     # capacity-plan wave 1 step 1.1. Built HERE beside the denylist rather
     # than inside `CompositionRoot`, for the reason the denylist is: both are
-    # thin objects over `root.cache` that only the API process has a use for.
+    # thin objects over a cache that only the API process has a use for.
     # `0` builds NOTHING — see `AuthSettings`: a baseline run must not pay
     # even a Redis round trip for an optimisation it is measuring the absence
     # of.
+    #
+    # On the EVICTABLE instance (5.2), and the asymmetry with the line above
+    # is worth stating: for a principal a stale entry is the risk and a
+    # missing one is free (it re-runs `provision_on_login` + `roles_of`, i.e.
+    # the pre-1.1 request), so eviction can only ever move this key in the
+    # safe direction. 1.1's security criterion does not rest on this cache at
+    # all — it rests on the denylist above, which is why the two can be split.
     principal_cache = (
-        PrincipalCache(root.cache, ttl_s=root.settings.auth.principal_cache_ttl_s)
+        PrincipalCache(root.evictable_cache, ttl_s=root.settings.auth.principal_cache_ttl_s)
         if root.settings.auth.principal_cache_ttl_s > 0
         else None
     )

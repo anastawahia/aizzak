@@ -68,7 +68,10 @@ from app.modules.knowledge.adapters.parsers.extractor import DocumentContentExtr
 from app.modules.knowledge.adapters.sql_repository import SqlDocumentRepository
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.use_cases import IndexFile, IndexFileService
-from app.modules.knowledge.domain.collections import knowledge_collection
+from app.modules.knowledge.domain.collections import (
+    EmbeddingRegime,
+    knowledge_collection_revision,
+)
 from app.modules.knowledge.domain.value_objects import IndexStatus
 from app.workers.bootstrap import build_knowledge_index_handler
 from app.workers.content_resolver import WorkerDocumentContentResolver
@@ -533,7 +536,18 @@ async def test_a_real_txt_file_flows_from_requested_all_the_way_to_indexed(
     space_id = new_uuid7()
     storage_key = f"{workspace_id}/{file_id}/notes.txt"
     ctx = _ctx(workspace_id)
-    collection = knowledge_collection(workspace_id)
+    # The corpus this pipeline's embedding regime owns (capacity 4.5), not the
+    # workspace's stable name: `IndexDocument` resolves the revisioned one and
+    # a search for the other would find an empty collection -- which is the
+    # whole failure the step exists to make visible rather than silent. The
+    # regime is `_StubEmbeddings`' own, plus `IndexDocument`'s default token
+    # ceiling, because that is the pair actually running here.
+    collection = knowledge_collection_revision(
+        workspace_id,
+        EmbeddingRegime(
+            model="stub-model", dimensions=_StubEmbeddings._DIM, max_input_tokens=512
+        ).revision,
+    )
 
     documents = SqlDocumentRepository(tenant_session)
     files = SqlFileRepository(tenant_session)

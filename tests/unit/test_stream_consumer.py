@@ -28,11 +28,16 @@ import pytest
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import AppError, ConflictError, UnsupportedTypeError
 from app.framework.events.envelope import build_envelope
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import Heartbeat
 from app.framework.types import Json
-from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
+from app.infrastructure.messaging.consumers.engine import (
+    EventHandler,
+    StreamConsumer,
+    Subscription,
+)
 from app.infrastructure.messaging.redis_streams import ConsumerInfo, DlqBacklog, StreamMessage
 
 
@@ -235,15 +240,22 @@ def _envelope_bytes(
     workspace_id: str = "ws-1",
     correlation_id: str | None = "corr-1",
     data: Json | None = None,
+    subject: str = "subject-1",
 ) -> bytes:
     """A REAL CloudEvents envelope (``build_envelope``, not a hand-rolled
     dict) serialized to bytes -- exactly what ``RedisStreamsConsumer.read``
-    would hand back as ``StreamMessage.raw``."""
+    would hand back as ``StreamMessage.raw``.
+
+    ``subject`` is a parameter since capacity 5.1: it is the aggregate id the
+    engine partitions a batch on (``_lanes``), so "two messages about one
+    document" and "two messages about two documents" are two different
+    envelopes here rather than two different comments.
+    """
     envelope = build_envelope(
         event_id=new_uuid7(),
         source="test",
         event_type=event_type,
-        subject="subject-1",
+        subject=subject,
         occurred_at=utc_now(),
         workspace_id=workspace_id,
         data=data or {},
@@ -262,6 +274,8 @@ def _consumer(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    concurrency: int = 1,
+    drain_timeout_s: float = 0.0,
 ) -> StreamConsumer:
     return StreamConsumer(
         fake,  # type: ignore[arg-type]
@@ -273,7 +287,45 @@ def _consumer(
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
         dlq_watch_interval_s=dlq_watch_interval_s,
+        concurrency=concurrency,
+        drain_timeout_s=drain_timeout_s,
     )
+
+
+class OverlapRecorder:
+    """A handler that records how many of itself were running at once, and in
+    what order they started -- the two facts every concurrency test below is
+    actually about (capacity 5.1).
+
+    Each call yields to the loop at least once (``asyncio.sleep(0)`` is not
+    enough to let a sibling task START on every 3.12 scheduling path, so it
+    sleeps a real, tiny interval), which is what makes "did these two overlap"
+    observable rather than a coincidence of scheduling order.
+    """
+
+    def __init__(self, *, delay_s: float = 0.01) -> None:
+        self.delay_s = delay_s
+        self.in_flight = 0
+        self.peak = 0
+        self.started: list[str] = []
+        self.finished: list[str] = []
+        self.overlapped_subjects: set[tuple[str, ...]] = set()
+        self._live_subjects: set[str] = set()
+
+    async def __call__(self, ctx: ExecutionContext, envelope: Json) -> None:
+        subject = str(envelope["subject"])
+        self.started.append(subject)
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        if self._live_subjects:
+            self.overlapped_subjects.add(tuple(sorted({subject, *self._live_subjects})))
+        self._live_subjects.add(subject)
+        try:
+            await asyncio.sleep(self.delay_s)
+        finally:
+            self._live_subjects.discard(subject)
+            self.in_flight -= 1
+            self.finished.append(subject)
 
 
 class CountingHeartbeat:
@@ -1031,3 +1083,299 @@ async def test_deregister_keeps_the_entry_while_it_still_owns_messages() -> None
     await _consumer(fake).deregister([_memory_sub()])
 
     assert fake.deleted_consumers == []
+
+
+# --------------------------------------------------------------------------- #
+# Capacity 5.1 -- bounded concurrency (`ح-6`)                                 #
+# --------------------------------------------------------------------------- #
+def _seed_batch(fake: InMemoryStreamsConsumer, subjects: Sequence[str]) -> None:
+    for subject in subjects:
+        fake.seed("stream.memory", _envelope_bytes("memory.item.stored.v1", subject=subject))
+
+
+def _sub(handler: EventHandler) -> Subscription:
+    return Subscription(
+        stream="stream.memory", group="cg.memory", handlers={"memory.item.stored.v1": handler}
+    )
+
+
+async def test_concurrency_of_one_is_the_pre_5_1_loop_message_for_message() -> None:
+    """The `م-8` reversal switch, asserted rather than asserted-about.
+
+    ``WORKER_CONCURRENCY=1`` is what a deployment sets to put this engine back
+    in the shape the 0.5 baseline is measured in, so "1 means sequential" has
+    to be a property of the code and not of how a batch happened to schedule:
+    strict arrival order, and never two handlers alive at once.
+    """
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-b", "doc-c", "doc-d"])
+    recorder = OverlapRecorder()
+
+    handled = await _consumer(fake, concurrency=1).run_once([_sub(recorder)])
+
+    assert handled == 4
+    assert recorder.peak == 1
+    assert recorder.started == ["doc-a", "doc-b", "doc-c", "doc-d"]
+    assert recorder.finished == recorder.started
+
+
+async def test_a_batch_of_distinct_aggregates_runs_through_every_lane() -> None:
+    """The step's whole purpose: four messages about four different documents
+    are four things this process can be waiting on at once, and the sequential
+    loop made it wait on them one at a time."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-b", "doc-c", "doc-d"])
+    recorder = OverlapRecorder()
+
+    handled = await _consumer(fake, concurrency=4).run_once([_sub(recorder)])
+
+    assert handled == 4
+    assert recorder.peak == 4
+    assert len(fake.acked) == 4
+
+
+async def test_the_lanes_are_a_ceiling_not_a_suggestion() -> None:
+    """Eight distinct aggregates through three lanes is three at a time, not
+    eight -- otherwise `WORKER_CONCURRENCY` would bound nothing and the pool
+    it sizes (`workers/bootstrap._worker_pool_size`) would be undersized by
+    however wide the batch happened to be."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, [f"doc-{index}" for index in range(8)])
+    recorder = OverlapRecorder()
+
+    handled = await _consumer(fake, batch_count=8, concurrency=3).run_once([_sub(recorder)])
+
+    assert handled == 8
+    assert recorder.peak == 3
+
+
+async def test_two_messages_about_one_aggregate_are_never_in_flight_together() -> None:
+    """Invariant 2, and the reason the batch is partitioned rather than
+    semaphored: «رسالتَين لمستندٍ واحد يجب ألّا تُعالَجا معاً».
+
+    Four messages, one subject, four lanes available -- and still exactly one
+    of them running at any instant, in arrival order.
+    """
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-a", "doc-a", "doc-a"])
+    recorder = OverlapRecorder()
+
+    handled = await _consumer(fake, concurrency=4).run_once([_sub(recorder)])
+
+    assert handled == 4
+    assert recorder.peak == 1
+    assert recorder.overlapped_subjects == set()
+
+
+async def test_one_slow_aggregate_does_not_serialise_the_others() -> None:
+    """The containing half of the invariant above: serialising an aggregate
+    against ITSELF must not serialise it against anything else, or the lock
+    would have cost exactly what the concurrency bought."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-a", "doc-b", "doc-c"])
+    recorder = OverlapRecorder()
+
+    await _consumer(fake, concurrency=4).run_once([_sub(recorder)])
+
+    assert recorder.peak == 3  # a's two are one lane; b and c are their own
+    assert any("doc-b" in pair for pair in recorder.overlapped_subjects)
+
+
+async def test_a_message_with_no_usable_subject_serialises_with_nothing() -> None:
+    """An envelope this engine cannot classify keeps its pre-5.1 treatment --
+    it is dispatched, not filtered and not dead-lettered -- and it takes a
+    lane of its own rather than being lumped with every other subject-less
+    message into one accidental queue."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    for _ in range(3):
+        fake.seed(
+            "stream.memory",
+            json.dumps(
+                {
+                    "type": "memory.item.stored.v1",
+                    "workspaceid": "ws-1",
+                    "id": str(new_uuid7()),
+                }
+            ).encode(),
+        )
+    recorder = OverlapRecorder()
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        await recorder(ctx, {**envelope, "subject": envelope.get("id")})
+
+    handled = await _consumer(fake, concurrency=3).run_once([_sub(_handle)])
+
+    assert handled == 3
+    assert recorder.peak == 3
+    assert fake.dead_lettered == []
+
+
+async def test_run_once_returns_only_after_every_lane_has_finished() -> None:
+    """Invariant 3, expressed where it is actually enforced.
+
+    ``run``'s loop fires ``sweep_stale``/``watch_dlq`` AFTER ``run_once``
+    returns, and the engine's own comment promises the sweep "cannot fire while
+    a handler is mid-flight". That promise is only true if the barrier is real
+    -- a pipelined loop would have broken it silently.
+    """
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-b", "doc-c", "doc-d"])
+    recorder = OverlapRecorder(delay_s=0.02)
+
+    await _consumer(fake, concurrency=4).run_once([_sub(recorder)])
+
+    assert recorder.in_flight == 0
+    assert len(recorder.finished) == 4
+
+
+async def test_the_beat_lands_while_a_batch_is_still_in_flight() -> None:
+    """Invariant 1: «النبضُ يجب أن يظلّ يعبّر عن حياة الحلقة لا عن اكتمال أطول
+    مهمّة».
+
+    Before 5.1 a beat could not happen while a handler ran, which is why two
+    services raised ``HEARTBEAT_MAX_AGE_S`` to 600. Concurrency would have made
+    the silence ``concurrency`` times likelier to hit the longest handler in a
+    batch, so the loop now beats on ``block_ms`` for as long as -- and ONLY as
+    long as -- a batch is in flight.
+    """
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-b"])
+    heartbeat = CountingHeartbeat()
+    seen: list[int] = []
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        await asyncio.sleep(0.08)
+        seen.append(heartbeat.beats)
+
+    await _consumer(fake, block_ms=10, concurrency=2, heartbeat=heartbeat).run_once([_sub(_handle)])
+
+    # The read's own beat is 1; anything above it landed DURING the handlers.
+    assert max(seen) > 1
+
+
+async def test_nothing_beats_while_the_loop_is_merely_waiting_for_a_read() -> None:
+    """The containing half: a ticker that beat unconditionally would report a
+    loop wedged inside ``read`` as healthy forever -- which is the exact
+    failure ``HealthSettings.heartbeat_max_age_s`` exists to catch. The ticker
+    lives and dies with a batch, so an empty read leaves exactly the one beat
+    ``run_once`` has always produced."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    heartbeat = CountingHeartbeat()
+
+    async def _never_called(ctx: ExecutionContext, envelope: Json) -> None:  # pragma: no cover
+        raise AssertionError("no message was seeded")
+
+    await _consumer(fake, block_ms=1, concurrency=4, heartbeat=heartbeat).run_once(
+        [_sub(_never_called)]
+    )
+    await asyncio.sleep(0.05)
+
+    assert heartbeat.beats == 1
+
+
+async def test_request_stop_leaves_the_loop_after_the_batch_in_flight() -> None:
+    """Invariant 4's engine half: a stop is not a cancellation. The message
+    this process already took out of the stream is finished and acked; the
+    loop simply does not read again."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a", "doc-b"])
+    consumer = _consumer(fake, block_ms=1, concurrency=2)
+    finished: list[str] = []
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        consumer.request_stop()
+        await asyncio.sleep(0.01)
+        finished.append(str(envelope["subject"]))
+
+    await asyncio.wait_for(consumer.run([_sub(_handle)]), timeout=2.0)
+
+    assert sorted(finished) == ["doc-a", "doc-b"]
+    assert len(fake.acked) == 2
+
+
+async def test_a_permanent_failure_is_dead_lettered_on_the_first_delivery() -> None:
+    """Invariant 5: «العابرُ يُعاد، وخطأُ التحقّق أو نوعٌ غير مدعومٍ يذهب إلى
+    DLQ من أوّل مرّة».
+
+    ``delivery_count`` is 1 here, four short of ``max_deliveries`` -- and the
+    entry still leaves the pipeline, because attempt 5 would decode, route and
+    fail on exactly the same bytes attempt 1 did.
+    """
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a"])
+
+    async def _reject(ctx: ExecutionContext, envelope: Json) -> None:
+        raise UnsupportedTypeError("application/x-nope")
+
+    handled = await _consumer(fake, max_deliveries=5).run_once([_sub(_reject)])
+
+    assert handled == 0
+    assert len(fake.dead_lettered) == 1
+    _stream, _group, _entry, reason, deliveries = fake.dead_lettered[0]
+    assert deliveries == 1
+    assert reason.startswith("handler_rejected: UnsupportedTypeError")
+
+
+async def test_a_conflict_keeps_its_whole_retry_budget() -> None:
+    """The two 4xx that are NOT permanent, and the reason including them would
+    be a bug: ``409`` means "someone else got there first, come back" (10 §6's
+    optimistic-lock convention). A budget spent on the first collision would
+    dead-letter the message a retry was going to fix."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a"])
+
+    async def _conflict(ctx: ExecutionContext, envelope: Json) -> None:
+        raise ConflictError("version moved")
+
+    await _consumer(fake, max_deliveries=5).run_once([_sub(_conflict)])
+
+    assert fake.dead_lettered == []
+    assert fake.acked == []  # still pending, i.e. redelivered
+
+
+async def test_a_rate_limit_keeps_its_whole_retry_budget() -> None:
+    """``429``'s the other one, and it says the same thing louder."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a"])
+
+    async def _throttled(ctx: ExecutionContext, envelope: Json) -> None:
+        raise AppError("slow down", code="common.rate_limited")
+
+    await _consumer(fake, max_deliveries=5).run_once([_sub(_throttled)])
+
+    assert fake.dead_lettered == []
+
+
+async def test_a_server_side_failure_still_spends_the_budget_one_delivery_at_a_time() -> None:
+    """The containing guard for the whole classification: a 5xx -- and
+    anything that is not an ``AppError`` at all, which is every driver error,
+    socket reset and timeout -- is the transient class 04 §3's ``N=5`` was
+    written for, and 5.1 must not have quietly moved it."""
+    fake = InMemoryStreamsConsumer()
+    await fake.ensure_group("stream.memory", "cg.memory")
+    _seed_batch(fake, ["doc-a"])
+
+    async def _boom(ctx: ExecutionContext, envelope: Json) -> None:
+        raise TimeoutError("qdrant did not answer")
+
+    consumer = _consumer(fake, max_deliveries=3)
+    for _ in range(2):
+        await consumer.run_once([_sub(_boom)])
+        assert fake.dead_lettered == []
+    await consumer.run_once([_sub(_boom)])
+
+    assert len(fake.dead_lettered) == 1
+    assert fake.dead_lettered[0][3].startswith("handler_failed: TimeoutError")

@@ -28,7 +28,7 @@ from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.settings.settings import RetrievalSettings
-from app.framework.types import Json
+from app.framework.types import Json, Uuid
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.knowledge.application.retrieval import (
     _DEFAULT_TUNING as _SHIPPED_TUNING,
@@ -89,6 +89,7 @@ from app.modules.knowledge.ports.content_extractor import (
 )
 from app.modules.knowledge.ports.inbound import DocumentNames, KnowledgeRetrieval, RoutedAnswer
 from app.modules.knowledge.ports.retrieval import ResolvedEmbedding
+from tests.unit.support_knowledge import corpus_name, resolved_corpus
 
 # The shipped tuning with both per-leg floors off (س-22's numbers were
 # calibrated 2026-08-27 on `P-38`'s evaluation set: 0.45 on the dense leg's
@@ -251,14 +252,42 @@ class _FakeHybridVectors:
         self.search_calls: list[tuple[str, int, Json | None]] = []
         self.search_sparse_calls: list[tuple[str, int, Json | None]] = []
 
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None:
-        self.points.setdefault(name, {})
+    def corpus(self, workspace_id: str) -> dict[str, VectorPoint]:
+        """The points in one workspace's corpus, whichever revision named it.
+
+        Tests ask by WORKSPACE and not by collection name because since
+        capacity 4.5 that name carries an embedding-regime fingerprint no test
+        here has an opinion about — spelling it out in each assertion would
+        pin a digest instead of a behaviour. A fake holds exactly one corpus
+        per workspace, so "whichever one" is never ambiguous; the rule that
+        DECIDES the name is asserted on its own, once.
+        """
+        prefix = f"kn-{workspace_id}"
+        for name, points in self.points.items():
+            if name == prefix or name.startswith(f"{prefix}-"):
+                return points
+        return {}
+
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str:
+        resolved = resolved_corpus(name, revision)
+        self.points.setdefault(resolved, {})
+        return resolved
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None:
-        self.ensured_hybrid.append((name, dim, distance))
-        self.points.setdefault(name, {})
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str:
+        resolved = resolved_corpus(name, revision)
+        self.ensured_hybrid.append((resolved, dim, distance))
+        self.points.setdefault(resolved, {})
+        return resolved
+
+    async def delete_everywhere(self, name: str, ids: Sequence[Uuid]) -> None:
+        prefix = f"{name}-"
+        for collection in list(self.points):
+            if collection == name or collection.startswith(prefix):
+                await self.delete(collection, ids)
 
     # See `test_knowledge_pipeline.FakeHybridVectors` -- adapter-side concern,
     # present for the Protocol only.
@@ -1113,7 +1142,7 @@ async def test_index_registered_document_happy_path() -> None:
         assert chunk.workspace_id == "ws1"
         assert chunk.text
         assert chunk.vector_ref is not None
-        assert chunk.vector_ref.collection == "kn-ws1"
+        assert chunk.vector_ref.collection == corpus_name("ws1", model="embed-1", dimensions=6)
         expected_point_id = chunk_point_id(doc.id, chunk.seq)
         assert chunk.vector_ref.point_id == expected_point_id
         # 3.k3 -> 3.k4 handoff invariant: the row id is a FRESH UUIDv7,
@@ -1129,7 +1158,7 @@ async def test_index_registered_document_happy_path() -> None:
     assert event.workspace_id == "ws1"
     assert event.file_id == "file-1"
     assert event.chunk_count == 2
-    assert event.collection == "kn-ws1"
+    assert event.collection == corpus_name("ws1", model="embed-1", dimensions=6)
 
 
 async def test_index_registered_document_pipeline_failure_marks_document_failed() -> None:
@@ -3012,7 +3041,7 @@ async def test_a_pinned_repeat_request_reads_the_store_too() -> None:
     assert summaries.calls == []
 
 
-async def test_the_returned_summary_is_headed_with_the_name_the_module_resolved() -> None:
+async def test_the_returned_summary_is_headed_with_the_name_the_moduleresolved_corpus() -> None:
     """ب-7ج meets ب-8: the stored delivery names its file, from the name the
     MODULE resolved -- the same one a receipt would have named.
 
@@ -3603,7 +3632,7 @@ async def test_every_indexed_point_carries_its_document_s_space_in_the_payload()
         api_key="key-1",
     )
 
-    points = list(vectors.points["kn-ws1"].values())
+    points = list(vectors.corpus("ws1").values())
     assert len(points) == 2
     assert {point.payload["space"] for point in points} == {_SPACE_A}
     # The tenant key is not replaced by it (DD-04): a space is an axis INSIDE
@@ -3627,7 +3656,7 @@ async def test_a_spaceless_document_omits_the_payload_key_rather_than_writing_nu
         api_key="key-1",
     )
 
-    (point,) = vectors.points["kn-ws1"].values()
+    (point,) = vectors.corpus("ws1").values()
     assert "space" not in point.payload
 
 
@@ -3656,7 +3685,7 @@ async def test_the_worker_takes_the_payload_space_from_the_document_row() -> Non
         content_hash="hash-abc",
     )
 
-    (point,) = vectors.points["kn-ws1"].values()
+    (point,) = vectors.corpus("ws1").values()
     assert point.payload["space"] == _SPACE_B
 
 
@@ -3797,7 +3826,7 @@ async def test_content_indexed_before_spaces_falls_out_of_a_space_scoped_search(
     # `space_id=None`, the "every space" call س-32 removed; the store is asked
     # directly now, because there is no longer any caller of this module that
     # could see the point at all.
-    assert [point.payload["text"] for point in vectors.points["kn-ws1"].values()] == [
+    assert [point.payload["text"] for point in vectors.corpus("ws1").values()] == [
         "quarterly revenue figures"
     ]
     # ⇒ §5-أ got STRICTER with the decision, not looser: pre-spaces content is
@@ -3966,7 +3995,7 @@ async def test_the_same_content_question_still_narrows_inside_the_space_that_hol
     }
 
 
-async def test_an_unspaced_question_is_refused_before_a_name_is_resolved() -> None:
+async def test_an_unspaced_question_is_refused_before_a_name_isresolved_corpus() -> None:
     """The guard on the ROUTING half (س-32) — and it has to fire here, not
     only inside the search.
 

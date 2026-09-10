@@ -94,7 +94,11 @@ from app.modules.knowledge.domain.chunking import (
     max_words_for_token_limit,
     semantic_boundaries,
 )
-from app.modules.knowledge.domain.collections import chunk_point_id, knowledge_collection
+from app.modules.knowledge.domain.collections import (
+    EmbeddingRegime,
+    chunk_point_id,
+    knowledge_collection,
+)
 from app.modules.knowledge.domain.sparse import Bm25Params, build_document_terms
 from app.modules.knowledge.domain.tables import explode_table
 from app.modules.knowledge.ports.content_extractor import (
@@ -339,6 +343,15 @@ class IndexDocument:
         # supplies the argument (ح-6/ح-7, plan §2).
         self._max_words = max_words_for_token_limit(embedding_max_input_tokens)
         self._overlap_words = int(self._max_words * SPLIT_OVERLAP_RATIO)
+        # Kept RAW as well as folded into `_max_words`, because the two answer
+        # different questions. `_max_words` is how wide a chunk may be; this is
+        # the ceiling at which the MODEL stops reading, and it is one of the
+        # three fields an `EmbeddingRegime` fingerprint is taken over (capacity
+        # step 4.5). Deriving it back out of `_max_words` would not work --
+        # `max_words_for_token_limit` is lossy by design (a floor and a safety
+        # margin) -- and two ceilings that collapse to the same word window are
+        # still two regimes whose vectors must not share a collection.
+        self._embedding_max_input_tokens = embedding_max_input_tokens
 
     async def execute(
         self,
@@ -415,8 +428,26 @@ class IndexDocument:
         parents = tuple(draft for draft in parent_drafts if draft.key in referenced_keys)
 
         dim = self._embeddings.dimensions(model)
-        collection = knowledge_collection(ctx.workspace_id)
-        await self._vectors.ensure_hybrid_collection(collection, dim, distance="cosine")
+        # The READ name resolves to the PHYSICAL one, and only the physical one
+        # is ever written to or recorded (capacity step 4.5). Under an ordinary
+        # deployment the two name the same corpus; during a model swap they do
+        # not, and the difference is exactly what keeps this document's vectors
+        # out of a collection built by another model. `IndexOutcome.collection`
+        # -- and therefore every `chunks.collection` row minted from it -- is
+        # the resolved name, so the delete paths reach the collection the point
+        # actually landed in rather than whichever one the alias points at
+        # later.
+        regime = EmbeddingRegime(
+            model=model,
+            dimensions=dim,
+            max_input_tokens=self._embedding_max_input_tokens,
+        )
+        collection = await self._vectors.ensure_hybrid_collection(
+            knowledge_collection(ctx.workspace_id),
+            dim,
+            distance="cosine",
+            revision=regime.revision,
+        )
 
         # P-05 (plan §4 step 16, decision س-15 = أ): counted over `to_index`
         # -- the FINAL rows, at `chunk_count`'s own granularity -- so the

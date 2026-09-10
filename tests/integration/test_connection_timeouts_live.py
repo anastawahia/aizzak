@@ -50,7 +50,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.framework.settings.settings import DatabaseSettings
+from app.framework.settings.settings import DatabaseSettings, Settings
 from app.infrastructure.persistence.database import create_engine
 from app.workers.bootstrap import _BACKGROUND_STATEMENT_TIMEOUT_MS, _worker_db
 from tests.integration.conftest import LiveDbDsns
@@ -202,8 +202,14 @@ async def test_a_background_engine_carries_the_looser_budget(
     live_db: LiveDbDsns,
 ) -> None:
     """Claim 4 -- `_worker_db`'s constants read back off the server. Proves
-    they ARRIVE, which is the half a unit test cannot see."""
-    worker_db = _worker_db(DatabaseSettings(url=live_db.app))
+    they ARRIVE, which is the half a unit test cannot see.
+
+    Takes a whole ``Settings`` since capacity 5.1: the worker pool size is
+    derived from ``events.worker_concurrency`` there, so the helper needs the
+    other half of the contract too. Everything but ``database`` is left at its
+    default, because this test asserts a TIMEOUT, and the timeout is a
+    constant of the helper rather than a function of the concurrency."""
+    worker_db = _worker_db(Settings(database=DatabaseSettings(url=live_db.app)))
     async with (
         _engine(
             worker_db.url,

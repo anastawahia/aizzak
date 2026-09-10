@@ -72,6 +72,20 @@ EXPECTED_ALERTS = frozenset(
         # the measurement apparatus rather than about the platform.
         "AizzakScrapeTargetDown",
         "AizzakPgbouncerDown",
+        # Wave 4 step 4.5 (docs/capacity-plan.md) -- the sixth, and the first
+        # whose subject is a MIGRATION rather than a dependency: an embedding
+        # model changed without its corpus, and every other signal in this
+        # file stays green while retrieval quietly stops seeing new documents.
+        "AizzakVectorShadowWrites",
+        # Wave 5 step 5.2 (docs/capacity-plan.md) -- the seventh and eighth,
+        # and the first two that could not have been WRITTEN before their own
+        # step. Until 5.2 there was one Redis at `maxmemory 0`: with no
+        # ceiling there is no "80% of" anything to threshold, and on a shared
+        # instance an eviction is ambiguous between "the cache is doing its
+        # job" and "an unconsumed stream entry was just deleted". Splitting
+        # the server is what turned both into questions with one answer.
+        "AizzakRedisStreamMemoryHigh",
+        "AizzakRedisStreamEvicted",
     }
 )
 
@@ -92,8 +106,22 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     earlier, because until 0.3 there was no Prometheus and therefore no
     ``up`` series to alert on.
 
+    Wave 4 step 4.5 adds the sixth, and it earns its place the same way the
+    third did: it thresholds a failure with NO other symptom. A deployment
+    that changed the embedding model and skipped the corpus migration keeps
+    every number in this file green -- normal latency, zero errors, a healthy
+    scrape -- while retrieval answers from a corpus nothing writes to any
+    more, and every document indexed since is invisible.
+
+    Wave 5 step 5.2 adds the seventh and eighth, and they clear the bar in a
+    way none of the six before them did: they are the first rules in this file
+    that were IMPOSSIBLE to write earlier. Both threshold a property of a
+    Redis instance that did not exist until that step split one server in two
+    -- a `maxmemory` to be 80% of, and an eviction counter whose movement is
+    unambiguous because the instance's policy pins it at zero.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a sixth entry needs its own written
+    decision, never by drift -- so a NINTH entry needs its own written
     reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md``) first, not just a name added here.
 
@@ -114,9 +142,10 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         f"  unexpected: {sorted(names - EXPECTED_ALERTS)}\n"
         f"  missing:    {sorted(EXPECTED_ALERTS - names)}\n"
         "This file is scoped to the Outbox age + DLQ depth signals (P1-3, step 10), the "
-        "Vault-authentication gauge (ن-10) and the two scrape-health rules (capacity-plan "
-        "Wave 0 step 0.3). A new rule needs its own logged justification first, not just a "
-        "name added to EXPECTED_ALERTS."
+        "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
+        "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5) and the two "
+        "redis-stream rules (step 5.2). A new rule needs its own logged justification "
+        "first, not just a name added to EXPECTED_ALERTS."
     )
 
 
@@ -249,6 +278,88 @@ def test_vault_auth_rule_references_the_real_metric_and_the_lockout_ordering() -
         f"{_ALERTS_YML}: {VAULT_AUTH_METRIC} rule's `response` must name the Vault user "
         "lockout and its unlock step -- without it the operator mints a new secret_id, "
         "sees it refused with an empty 403, and starts suspecting policies instead"
+    )
+
+
+def _rule_named(rules: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    matches = [rule for rule in rules if rule.get("alert") == name]
+    assert len(matches) == 1, f"{_ALERTS_YML}: expected exactly one {name!r} rule"
+    return matches[0]
+
+
+def test_both_redis_rules_are_scoped_to_the_noeviction_instance() -> None:
+    """capacity 5.2 -- the ``job="redis-stream"`` selector is the rule, not a
+    detail of it.
+
+    Both expressions are true CONTINUOUSLY on ``redis-cache``: it runs
+    ``allkeys-lru``, so it evicts by design and it is SUPPOSED to sit near its
+    ceiling (an LRU cache that never reaches `maxmemory` is a cache nobody
+    sized). Dropping the selector would not widen these rules, it would make
+    them fire forever and be silenced -- which is how an alert that matters
+    gets turned off for a reason that has nothing to do with it.
+    """
+    rules = _load_rules()
+    for name in ("AizzakRedisStreamMemoryHigh", "AizzakRedisStreamEvicted"):
+        expr = _rule_named(rules, name)["expr"]
+        assert 'job="redis-stream"' in expr, (
+            f'{_ALERTS_YML}: {name} must select `job="redis-stream"` -- unscoped, it also '
+            "matches the allkeys-lru instance, where both conditions are the design working"
+        )
+        assert "redis-cache" not in expr, (
+            f"{_ALERTS_YML}: {name} names the cache instance; these two rules are about "
+            "the instance that must never evict and must never fill"
+        )
+
+
+def test_the_redis_memory_rule_thresholds_the_80_percent_the_step_asks_for() -> None:
+    """The number 5.2 states in words ("تنبيهٌ عند 80%"), as a fraction of
+    ``maxmemory`` rather than as an absolute byte count.
+
+    An absolute threshold would have to be re-edited every time
+    ``docker-compose.yml`` changes the ceiling, and would go silently wrong in
+    the direction that matters: raise `maxmemory` to buy room and the alert
+    starts firing at 40% instead of 80%, so the operator silences it.
+    """
+    rule = _rule_named(_load_rules(), "AizzakRedisStreamMemoryHigh")
+    expr = " ".join(rule["expr"].split())
+    assert "redis_memory_used_bytes" in expr and "redis_memory_max_bytes" in expr, (
+        f"{_ALERTS_YML}: the memory rule must be a RATIO of used to maxmemory -- an "
+        "absolute byte threshold silently changes meaning when the ceiling moves"
+    )
+    assert "> 0.8" in expr, f"{_ALERTS_YML}: 5.2's threshold is 80% of maxmemory"
+    assert rule["for"] == "5m", (
+        f"{_ALERTS_YML}: the memory rule's `for:` drifted -- 80% of a 2 GB ceiling is a "
+        "trend with hours of runway, not a spike to debounce"
+    )
+    response = rule["annotations"]["response"]
+    assert "app.ops.dlq" in response, (
+        f"{_ALERTS_YML}: the memory rule's `response` must name `python -m app.ops.dlq` "
+        "-- the DLQs are the only keys on that instance with no bound at all "
+        "(`dead_letter` XADDs without `maxlen`, deliberately), so they are the first "
+        "thing an operator looks at"
+    )
+
+
+def test_the_redis_eviction_rule_refuses_to_debounce() -> None:
+    """The one rule in this file with no waiting window, and the reason is a
+    property of the instance rather than an opinion about urgency.
+
+    ``maxmemory-policy noeviction`` pins ``redis_evicted_keys_total`` at zero
+    structurally: on a correctly configured server this expression cannot
+    become true. So there is no flapping to suppress and no benign amount to
+    wait out -- the first increment is the entire finding, and every second of
+    `for:` is a second of silent loss on the instance holding the streams, the
+    WS registry and the session denylist.
+    """
+    rule = _rule_named(_load_rules(), "AizzakRedisStreamEvicted")
+    assert "redis_evicted_keys_total" in rule["expr"]
+    assert str(rule.get("for", "0s")) in {"0s", "0"}, (
+        f"{_ALERTS_YML}: AizzakRedisStreamEvicted must not debounce -- a `for:` here waits "
+        "out data loss on an instance where the counter cannot legitimately move at all"
+    )
+    assert rule["labels"]["severity"] == "critical", (
+        f"{_ALERTS_YML}: an eviction on the noeviction instance can drop an "
+        "`auth:revoked:<sub>` entry, which re-validates a revoked token until it expires"
     )
 
 

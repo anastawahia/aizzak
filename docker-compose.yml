@@ -70,7 +70,21 @@ x-app-env: &app-env
   # the three workers carry a background budget from their own constants in
   # `app/workers/bootstrap.py`.
   DB_POOL_RECYCLE_S: ${DB_POOL_RECYCLE_S:-900}
-  REDIS_URL: redis://redis:6379/0
+  # ح-10 · ق-4 (5.2) -- TWO URLs, and which key goes where is a wiring
+  # decision made in `framework/di/composition_root.py`, not here. REDIS_URL
+  # is the `noeviction` instance and stays the DEFAULT for everything: the
+  # `CacheProvider` port carries a session denylist, a single-use OAuth state
+  # and an abuse counter alongside the true caches, and none of those three
+  # may be evicted. CACHE_REDIS_URL is the `allkeys-lru` instance, and exactly
+  # two callers are pointed at it.
+  #
+  # Only `app` builds a cache today (the workers embed chunks, never queries
+  # -- `_build_embedding`'s own docstring), so CACHE_REDIS_URL is inert in the
+  # worker containers. It is set here anyway rather than per-service: the day
+  # a worker does build one, the alternative is that it silently gets the
+  # wrong instance.
+  REDIS_URL: redis://redis-stream:6379/0
+  CACHE_REDIS_URL: redis://redis-cache:6379/0
   MINIO_ENDPOINT: minio:9000
   MINIO_BUCKET: ${MINIO_BUCKET:-workspace-files}
   MINIO_SECURE: "false"
@@ -87,7 +101,32 @@ x-app-env: &app-env
   # URL is env-editable here (DD-11); model/dimensions/batch/timeout are
   # pinned adapter-side defaults that must match the image this service
   # bakes its model into (`services/embedding/Dockerfile`).
-  EMBEDDING_SERVICE_URL: http://embedding:8080
+  #
+  # ── `embedding` → `embedding-lb` (capacity 4.2) ─────────────────────────
+  # ⚠️ THE SERVICE NAME IS NO LONGER THE RIGHT DESTINATION, and pointing this
+  # back at it is a SILENT defect rather than an outage: `embedding` now has
+  # three replicas, the adapter holds pooled `httpx` connections, and a pooled
+  # connection resolves the name once and then stays on that one address. Two
+  # replicas would sit idle at full health while throughput looked like a
+  # failed scale-out -- 4.2's «عطبٌ صامتٌ يبدو كأنّه فشلُ توسّع».
+  #
+  # ⭐ AND IT IS ENV-EDITABLE FOR ONE REASON: it is HALF THE KILL SWITCH م-8
+  # requires of every step in this plan. Back to the pre-4.1/4.2 stack, with
+  # no file edited:
+  #
+  #     EMBEDDING_SERVICE_URL=http://embedding:8080 \
+  #       docker compose up -d --scale embedding=1 app worker-knowledge
+  #
+  # (`--scale` is accepted alongside `deploy.replicas` -- verified in
+  # `deploy/rolling-deploy.sh`'s own header.)
+  #
+  # ⚠️ WHICH MAKES A STALE `.env` THE TRAP: `.env` is interpolated into this
+  # value, so a developer whose file still carries the old
+  # `EMBEDDING_SERVICE_URL=http://embedding:8080` gets the silent defect above
+  # WITHOUT choosing it. That is why `.env.example` changed in the same commit,
+  # and why `GET /health` reports each replica's thread pin -- an idle fleet
+  # has to be visible from somewhere.
+  EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding-lb:8080}
   VAULT_ADDR: http://vault:8200
   # ── Vault authentication mode (7.3 · D-22 · 05 §3.3) ───────────────────
   # THREE variables, and which of them is set decides the mode, because
@@ -121,13 +160,56 @@ x-app-env: &app-env
   API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED:-true}
   WORKSPACE_RATE_PER_MIN: ${WORKSPACE_RATE_PER_MIN:-2400}
   MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-64}
+  # capacity-plan 4.3 -- how long a computed QUERY vector may be reused
+  # (`CachingEmbeddingProvider`, wrapped around the embedding adapter by the
+  # API's Composition Root and by nothing else). `0` builds no wrapper at all,
+  # which is what a baseline run needs. Ceiling 3600.
+  #
+  # ⚠️ IT REACHES THE WORKERS TOO -- this block is shared -- AND THEY IGNORE
+  # IT, deliberately. Only the API's Composition Root builds the wrapper; the
+  # knowledge worker's own root (`workers/bootstrap.py`) builds the bare
+  # adapter and does not read this value at all. The API embeds QUERIES (one
+  # short string per search, repeated across users); the worker embeds CHUNKS
+  # -- a hundred thousand per corpus, each seen exactly once -- and caching
+  # those would fill Redis with entries that can never be hit while evicting
+  # the ones that would. `tests/unit/test_embedding_fleet.py` guards the
+  # asymmetry, since a variable present in both environments is exactly the
+  # thing a later edit would "fix".
+  EMBEDDING_CACHE_TTL_S: ${EMBEDDING_CACHE_TTL_S:-600}
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   EVENT_STREAM_PREFIX: ${EVENT_STREAM_PREFIX:-stream.}
   OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
   CONSUMER_BLOCK_MS: ${CONSUMER_BLOCK_MS:-5000}
   MAX_RETRIES_BEFORE_DLQ: ${MAX_RETRIES_BEFORE_DLQ:-5}
   OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-256}
+  # Read COUNT for the API notify bridge's own `StreamConsumer` -- and ONLY
+  # for it since capacity 5.1. The three `worker-*` processes derive their
+  # count from `WORKER_CONCURRENCY` instead (`workers/bootstrap.
+  # _worker_batch_count`), because a worker that reserves entries it is not
+  # working on is `F-1`'s defect; the bridge, whose handler is a queue `put`,
+  # genuinely wants sixteen per read and one lane.
   CONSUMER_BATCH_COUNT: ${CONSUMER_BATCH_COUNT:-16}
+  # ── capacity 5.1 (`ح-6`): bounded concurrency in the consumption engine ──
+  # How many messages ONE worker process handles at once. Listed in the SHARED
+  # block so `.env` can move the floor for all three at once, and OVERRIDDEN
+  # per service below where that worker's own facts differ -- the
+  # `HEARTBEAT_MAX_AGE_S` precedent.
+  #
+  # ⚠️ THREE THINGS MOVE WITH IT and none of them is in this file: the
+  # worker's DATABASE pool (`_worker_pool_size` = concurrency + 1, which
+  # `tests/unit/test_connection_budget.py` multiplies out), its `XREADGROUP`
+  # COUNT, and its peak RSS -- `concurrency` documents parsed at once is
+  # `concurrency` copies of the largest one, against the `memory` limit each
+  # service declares below (08 §2-ز).
+  #
+  # `WORKER_CONCURRENCY=1` is this step's off switch (`م-8`): it restores the
+  # sequential engine byte for byte.
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  # How long a worker asked to stop keeps finishing what it already took
+  # before the rest is cancelled and left `pending` (invariant 4). MUST stay
+  # under `stop_grace_period` below, or `SIGKILL` arrives first and the drain
+  # is decoration -- `tests/unit/test_worker_drain_ladder.py` guards the order.
+  WORKER_DRAIN_TIMEOUT_S: ${WORKER_DRAIN_TIMEOUT_S:-30}
   # Retained length per stream, `XADD ... MAXLEN ~ N` (7.3). Streams are
   # append-only -- XACK does not delete -- so without this every
   # stream.<module> grows forever even with healthy consumers. 0 disables.
@@ -225,7 +307,7 @@ x-worker-service: &worker-service
     # That decision is now made, so the edge says what it always meant.
     pgbouncer:
       condition: service_healthy
-    redis:
+    redis-stream:
       condition: service_healthy
     minio:
       condition: service_healthy
@@ -237,13 +319,26 @@ x-worker-service: &worker-service
       condition: service_healthy
     vault:
       condition: service_healthy
-    embedding:
+    # `embedding-lb` and not `embedding` (capacity 4.2): the balancer is what
+    # this process actually calls, and its healthcheck proxies THROUGH to a
+    # real replica -- so waiting on it is the strictly stronger condition.
+    embedding-lb:
       condition: service_healthy
     migrate:
       condition: service_completed_successfully
     vault-bootstrap:
       condition: service_completed_successfully
   command: ["python", "-m", "app.workers.main"]
+  # ⭐ CAPACITY 5.1, INVARIANT 4 -- AND THE NUMBER THE DRAIN IS MEASURED
+  # AGAINST. Compose's default is 10 s: `SIGTERM`, ten seconds, `SIGKILL`. A
+  # worker draining `WORKER_DRAIN_TIMEOUT_S` (30 s) of in-flight work inside a
+  # 10 s grace period would be killed at a third of its own deadline every
+  # single time, and the drain would be a log line rather than a behaviour --
+  # so the deadline and the grace period are one decision taken in two files,
+  # and `tests/unit/test_worker_drain_ladder.py` is what stops them drifting.
+  # 45 s is `app`'s own value (7.2), for the same reason and with the same
+  # margin: the drain, then the deregistration round trips, then the clients.
+  stop_grace_period: 45s
   restart: unless-stopped
 
 # Merged INTO `environment:` (not into the service), alongside *app-env.
@@ -820,25 +915,118 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
-  redis:
+  # ── ح-10 · ق-4 (capacity 5.2): TWO Redis servers, because one heap cannot
+  # hold two eviction contracts. ───────────────────────────────────────────
+  #
+  # Until this step there was ONE `redis` at `maxmemory 0` (MEASURED, live:
+  # `maxmemory:0`, `maxmemory_policy:noeviction`), which is not a safety
+  # property -- it is the ABSENCE of a bound. `noeviction` only means anything
+  # once a ceiling exists to refuse writes at; with no ceiling the process
+  # grows until the 5 GB cgroup limit kills it, and the streams, the WS
+  # registry and the rate limiter go with it. The one alternative available on
+  # a single instance -- `allkeys-lru` -- is worse: it makes the SAME heap
+  # discard stream entries and connection records to make room for cached
+  # vectors, silently. Neither option is acceptable, and that is precisely
+  # what ق-4 decided by recommending two servers.
+  #
+  # THE ROW ABOVE DIVIDED, IT DID NOT DOUBLE (3.4's own instruction, kept):
+  # 2.0 vCPU / 5g became 1.0/3g + 1.0/2g.
+  redis-stream:
     deploy:
       resources:
         limits:
-          # ONE row, not two. §6 budgets `redis-stream` 4 GB and `redis-cache`
-          # 3 GB because ق-4 recommends splitting them -- unsigned, so one
-          # process does both jobs here, and one heap serving two roles does
-          # not need the sum of two independent maxima. What actually bounds
-          # this is `maxmemory` (ح-10, wave 5), which nothing sets yet;
-          # MEASURED today: 10.5 MiB. The day ق-4 splits the service, this row
-          # divides -- it does not double.
-          cpus: "2.0"
-          memory: 5g
+          # 3g of cgroup against `maxmemory 2gb`: Redis's RSS runs above its
+          # own accounting (allocator fragmentation, replication/AOF buffers,
+          # the COW pages a BGREWRITEAOF fork touches), so a cgroup equal to
+          # `maxmemory` turns a rewrite into an OOM kill. The 1.5x is the
+          # headroom, not slack.
+          cpus: "1.0"
+          memory: 3g
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
+    # `--maxmemory 2gb` is DERIVED, not picked. Live measurement of this
+    # stack's own entries: `stream.knowledge` holds 433 entries in 298,664
+    # bytes (~690 B each) and `stream.files`/`stream.media` run ~1,000 B each
+    # at real payloads. The declared worst case is four primary streams at
+    # STREAM_MAXLEN=100000 (~400 MB), plus the 1.2 limiter's sliding windows
+    # at the §0 peak (500 users x 120 + 200 workspaces x 2,400 = ~540k sorted
+    # -set members, ~40-55 MB), plus 1,500 WS registry entries, plus consumer
+    # -group PELs. ~500 MB of declared ceiling; 2 GB is 4x that.
+    #
+    # ⚠️ AND THE DLQs ARE NOT IN THAT 400 MB, BY DESIGN: `dead_letter`
+    # (`infrastructure/messaging/redis_streams.py`) issues its XADD with NO
+    # `maxlen` -- quarantined events must never be dropped to make room. So the
+    # one thing on this instance that can grow without any bound at all is the
+    # thing an incident produces. On `noeviction` a full instance refuses
+    # WRITES, which would take the WS registry and the rate limiter down with
+    # the DLQ storm that filled it. That is what `AizzakRedisStreamMemoryHigh`
+    # (80%, deploy/prometheus/alerts.yml) is for, and why the ceiling here is
+    # generous rather than tight.
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory",
+        "2gb",
+        "--maxmemory-policy",
+        "noeviction",
+      ]
     volumes:
+      # The SAME volume the pre-5.2 `redis` service held. Keeping the name is
+      # not cosmetic: renaming it would orphan the AOF and every stream in it
+      # behind a service that no longer mounts it -- data loss dressed as a
+      # rename.
       - redis-data:/data
     ports:
       - "127.0.0.1:${HOST_PORT_REDIS:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    <<: *app-logging
+
+  redis-cache:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
+    image: redis:7
+    # `--maxmemory 1gb`, and the plan's own `2gb` is the number this step
+    # declines. The two ceilings are not the same kind of number: on the
+    # stream instance a full heap REFUSES WRITES, on this one it evicts a cold
+    # key and the caller recomputes. So the derived number belongs to the
+    # instance that fails hard, and this one gets what its working set needs
+    # plus an order of magnitude. That working set is small and countable: the
+    # embedding cache at §0's 40 queries/s with a 600s TTL and zero repeats is
+    # 24,000 live entries x (1,536 B vector + ~80 B overhead) ~= 39 MB
+    # (`caching_embedding.py` packs float32, not JSON, for this reason), the
+    # principal cache is 500 users x a few hundred bytes, and Exa is not wired
+    # at all. 1 GB is ~25x the whole of it; 2 GB would buy nothing measurable
+    # and would have to come out of the instance that cannot afford it.
+    #
+    # ⚠️ NO PERSISTENCE, AND THAT IS THE POINT. `--save ""` plus
+    # `--appendonly no` means a restart comes back EMPTY. An empty cache is
+    # correct -- every entry here is reconstructible from its source -- while a
+    # restored one is a heap of `allkeys-lru` survivors chosen by nothing. It
+    # also removes the fork/COW spike that `vm.overcommit_memory=1` (3.5)
+    # exists to survive, on the one instance that has no reason to fork.
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "1gb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    ports:
+      - "127.0.0.1:${HOST_PORT_REDIS_CACHE:-16380}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -878,11 +1066,37 @@ services:
     deploy:
       resources:
         limits:
-          # §6 says 10 GB and annotates it "awaiting 4.4's measurement".
-          # MEASURED at 5.497 GiB on an idle stack carrying the full
-          # 200-workspace seed -- the LARGEST consumer here by a wide margin
-          # and the only row §6 is not generous about. 8 GB keeps ~45% headroom
-          # over that; 4.4 is what replaces the estimate with a number.
+          # §6 said 10 GB and annotated it "awaiting 4.4's measurement".
+          # 4.4 measured it, and the estimate is now a number -- but the
+          # FIRST number it produced was the wrong one, and the difference
+          # between the two is the whole reason this comment is long.
+          #
+          # On the full 200-workspace seed (1,000,771 points) this process
+          # first held **4.36 GiB resident** by its own allocator, with the
+          # container charged up to **6.36 GiB**. That was not the layout's
+          # cost: all 202 collections were sitting in Qdrant's `grey` status
+          # -- optimizations PENDING and not started -- carrying 1,616
+          # segments (eight per collection) that no one had ever merged.
+          # Qdrant starts a pending optimization on the next UPDATE to the
+          # collection, not on load, so a quiet tenant stays un-merged
+          # forever and the state SURVIVES a restart.
+          #
+          # After `python -m app.ops.qdrant_capacity optimize` (one no-op
+          # re-upsert per collection, which is all it takes to trigger them)
+          # the same million points hold **2.0-2.4 GiB resident** with the
+          # container charged **3.84 GiB**, in **411 segments** instead of
+          # 1,616. The pending state was costing **~2 GiB of RAM and 1,205
+          # segments**, and it was costing it invisibly.
+          #
+          # 8 GB therefore keeps ~52% headroom over the measured working
+          # peak. Two things follow and neither is optional: the LARGEST
+          # consumer in this file is worth re-measuring after any change to
+          # the corpus size, and a fleet that is never written to must be
+          # swept with `optimize` or it silently drifts back to the first
+          # number. Scalar quantization was NOT bought: the plan makes it
+          # conditional on measured memory pressure and 3.84 of 8 GB is not
+          # pressure -- it would trade recall for headroom this file already
+          # has.
           cpus: "3.0"
           memory: 8g
     image: qdrant/qdrant:v1.13.4
@@ -938,12 +1152,42 @@ services:
   # is never published to the host and never enters an nginx upstream, the
   # same trust boundary as Postgres/Redis/Qdrant above (tenant text crosses
   # the internal Docker network to reach it, never the public one).
+  #
+  # ── THREE REPLICAS BEHIND `embedding-lb` (capacity 4.1 + 4.2) ────────────
+  # Scaled by REPLICAS, never by `--workers` (the Dockerfile's `CMD` comment:
+  # one model load per process). Nothing reaches this name directly any more
+  # except `embedding-lb`; see `EMBEDDING_SERVICE_URL` in `x-app-env` above
+  # for why, and for the kill switch back to one replica.
   embedding:
     deploy:
+      replicas: 3
       resources:
         limits:
           cpus: "1.0"
-          memory: 2g
+          # ⚠️ 2g → 1280m (1.25 GiB), and it is a MEASUREMENT, not a trim to
+          # make three replicas fit. Sampled on this stack under saturation
+          # (8 concurrent `/embed` calls, batches of 8 realistic Arabic
+          # chunks):
+          #
+          #     381.9 MiB  resident, idle, model loaded
+          #     484.1 MiB  under load, early in a run
+          #     716.3 MiB  under load, after ~200 requests served
+          #
+          # The third number is the one this cap is set against (1.79x it),
+          # and the SHAPE of those three is why it is not 1g: resident size
+          # rises with requests served and then flattens -- allocator arenas,
+          # not a leak that would eventually reach any ceiling -- so a cap
+          # chosen from an early sample is a cap that fires an hour in. The
+          # long-soak number is still owed (د-20's soak is where it comes
+          # from); raising `EMB_BATCH` or `EMB_MAX_SEQ_LEN` means re-measuring
+          # this, not assuming it.
+          #
+          # It is ALSO what keeps 4.1 inside the ledger rather than over it:
+          # three replicas at 2g would put the standing total at 58.62 GB
+          # against the 57.60 GB that 08 §2-ز's headroom rule allows on §6's
+          # reference host, and `tests/unit/test_resource_budget.py` would
+          # (correctly) refuse it.
+          memory: 1280m
     image: aizzak/embedding:${EMBEDDING_IMAGE_TAG:-dev}
     build:
       context: .
@@ -961,8 +1205,76 @@ services:
       # the adapter-side `EmbeddingServiceSettings.embedding_max_input_tokens`
       # -- unlike the model name, a drift between them raises nothing; check
       # it against `GET /health`, which reports the value in force.
-      # ⚠️ Changing this invalidates every vector already indexed.
+      # ⚠️ Changing this invalidates every vector already indexed -- and since
+      # capacity 4.5 that is a PROCEDURE rather than an accident: this value is
+      # one of the three the corpus name fingerprints, so a deployment that
+      # moves it reads and writes `kn-<workspace_id>-<new revision>` and can
+      # reach no vector the old ceiling produced. Run
+      # `python -m app.ops.embedding_migration` (build, verify, deploy, verify,
+      # drop) around the change; 08 §4.17 is the whole sequence. Skipping it
+      # costs no error and no data -- retrieval simply stops seeing the corpus,
+      # and `AizzakVectorShadowWrites` is the only thing that says so.
       EMB_MAX_SEQ_LEN: "512"
+      # ── The thread pin (capacity 4.1) ─────────────────────────────────
+      # ⚠️ WITHOUT THESE THE FLEET LOSES A THIRD OF ITSELF, and torch picks
+      # the wrong number with no way to see it: MEASURED inside this
+      # container, it sized its intra-op pool from the HOST's core count and
+      # chose **5 threads against this service's 1.0-vCPU quota** -- five
+      # OpenMP workers sharing one core's worth of scheduler share, three
+      # times over.
+      #
+      # MEASURED back to back (8 concurrent `/embed`, batches of 8 realistic
+      # Arabic chunks, requests/second):
+      #
+      #                    one replica      three replicas
+      #     unpinned       0.55 · 0.56      1.81 · 0.89
+      #     pinned         1.05 · 1.05      2.72 · 2.54 · 2.87
+      #
+      # ⭐ AND THE SECOND ROW OF THE UNPINNED COLUMN IS THE REAL ARGUMENT:
+      # two identical runs of the same unpinned fleet answered 1.81 and 0.89.
+      # A fleet whose throughput halves between runs is not slow, it is
+      # UNPREDICTABLE -- fifteen OpenMP threads contending for five physical
+      # cores, with barrier waits burning the very quota they are waiting
+      # for. The pinned column repeats to within 6%.
+      #
+      # TWO variables because they are read by two different things at two
+      # different times: `OMP_NUM_THREADS` is read by the OpenMP runtime as
+      # it initialises, BEFORE any Python code of ours runs, and
+      # `EMB_TORCH_THREADS` is what `services/embedding/app.py` passes to
+      # `torch.set_num_threads()` before the model loads. Setting only the
+      # first leaves torch free to disagree with it; setting only the second
+      # leaves the OpenMP pool already built at the wrong size.
+      #
+      # 1 = the `cpus` limit above. The two numbers move TOGETHER: a replica
+      # given 2.0 vCPU wants 2 here, and `GET /health` reports the count that
+      # actually took effect so a pin that did not can be seen from outside.
+      OMP_NUM_THREADS: "1"
+      EMB_TORCH_THREADS: "1"
+      # ── Dynamic batching (capacity 4.3) ───────────────────────────────
+      # Until 4.3, `model.encode` ran ON this process's event loop, so a
+      # replica embedding one text could neither read its next request nor
+      # answer its own healthcheck -- and the query path's unit of work was a
+      # forward pass of ONE row, the most expensive shape this model has.
+      # `_Batcher` moves the encode to a thread and folds whatever queued
+      # during it into the next call.
+      #
+      # ⚠️ THE WINDOW IS THE FLOOR, NOT THE MECHANISM. At the §0 target of 40
+      # queries/second over three replicas, 5ms catches roughly 0.07 requests
+      # on its own; what fills a batch is the queue that accumulates DURING
+      # the previous encode. The window is what a LONE request pays.
+      #
+      # `0` builds no batcher and restores the pre-4.3 inline path in this
+      # same image -- the `م-8` switch, and `GET /health` reports the value in
+      # force so a baseline replica is distinguishable from a batching one.
+      EMB_BATCH_WINDOW_MS: ${EMB_BATCH_WINDOW_MS:-5}
+      # The ceiling on how many texts one coalesced encode may carry: a
+      # LATENCY bound, not a throughput knob. `EMB_BATCH` above is the
+      # forward-pass width; this is the most work a single caller can end up
+      # queued behind, and without it one burst blows the 400ms retrieval
+      # budget by way of the mechanism meant to protect it. A single request
+      # larger than this is still dispatched whole -- it bounds coalescing,
+      # never a caller.
+      EMB_MAX_BATCH_TEXTS: ${EMB_MAX_BATCH_TEXTS:-32}
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     expose:
@@ -973,6 +1285,75 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # The internal load balancer in front of `embedding` (capacity 4.2). One
+  # nginx, one job: spread `/embed` across the three replicas above and write
+  # down where each request went.
+  #
+  # ⭐ WHY A PROCESS AND NOT A CLIENT SETTING. The adapter
+  # (`ExternalEmbeddingProvider`) holds a pooled `httpx.AsyncClient`; a pooled
+  # connection resolves `embedding` ONCE and stays on that address, so three
+  # replicas behind one DNS name are one replica and two spares -- healthy,
+  # idle, and indistinguishable from a scale-out that simply did not work.
+  # 4.2 names the alternative (`httpx.Limits(max_keepalive_connections=0)`)
+  # and this is the other one: the fix lives in ONE place instead of three
+  # composition sites, costs no handshake per call, and -- the part that
+  # decides it -- logs `$upstream_addr`, which is the only way 4.2's
+  # acceptance criterion («سجلّات النسخ الثلاث تُظهر توزّعاً متقارباً») can be
+  # checked rather than asserted.
+  #
+  # INTERNAL ONLY, `expose` not `ports`: it inherits `embedding`'s trust
+  # boundary exactly, because it carries the same tenant text.
+  embedding-lb:
+    deploy:
+      resources:
+        limits:
+          # A proxy for ONE route whose upstream spends ~1 second of CPU per
+          # request. Measured shape: 2.87 requests/second across the whole
+          # fleet at saturation, 64 KB of response each, and this container
+          # sitting at 0.3% CPU and 4.8 MiB while it carried them. 0.5 vCPU is
+          # already an order of magnitude more than it can use; 128m is
+          # nginx's own footprint plus the 256 KB of proxy buffers
+          # `embedding-lb.conf` declares.
+          cpus: "0.5"
+          memory: 128m
+    image: nginx:1.27
+    depends_on:
+      embedding:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx/embedding-lb.conf:/etc/nginx/nginx.conf:ro
+    expose:
+      - "8080"
+    # ⚠️ THIS CHECK CROSSES THE LINK, the 7.3 argument applied to the second
+    # proxy in this file: it leaves through nginx's own listener, is resolved
+    # and proxied like any `/embed`, and comes back from a real replica. A
+    # stale resolver cache, a broken `proxy_pass` or a fleet with no healthy
+    # member all surface as an unhealthy BALANCER instead of a silent 502 in
+    # the middle of an indexing run.
+    #
+    # ⚠️ AND ITS CLOCKS ARE NOT THE EDGE'S, because `/health` on this upstream
+    # is not answerable while the upstream is working: `model.encode` is
+    # synchronous inside an `async` route, so a replica three seconds into a
+    # batch answers its own health probe only after finishing. MEASURED on the
+    # first day this service ran with three replicas, in this balancer's own
+    # access log: ELEVEN `499`s on `/health`, every one of them at 4.99s --
+    # the 5s `timeout` of a probe copied from the edge, giving up on a replica
+    # that was merely busy.
+    #
+    # So the timeout is 20s (longer than any batch measured here) and the
+    # interval 30s, which still declares a genuinely dead fleet unhealthy
+    # within three minutes. A container marked unhealthy for being BUSY is a
+    # worse lie than a slow probe -- and it is the lie that would fire in the
+    # middle of the indexing run this fleet exists to serve.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
     <<: *app-logging
 
@@ -1233,7 +1614,14 @@ services:
         condition: service_started
       pgbouncer:
         condition: service_healthy
-      redis:
+      redis-stream:
+        condition: service_healthy
+      # 5.2 -- `app` is the ONE process that builds a cache (the workers embed
+      # chunks, never queries), so it is the one service that carries this
+      # edge. Named for the §3.111 reason every edge above it is named: on a
+      # full `up -d` the instance boots anyway, and the missing edge only
+      # bites `docker compose up -d app` on its own.
+      redis-cache:
         condition: service_healthy
       minio:
         condition: service_healthy
@@ -1251,7 +1639,9 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
-      embedding:
+      # `embedding-lb` and not `embedding` -- see the worker anchor's copy of
+      # this note (capacity 4.2).
+      embedding-lb:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -1431,6 +1821,11 @@ services:
     environment:
       <<: [*app-env, *worker-env]
       WORKER: memory
+      # The shared default, stated rather than inherited silently, because
+      # this is the worker it fits best: one handler embeds ONE memory item
+      # and upserts one vector -- milliseconds of CPU around two network
+      # calls, which is the exact shape bounded concurrency is free on.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY_MEMORY:-4}
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "memory"]
@@ -1465,6 +1860,22 @@ services:
       # `Limits.summarize_job_max_duration_s` (1,800 s) ends a build that is
       # genuinely stuck instead of leaving this column to notice it.
       HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_KNOWLEDGE:-600}
+      # ⭐ CAPACITY 5.1 (`ح-6`) -- the worker this step is graded on, and the
+      # one whose ceiling is NOT its CPU share.
+      #
+      # Indexing is I/O around a short CPU burst: fetch from MinIO, parse,
+      # embed (a network call per batch, to `embedding-lb`), upsert to Qdrant,
+      # one Postgres transaction. Four of those overlap almost perfectly on
+      # `cpus: "1.0"` because at any instant three of them are waiting on a
+      # socket -- which is exactly why the sequential loop this replaces was
+      # leaving the machine idle rather than saturated.
+      #
+      # ⚠️ THE BINDING CONSTRAINT IS THE `memory` LIMIT BELOW, NOT THE CPU.
+      # `Limits.max_upload_bytes` is 50 MB, and a parse holds the file plus its
+      # extracted text plus its chunks; four at once is four of those. 2 GB is
+      # what 3.4's ledger gave this service, and the number here is measured
+      # against it (08 §4.18) rather than assumed to fit.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY_KNOWLEDGE:-4}
     # ⭐ TWO, and the only worker here that runs more than one. This is the
     # owner's answer to `summarization-scenarios-implementation-plan.md` §10
     # ق-و -- option (ب), the cheap half of `F-1` -- and it is the whole of
@@ -1568,6 +1979,26 @@ services:
       # latency, because an operator who learns to ignore this column loses
       # the other three checks with it.
       HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_MEDIA:-600}
+      # ⭐ CAPACITY 5.1 -- TWO, and the ONE worker that does not take the
+      # shared default, because the thing its handler waits on is not this
+      # container's to schedule.
+      #
+      # A media job is one image generation against an EXTERNAL provider,
+      # bounded by `Limits.media_timeout_s` (300 s). Four at once is four
+      # simultaneous calls into a provider that has no concurrency ceiling and
+      # no circuit breaker in front of it yet -- that is capacity step 6.1, and
+      # until it ships, this key would be the only thing deciding how hard a
+      # single container may lean on OpenAI. Two halves the head-of-line
+      # blocking that a 300 s handler creates while staying somewhere no
+      # provider's burst policy will notice.
+      #
+      # ⚠️ Read the OTHER half of what 5.1 changed here: this worker used to
+      # read SIXTEEN entries per `XREADGROUP` and walk them one at a time, so
+      # a full batch of long jobs held fifteen messages for up to eighty
+      # minutes in a process that was not looking at them -- `F-1`'s defect,
+      # on the worker nobody had checked for it. The COUNT is the concurrency
+      # now, so it holds two.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY_MEDIA:-2}
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "media"]
@@ -1602,7 +2033,7 @@ services:
       # gone rather than merely documented.
       pgbouncer:
         condition: service_healthy
-      redis:
+      redis-stream:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -2053,12 +2484,19 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
-  # Redis holds the rate limiter's windows (wave 1), the WebSocket session
-  # registry and every Stream in §7's topology. `maxmemory` is unset in this
-  # deployment, so the interesting number is not "how full" but whether a key
-  # was ever EVICTED -- silent data loss that surfaces much later as an
-  # unexplained miss, and which nothing in this codebase currently notices.
-  redis-exporter:
+  # TWO exporters since 5.2, one pinned to each instance, because the two
+  # instances need OPPOSITE alerts and a shared exporter cannot express that.
+  # On `redis-stream` any eviction at all is impossible by policy, so a
+  # non-zero counter there means somebody ran `CONFIG SET maxmemory-policy` by
+  # hand -- a tripwire that can never fire spuriously. On `redis-cache`
+  # eviction is the design working, and alerting on it would be noise.
+  #
+  # ⚠️ And one exporter scraping both (the `/scrape?target=` multi-target
+  # mode) was considered and rejected: it makes ONE container the single point
+  # of blindness for both servers, so `AizzakScrapeTargetDown` fires once for
+  # a failure that has two independent causes. 0.25 vCPU / 128 MB is what
+  # telling them apart costs.
+  redis-stream-exporter:
     deploy:
       resources:
         limits:
@@ -2066,10 +2504,33 @@ services:
           memory: 128m
     image: oliver006/redis_exporter:v1.90.0-alpine
     depends_on:
-      redis:
+      redis-stream:
         condition: service_healthy
     environment:
-      REDIS_ADDR: redis://redis:6379
+      REDIS_ADDR: redis://redis-stream:6379
+    expose:
+      - "9121"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9121/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
+  redis-cache-exporter:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+    image: oliver006/redis_exporter:v1.90.0-alpine
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis://redis-cache:6379
     expose:
       - "9121"
     healthcheck:

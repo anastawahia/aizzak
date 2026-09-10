@@ -92,9 +92,12 @@ class _FakeVectors:
         self.points: dict[str, dict[str, VectorPoint]] = {}
         self.ensured: list[tuple[str, int]] = []
 
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None:
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str:
         self.ensured.append((name, dim))
         self.points.setdefault(name, {})
+        return name
 
     async def upsert(self, collection: str, points: Sequence[VectorPoint]) -> None:
         bucket = self.points.setdefault(collection, {})

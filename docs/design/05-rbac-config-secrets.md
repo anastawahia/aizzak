@@ -99,7 +99,8 @@
 | `LOG_LEVEL` | `INFO` | مستوى السجلّ |
 | `DATABASE_URL` | `postgresql+asyncpg://app@pgbouncer:6432/app` | عبر PgBouncer |
 | `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `10` / `20` | تجمّع التطبيق (Transaction pooling) |
-| `REDIS_URL` | `redis://redis:6379/0` | Cache + Streams |
+| `REDIS_URL` | `redis://redis-stream:6379/0` | Streams · سجلّ WS · محدِّد المعدّل · قائمةُ المنع — `noeviction` (خطّة السعة `5.2`) |
+| `CACHE_REDIS_URL` | `redis://redis-cache:6379/0` | الذاكرةُ المخبّأة القابلة للإخلاء وحدَها — `allkeys-lru`. **فارغاً = الخادمُ نفسُه الذي يشير إليه `REDIS_URL`** (مفتاحُ إطفاء `م‑8`) |
 | `MINIO_ENDPOINT` | `minio:9000` | تخزين الكائنات |
 | `MINIO_BUCKET` | `workspace-files` | الدلو |
 | `MINIO_PRESIGN_PUT_TTL_S` / `MINIO_PRESIGN_GET_TTL_S` | `900` / `300` | عمر رابط الرفع/التنزيل الموقّع (ثوانٍ، ضمن مدى SigV4: `1..604800`) |

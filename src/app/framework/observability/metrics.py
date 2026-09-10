@@ -71,6 +71,7 @@ WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
 AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
 API_RATE_LIMIT_METRIC = "aizzak_api_rate_limit_total"
 HEAVY_JOB_LIMIT_METRIC = "aizzak_heavy_job_limit_total"
+VECTOR_CORPUS_METRIC = "aizzak_vector_corpus_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -194,6 +195,25 @@ heavy_job_limit_total = Counter(
     "ceiling that stopped being enforced looks, from every other metric, "
     "exactly like one nobody is reaching.",
     ["outcome"],
+)
+
+vector_corpus_total = Counter(
+    VECTOR_CORPUS_METRIC,
+    "Which CORPUS a vector operation resolved to, by `op` (capacity-plan "
+    "4.5). Every process reads and writes the collection built by its own "
+    "embedding regime, so `write`/`live` is the whole of an ordinary day. "
+    "`write`/`shadow` means this process's regime has no corpus for that "
+    "workspace and another regime owns the one that exists: the vectors land "
+    "somewhere nothing searches yet -- correct and expected while a "
+    "`build` runs, and the ONLY signal that a deployment changed the model "
+    "and skipped the migration, in which case every document indexed since "
+    "is invisible to retrieval and nothing else in the system looks "
+    "different. `read`/`missing` counts a search absorbed as an empty result "
+    "because its corpus does not exist; a workspace that has never indexed "
+    "anything is the ordinary cause, and an unadopted fleet after a deploy "
+    "is the alarming one -- which is why reads are counted ONLY here, on the "
+    "path that answers nothing, and never on the one that answers.",
+    ["op", "corpus"],
 )
 
 

@@ -127,7 +127,13 @@ export METRICS_DATABASE_URL="postgresql+asyncpg://metrics_reader:${METRICS_READE
 # (BE-ADM-014) is a manually-invoked one-shot tool, not a standing service.
 # An operator builds the DSN inline from WORKSPACE_PURGER_PASSWORD (already
 # required above) at invocation time -- see 08-local-runbook.md §4.6.
+# capacity 5.2 -- 6379 is the `noeviction` server (streams, WS registry, rate
+# limiter, session denylist) and 6380 is the `allkeys-lru` one. Both are
+# supervised in supervisord.conf. Setting CACHE_REDIS_URL explicitly rather
+# than leaning on its fallback is deliberate: the fallback exists for
+# deployments this repository does not control, and a Pod IS one it controls.
 export REDIS_URL="redis://127.0.0.1:6379/0"
+export CACHE_REDIS_URL="redis://127.0.0.1:6380/0"
 export MINIO_ENDPOINT="127.0.0.1:9000"
 export MINIO_SECURE=false
 export QDRANT_URL="http://127.0.0.1:6333"
@@ -185,6 +191,15 @@ export CONSUMER_BLOCK_MS="${CONSUMER_BLOCK_MS:-5000}"
 export MAX_RETRIES_BEFORE_DLQ="${MAX_RETRIES_BEFORE_DLQ:-5}"
 export OUTBOX_RELAY_BATCH_SIZE="${OUTBOX_RELAY_BATCH_SIZE:-256}"
 export CONSUMER_BATCH_COUNT="${CONSUMER_BATCH_COUNT:-16}"
+# capacity 5.1. The same default as Compose, and the same three things move
+# with it -- but the pool arithmetic BITES HARDER HERE: this deployment has no
+# pooler (§2 of 08), so every pool slot is a real Postgres backend and the
+# ceiling is `max_connections` itself. `tests/unit/test_connection_budget.py`
+# recomputes both deployments from these lines.
+export WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-4}"
+# supervisord's own `stopwaitsecs` is what bounds this here, not Compose's
+# `stop_grace_period` -- see `supervisord.conf`.
+export WORKER_DRAIN_TIMEOUT_S="${WORKER_DRAIN_TIMEOUT_S:-30}"
 export STREAM_MAXLEN="${STREAM_MAXLEN:-100000}"
 export MCP_ALLOWED_TRANSPORTS="${MCP_ALLOWED_TRANSPORTS:-http,sse}"
 export OAUTH_REFRESH_SKEW_S="${OAUTH_REFRESH_SKEW_S:-60}"

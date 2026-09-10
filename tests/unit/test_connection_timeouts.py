@@ -42,6 +42,7 @@ from pathlib import Path
 import yaml
 
 from app.framework.settings.settings import DatabaseSettings
+from app.infrastructure.config import load_settings
 from app.infrastructure.config.env_settings import _EnvSettings
 from app.infrastructure.persistence.database import _budget_sql
 from app.workers.bootstrap import (
@@ -265,12 +266,23 @@ def test_the_background_budget_is_looser_than_the_request_one() -> None:
 def test_worker_engines_carry_the_background_budget_and_the_shared_recycle() -> None:
     """`_worker_db` overrides three of the four and inherits the fourth --
     `pool_recycle_s` is the one that answers to the pooler, so it has to be the
-    same number in every process that talks to it."""
-    worker = _worker_db(DatabaseSettings(url="postgresql+asyncpg://x@y/z", pool_recycle_s=777))
+    same number in every process that talks to it.
+
+    It takes the whole `Settings` since capacity 5.1: the pool SIZE is derived
+    from `events.worker_concurrency` now (a concurrent worker holds one session
+    per in-flight handler), so the builder needs the half of the contract this
+    test used to hand it alone.
+    """
+    settings = load_settings().model_copy(
+        update={"database": DatabaseSettings(url="postgresql+asyncpg://x@y/z", pool_recycle_s=777)}
+    )
+    worker = _worker_db(settings)
     assert worker.statement_timeout_ms == _BACKGROUND_STATEMENT_TIMEOUT_MS
     assert worker.idle_in_transaction_timeout_ms == _BACKGROUND_IDLE_IN_TRANSACTION_TIMEOUT_MS
     assert worker.pool_timeout_s == _BACKGROUND_POOL_TIMEOUT_S
     assert worker.pool_recycle_s == 777
+    # 5.1: and the pool is wide enough for every lane the engine may open.
+    assert worker.pool_size > settings.events.worker_concurrency
 
 
 def test_a_bare_database_settings_leaves_the_ops_tools_unbounded() -> None:

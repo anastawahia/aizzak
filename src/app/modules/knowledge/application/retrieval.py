@@ -260,7 +260,10 @@ from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.rerank_provider import RerankedDocument, RerankProvider
 from app.framework.ports.vector_store import HybridVectorStore, SparseVector, VectorHit
 from app.framework.types import Json
-from app.modules.knowledge.domain.collections import knowledge_collection
+from app.modules.knowledge.domain.collections import (
+    EmbeddingRegime,
+    knowledge_collection_revision,
+)
 from app.modules.knowledge.domain.context_budget import fit_to_context_budget
 from app.modules.knowledge.domain.fusion import FusedChunk, reciprocal_rank_fusion
 from app.modules.knowledge.domain.mmr import MmrCandidate, maximal_marginal_relevance
@@ -631,12 +634,19 @@ class RetrieveContext:
         *,
         tuning: RetrievalTuning = _DEFAULT_TUNING,
         reranker: RerankProvider | None = None,
+        embedding_max_input_tokens: int = 512,
     ) -> None:
         self._embeddings = embeddings
         self._vectors = vectors
         self._documents = documents
         self._tuning = tuning
         self._reranker = reranker
+        # The third field of this deployment's `EmbeddingRegime` (capacity
+        # step 4.5) -- the `IndexDocument` constructor's own parameter, with
+        # the same default mirroring `EmbeddingServiceSettings`, because the
+        # two must resolve the SAME corpus name from the same deployment or a
+        # workspace would be written by one and searched in the other.
+        self._embedding_max_input_tokens = embedding_max_input_tokens
 
     async def execute(
         self,
@@ -725,7 +735,29 @@ class RetrieveContext:
             **_STAGE_LOG_DEFAULTS,
         }
 
-        collection = knowledge_collection(ctx.workspace_id)
+        # The corpus THIS deployment's embedding regime built (capacity step
+        # 4.5). Not the workspace's stable name and not whatever collection is
+        # largest: the query vector a few lines below is produced by this
+        # process's model, and the only vectors it may be compared against are
+        # the ones that model wrote. A regime whose corpus does not exist here
+        # searches nothing and says so (the store answers a missing collection
+        # with an empty result, and counts it) -- which is the honest outcome
+        # while a swap is still building, and a great deal better than
+        # scoring a question against another model's embedding space.
+        #
+        # ⚠️ Resolved with NO round trip: the name is a pure function of the
+        # regime, so retrieval pays nothing for revisioning on the path 07 §2
+        # gives 400ms. The provisioning side (`IndexDocument`) is where the
+        # store is asked which corpus exists, because that is the side that
+        # may create one.
+        collection = knowledge_collection_revision(
+            ctx.workspace_id,
+            EmbeddingRegime(
+                model=model,
+                dimensions=self._embeddings.dimensions(model),
+                max_input_tokens=self._embedding_max_input_tokens,
+            ).revision,
+        )
         flt: Json = {"workspace_id": ctx.workspace_id}
         # BE-RAG-005 — a narrowing scope on TOP of the tenant filter, never in
         # place of it: `workspace_id` stays on both legs whatever the caller

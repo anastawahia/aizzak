@@ -369,3 +369,137 @@ groups:
             refuses the exporter is a credential problem, and the platform
             itself is fine -- the app authenticates through AUTH_QUERY, a
             different path entirely.
+
+      # capacity-plan 4.5 -- the ONE signal that an embedding-model change
+      # shipped without its corpus migration. Every process reads and writes
+      # the collection its own regime built, so a deployment that changed
+      # EMB_MODEL/EMB_MAX_SEQ_LEN/dimensions and skipped
+      # `python -m app.ops.embedding_migration build` keeps serving perfectly:
+      # retrieval answers from the corpus nobody is writing to any more, and
+      # indexing writes into a corpus nobody searches. Latency is normal,
+      # error rates are zero, /health is green, and every document indexed
+      # since the deploy is invisible. Nothing else in this file can see it.
+      #
+      # `for: 10m` is what separates the accident from the PROCEDURE. A
+      # `build` run deliberately produces shadow writes for as long as it
+      # takes, and an operator is watching it; ten minutes is long enough not
+      # to page during a short one and short enough that an unattended
+      # deployment is caught inside a working day rather than a quarter.
+      # A long build fires this too -- correctly: it is the same state, and
+      # "expected right now" is a thing the operator knows and Prometheus
+      # cannot.
+      - alert: AizzakVectorShadowWrites
+        expr: increase(aizzak_vector_corpus_total{op="write",corpus="shadow"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Indexing is writing into a corpus nothing searches (capacity 4.5)"
+          description: >-
+            This deployment's embedding regime owns no corpus for at least one
+            workspace, so indexed documents are landing in a collection
+            retrieval does not read. Expected while
+            `app.ops.embedding_migration build` runs. Outside that, it means
+            the model, its dimensions or EMB_MAX_SEQ_LEN changed and the
+            corpus migration never ran -- and every document indexed since is
+            unreachable by search, with no error anywhere.
+          reason: >-
+            Threshold is `> 0` over ten minutes rather than a rate: a single
+            shadow write is already the whole finding, and the counter cannot
+            move at all under a deployment whose corpus matches its regime.
+            The metric's `corpus` label has exactly three values, so this
+            costs one series.
+          response: >-
+            `docker compose exec app python -m app.ops.embedding_migration
+            status --json` names the workspaces and this deployment's
+            revision. If a build is in flight, this is the procedure working.
+            If not, either finish the migration (`build` then `verify`, then
+            redeploy onto the new regime) or put the previous
+            EMB_MODEL/EMB_MAX_SEQ_LEN back -- the previous corpus is still
+            standing until someone runs `drop`, which is what makes the
+            rollback complete. Documents indexed into the shadow are not
+            lost; a later `build` sweeps them.
+
+      # ── capacity 5.2 (ح-10 · ق-4) — the two rules the split makes possible ──
+      #
+      # Before 5.2 there was one Redis at `maxmemory 0`, and neither of these
+      # could have been written: with no ceiling there is no "80% of" anything,
+      # and on a shared instance an eviction is ambiguous between "the cache is
+      # working" and "a stream entry was just silently deleted".
+      #
+      # `redis_memory_max_bytes` is the exporter's name for `maxmemory`. Both
+      # expressions are scoped `job="redis-stream"` and that scope is
+      # load-bearing, not decoration -- the same two expressions against
+      # `redis-cache` would fire continuously by design.
+      - alert: AizzakRedisStreamMemoryHigh
+        expr: >-
+          redis_memory_used_bytes{job="redis-stream"}
+          / redis_memory_max_bytes{job="redis-stream"} > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "redis-stream is at 80% of maxmemory -- at 100% it refuses writes"
+          description: >-
+            The `noeviction` instance is four fifths full. What happens at the
+            ceiling is not slow-down and not eviction: every write to that
+            server starts failing with OOM, and that server holds the event
+            streams, the WebSocket session registry, the per-user and
+            per-workspace rate-limit windows and the `auth:revoked:` session
+            denylist. A single tenant's DLQ storm therefore surfaces as
+            refused WebSocket connections and failed rate-limit accounting.
+          reason: >-
+            80% and `for: 5m` because the thing to catch is a TREND with hours
+            of runway, not a spike. The declared worst case of the bounded
+            keys is roughly 500 MB against a 2 GB ceiling (four streams at
+            STREAM_MAXLEN=100000 at ~1 KB per entry, MEASURED on this stack's
+            own entries, plus ~540k sliding-window members at the §0 peak),
+            so reaching 1.6 GB means something UNBOUNDED is growing. The
+            candidate is named: `dead_letter` issues its XADD with no `maxlen`
+            on purpose, since quarantined events must never be dropped to make
+            room.
+          response: >-
+            `docker compose exec redis-stream redis-cli INFO memory` for the
+            total, then `redis-cli --memkeys` or
+            `docker compose exec redis-stream redis-cli XLEN stream.<m>.dlq`
+            for the three DLQs -- they are the only unbounded keys on this
+            instance. Drain them with `python -m app.ops.dlq` (peek, then
+            requeue or drop). If the growth is in the primary streams instead,
+            a consumer group is stalled: `XINFO GROUPS stream.<m>` and 08 §4.2.
+            Raising `maxmemory` buys time and fixes nothing.
+
+      # This one can never fire on a correctly configured instance, and that
+      # is exactly its value: `maxmemory-policy noeviction` makes the counter
+      # unmovable, so any increase at all means somebody ran `CONFIG SET` on a
+      # live server -- silently converting the streams, the WS registry and the
+      # session denylist into evictable data. `ح-10`'s own words for that:
+      # "silent data loss, no error, no alert, no trace in any log".
+      - alert: AizzakRedisStreamEvicted
+        expr: increase(redis_evicted_keys_total{job="redis-stream"}[10m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "redis-stream evicted a key -- its policy is no longer noeviction"
+          description: >-
+            A key was discarded to make room on the instance whose entire
+            reason for existing is that it does not do that. Anything on it
+            may now vanish without an error: an unconsumed stream entry, a
+            WebSocket session record, a rate-limit window, or an
+            `auth:revoked:<sub>` denylist entry -- and an evicted denylist
+            entry means a revoked token works again until it expires.
+          reason: >-
+            `> 0` with no `for:` window, unlike every other rule in this file.
+            There is no benign amount of this: the counter is structurally
+            pinned at zero by the policy `docker-compose.yml` sets, so the
+            first increment is the whole finding and waiting to confirm it
+            only extends the window in which data is being lost.
+          response: >-
+            `docker compose exec redis-stream redis-cli CONFIG GET
+            maxmemory-policy` -- it must say `noeviction`. Put it back with
+            `CONFIG SET maxmemory-policy noeviction`, then find out what was
+            lost: `XPENDING`/`XLEN` per stream against the outbox, and treat
+            every WebSocket session as needing reconnection. If the policy is
+            already `noeviction`, the container was restarted with a different
+            `command:` -- compare against `docker-compose.yml` before
+            anything else.

@@ -280,6 +280,7 @@ addopts = "-q --strict-markers"
 markers = [
     "live_db: requires the local Compose PostgreSQL 16 at 127.0.0.1:15432; auto-skips unless EVERY role DSN it hands out completes a real connect + `SELECT 1` -- a wrong password skips with the driver's own message, it does not error",
     "live_redis: requires the local Compose Redis at 127.0.0.1:16379; auto-skips unless it answers a real PING through the adapter's own client factory",
+    "live_redis_cache: capacity 5.2 — requires the SECOND Compose Redis (the `allkeys-lru` instance) at 127.0.0.1:16380; auto-skips with the same real-PING handshake as `live_redis`, so a stack still running one unsplit server skips with the reason rather than failing",
     "live_minio: requires the local Compose MinIO at 127.0.0.1:19000; auto-skips unless the bucket-scoped test account's SIGNED `bucket_exists` call succeeds (so a rotated key or a missing bucket skips, it does not error)",
     "live_qdrant: requires the local Compose Qdrant at 127.0.0.1:16333; auto-skips unless a real request (list collections) succeeds",
     "live_vault: requires the persistent local Compose Vault at 127.0.0.1:18200; auto-skips unless it is UNSEALED and the exported TEST_VAULT_TOKEN is accepted",

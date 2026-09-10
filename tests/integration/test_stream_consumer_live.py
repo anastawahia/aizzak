@@ -10,7 +10,9 @@ unrelated data).
 
 from __future__ import annotations
 
+import asyncio
 import json
+from time import perf_counter
 
 import pytest
 from redis.asyncio import Redis
@@ -321,3 +323,167 @@ async def test_a_malformed_entry_is_dead_lettered_immediately(redis_client: Redi
     finally:
         await _cleanup(redis_client, stream, [group])
         await redis_client.delete(dlq)
+
+
+# --------------------------------------------------------------------------- #
+# Capacity 5.1 -- bounded concurrency against REAL Redis (`ح-6`)              #
+# --------------------------------------------------------------------------- #
+def _live_envelope(subject: str) -> bytes:
+    return json.dumps(
+        build_envelope(
+            event_id=new_uuid7(),
+            source="test",
+            event_type="media.job.requested.v1",
+            subject=subject,
+            occurred_at=utc_now(),
+            workspace_id="ws-1",
+            data={},
+        )
+    ).encode()
+
+
+def _live_consumer(redis_client: Redis, *, concurrency: int) -> StreamConsumer:
+    return StreamConsumer(
+        RedisStreamsConsumer(redis_client),
+        consumer_name="c1",
+        block_ms=200,
+        # The worker rule (`workers/bootstrap._worker_batch_count`): never
+        # reserve an entry you are not already working on.
+        batch_count=concurrency,
+        max_deliveries=5,
+        concurrency=concurrency,
+    )
+
+
+@pytest.mark.anyio
+async def test_a_concurrent_batch_beats_the_sequential_one_against_real_redis(
+    redis_client: Redis,
+) -> None:
+    """The step's own acceptance shape, at the ENGINE level and on real
+    ``XREADGROUP``/``XACK``: the same twelve messages, the same handler
+    latency, one lane against four.
+
+    The handler sleeps rather than working, and that is the honest model of
+    what an indexing handler does: a fetch from MinIO, a call to the embedding
+    fleet, an upsert to Qdrant, one Postgres transaction -- time spent waiting
+    on a socket, which is exactly the time a sequential loop was spending one
+    message at a time. The ratio asserted is deliberately far below the
+    arithmetic ceiling of 4 (a live Redis round trip per read is real work
+    that does NOT parallelise), because this test exists to prove the
+    mechanism against real Redis; the platform-level number 5.1 is graded on
+    is measured on the live stack, not here.
+    """
+    stream = f"stream.test.{new_uuid7()}"
+    group = f"cg.test.{new_uuid7()}"
+    delay_s = 0.05
+    total = 12
+
+    async def slow(ctx: ExecutionContext, envelope: Json) -> None:
+        await asyncio.sleep(delay_s)
+
+    subscription = Subscription(
+        stream=stream, group=group, handlers={"media.job.requested.v1": slow}
+    )
+    try:
+        await RedisStreamsConsumer(redis_client).ensure_group(stream, group)
+        for index in range(total):
+            await redis_client.xadd(stream, {_CE: _live_envelope(f"job-{index}")})
+
+        sequential = _live_consumer(redis_client, concurrency=1)
+        started = perf_counter()
+        drained = 0
+        while drained < total:
+            drained += await sequential.run_once([subscription])
+        one_lane = perf_counter() - started
+
+        for index in range(total):
+            await redis_client.xadd(stream, {_CE: _live_envelope(f"job-b-{index}")})
+
+        concurrent = _live_consumer(redis_client, concurrency=4)
+        started = perf_counter()
+        drained = 0
+        while drained < total:
+            drained += await concurrent.run_once([subscription])
+        four_lanes = perf_counter() - started
+
+        assert one_lane / four_lanes >= 2.5, f"{one_lane=:.3f} {four_lanes=:.3f}"
+    finally:
+        await _cleanup(redis_client, stream, [group])
+
+
+@pytest.mark.anyio
+async def test_two_messages_about_one_subject_stay_serialised_on_real_redis(
+    redis_client: Redis,
+) -> None:
+    """Invariant 2 where it has to hold -- against the real recovery/fresh
+    read split, not against the hermetic twin. Four entries about ONE
+    aggregate, four lanes available, and never two of them in flight."""
+    stream = f"stream.test.{new_uuid7()}"
+    group = f"cg.test.{new_uuid7()}"
+    in_flight = 0
+    peak = 0
+
+    async def watched(ctx: ExecutionContext, envelope: Json) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0.02)
+        finally:
+            in_flight -= 1
+
+    subscription = Subscription(
+        stream=stream, group=group, handlers={"media.job.requested.v1": watched}
+    )
+    try:
+        await RedisStreamsConsumer(redis_client).ensure_group(stream, group)
+        for _ in range(4):
+            await redis_client.xadd(stream, {_CE: _live_envelope("job-same")})
+
+        handled = await _live_consumer(redis_client, concurrency=4).run_once([subscription])
+
+        assert handled == 4
+        assert peak == 1
+        assert (await redis_client.xpending(stream, group))["pending"] == 0
+    finally:
+        await _cleanup(redis_client, stream, [group])
+
+
+@pytest.mark.anyio
+async def test_a_concurrent_read_never_redelivers_what_is_still_in_flight(
+    redis_client: Redis,
+) -> None:
+    """The reason a pipelined loop was rejected, proved rather than argued.
+
+    ``RedisStreamsConsumer.read`` opens every read with a RECOVERY pass
+    (``XREADGROUP ... 0``) that returns everything still in this consumer's
+    pending list. A loop that read again while work was in flight would get
+    its OWN in-flight entries back -- the same message dispatched twice at
+    once, with ``times_delivered`` climbing once per poll until a first
+    genuine failure dead-lettered it instantly. The batch barrier makes that
+    unreachable, and what proves it here is that every entry is handled
+    exactly once and every delivery count is 1.
+    """
+    stream = f"stream.test.{new_uuid7()}"
+    group = f"cg.test.{new_uuid7()}"
+    seen: list[str] = []
+
+    async def slow(ctx: ExecutionContext, envelope: Json) -> None:
+        await asyncio.sleep(0.05)
+        seen.append(str(envelope["subject"]))
+
+    subscription = Subscription(
+        stream=stream, group=group, handlers={"media.job.requested.v1": slow}
+    )
+    try:
+        await RedisStreamsConsumer(redis_client).ensure_group(stream, group)
+        for index in range(4):
+            await redis_client.xadd(stream, {_CE: _live_envelope(f"job-{index}")})
+
+        handled = await _live_consumer(redis_client, concurrency=4).run_once([subscription])
+
+        assert handled == 4
+        assert sorted(seen) == [f"job-{index}" for index in range(4)]
+        assert (await redis_client.xpending(stream, group))["pending"] == 0
+    finally:
+        await _cleanup(redis_client, stream, [group])

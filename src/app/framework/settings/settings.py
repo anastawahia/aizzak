@@ -125,9 +125,17 @@ class MigrationSettings(BaseModel):
 
 
 class RedisSettings(BaseModel):
+    """One Redis server's URL. TWO of these are bound (capacity 5.2, ح-10 ·
+    ق-4): ``Settings.redis`` is the ``noeviction`` instance and
+    ``Settings.cache_redis`` is the ``allkeys-lru`` one -- the same
+    two-DSNs-for-two-roles shape ``database``/``metrics`` already uses, for
+    the same reason: the difference between them is a GUARANTEE, and a
+    guarantee that lives in one shared field cannot be given to one caller and
+    withheld from another."""
+
     model_config = _FROZEN
 
-    url: str = "redis://redis:6379/0"
+    url: str = "redis://redis-stream:6379/0"
 
 
 class MetricsSettings(BaseModel):
@@ -311,13 +319,27 @@ class EmbeddingServiceSettings(BaseModel):
     """The central embedding service (2.10, refs ``llm-providers.md`` §5):
     ONE model load behind a small internal HTTP API
     (``services/embedding/app.py``), reached over ``url`` from the
-    ``ExternalEmbeddingProvider`` adapter. Only ``url`` is env-editable
+    ``ExternalEmbeddingProvider`` adapter. Only ``url`` and ``cache_ttl_s``
+    are env-editable
     (DD-11, ``infrastructure/config/env_settings.py``'s own docstring) --
     ``model``/``dimensions``/``batch``/``timeout_s``/``max_retries`` are
     pinned defaults that MUST match the baked image
     (``services/embedding/Dockerfile`` bakes exactly this model at build
-    time): an env-editable ``dimensions`` would silently break every
-    collection provisioned against it (``dim=384``, ``distance=cosine``).
+    time): an env-editable ``dimensions`` would break every collection
+    provisioned against it (``dim=384``, ``distance=cosine``).
+
+    **``model``, ``dimensions`` and ``embedding_max_input_tokens`` are this
+    deployment's EMBEDDING REGIME** (capacity 4.5,
+    ``knowledge.domain.collections.EmbeddingRegime``): together they
+    fingerprint the corpus every process here reads and writes, so moving any
+    of them points the whole fleet at a different collection. That is what
+    makes a model swap a procedure (``app.ops.embedding_migration``, 08 §4.17)
+    rather than an incident -- and it is why the word "silently" left the
+    ``dimensions`` sentence above: a width change now fails loudly at
+    provisioning (``QdrantVectorStore._guard_dimensions``), while a MODEL
+    change of the same width still cannot be detected by anything but the
+    procedure, because two 384-float vectors from two models are
+    indistinguishable to every layer below this one.
     """
 
     model_config = _FROZEN
@@ -346,6 +368,19 @@ class EmbeddingServiceSettings(BaseModel):
     # mismatch, which the service answers with a loud 400, a drift here is
     # silent on both sides. `GET /health` reports the value in force.
     embedding_max_input_tokens: int = 512
+
+    # capacity-plan 4.3 -- how long a computed query vector may be reused
+    # (`CachingEmbeddingProvider`). `0` builds NO cache wrapper at all, which
+    # is what a baseline run needs (`م-8`), and is the reason the adapter
+    # itself refuses a non-positive TTL rather than treating it as "off".
+    #
+    # Env-editable while `dimensions` beside it is not, and the difference is
+    # not arbitrary: a wrong `dimensions` silently breaks every collection
+    # provisioned against it, whereas this value cannot make a single vector
+    # wrong -- it only bounds how long a vector that was already correct keeps
+    # being reused. The bound on it is the adapter's
+    # (`MAX_EMBEDDING_CACHE_TTL_S`), stated once there and not repeated here.
+    cache_ttl_s: int = 600
 
 
 class RerankServiceSettings(BaseModel):
@@ -406,6 +441,45 @@ class EventSettings(BaseModel):
     # the `outbox_relay_batch_size` precedent, same `ge=1` reasoning (a
     # batch of zero is not a meaningful "how many entries per read" value).
     consumer_batch_count: int = Field(default=16, ge=1)
+    # capacity 5.1 (`ح-6`): how many messages ONE worker process handles at
+    # once (`consumers/engine.py::StreamConsumer`). Until 5.1 the answer was
+    # structurally 1 -- `engine.py`'s own `for message in messages: await
+    # self._dispatch(...)` -- and `_WORKER_POOL_SIZE`'s comment in
+    # `workers/bootstrap.py` was sized on exactly that sentence.
+    #
+    # ⚠️ It is NOT a free dial, and three things move with it rather than
+    # after it. Raising this raises (a) the DATABASE pool each worker opens,
+    # because one in-flight handler holds one session for the length of its
+    # unit of work -- `workers/bootstrap._worker_pool_size` derives it here
+    # rather than leaving two numbers to be kept equal by hand; (b) the read
+    # COUNT, because a process that reserves more entries than it can work on
+    # is `F-1`'s defect wearing a new number (`_worker_batch_count`); and (c)
+    # the container's peak memory, since `concurrency` documents parsed at
+    # once is `concurrency` copies of the largest one -- which is why
+    # `worker-knowledge`'s Compose value is set against its cgroup limit
+    # (08 §2-ز) and not against this default.
+    #
+    # `1` is the pre-5.1 behaviour byte for byte and is this step's `م-8`
+    # reversal switch: `WORKER_CONCURRENCY=1` restores the shape the 0.5
+    # baseline is measured in without redeploying anything else.
+    worker_concurrency: int = Field(default=4, ge=1)
+    # capacity 5.1 invariant (4): how long a worker asked to stop keeps
+    # finishing what it already took before the remainder is cancelled and
+    # left `pending` for the sweeper (`workers/lifecycle.py`).
+    #
+    # ⚠️ It must stay UNDER the supervisor's own grace period
+    # (`stop_grace_period: 45s` on the three `worker-*` services) minus the
+    # deregistration round trips, or the drain is cut off by `SIGKILL` before
+    # its deadline and buys nothing at all. That ORDER, not the absolute
+    # number, is what `tests/unit/test_worker_drain_ladder.py` guards.
+    #
+    # It is deliberately NOT sized to outlast the longest legitimate handler:
+    # a summary build may run for `summarize_job_max_duration_s` (1,800 s),
+    # and waiting that out would make every deploy a half-hour stall for a
+    # job the sweeper already knows how to recover. `0` disables the drain --
+    # the pre-5.1 "cancel where it stands", correct for a sequential consumer
+    # and for every direct caller that installs no signal handler at all.
+    worker_drain_timeout_s: float = Field(default=30.0, ge=0)
     # 7.3: `XADD ... MAXLEN ~ N` — the cap on a stream's retained length.
     #
     # Redis Streams are an APPEND-ONLY log: `XACK` clears a consumer group's
@@ -1070,6 +1144,15 @@ class Settings(BaseModel):
     # not be read as a fifth and sixth connection timeout.
     migrations: MigrationSettings = Field(default_factory=MigrationSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
+    # capacity 5.2 -- the `allkeys-lru` server. Defaults to the SAME url as
+    # `redis` above, which is deliberate and is the م-8 off switch: an
+    # environment that has not been split keeps one instance and behaves
+    # exactly as it did before this step, rather than resolving a hostname
+    # that does not exist there (`deploy/runpod/` was exactly that environment
+    # until this step wired it a second server). `infrastructure/config/
+    # env_settings.py` is where the fallback is applied, so the collapse is
+    # visible at the one place that reads the environment.
+    cache_redis: RedisSettings = Field(default_factory=RedisSettings)
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
     minio: MinioSettings = Field(default_factory=MinioSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)

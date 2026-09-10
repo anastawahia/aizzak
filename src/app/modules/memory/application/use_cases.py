@@ -281,9 +281,20 @@ class IndexMemoryItem:
         result = await self._embeddings.embed([item.content], model, api_key)
         vector = result.vectors[0]
         dim = self._embeddings.dimensions(model)
-        collection = memory_collection(ctx.workspace_id)
         point_id = memory_point_id(item.id)
-        await self._vectors.ensure_collection(collection, dim)
+        # No `revision=` here, deliberately, and the reason is written down
+        # rather than left to be inferred (capacity step 4.5): `mem-` corpora
+        # are NOT revisioned. Every memory item's source text is a row this
+        # module owns (`MemoryItem.content`) and `vector_ref` is nullable, so
+        # a regime change is repaired by clearing the refs and letting this
+        # very use-case rebuild the corpus in place -- no parse, no object
+        # store, no second collection to keep coherent while it happens.
+        # `knowledge` has none of that: its corpus can only be rebuilt by
+        # re-parsing files, which is why it is the one that needed an alias.
+        # What memory DOES get from 4.5 is the width guard in the adapter, so
+        # a `dimensions` change fails at provisioning instead of one rejected
+        # upsert at a time.
+        collection = await self._vectors.ensure_collection(memory_collection(ctx.workspace_id), dim)
         await self._vectors.upsert(
             collection,
             [

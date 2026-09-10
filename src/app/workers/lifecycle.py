@@ -17,13 +17,34 @@ removed, so every single restart left a permanent tombstone inside
 **What this adds, and what it deliberately does not.** ``SIGTERM``/``SIGINT``
 are turned into ordinary loop cancellation, which lets the code every
 entrypoint already has do what it always claimed to do, and adds one step of
-its own: ``StreamConsumer.deregister`` before the clients close. It does NOT
-add a timeout of its own -- the process supervisor already owns that
-(Compose's ``stop_grace_period``, 10 s by default, then ``SIGKILL``), and a
-second, shorter deadline here would only create a way for shutdown to be cut
-off earlier than the operator configured. The steps on this path are two
-Redis round trips per group; if they cannot finish inside the supervisor's
-grace period, Redis is down and the tombstone is the least of the problems.
+its own: ``StreamConsumer.deregister`` before the clients close.
+
+**Capacity 5.1 (invariant 4) put a DRAIN in front of that cancellation, and
+the reason is arithmetic rather than taste.** Before 5.1 a signal cancelled
+the read loop where it stood, so a worker mid-handler lost that one job: the
+entry stayed ``pending``, the sweeper eventually reclaimed it, and a
+half-written effect was covered by the handler's own transaction. Bounded
+concurrency multiplies that by ``WORKER_CONCURRENCY`` -- «التزامنُ بلا هذا
+يحوّل كلَّ نشرٍ إلى أربع مهامّ مبتورةٍ بدل واحدة». So a signal now asks the
+loop to STOP TAKING (``StreamConsumer.request_stop``) and gives the batch in
+flight ``EventSettings.worker_drain_timeout_s`` to finish; only what outlives
+that deadline is cancelled, and it is left ``pending`` exactly as every
+truncated job was before.
+
+⚠️ **The drain is bounded ON PURPOSE and does not try to outlast a long
+handler.** A summary build may legitimately run for
+``Limits.summarize_job_max_duration_s`` (1,800 s); waiting that out would turn
+every deploy into a half-hour stall, and the sweeper is already the answer for
+what does not finish. The deadline is sized for the SHORT handlers -- an
+indexing job, a memory item -- which is where the truncation actually costs
+work.
+
+⚠️ **And the ladder has to hold, or the drain is theatre:**
+``worker_drain_timeout_s`` (30 s) + the deregistration round trips must fit
+inside Compose's ``stop_grace_period`` (45 s on the three ``worker-*``
+services since 5.1; the DEFAULT of 10 s would have cut this path off at a
+third of its deadline). ``tests/unit/test_worker_drain_ladder.py`` is what
+keeps the two numbers in that order when either one moves.
 
 **Crash safety is a separate mechanism, on purpose.** ``SIGKILL``, an OOM
 kill, and a hard power loss all still skip this path entirely -- nothing in
@@ -54,13 +75,19 @@ async def run_worker(consumer: StreamConsumer, subscriptions: Sequence[Subscript
     shutdown signal arrives; deregister this process's consumer entries
     before returning either way.
 
-    A signal is delivered by cancelling the read loop -- the same
-    ``CancelledError`` the loop was already documented to propagate
-    (``StreamConsumer.run``), so nothing about the engine changes. A crash
-    inside the loop propagates unchanged too, AFTER the deregistration: a
-    worker that dies of a bug still owes Redis the same cleanup as one that
-    was asked to stop, and the entries it still holds pending are protected
-    by ``deregister``'s own refusal rule rather than by skipping the step.
+    A signal is delivered in TWO steps since capacity 5.1 (invariant 4):
+    ``StreamConsumer.request_stop`` first, so the loop leaves itself after the
+    batch in flight, and only then the cancellation the loop was always
+    documented to propagate (``StreamConsumer.run``). A crash inside the loop
+    propagates unchanged too, AFTER the deregistration: a worker that dies of
+    a bug still owes Redis the same cleanup as one that was asked to stop, and
+    the entries it still holds pending are protected by ``deregister``'s own
+    refusal rule rather than by skipping the step.
+
+    The drain deadline is the consumer's own (``StreamConsumer.drain_
+    timeout_s``, wired from ``EventSettings.worker_drain_timeout_s``), and
+    ``0`` -- the default for every direct caller that is not a ``worker-*``
+    entrypoint -- reproduces the pre-5.1 path exactly: cancel where it stands.
     """
     loop = asyncio.get_running_loop()
     stopping = asyncio.Event()
@@ -87,6 +114,7 @@ async def run_worker(consumer: StreamConsumer, subscriptions: Sequence[Subscript
         for sig in installed:
             loop.remove_signal_handler(sig)
         stop.cancel()
+        await _drain(consumer, work)
         await _cancel(work)
         # Safe to await inside this `finally`: the cancellation that gets here
         # is one THIS function issued against `work`, never against its own
@@ -94,6 +122,44 @@ async def run_worker(consumer: StreamConsumer, subscriptions: Sequence[Subscript
         # additionally swallows its own failures (its docstring), so the exit
         # path cannot be masked by a Redis error during cleanup.
         await consumer.deregister(subscriptions)
+
+
+async def _drain(consumer: StreamConsumer, work: asyncio.Task[None]) -> None:
+    """Ask the loop to stop taking, then give it its deadline to finish what
+    it already has (capacity 5.1, invariant 4).
+
+    ``asyncio.wait`` and NOT ``wait_for``: on timeout ``wait_for`` cancels the
+    task it was waiting on, which is the very truncation this function exists
+    to avoid doing SILENTLY -- the cancellation belongs to ``_cancel`` below,
+    after this has logged that the deadline was missed and by whom. On the
+    ordinary path ``work`` finishes first and ``_cancel`` sees a done task and
+    returns immediately.
+
+    A timed-out drain is a WARNING, not an error: leaving entries ``pending``
+    for the sweeper is a designed outcome, not a fault -- but it is one an
+    operator should be able to correlate with a deploy, which a silent
+    cancellation would never let them do.
+    """
+    if consumer.drain_timeout_s <= 0 or work.done():
+        return
+    consumer.request_stop()
+    _logger.info("worker.drain_started", extra={"timeout_s": consumer.drain_timeout_s})
+    await asyncio.wait({work}, timeout=consumer.drain_timeout_s)
+    if work.done():
+        # The loop can also END during the drain by DYING. `_cancel` below
+        # short-circuits on a done task and would never touch the result, so
+        # the exception would surface only as asyncio's "Task exception was
+        # never retrieved" at collection time -- a traceback with no shutdown
+        # around it. Retrieved and logged here instead; not re-raised, because
+        # this runs inside `run_worker`'s `finally` and raising there would
+        # mask whatever is actually shutting the process down.
+        failure = None if work.cancelled() else work.exception()
+        if failure is not None:
+            _logger.error("worker.drain_loop_failed", exc_info=failure)
+        else:
+            _logger.info("worker.drain_complete")
+        return
+    _logger.warning("worker.drain_timed_out", extra={"timeout_s": consumer.drain_timeout_s})
 
 
 def _on_signal(sig: signal.Signals, stopping: asyncio.Event) -> None:

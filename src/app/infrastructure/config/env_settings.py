@@ -86,7 +86,25 @@ class _EnvSettings(BaseSettings):
     migration_lock_timeout_ms: int = Field(3_000, alias="MIGRATION_LOCK_TIMEOUT_MS", gt=0)
     provision_lock_wait_ms: int = Field(900_000, alias="PROVISION_LOCK_WAIT_MS", gt=0)
 
-    redis_url: str = Field("redis://redis:6379/0", alias="REDIS_URL")
+    redis_url: str = Field("redis://redis-stream:6379/0", alias="REDIS_URL")
+
+    # capacity 5.2 (ح-10 · ق-4) -- the `allkeys-lru` server, and the ONLY
+    # setting in this file whose default is "whatever the other one says".
+    #
+    # Blank is not an oversight and not "unconfigured": it COLLAPSES the split,
+    # putting the evictable cache back on the single instance every deployment
+    # had before this step. That is the م-8 off switch (2.1's rule: every
+    # improvement ships with a way back to the state the baseline is measured
+    # in) and it is also the safe default for an environment this repository
+    # does not control -- a stale `.env` that names one Redis keeps booting,
+    # instead of failing to resolve a hostname it has never heard of.
+    #
+    # ⚠️ And the fallback direction matters. It collapses onto REDIS_URL --
+    # the `noeviction` instance -- never the other way: an unconfigured
+    # deployment ends up with a cache that is never evicted (today's
+    # behaviour, ح-10 unmitigated but nothing NEW broken), rather than with a
+    # session denylist that is.
+    cache_redis_url: str = Field("", alias="CACHE_REDIS_URL")
 
     # P1-3 (docs/p1-hardening-plan.md §3 step 10): the `/metrics` endpoint's
     # OWN role -- see `MetricsSettings`'s docstring for why this cannot be
@@ -145,6 +163,12 @@ class _EnvSettings(BaseSettings):
     # (EmbeddingServiceSettings' own docstring explains why an env-editable
     # dimension would be dangerous).
     embedding_service_url: str = Field("http://embedding:8080", alias="EMBEDDING_SERVICE_URL")
+    # capacity-plan 4.3. `0` does not mean a zero-second TTL -- it means the
+    # Composition Root wraps nothing, so a baseline run pays not even a Redis
+    # round trip for it (the `AUTH_PRINCIPAL_CACHE_TTL_S` shape above). The
+    # upper bound is the adapter's (`MAX_EMBEDDING_CACHE_TTL_S`), stated once
+    # there rather than twice.
+    embedding_cache_ttl_s: int = Field(600, alias="EMBEDDING_CACHE_TTL_S", ge=0)
 
     event_stream_prefix: str = Field("stream.", alias="EVENT_STREAM_PREFIX")
     outbox_poll_interval_ms: int = Field(500, alias="OUTBOX_POLL_INTERVAL_MS")
@@ -152,6 +176,16 @@ class _EnvSettings(BaseSettings):
     max_retries_before_dlq: int = Field(5, alias="MAX_RETRIES_BEFORE_DLQ")
     outbox_relay_batch_size: int = Field(256, alias="OUTBOX_RELAY_BATCH_SIZE")
     consumer_batch_count: int = Field(16, alias="CONSUMER_BATCH_COUNT")
+    # capacity 5.1 (`ح-6`). `WORKER_CONCURRENCY` and not `CONSUMER_CONCURRENCY`
+    # because the thing it bounds is a WORKER process's in-flight work, and the
+    # capacity plan names it that; `EventSettings.worker_concurrency` carries
+    # the three numbers that move with it. `1` restores the pre-5.1 sequential
+    # engine exactly (`م-8`).
+    worker_concurrency: int = Field(4, alias="WORKER_CONCURRENCY", ge=1)
+    # capacity 5.1 invariant (4). `0` disables the drain (cancel where it
+    # stands, the pre-5.1 path); above 0 it must stay under the service's
+    # `stop_grace_period`, which is what makes the drain reachable at all.
+    worker_drain_timeout_s: float = Field(30.0, alias="WORKER_DRAIN_TIMEOUT_S", ge=0)
     # 0 means "no trimming" (7.3) -- `ge=0` here, then mapped to the
     # `int | None` the settings contract actually models. Reading it as 0
     # rather than an empty string keeps the env value a plain integer.
@@ -215,6 +249,10 @@ def load_settings() -> Settings:
             provision_lock_wait_ms=env.provision_lock_wait_ms,
         ),
         redis=RedisSettings(url=env.redis_url),
+        # `or` and not a `if`: an empty CACHE_REDIS_URL is the documented
+        # collapse (see the field above), and an empty Redis URL is not a
+        # thing that could be meant literally anyway.
+        cache_redis=RedisSettings(url=env.cache_redis_url or env.redis_url),
         metrics=MetricsSettings(database_url=env.metrics_database_url),
         minio=MinioSettings(
             endpoint=env.minio_endpoint,
@@ -238,7 +276,9 @@ def load_settings() -> Settings:
             max_in_flight=env.max_in_flight_requests,
         ),
         ollama=OllamaSettings(base_url=env.ollama_base_url),
-        embedding_service=EmbeddingServiceSettings(url=env.embedding_service_url),
+        embedding_service=EmbeddingServiceSettings(
+            url=env.embedding_service_url, cache_ttl_s=env.embedding_cache_ttl_s
+        ),
         events=EventSettings(
             stream_prefix=env.event_stream_prefix,
             outbox_poll_interval_ms=env.outbox_poll_interval_ms,
@@ -246,6 +286,8 @@ def load_settings() -> Settings:
             max_retries_before_dlq=env.max_retries_before_dlq,
             outbox_relay_batch_size=env.outbox_relay_batch_size,
             consumer_batch_count=env.consumer_batch_count,
+            worker_concurrency=env.worker_concurrency,
+            worker_drain_timeout_s=env.worker_drain_timeout_s,
             # 0 disables trimming (7.3). The contract models "off" as None
             # rather than 0 so the adapter branches on a real absence, not on
             # a magic number it would have to re-interpret at every call.

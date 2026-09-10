@@ -275,11 +275,17 @@ async def test_another_tenants_file_id_destroys_nothing() -> None:
     assert list(stack.repository.rows) == [theirs.id]
 
 
-async def test_points_are_grouped_by_their_own_collection() -> None:
-    """Every chunk of a workspace lives in one collection today, but each
-    ``VectorRef`` names its own — and a purge that assumed otherwise would
-    delete one collection's ids from another's, which Qdrant accepts
-    silently."""
+async def test_points_are_deleted_from_every_corpus_not_the_recorded_one() -> None:
+    """The ``VectorRef``'s own collection stopped being the whole answer at
+    capacity 4.5: a model swap copies a point into a second corpus under the
+    SAME deterministic id while the row still names the first, so a purge that
+    honoured only what was recorded would leave the copy answering searches —
+    and after the swap that copy is the live corpus.
+
+    So the ids go to ``delete_everywhere`` under the workspace's stable name,
+    whatever each ref happens to say, and the store is what enumerates the
+    corpora. Two refs naming two different collections is the shape that used
+    to produce two narrow deletes and now produces one wide one."""
     stack = build_knowledge()
     ctx = _ctx()
     file_id = new_uuid7()
@@ -293,7 +299,7 @@ async def test_points_are_grouped_by_their_own_collection() -> None:
 
     await PurgeFileKnowledge(stack.repository, stack.vectors).execute(ctx, file_id)
 
-    assert sorted(stack.vectors.deleted) == [("kn-new", ["p2"]), ("kn-old", ["p1"])]
+    assert stack.vectors.deleted == [(f"kn-{ctx.workspace_id}", ["p1", "p2"])]
 
 
 async def test_a_file_with_nothing_indexed_asks_the_vector_store_for_nothing() -> None:

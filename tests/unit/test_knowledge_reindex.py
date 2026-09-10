@@ -220,7 +220,10 @@ async def test_the_old_documents_points_are_deleted_before_its_rows() -> None:
 
     await stack.knowledge.reindex.start(ctx, document_ids=["doc-old"])
 
-    assert stack.vectors.deleted == [("ws1-knowledge", ["point-a", "point-b"])]
+    # Under the workspace's STABLE name, not the one the refs record: a
+    # re-index that missed a copy in a second corpus (capacity 4.5) would
+    # double the document the moment the new one went live.
+    assert stack.vectors.deleted == [(f"kn-{ctx.workspace_id}", ["point-a", "point-b"])]
     # `prepare` empties the vector store; `commit` deletes the rows. The
     # recorder proves the first happened, and the purge list that the second
     # did — the fake would look identical either way if the order were wrong,

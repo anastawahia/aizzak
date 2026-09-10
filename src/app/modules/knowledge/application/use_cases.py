@@ -65,7 +65,7 @@ from app.framework.pagination import Page
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.quota_lock import QuotaLock
 from app.framework.ports.unit_of_work import UnitOfWork
-from app.framework.ports.vector_store import HybridVectorStore, VectorStore
+from app.framework.ports.vector_store import HybridVectorStore
 from app.framework.types import Uuid
 from app.modules.knowledge.application.event_mapping import to_outbox_record
 from app.modules.knowledge.application.indexing import IndexDocument, IndexOutcome
@@ -83,6 +83,7 @@ from app.modules.knowledge.application.summarization import (
     SummaryBuildCancelled,
     SummaryDraft,
 )
+from app.modules.knowledge.domain.collections import knowledge_collection
 from app.modules.knowledge.domain.entities import (
     Chunk,
     Document,
@@ -944,18 +945,20 @@ class ReindexDocuments:
         return job, tuple(events)
 
     async def _purge_vectors(self, ctx: ExecutionContext, document_id: Uuid) -> None:
-        """Delete a document's points, grouped by collection.
+        """Delete a document's points from every corpus the workspace has.
 
-        Grouping is defensive rather than expected: every chunk of one
-        document is written to the one per-workspace collection today
-        (``knowledge_collection``), but the ``VectorRef`` on each chunk names
-        its own, and honouring that costs one dict.
+        **The ``VectorRef``'s own collection is no longer enough, and since
+        capacity step 4.5 it is not even always right.** A workspace may hold
+        two corpora at once — the regime serving traffic and the one a model
+        swap is building — and a point copied into the second carries the same
+        deterministic id while the ``chunks.collection`` row still names the
+        first. Deleting only the recorded one leaves the copy answering
+        searches, and after the swap that copy is the live corpus. So the
+        point ids go to ``delete_everywhere``, which is the store's job
+        because only the store can enumerate the corpora.
         """
-        by_collection: dict[str, list[Uuid]] = {}
-        for ref in await self._documents.vector_refs(ctx, document_id):
-            by_collection.setdefault(ref.collection, []).append(ref.point_id)
-        for collection, point_ids in by_collection.items():
-            await self._vectors.delete(collection, point_ids)
+        ids = [ref.point_id for ref in await self._documents.vector_refs(ctx, document_id)]
+        await self._vectors.delete_everywhere(knowledge_collection(ctx.workspace_id), ids)
 
 
 class GetReindexJob:
@@ -2606,26 +2609,26 @@ class PurgeSpaceKnowledge:
     still there, the next run of the cascade collects the very same refs, and
     deleting an already-deleted point is a no-op.
 
-    Grouped by collection for ``_purge_vectors``' reason: every chunk of a
-    workspace lives in ``kn-<workspace_id>`` today, but each ``VectorRef``
-    names its own, and honouring that costs one dict.
+    Deleted from EVERY corpus of the workspace, for ``ReindexDocuments.
+    _purge_vectors``' reason (capacity step 4.5): a space's points may have
+    been copied into a second corpus by a model-swap build, under the same
+    deterministic ids, while the ``VectorRef`` rows still name the first.
 
-    ``VectorStore`` and not ``HybridVectorStore``: this needs ``delete`` and
-    nothing else, and §3.147 spent a step putting the hybrid-only method on the
-    hybrid port. Asking for the wider one here would undo that in the other
-    direction.
+    ``HybridVectorStore`` and no longer the narrower ``VectorStore``, and the
+    change is a real one: §3.147 spent a step keeping this class on the
+    smallest contract that served it, and ``delete_everywhere`` is on the
+    hybrid port precisely because only ``knowledge`` can have two corpora.
+    Asking for the narrower one now would mean asking for a deletion that is
+    not one.
     """
 
-    def __init__(self, documents: DocumentRepository, vectors: VectorStore) -> None:
+    def __init__(self, documents: DocumentRepository, vectors: HybridVectorStore) -> None:
         self._documents = documents
         self._vectors = vectors
 
     async def execute(self, ctx: ExecutionContext, space_id: Uuid) -> int:
-        by_collection: dict[str, list[Uuid]] = {}
-        for ref in await self._documents.vector_refs_in_space(ctx, space_id):
-            by_collection.setdefault(ref.collection, []).append(ref.point_id)
-        for collection, point_ids in by_collection.items():
-            await self._vectors.delete(collection, point_ids)
+        ids = [ref.point_id for ref in await self._documents.vector_refs_in_space(ctx, space_id)]
+        await self._vectors.delete_everywhere(knowledge_collection(ctx.workspace_id), ids)
         return await self._documents.purge_space(ctx, space_id)
 
 
@@ -2655,20 +2658,20 @@ class PurgeFileKnowledge:
     cascade collects the very same refs, and deleting an already-deleted point
     is a no-op.
 
-    ``VectorStore`` and not ``HybridVectorStore``, for that class's reason too:
-    this needs ``delete`` and nothing else.
+    ``HybridVectorStore`` for ``PurgeSpaceKnowledge``' reason too: every corpus
+    of the workspace, not only the one each ``VectorRef`` records (capacity
+    step 4.5) — otherwise a deleted file goes on being cited from the corpus a
+    model swap is building, and becomes visible again the moment that corpus
+    goes live.
     """
 
-    def __init__(self, documents: DocumentRepository, vectors: VectorStore) -> None:
+    def __init__(self, documents: DocumentRepository, vectors: HybridVectorStore) -> None:
         self._documents = documents
         self._vectors = vectors
 
     async def execute(self, ctx: ExecutionContext, file_id: Uuid) -> int:
-        by_collection: dict[str, list[Uuid]] = {}
-        for ref in await self._documents.vector_refs_for_file(ctx, file_id):
-            by_collection.setdefault(ref.collection, []).append(ref.point_id)
-        for collection, point_ids in by_collection.items():
-            await self._vectors.delete(collection, point_ids)
+        ids = [ref.point_id for ref in await self._documents.vector_refs_for_file(ctx, file_id)]
+        await self._vectors.delete_everywhere(knowledge_collection(ctx.workspace_id), ids)
         return await self._documents.purge_file(ctx, file_id)
 
 

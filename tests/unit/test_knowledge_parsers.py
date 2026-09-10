@@ -45,6 +45,7 @@ from app.modules.knowledge.ports.content_extractor import (
     ParsedChunkKind,
     ParsedDocument,
 )
+from tests.unit.support_knowledge import resolved_corpus
 
 
 # --------------------------------------------------------------------------- #
@@ -1887,8 +1888,9 @@ class _ProbeVectors:
         self.points: dict[str, VectorPoint] = {}
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None: ...
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str:
+        return resolved_corpus(name, revision)
 
     async def upsert(self, collection: str, points: list[VectorPoint]) -> None:
         for point in points:

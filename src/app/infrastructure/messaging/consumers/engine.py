@@ -68,6 +68,58 @@ must not swallow a decode failure before this engine ever sees it.
      ``N=5``, wired from ``EventSettings.max_retries_before_dlq``) ->
      ``handler_failed`` as above, THEN **dead-letter** with a reason naming
      the exception -- «بعد N=5 ⇒ يُنقل إلى stream.<m>.dlq مع سبب» verbatim.
+5. **Capacity 5.1, invariant (5) -- the retry budget is spent by ERROR CLASS,
+   not by count alone.** A handler that raises a PERMANENT failure is
+   dead-lettered on delivery 1, not on delivery 5: «إعادةُ ما لن ينجح أبداً
+   خمسَ مرّاتٍ إهدارُ سعةٍ في اللحظة التي تَعِزّ فيها بالضبط». What counts as
+   permanent is read off the error CATALOG rather than off a list this module
+   would have to keep in sync with four modules it may not import
+   (``_is_permanent`` below owns the rule and its two exceptions).
+
+**Capacity 5.1 -- bounded concurrency, and what it may not break.** Until 5.1
+this loop walked a batch one message at a time (``for message in messages:
+await self._dispatch(...)``), so one worker process = one in-flight handler.
+``concurrency`` > 1 dispatches a batch through at most that many lanes at once.
+Four properties are load-bearing and each is enforced structurally rather than
+by a comment:
+
+* **Per-entity ordering (invariant 2).** The batch is PARTITIONED by the
+  envelope's ``subject`` -- the aggregate id every producer already stamps
+  (``events/event_mapping.py`` in all four modules) -- and one partition is
+  never split across lanes. Two messages about one aggregate therefore run in
+  arrival order, in the same lane, never together. There is no lock object and
+  no lock table: a lock would have to be acquired correctly at every future
+  call site, while a partition cannot be got wrong.
+* **The sweeps stay outside the concurrency (invariant 3).** They still ride
+  ``run``'s loop AFTER ``run_once`` returns, and ``run_once`` returns only once
+  every lane of its batch has finished -- so ``sweep_stale``/``watch_dlq``
+  still "cannot fire while a handler is mid-flight", word for word as before.
+* **The batch is never wider than the lanes (F-1's rule, generalised).** The
+  workers pass ``batch_count == concurrency`` (``workers/bootstrap.py``), so a
+  process never holds a message in its PEL that it is not already working on.
+  This engine does not enforce that relation, because the API's notify bridge
+  legitimately wants the opposite (16 per read, one lane -- its handler is a
+  queue ``put``).
+* **A pipeline was rejected, and the reason is in the adapter.**
+  ``RedisStreamsConsumer.read`` opens every read with a RECOVERY pass
+  (``XREADGROUP ... 0``) that returns everything still in this consumer's PEL
+  -- which, in a loop that read again while work was in flight, is the
+  in-flight messages themselves: the same entry dispatched twice
+  concurrently, and (worse, because it is silent) its ``times_delivered``
+  climbing once per poll until a first genuine failure dead-letters it
+  instantly. The batch barrier is what makes that unreachable.
+
+**Capacity 5.1, invariant (1) -- the beat says the LOOP is alive, not that the
+longest handler finished.** While a batch is in flight a ticker beats every
+``block_ms``; it exists only for the duration of the batch, so a loop wedged in
+``read`` still goes silent and is still caught. See ``_beat_while_busy``.
+
+**Capacity 5.1, invariant (4) -- a stop finishes what it started.**
+``request_stop`` makes ``run`` leave its loop after the batch in flight instead
+of being cancelled inside it; ``workers/lifecycle.py`` gives that drain a
+deadline and cancels whatever outlives it, leaving those entries ``pending``
+for the sweeper. Without it, concurrency would turn every deploy into
+``concurrency`` truncated jobs instead of one.
 
 Structured logging throughout (10 §10): every log line below carries the
 Streams entry id and stream name, NEVER the decoded envelope or its
@@ -77,13 +129,16 @@ precedent ("Never the payload -- it may carry user content").
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
 from typing import cast
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import AppError
 from app.framework.observability import Heartbeat, NullHeartbeat, get_logger, log_context
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.dlq_watch import report_dlq_backlog
@@ -98,6 +153,19 @@ from app.infrastructure.messaging.redis_streams import (
 )
 
 _logger = get_logger(__name__)
+
+# A batch of one has nothing to deal into lanes, so it takes the sequential
+# path whatever `concurrency` says -- one task, one beat ticker and one extra
+# `json.loads` bought for a batch that cannot overlap with itself.
+_MIN_BATCH_TO_SPLIT = 2
+
+# `_is_permanent`'s rule, as three named numbers rather than three literals in
+# one boolean: the HTTP class boundaries the error catalog already uses
+# (`framework/errors.py`), and the two 4xx that mean "try again" -- 409
+# (optimistic-lock conflict, 10 §6) and 429 (`common.rate_limited`).
+_CLIENT_ERROR_FLOOR = 400
+_SERVER_ERROR_FLOOR = 500
+_RETRYABLE_CLIENT_ERRORS = frozenset({409, 429})
 
 # (ctx, full CloudEvents envelope) -> None; raising means "no XACK, redeliver"
 # (module docstring, policy 4). One handler per (subscription, event `type`).
@@ -138,6 +206,8 @@ class StreamConsumer:
         sweep_interval_s: float = 0.0,
         stale_idle_ms: int = 0,
         dlq_watch_interval_s: float = 0.0,
+        concurrency: int = 1,
+        drain_timeout_s: float = 0.0,
     ) -> None:
         self._consumer = consumer
         self._consumer_name = consumer_name
@@ -178,6 +248,59 @@ class StreamConsumer:
         # process that dead-letters into it.
         self._dlq_watch_interval_s = dlq_watch_interval_s
         self._next_dlq_watch_at = 0.0
+        # Capacity 5.1 (`ح-6`). DEFAULT 1, and that default is the whole
+        # reversibility argument (`م-8`): at 1 this class takes the explicit
+        # sequential path below and behaves byte for byte as it did before
+        # 5.1 -- same order, same task count, same beat placement -- so
+        # `WORKER_CONCURRENCY=1` restores the state the 0.5 baseline is
+        # measured in without redeploying anything else. Only the three
+        # `worker-*` bootstraps raise it; the API's notify bridge does not,
+        # for the reason the module docstring gives.
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        self._concurrency = concurrency
+        # Invariant (٤). Read by `workers/lifecycle.py` rather than passed to
+        # it separately: the number belongs with the loop it bounds, and a
+        # second parameter threaded through three entrypoints is a second
+        # place for the two to disagree. `0` means "no drain" -- the pre-5.1
+        # behaviour, which is correct for a sequential consumer and for every
+        # direct caller (a test, the notify bridge) that never installs a
+        # signal handler at all.
+        self._drain_timeout_s = drain_timeout_s
+        # An `Event` and not a `bool`: it is set from a signal callback and
+        # read from the loop, and `asyncio.Event` is the one of the two whose
+        # thread/callback safety is a documented promise rather than a
+        # property of CPython's bytecode. It binds no event loop at
+        # construction (3.10+), so building a consumer outside `asyncio.run`
+        # -- every unit test here does -- stays legal.
+        self._stop = asyncio.Event()
+
+    @property
+    def drain_timeout_s(self) -> float:
+        """How long a caller should let ``run`` finish its in-flight batch
+        after ``request_stop`` before cancelling it (invariant 4).
+        ``workers/lifecycle.py`` is the only reader."""
+        return self._drain_timeout_s
+
+    @property
+    def concurrency(self) -> int:
+        """How many lanes one batch is dispatched through. Published so a
+        composition root can derive its DATABASE pool from the same number
+        (``workers/bootstrap._worker_pool_size``) instead of restating it."""
+        return self._concurrency
+
+    def request_stop(self) -> None:
+        """Stop reading NEW messages; let the batch in flight finish
+        (invariant 4).
+
+        Idempotent, and safe from a signal handler's own callback: it sets a
+        plain flag and touches no Redis state. ``run`` checks it before every
+        read, so the longest a stop can go unnoticed is one blocking
+        ``XREADGROUP`` (``block_ms``) plus the batch in flight -- which is
+        exactly what the drain deadline has to be sized above, and is why
+        08 §4.18 writes the ladder down instead of leaving it to be inferred.
+        """
+        self._stop.set()
 
     async def setup(self, subscriptions: Sequence[Subscription]) -> None:
         """``ensure_group`` for every ``(stream, group)`` pair named by
@@ -223,15 +346,25 @@ class StreamConsumer:
         subscribes to, so the knowledge worker's ``cg.knowledge`` (two
         streams) is one blocking read, never two sequential ones.
 
-        **Heartbeat placement (ت-3).** Beats land after every completed
-        ``read`` and after every dispatched message, and NOT once per
-        ``run_once``: a returned ``XREADGROUP`` is the strongest liveness
-        evidence this loop can produce cheaply (it proves a full Redis
+        **Heartbeat placement (ت-3, extended by capacity 5.1).** Beats land
+        after every completed ``read`` and after every dispatched message, and
+        NOT once per ``run_once``: a returned ``XREADGROUP`` is the strongest
+        liveness evidence this loop can produce cheaply (it proves a full Redis
         round-trip, not merely that Python is executing), and the per-message
         beat is what keeps a long, legitimate BATCH from reading like a wedged
-        loop. What remains uncovered on purpose is a single handler that hangs
-        forever -- which is exactly the failure the staleness threshold
-        (``HealthSettings.heartbeat_max_age_s``) is sized to catch.
+        loop. 5.1 adds the third case those two never covered and that
+        concurrency would have made ``concurrency`` times likelier: while a
+        batch is IN FLIGHT, ``_beat_while_busy`` beats on ``block_ms``, so a
+        worker that is merely busy stops looking dead. A loop wedged in ``read``
+        itself still goes silent -- there is no batch, so there is no ticker --
+        which is the failure ``HealthSettings.heartbeat_max_age_s`` exists for.
+
+        **Concurrency (5.1).** At ``concurrency == 1`` the walk below is the
+        pre-5.1 loop verbatim. Above 1 the batch is dealt into lanes by
+        ``_lanes`` and run under one ``asyncio.TaskGroup``; ``run_once`` does
+        not return until every lane has finished, which is what keeps the
+        sweeps (invariant 3) and the recovery pass (the docstring's rejected
+        pipeline) safe.
         """
         by_group: dict[str, dict[str, Subscription]] = {}
         for subscription in subscriptions:
@@ -247,19 +380,95 @@ class StreamConsumer:
                 block_ms=self._block_ms,
             )
             self._heartbeat.beat()
-            for message in messages:
-                if await self._dispatch(group, by_stream, message):
-                    handled += 1
-                self._heartbeat.beat()
+            if self._concurrency == 1 or len(messages) < _MIN_BATCH_TO_SPLIT:
+                handled += await self._run_lane(group, by_stream, messages)
+            else:
+                handled += await self._run_batch(group, by_stream, messages)
         return handled
 
+    async def _run_batch(
+        self,
+        group: str,
+        by_stream: Mapping[str, Subscription],
+        messages: Sequence[StreamMessage],
+    ) -> int:
+        """Dispatch one batch through at most ``concurrency`` lanes, and
+        return only when every one of them has finished (5.1).
+
+        ``TaskGroup`` and not ``gather``: a lane that dies of something
+        ``_dispatch`` does not catch (a Redis failure on the ``XACK`` itself,
+        which already killed this loop before 5.1) must take the batch down
+        rather than leave siblings running into a process that is exiting.
+        The entries those siblings held are simply never acked, so they are
+        redelivered -- the same guarantee an ack failure always had, now
+        applied to ``concurrency`` messages instead of one.
+
+        The beat ticker is created OUTSIDE the group and cancelled in a
+        ``finally``: inside it, the group would wait forever for a task whose
+        whole job is to never finish.
+        """
+        lanes = _lanes(messages, self._concurrency)
+        beat = asyncio.create_task(self._beat_while_busy(), name="consumer.beat")
+        try:
+            async with asyncio.TaskGroup() as running:
+                tasks = [
+                    running.create_task(self._run_lane(group, by_stream, lane)) for lane in lanes
+                ]
+        finally:
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat
+        return sum(task.result() for task in tasks)
+
+    async def _run_lane(
+        self,
+        group: str,
+        by_stream: Mapping[str, Subscription],
+        messages: Iterable[StreamMessage],
+    ) -> int:
+        """One lane's messages, IN ORDER, one at a time -- the sequential walk
+        this method has always been, now with a name (5.1). Everything about
+        per-entity ordering rests on the fact that a lane is sequential and
+        that ``_lanes`` never splits one aggregate across two of them."""
+        handled = 0
+        for message in messages:
+            if await self._dispatch(group, by_stream, message):
+                handled += 1
+            self._heartbeat.beat()
+        return handled
+
+    async def _beat_while_busy(self) -> None:
+        """Beat every ``block_ms`` for as long as this task is allowed to live
+        -- i.e. for exactly as long as a batch is in flight (invariant 1).
+
+        It reports LOOP liveness and nothing else, and that is the point: a
+        busy worker must not read as a dead one, while a worker wedged
+        somewhere OUTSIDE a batch must still read as dead. Sleeping
+        ``block_ms`` and not something smaller keeps the file-touch rate of an
+        idle-but-working process identical to the rate the polling loop
+        already produces when it has nothing to do.
+        """
+        interval = max(self._block_ms, 1) / 1000
+        while True:
+            await asyncio.sleep(interval)
+            self._heartbeat.beat()
+
     async def run(self, subscriptions: Sequence[Subscription]) -> None:
-        """``setup`` once, then loop ``run_once`` forever. No sleep between
-        iterations: the blocking ``XREADGROUP`` inside ``read`` (``block_ms``)
-        is the loop's own pacing, exactly as a blocking read should be.
-        ``asyncio.CancelledError`` is a ``BaseException`` and is never caught
-        here, so a graceful shutdown (SIGTERM under Compose, 08 §2) always
-        propagates out of this loop rather than being swallowed.
+        """``setup`` once, then loop ``run_once`` until ``request_stop`` (5.1)
+        or a cancellation. No sleep between iterations: the blocking
+        ``XREADGROUP`` inside ``read`` (``block_ms``) is the loop's own pacing,
+        exactly as a blocking read should be. ``asyncio.CancelledError`` is a
+        ``BaseException`` and is never caught here, so a shutdown that runs out
+        of its drain deadline (``workers/lifecycle.py``) still propagates out
+        of this loop rather than being swallowed.
+
+        **The stop flag is checked before the READ, never inside the batch**
+        (invariant 4): a message this process has already taken out of the
+        stream is this process's to finish, and abandoning it mid-handler is
+        precisely the truncation concurrency would otherwise multiply. The
+        sweeps below are skipped on the way out for the same reason ت-2 keeps
+        them off the message path -- tidying bookkeeping is never worth
+        spending a shutdown deadline on.
 
         **The sweep rides this same loop (ت-2)** rather than living in a task
         of its own: it needs exactly what the loop already has (this
@@ -283,8 +492,10 @@ class StreamConsumer:
         await self.setup(subscriptions)
         self._next_sweep_at = monotonic() + self._sweep_interval_s
         self._next_dlq_watch_at = monotonic()
-        while True:
+        while not self._stop.is_set():
             await self.run_once(subscriptions)
+            if self._stop.is_set():
+                break
             if self._sweep_interval_s > 0 and monotonic() >= self._next_sweep_at:
                 self._next_sweep_at = monotonic() + self._sweep_interval_s
                 await self.sweep_stale(subscriptions)
@@ -452,14 +663,25 @@ class StreamConsumer:
                     },
                     exc_info=True,
                 )
-                if message.delivery_count >= self._max_deliveries:
+                # Capacity 5.1, invariant (5): the budget is spent by class
+                # FIRST and by count second. A permanent failure has already
+                # told us that attempt N would end here too, so the transfer
+                # happens now -- `_is_permanent` owns the rule and the two
+                # 4xx it refuses to call permanent.
+                permanent = _is_permanent(exc)
+                if permanent or message.delivery_count >= self._max_deliveries:
                     # 04 §3's «بعد N=5 ⇒ يُنقل إلى stream.<m>.dlq مع سبب»:
                     # this was attempt N -- transfer instead of another
                     # redelivery. The reason names the exception the way
                     # `handler_failed`'s own exc_info already does (same
                     # exposure surface, 10 §10), truncated so a pathological
-                    # message cannot bloat the DLQ.
-                    reason = f"handler_failed: {type(exc).__name__}: {exc}"[:500]
+                    # message cannot bloat the DLQ. The prefix DIFFERS for the
+                    # two paths on purpose: an operator reading a DLQ needs to
+                    # know whether this entry spent five deliveries or was
+                    # refused on the first, because only one of the two says
+                    # anything about the platform's health.
+                    label = "handler_rejected" if permanent else "handler_failed"
+                    reason = f"{label}: {type(exc).__name__}: {exc}"[:500]
                     await self._dead_letter(group, message, reason=reason)
                     return False
                 return False  # NO ack -- policy 4's redelivery path.
@@ -490,6 +712,107 @@ class StreamConsumer:
                 "delivery_count": message.delivery_count,
             },
         )
+
+
+def _lanes(messages: Sequence[StreamMessage], width: int) -> list[list[StreamMessage]]:
+    """Deal one batch into at most ``width`` sequential lanes, keeping every
+    message about one aggregate in ONE lane and in arrival order (5.1,
+    invariant 2).
+
+    The partition key is ``(stream, subject)`` -- ``subject`` is the CloudEvents
+    core attribute every producer in this codebase fills with the aggregate id
+    (``build_envelope``'s own ``subject: Uuid`` parameter), so "two messages
+    about one document" is answerable here without importing a single module.
+    The stream joins the key because ``subject`` is only unique within its
+    producer: two modules minting UUIDv7s could collide in principle, and a
+    collision would serialise two unrelated aggregates rather than corrupt
+    anything -- the key is deliberately the conservative one.
+
+    ⚠️ **A summary event's subject is its JOB, not its document** (the
+    knowledge module's own ``event_mapping`` comment says so, and says why:
+    "every summary event on one document would otherwise share a subject while
+    describing different builds of it"). So this key serialises the two events
+    of ONE build against each other, and does NOT serialise two different
+    builds of one document -- which is correct, because they write different
+    rows, and which is also the honest limit of what any process-local rule can
+    promise: ``worker-knowledge`` already runs with ``replicas: 2``, so two
+    messages about one aggregate can be in two PROCESSES at once and could
+    before 5.1 existed. What protects the EFFECT there is unchanged and is
+    elsewhere by design: the DD-09 ``processed_events`` claim keyed on the
+    GROUP, and each aggregate's own terminal-status guard.
+
+    A message with no usable ``subject`` gets a key of its own entry id: unique,
+    so it serialises with nothing, which is exactly the pre-5.1 treatment of an
+    envelope this engine cannot classify. It is NOT promoted to an unroutable
+    dead-letter -- policy 2's guard list is a contract about what the DISPATCH
+    needs, and widening it here would dead-letter envelopes that five years of
+    handlers have processed fine.
+
+    Dealing is round-robin over the partitions in first-seen order, so lanes
+    stay balanced by partition COUNT (never by cost -- this engine cannot know
+    a handler's cost, and pretending otherwise is how schedulers get slow).
+    """
+    partitions: dict[tuple[str, str], list[StreamMessage]] = {}
+    for message in messages:
+        partitions.setdefault(_entity_key(message), []).append(message)
+    lanes: list[list[StreamMessage]] = []
+    for index, partition in enumerate(partitions.values()):
+        if index < width:
+            lanes.append(partition)
+        else:
+            lanes[index % width].extend(partition)
+    return lanes
+
+
+def _entity_key(message: StreamMessage) -> tuple[str, str]:
+    """``(stream, subject)`` when the envelope carries a usable ``subject``,
+    else ``(stream, entry_id)`` -- see ``_lanes``.
+
+    Decoded a SECOND time here rather than threaded out of ``_dispatch``: the
+    partition has to exist before any dispatch runs, and a malformed envelope
+    must reach ``_dispatch``'s own policy-1 branch (which logs and
+    dead-letters) rather than being filtered out silently by the scheduler.
+    The cost is one extra ``json.loads`` per message per batch, only above
+    ``concurrency == 1``, on a path that is about to make network calls.
+    """
+    envelope = _decode(message)
+    subject = envelope.get("subject") if envelope is not None else None
+    if isinstance(subject, str) and subject:
+        return (message.stream, subject)
+    return (message.stream, message.entry_id)
+
+
+def _is_permanent(exc: Exception) -> bool:
+    """Whether a handler failure is one that attempt N would reproduce exactly
+    (5.1, invariant 5) -- the difference between spending the whole retry
+    budget and dead-lettering on delivery 1.
+
+    **The rule is the error CATALOG's, not a list here.** ``AppError`` carries
+    a ``status`` decided by its ``code`` (``framework/errors.py``), and a 4xx
+    is by definition a statement about the INPUT: an unsupported type, a failed
+    invariant, a row that is not there. Retrying it five times changes nothing
+    but the hour it reaches the DLQ. A 5xx -- and anything that is not an
+    ``AppError`` at all: a driver error, a socket reset, a timeout -- is the
+    transient class 04 §3's ``N=5`` was written for, and stays on the budget.
+
+    **Two 4xx are excluded, and both would be bugs to include.** ``409`` is
+    ``ConflictError``, whose entire meaning is "someone else got there first,
+    come back" (10 §6's optimistic-lock convention) -- a code that says retry.
+    ``429`` is ``common.rate_limited``, which says the same thing louder. Every
+    other 4xx in the catalog is a permanent fact about the message.
+
+    ⚠️ **``404`` IS included, and that is a deliberate change of behaviour.**
+    ``build_knowledge_index_handler`` records the opposite belief in a comment
+    ("a ``NotFoundError`` for a file row that vanished ... may succeed on the
+    next try"); a row that vanished does not come back, and the two paths end
+    in the same DLQ either way -- this one four redeliveries sooner, which is
+    four fewer at the moment capacity is scarce.
+    """
+    return (
+        isinstance(exc, AppError)
+        and _CLIENT_ERROR_FLOOR <= exc.status < _SERVER_ERROR_FLOOR
+        and exc.status not in _RETRYABLE_CLIENT_ERRORS
+    )
 
 
 def _pairs(subscriptions: Sequence[Subscription]) -> list[tuple[str, str]]:

@@ -231,10 +231,14 @@ async def test_only_this_spaces_corpus_is_destroyed() -> None:
     assert list(stack.repository.rows) == [theirs.id]
 
 
-async def test_points_are_grouped_by_their_own_collection() -> None:
-    """Every chunk of a workspace lives in one collection today, but each
-    ``VectorRef`` names its own — and a purge that assumed otherwise would
-    delete one collection's ids from another's, which Qdrant accepts silently."""
+async def test_points_are_deleted_from_every_corpus_not_the_recorded_one() -> None:
+    """A workspace can hold two corpora at once since capacity 4.5 — the one
+    serving traffic and the one a model swap is building — and a point copied
+    into the second keeps the SAME deterministic id while the row still names
+    the first. Honouring only what was recorded would leave the copy answering
+    searches in the space the user just deleted, so every id goes to
+    ``delete_everywhere`` under the workspace's stable name and the store is
+    what enumerates the corpora."""
     stack = build_knowledge()
     ctx = _ctx()
     space = new_uuid7()
@@ -248,7 +252,7 @@ async def test_points_are_grouped_by_their_own_collection() -> None:
 
     await PurgeSpaceKnowledge(stack.repository, stack.vectors).execute(ctx, space)
 
-    assert sorted(stack.vectors.deleted) == [("kn-new", ["p2"]), ("kn-old", ["p1"])]
+    assert stack.vectors.deleted == [(f"kn-{ctx.workspace_id}", ["p1", "p2"])]
 
 
 async def test_a_space_with_nothing_indexed_asks_the_vector_store_for_nothing() -> None:

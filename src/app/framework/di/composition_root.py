@@ -200,6 +200,7 @@ from app.framework.observability import configure_logging, get_logger
 from app.framework.ports import (
     AuthProvider,
     CacheProvider,
+    EmbeddingProvider,
     HybridVectorStore,
     LLMProvider,
     SecretsProvider,
@@ -218,6 +219,9 @@ from app.framework.settings import DatabaseSettings, Settings
 from app.framework.settings.settings import Limits, RetrievalSettings
 from app.framework.streaming import ConnectionHub, make_notification_handler
 from app.framework.workflows.registry import InMemoryWorkflowRegistry, WorkflowRegistry
+from app.infrastructure.ai_providers.embedding.caching_embedding import (
+    CachingEmbeddingProvider,
+)
 from app.infrastructure.ai_providers.embedding.external_embedding import (
     ExternalEmbeddingProvider,
     create_embedding_http_client,
@@ -634,14 +638,50 @@ async def _sweep_stale_notify_groups(
     return swept
 
 
-def _build_embedding(settings: Settings) -> tuple[httpx.AsyncClient, ExternalEmbeddingProvider]:
+def _build_embedding(
+    settings: Settings, evictable_cache: CacheProvider
+) -> tuple[httpx.AsyncClient, EmbeddingProvider]:
     """The central embedding service's client + adapter (2.10) — a helper so
     ``from_env`` stays under its statement ceiling, the ``_build_integrations``/
     ``_build_identity_faces`` precedent. Same client/adapter pairing as every
     other http-backed driven adapter this root builds (``ollama_http``/
-    ``ollama_llm``, ``openai_http``/``openai_llm``)."""
+    ``ollama_llm``, ``openai_http``/``openai_llm``).
+
+    **The query-vector cache is a WRAPPER built here, and only here (capacity
+    4.3).** ``cache_ttl_s <= 0`` returns the bare adapter — the `م-8` switch,
+    and the reason ``CachingEmbeddingProvider`` refuses a non-positive TTL of
+    its own accord: "off" has exactly one spelling, and it is this branch.
+
+    ⚠️ **And this is the API process's root, which is the whole reason the
+    wrapper belongs here rather than inside the adapter.** This process embeds
+    QUERIES (``retrieval.py`` and ``memory``'s search, one short string each,
+    repeated across users); the knowledge worker's own root
+    (``workers/bootstrap.py``) embeds CHUNKS — a hundred thousand of them per
+    corpus, each seen exactly once. Caching those would fill Redis with entries
+    that can never be hit and evict the ones that would be. The two roots build
+    two different providers because they are on two different sides of that
+    fact, not by oversight.
+
+    **And the parameter is ``evictable_cache``, not ``cache`` (capacity
+    5.2).** This is the largest tenant of the ``allkeys-lru`` instance and
+    what its ceiling is sized from; the claim that name makes -- every value
+    behind it is reconstructible from a source of truth -- is trivially true
+    here, since a miss re-embeds the very string that produced the entry. The
+    paragraph above is the same argument one level down: the wrapper already
+    exists to keep entries that CAN be hit away from entries that cannot, and
+    5.2 moves that whole population off the server a session denylist lives on.
+    """
     embedding_http = create_embedding_http_client(settings.embedding_service)
-    embedding = ExternalEmbeddingProvider(embedding_http, settings.embedding_service)
+    embedding: EmbeddingProvider = ExternalEmbeddingProvider(
+        embedding_http, settings.embedding_service
+    )
+    if settings.embedding_service.cache_ttl_s > 0:
+        embedding = CachingEmbeddingProvider(
+            embedding,
+            evictable_cache,
+            settings.embedding_service,
+            ttl_s=settings.embedding_service.cache_ttl_s,
+        )
     return embedding_http, embedding
 
 
@@ -680,6 +720,31 @@ def _build_rerank(
 # this connection has no other caller to share a bigger pool with.
 _METRICS_POOL_SIZE = 2
 _METRICS_MAX_OVERFLOW = 2
+
+
+def _build_caches(settings: Settings) -> tuple[Redis, CacheProvider, Redis, CacheProvider]:
+    """Both Redis clients and both ``CacheProvider`` adapters (capacity 5.2,
+    ``ح-10`` · ``ق-4``) — a helper for the ``_build_embedding``/
+    ``_build_notify_bridge`` reason: ``from_env`` is at the statement ceiling
+    ``ruff`` enforces, and this step needs two more objects there.
+
+    Returns ``(stream_client, retained_cache, cache_client, evictable_cache)``
+    in that order — the retained pair first, because it is the DEFAULT and the
+    one an unfamiliar caller should reach for. WHICH keys may go on which is
+    documented on ``CompositionRoot.cache``/``.evictable_cache``, where a
+    reader looking at a field will actually find it.
+
+    **The second client is built unconditionally**, even when
+    ``cache_redis.url`` has collapsed onto ``redis.url`` (the ``م-8`` off
+    switch, ``infrastructure/config/env_settings.py``). A second pool to the
+    same server costs a handful of idle sockets; branching on URL equality
+    would make a field's identity depend on configuration, and
+    ``disposables()`` would then have to know whether it is about to close the
+    same client twice.
+    """
+    stream_client = create_redis_client(settings.redis)
+    cache_client = create_redis_client(settings.cache_redis)
+    return stream_client, RedisCache(stream_client), cache_client, RedisCache(cache_client)
 
 
 def _build_metrics_source(
@@ -1226,7 +1291,7 @@ def _retrieval_tuning(retrieval: RetrievalSettings, limits: Limits) -> Retrieval
 def _build_knowledge(
     tenant_session: TenantSessionFactory,
     *,
-    embedding: ExternalEmbeddingProvider,
+    embedding: EmbeddingProvider,
     vectors: HybridVectorStore,
     resolver: EmbeddingResolver,
     outbox: EventOutbox,
@@ -1236,6 +1301,7 @@ def _build_knowledge(
     reranker: ExternalRerankProvider | None,
     max_build_duration_s: float,
     max_active_summary_jobs: int,
+    embedding_max_input_tokens: int,
 ) -> tuple[KnowledgeUseCases, PurgeSpaceKnowledge, PurgeFileKnowledge]:
     """The knowledge module's API-facing bundle, plus the one face that is not
     API-facing — a helper so ``from_env`` stays under its statement ceiling
@@ -1349,6 +1415,13 @@ def _build_knowledge(
                 # `Settings.retrieval.rerank_enabled` is on (`_build_rerank`),
                 # which is the shipped state.
                 reranker=reranker,
+                # Capacity step 4.5 — the third field of this deployment's
+                # embedding regime, and therefore part of the corpus NAME
+                # retrieval reads. Passed from the same `Settings` value
+                # `workers/bootstrap.py` hands `IndexDocument`: the indexer and
+                # the searcher have to compute one name, and the only way to
+                # guarantee that is for both to read one setting.
+                embedding_max_input_tokens=embedding_max_input_tokens,
             ),
             resolver,
             documents,
@@ -1523,7 +1596,62 @@ class CompositionRoot:
     # built with ``blocking_read_timeout_s`` because the bridge parks on
     # ``XREADGROUP ... BLOCK`` exactly like the three workers do (§1-أ-2).
     notify_redis_client: Redis
+    # capacity 5.2 (ح-10 · ق-4) -- the `allkeys-lru` server's client. A THIRD
+    # client rather than a third use of `redis_client`, because it points at a
+    # different SERVER, not merely a different socket profile like
+    # `notify_redis_client` above.
+    cache_redis_client: Redis
+    # ⭐ TWO `CacheProvider`s since 5.2, and which one a caller gets is the
+    # whole of this step. Read `evictable_cache` below before adding a caller
+    # to either.
+    #
+    # `cache` is on `redis-stream` (`noeviction`) and is the DEFAULT. It did
+    # not move in 5.2 and neither did any of its callers, which is deliberate:
+    # this one port carries three things that are not caches at all, and each
+    # of them fails SILENTLY when evicted --
+    #
+    #   * `auth:revoked:<sub>` (`framework/auth/revocation.py`) — the session
+    #     denylist. Its own module docstring: "A cache MISS means 'not
+    #     revoked' and the request proceeds." Evicting one entry therefore
+    #     re-validates a revoked token until its `exp`, which is exactly the
+    #     residual risk that module exists to close — and it is the LRU
+    #     instance's first choice for eviction, because the dangerous case
+    #     (an operator revokes a subject whose stolen token has not been used
+    #     yet) is by construction a key nobody reads. This is also what 1.1
+    #     leans on in writing: "«تعطيل حساب يسري في الطلب التالي» تحمله قائمة
+    #     المنع لا طزاجة `active`".
+    #   * `integrations:oauth:state:<state>` — the single-use CSRF binding.
+    #     Eviction fails closed, so it is an availability defect rather than a
+    #     hole: a legitimate connect flow is rejected at the callback.
+    #   * `admin:provider-probe:<provider>` — the probe abuse window. Eviction
+    #     silently resets it.
+    #
+    # And `app.ops.revoke` builds its own `RedisCache` over `settings.redis`
+    # in a separate process. Had `cache` been the field that moved, an
+    # operator's `python -m app.ops.revoke` would write the denylist to one
+    # server while the request path read the other — a revocation that reports
+    # success and denies nothing. Keeping `cache` where it is means that tool
+    # needed no change at all, which is the point: the DEFAULT must be the
+    # safe instance, so that a caller added later and thought about less
+    # carefully lands on `noeviction`.
     cache: CacheProvider
+    # `evictable_cache` is on `redis-cache` (`allkeys-lru`), and the name is a
+    # claim each of its callers has to be able to make: every value behind it
+    # is reconstructible from a source of truth, so losing one costs work and
+    # nothing else. Exactly two callers, both moved here by an explicit
+    # decision recorded in `_build_embedding` and `api/main.py`:
+    #
+    #   * `embed:v1:<hash>` (`CachingEmbeddingProvider`, 4.3) — deterministic
+    #     recompute, and by far the largest tenant of this instance.
+    #   * `auth:principal:<uid>` (`PrincipalCache`, 1.1) — a miss re-runs
+    #     `provision_on_login` + `roles_of`, i.e. exactly the pre-1.1 request.
+    #     Note the asymmetry with the denylist above: a MISSING principal is
+    #     harmless and a STALE one is the risk, so eviction is on the safe
+    #     side of this key in both directions.
+    #
+    # `search:exa:<sha256>` belongs here too and is not listed because
+    # `web_search` is not wired at all (this module's own docstring).
+    evictable_cache: CacheProvider
     # capacity-plan 1.2. Over the SAME `redis_client` as everything else on
     # the request path, and NOT over `cache`: the two ceilings are held in one
     # atomic Lua script and `CacheProvider` deliberately exposes no way to run
@@ -1723,8 +1851,7 @@ class CompositionRoot:
         sessionmaker = create_sessionmaker(engine)
         tenant_session = TenantSessionFactory(sessionmaker)
 
-        redis_client = create_redis_client(settings.redis)
-        cache = RedisCache(redis_client)
+        redis_client, cache, cache_redis_client, evictable_cache = _build_caches(settings)
 
         qdrant_client = create_qdrant_client(settings.qdrant)
         vector_store = QdrantVectorStore(qdrant_client)
@@ -1774,7 +1901,7 @@ class CompositionRoot:
         # and every other `_build_*` helper exist to keep it under; the two
         # internal model services are a natural pair to read together.
         (embedding_http, embedding), (rerank_http, reranker) = (
-            _build_embedding(settings),
+            _build_embedding(settings, evictable_cache),
             _build_rerank(settings),
         )
 
@@ -1903,6 +2030,7 @@ class CompositionRoot:
             reranker=reranker,
             max_build_duration_s=settings.limits.summarize_job_max_duration_s,
             max_active_summary_jobs=settings.limits.max_active_summary_jobs_per_workspace,
+            embedding_max_input_tokens=settings.embedding_service.embedding_max_input_tokens,
         )
 
         # 6.1-و-4-1 — the integrations bundle (built by the helper above, which
@@ -2047,7 +2175,9 @@ class CompositionRoot:
             tenant_session=tenant_session,
             redis_client=redis_client,
             notify_redis_client=notify_redis_client,
+            cache_redis_client=cache_redis_client,
             cache=cache,
+            evictable_cache=evictable_cache,
             # Inline rather than a local: this method is already at the
             # statement ceiling `ruff` enforces, and a one-argument adapter
             # over a client three lines above reads no worse here.
@@ -2277,6 +2407,7 @@ class CompositionRoot:
             self.metrics_engine.dispose,
             self.redis_client.aclose,
             self.notify_redis_client.aclose,
+            self.cache_redis_client.aclose,
             self.qdrant_client.close,
             _close_vault,
             self.firebase_http.aclose,

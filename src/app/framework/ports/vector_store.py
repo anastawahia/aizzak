@@ -76,7 +76,46 @@ class VectorHit:
 
 
 class VectorStore(Protocol):
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None: ...
+    """``ensure_collection`` RESOLVES as well as provisions, and it is the
+    only method here that may be handed a name that is not a collection.
+
+    ``name`` is the caller's STABLE name for one corpus (``kn-<workspace_id>``,
+    ``mem-<workspace_id>``). ``revision`` is the fingerprint of the embedding
+    regime the caller is about to write vectors under (capacity step 4.5,
+    ``knowledge.domain.collections.EmbeddingRegime``), and the return value is
+    the PHYSICAL collection that write must go to — which may not be ``name``.
+
+    **Why the return value exists at all.** With a revision, ``name`` is not
+    necessarily a collection: the corpus this regime owns may be a collection
+    of its own, or an alias over the pre-4.5 one, or not exist yet. A writer
+    that took ``name`` at face value would put its vectors wherever that name
+    happens to land — including a collection another model filled — and a
+    search over two embedding spaces returns results that look right and are
+    random, the failure 4.5 exists to make unreachable. So provisioning and
+    resolution are ONE call: there is no way to obtain a write target without
+    having asked which one it is.
+
+    **A swap never re-points anything under a running process.** Each
+    deployment resolves the corpus its own regime built, so a rolling upgrade
+    (7.2) that runs two model versions at once is two coherent fleets rather
+    than one mixed corpus — and rolling back is redeploying the previous
+    regime, whose corpus is still standing. The store never has to make a
+    switch atomic with a deploy, because there is no switch.
+
+    ``revision=None`` keeps the pre-4.5 contract exactly: ``name`` is a
+    physical collection, it is provisioned, and it is returned unchanged.
+    That is what the operational paths pass (they name a collection outright)
+    and it is what keeps every caller that has no regime honest rather than
+    guessing one.
+
+    **Provisioning stays lazy and searching a missing collection stays
+    normal** (module docstring) — a corpus is still created at first write,
+    and this method is still that write's precondition.
+    """
+
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str: ...
 
     async def upsert(self, collection: str, points: Sequence[VectorPoint]) -> None: ...
 
@@ -114,6 +153,22 @@ class HybridVectorStore(VectorStore, Protocol):
     existed can only gain them through an explicit operational call — see
     the spaces plan §5-ب.
 
+    ``delete_everywhere`` is the counterpart, and it is on the HYBRID port for
+    the same Interface-Segregation reason: ``memory`` has one corpus per
+    workspace and always will (its items are rebuildable from rows, so it was
+    never revisioned), while ``knowledge`` can have two at once and a
+    ``VectorRef`` recorded under one of them must not be able to leave a copy
+    alive in the other. ``name`` here is the workspace's STABLE name
+    (``kn-<workspace_id>``), never a resolved corpus: the whole point is to
+    reach the corpora the caller does not know about.
+
+    ``ensure_hybrid_collection`` carries ``revision`` and returns the resolved
+    physical name for the SAME reason ``ensure_collection`` does — that
+    method's docstring is the whole argument, and it applies here unchanged.
+    Knowledge is in fact the corpus 4.5 was written for: it is the one whose
+    read path (``knowledge/application/retrieval.py``) must keep answering
+    while a second copy of it is built.
+
     ``with_vectors`` asks BOTH legs to return each hit's own dense vector
     (``VectorHit.vector``) alongside its payload — MMR's input
     (rag-retrieval-plan.md §3.9, ``P-23``, decision س-20). It defaults to
@@ -131,8 +186,8 @@ class HybridVectorStore(VectorStore, Protocol):
     """
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None: ...
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str: ...
 
     async def search(
         self,
@@ -157,3 +212,5 @@ class HybridVectorStore(VectorStore, Protocol):
     async def ensure_payload_index(
         self, collection: str, field: str, *, tenant: bool = False
     ) -> None: ...
+
+    async def delete_everywhere(self, name: str, ids: Sequence[Uuid]) -> None: ...

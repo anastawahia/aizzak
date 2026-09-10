@@ -283,7 +283,11 @@ def test_the_scraper_and_exporters_publish_no_host_port() -> None:
     for name in (
         "prometheus",
         "pgbouncer-exporter",
-        "redis-exporter",
+        # Two since capacity 5.2, one per Redis instance -- the split is what
+        # lets `AizzakRedisStreamEvicted` mean one thing instead of two
+        # (deploy/prometheus/alerts.yml).
+        "redis-stream-exporter",
+        "redis-cache-exporter",
         "cadvisor",
         # Added by 0.6, and the boundary matters MORE here than for a counter:
         # these two hold the log lines themselves.

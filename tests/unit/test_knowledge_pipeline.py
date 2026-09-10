@@ -39,7 +39,7 @@ from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.ports.rerank_provider import RerankedDocument
 from app.framework.ports.vector_store import SparseVector, VectorHit, VectorPoint
 from app.framework.settings.settings import Limits, RetrievalSettings
-from app.framework.types import Json
+from app.framework.types import Json, Uuid
 from app.modules.knowledge.application import retrieval as retrieval_module
 from app.modules.knowledge.application.indexing import (
     IndexDocument,
@@ -95,6 +95,7 @@ from app.modules.knowledge.ports.content_extractor import (
     ParsedDocument,
 )
 from app.modules.knowledge.ports.retrieval import RetrievedChunk
+from tests.unit.support_knowledge import corpus_name, resolved_corpus
 
 # The SHIPPED retrieval configuration (plan step 18, `P-30` `P-40`, س-24) --
 # the same singleton `RetrieveContext` falls back to when no Composition Root
@@ -207,8 +208,13 @@ async def _seed_corpus(
     texts: Sequence[str],
     *,
     dim: int = 8,
+    model: str = "m",
 ) -> None:
-    collection = knowledge_collection(ctx.workspace_id)
+    # The corpus `RetrieveContext` will actually read (capacity 4.5): seeding
+    # `kn-<workspace_id>` instead would put the points in a collection this
+    # deployment's regime does not own, and every search below would answer
+    # empty for the right reason at the wrong time.
+    collection = corpus_name(ctx.workspace_id, model=model, dimensions=dim)
     points = [
         _hand_built_point(ctx, document_id, seq, text, _seeded_vector(text, dim))
         for seq, text in enumerate(texts)
@@ -308,14 +314,42 @@ class FakeHybridVectors:
         # store which never fills `VectorHit.vector` still retrieves.
         self.with_vectors_calls: list[bool] = []
 
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None:
-        self.points.setdefault(name, {})
+    def corpus(self, workspace_id: str) -> dict[str, VectorPoint]:
+        """The points in one workspace's corpus, whichever revision named it.
+
+        Tests ask by WORKSPACE and not by collection name because since
+        capacity 4.5 that name carries an embedding-regime fingerprint no test
+        here has an opinion about — spelling it out in each assertion would
+        pin a digest instead of a behaviour. A fake holds exactly one corpus
+        per workspace, so "whichever one" is never ambiguous; the rule that
+        DECIDES the name is asserted on its own, once.
+        """
+        prefix = f"kn-{workspace_id}"
+        for name, points in self.points.items():
+            if name == prefix or name.startswith(f"{prefix}-"):
+                return points
+        return {}
+
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str:
+        resolved = resolved_corpus(name, revision)
+        self.points.setdefault(resolved, {})
+        return resolved
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None:
-        self.ensured_hybrid.append((name, dim, distance))
-        self.points.setdefault(name, {})
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str:
+        resolved = resolved_corpus(name, revision)
+        self.ensured_hybrid.append((resolved, dim, distance))
+        self.points.setdefault(resolved, {})
+        return resolved
+
+    async def delete_everywhere(self, name: str, ids: Sequence[Uuid]) -> None:
+        prefix = f"{name}-"
+        for collection in list(self.points):
+            if collection == name or collection.startswith(prefix):
+                await self.delete(collection, ids)
 
     # Indexes are an adapter-side concern (the real one provisions them from
     # `ensure_hybrid_collection`, spaces plan step 9); a brute-force fake has
@@ -1988,12 +2022,16 @@ async def test_index_document_ensures_hybrid_collection_and_upserts_hybrid_point
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="embed-1", api_key="k"
     )
 
-    assert outcome.collection == "kn-ws1"
+    # The corpus is named by the REGIME, not by the workspace alone (capacity
+    # 4.5) -- and `IndexOutcome.collection` is the RESOLVED name, because that
+    # is what every `chunks.collection` row is minted from.
+    expected = corpus_name("ws1", model="embed-1", dimensions=6)
+    assert outcome.collection == expected
     assert outcome.dimensions == 6
     assert len(outcome.chunks) == 2
-    assert vectors.ensured_hybrid == [("kn-ws1", 6, "cosine")]
+    assert vectors.ensured_hybrid == [(expected, 6, "cosine")]
 
-    stored = vectors.points["kn-ws1"]
+    stored = vectors.corpus("ws1")
     assert len(stored) == 2
     for point in stored.values():
         assert point.vector  # dense vector present
@@ -2064,7 +2102,7 @@ async def test_index_document_point_ids_are_deterministic_across_reindex_runs() 
     assert [c.chunk_id for c in first.chunks] == [c.chunk_id for c in second.chunks]
     assert first.chunks[0].chunk_id == chunk_point_id("doc-1", 0)
     # re-indexing overwrites the same point rather than duplicating it
-    assert len(vectors.points["kn-ws1"]) == 1
+    assert len(vectors.corpus("ws1")) == 1
 
 
 async def test_index_document_batches_embed_calls_past_128_chunks() -> None:
@@ -2081,7 +2119,7 @@ async def test_index_document_batches_embed_calls_past_128_chunks() -> None:
     )
 
     assert len(outcome.chunks) == 130
-    assert len(vectors.points["kn-ws1"]) == 130
+    assert len(vectors.corpus("ws1")) == 130
     assert len(embeddings.calls) == 2  # ceil(130 / 128) == 2 batches
     assert len(embeddings.calls[0]) == 128
     assert len(embeddings.calls[1]) == 2
@@ -2120,7 +2158,7 @@ async def test_index_document_falls_back_to_per_chunk_embedding_when_batch_call_
     )
 
     assert len(outcome.chunks) == 3
-    assert len(vectors.points["kn-ws1"]) == 3
+    assert len(vectors.corpus("ws1")) == 3
     # one failed batch-of-3 call, then 3 individual per-chunk retries
     assert len(attempts) == 4
     assert len(attempts[0]) == 3
@@ -2174,8 +2212,10 @@ async def test_index_document_empty_parsed_document_upserts_nothing() -> None:
         api_key="k",
     )
 
-    assert outcome == IndexOutcome(collection="kn-ws1", dimensions=8, chunks=())
-    assert vectors.points.get("kn-ws1", {}) == {}
+    assert outcome == IndexOutcome(
+        collection=corpus_name("ws1", model="m", dimensions=8), dimensions=8, chunks=()
+    )
+    assert vectors.corpus("ws1") == {}
     assert embeddings.calls == []
 
 
@@ -2198,7 +2238,7 @@ async def test_index_document_payload_copies_citation_allowlist_keys_when_presen
     outcome = await use_case.execute(
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
-    point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
+    point = vectors.corpus("ws1")[outcome.chunks[0].chunk_id]
 
     assert point.payload["page_number"] == 4
     assert point.payload["table_name"] == "revenue"
@@ -2227,7 +2267,7 @@ async def test_index_document_payload_section_falls_back_to_title_metadata_key()
     outcome = await use_case.execute(
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
-    point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
+    point = vectors.corpus("ws1")[outcome.chunks[0].chunk_id]
 
     assert point.payload["section"] == "Responsibilities"
     assert "title" not in point.payload  # "title" itself is not in the allowlist
@@ -2251,7 +2291,7 @@ async def test_index_document_payload_omits_file_name_when_absent_from_metadata(
     outcome = await use_case.execute(
         ctx, document_id="doc-1", space_id=SPACE, parsed=parsed, model="m", api_key="k"
     )
-    point = vectors.points["kn-ws1"][outcome.chunks[0].chunk_id]
+    point = vectors.corpus("ws1")[outcome.chunks[0].chunk_id]
 
     assert "file_name" not in point.payload
 
@@ -2449,7 +2489,7 @@ async def test_index_document_semantic_pass_failure_degrades_to_the_unsplit_segm
     # Nothing lost: the ORIGINAL text (punctuation and all), as one node --
     # not the space-joined sentences a successful semantic split produces.
     assert [chunk.text for chunk in outcome.chunks] == [text]
-    assert len(vectors.points["kn-ws1"]) == 1
+    assert len(vectors.corpus("ws1")) == 1
     # only the mandatory pass ever completed
     assert embeddings.calls == [[text]]
     assert any(
@@ -2843,7 +2883,7 @@ async def test_index_document_table_parent_text_and_id_never_reach_the_qdrant_pa
 
     parent_text = outcome.parents[0].text
     for chunk in outcome.chunks:
-        point = vectors.points["kn-ws1"][chunk.chunk_id]
+        point = vectors.corpus("ws1")[chunk.chunk_id]
         assert parent_text not in point.payload.values()
         assert "_parent_key" not in point.payload
         assert "parent_id" not in point.payload
@@ -3144,7 +3184,7 @@ async def test_index_document_page_parent_text_and_key_never_reach_the_qdrant_pa
 
     parent_text = outcome.parents[0].text
     for chunk in outcome.chunks:
-        point = vectors.points["kn-ws1"][chunk.chunk_id]
+        point = vectors.corpus("ws1")[chunk.chunk_id]
         assert "_parent_key" not in point.payload
         assert "parent_id" not in point.payload
         assert parent_text not in point.payload.values()
@@ -3267,7 +3307,7 @@ async def test_retrieve_context_both_legs_called_with_workspace_and_space_filter
         ctx, space_id=SPACE, query="alpha report", model="m", api_key="k"
     )
 
-    collection = knowledge_collection("ws1")
+    collection = corpus_name("ws1", model="m", dimensions=8)
     assert vectors.search_calls[-1][0] == collection
     # BOTH conditions on BOTH legs (DD-04 for the tenant, س-32 for the space):
     # the space is no longer a narrowing a caller may omit, so its absence from
@@ -3328,7 +3368,7 @@ async def test_retrieve_context_lexical_only_recall_surfaces_via_sparse_leg() ->
     )
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
-    collection = knowledge_collection(ctx.workspace_id)
+    collection = corpus_name(ctx.workspace_id, model="m", dimensions=4)
     await vectors.upsert(
         collection,
         [
@@ -4445,7 +4485,7 @@ async def test_retrieve_context_tenant_isolation_on_both_legs() -> None:
     vectors = FakeHybridVectors()  # one store, shared by both workspaces
     ctx_a = _ctx("ws-a")
     ctx_b = _ctx("ws-b")
-    shared_collection = knowledge_collection("ws-b")
+    shared_collection = corpus_name("ws-b", model="m", dimensions=8)
     shared_text = "alpha beta gamma report content"
     shared_vector = _seeded_vector(shared_text, 8)
 
@@ -4496,7 +4536,7 @@ _OTHER_SUBJECTS = (
 async def _seed_one_paragraph_five_ways(vectors: FakeHybridVectors, ctx: ExecutionContext) -> None:
     """Six paraphrases on one axis, two other subjects on two more."""
     await vectors.upsert(
-        knowledge_collection(ctx.workspace_id),
+        corpus_name(ctx.workspace_id, model="m", dimensions=4),
         [
             *(
                 _hand_built_point(ctx, "doc-1", index, text, [1.0, 0.0, 0.0, 0.0])
@@ -4780,7 +4820,7 @@ async def test_retrieve_context_stage_scores_are_the_legs_own_not_rrfs(
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
     await vectors.upsert(
-        knowledge_collection(ctx.workspace_id),
+        corpus_name(ctx.workspace_id, model="m", dimensions=4),
         [
             _hand_built_point(ctx, "doc-1", 0, near_text, [1.0, 0.0, 0.0, 0.0]),
             _hand_built_point(ctx, "doc-1", 1, far_text, [-1.0, 0.0, 0.0, 0.0]),
@@ -4840,7 +4880,7 @@ async def test_retrieve_context_tags_each_candidate_with_the_leg_that_found_it(
     vectors = FakeHybridVectors()
     ctx = _ctx("ws1")
     await vectors.upsert(
-        knowledge_collection(ctx.workspace_id),
+        corpus_name(ctx.workspace_id, model="m", dimensions=4),
         [
             _hand_built_point(ctx, "doc-1", 0, both_text, [1.0, 0.0, 0.0, 0.0]),
             _hand_built_point(ctx, "doc-1", 1, dense_text, [0.8, 0.6, 0.0, 0.0]),
@@ -5633,7 +5673,7 @@ async def test_an_indexed_point_stores_bm25_weights_not_raw_counts() -> None:
         api_key="k",
     )
 
-    point = next(iter(vectors.points["kn-ws1"].values()))
+    point = next(iter(vectors.corpus("ws1").values()))
     assert point.sparse is not None
     values = point.sparse.values
     assert values

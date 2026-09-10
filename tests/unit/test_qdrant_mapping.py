@@ -20,6 +20,7 @@ right one.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -299,14 +300,42 @@ class _ProvisioningClient:
     ``create_raises`` injects the lost-create-race 409 the adapter swallows.
     """
 
-    def __init__(self, *, exists: bool = False, create_raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        exists: bool = False,
+        create_raises: Exception | None = None,
+        dim: int = 4,
+    ) -> None:
         self._exists = exists
         self._create_raises = create_raises
+        self._dim = dim
         self.created: list[str] = []
         self.indexes: list[tuple[str, str, bool]] = []
 
     async def collection_exists(self, collection_name: str) -> bool:
         return self._exists
+
+    async def get_collection(self, collection_name: str) -> Any:
+        """The probe that REPLACED ``collection_exists`` on the provisioning
+        path at capacity 4.5 -- one round trip that also carries the vector
+        width, so ``_guard_dimensions`` can refuse a corpus built at another
+        one. Answers the 404 the adapter absorbs when ``exists`` is false, and
+        the collection's real parameters when it is true."""
+        if not self._exists:
+            raise UnexpectedResponse(
+                status_code=404,
+                reason_phrase="Not Found",
+                content=b'{"status": {"error": "Not found: Collection doesn\'t exist!"}}',
+                headers=None,
+            )
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                params=SimpleNamespace(
+                    vectors=models.VectorParams(size=self._dim, distance=models.Distance.COSINE)
+                )
+            )
+        )
 
     async def create_collection(self, **kwargs: Any) -> None:
         if self._create_raises is not None:

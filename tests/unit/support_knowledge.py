@@ -49,6 +49,10 @@ from app.modules.knowledge.application.use_cases import (
     RequestSummary,
     RequestSummaryService,
 )
+from app.modules.knowledge.domain.collections import (
+    EmbeddingRegime,
+    knowledge_collection_revision,
+)
 from app.modules.knowledge.domain.entities import Document, ReindexJob, Summary, SummaryJob
 from app.modules.knowledge.domain.intent import Intent
 from app.modules.knowledge.domain.value_objects import (
@@ -478,12 +482,29 @@ class RecordingVectorStore:
     async def delete(self, collection: str, ids: Sequence[str]) -> None:
         self.deleted.append((collection, list(ids)))
 
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None:
+    async def delete_everywhere(self, name: str, ids: Sequence[str]) -> None:
+        # Recorded through `delete`, under the workspace's stable name: a fake
+        # store holds no corpora to enumerate, and what these tests assert is
+        # that the points went before the rows -- not how many collections a
+        # real Qdrant would have found them in.
+        #
+        # The empty-`ids` early return mirrors the adapter's, and it is load-
+        # bearing rather than cosmetic: "another tenant's file id destroys
+        # nothing" is asserted as NO call having been made, and a store that
+        # dutifully recorded a deletion of zero points would turn that
+        # assertion into one about arithmetic.
+        if not ids:
+            return
+        await self.delete(name, ids)
+
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str:
         raise AssertionError("a re-index never provisions a collection")
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None:
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str:
         raise AssertionError("a re-index never provisions a collection")
 
     async def ensure_payload_index(
@@ -711,4 +732,39 @@ def build_knowledge(*, retrieval: RecordingRetrieval | None = None) -> Knowledge
         summary_jobs=summary_jobs,
         files=files,
         quota_lock=quota_lock,
+    )
+
+
+def resolved_corpus(name: str, revision: str | None) -> str:
+    """What ``ensure_collection``/``ensure_hybrid_collection`` answer for a
+    workspace with no corpus yet (capacity 4.5) -- the "born revisioned" branch
+    of the Qdrant adapter's ``_resolve``.
+
+    In-memory fakes always start empty, so this is the branch every unit test
+    is on; the adapter's other two (claiming a pre-4.5 corpus, and refusing to
+    write into one another regime owns) need a real store and are covered in
+    ``test_qdrant_corpus_revisions.py``. Shared here rather than repeated in
+    each fake so the fakes cannot drift into disagreeing about what a resolved
+    name looks like.
+    """
+    return name if revision is None else f"{name}-{revision}"
+
+
+def corpus_name(
+    workspace_id: str, *, model: str, dimensions: int, max_input_tokens: int = 512
+) -> str:
+    """The collection BOTH ``IndexDocument`` and ``RetrieveContext`` resolve
+    for one workspace under one embedding regime (capacity 4.5).
+
+    Written once, here, on purpose: the indexer and the searcher compute this
+    name independently, from the same three settings, and the day they stop
+    agreeing every retrieval in the platform silently returns nothing. A test
+    that seeds a fake store through this helper and then searches it is that
+    agreement, checked.
+    """
+    return knowledge_collection_revision(
+        workspace_id,
+        EmbeddingRegime(
+            model=model, dimensions=dimensions, max_input_tokens=max_input_tokens
+        ).revision,
     )

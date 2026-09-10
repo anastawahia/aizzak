@@ -29,6 +29,19 @@ services:
   # recorded as ن-و and left alone, editing `docker-compose.yml` being a closed
   # rejected decision. This overlay ends up the better-hardened of the two.
   embedding:
+    # ⚠️ ONE REPLICA HERE, AND IT IS THE `ports:` KEY BELOW THAT DEMANDS IT.
+    # `docker-compose.yml` gives this service three replicas (capacity 4.1),
+    # and a published host port with more than one replica does not fail
+    # cleanly: replica 1 binds 8080 and the rest die with "port is already
+    # allocated" AFTER it started -- half a fleet, and an error on a command
+    # whose effect was partial (measured; `tests/unit/test_resource_budget.py::
+    # test_nothing_replicated_carries_a_container_name_or_a_published_port`
+    # guards the base file against exactly this, and cannot see this overlay).
+    # The live suite reaches `/embed` from the host to exercise the SERVICE,
+    # not the fleet, so one replica is also the honest shape for it -- 4.2's
+    # balancer (`embedding-lb`) is measured on the real stack, not here.
+    deploy:
+      replicas: 1
     ports:
       - "127.0.0.1:${HOST_PORT_EMBEDDING:-8080}:8080"
 

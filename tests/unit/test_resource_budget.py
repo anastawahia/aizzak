@@ -335,7 +335,12 @@ def test_the_patterns_actually_find_something() -> None:
     """Every parser here can match nothing and leave a green sum of zero --
     the `test_deploy_worker_default.py` precedent, applied to this module's."""
     standing, oneshot, profiled = _classify()
-    assert len(standing) == 21, sorted(standing)
+    # 22 until capacity 5.2, which split `redis` into `redis-stream` +
+    # `redis-cache` and `redis-exporter` into one per instance -- two rows
+    # where there were two, and the standing budget moved 34.00/56.38 ->
+    # 34.25/56.50 (the Redis pair DIVIDED the old 2.0 vCPU / 5 GB row rather
+    # than doubling it; the extra 0.25 vCPU / 128 MB is the second exporter).
+    assert len(standing) == 24, sorted(standing)
     assert len(oneshot) == 5, sorted(oneshot)
     assert len(profiled) == 3, sorted(profiled)
     assert _to_bytes("512m") == 512 * 1024**2

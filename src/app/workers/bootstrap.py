@@ -152,7 +152,7 @@ from app.framework.ports.llm_provider import LLMProvider
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
-from app.framework.settings.settings import DatabaseSettings, Settings
+from app.framework.settings.settings import DatabaseSettings, EventSettings, Settings
 from app.framework.types import Json, Uuid
 from app.infrastructure.ai_providers.embedding.external_embedding import (
     ExternalEmbeddingProvider,
@@ -387,12 +387,46 @@ def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable
 # Shared worker-bootstrap plumbing (5.1-ج)                                    #
 # --------------------------------------------------------------------------- #
 # Same reasoning as `_RELAY_POOL_SIZE` above, applied to each of the three
-# per-stream workers instead of the relay: one worker process, one in-flight
-# statement at a time (`StreamConsumer.run_once` dispatches messages
-# sequentially, never concurrently), so the API server's concurrent-
-# request pool sizing would be pure waste here too.
-_WORKER_POOL_SIZE = 2
+# per-stream workers instead of the relay: the API server's concurrent-request
+# pool sizing would be pure waste here.
+#
+# ⭐ IT WAS A CONSTANT UNTIL CAPACITY 5.1, AND ITS OWN COMMENT IS WHY IT COULD
+# NOT STAY ONE. The sentence that justified `2` was "one worker process, one
+# in-flight statement at a time (`StreamConsumer.run_once` dispatches messages
+# sequentially, never concurrently)" -- which 5.1 makes false by construction.
+# One in-flight handler holds one `uow.begin` session for the length of its
+# unit of work, so `WORKER_CONCURRENCY` handlers want `WORKER_CONCURRENCY`
+# sessions; leaving the pool at 2 would not have SLOWED a concurrent worker,
+# it would have failed it -- the surplus tasks block on the pool for
+# `_BACKGROUND_POOL_TIMEOUT_S` (15 s) and then raise, which the engine reads
+# as `handler_failed` and answers with a redelivery. Concurrency bought with a
+# pool that cannot serve it converts throughput into DLQ traffic.
+#
+# `+ 1` and not exactly the concurrency: the handlers do not open ONLY the
+# unit-of-work session -- `IndexRegisteredDocument.run` reads the document
+# before its transaction, `ProcessedEventLedger` claims inside it -- and one
+# slot of slack keeps a legitimate second checkout from queueing behind a
+# sibling. `max_overflow` stays 0 so the ceiling this publishes to
+# `test_connection_budget.py` is the real one and not a floor.
 _WORKER_MAX_OVERFLOW = 0
+
+
+def _worker_pool_size(settings: Settings) -> int:
+    """The DATABASE pool one worker process opens -- derived from
+    ``WORKER_CONCURRENCY``, never written twice (capacity 5.1).
+
+    Derived rather than configured for the reason `knowledge_stale_idle_ms`
+    is: both numbers move, and a deployment that raised the concurrency alone
+    would silently reopen exactly the failure described above.
+    """
+    return settings.events.worker_concurrency + 1
+
+
+# What a caller that has no `Settings` (a direct-construction test, the live
+# integration harness) gets, and what the connection ledger counts when it
+# reads this module: the shipped default resolved once, so `.env.example` and
+# `docker-compose.yml` cannot disagree with it in silence.
+_WORKER_POOL_SIZE = EventSettings().worker_concurrency + 1
 
 # 04 §2's consumer-group topology, named once: each constant feeds BOTH the
 # group's `Subscription`s and the DD-09 ledger claims its handlers write
@@ -427,7 +461,7 @@ class ProcessedEventLedger(Protocol):
     ) -> bool: ...
 
 
-def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
+def _worker_db(settings: Settings) -> DatabaseSettings:
     """Same ``DATABASE_URL``, a worker-sized pool and the background
     transaction budget -- the ``build_relay_from_env`` precedent (its own
     ``relay_db`` local), applied to each Streams worker.
@@ -436,10 +470,16 @@ def _worker_db(db: DatabaseSettings) -> DatabaseSettings:
     overridden: it is the one of the four that answers to something OUTSIDE
     this process (PgBouncer's ``client_idle_timeout``), so it must be the same
     number everywhere the pooler is the same pooler.
+
+    Takes the whole ``Settings`` since capacity 5.1, not just its
+    ``DatabaseSettings``: the pool size is now derived from
+    ``events.worker_concurrency`` (``_worker_pool_size``), which lives on the
+    other half of the contract.
     """
+    db = settings.database
     return DatabaseSettings(
         url=db.url,
-        pool_size=_WORKER_POOL_SIZE,
+        pool_size=_worker_pool_size(settings),
         max_overflow=_WORKER_MAX_OVERFLOW,
         pool_timeout_s=_BACKGROUND_POOL_TIMEOUT_S,
         pool_recycle_s=db.pool_recycle_s,
@@ -1071,6 +1111,8 @@ def build_knowledge_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    concurrency: int = 1,
+    drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the knowledge worker's ONE subscription under the ``cg.knowledge``
     consumer group (04 §4's binding table, `docs/log/3.45.md`'s recorded
@@ -1182,6 +1224,14 @@ def build_knowledge_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
+        # lane, cancel where it stands) so every direct caller of this builder
+        # -- the live integration tests included -- keeps the sequential
+        # consumer it was written against, and only the `_from_env` path below
+        # turns concurrency on. The `sweep_interval_s`/`ت-2` precedent, and the
+        # same reason: a test that opts into concurrency should say so.
+        concurrency=concurrency,
+        drain_timeout_s=drain_timeout_s,
     )
     return consumer, subscriptions
 
@@ -1211,12 +1261,26 @@ def build_knowledge_worker(
 # The cost is one `XREADGROUP` round trip per message instead of one per
 # sixteen, on a read that already spins every `consumer_block_ms` anyway.
 #
-# A constant here and not an `EventSettings` field: widening the flat env-key
-# list is a configuration-contract decision `05-rbac-config-secrets §2` owns,
-# and one taken in writing rather than in passing -- the precedent is
-# recorded on `RerankSettings` (`settings.py`). For THIS worker alone;
-# neither `media` nor `memory` has a handler that comes near this length.
-_KNOWLEDGE_BATCH_COUNT = 1
+# ⭐ CAPACITY 5.1 GENERALISED THIS RULE AND DELETED THE CONSTANT THAT STATED
+# IT FOR ONE WORKER. `F-1`'s property -- never hold in your PEL a message you
+# are not working on -- was expressed as the literal `1` because one was all a
+# sequential loop could work on. The honest expression of the same property
+# under bounded concurrency is `count == concurrency`, and it is now the rule
+# for all three workers rather than a constant for one: `worker-media`'s
+# handler may occupy the loop for `media_timeout_s` (300 s), and it was
+# reading SIXTEEN entries at a time and walking them one by one -- eighty
+# minutes of fifteen messages reserved by a process not looking at them, the
+# same defect `F-1` recorded on `knowledge` and nobody had looked for here.
+#
+# `EventSettings.consumer_batch_count` keeps its meaning and its reader: the
+# API's notify bridge (`framework/di/composition_root.py`), whose handler is a
+# queue `put` and which therefore genuinely does want sixteen per read and one
+# lane. That is the whole reason the engine takes the two numbers separately
+# instead of collapsing them.
+def _worker_batch_count(settings: Settings) -> int:
+    """``COUNT`` for a worker's ``XREADGROUP`` -- exactly its concurrency, so
+    a process never reserves an entry it is not already working on (5.1)."""
+    return settings.events.worker_concurrency
 
 
 def knowledge_stale_idle_ms(settings: Settings) -> int:
@@ -1326,7 +1390,7 @@ async def build_knowledge_worker_from_env() -> tuple[
     configure_logging(settings.log_level)
     _logger.info("knowledge_worker.bootstrap_initialized", extra={"app_env": settings.app_env})
 
-    engine = create_engine(_worker_db(settings.database))
+    engine = create_engine(_worker_db(settings))
     sessionmaker = create_sessionmaker(engine)
     tenant_session = TenantSessionFactory(sessionmaker)
     documents = SqlDocumentRepository(tenant_session)
@@ -1498,9 +1562,10 @@ async def build_knowledge_worker_from_env() -> tuple[
         ledger=ledger,
         consumer_name=consumer_name,
         block_ms=settings.events.consumer_block_ms,
-        # `F-1`, half of it -- see `_KNOWLEDGE_BATCH_COUNT` above for what
-        # this buys and, just as explicitly, what it does not.
-        batch_count=_KNOWLEDGE_BATCH_COUNT,
+        # `F-1`'s rule, now stated as the relation it always was -- see
+        # `_worker_batch_count` above for why the constant `1` could not
+        # survive bounded concurrency and what replaced it.
+        batch_count=_worker_batch_count(settings),
         max_deliveries=settings.events.max_retries_before_dlq,
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "knowledge"),
         # `F-4` -- the number stays configuration, not a constant buried in
@@ -1514,6 +1579,9 @@ async def build_knowledge_worker_from_env() -> tuple[
         # mid-build. `knowledge_stale_idle_ms` above says why it is derived.
         stale_idle_ms=knowledge_stale_idle_ms(settings),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.1 -- the only three sites that turn either on.
+        concurrency=settings.events.worker_concurrency,
+        drain_timeout_s=settings.events.worker_drain_timeout_s,
     )
 
     # `CompositionRoot.disposables()`'s own `_close_vault` precedent -- hvac
@@ -1597,6 +1665,8 @@ def build_media_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    concurrency: int = 1,
+    drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the media worker's single ``stream.media``/``cg.media``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -1631,6 +1701,14 @@ def build_media_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
+        # lane, cancel where it stands) so every direct caller of this builder
+        # -- the live integration tests included -- keeps the sequential
+        # consumer it was written against, and only the `_from_env` path below
+        # turns concurrency on. The `sweep_interval_s`/`ت-2` precedent, and the
+        # same reason: a test that opts into concurrency should say so.
+        concurrency=concurrency,
+        drain_timeout_s=drain_timeout_s,
     )
     return consumer, subscriptions
 
@@ -1675,7 +1753,7 @@ async def build_media_worker_from_env() -> tuple[
     configure_logging(settings.log_level)
     _logger.info("media_worker.bootstrap_initialized", extra={"app_env": settings.app_env})
 
-    engine = create_engine(_worker_db(settings.database))
+    engine = create_engine(_worker_db(settings))
     sessionmaker = create_sessionmaker(engine)
     tenant_session = TenantSessionFactory(sessionmaker)
     jobs = SqlMediaJobRepository(tenant_session)
@@ -1734,12 +1812,19 @@ async def build_media_worker_from_env() -> tuple[
         ledger=ledger,
         consumer_name=consumer_name,
         block_ms=settings.events.consumer_block_ms,
-        batch_count=settings.events.consumer_batch_count,
+        # 5.1: the worker rule, not `consumer_batch_count` -- see
+        # `_worker_batch_count`. `worker-media` in particular was reading 16
+        # entries per call and walking them one at a time behind a handler
+        # bounded by `media_timeout_s`.
+        batch_count=_worker_batch_count(settings),
         max_deliveries=settings.events.max_retries_before_dlq,
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "media"),
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.1 -- the only three sites that turn either on.
+        concurrency=settings.events.worker_concurrency,
+        drain_timeout_s=settings.events.worker_drain_timeout_s,
     )
 
     # The knowledge worker's `_close_vault` precedent -- hvac wraps a
@@ -1810,6 +1895,8 @@ def build_memory_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    concurrency: int = 1,
+    drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the memory worker's single ``stream.memory``/``cg.memory``
     subscription (04 §4). Every dependency here is a plain parameter -- this
@@ -1839,6 +1926,14 @@ def build_memory_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
+        # lane, cancel where it stands) so every direct caller of this builder
+        # -- the live integration tests included -- keeps the sequential
+        # consumer it was written against, and only the `_from_env` path below
+        # turns concurrency on. The `sweep_interval_s`/`ت-2` precedent, and the
+        # same reason: a test that opts into concurrency should say so.
+        concurrency=concurrency,
+        drain_timeout_s=drain_timeout_s,
     )
     return consumer, subscriptions
 
@@ -1865,7 +1960,7 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
     configure_logging(settings.log_level)
     _logger.info("memory_worker.bootstrap_initialized", extra={"app_env": settings.app_env})
 
-    engine = create_engine(_worker_db(settings.database))
+    engine = create_engine(_worker_db(settings))
     sessionmaker = create_sessionmaker(engine)
     tenant_session = TenantSessionFactory(sessionmaker)
     memory = SqlMemoryRepository(tenant_session)
@@ -1896,12 +1991,19 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
         api_key="",
         consumer_name=consumer_name,
         block_ms=settings.events.consumer_block_ms,
-        batch_count=settings.events.consumer_batch_count,
+        # 5.1: the worker rule, not `consumer_batch_count` -- see
+        # `_worker_batch_count`. `worker-media` in particular was reading 16
+        # entries per call and walking them one at a time behind a handler
+        # bounded by `media_timeout_s`.
+        batch_count=_worker_batch_count(settings),
         max_deliveries=settings.events.max_retries_before_dlq,
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "memory"),
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.1 -- the only three sites that turn either on.
+        concurrency=settings.events.worker_concurrency,
+        drain_timeout_s=settings.events.worker_drain_timeout_s,
     )
     disposables: list[Disposable] = [
         engine.dispose,

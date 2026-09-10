@@ -28,8 +28,10 @@ that genuinely perform I/O eagerly, are monkeypatched.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 
@@ -48,7 +50,7 @@ from app.framework.ports.event_outbox import OutboxRecord
 from app.framework.ports.vector_store import VectorHit, VectorPoint
 from app.framework.providers.resolver import SettingsProviderResolver
 from app.framework.settings import MinioSettings, Settings
-from app.framework.types import Json
+from app.framework.types import Json, Uuid
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import (
     EventHandler,
@@ -79,9 +81,10 @@ from app.workers import bootstrap
 from app.workers.bootstrap import (
     _FOREIGN_TO_KNOWLEDGE,
     _FOREIGN_TO_MEDIA,
-    _KNOWLEDGE_BATCH_COUNT,
     Disposable,
     _routing_for,
+    _worker_batch_count,
+    _worker_pool_size,
     build_knowledge_index_handler,
     build_knowledge_summary_delivery_handler,
     build_knowledge_summary_failure_handler,
@@ -94,6 +97,7 @@ from app.workers.bootstrap import (
     knowledge_stale_idle_ms,
 )
 from app.workers.media_generation import WorkerMediaGenerator
+from tests.unit.support_knowledge import resolved_corpus
 
 
 def _ctx(workspace_id: str = "ws-1") -> ExecutionContext:
@@ -245,11 +249,17 @@ class _FakeHybridVectors:
     def __init__(self) -> None:
         self.upserted: list[tuple[str, list[VectorPoint]]] = []
 
-    async def ensure_collection(self, name: str, dim: int, distance: str = "cosine") -> None: ...
+    async def ensure_collection(
+        self, name: str, dim: int, distance: str = "cosine", *, revision: str | None = None
+    ) -> str:
+        return resolved_corpus(name, revision)
 
     async def ensure_hybrid_collection(
-        self, name: str, dim: int, *, distance: str = "cosine"
-    ) -> None: ...
+        self, name: str, dim: int, *, distance: str = "cosine", revision: str | None = None
+    ) -> str:
+        return resolved_corpus(name, revision)
+
+    async def delete_everywhere(self, name: str, ids: Sequence[Uuid]) -> None: ...
 
     # The real adapter drives this from `ensure_hybrid_collection` itself
     # (spaces plan step 9), so no use-case ever calls it -- it is here for the
@@ -1647,40 +1657,90 @@ async def test_the_media_and_memory_workers_keep_the_shared_threshold(
     assert captured["knowledge"]["stale_idle_ms"] == knowledge_stale_idle_ms(settings)
 
 
-async def test_the_knowledge_worker_reads_one_message_at_a_time(
+async def test_no_worker_reserves_a_message_it_is_not_working_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`F-1`, the half of it this wave buys.
+    """`F-1`'s rule, as capacity 5.1 generalised it: ``COUNT == concurrency``,
+    for all three workers.
 
-    One ``XREADGROUP`` used to reserve sixteen messages in this consumer's
-    pending list, and the engine then walked them one at a time -- so a
-    half-hour summary build sat on fifteen others, most of them indexing
-    requests, which no sibling could take and which a crash would strand until
-    the ghost sweep.
+    Until 5.1 this was a constant `1` on the knowledge worker alone, because
+    one was all a sequential loop could work on. ``worker-media`` meanwhile
+    read SIXTEEN entries per call and walked them one at a time behind a
+    handler bounded by ``media_timeout_s`` -- the same defect `F-1` recorded
+    on `knowledge`, on a worker nobody had looked at.
 
-    ``1`` is asserted literally as well as through the constant: the constant
-    is the wiring, the literal is the decision. Renaming or reusing the
-    constant must not be able to quietly change what it holds.
-    """
-    captured = await _worker_wiring(monkeypatch)
-
-    assert _KNOWLEDGE_BATCH_COUNT == 1
-    assert captured["knowledge"]["batch_count"] == _KNOWLEDGE_BATCH_COUNT
-
-
-async def test_the_media_and_memory_workers_keep_the_configured_batch_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The containing guard for `F-1`'s half: the drop to one is this worker's
-    alone, and ``EventSettings.consumer_batch_count`` still means what it says
-    for the other two. Neither has a handler that runs for minutes, so a batch
-    of sixteen there is one round trip saved and nothing held hostage.
+    The relation is asserted, not a literal: the number moves with
+    ``WORKER_CONCURRENCY`` by design, and a test that pinned today's 4 would
+    fail on the deployment that tunes it rather than on the regression this
+    exists to catch.
     """
     captured = await _worker_wiring(monkeypatch)
     settings = load_settings()
 
-    assert captured["media"]["batch_count"] == settings.events.consumer_batch_count
-    assert captured["memory"]["batch_count"] == settings.events.consumer_batch_count
+    for worker in ("knowledge", "media", "memory"):
+        assert captured[worker]["batch_count"] == settings.events.worker_concurrency
+        assert captured[worker]["concurrency"] == settings.events.worker_concurrency
+
+
+async def test_the_notify_bridge_keeps_the_configured_batch_count() -> None:
+    """The containing guard for the rule above: ``CONSUMER_BATCH_COUNT`` still
+    means what it says, and still has a reader.
+
+    The API's notify bridge is the one ``StreamConsumer`` that legitimately
+    wants the opposite shape -- sixteen entries per read, one lane -- because
+    its handler is a queue ``put`` that cannot block on anything. If this
+    settings field ever stops being read, it is dead configuration and the
+    engine's two-parameter shape has lost the only reason it exists.
+
+    Read off the composition root's SOURCE and not off a built object:
+    building one needs a Redis client and a hub, which is a live-stack fixture
+    for a fact that is a single wiring line.
+    """
+    root = (
+        Path(inspect.getfile(bootstrap))
+        .parent.parent.joinpath("framework", "di", "composition_root.py")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "batch_count=settings.events.consumer_batch_count," in root
+    # And it stays a ONE-lane consumer: the bridge must never be handed the
+    # worker concurrency, or a fan-out whose whole contract is ordering per
+    # session would start interleaving.
+    assert "concurrency=" not in root
+
+
+async def test_every_worker_drains_before_it_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capacity 5.1 invariant 4, at the wiring level: all three workers are
+    built with the configured drain deadline, so a deploy finishes what it
+    started instead of truncating ``concurrency`` jobs at once. Every DIRECT
+    caller of the builders still gets ``0`` -- the pre-5.1 cancel-where-it-
+    stands -- which is what keeps the live integration harness unchanged.
+    """
+    captured = await _worker_wiring(monkeypatch)
+    settings = load_settings()
+
+    for worker in ("knowledge", "media", "memory"):
+        assert captured[worker]["drain_timeout_s"] == settings.events.worker_drain_timeout_s
+    assert settings.events.worker_drain_timeout_s > 0
+
+
+async def test_the_worker_database_pool_moves_with_the_concurrency() -> None:
+    """The pool is DERIVED, and the derivation is the point (capacity 5.1).
+
+    ``_WORKER_POOL_SIZE`` was the constant `2`, justified in its own comment by
+    "one worker process, one in-flight statement at a time" -- a sentence 5.1
+    makes false. Four concurrent handlers against a pool of two do not run
+    slower; two of them block for ``_BACKGROUND_POOL_TIMEOUT_S`` and then
+    raise, which the engine reads as a handler failure and answers with a
+    redelivery. A deployment that raised only the concurrency would have
+    bought DLQ traffic.
+    """
+    settings = load_settings()
+
+    assert _worker_pool_size(settings) > settings.events.worker_concurrency
+    assert _worker_batch_count(settings) == settings.events.worker_concurrency
 
 
 async def test_the_summarisation_pipeline_is_given_the_configured_call_timeout(

@@ -79,13 +79,25 @@ pytestmark = [pytest.mark.live_db]
 
 
 class _RecordingVectors:
-    """The one ``VectorStore`` method the cascade calls."""
+    """The one ``HybridVectorStore`` method the cascade calls.
+
+    ``delete_everywhere`` since capacity 4.5, and the change is the point: a
+    workspace can hold two corpora at once, and a deletion honouring only the
+    one each ``VectorRef`` records would leave a copy answering searches. The
+    empty-``ids`` early return mirrors the adapter's, so "another tenant's id
+    destroys nothing" stays assertable as no call at all.
+    """
 
     def __init__(self) -> None:
         self.deleted: list[tuple[str, list[str]]] = []
 
     async def delete(self, collection: str, ids: Sequence[str]) -> None:
         self.deleted.append((collection, list(ids)))
+
+    async def delete_everywhere(self, name: str, ids: Sequence[str]) -> None:
+        if not ids:
+            return
+        await self.delete(name, ids)
 
 
 def _ctx(workspace_id: str) -> ExecutionContext:

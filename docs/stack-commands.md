@@ -42,10 +42,10 @@
 | # | الأمر | الوظيفة |
 |---|---|---|
 | 14 | `docker compose up -d worker-memory worker-knowledge worker-media` | إقلاع العمّال الثلاثة صراحةً — وهم يقلعون أصلاً مع `docker compose up -d` كاملاً |
-| 15 | `docker compose exec redis redis-cli XINFO CONSUMERS stream.media cg.media` | **هل يستهلك فعلاً؟** `Up` تقول إنّ العمليّة حيّة فقط؛ هذا يقول إنّها مشترِكةٌ وتستقصي (`idle` بالثواني) |
+| 15 | `docker compose exec redis-stream redis-cli XINFO CONSUMERS stream.media cg.media` | **هل يستهلك فعلاً؟** `Up` تقول إنّ العمليّة حيّة فقط؛ هذا يقول إنّها مشترِكةٌ وتستقصي (`idle` بالثواني) |
 | 16 | `docker compose restart worker-knowledge` | إعادة تشغيل مستهلكٍ واحدٍ دون مسّ الآخرَين — ما كان مستحيلاً قبل التقسيم |
 | 17 | `docker compose up -d outbox-relay` | إقلاع مُرحّل Outbox: من جدول `platform.outbox` إلى مجاري Redis |
-| 18 | `docker compose exec redis redis-cli XLEN stream.<module>` | قياس طول المجرى — `XACK` لا يحذف، فالنموّ بلا حدٍّ سلوكٌ افتراضيّ |
+| 18 | `docker compose exec redis-stream redis-cli XLEN stream.<module>` | قياس طول المجرى — `XACK` لا يحذف، فالنموّ بلا حدٍّ سلوكٌ افتراضيّ |
 
 ### د) الأسرار — Vault وAppRole
 

@@ -1,0 +1,838 @@
+<title>لوحة خطّة السعة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Readex+Pro:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#F1F4F1;
+    --surface:#FFFFFF;
+    --surface-2:#E8EDE9;
+    --ink:#15211E;
+    --ink-2:#4E5D59;
+    --ink-3:#7C8B86;
+    --line:#D6DED8;
+    --accent:#0F6B62;
+    --done:#2F7A55;
+    --partial:#B7841C;
+    --blocked:#AF4A3C;
+    --pending:#8A9793;
+    --done-soft:#E2EFE7;
+    --partial-soft:#F6EDD6;
+    --blocked-soft:#F5E2DE;
+    --pending-soft:#E7EBE9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E1513;
+      --surface:#161E1B;
+      --surface-2:#1D2724;
+      --ink:#E6EDE9;
+      --ink-2:#A9B8B3;
+      --ink-3:#7E8D88;
+      --line:#293430;
+      --accent:#54B8AA;
+      --done:#5FB585;
+      --partial:#D6A945;
+      --blocked:#DC8073;
+      --pending:#8A9793;
+      --done-soft:#18291F;
+      --partial-soft:#2A2416;
+      --blocked-soft:#2C1D1A;
+      --pending-soft:#1E2523;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E1513;
+    --surface:#161E1B;
+    --surface-2:#1D2724;
+    --ink:#E6EDE9;
+    --ink-2:#A9B8B3;
+    --ink-3:#7E8D88;
+    --line:#293430;
+    --accent:#54B8AA;
+    --done:#5FB585;
+    --partial:#D6A945;
+    --blocked:#DC8073;
+    --pending:#8A9793;
+    --done-soft:#18291F;
+    --partial-soft:#2A2416;
+    --blocked-soft:#2C1D1A;
+    --pending-soft:#1E2523;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"IBM Plex Sans Arabic","Segoe UI",Tahoma,sans-serif;
+    font-size:16px;
+    line-height:1.75;
+    direction:rtl;
+    text-align:right;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:940px;margin:0 auto;padding:40px 24px 96px}
+  h1,h2,h3{font-family:"Readex Pro","IBM Plex Sans Arabic",sans-serif;text-wrap:balance;margin:0}
+
+  /* ---------- ترويسة ---------- */
+  .masthead{border-bottom:2px solid var(--ink);padding-bottom:28px;margin-bottom:36px}
+  .eyebrow{
+    font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin-bottom:14px;
+  }
+  h1{font-size:clamp(30px,5vw,44px);font-weight:600;line-height:1.25;letter-spacing:-.01em}
+  .standfirst{color:var(--ink-2);font-size:17px;max-width:62ch;margin-top:14px}
+  .meta{
+    display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:22px;
+    font-size:13px;color:var(--ink-3);font-variant-numeric:tabular-nums;
+  }
+  .meta b{color:var(--ink-2);font-weight:500}
+
+  /* ---------- شريط التقدّم ---------- */
+  .overview{margin-bottom:40px}
+  .bar{
+    display:flex;height:44px;border-radius:3px;overflow:hidden;
+    border:1px solid var(--line);background:var(--surface);
+  }
+  .bar span{
+    display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:600;color:#fff;
+    font-variant-numeric:tabular-nums;
+  }
+  .bar .s-done{background:var(--done)}
+  .bar .s-partial{background:var(--partial)}
+  .bar .s-blocked{background:var(--blocked)}
+  .bar .s-pending{background:var(--pending)}
+  .legend{
+    display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:16px;
+    font-size:13.5px;color:var(--ink-2);
+  }
+  .legend i{
+    width:11px;height:11px;border-radius:2px;display:inline-block;
+    margin-left:8px;vertical-align:-1px;
+  }
+  .k-done{background:var(--done)} .k-partial{background:var(--partial)}
+  .k-blocked{background:var(--blocked)} .k-pending{background:var(--pending)}
+
+  /* ---------- الخلاصة ---------- */
+  .verdict{
+    background:var(--surface);border:1px solid var(--line);
+    border-right:4px solid var(--accent);
+    padding:24px 26px;margin-bottom:44px;border-radius:2px;
+  }
+  .verdict h2{font-size:19px;font-weight:600;margin-bottom:10px}
+  .verdict p{margin:0 0 12px;color:var(--ink-2);max-width:66ch}
+  .verdict p:last-child{margin-bottom:0}
+  .verdict strong{color:var(--ink);font-weight:600}
+
+  /* ---------- الموجات ---------- */
+  .wave{margin-bottom:48px}
+  .wave-head{
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:4px;
+  }
+  .wave-num{
+    font-family:"Readex Pro",sans-serif;font-size:13px;font-weight:600;
+    color:var(--ink-3);letter-spacing:.06em;font-variant-numeric:tabular-nums;
+  }
+  .wave-head h2{font-size:23px;font-weight:600;flex:1;min-width:200px}
+  .wave-score{
+    font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .wave-note{font-size:14px;color:var(--ink-3);margin:10px 0 18px;max-width:70ch}
+
+  .steps{display:flex;flex-direction:column;gap:2px}
+  .step{
+    display:grid;grid-template-columns:auto 1fr;gap:0 18px;
+    background:var(--surface);border:1px solid var(--line);
+    border-right-width:4px;padding:18px 20px 18px 22px;
+  }
+  .step + .step{border-top:none}
+  .step.done{border-right-color:var(--done)}
+  .step.partial{border-right-color:var(--partial)}
+  .step.blocked{border-right-color:var(--blocked)}
+  .step.pending{border-right-color:var(--pending)}
+
+  .step-id{
+    font-family:"Readex Pro",sans-serif;font-size:14px;font-weight:600;
+    color:var(--ink-3);font-variant-numeric:tabular-nums;padding-top:1px;
+  }
+  .step-body{min-width:0}
+  .step-title{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;
+  }
+  .step-title h3{font-size:16.5px;font-weight:500;line-height:1.5}
+  .tag{
+    font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:2px;
+    letter-spacing:.02em;white-space:nowrap;
+  }
+  .tag.done{background:var(--done-soft);color:var(--done)}
+  .tag.partial{background:var(--partial-soft);color:var(--partial)}
+  .tag.blocked{background:var(--blocked-soft);color:var(--blocked)}
+  .tag.pending{background:var(--pending-soft);color:var(--ink-3)}
+
+  .line{display:flex;gap:10px;font-size:14.5px;line-height:1.7;margin-top:5px}
+  .line dt{
+    flex:0 0 52px;color:var(--ink-3);font-size:12.5px;font-weight:600;
+    padding-top:3px;letter-spacing:.02em;
+  }
+  .line dd{margin:0;color:var(--ink-2);max-width:68ch}
+  .line.rest dd{color:var(--ink-2)}
+  .line.rest dt{color:var(--partial)}
+  .line.done-l dt{color:var(--done)}
+  dl{margin:0}
+
+  /* ---------- الحواجز ---------- */
+  .blockers{margin-top:56px;padding-top:36px;border-top:2px solid var(--ink)}
+  .blockers h2{font-size:24px;font-weight:600;margin-bottom:8px}
+  .blockers > p{color:var(--ink-2);max-width:64ch;margin:0 0 24px}
+  .bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px}
+  .bcard{background:var(--surface);border:1px solid var(--line);padding:20px 22px}
+  .bcard h3{font-size:16px;font-weight:600;margin-bottom:6px}
+  .bcard .who{
+    font-size:11.5px;font-weight:600;letter-spacing:.06em;
+    color:var(--blocked);margin-bottom:10px;
+  }
+  .bcard p{margin:0;font-size:14.5px;color:var(--ink-2);line-height:1.7}
+
+  .foot{
+    margin-top:48px;padding-top:20px;border-top:1px solid var(--line);
+    font-size:13px;color:var(--ink-3);
+  }
+  .foot code{
+    font-family:"IBM Plex Sans Arabic",monospace;background:var(--surface-2);
+    padding:1px 6px;border-radius:2px;color:var(--ink-2);direction:ltr;display:inline-block;
+  }
+
+  @media (max-width:620px){
+    .step{grid-template-columns:1fr;gap:6px}
+    .step-id{padding-top:0}
+    .line{flex-direction:column;gap:0}
+    .line dt{flex:none}
+    .bar span{font-size:11px}
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">تقرير حالة · فرع capacity</div>
+    <h1>أين وصلت خطّة السعة</h1>
+    <p class="standfirst">
+      الخطّة تنقل المنصّة من «تعمل» إلى «تخدم ٥٠٠ مستخدم في وقتٍ واحد». هذا ملخّصٌ لكلّ خطوة: ما أُنجز منها فعلاً، وما بقي.
+    </p>
+    <div class="meta">
+      <span><b>٥٢</b> خطوة في <b>٩</b> مراحل</span>
+      <span>آخر عمل: <b>٩ سبتمبر ٢٠٢٦</b></span>
+      <span>المصدر: <b>docs/capacity-plan.md</b></span>
+    </div>
+  </header>
+
+  <section class="overview">
+    <div class="bar" role="img" aria-label="أربع وعشرون خطوة مكتملة، خمس مبنية بانتظار قياس، واحدة متوقفة، اثنتان وعشرون لم تبدأ">
+      <span class="s-done" style="flex:24">٢٤ مكتملة</span>
+      <span class="s-partial" style="flex:5">٥</span>
+      <span class="s-blocked" style="flex:1"></span>
+      <span class="s-pending" style="flex:22">٢٢ لم تبدأ</span>
+    </div>
+    <div class="legend">
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٢٤</span>
+      <span><i class="k-partial"></i>مبنيّة، وتنتظر قياساً — ٥</span>
+      <span><i class="k-blocked"></i>متوقّفة بسبب حاجز — ١</span>
+      <span><i class="k-pending"></i>لم تبدأ — ٢٢</span>
+    </div>
+  </section>
+
+  <div class="verdict">
+    <h2>الخلاصة في ثلاث جمل</h2>
+    <p>
+      <strong>النصف الأوّل من الطريق مقطوع.</strong> كلّ ما يخصّ قاعدة البيانات، والواجهة التي تستقبل الزوّار، وخدمة البحث الذكيّ — أُنجز وقيس فعليّاً، لا على الورق: ثلاث نسخ من التطبيق تعمل معاً، وسقوف موارد لكلّ خدمة، ونسخٌ احتياطيّ جُرِّب استرجاعه، وتحديثاتٌ تُنشر بلا انقطاع.
+    </p>
+    <p>
+      <strong>وما يوقف التقدّم الآن شيئان، وكلاهما ليس شغلَ مبرمج.</strong> الأوّل: لا توجد حسابات دخول تجريبيّة حقيقيّة، فلا يمكن تشغيل اختبار الحمل الكامل ولا تثبيت «خطّ الأساس» الذي تُقاس عليه كلّ خطوة. والثاني: لم يُختَر بعد مزوّد النموذج اللغويّ، وهو ما يعطّل مرحلةً كاملة.
+    </p>
+    <p>
+      <strong>والمتبقّي معروفٌ ومكتوب:</strong> ثلاث مراحل لم تبدأ — العمّال والطوابير، ومزوّدو النماذج، وحاجز الأمان قبل الإنتاج — إضافةً إلى أربع خطواتٍ من مرحلة المتانة التشغيليّة.
+    </p>
+  </div>
+
+  <!-- ======== الموجة 0 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٠</span>
+      <h2>القياس أوّلاً</h2>
+      <span class="wave-score">٣ من ٦ مكتملة</span>
+    </div>
+    <p class="wave-note">قبل تحسين أيّ شيء، لا بدّ من أدواتٍ تقيس. هذه المرحلة كلّها مبنيّة، ويتبقّى تشغيلها بحسابات حقيقيّة.</p>
+    <div class="steps">
+
+      <article class="step partial">
+        <div class="step-id">٠٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>منصّة اختبار الحمل</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>أداةٌ تصنع ضغطاً شبيهاً بالواقع (٣٠٠ طلب/ثانية و١٥٠٠ اتصال مفتوح)، وبياناتٌ تجريبيّة بحجمٍ حقيقيّ: مليون رسالة و١٠٠ ألف ملفّ على ٢٠٠ مساحة عمل. أوّل تشغيلٍ لها كشف ثلاثة أعطالٍ حقيقيّة كانت مختبئة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>تشغيلها بحسابات دخولٍ حقيقيّة. التشغيل بحسابٍ وهميّ يعطي رقماً بلا معنى.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٠٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>قياس كلّ طلب</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كلّ طلبٍ يدخل المنصّة صار يُسجَّل: كم استغرق، وهل نجح، ومن أيّ مسار. ومعها مؤشّراتٌ تكشف <em>سبب</em> البطء لا وقوعه فقط.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء. (ثلاثة مؤشّراتٍ ثانويّة أُجِّلت بسببٍ موثَّق.)</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٠٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>لوحات المراقبة والتنبيهات</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>لوحةُ مراقبةٍ حيّة داخل المنصّة، والتنبيهات صارت تُقيَّم فعلاً: إسقاط أيّ مكوّنٍ يُشعل تنبيهاً خلال دقيقة. وأوّل تشغيلٍ لها كشف ٣٠ رسالةً عالقة كانت قائمةً بصمت.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>التنبيهات تشتعل ولا تصل أحداً بعد — تحتاج وجهةَ إرسال (بريد أو محادثة)، وهي قرارُ مالك.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step partial">
+        <div class="step-id">٠٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>رصد الاستعلامات البطيئة</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>التفعيل داخل قاعدة البيانات، وأداةٌ تُخرج أبطأ عشرين استعلاماً مرتّبةً بالكلفة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>القائمة لا تعني شيئاً قبل أن يجري حملٌ حقيقيّ عليها — اليوم تتصدّرها اختباراتُ المطوّرين.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step blocked">
+        <div class="step-id">٠٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>خطّ الأساس الموثَّق</h3><span class="tag blocked">متوقّفة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>لا شيء بعد.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>تشغيلٌ كاملٌ للمنصّة كما هي، قبل أيّ تحسين، لتثبيت الإجابة: أين تنكسر اليوم بالضبط؟ هذا الرقم هو ما تُقاس عليه كلّ خطوةٍ لاحقة — ولا يمكن أخذه بلا حسابات حقيقيّة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٠٫٦</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سجلّاتٌ موحّدة ومجمَّعة</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كلّ خدمةٍ تكتب سجلّها بصيغةٍ واحدة، مع معرّفٍ يتتبّع الطلب عبر كلّ المكوّنات، وكلّها تُجمَع في مكانٍ واحدٍ قابلٍ للبحث بدل خمس عشرة حاويةً منفصلة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== الموجة 1 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ١</span>
+      <h2>تسجيل الدخول والحدود</h2>
+      <span class="wave-score">١ من ٣ مكتملة</span>
+    </div>
+    <p class="wave-note">أكبر مكسبٍ منفرد: كان كلّ طلبٍ يستشير قاعدة البيانات مرّتين قبل أن يبدأ العمل أصلاً.</p>
+    <div class="steps">
+
+      <article class="step partial">
+        <div class="step-id">١٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>حفظ هويّة المستخدم مؤقّتاً</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>بدل سؤال قاعدة البيانات عن هويّة المستخدم وصلاحيّاته في كلّ طلب، تُحفظ النتيجة لدقيقة. والجانب الأمنيّ مقيسٌ ومثبت: سحبُ الصلاحيّة يسري فوراً ولا ينتظر انتهاء المدّة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>قياس حجم المكسب تحت حملٍ حقيقيّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step partial">
+        <div class="step-id">١٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سقف طلباتٍ لكلّ مستخدم</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كان في الإعدادات رقمٌ مكتوب لا يقرؤه أحد. صار سقفاً حقيقيّاً بسقفين: واحدٌ للمستخدم وآخرُ لمساحة العمل كلّها — فمستأجرٌ بخمسين مستخدماً لم يعد يبتلع طاقة الجميع.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>التحقّق منه تحت حملٍ حقيقيّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">١٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سقف المهامّ الثقيلة</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>المسارات الأربعة الثقيلة — رفعُ ملفّ، فهرسة، إعادة فهرسة، تلخيص — صار لكلّ مستخدمٍ فيها سقفٌ مستقلّ، فلا يُغرق شخصٌ واحدٌ طابور المعالجة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== الموجة 2 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٢</span>
+      <h2>قاعدة البيانات</h2>
+      <span class="wave-score">٩ من ٩ مكتملة</span>
+    </div>
+    <p class="wave-note">المرحلة كاملةً منجَزة ومقيسة. كانت قاعدة البيانات تعمل بإعداداتها الافتراضيّة الخارجة من الصندوق.</p>
+    <div class="steps">
+
+      <article class="step done">
+        <div class="step-id">٢٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ضبط قاعدة البيانات للإنتاج</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>ثمانية إعداداتٍ معايَرة على حجم الخادم بدل الافتراضيّ (الذاكرة، عدد الاتصالات، حجم السجلّ…)، ومعها مفتاحٌ يُعيد كلّ شيءٍ إلى الافتراضيّ في ثانية — حتّى يمكن دائماً الإجابة عن «هل نفع الضبط فعلاً؟».</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>مقارنةُ الرقم قبلَ وبعد — تنتظر خطّ الأساس (٠٫٥).</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>توسيع مجمّع الاتصالات</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>من ٢٥ عمليّةً متزامنة إلى ١٠٠، ومن ٥٠٠ عميلٍ إلى ٢٠٠٠، مع رفضٍ صريحٍ وسريع عند الامتلاء بدل انتظارٍ لا ينتهي.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء يحجب. (سقفٌ داخليٌّ واحدٌ يحتاج انتباهاً لو تعدّدت قواعد البيانات مستقبلاً — مسجَّل.)</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>دفتر حسابٍ للاتّصالات</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>عدد الاتصالات التي تفتحها المنصّة كان محسوباً في رأس أحدهم فقط. صار مكتوباً في دليل التشغيل ومحروساً باختبارٍ يمنع أيّ تعديلٍ يكسر الحساب بصمت.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>مراجعة الفهارس</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>أغلى الاستعلامات فُحصت واحداً واحداً مع سياق العزل بين المستأجرين مضبوطاً — وهو فخٌّ يُغيّر النتيجة تماماً لو أُهمل.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>جدولان في البيانات التجريبيّة ما زالا فارغَين، فبعض المسارات لم تُقَس بعد.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>نسخٌ احتياطيّ واسترجاعٌ مُجرَّب</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>لم يكن هناك نسخٌ احتياطيّ إطلاقاً. صار: نسخٌ يوميّ ومستمرّ، ولقطاتٌ لمخزن البحث، <em>وتمرينُ استرجاعٍ فعليّ</em> إلى بيئةٍ نظيفة — لأنّ النسخة التي لم تُسترجَع ليست نسخة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>استرجاع مخزن البحث نفسه لم يُجرَّب بعد؛ التمرين أثبت قاعدة البيانات وحدها.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٦</div>
+        <div class="step-body">
+          <div class="step-title"><h3>مهلاتٌ في كلّ طبقة</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كان الاستعلام العالق يبقى عالقاً بلا نهاية ويحتجز مورداً نادراً حتّى يتوقّف كلّ شيء. صار لكلّ طبقةٍ مهلةٌ صريحة، مختلفةٌ بحسب نوع المسار.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٧</div>
+        <div class="step-body">
+          <div class="step-title"><h3>إغلاق ثغرة تجاوز الحصص</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كان قياساً حقيقيّاً قبل الإصلاح: مساحةُ عملٍ يتبقّى لها <b>رمزٌ واحد</b> قبلت ٤٦ طلباً من مئةٍ متزامنة وتجاوزت حصّتها خمسة أضعاف — بصمت. صار الحساب محميّاً من التسابق.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>سقفان ثانويّان (عدد التكاملات) ما زالا بلا هذه الحماية — مسجَّلان بسببٍ بنيويّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٨</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ضبط نموّ الجداول</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>ثلاثة جداولَ تكتب باستمرار كانت ستتضخّم بملايين الصفوف شهريّاً وتُبطئ كلّ شيءٍ تدريجيّاً بلا إنذار. صار لها تنظيفٌ خاصّ، ومقياسٌ للحجم عند عددِ صفوفٍ ثابت.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا مؤشّر في لوحة المراقبة لتأخّر التنظيف — يُقرأ بالأداة يدويّاً.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٢٫٩</div>
+        <div class="step-body">
+          <div class="step-title"><h3>تحديث بنية البيانات بلا انقطاع</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>القياس كشف عطباً أوسع ممّا كان مكتوباً: <b>نسخةٌ من كلّ ثلاث</b> كانت تفشل عند الإقلاع حتّى حين لا يوجد تحديثٌ أصلاً. صار هناك قفلٌ ينظّم الترتيب، ومهلةٌ تمنع تجميد القرّاء الأبرياء — وصفر خطأ بعدها.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== الموجة 3 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٣</span>
+      <h2>الواجهة الخارجيّة والتطبيق</h2>
+      <span class="wave-score">٦ من ٦ مكتملة</span>
+    </div>
+    <p class="wave-note">كانت المنصّة نسخةً واحدة بلا حدود موارد، وواجهةً معايَرةً لجهاز مطوّر. صارت ثلاث نسخٍ و٢٩ خدمةً لكلٍّ سقفها.</p>
+    <div class="steps">
+
+      <article class="step done">
+        <div class="step-id">٣٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ضبط بوّابة الدخول</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>سعة الاتصالات المتزامنة من ١٬٠٢٤ إلى ١٦٬٣٨٤. والحدّ الذي كان يخنق كلّ موظّفي مكتبٍ واحدٍ خلف شبكةٍ مشتركة رُفع إلى دوره الصحيح: درعٌ ضدّ الهجمات، لا محاسبةٌ للمستخدم.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>بقيّة الخدمات ما زالت عند الحدّ القديم — ليس حاجزاً، ومسجَّل.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٣٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>إبقاء الاتصالات مفتوحة نحو الداخل</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>الثمن قيس بدقّة: مصافحةٌ جديدة لكلّ طلب تكلّف ٠٫٩٧ جزءاً من الألف من الثانية و~١٨٬٧٠٠ منفذاً عند الهدف. القرار مكتوبٌ بعينين مفتوحتَين: يُدفَع الآن، ويُحلّ يوم الخروج من هذه البيئة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>الحلّ الكامل مؤجَّلٌ عمداً — يحتاج تغيير طوبولوجيا النشر.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٣٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ضبط خادم التطبيق</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>مهلاتٌ وإغلاقٌ لطيف صريحة. والقياس: بثٌّ مستمرّ لمدّة <b>٣٠٠ ثانية</b> بلا انقطاعةٍ واحدة، وإيقافُ الخدمة يُنهي العمل بلطفٍ بلا قطع اتصالٍ مفتوح.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء. (إعادةُ تدوير العمّال رُفضت بقرارٍ محسوبٍ لا سهو.)</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٣٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ثلاث نسخٍ وسقوف موارد</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>ثلاث نسخٍ من التطبيق تعمل معاً (١٢ عمليّة)، و٢٩ خدمةً لكلٍّ سقفُ معالجةٍ وذاكرة. والعزل مقيسٌ لا مُدَّعى: جارٌ مزعجٌ خلف سقفٍ كلّف ٢٤٪ تباطؤاً فقط، وبلا سقفٍ كلّف ٨٦٪.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>الميزانيّة المطلوبة (٣٤ نواة و٥٦ جيجابايت) تتجاوز جهاز التطوير الحاليّ — قرار عتادٍ معلّق.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٣٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ضبط نظام التشغيل المضيف</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>سكربتٌ موثَّق يضبط ما يخصّ المضيف فعلاً، لا يُكرّر أثره، ويطبع ما غيّره — والقياس وجد أنّ أربعةً من خمسة مقابضَ لم تكن للمضيف أصلاً، وأنّ خامساً لم يُذكر كان يُحذّر عند كلّ إقلاع.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>السكربت لم يُطبَّق على الجهاز الحاليّ بعد.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٣٫٦</div>
+        <div class="step-body">
+          <div class="step-title"><h3>طابورٌ لكلّ جلسة إشعارات</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>القياس كشف أسوأ ممّا وُصف: جلسةٌ واحدة على شبكةٍ بطيئة كانت <b>توقف الإشعارات عن كلّ المستأجرين</b>، لا عن مساحتها فقط. صار لكلّ جلسةٍ طابورٌ محدود وإرسالٌ مستقلّ، والجلسة العالقة تُغلَق وحدها.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا مؤشّر في اللوحة لعدد الجلسات المطرودة — يُقرأ من السجلّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== الموجة 4 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٤</span>
+      <h2>البحث الذكيّ في المستندات</h2>
+      <span class="wave-score">٤ من ٥ مكتملة</span>
+    </div>
+    <p class="wave-note">هذا المسار يجري أمام المستخدم مباشرةً، فميزانيّته الزمنيّة الأضيق: ٤٠٠ جزءٍ من الألف من الثانية.</p>
+    <div class="steps">
+
+      <article class="step done">
+        <div class="step-id">٤٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>توسيع خدمة تحليل النصوص</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>كانت نسخةً واحدة تعالج طلباً واحداً في اللحظة، وتتجمّد كلّيّاً أثناءه حتّى عن الردّ على فحص الصحّة. صارت ثلاث نسخٍ بحصصٍ مضبوطةٍ لكلّ نسخة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>رقم استهلاك الذاكرة تحت تشغيلٍ طويل غير مأخوذ بعد.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٤٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>توزيع الحمل على النسخ الثلاث</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>بلا هذه الخطوة كانت النسختان الجديدتان ستبقيان خاملتَين تماماً — عطبٌ صامتٌ يبدو كأنّه فشلُ توسّع. صار أمامها موزّعُ حملٍ حقيقيّ.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step partial">
+        <div class="step-id">٤٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>تجميع الطلبات وحفظ نتائجها</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>الطلبات المتزامنة تُجمَّع في دفعةٍ واحدة، ونتائج الاستعلامات المتكرّرة تُحفظ. والفارق مقيس: استعلامٌ محفوظ يُجاب في <b>٠٫٠٩</b> جزءٍ من الألف من الثانية مقابل <b>٢٥</b> لو ذهب إلى الخدمة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>نسبة الاستفادة الفعليّة لا تُعرف إلّا بحملٍ حقيقيّ من مستخدمين.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٤٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>قياس مخزن البحث وحسم قرار العزل</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>بُنيت الطريقتان كلتاهما بمليون سجلٍّ حقيقيّ وقُورنتا. <b>القرار حُسم:</b> يبقى صندوقٌ مستقلّ لكلّ مساحة عمل — أسرع ٣٧٪، وحذفُ عميلٍ يتمّ في ٥ أجزاءٍ من الألف من الثانية بدل ٩١٠ مع بقايا. والثمن مكتوب: الإقلاع يستغرق دقيقة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>الخطوة كشفت جانباً <b>٢ جيجابايت مهدورةً بصمت</b> — تُعالَج ضمن أدوات التشغيل الدوريّة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="step-id">٤٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>تبديل نموذج التحليل بلا كارثة</h3><span class="tag done">مكتملة</span></div>
+          <dl>
+            <div class="line done-l"><dt>تمّ</dt><dd>تغيير النموذج كان يُبطل <em>كلّ</em> ما فُهرس سابقاً بصمت، والنتائج تبدو صحيحةً وهي عشوائيّة. صار مساراً منظّماً بإصدارٍ صريح، وجُرِّب على بروفةٍ حيّةٍ كاملة.</dd></div>
+            <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== الموجة 5 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٥</span>
+      <h2>معالجة المهامّ في الخلفيّة</h2>
+      <span class="wave-score">لم تبدأ · ٧ خطوات</span>
+    </div>
+    <p class="wave-note">العامل اليوم يعالج مستنداً واحداً في اللحظة. الهدف ١٠٠ مهمّة في الدقيقة — أي أنّنا بعيدون بمرتبةٍ كاملة.</p>
+    <div class="steps">
+      <article class="step pending"><div class="step-id">٥٫١</div><div class="step-body">
+        <div class="step-title"><h3>معالجة عدّة مهامّ معاً</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>محرّك المعالجة يأخذ الرسائل واحدةً واحدة. المطلوب معالجةُ أربعٍ معاً لكلّ عامل، مع الحفاظ على خمسة ضوابط لا يجوز كسرها (أهمّها ألّا يبدو العامل المنشغل ميّتاً).</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٢</div><div class="step-body">
+        <div class="step-title"><h3>فصل الذاكرة المؤقّتة عن طوابير الأحداث</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>كلّ شيءٍ اليوم في مخزنٍ واحد: تضخّمُ الذاكرة المؤقّتة يقتل طوابير الأحداث ويرفض اتصالات المستخدمين. المطلوب فصلهما بسياستَي ذاكرةٍ مختلفتَين.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٣</div><div class="step-body">
+        <div class="step-title"><h3>مضاعفة عمّال الفهرسة وإعلان الضغط</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>رفعُ العمّال من ٢ إلى ٤، وإعلانُ التأخّر للمستخدم بدل قبول عملٍ لن يُنجَز.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٤</div><div class="step-body">
+        <div class="step-title"><h3>منع تكرار تسليم الإشعارات</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>مع اثنتي عشرة عمليّةً صار كلّ حدثٍ يُسلَّم اثنتي عشرة مرّة. يحتاج تصميماً مختلفاً.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٥</div><div class="step-body">
+        <div class="step-title"><h3>تنظيفٌ آمن للطوابير</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>التنظيف الحاليّ يقصّ بالطول لا بموضع أبطأ قارئ — فقد بياناتٍ <b>صامت</b> عند أيّ تأخّرٍ عابر: لا خطأ ولا تنبيه ولا أثر.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٦</div><div class="step-body">
+        <div class="step-title"><h3>إعادة تشغيل الأحداث المفقودة</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>أداةٌ تُعيد نشر ما فُقد بين تسجيل الحدث ووصوله إلى معالجه.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٥٫٧</div><div class="step-body">
+        <div class="step-title"><h3>جدولة أدوات الصيانة</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>تسع أدواتِ صيانةٍ موجودة ولا يشغّلها شيء. المطلوب جدولتها تلقائيّاً (تنظيف، أرشفة، تدوير مفاتيح).</dd></div></dl>
+      </div></article>
+    </div>
+  </section>
+
+  <!-- ======== الموجة 6 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٦</span>
+      <h2>مزوّدو النماذج اللغويّة</h2>
+      <span class="wave-score">لم تبدأ · ٥ خطوات · محجوبة بقرار</span>
+    </div>
+    <p class="wave-note">هذه المرحلة كلّها متوقّفة على قرارٍ واحدٍ لم يُتَّخذ: أيّ مزوّدٍ نستخدم؟ وهو رأس الطريق الحرج.</p>
+    <div class="steps">
+      <article class="step pending"><div class="step-id">٦٫١</div><div class="step-body">
+        <div class="step-title"><h3>سقف تزامنٍ وقاطع دارة لكلّ مزوّد</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>حدٌّ للطلبات المتزامنة، وقاطعٌ يردّ خطأً فوريّاً عند تعطّل المزوّد بدل تكديس طلباتٍ لن تُجاب.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٦٫٢</div><div class="step-body">
+        <div class="step-title"><h3>تفعيل المزوّدين السحابيّين</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>الكود مكتوبٌ ومُختبَر. الحاجز مفاتيح الوصول والقرار — لا هندسة. والنموذج المحلّيّ الحاليّ يعالج ١–٤ محادثاتٍ فقط في اللحظة، والهدف ٥٠.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٦٫٣</div><div class="step-body">
+        <div class="step-title"><h3>إثبات أنّ البثّ لا يحتجز موارد</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>ثابتٌ بنيويّاً، ويبقى إثباته تحت حمل: ٥٠ محادثةً متزامنةً وقراءةُ المؤشّرات أثناءها.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٦٫٤</div><div class="step-body">
+        <div class="step-title"><h3>ماذا يحدث عند فشل مزوّد</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا تحويل تلقائيّ في التصميم اليوم. السؤال واجبُ الجواب: نحوّل إلى بديلٍ أم نرفض صراحةً؟</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٦٫٥</div><div class="step-body">
+        <div class="step-title"><h3>ميزانيّة كلفةٍ لكلّ مساحة عمل</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>المزوّد السحابيّ لا ينهار تحت الحمل — يُرسل فاتورة. الكلفة بُعدُ سعةٍ كامل يحتاج سقفاً وإنذاراً.</dd></div></dl>
+      </div></article>
+    </div>
+  </section>
+
+  <!-- ======== الموجة 7 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٧</span>
+      <h2>المتانة التشغيليّة</h2>
+      <span class="wave-score">١ من ٥ مكتملة</span>
+    </div>
+    <div class="steps">
+      <article class="step pending"><div class="step-id">٧٫١</div><div class="step-body">
+        <div class="step-title"><h3>خزنة الأسرار للإنتاج</h3><span class="tag pending">لم تبدأ · أخطر خطوة</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>مفتاح فتح الخزنة مكتوبٌ اليوم بنصٍّ صريح على القرص. وكلّ فكّ تشفيرٍ في المنصّة يمرّ بها، فترحيلٌ فاشل يعني <b>توقّفاً كاملاً لا تباطؤاً</b>. تحتاج نافذة صيانةٍ معلنة ومسارَ تراجعٍ مُجرَّبٍ قبل البدء.</dd></div></dl>
+      </div></article>
+
+      <article class="step done"><div class="step-id">٧٫٢</div><div class="step-body">
+        <div class="step-title"><h3>نشر التحديثات بلا انقطاع</h3><span class="tag done">مكتملة</span></div>
+        <dl>
+          <div class="line done-l"><dt>تمّ</dt><dd>القياس كشف أنّ النسخ الثلاث لم تكن تشتري إتاحةً أصلاً، وأنّ هناك مهلةً ثانيةً لم يكتبها أحد. صار النشر متتابعاً محكوماً بفحص جاهزيّة — والنتيجة مقيسةٌ مرّتين: <b>٧٬٥٠٠ من ٧٬٥٠٠ طلبٍ نجحت، صفرُ إخفاق</b> أثناء النشر.</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>نافذةٌ قصيرةٌ تدخل فيها النسخة الجديدة التوزيع قبل جاهزيّتها التامّة — مسجَّلة.</dd></div>
+        </dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٧٫٣</div><div class="step-body">
+        <div class="step-title"><h3>تنبيهاتٌ تعني شيئاً</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>مراجعة التنبيهات لتقيس <em>تجربة المستخدم</em> لا استهلاك العتاد: «المعالج فوق ٨٠٪» ينطلق على عاملٍ سليمٍ يؤدّي عمله.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٧٫٤</div><div class="step-body">
+        <div class="step-title"><h3>تمارين استرجاعٍ وأعطال</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>اعتماد أهدافٍ معلَنة أوّلاً (كم من الوقت للتعافي؟ كم من البيانات نقبل فقدَه؟) ثمّ التمرين عليها.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٧٫٥</div><div class="step-body">
+        <div class="step-title"><h3>مفاتيح إيقافٍ للميزات</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>عند الإشباع يجب أن يكون الخيار بين «كلّ شيءٍ بطيء» و«ميزةٌ واحدةٌ معطَّلة» <b>مفتاحاً</b>، لا إصداراً جديداً يُنشر تحت الضغط.</dd></div></dl>
+      </div></article>
+    </div>
+  </section>
+
+  <!-- ======== الموجة 8 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٨</span>
+      <h2>حاجز الأمان قبل الإنتاج</h2>
+      <span class="wave-score">لم تبدأ · ٦ خطوات</span>
+    </div>
+    <p class="wave-note">هذه المرحلة لا تخصّ السعة، لكنّها تمنع الإطلاق. ومعظمها أصغر ممّا يبدو: الآليّات موجودة وتنتظر التفعيل.</p>
+    <div class="steps">
+      <article class="step pending"><div class="step-id">٨٫١</div><div class="step-body">
+        <div class="step-title"><h3>الشهادة والنطاق العامّ</h3><span class="tag pending">لم تبدأ · صغيرة</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>التشفير يعمل فعلاً؛ الناقص شهادةٌ حقيقيّة بتجديدٍ تلقائيّ وتحويلٌ إجباريّ إلى المسار الآمن. أسطرٌ تُشغَّل يوم وجود اسم نطاقٍ حقيقيّ، لا عملٌ هندسيّ.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٨٫٢</div><div class="step-body">
+        <div class="step-title"><h3>تقسيم الشبكة</h3><span class="tag pending">لم تبدأ · الأهمّ في المرحلة</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>كلّ المكوّنات اليوم على شبكةٍ واحدة: ثغرةٌ في أيّ حاويةٍ تصل قاعدة البيانات مباشرةً. المطلوب ثلاث شبكاتٍ منفصلة.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٨٫٣</div><div class="step-body">
+        <div class="step-title"><h3>تصليب الحاويات والأسرار</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>تشغيلٌ بصلاحيّاتٍ دنيا، ونظامُ ملفّاتٍ للقراءة فقط، وتثبيتُ الصور ببصمةٍ لا باسم.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٨٫٤</div><div class="step-body">
+        <div class="step-title"><h3>مسار الملفّات من الرفع إلى التخزين</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>صلاحيّةٌ محدودة للتخزين بدل صلاحيّة الجذر، وفاحصُ برمجيّاتٍ خبيثة قبل قبول الملفّ.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٨٫٥</div><div class="step-body">
+        <div class="step-title"><h3>حماية من طلباتٍ خبيثة للخادم</h3><span class="tag pending">لم تبدأ</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>مساراتٌ تقبل رابطاً من المستخدم. المطلوب قائمةُ سماحٍ وتحقّقٌ من الوجهة قبل الطلب.</dd></div></dl>
+      </div></article>
+
+      <article class="step pending"><div class="step-id">٨٫٦</div><div class="step-body">
+        <div class="step-title"><h3>تتبّع ما يعمل على الخادم</h3><span class="tag pending">لم تبدأ · قابلة للتأجيل</span></div>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا سبيل اليوم للجزم بما يعمل على الخادم الآن، والتراجع يصير إعادة بناءٍ لا إعادة نشر. لا يمنع السعة، ويمنع تشغيلها بثقة.</dd></div></dl>
+      </div></article>
+    </div>
+  </section>
+
+  <!-- ======== الحواجز ======== -->
+  <section class="blockers">
+    <h2>ما يحجب التقدّم الآن</h2>
+    <p>حاجزان فقط، وكلاهما قرارٌ أو فعلُ مالك — لا يرفعه المنفّذ مهما كتب من شيفرة.</p>
+    <div class="bgrid">
+      <div class="bcard">
+        <div class="who">يحجب: ٤ خطوات + كلّ قياسٍ مقارن</div>
+        <h3>لا توجد حسابات دخول تجريبيّة حقيقيّة</h3>
+        <p>اختبار الحمل يحتاج مئات الحسابات الحقيقيّة ليمرّ بمسار تسجيل الدخول كاملاً. والاختبار بحسابٍ وهميّ يعيد إنتاج الرقم القديم بلا معنى — لأنّ مسار الدخول نفسه هو ثاني أكبر اختناقٍ في المنصّة. بلا هذا: لا خطّ أساس، ولا إجابة عن «هل نفعت التحسينات؟».</p>
+      </div>
+      <div class="bcard">
+        <div class="who">يحجب: المرحلة ٦ كاملة</div>
+        <h3>لم يُختَر مزوّد النموذج اللغويّ</h3>
+        <p>النموذج المحلّيّ الحاليّ يعالج من واحدةٍ إلى أربع محادثاتٍ في اللحظة، والهدف ٥٠. أيّ خطّةٍ للسعة تسقط إن بقي كما هو. القرار في جوهره قرارُ كلفة، لا قرارُ هندسة.</p>
+      </div>
+      <div class="bcard">
+        <div class="who">قرارات أخرى معلّقة: ٣</div>
+        <h3>ثلاثة قراراتٍ أصغر</h3>
+        <p>حجم الخادم النهائيّ · سياسة الاحتفاظ بالبيانات وأرشفتها · نسخُ قاعدة البيانات الاحتياطيّ الحيّ. وقرارٌ رابع <b>حُسم بالقياس</b> في الخطوة ٤٫٤ ولم يعد معلّقاً.</p>
+      </div>
+      <div class="bcard">
+        <div class="who">قرار عتاد</div>
+        <h3>جهاز التطوير أصغر من الميزانيّة</h3>
+        <p>المنصّة كما هي مشحونة تطلب ٣٤ نواةً و٥٦ جيجابايت، والجهاز الحاليّ ١٠ نوى و١٢٫٦ جيجابايت. لا يمنع العمل اليوم، ويمنع تشغيل كلّ شيءٍ معاً بالحجم المستهدف.</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot">
+    مبنيّ من <code>docs/capacity-plan.md</code> و<code>docs/capacity-status.md</code> · فرع <code>capacity</code> · آخر خطوةٍ منجَزة ٩ سبتمبر ٢٠٢٦ (٤٫٥).
+    الأرقام والتفاصيل الكاملة لكلّ خطوة في وثيقة الحالة.
+  </p>
+
+</div>

@@ -124,13 +124,23 @@ scrape_configs:
     static_configs:
       - targets: ["pgbouncer-exporter:9127"]
 
-  # `maxmemory` policy, eviction count and keyspace size. Redis is the store
-  # behind the rate limiter (wave 1), the WS registry and every Stream in
-  # §7's topology; an eviction there is silent data loss that shows up much
-  # later as an unexplained miss.
-  - job_name: redis
+  # TWO Redis jobs since capacity 5.2 (ح-10 · ق-4), and the split is what
+  # makes the alerts on them expressible at all. `redis-stream` holds the
+  # streams, the WS registry, the rate limiter's windows and the session
+  # denylist under `noeviction`: an eviction there is impossible by policy, so
+  # a non-zero counter means the policy was changed by hand, and filling it
+  # means WRITES ARE BEING REFUSED. `redis-cache` runs `allkeys-lru`, where
+  # eviction is the design working and both of those rules would be pure
+  # noise. One job carrying both instances could not tell the two apart
+  # without relabelling, and the alert expressions would have to encode the
+  # instance address instead of its role.
+  - job_name: redis-stream
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ["redis-stream-exporter:9121"]
+
+  - job_name: redis-cache
+    static_configs:
+      - targets: ["redis-cache-exporter:9121"]
 
   # ── The log pipeline (capacity 0.6) ──────────────────────────────────────
   # A collector that quietly stops shipping looks EXACTLY like a quiet

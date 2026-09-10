@@ -133,6 +133,13 @@ _PROBE_TIMEOUT_S = 1.5
 _HANDSHAKE_TIMEOUT_S = 5.0
 
 _REDIS_URL_DEFAULT = "redis://127.0.0.1:16379/0"
+# capacity 5.2 (ح-10 · ق-4) -- the SECOND Redis, `allkeys-lru`. A separate
+# default rather than a database index on the first: `maxmemory` and
+# `maxmemory-policy` are server-wide in Redis, so two eviction contracts
+# cannot be expressed as two DBs on one instance however carefully the keys
+# are namespaced. That is the whole reason 5.2 is a topology change and not a
+# key-prefix convention.
+_CACHE_REDIS_URL_DEFAULT = "redis://127.0.0.1:16380/0"
 
 # Dedicated bucket-scoped MinIO service account. NEVER the server's root keys:
 # this account can only see/read/write bucket `aizzak-test`.
@@ -713,6 +720,27 @@ def live_redis() -> str:
     url = os.environ.get("TEST_REDIS_URL", _REDIS_URL_DEFAULT)
     _skip_unless_live(url, "Redis", partial(_redis_handshake, url))
     return url
+
+
+@pytest.fixture(scope="session")
+def live_redis_cache() -> str:
+    """The ``allkeys-lru`` instance (capacity 5.2), probed exactly like
+    ``live_redis`` above and skipping on its own so a stack that has not been
+    split yet says WHICH server is missing rather than failing obscurely."""
+    url = os.environ.get("TEST_CACHE_REDIS_URL", _CACHE_REDIS_URL_DEFAULT)
+    _skip_unless_live(url, "Redis (cache instance)", partial(_redis_handshake, url))
+    return url
+
+
+@pytest.fixture
+async def cache_redis_client(live_redis_cache: str) -> AsyncIterator[Redis]:
+    """One real async client per test against the cache instance -- the
+    ``redis_client`` fixture below, pointed at the other server."""
+    client = create_redis_client(RedisSettings(url=live_redis_cache))
+    try:
+        yield client
+    finally:
+        await client.aclose()
 
 
 @pytest.fixture

@@ -142,7 +142,7 @@ docker compose exec -e VAULT_SECRET_ID=<id> app python /app/deploy/smoke/approle
 docker compose up -d              # العمّال الثلاثة + outbox-relay مع الجميع
 
 # هل يستهلك فعلاً، أم أنّ الحاوية «Up» وحسب؟
-docker compose exec redis redis-cli XINFO CONSUMERS stream.media cg.media
+docker compose exec redis-stream redis-cli XINFO CONSUMERS stream.media cg.media
 ```
 
 > ⭐ **لا تُمرّر `WORKER` بعد الآن** ([§3.133](log/3.133.md)). كانت هنا خدمةٌ واحدة `worker` يختار عاملَها المتغيّر، فلا يعمل إلّا مستهلكٌ واحدٌ في المرّة (‏`up -d worker` بقيمةٍ ثانية = **نفس الحاوية يُعاد إنشاؤها**). صارت ثلاث خدماتٍ تحمل قيمها حرفيّاً، فالمتغيّر لا يُقرأ من Compose إطلاقاً — ومعه زال فخُّ «`.env` يغلب الملفّ بصمت» الذي لم يكن يُكشَف إلّا بـ`docker compose config`. يبقى `WORKER` ذا معنىً في مسار RunPod و`python -m` المجرّد.
