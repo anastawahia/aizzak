@@ -429,7 +429,7 @@ html{ scroll-behavior:smooth; }
       <span><b>1</b> open blocker <code style="direction:rtl">د‑9</code></span>
       <span><b>~90</b> min + seed</span>
       <span>branch <b>capacity</b></span>
-      <span>2026‑09‑10</span>
+      <span>2026‑09‑10 · حُدِّث 2026‑09‑16</span>
     </div>
 
     <div class="tape">
@@ -1126,6 +1126,30 @@ html{ scroll-behavior:smooth; }
         على مُجمِّعٍ سقفُه <span class="num">25</span>. ولهذا سُمّي مسارُ المصادقة أكبرَ مكسبٍ منفرد — <b>وهذا بالضبط ما لا يستطيع مُصادِقٌ وهميٌّ قياسَه.</b>
       </p>
     </div>
+
+    <div class="note ok">
+      <span class="lbl">the one-command path · added 2026‑09‑13</span>
+      <p>
+        <b>الخطوات 7 إلى 12 صارت أمراً واحداً.</b> ‏<code>python -m app.ops.mint_load_tokens</code> مبنيّةٌ في المستودع
+        (‏<code>src/app/ops/mint_load_tokens.py</code>، واختبارُها الوحدويّ على <code>httpx.MockTransport</code>)، وتفعل لكلّ حسابٍ
+        ما تفعله الخطواتُ 7–9 بالترتيب نفسِه — التسجيلُ ثمّ <code>/me/context</code> ثمّ <code>/spaces</code> — وتكتب
+        <code>tokens.json</code> بـ<code>"stub": false</code>، و<code>include-workspaces.txt</code> جاهزةً للخطوة 15،
+        و<code>accounts.json</code> برموز التجديد وكلمات المرور (ثلاثتُها خارج git).
+      </p>
+      <div class="term-block" style="margin-block:.6rem">
+        <div class="term-bar"><span class="dot"></span> bash — من جذر المستودع</div>
+        <pre><span class="p">$</span> FIREBASE_WEB_API_KEY='…' python -m app.ops.mint_load_tokens mint --count 500
+<span class="p">$</span> python -m app.ops.mint_load_tokens verify --duration-s 1800 --ws-vus 1500</pre>
+      </div>
+      <p>
+        <b>وما لا تُغنيك عنه:</b> الخطوة 6 كلُّها — المفتاحُ وتفعيلُ المزوّد <b>والحصّة</b> — تبقى في الكونسول بيدك؛ الأداةُ لا ترفع
+        <code>د‑9</code>، بل تجعل ما بعده أمراً واحداً. وتعرف الحصّةَ: التسجيلاتُ في مسارٍ واحد، والرفضُ يوقفه دقيقةً ويطبع مكانَ الرفع مرّةً،
+        وكلُّ حسابٍ اكتمل محفوظ — <b>فإعادةُ تشغيلها تُكمل ولا تُكرّر</b>. وبعد البذرة (الخطوة 15) الرموزُ قاربت نهايتَها:
+        <code>refresh</code> يبدّلها كلَّها في ثوانٍ <b>وينقل كلَّ مدخلةٍ إلى المساحة التي ملأتها البذرة</b> (الملاحظةُ في الخطوة 9 — أُضيفت 2026‑09‑16)،
+        و<code>verify</code> يفحصها بالمعايير الأربعة وبأنّ مساحاتِها تحمل محتوًى، قبل أن تُنفق ثلاثين دقيقة.
+        الخطواتُ 7–12 أدناه تبقى مكتوبةً لتعرف <b>ما</b> تفعله الأداة — لا لتنفّذها بيدك.
+      </p>
+    </div>
   </div>
 </section>
 
@@ -1139,7 +1163,7 @@ html{ scroll-behavior:smooth; }
         <div class="step-head">
           <h3>تهيئة مشروع Firebase</h3>
           <span class="chip chip-human">تنتظر إدخالك</span>
-          <span class="chip chip-plain">لا أمرَ لها — ثلاثةُ أفعالٍ في المتصفّح</span>
+          <span class="chip chip-plain">لا أمرَ لها — أربعةُ أفعالٍ في المتصفّح</span>
         </div>
 
         <div class="tablewrap">
@@ -1149,6 +1173,7 @@ html{ scroll-behavior:smooth; }
               <tr><td class="n">1</td><td>تأكّد أنّ معرّف المشروع في وحدة تحكّم Firebase <b>هو نفسُه</b> الموضوع في <code>FIREBASE_PROJECT_ID</code>.</td><td>اختلافُ حرفٍ واحد ⟵ <span class="num">401</span> على كلّ طلبٍ في التشغيل كلّه، ولا شيءَ في السجلّ يقول «المشروع خطأ».</td></tr>
               <tr><td class="n">2</td><td>فعّل مزوّد <b>Email/Password</b> في <code>Authentication → Sign-in method</code>.</td><td>أوّلُ نداءِ سكٍّ يفشل بـ<code>OPERATION_NOT_ALLOWED</code>.</td></tr>
               <tr><td class="n">3</td><td>انسخ <b>مفتاح الويب</b> من <code>Project settings → Web API key</code>.</td><td>لا سبيل إلى إنشاء حسابٍ برمجيّاً.</td></tr>
+              <tr><td class="n">4</td><td>جدوِل <b>زيادةً مؤقّتةً في حصّة التسجيل</b> من <code>Authentication → Settings → Sign-up quota</code>. Firebase يحدّ إنشاءَ الحسابات بـ<b><span class="num">100</span> حساب/ساعة لكلّ عنوان IP</b> (حدٌّ موثَّقٌ عندهم)، وأنت على وشك إنشاء خمسمئة من جهازٍ واحد.</td><td>حلقةُ الخطوة 10 — أو الأداةُ — تتوقّف عند الحساب <span class="num">101</span> بـ<code>TOO_MANY_ATTEMPTS_TRY_LATER</code>. الأداةُ تنتظر وتُستأنف؛ الحلقةُ اليدويّة تُخفق صامتةً على 400 سطر.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1319,8 +1344,24 @@ html{ scroll-behavior:smooth; }
         </div>
 
         <div class="note ok"><span class="lbl">كيف تعرف أنّها نجحت</span><p>
-          جوابٌ يحمل <code>id</code> بهيئة UUID. <b>هذا هو <code>space_id</code></b> الذي يدخل البِركة.
+          جوابٌ يحمل <code>id</code> بهيئة UUID. <b>هذا هو <code>space_id</code></b> الذي يدخل البِركة — <b>مؤقّتاً</b>؛ اقرأ الملاحظةَ التالية.
         </p></div>
+
+        <div class="note warn">
+          <span class="lbl">المساحةُ التي أنشأتها الآن لن يكتب فيها أحد — وُجد 2026‑09‑16</span>
+          <p>
+            البذرةُ (الخطوة 15) تكتب محتواها في <b>مساحتَين من عندها</b> لكلّ مساحةِ عمل — <code>seed-space-0</code> و<code>seed-space-1</code>
+            (‏<code>load_seed._seed_workspace_identity</code>)، حتّى للمستأجر المُضمَّن بـ<code>--include-workspace</code> — ولا تلمس مساحةَ
+            <code>load</code> هذه. وأربعةٌ من خمسة سيناريوهات مقيَّدةٌ بـ<code>space_id</code> المدخلة (‏<code>س‑32</code>). فبِركةٌ تبقى على
+            <code>load</code> ترسل كلَّ بحثٍ وكلَّ سردٍ إلى <b>مساحةٍ فارغة</b>: يُقاس المرشِّحُ لا المنصّة — عينُ ما يمنعه الشرطُ (٣).
+          </p>
+          <p>
+            <b>ما يجب أن يحدث بعد البذرة:</b> استبدالُ <code>space_id</code> في كلّ مدخلةٍ بمعرّف المساحة التي امتلأت —
+            <code>GET /api/v1/spaces</code> بالرمز نفسِه يعيد لكلّ مساحةٍ <code>file_count</code> و<code>conversation_count</code>، وتأخذ الأملأ.
+            في المسار اليدويّ هذه حلقةٌ خمسمئةُ نداءٍ أخرى؛ في الأداة هي ما يفعله <code>refresh</code> — الخطوةُ التي تجري بعد البذرة أصلاً —
+            ويطبع <code>N at an empty space</code> إن بقيت مدخلةٌ على مساحةٍ فارغة، و<code>verify</code> يرفض البِركةَ عندها (‏<code>space content</code>).
+          </p>
+        </div>
       </div>
     </article>
 
@@ -1387,11 +1428,26 @@ minimum pool = 1500 ÷ 3 = <span class="w">500 tokens</span></pre>
           <div><span class="a-k">&gt; pool.ndjson</span><span class="a-v">‏NDJSON — كائنُ JSON واحدٌ في كلّ سطر. شكلٌ مقاومٌ للانقطاع: حلقةٌ تتوقّف في المنتصف تترك ملفّاً صالحاً حتّى آخر سطرٍ كامل.</span></div>
         </div>
 
-        <div class="note human">
-          <span class="lbl">⏱ ابدأ العدّ من هنا</span>
+        <div class="note warn">
+          <span class="lbl">the sign-up quota — the stop this loop does not see coming</span>
           <p>
-            الرموزُ تعيش <b>ساعةً</b>. الحلقةُ نفسُها قد تأخذ دقائق، وما بعدها — البذرة — يأخذ <b>عشراتِ الدقائق</b>.
-            فرتّب البذرةَ <b>قبل</b> السكّ إن أمكن، أو جدّد الرموزَ بـ<code>refreshToken</code> قبل التشغيل مباشرة.
+            Firebase يحدّ إنشاءَ الحسابات بـ<b><span class="num">100</span> حساب في الساعة لكلّ عنوان IP</b>. هذه الحلقةُ تعمل من عنوانٍ واحد،
+            فعند الدورة <span class="num">101</span> يعود <code>signUp</code> بـ<code>400</code> ونصُّ الخطأ <code>TOO_MANY_ATTEMPTS_TRY_LATER</code> —
+            و<code>python3 -c … ["idToken"]</code> يرمي <code>KeyError</code>، فتمتلئ الأسطرُ الباقية من <code>pool.ndjson</code> بفراغ.
+          </p>
+          <p>
+            <b>العلاجُ في الخطوة 6 (الفعل 4)</b>: زيادةٌ مؤقّتةٌ مجدولةٌ في الكونسول <b>قبل</b> الحلقة. أو الأداةُ بدل الحلقة:
+            تكتشف الرفضَ، تنتظر دقيقةً، وتُستأنف من حيث توقّفت.
+          </p>
+        </div>
+
+        <div class="note human">
+          <span class="lbl">⏱ ابدأ العدّ من هنا — والترتيبُ ليس اختياراً</span>
+          <p>
+            الرموزُ تعيش <b>ساعةً</b>. الحلقةُ نفسُها دقائق، وما بعدها — البذرة — <b>عشراتُ الدقائق</b>. ولا يمكن تقديمُ البذرة على السكّ:
+            <code>load_seed.py</code> يضع مساحاتِ <code>--include-workspace</code> في <b>الرُّتَب الأولى</b> ويشتقّ سائرَ المعرّفات من الرتبة،
+            فالحساباتُ يجب أن توجد <b>قبل</b> أن تُكتب البذرة. الترتيبُ إذاً: <b>سكٌّ ← بذرة ← تجديد ← تشغيل</b> —
+            و<code>refreshToken</code> المحفوظ (أو <code>mint_load_tokens refresh</code>) هو ما يجعل الخطوةَ الثالثة ثوانيَ لا إعادةَ سكّ.
           </p>
         </div>
       </div>
@@ -1519,7 +1575,8 @@ print(f"ws per user     = {1500/len(t):.2f}")'</pre>
             ملفُّ النقع ثمانِ ساعات، والرمزُ يعيش ساعة. <b>ولا تنفع إعادةُ كتابة البِركة في منتصف التشغيل</b>:
             البِركةُ تُقرأ <b>مرّةً عند تهيئة كلّ VU</b>، فإعادةُ الكتابة لا تبلغ إلّا الـVUs التي تُهيَّأ بعدها.
           </p>
-          <p>الشكلُ الموثوق: <b>قطّع النقعَ إلى مقاطعَ بطول ساعة، وشغّل كلَّ مقطعٍ ببِركةٍ طازجة، ثمّ اجمع الأرشيفات.</b></p>
+          <p>الشكلُ الموثوق: <b>قطّع النقعَ إلى مقاطعَ بطول ساعة، وشغّل كلَّ مقطعٍ ببِركةٍ طازجة، ثمّ اجمع الأرشيفات.</b>
+          و«طازجة» هنا <code>python -m app.ops.mint_load_tokens refresh</code> بين المقطعَين — خمسمئةُ تبديلٍ عبر <code>securetoken</code> في ثوانٍ، وسقفُهم 18,000 في الدقيقة.</p>
         </div>
       </div>
     </article>
@@ -2015,7 +2072,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
         </tr>
         <tr>
           <td class="n"><a href="#s7">07–12</a></td>
-          <td><b>سكُّ 500 حسابٍ ورمزٍ ومساحة</b> — جوهرُ <code>د‑9</code></td>
+          <td><b>سكُّ 500 حسابٍ ورمزٍ ومساحة</b> — جوهرُ <code>د‑9</code>. أمرٌ واحدٌ منذ 2026‑09‑13: <code>mint_load_tokens mint</code> — وما يبقى بيدك منه هو الخطوة 6.</td>
           <td>البِركةُ الاصطناعيّة تُنتج <span class="num">401</span> على كلّ طلبٍ و<code>valid: false</code> أبداً. <b>هذا هو الحاجب.</b></td>
         </tr>
         <tr>
@@ -2090,21 +2147,21 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
   <div class="sec-head">
     <span class="kicker">two findings from reading the code</span>
     <h2>ملاحظتان وجدتُهما أثناء إعداد هذا الدليل</h2>
-    <p>كلتاهما تخصّ القارئ الذي يتبع الخطوات أعلاه، ولا واحدةٌ منهما مُصلَحةٌ في المستودع اليوم.</p>
+    <p>كلتاهما تخصّ القارئ الذي يتبع الخطوات أعلاه. الأولى أُصلحت في 2026‑09‑13 مع بناء الأداة؛ الثانية قرارٌ لا إصلاح.</p>
   </div>
 
   <div class="tri">
     <article style="grid-column: span 1">
-      <span class="cnum">finding 1 · documentation</span>
-      <h3>«وصفة السكّ» المُحال إليها غير موجودة</h3>
+      <span class="cnum">finding 1 · documentation · fixed 2026‑09‑13</span>
+      <h3>«وصفة السكّ» المُحال إليها لم تكن موجودة</h3>
       <p>
-        السطرُ 13 من <code>deploy/load/lib/auth.js</code> يقول حرفيّاً:
-        «<span dir="ltr">deploy/load/README.md §2 has the minting recipe</span>».
-        و§2 من ذلك الملفّ يحمل أمرَ <code>cp</code> وجملةَ «املأها برموزٍ حقيقيّة» — <b>لا وصفة</b>.
+        كان السطرُ 13 من <code>deploy/load/lib/auth.js</code> يقول:
+        «<span dir="ltr">deploy/load/README.md §2 has the minting recipe</span>» — و§2 كان يحمل أمرَ <code>cp</code>
+        وجملةَ «املأها برموزٍ حقيقيّة»، <b>لا وصفة</b>. وثلاثُ رسائلِ خطأٍ في الشيفرة كانت تحيل إلى المكان نفسِه.
       </p>
       <p>
-        وثلاثُ رسائلِ خطأٍ أخرى في الشيفرة تحيل إلى المكان نفسِه: مُحمِّلُ البِركة عند رمزٍ بلا <code>space_id</code>،
-        وحارسُ الانتهاء، وحارسُ حجم البِركة. <b>الخطوات 6–12 في هذا الدليل هي ما ينقص هناك.</b>
+        <b>الآن §2 يحمل الأداة</b>، و<code>auth.js</code> يحيل إليها — <b>وفرضيّتُه القديمة صُحّحت</b>: كان يقول إنّ السكّ «يحتاج حسابَ خدمة»،
+        وهو لا يحتاجه؛ التسجيلُ بالبريد عمليّةُ <b>عميل</b> بمفتاح الويب، وحسابُ الخدمة لا يسكّ إلّا رموزاً مخصّصةً يرفضها المُحقِّق أصلاً.
       </p>
     </article>
     <article>
@@ -2125,16 +2182,18 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
       </p>
     </article>
     <article style="background:var(--surface-2)">
-      <span class="cnum">what would remove both</span>
+      <span class="cnum">built · 2026‑09‑13</span>
       <h3>أداةُ سكٍّ داخل المستودع</h3>
       <p>
-        <code>python -m app.ops.mint_load_tokens</code>: تأخذ مفتاحَ الويب وعدداً، فتنفّذ الخطوات <b>7–12</b> كلَّها
-        بالتوازي، وتحفظ <code>refreshToken</code> لكلّ حساب لتجديدٍ لاحقٍ في ثوانٍ، وتُخرج <code>tokens.json</code>
-        وقائمةَ <code>--include-workspace</code> جاهزةً.
+        <code>python -m app.ops.mint_load_tokens</code> — أربعةُ أفعال: <code>mint</code> يأخذ المفتاحَ من البيئة وعدداً، فينفّذ الخطوات
+        <b>7–12</b> مُستأنَفةً وواعيةً بحصّة Firebase؛ <code>refresh</code> يبدّل الرموزَ كلَّها في ثوانٍ (ويعود إلى كلمة المرور لحسابٍ أُبطل
+        رمزُ تجديده) <b>وينقل كلَّ مدخلةٍ إلى المساحة التي ملأتها البذرة</b> (الخطوة 9، 2026‑09‑16)؛ <code>verify</code> يفحص المعاييرَ الأربعة
+        و<code>aud</code>/<code>iss</code> وامتلاءَ المساحات قبل التشغيل؛ <code>delete --yes</code> يحذف الحسابات.
       </p>
       <p class="small muted">
-        غيرُ مبنيّةٍ بعد. وهي ما يحوّل القسمَ «ج» من سبع خطواتٍ يدويّةٍ إلى أمرٍ واحد — <b>ولا ترفع الحاجب <code>د‑9</code> وحدها</b>،
-        لأنّ المفتاحَ يبقى بيد المالك.
+        تُخرج <code>tokens.json</code> و<code>include-workspaces.txt</code> و<code>accounts.json</code>، وثلاثتُها خارج git.
+        <b>ولا ترفع <code>د‑9</code> وحدها</b>: المفتاحُ وتفعيلُ المزوّد والحصّةُ ثلاثتُها في الكونسول بيد المالك. والقرارُ الثاني — 500 مستأجراً
+        أم أقلّ — تنفّذه ولا تتّخذه.
       </p>
     </article>
   </div>
@@ -2145,13 +2204,13 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
 <footer>
   <div class="wrap stack gap-m">
     <p style="max-width:68ch">
-      كلُّ رقمٍ ومسارٍ في هذه الصفحة مقروءٌ من المستودع على الفرع <code>capacity</code> بتاريخ 2026‑09‑10،
-      لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
+      كلُّ رقمٍ ومسارٍ في هذه الصفحة مقروءٌ من المستودع على الفرع <code>capacity</code> بتاريخ 2026‑09‑10
+      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
     </p>
     <p class="paths">
       docs/capacity-plan.md  ·  docs/capacity-status.md  ·  deploy/load/README.md<br>
       deploy/load/{run.sh, smoke.sh, entrypoint.sh, peak.js}  ·  deploy/load/lib/{config.js, auth.js, profile.js}<br>
-      src/app/ops/load_seed.py  ·  src/app/api/middleware/auth.py  ·  src/app/infrastructure/auth/firebase_auth.py
+      src/app/ops/load_seed.py  ·  src/app/ops/mint_load_tokens.py  ·  src/app/api/middleware/auth.py  ·  src/app/infrastructure/auth/firebase_auth.py
     </p>
   </div>
 </footer>

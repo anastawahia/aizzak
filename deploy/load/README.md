@@ -36,21 +36,93 @@ number and means nothing, because the auth path **is** bottleneck `ح‑2` (at
 least two database round trips per request, before any work).
 
 ```
-cp deploy/load/tokens.example.json deploy/load/tokens.json
+FIREBASE_WEB_API_KEY='<Project settings → Web API key>' \
+  python -m app.ops.mint_load_tokens mint --count 500
 ```
 
-Then fill `tokens[]` with real Firebase ID tokens and set `"stub": false`.
-Each entry needs a `space_id` as well as a token: `KnowledgeSearchIn`,
-`FileRegisterIn` and `ConversationCreateIn` all require one (س-32), so a pool
-without them can run one scenario out of five. `tokens.json` is gitignored —
-it holds credentials, not fixtures.
+That one command is the whole recipe. For each account it signs up an
+Email/Password user (`accounts:signUp`, the project's public Web API key —
+no service account is involved, see `lib/auth.js`), makes the first
+authenticated request so the platform's own JIT provisioning creates the
+tenant and returns its id (`GET /api/v1/me/context`), and creates the space
+every scenario but one needs (`POST /api/v1/spaces`, س-32). It writes three
+files, all gitignored:
+
+| File | Reader | Holds |
+|---|---|---|
+| `tokens.json` | k6 (`lib/auth.js`) | `tokens[]` of `workspace` / `space_id` / `id_token`, `"stub": false` — plus what each space holds, which `verify` reads and k6 ignores |
+| `accounts.json` | `mint_load_tokens` itself | the refresh token and password of every account — what `refresh` and `delete` need |
+| `include-workspaces.txt` | `app.ops.load_seed run` | one tenant id per line, for `--include-workspace` (§3) |
+
+**Three things stay with the owner, all in the Firebase console**, and the
+tool says so rather than working around them: the Web API key; the
+Email/Password provider (`Authentication → Sign-in method`, or every sign-up
+answers `OPERATION_NOT_ALLOWED`); and the **sign-up quota** — Firebase caps
+account creation at **100 accounts per hour per IP address**, so a 500-account
+run from one machine stalls at 100 with `TOO_MANY_ATTEMPTS_TRY_LATER` unless a
+temporary increase was scheduled first (`Authentication → Settings → Sign-up
+quota`). The tool does not fail on that: sign-ups go through one lane, a
+refusal pauses it for a minute and prints the fix once, every finished account
+is saved, and `mint` re-run continues from where it stopped (an account whose
+tenant was not provisioned is finished, not recreated). It gives up after
+`--max-quota-wait-s` (65 minutes) with the state intact.
 
 **Size the pool from the profile.** `peak` holds 1,500 sockets and §0 derives
 them as 500 users × 3 tabs against a `ws_connections_per_user` ceiling of 5.
 A 200-token pool would put 7.5 sockets on each user, the platform would
 correctly refuse a third of them, and the report would show a WebSocket
 failure rate that is the limiter working. `lib/profile.js` refuses to start
-above 3 sockets per user for exactly that reason.
+above 3 sockets per user for exactly that reason — and so does
+`mint_load_tokens verify`, a second earlier and before the seed:
+
+```
+python -m app.ops.mint_load_tokens verify --duration-s 1800 --ws-vus 1500
+```
+
+**500 accounts are 500 tenants.** `INV‑W1` gives each user one workspace and
+no membership route exists, so the pool's floor is also 500 Qdrant
+collections — above §0's own 200–400, which `4.4` measured (boot 58.4 s at
+202). `--count` does what it is told; whether to run above the target and
+record it in the baseline, or run fewer users and fewer sockets
+(`LOAD_WS_VUS`), is the operator's decision, not the tool's.
+
+**Tokens live one hour; the seed takes tens of minutes; the order is fixed.**
+`load_seed` places `--include-workspace` tenants first and derives every other
+id from the ordinal, so the accounts must exist before the seed is written —
+and by the time it is, the tokens are near their end. Hence `refresh`:
+
+```
+python -m app.ops.mint_load_tokens mint --count 500        # accounts + tenants
+python -m app.ops.load_seed run --seed-id <id> \
+  $(sed 's/^/--include-workspace /' deploy/load/include-workspaces.txt)
+python -m app.ops.mint_load_tokens refresh                 # new tokens, seconds -- and each
+                                                           # entry moved onto the seeded space
+python -m app.ops.mint_load_tokens verify                  # profile.js's guards, early
+deploy/load/run.sh peak
+```
+
+**`refresh` is also what points the pool at the seed.** The seed writes its
+content into two spaces of its own per workspace (`seed-space-0/1`,
+`load_seed._seed_workspace_identity`) — never into the `load` space `mint`
+created — and four of the five scenarios are scoped to the entry's
+`space_id` (س‑32). A pool left on `load` sends every search and listing into
+an **empty** space: the filter is measured, not the platform, which is the
+thing condition (3) forbids. So `refresh` lists each tenant's spaces
+(`GET /api/v1/spaces` reports `file_count` / `conversation_count`) and moves
+the entry onto the fullest; before the seed it reports `N at an empty space`,
+and `verify` refuses such a pool (`space content`). Run it after the seed,
+not only before the run.
+
+`refresh` exchanges every refresh token at `securetoken.googleapis.com`
+(18,000 exchanges a minute per project is the limit; 500 is nothing) and
+falls back to the password for an account whose refresh token was revoked, so
+one revoked account never costs the pool a re-mint — or the seed its ids. The
+30-minute `peak` profile fits inside one hour; the 8-hour `average` profile
+does not, and the harness refuses to start rather than let hour two report a
+100% error rate that is the harness. The pool is read once at init per VU,
+so a mid-run rewrite only reaches VUs initialised afterwards; the reliable
+form is to drive the soak as hour-long segments, `refresh` between them, and
+concatenate the archived results.
 
 **A pool you do not have to mint.** `deploy/load/smoke.sh` writes four
 synthetic tokens, runs twenty seconds of the full peak mix and deletes them
@@ -60,13 +132,9 @@ their stated rates, thresholds evaluate, the archive is written with
 `valid: false` in it. Run it after every edit to this directory; §5 lists the
 three bugs its first execution found.
 
-**Tokens live one hour.** The 30-minute `peak` profile fits inside one
-minting; the 8-hour `average` profile does not, and the harness refuses to
-start rather than let hour two report a 100% error rate that is the harness.
-For a soak, re-mint into the same path on a cron while the run is live — the
-pool is read once at init per VU, so a mid-run rewrite only reaches VUs
-initialised afterwards; the reliable form is to drive the soak as a sequence
-of hour-long segments and concatenate the archived results.
+**Cleaning up.** `python -m app.ops.mint_load_tokens delete --yes` deletes
+the Firebase accounts and the three files. The tenants they created stay in
+Postgres and Qdrant — `app.ops.purge` is the tool for those.
 
 ---
 
@@ -87,11 +155,16 @@ argued.
 export DATABASE_URL="postgresql+asyncpg://app_rw:$APP_RW_PASSWORD@127.0.0.1:${HOST_PORT_POSTGRES:-15432}/aizzak"
 export QDRANT_URL="http://127.0.0.1:${HOST_PORT_QDRANT:-16333}"
 
-python -m app.ops.load_seed plan --seed-id dev-2026-09-03    # see the skew first
-python -m app.ops.load_seed run  --seed-id dev-2026-09-03    # tens of minutes
+#    The real tenants (§2) go FIRST and take the largest shares -- a corpus
+#    whose bulk sits in workspaces no VU authenticates as is one the harness
+#    cannot see. So the pool is minted before the seed, and refreshed after.
+INCLUDE=$(sed 's/^/--include-workspace /' deploy/load/include-workspaces.txt)
+python -m app.ops.load_seed plan --seed-id dev-2026-09-03 $INCLUDE   # see the skew first
+python -m app.ops.load_seed run  --seed-id dev-2026-09-03 $INCLUDE   # tens of minutes
 
-# 2. Feed the archive what was actually written.
+# 2. Feed the archive what was actually written; renew the hour-old pool.
 eval "$(python -m app.ops.load_seed status --seed-id dev-2026-09-03 --export)"
+python -m app.ops.mint_load_tokens refresh
 deploy/load/run.sh peak
 ```
 

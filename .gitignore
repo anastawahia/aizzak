@@ -66,6 +66,11 @@ deploy/nginx/certs/
 # REAL Firebase ID tokens -- credentials, not fixtures -- and the results
 # directory is per-run output that belongs in an archive, not in history.
 deploy/load/tokens.json
+# `app.ops.mint_load_tokens` keeps the refresh token and password of every
+# load account here -- credentials to credentials -- and the tenant ids beside
+# them are one machine's fact, like the seed manifest below.
+deploy/load/accounts.json
+deploy/load/include-workspaces.txt
 deploy/load/results/
 # `app.ops.load_seed` writes one manifest per seed run: it describes the state
 # of ONE machine's database (which workspace ids exist, how many rows each

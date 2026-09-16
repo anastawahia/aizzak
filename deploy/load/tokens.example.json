@@ -1,9 +1,10 @@
 {
   "_comment": [
-    "Copy to deploy/load/tokens.json (gitignored) and fill with REAL Firebase ID",
-    "tokens. Condition (1) of docs/capacity-plan.md §0.1: a stub authenticator",
-    "reproduces 07-nfr-slo §2's existing number and measures nothing, because the",
-    "auth path IS bottleneck ح‑2.",
+    "The SHAPE of deploy/load/tokens.json (gitignored). Do not fill it by hand:",
+    "`python -m app.ops.mint_load_tokens mint --count 500` writes it with REAL",
+    "Firebase ID tokens (README §2). Condition (1) of docs/capacity-plan.md §0.1:",
+    "a stub authenticator reproduces 07-nfr-slo §2's existing number and measures",
+    "nothing, because the auth path IS bottleneck ح‑2.",
     "",
     "`stub` is a declaration, not a switch. Setting it true does not change what",
     "the harness sends; it marks the archived result invalid so a harness smoke",
@@ -11,7 +12,12 @@
     "",
     "Size the pool from the profile: peak holds 1,500 sockets and §0 derives them",
     "as 500 users x 3 tabs, so a peak run needs at least 500 distinct users.",
-    "`lib/profile.js`'s guard refuses a pool that would exceed 3 sockets per user."
+    "`lib/profile.js`'s guard refuses a pool that would exceed 3 sockets per user.",
+    "",
+    "`space_id` must be a space the SEED filled (seed-space-0/1), not an empty one:",
+    "four scenarios out of five are scoped to it. `space_name`/`space_files`/",
+    "`space_conversations` record what it held when `refresh` last looked; k6",
+    "ignores them, `verify` refuses a pool whose spaces hold nothing."
   ],
   "stub": true,
   "minted_at": "1970-01-01T00:00:00Z",
@@ -19,7 +25,10 @@
     {
       "workspace": "ws-0001",
       "space_id": "00000000-0000-0000-0000-000000000000",
-      "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.PLACEHOLDER.PLACEHOLDER"
+      "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.PLACEHOLDER.PLACEHOLDER",
+      "space_name": "seed-space-0",
+      "space_files": 0,
+      "space_conversations": 0
     }
   ]
 }

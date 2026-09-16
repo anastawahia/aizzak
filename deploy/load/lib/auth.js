@@ -7,10 +7,14 @@
 // hand every VU a real Firebase ID token belonging to a real workspace -- and
 // two refusals, because the two ways this silently degrades are both easy.
 //
-// Tokens are NOT minted here. Minting needs a Firebase service account, and
-// putting one inside the load harness would make every k6 run a credential
-// holder. `deploy/load/README.md` §2 has the minting recipe; the output is a
-// JSON file this reads and `.gitignore` refuses to commit.
+// Tokens are NOT minted here -- `python -m app.ops.mint_load_tokens` mints
+// them (README §2), and the output is a JSON file this reads and `.gitignore`
+// refuses to commit. An earlier version of this comment said minting "needs a
+// Firebase service account"; it does not. An Email/Password sign-up is a
+// client operation against the project's Web API key, and a service account
+// could only mint CUSTOM tokens, which `firebase_auth.py` refuses anyway
+// (`iss` must be securetoken.google.com). Keeping the key out of the harness
+// is still right: k6 has no reason to hold a credential that creates accounts.
 
 import { SharedArray } from 'k6/data';
 import encoding from 'k6/encoding';
@@ -96,7 +100,7 @@ export function assertTokensCoverRun(runSeconds) {
   if (remaining < runSeconds) {
     throw new Error(
       `The earliest token expires in ${remaining}s but the profile runs for ${runSeconds}s. ` +
-        'Re-mint the pool (README §2), or drive the run with a refresh loop -- ' +
+        'Run `python -m app.ops.mint_load_tokens refresh` (seconds; README §2) -- ' +
         'an expiring pool reports a 100% error rate that is the harness, not the platform.',
     );
   }
