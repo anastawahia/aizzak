@@ -35,6 +35,7 @@ from app.framework.di.composition_root import _CG_NOTIFY_PREFIX as _ROOT_PREFIX
 from app.framework.settings.settings import EventSettings
 from app.infrastructure.messaging.consumers import sweeper as module
 from app.infrastructure.messaging.consumers.sweeper import (
+    DEFAULT_STALE_IDLE_SECONDS,
     NotifyGroup,
     deregister_consumer,
     destroy_orphan_notify_groups,
@@ -43,7 +44,7 @@ from app.infrastructure.messaging.consumers.sweeper import (
     read_notify_groups,
     sweep_stale_consumers,
 )
-from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
+from app.infrastructure.messaging.redis_streams import ConsumerInfo, RedisStreamsConsumer
 
 _STREAM = "stream.knowledge"
 _GROUP = "cg.knowledge"
@@ -72,6 +73,8 @@ class _StubRedis:
         self.destroyed: list[tuple[str, str]] = []
         self.deleted: list[tuple[str, str, str]] = []
         self.claims: list[tuple[str, str, str, int]] = []
+        self.consumer_reads: list[tuple[str, str]] = []
+        self.consumers_appear_after: dict[tuple[str, str], int] = {}
         self.reads = 0
         # `False` models the one case the sweeper must refuse rather than
         # force: entries that survive the claim (another claimer won the race,
@@ -110,6 +113,13 @@ class _StubRedis:
         return 1
 
     async def xinfo_consumers(self, name: str, groupname: str) -> list[dict[str, Any]]:
+        self.consumer_reads.append((name, groupname))
+        if self.reads < self.consumers_appear_after.get((name, groupname), 0):
+            # Registration follows group creation by milliseconds, but it DOES
+            # follow it -- the one instant `find_orphan_notify_groups`' settle
+            # window exists for. Staged against the group-read counter so a
+            # test can put that instant between the two readings.
+            return []
         rows = [
             {"name": consumer.encode(), "pending": len(self.pending[key]), "idle": self.idle[key]}
             for key in sorted(self.idle)
@@ -159,8 +169,28 @@ def _consumer(client: _StubRedis) -> RedisStreamsConsumer:
     return RedisStreamsConsumer(cast(Redis, client))
 
 
-def _group(name: str, *, consumers: int = 0, pending: int = 0) -> NotifyGroup:
-    return NotifyGroup(stream=_STREAM, name=name, consumers=consumers, pending=pending)
+def _group(
+    name: str,
+    *,
+    consumers: int = 0,
+    pending: int = 0,
+    readers: tuple[ConsumerInfo, ...] = (),
+) -> NotifyGroup:
+    """``consumers`` defaults to ``len(readers)`` so a test never has to keep
+    the count and the rows in sync by hand -- the one disagreement between
+    them that matters (gate 3, "reports N but lists none") is written
+    explicitly by the test that wants it."""
+    return NotifyGroup(
+        stream=_STREAM,
+        name=name,
+        consumers=consumers or len(readers),
+        pending=pending,
+        readers=readers,
+    )
+
+
+def _reader(name: str, *, idle_ms: int, pending: int = 0) -> ConsumerInfo:
+    return ConsumerInfo(name=name, pending=pending, idle_ms=idle_ms)
 
 
 def _dead_host_group() -> str:
@@ -352,14 +382,94 @@ async def test_a_missing_stream_contributes_nothing_rather_than_raising() -> Non
     assert [g.name for g in found] == [_dead_host_group()]
 
 
-def test_a_group_with_a_registered_consumer_is_never_an_orphan() -> None:
-    """Gate 1. A consumer entry means a process is reading under this group --
-    or that a ghost consumer of a dead one is still registered inside a group
-    that is legitimately in use (docs/log/3.134.md). Both are refusals."""
-    orphan, reason = is_orphan(_group(_dead_host_group(), consumers=1))
+_STALE_MS = int(DEFAULT_STALE_IDLE_SECONDS * 1000)
+
+
+def test_a_group_whose_reader_spoke_recently_is_never_an_orphan() -> None:
+    """Gate 1. A live bridge blocked in `XREADGROUP` resets its idle clock
+    every `consumer_block_ms` (5 s), so anything under the 15-minute
+    threshold is a working process. The measured live values on the shipped
+    stack were 432 ms and 4,815 ms."""
+    group = _group(_dead_host_group(), readers=(_reader("notify.x.1", idle_ms=4_815),))
+
+    orphan, reason = is_orphan(group, min_idle_ms=_STALE_MS)
 
     assert orphan is False
-    assert "consumer" in reason
+    assert "4815 ms ago" in reason
+
+
+def test_a_group_whose_only_reader_died_hours_ago_is_an_orphan() -> None:
+    """⚠️ THE regression this whole change exists for (capacity 5.4).
+
+    Gate 1 used to read `if group.consumers > 0: return False` -- and Redis
+    never removes a consumer entry when its process dies, so an uncleanly
+    killed bridge's group reports `consumers: 1` forever and that gate could
+    never pass. Measured on the live stack seventeen minutes after a full
+    recreate: 25 notify groups on one stream from seven hostnames, four of
+    them dead for 6-11 hours, every one reported LIVE, and the timed sweep
+    collected exactly the one group that happened to hold no consumer row.
+
+    21,693,214 ms is the real `idle` of one of those four hosts' readers.
+    """
+    group = _group(_dead_host_group(), readers=(_reader("notify.dead.7", idle_ms=21_693_214),))
+
+    orphan, reason = is_orphan(group, min_idle_ms=_STALE_MS)
+
+    assert orphan is True
+    assert "21693214" in reason
+
+
+def test_a_dead_readers_unacked_entries_outrank_how_long_it_has_been_silent() -> None:
+    """Gate 2 is checked BEFORE gate 1's verdict can matter. A consumer that
+    owns pending entries owns messages no matter how long it has been dead;
+    destroying its group discards them where no `XAUTOCLAIM` can reach
+    them."""
+    group = _group(
+        _dead_host_group(), readers=(_reader("notify.dead.7", idle_ms=99_000_000, pending=2),)
+    )
+
+    orphan, reason = is_orphan(group, min_idle_ms=_STALE_MS)
+
+    assert orphan is False
+    assert "XAUTOCLAIM" in reason
+
+
+def test_one_live_reader_protects_a_group_full_of_corpses() -> None:
+    """The refusal is `any` live, not `all` dead -- a group with one working
+    reader beside three tombstones is in use."""
+    group = _group(
+        _dead_host_group(),
+        readers=(
+            _reader("notify.a.1", idle_ms=90_000_000),
+            _reader("notify.b.2", idle_ms=200),
+            _reader("notify.c.3", idle_ms=90_000_000),
+        ),
+    )
+
+    assert is_orphan(group, min_idle_ms=_STALE_MS)[0] is False
+
+
+def test_a_switched_off_threshold_restores_the_old_rule_rather_than_sweeping_everything() -> None:
+    """`CONSUMER_STALE_IDLE_S=0` means "the idle half is off" everywhere else
+    in this codebase. If it read as "every consumer counts as dead" here, the
+    knob that disables a sweep would become the knob that makes it maximally
+    destructive."""
+    group = _group(_dead_host_group(), readers=(_reader("notify.dead.7", idle_ms=99_000_000),))
+
+    orphan, reason = is_orphan(group, min_idle_ms=0)
+
+    assert orphan is False
+    assert "1 consumer(s) registered" in reason
+
+
+def test_a_count_with_no_rows_behind_it_is_undecidable_not_sweepable() -> None:
+    """Gate 3. `XINFO GROUPS` and `XINFO CONSUMERS` are two round trips, so
+    they can disagree. A group claiming a consumer it cannot list is a race,
+    and a race resolves to "leave it alone"."""
+    orphan, reason = is_orphan(_group(_dead_host_group(), consumers=1), min_idle_ms=_STALE_MS)
+
+    assert orphan is False
+    assert "undecidable" in reason
 
 
 def test_a_group_holding_pending_entries_is_never_an_orphan() -> None:
@@ -439,6 +549,11 @@ async def test_a_group_that_registers_between_the_two_readings_is_spared() -> No
         {_STREAM: [{"name": booting.encode(), "consumers": 0, "pending": 0}]},
         {_STREAM: [{"name": booting.encode(), "consumers": 1, "pending": 0}]},
     ]
+    # No consumer row at the first reading -- that IS the mid-boot instant.
+    # By the second its first `XREADGROUP` has landed, and the row's `idle` is
+    # milliseconds old, which is what gate 1 then sees.
+    client.seed_consumer(_STREAM, booting, "notify.otherhost0001.9", idle_ms=3)
+    client.consumers_appear_after[(_STREAM, booting)] = 2
 
     orphans = await find_orphan_notify_groups(_consumer(client), [_STREAM], settle_seconds=0.01)
 
@@ -461,26 +576,48 @@ async def test_a_group_unused_in_both_readings_survives_confirmation() -> None:
 
 @pytest.mark.asyncio
 async def test_destroy_removes_exactly_the_orphans_and_nothing_else() -> None:
-    """End to end over the stub: two orphans, one live group, one group with
-    pending entries, and the static topology's own group -- one survivor set,
-    asserted by name rather than by count."""
+    """End to end over the stub, through the REAL two-command census: a
+    tombstoned group (a registered consumer silent for eleven hours -- the
+    shape 5.4 found on the live stack), one with no consumer at all, one
+    being actively read, one holding pending entries, and the static
+    topology's own group. One survivor set, asserted by name."""
+    live = f"{module._CG_NOTIFY_PREFIX}.livehost0002.5"
+    tombstoned = f"{module._CG_NOTIFY_PREFIX}.deadhost0000.8"
     client = _StubRedis()
     client.seed_group(_STREAM, "cg.knowledge")
     client.seed_group(_STREAM, _dead_host_group())
-    client.seed_group(_STREAM, f"{module._CG_NOTIFY_PREFIX}.deadhost0000.8")
-    client.seed_group(_STREAM, f"{module._CG_NOTIFY_PREFIX}.livehost0002.5", consumers=1)
+    client.seed_group(_STREAM, tombstoned, consumers=1)
+    client.seed_consumer(_STREAM, tombstoned, "notify.deadhost0000.8", idle_ms=41_113_211)
+    client.seed_group(_STREAM, live, consumers=1)
+    client.seed_consumer(_STREAM, live, "notify.livehost0002.5", idle_ms=432)
     client.seed_group(_STREAM, f"{module._CG_NOTIFY_PREFIX}.deadhost0003.6", pending=2)
 
     orphans = await find_orphan_notify_groups(_consumer(client), [_STREAM], settle_seconds=0)
     destroyed = await destroy_orphan_notify_groups(_consumer(client), orphans)
 
     assert destroyed == 2
-    assert client.destroyed == [
-        (_STREAM, _dead_host_group()),
-        (_STREAM, f"{module._CG_NOTIFY_PREFIX}.deadhost0000.8"),
-    ]
+    assert client.destroyed == [(_STREAM, _dead_host_group()), (_STREAM, tombstoned)]
     assert {g["name"].decode() for g in client.groups[_STREAM]} == {
         "cg.knowledge",
-        f"{module._CG_NOTIFY_PREFIX}.livehost0002.5",
+        live,
         f"{module._CG_NOTIFY_PREFIX}.deadhost0003.6",
     }
+
+
+@pytest.mark.asyncio
+async def test_the_census_reads_consumers_only_for_notify_groups() -> None:
+    """The second round trip is what makes the rule answerable, and it is
+    bounded: one `XINFO CONSUMERS` per NOTIFY group, none for the static
+    topology's own groups (which the prefix filter drops before any consumer
+    read is issued). At the shipped fleet that is 24 extra calls per sweep,
+    once every `notify_group_sweep_interval_s`."""
+    client = _StubRedis()
+    client.seed_group(_STREAM, "cg.knowledge", consumers=2)
+    client.seed_group(_STREAM, _dead_host_group(), consumers=1)
+    client.seed_consumer(_STREAM, _dead_host_group(), "notify.deadhost0000.7", idle_ms=1_000_000)
+
+    found = await read_notify_groups(_consumer(client), [_STREAM])
+
+    assert [g.name for g in found] == [_dead_host_group()]
+    assert [r.idle_ms for r in found[0].readers] == [1_000_000]
+    assert client.consumer_reads == [(_STREAM, _dead_host_group())]

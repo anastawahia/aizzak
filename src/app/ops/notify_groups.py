@@ -20,7 +20,14 @@ all with ``pending 0``.
 ``infrastructure/messaging/consumers/sweeper.py``, and the API process runs
 them on a timer of its own (``CompositionRoot.sweep_orphan_notify_groups_
 forever``, wired from ``EventSettings.notify_group_sweep_interval_s``), so the
-leak is closed automatically rather than by remembering to run this. This
+leak is closed automatically rather than by remembering to run this. **⚠️ And
+that sentence was false for as long as it stood** (capacity 5.4): the timer
+ran, but the rule it ran could not fire on a group whose dead process had
+left its consumer entry behind -- which is every uncleanly-killed bridge, i.e.
+the entire leak described above. Re-measured 2026-09-10 with the timer in
+place: **25 groups on one stream from seven hostnames, four dead for 6-11
+hours, all reported LIVE**. ``sweeper.is_orphan`` now keys on ``idle`` rather
+than on a consumer entry's existence. This
 module stays because automation and inspection are different needs: an
 operator wants to SEE what the rule considers live before trusting it, wants
 to force a sweep immediately after recreating containers rather than waiting
@@ -58,6 +65,7 @@ from app.infrastructure.cache.redis_cache import create_redis_client
 from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.sweeper import (
     DEFAULT_SETTLE_SECONDS,
+    DEFAULT_STALE_IDLE_SECONDS,
     NotifyGroup,
     destroy_orphan_notify_groups,
     find_orphan_notify_groups,
@@ -75,12 +83,20 @@ def topology_streams() -> tuple[str, ...]:
     return tuple(dict.fromkeys(binding.stream for binding in STATIC_CONSUMER_TOPOLOGY))
 
 
-def _print_groups(groups: Sequence[NotifyGroup]) -> None:
+def _print_groups(groups: Sequence[NotifyGroup], *, min_idle_ms: int) -> None:
+    """One line per group, verdict first and the EVIDENCE for it last.
+
+    The reason string is the rule's own (``is_orphan`` returns it), never a
+    second phrasing of the rule here: an operator reading "LIVE" has to be
+    able to see WHY -- ``read 431 ms ago`` and ``every reader idle >=
+    21,693,214 ms`` are four orders of magnitude apart, and before 5.4 this
+    column said ``live: 1 consumer(s) registered`` for both.
+    """
     if not groups:
         print("no cg.notify groups found on the topology's streams")
         return
     for group in sorted(groups, key=lambda g: (g.stream, g.name)):
-        orphan, reason = is_orphan(group)
+        orphan, reason = is_orphan(group, min_idle_ms=min_idle_ms)
         print(f"{'ORPHAN' if orphan else 'LIVE  '}  {group.stream:<20} {group.name:<34} {reason}")
 
 
@@ -88,19 +104,23 @@ async def _run(args: argparse.Namespace) -> int:
     streams = topology_streams()
     client = create_redis_client(load_settings().redis)
     consumer = RedisStreamsConsumer(client)
+    min_idle_ms = int(args.min_idle_seconds * 1000)
     try:
         if args.action == "list":
-            _print_groups(await read_notify_groups(consumer, streams))
+            _print_groups(await read_notify_groups(consumer, streams), min_idle_ms=min_idle_ms)
             return 0
 
         # "sweep" -- `main` has already refused to reach here without --yes.
         orphans = await find_orphan_notify_groups(
-            consumer, streams, settle_seconds=args.settle_seconds
+            consumer,
+            streams,
+            settle_seconds=args.settle_seconds,
+            min_idle_ms=min_idle_ms,
         )
         if not orphans:
             print("nothing to sweep: no orphaned cg.notify groups")
             return 0
-        _print_groups(orphans)
+        _print_groups(orphans, min_idle_ms=min_idle_ms)
         destroyed = await destroy_orphan_notify_groups(consumer, orphans)
         print(f"destroyed {destroyed} orphaned cg.notify group(s)")
         return 0
@@ -115,7 +135,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="action", required=True)
 
-    sub.add_parser("list", help="print every cg.notify group, marking LIVE vs ORPHAN")
+    list_parser = sub.add_parser("list", help="print every cg.notify group, marking LIVE vs ORPHAN")
 
     sweep_parser = sub.add_parser("sweep", help="XGROUP DESTROY the orphaned notify groups")
     sweep_parser.add_argument(
@@ -132,6 +152,21 @@ def _build_parser() -> argparse.ArgumentParser:
             f"(default {DEFAULT_SETTLE_SECONDS}; 0 skips the second reading)"
         ),
     )
+    # On BOTH verbs, because `list`'s whole job is to show what `sweep` would
+    # do: a threshold that could differ between them would make the preview a
+    # different question from the action it previews.
+    for verb in (list_parser, sweep_parser):
+        verb.add_argument(
+            "--min-idle-seconds",
+            type=float,
+            default=DEFAULT_STALE_IDLE_SECONDS,
+            help=(
+                "how long a group's readers must ALL have been silent before it "
+                f"counts as dead (default {DEFAULT_STALE_IDLE_SECONDS}, mirroring "
+                "CONSUMER_STALE_IDLE_S; 0 restores the pre-5.4 rule where any "
+                "registered consumer means LIVE)"
+            ),
+        )
     return parser
 
 

@@ -2342,11 +2342,18 @@ class CompositionRoot:
         interval = self.settings.events.notify_group_sweep_interval_s
         if interval <= 0:
             return
+        # The SAME death threshold the consumer sweep uses, passed rather
+        # than defaulted so one setting governs both halves of ت-2 -- see
+        # `sweeper.is_orphan` gate 1 for why the group rule needs an idle
+        # threshold at all, and what it measured before it had one.
+        min_idle_ms = int(self.settings.events.consumer_stale_idle_s * 1000)
         consumer = RedisStreamsConsumer(self.redis_client)
         while True:
             await asyncio.sleep(interval)
             try:
-                orphans = await find_orphan_notify_groups(consumer, tuple(_NOTIFY_STREAMS))
+                orphans = await find_orphan_notify_groups(
+                    consumer, tuple(_NOTIFY_STREAMS), min_idle_ms=min_idle_ms
+                )
                 if orphans:
                     await destroy_orphan_notify_groups(consumer, orphans)
                     _logger.warning(

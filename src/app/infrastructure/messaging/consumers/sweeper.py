@@ -34,9 +34,25 @@ is different in each case.**
   that no longer exists. Liveness of a pid on ANOTHER host is not decidable
   from here (which is exactly why ``composition_root._sweep_stale_notify_
   groups`` restricts itself to its own hostname, and why this module does not
-  weaken that guard). What IS decidable is whether anything is currently
-  reading under a group, and that -- confirmed by two readings a settle
-  window apart -- is what these key on.
+  weaken that guard). What IS decidable is whether anything has read under a
+  group RECENTLY, and that -- confirmed by two readings a settle window apart
+  -- is what these key on.
+
+**⚠️ And the second bullet was written keying on the wrong thing (capacity
+5.4).** It asked whether a consumer entry EXISTS, which the first paragraph
+above already says is unanswerable: Redis never forgets a reader, so the
+entry exists for every process that ever booted. The rule was therefore
+structurally unable to fire on the exact leak this module was written to
+close, and it did not fire -- measured on the live stack, 25 notify groups on
+one stream from seven hostnames, four of them dead for 6-11 hours, every one
+of them reported LIVE. The two layers had ended up covering each other's
+blind spot everywhere except the one family they were both written for: a
+notify group has exactly ONE member, the process it is named after, so
+``sweep_stale_consumers`` -- which never touches ``live_consumer`` and only
+ever runs over a live process's own groups -- can never reach it either.
+``is_orphan`` now asks the answerable question, ``idle`` beyond the same
+death threshold the consumer sweep already uses. Its docstring carries the
+numbers.
 
 **Who calls this.** The three ``worker-*`` processes via ``StreamConsumer``
 (``engine.py``, on its own loop timer and once more at a clean exit), the API
@@ -54,7 +70,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from app.framework.observability import get_logger
-from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
+from app.infrastructure.messaging.redis_streams import ConsumerInfo, RedisStreamsConsumer
 
 _logger = get_logger(__name__)
 
@@ -71,6 +87,13 @@ _CG_NOTIFY_PREFIX = "cg.notify"
 # show zero consumers for that instant. Two observations this far apart must
 # BOTH show zero before anything is destroyed -- see `find_orphan_notify_groups`.
 DEFAULT_SETTLE_SECONDS = 5.0
+
+# Mirrors `EventSettings.consumer_stale_idle_s` (15 min), for the same reason
+# and with the same relation to `consumer_block_ms` that field's own comment
+# argues: it is a DEATH threshold, not a cadence. Both callers pass the
+# setting; this is the fallback for a direct call and for `app.ops.
+# notify_groups`' default, so the two can never disagree by accident.
+DEFAULT_STALE_IDLE_SECONDS = 900.0
 
 
 # --------------------------------------------------------------------------- #
@@ -227,12 +250,21 @@ async def _pending_of(consumer: RedisStreamsConsumer, stream: str, group: str, n
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True, slots=True)
 class NotifyGroup:
-    """One `cg.notify.*` group as `XINFO GROUPS` reports it."""
+    """One `cg.notify.*` group as `XINFO GROUPS` reports it, plus the
+    ``XINFO CONSUMERS`` rows registered inside it.
+
+    ``readers`` is not decoration and not an optimisation: without it this
+    dataclass could only ever answer "does a consumer entry exist", and that
+    question is the one this module's own opening paragraph says is
+    unanswerable -- *Redis never forgets a reader*, so the entry exists for
+    every process that ever booted, dead or alive. See ``is_orphan``.
+    """
 
     stream: str
     name: str
     consumers: int
     pending: int
+    readers: tuple[ConsumerInfo, ...] = ()
 
     @property
     def process_tag(self) -> str:
@@ -249,9 +281,23 @@ class NotifyGroup:
 async def read_notify_groups(
     consumer: RedisStreamsConsumer, streams: Sequence[str]
 ) -> list[NotifyGroup]:
-    """Every `cg.notify*` group across `streams`. A stream that does not
-    exist contributes nothing (``RedisStreamsConsumer.group_infos``' own
-    folding of the ``"no such key"`` reply)."""
+    """Every `cg.notify*` group across `streams`, each carrying the consumer
+    rows registered inside it. A stream that does not exist contributes
+    nothing (``RedisStreamsConsumer.group_infos``' own folding of the
+    ``"no such key"`` reply).
+
+    **The second call is the whole point, and it is one per notify group.**
+    ``XINFO GROUPS`` reports how MANY consumers a group has and nothing about
+    them; ``XINFO CONSUMERS`` reports each one's ``idle``, which is the only
+    evidence from outside a process that it is still reading. A group is only
+    asked about when its name carries the notify prefix, so the static
+    topology's own groups cost nothing here, and the whole census is
+    ``len(streams)`` group reads plus one consumer read per notify group --
+    at the shipped fleet (12 processes x 2 streams) 26 round trips per sweep,
+    once every ``notify_group_sweep_interval_s``. Measured against the
+    fan-out this same fleet already costs Redis, that is noise; the number is
+    in ``08 §4.20``.
+    """
     found: list[NotifyGroup] = []
     for stream in streams:
         for info in await consumer.group_infos(stream):
@@ -263,39 +309,107 @@ async def read_notify_groups(
                     name=info.name,
                     consumers=info.consumers,
                     pending=info.pending,
+                    readers=tuple(await consumer.list_consumers(stream, info.name)),
                 )
             )
     return found
 
 
-def is_orphan(group: NotifyGroup) -> tuple[bool, str]:
+def is_orphan(
+    group: NotifyGroup, *, min_idle_ms: int = int(DEFAULT_STALE_IDLE_SECONDS * 1000)
+) -> tuple[bool, str]:
     """The safety rule, in one place, returning its own reason so a caller
     can print exactly what a sweep would act on.
 
-    Three independent gates, each necessary:
+    **⚠️ Gate 1 used to be "no consumer is registered", and that rule could
+    not fire.** It contradicted this module's own opening sentence -- *Redis
+    never forgets a reader* -- in the one family it was written for. A bridge
+    that dies uncleanly leaves its consumer entry behind exactly as a worker
+    does, so its group reports ``consumers: 1`` forever and "zero consumers"
+    is never observed again. The consumer-level sweep does not rescue it
+    either, and could not: ``sweep_stale_consumers`` runs inside a live
+    process over its OWN groups, and a notify group has exactly one member --
+    the process it is named after. So the tombstone consumer sits in a group
+    no live process reads, and each layer's blind spot is the other layer's
+    only job. Measured on the live stack 2026-09-10, seventeen minutes after
+    a full recreate: **25 notify groups on ``stream.knowledge`` from seven
+    hostnames, four of them dead for 6-11 hours, and the operator tool
+    reported every single one "LIVE: 1 consumer(s) registered"**. The timed
+    sweep fired on schedule and collected exactly one group -- the only one
+    that happened to hold no consumer entry at all.
 
-    1. **No consumer is registered.** A process that is reading under a group
-       has a consumer entry inside it, and that entry survives the process's
-       death (which is why dead *consumers* linger -- docs/log/3.134.md). So
-       ``consumers > 0`` means either a live reader or a ghost consumer whose
-       group is still legitimately in use; both are refusals here.
+    So gate 1 asks the answerable question instead. Four gates, each
+    necessary:
+
+    1. **No reader that could still be alive.** A live bridge blocked in
+       ``XREADGROUP`` resets its ``idle`` clock every ``consumer_block_ms``
+       (5 s), so any consumer idle beyond ``min_idle_ms`` -- 15 min, the same
+       ``EventSettings.consumer_stale_idle_s`` death threshold
+       ``sweep_stale_consumers`` already relies on, and for the identical
+       reason -- is a corpse. **The separation is four orders of magnitude,
+       measured not assumed:** live bridge consumers on the shipped stack
+       read ``idle`` 432 ms and 4,815 ms; the dead hosts' read 21,693,214 ms
+       and 41,113,211 ms. The threshold sits 180x above the live ceiling and
+       24x below the observed dead floor.
     2. **Nothing is pending.** A group holding delivered-but-unacked entries
        owns messages. Destroying it drops that bookkeeping silently, so this
-       refuses regardless of anything else.
-    3. **Not this host's live pid.** If the sweep runs INSIDE a live API
+       refuses regardless of anything else -- and it refuses on the group's
+       own counter AND on any reader's, since a reader that owns entries is
+       the thing ``XAUTOCLAIM`` exists to rescue.
+    3. **No unexplained consumer.** ``consumers > 0`` with no reader rows to
+       show for it means the two reads disagreed (a consumer registered or
+       was deleted between them). Undecidable is a refusal, never a licence.
+    4. **Not this host's live pid.** If the sweep runs INSIDE a live API
        container, that container's own groups are excluded by asking the OS
        -- the same ``os.kill(pid, 0)`` question ``_sweep_stale_notify_groups``
        asks, for the one host where it can be asked at all.
+
+    ``min_idle_ms <= 0`` restores the pre-fix gate 1 exactly (any registered
+    consumer refuses), because that is what ``consumer_stale_idle_s = 0``
+    means everywhere else in this codebase: the idle half is switched off,
+    and a switched-off threshold must never read as "everything is dead".
+
+    **⚠️ ``inactive`` is NOT the field to use here, and it looks like it is.**
+    Redis 7.2 added it alongside ``idle`` as "ms since the last successful
+    read", which sounds like the sharper liveness signal. It is not: a
+    healthy notify bridge on an idle stream has never successfully read
+    anything, and Redis reports ``inactive: -1`` for it (measured on the same
+    live consumers above). Keying on it would mark every quiet bridge dead.
+    ``ConsumerInfo`` reads ``idle`` and only ``idle``.
     """
-    if group.consumers > 0:
-        return False, f"live: {group.consumers} consumer(s) registered"
     if group.pending > 0:
         return False, f"holds {group.pending} pending entr(ies) -- XAUTOCLAIM before deleting"
+    owed = sum(reader.pending for reader in group.readers)
+    if owed > 0:
+        return False, f"a reader still owns {owed} entr(ies) -- XAUTOCLAIM before deleting"
+    if living := _living_reader(group, min_idle_ms):
+        return False, living
+    if group.consumers > 0 and not group.readers:
+        return False, f"reports {group.consumers} consumer(s) but lists none -- undecidable"
     if group.is_this_host:
         pid_text = group.process_tag.rsplit(".", 1)[-1]
         if pid_text.isdigit() and pid_is_alive(int(pid_text)):
             return False, "this host, and its pid is alive"
-    return True, "no consumer, nothing pending"
+    idle = [reader.idle_ms for reader in group.readers]
+    return True, (
+        f"nothing pending, every reader idle >= {max(idle)} ms"
+        if idle
+        else "no consumer, nothing pending"
+    )
+
+
+def _living_reader(group: NotifyGroup, min_idle_ms: int) -> str:
+    """Gate 1 alone: why this group still counts as read, or ``""``.
+
+    Split out so ``is_orphan`` reads as the flat list of gates its docstring
+    describes, and so the ``min_idle_ms <= 0`` fallback -- the pre-5.4 rule,
+    restored exactly when the idle threshold is switched off -- sits next to
+    the rule it replaces rather than inside a branch of it.
+    """
+    if min_idle_ms <= 0:
+        return f"live: {len(group.readers)} consumer(s) registered" if group.readers else ""
+    fresh = [reader.idle_ms for reader in group.readers if reader.idle_ms < min_idle_ms]
+    return f"live: read {min(fresh)} ms ago (threshold {min_idle_ms} ms)" if fresh else ""
 
 
 def pid_is_alive(pid: int) -> bool:
@@ -316,6 +430,7 @@ async def find_orphan_notify_groups(
     streams: Sequence[str],
     *,
     settle_seconds: float = DEFAULT_SETTLE_SECONDS,
+    min_idle_ms: int = int(DEFAULT_STALE_IDLE_SECONDS * 1000),
 ) -> list[NotifyGroup]:
     """Orphans confirmed by TWO readings `settle_seconds` apart.
 
@@ -332,9 +447,16 @@ async def find_orphan_notify_groups(
 
     `settle_seconds=0` skips the second reading. It exists for tests, and for
     an operator who has already stopped everything that could be booting.
+
+    **The window did not become redundant when gate 1 learned to read
+    ``idle``.** The two guards cover different states: ``idle`` answers for a
+    group that HAS a reader, and the window answers for one that has none
+    yet. A bridge between ``ensure_group`` and its first ``XREADGROUP`` is
+    precisely the case with no consumer row to be idle, so it is still the
+    window alone that spares it.
     """
     first = {(g.stream, g.name): g for g in await read_notify_groups(consumer, streams)}
-    candidates = {key: g for key, g in first.items() if is_orphan(g)[0]}
+    candidates = {key: g for key, g in first.items() if is_orphan(g, min_idle_ms=min_idle_ms)[0]}
     if not candidates or settle_seconds <= 0:
         return list(candidates.values())
 
@@ -345,12 +467,13 @@ async def find_orphan_notify_groups(
         again = second.get(key)
         if again is None:
             continue  # Vanished between readings -- somebody else swept it.
-        if is_orphan(again)[0]:
+        orphan, reason = is_orphan(again, min_idle_ms=min_idle_ms)
+        if orphan:
             confirmed.append(again)
         else:
             _logger.info(
                 "notify_groups.settled_live",
-                extra={"stream": key[0], "group": key[1], "reason": is_orphan(again)[1]},
+                extra={"stream": key[0], "group": key[1], "reason": reason},
             )
     return confirmed
 

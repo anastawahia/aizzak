@@ -181,14 +181,29 @@ class StreamMessage:
 
 @dataclass(frozen=True, slots=True)
 class GroupInfo:
-    """One row of ``XINFO GROUPS``, thinned to what the ت-2 sweepers read:
-    the group's name plus the two counters that decide whether anything is
-    still using it (``consumers``) and whether destroying it would drop
-    bookkeeping (``pending``)."""
+    """One row of ``XINFO GROUPS``, thinned to what its readers need: the
+    group's name, the two counters that decide whether anything is still
+    using it (``consumers``) and whether destroying it would drop bookkeeping
+    (``pending``), and how far behind the stream's tail it is (``lag``).
+
+    **``pending`` and ``lag`` answer different questions and neither
+    substitutes for the other** (capacity 5.4). ``pending`` counts entries
+    DELIVERED to this group and not yet acked; ``lag`` counts entries on the
+    stream this group has not been delivered at all. A group that has read
+    nothing has ``pending == 0`` and ``lag == n`` -- so "has this group caught
+    up?" is a ``lag`` question, and a caller that asked ``pending`` would get
+    "yes" from a reader that had not started.
+
+    ``lag`` is ``None`` when Redis cannot determine it -- entries were trimmed
+    away from under the group, or its position was set by hand. Not zero:
+    "unknown" and "caught up" are the two answers a caller most needs kept
+    apart, and Redis reports the difference (nil vs 0) deliberately.
+    """
 
     name: str
     consumers: int
     pending: int
+    lag: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +444,7 @@ class RedisStreamsConsumer:
                 name=cast(bytes, row["name"]).decode(),
                 consumers=int(row["consumers"]),
                 pending=int(row["pending"]),
+                lag=None if row.get("lag") is None else int(row["lag"]),
             )
             for row in rows
         ]
