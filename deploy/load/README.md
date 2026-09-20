@@ -241,6 +241,33 @@ digests, k6 version, host — and archives to
 through unchanged: a missed budget is a **failed run**, not a note in a
 report.
 
+**`run.sh` never changes the platform it measures, and it refuses a platform
+that does not match the files.** Both learned from the first §0.1-valid run
+(2026‑09‑20), which measured nothing:
+
+- `compose run` brings the generator's dependency chain "up", and "up"
+  recreates any container whose config drifted from `docker-compose.yml` +
+  `.env`. That run recreated all three app replicas five seconds after it
+  began; the fresh processes never obtained Firebase's public keys, and every
+  one of its 526,629 requests was refused as `common.internal` in ~2 ms. The
+  generator now runs with `--no-deps`: whatever is running is what gets
+  measured.
+- Which is only safe if what is running is what the files say. `.env` is
+  where `م‑8`'s kill switches live, and a switch reaches a container only
+  when the container is recreated — so before the run, every running
+  container's Compose config hash is compared with the hash the files
+  produce now, and a mismatch is refused (`docker compose up -d --build`,
+  then rerun). Refused rather than recorded: a dirty tree is a caveat on the
+  claim, a stale container is a different platform.
+- And before the first VU starts, `setup()` sends **six authenticated
+  `GET /api/v1/me/context` probes** through the edge (six, because nginx
+  round-robins across replicas) and aborts unless all six answer 200 — with
+  the status, the error code and what it usually means (`401` → refresh the
+  pool; `500 common.internal` → a replica that cannot verify tokens, read the
+  app log for `firebase_auth.jwks_fetch_failed`; `502/503` → no healthy
+  upstream). An aborted `setup()` still leaves a file: it says
+  `platform_answered: false`, and `run.sh` says no load was generated.
+
 Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
 `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` · `LOAD_P95_GENERATION_S` ·
 `LOAD_VERBOSE=1`.
@@ -339,13 +366,28 @@ The archived JSON leads with the four things that decide whether it counts:
 
 ```json
 { "profile": "peak", "valid": true,
-  "validity": { "real_tokens": true, "tls_edge": true, "realistic_seed": true },
+  "validity": { "real_tokens": true, "tls_edge": true, "realistic_seed": true,
+                "platform_answered": true },
   "run": { "commit": "…", "dirty": false, "images": { "app": "sha256:…" } },
   "seed": { "messages": 1000000, "…": 0 } }
 ```
 
 then `thresholds` (each budget, pass or fail), `latency` (p50/p95/p99 per
 metric and per scenario), `counters`, and the raw k6 metrics underneath.
+
+`validity` carries §0.1's three conditions and one more. The three say the
+run was *set up* as a baseline; `platform_answered` says there was a
+platform to measure — it is false when more of what the generator sent was
+refused than answered (`aizzak_failed_requests` rate ≥ 0.5, 429s excluded as
+in §7 item 4), or when nothing was sent at all. The 2026‑09‑20 peak run met
+all three conditions, failed 100 % of its requests, and said `valid: true`
+until this field existed; its percentiles describe the error path.
+
+Rate metrics in `counters` are objects, not numbers: `{ "rate": 1, "count":
+526629, "total": 526629 }`, where `count` is the samples in which the metric
+was true — for `http_req_failed`, the failures. The old rendering printed the
+rate alone, and `http_req_failed: 1` read as one failed request when it meant
+all of them.
 
 Two fields are worth reading before the percentiles:
 

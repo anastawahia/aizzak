@@ -21,12 +21,26 @@ export function buildSummary(profile, data) {
     real_tokens: TOKENS_ARE_REAL === true,
     tls_edge: BASE_URL.startsWith('https://'),
     realistic_seed: seedIsRealistic(),
+    // A fourth, learned on 2026-09-20: the three above say the run was SET
+    // UP as a baseline; this one says there was a platform to measure. That
+    // run met all three, every one of its 526,629 requests failed in ~2ms,
+    // and the file said `valid: true` because nothing had asked. §7 judges
+    // an error RATE against its budget; this is coarser and earlier -- when
+    // more of what the generator sent was refused than answered, the run
+    // measured an outage, and an outage's percentiles describe the error
+    // path, not the platform. (429s are not failures here, exactly as in
+    // §7 item 4: a limiter shedding load is the platform answering.)
+    platform_answered: failedRate(data) < 0.5,
   };
-  validity.valid = validity.real_tokens && validity.tls_edge && validity.realistic_seed;
+  validity.valid =
+    validity.real_tokens &&
+    validity.tls_edge &&
+    validity.realistic_seed &&
+    validity.platform_answered;
 
   return {
     profile,
-    // A run that fails any of the three conditions is not a baseline. Writing
+    // A run that fails any of the four conditions is not a baseline. Writing
     // `false` into the file is what stops it becoming one by being the only
     // number anybody kept.
     valid: validity.valid,
@@ -88,11 +102,35 @@ function latencyTable(data) {
   return out;
 }
 
+// `aizzak_failed_requests` is recorded once per request AND once per socket
+// attempt (`metrics.js`, `ws_hold.js`), so it is the one rate that covers
+// everything the generator did. No samples at all -- k6 declares the metric
+// at init, so it is present even when `setup()` threw and no VU ever ran --
+// is the same answer as "all of them failed": k6 still writes the summary
+// for an aborted run, and a rate of 0 over nothing must not read as a
+// platform that answered everything.
+function failedRate(data) {
+  const v = ((data.metrics || {}).aizzak_failed_requests || {}).values || {};
+  const samples = (v.passes || 0) + (v.fails || 0);
+  return samples > 0 && typeof v.rate === 'number' ? v.rate : 1;
+}
+
 function counterTable(data) {
   const out = {};
   for (const [name, metric] of Object.entries(data.metrics || {})) {
     if (metric.type === 'counter') out[name] = metric.values.count;
-    else if (metric.type === 'rate') out[name] = metric.values.rate;
+    // A rate is not a count. The 2026-09-20 file carried
+    // `http_req_failed: 1`, which reads as ONE failed request and meant ALL
+    // of them (a rate of 1.0). `count` is the samples where the metric was
+    // true -- for `http_req_failed`, the failures -- out of `total`.
+    else if (metric.type === 'rate') {
+      const v = metric.values || {};
+      out[name] = {
+        rate: v.rate,
+        count: v.passes,
+        total: (v.passes || 0) + (v.fails || 0),
+      };
+    }
   }
   return out;
 }

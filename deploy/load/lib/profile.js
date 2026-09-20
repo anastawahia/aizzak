@@ -3,7 +3,9 @@
 // budgets, the guards -- is shared, so the two cannot drift into testing
 // different systems.
 
+import http from 'k6/http';
 import {
+  BASE_URL,
   BROWSE_RPS_PEAK,
   BUDGET_MS,
   INDEX_STARTS_PER_S,
@@ -13,7 +15,7 @@ import {
   TLS_GLOBAL_OPTIONS,
   assertRunnable,
 } from './config.js';
-import { assertTokensCoverRun, poolSize } from './auth.js';
+import { anyToken, assertTokensCoverRun, authHeaders, poolSize } from './auth.js';
 
 // §0.1's acceptance criterion asks for p50/p95/p99; k6's default trend stats
 // carry neither p50 by that name nor p99 at all.
@@ -92,7 +94,69 @@ export function guard({ durationS, wsVus }) {
         'otherwise the refusals this produces are the limiter, not a capacity finding.',
     );
   }
+
+  assertPlatformAnswers();
   return { started_at: new Date().toISOString(), ws_sockets_per_user: round2(perUser) };
+}
+
+// The platform answers ONE authenticated request before it is asked to answer
+// half a million. The 2026-09-20 peak run passed every guard above -- real
+// tokens, TLS edge, a floor-sized seed -- and then every one of its 526,629
+// requests failed in ~2ms: `run.sh` had recreated the app replicas as the
+// run began, the fresh processes never obtained Firebase's public keys, and a
+// verifier without keys refuses everything as `common.internal`. Thirty
+// minutes of load measured the error path, and the archived file said
+// `valid: true`. A probe here costs one round trip and turns that into a
+// refusal before the first VU starts.
+//
+// Six probes, not one: the edge round-robins across replicas, and one warm
+// replica proves nothing about the other two. `/me/context` because it is
+// the request every scenario's first request depends on -- token verified,
+// principal resolved, tenant found -- and nothing else.
+const PREFLIGHT_PROBES = 6;
+
+function assertPlatformAnswers() {
+  const tok = anyToken();
+  for (let i = 0; i < PREFLIGHT_PROBES; i++) {
+    const res = http.get(`${BASE_URL}/api/v1/me/context`, {
+      headers: authHeaders(tok),
+      tags: { op: 'preflight', route: 'preflight' },
+    });
+    if (res.status !== 200) {
+      throw new Error(`preflight: ${describeRefusal(res)} (probe ${i + 1} of ${PREFLIGHT_PROBES})`);
+    }
+  }
+}
+
+function describeRefusal(res) {
+  let code = '';
+  try {
+    code = JSON.parse(res.body).code || '';
+  } catch {
+    code = '';
+  }
+  const where = `${BASE_URL}/api/v1/me/context answered ${res.status}${code ? ` ${code}` : ''}`;
+  if (res.status === 0) {
+    return `${where} -- no edge at ${BASE_URL} (${res.error || 'connection failed'}).`;
+  }
+  if (res.status === 401) {
+    return (
+      `${where} -- the pool's token is refused: expired, or minted for another Firebase project. ` +
+      '`python -m app.ops.mint_load_tokens refresh`, then `verify` (README §2).'
+    );
+  }
+  if (res.status === 500) {
+    return (
+      `${where} -- the platform cannot verify tokens at all. ` +
+      'Typically a replica with no Firebase public keys: a fresh container that cannot reach ' +
+      'www.googleapis.com. Read the app log for `firebase_auth.jwks_fetch_failed`, fix the route, ' +
+      'and probe again -- the load would only have measured this refusal.'
+    );
+  }
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    return `${where} -- the edge has no healthy upstream (\`docker compose ps\`).`;
+  }
+  return `${where} -- not a platform that can be measured; fix it, then rerun.`;
 }
 
 // ⚠️ k6 takes an INTEGER `rate` over a `timeUnit`, and a fractional one is not

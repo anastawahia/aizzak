@@ -73,6 +73,12 @@ export function tokenForVu() {
   return pool[(__VU - 1) % pool.length];
 }
 
+// For code that runs outside a VU (`setup()`, where `__VU` is 0): one real
+// token, any of them -- the pre-flight probe in `profile.js`.
+export function anyToken() {
+  return pool[0];
+}
+
 export function authHeaders(tok, extra) {
   return Object.assign(
     {

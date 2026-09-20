@@ -29,6 +29,13 @@ const HOLD_MS = Number(__ENV.LOAD_WS_HOLD_MS || 120000);
 // 03 §3.2's `ping` verb. Idle does not mean silent: a proxy that closes idle
 // sockets would otherwise look like the platform dropping connections.
 const PING_MS = Number(__ENV.LOAD_WS_PING_MS || 30000);
+// How long a VU waits after a REFUSED upgrade before it tries again. Without
+// it, `constant-vus` starts the next iteration the instant this one ends, and
+// 1,500 refused VUs become a handshake storm: the 2026-09-20 peak run opened
+// 165,609 sockets in thirty minutes -- 90 fresh TLS handshakes a second, every
+// one of them rejected, none of them the population §0 describes. A real
+// client that is refused backs off; so does this one.
+const REJECT_BACKOFF_MS = Number(__ENV.LOAD_WS_REJECT_BACKOFF_MS || 5000);
 
 export function wsHold() {
   const tok = tokenForVu();
@@ -38,6 +45,14 @@ export function wsHold() {
   const openedAt = Date.now();
   let pinger = null;
   let opened = false;
+  let backingOff = false;
+  // Keeps the iteration alive for the backoff -- k6 ends an iteration when
+  // its event loop is empty, so a pending timer IS the wait.
+  const backOff = () => {
+    if (backingOff) return;
+    backingOff = true;
+    setTimeout(() => {}, REJECT_BACKOFF_MS);
+  };
 
   socket.onopen = () => {
     opened = true;
@@ -56,10 +71,14 @@ export function wsHold() {
     // upgrade contributes a failure instead. Recording 0 for a refusal would
     // pull the trend DOWN as the edge got worse.
     if (opened) wsHoldSeconds.add((Date.now() - openedAt) / 1000);
+    else backOff();
   };
 
   socket.onerror = () => {
-    if (!opened) failures.add(true);
+    if (!opened) {
+      failures.add(true);
+      backOff();
+    }
     if (pinger !== null) clearInterval(pinger);
   };
 }

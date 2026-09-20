@@ -93,6 +93,36 @@ else
   export RUN_DIRTY=0
 fi
 
+# ── The platform under test is the one the files describe (م‑8, ح‑20) ─────
+# `.env` is where the baseline's kill switches live, and a switch flipped in
+# `.env` reaches a container only when that container is RECREATED. So a run
+# can read `AUTH_PRINCIPAL_CACHE_TTL_S=0` in the file and measure a platform
+# still caching principals -- nothing in k6 can tell, and the archived result
+# would swear to a configuration it never ran. Compose stamps every container
+# with a hash of the config it was created from; comparing that with the
+# hash the files produce NOW is the whole check. Refused, not recorded: a
+# dirty tree is a caveat on the claim, a stale container is a different
+# platform.
+if docker compose version >/dev/null 2>&1; then
+  drift="$(
+    hashes="$(docker compose config --hash '*' 2>/dev/null)"
+    docker compose ps --format '{{.Name}} {{.Service}}' 2>/dev/null |
+      while read -r name service; do
+        [ -n "$name" ] || continue
+        want="$(printf '%s\n' "$hashes" | awk -v s="$service" '$1 == s { print $2 }')"
+        [ -n "$want" ] || continue
+        have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$name" 2>/dev/null)"
+        [ "$want" = "$have" ] || echo "$service"
+      done | sort -u | tr '\n' ' '
+  )"
+  if [ -n "$drift" ]; then
+    echo "⚠️  running containers were created from an older docker-compose.yml/.env: ${drift}" >&2
+    echo "    The switches the files set are not the switches the platform runs. Recreate first:" >&2
+    echo "      docker compose up -d --build" >&2
+    exit 2
+  fi
+fi
+
 # Image digests, best effort: `docker compose images` is the only view that
 # names what is ACTUALLY running rather than what the file asks for, which is
 # the whole distinction ح‑20 is about.
@@ -205,7 +235,16 @@ else
   # `results/` back to LOAD_UID:LOAD_GID when the run ends. The image's own uid
   # is 12345, so without one of the two the whole 30-minute run would end in a
   # permission denied writing its own archive.
-  docker compose --profile load run --rm -T \
+  # `--no-deps`, and not as an optimisation. Without it `compose run` brings
+  # the generator's dependency chain (k6 -> nginx -> app -> ...) "up", and
+  # "up" includes RECREATING any container whose config no longer matches
+  # `docker-compose.yml` + `.env`. The 2026-09-20 peak run did exactly that:
+  # five seconds after it started, run.sh had replaced all three app replicas
+  # with fresh ones, and the fresh ones could not verify a single token for
+  # the whole thirty minutes. The platform under test is whatever is already
+  # running -- the drift check above is what guarantees that matches the
+  # files -- and this script never changes it.
+  docker compose --profile load run --rm --no-deps -T \
     k6 run "/load/$profile.js"
 fi
 k6_status=$?
@@ -214,10 +253,20 @@ set -e
 if [ -f "$host_out" ]; then
   valid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["valid"])' "$host_out" 2>/dev/null || echo '?')"
   echo
+  answered="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validity"]["platform_answered"])' "$host_out" 2>/dev/null || echo '?')"
+  attempts="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["counters"]["aizzak_failed_requests"]["total"])' "$host_out" 2>/dev/null || echo '?')"
   echo "archived  : $host_out"
   echo "valid     : $valid"
-  if [ "$valid" != "True" ]; then
-    echo "            ⚠️  one of §0.1's three conditions was not met — see .validity in the file." >&2
+  # k6 writes the summary even for a run that never started (`setup()` threw:
+  # an expired pool, a failed pre-flight probe), so the file exists and says
+  # so; the message here says which of the two it was.
+  if [ "$attempts" = "0" ]; then
+    echo "            ⚠️  no load was generated — setup() refused (see the k6 error above); nothing here is a measurement." >&2
+  elif [ "$answered" = "False" ]; then
+    echo "            ⚠️  the platform refused more than it answered — this run measured an outage, not a capacity." >&2
+    echo "                see .counters.aizzak_failed_requests, then the app log for the refusal's cause." >&2
+  elif [ "$valid" != "True" ]; then
+    echo "            ⚠️  one of §0.1's conditions was not met — see .validity in the file." >&2
   fi
 fi
 

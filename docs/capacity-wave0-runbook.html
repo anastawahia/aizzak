@@ -429,7 +429,7 @@ html{ scroll-behavior:smooth; }
       <span><b>1</b> open blocker <code style="direction:rtl">د‑9</code></span>
       <span><b>~90</b> min + seed</span>
       <span>branch <b>capacity</b></span>
-      <span>2026‑09‑10 · حُدِّث 2026‑09‑16</span>
+      <span>2026‑09‑10 · حُدِّث 2026‑09‑21</span>
     </div>
 
     <div class="tape">
@@ -714,13 +714,17 @@ html{ scroll-behavior:smooth; }
       <div class="term-block" style="margin-block-start:.4rem">
         <div class="term-bar"><span class="dot"></span> deploy/load/results/peak-&lt;UTC&gt;.json</div>
         <pre>{ <span class="c">"profile"</span>: "peak", <span class="c">"valid"</span>: true,
-  <span class="c">"validity"</span>: { "real_tokens": true, "tls_edge": true, "realistic_seed": true },
+  <span class="c">"validity"</span>: { "real_tokens": true, "tls_edge": true, "realistic_seed": true,
+                "platform_answered": true },
   <span class="c">"run"</span>:      { "commit": "…", "dirty": false, "images": { "app": "sha256:…" } },
   <span class="c">"seed"</span>:     { "messages": 1000000, "files": 100000, … } }</pre>
       </div>
       <p class="small">
         <code>valid: false</code> لا تعني أنّ الأرقام مزيّفة — الأرقامُ حقيقيّةٌ دائماً. تعني أنّها
-        <b>ليست خطَّ أساس</b>، وأنّ أحدَ الشروط الثلاثة لم يتحقّق، والحقلُ <code>validity</code> يسمّي أيَّها.
+        <b>ليست خطَّ أساس</b>، وأنّ أحدَ الشروط لم يتحقّق، والحقلُ <code>validity</code> يسمّي أيَّها.
+        <b>والرابعُ، <code>platform_answered</code>، أُضيف في 2026‑09‑21</b>: الثلاثةُ تقول إنّ التشغيل <b>أُعدّ</b> خطَّ أساس،
+        وهو يقول إنّ منصّةً كانت هناك لتُقاس — يسقط حين يُرفض أكثرُ ممّا يُجاب (نسبةُ الفشل ≥ 0.5، و429 ليست فشلاً)،
+        أو حين لا يُرسَل شيءٌ أصلاً. أوّلُ تشغيلٍ استوفى الثلاثةَ رُدّ كلُّ طلبٍ فيه 500 وقال <code>valid: true</code>.
       </p>
     </div>
   </div>
@@ -1868,7 +1872,7 @@ export LOAD_SEED_WORKSPACES=200</pre>
         </div>
 
         <div class="col"><p>
-          الأمرُ سطرٌ واحد، والسكربتُ خلفَه يفعل <b>تسعةَ أشياءَ</b> قبل أن يُطلق k6 وبعدَه. هذه هي، بالترتيب:
+          الأمرُ سطرٌ واحد، والسكربتُ خلفَه يفعل <b>أحدَ عشرَ شيئاً</b> قبل أن يُطلق k6 وبعدَه. هذه هي، بالترتيب:
         </p></div>
 
         <div class="anatomy">
@@ -1909,6 +1913,17 @@ export LOAD_SEED_WORKSPACES=200</pre>
           <div><span class="a-k">9 · يؤرشف ويمرّر الحكم</span><span class="a-v">
             الملفُّ في <code>deploy/load/results/peak-&lt;ختم UTC&gt;.json</code>، ثمّ يطبع <code>archived:</code> و<code>valid:</code>،
             <b>ورمزُ خروج k6 يمرّ كما هو</b>: «ميزانيّةٌ مفقودة <b>تشغيلٌ فاشل</b>، لا ملاحظةٌ في تقرير».
+          </span></div>
+          <div><span class="a-k">10 · يرفض منصّةً لا تطابق الملفّات</span><span class="a-v">
+            <b>منذ 2026‑09‑21.</b> مفتاحٌ في <code>.env</code> لا يبلغ حاويةً لم يُعَد إنشاؤها، فقبل التشغيل يقارن hash إعدادِ كلِّ حاويةٍ قائمة
+            بما تنتجه <code>docker-compose.yml</code>+<code>.env</code> الآن، <b>ويرفض</b> عند أيّ اختلاف (<code>docker compose up -d --build</code> ثمّ أعد).
+            رفضٌ لا تسجيل: شجرةٌ متّسخة تحفّظٌ على الادّعاء، وحاويةٌ قديمة <b>منصّةٌ أخرى</b>.
+          </span></div>
+          <div><span class="a-k">11 · ولا يغيّر المنصّةَ أبداً</span><span class="a-v">
+            المولّدُ يُشغَّل بـ<code>--no-deps</code>. بدونها كان <code>compose run</code> «يرفع» سلسلةَ اعتماد k6 (nginx → app)، و«يرفع» تعني
+            <b>يعيد إنشاءَ</b> ما خالف الملفّات — وهذا ما فعله تشغيلُ 2026‑09‑20 بعد خمس ثوانٍ من بدئه (الملاحظة أسفل الخطوة 19).
+            <b>وقبل أوّل VU</b>، يرسل <code>setup()</code> في k6 ستَّ طلباتٍ مُصادَقةٍ إلى <code>/api/v1/me/context</code> عبر الحافّة
+            (ستٌّ لأنّ nginx يوزّع على النسخ الثلاث) ويوقف التشغيلَ إن لم تُجَب كلُّها 200 — برسالةٍ تسمّي الحالةَ ومعناها.
           </span></div>
         </div>
 
@@ -1981,7 +1996,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
           <table>
             <thead><tr><th>#</th><th>الحقل</th><th>ماذا يقول لك</th></tr></thead>
             <tbody>
-              <tr><td class="n">1</td><td class="k">valid · validity</td><td><code>false</code> تعني أنّ الأرقام حقيقيّة <b>لكنّها ليست خطَّ أساس</b>، و<code>validity</code> يسمّي أيَّ شرطٍ سقط. الملفُّ يقولها في حقلٍ لا في ذاكرة أحد.</td></tr>
+              <tr><td class="n">1</td><td class="k">valid · validity</td><td><code>false</code> تعني أنّ الأرقام حقيقيّة <b>لكنّها ليست خطَّ أساس</b>، و<code>validity</code> يسمّي أيَّ شرطٍ سقط. الملفُّ يقولها في حقلٍ لا في ذاكرة أحد. و<code>platform_answered: false</code> تعني أنّ الأرقام <b>تصف مسارَ الخطأ</b>: لا تقرأ بعدها مئيناً.</td></tr>
               <tr><td class="n">2</td><td class="k">counters.aizzak_rate_limited_total</td><td>الـ<span class="num">429</span> المقصودة، وهي <b>مستثناةٌ من ميزانيّة الخطأ بالبناء</b>. قيمةٌ كبيرةٌ في تشغيلٍ بحاويةٍ طالبت بعناوينها تعني أنّ الكتلة صغيرةٌ على المعدّل المعروض.</td></tr>
               <tr><td class="n">3</td><td class="k">assumptions.p95_generation_s</td><td>معدّلُ وصول البثّ مشتقٌّ منه عبر معادلة المزوّد، <b>ولم يقسه شيءٌ بعد</b>. الخطوةُ <code>0.5</code> هي ما يستبدل الافتراض.</td></tr>
               <tr><td class="n">4</td><td class="k">run.commit · run.dirty · run.images</td><td>هل يصف هذا التشغيلُ commit بعينه؟ <code>dirty: true</code> يعني <b>لا</b>.</td></tr>
@@ -1996,6 +2011,25 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
           <p>
             <code>dropped_iterations &gt; 0</code> في الملخّص. k6 <b>يُسقط التكرارات ولا يصفّها</b> حين تنفد الـVUs،
             فالمعدّلُ الذي يدّعيه التقريرُ حينها <b>ليس المعدّلَ الذي جرى</b>. راقب أيضاً وحدةَ المعالجة في المولّد نفسِه.
+          </p>
+        </div>
+
+        <div class="note warn">
+          <span class="lbl">وأوّلُ تشغيلٍ استوفى الشروطَ الثلاثة قاس لا شيء — 2026‑09‑20</span>
+          <p>
+            ‏<code>peak-20260920T220357Z.json</code>: رموزٌ حقيقيّة، حافّةُ TLS، بذرةٌ على الأرضيّة، شجرةٌ نظيفة، المفاتيحُ مطفأة —
+            و<b>كلُّ طلبٍ من <span class="num">526,629</span> رُدّ <span class="num">500</span> في ملّي‑ثانيتين</b>، وكلُّ مقبسٍ رُفض،
+            ولم يصل استعلامٌ واحدٌ إلى Postgres. والملفُّ قال <code>valid: true</code>.
+          </p>
+          <p>
+            السبب: <code>run.sh</code> شغّل المولّدَ بلا <code>--no-deps</code>، فأعاد Compose إنشاءَ نسخ التطبيق الثلاث <b>بعد خمس ثوانٍ من بدء التشغيل</b>؛
+            وُلدت بلا مفاتيح Firebase العامّة ولم تحصل عليها ثلاثين دقيقة (لماذا — لم يُحسم؛ الشبكةُ نفسُها كانت تتعثّر تحت العاصفة)،
+            ومُصادِقٌ بلا مفاتيح يرفض كلَّ شيءٍ <code>common.internal</code> <b>بلا سطرِ سجلٍّ واحد</b>. بعد انتهاء التشغيل أجاب الرمزُ نفسُه 200.
+          </p>
+          <p>
+            <b>ما تغيّر:</b> الخطوةُ 18 ترفض منصّةً لا تطابق الملفّات، ولا تعيد إنشاءَ شيء، وتسبر الحافّةَ بستّ طلباتٍ مُصادَقةٍ قبل أوّل VU؛
+            و<code>validity</code> صار له شرطٌ رابع؛ والمُصادِقُ يسجّل المحاولةَ الفاشلة (<code>firebase_auth.jwks_fetch_failed</code>).
+            <b>والملفُّ نفسُه باطلٌ ولا يدخل الخطوةَ 20</b> — التفصيلُ في <code>docs/capacity-status.md §5</code>.
           </p>
         </div>
 
@@ -2205,7 +2239,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
   <div class="wrap stack gap-m">
     <p style="max-width:68ch">
       كلُّ رقمٍ ومسارٍ في هذه الصفحة مقروءٌ من المستودع على الفرع <code>capacity</code> بتاريخ 2026‑09‑10
-      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
+      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16، وبالتشغيل الذي قاس لا شيء في 2026‑09‑21)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
     </p>
     <p class="paths">
       docs/capacity-plan.md  ·  docs/capacity-status.md  ·  deploy/load/README.md<br>

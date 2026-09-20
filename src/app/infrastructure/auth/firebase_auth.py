@@ -98,7 +98,11 @@ means the TOKEN is bad -> ``UnauthorizedError`` / ``auth.invalid_token`` /
 401. Every other ``jwt.PyJWTError`` (``PyJWKError``, ``PyJWKSetError``,
 ``InvalidKeyError``, ``MissingCryptographyError``, ...) and every
 ``httpx.HTTPError`` means OUR key-fetch/deployment is broken ->
-``AppError`` / ``common.internal`` / 500. This is the exact fix for alpha's
+``AppError`` / ``common.internal`` / 500, and the failed attempt is logged
+(``firebase_auth.jwks_fetch_failed``, WARNING, the exception attached) --
+once per refetch budget, never per refused request, because the 500s
+themselves are ``AppError``s and the API answers those without logging
+them. This is the exact fix for alpha's
 §7 bug: a bare ``except Exception:`` folded a transient Google outage into
 the same 401 as "your token is garbage" (refs ``auth-firebase.md`` §7/§9)
 -- PyJWT's own exception tree already draws this line (``InvalidTokenError``
@@ -156,6 +160,7 @@ by the port's own contract -- authentication precedes context, there is no
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import httpx
@@ -166,6 +171,8 @@ from jwt.exceptions import InvalidTokenError, PyJWKSetError, PyJWTError
 from app.framework.errors import AppError, UnauthorizedError, ValidationError
 from app.framework.ports.auth_provider import Identity
 from app.framework.types import Json
+
+_logger = logging.getLogger(__name__)
 
 # Google's JWK (not X.509) endpoint for the securetoken signer (D2) -- a
 # module constant, never derived from a token header (`jku`/`x5u` are
@@ -394,6 +401,25 @@ class FirebaseAuth:
                     await self._fetch_keys()
                 except (httpx.HTTPError, PyJWTError, ValueError, TypeError) as exc:
                     fetch_error = exc  # tolerated iff the cache can still answer
+                    # The ONE line an outage leaves behind. Every request the
+                    # budget refuses below is an `AppError`, and `AppError`s
+                    # are answered, not logged (`api/main.py`) -- so without
+                    # this, a replica that cannot reach Google fails every
+                    # authenticated request as `common.internal` in
+                    # milliseconds and writes nothing at all (the 2026-09-20
+                    # peak run: 526,629 requests, zero lines). Bounded by the
+                    # same budget as the fetch itself: once per
+                    # `_MIN_REFRESH_INTERVAL_S` per process, never per request.
+                    _logger.warning(
+                        "firebase_auth.jwks_fetch_failed",
+                        extra={
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "cached_keys": len(self._keys),
+                            "cache_fresh": self._is_fresh(),
+                            "next_attempt_in_s": _MIN_REFRESH_INTERVAL_S,
+                        },
+                        exc_info=exc,
+                    )
 
             key = self._lookup(kid)
             if key is not None:

@@ -643,6 +643,47 @@ async def test_t22_jwks_timeout_is_500_not_401(
     assert excinfo.value.status == 500
 
 
+async def test_t22b_a_failed_fetch_is_logged_once_per_budget_not_once_per_refusal(
+    rsa_keys: dict[str, rsa.RSAPrivateKey],
+    frozen_clock: _Clock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 2026-09-20 peak run: three fresh replicas that could not reach
+    Google answered 526,629 requests as ``common.internal`` in ~2ms each and
+    logged NOTHING -- the refusals are ``AppError``s, which the API answers
+    without logging. The one place that knows why is the failed attempt
+    itself, so that is where the line goes: once per refetch budget (the
+    attempt is already bounded to one per ``_MIN_REFRESH_INTERVAL_S``), with
+    the underlying exception attached, and not once per refused request --
+    at 300 rps that would be its own outage."""
+    adapter, handler = _build(_jwks(_jwk("key-a", rsa_keys["key-a"])))
+    handler.raises = httpx.ConnectTimeout("connect timed out")
+
+    with caplog.at_level("WARNING", logger="app.infrastructure.auth.firebase_auth"):
+        for _ in range(5):  # one attempt, four budget refusals
+            with pytest.raises(AppError):
+                await adapter.verify_token(_token(rsa_keys["key-a"], "key-a"))
+
+    assert handler.call_count == 1
+    records = [r for r in caplog.records if r.getMessage() == "firebase_auth.jwks_fetch_failed"]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert "ConnectTimeout" in str(getattr(records[0], "error", ""))
+    assert getattr(records[0], "cached_keys", None) == 0
+    assert getattr(records[0], "cache_fresh", None) is False
+    assert records[0].exc_info is not None and records[0].exc_info[0] is httpx.ConnectTimeout
+
+    # The budget replenishes -> the next attempt is the next line, no sooner.
+    frozen_clock.advance(_MIN_REFRESH_INTERVAL_S)
+    with (
+        caplog.at_level("WARNING", logger="app.infrastructure.auth.firebase_auth"),
+        pytest.raises(AppError),
+    ):
+        await adapter.verify_token(_token(rsa_keys["key-a"], "key-a"))
+    assert handler.call_count == 2
+    assert sum(r.getMessage() == "firebase_auth.jwks_fetch_failed" for r in caplog.records) == 2
+
+
 @pytest.mark.parametrize(
     "body",
     [
