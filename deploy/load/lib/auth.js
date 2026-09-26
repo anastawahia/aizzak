@@ -73,6 +73,16 @@ export function tokenForVu() {
   return pool[(__VU - 1) % pool.length];
 }
 
+// For a VU that holds several sockets (`ws_hold.js`): socket `slot` of
+// `slots`, a stride apart, so one VU's sockets belong to `slots` different
+// users and the population spreads over the pool as evenly as one socket per
+// VU did -- `ws_connections_per_user` is 5, and the guard in `profile.js`
+// counts on nobody holding more than their share.
+export function tokenForSlot(slot, slots) {
+  const stride = Math.max(1, Math.floor(pool.length / slots));
+  return pool[(__VU - 1 + slot * stride) % pool.length];
+}
+
 // For code that runs outside a VU (`setup()`, where `__VU` is 0): one real
 // token, any of them -- the pre-flight probes in `profile.js`. The index is
 // for the one probe that can be legitimately refused for the token it picked

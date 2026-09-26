@@ -2709,6 +2709,22 @@ services:
         limits:
           cpus: "2.0"
           memory: 2g
+    # The generator's memory decides whether its numbers mean anything. The
+    # 2026-09-26 peak run was killed at 17m29s by THIS limit (`dmesg`: memcg
+    # OOM, task k6), and it had been thrashing against it for minutes first:
+    # 957 MiB of k6 already in swap and 5.97M major page faults -- a generator
+    # paging its own code back in between requests, and every latency it
+    # recorded in that stretch timing itself. MEASURED afterwards, idle VUs
+    # with this harness's init context: 0.65 MiB each, so the 3,700 VUs the
+    # profile allowed needed ~2.4 GiB before a single connection was open.
+    #
+    # Three things answer it, together: fewer VUs (`lib/config.js`
+    # WS_SOCKETS_PER_VU), a Go heap that gives way before the limit
+    # (`GOMEMLIMIT` below), and NO swap -- a generator out of memory must die
+    # the second it is, not keep producing numbers. `run.sh` reads this
+    # container's cgroup while it runs and marks a run that hit the limit, or
+    # was CPU-throttled, invalid.
+    memswap_limit: 2g
     profiles: ["load"]
     # Pinned like every other image here, and the pin is load-bearing: the
     # WebSocket scenarios import `k6/experimental/websockets`, and which name
@@ -2771,10 +2787,18 @@ services:
       # `lib/config.js` `uploadTarget()` for the measurement, and for why the
       # platform's own setting is not touched.
       LOAD_UPLOAD_ORIGIN: ${LOAD_UPLOAD_ORIGIN:-http://minio:9000}
+      # Go's collector knows nothing of cgroup limits unless told: by default
+      # it lets the heap reach twice the live set, which is how ~1.3 GiB of
+      # live VUs becomes an OOM kill at 2 GiB. ~17% under `memory` above --
+      # the cgroup also carries what is not Go's: 60 MiB of kernel memory
+      # alone when that run died (stacks, page tables, sockets), plus the
+      # binary's own pages.
+      GOMEMLIMIT: 1700MiB
       LOAD_TOKEN_FILE: ${LOAD_TOKEN_FILE:-/load/tokens.json}
       LOAD_OUT: ${LOAD_OUT-}
       LOAD_DURATION_S: ${LOAD_DURATION_S-}
       LOAD_WS_VUS: ${LOAD_WS_VUS-}
+      LOAD_WS_SOCKETS_PER_VU: ${LOAD_WS_SOCKETS_PER_VU-}
       LOAD_AGENT_KEY: ${LOAD_AGENT_KEY-}
       LOAD_PROMPT: ${LOAD_PROMPT-}
       LOAD_VERBOSE: ${LOAD_VERBOSE-}
@@ -2782,6 +2806,7 @@ services:
       LOAD_P95_GENERATION_S: ${LOAD_P95_GENERATION_S-}
       LOAD_STREAM_TIMEOUT_MS: ${LOAD_STREAM_TIMEOUT_MS-}
       LOAD_INDEX_POLL_S: ${LOAD_INDEX_POLL_S-}
+      LOAD_INDEX_POLL_MAX_S: ${LOAD_INDEX_POLL_MAX_S-}
       LOAD_INDEX_TIMEOUT_S: ${LOAD_INDEX_TIMEOUT_S-}
       LOAD_WS_HOLD_MS: ${LOAD_WS_HOLD_MS-}
       LOAD_WS_PING_MS: ${LOAD_WS_PING_MS-}

@@ -18,7 +18,17 @@ import { API, uploadTarget } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { failures, graded, indexEndToEnd } from '../lib/metrics.js';
 
+// How often to ask whether the worker is done. A fixed 2s was measured to BE
+// load: on 2026-09-26 the polls were 16,477 of the 121,868 requests the app
+// served (13.5% -- more than `/files` and `/me/context` together), because
+// 285 index VUs were asking every 2s once the workers fell behind: the harness
+// adding ~140 rps exactly when the platform could least afford it. So the
+// interval grows with the job's age -- a twentieth of it, which bounds the
+// overshoot of an e2e sample at ~5% -- from POLL_INTERVAL_S to POLL_MAX_S. A
+// healthy ~50s job is polled almost exactly as before; a 5-minute one about 60
+// times instead of 150.
 const POLL_INTERVAL_S = Number(__ENV.LOAD_INDEX_POLL_S || 2);
+const POLL_MAX_S = Number(__ENV.LOAD_INDEX_POLL_MAX_S || 10);
 // Bounds a VU whose document never reaches a terminal state -- a stalled
 // worker, a DLQ'd envelope, a sealed Vault (`ح‑14`) starving the pipeline of
 // MinIO credentials. Timing out is recorded as a failure, never as a fast
@@ -27,10 +37,15 @@ const INDEX_TIMEOUT_S = Number(__ENV.LOAD_INDEX_TIMEOUT_S || 300);
 
 // Real-ish content: Arabic and Latin in one document, because the chunker and
 // the multilingual embedding model both behave differently on each, and a
-// corpus of lorem ipsum measures neither.
-const BODY = buildDocument();
+// corpus of lorem ipsum measures neither. Built on a VU's FIRST job, not at
+// module load: every VU runs every module's init code whatever scenario it
+// serves, so a document built up there sat in every VU of the other four
+// scenarios -- 2,837 of the 3,122 alive when the 2026-09-26 run was killed --
+// at ~70 KiB apiece (the string is UTF-16 inside the VM).
+let body = null;
 
 export function indexFile() {
+  if (body === null) body = buildDocument();
   const tok = tokenForVu();
   const startedAt = Date.now();
   const name = `load-${__VU}-${__ITER}-${startedAt}.txt`;
@@ -42,7 +57,7 @@ export function indexFile() {
       space_id: tok.spaceId,
       name,
       content_type: 'text/plain',
-      size_bytes: BODY.length,
+      size_bytes: body.length,
     }),
     { headers: authHeaders(tok), tags: { op: 'write', route: 'register_file' } },
   );
@@ -60,7 +75,7 @@ export function indexFile() {
   // explains why that is necessary from inside a container and why it leaves
   // the platform untouched.
   const target = uploadTarget(uploadUrl);
-  const put = http.put(target.url, BODY, {
+  const put = http.put(target.url, body, {
     headers: { 'Content-Type': 'text/plain', ...target.headers },
     tags: { op: 'upload', route: 'minio_put' },
   });
@@ -91,7 +106,8 @@ export function indexFile() {
       failures.add(true);
       return;
     }
-    sleep(POLL_INTERVAL_S);
+    const ageS = (Date.now() - startedAt) / 1000;
+    sleep(Math.min(POLL_MAX_S, Math.max(POLL_INTERVAL_S, ageS / 20)));
     const doc = http.get(`${API}/knowledge/documents/${documentId}`, {
       headers: authHeaders(tok),
       tags: { op: 'poll', route: 'get_document' },

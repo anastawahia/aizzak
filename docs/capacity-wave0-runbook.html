@@ -1872,7 +1872,7 @@ export LOAD_SEED_WORKSPACES=200</pre>
         </div>
 
         <div class="col"><p>
-          الأمرُ سطرٌ واحد، والسكربتُ خلفَه يفعل <b>اثنَي عشرَ شيئاً</b> قبل أن يُطلق k6 وبعدَه. هذه هي، بالترتيب:
+          الأمرُ سطرٌ واحد، والسكربتُ خلفَه يفعل <b>ثلاثةَ عشرَ شيئاً</b> قبل أن يُطلق k6 وأثناءه وبعدَه. هذه هي، بالترتيب:
         </p></div>
 
         <div class="anatomy">
@@ -1933,6 +1933,12 @@ export LOAD_SEED_WORKSPACES=200</pre>
             نفسِه فشل <b>كلُّ</b> رفعٍ إلى MinIO لأنّ الرابطَ الموقَّع يسمّي <code>localhost:19000</code> وهو داخلَ الحاوية المولّدُ نفسُه.
             الرسالةُ تسمّي المسارَ والحالةَ ولمن العطب. ويترك المِسبارُ خلفَه محادثةً واحدةً وملفّاً واحداً ووثيقةً مفهرسة — لأنّ مِسباراً
             يقرأ فقط لا يثبت مسارَ الكتابة.
+          </span></div>
+          <div><span class="a-k">13 · وأثناءه يراقب المولّدَ نفسَه</span><span class="a-v">
+            <b>منذ 2026‑09‑26.</b> كلَّ عشر ثوانٍ يقرأ ذاكرةَ حاوية k6 ومعالجَها من الخارج، ويكتب في الملفّ كتلةَ <code>generator</code>
+            وشرطاً خامساً <code>validity.generator_kept_up</code>: <code>false</code> إن بلغ k6 حدَّ ذاكرته مرّةً، أو خُنق معالجُه في أكثرَ من
+            <span class="num">1٪</span> من الوقت — فزمنٌ يقيسه مولّدٌ مخنوقٌ زمنُ المولّد. ويسجّل معه كم بدّل الجهازُ كلُّه من ذاكرته أثناء التشغيل.
+            والحاويةُ <b>بلا تبديل</b>: إن نفدت ذاكرةُ k6 مات في الحال (رمزُ الخروج <span class="num">137</span>) ويقول <code>run.sh</code> ذلك صراحةً.
           </span></div>
         </div>
 
@@ -2000,17 +2006,18 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
           <div><span class="a-k">--no-ensure-ascii</span><span class="a-v">يُبقي أيَّ نصٍّ عربيٍّ مقروءاً بدل تحويله إلى <code>\uXXXX</code>.</span></div>
         </div>
 
-        <h4>اقرأ بهذا الترتيب — والأربعةُ الأولى قبل أيّ مئين</h4>
+        <h4>اقرأ بهذا الترتيب — والخمسةُ الأولى قبل أيّ مئين</h4>
         <div class="tablewrap">
           <table>
             <thead><tr><th>#</th><th>الحقل</th><th>ماذا يقول لك</th></tr></thead>
             <tbody>
               <tr><td class="n">1</td><td class="k">valid · validity</td><td><code>false</code> تعني أنّ الأرقام حقيقيّة <b>لكنّها ليست خطَّ أساس</b>، و<code>validity</code> يسمّي أيَّ شرطٍ سقط. الملفُّ يقولها في حقلٍ لا في ذاكرة أحد. و<code>platform_answered: false</code> تعني أنّ الأرقام <b>تصف مسارَ الخطأ</b>: لا تقرأ بعدها مئيناً.</td></tr>
-              <tr><td class="n">2</td><td class="k">counters.aizzak_rate_limited_total</td><td>الـ<span class="num">429</span> المقصودة، وهي <b>مستثناةٌ من ميزانيّة الخطأ بالبناء</b>. قيمةٌ كبيرةٌ في تشغيلٍ بحاويةٍ طالبت بعناوينها تعني أنّ الكتلة صغيرةٌ على المعدّل المعروض.</td></tr>
-              <tr><td class="n">3</td><td class="k">assumptions.p95_generation_s</td><td>معدّلُ وصول البثّ مشتقٌّ منه عبر معادلة المزوّد، <b>ولم يقسه شيءٌ بعد</b>. الخطوةُ <code>0.5</code> هي ما يستبدل الافتراض.</td></tr>
-              <tr><td class="n">4</td><td class="k">run.commit · run.dirty · run.images</td><td>هل يصف هذا التشغيلُ commit بعينه؟ <code>dirty: true</code> يعني <b>لا</b>.</td></tr>
-              <tr><td class="n">5</td><td class="k">thresholds</td><td>كلُّ ميزانيّةٍ ونجاحُها أو سقوطُها. هذه هي البوّابة.</td></tr>
-              <tr><td class="n">6</td><td class="k">latency</td><td>‏p50/p95/p99 لكلّ مقياسٍ <b>ولكلّ سيناريو</b> — وهو حرفيّاً ما يطلبه معيارُ قبول <code>0.1</code>.</td></tr>
+              <tr><td class="n">2</td><td class="k">generator</td><td>ذاكرةُ المولّد وخنقُ معالجه، وتبديلُ الجهاز أثناء التشغيل. <code>generator_kept_up: false</code> يعني أنّ <b>جزءاً من الأزمنة زمنُ k6</b> لا المنصّة.</td></tr>
+              <tr><td class="n">3</td><td class="k">counters.aizzak_rate_limited_total</td><td>الـ<span class="num">429</span> المقصودة، وهي <b>مستثناةٌ من ميزانيّة الخطأ بالبناء</b>. قيمةٌ كبيرةٌ في تشغيلٍ بحاويةٍ طالبت بعناوينها تعني أنّ الكتلة صغيرةٌ على المعدّل المعروض.</td></tr>
+              <tr><td class="n">4</td><td class="k">assumptions.p95_generation_s</td><td>معدّلُ وصول البثّ مشتقٌّ منه عبر معادلة المزوّد، <b>ولم يقسه شيءٌ بعد</b>. الخطوةُ <code>0.5</code> هي ما يستبدل الافتراض.</td></tr>
+              <tr><td class="n">5</td><td class="k">run.commit · run.dirty · run.images</td><td>هل يصف هذا التشغيلُ commit بعينه؟ <code>dirty: true</code> يعني <b>لا</b>.</td></tr>
+              <tr><td class="n">6</td><td class="k">thresholds</td><td>كلُّ ميزانيّةٍ ونجاحُها أو سقوطُها. هذه هي البوّابة.</td></tr>
+              <tr><td class="n">7</td><td class="k">latency</td><td>‏p50/p95/p99 لكلّ مقياسٍ <b>ولكلّ سيناريو</b> — وهو حرفيّاً ما يطلبه معيارُ قبول <code>0.1</code>.</td></tr>
             </tbody>
           </table>
         </div>
@@ -2054,9 +2061,31 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
           <p>
             <b>ما تغيّر:</b> المِسبارُ القَبْليُّ صار يجرّب <b>كلَّ مسار</b> مرّةً (البند 12 في الخطوة 18)، والرفعُ يطلب عنواناً يحلُّه المولّدُ
             ويرسل المضيفَ الموقَّعَ في <code>Host</code> (<code>LOAD_UPLOAD_ORIGIN</code>)، و<b>كلُّ خطأ ≥ 500 صار يترك سطراً</b>
-            (<code>api.server_error</code>) — في دخانِ 25 ثانيةً رُدّ 357 من 4,485 طلباً <span class="num">500</span> بلا سطرٍ واحد.
+            (<code>api.server_error</code>) — <s>في دخانِ 25 ثانيةً رُدّ 357 من 4,485 طلباً <span class="num">500</span> بلا سطرٍ واحد.</s>
+            <b>مُصحَّح:</b> تلك كُتبت (<code>api.unhandled_exception</code>، نفادُ مُجمِّع الاتصالات) وفاتتني؛ والسطرُ الجديد التقط في التشغيل
+            التالي <span class="num">12</span> خطأً كانت ستصمت.
             والمُثبَتُ بعد الإصلاح: <code>GET /conversations</code> يجيب 200، وسلسلةُ الفهرسة تمرّ، و<b>أوّلُ عيّنةٍ لـ<code>aizzak_index_e2e_ms</code>
             في تاريخ المستودع: <span class="num">50,363</span> ms</b>.
+          </p>
+        </div>
+
+        <div class="note warn">
+          <span class="lbl">والتشغيلُ الثالث قتله المولّدُ لا المنصّة — 2026‑09‑26</span>
+          <p>
+            توقّف عند <span class="num">17:29</span> بكلمة <code>Killed</code>: النواةُ أوقفت k6 لأنّه تجاوز حدَّ ذاكرة حاويته (<span class="num">2</span> GiB)،
+            وكان قبلها دقائقَ <b>يبدّل ذاكرتَه إلى القرص</b> (<span class="num">957</span> MiB، و<span class="num">5.97</span> مليون خطأِ صفحة) — فكلُّ زمنٍ سجّله فيها زمنُه هو.
+            والسببُ مقيس: كلُّ VU يكلّف <span class="num">0.65</span> MiB، وسقفُ الملفّ <span class="num">3,700</span> VU، أي نحو <span class="num">2.4</span> GiB قبل أيّ اتصال.
+          </p>
+          <p>
+            <b>ما تغيّر:</b> عشرةُ مقابسَ لكلّ VU في سيناريو WS، ومستندُ الرفع يُبنى حيث يُرفع فقط — فالسقفُ <span class="num">2,350</span> VU
+            ≈ <span class="num">1.0</span> GiB؛ و<code>GOMEMLIMIT</code> تحت الحدّ وبلا تبديل؛ والمراقبةُ في البند 13 أعلاه؛ واستطلاعُ الفهرسة يتباعد مع عمر المهمّة.
+            دخانُ <span class="num">90</span> ثانيةً بعدها: ذروةُ <span class="num">1,502</span> من <span class="num">2,048</span> MiB، صفرُ بلوغٍ للحدّ، <code>generator_kept_up: true</code>.
+          </p>
+          <p>
+            <b>وما رأته المنصّةُ قبل موته أوّلُ قياسٍ حقيقيّ:</b> من الدقيقة الثانية نفد <b>مُجمِّعُ اتصالات قاعدة البيانات</b>
+            (<code>QueuePool limit … timeout 5.0</code>)، فكان زمنُ الخادم الوسيطُ <span class="num">3.4–5.6</span> ثانية، و<span class="num">1.6٪</span> من الطلبات
+            <span class="num">500</span>، والمخدومُ نحو <span class="num">116</span> rps من <span class="num">300</span>.
+            <b>فالمتوقَّعُ أن يكتمل التشغيلُ القادم وأن يفشل ميزانيّاتِه (رمزُ الخروج <span class="num">99</span>)</b> — وذلك هو القياس، لا عطبٌ في الهيكل.
           </p>
         </div>
 
@@ -2266,7 +2295,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
   <div class="wrap stack gap-m">
     <p style="max-width:68ch">
       كلُّ رقمٍ ومسارٍ في هذه الصفحة مقروءٌ من المستودع على الفرع <code>capacity</code> بتاريخ 2026‑09‑10
-      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16، وبالتشغيل الذي قاس لا شيء في 2026‑09‑21)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
+      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16، وبالتشغيل الذي قاس لا شيء في 2026‑09‑21، وبتشغيلَي 2026‑09‑26)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
     </p>
     <p class="paths">
       docs/capacity-plan.md  ·  docs/capacity-status.md  ·  deploy/load/README.md<br>

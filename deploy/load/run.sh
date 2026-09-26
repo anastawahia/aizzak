@@ -227,6 +227,34 @@ echo "seed      : ${LOAD_SEED_ID:-<UNSTATED — this run cannot be a baseline>}"
 echo "out       : $host_out"
 echo
 
+# ── The generator's own health ───────────────────────────────────────────────
+# §0.1's conditions say the PLATFORM was set up right; none said the generator
+# kept up, and on 2026-09-26 it did not: k6 thrashed against its 2 GiB limit
+# for minutes -- 957 MiB swapped out, 5.97M major faults -- before the kernel
+# killed it at 17m29s, and everything it timed in that stretch timed itself.
+# So its cgroup is read from OUTSIDE while it runs (`cgroup_sample.sh`, every
+# 10s): hitting the memory limit and being CPU-throttled are the two ways a
+# container starves, and a run where either happened is marked invalid below.
+# Docker mode only -- a host k6 has no container to read.
+gen_log=""
+sampler=""
+# And the machine's own paging, which the platform shares with the generator:
+# on this WSL VM the stack alone leaves ~3 GiB free, so a run can push the
+# PLATFORM into swap, and a query waiting on a page-in is timed as a slow
+# query. Recorded, not gated -- the idle VM already pages a little.
+swap_before="$(awk '/^pswp(in|out) /{printf "%s ", $2}' /proc/vmstat 2>/dev/null || true)"
+if [ "$k6_mode" = docker ]; then
+  gen_log="${host_out%.json}.generator.log"
+  (
+    while sleep 10; do
+      id="$(docker ps -q --filter label=com.docker.compose.service=k6 \
+        --filter label=com.docker.compose.oneoff=True | head -1)"
+      [ -n "$id" ] && docker exec "$id" sh /load/cgroup_sample.sh 2>/dev/null
+    done
+  ) >"$gen_log" &
+  sampler=$!
+fi
+
 set +e
 if [ "$k6_mode" = host ]; then
   k6 run "deploy/load/$profile.js"
@@ -250,6 +278,84 @@ fi
 k6_status=$?
 set -e
 
+if [ -n "$sampler" ]; then
+  kill "$sampler" 2>/dev/null || true
+  wait "$sampler" 2>/dev/null || true
+fi
+swap_after="$(awk '/^pswp(in|out) /{printf "%s ", $2}' /proc/vmstat 2>/dev/null || true)"
+
+if [ ! -f "$host_out" ] && [ "$k6_status" = 137 ]; then
+  echo
+  echo "⚠️  k6 was KILLED (exit 137) and wrote nothing — almost always its memory limit:" >&2
+  echo "      dmesg | grep -i 'killed process'" >&2
+fi
+
+# The verdict on the samples, folded into the archived file so it travels with
+# the numbers. Invalid when the generator hit its memory limit at all, or was
+# throttled in more than 1% of CPU periods -- a throttled period freezes every
+# VU for up to 100ms, which is the size of the budgets being measured. The
+# first 30s are skipped: that is thousands of VUs compiling the same script,
+# before any request is timed.
+if [ -f "$host_out" ] && [ -n "$gen_log" ]; then
+  python3 - "$host_out" "$gen_log" "$swap_before" "$swap_after" <<'PY' || echo "⚠️  could not evaluate the generator samples in $gen_log" >&2
+import json, os, sys
+
+out, log = sys.argv[1], sys.argv[2]
+rows = []
+for line in open(log):
+    kv = dict(p.split("=", 1) for p in line.split() if "=" in p)
+    if "t" in kv:
+        rows.append(kv)
+
+
+def num(row, key):
+    return int(row.get(key) or 0)
+
+
+if rows:
+    base = next((r for r in rows[:-1] if num(r, "t") >= num(rows[0], "t") + 30), rows[0])
+    last = rows[-1]
+    periods = num(last, "nr_periods") - num(base, "nr_periods")
+    throttled = num(last, "nr_throttled") - num(base, "nr_throttled")
+    gen = {
+        "samples": len(rows),
+        "memory_limit_bytes": None if last.get("limit") == "max" else num(last, "limit"),
+        "memory_peak_bytes": max(num(r, "peak") for r in rows),
+        "memory_limit_hits": num(last, "max"),
+        "oom_kills": num(last, "oom_kill"),
+        "cpu_throttled_pct": round(100.0 * throttled / periods, 2) if periods else 0.0,
+    }
+    kept_up = gen["memory_limit_hits"] == 0 and gen["oom_kills"] == 0 and gen["cpu_throttled_pct"] <= 1.0
+else:
+    # Nothing sampled is not evidence that nothing went wrong.
+    gen, kept_up = {"samples": 0}, False
+
+swap = [s.split() for s in sys.argv[3:5]]
+if all(len(x) == 2 for x in swap):
+    page = os.sysconf("SC_PAGE_SIZE")
+    (in0, out0), (in1, out1) = ([int(v) for v in x] for x in swap)
+    gen["host_swapped_in_mib"] = round((in1 - in0) * page / 2**20, 1)
+    gen["host_swapped_out_mib"] = round((out1 - out0) * page / 2**20, 1)
+
+doc = json.load(open(out))
+doc["generator"] = gen
+doc["validity"]["generator_kept_up"] = kept_up
+doc["valid"] = doc["validity"]["valid"] = bool(doc["valid"]) and kept_up
+with open(out, "w") as f:
+    json.dump(doc, f, indent=2)
+
+peak = gen.get("memory_peak_bytes")
+limit = gen.get("memory_limit_bytes")
+print(
+    "generator : "
+    + (f"memory peak {peak / 2**20:.0f} MiB of {limit / 2**20:.0f} MiB · " if peak and limit else "")
+    + f"limit hits {gen.get('memory_limit_hits', '?')} · CPU throttled {gen.get('cpu_throttled_pct', '?')}% of periods"
+)
+if "host_swapped_in_mib" in gen:
+    print(f"host      : swapped in {gen['host_swapped_in_mib']} MiB, out {gen['host_swapped_out_mib']} MiB during the run")
+PY
+fi
+
 if [ -f "$host_out" ]; then
   valid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["valid"])' "$host_out" 2>/dev/null || echo '?')"
   echo
@@ -265,6 +371,9 @@ if [ -f "$host_out" ]; then
   elif [ "$answered" = "False" ]; then
     echo "            ⚠️  the platform refused more than it answered — this run measured an outage, not a capacity." >&2
     echo "                see .counters.aizzak_failed_requests, then the app log for the refusal's cause." >&2
+  elif [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validity"].get("generator_kept_up"))' "$host_out" 2>/dev/null)" = "False" ]; then
+    echo "            ⚠️  the GENERATOR ran short (memory limit or CPU throttling) — these latencies partly time k6." >&2
+    echo "                see .generator in the file." >&2
   elif [ "$valid" != "True" ]; then
     echo "            ⚠️  one of §0.1's conditions was not met — see .validity in the file." >&2
   fi

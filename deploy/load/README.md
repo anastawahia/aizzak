@@ -281,10 +281,41 @@ that does not match the files.** Both learned from the first §0.1-valid run
   It costs ~10 requests and leaves one conversation, one 9‑byte file and one
   indexed document behind; a preflight that only read could not prove the
   write path.
+- **And while it runs, `run.sh` watches the generator from outside.** Every
+  10 s it reads the k6 container's own cgroup (`cgroup_sample.sh`) into
+  `results/<run>.generator.log`, and at the end folds the verdict into the
+  archive as `generator` and `validity.generator_kept_up`: false if k6 hit
+  its memory limit even once, or was CPU‑throttled in more than 1 % of
+  periods after its first 30 s. It also records how much the *machine*
+  swapped during the run (recorded, not gated). The 2026‑09‑26 peak run is
+  why: k6 thrashed against its 2 GiB limit for minutes — 957 MiB swapped,
+  5.97 M major faults — before the kernel killed it at 17m29s, and nothing
+  in the output said its numbers had stopped being the platform's. The
+  service now has no swap (a generator out of memory dies at once) and
+  `GOMEMLIMIT` under the limit; a killed k6 exits 137, writes nothing, and
+  `run.sh` says so.
+
+**Where the generator's memory goes, measured.** An idle VU with this
+harness's init context costs ~0.65 MiB on k6 1.3.0 (0.40 MiB live, the rest
+GC headroom), and a peak run may allocate up to its `maxVUs`: 3,700 of them
+needed ~2.4 GiB before a single connection was open. So `ws_hold.js` holds
+**ten sockets per VU** (`LOAD_WS_SOCKETS_PER_VU`; `LOAD_WS_VUS` is still the
+*socket* population, and the split always divides it exactly), the upload
+document is built only in VUs that upload (it had been ~0.28 MiB of garbage
+and string in every VU), and the ceiling is now 2,350 VUs — ~1.0 GiB idle
+under the service's real limits, ~1.5 GiB at the peak of a 90 s smoke.
+
+**Index polls back off.** A fixed 2 s poll was 13.5 % of everything the app
+served on 2026‑09‑26 — 285 index VUs asking every 2 s once the workers fell
+behind, i.e. the harness adding ~140 rps exactly when the platform could
+least afford it. The interval is now a twentieth of the job's age, between
+`LOAD_INDEX_POLL_S` (2 s) and `LOAD_INDEX_POLL_MAX_S` (10 s): a healthy
+~50 s job is polled as before, and no e2e sample overshoots by more than ~5 %.
 
 Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
-`LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` · `LOAD_P95_GENERATION_S` ·
-`LOAD_UPLOAD_ORIGIN` · `LOAD_VERBOSE=1`.
+`LOAD_WS_SOCKETS_PER_VU` · `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` ·
+`LOAD_P95_GENERATION_S` · `LOAD_INDEX_POLL_MAX_S` · `LOAD_UPLOAD_ORIGIN` ·
+`LOAD_VERBOSE=1`.
 
 **`LOAD_UPLOAD_ORIGIN`** is the one address the generator is *handed* rather
 than configured with. `POST /files` answers with a URL presigned against
@@ -321,7 +352,9 @@ not meant to; what is being measured is the cost of TLS termination.
   `MediaGenerator`, which the plan puts out of scope.
 - **The load generator itself.** One k6 host driving 300 rps plus 1,500
   sockets can become the bottleneck before the platform does. Raise the file
-  descriptor limit (`ulimit -n 65535`), watch the generator's own CPU, and
+  descriptor limit (`ulimit -n 65535`), read `generator` in the result (§4 —
+  in a container run `run.sh` measures the generator's memory and CPU for
+  you), and
   treat `dropped_iterations > 0` in the summary as invalidating the rate the
   report claims — k6 drops iterations rather than queueing them when it runs
   out of VUs. **Measured, not theoretical:** the first smoke run put 37,283
@@ -394,7 +427,9 @@ The archived JSON leads with the four things that decide whether it counts:
 ```json
 { "profile": "peak", "valid": true,
   "validity": { "real_tokens": true, "tls_edge": true, "realistic_seed": true,
-                "platform_answered": true },
+                "platform_answered": true, "generator_kept_up": true },
+  "generator": { "memory_peak_bytes": 1575235584, "memory_limit_hits": 0,
+                 "cpu_throttled_pct": 0.4, "…": 0 },
   "run": { "commit": "…", "dirty": false, "images": { "app": "sha256:…" } },
   "seed": { "messages": 1000000, "…": 0 } }
 ```
@@ -402,9 +437,10 @@ The archived JSON leads with the four things that decide whether it counts:
 then `thresholds` (each budget, pass or fail), `latency` (p50/p95/p99 per
 metric and per scenario), `counters`, and the raw k6 metrics underneath.
 
-`validity` carries §0.1's three conditions and one more. The three say the
-run was *set up* as a baseline; `platform_answered` says there was a
-platform to measure — it is false when more of what the generator sent was
+`validity` carries §0.1's three conditions and two more. The three say the
+run was *set up* as a baseline; `generator_kept_up` says the thing doing the
+measuring was not itself the bottleneck (§4); `platform_answered` says there
+was a platform to measure — it is false when more of what the generator sent was
 refused than answered (`aizzak_failed_requests` rate ≥ 0.5, 429s excluded as
 in §7 item 4), or when nothing was sent at all. The 2026‑09‑20 peak run met
 all three conditions, failed 100 % of its requests, and said `valid: true`

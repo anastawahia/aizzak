@@ -69,6 +69,24 @@ export const WS_URL = `${BASE_URL.replace(/^http/, 'ws')}/api/v1/ws`;
 // latency table, as a very fast endpoint.
 export const AGENT_KEY = __ENV.LOAD_AGENT_KEY || 'rag_agent';
 
+// How many idle WebSockets one VU holds (`scenarios/ws_hold.js`). MEASURED on
+// k6 1.3.0 with this harness's init context: a VU costs ~0.65 MiB before it
+// opens anything (0.40 MiB live, the rest GC headroom), so 1,500 one-socket VUs
+// were ~1 GiB of a 2 GiB generator spent on JavaScript runtimes that only wait
+// -- and the 2026-09-26 peak run was killed by that limit at 17m29s. The
+// quantity §0 names is the SOCKET population; one VU's event loop holds ten
+// idle sockets as easily as one.
+export const WS_SOCKETS_PER_VU = Number(__ENV.LOAD_WS_SOCKETS_PER_VU || 10);
+
+// The largest count <= WS_SOCKETS_PER_VU that divides the population exactly,
+// so `vus × sockets` is the population the run claims and not a rounding of it.
+export function wsSocketsPerVu(population) {
+  for (let d = Math.min(WS_SOCKETS_PER_VU, population); d > 1; d--) {
+    if (population % d === 0) return d;
+  }
+  return 1;
+}
+
 // ── The object store, which is the one address k6 is handed rather than
 //    configured with ────────────────────────────────────────────────────────
 // `POST /files` answers with a PRESIGNED URL, and it is signed against

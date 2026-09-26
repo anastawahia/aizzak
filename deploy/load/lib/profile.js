@@ -17,6 +17,7 @@ import {
   TLS_GLOBAL_OPTIONS,
   assertRunnable,
   uploadTarget,
+  wsSocketsPerVu,
 } from './config.js';
 import { anyToken, assertTokensCoverRun, authHeaders, poolSize } from './auth.js';
 
@@ -27,6 +28,7 @@ const TREND_STATS = ['min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max', 'a
 export function buildOptions({ scale, durationS, wsVus }) {
   const s = (n) => n * scale;
   const duration = `${durationS}s`;
+  const socketsPerVu = wsSocketsPerVu(wsVus);
 
   return {
     ...TLS_GLOBAL_OPTIONS,
@@ -40,11 +42,15 @@ export function buildOptions({ scale, durationS, wsVus }) {
       stream: arrival('stream', s(STREAM_STARTS_PER_S), duration, 80, 400),
       index: arrival('indexFile', s(INDEX_STARTS_PER_S), duration, 150, 600),
       ws: {
-        // A POPULATION, not a rate -- see `scenarios/ws_hold.js`.
+        // A POPULATION, not a rate -- see `scenarios/ws_hold.js`. `wsVus` is
+        // the number of SOCKETS; each VU holds `socketsPerVu` of them
+        // (`lib/config.js` has the memory measurement that made that
+        // necessary), and learns how many from its scenario's env.
         executor: 'constant-vus',
         exec: 'wsHold',
-        vus: wsVus,
+        vus: wsVus / socketsPerVu,
         duration,
+        env: { LOAD_WS_SOCKETS_THIS_VU: String(socketsPerVu) },
         tags: { profile_part: 'ws' },
       },
     },
@@ -92,7 +98,7 @@ export function guard({ durationS, wsVus }) {
   const perUser = wsVus / poolSize();
   if (perUser > 3) {
     throw new Error(
-      `${wsVus} WS VUs across ${poolSize()} tokens is ${perUser.toFixed(1)} sockets per user; ` +
+      `${wsVus} WS sockets across ${poolSize()} tokens is ${perUser.toFixed(1)} per user; ` +
         'ws_connections_per_user is 5 and §0 assumes 3. Mint more tokens (README §2) -- ' +
         'otherwise the refusals this produces are the limiter, not a capacity finding.',
     );
