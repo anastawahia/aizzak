@@ -12,17 +12,29 @@
 // baseline comparable to the thing it is a baseline for.
 
 import http from 'k6/http';
-import { API } from '../lib/config.js';
+import { AGENT_KEY, API } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { graded } from '../lib/metrics.js';
-
-const AGENT_KEY = __ENV.LOAD_AGENT_KEY || 'rag_agent';
 
 export function browse() {
   const tok = tokenForVu();
   const slot = __ITER % 10;
 
-  if (slot < 4) return read(tok, 'conversations', `${API}/conversations?limit=20`);
+  if (slot < 4) {
+    // `agent_key` AND `space_id` are both REQUIRED query parameters -- threads
+    // are threaded per agent, and step 12 of the spaces plan (§3.7) narrowed
+    // the listing to one space as well. A request missing either is answered
+    // 422 by FastAPI before the handler runs, in ~26ms, WITHOUT touching the
+    // database: the 2026-09-26 run sent 9,993 of them in two minutes -- 31% of
+    // everything the edge saw -- and they landed in `http_req_duration{op:read}`
+    // as the fastest reads in the profile. `graded()` counted every one as a
+    // failure, and `p95<150ms` passed BECAUSE of them.
+    return read(
+      tok,
+      'conversations',
+      `${API}/conversations?agent_key=${AGENT_KEY}&space_id=${tok.spaceId}&limit=20`,
+    );
+  }
   if (slot < 6) return read(tok, 'spaces', `${API}/spaces?limit=20`);
   if (slot === 6) {
     return read(tok, 'files', `${API}/files?space_id=${tok.spaceId}&limit=20`);

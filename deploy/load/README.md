@@ -267,10 +267,37 @@ that does not match the files.** Both learned from the first §0.1-valid run
   app log for `firebase_auth.jwks_fetch_failed`; `502/503` → no healthy
   upstream). An aborted `setup()` still leaves a file: it says
   `platform_answered: false`, and `run.sh` says no load was generated.
+- **Then every route the profile will drive, once each** — the real query
+  parameters, the real payloads, including the whole index chain (register →
+  PUT to the object store → complete → index → poll). That probe proves the
+  platform is up; this one proves the *harness still speaks its API*, and on
+  2026‑09‑26 it did not: `GET /conversations` had gained two required query
+  parameters and answered 422 to 31% of the run's requests in 26 ms — the
+  fastest "reads" in the profile, inside the 150 ms budget it then passed.
+  A refusal here names the route, the status, the code and whose fault it
+  is (`422` → the scenario drifted from the router; `409
+  spaces.quota_exceeded` → that space is at its 1 GiB ceiling, so the probe
+  samples five spaces across the pool before calling the corpus unindexable).
+  It costs ~10 requests and leaves one conversation, one 9‑byte file and one
+  indexed document behind; a preflight that only read could not prove the
+  write path.
 
 Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
 `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` · `LOAD_P95_GENERATION_S` ·
-`LOAD_VERBOSE=1`.
+`LOAD_UPLOAD_ORIGIN` · `LOAD_VERBOSE=1`.
+
+**`LOAD_UPLOAD_ORIGIN`** is the one address the generator is *handed* rather
+than configured with. `POST /files` answers with a URL presigned against
+`MINIO_PUBLIC_ENDPOINT` — `localhost:19000`, what a browser on the host can
+reach — and `localhost` inside the k6 container is the generator itself, so
+every upload of the 2026‑09‑26 run died with `connection refused` and the
+index scenario recorded nothing. SigV4 covers the **host header**, not the
+address dialled, so the generator dials `http://minio:9000` (the Compose
+default) and sends the signed host as `Host`. Measured, one presigned PUT:
+as signed → `0`, rewritten with the `Host` header → `200`, rewritten without
+it → `403 SignatureDoesNotMatch`. The platform's own setting is never
+touched, and the archived result records what was dialled in
+`run.upload_origin`.
 
 **The edge is not optional.** Condition (2) — through TLS and the real nginx
 edge, never `app:8000` — is the one condition the harness enforces itself:

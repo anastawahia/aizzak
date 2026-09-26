@@ -49,7 +49,7 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.lifecycle import Disposable
-from app.framework.errors import NotFoundError, RateLimitedError, UnauthorizedError
+from app.framework.errors import AppError, NotFoundError, RateLimitedError, UnauthorizedError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.providers.resolver import ResolvedProvider
@@ -186,6 +186,12 @@ def _make_app(
     @app.get("/api/v1/_boom")
     async def _boom(ctx: Context) -> dict[str, str]:
         raise ValueError("secret detail 42")
+
+    @app.get("/api/v1/_internal")
+    async def _internal(ctx: Context) -> dict[str, str]:
+        # A MODELLED server failure: what every repository's `_translate`
+        # raises when the database refuses a write it should have taken.
+        raise AppError("the database refused the write")
 
     @app.get("/api/v1/_throttled")
     async def _throttled(ctx: Context) -> dict[str, str]:
@@ -564,6 +570,54 @@ def test_a_wrong_verb_is_405_method_not_allowed() -> None:
     assert response.status_code == 405
     assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
     assert response.json()["code"] == "common.method_not_allowed"
+
+
+def test_a_modelled_server_error_leaves_exactly_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An `AppError` is the app's own answer and is not logged -- with one
+    exception, added after two capacity runs measured the cost of the rule
+    being absolute. A 5xx says the SERVER failed, and a platform that can
+    answer half a million requests `common.internal` without writing a line
+    cannot be diagnosed from its own logs at all (`main.py`'s handler carries
+    both measurements). The line names the code and the correlation id, and
+    carries the exception, because the status alone is what nginx already
+    had."""
+    client = TestClient(_make_app())
+    with caplog.at_level(logging.ERROR):
+        response = client.get("/api/v1/_internal", headers=_auth())
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+    matches = [
+        record
+        for record in caplog.records
+        if record.name == "app.api.main" and record.levelno >= logging.ERROR
+    ]
+    assert len(matches) == 1
+    assert matches[0].getMessage() == "api.server_error"
+    assert matches[0].path == "/api/v1/_internal"  # type: ignore[attr-defined]
+    assert matches[0].code == "common.internal"  # type: ignore[attr-defined]
+    assert matches[0].status == 500  # type: ignore[attr-defined]
+    assert matches[0].correlation_id == response.json()["correlation_id"]  # type: ignore[attr-defined]
+    assert "the database refused the write" in caplog.text
+
+
+def test_a_client_side_app_error_leaves_no_line(caplog: pytest.LogCaptureFixture) -> None:
+    """The other half, and the one that keeps the line above worth reading: a
+    404 is the client's business, and a peak profile that misses on 40% of its
+    reads would otherwise write 120,000 error lines a minute for a platform
+    that is behaving exactly as designed."""
+    client = TestClient(_make_app())
+    with caplog.at_level(logging.ERROR):
+        assert client.get("/api/v1/_notfound", headers=_auth()).status_code == 404
+        assert client.get("/api/v1/_throttled", headers=_auth()).status_code == 429
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "app.api.main" and record.levelno >= logging.ERROR
+    ]
 
 
 def test_an_unmapped_http_status_degrades_to_internal() -> None:

@@ -25,11 +25,10 @@ import http from 'k6/http';
 // one is what ships. `k6/timers` IS graduated and is imported as such.
 import { WebSocket } from 'k6/experimental/websockets';
 import { clearTimeout, setTimeout } from 'k6/timers';
-import { API, WS_URL } from '../lib/config.js';
+import { AGENT_KEY, API, WS_URL } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { failures, graded, ttft } from '../lib/metrics.js';
 
-const AGENT_KEY = __ENV.LOAD_AGENT_KEY || 'rag_agent';
 const PROMPT = __ENV.LOAD_PROMPT || 'لخّص لي أهمّ ثلاث نقاط في المستندات المتاحة.';
 // Generous next to a 1.2s budget, and it is not a budget: it bounds a VU that
 // would otherwise hold a socket for the rest of the run when the provider

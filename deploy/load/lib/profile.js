@@ -5,6 +5,8 @@
 
 import http from 'k6/http';
 import {
+  AGENT_KEY,
+  API,
   BASE_URL,
   BROWSE_RPS_PEAK,
   BUDGET_MS,
@@ -14,6 +16,7 @@ import {
   TARGET,
   TLS_GLOBAL_OPTIONS,
   assertRunnable,
+  uploadTarget,
 } from './config.js';
 import { anyToken, assertTokensCoverRun, authHeaders, poolSize } from './auth.js';
 
@@ -96,6 +99,7 @@ export function guard({ durationS, wsVus }) {
   }
 
   assertPlatformAnswers();
+  assertEveryRouteAnswers();
   return { started_at: new Date().toISOString(), ws_sockets_per_user: round2(perUser) };
 }
 
@@ -123,21 +127,193 @@ function assertPlatformAnswers() {
       tags: { op: 'preflight', route: 'preflight' },
     });
     if (res.status !== 200) {
-      throw new Error(`preflight: ${describeRefusal(res)} (probe ${i + 1} of ${PREFLIGHT_PROBES})`);
+      throw new Error(
+        `preflight: ${describeRefusal(res, 'GET /api/v1/me/context')} ` +
+          `(probe ${i + 1} of ${PREFLIGHT_PROBES})`,
+      );
     }
   }
 }
 
-function describeRefusal(res) {
+// ...and then EVERY route the profile is about to drive, once each.
+//
+// The probe above proves there is a platform. It does not prove the harness
+// still speaks its API, and on 2026-09-26 it did not: `GET /conversations`
+// had gained two required query parameters (`agent_key`, and `space_id` at
+// the spaces plan's step 12), the scenario still sent `?limit=20`, and 9,993
+// of the run's first 32,376 edge requests -- 31% -- were 422s answered in
+// 26ms without reaching the database. They are the fastest "reads" a profile
+// can produce, they sit inside `http_req_duration{op:read}`, and the 150ms
+// budget passes because of them. The same run lost its whole index scenario
+// to an upload address the generator could not dial.
+//
+// Neither is a platform fault and neither is visible in a percentile, so both
+// are refused here instead: one request per route, the real parameters, the
+// real payloads. It costs ~10 requests and about a second.
+//
+// It is NOT free of side effects, and that is deliberate: a preflight that
+// only read could not prove the write path. One conversation, one 9-byte
+// file and one indexed document per run -- against a seed of 100,000 files
+// and a run that creates ~45,000 rows of its own, that is noise, and a probe
+// that lies about the path it checked would not be.
+//
+// The WebSocket scenarios are NOT probed here: `k6/experimental/websockets`
+// is event-driven and `setup()` has nothing to await it with. A dead socket
+// path shows up in the first seconds of the run as a rejection rate, which is
+// the case this file cannot improve on.
+function assertEveryRouteAnswers() {
+  const tok = anyToken();
+  const atTok = (t, route) => ({ headers: authHeaders(t), tags: { op: 'preflight', route } });
+  const at = (route) => atTok(tok, route);
+
+  probe(
+    'GET /api/v1/conversations',
+    http.get(
+      `${API}/conversations?agent_key=${AGENT_KEY}&space_id=${tok.spaceId}&limit=20`,
+      at('conversations'),
+    ),
+    [200],
+  );
+  probe('GET /api/v1/spaces', http.get(`${API}/spaces?limit=20`, at('spaces')), [200]);
+  probe(
+    'GET /api/v1/files',
+    http.get(`${API}/files?space_id=${tok.spaceId}&limit=20`, at('files')),
+    [200],
+  );
+  probe(
+    'POST /api/v1/me/heartbeat',
+    http.post(`${API}/me/heartbeat`, null, at('heartbeat')),
+    [200, 204],
+  );
+  probe(
+    'POST /api/v1/conversations',
+    http.post(
+      `${API}/conversations`,
+      JSON.stringify({ space_id: tok.spaceId, agent_key: AGENT_KEY, title: 'load preflight' }),
+      at('create_conversation'),
+    ),
+    [201],
+  );
+  probe(
+    'POST /api/v1/knowledge/search',
+    http.post(
+      `${API}/knowledge/search`,
+      JSON.stringify({ query: 'preflight', space_id: tok.spaceId, k: 1 }),
+      at('knowledge_search'),
+    ),
+    [200],
+  );
+
+  // The index chain, in the order the scenario runs it, up to the worker.
+  //
+  // Its first call is the one probe that can be refused for a reason that is
+  // about the TOKEN rather than about the platform: a space at its 1 GiB
+  // ceiling answers `409 spaces.quota_exceeded`. On the dev-2026-09-17 corpus
+  // 13 of the pool's 500 spaces are over it -- the seeder writes rows
+  // directly and the ceiling is only enforced on registration -- and they are
+  // pool entries 0 to 12, because the token file is ordered by space size.
+  // So the probe SPREADS its attempts across the pool rather than walking its
+  // head, and gives up only when every sample is full, which is a corpus in
+  // which the index scenario cannot register anything.
+  const body = 'preflight';
+  const stride = Math.max(1, Math.floor(poolSize() / QUOTA_PROBES));
+  let reg = null;
+  let regTok = tok;
+  for (let i = 0; i < QUOTA_PROBES; i++) {
+    regTok = anyToken(i * stride);
+    reg = http.post(
+      `${API}/files`,
+      JSON.stringify({
+        space_id: regTok.spaceId,
+        name: `preflight-${Date.now()}.txt`,
+        content_type: 'text/plain',
+        size_bytes: body.length,
+      }),
+      atTok(regTok, 'register_file'),
+    );
+    if (reg.status === 201 || !isSpaceFull(reg)) break;
+  }
+  probe(
+    'POST /api/v1/files',
+    reg,
+    [201],
+    isSpaceFull(reg)
+      ? `all ${QUOTA_PROBES} spaces sampled across the pool are at their byte ceiling, so the ` +
+        'index scenario would register nothing for the whole run. Purge the corpus ' +
+        '(`python -m app.ops.purge --help`) or reseed it below the quota the API enforces.'
+      : undefined,
+  );
+  const fileId = reg.json('file_id');
+  const target = uploadTarget(reg.json('upload_url'));
+  probe(
+    `PUT ${target.url.split('?')[0]}`,
+    http.put(target.url, body, {
+      headers: { 'Content-Type': 'text/plain', ...target.headers },
+      tags: { op: 'preflight', route: 'minio_put' },
+    }),
+    [200],
+    'The presigned URL the platform issued names an address this generator cannot reach, ' +
+      'or it reached one that rejects the signature. `LOAD_UPLOAD_ORIGIN` is what the ' +
+      "generator dials and the URL's own host is what it sends as `Host` -- see " +
+      '`lib/config.js`. Every upload of the run would have failed here.',
+  );
+  probe(
+    'POST /api/v1/files/{id}/complete',
+    http.post(
+      `${API}/files/${fileId}/complete`,
+      JSON.stringify({ checksum: null }),
+      atTok(regTok, 'complete_file'),
+    ),
+    [200],
+  );
+  const idx = probe(
+    'POST /api/v1/knowledge/documents',
+    http.post(`${API}/knowledge/documents`, JSON.stringify({ file_id: fileId }), {
+      headers: authHeaders(regTok, { 'Idempotency-Key': `preflight-${fileId}` }),
+      tags: { op: 'preflight', route: 'index_file' },
+    }),
+    [202],
+  );
+  probe(
+    'GET /api/v1/knowledge/documents/{id}',
+    http.get(`${API}/knowledge/documents/${idx.json('id')}`, atTok(regTok, 'get_document')),
+    [200],
+  );
+}
+
+// How many of the pool's spaces the registration probe will try before it
+// calls a corpus unindexable.
+const QUOTA_PROBES = 5;
+
+function isSpaceFull(res) {
+  if (!res || res.status !== 409) return false;
+  try {
+    return JSON.parse(res.body).code === 'spaces.quota_exceeded';
+  } catch {
+    return false;
+  }
+}
+
+function probe(what, res, want, hint) {
+  if (!want.includes(res.status)) {
+    throw new Error(
+      `preflight: ${describeRefusal(res, what, want)}${hint ? `\n  ${hint}` : ''}`,
+    );
+  }
+  return res;
+}
+
+function describeRefusal(res, what, want) {
   let code = '';
   try {
     code = JSON.parse(res.body).code || '';
   } catch {
     code = '';
   }
-  const where = `${BASE_URL}/api/v1/me/context answered ${res.status}${code ? ` ${code}` : ''}`;
+  const expected = want && want.length ? ` (wanted ${want.join('/')})` : '';
+  const where = `${what} answered ${res.status}${code ? ` ${code}` : ''}${expected}`;
   if (res.status === 0) {
-    return `${where} -- no edge at ${BASE_URL} (${res.error || 'connection failed'}).`;
+    return `${where} -- nothing answered (${res.error || 'connection failed'}).`;
   }
   if (res.status === 401) {
     return (
@@ -145,10 +321,24 @@ function describeRefusal(res) {
       '`python -m app.ops.mint_load_tokens refresh`, then `verify` (README §2).'
     );
   }
+  if (res.status === 403) {
+    return `${where} -- authenticated but not permitted; the pool's user lacks this route's right.`;
+  }
+  if (res.status === 404 || res.status === 405) {
+    return `${where} -- the route moved or changed method. The harness and the API have drifted.`;
+  }
+  if (res.status === 422) {
+    // The harness's fault, not the platform's, and the body names the field.
+    return (
+      `${where} -- the request is not the shape this API accepts (a required query parameter ` +
+      `or body field). The scenario and the router have drifted; fix the scenario. ` +
+      `Body: ${String(res.body).slice(0, 300)}`
+    );
+  }
   if (res.status === 500) {
     return (
-      `${where} -- the platform cannot verify tokens at all. ` +
-      'Typically a replica with no Firebase public keys: a fresh container that cannot reach ' +
+      `${where} -- the platform cannot serve this route at all. If it is every route, typically ` +
+      'a replica with no Firebase public keys: a fresh container that cannot reach ' +
       'www.googleapis.com. Read the app log for `firebase_auth.jwks_fetch_failed`, fix the route, ' +
       'and probe again -- the load would only have measured this refusal.'
     );

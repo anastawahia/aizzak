@@ -74,9 +74,12 @@ export function tokenForVu() {
 }
 
 // For code that runs outside a VU (`setup()`, where `__VU` is 0): one real
-// token, any of them -- the pre-flight probe in `profile.js`.
-export function anyToken() {
-  return pool[0];
+// token, any of them -- the pre-flight probes in `profile.js`. The index is
+// for the one probe that can be legitimately refused for the token it picked
+// rather than for the platform's state: a space at its byte ceiling answers
+// `409 spaces.quota_exceeded`, which says nothing about the other 499.
+export function anyToken(index) {
+  return pool[(index || 0) % pool.length];
 }
 
 export function authHeaders(tok, extra) {

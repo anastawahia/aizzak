@@ -14,7 +14,7 @@
 
 import http from 'k6/http';
 import { sleep } from 'k6';
-import { API } from '../lib/config.js';
+import { API, uploadTarget } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { failures, graded, indexEndToEnd } from '../lib/metrics.js';
 
@@ -54,8 +54,14 @@ export function indexFile() {
   // URL is signed against `MINIO_PUBLIC_ENDPOINT` (SigV4 covers the host, so
   // it cannot be proxied), which is also how a browser uploads in production.
   // Condition (٢) of §0.1 is about the API path, and this is not it.
-  const put = http.put(uploadUrl, BODY, {
-    headers: { 'Content-Type': 'text/plain' },
+  //
+  // What the generator CAN change is the address it dials, while sending the
+  // host the URL was signed against -- `uploadTarget()` in `lib/config.js`
+  // explains why that is necessary from inside a container and why it leaves
+  // the platform untouched.
+  const target = uploadTarget(uploadUrl);
+  const put = http.put(target.url, BODY, {
+    headers: { 'Content-Type': 'text/plain', ...target.headers },
     tags: { op: 'upload', route: 'minio_put' },
   });
   if (!graded(put, 'minio_put', [200])) return;

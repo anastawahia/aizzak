@@ -9,7 +9,14 @@
 // waves against this file, and a comparison between two runs whose seeds
 // differed by an order of magnitude is not a comparison.
 
-import { seedIsRealistic, BASE_URL, P95_GENERATION_S, SEED, TARGET } from './config.js';
+import {
+  seedIsRealistic,
+  BASE_URL,
+  P95_GENERATION_S,
+  SEED,
+  TARGET,
+  UPLOAD_ORIGIN,
+} from './config.js';
 import { TOKENS_ARE_REAL } from './auth.js';
 
 // k6 hands `handleSummary` the whole end-of-test dataset; this reshapes the
@@ -54,6 +61,10 @@ export function buildSummary(profile, data) {
       dirty: __ENV.RUN_DIRTY === '1',
       images: safeJson(__ENV.RUN_IMAGES) || {},
       base_url: BASE_URL,
+      // Where the generator DIALLED presigned uploads, which is not
+      // necessarily the address they were signed against (`lib/config.js`).
+      // Empty means it used them exactly as issued.
+      upload_origin: UPLOAD_ORIGIN,
       k6_version: __ENV.RUN_K6_VERSION || '',
       host: __ENV.RUN_HOST || '',
     },

@@ -61,6 +61,51 @@ export const BASE_URL = (__ENV.LOAD_BASE_URL || 'https://localhost').replace(/\/
 export const API = `${BASE_URL}/api/v1`;
 export const WS_URL = `${BASE_URL.replace(/^http/, 'ws')}/api/v1/ws`;
 
+// The agent the scenarios drive. ONE place, because two of them name it and
+// the API narrows by it: `GET /conversations` is per-agent AND per-space (both
+// REQUIRED query parameters, `api/v1/routers/conversations.py`), so a listing
+// asked for a different agent than the one `stream` and `browse` write under
+// is a perfectly valid request that returns an empty page -- which reads, in a
+// latency table, as a very fast endpoint.
+export const AGENT_KEY = __ENV.LOAD_AGENT_KEY || 'rag_agent';
+
+// ── The object store, which is the one address k6 is handed rather than
+//    configured with ────────────────────────────────────────────────────────
+// `POST /files` answers with a PRESIGNED URL, and it is signed against
+// `MINIO_PUBLIC_ENDPOINT` -- `localhost:19000` here, because that is the
+// address a browser ON THE HOST can reach. Inside the generator's container
+// `localhost` is the generator itself, so every upload of the 2026-09-26 peak
+// run died with `dial tcp 127.0.0.1:19000: connect: connection refused`, and
+// the index scenario -- the ONLY source of `aizzak_index_e2e_ms`, which §3's
+// replica equation takes as an input -- recorded nothing for nineteen minutes.
+//
+// SigV4 covers the HOST HEADER, not the address dialled. So the generator
+// dials a name it can resolve and sends the host the URL was signed against.
+// MEASURED on this stack, one presigned PUT signed for `localhost:19000`:
+//
+//   as signed, from the container         ->   0  dial tcp 127.0.0.1:19000 refused
+//   minio:9000 + `Host: localhost:19000`  -> 200
+//   minio:9000, no Host header            -> 403 SignatureDoesNotMatch
+//
+// The third line is why this is a Host header and not a URL rewrite, and why
+// `MINIO_PUBLIC_ENDPOINT` is not repointed at `minio:9000` for the duration of
+// a run: that would be changing the platform under test to suit the
+// generator. Nothing about the system under test changes here -- the same
+// bytes reach the same MinIO with the same signature.
+//
+// Empty (the default) leaves presigned URLs exactly as the platform issued
+// them, which is right for a host-mode run where `localhost:19000` IS the
+// object store. `docker-compose.yml` sets it for the container.
+export const UPLOAD_ORIGIN = (__ENV.LOAD_UPLOAD_ORIGIN || '').replace(/\/+$/, '');
+
+export function uploadTarget(url) {
+  const m = /^(https?:\/\/)([^/]+)(.*)$/.exec(url);
+  if (!UPLOAD_ORIGIN || !m) return { url, headers: {} };
+  // `Host` is a request header k6 honours (it sets the request's host rather
+  // than adding a duplicate header), which is the whole mechanism.
+  return { url: `${UPLOAD_ORIGIN}${m[3]}`, headers: { Host: m[2] } };
+}
+
 // ── The three conditions §0.1 says void the whole result ──────────────────
 // Written as VALUES rather than as prose in the README, because prose is not
 // checked and this is: `validity()` below folds them into the run summary, and

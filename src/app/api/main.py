@@ -117,6 +117,10 @@ REQUEST_ID_HEADER = "X-Request-Id"
 # structurally different from every other status the handler sees, and a
 # bare literal in that comparison would read like an ordinary error code.
 RATE_LIMITED_STATUS = 429
+# The line where an error stops being the client's business and becomes the
+# platform's own failure -- see `_handle_app_error` for the two runs that had
+# to be diagnosed without it.
+SERVER_ERROR_STATUS = 500
 
 # The `default` response every operation declares (6.2-ب). FastAPI renders a
 # `model` under `application/json`, so `_retype_problem_responses` moves it to
@@ -519,6 +523,34 @@ def _install_problem_handlers(app: FastAPI) -> None:
         # `LimitDecision.retry_after_s`) can say when. Every other `AppError`
         # answers exactly as before.
         retry_after_s = exc.retry_after_s if isinstance(exc, RateLimitedError) else None
+        if exc.status >= SERVER_ERROR_STATUS:
+            # An `AppError` is a DELIBERATE answer, so it is normally not
+            # logged -- a 404 or a 409 is the client's business and logging it
+            # under load is how an access log gets written twice. A 5xx is
+            # different by definition: the catalog's own word for it is that
+            # the server failed, and until this line the platform could fail
+            # in complete silence.
+            #
+            # MEASURED, twice. On 2026-09-20 a peak run answered 526,629
+            # requests `common.internal` in ~2ms each over thirty minutes and
+            # left NOTHING in any log; the cause (three replicas that never
+            # obtained Firebase's public keys) had to be reconstructed from an
+            # absence -- no outbound 200 to googleapis in an httpx line. On
+            # 2026-09-26 a 25-second smoke answered 357 of its 4,485 requests
+            # 500 across three unrelated read routes, and again the only
+            # evidence was nginx's status column. `_handle_unexpected` below
+            # has always logged the exceptions nobody modelled; this is the
+            # same guarantee for the ones we did.
+            _logger.error(
+                "api.server_error",
+                extra={
+                    "path": request.url.path,
+                    "code": exc.code,
+                    "status": exc.status,
+                    "correlation_id": correlation_id,
+                },
+                exc_info=exc,
+            )
         if exc.status == RATE_LIMITED_STATUS:
             # Wave 0 step 0.2. Counted by STATUS rather than by type, because
             # this metric answers "how much load was shed", and a 429 raised

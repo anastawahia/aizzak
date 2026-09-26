@@ -2763,6 +2763,14 @@ services:
       # Inside this network the edge is `nginx`; `localhost` here is the
       # generator's own loopback. `run.sh` refuses the latter outright.
       LOAD_BASE_URL: ${LOAD_BASE_URL:-https://nginx}
+      # And the same sentence for the object store. `POST /files` hands back a
+      # URL signed against `MINIO_PUBLIC_ENDPOINT` (`localhost:19000` -- what a
+      # browser on the HOST can reach); `localhost` in here is the generator.
+      # The 2026-09-26 peak run lost its entire index scenario to that, so the
+      # generator dials this address and sends the signed host as `Host`. See
+      # `lib/config.js` `uploadTarget()` for the measurement, and for why the
+      # platform's own setting is not touched.
+      LOAD_UPLOAD_ORIGIN: ${LOAD_UPLOAD_ORIGIN:-http://minio:9000}
       LOAD_TOKEN_FILE: ${LOAD_TOKEN_FILE:-/load/tokens.json}
       LOAD_OUT: ${LOAD_OUT-}
       LOAD_DURATION_S: ${LOAD_DURATION_S-}
