@@ -556,7 +556,7 @@ html{ scroll-behavior:smooth; }
           <tr><td class="k">0.2</td><td>مقاييس RED على كلّ طلب (معدّل · أخطاء · مدّة)</td><td><span class="chip chip-auto">مكتملة</span></td></tr>
           <tr><td class="k">0.3</td><td>Prometheus و Grafana داخل Compose</td><td><span class="chip chip-auto">مكتملة</span></td></tr>
           <tr><td class="k">0.4</td><td><code>pg_stat_statements</code> — أبطأ الاستعلامات</td><td><span class="chip chip-block">الأداة تمّت · القبول محجوب</span></td></tr>
-          <tr><td class="k">0.5</td><td><b>خطّ الأساس المُوثَّق</b> ← <code>docs/capacity-baseline.md</code></td><td><span class="chip chip-block">محجوبةٌ لم تبدأ</span></td></tr>
+          <tr><td class="k">0.5</td><td><b>خطّ الأساس المُوثَّق</b> ← <code>docs/capacity-baseline.md</code></td><td><span class="chip chip-auto">مكتملة · 2026‑09‑26</span></td></tr>
           <tr><td class="k">0.6</td><td>سجلّاتٌ مهيكلةٌ ومجمَّعة</td><td><span class="chip chip-auto">مكتملة</span></td></tr>
         </tbody>
       </table>
@@ -2106,7 +2106,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
       <div class="step-body">
         <div class="step-head">
           <h3>تثبيت خطّ الأساس</h3>
-          <span class="chip chip-human">تنتظر إدخالك</span>
+          <span class="chip chip-auto">تمّت · 2026‑09‑26</span>
           <span class="chip chip-block">الفعل الذي يُغلق الموجة صفر</span>
         </div>
 
@@ -2130,6 +2130,20 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
           <p>
             الخطوات <code>1.1</code> و<code>1.2</code> و<code>2.1</code> و<code>3.4</code> كلُّها تنتظر شطراً من قبولها عند هذا الرقم.
             وحتّى يُكتب، تبقى كلُّ الموجات الثماني بلا مرجعٍ يُقاس عليه.
+          </p>
+        </div>
+
+        <div class="note ok">
+          <span class="lbl">مُثبَّت — 2026‑09‑26</span>
+          <p>
+            <code>docs/capacity-baseline.md</code> مكتوبة، من تشغيلِ ذروةٍ كاملٍ بمفاتيح <code>م‑8</code> مُطفأةً كلِّها.
+            القراءةُ والكتابةُ داخل ميزانيّتهما حتّى <span class="num">100</span> طلب/ث وتسقطان عند <span class="num">150</span>،
+            والسقفُ نحو <span class="num">190</span> طلباً/ث مخدوماً.
+            والموردُ إنتاجيّةُ معاملات قاعدة البيانات: نحو <span class="num">1,300</span> معاملة/ث، بسبعِ معاملاتٍ لكلّ طلب.
+          </p>
+          <p>
+            <b>والتالي البندُ الثالث في الجدول أعلاه</b>، بمفتاحٍ واحدٍ لكلّ خطوة: تشغيلٌ يُشعَل فيه مفتاحُ الخطوة المقيسة وحدَه،
+            بعد أن يفرغ طابورُ الفهرسة، ومع <code>cadvisor</code> مُشغَّلاً (القواعدُ في <code>§8</code> من الوثيقة).
           </p>
         </div>
       </div>
@@ -2172,7 +2186,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
         </tr>
         <tr>
           <td class="n"><a href="#s20">20</a></td>
-          <td><b>كتابة <code>docs/capacity-baseline.md</code></b></td>
+          <td><b>كتابة <code>docs/capacity-baseline.md</code></b> <span class="chip chip-auto">تمّت · 2026‑09‑26</span></td>
           <td>تبقى الموجات 1–8 بلا مرجعٍ يُقاس عليه، ويبقى الحاجبُ مفتوحاً في الوثيقة.</td>
         </tr>
       </tbody>
@@ -2295,7 +2309,7 @@ out       : deploy/load/results/peak-20260910T…Z.json</pre>
   <div class="wrap stack gap-m">
     <p style="max-width:68ch">
       كلُّ رقمٍ ومسارٍ في هذه الصفحة مقروءٌ من المستودع على الفرع <code>capacity</code> بتاريخ 2026‑09‑10
-      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16، وبالتشغيل الذي قاس لا شيء في 2026‑09‑21، وبتشغيلَي 2026‑09‑26)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
+      (وحُدِّثت بالأداة والحصّة في 2026‑09‑13، وبملاحظة المساحة الفارغة في 2026‑09‑16، وبالتشغيل الذي قاس لا شيء في 2026‑09‑21، وبتشغيلات 2026‑09‑26 وخطِّ الأساس الذي ثبّتته)، لا من الذاكرة. والمصادرُ المُلزِمة — عند أيّ اختلاف، الصوابُ فيها لا هنا:
     </p>
     <p class="paths">
       docs/capacity-plan.md  ·  docs/capacity-status.md  ·  deploy/load/README.md<br>
