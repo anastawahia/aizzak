@@ -422,12 +422,13 @@ not meant to; what is being measured is the cost of TLS termination.
 
 ## 6. Reading the result
 
-The archived JSON leads with the four things that decide whether it counts:
+The archived JSON leads with the things that decide whether it counts:
 
 ```json
 { "profile": "peak", "valid": true,
   "validity": { "real_tokens": true, "tls_edge": true, "realistic_seed": true,
-                "platform_answered": true, "generator_kept_up": true },
+                "platform_answered": true, "rate_delivered": true,
+                "generator_kept_up": true },
   "generator": { "memory_peak_bytes": 1575235584, "memory_limit_hits": 0,
                  "cpu_throttled_pct": 0.4, "…": 0 },
   "run": { "commit": "…", "dirty": false, "images": { "app": "sha256:…" } },
@@ -437,7 +438,7 @@ The archived JSON leads with the four things that decide whether it counts:
 then `thresholds` (each budget, pass or fail), `latency` (p50/p95/p99 per
 metric and per scenario), `counters`, and the raw k6 metrics underneath.
 
-`validity` carries §0.1's three conditions and two more. The three say the
+`validity` carries §0.1's three conditions and three more. The three say the
 run was *set up* as a baseline; `generator_kept_up` says the thing doing the
 measuring was not itself the bottleneck (§4); `platform_answered` says there
 was a platform to measure — it is false when more of what the generator sent was
@@ -445,6 +446,11 @@ refused than answered (`aizzak_failed_requests` rate ≥ 0.5, 429s excluded as
 in §7 item 4), or when nothing was sent at all. The 2026‑09‑20 peak run met
 all three conditions, failed 100 % of its requests, and said `valid: true`
 until this field existed; its percentiles describe the error path.
+`rate_delivered` says the profile's arrival rate actually arrived: it is false
+when k6 recorded any `dropped_iterations` — it ran out of VUs because the
+responses were slow enough to hold them all — and the rate in `targets` was
+then never offered. The 2026‑09‑26 peak run dropped 264,140 arrivals (about
+half), every endpoint's p50 sat near 7 s, and the file said `valid: true`.
 
 Rate metrics in `counters` are objects, not numbers: `{ "rate": 1, "count":
 526629, "total": 526629 }`, where `count` is the samples in which the metric

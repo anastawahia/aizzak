@@ -374,6 +374,9 @@ if [ -f "$host_out" ]; then
   elif [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validity"].get("generator_kept_up"))' "$host_out" 2>/dev/null)" = "False" ]; then
     echo "            ⚠️  the GENERATOR ran short (memory limit or CPU throttling) — these latencies partly time k6." >&2
     echo "                see .generator in the file." >&2
+  elif [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validity"].get("rate_delivered"))' "$host_out" 2>/dev/null)" = "False" ]; then
+    echo "            ⚠️  k6 DROPPED arrivals (ran out of VUs) — the profile's rate was never offered; this was a closed-loop run." >&2
+    echo "                see .counters.dropped_iterations against .counters.iterations." >&2
   elif [ "$valid" != "True" ]; then
     echo "            ⚠️  one of §0.1's conditions was not met — see .validity in the file." >&2
   fi

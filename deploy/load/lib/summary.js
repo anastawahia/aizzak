@@ -38,16 +38,25 @@ export function buildSummary(profile, data) {
     // path, not the platform. (429s are not failures here, exactly as in
     // §7 item 4: a limiter shedding load is the platform answering.)
     platform_answered: failedRate(data) < 0.5,
+    // A fifth, learned on 2026-09-26: `profile.js` has always said a non-zero
+    // `dropped_iterations` invalidates the rate the report claims, and
+    // nothing here read it. That run dropped 264,140 arrivals -- about half
+    // of what the profile offered -- because every VU was parked on a 7s
+    // response, and the file said `valid: true` for a 300 rps peak the
+    // platform was never actually sent. A constant-arrival-rate profile that
+    // did not arrive at its rate is a closed-loop test wearing its name.
+    rate_delivered: droppedIterations(data) === 0,
   };
   validity.valid =
     validity.real_tokens &&
     validity.tls_edge &&
     validity.realistic_seed &&
-    validity.platform_answered;
+    validity.platform_answered &&
+    validity.rate_delivered;
 
   return {
     profile,
-    // A run that fails any of the four conditions is not a baseline. Writing
+    // A run that fails any of the five conditions is not a baseline. Writing
     // `false` into the file is what stops it becoming one by being the only
     // number anybody kept.
     valid: validity.valid,
@@ -124,6 +133,13 @@ function failedRate(data) {
   const v = ((data.metrics || {}).aizzak_failed_requests || {}).values || {};
   const samples = (v.passes || 0) + (v.fails || 0);
   return samples > 0 && typeof v.rate === 'number' ? v.rate : 1;
+}
+
+// Absent means k6 never had to drop one -- the metric is only emitted on the
+// first drop -- so 0 is the honest reading of "not there".
+function droppedIterations(data) {
+  const v = ((data.metrics || {}).dropped_iterations || {}).values || {};
+  return v.count || 0;
 }
 
 function counterTable(data) {
