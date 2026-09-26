@@ -25,35 +25,48 @@ import { anyToken, assertTokensCoverRun, authHeaders, poolSize } from './auth.js
 // carry neither p50 by that name nor p99 at all.
 const TREND_STATS = ['min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max', 'avg', 'count'];
 
-export function buildOptions({ scale, durationS, wsVus }) {
+// The five-part mix every profile runs. `peak`/`average` run ONE set for the
+// whole duration; `step` runs one set per step, each starting where the last
+// ended and carrying its own `step` tag -- so all three profiles offer the
+// same system the same mix, and differ only in how much of it and when.
+function scenarioSet({ scale, durationS, wsVus, startS = 0, tags = {}, suffix = '' }) {
   const s = (n) => n * scale;
   const duration = `${durationS}s`;
   const socketsPerVu = wsSocketsPerVu(wsVus);
+  const at = (scenario) => ({
+    ...scenario,
+    ...(startS ? { startTime: `${startS}s` } : {}),
+    tags: { ...(scenario.tags || {}), ...tags },
+  });
 
+  return {
+    [`browse${suffix}`]: at(arrival('browse', s(BROWSE_RPS_PEAK), duration, 200, 800)),
+    [`rag${suffix}`]: at(arrival('rag', s(TARGET.ragQpsPeak), duration, 60, 400)),
+    [`stream${suffix}`]: at(arrival('stream', s(STREAM_STARTS_PER_S), duration, 80, 400)),
+    [`index${suffix}`]: at(arrival('indexFile', s(INDEX_STARTS_PER_S), duration, 150, 600)),
+    [`ws${suffix}`]: at({
+      // A POPULATION, not a rate -- see `scenarios/ws_hold.js`. `wsVus` is
+      // the number of SOCKETS; each VU holds `socketsPerVu` of them
+      // (`lib/config.js` has the memory measurement that made that
+      // necessary), and learns how many from its scenario's env.
+      executor: 'constant-vus',
+      exec: 'wsHold',
+      vus: wsVus / socketsPerVu,
+      duration,
+      env: { LOAD_WS_SOCKETS_THIS_VU: String(socketsPerVu) },
+      tags: { profile_part: 'ws' },
+    }),
+  };
+}
+
+export function buildOptions({ scale, durationS, wsVus }) {
   return {
     ...TLS_GLOBAL_OPTIONS,
     summaryTrendStats: TREND_STATS,
     // Every scenario starts at once: §0's targets are simultaneous, and a
     // staggered start would measure five systems in sequence instead of one
     // under all five loads.
-    scenarios: {
-      browse: arrival('browse', s(BROWSE_RPS_PEAK), duration, 200, 800),
-      rag: arrival('rag', s(TARGET.ragQpsPeak), duration, 60, 400),
-      stream: arrival('stream', s(STREAM_STARTS_PER_S), duration, 80, 400),
-      index: arrival('indexFile', s(INDEX_STARTS_PER_S), duration, 150, 600),
-      ws: {
-        // A POPULATION, not a rate -- see `scenarios/ws_hold.js`. `wsVus` is
-        // the number of SOCKETS; each VU holds `socketsPerVu` of them
-        // (`lib/config.js` has the memory measurement that made that
-        // necessary), and learns how many from its scenario's env.
-        executor: 'constant-vus',
-        exec: 'wsHold',
-        vus: wsVus / socketsPerVu,
-        duration,
-        env: { LOAD_WS_SOCKETS_THIS_VU: String(socketsPerVu) },
-        tags: { profile_part: 'ws' },
-      },
-    },
+    scenarios: scenarioSet({ scale, durationS, wsVus }),
     thresholds: {
       // ── 07 §2's budgets, unrelaxed. These FAIL the run. ────────────────
       'http_req_duration{op:read}': [`p(95)<${BUDGET_MS.read}`],
@@ -399,6 +412,79 @@ function arrival(exec, perSecond, duration, preAllocatedVUs, maxVUs) {
     // the rate the report claims.
     preAllocatedVUs,
     maxVUs,
+  };
+}
+
+// ── The STEP profile (0.5, decided 2026-09-26) ────────────────────────────
+// The 2026-09-26 peak run offered 300 rps to a platform that serves ~160 and
+// archived thirty minutes of queueing: every percentile in it was the length
+// of a queue, not the cost of a request. A constant rate above the ceiling
+// cannot measure the ceiling. This profile offers the same mix at rising
+// rates, one step after another, and reports each step on its own -- the
+// answer is the highest step that was still DELIVERED (no dropped arrivals)
+// and still inside 07 §2's budgets, which is the number later waves move.
+//
+// Each step is a full `scenarioSet` at `rps / apiRpsPeak` of peak, sockets
+// included, starting when the previous one's duration ends. The previous
+// step's in-flight iterations drain into the next for up to k6's 30s
+// graceful stop; that tail is in the NEXT step's clock but the PREVIOUS
+// step's tag, so each step's numbers are its own requests.
+export function stepPlan(stepsRps, holdS) {
+  return stepsRps.map((rps, i) => ({
+    label: `rps${String(rps).padStart(3, '0')}`,
+    rps,
+    scale: rps / TARGET.apiRpsPeak,
+    startS: i * holdS,
+    holdS,
+  }));
+}
+
+export function stepWsVus(step, wsPeak) {
+  return Math.max(1, Math.round(wsPeak * step.scale));
+}
+
+// Per-step submetrics. k6 materialises a tagged slice only where a threshold
+// names it, so each step gets always-true bounds purely to appear in the
+// summary; the budgets are then judged PER STEP in `lib/summary.js`, not
+// here -- a step above the ceiling is expected to miss them, and that miss
+// is the finding, not a failed run.
+function stepThresholds(plan) {
+  const out = {};
+  for (const { label } of plan) {
+    const t = `step:${label}`;
+    out[`http_req_duration{op:read,${t}}`] = ['p(99)>=0'];
+    out[`http_req_duration{op:write,${t}}`] = ['p(99)>=0'];
+    out[`aizzak_rag_retrieval_ms{${t}}`] = ['p(99)>=0'];
+    out[`aizzak_ttft_ms{${t}}`] = ['p(99)>=0'];
+    out[`aizzak_index_e2e_ms{${t}}`] = ['p(99)>=0'];
+    out[`aizzak_failed_requests{${t}}`] = ['rate>=0'];
+    out[`http_reqs{${t}}`] = ['count>=0'];
+    out[`iterations{${t}}`] = ['count>=0'];
+    out[`dropped_iterations{${t}}`] = ['count>=0'];
+  }
+  return out;
+}
+
+export function buildStepOptions({ plan, wsPeak }) {
+  let scenarios = {};
+  for (const step of plan) {
+    scenarios = {
+      ...scenarios,
+      ...scenarioSet({
+        scale: step.scale,
+        durationS: step.holdS,
+        wsVus: stepWsVus(step, wsPeak),
+        startS: step.startS,
+        tags: { step: step.label },
+        suffix: `_${step.label}`,
+      }),
+    };
+  }
+  return {
+    ...TLS_GLOBAL_OPTIONS,
+    summaryTrendStats: TREND_STATS,
+    scenarios,
+    thresholds: stepThresholds(plan),
   };
 }
 

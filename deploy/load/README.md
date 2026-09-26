@@ -27,6 +27,21 @@ the profile and the arithmetic stays visible. `browse` takes the remainder of
 the 300 rps rather than an absolute rate of its own — otherwise the five
 scenarios would sum to more than the target they claim to test.
 
+**Three profiles over that one mix.** `peak.js` runs it at 300 rps for 30
+minutes; `average.js` at 50 rps (8 hours by default, `LOAD_DURATION_S` to
+shorten); `step.js` runs it at rising rates — `LOAD_STEPS` (default
+`50,100,150,200`), `LOAD_STEP_S` each (default 360) — one full set of the
+five scenarios per step, each tagged `step:rpsNNN`. The step profile exists
+because the 2026‑09‑26 peak run offered 300 rps to a platform that serves
+~160, and a constant rate above a ceiling measures the queue in front of it,
+not the ceiling. Its result carries a `steps` table (per step: rps offered
+and served, dropped arrivals, p50/p95/p99 per budget, error rate) and a
+`knee`: `sustained_rps` — the highest step that, with every step below it,
+dropped nothing and stayed inside the 0.1 % error budget — and
+`within_budget_rps`, which adds 07 §2's four latency budgets. Drops above the
+knee are the finding, so for this profile `validity.rate_delivered` is judged
+on the lowest step only.
+
 ---
 
 ## 2. The token pool — condition (1)

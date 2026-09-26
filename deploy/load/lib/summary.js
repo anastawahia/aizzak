@@ -12,6 +12,7 @@
 import {
   seedIsRealistic,
   BASE_URL,
+  BUDGET_MS,
   P95_GENERATION_S,
   SEED,
   TARGET,
@@ -22,7 +23,8 @@ import { TOKENS_ARE_REAL } from './auth.js';
 // k6 hands `handleSummary` the whole end-of-test dataset; this reshapes the
 // part a human or a later diff actually reads, and keeps the raw metrics
 // alongside rather than instead.
-export function buildSummary(profile, data) {
+export function buildSummary(profile, data, { steps: plan } = {}) {
+  const steps = plan ? stepTable(plan, data) : null;
   const validity = {
     // §0.1's three conditions, evaluated rather than asserted in prose.
     real_tokens: TOKENS_ARE_REAL === true,
@@ -45,7 +47,13 @@ export function buildSummary(profile, data) {
     // response, and the file said `valid: true` for a 300 rps peak the
     // platform was never actually sent. A constant-arrival-rate profile that
     // did not arrive at its rate is a closed-loop test wearing its name.
-    rate_delivered: droppedIterations(data) === 0,
+    //
+    // The STEP profile is the one place drops are expected: a step above the
+    // ceiling drops by construction, and that is its finding. There the
+    // condition moves to the LOWEST step -- if even that one could not be
+    // delivered, no step measured a rate and the run found nothing -- and
+    // each step carries its own `delivered` in `steps`.
+    rate_delivered: steps ? steps.length > 0 && steps[0].delivered : droppedIterations(data) === 0,
   };
   validity.valid =
     validity.real_tokens &&
@@ -85,6 +93,7 @@ export function buildSummary(profile, data) {
       // stream arrival rate in THIS run was right.
       p95_generation_s: P95_GENERATION_S,
     },
+    ...(steps ? { steps, knee: kneeOf(steps) } : {}),
     thresholds: thresholdVerdicts(data),
     latency: latencyTable(data),
     counters: counterTable(data),
@@ -133,6 +142,77 @@ function failedRate(data) {
   const v = ((data.metrics || {}).aizzak_failed_requests || {}).values || {};
   const samples = (v.passes || 0) + (v.fails || 0);
   return samples > 0 && typeof v.rate === 'number' ? v.rate : 1;
+}
+
+// One row per step of `step.js`, read from the `{step:<label>}` submetrics
+// `lib/profile.js` materialises. `delivered` is the rate condition applied to
+// the step alone; `within_budget` adds 07 §2's four latency budgets and §7's
+// error budget, judged against this step's own requests.
+function stepTable(plan, data) {
+  const m = data.metrics || {};
+  const val = (name) => (m[name] || {}).values || {};
+  return plan.map((step) => {
+    const t = `step:${step.label}`;
+    const trend = (name) => {
+      const v = val(name);
+      return v.count ? { count: v.count, p50: pick(v, 'p(50)', 'med'), p95: v['p(95)'], p99: v['p(99)'] } : null;
+    };
+    const read = trend(`http_req_duration{op:read,${t}}`);
+    const write = trend(`http_req_duration{op:write,${t}}`);
+    const rag = trend(`aizzak_rag_retrieval_ms{${t}}`);
+    const ttft = trend(`aizzak_ttft_ms{${t}}`);
+    const failed = val(`aizzak_failed_requests{${t}}`);
+    const samples = (failed.passes || 0) + (failed.fails || 0);
+    const errorRate = samples > 0 ? failed.rate : 1;
+    const dropped = val(`dropped_iterations{${t}}`).count || 0;
+    const iterations = val(`iterations{${t}}`).count || 0;
+    const delivered = iterations > 0 && dropped === 0;
+    const under = (trendRow, budget) => !trendRow || trendRow.p95 < budget;
+    return {
+      label: step.label,
+      rps: step.rps,
+      start_s: step.startS,
+      hold_s: step.holdS,
+      served_http_rps: (val(`http_reqs{${t}}`).count || 0) / step.holdS,
+      iterations,
+      dropped_iterations: dropped,
+      delivered,
+      error_rate: errorRate,
+      within_budget:
+        delivered &&
+        errorRate < 0.001 &&
+        under(read, BUDGET_MS.read) &&
+        under(write, BUDGET_MS.write) &&
+        under(rag, BUDGET_MS.ragRetrieval) &&
+        under(ttft, BUDGET_MS.ttft),
+      p95: {
+        read: read && read.p95,
+        write: write && write.p95,
+        rag: rag && rag.p95,
+        ttft: ttft && ttft.p95,
+      },
+      latency: { read, write, rag, ttft, index_e2e: trend(`aizzak_index_e2e_ms{${t}}`) },
+    };
+  });
+}
+
+// The knee is the highest step BELOW which every step also held: a platform
+// that fails at 100 and recovers at 150 has not shown it serves 150, it has
+// shown noise, and the figure a later wave is compared against must not be
+// the lucky one.
+function kneeOf(steps) {
+  const highest = (ok) => {
+    let rps = null;
+    for (const s of steps) {
+      if (!ok(s)) break;
+      rps = s.rps;
+    }
+    return rps;
+  };
+  return {
+    sustained_rps: highest((s) => s.delivered && s.error_rate < 0.001),
+    within_budget_rps: highest((s) => s.within_budget),
+  };
 }
 
 // Absent means k6 never had to drop one -- the metric is only emitted on the
