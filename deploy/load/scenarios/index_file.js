@@ -1,9 +1,10 @@
 // Scenario 4 of §0.1: "رفعُ ملفٍّ وفهرسته" -- 100 jobs/minute, end to end.
 //
 // This is the only scenario that crosses the ASYNCHRONOUS boundary, and it is
-// the one that produces `ح‑6`'s number: `engine.py:250` dispatches a batch
-// with a plain `for` loop, so one worker replica indexes one document at a
-// time and `worker-knowledge` at `replicas: 2` indexes two. §3's replica
+// the one that produces `ح‑6`'s number. `ح‑6` was a serial loop -- one
+// document per worker replica at a time -- and capacity 5.1 replaced it with
+// up to `WORKER_CONCURRENCY` (4) per replica, so `worker-knowledge` at
+// `replicas: 2` has up to eight in flight. §3's replica
 // equation needs `p95 زمن المهمّة` as an input and nobody has measured it;
 // `aizzak_index_e2e_ms` is that input.
 //
