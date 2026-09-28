@@ -124,19 +124,33 @@ if docker compose version >/dev/null 2>&1; then
   fi
 fi
 
-# Image digests, best effort: `docker compose images` is the only view that
-# names what is ACTUALLY running rather than what the file asks for, which is
-# the whole distinction ح‑20 is about.
+# Image IDs, one per Compose service, best effort. The image a CONTAINER was
+# created from is what is ACTUALLY running -- not what the file asks for, and
+# not what `:dev` points at after a rebuild nobody recreated -- which is the
+# whole distinction ح‑20 is about. The service comes from Compose's own label,
+# the way `rolling-deploy.sh` finds replicas: until 2026-09-28 this read a
+# `Service` field from `docker compose images --format json`, which Compose v5
+# does not print, so every row landed under "?" and only the last one survived
+# (د‑36). Replicas that disagree -- a rollout caught halfway -- are kept as a
+# list, never collapsed into whichever came last.
 export RUN_IMAGES="$(
-  docker compose images --format json 2>/dev/null |
-    python3 -c 'import json,sys
-try:
-    rows = json.load(sys.stdin)
-except Exception:
-    print("{}"); raise SystemExit
-if isinstance(rows, dict):
-    rows = [rows]
-print(json.dumps({r.get("Service", "?"): (r.get("ID") or r.get("Digest") or "") for r in rows}))' 2>/dev/null || echo '{}'
+  {
+    containers="$(docker compose ps -aq 2>/dev/null || true)"
+    [ -z "$containers" ] ||
+      docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}' \
+        $containers 2>/dev/null ||
+      true
+  } | python3 -c 'import json,sys
+ids = {}
+for line in sys.stdin:
+    fields = line.split()
+    if fields:
+        ids.setdefault(fields[0] if len(fields) == 2 else "?", set()).add(fields[-1])
+out = {}
+for service, images in sorted(ids.items()):
+    images = sorted(images)
+    out[service] = images[0] if len(images) == 1 else images
+print(json.dumps(out))' 2>/dev/null || echo '{}'
 )"
 
 export RUN_HOST="$(hostname 2>/dev/null || echo '')"

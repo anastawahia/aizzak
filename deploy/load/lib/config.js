@@ -45,6 +45,17 @@ export const BROWSE_RPS_PEAK = round2(
 // nothing else.
 export const PEAK_FACTOR = TARGET.apiRpsPeak / TARGET.apiRpsAverage;
 
+// ── The RAG query stream (`lib/queries.js`, capacity blocker د‑37) ────────
+// How many distinct questions the RAG scenario asks, and how skewed their
+// popularity is (a Zipf-like exponent; 0 is uniform). Together they DECIDE how
+// often a question repeats while step 4.3's query-vector cache still holds it,
+// so they are assumptions, declared like `P95_GENERATION_S` and stamped into
+// every result -- not facts about the platform. Simulated against the
+// default 600 s TTL, the defaults repeat ~24% of requests at 13 q/s (the
+// 100 rps step, 6 minutes) and ~44% at 40 q/s (peak, 30 minutes).
+export const RAG_QUERIES = Number(__ENV.LOAD_RAG_QUERIES || 100_000);
+export const RAG_QUERY_ZIPF = Number(__ENV.LOAD_RAG_QUERY_ZIPF || 0.8);
+
 // ── 07-nfr-slo §2's time budgets, unrelaxed (§0's own statement) ──────────
 // These are k6 threshold expressions, so a profile that misses a budget exits
 // non-zero. A load test whose failure is a line of prose in a summary is a

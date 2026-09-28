@@ -15,8 +15,10 @@ import struct
 from collections.abc import Sequence
 
 import pytest
+from prometheus_client import REGISTRY
 
 from app.framework.errors import ValidationError
+from app.framework.observability.metrics import EMBEDDING_CACHE_METRIC
 from app.framework.ports.embedding_provider import EmbeddingResult
 from app.framework.settings.settings import EmbeddingServiceSettings
 from app.infrastructure.ai_providers.embedding.caching_embedding import (
@@ -95,6 +97,27 @@ def _wrap(
     return CachingEmbeddingProvider(inner, cache, _SETTINGS, ttl_s=ttl_s)
 
 
+_RESULTS = ("hit", "miss", "unavailable")
+
+
+def _lookups() -> dict[str, float]:
+    """``aizzak_embedding_cache_total`` by result, 0.0 before a first
+    observation. Read as a DELTA by every test below -- the
+    ``test_capacity_metrics.py`` discipline: the counter is a module-level
+    global on the default registry, shared with whatever the suite ran
+    first."""
+    values = {
+        result: REGISTRY.get_sample_value(EMBEDDING_CACHE_METRIC, {"result": result})
+        for result in _RESULTS
+    }
+    return {result: value or 0.0 for result, value in values.items()}
+
+
+def _counted_since(before: dict[str, float]) -> dict[str, float]:
+    after = _lookups()
+    return {result: after[result] - before[result] for result in _RESULTS}
+
+
 # --------------------------------------------------------------------------- #
 # The hit -- the whole reason the step exists                                 #
 # --------------------------------------------------------------------------- #
@@ -112,8 +135,7 @@ async def test_a_repeated_query_is_never_embedded_twice() -> None:
 async def test_a_hit_reports_zero_tokens_because_nothing_was_embedded() -> None:
     """``tokens`` is the work the model actually performed (module
     docstring). Inventing a plausible number for a hit would make the field
-    describe something else -- and would hide the hit rate from the only
-    place it is visible without a Redis session."""
+    describe something else."""
     inner, cache = _RecordingProvider(), _FakeCache()
     provider = _wrap(inner, cache)
 
@@ -251,6 +273,76 @@ async def test_a_stored_value_of_the_wrong_width_is_a_miss() -> None:
 
     assert inner.calls == [["q"]]
     assert result.vectors == [[1.0] * _DIM]
+
+
+# --------------------------------------------------------------------------- #
+# The count -- capacity blocker د-38                                          #
+# --------------------------------------------------------------------------- #
+async def test_every_lookup_is_counted_by_what_it_found() -> None:
+    """Step 4.3 is judged by its hit rate, and until this counter the cache
+    answered from Redis without telling anyone -- the rate could only be read
+    from a Redis session."""
+    inner, cache = _RecordingProvider(), _FakeCache()
+    provider = _wrap(inner, cache)
+    before = _lookups()
+
+    await provider.embed(["q"], "test-model", "")
+    await provider.embed(["q"], "test-model", "")
+
+    assert _counted_since(before) == {"hit": 1, "miss": 1, "unavailable": 0}
+
+
+async def test_a_call_is_counted_per_text_not_per_call() -> None:
+    """The unit the key is built on. Counted per call, a call that was two
+    thirds answered from Redis would have to be called either a hit or a
+    miss, and both would be wrong."""
+    inner, cache = _RecordingProvider(), _FakeCache()
+    provider = _wrap(inner, cache)
+    await provider.embed(["alpha"], "test-model", "")
+    before = _lookups()
+
+    await provider.embed(["alpha", "bb", "alpha"], "test-model", "")
+
+    assert _counted_since(before) == {"hit": 2, "miss": 1, "unavailable": 0}
+
+
+async def test_a_broken_cache_read_is_counted_unavailable_not_miss() -> None:
+    """⚠️ Fail-open makes a broken Redis BEHAVE like a cold one, which is why
+    the two must not be COUNTED alike: as misses, an outage would read as a
+    load whose questions never repeat."""
+    inner, cache = _RecordingProvider(), _FakeCache(fail_get=True)
+    before = _lookups()
+
+    await _wrap(inner, cache).embed(["q", "r"], "test-model", "")
+
+    assert _counted_since(before) == {"hit": 0, "miss": 0, "unavailable": 2}
+
+
+async def test_a_stored_value_of_the_wrong_width_is_counted_as_a_miss() -> None:
+    """Redis answered; what it held was unusable, and the write that follows
+    replaces it. A miss, not an outage."""
+    inner, cache = _RecordingProvider(), _FakeCache()
+    provider = _wrap(inner, cache)
+    await provider.embed(["q"], "test-model", "")
+    ((key, _),) = cache.store.items()
+    cache.store[key] = struct.pack("<3f", 1.0, 2.0, 3.0)
+    before = _lookups()
+
+    await provider.embed(["q"], "test-model", "")
+
+    assert _counted_since(before) == {"hit": 0, "miss": 1, "unavailable": 0}
+
+
+async def test_a_call_the_cache_never_consults_counts_nothing() -> None:
+    """A blank text is delegated whole (the wrapped adapter's error to
+    raise). Counting it would put lookups that never happened into the
+    denominator of the hit rate."""
+    inner, cache = _RecordingProvider(), _FakeCache()
+    before = _lookups()
+
+    await _wrap(inner, cache).embed(["  "], "test-model", "")
+
+    assert _counted_since(before) == {"hit": 0, "miss": 0, "unavailable": 0}
 
 
 # --------------------------------------------------------------------------- #

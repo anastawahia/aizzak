@@ -72,6 +72,7 @@ AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
 API_RATE_LIMIT_METRIC = "aizzak_api_rate_limit_total"
 HEAVY_JOB_LIMIT_METRIC = "aizzak_heavy_job_limit_total"
 VECTOR_CORPUS_METRIC = "aizzak_vector_corpus_total"
+EMBEDDING_CACHE_METRIC = "aizzak_embedding_cache_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -214,6 +215,23 @@ vector_corpus_total = Counter(
     "is the alarming one -- which is why reads are counted ONLY here, on the "
     "path that answers nothing, and never on the one that answers.",
     ["op", "corpus"],
+)
+
+embedding_cache_total = Counter(
+    EMBEDDING_CACHE_METRIC,
+    "Query-vector cache lookups, by result (capacity-plan 4.3). One per TEXT "
+    "the cache is asked about, because the key is per text -- a call carrying "
+    "several is several lookups -- and none for a call it never consults. A "
+    "`hit` is a text that never reached the embedding fleet, so the rate of "
+    "`hit` over the rate of all three IS step 4.3's hit rate, read off the "
+    "platform rather than out of a Redis session. `unavailable` is the "
+    "fail-open path: Redis did not answer and the text was embedded as if it "
+    "had missed. It is counted apart from `miss` because the two behave alike "
+    "and mean opposite things -- a cold cache and a broken one -- and folded "
+    "together a broken Redis would read as a load whose questions never "
+    "repeat. Only the API process builds this cache, so only `app` targets "
+    "report it.",
+    ["result"],
 )
 
 

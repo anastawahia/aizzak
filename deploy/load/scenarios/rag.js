@@ -8,24 +8,18 @@
 // queries serialize. Step 0.5's baseline is not complete until this number is
 // written down.
 
+import exec from 'k6/execution';
 import http from 'k6/http';
 import { API } from '../lib/config.js';
 import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { graded, ragRetrieval } from '../lib/metrics.js';
+import { ragQuery } from '../lib/queries.js';
 
-// Fixed queries rather than generated noise: an embedding cache anywhere in
-// the path would turn random strings into a cache-miss benchmark and repeated
-// strings into a cache-hit one. A small rotating set is neither, and is
-// reproducible between runs.
-const QUERIES = [
-  'ما سياسة الإجازات السنويّة؟',
-  'quarterly revenue breakdown',
-  'كيف أضبط اتصال قاعدة البيانات؟',
-  'incident response runbook',
-  'شروط إنهاء العقد',
-  'embedding dimensions and model',
-];
-
+// The question comes from `lib/queries.js`, not a fixed list. Six rotating
+// questions were said to be "neither a cache-hit nor a cache-miss benchmark";
+// once step 4.3's cache was on they were ~100% hits, and none of them shared
+// a word with the seeded corpus (د‑37). That module says what the stream is
+// instead, and why its repeat rate is an assumption the result must carry.
 export function rag() {
   const tok = tokenForVu();
   // `k`, not `top_k`, and `space_id` is REQUIRED -- س-32 made a search span
@@ -33,7 +27,7 @@ export function rag() {
   // cross-space version had to be withdrawn. A harness that reproduced that
   // request would reproduce that withdrawal.
   const body = {
-    query: QUERIES[__ITER % QUERIES.length],
+    query: ragQuery(exec.scenario.name, exec.scenario.iterationInTest),
     space_id: tok.spaceId,
     k: 8,
   };

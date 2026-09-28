@@ -2319,12 +2319,15 @@ class CompositionRoot:
         which is exactly why the startup sweep restricts itself to its own
         hostname. What IS decidable is whether anything is currently reading
         under a group, and ``sweeper.find_orphan_notify_groups`` keys on that
-        instead: zero consumers, zero pending, confirmed by two readings a
-        settle window apart, with this host's own live pids excluded by the
-        same ``os.kill(pid, 0)`` question as before. The settle window is
-        what protects a sibling caught between ``ensure_group`` and its first
-        ``XREADGROUP`` -- the one state in which a live bridge shows no
-        consumer.
+        instead: every reader silent for longer than ``min_idle_ms`` (a live
+        bridge re-reads every ``consumer_block_ms``), zero pending, confirmed
+        by two readings a settle window apart, with this host's own live pids
+        excluded by the same ``os.kill(pid, 0)`` question as before --
+        ``sweeper.is_orphan`` has the four gates, and why "zero consumers"
+        could never fire (a dead bridge's consumer entry outlives it). The
+        settle window is what protects a sibling caught between
+        ``ensure_group`` and its first ``XREADGROUP`` -- the one state in
+        which a live bridge shows no consumer.
 
         Sleeps BEFORE the first sweep rather than after: at second zero this
         process's own bridge may not have registered its consumer yet, and

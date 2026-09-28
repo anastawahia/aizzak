@@ -54,6 +54,7 @@ from app.ops.load_seed import (
 _ANCHOR = datetime(2026, 9, 3, tzinfo=UTC)
 _BM25 = Bm25Params(k1=1.5, b=0.75, avg_len=32.0)
 _CONFIG_JS = Path("deploy/load/lib/config.js")
+_QUERIES_JS = Path("deploy/load/lib/queries.js")
 
 
 def _plan(**overrides: object) -> load_seed.SeedPlan:
@@ -91,6 +92,23 @@ def test_the_floor_matches_the_one_the_k6_harness_enforces() -> None:
         "vectors": FLOOR.vectors,
         "workspaces": FLOOR.workspaces,
     }
+
+
+def test_the_syllables_match_the_ones_the_k6_rag_questions_are_built_from() -> None:
+    """``_SYLLABLES_AR``/``_SYLLABLES_EN`` and ``lib/queries.js``'s copies are the
+    same two lists written twice, in two languages -- and in the same ORDER,
+    which decides the words the seed makes common. The RAG scenario builds its
+    questions from them so that the BM25 leg of the search meets seeded text
+    (``د-37``). If the copies drift, every question misses the corpus again and
+    nothing fails: the retrieval p95 just gets quietly cheaper."""
+    source = _QUERIES_JS.read_text(encoding="utf-8")
+    for name, syllables in (
+        ("SYLLABLES_AR", load_seed._SYLLABLES_AR),
+        ("SYLLABLES_EN", load_seed._SYLLABLES_EN),
+    ):
+        match = re.search(rf"const {name} = \[([^\]]*)\]", source)
+        assert match, f"{_QUERIES_JS} no longer declares {name} in the expected shape"
+        assert tuple(re.findall(r"'([^']*)'", match.group(1))) == syllables
 
 
 def test_the_plans_own_numbers_are_the_floor() -> None:

@@ -14,6 +14,8 @@ import {
   BASE_URL,
   BUDGET_MS,
   P95_GENERATION_S,
+  RAG_QUERIES,
+  RAG_QUERY_ZIPF,
   SEED,
   TARGET,
   UPLOAD_ORIGIN,
@@ -92,6 +94,10 @@ export function buildSummary(profile, data, { steps: plan } = {}) {
       // measured it yet. When 0.5 does, this field is what says whether the
       // stream arrival rate in THIS run was right.
       p95_generation_s: P95_GENERATION_S,
+      // The RAG question stream (`lib/queries.js`). How often a question
+      // repeats inside step 4.3's cache window follows from these two, so a
+      // RAG p95 is only comparable with another taken at the same values.
+      rag_queries: { distinct: RAG_QUERIES, zipf_exponent: RAG_QUERY_ZIPF },
     },
     ...(steps ? { steps, knee: kneeOf(steps) } : {}),
     thresholds: thresholdVerdicts(data),

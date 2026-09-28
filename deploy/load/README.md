@@ -27,6 +27,21 @@ the profile and the arithmetic stays visible. `browse` takes the remainder of
 the 300 rps rather than an absolute rate of its own — otherwise the five
 scenarios would sum to more than the target they claim to test.
 
+**`rag` asks many questions, not the same six.** `lib/queries.js` spells up
+to 262,144 distinct questions from the seed's own vocabulary, so the sparse
+leg of the hybrid search meets seeded text, and asks them with a Zipf-like
+popularity: `LOAD_RAG_QUERIES` distinct ones (default 100,000) at exponent
+`LOAD_RAG_QUERY_ZIPF` (default 0.8; 0 is uniform). Both are stamped into
+`assumptions.rag_queries`, because how often a question repeats inside step
+4.3's cache window follows from those two numbers, not from the platform: at
+the defaults and a 600 s TTL, ~24% of requests repeat at 13 q/s (the 100 rps
+step) and ~44% at 40 q/s (peak). Until 2026‑09‑28 the scenario rotated six
+fixed questions, which with the cache on was ~100% hits by construction
+(`د‑37`). Those shares are what the stream offers the cache; what the cache
+actually answered is the platform's own count, `aizzak_embedding_cache_total`
+(`hit`, `miss`, `unavailable`, one per question), read from Prometheus over
+the run's window (`د‑38`, `08 §2‑ط`). The result file does not carry it.
+
 **Three profiles over that one mix.** `peak.js` runs it at 300 rps for 30
 minutes; `average.js` at 50 rps (8 hours by default, `LOAD_DURATION_S` to
 shorten); `step.js` runs it at rising rates — `LOAD_STEPS` (default
@@ -338,8 +353,9 @@ least afford it. The interval is now a twentieth of the job's age, between
 
 Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
 `LOAD_WS_SOCKETS_PER_VU` · `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` ·
-`LOAD_P95_GENERATION_S` · `LOAD_INDEX_POLL_MAX_S` · `LOAD_INDEX_TIMEOUT_S` ·
-`LOAD_UPLOAD_ORIGIN` · `LOAD_VERBOSE=1`.
+`LOAD_P95_GENERATION_S` · `LOAD_RAG_QUERIES` · `LOAD_RAG_QUERY_ZIPF` ·
+`LOAD_INDEX_POLL_MAX_S` · `LOAD_INDEX_TIMEOUT_S` · `LOAD_UPLOAD_ORIGIN` ·
+`LOAD_VERBOSE=1`.
 
 **`LOAD_UPLOAD_ORIGIN`** is the one address the generator is *handed* rather
 than configured with. `POST /files` answers with a URL presigned against
@@ -462,6 +478,12 @@ The archived JSON leads with the things that decide whether it counts:
 then `thresholds` (each budget, pass or fail), `latency` (p50/p95/p99 per
 metric and per scenario), `counters`, and the raw k6 metrics underneath.
 
+`run.images` names the image each Compose service's containers were created
+from — what was running, not what the files ask for — and holds a list where
+replicas disagree. Files archived before 2026‑09‑28 hold one entry named `?`
+instead and say nothing about which images ran (`د‑36`); for those, `commit`
+and `dirty` are the reference.
+
 `validity` carries §0.1's three conditions and three more. The three say the
 run was *set up* as a baseline; `generator_kept_up` says the thing doing the
 measuring was not itself the bottleneck (§4); `platform_answered` says there
@@ -482,7 +504,7 @@ was true — for `http_req_failed`, the failures. The old rendering printed the
 rate alone, and `http_req_failed: 1` read as one failed request when it meant
 all of them.
 
-Three fields are worth reading before the percentiles:
+Four fields are worth reading before the percentiles:
 
 - `counters.aizzak_rate_limited_total` — intended 429s, which §7 item 4
   excludes from the error budget. **This paragraph used to say the value
@@ -508,6 +530,11 @@ Three fields are worth reading before the percentiles:
   through §3's provider equation, and nothing has measured it yet. Step 0.5
   replaces the assumption; until then it is stated in every result rather
   than buried in a default.
+- `assumptions.rag_queries` — the RAG question stream's size and popularity
+  exponent (§1). The share of RAG requests step 4.3's cache can answer
+  follows from them, so compare a RAG p95 only with one taken at the same
+  values, or with the cache off (`EMBEDDING_CACHE_TTL_S=0`). The share it
+  did answer is `aizzak_embedding_cache_total` over the run (§1).
 
 Requirements: **k6 1.x**, either installed or via `--profile load` (pinned at
 `grafana/k6:1.3.0`); Python 3 for `run.sh`'s two JSON helpers; and a running

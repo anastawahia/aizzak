@@ -54,8 +54,17 @@ many.
 **Tokens count what was SPENT, so a hit contributes zero.** ``EmbeddingResult.
 tokens`` is the work the model actually performed, and a cache hit performs
 none. Estimating a plausible number for it would make the field describe
-something else entirely — and would hide the hit rate from the only place it
-is visible without a Redis session.
+something else entirely.
+
+**Every lookup is counted by what it found** (``aizzak_embedding_cache_total``
+in ``framework/observability/metrics.py``, capacity blocker د-38). Until
+2026-09-28 this cache answered from Redis and told no one, so the one number
+step 4.3 is judged by -- its hit rate -- could only be read from a Redis
+session. The count is per TEXT, the unit the key is built on, and a call this
+wrapper delegates whole consulted nothing and counts nothing. ⚠️ A read that
+FAILED is ``unavailable``, never ``miss``: fail-open makes the two behave
+alike, which is exactly why they are counted apart -- folded together, a
+broken Redis would read as a load whose questions never repeat.
 """
 
 from __future__ import annotations
@@ -65,6 +74,7 @@ import struct
 from collections.abc import Sequence
 
 from app.framework.errors import ValidationError
+from app.framework.observability.metrics import embedding_cache_total
 from app.framework.ports.cache_provider import CacheProvider
 from app.framework.ports.embedding_provider import EmbeddingProvider, EmbeddingResult
 from app.framework.settings.settings import EmbeddingServiceSettings
@@ -205,12 +215,18 @@ class CachingEmbeddingProvider:
         return f"{_KEY_PREFIX}{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
 
     async def _get(self, key: str, width: int) -> list[float] | None:
-        """Fail-open read: any error, any unreadable value, is a miss."""
+        """Fail-open read: any error, any unreadable value, is a miss to the
+        caller -- and is counted as what it was (module docstring). A value
+        that does not unpack is a real ``miss``, not ``unavailable``: Redis
+        answered, and the write that follows replaces the entry."""
         try:
             raw = await self._cache.get(key)
         except Exception:  # fail-open IS the policy (module docstring)
+            embedding_cache_total.labels(result="unavailable").inc()
             return None
-        return _unpack(raw, width)
+        vector = _unpack(raw, width)
+        embedding_cache_total.labels(result="miss" if vector is None else "hit").inc()
+        return vector
 
     async def _put(self, key: str, vector: list[float], width: int) -> None:
         """Fail-open write, and it refuses to store a vector of the wrong
