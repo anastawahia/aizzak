@@ -167,6 +167,13 @@ _CLIENT_ERROR_FLOOR = 400
 _SERVER_ERROR_FLOOR = 500
 _RETRYABLE_CLIENT_ERRORS = frozenset({409, 429})
 
+# `run_forever`'s restart backoff: one second after the first failure, doubled
+# per failure in a row, capped at 30 s -- the outbox relay's ceiling
+# (`workers/bootstrap._MAX_BACKOFF_MS`) for its reason: a flapping Redis is not
+# hammered, and a recovered one is noticed within seconds.
+_FIRST_RESTART_BACKOFF_S = 1.0
+_MAX_RESTART_BACKOFF_S = 30.0
+
 # (ctx, full CloudEvents envelope) -> None; raising means "no XACK, redeliver"
 # (module docstring, policy 4). One handler per (subscription, event `type`).
 EventHandler = Callable[[ExecutionContext, Json], Awaitable[None]]
@@ -274,6 +281,10 @@ class StreamConsumer:
         # construction (3.10+), so building a consumer outside `asyncio.run`
         # -- every unit test here does -- stays legal.
         self._stop = asyncio.Event()
+        # Passes `run` has completed. `run_forever` reads it to tell a failure
+        # after a healthy stretch (backoff starts over) from one more failure
+        # in a row (backoff doubles).
+        self._passes = 0
 
     @property
     def drain_timeout_s(self) -> float:
@@ -494,6 +505,7 @@ class StreamConsumer:
         self._next_dlq_watch_at = monotonic()
         while not self._stop.is_set():
             await self.run_once(subscriptions)
+            self._passes += 1
             if self._stop.is_set():
                 break
             if self._sweep_interval_s > 0 and monotonic() >= self._next_sweep_at:
@@ -502,6 +514,62 @@ class StreamConsumer:
             if self._dlq_watch_interval_s > 0 and monotonic() >= self._next_dlq_watch_at:
                 self._next_dlq_watch_at = monotonic() + self._dlq_watch_interval_s
                 await self.watch_dlq(subscriptions)
+
+    async def run_forever(
+        self,
+        subscriptions: Sequence[Subscription],
+        *,
+        first_backoff_s: float = _FIRST_RESTART_BACKOFF_S,
+        max_backoff_s: float = _MAX_RESTART_BACKOFF_S,
+    ) -> None:
+        """``run``, re-entered after every failure that escapes it, until
+        ``request_stop`` or a cancellation -- for an owner that does NOT exit
+        when the loop dies.
+
+        ``run`` lets a Redis failure escape on purpose: a worker's loop IS its
+        process (``workers/lifecycle.py`` re-raises it), so the process exits
+        and its container restarts with fresh connections. The API's notify
+        bridge has no such owner: it is one background task in a process that
+        keeps serving HTTP, and the lifespan only logs its death
+        (``api/main.py::_log_background_task_death``). Measured on
+        2026-09-28: an ``XREADGROUP`` that outlived its 6 s socket timeout
+        (``Timeout reading from redis-stream:6379``) ended one process's
+        bridge for good under load at 06:32, then every remaining one -- 11
+        processes in the same second -- at 08:29 with no load at all. From
+        then on no WebSocket client received a heavy result, and every
+        replica still reported ``healthy``.
+
+        Re-entering ``run`` rather than retrying the read alone repeats
+        ``setup``, so a group that vanished meanwhile (a restarted Redis, a
+        sibling's orphan sweep) is recreated at ``$`` instead of every later
+        read failing ``NOGROUP``. The consumer name does not change, so
+        whatever this process still had pending comes back through ``read``'s
+        recovery pass.
+
+        Backoff starts at ``first_backoff_s`` and doubles per failure in a row
+        up to ``max_backoff_s``; a failure after at least one clean pass
+        starts over (``OutboxRelay.run_forever``'s rule: a healthy stretch
+        must not inherit an old outage's penalty). ``Exception`` and not only
+        ``AppError``: the loop must not stay dead whatever killed it, and
+        every failure is still logged with its traceback.
+        ``asyncio.CancelledError`` is a ``BaseException`` and propagates, so
+        shutdown still works.
+        """
+        backoff_s = first_backoff_s
+        while not self._stop.is_set():
+            passes = self._passes
+            try:
+                await self.run(subscriptions)
+            except Exception:
+                if self._passes > passes:
+                    backoff_s = first_backoff_s
+                _logger.error(
+                    "consumer_loop_failed",
+                    extra={"consumer": self._consumer_name, "retry_in_s": backoff_s},
+                    exc_info=True,
+                )
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2, max_backoff_s)
 
     async def sweep_stale(self, subscriptions: Sequence[Subscription]) -> list[str]:
         """Reclaim-then-delete the ghost consumers other processes left in

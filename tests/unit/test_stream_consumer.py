@@ -1379,3 +1379,148 @@ async def test_a_server_side_failure_still_spends_the_budget_one_delivery_at_a_t
 
     assert len(fake.dead_lettered) == 1
     assert fake.dead_lettered[0][3].startswith("handler_failed: TimeoutError")
+
+
+# --------------------------------------------------------------------------- #
+# run_forever -- a loop whose owner does not exit when it dies (2026-09-28)    #
+# --------------------------------------------------------------------------- #
+class _FlakyReads(InMemoryStreamsConsumer):
+    """Fails a read the two ways the real adapter does when Redis misbehaves:
+    the next ``failures`` reads time out, and a read of a group that no longer
+    exists fails ``NOGROUP`` -- both as the adapter's own ``AppError``. Yields
+    on every read, as a blocking ``XREADGROUP`` does, so the loop can run as a
+    task beside the test."""
+
+    def __init__(self, *, failures: int = 0) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def read(
+        self,
+        *,
+        streams: Sequence[str],
+        group: str,
+        consumer: str,
+        count: int,
+        block_ms: int,
+    ) -> list[StreamMessage]:
+        await asyncio.sleep(0.001)
+        if self.failures > 0:
+            self.failures -= 1
+            raise AppError("event consume failed", code="common.internal")
+        if any((stream, group) not in self.groups for stream in streams):
+            raise AppError("event consume failed", code="common.internal")
+        return await super().read(
+            streams=streams, group=group, consumer=consumer, count=count, block_ms=block_ms
+        )
+
+
+def _retries(caplog: pytest.LogCaptureFixture) -> list[float]:
+    return [
+        record.retry_in_s  # type: ignore[attr-defined]
+        for record in caplog.records
+        if record.message == "consumer_loop_failed"
+    ]
+
+
+async def test_run_still_lets_a_read_failure_escape() -> None:
+    """The workers' half, unchanged: their loop IS their process, so the
+    failure must still reach ``workers/lifecycle.py``, which exits and lets
+    the container restart."""
+    with pytest.raises(AppError):
+        await _consumer(_FlakyReads(failures=1)).run([_memory_sub()])
+
+
+async def test_run_forever_reads_again_after_a_failed_read() -> None:
+    """The 2026-09-28 death, replayed: one read times out, and a message
+    published afterwards must still reach its handler."""
+    fake = _FlakyReads(failures=1)
+    _seed_batch(fake, ["doc-a"])
+    handled = asyncio.Event()
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        handled.set()
+
+    engine = _consumer(fake, block_ms=1)
+    task = asyncio.create_task(engine.run_forever([_sub(_handle)], first_backoff_s=0.001))
+    try:
+        await asyncio.wait_for(handled.wait(), timeout=5)
+    finally:
+        task.cancel()
+
+    assert len(fake.acked) == 1
+
+
+async def test_run_forever_recreates_a_group_that_vanished() -> None:
+    """Why ``run`` is re-entered rather than the read retried: a group
+    destroyed while the loop runs fails every later read ``NOGROUP``, and only
+    ``setup`` brings it back."""
+    fake = _FlakyReads()
+    handled = asyncio.Event()
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        handled.set()
+
+    engine = _consumer(fake, block_ms=1)
+    task = asyncio.create_task(engine.run_forever([_sub(_handle)], first_backoff_s=0.001))
+    try:
+        async with asyncio.timeout(5):
+            while not fake.read_calls:
+                await asyncio.sleep(0.01)
+            await fake.destroy_group("stream.memory", "cg.memory")
+            _seed_batch(fake, ["doc-a"])
+            await handled.wait()
+    finally:
+        task.cancel()
+
+    assert ("stream.memory", "cg.memory") in fake.groups
+
+
+async def test_run_forever_doubles_its_backoff_only_for_failures_in_a_row(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Three failures in a row wait longer each time, up to the ceiling; one
+    after a clean pass starts over, because it is a new outage."""
+    fake = _FlakyReads(failures=3)
+    engine = _consumer(fake, block_ms=1)
+
+    with caplog.at_level(logging.ERROR):
+        task = asyncio.create_task(
+            engine.run_forever([_memory_sub()], first_backoff_s=0.001, max_backoff_s=0.003)
+        )
+        try:
+            async with asyncio.timeout(5):
+                while len(fake.read_calls) < 3:
+                    await asyncio.sleep(0.01)
+                fake.failures = 1
+                while len(_retries(caplog)) < 4:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+
+    assert _retries(caplog) == pytest.approx([0.001, 0.002, 0.003, 0.001])
+
+
+async def test_run_forever_returns_once_stopped() -> None:
+    fake = _FlakyReads()
+    _seed_batch(fake, ["doc-a"])
+    engine = _consumer(fake, block_ms=1)
+
+    async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
+        engine.request_stop()
+
+    await asyncio.wait_for(engine.run_forever([_sub(_handle)]), timeout=2.0)
+
+    assert len(fake.acked) == 1
+
+
+async def test_run_forever_still_stops_on_cancellation() -> None:
+    """The lifespan cancels the bridge at shutdown and then awaits it; a
+    retry loop that caught the cancellation would hang every deploy."""
+    engine = _consumer(_FlakyReads(failures=1_000), block_ms=1)
+    task = asyncio.create_task(engine.run_forever([_memory_sub()], first_backoff_s=0.001))
+    await asyncio.sleep(0.02)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task

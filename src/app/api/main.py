@@ -344,10 +344,14 @@ def _log_background_task_death(task: asyncio.Task[None]) -> None:
     learns to ignore — which would destroy the very visibility this callback
     exists to buy (§1-أ-2's silent failure is the one thing this closes).
 
-    Any OTHER exception means the task's own unbounded loop
-    (``consumers/engine.py``'s ``run()``, a bare ``while True``) exited
-    without warning — today that has exactly one cause (§1-أ-2's timeout
-    mismatch), but this callback logs whatever it is, not only that one.
+    Any OTHER exception means the task's own unbounded loop exited without
+    warning, and this callback logs whatever it was. For the notify bridge a
+    Redis failure no longer gets this far: on 2026-09-28 ``XREADGROUP``
+    timeouts left this line as the only trace of every bridge on the platform
+    while each replica stayed ``healthy``, so the bridge now runs under
+    ``StreamConsumer.run_forever``, which logs and re-enters its own loop.
+    Recovery belongs in each task's own loop (that method, and
+    ``sweep_orphan_notify_groups_forever``'s ``except``), never here.
     """
     if task.cancelled():
         return
@@ -737,7 +741,10 @@ def create_production_app() -> FastAPI:
     )
 
     async def _run_notify_bridge() -> None:
-        await root.notify_consumer.run(root.notify_subscriptions)
+        # `run_forever`, not `run`: this process does not exit when the
+        # bridge's loop dies, so the loop must not be allowed to -- see that
+        # method's docstring for the load run that measured the difference.
+        await root.notify_consumer.run_forever(root.notify_subscriptions)
 
     async def _sample_saturation() -> None:
         # `sync_engine.pool` rather than a typed accessor: `pool_stats_of`
