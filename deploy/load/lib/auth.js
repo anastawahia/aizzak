@@ -48,6 +48,10 @@ const pool = new SharedArray('firebase-tokens', () => {
       idToken: t.id_token,
       workspace: t.workspace || `unknown-${i}`,
       spaceId: t.space_id,
+      // Where uploads go (د-33): the content space is often over a ceiling
+      // for the seed's heaviest tenants. A pool from before the field falls
+      // back to `space_id`, and `mint_load_tokens verify` refuses such a pool.
+      uploadSpaceId: t.upload_space_id === undefined ? t.space_id : t.upload_space_id,
       exp: expiryOf(t.id_token),
     };
   });
@@ -71,6 +75,27 @@ export function poolSize() {
 
 export function tokenForVu() {
   return pool[(__VU - 1) % pool.length];
+}
+
+// For the upload scenario: the same round-robin, over the entries whose
+// tenant has room. A tenant at the byte or file ceiling answers every upload
+// `409` -- correctly -- and a VU bound to one fails in milliseconds, is idle
+// again at once, and so takes a far larger share of arrivals than 1/N: in the
+// 2026-09-28 run 13 such spaces of 500 were 59% of all failures (د-33).
+// Indices, built on first use: only the upload scenario's VUs ever call
+// this, and a copy of the pool itself in each of 1,500 VUs is what
+// `SharedArray` exists to prevent.
+let uploaders = null;
+
+export function uploadTokenForVu() {
+  if (uploaders === null) {
+    uploaders = [];
+    for (let i = 0; i < pool.length; i++) if (pool[i].uploadSpaceId) uploaders.push(i);
+  }
+  if (uploaders.length === 0) {
+    throw new Error('no pool entry has an upload_space_id; run `mint_load_tokens refresh`.');
+  }
+  return pool[uploaders[(__VU - 1) % uploaders.length]];
 }
 
 // For a VU that holds several sockets (`ws_hold.js`): socket `slot` of

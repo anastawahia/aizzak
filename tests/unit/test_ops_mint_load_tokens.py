@@ -24,9 +24,12 @@ import httpx
 import jwt
 import pytest
 
+from app.framework.settings.settings import Limits
 from app.ops import mint_load_tokens as module
 from app.ops.mint_load_tokens import (
     QUOTA_RETRY_S,
+    SPACE_BYTE_CEILING,
+    WORKSPACE_FILE_CEILING,
     Account,
     QuotaExhausted,
     State,
@@ -82,6 +85,8 @@ class FakeWorld:
         self.expired_refresh_tokens: set[str] = set()
         self.seeded: set[str] = set()  # uids whose workspace the seed filled
         self.paginate_spaces = False
+        # uid -> (bytes_used, file_count) of ``seed-space-0``, the fullest
+        self.heavy: dict[str, tuple[int, int]] = {}
         self.listings: list[str] = []
         self.tokens: dict[str, str] = {}  # id_token -> uid
         self._n = 0
@@ -170,19 +175,28 @@ class FakeWorld:
         (empty) and, once the seed ran, ``seed-space-0/1`` with content."""
         self.listings.append(uid)
         assert request.url.params["limit"] == "100"
-        own = {"id": f"sp-{uid}", "name": "load", "file_count": 0, "conversation_count": 0}
+        own = {
+            "id": f"sp-{uid}",
+            "name": "load",
+            "bytes_used": 0,
+            "file_count": 0,
+            "conversation_count": 0,
+        }
+        heavy_bytes, heavy_files = self.heavy.get(uid, (80_000, 40))
         seeded = (
             [
                 {
                     "id": f"seed-{uid}-1",
                     "name": "seed-space-1",
+                    "bytes_used": 24_000 if uid not in self.heavy else heavy_bytes,
                     "file_count": 12,
                     "conversation_count": 3,
                 },
                 {
                     "id": f"seed-{uid}-0",
                     "name": "seed-space-0",
-                    "file_count": 40,
+                    "bytes_used": heavy_bytes,
+                    "file_count": heavy_files,
                     "conversation_count": 7,
                 },
             ]
@@ -257,8 +271,18 @@ async def test_mint_signs_up_provisions_and_writes_the_pool_auth_js_reads(
     pool = json.loads(pool_path.read_text())
     assert pool["stub"] is False
     assert [sorted(t) for t in pool["tokens"]] == [
-        ["id_token", "space_conversations", "space_files", "space_id", "space_name", "workspace"]
+        [
+            "id_token",
+            "space_conversations",
+            "space_files",
+            "space_id",
+            "space_name",
+            "upload_space_bytes",
+            "upload_space_id",
+            "workspace",
+        ]
     ] * 3
+    assert all(t["upload_space_id"] == t["space_id"] for t in pool["tokens"])
     assert {(t["space_name"], t["space_files"]) for t in pool["tokens"]} == {("load", 0)}
     assert {t["workspace"] for t in pool["tokens"]} == {"ws-uid1", "ws-uid2", "ws-uid3"}
     assert {t["space_id"] for t in pool["tokens"]} == {"sp-uid1", "sp-uid2", "sp-uid3"}
@@ -478,6 +502,39 @@ async def test_refresh_moves_each_entry_onto_the_space_the_seed_filled(
     assert _verdicts(json.loads(pool_path.read_text()), ws_vus=9)["space content"] is True
 
 
+async def test_refresh_keeps_reads_on_the_content_and_sends_uploads_where_there_is_room(
+    world: FakeWorld,
+) -> None:
+    """``د-33``: the seed's heaviest tenants are over the platform's own
+    ceilings, so every upload into their content space answers ``409`` and
+    the run measures the ceiling. Reads stay on the fullest space; uploads go
+    to the fullest space still under the byte cap -- and nowhere when the
+    TENANT is at its file cap, whichever space would take the bytes."""
+    state = _state_with(world, 3)
+    world.seeded = {"u0", "u1", "u2"}
+    world.heavy = {
+        "u1": (SPACE_BYTE_CEILING + 1, 40),  # both seed spaces over the byte cap
+        "u2": (1_000, WORKSPACE_FILE_CEILING),  # the tenant over the file cap
+    }
+    clients = _clients(world)
+    try:
+        report = await refresh(state, api_key=KEY, clients=clients)
+    finally:
+        await clients.aclose()
+
+    roomy, over_bytes, over_files = state.accounts
+    assert [a.space_id for a in state.accounts] == ["seed-u0-0", "seed-u1-0", "seed-u2-0"]
+    assert roomy.upload_space_id == "seed-u0-0"  # with the content when it fits
+    assert (over_bytes.upload_space_id, over_bytes.upload_space_bytes) == ("sp-u1", 0)
+    assert over_files.upload_space_id is None and report.no_upload_room == 1
+
+
+def test_the_ceilings_are_the_platforms_own() -> None:
+    limits = Limits()
+    assert limits.max_space_bytes == SPACE_BYTE_CEILING
+    assert limits.max_files_per_workspace == WORKSPACE_FILE_CEILING
+
+
 async def test_delete_renews_then_deletes_and_empties_the_state(world: FakeWorld) -> None:
     state = _state_with(world, 2)
     clients = _clients(world)
@@ -501,6 +558,8 @@ def _pool(n: int, **overrides: Any) -> dict[str, Any]:
             "id_token": _id_token(f"u{i}"),
             "space_files": 40,
             "space_conversations": 7,
+            "upload_space_id": f"sp-{i}",
+            "upload_space_bytes": 0,
         }
         for i in range(n)
     ]
@@ -605,3 +664,30 @@ def test_cli_refuses_to_mint_without_the_web_api_key(
     )
     with pytest.raises(SystemExit, match="FIREBASE_WEB_API_KEY"):
         module.main()
+
+
+def test_verify_refuses_a_pool_without_an_upload_answer_and_one_where_nobody_can_upload() -> None:
+    """A pool from before ``upload_space_id`` would upload into the content
+    space -- the 409s the field exists to avoid. A tenant at a ceiling
+    (``null``) is expected and passes; a pool of only those does not."""
+    assert _verdicts(_pool(500))["upload room"] is True
+
+    old = _pool(500)
+    del old["tokens"][9]["upload_space_id"]
+    assert _verdicts(old)["upload room"] is False
+
+    some_full = _pool(500)
+    for t in some_full["tokens"][:13]:
+        t["upload_space_id"] = None
+    checks = {
+        c.name: c
+        for c in verify_pool(
+            some_full, now=int(time.time()), duration_s=1800, ws_vus=1500, project_id=PROJECT
+        )
+    }
+    assert checks["upload room"].ok is True and "487 of 500" in checks["upload room"].detail
+
+    all_full = _pool(500)
+    for t in all_full["tokens"]:
+        t["upload_space_id"] = None
+    assert _verdicts(all_full)["upload room"] is False

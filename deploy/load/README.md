@@ -128,6 +128,15 @@ the entry onto the fullest; before the seed it reports `N at an empty space`,
 and `verify` refuses such a pool (`space content`). Run it after the seed,
 not only before the run.
 
+**And uploads go somewhere else than reads.** The seed's heaviest tenants
+are over the platform's own ceilings (13 of 500 content spaces above the
+1 GiB byte cap, one tenant above 10,000 files), so every upload into their
+content space is `409` -- the ceiling working, measured as failure: 59% of the
+2026-09-28 step run's errors (`د‑33`). `refresh` therefore also writes
+`upload_space_id`: a space of the same tenant with room under both ceilings,
+or `null` when there is none. `index_file.js` uploads only through entries
+that have one, and `verify` refuses a pool written before the field existed.
+
 `refresh` exchanges every refresh token at `securetoken.googleapis.com`
 (18,000 exchanges a minute per project is the limit; 500 is nothing) and
 falls back to the password for an account whose refresh token was revoked, so

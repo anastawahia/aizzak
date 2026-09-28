@@ -77,6 +77,16 @@ each tenant's spaces (``GET /api/v1/spaces`` reports what each one holds)
 and points the entry at the fullest, and ``verify`` refuses a pool whose
 spaces hold nothing.
 
+The fullest space is also where the seed's heaviest tenants are OVER the
+platform's own ceilings -- 13 of 500 seeded spaces above the 1 GiB byte
+cap, one tenant above the 10,000-file cap -- so every upload into it
+answers ``409``, correctly, and the 2026-09-28 step run spent 59% of its
+error budget on exactly that. Reads and uploads therefore point at
+different spaces: ``space_id`` stays on the content (what browse and RAG
+must measure), and ``upload_space_id`` names a space of the same tenant
+with room left, or ``null`` when the tenant has none -- ``index_file.js``
+then uploads through another entry instead of measuring the ceiling.
+
 Run from the repository root, like ``load_seed``::
 
     FIREBASE_WEB_API_KEY=… python -m app.ops.mint_load_tokens mint --count 500
@@ -128,6 +138,17 @@ ID_TOKEN_LIFETIME_S = 3600
 #: ``lib/profile.js``'s guard: more than this many sockets per user and the
 #: platform's ``ws_connections_per_user`` ceiling (5) is what gets measured.
 MAX_WS_PER_USER = 3.0
+
+#: The platform's per-space byte ceiling and per-tenant file ceiling
+#: (``Limits.max_space_bytes`` / ``max_files_per_workspace``), copied rather
+#: than imported so this tool stays free of the app's settings; a unit test
+#: pins them to ``Limits``. An upload space must sit this far BELOW both, so
+#: that the run's own uploads (a few per tenant, ~70 KiB each) cannot fill it
+#: mid-run.
+SPACE_BYTE_CEILING = 1_073_741_824
+WORKSPACE_FILE_CEILING = 10_000
+UPLOAD_HEADROOM_BYTES = 64 * 1024 * 1024
+UPLOAD_HEADROOM_FILES = 100
 
 #: Transient edge answers: nginx's per-IP ``limit_req`` (429, capacity د-8),
 #: the in-flight guard (503, capacity 1.2), an upstream hiccup (502/504).
@@ -191,6 +212,10 @@ class Account:
     # both as a pool that would measure an empty space.
     space_files: int | None = None
     space_conversations: int | None = None
+    # Where ``index_file.js`` uploads: a space of this tenant with room under
+    # both ceilings, or ``None`` when it has none (module docstring).
+    upload_space_id: str | None = None
+    upload_space_bytes: int | None = None
 
     @property
     def complete(self) -> bool:
@@ -430,6 +455,8 @@ async def create_space(clients: Clients, account: Account, *, sleep: SleepFn) ->
     account.space_name = str(body.get("name") or "load")
     account.space_files = 0
     account.space_conversations = 0
+    account.upload_space_id = account.space_id
+    account.upload_space_bytes = 0
 
 
 async def point_at_content(clients: Clients, account: Account, *, sleep: SleepFn) -> bool:
@@ -459,6 +486,7 @@ async def point_at_content(clients: Clients, account: Account, *, sleep: SleepFn
     def _held(space: dict[str, Any]) -> tuple[int, int]:
         return int(space.get("file_count") or 0), int(space.get("conversation_count") or 0)
 
+    point_uploads(account, spaces)
     fullest = max(spaces, key=_held, default=None)
     if fullest is None or _held(fullest) == (0, 0):
         account.space_files, account.space_conversations = 0, 0
@@ -467,6 +495,31 @@ async def point_at_content(clients: Clients, account: Account, *, sleep: SleepFn
     account.space_name = str(fullest.get("name") or "")
     account.space_files, account.space_conversations = _held(fullest)
     return True
+
+
+def point_uploads(account: Account, spaces: list[dict[str, Any]]) -> None:
+    """Name the space ``index_file.js`` uploads into: the fullest one still
+    under both ceilings with headroom, so an upload lands among content when
+    it can, and ``None`` when the tenant has no such space.
+
+    The file ceiling is the TENANT's, so it is summed over every listed
+    space: a tenant at 10,000 files has no room in its emptiest space either.
+    """
+    files = sum(int(s.get("file_count") or 0) for s in spaces)
+    if files + UPLOAD_HEADROOM_FILES > WORKSPACE_FILE_CEILING:
+        account.upload_space_id, account.upload_space_bytes = None, None
+        return
+    roomy = [
+        s
+        for s in spaces
+        if int(s.get("bytes_used") or 0) + UPLOAD_HEADROOM_BYTES <= SPACE_BYTE_CEILING
+    ]
+    best = max(roomy, key=lambda s: int(s.get("file_count") or 0), default=None)
+    if best is None:
+        account.upload_space_id, account.upload_space_bytes = None, None
+        return
+    account.upload_space_id = str(best["id"])
+    account.upload_space_bytes = int(best.get("bytes_used") or 0)
 
 
 # ── mint ──────────────────────────────────────────────────────────────────
@@ -594,6 +647,7 @@ class RenewReport:
     by_password: int = 0
     on_content: int = 0
     on_empty: int = 0
+    no_upload_room: int = 0
     failed: list[str] = field(default_factory=list)
 
 
@@ -631,6 +685,8 @@ async def refresh(
                 report.on_content += 1
             else:
                 report.on_empty += 1
+            if account.upload_space_id is None:
+                report.no_upload_room += 1
 
     await asyncio.gather(*(_one(a) for a in state.accounts))
     return report
@@ -701,6 +757,10 @@ def write_pool(state: State, path: Path) -> int:
                 "space_name": a.space_name,
                 "space_files": a.space_files,
                 "space_conversations": a.space_conversations,
+                # Read by `index_file.js`: `null` means this tenant is at a
+                # ceiling, and its uploads go through another entry.
+                "upload_space_id": a.upload_space_id,
+                "upload_space_bytes": a.upload_space_bytes,
             }
             for a in complete
         ],
@@ -770,6 +830,25 @@ def verify_pool(
             n > 0 and held == n,
             f"{held} of {n} entries point at a space holding files or conversations"
             + ("" if held == n else " -- seed first, then `refresh` (README §2)"),
+        )
+    )
+
+    # And the upload side (د-33): a pool from before `upload_space_id` has no
+    # answer at all, which `index_file.js` would read as "upload into the
+    # content space" -- the 409s this field exists to avoid. Tenants at a
+    # ceiling are expected (`null`) and only reported; a pool where NOBODY
+    # can upload cannot run the index scenario.
+    unanswered = sum(1 for t in tokens if "upload_space_id" not in t)
+    uploaders = sum(1 for t in tokens if t.get("upload_space_id"))
+    checks.append(
+        Check(
+            "upload room",
+            unanswered == 0 and uploaders > 0,
+            (
+                f"{unanswered} entries have no upload_space_id -- run `refresh`"
+                if unanswered
+                else f"{uploaders} of {n} entries can upload; {n - uploaders} are at a ceiling"
+            ),
         )
     )
 
@@ -908,6 +987,10 @@ async def _act_refresh(args: argparse.Namespace) -> int:
             "            an empty space measures the filter, not the platform (condition 3): "
             "run the seed with include-workspaces.txt, then `refresh` again."
         )
+    _print(
+        f"uploads   : {len(state.accounts) - report.no_upload_room} entries upload into a space "
+        f"with room, {report.no_upload_room} tenants are at a ceiling and do not upload"
+    )
     for line in report.failed:
         _print(f"failed    : {line}")
     _emit_pool(state, args)

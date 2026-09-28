@@ -16,7 +16,7 @@
 import http from 'k6/http';
 import { sleep } from 'k6';
 import { API, uploadTarget } from '../lib/config.js';
-import { authHeaders, tokenForVu } from '../lib/auth.js';
+import { authHeaders, uploadTokenForVu } from '../lib/auth.js';
 import { failures, graded, indexEndToEnd } from '../lib/metrics.js';
 
 // How often to ask whether the worker is done. A fixed 2s was measured to BE
@@ -47,7 +47,7 @@ let body = null;
 
 export function indexFile() {
   if (body === null) body = buildDocument();
-  const tok = tokenForVu();
+  const tok = uploadTokenForVu();
   const startedAt = Date.now();
   const name = `load-${__VU}-${__ITER}-${startedAt}.txt`;
 
@@ -55,7 +55,7 @@ export function indexFile() {
   const reg = http.post(
     `${API}/files`,
     JSON.stringify({
-      space_id: tok.spaceId,
+      space_id: tok.uploadSpaceId,
       name,
       content_type: 'text/plain',
       size_bytes: body.length,
