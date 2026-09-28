@@ -17,7 +17,7 @@ import http from 'k6/http';
 import { sleep } from 'k6';
 import { API, uploadTarget } from '../lib/config.js';
 import { authHeaders, uploadTokenForVu } from '../lib/auth.js';
-import { failures, graded, indexEndToEnd } from '../lib/metrics.js';
+import { failures, graded, indexEndToEnd, indexTimeouts } from '../lib/metrics.js';
 
 // How often to ask whether the worker is done. A fixed 2s was measured to BE
 // load: on 2026-09-26 the polls were 16,477 of the 121,868 requests the app
@@ -32,8 +32,9 @@ const POLL_INTERVAL_S = Number(__ENV.LOAD_INDEX_POLL_S || 2);
 const POLL_MAX_S = Number(__ENV.LOAD_INDEX_POLL_MAX_S || 10);
 // Bounds a VU whose document never reaches a terminal state -- a stalled
 // worker, a DLQ'd envelope, a sealed Vault (`ح‑14`) starving the pipeline of
-// MinIO credentials. Timing out is recorded as a failure, never as a fast
-// success and never as a missing sample.
+// MinIO credentials. Timing out is recorded on `aizzak_index_timeouts`, never
+// as a fast success and never as a missing sample -- and not as a failed
+// request either, since 2026-09-28 (`lib/metrics.js` says why).
 const INDEX_TIMEOUT_S = Number(__ENV.LOAD_INDEX_TIMEOUT_S || 300);
 
 // Real-ish content: Arabic and Latin in one document, because the chunker and
@@ -104,7 +105,7 @@ export function indexFile() {
   const deadline = Date.now() + INDEX_TIMEOUT_S * 1000;
   for (;;) {
     if (Date.now() > deadline) {
-      failures.add(true);
+      indexTimeouts.add(true);
       return;
     }
     const ageS = (Date.now() - startedAt) / 1000;
@@ -115,12 +116,16 @@ export function indexFile() {
     });
     if (doc.status !== 200) continue;
     const status = doc.json('status');
+    // A worker's verdict IS an answer, right or wrong, so it stays in the
+    // error rate; only the absence of one moved out.
     if (status === 'indexed') {
       indexEndToEnd.add(Date.now() - startedAt);
+      indexTimeouts.add(false);
       failures.add(false);
       return;
     }
     if (status === 'failed') {
+      indexTimeouts.add(false);
       failures.add(true);
       return;
     }

@@ -50,6 +50,9 @@ function textSummary(data) {
     return v['p(95)'] === undefined ? '—' : `${Math.round(v['p(95)'])}`;
   };
   const rate = ((m.aizzak_failed_requests || {}).values || {}).rate;
+  // Timed out / verdicts, as in `step.js`: a rate over no verdicts is not 0%.
+  const idx = (m.aizzak_index_timeouts || {}).values || {};
+  const verdicts = (idx.passes || 0) + (idx.fails || 0);
   return (
     '\npeak: ' +
     `read p95 ${p95('http_req_duration', 'op:read')}ms · ` +
@@ -57,6 +60,7 @@ function textSummary(data) {
     `rag p95 ${p95('aizzak_rag_retrieval_ms')}ms · ` +
     `ttft p95 ${p95('aizzak_ttft_ms')}ms · ` +
     `index p95 ${p95('aizzak_index_e2e_ms')}ms · ` +
-    `errors ${rate === undefined ? '—' : (rate * 100).toFixed(3)}%\n`
+    `errors ${rate === undefined ? '—' : (rate * 100).toFixed(3)}% · ` +
+    `index timeouts ${verdicts ? `${idx.passes || 0}/${verdicts}` : '—'}\n`
   );
 }

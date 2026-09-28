@@ -20,6 +20,16 @@ export const ragRetrieval = new Trend('aizzak_rag_retrieval_ms', true);
 // Register -> PUT -> complete -> index -> `indexed`, across the worker. `ح‑6`
 // is exactly this number failing to fall when replicas are added.
 export const indexEndToEnd = new Trend('aizzak_index_e2e_ms', true);
+// ...and the jobs that never produced a sample for it: still neither `indexed`
+// nor `failed` after `INDEX_TIMEOUT_S` (`scenarios/index_file.js`). That is the
+// trend's tail past the harness's patience -- a LATENCY outcome of the
+// asynchronous path, not an error -- so it is a rate of its own, one sample per
+// job that reached a verdict, and NOT in `aizzak_failed_requests` below: §7
+// item 4's budget is on the synchronous paths, and every request such a job
+// made was answered. Folded in, it decided the 2026-09-28 step run by itself:
+// ~all of steps 125-175's 61/70/80 errors were index timeouts, against one
+// failed check in 197,584 -- a worker backlog, read as a failing API.
+export const indexTimeouts = new Rate('aizzak_index_timeouts');
 export const wsHoldSeconds = new Trend('aizzak_ws_hold_seconds');
 export const wsFrames = new Counter('aizzak_ws_frames');
 

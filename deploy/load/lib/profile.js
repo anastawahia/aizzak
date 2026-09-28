@@ -75,7 +75,9 @@ export function buildOptions({ scale, durationS, wsVus }) {
       aizzak_ttft_ms: [`p(95)<${BUDGET_MS.ttft}`],
       // §7 item 4. An intended 429 is not in this rate by construction
       // (`lib/metrics.js`), so this is the honest error budget and not a
-      // proxy for one.
+      // proxy for one. Nor is an index job that ran out of time: that is
+      // `aizzak_index_timeouts`, reported and not gated -- 07 §2 has no
+      // budget for it, and §7 item 4's is on the synchronous paths.
       aizzak_failed_requests: ['rate<0.001'],
 
       // ── Reporting-only submetrics ──────────────────────────────────────
@@ -458,6 +460,7 @@ function stepThresholds(plan) {
     out[`aizzak_ttft_ms{${t}}`] = ['p(99)>=0'];
     out[`aizzak_index_e2e_ms{${t}}`] = ['p(99)>=0'];
     out[`aizzak_failed_requests{${t}}`] = ['rate>=0'];
+    out[`aizzak_index_timeouts{${t}}`] = ['rate>=0'];
     out[`http_reqs{${t}}`] = ['count>=0'];
     out[`iterations{${t}}`] = ['count>=0'];
     out[`dropped_iterations{${t}}`] = ['count>=0'];

@@ -147,7 +147,8 @@ function failedRate(data) {
 // One row per step of `step.js`, read from the `{step:<label>}` submetrics
 // `lib/profile.js` materialises. `delivered` is the rate condition applied to
 // the step alone; `within_budget` adds 07 §2's four latency budgets and §7's
-// error budget, judged against this step's own requests.
+// error budget, judged against this step's own requests. `index_timeouts`
+// sits beside them and judges nothing (`lib/metrics.js` says why).
 function stepTable(plan, data) {
   const m = data.metrics || {};
   const val = (name) => (m[name] || {}).values || {};
@@ -164,6 +165,8 @@ function stepTable(plan, data) {
     const failed = val(`aizzak_failed_requests{${t}}`);
     const samples = (failed.passes || 0) + (failed.fails || 0);
     const errorRate = samples > 0 ? failed.rate : 1;
+    const timedOut = val(`aizzak_index_timeouts{${t}}`);
+    const verdicts = (timedOut.passes || 0) + (timedOut.fails || 0);
     const dropped = val(`dropped_iterations{${t}}`).count || 0;
     const iterations = val(`iterations{${t}}`).count || 0;
     const delivered = iterations > 0 && dropped === 0;
@@ -178,6 +181,15 @@ function stepTable(plan, data) {
       dropped_iterations: dropped,
       delivered,
       error_rate: errorRate,
+      // Of the index jobs that reached a verdict -- `indexed`, `failed`, or
+      // out of time. A job still running when the step ended reached none,
+      // so a step whose backlog outgrew its hold shows few verdicts, not few
+      // timeouts: read it beside `latency.index_e2e`.
+      index_timeouts: {
+        count: timedOut.passes || 0,
+        verdicts,
+        rate: verdicts > 0 ? timedOut.rate : null,
+      },
       within_budget:
         delivered &&
         errorRate < 0.001 &&

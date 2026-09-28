@@ -35,12 +35,12 @@ five scenarios per step, each tagged `step:rpsNNN`. The step profile exists
 because the 2026‑09‑26 peak run offered 300 rps to a platform that serves
 ~160, and a constant rate above a ceiling measures the queue in front of it,
 not the ceiling. Its result carries a `steps` table (per step: rps offered
-and served, dropped arrivals, p50/p95/p99 per budget, error rate) and a
-`knee`: `sustained_rps` — the highest step that, with every step below it,
-dropped nothing and stayed inside the 0.1 % error budget — and
-`within_budget_rps`, which adds 07 §2's four latency budgets. Drops above the
-knee are the finding, so for this profile `validity.rate_delivered` is judged
-on the lowest step only.
+and served, dropped arrivals, p50/p95/p99 per budget, error rate, index
+timeouts) and a `knee`: `sustained_rps` — the highest step that, with every
+step below it, dropped nothing and stayed inside the 0.1 % error budget — and
+`within_budget_rps`, which adds 07 §2's four latency budgets. Index timeouts
+decide neither (§6). Drops above the knee are the finding, so for this
+profile `validity.rate_delivered` is judged on the lowest step only.
 
 ---
 
@@ -338,8 +338,8 @@ least afford it. The interval is now a twentieth of the job's age, between
 
 Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
 `LOAD_WS_SOCKETS_PER_VU` · `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` ·
-`LOAD_P95_GENERATION_S` · `LOAD_INDEX_POLL_MAX_S` · `LOAD_UPLOAD_ORIGIN` ·
-`LOAD_VERBOSE=1`.
+`LOAD_P95_GENERATION_S` · `LOAD_INDEX_POLL_MAX_S` · `LOAD_INDEX_TIMEOUT_S` ·
+`LOAD_UPLOAD_ORIGIN` · `LOAD_VERBOSE=1`.
 
 **`LOAD_UPLOAD_ORIGIN`** is the one address the generator is *handed* rather
 than configured with. `POST /files` answers with a URL presigned against
@@ -482,7 +482,7 @@ was true — for `http_req_failed`, the failures. The old rendering printed the
 rate alone, and `http_req_failed: 1` read as one failed request when it meant
 all of them.
 
-Two fields are worth reading before the percentiles:
+Three fields are worth reading before the percentiles:
 
 - `counters.aizzak_rate_limited_total` — intended 429s, which §7 item 4
   excludes from the error budget. **This paragraph used to say the value
@@ -495,6 +495,15 @@ Two fields are worth reading before the percentiles:
   host k6 produced the run. A non-zero value in a container run with
   addresses claimed means the block was too small for the offered rate —
   divide the rate by 20 r/s for the minimum.
+- `counters.aizzak_index_timeouts` — index jobs still neither `indexed` nor
+  `failed` after `LOAD_INDEX_TIMEOUT_S` (300 s), out of the jobs that reached
+  a verdict; per step as `index_timeouts`. **Not in the error rate**, since
+  2026‑09‑28: §7 item 4's budget is on the synchronous paths, every request
+  such a job made was answered, and folded in they decided that day's step
+  run on their own — ~all of steps 125–175's errors, against one failed check
+  in 197,584. A document the worker *failed* is still an error: that is a
+  wrong answer, not a missing one. A job still running when its step ends
+  reaches no verdict, so read this beside `latency.index_e2e`.
 - `assumptions.p95_generation_s` — the stream arrival rate is derived from it
   through §3's provider equation, and nothing has measured it yet. Step 0.5
   replaces the assumption; until then it is stated in every result rather

@@ -51,13 +51,17 @@ export function handleSummary(data) {
 
 function textSummary(summary) {
   const ms = (v) => (v === undefined || v === null ? '—' : `${Math.round(v)}`);
-  const lines = ['\nstep: rps offered → served · dropped · read/write/rag/ttft p95 ms · errors'];
+  const lines = [
+    '\nstep: rps offered → served · dropped · read/write/rag/ttft p95 ms · errors · ' +
+      'index timed out/verdicts',
+  ];
   for (const s of summary.steps) {
     lines.push(
       `  ${String(s.rps).padStart(3)} → ${s.served_http_rps.toFixed(0).padStart(3)} · ` +
         `${String(s.dropped_iterations).padStart(6)} · ` +
         `${ms(s.p95.read)}/${ms(s.p95.write)}/${ms(s.p95.rag)}/${ms(s.p95.ttft)} · ` +
-        `${(s.error_rate * 100).toFixed(2)}%` +
+        `${(s.error_rate * 100).toFixed(2)}% · ` +
+        `${s.index_timeouts.count}/${s.index_timeouts.verdicts}` +
         (s.within_budget ? '  ✓ budget' : s.delivered ? '  delivered' : ''),
     );
   }
