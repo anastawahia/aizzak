@@ -594,7 +594,17 @@ docker compose exec -T prometheus wget -qO- \
   'http://127.0.0.1:9090/api/v1/query?query=sum%20by%20(result)%20(increase(aizzak_embedding_cache_total%5B10m%5D))'
 ```
 
-والمعدّلُ `hit` على مجموع الثلاث: `sum(rate(aizzak_embedding_cache_total{result="hit"}[5m])) / sum(rate(aizzak_embedding_cache_total[5m]))`. ونتيجةٌ فارغةٌ تعني أنّ أحداً لم يبحث منذ آخر إقلاع، أو أنّ الصورةَ أقدمُ من العدّاد.
+والمعدّلُ `hit` على مجموع الثلاث: `sum(rate(aizzak_embedding_cache_total{result="hit"}[5m])) / sum(rate(aizzak_embedding_cache_total[5m]))`.
+
+**وأوّلُ قراءةٍ بعد إقلاعٍ تُؤخذ مجموعاً:** `increase` و`rate` يحتاجان كشطتَين رأتا العدّاد (كلَّ 15 ث)، فبحوثٌ قليلةٌ على نسخٍ جديدةٍ قد لا تظهر فيهما بعد. والمجموعُ منذ آخر إقلاعٍ يظهر من أوّل كشطة:
+
+```bash
+# المجموعُ لكلّ نتيجةٍ منذ آخر إقلاع
+docker compose exec -T prometheus wget -qO- \
+  'http://127.0.0.1:9090/api/v1/query?query=sum%20by%20(result)%20(aizzak_embedding_cache_total)'
+```
+
+ونتيجةٌ فارغةٌ هنا تعني أنّ أحداً لم يبحث منذ آخر إقلاع، أو أنّ الصورةَ أقدمُ من العدّاد.
 
 **⚠️ و`unavailable` فوق الصفر عطلٌ لا حِمل:** الغلافُ يفشل مفتوحاً، فالبحثُ يعمل وكلُّ استعلامٍ يذهب إلى الأسطول، ولا خطأَ في أيّ مكانٍ آخر. ابدأ من `redis-cache` (`§4.19`).
 
