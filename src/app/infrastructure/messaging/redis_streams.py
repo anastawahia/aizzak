@@ -177,6 +177,14 @@ class StreamMessage:
     entry_id: str
     raw: bytes | None
     delivery_count: int = 1
+    # capacity 5.5 (`ح-17`): the entry is still in this consumer's pending
+    # list but no longer on the stream -- something trimmed it while it was in
+    # flight. Redis answers the recovery read with the id and NO fields
+    # (measured on 7.4), and an entry that exists always has at least one
+    # (`XADD` refuses zero), so the two cases cannot be confused. Kept apart
+    # from `raw is None` on purpose: that is a malformed ENTRY, this is a lost
+    # one, and an operator reading the DLQ needs to know which.
+    trimmed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +613,7 @@ class RedisStreamsConsumer:
                         entry_id=message.entry_id,
                         raw=message.raw,
                         delivery_count=counts.get((message.stream, message.entry_id), 1),
+                        trimmed=message.trimmed,
                     )
                     for message in recovered_messages
                 ]
@@ -764,13 +773,22 @@ def _to_messages(response: object) -> list[StreamMessage]:
     (decode/validation of ``ce`` is the ENGINE's job, module docstring's
     "keep this adapter THIN"). A ``None``/empty response (nothing to read,
     the common case under ``BLOCK`` timing out) yields an empty list.
+
+    An entry with NO fields is one the recovery pass found in the pending list
+    after the stream itself dropped it (``StreamMessage.trimmed``); redis-py
+    hands Redis's nil back as an empty mapping, which is what is tested here.
     """
     messages: list[StreamMessage] = []
     for stream_name, entries in cast("_ReadGroupResponse", response or []):
         stream = stream_name.decode()
         for entry_id, fields in entries:
             messages.append(
-                StreamMessage(stream=stream, entry_id=entry_id.decode(), raw=fields.get(_CE_FIELD))
+                StreamMessage(
+                    stream=stream,
+                    entry_id=entry_id.decode(),
+                    raw=fields.get(_CE_FIELD) if fields else None,
+                    trimmed=not fields,
+                )
             )
     return messages
 

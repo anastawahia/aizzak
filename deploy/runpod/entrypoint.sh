@@ -201,6 +201,10 @@ export WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-4}"
 # `stop_grace_period` -- see `supervisord.conf`.
 export WORKER_DRAIN_TIMEOUT_S="${WORKER_DRAIN_TIMEOUT_S:-30}"
 export STREAM_MAXLEN="${STREAM_MAXLEN:-100000}"
+# capacity 5.5 (`ح-17`): the relay trims every published stream below its
+# slowest reader; MAXLEN above is only the backstop. `0` switches the trim off.
+export STREAM_TRIM_INTERVAL_S="${STREAM_TRIM_INTERVAL_S:-60}"
+export STREAM_TRIM_MARGIN_S="${STREAM_TRIM_MARGIN_S:-600}"
 export MCP_ALLOWED_TRANSPORTS="${MCP_ALLOWED_TRANSPORTS:-http,sse}"
 export OAUTH_REFRESH_SKEW_S="${OAUTH_REFRESH_SKEW_S:-60}"
 export USAGE_ROLLUP_PERIODS="${USAGE_ROLLUP_PERIODS:-day,month}"

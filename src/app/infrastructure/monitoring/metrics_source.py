@@ -30,6 +30,7 @@ multi-worker default without ``PROMETHEUS_MULTIPROC_DIR``.**
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
@@ -37,7 +38,9 @@ from redis.exceptions import ResponseError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY
+from app.framework.events.topology import PUBLISHED_STREAMS, STATIC_CONSUMER_TOPOLOGY
+from app.framework.ports.metrics_source import StreamRetention
+from app.infrastructure.messaging.stream_retention import read_stream_snapshot
 
 # Every source stream this platform's workers consume, derived from the ONE
 # canonical topology table (`framework/events/topology.py`) rather than typed
@@ -74,9 +77,26 @@ class SqlRedisMetricsSource:
     """Structural ``MetricsSource`` (Protocol match, no inheritance -- the
     ``RedisCache``/every adapter-over-a-port precedent in this codebase)."""
 
-    def __init__(self, engine: AsyncEngine, redis_client: Redis) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        redis_client: Redis,
+        *,
+        stream_maxlen: int | None = None,
+        streams: Sequence[str] = PUBLISHED_STREAMS,
+    ) -> None:
         self._engine = engine
         self._redis = redis_client
+        # The streams `stream_retention` reads -- the published list in every
+        # deployment; a parameter only so a live test can point it at streams
+        # of its own instead of the stack's real ones.
+        self._streams = tuple(streams)
+        # capacity 5.5: the `XADD ... MAXLEN ~` backstop, reported next to each
+        # stream's length so the 70% rule is a ratio in PromQL rather than a
+        # byte count typed into `alerts.yml` (the 5.2 precedent). Config, not
+        # Redis state: `None` means the backstop is off, and the gauge is then
+        # absent rather than zero.
+        self._stream_maxlen = stream_maxlen
 
     async def outbox_oldest_unpublished_age_seconds(self) -> float:
         """``min(created_at)`` over the unpublished half of ``platform.outbox``
@@ -145,6 +165,43 @@ class SqlRedisMetricsSource:
                     continue
                 lags[(binding.stream, binding.group)] = max(0.0, (head_ms - delivered_ms) / 1000)
         return lags
+
+    async def stream_retention(self) -> StreamRetention:
+        """Every ``PUBLISHED_STREAMS`` entry, one transactional snapshot
+        each (``stream_retention.read_stream_snapshot``), folded into the
+        port's four answers.
+
+        The snapshot is the SAME reading the relay's trimmer decides from, so
+        a gauge and a trim can never disagree about where a group stands. It
+        also looks up, for each group that is behind, the first entry it has
+        not been handed -- one ``XRANGE ... COUNT 1`` -- which is what turns
+        a position into an age. Caught-up groups (the common case, and every
+        notify group almost always) cost nothing beyond the transaction.
+
+        A stream that does not exist yet is absent, never ``0`` -- the
+        ``stream_lag_seconds`` rule, for the same reason.
+        """
+        lengths: dict[str, int] = {}
+        ages: dict[tuple[str, str], float] = {}
+        unread_trimmed: dict[tuple[str, str], int] = {}
+        for stream in self._streams:
+            snapshot = await read_stream_snapshot(self._redis, stream, with_undelivered=True)
+            if snapshot is None:
+                continue
+            lengths[stream] = snapshot.length
+            for group in snapshot.groups:
+                key = (stream, group.family)
+                age = snapshot.age_s(group.oldest_unconsumed_id)
+                ages[key] = max(ages.get(key, 0.0), age)
+                lost = group.unread_trimmed(snapshot.entries_added)
+                if lost is not None:
+                    unread_trimmed[key] = max(unread_trimmed.get(key, 0), lost)
+        return StreamRetention(
+            lengths=lengths,
+            backstop=self._stream_maxlen,
+            oldest_unconsumed_age_s=ages,
+            unread_trimmed=unread_trimmed,
+        )
 
     async def dlq_depths(self) -> dict[str, int]:
         """``XLEN`` of ``<stream>.dlq`` for every entry in

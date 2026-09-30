@@ -503,3 +503,85 @@ groups:
             already `noeviction`, the container was restarted with a different
             `command:` -- compare against `docker-compose.yml` before
             anything else.
+
+      # ── capacity 5.5 (ح-17) — the stream trim, its backstop, and the loss ──
+      #
+      # Since 5.5 `outbox-relay` trims every published stream below its
+      # slowest reader (`XTRIM MINID ~`), and `XADD ... MAXLEN ~` stays only as
+      # a BACKSTOP: the one mechanism left that can delete an entry a group
+      # has not read. These two rules watch it from both sides -- before it
+      # bites, and if it ever does. All four gauges are external state that
+      # every `app` replica recomputes, hence `max` everywhere.
+      - alert: AizzakStreamBackstopHigh
+        expr: >-
+          max by (stream) (aizzak_stream_length)
+          / scalar(max(aizzak_stream_maxlen)) > 0.7
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A stream is at 70% of its MAXLEN backstop -- past 100% XADD deletes unread entries ({{ $labels.stream }})"
+          description: >-
+            The trim keeps a stream down to what its slowest consumer group
+            still needs, so a stream this long means a group has stopped
+            reading -- a stopped worker, a wedged one, or a group nobody will
+            ever read again -- or the trim itself is not running. At the
+            backstop, every new event deletes the oldest entry whether or not
+            that group has read it: the silent loss `ح-17` names.
+          reason: >-
+            70% is capacity 5.5's own number. The backstop is sized at three
+            times the peak arrival on the busiest stream over the longest
+            outage 5.5 calls acceptable (08 §4.21: 100,000 entries against
+            ~12,000 for a 20-minute outage at 200 events/min, plus the trim
+            margin), so reaching 70% is already far outside anything
+            tolerable -- and `for: 5m` because the length only climbs, it
+            never spikes.
+          response: >-
+            `docker compose exec -T app python -m app.ops.stream_trim status`
+            names the group that bounds the trim and how long it has held it.
+            A worker's group (`cg.knowledge`/`cg.media`/`cg.memory`): bring
+            its worker back -- nothing is lost yet. A group nothing will ever
+            read again: destroy it (`redis-cli XGROUP DESTROY <stream>
+            <group>`, 08 §4.21). Every group caught up and the stream still
+            long: the trim is not running -- `STREAM_TRIM_INTERVAL_S` and the
+            `stream_trim.*` lines in `outbox-relay`'s log. Raising
+            STREAM_MAXLEN buys time against a memory ceiling that is not
+            yours to spend (08 §4.19).
+
+      # The loss itself, counted by Redis. `entries-added - entries-read -
+      # lag` is the number of entries removed before a group read them; it is
+      # structurally zero while only the 5.5 trim runs (it never cuts below a
+      # group's position), so -- like `AizzakRedisStreamEvicted` above -- the
+      # first non-zero value is the whole finding and there is nothing to
+      # debounce. Redis re-estimates `entries-read` once the group reads past
+      # the gap, so the number is only visible while the group is still
+      # behind it; a `for:` window could let a recovering consumer erase the
+      # evidence before the alert ever fired.
+      - alert: AizzakStreamEntriesLost
+        expr: max by (stream, group) (aizzak_stream_unread_trimmed_entries) > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Stream entries were deleted before a consumer group read them ({{ $labels.stream }} / {{ $labels.group }})"
+          description: >-
+            Events were removed from {{ $labels.stream }} while
+            {{ $labels.group }} had not yet read them. Their outbox rows are
+            already stamped published, so nothing will redeliver them: the
+            work they asked for (an indexing job, a media job, a memory item)
+            will not happen, and no other signal says so.
+          reason: >-
+            `> 0` with no `for:` window. The 5.5 trim cannot produce this, so
+            any value means the MAXLEN backstop bit into unread history or
+            someone ran XTRIM by hand. The gauge also disappears once the
+            group reads past the gap, so waiting to confirm it can only lose
+            the evidence.
+          response: >-
+            `python -m app.ops.stream_trim status` for the group and the size
+            of the gap. Then find what was lost: the entry ids between the
+            group's cursor and the stream's first entry are gone, but their
+            payloads are still rows in `platform.outbox` (published in that
+            window, same stream). Re-publishing them is 5.6's replay tool;
+            until it exists, requeue by hand and let `processed_events` absorb
+            anything that did get through. Then fix why the group stalled
+            long enough for the backstop to reach it.

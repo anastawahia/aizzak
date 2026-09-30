@@ -73,6 +73,10 @@ from app.api.metrics import (
     DLQ_DEPTH_METRIC,
     OUTBOX_AGE_METRIC,
     STREAM_LAG_METRIC,
+    STREAM_LENGTH_METRIC,
+    STREAM_MAXLEN_METRIC,
+    STREAM_UNCONSUMED_AGE_METRIC,
+    STREAM_UNREAD_TRIMMED_METRIC,
     VAULT_AUTH_METRIC,
 )
 from app.framework.observability.metrics import (
@@ -111,7 +115,21 @@ _APP_JOB = "aizzak-app"
 # four `api/metrics.py` gauges are one fact read N times; the fourth reports on
 # the reading PROCESS, and its own help string is what says so. See the
 # docstring's third family.
-_EXTERNAL_STATE = frozenset({OUTBOX_AGE_METRIC, DLQ_DEPTH_METRIC, STREAM_LAG_METRIC})
+#
+# Capacity 5.5 adds four more, all external state: `aizzak_stream_maxlen` is
+# configuration rather than Redis state, but every replica reports the same
+# number for the same reason, and summing it would triple the backstop.
+_EXTERNAL_STATE = frozenset(
+    {
+        OUTBOX_AGE_METRIC,
+        DLQ_DEPTH_METRIC,
+        STREAM_LAG_METRIC,
+        STREAM_LENGTH_METRIC,
+        STREAM_MAXLEN_METRIC,
+        STREAM_UNCONSUMED_AGE_METRIC,
+        STREAM_UNREAD_TRIMMED_METRIC,
+    }
+)
 
 # One fleet total, split across containers -- these must be summed.
 _PER_CONTAINER_SHARE = frozenset(

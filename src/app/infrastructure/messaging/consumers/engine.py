@@ -27,7 +27,9 @@ must not swallow a decode failure before this engine ever sees it.
    (which governs «فشل عابر», transient failures) does not apply. 5.1-ج's
    interim policy XACK-dropped these with a loud log because the DLQ did
    not exist yet -- the poison pill now has a destination instead of
-   vanishing.
+   vanishing. **Capacity 5.5:** an entry the STREAM dropped while it sat in
+   the pending list (``StreamMessage.trimmed``) takes the same path under its
+   own reason, ``entry_trimmed`` -- a lost entry, not a malformed one.
 2. ``type``, ``workspaceid``, or ``id`` missing/empty -> log ``ERROR
    "unroutable_envelope"`` and **dead-letter immediately** -- the same
    permanent-poison reasoning: nothing in this codebase's own producer path
@@ -646,15 +648,21 @@ class StreamConsumer:
         """Apply the module docstring's per-message policy to ONE delivered
         message; returns whether it was handled successfully (for
         ``run_once``'s return count)."""
-        envelope = _decode(message)
+        # capacity 5.5 (`ح-17`): a TRIMMED entry is one the stream dropped
+        # while it sat in the pending list, so there is nothing left to handle
+        # -- only the bookkeeping of the loss. It is dead-lettered under its
+        # own reason rather than as `malformed_envelope`, which would send an
+        # operator looking for a producer bug that does not exist. The trim 5.5
+        # ships never does this (it keeps every group's oldest pending entry);
+        # only the `MAXLEN` backstop or a hand-run `XTRIM` can.
+        envelope = None if message.trimmed else _decode(message)
         if envelope is None:
-            _logger.error(
-                "malformed_envelope", extra={"entry_id": message.entry_id, "stream": message.stream}
-            )
-            # Permanent poison, dead-lettered immediately (policy 1) -- no
+            reason = "entry_trimmed" if message.trimmed else "malformed_envelope"
+            _logger.error(reason, extra={"entry_id": message.entry_id, "stream": message.stream})
+            # Permanent either way, dead-lettered immediately (policy 1) -- no
             # retry budget can fix bytes that will decode the same way on
-            # attempt N as on attempt 1.
-            await self._dead_letter(group, message, reason="malformed_envelope")
+            # attempt N as on attempt 1, or bring back an entry that is gone.
+            await self._dead_letter(group, message, reason=reason)
             return False
 
         event_type = envelope.get("type")

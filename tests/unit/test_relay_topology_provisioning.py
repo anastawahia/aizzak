@@ -106,7 +106,7 @@ async def test_ensure_group_for_every_pair_precedes_the_first_publish(
     calls: list[tuple[str, ...]] = []
     _install_spy_consumer(monkeypatch, calls)
 
-    relay, ensure_topology, disposables = build_relay_from_env()
+    relay, ensure_topology, _, disposables = build_relay_from_env()
 
     async def _fake_run_forever() -> None:
         calls.append(("publish",))
@@ -114,7 +114,7 @@ async def test_ensure_group_for_every_pair_precedes_the_first_publish(
     monkeypatch.setattr(relay, "run_forever", _fake_run_forever)
     monkeypatch.setattr(
         "app.workers.outbox_relay.build_relay_from_env",
-        lambda: (relay, ensure_topology, disposables),
+        lambda: (relay, ensure_topology, None, disposables),
     )
 
     await outbox_relay.run()
@@ -144,7 +144,7 @@ async def test_ensure_group_failure_propagates_and_blocks_the_first_publish(
     calls: list[tuple[str, ...]] = []
     _install_spy_consumer(monkeypatch, calls, fail_on=2)  # fails on the second pair
 
-    relay, ensure_topology, disposables = build_relay_from_env()
+    relay, ensure_topology, _, disposables = build_relay_from_env()
 
     async def _fake_run_forever() -> None:
         calls.append(("publish",))
@@ -152,7 +152,7 @@ async def test_ensure_group_failure_propagates_and_blocks_the_first_publish(
     monkeypatch.setattr(relay, "run_forever", _fake_run_forever)
     monkeypatch.setattr(
         "app.workers.outbox_relay.build_relay_from_env",
-        lambda: (relay, ensure_topology, disposables),
+        lambda: (relay, ensure_topology, None, disposables),
     )
 
     with pytest.raises(AppError, match="event consume failed"):
@@ -175,7 +175,7 @@ async def test_topology_consumer_shares_the_publisher_redis_client(
     calls: list[tuple[str, ...]] = []
     instances = _install_spy_consumer(monkeypatch, calls)
 
-    _, ensure_topology, disposables = build_relay_from_env()
+    _, ensure_topology, _, disposables = build_relay_from_env()
     await ensure_topology()
 
     assert len(instances) == 1

@@ -35,8 +35,17 @@ from app.api.metrics import (
     DLQ_DEPTH_METRIC,
     OUTBOX_AGE_METRIC,
     STREAM_LAG_METRIC,
+    STREAM_LENGTH_METRIC,
+    STREAM_MAXLEN_METRIC,
+    STREAM_UNCONSUMED_AGE_METRIC,
+    STREAM_UNREAD_TRIMMED_METRIC,
     VAULT_AUTH_METRIC,
     metrics_router,
+)
+from app.framework.ports.metrics_source import StreamRetention
+
+_NO_RETENTION = StreamRetention(
+    lengths={}, backstop=None, oldest_unconsumed_age_s={}, unread_trimmed={}
 )
 
 
@@ -50,6 +59,7 @@ class _FakeMetricsSource:
         outbox_age: float,
         dlq_depths: dict[str, int],
         stream_lag: dict[tuple[str, str], float] | None = None,
+        stream_retention: StreamRetention = _NO_RETENTION,
     ) -> None:
         self.outbox_age = outbox_age
         self.dlq_depths_value = dlq_depths
@@ -58,6 +68,9 @@ class _FakeMetricsSource:
         # because "no stream has been published to yet" is a real state the
         # adapter reports the same way (see its own docstring).
         self.stream_lag_value = stream_lag or {}
+        # Capacity 5.5 -- defaulted to "nothing published, no backstop" for the
+        # same reason.
+        self.stream_retention_value = stream_retention
 
     async def outbox_oldest_unpublished_age_seconds(self) -> float:
         return self.outbox_age
@@ -67,6 +80,9 @@ class _FakeMetricsSource:
 
     async def stream_lag_seconds(self) -> dict[tuple[str, str], float]:
         return dict(self.stream_lag_value)
+
+    async def stream_retention(self) -> StreamRetention:
+        return self.stream_retention_value
 
 
 class _FakeVaultHealth:
@@ -225,3 +241,68 @@ def test_a_caught_up_group_renders_zero_and_an_unpublished_stream_renders_nothin
 
     assert 'stream="stream.memory"' in body
     assert 'stream="stream.media"' not in body
+
+
+# --------------------------------------------------------------------------- #
+# Capacity 5.5 (docs/capacity-plan.md, ح-17) -- the four stream-trim gauges   #
+# --------------------------------------------------------------------------- #
+def test_stream_retention_renders_length_backstop_age_and_loss() -> None:
+    retention = StreamRetention(
+        lengths={"stream.knowledge": 1234, "stream.files": 7},
+        backstop=100_000,
+        oldest_unconsumed_age_s={
+            ("stream.knowledge", "cg.knowledge"): 1200.0,
+            ("stream.knowledge", "cg.notify"): 0.0,
+        },
+        unread_trimmed={("stream.knowledge", "cg.knowledge"): 0},
+    )
+    source = _FakeMetricsSource(outbox_age=0.0, dlq_depths={}, stream_retention=retention)
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert _metric_value(body, STREAM_LENGTH_METRIC, labels={"stream": "stream.knowledge"}) == 1234
+    assert _metric_value(body, STREAM_LENGTH_METRIC, labels={"stream": "stream.files"}) == 7
+    assert _metric_value(body, STREAM_MAXLEN_METRIC) == 100_000
+    assert (
+        _metric_value(
+            body,
+            STREAM_UNCONSUMED_AGE_METRIC,
+            labels={"stream": "stream.knowledge", "group": "cg.knowledge"},
+        )
+        == 1200.0
+    )
+    assert (
+        _metric_value(
+            body,
+            STREAM_UNCONSUMED_AGE_METRIC,
+            labels={"stream": "stream.knowledge", "group": "cg.notify"},
+        )
+        == 0.0
+    )
+    assert (
+        _metric_value(
+            body,
+            STREAM_UNREAD_TRIMMED_METRIC,
+            labels={"stream": "stream.knowledge", "group": "cg.knowledge"},
+        )
+        == 0
+    )
+
+
+def test_a_switched_off_backstop_is_absent_not_zero() -> None:
+    """``STREAM_MAXLEN=0`` means no cap. Rendered as ``0``, the backstop
+    rule's ratio would read every stream as infinitely full; absent, the rule
+    has nothing to divide by and stays quiet -- which is the truth."""
+    retention = StreamRetention(
+        lengths={"stream.knowledge": 10},
+        backstop=None,
+        oldest_unconsumed_age_s={},
+        unread_trimmed={},
+    )
+    source = _FakeMetricsSource(outbox_age=0.0, dlq_depths={}, stream_retention=retention)
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    names = _metric_names(body)
+    assert STREAM_LENGTH_METRIC in names
+    assert STREAM_MAXLEN_METRIC not in names

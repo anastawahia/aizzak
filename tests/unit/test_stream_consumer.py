@@ -515,6 +515,46 @@ async def test_missing_ce_field_is_logged_and_dead_lettered(
     assert any(record.getMessage() == "dead_lettered" for record in caplog.records)
 
 
+async def test_a_trimmed_pending_entry_is_dead_lettered_as_trimmed_not_malformed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Capacity 5.5 (``ح-17``). A pending entry the stream dropped comes back
+    from the recovery read with no payload at all. Nothing can handle it and
+    nothing can bring it back, so it is dead-lettered at once -- under its own
+    reason: ``malformed_envelope`` would send an operator looking for a
+    producer bug, when what happened is a trim cutting into unread history."""
+
+    class _TrimmedUnderThePel(InMemoryStreamsConsumer):
+        async def read(self, **kwargs: object) -> list[StreamMessage]:
+            messages = await super().read(**kwargs)  # type: ignore[arg-type]
+            return [
+                StreamMessage(
+                    stream=m.stream,
+                    entry_id=m.entry_id,
+                    raw=None,
+                    delivery_count=m.delivery_count,
+                    trimmed=True,
+                )
+                for m in messages
+            ]
+
+    fake = _TrimmedUnderThePel()
+    sub = Subscription(stream="stream.knowledge", group="cg.knowledge", handlers={})
+    entry_id = fake.seed("stream.knowledge", b"irrelevant")
+
+    with caplog.at_level(logging.ERROR):
+        handled = await _consumer(fake).run_once([sub])
+
+    assert handled == 0
+    assert fake.dead_lettered == [
+        ("stream.knowledge", "cg.knowledge", entry_id, "entry_trimmed", 1)
+    ]
+    assert fake.pending[("stream.knowledge", "cg.knowledge")] == {}  # transferred, not retried
+    messages = [record.getMessage() for record in caplog.records]
+    assert "entry_trimmed" in messages
+    assert "malformed_envelope" not in messages
+
+
 async def test_invalid_json_ce_is_logged_and_dead_lettered(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -345,6 +345,44 @@ async def test_read_merges_recovered_messages_before_fresh_ones() -> None:
     ]
 
 
+async def test_a_pending_entry_the_stream_no_longer_holds_is_marked_trimmed() -> None:
+    """Capacity 5.5 (``ح-17``). Measured on Redis 7.4: when a pending entry
+    has been trimmed off the stream, the recovery read still returns its id --
+    with NO fields (redis-py hands the nil back as an empty mapping). The
+    adapter must say so, rather than let it pass as an entry that merely
+    lacks a ``ce`` field, and must keep the real delivery counter on it."""
+    client = _FakeRedisClient()
+    client.queue_xreadgroup_response([[b"stream.knowledge", [(b"1-0", {})]]])
+    client.queue_xpending_response(
+        [{"message_id": b"1-0", "consumer": b"c1", "time_since_delivered": 5, "times_delivered": 2}]
+    )
+    consumer = RedisStreamsConsumer(client)  # type: ignore[arg-type]
+
+    [message] = await consumer.read(
+        streams=["stream.knowledge"], group="cg.knowledge", consumer="c1", count=4, block_ms=500
+    )
+
+    assert message.trimmed is True
+    assert message.raw is None
+    assert message.delivery_count == 2
+
+
+async def test_an_entry_without_a_ce_field_is_not_mistaken_for_a_trimmed_one() -> None:
+    """The other side of the distinction: an entry that EXISTS always has a
+    field (``XADD`` refuses zero), so a ``ce``-less one is malformed, not lost."""
+    client = _FakeRedisClient()
+    client.queue_xreadgroup_response([])
+    client.queue_xreadgroup_response([[b"stream.knowledge", [(b"2-0", {b"other": b"x"})]]])
+    consumer = RedisStreamsConsumer(client)  # type: ignore[arg-type]
+
+    [message] = await consumer.read(
+        streams=["stream.knowledge"], group="cg.knowledge", consumer="c1", count=4, block_ms=500
+    )
+
+    assert message.trimmed is False
+    assert message.raw is None
+
+
 async def test_read_asks_xpending_only_for_recovered_entries_and_filters_by_consumer() -> None:
     """The 5.2-ب enrichment's two economy/correctness properties in one:
     the ``XPENDING RANGE`` is bounded to exactly the recovered ids and

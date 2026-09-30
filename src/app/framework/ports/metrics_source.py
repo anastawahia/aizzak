@@ -53,6 +53,13 @@ by construction rather than by coordination.
   unread entries are on their way to being deleted with no error, no alert and
   no log line anywhere.
 
+* ``stream_retention`` — capacity 5.5 (``ح-17``): what each published stream
+  holds and how far behind its slowest reader is, the numbers that watch the
+  trim ``outbox-relay`` now performs (``infrastructure/messaging/
+  stream_retention.py``). ``StreamRetention`` below says what each field
+  answers; the reason there is an AGE at all is the plan's own sentence --
+  «لا ``XLEN`` وحده، فالطولُ لا يقول شيئاً عن الاستهلاك».
+
 Implemented by ``infrastructure.monitoring.metrics_source.SqlRedisMetricsSource``
 (the Composition Root's only caller); a fake substitutes it in
 ``tests/unit/test_api_metrics_router.py`` so the rendering logic can be
@@ -61,7 +68,34 @@ exercised without a live Postgres/Redis.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class StreamRetention:
+    """One reading of every published stream (capacity 5.5).
+
+    * ``lengths`` -- ``XLEN`` per stream. Alone it says nothing about
+      consumption; next to ``backstop`` it says how close ``XADD``'s
+      ``MAXLEN`` is to deleting entries (``AizzakStreamBackstopHigh``, 70%).
+    * ``backstop`` -- that ``MAXLEN``; ``None`` when it is switched off.
+    * ``oldest_unconsumed_age_s`` -- per ``(stream, group)``, how long the
+      oldest entry that group has not FINISHED has been waiting: pending or
+      not yet delivered, ``0.0`` when it has finished everything. The
+      ``cg.notify.<host>.<pid>`` groups are one label, ``cg.notify``, at their
+      maximum -- their names change with every deploy.
+    * ``unread_trimmed`` -- per ``(stream, group)``, entries removed from the
+      stream before that group read them. Zero by construction while only the
+      5.5 trim runs; anything else is the loss ``ح-17`` describes, caught in
+      the act (it is visible while the group is still behind the gap).
+    """
+
+    lengths: Mapping[str, int]
+    backstop: int | None
+    oldest_unconsumed_age_s: Mapping[tuple[str, str], float]
+    unread_trimmed: Mapping[tuple[str, str], int]
 
 
 class MetricsSource(Protocol):
@@ -70,3 +104,5 @@ class MetricsSource(Protocol):
     async def dlq_depths(self) -> dict[str, int]: ...
 
     async def stream_lag_seconds(self) -> dict[tuple[str, str], float]: ...
+
+    async def stream_retention(self) -> StreamRetention: ...

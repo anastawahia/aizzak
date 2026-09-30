@@ -93,3 +93,21 @@ STATIC_CONSUMER_TOPOLOGY: tuple[ConsumerBinding, ...] = (
     ConsumerBinding(stream="stream.media", group="cg.media"),
     ConsumerBinding(stream="stream.memory", group="cg.memory"),
 )
+
+# Every stream the relay publishes to -- the set capacity 5.5's trimmer
+# manages (`infrastructure/messaging/stream_retention.py`) and the stream
+# gauges on `/metrics` report. A superset of the table above by exactly
+# `stream.files`, which is published and read by nobody.
+#
+# Written out, and never discovered with `SCAN stream.*`, for two reasons the
+# live Redis makes concrete: the same server holds `stream.<m>.dlq` --
+# quarantine, which no trimmer may ever touch -- and, on a development stack,
+# `stream.test.*` keys the integration suite leaves behind. Guarded like the
+# table above: `tests/unit/test_stream_topology.py` compares it with the four
+# modules' own `STREAM` constants.
+PUBLISHED_STREAMS: tuple[str, ...] = (
+    "stream.files",
+    "stream.knowledge",
+    "stream.media",
+    "stream.memory",
+)

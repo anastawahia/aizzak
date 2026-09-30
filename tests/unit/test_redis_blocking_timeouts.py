@@ -178,7 +178,7 @@ def test_relay_client_stays_at_exactly_two_seconds() -> None:
     short sleep and never blocks, so it must NOT be generalised onto the
     derived timeout later, e.g. once step 3 mounts a consumer-shaped object
     on top of it."""
-    _, _, disposables = build_relay_from_env()
+    _, _, _, disposables = build_relay_from_env()
     client = _redis_client_of(disposables)
     assert _read_timeout(client) == 2.0
 
@@ -194,7 +194,7 @@ async def test_connect_timeout_is_untouched_everywhere(
     _, _, knowledge_disposables = await build_knowledge_worker_from_env()
     _, _, media_disposables = await build_media_worker_from_env()
     _, _, memory_disposables = build_memory_worker_from_env()
-    _, _, relay_disposables = build_relay_from_env()
+    _, _, _, relay_disposables = build_relay_from_env()
 
     clients = [
         _redis_client_of(knowledge_disposables),

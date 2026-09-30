@@ -39,7 +39,11 @@ has nowhere to hide.
 
 from __future__ import annotations
 
-from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY, ConsumerBinding
+from app.framework.events.topology import (
+    PUBLISHED_STREAMS,
+    STATIC_CONSUMER_TOPOLOGY,
+    ConsumerBinding,
+)
 from app.infrastructure.monitoring.metrics_source import DLQ_SOURCE_STREAMS
 from app.modules.files.application.event_mapping import STREAM as _FILES_STREAM
 from app.modules.knowledge.application.event_mapping import STREAM as _KNOWLEDGE_STREAM
@@ -187,3 +191,36 @@ def test_no_binding_group_is_a_per_process_notify_group() -> None:
             f"{binding.group!r} looks like a per-process notify group -- it must never be "
             "pre-created statically (see topology.py's docstring, part (b))"
         )
+
+
+def test_published_streams_are_exactly_the_four_modules_streams() -> None:
+    """Capacity 5.5: the list the stream trimmer manages and the stream gauges
+    report. Checked against the four modules' own `STREAM` constants, so a
+    module that publishes to a stream this list does not name fails here --
+    otherwise its stream would grow to the `MAXLEN` backstop untrimmed and
+    unwatched, the pre-5.5 state exactly.
+
+    Anchored on the count as well as on the set (the 3.69 lesson): an empty
+    tuple equals nothing, but four blank-free names are what is claimed."""
+    assert len(PUBLISHED_STREAMS) == 4
+    assert set(PUBLISHED_STREAMS) == {
+        _FILES_STREAM,
+        _KNOWLEDGE_STREAM,
+        _MEDIA_STREAM,
+        _MEMORY_STREAM,
+    }
+
+
+def test_every_consumed_stream_is_a_published_one() -> None:
+    """A group reads a stream the trimmer never visits would hold nothing
+    back and be protected by nothing -- the static topology must sit inside
+    the published list."""
+    consumed = {binding.stream for binding in STATIC_CONSUMER_TOPOLOGY}
+    assert consumed <= set(PUBLISHED_STREAMS)
+
+
+def test_no_dead_letter_stream_is_ever_managed() -> None:
+    """The trimmer deletes history; a DLQ is quarantine that only a human may
+    empty (`consumers/dlq_watch.py`'s docstring). A `.dlq` name in this list
+    would put evidence on a timer."""
+    assert not any(stream.endswith(".dlq") for stream in PUBLISHED_STREAMS)

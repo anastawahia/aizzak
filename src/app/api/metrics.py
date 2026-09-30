@@ -77,7 +77,7 @@ from prometheus_client import (
 from prometheus_client.core import GaugeMetricFamily, Metric
 from starlette.responses import Response
 
-from app.framework.ports.metrics_source import MetricsSource
+from app.framework.ports.metrics_source import MetricsSource, StreamRetention
 from app.framework.ports.vault_health import VaultHealth
 
 metrics_router = APIRouter(tags=["metrics"])
@@ -97,6 +97,14 @@ VAULT_AUTH_METRIC = "aizzak_vault_authenticated"
 # Wave 0 step 0.2 (`docs/capacity-plan.md`) -- the fourth live gauge, and the
 # first that carries two labels. Its own reasoning is in the port.
 STREAM_LAG_METRIC = "aizzak_stream_lag_seconds"
+# Capacity 5.5 (`ح-17`) -- the four numbers that watch the stream trim, all
+# from one `StreamRetention` reading (the port's docstring says what each one
+# answers). External state like the four above: every replica recomputes the
+# same fact, so every rule and panel collapses them with `max`.
+STREAM_LENGTH_METRIC = "aizzak_stream_length"
+STREAM_MAXLEN_METRIC = "aizzak_stream_maxlen"
+STREAM_UNCONSUMED_AGE_METRIC = "aizzak_stream_oldest_unconsumed_age_seconds"
+STREAM_UNREAD_TRIMMED_METRIC = "aizzak_stream_unread_trimmed_entries"
 
 _NOT_WIRED_STATUS = 503
 
@@ -169,12 +177,58 @@ async def metrics(request: Request) -> Response:
         stream_lag.add_metric([stream, group], lag)
     families.append(stream_lag)
 
+    families.extend(_stream_retention_families(await source.stream_retention()))
+
     registry = CollectorRegistry()
     registry.register(_Snapshot(families))
     return Response(
         content=generate_latest(registry) + _process_metrics(),
         media_type=CONTENT_TYPE_LATEST,
     )
+
+
+def _stream_retention_families(retention: StreamRetention) -> list[Metric]:
+    """Capacity 5.5's four gauges. ``aizzak_stream_maxlen`` is OMITTED when
+    the backstop is off (``STREAM_MAXLEN=0``) rather than rendered as ``0``:
+    a ratio against zero would read as infinitely full, and the honest
+    statement is that there is no cap to be near."""
+    length = GaugeMetricFamily(
+        STREAM_LENGTH_METRIC,
+        "XLEN of each published stream -- read against aizzak_stream_maxlen, never alone.",
+        labels=["stream"],
+    )
+    for stream, entries in retention.lengths.items():
+        length.add_metric([stream], entries)
+    families: list[Metric] = [length]
+    if retention.backstop is not None:
+        families.append(
+            GaugeMetricFamily(
+                STREAM_MAXLEN_METRIC,
+                "The XADD MAXLEN backstop (STREAM_MAXLEN): past it, entries go whether "
+                "or not every group has read them.",
+                value=retention.backstop,
+            )
+        )
+    age = GaugeMetricFamily(
+        STREAM_UNCONSUMED_AGE_METRIC,
+        "Seconds the oldest entry a group has not finished (pending or undelivered) has "
+        "waited; 0 when it has finished everything. cg.notify.* is one label.",
+        labels=["stream", "group"],
+    )
+    for (stream, group), seconds in retention.oldest_unconsumed_age_s.items():
+        age.add_metric([stream, group], seconds)
+    families.append(age)
+    trimmed = GaugeMetricFamily(
+        STREAM_UNREAD_TRIMMED_METRIC,
+        "Entries removed from a stream before this group read them (entries-added - "
+        "entries-read - lag). Zero unless the MAXLEN backstop or a manual XTRIM cut "
+        "into unread history.",
+        labels=["stream", "group"],
+    )
+    for (stream, group), entries in retention.unread_trimmed.items():
+        trimmed.add_metric([stream, group], entries)
+    families.append(trimmed)
+    return families
 
 
 class _Snapshot:

@@ -144,7 +144,7 @@ from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
 from app.framework.errors import AppError, ConflictError, UnsupportedTypeError, ValidationError
-from app.framework.events.topology import STATIC_CONSUMER_TOPOLOGY
+from app.framework.events.topology import PUBLISHED_STREAMS, STATIC_CONSUMER_TOPOLOGY
 from app.framework.observability import Heartbeat, build_heartbeat, configure_logging, get_logger
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
@@ -169,6 +169,7 @@ from app.infrastructure.config import load_settings
 from app.infrastructure.messaging.consumers.engine import EventHandler, StreamConsumer, Subscription
 from app.infrastructure.messaging.outbox import OutboxRelay
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer, RedisStreamsPublisher
+from app.infrastructure.messaging.stream_retention import StreamTrimmer
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelayStore
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
@@ -277,13 +278,25 @@ _MAX_BACKOFF_MS = 30_000
 EnsureTopology = Callable[[], Awaitable[None]]
 
 
-def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable]]:
+def build_relay_from_env() -> tuple[
+    OutboxRelay, EnsureTopology, StreamTrimmer | None, list[Disposable]
+]:
     """Build one ``OutboxRelay`` wired exactly as the ``outbox_relay``
     process runs it, plus an ``ensure_topology`` closure the entrypoint must
-    ``await`` before the relay's first publish, plus the resources
+    ``await`` before the relay's first publish, plus the stream trimmer the
+    entrypoint runs beside the relay (capacity 5.5 -- ``None`` when
+    ``STREAM_TRIM_INTERVAL_S=0`` switches it off), plus the resources
     ``outbox_relay.py``'s entrypoint must close on shutdown (in no
     particular order -- disposing an engine and closing a Redis client are
     independent of each other).
+
+    **Why the trimmer lives HERE (capacity 5.5, `ح-17`).** It must run
+    exactly once per stack, and this is the one process D-26 already makes a
+    singleton; it is also the only producer on these streams, so "the streams
+    the relay publishes to" and "the streams that need trimming" are the same
+    list by construction (``PUBLISHED_STREAMS``). It rides the relay's own
+    client: every call it makes (``MULTI``, ``XPENDING``, ``XTRIM``) returns
+    at once, so the short read timeout below is right for it too.
 
     **Why a relay -- a PRODUCER -- provisions consumer groups.**
     ``ensure_topology`` walks ``STATIC_CONSUMER_TOPOLOGY``
@@ -315,6 +328,9 @@ def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable
             "app_env": settings.app_env,
             "batch_size": settings.events.outbox_relay_batch_size,
             "poll_interval_ms": settings.events.outbox_poll_interval_ms,
+            "stream_trim_interval_s": settings.events.stream_trim_interval_s,
+            "stream_trim_margin_s": settings.events.stream_trim_margin_s,
+            "stream_maxlen": settings.events.stream_maxlen,
         },
     )
 
@@ -379,8 +395,18 @@ def build_relay_from_env() -> tuple[OutboxRelay, EnsureTopology, list[Disposable
         heartbeat=build_heartbeat(settings.health.heartbeat_dir, "outbox-relay"),
     )
 
+    trimmer: StreamTrimmer | None = None
+    if settings.events.stream_trim_interval_s > 0:
+        trimmer = StreamTrimmer(
+            redis_client,
+            streams=PUBLISHED_STREAMS,
+            interval_s=settings.events.stream_trim_interval_s,
+            margin_s=settings.events.stream_trim_margin_s,
+            backstop=settings.events.stream_maxlen,
+        )
+
     disposables: list[Disposable] = [engine.dispose, redis_client.aclose]
-    return relay, ensure_topology, disposables
+    return relay, ensure_topology, trimmer, disposables
 
 
 # --------------------------------------------------------------------------- #

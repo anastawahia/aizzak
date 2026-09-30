@@ -190,6 +190,11 @@ class _EnvSettings(BaseSettings):
     # `int | None` the settings contract actually models. Reading it as 0
     # rather than an empty string keeps the env value a plain integer.
     stream_maxlen: int = Field(100_000, alias="STREAM_MAXLEN", ge=0)
+    # capacity 5.5 (`ح-17`): the relay's trim below each stream's slowest
+    # reader. `0` disables it (the `م-8` switch -- MAXLEN alone, as before);
+    # the margin is inspection history, not safety (`EventSettings`).
+    stream_trim_interval_s: float = Field(60.0, alias="STREAM_TRIM_INTERVAL_S", ge=0)
+    stream_trim_margin_s: float = Field(600.0, alias="STREAM_TRIM_MARGIN_S", ge=0)
 
     # ت-2: the two automatic sweeps' knobs (EventSettings' own docstrings
     # carry the safety relation between `CONSUMER_STALE_IDLE_S` and
@@ -292,6 +297,8 @@ def load_settings() -> Settings:
             # rather than 0 so the adapter branches on a real absence, not on
             # a magic number it would have to re-interpret at every call.
             stream_maxlen=env.stream_maxlen or None,
+            stream_trim_interval_s=env.stream_trim_interval_s,
+            stream_trim_margin_s=env.stream_trim_margin_s,
             consumer_sweep_interval_s=env.consumer_sweep_interval_s,
             consumer_stale_idle_s=env.consumer_stale_idle_s,
             notify_group_sweep_interval_s=env.notify_group_sweep_interval_s,

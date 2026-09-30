@@ -1333,6 +1333,153 @@
       }
     },
     {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Oldest unconsumed entry, by group",
+      "description": "Capacity 5.5 (ح-17): how long the oldest entry a group has NOT FINISHED has waited -- pending (delivered, not acked) or not yet delivered; 0 when the group has finished everything. Unlike lag, it sees an entry stuck in flight. The cg.notify.<host>.<pid> groups are one line (cg.notify), at their worst. A line that climbs without falling is a group that has stopped reading -- and the group that bounds the stream trim, so its stream grows toward the MAXLEN backstop (next panel).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (stream, group) (aizzak_stream_oldest_unconsumed_age_seconds)",
+          "legendFormat": "{{stream}} / {{group}}",
+          "range": true,
+          "instant": false,
+          "refId": "AA"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Stream length against the MAXLEN backstop",
+      "description": "Capacity 5.5: each published stream's XLEN as a fraction of STREAM_MAXLEN. The trim keeps streams down to what their slowest group still needs, so this stays near zero while every group reads. At 1.0 XADD starts deleting the oldest entries whether or not a group has read them; AizzakStreamBackstopHigh fires at 0.7. Absent when the backstop is off.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (stream) (aizzak_stream_length) / scalar(max(aizzak_stream_maxlen))",
+          "legendFormat": "{{stream}}",
+          "range": true,
+          "instant": false,
+          "refId": "AB"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.7
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 21,
       "type": "row",
       "title": "Redis and container memory",
@@ -1340,7 +1487,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "collapsed": false,
       "panels": []
@@ -1358,7 +1505,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {
@@ -1440,7 +1587,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {
@@ -1529,7 +1676,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {

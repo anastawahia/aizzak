@@ -32,7 +32,14 @@ from typing import Any
 
 import yaml
 
-from app.api.metrics import DLQ_DEPTH_METRIC, OUTBOX_AGE_METRIC, VAULT_AUTH_METRIC
+from app.api.metrics import (
+    DLQ_DEPTH_METRIC,
+    OUTBOX_AGE_METRIC,
+    STREAM_LENGTH_METRIC,
+    STREAM_MAXLEN_METRIC,
+    STREAM_UNREAD_TRIMMED_METRIC,
+    VAULT_AUTH_METRIC,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALERTS_YML = _REPO_ROOT / "deploy" / "prometheus" / "alerts.yml"
@@ -86,6 +93,16 @@ EXPECTED_ALERTS = frozenset(
         # the server is what turned both into questions with one answer.
         "AizzakRedisStreamMemoryHigh",
         "AizzakRedisStreamEvicted",
+        # Wave 5 step 5.5 (docs/capacity-plan.md, ح-17) -- the ninth and
+        # tenth. The ninth is the step's own sentence ("مع تنبيهٍ عند 70%"):
+        # the MAXLEN backstop is the one mechanism left that can delete an
+        # entry a group has not read, and this says so before it does. The
+        # tenth says so if it ever did -- `ح-17`'s defining words were "no
+        # error, no alert, no trace in any log", and Redis's own counters
+        # (entries-added - entries-read - lag) turn that loss into a number
+        # that is structurally zero under the trim 5.5 ships.
+        "AizzakStreamBackstopHigh",
+        "AizzakStreamEntriesLost",
     }
 )
 
@@ -120,8 +137,15 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     -- a `maxmemory` to be 80% of, and an eviction counter whose movement is
     unambiguous because the instance's policy pins it at zero.
 
+    Wave 5 step 5.5 adds the ninth and tenth, both about the one deletion
+    left after the step's own trim: the ``MAXLEN`` backstop. The ninth is
+    named by the step itself (70% of the cap); the tenth is the loss the
+    backstop can cause, counted by Redis rather than inferred -- the first
+    rule here whose metric is zero by construction under correct operation
+    AND could not be read at all before 5.5 put it on ``/metrics``.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a NINTH entry needs its own written
+    decision, never by drift -- so an ELEVENTH entry needs its own written
     reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md``) first, not just a name added here.
 
@@ -143,9 +167,10 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         f"  missing:    {sorted(EXPECTED_ALERTS - names)}\n"
         "This file is scoped to the Outbox age + DLQ depth signals (P1-3, step 10), the "
         "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
-        "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5) and the two "
-        "redis-stream rules (step 5.2). A new rule needs its own logged justification "
-        "first, not just a name added to EXPECTED_ALERTS."
+        "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
+        "redis-stream rules (step 5.2) and the two stream-trim rules (step 5.5). A new "
+        "rule needs its own logged justification first, not just a name added to "
+        "EXPECTED_ALERTS."
     )
 
 
@@ -361,6 +386,43 @@ def test_the_redis_eviction_rule_refuses_to_debounce() -> None:
         f"{_ALERTS_YML}: an eviction on the noeviction instance can drop an "
         "`auth:revoked:<sub>` entry, which re-validates a revoked token until it expires"
     )
+
+
+def test_the_backstop_rule_thresholds_the_70_percent_the_step_asks_for() -> None:
+    """Capacity 5.5, in its own words: «مع تنبيهٍ عند 70%». A ratio of the
+    stream's length to the configured cap, never a count typed here -- the
+    5.2 argument, restated: an absolute threshold changes meaning silently
+    the day STREAM_MAXLEN moves."""
+    rule = _rule_named(_load_rules(), "AizzakStreamBackstopHigh")
+    expr = " ".join(rule["expr"].split())
+    assert STREAM_LENGTH_METRIC in expr and STREAM_MAXLEN_METRIC in expr, (
+        f"{_ALERTS_YML}: the backstop rule must be a RATIO of length to the cap"
+    )
+    assert "> 0.7" in expr, f"{_ALERTS_YML}: 5.5's threshold is 70% of the backstop"
+    assert rule["for"] == "5m", (
+        f"{_ALERTS_YML}: a stream's length only climbs; `for: 5m` is noise suppression, "
+        "and a longer window spends runway the backstop does not have to spare"
+    )
+    assert "app.ops.stream_trim status" in rule["annotations"]["response"], (
+        f"{_ALERTS_YML}: the response must name the tool that says WHICH group holds "
+        "the stream -- the first question this alert raises"
+    )
+
+
+def test_the_loss_rule_refuses_to_debounce() -> None:
+    """The loss count is zero by construction under the 5.5 trim, and Redis
+    forgets it once the group reads past the gap -- so a `for:` window could
+    only let a recovering consumer erase the evidence before the rule fires.
+    Critical, like the eviction rule: work the platform accepted will not
+    happen, and nothing else says so."""
+    rule = _rule_named(_load_rules(), "AizzakStreamEntriesLost")
+    assert STREAM_UNREAD_TRIMMED_METRIC in rule["expr"]
+    assert "> 0" in rule["expr"]
+    assert str(rule.get("for", "0s")) in {"0s", "0"}, (
+        f"{_ALERTS_YML}: AizzakStreamEntriesLost must not debounce -- the gauge returns "
+        "to zero on its own once the group reads past the gap"
+    )
+    assert rule["labels"]["severity"] == "critical"
 
 
 def test_every_rule_carries_the_minimum_operator_fields() -> None:

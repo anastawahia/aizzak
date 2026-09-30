@@ -93,7 +93,7 @@ async def test_ensure_topology_then_publish_delivers_all_three_entries(
         (ConsumerBinding(stream=stream, group=group),),
     )
 
-    _, ensure_topology, disposables = build_relay_from_env()
+    _, ensure_topology, _, disposables = build_relay_from_env()
     client = _redis_client_of(disposables)
     payloads = [f"payload-{i}".encode() for i in range(3)]
     try:
@@ -136,7 +136,7 @@ async def test_publish_then_ensure_topology_delivers_nothing(
         (ConsumerBinding(stream=stream, group=group),),
     )
 
-    _, ensure_topology, disposables = build_relay_from_env()
+    _, ensure_topology, _, disposables = build_relay_from_env()
     client = _redis_client_of(disposables)
     payloads = [f"payload-{i}".encode() for i in range(3)]
     try:

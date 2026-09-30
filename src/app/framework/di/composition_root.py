@@ -790,7 +790,9 @@ def _build_metrics_source(
             idle_in_transaction_timeout_ms=settings.database.idle_in_transaction_timeout_ms,
         )
     )
-    return metrics_engine, SqlRedisMetricsSource(metrics_engine, redis_client)
+    return metrics_engine, SqlRedisMetricsSource(
+        metrics_engine, redis_client, stream_maxlen=settings.events.stream_maxlen
+    )
 
 
 def _build_notify_bridge(

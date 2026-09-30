@@ -495,9 +495,36 @@ class EventSettings(BaseModel):
     # which is why the default is generous rather than tight, and why 08 §7
     # tells operators to watch `XLEN` instead of treating this as a solution.
     #
+    # Since capacity 5.5 (`ح-17`) it is the BACKSTOP, not the trim. The trim
+    # is `stream_trim_interval_s` below, which never deletes what any group
+    # still needs; this cap only bites when that cannot keep a stream short
+    # -- a reader stalled far beyond any acceptable outage, or the trimmer
+    # itself switched off. It stays because without it one stalled group
+    # grows its stream until `redis-stream` (`noeviction`) refuses every
+    # write on the instance. The size is DERIVED (08 §4.21): three times the
+    # peak arrival on the busiest stream over the longest outage 5.5 calls
+    # acceptable, plus the margin -- `tests/unit/test_stream_retention.py`
+    # re-does the multiplication.
+    #
     # `None` disables trimming and is the pre-7.3 behaviour byte for byte;
     # `STREAM_MAXLEN=0` resolves to it.
     stream_maxlen: int | None = Field(default=100_000, ge=1)
+    # capacity 5.5 (`ح-17`): how often the relay trims every published stream
+    # below its slowest reader (`infrastructure/messaging/stream_retention.py`).
+    # `0` disables it -- `XADD ... MAXLEN ~` alone, the pre-5.5 behaviour, and
+    # this step's `م-8` switch.
+    #
+    # A pass costs a transaction and a trim per stream (four), so the number is
+    # about memory, not load: at §0's peak the busiest stream grows by ~200
+    # entries a minute, ~140 KB -- nothing a minute of lateness can hurt.
+    stream_trim_interval_s: float = Field(default=60.0, ge=0)
+    # How much already-consumed history the trim leaves behind the slowest
+    # reader. ⚠️ NOT what makes the trim safe: the oldest PENDING entry of
+    # every group does that exactly (`stream_retention.py`'s docstring says
+    # why a time margin could not -- a summary build holds its entry for up to
+    # 1,800 s). This is a window kept for inspection: `XRANGE` on a stream
+    # still shows the last ten minutes of what its readers were handed.
+    stream_trim_margin_s: float = Field(default=600.0, ge=0)
 
     # ت-2 (`docs/operational-findings.md` §2): how often a worker tidies the
     # tombstones other processes left in its own groups, and how idle a

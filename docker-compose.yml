@@ -213,7 +213,18 @@ x-app-env: &app-env
   # Retained length per stream, `XADD ... MAXLEN ~ N` (7.3). Streams are
   # append-only -- XACK does not delete -- so without this every
   # stream.<module> grows forever even with healthy consumers. 0 disables.
+  # ⚠️ Since capacity 5.5 (`ح-17`) this is the BACKSTOP, not the trim: it
+  # deletes by length whether or not a group has read the entry, so it is
+  # sized to bite only far beyond any acceptable outage (08 §4.21).
   STREAM_MAXLEN: ${STREAM_MAXLEN:-100000}
+  # capacity 5.5: `outbox-relay` trims every published stream below its
+  # slowest consumer group (`XTRIM MINID ~`) this often, keeping MARGIN
+  # seconds of already-consumed history for inspection. Only the relay reads
+  # them; they sit in the shared block beside STREAM_MAXLEN because the three
+  # describe one policy. `STREAM_TRIM_INTERVAL_S=0` is this step's off switch
+  # (`م-8`): MAXLEN alone, exactly as before.
+  STREAM_TRIM_INTERVAL_S: ${STREAM_TRIM_INTERVAL_S:-60}
+  STREAM_TRIM_MARGIN_S: ${STREAM_TRIM_MARGIN_S:-600}
   # ت‑3: where the port-less processes stamp their liveness, and how stale
   # that stamp may get. Listed in the SHARED env block on purpose even though
   # only four services beat -- `app` and `migrate` ignore it, and the
