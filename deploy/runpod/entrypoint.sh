@@ -102,12 +102,13 @@ export DATABASE_URL="postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@127.0.0.1:54
 export RELAY_DATABASE_URL="postgresql+asyncpg://outbox_relay:${OUTBOX_RELAY_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}"
 # No RETENTION_DATABASE_URL export here, deliberately -- unlike outbox_relay
 # (a supervisord-managed standing service, RELAY_DATABASE_URL above), nothing
-# in this image runs `python -m app.ops.retention` automatically: it is a
-# manually-invoked one-shot tool (P1-5, no periodic scheduling in scope), so
-# there is no standing consumer to compose this URL for. An operator running
-# it by hand builds the DSN inline from RETENTION_SWEEPER_PASSWORD (already
-# required above, so always present) at invocation time -- see
-# 08-local-runbook.md §4.3.
+# in this image runs `python -m app.ops.retention` automatically. Capacity 5.7
+# gave the Compose stack a runner for it (`ops-scheduler`, 08 §4.23), and this
+# image has none: it runs no backup either (no WAL archive, no shipper), and
+# the scheduler's purge refuses to run without a backup from the same cycle,
+# so half a scheduler here would be worse than an honest gap. An operator
+# running it by hand builds the DSN inline from RETENTION_SWEEPER_PASSWORD
+# (already required above, so always present) -- see 08-local-runbook.md §4.3.
 # METRICS_DATABASE_URL, by contrast, DOES need exporting here -- unlike
 # retention_sweeper, `metrics_reader` (P1-3, p1-hardening-plan.md §3 step 10)
 # IS a standing consumer: the `app` program below (every gunicorn worker

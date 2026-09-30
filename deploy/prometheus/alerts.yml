@@ -585,3 +585,95 @@ groups:
             until it exists, requeue by hand and let `processed_events` absorb
             anything that did get through. Then fix why the group stalled
             long enough for the backstop to reach it.
+
+  # ── capacity 5.7 — the scheduled tasks, and the failure that is silence ──
+  #
+  # 5.7's own warning: «مهمّةٌ مجدولةٌ تفشل صامتةً أسوأُ من غياب المهمّة». A
+  # task that is not scheduled is a known gap; one that is scheduled and has
+  # quietly stopped is a gap everybody believes is closed. So every scheduled
+  # task records its passes in one ledger (`framework/ports/task_ledger.py`),
+  # `/metrics` reports it, and these two rules read it: one for a task that
+  # stopped succeeding, one for a task nothing ever started. All five gauges
+  # are external state every `app` replica recomputes, hence `max by (task)`.
+  #
+  # ⚠️ The label is `task`. `job` is the label Prometheus writes with the
+  # scrape job's name, and an exposed `job` label is renamed `exported_job`
+  # on ingestion -- `max by (job)` here would have grouped the whole ledger
+  # into one series called `aizzak-app`.
+  - name: aizzak-ops-tasks
+    rules:
+      - alert: AizzakOpsTaskOverdue
+        # The last success -- or, for a task that never succeeded, the moment
+        # it was armed -- is older than two cycles plus the longest one run
+        # may take. `or` takes the success where there is one and the arming
+        # only where there is none; a task switched off (cycle 0) has no
+        # deadline series and cannot match.
+        expr: >-
+          time() - (
+            max by (task) (aizzak_ops_task_last_success_timestamp_seconds)
+            or max by (task) (aizzak_ops_task_armed_timestamp_seconds)
+          ) > max by (task) (aizzak_ops_task_max_success_age_seconds)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled task {{ $labels.task }} has not succeeded in two cycles"
+          description: >-
+            {{ $labels.task }} last succeeded (or, if it never has, was first
+            armed) longer ago than two of its cycles plus one run. Its runner
+            is either not running it or running it and failing every time --
+            `aizzak_ops_task_last_failure_timestamp_seconds` newer than the
+            last success says which. Either way the thing it maintains is
+            drifting: the backup shelf ages, the ledgers grow, the WAL spool
+            fills, the Transit key's old versions stay in use.
+          reason: >-
+            "Two cycles" is capacity 5.7's own threshold, written as a number
+            by the runner itself (`max_success_age = 2 x interval +
+            max_runtime`), so a daily job is late at 48 h plus its allowed
+            run time and the 60-second trimmer at two minutes -- one rule for
+            every cadence. One missed cycle is a retry; two in a row is a
+            task that has stopped. `for: 5m` only debounces a scrape; the
+            deadline already carries the slack.
+          response: >-
+            `docker compose exec ops-scheduler python -m app.ops.scheduler
+            status` prints every task's state, last success and last error
+            (the error text is in the ledger, and the full output is in the
+            runner's own log: `docker compose logs ops-scheduler` for the
+            nightly tools, `outbox-relay` for stream_trim, `app` for
+            notify_groups, the named worker for dlq_watch:*). Fix the cause,
+            then run it once by hand through the same path:
+            `python -m app.ops.scheduler run-once <task> --yes` (08 §4.23).
+            A `purge` refused because `backup` did not succeed is the backup's
+            problem, not purge's.
+
+      - alert: AizzakOpsTaskNeverArmed
+        # A task in the catalog that no runner has ever declared -- its
+        # service was never deployed, or its loop never started. The overdue
+        # rule cannot see this: with neither a success nor an arming there is
+        # no clock to be late against.
+        expr: >-
+          max by (task) (aizzak_ops_task_expected)
+          unless max by (task) (aizzak_ops_task_armed_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled task {{ $labels.task }} is expected but nothing has ever run it"
+          description: >-
+            {{ $labels.task }} is in the platform's task catalog
+            (`SCHEDULED_TASKS`) but no runner has written a single line about
+            it to the task ledger. The service that should run it is missing,
+            has never finished starting, or was built from an image older
+            than capacity 5.7.
+          reason: >-
+            An absent record looks exactly like an absent obligation, so the
+            catalog is reported whether or not anything wrote to it, and this
+            rule is the difference. `for: 30m` covers a stack still booting;
+            every runner arms its tasks within its first minute.
+          response: >-
+            `docker compose ps` for the runner `python -m app.ops.scheduler
+            status` names (ops-scheduler for the nightly tools). If it is
+            running, check its log for `scheduled_task.ledger_write_failed`
+            or `ops_scheduler.tick_failed` -- the ledger lives on
+            redis-stream. If the key was flushed with the rest of Redis, the
+            next pass re-arms it by itself.

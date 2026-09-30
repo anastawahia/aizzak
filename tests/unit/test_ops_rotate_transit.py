@@ -25,13 +25,18 @@ from typing import Any
 
 import pytest
 
+from app.infrastructure.secrets.vault_secrets import TransitKeyInfo
 from app.ops import rotate_transit as rotate_transit_module
+from app.ops.role_guard import ROLE_MISMATCH_EXIT
 from app.ops.rotate_transit import (
     _TABLE_SPECS,
+    CYCLE_BROKEN_EXIT,
+    ROTATION_GRACE_S,
     RewrapResult,
     _key_version,
     rewrap_all,
     rewrap_table,
+    rotation_cycle,
 )
 
 
@@ -238,3 +243,57 @@ def test_cli_requires_a_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.argv", ["app.ops.rotate_transit"])
     with pytest.raises(SystemExit):
         rotate_transit_module.main()
+
+
+# ---------------------------------------------------------------------------
+# Capacity 5.7 -- the declared cycle. A rewrap sweep onto "the current
+# version" succeeds trivially forever when the current version never changes
+# (measured 2026-09-30: version 1 for 66 days, `auto_rotate_period` 0), so the
+# sweep's exit code now also says whether the key is actually turning over.
+# ---------------------------------------------------------------------------
+
+_DAY = 86_400.0
+
+
+def _key_info(*, period_s: float, latest_age_s: float, latest: int = 3) -> TransitKeyInfo:
+    now = 1_790_000_000.0
+    return TransitKeyInfo(
+        name="tenant-secrets",
+        latest_version=latest,
+        min_decryption_version=1,
+        auto_rotate_period_s=period_s,
+        version_created_at={
+            v: now - latest_age_s - (latest - v) * _DAY for v in range(1, latest + 1)
+        },
+    )
+
+
+def test_a_key_with_no_declared_cycle_is_broken_however_fresh() -> None:
+    cycle = rotation_cycle(_key_info(period_s=0, latest_age_s=60), now=1_790_000_000.0)
+    assert cycle.verdict == "no_cycle" and not cycle.ok
+
+
+def test_a_key_rotating_on_its_cycle_is_ok_up_to_one_day_of_grace() -> None:
+    now = 1_790_000_000.0
+    fresh = rotation_cycle(_key_info(period_s=30 * _DAY, latest_age_s=29 * _DAY), now=now)
+    graced = rotation_cycle(
+        _key_info(period_s=30 * _DAY, latest_age_s=30 * _DAY + ROTATION_GRACE_S - 1), now=now
+    )
+    assert fresh.ok and graced.ok
+
+
+def test_a_key_older_than_its_cycle_plus_grace_has_stopped_rotating() -> None:
+    """The live key's shape on 2026-09-30 once a 30-day cycle is declared:
+    version 1, 66 days old -- Vault rotates it at its next check, and until
+    then the sweep says so."""
+    cycle = rotation_cycle(
+        _key_info(period_s=30 * _DAY, latest_age_s=66 * _DAY, latest=1), now=1_790_000_000.0
+    )
+    assert cycle.verdict == "overdue" and not cycle.ok
+    assert round(cycle.latest_age_s / _DAY) == 66
+
+
+def test_the_sweep_exit_codes_are_distinct() -> None:
+    """1 is a sweep that failed, 2 the wrong role, 3 a sweep that did its
+    work beside a key that is not rotating -- three different fixes."""
+    assert len({1, ROLE_MISMATCH_EXIT, CYCLE_BROKEN_EXIT}) == 3

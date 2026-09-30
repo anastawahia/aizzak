@@ -70,7 +70,19 @@ _SUFFIX = ".heartbeat"
 # the first symptom anyone sees is a full data volume taking the whole
 # platform down -- caused by the backup system. "The container is Up" says
 # nothing about that; a beat per completed shipping cycle does.
-HEARTBEAT_PROCESS_NAMES = ("memory", "knowledge", "media", "outbox-relay", "wal-shipper")
+#
+# `ops-scheduler` (capacity 5.7) is the sixth. Its beat says the scheduling
+# LOOP is turning -- it beats while a job runs, too, since a nightly backup
+# may legitimately take an hour. Whether the JOBS succeed is a different
+# question with a different answer: the task ledger (`scheduled_tasks.py`).
+HEARTBEAT_PROCESS_NAMES = (
+    "memory",
+    "knowledge",
+    "media",
+    "outbox-relay",
+    "wal-shipper",
+    "ops-scheduler",
+)
 
 
 class Heartbeat(Protocol):

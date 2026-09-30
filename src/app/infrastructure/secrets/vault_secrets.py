@@ -65,7 +65,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from typing import TypeVar
 
@@ -234,6 +236,21 @@ def _translate_kv(exc: Exception) -> AppError:
     return _translate(exc)
 
 
+@dataclass(frozen=True, slots=True)
+class TransitKeyInfo:
+    """What Vault says about a Transit key -- its versions and when each was
+    created, the auto-rotation period (``0`` = none declared), and the oldest
+    version it still decrypts. Metadata only: a non-exportable key's ``read``
+    carries no key material, which is why the AppRole may hold it (capacity
+    5.7, ``deploy/vault/app-policy.hcl``)."""
+
+    name: str
+    latest_version: int
+    min_decryption_version: int
+    auto_rotate_period_s: float
+    version_created_at: Mapping[int, float]
+
+
 class VaultSecrets:
     """Vault-backed ``SecretsProvider`` (02 §1.9, structural Protocol match)."""
 
@@ -336,6 +353,44 @@ class VaultSecrets:
         except (VaultError, OSError, KeyError, TypeError, ValueError) as exc:
             raise _translate(exc) from exc
 
+    async def transit_key_info(self, key_name: str) -> TransitKeyInfo:
+        """Read a Transit key's metadata (capacity 5.7) -- adapter-only, like
+        ``rewrap`` and for the same reason: its one caller is
+        ``app.ops.rotate_transit``, which needs to know whether the key is
+        actually rotating. A sweep that rewraps "onto the current version"
+        succeeds trivially forever when the current version never changes --
+        measured on 2026-09-30: ``tenant-secrets`` at version 1 since
+        2026-07-26, ``auto_rotate_period`` 0.
+
+        ``keys`` maps each version to its creation time. For a symmetric key
+        Vault returns a bare Unix timestamp per version; the dict shape
+        (asymmetric keys) is read for its ``creation_time`` defensively rather
+        than assumed away.
+        """
+        _guard_key_name(key_name)
+
+        try:
+            resp = await self._call(
+                partial(
+                    self._client.secrets.transit.read_key,
+                    name=key_name,
+                    mount_point=_TRANSIT_MOUNT,
+                )
+            )
+            data = resp["data"]
+            created: dict[int, float] = {}
+            for version, stamp in dict(data["keys"]).items():
+                created[int(version)] = _creation_seconds(stamp)
+            return TransitKeyInfo(
+                name=key_name,
+                latest_version=int(data["latest_version"]),
+                min_decryption_version=int(data["min_decryption_version"]),
+                auto_rotate_period_s=float(data.get("auto_rotate_period") or 0),
+                version_created_at=created,
+            )
+        except (VaultError, OSError, KeyError, TypeError, ValueError) as exc:
+            raise _translate(exc) from exc
+
     async def rewrap(self, key_name: str, ciphertext: str) -> str:
         """Re-encrypt ``ciphertext`` under the key's CURRENT Transit version,
         without the plaintext ever leaving Vault (P1-9, docs/p1-hardening
@@ -381,3 +436,15 @@ class VaultSecrets:
             return str(resp["data"]["ciphertext"])
         except (VaultError, OSError, KeyError, TypeError, ValueError) as exc:
             raise _translate(exc) from exc
+
+
+def _creation_seconds(stamp: object) -> float:
+    """A Transit version's creation time as Unix seconds -- an int for a
+    symmetric key, an RFC 3339 string inside a dict for an asymmetric one."""
+    if isinstance(stamp, dict):
+        stamp = stamp.get("creation_time")
+    if isinstance(stamp, int | float):
+        return float(stamp)
+    if isinstance(stamp, str):
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    raise ValueError(f"unreadable Transit version creation time: {stamp!r}")

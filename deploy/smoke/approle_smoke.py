@@ -128,6 +128,22 @@ async def main() -> None:
         _fail("[3b] the rewrapped ciphertext did not decrypt to the original plaintext")
     print("[3b] Transit rewrap  tenant-secrets  (policy grant P1-9)         OK")
 
+    # [3c] Capacity 5.7: the key's metadata, which the nightly rewrap sweep
+    # reads to know whether the key is actually ROTATING. A sweep next to a key
+    # that never moves succeeds every night and does nothing; the declared
+    # cycle (`auto_rotate_period`, set by deploy/vault/bootstrap.sh) is what
+    # this reads back. Metadata only -- the key is not exportable.
+    info = await secrets.transit_key_info(_TENANT_KEY)
+    if info.auto_rotate_period_s <= 0:
+        _fail(
+            "[3c] tenant-secrets declares no auto_rotate_period -- re-run vault-bootstrap "
+            "(the 5.7 cycle is applied there)"
+        )
+    print(
+        f"[3c] Transit key read  tenant-secrets  v{info.latest_version}, cycle "
+        f"{info.auto_rotate_period_s / 86_400:g}d  (policy grant 5.7)        OK"
+    )
+
     # [4..7] The denials. Each of these SUCCEEDS under the dev root token this
     # replaces, so a pass here is the whole difference AppRole buys.
     await _assert_denied(
@@ -153,6 +169,16 @@ async def main() -> None:
         "the app could mint a new key version on its own initiative -- "
         "rewrap [3b] must only ever re-encrypt under a version an operator "
         "already minted, never mint one itself",
+    )
+    # [8] Capacity 5.7 granted `read` on the key's own path -- and nothing
+    # more. Changing its configuration (the cycle, `min_decryption_version`)
+    # stays an operator's act: the one irreversible step in the rotation path.
+    await _assert_denied(
+        "[8] transit/keys/tenant-secrets/config (the cycle is Vault's, not the app's)",
+        lambda: client.secrets.transit.update_key_configuration(
+            name=_TENANT_KEY, min_decryption_version=1, mount_point="transit"
+        ),
+        "the app could retire key versions -- min_decryption_version is irreversible",
     )
 
     print("\nAppRole smoke: all checks passed.")

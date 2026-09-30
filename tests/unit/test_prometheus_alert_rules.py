@@ -34,6 +34,10 @@ import yaml
 
 from app.api.metrics import (
     DLQ_DEPTH_METRIC,
+    OPS_TASK_ARMED_METRIC,
+    OPS_TASK_EXPECTED_METRIC,
+    OPS_TASK_LAST_SUCCESS_METRIC,
+    OPS_TASK_MAX_SUCCESS_AGE_METRIC,
     OUTBOX_AGE_METRIC,
     STREAM_LENGTH_METRIC,
     STREAM_MAXLEN_METRIC,
@@ -103,6 +107,15 @@ EXPECTED_ALERTS = frozenset(
         # that is structurally zero under the trim 5.5 ships.
         "AizzakStreamBackstopHigh",
         "AizzakStreamEntriesLost",
+        # Wave 5 step 5.7 (docs/capacity-plan.md) -- the eleventh and twelfth,
+        # and the step names them itself: «كلٌّ منها تُصدر مقياسَ آخرِ نجاح
+        # وتنبيهاً عند تجاوز دورتين». The eleventh is that sentence; the
+        # twelfth is what the eleventh cannot see -- a task with neither a
+        # success nor an arming has no clock to be late against, so "expected
+        # and never armed" needs a rule of its own. Both read a ledger that
+        # did not exist before 5.7 (`framework/ports/task_ledger.py`).
+        "AizzakOpsTaskOverdue",
+        "AizzakOpsTaskNeverArmed",
     }
 )
 
@@ -144,8 +157,15 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     rule here whose metric is zero by construction under correct operation
     AND could not be read at all before 5.5 put it on ``/metrics``.
 
+    Wave 5 step 5.7 adds the eleventh and twelfth, and the step wrote the
+    first one's threshold itself ("two cycles"): a scheduled task that stopped
+    succeeding, and a task nothing ever started. They are the first rules
+    whose threshold is not in this file at all -- each runner writes its own
+    deadline (``2 x interval + max_runtime``) next to its record, so one rule
+    serves a 60-second loop and a nightly backup alike.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so an ELEVENTH entry needs its own written
+    decision, never by drift -- so a THIRTEENTH entry needs its own written
     reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md``) first, not just a name added here.
 
@@ -168,7 +188,8 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         "This file is scoped to the Outbox age + DLQ depth signals (P1-3, step 10), the "
         "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
         "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
-        "redis-stream rules (step 5.2) and the two stream-trim rules (step 5.5). A new "
+        "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5) and the two "
+        "scheduled-task rules (step 5.7). A new "
         "rule needs its own logged justification first, not just a name added to "
         "EXPECTED_ALERTS."
     )
@@ -437,3 +458,36 @@ def test_every_rule_carries_the_minimum_operator_fields() -> None:
                 f"{_ALERTS_YML}: rule {rule['alert']!r} is missing a non-empty "
                 f"`annotations.{field}`"
             )
+
+
+def test_the_overdue_rule_compares_the_ledger_against_the_runners_own_deadline() -> None:
+    """5.7's "two cycles" is not a number in this file: each runner writes
+    ``2 x interval + max_runtime`` next to its record, so one rule covers the
+    60-second trimmer and the nightly backup. The rule must read all three
+    series -- the success, the arming it falls back to, and the deadline --
+    and collapse the replicas by ``task``, never by ``job`` (the scrape job's
+    own label, which an exposed ``job`` would have been renamed away from).
+    Its behaviour against synthetic series was checked with ``promtool test
+    rules`` (08 §4.23)."""
+    expr = _rule_named(_load_rules(), "AizzakOpsTaskOverdue")["expr"]
+    for metric in (
+        OPS_TASK_LAST_SUCCESS_METRIC,
+        OPS_TASK_ARMED_METRIC,
+        OPS_TASK_MAX_SUCCESS_AGE_METRIC,
+    ):
+        assert f"max by (task) ({metric})" in expr, (metric, expr)
+    assert " or " in expr, "a task that never succeeded must be late against its arming"
+    assert "time()" in expr
+    assert "job" not in expr
+
+
+def test_the_never_armed_rule_subtracts_the_armed_tasks_from_the_catalog() -> None:
+    """The overdue rule cannot fire for a task with no arming -- there is no
+    clock. The catalog series (every task, always) minus the armed ones is
+    the set nothing has ever started."""
+    rule = _rule_named(_load_rules(), "AizzakOpsTaskNeverArmed")
+    expr = rule["expr"]
+    assert f"max by (task) ({OPS_TASK_EXPECTED_METRIC})" in expr
+    assert " unless " in expr
+    assert f"max by (task) ({OPS_TASK_ARMED_METRIC})" in expr
+    assert rule["for"] == "30m", "long enough for a booting stack, short of a missed night"

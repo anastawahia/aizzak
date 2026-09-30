@@ -60,6 +60,14 @@ by construction rather than by coordination.
   answers; the reason there is an AGE at all is the plan's own sentence --
   «لا ``XLEN`` وحده، فالطولُ لا يقول شيئاً عن الاستهلاك».
 
+* ``scheduled_tasks`` — capacity 5.7: one ``TaskRecord`` for EVERY task in
+  ``SCHEDULED_TASKS`` (``framework/observability/scheduled_tasks.py``),
+  including the ones nothing has ever written -- an empty record, never a
+  missing key, because "expected and never armed" is itself the signal
+  ``AizzakOpsTaskNeverArmed`` fires on. Read from the task ledger
+  (``framework/ports/task_ledger.py``), the same fresh-per-scrape rule as
+  every method above.
+
 Implemented by ``infrastructure.monitoring.metrics_source.SqlRedisMetricsSource``
 (the Composition Root's only caller); a fake substitutes it in
 ``tests/unit/test_api_metrics_router.py`` so the rendering logic can be
@@ -71,6 +79,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
+
+from app.framework.ports.task_ledger import TaskRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,3 +116,5 @@ class MetricsSource(Protocol):
     async def stream_lag_seconds(self) -> dict[tuple[str, str], float]: ...
 
     async def stream_retention(self) -> StreamRetention: ...
+
+    async def scheduled_tasks(self) -> Mapping[str, TaskRecord]: ...

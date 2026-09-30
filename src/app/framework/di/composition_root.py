@@ -197,6 +197,7 @@ from app.framework.di.storage_binding import bind_minio
 from app.framework.di.storage_handle import StorageHandle
 from app.framework.di.vault_binding import build_vault
 from app.framework.observability import configure_logging, get_logger
+from app.framework.observability.scheduled_tasks import NOTIFY_GROUPS_TASK, TaskReport
 from app.framework.ports import (
     AuthProvider,
     CacheProvider,
@@ -252,6 +253,7 @@ from app.infrastructure.messaging.consumers.sweeper import (
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
 from app.infrastructure.monitoring.metrics_source import SqlRedisMetricsSource
 from app.infrastructure.monitoring.system_stats import HostSystemStats
+from app.infrastructure.monitoring.task_ledger import RedisTaskLedger
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.idempotency import SqlIdempotencyStore
 from app.infrastructure.persistence.outbox import SqlEventOutbox
@@ -2353,8 +2355,17 @@ class CompositionRoot:
         # threshold at all, and what it measured before it had one.
         min_idle_ms = int(self.settings.events.consumer_stale_idle_s * 1000)
         consumer = RedisStreamsConsumer(self.redis_client)
+        # Capacity 5.7: every sweep lands in the task ledger, from every
+        # replica -- the record answers "did ANY replica sweep lately", which
+        # is the only question the alert asks. Armed before the first sleep so
+        # a sweep that never completes is late against a known start.
+        report = TaskReport(
+            RedisTaskLedger(self.redis_client), NOTIFY_GROUPS_TASK, interval_s=interval
+        )
+        await report.arm()
         while True:
             await asyncio.sleep(interval)
+            started_at = report.now()
             try:
                 orphans = await find_orphan_notify_groups(
                     consumer, tuple(_NOTIFY_STREAMS), min_idle_ms=min_idle_ms
@@ -2365,8 +2376,11 @@ class CompositionRoot:
                         "composition_root.notify_orphan_groups_swept",
                         extra={"groups": [group.name for group in orphans]},
                     )
-            except Exception:
+            except Exception as exc:
                 _logger.error("composition_root.notify_group_sweep_failed", exc_info=True)
+                await report.failed(started_at=started_at, error=exc)
+            else:
+                await report.succeeded(started_at=started_at)
 
     async def teardown_notify_bridge(self) -> None:
         """Shutdown hook (docs/log/3.81.md): ``XGROUP DESTROY`` THIS

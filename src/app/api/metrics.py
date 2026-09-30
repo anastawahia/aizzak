@@ -64,7 +64,7 @@ whose Outbox happened to be empty.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from fastapi import APIRouter, Request
 from prometheus_client import (
@@ -78,6 +78,7 @@ from prometheus_client.core import GaugeMetricFamily, Metric
 from starlette.responses import Response
 
 from app.framework.ports.metrics_source import MetricsSource, StreamRetention
+from app.framework.ports.task_ledger import TaskRecord
 from app.framework.ports.vault_health import VaultHealth
 
 metrics_router = APIRouter(tags=["metrics"])
@@ -105,6 +106,22 @@ STREAM_LENGTH_METRIC = "aizzak_stream_length"
 STREAM_MAXLEN_METRIC = "aizzak_stream_maxlen"
 STREAM_UNCONSUMED_AGE_METRIC = "aizzak_stream_oldest_unconsumed_age_seconds"
 STREAM_UNREAD_TRIMMED_METRIC = "aizzak_stream_unread_trimmed_entries"
+# Capacity 5.7 -- the scheduled-task ledger, five gauges from one read
+# (`MetricsSource.scheduled_tasks`). External state like every gauge above:
+# each replica reads the same ledger, so every rule collapses with `max`.
+#
+# ⚠️ The label is `task`, and `job` would have been a silent defect. `job` is
+# the label Prometheus stamps on every series with the SCRAPE job's name
+# (`aizzak-app`); a target that exposes its own `job` label has it renamed to
+# `exported_job` on ingestion (`honor_labels: false`, the default here). Every
+# rule written `max by (job)` would then have grouped by the scrape job --
+# one series for the whole ledger, the most overdue task hidden behind the
+# freshest one.
+OPS_TASK_EXPECTED_METRIC = "aizzak_ops_task_expected"
+OPS_TASK_ARMED_METRIC = "aizzak_ops_task_armed_timestamp_seconds"
+OPS_TASK_LAST_SUCCESS_METRIC = "aizzak_ops_task_last_success_timestamp_seconds"
+OPS_TASK_LAST_FAILURE_METRIC = "aizzak_ops_task_last_failure_timestamp_seconds"
+OPS_TASK_MAX_SUCCESS_AGE_METRIC = "aizzak_ops_task_max_success_age_seconds"
 
 _NOT_WIRED_STATUS = 503
 
@@ -178,6 +195,7 @@ async def metrics(request: Request) -> Response:
     families.append(stream_lag)
 
     families.extend(_stream_retention_families(await source.stream_retention()))
+    families.extend(_scheduled_task_families(await source.scheduled_tasks()))
 
     registry = CollectorRegistry()
     registry.register(_Snapshot(families))
@@ -229,6 +247,54 @@ def _stream_retention_families(retention: StreamRetention) -> list[Metric]:
         trimmed.add_metric([stream, group], entries)
     families.append(trimmed)
     return families
+
+
+def _scheduled_task_families(records: Mapping[str, TaskRecord]) -> list[Metric]:
+    """Capacity 5.7's five gauges. Only ``expected`` is rendered for every
+    task; each timestamp is ABSENT until it happened, never ``0`` -- a zero
+    would read as 1970, i.e. as the most overdue task there could be, for a
+    task that has simply never failed. And ``max_success_age`` is absent for
+    a task switched off or never armed: there is no deadline to be late for,
+    and the never-armed case has a rule of its own."""
+    expected = GaugeMetricFamily(
+        OPS_TASK_EXPECTED_METRIC,
+        "1 for every task in SCHEDULED_TASKS, whether or not anything ever ran it.",
+        labels=["task"],
+    )
+    armed = GaugeMetricFamily(
+        OPS_TASK_ARMED_METRIC,
+        "When a runner first declared this task (Unix seconds) -- the clock a task "
+        "that has never succeeded is late against.",
+        labels=["task"],
+    )
+    success = GaugeMetricFamily(
+        OPS_TASK_LAST_SUCCESS_METRIC,
+        "When this task last completed successfully (Unix seconds).",
+        labels=["task"],
+    )
+    failure = GaugeMetricFamily(
+        OPS_TASK_LAST_FAILURE_METRIC,
+        "When this task last failed (Unix seconds); newer than the last success "
+        "means it is failing now.",
+        labels=["task"],
+    )
+    deadline = GaugeMetricFamily(
+        OPS_TASK_MAX_SUCCESS_AGE_METRIC,
+        "How old the last success may get before the task is overdue: two cycles plus "
+        "the longest one run may take (capacity 5.7).",
+        labels=["task"],
+    )
+    for name, record in records.items():
+        expected.add_metric([name], 1.0)
+        if record.armed_at is not None:
+            armed.add_metric([name], record.armed_at)
+        if record.last_success_at is not None:
+            success.add_metric([name], record.last_success_at)
+        if record.last_failure_at is not None:
+            failure.add_metric([name], record.last_failure_at)
+        if record.max_success_age_s is not None:
+            deadline.add_metric([name], record.max_success_age_s)
+    return [expected, armed, success, failure, deadline]
 
 
 class _Snapshot:

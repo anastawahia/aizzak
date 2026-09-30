@@ -142,6 +142,8 @@ from typing import cast
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError
 from app.framework.observability import Heartbeat, NullHeartbeat, get_logger, log_context
+from app.framework.observability.scheduled_tasks import TaskReport, dlq_watch_task
+from app.framework.ports.task_ledger import TaskLedger
 from app.framework.types import Json
 from app.infrastructure.messaging.consumers.dlq_watch import report_dlq_backlog
 from app.infrastructure.messaging.consumers.sweeper import (
@@ -215,6 +217,8 @@ class StreamConsumer:
         sweep_interval_s: float = 0.0,
         stale_idle_ms: int = 0,
         dlq_watch_interval_s: float = 0.0,
+        dlq_watch_ledger: TaskLedger | None = None,
+        dlq_watch_max_runtime_s: float = 0.0,
         concurrency: int = 1,
         drain_timeout_s: float = 0.0,
     ) -> None:
@@ -257,6 +261,17 @@ class StreamConsumer:
         # process that dead-letters into it.
         self._dlq_watch_interval_s = dlq_watch_interval_s
         self._next_dlq_watch_at = 0.0
+        # Capacity 5.7: one ledger record per watched stream, built in `run`
+        # once the subscriptions are known. Per STREAM, not per worker, because
+        # the question the acceptance criterion asks is "was every DLQ looked
+        # at", and two replicas watching one stream must not cover for a third
+        # worker that stopped watching another. `dlq_watch_max_runtime_s` is
+        # how late a watch may legitimately run: it waits between passes, and
+        # a pass is as long as the slowest handler in its batch (a summary
+        # build may take `summarize_job_max_duration_s`).
+        self._dlq_watch_ledger = dlq_watch_ledger
+        self._dlq_watch_max_runtime_s = dlq_watch_max_runtime_s
+        self._dlq_reports: list[TaskReport] = []
         # Capacity 5.1 (`ح-6`). DEFAULT 1, and that default is the whole
         # reversibility argument (`م-8`): at 1 this class takes the explicit
         # sequential path below and behaves byte for byte as it did before
@@ -503,6 +518,7 @@ class StreamConsumer:
         DELETES), so it keeps waiting out its first full interval.
         """
         await self.setup(subscriptions)
+        await self._arm_dlq_reports(subscriptions)
         self._next_sweep_at = monotonic() + self._sweep_interval_s
         self._next_dlq_watch_at = monotonic()
         while not self._stop.is_set():
@@ -611,13 +627,39 @@ class StreamConsumer:
         """
         if self._dlq_watch_interval_s <= 0:
             return []
+        started_at = [report.now() for report in self._dlq_reports]
         try:
-            return await report_dlq_backlog(
+            found = await report_dlq_backlog(
                 self._consumer, streams=[s.stream for s in subscriptions]
             )
-        except Exception:
+        except Exception as exc:
             _logger.error("dlq_watch_failed", exc_info=True)
+            for report, started in zip(self._dlq_reports, started_at, strict=True):
+                await report.failed(started_at=started, error=exc)
             return []
+        for report, started in zip(self._dlq_reports, started_at, strict=True):
+            await report.succeeded(started_at=started)
+        return found
+
+    async def _arm_dlq_reports(self, subscriptions: Sequence[Subscription]) -> None:
+        """Capacity 5.7: declare one ledger record per stream this worker
+        watches. Nothing without a ledger -- a test or the notify bridge
+        builds this engine with none, and their stream names need not be in
+        the catalog at all."""
+        if self._dlq_watch_interval_s <= 0 or self._dlq_watch_ledger is None:
+            self._dlq_reports = []
+            return
+        self._dlq_reports = [
+            TaskReport(
+                self._dlq_watch_ledger,
+                dlq_watch_task(stream),
+                interval_s=self._dlq_watch_interval_s,
+                max_runtime_s=self._dlq_watch_max_runtime_s,
+            )
+            for stream in dict.fromkeys(s.stream for s in subscriptions)
+        ]
+        for report in self._dlq_reports:
+            await report.arm()
 
     async def deregister(self, subscriptions: Sequence[Subscription]) -> None:
         """Remove THIS process's own consumer registration from every group

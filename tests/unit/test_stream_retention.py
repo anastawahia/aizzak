@@ -633,3 +633,62 @@ def test_run_refuses_without_yes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.argv", ["stream_trim", "run"])
     with pytest.raises(SystemExit, match="--yes"):
         stream_trim.main()
+
+
+class _PassLedger:
+    """Collects what the trimmer's `TaskReport` writes (capacity 5.7)."""
+
+    def __init__(self) -> None:
+        self.armed: list[float] = []
+        self.outcomes: list[str | None] = []
+
+    async def arm(self, task: str, *, interval_s: float, max_runtime_s: float, at: float) -> None:
+        assert task == "stream_trim"
+        self.armed.append(interval_s)
+
+    async def record(self, task: str, **kwargs: object) -> None:
+        assert task == "stream_trim"
+        self.outcomes.append(kwargs["error"])  # type: ignore[arg-type]
+
+
+async def test_every_pass_lands_in_the_task_ledger_failures_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """5.5 wrote "no metric for the last successful pass" as a gap and named
+    5.7 its home: a pass that trims nothing is silent, so silence was both the
+    healthy trimmer and the dead one. Each pass is recorded -- and a failing
+    one as a failure, so a trimmer failing every pass reads as failing, not
+    merely as quiet."""
+    results = iter([None, ConnectionError("redis went away"), None])
+
+    async def _pass(self: StreamTrimmer) -> list[object]:
+        outcome = next(results)
+        if outcome is not None:
+            raise outcome
+        return []
+
+    sleeps = 0
+
+    async def _sleep(_: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(StreamTrimmer, "trim_once", _pass)
+    monkeypatch.setattr(stream_retention.asyncio, "sleep", _sleep)
+    ledger = _PassLedger()
+    trimmer = StreamTrimmer(
+        object(),  # type: ignore[arg-type]
+        streams=[],
+        interval_s=60,
+        margin_s=0,
+        backstop=None,
+        ledger=ledger,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await trimmer.run_forever()
+
+    assert ledger.armed == [60]
+    assert ledger.outcomes == [None, "ConnectionError: redis went away", None]

@@ -55,9 +55,23 @@ path "transit/rewrap/tenant-secrets" {
   capabilities = ["update"]
 }
 
+# `VaultSecrets.transit_key_info` -> hvac `read_key` -> GET /v1/transit/keys/
+# tenant-secrets. Capacity 5.7: the scheduled rewrap sweep must know whether
+# the key is actually ROTATING -- a sweep onto "the current version" succeeds
+# trivially forever if the current version never changes (measured: version 1
+# for 66 days, no cycle declared). `read` on the key's own path returns its
+# metadata -- versions and their creation times, `auto_rotate_period`,
+# `min_decryption_version` -- and no key material (the key is not exportable,
+# and export is a different path). It does not reach `.../rotate` or
+# `.../config`: those are `update` on their own paths, still refused below.
+path "transit/keys/tenant-secrets" {
+  capabilities = ["read"]
+}
+
 # ── Deliberately NOT granted ─────────────────────────────────────────────
 # `transit/keys/tenant-secrets/rotate` and every other `transit/keys/*`
-# path -- minting a NEW key version, changing `min_decryption_version`, or
+# path other than the metadata `read` above -- minting a NEW key version,
+# changing `min_decryption_version`, or
 # any other key-ADMINISTRATION action is a Vault-operator step
 # (08-local-runbook §4.5 gives the exact command), never something the
 # application authenticates to do. `rewrap` re-encrypts under whatever

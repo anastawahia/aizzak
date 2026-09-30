@@ -160,6 +160,8 @@ from app.infrastructure.storage.minio_storage import create_minio_client, delete
 from app.infrastructure.vector.qdrant_store import create_qdrant_client, drop_collection
 from app.modules.knowledge.domain.collections import knowledge_collection
 from app.modules.memory.domain.collections import memory_collection
+from app.ops.provision import PURGE_ROLE
+from app.ops.role_guard import ROLE_MISMATCH_EXIT, RoleMismatchError, require_role
 
 _logger = logging.getLogger(__name__)
 
@@ -592,6 +594,10 @@ async def _run_cli(args: argparse.Namespace) -> int:
     )
     engine = create_engine(DatabaseSettings(url=settings.database.url), poolclass=NullPool)
     try:
+        # Capacity 5.7 (`role_guard`'s docstring): candidates are found through
+        # a SELECT policy scoped to this role alone, so under any other role
+        # `scan` finds no deleted users and `run` purges nothing -- successfully.
+        await require_role(engine, tool="app.ops.purge", expected=PURGE_ROLE)
         if args.action == "scan":
             async with engine.connect() as conn:
                 candidates = await find_candidates(conn, retention=retention, limit=args.limit)
@@ -686,7 +692,11 @@ def main() -> None:
             "destructively deletes a workspace's content across Qdrant, MinIO and Postgres, "
             "and there is no undo."
         )
-    raise SystemExit(asyncio.run(_run_cli(args)))
+    try:
+        raise SystemExit(asyncio.run(_run_cli(args)))
+    except RoleMismatchError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(ROLE_MISMATCH_EXIT) from exc
 
 
 if __name__ == "__main__":

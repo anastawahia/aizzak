@@ -59,6 +59,7 @@ from pathlib import Path
 import yaml
 
 from app.framework.di.composition_root import _METRICS_MAX_OVERFLOW, _METRICS_POOL_SIZE
+from app.ops.scheduler import DSN_VARIABLES, JOBS, child_env
 from app.workers.bootstrap import (
     _RELAY_MAX_OVERFLOW,
     _RELAY_POOL_SIZE,
@@ -137,6 +138,19 @@ _PRE_FLIGHT_MODULES = frozenset({"app.ops.provision"})
 # its DSN goes DIRECT to Postgres -- so it occupies no MAX_CLIENT_CONN seat in
 # front of the pooler at all.
 _MANUAL_MODULES = frozenset({"app.ops.backup"})
+
+# Capacity 5.7: a STANDING service that holds several roles' DSNs and is
+# nonetheless one connection. `app.ops.scheduler` runs its jobs one at a time,
+# hands each child exactly one DSN (`child_env`), and every job is a `NullPool`
+# tool -- so at any instant the whole service holds at most ONE connection,
+# never one per DSN. Counted as one client and one backend on the pooler, under
+# a label rather than a role (which role depends on which job is running); the
+# backup job's DSN goes DIRECT to Postgres and takes no pooler seat, the
+# `backup` service's own footing. Summing one pool per DSN would count three
+# connections that cannot coexist -- the inflation the migrator's exclusion
+# refuses for the same reason. `test_the_scheduler_is_one_connection_at_a_time`
+# checks the premise against the scheduler's own code.
+_SEQUENTIAL_MODULES = frozenset({"app.ops.scheduler"})
 
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?)([^}]*))?\}")
 _DSN_PATTERN = re.compile(
@@ -325,6 +339,23 @@ def _compose_topology() -> _Topology:
             size, overflow = _ENTRYPOINT_POOLS[module]
             processes = 1
             pools = (_pool_from_dsn(str(env["DATABASE_URL"]), size, overflow, defaults),)
+        elif module in _SEQUENTIAL_MODULES:
+            processes = 1
+            pooled = [
+                key for key in dsn_keys if _POOLER_ENDPOINT in _resolve(str(env[key]), defaults)
+            ]
+            pools = (
+                (
+                    _Pool(
+                        role=f"{name} (one job at a time)",
+                        endpoint=_POOLER_ENDPOINT,
+                        size=1,
+                        overflow=0,
+                    ),
+                )
+                if pooled
+                else ()
+            )
         else:
             unaccounted.append(f"{name} ({module})")
             continue
@@ -664,9 +695,16 @@ def test_app_rw_is_the_role_the_pooler_actually_throttles() -> None:
     default_pool_size = int(_pgbouncer_env()["DEFAULT_POOL_SIZE"])
     demand = _demand_by_role(topology)
 
-    assert set(demand) == {"app_rw", "metrics_reader", "outbox_relay"}, (
-        f"the set of roles reaching Postgres through the pooler changed: {sorted(demand)}"
-    )
+    # Capacity 5.7 adds the scheduler's one connection -- a LABEL, since which of
+    # its three pooler-bound roles it is depends on the job running
+    # (`_SEQUENTIAL_MODULES`); one client, one backend, never three.
+    assert set(demand) == {
+        "app_rw",
+        "metrics_reader",
+        "outbox_relay",
+        "ops-scheduler (one job at a time)",
+    }, f"the set of roles reaching Postgres through the pooler changed: {sorted(demand)}"
+    assert demand["ops-scheduler (one job at a time)"] == 1
     assert demand["app_rw"] > default_pool_size, (
         "app_rw no longer over-subscribes its pool -- ح-3 has stopped being the "
         "binding constraint and 08 §2-ب's ledger needs rewriting, not patching"
@@ -846,7 +884,8 @@ def test_the_patterns_actually_find_something() -> None:
     compose = _compose_topology()
     runpod = _runpod_topology()
 
-    assert len(compose.runners) == 5, [r.name for r in compose.runners]
+    # 6 since capacity 5.7 added `ops-scheduler` (one pooler connection).
+    assert len(compose.runners) == 6, [r.name for r in compose.runners]
     assert len(runpod.runners) == 3, [r.name for r in runpod.runners]
     assert _pooler_clients(compose) > 0
     assert _direct_backends(runpod) > 0
@@ -855,3 +894,26 @@ def test_the_patterns_actually_find_something() -> None:
     # the day someone legitimately changes the default.
     assert int(_runpod_exports()["WEB_CONCURRENCY"]) >= 1
     assert set(_ENTRYPOINT_POOLS) == {"app.workers.main", "app.workers.outbox_relay"}
+
+
+def test_the_scheduler_is_one_connection_at_a_time() -> None:
+    """The premise `_SEQUENTIAL_MODULES` counts on, checked against the code
+    rather than this file's comment: every scheduler job's child is handed at
+    most ONE DSN, and the job that holds the pooler-bound roles never runs
+    beside another (the loop is sequential -- `Scheduler.tick` awaits each
+    job before the next). And the backup job is the one that goes direct, so
+    it is the only DSN in the service that must NOT name the pooler."""
+    environ = {key: f"postgresql+asyncpg://role-{key}@host/db" for key in DSN_VARIABLES}
+    for job in JOBS:
+        dsns = [key for key in child_env(job, environ) if key.endswith("DATABASE_URL")]
+        assert len(dsns) <= 1, (job.task, dsns)
+
+    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    env = compose["services"]["ops-scheduler"]["environment"]
+    assert _POOLER_ENDPOINT not in env["BACKUP_DATABASE_URL"]
+    for key in (
+        "RETENTION_DATABASE_URL",
+        "WORKSPACE_PURGER_DATABASE_URL",
+        "TRANSIT_ROTATOR_DATABASE_URL",
+    ):
+        assert _POOLER_ENDPOINT in env[key], key

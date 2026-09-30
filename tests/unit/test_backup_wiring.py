@@ -144,19 +144,23 @@ def test_the_spool_is_chowned_before_the_server_that_writes_it_starts() -> None:
 
 def test_the_spool_volume_is_shared_by_exactly_the_two_services_that_need_it() -> None:
     """The server writes it and the shipper deletes from it. Any third mount
-    is a copy of every tenant's transaction log somewhere nobody audited."""
+    is a copy of every tenant's transaction log somewhere nobody audited.
+
+    Capacity 5.7 adds `ops-scheduler`, for one reason: its nightly `backup
+    full` ships the spool after the base backup, exactly as the `backup`
+    one-shot does -- the same job, run by a runner instead of a person."""
     mounts = [line for line in _compose().splitlines() if f"- wal-archive:{_SPOOL}" in line]
 
-    # postgres, wal-shipper, backup, wal-archive-init -- and no more.
-    assert len(mounts) == 4
+    # postgres, wal-shipper, backup, ops-scheduler, wal-archive-init -- and no more.
+    assert len(mounts) == 5
 
 
 def test_both_backup_containers_run_as_the_postgres_uid() -> None:
     """Deleting a shipped segment needs write on the DIRECTORY. The
     alternative to matching the uid was widening the mode of live WAL."""
     compose = _compose()
-    for service in ("wal-shipper:", "backup:"):
-        block = compose.split(service, 1)[1][:900]
+    for service in ("wal-shipper:", "backup:", "ops-scheduler:"):
+        block = compose.split(f"\n  {service}", 1)[1][:3200]
         assert 'user: "999:999"' in block, f"{service} must run as the spool's owner"
 
 

@@ -79,6 +79,8 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from app.framework.observability import get_logger
+from app.framework.observability.scheduled_tasks import STREAM_TRIM_TASK, TaskReport
+from app.framework.ports.task_ledger import TaskLedger
 
 _logger = get_logger(__name__)
 
@@ -364,6 +366,7 @@ class StreamTrimmer:
         interval_s: float,
         margin_s: float,
         backstop: int | None,
+        ledger: TaskLedger | None = None,
     ) -> None:
         if interval_s <= 0:
             raise ValueError("interval_s must be > 0; a disabled trimmer is not built at all")
@@ -373,6 +376,15 @@ class StreamTrimmer:
         self._margin_ms = int(margin_s * 1000)
         self._backstop = backstop
         self._next_warn_at: dict[str, float] = {}
+        # Capacity 5.7. 5.5 shipped this loop with "no metric for the last
+        # successful pass" written down as a gap and 5.7 named as its home: a
+        # dead trimmer returns the platform to `MAXLEN` alone, and nothing says
+        # so until a stream reaches 70% -- hours at peak, days at the real
+        # rate. Measured on the live relay on 2026-09-30: an hour and a half
+        # of passes and not one log line after the boot line, because a pass
+        # that trims nothing is silent. So each pass is recorded, and the ledger says what silence
+        # could not.
+        self._report = TaskReport(ledger, STREAM_TRIM_TASK, interval_s=interval_s)
 
     async def trim_once(self) -> list[TrimReport]:
         """One pass over every stream: read, decide, ``XTRIM MINID ~``.
@@ -445,10 +457,19 @@ class StreamTrimmer:
     async def run_forever(self) -> None:
         """``trim_once`` every ``interval_s`` until cancelled. A failed pass
         is logged and the next one tries again: trimming is housekeeping, and
-        the backstop still bounds every stream while it is not happening."""
+        the backstop still bounds every stream while it is not happening.
+
+        Every pass lands in the task ledger (capacity 5.7), the failures as
+        well as the successes -- a trimmer failing every pass must read as
+        failing, not merely as quiet."""
+        await self._report.arm()
         while True:
+            started_at = self._report.now()
             try:
                 await self.trim_once()
-            except Exception:
+            except Exception as exc:
                 _logger.error("stream_trim.failed", exc_info=True)
+                await self._report.failed(started_at=started_at, error=exc)
+            else:
+                await self._report.succeeded(started_at=started_at)
             await asyncio.sleep(self._interval_s)

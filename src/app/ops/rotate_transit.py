@@ -100,7 +100,23 @@ the reported count is exact, but issues no ``UPDATE`` at all.
 ``DATABASE_URL`` for THIS process must be the ``transit_rotator`` role's OWN
 DSN -- the same per-process convention ``provision.py``/``retention.py``
 already document for ``aizzak_owner``/``retention_sweeper``: one role per
-process, never one role wearing another's hat.
+process, never one role wearing another's hat. Since capacity 5.7 that is
+checked rather than trusted (``app.ops.role_guard``): under any other role
+RLS hides every row, and the sweep would report ``scanned: 0`` and succeed.
+
+**The declared cycle (capacity 5.7).** 5.7 schedules this sweep "وفق دورةٍ
+معلنة", and 05 §3.2 promises "دورة تدوير موحّدة" four times without ever
+saying how long it is. Measured on 2026-09-30: ``tenant-secrets`` had been at
+version 1 since 2026-07-26 with ``auto_rotate_period`` 0 -- so a nightly
+sweep would have found every row "already current" and succeeded, every
+night, while nothing rotated at all. A sweep is only meaningful next to a key
+that moves. So the cycle is now Vault's own property
+(``auto_rotate_period`` on the key, set by ``deploy/vault/bootstrap.sh``;
+Vault mints each new version itself), and every ``sweep`` ends by reading
+the key's metadata and exits ``3`` -- AFTER persisting whatever it rewrapped
+-- when no cycle is declared, or when the newest version is older than the
+cycle plus ``ROTATION_GRACE_S``. ``min_decryption_version`` is still never
+advanced here: that step is irreversible and stays an operator's (§4.5).
 """
 
 from __future__ import annotations
@@ -111,6 +127,7 @@ import json
 import logging
 import re
 import sys
+import time
 from dataclasses import dataclass
 
 from sqlalchemy import text
@@ -121,10 +138,13 @@ from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.config import load_settings, load_vault_auth
 from app.infrastructure.persistence.database import create_engine
 from app.infrastructure.secrets.vault_secrets import (
+    TransitKeyInfo,
     VaultSecrets,
     create_approle_relogin,
     create_vault_client,
 )
+from app.ops.provision import TRANSIT_ROTATOR_ROLE
+from app.ops.role_guard import ROLE_MISMATCH_EXIT, RoleMismatchError, require_role
 
 _logger = logging.getLogger(__name__)
 
@@ -133,6 +153,20 @@ _logger = logging.getLogger(__name__)
 # constant across a no-op rewrap, unlike the bytes themselves (module
 # docstring's "Idempotency" paragraph).
 _VERSION_RE = re.compile(r"^vault:v(\d+):")
+
+# SEC-07's one unified key -- the key whose rotation cycle the sweep verifies.
+# Rows name their own key in `key_id` and are rewrapped under that name; this
+# is only the key whose CYCLE is declared (`deploy/vault/bootstrap.sh`).
+TENANT_SECRETS_KEY = "tenant-secrets"
+
+# How far past its declared period the newest version may be before the cycle
+# counts as stopped. Vault checks keys for auto-rotation about once an hour; a
+# day covers that, a sealed Vault overnight and a scheduler that ran early.
+ROTATION_GRACE_S = 86_400.0
+
+# Exit code of a sweep that did its work but found the key not rotating --
+# distinct from 1 (the sweep itself failed) and 2 (the wrong role).
+CYCLE_BROKEN_EXIT = 3
 
 
 def _key_version(ciphertext: str) -> int:
@@ -240,6 +274,65 @@ async def rewrap_all(
     return [await rewrap_table(engine, secrets, spec, dry_run=dry_run) for spec in _TABLE_SPECS]
 
 
+@dataclass(frozen=True, slots=True)
+class RotationCycle:
+    """Whether the key is actually turning over, from its own metadata.
+    ``verdict`` is ``ok``, ``no_cycle`` (``auto_rotate_period`` is 0) or
+    ``overdue`` (the newest version is older than the period plus
+    ``ROTATION_GRACE_S``)."""
+
+    key: str
+    latest_version: int
+    min_decryption_version: int
+    auto_rotate_period_s: float
+    latest_age_s: float
+    verdict: str
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict == "ok"
+
+
+def rotation_cycle(info: TransitKeyInfo, *, now: float) -> RotationCycle:
+    """Judge the key's rotation from what Vault reports -- no clock of the
+    key's own is trusted beyond the creation time Vault stamped on each
+    version."""
+    created = info.version_created_at.get(info.latest_version)
+    age = max(0.0, now - created) if created is not None else float("inf")
+    if info.auto_rotate_period_s <= 0:
+        verdict = "no_cycle"
+    elif age > info.auto_rotate_period_s + ROTATION_GRACE_S:
+        verdict = "overdue"
+    else:
+        verdict = "ok"
+    return RotationCycle(
+        key=info.name,
+        latest_version=info.latest_version,
+        min_decryption_version=info.min_decryption_version,
+        auto_rotate_period_s=info.auto_rotate_period_s,
+        latest_age_s=age,
+        verdict=verdict,
+    )
+
+
+def _print_cycle(cycle: RotationCycle) -> None:
+    payload = {
+        "key": cycle.key,
+        "latest_version": cycle.latest_version,
+        "min_decryption_version": cycle.min_decryption_version,
+        "auto_rotate_period_days": round(cycle.auto_rotate_period_s / 86_400, 2),
+        "latest_version_age_days": round(cycle.latest_age_s / 86_400, 2)
+        if cycle.latest_age_s != float("inf")
+        else None,
+        "cycle": cycle.verdict,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    if cycle.ok:
+        _logger.info("ops.rotate_transit.cycle_ok", extra=payload)
+    else:
+        _logger.error("ops.rotate_transit.cycle_broken", extra=payload)
+
+
 def _print_result(result: RewrapResult) -> None:
     payload = {
         "table": result.table,
@@ -267,9 +360,14 @@ async def _run_cli(args: argparse.Namespace) -> int:
     )
     engine = create_engine(DatabaseSettings(url=settings.database.url), poolclass=NullPool)
     try:
+        await require_role(engine, tool="app.ops.rotate_transit", expected=TRANSIT_ROTATOR_ROLE)
         for result in await rewrap_all(engine, secrets, dry_run=args.dry_run):
             _print_result(result)
-        return 0
+        # After the sweep, never before: whatever it rewrapped is persisted
+        # either way, and the exit code is about the key, not the rows.
+        cycle = rotation_cycle(await secrets.transit_key_info(TENANT_SECRETS_KEY), now=time.time())
+        _print_cycle(cycle)
+        return 0 if cycle.ok else CYCLE_BROKEN_EXIT
     finally:
         await engine.dispose()
 
@@ -297,7 +395,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     args = _build_parser().parse_args()
-    raise SystemExit(asyncio.run(_run_cli(args)))
+    try:
+        raise SystemExit(asyncio.run(_run_cli(args)))
+    except RoleMismatchError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(ROLE_MISMATCH_EXIT) from exc
 
 
 if __name__ == "__main__":

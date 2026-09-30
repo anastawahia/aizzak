@@ -130,6 +130,8 @@ from sqlalchemy.pool import NullPool
 from app.framework.settings.settings import DatabaseSettings, EventSettings
 from app.infrastructure.config import load_settings
 from app.infrastructure.persistence.database import create_engine
+from app.ops.provision import RETENTION_ROLE
+from app.ops.role_guard import ROLE_MISMATCH_EXIT, RoleMismatchError, require_role
 
 _logger = logging.getLogger(__name__)
 
@@ -393,6 +395,10 @@ def _print_result(result: SweepResult) -> None:
 async def _run_cli(args: argparse.Namespace) -> int:
     engine = create_engine(DatabaseSettings(url=load_settings().database.url), poolclass=NullPool)
     try:
+        # Capacity 5.7 (`role_guard`'s docstring): under any other role RLS
+        # turns two of the four tables into empty ones, and the sweep
+        # "succeeds" on them. Checked before anything is counted.
+        await require_role(engine, tool="app.ops.retention", expected=RETENTION_ROLE)
         if args.table is not None:
             retention = (
                 timedelta(days=args.older_than_days)
@@ -455,7 +461,11 @@ def main() -> None:
             "--older-than-days requires --table -- there is no single retention window "
             "for all four tables (module docstring's whole point)."
         )
-    raise SystemExit(asyncio.run(_run_cli(args)))
+    try:
+        raise SystemExit(asyncio.run(_run_cli(args)))
+    except RoleMismatchError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(ROLE_MISMATCH_EXIT) from exc
 
 
 if __name__ == "__main__":

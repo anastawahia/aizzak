@@ -39,8 +39,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.framework.events.topology import PUBLISHED_STREAMS, STATIC_CONSUMER_TOPOLOGY
+from app.framework.observability.scheduled_tasks import SCHEDULED_TASKS
 from app.framework.ports.metrics_source import StreamRetention
+from app.framework.ports.task_ledger import TaskRecord
 from app.infrastructure.messaging.stream_retention import read_stream_snapshot
+from app.infrastructure.monitoring.task_ledger import RedisTaskLedger
 
 # Every source stream this platform's workers consume, derived from the ONE
 # canonical topology table (`framework/events/topology.py`) rather than typed
@@ -202,6 +205,15 @@ class SqlRedisMetricsSource:
             oldest_unconsumed_age_s=ages,
             unread_trimmed=unread_trimmed,
         )
+
+    async def scheduled_tasks(self) -> dict[str, TaskRecord]:
+        """Every catalog task's ledger record, in catalog order -- one
+        pipelined ``HGETALL`` per task on the SAME ``redis-stream`` client the
+        DLQ depths are read with. A task nothing has written comes back as an
+        empty record rather than being left out: the scrape reports what is
+        EXPECTED, and the difference is the ``AizzakOpsTaskNeverArmed`` rule.
+        """
+        return await RedisTaskLedger(self._redis).read(task.name for task in SCHEDULED_TASKS)
 
     async def dlq_depths(self) -> dict[str, int]:
         """``XLEN`` of ``<stream>.dlq`` for every entry in

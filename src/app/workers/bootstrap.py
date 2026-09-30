@@ -149,6 +149,7 @@ from app.framework.observability import Heartbeat, build_heartbeat, configure_lo
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.llm_provider import LLMProvider
+from app.framework.ports.task_ledger import TaskLedger
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
@@ -170,6 +171,7 @@ from app.infrastructure.messaging.consumers.engine import EventHandler, StreamCo
 from app.infrastructure.messaging.outbox import OutboxRelay
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer, RedisStreamsPublisher
 from app.infrastructure.messaging.stream_retention import StreamTrimmer
+from app.infrastructure.monitoring.task_ledger import RedisTaskLedger
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelayStore
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
@@ -403,6 +405,9 @@ def build_relay_from_env() -> tuple[
             interval_s=settings.events.stream_trim_interval_s,
             margin_s=settings.events.stream_trim_margin_s,
             backstop=settings.events.stream_maxlen,
+            # Capacity 5.7: the same `redis-stream` client, so recording a
+            # pass costs no new connection.
+            ledger=RedisTaskLedger(redis_client),
         )
 
     disposables: list[Disposable] = [engine.dispose, redis_client.aclose]
@@ -1137,6 +1142,8 @@ def build_knowledge_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    dlq_watch_ledger: TaskLedger | None = None,
+    dlq_watch_max_runtime_s: float = 0.0,
     concurrency: int = 1,
     drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
@@ -1250,6 +1257,10 @@ def build_knowledge_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.7 -- the ledger record of each watch. `None` for a direct
+        # caller, like the interval above.
+        dlq_watch_ledger=dlq_watch_ledger,
+        dlq_watch_max_runtime_s=dlq_watch_max_runtime_s,
         # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
         # lane, cancel where it stands) so every direct caller of this builder
         # -- the live integration tests included -- keeps the sequential
@@ -1605,6 +1616,11 @@ async def build_knowledge_worker_from_env() -> tuple[
         # mid-build. `knowledge_stale_idle_ms` above says why it is derived.
         stale_idle_ms=knowledge_stale_idle_ms(settings),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.7. The watch runs BETWEEN passes, and a pass here can hold
+        # a summary build for `summarize_job_max_duration_s` -- the longest a
+        # watch on this worker may legitimately be late.
+        dlq_watch_ledger=RedisTaskLedger(redis_client),
+        dlq_watch_max_runtime_s=float(settings.limits.summarize_job_max_duration_s),
         # Capacity 5.1 -- the only three sites that turn either on.
         concurrency=settings.events.worker_concurrency,
         drain_timeout_s=settings.events.worker_drain_timeout_s,
@@ -1691,6 +1707,8 @@ def build_media_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    dlq_watch_ledger: TaskLedger | None = None,
+    dlq_watch_max_runtime_s: float = 0.0,
     concurrency: int = 1,
     drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
@@ -1727,6 +1745,10 @@ def build_media_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.7 -- the ledger record of each watch. `None` for a direct
+        # caller, like the interval above.
+        dlq_watch_ledger=dlq_watch_ledger,
+        dlq_watch_max_runtime_s=dlq_watch_max_runtime_s,
         # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
         # lane, cancel where it stands) so every direct caller of this builder
         # -- the live integration tests included -- keeps the sequential
@@ -1848,6 +1870,10 @@ async def build_media_worker_from_env() -> tuple[
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.7 -- as on the knowledge worker; here a pass is bounded
+        # by `media_timeout_s`.
+        dlq_watch_ledger=RedisTaskLedger(redis_client),
+        dlq_watch_max_runtime_s=float(settings.limits.media_timeout_s),
         # Capacity 5.1 -- the only three sites that turn either on.
         concurrency=settings.events.worker_concurrency,
         drain_timeout_s=settings.events.worker_drain_timeout_s,
@@ -1921,6 +1947,8 @@ def build_memory_worker(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    dlq_watch_ledger: TaskLedger | None = None,
+    dlq_watch_max_runtime_s: float = 0.0,
     concurrency: int = 1,
     drain_timeout_s: float = 0.0,
 ) -> tuple[StreamConsumer, list[Subscription]]:
@@ -1952,6 +1980,10 @@ def build_memory_worker(
         # integration test) gets a consumer that reads and nothing else, and
         # only the `_from_env` path below turns the DLQ report on.
         dlq_watch_interval_s=dlq_watch_interval_s,
+        # Capacity 5.7 -- the ledger record of each watch. `None` for a direct
+        # caller, like the interval above.
+        dlq_watch_ledger=dlq_watch_ledger,
+        dlq_watch_max_runtime_s=dlq_watch_max_runtime_s,
         # Capacity 5.1 (`ح-6`). Both DEFAULT to the pre-5.1 behaviour (one
         # lane, cancel where it stands) so every direct caller of this builder
         # -- the live integration tests included -- keeps the sequential
@@ -2027,6 +2059,9 @@ def build_memory_worker_from_env() -> tuple[StreamConsumer, list[Subscription], 
         sweep_interval_s=settings.events.consumer_sweep_interval_s,
         stale_idle_ms=int(settings.events.consumer_stale_idle_s * 1000),
         dlq_watch_interval_s=settings.events.dlq_watch_interval_s,
+        # Capacity 5.7 -- as on the knowledge worker. No handler here holds a
+        # pass for longer than a request timeout, so no allowance is added.
+        dlq_watch_ledger=RedisTaskLedger(redis_client),
         # Capacity 5.1 -- the only three sites that turn either on.
         concurrency=settings.events.worker_concurrency,
         drain_timeout_s=settings.events.worker_drain_timeout_s,

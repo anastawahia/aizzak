@@ -73,6 +73,9 @@ _HEARTBEAT_SERVICES = {
     # leaves `archive_command` writing into a spool nobody drains until the
     # data volume fills.
     "wal-shipper": "wal-shipper",
+    # Capacity 5.7. The scheduling loop: it beats every tick and while a job
+    # runs, so a nightly backup that takes an hour does not read as a hang.
+    "ops-scheduler": "ops-scheduler",
 }
 
 

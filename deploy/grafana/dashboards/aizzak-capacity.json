@@ -1732,6 +1732,217 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 27,
+      "type": "row",
+      "title": "Scheduled tasks — do the ops tools still run by themselves? (step 5.7)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 28,
+      "type": "bargauge",
+      "title": "Age of each task's last success, against its deadline",
+      "description": "Capacity 5.7: for every scheduled task, how old its last success is (or its arming, if it has never succeeded), as a share of its own deadline -- two cycles plus the longest one run may take, written by the runner itself. Past 0.5 the task has missed one cycle (a retry is normal); at 1.0 AizzakOpsTaskOverdue fires. A task switched off (cycle 0) has no deadline and no bar; one nothing ever armed has no bar either and is counted on the right. python -m app.ops.scheduler status says why.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 58
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(time() - (max by (task) (aizzak_ops_task_last_success_timestamp_seconds) or max by (task) (aizzak_ops_task_armed_timestamp_seconds))) / max by (task) (aizzak_ops_task_max_success_age_seconds)",
+          "legendFormat": "{{task}}",
+          "range": false,
+          "instant": true,
+          "refId": "AC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "Tasks failing now",
+      "description": "Scheduled tasks whose latest pass failed -- their last failure is newer than their last success, or they have failed and never succeeded. Not yet an alert: one failed night is retried within the hour. It becomes AizzakOpsTaskOverdue if it lasts two cycles. The error text is in the ledger (python -m app.ops.scheduler status).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 58
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count((max by (task) (aizzak_ops_task_last_failure_timestamp_seconds) > max by (task) (aizzak_ops_task_last_success_timestamp_seconds)) or (max by (task) (aizzak_ops_task_last_failure_timestamp_seconds) unless max by (task) (aizzak_ops_task_last_success_timestamp_seconds))) or vector(0)",
+          "legendFormat": "tasks",
+          "range": false,
+          "instant": true,
+          "refId": "AD"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Tasks nothing has ever armed",
+      "description": "Tasks in the catalog (SCHEDULED_TASKS) that no runner has ever declared -- their service is missing or predates capacity 5.7. They have no clock to be late against, so the bars on the left cannot show them; AizzakOpsTaskNeverArmed fires after 30m.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 63
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(max by (task) (aizzak_ops_task_expected) unless max by (task) (aizzak_ops_task_armed_timestamp_seconds)) or vector(0)",
+          "legendFormat": "tasks",
+          "range": false,
+          "instant": true,
+          "refId": "AE"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
     }
   ],
   "annotations": {

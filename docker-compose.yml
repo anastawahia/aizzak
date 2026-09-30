@@ -1455,6 +1455,12 @@ services:
       # if the vault-data volume is ever wiped without also editing .env.
       # role_id is non-secret (05 §2). Unset in a real deployment.
       AIZZAK_APPROLE_ROLE_ID: ${VAULT_ROLE_ID-}
+      # Capacity 5.7 -- the Transit key's declared rotation cycle. Vault
+      # rotates the key itself on this period; `app.ops.rotate_transit sweep`
+      # (run nightly by `ops-scheduler`) rewraps onto each new version and
+      # exits non-zero if the period is 0 or the newest version is older
+      # than it. bootstrap.sh says why 720h.
+      TRANSIT_AUTO_ROTATE_PERIOD: ${TRANSIT_AUTO_ROTATE_PERIOD:-720h}
     volumes:
       - ./deploy/vault/bootstrap.sh:/bootstrap.sh:ro
       - ./deploy/vault/app-policy.hcl:/app-policy.hcl:ro
@@ -2184,6 +2190,103 @@ services:
       - wal-archive:/var/lib/postgresql/wal-archive
     command: ["python", "-m", "app.ops.backup", "status"]
     restart: "no"
+
+  # ─────────────────────────── scheduled tasks ────────────────────────────
+  # Capacity step 5.7: «أدواتُ التشغيل تعمل من تلقائها». The runner the four
+  # ops tools never had -- backup (+ prune), retention, purge and the Transit
+  # rewrap -- each run nightly as `python -m <tool>`, the same command the
+  # runbook gives an operator, and each run recorded in the task ledger that
+  # `/metrics` reads (`app.ops.scheduler`'s docstring; 08 §4.23).
+  #
+  # ⚠️ STANDING, NOT A PROFILE, and that is the step's whole point: the
+  # `backup` one-shot above sits behind a profile precisely because it is an
+  # operator habit, and on 2026-09-30 the newest base backup it had ever taken
+  # was 26 days old. A scheduler that has to be remembered is not one.
+  #
+  # ⚠️ IT HOLDS FOUR ROLES' DSNs, AND HANDS EACH CHILD EXACTLY ONE. Every job
+  # is a subprocess, and `child_env` strips every `*DATABASE_URL` before
+  # adding the job's own under the name its tool reads -- so each process that
+  # opens a database connection still holds one role, the convention
+  # `08 §4.3` states. The container is where the four meet, the same way `app`
+  # already carries `app_rw` and `metrics_reader` side by side. And the three
+  # cross-tenant tools now check `current_user` themselves (`app.ops.
+  # role_guard`): a DSN wired to the wrong variable below refuses, it does not
+  # sweep an RLS-empty table "successfully" every night.
+  #
+  # `user: "999:999"` and the spool volume for the `backup` job alone: `full`
+  # ships the spool after the base backup, and deleting a shipped segment
+  # needs write permission on the directory `postgres` (uid 999) writes -- the
+  # reasoning on the two services above, unchanged. The other jobs are
+  # network clients and do not care which uid runs them.
+  ops-scheduler:
+    <<: [*app-image, *app-logging]
+    deploy:
+      resources:
+        limits:
+          # One job at a time, and the heaviest is `backup full` -- the
+          # `backup` service's own ceiling, for the same work.
+          cpus: "1.0"
+          memory: 1g
+    user: "999:999"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      redis-stream:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      vault-bootstrap:
+        condition: service_completed_successfully
+      minio-bootstrap:
+        condition: service_completed_successfully
+      wal-archive-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      # One DSN per job, each its own role. Through the pooler for the three
+      # sweeps (short transactions, the `app` shape); DIRECT to Postgres for
+      # the backup, which neither `pg_basebackup` nor `pg_dump` can do through
+      # it (the `backup` service's note above).
+      RETENTION_DATABASE_URL: postgresql+asyncpg://retention_sweeper:${RETENTION_SWEEPER_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      WORKSPACE_PURGER_DATABASE_URL: postgresql+asyncpg://workspace_purger:${WORKSPACE_PURGER_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      TRANSIT_ROTATOR_DATABASE_URL: postgresql+asyncpg://transit_rotator:${TRANSIT_ROTATOR_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
+      BACKUP_DATABASE_URL: postgresql://backup_operator:${BACKUP_OPERATOR_PASSWORD}@postgres:5432/${POSTGRES_DB:-aizzak}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-aizzak-backups}
+      BACKUP_SPOOL_DIR: /var/lib/postgresql/wal-archive
+      # The cycles (08 §4.23). A day each, anchored at 02:00 UTC; `0` switches
+      # one job off -- it is then armed with a cycle of 0 and nothing expects
+      # it (the `م-8` kill switch). `purge` refuses to run in a cycle whose
+      # `backup` has not succeeded, so switching the backup off stops purge
+      # too, loudly.
+      OPS_SCHEDULE_OFFSET_S: ${OPS_SCHEDULE_OFFSET_S:-7200}
+      OPS_BACKUP_INTERVAL_S: ${OPS_BACKUP_INTERVAL_S:-86400}
+      OPS_BACKUP_PRUNE_INTERVAL_S: ${OPS_BACKUP_PRUNE_INTERVAL_S:-86400}
+      OPS_RETENTION_INTERVAL_S: ${OPS_RETENTION_INTERVAL_S:-86400}
+      OPS_PURGE_INTERVAL_S: ${OPS_PURGE_INTERVAL_S:-86400}
+      OPS_ROTATE_TRANSIT_INTERVAL_S: ${OPS_ROTATE_TRANSIT_INTERVAL_S:-86400}
+      OPS_RETRY_AFTER_S: ${OPS_RETRY_AFTER_S:-3600}
+      OPS_MAX_ATTEMPTS_PER_CYCLE: ${OPS_MAX_ATTEMPTS_PER_CYCLE:-3}
+    volumes:
+      - wal-archive:/var/lib/postgresql/wal-archive
+    command: ["python", "-m", "app.ops.scheduler", "run"]
+    # A SIGTERM mid-job is forwarded to the child, which gets 20 s before
+    # SIGKILL, and the run is recorded as interrupted -- inside this window.
+    stop_grace_period: 45s
+    # ت-3: a loop with no listener. The beat says the LOOP is turning (it
+    # beats while a job runs, too); whether the jobs succeed is the ledger's
+    # question, and the two alerts' (`AizzakOpsTaskOverdue`).
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "ops-scheduler"]
+    restart: unless-stopped
 
   # ─────────────────────────────── edge ───────────────────────────────────
   # Local TLS material (7.3). Same one-shot pattern as the vault/minio

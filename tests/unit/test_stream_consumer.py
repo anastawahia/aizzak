@@ -274,6 +274,7 @@ def _consumer(
     sweep_interval_s: float = 0.0,
     stale_idle_ms: int = 0,
     dlq_watch_interval_s: float = 0.0,
+    dlq_watch_ledger: object | None = None,
     concurrency: int = 1,
     drain_timeout_s: float = 0.0,
 ) -> StreamConsumer:
@@ -287,6 +288,7 @@ def _consumer(
         sweep_interval_s=sweep_interval_s,
         stale_idle_ms=stale_idle_ms,
         dlq_watch_interval_s=dlq_watch_interval_s,
+        dlq_watch_ledger=dlq_watch_ledger,  # type: ignore[arg-type]
         concurrency=concurrency,
         drain_timeout_s=drain_timeout_s,
     )
@@ -1096,6 +1098,79 @@ async def test_the_loop_reports_a_backlog_on_its_very_first_pass(
 
     reported = [r for r in caplog.records if r.message == "dlq.backlog"]
     assert reported and reported[0].depth == 1  # type: ignore[attr-defined]
+
+
+class _WatchLedger:
+    """Collects what the DLQ watch's `TaskReport`s write (capacity 5.7)."""
+
+    def __init__(self) -> None:
+        self.armed: dict[str, float] = {}
+        self.outcomes: list[tuple[str, str | None]] = []
+
+    async def arm(self, task: str, *, interval_s: float, max_runtime_s: float, at: float) -> None:
+        self.armed[task] = max_runtime_s
+
+    async def record(self, task: str, **kwargs: object) -> None:
+        self.outcomes.append((task, kwargs["error"]))  # type: ignore[arg-type]
+
+
+async def test_each_watched_stream_gets_its_own_ledger_row() -> None:
+    """Per stream, so a replica watching `stream.knowledge` cannot cover for
+    another worker that stopped watching `stream.memory`. Armed when `run`
+    starts, with the allowance the worker declared for its slowest pass."""
+
+    class _Yielding(InMemoryStreamsConsumer):
+        # The loop must give the event loop a turn, or nothing else -- this
+        # test's own wait included -- ever runs (the first-pass test's fake).
+        async def read(self, **kwargs: object) -> list[StreamMessage]:
+            await asyncio.sleep(0.001)
+            return await super().read(**kwargs)  # type: ignore[arg-type]
+
+    fake = _Yielding()
+    ledger = _WatchLedger()
+    engine = StreamConsumer(
+        fake,  # type: ignore[arg-type]
+        consumer_name="test-consumer",
+        block_ms=1,
+        batch_count=10,
+        max_deliveries=5,
+        dlq_watch_interval_s=3600,
+        dlq_watch_ledger=ledger,  # type: ignore[arg-type]
+        dlq_watch_max_runtime_s=1_800.0,
+    )
+    task = asyncio.create_task(engine.run([_memory_sub()]))
+    try:
+        async with asyncio.timeout(5):
+            while not ledger.outcomes:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+
+    assert ledger.armed == {"dlq_watch:stream.memory": 1_800.0}
+    assert ledger.outcomes[0] == ("dlq_watch:stream.memory", None)
+
+
+async def test_a_failed_watch_is_recorded_as_a_failure_of_that_stream() -> None:
+    class _Exploding(InMemoryStreamsConsumer):
+        async def dlq_backlog(self, stream: str) -> DlqBacklog:
+            raise RuntimeError("redis is having a moment")
+
+    ledger = _WatchLedger()
+    engine = _consumer(_Exploding(), dlq_watch_interval_s=60, dlq_watch_ledger=ledger)
+    await engine._arm_dlq_reports([_memory_sub()])
+
+    assert await engine.watch_dlq([_memory_sub()]) == []
+    assert ledger.outcomes == [
+        ("dlq_watch:stream.memory", "RuntimeError: redis is having a moment")
+    ]
+
+
+async def test_without_a_ledger_nothing_is_armed_and_any_stream_name_is_fine() -> None:
+    """A test or the notify bridge builds this engine with no ledger, and
+    their streams need not be in the catalog at all."""
+    engine = _consumer(InMemoryStreamsConsumer(), dlq_watch_interval_s=60)
+    await engine._arm_dlq_reports([Subscription(stream="stream.test.x", group="g", handlers={})])
+    assert await engine.watch_dlq([]) == []
 
 
 async def test_deregister_removes_only_this_processs_own_entry() -> None:

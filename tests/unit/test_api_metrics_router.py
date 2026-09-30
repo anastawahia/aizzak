@@ -33,6 +33,11 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from app.api.metrics import (
     DLQ_DEPTH_METRIC,
+    OPS_TASK_ARMED_METRIC,
+    OPS_TASK_EXPECTED_METRIC,
+    OPS_TASK_LAST_FAILURE_METRIC,
+    OPS_TASK_LAST_SUCCESS_METRIC,
+    OPS_TASK_MAX_SUCCESS_AGE_METRIC,
     OUTBOX_AGE_METRIC,
     STREAM_LAG_METRIC,
     STREAM_LENGTH_METRIC,
@@ -43,6 +48,7 @@ from app.api.metrics import (
     metrics_router,
 )
 from app.framework.ports.metrics_source import StreamRetention
+from app.framework.ports.task_ledger import TaskRecord
 
 _NO_RETENTION = StreamRetention(
     lengths={}, backstop=None, oldest_unconsumed_age_s={}, unread_trimmed={}
@@ -60,6 +66,7 @@ class _FakeMetricsSource:
         dlq_depths: dict[str, int],
         stream_lag: dict[tuple[str, str], float] | None = None,
         stream_retention: StreamRetention = _NO_RETENTION,
+        scheduled_tasks: dict[str, TaskRecord] | None = None,
     ) -> None:
         self.outbox_age = outbox_age
         self.dlq_depths_value = dlq_depths
@@ -71,6 +78,9 @@ class _FakeMetricsSource:
         # Capacity 5.5 -- defaulted to "nothing published, no backstop" for the
         # same reason.
         self.stream_retention_value = stream_retention
+        # Capacity 5.7 -- defaulted to "no task in the catalog" for the same
+        # reason; the adapter itself always returns one record per task.
+        self.scheduled_tasks_value = scheduled_tasks or {}
 
     async def outbox_oldest_unpublished_age_seconds(self) -> float:
         return self.outbox_age
@@ -83,6 +93,9 @@ class _FakeMetricsSource:
 
     async def stream_retention(self) -> StreamRetention:
         return self.stream_retention_value
+
+    async def scheduled_tasks(self) -> dict[str, TaskRecord]:
+        return dict(self.scheduled_tasks_value)
 
 
 class _FakeVaultHealth:
@@ -306,3 +319,81 @@ def test_a_switched_off_backstop_is_absent_not_zero() -> None:
     names = _metric_names(body)
     assert STREAM_LENGTH_METRIC in names
     assert STREAM_MAXLEN_METRIC not in names
+
+
+# --------------------------------------------------------------------------
+# Capacity 5.7 -- the scheduled-task ledger.
+# --------------------------------------------------------------------------
+
+
+def _task_series(body: str, name: str) -> dict[str, float]:
+    return {
+        sample.labels["task"]: sample.value
+        for family in text_string_to_metric_families(body)
+        if family.name == name
+        for sample in family.samples
+    }
+
+
+def test_every_task_is_expected_and_each_timestamp_appears_only_once_it_happened() -> None:
+    """Three tasks in three states: one never armed, one armed and never run,
+    one that succeeded and then failed. ``expected`` names all three -- that
+    is what lets the never-armed rule see the first -- and every other gauge
+    names only the tasks for which its moment actually happened: a ``0``
+    would read as 1970, i.e. as the most overdue task there could be."""
+    records = {
+        "retention": TaskRecord(task="retention"),
+        "purge": TaskRecord(task="purge", interval_s=86_400.0, armed_at=1_000.0),
+        "backup": TaskRecord(
+            task="backup",
+            interval_s=86_400.0,
+            max_runtime_s=7_200.0,
+            armed_at=1_000.0,
+            last_success_at=2_000.0,
+            last_failure_at=3_000.0,
+        ),
+    }
+    source = _FakeMetricsSource(outbox_age=0.0, dlq_depths={}, scheduled_tasks=records)
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert _task_series(body, OPS_TASK_EXPECTED_METRIC) == {
+        "retention": 1.0,
+        "purge": 1.0,
+        "backup": 1.0,
+    }
+    assert _task_series(body, OPS_TASK_ARMED_METRIC) == {"purge": 1_000.0, "backup": 1_000.0}
+    assert _task_series(body, OPS_TASK_LAST_SUCCESS_METRIC) == {"backup": 2_000.0}
+    assert _task_series(body, OPS_TASK_LAST_FAILURE_METRIC) == {"backup": 3_000.0}
+    # Two cycles plus one run: 2 x 86,400 + 7,200.
+    assert _task_series(body, OPS_TASK_MAX_SUCCESS_AGE_METRIC) == {
+        "purge": 172_800.0,
+        "backup": 180_000.0,
+    }
+
+
+def test_a_switched_off_task_has_no_deadline() -> None:
+    """A cycle of 0 is the kill switch: armed, expected, and not late for
+    anything -- no deadline series, so the overdue rule cannot match it."""
+    records = {"purge": TaskRecord(task="purge", interval_s=0.0, armed_at=1_000.0)}
+    source = _FakeMetricsSource(outbox_age=0.0, dlq_depths={}, scheduled_tasks=records)
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert _task_series(body, OPS_TASK_ARMED_METRIC) == {"purge": 1_000.0}
+    assert _task_series(body, OPS_TASK_MAX_SUCCESS_AGE_METRIC) == {}
+
+
+def test_the_task_label_is_never_job() -> None:
+    """``job`` is the label Prometheus stamps with the SCRAPE job's name; an
+    exposed ``job`` would be renamed ``exported_job`` on ingestion and every
+    ``max by (job)`` in the rules would group by ``aizzak-app`` instead."""
+    records = {"retention": TaskRecord(task="retention", interval_s=60.0, armed_at=1.0)}
+    source = _FakeMetricsSource(outbox_age=0.0, dlq_depths={}, scheduled_tasks=records)
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    for family in text_string_to_metric_families(body):
+        if family.name.startswith("aizzak_ops_task_"):
+            for sample in family.samples:
+                assert set(sample.labels) == {"task"}, (family.name, sample.labels)

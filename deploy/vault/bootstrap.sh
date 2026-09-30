@@ -5,9 +5,11 @@
 # Enables KV v2 and Transit and seeds the secrets the app reads at startup.
 # Idempotent throughout: Vault now persists (`file` storage, not `-dev`), so
 # this script runs on EVERY `up` against SURVIVING state, not a wiped one --
-# re-running must be a no-op, not an error, and MUST NEVER destroy or rotate
-# the Transit key an earlier run already created (a regenerated key cannot
-# decrypt ciphertext produced under the old one -- `CipherRef`/INV-C2/INV-I1).
+# re-running must be a no-op, not an error, and MUST NEVER destroy or
+# regenerate the Transit key an earlier run already created (a regenerated key
+# cannot decrypt ciphertext produced under the old one -- `CipherRef`/INV-C2/
+# INV-I1). Since capacity 5.7 it DOES declare the key's rotation cycle, which
+# is a different thing entirely -- see the note on `auto_rotate_period` below.
 #
 # ⭐ `vault write -f transit/keys/tenant-secrets` on an ALREADY-EXISTING key
 # is safe by Vault's own design, not by an `|| true` guard here: measured
@@ -15,8 +17,9 @@
 # `latest_version` unchanged and a ciphertext produced before the re-run
 # still decrypted correctly afterward. Vault's "create key" endpoint is a
 # no-op when the name already exists; it does NOT rotate. Rotation is a
-# separate, unreachable call (`transit/keys/<name>/rotate`) that nothing in
-# this script or in `src/` ever makes.
+# separate call (`transit/keys/<name>/rotate`) that nothing in this script or
+# in `src/` ever makes -- since 5.7 Vault makes it itself, on the declared
+# cycle below.
 #
 # The values seeded here also live in .env (gitignored). That duplication is
 # the design's own model -- 08 §3 seeds Vault from the same values Compose
@@ -58,6 +61,32 @@ vault secrets enable transit 2>/dev/null || true
 # SEC-07: ONE Transit key for both tenant secret sites (credentials + the
 # integrations connectors), so they share a pattern and a rotation cycle.
 vault write -f transit/keys/tenant-secrets >/dev/null 2>&1 || true
+
+# ── The rotation cycle, declared (capacity 5.7) ─────────────────────────
+# 05 §3.2 promises "a single unified rotation cycle" for this key and never
+# says how long it is, and nothing ever turned it: MEASURED on 2026-09-30,
+# version 1 since 2026-07-26 with `auto_rotate_period` 0. A nightly rewrap
+# sweep next to a key that never moves succeeds every night and does nothing
+# -- the false reassurance 5.7 is written against.
+#
+# So the cycle is Vault's own property now: `auto_rotate_period` makes Vault
+# mint a new version by itself once the newest one is older than the period
+# (it checks about once an hour). This is NOT the destructive case the header
+# forbids: a new version is added to the keyring, every older one keeps
+# decrypting (`min_decryption_version` is never touched here or by the app --
+# retiring versions is irreversible and stays an operator step, 08 §4.5), and
+# the scheduled `app.ops.rotate_transit sweep` moves every stored ciphertext
+# onto the newest version within a day. The sweep also reads this period back
+# and exits non-zero if it is 0 or the newest version is older than it.
+#
+# 720h (30 days): short enough that the rotation path is exercised every
+# month rather than discovered broken in its first year, and nothing in this
+# platform's volume argues for longer -- a version is a few bytes in Vault's
+# keyring. Re-applied on every run, so an operator who changed it by hand gets
+# the declared value back; change it HERE (or TRANSIT_AUTO_ROTATE_PERIOD).
+# A key older than the new period rotates at Vault's next check.
+vault write transit/keys/tenant-secrets/config \
+    auto_rotate_period="${TRANSIT_AUTO_ROTATE_PERIOD:-720h}" >/dev/null
 
 echo "vault-bootstrap: seeding secrets (05 §3.1)"
 vault kv put secret/db \

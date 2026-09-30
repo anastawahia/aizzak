@@ -340,7 +340,11 @@ def test_the_patterns_actually_find_something() -> None:
     # where there were two, and the standing budget moved 34.00/56.38 ->
     # 34.25/56.50 (the Redis pair DIVIDED the old 2.0 vCPU / 5 GB row rather
     # than doubling it; the extra 0.25 vCPU / 128 MB is the second exporter).
-    assert len(standing) == 24, sorted(standing)
+    # 25 since capacity 5.7: `ops-scheduler` is standing on purpose (a
+    # nightly job that waits for someone to start its container is the gap
+    # 5.7 closes), at the `backup` service's own 1.0 vCPU / 1 GB -> 35.25/57.50,
+    # a tenth of a GB under the 57.60 this ledger allows.
+    assert len(standing) == 25, sorted(standing)
     assert len(oneshot) == 5, sorted(oneshot)
     assert len(profiled) == 3, sorted(profiled)
     assert _to_bytes("512m") == 512 * 1024**2
