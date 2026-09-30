@@ -260,9 +260,21 @@ def _app_rw_grants() -> tuple[str, ...]:
 APP_RW_GRANTS: tuple[str, ...] = _app_rw_grants()
 
 # The mirror image of app_rw's INSERT-only outbox grant (5.1-ب).
+#
+# Capacity 5.6 adds a READ of the consumer ledger, for `python -m
+# app.ops.replay` -- which runs as this role because replaying is this role's
+# own job done again: taking published rows of `platform.outbox` and putting
+# them back on their streams. The tool asks the ledger which rows every
+# durable group has already claimed, so it can leave them alone. SELECT only:
+# never INSERT (the relay must not be able to mark an event processed and so
+# hide it from its consumer) and never DELETE (it must not be able to un-claim
+# one either). Nothing is widened that matters: this role can already force a
+# replay of ANY row by setting `published_at` back to NULL, and already reads
+# every payload -- the ledger holds two ids and a timestamp per row.
 OUTBOX_RELAY_GRANTS: tuple[str, ...] = (
     f"GRANT USAGE ON SCHEMA platform TO {RELAY_ROLE}",
     f"GRANT SELECT, UPDATE ON platform.outbox TO {RELAY_ROLE}",
+    f"GRANT SELECT ON platform.processed_events TO {RELAY_ROLE}",
 )
 
 # P1-5's retention role (docs/p1-hardening-plan.md §3 step 8, `app.ops.

@@ -117,6 +117,18 @@ def test_relay_holds_the_mirror_image_on_the_outbox() -> None:
     assert "INSERT" not in outbox[0], "the relay must not be able to produce events"
 
 
+def test_relay_reads_the_ledger_and_can_neither_claim_nor_unclaim() -> None:
+    """Capacity 5.6: `app.ops.replay` runs as the relay and asks the ledger
+    what every durable group already claimed. SELECT is all it needs. An
+    INSERT would let the relay mark an event processed before its consumer saw
+    it; a DELETE would let it un-claim one and revive a duplicate effect."""
+    ledger = [s for s in OUTBOX_RELAY_GRANTS if " ON platform.processed_events TO " in s]
+    assert len(ledger) == 1
+    assert "SELECT" in ledger[0]
+    for verb in ("INSERT", "UPDATE", "DELETE"):
+        assert verb not in ledger[0], f"outbox_relay must not {verb} platform.processed_events"
+
+
 def test_retention_sweeper_gets_select_and_delete_never_insert_or_update() -> None:
     """P1-5 (docs/p1-hardening-plan.md §3 step 8): the retention role must be
     able to shrink the three unbounded ledgers and nothing else -- never able

@@ -21,10 +21,14 @@
 #                         workspace. FORCE ROW LEVEL SECURITY means even the
 #                         owner would be subject to policy, but app_rw not
 #                         owning the tables is the belt to that suspenders.
-#   outbox_relay       -- SELECT/UPDATE on platform.outbox and nothing else,
-#                         the mirror image of app_rw's INSERT-only grant
-#                         there. A producer that could UPDATE published_at
-#                         could make an event vanish unpublished (D-18).
+#   outbox_relay       -- SELECT/UPDATE on platform.outbox, the mirror
+#                         image of app_rw's INSERT-only grant there. A
+#                         producer that could UPDATE published_at could make
+#                         an event vanish unpublished (D-18). Plus SELECT on
+#                         platform.processed_events since capacity 5.6: the
+#                         replay tool (`python -m app.ops.replay`) runs as
+#                         this role and reads which events are already
+#                         claimed. Never INSERT/DELETE there.
 #   retention_sweeper  -- SELECT/DELETE on the three unbounded platform
 #                         ledgers (outbox, processed_events, idempotency_keys)
 #                         and nothing else -- the age-based retention sweep

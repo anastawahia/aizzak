@@ -28,6 +28,9 @@ independent sources of truth instead.
 3. `test_no_binding_group_is_a_per_process_notify_group` -- no group starts
    with `cg.notify`, the family `topology.py`'s docstring (part (b)) explains
    is deliberately absent.
+4. `test_each_bindings_event_types_are_exactly_the_types_its_worker_handles`
+   (capacity 5.6) -- each binding's `event_types` equals the handler map its
+   worker builder constructs, the half of the topology the replay tool reads.
 
 Guard-the-guard (3.69's lesson, restated in `test_deploy_worker_default.py`):
 a set-equality check silently passes if BOTH sides are empty, and an empty
@@ -44,6 +47,7 @@ from app.framework.events.topology import (
     STATIC_CONSUMER_TOPOLOGY,
     ConsumerBinding,
 )
+from app.infrastructure.messaging.consumers.engine import Subscription
 from app.infrastructure.monitoring.metrics_source import DLQ_SOURCE_STREAMS
 from app.modules.files.application.event_mapping import STREAM as _FILES_STREAM
 from app.modules.knowledge.application.event_mapping import STREAM as _KNOWLEDGE_STREAM
@@ -62,9 +66,9 @@ class _Unused:
     repository/outbox/unit-of-work/ledger/client parameter below."""
 
 
-def _built_pairs() -> frozenset[tuple[str, str]]:
-    """The `(stream, group)` pairs the three worker composition roots in
-    `workers/bootstrap.py` actually build their `Subscription`s with."""
+def _built_subscriptions() -> tuple[Subscription, ...]:
+    """The `Subscription`s the three worker composition roots in
+    `workers/bootstrap.py` actually build."""
     placeholder = _Unused()
 
     _, knowledge_subscriptions = build_knowledge_worker(
@@ -110,8 +114,12 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
         batch_count=10,
         max_deliveries=5,
     )
-    all_subscriptions = (*knowledge_subscriptions, *media_subscriptions, *memory_subscriptions)
-    return frozenset((s.stream, s.group) for s in all_subscriptions)
+    return (*knowledge_subscriptions, *media_subscriptions, *memory_subscriptions)
+
+
+def _built_pairs() -> frozenset[tuple[str, str]]:
+    """The `(stream, group)` pairs of `_built_subscriptions`."""
+    return frozenset((s.stream, s.group) for s in _built_subscriptions())
 
 
 def test_table_has_exactly_the_three_pairs_named_by_the_plan() -> None:
@@ -158,6 +166,25 @@ def test_table_matches_exactly_what_the_three_workers_build_no_more_no_less() ->
         "build_knowledge_worker/build_media_worker/build_memory_worker actually build "
         f"{sorted(built)} -- missing from the table: {sorted(built - table)}, "
         f"extra in the table: {sorted(table - built)}"
+    )
+
+
+def test_each_bindings_event_types_are_exactly_the_types_its_worker_handles() -> None:
+    """Capacity 5.6 (`topology.py`'s docstring, part (d)): the replay tool
+    reads `event_types` to decide whether a durable group still owes a
+    published row an effect. A type missing here would make the tool call a
+    lost event "no durable reader" and never replay it; an extra one would
+    make it replay, on every run, an event no handler will ever claim.
+
+    Compared as a whole mapping rather than type by type, so the failure
+    names the group and both sets. Anchored on non-emptiness first (the 3.69
+    lesson): two empty sets are equal and would guard nothing."""
+    built = {(s.stream, s.group): frozenset(s.handlers) for s in _built_subscriptions()}
+    table = {(b.stream, b.group): b.event_types for b in STATIC_CONSUMER_TOPOLOGY}
+    assert all(types for types in table.values()), f"a binding with no event types: {table}"
+    assert table == built, (
+        f"STATIC_CONSUMER_TOPOLOGY's event_types {table} do not match the handler maps "
+        f"the three worker builders construct {built}"
     )
 
 

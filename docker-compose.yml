@@ -2059,8 +2059,11 @@ services:
       # because `worker` sits behind a disabled profile.
     environment:
       <<: *app-env
-      # The relay's OWN role: SELECT/UPDATE on platform.outbox and nothing
-      # else -- the mirror image of app_rw's INSERT-only grant there.
+      # The relay's OWN role: SELECT/UPDATE on platform.outbox -- the mirror
+      # image of app_rw's INSERT-only grant there -- plus a read of
+      # platform.processed_events for the replay tool (capacity 5.6), which
+      # is run in THIS container: `docker compose exec outbox-relay python -m
+      # app.ops.replay plan --since 2h` (08 §4.22).
       DATABASE_URL: postgresql+asyncpg://outbox_relay:${OUTBOX_RELAY_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
     command: ["python", "-m", "app.workers.outbox_relay"]
     deploy:

@@ -60,6 +60,19 @@ tripping contract 6 either). Step 3 of the plan above is what makes
 created at the stream's tail in time to see everything published from then
 on (`redis_streams.py`'s `xgroup_create(..., id="$", mkstream=True)`, §1-ب
 of the plan — unchanged by this step).
+
+**(d) Capacity 5.6 added `event_types`, and a second reader.** The replay
+tool (`app.ops.replay`) has to answer, per published outbox row, "does a
+durable group still owe this event an effect?" — and that question has two
+halves this table did not hold: WHICH group reads the row's stream (it did),
+and whether that group has a handler for the row's TYPE at all (it did not).
+A type no handler claims is ack-skipped by the engine and never enters
+`platform.processed_events`, so without the second half every
+notification-only event (`knowledge.document.indexed.v1` and friends) would
+look forever unprocessed and be re-published on every replay. The set is
+written out for reason (a) above, and guarded the same way:
+`tests/unit/test_stream_topology.py` compares it, group by group, with the
+handler maps the three worker builders actually construct.
 """
 
 from __future__ import annotations
@@ -69,10 +82,19 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ConsumerBinding:
-    """One `(stream, group)` pair from the static topology below."""
+    """One `(stream, group)` pair from the static topology below.
+
+    ``event_types`` are the types the group has a handler for -- each of which
+    claims ``(group, event_id)`` in ``platform.processed_events`` when it acts
+    (5.2-أ). Empty by default because the only reader that needs it is the
+    replay tool (docstring part (d)); a binding built just to provision a group
+    has no use for it, and the drift test keeps the production table from
+    leaving it empty.
+    """
 
     stream: str
     group: str
+    event_types: frozenset[str] = frozenset()
 
 
 # The pairs §1-ج's table names, written literally for the reason (a) above
@@ -89,9 +111,30 @@ class ConsumerBinding:
 # is still published to -- `XADD` needs no group -- it simply has no reader
 # in this deployment.
 STATIC_CONSUMER_TOPOLOGY: tuple[ConsumerBinding, ...] = (
-    ConsumerBinding(stream="stream.knowledge", group="cg.knowledge"),
-    ConsumerBinding(stream="stream.media", group="cg.media"),
-    ConsumerBinding(stream="stream.memory", group="cg.memory"),
+    ConsumerBinding(
+        stream="stream.knowledge",
+        group="cg.knowledge",
+        # `document.indexed`/`indexing_failed` are NOT here: they travel on the
+        # same stream, but only the per-process notify family reads them.
+        event_types=frozenset(
+            {
+                "knowledge.document.registered.v1",
+                "knowledge.summary.requested.v1",
+                "knowledge.summary.built.v1",
+                "knowledge.summary.build_failed.v1",
+            }
+        ),
+    ),
+    ConsumerBinding(
+        stream="stream.media",
+        group="cg.media",
+        event_types=frozenset({"media.job.requested.v1"}),
+    ),
+    ConsumerBinding(
+        stream="stream.memory",
+        group="cg.memory",
+        event_types=frozenset({"memory.item.stored.v1"}),
+    ),
 )
 
 # Every stream the relay publishes to -- the set capacity 5.5's trimmer
