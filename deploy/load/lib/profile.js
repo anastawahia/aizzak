@@ -491,6 +491,31 @@ export function buildStepOptions({ plan, wsPeak }) {
   };
 }
 
+// ── The BACKLOG profile (capacity 5.5's live acceptance, `08 §4.21`) ──────
+// §0's index arrival rate and nothing else: the criterion stops one worker
+// under 100 jobs a minute, and every other scenario would be load on the API
+// it does not name. The jobs are not awaited (`scenarios/index_backlog.js`),
+// so a VU is free again in well under a second -- 10 pre-allocated cover the
+// rate many times over, and `maxVUs` is there for a slow edge, not a plan.
+//
+// One gate, the error budget: a run that refused its own arrivals did not
+// offer the load the criterion names. Latency is reported and not gated --
+// this profile measures what reaches the queue, not how fast.
+export function buildBacklogOptions({ durationS }) {
+  return {
+    ...TLS_GLOBAL_OPTIONS,
+    summaryTrendStats: TREND_STATS,
+    scenarios: {
+      backlog: arrival('indexBacklog', INDEX_STARTS_PER_S, `${durationS}s`, 10, 100),
+    },
+    thresholds: {
+      aizzak_failed_requests: ['rate<0.001'],
+      'http_req_duration{op:write}': ['p(99)>=0'],
+      'http_req_duration{op:upload}': ['p(99)>=0'],
+    },
+  };
+}
+
 export function scaleFor(profile) {
   return profile === 'peak' ? 1 : 1 / PEAK_FACTOR;
 }

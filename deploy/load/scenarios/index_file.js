@@ -50,56 +50,8 @@ export function indexFile() {
   if (body === null) body = buildDocument();
   const tok = uploadTokenForVu();
   const startedAt = Date.now();
-  const name = `load-${__VU}-${__ITER}-${startedAt}.txt`;
-
-  // 1) register
-  const reg = http.post(
-    `${API}/files`,
-    JSON.stringify({
-      space_id: tok.uploadSpaceId,
-      name,
-      content_type: 'text/plain',
-      size_bytes: body.length,
-    }),
-    { headers: authHeaders(tok), tags: { op: 'write', route: 'register_file' } },
-  );
-  if (!graded(reg, 'register_file', [201])) return;
-  const fileId = reg.json('file_id');
-  const uploadUrl = reg.json('upload_url');
-
-  // 2) PUT the bytes. This one request does NOT cross nginx: the presigned
-  // URL is signed against `MINIO_PUBLIC_ENDPOINT` (SigV4 covers the host, so
-  // it cannot be proxied), which is also how a browser uploads in production.
-  // Condition (٢) of §0.1 is about the API path, and this is not it.
-  //
-  // What the generator CAN change is the address it dials, while sending the
-  // host the URL was signed against -- `uploadTarget()` in `lib/config.js`
-  // explains why that is necessary from inside a container and why it leaves
-  // the platform untouched.
-  const target = uploadTarget(uploadUrl);
-  const put = http.put(target.url, body, {
-    headers: { 'Content-Type': 'text/plain', ...target.headers },
-    tags: { op: 'upload', route: 'minio_put' },
-  });
-  if (!graded(put, 'minio_put', [200])) return;
-
-  // 3) complete -- `checksum: null` is the contract's own honest answer for a
-  // client that did not hash its upload.
-  const done = http.post(`${API}/files/${fileId}/complete`, JSON.stringify({ checksum: null }), {
-    headers: authHeaders(tok),
-    tags: { op: 'write', route: 'complete_file' },
-  });
-  if (!graded(done, 'complete_file', [200])) return;
-
-  // 4) index -- the ONLY way anything is ever indexed. `Idempotency-Key`
-  // because a retried POST buys a second document and the same embeddings
-  // twice, which under load is a self-inflicted amplification.
-  const idx = http.post(`${API}/knowledge/documents`, JSON.stringify({ file_id: fileId }), {
-    headers: authHeaders(tok, { 'Idempotency-Key': `load-${fileId}` }),
-    tags: { op: 'write', route: 'index_file' },
-  });
-  if (!graded(idx, 'index_file', [202])) return;
-  const documentId = idx.json('id');
+  const documentId = submitIndexJob(tok, body, `load-${__VU}-${__ITER}-${startedAt}.txt`);
+  if (documentId === null) return;
 
   // 5) wait for the worker
   const deadline = Date.now() + INDEX_TIMEOUT_S * 1000;
@@ -130,6 +82,70 @@ export function indexFile() {
       return;
     }
   }
+}
+
+// One job's four calls, up to the queue's door: register, PUT, complete,
+// index. Shared with `index_backlog.js`, which stops here. Answers the
+// document id, or null when a call was refused -- already counted by `graded`.
+export function submitIndexJob(tok, body, name) {
+  // 1) register. The size is the BYTES the PUT sends: `body.length` counts
+  // UTF-16 units, and declared every Arabic character at half its size.
+  const reg = http.post(
+    `${API}/files`,
+    JSON.stringify({
+      space_id: tok.uploadSpaceId,
+      name,
+      content_type: 'text/plain',
+      size_bytes: utf8Bytes(body),
+    }),
+    { headers: authHeaders(tok), tags: { op: 'write', route: 'register_file' } },
+  );
+  if (!graded(reg, 'register_file', [201])) return null;
+  const fileId = reg.json('file_id');
+  const uploadUrl = reg.json('upload_url');
+
+  // 2) PUT the bytes. This one request does NOT cross nginx: the presigned
+  // URL is signed against `MINIO_PUBLIC_ENDPOINT` (SigV4 covers the host, so
+  // it cannot be proxied), which is also how a browser uploads in production.
+  // Condition (٢) of §0.1 is about the API path, and this is not it.
+  //
+  // What the generator CAN change is the address it dials, while sending the
+  // host the URL was signed against -- `uploadTarget()` in `lib/config.js`
+  // explains why that is necessary from inside a container and why it leaves
+  // the platform untouched.
+  const target = uploadTarget(uploadUrl);
+  const put = http.put(target.url, body, {
+    headers: { 'Content-Type': 'text/plain', ...target.headers },
+    tags: { op: 'upload', route: 'minio_put' },
+  });
+  if (!graded(put, 'minio_put', [200])) return null;
+
+  // 3) complete -- `checksum: null` is the contract's own honest answer for a
+  // client that did not hash its upload.
+  const done = http.post(`${API}/files/${fileId}/complete`, JSON.stringify({ checksum: null }), {
+    headers: authHeaders(tok),
+    tags: { op: 'write', route: 'complete_file' },
+  });
+  if (!graded(done, 'complete_file', [200])) return null;
+
+  // 4) index -- the ONLY way anything is ever indexed. `Idempotency-Key`
+  // because a retried POST buys a second document and the same embeddings
+  // twice, which under load is a self-inflicted amplification.
+  const idx = http.post(`${API}/knowledge/documents`, JSON.stringify({ file_id: fileId }), {
+    headers: authHeaders(tok, { 'Idempotency-Key': `load-${fileId}` }),
+    tags: { op: 'write', route: 'index_file' },
+  });
+  if (!graded(idx, 'index_file', [202])) return null;
+  return idx.json('id');
+}
+
+function utf8Bytes(s) {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
 }
 
 function buildDocument() {

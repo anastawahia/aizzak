@@ -30,6 +30,12 @@ export const indexEndToEnd = new Trend('aizzak_index_e2e_ms', true);
 // ~all of steps 125-175's 61/70/80 errors were index timeouts, against one
 // failed check in 197,584 -- a worker backlog, read as a failing API.
 export const indexTimeouts = new Rate('aizzak_index_timeouts');
+// Index requests the platform ACCEPTED (202): each one is a document and one
+// `knowledge.document.registered` event in the outbox. `backlog.js` reports
+// it so capacity 5.5's per-message verdict (`08 §4.21`) has a third number to
+// agree with -- what the generator was told, what the outbox holds, and what
+// the worker recorded.
+export const indexJobsAccepted = new Counter('aizzak_index_jobs_accepted');
 export const wsHoldSeconds = new Trend('aizzak_ws_hold_seconds');
 export const wsFrames = new Counter('aizzak_ws_frames');
 

@@ -87,7 +87,7 @@ export function tokenForVu() {
 // `SharedArray` exists to prevent.
 let uploaders = null;
 
-export function uploadTokenForVu() {
+function uploaderIndices() {
   if (uploaders === null) {
     uploaders = [];
     for (let i = 0; i < pool.length; i++) if (pool[i].uploadSpaceId) uploaders.push(i);
@@ -95,7 +95,29 @@ export function uploadTokenForVu() {
   if (uploaders.length === 0) {
     throw new Error('no pool entry has an upload_space_id; run `mint_load_tokens refresh`.');
   }
-  return pool[uploaders[(__VU - 1) % uploaders.length]];
+  return uploaders;
+}
+
+export function uploadTokenForVu() {
+  const idx = uploaderIndices();
+  return pool[idx[(__VU - 1) % idx.length]];
+}
+
+// The same entries, round-robin over the ITERATION instead of the VU -- for a
+// profile that does not wait on its jobs (`scenarios/index_backlog.js`). A job
+// that ends at its index request holds a VU for well under a second, so k6
+// serves 100 arrivals a minute from one or two VUs, and a VU-bound token would
+// put nearly every job on one or two users: past 1.3's heavy-job ceiling
+// (30 a minute per user) within the first minute, and past their upload
+// space's file room within the run. Per iteration, 2,000 jobs over 500
+// entries is four each.
+export function uploadTokenForIteration(i) {
+  const idx = uploaderIndices();
+  return pool[idx[i % idx.length]];
+}
+
+export function uploaderCount() {
+  return uploaderIndices().length;
 }
 
 // For a VU that holds several sockets (`ws_hold.js`): socket `slot` of

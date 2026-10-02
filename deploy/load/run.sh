@@ -6,6 +6,7 @@
 #   deploy/load/run.sh peak
 #   deploy/load/run.sh average
 #   deploy/load/run.sh step
+#   deploy/load/run.sh backlog   (capacity 5.5's load; 08 §4.21 stops the worker around it)
 #
 # Environment the OPERATOR must supply (there are no defaults, on purpose --
 # see `lib/config.js` on why an unstated seed makes two runs incomparable):
@@ -24,9 +25,9 @@ set -euo pipefail
 
 profile="${1:-peak}"
 case "$profile" in
-  peak | average | step) ;;
+  peak | average | step | backlog) ;;
   *)
-    echo "usage: $0 {peak|average|step}" >&2
+    echo "usage: $0 {peak|average|step|backlog}" >&2
     exit 2
     ;;
 esac

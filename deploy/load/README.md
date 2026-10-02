@@ -57,6 +57,29 @@ step below it, dropped nothing and stayed inside the 0.1 % error budget — and
 decide neither (§6). Drops above the knee are the finding, so for this
 profile `validity.rate_delivered` is judged on the lowest step only.
 
+**And one profile outside that mix: `backlog.js`**, the load of capacity
+5.5's live acceptance (`08 §4.21`) — §0's 100 index jobs a minute for 20
+minutes (`LOAD_DURATION_S`), and nothing else. The runbook stops
+`worker-knowledge` around it; the profile only offers the arrivals. Its
+scenario (`scenarios/index_backlog.js`) differs from `index` in three ways,
+each for a reason:
+
+* **It stops at the 202.** `index` polls every job until the worker answers,
+  and with the worker stopped none ever does — a VU parked on every arrival.
+  The verdict is per message, in SQL, after the worker catches up.
+* **Its document is two lines, one chunk** (`index`'s is ~40 KB, 37 chunks).
+  Loss does not depend on size, and the backlog must drain before the verdict
+  can be read: 2,000 big documents are three to four hours at 8–10 a minute.
+* **The token is chosen per job, not per VU.** A job that ends at its 202
+  holds a VU for a fraction of a second, so a few VUs serve every arrival,
+  and a VU-bound token would put the run on two users — past 1.3's 30
+  heavy jobs a minute in the first minute. `setup()` refuses a pool too small
+  to stay under that and under the 100 files of room each upload space keeps.
+
+Its result adds a `backlog` block: `offered`, `accepted` (each 202 is one
+`knowledge.document.registered` event — the number the SQL verdict must find
+twice) and `dropped`.
+
 ---
 
 ## 2. The token pool — condition (1)
@@ -243,6 +266,7 @@ and the file says so in a field rather than in a memory.
 deploy/load/smoke.sh          # ~30 s   (the harness itself, §2)
 deploy/load/run.sh peak       # 30 min  (§7 item 1)
 deploy/load/run.sh average    # 8 hours (§7 item 2)
+deploy/load/run.sh backlog    # 20 min  (capacity 5.5 — `08 §4.21` stops the worker around it)
 ```
 
 **k6 does not have to be installed.** It is a Go binary, not something this
