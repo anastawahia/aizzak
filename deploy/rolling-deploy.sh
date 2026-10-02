@@ -39,7 +39,10 @@
 set -euo pipefail
 
 SERVICE="${SERVICE:-app}"
-PROJECT="${PROJECT:-$(basename "$(pwd)")}"
+# Ask Compose, don't guess: docker-compose.yml pins `name: aizzak`, and the
+# directory is `AIZZAK` -- basename(pwd) matched no container at all.
+PROJECT="${PROJECT:-$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -1)}"
+[ -n "$PROJECT" ] || { echo "ERROR: cannot resolve compose project name (set PROJECT=)" >&2; exit 2; }
 DRAIN_WINDOW_S="${DRAIN_WINDOW_S:-10}"
 DRAIN_GRACE_S="${DRAIN_GRACE_S:-2}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-120}"
