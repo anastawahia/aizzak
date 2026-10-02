@@ -63,6 +63,11 @@ from app.api.metrics import metrics_router
 from app.api.middleware.auth import ApiAuthenticator
 from app.api.middleware.inflight import InFlightLimitMiddleware
 from app.api.middleware.metrics import RedMetricsMiddleware
+from app.api.middleware.queue_backpressure import (
+    KNOWLEDGE_GROUP,
+    KNOWLEDGE_STREAM,
+    QueueBackpressure,
+)
 from app.api.middleware.rate_limit import ApiRateLimiter, HeavyJobRateLimiter
 from app.api.v1.dependencies import ApiServices, HttpAuthenticator
 from app.api.v1.dto.problem import ProblemDetails
@@ -691,6 +696,21 @@ def create_production_app() -> FastAPI:
         if root.settings.rate_limit.enabled
         else None
     )
+    # capacity-plan 5.3 -- the indexing queue's lag gate, over the SAME port
+    # that fills `aizzak_stream_queue_wait_seconds`, so the gate and the gauge read
+    # one number. Its own `0` switch (`QUEUE_LAG_CEILING_S`), not
+    # `API_RATE_LIMIT_ENABLED`: `RateLimitSettings` says why.
+    queue_backpressure = (
+        QueueBackpressure(
+            root.metrics_source,
+            stream=KNOWLEDGE_STREAM,
+            group=KNOWLEDGE_GROUP,
+            lag_ceiling_s=root.settings.rate_limit.queue_lag_ceiling_s,
+            retry_after_s=root.settings.rate_limit.queue_retry_after_s,
+        )
+        if root.settings.rate_limit.queue_lag_ceiling_s > 0
+        else None
+    )
     services = ApiServices(
         settings=root.settings,
         orchestrator=root.orchestrator,
@@ -729,6 +749,7 @@ def create_production_app() -> FastAPI:
         principal_cache=principal_cache,
         rate_limiter=rate_limiter,
         heavy_job_limiter=heavy_job_limiter,
+        queue_backpressure=queue_backpressure,
         authorization=root.authorization,
         idempotency=root.idempotency,
         # Narrowed to `ModelCatalog` at the boundary (see `ApiServices.models`):

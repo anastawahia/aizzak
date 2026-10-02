@@ -71,6 +71,7 @@ WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
 AUTH_PRINCIPAL_CACHE_METRIC = "aizzak_auth_principal_cache_total"
 API_RATE_LIMIT_METRIC = "aizzak_api_rate_limit_total"
 HEAVY_JOB_LIMIT_METRIC = "aizzak_heavy_job_limit_total"
+QUEUE_BACKPRESSURE_METRIC = "aizzak_queue_backpressure_total"
 VECTOR_CORPUS_METRIC = "aizzak_vector_corpus_total"
 EMBEDDING_CACHE_METRIC = "aizzak_embedding_cache_total"
 
@@ -196,6 +197,17 @@ heavy_job_limit_total = Counter(
     "ceiling that stopped being enforced looks, from every other metric, "
     "exactly like one nobody is reaching.",
     ["outcome"],
+)
+
+queue_backpressure_total = Counter(
+    QUEUE_BACKPRESSURE_METRIC,
+    "Queue admission decisions on the routes that put work on a stream, by "
+    "stream and outcome (capacity-plan 5.3). `refused` is a submission "
+    "answered 429 because the stream's group was already past its declared "
+    "lag ceiling -- work the platform declined rather than accepted and left "
+    "pending. `unavailable` is the fail-open path: the lag could not be read "
+    "and the submission was admitted unchecked.",
+    ["stream", "outcome"],
 )
 
 vector_corpus_total = Counter(

@@ -53,6 +53,17 @@ by construction rather than by coordination.
   unread entries are on their way to being deleted with no error, no alert and
   no log line anywhere.
 
+* ``stream_queue_wait_seconds`` — capacity 5.3: how long the OLDEST entry a
+  group has not yet been handed has been waiting, by Redis's own clock, for
+  every ``STATIC_CONSUMER_TOPOLOGY`` pair; ``0.0`` when nothing is waiting.
+  It is the number the indexing queue's admission gate reads, and it differs
+  from ``stream_lag_seconds`` exactly where a gate must not be wrong: after a
+  quiet spell, the first entry of a burst that lands while every handler is
+  busy puts ``stream_lag_seconds`` at the length of the QUIET SPELL (the gap
+  between that entry and the last one delivered), while this reads the
+  seconds it has actually waited. It also counts nothing in flight -- a
+  summary build pending for half an hour is work, not queue.
+
 * ``stream_retention`` — capacity 5.5 (``ح-17``): what each published stream
   holds and how far behind its slowest reader is, the numbers that watch the
   trim ``outbox-relay`` now performs (``infrastructure/messaging/
@@ -114,6 +125,8 @@ class MetricsSource(Protocol):
     async def dlq_depths(self) -> dict[str, int]: ...
 
     async def stream_lag_seconds(self) -> dict[tuple[str, str], float]: ...
+
+    async def stream_queue_wait_seconds(self) -> dict[tuple[str, str], float]: ...
 
     async def stream_retention(self) -> StreamRetention: ...
 

@@ -169,6 +169,20 @@ class SqlRedisMetricsSource:
                 lags[(binding.stream, binding.group)] = max(0.0, (head_ms - delivered_ms) / 1000)
         return lags
 
+    async def stream_queue_wait_seconds(self) -> dict[tuple[str, str], float]:
+        """Seconds the oldest undelivered entry of each bound group has
+        waited (``queue_wait_seconds`` below, once per binding).
+
+        Absent for a stream that does not exist yet or a group not created on
+        it -- the ``stream_lag_seconds`` rule, for the same reason.
+        """
+        waits: dict[tuple[str, str], float] = {}
+        for binding in STATIC_CONSUMER_TOPOLOGY:
+            wait = await queue_wait_seconds(self._redis, binding.stream, binding.group)
+            if wait is not None:
+                waits[(binding.stream, binding.group)] = wait
+        return waits
+
     async def stream_retention(self) -> StreamRetention:
         """Every ``PUBLISHED_STREAMS`` entry, one transactional snapshot
         each (``stream_retention.read_stream_snapshot``), folded into the
@@ -259,3 +273,41 @@ def _stream_id_ms(raw: object) -> float | None:
         return float(head)
     except ValueError:
         return None
+
+
+async def queue_wait_seconds(redis: Redis, stream: str, group: str) -> float | None:
+    """How long the oldest entry ``group`` has not yet been handed has waited
+    on ``stream``; ``0.0`` when nothing is waiting, ``None`` when the stream
+    or the group does not exist.
+
+    ``TIME`` and ``XINFO GROUPS`` in one ``MULTI``, then one ``XRANGE (cursor
+    COUNT 1``. The entry after the cursor carries its own millisecond
+    timestamp and ``TIME`` is the clock that minted it, so -- as in
+    ``stream_lag_seconds`` -- no clock of ours enters the subtraction. A
+    function over a client rather than a method so the live suite can prove it
+    on keys of its own instead of the platform's streams.
+    """
+    try:
+        async with redis.pipeline(transaction=True) as pipe:
+            pipe.time()
+            pipe.xinfo_groups(stream)
+            server_time, groups = await pipe.execute()
+    except ResponseError:
+        return None
+    cursor = next(
+        (
+            _as_text(_field(row, "last-delivered-id"))
+            for row in groups
+            if _as_text(_field(row, "name")) == group
+        ),
+        None,
+    )
+    if cursor is None:
+        return None
+    seconds, micros = server_time
+    now_ms = int(seconds) * 1000 + int(micros) // 1000
+    rows = await redis.xrange(stream, min=f"({cursor}", max="+", count=1)
+    oldest_ms = _stream_id_ms(rows[0][0]) if rows else None
+    if oldest_ms is None:
+        return 0.0
+    return max(0.0, (now_ms - oldest_ms) / 1000)

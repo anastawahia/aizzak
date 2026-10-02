@@ -245,21 +245,21 @@
     </p>
     <div class="meta">
       <span><b>٥٢</b> خطوة في <b>٩</b> مراحل</span>
-      <span>آخر عمل: <b>٣٠ سبتمبر ٢٠٢٦</b></span>
+      <span>آخر عمل: <b>٢ أكتوبر ٢٠٢٦</b></span>
       <span>المصدر: <b>docs/capacity-plan.md</b></span>
     </div>
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="تسعٌ وعشرون خطوة مكتملة، خمس مبنية بانتظار قياس، ثماني عشرة لم تبدأ">
-      <span class="s-done" style="flex:29">٢٩ مكتملة</span>
-      <span class="s-partial" style="flex:5">٥</span>
-      <span class="s-pending" style="flex:18">١٨ لم تبدأ</span>
+    <div class="bar" role="img" aria-label="ثلاثون خطوة مكتملة، سبع مبنية بانتظار قياس، خمس عشرة لم تبدأ">
+      <span class="s-done" style="flex:30">٣٠ مكتملة</span>
+      <span class="s-partial" style="flex:7">٧</span>
+      <span class="s-pending" style="flex:15">١٥ لم تبدأ</span>
     </div>
     <div class="legend">
-      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٢٩</span>
-      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٥</span>
-      <span><i class="k-pending"></i>لم تبدأ — ١٨</span>
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٣٠</span>
+      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٧</span>
+      <span><i class="k-pending"></i>لم تبدأ — ١٥</span>
     </div>
   </section>
 
@@ -687,7 +687,7 @@
     <div class="wave-head">
       <span class="wave-num">المرحلة ٥</span>
       <h2>معالجة المهامّ في الخلفيّة</h2>
-      <span class="wave-score">٢ من ٧ مكتملة</span>
+      <span class="wave-score">٣ من ٧ مكتملة</span>
     </div>
     <p class="wave-note">الفهرسة اليوم ٨–١٠ مستندات في الدقيقة، والهدف ١٠٠. العامل صار يعالج عدّة مهامّ معاً، لكنّ القيد انتقل إلى خدمة تحليل النصوص ومعالج الجهاز.</p>
     <div class="steps">
@@ -707,9 +707,12 @@
         </dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٥٫٣</div><div class="step-body">
-        <div class="step-title"><h3>مضاعفة عمّال الفهرسة وإعلان الضغط</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>رفعُ العمّال من ٢ إلى ٤، وإعلانُ التأخّر للمستخدم بدل قبول عملٍ لن يُنجَز. تنتظر التنظيف الآمن (٥٫٥) وخادماً أكبر.</dd></div></dl>
+      <article class="step partial"><div class="step-id">٥٫٣</div><div class="step-body">
+        <div class="step-title"><h3>مضاعفة عمّال الفهرسة وإعلان الضغط</h3><span class="tag partial">مبنيّة · التوسيع والقياس على الإنتاج</span></div>
+        <dl>
+          <div class="line done-l"><dt>تمّ</dt><dd>إذا انتظرت أقدم مهمّة فهرسة أكثر من دقيقتين، يرفض النظام المهامّ الجديدة برسالةٍ صريحة («أعد المحاولة بعد ٣٠ ثانية») بدل قبول عملٍ لن يُنجَز في وقته. ولا يُحسب الرفض من رصيد المستخدم، ولا يتوقّف الرفع إن تعذّرت قراءة الطابور. وفي الطريق كُشف أنّ مقياس التأخّر القديم لا يصلح لهذا: بعد فترة هدوء كان سيقرأ طول الصمت لا طول الانتظار، فيرفض خطأً. فصار للانتظار الحقيقيّ مقياسٌ جديد، جُرِّب على Redis حقيقيّ. ونُشر على المنصّة في ٢ أكتوبر.</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>رفع العمّال من ٢ إلى ٤ مؤجَّلٌ بقرار المالك: أربعُ نسخٍ تتجاوز ميزانيّة الذاكرة (٦١٫٥ من ٥٧٫٦ غيغابايت)، وذروة ذاكرة العامل وزمن المهمّة لم يُقاسا. يُقاس الثلاثة ومعيار القبول (١٠٠ مهمّة في الدقيقة) على خادم الإنتاج.</dd></div>
+        </dl>
       </div></article>
 
       <article class="step done"><div class="step-id">٥٫٤</div><div class="step-body">
@@ -720,11 +723,12 @@
         </dl>
       </div></article>
 
-      <article class="step partial"><div class="step-id">٥٫٥</div><div class="step-body">
-        <div class="step-title"><h3>تنظيفٌ آمن للطوابير</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
+      <article class="step done"><div class="step-id">٥٫٥</div><div class="step-body">
+        <div class="step-title"><h3>تنظيفٌ آمن للطوابير</h3><span class="tag done">مكتملة</span></div>
         <dl>
           <div class="line done-l"><dt>تمّ</dt><dd>التنظيف صار يحذف فقط ما قرأه <b>كلّ</b> القرّاء، حتّى لو كان أحدهم عاملاً متوقّفاً. والحدّ القديم بقي احتياطاً لا يعمل إلّا بعد ساعاتٍ من التوقّف، وقبله تنبيهٌ عند ٧٠٪. وصار فقدُ أيّ رسالةٍ رقماً يُرى وتنبيهاً، بعد أن كان صامتاً. وجُرِّب على Redis حقيقيّ: الطريقة القديمة فقدت رسائل، والجديدة لم تفقد شيئاً.</dd></div>
-          <div class="line rest"><dt>متبقٍّ</dt><dd>التجربة الحيّة على المنصّة نفسها (إيقاف عامل الفهرسة ٢٠ دقيقة تحت ١٠٠ مهمّة في الدقيقة) لم تُجرَ بعد، والإصدار الجديد لم يُنشَر عليها. أمّا مجموعة القراءة المهجورة على طابور الملفّات، التي كانت ستمنع تنظيفه، فحُذفت في ٣٠ سبتمبر بقرار المالك.</dd></div>
+          <div class="line done-l"><dt>قيس</dt><dd>في ٢ أكتوبر على المنصّة نفسها: أُوقف عامل الفهرسة ٢٠ دقيقة تحت ١٠٠ مهمّة في الدقيقة، ثمّ أُعيد. وصلت الرسائل كلّها — ٢٬٠٠٢ من ٢٬٠٠٢ — وفرغ الطابور في نحو ٩٠ ثانية.</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>لا شيء.</dd></div>
         </dl>
       </div></article>
 
@@ -740,7 +744,7 @@
         <div class="step-title"><h3>جدولة أدوات الصيانة</h3><span class="tag partial">مبنيّة · تنتظر القياس</span></div>
         <dl>
           <div class="line done-l"><dt>تمّ</dt><dd>خدمةٌ جديدة تشغّل كلّ ليلة النسخَ الاحتياطيّ وتنظيفَه، وحذفَ السجلّات القديمة، وتطهيرَ حسابات المحذوفين (بعد نسخةٍ احتياطيّةٍ ناجحة فقط)، وإعادةَ تشفير الأسرار. وكلّ مهمّةٍ دوريّةٍ — عشرُ مهامّ — صارت تسجّل متى نجحت آخرَ مرّة، ويُنبَّه إذا فاتتها دورتان أو لم تبدأ أصلاً. وثلاث أدوات صارت ترفض أن تعمل بصلاحيّةٍ خاطئة، لأنّها كانت «تنجح» عندها دون أن تفعل شيئاً.</dd></div>
-          <div class="line rest"><dt>متبقٍّ</dt><dd>النشر على المنصّة (قرار المالك)، ثمّ أسبوعٌ كامل دون تدخّلٍ يدويّ هو شرط القبول.</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>نُشرت على المنصّة في ٢ أكتوبر، ونجحت أوّل دورةٍ ليليّة بمهامّها العشر. وشرط القبول أسبوعٌ كامل دون تدخّلٍ يدويّ، يُعدّ حتّى ٩ أكتوبر.</dd></div>
         </dl>
       </div></article>
     </div>
@@ -885,7 +889,7 @@
   </section>
 
   <p class="foot">
-    مبنيّ من <code>docs/capacity-plan.md</code> و<code>docs/capacity-status.md</code> و<code>docs/capacity-baseline.md</code> · فرع <code>capacity</code> · آخر تحديث ٢٨ سبتمبر ٢٠٢٦ (بعد ٥٫٤ وتشغيلات الحمل).
+    مبنيّ من <code>docs/capacity-plan.md</code> و<code>docs/capacity-status.md</code> و<code>docs/capacity-baseline.md</code> · فرع <code>capacity</code> · آخر تحديث ٢ أكتوبر ٢٠٢٦ (بعد ٥٫٣ وقياس ٥٫٥ ونشر ٥٫٧).
     الأرقام والتفاصيل الكاملة لكلّ خطوة في وثيقة الحالة.
   </p>
 

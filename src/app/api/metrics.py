@@ -98,6 +98,7 @@ VAULT_AUTH_METRIC = "aizzak_vault_authenticated"
 # Wave 0 step 0.2 (`docs/capacity-plan.md`) -- the fourth live gauge, and the
 # first that carries two labels. Its own reasoning is in the port.
 STREAM_LAG_METRIC = "aizzak_stream_lag_seconds"
+STREAM_QUEUE_WAIT_METRIC = "aizzak_stream_queue_wait_seconds"
 # Capacity 5.5 (`ح-17`) -- the four numbers that watch the stream trim, all
 # from one `StreamRetention` reading (the port's docstring says what each one
 # answers). External state like the four above: every replica recomputes the
@@ -193,6 +194,19 @@ async def metrics(request: Request) -> Response:
     for (stream, group), lag in (await source.stream_lag_seconds()).items():
         stream_lag.add_metric([stream, group], lag)
     families.append(stream_lag)
+
+    # Capacity 5.3 -- the number the indexing queue's admission gate reads
+    # (`api/middleware/queue_backpressure.py`), so a 429 on the API can be
+    # read against the very value that caused it.
+    queue_wait = GaugeMetricFamily(
+        STREAM_QUEUE_WAIT_METRIC,
+        "Seconds the oldest entry a consumer group has not yet been handed has waited "
+        "(0 when nothing is waiting). In-flight work is not counted.",
+        labels=["stream", "group"],
+    )
+    for (stream, group), wait in (await source.stream_queue_wait_seconds()).items():
+        queue_wait.add_metric([stream, group], wait)
+    families.append(queue_wait)
 
     families.extend(_stream_retention_families(await source.stream_retention()))
     families.extend(_scheduled_task_families(await source.scheduled_tasks()))

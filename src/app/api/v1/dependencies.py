@@ -36,6 +36,7 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
+from app.api.middleware.queue_backpressure import QueueBackpressure
 from app.api.middleware.rate_limit import ApiRateLimiter, HeavyJobRateLimiter
 from app.framework.agent_runtime.registry import AgentRegistry
 from app.framework.auth.principal_cache import PrincipalCache
@@ -298,6 +299,11 @@ class ApiServices:
     # behave exactly as they did before 1.3, since a missing capacity control
     # costs throughput protection and nothing else.
     heavy_job_limiter: HeavyJobRateLimiter | None = None
+    # capacity-plan 5.3 -- the indexing queue's lag gate, consulted by
+    # `api/middleware/queue_backpressure.py` on the three knowledge 202s.
+    # `None` for a hermetic test app and for `QUEUE_LAG_CEILING_S=0`, and the
+    # routes then admit exactly as before -- a capacity control again.
+    queue_backpressure: QueueBackpressure | None = None
     # The D-16 routing table, read-only (02 §3.5.1). Typed as the NARROW
     # catalogue port and never as `ProviderResolver`: the resolver's
     # `ResolvedProvider` carries a decrypted `api_key`, so holding the wide

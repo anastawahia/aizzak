@@ -107,3 +107,23 @@ async def heavy_job(
     if limiter is None:
         return
     await limiter.check(user_id=principal.user_id)
+
+
+async def knowledge_queue_open(
+    principal: Annotated[Principal, Depends(current_principal)], services: Services
+) -> None:
+    """Capacity-plan 5.3: refuse a submission to ``stream.knowledge`` while
+    ``cg.knowledge`` is past its declared lag ceiling
+    (``api/middleware/queue_backpressure.py`` argues the policy).
+
+    Here rather than beside its policy because it hangs on the same doors as
+    ``heavy_job`` and BEFORE it: a submission the queue declines must not
+    spend the user's job budget. ``principal`` is taken only so the request
+    is authenticated first -- an anonymous caller hears 401, never a
+    statement about the platform's queue.
+    """
+    del principal
+    gate = services.queue_backpressure
+    if gate is None:
+        return
+    await gate.check()

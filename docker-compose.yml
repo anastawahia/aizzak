@@ -160,6 +160,14 @@ x-app-env: &app-env
   API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED:-true}
   WORKSPACE_RATE_PER_MIN: ${WORKSPACE_RATE_PER_MIN:-2400}
   MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-64}
+  # capacity-plan 5.3 -- the indexing queue's declared backpressure: past
+  # this many seconds of `cg.knowledge` lag, the three knowledge 202s answer
+  # 429 + `Retry-After` instead of accepting work that will not be done in
+  # time. 120 is 08 §4.0's two minutes. `0` builds no gate -- which is what
+  # 5.5's `backlog` run needs, since it pushes the lag past the ceiling ON
+  # PURPOSE (08 §4.21).
+  QUEUE_LAG_CEILING_S: ${QUEUE_LAG_CEILING_S:-120}
+  QUEUE_RETRY_AFTER_S: ${QUEUE_RETRY_AFTER_S:-30}
   # capacity-plan 4.3 -- how long a computed QUERY vector may be reused
   # (`CachingEmbeddingProvider`, wrapped around the embedding adapter by the
   # API's Composition Root and by nothing else). `0` builds no wrapper at all,
@@ -1945,6 +1953,22 @@ services:
     # is the answer to THAT, and ق-و's own criterion for buying it is an
     # indexing lag past two minutes with both replicas active; 08 §2 carries
     # the command that reads it.
+    #
+    # ⚠️ STILL TWO after capacity 5.3, which names four -- and deliberately.
+    # §3's arithmetic at the §0 target (100 jobs/min, p95 8 s, concurrency 4):
+    # (1.67 x 8) / (0.70 x 4) = 4.8, so four is the floor once the p95 is
+    # measured. Two things are not measured yet, and both belong to the
+    # PRODUCTION host rather than this one: that p95 (5.1 found the wall on a
+    # 10-vCPU machine is the embedding fleet, not this worker, at 52.7% of its
+    # share -- a count graded here would grade the host), and this worker's
+    # memory peak at four concurrent parses. The second is binding: two more
+    # replicas at 2g put the standing ledger at 61.50 GB against the 57.60 the
+    # reference host allows (08 §2-ز), and `test_resource_budget.py` refuses
+    # it. Lowering 2g to make the sum fit, unmeasured, is exactly what that
+    # ledger forbids. Owner's decision, 2026-10-02.
+    #
+    # What 5.3 DID ship here: the queue no longer starves in silence. Past the
+    # declared two minutes of lag the API answers 429 (`QUEUE_LAG_CEILING_S`).
     deploy:
       resources:
         limits:

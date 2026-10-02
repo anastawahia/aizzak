@@ -155,6 +155,9 @@ class _EnvSettings(BaseSettings):
     api_rate_limit_enabled: bool = Field(True, alias="API_RATE_LIMIT_ENABLED")
     workspace_rate_per_min: int = Field(2400, alias="WORKSPACE_RATE_PER_MIN", ge=1)
     max_in_flight_requests: int = Field(64, alias="MAX_IN_FLIGHT_REQUESTS", ge=0)
+    # capacity-plan 5.3. `0` builds no queue gate (the line above's shape).
+    queue_lag_ceiling_s: int = Field(120, alias="QUEUE_LAG_CEILING_S", ge=0)
+    queue_retry_after_s: int = Field(30, alias="QUEUE_RETRY_AFTER_S", ge=1)
 
     ollama_base_url: str = Field("http://ollama:11434", alias="OLLAMA_BASE_URL")
 
@@ -279,6 +282,8 @@ def load_settings() -> Settings:
             enabled=env.api_rate_limit_enabled,
             workspace_per_min=env.workspace_rate_per_min,
             max_in_flight=env.max_in_flight_requests,
+            queue_lag_ceiling_s=env.queue_lag_ceiling_s,
+            queue_retry_after_s=env.queue_retry_after_s,
         ),
         ollama=OllamaSettings(base_url=env.ollama_base_url),
         embedding_service=EmbeddingServiceSettings(

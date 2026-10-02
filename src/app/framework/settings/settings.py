@@ -305,6 +305,19 @@ class RateLimitSettings(BaseModel):
     enabled: bool = True
     workspace_per_min: int = 2400
     max_in_flight: int = 64
+    # capacity-plan 5.3 -- the indexing queue's declared backpressure
+    # (`api/middleware/queue_backpressure.py`). Once the oldest entry
+    # `cg.knowledge` has not been handed has waited `queue_lag_ceiling_s`
+    # seconds (`aizzak_stream_queue_wait_seconds`), a submission answers 429 with
+    # `Retry-After: queue_retry_after_s` instead of a 202 for work that will
+    # not be done in time. 120 is the two minutes 08 §4.0 and §7 item 5
+    # declare. **Zero builds no gate at all**, the `max_in_flight` switch
+    # exactly -- and a SEPARATE switch from `enabled`, because the two
+    # measure different things: a `م-8` baseline of the request ceilings says
+    # nothing about the queue, and a load run that must push the queue past
+    # its ceiling (5.5's backlog) needs this one off and those on.
+    queue_lag_ceiling_s: int = 120
+    queue_retry_after_s: int = 30
 
 
 class OllamaSettings(BaseModel):

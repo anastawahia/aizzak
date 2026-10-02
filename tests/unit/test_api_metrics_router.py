@@ -42,6 +42,7 @@ from app.api.metrics import (
     STREAM_LAG_METRIC,
     STREAM_LENGTH_METRIC,
     STREAM_MAXLEN_METRIC,
+    STREAM_QUEUE_WAIT_METRIC,
     STREAM_UNCONSUMED_AGE_METRIC,
     STREAM_UNREAD_TRIMMED_METRIC,
     VAULT_AUTH_METRIC,
@@ -65,6 +66,7 @@ class _FakeMetricsSource:
         outbox_age: float,
         dlq_depths: dict[str, int],
         stream_lag: dict[tuple[str, str], float] | None = None,
+        stream_queue_wait: dict[tuple[str, str], float] | None = None,
         stream_retention: StreamRetention = _NO_RETENTION,
         scheduled_tasks: dict[str, TaskRecord] | None = None,
     ) -> None:
@@ -75,6 +77,8 @@ class _FakeMetricsSource:
         # because "no stream has been published to yet" is a real state the
         # adapter reports the same way (see its own docstring).
         self.stream_lag_value = stream_lag or {}
+        # Capacity 5.3 -- empty by default, the line above's reason.
+        self.stream_queue_wait_value = stream_queue_wait or {}
         # Capacity 5.5 -- defaulted to "nothing published, no backstop" for the
         # same reason.
         self.stream_retention_value = stream_retention
@@ -90,6 +94,9 @@ class _FakeMetricsSource:
 
     async def stream_lag_seconds(self) -> dict[tuple[str, str], float]:
         return dict(self.stream_lag_value)
+
+    async def stream_queue_wait_seconds(self) -> dict[tuple[str, str], float]:
+        return dict(self.stream_queue_wait_value)
 
     async def stream_retention(self) -> StreamRetention:
         return self.stream_retention_value
@@ -254,6 +261,25 @@ def test_a_caught_up_group_renders_zero_and_an_unpublished_stream_renders_nothin
 
     assert 'stream="stream.memory"' in body
     assert 'stream="stream.media"' not in body
+
+
+def test_the_queue_wait_the_admission_gate_reads_is_on_the_scrape() -> None:
+    """Capacity 5.3: a 429 from the indexing queue must be readable against
+    the value that caused it -- the gate and this gauge share one port
+    method."""
+    source = _FakeMetricsSource(
+        outbox_age=0.0,
+        dlq_depths={},
+        stream_lag={("stream.knowledge", "cg.knowledge"): 600.0},
+        stream_queue_wait={("stream.knowledge", "cg.knowledge"): 3.25},
+    )
+    with TestClient(_build_app(source)) as client:
+        body = client.get("/metrics").text
+
+    assert STREAM_QUEUE_WAIT_METRIC in _metric_names(body)
+    assert (
+        f'{STREAM_QUEUE_WAIT_METRIC}{{group="cg.knowledge",stream="stream.knowledge"}} 3.25' in body
+    )
 
 
 # --------------------------------------------------------------------------- #

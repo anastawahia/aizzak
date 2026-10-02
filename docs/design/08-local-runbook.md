@@ -2005,6 +2005,11 @@ select count(*) from knowledge.documents where status in ('pending', 'indexing')
 SQL
 python -m app.ops.mint_load_tokens refresh
 
+# ⚠️ منذ `5.3`: هذا القياسُ يدفع انتظارَ الطابور فوق الدقيقتين **عمداً**، فبوّابةُ الضغط العكسيّ
+#    كانت سترفض معظمَ الحمل بـ429 (‏§4.24). أطفئها لهذا التشغيل وحده، ثمّ أعِدها بعده:
+#    QUEUE_LAG_CEILING_S=0 deploy/rolling-deploy.sh      ← قبل الخطوة ١
+#    deploy/rolling-deploy.sh                           ← بعد الخطوة ٤ (يعود إلى 120)
+
 # ١) لحظةُ البدء، ثمّ الإيقاف
 T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose exec -T app python -m app.ops.stream_trim status --json > deploy/load/results/stream-trim-t0.json
@@ -2217,6 +2222,27 @@ docker compose exec ops-scheduler python -m app.ops.scheduler status   # كلّ�
 - **ميزانيّةُ الذاكرة امتلأت:** ‏57.50 من 57.60 (§2‑ز).
 - **القبولُ أسبوعٌ بلا تدخّل** — يبدأ عدُّه من النشر.
 
+### 4.24 الضغطُ العكسيُّ على طابور الفهرسة — `429` بدل قبولِ ما لن يُنجَز (خطّة السعة · الخطوة `5.3` · `ق‑6`)
+
+**القاعدة.** متى انتظر أقدمُ مدخلٍ لم يُسلَّم بعدُ لـ`cg.knowledge` على `stream.knowledge` أكثرَ من **120 ثانية** (`QUEUE_LAG_CEILING_S`)، تُجيب مساراتُ المعرفة الثلاثة التي تُنشئ عملاً — `POST /knowledge/documents` و`/knowledge/reindex` و`/knowledge/documents/{id}/summary` — **`429` بـ`Retry-After: 30`** (`QUEUE_RETRY_AFTER_S`) بدل `202`. ‏`202` في تلك اللحظة إيصالٌ لعملٍ تعلم المنصّةُ أنّها لن تُنجزه في ميزانيّتها؛ والمستخدمُ يرى مستنداً عالقاً على `pending` فيظنّه عطباً.
+
+**الرقمُ الذي تقرؤه البوّابة منشورٌ مقياساً:** `aizzak_stream_queue_wait_seconds{stream,group}` — المنفذُ نفسُه والطريقةُ نفسُها، فالرفضُ والرسمُ لا يختلفان أبداً. **⚠️ وليس `aizzak_stream_lag_seconds`** — ذلك الفرقُ بين معرّف رأس المجرى ومؤشّر المجموعة: بعد عشر دقائق هدوءٍ يقرأ أوّلُ رفعٍ في دفعةٍ والعمّالُ مشغولون **عشرَ دقائق**، أي طولَ الصمت لا طولَ الانتظار، فكانت البوّابةُ ستُغلق على طابورٍ عمقُه ثوانٍ (مُثبَتٌ على Redis حقيقيّ: `tests/integration/test_queue_wait_live.py`). **ولا `aizzak_stream_oldest_unconsumed_age_seconds`** (`5.5`)، لأنّه يعدّ المعلَّقَ أيضاً، وبناءُ ملخّصٍ يبقى معلَّقاً حتّى 1,800 ث مشروعاً.
+
+| السلوك | لماذا |
+|---|---|
+| بعد `require` وقبل `heavy_job` | مَن لا يملك الصلاحية يسمع 403؛ والطلبُ المرفوضُ هنا لا يُنفق من حدّ الـ30 مهمّة/دقيقة |
+| يفشل **مفتوحاً** إن لم يُجب Redis | ضابطُ سعةٍ لا ضابطُ أمان — ويُعدّ (`outcome="unavailable"`) |
+| يقرأ Redis مرّةً كلَّ 5 ث على الأكثر لكلّ عمليّة | دفعةُ رفعٍ لا تضاعف القراءات |
+| `POST /media/jobs` خارجه | مهمّةُ صورةٍ تستغرق دقائق بطبعها؛ سقفُها رقمٌ آخر لم يُوقَّع |
+| `QUEUE_LAG_CEILING_S=0` لا يبني بوّابةً | مفتاحُ `م‑8`، وقياسُ `backlog` في §4.21 يحتاجه |
+
+```bash
+# ما تراه البوّابة الآن، وقراراتُها منذ الإقلاع
+docker compose exec -T app sh -c 'curl -s 127.0.0.1:8000/metrics' | grep -E '^aizzak_stream_queue_wait_seconds|^aizzak_queue_backpressure_total'
+```
+
+**⚠️ وعددُ نسخ `worker-knowledge` بقي اثنتين، بقرار المالك (2026‑10‑02).** معادلةُ `§3` تقول أربعاً حدّاً أدنى، لكنّ رقمَين لم يُقاسا بعد، وكلاهما لخادم الإنتاج: ‏`p95` زمنِ المهمّة (الجدارُ على هذا المضيف أسطولُ التضمين لا العامل — `5.1`)، وذروةُ ذاكرة العامل عند أربعةِ تحليلاتٍ متزامنة. والثاني حاجب: نسختان إضافيّتان بـ2g تجعلان ميزانيّةَ §2‑ز **61.50 من 57.60** GB، ويرفضها `test_resource_budget.py` بحقّ.
+
 ## 5) فحص الصحّة — من يُعلن حياته، وبأيّ دليل ([§3.136](../log/3.136.md) · ت‑3)
 
 `docker compose ps` صار يقول شيئاً عن **كلّ** خدمةٍ طويلة. حتّى 2026‑08‑13 كانت **ستٌّ من ثلاث عشرة بلا فحصٍ إطلاقاً** (`qdrant` · `pgbouncer` · `ollama-bridge` · `outbox-relay` · العاملان، ثمّ الثلاثة بعد [§3.134](../log/3.134.md))، ولذلك نتيجتان ملموستان: `depends_on` لم يكن يملك لـ`qdrant`/`pgbouncer` أقوى من `service_started` — **والبدء ليس الجاهزيّة** — وعاملٌ توقّفت حلقته كان **غير مرئيٍّ تماماً**.
@@ -2304,4 +2330,5 @@ alembic revision -m "..."         # هجرة جديدة (راجع ألا تُن�
 | رفض اتصال Postgres | مرّ عبر PgBouncer (6432) لا 5432؛ حجم التجمّع |
 | فشل الأسرار | صحّة AppRole (`VAULT_ROLE_ID`/`VAULT_SECRET_ID`) وتفعيل Transit ووجود مفتاح `tenant-secrets` |
 | فشل ربط موصّل | `OAUTH_REDIRECT_BASE_URL`؛ صلاحية `refresh_token`؛ نقل MCP (http/sse فقط) |
+| رفض فهرسةٍ بـ429 و`Retry-After: 30` | طابورُ الفهرسة مُشبَع — `aizzak_stream_queue_wait_seconds` فوق 120 ث (§4.24)؛ راجع صحّةَ `worker-knowledge` وأسطولَ التضمين |
 | رفض عملية بـ429 usage | تجاوز حصّة/ميزانية — راجع `GET /usage` و`/usage/limits` (`USAGE_DEFAULT_LIMITS`) |
