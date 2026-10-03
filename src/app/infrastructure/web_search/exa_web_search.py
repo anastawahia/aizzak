@@ -63,6 +63,7 @@ from app.framework.errors import ValidationError
 from app.framework.ports.cache_provider import CacheProvider
 from app.framework.ports.web_search_provider import WebSearchHit
 from app.framework.types import Json
+from app.infrastructure.ai_providers.llm.shared import DEFAULT_MAX_CONNECTIONS, http_limits
 
 # A literal module constant, never configuration (the ``openai_llm`` _BASE_URL
 # precedent: a configurable base URL would be a key-exfiltration lever).
@@ -96,6 +97,9 @@ def create_exa_http_client(
     return httpx.AsyncClient(
         base_url=_BASE_URL,
         timeout=httpx.Timeout(timeout_s, connect=_CONNECT_TIMEOUT_S),
+        # capacity-plan 6.1 -- the same explicit pool every third-party AI
+        # vendor client gets, instead of httpx's unchosen 100.
+        limits=http_limits(DEFAULT_MAX_CONNECTIONS),
         trust_env=False,
         transport=transport,
     )

@@ -231,6 +231,7 @@ from app.infrastructure.ai_providers.image.external_image import (
     OpenAIImage,
     create_openai_image_http_client,
 )
+from app.infrastructure.ai_providers.llm.guard import guard_adapters, pool_size
 from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
 from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
 from app.infrastructure.ai_providers.rerank.external_rerank import (
@@ -1874,12 +1875,20 @@ class CompositionRoot:
             settings.firebase.jwks_cache_ttl,
         )
 
+        # capacity-plan 6.1 -- each pool is sized to its provider's
+        # concurrency ceiling, so the sockets a provider may hold open are the
+        # calls the guard below lets it have in flight.
         ollama_http = create_ollama_http_client(
-            settings.ollama, timeout_s=settings.limits.llm_timeout_s
+            settings.ollama,
+            timeout_s=settings.limits.llm_timeout_s,
+            max_connections=pool_size(settings.provider_guard, "ollama"),
         )
         ollama_llm = OllamaLLM(ollama_http)
 
-        openai_http = create_openai_http_client(timeout_s=settings.limits.llm_timeout_s)
+        openai_http = create_openai_http_client(
+            timeout_s=settings.limits.llm_timeout_s,
+            max_connections=pool_size(settings.provider_guard, "openai"),
+        )
         openai_llm = OpenAILLM(openai_http)
 
         # Step 19 -- `media_timeout_s` (300s), NOT `llm_timeout_s` (60s):
@@ -1915,8 +1924,11 @@ class CompositionRoot:
         # annotation is REQUIRED for `mypy --strict`: without it, the
         # comprehension below infers `dict[str, OllamaLLM | OpenAILLM]`,
         # not `dict[str, LLMProvider]`.
+        #
+        # capacity-plan 6.1 -- every adapter behind its provider's guard: a
+        # full ceiling answers 429 (`ق-6`), a failing provider 502 at once.
         llm_adapters: tuple[LLMProvider, ...] = (ollama_llm, openai_llm)
-        llm_providers: dict[str, LLMProvider] = {a.provider: a for a in llm_adapters}
+        (llm_providers,) = guard_adapters([llm_adapters], settings.provider_guard)
 
         # ------------------------------------------------------------------
         # 4.7-b-2 — the application layer. Everything below is synchronous by

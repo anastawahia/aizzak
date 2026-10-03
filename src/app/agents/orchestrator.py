@@ -937,6 +937,15 @@ def _in_band_error(event: AgentEvent) -> AppError:
     code = event.data.get("code")
     status = event.data.get("status")
     detail = event.data.get("detail")
+    retry_after_s = event.data.get("retry_after_s")
+    if status == RateLimitedError.status and isinstance(retry_after_s, int):
+        # capacity-plan 6.1 -- rebuilt as the class the API's handler reads
+        # `Retry-After` from, so the JSON 429 carries the header too. Its
+        # code is the class's own: every 429 in the catalog is
+        # `common.rate_limited`.
+        return RateLimitedError(
+            detail if isinstance(detail, str) else None, retry_after_s=retry_after_s
+        )
     return AppError(
         detail if isinstance(detail, str) else "the agent run failed",
         code=code if isinstance(code, str) else "agent.failed",

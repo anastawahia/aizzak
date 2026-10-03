@@ -68,6 +68,14 @@ image adapter has no use for, and ``_auth_header`` stayed COPIED in each
 adapter rather than hoisted, because one image adapter is N=1 and this
 module exists precisely because N=2 is the threshold.
 
+**What capacity-plan 6.1 added, and why it is not a scope breach either:**
+``ProviderFailure`` (+ ``is_transient_status``/``parse_retry_after``) and
+``http_limits``. Both shipped adapters raise through ``off_contract`` and
+``translate_http_error`` already, so WHETHER a failure is worth retrying is
+decided in the one place every failure is built -- not re-derived from a
+detail string by the guard -- and the pool shape is transport policy of the
+same kind as ``trust_env=False``.
+
 This module imports ONLY ``httpx``, ``json``, ``app.framework.errors`` and
 ``app.framework.types`` -- it does not import ``llm_provider`` at all, one
 notch more decoupled than either adapter (which import the port's VALUE
@@ -105,11 +113,40 @@ _CHARS_PER_TOKEN: int = 4
 ROLES: frozenset[str] = frozenset({"system", "user", "assistant", "tool"})
 
 
+# capacity-plan 6.1 -- how long an idle pooled connection to a vendor is kept.
+# Short on purpose: a provider behind a load balancer drops idle sockets on
+# its own schedule, and a pooled socket it already closed costs one failed
+# request to discover.
+_KEEPALIVE_EXPIRY_S: float = 15.0
+
+# capacity-plan 6.1 -- an `httpx.Limits` nobody sized is httpx's default of 100
+# sockets per client, a number this platform never chose. Each LLM client
+# defaults to this, and the Composition Root passes the provider's own
+# concurrency ceiling instead (`ProviderGuardSettings`), so the sockets a
+# provider may hold open are the calls it may have in flight -- and a stuck
+# provider can exhaust its own pool, never the process's file descriptors.
+DEFAULT_MAX_CONNECTIONS: int = 16
+
+
+def http_limits(max_connections: int) -> httpx.Limits:
+    """The ONE ``httpx.Limits`` shape every external-vendor client uses
+    (capacity-plan 6.1): ``max_connections`` is the caller's, the keep-alive
+    pool is the same size (a pool smaller than the concurrency it serves
+    reconnects on every burst), and idle sockets expire after
+    ``_KEEPALIVE_EXPIRY_S``."""
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=max_connections,
+        keepalive_expiry=_KEEPALIVE_EXPIRY_S,
+    )
+
+
 def create_llm_http_client(
     *,
     base_url: str,
     timeout_s: float,
     transport: httpx.AsyncBaseTransport | None = None,
+    max_connections: int = DEFAULT_MAX_CONNECTIONS,
 ) -> httpx.AsyncClient:
     """Build one LLM adapter's ``httpx.AsyncClient`` -- the technical
     plumbing every adapter's OWN public factory (``create_ollama_http_client``,
@@ -139,12 +176,83 @@ def create_llm_http_client(
     return httpx.AsyncClient(
         base_url=base_url,
         timeout=httpx.Timeout(timeout_s, connect=_CONNECT_TIMEOUT_S),
+        limits=http_limits(max_connections),
         trust_env=False,
         transport=transport,
     )
 
 
-def off_contract(provider: str, detail: str) -> AppError:
+class ProviderFailure(AppError):
+    """``agent.failed``/502 that also says whether trying again could help
+    (capacity-plan 6.1).
+
+    The tenant sees exactly what it saw before: the same code, status and
+    detail, because this IS an ``AppError`` with the catalog's
+    ``agent.failed``. The two extra facts are for the guard
+    (``ai_providers/llm/guard.py``) and nothing else:
+
+    * ``transient`` -- the provider was unreachable, timed out, throttled us
+      or failed on its own side (5xx). Only these are retried, and only these
+      count toward opening the circuit: a rejected key or an unknown model is
+      one caller's configuration, and letting it open the circuit would cut
+      off every tenant on that provider because one of them typed a key wrong.
+    * ``retryable`` -- asking again could succeed AND costs little to find
+      out: the connection never opened (refused, or the 5 s connect
+      timeout), or the provider answered 429/5xx straight away. Always
+      ``transient`` too. A read timeout is transient but NOT retryable: it
+      already spent ``Limits.llm_timeout_s``, and retrying it twice turns one
+      60-second wait into three -- the stacking 6.1 exists to stop.
+    * ``retry_after_s`` -- the provider's own ``Retry-After`` on a 429/503,
+      read from the HEADER only (the body is never read on an error -- each
+      adapter's error policy). It paces our retry; it is never passed on to
+      the tenant (``openai_llm.py``'s 429 paragraph says why).
+    """
+
+    code = "agent.failed"
+    status = 502
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        transient: bool = False,
+        retryable: bool = False,
+        retry_after_s: float | None = None,
+    ) -> None:
+        super().__init__(detail, code="agent.failed", status=502)
+        self.transient = transient or retryable
+        self.retryable = retryable
+        self.retry_after_s = retry_after_s
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """A provider's ``Retry-After`` in its delay-seconds form, or ``None``.
+
+    The HTTP-date form is deliberately not parsed: it needs a clock agreement
+    with the vendor that a retry decision should not depend on, and ``None``
+    simply falls back to our own backoff."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def is_transient_status(status: int) -> bool:
+    """429 and every 5xx: the provider's own state, not this request's shape."""
+    return status == httpx.codes.TOO_MANY_REQUESTS or status >= httpx.codes.INTERNAL_SERVER_ERROR
+
+
+def off_contract(
+    provider: str,
+    detail: str,
+    *,
+    transient: bool = False,
+    retryable: bool = False,
+    retry_after_s: float | None = None,
+) -> ProviderFailure:
     """The ONE place any LLM adapter constructs
     ``AppError(code="agent.failed")`` (03-api-spec §4, "فشل تنفيذ
     الوكيل/المزوّد"؛ 07-nfr-slo §4 pins this same code to the LLM-call
@@ -154,20 +262,39 @@ def off_contract(provider: str, detail: str) -> AppError:
     same way ``firebase_auth`` sets its own statuses explicitly. ``detail``
     is always prefixed with the CALLING adapter's own ``provider`` string,
     so two adapters' errors are never ambiguous about their source even
-    after both funnel through this one function."""
-    return AppError(f"{provider} {detail}", code="agent.failed", status=502)
+    after both funnel through this one function.
+
+    ``transient``/``retry_after_s`` default to "not retryable": an
+    off-contract body is the provider answering wrongly, and asking again is
+    asking for the same wrong answer (``ProviderFailure``)."""
+    return ProviderFailure(
+        f"{provider} {detail}",
+        transient=transient,
+        retryable=retryable,
+        retry_after_s=retry_after_s,
+    )
 
 
-def translate_http_error(provider: str, exc: Exception) -> AppError:
+def translate_http_error(provider: str, exc: Exception) -> ProviderFailure:
     """Map any transport-level ``httpx`` failure onto ``agent.failed``/502.
     A ``TimeoutException`` gets a distinguishable detail; every other
     ``httpx.HTTPError`` collapses to one generic message -- there is no
     caller-branchable case worth preserving here (D-16: nothing falls back
     between providers on an LLM failure, so no finer-grained code would
-    ever be acted on)."""
+    ever be acted on).
+
+    Every transport failure is ``transient`` -- the provider's state, which
+    the 6.1 guard counts toward its circuit. Only a failure to CONNECT is
+    also ``retryable``: nothing reached the provider and little time was
+    spent. A read timeout or a connection dropped mid-answer is not
+    (``ProviderFailure`` says why)."""
+    if isinstance(exc, httpx.ConnectTimeout):
+        return off_contract(provider, "call timed out", retryable=True)
     if isinstance(exc, httpx.TimeoutException):
-        return off_contract(provider, "call timed out")
-    return off_contract(provider, "call failed")
+        return off_contract(provider, "call timed out", transient=True)
+    if isinstance(exc, httpx.ConnectError):
+        return off_contract(provider, "call failed", retryable=True)
+    return off_contract(provider, "call failed", transient=True)
 
 
 def parse_json_object(provider: str, raw: str) -> Json:

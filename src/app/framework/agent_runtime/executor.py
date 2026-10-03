@@ -69,8 +69,9 @@ from collections.abc import AsyncIterator
 
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
 from app.framework.agent_runtime.lifecycle import AgentLifecycle
-from app.framework.errors import AppError
+from app.framework.errors import AppError, RateLimitedError
 from app.framework.observability import get_logger
+from app.framework.types import Json
 
 _logger = get_logger(__name__)
 
@@ -92,7 +93,13 @@ def _error_event(exc: Exception) -> AgentEvent:
     and traceback never reach the client stream.
     """
     if isinstance(exc, AppError):
-        data = {"code": exc.code, "status": exc.status, "detail": exc.detail}
+        data: Json = {"code": exc.code, "status": exc.status, "detail": exc.detail}
+        # capacity-plan 6.1 (`ق-6`) -- a provider at its concurrency ceiling
+        # raises a 429 from INSIDE the run, so its `Retry-After` has to ride
+        # the event: it is the only thing a client can act on, and without it
+        # the 429 is just a failure.
+        if isinstance(exc, RateLimitedError) and exc.retry_after_s is not None:
+            data["retry_after_s"] = exc.retry_after_s
     else:
         # 03 §4's entry for exactly this ("خطأ غير متوقّع (يُخفي التفاصيل)").
         # Was `common.error` — a code the catalog never defined, so a client

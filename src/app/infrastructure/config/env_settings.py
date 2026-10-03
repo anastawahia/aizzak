@@ -25,6 +25,7 @@ from app.framework.settings.settings import (
     MigrationSettings,
     MinioSettings,
     OllamaSettings,
+    ProviderGuardSettings,
     QdrantSettings,
     RateLimitSettings,
     RedisSettings,
@@ -160,6 +161,16 @@ class _EnvSettings(BaseSettings):
     queue_retry_after_s: int = Field(30, alias="QUEUE_RETRY_AFTER_S", ge=1)
 
     ollama_base_url: str = Field("http://ollama:11434", alias="OLLAMA_BASE_URL")
+    # capacity-plan 6.1. Per process, per provider (`ProviderGuardSettings`).
+    # `0` lifts a ceiling entirely; the circuit and retry numbers must be
+    # positive except `LLM_MAX_RETRIES`, where `0` legitimately means "never
+    # retry".
+    llm_max_concurrency: int = Field(5, alias="LLM_MAX_CONCURRENCY", ge=0)
+    ollama_max_concurrency: int = Field(2, alias="OLLAMA_MAX_CONCURRENCY", ge=0)
+    llm_saturation_retry_after_s: int = Field(5, alias="LLM_SATURATION_RETRY_AFTER_S", ge=1)
+    llm_circuit_failure_threshold: int = Field(5, alias="LLM_CIRCUIT_FAILURE_THRESHOLD", ge=1)
+    llm_circuit_open_s: float = Field(30.0, alias="LLM_CIRCUIT_OPEN_S", gt=0)
+    llm_max_retries: int = Field(2, alias="LLM_MAX_RETRIES", ge=0)
 
     # 2.10: only the URL is env-editable (DD-11) -- model/dimensions/batch/
     # timeout are pinned defaults that must match the baked service image
@@ -286,6 +297,14 @@ def load_settings() -> Settings:
             queue_retry_after_s=env.queue_retry_after_s,
         ),
         ollama=OllamaSettings(base_url=env.ollama_base_url),
+        provider_guard=ProviderGuardSettings(
+            max_concurrency=env.llm_max_concurrency,
+            ollama_max_concurrency=env.ollama_max_concurrency,
+            saturation_retry_after_s=env.llm_saturation_retry_after_s,
+            circuit_failure_threshold=env.llm_circuit_failure_threshold,
+            circuit_open_s=env.llm_circuit_open_s,
+            max_retries=env.llm_max_retries,
+        ),
         embedding_service=EmbeddingServiceSettings(
             url=env.embedding_service_url, cache_ttl_s=env.embedding_cache_ttl_s
         ),

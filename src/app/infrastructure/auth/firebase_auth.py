@@ -206,6 +206,11 @@ _LEEWAY_S: float = 60.0
 # Google endpoint (the 2.3-2.6 precedent; 07-nfr latency budgets are
 # sub-second).
 _HTTP_TIMEOUT_S: float = 5.0
+# capacity-plan 6.1 -- an explicit pool instead of httpx's unchosen 100. The
+# JWKS fetch happens once per key rotation per process, so two sockets are
+# already one more than it uses; the point is that a hung Google endpoint can
+# hold two, not a hundred.
+_HTTP_LIMITS = httpx.Limits(max_connections=2, max_keepalive_connections=2, keepalive_expiry=15.0)
 
 # The kid-miss refetch budget (D4): bounds the DoS amplifier a naive
 # refetch-on-any-miss (`PyJWKClient.get_signing_key`, `jwks_client.py:
@@ -320,7 +325,9 @@ def create_firebase_http_client(
     and connection-free (D8), the same ground already proven by
     ``create_redis_client``/``create_qdrant_client``.
     """
-    return httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S, trust_env=False, transport=transport)
+    return httpx.AsyncClient(
+        timeout=_HTTP_TIMEOUT_S, limits=_HTTP_LIMITS, trust_env=False, transport=transport
+    )
 
 
 class FirebaseAuth:

@@ -320,6 +320,56 @@ class RateLimitSettings(BaseModel):
     queue_retry_after_s: int = 30
 
 
+class ProviderGuardSettings(BaseModel):
+    """Capacity-plan step 6.1's knobs -- the guard every LLM provider sits
+    behind (``infrastructure/ai_providers/llm/guard.py``).
+
+    **The ceilings are per PROCESS, per provider**, the ``max_in_flight``
+    precedent: a ceiling shared across processes would be a Redis round trip
+    on every call, to enforce a number the provider does not enforce either
+    (its quota is per minute, not per socket). So the fleet-wide number is
+    this times the processes that call the provider. ``§3``'s
+    ``llm_concurrency = sessions/s x p95`` gives fifty streams at the ``§0``
+    target; with ``3.4``'s twelve API processes, five each is sixty, the
+    first round number at or above it. Ollama on a CPU cannot serve twelve
+    concurrent generations, let alone sixty; two each keeps a burst from
+    queueing twenty-four requests behind one model. **Zero means no
+    ceiling** -- the worker roots pass it, because ``WORKER_CONCURRENCY``
+    already bounds what a worker can have in flight, and a worker that is
+    refused has nobody to tell.
+
+    ``saturation_retry_after_s`` is the ``Retry-After`` on the 429 a full
+    ceiling answers (``ق-6``). A generation lasts seconds, so a permit frees
+    within seconds; five is long enough not to invite a retry storm and short
+    enough that a user is not told to wait for a slot that is already free.
+
+    The circuit opens after ``circuit_failure_threshold`` CONSECUTIVE
+    transient failures and stays open ``circuit_open_s`` seconds, answering
+    502 at once instead of letting each request wait out its own timeout.
+    Then ONE call is let through; its success closes the circuit, its
+    failure reopens it. Five in a row is not one unlucky request; thirty
+    seconds is a model restart, not a page.
+
+    ``max_retries`` applies to RETRYABLE failures only (connect failure, 429,
+    5xx -- ``shared.ProviderFailure``), never to a 4xx and never to a read
+    timeout.
+    """
+
+    model_config = _FROZEN
+
+    max_concurrency: int = 5
+    ollama_max_concurrency: int = 2
+    saturation_retry_after_s: int = 5
+    circuit_failure_threshold: int = 5
+    circuit_open_s: float = 30.0
+    max_retries: int = 2
+
+    def concurrency_for(self, provider: str) -> int:
+        """The ceiling for one provider: Ollama's own, every cloud provider
+        the shared one."""
+        return self.ollama_max_concurrency if provider == "ollama" else self.max_concurrency
+
+
 class OllamaSettings(BaseModel):
     model_config = _FROZEN
 
@@ -1208,6 +1258,9 @@ class Settings(BaseModel):
     # never declared.
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    # capacity-plan 6.1 -- the per-provider concurrency ceiling, circuit and
+    # retry policy every LLM call goes through.
+    provider_guard: ProviderGuardSettings = Field(default_factory=ProviderGuardSettings)
     embedding_service: EmbeddingServiceSettings = Field(default_factory=EmbeddingServiceSettings)
     # rag-retrieval-plan.md §4 row 21 (`P-24`, س-21) — WHERE the cross-encoder
     # rerank service is. Beside `embedding_service` because it is the same

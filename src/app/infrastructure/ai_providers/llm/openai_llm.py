@@ -185,11 +185,14 @@ from app.framework.errors import AppError, ValidationError
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.types import Json
 from app.infrastructure.ai_providers.llm.shared import (
+    DEFAULT_MAX_CONNECTIONS,
     ROLES,
     create_llm_http_client,
+    is_transient_status,
     neutral_tool_call,
     off_contract,
     parse_json_object,
+    parse_retry_after,
     reported_token_count,
     token_count,
     translate_http_error,
@@ -225,6 +228,7 @@ def create_openai_http_client(
     *,
     timeout_s: float,
     transport: httpx.AsyncBaseTransport | None = None,
+    max_connections: int = DEFAULT_MAX_CONNECTIONS,
 ) -> httpx.AsyncClient:
     """Build the shared OpenAI HTTP client (Composition Root / test harness
     only). No ``settings`` parameter and no base-URL guard, unlike
@@ -234,7 +238,12 @@ def create_openai_http_client(
     ``shared.create_llm_http_client`` -- the ONE place ``trust_env=False``
     and the ``(timeout_s, connect=5.0)`` timeout pair are set for every LLM
     adapter."""
-    return create_llm_http_client(base_url=_BASE_URL, timeout_s=timeout_s, transport=transport)
+    return create_llm_http_client(
+        base_url=_BASE_URL,
+        timeout_s=timeout_s,
+        transport=transport,
+        max_connections=max_connections,
+    )
 
 
 def _auth_header(api_key: str) -> dict[str, str]:
@@ -628,20 +637,38 @@ def _parse_tool_arguments(raw: object) -> Json:
     return parsed
 
 
-def _translate_status(status: int, *, tool_role_sent: bool) -> AppError:
+def _translate_status(
+    status: int, *, tool_role_sent: bool, retry_after: str | None = None
+) -> AppError:
     """Map an OpenAI HTTP error STATUS (never its body -- module docstring's
     error-policy paragraph) onto ``agent.failed``/502. A pure function of
-    ``status``/``tool_role_sent`` alone -- no I/O, nothing read from the
-    response."""
+    ``status``/``tool_role_sent`` and the ``Retry-After`` HEADER -- no I/O,
+    no body byte read.
+
+    429 and 5xx are ``transient`` (capacity-plan 6.1, ``shared.ProviderFailure``)
+    and carry OpenAI's own ``Retry-After`` for the guard to pace a retry by;
+    the tenant still sees the same ``agent.failed`` it always did."""
     if status == _HTTP_UNAUTHORIZED:
         return off_contract(_PROVIDER, "rejected the api key")
     if status == _HTTP_TOO_MANY_REQUESTS:
-        return off_contract(_PROVIDER, "call failed: rate limited")
+        return off_contract(
+            _PROVIDER,
+            "call failed: rate limited",
+            retryable=True,
+            retry_after_s=parse_retry_after(retry_after),
+        )
     if status == _HTTP_NOT_FOUND:
         return off_contract(_PROVIDER, "model not available")
     if status == _HTTP_BAD_REQUEST and tool_role_sent:
         return off_contract(
             _PROVIDER, "call failed: a 'tool' role message is not expressible through this port"
+        )
+    if is_transient_status(status):
+        return off_contract(
+            _PROVIDER,
+            "call failed",
+            retryable=True,
+            retry_after_s=parse_retry_after(retry_after),
         )
     return off_contract(_PROVIDER, "call failed")
 
@@ -677,7 +704,9 @@ class OpenAILLM:
             response = await self._client.post(_CHAT_PATH, json=body, headers=headers)
             if response.status_code >= _HTTP_BAD_REQUEST:
                 raise _translate_status(
-                    response.status_code, tool_role_sent=_has_tool_role(messages)
+                    response.status_code,
+                    tool_role_sent=_has_tool_role(messages),
+                    retry_after=response.headers.get("retry-after"),
                 )
             # Unwrapped INSIDE the try (2.5/2.6/2.8-a precedent): translated
             # by _to_result/parse_json_object's own guards, never a raw
@@ -739,7 +768,11 @@ class OpenAILLM:
                 if response.status_code >= _HTTP_BAD_REQUEST:
                     # Status/headers are available before any body byte is
                     # read; the body is deliberately never read at all.
-                    raise _translate_status(response.status_code, tool_role_sent=tool_role_sent)
+                    raise _translate_status(
+                        response.status_code,
+                        tool_role_sent=tool_role_sent,
+                        retry_after=response.headers.get("retry-after"),
+                    )
                 async for payload in _sse_payloads(response.aiter_lines()):
                     if payload == _DONE_PAYLOAD:
                         continue  # framing end -> falls through to the raise below

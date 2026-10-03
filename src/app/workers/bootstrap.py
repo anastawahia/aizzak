@@ -163,6 +163,7 @@ from app.infrastructure.ai_providers.image.external_image import (
     OpenAIImage,
     create_openai_image_http_client,
 )
+from app.infrastructure.ai_providers.llm.guard import guard_adapters
 from app.infrastructure.ai_providers.llm.ollama_llm import OllamaLLM, create_ollama_http_client
 from app.infrastructure.ai_providers.llm.openai_llm import OpenAILLM, create_openai_http_client
 from app.infrastructure.cache.redis_cache import blocking_read_timeout_s, create_redis_client
@@ -1500,6 +1501,13 @@ async def build_knowledge_worker_from_env() -> tuple[
         OllamaLLM(summarize_ollama_http),
         OpenAILLM(summarize_openai_http),
     )
+    # capacity-plan 6.1 -- both pairs behind ONE guard per provider: the
+    # circuit and the retry policy, with no concurrency ceiling (`0`), since
+    # `WORKER_CONCURRENCY` already bounds what this worker has in flight and a
+    # refused job has nobody to read the 429.
+    llm_providers, summarize_llm_providers = guard_adapters(
+        [llm_adapters, summarize_adapters], settings.provider_guard, max_concurrency=0
+    )
 
     # Step 16 -- the embedding route, resolved the SAME way the API resolves
     # it (see the docstring). `embedding_providers` is keyed by the adapter's
@@ -1514,7 +1522,7 @@ async def build_knowledge_worker_from_env() -> tuple[
     credentials = ResolveCredential(SqlCredentialRepository(tenant_session), secrets)
     providers = SettingsProviderResolver(
         routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
-        llm_providers={adapter.provider: adapter for adapter in llm_adapters},
+        llm_providers=llm_providers,
         embedding_providers={embeddings.provider: embeddings},
         image_providers={},  # step 18 -- and `_routing_for` drops the namespace
         key_resolver=credentials,
@@ -1533,7 +1541,7 @@ async def build_knowledge_worker_from_env() -> tuple[
     # sized by `parser_timeout_seconds` already.
     summarize_providers = SettingsProviderResolver(
         routing=_routing_for(settings.provider_routing, foreign=_FOREIGN_TO_KNOWLEDGE),
-        llm_providers={adapter.provider: adapter for adapter in summarize_adapters},
+        llm_providers=summarize_llm_providers,
         embedding_providers={embeddings.provider: embeddings},
         image_providers={},
         key_resolver=credentials,

@@ -107,11 +107,14 @@ from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, Ll
 from app.framework.settings.settings import OllamaSettings
 from app.framework.types import Json
 from app.infrastructure.ai_providers.llm.shared import (
+    DEFAULT_MAX_CONNECTIONS,
     ROLES,
     create_llm_http_client,
+    is_transient_status,
     neutral_tool_call,
     off_contract,
     parse_json_object,
+    parse_retry_after,
     reported_token_count,
     token_count,
     translate_http_error,
@@ -152,6 +155,7 @@ def create_ollama_http_client(
     *,
     timeout_s: float,
     transport: httpx.AsyncBaseTransport | None = None,
+    max_connections: int = DEFAULT_MAX_CONNECTIONS,
 ) -> httpx.AsyncClient:
     """Build the shared Ollama HTTP client (Composition Root / test harness
     only).
@@ -190,7 +194,12 @@ def create_ollama_http_client(
     above), because OpenAI's factory needs neither.
     """
     base_url = _guard_base_url(settings.base_url)
-    return create_llm_http_client(base_url=base_url, timeout_s=timeout_s, transport=transport)
+    return create_llm_http_client(
+        base_url=base_url,
+        timeout_s=timeout_s,
+        transport=transport,
+        max_connections=max_connections,
+    )
 
 
 def _guard_base_url(base_url: str) -> str:
@@ -382,7 +391,7 @@ def _to_tool_calls(message: Json) -> list[Json] | None:
     return calls or None
 
 
-def _translate_status(status: int, *, tools_sent: bool) -> AppError:
+def _translate_status(status: int, *, tools_sent: bool, retry_after: str | None = None) -> AppError:
     """Map an Ollama HTTP error STATUS (never its body -- see the module
     docstring's error-policy paragraph) onto ``agent.failed``/502. A pure
     function of ``status``/``tools_sent`` alone -- no I/O, nothing read from
@@ -390,11 +399,23 @@ def _translate_status(status: int, *, tools_sent: bool) -> AppError:
     confirmed live for a tool-calling request against a model that does not
     support tools (``gemma3:1b``) -- ``tools_sent`` is OUR OWN request-shape
     fact (whether this call's ``_build_chat_body`` included a ``tools``
-    key), never anything parsed from Ollama's own error body."""
+    key), never anything parsed from Ollama's own error body.
+
+    429 and 5xx are ``transient`` (capacity-plan 6.1,
+    ``shared.ProviderFailure``): Ollama answers 503 while it is loading a
+    model or its queue is full, which is precisely the state worth one paced
+    retry and worth counting toward the circuit."""
     if status == _HTTP_NOT_FOUND:
         return off_contract(_PROVIDER, "model not available")
     if status == _HTTP_BAD_REQUEST and tools_sent:
         return off_contract(_PROVIDER, "call failed: this model may not support tools")
+    if is_transient_status(status):
+        return off_contract(
+            _PROVIDER,
+            "call failed",
+            retryable=True,
+            retry_after_s=parse_retry_after(retry_after),
+        )
     return off_contract(_PROVIDER, "call failed")
 
 
@@ -420,7 +441,11 @@ class OllamaLLM:
         try:
             response = await self._client.post(_CHAT_PATH, json=body)
             if response.status_code >= _HTTP_BAD_REQUEST:
-                raise _translate_status(response.status_code, tools_sent=bool(params.tools))
+                raise _translate_status(
+                    response.status_code,
+                    tools_sent=bool(params.tools),
+                    retry_after=response.headers.get("retry-after"),
+                )
             # Unwrapped INSIDE the try (2.5/2.6 precedent): translated by
             # _to_result/parse_json_object's own guards, never a raw exception.
             return _to_result(parse_json_object(_PROVIDER, response.text), messages)
@@ -476,7 +501,11 @@ class OllamaLLM:
                     # before any body byte is read -- no `aread()` needed to
                     # inspect them, and the body is deliberately never read
                     # at all (module docstring: no vendor-topology leak).
-                    raise _translate_status(response.status_code, tools_sent=tools_sent)
+                    raise _translate_status(
+                        response.status_code,
+                        tools_sent=tools_sent,
+                        retry_after=response.headers.get("retry-after"),
+                    )
                 async for line in response.aiter_lines():
                     if not line:  # NDJSON keep-alive/framing blank lines
                         continue

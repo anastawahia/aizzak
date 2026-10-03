@@ -74,6 +74,9 @@ HEAVY_JOB_LIMIT_METRIC = "aizzak_heavy_job_limit_total"
 QUEUE_BACKPRESSURE_METRIC = "aizzak_queue_backpressure_total"
 VECTOR_CORPUS_METRIC = "aizzak_vector_corpus_total"
 EMBEDDING_CACHE_METRIC = "aizzak_embedding_cache_total"
+LLM_IN_FLIGHT_METRIC = "aizzak_llm_in_flight"
+LLM_GUARD_METRIC = "aizzak_llm_guard_total"
+LLM_CIRCUIT_OPEN_METRIC = "aizzak_llm_circuit_open"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -208,6 +211,36 @@ queue_backpressure_total = Counter(
     "pending. `unavailable` is the fail-open path: the lag could not be read "
     "and the submission was admitted unchecked.",
     ["stream", "outcome"],
+)
+
+# capacity-plan 6.1 -- the per-provider guard (`ai_providers/llm/guard.py`).
+llm_in_flight = Gauge(
+    LLM_IN_FLIGHT_METRIC,
+    "LLM calls this process currently holds a provider permit for, by provider "
+    "(capacity-plan 6.1). A stream holds its permit until its last chunk, so "
+    "this is the concurrency the provider actually sees from here.",
+    ["provider"],
+    multiprocess_mode="livesum",
+)
+
+llm_guard_total = Counter(
+    LLM_GUARD_METRIC,
+    "LLM call decisions by the per-provider guard, by provider and outcome "
+    "(capacity-plan 6.1). `saturated` answered 429 because the provider's "
+    "concurrency ceiling was full; `circuit_open` answered 502 without calling "
+    "a provider that kept failing; `retried` is one more attempt after a "
+    "transient failure; `failed` is a transient failure that reached the "
+    "caller. A rising `saturated` is a capacity shortfall, a rising "
+    "`circuit_open` is an outage -- the two must never read as one number.",
+    ["provider", "outcome"],
+)
+
+llm_circuit_open = Gauge(
+    LLM_CIRCUIT_OPEN_METRIC,
+    "1 while this provider's circuit is open in at least one live process, "
+    "else 0 (capacity-plan 6.1).",
+    ["provider"],
+    multiprocess_mode="livemax",
 )
 
 vector_corpus_total = Counter(

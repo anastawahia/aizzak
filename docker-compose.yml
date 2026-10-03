@@ -168,6 +168,15 @@ x-app-env: &app-env
   # PURPOSE (08 §4.21).
   QUEUE_LAG_CEILING_S: ${QUEUE_LAG_CEILING_S:-120}
   QUEUE_RETRY_AFTER_S: ${QUEUE_RETRY_AFTER_S:-30}
+  # capacity-plan 6.1 -- the per-provider LLM guard (08 §4.25). Per process:
+  # the API refuses with 429 past the ceiling; the workers read the circuit
+  # and retry numbers and ignore the two ceilings (`workers/bootstrap.py`).
+  LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-5}
+  OLLAMA_MAX_CONCURRENCY: ${OLLAMA_MAX_CONCURRENCY:-2}
+  LLM_SATURATION_RETRY_AFTER_S: ${LLM_SATURATION_RETRY_AFTER_S:-5}
+  LLM_CIRCUIT_FAILURE_THRESHOLD: ${LLM_CIRCUIT_FAILURE_THRESHOLD:-5}
+  LLM_CIRCUIT_OPEN_S: ${LLM_CIRCUIT_OPEN_S:-30}
+  LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
   # capacity-plan 4.3 -- how long a computed QUERY vector may be reused
   # (`CachingEmbeddingProvider`, wrapped around the embedding adapter by the
   # API's Composition Root and by nothing else). `0` builds no wrapper at all,
