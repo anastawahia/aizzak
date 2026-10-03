@@ -105,6 +105,7 @@
   .bar .s-partial{background:var(--partial)}
   .bar .s-blocked{background:var(--blocked)}
   .bar .s-pending{background:var(--pending)}
+  .bar .s-deferred{background:repeating-linear-gradient(135deg,var(--pending) 0 6px,var(--ink-3) 6px 12px)}
   .legend{
     display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:16px;
     font-size:13.5px;color:var(--ink-2);
@@ -115,6 +116,7 @@
   }
   .k-done{background:var(--done)} .k-partial{background:var(--partial)}
   .k-blocked{background:var(--blocked)} .k-pending{background:var(--pending)}
+  .k-deferred{background:repeating-linear-gradient(135deg,var(--pending) 0 3px,var(--ink-3) 3px 6px)}
 
   /* ---------- الخلاصة ---------- */
   .verdict{
@@ -173,6 +175,7 @@
   .step.partial{border-right-color:var(--partial)}
   .step.blocked{border-right-color:var(--blocked)}
   .step.pending{border-right-color:var(--pending)}
+  .step.deferred{border-right-color:var(--pending);border-right-style:dashed}
 
   .step-id{
     font-family:"Readex Pro",sans-serif;font-size:14px;font-weight:600;
@@ -191,6 +194,7 @@
   .tag.partial{background:var(--partial-soft);color:var(--partial)}
   .tag.blocked{background:var(--blocked-soft);color:var(--blocked)}
   .tag.pending{background:var(--pending-soft);color:var(--ink-3)}
+  .tag.deferred{background:var(--pending-soft);color:var(--ink-2)}
 
   .line{display:flex;gap:10px;font-size:14.5px;line-height:1.7;margin-top:5px}
   .line dt{
@@ -245,21 +249,23 @@
     </p>
     <div class="meta">
       <span><b>٥٢</b> خطوة في <b>٩</b> مراحل</span>
-      <span>آخر عمل: <b>٢ أكتوبر ٢٠٢٦</b></span>
+      <span>آخر عمل: <b>٣ أكتوبر ٢٠٢٦</b></span>
       <span>المصدر: <b>docs/capacity-plan.md</b></span>
     </div>
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="ثلاثون خطوة مكتملة، سبع مبنية بانتظار قياس، خمس عشرة لم تبدأ">
+    <div class="bar" role="img" aria-label="ثلاثون خطوة مكتملة، ثمانٍ مبنية بانتظار قياس، ثمانٍ لم تبدأ، ست مؤجلة">
       <span class="s-done" style="flex:30">٣٠ مكتملة</span>
-      <span class="s-partial" style="flex:7">٧</span>
-      <span class="s-pending" style="flex:15">١٥ لم تبدأ</span>
+      <span class="s-partial" style="flex:8">٨</span>
+      <span class="s-pending" style="flex:8">٨</span>
+      <span class="s-deferred" style="flex:6">٦</span>
     </div>
     <div class="legend">
       <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٣٠</span>
-      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٧</span>
-      <span><i class="k-pending"></i>لم تبدأ — ١٥</span>
+      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٨</span>
+      <span><i class="k-pending"></i>لم تبدأ — ٨</span>
+      <span><i class="k-deferred"></i>مؤجَّلة بقرار المالك (المرحلة ٨) — ٦</span>
     </div>
   </section>
 
@@ -272,7 +278,7 @@
       <strong>والسقف الجديد لم يُقَس بعد، لأنّ جهاز التطوير نفسه ينفد.</strong> عند حملٍ أعلى تمتلئ ذاكرة الجهاز، فيقيس الاختبارُ الجهازَ لا المنصّة. وبلوغ الهدف الكامل (٣٠٠ طلب في الثانية) يحتاج خادماً بحجم الإنتاج.
     </p>
     <p>
-      <strong>وما زال بعيداً عن هدفه شيئان:</strong> فهرسة المستندات (٨–١٠ في الدقيقة، والهدف ١٠٠)، والنموذج اللغويّ الذي لم يُختَر مزوّده بعد. أمّا عيبا أداة الاختبار فأُصلحا في ٢٨ سبتمبر.
+      <strong>وما زال بعيداً عن هدفه شيئان:</strong> فهرسة المستندات (٨–١٠ في الدقيقة، والهدف ١٠٠)، والمحادثة مع النموذج اللغويّ. مزوّده حُسم في ٣ أكتوبر (هجين)، وصار كلّ نداءٍ له يمرّ بحارسٍ يرفض بوضوح بدل أن يتكدّس. لكنّ المحوّلات السحابيّة لم تُكتب بعد، فالسعة اليوم سعة النموذج المحلّيّ: ١–٤ محادثاتٍ في اللحظة، والهدف ٥٠.
     </p>
   </div>
 
@@ -755,28 +761,32 @@
     <div class="wave-head">
       <span class="wave-num">المرحلة ٦</span>
       <h2>مزوّدو النماذج اللغويّة</h2>
-      <span class="wave-score">لم تبدأ · ٥ خطوات · محجوبة بقرار</span>
+      <span class="wave-score">٠ من ٥ مكتملة · بدأت ٣ أكتوبر</span>
     </div>
-    <p class="wave-note">هذه المرحلة كلّها متوقّفة على قرارٍ واحدٍ لم يُتَّخذ: أيّ مزوّدٍ نستخدم؟ وهو رأس الطريق الحرج.</p>
+    <p class="wave-note">القرار حُسم في ٣ أكتوبر: <b>هجين</b> — مزوّدٌ سحابيّ للمحادثة، والنموذج المحلّيّ للعمّال، مع إبقاء التبديل بين النماذج متاحاً. وعند الامتلاء يُرفض الطلب فوراً برسالةٍ صريحة (٤٢٩ مع «أعد المحاولة بعد…») بدل انتظارٍ صامت.</p>
     <div class="steps">
-      <article class="step pending"><div class="step-id">٦٫١</div><div class="step-body">
-        <div class="step-title"><h3>سقف تزامنٍ وقاطع دارة لكلّ مزوّد</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>حدٌّ للطلبات المتزامنة، وقاطعٌ يردّ خطأً فوريّاً عند تعطّل المزوّد بدل تكديس طلباتٍ لن تُجاب.</dd></div></dl>
+      <article class="step partial"><div class="step-id">٦٫١</div><div class="step-body">
+        <div class="step-title"><h3>سقف تزامنٍ وقاطع دارة لكلّ مزوّد</h3><span class="tag partial">مبنيّة · منشورة · تنتظر القياس</span></div>
+        <dl>
+          <div class="line done-l"><dt>تمّ</dt><dd>كلّ نداءٍ للنموذج اللغويّ يمرّ بحارسٍ خاصٍّ بمزوّده. إذا امتلأ (٥ نداءاتٍ للسحابيّ و٢ للمحلّيّ في كلّ عمليّة) يُرفض النداء الزائد فوراً برسالة «أعد المحاولة بعد ٥ ثوانٍ». وبعد خمسة أعطالٍ متتالية يتوقّف الاتّصال بالمزوّد ٣٠ ثانية ويُجاب كلّ طلبٍ بخطأٍ فوريّ، ثمّ يمرّ طلبٌ تجريبيّ واحد يحسم. وما يستحقّ الإعادة يُعاد مرّتين على الأكثر، أمّا انتهاء المهلة فلا يُعاد. ومفتاح مستأجرٍ خاطئ لا يقطع المزوّد عن الباقين.</dd></div>
+          <div class="line done-l"><dt>نُشر</dt><dd>في ٣ أكتوبر على النسخ الثلاث والعمّال، ومؤشّر القاطع يظهر في لوحة القياس من كلّ نسخة. و٣٨ اختباراً جديداً ناجحة.</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>القياس الحيّ: إيقاف النموذج المحلّيّ تحت الحمل، والتأكّد أنّ الأخطاء فوريّة وأنّ بقيّة المسارات لا تتباطأ. ولا تنبيه بعد عند فتح القاطع.</dd></div>
+        </dl>
       </div></article>
 
       <article class="step pending"><div class="step-id">٦٫٢</div><div class="step-body">
         <div class="step-title"><h3>تفعيل المزوّدين السحابيّين</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>الكود مكتوبٌ ومُختبَر. الحاجز مفاتيح الوصول والقرار — لا هندسة. والنموذج المحلّيّ الحاليّ يعالج ١–٤ محادثاتٍ فقط في اللحظة، والهدف ٥٠.</dd></div></dl>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>القرار حُسم، لكنّ العمل أكبر ممّا كان مكتوباً: الموجود فعلاً محوّلا OpenAI والنموذج المحلّيّ فقط، أمّا Claude وGemini وOpenRouter فملفّاتٌ فارغة. فالخطوة تبني محوّلاً، ثمّ تحتاج مفاتيح الوصول. والنموذج المحلّيّ يعالج ١–٤ محادثاتٍ فقط في اللحظة، والهدف ٥٠.</dd></div></dl>
       </div></article>
 
       <article class="step pending"><div class="step-id">٦٫٣</div><div class="step-body">
         <div class="step-title"><h3>إثبات أنّ البثّ لا يحتجز موارد</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>ثابتٌ بنيويّاً، ويبقى إثباته تحت حمل: ٥٠ محادثةً متزامنةً وقراءةُ المؤشّرات أثناءها.</dd></div></dl>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>ثابتٌ بنيويّاً، ويبقى إثباته تحت حمل: ٥٠ محادثةً متزامنةً وقراءةُ المؤشّرات أثناءها. وبعد ٦٫١ صار للنموذج المحلّيّ سقفٌ لا يتجاوز ٢٤ محادثةً في المنصّة كلّها، فالقياس يحتاج رفع السقف مؤقّتاً أو مزوّداً سحابيّاً.</dd></div></dl>
       </div></article>
 
       <article class="step pending"><div class="step-id">٦٫٤</div><div class="step-body">
         <div class="step-title"><h3>ماذا يحدث عند فشل مزوّد</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا تحويل تلقائيّ في التصميم اليوم. السؤال واجبُ الجواب: نحوّل إلى بديلٍ أم نرفض صراحةً؟</dd></div></dl>
+        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا تحويل تلقائيّ في التصميم اليوم. وباختيار الهجين صار السؤال واجبَ الجواب: حين يتوقّف مزوّد، نحوّل إلى الآخر أم نرفض صراحةً؟</dd></div></dl>
       </div></article>
 
       <article class="step pending"><div class="step-id">٦٫٥</div><div class="step-body">
@@ -829,37 +839,37 @@
     <div class="wave-head">
       <span class="wave-num">المرحلة ٨</span>
       <h2>حاجز الأمان قبل الإنتاج</h2>
-      <span class="wave-score">لم تبدأ · ٦ خطوات</span>
+      <span class="wave-score">مؤجَّلة · ٦ خطوات</span>
     </div>
-    <p class="wave-note">هذه المرحلة لا تخصّ السعة، لكنّها تمنع الإطلاق. ومعظمها أصغر ممّا يبدو: الآليّات موجودة وتنتظر التفعيل.</p>
+    <p class="wave-note"><b>أُجِّلت بقرار المالك في ٣ أكتوبر.</b> هذه المرحلة لا تخصّ السعة، لكنّها تمنع الإطلاق: لا تُفتح المنصّة للإنترنت قبلها. ومعظمها أصغر ممّا يبدو: الآليّات موجودة وتنتظر التفعيل.</p>
     <div class="steps">
-      <article class="step pending"><div class="step-id">٨٫١</div><div class="step-body">
-        <div class="step-title"><h3>الشهادة والنطاق العامّ</h3><span class="tag pending">لم تبدأ · صغيرة</span></div>
+      <article class="step deferred"><div class="step-id">٨٫١</div><div class="step-body">
+        <div class="step-title"><h3>الشهادة والنطاق العامّ</h3><span class="tag deferred">مؤجَّلة · صغيرة</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>التشفير يعمل فعلاً؛ الناقص شهادةٌ حقيقيّة بتجديدٍ تلقائيّ وتحويلٌ إجباريّ إلى المسار الآمن. أسطرٌ تُشغَّل يوم وجود اسم نطاقٍ حقيقيّ، لا عملٌ هندسيّ.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٨٫٢</div><div class="step-body">
-        <div class="step-title"><h3>تقسيم الشبكة</h3><span class="tag pending">لم تبدأ · الأهمّ في المرحلة</span></div>
+      <article class="step deferred"><div class="step-id">٨٫٢</div><div class="step-body">
+        <div class="step-title"><h3>تقسيم الشبكة</h3><span class="tag deferred">مؤجَّلة · الأهمّ في المرحلة</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>كلّ المكوّنات اليوم على شبكةٍ واحدة: ثغرةٌ في أيّ حاويةٍ تصل قاعدة البيانات مباشرةً. المطلوب ثلاث شبكاتٍ منفصلة.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٨٫٣</div><div class="step-body">
-        <div class="step-title"><h3>تصليب الحاويات والأسرار</h3><span class="tag pending">لم تبدأ</span></div>
+      <article class="step deferred"><div class="step-id">٨٫٣</div><div class="step-body">
+        <div class="step-title"><h3>تصليب الحاويات والأسرار</h3><span class="tag deferred">مؤجَّلة</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>تشغيلٌ بصلاحيّاتٍ دنيا، ونظامُ ملفّاتٍ للقراءة فقط، وتثبيتُ الصور ببصمةٍ لا باسم.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٨٫٤</div><div class="step-body">
-        <div class="step-title"><h3>مسار الملفّات من الرفع إلى التخزين</h3><span class="tag pending">لم تبدأ</span></div>
+      <article class="step deferred"><div class="step-id">٨٫٤</div><div class="step-body">
+        <div class="step-title"><h3>مسار الملفّات من الرفع إلى التخزين</h3><span class="tag deferred">مؤجَّلة</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>صلاحيّةٌ محدودة للتخزين بدل صلاحيّة الجذر، وفاحصُ برمجيّاتٍ خبيثة قبل قبول الملفّ.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٨٫٥</div><div class="step-body">
-        <div class="step-title"><h3>حماية من طلباتٍ خبيثة للخادم</h3><span class="tag pending">لم تبدأ</span></div>
+      <article class="step deferred"><div class="step-id">٨٫٥</div><div class="step-body">
+        <div class="step-title"><h3>حماية من طلباتٍ خبيثة للخادم</h3><span class="tag deferred">مؤجَّلة</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>مساراتٌ تقبل رابطاً من المستخدم. المطلوب قائمةُ سماحٍ وتحقّقٌ من الوجهة قبل الطلب.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٨٫٦</div><div class="step-body">
-        <div class="step-title"><h3>تتبّع ما يعمل على الخادم</h3><span class="tag pending">لم تبدأ · قابلة للتأجيل</span></div>
+      <article class="step deferred"><div class="step-id">٨٫٦</div><div class="step-body">
+        <div class="step-title"><h3>تتبّع ما يعمل على الخادم</h3><span class="tag deferred">مؤجَّلة · قابلة للتأجيل</span></div>
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا سبيل اليوم للجزم بما يعمل على الخادم الآن، والتراجع يصير إعادة بناءٍ لا إعادة نشر. لا يمنع السعة، ويمنع تشغيلها بثقة.</dd></div></dl>
       </div></article>
     </div>
@@ -868,7 +878,7 @@
   <!-- ======== الحواجز ======== -->
   <section class="blockers">
     <h2>ما يحجب التقدّم الآن</h2>
-    <p>حاجزُ حسابات الدخول رُفع، وبه ثُبِّت خطّ الأساس. وما يحجب الآن: قراران كبيران للمالك، وثلاثة قراراتٍ أصغر.</p>
+    <p>قرار المزوّد حُسم في ٣ أكتوبر، ومعه سلوك المنصّة عند الامتلاء. وما يحجب الآن: قرار العتاد، والمحوّلات السحابيّة التي لم تُكتب، وقراران أصغر.</p>
     <div class="bgrid">
       <div class="bcard">
         <div class="who">يحجب: قياسَ السقف الجديد، والفهرسة</div>
@@ -876,20 +886,20 @@
         <p>المنصّة تطلب نحو ٣٤ نواةً و٥٦ جيجابايت، والجهاز ١٠ نوى و١٣ جيجابايت. تحت الحمل تمتلئ ذاكرته فيبطئ كلّ شيء: تشغيلٌ كامل في ٢٨ سبتمبر قاس الجهاز المستنفد لا المنصّة، ولم يصلح منه رقم. والقرار: حجم الخادم النهائيّ، وهو قرارُ مالك.</p>
       </div>
       <div class="bcard">
-        <div class="who">يحجب: المرحلة ٦ كاملة</div>
-        <h3>لم يُختَر مزوّد النموذج اللغويّ</h3>
-        <p>النموذج المحلّيّ الحاليّ يعالج من واحدةٍ إلى أربع محادثاتٍ في اللحظة، والهدف ٥٠. أيّ خطّةٍ للسعة تسقط إن بقي كما هو. القرار في جوهره قرارُ كلفة، لا قرارُ هندسة.</p>
+        <div class="who">يحجب: سعة المحادثة (٦٫٢)</div>
+        <h3>المحوّلات السحابيّة لم تُكتب</h3>
+        <p>اختير الهجين، لكنّ Claude وGemini وOpenRouter ملفّاتٌ فارغة، والمبنيّ فعلاً OpenAI والنموذج المحلّيّ. والمحلّيّ يعالج من واحدةٍ إلى أربع محادثاتٍ في اللحظة، والهدف ٥٠. فالحاجز صار عملاً هندسيّاً ومفاتيح وصول، لا قراراً.</p>
       </div>
       <div class="bcard">
-        <div class="who">قرارات أخرى معلّقة: ٣</div>
-        <h3>ثلاثة قراراتٍ أصغر</h3>
-        <p>نسخُ قاعدة البيانات الاحتياطيّ الحيّ · سلوك المنصّة عند الامتلاء (رفضٌ صريح) · وجهةُ التنبيهات (بريد أو محادثة). وقراران آخران <b>حُسما بالقياس</b>: مخزن البحث (٤٫٤) وفصل الذاكرة المؤقّتة (٥٫٢).</p>
+        <div class="who">قرارات أخرى معلّقة: ٢</div>
+        <h3>قراران أصغر</h3>
+        <p>نسخُ قاعدة البيانات الاحتياطيّ الحيّ · وجهةُ التنبيهات (بريد أو محادثة). وأربعة قراراتٍ حُسمت: مخزن البحث (٤٫٤) وفصل الذاكرة المؤقّتة (٥٫٢) <b>بالقياس</b>، ومزوّد النموذج (هجين) وسلوك الامتلاء (رفضٌ صريح) <b>بتوقيع المالك</b> في ٣ أكتوبر.</p>
       </div>
     </div>
   </section>
 
   <p class="foot">
-    مبنيّ من <code>docs/capacity-plan.md</code> و<code>docs/capacity-status.md</code> و<code>docs/capacity-baseline.md</code> · فرع <code>capacity</code> · آخر تحديث ٢ أكتوبر ٢٠٢٦ (بعد ٥٫٣ وقياس ٥٫٥ ونشر ٥٫٧).
+    مبنيّ من <code>docs/capacity-plan.md</code> و<code>docs/capacity-status.md</code> و<code>docs/capacity-baseline.md</code> · فرع <code>capacity</code> · آخر تحديث ٣ أكتوبر ٢٠٢٦ (قرارا المزوّد والامتلاء، وتأجيل المرحلة ٨، وبناء ٦٫١ ونشرها).
     الأرقام والتفاصيل الكاملة لكلّ خطوة في وثيقة الحالة.
   </p>
 
