@@ -423,7 +423,7 @@ else:
     )
     print(
         "            "
-        + (f"${c['usd_per_1k_requests']:.4f} per 1,000 requests · " if requests else "no requests · ")
+        + (f"${c['usd_per_1k_requests']:.6f} per 1,000 requests · " if requests else "no requests · ")
         + (f"${c['usd_per_1m_tokens']:.4f} per 1M tokens" if tokens else "no tokens")
     )
 with open(out, "w") as f:
