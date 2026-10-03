@@ -89,6 +89,7 @@ from app.framework.ports.llm_provider import (
 from app.framework.ports.storage_provider import StorageProvider
 from app.framework.ports.web_search_provider import WebSearchProvider
 from app.framework.providers.fallback import LlmFallback
+from app.framework.providers.pricing import LlmPricing
 from app.framework.providers.resolver import ProviderResolver
 from app.framework.types import Json, Uuid
 from app.framework.workflows.engine import SequentialWorkflowEngine, WorkflowResult
@@ -118,18 +119,31 @@ _LLM_CAPABILITY = "chat"
 # mistaken for a measured count (see `_TokenMeter`).
 _CHARS_PER_TOKEN = 4
 
-# v1 records no monetary cost: there is no pricing source anywhere in the
-# project (no rate table in Requirements or `design/`), and plan §0.6 puts
-# billing/payment explicitly out of v1. `tokens` is therefore the only live
-# enforced metric, and the configured cost limit never fires — a documented
-# consequence, not an oversight. The ledger column stays for the extension.
-_V1_COST_MICROS = 0
-
 # The `provider` recorded for an agent that resolves no LLM (the media agents,
 # D-04). A non-empty placeholder, because `CaptureUsage` rejects a blank
 # provider and `usage`'s rollup buckets are keyed by this string — "" would
 # either fail validation or silently collide with a real provider's bucket.
 _NO_PROVIDER = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class _BilledRoute:
+    """The provider AND model a charge is priced on (capacity-plan 6.5).
+
+    The provider alone used to be enough, because every charge cost 0. A price
+    belongs to a model, not to a vendor — ``gpt-4.1-mini`` and ``gpt-4.1``
+    differ fivefold — so the pair travels together from the pre-flight that
+    resolved it to the capture that prices it, and a turn can never be priced
+    on a model it did not run.
+    """
+
+    provider: str
+    model: str
+
+
+# The route of a turn that resolved no LLM. Its meter is empty by construction,
+# so it is never priced; the model is blank rather than invented.
+_NO_ROUTE = _BilledRoute(provider=_NO_PROVIDER, model="")
 
 # `LimitDecision.reason` → 03 §4 error code (6.2). The keys are `usage`'s
 # `DenyReason` values, which cross the inbound port as plain `str` (the same
@@ -498,6 +512,14 @@ def _timeout_event(cap_s: float) -> AgentEvent:
     )
 
 
+def _billed_route(binding: ResolvedLLM | None) -> _BilledRoute:
+    """The route a turn or step is admitted and (unless 6.4 switches it)
+    charged on — ``_NO_ROUTE`` for an agent that resolved no LLM."""
+    if binding is None:
+        return _NO_ROUTE
+    return _BilledRoute(provider=binding.provider.provider, model=binding.model)
+
+
 def _due_notice(fallback: _Fallback | None) -> AgentEvent | None:
     """6.4's ``notice`` frame, exactly once, as soon as the local model has
     answered — i.e. before the first event built from its answer. ``None``
@@ -627,14 +649,14 @@ class _Fallback:
             "to": {"provider": self.target.provider.provider, "model": self.target.model},
         }
 
-    def billed(self, primary: str) -> str:
-        """The provider a turn's charge is recorded against. The local one
-        only when it produced EVERYTHING; a turn that mixed the two is
-        charged to the primary — the conservative direction, ``_TokenMeter``'s
-        "one unreported call taints the total" rule applied to cost."""
-        if self.switched and not self.primary_served:
-            return self.target.provider.provider
-        return primary
+    def billed(self) -> _BilledRoute:
+        """The route a turn's charge is recorded and PRICED against. The local
+        one only when it produced EVERYTHING; a turn that mixed the two is
+        charged to the primary, every token at the primary's price — the
+        conservative direction, ``_TokenMeter``'s "one unreported call taints
+        the total" rule applied to cost (capacity-plan 6.5)."""
+        served = self.target if self.switched and not self.primary_served else self.primary
+        return _BilledRoute(provider=served.provider.provider, model=served.model)
 
     def served(self, failure: AppError) -> None:
         """The local model has answered: switch for the rest of the turn."""
@@ -870,6 +892,10 @@ class OrchestratorDependencies:
     # Single-agent turns only: a workflow step runs inside a run the user
     # never pinned to a model, and is not switched behind its back.
     llm_fallback: LlmFallback | None = None
+    # capacity-plan 6.5 — what a charge costs. `None` prices every charge at 0,
+    # the pre-6.5 behaviour, so a bare test bundle keeps it; the root always
+    # passes the table, which refused to boot if a cloud route had no price.
+    pricing: LlmPricing | None = None
 
 
 @dataclass(slots=True)
@@ -883,7 +909,7 @@ class _OpenStep:
     """
 
     agent_key: str
-    provider: str
+    route: _BilledRoute
     meter: _TokenMeter
     # 2.7 — the step's own quota slot. Per STEP and not per run, for the same
     # reason the charge is: each step reserves under the agent that actually
@@ -953,7 +979,7 @@ class _MeteredSteps:
         # tokens steps 1 and 2 really consumed.
         await self.close_step()
         meter = _TokenMeter()
-        deps, provider, reservation_id = await self._orchestrator.begin_step(
+        deps, route, reservation_id = await self._orchestrator.begin_step(
             self._ctx, agent_key, meter, space_id=self._space_id
         )
         # Recorded only AFTER `begin_step` succeeded: a step the quota denied,
@@ -962,7 +988,7 @@ class _MeteredSteps:
         # either, since `reserve` writes nothing on a denial.
         self._open = _OpenStep(
             agent_key=agent_key,
-            provider=provider,
+            route=route,
             meter=meter,
             reservation_id=reservation_id,
         )
@@ -979,7 +1005,7 @@ class _MeteredSteps:
         # twice would double-charge a workspace for tokens it spent once.
         self._open = None
         await self._orchestrator.finish_step(
-            self._ctx, step.agent_key, step.provider, step.meter, step.reservation_id
+            self._ctx, step.agent_key, step.route, step.meter, step.reservation_id
         )
 
 
@@ -1343,7 +1369,7 @@ class AgentOrchestrator:
         pending = await self._pending_clarification(ctx, req.conversation_id)
         record.pending = pending
         binding = await self._resolve_llm(ctx, agent_key, route=route)
-        provider_name = binding.provider.provider if binding is not None else _NO_PROVIDER
+        billed = _billed_route(binding)
         record.fallback = await self._fallback_for(ctx, binding, req)
 
         # Quota BEFORE the run (FR-132, 11 §8.1): a denial must cost nothing,
@@ -1353,7 +1379,7 @@ class AgentOrchestrator:
         # 2.7 -- and it RESERVES rather than merely asking, so the hundredth
         # concurrent request on the last token of a workspace's headroom is
         # refused instead of being told the same "yes" as the first.
-        record.reservation_id = await self._admit(ctx, agent_key, provider_name)
+        record.reservation_id = await self._admit(ctx, agent_key, billed.provider)
 
         # ⚠️ Everything from here to the `return` is the ONE window where an
         # admitted turn can die before `_metered` exists to bill it -- an
@@ -1382,7 +1408,7 @@ class AgentOrchestrator:
             await self._give_back(ctx, record.reservation_id)
             raise
         return record, self._metered(
-            ctx, agent_key, provider_name, record, self._deps.executor.drive(agent, req)
+            ctx, agent_key, billed, record, self._deps.executor.drive(agent, req)
         )
 
     async def _give_back(self, ctx: ExecutionContext, reservation_id: Uuid | None) -> None:
@@ -1605,11 +1631,12 @@ class AgentOrchestrator:
 
     async def begin_step(
         self, ctx: ExecutionContext, agent_key: str, meter: _TokenMeter, *, space_id: Uuid
-    ) -> tuple[AgentDependencies, str, Uuid | None]:
+    ) -> tuple[AgentDependencies, _BilledRoute, Uuid | None]:
         """Start one workflow step: resolve its provider, RESERVE the quota,
-        assemble its bundle — returning the bundle, the provider name the
-        eventual charge must carry, and the quota slot ``finish_step`` owes
-        back (4.7-e-1; enforcement added 4.7-e-2, the reservation 2.7).
+        assemble its bundle — returning the bundle, the provider and model the
+        eventual charge must carry and be priced on (6.5), and the quota slot
+        ``finish_step`` owes back (4.7-e-1; enforcement added 4.7-e-2, the
+        reservation 2.7).
 
         Public, with ``finish_step``, because ``_MeteredSteps`` is their only
         caller and this IS the orchestrator's contract with the workflow
@@ -1632,20 +1659,20 @@ class AgentOrchestrator:
         the work it had already bought.
         """
         binding = await self._resolve_llm(ctx, agent_key)
-        provider = binding.provider.provider if binding is not None else _NO_PROVIDER
-        reservation_id = await self._admit(ctx, agent_key, provider)
+        billed = _billed_route(binding)
+        reservation_id = await self._admit(ctx, agent_key, billed.provider)
         # س-32 — the RUN's space reaches every step of it. A step's agent is the
         # same agent a user could invoke directly, so it gets the same isolation
         # by the same field; without this a workflow would be the one way to
         # reach an unscoped read, which is precisely the hole the decision
         # closes on the direct path.
-        return self._build_dependencies(binding, meter, space_id=space_id), provider, reservation_id
+        return self._build_dependencies(binding, meter, space_id=space_id), billed, reservation_id
 
     async def finish_step(
         self,
         ctx: ExecutionContext,
         agent_key: str,
-        provider: str,
+        route: _BilledRoute,
         meter: _TokenMeter,
         reservation_id: Uuid | None = None,
     ) -> None:
@@ -1658,7 +1685,7 @@ class AgentOrchestrator:
         handed back for it, which is why the slot is passed here rather than
         being released by whoever decides there is nothing to bill.
         """
-        await self._capture(ctx, agent_key, provider, meter, reservation_id)
+        await self._capture(ctx, agent_key, route, meter, reservation_id)
 
     def _build_dependencies(
         self,
@@ -1817,7 +1844,7 @@ class AgentOrchestrator:
         self,
         ctx: ExecutionContext,
         agent_key: str,
-        provider: str,
+        route: _BilledRoute,
         record: _TurnRecord,
         events: AsyncIterator[AgentEvent],
     ) -> AsyncIterator[AgentEvent]:
@@ -1956,7 +1983,7 @@ class AgentOrchestrator:
             # ⚠️ And billing is deliberately NOT reduced for a cut-off turn
             # (decision 3): those tokens were generated and paid for upstream.
             # ب-10 reduces what is LOST, never what is owed.
-            billed = provider if record.fallback is None else record.fallback.billed(provider)
+            billed = route if record.fallback is None else record.fallback.billed()
             await self._capture(ctx, agent_key, billed, record.meter, record.reservation_id)
 
     async def _settle_cut(
@@ -2234,7 +2261,7 @@ class AgentOrchestrator:
         self,
         ctx: ExecutionContext,
         agent_key: str,
-        provider: str,
+        route: _BilledRoute,
         meter: _TokenMeter,
         reservation_id: Uuid | None = None,
     ) -> None:
@@ -2262,6 +2289,14 @@ class AgentOrchestrator:
           revenue, so this log is the operator's signal to investigate. A
           swallowed failure here leaves the slot held, and that is bounded
           rather than permanent: it expires on the request's own deadline.
+
+        **Priced on the route that served it** (capacity-plan 6.5): the
+        prompt and completion halves of the meter at that model's two prices,
+        rounded up once for the whole turn. The pricing sits INSIDE the
+        ``try`` for the second silence's reason — a model the table cannot
+        price is a configuration bug ``LlmPricing.for_routes`` refuses at boot,
+        and if one slipped through anyway it is logged here rather than
+        turning a delivered answer into an error.
         """
         enforcement = self._deps.usage_enforcement
         capture = self._deps.usage_capture
@@ -2270,15 +2305,15 @@ class AgentOrchestrator:
             await self._give_back(ctx, reservation_id)
             return
         assert capture is not None  # narrowed by `billable`
-        charge = UsageCharge(
-            agent=agent_key,
-            provider=provider,
-            tokens=meter.total,
-            cost_micros=_V1_COST_MICROS,
-            operation_id=new_uuid7(),
-            estimated=meter.estimated,
-        )
         try:
+            charge = UsageCharge(
+                agent=agent_key,
+                provider=route.provider,
+                tokens=meter.total,
+                cost_micros=self._cost_of(route, meter),
+                operation_id=new_uuid7(),
+                estimated=meter.estimated,
+            )
             if enforcement is not None and reservation_id is not None:
                 # ONE transaction for the release and the append (2.7): the
                 # workspace is never briefly charged twice for this request,
@@ -2289,9 +2324,18 @@ class AgentOrchestrator:
         except Exception as exc:  # never mask a delivered answer
             _logger.warning(
                 "orchestrator.usage_capture_failed",
-                extra={"agent_key": agent_key, "provider": provider, "tokens": meter.total},
+                extra={"agent_key": agent_key, "provider": route.provider, "tokens": meter.total},
                 exc_info=exc,
             )
+
+    def _cost_of(self, route: _BilledRoute, meter: _TokenMeter) -> int:
+        """The turn's price in micro-dollars, or 0 with no table wired (6.5)."""
+        pricing = self._deps.pricing
+        if pricing is None:
+            return 0
+        return pricing.cost_micros(
+            route.provider, route.model, meter.prompt_total, meter.completion_total
+        )
 
     async def _release(
         self, ctx: ExecutionContext, enforcement: UsageEnforcement, reservation_id: Uuid

@@ -40,16 +40,22 @@ class Evaluation:
     binding: LimitCheck | None
 
 
-def evaluate(checks: Sequence[LimitCheck], *, estimated_tokens: int | None = None) -> Evaluation:
+def evaluate(
+    checks: Sequence[LimitCheck],
+    *,
+    estimated_tokens: int | None = None,
+    estimated_cost_micros: int | None = None,
+) -> Evaluation:
     """Evaluate every relevant ``LimitCheck`` and return one ``Decision``.
 
     1. No checks at all ⇒ allow, ``remaining=None`` (nothing to be near).
-    2. A ``TOKENS`` check is violated when already at/over its cap
-       (``current >= limit_value``) OR when the request's
-       ``estimated_tokens`` would push it strictly over
-       (``current + estimated_tokens > limit_value`` — landing exactly on
-       the cap is allowed). A ``COST_MICROS`` check is only ever violated by
-       the first rule (there is no "estimated cost" input in v1).
+    2. A check is violated when already at/over its cap
+       (``current >= limit_value``) OR when the request's estimate for THAT
+       metric would push it strictly over (``current + estimate >
+       limit_value`` — landing exactly on the cap is allowed): a ``TOKENS``
+       check reads ``estimated_tokens``, a ``COST_MICROS`` check
+       ``estimated_cost_micros`` (capacity-plan 6.5 — until then cost had no
+       estimate input and only the first rule could fire).
     3. ``remaining`` is the smallest headroom (``max(limit - current, 0)``)
        across ``TOKENS`` checks only — ``None`` if there are none — computed
        independently of whether the request is ultimately allowed or
@@ -65,7 +71,9 @@ def evaluate(checks: Sequence[LimitCheck], *, estimated_tokens: int | None = Non
         return Evaluation(Decision(allowed=True), None)
 
     remaining = _remaining_tokens(checks)
-    violated = [check for check in checks if _violates(check, estimated_tokens)]
+    violated = [
+        check for check in checks if _violates(check, estimated_tokens, estimated_cost_micros)
+    ]
     if not violated:
         return Evaluation(Decision(allowed=True, remaining=remaining), None)
 
@@ -76,14 +84,13 @@ def evaluate(checks: Sequence[LimitCheck], *, estimated_tokens: int | None = Non
     return Evaluation(Decision(allowed=False, reason=reason, remaining=remaining), binding)
 
 
-def _violates(check: LimitCheck, estimated_tokens: int | None) -> bool:
-    if check.metric is Metric.TOKENS:
-        over_current = check.current >= check.limit_value
-        over_estimate = (
-            estimated_tokens is not None and check.current + estimated_tokens > check.limit_value
-        )
-        return over_current or over_estimate
-    return check.current >= check.limit_value
+def _violates(
+    check: LimitCheck, estimated_tokens: int | None, estimated_cost_micros: int | None
+) -> bool:
+    estimate = estimated_tokens if check.metric is Metric.TOKENS else estimated_cost_micros
+    over_current = check.current >= check.limit_value
+    over_estimate = estimate is not None and check.current + estimate > check.limit_value
+    return over_current or over_estimate
 
 
 def _rank(check: LimitCheck) -> tuple[int, int]:

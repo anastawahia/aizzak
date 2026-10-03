@@ -215,6 +215,7 @@ from app.framework.ports.system_stats import SystemStatsSource
 from app.framework.ports.vault_health import VaultHealth
 from app.framework.providers.catalog import ModelCatalog
 from app.framework.providers.inventory import ProviderInventory, ProviderProbe
+from app.framework.providers.pricing import LlmPricing
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings import DatabaseSettings, Settings
 from app.framework.settings.settings import Limits, RetrievalSettings
@@ -1974,6 +1975,12 @@ class CompositionRoot:
             # keyless set beside it; a cloud route here refuses to boot.
             fallback_route=settings.llm_fallback_route,
         )
+        # capacity-plan 6.5 -- the price of every routed cloud model, checked
+        # against the table the resolver just parsed: a cloud route without a
+        # price refuses to boot here, because its spend would never be counted.
+        pricing = LlmPricing.for_routes(
+            settings.llm_prices, provider_resolver.configured_providers()
+        )
 
         agent_registry: AgentRegistry = InMemoryAgentRegistry()
         plugin_report = PluginLoader().load_into(agent_registry)
@@ -2150,6 +2157,9 @@ class CompositionRoot:
                 # `LlmFallback` face: the fallback route is a row of the table
                 # it parsed, so the two can never disagree.
                 llm_fallback=provider_resolver,
+                # capacity-plan 6.5 -- what each charge costs; feeds the
+                # workspace `cost_micros` budget, which until now read 0.
+                pricing=pricing,
                 files=files_query,
                 media=media_requests,
                 usage_enforcement=_usage_enforcement(usage_ledger, settings, tenant_session),

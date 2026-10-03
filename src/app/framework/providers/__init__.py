@@ -11,6 +11,7 @@ from app.framework.providers.inventory import (
     ProviderProbe,
     ProviderRoute,
 )
+from app.framework.providers.pricing import LlmPricing, ModelPrice
 from app.framework.providers.resolver import (
     KeyResolver,
     ProviderResolver,
@@ -24,8 +25,10 @@ __all__ = [
     "ConfiguredProvider",
     "KeyResolver",
     "LlmFallback",
+    "LlmPricing",
     "ModelCatalog",
     "ModelChoice",
+    "ModelPrice",
     "Namespace",
     "ProbeOutcome",
     "ProviderInventory",

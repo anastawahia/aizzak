@@ -168,6 +168,15 @@ SUMMARY_ABANDONED_REASON = (
 # set below can only hold sentences that have a name.
 SUMMARY_EMPTY_BUILD_REASON = "the summary build produced no text"
 
+# capacity-plan 6.5 — a build refused BEFORE its first provider call because
+# the workspace is out of allowance (the worker's `summary_metering`). Two
+# sentences, as a chat turn gets two codes (`usage.quota_exceeded` /
+# `usage.budget_exceeded`): the token quota and the spending budget are
+# different limits, raised by different people, and "ask again" is the wrong
+# advice for both until the period turns over.
+SUMMARY_QUOTA_EXCEEDED_REASON = "this workspace has used its token allowance for this period"
+SUMMARY_BUDGET_EXCEEDED_REASON = "this workspace has reached its spending budget for this period"
+
 # ب-11ب (خطة السيناريوهات §7، ف-3) — the reasons a THREAD may be shown
 # verbatim, and the reason there has to be a set at all.
 #
@@ -198,6 +207,8 @@ SUMMARY_DELIVERABLE_REASONS: frozenset[str] = frozenset(
         SUMMARY_CANCELLED_REASON,
         SUMMARY_ABANDONED_REASON,
         SUMMARY_EMPTY_BUILD_REASON,
+        SUMMARY_QUOTA_EXCEEDED_REASON,
+        SUMMARY_BUDGET_EXCEEDED_REASON,
     }
 )
 

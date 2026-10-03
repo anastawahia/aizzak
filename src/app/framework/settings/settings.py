@@ -1234,6 +1234,13 @@ class Settings(BaseModel):
     # is the resolver's (`SettingsProviderResolver`), for `provider_routing`'s
     # reason above: it is the one place that knows which adapters are local.
     llm_fallback_route: str = ""
+    # capacity-plan 6.5 -- `{"provider/model": {"input": n, "output": n}}`,
+    # USD per million tokens (the same number as micro-dollars per token).
+    # Every `llm` route to a cloud provider must be priced or the process
+    # refuses to boot (`providers/pricing.py`); local providers are free and
+    # may not appear. Untyped here for `provider_routing`'s reason: the check
+    # needs the parsed routing table, so it lives beside the resolver.
+    llm_prices: Json = Field(default_factory=dict)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     # capacity-plan 2.9 -- the deploy's two waits, beside `database` rather

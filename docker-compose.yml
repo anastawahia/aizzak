@@ -257,6 +257,11 @@ x-app-env: &app-env
   # -- which is why the default is empty: the routing default above has no
   # second route to name.
   LLM_FALLBACK_ROUTE: ${LLM_FALLBACK_ROUTE:-}
+  # capacity-plan 6.5: USD per million tokens for every cloud model a route
+  # names; `app` and `worker-knowledge` refuse to boot on an unpriced cloud
+  # route. The default prices the one cloud model this platform has enabled,
+  # so turning on the `cloud` route alone never boots an unmetered stack.
+  LLM_PRICES: ${LLM_PRICES:-{"openai/gpt-4.1-mini":{"input":0.40,"output":1.60}}}
   OAUTH_REDIRECT_BASE_URL: ${OAUTH_REDIRECT_BASE_URL:-http://localhost}
   MCP_ALLOWED_TRANSPORTS: ${MCP_ALLOWED_TRANSPORTS:-http,sse}
   OAUTH_REFRESH_SKEW_S: ${OAUTH_REFRESH_SKEW_S:-60}

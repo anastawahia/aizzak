@@ -152,6 +152,7 @@ from app.framework.ports.llm_provider import LLMProvider
 from app.framework.ports.task_ledger import TaskLedger
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.ports.vector_store import HybridVectorStore, VectorStore
+from app.framework.providers.pricing import LlmPricing
 from app.framework.providers.resolver import ProviderResolver, SettingsProviderResolver
 from app.framework.settings.settings import DatabaseSettings, EventSettings, Settings
 from app.framework.types import Json, Uuid
@@ -176,6 +177,7 @@ from app.infrastructure.monitoring.task_ledger import RedisTaskLedger
 from app.infrastructure.persistence.database import create_engine, create_sessionmaker
 from app.infrastructure.persistence.outbox import SqlEventOutbox, SqlOutboxRelayStore
 from app.infrastructure.persistence.processed_events import SqlProcessedEventLedger
+from app.infrastructure.persistence.quota_lock import AdvisoryQuotaLock
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.infrastructure.vector.qdrant_store import QdrantVectorStore, create_qdrant_client
 from app.modules.conversations.adapters.sql_repository import SqlConversationRepository
@@ -203,6 +205,8 @@ from app.modules.knowledge.application.use_cases import (
     BuildSummary,
     GetDocumentFileName,
     IndexRegisteredDocument,
+    SummaryAttempt,
+    SummaryBuildPlan,
     delivered_failure_text,
     delivered_summary_text,
 )
@@ -222,8 +226,18 @@ from app.modules.memory.application.use_cases import IndexMemoryItem
 from app.modules.memory.ports.repository import MemoryRepository
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
 from app.modules.spaces.application.use_cases import SpacesQueryService
+from app.modules.usage.adapters.sql_repository import SqlUsageLedgerRepository
+from app.modules.usage.application.use_cases import (
+    CaptureUsage,
+    CommitReservation,
+    EnforceLimit,
+    ReleaseReservation,
+    ReserveQuota,
+    UsageEnforcementService,
+)
 from app.workers.content_resolver import WorkerDocumentContentResolver
 from app.workers.media_generation import WorkerMediaGenerator
+from app.workers.summary_metering import SummaryAdmission, SummaryMetering, SummaryRefusal
 
 _logger = get_logger(__name__)
 
@@ -580,6 +594,37 @@ class _WorkerSummarizerResolver:
         return ResolvedSummarizer(provider=provider, model=resolved.model, api_key=resolved.api_key)
 
 
+def _summary_enforcement(
+    settings: Settings, tenant_session: TenantSessionFactory
+) -> UsageEnforcementService:
+    """The quota seam a summary build reserves against (capacity-plan 6.5) --
+    ``composition_root._usage_enforcement``'s twin, copied rather than
+    imported for ``_WorkerSummarizerResolver``'s reason (the ``layers``
+    contract keeps this package off ``app.framework.di``).
+
+    **One number differs, and it is the reason this is not a copy-paste.** The
+    API's reservations expire after its stream deadline; a build's must
+    outlive the longest a build may run, ``summarize_job_max_duration_s``,
+    which the handler enforces with ``asyncio.timeout``. A slot that expired
+    mid-build would stop counting a build still spending, and the workspace's
+    next admission would read headroom that is not there.
+    """
+    ledger = SqlUsageLedgerRepository(tenant_session)
+    enforce = EnforceLimit(ledger, settings.usage)
+    return UsageEnforcementService(
+        enforce,
+        ReserveQuota(
+            enforce,
+            ledger,
+            tenant_session,
+            AdvisoryQuotaLock(tenant_session),
+            settings.limits.summarize_job_max_duration_s,
+        ),
+        CommitReservation(ledger, CaptureUsage(ledger), tenant_session),
+        ReleaseReservation(ledger),
+    )
+
+
 def _consumer_name(prefix: str) -> str:
     """A per-process Streams consumer identity: ``<prefix>.<hostname>.<pid>``
     -- deterministic and inspectable (which worker instance owns a given
@@ -747,6 +792,7 @@ def build_knowledge_summary_handler(
     consumer_group: str = _CG_KNOWLEDGE,
     heartbeat: Heartbeat | None = None,
     max_duration_s: float | None = None,
+    metering: SummaryMetering | None = None,
 ) -> EventHandler:
     """``knowledge.summary.requested.v1`` -> ``BuildSummary.claim`` (the
     ``queued → running`` claim + the chunk read + route resolution) ->
@@ -800,10 +846,44 @@ def build_knowledge_summary_handler(
     it to be redelivered until the DLQ. Both default to off, so every direct
     caller -- the live integration tests included -- keeps today's behaviour,
     the ``sweep_interval_s`` precedent in ``build_knowledge_worker``.
+
+    **``metering`` (capacity-plan 6.5) brackets ``run`` and nothing else.**
+    Admitted after ``claim`` -- the route it resolves is what the reservation
+    is taken under -- and before the first provider call; a workspace out of
+    tokens or budget is answered through the SAME ``fail`` as every other
+    build that cannot start, with a sentence its thread is allowed to show.
+    Settled in a ``finally`` so a build cut by ``max_duration_s`` is still
+    billed for what it spent. ``None`` keeps the unmetered behaviour for the
+    direct callers above.
     """
     # `Heartbeat` has no `read` side by design, so there is nothing to ask it
     # here; the whole binding is one bound method handed to `run`.
     beat = None if heartbeat is None else heartbeat.beat
+
+    async def _build(
+        ctx: ExecutionContext, job_id: str, plan: SummaryBuildPlan
+    ) -> SummaryAttempt | None:
+        admission: SummaryAdmission | None = None
+        if metering is not None:
+            outcome = await metering.admit(ctx, plan)
+            if isinstance(outcome, SummaryRefusal):
+                return await build.fail(ctx, job_id=job_id, reason=outcome.reason)
+            admission = outcome
+            plan = admission.plan
+        try:
+            # `asyncio.timeout(None)` is the documented no-op, so the default
+            # needs no branch of its own here.
+            async with asyncio.timeout(max_duration_s):
+                return await build.run(ctx, plan, on_heartbeat=beat)
+        except TimeoutError:
+            return await build.fail(
+                ctx,
+                job_id=job_id,
+                reason=_SUMMARY_TIMEOUT_REASON.format(seconds=max_duration_s),
+            )
+        finally:
+            if metering is not None and admission is not None:
+                await metering.settle(ctx, admission)
 
     async def _handle(ctx: ExecutionContext, envelope: Json) -> None:
         data = envelope["data"]
@@ -824,17 +904,7 @@ def build_knowledge_summary_handler(
         else:
             if plan is None:
                 return  # DD-09 no-op, or a job cancelled before it was claimed.
-            try:
-                # `asyncio.timeout(None)` is the documented no-op, so the
-                # default needs no branch of its own here.
-                async with asyncio.timeout(max_duration_s):
-                    attempt = await build.run(ctx, plan, on_heartbeat=beat)
-            except TimeoutError:
-                attempt = await build.fail(
-                    ctx,
-                    job_id=job_id,
-                    reason=_SUMMARY_TIMEOUT_REASON.format(seconds=max_duration_s),
-                )
+            attempt = await _build(ctx, job_id, plan)
         if attempt is None:
             return
 
@@ -1147,6 +1217,7 @@ def build_knowledge_worker(
     dlq_watch_max_runtime_s: float = 0.0,
     concurrency: int = 1,
     drain_timeout_s: float = 0.0,
+    summary_metering: SummaryMetering | None = None,
 ) -> tuple[StreamConsumer, list[Subscription]]:
     """Wire the knowledge worker's ONE subscription under the ``cg.knowledge``
     consumer group (04 §4's binding table, `docs/log/3.45.md`'s recorded
@@ -1212,6 +1283,9 @@ def build_knowledge_worker(
                     ledger,
                     heartbeat=heartbeat,
                     max_duration_s=summarize_max_duration_s,
+                    # capacity-plan 6.5 -- `None` for direct callers, the
+                    # `heartbeat` precedent; the `_from_env` path wires it.
+                    metering=summary_metering,
                 ),
                 # `F-7` -- the worker consuming its own event, exactly as it
                 # already consumes `document.registered.v1` to produce
@@ -1547,6 +1621,15 @@ async def build_knowledge_worker_from_env() -> tuple[
         key_resolver=credentials,
         keyless_providers=_KEYLESS_PROVIDERS,
     )
+    # capacity-plan 6.5 -- summary builds reserve, meter and commit against
+    # the workspace's quota and budget exactly as a chat turn does
+    # (`summary_metering.py`). The price table is checked against THIS
+    # process's routing table, so a `summarize` route to an unpriced cloud
+    # model refuses to boot the worker, not just the API.
+    summary_metering = SummaryMetering(
+        _summary_enforcement(settings, tenant_session),
+        LlmPricing.for_routes(settings.llm_prices, summarize_providers.configured_providers()),
+    )
     # `limits` carries the OCR caps of rag-indexing-plan.md §3.8 into the
     # parser routes (plan step 5 / `P-09` `P-11`). Without it the numbers would
     # sit in `Settings` and mean nothing — the extractor would keep falling
@@ -1632,6 +1715,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         # Capacity 5.1 -- the only three sites that turn either on.
         concurrency=settings.events.worker_concurrency,
         drain_timeout_s=settings.events.worker_drain_timeout_s,
+        summary_metering=summary_metering,
     )
 
     # `CompositionRoot.disposables()`'s own `_close_vault` precedent -- hvac

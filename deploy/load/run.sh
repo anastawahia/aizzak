@@ -271,6 +271,9 @@ if [ "$k6_mode" = docker ]; then
   sampler=$!
 fi
 
+# The run's window, for the cost block below: the ledger is read for exactly
+# the charges written while k6 ran.
+run_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 if [ "$k6_mode" = host ]; then
   k6 run "deploy/load/$profile.js"
@@ -293,6 +296,7 @@ else
 fi
 k6_status=$?
 set -e
+run_ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 if [ -n "$sampler" ]; then
   kill "$sampler" 2>/dev/null || true
@@ -369,6 +373,61 @@ print(
 )
 if "host_swapped_in_mib" in gen:
     print(f"host      : swapped in {gen['host_swapped_in_mib']} MiB, out {gen['host_swapped_out_mib']} MiB during the run")
+PY
+fi
+
+# ── What the run cost (capacity-plan 6.5 · §7 item 11) ───────────────────────
+# §7 asks the gate report for "the cost per 1,000 requests and per million
+# tokens". Read from the usage LEDGER, not from a metric: it is the very rows
+# the workspace budget decides on, so the report and the 429s cannot disagree,
+# and it is the only place a summary build's charge is visible at all (the
+# workers expose no metrics). Superuser inside the postgres container, the
+# backlog-check precedent: the ledger is RLS-forced per workspace, and this
+# question is about all of them. Every charge in the window counts -- on a
+# stack that serves anyone else during a run, so does their spend.
+# `cost_micros / tokens` IS dollars per million tokens (the units are chosen
+# so; `framework/providers/pricing.py`).
+if [ -f "$host_out" ]; then
+  cost_row="$(printf "select count(*), coalesce(sum(tokens), 0), coalesce(sum(cost_micros), 0), count(distinct workspace_id), coalesce(sum(cost_micros) filter (where agent_key = 'summarize'), 0), coalesce((select max(c) from (select sum(cost_micros) c from usage.usage_records where created_at >= '%s' and created_at < '%s' group by workspace_id) w), 0) from usage.usage_records where created_at >= '%s' and created_at < '%s';\n" \
+    "$run_started" "$run_ended" "$run_started" "$run_ended" \
+    | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -XAt -F " "' 2>/dev/null || true)"
+  python3 - "$host_out" "$run_started" "$run_ended" "$cost_row" <<'PY' || echo "⚠️  could not record the run's cost" >&2
+import json, sys
+
+out, started, ended, row = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
+doc = json.load(open(out))
+requests = doc.get("counters", {}).get("http_reqs") or 0
+if len(row) != 6:
+    doc["cost"] = None
+    print("cost      : ⚠️  the usage ledger could not be read -- no cost recorded for this run")
+else:
+    charges, tokens, micros, workspaces, summary_micros, top_micros = (int(v) for v in row)
+    doc["cost"] = {
+        "window": {"from": started, "to": ended},
+        "charges": charges,
+        "tokens": tokens,
+        "cost_micros": micros,
+        "cost_usd": micros / 1e6,
+        "requests": requests,
+        "usd_per_1k_requests": round(micros / 1e6 / requests * 1000, 6) if requests else None,
+        "usd_per_1m_tokens": round(micros / tokens, 6) if tokens else None,
+        "usd_per_1k_llm_charges": round(micros / 1e6 / charges * 1000, 6) if charges else None,
+        "workspaces_charged": workspaces,
+        "summary_cost_micros": summary_micros,
+        "top_workspace_cost_micros": top_micros,
+    }
+    c = doc["cost"]
+    print(
+        f"cost      : ${c['cost_usd']:.4f} for {tokens:,} tokens in {charges:,} charges "
+        f"({workspaces} workspaces)"
+    )
+    print(
+        "            "
+        + (f"${c['usd_per_1k_requests']:.4f} per 1,000 requests · " if requests else "no requests · ")
+        + (f"${c['usd_per_1m_tokens']:.4f} per 1M tokens" if tokens else "no tokens")
+    )
+with open(out, "w") as f:
+    json.dump(doc, f, indent=2)
 PY
 fi
 

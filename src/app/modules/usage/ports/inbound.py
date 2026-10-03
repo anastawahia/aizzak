@@ -1,7 +1,11 @@
 """Usage inbound ports (02-port-contracts §2, verbatim contract).
 
 Called **only by the orchestrator** (the agents layer, INV-U4) — never by
-another business module (12-module-authoring-guide §3). Both are
+another business module (12-module-authoring-guide §3). **One amendment
+(capacity-plan 6.5):** the knowledge worker's composition layer
+(``app.workers.summary_metering``) is the second caller, because a summary
+build spends tokens the orchestrator never sees; it is still not a business
+module, and the knowledge module itself never learns metering exists. Both are
 synchronous, no Redis Streams (INV-U5, FR-131/132):
 ``UsageEnforcement.check`` runs before an operation, ``UsageCapture.record``
 appends after it, idempotently.

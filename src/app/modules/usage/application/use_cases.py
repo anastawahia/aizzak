@@ -73,13 +73,21 @@ USAGE_QUOTA_CEILING = "usage.workspace_quota"
 # and one token of headroom" into one admission instead of a hundred.
 _MIN_RESERVED_TOKENS = 1
 
-# ⚠️ Reservations carry NO cost estimate, and the ``COST_MICROS`` limit is
-# therefore admission-controlled by the ledger alone. That is not an oversight
-# to be fixed by inventing a price: v1 charges ``_V1_COST_MICROS = 0`` for
-# every operation (``agents/orchestrator.py``), so a cost reservation would be
-# a number with no producer on either side of it. The moment a real price
-# exists, this is the line that changes.
-_RESERVED_COST_MICROS = 0
+# What ``ReserveQuota`` holds against the ``COST_MICROS`` budget (capacity-plan
+# 6.5): ONE micro-dollar, ``_MIN_RESERVED_TOKENS``' argument applied to money.
+#
+# Until 6.5 this was 0, and rightly: every charge was 0 too, so a cost
+# reservation would have been a number with no producer on either side of it.
+# Charges now carry real prices (``framework/providers/pricing.py``), and a
+# zero hold would let a hundred simultaneous turns on the last micro of a
+# budget all read the same headroom and all be told yes. One micro invents no
+# price -- nobody can know a turn's cost before it runs, a local one costs
+# nothing at all -- it is only the smallest true statement that a request is
+# in flight, and ``commit`` replaces it with the measured charge. What it
+# cannot stop is said plainly: turns admitted while headroom remained may
+# each finish at full cost, so a budget can be overshot by at most the
+# in-flight turns' worth, never by an unbounded tail.
+_RESERVED_COST_MICROS = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +118,7 @@ class EnforceLimit:
         agent: str,
         provider: str,
         estimated_tokens: int | None = None,
+        estimated_cost_micros: int | None = None,
     ) -> tuple[Decision, tuple[UsageEvent, ...]]:
         rows = await self._ledger.get_limits(ctx)
         configured = [row.rule for row in rows]
@@ -149,7 +158,11 @@ class EnforceLimit:
                 LimitCheck(rule.scope, rule.metric, rule.period, rule.limit_value, current)
             )
 
-        evaluation = evaluate(checks, estimated_tokens=estimated_tokens)
+        evaluation = evaluate(
+            checks,
+            estimated_tokens=estimated_tokens,
+            estimated_cost_micros=estimated_cost_micros,
+        )
         if evaluation.binding is None:
             return evaluation.decision, ()
 
@@ -223,8 +236,13 @@ class ReserveQuota:
             # against itself: `evaluate`'s overshoot rule denies a check whose
             # `current + estimated` would pass the cap, so the last token of
             # headroom is taken by the first caller and refused to the rest.
+            # The cost estimate does the same for the budget (6.5).
             decision, events = await self._enforce.execute(
-                ctx, agent=agent, provider=provider, estimated_tokens=tokens
+                ctx,
+                agent=agent,
+                provider=provider,
+                estimated_tokens=tokens,
+                estimated_cost_micros=_RESERVED_COST_MICROS,
             )
             if not decision.allowed:
                 return decision, events
