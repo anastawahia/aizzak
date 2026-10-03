@@ -35,8 +35,11 @@ numbers, plus the mechanism itself in `test_streaming_hub.py`.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -255,8 +258,8 @@ def test_the_script_exists_and_is_executable() -> None:
         ),
         (
             "/health/ready",
-            "the transition to the next replica must be gated on READINESS -- step 7.2 names "
-            "that endpoint specifically, and `docker` health is not it.",
+            "an HTTP service's transition to the next replica must be gated on READINESS -- "
+            "step 7.2 names that endpoint specifically, and `docker` health is not it there.",
         ),
         (
             "/health/drain",
@@ -282,3 +285,246 @@ def test_the_script_puts_the_fleet_back_if_it_dies_mid_roll() -> None:
 
     assert "trap cleanup EXIT" in body
     assert re.search(r"cleanup\(\)\s*\{", body)
+
+
+# ------------------------------------------------- the script, actually run --
+#
+# ⛔ WHY THESE EXIST. Every test above reads the script as TEXT, and all of
+# them passed for a script that could not roll a single worker: it probed
+# `/health/ready` on :8000 in a container that serves no HTTP, waited out the
+# timeout on every replica, and gave up (2026-10-03, capacity-plan 6.2 (7)).
+# Text cannot say what a script DOES with a given replica. So the script now
+# runs here against a fake `docker` on PATH that keeps a small fleet in a JSON
+# file and records every call -- what is asserted is the sequence of calls.
+
+_FAKE_DOCKER = r"""
+import json, os, sys
+
+state_path = os.environ["FAKE_DOCKER_STATE"]
+with open(state_path) as f:
+    st = json.load(f)
+with open(os.environ["FAKE_DOCKER_CALLS"], "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")
+
+def save():
+    with open(state_path, "w") as f:
+        json.dump(st, f)
+
+def find(cid):
+    for c in st["containers"]:
+        if c["id"] == cid:
+            return c
+    sys.exit(1)
+
+def running(service):
+    return [c for c in st["containers"] if c["service"] == service and c["status"] == "running"]
+
+a = sys.argv[1:]
+if a[:2] == ["compose", "up"]:
+    service = a[-1]
+    want = int(a[a.index("--scale") + 1].split("=")[1])
+    while len(running(service)) < want:
+        st["next"] += 1
+        n = st["next"]
+        st["containers"].append({
+            "id": f"c{n}", "name": f"aizzak-{service}-{n}", "service": service,
+            "status": "running", "health": st["new_health"], "test": st["test"],
+            "ip": f"10.0.0.{n}",
+        })
+    while len(running(service)) > want:
+        st["containers"].remove(running(service)[-1])
+    save()
+elif a[0] == "ps":
+    label = "label=com.docker.compose.service="
+    service = [x[len(label):] for x in a if x.startswith(label)][0]
+    for c in running(service):
+        print(c["id"])
+elif a[0] == "inspect":
+    c, fmt = find(a[1]), a[a.index("--format") + 1]
+    if "IPAddress" in fmt:
+        print(c["ip"])
+    elif "Healthcheck" in fmt:
+        print(json.dumps(c["test"]) if c["test"] else "")
+    elif "State.Status" in fmt:
+        print(f"{c['status']}/{c['health']}")
+    else:
+        print("/" + c["name"])
+elif a[0] == "exec":
+    find(a[1])
+    if "/health/drain" in " ".join(a):
+        print('{"status":"draining"}')
+elif a[0] == "stats":
+    find(a[-1])
+    print(st["mem_usage"])
+elif a[0] == "stop":
+    find(a[1])["status"] = "exited"
+    save()
+elif a[0] == "rm":
+    st["containers"].remove(find(a[-1]))
+    save()
+else:
+    sys.exit(f"fake docker: unexpected call {a}")
+"""
+
+_APP_TEST = ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/ready"]
+_WORKER_TEST = ["CMD", "python", "-m", "app.ops.healthcheck", "knowledge"]
+
+
+def _roll(
+    tmp_path: Path,
+    *,
+    service: str,
+    replicas: int,
+    test: list[str] | None,
+    new_health: str = "healthy",
+    mem_available_mib: int = 8192,
+    mem_usage: str = "600MiB / 2GiB",
+    args: tuple[str, ...] = (),
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]], list[dict[str, str]]]:
+    """Run the real script against a fleet of ``replicas`` copies of
+    ``service``; return its result, every docker call, and the final fleet."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text(f"#!{sys.executable}\n{_FAKE_DOCKER}", encoding="utf-8")
+    fake.chmod(0o755)
+    state = tmp_path / "state.json"
+    old = [
+        {
+            "id": f"old{i}",
+            "name": f"aizzak-{service}-{i}",
+            "service": service,
+            "status": "running",
+            "health": "healthy",
+            "test": test,
+            "ip": f"10.0.1.{i}",
+        }
+        for i in range(1, replicas + 1)
+    ]
+    state.write_text(
+        json.dumps(
+            {
+                "containers": old,
+                "next": 100,
+                "new_health": new_health,
+                "test": test,
+                "mem_usage": mem_usage,
+            }
+        ),
+        encoding="utf-8",
+    )
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: 13280000 kB\nMemAvailable: {mem_available_mib * 1024} kB\n")
+    calls = tmp_path / "calls.jsonl"
+    calls.touch()
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_DOCKER_STATE": str(state),
+        "FAKE_DOCKER_CALLS": str(calls),
+        "PROJECT": "aizzak",
+        "SERVICE": service,
+        "MEMINFO": str(meminfo),
+        "DRAIN_WINDOW_S": "0",
+        "DRAIN_GRACE_S": "0",
+        "READY_TIMEOUT_S": "6",
+    }
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    logged = [json.loads(line) for line in calls.read_text().splitlines()]
+    fleet = json.loads(state.read_text())["containers"]
+    return result, logged, fleet
+
+
+def _scales(calls: list[list[str]]) -> list[str]:
+    return [c[c.index("--scale") + 1] for c in calls if c[:2] == ["compose", "up"]]
+
+
+def test_a_worker_is_rolled_in_place_and_stopped_not_killed(tmp_path: Path) -> None:
+    """The case that never worked. A worker serves no HTTP, so readiness is its
+    own healthcheck; it is STOPPED (SIGTERM, then its 45 s grace -- 5.1's
+    drain ladder) rather than `rm -f`'d; and by default it is replaced in
+    place, never running N+1 -- one extra worker on a full host is what had
+    the kernel kill Qdrant on 2026-10-03."""
+    result, calls, fleet = _roll(
+        tmp_path, service="worker-knowledge", replicas=2, test=_WORKER_TEST
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ["stop", "old1"] in calls and ["stop", "old2"] in calls
+    assert not any(c[:2] == ["rm", "-f"] for c in calls), "a worker was SIGKILLed"
+    assert not any(c[0] == "exec" for c in calls), "the script spoke HTTP to a worker"
+    assert "worker-knowledge=3" not in _scales(calls), "a worker was surged by default"
+    assert sorted(c["id"] for c in fleet) == ["c101", "c102"]
+
+
+def test_the_app_still_surges_drains_and_waits_for_http_readiness(tmp_path: Path) -> None:
+    """7.2's measured sequence, unchanged for an HTTP service: N+1 first, ready
+    over HTTP, drained over loopback, then removed."""
+    result, calls, fleet = _roll(tmp_path, service="app", replicas=3, test=_APP_TEST)
+
+    assert result.returncode == 0, result.stderr
+    assert _scales(calls).count("app=4") == 3
+    probes = [" ".join(c) for c in calls if c[0] == "exec"]
+    assert sum("/health/ready" in p for p in probes) == 3
+    assert sum("/health/drain" in p for p in probes) == 3
+    assert ["rm", "-f", "old1"] in calls
+    assert len(fleet) == 3 and not any(c["id"].startswith("old") for c in fleet)
+
+
+def test_a_surge_the_host_cannot_hold_is_refused_before_anything_changes(tmp_path: Path) -> None:
+    """600 MiB for the extra copy + the 1,024 MiB reserve does not fit in 1,000
+    available: refused, with the way through named, and the fleet untouched."""
+    result, calls, fleet = _roll(
+        tmp_path, service="app", replicas=3, test=_APP_TEST, mem_available_mib=1000
+    )
+
+    assert result.returncode != 0
+    assert "--in-place" in result.stderr
+    assert "app=4" not in _scales(calls)
+    assert not any(c[0] in ("rm", "stop", "exec") for c in calls)
+    assert sorted(c["id"] for c in fleet) == ["old1", "old2", "old3"]
+
+
+def test_in_place_needs_no_memory_check_and_still_drains_the_app(tmp_path: Path) -> None:
+    """On the same full host, `--in-place` is the way through: drained, removed,
+    replaced -- never N+1, and `docker stats` is not even asked."""
+    result, calls, _ = _roll(
+        tmp_path,
+        service="app",
+        replicas=3,
+        test=_APP_TEST,
+        mem_available_mib=1000,
+        args=("--in-place",),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "app=4" not in _scales(calls)
+    assert not any(c[0] == "stats" for c in calls)
+    assert sum("/health/drain" in " ".join(c) for c in calls if c[0] == "exec") == 3
+
+
+def test_an_unhealthy_replacement_stops_the_roll_at_once(tmp_path: Path) -> None:
+    """`unhealthy` is past start_period and will not improve by waiting: the
+    roll stops on the first replica instead of spending the timeout on each."""
+    result, calls, _ = _roll(
+        tmp_path, service="worker-knowledge", replicas=2, test=_WORKER_TEST, new_health="unhealthy"
+    )
+
+    assert result.returncode != 0
+    assert "unhealthy" in result.stderr
+    assert ["stop", "old2"] not in calls, "the roll went on to the next replica"
+
+
+def test_a_service_with_no_healthcheck_is_refused(tmp_path: Path) -> None:
+    result, calls, _ = _roll(tmp_path, service="thing", replicas=1, test=None)
+
+    assert result.returncode != 0
+    assert "no healthcheck" in result.stderr
+    assert not any(c[:2] == ["compose", "up"] for c in calls)
