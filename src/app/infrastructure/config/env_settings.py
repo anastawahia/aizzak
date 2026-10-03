@@ -230,6 +230,8 @@ class _EnvSettings(BaseSettings):
     heartbeat_max_age_s: int = Field(300, alias="HEARTBEAT_MAX_AGE_S", ge=1)
 
     provider_routing: dict[str, Any] = Field(default_factory=dict, alias="PROVIDER_ROUTING")
+    # capacity-plan 6.4 -- "" (the default) is the explicit "no fallback".
+    llm_fallback_route: str = Field("", alias="LLM_FALLBACK_ROUTE")
 
     oauth_redirect_base_url: str | None = Field(default=None, alias="OAUTH_REDIRECT_BASE_URL")
     mcp_allowed_transports: str = Field("http,sse", alias="MCP_ALLOWED_TRANSPORTS")
@@ -254,6 +256,7 @@ def load_settings() -> Settings:
         api_prefix=env.api_prefix,
         log_level=env.log_level,
         provider_routing=env.provider_routing,
+        llm_fallback_route=env.llm_fallback_route.strip(),
         database=DatabaseSettings(
             url=env.database_url,
             pool_size=env.db_pool_size,

@@ -1227,6 +1227,13 @@ class Settings(BaseModel):
     # "provider has no wired adapter" half it could not, and two half-validators
     # drift.
     provider_routing: Json = Field(default_factory=dict)
+    # capacity-plan 6.4 -- the `llm` route a CHAT turn falls back to when its
+    # own cloud provider fails before answering. "" is the written refusal:
+    # no fallback, and a failing provider reaches the user as the 502 it is.
+    # Only a route to a KEYLESS (local) provider is accepted, and the check
+    # is the resolver's (`SettingsProviderResolver`), for `provider_routing`'s
+    # reason above: it is the one place that knows which adapters are local.
+    llm_fallback_route: str = ""
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     # capacity-plan 2.9 -- the deploy's two waits, beside `database` rather

@@ -79,6 +79,14 @@ therefore deferred to Phase 4; the Composition Root docstring carries the
 one-construction sketch, and every argument it needs except ``key_resolver``
 already lives on the root today.
 
+**The fallback route (capacity-plan 6.4).** ``fallback_route`` names one
+``llm`` route a chat turn falls back to when its own provider fails before
+answering (``providers/fallback.py`` has the decision). It is checked HERE, at
+construction, for the reason the table is: a typo must die at boot. Two rules,
+and both refuse to construct: the route must exist in this table, and its
+provider must be keyless — a fallback may only lead somewhere local, never to
+a cloud the tenant did not choose. ``""`` means no fallback.
+
 **Deliberately absent:** ``supports()`` consultation (a routing hint, not a
 guarantee — 2.8-a decision 3, confirmed live in §3.24; its vocabulary
 ``tools|vision|streaming`` is not the routing-key namespace; per-model truth
@@ -292,6 +300,33 @@ def _parse_namespace(
     return routes
 
 
+def _parse_fallback(
+    fallback_route: str, llm_routes: Mapping[str, _Route], keyless: frozenset[str]
+) -> _Route | None:
+    """The 6.4 fallback route, validated against the parsed table, or
+    ``None`` when there is none (module docstring, The fallback route)."""
+    if not isinstance(fallback_route, str):
+        raise ValidationError(
+            f"llm_fallback_route: must be a string, got {type(fallback_route).__name__}"
+        )
+    name = fallback_route.strip()
+    if not name:
+        return None
+    route = llm_routes.get(name)
+    if route is None:
+        raise ValidationError(
+            f"llm_fallback_route: {name!r} is not a configured llm route "
+            f"(configured: {sorted(llm_routes)})"
+        )
+    if route.provider not in keyless:
+        raise ValidationError(
+            f"llm_fallback_route: {name!r} routes to {route.provider!r}, which takes a "
+            f"credential; a fallback may only lead to a local provider "
+            f"(local: {sorted(keyless)})"
+        )
+    return route
+
+
 class SettingsProviderResolver:
     """The concrete ``ProviderResolver`` — strict parse at construction,
     fail-closed lookup at call time (module docstring has the full record)."""
@@ -305,6 +340,7 @@ class SettingsProviderResolver:
         image_providers: Mapping[str, ImageProvider],
         key_resolver: KeyResolver,
         keyless_providers: frozenset[str],
+        fallback_route: str = "",
     ) -> None:
         self._llm_providers = llm_providers
         self._embedding_providers = embedding_providers
@@ -322,6 +358,10 @@ class SettingsProviderResolver:
         self._llm_routes = routes.llm
         self._embedding_routes = routes.embedding
         self._image_routes = routes.image
+        # Defaulted, unlike `image_providers`: "" is a real decision (no
+        # fallback), and the workers -- which never run a chat turn -- have
+        # no reason to say it.
+        self._fallback = _parse_fallback(fallback_route, routes.llm, keyless_providers)
 
     async def resolve_llm(
         self, ctx: ExecutionContext, *, capability: str, model: str | None = None
@@ -345,6 +385,24 @@ class SettingsProviderResolver:
         resolved = ResolvedProvider(
             provider=route.provider,
             model=_override_or_routed(model, route),
+            api_key=await self._api_key_for(ctx, route.provider),
+        )
+        return self._llm_providers[route.provider], resolved
+
+    async def resolve_llm_fallback(
+        self, ctx: ExecutionContext, *, primary: str
+    ) -> tuple[LLMProvider, ResolvedProvider] | None:
+        """Where a turn on ``primary`` falls back to (``LlmFallback``, 6.4).
+
+        ``None`` from a keyless ``primary`` is the data-policy rule read from
+        the other side: a local turn has nowhere more local to go, and the
+        only other places are clouds."""
+        route = self._fallback
+        if route is None or primary in self._keyless or primary == route.provider:
+            return None
+        resolved = ResolvedProvider(
+            provider=route.provider,
+            model=route.model,
             api_key=await self._api_key_for(ctx, route.provider),
         )
         return self._llm_providers[route.provider], resolved
@@ -559,6 +617,7 @@ def _override_or_routed(model: str | None, route: _Route) -> str:
 
 
 if TYPE_CHECKING:
+    from app.framework.providers.fallback import LlmFallback
 
     def _conforms(resolver: SettingsProviderResolver) -> ProviderResolver:
         """mypy-gate structural proof that the concrete class satisfies the
@@ -576,6 +635,11 @@ if TYPE_CHECKING:
     def _conforms_probe(resolver: SettingsProviderResolver) -> ProviderProbe:
         """BE-ADM-012's narrowing. ``probe`` only ever ACCEPTS a key, so this
         face lets the admin surface spend one without being able to read one."""
+        return resolver
+
+    def _conforms_fallback(resolver: SettingsProviderResolver) -> LlmFallback:
+        """6.4's narrowing: the chat orchestrator's one extra question,
+        answered by the object that parsed the table it is about."""
         return resolver
 
     def _conforms_catalog(resolver: SettingsProviderResolver) -> ModelCatalog:

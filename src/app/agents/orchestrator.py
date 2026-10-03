@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -77,6 +78,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ForbiddenError, RateLimitedError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
+from app.framework.observability.metrics import llm_fallback_total
 from app.framework.ports.llm_provider import (
     LlmChunk,
     LlmMessage,
@@ -86,6 +88,7 @@ from app.framework.ports.llm_provider import (
 )
 from app.framework.ports.storage_provider import StorageProvider
 from app.framework.ports.web_search_provider import WebSearchProvider
+from app.framework.providers.fallback import LlmFallback
 from app.framework.providers.resolver import ProviderResolver
 from app.framework.types import Json, Uuid
 from app.framework.workflows.engine import SequentialWorkflowEngine, WorkflowResult
@@ -341,6 +344,28 @@ _INCOMPLETE_MARKER_EN = "⚠️ This answer was cut off before it finished."
 # ASCII escape inside it.
 _MARKER_GAP = "\n\n"
 
+# capacity-plan 6.4 — what the reader is told when the model they chose could
+# not answer and the local one did (`_Fallback`). It goes out three ways: a
+# `notice` frame BEFORE the local model's first token, a `fallback` key on the
+# `final` frame, and this same sentence at the head of the stored reply — the
+# last for ب-10's reason exactly: `MessageContent` has no structured half, and
+# a reader returning to the thread must still be able to see why this answer
+# is not from the model the conversation is pinned to. At the HEAD, unlike
+# ب-10's marker: that one remarks on how an answer ended, this one on who
+# wrote all of it, and the reader should know before reading.
+_FALLBACK_NOTICE_AR = "⚠️ تعذّر الوصولُ إلى النموذج السحابيّ، فأجاب النموذجُ المحلّيّ عن هذا السؤال."
+_FALLBACK_NOTICE_EN = (
+    "⚠️ The cloud model could not be reached, so the local model answered this question."
+)
+# A new frame type rather than a `token`: a sentence streamed as a token would
+# be read as the first words of the answer — by the reader, and by every
+# client that concatenates deltas. Both transports already forward any event
+# type verbatim (`api/v1/sse.py`, `websocket/streaming.py`), and a client that
+# does not know `notice` skips it and still has the stored sentence.
+_NOTICE_EVENT = "notice"
+_FALLBACK_KIND = "llm_fallback"
+_FALLBACK_KEY = "fallback"
+
 # The same Arabic-PRESENCE check the RAG agent picks its own fixed sentences
 # by, deliberately re-stated here rather than shared, for two reasons that
 # point the same way. The orchestrator must not import an agent plugin — it
@@ -473,6 +498,19 @@ def _timeout_event(cap_s: float) -> AgentEvent:
     )
 
 
+def _due_notice(fallback: _Fallback | None) -> AgentEvent | None:
+    """6.4's ``notice`` frame, exactly once, as soon as the local model has
+    answered — i.e. before the first event built from its answer. ``None``
+    on every other pull."""
+    if fallback is None or not fallback.switched or fallback.announced:
+        return None
+    fallback.announced = True
+    return AgentEvent(
+        type=_NOTICE_EVENT,
+        data={"kind": _FALLBACK_KIND, "detail": fallback.notice, **fallback.describe()},
+    )
+
+
 class _MeteredLLM:
     """A transparent ``LLMProvider`` decorator that tees token counts into a
     ``_TokenMeter`` (4.7-c-2).
@@ -536,6 +574,239 @@ class _MeteredLLM:
             yield chunk
 
 
+def _provider_down(error: AppError) -> bool:
+    """Whether ``error`` says the provider itself is failing (6.4).
+
+    ``transient`` is ``ProviderFailure``'s documented contract — unreachable,
+    timed out, throttled, failing on its own side, or a circuit already open —
+    read structurally because this layer may not import
+    ``app.infrastructure`` (``agents-no-api-no-infra``). Everything else stays
+    the caller's answer: a rejected key or an unknown model is a configuration
+    to FIX, and a working local answer would hide it from the operator for as
+    long as nobody looked; the guard's own 429 is ق-6's signed "say so", not a
+    failure.
+    """
+    return error.code == "agent.failed" and getattr(error, "transient", False) is True
+
+
+async def _aclose(chunks: AsyncIterator[LlmChunk]) -> None:
+    """Close a sub-stream NOW (the guard's reasoning): the port promises no
+    ``aclose``, every adapter's generator has one, and a consumer walking away
+    must release the provider's response rather than leave it to GC."""
+    close = getattr(chunks, "aclose", None)
+    if close is not None:
+        await close()
+
+
+@dataclass(slots=True)
+class _Fallback:
+    """One chat turn's capacity-plan 6.4 fallback: where it may go, and what
+    happened (``providers/fallback.py`` has the decision).
+
+    **Sticky.** Once the local model has answered one call of the turn, every
+    later call of the same turn goes straight to it: the cloud provider has
+    just proved it is down, and one answer should come from one model.
+    """
+
+    primary: ResolvedLLM
+    target: ResolvedLLM
+    # Picked once, in the pre-flight, from the QUESTION's script — the notice
+    # goes out before there is any reply to read a script from.
+    notice: str
+    switched: bool = False
+    announced: bool = False
+    # Whether the PRIMARY delivered anything this turn (a chunk, or a whole
+    # result). Billing reads it: see `billed`.
+    primary_served: bool = False
+
+    def describe(self) -> Json:
+        """The ``from``/``to`` pair a client renders — route-level facts the
+        model catalogue already publishes, and no credential."""
+        return {
+            "from": {"provider": self.primary.provider.provider, "model": self.primary.model},
+            "to": {"provider": self.target.provider.provider, "model": self.target.model},
+        }
+
+    def billed(self, primary: str) -> str:
+        """The provider a turn's charge is recorded against. The local one
+        only when it produced EVERYTHING; a turn that mixed the two is
+        charged to the primary — the conservative direction, ``_TokenMeter``'s
+        "one unreported call taints the total" rule applied to cost."""
+        if self.switched and not self.primary_served:
+            return self.target.provider.provider
+        return primary
+
+    def served(self, failure: AppError) -> None:
+        """The local model has answered: switch for the rest of the turn."""
+        if self.switched:
+            return
+        self.switched = True
+        self._count("served")
+        _logger.warning(
+            "orchestrator.llm_fallback",
+            extra={**self._labels(), "outcome": "served", "detail": failure.detail},
+        )
+
+    def failed(self, failure: AppError, error: BaseException) -> None:
+        """The local model failed too; the caller re-raises ``failure``."""
+        self._count("failed")
+        _logger.warning(
+            "orchestrator.llm_fallback",
+            extra={
+                **self._labels(),
+                "outcome": "failed",
+                "detail": failure.detail,
+                "fallback_error": type(error).__name__,
+            },
+        )
+
+    def _labels(self) -> dict[str, str]:
+        return {
+            "from_provider": self.primary.provider.provider,
+            "to_provider": self.target.provider.provider,
+        }
+
+    def _count(self, outcome: str) -> None:
+        llm_fallback_total.labels(**self._labels(), outcome=outcome).inc()
+
+
+class _FallbackLLM:
+    """The turn's ``LLMProvider``: the primary, or the local model when the
+    primary fails before answering (capacity-plan 6.4).
+
+    Structural match, no inheritance, ``_MeteredLLM``'s shape — and it sits
+    INSIDE the meter, so a call is counted once, by whichever model served it.
+    The primary arrives already behind its ``GuardedLLM``: its retries and its
+    circuit have had their say before a failure reaches this class.
+
+    **Only before the first chunk.** A stream that has started is the user
+    reading an answer; a second one from another model would be a different
+    answer. A failure after that point passes through and the turn is cut
+    (ب-10), exactly as without a fallback.
+
+    **The three conditions of 6.4, where each one is met.** (2) the data
+    policy is the resolver's (a fallback route can only be local); (3) holds
+    because a generation is a pure read and nothing has been shown yet; (1),
+    functional equivalence, is checked HERE, per call, because only a call
+    knows what it needs: one that carries tools is never re-sent to a
+    provider that cannot take them.
+    """
+
+    def __init__(self, primary: LLMProvider, state: _Fallback) -> None:
+        self._primary = primary
+        self._state = state
+        self.provider = primary.provider
+
+    async def complete(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> LlmResult:
+        if self._state.switched:
+            return await self._complete_on_target(messages, params)
+        try:
+            result = await self._primary.complete(messages, params, api_key)
+        except AppError as failure:
+            if not self._eligible(failure, params, capability=None):
+                raise
+            try:
+                result = await self._complete_on_target(messages, params)
+            except Exception as error:
+                self._state.failed(failure, error)
+                # The error the user's OWN choice produced — "the cloud is
+                # down" — not the fallback's, which would blame a model they
+                # never picked. The fallback's rides along as `__context__`.
+                raise failure  # noqa: B904
+            self._state.served(failure)
+            return result
+        self._state.primary_served = True
+        return result
+
+    def stream(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> AsyncIterator[LlmChunk]:
+        # Plain `def`, like the port: the primary's call-time guards still
+        # fire at call time.
+        if self._state.switched:
+            target = self._state.target
+            return target.provider.stream(messages, self._retarget(params), target.api_key)
+        first = self._primary.stream(messages, params, api_key)
+        return self._stream_or_fall_back(first, messages, params)
+
+    def supports(self, capability: str) -> bool:
+        """The PRIMARY's answer, verbatim: the agent asked for that model, and
+        a fallback that answered for itself would let an outage change what an
+        agent thinks it may ask for."""
+        return self._primary.supports(capability)
+
+    async def _complete_on_target(
+        self, messages: Sequence[LlmMessage], params: LlmParams
+    ) -> LlmResult:
+        target = self._state.target
+        return await target.provider.complete(messages, self._retarget(params), target.api_key)
+
+    async def _stream_or_fall_back(
+        self,
+        first: AsyncIterator[LlmChunk],
+        messages: Sequence[LlmMessage],
+        params: LlmParams,
+    ) -> AsyncIterator[LlmChunk]:
+        started = False
+        failure: AppError | None = None
+        try:
+            async for chunk in first:
+                if not started:
+                    started = True
+                    self._state.primary_served = True
+                yield chunk
+        except AppError as error:
+            if started or not self._eligible(error, params, capability="streaming"):
+                raise
+            failure = error
+        finally:
+            await _aclose(first)
+        if failure is None:
+            return
+        target = self._state.target
+        chunks = target.provider.stream(messages, self._retarget(params), target.api_key)
+        try:
+            async for chunk in chunks:
+                self._state.served(failure)
+                yield chunk
+        except Exception as error:
+            if self._state.switched:
+                raise  # the local model died mid-answer: its own cut (ب-10)
+            self._state.failed(failure, error)
+            raise failure  # noqa: B904 -- `complete`'s reason
+        finally:
+            await _aclose(chunks)
+        # An empty but successful stream still answered.
+        self._state.served(failure)
+
+    def _eligible(self, failure: AppError, params: LlmParams, *, capability: str | None) -> bool:
+        """6.4's per-call test: the provider is down, and the local model can
+        take this call as it is (condition 1)."""
+        if not _provider_down(failure):
+            return False
+        target = self._state.target.provider
+        if params.tools and not target.supports("tools"):
+            return False
+        return capability is None or target.supports(capability)
+
+    def _retarget(self, params: LlmParams) -> LlmParams:
+        """The same call for the local model: only the MODEL changes. A cloud
+        model name sent to Ollama is a 404, and every other parameter is what
+        the agent asked for."""
+        return dataclasses.replace(params, model=self._state.target.model)
+
+
+def _with_fallback_notice(text: str, fallback: _Fallback | None) -> str:
+    """``text`` with 6.4's notice at its head when the local model answered."""
+    if fallback is None or not fallback.switched:
+        return text
+    if not text.strip():
+        return fallback.notice
+    return f"{fallback.notice}{_MARKER_GAP}{text}"
+
+
 @dataclass(frozen=True, slots=True)
 class OrchestratorDependencies:
     """The PROCESS-WIDE collaborators, built once by the Composition Root.
@@ -592,6 +863,13 @@ class OrchestratorDependencies:
     # bundle without it can still run agents that require NOTHING — there is no
     # decision to make — and refuses any agent that declares a permission.
     authorization: AuthorizationService | None = None
+    # capacity-plan 6.4 — where a chat turn goes when its cloud provider fails
+    # before answering (`_FallbackLLM`). The resolver's narrow face, like
+    # `ModelCatalog` is the API's. `None` — and a resolver configured with no
+    # fallback route — both mean the 6.1 behaviour: the failure is the answer.
+    # Single-agent turns only: a workflow step runs inside a run the user
+    # never pinned to a model, and is not switched behind its back.
+    llm_fallback: LlmFallback | None = None
 
 
 @dataclass(slots=True)
@@ -909,6 +1187,11 @@ class _TurnRecord:
     # record for the reason everything else here is: the pre-flight knows it
     # and the end of the stream needs it, and re-deriving it is impossible.
     reservation_id: Uuid | None = None
+    # capacity-plan 6.4 — this turn's fallback, when it has one. On the record
+    # because three places read it after the pre-flight that built it: the
+    # stream (the `notice` frame and the `final` key), the reply write (the
+    # stored sentence) and the capture (which provider served).
+    fallback: _Fallback | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,6 +1344,7 @@ class AgentOrchestrator:
         record.pending = pending
         binding = await self._resolve_llm(ctx, agent_key, route=route)
         provider_name = binding.provider.provider if binding is not None else _NO_PROVIDER
+        record.fallback = await self._fallback_for(ctx, binding, req)
 
         # Quota BEFORE the run (FR-132, 11 §8.1): a denial must cost nothing,
         # so this precedes agent creation, and it raises rather than yielding
@@ -1082,7 +1366,12 @@ class AgentOrchestrator:
         # slot, which is why this guard stops exactly there.
         try:
             deps = self._build_dependencies(
-                binding, record.meter, scope, space_id=space_id, pending=pending
+                binding,
+                record.meter,
+                scope,
+                space_id=space_id,
+                pending=pending,
+                fallback=record.fallback,
             )
             # Registry raises NotFoundError(404) for an unknown key and
             # ValidationError(422) for a malformed one -- both pass straight
@@ -1379,6 +1668,7 @@ class AgentOrchestrator:
         *,
         space_id: Uuid | None,
         pending: tuple[str, ...] = (),
+        fallback: _Fallback | None = None,
     ) -> AgentDependencies:
         """Assemble the per-request bundle handed to the agent.
 
@@ -1412,7 +1702,12 @@ class AgentOrchestrator:
         """
         metered = (
             ResolvedLLM(
-                provider=_MeteredLLM(binding.provider, meter),
+                provider=_MeteredLLM(
+                    binding.provider
+                    if fallback is None
+                    else _FallbackLLM(binding.provider, fallback),
+                    meter,
+                ),
                 model=binding.model,
                 api_key=binding.api_key,
             )
@@ -1622,8 +1917,16 @@ class AgentOrchestrator:
                     # reason exactly: `invoke_once` raises on an in-band
                     # error and may never resume this generator.
                     await self._settle_cut(ctx, record, streamed, reason=_CUT_ERROR)
+                notice = _due_notice(record.fallback)
+                if notice is not None:
+                    yield notice
                 if event.type == "final":
                     terminal = True
+                    if record.fallback is not None and record.fallback.switched:
+                        event = AgentEvent(
+                            type=event.type,
+                            data={**event.data, _FALLBACK_KEY: record.fallback.describe()},
+                        )
                     # ب-9 — BEFORE `_persist_reply`, so the key is off the
                     # frame by the time anything reads its content: the stored
                     # message is rendered from this same payload, and a media
@@ -1653,7 +1956,8 @@ class AgentOrchestrator:
             # ⚠️ And billing is deliberately NOT reduced for a cut-off turn
             # (decision 3): those tokens were generated and paid for upstream.
             # ب-10 reduces what is LOST, never what is owed.
-            await self._capture(ctx, agent_key, provider, record.meter, record.reservation_id)
+            billed = provider if record.fallback is None else record.fallback.billed(provider)
+            await self._capture(ctx, agent_key, billed, record.meter, record.reservation_id)
 
     async def _settle_cut(
         self,
@@ -1760,7 +2064,7 @@ class AgentOrchestrator:
                 ctx,
                 record.conversation_id,
                 role=_ROLE_ASSISTANT,
-                text=_mark_incomplete(text),
+                text=_mark_incomplete(_with_fallback_notice(text, record.fallback)),
                 # A cut-off stream produced text and nothing else: an
                 # attachment is announced on the `final` frame that never
                 # came.
@@ -1901,7 +2205,7 @@ class AgentOrchestrator:
                 ctx,
                 record.conversation_id,
                 role=_ROLE_ASSISTANT,
-                text=text,
+                text=_with_fallback_notice(text, record.fallback),
                 attachments=attachments,
                 token_count=completion or None,
             )
@@ -2089,6 +2393,32 @@ class AgentOrchestrator:
         if req.conversation_id is None:
             return req.space_id
         return await threads.space_of(ctx, req.conversation_id)
+
+    async def _fallback_for(
+        self, ctx: ExecutionContext, binding: ResolvedLLM | None, req: AgentRequest
+    ) -> _Fallback | None:
+        """This turn's 6.4 fallback, or ``None`` (none wired, none
+        configured, no LLM, or a turn that is already local).
+
+        Pre-flight and before ``_admit``, with the resolution it pairs with:
+        the lookup is a table read for a keyless route, and a turn should
+        know where it may go before it is admitted to go anywhere.
+        """
+        source = self._deps.llm_fallback
+        if source is None or binding is None:
+            return None
+        found = await source.resolve_llm_fallback(ctx, primary=binding.provider.provider)
+        if found is None:
+            return None
+        provider, resolved = found
+        question, _attachments = _turn_content(req.input)
+        return _Fallback(
+            primary=binding,
+            target=ResolvedLLM(provider=provider, model=resolved.model, api_key=resolved.api_key),
+            notice=(
+                _FALLBACK_NOTICE_AR if _ARABIC_CHAR_RE.search(question) else _FALLBACK_NOTICE_EN
+            ),
+        )
 
     async def _resolve_llm(
         self, ctx: ExecutionContext, agent_key: str, *, route: str | None = None

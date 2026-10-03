@@ -264,6 +264,9 @@ data: {"delta":"مرحب"}
 event: tool_call
 data: {"tool":"rag_search","args":{"query":"..."}}
 
+event: notice
+data: {"kind":"llm_fallback","detail":"⚠️ تعذّر الوصولُ إلى النموذج السحابيّ، فأجاب النموذجُ المحلّيّ عن هذا السؤال.","from":{"provider":"openai","model":"gpt-4.1-mini"},"to":{"provider":"ollama","model":"gemma3:1b"}}
+
 event: final
 data: {"message_id":"018f...","content":{...},"usage":{"prompt_tokens":812,"completion_tokens":140}}
 
@@ -272,6 +275,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 ```
 - ترميز UTF‑8، `Cache-Control: no-cache`، نبضة `:keep-alive` كل 15s.
 - الإنهاء بحدث `final` أو `error` ثم إغلاق التدفّق.
+- **`notice` (خطّةُ السعة `6.4`) إطارٌ غيرُ طرفيٍّ يُخبر القارئَ بشيءٍ عن الجواب لا يكون جزءاً منه.** نوعُه الوحيدُ اليوم `kind: "llm_fallback"`: نموذجُ المحادثة السحابيّ تعذّر قبل أن يقول كلمة، فأجاب النموذجُ المحلّيّ (`LLM_FALLBACK_ROUTE`). يصل **مرّةً واحدةً قبل أوّل `token`** من الجواب المحلّيّ، و`detail` جملةٌ جاهزةٌ للعرض بلغة السؤال، و`from`/`to` المزوّدُ والنموذج. ويحمل `final` المفتاحَ نفسَه `fallback: {from, to}`، **ويبدأ الردُّ المحفوظ (`content.text`) بالجملة نفسِها** — فعميلٌ لا يعرف `notice` يتخطّاه ولا يفقد الإشعار. وليس نصّاً في `token` عمداً: جملةٌ تُبثّ رمزاً تُقرأ أوّلَ كلماتِ الجواب.
 - **مفاتيح الوكيل الطرفيّة تبقى على `final` إلى جانب ما تضيفه المنصّة** (`message_id`/`content`/`usage`): لكلّ وكيل مفاتيحه الخاصّة (`job_id`, …)، ولا يُسقِطها المنسِّق. `rag_agent` يضيف `citations` — قائمة استشهادات مفهومة (خطّة الاسترجاع §3.2/§4 صفّ ٣، `P-32`) لا UUID عارٍ:
   ```json
   "citations": [
@@ -293,6 +297,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 ```json
 {"type":"token","conversation_id":"018f...","delta":"..."}
 {"type":"tool_call","conversation_id":"018f...","tool":"...","args":{...}}
+{"type":"notice","conversation_id":"018f...","kind":"llm_fallback","detail":"...","from":{...},"to":{...}}
 {"type":"notification","event":"knowledge.document.indexed.v1","data":{"document_id":"018f..."}}
 {"type":"final","conversation_id":"018f...","message_id":"018f...","usage":{...}}
 {"type":"error","conversation_id":"018f...","problem":{...RFC9457...}}

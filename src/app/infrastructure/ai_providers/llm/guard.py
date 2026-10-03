@@ -118,7 +118,15 @@ class ProviderGuard:
         if self._opened_at is not None:
             if self._clock() - self._opened_at < self._open_s or self._probe_out:
                 llm_guard_total.labels(provider=self.provider, outcome="circuit_open").inc()
-                raise off_contract(self.provider, "is failing; not called (circuit open)")
+                # `transient`: the provider is known to be down, which is the
+                # very fact the word means -- and what 6.4's fallback reads to
+                # send the turn to the local model. Never `retryable` (asking
+                # again inside `circuit_open_s` is refused the same way), and
+                # it cannot feed the circuit: `record` is never reached from
+                # a refused `admit`.
+                raise off_contract(
+                    self.provider, "is failing; not called (circuit open)", transient=True
+                )
             probe = True
         if self._max_concurrency and self._in_flight >= self._max_concurrency:
             llm_guard_total.labels(provider=self.provider, outcome="saturated").inc()

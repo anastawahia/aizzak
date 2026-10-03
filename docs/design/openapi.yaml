@@ -201,7 +201,7 @@ paths:
           description: Completion (JSON) or event stream (SSE)
           content:
             application/json: { schema: { $ref: "#/components/schemas/AgentInvokeOut" } }
-            text/event-stream: { schema: { type: string, description: "SSE: token|tool_call|final|error events" } }
+            text/event-stream: { schema: { type: string, description: "SSE: token|tool_call|notice|final|error events (notice: 03 §3.1, capacity-plan 6.4)" } }
         default: { $ref: "#/components/responses/Problem" }
 
   /models:

@@ -77,6 +77,7 @@ EMBEDDING_CACHE_METRIC = "aizzak_embedding_cache_total"
 LLM_IN_FLIGHT_METRIC = "aizzak_llm_in_flight"
 LLM_GUARD_METRIC = "aizzak_llm_guard_total"
 LLM_CIRCUIT_OPEN_METRIC = "aizzak_llm_circuit_open"
+LLM_FALLBACK_METRIC = "aizzak_llm_fallback_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -241,6 +242,17 @@ llm_circuit_open = Gauge(
     "else 0 (capacity-plan 6.1).",
     ["provider"],
     multiprocess_mode="livemax",
+)
+
+llm_fallback_total = Counter(
+    LLM_FALLBACK_METRIC,
+    "Chat LLM calls sent to the local fallback after their own provider failed "
+    "before answering, by the failed provider, the fallback provider and outcome "
+    "(capacity-plan 6.4). `served` answered the user (who was told); `failed` "
+    "failed too, and the user got the ORIGINAL provider's error. Any `served` "
+    "means users are reading the local model's answers instead of the model "
+    "they chose.",
+    ["from_provider", "to_provider", "outcome"],
 )
 
 vector_corpus_total = Counter(

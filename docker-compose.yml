@@ -251,6 +251,12 @@ x-app-env: &app-env
   HEARTBEAT_DIR: ${HEARTBEAT_DIR:-/tmp/aizzak-heartbeat}
   HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S:-300}
   PROVIDER_ROUTING: ${PROVIDER_ROUTING:-{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}}
+  # capacity-plan 6.4: the llm route a chat turn falls back to when its cloud
+  # provider fails before answering. Empty = no fallback; the route must
+  # exist in PROVIDER_ROUTING and be local (keyless), or `app` refuses to boot
+  # -- which is why the default is empty: the routing default above has no
+  # second route to name.
+  LLM_FALLBACK_ROUTE: ${LLM_FALLBACK_ROUTE:-}
   OAUTH_REDIRECT_BASE_URL: ${OAUTH_REDIRECT_BASE_URL:-http://localhost}
   MCP_ALLOWED_TRANSPORTS: ${MCP_ALLOWED_TRANSPORTS:-http,sse}
   OAUTH_REFRESH_SKEW_S: ${OAUTH_REFRESH_SKEW_S:-60}

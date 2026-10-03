@@ -255,16 +255,16 @@
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="إحدى وثلاثون خطوة مكتملة، ثمانٍ مبنية بانتظار قياس، سبعٌ لم تبدأ، ست مؤجلة">
+    <div class="bar" role="img" aria-label="إحدى وثلاثون خطوة مكتملة، تسعٌ مبنية بانتظار قياس، ستٌّ لم تبدأ، ست مؤجلة">
       <span class="s-done" style="flex:31">٣١ مكتملة</span>
-      <span class="s-partial" style="flex:8">٨</span>
-      <span class="s-pending" style="flex:7">٧</span>
+      <span class="s-partial" style="flex:9">٩</span>
+      <span class="s-pending" style="flex:6">٦</span>
       <span class="s-deferred" style="flex:6">٦</span>
     </div>
     <div class="legend">
       <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٣١</span>
-      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٨</span>
-      <span><i class="k-pending"></i>لم تبدأ — ٧</span>
+      <span><i class="k-partial"></i>مبنيّة، وينقصها قياسٌ أو إصلاحٌ صغير — ٩</span>
+      <span><i class="k-pending"></i>لم تبدأ — ٦</span>
       <span><i class="k-deferred"></i>مؤجَّلة بقرار المالك (المرحلة ٨) — ٦</span>
     </div>
   </section>
@@ -788,9 +788,13 @@
         <dl><div class="line rest"><dt>متبقٍّ</dt><dd>ثابتٌ بنيويّاً، ويبقى إثباته تحت حمل: ٥٠ محادثةً متزامنةً وقراءةُ المؤشّرات أثناءها. وبعد ٦٫١ صار للنموذج المحلّيّ سقفٌ لا يتجاوز ٢٤ محادثةً في المنصّة كلّها، فالقياس يحتاج رفع السقف مؤقّتاً أو مزوّداً سحابيّاً.</dd></div></dl>
       </div></article>
 
-      <article class="step pending"><div class="step-id">٦٫٤</div><div class="step-body">
-        <div class="step-title"><h3>ماذا يحدث عند فشل مزوّد</h3><span class="tag pending">لم تبدأ</span></div>
-        <dl><div class="line rest"><dt>متبقٍّ</dt><dd>لا تحويل تلقائيّ في التصميم اليوم. وباختيار الهجين صار السؤال واجبَ الجواب: حين يتوقّف مزوّد، نحوّل إلى الآخر أم نرفض صراحةً؟</dd></div></dl>
+      <article class="step partial"><div class="step-id">٦٫٤</div><div class="step-body">
+        <div class="step-title"><h3>ماذا يحدث عند فشل مزوّد</h3><span class="tag partial">مبنيّة · لم تُنشَر</span></div>
+        <dl>
+          <div class="line done-l"><dt>تمّ</dt><dd>بقرار المالك في ٣ أكتوبر: <b>إذا تعذّر النموذج السحابيّ قبل أن يبدأ الجواب، يُجيب النموذج المحلّيّ، ويُخبَر المستخدم</b> برسالةٍ تظهر قبل أوّل كلمة، وتبقى مكتوبةً في أوّل الردّ المحفوظ. والتحويل في اتّجاهٍ واحد فقط: لا تنتقل محادثةٌ محلّيّة إلى السحابة أبداً، والمنصّة ترفض الإقلاع إن ضُبط غير ذلك. والقرار مكتوبٌ في الإعدادات (<code>LLM_FALLBACK_ROUTE</code>)، ويُلغى بإفراغه. و٢٢ اختباراً جديداً ناجحة.</dd></div>
+          <div class="line rest"><dt>لا يُحوَّل</dt><dd>إذا كان مفتاح OpenAI مرفوضاً (خطأ إعدادٍ يجب أن يُصلَح لا أن يُخفى)، أو إذا امتلأ سقف الحارس (يُرفض برسالة «أعد المحاولة»)، أو إذا انقطع الجواب بعد أن بدأ (لا يُجاب المستخدم مرّتين).</dd></div>
+          <div class="line rest"><dt>متبقٍّ</dt><dd>النشر على المنصّة الحيّة (قرار المالك)، ثمّ تجربةٌ حيّة: إيقاف الوصول إلى OpenAI ورؤية الرسالة والجواب المحلّيّ. والواجهة لا تعرض الرسالة الخاصّة بعد، لكنّ السطر المكتوب في أوّل الردّ يصل الجميع.</dd></div>
+        </dl>
       </div></article>
 
       <article class="step pending"><div class="step-id">٦٫٥</div><div class="step-body">

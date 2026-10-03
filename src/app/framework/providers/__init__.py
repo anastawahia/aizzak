@@ -1,6 +1,7 @@
 """Provider resolution — framework contract + concrete resolver (02 §3.5, 2.9)."""
 
 from app.framework.providers.catalog import ModelCatalog, ModelChoice
+from app.framework.providers.fallback import LlmFallback
 from app.framework.providers.inventory import (
     PROBEABLE_NAMESPACES,
     ConfiguredProvider,
@@ -22,6 +23,7 @@ __all__ = [
     "PROBEABLE_NAMESPACES",
     "ConfiguredProvider",
     "KeyResolver",
+    "LlmFallback",
     "ModelCatalog",
     "ModelChoice",
     "Namespace",

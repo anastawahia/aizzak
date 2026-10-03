@@ -1970,6 +1970,9 @@ class CompositionRoot:
             # "embedding-local" alongside "ollama" -- the local embedding
             # model has no authentication of its own either.
             keyless_providers=frozenset({"ollama", "embedding-local"}),
+            # capacity-plan 6.4 -- validated against the table above and the
+            # keyless set beside it; a cloud route here refuses to boot.
+            fallback_route=settings.llm_fallback_route,
         )
 
         agent_registry: AgentRegistry = InMemoryAgentRegistry()
@@ -2143,6 +2146,10 @@ class CompositionRoot:
                 agents=agent_registry,
                 executor=AgentLifecycleExecutor(),
                 providers=provider_resolver,
+                # capacity-plan 6.4 -- the same resolver, through its
+                # `LlmFallback` face: the fallback route is a row of the table
+                # it parsed, so the two can never disagree.
+                llm_fallback=provider_resolver,
                 files=files_query,
                 media=media_requests,
                 usage_enforcement=_usage_enforcement(usage_ledger, settings, tenant_session),
