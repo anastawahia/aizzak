@@ -64,7 +64,15 @@ if (!(RAG_QUERY_ZIPF >= 0)) {
 
 // The question a scenario's `iteration`-th request asks.
 export function ragQuery(scenario, iteration) {
-  return queryText(rank(unit(1, fnv1a(scenario), iteration), RAG_QUERIES, RAG_QUERY_ZIPF));
+  return queryText(ragRank(scenario, iteration));
+}
+
+// Its popularity rank, without the spelling. Two requests ask the same
+// question exactly when they draw the same rank (`queryText` is injective),
+// so `rag.js` replays this to say how often the stream it offered repeated
+// inside the cache window.
+export function ragRank(scenario, iteration) {
+  return rank(unit(1, fnv1a(scenario), iteration), RAG_QUERIES, RAG_QUERY_ZIPF);
 }
 
 // The question at popularity rank `r` (0 is the most asked). Exported so any

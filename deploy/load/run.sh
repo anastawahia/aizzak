@@ -8,6 +8,7 @@
 #   deploy/load/run.sh step
 #   deploy/load/run.sh backlog   (capacity 5.5's load; 08 §4.21 stops the worker around it)
 #   deploy/load/run.sh abuse     (1.2: one abusive tenant against its neighbours, 3 phases)
+#   deploy/load/run.sh rag       (4.3: the RAG scenario alone at §0's peak question rate)
 #
 # Environment the OPERATOR must supply (there are no defaults, on purpose --
 # see `lib/config.js` on why an unstated seed makes two runs incomparable):
@@ -26,9 +27,9 @@ set -euo pipefail
 
 profile="${1:-peak}"
 case "$profile" in
-  peak | average | step | backlog | abuse) ;;
+  peak | average | step | backlog | abuse | rag) ;;
   *)
-    echo "usage: $0 {peak|average|step|backlog|abuse}" >&2
+    echo "usage: $0 {peak|average|step|backlog|abuse|rag}" >&2
     exit 2
     ;;
 esac
@@ -272,6 +273,36 @@ if [ "$k6_mode" = docker ]; then
   sampler=$!
 fi
 
+# ── The query-vector cache's own count (4.3 · `aizzak_embedding_cache_total`) ─
+# Read from every app replica just before and just after the run, directly and
+# not through Prometheus, whose 15 s scrape would smear both edges of the
+# window. One line per container and result, so a replica that restarted
+# mid-run -- its count starts again at zero -- is caught below rather than
+# subtracted into a smaller number. A replica that has served no search has
+# no line at all (a labelled counter appears on first use), so each one that
+# answered also prints `answered` -- otherwise its first search would read as
+# a replica that joined mid-run. Every lookup in the window counts, from any
+# caller: in the five-part mix that includes the chat scenario's one fixed
+# prompt, which is why 4.3's hit rate is read from the `rag` profile.
+cache_snapshot() {
+  for id in $(docker compose ps -q app 2>/dev/null); do
+    docker exec "$id" python -c 'import urllib.request
+for line in urllib.request.urlopen("http://127.0.0.1:8000/metrics", timeout=5).read().decode().splitlines():
+    if line.startswith("aizzak_embedding_cache_total{"):
+        print(line)
+print("answered")' 2>/dev/null |
+      sed -nE -e "s/^aizzak_embedding_cache_total\{result=\"([a-z_]+)\"\} ([0-9.e+]+)$/$id \1 \2/p" \
+        -e "s/^answered$/$id answered 1/p"
+  done
+}
+# And the TTL those replicas run, for `rag.js`'s replay of how often its
+# stream repeated inside that window. From a running replica rather than
+# `.env`: the drift check above makes the two agree, and this is the value in
+# force. Unset in the container means the platform's default.
+RUN_EMBEDDING_CACHE_TTL_S="$(docker compose exec -T app printenv EMBEDDING_CACHE_TTL_S 2>/dev/null | tr -d '\r' || true)"
+export RUN_EMBEDDING_CACHE_TTL_S="${RUN_EMBEDDING_CACHE_TTL_S:-600}"
+cache_before="$(cache_snapshot || true)"
+
 # The run's window, for the cost block below: the ledger is read for exactly
 # the charges written while k6 ran.
 run_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -298,6 +329,7 @@ fi
 k6_status=$?
 set -e
 run_ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cache_after="$(cache_snapshot || true)"
 
 if [ -n "$sampler" ]; then
   kill "$sampler" 2>/dev/null || true
@@ -426,6 +458,58 @@ else:
         "            "
         + (f"${c['usd_per_1k_requests']:.6f} per 1,000 requests · " if requests else "no requests · ")
         + (f"${c['usd_per_1m_tokens']:.4f} per 1M tokens" if tokens else "no tokens")
+    )
+with open(out, "w") as f:
+    json.dump(doc, f, indent=2)
+PY
+fi
+
+# The cache count over the window (the snapshots above). `hit_rate` is hits
+# over all three results, `08 §2-ط`'s formula: `unavailable` is a lookup Redis
+# did not answer, and leaving it out would make a broken cache look like a
+# quiet one. `replicas_stable` false means a container came, went or
+# restarted in between, and the delta undercounts.
+if [ -f "$host_out" ]; then
+  python3 - "$host_out" "$cache_before" "$cache_after" <<'PY' || echo "⚠️  could not record the cache count" >&2
+import json, sys
+
+out, before, after = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def parse(text):
+    rows = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            rows[(parts[0], parts[1])] = float(parts[2])
+    return rows
+
+
+b, a = parse(before), parse(after)
+doc = json.load(open(out))
+if not a:
+    doc["embedding_cache"] = None
+    print("cache     : ⚠️  no replica answered /metrics -- no cache count recorded for this run")
+else:
+    containers = lambda rows: {c for c, _ in rows}
+    stable = containers(b) == containers(a) and all(a.get(k, 0) >= v for k, v in b.items())
+    lookups = {}
+    for (container, result), value in a.items():
+        if result != "answered":
+            lookups[result] = lookups.get(result, 0) + int(value - b.get((container, result), 0))
+    total = sum(lookups.values())
+    doc["embedding_cache"] = {
+        "lookups": lookups,
+        "hit_rate": lookups.get("hit", 0) / total if total else None,
+        "replicas": len(containers(a)),
+        "replicas_stable": stable,
+    }
+    c = doc["embedding_cache"]
+    print(
+        f"cache     : {lookups.get('hit', 0):,} hits of {total:,} lookups"
+        + (f" ({c['hit_rate'] * 100:.1f}%)" if total else "")
+        + f" · unavailable {lookups.get('unavailable', 0):,}"
+        + ("" if stable else " · ⚠️  a replica restarted or changed during the run; the count undercounts")
     )
 with open(out, "w") as f:
     json.dump(doc, f, indent=2)

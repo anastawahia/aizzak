@@ -11,7 +11,7 @@
 import exec from 'k6/execution';
 import http from 'k6/http';
 import { API } from '../lib/config.js';
-import { authHeaders, tokenForVu } from '../lib/auth.js';
+import { authHeaders, tokenForIteration } from '../lib/auth.js';
 import { graded, ragRetrieval } from '../lib/metrics.js';
 import { ragQuery } from '../lib/queries.js';
 
@@ -21,7 +21,9 @@ import { ragQuery } from '../lib/queries.js';
 // a word with the seeded corpus (د‑37). That module says what the stream is
 // instead, and why its repeat rate is an assumption the result must carry.
 export function rag() {
-  const tok = tokenForVu();
+  // Per iteration, not per VU (`lib/auth.js` says why): a search needs any
+  // user's space, never the one this VU searched last.
+  const tok = tokenForIteration(exec.scenario.iterationInTest);
   // `k`, not `top_k`, and `space_id` is REQUIRED -- س-32 made a search span
   // one space or not run at all, and the audit measurement taken through the
   // cross-space version had to be withdrawn. A harness that reproduced that

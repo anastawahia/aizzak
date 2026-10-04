@@ -3059,6 +3059,7 @@ services:
       # from the day they were added; found when the abuse profile's were.
       LOAD_RAG_QUERIES: ${LOAD_RAG_QUERIES-}
       LOAD_RAG_QUERY_ZIPF: ${LOAD_RAG_QUERY_ZIPF-}
+      LOAD_RAG_QPS: ${LOAD_RAG_QPS-}
       # `abuse.js` (capacity 1.2).
       LOAD_ABUSE_PHASE_S: ${LOAD_ABUSE_PHASE_S-}
       LOAD_ABUSE_WARMUP_S: ${LOAD_ABUSE_WARMUP_S-}
@@ -3081,6 +3082,9 @@ services:
       RUN_IMAGES: ${RUN_IMAGES-}
       RUN_K6_VERSION: ${RUN_K6_VERSION-}
       RUN_HOST: ${RUN_HOST-}
+      # The query-vector cache TTL the app replicas run (4.3), which
+      # `rag.js` replays its question stream against.
+      RUN_EMBEDDING_CACHE_TTL_S: ${RUN_EMBEDDING_CACHE_TTL_S-}
       # How many source addresses this generator claims (capacity blocker
       # د‑8), and who owns the files it writes. Both are read by
       # `deploy/load/entrypoint.sh`, which explains the whole mechanism.

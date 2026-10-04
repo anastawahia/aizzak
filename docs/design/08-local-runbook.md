@@ -613,6 +613,21 @@ docker compose exec -T prometheus wget -qO- \
 
 ونتيجةٌ فارغةٌ هنا تعني أنّ أحداً لم يبحث منذ آخر إقلاع، أو أنّ الصورةَ أقدمُ من العدّاد.
 
+**ومعيارُ `4.3` يُقرأ بملفّ الحمل `rag`** (منذ 2026‑10‑04)، لا بالمزيج الخماسيّ: محادثاتُ المزيج تسأل سؤالاً ثابتاً واحداً (`LOAD_PROMPT`) يمرّ على الذاكرة نفسِها فيصيب دائماً، والعدّادُ لا يميّز المتّصلين. ‏`run.sh` يقرأ العدّادَ من النسخ الثلاث قبل التشغيل وبعده مباشرةً ويكتبه في الكتلة `embedding_cache`، ويكتب `rag.js` بجانبه ما **عرضه** تيّارُ الأسئلة على الذاكرة (`rag.offered_repeat_share`):
+
+```bash
+# (١) الذاكرةُ باردةٌ من أسئلة التيّار: لا تشغيلَ rag في آخر EMBEDDING_CACHE_TTL_S ثانية
+# (٢) طابورُ الفهرسة فارغ، ورموزٌ جديدة (README §2)
+eval "$(python -m app.ops.load_seed status --seed-id <id> --export)"
+deploy/load/run.sh rag                      # 40 سؤالاً/ث نصفَ ساعة
+LOAD_RAG_QPS=20 deploy/load/run.sh rag      # لمضيفٍ لا يخدم 40 (انظر التحذير)
+# (٣) الحكم
+jq '{cache: .embedding_cache, offered: .rag.offered_repeat_share, dropped: .rag.dropped, limited: .rag.rate_limited}' \
+  deploy/load/results/rag-<stamp>.json
+```
+
+**تعمل الذاكرةُ كما بُنيت** إذا قارب `embedding_cache.hit_rate` قيمةَ `rag.offered_repeat_share`، و`unavailable` صفر، و`replicas_stable` صحيح، و`dropped` و`rate_limited` صفر (إسقاطٌ أو `429` يعني أنّ طلباتٍ لم تبلغ الذاكرة، فلا تصفها المحاكاة). **⚠️ وخفضُ `LOAD_RAG_QPS` يخفض النسبةَ المعروضة** (35.8٪ عند 20/ث مقابل 43.8٪ عند 40/ث، نصفَ ساعةٍ بالافتراضات)، فلا يُقارَن تشغيلٌ مخفوضٌ إلّا بمحاكاته.
+
 **⚠️ و`unavailable` فوق الصفر عطلٌ لا حِمل:** الغلافُ يفشل مفتوحاً، فالبحثُ يعمل وكلُّ استعلامٍ يذهب إلى الأسطول، ولا خطأَ في أيّ مكانٍ آخر. ابدأ من `redis-cache` (`§4.19`).
 
 **⚠️ ومفتاحُ الذاكرة يحمل اسمَ النموذج وسقفَ التسلسل**، فتبديلُ `EMBEDDING_MODEL` أو `EMB_MAX_SEQ_LEN` لا يُقرأ منها شيء. والباقي — أن يتحرّك النصفان (سقفُ الخدمة `EMB_MAX_SEQ_LEN` وسقفُ المحوّل `embedding_max_input_tokens`) معاً — لا يفرضه شيء، ويحدّه أنّ ‏`EMBEDDING_CACHE_TTL_S` دقائقُ لا أيّام.

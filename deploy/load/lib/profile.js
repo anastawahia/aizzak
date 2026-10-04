@@ -516,6 +516,34 @@ export function buildBacklogOptions({ durationS }) {
   };
 }
 
+// ── The RAG profile (capacity 4.3's acceptance) ───────────────────────────
+// §0's peak question rate and nothing else, under the scenario's own name, so
+// it asks exactly the questions `peak.js` asks, in the same order. The mix
+// cannot give 4.3 either of its numbers: its chat scenario sends one fixed
+// prompt through the same query-vector cache (a hit every time after the
+// first, and the platform's count cannot tell callers apart), and it reaches
+// 40 questions a second only at 300 rps, above the knee.
+//
+// The gates are 07 §2's retrieval budget and the error budget, the two this
+// rate is judged by; the hit rate is no threshold, because how often the
+// stream repeats is the harness's assumption (`lib/queries.js`). `qps` is
+// §0's 40 unless the operator lowers it for a host that cannot serve that
+// (`rag.js`).
+export function buildRagOptions({ durationS, qps }) {
+  return {
+    ...TLS_GLOBAL_OPTIONS,
+    summaryTrendStats: TREND_STATS,
+    scenarios: {
+      rag: arrival('rag', qps, `${durationS}s`, 60, 400),
+    },
+    thresholds: {
+      aizzak_rag_retrieval_ms: [`p(95)<${BUDGET_MS.ragRetrieval}`],
+      aizzak_failed_requests: ['rate<0.001'],
+      'http_req_duration{scenario:rag}': ['p(99)>=0'],
+    },
+  };
+}
+
 // ── The ABUSE profile (1.2's isolation criterion) ─────────────────────────
 // Three phases of equal length, back to back, after a warm-up: the
 // neighbours alone, the neighbours with the abuser, the neighbours alone again. The criterion is a

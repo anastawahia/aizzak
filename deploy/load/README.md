@@ -39,8 +39,9 @@ step) and ~44% at 40 q/s (peak). Until 2026‑09‑28 the scenario rotated six
 fixed questions, which with the cache on was ~100% hits by construction
 (`د‑37`). Those shares are what the stream offers the cache; what the cache
 actually answered is the platform's own count, `aizzak_embedding_cache_total`
-(`hit`, `miss`, `unavailable`, one per question), read from Prometheus over
-the run's window (`د‑38`, `08 §2‑ط`). The result file does not carry it.
+(`hit`, `miss`, `unavailable`, one per question), which `run.sh` reads from
+every replica around the run into the result's `embedding_cache` block
+(`د‑38`, `08 §2‑ط`; the `rag` profile below says why 4.3 reads it there).
 
 **Three profiles over that one mix.** `peak.js` runs it at 300 rps for 30
 minutes; `average.js` at 50 rps (8 hours by default, `LOAD_DURATION_S` to
@@ -114,6 +115,37 @@ sliding log can admit in the phase, and which ceiling refused the rest.
 `isolation.held` needs all six of its `checks`, and `run.sh` exits 99 when it
 is false — the verdict is a comparison between phases, which no k6 threshold
 can express.
+
+**And one for step 4.3: `rag.js`**, the RAG scenario alone at §0's peak
+question rate (`LOAD_RAG_QPS`, default 40) for the peak profile's 30 minutes
+(`LOAD_DURATION_S`). The mix cannot give 4.3 either of its numbers: its chat
+scenario sends one fixed prompt (`LOAD_PROMPT`) through the same query-vector
+cache, a hit every time after the first, and it reaches 40 questions a second
+only at 300 rps, above the knee. The scenario keeps its name, so it asks
+exactly `peak.js`'s questions in the same order. Gates: the retrieval budget
+(400 ms p95) and the error budget. The result adds a `rag` block whose
+`offered_repeat_share` is the harness's half of the hit rate — the share of
+arrivals whose question was already embedded inside the TTL the replicas run,
+replayed from the same function the scenario asked with — beside the
+platform's half, `embedding_cache` below. ⚠️ Lower `LOAD_RAG_QPS` only for a
+host that cannot serve 40: above the ceiling k6 drops arrivals and the
+replay no longer describes what was asked; and a lowered run is read against
+its own replay, because the share rises with the rate (32.8 % at 15/s, 35.8 %
+at 20/s, 43.8 % at 40/s, over 30 minutes at the defaults).
+
+Since 2026‑10‑04 `rag` picks its token **per iteration**, in every profile
+(`lib/auth.js` `tokenForIteration`): a fast search frees its VU at once, so a
+VU-bound token put the scenario on a few users and past 1.2's 120/min each —
+581 of 2,308 arrivals were 429s in the first `rag` smoke, none of which
+reached the search or its cache.
+
+**Every result now carries `embedding_cache`**, written by `run.sh`: the
+platform's own `aizzak_embedding_cache_total` read from every app replica
+just before and just after k6, directly rather than through Prometheus's
+15 s scrape — `lookups` per result (`hit`, `miss`, `unavailable`), `hit_rate`
+(hits over all three, `08 §2‑ط`), and `replicas_stable`, false when a
+replica restarted or changed in between (the delta then undercounts). In the
+mixed profiles it counts the chat scenario's lookups too.
 
 ---
 
@@ -303,6 +335,7 @@ deploy/load/run.sh peak       # 30 min  (§7 item 1)
 deploy/load/run.sh average    # 8 hours (§7 item 2)
 deploy/load/run.sh backlog    # 20 min  (capacity 5.5 — `08 §4.21` stops the worker around it)
 deploy/load/run.sh abuse      # 16 min  (capacity 1.2 — one abusive tenant, its neighbours' p95)
+deploy/load/run.sh rag        # 30 min  (capacity 4.3 — the cache's hit rate, retrieval p95 at 40/s)
 ```
 
 **k6 does not have to be installed.** It is a Go binary, not something this
@@ -596,7 +629,7 @@ Four fields are worth reading before the percentiles:
   exponent (§1). The share of RAG requests step 4.3's cache can answer
   follows from them, so compare a RAG p95 only with one taken at the same
   values, or with the cache off (`EMBEDDING_CACHE_TTL_S=0`). The share it
-  did answer is `aizzak_embedding_cache_total` over the run (§1).
+  did answer is `embedding_cache.hit_rate` (§1).
 
 Requirements: **k6 1.x**, either installed or via `--profile load` (pinned at
 `grafana/k6:1.3.0`); Python 3 for `run.sh`'s two JSON helpers; and a running

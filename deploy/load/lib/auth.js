@@ -120,6 +120,19 @@ export function uploaderCount() {
   return uploaderIndices().length;
 }
 
+// The whole pool, round-robin over the ITERATION -- for `scenarios/rag.js`.
+// A search answered in tens of milliseconds frees its VU at once, so k6
+// serves a scenario's arrivals from whichever few VUs are idle, and a
+// VU-bound token put them on a few users: past 1.2's 120 requests a minute
+// per user in seconds. Each 429 frees its VU faster still, so the same users
+// took the next arrivals too -- 581 of 2,308 in the first one-minute `rag`
+// smoke (2026-10-04), every one of them a question that never reached the
+// search or its cache. Per iteration, 40 a second over 500 users is one
+// every 12.5 s each.
+export function tokenForIteration(i) {
+  return pool[i % pool.length];
+}
+
 // For `abuse.js`: ONE pool entry is the abusive tenant and every other entry
 // is a neighbour. `INV-W1` gives each user one workspace, so an entry is a
 // user and a tenant at once -- the abuser is a single identity, and no

@@ -124,9 +124,25 @@ fi
 # `set +e` is not optional here: k6's normal SUCCESSFUL-but-failing-a-threshold
 # exit is 99, and `set -e` would abandon the run's own results directory to
 # root ownership on every real gate failure.
+#
+# And k6 runs in the background with the signal forwarded, because Ctrl-C on
+# `run.sh` (and `docker kill --signal=SIGINT`) reaches PID 1 -- this shell --
+# not k6. A shell waiting on a foreground child acts on that SIGINT the moment
+# the child exits, and dies without reaching the `chown` below: on 2026-10-04
+# an interrupted `rag` run left its result root-owned, so every one of
+# `run.sh`'s additions to it (generator, cost, cache count) failed to write.
+# A trapped signal also interrupts `wait` itself, hence the second one.
 set +e
-"$k6_bin" "$@"
+"$k6_bin" "$@" &
+k6_pid=$!
+trap 'kill -INT "$k6_pid" 2>/dev/null' INT TERM
+wait "$k6_pid"
 status=$?
+while kill -0 "$k6_pid" 2>/dev/null; do
+  wait "$k6_pid"
+  status=$?
+done
+trap - INT TERM
 set -e
 
 # k6 runs as root here (see above); without this the operator inherits a
