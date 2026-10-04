@@ -2,7 +2,7 @@
 
 # منصة ذكاء اصطناعي متعددة الوكلاء — وثيقة المعمارية
 
-> **Software Architecture Document · v2.0 — مطابَقة للشيفرة**
+> **Software Architecture Document · v2.1 — مطابَقة للشيفرة**
 >
 > مخطط معماري كامل لتطبيق Backend بلغة Python — مبني على
 > **Modular Monolith** و**Hexagonal Architecture** و**Plugin System** و**Event‑Driven** للعمليات الثقيلة.
@@ -13,15 +13,29 @@
 | **النمط** | Modular Monolith |
 | **الأنماط** | Hexagonal · Plugin · Event‑Driven |
 | **حالة التصميم** | ✅ معتمد — 15/15 مرحلة · 26 قراراً |
-| **حالة البناء** | 🟡 مبنيّ ويعمل محلّيّاً — خطّة السعة قيد التنفيذ (الموجات 0→3) |
+| **حالة البناء** | 🟡 مبنيّ ويعمل محلّيّاً — خطّة السعة: الموجات 1–3 تمّت · 4 مبنيّة · 5–7 جارية · 8 مؤجَّلة بقرار المالك |
 | **تاريخ الاعتماد** | 2026‑07‑08 |
-| **آخر مطابقة للشيفرة** | **2026‑09‑06** · الفرع `capacity` |
+| **آخر مطابقة للشيفرة** | **2026‑10‑04** · الفرع `capacity` (بما فيه تعديلات `7.3` غير المُودَعة بعد) |
 
 > ⚠️ **ما تصفه هذه الوثيقة.** حتّى `v1.0` كانت هذه وثيقةَ **تصميمٍ معتمَد** — تصف ما اتُّفق على بنائه.
-> و`v2.0` تصف **ما هو مبنيٌّ فعلاً في `src/`**: كلُّ عددٍ فيها مقروءٌ من الشجرة لا من الخطّة، وكلُّ
+> ومنذ `v2.0` تصف **ما هو مبنيٌّ فعلاً في `src/`**: كلُّ عددٍ فيها مقروءٌ من الشجرة لا من الخطّة، وكلُّ
 > فارقٍ بين التصميم والواقع مذكورٌ في موضعه لا مطموس. وما لم يُبنَ بعدُ مجموعٌ صراحةً في
 > [§15](#15--ما-ليس-مبنيّاً-بعد). سجلُّ القرارات `D‑01…D‑26` يبقى كما اعتُمد — والانحرافُ عنه يُؤرَّخ
 > تحته، لا فوقه.
+
+> **ما تغيّر منذ `v2.0` (2026‑09‑06):**
+> - **35 خدمةً بدل 29:** ‏Redis انقسم مثيلَين (`5.2`)، والتضمينُ ثلاثُ نسخٍ خلف موازِن (`4.1`/`4.2`)، و`ops-scheduler`
+>   يشغّل أدواتِ التشغيل وحدَه (`5.7`)، و`alertmanager` + `alert-sink` يوصلان التنبيهات (`7.3`).
+> - **منفذٌ رابعٌ وعشرون:** ‏`TaskLedger` — كلُّ مهمّةٍ دوريّةٍ تقول متى نجحت آخرَ مرّة.
+> - **طبقةُ المزوّدين صارت حقيقيّة:** حارسٌ لكلّ مزوّد (`6.1`)، وتحويلٌ من السحابيّ إلى المحلّيّ (`6.4`) — وهو انحرافٌ عن
+>   `D‑16`، ‏وتسعيرٌ وميزانيّةُ كلفة لكلّ مساحة (`6.5`).
+> - **المجاري:** تزامنٌ محدودٌ في المستهلك (`5.1`)، وقصٌّ آمن (`5.5`)، وإعادةُ نشرٍ من `outbox` (`5.6`)، وضغطٌ عكسيٌّ مُعلَن (`5.3`).
+> - **الرصد:** 33 مقياساً، و23 قاعدةَ تنبيهٍ **تصل** (محلّيّاً)، ولكلٍّ إجراءٌ مكتوب.
+> - **تصحيحاتٌ لِما قالته `v2.0` خطأً** — والشيفرةُ هي الحَكَم:
+>   - قالت إنّ محوّلات **Gemini · Claude · OpenRouter** «مكتوبةٌ ومُختبَرة» — **ملفّاتُها فارغة (0 بايت)**، وكانت كذلك يومَها.
+>   - و**موصّلاتُ OAuth وعميلُ MCP البعيد ومحوّلُ الفيديو** ملفّاتٌ فارغةٌ كذلك.
+>   - و**Exa** محوّلٌ مكتوبٌ **غيرُ موصول** — لا يبنيه Composition Root بلا مفتاح.
+>   - و**كتالوجُ الـWorkflows فارغ** — المحرّكُ والسجلُّ مبنيّان، ولا تعريفَ واحداً مسجَّلاً.
 
 ---
 
@@ -60,7 +74,8 @@
 
 **والمبادئ مفروضةٌ آليّاً لا موصوفة:** ثمانيةُ عقودٍ في `.importlinter` تُشغَّل في CI ضمن
 **البوّابات الخمس** (`ruff format --check` · `ruff check` · `mypy --strict` · `lint-imports` ·
-`pytest`) — [§09](#09--قواعد-الاعتماد).
+`pytest`) — [§09](#09--قواعد-الاعتماد). ومنذ `7.3` خطوةٌ سادسةٌ في الوظيفة نفسِها: قواعدُ التنبيه
+تُختبَر بـ`promtool test rules` و`amtool check-config` (‏`deploy/prometheus/test-rules.sh`).
 
 ---
 
@@ -70,30 +85,33 @@
 |---|---|---|
 | `db` قاعدة البيانات | PostgreSQL | ✅ مبنيّ |
 | `pool` تجميع الاتصالات | PgBouncer (Transaction pooling) | ✅ مبنيّ |
-| `cache/bus` الكاش والناقل | Redis · Streams | ✅ مبنيّ |
+| `cache/bus` الكاش والناقل | **Redis × 2** — `redis-stream` (Streams · `noeviction` · AOF) و`redis-cache` (تخبئةٌ قابلةٌ للطرد · `allkeys-lru` · بلا حفظ) | ✅ مبنيّ — فُصل في `5.2` |
 | `object` تخزين الكائنات | MinIO | ✅ مبنيّ |
 | `auth` الهوية | Firebase | ✅ مبنيّ |
-| `edge` الحافة | Nginx (TLS · WS) | ✅ مبنيّ |
+| `edge` الحافة | Nginx (TLS · WS · `limit_req` لكلّ IP) | ✅ مبنيّ |
 | `app` التطبيق | FastAPI · Uvicorn · Gunicorn | ✅ مبنيّ |
-| `+vectors` مخزن المتجهات | **Qdrant** (بحث هجين) | ✅ مبنيّ |
+| `+vectors` مخزن المتجهات | **Qdrant** (بحث هجين · صندوقٌ لكلّ مساحة عمل) | ✅ مبنيّ |
 | `+secrets` إدارة الأسرار | **HashiCorp Vault** (AppRole · Transit) | ✅ مبنيّ |
 
 **وخدماتٌ أُضيفت بعد الاعتماد** — كلٌّ بسببها، ولا واحدةَ منها كانت في قائمة `v1.0`:
 
 | المجال | التقنية | لماذا أُضيفت |
 |---|---|---|
-| `embed` خدمة التضمين | **deployable منفصل** (`services/embedding/`) | `torch`/`sentence-transformers` وزنٌ ثقيلٌ ونطاقُ GPU. تعيش في صورتها وحدَها ولا تدخل رسمَ استيراد `app.*` قطّ؛ التطبيقُ والعمّال يكلّمونها عبر HTTP كأيّ خدمةٍ داخليّة، فيُدفع تحميلُ النموذج **مرّةً** لا مرّةً لكلّ عملية |
-| `search` البحث في الويب | **Exa** (`WebSearchProvider`) | أداةٌ للوكلاء عبر `ToolRegistry` — منفذٌ مُقادٌ كأيّ مزوّدٍ خارجيّ |
-| `metrics` المقاييس | **Prometheus** + **Grafana** | الموجة 0 من خطّة السعة: RED والإشباع — إحدى عشرة عائلةَ مقاييس، وخمسُ قواعدِ تنبيه، ولوحةٌ بتسعةَ عشرَ لوحاً |
-| `logs` السجلّات | **Loki** + **Alloy** | تجميعُ سجلٍّ مهيكلٍ واحدٍ قابلٍ للبحث بـ`correlation_id` عبر الحافّة والتطبيق والعامل |
-| `probes` المجسّات | **cAdvisor** · `pgbouncer-exporter` · `redis-stream-exporter` · `redis-cache-exporter` | إشباعُ المُجمِّع وخادمَي Redis والحاويات — أرقامٌ لا يعرفها التطبيقُ عن نفسه |
-| `load` توليد الحمل | **k6** (خلف `--profile load`) | خمسةُ سيناريوهاتٍ تجري معاً؛ لا تُقلع في التشغيل العاديّ |
-| `ollama` نموذجٌ محلّيّ | **Ollama** (عبر `ollama-bridge`) | المسارُ العامل الوحيد للنماذج اليوم — [§15](#15--ما-ليس-مبنيّاً-بعد) |
+| `embed` خدمة التضمين | **deployable منفصل** (`services/embedding/`) — **ثلاثُ نسخ خلف `embedding-lb`** (nginx) | `torch`/`sentence-transformers` وزنٌ ثقيل؛ تعيش في صورتها وحدَها ولا تدخل رسمَ استيراد `app.*`. ونسخٌ بلا موازِنٍ أمامها كانت **عطباً صامتاً** لا تحسيناً ناقصاً، فشُحنت `4.1` و`4.2` معاً. وداخلها **تجميعُ دفعاتٍ ديناميكيّ** (`EMB_BATCH_WINDOW_MS`، ‏`4.3`) |
+| `search` البحث في الويب | **Exa** (`WebSearchProvider`) — ⚠️ **مكتوبٌ غيرُ موصول** | المحوّلُ موجود، لكنّ Composition Root لا يبنيه بلا مفتاح: حقلُ `web_search` في تبعيّات الوكيل `None`، والوكيلُ الذي يطلبه يفشل بـ500 نظيفٍ لا بجوابٍ خاطئٍ صامت |
+| `metrics` المقاييس | **Prometheus** + **Grafana** | **33 مقياساً** باسمه في `src/app`، ولوحتان: السعة (**24 لوحاً في 6 صفوف**) والسجلّات |
+| `alerts` التنبيه | **Alertmanager** + **`alert-sink`** | `7.3`: كانت القواعدُ تُقيَّم ولا تصل أحداً. صارت **23 قاعدة** تصل — **محلّيّاً فقط** بقرار المالك (2026‑10‑04) — ولكلٍّ قسمٌ في [`docs/runbooks/alerts.md`](runbooks/alerts.md) وحالتان في `promtool` (تُشعله وتُصمته) |
+| `logs` السجلّات | **Loki** + **Alloy** | سجلٌّ مهيكلٌ واحدٌ قابلٌ للبحث بـ`correlation_id` عبر الحافّة والتطبيق والعامل |
+| `probes` المجسّات | `pgbouncer-exporter` · `redis-stream-exporter` · `redis-cache-exporter` · **cAdvisor** (خلف `--profile container-metrics`) | إشباعُ المُجمِّع وخادمَي Redis والحاويات — أرقامٌ لا يعرفها التطبيقُ عن نفسه |
+| `sched` المُجدوِل | **`ops-scheduler`** (الصورة نفسُها، `python -m app.ops.scheduler run`) | `5.7`: «مهمّةٌ مجدولةٌ تفشل صامتةً أسوأُ من غياب المهمّة». **عشرُ مهامّ دوريّة** تكتب نجاحَها في `TaskLedger`، وتنبيهان لمهمّةٍ متأخّرةٍ أو لم يُسلّحها أحد |
+| `load` توليد الحمل | **k6** (خلف `--profile load`) | **سبعةُ سيناريوهات** في **ستّة ملفّاتِ حمل** (`peak` · `average` · `step` · `backlog` · `abuse` · `rag`) + `smoke.sh`؛ لا تُقلع في التشغيل العاديّ |
+| `ollama` نموذجٌ محلّيّ | **Ollama** (عبر `ollama-bridge`) | المسارُ الافتراضيُّ المحلّيّ، **ومقصدُ التحويل** حين يتعذّر النموذجُ السحابيّ (`6.4`) |
 
 > **ما تغيّر عن `v1.0`.** كانت الوثيقةُ تقول «لا خدمة أخرى خارج هذه القائمة»، وذلك **لم يعد صحيحاً**:
-> منشورُ Compose اليوم **تسعٌ وعشرون خدمة**. لكنّ القيدَ الأصليَّ لم يُنقض بقدر ما تخصّص — فلا واحدةٌ
-> من المضافات في مسار الطلب المتزامن: خدمةُ التضمين نداءُ HTTP داخليٌّ خلف منفذٍ قائم، والمراقبةُ
-> **تُلاحِظ** ولا تُخدَم منها استجابة، وk6 خلف `profile` لا يُقلع أصلاً. القيدُ الحيُّ الآن أضيقُ وأدقّ:
+> منشورُ Compose اليوم **خمسٌ وثلاثون خدمة** — اثنتان وثلاثون تُقلع افتراضيّاً، وثلاثٌ خلف `profile`
+> (`backup` · `cadvisor` · `k6`). لكنّ القيدَ الأصليَّ لم يُنقض بقدر ما تخصّص: ما دخل مسارَ الطلب
+> (`redis-cache` · `embedding-lb`) دخله **خلف منفذٍ قائم** (`CacheProvider` · `EmbeddingProvider`)،
+> والمراقبةُ والتنبيهُ **يُلاحِظان** ولا تُخدَم منهما استجابة. القيدُ الحيُّ أضيقُ وأدقّ:
 > **لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في `framework/ports/`**.
 
 ---
@@ -113,8 +131,9 @@
 ## 03 · سياق النظام (C4 · L1)
 
 المنصة كنظام واحد يتفاعل معه **المستخدم** و**المسؤول**، ويعتمد على أنظمة خارجية:
-**Firebase** للهوية، و**مزوّدي الذكاء**، و**محرّك بحثٍ في الويب**، و**موصّلات/خوادم MCP خارجية**
-(OAuth · HTTP/SSE) عبر وحدة `integrations`. الهوية عبر Firebase؛ التفويض داخل التطبيق.
+**Firebase** للهوية، و**مزوّدي النماذج** (OpenAI سحابيّاً · Ollama محلّيّاً)، و**محرّك بحثٍ في الويب**
+(غيرُ موصول)، و**موصّلات/خوادم MCP خارجية** (التسجيلُ مبنيّ، والنقلُ لا). الهوية عبر Firebase؛
+التفويض داخل التطبيق.
 
 ```mermaid
 graph TD
@@ -122,74 +141,79 @@ graph TD
     Admin["المسؤول<br/>Platform admin"]
     Platform["منصة الوكلاء الذكية<br/>Multi-Agent AI Platform<br/>Modular Monolith · FastAPI"]
     Firebase["Firebase Auth<br/>الهوية فقط"]
-    Providers["المزوّدون الخارجيون<br/>LLM · Embedding · Rerank · Image · Video"]
-    Search["بحث الويب<br/>Exa"]
-    Connectors["موصّلات/خوادم MCP خارجية<br/>OAuth · MCP (HTTP/SSE)"]
+    Providers["مزوّدو النماذج<br/>OpenAI (سحابيّ) · Ollama (محلّيّ)<br/>Rerank · Image"]
+    Search["بحث الويب · Exa<br/>مكتوبٌ غيرُ موصول"]
+    Connectors["موصّلات/خوادم MCP خارجية<br/>التسجيلُ مبنيّ · المحوّلان فارغان"]
 
     User --> Platform
     Admin --> Platform
     User -. الهوية .-> Firebase
     Platform --> Firebase
     Platform --> Providers
-    Platform --> Search
-    Platform --> Connectors
+    Platform -.-> Search
+    Platform -.-> Connectors
 ```
 
-*Fig 1 — System Context (L1)*
+*Fig 1 — System Context (L1) · المتقطّعُ = غيرُ عاملٍ اليوم*
 
 ---
 
 ## 04 · الحاويات وتدفق البيانات (C4 · L2)
 
-التطبيق **Stateless** خلف Nginx (عدة نسخ Gunicorn+Uvicorn)، والعمّال **ثلاث عمليات منفصلة** تستهلك
-Redis Streams، ومُرحّل Outbox عمليةٌ رابعة. التطبيق يَنشُر أحداث المهام الثقيلة ثم يردّ فوراً —
-**لا اقتران مباشر بين التطبيق والعمّال**.
+التطبيق **Stateless** خلف Nginx — **ثلاثُ نسخٍ × `WEB_CONCURRENCY=4` = اثنتا عشرةَ عمليّة**. والعمّال
+**ثلاث عمليات منفصلة** تستهلك Redis Streams (`worker-knowledge` بنسختَين)، ومُرحّل Outbox عمليةٌ رابعة،
+و`ops-scheduler` خامسة. التطبيق يكتب حدثَ المهمّة الثقيلة في `outbox` **في معاملته نفسِها** ثم يردّ
+فوراً — **لا اقتران مباشر بين التطبيق والعمّال**، ولا بين التطبيق والمُرحِّل.
 
 ```mermaid
 graph TD
     Client["المستخدم / المسؤول<br/>Web · WebSocket · SSE"]
-    Nginx["Nginx<br/>Reverse proxy · TLS · WS"]
-    App["التطبيق الرئيسي<br/>FastAPI · Gunicorn+Uvicorn<br/>+ جسر cg.notify داخل العملية"]
+    Nginx["Nginx<br/>TLS · WS · limit_req"]
+    App["التطبيق × 3<br/>FastAPI · 12 عمليّة gunicorn<br/>+ جسر cg.notify داخل كلّ عمليّة"]
     WM["worker-memory<br/>cg.memory"]
-    WK["worker-knowledge<br/>cg.knowledge"]
+    WK["worker-knowledge × 2<br/>cg.knowledge"]
     WD["worker-media<br/>cg.media"]
-    Relay["outbox-relay<br/>poll → publish"]
+    Relay["outbox-relay × 1<br/>poll → XADD · قصّ المجاري"]
+    Sched["ops-scheduler<br/>10 مهامّ دوريّة"]
 
     Firebase["Firebase Auth<br/>التحقق من الهوية"]
-    AI["مزوّدو الذكاء<br/>LLM · Image · Video · Rerank"]
-    Embed["خدمة التضمين<br/>deployable منفصل · HTTP"]
-    Connectors["موصّلات/خوادم MCP خارجية<br/>OAuth · MCP (HTTP/SSE)"]
+    AI["مزوّدو النماذج<br/>OpenAI · Ollama · Rerank · Image"]
+    LB["embedding-lb<br/>nginx"]
+    Embed["التضمين × 3<br/>دفعاتٌ ديناميكيّة"]
 
     subgraph data ["طبقة البيانات والبنية التحتية (مُدارة ذاتياً)"]
         PgBouncer["PgBouncer<br/>Transaction pooling"]
         Postgres["PostgreSQL<br/>RLS by workspace · schema لكل وحدة"]
-        Redis["Redis<br/>Cache + Streams + حدود المعدّل"]
+        RS["redis-stream<br/>Streams · noeviction"]
+        RC["redis-cache<br/>تخبئة · allkeys-lru"]
         MinIO["MinIO<br/>Object storage"]
-        Qdrant["Qdrant<br/>Vectors · بحث هجين"]
-        Vault["Vault<br/>Secrets · Transit"]
+        Qdrant["Qdrant<br/>صندوقٌ لكلّ مساحة"]
+        Vault["Vault<br/>AppRole · Transit"]
         PgBouncer --> Postgres
     end
 
-    subgraph obs ["الملاحظة (Observability)"]
-        Prom["Prometheus<br/>+ Grafana"]
-        Loki["Loki<br/>+ Alloy"]
+    subgraph obs ["الملاحظة والتنبيه"]
+        Prom["Prometheus + Grafana"]
+        AM["Alertmanager → alert-sink"]
+        Loki["Loki + Alloy"]
     end
 
     Client --> Nginx
     Nginx --> App
     App --> Firebase
     App --> AI
-    App --> Embed
-    App --> Connectors
-    App --> Redis
+    App --> LB
+    LB --> Embed
     App --> PgBouncer
-    App --> Relay
-    Redis -. تستهلك .-> WM
-    Redis -. تستهلك .-> WK
-    Redis -. تستهلك .-> WD
-    Relay --> Redis
-    WM --> Embed
-    WK --> Embed
+    App --> RS
+    App --> RC
+    Relay --> PgBouncer
+    Relay --> RS
+    RS -. تستهلك .-> WM
+    RS -. تستهلك .-> WK
+    RS -. تستهلك .-> WD
+    WM --> LB
+    WK --> LB
     WK --> AI
     WD --> AI
     WM --> PgBouncer
@@ -199,6 +223,11 @@ graph TD
     WK --> Qdrant
     WK --> MinIO
     WD --> MinIO
+    Sched --> PgBouncer
+    Sched --> MinIO
+    Sched --> Qdrant
+    Sched --> Vault
+    Prom --> AM
     App -. مقاييس/سجلّات .-> obs
     WK -. مقاييس/سجلّات .-> obs
 ```
@@ -208,7 +237,15 @@ graph TD
 > **الإشعارُ يعيش داخل عملية الـAPI لا في عاملٍ خامس.** جسرُ `cg.notify` — الذي يترجم أحداثَ المجاري
 > إلى رسائل WebSocket — مشترِكٌ داخل عمليّة الـAPI نفسها، لأنّ `ConnectionHub` سجلٌّ **داخلَ العملية**
 > (الجلسةُ تعيش في عمليّةٍ واحدة). ولذلك ليست مجموعةً واحدةً بل **أسرةُ مجموعاتٍ لكلّ عملية**
-> `cg.notify.<host>.<pid>` — [§10](#10--العمارة-المدفوعة-بالأحداث).
+> `cg.notify.<host>.<pid>` — [§10](#10--العمارة-المدفوعة-بالأحداث). ولكلّ جلسةٍ قائمةُ انتظارٍ محدودة،
+> فالمستهلكُ البطيءُ يُقطَع وحدَه ولا يوقف إشعاراتِ المستأجرين جميعاً (`3.6`).
+
+> **Redis مثيلان، والاختيارُ بينهما قرارُ توصيلٍ في Composition Root لا في الإعداد** (`5.2` · `ق‑4`).
+> ‏`REDIS_URL` (`redis-stream`، ‏`noeviction`) هو **الافتراضيُّ لكلّ شيء**: المجاري، وقائمةُ إبطال الجلسات،
+> وحالةُ OAuth، وعدّاداتُ الإساءة — ولا شيءَ منها يجوز طردُه. و`CACHE_REDIS_URL` (`redis-cache`،
+> ‏`allkeys-lru`) يُشار إليه من **مستدعيَين اثنين فقط**، وكلاهما قابلٌ لإعادة البناء من مصدر حقيقته: متّجهُ
+> الاستعلام المخبّأ (`embed:v1:*`، ‏`4.3`) و`Principal` المخبّأ (`auth:principal:*`، ‏`1.1`). فالمستدعي
+> الذي يُضاف لاحقاً بلا تفكيرٍ كافٍ يقع على المثيل **الآمن**.
 
 ---
 
@@ -219,11 +256,11 @@ graph TD
 
 ```mermaid
 graph TD
-    API["طبقة الواجهة (API)<br/>15 موجّهاً · WebSocket · SSE · DTOs"]
+    API["طبقة الواجهة (API)<br/>15 موجّهاً · WebSocket · SSE · 7 وسائط"]
     Agents["طبقة الوكلاء (Agents)<br/>5 وكلاء + Orchestrator"]
     Modules["وحدات الأعمال (Modules)<br/>12 وحدة · Domain · Application · Ports"]
-    Framework["طبقة الإطار (Framework)<br/>23 منفذاً · Registry · DI · EventBus · Tools"]
-    Infra["البنية التحتية (Adapters)<br/>Repositories · Redis · MinIO · Qdrant<br/>Vault · Firebase · LLM/Image/Video/Rerank/Search"]
+    Framework["طبقة الإطار (Framework)<br/>24 منفذاً · Registry · DI · EventBus · Tools · Providers"]
+    Infra["البنية التحتية (Adapters)<br/>Repositories · Redis × 2 · MinIO · Qdrant<br/>Vault · Firebase · OpenAI/Ollama خلف ProviderGuard"]
 
     API --> Agents
     Agents --> Modules
@@ -236,22 +273,23 @@ graph TD
 
 | الطبقة | المجلّد | الدور | تحتوي |
 |---|---|---|---|
-| **الواجهة (API)** | `src/app/api/` | محوّل قيادة | 15 موجّهاً `‎/api/v1`، WebSocket، SSE، DTO، تحقق Firebase، RBAC guards، وسائطُ الحدّ والمقاييس والتزامن — بلا منطق أعمال |
-| **الوكلاء** | `src/app/agents/` | منسّق | BaseAgent، دورة الحياة، Orchestrator، استخدام Tools — ينسّق فقط |
+| **الواجهة (API)** | `src/app/api/` | محوّل قيادة | 15 موجّهاً `‎/api/v1`، WebSocket، SSE، DTO — و**سبعُ وسائط**: سقفُ الطلبات الجارية (`inflight`) · مقاييسُ RED · المصادقة (+ `Principal` مخبّأ) · RBAC · حدُّ المعدّل بدلوَين · المهامُّ الثقيلة لكلّ مستخدم · **الضغطُ العكسيّ لطابور الفهرسة** (`5.3`) — بلا منطق أعمال |
+| **الوكلاء** | `src/app/agents/` | منسّق | BaseAgent، دورة الحياة، Orchestrator (عدٌّ وتسعيرٌ وتحويلٌ حول كلّ نداء نموذج)، استخدام Tools — ينسّق فقط |
 | **الوحدات** | `src/app/modules/` | النواة | 12 وحدة: Domain (نقي) + Application (Use‑Cases) + Ports |
-| **الإطار** | `src/app/framework/` | الكِرنل | PluginLoader، Registries، WorkflowEngine، EventBus، ToolRegistry، 23 منفذاً مشتركاً، ConnectionHub، Observability، Settings، Composition Root |
-| **البنية التحتية** | `src/app/infrastructure/` | محوّل مُقاد | تنفيذ المنافذ فوق Postgres/Redis/MinIO/Qdrant/Vault/Firebase ومزوّدي الذكاء والبحث |
+| **الإطار** | `src/app/framework/` | الكِرنل | PluginLoader، Registries، WorkflowEngine، EventBus، ToolRegistry، **24 منفذاً مشتركاً**، ConnectionHub، Observability (+ كتالوج المهامّ الدوريّة)، **`providers/`** (Resolver · Fallback · Pricing · Catalog)، Settings، Composition Root |
+| **البنية التحتية** | `src/app/infrastructure/` | محوّل مُقاد | تنفيذ المنافذ فوق Postgres/Redis/MinIO/Qdrant/Vault/Firebase ومزوّدي النماذج — ومنها `monitoring/` (‏`RedisTaskLedger` · `VaultProbe` · `SqlRedisMetricsSource`) و`messaging/stream_retention.py` |
 
 **وطبقتان تشغيليّتان خارج المكدّس الخمسـيّ** — لا تدخلان رسمَ الاعتماد لأنّ لا أحد يستوردهما:
 
 | المجلّد | الدور |
 |---|---|
-| `src/app/workers/` | **ثلاثة عمّال + مُرحّل**: `memory_worker` · `knowledge_worker` · `media_worker` · `outbox_relay`. الصورة نفسُها، أمرٌ مختلف |
-| `src/app/ops/` | **خمس عشرة نقطةَ دخولٍ تشغيليّة** — `provision` (الهجرات ثمّ المنح) · `backup` · `retention` · `purge` · `revoke` · `rotate_transit` · `dlq` · `healthcheck` · `online_ddl` · `payload_indexes` · `slow_queries` · `explain_hot_paths` · `table_growth` · `notify_groups` · `load_seed` |
+| `src/app/workers/` | **ثلاثة عمّال + مُرحّل**: `memory_worker` · `knowledge_worker` · `media_worker` · `outbox_relay` — ومعها `bootstrap` و`content_resolver` و`media_generation` و`summary_metering` (عدُّ التلخيص، `6.5`). الصورة نفسُها، أمرٌ مختلف |
+| `src/app/ops/` | **ثلاثٌ وعشرون وحدة: إحدى وعشرون نقطةَ دخولٍ تشغيليّة** — `provision` (الهجرات ثمّ المنح) · `backup` · `retention` · `purge` · `revoke` · `rotate_transit` · `dlq` · `healthcheck` · `payload_indexes` · `slow_queries` · `explain_hot_paths` · `table_growth` · `notify_groups` · `load_seed` · 🆕 `scheduler` · `stream_trim` · `replay` · `embedding_migration` · `qdrant_capacity` · `notify_cost` · `mint_load_tokens` — **ومكتبتان** تستوردهما الأدوات: `online_ddl` و🆕 `role_guard` |
 
 > **`alembic upgrade head` ليس أمراً يملكه هذا المستودع.** المنصّةُ تُشغّل **اثنتَي عشرةَ سلسلةَ هجراتٍ
 > مستقلّة** (‏`version_table_schema` لكلّ وحدة)، فـ`head` ملتبسٌ وAlembic يرفضه. الاستدعاءُ الحقيقيُّ
-> `python -m app.ops.provision` — يُشغّل السلاسل بالترتيب ثمّ يُصدر المنحَ التي لا تُصدرها أيُّ هجرة.
+> `python -m app.ops.provision` (خدمةُ `migrate`) — يُشغّل السلاسل بالترتيب ثمّ يُصدر المنحَ التي لا
+> تُصدرها أيُّ هجرة.
 
 ---
 
@@ -281,7 +319,7 @@ graph TD
     end
     subgraph c5 ["التكامل والقياس"]
         Integrations["Integrations<br/>موصّلات · OAuth · MCP بعيد"]
-        Usage["Usage<br/>قياس · حصص · reserve/commit"]
+        Usage["Usage<br/>حصص · reserve/commit · ميزانيّةُ كلفة"]
     end
     subgraph c6 ["إدارة المنصّة"]
         AdminM["Admin<br/>تطبيقيّةٌ بلا نطاق"]
@@ -292,20 +330,20 @@ graph TD
 
 *Fig 4 — Business Modules Map (**12** في v1)*
 
-| # | الوحدة | schema | domain | ملاحظة |
-|---|---|---|---|---|
-| 1 | `workspace` | ✅ | ✅ | المستأجر — حدُّ الأمان الوحيد |
-| 2 | **`spaces`** | ✅ | ✅ | **أُضيفت بعد الاعتماد** |
-| 3 | `access` | ✅ | ✅ | RBAC |
-| 4 | `credentials` | ✅ | ✅ | مفاتيح المزوّدين · Vault Transit |
-| 5 | `conversations` | ✅ | ✅ | |
-| 6 | `memory` | ✅ | ✅ | |
-| 7 | `files` | ✅ | ✅ | |
-| 8 | `knowledge` | ✅ | ✅ | سبعةُ منافذَ داخليّة — أكبرُ وحدة |
-| 9 | `media` | ✅ | ✅ | |
-| 10 | `integrations` | ✅ | ✅ | OAuth · MCP بعيد |
-| 11 | `usage` | ✅ | ✅ | منافذُ واردة |
-| 12 | **`admin`** | ✗ | ✗ | **أُضيفت بعد الاعتماد** |
+| # | الوحدة | schema | domain | منافذ | ملاحظة |
+|---|---|---|---|---|---|
+| 1 | `workspace` | ✅ | ✅ | 3 | المستأجر — حدُّ الأمان الوحيد |
+| 2 | **`spaces`** | ✅ | ✅ | 2 | **أُضيفت بعد الاعتماد** |
+| 3 | `access` | ✅ | ✅ | 2 | RBAC |
+| 4 | `credentials` | ✅ | ✅ | 2 | مفاتيح المزوّدين · Vault Transit |
+| 5 | `conversations` | ✅ | ✅ | 4 | |
+| 6 | `memory` | ✅ | ✅ | 1 | |
+| 7 | `files` | ✅ | ✅ | 3 | |
+| 8 | `knowledge` | ✅ | ✅ | 7 | أكبرُ وحدة — صندوقُ Qdrant لكلّ مساحة (`ق‑3`)، بمراجعاتٍ واسمٍ مستعار (`4.5`) |
+| 9 | `media` | ✅ | ✅ | 3 | |
+| 10 | `integrations` | ✅ | ✅ | 3 | OAuth · MCP بعيد — المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان ([§15](#15--ما-ليس-مبنيّاً-بعد)) |
+| 11 | `usage` | ✅ | ✅ | 2 | منافذُ واردة · `reserve`/`commit` · **ميزانيّةُ كلفةٍ تعمل** (`6.5`) |
+| 12 | **`admin`** | ✗ | ✗ | 4 | **أُضيفت بعد الاعتماد** |
 
 > **`spaces` ليست مستأجراً، وهذا هو التصميم.** الفضاءُ **محورُ الملكية داخل** مساحة العمل: كلُّ ملفٍّ
 > وكلُّ محادثةٍ ينتمي إلى واحدٍ بالضبط، وما يراه الحديثُ هو محتوى فضائه. لكنّ **مساحةَ العمل تبقى حدَّ
@@ -319,9 +357,10 @@ graph TD
 > إحدى عشرةَ وحدةً لها `domain/` وschema، و`admin` ليست إحداها.
 
 > **الوحداتُ الثلاثُ المحجوزة ما تزال محجوزة:** ‏`scheduling` · `sandbox` · `runs` — لا وجودَ لأيٍّ
-> منها في `src/app/modules/`.
+> منها في `src/app/modules/`. و`ops-scheduler` **ليس** `scheduling`: الأوّلُ يشغّل أدواتِ تشغيلٍ للمنصّة،
+> والثانيةُ وحدةُ أعمالٍ لمهامّ المستخدمين ولم تُبنَ.
 
-> **مِلكيّةُ الجداول صارت مفروضةً بـschema لكلّ وحدة** — وهي التوصيةُ الاستباقيّةُ الأولى من `§14`،
+> **مِلكيّةُ الجداول مفروضةٌ بـschema لكلّ وحدة** — وهي التوصيةُ الاستباقيّةُ الأولى من `§14`،
 > نُفِّذت: اثنتا عشرةَ سلسلةَ هجراتٍ (إحدى عشرةَ وحدةً + `platform`)، لكلٍّ `version_table_schema`
 > خاصّتُها.
 
@@ -352,16 +391,27 @@ stateDiagram-v2
 
 **الوكلاء المبنيّون — خمسةٌ ومُنسِّق** (لا «أمثلة»: هذه هي المجموعةُ القائمة في `src/app/agents/`):
 
-| الوكيل | يحمل | |
-|---|---|---|
-| `rag_agent` | `prompts/` + `tools/` | الاسترجاع المُعزَّز |
-| `data_analysis_agent` | `prompts/` + `tools/` | تحليل البيانات |
-| `file_editing_agent` | `prompts/` + `tools/` | تحرير الملفّات |
-| `image_agent` | manifest فقط | توليد الصور |
-| `video_agent` | manifest فقط | توليد الفيديو |
-| `orchestrator.py` | — | تنسيقُ متعدّدِ الوكلاء (ليس وكيلاً ولا إضافة) |
+| الوكيل | يحمل | | ملاحظة |
+|---|---|---|---|
+| `rag_agent` | `prompts/` + `tools/` | الاسترجاع المُعزَّز | يسترجع ويستشهد بمقاطع المساحة الحقيقيّة |
+| `data_analysis_agent` | `prompts/` + `tools/` | تحليل البيانات | |
+| `file_editing_agent` | `prompts/` + `tools/` | تحرير الملفّات | |
+| `image_agent` | manifest فقط | توليد الصور | عبر `OpenAIImage` |
+| `video_agent` | manifest فقط | توليد الفيديو | ⚠️ لا محوّلَ لـ`VideoProvider` — الملفُّ فارغ |
+| `orchestrator.py` | — | تنسيقُ متعدّدِ الوكلاء | ليس وكيلاً ولا إضافة |
 
 كلٌّ منهم منسّقٌ رفيعٌ يستدعي الوحدات عبر Ports ويستخدم Tools؛ العمليات الثقيلة تُحال إلى Streams.
+
+> **المُنسِّق صار يحيط كلَّ نداء نموذجٍ بثلاث طبقات** (الموجة 6):
+> **العدّ** (`_MeteredLLM` — الاستهلاكُ يُلتقط متزامناً عبر منفذ `usage` الوارد)، و**التسعير** (`_BilledRoute`
+> — لكلّ نموذجٍ سحابيٍّ سعرٌ في `LLM_PRICES`، فكلُّ دورٍ يُشحَن بكلفته الحقيقيّة بدل الصفر)، و**التحويل**
+> (`LlmFallback` — دورٌ تعذّر نموذجُه السحابيُّ **قبل أوّل مقطع** يُجيبه النموذجُ المحلّيّ ويُخبَر المستخدم).
+> والميزانيّةُ تُفحَص **قبل** بدء المحادثة، والنافدةُ توقف محادثاتِ المساحة كلَّها، **المحلّيّةَ أيضاً** (قرار المالك).
+
+> **محرّكُ الـWorkflows وسجلُّه موصولان، والكتالوجُ فارغ — وهذه نتيجةٌ لا عنصرٌ نائب.**
+> ‏`framework/workflows/definitions/` لا يحمل إلّا ملفّاتٍ فارغة، فلا تعريفَ مسجَّلاً. والمثالُ الوحيدُ في
+> التصميم (`rag → data_analysis → image → video → file_editing`) **لا يتسلسل** على الوكلاء كما بُنوا:
+> ‏`rag_agent` يُخرج `{text, citations}` و`data_analysis_agent` يطلب `file_id` لا تُنتجه خطوةٌ سابقة.
 
 ---
 
@@ -370,44 +420,57 @@ stateDiagram-v2
 المنافذ تُعرَّف في **Framework**، والمحوّلات في **Infrastructure**، والربط في **Composition Root**
 عبر Manual DI (عكس الاعتماد). لا يستورد أحدٌ المحوّلات المحسوسة إلا Composition Root.
 
-`src/app/framework/ports/` يحمل اليوم **23 وحدةَ منفذٍ** تعرّف **24 بروتوكولاً** — لا العشرةَ التي
+`src/app/framework/ports/` يحمل اليوم **24 وحدةَ منفذٍ** تعرّف **25 بروتوكولاً** — لا العشرةَ التي
 وصفتها `v1.0`. والزيادةُ ليست تضخُّماً: كلُّ منفذٍ مضافٍ يُخرج تقنيةً كانت ستُستورد مباشرةً.
+**وأسماءُ المحوّلات أدناه هي أسماءُ الأصناف في الشيفرة** (`v2.0` كانت تكتب أسماءً وصفيّة).
 
 **منافذ مُقادة (Driven) — التقنيات الخارجية:**
 
 | Port | Adapter(s) | Backing |
 |---|---|---|
-| `LLMProvider` | OpenAI · Gemini · Claude · Ollama · OpenRouter (أصلي لكل مزوّد) | خارجي |
-| `EmbeddingProvider` | `ExternalEmbeddingProvider` → خدمة التضمين | HTTP داخلي |
-| `RerankProvider` | `ExternalRerank` | خارجي |
-| `ImageProvider` / `VideoProvider` | محوّلات توليد خارجية | خارجي |
-| `WebSearchProvider` | `ExaWebSearch` | خارجي |
-| `VectorStore` / `HybridVectorStore` | `QdrantAdapter` | Qdrant |
-| `StorageProvider` | `MinIOAdapter` | MinIO |
-| `CacheProvider` | `RedisCache` | Redis |
-| `EventPublisher` | `RedisStreams` | Redis |
-| `RateLimiter` | `RedisRateLimiter` (Lua ذرّيّ) | Redis |
-| `WsConnectionRegistry` | `RedisConnectionRegistry` | Redis |
+| `LLMProvider` | `OpenAILLM` · `OllamaLLM` — كلٌّ ملفوفٌ بـ`GuardedLLM` (`ProviderGuard`). ‏⚠️ Claude · Gemini · OpenRouter: **ملفّاتٌ فارغة** | خارجي / محلّي |
+| `EmbeddingProvider` | `ExternalEmbeddingProvider` → `embedding-lb` → ثلاث نسخ؛ ويلفّه `CachingEmbeddingProvider` على `redis-cache` | HTTP داخلي |
+| `RerankProvider` | `ExternalRerankProvider` | HTTP |
+| `ImageProvider` | `OpenAIImage` | خارجي |
+| `VideoProvider` | ⚠️ — **ملفٌّ فارغ** | — |
+| `WebSearchProvider` | `ExaWebSearchAdapter` — ⚠️ **مكتوبٌ غيرُ موصول** | خارجي |
+| `VectorStore` / `HybridVectorStore` | `QdrantVectorStore` (صندوقٌ لكلّ مساحة · مراجعاتٌ واسمٌ مستعار) | Qdrant |
+| `StorageProvider` | `MinioStorage` | MinIO |
+| `CacheProvider` | `RedisCache` × 2 — **المحفوظ** (الافتراضيّ، `redis-stream`) و**القابلُ للطرد** (`redis-cache`) | Redis |
+| `EventPublisher` | `RedisStreamsPublisher` | Redis |
+| `RateLimiter` | `RedisRateLimiter` (Lua ذرّيّ · دلوان في نداءٍ واحد) | Redis |
+| `WsConnectionRegistry` | `RedisWsConnectionRegistry` | Redis |
+| 🆕 `TaskLedger` | `RedisTaskLedger` — سجلٌّ لكلّ **مهمّة** لا مقياسٌ لكلّ عمليّة | Redis |
 | `SecretsProvider` | `VaultSecrets` (Transit) | Vault |
-| `VaultHealth` | مِجسٌّ يغلّف `SecretsProvider` نفسَه | Vault |
+| `VaultHealth` | `VaultProbe` | Vault |
 | `AuthProvider` | `FirebaseAuth` | Firebase |
-| `ConnectorProvider` / `MCPClient` | موصّلات OAuth + عميل MCP بعيد (HTTP/SSE) | خارجي |
-| `EventOutbox` | جدول Outbox | PostgreSQL |
-| `IdempotencyStore` | `platform.processed_events` + سجلّ الطلبات | PostgreSQL |
-| `QuotaLock` | قفلٌ استشاريٌّ لكلّ `(workspace, limit)` | PostgreSQL |
-| `UnitOfWork` | معاملةٌ واحدةٌ تحت RLS | PostgreSQL |
-| `MetricsSource` / `SystemStatsSource` | مصادرُ المقاييس وإحصاء النظام | محلّيّ |
+| `ConnectorProvider` / `MCPClient` | ⚠️ — **ملفّان فارغان**؛ التسجيلُ والإدراجُ والتعطيلُ موصولة | — |
+| `EventOutbox` | `SqlEventOutbox` | PostgreSQL |
+| `IdempotencyStore` | `SqlIdempotencyStore` (ومعه `SqlProcessedEventLedger` للمستهلكين) | PostgreSQL |
+| `QuotaLock` | `AdvisoryQuotaLock` — قفلٌ استشاريٌّ لكلّ `(workspace, limit)` | PostgreSQL |
+| `UnitOfWork` | `TenantSessionFactory.begin` — معاملةٌ واحدةٌ تحت RLS يلتحق بها كلُّ مستودعٍ والـOutbox | PostgreSQL |
+| `MetricsSource` / `SystemStatsSource` | `SqlRedisMetricsSource` · `HostSystemStats` | Postgres · Redis · المضيف |
 | `Repository` (لكل Module) | SqlAlchemy Repositories | PostgreSQL |
 
 **منافذ واردة (Inbound Ports):** خلافاً للمنافذ المُقادة أعلاه، تعرّف وحدة `usage` منفذَين **واردَين**
 يستدعيهما المُنسِّق (طبقة الوكلاء): **فرض الحدّ** و**التقاط الاستهلاك** (متزامن، **بلا Redis Streams**)
 — `FR‑131/132`.
 
-> **`reserve`/`commit` لم يعد «قابلاً للتطوّر»، بل مبنيّ.** كانت `v1.0` تصف كائنَ قرارٍ *يمكن* أن يتطوّر
-> إلى حجزٍ وشحن؛ وقد تطوّر فعلاً (خطوةُ السعة `2.7`): سقفُ الرموز يُحجَز قبل نداء النموذج ويُشحَن
-> بالمقيس بعده، بجدول حجوزاتٍ تحت RLS. والسببُ قياسيٌّ لا نظريّ: بلا حجز، مئةُ طلبٍ متزامنٍ على
-> مساحةٍ يتبقّى فيها رمزٌ واحدٌ كانت **تُقبل ستّةٌ وأربعون** منها — لأنّ لا أحدَ منها قد أنفق شيئاً وقتَ
-> الفحص. وما فحصُه وكتابتُه متلاصقان (الملفّات مثلاً) كفاه `QuotaLock` بدل الحجز.
+> **`ProviderGuard` — ثلاثةُ أشياء لكلّ مزوّد، لكلّ عمليّة، ولا شيءَ غيرها** (`6.1` · `ق‑6`):
+> **سقفُ تزامنٍ يرفض بدل أن يصطفّ** (Ollama 2، والسحابيُّ 5 — والزائدُ `429` فوراً بـ`Retry-After`)،
+> و**قاطعُ دارة** بعد إخفاقاتٍ عابرةٍ متتالية (`502` فوراً بدل انتظار المهلة أمام مزوّدٍ معروفٍ أنّه ساقط)،
+> و**إعادةٌ للإخفاقات الرخيصة وحدَها** قبل أوّل مقطع. «لكلّ عمليّة» مقصود: اثنتا عشرةَ عمليّةً تتعلّم في خمسة
+> نداءاتٍ أنّ المزوّدَ ساقط أرخصُ من رحلةٍ إلى Redis في كلّ نداء.
+
+> **وفي `framework/providers/` بروتوكولان ليسا في `ports/` عمداً:** ‏`LlmFallback` و`LlmPricing`. لا يسألهما
+> إلّا المُنسِّق، وينفّذهما الكائنُ نفسُه الذي يقرأ جدولَ التوجيه — فلا يستطيع مسارُ التحويل أن يسمّي مساراً
+> لا يعرفه الـResolver. والإقلاعُ **يرفض** جدولاً فيه مسارٌ سحابيٌّ بلا سعر، أو مسارُ تحويلٍ يحتاج اعتماداً.
+
+> **`reserve`/`commit` مبنيّ، وصار يحمل الكلفةَ لا الرموزَ وحدَها.** سقفُ الرموز يُحجَز قبل نداء النموذج
+> ويُشحَن بالمقيس بعده (`2.7`) — بلا حجز، مئةُ طلبٍ متزامنٍ على مساحةٍ يتبقّى فيها رمزٌ واحدٌ كانت **تُقبل
+> ستّةٌ وأربعون** منها. وحتّى `6.5` كان كلُّ شحنٍ يحمل `cost_micros = 0` فلا تعضّ ميزانيّةُ الكلفة أبداً؛ صار
+> السعرُ بالدولار لكلّ مليون رمز — وهو بالضبط ميكرو‑دولار لكلّ رمز — بـ`Decimal` لا `float`، **والتلخيصُ
+> صار يُعَدّ** ويُرفض قبل أوّل نداءٍ إن نفدت الميزانيّة.
 
 ---
 
@@ -446,22 +509,28 @@ stateDiagram-v2
 graph LR
     Producer["Producer<br/>API / Module"]
     Outbox["Outbox<br/>Postgres · same tx"]
-    Relay["outbox-relay<br/>poll → publish"]
-    Stream["Redis Stream<br/>XADD stream.&lt;module&gt;"]
-    Worker["Worker<br/>Consumer Group"]
+    Relay["outbox-relay<br/>poll → XADD"]
+    Stream["Redis Stream<br/>stream.&lt;module&gt;"]
+    Trim["قصٌّ آمن<br/>تحت أبطأ قارئ + MAXLEN"]
+    Worker["Worker<br/>Consumer Group · تزامنٌ محدود"]
     Dedupe["processed_events<br/>(group, event_id)"]
     Process["Process + Persist<br/>Postgres · Qdrant · MinIO"]
     Notify["جسر cg.notify<br/>→ WebSocket"]
     DLQ["stream.&lt;m&gt;.dlq<br/>after N=5"]
+    Replay["app.ops.replay<br/>ما فقده Redis"]
 
     Producer --> Outbox
     Outbox --> Relay
     Relay --> Stream
+    Relay -. يشغّل .-> Trim
+    Trim -.-> Stream
     Stream --> Worker
     Worker --> Dedupe
     Dedupe --> Process
     Process --> Notify
     Worker -. after N=5 .-> DLQ
+    Outbox -. إعادةُ نشر .-> Replay
+    Replay -.-> Stream
 ```
 
 *Fig 6 — Event-Driven Message Flow*
@@ -470,11 +539,21 @@ graph LR
 
 | المجرى | المنتِج | Consumer Group | العامل |
 |---|---|---|---|
-| `stream.knowledge` | knowledge | `cg.knowledge` | `knowledge_worker` |
+| `stream.knowledge` | knowledge | `cg.knowledge` | `knowledge_worker` (× 2) |
 | `stream.media` | media (API) | `cg.media` | `media_worker` |
 | `stream.memory` | memory | `cg.memory` | `memory_worker` |
 | `stream.files` | files | **— لا مستهلك** | — |
 | `*` (فشل) | العامل | — | `stream.<m>.dlq` |
+
+**وما أضافته الموجة 5 على هذا الخطّ:**
+
+| الخطوة | ما بُني | أين |
+|---|---|---|
+| `5.1` | **تزامنٌ محدودٌ** في محرّك الاستهلاك — عدّةُ معالِجاتٍ في الطيران لكلّ عمليّة، ومسبحُ العامل مشتقٌّ منه (التزامن + 1) لا مكتوبٌ مرّتين | `infrastructure/messaging/consumers/engine.py` |
+| `5.3` | **ضغطٌ عكسيٌّ مُعلَن**: حين يتجاوز انتظارُ أقدم مدخلٍ في `cg.knowledge` ‏120 ث، يُجاب الرفعُ الجديد `429` بـ`Retry-After` بدل `202` لعملٍ تعرف المنصّةُ أنّها لن تؤدّيه في ميزانيّتها | `api/middleware/queue_backpressure.py` |
+| `5.5` | **قصٌّ آمن**: كلُّ مجرى يُقصّ **تحت أبطأ قارئٍ له**، و`MAXLEN` حدٌّ احتياطيٌّ لا سياسة — يشغّله المُرحِّل ويقرؤه `/metrics` | `infrastructure/messaging/stream_retention.py` |
+| `5.6` | **إعادةُ نشرٍ من `platform.outbox`**: ما فقده Redis يُعاد، وما لا يستطيع السجلُّ ضمانَه لا يُعاد — مُقاسٌ حيّاً: عشرةٌ من عشرة بلا أثرٍ مزدوج | `ops/replay.py` |
+| `5.7` | **مراقبةُ الـDLQ مهمّةٌ دوريّة** لكلّ مجرى، تكتب نجاحَها في `TaskLedger` كسائر المهامّ | `framework/observability/scheduled_tasks.py` |
 
 > **«مجرى لكل وحدة» لم تعد تصف الواقع، والفارقُ مقصود.** ‏`stream.files` **بلا مجموعةِ استهلاكٍ عمداً**
 > منذ صارت الفهرسةُ يدويّة: كان إتمامُ الرفع أمراً بالفهرسة ولم يُسأل أحد، فصار التسجيلُ طلباً صريحاً.
@@ -485,8 +564,11 @@ graph LR
 > **و`cg.notify` أسرةُ مجموعاتٍ لكلّ عملية، لا مجموعةٌ واحدة.** جسرُ الإشعارات يعيش داخل عمليّة الـAPI،
 > و`ConnectionHub` سجلٌّ داخلَ العملية — فمجموعةٌ مشتركةٌ بين أشقّاء gunicorn كانت تُوزّع كلَّ حدثٍ على
 > **نصفها فقط**، أي فقدُ نحو نصف الإشعارات صامتاً. فلكلّ عمليّةٍ `cg.notify.<host>.<pid>` تُنشئها عند
-> الإقلاع وتُتلفها عند الإغلاق النظيف، واليتيمةُ تُكنَس عند إقلاعٍ تالٍ على المضيف نفسه
-> (`app.ops.notify_groups`).
+> الإقلاع وتُتلفها عند الإغلاق النظيف، واليتيمةُ تُكنَس دوريّاً (`notify_groups`، مهمّةٌ في `TaskLedger`).
+
+> **والمُرحِّلُ يُنشئ المجموعاتِ قبل أوّل `XADD`.** ‏`ensure_topology()` تمرّ على `STATIC_CONSUMER_TOPOLOGY`
+> قبل أن يبدأ النشر — فلا مسارَ إقلاعٍ يُنشئ مجموعةً **بعد** مدخلاتٍ لن تراها أبداً، ولم يعد العاملُ
+> يحتاج أن يسبق المُرحِّل.
 
 > **قياس الاستخدام خارج الناقل:** التقاط استهلاك وحدة `usage` **لا يمرّ عبر Redis Streams** (رغم
 > كثافته) بل عبر **منفذ وارد متزامن** — صوناً لقصر الأحداث على العمليات الثقيلة فقط (`FR‑131` · D‑04).
@@ -497,63 +579,77 @@ graph LR
 
 Defense in Depth — كل طلب يعبر طبقات ضبط متتابعة. الهوية عبر Firebase (تحقق JWT محلي بمفاتيح
 مُخزّنة)، والتفويض RBAC داخل التطبيق، وعزل المستأجرين عبر **RLS أصلية + ترشيح تطبيقي** (دفاع
-بعمق)، والأسرار عبر Vault Transit.
+بعمق)، والأسرار عبر Vault Transit. **والترتيبُ أدناه هو ترتيبُ الشيفرة** — `v2.0` كانت تضع حدَّ المعدّل
+قبل المصادقة، وهو بعدها: سقفٌ لكلّ مستخدمٍ لا يُطبَّق قبل معرفة المستخدم.
 
 ```mermaid
 graph TD
-    T["أمن النقل (Transport)<br/>TLS · Nginx"]
-    Rate["حدُّ المعدّل (Rate limit)<br/>Redis · Lua ذرّيّ · دلوان"]
-    AuthN["المصادقة (AuthN)<br/>Firebase ID Token"]
+    T["أمن النقل والحافّة<br/>TLS · Nginx · limit_req لكلّ IP"]
+    Burst["سقفُ الطلبات الجارية<br/>inflight · 429 قبل أيّ شيء"]
+    AuthN["المصادقة (AuthN)<br/>Firebase ID Token · Principal مخبّأ · قائمةُ إبطال"]
     Identity["الهوية والمستأجر<br/>User (JIT) · workspace_id"]
+    Rate["حدُّ المعدّل<br/>دلوان: المستخدم + المستأجر · Lua ذرّيّ"]
     AuthZ["التفويض (AuthZ)<br/>RBAC · Role→Permissions"]
+    Heavy["العملُ الثقيل<br/>حدٌّ لكلّ مستخدم · ضغطٌ عكسيّ للفهرسة"]
     RLS["عزل المستأجر<br/>PostgreSQL RLS · SET LOCAL"]
-    Quota["الحصص (Quota)<br/>QuotaLock · reserve/commit"]
+    Quota["الحصص والكلفة<br/>QuotaLock · reserve/commit · ميزانيّة"]
     Secrets["الأسرار (Secrets)<br/>Vault Transit · API keys"]
 
-    T --> Rate --> AuthN --> Identity --> AuthZ --> RLS --> Quota --> Secrets
+    T --> Burst --> AuthN --> Identity --> Rate --> AuthZ --> Heavy --> RLS --> Quota --> Secrets
 ```
 
 *Fig 7 — Security Defense in Depth*
 
+> **دلوان لا دلوٌ واحد — والثاني هو المقصود** (`1.2`). سقفٌ لكلّ مستخدمٍ لا يعزل أحداً على منصّةٍ متعدّدة
+> المستأجرين: مساحةٌ بخمسين مستخدماً تبلغ 6,000 طلبٍ/دقيقة وكلُّ واحدٍ داخل حدّه. فالسقفُ المستأجريُّ هو ما
+> يحوّل «العدلَ بين المستأجرين» من نيّةٍ إلى شيءٍ يستطيع اختبارٌ أن يُسقطه — والدلوان يُستهلكان في نداءٍ ذرّيٍّ
+> واحد، كلّاً أو لا شيء. وقيس: مستأجرٌ عند 6,000 طلبٍ/دقيقة لم يرفع p95 جيرانه.
+
 > **أسرار موحّدة (SEC‑07):** مفاتيح مزوّدي LLM (`credentials`) ورموز OAuth/أسرار الموصّلات
 > (`integrations`) تُعمَّى جميعاً عبر **Vault Transit** بنمط ومفتاح ودورة تدوير موحّدين، بحدّ ملكية
-> واضح ولا ازدواج تخزين للسرّ نفسه. والتدويرُ أداةٌ قائمة: `app.ops.rotate_transit`.
+> واضح ولا ازدواج تخزين للسرّ نفسه. والتدويرُ مهمّةٌ دوريّةٌ الآن: `rotate_transit` في `ops-scheduler`.
 
 **وأدوارُ قاعدة البيانات ثمانية، وثامنُها وُلد من ضرورة.** ‏`aizzak_owner` يملك الجداول،
-و`app_rw` يعمل تحت RLS — و**لا واحدَ منهما يستطيع أخذ نسخةٍ احتياطيّةٍ منطقيّة**: ‏`pg_dump` بدور
+و`app_rw` يعمل تحت RLS، و`outbox_relay` · `retention_sweeper` · `metrics_reader` · `transit_rotator` ·
+`workspace_purger` لكلٍّ عملُه — و**لا واحدَ منها يستطيع أخذ نسخةٍ احتياطيّةٍ منطقيّة**: ‏`pg_dump` بدور
 المالك يفشل على أوّل جدولٍ مستأجر، وبـ`--enable-row-security` **يخرج بصفرٍ ويكتب قاعدةً فارغة** —
-نسخةٌ «ناجحة» لا شيءَ فيها. فدورٌ بـ`BYPASSRLS` للنسخ وحدَه، والأداةُ ترفض العمل بلا تلك السمة،
-وكلُّ دُفعةٍ تُقرأ من جديد للتحقّق.
+نسخةٌ «ناجحة» لا شيءَ فيها. فـ`backup_operator` بـ`BYPASSRLS` للنسخ وحدَه، والأداةُ ترفض العمل بلا تلك
+السمة، وكلُّ دُفعةٍ تُقرأ من جديد للتحقّق.
+
+> **🆕 والمسحُ العابرُ للمستأجرين لا يعمل إلّا بدوره** (`role_guard`، ‏`5.7`). منذ صارت `retention` و`purge`
+> و`rotate_transit` تُشغَّل آليّاً، صار خطأُ الإعداد يتكرّر كلَّ ليلةٍ بدل أن يُخطئه مشغّلٌ مرّة — فكلُّ أداةٍ
+> منها **ترفض** أن تعمل بأيّ دورٍ غير دورها. ولذلك لا تُشغَّل من المضيف بدور المالك.
 
 ---
 
 ## 12 · معمارية النشر
 
-**Docker Compose** — **تسعٌ وعشرون خدمة**، قابلةٌ للتوسّع الأفقي: Nginx يوازن على نسخ App
-(Gunicorn+Uvicorn) بلا حالة، والعمّال الثلاثة ومُرحّل Outbox عملياتٌ مستقلة، وكلها تصل خدمات البيانات
-عبر PgBouncer (Transaction pooling).
+**Docker Compose** — **خمسٌ وثلاثون خدمة** (اثنتان وثلاثون افتراضيّاً + ثلاثٌ خلف `profile`)، قابلةٌ
+للتوسّع الأفقي: Nginx يوازن على نسخ App (Gunicorn+Uvicorn) بلا حالة، والعمّال الثلاثة ومُرحّل Outbox
+والمُجدوِل عملياتٌ مستقلة، وكلها تصل خدمات البيانات عبر PgBouncer (Transaction pooling).
 
 ```mermaid
 graph TD
     Client["Client"]
     Nginx["Nginx<br/>LB · TLS · WS"]
-    App["App Replicas × N<br/>Gunicorn + Uvicorn<br/>WEB_CONCURRENCY"]
-    Worker["3 Workers<br/>memory · knowledge · media"]
-    Outbox["outbox-relay × 1<br/>poll → publish"]
-    Embed["embedding<br/>deployable منفصل"]
-    Provision["provision<br/>12 سلسلة + المنح"]
-    Data["خدمات البيانات (مُدارة ذاتياً)<br/>PgBouncer · PostgreSQL · Redis · MinIO · Qdrant · Vault"]
+    App["app × 3<br/>Gunicorn + Uvicorn<br/>WEB_CONCURRENCY=4"]
+    Worker["العمّال<br/>memory · knowledge × 2 · media"]
+    Outbox["outbox-relay × 1<br/>poll → publish · قصّ"]
+    Sched["ops-scheduler<br/>backup · retention · purge · rotate"]
+    Embed["embedding × 3<br/>خلف embedding-lb"]
+    Provision["migrate<br/>12 سلسلة + المنح"]
+    Data["خدمات البيانات (مُدارة ذاتياً)<br/>PgBouncer · PostgreSQL · redis-stream · redis-cache · MinIO · Qdrant · Vault"]
     Backup["wal-shipper + backup<br/>PITR"]
-    Obs["Prometheus · Grafana<br/>Loki · Alloy · cAdvisor · exporters"]
+    Obs["Prometheus · Grafana · Alertmanager → alert-sink<br/>Loki · Alloy · exporters · cAdvisor"]
 
     Client --> Nginx
     Nginx --> App
-    App --> Outbox
     App --> Data
     App --> Embed
     Worker --> Data
     Worker --> Embed
     Outbox --> Data
+    Sched --> Data
     Provision --> Data
     Data --> Backup
     App -. تُلاحَظ .-> Obs
@@ -563,19 +659,37 @@ graph TD
 
 *Fig 8 — Deployment Topology*
 
-**وثلاثةُ بنودٍ لم تكن في `v1.0`:**
+**الخدمات الخمس والثلاثون بحسب الدور:**
+
+| الدور | الخدمات | العدد |
+|---|---|---|
+| الحافّة | `nginx` · `nginx-certs` | 2 |
+| التطبيق والعمليّات | `app` (× 3) · `worker-memory` · `worker-knowledge` (× 2) · `worker-media` · `outbox-relay` · `ops-scheduler` | 6 |
+| النماذج | `embedding` (× 3) · `embedding-lb` · `ollama-bridge` | 3 |
+| البيانات | `postgres` · `pgbouncer` · `redis-stream` · `redis-cache` · `minio` · `qdrant` · `vault` | 7 |
+| التهيئة (تنتهي) | `wal-archive-init` · `vault-bootstrap` · `minio-bootstrap` · `migrate` | 4 |
+| النسخ الاحتياطيّ | `wal-shipper` · `backup` *(profile)* | 2 |
+| الملاحظة والتنبيه | `prometheus` · `grafana` · `alertmanager` · `alert-sink` · `loki` · `alloy` · `pgbouncer-exporter` · `redis-stream-exporter` · `redis-cache-exporter` · `cadvisor` *(profile)* | 10 |
+| الحمل | `k6` *(profile)* | 1 |
+
+**وبنودٌ لم تكن في `v1.0`:**
 
 - **الاسترجاعُ الزمنيّ (PITR) مبنيٌّ ومُقاس.** ‏`wal-shipper` يشحن المقاطع و`backup` يأخذ المرساةَ
   الماديّة (`pg_basebackup`) — لأنّ **دُفعةً منطقيّةً + رفَّ WAL لا يُنتج استرجاعاً زمنيّاً بحال**:
   المنطقيّةُ تُستعاد في عنقودٍ بمُعرِّفِ نظامٍ جديد، والمقطعُ المؤرشَفُ سجلٌّ ماديٌّ يرفضه أيُّ عنقودٍ
-  سواه. والدُّفعةُ باقيةٌ لما لا تستطيعه الماديّة (إصدارٌ رئيسٌ مختلف · جدولٌ واحد · فسادٌ تنسخه
-  الماديّةُ بأمانة). المُقاس: استرجاعٌ إلى لحظةٍ مختارة في **46.1 ثانية**.
-- **التزويدُ خطوةُ نشرٍ لا هجرة.** كلُّ نسخةٍ تُشغّل `provision`، وذلك كان سباقاً حتّى `2.9`: واحدةٌ من
-  كلّ ثلاثِ نسخٍ تفشل **في المنح** بـ`tuple concurrently updated` — على جملةٍ كانت وثيقتُها تصفها
-  بأنّها «آمنةٌ في كلّ نشر». صار قفلُ جلسةٍ يغطّي الأطوارَ الثلاثة.
+  سواه. والدُّفعةُ باقيةٌ لما لا تستطيعه الماديّة. المُقاس: استرجاعٌ إلى لحظةٍ مختارة في **46.1 ثانية**.
+  ومنذ `5.7` النسخُ **مهمّةٌ ليليّةٌ في `ops-scheduler`** لا أمرٌ يدويّ، و`purge` يرفض أن يعمل ما لم ينجح
+  `backup` في الدورة نفسِها.
+- **التزويدُ خطوةُ نشرٍ لا هجرة.** خدمةُ `migrate` تُشغّل `provision` وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها،
+  وقفلُ جلسةٍ يغطّي الأطوارَ الثلاثة — بعد أن كانت واحدةٌ من كلّ ثلاثِ نسخٍ تفشل **في المنح** بـ`tuple
+  concurrently updated` (`2.9`).
+- **ثلاثُ نسخٍ صارت تشتري إتاحةً** (`7.2`): لم تكن كذلك قبلها، ونشرٌ متدرّجٌ بلا انقطاع في
+  `deploy/rolling-deploy.sh`.
 - **منشوران لا منشورٌ واحد.** Compose و**RunPod** يختلفان في القيود اختلافاً معماريّاً: RunPod
-  **بلا مُجمِّعٍ أصلاً**، فسقفُ `WEB_CONCURRENCY` عليه **5** مقابل 14 على Compose. وما يصلح لأحدهما
-  قد لا يبلغ الآخر — إعداداتُ الشبكة مقيَّدةٌ بفضاء الاسم، لا يبلغها سكربتُ مضيف.
+  **بلا مُجمِّعٍ أصلاً**، فسقفُ `WEB_CONCURRENCY` عليه **5**، مقابل **19 لكلّ نسخةٍ** على Compose (بعد أن
+  رفعت `2.2` سقفَ عملاء المُجمِّع إلى 2,000). والرقمُ انقلب مرّتين في ثلاث خطوات، فالاختبارُ لا يؤكّد أيَّهما
+  أضيق بل أنّ الافتراضَ المشحونَ لكلّ منشورٍ داخلَ سقفه.
+- **كلُّ خدمةٍ بسقف موارد** (`3.4`)، والدفترُ المحروسُ في `deploy/resource-budget.sh` يجمعها.
 
 ---
 
@@ -598,7 +712,7 @@ graph TD
 | D‑13 | Plugin discovery | مسح مجلد + importlib |
 | D‑14 | EmbeddingProvider | خارجي فقط |
 | D‑15 | LLM adapters | أصلي لكل مزوّد |
-| D‑16 | Provider routing | ProviderResolver بلا Fallback |
+| D‑16 | Provider routing | ProviderResolver بلا Fallback → **انظر الانحراف أدناه** |
 | D‑17 | فرض القواعد | import‑linter في CI (8 عقود) |
 | D‑18 | نشر الأحداث | Transactional Outbox |
 | D‑19 | دلالات التسليم | at‑least‑once + Idempotent + DLQ (N=5) |
@@ -623,13 +737,31 @@ graph TD
 >   بلا نطاقٍ ولا schema). المحجوزُ **3** كما هو.
 > - **`D‑20` لم يعد «مجرًى لكلّ وحدة» حرفيّاً:** أربعةُ مجارٍ، و`stream.files` **بلا مستهلكٍ عمداً** —
 >   [§10](#10--العمارة-المدفوعة-بالأحداث).
-> - **`D‑14` استقرّ على خدمةٍ داخليّة:** المزوّدُ «خارجيٌّ» عن `app.*` كما نصّ القرار، لكنّه اليوم
+> - **`D‑14` استقرّ على خدمةٍ داخليّة:** المزوّدُ «خارجيٌّ» عن `app.*` كما نصّ القرار، لكنّه
 >   **deployable خاصٌّ بنا** — لإبقاء `torch` خارج رسم استيراد التطبيق.
-> - **منفذان جديدان يستحقّان قراراً:** ‏`RerankProvider` (الترتيبُ الثاني في مسار RAG) و
->   `WebSearchProvider` (‏Exa) — أُضيفا كمنافذَ مُقادةٍ عاديّة تحت `D‑08`.
+> - **منفذان جديدان تحت `D‑08`:** ‏`RerankProvider` (الترتيبُ الثاني في مسار RAG) و`WebSearchProvider` (‏Exa).
 > - **`reserve`/`commit` نُفِّذ فعلاً** لسقوف `usage` (خطوة السعة `2.7`) — [§08](#08--المنافذ-والمحوّلات).
 > - **دورٌ ثامنٌ بـ`BYPASSRLS`** للنسخ الاحتياطيّ وحدَه — [§11](#11--معمارية-الأمن).
 > - **توصيةُ `§14` الأولى نُفِّذت:** schema لكلّ وحدة، اثنتا عشرةَ سلسلةَ هجرات.
+
+> **انحرافاتٌ وقراراتٌ جديدة (2026‑09‑06 → 2026‑10‑04):**
+> - **`D‑16` لم يعد «بلا Fallback» مطلقاً** (`6.4`، قرار المالك 2026‑10‑03): دورٌ تعذّر نموذجُه
+>   السحابيُّ **قبل أن يقول كلمة** يُجيبه النموذجُ المحلّيّ ويُخبَر المستخدم — **في اتّجاهٍ واحدٍ فقط**،
+>   وبالإعداد `LLM_FALLBACK_ROUTE` (فارغُه يُطفئه). والعكسُ ممنوعٌ بالإقلاع لا بالعُرف: مستأجرٌ أبقى
+>   محادثاته محلّيّةً لا تُرسَل إلى سحابةٍ لأنّ Ollama كان يُعاد تشغيله. وبعد أوّل مقطعٍ لا تحويل، بل قطع.
+> - **`D‑15` مبنيٌّ لمزوّدَين من خمسة:** ‏`OpenAILLM` و`OllamaLLM`. و`claude`/`gemini`/`openrouter`
+>   **مؤجَّلةٌ بقرار المالك** (`6.2`) — وملفّاتُها فارغة.
+> - **`ق‑1` وُقِّع: هجين** — سحابيٌّ (`openai` مفعَّل) ومحلّيّ، والتبديلُ بين النماذج متاح.
+> - **`ق‑6` وُقِّع: التشبّعُ يُجاب `429` فوراً بـ`Retry-After`** لا طابوراً صامتاً — على المزوّد (`6.1`)
+>   وعلى طابور الفهرسة (`5.3`).
+> - **`D‑14` صار ثلاثَ نسخٍ خلف موازِن** (`4.1`/`4.2`) مع تخبئة متّجه الاستعلام في `redis-cache` (`4.3`)،
+>   و**تبديلُ نموذج التضمين مسارٌ لا حادثة** (`4.5`): صناديقُ بمراجعات، والتبديلُ ذرّيٌّ عبر اسمٍ مستعار.
+> - **`D‑01` · `ق‑3` حُسم بالقياس: صندوقُ Qdrant لكلّ مساحة عمل يبقى** (`4.4`).
+> - **Redis مثيلان** (`ق‑4` حُسم بالقياس في `5.2`): ‏`maxmemory-policy` إعدادٌ على مستوى الخادم، فلا يجتمع
+>   ما لا يجوز طردُه مع ما يجب طردُه في مثيلٍ واحد.
+> - **ميزانيّةُ كلفةٍ لكلّ مساحة** (`6.5`) بأسعارٍ حقيقيّة، والنافدةُ توقف المحادثاتِ المحلّيّةَ أيضاً (قرار المالك).
+> - **منفذٌ جديد: `TaskLedger`** (`5.7`) — وخدمةٌ دائمةٌ تشغّل أدواتِ التشغيل.
+> - **التنبيهاتُ تصل محلّيّاً فقط** (`7.3`، قرار المالك 2026‑10‑04): ‏`alert-sink` سجلٌّ لا قناةٌ خارجيّة.
 
 ---
 
@@ -651,10 +783,10 @@ graph TD
 | التوصية | الحالة |
 |---|---|
 | **Schema لكل Module** داخل Postgres | ✅ **نُفِّذت** — 12 سلسلةَ هجرات، `version_table_schema` لكلّ وحدة |
-| **إبقاء Framework نحيفاً** | 🟡 **قائمة** — الكِرنل نما إلى 23 منفذاً و`agent_runtime`/`tools`/`workflows`/`observability`. النموُّ في التجريدات لا في المنطق، والعقودُ الثمانية تحرسه — لكنّ الحراسةَ اتّجاهيّةٌ لا حجميّة |
-| **Outbox Relay** نقطة فشل | 🟡 **قائمة** — ما تزال نسخةً واحدة؛ لا انتخابَ قائدٍ بعد |
-| **ProviderResolver بلا Fallback (D‑16)** | 🟡 **قائمة** — المقايضةُ مُبقاة؛ والقرارُ `ق‑1` سيعيد فتحها |
-| **نقاط توسعة Observability** | ✅ **استُهلكت** — `correlation_id` يعبر الحافّةَ والتطبيقَ والعامل في استعلامٍ واحد، و11 عائلةَ مقاييس، و5 قواعدِ تنبيه. **والخطوةُ وجدت أنّ المعرّفات لم تكن تُضبَط قطُّ قبلها** |
+| **إبقاء Framework نحيفاً** | 🟡 **قائمة** — الكِرنل نما إلى 24 منفذاً، و`providers/` صار يحمل التحويلَ والتسعير، و`observability/` يحمل كتالوجَ المهامّ الدوريّة. النموُّ في التجريدات لا في المنطق، والعقودُ الثمانية تحرسه — لكنّ الحراسةَ اتّجاهيّةٌ لا حجميّة |
+| **Outbox Relay** نقطة فشل | 🟡 **قائمة — لكنّها صارت مرئيّةً وقابلةً للاسترداد** — ما تزال نسخةً واحدةً بلا انتخاب قائد، وصارت تحمل أيضاً قصَّ المجاري. لكنّ تأخّرَها ينبّه (`AizzakOutboxCycleTimeHigh`)، وقصَّها مهمّةٌ في `TaskLedger`، وما فقده Redis يُعاد من `outbox` (`5.6`) |
+| **ProviderResolver بلا Fallback (D‑16)** | 🟢 **أُعيد فتحُها وحُسمت** — تحويلٌ في اتّجاهٍ واحد (سحابيّ → محلّيّ) بقرار المالك، وقاطعُ دارةٍ لكلّ مزوّد. والمقايضةُ الباقية: لا تحويلَ بين مزوّدَين سحابيَّين، ولا من محلّيٍّ إلى سحابيّ |
+| **نقاط توسعة Observability** | ✅ **استُهلكت** — `correlation_id` يعبر الحافّةَ والتطبيقَ والعامل في استعلامٍ واحد، و**33 مقياساً**، و**23 قاعدةَ تنبيهٍ تصل** — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوبٌ وحالةٌ تُشعله صناعيّاً. وحيّاً: ‏`redis-cache` موقوفاً ← التنبيهُ في 108 ث |
 
 ---
 
@@ -665,12 +797,22 @@ graph TD
 
 | البند | الأثر المعماريّ |
 |---|---|
-| **مفاتيح مزوّدي السحابة** | محوّلاتُ Gemini · Claude · OpenAI · OpenRouter **مكتوبةٌ ومُختبَرة** ومربوطةٌ في Composition Root — والحاجزُ المفاتيحُ والقرارُ `ق‑1` غيرُ الموقَّع. **Ollama المحلّيُّ هو المسار العامل**، وهو أيضاً سقفُ الأداء |
+| **محوّلاتُ Claude · Gemini · OpenRouter** | **ملفّاتٌ فارغة** (`infrastructure/ai_providers/llm/`) — ومؤجَّلةٌ بقرار المالك (`6.2`). العاملُ اليوم `openai` سحابيّاً و`ollama` محلّيّاً. **تصحيح:** ‏`v2.0` وصفتها بأنّها «مكتوبةٌ ومُختبَرة ومربوطة»، ولم تكن |
+| **موصّلاتُ OAuth وعميلُ MCP البعيد** | ‏`oauth_connector.py` و`remote_mcp_client.py` فارغان. التسجيلُ والإدراجُ والتعطيلُ موصولة، لكنّ `GET /connectors` يُجيب قائمةً فارغة، وأدواتُ المساحة `None` ← ‏`503` — لأنّ قائمةَ أدواتٍ فارغةً لمساحةٍ لها خادمُ MCP حيٌّ ستكون كذباً |
+| **محوّلُ الفيديو** | ‏`external_video.py` فارغ — `video_agent` قائمٌ بلا مزوّد |
+| **بحثُ الويب (Exa)** | المحوّلُ مكتوب، ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف |
+| **كتالوجُ الـWorkflows** | المحرّكُ والسجلُّ موصولان و`invoke_workflow` حيّ، **ولا تعريفَ واحداً** — والمثالُ الموثَّق لا يتسلسل على الوكلاء كما بُنوا ([§07](#07--الوكلاء-ودورة-الحياة)) |
 | **اعتماد `image:openai`** | عاملُ `media` يقلع ويستهلك، لكنّ تنفيذَ مهمّةِ صورةٍ يحتاج اعتماداً مخزَّناً؛ غيابُه **يُفشل المهمّة لا الإقلاع** |
-| **خطُّ الأساس المُوثَّق** | البذرةُ والمولّدُ يعملان بحجمهما الكامل، وحدُّ الحافّة رُفع (صفرُ رفضٍ عند 300 طلب/ث). وما بقي **بِركةُ رموزِ Firebase حقيقيّة** — لا سبيلَ في المستودع لسكّها |
 | **الوحدات المحجوزة الثلاث** | `scheduling` · `sandbox` · `runs` — غيرُ موجودة. و`sandbox` هو ما يحجب نقلَ MCP المحلّيّ (stdio) |
-| **انتخابُ قائدٍ لمُرحّل Outbox** | نسخةٌ واحدةٌ ما تزال؛ توصيةُ `§14` قائمة |
-| **الموجات 4–8 من خطّة السعة** | لم تبدأ. الطريقُ الحرج: `ق‑1` → الموجة 0 → 1 → 2 → 3 → بوّابةُ القبول |
+| **انتخابُ قائدٍ لمُرحّل Outbox** | نسخةٌ واحدةٌ ما تزال؛ توصيةُ `§14` قائمة — وإن صارت مرئيّةً وقابلةً للاسترداد |
+| **قناةُ تنبيهٍ خارجيّة** | التنبيهاتُ تصل `alert-sink` محلّيّاً فقط (قرار المالك)؛ لا Telegram ولا بريد. ويبقى أن يجرّب الإجراءاتِ شخصٌ لم يكتبها |
+| **Vault إنتاجيّ (`7.1`)** | فكُّ ختمٍ آليٌّ أو إجراءٌ يدويٌّ مُتمرَّنٌ عليه — **أخطرُ خطوةٍ في خطّة السعة** ولم تبدأ |
+| **تكرارُ Postgres** | محجوبٌ بـ`ق‑5` غيرِ الموقَّع (و`ق‑2` طوبولوجيا المضيف غيرُ موقَّعٍ كذلك) |
+| **ما بقي من خطّة السعة** | ‏`0.4` (تقريرٌ تحت حمل الذروة) · زمنُ RAG عند 40 سؤالاً/ث (`4.3`، يحدّه Qdrant في التبديل على هذا المضيف) · إنتاجيّةُ `5.1` · توسيعُ `worker-knowledge` (`5.3`، مؤجَّلٌ لخادم الإنتاج) · أسبوعُ قبول `5.7` · القبولُ الحيُّ لـ`6.1` · `6.3` · شطرُ 1,500 مقبس WS في `7.2` · `7.4` · `7.5` · **والموجة 8 مؤجَّلةٌ بقرار المالك** — وهي بوّابةُ نشرٍ صلبة: لا يُفتَح المكدّسُ لعنوانٍ عامٍّ قبلها |
+
+> **وما خرج من هذا القسم منذ `v2.0`:** خطُّ الأساس **مُثبَّت** ([`capacity-baseline.md`](capacity-baseline.md)،
+> 2026‑09‑26)، وبِركةُ رموز Firebase **تُسكّ** من المستودع (`app.ops.mint_load_tokens`، ‏`د‑9` مرفوع)، و`ق‑1`
+> **وُقِّع**، والموجاتُ 1 و2 و3 **تمّت كاملةً** والرابعةُ مبنيّة.
 
 > **وسقفُ `07-nfr-slo §3` ليس هدفَ اليوم.** الوثيقةُ تعلن 5,000 مستخدمٍ متزامنٍ و1,000 rps و10,000
 > اتصالِ WS؛ وخطّةُ السعة **لا تستهدفه** — تستهدف **500 مستخدمٍ متزامن · 300 rps ذروةً · 1,500 اتصالَ
@@ -680,9 +822,9 @@ graph TD
 
 <div align="center">
 
-**منصة الوكلاء الذكية — وثيقة المعمارية v2.0 · مطابَقة للشيفرة**
+**منصة الوكلاء الذكية — وثيقة المعمارية v2.1 · مطابَقة للشيفرة (2026‑10‑04)**
 
-`15 مرحلة · 26 قراراً · 12 وحدة · 23 منفذاً · 8 عقود · 0 مخالفة حرجة`
+`15 مرحلة · 26 قراراً · 12 وحدة · 24 منفذاً · 8 عقود · 35 خدمة · 0 مخالفة حرجة`
 
 </div>
 

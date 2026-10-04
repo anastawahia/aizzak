@@ -1,0 +1,811 @@
+<title>وثيقة المعمارية — منصة الوكلاء الذكية</title>
+<style>
+:root{
+  --bg:#F3F3F9; --surface:#FFFFFF; --surface-2:#FAFAFE;
+  --ink:#1E1B2E; --muted:#6A6782; --faint:#918EA6;
+  --accent:#534AB7; --accent-soft:#EEEDFE; --accent-2:#0F6E56; --warn:#8a5a06;
+  --line:#E5E3F0; --line-strong:#D6D3E6; --shadow:0 1px 2px rgba(30,27,46,.06),0 8px 24px rgba(30,27,46,.05);
+  --font-sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,"Noto Sans Arabic",sans-serif;
+  --font-mono:"Cascadia Code","Consolas",ui-monospace,"SFMono-Regular",monospace;
+  --maxw:960px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121019; --surface:#1B1926; --surface-2:#211E30;
+    --ink:#EEEBF7; --muted:#A8A4BE; --faint:#7C7994;
+    --accent:#AFA9EC; --accent-soft:#26215C; --accent-2:#5DCAA5; --warn:#EFB84E;
+    --line:#2C2839; --line-strong:#3B3653; --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121019; --surface:#1B1926; --surface-2:#211E30; --ink:#EEEBF7; --muted:#A8A4BE; --faint:#7C7994;
+  --accent:#AFA9EC; --accent-soft:#26215C; --accent-2:#5DCAA5; --warn:#EFB84E; --line:#2C2839; --line-strong:#3B3653;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--ink)}
+.doc{max-width:var(--maxw);margin:0 auto;padding:26px 16px 90px;color:var(--ink);
+  background:var(--bg);font-family:var(--font-sans);line-height:1.75;font-size:16px;}
+.doc :where(h1,h2,h3){text-wrap:balance;line-height:1.25;margin:0}
+code,.mono{font-family:var(--font-mono);font-size:.86em;overflow-wrap:anywhere}
+.eyebrow{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* header */
+.masthead{border:1px solid var(--line);background:
+   radial-gradient(120% 140% at 100% 0%,var(--accent-soft) 0%,transparent 55%),var(--surface);
+   border-radius:20px;padding:34px 26px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.masthead::before{content:"";position:absolute;inset:0;pointer-events:none;
+   background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+   background-size:26px 26px;opacity:.32;mask:radial-gradient(80% 90% at 100% 0%,#000,transparent 60%)}
+.masthead>*{position:relative}
+.h1{font-size:clamp(26px,4.4vw,44px);font-weight:800;letter-spacing:-.02em;margin:.32em 0 .1em}
+.lede{color:var(--muted);font-size:clamp(15px,1.9vw,18px);max-width:62ch}
+.meta{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:20px}
+.tag{font-family:var(--font-mono);font-size:12px;padding:5px 11px;border:1px solid var(--line-strong);
+   border-radius:999px;color:var(--muted);background:var(--surface-2)}
+.tag.ok{color:var(--accent-2);border-color:color-mix(in srgb,var(--accent-2) 40%,var(--line))}
+.tag.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+
+/* toc */
+.toc{display:flex;flex-wrap:wrap;gap:6px 8px;margin:22px 0 0}
+.toc a{font-size:13px;padding:5px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink)}
+.toc a b{font-family:var(--font-mono);color:var(--accent);font-size:11.5px;margin-inline-end:5px}
+.toc a:hover{border-color:var(--accent);text-decoration:none}
+
+/* sections */
+section{margin-top:52px;scroll-margin-top:20px}
+.sec-head{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:22px}
+.sec-no{font-family:var(--font-mono);font-size:13px;color:var(--accent);font-weight:700;flex:none;
+   width:2.6em;letter-spacing:.02em}
+.sec-head h2{font-size:clamp(20px,2.6vw,27px);font-weight:750;letter-spacing:-.01em}
+.sec-head .sub{color:var(--faint);font-size:13px;font-family:var(--font-mono);margin-inline-start:auto;flex:none}
+h3.sub-h{font-size:16px;font-weight:700;margin:26px 0 10px}
+p{margin:0 0 14px}
+.note{color:var(--muted);font-size:14.5px}
+
+/* chips */
+.chips{display:flex;flex-wrap:wrap;gap:9px;margin:6px 0 4px}
+.chip{font-size:13.5px;padding:7px 13px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface);
+   color:var(--ink);box-shadow:var(--shadow)}
+.chip.acc{border-color:color-mix(in srgb,var(--accent) 42%,var(--line));background:var(--accent-soft);color:var(--accent)}
+.chip.new{border-color:color-mix(in srgb,var(--accent-2) 46%,var(--line));color:var(--accent-2)}
+.chip.off{border-style:dashed;color:var(--muted)}
+.chip .k{font-family:var(--font-mono);font-size:11px;color:var(--faint);margin-inline-end:6px}
+
+/* stat tiles */
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin:18px 0 6px}
+.stat{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px 12px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:24px;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums;line-height:1.2}
+.stat span{font-size:12.5px;color:var(--muted)}
+
+/* phase index */
+.grid-idx{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.idx{display:flex;gap:11px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:11px 13px;
+   background:var(--surface);box-shadow:var(--shadow)}
+.idx b{font-family:var(--font-mono);color:var(--accent);font-size:13px;flex:none}
+.idx span{font-size:13.5px;color:var(--ink)}
+
+/* figures */
+figure{margin:0 0 16px}
+.figure{background:#FCFCFE;border:1px solid var(--line-strong);border-radius:16px;padding:16px 16px 8px;
+   box-shadow:var(--shadow);overflow-x:auto}
+.figure svg{display:block;width:100%;height:auto;min-width:560px;direction:ltr;--b:#C9C7D8}
+figcaption{color:#6A6782;font-size:13px;text-align:center;padding:10px 6px 4px;font-family:var(--font-mono)}
+
+/* diagram color system (fixed light plate, both themes) */
+.figure svg .arr{fill:none;stroke:#8B88A0;stroke-width:1.2}
+.figure svg .arr.d{stroke-dasharray:5 4}
+.figure svg text{font-family:var(--font-sans)}
+.figure svg text[text-anchor="middle"]{unicode-bidi:plaintext}
+.figure svg .t{font-weight:600}
+.figure svg text.t{fill:#2C2C2A}.figure svg text.ts{fill:#5F5E5A}
+.c-purple rect,.c-purple circle{fill:#EEEDFE;stroke:#534AB7;stroke-width:1}.c-purple .t{fill:#3C3489}.c-purple .ts{fill:#534AB7}
+.c-teal rect{fill:#E1F5EE;stroke:#0F6E56;stroke-width:1}.c-teal .t{fill:#085041}.c-teal .ts{fill:#0F6E56}
+.c-gray rect{fill:#F1EFE8;stroke:#5F5E5A;stroke-width:1}.c-gray .t{fill:#444441}.c-gray .ts{fill:#5F5E5A}
+.c-coral rect{fill:#FAECE7;stroke:#993C1D;stroke-width:1}.c-coral .t{fill:#712B13}.c-coral .ts{fill:#993C1D}
+.c-amber rect{fill:#FAEEDA;stroke:#854F0B;stroke-width:1}.c-amber .t{fill:#633806}.c-amber .ts{fill:#854F0B}
+.c-green rect{fill:#EAF3DE;stroke:#3B6D11;stroke-width:1}.c-green .t{fill:#27500A}.c-green .ts{fill:#3B6D11}
+.c-red rect{fill:#FCEBEB;stroke:#A32D2D;stroke-width:1}.c-red .t{fill:#791F1F}.c-red .ts{fill:#A32D2D}
+.c-off rect{fill:#FAFAF7;stroke:#9A988F;stroke-width:1;stroke-dasharray:5 4}.c-off .t{fill:#6B6A64}.c-off .ts{fill:#8A887F}
+.figure svg .frame{fill:none;stroke:var(--b);stroke-width:1;stroke-dasharray:6 4}
+
+/* tables */
+.table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin:0 0 16px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14.5px;background:var(--surface)}
+th,td{text-align:right;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+thead th{background:var(--surface-2);color:var(--muted);font-weight:650;font-size:12.5px;
+   letter-spacing:.02em;position:sticky;top:0}
+tbody tr:last-child td{border-bottom:0}
+td .mono,td code{color:var(--accent)}
+td.num{font-variant-numeric:tabular-nums;text-align:center;font-family:var(--font-mono)}
+.dl td:first-child{font-family:var(--font-mono);color:var(--accent);font-weight:700;white-space:nowrap;font-size:13px}
+tr.dev td{background:color-mix(in srgb,var(--warn) 7%,var(--surface))}
+.pill{display:inline-block;font-size:12px;font-family:var(--font-mono);padding:2px 9px;border-radius:999px;font-weight:600;white-space:nowrap}
+.pill.ok{background:color-mix(in srgb,var(--accent-2) 16%,transparent);color:var(--accent-2)}
+.pill.warn{background:color-mix(in srgb,#B8860B 20%,transparent);color:var(--warn)}
+.pill.off{background:color-mix(in srgb,var(--faint) 18%,transparent);color:var(--muted)}
+.pill.new{background:var(--accent-soft);color:var(--accent)}
+
+/* callout */
+.call{border:1px solid var(--line);border-inline-start:3px solid var(--accent);background:var(--surface-2);
+   border-radius:12px;padding:14px 16px;margin:16px 0;font-size:14.5px;color:var(--ink)}
+.call b{color:var(--accent)}
+.call.warn{border-inline-start-color:var(--warn)}
+.call.warn b{color:var(--warn)}
+.call.ok{border-inline-start-color:var(--accent-2)}
+.call.ok b{color:var(--accent-2)}
+.call p:last-child,.call ul:last-child{margin-bottom:0}
+ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);padding-top:18px;color:var(--faint);font-size:13px;
+   display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:space-between}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.two{grid-template-columns:1fr}.sec-head .sub{display:none}.masthead{padding:26px 18px}}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs></svg>
+
+<main class="doc" dir="rtl">
+
+  <header class="masthead">
+    <div class="eyebrow">Software Architecture Document · v2.1 — مطابَقة للشيفرة</div>
+    <h1 class="h1">منصة ذكاء اصطناعي متعددة الوكلاء</h1>
+    <p class="lede">مخطط معماري كامل لتطبيق Backend بلغة Python — مبني على Modular Monolith وHexagonal Architecture وPlugin System وEvent‑Driven للعمليات الثقيلة. منذ <code>v2.0</code> تصف الوثيقةُ <b>ما هو مبنيٌّ فعلاً في <code>src/</code></b>: كلُّ عددٍ مقروءٌ من الشجرة، وكلُّ فارقٍ عن التصميم مذكورٌ في موضعه.</p>
+    <div class="meta">
+      <span class="tag">FastAPI · Uvicorn · Gunicorn</span>
+      <span class="tag">Modular Monolith</span>
+      <span class="tag">Hexagonal · Plugin · Event‑Driven</span>
+      <span class="tag ok">التصميم: معتمد ✓ 15/15 · 2026‑07‑08</span>
+      <span class="tag warn">البناء: يعمل محلّيّاً · السعة 1–3 تمّت · 4 مبنيّة · 5–7 جارية · 8 مؤجَّلة</span>
+      <span class="tag">آخر مطابقة: 2026‑10‑04 · capacity</span>
+    </div>
+    <nav class="toc" aria-label="المحتويات">
+      <a href="#overview"><b>00</b>المبادئ</a><a href="#stack"><b>01</b>المكدّس</a><a href="#phases"><b>02</b>المراحل</a>
+      <a href="#context"><b>03</b>السياق</a><a href="#containers"><b>04</b>الحاويات</a><a href="#layers"><b>05</b>الطبقات</a>
+      <a href="#modules"><b>06</b>الوحدات</a><a href="#agents"><b>07</b>الوكلاء</a><a href="#ports"><b>08</b>المنافذ</a>
+      <a href="#deps"><b>09</b>الاعتماد</a><a href="#events"><b>10</b>الأحداث</a><a href="#security"><b>11</b>الأمن</a>
+      <a href="#deploy"><b>12</b>النشر</a><a href="#decisions"><b>13</b>القرارات</a><a href="#validation"><b>14</b>التحقق</a>
+      <a href="#not-built"><b>15</b>ما لم يُبنَ</a>
+    </nav>
+  </header>
+
+  <div class="stats" role="list">
+    <div class="stat" role="listitem"><b>12</b><span>وحدة أعمال</span></div>
+    <div class="stat" role="listitem"><b>24</b><span>منفذاً · 25 بروتوكولاً</span></div>
+    <div class="stat" role="listitem"><b>8</b><span>عقود import‑linter</span></div>
+    <div class="stat" role="listitem"><b>35</b><span>خدمة Compose</span></div>
+    <div class="stat" role="listitem"><b>33</b><span>مقياساً</span></div>
+    <div class="stat" role="listitem"><b>23</b><span>قاعدةَ تنبيهٍ تصل</span></div>
+  </div>
+
+  <div class="call">
+    <p><b>ما تغيّر منذ v2.0 (2026‑09‑06):</b></p>
+    <ul class="tight">
+      <li><b>35 خدمةً بدل 29:</b> Redis انقسم مثيلَين (<code>5.2</code>)، والتضمينُ ثلاثُ نسخٍ خلف موازِن (<code>4.1</code>/<code>4.2</code>)، و<code>ops-scheduler</code> يشغّل أدواتِ التشغيل وحدَه (<code>5.7</code>)، و<code>alertmanager</code> + <code>alert-sink</code> يوصلان التنبيهات (<code>7.3</code>).</li>
+      <li><b>منفذٌ رابعٌ وعشرون:</b> <code>TaskLedger</code> — كلُّ مهمّةٍ دوريّةٍ تقول متى نجحت آخرَ مرّة.</li>
+      <li><b>طبقةُ المزوّدين:</b> حارسٌ لكلّ مزوّد (<code>6.1</code>)، وتحويلٌ سحابيّ → محلّيّ (<code>6.4</code>، انحرافٌ عن <code>D‑16</code>)، وتسعيرٌ وميزانيّةُ كلفة (<code>6.5</code>).</li>
+      <li><b>المجاري:</b> تزامنٌ محدود (<code>5.1</code>)، وقصٌّ آمن (<code>5.5</code>)، وإعادةُ نشرٍ من <code>outbox</code> (<code>5.6</code>)، وضغطٌ عكسيٌّ مُعلَن (<code>5.3</code>).</li>
+    </ul>
+  </div>
+  <div class="call warn">
+    <p><b>تصحيحاتٌ لما قالته v2.0 خطأً — والشيفرةُ هي الحَكَم:</b></p>
+    <ul class="tight">
+      <li>محوّلات <b>Gemini · Claude · OpenRouter</b> وُصفت بأنّها «مكتوبةٌ ومُختبَرة» — ملفّاتُها <b>فارغة (0 بايت)</b>، وكانت كذلك يومَها.</li>
+      <li><b>موصّلاتُ OAuth</b> و<b>عميلُ MCP البعيد</b> و<b>محوّلُ الفيديو</b> ملفّاتٌ فارغةٌ كذلك.</li>
+      <li><b>Exa</b> محوّلٌ مكتوبٌ <b>غيرُ موصول</b>، و<b>كتالوجُ الـWorkflows فارغ</b>.</li>
+      <li><b>حدُّ المعدّل</b> يأتي <b>بعد</b> المصادقة لا قبلها (سقفٌ لكلّ مستخدمٍ لا يُطبَّق قبل معرفته).</li>
+    </ul>
+  </div>
+
+  <!-- 00 OVERVIEW -->
+  <section id="overview">
+    <div class="sec-head"><span class="sec-no">00</span><h2>نظرة عامة والمبادئ</h2><span class="sub">Overview</span></div>
+    <p>صُمّمت المنصة على يد فريق من <b>قائد معماري + 7 وكلاء متخصصين</b> (البنية الكلية، النواة، الوحدات، الوكلاء، المنافذ، الأحداث، الأمن والنشر) عبر 15 مرحلة اعتماد متتابعة. كل قرار معماري طُرح واعتُمد صراحةً — لا افتراضات. الحصيلة <b>26 قراراً موثّقاً</b>.</p>
+    <div class="chips" role="list">
+      <span class="chip acc" role="listitem">SOLID</span>
+      <span class="chip" role="listitem">High Cohesion</span>
+      <span class="chip" role="listitem">Low Coupling</span>
+      <span class="chip" role="listitem">Separation of Concerns</span>
+      <span class="chip" role="listitem">Dependency Inversion</span>
+      <span class="chip" role="listitem">Interface Segregation</span>
+      <span class="chip" role="listitem">Domain‑Driven Design</span>
+      <span class="chip acc" role="listitem">Modular Monolith</span>
+      <span class="chip acc" role="listitem">Hexagonal</span>
+      <span class="chip acc" role="listitem">Plugin Architecture</span>
+      <span class="chip acc" role="listitem">Event‑Driven</span>
+    </div>
+    <p class="note" style="margin-top:14px"><b>والمبادئ مفروضةٌ آليّاً لا موصوفة:</b> ثمانيةُ عقودٍ في <code>.importlinter</code> تُشغَّل في CI ضمن البوّابات الخمس (<code>ruff format --check</code> · <code>ruff check</code> · <code>mypy --strict</code> · <code>lint-imports</code> · <code>pytest</code>). ومنذ <code>7.3</code> خطوةٌ سادسة: قواعدُ التنبيه تُختبَر بـ<code>promtool test rules</code> و<code>amtool check-config</code>.</p>
+  </section>
+
+  <!-- 01 STACK -->
+  <section id="stack">
+    <div class="sec-head"><span class="sec-no">01</span><h2>المكدّس التقني</h2><span class="sub">Infrastructure</span></div>
+    <div class="chips">
+      <span class="chip"><span class="k">db</span>PostgreSQL</span>
+      <span class="chip"><span class="k">pool</span>PgBouncer</span>
+      <span class="chip"><span class="k">cache/bus</span>Redis × 2 · stream / cache</span>
+      <span class="chip"><span class="k">object</span>MinIO</span>
+      <span class="chip"><span class="k">auth</span>Firebase</span>
+      <span class="chip"><span class="k">edge</span>Nginx · limit_req</span>
+      <span class="chip"><span class="k">app</span>FastAPI · Uvicorn · Gunicorn</span>
+      <span class="chip new"><span class="k">+vectors</span>Qdrant</span>
+      <span class="chip new"><span class="k">+secrets</span>HashiCorp Vault</span>
+    </div>
+    <h3 class="sub-h">وخدماتٌ أُضيفت بعد الاعتماد — كلٌّ بسببها</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>المجال</th><th>التقنية</th><th>لماذا أُضيفت</th></tr></thead>
+        <tbody>
+          <tr><td><code>embed</code></td><td>خدمة تضمين منفصلة <b>× 3</b> خلف <code>embedding-lb</code></td><td><code>torch</code> خارج رسم استيراد <code>app.*</code>. ونسخٌ بلا موازِن كانت عطباً صامتاً، فشُحنت <code>4.1</code>/<code>4.2</code> معاً؛ وداخلها تجميعُ دفعاتٍ ديناميكيّ (<code>4.3</code>)</td></tr>
+          <tr><td><code>search</code></td><td>Exa <span class="pill warn">غير موصول</span></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
+          <tr><td><code>metrics</code></td><td>Prometheus + Grafana</td><td>33 مقياساً، ولوحتان: السعة (24 لوحاً في 6 صفوف) والسجلّات</td></tr>
+          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code> <span class="pill new">7.3</span></td><td>23 قاعدةً تصل — <b>محلّيّاً فقط</b> بقرار المالك (2026‑10‑04)؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
+          <tr><td><code>logs</code></td><td>Loki + Alloy</td><td>سجلٌّ مهيكلٌ واحد بـ<code>correlation_id</code> عبر الحافّة والتطبيق والعامل</td></tr>
+          <tr><td><code>probes</code></td><td>pgbouncer · redis-stream · redis-cache exporters · cAdvisor <i>(profile)</i></td><td>إشباعُ المُجمِّع وخادمَي Redis والحاويات</td></tr>
+          <tr><td><code>sched</code></td><td><code>ops-scheduler</code> <span class="pill new">5.7</span></td><td>عشرُ مهامّ دوريّة تكتب نجاحَها في <code>TaskLedger</code>، وتنبيهان لمتأخّرةٍ أو غيرِ مسلَّحة</td></tr>
+          <tr><td><code>load</code></td><td>k6 <i>(profile load)</i></td><td>سبعةُ سيناريوهات في ستّة ملفّاتِ حمل (<code>peak</code> · <code>average</code> · <code>step</code> · <code>backlog</code> · <code>abuse</code> · <code>rag</code>)</td></tr>
+          <tr><td><code>ollama</code></td><td>Ollama عبر <code>ollama-bridge</code></td><td>المسارُ المحلّيّ الافتراضيّ، ومقصدُ التحويل حين يتعذّر السحابيّ (<code>6.4</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="call"><b>القيدُ الأصليّ تخصّص ولم يُنقض.</b> كانت <code>v1.0</code> تقول «لا خدمة أخرى خارج هذه القائمة»؛ والمنشورُ اليوم <b>35 خدمة</b> (32 افتراضيّاً + 3 خلف <code>profile</code>). لكنّ ما دخل مسارَ الطلب (<code>redis-cache</code> · <code>embedding-lb</code>) دخله <b>خلف منفذٍ قائم</b>. القيدُ الحيّ: <b>لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في <code>framework/ports/</code></b>.</div>
+  </section>
+
+  <!-- 02 PHASES -->
+  <section id="phases">
+    <div class="sec-head"><span class="sec-no">02</span><h2>مراحل التصميم الخمس عشرة</h2><span class="sub">Roadmap</span></div>
+    <div class="grid-idx">
+      <div class="idx"><b>01</b><span>مراجعة القرارات</span></div>
+      <div class="idx"><b>02</b><span>System Context</span></div>
+      <div class="idx"><b>03</b><span>Container Diagram</span></div>
+      <div class="idx"><b>04</b><span>Layered Architecture</span></div>
+      <div class="idx"><b>05</b><span>Framework Design</span></div>
+      <div class="idx"><b>06</b><span>Business Modules</span></div>
+      <div class="idx"><b>07</b><span>Agents Design</span></div>
+      <div class="idx"><b>08</b><span>Plugin Architecture</span></div>
+      <div class="idx"><b>09</b><span>Ports &amp; Adapters</span></div>
+      <div class="idx"><b>10</b><span>Dependency Rules</span></div>
+      <div class="idx"><b>11</b><span>Event‑Driven</span></div>
+      <div class="idx"><b>12</b><span>Infrastructure</span></div>
+      <div class="idx"><b>13</b><span>Security</span></div>
+      <div class="idx"><b>14</b><span>Deployment</span></div>
+      <div class="idx"><b>15</b><span>Validation</span></div>
+    </div>
+  </section>
+
+  <!-- 03 CONTEXT -->
+  <section id="context">
+    <div class="sec-head"><span class="sec-no">03</span><h2>سياق النظام</h2><span class="sub">C4 · L1</span></div>
+    <p>المنصة نظامٌ واحد يتفاعل معه المستخدم والمسؤول، ويعتمد على: Firebase للهوية، ومزوّدي النماذج (OpenAI سحابيّاً · Ollama محلّيّاً)، ومحرّك بحثٍ في الويب (غيرُ موصول)، وموصّلات/خوادم MCP خارجية (التسجيلُ مبنيّ والنقلُ لا). الهوية عبر Firebase؛ التفويض داخل التطبيق.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 440" role="img" xmlns="http://www.w3.org/2000/svg"><title>سياق النظام</title><desc>المنصة في المركز، يتفاعل معها المستخدم والمسؤول، وتعتمد على Firebase ومزوّدي النماذج، وعلى Exa والموصّلات اللذين لا يعملان بعد.</desc>
+        <line class="arr" x1="160" y1="98" x2="262" y2="158" marker-end="url(#arrow)"/>
+        <line class="arr" x1="520" y1="98" x2="418" y2="158" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="100" y1="98" x2="92" y2="336" marker-end="url(#arrow)"/>
+        <text class="ts" x="128" y="232" text-anchor="middle" font-size="11">الهوية</text>
+        <line class="arr" x1="240" y1="258" x2="120" y2="336" marker-end="url(#arrow)"/>
+        <line class="arr" x1="300" y1="258" x2="262" y2="336" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="380" y1="258" x2="418" y2="336" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="440" y1="258" x2="560" y2="336" marker-end="url(#arrow)"/>
+        <g class="c-gray"><rect x="70" y="40" width="170" height="58" rx="8"/><text class="t" x="155" y="67" text-anchor="middle" font-size="15">المستخدم</text><text class="ts" x="155" y="86" text-anchor="middle" font-size="11.5">Workspace owner</text></g>
+        <g class="c-gray"><rect x="440" y="40" width="170" height="58" rx="8"/><text class="t" x="525" y="67" text-anchor="middle" font-size="15">المسؤول</text><text class="ts" x="525" y="86" text-anchor="middle" font-size="11.5">Platform admin</text></g>
+        <g class="c-purple"><rect x="210" y="160" width="260" height="98" rx="10"/><text class="t" x="340" y="196" text-anchor="middle" font-size="16">منصة الوكلاء الذكية</text><text class="ts" x="340" y="219" text-anchor="middle" font-size="12">Multi-Agent AI Platform</text><text class="ts" x="340" y="237" text-anchor="middle" font-size="11">Modular Monolith · FastAPI</text></g>
+        <g class="c-teal"><rect x="20" y="340" width="145" height="84" rx="8"/><text class="t" x="92" y="374" text-anchor="middle" font-size="14">Firebase Auth</text><text class="ts" x="92" y="395" text-anchor="middle" font-size="11.5">الهوية فقط</text></g>
+        <g class="c-teal"><rect x="185" y="340" width="145" height="84" rx="8"/><text class="t" x="257" y="364" text-anchor="middle" font-size="13.5">مزوّدو النماذج</text><text class="ts" x="257" y="383" text-anchor="middle" font-size="11">OpenAI · سحابيّ</text><text class="ts" x="257" y="399" text-anchor="middle" font-size="11">Ollama · محلّيّ</text><text class="ts" x="257" y="415" text-anchor="middle" font-size="11">Rerank · Image</text></g>
+        <g class="c-off"><rect x="350" y="340" width="145" height="84" rx="8"/><text class="t" x="422" y="372" text-anchor="middle" font-size="13.5">بحث الويب · Exa</text><text class="ts" x="422" y="394" text-anchor="middle" font-size="11">مكتوبٌ غيرُ موصول</text></g>
+        <g class="c-off"><rect x="515" y="340" width="145" height="84" rx="8"/><text class="t" x="587" y="366" text-anchor="middle" font-size="13.5">موصّلات · MCP</text><text class="ts" x="587" y="386" text-anchor="middle" font-size="11">التسجيلُ مبنيّ</text><text class="ts" x="587" y="403" text-anchor="middle" font-size="11">المحوّلان فارغان</text></g>
+      </svg>
+      <figcaption>Fig 1 — System Context (L1) · المتقطّع = غيرُ عاملٍ اليوم</figcaption>
+    </figure>
+  </section>
+
+  <!-- 04 CONTAINERS -->
+  <section id="containers">
+    <div class="sec-head"><span class="sec-no">04</span><h2>الحاويات وتدفق البيانات</h2><span class="sub">C4 · L2</span></div>
+    <p>التطبيق <b>Stateless</b> خلف Nginx — <b>ثلاثُ نسخٍ × <code>WEB_CONCURRENCY=4</code> = اثنتا عشرةَ عمليّة</b>. والعمّال ثلاث عمليات منفصلة تستهلك Redis Streams (<code>worker-knowledge</code> بنسختين)، ومُرحّل Outbox رابعة، و<code>ops-scheduler</code> خامسة. التطبيق يكتب حدثَ المهمّة الثقيلة في <code>outbox</code> في معاملته نفسها ثم يردّ فوراً — <b>لا اقتران مباشر بين التطبيق والعمّال، ولا بين التطبيق والمُرحِّل</b>.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 760 640" role="img" xmlns="http://www.w3.org/2000/svg"><title>مخطط الحاويات</title><desc>العميل عبر Nginx إلى ثلاث نسخ من التطبيق، والتطبيق يصل Firebase ومزوّدي النماذج والتضمين عبر موازِن وطبقة البيانات؛ والعمّال والمُرحّل والمُجدوِل تحت طبقة البيانات، والملاحظة في الأسفل.</desc>
+        <rect class="frame" x="20" y="290" width="720" height="142" rx="10"/>
+        <text class="ts" x="32" y="308" font-size="11">طبقة البيانات والبنية التحتية (مُدارة ذاتياً)</text>
+        <rect class="frame" x="20" y="540" width="720" height="86" rx="10"/>
+        <text class="ts" x="32" y="557" font-size="11">الملاحظة والتنبيه — تُلاحِظ ولا تُخدَم منها استجابة</text>
+        <line class="arr" x1="85" y1="70" x2="85" y2="98" marker-end="url(#arrow)"/>
+        <line class="arr" x1="150" y1="127" x2="198" y2="127" marker-end="url(#arrow)"/>
+        <line class="arr" x1="460" y1="104" x2="598" y2="50" marker-end="url(#arrow)"/>
+        <line class="arr" x1="460" y1="120" x2="598" y2="110" marker-end="url(#arrow)"/>
+        <line class="arr" x1="460" y1="150" x2="598" y2="174" marker-end="url(#arrow)"/>
+        <line class="arr" x1="670" y1="198" x2="670" y2="210" marker-end="url(#arrow)"/>
+        <line class="arr" x1="330" y1="174" x2="330" y2="288" marker-end="url(#arrow)"/>
+        <line class="arr" x1="99" y1="366" x2="99" y2="376" marker-end="url(#arrow)"/>
+        <line class="arr" x1="99" y1="460" x2="99" y2="434" marker-end="url(#arrow)"/>
+        <line class="arr" x1="241" y1="460" x2="241" y2="434" marker-end="url(#arrow)"/>
+        <line class="arr" x1="383" y1="460" x2="383" y2="434" marker-end="url(#arrow)"/>
+        <line class="arr" x1="525" y1="460" x2="525" y2="434" marker-end="url(#arrow)"/>
+        <line class="arr" x1="667" y1="460" x2="667" y2="434" marker-end="url(#arrow)"/>
+        <g class="c-gray"><rect x="20" y="20" width="130" height="50" rx="8"/><text class="t" x="85" y="42" text-anchor="middle" font-size="12.5">المستخدم / المسؤول</text><text class="ts" x="85" y="60" text-anchor="middle" font-size="11">Web · WS · SSE</text></g>
+        <g class="c-gray"><rect x="20" y="100" width="130" height="54" rx="8"/><text class="t" x="85" y="123" text-anchor="middle" font-size="14">Nginx</text><text class="ts" x="85" y="142" text-anchor="middle" font-size="11">TLS · WS · limit_req</text></g>
+        <g class="c-purple"><rect x="200" y="90" width="260" height="84" rx="10"/><text class="t" x="330" y="118" text-anchor="middle" font-size="15">التطبيق × 3</text><text class="ts" x="330" y="139" text-anchor="middle" font-size="11">FastAPI · Gunicorn+Uvicorn · 12 عمليّة</text><text class="ts" x="330" y="158" text-anchor="middle" font-size="11">+ جسر cg.notify داخل كلّ عمليّة</text></g>
+        <g class="c-teal"><rect x="600" y="20" width="140" height="48" rx="8"/><text class="t" x="670" y="41" text-anchor="middle" font-size="13">Firebase Auth</text><text class="ts" x="670" y="58" text-anchor="middle" font-size="11">التحقّق من الهوية</text></g>
+        <g class="c-teal"><rect x="600" y="80" width="140" height="60" rx="8"/><text class="t" x="670" y="100" text-anchor="middle" font-size="13">مزوّدو النماذج</text><text class="ts" x="670" y="117" text-anchor="middle" font-size="11">OpenAI · سحابيّ</text><text class="ts" x="670" y="132" text-anchor="middle" font-size="11">Ollama · محلّيّ</text></g>
+        <g class="c-gray"><rect x="600" y="152" width="140" height="46" rx="8"/><text class="t" x="670" y="172" text-anchor="middle" font-size="13">embedding-lb</text><text class="ts" x="670" y="189" text-anchor="middle" font-size="11">nginx · موازِن</text></g>
+        <g class="c-purple"><rect x="600" y="212" width="140" height="50" rx="8"/><text class="t" x="670" y="233" text-anchor="middle" font-size="13">التضمين × 3</text><text class="ts" x="670" y="251" text-anchor="middle" font-size="11">دفعاتٌ ديناميكيّة</text></g>
+        <g class="c-gray"><rect x="36" y="320" width="126" height="46" rx="6"/><text class="t" x="99" y="340" text-anchor="middle" font-size="12.5">PgBouncer</text><text class="ts" x="99" y="357" text-anchor="middle" font-size="10.5">Transaction pooling</text></g>
+        <g class="c-gray"><rect x="178" y="320" width="126" height="46" rx="6"/><text class="t" x="241" y="340" text-anchor="middle" font-size="12.5">redis-stream</text><text class="ts" x="241" y="357" text-anchor="middle" font-size="10.5">Streams · noeviction</text></g>
+        <g class="c-gray"><rect x="320" y="320" width="126" height="46" rx="6"/><text class="t" x="383" y="340" text-anchor="middle" font-size="12.5">redis-cache</text><text class="ts" x="383" y="357" text-anchor="middle" font-size="10.5">تخبئة · allkeys-lru</text></g>
+        <g class="c-gray"><rect x="462" y="320" width="126" height="46" rx="6"/><text class="t" x="525" y="340" text-anchor="middle" font-size="12.5">Qdrant</text><text class="ts" x="525" y="357" text-anchor="middle" font-size="10.5">صندوقٌ لكلّ مساحة</text></g>
+        <g class="c-gray"><rect x="604" y="320" width="126" height="46" rx="6"/><text class="t" x="667" y="340" text-anchor="middle" font-size="12.5">Vault</text><text class="ts" x="667" y="357" text-anchor="middle" font-size="10.5">AppRole · Transit</text></g>
+        <g class="c-gray"><rect x="36" y="378" width="126" height="46" rx="6"/><text class="t" x="99" y="398" text-anchor="middle" font-size="12.5">PostgreSQL</text><text class="ts" x="99" y="415" text-anchor="middle" font-size="10.5">RLS · schema لكلّ وحدة</text></g>
+        <g class="c-gray"><rect x="462" y="378" width="126" height="46" rx="6"/><text class="t" x="525" y="398" text-anchor="middle" font-size="12.5">MinIO</text><text class="ts" x="525" y="415" text-anchor="middle" font-size="10.5">Object storage</text></g>
+        <g class="c-amber"><rect x="36" y="462" width="126" height="52" rx="8"/><text class="t" x="99" y="484" text-anchor="middle" font-size="12.5">outbox-relay × 1</text><text class="ts" x="99" y="502" text-anchor="middle" font-size="10.5">poll → XADD · قصّ</text></g>
+        <g class="c-purple"><rect x="178" y="462" width="126" height="52" rx="8"/><text class="t" x="241" y="484" text-anchor="middle" font-size="12.5">worker-memory</text><text class="ts" x="241" y="502" text-anchor="middle" font-size="10.5">cg.memory</text></g>
+        <g class="c-purple"><rect x="320" y="462" width="126" height="52" rx="8"/><text class="t" x="383" y="484" text-anchor="middle" font-size="12">worker-knowledge</text><text class="ts" x="383" y="502" text-anchor="middle" font-size="10.5">× 2 · cg.knowledge</text></g>
+        <g class="c-purple"><rect x="462" y="462" width="126" height="52" rx="8"/><text class="t" x="525" y="484" text-anchor="middle" font-size="12.5">worker-media</text><text class="ts" x="525" y="502" text-anchor="middle" font-size="10.5">cg.media</text></g>
+        <g class="c-amber"><rect x="604" y="462" width="126" height="52" rx="8"/><text class="t" x="667" y="484" text-anchor="middle" font-size="12.5">ops-scheduler</text><text class="ts" x="667" y="502" text-anchor="middle" font-size="10.5">10 مهامّ دوريّة</text></g>
+        <g class="c-gray"><rect x="36" y="566" width="168" height="48" rx="6"/><text class="t" x="120" y="586" text-anchor="middle" font-size="12.5">Prometheus + Grafana</text><text class="ts" x="120" y="604" text-anchor="middle" font-size="10.5">33 مقياساً · لوحتان</text></g>
+        <g class="c-gray"><rect x="216" y="566" width="168" height="48" rx="6"/><text class="t" x="300" y="586" text-anchor="middle" font-size="12.5">Alertmanager</text><text class="ts" x="300" y="604" text-anchor="middle" font-size="10.5">23 تنبيهاً → alert-sink</text></g>
+        <g class="c-gray"><rect x="396" y="566" width="160" height="48" rx="6"/><text class="t" x="476" y="586" text-anchor="middle" font-size="12.5">Loki + Alloy</text><text class="ts" x="476" y="604" text-anchor="middle" font-size="10.5">سجلٌّ بـ correlation_id</text></g>
+        <g class="c-gray"><rect x="568" y="566" width="162" height="48" rx="6"/><text class="t" x="649" y="586" text-anchor="middle" font-size="12">exporters + cAdvisor</text><text class="ts" x="649" y="604" text-anchor="middle" font-size="10.5">pgbouncer · redis × 2</text></g>
+      </svg>
+      <figcaption>Fig 2 — Container Diagram (L2) · العمّال والمُرحّل والمُجدوِل يكتبون ويقرؤون طبقة البيانات، والعمّالُ يصلون التضمين عبر الموازِن نفسه</figcaption>
+    </figure>
+    <div class="two">
+      <div class="call"><b>الإشعارُ داخل عملية الـAPI لا في عاملٍ خامس.</b> جسرُ <code>cg.notify</code> مشترِكٌ داخل كلّ عمليّة API لأنّ <code>ConnectionHub</code> سجلٌّ داخلَ العملية — فهي <b>أسرةُ مجموعاتٍ</b> <code>cg.notify.&lt;host&gt;.&lt;pid&gt;</code>. ولكلّ جلسةٍ قائمةُ انتظارٍ محدودة، فالمستهلكُ البطيءُ يُقطَع وحدَه (<code>3.6</code>).</div>
+      <div class="call"><b>Redis مثيلان، والاختيارُ قرارُ توصيل.</b> <code>redis-stream</code> (<code>noeviction</code>) هو الافتراضيّ لكلّ شيء: المجاري وقائمةُ الإبطال وحالةُ OAuth وعدّاداتُ الإساءة. و<code>redis-cache</code> (<code>allkeys-lru</code>) لمستدعيَين فقط يمكن إعادة بنائهما: متّجهُ الاستعلام (<code>4.3</code>) و<code>Principal</code> المخبّأ (<code>1.1</code>).</div>
+    </div>
+  </section>
+
+  <!-- 05 LAYERS -->
+  <section id="layers">
+    <div class="sec-head"><span class="sec-no">05</span><h2>البنية الطبقية</h2><span class="sub">Layers</span></div>
+    <p>خمس طبقات، والاعتماد يتّجه دائماً <b>للداخل نحو النواة</b>. الـ Domain لا يعرف FastAPI ولا قاعدة بيانات ولا أي Framework تقني. البنية التحتية محوّلات تُنفّذ المنافذ باتجاه الداخل.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 386" role="img" xmlns="http://www.w3.org/2000/svg"><title>البنية الطبقية</title><desc>خمس طبقات مع اتجاه الاعتماد للداخل وقلب المحوّلات عبر المنافذ.</desc><line class="arr" x1="95" y1="99" x2="95" y2="115" marker-end="url(#arrow)"/><line class="arr" x1="95" y1="171" x2="95" y2="187" marker-end="url(#arrow)"/><line class="arr" x1="95" y1="257" x2="95" y2="273" marker-end="url(#arrow)"/><line class="arr d" x1="486" y1="223" x2="467" y2="223" marker-end="url(#arrow)"/><line class="arr d" x1="486" y1="309" x2="467" y2="309" marker-end="url(#arrow)"/>
+        <g class="c-purple"><rect x="45" y="45" width="420" height="54" rx="8"/><text class="t" x="255" y="70" text-anchor="middle" font-size="14.5">طبقة الواجهة (API)</text><text class="ts" x="255" y="88" text-anchor="middle" font-size="11">15 موجّهاً · WebSocket · SSE · 7 وسائط</text></g>
+        <g class="c-purple"><rect x="45" y="117" width="420" height="54" rx="8"/><text class="t" x="255" y="142" text-anchor="middle" font-size="14.5">طبقة الوكلاء (Agents)</text><text class="ts" x="255" y="160" text-anchor="middle" font-size="11">5 وكلاء + Orchestrator (عدّ · تسعير · تحويل)</text></g>
+        <g class="c-teal"><rect x="45" y="189" width="420" height="68" rx="8"/><text class="t" x="255" y="216" text-anchor="middle" font-size="14.5">وحدات الأعمال (Modules)</text><text class="ts" x="255" y="236" text-anchor="middle" font-size="11">12 وحدة · Domain · Application · Ports</text></g>
+        <g class="c-gray"><rect x="45" y="275" width="420" height="68" rx="8"/><text class="t" x="255" y="302" text-anchor="middle" font-size="14.5">طبقة الإطار (Framework)</text><text class="ts" x="255" y="322" text-anchor="middle" font-size="11">24 منفذاً · Registry · DI · EventBus · Tools · Providers</text></g>
+        <g class="c-coral"><rect x="488" y="45" width="152" height="298" rx="8"/><text class="t" x="564" y="88" text-anchor="middle" font-size="14">البنية التحتية</text><text class="ts" x="564" y="106" text-anchor="middle" font-size="11">(Adapters)</text><text class="ts" x="564" y="144" text-anchor="middle" font-size="11">Repositories (SQL)</text><text class="ts" x="564" y="166" text-anchor="middle" font-size="11">Redis × 2 · Streams</text><text class="ts" x="564" y="188" text-anchor="middle" font-size="11">MinIO · Qdrant</text><text class="ts" x="564" y="210" text-anchor="middle" font-size="11">Vault · Firebase</text><text class="ts" x="564" y="232" text-anchor="middle" font-size="11">OpenAI · Ollama</text><text class="ts" x="564" y="250" text-anchor="middle" font-size="10.5">خلف ProviderGuard</text><text class="ts" x="564" y="290" text-anchor="middle" font-size="11">implements Ports</text></g>
+      </svg>
+      <figcaption>Fig 3 — Layered Architecture (🟣 Driving · 🟢 Core · ⚪ Kernel · 🟠 Driven)</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>الطبقة</th><th>المجلّد</th><th>الدور</th><th>تحتوي</th></tr></thead>
+        <tbody>
+          <tr><td>الواجهة (API)</td><td><code>api/</code></td><td>محوّل قيادة</td><td>15 موجّهاً <code>/api/v1</code>، WebSocket، SSE، DTO — وسبعُ وسائط: سقفُ الطلبات الجارية · مقاييسُ RED · المصادقة (+ <code>Principal</code> مخبّأ) · RBAC · حدُّ المعدّل بدلوَين · المهامُّ الثقيلة · <b>الضغطُ العكسيّ للفهرسة</b> — بلا منطق أعمال</td></tr>
+          <tr><td>الوكلاء</td><td><code>agents/</code></td><td>منسّق</td><td>BaseAgent، دورة الحياة، Orchestrator (عدٌّ وتسعيرٌ وتحويلٌ حول كلّ نداء نموذج)، استخدام Tools</td></tr>
+          <tr><td>الوحدات</td><td><code>modules/</code></td><td>النواة</td><td>12 وحدة: Domain (نقي) + Application (Use‑Cases) + Ports</td></tr>
+          <tr><td>الإطار</td><td><code>framework/</code></td><td>الكِرنل</td><td>PluginLoader، Registries، WorkflowEngine، EventBus، ToolRegistry، <b>24 منفذاً</b>، ConnectionHub، Observability (+ كتالوج المهامّ الدوريّة)، <code>providers/</code> (Resolver · Fallback · Pricing · Catalog)، Settings، Composition Root</td></tr>
+          <tr><td>البنية التحتية</td><td><code>infrastructure/</code></td><td>محوّل مُقاد</td><td>تنفيذ المنافذ فوق Postgres/Redis/MinIO/Qdrant/Vault/Firebase ومزوّدي النماذج — ومنها <code>monitoring/</code> و<code>messaging/stream_retention.py</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 class="sub-h">وطبقتان تشغيليّتان خارج المكدّس — لا يستوردهما أحد</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>المجلّد</th><th>الدور</th></tr></thead>
+        <tbody>
+          <tr><td><code>workers/</code></td><td><b>ثلاثة عمّال + مُرحّل</b>: <code>memory_worker</code> · <code>knowledge_worker</code> · <code>media_worker</code> · <code>outbox_relay</code> — ومعها <code>bootstrap</code> و<code>summary_metering</code> (عدُّ التلخيص، <code>6.5</code>). الصورة نفسُها، أمرٌ مختلف</td></tr>
+          <tr><td><code>ops/</code></td><td><b>23 وحدة: 21 نقطةَ دخول + مكتبتان</b> (<code>online_ddl</code> · <code>role_guard</code>). الجديدُ منذ v2.0: <code>scheduler</code> · <code>stream_trim</code> · <code>replay</code> · <code>embedding_migration</code> · <code>qdrant_capacity</code> · <code>notify_cost</code> · <code>mint_load_tokens</code> · <code>role_guard</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="call"><b><code>alembic upgrade head</code> ليس أمراً يملكه هذا المستودع.</b> اثنتا عشرةَ سلسلةَ هجراتٍ مستقلّة (<code>version_table_schema</code> لكلّ وحدة)، فـ<code>head</code> ملتبس. الاستدعاءُ الحقيقيّ <code>python -m app.ops.provision</code> (خدمةُ <code>migrate</code>): السلاسلُ بالترتيب ثمّ المنح.</div>
+  </section>
+
+  <!-- 06 MODULES -->
+  <section id="modules">
+    <div class="sec-head"><span class="sec-no">06</span><h2>وحدات الأعمال الاثنتا عشرة</h2><span class="sub">Bounded Contexts</span></div>
+    <p>كل وحدة تتبع Hexagonal داخلياً (Domain / Application / Ports / Adapters) وتطبّق Repository Pattern. <b>لا وحدة تستدعي أخرى مباشرة</b> — فقط عبر Inbound Port محقون أو Global Event.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 310" role="img" xmlns="http://www.w3.org/2000/svg"><title>خريطة الوحدات</title><desc>اثنتا عشرة وحدة في ستة عناقيد مع حدث من Files إلى Knowledge.</desc>
+        <text class="ts" x="110" y="56" text-anchor="middle" font-size="11">التمكين والأمان</text>
+        <text class="ts" x="280" y="56" text-anchor="middle" font-size="11">التفاعل والذاكرة</text>
+        <text class="ts" x="450" y="56" text-anchor="middle" font-size="11">المحتوى والمعرفة</text>
+        <text class="ts" x="605" y="56" text-anchor="middle" font-size="11">التكامل والقياس</text>
+        <text class="ts" x="280" y="212" text-anchor="middle" font-size="11">التوليد</text>
+        <text class="ts" x="605" y="212" text-anchor="middle" font-size="11">إدارة المنصّة</text>
+        <line class="arr d" x1="450" y1="119" x2="450" y2="132" marker-end="url(#arrow)"/>
+        <g class="c-gray"><rect x="40" y="68" width="140" height="50" rx="7"/><text class="t" x="110" y="89" text-anchor="middle" font-size="13">Workspace</text><text class="ts" x="110" y="106" text-anchor="middle" font-size="11">المستأجر (Tenant)</text></g>
+        <g class="c-gray"><rect x="40" y="128" width="140" height="50" rx="7"/><text class="t" x="110" y="149" text-anchor="middle" font-size="13">Spaces</text><text class="ts" x="110" y="166" text-anchor="middle" font-size="11">محورُ الملكية</text></g>
+        <g class="c-gray"><rect x="40" y="188" width="140" height="50" rx="7"/><text class="t" x="110" y="209" text-anchor="middle" font-size="13">Access (RBAC)</text><text class="ts" x="110" y="226" text-anchor="middle" font-size="11">الأدوار والصلاحيات</text></g>
+        <g class="c-gray"><rect x="40" y="248" width="140" height="50" rx="7"/><text class="t" x="110" y="269" text-anchor="middle" font-size="13">Credentials</text><text class="ts" x="110" y="286" text-anchor="middle" font-size="11">مفاتيح API · Vault</text></g>
+        <g class="c-purple"><rect x="210" y="68" width="140" height="50" rx="7"/><text class="t" x="280" y="89" text-anchor="middle" font-size="12.5">Conversations</text><text class="ts" x="280" y="106" text-anchor="middle" font-size="11">workspace + agent</text></g>
+        <g class="c-purple"><rect x="210" y="128" width="140" height="50" rx="7"/><text class="t" x="280" y="149" text-anchor="middle" font-size="13">Memory</text><text class="ts" x="280" y="166" text-anchor="middle" font-size="11">ذاكرة دلالية · Qdrant</text></g>
+        <g class="c-teal"><rect x="380" y="68" width="140" height="50" rx="7"/><text class="t" x="450" y="89" text-anchor="middle" font-size="13">Files</text><text class="ts" x="450" y="106" text-anchor="middle" font-size="11">مشتركة · MinIO</text></g>
+        <g class="c-teal"><rect x="380" y="134" width="140" height="50" rx="7"/><text class="t" x="450" y="155" text-anchor="middle" font-size="12.5">Knowledge (RAG)</text><text class="ts" x="450" y="172" text-anchor="middle" font-size="11">فهرسة · استرجاع · تلخيص</text></g>
+        <g class="c-amber"><rect x="540" y="68" width="130" height="50" rx="7"/><text class="t" x="605" y="89" text-anchor="middle" font-size="13">Integrations</text><text class="ts" x="605" y="106" text-anchor="middle" font-size="11">OAuth · MCP بعيد</text></g>
+        <g class="c-amber"><rect x="540" y="128" width="130" height="50" rx="7"/><text class="t" x="605" y="149" text-anchor="middle" font-size="13">Usage</text><text class="ts" x="605" y="166" text-anchor="middle" font-size="10.5">حصص · reserve · كلفة</text></g>
+        <g class="c-coral"><rect x="210" y="222" width="140" height="56" rx="7"/><text class="t" x="280" y="246" text-anchor="middle" font-size="13">Media</text><text class="ts" x="280" y="264" text-anchor="middle" font-size="11">صور / فيديو</text></g>
+        <g class="c-gray"><rect x="540" y="222" width="130" height="56" rx="7"/><text class="t" x="605" y="246" text-anchor="middle" font-size="13">Admin</text><text class="ts" x="605" y="264" text-anchor="middle" font-size="11">تطبيقيّةٌ بلا نطاق</text></g>
+      </svg>
+      <figcaption>Fig 4 — Business Modules Map (12 في v1)</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th>الوحدة</th><th>schema</th><th>domain</th><th>منافذ</th><th>ملاحظة</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td><code>workspace</code></td><td>✅</td><td>✅</td><td class="num">3</td><td>المستأجر — حدُّ الأمان الوحيد</td></tr>
+          <tr><td class="num">2</td><td><code>spaces</code> <span class="pill new">بعد الاعتماد</span></td><td>✅</td><td>✅</td><td class="num">2</td><td>محورُ ملكيّةٍ داخل المستأجر، لا مستأجر</td></tr>
+          <tr><td class="num">3</td><td><code>access</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>RBAC</td></tr>
+          <tr><td class="num">4</td><td><code>credentials</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>مفاتيح المزوّدين · Vault Transit</td></tr>
+          <tr><td class="num">5</td><td><code>conversations</code></td><td>✅</td><td>✅</td><td class="num">4</td><td></td></tr>
+          <tr><td class="num">6</td><td><code>memory</code></td><td>✅</td><td>✅</td><td class="num">1</td><td></td></tr>
+          <tr><td class="num">7</td><td><code>files</code></td><td>✅</td><td>✅</td><td class="num">3</td><td></td></tr>
+          <tr><td class="num">8</td><td><code>knowledge</code></td><td>✅</td><td>✅</td><td class="num">7</td><td>أكبرُ وحدة — صندوقُ Qdrant لكلّ مساحة (<code>ق‑3</code>)، بمراجعاتٍ واسمٍ مستعار (<code>4.5</code>)</td></tr>
+          <tr><td class="num">9</td><td><code>media</code></td><td>✅</td><td>✅</td><td class="num">3</td><td></td></tr>
+          <tr><td class="num">10</td><td><code>integrations</code></td><td>✅</td><td>✅</td><td class="num">3</td><td>المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان <span class="pill warn">§15</span></td></tr>
+          <tr><td class="num">11</td><td><code>usage</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>منافذُ واردة · <code>reserve</code>/<code>commit</code> · ميزانيّةُ كلفةٍ تعمل (<code>6.5</code>)</td></tr>
+          <tr><td class="num">12</td><td><code>admin</code> <span class="pill new">بعد الاعتماد</span></td><td>✗</td><td>✗</td><td class="num">4</td><td>تطبيقيّةٌ بلا نطاقٍ ولا schema — عمداً</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two">
+      <div class="call"><b><code>spaces</code> ليست مستأجراً.</b> كلُّ ملفٍّ ومحادثةٍ ينتمي إلى فضاءٍ واحد، لكنّ <b>مساحةَ العمل تبقى حدَّ الأمان الوحيد</b>: RLS على <code>app.workspace_id</code> وحدَه، والفضاءُ يُرشَّح في الاستعلام لا في سياسة.</div>
+      <div class="call"><b><code>admin</code> بلا نطاقٍ عمداً.</b> تقرأ وتتصرّف عبر أربعة منافذ (<code>accounts</code> · <code>directory</code> · <code>providers</code> · <code>roles</code>) فوق ما تملكه الوحداتُ الأخرى — مُجمَّعٌ لها كان سيخترع مِلكيّةً مزدوجة.</div>
+    </div>
+    <p class="note">الوحداتُ المحجوزة الثلاث ما تزال محجوزة: <code>scheduling</code> · <code>sandbox</code> · <code>runs</code>. و<code>ops-scheduler</code> ليس <code>scheduling</code>: الأوّلُ يشغّل أدواتِ تشغيل المنصّة، والثانيةُ وحدةُ أعمالٍ لمهامّ المستخدمين لم تُبنَ.</p>
+  </section>
+
+  <!-- 07 AGENTS -->
+  <section id="agents">
+    <div class="sec-head"><span class="sec-no">07</span><h2>الوكلاء ودورة الحياة</h2><span class="sub">Agents</span></div>
+    <p>كل Agent <b>Stateless</b>، يُنشأ لكل Request عبر <code>AgentRegistry</code>، يحمّل السياق والذاكرة والمحادثة، ثم يُتلَف. المحادثات تتبع الوكيل بمفتاح <code>(workspace + agent)</code>، وللـ Workflow متعدّد الوكلاء محادثته الخاصة.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 270" role="img" xmlns="http://www.w3.org/2000/svg"><title>دورة حياة الوكيل</title><desc>Created ثم Initialized ثم Running ثم Completed ثم Disposed، ومسار الفشل من Running إلى Failed.</desc><line class="arr" x1="144" y1="98" x2="156" y2="98" marker-end="url(#arrow)"/><line class="arr" x1="276" y1="98" x2="288" y2="98" marker-end="url(#arrow)"/><line class="arr" x1="394" y1="98" x2="406" y2="98" marker-end="url(#arrow)"/><line class="arr" x1="524" y1="98" x2="536" y2="98" marker-end="url(#arrow)"/><line class="arr" x1="342" y1="126" x2="430" y2="174" marker-end="url(#arrow)"/><line class="arr" x1="512" y1="196" x2="566" y2="128" marker-end="url(#arrow)"/><g class="c-gray"><rect x="40" y="70" width="104" height="56" rx="8"/><text class="t" x="92" y="94" text-anchor="middle" font-size="13">Created</text><text class="ts" x="92" y="111" text-anchor="middle" font-size="11">by Registry</text></g><g class="c-gray"><rect x="158" y="70" width="118" height="56" rx="8"/><text class="t" x="217" y="94" text-anchor="middle" font-size="13">Initialized</text><text class="ts" x="217" y="111" text-anchor="middle" font-size="11">load context/memory</text></g><g class="c-purple"><rect x="290" y="70" width="104" height="56" rx="8"/><text class="t" x="342" y="94" text-anchor="middle" font-size="13">Running</text><text class="ts" x="342" y="111" text-anchor="middle" font-size="11">tools · LLM</text></g><g class="c-teal"><rect x="408" y="70" width="116" height="56" rx="8"/><text class="t" x="466" y="94" text-anchor="middle" font-size="13">Completed</text><text class="ts" x="466" y="111" text-anchor="middle" font-size="11">persist results</text></g><g class="c-gray"><rect x="538" y="70" width="102" height="56" rx="8"/><text class="t" x="589" y="94" text-anchor="middle" font-size="13">Disposed</text><text class="ts" x="589" y="111" text-anchor="middle" font-size="11">release · GC</text></g><g class="c-red"><rect x="396" y="174" width="116" height="54" rx="8"/><text class="t" x="454" y="197" text-anchor="middle" font-size="13">Failed</text><text class="ts" x="454" y="214" text-anchor="middle" font-size="11">error · rollback</text></g></svg>
+      <figcaption>Fig 5 — Agent Lifecycle State Machine</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>الوكيل</th><th>يحمل</th><th>الدور</th><th>ملاحظة</th></tr></thead>
+        <tbody>
+          <tr><td><code>rag_agent</code></td><td><code>prompts/</code> + <code>tools/</code></td><td>الاسترجاع المُعزَّز</td><td>يسترجع ويستشهد بمقاطع المساحة الحقيقيّة</td></tr>
+          <tr><td><code>data_analysis_agent</code></td><td><code>prompts/</code> + <code>tools/</code></td><td>تحليل البيانات</td><td></td></tr>
+          <tr><td><code>file_editing_agent</code></td><td><code>prompts/</code> + <code>tools/</code></td><td>تحرير الملفّات</td><td></td></tr>
+          <tr><td><code>image_agent</code></td><td>manifest فقط</td><td>توليد الصور</td><td>عبر <code>OpenAIImage</code></td></tr>
+          <tr><td><code>video_agent</code></td><td>manifest فقط</td><td>توليد الفيديو</td><td><span class="pill warn">بلا مزوّد</span> محوّلُ <code>VideoProvider</code> فارغ</td></tr>
+          <tr><td><code>orchestrator.py</code></td><td>—</td><td>تنسيقُ متعدّدِ الوكلاء</td><td>ليس وكيلاً ولا إضافة</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two">
+      <div class="call"><b>Plugin (D‑13):</b> إسقاط مجلد في <code>agents/</code> + <code>AgentMetadata</code> + وراثة <code>BaseAgent</code> → يكتشفه <code>PluginLoader</code> عبر importlib ويسجّله تلقائياً، بلا تعديل نواة، مع عزل الإضافة المعطوبة.</div>
+      <div class="call"><b>المُنسِّق يحيط كلَّ نداء نموذجٍ بثلاث طبقات:</b> العدّ (<code>_MeteredLLM</code>)، والتسعير (<code>_BilledRoute</code> بأسعار <code>LLM_PRICES</code>)، والتحويل (<code>LlmFallback</code> قبل أوّل مقطع). والميزانيّةُ تُفحَص قبل بدء المحادثة، والنافدةُ توقف المحلّيّةَ أيضاً.</div>
+    </div>
+    <div class="call warn"><b>محرّكُ الـWorkflows وسجلُّه موصولان، والكتالوجُ فارغ.</b> <code>framework/workflows/definitions/</code> لا يحمل إلّا ملفّاتٍ فارغة. والمثالُ الوحيدُ في التصميم (<code>rag → data_analysis → image → video → file_editing</code>) لا يتسلسل على الوكلاء كما بُنوا: <code>rag_agent</code> يُخرج <code>{text, citations}</code> و<code>data_analysis_agent</code> يطلب <code>file_id</code>.</div>
+  </section>
+
+  <!-- 08 PORTS -->
+  <section id="ports">
+    <div class="sec-head"><span class="sec-no">08</span><h2>المنافذ والمحوّلات</h2><span class="sub">Ports &amp; Adapters</span></div>
+    <p>المنافذ تُعرَّف في Framework، والمحوّلات في Infrastructure، والربط في Composition Root عبر Manual DI. <code>framework/ports/</code> يحمل <b>24 وحدةَ منفذٍ تعرّف 25 بروتوكولاً</b>. وأسماءُ المحوّلات أدناه هي <b>أسماءُ الأصناف في الشيفرة</b>.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Port</th><th>Adapter(s)</th><th>Backing</th></tr></thead>
+        <tbody>
+          <tr><td><code>LLMProvider</code></td><td><code>OpenAILLM</code> · <code>OllamaLLM</code> — كلٌّ ملفوفٌ بـ<code>GuardedLLM</code>. <span class="pill warn">فارغة</span> Claude · Gemini · OpenRouter</td><td>خارجي / محلّي</td></tr>
+          <tr><td><code>EmbeddingProvider</code></td><td><code>ExternalEmbeddingProvider</code> → <code>embedding-lb</code> → 3 نسخ؛ ويلفّه <code>CachingEmbeddingProvider</code> على <code>redis-cache</code></td><td>HTTP داخلي</td></tr>
+          <tr><td><code>RerankProvider</code></td><td><code>ExternalRerankProvider</code></td><td>HTTP</td></tr>
+          <tr><td><code>ImageProvider</code></td><td><code>OpenAIImage</code></td><td>خارجي</td></tr>
+          <tr><td><code>VideoProvider</code></td><td><span class="pill warn">ملفٌّ فارغ</span></td><td>—</td></tr>
+          <tr><td><code>WebSearchProvider</code></td><td><code>ExaWebSearchAdapter</code> <span class="pill warn">غير موصول</span></td><td>خارجي</td></tr>
+          <tr><td><code>VectorStore</code> / <code>HybridVectorStore</code></td><td><code>QdrantVectorStore</code> — صندوقٌ لكلّ مساحة · مراجعاتٌ واسمٌ مستعار</td><td>Qdrant</td></tr>
+          <tr><td><code>StorageProvider</code></td><td><code>MinioStorage</code></td><td>MinIO</td></tr>
+          <tr><td><code>CacheProvider</code></td><td><code>RedisCache</code> × 2 — المحفوظ (افتراضيّ) والقابلُ للطرد</td><td>Redis</td></tr>
+          <tr><td><code>EventPublisher</code></td><td><code>RedisStreamsPublisher</code></td><td>Redis</td></tr>
+          <tr><td><code>RateLimiter</code></td><td><code>RedisRateLimiter</code> — Lua ذرّيّ · دلوان في نداءٍ واحد</td><td>Redis</td></tr>
+          <tr><td><code>WsConnectionRegistry</code></td><td><code>RedisWsConnectionRegistry</code></td><td>Redis</td></tr>
+          <tr><td><code>TaskLedger</code> <span class="pill new">جديد</span></td><td><code>RedisTaskLedger</code> — سجلٌّ لكلّ مهمّة لا مقياسٌ لكلّ عمليّة</td><td>Redis</td></tr>
+          <tr><td><code>SecretsProvider</code></td><td><code>VaultSecrets</code> (Transit)</td><td>Vault</td></tr>
+          <tr><td><code>VaultHealth</code></td><td><code>VaultProbe</code></td><td>Vault</td></tr>
+          <tr><td><code>AuthProvider</code></td><td><code>FirebaseAuth</code></td><td>Firebase</td></tr>
+          <tr><td><code>ConnectorProvider</code> / <code>MCPClient</code></td><td><span class="pill warn">ملفّان فارغان</span> — التسجيلُ والإدراجُ والتعطيلُ موصولة</td><td>—</td></tr>
+          <tr><td><code>EventOutbox</code></td><td><code>SqlEventOutbox</code></td><td>PostgreSQL</td></tr>
+          <tr><td><code>IdempotencyStore</code></td><td><code>SqlIdempotencyStore</code> (+ <code>SqlProcessedEventLedger</code> للمستهلكين)</td><td>PostgreSQL</td></tr>
+          <tr><td><code>QuotaLock</code></td><td><code>AdvisoryQuotaLock</code> — قفلٌ لكلّ <code>(workspace, limit)</code></td><td>PostgreSQL</td></tr>
+          <tr><td><code>UnitOfWork</code></td><td><code>TenantSessionFactory.begin</code> — معاملةٌ واحدةٌ تحت RLS</td><td>PostgreSQL</td></tr>
+          <tr><td><code>MetricsSource</code> / <code>SystemStatsSource</code></td><td><code>SqlRedisMetricsSource</code> · <code>HostSystemStats</code></td><td>Postgres · Redis · المضيف</td></tr>
+          <tr><td><code>Repository</code> (لكل Module)</td><td>SqlAlchemy Repositories</td><td>PostgreSQL</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note"><b>منافذ واردة:</b> تعرّف وحدة <code>usage</code> منفذَين واردَين يستدعيهما المُنسِّق: فرض الحدّ والتقاط الاستهلاك (متزامن، بلا Redis Streams) — <code>FR‑131/132</code>.</p>
+    <div class="two">
+      <div class="call"><b><code>ProviderGuard</code> — لكلّ مزوّد، لكلّ عمليّة (<code>6.1</code>):</b> سقفُ تزامنٍ يرفض بدل أن يصطفّ (Ollama 2، السحابيّ 5 → <code>429</code> بـ<code>Retry-After</code>)، وقاطعُ دارةٍ بعد إخفاقاتٍ عابرةٍ متتالية (<code>502</code> فوراً)، وإعادةٌ للإخفاقات الرخيصة وحدَها قبل أوّل مقطع.</div>
+      <div class="call"><b><code>reserve</code>/<code>commit</code> يحمل الكلفةَ الآن.</b> بلا حجزٍ كانت مئةُ طلبٍ متزامنٍ على رمزٍ واحدٍ متبقٍّ تُقبل ستّةٌ وأربعون منها (<code>2.7</code>). وحتّى <code>6.5</code> كان كلُّ شحنٍ بـ<code>cost_micros = 0</code>؛ صار بأسعارٍ حقيقيّة بـ<code>Decimal</code>، والإقلاعُ يرفض مساراً سحابيّاً بلا سعر.</div>
+    </div>
+  </section>
+
+  <!-- 09 DEP RULES -->
+  <section id="deps">
+    <div class="sec-head"><span class="sec-no">09</span><h2>قواعد الاعتماد</h2><span class="sub">Dependency Rules</span></div>
+    <p>مفروضة آلياً عبر <code>import-linter</code> في CI (D‑17) — <b>ثمانيةُ عقود</b>.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>الطبقة</th><th>تعتمد على</th><th>يُمنع استيراده</th></tr></thead>
+        <tbody>
+          <tr><td>API</td><td>Agents · Modules · Framework</td><td>Infrastructure · Domain للمنطق</td></tr>
+          <tr><td>Agents</td><td>Modules(Ports) · Framework</td><td>Infrastructure · وكلاء آخرون · API</td></tr>
+          <tr><td>Application</td><td>Domain · Framework · Ports</td><td>أي Module آخر · Infrastructure · FastAPI</td></tr>
+          <tr><td>Domain</td><td>stdlib فقط</td><td>كل شيء تقني (FastAPI/SQLAlchemy/Redis/Qdrant/MinIO/hvac/Pydantic)</td></tr>
+          <tr><td>Framework</td><td>stdlib + تجريداته</td><td>API · Agents · Modules · Infrastructure</td></tr>
+          <tr><td>Infrastructure</td><td>Framework · Ports</td><td>— (لا يستوردها إلا Composition Root)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note"><b>العقودُ الثمانية:</b> الطبقاتُ الخمس · نقاءُ النطاق · حدودُ التطبيق · استقلالُ الوحدات · استقلالُ الوكلاء · الوكلاءُ بلا API/Infra · البنيةُ التحتيّة عبر Composition Root وحدَه · الكِرنلُ لا يستورد الخارج.</p>
+    <div class="call"><b>واستثناءان مُوقَّعان، لا ثغرتان.</b> <code>framework.di.composition_root</code> وحدَه يستورد <code>app.modules.**</code> و<code>app.agents.orchestrator</code> بعينه — لا <code>app.agents.**</code> — فيبقى الوكيلُ الإضافةُ غيرَ قابلٍ للبلوغ إلّا عبر <code>importlib</code> (D‑13).</div>
+  </section>
+
+  <!-- 10 EVENTS -->
+  <section id="events">
+    <div class="sec-head"><span class="sec-no">10</span><h2>العمارة المدفوعة بالأحداث</h2><span class="sub">للعمليات الثقيلة فقط</span></div>
+    <p>نوعان: <b>Domain Events</b> (بالذاكرة، داخل الوحدة) و<b>Global Events</b> (Redis Streams). النشر عبر <b>Transactional Outbox</b>؛ التسليم at‑least‑once مع مستهلكين Idempotent وDLQ بعد <b>N = 5</b> محاولات. المظروف CloudEvents 1.0.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 410" role="img" xmlns="http://www.w3.org/2000/svg"><title>تدفق الأحداث</title><desc>من Outbox إلى المُرحّل إلى المجرى ثم العامل فسجلّ عدم التكرار فالمعالجة فالإشعار، مع DLQ وقصٍّ آمن وإعادة نشرٍ من Outbox.</desc>
+        <line class="arr" x1="136" y1="75" x2="154" y2="75" marker-end="url(#arrow)"/>
+        <line class="arr" x1="280" y1="75" x2="298" y2="75" marker-end="url(#arrow)"/>
+        <line class="arr" x1="412" y1="75" x2="430" y2="75" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="190" y1="102" x2="100" y2="148" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="356" y1="102" x2="356" y2="148" marker-end="url(#arrow)"/>
+        <line class="arr" x1="544" y1="102" x2="544" y2="148" marker-end="url(#arrow)"/>
+        <polyline class="arr d" points="80,200 80,224 422,224 422,92 430,92" marker-end="url(#arrow)"/>
+        <text class="ts" x="250" y="218" text-anchor="middle" font-size="10.5">إعادةُ نشرٍ بالمُعرِّف الأصليّ</text>
+        <line class="arr" x1="544" y1="200" x2="544" y2="248" marker-end="url(#arrow)"/>
+        <line class="arr" x1="432" y1="275" x2="398" y2="275" marker-end="url(#arrow)"/>
+        <line class="arr" x1="196" y1="275" x2="176" y2="275" marker-end="url(#arrow)"/>
+        <polyline class="arr d" points="656,175 672,175 672,363 658,363" marker-end="url(#arrow)"/>
+        <g class="c-purple"><rect x="24" y="48" width="112" height="54" rx="8"/><text class="t" x="80" y="71" text-anchor="middle" font-size="12.5">Producer</text><text class="ts" x="80" y="89" text-anchor="middle" font-size="11">API / Module</text></g>
+        <g class="c-gray"><rect x="156" y="48" width="124" height="54" rx="8"/><text class="t" x="218" y="71" text-anchor="middle" font-size="12.5">Outbox</text><text class="ts" x="218" y="89" text-anchor="middle" font-size="11">Postgres · same tx</text></g>
+        <g class="c-purple"><rect x="300" y="48" width="112" height="54" rx="8"/><text class="t" x="356" y="71" text-anchor="middle" font-size="12.5">outbox-relay</text><text class="ts" x="356" y="89" text-anchor="middle" font-size="11">poll → XADD</text></g>
+        <g class="c-gray"><rect x="432" y="48" width="224" height="54" rx="8"/><text class="t" x="544" y="71" text-anchor="middle" font-size="12.5">Redis Stream</text><text class="ts" x="544" y="89" text-anchor="middle" font-size="11">stream.&lt;module&gt; · redis-stream</text></g>
+        <g class="c-amber"><rect x="24" y="150" width="112" height="50" rx="8"/><text class="t" x="80" y="171" text-anchor="middle" font-size="12">app.ops.replay</text><text class="ts" x="80" y="188" text-anchor="middle" font-size="10.5">ما فقده Redis</text></g>
+        <g class="c-amber"><rect x="300" y="150" width="112" height="50" rx="8"/><text class="t" x="356" y="171" text-anchor="middle" font-size="12.5">قصٌّ آمن</text><text class="ts" x="356" y="188" text-anchor="middle" font-size="10.5">تحت أبطأ قارئ</text></g>
+        <g class="c-purple"><rect x="432" y="150" width="224" height="50" rx="8"/><text class="t" x="544" y="171" text-anchor="middle" font-size="12.5">Worker</text><text class="ts" x="544" y="188" text-anchor="middle" font-size="11">Consumer Group · تزامنٌ محدود</text></g>
+        <g class="c-teal"><rect x="24" y="250" width="152" height="50" rx="8"/><text class="t" x="100" y="271" text-anchor="middle" font-size="12.5">جسر cg.notify</text><text class="ts" x="100" y="288" text-anchor="middle" font-size="11">→ WebSocket</text></g>
+        <g class="c-teal"><rect x="196" y="250" width="202" height="50" rx="8"/><text class="t" x="297" y="271" text-anchor="middle" font-size="12.5">Process + Persist</text><text class="ts" x="297" y="288" text-anchor="middle" font-size="11">Postgres · Qdrant · MinIO</text></g>
+        <g class="c-gray"><rect x="432" y="250" width="224" height="50" rx="8"/><text class="t" x="544" y="271" text-anchor="middle" font-size="12.5">processed_events</text><text class="ts" x="544" y="288" text-anchor="middle" font-size="11">(group, event_id) · مرّةً واحدة</text></g>
+        <g class="c-red"><rect x="432" y="340" width="224" height="46" rx="8"/><text class="t" x="544" y="360" text-anchor="middle" font-size="12.5">stream.&lt;m&gt;.dlq</text><text class="ts" x="544" y="377" text-anchor="middle" font-size="11">بعد N = 5 محاولات</text></g>
+      </svg>
+      <figcaption>Fig 6 — Event-Driven Message Flow</figcaption>
+    </figure>
+    <h3 class="sub-h">الطوبولوجيا الفعليّة — أربعةُ مجارٍ، وثلاثُ مجموعاتٍ ساكنة</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>المجرى</th><th>المنتِج</th><th>Consumer Group</th><th>العامل</th></tr></thead>
+        <tbody>
+          <tr><td><code>stream.knowledge</code></td><td>knowledge</td><td><code>cg.knowledge</code></td><td><code>knowledge_worker</code> (× 2)</td></tr>
+          <tr><td><code>stream.media</code></td><td>media (API)</td><td><code>cg.media</code></td><td><code>media_worker</code></td></tr>
+          <tr><td><code>stream.memory</code></td><td>memory</td><td><code>cg.memory</code></td><td><code>memory_worker</code></td></tr>
+          <tr><td><code>stream.files</code></td><td>files</td><td><b>— لا مستهلك</b></td><td>—</td></tr>
+          <tr><td><code>*</code> (فشل)</td><td>العامل</td><td>—</td><td><code>stream.&lt;m&gt;.dlq</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 class="sub-h">وما أضافته الموجة 5 على هذا الخطّ</h3>
+    <div class="table-scroll">
+      <table class="dl">
+        <thead><tr><th>الخطوة</th><th>ما بُني</th><th>أين</th></tr></thead>
+        <tbody>
+          <tr><td>5.1</td><td>تزامنٌ محدودٌ في محرّك الاستهلاك؛ مسبحُ العامل مشتقٌّ منه (التزامن + 1)</td><td><code>messaging/consumers/engine.py</code></td></tr>
+          <tr><td>5.3</td><td>ضغطٌ عكسيٌّ مُعلَن: انتظارُ أقدم مدخلٍ في <code>cg.knowledge</code> فوق 120 ث ← <code>429</code> بـ<code>Retry-After</code> بدل <code>202</code></td><td><code>api/middleware/queue_backpressure.py</code></td></tr>
+          <tr><td>5.5</td><td>قصٌّ آمنٌ تحت أبطأ قارئ، و<code>MAXLEN</code> حدٌّ احتياطيّ — يشغّله المُرحِّل</td><td><code>messaging/stream_retention.py</code></td></tr>
+          <tr><td>5.6</td><td>إعادةُ نشرٍ من <code>platform.outbox</code> — عشرةٌ من عشرة حيّاً بلا أثرٍ مزدوج</td><td><code>ops/replay.py</code></td></tr>
+          <tr><td>5.7</td><td>مراقبةُ كلّ DLQ مهمّةٌ دوريّةٌ تكتب نجاحَها في <code>TaskLedger</code></td><td><code>observability/scheduled_tasks.py</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two">
+      <div class="call"><b>«مجرى لكل وحدة» لم تعد تصف الواقع — عمداً.</b> <code>stream.files</code> بلا مجموعةٍ منذ صارت الفهرسةُ يدويّة؛ والحدثُ يُنشَر لأنّه واقعةٌ صادقة، لكنّ مجموعةً مهجورةً يتضخّم تأخّرُها إلى الأبد ويفسد الإشارةَ التي يثق بها المشغّل.</div>
+      <div class="call"><b>والمُرحِّلُ يُنشئ المجموعاتِ قبل أوّل <code>XADD</code>.</b> <code>ensure_topology()</code> تمرّ على <code>STATIC_CONSUMER_TOPOLOGY</code> أوّلاً، فلا مجموعةَ تُنشأ بعد مدخلاتٍ لن تراها. وقياسُ الاستخدام خارج الناقل: منفذٌ واردٌ متزامن (<code>FR‑131</code> · D‑04).</div>
+    </div>
+  </section>
+
+  <!-- 11 SECURITY -->
+  <section id="security">
+    <div class="sec-head"><span class="sec-no">11</span><h2>معمارية الأمن</h2><span class="sub">Defense in Depth</span></div>
+    <p>كل طلب يعبر طبقات ضبط متتابعة. الهوية عبر Firebase (تحقق JWT محلي بمفاتيح مُخزّنة)، والتفويض RBAC داخل التطبيق، وعزل المستأجرين عبر <b>RLS أصلية + ترشيح تطبيقي</b>، والأسرار عبر Vault Transit. <b>والترتيبُ أدناه هو ترتيبُ الشيفرة.</b></p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 510" role="img" xmlns="http://www.w3.org/2000/svg"><title>طبقات الأمن</title><desc>عشر طبقات بالترتيب: النقل والحافّة، سقف الطلبات الجارية، المصادقة، الهوية والمستأجر، حدّ المعدّل، التفويض، العمل الثقيل، عزل RLS، الحصص والكلفة، الأسرار.</desc>
+        <g class="arrs">
+          <line class="arr" x1="340" y1="62" x2="340" y2="70" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="110" x2="340" y2="118" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="158" x2="340" y2="166" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="206" x2="340" y2="214" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="254" x2="340" y2="262" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="302" x2="340" y2="310" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="350" x2="340" y2="358" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="398" x2="340" y2="406" marker-end="url(#arrow)"/>
+          <line class="arr" x1="340" y1="446" x2="340" y2="454" marker-end="url(#arrow)"/>
+        </g>
+        <g class="ts" font-size="11" font-family="monospace"><text class="ts" x="72" y="48" text-anchor="middle">1</text><text class="ts" x="72" y="96" text-anchor="middle">2</text><text class="ts" x="72" y="144" text-anchor="middle">3</text><text class="ts" x="72" y="192" text-anchor="middle">4</text><text class="ts" x="72" y="240" text-anchor="middle">5</text><text class="ts" x="72" y="288" text-anchor="middle">6</text><text class="ts" x="72" y="336" text-anchor="middle">7</text><text class="ts" x="72" y="384" text-anchor="middle">8</text><text class="ts" x="72" y="432" text-anchor="middle">9</text><text class="ts" x="72" y="480" text-anchor="middle">10</text></g>
+        <g class="c-purple"><rect x="95" y="24" width="490" height="38" rx="7"/><text class="t" x="340" y="40" text-anchor="middle" font-size="12.5">أمن النقل والحافّة</text><text class="ts" x="340" y="55" text-anchor="middle" font-size="11">TLS · Nginx · limit_req لكلّ IP</text></g>
+        <g class="c-purple"><rect x="95" y="72" width="490" height="38" rx="7"/><text class="t" x="340" y="88" text-anchor="middle" font-size="12.5">سقفُ الطلبات الجارية</text><text class="ts" x="340" y="103" text-anchor="middle" font-size="11">inflight · 429 قبل أيّ شيء</text></g>
+        <g class="c-purple"><rect x="95" y="120" width="490" height="38" rx="7"/><text class="t" x="340" y="136" text-anchor="middle" font-size="12.5">المصادقة (AuthN)</text><text class="ts" x="340" y="151" text-anchor="middle" font-size="11">Firebase ID Token · Principal مخبّأ · قائمةُ إبطال</text></g>
+        <g class="c-purple"><rect x="95" y="168" width="490" height="38" rx="7"/><text class="t" x="340" y="184" text-anchor="middle" font-size="12.5">الهوية والمستأجر</text><text class="ts" x="340" y="199" text-anchor="middle" font-size="11">User (JIT) · workspace_id</text></g>
+        <g class="c-purple"><rect x="95" y="216" width="490" height="38" rx="7"/><text class="t" x="340" y="232" text-anchor="middle" font-size="12.5">حدُّ المعدّل</text><text class="ts" x="340" y="247" text-anchor="middle" font-size="11">دلوان: المستخدم + المستأجر · Lua ذرّيّ</text></g>
+        <g class="c-purple"><rect x="95" y="264" width="490" height="38" rx="7"/><text class="t" x="340" y="280" text-anchor="middle" font-size="12.5">التفويض (AuthZ)</text><text class="ts" x="340" y="295" text-anchor="middle" font-size="11">RBAC · Role→Permissions</text></g>
+        <g class="c-purple"><rect x="95" y="312" width="490" height="38" rx="7"/><text class="t" x="340" y="328" text-anchor="middle" font-size="12.5">العملُ الثقيل</text><text class="ts" x="340" y="343" text-anchor="middle" font-size="11">حدٌّ لكلّ مستخدم · ضغطٌ عكسيٌّ للفهرسة</text></g>
+        <g class="c-teal"><rect x="95" y="360" width="490" height="38" rx="7"/><text class="t" x="340" y="376" text-anchor="middle" font-size="12.5">عزل المستأجر</text><text class="ts" x="340" y="391" text-anchor="middle" font-size="11">PostgreSQL RLS · SET LOCAL</text></g>
+        <g class="c-green"><rect x="95" y="408" width="490" height="38" rx="7"/><text class="t" x="340" y="424" text-anchor="middle" font-size="12.5">الحصص والكلفة</text><text class="ts" x="340" y="439" text-anchor="middle" font-size="11">QuotaLock · reserve/commit · ميزانيّة</text></g>
+        <g class="c-amber"><rect x="95" y="456" width="490" height="38" rx="7"/><text class="t" x="340" y="472" text-anchor="middle" font-size="12.5">الأسرار (Secrets)</text><text class="ts" x="340" y="487" text-anchor="middle" font-size="11">Vault Transit · API keys</text></g>
+      </svg>
+      <figcaption>Fig 7 — Security Defense in Depth</figcaption>
+    </figure>
+    <div class="two">
+      <div class="call"><b>دلوان لا دلوٌ واحد (<code>1.2</code>).</b> سقفٌ لكلّ مستخدمٍ لا يعزل أحداً: مساحةٌ بخمسين مستخدماً تبلغ 6,000 طلبٍ/دقيقة وكلٌّ داخل حدّه. السقفُ المستأجريّ هو ما يجعل العدلَ قابلاً للاختبار — وقيس: مستأجرٌ عند 6,000/دقيقة لم يرفع p95 جيرانه.</div>
+      <div class="call"><b>أسرار موحّدة (SEC‑07):</b> مفاتيح المزوّدين (<code>credentials</code>) ورموز OAuth (<code>integrations</code>) عبر Vault Transit بمفتاحٍ ودورة تدويرٍ موحّدين — والتدويرُ مهمّةٌ دوريّةٌ في <code>ops-scheduler</code>.</div>
+    </div>
+    <p><b>وأدوارُ قاعدة البيانات ثمانية:</b> <code>aizzak_owner</code> · <code>app_rw</code> · <code>outbox_relay</code> · <code>retention_sweeper</code> · <code>metrics_reader</code> · <code>transit_rotator</code> · <code>workspace_purger</code> · <code>backup_operator</code>. والثامنُ بـ<code>BYPASSRLS</code> للنسخ وحدَه: <code>pg_dump</code> بدور المالك يفشل، وبـ<code>--enable-row-security</code> يخرج بصفرٍ ويكتب قاعدةً فارغة — نسخةٌ «ناجحة» لا شيءَ فيها.</p>
+    <div class="call warn"><b>والمسحُ العابرُ للمستأجرين لا يعمل إلّا بدوره (<code>role_guard</code>، 5.7).</b> RLS لا يقول «ممنوع» بل «لا شيءَ هنا»، فـ<code>retention</code> بدور المالك قاس صفراً بينما في الجدول 6,943 صفّاً منتهياً. لذلك <code>retention</code> و<code>purge</code> و<code>rotate_transit</code> ترفض أيَّ دورٍ غير دورها — وإلّا سجّل المُجدوِلُ نجاحاً كلَّ ليلةٍ إلى الأبد.</div>
+  </section>
+
+  <!-- 12 DEPLOYMENT -->
+  <section id="deploy">
+    <div class="sec-head"><span class="sec-no">12</span><h2>معمارية النشر</h2><span class="sub">Docker Compose · 35 خدمة</span></div>
+    <p>خمسٌ وثلاثون خدمة (32 افتراضيّاً + 3 خلف <code>profile</code>): Nginx يوازن على نسخ App بلا حالة، والعمّال ومُرحّل Outbox والمُجدوِل عملياتٌ مستقلة، وكلها تصل خدمات البيانات عبر PgBouncer.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 460" role="img" xmlns="http://www.w3.org/2000/svg"><title>طوبولوجيا النشر</title><desc>العميل عبر Nginx إلى ثلاث نسخ من التطبيق؛ العمّال والتضمين بجانبها؛ المُرحّل والمُجدوِل والتهيئة تحتها؛ ثم خدمات البيانات، فالنسخ الاحتياطي والملاحظة.</desc>
+        <line class="arr" x1="340" y1="62" x2="340" y2="78" marker-end="url(#arrow)"/>
+        <line class="arr" x1="270" y1="125" x2="120" y2="148" marker-end="url(#arrow)"/>
+        <line class="arr" x1="435" y1="181" x2="448" y2="181" marker-end="url(#arrow)"/>
+        <polyline class="arr" points="230,200 237,200 237,314" marker-end="url(#arrow)"/>
+        <polyline class="arr" points="435,200 442,200 442,314" marker-end="url(#arrow)"/>
+        <line class="arr" x1="135" y1="284" x2="135" y2="314" marker-end="url(#arrow)"/>
+        <line class="arr" x1="340" y1="284" x2="340" y2="314" marker-end="url(#arrow)"/>
+        <line class="arr" x1="545" y1="284" x2="545" y2="314" marker-end="url(#arrow)"/>
+        <line class="arr" x1="185" y1="370" x2="185" y2="394" marker-end="url(#arrow)"/>
+        <line class="arr d" x1="495" y1="370" x2="495" y2="394" marker-end="url(#arrow)"/>
+        <g class="c-gray"><rect x="280" y="24" width="120" height="38" rx="7"/><text class="t" x="340" y="48" text-anchor="middle" font-size="12.5">Client</text></g>
+        <g class="c-gray"><rect x="255" y="80" width="170" height="45" rx="7"/><text class="t" x="340" y="100" text-anchor="middle" font-size="13">Nginx</text><text class="ts" x="340" y="116" text-anchor="middle" font-size="11">LB · TLS · WS</text></g>
+        <g class="c-purple"><rect x="40" y="150" width="190" height="62" rx="8"/><text class="t" x="135" y="176" text-anchor="middle" font-size="13">app × 3</text><text class="ts" x="135" y="195" text-anchor="middle" font-size="11">Gunicorn+Uvicorn · 4 لكلّ نسخة</text></g>
+        <g class="c-purple"><rect x="245" y="150" width="190" height="62" rx="8"/><text class="t" x="340" y="176" text-anchor="middle" font-size="13">العمّال</text><text class="ts" x="340" y="195" text-anchor="middle" font-size="10">memory · knowledge × 2 · media</text></g>
+        <g class="c-teal"><rect x="450" y="150" width="190" height="62" rx="8"/><text class="t" x="545" y="176" text-anchor="middle" font-size="13">embedding × 3</text><text class="ts" x="545" y="195" text-anchor="middle" font-size="11">خلف embedding-lb</text></g>
+        <g class="c-amber"><rect x="40" y="240" width="190" height="44" rx="7"/><text class="t" x="135" y="259" text-anchor="middle" font-size="12.5">outbox-relay × 1</text><text class="ts" x="135" y="275" text-anchor="middle" font-size="10.5">poll → publish · قصّ</text></g>
+        <g class="c-amber"><rect x="245" y="240" width="190" height="44" rx="7"/><text class="t" x="340" y="259" text-anchor="middle" font-size="12.5">ops-scheduler</text><text class="ts" x="340" y="275" text-anchor="middle" font-size="10.5">backup · retention · purge · rotate</text></g>
+        <g class="c-gray"><rect x="450" y="240" width="190" height="44" rx="7"/><text class="t" x="545" y="259" text-anchor="middle" font-size="12.5">migrate</text><text class="ts" x="545" y="275" text-anchor="middle" font-size="10.5">12 سلسلة + المنح · ثمّ تنتهي</text></g>
+        <g class="c-gray"><rect x="40" y="316" width="600" height="54" rx="8"/><text class="t" x="340" y="338" text-anchor="middle" font-size="12.5">خدمات البيانات (مُدارة ذاتياً)</text><text class="ts" x="340" y="356" text-anchor="middle" font-size="11">PgBouncer · PostgreSQL · redis-stream · redis-cache · MinIO · Qdrant · Vault</text></g>
+        <g class="c-gray"><rect x="40" y="396" width="290" height="44" rx="7"/><text class="t" x="185" y="415" text-anchor="middle" font-size="12.5">wal-shipper + backup</text><text class="ts" x="185" y="431" text-anchor="middle" font-size="10.5">PITR · استرجاعٌ في 46.1 ث</text></g>
+        <g class="c-purple"><rect x="350" y="396" width="290" height="44" rx="7"/><text class="t" x="495" y="415" text-anchor="middle" font-size="12.5">الملاحظة والتنبيه</text><text class="ts" x="495" y="431" text-anchor="middle" font-size="10.5">Prometheus · Grafana · Alertmanager · Loki · Alloy</text></g>
+      </svg>
+      <figcaption>Fig 8 — Deployment Topology · التطبيقُ والعمّالُ يصلون التضمين عبر embedding-lb</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>الدور</th><th>الخدمات</th><th>العدد</th></tr></thead>
+        <tbody>
+          <tr><td>الحافّة</td><td><code>nginx</code> · <code>nginx-certs</code></td><td class="num">2</td></tr>
+          <tr><td>التطبيق والعمليّات</td><td><code>app</code> (× 3) · <code>worker-memory</code> · <code>worker-knowledge</code> (× 2) · <code>worker-media</code> · <code>outbox-relay</code> · <code>ops-scheduler</code></td><td class="num">6</td></tr>
+          <tr><td>النماذج</td><td><code>embedding</code> (× 3) · <code>embedding-lb</code> · <code>ollama-bridge</code></td><td class="num">3</td></tr>
+          <tr><td>البيانات</td><td><code>postgres</code> · <code>pgbouncer</code> · <code>redis-stream</code> · <code>redis-cache</code> · <code>minio</code> · <code>qdrant</code> · <code>vault</code></td><td class="num">7</td></tr>
+          <tr><td>التهيئة (تنتهي)</td><td><code>wal-archive-init</code> · <code>vault-bootstrap</code> · <code>minio-bootstrap</code> · <code>migrate</code></td><td class="num">4</td></tr>
+          <tr><td>النسخ الاحتياطيّ</td><td><code>wal-shipper</code> · <code>backup</code> <i>(profile)</i></td><td class="num">2</td></tr>
+          <tr><td>الملاحظة والتنبيه</td><td><code>prometheus</code> · <code>grafana</code> · <code>alertmanager</code> · <code>alert-sink</code> · <code>loki</code> · <code>alloy</code> · 3 exporters · <code>cadvisor</code> <i>(profile)</i></td><td class="num">10</td></tr>
+          <tr><td>الحمل</td><td><code>k6</code> <i>(profile)</i></td><td class="num">1</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 class="sub-h">بنودٌ لم تكن في v1.0</h3>
+    <ul class="tight">
+      <li><b>PITR مبنيٌّ ومُقاس:</b> <code>wal-shipper</code> + مرساةٌ ماديّة (<code>pg_basebackup</code>) — لأنّ دُفعةً منطقيّةً + WAL لا تُنتج استرجاعاً زمنيّاً. استرجاعٌ إلى لحظةٍ مختارة في <b>46.1 ث</b>. ومنذ <code>5.7</code> النسخُ ليليٌّ في <code>ops-scheduler</code>، و<code>purge</code> يرفض العمل ما لم ينجح <code>backup</code> في الدورة نفسها.</li>
+      <li><b>التزويدُ خطوةُ نشرٍ لا هجرة:</b> خدمةُ <code>migrate</code> وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها، وقفلُ جلسةٍ يغطّي الأطوار الثلاثة (<code>2.9</code>).</li>
+      <li><b>ثلاثُ نسخٍ صارت تشتري إتاحةً</b> (<code>7.2</code>)، ونشرٌ متدرّجٌ بلا انقطاع في <code>deploy/rolling-deploy.sh</code>.</li>
+      <li><b>منشوران:</b> RunPod بلا مُجمِّع، فسقفُ <code>WEB_CONCURRENCY</code> عليه <b>5</b> مقابل <b>19 لكلّ نسخة</b> على Compose (بعد رفع سقف عملاء المُجمِّع إلى 2,000 في <code>2.2</code>).</li>
+      <li><b>كلُّ خدمةٍ بسقف موارد</b> (<code>3.4</code>)، والدفترُ المحروسُ في <code>deploy/resource-budget.sh</code>.</li>
+    </ul>
+  </section>
+
+  <!-- 13 DECISIONS -->
+  <section id="decisions">
+    <div class="sec-head"><span class="sec-no">13</span><h2>سجل القرارات المعمارية</h2><span class="sub">26 ADRs</span></div>
+    <div class="table-scroll">
+      <table class="dl">
+        <thead><tr><th>#</th><th>القرار</th><th>الاختيار المعتمد</th><th>الواقع اليوم</th></tr></thead>
+        <tbody>
+          <tr class="dev"><td>D‑01</td><td>Vector Store</td><td>Qdrant (تشغيل ذاتي)</td><td>صندوقٌ لكلّ مساحة (<code>ق‑3</code> بالقياس)</td></tr>
+          <tr><td>D‑02</td><td>التوليد الإعلامي</td><td>منفذان: ImageProvider + VideoProvider</td><td>الصورة مبنيّة · الفيديو فارغ</td></tr>
+          <tr><td>D‑03</td><td>الأسرار</td><td>HashiCorp Vault + Transit</td><td></td></tr>
+          <tr><td>D‑04</td><td>Multi‑Agent Workflow</td><td>متزامن للخفيف + Streams للثقيل</td><td></td></tr>
+          <tr><td>D‑05</td><td>علاقة Agent↔Module</td><td>وكيل منسّق عبر Ports (N:M)</td><td></td></tr>
+          <tr><td>D‑06</td><td>Memory &amp; Conversations</td><td>Postgres (workspace+agent) + Qdrant</td><td></td></tr>
+          <tr><td>D‑07</td><td>Tenant</td><td>المستأجر = Workspace</td><td></td></tr>
+          <tr><td>D‑08</td><td>Tool System</td><td>أداة = محوّل فوق Ports + ToolRegistry مستقل</td><td>+ Rerank · WebSearch</td></tr>
+          <tr><td>D‑09</td><td>Workflow definition</td><td>ثابت بالكود + WorkflowRegistry</td><td>الكتالوج فارغ</td></tr>
+          <tr><td>D‑10</td><td>Streaming</td><td>WebSocket تفاعلي + SSE للردّ الواحد</td><td></td></tr>
+          <tr class="dev"><td>D‑11</td><td>Modules map</td><td><s>10 وحدات</s></td><td><b>12 وحدة</b> (+ spaces · admin)</td></tr>
+          <tr><td>D‑12</td><td>Workflow conversation</td><td>محادثة خاصة بالـ Workflow</td><td></td></tr>
+          <tr><td>D‑13</td><td>Plugin discovery</td><td>مسح مجلد + importlib</td><td></td></tr>
+          <tr class="dev"><td>D‑14</td><td>EmbeddingProvider</td><td>خارجي فقط</td><td>خدمةٌ داخليّة × 3 خلف موازِن</td></tr>
+          <tr class="dev"><td>D‑15</td><td>LLM adapters</td><td>أصلي لكل مزوّد</td><td>2 من 5 (OpenAI · Ollama)</td></tr>
+          <tr class="dev"><td>D‑16</td><td>Provider routing</td><td>ProviderResolver بلا Fallback</td><td>تحويلٌ سحابيّ → محلّيّ فقط (<code>6.4</code>)</td></tr>
+          <tr><td>D‑17</td><td>فرض القواعد</td><td>import‑linter في CI</td><td>8 عقود</td></tr>
+          <tr><td>D‑18</td><td>نشر الأحداث</td><td>Transactional Outbox</td><td>+ إعادةُ نشرٍ منه (<code>5.6</code>)</td></tr>
+          <tr><td>D‑19</td><td>دلالات التسليم</td><td>at‑least‑once + Idempotent + DLQ</td><td>N = 5</td></tr>
+          <tr class="dev"><td>D‑20</td><td>Streams topology</td><td>مجرى لكل وحدة + Consumer Groups</td><td>4 مجارٍ · <code>stream.files</code> بلا مستهلك</td></tr>
+          <tr><td>D‑21</td><td>PgBouncer</td><td>Transaction pooling</td><td></td></tr>
+          <tr><td>D‑22</td><td>Vault auth</td><td>AppRole</td><td></td></tr>
+          <tr><td>D‑23</td><td>عزل المستأجرين</td><td>RLS أصلية + ترشيح تطبيقي</td><td></td></tr>
+          <tr><td>D‑24</td><td>RBAC</td><td>Role → Permissions</td><td></td></tr>
+          <tr><td>D‑25</td><td>التحقق من التوكن</td><td>JWT محلي بمفاتيح مُخزّنة</td><td>+ Principal مخبّأ (<code>1.1</code>)</td></tr>
+          <tr><td>D‑26</td><td>Orchestration</td><td>Docker Compose</td><td>35 خدمة</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="call"><b>قرارات ما بعد الاعتماد (2026‑07‑10):</b> ترقية <code>integrations</code> + <code>usage</code> إلى وحدتَي v1 · قياس <code>usage</code> عبر منفذ واردٍ متزامن · MCP بنقلٍ بعيد (HTTP/SSE) حصراً · موصّلات عبر Tool System بكتالوجٍ لكلّ Workspace وتجديد OAuth كسول · أسرارٌ موحّدة (SEC‑07).</div>
+    <div class="call warn">
+      <p><b>انحرافاتٌ وقراراتٌ جديدة (2026‑09‑06 → 2026‑10‑04):</b></p>
+      <ul class="tight">
+        <li><b>D‑16:</b> دورٌ تعذّر نموذجُه السحابيُّ قبل أن يقول كلمة يُجيبه المحلّيّ ويُخبَر المستخدم — <b>اتّجاهٌ واحد</b>، بالإعداد <code>LLM_FALLBACK_ROUTE</code>، والعكسُ ممنوعٌ بالإقلاع. وبعد أوّل مقطعٍ قطعٌ لا تحويل.</li>
+        <li><b>D‑15:</b> <code>claude</code>/<code>gemini</code>/<code>openrouter</code> مؤجَّلةٌ بقرار المالك (<code>6.2</code>) — وملفّاتُها فارغة.</li>
+        <li><b><code>ق‑1</code> وُقِّع: هجين</b>، و<b><code>ق‑6</code> وُقِّع: <code>429</code> فوريٌّ بـ<code>Retry-After</code></b> لا طابورٌ صامت — على المزوّد وعلى طابور الفهرسة.</li>
+        <li><b>D‑14:</b> ثلاثُ نسخٍ خلف موازِن، وتخبئةُ متّجه الاستعلام، وتبديلُ نموذج التضمين مسارٌ ذرّيٌّ عبر اسمٍ مستعار (<code>4.5</code>).</li>
+        <li><b>Redis مثيلان</b> (<code>ق‑4</code> بالقياس): <code>maxmemory-policy</code> إعدادٌ على مستوى الخادم.</li>
+        <li><b>ميزانيّةُ كلفةٍ لكلّ مساحة</b> بأسعارٍ حقيقيّة (<code>6.5</code>)، و<b>منفذ <code>TaskLedger</code></b> (<code>5.7</code>)، و<b>التنبيهاتُ محلّيّةٌ فقط</b> (<code>7.3</code>).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 14 VALIDATION -->
+  <section id="validation">
+    <div class="sec-head"><span class="sec-no">14</span><h2>التحقق المعماري</h2><span class="sub">Validation</span></div>
+    <p>مراجعة التصميم كاملاً: <b>6 مبادئ متوافقة تماماً</b>، وبندان بتوصية استباقية — بلا مخالفات حرجة.</p>
+    <figure class="figure">
+      <svg viewBox="0 0 680 242" role="img" xmlns="http://www.w3.org/2000/svg"><title>بطاقة التحقق</title><desc>ثمانية فحوص، ستة متوافقة واثنان بتوصية.</desc><g class="c-green"><rect x="40" y="50" width="138" height="68" rx="8"/><text class="t" x="109" y="82" text-anchor="middle" font-size="13">SOLID</text><text class="ts" x="109" y="103" text-anchor="middle" font-size="11">متوافق ✓</text></g><g class="c-amber"><rect x="194" y="50" width="138" height="68" rx="8"/><text class="t" x="263" y="82" text-anchor="middle" font-size="13">Low Coupling</text><text class="ts" x="263" y="103" text-anchor="middle" font-size="11">توصية</text></g><g class="c-green"><rect x="348" y="50" width="138" height="68" rx="8"/><text class="t" x="417" y="82" text-anchor="middle" font-size="13">No Circular</text><text class="ts" x="417" y="103" text-anchor="middle" font-size="11">متوافق ✓</text></g><g class="c-green"><rect x="502" y="50" width="138" height="68" rx="8"/><text class="t" x="571" y="82" text-anchor="middle" font-size="13">Layers</text><text class="ts" x="571" y="103" text-anchor="middle" font-size="11">متوافق ✓</text></g><g class="c-green"><rect x="40" y="134" width="138" height="68" rx="8"/><text class="t" x="109" y="166" text-anchor="middle" font-size="13">Hexagonal</text><text class="ts" x="109" y="187" text-anchor="middle" font-size="11">متوافق ✓</text></g><g class="c-amber"><rect x="194" y="134" width="138" height="68" rx="8"/><text class="t" x="263" y="163" text-anchor="middle" font-size="12.5">Modular Monolith</text><text class="ts" x="263" y="187" text-anchor="middle" font-size="11">توصية</text></g><g class="c-green"><rect x="348" y="134" width="138" height="68" rx="8"/><text class="t" x="417" y="166" text-anchor="middle" font-size="13">Plugin</text><text class="ts" x="417" y="187" text-anchor="middle" font-size="11">متوافق ✓</text></g><g class="c-green"><rect x="502" y="134" width="138" height="68" rx="8"/><text class="t" x="571" y="166" text-anchor="middle" font-size="13">Event-Driven</text><text class="ts" x="571" y="187" text-anchor="middle" font-size="11">متوافق ✓</text></g></svg>
+      <figcaption>Fig 9 — Architecture Validation Scorecard</figcaption>
+    </figure>
+    <h3 class="sub-h">التوصيات الاستباقية — وحالتُها اليوم</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>التوصية</th><th>الحالة</th><th>التفصيل</th></tr></thead>
+        <tbody>
+          <tr><td>Schema لكل Module</td><td><span class="pill ok">نُفِّذت</span></td><td>12 سلسلةَ هجرات، <code>version_table_schema</code> لكلّ وحدة</td></tr>
+          <tr><td>إبقاء Framework نحيفاً</td><td><span class="pill warn">قائمة</span></td><td>24 منفذاً، و<code>providers/</code> يحمل التحويلَ والتسعير، و<code>observability/</code> كتالوجَ المهامّ. النموُّ في التجريدات لا في المنطق — لكنّ العقودَ تحرس الاتّجاهَ لا الحجم</td></tr>
+          <tr><td>Outbox Relay نقطة فشل</td><td><span class="pill warn">قائمة · مرئيّة</span></td><td>نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل قصَّ المجاري أيضاً. لكنّ تأخّرَها ينبّه (<code>AizzakOutboxCycleTimeHigh</code>)، وما فقده Redis يُعاد من <code>outbox</code> (<code>5.6</code>)</td></tr>
+          <tr><td>ProviderResolver بلا Fallback (D‑16)</td><td><span class="pill ok">حُسمت</span></td><td>تحويلٌ سحابيّ → محلّيّ بقرار المالك، وقاطعُ دارةٍ لكلّ مزوّد. الباقي: لا تحويلَ بين سحابيَّين ولا من محلّيٍّ إلى سحابيّ</td></tr>
+          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و23 تنبيهاً تصل — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6×. وحيّاً: <code>redis-cache</code> موقوفاً ← التنبيهُ في 108 ث</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 15 NOT BUILT -->
+  <section id="not-built">
+    <div class="sec-head"><span class="sec-no">15</span><h2>ما ليس مبنيّاً بعد</h2><span class="sub">Gaps</span></div>
+    <p>وثيقةٌ تصف التصميمَ وحدَه تُقرأ كأنّها تصف الواقع. الحالةُ الحيّة في <a href="capacity-status.md"><code>docs/capacity-status.md</code></a>، والخطّةُ في <a href="capacity-plan.md"><code>docs/capacity-plan.md</code></a>.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>البند</th><th>الأثر المعماريّ</th></tr></thead>
+        <tbody>
+          <tr><td><b>محوّلات Claude · Gemini · OpenRouter</b></td><td>ملفّاتٌ فارغة، ومؤجَّلةٌ بقرار المالك (<code>6.2</code>). العامل: <code>openai</code> سحابيّاً و<code>ollama</code> محلّيّاً. <span class="pill warn">تصحيح</span> v2.0 وصفتها بأنّها مكتوبةٌ ومُختبَرة</td></tr>
+          <tr><td><b>موصّلات OAuth وعميل MCP</b></td><td>الملفّان فارغان؛ <code>GET /connectors</code> يُجيب قائمةً فارغة، وأدواتُ المساحة ← <code>503</code> لأنّ قائمةً فارغةً لمساحةٍ لها خادمٌ حيٌّ ستكون كذباً</td></tr>
+          <tr><td><b>محوّل الفيديو</b></td><td>فارغ — <code>video_agent</code> قائمٌ بلا مزوّد</td></tr>
+          <tr><td><b>بحث الويب (Exa)</b></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
+          <tr><td><b>كتالوج الـWorkflows</b></td><td>المحرّكُ والسجلُّ موصولان و<code>invoke_workflow</code> حيّ، ولا تعريفَ واحداً</td></tr>
+          <tr><td><b>اعتماد <code>image:openai</code></b></td><td>عاملُ <code>media</code> يقلع ويستهلك، لكنّ مهمّةَ الصورة تحتاج اعتماداً مخزَّناً؛ غيابُه يُفشل المهمّة لا الإقلاع</td></tr>
+          <tr><td><b>الوحدات المحجوزة الثلاث</b></td><td><code>scheduling</code> · <code>sandbox</code> · <code>runs</code> — و<code>sandbox</code> يحجب نقلَ MCP المحلّيّ (stdio)</td></tr>
+          <tr><td><b>انتخاب قائدٍ لمُرحّل Outbox</b></td><td>نسخةٌ واحدة — مرئيّةٌ وقابلةٌ للاسترداد، لكنّها نقطةُ فشلٍ واحدة</td></tr>
+          <tr><td><b>قناة تنبيهٍ خارجيّة</b></td><td><code>alert-sink</code> محلّيّ فقط (قرار المالك)؛ ويبقى أن يجرّب الإجراءاتِ شخصٌ لم يكتبها</td></tr>
+          <tr><td><b>Vault إنتاجيّ (<code>7.1</code>)</b></td><td>فكُّ ختمٍ آليٌّ أو يدويٌّ مُتمرَّن عليه — أخطرُ خطوةٍ في خطّة السعة، ولم تبدأ</td></tr>
+          <tr><td><b>تكرار Postgres</b></td><td>محجوبٌ بـ<code>ق‑5</code> (و<code>ق‑2</code> طوبولوجيا المضيف) غيرِ الموقَّعَين</td></tr>
+          <tr><td><b>ما بقي من خطّة السعة</b></td><td><code>0.4</code> · زمنُ RAG عند 40 سؤالاً/ث (<code>4.3</code>، يحدّه Qdrant في التبديل على هذا المضيف) · إنتاجيّةُ <code>5.1</code> · توسيعُ <code>worker-knowledge</code> (<code>5.3</code>، لخادم الإنتاج) · أسبوعُ قبول <code>5.7</code> · قبولُ <code>6.1</code> الحيّ · <code>6.3</code> · 1,500 مقبس WS (<code>7.2</code>) · <code>7.4</code> · <code>7.5</code> · <b>والموجة 8 مؤجَّلة</b> — بوّابةٌ صلبة: لا عنوانَ عامّاً قبلها</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="call ok"><b>وما خرج من هذا القسم منذ v2.0:</b> خطُّ الأساس مُثبَّت (2026‑09‑26)، وبِركةُ رموز Firebase تُسكّ من المستودع (<code>app.ops.mint_load_tokens</code>)، و<code>ق‑1</code> وُقِّع، والموجاتُ 1 و2 و3 تمّت كاملةً والرابعةُ مبنيّة.</div>
+    <div class="call"><b>وسقفُ <code>07-nfr-slo §3</code> ليس هدفَ اليوم.</b> الوثيقةُ تعلن 5,000 مستخدمٍ متزامنٍ و1,000 rps و10,000 اتصال WS؛ وخطّةُ السعة تستهدف <b>500 مستخدمٍ متزامن · 300 rps ذروةً · 1,500 اتصال WS · 200–400 مساحةَ عمل</b> بأرقامٍ قابلةٍ للقياس والرفض.</div>
+  </section>
+
+  <div class="foot">
+    <span>منصة الوكلاء الذكية — وثيقة المعمارية v2.1 · مطابَقة للشيفرة (2026‑10‑04)</span>
+    <span class="mono">15 مرحلة · 26 قراراً · 12 وحدة · 24 منفذاً · 8 عقود · 35 خدمة · 0 مخالفة حرجة</span>
+  </div>
+
+</main>
