@@ -156,16 +156,16 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
 <main class="doc" dir="rtl">
 
   <header class="masthead">
-    <div class="eyebrow">Software Architecture Document · v2.1 — مطابَقة للشيفرة</div>
+    <div class="eyebrow">Software Architecture Document · v2.2 — مطابَقة للشيفرة</div>
     <h1 class="h1">منصة ذكاء اصطناعي متعددة الوكلاء</h1>
-    <p class="lede">مخطط معماري كامل لتطبيق Backend بلغة Python — مبني على Modular Monolith وHexagonal Architecture وPlugin System وEvent‑Driven للعمليات الثقيلة. منذ <code>v2.0</code> تصف الوثيقةُ <b>ما هو مبنيٌّ فعلاً في <code>src/</code></b>: كلُّ عددٍ مقروءٌ من الشجرة، وكلُّ فارقٍ عن التصميم مذكورٌ في موضعه.</p>
+    <p class="lede">مخطط معماري كامل لتطبيق Backend بلغة Python — مبني على Modular Monolith وHexagonal Architecture وPlugin System وEvent‑Driven للعمليات الثقيلة. تصف الوثيقةُ <b>ما هو مبنيٌّ فعلاً في <code>src/</code></b>: كلُّ عددٍ مقروءٌ من الشيفرة، والانحرافُ عن سجلّ القرارات مذكورٌ في <a href="#decisions">§13</a>، وما لم يُبنَ في <a href="#not-built">§15</a>. وحالةُ التنفيذ وخطّةُ السعة خارجها: <a href="capacity-status.md"><code>capacity-status.md</code></a> · <a href="capacity-plan.md"><code>capacity-plan.md</code></a>.</p>
     <div class="meta">
       <span class="tag">FastAPI · Uvicorn · Gunicorn</span>
       <span class="tag">Modular Monolith</span>
       <span class="tag">Hexagonal · Plugin · Event‑Driven</span>
       <span class="tag ok">التصميم: معتمد ✓ 15/15 · 2026‑07‑08</span>
-      <span class="tag warn">البناء: يعمل محلّيّاً · السعة 1–3 تمّت · 4 مبنيّة · 5–7 جارية · 8 مؤجَّلة</span>
-      <span class="tag">آخر مطابقة: 2026‑10‑04 · capacity</span>
+      <span class="tag warn">البناء: يعمل محلّيّاً · الفجوات في §15</span>
+      <span class="tag">آخر مطابقة للشيفرة: 2026‑10‑04</span>
     </div>
     <nav class="toc" aria-label="المحتويات">
       <a href="#overview"><b>00</b>المبادئ</a><a href="#stack"><b>01</b>المكدّس</a><a href="#phases"><b>02</b>المراحل</a>
@@ -183,26 +183,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
     <div class="stat" role="listitem"><b>8</b><span>عقود import‑linter</span></div>
     <div class="stat" role="listitem"><b>35</b><span>خدمة Compose</span></div>
     <div class="stat" role="listitem"><b>33</b><span>مقياساً</span></div>
-    <div class="stat" role="listitem"><b>23</b><span>قاعدةَ تنبيهٍ تصل</span></div>
-  </div>
-
-  <div class="call">
-    <p><b>ما تغيّر منذ v2.0 (2026‑09‑06):</b></p>
-    <ul class="tight">
-      <li><b>35 خدمةً بدل 29:</b> Redis انقسم مثيلَين (<code>5.2</code>)، والتضمينُ ثلاثُ نسخٍ خلف موازِن (<code>4.1</code>/<code>4.2</code>)، و<code>ops-scheduler</code> يشغّل أدواتِ التشغيل وحدَه (<code>5.7</code>)، و<code>alertmanager</code> + <code>alert-sink</code> يوصلان التنبيهات (<code>7.3</code>).</li>
-      <li><b>منفذٌ رابعٌ وعشرون:</b> <code>TaskLedger</code> — كلُّ مهمّةٍ دوريّةٍ تقول متى نجحت آخرَ مرّة.</li>
-      <li><b>طبقةُ المزوّدين:</b> حارسٌ لكلّ مزوّد (<code>6.1</code>)، وتحويلٌ سحابيّ → محلّيّ (<code>6.4</code>، انحرافٌ عن <code>D‑16</code>)، وتسعيرٌ وميزانيّةُ كلفة (<code>6.5</code>).</li>
-      <li><b>المجاري:</b> تزامنٌ محدود (<code>5.1</code>)، وقصٌّ آمن (<code>5.5</code>)، وإعادةُ نشرٍ من <code>outbox</code> (<code>5.6</code>)، وضغطٌ عكسيٌّ مُعلَن (<code>5.3</code>).</li>
-    </ul>
-  </div>
-  <div class="call warn">
-    <p><b>تصحيحاتٌ لما قالته v2.0 خطأً — والشيفرةُ هي الحَكَم:</b></p>
-    <ul class="tight">
-      <li>محوّلات <b>Gemini · Claude · OpenRouter</b> وُصفت بأنّها «مكتوبةٌ ومُختبَرة» — ملفّاتُها <b>فارغة (0 بايت)</b>، وكانت كذلك يومَها.</li>
-      <li><b>موصّلاتُ OAuth</b> و<b>عميلُ MCP البعيد</b> و<b>محوّلُ الفيديو</b> ملفّاتٌ فارغةٌ كذلك.</li>
-      <li><b>Exa</b> محوّلٌ مكتوبٌ <b>غيرُ موصول</b>، و<b>كتالوجُ الـWorkflows فارغ</b>.</li>
-      <li><b>حدُّ المعدّل</b> يأتي <b>بعد</b> المصادقة لا قبلها (سقفٌ لكلّ مستخدمٍ لا يُطبَّق قبل معرفته).</li>
-    </ul>
+    <div class="stat" role="listitem"><b>23</b><span>قاعدةَ تنبيه</span></div>
   </div>
 
   <!-- 00 OVERVIEW -->
@@ -222,7 +203,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <span class="chip acc" role="listitem">Plugin Architecture</span>
       <span class="chip acc" role="listitem">Event‑Driven</span>
     </div>
-    <p class="note" style="margin-top:14px"><b>والمبادئ مفروضةٌ آليّاً لا موصوفة:</b> ثمانيةُ عقودٍ في <code>.importlinter</code> تُشغَّل في CI ضمن البوّابات الخمس (<code>ruff format --check</code> · <code>ruff check</code> · <code>mypy --strict</code> · <code>lint-imports</code> · <code>pytest</code>). ومنذ <code>7.3</code> خطوةٌ سادسة: قواعدُ التنبيه تُختبَر بـ<code>promtool test rules</code> و<code>amtool check-config</code>.</p>
+    <p class="note" style="margin-top:14px"><b>والمبادئ مفروضةٌ آليّاً لا موصوفة:</b> ثمانيةُ عقودٍ في <code>.importlinter</code> تُشغَّل في CI ضمن البوّابات الخمس (<code>ruff format --check</code> · <code>ruff check</code> · <code>mypy --strict</code> · <code>lint-imports</code> · <code>pytest</code>). وفي الوظيفة نفسِها تُختبَر قواعدُ التنبيه بـ<code>promtool test rules</code> و<code>amtool check-config</code>.</p>
   </section>
 
   <!-- 01 STACK -->
@@ -239,24 +220,24 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <span class="chip new"><span class="k">+vectors</span>Qdrant</span>
       <span class="chip new"><span class="k">+secrets</span>HashiCorp Vault</span>
     </div>
-    <h3 class="sub-h">وخدماتٌ أُضيفت بعد الاعتماد — كلٌّ بسببها</h3>
+    <h3 class="sub-h">وخدماتٌ مساندة أُضيفت بعد الاعتماد — كلٌّ بسببها</h3>
     <div class="table-scroll">
       <table>
         <thead><tr><th>المجال</th><th>التقنية</th><th>لماذا أُضيفت</th></tr></thead>
         <tbody>
-          <tr><td><code>embed</code></td><td>خدمة تضمين منفصلة <b>× 3</b> خلف <code>embedding-lb</code></td><td><code>torch</code> خارج رسم استيراد <code>app.*</code>. ونسخٌ بلا موازِن كانت عطباً صامتاً، فشُحنت <code>4.1</code>/<code>4.2</code> معاً؛ وداخلها تجميعُ دفعاتٍ ديناميكيّ (<code>4.3</code>)</td></tr>
+          <tr><td><code>embed</code></td><td>خدمة تضمين منفصلة <b>× 3</b> خلف <code>embedding-lb</code></td><td><code>torch</code> خارج رسم استيراد <code>app.*</code>. والموازِنُ والنسخُ وحدةٌ واحدة: نسخٌ بلا موازِن عطبٌ صامت؛ وداخلها تجميعُ دفعاتٍ ديناميكيّ (<code>EMB_BATCH_WINDOW_MS</code>)</td></tr>
           <tr><td><code>search</code></td><td>Exa <span class="pill warn">غير موصول</span></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
-          <tr><td><code>metrics</code></td><td>Prometheus + Grafana</td><td>33 مقياساً، ولوحتان: السعة (24 لوحاً في 6 صفوف) والسجلّات</td></tr>
-          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code> <span class="pill new">7.3</span></td><td>23 قاعدةً تصل — <b>محلّيّاً فقط</b> بقرار المالك (2026‑10‑04)؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
+          <tr><td><code>metrics</code></td><td>Prometheus + Grafana</td><td>33 مقياساً، ولوحتا Grafana: السعة والسجلّات</td></tr>
+          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code></td><td>قاعدةٌ بلا موجِّهٍ لا تصل أحداً: 23 قاعدةً تُوجَّه إلى <code>alert-sink</code> — <b>محلّيّاً فقط</b>؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
           <tr><td><code>logs</code></td><td>Loki + Alloy</td><td>سجلٌّ مهيكلٌ واحد بـ<code>correlation_id</code> عبر الحافّة والتطبيق والعامل</td></tr>
           <tr><td><code>probes</code></td><td>pgbouncer · redis-stream · redis-cache exporters · cAdvisor <i>(profile)</i></td><td>إشباعُ المُجمِّع وخادمَي Redis والحاويات</td></tr>
-          <tr><td><code>sched</code></td><td><code>ops-scheduler</code> <span class="pill new">5.7</span></td><td>عشرُ مهامّ دوريّة تكتب نجاحَها في <code>TaskLedger</code>، وتنبيهان لمتأخّرةٍ أو غيرِ مسلَّحة</td></tr>
-          <tr><td><code>load</code></td><td>k6 <i>(profile load)</i></td><td>سبعةُ سيناريوهات في ستّة ملفّاتِ حمل (<code>peak</code> · <code>average</code> · <code>step</code> · <code>backlog</code> · <code>abuse</code> · <code>rag</code>)</td></tr>
-          <tr><td><code>ollama</code></td><td>Ollama عبر <code>ollama-bridge</code></td><td>المسارُ المحلّيّ الافتراضيّ، ومقصدُ التحويل حين يتعذّر السحابيّ (<code>6.4</code>)</td></tr>
+          <tr><td><code>sched</code></td><td><code>ops-scheduler</code></td><td>عشرُ مهامّ دوريّة تكتب نجاحَها في <code>TaskLedger</code>، وتنبيهان لمتأخّرةٍ أو غيرِ مسلَّحة</td></tr>
+          <tr><td><code>load</code></td><td>k6 <i>(profile load)</i></td><td>أداةُ قياس السعة (<code>deploy/load/</code>)؛ لا تُقلع في التشغيل العاديّ ولا تدخل مسارَ الطلب</td></tr>
+          <tr><td><code>ollama</code></td><td>Ollama عبر <code>ollama-bridge</code></td><td>المسارُ المحلّيّ الافتراضيّ، ومقصدُ التحويل حين يتعذّر السحابيّ</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="call"><b>القيدُ الأصليّ تخصّص ولم يُنقض.</b> كانت <code>v1.0</code> تقول «لا خدمة أخرى خارج هذه القائمة»؛ والمنشورُ اليوم <b>35 خدمة</b> (32 افتراضيّاً + 3 خلف <code>profile</code>). لكنّ ما دخل مسارَ الطلب (<code>redis-cache</code> · <code>embedding-lb</code>) دخله <b>خلف منفذٍ قائم</b>. القيدُ الحيّ: <b>لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في <code>framework/ports/</code></b>.</div>
+    <div class="call"><b>القيدُ الحاكمُ لإضافة الخدمات.</b> المنشورُ <b>35 خدمة</b> (32 افتراضيّاً + 3 خلف <code>profile</code>)، وما دخل منها مسارَ الطلب (<code>redis-cache</code> · <code>embedding-lb</code>) دخله <b>خلف منفذٍ قائم</b>. القاعدة: <b>لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في <code>framework/ports/</code></b>.</div>
   </section>
 
   <!-- 02 PHASES -->
@@ -357,8 +338,8 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <figcaption>Fig 2 — Container Diagram (L2) · العمّال والمُرحّل والمُجدوِل يكتبون ويقرؤون طبقة البيانات، والعمّالُ يصلون التضمين عبر الموازِن نفسه</figcaption>
     </figure>
     <div class="two">
-      <div class="call"><b>الإشعارُ داخل عملية الـAPI لا في عاملٍ خامس.</b> جسرُ <code>cg.notify</code> مشترِكٌ داخل كلّ عمليّة API لأنّ <code>ConnectionHub</code> سجلٌّ داخلَ العملية — فهي <b>أسرةُ مجموعاتٍ</b> <code>cg.notify.&lt;host&gt;.&lt;pid&gt;</code>. ولكلّ جلسةٍ قائمةُ انتظارٍ محدودة، فالمستهلكُ البطيءُ يُقطَع وحدَه (<code>3.6</code>).</div>
-      <div class="call"><b>Redis مثيلان، والاختيارُ قرارُ توصيل.</b> <code>redis-stream</code> (<code>noeviction</code>) هو الافتراضيّ لكلّ شيء: المجاري وقائمةُ الإبطال وحالةُ OAuth وعدّاداتُ الإساءة. و<code>redis-cache</code> (<code>allkeys-lru</code>) لمستدعيَين فقط يمكن إعادة بنائهما: متّجهُ الاستعلام (<code>4.3</code>) و<code>Principal</code> المخبّأ (<code>1.1</code>).</div>
+      <div class="call"><b>الإشعارُ داخل عملية الـAPI لا في عاملٍ خامس.</b> جسرُ <code>cg.notify</code> مشترِكٌ داخل كلّ عمليّة API لأنّ <code>ConnectionHub</code> سجلٌّ داخلَ العملية — فهي <b>أسرةُ مجموعاتٍ</b> <code>cg.notify.&lt;host&gt;.&lt;pid&gt;</code>. ولكلّ جلسةٍ قائمةُ انتظارٍ محدودة، فالمستهلكُ البطيءُ يُقطَع وحدَه.</div>
+      <div class="call"><b>Redis مثيلان، والاختيارُ قرارُ توصيل.</b> <code>redis-stream</code> (<code>noeviction</code>) هو الافتراضيّ لكلّ شيء: المجاري وقائمةُ الإبطال وحالةُ OAuth وعدّاداتُ الإساءة. و<code>redis-cache</code> (<code>allkeys-lru</code>) لمستدعيَين فقط يمكن إعادة بنائهما: متّجهُ الاستعلام و<code>Principal</code> المخبّأ. والفصلُ ضرورة: <code>maxmemory-policy</code> إعدادٌ على مستوى الخادم.</div>
     </div>
   </section>
 
@@ -393,8 +374,8 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <table>
         <thead><tr><th>المجلّد</th><th>الدور</th></tr></thead>
         <tbody>
-          <tr><td><code>workers/</code></td><td><b>ثلاثة عمّال + مُرحّل</b>: <code>memory_worker</code> · <code>knowledge_worker</code> · <code>media_worker</code> · <code>outbox_relay</code> — ومعها <code>bootstrap</code> و<code>summary_metering</code> (عدُّ التلخيص، <code>6.5</code>). الصورة نفسُها، أمرٌ مختلف</td></tr>
-          <tr><td><code>ops/</code></td><td><b>23 وحدة: 21 نقطةَ دخول + مكتبتان</b> (<code>online_ddl</code> · <code>role_guard</code>). الجديدُ منذ v2.0: <code>scheduler</code> · <code>stream_trim</code> · <code>replay</code> · <code>embedding_migration</code> · <code>qdrant_capacity</code> · <code>notify_cost</code> · <code>mint_load_tokens</code> · <code>role_guard</code></td></tr>
+          <tr><td><code>workers/</code></td><td><b>ثلاثة عمّال + مُرحّل</b>: <code>memory_worker</code> · <code>knowledge_worker</code> · <code>media_worker</code> · <code>outbox_relay</code> — ومعها <code>bootstrap</code> و<code>summary_metering</code> (عدُّ التلخيص). الصورة نفسُها، أمرٌ مختلف</td></tr>
+          <tr><td><code>ops/</code></td><td><b>23 وحدة: 21 نقطةَ دخول + مكتبتان</b> (<code>online_ddl</code> · <code>role_guard</code>): <code>provision</code> · <code>backup</code> · <code>retention</code> · <code>purge</code> · <code>revoke</code> · <code>rotate_transit</code> · <code>dlq</code> · <code>healthcheck</code> · <code>scheduler</code> · <code>stream_trim</code> · <code>replay</code> · <code>embedding_migration</code> · … — وأدواتُ القياس والتشخيص</td></tr>
         </tbody>
       </table>
     </div>
@@ -440,10 +421,10 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td class="num">5</td><td><code>conversations</code></td><td>✅</td><td>✅</td><td class="num">4</td><td></td></tr>
           <tr><td class="num">6</td><td><code>memory</code></td><td>✅</td><td>✅</td><td class="num">1</td><td></td></tr>
           <tr><td class="num">7</td><td><code>files</code></td><td>✅</td><td>✅</td><td class="num">3</td><td></td></tr>
-          <tr><td class="num">8</td><td><code>knowledge</code></td><td>✅</td><td>✅</td><td class="num">7</td><td>أكبرُ وحدة — صندوقُ Qdrant لكلّ مساحة (<code>ق‑3</code>)، بمراجعاتٍ واسمٍ مستعار (<code>4.5</code>)</td></tr>
+          <tr><td class="num">8</td><td><code>knowledge</code></td><td>✅</td><td>✅</td><td class="num">7</td><td>أكبرُ وحدة — صندوقُ Qdrant لكلّ مساحة، بمراجعاتٍ واسمٍ مستعار</td></tr>
           <tr><td class="num">9</td><td><code>media</code></td><td>✅</td><td>✅</td><td class="num">3</td><td></td></tr>
           <tr><td class="num">10</td><td><code>integrations</code></td><td>✅</td><td>✅</td><td class="num">3</td><td>المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان <span class="pill warn">§15</span></td></tr>
-          <tr><td class="num">11</td><td><code>usage</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>منافذُ واردة · <code>reserve</code>/<code>commit</code> · ميزانيّةُ كلفةٍ تعمل (<code>6.5</code>)</td></tr>
+          <tr><td class="num">11</td><td><code>usage</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>منافذُ واردة · <code>reserve</code>/<code>commit</code> · ميزانيّةُ كلفة</td></tr>
           <tr><td class="num">12</td><td><code>admin</code> <span class="pill new">بعد الاعتماد</span></td><td>✗</td><td>✗</td><td class="num">4</td><td>تطبيقيّةٌ بلا نطاقٍ ولا schema — عمداً</td></tr>
         </tbody>
       </table>
@@ -503,7 +484,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td><code>EventPublisher</code></td><td><code>RedisStreamsPublisher</code></td><td>Redis</td></tr>
           <tr><td><code>RateLimiter</code></td><td><code>RedisRateLimiter</code> — Lua ذرّيّ · دلوان في نداءٍ واحد</td><td>Redis</td></tr>
           <tr><td><code>WsConnectionRegistry</code></td><td><code>RedisWsConnectionRegistry</code></td><td>Redis</td></tr>
-          <tr><td><code>TaskLedger</code> <span class="pill new">جديد</span></td><td><code>RedisTaskLedger</code> — سجلٌّ لكلّ مهمّة لا مقياسٌ لكلّ عمليّة</td><td>Redis</td></tr>
+          <tr><td><code>TaskLedger</code></td><td><code>RedisTaskLedger</code> — سجلٌّ لكلّ مهمّة لا مقياسٌ لكلّ عمليّة</td><td>Redis</td></tr>
           <tr><td><code>SecretsProvider</code></td><td><code>VaultSecrets</code> (Transit)</td><td>Vault</td></tr>
           <tr><td><code>VaultHealth</code></td><td><code>VaultProbe</code></td><td>Vault</td></tr>
           <tr><td><code>AuthProvider</code></td><td><code>FirebaseAuth</code></td><td>Firebase</td></tr>
@@ -519,8 +500,8 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
     </div>
     <p class="note"><b>منافذ واردة:</b> تعرّف وحدة <code>usage</code> منفذَين واردَين يستدعيهما المُنسِّق: فرض الحدّ والتقاط الاستهلاك (متزامن، بلا Redis Streams) — <code>FR‑131/132</code>.</p>
     <div class="two">
-      <div class="call"><b><code>ProviderGuard</code> — لكلّ مزوّد، لكلّ عمليّة (<code>6.1</code>):</b> سقفُ تزامنٍ يرفض بدل أن يصطفّ (Ollama 2، السحابيّ 5 → <code>429</code> بـ<code>Retry-After</code>)، وقاطعُ دارةٍ بعد إخفاقاتٍ عابرةٍ متتالية (<code>502</code> فوراً)، وإعادةٌ للإخفاقات الرخيصة وحدَها قبل أوّل مقطع.</div>
-      <div class="call"><b><code>reserve</code>/<code>commit</code> يحمل الكلفةَ الآن.</b> بلا حجزٍ كانت مئةُ طلبٍ متزامنٍ على رمزٍ واحدٍ متبقٍّ تُقبل ستّةٌ وأربعون منها (<code>2.7</code>). وحتّى <code>6.5</code> كان كلُّ شحنٍ بـ<code>cost_micros = 0</code>؛ صار بأسعارٍ حقيقيّة بـ<code>Decimal</code>، والإقلاعُ يرفض مساراً سحابيّاً بلا سعر.</div>
+      <div class="call"><b><code>ProviderGuard</code> — لكلّ مزوّد، لكلّ عمليّة:</b> سقفُ تزامنٍ يرفض بدل أن يصطفّ (Ollama 2، السحابيّ 5 → <code>429</code> بـ<code>Retry-After</code>)، وقاطعُ دارةٍ بعد إخفاقاتٍ عابرةٍ متتالية (<code>502</code> فوراً)، وإعادةٌ للإخفاقات الرخيصة وحدَها قبل أوّل مقطع.</div>
+      <div class="call"><b><code>reserve</code>/<code>commit</code> يحمل الرموزَ والكلفة.</b> السقفُ يُحجَز قبل نداء النموذج ويُشحَن بالمقيس بعده، فلا تتجاوز الطلباتُ المتزامنةُ ما تبقّى. والكلفةُ من <code>LLM_PRICES</code> بـ<code>Decimal</code>، والتلخيصُ يُعَدّ كذلك، والإقلاعُ يرفض مساراً سحابيّاً بلا سعر.</div>
     </div>
   </section>
 
@@ -590,21 +571,21 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         </tbody>
       </table>
     </div>
-    <h3 class="sub-h">وما أضافته الموجة 5 على هذا الخطّ</h3>
+    <h3 class="sub-h">ضماناتُ الخطّ</h3>
     <div class="table-scroll">
-      <table class="dl">
-        <thead><tr><th>الخطوة</th><th>ما بُني</th><th>أين</th></tr></thead>
+      <table>
+        <thead><tr><th>الضمان</th><th>ما يفعل</th><th>أين</th></tr></thead>
         <tbody>
-          <tr><td>5.1</td><td>تزامنٌ محدودٌ في محرّك الاستهلاك؛ مسبحُ العامل مشتقٌّ منه (التزامن + 1)</td><td><code>messaging/consumers/engine.py</code></td></tr>
-          <tr><td>5.3</td><td>ضغطٌ عكسيٌّ مُعلَن: انتظارُ أقدم مدخلٍ في <code>cg.knowledge</code> فوق 120 ث ← <code>429</code> بـ<code>Retry-After</code> بدل <code>202</code></td><td><code>api/middleware/queue_backpressure.py</code></td></tr>
-          <tr><td>5.5</td><td>قصٌّ آمنٌ تحت أبطأ قارئ، و<code>MAXLEN</code> حدٌّ احتياطيّ — يشغّله المُرحِّل</td><td><code>messaging/stream_retention.py</code></td></tr>
-          <tr><td>5.6</td><td>إعادةُ نشرٍ من <code>platform.outbox</code> — عشرةٌ من عشرة حيّاً بلا أثرٍ مزدوج</td><td><code>ops/replay.py</code></td></tr>
-          <tr><td>5.7</td><td>مراقبةُ كلّ DLQ مهمّةٌ دوريّةٌ تكتب نجاحَها في <code>TaskLedger</code></td><td><code>observability/scheduled_tasks.py</code></td></tr>
+          <tr><td><b>تزامنٌ محدود</b></td><td>عدّةُ معالِجاتٍ لكلّ عمليّة؛ مسبحُ العامل مشتقٌّ منه (التزامن + 1)</td><td><code>messaging/consumers/engine.py</code></td></tr>
+          <tr><td><b>ضغطٌ عكسيٌّ مُعلَن</b></td><td>انتظارُ أقدم مدخلٍ في <code>cg.knowledge</code> فوق 120 ث ← <code>429</code> بـ<code>Retry-After</code> بدل <code>202</code></td><td><code>api/middleware/queue_backpressure.py</code></td></tr>
+          <tr><td><b>قصٌّ آمن</b></td><td>تحت أبطأ قارئ، و<code>MAXLEN</code> حدٌّ احتياطيّ — يشغّله المُرحِّل</td><td><code>messaging/stream_retention.py</code></td></tr>
+          <tr><td><b>إعادةُ نشر</b></td><td>من <code>platform.outbox</code> ما فقده Redis؛ والمستهلكون Idempotent فلا أثرَ مزدوج</td><td><code>ops/replay.py</code></td></tr>
+          <tr><td><b>مراقبةُ الـDLQ</b></td><td>مهمّةٌ دوريّةٌ لكلّ مجرى تكتب نجاحَها في <code>TaskLedger</code></td><td><code>observability/scheduled_tasks.py</code></td></tr>
         </tbody>
       </table>
     </div>
     <div class="two">
-      <div class="call"><b>«مجرى لكل وحدة» لم تعد تصف الواقع — عمداً.</b> <code>stream.files</code> بلا مجموعةٍ منذ صارت الفهرسةُ يدويّة؛ والحدثُ يُنشَر لأنّه واقعةٌ صادقة، لكنّ مجموعةً مهجورةً يتضخّم تأخّرُها إلى الأبد ويفسد الإشارةَ التي يثق بها المشغّل.</div>
+      <div class="call"><b>«مجرى لكل وحدة» لا تصف الواقع — عمداً.</b> <code>stream.files</code> بلا مجموعة: الفهرسةُ طلبٌ صريح لا أثرٌ جانبيٌّ للرفع؛ والحدثُ يُنشَر لأنّه واقعةٌ صادقة، لكنّ مجموعةً مهجورةً يتضخّم تأخّرُها إلى الأبد ويفسد الإشارةَ التي يثق بها المشغّل.</div>
       <div class="call"><b>والمُرحِّلُ يُنشئ المجموعاتِ قبل أوّل <code>XADD</code>.</b> <code>ensure_topology()</code> تمرّ على <code>STATIC_CONSUMER_TOPOLOGY</code> أوّلاً، فلا مجموعةَ تُنشأ بعد مدخلاتٍ لن تراها. وقياسُ الاستخدام خارج الناقل: منفذٌ واردٌ متزامن (<code>FR‑131</code> · D‑04).</div>
     </div>
   </section>
@@ -641,11 +622,11 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <figcaption>Fig 7 — Security Defense in Depth</figcaption>
     </figure>
     <div class="two">
-      <div class="call"><b>دلوان لا دلوٌ واحد (<code>1.2</code>).</b> سقفٌ لكلّ مستخدمٍ لا يعزل أحداً: مساحةٌ بخمسين مستخدماً تبلغ 6,000 طلبٍ/دقيقة وكلٌّ داخل حدّه. السقفُ المستأجريّ هو ما يجعل العدلَ قابلاً للاختبار — وقيس: مستأجرٌ عند 6,000/دقيقة لم يرفع p95 جيرانه.</div>
+      <div class="call"><b>دلوان لا دلوٌ واحد.</b> سقفٌ لكلّ مستخدمٍ لا يعزل أحداً: مساحةٌ بخمسين مستخدماً تبلغ 6,000 طلبٍ/دقيقة وكلٌّ داخل حدّه. السقفُ المستأجريّ هو ما يجعل العدلَ قابلاً للاختبار، والدلوان يُستهلكان في نداءٍ ذرّيٍّ واحد.</div>
       <div class="call"><b>أسرار موحّدة (SEC‑07):</b> مفاتيح المزوّدين (<code>credentials</code>) ورموز OAuth (<code>integrations</code>) عبر Vault Transit بمفتاحٍ ودورة تدويرٍ موحّدين — والتدويرُ مهمّةٌ دوريّةٌ في <code>ops-scheduler</code>.</div>
     </div>
     <p><b>وأدوارُ قاعدة البيانات ثمانية:</b> <code>aizzak_owner</code> · <code>app_rw</code> · <code>outbox_relay</code> · <code>retention_sweeper</code> · <code>metrics_reader</code> · <code>transit_rotator</code> · <code>workspace_purger</code> · <code>backup_operator</code>. والثامنُ بـ<code>BYPASSRLS</code> للنسخ وحدَه: <code>pg_dump</code> بدور المالك يفشل، وبـ<code>--enable-row-security</code> يخرج بصفرٍ ويكتب قاعدةً فارغة — نسخةٌ «ناجحة» لا شيءَ فيها.</p>
-    <div class="call warn"><b>والمسحُ العابرُ للمستأجرين لا يعمل إلّا بدوره (<code>role_guard</code>، 5.7).</b> RLS لا يقول «ممنوع» بل «لا شيءَ هنا»، فـ<code>retention</code> بدور المالك قاس صفراً بينما في الجدول 6,943 صفّاً منتهياً. لذلك <code>retention</code> و<code>purge</code> و<code>rotate_transit</code> ترفض أيَّ دورٍ غير دورها — وإلّا سجّل المُجدوِلُ نجاحاً كلَّ ليلةٍ إلى الأبد.</div>
+    <div class="call warn"><b>والمسحُ العابرُ للمستأجرين لا يعمل إلّا بدوره (<code>role_guard</code>).</b> RLS لا يقول «ممنوع» بل «لا شيءَ هنا»، فأداةٌ بدورٍ خاطئٍ تمرّ بصفرٍ وتُسجَّل ناجحة. لذلك <code>retention</code> و<code>purge</code> و<code>rotate_transit</code> ترفض أيَّ دورٍ غير دورها — وإلّا سجّل المُجدوِلُ نجاحاً كلَّ ليلةٍ إلى الأبد.</div>
   </section>
 
   <!-- 12 DEPLOYMENT -->
@@ -673,7 +654,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         <g class="c-amber"><rect x="245" y="240" width="190" height="44" rx="7"/><text class="t" x="340" y="259" text-anchor="middle" font-size="12.5">ops-scheduler</text><text class="ts" x="340" y="275" text-anchor="middle" font-size="10.5">backup · retention · purge · rotate</text></g>
         <g class="c-gray"><rect x="450" y="240" width="190" height="44" rx="7"/><text class="t" x="545" y="259" text-anchor="middle" font-size="12.5">migrate</text><text class="ts" x="545" y="275" text-anchor="middle" font-size="10.5">12 سلسلة + المنح · ثمّ تنتهي</text></g>
         <g class="c-gray"><rect x="40" y="316" width="600" height="54" rx="8"/><text class="t" x="340" y="338" text-anchor="middle" font-size="12.5">خدمات البيانات (مُدارة ذاتياً)</text><text class="ts" x="340" y="356" text-anchor="middle" font-size="11">PgBouncer · PostgreSQL · redis-stream · redis-cache · MinIO · Qdrant · Vault</text></g>
-        <g class="c-gray"><rect x="40" y="396" width="290" height="44" rx="7"/><text class="t" x="185" y="415" text-anchor="middle" font-size="12.5">wal-shipper + backup</text><text class="ts" x="185" y="431" text-anchor="middle" font-size="10.5">PITR · استرجاعٌ في 46.1 ث</text></g>
+        <g class="c-gray"><rect x="40" y="396" width="290" height="44" rx="7"/><text class="t" x="185" y="415" text-anchor="middle" font-size="12.5">wal-shipper + backup</text><text class="ts" x="185" y="431" text-anchor="middle" font-size="10.5">PITR · استرجاعٌ زمنيّ</text></g>
         <g class="c-purple"><rect x="350" y="396" width="290" height="44" rx="7"/><text class="t" x="495" y="415" text-anchor="middle" font-size="12.5">الملاحظة والتنبيه</text><text class="ts" x="495" y="431" text-anchor="middle" font-size="10.5">Prometheus · Grafana · Alertmanager · Loki · Alloy</text></g>
       </svg>
       <figcaption>Fig 8 — Deployment Topology · التطبيقُ والعمّالُ يصلون التضمين عبر embedding-lb</figcaption>
@@ -693,13 +674,13 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         </tbody>
       </table>
     </div>
-    <h3 class="sub-h">بنودٌ لم تكن في v1.0</h3>
+    <h3 class="sub-h">ملاحظاتُ النشر</h3>
     <ul class="tight">
-      <li><b>PITR مبنيٌّ ومُقاس:</b> <code>wal-shipper</code> + مرساةٌ ماديّة (<code>pg_basebackup</code>) — لأنّ دُفعةً منطقيّةً + WAL لا تُنتج استرجاعاً زمنيّاً. استرجاعٌ إلى لحظةٍ مختارة في <b>46.1 ث</b>. ومنذ <code>5.7</code> النسخُ ليليٌّ في <code>ops-scheduler</code>، و<code>purge</code> يرفض العمل ما لم ينجح <code>backup</code> في الدورة نفسها.</li>
-      <li><b>التزويدُ خطوةُ نشرٍ لا هجرة:</b> خدمةُ <code>migrate</code> وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها، وقفلُ جلسةٍ يغطّي الأطوار الثلاثة (<code>2.9</code>).</li>
-      <li><b>ثلاثُ نسخٍ صارت تشتري إتاحةً</b> (<code>7.2</code>)، ونشرٌ متدرّجٌ بلا انقطاع في <code>deploy/rolling-deploy.sh</code>.</li>
-      <li><b>منشوران:</b> RunPod بلا مُجمِّع، فسقفُ <code>WEB_CONCURRENCY</code> عليه <b>5</b> مقابل <b>19 لكلّ نسخة</b> على Compose (بعد رفع سقف عملاء المُجمِّع إلى 2,000 في <code>2.2</code>).</li>
-      <li><b>كلُّ خدمةٍ بسقف موارد</b> (<code>3.4</code>)، والدفترُ المحروسُ في <code>deploy/resource-budget.sh</code>.</li>
+      <li><b>PITR مبنيّ:</b> <code>wal-shipper</code> + مرساةٌ ماديّة (<code>pg_basebackup</code>) — لأنّ دُفعةً منطقيّةً + WAL لا تُنتج استرجاعاً زمنيّاً. والنسخُ ليليٌّ في <code>ops-scheduler</code>، و<code>purge</code> يرفض العمل ما لم ينجح <code>backup</code> في الدورة نفسها.</li>
+      <li><b>التزويدُ خطوةُ نشرٍ لا هجرة:</b> خدمةُ <code>migrate</code> وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها، وقفلُ جلسةٍ يغطّي الأطوار الثلاثة فلا تتسابق نسختان على المنح.</li>
+      <li><b>ثلاثُ نسخٍ تشتري إتاحةً:</b> نشرٌ متدرّجٌ نسخةً بعد نسخة يصرّف اتصالاتِ WebSocket قبل الإيقاف (<code>deploy/rolling-deploy.sh</code>).</li>
+      <li><b>منشوران:</b> RunPod بلا مُجمِّع، فسقفُ <code>WEB_CONCURRENCY</code> عليه <b>5</b> مقابل <b>19 لكلّ نسخة</b> على Compose (سقفُ عملاء المُجمِّع 2,000).</li>
+      <li><b>كلُّ خدمةٍ بسقف موارد</b>، والدفترُ المحروسُ في <code>deploy/resource-budget.sh</code>.</li>
     </ul>
   </section>
 
@@ -710,7 +691,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <table class="dl">
         <thead><tr><th>#</th><th>القرار</th><th>الاختيار المعتمد</th><th>الواقع اليوم</th></tr></thead>
         <tbody>
-          <tr class="dev"><td>D‑01</td><td>Vector Store</td><td>Qdrant (تشغيل ذاتي)</td><td>صندوقٌ لكلّ مساحة (<code>ق‑3</code> بالقياس)</td></tr>
+          <tr class="dev"><td>D‑01</td><td>Vector Store</td><td>Qdrant (تشغيل ذاتي)</td><td>صندوقٌ لكلّ مساحة عمل</td></tr>
           <tr><td>D‑02</td><td>التوليد الإعلامي</td><td>منفذان: ImageProvider + VideoProvider</td><td>الصورة مبنيّة · الفيديو فارغ</td></tr>
           <tr><td>D‑03</td><td>الأسرار</td><td>HashiCorp Vault + Transit</td><td></td></tr>
           <tr><td>D‑04</td><td>Multi‑Agent Workflow</td><td>متزامن للخفيف + Streams للثقيل</td><td></td></tr>
@@ -725,30 +706,39 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td>D‑13</td><td>Plugin discovery</td><td>مسح مجلد + importlib</td><td></td></tr>
           <tr class="dev"><td>D‑14</td><td>EmbeddingProvider</td><td>خارجي فقط</td><td>خدمةٌ داخليّة × 3 خلف موازِن</td></tr>
           <tr class="dev"><td>D‑15</td><td>LLM adapters</td><td>أصلي لكل مزوّد</td><td>2 من 5 (OpenAI · Ollama)</td></tr>
-          <tr class="dev"><td>D‑16</td><td>Provider routing</td><td>ProviderResolver بلا Fallback</td><td>تحويلٌ سحابيّ → محلّيّ فقط (<code>6.4</code>)</td></tr>
+          <tr class="dev"><td>D‑16</td><td>Provider routing</td><td>ProviderResolver بلا Fallback</td><td>تحويلٌ سحابيّ → محلّيّ فقط</td></tr>
           <tr><td>D‑17</td><td>فرض القواعد</td><td>import‑linter في CI</td><td>8 عقود</td></tr>
-          <tr><td>D‑18</td><td>نشر الأحداث</td><td>Transactional Outbox</td><td>+ إعادةُ نشرٍ منه (<code>5.6</code>)</td></tr>
+          <tr><td>D‑18</td><td>نشر الأحداث</td><td>Transactional Outbox</td><td>+ إعادةُ نشرٍ منه</td></tr>
           <tr><td>D‑19</td><td>دلالات التسليم</td><td>at‑least‑once + Idempotent + DLQ</td><td>N = 5</td></tr>
           <tr class="dev"><td>D‑20</td><td>Streams topology</td><td>مجرى لكل وحدة + Consumer Groups</td><td>4 مجارٍ · <code>stream.files</code> بلا مستهلك</td></tr>
           <tr><td>D‑21</td><td>PgBouncer</td><td>Transaction pooling</td><td></td></tr>
           <tr><td>D‑22</td><td>Vault auth</td><td>AppRole</td><td></td></tr>
           <tr><td>D‑23</td><td>عزل المستأجرين</td><td>RLS أصلية + ترشيح تطبيقي</td><td></td></tr>
           <tr><td>D‑24</td><td>RBAC</td><td>Role → Permissions</td><td></td></tr>
-          <tr><td>D‑25</td><td>التحقق من التوكن</td><td>JWT محلي بمفاتيح مُخزّنة</td><td>+ Principal مخبّأ (<code>1.1</code>)</td></tr>
+          <tr><td>D‑25</td><td>التحقق من التوكن</td><td>JWT محلي بمفاتيح مُخزّنة</td><td>+ Principal مخبّأ</td></tr>
           <tr><td>D‑26</td><td>Orchestration</td><td>Docker Compose</td><td>35 خدمة</td></tr>
         </tbody>
       </table>
     </div>
     <div class="call"><b>قرارات ما بعد الاعتماد (2026‑07‑10):</b> ترقية <code>integrations</code> + <code>usage</code> إلى وحدتَي v1 · قياس <code>usage</code> عبر منفذ واردٍ متزامن · MCP بنقلٍ بعيد (HTTP/SSE) حصراً · موصّلات عبر Tool System بكتالوجٍ لكلّ Workspace وتجديد OAuth كسول · أسرارٌ موحّدة (SEC‑07).</div>
     <div class="call warn">
-      <p><b>انحرافاتٌ وقراراتٌ جديدة (2026‑09‑06 → 2026‑10‑04):</b></p>
+      <p><b>انحرافاتٌ مُنفَّذة عن السجلّ — وسببُها:</b></p>
       <ul class="tight">
+        <li><b>D‑11:</b> 12 وحدة — <code>spaces</code> محورُ ملكيّةٍ داخل المستأجر، و<code>admin</code> تطبيقيّةٌ بلا نطاقٍ ولا schema. المحجوزُ 3 كما هو.</li>
+        <li><b>D‑14:</b> خدمةٌ داخليّةٌ خاصّةٌ بنا لإبقاء <code>torch</code> خارج رسم الاستيراد؛ ثلاثُ نسخٍ خلف موازِن، وتخبئةُ متّجه الاستعلام، وتبديلُ نموذج التضمين ذرّيٌّ عبر اسمٍ مستعار.</li>
+        <li><b>D‑15:</b> مبنيٌّ لـ<code>openai</code> و<code>ollama</code>؛ ملفّاتُ <code>claude</code>/<code>gemini</code>/<code>openrouter</code> فارغة.</li>
         <li><b>D‑16:</b> دورٌ تعذّر نموذجُه السحابيُّ قبل أن يقول كلمة يُجيبه المحلّيّ ويُخبَر المستخدم — <b>اتّجاهٌ واحد</b>، بالإعداد <code>LLM_FALLBACK_ROUTE</code>، والعكسُ ممنوعٌ بالإقلاع. وبعد أوّل مقطعٍ قطعٌ لا تحويل.</li>
-        <li><b>D‑15:</b> <code>claude</code>/<code>gemini</code>/<code>openrouter</code> مؤجَّلةٌ بقرار المالك (<code>6.2</code>) — وملفّاتُها فارغة.</li>
-        <li><b><code>ق‑1</code> وُقِّع: هجين</b>، و<b><code>ق‑6</code> وُقِّع: <code>429</code> فوريٌّ بـ<code>Retry-After</code></b> لا طابورٌ صامت — على المزوّد وعلى طابور الفهرسة.</li>
-        <li><b>D‑14:</b> ثلاثُ نسخٍ خلف موازِن، وتخبئةُ متّجه الاستعلام، وتبديلُ نموذج التضمين مسارٌ ذرّيٌّ عبر اسمٍ مستعار (<code>4.5</code>).</li>
-        <li><b>Redis مثيلان</b> (<code>ق‑4</code> بالقياس): <code>maxmemory-policy</code> إعدادٌ على مستوى الخادم.</li>
-        <li><b>ميزانيّةُ كلفةٍ لكلّ مساحة</b> بأسعارٍ حقيقيّة (<code>6.5</code>)، و<b>منفذ <code>TaskLedger</code></b> (<code>5.7</code>)، و<b>التنبيهاتُ محلّيّةٌ فقط</b> (<code>7.3</code>).</li>
+        <li><b>D‑20:</b> أربعةُ مجارٍ، و<code>stream.files</code> بلا مستهلكٍ عمداً.</li>
+      </ul>
+    </div>
+    <div class="call">
+      <p><b>وقراراتٌ لاحقة تُكمل السجلّ دون أن تخالفه:</b></p>
+      <ul class="tight">
+        <li><b>توجيهٌ هجين</b> سحابيّ ومحلّيّ، و<b>التشبّعُ <code>429</code> فوراً بـ<code>Retry-After</code></b> لا طابورٌ صامت — على المزوّد وعلى طابور الفهرسة.</li>
+        <li><b>Redis مثيلان:</b> محفوظٌ للمجاري وما لا يجوز طردُه، وقابلٌ للطرد للتخبئة.</li>
+        <li><b>منافذُ جديدة:</b> <code>RerankProvider</code> و<code>WebSearchProvider</code> (تحت D‑08)، و<code>TaskLedger</code> مع خدمة <code>ops-scheduler</code>.</li>
+        <li><b><code>reserve</code>/<code>commit</code></b> و<b>ميزانيّةُ كلفةٍ لكلّ مساحة</b> بأسعارٍ حقيقيّة؛ ودورٌ ثامنٌ بـ<code>BYPASSRLS</code> للنسخ وحدَه؛ وschema لكلّ وحدة.</li>
+        <li><b>التنبيهاتُ تصل محلّيّاً فقط</b> عبر <code>alert-sink</code>.</li>
       </ul>
     </div>
   </section>
@@ -768,9 +758,9 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         <tbody>
           <tr><td>Schema لكل Module</td><td><span class="pill ok">نُفِّذت</span></td><td>12 سلسلةَ هجرات، <code>version_table_schema</code> لكلّ وحدة</td></tr>
           <tr><td>إبقاء Framework نحيفاً</td><td><span class="pill warn">قائمة</span></td><td>24 منفذاً، و<code>providers/</code> يحمل التحويلَ والتسعير، و<code>observability/</code> كتالوجَ المهامّ. النموُّ في التجريدات لا في المنطق — لكنّ العقودَ تحرس الاتّجاهَ لا الحجم</td></tr>
-          <tr><td>Outbox Relay نقطة فشل</td><td><span class="pill warn">قائمة · مرئيّة</span></td><td>نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل قصَّ المجاري أيضاً. لكنّ تأخّرَها ينبّه (<code>AizzakOutboxCycleTimeHigh</code>)، وما فقده Redis يُعاد من <code>outbox</code> (<code>5.6</code>)</td></tr>
-          <tr><td>ProviderResolver بلا Fallback (D‑16)</td><td><span class="pill ok">حُسمت</span></td><td>تحويلٌ سحابيّ → محلّيّ بقرار المالك، وقاطعُ دارةٍ لكلّ مزوّد. الباقي: لا تحويلَ بين سحابيَّين ولا من محلّيٍّ إلى سحابيّ</td></tr>
-          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و23 تنبيهاً تصل — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6×. وحيّاً: <code>redis-cache</code> موقوفاً ← التنبيهُ في 108 ث</td></tr>
+          <tr><td>Outbox Relay نقطة فشل</td><td><span class="pill warn">قائمة · مرئيّة</span></td><td>نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل قصَّ المجاري أيضاً. لكنّ تأخّرَها ينبّه (<code>AizzakOutboxCycleTimeHigh</code>)، وما فقده Redis يُعاد من <code>outbox</code> (<code>app.ops.replay</code>)</td></tr>
+          <tr><td>ProviderResolver بلا Fallback (D‑16)</td><td><span class="pill ok">حُسمت</span></td><td>تحويلٌ سحابيّ → محلّيّ، وقاطعُ دارةٍ لكلّ مزوّد. الباقي: لا تحويلَ بين سحابيَّين ولا من محلّيٍّ إلى سحابيّ</td></tr>
+          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و23 قاعدةَ تنبيه — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوب</td></tr>
         </tbody>
       </table>
     </div>
@@ -779,12 +769,12 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
   <!-- 15 NOT BUILT -->
   <section id="not-built">
     <div class="sec-head"><span class="sec-no">15</span><h2>ما ليس مبنيّاً بعد</h2><span class="sub">Gaps</span></div>
-    <p>وثيقةٌ تصف التصميمَ وحدَه تُقرأ كأنّها تصف الواقع. الحالةُ الحيّة في <a href="capacity-status.md"><code>docs/capacity-status.md</code></a>، والخطّةُ في <a href="capacity-plan.md"><code>docs/capacity-plan.md</code></a>.</p>
+    <p>وثيقةٌ تصف التصميمَ وحدَه تُقرأ كأنّها تصف الواقع؛ وهذه الفجواتُ المعماريّةُ القائمة.</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>البند</th><th>الأثر المعماريّ</th></tr></thead>
         <tbody>
-          <tr><td><b>محوّلات Claude · Gemini · OpenRouter</b></td><td>ملفّاتٌ فارغة، ومؤجَّلةٌ بقرار المالك (<code>6.2</code>). العامل: <code>openai</code> سحابيّاً و<code>ollama</code> محلّيّاً. <span class="pill warn">تصحيح</span> v2.0 وصفتها بأنّها مكتوبةٌ ومُختبَرة</td></tr>
+          <tr><td><b>محوّلات Claude · Gemini · OpenRouter</b></td><td>ملفّاتٌ فارغة. العامل: <code>openai</code> سحابيّاً و<code>ollama</code> محلّيّاً</td></tr>
           <tr><td><b>موصّلات OAuth وعميل MCP</b></td><td>الملفّان فارغان؛ <code>GET /connectors</code> يُجيب قائمةً فارغة، وأدواتُ المساحة ← <code>503</code> لأنّ قائمةً فارغةً لمساحةٍ لها خادمٌ حيٌّ ستكون كذباً</td></tr>
           <tr><td><b>محوّل الفيديو</b></td><td>فارغ — <code>video_agent</code> قائمٌ بلا مزوّد</td></tr>
           <tr><td><b>بحث الويب (Exa)</b></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
@@ -792,19 +782,16 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td><b>اعتماد <code>image:openai</code></b></td><td>عاملُ <code>media</code> يقلع ويستهلك، لكنّ مهمّةَ الصورة تحتاج اعتماداً مخزَّناً؛ غيابُه يُفشل المهمّة لا الإقلاع</td></tr>
           <tr><td><b>الوحدات المحجوزة الثلاث</b></td><td><code>scheduling</code> · <code>sandbox</code> · <code>runs</code> — و<code>sandbox</code> يحجب نقلَ MCP المحلّيّ (stdio)</td></tr>
           <tr><td><b>انتخاب قائدٍ لمُرحّل Outbox</b></td><td>نسخةٌ واحدة — مرئيّةٌ وقابلةٌ للاسترداد، لكنّها نقطةُ فشلٍ واحدة</td></tr>
-          <tr><td><b>قناة تنبيهٍ خارجيّة</b></td><td><code>alert-sink</code> محلّيّ فقط (قرار المالك)؛ ويبقى أن يجرّب الإجراءاتِ شخصٌ لم يكتبها</td></tr>
-          <tr><td><b>Vault إنتاجيّ (<code>7.1</code>)</b></td><td>فكُّ ختمٍ آليٌّ أو يدويٌّ مُتمرَّن عليه — أخطرُ خطوةٍ في خطّة السعة، ولم تبدأ</td></tr>
-          <tr><td><b>تكرار Postgres</b></td><td>محجوبٌ بـ<code>ق‑5</code> (و<code>ق‑2</code> طوبولوجيا المضيف) غيرِ الموقَّعَين</td></tr>
-          <tr><td><b>ما بقي من خطّة السعة</b></td><td><code>0.4</code> · زمنُ RAG عند 40 سؤالاً/ث (<code>4.3</code>، يحدّه Qdrant في التبديل على هذا المضيف) · إنتاجيّةُ <code>5.1</code> · توسيعُ <code>worker-knowledge</code> (<code>5.3</code>، لخادم الإنتاج) · أسبوعُ قبول <code>5.7</code> · قبولُ <code>6.1</code> الحيّ · <code>6.3</code> · 1,500 مقبس WS (<code>7.2</code>) · <code>7.4</code> · <code>7.5</code> · <b>والموجة 8 مؤجَّلة</b> — بوّابةٌ صلبة: لا عنوانَ عامّاً قبلها</td></tr>
+          <tr><td><b>قناة تنبيهٍ خارجيّة</b></td><td><code>alert-sink</code> محلّيّ فقط؛ لا Telegram ولا بريد</td></tr>
+          <tr><td><b>فكُّ ختم Vault في الإنتاج</b></td><td>لا فكَّ ختمٍ آليّاً ولا إجراءً يدويّاً مُتمرَّناً عليه — وVault في مسار كلِّ سرّ</td></tr>
+          <tr><td><b>تكرار Postgres</b></td><td>نسخةٌ واحدةٌ بلا تكرار؛ وطوبولوجيا المضيف لم تُحسم بعد</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="call ok"><b>وما خرج من هذا القسم منذ v2.0:</b> خطُّ الأساس مُثبَّت (2026‑09‑26)، وبِركةُ رموز Firebase تُسكّ من المستودع (<code>app.ops.mint_load_tokens</code>)، و<code>ق‑1</code> وُقِّع، والموجاتُ 1 و2 و3 تمّت كاملةً والرابعةُ مبنيّة.</div>
-    <div class="call"><b>وسقفُ <code>07-nfr-slo §3</code> ليس هدفَ اليوم.</b> الوثيقةُ تعلن 5,000 مستخدمٍ متزامنٍ و1,000 rps و10,000 اتصال WS؛ وخطّةُ السعة تستهدف <b>500 مستخدمٍ متزامن · 300 rps ذروةً · 1,500 اتصال WS · 200–400 مساحةَ عمل</b> بأرقامٍ قابلةٍ للقياس والرفض.</div>
   </section>
 
   <div class="foot">
-    <span>منصة الوكلاء الذكية — وثيقة المعمارية v2.1 · مطابَقة للشيفرة (2026‑10‑04)</span>
+    <span>منصة الوكلاء الذكية — وثيقة المعمارية v2.2 · مطابَقة للشيفرة (2026‑10‑04)</span>
     <span class="mono">15 مرحلة · 26 قراراً · 12 وحدة · 24 منفذاً · 8 عقود · 35 خدمة · 0 مخالفة حرجة</span>
   </div>
 
