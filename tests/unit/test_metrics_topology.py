@@ -80,6 +80,7 @@ from app.api.metrics import (
     STREAM_LAG_METRIC,
     STREAM_LENGTH_METRIC,
     STREAM_MAXLEN_METRIC,
+    STREAM_QUEUE_WAIT_METRIC,
     STREAM_UNCONSUMED_AGE_METRIC,
     STREAM_UNREAD_TRIMMED_METRIC,
     VAULT_AUTH_METRIC,
@@ -88,6 +89,7 @@ from app.framework.observability.metrics import (
     API_RATE_LIMIT_METRIC,
     AUTH_PRINCIPAL_CACHE_METRIC,
     DB_POOL_AVAILABLE_METRIC,
+    DB_POOL_CAPACITY_METRIC,
     DB_POOL_IN_USE_METRIC,
     DB_POOL_OVERFLOW_METRIC,
     EMBEDDING_CACHE_METRIC,
@@ -95,6 +97,7 @@ from app.framework.observability.metrics import (
     HEAVY_JOB_LIMIT_METRIC,
     HTTP_DURATION_METRIC,
     HTTP_REQUESTS_METRIC,
+    LLM_CIRCUIT_OPEN_METRIC,
     RATE_LIMIT_REJECTIONS_METRIC,
     WS_CONNECTIONS_METRIC,
 )
@@ -133,6 +136,8 @@ _EXTERNAL_STATE = frozenset(
         STREAM_MAXLEN_METRIC,
         STREAM_UNCONSUMED_AGE_METRIC,
         STREAM_UNREAD_TRIMMED_METRIC,
+        # Capacity 5.3's queue clock, which 7.3's queue rule reads.
+        STREAM_QUEUE_WAIT_METRIC,
         # Capacity 5.7 -- one task ledger, read by every replica.
         OPS_TASK_EXPECTED_METRIC,
         OPS_TASK_ARMED_METRIC,
@@ -150,6 +155,8 @@ _PER_CONTAINER_SHARE = frozenset(
         DB_POOL_IN_USE_METRIC,
         DB_POOL_AVAILABLE_METRIC,
         DB_POOL_OVERFLOW_METRIC,
+        # Capacity 7.3 -- the pool rule's denominator, `livesum` like the rest.
+        DB_POOL_CAPACITY_METRIC,
         RATE_LIMIT_REJECTIONS_METRIC,
         WS_CONNECTIONS_METRIC,
         AUTH_PRINCIPAL_CACHE_METRIC,
@@ -162,7 +169,12 @@ _PER_CONTAINER_SHARE = frozenset(
 # A true statement about ONE container. Never summed -- adding 1/0 flags, or
 # adding one loop's lag to another's, answers no question anyone asks -- and
 # never required to collapse either: "which replica" is the useful half.
-_PER_CONTAINER_HEALTH = frozenset({VAULT_AUTH_METRIC, EVENT_LOOP_LAG_METRIC})
+_PER_CONTAINER_HEALTH = frozenset(
+    # 7.3 adds the 6.1 circuit: an open circuit is a fact about the processes
+    # in ONE container, and any container's is users failing -- `max`, never
+    # `sum`, which would count three open circuits as three outages.
+    {VAULT_AUTH_METRIC, EVENT_LOOP_LAG_METRIC, LLM_CIRCUIT_OPEN_METRIC}
+)
 
 # The PromQL aggregators that collapse a metric across scrape targets. `sum` is
 # deliberately absent: summing external state is the defect this module exists

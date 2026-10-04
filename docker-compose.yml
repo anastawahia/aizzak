@@ -2592,6 +2592,85 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
+  # ── Alert delivery (capacity 7.3, docs/capacity-plan.md) ─────────────────
+  # Until 7.3 a firing rule was a row in Prometheus's ALERTS series and
+  # nothing else (debt د-5). These two services are the rest of the path:
+  # Prometheus -> `alertmanager` (grouping, repeats, resolutions, silences) ->
+  # `alert-sink`, the one receiver the owner chose for now (2026-10-04),
+  # which writes every notification as one JSON line that Alloy ships to Loki.
+  # Both `expose`-only, on the boundary `prometheus` draws: an alert names
+  # the failing part of the platform, which is operator information. Silences
+  # are set through Grafana's Alertmanager datasource, which is the one
+  # loopback door in.
+  alertmanager:
+    # 64 MB, not the exporters' 128: the standing budget had 0.10 GB left
+    # under its 57.60 ceiling (08 §2-ز), and these two services take 96 MB of
+    # it. Measured at idle after deployment -- see docs/capacity-status.md
+    # 7.3 for the numbers.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+    image: prom/alertmanager:v0.34.1
+    depends_on:
+      alert-sink:
+        condition: service_healthy
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # Silences and the notification log. Losing it re-sends every alert
+      # still firing and forgets every silence -- a named volume so that a
+      # recreate is not that.
+      - alertmanager-data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      # ONE node. Left at its default, Alertmanager binds the gossip port
+      # 9094 and looks for peers that will never exist.
+      - "--cluster.listen-address="
+    expose:
+      - "9093"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9093/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # A stock Python image running one standard-library file: nothing to build,
+  # nothing to pin but the interpreter. Read-only and unprivileged -- it
+  # holds no state and needs none.
+  alert-sink:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 32m
+    image: python:3.12-slim
+    user: "65534:65534"
+    read_only: true
+    volumes:
+      - ./deploy/alertmanager/sink.py:/sink/sink.py:ro
+    command: ["python", "-u", "/sink/sink.py"]
+    expose:
+      - "9095"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9095/health', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 5s
+    restart: unless-stopped
+    <<: *app-logging
+
   # ح-3's direct evidence, and the reason step 0.2 deferred `cl_waiting` and
   # `sv_active` rather than reading them from the app: they live behind
   # pgbouncer's ADMIN console, which `admin_users` restricts to the Postgres
@@ -3060,6 +3139,8 @@ volumes:
   # from deploy/grafana/dashboards, so losing this volume loses a password,
   # never a panel.
   grafana-data:
+  # Alertmanager's silences and notification log (capacity 7.3).
+  alertmanager-data:
   # Loki's chunks + index (capacity 0.6). A named volume for the same reason
   # `prometheus-data` is one: the lines explaining a failed load run must
   # survive the `docker compose up -d --force-recreate` that nobody thought of

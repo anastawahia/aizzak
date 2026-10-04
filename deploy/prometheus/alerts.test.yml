@@ -1,0 +1,670 @@
+# Synthetic firing for every rule in alerts.yml -- capacity 7.3's acceptance
+# ("كلّ تنبيهٍ مُطلَقٌ صناعيّاً مرّةً واحدةً على الأقلّ"), run by
+# `deploy/prometheus/test-rules.sh` (08 §4.28) and in CI.
+#
+# Each rule gets two kinds of case: the shape that must FIRE, with the labels
+# an operator will see, and the healthy (or deliberately excluded) shape that
+# must NOT. A rule tested only for firing passes when it fires on everything,
+# which is the alert that gets switched off the third time.
+#
+# ⚠️ The rules are loaded WITHOUT their annotations. promtool compares
+# annotations exactly, so every case would have to restate four paragraphs of
+# prose; `test-rules.sh` strips them into a scratch copy instead, and
+# `tests/unit/test_prometheus_alert_rules.py` checks the annotations on their
+# own. What this file proves is WHEN each rule fires.
+#
+# Series are sampled every 15s, as the live scrape is. App metrics carry two
+# or three `instance`s where the rule must collapse replicas, so a rule that
+# fires once per container fails here rather than in someone's inbox.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ── aizzak-outbox-dlq ─────────────────────────────────────────────────────
+  - name: outbox stalled for two minutes fires once, not once per replica
+    interval: 15s
+    input_series:
+      - series: 'aizzak_outbox_oldest_unpublished_age_seconds{instance="a:8000",job="aizzak-app"}'
+        values: "10x20"
+      - series: 'aizzak_outbox_oldest_unpublished_age_seconds{instance="b:8000",job="aizzak-app"}'
+        values: "10x20"
+      - series: 'aizzak_outbox_oldest_unpublished_age_seconds{instance="c:8000",job="aizzak-app"}'
+        values: "10x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakOutboxCycleTimeHigh
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AizzakOutboxCycleTimeHigh
+        exp_alerts:
+          - exp_labels: {severity: warning}
+
+  - name: a healthy relay is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_outbox_oldest_unpublished_age_seconds{instance="a:8000",job="aizzak-app"}'
+        values: "0.4x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakOutboxCycleTimeHigh
+        exp_alerts: []
+
+  - name: one DLQ entry for five minutes fires
+    interval: 15s
+    input_series:
+      - series: 'aizzak_dlq_depth{stream="stream.media",instance="a:8000",job="aizzak-app"}'
+        values: "3x30"
+      - series: 'aizzak_dlq_depth{stream="stream.media",instance="b:8000",job="aizzak-app"}'
+        values: "3x30"
+      - series: 'aizzak_dlq_depth{stream="stream.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakDlqNotEmpty
+        exp_alerts:
+          - exp_labels: {severity: warning}
+
+  - name: an empty DLQ is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_dlq_depth{stream="stream.media",instance="a:8000",job="aizzak-app"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakDlqNotEmpty
+        exp_alerts: []
+
+  # ── aizzak-vault ──────────────────────────────────────────────────────────
+  - name: one replica losing Vault fires for that replica alone
+    interval: 15s
+    input_series:
+      - series: 'aizzak_vault_authenticated{instance="a:8000",job="aizzak-app"}'
+        values: "0x30"
+      - series: 'aizzak_vault_authenticated{instance="b:8000",job="aizzak-app"}'
+        values: "1x30"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakVaultAuthFailing
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AizzakVaultAuthFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "a:8000", job: aizzak-app}
+
+  # ── aizzak-scrape ─────────────────────────────────────────────────────────
+  - name: a dead target fires, the optional cAdvisor does not
+    interval: 15s
+    input_series:
+      - series: 'up{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "0x10"
+      - series: 'up{job="cadvisor",instance="cadvisor:8080",tier="optional"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakScrapeTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: redis-cache
+              instance: "redis-cache-exporter:9121"
+
+  - name: a dead pooler behind a live exporter fires within the minute
+    interval: 15s
+    input_series:
+      - series: 'pgbouncer_up{job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "0x10"
+      - series: 'up{job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: AizzakPgbouncerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: pgbouncer
+              instance: "pgbouncer-exporter:9127"
+      - eval_time: 30s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts: []
+
+  - name: a pooler that answers is silent
+    interval: 15s
+    input_series:
+      - series: 'pgbouncer_up{job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AizzakPgbouncerDown
+        exp_alerts: []
+
+  - name: shadow writes for ten minutes fire, live writes do not
+    interval: 15s
+    input_series:
+      - series: 'aizzak_vector_corpus_total{op="write",corpus="shadow",instance="a:8000",job="aizzak-app"}'
+        values: "0+1x100"
+      - series: 'aizzak_vector_corpus_total{op="write",corpus="live",instance="b:8000",job="aizzak-app"}'
+        values: "0+50x100"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AizzakVectorShadowWrites
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              op: write
+              corpus: shadow
+              instance: "a:8000"
+              job: aizzak-app
+
+  - name: a deployment writing only live vectors is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_vector_corpus_total{op="write",corpus="live",instance="a:8000",job="aizzak-app"}'
+        values: "0+50x100"
+      - series: 'aizzak_vector_corpus_total{op="write",corpus="shadow",instance="a:8000",job="aizzak-app"}'
+        values: "0x100"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AizzakVectorShadowWrites
+        exp_alerts: []
+
+  - name: redis-stream at 90% of maxmemory fires, redis-cache full does not
+    interval: 15s
+    input_series:
+      - series: 'redis_memory_used_bytes{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "1800000000x30"
+      - series: 'redis_memory_max_bytes{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "2000000000x30"
+      - series: 'redis_memory_used_bytes{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "1070000000x30"
+      - series: 'redis_memory_max_bytes{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "1073741824x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakRedisStreamMemoryHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: redis-stream
+              instance: "redis-stream-exporter:9121"
+
+  - name: a full redis-cache alone never raises the stream memory rule
+    interval: 15s
+    input_series:
+      - series: 'redis_memory_used_bytes{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "300000000x30"
+      - series: 'redis_memory_max_bytes{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "2000000000x30"
+      - series: 'redis_memory_used_bytes{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "1073000000x30"
+      - series: 'redis_memory_max_bytes{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "1073741824x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakRedisStreamMemoryHigh
+        exp_alerts: []
+
+  - name: one eviction on redis-stream fires at once, cache evictions never
+    interval: 15s
+    input_series:
+      - series: 'redis_evicted_keys_total{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "0 0 0 0 1 1 1 1 1"
+      - series: 'redis_evicted_keys_total{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "0+500x8"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakRedisStreamEvicted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis-stream
+              instance: "redis-stream-exporter:9121"
+
+  - name: an LRU cache evicting all day is not a stream eviction
+    interval: 15s
+    input_series:
+      - series: 'redis_evicted_keys_total{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "0+500x40"
+      - series: 'redis_evicted_keys_total{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AizzakRedisStreamEvicted
+        exp_alerts: []
+
+  - name: a stream at 80% of its backstop fires per stream
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_length{stream="stream.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "80000x30"
+      - series: 'aizzak_stream_length{stream="stream.knowledge",instance="b:8000",job="aizzak-app"}'
+        values: "80000x30"
+      - series: 'aizzak_stream_length{stream="stream.media",instance="a:8000",job="aizzak-app"}'
+        values: "500x30"
+      - series: 'aizzak_stream_maxlen{instance="a:8000",job="aizzak-app"}'
+        values: "100000x30"
+      - series: 'aizzak_stream_maxlen{instance="b:8000",job="aizzak-app"}'
+        values: "100000x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakStreamBackstopHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, stream: stream.knowledge}
+
+  - name: a stream at half its backstop is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_length{stream="stream.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "50000x30"
+      - series: 'aizzak_stream_maxlen{instance="a:8000",job="aizzak-app"}'
+        values: "100000x30"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakStreamBackstopHigh
+        exp_alerts: []
+
+  - name: entries trimmed before a group read them fire with no delay
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_unread_trimmed_entries{stream="stream.media",group="cg.media",instance="a:8000",job="aizzak-app"}'
+        values: "0 0 12 12 12"
+      - series: 'aizzak_stream_unread_trimmed_entries{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "0x4"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: AizzakStreamEntriesLost
+        exp_alerts:
+          - exp_labels: {severity: critical, stream: stream.media, group: cg.media}
+
+  - name: no entry trimmed unread is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_unread_trimmed_entries{stream="stream.media",group="cg.media",instance="a:8000",job="aizzak-app"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AizzakStreamEntriesLost
+        exp_alerts: []
+
+  # ── aizzak-ops-tasks ──────────────────────────────────────────────────────
+  # `time()` is seconds since the start of the test (0 at t=0), so a
+  # timestamp series is written in those seconds too.
+  - name: a task late against its success, and one late against its arming
+    interval: 15s
+    input_series:
+      # Succeeded at t=0, may be 120s old: late from 2m, firing from 7m.
+      - series: 'aizzak_ops_task_last_success_timestamp_seconds{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "0x60"
+      - series: 'aizzak_ops_task_max_success_age_seconds{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "120x60"
+      # Never succeeded; armed at t=0 with the same deadline.
+      - series: 'aizzak_ops_task_armed_timestamp_seconds{task="stream_trim",instance="a:8000",job="aizzak-app"}'
+        values: "0x60"
+      - series: 'aizzak_ops_task_max_success_age_seconds{task="stream_trim",instance="a:8000",job="aizzak-app"}'
+        values: "120x60"
+      # Succeeds every cycle: its timestamp keeps up with the clock.
+      - series: 'aizzak_ops_task_last_success_timestamp_seconds{task="purge",instance="a:8000",job="aizzak-app"}'
+        values: "0+15x60"
+      - series: 'aizzak_ops_task_max_success_age_seconds{task="purge",instance="a:8000",job="aizzak-app"}'
+        values: "120x60"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AizzakOpsTaskOverdue
+        exp_alerts:
+          - exp_labels: {severity: warning, task: backup}
+          - exp_labels: {severity: warning, task: stream_trim}
+
+  # Late for three minutes is pending, not firing: `for: 5m` is a debounce.
+  - name: a task that succeeds every cycle is silent, and a late one is first pending
+    interval: 15s
+    input_series:
+      - series: 'aizzak_ops_task_last_success_timestamp_seconds{task="purge",instance="a:8000",job="aizzak-app"}'
+        values: "0+15x60"
+      - series: 'aizzak_ops_task_max_success_age_seconds{task="purge",instance="a:8000",job="aizzak-app"}'
+        values: "120x60"
+      - series: 'aizzak_ops_task_last_success_timestamp_seconds{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "0x60"
+      - series: 'aizzak_ops_task_max_success_age_seconds{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "120x60"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AizzakOpsTaskOverdue
+        exp_alerts: []
+
+  - name: a catalog task nothing ever armed fires after half an hour
+    interval: 1m
+    input_series:
+      - series: 'aizzak_ops_task_expected{task="rotate_transit",instance="a:8000",job="aizzak-app"}'
+        values: "1x40"
+      - series: 'aizzak_ops_task_expected{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "1x40"
+      - series: 'aizzak_ops_task_armed_timestamp_seconds{task="backup",instance="a:8000",job="aizzak-app"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AizzakOpsTaskNeverArmed
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: AizzakOpsTaskNeverArmed
+        exp_alerts:
+          - exp_labels: {severity: warning, task: rotate_transit}
+
+  # ── aizzak-error-budget (7.3) ─────────────────────────────────────────────
+  # 100 good + 5 failed requests per 15s on one route: 4.8% errors, past
+  # both 1.44% (fast) and 0.6% (slow). Health-route 500s at ten times that
+  # rate ride along and must change nothing.
+  - name: a 4.8% error rate burns fast; health-route errors are not counted
+    interval: 15s
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+100x120"
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="500",instance="a:8000",job="aizzak-app"}'
+        values: "0+5x120"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+
+  - name: errors on health routes alone never touch the budget
+    interval: 15s
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+100x120"
+      - series: 'aizzak_http_requests_total{route="/health/ready",method="GET",status="503",instance="a:8000",job="aizzak-app"}'
+        values: "0+50x120"
+      - series: 'aizzak_http_requests_total{route="/metrics",method="GET",status="500",instance="a:8000",job="aizzak-app"}'
+        values: "0+50x120"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: AizzakApiErrorBudgetBurnSlow
+        exp_alerts: []
+
+  # The multi-window property: twenty minutes of errors, then none. The hour
+  # still averages past 1.44%, but the five-minute window is clean, so the
+  # page stops within minutes instead of an hour later.
+  - name: the fast burn stops once the errors stop, though the hour is still bad
+    interval: 15s
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+100x160"
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="500",instance="a:8000",job="aizzak-app"}'
+        values: "0+5x80 400x80"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+      - eval_time: 32m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+
+  # 1 failure per 101 requests: 0.99% -- past the slow rule's 0.6%, short of
+  # the fast rule's 1.44%. The two must answer differently.
+  - name: a 1% error rate burns slowly and does not page
+    interval: 15s
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/chat",method="POST",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+100x300"
+      - series: 'aizzak_http_requests_total{route="/api/v1/chat",method="POST",status="502",instance="b:8000",job="aizzak-app"}'
+        values: "0+1x300"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AizzakApiErrorBudgetBurnSlow
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: AizzakApiErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      - eval_time: 60m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: 0.1% errors is the budget itself, not a burn
+    interval: 15s
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/chat",method="POST",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+1000x300"
+      - series: 'aizzak_http_requests_total{route="/api/v1/chat",method="POST",status="500",instance="a:8000",job="aizzak-app"}'
+        values: "0+1x300"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: AizzakApiErrorBudgetBurnSlow
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+
+  # ── aizzak-saturation (7.3) ───────────────────────────────────────────────
+  - name: one container at 96% of its pool fires for that container only
+    interval: 15s
+    input_series:
+      - series: 'aizzak_db_pool_in_use{instance="a:8000",job="aizzak-app"}'
+        values: "115x20"
+      - series: 'aizzak_db_pool_capacity{instance="a:8000",job="aizzak-app"}'
+        values: "120x20"
+      - series: 'aizzak_db_pool_in_use{instance="b:8000",job="aizzak-app"}'
+        values: "46x20"
+      - series: 'aizzak_db_pool_capacity{instance="b:8000",job="aizzak-app"}'
+        values: "120x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakDbPoolSaturated
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AizzakDbPoolSaturated
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:8000", job: aizzak-app}
+
+  - name: a pool with no published capacity cannot fire
+    interval: 15s
+    input_series:
+      - series: 'aizzak_db_pool_in_use{instance="a:8000",job="aizzak-app"}'
+        values: "120x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakDbPoolSaturated
+        exp_alerts: []
+
+  - name: clients queueing at PgBouncer fire per database, the admin pool is ignored
+    interval: 15s
+    input_series:
+      - series: 'pgbouncer_pools_client_waiting_connections{database="aizzak",user="app_rw",job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "150x20"
+      - series: 'pgbouncer_pools_client_waiting_connections{database="aizzak",user="metrics_reader",job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "0x20"
+      - series: 'pgbouncer_pools_client_waiting_connections{database="pgbouncer",user="pgbouncer",job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "50x20"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AizzakPgbouncerClientsWaiting
+        exp_alerts:
+          - exp_labels: {severity: warning, database: aizzak}
+
+  - name: the knee's four waiting clients are not an alert
+    interval: 15s
+    input_series:
+      - series: 'pgbouncer_pools_client_waiting_connections{database="aizzak",user="app_rw",job="pgbouncer",instance="pgbouncer-exporter:9127"}'
+        values: "4x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakPgbouncerClientsWaiting
+        exp_alerts: []
+
+  # A two-second stall once a minute: the scrape sees it on one sample in
+  # four, which `max_over_time` must not lose.
+  - name: an event loop that stalls every minute fires; one stall does not
+    interval: 15s
+    input_series:
+      - series: 'aizzak_event_loop_lag_seconds{instance="a:8000",job="aizzak-app"}'
+        values: "0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2 0.002 0.002 0.002 2"
+      - series: 'aizzak_event_loop_lag_seconds{instance="b:8000",job="aizzak-app"}'
+        values: "0.002 0.002 3 0.002x33"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AizzakEventLoopBlocked
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:8000", job: aizzak-app}
+
+  - name: a healthy loop is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_event_loop_lag_seconds{instance="a:8000",job="aizzak-app"}'
+        values: "0.12x40"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AizzakEventLoopBlocked
+        exp_alerts: []
+
+  - name: a queue waiting past two minutes fires once per stream and group
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "200x40"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.knowledge",group="cg.knowledge",instance="b:8000",job="aizzak-app"}'
+        values: "200x40"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.media",group="cg.media",instance="a:8000",job="aizzak-app"}'
+        values: "5x40"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, stream: stream.knowledge, group: cg.knowledge}
+
+  # The reason the rule reads queue_wait: after a quiet night the lag gauge
+  # reads the length of the night while nothing is actually waiting.
+  - name: a long lag after a quiet spell with nothing waiting is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_lag_seconds{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "28800x40"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts: []
+
+  # 100 served + 10 refused per 15s: 9% of requests refused.
+  - name: one request in eleven refused with 429 fires
+    interval: 15s
+    input_series:
+      - series: 'aizzak_rate_limit_rejections_total{reason="rate_limit.workspace",instance="a:8000",job="aizzak-app"}'
+        values: "0+10x100"
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+100x100"
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="429",instance="a:8000",job="aizzak-app"}'
+        values: "0+10x100"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AizzakRateLimitedShareHigh
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: AizzakRateLimitedShareHigh
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      # A refusal is not an error: the same traffic burns no budget.
+      - eval_time: 21m
+        alertname: AizzakApiErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: an occasional 429 is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_rate_limit_rejections_total{reason="rate_limit.user",instance="a:8000",job="aizzak-app"}'
+        values: "0+1x100"
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+110x100"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AizzakRateLimitedShareHigh
+        exp_alerts: []
+
+  - name: redis-stream down pages in 30s, redis-cache down warns after a minute
+    interval: 15s
+    input_series:
+      - series: 'redis_up{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "0x10"
+      - series: 'redis_up{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: AizzakRedisStreamDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis-stream
+              instance: "redis-stream-exporter:9121"
+      - eval_time: 45s
+        alertname: AizzakRedisCacheDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: AizzakRedisCacheDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: redis-cache
+              instance: "redis-cache-exporter:9121"
+
+  - name: both Redis servers answering is silent
+    interval: 15s
+    input_series:
+      - series: 'redis_up{job="redis-stream",instance="redis-stream-exporter:9121"}'
+        values: "1x10"
+      - series: 'redis_up{job="redis-cache",instance="redis-cache-exporter:9121"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AizzakRedisStreamDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: AizzakRedisCacheDown
+        exp_alerts: []
+
+  - name: a circuit open in one container for two minutes fires per provider
+    interval: 15s
+    input_series:
+      - series: 'aizzak_llm_circuit_open{provider="openai",instance="a:8000",job="aizzak-app"}'
+        values: "1x20"
+      - series: 'aizzak_llm_circuit_open{provider="openai",instance="b:8000",job="aizzak-app"}'
+        values: "0x20"
+      - series: 'aizzak_llm_circuit_open{provider="ollama",instance="a:8000",job="aizzak-app"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AizzakLlmCircuitOpen
+        exp_alerts:
+          - exp_labels: {severity: warning, provider: openai}
+
+  # Open for 75s, then a probe succeeds: the guard working, not an outage.
+  - name: one open-close cycle of the circuit is silent
+    interval: 15s
+    input_series:
+      - series: 'aizzak_llm_circuit_open{provider="openai",instance="a:8000",job="aizzak-app"}'
+        values: "1x4 0x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakLlmCircuitOpen
+        exp_alerts: []
+
+  # ── aizzak-meta (7.3) ─────────────────────────────────────────────────────
+  - name: the watchdog fires with nothing at all to read
+    interval: 15s
+    input_series:
+      - series: 'up{job="prometheus",instance="127.0.0.1:9090"}'
+        values: "1x4"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: AizzakWatchdog
+        exp_alerts:
+          - exp_labels: {severity: none}

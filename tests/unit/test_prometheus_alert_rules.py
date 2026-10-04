@@ -39,14 +39,27 @@ from app.api.metrics import (
     OPS_TASK_LAST_SUCCESS_METRIC,
     OPS_TASK_MAX_SUCCESS_AGE_METRIC,
     OUTBOX_AGE_METRIC,
+    STREAM_LAG_METRIC,
     STREAM_LENGTH_METRIC,
     STREAM_MAXLEN_METRIC,
+    STREAM_QUEUE_WAIT_METRIC,
     STREAM_UNREAD_TRIMMED_METRIC,
     VAULT_AUTH_METRIC,
+)
+from app.framework.observability.metrics import (
+    DB_POOL_CAPACITY_METRIC,
+    DB_POOL_IN_USE_METRIC,
+    HTTP_REQUESTS_METRIC,
+    RATE_LIMIT_REJECTIONS_METRIC,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALERTS_YML = _REPO_ROOT / "deploy" / "prometheus" / "alerts.yml"
+# Capacity 7.3 -- the two files every rule must now have an entry in.
+_ALERTS_TEST_YML = _REPO_ROOT / "deploy" / "prometheus" / "alerts.test.yml"
+_RUNBOOK = _REPO_ROOT / "docs" / "runbooks" / "alerts.md"
+_RUNBOOK_URL = "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md"
+_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _load_rules() -> list[dict[str, Any]]:
@@ -116,6 +129,29 @@ EXPECTED_ALERTS = frozenset(
         # did not exist before 5.7 (`framework/ports/task_ledger.py`).
         "AizzakOpsTaskOverdue",
         "AizzakOpsTaskNeverArmed",
+        # Capacity 7.3 (docs/capacity-plan.md) -- eleven at once, and the step
+        # lists them itself: «إشباعُ مسبح · تأخّرُ مجرًى · عمقُ DLQ · معدّلُ
+        # 5xx · معدّلُ 429 · ذاكرة Redis · Vault مختوم · تأخّرُ حلقة الأحداث ·
+        # cl_waiting». Three of the nine were already here (DLQ, Redis memory,
+        # Vault -- a sealed Vault fails the auth probe). The 5xx rate is the
+        # two burn-rate rules its own ⚠️ asks for instead of a threshold, at
+        # its two named rates (14.4x/1h, 6x/6h). Every number is calibrated
+        # on the baseline that 0.3's note below was waiting for.
+        "AizzakApiErrorBudgetBurnFast",
+        "AizzakApiErrorBudgetBurnSlow",
+        "AizzakDbPoolSaturated",
+        "AizzakPgbouncerClientsWaiting",
+        "AizzakEventLoopBlocked",
+        "AizzakStreamQueueWaitHigh",
+        "AizzakRateLimitedShareHigh",
+        # AizzakPgbouncerDown's reasoning applied to Redis: each exporter
+        # outlives its server, so `up` stays 1 and only `redis_up` falls.
+        "AizzakRedisStreamDown",
+        "AizzakRedisCacheDown",
+        # 6.1's circuit, deferred there for want of a delivery path (د-5).
+        "AizzakLlmCircuitOpen",
+        # The pipeline's heartbeat: the one rule that speaks by ARRIVING.
+        "AizzakWatchdog",
     }
 )
 
@@ -164,16 +200,25 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     deadline (``2 x interval + max_runtime``) next to its record, so one rule
     serves a 60-second loop and a nightly backup alike.
 
+    Capacity 7.3 adds eleven, and the step names them: the saturation and
+    rate signals its list asks for, calibrated on the baseline
+    (``docs/capacity-baseline.md``, 2026-09-26) that the paragraph below was
+    waiting for, plus the two Redis liveness rules, the 6.1 circuit and the
+    Watchdog. 7.3 is also what makes them more than names: each one has a
+    runbook section and a promtool case that fires it (see the tests at the
+    end of this module).
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a THIRTEENTH entry needs its own written
-    reason (a ``docs/log/`` write-up, or a named step in
+    decision, never by drift -- so a TWENTY-FOURTH entry needs its own
+    written reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md``) first, not just a name added here.
 
-    **And note what growth is still refused.** Step 0.2 added RED and
-    saturation metrics and step 0.3 plots all of them, but no latency,
-    error-rate or ``cl_waiting`` rule appears in this set. Every such rule
-    needs a threshold, and the only honest source for one is step 0.5's
-    measured baseline, which does not exist yet.
+    **What was refused until 7.3, and why.** Step 0.2 added RED and
+    saturation metrics and step 0.3 plotted all of them, but no error-rate or
+    ``cl_waiting`` rule appeared in this set: every such rule needs a
+    threshold, and the only honest source for one was step 0.5's measured
+    baseline, which did not exist yet. Latency still has none -- 07 §2's
+    budgets are p95 targets, not a failure ratio with a budget to burn.
     """
     rules = _load_rules()
     names = {rule["alert"] for rule in rules}
@@ -188,8 +233,8 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         "This file is scoped to the Outbox age + DLQ depth signals (P1-3, step 10), the "
         "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
         "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
-        "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5) and the two "
-        "scheduled-task rules (step 5.7). A new "
+        "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5), the two "
+        "scheduled-task rules (step 5.7) and the eleven of step 7.3. A new "
         "rule needs its own logged justification first, not just a name added to "
         "EXPECTED_ALERTS."
     )
@@ -205,7 +250,8 @@ def test_scrape_target_down_rule_excludes_the_optional_tier() -> None:
     firing is worse than a missing one: it trains its reader to skip the
     whole file, which silently disarms the four rules that DO mean something.
     """
-    rule = _rule_for(_load_rules(), "up{")
+    # By name since 7.3: `redis_up{...}` also contains "up{".
+    rule = _rule_named(_load_rules(), "AizzakScrapeTargetDown")
     assert 'tier!="optional"' in rule["expr"], (
         f'{_ALERTS_YML}: the target-down rule must exclude `tier="optional"` -- the '
         "cAdvisor target is absent from a default `up` on purpose, and an always-firing "
@@ -453,7 +499,7 @@ def test_every_rule_carries_the_minimum_operator_fields() -> None:
     above."""
     for rule in _load_rules():
         annotations = rule["annotations"]
-        for field in ("summary", "description", "reason", "response"):
+        for field in ("summary", "description", "reason", "response", "runbook_url"):
             assert annotations.get(field), (
                 f"{_ALERTS_YML}: rule {rule['alert']!r} is missing a non-empty "
                 f"`annotations.{field}`"
@@ -491,3 +537,133 @@ def test_the_never_armed_rule_subtracts_the_armed_tasks_from_the_catalog() -> No
     assert " unless " in expr
     assert f"max by (task) ({OPS_TASK_ARMED_METRIC})" in expr
     assert rule["for"] == "30m", "long enough for a booting stack, short of a missed night"
+
+
+# ── capacity 7.3 — every rule has a runbook, every rule is fired ────────────
+
+
+def _promtool_cases() -> list[dict[str, Any]]:
+    doc = yaml.safe_load(_ALERTS_TEST_YML.read_text(encoding="utf-8"))
+    assert doc["rule_files"] == ["alerts.yml"], (
+        f"{_ALERTS_TEST_YML}: `rule_files` must name the copy test-rules.sh writes next to it"
+    )
+    return [case for test in doc["tests"] for case in test.get("alert_rule_test", [])]
+
+
+def test_every_rule_opens_its_own_runbook_section() -> None:
+    """7.3: «ولكلٍّ رابطٌ يفتح إجراءً». The link must be THIS rule's section --
+    a link to the top of the document is a procedure nobody can find at three
+    in the morning -- and the anchor must exist, or GitHub opens the page and
+    scrolls nowhere, which looks exactly like a working link."""
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    for rule in _load_rules():
+        anchor = rule["alert"].lower()
+        assert rule["annotations"]["runbook_url"] == f"{_RUNBOOK_URL}#{anchor}", (
+            f"{_ALERTS_YML}: {rule['alert']}'s runbook_url must be {_RUNBOOK_URL}#{anchor}"
+        )
+        assert f'<a id="{anchor}"></a>' in runbook, (
+            f"{_RUNBOOK}: no section anchored `{anchor}` for {rule['alert']} -- the link "
+            "would open the page and land on nothing"
+        )
+
+
+def test_every_rule_is_fired_and_held_silent_by_the_promtool_suite() -> None:
+    """7.3: «كلّ تنبيهٍ مُطلَقٌ صناعيّاً مرّةً واحدةً على الأقلّ». A case that
+    fires it proves the expression can match; a case that expects nothing
+    proves it does not match everything. Either alone passes for a rule that
+    is broken in the other direction."""
+    fired: set[str] = set()
+    silent: set[str] = set()
+    for case in _promtool_cases():
+        (fired if case.get("exp_alerts") else silent).add(case["alertname"])
+
+    unknown = (fired | silent) - EXPECTED_ALERTS
+    assert not unknown, f"{_ALERTS_TEST_YML}: cases for alerts that do not exist: {unknown}"
+    # The Watchdog is the one rule with no silent shape: `vector(1)` is true
+    # by construction, which is the point of it.
+    assert fired == EXPECTED_ALERTS, (
+        f"{_ALERTS_TEST_YML}: never fired: {sorted(EXPECTED_ALERTS - fired)}"
+    )
+    assert silent == EXPECTED_ALERTS - {"AizzakWatchdog"}, (
+        f"{_ALERTS_TEST_YML}: never held silent: "
+        f"{sorted(EXPECTED_ALERTS - {'AizzakWatchdog'} - silent)}"
+    )
+
+
+def test_ci_runs_the_promtool_suite() -> None:
+    """A test file nobody runs is the `alerts.yml`-without-a-Prometheus state
+    this whole file lived in until 0.3, moved one level down."""
+    assert "deploy/prometheus/test-rules.sh" in _CI_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_severity_is_one_of_three_and_only_the_watchdog_has_none() -> None:
+    """`alertmanager.yml` routes on `severity`. A fourth value would fall
+    through to the default route silently, and a real rule at `none` would be
+    read as the heartbeat."""
+    for rule in _load_rules():
+        severity = rule["labels"]["severity"]
+        expected = {"none"} if rule["alert"] == "AizzakWatchdog" else {"critical", "warning"}
+        assert severity in expected, f"{rule['alert']}: severity {severity!r}"
+
+
+def test_the_error_budget_burns_at_the_two_rates_the_step_names() -> None:
+    """7.3's ⚠️: 14.4x over one hour and 6x over six, against the 0.1% budget
+    of 07 §2 (99.9%) and plan §7 item 4. Each long window is paired with a
+    short one, and 429 is not an error."""
+    rules = _load_rules()
+    for name, factor, long_w, short_w, severity in (
+        ("AizzakApiErrorBudgetBurnFast", "14.4", "1h", "5m", "critical"),
+        ("AizzakApiErrorBudgetBurnSlow", "6", "6h", "30m", "warning"),
+    ):
+        rule = _rule_named(rules, name)
+        expr = rule["expr"]
+        assert f"({factor} * 0.001)" in expr, (name, expr)
+        assert f"[{long_w}]" in expr and f"[{short_w}]" in expr, (name, expr)
+        assert " and" in expr, f"{name}: both windows must burn, not either"
+        assert HTTP_REQUESTS_METRIC in expr
+        assert 'status=~"5.."' in expr and "429" not in expr, (
+            f"{name}: only 5xx spends the budget; an intended 429 is not an error"
+        )
+        assert expr.count('route!~"/metrics|/health.*"') == 4, (
+            f"{name}: scrapes and healthchecks must leave numerator and denominator alike"
+        )
+        assert rule["labels"]["severity"] == severity
+
+
+def test_the_saturation_rules_read_the_numbers_the_baseline_was_measured_in() -> None:
+    rules = _load_rules()
+
+    pool = _rule_named(rules, "AizzakDbPoolSaturated")["expr"]
+    assert f"{DB_POOL_IN_USE_METRIC} / {DB_POOL_CAPACITY_METRIC}" in pool, (
+        "the pool rule needs the published capacity, not a ceiling retyped into PromQL"
+    )
+
+    # `queue_wait`, never `lag`: after a quiet night `lag` reads the night.
+    queue = _rule_named(rules, "AizzakStreamQueueWaitHigh")["expr"]
+    assert STREAM_QUEUE_WAIT_METRIC in queue and STREAM_LAG_METRIC not in queue, queue
+    assert "> 120" in queue, "plan §7 item 5 and QUEUE_LAG_CEILING_S: two minutes"
+
+    shed = _rule_named(rules, "AizzakRateLimitedShareHigh")["expr"]
+    assert RATE_LIMIT_REJECTIONS_METRIC in shed and HTTP_REQUESTS_METRIC in shed, shed
+
+    waiting = _rule_named(rules, "AizzakPgbouncerClientsWaiting")["expr"]
+    assert "pgbouncer_pools_client_waiting_connections" in waiting
+    assert 'database!="pgbouncer"' in waiting, "the admin console is not a pool anyone waits in"
+
+
+def test_each_redis_liveness_rule_reads_its_own_exporter_verdict() -> None:
+    """`redis_up`, not `up`: the exporter keeps answering scrapes while its
+    server is gone -- AizzakPgbouncerDown's reasoning, applied to Redis."""
+    rules = _load_rules()
+    stream = _rule_named(rules, "AizzakRedisStreamDown")
+    cache = _rule_named(rules, "AizzakRedisCacheDown")
+    assert stream["expr"].strip() == 'redis_up{job="redis-stream"} == 0'
+    assert cache["expr"].strip() == 'redis_up{job="redis-cache"} == 0'
+    assert stream["labels"]["severity"] == "critical", "events, WebSockets and limits stop"
+    assert cache["labels"]["severity"] == "warning", "every cache reader fails open"
+
+
+def test_the_watchdog_is_true_by_construction() -> None:
+    rule = _rule_named(_load_rules(), "AizzakWatchdog")
+    assert rule["expr"].strip() == "vector(1)"
+    assert str(rule.get("for", "0s")) in {"0s", "0"}

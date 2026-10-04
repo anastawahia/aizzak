@@ -69,6 +69,15 @@ jobs:
       - name: pytest (full suite; live_* tests skip without local services)
         run: pytest -rs
 
+      # Capacity 7.3: every alert rule fired on synthetic series (and held
+      # silent on the healthy shape) by the promtool of the image Compose
+      # pins, plus `amtool check-config`. Docker is on every ubuntu-latest
+      # runner; PyYAML came with `[dev]` above.
+      - name: alert rules (promtool test rules + amtool check-config)
+        run: deploy/prometheus/test-rules.sh
+        env:
+          PYTHON: python
+
   # Real adapters against real infrastructure. This consumes the repository's
   # deployment entrypoints -- 10-roles.sh through the Postgres image,
   # deploy/{vault,minio}/bootstrap.sh through their one-shot services, and

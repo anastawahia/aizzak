@@ -1,0 +1,24 @@
+# The Alertmanager datasource -- capacity 7.3 (docs/capacity-plan.md).
+#
+# Grafana is the one loopback door into this stack (127.0.0.1:13000), and
+# Alertmanager is `expose`-only behind it. So this is how an operator sees
+# what is firing right now, and how a silence is set during planned work (a
+# load run past the knee, a maintenance window) without editing a file:
+# Alerting -> Silences, with this datasource selected.
+#
+# `implementation: prometheus` because it IS the upstream Alertmanager, not
+# Mimir's. `handleGrafanaManagedAlerts: false` because this stack has no
+# Grafana-managed rules -- every rule lives in deploy/prometheus/alerts.yml,
+# under review, and Grafana only reads them.
+apiVersion: 1
+
+datasources:
+  - name: Alertmanager
+    uid: aizzak-alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

@@ -127,14 +127,16 @@ loki.process "docker_json" {
 	// 6. The correlation ids, lifted from the services that emit JSON -- the
 	//    app, the three workers, the relay, the migrator, and (since 0.6) the
 	//    nginx access log, whose `log_format aizzak_json` was shaped to carry
-	//    the same three field names on purpose.
+	//    the same three field names on purpose. And since capacity 7.3 the
+	//    `alert-sink`, whose lines carry `level` and no ids: a firing critical
+	//    is `level=error`, so "show me only the errors" includes the alerts.
 	//
 	//    ⚠️ Scoped by `stage.match`, not applied to everything: postgres,
 	//    redis, minio, qdrant and vault write their own non-JSON formats, and
 	//    running a JSON stage over them would log a parse warning per line --
 	//    turning the collector into the loudest producer in the store.
 	stage.match {
-		selector = "{service=~\"app|worker-.*|outbox-relay|migrate|nginx\"}"
+		selector = "{service=~\"app|worker-.*|outbox-relay|migrate|nginx|alert-sink\"}"
 
 		stage.json {
 			expressions = {

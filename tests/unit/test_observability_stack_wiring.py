@@ -311,6 +311,10 @@ def test_the_scraper_and_exporters_publish_no_host_port() -> None:
         # these two hold the log lines themselves.
         "loki",
         "alloy",
+        # Added by 7.3. An alert names the failing part of the platform, which
+        # is operator information; silences go through Grafana's datasource.
+        "alertmanager",
+        "alert-sink",
     ):
         assert not services[name].get("ports"), (
             f"{_COMPOSE.name}: `{name}` must be `expose`-only -- publishing it puts "
@@ -422,3 +426,69 @@ def test_every_panel_carries_a_description() -> None:
                 f"{path.name}: panel {panel.get('title')!r} has no description -- say what "
                 "the line means and what number would be bad, or the panel is decoration"
             )
+
+
+# ── The delivery path (capacity 7.3) ───────────────────────────────────────
+# Prometheus -> alertmanager -> alert-sink. Every link is a hostname and a
+# port written in a different file, and every break is silent: Prometheus
+# logs a send error nobody reads, Alertmanager retries a webhook into a
+# closed port, and the alerts keep firing in a UI while arriving nowhere --
+# the state debt د-5 described, rebuilt by a typo.
+
+_ALERTMANAGER_YML = _REPO_ROOT / "deploy" / "alertmanager" / "alertmanager.yml"
+_SINK = _REPO_ROOT / "deploy" / "alertmanager" / "sink.py"
+
+
+def test_prometheus_sends_to_the_alertmanager_service() -> None:
+    services = _compose()["services"]
+    targets = [
+        target
+        for manager in _prom()["alerting"]["alertmanagers"]
+        for static in manager["static_configs"]
+        for target in static["targets"]
+    ]
+    assert targets == ["alertmanager:9093"], targets
+    assert "9093" in services["alertmanager"]["expose"]
+
+
+def test_alertmanager_reads_the_file_this_repository_holds() -> None:
+    """`--config.file` and the bind mount are two halves of one path; drift
+    between them starts Alertmanager on its built-in default, which routes
+    to a receiver that does not exist here."""
+    service = _compose()["services"]["alertmanager"]
+    mounted = _bind_target(service, "./deploy/alertmanager/alertmanager.yml")
+    assert mounted is not None, f"{_COMPOSE.name}: alertmanager does not mount its config"
+    assert f"--config.file={mounted}" in service["command"], service["command"]
+
+
+def test_every_receiver_posts_to_the_sink_that_listens() -> None:
+    """The webhook URL, the port Compose exposes and the port the script
+    binds must be one number, and resolutions must be sent -- "it stopped"
+    is the line that says the repair worked."""
+    services = _compose()["services"]
+    config = _load_yaml(_ALERTMANAGER_YML)
+    port = re.search(r"^PORT = (\d+)$", _SINK.read_text(encoding="utf-8"), re.M)
+    assert port is not None, f"{_SINK}: no `PORT = <n>` constant"
+    assert port.group(1) in services["alert-sink"]["expose"]
+
+    hooks = [hook for receiver in config["receivers"] for hook in receiver["webhook_configs"]]
+    assert hooks, f"{_ALERTMANAGER_YML}: no webhook receiver -- nothing would arrive"
+    for hook in hooks:
+        assert hook["url"].startswith(f"http://alert-sink:{port.group(1)}/"), hook["url"]
+        assert hook.get("send_resolved") is True, hook
+
+
+def test_the_watchdog_has_a_route_of_its_own() -> None:
+    """Under the default route the heartbeat repeats every four hours, and a
+    pipeline dead for three of them would look alive. The runbook tells the
+    operator to worry after ten quiet minutes, so it must repeat inside that."""
+    routes = _load_yaml(_ALERTMANAGER_YML)["route"]["routes"]
+    watchdog = [r for r in routes if r.get("matchers") == ['alertname="AizzakWatchdog"']]
+    assert len(watchdog) == 1, routes
+    assert watchdog[0]["repeat_interval"] == "5m"
+
+
+def test_grafana_reaches_the_alertmanager_service() -> None:
+    source = _load_yaml(_DATASOURCES / "alertmanager.yml")["datasources"][0]
+    assert source["type"] == "alertmanager"
+    assert source["url"] == "http://alertmanager:9093", source["url"]

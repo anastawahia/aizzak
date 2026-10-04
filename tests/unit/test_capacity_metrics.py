@@ -28,11 +28,13 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from redis.exceptions import ResponseError
+from sqlalchemy.pool import QueuePool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.middleware.metrics import RedMetricsMiddleware
 from app.framework.observability.metrics import (
     DB_POOL_AVAILABLE_METRIC,
+    DB_POOL_CAPACITY_METRIC,
     DB_POOL_IN_USE_METRIC,
     DB_POOL_OVERFLOW_METRIC,
     EVENT_LOOP_LAG_METRIC,
@@ -308,6 +310,31 @@ def test_a_pool_that_cannot_report_is_none_rather_than_an_exception() -> None:
     assert pool_stats_of(object()) is None
 
 
+def test_the_capacity_is_read_off_a_real_queue_pool() -> None:
+    """Capacity 7.3's denominator, against SQLAlchemy itself rather than a
+    fake: `_max_overflow` is private, so the only test worth having is one a
+    SQLAlchemy release that renamed it would fail."""
+    pool = QueuePool(lambda: None, pool_size=10, max_overflow=20)
+    stats = pool_stats_of(pool)
+    assert stats is not None
+    assert stats.capacity == 30
+
+
+def test_an_unbounded_pool_has_no_capacity_to_saturate() -> None:
+    """`max_overflow=-1` is SQLAlchemy's "no limit". Publishing `size - 1`
+    would hand the saturation rule a ceiling the pool does not have."""
+    stats = pool_stats_of(QueuePool(lambda: None, pool_size=5, max_overflow=-1))
+    assert stats is not None
+    assert stats.capacity is None
+
+
+def test_a_pool_without_the_ceiling_still_reports_its_three_numbers() -> None:
+    """The fake above has no `size()`: the capacity is missing, the rest is
+    not -- a gauge the alert cannot use must not take the others with it."""
+    stats = pool_stats_of(_FakePool(out=1, in_=2, overflow=0))
+    assert stats == PoolStats(in_use=1, available=2, overflow=0, capacity=None)
+
+
 # --------------------------------------------------------------------------- #
 # The saturation sampler                                                      #
 # --------------------------------------------------------------------------- #
@@ -327,6 +354,22 @@ async def test_the_sampler_publishes_pool_gauges_on_its_first_window() -> None:
     assert REGISTRY.get_sample_value(DB_POOL_IN_USE_METRIC) == 4.0
     assert REGISTRY.get_sample_value(DB_POOL_AVAILABLE_METRIC) == 6.0
     assert REGISTRY.get_sample_value(DB_POOL_OVERFLOW_METRIC) == 0.0
+
+
+async def test_the_sampler_publishes_the_pool_capacity() -> None:
+    task = asyncio.create_task(
+        sample_process_metrics(
+            QueuePool(lambda: None, pool_size=3, max_overflow=4),
+            report_interval_s=0.01,
+            probe_interval_s=0.001,
+        )
+    )
+    try:
+        await _until(lambda: REGISTRY.get_sample_value(DB_POOL_CAPACITY_METRIC) == 7.0)
+    finally:
+        task.cancel()
+
+    assert REGISTRY.get_sample_value(DB_POOL_CAPACITY_METRIC) == 7.0
 
 
 async def test_event_loop_lag_sees_a_loop_blocked_by_a_synchronous_call() -> None:

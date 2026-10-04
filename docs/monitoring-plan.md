@@ -15,7 +15,7 @@
 | الأرقام | Prometheus يجمع من: `app` · PgBouncer · Redis (اثنان) · Alloy · Loki · cAdvisor (اختياريّ) | Postgres نفسه · Qdrant · MinIO · Vault · nginx · embedding · العمّال (workers) كخدمات مستقلّة · الجهاز (القرص والمعالج) |
 | السجلات | Alloy ← Loki، وتتبّع الطلب بـ `correlation_id` | لا شيء جوهريّ |
 | اللوحات | لوحة السعة + لوحة السجلات | لوحة رئيسيّة واحدة «هل كلّ شيء بخير؟» · لوحات لكلّ خدمة · لوحة SLO |
-| التنبيهات | 13 قاعدة في [`alerts.yml`](../deploy/prometheus/alerts.yml) | **لا شيء يوصلها إليك**: لا Alertmanager ولا نقطة اتصال |
+| التنبيهات | **منذ خطوة السعة `7.3` (2026‑10‑04):** 23 قاعدة في [`alerts.yml`](../deploy/prometheus/alerts.yml)، وAlertmanager يوصلها محلّيّاً إلى `alert-sink` (سطرٌ في Loki)، ونبض Watchdog، ورابطُ إجراءٍ لكلّ تنبيه في [`runbooks/alerts.md`](runbooks/alerts.md) | **قناةٌ خارجيّة** (تيليغرام أو بريد) — أجّلها المالك؛ فالمرحلة 1 أدناه تمّت إلّا الخطوتين 2 و3 (القناة وسرّها) |
 | الفحص من الخارج | — | لا أحد يطرق المنصّة كما يطرقها المستخدم |
 | تتبّع زمن الطلب داخلياً | — | لا Tracing |
 

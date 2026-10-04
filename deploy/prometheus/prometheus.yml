@@ -10,15 +10,13 @@
 # streams for six weeks and nothing noticed, because nothing was reading the
 # gauge. This file is what makes the rules ARM.
 #
-# ── No Alertmanager, and that is a stated gap, not an oversight ────────────
-# Prometheus evaluates rules on its own; `ALERTS`/`/api/v1/alerts` go to
-# `firing` with no Alertmanager anywhere, which is exactly what step 0.3's
-# acceptance criterion asks for ("التنبيهات تُقيَّم فعلاً"). ROUTING a firing
-# alert to a human is a different job, and it needs something this repository
-# cannot invent: a destination. An Alertmanager with no receiver configured
-# would be the "إنذارٌ يُرى لا يُستجاب له" `alerts.yml` already refuses --
-# one more service, still nobody paged. Recorded as an open debt in
-# `docs/capacity-status.md` rather than half-built here.
+# ── Alertmanager since capacity 7.3 (debt د-5) ─────────────────────────────
+# Until 7.3 there was none, deliberately: routing a firing alert needs a
+# destination this repository cannot invent, and an Alertmanager with no
+# receiver would have been one more service with nobody paged. The owner
+# chose local delivery (2026-10-04) -- `deploy/alertmanager/alertmanager.yml`
+# routes every notification to `alert-sink`, whose log lines Alloy ships to
+# Loki -- so the gap is now the external channel, not the path.
 #
 # ── Scrape interval, and why the acceptance criterion depends on it ────────
 # 15s, with `evaluation_interval` matched to it. Step 0.3's acceptance is
@@ -36,6 +34,11 @@ global:
 
 rule_files:
   - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
   # Prometheus scrapes itself: without this, `up` exists for every target
@@ -160,6 +163,17 @@ scrape_configs:
   - job_name: loki
     static_configs:
       - targets: ["loki:3100"]
+
+  # ── The delivery path (capacity 7.3) ─────────────────────────────────────
+  # Scraped so that a dead Alertmanager is an `up == 0` -- and so its own
+  # `alertmanager_notifications_failed_total` says when the sink stopped
+  # accepting. ⚠️ The one alert that cannot be DELIVERED is the one about
+  # the deliverer: `AizzakScrapeTargetDown{job="alertmanager"}` fires in
+  # Prometheus and goes nowhere. The Watchdog's five-minute line in the
+  # sink's log going quiet is what says so instead.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
 
   # ── Optional target: NOT started by a default `docker compose up` ─────────
   # `tier: optional` is read by `alerts.yml`'s `AizzakScrapeTargetDown` rule,

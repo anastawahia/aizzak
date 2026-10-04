@@ -1,0 +1,58 @@
+# Where a firing alert goes once Prometheus has decided it is firing --
+# capacity 7.3 (docs/capacity-plan.md), and the end of debt د-5.
+#
+# ── One receiver, and it is local on purpose ───────────────────────────────
+# Until 7.3 every rule in `deploy/prometheus/alerts.yml` was evaluated and
+# reached nobody: `ALERTS{alertstate="firing"}` in Prometheus, and that was
+# the whole delivery path. The owner chose (2026-10-04) to deliver locally
+# for now: every notification is a JSON line in `alert-sink`'s log, which
+# Alloy ships to Loki like any other container's, so it can be read in
+# Grafana (`{service="alert-sink"}`) or with `docker compose logs alert-sink`.
+# An external channel is one more entry under `receivers:` plus a `continue:
+# true` route the day one is chosen -- and its secret goes in `.env` and a
+# `*_file` field, never in this file.
+#
+# ── Timings ────────────────────────────────────────────────────────────────
+# group_wait 15s: long enough for the replicas of one fault to land in one
+#   notification (three app containers losing Vault within a scrape of each
+#   other), short enough to keep a one-minute rule inside two minutes end to
+#   end. MEASURED with 30s: stopping redis-cache to the line in the sink took
+#   126s against the two minutes docs/monitoring-plan.md stage 1 asks for.
+# group_interval 1m: how soon a CHANGE to a group is sent -- a second stream
+#   joining a lagging one, and above all a resolution. MEASURED with 5m: the
+#   "resolved" line arrived 301s after redis-cache was back, five minutes of
+#   an operator not knowing the repair had worked.
+# repeat_interval 4h for a warning, 1h for a critical: an alert that is still
+#   true is said again, so a missed line is not a missed outage; a critical
+#   more often because it is a capability already gone.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: local-sink
+  group_by: [alertname]
+  group_wait: 15s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    # The heartbeat. `AizzakWatchdog` is always firing, so a line from it
+    # every five minutes proves Prometheus evaluates, Alertmanager routes and
+    # the sink records. The day the lines stop, the pipeline broke -- which
+    # no rule INSIDE the pipeline can ever say about itself.
+    - matchers: ['alertname="AizzakWatchdog"']
+      receiver: local-sink
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
+    - matchers: ['severity="critical"']
+      receiver: local-sink
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: local-sink
+    webhook_configs:
+      - url: http://alert-sink:9095/
+        # A resolution is half of what an operator needs: "it stopped" is
+        # the line that says the repair worked.
+        send_resolved: true

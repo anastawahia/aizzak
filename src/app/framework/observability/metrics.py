@@ -65,6 +65,10 @@ HTTP_DURATION_METRIC = "aizzak_http_request_duration_seconds"
 DB_POOL_IN_USE_METRIC = "aizzak_db_pool_in_use"
 DB_POOL_AVAILABLE_METRIC = "aizzak_db_pool_available"
 DB_POOL_OVERFLOW_METRIC = "aizzak_db_pool_overflow"
+# Capacity 7.3 -- the denominator the three above never had. "Is the pool
+# saturated" is `in_use / capacity`, and without this gauge the capacity lived
+# only in two environment variables Prometheus cannot read.
+DB_POOL_CAPACITY_METRIC = "aizzak_db_pool_capacity"
 EVENT_LOOP_LAG_METRIC = "aizzak_event_loop_lag_seconds"
 RATE_LIMIT_REJECTIONS_METRIC = "aizzak_rate_limit_rejections_total"
 WS_CONNECTIONS_METRIC = "aizzak_ws_connections"
@@ -141,6 +145,14 @@ db_pool_available = Gauge(
 db_pool_overflow = Gauge(
     DB_POOL_OVERFLOW_METRIC,
     "Overflow connections open beyond pool_size in this process.",
+    multiprocess_mode="livesum",
+)
+
+db_pool_capacity = Gauge(
+    DB_POOL_CAPACITY_METRIC,
+    "Most connections this process's pool will hand out (pool_size + "
+    "max_overflow) before a checkout queues for DB_POOL_TIMEOUT_S and then "
+    "fails with a 500 (capacity-plan 7.3).",
     multiprocess_mode="livesum",
 )
 
@@ -294,11 +306,16 @@ embedding_cache_total = Counter(
 
 @dataclass(frozen=True, slots=True)
 class PoolStats:
-    """The three numbers ``§3``'s connection-budget equation is written in."""
+    """The three numbers ``§3``'s connection-budget equation is written in,
+    and since capacity 7.3 the ceiling they are measured against."""
 
     in_use: int
     available: int
     overflow: int
+    # ``None`` for a pool with no ceiling to saturate (``max_overflow=-1``) or
+    # one that cannot say -- the alert then has no denominator, which is the
+    # truth rather than a guess.
+    capacity: int | None = None
 
 
 def pool_stats_of(pool: object) -> PoolStats | None:
@@ -326,7 +343,31 @@ def pool_stats_of(pool: object) -> PoolStats | None:
         in_use=int(checked_out),
         available=int(checked_in),
         overflow=max(0, int(overflow)),
+        capacity=_capacity_of(pool),
     )
+
+
+def _capacity_of(pool: object) -> int | None:
+    """``pool_size + max_overflow``, or ``None`` when there is no such ceiling.
+
+    ⚠️ ``_max_overflow`` is private, and read anyway: ``QueuePool`` exposes
+    ``size()`` but no public accessor for the overflow ceiling (SQLAlchemy
+    2.0), and the alternative -- recomputing it from ``DB_POOL_SIZE`` and
+    ``DB_MAX_OVERFLOW`` here -- would report what the environment says
+    rather than what the pool was actually built with. A rename on
+    SQLAlchemy's side lands in the ``AttributeError`` branch and publishes
+    nothing, which ``AizzakDbPoolSaturated`` then cannot evaluate; it does not
+    publish a wrong number.
+    """
+    try:
+        size = int(pool.size())  # type: ignore[attr-defined]
+        max_overflow = int(pool._max_overflow)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        return None
+    if max_overflow < 0:
+        # `max_overflow=-1` is SQLAlchemy's "no limit": nothing to saturate.
+        return None
+    return size + max_overflow
 
 
 async def sample_process_metrics(
@@ -373,3 +414,5 @@ async def sample_process_metrics(
             db_pool_in_use.set(stats.in_use)
             db_pool_available.set(stats.available)
             db_pool_overflow.set(stats.overflow)
+            if stats.capacity is not None:
+                db_pool_capacity.set(stats.capacity)
