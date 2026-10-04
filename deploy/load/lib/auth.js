@@ -120,6 +120,37 @@ export function uploaderCount() {
   return uploaderIndices().length;
 }
 
+// For `abuse.js`: ONE pool entry is the abusive tenant and every other entry
+// is a neighbour. `INV-W1` gives each user one workspace, so an entry is a
+// user and a tenant at once -- the abuser is a single identity, and no
+// neighbour can share its buckets. The last entry by default: the pool is
+// ordered by space size, so it is a small tenant, and its admitted requests
+// cost what everyone else's do (`LOAD_ABUSER_INDEX` picks another).
+export function abuserIndex() {
+  const raw = __ENV.LOAD_ABUSER_INDEX;
+  const i = raw === undefined || raw === '' ? pool.length - 1 : Number(raw);
+  if (!Number.isInteger(i) || i < 0 || i >= pool.length) {
+    throw new Error(`LOAD_ABUSER_INDEX=${raw} is not an entry of a ${pool.length}-token pool.`);
+  }
+  return i;
+}
+
+export function abuserToken() {
+  return pool[abuserIndex()];
+}
+
+// Round-robin over the ITERATION, skipping the abuser -- the
+// `uploadTokenForIteration` shape, for the same reason: a fast request frees
+// its VU at once, so a VU-bound token would put most of the neighbours' load
+// on the handful of VUs k6 keeps reusing, and those few users would meet
+// their own 120/min ceiling. Per iteration, every neighbour carries the same
+// share, which `abuse.js` checks is far below that ceiling.
+export function neighbourTokenForIteration(i) {
+  const skip = abuserIndex();
+  const j = i % (pool.length - 1);
+  return pool[j < skip ? j : j + 1];
+}
+
 // For a VU that holds several sockets (`ws_hold.js`): socket `slot` of
 // `slots`, a stride apart, so one VU's sockets belong to `slots` different
 // users and the population spreads over the pool as evenly as one socket per

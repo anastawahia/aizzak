@@ -47,6 +47,10 @@ export const wsFrames = new Counter('aizzak_ws_frames');
 // error rate.
 export const rejected = new Counter('aizzak_rate_limited_total');
 export const failures = new Rate('aizzak_failed_requests');
+// One sample per 429: did it carry `Retry-After`? The check below says the
+// same per route; this is the one number `abuse.js` can gate on across all of
+// them (1.2's acceptance criterion names the header).
+export const retryAfterPresent = new Rate('aizzak_429_retry_after');
 
 // Anything the platform is allowed to answer under load without it counting
 // against the error budget. 429 by §7; 503 deliberately NOT included -- a
@@ -58,12 +62,14 @@ const ACCEPTABLE = new Set([429]);
 export function graded(res, name, expected) {
   const want = expected || [200];
   if (ACCEPTABLE.has(res.status)) {
-    rejected.add(1, { route: name });
+    rejected.add(1, { route: name, scope: refusalScope(res) });
     failures.add(false);
     // A 429 without `Retry-After` is a bug in the limiter, not a rejection
     // the client can act on (`1.2`'s own acceptance criterion), so it is
     // checked here where every 429 in the whole harness passes through.
-    check(res, { [`${name}: 429 carries Retry-After`]: (r) => !!r.headers['Retry-After'] });
+    const hasRetryAfter = !!res.headers['Retry-After'];
+    retryAfterPresent.add(hasRetryAfter);
+    check(res, { [`${name}: 429 carries Retry-After`]: () => hasRetryAfter });
     return false;
   }
   const ok = want.includes(res.status);
@@ -73,4 +79,27 @@ export function graded(res, name, expected) {
     console.error(`${name} -> ${res.status} ${String(res.body).slice(0, 300)}`);
   }
   return ok;
+}
+
+// WHICH ceiling said no -- a tag on `aizzak_rate_limited_total`, read from the
+// body because the status is the same 429 for all of them. A tenant held at
+// its own user ceiling is the limiter working; a 429 from the in-flight guard
+// or from nginx's per-address `limit_req` is the platform or the edge running
+// out of room, and the two must not add up into one number. nginx's refusal
+// is its plain HTML error page (`deploy/nginx/nginx.conf`, `limit_req_status`),
+// so a body that is not JSON is the edge. The details are
+// `api/middleware/rate_limit.py`'s `_DETAILS` and `inflight.py`'s; "heavy job"
+// is tested first because it ends in "for this user" too.
+export function refusalScope(res) {
+  let detail;
+  try {
+    detail = String(JSON.parse(res.body).detail || '');
+  } catch {
+    return 'edge';
+  }
+  if (detail.startsWith('heavy job')) return 'heavy';
+  if (detail.endsWith('for this user')) return 'user';
+  if (detail.endsWith('for this workspace')) return 'workspace';
+  if (detail.includes('in-flight')) return 'in_flight';
+  return 'other';
 }

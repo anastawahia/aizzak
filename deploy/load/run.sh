@@ -7,6 +7,7 @@
 #   deploy/load/run.sh average
 #   deploy/load/run.sh step
 #   deploy/load/run.sh backlog   (capacity 5.5's load; 08 §4.21 stops the worker around it)
+#   deploy/load/run.sh abuse     (1.2: one abusive tenant against its neighbours, 3 phases)
 #
 # Environment the OPERATOR must supply (there are no defaults, on purpose --
 # see `lib/config.js` on why an unstated seed makes two runs incomparable):
@@ -25,9 +26,9 @@ set -euo pipefail
 
 profile="${1:-peak}"
 case "$profile" in
-  peak | average | step | backlog) ;;
+  peak | average | step | backlog | abuse) ;;
   *)
-    echo "usage: $0 {peak|average|step|backlog}" >&2
+    echo "usage: $0 {peak|average|step|backlog|abuse}" >&2
     exit 2
     ;;
 esac
@@ -454,6 +455,18 @@ if [ -f "$host_out" ]; then
     echo "                see .counters.dropped_iterations against .counters.iterations." >&2
   elif [ "$valid" != "True" ]; then
     echo "            ⚠️  one of §0.1's conditions was not met — see .validity in the file." >&2
+  fi
+fi
+
+# The abuse profile's verdict is a comparison between its phases, which no k6
+# threshold can express, so `abuse.js` writes it into the archive and it is
+# turned into an exit code HERE -- 99, k6's own code for a crossed threshold,
+# so a run whose neighbours felt the abuser fails exactly like a missed budget.
+if [ "$profile" = abuse ] && [ -f "$host_out" ] && [ "$k6_status" = 0 ]; then
+  held="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["isolation"]["held"])' "$host_out" 2>/dev/null || echo '?')"
+  if [ "$held" != "True" ]; then
+    echo "isolation : NOT HELD — see .isolation.checks in the file." >&2
+    k6_status=99
   fi
 fi
 

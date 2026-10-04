@@ -17,8 +17,14 @@ import { authHeaders, tokenForVu } from '../lib/auth.js';
 import { graded } from '../lib/metrics.js';
 
 export function browse() {
-  const tok = tokenForVu();
-  const slot = __ITER % 10;
+  return browseAs(tokenForVu(), __ITER);
+}
+
+// The same mix for a caller that chooses the token itself -- `abuse.js`'s
+// abuser and its neighbours, so the two differ in rate and in nothing else.
+// `n` picks the slot, so it must advance by one per call for the mix to hold.
+export function browseAs(tok, n) {
+  const slot = n % 10;
 
   if (slot < 4) {
     // `agent_key` AND `space_id` are both REQUIRED query parameters -- threads

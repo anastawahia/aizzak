@@ -2973,6 +2973,20 @@ services:
       LOAD_INDEX_TIMEOUT_S: ${LOAD_INDEX_TIMEOUT_S-}
       LOAD_WS_HOLD_MS: ${LOAD_WS_HOLD_MS-}
       LOAD_WS_PING_MS: ${LOAD_WS_PING_MS-}
+      LOAD_WS_REJECT_BACKOFF_MS: ${LOAD_WS_REJECT_BACKOFF_MS-}
+      # A knob missing from this list is not refused, it is IGNORED: the
+      # container never sees it and the profile runs on its default while the
+      # operator believes otherwise. The two RAG knobs were missing from here
+      # from the day they were added; found when the abuse profile's were.
+      LOAD_RAG_QUERIES: ${LOAD_RAG_QUERIES-}
+      LOAD_RAG_QUERY_ZIPF: ${LOAD_RAG_QUERY_ZIPF-}
+      # `abuse.js` (capacity 1.2).
+      LOAD_ABUSE_PHASE_S: ${LOAD_ABUSE_PHASE_S-}
+      LOAD_ABUSE_WARMUP_S: ${LOAD_ABUSE_WARMUP_S-}
+      LOAD_NEIGHBOUR_RPS: ${LOAD_NEIGHBOUR_RPS-}
+      LOAD_ABUSE_RPS: ${LOAD_ABUSE_RPS-}
+      LOAD_ABUSER_INDEX: ${LOAD_ABUSER_INDEX-}
+      LOAD_NEIGHBOUR_TOLERANCE: ${LOAD_NEIGHBOUR_TOLERANCE-}
       # The seed declaration §0.1 condition (3) asks for. Empty is not a
       # default: `lib/config.js` marks the whole result invalid when these are
       # unstated, which is the point.

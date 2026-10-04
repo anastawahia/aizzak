@@ -516,6 +516,83 @@ export function buildBacklogOptions({ durationS }) {
   };
 }
 
+// ── The ABUSE profile (1.2's isolation criterion) ─────────────────────────
+// Three phases of equal length, back to back, after a warm-up: the
+// neighbours alone, the neighbours with the abuser, the neighbours alone again. The criterion is a
+// COMPARISON -- "does not raise its neighbour's p95" -- and a comparison
+// needs a reference taken on the same stack minutes apart, not a budget from
+// a document. Two quiet phases rather than one bracket the abuse phase, so a
+// stack that drifts on its own during the run (a backlog draining, a cache
+// warming, the host paging) shows up as the two references disagreeing
+// instead of as an effect of the abuser.
+//
+// The phase and the tenant are scenario TAGS, so every metric -- k6's and
+// this harness's -- splits by them without any scenario naming one, and the
+// verdict is computed from the slices in `abuse.js`. The thresholds here
+// only materialise those slices (k6 builds a tagged submetric only where a
+// threshold names it) plus §7 item 4's error budget, which holds for the
+// whole run: an abuser's 429 is not an error (`lib/metrics.js`).
+export const ABUSE_PHASES = ['before', 'abuse', 'after'];
+export const REFUSAL_SCOPES = ['user', 'workspace', 'in_flight', 'edge', 'heavy', 'other'];
+
+export function buildAbuseOptions({ warmupS, phaseS, neighbourRps, abuseRps }) {
+  // The warm-up is the neighbours' own traffic, judged by nothing. Without it
+  // the first quiet phase is also the stack's cold start -- every neighbour's
+  // first request a principal-cache miss, the hot pages not yet in memory --
+  // and a slow reference is one the abuser passes too easily.
+  const scenarios = {};
+  if (warmupS > 0) {
+    scenarios.neighbour_warmup = {
+      ...arrival('neighbour', neighbourRps, `${warmupS}s`, 50, 400),
+      tags: { tenant: 'neighbour', phase: 'warmup' },
+    };
+  }
+  ABUSE_PHASES.forEach((phase, i) => {
+    const startTime = `${warmupS + i * phaseS}s`;
+    scenarios[`neighbour_${phase}`] = {
+      ...arrival('neighbour', neighbourRps, `${phaseS}s`, 50, 400),
+      startTime,
+      tags: { tenant: 'neighbour', phase },
+    };
+    if (phase === 'abuse') {
+      scenarios.abuser = {
+        ...arrival('abuser', abuseRps, `${phaseS}s`, 50, 400),
+        startTime,
+        tags: { tenant: 'abuser', phase },
+      };
+    }
+  });
+
+  const thresholds = { aizzak_failed_requests: ['rate<0.001'] };
+  for (const phase of ABUSE_PHASES) {
+    const t = `tenant:neighbour,phase:${phase}`;
+    thresholds[`http_req_duration{${t},op:read}`] = ['p(99)>=0'];
+    thresholds[`http_req_duration{${t},op:write}`] = ['p(99)>=0'];
+    thresholds[`http_req_duration{${t}}`] = ['p(99)>=0'];
+    thresholds[`http_reqs{${t}}`] = ['count>=0'];
+    thresholds[`aizzak_failed_requests{${t}}`] = ['rate>=0'];
+    thresholds[`aizzak_rate_limited_total{${t}}`] = ['count>=0'];
+    thresholds[`iterations{phase:${phase}}`] = ['count>=0'];
+    thresholds[`dropped_iterations{phase:${phase}}`] = ['count>=0'];
+  }
+  thresholds['http_req_duration{tenant:abuser}'] = ['p(99)>=0'];
+  thresholds['http_reqs{tenant:abuser}'] = ['count>=0'];
+  thresholds['aizzak_failed_requests{tenant:abuser}'] = ['rate>=0'];
+  thresholds['aizzak_rate_limited_total{tenant:abuser}'] = ['count>=0'];
+  thresholds['aizzak_429_retry_after{tenant:abuser}'] = ['rate>=0'];
+  thresholds['dropped_iterations{tenant:abuser}'] = ['count>=0'];
+  for (const scope of REFUSAL_SCOPES) {
+    thresholds[`aizzak_rate_limited_total{tenant:abuser,scope:${scope}}`] = ['count>=0'];
+  }
+
+  return {
+    ...TLS_GLOBAL_OPTIONS,
+    summaryTrendStats: TREND_STATS,
+    scenarios,
+    thresholds,
+  };
+}
+
 export function scaleFor(profile) {
   return profile === 'peak' ? 1 : 1 / PEAK_FACTOR;
 }

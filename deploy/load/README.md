@@ -80,6 +80,41 @@ Its result adds a `backlog` block: `offered`, `accepted` (each 202 is one
 `knowledge.document.registered` event — the number the SQL verdict must find
 twice) and `dropped`.
 
+**And one for tenant isolation: `abuse.js`**, the half of step 1.2's
+acceptance a functional test cannot reach — "an abusive tenant in a k6 test
+does not raise its neighbour's p95". After a warm-up of neighbour traffic
+that nothing judges (`LOAD_ABUSE_WARMUP_S`, default 60 s — a cold first phase
+is a slow reference, and the abuser would pass it too easily), three phases
+of `LOAD_ABUSE_PHASE_S` (default 300 s): the neighbours alone, the
+neighbours with one abusive tenant, the neighbours alone again. Both sides run `browse`'s mix, so the
+abuser differs in rate and nothing else.
+
+* **The neighbours** are every pool entry but one, at `LOAD_NEIGHBOUR_RPS`
+  (default §0's average, 50 rps), the token chosen per iteration so each
+  stays far below its own 120/min — `setup()` refuses a pool where they
+  would not, since their own 429s would read as the abuser reaching them.
+* **The abuser** is the remaining entry (`LOAD_ABUSER_INDEX`, default the
+  last) at `LOAD_ABUSE_RPS`, default **100 rps — 1.2's own figure** for a
+  tenant of fifty users at the ceiling (6,000/min). `INV‑W1` gives each user
+  one workspace and no membership route exists, so that volume can only come
+  from ONE user here, and the user bucket holds it; the tenant bucket
+  (2,400/min) sits above it and cannot bind first.
+* **Two quiet phases, not one,** so a stack that drifts on its own during the
+  run shows up as its two references disagreeing (`quiet_spread_pct`), not as
+  an effect of the abuser. The abuser is charged only with what the worse of
+  them did not also do.
+
+Every 429 in the harness is now tagged with the ceiling that refused it
+(`scope`: `user`, `workspace`, `in_flight`, `edge`, `heavy`, `other`),
+read from the body — `lib/metrics.js` `refusalScope`. The result adds an
+`isolation` block: per phase the neighbours' p95 for reads and writes, their
+429s and errors; the comparison, at `LOAD_NEIGHBOUR_TOLERANCE` (default 10 %);
+and the abuser's requests, how many were admitted against the most a 60 s
+sliding log can admit in the phase, and which ceiling refused the rest.
+`isolation.held` needs all six of its `checks`, and `run.sh` exits 99 when it
+is false — the verdict is a comparison between phases, which no k6 threshold
+can express.
+
 ---
 
 ## 2. The token pool — condition (1)
@@ -267,6 +302,7 @@ deploy/load/smoke.sh          # ~30 s   (the harness itself, §2)
 deploy/load/run.sh peak       # 30 min  (§7 item 1)
 deploy/load/run.sh average    # 8 hours (§7 item 2)
 deploy/load/run.sh backlog    # 20 min  (capacity 5.5 — `08 §4.21` stops the worker around it)
+deploy/load/run.sh abuse      # 16 min  (capacity 1.2 — one abusive tenant, its neighbours' p95)
 ```
 
 **k6 does not have to be installed.** It is a Go binary, not something this
@@ -379,7 +415,9 @@ Useful overrides: `LOAD_BASE_URL` · `LOAD_DURATION_S` · `LOAD_WS_VUS` ·
 `LOAD_WS_SOCKETS_PER_VU` · `LOAD_TOKEN_FILE` · `LOAD_AGENT_KEY` ·
 `LOAD_P95_GENERATION_S` · `LOAD_RAG_QUERIES` · `LOAD_RAG_QUERY_ZIPF` ·
 `LOAD_INDEX_POLL_MAX_S` · `LOAD_INDEX_TIMEOUT_S` · `LOAD_UPLOAD_ORIGIN` ·
-`LOAD_VERBOSE=1`.
+`LOAD_VERBOSE=1` · and for `abuse` only: `LOAD_ABUSE_PHASE_S` · `LOAD_ABUSE_WARMUP_S` ·
+`LOAD_NEIGHBOUR_RPS` · `LOAD_ABUSE_RPS` · `LOAD_ABUSER_INDEX` ·
+`LOAD_NEIGHBOUR_TOLERANCE`.
 
 **`LOAD_UPLOAD_ORIGIN`** is the one address the generator is *handed* rather
 than configured with. `POST /files` answers with a URL presigned against
