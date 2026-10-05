@@ -4,13 +4,17 @@
 #
 #   deploy/prometheus/test-rules.sh
 #
-# Three checks, each with the binary of the image Compose actually runs, so a
+# Four checks, each with the binary of the image Compose actually runs, so a
 # rule that parses here parses in production:
 #   1. promtool check rules     -- alerts.yml is valid PromQL and YAML;
 #   2. promtool test rules      -- alerts.test.yml: every rule fires on the
 #                                  shape it exists for, and stays silent on
 #                                  the healthy one;
-#   3. amtool check-config      -- deploy/alertmanager/alertmanager.yml.
+#   3. amtool check-config      -- deploy/alertmanager/alertmanager.yml;
+#   4. promtool check config    -- deploy/prometheus/prometheus.yml, with
+#                                  alerts.yml beside it as the container sees
+#                                  it (every scrape job parses, the rule file
+#                                  it names exists).
 #
 # ⚠️ Step 2 runs against a COPY of alerts.yml with the annotations removed.
 # promtool compares annotations exactly, so keeping them would force every
@@ -70,5 +74,11 @@ docker run --rm -v "$work:/t:ro" -w /t --entrypoint promtool \
 echo "== amtool check-config (${am_image})"
 docker run --rm -v "$PWD/deploy/alertmanager:/am:ro" --entrypoint amtool \
   "$am_image" check-config /am/alertmanager.yml
+
+echo "== promtool check config (${prom_image})"
+docker run --rm \
+  -v "$PWD/deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -v "$PWD/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+  --entrypoint promtool "$prom_image" check config /etc/prometheus/prometheus.yml
 
 echo "test-rules: OK"

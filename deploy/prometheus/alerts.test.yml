@@ -657,6 +657,165 @@ tests:
         alertname: AizzakLlmCircuitOpen
         exp_alerts: []
 
+  # ── aizzak-host ──────────────────────────────────────────────────────────
+  - name: the root filesystem at 85% past ten minutes fires once, with its mountpoint
+    interval: 15s
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="/dev/sdd",fstype="ext4",mountpoint="/"}'
+        values: "15e9x60"
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="/dev/sdd",fstype="ext4",mountpoint="/"}'
+        values: "100e9x60"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AizzakHostDiskHigh
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: AizzakHostDiskHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: "node-exporter:9100", device: /dev/sdd, fstype: ext4, mountpoint: /}
+
+  - name: 79 percent, the Windows drive, an overlay and a zero-size mount are silent
+    interval: 15s
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="/dev/sdd",fstype="ext4",mountpoint="/"}'
+        values: "21e9x60"
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="/dev/sdd",fstype="ext4",mountpoint="/"}'
+        values: "100e9x60"
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="C:",fstype="9p",mountpoint="/mnt/c"}'
+        values: "1e9x60"
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="C:",fstype="9p",mountpoint="/mnt/c"}'
+        values: "100e9x60"
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="overlay",fstype="overlay",mountpoint="/"}'
+        values: "1e9x60"
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="overlay",fstype="overlay",mountpoint="/"}'
+        values: "100e9x60"
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="none",fstype="ext4",mountpoint="/"}'
+        values: "0x60"
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="none",fstype="ext4",mountpoint="/"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AizzakHostDiskHigh
+        exp_alerts: []
+
+  # ── aizzak-postgres ──────────────────────────────────────────────────────
+  - name: a dead server behind a live exporter fires within the minute
+    interval: 15s
+    input_series:
+      - series: 'pg_up{job="postgres",instance="postgres-exporter:9187"}'
+        values: "0x10"
+      - series: 'up{job="postgres",instance="postgres-exporter:9187"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 15s
+        alertname: AizzakPostgresDown
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: AizzakPostgresDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: postgres, instance: "postgres-exporter:9187"}
+      - eval_time: 45s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts: []
+
+  - name: a dead exporter is a scrape failure, not a dead server
+    interval: 15s
+    input_series:
+      - series: 'up{job="postgres",instance="postgres-exporter:9187"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: postgres, instance: "postgres-exporter:9187"}
+      - eval_time: 45s
+        alertname: AizzakPostgresDown
+        exp_alerts: []
+
+  - name: a dead node exporter fires, a 15-second blip on the postgres one does not
+    interval: 15s
+    input_series:
+      - series: 'up{job="node",instance="node-exporter:9100"}'
+        values: "0x10"
+      - series: 'up{job="postgres",instance="postgres-exporter:9187"}'
+        values: "0 0 1x8"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: "node-exporter:9100"}
+
+  - name: a server that answers is silent
+    interval: 15s
+    input_series:
+      - series: 'pg_up{job="postgres",instance="postgres-exporter:9187"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AizzakPostgresDown
+        exp_alerts: []
+
+  - name: a lock wait past a minute that persists fires
+    interval: 15s
+    input_series:
+      - series: 'pg_lock_wait_longest_seconds{job="postgres",instance="postgres-exporter:9187",server="postgres:5432"}'
+        values: "70+15x10"
+    alert_rule_test:
+      - eval_time: 15s
+        alertname: AizzakPostgresLockWaitHigh
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: AizzakPostgresLockWaitHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, job: postgres, instance: "postgres-exporter:9187", server: "postgres:5432"}
+
+  - name: a 50-second wait and a one-sample 70 are silent
+    interval: 15s
+    input_series:
+      - series: 'pg_lock_wait_longest_seconds{job="postgres",instance="postgres-exporter:9187",server="postgres:5432"}'
+        values: "50x10"
+      - series: 'pg_lock_wait_longest_seconds{job="postgres",instance="postgres-exporter:9187",server="other:5432"}'
+        values: "0 0 70 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: AizzakPostgresLockWaitHigh
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: AizzakPostgresLockWaitHigh
+        exp_alerts: []
+
+  - name: a segment stuck past fifteen minutes fires, whatever failed_count says
+    interval: 15s
+    input_series:
+      - series: 'pg_archive_ready_oldest_age_seconds{job="postgres",instance="postgres-exporter:9187",server="postgres:5432"}'
+        values: "880+15x20"
+      - series: 'pg_archive_ready_segments{job="postgres",instance="postgres-exporter:9187",server="postgres:5432"}'
+        values: "3x20"
+      - series: 'pg_stat_archiver_failed_count{job="postgres",instance="postgres-exporter:9187"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AizzakPostgresArchiveStalled
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: AizzakPostgresArchiveStalled
+        exp_alerts:
+          - exp_labels: {severity: critical, job: postgres, instance: "postgres-exporter:9187", server: "postgres:5432"}
+
+  - name: quiet and healthy clusters are silent however old the last archive is
+    interval: 15s
+    input_series:
+      - series: 'pg_archive_ready_oldest_age_seconds{job="postgres",instance="postgres-exporter:9187",server="postgres:5432"}'
+        values: "0x80"
+      - series: 'pg_stat_archiver_last_archive_age{job="postgres",instance="postgres-exporter:9187"}'
+        values: "21600+15x80"
+      - series: 'pg_archive_ready_oldest_age_seconds{job="postgres",instance="postgres-exporter:9187",server="other:5432"}'
+        values: "0 5 12 0 3 9 0 2 0 0 4 0 1 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AizzakPostgresArchiveStalled
+        exp_alerts: []
+
   # ── aizzak-meta (7.3) ─────────────────────────────────────────────────────
   - name: the watchdog fires with nothing at all to read
     interval: 15s

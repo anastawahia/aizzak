@@ -1031,7 +1031,12 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 2g
+          # 2g -> 1792m (monitoring-host-postgres: pays for node-exporter +
+          # postgres-exporter). Its ceiling is `--maxmemory 1gb` below, not
+          # load: 15-day peak 21.0 MiB (cAdvisor), RSS 19.6 MiB
+          # (redis_exporter), no fork/COW (`--save ""`). 768 MiB stays above
+          # maxmemory for fragmentation and client buffers.
+          memory: 1792m
     image: redis:7
     # `--maxmemory 1gb`, and the plan's own `2gb` is the number this step
     # declines. The two ceilings are not the same kind of number: on the
@@ -2782,6 +2787,108 @@ services:
     restart: unless-stopped
     <<: *app-logging
 
+  # Monitoring plan phase 2, row 1 (docs/delivery/monitoring-host-postgres/design.md).
+  # NO host rootfs mount, deliberately: `/:/host` would hand uid 65534 every
+  # world-readable host file -- measured: /home/AIZZAK/.env is mode 0644 -- and
+  # the whole Windows drive through /mnt/c. statfs() on an empty NAMED volume
+  # answers for the filesystem holding Docker's data root, which on this host
+  # IS `/` (/dev/sdd, measured equal to `df -B1 /`); --path.rootfs strips the
+  # /host prefix so the series reads mountpoint="/". On a host whose
+  # /var/lib/docker is a separate disk this measures THAT disk -- the one every
+  # volume (Postgres, WAL spool, TSDB, Loki) lives on.
+  # CPU/memory come from the container's own /proc, which is host-wide (no
+  # lxcfs). Network numbers are the CONTAINER's namespace (Q-9), not the host's.
+  # `node_filesystem_readonly{mountpoint="/"}` reads 1 because THIS mount is
+  # :ro -- it says nothing about the host disk; no rule reads it.
+  node-exporter:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+    image: prom/node-exporter:v1.12.1
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - node-exporter-probe:/host:ro
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.disable-defaults"
+      - "--collector.cpu"
+      - "--collector.meminfo"
+      - "--collector.loadavg"
+      - "--collector.vmstat"
+      - "--collector.stat"
+      - "--collector.diskstats"
+      - "--collector.filesystem"
+      - "--collector.netdev"
+      - "--collector.uname"
+      - "--collector.time"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|etc|run)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(9p|autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|drvfs|erofs|fuse\\..*|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs|virtiofs)$$"
+    expose:
+      - "9100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9100/"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # Monitoring plan phase 2, row 2. DIRECT to postgres:5432, never the pooler:
+  # `AizzakPostgresDown` exists for the server dying BEHIND a live pgbouncer.
+  # Holds ONE credential, its own: metrics_exporter is pg_monitor and nothing
+  # else, CONNECTION LIMIT 2 (= the exporter's two MaxOpenConns(1) pools),
+  # statement_timeout 5s, lock_timeout 1s, read-only by default -- all set by
+  # deploy/postgres/initdb/15-metrics-exporter.sh, which is also what sets its
+  # password (08 §3.3-ج). The password is NOT in the `postgres` service's
+  # environment on purpose: a new key there changes that service's config hash,
+  # and the next plain `docker compose up -d` would recreate the database.
+  # Probes the EXPORTER (`/`), not the server and not /metrics -- the
+  # pgbouncer-exporter reasoning: it must keep answering `pg_up 0` mid-outage.
+  # queries.yaml is a single-file bind: an edit needs
+  # `up -d --force-recreate --no-deps postgres-exporter`.
+  postgres-exporter:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-aizzak}?sslmode=disable&connect_timeout=5
+      DATA_SOURCE_USER: metrics_exporter
+      DATA_SOURCE_PASS: ${METRICS_EXPORTER_PASSWORD:?set METRICS_EXPORTER_PASSWORD in .env}
+    volumes:
+      - ./deploy/postgres-exporter/queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    command:
+      - "--web.listen-address=:9187"
+      - "--extend.query-path=/etc/postgres-exporter/queries.yaml"
+      - "--collection-timeout=8s"
+      - "--no-collector.stat_statements"
+      - "--no-collector.statio_user_tables"
+    expose:
+      - "9187"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9187/"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    restart: unless-stopped
+    <<: *app-logging
+
   # ⚠️ OPT-IN, AND THE PROFILE IS A SECURITY DECISION rather than a
   # convenience. cAdvisor needs `/var/run/docker.sock` to name containers,
   # which is root-equivalent access to this host: anything that can talk to
@@ -3158,3 +3265,6 @@ volumes:
   # the data directory stays exactly what Vault itself owns, and this one
   # stays exactly what the bootstrap/recovery tooling owns.
   vault-init:
+  # Empty by design: node-exporter's statfs() on it answers for the filesystem
+  # holding Docker's data root, with no host path mounted.
+  node-exporter-probe:
