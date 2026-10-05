@@ -48,7 +48,11 @@ docker compose logs --since 1h alert-sink
 | التنبيه | الخطورة | باختصار |
 |---|---|---|
 | [`AizzakApiErrorBudgetBurnFast`](#aizzakapierrorbudgetburnfast) | حرج | أخطاء 5xx تأكل ميزانيّة الشهر بسرعة 14.4 ضعفاً |
+| [`AizzakPostgresDown`](#aizzakpostgresdown) | حرج | Postgres نفسُه لا يُجيب المُصدِّرَ (المُجمِّع قد يبدو سليماً) |
+| [`AizzakPostgresArchiveStalled`](#aizzakpostgresarchivestalled) | حرج | مقطعُ WAL منتهٍ ينتظر الأرشفة أكثر من 15 دقيقة |
 | [`AizzakApiErrorBudgetBurnSlow`](#aizzakapierrorbudgetburnslow) | تحذير | تسرّبُ أخطاءٍ بطيءٌ ومستمرّ (6 أضعاف) |
+| [`AizzakPostgresLockWaitHigh`](#aizzakpostgreslockwaithigh) | تحذير | جلسةٌ تنتظر قفلاً أكثر من دقيقة |
+| [`AizzakHostDiskHigh`](#aizzakhostdiskhigh) | تحذير | قرصُ الجهاز (`/`) ممتلئٌ أكثر من 80% |
 | [`AizzakPgbouncerDown`](#aizzakpgbouncerdown) | حرج | مُجمِّع اتصالات قاعدة البيانات لا يردّ |
 | [`AizzakRedisStreamDown`](#aizzakredisstreamdown) | حرج | Redis الخاصّ بالمجاري والجلسات لا يردّ |
 | [`AizzakVaultAuthFailing`](#aizzakvaultauthfailing) | حرج | التطبيق لا يصادق مع Vault (أو Vault مختوم) |
@@ -123,6 +127,68 @@ docker compose exec -T pgbouncer sh -c 'PGPASSWORD="$DB_PASSWORD" psql -h 127.0.
 4. إن نجح الأمرُ أعلاه فالمنصّةُ سليمة، والخللُ في بيانات اعتماد المُصدِّر (`POSTGRES_SUPERUSER` في `.env`).
 
 **كيف تعرف أنّه زال:** سطر `resolved` خلال أقلّ من دقيقة من عودته.
+
+---
+
+<a id="aizzakpostgresdown"></a>
+
+### `AizzakPostgresDown` — Postgres نفسُه لا يُجيب المُصدِّرَ
+
+**ماذا يعني:** `postgres-exporter` حيٌّ، لكنّه لا يستطيع الدخول إلى الخادم منذ 30 ثانية. **`AizzakPgbouncerDown` لا يرى هذا**: لوحة إدارة PgBouncer يجيبها المُجمِّع نفسُه، فيبقى `pgbouncer_up = 1` والخادمُ خلفه ميّت. كلُّ مسارٍ يلمس البيانات متوقّف.
+
+**الخطوات:**
+
+1. حالةُ الخادم (قراءةٌ فقط):
+
+```bash
+docker compose ps postgres
+```
+
+2. إن كان يعمل، فاقرأ ما يقوله المُصدِّر:
+
+```bash
+docker compose logs --since 10m postgres-exporter
+```
+
+   سطرُ `password authentication failed for user "metrics_exporter"` يعني **الدورَ أو كلمةَ سرّه لا الخادم**: على حجمٍ جديد يُولد الدورُ بلا كلمة سرّ، والعلاجُ [`08 §3.3‑ج`](../design/08-local-runbook.md) الخطوة ②.
+3. إن كان `postgres` متوقّفاً أو غير سليم: انظر `docker compose logs --since 10m postgres`. **إعادةُ تشغيل `postgres` قرارٌ بشريّ وحده.**
+
+**أسطرٌ في سجلّ المُصدِّر لا تعني عطلاً:** `WARN … Error loading config … postgres_exporter.yml` (ملفّ الوحدات المتعدّدة غير مستعمل)، و`WARN … The extended queries.yaml config is DEPRECATED`.
+
+**كيف تعرف أنّه زال:** `pg_up` يعود 1، وسطر `resolved` خلال أقلّ من دقيقة.
+
+---
+
+<a id="aizzakpostgresarchivestalled"></a>
+
+### `AizzakPostgresArchiveStalled` — مقطعُ WAL منتهٍ ينتظر الأرشفة أكثر من 15 دقيقة
+
+**ماذا يعني:** ملفّات `.ready` تتراكم: الخادمُ لا ينسخ WAL إلى المِبْولة. القرصُ يمتلئ، والاسترجاعُ إلى نقطةٍ زمنيّة يقف عند آخر مقطعٍ مؤرشف. **القاعدةُ مبنيّةٌ على `.ready` لا على `failed_count`** (يبقى 0 حين يتعذّر تنفيذ `archive_command` أصلاً) **ولا على `last_archive_age`** (عنقودٌ هادئ لا يُكمل مقاطع فيكبر العمر بلا عطل).
+
+**الخطوات:**
+
+1. حالةُ المؤرشِف (قراءةٌ فقط):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -x -c "SELECT * FROM pg_stat_archiver;"'
+```
+
+2. لماذا يفشل الأمر:
+
+```bash
+docker compose logs --since 30m postgres | grep -i "archive command failed"
+```
+
+3. مجلّدُ المِبْولة والقرص:
+
+```bash
+docker compose exec -T postgres ls -ld /var/lib/postgresql/wal-archive
+df -h /
+```
+
+4. إن كان `wal-shipper` متوقّفاً فالمِبْولةُ تمتلئ: `docker compose ps wal-shipper`. وعمقُها: `docker compose exec -T ops-scheduler python -m app.ops.backup status`.
+
+**كيف تعرف أنّه زال:** `pg_archive_ready_oldest_age_seconds` يعود 0، وسطر `resolved`.
 
 ---
 
@@ -258,6 +324,26 @@ docker compose exec -T app python -m app.ops.stream_trim status
 3. أصلح، أو ارجع عن التغيير الذي أدخله ([`08 §4.15`](../design/08-local-runbook.md)).
 
 **كيف تعرف أنّه زال:** يزول حين تنظف نصفُ الساعة الأخيرة.
+
+---
+
+<a id="aizzakpostgreslockwaithigh"></a>
+
+### `AizzakPostgresLockWaitHigh` — جلسةٌ تنتظر قفلاً أكثر من دقيقة
+
+**ماذا يعني:** جلسةٌ في قاعدة المنصّة تنتظر قفلاً منذ أكثر من 60 ثانية (`pg_locks.waitstart`). السببُ عادةً معاملةٌ مفتوحة أو `ALTER`/`VACUUM FULL` يدويّ. القاعدة تُحصي قاعدةَ المنصّة وحدَها، لا `aizzak_test`.
+
+**الخطوات:**
+
+1. من يحجب من (قراءةٌ فقط):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT pid, pg_blocking_pids(pid), wait_event, now()-xact_start AS tx_age, left(query,120) FROM pg_stat_activity WHERE wait_event_type = '"'"'Lock'"'"';"'
+```
+
+2. إن كان الحاجبُ عملاً مخطَّطاً فأسكت التنبيه من Grafana (لا تعدّل الحدّ). وإلّا فإنهاء الجلسة (`pg_cancel_backend`) **قرارٌ بشريّ**.
+
+**كيف تعرف أنّه زال:** `pg_lock_wait_longest_seconds` يعود 0، وسطر `resolved`.
 
 ---
 
@@ -433,6 +519,35 @@ docker compose ps ollama-bridge
 ---
 
 ## 4) التحذيرات — المجاري والصادر والتخزين
+
+<a id="aizzakhostdiskhigh"></a>
+
+### `AizzakHostDiskHigh` — قرصُ الجهاز (`/`) ممتلئٌ أكثر من 80%
+
+**ماذا يعني:** `/` يحمل جذرَ بيانات Docker كلَّه: Postgres ومِبْولة WAL وPrometheus وLoki. **Postgres يتوقّف عن الكتابة عند 100%.** القياسُ `1 - avail/size` (الكتلُ المحجوزة للجذر تُعدّ مستعملة). ⚠️ **قرصُ Windows (`C:`، `/mnt/c`) غيرُ مراقَب (Q‑2)**، وملفّ القرص الافتراضيّ عليه قد يمتلئ أوّلاً.
+
+**الخطوات:**
+
+1. المساحة (قراءةٌ فقط):
+
+```bash
+df -h /
+docker system df
+```
+
+2. عمقُ مِبْولة WAL (شاحنٌ ميّت يملأ القرص):
+
+```bash
+docker compose exec -T ops-scheduler python -m app.ops.backup status
+```
+
+3. ما يُحرَّر يُحرَّر **بالاسم وبقرارٍ بشريّ**.
+
+> ⛔ **لا** `docker volume prune` · **لا** `docker system prune` · **لا** `docker compose down -v`. الأوامرُ الثلاثة تمحو بياناتٍ لا تعود (أحجام Postgres وMinIO وQdrant وVault).
+
+**كيف تعرف أنّه زال:** الاستعمالُ تحت 80% عشر دقائق، وسطر `resolved`.
+
+---
 
 <a id="aizzakoutboxcycletimehigh"></a>
 
@@ -612,6 +727,7 @@ docker compose exec -T ops-scheduler python -m app.ops.scheduler run-once backup
 
    (ضع اسمَ المهمّة بدل `backup`). التفاصيل في [`08 §4.23`](../design/08-local-runbook.md).
 4. ملاحظة: بعد توقّف المكدّس كلّه مدّةً طويلة، قد يشتعل هذا لمهامّ الدورات القصيرة ثمّ يزول وحده بعد أوّل نجاح.
+5. **عمرُ آخر نسخةٍ احتياطيّة** هو `aizzak_ops_task_last_success_timestamp_seconds{task="backup"}` — وهذا التنبيهُ يغطّيه (Q‑5): لا قاعدةَ ثانيةً له.
 
 **كيف تعرف أنّه زال:** `status` يقول `ok` ونجاحٌ حديث، وسطر `resolved`.
 
