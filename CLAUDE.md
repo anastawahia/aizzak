@@ -62,7 +62,11 @@
 - A second target is RunPod (`deploy/runpod/`, an all-in-one image).
 - Nothing deploys automatically on push; CI only tests.
 - Wave 8, the production gate, is deferred by the owner. Do not expose the stack publicly (`docs/capacity-status.md`).
-- **Production deploys, and any recreate or restart of the running stack, are human-only.**
+- **Production deploys (RunPod, or anything exposed publicly) are human-only.**
+- The local Compose stack is a development environment (owner decision, 2026-10-05). Agents may start, stop, restart and recreate its containers (`docker compose up -d [--no-deps] [--force-recreate] <service>`, `restart`, `stop`):
+  - name the services you touch, and prefer `--no-deps`;
+  - check the services' health afterwards;
+  - volume deletion stays blocked by the hook, and `.env` stays unreadable.
 
 ## Secrets
 - Never read, print or copy these:
