@@ -6,7 +6,7 @@
 - **النطاق:** US‑1…US‑6 وUS‑8 وUS‑9. **US‑7 (اللوحات) مؤجّلة ولا تُختبر.**
 - **ملاحظة عن شجرة العمل:** `src/app/ops/backup.py` و`tests/unit/test_backup_wiring.py` و`tests/unit/test_ops_backup.py` فيها تعديلاتٌ غير مُودَعة من جلسةٍ أخرى (تغيير `QDRANT_RETENTION`). بوّابة pytest أدناه جرت على الشجرة كما هي، أي معها تلك التعديلات. لم تُلمس.
 - **الرموز في عمود النوع:** وحدة = `pytest tests/unit`؛ promtool = `deploy/prometheus/test-rules.sh`؛ Compose = `docker compose config` على `.env.example`؛ CI‑تكامل = `tests/integration` (لم يُشغَّل هنا: ممنوع دون إذن، يشغّله job ‏`integration`)؛ حيّ = فحصٌ مُسجَّل بتاريخه على الحزمة المحلّيّة.
-- **اختبارات أضافها QA:** `tests/unit/test_monitoring_host_postgres_acceptance.py` (20 اختباراً: 19 ناجحاً وواحدٌ `xfail(strict)` للخطأ BUG‑1).
+- **اختبارات أضافها QA:** `tests/unit/test_monitoring_host_postgres_acceptance.py` (20 اختباراً: كلّها ناجحة بعد إصلاح BUG‑1 وإزالة `xfail`).
 
 ## 1. مصفوفة التغطية
 
@@ -29,7 +29,7 @@
 | AC‑3.3 | حيّ | `up{job="postgres"}` = 1 و`pg_up` = 1 (ح‑1) | ✅ |
 | AC‑3.4 | حيّ | وُجدت سلاسل لـ: `pg_up`، `pg_locks_count` (45 سلسلة)، `pg_lock_wait_longest_seconds`، `pg_stat_activity_max_tx_duration`، `pg_database_size_bytes`، `pg_stat_user_tables_table_size_bytes` (43 جدولاً)، `pg_archive_ready_segments`، `pg_archive_ready_oldest_age_seconds`، `pg_stat_archiver_last_archive_age` | ✅ |
 | AC‑3.5 | حيّ | `pg_stat_activity` للدور: 1 (≤ 2)؛ والسقف من الخادم `CONNECTION LIMIT 2` | ✅ |
-| AC‑3.6 | حيّ (جزئيّ، الساعة لم تكتمل) | عند 18:24 UTC (الحاويتان تعملان منذ 18:11، أي نحو 13 دقيقة): `queryid`/`query` تسمية = لا نتيجة (0)؛ أقصى `scrape_samples_scraped` = 1535 (< 3000)؛ P95 زمن الكشط = 0.198 ث (< 2) في النافذة المتاحة. **القياس الكامل لساعةٍ كاملة بعد 19:11 UTC بيد البشري** | ✅ مؤقّتاً — المتبقّي للبشري |
+| AC‑3.6 | حيّ (أُكمل بعد الدورة 1) | قياس ساعةٍ كاملة عند 20:48 UTC (المُصدِّران يعملان منذ 18:11، أي أكثر من ساعتين): `max_over_time(scrape_samples_scraped[1h])` = 1535 (postgres) و357 (node) (< 3000)؛ P95 زمن الكشط خلال الساعة = 0.034 ث (postgres) و0.012 ث (node) (< 2)؛ لا سلسلة بتسمية `queryid` | ✅ |
 | AC‑3.7 | وحدة | `test_metrics_exporter_role.py::test_no_per_query_series_can_be_exported` (+ `queries.yaml`: كلّ الأعمدة GAUGE، لا تسمية) | ✅ |
 | AC‑4.1 | promtool | `alerts.test.yml`: «the root filesystem at 85% past ten minutes fires once, with its mountpoint» (صامتٌ عند 9m، يشتعل عند 11m بـ`severity: warning` و`mountpoint: /`) | ✅ |
 | AC‑4.2 | promtool + استكشاف | «79 percent, the Windows drive, an overlay and a zero-size mount are silent» (79% و9p و`overlay`)؛ وأضفتُ استكشافيّاً حالة tmpfs وقرصٍ آخر (§3). حالة «85% لمدّةٍ أقصر من `for`» تغطّيها حالة 9m في الاختبار الأول | ✅ |
@@ -53,13 +53,13 @@
 | AC‑8.3 | وحدة | `tests/unit/test_connection_budget.py` (164 = 162 + 2، وحارس `CONNECTION LIMIT 2` و`postgres:5432/`) | ✅ |
 | AC‑8.4 | بوّابات | §2: الستّ كلّها 0 | ✅ |
 | AC‑8.5 | وحدة (جديد) + مراجعة | `test_monitoring_host_postgres_acceptance.py::test_the_monitoring_plan_counts_the_real_number_of_rules` (27 = عدد القواعد الحقيقيّ، والجهاز وPostgres انتقلا من «الناقص»)؛ `::test_the_capacity_ledger_says_what_the_exporter_closed_and_left_open` (د‑12 ود‑15). `capacity-summary.html`: مراجعة يدويّة للفرق (سطر «متبقٍّ» حُدِّث؛ لا تغيّر في العدّادات لأنّ حالة الدَّين لم تتغيّر) | ✅ |
-| AC‑9.1 | وحدة (جديد) + مراجعة | `::test_the_activation_steps_come_in_the_required_order`، `::test_the_activation_warns_that_a_plain_up_recreates_things`، `::test_the_activation_explains_recreate_over_reload_and_checks_postgres_is_untouched`، `::test_the_activation_prints_no_secret`. **بندٌ ناقص:** فحص طول كلمة السرّ دون طباعتها غير موجود في §3.3‑ج → `::test_the_activation_checks_the_password_length_without_printing_it` (xfail صارم) = **BUG‑1** | 🔴 (جزئيّ: بندٌ واحد) |
+| AC‑9.1 | وحدة (جديد) + مراجعة | `::test_the_activation_steps_come_in_the_required_order`، `::test_the_activation_warns_that_a_plain_up_recreates_things`، `::test_the_activation_explains_recreate_over_reload_and_checks_postgres_is_untouched`، `::test_the_activation_prints_no_secret`. **BUG‑1 أُغلق في الدورة 1** (فحص الطول `len=` موجود في ⓪ ويرفض الفارغ و`change-me*`؛ الاختبار `::test_the_activation_checks_the_password_length_without_printing_it` يمرّ فعلاً دون `xfail`) | ✅ |
 | AC‑9.2 | حيّ | `up{job=~"node\|postgres"}` سلسلتان = 1 (ح‑1) | ✅ |
 | AC‑9.3 | حيّ | `Created` لـ`aizzak-postgres-1` = `2026-09-28T06:16:02Z` والمعرّف `6137b203eb18` = خطّ الأساس في `status.md` (لم يُعَد إنشاؤه). `StartedAt` = 12:07:47Z اليوم (إعادة تشغيلٍ سابقة لا إعادة إنشاء) | ✅ |
 | AC‑9.4 | حيّ | عند 18:24 UTC (Prometheus يعمل منذ 18:11:53، المُصدِّران منذ 18:11:20): `ALERTS{alertname=~"AizzakScrapeTargetDown\|AizzakPostgres.*\|AizzakHost.*", alertstate="firing"}` = لا نتيجة. الاشتعالان الوحيدان في المكدّس: `AizzakWatchdog` (بالتصميم) و`AizzakDlqNotEmpty` (قديمٌ لا علاقة له بالميزة). أُعيدت المراجعة في آخر الجلسة (§3 ح‑3) | ✅ |
-| AC‑9.5 | حيّ (جزئيّ) | `docker stats` عند 18:24: `node-exporter` 16.8 MiB من 64 (26%)؛ `postgres-exporter` 13.3 MiB من 128 (10%) — كلاهما < 50%. **قياس الساعة بعد 19:11 UTC وتسجيله في `status.md` بيد البشري** | ✅ مؤقّتاً — المتبقّي للبشري |
+| AC‑9.5 | حيّ (أُكمل بعد الدورة 1) | `docker stats` عند 20:48 UTC: `node-exporter` 17.6 MiB من 64 (27.6%)؛ `postgres-exporter` 14.6 MiB من 128 (11.4%) — كلاهما < 50% بعد أكثر من ساعتين | ✅ |
 
-**ملخّص:** 46 معياراً داخل النطاق (50 − 4 من US‑7): 45 ✅، 1 🔴 جزئيّ (AC‑9.1، بندٌ توثيقيّ). ثلاثة معايير تنتظر طرفاً آخر: AC‑2.4/2.5 (job ‏`integration` في CI)، وAC‑3.6/AC‑9.5 (قياس الساعة).
+**ملخّص (بعد الدورة 1):** 46 معياراً داخل النطاق: 46 ✅. يبقى معياران ينتظران طرفاً آخر: AC‑2.4/2.5 (job ‏`integration` في CI، لم يُشغَّل هنا). AC‑3.6/AC‑9.5 أُكملا (قياس الساعة).
 
 ## 2. نتائج بوابات المشروع
 على `/home/AIZZAK`، الفرع `monitoring`، `PATH` يبدأ بـ`.venv/bin` (دونه يتخطّى اختبار `tests/architecture/test_import_contracts.py` لأنّ `lint-imports` غير موجود على PATH).
@@ -115,7 +115,7 @@ test-rules: OK                                                 EXIT 0
 
 | # | الوصف | الشدة | خطوات إعادة الإنتاج | الحالة |
 |---|---|---|---|---|
-| BUG‑1 | **إجراء التفعيل (§3.3‑ج) ينقصه فحص طول كلمة السرّ** (AC‑9.1 البند ⓪، وتصميمه ⓪‑ب `len=32`). الخطوة ⓪ تلحق قيمةً عشوائيّة فقط إن غاب الاسم (`grep -q`)، فإن كان في `.env` قيمة `change-me-*` منسوخة من `.env.example` (والـ`:?` لا يرفضها: `08-local-runbook.md:665`) فتمرّ بصمت ويصير للدور كلمة سرّ معروفة. | minor (توثيقيّ؛ الحزمة المحلّيّة منشورةٌ بقيمةٍ عشوائيّة بحسب `status.md`، والمخاطرة على من ينفّذ الإجراء لاحقاً) | `sed -n '/### 3.3‑ج/,/^### /p' docs/design/08-local-runbook.md` وابحث عن فحص طول (`${#…}` أو `wc -c` أو `len=`): لا شيء. أو `pytest tests/unit/test_monitoring_host_postgres_acceptance.py::test_the_activation_checks_the_password_length_without_printing_it` (xfail صارم). **المتوقَّع:** سطرٌ بعد ⓪ يطبع الطول فقط (على نمط `08-local-runbook.md:665-675`) ويفشل إن < 24 أو بدأ بـ`change-me`. **الفعلي:** غائب. الملف: `docs/design/08-local-runbook.md` (قسم §3.3‑ج، كتلة ⓪). **المالك: backend (توثيق)**. بعد الإصلاح تُزال علامة `xfail` من الاختبار | مفتوح |
+| BUG‑1 | **إجراء التفعيل (§3.3‑ج) ينقصه فحص طول كلمة السرّ** (AC‑9.1 البند ⓪، وتصميمه ⓪‑ب `len=32`). الخطوة ⓪ تلحق قيمةً عشوائيّة فقط إن غاب الاسم (`grep -q`)، فإن كان في `.env` قيمة `change-me-*` منسوخة من `.env.example` (والـ`:?` لا يرفضها: `08-local-runbook.md:665`) فتمرّ بصمت ويصير للدور كلمة سرّ معروفة. | minor (توثيقيّ؛ الحزمة المحلّيّة منشورةٌ بقيمةٍ عشوائيّة بحسب `status.md`، والمخاطرة على من ينفّذ الإجراء لاحقاً) | `sed -n '/### 3.3‑ج/,/^### /p' docs/design/08-local-runbook.md` وابحث عن فحص طول (`${#…}` أو `wc -c` أو `len=`): لا شيء. أو `pytest tests/unit/test_monitoring_host_postgres_acceptance.py::test_the_activation_checks_the_password_length_without_printing_it` (xfail صارم). **المتوقَّع:** سطرٌ بعد ⓪ يطبع الطول فقط (على نمط `08-local-runbook.md:665-675`) ويفشل إن < 24 أو بدأ بـ`change-me`. **الفعلي:** غائب. الملف: `docs/design/08-local-runbook.md` (قسم §3.3‑ج، كتلة ⓪). **المالك: backend (توثيق)**. بعد الإصلاح تُزال علامة `xfail` من الاختبار | **مُغلق** (الدورة 1، commit `22442b2`؛ انظر §6) |
 
 **ملاحظات (ليست أخطاء، للعلم):**
 1. **AC‑2.6:** لا اختبار تكاملٍ ينفّذ سكربت الدور مرّتين؛ يقتصر الأمر على الاختبار الساكن وإجراء US‑9. يُنصح (غير حاجب) بإضافة حالةٍ إلى `test_metrics_exporter_role_live.py` تشغّل السكربت ثانيةً وتقارن `pg_roles`.
@@ -125,6 +125,39 @@ test-rules: OK                                                 EXIT 0
 5. **د‑25/CPU:** `OVERSUBSCRIBED 36.10/32` في `resource-budget.sh` (كان 35.60)؛ سابقٌ للميزة ولا يغيّر خروج 0.
 
 ## 5. الحكم
-**PASS مشروط** — البوّابات الستّ كلّها خضراء، ولا خطأ حاجبٌ ولا major؛ الخطأ الوحيد BUG‑1 (minor، توثيقيّ). ما يبقى لغير QA: نتيجة job ‏`integration` في CI (AC‑2.4/2.5)، وقياس الساعة الكاملة بعد 19:11 UTC (AC‑3.6/AC‑9.5)، وإصلاح سطر فحص الطول في §3.3‑ج (BUG‑1) ثمّ إزالة `xfail`.
+**PASS** (بعد الدورة 1) — البوّابات الستّ خضراء، لا أخطاء مفتوحة، BUG‑1 مُغلق وM‑1/L‑1 مُتحقَّق منهما على حاوية مؤقّتة. ما يبقى لغير QA: نتيجة job ‏`integration` في CI (AC‑2.4/2.5)، والتنظيف الحيّ لمرّة واحدة (إجراء بشريّ حصراً، `08 §3.3‑ج`) لإزالة أي أثر قديم في `pg_stat_statements` للحزمة الحيّة.
+
+
+## 6. إعادة بعد الدورة 1 (commits ‏`22442b2` و`97e4b12`)
+
+**البوّابات (على شجرة فيها تعديلات الجلسة الأخرى غير المُودَعة، لم تُلمس):**
+
+| البوّابة | النتيجة | EXIT |
+|---|---|---|
+| `ruff format --check .` | 798 files already formatted | 0 |
+| `ruff check .` | All checks passed! | 0 |
+| `mypy src` | Success: no issues found in 467 source files | 0 |
+| `lint-imports` | Contracts: 8 kept, 0 broken | 0 |
+| `pytest -rs tests/unit tests/architecture tests/eval` | 5107 passed, 7 warnings in 90.71s (لا xfail ولا skip) | 0 |
+| `deploy/prometheus/test-rules.sh` | 27 rules found، `test-rules: OK` | 0 |
+
+لم يُشغَّل `tests/integration` (ممنوع دون إذن)، ولم يُقرأ `.env`.
+
+**1) BUG‑1 مُغلق.**
+- `test_the_activation_checks_the_password_length_without_printing_it` يمرّ فعلاً (لا `xfail`).
+- السكربت المُودَع (`git show HEAD:deploy/postgres/initdb/15-metrics-exporter.sh`) يرفض الفارغ و`change-me*` بخروج 1 ما لم يكن `METRICS_EXPORTER_ALLOW_PLACEHOLDER=1`؛ وهذا المتغيّر لا يرد إلا في `ci.yml` والسكربت واختبار الوحدة (`grep` على الشجرة).
+- فحص الطول `len=${#l}` في ⓪ من `08 §3.3‑ج`، وحلقتا الأسرار في `08` وquickstart تضمّان `METRICS_EXPORTER_PASSWORD`.
+- على الحاوية المؤقّتة: الفارغ → `REFUSED ... empty` خروج 1؛ `change-me-abc` → `REFUSED: placeholder` خروج 1؛ مع `ALLOW_PLACEHOLDER=1` → تحذير وخروج 0.
+
+**2) M‑1/L‑1 على `postgres:16` مؤقّتة** (شبكة مؤقّتة، `shared_preload_libraries=pg_stat_statements`، `track_utility=on`، `track=all`؛ أُزيلت الحاوية والشبكة بعدها، والتحقّق: 0 متبقٍّ):
+- شُغّل السكربت المُودَع مرّتين بكلمة سرّ عشوائية (48 hex) بطريقة stdin: الخروج 0 في المرّتين (متقاربٌ ومتكرّر).
+- عدد صفوف `pg_stat_statements` التي تحوي القيمة = **0**. الشاهد: `ALTER ROLE ... PASSWORD 'qa-control-literal'` بجلسة psql عاديّة → **1** (فالقياس صالح ويكشف التسرّب).
+- سجلّ الحاوية لا يحوي القيمة (0 تطابق). والدخول بالقيمة عبر TCP نجح (الكلمة فعلاً مضبوطة).
+- `ps`: السكربت لا يستعمل `--set`/`-v` بالقيمة؛ الوحيد `--set db_name=` (اسم قاعدة، لا سرّ) ويقرأ القيمة بـ`\getenv` فلا تظهر في argv.
+- لم يُشغَّل شيء على `postgres` الحيّ.
+
+**3) الحزمة الحيّة عند 20:48 UTC:** كلّ الخدمات `healthy`؛ `up{job=~"node|postgres"}` = 1 للاثنين. قياسات الساعة في AC‑3.6/AC‑9.5 أعلاه.
+
+**الأخطاء المفتوحة:** لا شيء. لم تُضَف اختبارات جديدة (لا فجوة).
 
 </div>
