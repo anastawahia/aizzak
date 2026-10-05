@@ -107,6 +107,19 @@ _PG_SUPERUSER_RESERVED = 3
 _EXPORTER_ADMIN_CLIENTS = 1
 _POOLER_HEALTHCHECK_CLIENTS = 1
 
+# monitoring-host-postgres: `postgres-exporter` connects DIRECTLY to
+# postgres:5432 (never the pooler -- `AizzakPostgresDown` exists for the server
+# dying behind a live pgbouncer), so it holds real backends and no pooler
+# client. It opens two pools of `SetMaxOpenConns(1)` (exporter/server.go and
+# collector/instance.go in v0.20.1), and the role it logs in as carries
+# `CONNECTION LIMIT 2` (deploy/postgres/initdb/15-metrics-exporter.sh), so
+# the figure is enforced by the server rather than promised by the exporter.
+# `test_the_admin_sessions_this_ledger_counts_still_exist` pins both ends.
+_POSTGRES_EXPORTER_BACKENDS = 2
+_METRICS_EXPORTER_ROLE_SCRIPT = (
+    _REPO_ROOT / "deploy" / "postgres" / "initdb" / "15-metrics-exporter.sh"
+)
+
 _POOLER_ENDPOINT = "pgbouncer:6432"
 
 # The pool each entrypoint opens for its `DATABASE_URL`. Keyed by the module
@@ -504,6 +517,13 @@ def _server_backends(topology: _Topology, pool_ceiling: int) -> int:
     )
 
 
+def _postgres_backends(topology: _Topology, pool_ceiling: int) -> int:
+    """Every backend the Compose stack can hold: what the pooler opens
+    (`_server_backends`, which keeps meaning exactly that) plus the exporter's
+    direct ones."""
+    return _server_backends(topology, pool_ceiling) + _POSTGRES_EXPORTER_BACKENDS
+
+
 def _direct_backends(topology: _Topology) -> int:
     """RunPod has no pooler, so every pool slot is a backend."""
     return sum(
@@ -609,6 +629,16 @@ def test_the_admin_sessions_this_ledger_counts_still_exist() -> None:
         "client connection or a backend -- `_POOLER_HEALTHCHECK_CLIENTS` is now wrong"
     )
 
+    pg_exporter = compose["services"]["postgres-exporter"]["environment"]
+    assert str(pg_exporter["DATA_SOURCE_URI"]).startswith("postgres:5432/"), (
+        "postgres-exporter no longer connects directly to postgres:5432 -- "
+        "`_POSTGRES_EXPORTER_BACKENDS` is no longer a direct-backend term"
+    )
+    assert "CONNECTION LIMIT 2" in _METRICS_EXPORTER_ROLE_SCRIPT.read_text(encoding="utf-8"), (
+        "the metrics_exporter role no longer carries `CONNECTION LIMIT 2` -- the "
+        "server no longer enforces `_POSTGRES_EXPORTER_BACKENDS`"
+    )
+
 
 # --------------------------------------------- ceiling one: pooler clients --
 
@@ -650,7 +680,7 @@ def test_the_pooler_cannot_ask_postgres_for_more_backends_than_it_has() -> None:
     then discover that Postgres takes ninety-seven."""
     topology = _compose_topology()
     ceiling = _pg_max_connections() - _PG_SUPERUSER_RESERVED
-    backends = _server_backends(topology, _pool_ceiling())
+    backends = _postgres_backends(topology, _pool_ceiling())
 
     assert backends <= ceiling, (
         f"the pooler can open {backends} backends against a server that allows {ceiling} "
@@ -847,7 +877,7 @@ def test_the_runbook_ledger_carries_the_numbers_this_module_computes() -> None:
 
     computed = {
         "compose.pooler_clients": _pooler_clients(compose),
-        "compose.postgres_backends": _server_backends(compose, _pool_ceiling()),
+        "compose.postgres_backends": _postgres_backends(compose, _pool_ceiling()),
         "compose.app_rw_demand": _demand_by_role(compose)["app_rw"],
         "compose.web_concurrency_max": _highest_fitting_web_concurrency(
             compose, client_ceiling, _pooler_clients

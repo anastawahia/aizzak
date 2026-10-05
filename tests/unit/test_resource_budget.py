@@ -346,7 +346,11 @@ def test_the_patterns_actually_find_something() -> None:
     # a tenth of a GB under the 57.60 this ledger allows.
     # 27 since capacity 7.3: `alertmanager` (0.25 vCPU / 64 MB) and
     # `alert-sink` (0.1 / 32 MB) -> 35.60/57.59, sized to fit the last tenth.
-    assert len(standing) == 27, sorted(standing)
+    # 29 since monitoring-host-postgres: node-exporter (0.25/64m) +
+    # postgres-exporter (0.25/128m), paid for by redis-cache 2g -> 1792m (its
+    # 15-day peak is 21 MiB under a 1 GiB maxmemory) -> 36.10/57.53, 70 MiB
+    # under the ceiling.
+    assert len(standing) == 29, sorted(standing)
     assert len(oneshot) == 5, sorted(oneshot)
     assert len(profiled) == 3, sorted(profiled)
     assert _to_bytes("512m") == 512 * 1024**2

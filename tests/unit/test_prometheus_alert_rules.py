@@ -150,6 +150,16 @@ EXPECTED_ALERTS = frozenset(
         "AizzakRedisCacheDown",
         # 6.1's circuit, deferred there for want of a delivery path (د-5).
         "AizzakLlmCircuitOpen",
+        # Monitoring plan phase 2, rows 1-2 (docs/monitoring-plan.md §1,
+        # docs/delivery/monitoring-host-postgres/) -- the first rules about the
+        # HOST and about Postgres ITSELF rather than the pooler in front of it.
+        # Until then a full disk, a dead server behind a live pgbouncer
+        # (`pgbouncer_up` is the admin console's verdict) and a stalled WAL
+        # archiver were all silent: none of them had a series to threshold.
+        "AizzakHostDiskHigh",
+        "AizzakPostgresDown",
+        "AizzakPostgresLockWaitHigh",
+        "AizzakPostgresArchiveStalled",
         # The pipeline's heartbeat: the one rule that speaks by ARRIVING.
         "AizzakWatchdog",
     }
@@ -208,8 +218,12 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     runbook section and a promtool case that fires it (see the tests at the
     end of this module).
 
+    Monitoring plan phase 2 (rows 1-2) adds four: the host's root disk, and
+    Postgres's liveness, lock wait and WAL archiving -- the first rules about
+    the host and about the server itself, which had no exporter until then.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a TWENTY-FOURTH entry needs its own
+    decision, never by drift -- so a TWENTY-EIGHTH entry needs its own
     written reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md``) first, not just a name added here.
 
@@ -234,7 +248,8 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
         "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
         "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5), the two "
-        "scheduled-task rules (step 5.7) and the eleven of step 7.3. A new "
+        "scheduled-task rules (step 5.7), the eleven of step 7.3 and the four of "
+        "monitoring-plan phase 2. A new "
         "rule needs its own logged justification first, not just a name added to "
         "EXPECTED_ALERTS."
     )
@@ -667,3 +682,56 @@ def test_the_watchdog_is_true_by_construction() -> None:
     rule = _rule_named(_load_rules(), "AizzakWatchdog")
     assert rule["expr"].strip() == "vector(1)"
     assert str(rule.get("for", "0s")) in {"0s", "0"}
+
+
+def test_the_postgres_liveness_rule_reads_the_exporters_verdict() -> None:
+    """`pg_up`, not `up`: the exporter keeps answering scrapes while the server
+    is gone -- and `pgbouncer_up` cannot see it, the pooler answers its own
+    admin console (AC-5.6)."""
+    rule = _rule_named(_load_rules(), "AizzakPostgresDown")
+    assert rule["expr"].strip() == 'pg_up{job="postgres"} == 0'
+    assert rule["labels"]["severity"] == "critical"
+    assert str(rule["for"]) == "30s"
+
+
+def test_the_archive_rule_reads_progress_not_the_failure_counter() -> None:
+    """`failed_count` stays 0 when archive_command cannot even run, and
+    `last_archive_age` grows on a quiet cluster that completes no segments;
+    only the oldest `.ready` file tells a stall from either (AC-5.5)."""
+    rule = _rule_named(_load_rules(), "AizzakPostgresArchiveStalled")
+    expr = rule["expr"]
+    assert "failed_count" not in expr and "last_archive_age" not in expr
+    assert "pg_archive_ready_oldest_age_seconds" in expr and "> 900" in expr
+    assert rule["labels"]["severity"] == "critical"
+
+
+def test_the_lock_rule_thresholds_one_minute_of_waiting() -> None:
+    rule = _rule_named(_load_rules(), "AizzakPostgresLockWaitHigh")
+    assert 'pg_lock_wait_longest_seconds{job="postgres"}' in rule["expr"]
+    assert "> 60" in rule["expr"]
+    assert rule["labels"]["severity"] == "warning"
+
+
+def test_the_disk_rule_watches_root_only() -> None:
+    """The Windows drive is deliberately unmonitored (Q-2)."""
+    rule = _rule_named(_load_rules(), "AizzakHostDiskHigh")
+    expr = rule["expr"]
+    assert 'mountpoint="/"' in expr and "/mnt/c" not in expr
+    assert "> 0.80" in expr
+    assert str(rule["for"]) == "10m"
+    assert rule["labels"]["severity"] == "warning"
+
+
+def test_the_rule_script_also_checks_the_scrape_config() -> None:
+    script = (_REPO_ROOT / "deploy" / "prometheus" / "test-rules.sh").read_text(encoding="utf-8")
+    assert "check config" in script, "prometheus.yml is no longer syntax-checked in CI"
+
+
+def test_the_backup_age_question_points_at_the_ops_task_rule() -> None:
+    """AC-5.8: the age of the last backup is not a new rule -- it is the
+    overdue rule's ledger metric, and the runbook must say so."""
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    start = text.index('<a id="aizzakopstaskoverdue">')
+    end = text.find('<a id="', start + 1)
+    section = text[start : end if end != -1 else len(text)]
+    assert 'aizzak_ops_task_last_success_timestamp_seconds{task="backup"}' in section
