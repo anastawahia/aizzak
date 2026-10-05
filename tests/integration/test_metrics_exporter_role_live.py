@@ -41,7 +41,7 @@ _DSN = os.environ.get(
 _QUERIES = Path(__file__).resolve().parents[2] / "deploy" / "postgres-exporter" / "queries.yaml"
 _MISSING = (
     f"role {_ROLE} does not exist on this cluster -- run "
-    "docs/design/08-local-runbook.md §3.3-ج step 2 (15-metrics-exporter.sh)"
+    "docs/design/08-local-runbook.md §3.3-ج step ① (15-metrics-exporter.sh)"
 )
 
 

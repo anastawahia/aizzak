@@ -21,20 +21,27 @@
 # psql's argv (CWE-214), and as a psql variable, so the shell never
 # interpolates it into SQL.
 #
-# Before the ALTER the same session turns off the two places that would keep
+# Before the ALTER the same session turns off every place that would keep
 # the literal (CWE-312/532): `pg_stat_statements.track_utility` (the ALTER ROLE
 # text, literal included, would sit in pg_stat_statements, readable by
-# pg_read_all_stats and printed by `app.ops.slow_queries top`) and
-# `log_min_error_statement` (a failing ALTER would log the statement). Both
-# are superuser-only settings and this script runs as the superuser. (The
-# statement is still in pg_stat_activity.query for the instant it runs.)
+# pg_read_all_stats and printed by `app.ops.slow_queries top`),
+# `log_min_error_statement` (a failing ALTER would log the statement), and the
+# statement-logging knobs an operator may have switched on (log_statement,
+# log_min_duration_statement, log_min_duration_sample,
+# log_transaction_sample_rate, debug_print_parse). All are superuser-settable
+# in-session and this script runs as the superuser. (The statement is still in
+# pg_stat_activity.query for the instant it runs.)
 #
-# A real cluster refuses an empty or `change-me*` password (that value is
-# published in .env.example and the role reads other sessions' query text).
-# CI alone opts in with METRICS_EXPORTER_ALLOW_PLACEHOLDER=1.
+# A real cluster refuses an empty, `change-me*` (any case) or shorter-than-32
+# password (that value is published in .env.example and the role reads other
+# sessions' query text). The check runs BEFORE the first psql call, so a
+# refused run creates and changes nothing. CI alone opts in with
+# METRICS_EXPORTER_ALLOW_PLACEHOLDER=1 (placeholder and length checks skipped).
 #
 # Why no top-level `exit`: docker-entrypoint.sh `source`s every 0644 *.sh in
 # /docker-entrypoint-initdb.d, so an `exit` here would abort cluster init.
+# A refusal (`return 1`) also aborts initdb under the entrypoint's `set -e`; it
+# is reachable only if the variable enters the postgres service.
 #
 # The role is pg_monitor and nothing else, NOINHERIT with ONE membership that
 # is explicitly live (PG16 records the inherit option per membership -- the
@@ -43,6 +50,28 @@
 # text of other sessions' queries via pg_read_all_stats (part of pg_monitor);
 # the exporter never exports that text as a label.
 set -euo pipefail
+
+if [ "${METRICS_EXPORTER_PASSWORD+set}" = "set" ]; then
+    # `return` when sourced by docker-entrypoint, `exit` when run by hand.
+    if [ -z "${METRICS_EXPORTER_PASSWORD}" ]; then
+        echo "15-metrics-exporter: REFUSED: METRICS_EXPORTER_PASSWORD is empty -- fix .env first" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    if [ "${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" = "1" ]; then
+        echo "15-metrics-exporter: WARNING: placeholder/short password checks skipped (CI only)" >&2
+    else
+        case "${METRICS_EXPORTER_PASSWORD,,}" in
+            change-me*)
+                echo "15-metrics-exporter: REFUSED: placeholder password (change-me-*) -- fix .env first" >&2
+                return 1 2>/dev/null || exit 1
+                ;;
+        esac
+        if [ "${#METRICS_EXPORTER_PASSWORD}" -lt 32 ]; then
+            echo "15-metrics-exporter: REFUSED: password shorter than 32 characters -- fix .env first" >&2
+            return 1 2>/dev/null || exit 1
+        fi
+    fi
+fi
 
 psql -v ON_ERROR_STOP=1 \
      --username "${POSTGRES_USER:-postgres}" \
@@ -71,25 +100,16 @@ psql -v ON_ERROR_STOP=1 \
 EOSQL
 
 if [ "${METRICS_EXPORTER_PASSWORD+set}" = "set" ]; then
-    # `return` when sourced by docker-entrypoint, `exit` when run by hand.
-    if [ -z "${METRICS_EXPORTER_PASSWORD}" ]; then
-        echo "15-metrics-exporter: REFUSED: METRICS_EXPORTER_PASSWORD is empty -- fix .env first" >&2
-        return 1 2>/dev/null || exit 1
-    fi
-    case "${METRICS_EXPORTER_PASSWORD}" in
-        change-me*)
-            if [ "${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" != "1" ]; then
-                echo "15-metrics-exporter: REFUSED: placeholder password (change-me-*) -- fix .env first" >&2
-                return 1 2>/dev/null || exit 1
-            fi
-            echo "15-metrics-exporter: WARNING: placeholder password allowed (CI only)" >&2
-            ;;
-    esac
     psql -v ON_ERROR_STOP=1 \
          --username "${POSTGRES_USER:-postgres}" \
          --dbname "${POSTGRES_DB:-postgres}" <<-'EOSQL'
         SET pg_stat_statements.track_utility = off;
         SET log_min_error_statement = panic;
+        SET log_statement = 'none';
+        SET log_min_duration_statement = -1;
+        SET log_min_duration_sample = -1;
+        SET log_transaction_sample_rate = 0;
+        SET debug_print_parse = off;
         \getenv exporter_password METRICS_EXPORTER_PASSWORD
         ALTER ROLE metrics_exporter PASSWORD :'exporter_password';
 EOSQL

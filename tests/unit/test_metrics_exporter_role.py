@@ -12,8 +12,11 @@ only through the script run by hand, and the exporter holds the one credential.
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +89,11 @@ def test_the_literal_is_kept_out_of_pg_stat_statements_and_the_log() -> None:
     for setting in (
         "SET pg_stat_statements.track_utility = off;",
         "SET log_min_error_statement = panic;",
+        "SET log_statement = 'none';",
+        "SET log_min_duration_statement = -1;",
+        "SET log_min_duration_sample = -1;",
+        "SET log_transaction_sample_rate = 0;",
+        "SET debug_print_parse = off;",
     ):
         assert setting in sql, setting
         assert sql.index(setting) < alter, f"{setting} must precede the password ALTER"
@@ -100,11 +108,56 @@ def test_a_real_cluster_refuses_an_empty_or_placeholder_password() -> None:
     sql = _sql_only()
     assert '"${METRICS_EXPORTER_PASSWORD+set}" = "set"' in sql
     assert 'if [ -z "${METRICS_EXPORTER_PASSWORD}" ]' in sql
+    assert '"${METRICS_EXPORTER_PASSWORD,,}" in' in sql, "the placeholder match is case-insensitive"
     assert "change-me*)" in sql
-    assert '"${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" != "1"' in sql
-    assert sql.count("REFUSED") == 2 and sql.count("return 1 2>/dev/null || exit 1") == 2
+    assert '"${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" = "1"' in sql
+    assert '"${#METRICS_EXPORTER_PASSWORD}" -lt 32' in sql
+    assert sql.count("REFUSED") == 3 and sql.count("return 1 2>/dev/null || exit 1") == 3
     ci = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "METRICS_EXPORTER_ALLOW_PLACEHOLDER=1" in ci
+
+
+def test_a_refused_run_creates_nothing() -> None:
+    """R1-3: every refusal sits before the first psql call."""
+    sql = _sql_only()
+    first_psql = sql.index("psql -v ON_ERROR_STOP=1")
+    assert sql.rindex("REFUSED") < first_psql
+
+
+def _run_refusal(
+    password: str, *, allow_placeholder: bool = False
+) -> tuple[subprocess.CompletedProcess[str], bool]:
+    """Run the real script with a `psql` that records a call and succeeds."""
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / "psql"
+        fake.write_text(f"#!/bin/sh\ntouch {tmp}/psql-called\ncat >/dev/null\n", encoding="utf-8")
+        fake.chmod(0o755)
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", _VAR: password}
+        if allow_placeholder:
+            env["METRICS_EXPORTER_ALLOW_PLACEHOLDER"] = "1"
+        result = subprocess.run(
+            ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False
+        )
+        return result, (Path(tmp) / "psql-called").exists()
+
+
+@pytest.mark.parametrize(
+    "password", ["Change-me-x", "changeme", "CHANGE-ME-" + "x" * 40, "short", "Zq7!xw", ""]
+)
+def test_weak_passwords_are_refused_before_psql_and_never_printed(password: str) -> None:
+    result, called = _run_refusal(password)
+    assert result.returncode == 1
+    assert "REFUSED" in result.stderr
+    assert not called, "a refused run must not reach psql"
+    if len(password) > 5:  # shorter ones collide with words in the fixed message
+        assert password not in result.stdout + result.stderr
+
+
+def test_a_strong_password_passes_the_gate_and_ci_opt_in_still_works() -> None:
+    strong, strong_called = _run_refusal("a1" * 24)
+    assert strong.returncode == 0 and strong_called
+    ci, ci_called = _run_refusal("change-me-metrics-exporter", allow_placeholder=True)
+    assert ci.returncode == 0 and ci_called and "WARNING" in ci.stderr
 
 
 def test_pg_monitor_with_inherit_is_the_only_grant() -> None:
