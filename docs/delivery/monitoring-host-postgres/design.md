@@ -440,7 +440,9 @@ custom metrics: pg_lock_wait_longest_seconds, pg_lock_wait_sessions,
 
 # Role script  deploy/postgres/initdb/15-metrics-exporter.sh
 inputs : POSTGRES_USER (default postgres), POSTGRES_DB (default postgres),
-         METRICS_EXPORTER_PASSWORD (optional; empty -> role without password, warning on stderr)
+         METRICS_EXPORTER_PASSWORD (optional: unset -> role without password, warning on stderr;
+                                    set but empty/placeholder/<32 chars -> REFUSED rc=1, nothing created),
+         METRICS_EXPORTER_ALLOW_PLACEHOLDER (=1: CI only, skips the placeholder and length checks)  [amended 2026-10-05]
 effect : idempotent; exit 0 on success, non-zero on SQL error (ON_ERROR_STOP)
 contract: sourced by docker-entrypoint at initdb  -> NO top-level `exit`
           executed by hand:  docker compose exec -T -e METRICS_EXPORTER_PASSWORD postgres \
@@ -456,12 +458,36 @@ tests/unit/test_connection_budget.py::_POSTGRES_EXPORTER_BACKENDS = 2
 
 ## 4. البيانات
 
+> **تعديلٌ لاحق للمراجعة، 2026‑10‑05 (R1‑1، وM‑1 وL‑1 وL‑4 وI‑7 وR1‑3 في `security-review.md`/`review.md`).** النصّ أدناه هو السكربت **المُنفَّذ**. وقد خالفته النسخةُ الأولى من هذا القسم في خمسة أمور: (1) كلمة السرّ تعبر `\getenv` لا `--set exporter_password=…`، فلا تدخل argv (CWE‑214). (2) جلسة `ALTER` تعطّل في جلستها قبل `ALTER`: `pg_stat_statements.track_utility` و`log_min_error_statement` ثمّ `log_statement` و`log_min_duration_statement` و`log_min_duration_sample` و`log_transaction_sample_rate` و`debug_print_parse`، فلا يبقى الحرفيّ في الإحصاءات ولا السجلّ (CWE‑312/532). (3) الرفض: متغيّرٌ مضبوطٌ فارغ، أو `change-me*` بأيّ حالة أحرف، أو أقصر من 32 محرفاً ⇒ `return 1`/`exit 1` دون طباعة القيمة، **قبل** أوّل `psql` فلا يُنشأ شيء. (4) `METRICS_EXPORTER_ALLOW_PLACEHOLDER=1` يعطّل فحصَي القيمة النائبة والطول (CI وحده، بتحذيرٍ على stderr). (5) متغيّرٌ غير مضبوط ⇒ دورٌ بلا كلمة سرّ (مسار initdb). والاختبارات الجديدة في الجدول 5‑ب.
+
 **لا جداول ولا أعمدة ولا فهارس ولا ترحيل Alembic ولا تغيير RLS.** التغيير الوحيد دورُ عنقودٍ جديد، يُنشئه سكربت `initdb` على حجمٍ جديد، وأمرٌ بشريّ على العنقود القائم. السكربت مُجرَّب على `postgres:16` مؤقّت: نجح عند `initdb` بلا كلمة سرّ، ثمّ مرّتين يدويّاً بكلمة سرّ، بمخرجٍ 0 وخصائص لم تتغيّر. والنصّ التالي مُلزِم، ويُكتب فوقه رأس تعليقٍ إنجليزيّ على نمط `10-roles.sh` يشرح ثلاثة أشياء: لماذا ملفٌّ مستقلّ، ولماذا لا كلمة سرّ في بيئة `postgres`، ولماذا لا `exit`.
 
 ```bash
 #!/bin/bash
 # (header comment -- see above)
 set -euo pipefail
+
+if [ "${METRICS_EXPORTER_PASSWORD+set}" = "set" ]; then
+    # `return` when sourced by docker-entrypoint, `exit` when run by hand.
+    if [ -z "${METRICS_EXPORTER_PASSWORD}" ]; then
+        echo "15-metrics-exporter: REFUSED: METRICS_EXPORTER_PASSWORD is empty -- fix .env first" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    if [ "${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" = "1" ]; then
+        echo "15-metrics-exporter: WARNING: placeholder/short password checks skipped (CI only)" >&2
+    else
+        case "${METRICS_EXPORTER_PASSWORD,,}" in
+            change-me*)
+                echo "15-metrics-exporter: REFUSED: placeholder password (change-me-*) -- fix .env first" >&2
+                return 1 2>/dev/null || exit 1
+                ;;
+        esac
+        if [ "${#METRICS_EXPORTER_PASSWORD}" -lt 32 ]; then
+            echo "15-metrics-exporter: REFUSED: password shorter than 32 characters -- fix .env first" >&2
+            return 1 2>/dev/null || exit 1
+        fi
+    fi
+fi
 
 psql -v ON_ERROR_STOP=1 \
      --username "${POSTGRES_USER:-postgres}" \
@@ -489,19 +515,23 @@ psql -v ON_ERROR_STOP=1 \
     GRANT pg_monitor TO metrics_exporter WITH INHERIT TRUE;
 EOSQL
 
-if [ -n "${METRICS_EXPORTER_PASSWORD:-}" ]; then
-    case "${METRICS_EXPORTER_PASSWORD}" in
-        change-me*) echo "15-metrics-exporter: WARNING: placeholder password (change-me-*)" >&2 ;;
-    esac
+if [ "${METRICS_EXPORTER_PASSWORD+set}" = "set" ]; then
     psql -v ON_ERROR_STOP=1 \
          --username "${POSTGRES_USER:-postgres}" \
-         --dbname "${POSTGRES_DB:-postgres}" \
-         --set exporter_password="${METRICS_EXPORTER_PASSWORD}" <<-'EOSQL'
+         --dbname "${POSTGRES_DB:-postgres}" <<-'EOSQL'
+        SET pg_stat_statements.track_utility = off;
+        SET log_min_error_statement = panic;
+        SET log_statement = 'none';
+        SET log_min_duration_statement = -1;
+        SET log_min_duration_sample = -1;
+        SET log_transaction_sample_rate = 0;
+        SET debug_print_parse = off;
+        \getenv exporter_password METRICS_EXPORTER_PASSWORD
         ALTER ROLE metrics_exporter PASSWORD :'exporter_password';
 EOSQL
     echo "15-metrics-exporter: metrics_exporter ready (password set)"
 else
-    echo "15-metrics-exporter: metrics_exporter created WITHOUT a password -- set it with 08 §3.3-ج step ②" >&2
+    echo "15-metrics-exporter: metrics_exporter created WITHOUT a password -- set it with 08 §3.3-ج step ①" >&2
 fi
 ```
 
@@ -702,7 +732,13 @@ pg_ls_archive_statusdir()       -> يعمل (عضويّة pg_monitor فعّال�
 | `test_the_role_script_sorts_between_the_roles_and_the_extensions` | الاسم بين `10-roles.sh` و`20-extensions.sh`، والوضع غير تنفيذيّ (0644) كأخيه |
 | `test_the_role_script_is_safe_to_source` | لا سطر `exit` خارج الدوالّ (يُستورَد عند `initdb`) |
 | `test_the_role_is_created_inside_an_existence_check` | `IF NOT EXISTS (… rolname = 'metrics_exporter')` و`CREATE ROLE metrics_exporter LOGIN NOINHERIT CONNECTION LIMIT 2` (AC‑2.1) |
-| `test_the_password_is_a_psql_variable_never_shell_interpolated` | `--set exporter_password=` و`PASSWORD :'exporter_password'`، ولا `PASSWORD '$` (AC‑2.1) |
+| `test_the_password_is_a_psql_variable_never_shell_interpolated` | `\getenv exporter_password METRICS_EXPORTER_PASSWORD` و`PASSWORD :'exporter_password'`، ولا `PASSWORD '$` (AC‑2.1؛ عُدِّل 2026‑10‑05) |
+| `test_the_password_is_never_on_a_command_line` | لا `--set exporter_password` ولا `-v exporter_password` (L‑1، CWE‑214) |
+| `test_the_literal_is_kept_out_of_pg_stat_statements_and_the_log` | `SET track_utility/log_min_error_statement/log_statement/log_min_duration_statement/log_min_duration_sample/log_transaction_sample_rate/debug_print_parse` كلّها قبل `\getenv` ثمّ `ALTER`، في جلسة psql نفسها (M‑1، L‑4) |
+| `test_a_real_cluster_refuses_an_empty_or_placeholder_password` | الفارغ و`change-me*` (حالة أحرف غير حسّاسة) وأقلّ من 32، وتجاوز CI الصريح في `ci.yml` (BUG‑1، I‑7) |
+| `test_a_refused_run_creates_nothing` | كلّ رفضٍ قبل أوّل `psql` (R1‑3) |
+| `test_weak_passwords_are_refused_before_psql_and_never_printed` | تشغيلٌ فعليّ للسكربت بـ`psql` مزيَّف: `Change-me-x` و`changeme` و`short` وغيرها ⇒ rc=1 دون استدعاء psql ودون طباعة القيمة (I‑7) |
+| `test_a_strong_password_passes_the_gate_and_ci_opt_in_still_works` | كلمةٌ قويّة تمرّ، والمسار `ALLOW_PLACEHOLDER=1` يمرّ بتحذير (I‑7) |
 | `test_pg_monitor_with_inherit_is_the_only_grant` | `GRANT pg_monitor TO metrics_exporter WITH INHERIT TRUE`؛ لا `GRANT SELECT\|INSERT\|UPDATE\|DELETE`؛ ولا ظهور لـ`pg_read_all_data` و`pg_write_all_data` و`pg_read_server_files` و`pg_write_server_files` و`pg_execute_server_program`؛ وكلمات `SUPERUSER\|BYPASSRLS\|CREATEROLE\|REPLICATION\|CREATEDB` لا تظهر إلّا مسبوقةً بـ`NO` (AC‑2.1) |
 | `test_the_role_is_bounded_server_side` | `statement_timeout = '5s'` و`lock_timeout = '1s'` و`default_transaction_read_only = on` و`CONNECTION LIMIT 2` (AC‑2.5 نصّاً) |
 | `test_every_attribute_is_reasserted_so_a_rerun_converges` | `ALTER ROLE metrics_exporter LOGIN NOINHERIT NOSUPERUSER … CONNECTION LIMIT 2` خارج كتلة `DO` (AC‑2.6 شكلاً) |

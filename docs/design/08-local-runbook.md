@@ -481,7 +481,7 @@ resources.reference_host_gb   = 64
 
 **⚠️ و`5.7` أنفقت آخرَ ما بقي من هامش الذاكرة تقريباً.** `ops-scheduler` خدمةٌ **دائمة** (المهامُّ الليليّة لا تنتظر مشغّلاً يتذكّرها)، وسقفُها سقفُ خدمة `backup` نفسُه — **1 vCPU و1g** — لأنّ أثقلَ ما تشغّله هو `backup full` نفسُه. **⚠️ وذلك السقفُ نفسُه لم يُقَس:** وضعته `3.4` لخدمة `backup` مع سقوف الخدمات كلِّها، ولم تقِس `2.5` ذروةَ ذاكرتها، فذروةُ `backup full` الحقيقيّة أوّلُ ما يُقاس حين يُعاد تركيبُ الميزانيّة. فصار المجموعُ **57.50 من 57.60** التي يسمح بها هامشُ هذا الدفتر (‏64 − 6.4): **عُشرُ غيغابايت**. أيُّ خدمةٍ دائمةٍ تُضاف بعدها — أو أيُّ سقفٍ يُرفع — **يُسقط `test_the_standing_budget_fits_the_reference_host`**، وذلك مقصود: الدفترُ يقول الآن بصوتٍ عالٍ إنّ المضيفَ المرجعيَّ امتلأ، وإنّ الخطوةَ التالية التي تضيف شيئاً دائماً يجب أن تُعيد تركيبه (وهو دَينٌ مسجَّلٌ أصلاً لـ`5.3` في `د‑26`). والمعالجةُ **35.25 من 32** (‏1.10×) حجزٌ زائدٌ يُبلَّغ، بالحكم نفسِه الذي تشرحه الفقرةُ التالية.
 
-**⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّان نظرةً في إعادة تركيب الدفتر (`د‑26`).
+**⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّ نظرةً في إعادة تركيب الدفتر (`د‑26`).
 
 **⚠️ و`7.3` أنفقت العُشرَ الباقي إلّا قليلاً.** خدمتا توصيل التنبيهات دائمتان (تنبيهٌ لا يصل حين يُحتاج ليس تنبيهاً): `alertmanager` بـ0.25 vCPU و**64m**، و`alert-sink` بـ0.1 vCPU و**32m** — نصفُ سقف المُصدِّرات وربعُه، لأنّ الهامشَ كان 102 ميغابايت لا أكثر. فصار المجموعُ **57.59 من 57.60**. والسقفان صغيران لأنّ العمليّتين صغيرتان، والمقيسُ بعد النشر في `capacity-status.md` (‏`7.3`). **والخطوةُ التالية التي تضيف شيئاً دائماً لا تجد مكاناً أصلاً**: إعادةُ تركيب الدفتر (`د‑26`) صارت شرطاً لا خياراً.
 
@@ -858,7 +858,7 @@ cd /home/AIZZAK
 grep -q '^METRICS_EXPORTER_PASSWORD=' .env || printf '\nMETRICS_EXPORTER_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> .env
 #    الطول وحده (المتوقَّع len=48)، ويقف الإجراء إن كانت القيمة فارغةً أو `change-me*` (AC‑9.1):
 #    الاسمُ الموجودُ لا يعني قيمةً حقيقيّة: `cp .env.example .env` يَدَعُ القيمةَ المنشورةَ في المستودع.
-l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "$l" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) echo "len=${#l}";; esac
+l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "${l,,}" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) [ "${#l}" -ge 32 ] && echo "len=${#l}" || { echo "TOO SHORT -- fix .env first"; false; };; esac
 #    خطّ الأساس لـAC‑9.3: معرّفُ postgres ووقتُ إقلاعه وبصمتُه على الحاوية الحيّة، ثمّ المحسوبة (تتساويان؛ وإلّا فثمّة انحرافٌ سابق)
 docker inspect -f '{{.Id}} {{.State.StartedAt}} {{index .Config.Labels "com.docker.compose.config-hash"}}' aizzak-postgres-1
 docker compose config --hash postgres
@@ -866,8 +866,8 @@ docker compose config --hash postgres
 # ①  الدورُ وكلمةُ سرّه. كلمةُ السرّ تعبر **stdin** إلى الحاوية، ثمّ يقرؤها psql من البيئة بـ`\getenv`:
 #    لا تُطبع، ولا تدخل بيئةَ هذا الصَدَفة ولا سطرَ أوامر. (داخل الحاوية تعيش في بيئة عمليّة السكربت
 #    وحدها، لا في argv لـpsql.) والسكربتُ يعطّل `pg_stat_statements.track_utility` و
-#    `log_min_error_statement` في جلسته قبل `ALTER ROLE`، فلا يبقى الحرفيّ في `pg_stat_statements` ولا في
-#    السجلّ؛ ويرفض كلمةً فارغةً أو `change-me*`. يُشغَّل مرّتين (AC‑2.6) والسطرُ بعدهما واحد.
+#    `log_min_error_statement` و`log_statement` وأخواتها (`log_min_duration_*` و`log_transaction_sample_rate` و`debug_print_parse`) في جلسته قبل `ALTER ROLE`، فلا يبقى الحرفيّ في `pg_stat_statements` ولا في
+#    السجلّ؛ ويرفض كلمةً فارغةً أو `change-me*` (بأيّ حالة أحرف) أو أقصر من 32 محرفاً، **قبل** أوّل `psql` فلا يُنشئ شيئاً. يُشغَّل مرّتين (AC‑2.6) والسطرُ بعدهما واحد.
 for i in 1 2; do
   sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env |
     docker compose exec -T postgres bash -c \
@@ -934,9 +934,9 @@ SELECT count(*) AS leaking_after FROM pg_stat_statements WHERE query ILIKE 'ALTE
 SQL
 #     المتوقَّع: leaking_before ≥ 1، ثمّ reset_rows مساوٍ له، ثمّ leaking_after = 0
 
-# (ب) دوِّر القيمة في .env دون طباعتها، ثمّ افحص الطول (⓪)
+# (ب) **إلزاميّة لا اختياريّة**: دوِّر القيمة في .env دون طباعتها، ثمّ افحص الطول (⓪)
 N=$(openssl rand -hex 24) perl -pi -e 's/^METRICS_EXPORTER_PASSWORD=.*/METRICS_EXPORTER_PASSWORD=$ENV{N}/' .env
-l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "$l" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) echo "len=${#l}";; esac
+l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "${l,,}" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) [ "${#l}" -ge 32 ] && echo "len=${#l}" || { echo "TOO SHORT -- fix .env first"; false; };; esac
 
 # (ج) أعد تشغيل السكربت المُصلَح بطريقة stdin (الخطوة ①، الحلقة نفسها)
 for i in 1 2; do
@@ -952,6 +952,11 @@ docker compose exec -T prometheus promtool query instant http://127.0.0.1:9090 '
 # (هـ) تحقّق أنّ القيمة الجديدة لا تظهر في أيّ صفّ (عدٌّ فقط): السطرُ الأوّل من stdin كلمةُ السرّ، والباقي SQL
 { sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env; cat <<'SQL'
 SET log_min_error_statement = panic;
+SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_duration_sample = -1;
+SET log_transaction_sample_rate = 0;
+SET debug_print_parse = off;
 \getenv v METRICS_EXPORTER_PASSWORD
 SELECT count(*) AS rows_containing_the_new_value FROM pg_stat_statements WHERE position(:'v' IN query) > 0;
 SQL
@@ -960,7 +965,11 @@ SQL
 #     المتوقَّع: 0   (ويبقى pg_up = 1)
 ```
 
-لا تُشغّل `pg_stat_statements_reset()` بلا وسائط، ولا `DROP ROLE`. الوقتُ الوحيد الذي يظهر فيه النصّ بعد الإصلاح هو لحظةُ تنفيذ `ALTER` نفسها في `pg_stat_activity.query`.
+لا تُشغّل `pg_stat_statements_reset()` بلا وسائط، ولا `DROP ROLE`.
+
+**الخطوة (ب) إلزاميّة لا اختياريّة.** التصفير المُوجَّه في (أ) يحذف المُدخَل من العرض `pg_stat_statements` فقط، لكنّ **نصّه القديم يبقى يتيماً في `$PGDATA/pg_stat_tmp/pgss_query_texts.stat`** (ملفٌّ `0600` للمستخدم postgres، ولا يدخل `pg_basebackup`) حتّى إعادة تشغيل postgres القادمة. فالقيمة المسرَّبة تُعدّ مكشوفةً إلى ذلك الحين، وتدويرها في (ب) هو ما يُبطلها. إعادة التشغيل نفسها ليست مطلوبة، وهي قرارٌ بشريّ.
+
+بعد الإصلاح والتدوير، **المواضع التي يظهر فيها نصُّ `ALTER` للقيمة الجديدة**: لحظةُ تنفيذه في `pg_stat_activity.query` فقط. ولا يبقى في `pg_stat_statements` ولا في السجلّ ولا في ملفّ النصوص.
 
 **التراجع:** `docker compose stop node-exporter postgres-exporter && docker compose rm -f node-exporter postgres-exporter`، ثمّ `git revert` وإعادةُ إنشاء `prometheus`؛ و`DROP ROLE metrics_exporter;` اختياريّ بصلاحيّة المستخدم الخارق.
 

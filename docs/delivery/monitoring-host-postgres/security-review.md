@@ -40,4 +40,50 @@
 - `METRICS_EXPORTER_PASSWORD` غائبٌ عن بيئة خدمة `postgres`، وهذا محروسٌ باختبار.
 - CI لا يكشف سرّاً: القيمة وهميّة، ولا `pull_request_target`.
 
+## إعادة الفحص — الدورة 1
+
+- **النطاق:** `git diff ce5d741..97e4b12` (الإصلاح `22442b2` ثمّ `97e4b12`)، والملفّات مقروءةٌ بـ`git show 97e4b12:<path>`. تعديلاتُ الجلسة الأخرى غير المحفوظة و`status.md` خارج النطاق ولم تُلمس.
+- **الحكم:** **PASS**. أُغلق M‑1 وL‑1 في الشيفرة. لا ملاحظة عالية ولا حرجة، ولا فحص صلاحيّات أو عزل ناقص. **لا ملاحظة حاجبة.**
+- **⚠️ التنظيف الحيّ ما زال بيد المالك:** قيس على `aizzak` الحيّة بالعدّ وحده: `leaking_rows_alter_metrics_exporter = 1`. أي أنّ صفّ `ALTER ROLE metrics_exporter PASSWORD '<literal>'` ما زال في `pg_stat_statements`. فالقيمة الحاليّة تُعدّ مكشوفةً حتّى ينفّذ المالك §3.3‑ج «تنظيفٌ لمرّةٍ واحدة» بخطواته (أ)…(هـ). وحتّى ذلك الحين لا يُشغَّل `python -m app.ops.slow_queries top`.
+- **طريقة التحقّق:**
+  - حاويةٌ مؤقّتة `postgres:16` على شبكةٍ مؤقّتة، أُزيلتا بعد الفحص. شُغّلت عليها نسخة `97e4b12` من السكربت بإعدادات الحزمة: `shared_preload_libraries=pg_stat_statements` و`track=top` و`track_utility=on` افتراضيّاً.
+  - الكلمات المستعملة قيمٌ عشوائيّة للاختبار. كلُّ فحصٍ عدٌّ بـ`grep -c` أو `count(*)`، ولم تُطبع أيّ قيمة.
+  - على الحزمة الحيّة استعلاماتُ كتالوج للقراءة فقط: `pg_settings` و`pg_db_role_setting` وعدُّ صفوف `pg_stat_statements`، دون عمود `query`.
+  - اختبارات الوحدة للميزة نجحت (`test_metrics_exporter_role.py` و`test_monitoring_host_postgres_acceptance.py`).
+  - مسحُ الفرق بـ`grep` لأنماط المفاتيح: لا شيء. `gitleaks` و`trufflehog` غير مثبّتين.
+
+### حالة M‑1 وL‑1
+| # | الحالة | الدليل |
+|---|---|---|
+| M‑1 (CWE‑312/532) | **مُغلقة في الشيفرة**. التنظيف الحيّ معلّقٌ على المالك. | **الشيفرة:** `15-metrics-exporter.sh:91-94`. الأمران `SET pg_stat_statements.track_utility = off;` و`SET log_min_error_statement = panic;` في جلسة psql نفسها (heredoc واحد)، قبل `\getenv` و`ALTER ROLE`. ومع `ON_ERROR_STOP=1`، إن فشل أيّ `SET` توقّف psql قبل `ALTER`، أي أنّ الفشل مغلق. **قيس على الحاوية المؤقّتة:** تشغيلتان بطريقة stdin، فكانت الصفوف التي تحوي الحرفيّة في `pg_stat_statements` = 0، وصفوف `ALTER ROLE metrics_exporter%PASSWORD%` = 0، وأسطر السجلّ = 0، وملفّ `pgss_query_texts.stat` = 0، ونجح دخول `metrics_exporter`. **مسار الفشل:** `ALTER ROLE` لدورٍ غير موجود بعد الأمرين أعطى 0 في السجلّ. وفي الضابط، أي التنفيذ نفسه دون `SET`، ظهرت الحرفيّة في السجلّ (1). **مسار initdb:** المتغيّر غائبٌ عن بيئة `postgres`، فيُنشأ الدور بلا كلمة سرّ (قيس). وإن حُقنت قيمة `change-me*` فالرفض بـ`return 1` تحت `set -e` يُسقط التهيئة ولا يُكمل (قيس، rc=1). **إعدادات الحزمة الحيّة:** `log_statement=none` و`log_min_duration_statement=-1` و`log_min_duration_sample=-1` و`log_transaction_sample_rate=0` و`debug_print_*=off`، كلّها افتراضيّة. ولا `auto_explain` (`shared_preload_libraries=pg_stat_statements` وحده، و`session_/local_preload_libraries` فارغان). ولا إعداد سجلّ على مستوى قاعدةٍ أو دور (0 في `pg_db_role_setting`). فلا مسار يسجّل `ALTER` اليوم، وانظر L‑4 للتقوية. والمتبقّي المقبول المذكور في السكربت: النصّ في `pg_stat_activity.query` لحظةَ التنفيذ فقط. |
+| L‑1 (CWE‑214) | **مُغلقة** | `\getenv exporter_password METRICS_EXPORTER_PASSWORD` حلّ محلّ `--set`، فلا قيمة في argv لـpsql. ووسيط psql الوحيد الآخر `--set db_name=` ليس سرّاً. وفي الإجراء، `bash -c '…'` يحمل نصّاً حرفيّاً لا القيمة، والقيمة تعبر stdin إلى `read -r`. وفي ⓪، `printf` أمرٌ مدمجٌ في bash فلا عمليّة ولا argv. ولا `set -x` ولا `echo` للقيمة في أيّ مسار. |
+
+### البنود الأخرى المطلوب التحقّق منها
+- **رفض القيمة الوهميّة وخيار CI** (`15-metrics-exporter.sh:73-87`). قيس:
+  - القيمة الفارغة: `REFUSED`، rc=1.
+  - `change-me-metrics-exporter`: `REFUSED`، rc=1.
+  - `METRICS_EXPORTER_ALLOW_PLACEHOLDER=1`: قُبلت مع سطر `WARNING: placeholder password allowed (CI only)` على stderr، فالقبول ليس صامتاً.
+  - `ALLOW_PLACEHOLDER=yes`: `REFUSED`، فالمطابقة لـ`1` حرفيّاً.
+  - stdin فارغ: يُصدَّر متغيّرٌ فارغ، فـ`REFUSED`.
+
+  والخيار لا يصل إلى الحاوية إلّا بـ`-e` صريحٍ على `exec`. وهو غير موجود في `docker-compose.yml` ولا في `.env.example`، ولا في أيّ ملفّ غير `ci.yml` والسكربت واختباره (`grep`). فلا يمكن تفعيله على مضيفٍ حقيقيّ دون قصدٍ وتحذيرٍ مطبوع. والحدّ المتبقّي في I‑7.
+- **إجراء التنظيف البشريّ** (`08-local-runbook.md:924-963`، نسخة `97e4b12`):
+  - **(أ)** صحيحةٌ ومحدّدة الهدف. `pg_stat_statements_reset(userid, dbid, queryid)` يأخذ الوسائط الثلاثة، ولا استدعاء له بلا وسائط، وتحذير `:963` يمنع ذلك صراحةً. قيس على الحاوية المؤقّتة بعد إعادة إنتاج التسريب بنسخة `ce5d741`: `leaking_before=1`، ثمّ `reset_rows=1` (فـ`count()` على نتيجة `void` يعدّ صحيحاً في PG16)، ثمّ `leaking_after=0`، وبقيت إحصاءات الجمل الأخرى (19 صفّاً). كلّ المخرجات أعداد، ولا عمود `query`.
+  - **(ب)** `N=$(openssl rand -hex 24) perl -pi -e '…$ENV{N}…' .env` صحيح. الإسناد قبل الأمر يضع `N` في **بيئة** perl لا في argv. قيس بقراءة `/proc/self/cmdline` من داخل perl: القيمة غائبة عن argv، وموجودة في `%ENV` بطول 48. ولا يبقى `N` في الصدفة بعد الأمر. ونصّ `-e` بين علامتين مفردتين، فيُكتب حرفيّاً في التاريخ دون القيمة. و`openssl` لا يأخذ القيمة وسيطاً. وعلى نسخةٍ تجريبيّة، `perl -pi` حفظ الوضع `600` وعدد الأسطر، وتحقّق الطول طبع `len=48` فقط.
+  - **(ج)/(د)** تعيدان الخطوة ① المُصلَحة ثمّ تعيدان إنشاء المُصدِّر وحده. هذا صحيح، ولا قيمة مطبوعة.
+  - **(هـ)** التحقّق بالعدّ فقط. وجملة `SELECT … position(:'v' IN query)` نفسها تُخزَّن في `pg_stat_statements` مُطبَّعة (`$1`). قيس بتشغيلها مرّتين: 0 ثمّ 0، و0 في ملفّ النصوص، و0 في السجلّ.
+- **`ci.yml:132`:** `"$(sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env)"`. ملفّ `.env` في CI منسوخٌ من `.env.example` (`ci.yml:109`)، فالقيمة الوهميّة المنشورة. وGitHub Actions يعرض نصّ `run:` قبل التوسيع، ولا `set -x`، و`sed` لا يكتب شيئاً إلى السجلّ. فلا سرّ يظهر في سجلّات CI. والقيمة تكون في argv لـ`docker` على المشغّل المؤقّت، وهي قيمةٌ عامّة، فهذا مقبول. وإن غاب السطر من `.env` كانت القيمة فارغة، فيرفضها السكربت (فشلٌ مغلق).
+
+### ملاحظات جديدة
+| # | الشدة | الفئة (OWASP/CWE) | الملف:السطر | الوصف وسيناريو الاستغلال | الإصلاح |
+|---|---|---|---|---|---|
+| L‑4 | منخفضة (غير حاجبة، تقوية) | A09:2021 · CWE‑532 | `deploy/postgres/initdb/15-metrics-exporter.sh:90-94`؛ وجلسة (هـ) في `08-local-runbook.md:954-956` | الإصلاح يعطّل مكانين فقط: `track_utility` و`log_min_error_statement`. ويعتمد على أن تبقى إعدادات السجلّ الأخرى افتراضيّة، وهي اليوم كذلك على الحزمة الحيّة. **قيس على الحاوية المؤقّتة:** مع `log_statement='ddl'` (بـ`ALTER SYSTEM` ثمّ reload) سجّل السكربتُ المُصلَح جملة `ALTER ROLE … PASSWORD '<literal>'` كاملةً في stderr (سطر واحد). وعلى الحزمة يصل stderr إلى Loki. **السيناريو:** مشغّلٌ يفعّل `log_statement=ddl` للتدقيق، أو `log_min_duration_statement=0` أو `log_transaction_sample_rate` لتشخيصٍ مؤقّت (بـ`ALTER SYSTEM` أو `-c`)، ثمّ يدوّر كلمة السرّ بالإجراء الموثّق. فتدخل الحرفيّة سجلّات postgres وLoki ويقرؤها كلّ من يقرأ السجلّات. | في جلسة السكربت نفسها، قبل `ALTER`، أضف: `SET log_statement = 'none'; SET log_min_duration_statement = -1; SET log_min_duration_sample = -1; SET log_transaction_sample_rate = 0; SET debug_print_parse = off;`. كلّها قابلة للضبط بالـ superuser داخل الجلسة. ومدّد اختبار `test_the_literal_is_kept_out_of_pg_stat_statements_and_the_log` ليشملها. وأضف `SET log_statement = 'none'` وما يليه إلى جلسة (هـ) أيضاً، لأنّ `log_statement=all` يسجّل `SELECT` الذي يحمل القيمة الجديدة. |
+| I‑6 | معلومة | CWE‑312 (متبقٍّ على القرص) | `08-local-runbook.md:924-933` (أ)، و`:963` | `pg_stat_statements_reset(userid, dbid, queryid)` يحذف المُدخَل من العرض، **لكنّ نصّه يبقى يتيماً في `$PGDATA/pg_stat_tmp/pgss_query_texts.stat`**. يبقى حتّى إعادة تشغيل postgres أو حتّى يجمع الامتداد قمامته، وهذا يتأخّر كثيراً مع `max=10000`. قيس على الحاوية المؤقّتة: 1 بعد التصفير، ثمّ 0 بعد إعادة التشغيل. الملفّ `0600` للمستخدم postgres، و`pg_basebackup` يستثني محتوى `pg_stat_tmp`. والقيمة الباقية هي **القديمة** التي تُبطلها الخطوة (ب). فجملة `:963` («الوقتُ الوحيد الذي يظهر فيه النصّ…») غير دقيقة في هذه النقطة فقط. | لا تغيير في الشيفرة. أضف إلى الدليل سطراً يقول إنّ (ب) **إلزاميّة لا اختياريّة**، لأنّ نصّ القيمة القديمة يبقى على القرص حتّى إعادة تشغيل postgres القادمة. وإعادة التشغيل نفسها ليست مطلوبة، وهي قرارٌ بشريّ. |
+| I‑7 | معلومة | CWE‑521 | `15-metrics-exporter.sh:80`؛ ⓪ في `08-local-runbook.md:861` | الرفض يطابق البادئة `change-me*` بحساسيّةٍ لحالة الأحرف. قيس: `Change-me-x` و`changeme` و`short` قُبلت كلّها (rc=0). وتحقّق ⓪ يطبع `len=` لكنّه لا يوقف الإجراء إن كان الطول أقلّ من 48. فقيمةٌ ضعيفة يكتبها إنسانٌ بيده تمرّ. الأثر محدود: الدور على شبكة `aizzak_default` الداخليّة فقط، و`pg_monitor` وحده. | اختياريّ: أضف في السكربت حدّاً أدنى للطول، مثل `[ ${#METRICS_EXPORTER_PASSWORD} -ge 32 ]` إلّا في CI. أو اجعل ⓪ يفشل إن كان الطول أقلّ من 32. |
+
+### ما تحقّق أنّه سليم في هذه الدورة
+- `METRICS_EXPORTER_ALLOW_PLACEHOLDER` لا يظهر في أيّ ملفّ Compose أو قالب `.env`، فلا يُفعَّل إلّا صراحةً.
+- إجراء التدوير لا يكتب القيمة في التاريخ ولا في argv. وكلّ تحقّقٍ في الدليل عدٌّ أو طول.
+- لم يُمسّ أيّ شيء على الحزمة الحيّة. استُعملت استعلامات القراءة وحدها، وأُزيلت الحاوية والشبكة المؤقّتتان.
+
 </div>
