@@ -123,8 +123,14 @@ number**, the ``app.ops.retention`` shape:
   a week of point-in-time coverage.
 * ``DUMP_RETENTION`` (30 days) -- small, and the only artifact that survives
   a corruption or a major-version move. Kept longest for that reason.
-* ``QDRANT_RETENTION`` (7 days) -- derived state, recomputable at the cost of
-  re-embedding the corpus.
+* ``QDRANT_RETENTION`` (3 days) -- derived state: every point is recomputable
+  by re-embedding the chunk text Postgres already holds, so a snapshot buys
+  restore TIME, not data. Three nightly sets cover a bad night and a bad
+  restore attempt. Four sets were already 28 of the bucket's 32 GiB
+  (measured 2026-10-05), and a week of them plus thirty days of pruned
+  copies projected to ~260 GiB of protection for data that can be rebuilt.
+  The bucket's lifecycle keeps a pruned ``qdrant/`` set for one more day,
+  not thirty (``deploy/minio/bootstrap.sh``).
 * WAL is **not** aged out. A segment is retained until the OLDEST surviving
   base backup no longer needs it, because "delete WAL older than N days" is
   precisely how a point-in-time restore dies quietly: the base backup is
@@ -193,7 +199,7 @@ MANIFEST_NAME = "manifest.json"
 # numbers and not one, and why WAL is not among them.
 BASE_RETENTION = timedelta(days=7)
 DUMP_RETENTION = timedelta(days=30)
-QDRANT_RETENTION = timedelta(days=7)
+QDRANT_RETENTION = timedelta(days=3)
 
 # Never prune the last one, at any age. A retention sweep that can empty the
 # shelf is not a retention policy.

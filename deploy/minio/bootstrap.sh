@@ -38,14 +38,117 @@ mc mb --ignore-existing "aizzak/${backup_bucket}" >/dev/null
 # It is NOT a substitute for `app.ops.backup prune`, and the division is
 # strict: prune owns CURRENT versions (it is the only thing that knows a WAL
 # segment is still needed by the oldest surviving base backup, which no
-# date-based rule can know), and the rule below bounds the NONCURRENT ones
+# date-based rule can know), and the rules below bound the NONCURRENT ones
 # it leaves behind. Two authorities over the same objects would eventually
 # disagree, and the one that "wins" would be whichever ran last.
+#
+# `prune` deletes without a version id, so EVERY set it retires lives on as
+# a noncurrent version for the window below. One window for the whole bucket
+# was the wrong unit: the four prefixes differ by two orders of magnitude in
+# size and in what a stale copy is worth, so each gets its own --
+#
+#   qdrant/  BACKUP_QDRANT_NONCURRENT_DAYS (1)  derived state, rebuildable
+#            by re-embedding; ~7 GiB a night, and thirty days of pruned
+#            sets was the bulk of the projected bucket.
+#   wal/     BACKUP_WAL_NONCURRENT_DAYS (7)     a pruned segment is below the
+#            floor of every surviving base backup; a week covers a prune
+#            that turns out to have been wrong.
+#   base/    BACKUP_BASE_NONCURRENT_DAYS (7)    every set is self-contained
+#            (`pg_basebackup --wal-method stream`) and BASE_RETENTION is
+#            itself 7 days; a week covers a prune that turns out to have been
+#            wrong, as for wal/ (owner decision 2026-10-05).
+#   dump/    BACKUP_NONCURRENT_DAYS (30)        unchanged; the original
+#            variable now covers dump/ alone.
+#
+# There is deliberately NO un-prefixed rule: with one, every object matches
+# two rules and the effective window depends on how the server resolves the
+# overlap. Every object this bucket holds lives under one of these four
+# prefixes (`app.ops.backup`'s layout).
+#
+# IMPORTED WHOLE, not added. `mc ilm import` replaces the bucket's entire
+# lifecycle configuration, so a re-run converges on exactly these four rules.
+# The `mc ilm rule add ... || echo "already present"` this replaces never
+# reached its `echo`: `rule add` mints a fresh ID and succeeds every time, and
+# the live bucket had collected 22 identical copies (measured 2026-10-05).
 mc version enable "aizzak/${backup_bucket}" >/dev/null
-mc ilm rule add --noncurrent-expire-days "${BACKUP_NONCURRENT_DAYS:-30}" \
-    "aizzak/${backup_bucket}" >/dev/null 2>&1 \
-    || echo "minio-bootstrap: noncurrent-version rule already present on ${backup_bucket}"
-echo "minio-bootstrap: bucket ${backup_bucket} ready (versioned)"
+
+qdrant_noncurrent_days="${BACKUP_QDRANT_NONCURRENT_DAYS:-1}"
+wal_noncurrent_days="${BACKUP_WAL_NONCURRENT_DAYS:-7}"
+base_noncurrent_days="${BACKUP_BASE_NONCURRENT_DAYS:-7}"
+dump_noncurrent_days="${BACKUP_NONCURRENT_DAYS:-30}"
+for days in "${qdrant_noncurrent_days}" "${wal_noncurrent_days}" \
+    "${base_noncurrent_days}" "${dump_noncurrent_days}"; do
+    case "${days}" in
+        '' | *[!0-9]*)
+            echo "minio-bootstrap: noncurrent window '${days}' is not a whole number of days" >&2
+            exit 1
+            ;;
+    esac
+    if [ "${days}" -lt 1 ]; then
+        echo "minio-bootstrap: noncurrent window '${days}' must be at least 1 day" >&2
+        exit 1
+    fi
+done
+
+mc ilm import "aizzak/${backup_bucket}" >/dev/null <<EOF
+{
+  "Rules": [
+    {
+      "ID": "noncurrent-qdrant",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "qdrant/"},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": ${qdrant_noncurrent_days}}
+    },
+    {
+      "ID": "noncurrent-wal",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "wal/"},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": ${wal_noncurrent_days}}
+    },
+    {
+      "ID": "noncurrent-base",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "base/"},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": ${base_noncurrent_days}}
+    },
+    {
+      "ID": "noncurrent-dump",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "dump/"},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": ${dump_noncurrent_days}}
+    }
+  ]
+}
+EOF
+
+# Read it back: "the import exited 0" is a claim about the client, the rules
+# on the bucket are a fact. Counted with shell expansion alone because the
+# pinned `minio/mc` image carries coreutils and no `grep`/`sed`/`awk`/`jq`
+# (measured: an earlier draft of this check failed on `grep: command not
+# found` against a scratch server).
+exported=$(mc ilm export "aizzak/${backup_bucket}")
+rule_count=0
+rest="${exported}"
+while :; do
+    case "${rest}" in
+        *'"ID"'*) rest="${rest#*\"ID\"}"; rule_count=$((rule_count + 1)) ;;
+        *) break ;;
+    esac
+done
+for id in noncurrent-qdrant noncurrent-wal noncurrent-base noncurrent-dump; do
+    case "${exported}" in
+        *"\"ID\":\"${id}\""*) ;;
+        *) rule_count=-1 ;;
+    esac
+done
+if [ "${rule_count}" -ne 4 ]; then
+    echo "minio-bootstrap: ${backup_bucket} lifecycle is not the four expected rules:" \
+        "${exported}" >&2
+    exit 1
+fi
+echo "minio-bootstrap: bucket ${backup_bucket} ready (versioned, 4 noncurrent-version rules:" \
+    "qdrant/ ${qdrant_noncurrent_days}d, wal/ ${wal_noncurrent_days}d," \
+    "base/ ${base_noncurrent_days}d, dump/ ${dump_noncurrent_days}d)"
 
 # ── the live test harness's bucket + scoped account (docs/log/3.99.md) ───
 # `tests/integration/test_minio_storage.py` runs against a REAL MinIO through a
