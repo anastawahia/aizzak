@@ -64,9 +64,47 @@ def test_the_role_is_created_inside_an_existence_check() -> None:
 
 def test_the_password_is_a_psql_variable_never_shell_interpolated() -> None:
     sql = _sql_only()
-    assert '--set exporter_password="${METRICS_EXPORTER_PASSWORD}"' in sql
+    assert "\\getenv exporter_password METRICS_EXPORTER_PASSWORD" in sql
     assert "PASSWORD :'exporter_password'" in sql
     assert "PASSWORD '$" not in sql
+
+
+def test_the_password_is_never_on_a_command_line() -> None:
+    """L-1 (CWE-214): `psql --set x=value` puts the value in argv, readable from
+    /proc/<pid>/cmdline. `\\getenv` reads it from the environment inside psql."""
+    sql = _sql_only()
+    assert "--set exporter_password" not in sql
+    assert not re.search(r"(-v|--set)\s+exporter_password", sql)
+
+
+def test_the_literal_is_kept_out_of_pg_stat_statements_and_the_log() -> None:
+    """M-1 (CWE-312/532): with `track_utility` on, `ALTER ROLE ... PASSWORD '<literal>'`
+    is stored in pg_stat_statements, which `slow_queries top` prints; and a failing
+    statement is logged. Both are switched off in the SAME psql session, BEFORE the ALTER."""
+    sql = _sql_only()
+    alter = sql.index("ALTER ROLE metrics_exporter PASSWORD")
+    for setting in (
+        "SET pg_stat_statements.track_utility = off;",
+        "SET log_min_error_statement = panic;",
+    ):
+        assert setting in sql, setting
+        assert sql.index(setting) < alter, f"{setting} must precede the password ALTER"
+    getenv = sql.index("\\getenv exporter_password")
+    session_start = sql.rindex("psql -v ON_ERROR_STOP=1", 0, alter)
+    assert session_start < sql.index("SET pg_stat_statements.track_utility") < getenv < alter
+
+
+def test_a_real_cluster_refuses_an_empty_or_placeholder_password() -> None:
+    """BUG-1 (AC-9.1): the value `.env.example` publishes must not become the
+    role's password; CI alone opts in explicitly."""
+    sql = _sql_only()
+    assert '"${METRICS_EXPORTER_PASSWORD+set}" = "set"' in sql
+    assert 'if [ -z "${METRICS_EXPORTER_PASSWORD}" ]' in sql
+    assert "change-me*)" in sql
+    assert '"${METRICS_EXPORTER_ALLOW_PLACEHOLDER:-}" != "1"' in sql
+    assert sql.count("REFUSED") == 2 and sql.count("return 1 2>/dev/null || exit 1") == 2
+    ci = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "METRICS_EXPORTER_ALLOW_PLACEHOLDER=1" in ci
 
 
 def test_pg_monitor_with_inherit_is_the_only_grant() -> None:

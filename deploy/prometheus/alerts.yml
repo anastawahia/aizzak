@@ -1126,7 +1126,7 @@ groups:
             `docker compose ps postgres`. If it runs: `docker compose logs
             --since 10m postgres-exporter`. A line `password authentication
             failed for user "metrics_exporter"` means the role or its password,
-            not the server -- the fix is 08-local-runbook §3.3-ج step 2.
+            not the server -- the fix is 08-local-runbook §3.3-ج step ①.
             Restarting `postgres` is a human decision.
       - alert: AizzakPostgresLockWaitHigh
         expr: pg_lock_wait_longest_seconds{job="postgres"} > 60

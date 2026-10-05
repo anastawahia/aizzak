@@ -123,10 +123,14 @@ jobs:
             sh /opt/aizzak/testdb/20-test-database.sh
           # metrics_exporter is created WITHOUT a password on a fresh volume
           # (08-local-runbook §3.3-ج); the script is run twice, the second
-          # time proving it converges. The value is .env.example's dummy.
+          # time proving it converges. The value is read from .env -- the same
+          # source the TEST_DATABASE_URL_METRICS_EXPORTER DSN below uses -- and is
+          # .env.example's dummy, which the script only accepts with the explicit
+          # CI-only opt-in.
           for _ in 1 2; do
             docker compose exec -T \
-              -e METRICS_EXPORTER_PASSWORD=change-me-metrics-exporter postgres \
+              -e METRICS_EXPORTER_PASSWORD="$(sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env)" \
+              -e METRICS_EXPORTER_ALLOW_PLACEHOLDER=1 postgres \
               bash /docker-entrypoint-initdb.d/15-metrics-exporter.sh
           done
 

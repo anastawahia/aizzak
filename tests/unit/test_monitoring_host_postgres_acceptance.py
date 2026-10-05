@@ -139,7 +139,12 @@ def test_the_activation_warns_that_a_plain_up_recreates_things() -> None:
 def test_the_activation_explains_recreate_over_reload_and_checks_postgres_is_untouched() -> None:
     s = _activation()
     assert "inode" in s and "-/reload" not in s.replace("لا reload", "")
-    assert "docker inspect -f '{{.Id}} {{.State.StartedAt}}' aizzak-postgres-1" in s
+    # id + start time + the live container's config-hash label (compared with the computed one)
+    inspect = (
+        "docker inspect -f '{{.Id}} {{.State.StartedAt}} "
+        '{{index .Config.Labels "com.docker.compose.config-hash"}}\' aizzak-postgres-1'
+    )
+    assert inspect in s
     assert "docker compose config --hash postgres" in s
 
 
@@ -154,18 +159,10 @@ def test_the_activation_prints_no_secret() -> None:
             assert ">> .env" in line or "grep -q" in line, f"password may be printed: {line!r}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG-1 (test-plan.md): AC-9.1 step 0 requires a password-LENGTH check "
-        "without printing it (08-local-runbook.md:665-675 style); the section "
-        "only generates the value when the name is absent, so a copied "
-        "`change-me-*` placeholder passes silently."
-    ),
-)
 def test_the_activation_checks_the_password_length_without_printing_it() -> None:
     s = _activation()
     assert re.search(r"\$\{#|wc -c|awk[^\n]*length|len=", s), "no length check in the procedure"
+    assert "change-me*" in s and "PLACEHOLDER" in s, "the check must stop on a placeholder"
 
 
 # ── AC-8.5 · the ledgers ────────────────────────────────────────────────────

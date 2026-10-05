@@ -150,7 +150,7 @@ docker compose ps postgres
 docker compose logs --since 10m postgres-exporter
 ```
 
-   سطرُ `password authentication failed for user "metrics_exporter"` يعني **الدورَ أو كلمةَ سرّه لا الخادم**: على حجمٍ جديد يُولد الدورُ بلا كلمة سرّ، والعلاجُ [`08 §3.3‑ج`](../design/08-local-runbook.md) الخطوة ②.
+   سطرُ `password authentication failed for user "metrics_exporter"` يعني **الدورَ أو كلمةَ سرّه لا الخادم**: على حجمٍ جديد يُولد الدورُ بلا كلمة سرّ، والعلاجُ [`08 §3.3‑ج`](../design/08-local-runbook.md) الخطوة ①.
 3. إن كان `postgres` متوقّفاً أو غير سليم: انظر `docker compose logs --since 10m postgres`. **إعادةُ تشغيل `postgres` قرارٌ بشريّ وحده.**
 
 **أسطرٌ في سجلّ المُصدِّر لا تعني عطلاً:** `WARN … Error loading config … postgres_exporter.yml` (ملفّ الوحدات المتعدّدة غير مستعمل)، و`WARN … The extended queries.yaml config is DEPRECATED`.

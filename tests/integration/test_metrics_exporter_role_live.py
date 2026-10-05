@@ -29,7 +29,7 @@ from sqlalchemy.pool import NullPool
 
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.persistence.database import create_engine
-from tests.integration.conftest import LiveDbDsns
+from tests.integration.conftest import LiveDbDsns, _unavailable_live_dependency
 
 pytestmark = pytest.mark.live_db
 
@@ -160,7 +160,9 @@ async def exporter_engine(owner_engine: AsyncEngine) -> AsyncIterator[AsyncEngin
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
         except Exception as exc:
-            pytest.skip(f"{_ROLE} cannot log in with TEST_DATABASE_URL_METRICS_EXPORTER: {exc}")
+            _unavailable_live_dependency(
+                f"{_ROLE} cannot log in with TEST_DATABASE_URL_METRICS_EXPORTER: {exc}"
+            )
         yield engine
     finally:
         await engine.dispose()

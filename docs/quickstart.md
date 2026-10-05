@@ -63,6 +63,7 @@ cp .env.example .env
 | `RETENTION_SWEEPER_PASSWORD` | دور مكنسة الاحتفاظ (SELECT/DELETE على الجداول الثلاثة غير المحدودة فقط — `python -m app.ops.retention`، يدويّاً لا خدمةً دائمة) |
 | `METRICS_READER_PASSWORD` | دور قراءة `/metrics` (‏SELECT وحيدة على `platform.outbox` فقط — P1‑3، خدمةٌ دائمة داخل `app`) |
 | `TRANSIT_ROTATOR_PASSWORD` | دور تدوير مفتاح Transit (‏`UPDATE` مقصورٌ على `ciphertext_ref` وحده — P1‑9، `python -m app.ops.rotate_transit`، يدويّاً لا خدمةً دائمة) |
+| `METRICS_EXPORTER_PASSWORD` | دور مُصدِّر مقاييس Postgres (‏`pg_monitor` وحده، للقراءة فقط — `postgres-exporter`). **لا يُنشأ مع الحجم**: الدور يولد بلا كلمة سرّ، وتضعها الخطوةُ ① من [`08 §3.3‑ج`](design/08-local-runbook.md)، وهي ترفض الفارغ و`change-me*` (الطول 48 بـ`openssl rand -hex 24`) |
 | `MINIO_ROOT_USER` · `MINIO_ROOT_PASSWORD` | تخزين الكائنات |
 | **`FIREBASE_PROJECT_ID`** | ⚠️ **فارغٌ في `.env.example` وهو إلزاميّ**: `FirebaseAuth` يفشل فشلاً سريعاً عند الإنشاء على قيمةٍ فارغة (`_guard_project_id`) ⇒ التطبيق **لا يقلع** أصلاً |
 
@@ -73,7 +74,7 @@ cp .env.example .env
 ```bash
 for v in POSTGRES_SUPERUSER_PASSWORD AIZZAK_OWNER_PASSWORD APP_RW_PASSWORD \
          OUTBOX_RELAY_PASSWORD RETENTION_SWEEPER_PASSWORD METRICS_READER_PASSWORD \
-         TRANSIT_ROTATOR_PASSWORD MINIO_ROOT_PASSWORD; do
+         TRANSIT_ROTATOR_PASSWORD MINIO_ROOT_PASSWORD METRICS_EXPORTER_PASSWORD; do
   l=$(grep "^${v}=" .env); l=${l#*=}; printf "%-28s len=%s\n" "$v" "${#l}"   # 32، ولا يبدأ بـchange-me
 done
 grep "^MINIO_ROOT_USER=" .env   # معرّفٌ لا سرّ: لا قاعدةَ طولٍ عليه، لكن لا يبقى change-me-* أيضاً
