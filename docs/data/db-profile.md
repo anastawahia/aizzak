@@ -312,7 +312,19 @@ GRANT CONNECT ON DATABASE aizzak_test TO aizzak_reader;
 | `python -m app.ops.scheduler status` / `run` | المُشغّلُ الليليُّ للأدوات العشر ودفترُها | `status` ✅ | — | متعدّد | خطّة السعة `5.7` |
 | `python -m app.ops.mint_load_tokens verify` | فحصُ توكنات الحمل | ✅ | — | — | `stack-commands.md` |
 
-**نقطةُ تشغيلٍ مهمّة:** هذه الأدواتُ تعمل من **داخل حاوية**، مثل `docker compose exec ops-scheduler python -m app.ops.<tool>`. ولإلقاءِ نظرةٍ على بياناتٍ حيّةٍ قبل إعادةِ بناء الصورة، الطريقُ هو DSN المالك على 15432 و`redis` على 16379 — **لكن ليس** لـ`retention` ولا `purge` ولا `rotate_transit`: تلك ترفض أيَّ دورٍ غير دورها بحكم `role_guard`.
+**نقطةُ تشغيلٍ مهمّة — والحاويةُ ليست واحدةً لكلّ الأدوات** (مقيسٌ 2026‑10‑05):
+
+| الأداة | من أيّ حاوية | لماذا |
+|---|---|---|
+| `scheduler status` · `notify_groups` · `dlq` | `ops-scheduler` أو `app` أو العامل المعنيّ | لا تحتاج DSN المالك |
+| `stream_trim status` | `outbox-relay` | دورُه هو دورُ التقليم |
+| **`table_growth` · `slow_queries` · `online_ddl`** | **`docker compose run --rm --no-deps migrate python -m app.ops.<tool>`** | تحتاج **DSN `aizzak_owner` على `postgres:5432`**، وهو موجودٌ في خدمة `migrate` وحدها |
+
+⚠️ **ولا تُشغَّل `table_growth` ولا `slow_queries` من `ops-scheduler`.** ‏`DATABASE_URL` **فارغٌ هناك بالتصميم** — `child_env` يجرّد كلَّ `*DATABASE_URL` ويمرّر لكلّ مهمّةٍ DSN دورِها وحده (`docker-compose.yml:2251`). النتيجةُ المقيسة: `table_growth` يفشل بـ`database "app" does not exist`، و`slow_queries` بـ`server_login_retry` من PgBouncer، **ويتركان أسطرَ فشلِ تسجيلٍ في سجلّ PgBouncer تبدو كعطلٍ في المكدّس وليست كذلك**.
+
+و`docker compose run --rm --no-deps migrate <command>` آمنٌ: خدمةُ `migrate` تحمل `command:` عاديّاً بلا `entrypoint` مخصّص، فالأمرُ المُمرَّر **يستبدله** ولا يشغّل `provision`.
+
+ولإلقاءِ نظرةٍ على بياناتٍ حيّةٍ قبل إعادةِ بناء الصورة، الطريقُ هو DSN المالك على 15432 و`redis` على 16379 — **لكن ليس** لـ`retention` ولا `purge` ولا `rotate_transit`: تلك ترفض أيَّ دورٍ غير دورها بحكم `role_guard`.
 
 ---
 
@@ -381,6 +393,7 @@ GRANT CONNECT ON DATABASE aizzak_test TO aizzak_reader;
 
 | التاريخ | التغيير |
 |---|---|
+| 2026‑10‑05 | تصحيحٌ بعد أوّل فحصِ صحّة ([`health/2026-10-05-shared-dev.md`](health/2026-10-05-shared-dev.md)): `table_growth` و`slow_queries` و`online_ddl` تُشغَّل من خدمة `migrate` لا من `ops-scheduler` — القسم ٧ |
 | 2026‑10‑05 | إنشاءُ الملفّ. ثمانيةُ مخازنَ وخمسُ بيئاتٍ أُحصيَت؛ وتصنيفاتُها ثبّتها المالك؛ وتُحقِّق من تسعِ وصفاتٍ حيّاً (‏PostgreSQL ×3 · ‏Redis ×2 · ‏Qdrant · MinIO · Vault)؛ و‏**ح‑أ** (قاعدةُ الاختبار تشارك العنقودَ الحيّ) · **ح‑ب** (مخازنُ بلا نسخةٍ اختباريّة) · **ح‑ج** (لا دورَ قراءةٍ محضة) مفتوحة |
 
 </div>
