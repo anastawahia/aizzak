@@ -121,6 +121,14 @@ jobs:
           docker compose run --rm --no-deps --build migrate
           docker compose exec -T postgres \
             sh /opt/aizzak/testdb/20-test-database.sh
+          # metrics_exporter is created WITHOUT a password on a fresh volume
+          # (08-local-runbook §3.3-ج); the script is run twice, the second
+          # time proving it converges. The value is .env.example's dummy.
+          for _ in 1 2; do
+            docker compose exec -T \
+              -e METRICS_EXPORTER_PASSWORD=change-me-metrics-exporter postgres \
+              bash /docker-entrypoint-initdb.d/15-metrics-exporter.sh
+          done
 
       - name: Generate test-harness environment
         run: |
@@ -140,6 +148,7 @@ jobs:
           TEST_DATABASE_URL_RETENTION=postgresql+asyncpg://retention_sweeper:${RETENTION_SWEEPER_PASSWORD}@127.0.0.1:${HOST_PORT_POSTGRES}/aizzak_test
           TEST_DATABASE_URL_METRICS=postgresql+asyncpg://metrics_reader:${METRICS_READER_PASSWORD}@127.0.0.1:${HOST_PORT_POSTGRES}/aizzak_test
           TEST_DATABASE_URL_TRANSIT_ROTATOR=postgresql+asyncpg://transit_rotator:${TRANSIT_ROTATOR_PASSWORD}@127.0.0.1:${HOST_PORT_POSTGRES}/aizzak_test
+          TEST_DATABASE_URL_METRICS_EXPORTER=postgresql+asyncpg://metrics_exporter:${METRICS_EXPORTER_PASSWORD}@127.0.0.1:${HOST_PORT_POSTGRES}/aizzak_test
           TEST_REDIS_URL=redis://127.0.0.1:${HOST_PORT_REDIS}/0
           TEST_CACHE_REDIS_URL=redis://127.0.0.1:${HOST_PORT_REDIS_CACHE}/0
           TEST_MINIO_ENDPOINT=127.0.0.1:${HOST_PORT_MINIO}
