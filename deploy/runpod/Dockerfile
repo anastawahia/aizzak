@@ -35,8 +35,8 @@
 
 # ── binary sources: the same pinned images docker-compose.yml uses ─────────
 FROM qdrant/qdrant:v1.13.4                      AS qdrant_src
-FROM minio/minio:RELEASE.2025-04-22T22-12-26Z   AS minio_src
-FROM minio/mc:RELEASE.2025-04-16T18-13-26Z      AS mc_src
+FROM pgsty/minio:RELEASE.2026-08-04T00-00-00Z  AS minio_src
+FROM pgsty/mc:RELEASE.2026-09-16T00-00-00Z     AS mc_src
 FROM hashicorp/vault:1.18                       AS vault_src
 
 # --------------------------------------------------------------------------

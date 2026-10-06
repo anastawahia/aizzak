@@ -79,7 +79,7 @@ volume="aizzak-restore-${stamp}"
 network="$(docker compose ps --format '{{.Networks}}' postgres | head -1)"
 bucket="${BACKUP_BUCKET:-aizzak-backups}"
 db="${POSTGRES_DB:-aizzak}"
-mc_image="minio/mc:RELEASE.2025-04-16T18-13-26Z"
+mc_image="pgsty/mc:RELEASE.2026-09-16T00-00-00Z"
 pg_image="postgres:16"
 
 mkdir -p "${wal_dir}"

@@ -30,7 +30,7 @@
 | `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
-| `minio-bootstrap` | minio/mc | — | إنشاء الدلو |
+| `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
 | `nginx-certs` | nginx:1.27 | — | شهادة TLS محلّية موقَّعة ذاتيّاً |
 | `migrate` | نفس صورة التطبيق | — | الهجرات + المنح (`app.ops.provision`) |
 
