@@ -228,7 +228,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td><code>embed</code></td><td>خدمة تضمين منفصلة <b>× 3</b> خلف <code>embedding-lb</code></td><td><code>torch</code> خارج رسم استيراد <code>app.*</code>. والموازِنُ والنسخُ وحدةٌ واحدة: نسخٌ بلا موازِن عطبٌ صامت؛ وداخلها تجميعُ دفعاتٍ ديناميكيّ (<code>EMB_BATCH_WINDOW_MS</code>)</td></tr>
           <tr><td><code>search</code></td><td>Exa <span class="pill warn">غير موصول</span></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
           <tr><td><code>metrics</code></td><td>Prometheus + Grafana</td><td>33 مقياساً، ولوحتا Grafana: السعة والسجلّات</td></tr>
-          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code></td><td>قاعدةٌ بلا موجِّهٍ لا تصل أحداً: 23 قاعدةً تُوجَّه إلى <code>alert-sink</code> — <b>محلّيّاً فقط</b>؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
+          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code></td><td>قاعدةٌ بلا موجِّهٍ لا تصل أحداً: 27 قاعدةً تُوجَّه إلى <code>alert-sink</code> — <b>محلّيّاً فقط</b>؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
           <tr><td><code>logs</code></td><td>Loki + Alloy</td><td>سجلٌّ مهيكلٌ واحد بـ<code>correlation_id</code> عبر الحافّة والتطبيق والعامل</td></tr>
           <tr><td><code>probes</code></td><td>pgbouncer · redis-stream · redis-cache exporters · cAdvisor <i>(profile)</i></td><td>إشباعُ المُجمِّع وخادمَي Redis والحاويات</td></tr>
           <tr><td><code>sched</code></td><td><code>ops-scheduler</code></td><td>عشرُ مهامّ دوريّة تكتب نجاحَها في <code>TaskLedger</code>، وتنبيهان لمتأخّرةٍ أو غيرِ مسلَّحة</td></tr>
@@ -760,7 +760,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td>إبقاء Framework نحيفاً</td><td><span class="pill warn">قائمة</span></td><td>24 منفذاً، و<code>providers/</code> يحمل التحويلَ والتسعير، و<code>observability/</code> كتالوجَ المهامّ. النموُّ في التجريدات لا في المنطق — لكنّ العقودَ تحرس الاتّجاهَ لا الحجم</td></tr>
           <tr><td>Outbox Relay نقطة فشل</td><td><span class="pill warn">قائمة · مرئيّة</span></td><td>نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل قصَّ المجاري أيضاً. لكنّ تأخّرَها ينبّه (<code>AizzakOutboxCycleTimeHigh</code>)، وما فقده Redis يُعاد من <code>outbox</code> (<code>app.ops.replay</code>)</td></tr>
           <tr><td>ProviderResolver بلا Fallback (D‑16)</td><td><span class="pill ok">حُسمت</span></td><td>تحويلٌ سحابيّ → محلّيّ، وقاطعُ دارةٍ لكلّ مزوّد. الباقي: لا تحويلَ بين سحابيَّين ولا من محلّيٍّ إلى سحابيّ</td></tr>
-          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و23 قاعدةَ تنبيه — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوب</td></tr>
+          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و27 قاعدةَ تنبيه — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوب</td></tr>
         </tbody>
       </table>
     </div>

@@ -197,7 +197,7 @@ def _orchestrator(
     local: LLMProvider,
     *,
     agent: type[BaseAgent] = _ChatAgent,
-    fallback: LlmFallback | None | str = "wired",
+    fallback: LlmFallback | str | None = "wired",
     routing: Json | None = None,
 ) -> tuple[AgentOrchestrator, _FakeThreads, _FakeCapture]:
     registry = InMemoryAgentRegistry()

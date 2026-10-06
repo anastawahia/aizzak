@@ -175,6 +175,22 @@ scrape_configs:
     static_configs:
       - targets: ["alertmanager:9093"]
 
+  # Monitoring plan phase 2 (docs/delivery/monitoring-host-postgres/design.md).
+  # Ordinary targets -- no `tier: optional` -- so AizzakScrapeTargetDown
+  # covers both the moment either exporter dies.
+  # `node`: disk/CPU/memory are the HOST's; network is the exporter
+  # container's own namespace (Q-9) -- not host traffic.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # `postgres`: Postgres ITSELF, as opposed to `pgbouncer` above, whose
+  # `pgbouncer_up` is the pooler's admin console and stays 1 when the server
+  # behind it is gone.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
   # ── Optional target: NOT started by a default `docker compose up` ─────────
   # `tier: optional` is read by `alerts.yml`'s `AizzakScrapeTargetDown` rule,
   # which excludes it. Without that label an absent cAdvisor would hold a

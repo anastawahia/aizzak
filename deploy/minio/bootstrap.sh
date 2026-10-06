@@ -1,6 +1,6 @@
 #!/bin/sh
 # MinIO bootstrap (7.1 · 08-local-runbook §3 step 4): create the object
-# bucket. Runs from the pinned `minio/mc` image -- a deploy artifact does not
+# bucket. Runs from the pinned `pgsty/mc` image -- a deploy artifact does not
 # curl an unversioned binary off the internet at boot.
 #
 # Idempotent: `mb --ignore-existing` is a no-op on an existing bucket, and the

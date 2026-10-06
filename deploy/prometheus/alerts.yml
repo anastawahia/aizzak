@@ -18,8 +18,11 @@
 # rules about the scraper itself, 4.5-5.7 one or two per step, and 7.3 the
 # first DERIVED rules -- error-budget burn rates, a ratio of two counters over
 # two windows -- because "is the commitment eroding" is not a question any
-# single gauge answers. Still true: every rule names the step that earned it,
-# and nothing here is a dashboard.
+# single gauge answers. Monitoring plan phase 2 (docs/monitoring-plan.md,
+# docs/delivery/monitoring-host-postgres/) added the first rules about the
+# HOST and about Postgres ITSELF: a full disk, a dead server behind a live
+# pgbouncer, a lock wait, a stalled WAL archiver. Still true: every rule names
+# the step that earned it, and nothing here is a dashboard.
 #
 # ── What evaluates it, and where a firing alert goes ───────────────────────
 # Written on 2026-07-30 as an artifact for a scraper that did not exist yet.
@@ -1068,6 +1071,107 @@ groups:
             platform key's quota. `ollama`: `docker compose ps
             ollama-bridge` and the host's Ollama. The circuit closes by
             itself once a probe succeeds; there is nothing to reset.
+
+  # ── The host (monitoring plan phase 2, row 1) ──────────────────────────
+  - name: aizzak-host
+    rules:
+      - alert: AizzakHostDiskHigh
+        expr: >-
+          1 - node_filesystem_avail_bytes{job="node", mountpoint="/", fstype!~"tmpfs|overlay|9p"}
+            / node_filesystem_size_bytes{job="node", mountpoint="/", fstype!~"tmpfs|overlay|9p"}
+          > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The host's root filesystem is {{ $value | humanizePercentage }} full"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakhostdiskhigh"
+          description: >-
+            `/` holds Docker's whole data root: Postgres, the WAL spool,
+            Prometheus and Loki. Postgres stops writing at 100%. The Windows
+            drive (C:, /mnt/c) is NOT monitored (Q-2), and the virtual disk
+            file on it can fill first.
+          reason: >-
+            80% is the monitoring plan's number. `1 - avail/size`: blocks
+            reserved for root count as used, because Postgres runs as uid 999
+            and cannot write into them. `for: 10m` (Q-7): a disk fills over
+            hours, and ten minutes ignores the spike of a base-backup spool.
+            Excluding tmpfs|overlay|9p here is a belt over the exporter's own
+            exclusion.
+          response: >-
+            `df -h /`, then `docker system df`, then `docker compose exec -T
+            ops-scheduler python -m app.ops.backup status` for the spool
+            depth. NEVER the volume-prune, system-prune or `down -v` commands.
+
+  # ── Postgres itself (monitoring plan phase 2, row 2) ───────────────────
+  - name: aizzak-postgres
+    rules:
+      - alert: AizzakPostgresDown
+        expr: pg_up{job="postgres"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "postgres-exporter cannot reach Postgres -- every data path is down"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakpostgresdown"
+          description: >-
+            The exporter is alive but has not been able to log in to the
+            server for 30 seconds. AizzakPgbouncerDown cannot see this: the
+            pooler's admin console is answered by the pooler itself.
+          reason: >-
+            `== 0` on the exporter's own verdict, not on `up` (the
+            AizzakPgbouncerDown logic). 30s: a deliberate restart of a healthy
+            cluster finishes inside it; the same `for` as AizzakRedisStreamDown.
+          response: >-
+            `docker compose ps postgres`. If it runs: `docker compose logs
+            --since 10m postgres-exporter`. A line `password authentication
+            failed for user "metrics_exporter"` means the role or its password,
+            not the server -- the fix is 08-local-runbook §3.3-ج step ①.
+            Restarting `postgres` is a human decision.
+      - alert: AizzakPostgresLockWaitHigh
+        expr: pg_lock_wait_longest_seconds{job="postgres"} > 60
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "A session has waited on a lock for over a minute"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakpostgreslockwaithigh"
+          description: >-
+            A session in the platform database has waited more than a minute
+            for a lock. Usually an open transaction or a hand-run
+            ALTER/VACUUM FULL.
+          reason: >-
+            > 60s is the plan's number. `pg_locks.waitstart` measures the wait
+            itself, not the transaction's age. `for: 30s` makes the effective
+            threshold 60-90s, so one sample cannot fire it.
+          response: >-
+            `SELECT pid, pg_blocking_pids(pid), wait_event, now()-xact_start,
+            left(query,120) FROM pg_stat_activity WHERE wait_event_type =
+            'Lock';`. `pg_cancel_backend` is a human decision. Silence planned
+            work from Grafana; do not edit the threshold.
+      - alert: AizzakPostgresArchiveStalled
+        expr: pg_archive_ready_oldest_age_seconds{job="postgres"} > 900
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A finished WAL segment has waited over 15 minutes to be archived"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakpostgresarchivestalled"
+          description: >-
+            `.ready` segments are piling up: the server is not copying WAL to
+            the spool. The disk fills, and point-in-time recovery stops at the
+            last archived segment.
+          reason: >-
+            Built on `.ready` files, not `failed_count`, which stays 0 when
+            archive_command cannot even be run (src/app/ops/backup.py), and
+            not on `last_archive_age`, because a quiet cluster completes no
+            segments. 900s = 3 x archive_timeout (Q-7). `for: 1m` absorbs a
+            WSL2 clock jump.
+          response: >-
+            `SELECT * FROM pg_stat_archiver;`, then `docker compose logs
+            --since 30m postgres | grep -i "archive command failed"`, then
+            `docker compose exec -T postgres ls -ld
+            /var/lib/postgresql/wal-archive`, then `df -h /`.
 
   # ── The pipeline's own heartbeat ────────────────────────────────────────
   # Always firing, by construction. Every rule above can only speak if

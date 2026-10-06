@@ -315,12 +315,47 @@ def test_the_scraper_and_exporters_publish_no_host_port() -> None:
         # is operator information; silences go through Grafana's datasource.
         "alertmanager",
         "alert-sink",
+        # Monitoring plan phase 2: the host's numbers and a pg_monitor session.
+        "node-exporter",
+        "postgres-exporter",
     ):
         assert not services[name].get("ports"), (
             f"{_COMPOSE.name}: `{name}` must be `expose`-only -- publishing it puts "
             "operator information (or, for the exporters, a superuser session) on a host "
             "interface"
         )
+
+
+def test_the_host_exporter_reads_no_host_filesystem() -> None:
+    """AC-1.3. `/:/host` would hand uid 65534 every world-readable host file
+    (measured: `.env` is mode 0644) and the Windows drive through /mnt/c. The
+    only mount is an empty NAMED volume, read-only; its statfs() answers for
+    the filesystem holding Docker's data root."""
+    service = _compose()["services"]["node-exporter"]
+    assert service["volumes"] == ["node-exporter-probe:/host:ro"], service["volumes"]
+    for mount in service["volumes"]:
+        assert not mount.startswith("/"), f"host path mounted into node-exporter: {mount}"
+        assert "docker.sock" not in mount
+        assert mount.endswith(":ro")
+    assert service["user"] == "65534:65534"
+    assert service["read_only"] is True
+    for forbidden in ("network_mode", "pid", "privileged", "cap_add"):
+        assert forbidden not in service, f"node-exporter must not set `{forbidden}`"
+    command = service["command"]
+    assert "--path.rootfs=/host" in command
+    assert "--collector.disable-defaults" in command
+    assert "node-exporter-probe" in _compose()["volumes"]
+
+
+def test_the_host_and_postgres_jobs_scrape_their_exporters() -> None:
+    """Both are ordinary targets: no `labels`, so no `tier: optional`, and
+    AizzakScrapeTargetDown covers them the moment either exporter dies."""
+    jobs = {job["job_name"]: job for job in _prom()["scrape_configs"]}
+    expected = {"node": "node-exporter:9100", "postgres": "postgres-exporter:9187"}
+    for name, target in expected.items():
+        configs = jobs[name]["static_configs"]
+        assert [c["targets"] for c in configs] == [[target]], (name, configs)
+        assert all("labels" not in c for c in configs), f"job {name!r} must carry no labels"
 
 
 def test_grafana_is_published_on_loopback_only() -> None:

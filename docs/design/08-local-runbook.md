@@ -30,7 +30,7 @@
 | `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
-| `minio-bootstrap` | minio/mc | — | إنشاء الدلو |
+| `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
 | `nginx-certs` | nginx:1.27 | — | شهادة TLS محلّية موقَّعة ذاتيّاً |
 | `migrate` | نفس صورة التطبيق | — | الهجرات + المنح (`app.ops.provision`) |
 
@@ -70,6 +70,7 @@
 | `outbox-relay` | 1 | `DATABASE_URL` | `outbox_relay` | 2+0 | 2 |
 | `ops-scheduler` (`5.7`) | 1 | **مهمّةٌ واحدةٌ في كلّ لحظة** | `retention_sweeper` **أو** `workspace_purger` **أو** `transit_rotator` | `NullPool` | 1 |
 | `pgbouncer-exporter` | 1 | قاعدةُ الإدارة الوهميّة | `postgres` | — | 1 |
+| `postgres-exporter` (`monitoring-host-postgres`) | 1 | **مباشرٌ إلى `postgres:5432`** لا عبر المُجمِّع | `metrics_exporter` (`CONNECTION LIMIT 2`) | `SetMaxOpenConns(1)` ×2 | 2 (خلفيّتان لا مقعدا عميل) |
 | فحصُ صحّة المُجمِّع | 1 | `psql -p 6432` | `postgres` | — | 1 |
 
 > ⚠️ **وأداةُ النسخ الاحتياطيّ ليست في الجدول، وهذا محسوبٌ لا مُغفَل** (‏`2.5`). خدمةُ `backup` تحمل `BACKUP_DATABASE_URL` وتقع خلف `profiles: ["backup"]`، فلا يبدؤها `docker compose up -d` أبداً: أمرُ مشغِّلٍ لا خدمة، على نفس مِنصّة `app.ops.retention` و`purge` و`load_seed` — والفرقُ الوحيد أنّ لهذه تعريفَ خدمة. وهي `NullPool`: **اتّصالٌ واحدٌ في اللحظة**، من الثلاثين المحجوزةِ للإدارة في الشرط الثاني أعلاه، **ومباشرٌ إلى `postgres:5432`** فلا يشغل مقعدَ عميلٍ أمام المُجمِّع أصلاً. والثلاثةُ مفحوصةٌ في `test_the_manual_tools_really_are_out_of_the_standing_budget`، لا موصوفةٌ هنا وكفى. **و`wal-shipper` — الخدمةُ الدائمةُ الوحيدةُ في تلك الموجة — لا تحمل بيانَ اعتمادِ قاعدةٍ البتّة**: `wal` يقرأ مجلّداً ويكتب أشياءً، ولا يسأل قاعدةَ البيانات شيئاً؛ وذلك مقصود، لأنّ الساعةَ التي توجد هذه الخدمةُ لأجلها هي الساعةُ التي تتعثّر فيها قاعدةُ البيانات. **و`pg_basebackup` يفتح اتّصالَ استنساخٍ يُحسَب على `max_wal_senders` لا على `max_connections`**، فلا يدخل هذا الحساب من بابٍ آخر.
@@ -82,7 +83,7 @@
 
 ```text
 compose.pooler_clients      = 433   # من أصل 2000 (MAX_CLIENT_CONN — كانت 500 قبل `2.2`، و432 قبل `5.7`)
-compose.postgres_backends   = 162   # من أصل 297  (max_connections 300 ناقصَ 3 محجوزةً للمستخدم الخارق — 161 قبل `5.7`)
+compose.postgres_backends   = 164   # من أصل 297  (max_connections 300 ناقصَ 3 محجوزةً للمستخدم الخارق — 161 قبل `5.7`، و162 قبل `monitoring-host-postgres` التي أضافت خلفيّتَي `postgres-exporter`)
 compose.app_rw_demand       = 380   # مقابل 110   (DEFAULT_POOL_SIZE 100 + RESERVE_POOL_SIZE 10)
 compose.web_concurrency_max = 19    # أعلى قيمةٍ تبقى تحت سقف العملاء — **لكلّ نسخة**، والنسخُ ثلاث
 runpod.postgres_backends    = 75    # من أصل 197  (max_connections 200 ناقصَ 3)
@@ -472,13 +473,15 @@ create_index_concurrently:                indisvalid = true    ← أسقطت ا
 **الميزانيّةُ المحسوبة** — تُشتَقّ من `docker-compose.yml` ولا تُكتب بيد؛ `deploy/resource-budget.sh` يطبعها و`tests/unit/test_resource_budget.py` يقارنها بما هنا:
 
 ```text
-resources.standing_cpus       = 35.60   # سقفُ الخدمات الدائمة مجتمعةً — كانت 34.00 قبل `5.2`، و34.25 قبل `5.7`، و35.25 قبل `7.3`
-resources.standing_memory_gb  = 57.59   # كانت 50.50 قبل `2.1`، و54.50 قبل `4.1`، و56.38 قبل `5.2`، و56.50 قبل `5.7`، و57.50 قبل `7.3`
+resources.standing_cpus       = 36.10   # سقفُ الخدمات الدائمة مجتمعةً — كانت 34.00 قبل `5.2`، و34.25 قبل `5.7`، و35.25 قبل `7.3`، و35.60 قبل `monitoring-host-postgres`
+resources.standing_memory_gb  = 57.53   # كانت 50.50 قبل `2.1`، و54.50 قبل `4.1`، و56.38 قبل `5.2`، و56.50 قبل `5.7`، و57.50 قبل `7.3`، و57.59 قبل `monitoring-host-postgres`
 resources.reference_host_cpus = 32      # مضيف §6 المرجعيّ
 resources.reference_host_gb   = 64
 ```
 
 **⚠️ و`5.7` أنفقت آخرَ ما بقي من هامش الذاكرة تقريباً.** `ops-scheduler` خدمةٌ **دائمة** (المهامُّ الليليّة لا تنتظر مشغّلاً يتذكّرها)، وسقفُها سقفُ خدمة `backup` نفسُه — **1 vCPU و1g** — لأنّ أثقلَ ما تشغّله هو `backup full` نفسُه. **⚠️ وذلك السقفُ نفسُه لم يُقَس:** وضعته `3.4` لخدمة `backup` مع سقوف الخدمات كلِّها، ولم تقِس `2.5` ذروةَ ذاكرتها، فذروةُ `backup full` الحقيقيّة أوّلُ ما يُقاس حين يُعاد تركيبُ الميزانيّة. فصار المجموعُ **57.50 من 57.60** التي يسمح بها هامشُ هذا الدفتر (‏64 − 6.4): **عُشرُ غيغابايت**. أيُّ خدمةٍ دائمةٍ تُضاف بعدها — أو أيُّ سقفٍ يُرفع — **يُسقط `test_the_standing_budget_fits_the_reference_host`**، وذلك مقصود: الدفترُ يقول الآن بصوتٍ عالٍ إنّ المضيفَ المرجعيَّ امتلأ، وإنّ الخطوةَ التالية التي تضيف شيئاً دائماً يجب أن تُعيد تركيبه (وهو دَينٌ مسجَّلٌ أصلاً لـ`5.3` في `د‑26`). والمعالجةُ **35.25 من 32** (‏1.10×) حجزٌ زائدٌ يُبلَّغ، بالحكم نفسِه الذي تشرحه الفقرةُ التالية.
+
+**⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّ نظرةً في إعادة تركيب الدفتر (`د‑26`).
 
 **⚠️ و`7.3` أنفقت العُشرَ الباقي إلّا قليلاً.** خدمتا توصيل التنبيهات دائمتان (تنبيهٌ لا يصل حين يُحتاج ليس تنبيهاً): `alertmanager` بـ0.25 vCPU و**64m**، و`alert-sink` بـ0.1 vCPU و**32m** — نصفُ سقف المُصدِّرات وربعُه، لأنّ الهامشَ كان 102 ميغابايت لا أكثر. فصار المجموعُ **57.59 من 57.60**. والسقفان صغيران لأنّ العمليّتين صغيرتان، والمقيسُ بعد النشر في `capacity-status.md` (‏`7.3`). **والخطوةُ التالية التي تضيف شيئاً دائماً لا تجد مكاناً أصلاً**: إعادةُ تركيب الدفتر (`د‑26`) صارت شرطاً لا خياراً.
 
@@ -662,12 +665,12 @@ REQUIRE_LIVE=1 pytest -rs
 
 `docker-compose.test.yml` لا يُقرأ تلقائياً، ولا ينشئ قاعدة الاختبار عند الرفع: السطر الثاني فعل تزويدٍ صريح قابل لإعادة التشغيل. و`.env.test` ملف محلّي متجاهَل يحمل الاعتمادات الفعلية؛ لا تستبدله بقيم `.env.test.example` النائبة.
 
-> ⚠️ **بين السطرين — قِس أطوال الأسرار الثمانية، ولا تكتفِ بحارس `:?`.** كلمات مرور Postgres السبع (‏المستخدم الخارق + أصحاب الأدوار الستّة) و`MINIO_ROOT_PASSWORD` معها محميّةٌ كلّها في `docker-compose.yml` بـ`${VAR:?...}`، والحارس يرفض **غير المضبوط والفارغ** فقط: قيمة `change-me-*` المنسوخة من `.env.example` تمرّ صامتة. و`10-roles.sh` يعمل **مرّةً واحدةً** عند تهيئة الحجم الأوّل ⇒ ما يُقرأ هنا يُولد به الدور و**يبقى**: لا إصلاحَ بعدها إلّا `ALTER ROLE` يدويّةً بصلاحيّة المستخدم الخارق (‏§3.3‑ب). ‏`MINIO_ROOT_PASSWORD` أهون قليلاً — MinIO يقرأ جذره من البيئة في **كلّ** إقلاع، فتغييرُه لاحقاً يسري بإعادة إنشاء الحاوية — لكنّه يبقى اعتماداً منشوراً حتّى تفعل، و`deploy/vault/bootstrap.sh` يبذر القيمة نفسها في `secret/minio` فيلزم أن يُعاد تشغيله معها. هذا ليس افتراضاً: `TRANSIT_ROTATOR_PASSWORD` وُجد placeholder في `.env` الحيّة يوم §3.97 (الفقرة (هـ))، ولا حارسَ آليّ يكشفه لأنّ `.env` غير متعقَّبةٍ في git. لا تطبع القيمة — الطول وحده:
+> ⚠️ **بين السطرين — قِس أطوال الأسرار التسعة، ولا تكتفِ بحارس `:?`.** كلمات مرور Postgres السبع (‏المستخدم الخارق + أصحاب الأدوار الستّة) و`MINIO_ROOT_PASSWORD` معها محميّةٌ كلّها في `docker-compose.yml` بـ`${VAR:?...}`، والحارس يرفض **غير المضبوط والفارغ** فقط: قيمة `change-me-*` المنسوخة من `.env.example` تمرّ صامتة. و`10-roles.sh` يعمل **مرّةً واحدةً** عند تهيئة الحجم الأوّل ⇒ ما يُقرأ هنا يُولد به الدور و**يبقى**: لا إصلاحَ بعدها إلّا `ALTER ROLE` يدويّةً بصلاحيّة المستخدم الخارق (‏§3.3‑ب). ‏`MINIO_ROOT_PASSWORD` أهون قليلاً — MinIO يقرأ جذره من البيئة في **كلّ** إقلاع، فتغييرُه لاحقاً يسري بإعادة إنشاء الحاوية — لكنّه يبقى اعتماداً منشوراً حتّى تفعل، و`deploy/vault/bootstrap.sh` يبذر القيمة نفسها في `secret/minio` فيلزم أن يُعاد تشغيله معها. هذا ليس افتراضاً: `TRANSIT_ROTATOR_PASSWORD` وُجد placeholder في `.env` الحيّة يوم §3.97 (الفقرة (هـ))، ولا حارسَ آليّ يكشفه لأنّ `.env` غير متعقَّبةٍ في git. لا تطبع القيمة — الطول وحده:
 
 ```bash
 for v in POSTGRES_SUPERUSER_PASSWORD AIZZAK_OWNER_PASSWORD APP_RW_PASSWORD \
          OUTBOX_RELAY_PASSWORD RETENTION_SWEEPER_PASSWORD METRICS_READER_PASSWORD \
-         TRANSIT_ROTATOR_PASSWORD MINIO_ROOT_PASSWORD; do
+         TRANSIT_ROTATOR_PASSWORD MINIO_ROOT_PASSWORD METRICS_EXPORTER_PASSWORD; do
   l=$(grep "^${v}=" .env); l=${l#*=}; printf "%-28s len=%s\n" "$v" "${#l}"   # 32، ولا يبدأ بـchange-me
 done
 grep "^MINIO_ROOT_USER=" .env   # معرّفٌ لا سرّ: لا قاعدةَ طولٍ عليه، لكن لا يبقى change-me-* أيضاً
@@ -843,6 +846,132 @@ docker compose up --no-deps migrate      # = python -m app.ops.provision
 > ```
 
 **④ تحقّق.** سبعةُ أدوار · الرؤوس تقدّمت · السياسات والفهارس موجودة · `metrics_reader` يسجّل دخولاً **عبر PgBouncer** (‏النقطة الوحيدة القادرة على إفشال ترقية `app` لاحقاً، فاختبرها الآن) · `app_rw` ما يزال `INSERT` وحده على `platform.outbox` · الحاويات لم تُعَد. التفصيل الكامل بالأرقام في [§3.97](../log/3.97.md) §4.
+
+### 3.3‑ج تفعيلُ مراقبة الجهاز وPostgres على عنقودٍ **قائم** (`monitoring-host-postgres` · خطّة المراقبة، المرحلة 2)
+
+خدمتان جديدتان: `node-exporter` (القرص والمعالج والذاكرة) و`postgres-exporter` (يدخل `postgres:5432` **مباشرةً** بدورٍ جديد `metrics_exporter`: `pg_monitor` وحده، `CONNECTION LIMIT 2`، للقراءة فقط). **كلمةُ سرّ الدور ليست في بيئة خدمة `postgres` عمداً**: مفتاحٌ جديدٌ هناك يغيّر بصمةَ تلك الخدمة، فيُعيد أوّلُ `docker compose up -d` عامٍّ **إنشاءَ قاعدة البيانات**. فالدورُ يُنشأ بسكربتٍ يُشغَّل يدويّاً (وهو نفسُه ما يشغّله `initdb` على حجمٍ جديد). البصمةُ مُثبَتةٌ بالقياس: `docker compose config --hash postgres` لا تتغيّر بهذه الميزة.
+
+```bash
+cd /home/AIZZAK
+
+# ⓪  المتغيّر في .env (قيمةٌ عشوائيّة، لا تُطبع ولا يُقرأ الملفّ). يُتخطّى إن وُجد.
+grep -q '^METRICS_EXPORTER_PASSWORD=' .env || printf '\nMETRICS_EXPORTER_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> .env
+#    الطول وحده (المتوقَّع len=48)، ويقف الإجراء إن كانت القيمة فارغةً أو `change-me*` (AC‑9.1):
+#    الاسمُ الموجودُ لا يعني قيمةً حقيقيّة: `cp .env.example .env` يَدَعُ القيمةَ المنشورةَ في المستودع.
+l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "${l,,}" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) [ "${#l}" -ge 32 ] && echo "len=${#l}" || { echo "TOO SHORT -- fix .env first"; false; };; esac
+#    خطّ الأساس لـAC‑9.3: معرّفُ postgres ووقتُ إقلاعه وبصمتُه على الحاوية الحيّة، ثمّ المحسوبة (تتساويان؛ وإلّا فثمّة انحرافٌ سابق)
+docker inspect -f '{{.Id}} {{.State.StartedAt}} {{index .Config.Labels "com.docker.compose.config-hash"}}' aizzak-postgres-1
+docker compose config --hash postgres
+
+# ①  الدورُ وكلمةُ سرّه. كلمةُ السرّ تعبر **stdin** إلى الحاوية، ثمّ يقرؤها psql من البيئة بـ`\getenv`:
+#    لا تُطبع، ولا تدخل بيئةَ هذا الصَدَفة ولا سطرَ أوامر. (داخل الحاوية تعيش في بيئة عمليّة السكربت
+#    وحدها، لا في argv لـpsql.) والسكربتُ يعطّل `pg_stat_statements.track_utility` و
+#    `log_min_error_statement` و`log_statement` وأخواتها (`log_min_duration_*` و`log_transaction_sample_rate` و`debug_print_parse`) في جلسته قبل `ALTER ROLE`، فلا يبقى الحرفيّ في `pg_stat_statements` ولا في
+#    السجلّ؛ ويرفض كلمةً فارغةً أو `change-me*` (بأيّ حالة أحرف) أو أقصر من 32 محرفاً، **قبل** أوّل `psql` فلا يُنشئ شيئاً. يُشغَّل مرّتين (AC‑2.6) والسطرُ بعدهما واحد.
+for i in 1 2; do
+  sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env |
+    docker compose exec -T postgres bash -c \
+      'read -r METRICS_EXPORTER_PASSWORD; export METRICS_EXPORTER_PASSWORD; bash /docker-entrypoint-initdb.d/15-metrics-exporter.sh'
+  docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+    "SELECT rolsuper, rolbypassrls, rolcreaterole, rolreplication, rolconnlimit, rolconfig FROM pg_roles WHERE rolname = '"'"'metrics_exporter'"'"'"'
+done
+#    المتوقَّع مرّتين: f|f|f|f|2|{statement_timeout=5s,lock_timeout=1s,default_transaction_read_only=on}
+
+# ②  المُصدِّران: صورٌ جاهزة لا تُبنى
+docker compose up -d --no-deps node-exporter postgres-exporter
+docker compose ps node-exporter postgres-exporter         # healthy
+
+# ③  (اختياريّ، في النافذة نفسها) redis-cache بسقفه الجديد 1792m: يعود فارغاً، وهذا تصميمه (--save "")
+docker compose up -d --no-deps redis-cache
+
+# ④  Prometheus: إعادةُ إنشاء لا reload (الملفّان مربوطان ملفّاً ملفّاً فيمسك الحاوية inode القديم بعد git)
+docker compose up -d --force-recreate --no-deps prometheus
+
+# ⑤  التحقّق بعد دقيقة
+Q() { docker compose exec -T prometheus promtool query instant http://127.0.0.1:9090 "$1"; }
+Q 'up{job=~"node|postgres"}'                 # سلسلتان = 1   (AC‑9.2 · 1.4 · 3.3)
+Q 'pg_up'                                    # 1             (AC‑3.3)
+Q 'node_memory_MemTotal_bytes'; grep MemTotal /proc/meminfo     # ×1024 ≤ 1%    (AC‑1.5)
+Q 'count(count by (cpu) (node_cpu_seconds_total))'; nproc       # متساويان
+Q 'node_filesystem_size_bytes'; df -B1 /     # سلسلةٌ واحدة mountpoint="/" ext4 = حجم df (AC‑1.6)
+Q 'count by (__name__) ({job="postgres", __name__=~"pg_up|pg_locks_count|pg_lock_wait_longest_seconds|pg_stat_activity_max_tx_duration|pg_database_size_bytes|pg_stat_user_tables_table_size_bytes|pg_archive_ready_segments|pg_archive_ready_oldest_age_seconds|pg_stat_archiver_archived_count"})'   # تسعة أسماء (AC‑3.4)
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT count(*) FROM pg_stat_activity WHERE usename = '"'"'metrics_exporter'"'"'"'      # ≤ 2 (AC‑3.5)
+docker inspect -f '{{.Id}} {{.State.StartedAt}} {{index .Config.Labels "com.docker.compose.config-hash"}}' aizzak-postgres-1   # = خطّ الأساس (AC‑9.3)
+docker compose config --hash postgres        # = البصمة المسجَّلة
+
+# ⑥  بعد 10 دقائق (AC‑9.4): لا نتيجة، أو حالةٌ حقيقيّة موثَّقة
+Q 'ALERTS{alertname=~"AizzakScrapeTargetDown|AizzakPostgres.*|AizzakHost.*", alertstate="firing"}'
+
+# ⑦  بعد ساعة (AC‑3.6 · AC‑9.5): تُسجَّل الأرقام في status.md
+Q 'count({job="postgres", queryid=~".+"}) or count({job="postgres", query=~".+"}) or vector(0)'   # 0
+Q 'max_over_time(scrape_samples_scraped{job=~"node|postgres"}[1h])'                               # < 3000 لكلٍّ
+Q 'quantile_over_time(0.95, scrape_duration_seconds{job=~"node|postgres"}[1h])'                   # < 2
+docker stats --no-stream aizzak-node-exporter-1 aizzak-postgres-exporter-1                        # < 50% من السقف
+
+# ⑧  (اختياريّ، AC‑6.4: يوقف حاويةً حيّة)
+docker compose stop postgres-exporter; sleep 75; docker compose logs --since 2m alert-sink | grep AizzakScrapeTargetDown
+docker compose start postgres-exporter
+```
+
+**تحذيرات:**
+- `docker compose up -d` العامّ **لا** يُعيد إنشاء `postgres` بسبب هذه الميزة، لكنّه يُعيد إنشاء `redis-cache` إن تُخطّيت ③، وكلَّ خدمةٍ انحرفت لسببٍ آخر. فالأوامرُ أعلاه بأسماء الخدمات و`--no-deps`.
+- **حجمٌ جديد** (مضيفٌ جديد): `initdb` يُنشئ الدورَ **بلا** كلمة سرّ، فتلزم الخطوةُ ① مرّةً بعد أوّل `up -d`؛ قبلها يشتعل `AizzakPostgresDown` وسجلُّ المُصدِّر يقول `password authentication failed for user "metrics_exporter"`.
+- **تدوير كلمة السرّ:** غيّرها في `.env` **دون طباعتها** (`N=$(openssl rand -hex 24) perl -pi -e 's/^METRICS_EXPORTER_PASSWORD=.*/METRICS_EXPORTER_PASSWORD=$ENV{N}/' .env`)، ثمّ ⓪ (الطول) ثمّ ① **بصيغته المُصلَحة** (التي تعطّل `track_utility` قبل `ALTER ROLE`)، ثمّ `docker compose up -d --no-deps postgres-exporter`. لا تشغّل `ALTER ROLE … PASSWORD '…'` بيدك في جلسة psql عاديّة: حرفيّتُه تدخل `pg_stat_statements` (M‑1).
+- **تعديل `deploy/postgres-exporter/queries.yaml`** (ملفٌّ مربوطٌ منفرداً): `docker compose up -d --force-recreate --no-deps postgres-exporter`.
+- **أرقامُ الشبكة** في `node-exporter` من نطاق **الحاوية** لا المضيف (Q‑9)؛ والقرصُ المراقَب `/` وحده (Q‑2): قرصُ Windows غيرُ مراقَب.
+
+**تنظيفٌ لمرّةٍ واحدة — بيد بشريّ فقط (M‑1 · CWE‑312/532).** شُغّلت الخطوةُ ① على العنقود الحيّ **قبل** إصلاح السكربت، فبقي نصُّ `ALTER ROLE metrics_exporter PASSWORD '<القيمة>'` في `pg_stat_statements` (يقرؤه `aizzak_owner` و`metrics_exporter` والمستخدمُ الخارق، ويطبعه `python -m app.ops.slow_queries top`). فالقيمةُ الحاليّة تُعدّ مكشوفة. بعد أن تصير الشجرةُ على النسخة المُصلَحة من `15-metrics-exporter.sh`، ومن `/home/AIZZAK`، **بلا طباعة أيّ قيمة ولا عمود `query`** (عدٌّ فقط):
+
+```bash
+cd /home/AIZZAK
+# (أ) اعثر على الصفّ المسرِّب وصفِّره **وحده** (لا pg_stat_statements_reset() الكاملة: تمحو إحصاءَ كلّ شيء)
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -At' <<'SQL'
+SELECT count(*) AS leaking_before FROM pg_stat_statements WHERE query ILIKE 'ALTER ROLE metrics_exporter%PASSWORD%';
+SELECT count(pg_stat_statements_reset(userid, dbid, queryid)) AS reset_rows
+  FROM pg_stat_statements WHERE query ILIKE 'ALTER ROLE metrics_exporter%PASSWORD%';
+SELECT count(*) AS leaking_after FROM pg_stat_statements WHERE query ILIKE 'ALTER ROLE metrics_exporter%PASSWORD%';
+SQL
+#     المتوقَّع: leaking_before ≥ 1، ثمّ reset_rows مساوٍ له، ثمّ leaking_after = 0
+
+# (ب) **إلزاميّة لا اختياريّة**: دوِّر القيمة في .env دون طباعتها، ثمّ افحص الطول (⓪)
+N=$(openssl rand -hex 24) perl -pi -e 's/^METRICS_EXPORTER_PASSWORD=.*/METRICS_EXPORTER_PASSWORD=$ENV{N}/' .env
+l=$(grep '^METRICS_EXPORTER_PASSWORD=' .env); l=${l#*=}; case "${l,,}" in ''|change-me*) echo "PLACEHOLDER -- fix .env first"; false;; *) [ "${#l}" -ge 32 ] && echo "len=${#l}" || { echo "TOO SHORT -- fix .env first"; false; };; esac
+
+# (ج) أعد تشغيل السكربت المُصلَح بطريقة stdin (الخطوة ①، الحلقة نفسها)
+for i in 1 2; do
+  sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env |
+    docker compose exec -T postgres bash -c \
+      'read -r METRICS_EXPORTER_PASSWORD; export METRICS_EXPORTER_PASSWORD; bash /docker-entrypoint-initdb.d/15-metrics-exporter.sh'
+done
+
+# (د) أعد إنشاء المُصدِّر وحده (البيئة تغيّرت) ثمّ انتظر دقيقة
+docker compose up -d --no-deps postgres-exporter
+docker compose exec -T prometheus promtool query instant http://127.0.0.1:9090 'pg_up'      # 1
+
+# (هـ) تحقّق أنّ القيمة الجديدة لا تظهر في أيّ صفّ (عدٌّ فقط): السطرُ الأوّل من stdin كلمةُ السرّ، والباقي SQL
+{ sed -n 's/^METRICS_EXPORTER_PASSWORD=//p' .env; cat <<'SQL'
+SET log_min_error_statement = panic;
+SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_duration_sample = -1;
+SET log_transaction_sample_rate = 0;
+SET debug_print_parse = off;
+\getenv v METRICS_EXPORTER_PASSWORD
+SELECT count(*) AS rows_containing_the_new_value FROM pg_stat_statements WHERE position(:'v' IN query) > 0;
+SQL
+} | docker compose exec -T postgres bash -c \
+      'read -r METRICS_EXPORTER_PASSWORD; export METRICS_EXPORTER_PASSWORD; psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atq'
+#     المتوقَّع: 0   (ويبقى pg_up = 1)
+```
+
+لا تُشغّل `pg_stat_statements_reset()` بلا وسائط، ولا `DROP ROLE`.
+
+**الخطوة (ب) إلزاميّة لا اختياريّة.** التصفير المُوجَّه في (أ) يحذف المُدخَل من العرض `pg_stat_statements` فقط، لكنّ **نصّه القديم يبقى يتيماً في `$PGDATA/pg_stat_tmp/pgss_query_texts.stat`** (ملفٌّ `0600` للمستخدم postgres، ولا يدخل `pg_basebackup`) حتّى إعادة تشغيل postgres القادمة. فالقيمة المسرَّبة تُعدّ مكشوفةً إلى ذلك الحين، وتدويرها في (ب) هو ما يُبطلها. إعادة التشغيل نفسها ليست مطلوبة، وهي قرارٌ بشريّ.
+
+بعد الإصلاح والتدوير، **المواضع التي يظهر فيها نصُّ `ALTER` للقيمة الجديدة**: لحظةُ تنفيذه في `pg_stat_activity.query` فقط. ولا يبقى في `pg_stat_statements` ولا في السجلّ ولا في ملفّ النصوص.
+
+**التراجع:** `docker compose stop node-exporter postgres-exporter && docker compose rm -f node-exporter postgres-exporter`، ثمّ `git revert` وإعادةُ إنشاء `prometheus`؛ و`DROP ROLE metrics_exporter;` اختياريّ بصلاحيّة المستخدم الخارق.
 
 ### 3.4 ⚠️ Vault دائمٌ الآن، وهذا لا يُغنى عن قراءته (release-blockers-plan.md §3 خطوة 1)
 
@@ -2395,6 +2524,7 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 ```
 
 - **تعديلُ حدّ:** في `alerts.yml` ومعه حالتُه في `alerts.test.yml`، ثمّ `deploy/prometheus/test-rules.sh`، ثمّ `docker compose up -d --force-recreate --no-deps prometheus` (الملفّ مربوطٌ ملفّاً واحداً؛ محرِّرٌ يستبدل الملفّ يترك الحاويةَ على النسخة القديمة).
+- **قواعدُ الجهاز وPostgres** (`AizzakHostDiskHigh` · `AizzakPostgresDown` · `AizzakPostgresLockWaitHigh` · `AizzakPostgresArchiveStalled`): تفعيلُ مُصدِّريها في §3.3‑ج من هذا الملفّ. وما لم يُفعَّل الدورُ يشتعل `AizzakPostgresDown`.
 - **قاعدةٌ جديدة:** اسمُها في `EXPECTED_ALERTS` (`tests/unit/test_prometheus_alert_rules.py`) مع سببٍ مكتوب، وقسمٌ في `docs/runbooks/alerts.md` بمرساةٍ `<a id="اسمها بحروفٍ صغيرة">`، وحالتان في `alerts.test.yml`. الاختبارُ يرفض أيَّ ناقص.
 - **⚠️ تشغيلُ حملٍ فوق نقطة الانكسار يُشعل تنبيهات الإشباع وميزانيّة الخطأ.** هذا عملُها. أسكتها للتشغيل من Grafana.
 - **⚠️ تنبيهٌ واحدٌ لا يصل أبداً:** موتُ `alertmanager` نفسِه (‏`AizzakScrapeTargetDown{job="alertmanager"}` يشتعل في Prometheus ولا طريقَ له). يُعرَف من **توقّف نبض `AizzakWatchdog`** في سجلّ `alert-sink` أكثرَ من عشر دقائق.

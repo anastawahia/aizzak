@@ -1,0 +1,34 @@
+# Two numbers no built-in collector of postgres_exporter v0.20.1 has
+# (docs/delivery/monitoring-host-postgres/design.md §3-ج). Every column is a
+# GAUGE; NO column is a LABEL -- no query text, no queryid, no user (NFR-5).
+# `--extend.query-path` is deprecated upstream and still works in the pinned
+# version; check it first on any exporter upgrade.
+pg_lock_wait:
+  query: |
+    SELECT COALESCE(max(EXTRACT(EPOCH FROM clock_timestamp() - l.waitstart)), 0)::float8 AS longest_seconds,
+           count(DISTINCT l.pid)::float8 AS sessions
+    FROM pg_catalog.pg_locks l
+    JOIN pg_catalog.pg_stat_activity a ON a.pid = l.pid
+    WHERE NOT l.granted AND l.waitstart IS NOT NULL AND a.datname = current_database()
+  master: true
+  metrics:
+    - longest_seconds:
+        usage: "GAUGE"
+        description: "Seconds the longest-waiting lock request in this database has waited (pg_locks.waitstart, PG14+); 0 when none"
+    - sessions:
+        usage: "GAUGE"
+        description: "Sessions in this database currently waiting on a lock"
+pg_archive_ready:
+  query: |
+    SELECT count(*)::float8 AS segments,
+           COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - min(modification)), 0)::float8 AS oldest_age_seconds
+    FROM pg_catalog.pg_ls_archive_statusdir()
+    WHERE name LIKE '%.ready'
+  master: true
+  metrics:
+    - segments:
+        usage: "GAUGE"
+        description: "WAL files completed and not yet archived (.ready in archive_status)"
+    - oldest_age_seconds:
+        usage: "GAUGE"
+        description: "Age of the oldest .ready file; 0 when none -- a quiet cluster is not a stalled one"

@@ -187,9 +187,8 @@ async def test_a_joined_calls_exception_also_rolls_back_the_shared_session() -> 
     ctx = _ctx()
 
     with pytest.raises(RuntimeError, match="boom"):
-        async with factory.begin(ctx):
-            async with factory(ctx):
-                raise RuntimeError("boom")
+        async with factory.begin(ctx), factory(ctx):
+            raise RuntimeError("boom")
 
     session = maker.created[0]
     assert session.rolled_back is True
