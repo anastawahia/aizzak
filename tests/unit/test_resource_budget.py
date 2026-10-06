@@ -48,6 +48,7 @@ matching something.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -248,11 +249,15 @@ def test_nothing_replicated_carries_a_container_name_or_a_published_port() -> No
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
+    # Pinned to the file this module reads. The script takes Docker's own
+    # `COMPOSE_FILE` variable as ONE path, and CI's integration job exports it
+    # as the colon-separated pair `docker-compose.yml:docker-compose.test.yml`.
     return subprocess.run(
         ["bash", str(_SCRIPT), *args],
         capture_output=True,
         text=True,
         cwd=_REPO_ROOT,
+        env={**os.environ, "COMPOSE_FILE": str(_COMPOSE)},
         check=False,
     )
 
