@@ -55,6 +55,17 @@ services:
   # mountpoint and postgres fails to start at all -- and `docker compose config`
   # validates it happily, so the error only ever appears at `up`. Measured, with
   # this exact pair of mounts. ن-ي.
+  #
+  # The CPU cap is lowered for the CI runner, not for the harness's sake: the
+  # base file gives postgres `cpus: "6.0"` (capacity 3.4, sized for this host's
+  # 10 cores), and a GitHub-hosted runner has 4. Docker refuses a limit above
+  # the machine's core count outright -- "range of CPUs is from 0.01 to 4.00"
+  # -- so postgres never starts and the whole `integration` job dies at `up`.
+  # The live stack does not read this file, so its 6 cores are untouched.
   postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
     volumes:
       - ./deploy/postgres/testdb:/opt/aizzak/testdb:ro
