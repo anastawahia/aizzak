@@ -58,11 +58,15 @@
 - Delivery docs go in `docs/delivery/<slug>/`.
 
 ## Staging & deploy
-- TODO(human): **there is no staging target.** Today the only stack is the local Compose stack on this host (`docker compose up -d`, rolling replace via `deploy/rolling-deploy.sh`). It also acts as the live test environment.
-- A second target is RunPod (`deploy/runpod/`, an all-in-one image).
+- Staging target: a RunPod GPU Pod running the all-in-one image (`deploy/runpod/`, guide `docs/deploy-runpod.md`). It is reachable publicly through the RunPod proxy URL (`https://<POD_ID>-80.proxy.runpod.net`).
+- The local Compose stack on this host (`docker compose up -d`, rolling replace via `deploy/rolling-deploy.sh`) stays the development and live test environment.
 - Nothing deploys automatically on push; CI only tests.
-- Wave 8, the production gate, is deferred by the owner. Do not expose the stack publicly (`docs/capacity-status.md`).
-- **Production deploys (RunPod, or anything exposed publicly) are human-only.**
+- Staging phase (owner decision, 2026-10-06):
+  - Public exposure of the stack through RunPod is allowed. Real data is allowed.
+  - Security hardening is deferred until after the first RunPod boot. Record each gap you find in the staging security list in `docs/deploy-runpod.md`; do not block a staging deploy on it.
+  - Agents may deploy to RunPod without a human: build and push the image, create, update and restart the Pod. Report each deploy (image tag, Pod ID, URL, `/health` result).
+  - Deleting a Pod or a network volume still needs human approval (it destroys data).
+- Wave 8, the production gate, stays deferred (`docs/capacity-status.md`). The production launch is still a human decision.
 - The local Compose stack is a development environment (owner decision, 2026-10-05). Agents may start, stop, restart and recreate its containers (`docker compose up -d [--no-deps] [--force-recreate] <service>`, `restart`, `stop`):
   - name the services you touch, and prefer `--no-deps`;
   - check the services' health afterwards;
