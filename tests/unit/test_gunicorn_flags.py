@@ -76,7 +76,8 @@ def _command_lines() -> list[tuple[str, str]]:
     compose_cmd = " ".join(re.findall(r'"([^"]*)"', raw.replace("\\\n", " ")))
 
     supervisor = _RUNPOD_SUPERVISOR.read_text(encoding="utf-8")
-    match = re.search(r"^command=(\S*gunicorn .*)$", supervisor, flags=re.MULTILINE)
+    # `.*?` skips the `aizzak-with-vault` wrapper in front of gunicorn.
+    match = re.search(r"^command=.*?(\S*gunicorn .*)$", supervisor, flags=re.MULTILINE)
     assert match is not None, "deploy/runpod/supervisord.conf launches no gunicorn"
     return [("Dockerfile", compose_cmd), ("deploy/runpod/supervisord.conf", match.group(1))]
 

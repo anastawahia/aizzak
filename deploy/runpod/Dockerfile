@@ -104,6 +104,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # tesseract-ocr backs the knowledge module's OCR adapter (pytesseract is a
 # binding, not an implementation). gosu drops privilege for the Postgres
 # cluster init. netcat/curl are what the bootstrap waits with.
+# The pango/cairo/harfbuzz libraries and the two font packages are
+# WeasyPrint's (summary PDFs), the same list as the main ./Dockerfile:
+# without fonts-noto-core Arabic text renders as empty boxes.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         python3.12 python3.12-venv \
@@ -112,6 +115,8 @@ RUN apt-get update \
         nginx \
         supervisor \
         tesseract-ocr \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
+        fonts-dejavu-core fonts-noto-core \
         openssh-server \
         curl ca-certificates gosu netcat-openbsd jq procps tzdata \
     && rm -rf /var/lib/apt/lists/*
@@ -147,10 +152,12 @@ COPY deploy/ ./deploy/
 
 COPY deploy/runpod/entrypoint.sh    /usr/local/bin/entrypoint.sh
 COPY deploy/runpod/bootstrap.sh     /usr/local/bin/aizzak-bootstrap.sh
+COPY deploy/runpod/with-vault.sh    /usr/local/bin/aizzak-with-vault
 COPY deploy/runpod/supervisord.conf /etc/supervisor/supervisord.conf
 COPY deploy/runpod/nginx.conf       /etc/nginx/nginx.conf
 
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aizzak-bootstrap.sh \
+        /usr/local/bin/aizzak-with-vault \
     && useradd --create-home --uid 10001 aizzak \
     && chown -R aizzak:aizzak /app /opt/qdrant /opt/hf-cache
 

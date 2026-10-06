@@ -76,6 +76,26 @@ log "seeding Vault (KV v2 + Transit + AppRole)"
 AIZZAK_APPROLE_ROLE_ID="${VAULT_ROLE_ID:-}" \
     sh /app/deploy/vault/bootstrap.sh
 
+# The app's own Vault login. Compose reads VAULT_SECRET_ID from the operator's
+# shell; a Pod has no operator shell at boot, and no secret_id can exist before
+# this Vault was initialised. So mint a fresh one on EVERY boot and leave it
+# where `aizzak-with-vault` (the wrapper on `app` and `worker`) reads it.
+# Each one lives secret_id_ttl (720h), so a restart is also the renewal.
+# /run is container disk, not the volume: the file never outlives the Pod.
+log "minting the app's AppRole login"
+VAULT_CRED_FILE=/run/aizzak/vault-approle.env
+install -d -m 0750 -o root -g aizzak "$(dirname "$VAULT_CRED_FILE")"
+role_id="$(vault read -field=role_id auth/approle/role/app/role-id)"
+secret_id="$(vault write -f -field=secret_id auth/approle/role/app/secret-id)"
+(
+    umask 077
+    printf 'VAULT_ROLE_ID=%s\nVAULT_SECRET_ID=%s\n' "$role_id" "$secret_id" \
+        > "${VAULT_CRED_FILE}.tmp"
+)
+unset role_id secret_id
+chown aizzak:aizzak "${VAULT_CRED_FILE}.tmp"
+mv -f "${VAULT_CRED_FILE}.tmp" "$VAULT_CRED_FILE"
+
 # ── 3. MinIO: the object bucket ───────────────────────────────────────────
 wait_for "MinIO" 60 curl -fsS "http://127.0.0.1:9000/minio/health/live"
 

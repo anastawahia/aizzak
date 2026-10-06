@@ -262,15 +262,22 @@ export PGDATA="$DATA/postgres"
 # records it, with the unseal key, under $DATA/vault-init -- see that
 # script's header and docs/deploy-runpod.md §8.1 for what this trades away
 # (no KMS on a Pod, so both live in a plain file, 0600) and the upgrade path.
-# VAULT_TOKEN stays UNSET: AppRole (below) is the mode this image uses, and
+# VAULT_TOKEN stays UNSET: AppRole is the mode this image uses, and
 # aizzak-bootstrap.sh reads the real root token out of $DATA/vault-init
-# itself for the one bootstrap step that still needs it. `vault` and
+# itself for the one bootstrap step that still needs it. The same bootstrap
+# mints the app's AppRole login on every boot; `aizzak-with-vault` hands it
+# to `app` and `worker` (supervisord.conf). `vault` and
 # `vault-init` are kept as TWO directories, not one, so the data directory
 # stays exactly what Vault itself owns (same reasoning as docker-compose.yml's
 # separate `vault-data`/`vault-init` volumes).
 export VAULT_DATA_DIR="$DATA/vault"
 export VAULT_INIT_DIR="$DATA/vault-init"
 export VAULT_LISTEN_ADDR=127.0.0.1
+# Both scripts default to the paths Compose mounts them at (/vault/config/,
+# /app-policy.hcl), which do not exist in this image. Without the first, start.sh
+# exits before Vault starts and the bootstrap times out waiting for it.
+export VAULT_CONFIG_TEMPLATE=/app/deploy/vault/server.hcl
+export VAULT_POLICY_FILE=/app/deploy/vault/app-policy.hcl
 
 if ! mountpoint -q /workspace 2>/dev/null; then
     log "⚠️  /workspace is NOT a mounted volume. All data will be LOST when this"

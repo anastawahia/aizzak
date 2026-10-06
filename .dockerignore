@@ -29,7 +29,19 @@ htmlcov/
 # ⚠️ Secrets. The image must receive its configuration from the environment,
 # never from a baked file.
 .env
+.env.*
+!.env.example
+!.env.test.example
 *.local
+
+# Load-test accounts, tokens, seeds and results -- real development users'
+# credentials and data. `deploy/runpod/Dockerfile` copies `deploy/` whole, so
+# without these lines they ride into an image that may be pushed publicly.
+deploy/load/accounts.json
+deploy/load/tokens.json
+deploy/load/include-workspaces.txt
+deploy/load/seeds/
+deploy/load/results/
 
 # Development TLS material -- regenerated per deployment.
 deploy/nginx/certs/

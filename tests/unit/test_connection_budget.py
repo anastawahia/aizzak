@@ -184,6 +184,9 @@ _RUNPOD_MAX_CONNECTIONS = re.compile(r'echo "max_connections = (?P<value>\d+)"')
 # `/opt/venv-emb` and the bootstrap out of `/usr/local/bin`, so this prefix is
 # exactly "the processes that can hold a SQLAlchemy pool" and nothing else.
 _RUNPOD_APP_VENV = "/opt/venv/bin/"
+# `app` and `worker` start through this wrapper, which only adds the Vault
+# AppRole login to the environment and then execs the real command.
+_RUNPOD_VAULT_WRAPPER = "/usr/local/bin/aizzak-with-vault "
 
 
 # --------------------------------------------------------------- the model --
@@ -397,7 +400,7 @@ def _runpod_topology() -> _Topology:
         command_match = _COMMAND_PATTERN.search(match.group("body"))
         if command_match is None:
             continue
-        command = command_match.group("command")
+        command = command_match.group("command").removeprefix(_RUNPOD_VAULT_WRAPPER)
         if not command.startswith(_RUNPOD_APP_VENV):
             continue
         module = _module_of(command)
