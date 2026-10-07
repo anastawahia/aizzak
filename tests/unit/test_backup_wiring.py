@@ -20,10 +20,19 @@ Neither is reachable by reading the file that contains the bug.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
-from app.ops.backup import BACKUP_ROLE
+from app.ops.backup import (
+    BACKUP_ROLE,
+    BASE_PREFIX,
+    BASE_RETENTION,
+    DUMP_PREFIX,
+    QDRANT_PREFIX,
+    QDRANT_RETENTION,
+    WAL_PREFIX,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -250,7 +259,153 @@ def test_the_backup_bucket_is_separate_from_the_file_bucket_and_versioned() -> N
 
     assert 'backup_bucket="${BACKUP_BUCKET:-aizzak-backups}"' in bootstrap
     assert 'mc version enable "aizzak/${backup_bucket}"' in bootstrap
-    assert "noncurrent-expire-days" in bootstrap
+    assert 'mc ilm import "aizzak/${backup_bucket}"' in bootstrap
+
+
+# ------------------------------------------------- the bucket's lifecycle --
+
+# Prefix -> the variable that sets its noncurrent window and that variable's
+# script default. Every prefix has its own variable; the original
+# `BACKUP_NONCURRENT_DAYS` now covers `dump/` alone, whose window did not change.
+_LIFECYCLE_WINDOWS = {
+    QDRANT_PREFIX: ("BACKUP_QDRANT_NONCURRENT_DAYS", 1),
+    WAL_PREFIX: ("BACKUP_WAL_NONCURRENT_DAYS", 7),
+    BASE_PREFIX: ("BACKUP_BASE_NONCURRENT_DAYS", 7),
+    DUMP_PREFIX: ("BACKUP_NONCURRENT_DAYS", 30),
+}
+
+
+def _bootstrap_code() -> list[str]:
+    """The script's lines minus its comments -- the comment block quotes the
+    `ilm rule add` it replaced, and a guard that reads that as evidence
+    proves nothing."""
+    return [
+        line
+        for line in _MINIO_BOOTSTRAP.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+
+def _script_default(variable: str) -> int:
+    match = re.search(rf"\${{{variable}:-(\d+)}}", _MINIO_BOOTSTRAP.read_text("utf-8"))
+    assert match is not None, f"bootstrap.sh does not read {variable} with a default"
+    return int(match.group(1))
+
+
+def _lifecycle_document() -> dict[str, list[dict[str, object]]]:
+    """The heredoc `mc ilm import` reads, with each shell variable replaced by
+    the default of the environment variable it comes from."""
+    script = _MINIO_BOOTSTRAP.read_text(encoding="utf-8")
+    heredoc = script.split('mc ilm import "aizzak/${backup_bucket}" >/dev/null <<EOF\n', 1)[1]
+    body = heredoc.split("\nEOF\n", 1)[0]
+    shell_to_env = {
+        "qdrant_noncurrent_days": "BACKUP_QDRANT_NONCURRENT_DAYS",
+        "wal_noncurrent_days": "BACKUP_WAL_NONCURRENT_DAYS",
+        "base_noncurrent_days": "BACKUP_BASE_NONCURRENT_DAYS",
+        "dump_noncurrent_days": "BACKUP_NONCURRENT_DAYS",
+    }
+    for shell_var, env_var in shell_to_env.items():
+        assert f'{shell_var}="${{{env_var}:-' in script, f"{shell_var} is not read from {env_var}"
+        body = body.replace(f"${{{shell_var}}}", str(_script_default(env_var)))
+    document: dict[str, list[dict[str, object]]] = json.loads(body)
+    return document
+
+
+def test_the_lifecycle_is_imported_whole_and_never_added_rule_by_rule() -> None:
+    """Measured 2026-10-05: 22 identical noncurrent rules on the live bucket.
+    `mc ilm rule add` mints a fresh ID and succeeds on every run, so the
+    `|| echo "already present"` it carried never fired. `mc ilm import`
+    replaces the whole configuration, which is what makes a re-run converge
+    (proved twice against a scratch server)."""
+    code = "\n".join(_bootstrap_code())
+
+    assert "ilm rule add" not in code
+    assert code.count("mc ilm import") == 1
+
+
+def test_the_lifecycle_declares_one_rule_per_prefix_and_nothing_unprefixed() -> None:
+    """An un-prefixed rule would match every object alongside its prefix
+    rule, and the effective window would depend on how the server resolves
+    the overlap. The four prefixes are the tool's own constants."""
+    rules = _lifecycle_document()["Rules"]
+    prefixes = []
+    for rule in rules:
+        rule_filter = rule.get("Filter")
+        assert isinstance(rule_filter, dict) and rule_filter.get("Prefix"), (
+            f"rule {rule.get('ID')} has no prefix filter"
+        )
+        prefixes.append(rule_filter["Prefix"])
+
+    assert sorted(prefixes) == sorted(_LIFECYCLE_WINDOWS)
+    assert len({rule["ID"] for rule in rules}) == len(rules)
+
+
+def test_each_prefix_gets_its_own_noncurrent_window() -> None:
+    by_prefix = {
+        rule["Filter"]["Prefix"]: rule  # type: ignore[index]
+        for rule in _lifecycle_document()["Rules"]
+    }
+    for prefix, (variable, days) in _LIFECYCLE_WINDOWS.items():
+        rule = by_prefix[prefix]
+        assert rule["Status"] == "Enabled"
+        assert rule["NoncurrentVersionExpiration"] == {"NoncurrentDays": days}, (
+            f"{prefix} should expire noncurrent versions after {variable}={days} days"
+        )
+        assert set(rule) == {"ID", "Status", "Filter", "NoncurrentVersionExpiration"}, (
+            f"{prefix} carries an action beyond noncurrent expiry -- CURRENT versions "
+            "belong to `app.ops.backup prune` alone"
+        )
+
+
+def test_a_pruned_qdrant_set_is_gone_well_before_the_next_one_retires() -> None:
+    """The point of the change: a pruned snapshot set (~7 GiB) used to linger
+    thirty days as a noncurrent version. It now lingers less than the
+    retention window that retired it."""
+    assert _script_default("BACKUP_QDRANT_NONCURRENT_DAYS") < QDRANT_RETENTION.days
+
+
+def test_the_base_window_has_its_own_variable_and_does_not_ride_on_dumps() -> None:
+    """Owner decision 2026-10-05: `base/` drops to 7 days while `dump/` stays
+    at 30. Sharing `BACKUP_NONCURRENT_DAYS` again would silently pull `base/`
+    back to 30 (or push `dump/` down to 7), so the two windows must stay apart."""
+    script = _MINIO_BOOTSTRAP.read_text(encoding="utf-8")
+    windows = dict(
+        re.findall(
+            r'"ID": "(noncurrent-[a-z]+)",.*?"NoncurrentDays": \$\{(\w+)\}',
+            script,
+            flags=re.DOTALL,
+        )
+    )
+
+    assert windows["noncurrent-base"] == "base_noncurrent_days"
+    assert windows["noncurrent-dump"] == "dump_noncurrent_days"
+    assert 'base_noncurrent_days="${BACKUP_BASE_NONCURRENT_DAYS:-' in script
+    assert 'dump_noncurrent_days="${BACKUP_NONCURRENT_DAYS:-' in script
+    assert _script_default("BACKUP_BASE_NONCURRENT_DAYS") < _script_default(
+        "BACKUP_NONCURRENT_DAYS"
+    )
+    # Each base set is self-contained (`--wal-method stream`), so a pruned one
+    # is worth keeping no longer than the retention that retired it.
+    assert _script_default("BACKUP_BASE_NONCURRENT_DAYS") <= BASE_RETENTION.days
+
+
+def test_the_bootstrap_reads_the_rules_back_rather_than_trusting_the_import() -> None:
+    code = "\n".join(_bootstrap_code())
+
+    assert 'mc ilm export "aizzak/${backup_bucket}"' in code
+    assert '"${rule_count}" -ne 4' in code
+    # The pinned `minio/mc` image has coreutils and no grep/sed/awk/jq --
+    # measured: the first draft of the read-back died on `grep: not found`.
+    for tool in ("grep ", "sed ", "awk ", "jq "):
+        assert f"| {tool}" not in code and f"$({tool}" not in code
+
+
+def test_the_new_windows_are_documented_where_every_deployment_starts() -> None:
+    env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    for variable in sorted({variable for variable, _ in _LIFECYCLE_WINDOWS.values()}):
+        assert f"\n{variable}={_script_default(variable)}\n" in env_example, (
+            f".env.example must carry {variable} at the script's default"
+        )
 
 
 def test_the_client_major_tracks_the_server_major() -> None:
