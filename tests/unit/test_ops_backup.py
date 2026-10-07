@@ -26,6 +26,7 @@ from app.ops.backup import (
     BASE_RETENTION,
     DUMP_RETENTION,
     MIN_KEPT_SETS,
+    QDRANT_RETENTION,
     BackupError,
     Preflight,
     _async_url,
@@ -197,6 +198,24 @@ def test_each_artifact_class_ages_on_its_own_window() -> None:
 
     assert _expired(sets, BASE_RETENTION, _NOW) == [_stamp(age)]
     assert _expired(sets, DUMP_RETENTION, _NOW) == []
+
+
+def test_qdrant_snapshots_keep_three_nights_and_no_more() -> None:
+    """Qdrant is derived state (rebuildable by re-embedding Postgres's chunk
+    text), and a nightly set is ~7 GiB -- at seven days it was the bulk of
+    the backup bucket. Three nights is the window; the bases keep their
+    week, because THEY are not rebuildable."""
+    assert timedelta(days=3) == QDRANT_RETENTION
+    assert QDRANT_RETENTION < BASE_RETENTION
+
+    nightly = [{"set": _stamp(timedelta(days=age, hours=1))} for age in range(5)]
+    plan = plan_prune(bases=[], dumps=[], vectors=nightly, archived=[], now=_NOW)
+
+    # 01:00, 1d01h, 2d01h survive; 3d01h and 4d01h go.
+    assert plan.qdrant_sets == [
+        _stamp(timedelta(days=4, hours=1)),
+        _stamp(timedelta(days=3, hours=1)),
+    ]
 
 
 def test_a_set_name_that_is_not_a_timestamp_is_never_swept() -> None:
