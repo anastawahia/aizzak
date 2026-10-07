@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>بناء صورة RunPod</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f6f5f1;
+  --surface: #ffffff;
+  --text: #1d1f21;
+  --muted: #5f6368;
+  --border: #e2e0d9;
+  --accent: #1f6f5c;
+  --accent-soft: #e3f1ec;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --danger: #a3312b;
+  --danger-soft: #fbe7e5;
+  --code-bg: #1e2226;
+  --code-text: #e8eaed;
+  --code-dim: #9aa0a6;
+  --done: #c7c4bb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a;
+    --surface: #1d2024;
+    --text: #e8e6e1;
+    --muted: #a3a7ad;
+    --border: #2f3338;
+    --accent: #5fc2a4;
+    --accent-soft: #19332c;
+    --warn: #e8b85a;
+    --warn-soft: #33290f;
+    --danger: #ef8a83;
+    --danger-soft: #3a1d1b;
+    --code-bg: #0f1113;
+    --code-text: #e8eaed;
+    --code-dim: #8a9097;
+    --done: #4a4e54;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15171a;
+  --surface: #1d2024;
+  --text: #e8e6e1;
+  --muted: #a3a7ad;
+  --border: #2f3338;
+  --accent: #5fc2a4;
+  --accent-soft: #19332c;
+  --warn: #e8b85a;
+  --warn-soft: #33290f;
+  --danger: #ef8a83;
+  --danger-soft: #3a1d1b;
+  --code-bg: #0f1113;
+  --code-text: #e8eaed;
+  --code-dim: #8a9097;
+  --done: #4a4e54;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+header h1 { font-size: 1.75rem; margin: 0 0 6px; line-height: 1.4; }
+header p { margin: 0; color: var(--muted); }
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+.fact {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.fact b { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+.fact span { font-weight: 700; }
+.note {
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 16px 0;
+  border: 1px solid transparent;
+}
+.note.ok { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.note.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.note.danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.note strong { display: block; margin-bottom: 2px; }
+.note ul { margin: 4px 0 0; padding-inline-start: 20px; }
+.progress {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 10px 0;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.bar { flex: 1; height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+section.step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 20px 16px;
+  margin: 20px 0;
+}
+section.step.is-done { border-color: var(--done); }
+section.step.is-done .step-head h2 { color: var(--muted); }
+.step-head { display: flex; align-items: flex-start; gap: 12px; }
+.num {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface);
+  display: grid; place-items: center;
+  font-weight: 700;
+}
+.step-head h2 { font-size: 1.2rem; margin: 2px 0 0; flex: 1; line-height: 1.5; }
+.step-head label {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  margin-top: 6px;
+}
+.step-head input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.step p, .step li { margin: 8px 0; }
+.step ol, .step ul { padding-inline-start: 22px; }
+h3 { font-size: 1rem; margin: 18px 0 4px; }
+code {
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.88em;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 1px 6px;
+  border-radius: 5px;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.cmd {
+  position: relative;
+  margin: 10px 0;
+  direction: ltr;
+}
+.cmd pre {
+  margin: 0;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 8px;
+  padding: 14px 16px;
+  padding-right: 76px;
+  overflow-x: auto;
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  text-align: left;
+}
+.cmd button {
+  position: absolute;
+  top: 8px; right: 8px;
+  font: inherit;
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--code-text) 12%, transparent);
+  color: var(--code-text);
+  border: 1px solid color-mix(in srgb, var(--code-text) 20%, transparent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+}
+.cmd button:hover { background: color-mix(in srgb, var(--code-text) 22%, transparent); }
+.expect {
+  border-inline-start: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 14px;
+  margin: 10px 0;
+  font-size: 0.95rem;
+}
+[dir="rtl"] .expect { border-radius: 8px 0 0 8px; }
+.expect b { color: var(--accent); }
+.out {
+  direction: ltr;
+  text-align: left;
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.82rem;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 0.93rem; }
+th, td { text-align: start; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+.table-wrap { overflow-x: auto; }
+footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
+@media (max-width: 520px) {
+  header h1 { font-size: 1.45rem; }
+  section.step { padding: 16px 14px 12px; }
+  .step-head { flex-wrap: wrap; }
+  .step-head label { margin-inline-start: 46px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>بناء صورة RunPod وتجربتها على جهازك</h1>
+  <p>خطوات مرتّبة: تبني الصورة، تفحصها، تشغّلها تجربةً على جهازك، ثم ترفعها. كل أمر له زر نسخ.</p>
+</header>
+
+<div class="facts">
+  <div class="fact"><b>الفرع</b><span><code>runpod</code> عند <code>fb5765b</code></span></div>
+  <div class="fact"><b>اسم الصورة</b><span><code>aizzak-runpod:staging-1</code></span></div>
+  <div class="fact"><b>الوقت التقديري للبناء</b><span>15 إلى 40 دقيقة</span></div>
+  <div class="fact"><b>الإقلاع الأول للتجربة</b><span>5 إلى 15 دقيقة</span></div>
+</div>
+
+<div class="note ok">
+  <strong>لن يتأثر المكدّس الحالي، ولن تُنقل أي بيانات مستخدمين</strong>
+  <ul>
+    <li>الصورة لا تحمل ملفات الحسابات ولا الـ tokens ولا بيانات التجارب، وستتأكد من ذلك بنفسك في الخطوة 4.</li>
+    <li>التجربة تستخدم حاوية منفصلة، وقرص بيانات جديداً فارغاً، والمنفذ <code>28080</code> الذي لا يستخدمه المكدّس الحالي.</li>
+  </ul>
+</div>
+
+<div class="progress" aria-live="polite">
+  <span id="progress-text">0 من 12 خطوة</span>
+  <div class="bar"><i id="progress-bar"></i></div>
+</div>
+
+<!-- 1 -->
+<section class="step" data-step="1">
+  <div class="step-head">
+    <span class="num">1</span>
+    <h2>افتح الطرفية وانتقل إلى المشروع</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>افتح طرفية Ubuntu (WSL)، ثم نفّذ الأوامر بالترتيب:</p>
+  <div class="cmd"><pre>cd /home/AIZZAK</pre></div>
+  <div class="cmd"><pre>git checkout runpod</pre></div>
+  <div class="cmd"><pre>git log --oneline -1</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> السطر يبدأ بـ <code>fb5765b</code>:
+    <div class="out">fb5765b fix(runpod): boot Vault and log the app into it</div>
+  </div>
+  <div class="cmd"><pre>git status --short</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> لا شيء، أو سطر واحد فقط هو <code>?? docs/delivery/runpod-staging/</code> (هذا الملف نفسه). أي تعديل آخر يعني أن الصورة لن تطابق ما راجعناه، فأخبرني به قبل البناء.</div>
+</section>
+
+<!-- 2 -->
+<section class="step" data-step="2">
+  <div class="step-head">
+    <span class="num">2</span>
+    <h2>تأكد أن Docker يعمل وأن المساحة تكفي</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <div class="cmd"><pre>docker info --format '{{.ServerVersion}}'</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> رقم إصدار، مثل <code>29.6.1</code>. إن ظهر خطأ اتصال فشغّل Docker Desktop أولاً.</div>
+  <div class="cmd"><pre>df -h /var/lib/docker</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> في عمود <code>Avail</code> مساحة لا تقل عن 40GB. (عندك اليوم حوالي 825GB.)</div>
+</section>
+
+<!-- 3 -->
+<section class="step" data-step="3">
+  <div class="step-head">
+    <span class="num">3</span>
+    <h2>ابنِ الصورة</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>من داخل <code>/home/AIZZAK</code> نفّذ أمر البناء. انتبه للنقطة في آخر الأمر، فهي تعني «المجلد الحالي».</p>
+  <div class="cmd"><pre>docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t aizzak-runpod:staging-1 .</pre></div>
+  <ul>
+    <li>يحمّل Ubuntu وPostgres وOllama ومكتبات Python ونموذج التضمين، لذلك يأخذ وقتاً حسب سرعة الإنترنت.</li>
+    <li>ستظهر مراحل مرقّمة مثل <code>[runtime 5/14]</code>. هذا طبيعي.</li>
+    <li>لا تغلق الطرفية حتى ينتهي. إن انقطع البناء فأعد الأمر نفسه، فهو يكمل مما انتهى إليه.</li>
+  </ul>
+  <div class="expect"><b>النتيجة المتوقعة:</b> ينتهي دون كلمة <code>ERROR</code>، وآخر الأسطر يذكر اسم الصورة:
+    <div class="out">=&gt; =&gt; naming to docker.io/library/aizzak-runpod:staging-1</div>
+  </div>
+  <div class="note warn"><strong>إن فشل البناء</strong>انسخ آخر 30 سطراً من الطرفية وأرسلها لي. أغلب الأعطال هنا سببها انقطاع الإنترنت، وإعادة الأمر تكفي.</div>
+</section>
+
+<!-- 4 -->
+<section class="step" data-step="4">
+  <div class="step-head">
+    <span class="num">4</span>
+    <h2>افحص الصورة (خمسة فحوص سريعة)</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>كل أمر هنا يشغّل الصورة لحظة لينفّذ فحصاً واحداً ثم يُغلقها. لا يبدأ أي خادم.</p>
+
+  <h3>أ. حجم الصورة</h3>
+  <div class="cmd"><pre>docker image ls aizzak-runpod</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> سطر واحد بالوسم <code>staging-1</code>. سجّل الحجم، فهو ما سترفعه لاحقاً.</div>
+
+  <h3>ب. لا أسرار ولا بيانات مستخدمين داخل الصورة</h3>
+  <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 sh -c 'find /app \( -name accounts.json -o -name tokens.json -o -name include-workspaces.txt -o -name ".env*" -o -path "*/deploy/load/seeds" -o -path "*/deploy/load/results" \) -print; echo CHECK-DONE'</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> سطر واحد فقط هو <code>CHECK-DONE</code>. أي اسم ملف يظهر قبله يعني أن الصورة تحمل سراً، فلا ترفعها وأخبرني.</div>
+
+  <h3>ج. الخط العربي لملفات PDF</h3>
+  <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 sh -c 'ls /usr/share/fonts/truetype/noto | grep -c Arabic'</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> رقم أكبر من صفر.</div>
+
+  <h3>د. مكتبة إنشاء PDF</h3>
+  <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 /opt/venv/bin/python -c "import weasyprint; print('weasyprint', weasyprint.__version__)"</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> سطر مثل <code>weasyprint 6x.x</code> دون أي خطأ.</div>
+
+  <h3>هـ. سكربت دخول Vault الجديد</h3>
+  <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 ls -l /usr/local/bin/aizzak-with-vault</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> السطر يبدأ بـ <code>-rwxr-xr-x</code> (أي أنه قابل للتشغيل).</div>
+</section>
+
+<!-- 5 -->
+<section class="step" data-step="5">
+  <div class="step-head">
+    <span class="num">5</span>
+    <h2>جهّز ملف إعدادات للتجربة</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>التجربة تحتاج 14 قيمة. هذه الأوامر تولّد كلمات سر عشوائية في ملف خارج المشروع. هذه القيم للتجربة المحلية فقط، وسنولّد قيماً جديدة للـ Pod.</p>
+  <div class="cmd"><pre>mkdir -p ~/aizzak-runpod-test</pre></div>
+  <div class="cmd"><pre>{
+  for v in POSTGRES_SUPERUSER_PASSWORD AIZZAK_OWNER_PASSWORD APP_RW_PASSWORD \
+           OUTBOX_RELAY_PASSWORD RETENTION_SWEEPER_PASSWORD METRICS_READER_PASSWORD \
+           TRANSIT_ROTATOR_PASSWORD WORKSPACE_PURGER_PASSWORD BACKUP_OPERATOR_PASSWORD \
+           MINIO_ROOT_PASSWORD; do
+    echo "$v=$(openssl rand -hex 24)"
+  done
+  echo "MINIO_ROOT_USER=aizzak-admin"
+  echo "FIREBASE_PROJECT_ID=aizzak-agent"
+  echo "APP_ENV=staging"
+  echo "WEB_CONCURRENCY=1"
+} &gt; ~/aizzak-runpod-test/test.env</pre></div>
+  <div class="cmd"><pre>chmod 600 ~/aizzak-runpod-test/test.env</pre></div>
+  <div class="cmd"><pre>grep -c = ~/aizzak-runpod-test/test.env</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>14</code>.</div>
+  <div class="note warn">
+    <strong>قيمتان تستحقان الانتباه</strong>
+    <ul>
+      <li><code>FIREBASE_PROJECT_ID=aizzak-agent</code> استنتجته من إعدادات CORS. إن كان اسم مشروعك في Firebase مختلفاً فعدّله في الملف. للتجربة المحلية تكفي أي قيمة غير فارغة.</li>
+      <li><code>WEB_CONCURRENCY=1</code> يقلّل استهلاك الذاكرة على جهازك، لأن المكدّس الحالي يعمل في الوقت نفسه. على RunPod سنستخدم القيمة الافتراضية.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 6 -->
+<section class="step" data-step="6">
+  <div class="step-head">
+    <span class="num">6</span>
+    <h2>شغّل حاوية التجربة</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <div class="cmd"><pre>docker run -d --name aizzak-runpod-test \
+  --env-file ~/aizzak-runpod-test/test.env \
+  -v aizzak-runpod-test-data:/workspace \
+  -p 28080:80 \
+  aizzak-runpod:staging-1</pre></div>
+  <ul>
+    <li><code>aizzak-runpod-test-data</code>: قرص بيانات جديد وفارغ يمثّل قرص RunPod. لا علاقة له بأقراص المكدّس الحالي.</li>
+    <li><code>28080</code>: المنفذ الذي ستفتح منه التجربة على جهازك.</li>
+    <li>Docker على جهازك لا يصل إلى كرت الشاشة، فيعمل Ollama هنا على المعالج. هذا أبطأ لكنه يكفي للتأكد أن الصورة تقلع.</li>
+  </ul>
+  <div class="expect"><b>النتيجة المتوقعة:</b> سطر طويل من الحروف والأرقام (رقم الحاوية).</div>
+</section>
+
+<!-- 7 -->
+<section class="step" data-step="7">
+  <div class="step-head">
+    <span class="num">7</span>
+    <h2>راقب الإقلاع الأول</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>هذا الأمر يعرض الرسائل المهمة فقط ويتابعها لحظة بلحظة:</p>
+  <div class="cmd"><pre>docker logs -f aizzak-runpod-test 2&gt;&amp;1 | grep --line-buffered -E "\[entrypoint\]|\[bootstrap\]|vault-start|⛔"</pre></div>
+  <p>ستظهر هذه المراحل بالترتيب تقريباً:</p>
+  <ol>
+    <li><code>[entrypoint] initialising a new PostgreSQL 16 cluster</code></li>
+    <li><code>vault-start: initialized; unseal key + root token recorded</code> ثم <code>vault-start: unsealed and ready</code></li>
+    <li><code>[bootstrap] seeding Vault (KV v2 + Transit + AppRole)</code></li>
+    <li><code>[bootstrap] minting the app's AppRole login</code></li>
+    <li><code>[bootstrap] running migrations + grants (app.ops.provision)</code></li>
+    <li><code>[bootstrap] pulling gemma3:1b</code>: تحميل النموذج، وهي أطول مرحلة (عدة دقائق).</li>
+    <li><code>[bootstrap] starting the API</code> ثم <code>[bootstrap] starting nginx</code></li>
+  </ol>
+  <div class="expect"><b>النتيجة المتوقعة:</b> آخر سطر:
+    <div class="out">[bootstrap] ✅ boot complete -- http://localhost/health</div>
+    الرابط في الرسالة لا يذكر المنفذ، والصحيح على جهازك هو <code>28080</code>.
+  </div>
+  <p>بعد ظهوره اضغط <code>Ctrl+C</code> لإيقاف المتابعة. هذا لا يوقف الحاوية.</p>
+  <div class="note danger"><strong>إن ظهرت علامة ⛔</strong>توقّف الإقلاع. انسخ السطر الذي فيه ⛔ مع 20 سطراً قبله وأرسلها لي. لقراءة آخر 80 سطراً كاملة:
+    <div class="cmd"><pre>docker logs aizzak-runpod-test 2&gt;&amp;1 | tail -80</pre></div>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="step" data-step="8">
+  <div class="step-head">
+    <span class="num">8</span>
+    <h2>تحقق أن كل الخدمات تعمل</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <div class="cmd"><pre>docker exec aizzak-runpod-test supervisorctl -c /etc/supervisor/supervisord.conf status</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> كل الخدمات <code>RUNNING</code>، ما عدا <code>bootstrap</code> فحالته <code>EXITED</code>، وهذا طبيعي لأنه يعمل مرة واحدة ثم ينتهي. القائمة: app, bootstrap, embedding, minio, nginx, ollama, outbox-relay, postgres, qdrant, redis-cache, redis-stream, sshd, vault, worker.</div>
+  <div class="cmd"><pre>curl -s http://localhost:28080/health</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ok"}</code></div>
+  <div class="cmd"><pre>curl -s http://localhost:28080/health/ready</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ready"}</code></div>
+  <div class="note ok"><strong>لماذا هذا يكفي لإثبات إصلاح Vault</strong>التطبيق يقرأ مفاتيح MinIO من Vault عند الإقلاع، ويرفض أن يعمل إن فشل الدخول. فوصول <code>app</code> إلى <code>RUNNING</code> وردّ <code>/health</code> يعنيان أن الأعطال الثلاثة أُصلحت.</div>
+</section>
+
+<!-- 9 -->
+<section class="step" data-step="9">
+  <div class="step-head">
+    <span class="num">9</span>
+    <h2>جرّب الإقلاع الثاني</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>هذه الخطوة تثبت أن الحاوية تعود سليمة بعد إعادة التشغيل، كما سيحدث للـ Pod.</p>
+  <div class="cmd"><pre>docker restart -t 60 aizzak-runpod-test</pre></div>
+  <p><code>-t 60</code> يعطي الخدمات 60 ثانية لتُغلق بهدوء. بدونه يقتل Docker الحاوية بعد 10 ثوانٍ، فيُغلق Postgres وVault إغلاقاً مفاجئاً.</p>
+  <div class="cmd"><pre>docker logs -f --since 2m aizzak-runpod-test 2&gt;&amp;1 | grep --line-buffered -E "\[entrypoint\]|\[bootstrap\]|vault-start|⛔"</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> هذه المرة تظهر رسائل مختلفة لأن البيانات موجودة، والإقلاع أسرع:
+    <div class="out">[entrypoint] existing PostgreSQL cluster found at /workspace/data/postgres -- leaving it alone
+vault-start: sealed; unsealing from the recorded init material at ...
+[bootstrap] gemma3:1b already present
+[bootstrap] ✅ boot complete -- http://localhost/health</div>
+  </div>
+  <p>ثم اضغط <code>Ctrl+C</code> وأعد فحص الصحة:</p>
+  <div class="cmd"><pre>curl -s http://localhost:28080/health/ready</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ready"}</code></div>
+</section>
+
+<!-- 10 -->
+<section class="step" data-step="10">
+  <div class="step-head">
+    <span class="num">10</span>
+    <h2>أخبرني بالنتيجة</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <ul>
+    <li>إن نجحت الخطوات 7 إلى 9: اكتب لي «نجحت التجربة» واترك الحاوية تعمل. سأشغّل عليها فحصاً أعمق لقاعدة البيانات وعزل المستأجرين وVault وMinIO، ثم ننتقل إلى الرفع.</li>
+    <li>إن فشلت خطوة: أرسل لي رقمها وما ظهر في الطرفية.</li>
+  </ul>
+</section>
+
+<!-- 11 -->
+<section class="step" data-step="11">
+  <div class="step-head">
+    <span class="num">11</span>
+    <h2>ارفع الصورة إلى Docker Hub</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>بعد نجاح التجربة فقط. استبدل <code>USERNAME</code> باسم حسابك في Docker Hub.</p>
+  <div class="cmd"><pre>docker login</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>Login Succeeded</code>.</div>
+  <div class="cmd"><pre>docker tag aizzak-runpod:staging-1 USERNAME/aizzak-runpod:staging-1</pre></div>
+  <div class="cmd"><pre>docker push USERNAME/aizzak-runpod:staging-1</pre></div>
+  <ul>
+    <li>الرفع يأخذ وقتاً حسب حجم الصورة (الخطوة 4-أ) وسرعة الرفع عندك. إن انقطع فأعد الأمر، فهو يكمل الطبقات الناقصة فقط.</li>
+    <li>المستودع في Docker Hub يكون عاماً عادةً. هذا مقبول هنا لأن الكود عام أصلاً على GitHub، والصورة لا تحمل أسراراً (الخطوة 4-ب).</li>
+    <li>عند أي تحديث لاحق استخدم وسماً جديداً (<code>staging-2</code>، <code>staging-3</code>، ...) ولا تُعِد استخدام وسم قديم، لأن RunPod قد يستمر في استخدام النسخة المخزّنة عنده.</li>
+  </ul>
+  <div class="expect"><b>النتيجة المتوقعة:</b> آخر سطر يبدأ بـ <code>staging-1: digest: sha256:</code>. أرسل لي اسم المستخدم لأُكمل إعداد الـ Pod.</div>
+</section>
+
+<!-- 12 -->
+<section class="step" data-step="12">
+  <div class="step-head">
+    <span class="num">12</span>
+    <h2>نظّف التجربة (بعد أن أنتهي من الفحص الأعمق)</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <div class="cmd"><pre>docker stop -t 60 aizzak-runpod-test</pre></div>
+  <div class="cmd"><pre>docker rm aizzak-runpod-test</pre></div>
+  <div class="cmd"><pre>docker volume rm aizzak-runpod-test-data</pre></div>
+  <div class="cmd"><pre>rm -rf ~/aizzak-runpod-test</pre></div>
+  <div class="note danger">
+    <strong>احذف بالاسم فقط</strong>
+    لا تستخدم <code>docker volume prune</code> ولا <code>docker system prune</code>، فهما يحذفان أقراص المكدّس الحالي أيضاً. الصورة نفسها لا تحذفها، فقد نحتاجها.
+  </div>
+</section>
+
+<h2 style="font-size:1.25rem;margin-top:36px">إذا واجهت مشكلة</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>ما يظهر لك</th><th>السبب الأرجح</th><th>ماذا تفعل</th></tr></thead>
+  <tbody>
+    <tr><td>فشل البناء عند <code>apt-get</code> أو <code>ollama.com</code> أو <code>pip</code></td><td>انقطاع الإنترنت أثناء التحميل</td><td>أعد أمر البناء نفسه</td></tr>
+    <tr><td><code>port is already allocated</code> عند الخطوة 6</td><td>المنفذ 28080 مستخدم</td><td>احذف الحاوية بأمري الخطوة 12 الأولين، ثم غيّر <code>28080</code> إلى <code>28081</code> في الخطوات 6 و8 و9</td></tr>
+    <tr><td><code>The container name ... is already in use</code></td><td>حاوية تجربة سابقة موجودة</td><td>نفّذ أمري الخطوة 12 الأولين ثم أعد الخطوة 6</td></tr>
+    <tr><td><code>⛔ ... is not set</code> في أول الإقلاع</td><td>قيمة ناقصة في ملف الإعدادات</td><td>أعد الخطوة 5 كاملة، ثم احذف الحاوية وأعد الخطوة 6</td></tr>
+    <tr><td><code>Vault did not come up</code></td><td>Vault لم يبدأ</td><td>أرسل لي ناتج: <code>docker logs aizzak-runpod-test 2&gt;&amp;1 | grep vault-start</code></td></tr>
+    <tr><td><code>[with-vault] ⛔ ... is not readable</code></td><td>الإقلاع توقف قبل إنشاء بيانات دخول Vault</td><td>أرسل لي آخر 80 سطراً (الأمر في الخطوة 7)</td></tr>
+    <tr><td><code>app</code> حالته <code>FATAL</code> أو <code>BACKOFF</code></td><td>التطبيق يفشل عند الإقلاع</td><td>أرسل لي آخر 80 سطراً</td></tr>
+    <tr><td>الجهاز صار بطيئاً جداً</td><td>الذاكرة لا تكفي للمكدّسين معاً</td><td>شاهد الاستهلاك: <code>docker stats --no-stream aizzak-runpod-test</code>، وإن لزم أوقف الحاوية: <code>docker stop -t 60 aizzak-runpod-test</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>آخر تحديث: 2026‑10‑07 · الفرع <code>runpod</code> عند <code>fb5765b</code></footer>
+</div>
+
+<script>
+(function () {
+  // Copy buttons on every command block.
+  document.querySelectorAll(".cmd").forEach(function (block) {
+    var pre = block.querySelector("pre");
+    if (!pre) return;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "نسخ";
+    btn.addEventListener("click", function () {
+      var text = pre.textContent;
+      var done = function () {
+        btn.textContent = "نُسخ ✓";
+        setTimeout(function () { btn.textContent = "نسخ"; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(text); done(); });
+      } else {
+        fallback(text);
+        done();
+      }
+    });
+    block.appendChild(btn);
+  });
+
+  function fallback(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  // Step check-offs, remembered in this browser only.
+  var KEY = "aizzak-runpod-build-steps";
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  var steps = Array.prototype.slice.call(document.querySelectorAll("section.step"));
+  var text = document.getElementById("progress-text");
+  var bar = document.getElementById("progress-bar");
+
+  function refresh() {
+    var n = 0;
+    steps.forEach(function (s) {
+      var on = s.querySelector("input").checked;
+      s.classList.toggle("is-done", on);
+      if (on) n++;
+    });
+    text.textContent = n + " من " + steps.length + " خطوة";
+    bar.style.width = (100 * n / steps.length) + "%";
+  }
+
+  steps.forEach(function (s) {
+    var box = s.querySelector("input");
+    box.checked = !!saved[s.dataset.step];
+    box.addEventListener("change", function () {
+      saved[s.dataset.step] = box.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      refresh();
+    });
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>
