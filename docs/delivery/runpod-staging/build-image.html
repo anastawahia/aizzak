@@ -310,14 +310,14 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
 <section class="step" data-step="4">
   <div class="step-head">
     <span class="num">4</span>
-    <h2>افحص الصورة (خمسة فحوص سريعة)</h2>
+    <h2>افحص الصورة (ستة فحوص سريعة)</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
   <p>كل أمر هنا يشغّل الصورة لحظة لينفّذ فحصاً واحداً ثم يُغلقها. لا يبدأ أي خادم.</p>
 
   <h3>أ. حجم الصورة</h3>
   <div class="cmd"><pre>docker image ls aizzak-runpod</pre></div>
-  <div class="expect"><b>النتيجة المتوقعة:</b> سطر واحد بالوسم <code>staging-1</code>. سجّل الحجم، فهو ما سترفعه لاحقاً.</div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> سطر واحد بالوسم <code>staging-1</code>، وعمود <code>CREATED</code> يقول إنها بُنيت قبل دقائق. إن قال "hours ago" فالبناء لم يكتمل وما زالت الصورة القديمة، فأعد الخطوة 3. سجّل الحجم، فهو ما سترفعه لاحقاً.</div>
 
   <h3>ب. لا أسرار ولا بيانات مستخدمين داخل الصورة</h3>
   <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 sh -c 'find /app \( -name accounts.json -o -name tokens.json -o -name include-workspaces.txt -o -name ".env*" -o -path "*/deploy/load/seeds" -o -path "*/deploy/load/results" \) -print; echo CHECK-DONE'</pre></div>
@@ -334,6 +334,10 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
   <h3>هـ. سكربت دخول Vault الجديد</h3>
   <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 ls -l /usr/local/bin/aizzak-with-vault</pre></div>
   <div class="expect"><b>النتيجة المتوقعة:</b> السطر يبدأ بـ <code>-rwxr-xr-x</code> (أي أنه قابل للتشغيل).</div>
+
+  <h3>و. الصورة تحمل إصلاحات الإقلاع الأول</h3>
+  <div class="cmd"><pre>docker run --rm aizzak-runpod:staging-1 grep -c 'HOME="/home/aizzak"' /etc/supervisor/supervisord.conf</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> الرقم <code>11</code>. إن ظهر <code>1</code> فالصورة قديمة ولن يقلع فيها Vault، فأعد الخطوة 3.</div>
 </section>
 
 <!-- 5 -->
