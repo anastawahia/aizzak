@@ -41,7 +41,17 @@ VAULT_CONFIG_RENDERED="/tmp/vault-server-rendered.hcl"
 INIT_FILE="$VAULT_INIT_DIR/init.json"
 
 log() { printf 'vault-start: %s\n' "$*"; }
-die() { printf 'vault-start: \xe2\x9b\x94 %s\n' "$*" >&2; exit 1; }
+# Takes the server down with this script: under supervisord (RunPod) an exit
+# here is followed by a restart, and a server left behind keeps :8200 bound,
+# so every retry after the first dies on "address already in use".
+die() {
+    printf 'vault-start: \xe2\x9b\x94 %s\n' "$*" >&2
+    if [ -n "${VAULT_PID:-}" ]; then
+        kill -TERM "$VAULT_PID" 2>/dev/null || true
+        wait "$VAULT_PID" 2>/dev/null || true
+    fi
+    exit 1
+}
 
 # Extracts the first (and, with -key-shares=1, only) base64 unseal key out of
 # a `vault operator init -format=json` document. No `jq` in this image --
@@ -79,10 +89,13 @@ trap term TERM INT
 # live against this exact image (1.18.5), because the exit codes an older
 # Vault CLI used are NOT what this one does. Only exit 1 means "keep
 # waiting"; 0 and 2 both mean the process is up.
+# Exit 1 is also every CLI-side error (an unreadable $HOME/.vault was one),
+# so the last answer goes into the failure message instead of /dev/null.
 tries=0
 rc=1
+status_out=""
 while :; do
-    if vault status >/dev/null 2>&1; then
+    if status_out="$(vault status 2>&1)"; then
         rc=0
     else
         rc=$?
@@ -92,7 +105,7 @@ while :; do
     fi
     tries=$((tries + 1))
     if [ "$tries" -ge 60 ]; then
-        die "the HTTP listener never came up (60s)"
+        die "the HTTP listener never came up (60s); last 'vault status': $status_out"
     fi
     sleep 1
 done

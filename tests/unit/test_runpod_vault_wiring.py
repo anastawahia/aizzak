@@ -11,6 +11,9 @@ up anywhere except on a real Pod:
     without a Vault login. On a Pod no `VAULT_SECRET_ID` can exist before Vault
     is initialised, so the bootstrap mints one per boot and `app`/`worker`
     start through `aizzak-with-vault`, which reads it.
+  * supervisord's `user=` switches the uid but leaves HOME=/root, which
+    aizzak cannot read. The Vault CLI reads $HOME/.vault, so every `vault`
+    call in `start.sh` failed and Vault never came up (first local boot).
 """
 
 from __future__ import annotations
@@ -95,3 +98,16 @@ def test_vault_readers_start_through_the_wrapper() -> None:
         flags=re.MULTILINE,
     ), "the Dockerfile does not install the wrapper supervisord.conf names"
     assert _WRAPPER_IN_IMAGE in dockerfile[dockerfile.index("RUN chmod +x") :]
+
+
+def test_every_aizzak_program_gets_its_own_home() -> None:
+    text = _SUPERVISORD.read_text(encoding="utf-8")
+    sections = re.split(r"(?m)^(?=\[program:)", text)[1:]
+    aizzak = [s for s in sections if re.search(r"(?m)^user=aizzak$", s)]
+    assert aizzak, "supervisord.conf runs nothing as aizzak -- the test is stale"
+    for section in aizzak:
+        name = section.split("]", 1)[0].removeprefix("[program:")
+        env = re.search(r"(?m)^environment=(.*)$", section)
+        assert env is not None and 'HOME="/home/aizzak"' in env.group(1), (
+            f"[program:{name}] runs as aizzak with supervisord's HOME=/root"
+        )

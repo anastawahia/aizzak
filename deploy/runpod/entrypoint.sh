@@ -209,7 +209,14 @@ export STREAM_TRIM_MARGIN_S="${STREAM_TRIM_MARGIN_S:-600}"
 export MCP_ALLOWED_TRANSPORTS="${MCP_ALLOWED_TRANSPORTS:-http,sse}"
 export OAUTH_REFRESH_SKEW_S="${OAUTH_REFRESH_SKEW_S:-60}"
 export USAGE_ROLLUP_PERIODS="${USAGE_ROLLUP_PERIODS:-day,month}"
-export USAGE_DEFAULT_LIMITS="${USAGE_DEFAULT_LIMITS:-{\"tokens\":{\"month\":5000000},\"cost_micros\":{\"month\":50000000}}}"
+# ⚠️ JSON defaults go through a variable: inside `${VAR:-...}` the first
+# literal `}` closes the expansion, and the rest is pasted on as plain text.
+# Written inline, both of these came out as VALID JSON with the wrong nesting
+# (`cost_micros` inside `tokens`, `embedding` inside `llm`), and the app
+# refused the routing table at startup (first local boot, 2026-10-08).
+# `tests/unit/test_runpod_json_defaults.py` evaluates both with bash.
+default_usage_limits='{"tokens":{"month":5000000},"cost_micros":{"month":50000000}}'
+export USAGE_DEFAULT_LIMITS="${USAGE_DEFAULT_LIMITS:-$default_usage_limits}"
 
 # ⚠️ THIS PATH RUNS EXACTLY ONE WORKER, and that is what still makes this
 # default matter. Compose stopped needing it in docs/log/3.133.md -- its one
@@ -231,7 +238,9 @@ export WORKER="${WORKER:-memory}"
 # The model the routing table names below must be the model pulled at
 # bootstrap, or every LLM call 404s at Ollama.
 export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma3:1b}"
-export PROVIDER_ROUTING="${PROVIDER_ROUTING:-{\"llm\":{\"default\":{\"provider\":\"ollama\",\"model\":\"${OLLAMA_MODEL}\"}},\"embedding\":{\"default\":{\"provider\":\"embedding-local\",\"model\":\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\"}}}}"
+# The same `}` trap as USAGE_DEFAULT_LIMITS above, hence the variable.
+default_routing="$(printf '{"llm":{"default":{"provider":"ollama","model":"%s"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}' "$OLLAMA_MODEL")"
+export PROVIDER_ROUTING="${PROVIDER_ROUTING:-$default_routing}"
 
 export OLLAMA_MODELS=/workspace/data/ollama
 export OLLAMA_HOST=127.0.0.1:11434

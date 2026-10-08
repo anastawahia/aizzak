@@ -109,6 +109,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # without fonts-noto-core Arabic text renders as empty boxes.
 # zstd is the Ollama installer's: it now ships .tar.zst archives and stops
 # with "This version requires zstd for extraction" when zstd is missing.
+# libunwind8 is qdrant's: the binary lifted from qdrant/qdrant links
+# libunwind.so.8 and libunwind-ptrace.so.0, which its Debian base image has
+# and ubuntu:24.04 does not (qdrant FATAL on the first local boot otherwise).
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         python3.12 python3.12-venv \
@@ -121,6 +124,7 @@ RUN apt-get update \
         fonts-dejavu-core fonts-noto-core \
         openssh-server \
         curl ca-certificates gosu netcat-openbsd jq procps tzdata zstd \
+        libunwind8 \
     && rm -rf /var/lib/apt/lists/*
 
 # Vendor binaries, lifted from the pinned images rather than curl'd off the
