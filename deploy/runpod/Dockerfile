@@ -107,6 +107,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # The pango/cairo/harfbuzz libraries and the two font packages are
 # WeasyPrint's (summary PDFs), the same list as the main ./Dockerfile:
 # without fonts-noto-core Arabic text renders as empty boxes.
+# zstd is the Ollama installer's: it now ships .tar.zst archives and stops
+# with "This version requires zstd for extraction" when zstd is missing.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         python3.12 python3.12-venv \
@@ -118,7 +120,7 @@ RUN apt-get update \
         libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
         fonts-dejavu-core fonts-noto-core \
         openssh-server \
-        curl ca-certificates gosu netcat-openbsd jq procps tzdata \
+        curl ca-certificates gosu netcat-openbsd jq procps tzdata zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # Vendor binaries, lifted from the pinned images rather than curl'd off the

@@ -235,7 +235,7 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
 </header>
 
 <div class="facts">
-  <div class="fact"><b>الفرع</b><span><code>runpod</code> عند <code>fb5765b</code></span></div>
+  <div class="fact"><b>الفرع</b><span><code>runpod</code> مع إصلاح <code>zstd</code></span></div>
   <div class="fact"><b>اسم الصورة</b><span><code>aizzak-runpod:staging-1</code></span></div>
   <div class="fact"><b>الوقت التقديري للبناء</b><span>15 إلى 40 دقيقة</span></div>
   <div class="fact"><b>الإقلاع الأول للتجربة</b><span>5 إلى 15 دقيقة</span></div>
@@ -265,11 +265,12 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
   <div class="cmd"><pre>cd /home/AIZZAK</pre></div>
   <div class="cmd"><pre>git checkout runpod</pre></div>
   <div class="cmd"><pre>git log --oneline -1</pre></div>
-  <div class="expect"><b>النتيجة المتوقعة:</b> السطر يبدأ بـ <code>fb5765b</code>:
-    <div class="out">fb5765b fix(runpod): boot Vault and log the app into it</div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> رمز قصير ثم هذه الرسالة:
+    <div class="out">fix(runpod): install zstd for the Ollama installer</div>
+    إن ظهرت رسالة أخرى فالإصلاح ليس عندك بعد، فأخبرني قبل البناء.
   </div>
   <div class="cmd"><pre>git status --short</pre></div>
-  <div class="expect"><b>النتيجة المتوقعة:</b> لا شيء، أو سطر واحد فقط هو <code>?? docs/delivery/runpod-staging/</code> (هذا الملف نفسه). أي تعديل آخر يعني أن الصورة لن تطابق ما راجعناه، فأخبرني به قبل البناء.</div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> لا شيء. أي تعديل يعني أن الصورة لن تطابق ما راجعناه، فأخبرني به قبل البناء.</div>
 </section>
 
 <!-- 2 -->
@@ -511,6 +512,7 @@ vault-start: sealed; unsealing from the recorded init material at ...
   <thead><tr><th>ما يظهر لك</th><th>السبب الأرجح</th><th>ماذا تفعل</th></tr></thead>
   <tbody>
     <tr><td>فشل البناء عند <code>apt-get</code> أو <code>ollama.com</code> أو <code>pip</code></td><td>انقطاع الإنترنت أثناء التحميل</td><td>أعد أمر البناء نفسه</td></tr>
+    <tr><td><code>This version requires zstd for extraction</code></td><td>الفرع لا يحوي إصلاح <code>zstd</code></td><td>أعد الخطوة 1 وتأكد من الرسالة، ثم أعد أمر البناء</td></tr>
     <tr><td><code>port is already allocated</code> عند الخطوة 6</td><td>المنفذ 28080 مستخدم</td><td>احذف الحاوية بأمري الخطوة 12 الأولين، ثم غيّر <code>28080</code> إلى <code>28081</code> في الخطوات 6 و8 و9</td></tr>
     <tr><td><code>The container name ... is already in use</code></td><td>حاوية تجربة سابقة موجودة</td><td>نفّذ أمري الخطوة 12 الأولين ثم أعد الخطوة 6</td></tr>
     <tr><td><code>⛔ ... is not set</code> في أول الإقلاع</td><td>قيمة ناقصة في ملف الإعدادات</td><td>أعد الخطوة 5 كاملة، ثم احذف الحاوية وأعد الخطوة 6</td></tr>
@@ -522,7 +524,7 @@ vault-start: sealed; unsealing from the recorded init material at ...
 </table>
 </div>
 
-<footer>آخر تحديث: 2026‑10‑07 · الفرع <code>runpod</code> عند <code>fb5765b</code></footer>
+<footer>آخر تحديث: 2026‑10‑08 · الفرع <code>runpod</code></footer>
 </div>
 
 <script>
