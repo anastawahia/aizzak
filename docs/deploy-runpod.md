@@ -176,6 +176,20 @@ docker push anastawahia/aizzak-runpod:staging-1
 > - إن فشل الرفع بـ`502 Bad Gateway` أو انقطع، فأعد الأمر نفسه. هذا عطلٌ مؤقّت في Docker Hub، والإعادة ترفع الطبقات الناقصة فقط.
 > - **وسمٌ جديدٌ لكلّ تحديث:** `staging-2`، `staging-3`... لا تعِد استخدام وسمٍ قديم، فقد يستعمل RunPod النسخة المخزّنة عنده.
 
+> ⚠️ **أيّ تعديلٍ في `src/` أو `deploy/` يعيد رفع طبقةٍ بحجم 564 م.ب.** خطوة `RUN … chown -R aizzak:aizzak /app /opt/qdrant /opt/hf-cache` في `deploy/runpod/Dockerfile` تأتي بعد نسخ الشيفرة، فتُبنى من جديد مع كلّ تعديل، وتنسخ معها ملفّات النموذج كلّها. على خطّ رفعٍ بطيء (قيس 2026‑10‑11: نحو 150 ك.ب/ث) ينقطع الرفع قبل أن يكتمل.
+>
+> - **العلاج المقترح (يحتاج موافقة، لأنّه في `deploy/`):** تغيير مالك `/opt/qdrant` و`/opt/hf-cache` قبل نسخ الشيفرة، ونسخ الشيفرة بـ`COPY --chown`. عندها يرفع التحديث بضعة ميغابايتات فقط.
+> - **ما فعلناه لـ`staging-2`:** بنيناه طبقةً صغيرةً فوق `staging-1` المرفوع أصلاً، بعد التحقّق من أنّ ملفّات `/app` الـ610 وسكربتات `/usr/local/bin` وإعدادات `/etc` مطابقةٌ للالتزام `9d60943` بايتاً ببايت، إلّا `entrypoint.sh`. فالمحتوى مطابقٌ لبناءٍ كامل من `deploy/runpod/Dockerfile`:
+>
+> ```dockerfile
+> FROM anastawahia/aizzak-runpod:staging-1@sha256:368f2ab916b4b31370a07e6419eff51c3279d64814c06c72a59f78664671e8dc
+> COPY --chmod=755 deploy/runpod/entrypoint.sh /usr/local/bin/entrypoint.sh
+> COPY --chown=aizzak:aizzak --chmod=644 deploy/runpod/entrypoint.sh /app/deploy/runpod/entrypoint.sh
+> LABEL org.opencontainers.image.revision="9d60943"
+> ```
+>
+> الناتج: `anastawahia/aizzak-runpod:staging-2@sha256:4279d520d8cee59830e4c3aa8b0b07b327cbac609977b81bba96c38cad52a519`.
+
 ---
 
 ## 5) إنشاء الـPod
@@ -197,7 +211,7 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 | الحقل | القيمة | ملاحظة |
 |---|---|---|
-| **Container Image** | `anastawahia/aizzak-runpod:staging-1` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
+| **Container Image** | `anastawahia/aizzak-runpod:staging-2` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
 | **Container Start Command** | **فارغ** | الصورة تعرّف `CMD`. أيّ قيمةٍ هنا تلغيه |
 | **Container Disk** | **20 GB** | الصورة ≈ 3.6 ج.ب، وكلّ البيانات على `/workspace` |
 | **Volume Disk** | **50 GB** | قرص البيانات ([§5.4](#54-التخزين)). يُزاد لاحقاً ولا يُنقَص |
