@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تشغيل RunPod Pod</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f6f5f1;
+  --surface: #ffffff;
+  --text: #1d1f21;
+  --muted: #5f6368;
+  --border: #e2e0d9;
+  --accent: #1f6f5c;
+  --accent-soft: #e3f1ec;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --danger: #a3312b;
+  --danger-soft: #fbe7e5;
+  --code-bg: #1e2226;
+  --code-text: #e8eaed;
+  --code-dim: #9aa0a6;
+  --done: #c7c4bb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a;
+    --surface: #1d2024;
+    --text: #e8e6e1;
+    --muted: #a3a7ad;
+    --border: #2f3338;
+    --accent: #5fc2a4;
+    --accent-soft: #19332c;
+    --warn: #e8b85a;
+    --warn-soft: #33290f;
+    --danger: #ef8a83;
+    --danger-soft: #3a1d1b;
+    --code-bg: #0f1113;
+    --code-text: #e8eaed;
+    --code-dim: #8a9097;
+    --done: #4a4e54;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15171a;
+  --surface: #1d2024;
+  --text: #e8e6e1;
+  --muted: #a3a7ad;
+  --border: #2f3338;
+  --accent: #5fc2a4;
+  --accent-soft: #19332c;
+  --warn: #e8b85a;
+  --warn-soft: #33290f;
+  --danger: #ef8a83;
+  --danger-soft: #3a1d1b;
+  --code-bg: #0f1113;
+  --code-text: #e8eaed;
+  --code-dim: #8a9097;
+  --done: #4a4e54;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+header h1 { font-size: 1.75rem; margin: 0 0 6px; line-height: 1.4; }
+header p { margin: 0; color: var(--muted); }
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+.fact {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.fact b { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+.fact span { font-weight: 700; }
+.note {
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 16px 0;
+  border: 1px solid transparent;
+}
+.note.ok { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.note.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.note.danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.note strong { display: block; margin-bottom: 2px; }
+.note ul { margin: 4px 0 0; padding-inline-start: 20px; }
+.progress {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 10px 0;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.bar { flex: 1; height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+section.step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 20px 16px;
+  margin: 20px 0;
+}
+section.step.is-done { border-color: var(--done); }
+section.step.is-done .step-head h2 { color: var(--muted); }
+.step-head { display: flex; align-items: flex-start; gap: 12px; }
+.num {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface);
+  display: grid; place-items: center;
+  font-weight: 700;
+}
+.step-head h2 { font-size: 1.2rem; margin: 2px 0 0; flex: 1; line-height: 1.5; }
+.step-head label {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  margin-top: 6px;
+}
+.step-head input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.step p, .step li { margin: 8px 0; }
+.step ol, .step ul { padding-inline-start: 22px; }
+h3 { font-size: 1rem; margin: 18px 0 4px; }
+code {
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.88em;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 1px 6px;
+  border-radius: 5px;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.cmd {
+  position: relative;
+  margin: 10px 0;
+  direction: ltr;
+}
+.cmd pre {
+  margin: 0;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 8px;
+  padding: 14px 16px;
+  padding-right: 76px;
+  overflow-x: auto;
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  text-align: left;
+}
+.cmd button {
+  position: absolute;
+  top: 8px; right: 8px;
+  font: inherit;
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--code-text) 12%, transparent);
+  color: var(--code-text);
+  border: 1px solid color-mix(in srgb, var(--code-text) 20%, transparent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: "IBM Plex Sans Arabic", sans-serif;
+}
+.cmd button:hover { background: color-mix(in srgb, var(--code-text) 22%, transparent); }
+.expect {
+  border-inline-start: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 14px;
+  margin: 10px 0;
+  font-size: 0.95rem;
+}
+[dir="rtl"] .expect { border-radius: 8px 0 0 8px; }
+.expect b { color: var(--accent); }
+.out {
+  direction: ltr;
+  text-align: left;
+  font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  font-size: 0.82rem;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 0.93rem; }
+th, td { text-align: start; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+.table-wrap { overflow-x: auto; }
+footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
+@media (max-width: 520px) {
+  header h1 { font-size: 1.45rem; }
+  section.step { padding: 16px 14px 12px; }
+  .step-head { flex-wrap: wrap; }
+  .step-head label { margin-inline-start: 46px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>تشغيل الصورة على RunPod (بيئة staging)</h1>
+  <p>خطوات مرتّبة من واجهة RunPod في المتصفّح وطرفية WSL: تجهّز كلمات السر وقرص البيانات والقالب، ثم تنشئ الـ Pod وتتحقق منه. كل أمر له زر نسخ.</p>
+</header>
+
+<div class="facts">
+  <div class="fact"><b>الصورة</b><span><code>anastawahia/aizzak-runpod:staging-1</code></span></div>
+  <div class="fact"><b>كرت الشاشة</b><span>GPU واحد، 16GB</span></div>
+  <div class="fact"><b>قرص البيانات</b><span>Network Volume بحجم 50GB</span></div>
+  <div class="fact"><b>الإقلاع الأول</b><span>10 إلى 20 دقيقة</span></div>
+</div>
+
+<div class="note ok">
+  <strong>لن تُنقل أي بيانات من جهازك</strong>
+  <ul>
+    <li>الـ Pod يبدأ بقرص بيانات جديد فارغ. لا ينتقل إليه أي مستخدم أو ملف من المكدّس الحالي.</li>
+    <li>كلمات السر هنا جديدة، ولا علاقة لها بكلمات سر جهازك ولا بكلمات سر التجربة المحلية.</li>
+  </ul>
+</div>
+
+<div class="note warn">
+  <strong>قبل أن تبدأ</strong>
+  <ul>
+    <li>اشحن رصيداً في حساب RunPod. الـ Pod يُحسب بالساعة ما دام يعمل، وقرص البيانات يُحسب شهرياً حتى لو كان الـ Pod متوقفاً. السعر يظهر بجانب كل خيار.</li>
+    <li>أسماء الأزرار في واجهة RunPod قد تختلف قليلاً عمّا هنا. ابحث عن أقرب اسم.</li>
+  </ul>
+</div>
+
+<div class="progress" aria-live="polite">
+  <span id="progress-text">0 من 11 خطوة</span>
+  <div class="bar"><i id="progress-bar"></i></div>
+</div>
+
+<!-- 1 -->
+<section class="step" data-step="1">
+  <div class="step-head">
+    <span class="num">1</span>
+    <h2>تأكد أن الصورة موجودة على Docker Hub</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>في طرفية Ubuntu (WSL):</p>
+  <div class="cmd"><pre>docker manifest inspect anastawahia/aizzak-runpod:staging-1 &gt; /dev/null &amp;&amp; echo IMAGE-OK</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>IMAGE-OK</code>.</div>
+  <div class="note warn"><strong>إن ظهر <code>no such manifest</code></strong>الرفع لم يكتمل بعد. أعد أمر الرفع وانتظر حتى يظهر سطر <code>staging-1: digest: sha256:...</code>:
+    <div class="cmd"><pre>docker push anastawahia/aizzak-runpod:staging-1</pre></div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="step" data-step="2">
+  <div class="step-head">
+    <span class="num">2</span>
+    <h2>ولّد كلمات السر وملف الإعدادات</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>هذا الأمر يكتب 13 قيمة في ملف خارج المشروع، لا يقرؤه غيرك. إن كان الملف موجوداً من قبل فلا يغيّره.</p>
+  <div class="cmd"><pre>if [ -e ~/aizzak-runpod-staging.env ]; then
+  echo "EXISTS: keep it, do not regenerate"
+else
+  install -m 600 /dev/null ~/aizzak-runpod-staging.env
+  {
+    for v in POSTGRES_SUPERUSER_PASSWORD AIZZAK_OWNER_PASSWORD APP_RW_PASSWORD \
+             OUTBOX_RELAY_PASSWORD RETENTION_SWEEPER_PASSWORD METRICS_READER_PASSWORD \
+             TRANSIT_ROTATOR_PASSWORD WORKSPACE_PURGER_PASSWORD BACKUP_OPERATOR_PASSWORD \
+             MINIO_ROOT_PASSWORD; do
+      echo "$v=$(openssl rand -hex 24)"
+    done
+    echo "MINIO_ROOT_USER=aizzak-minio"
+    echo "FIREBASE_PROJECT_ID=aizzak-agent"
+    echo "APP_ENV=staging"
+  } &gt; ~/aizzak-runpod-staging.env
+  echo CREATED
+fi</pre></div>
+  <div class="cmd"><pre>grep -c = ~/aizzak-runpod-staging.env</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>CREATED</code> ثم <code>13</code>.</div>
+  <div class="note danger">
+    <strong>احتفظ بهذا الملف</strong>
+    <ul>
+      <li>تحتاجه ما دام قرص البيانات موجوداً. قاعدة البيانات تُنشأ بكلمة السر الأولى، وتغييرها لاحقاً يمنع الإقلاع.</li>
+      <li>لا تلصقه في المحادثة، ولا تضعه داخل المشروع. يُفضّل أن تحفظ نسخة منه في مدير كلمات سر.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="step" data-step="3">
+  <div class="step-head">
+    <span class="num">3</span>
+    <h2>أضف مفتاح SSH إلى حسابك في RunPod</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>المفتاح يتيح لك الدخول إلى الـ Pod لتشخيص أي عطل ولحفظ مفتاح Vault (الخطوة 9). أضفه <b>قبل</b> إنشاء الـ Pod، لأن RunPod يسلّمه للـ Pod عند تشغيله.</p>
+  <div class="cmd"><pre>ls ~/.ssh/id_ed25519.pub 2&gt;/dev/null || ssh-keygen -t ed25519 -C "aizzak-runpod" -N "" -f ~/.ssh/id_ed25519</pre></div>
+  <div class="cmd"><pre>cat ~/.ssh/id_ed25519.pub</pre></div>
+  <ol>
+    <li>انسخ السطر الذي يبدأ بـ <code>ssh-ed25519</code>.</li>
+    <li>في RunPod افتح <b>Settings</b>، ثم <b>SSH Public Keys</b>.</li>
+    <li>الصق السطر في سطر جديد، ثم احفظ.</li>
+  </ol>
+  <div class="expect"><b>النتيجة المتوقعة:</b> المفتاح يظهر في القائمة. هذا مفتاح عام، ولا ضرر من رؤيته.</div>
+</section>
+
+<!-- 4 -->
+<section class="step" data-step="4">
+  <div class="step-head">
+    <span class="num">4</span>
+    <h2>أنشئ قرص البيانات الدائم (Network Volume)</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>كل بيانات المكدّس تُحفظ هنا: قاعدة البيانات، والملفات، وVault، والنموذج. القرص يبقى حتى لو أوقفت الـ Pod أو حذفته.</p>
+  <ol>
+    <li>افتح <b>Storage</b> من القائمة الجانبية، ثم <b>New Network Volume</b>.</li>
+    <li>اختر مركز بيانات (Datacenter) تظهر فيه كروت 16GB متاحة، مثل RTX A4000 أو RTX 4000 Ada أو RTX A4500.</li>
+    <li>الاسم: <code>aizzak-staging-data</code></li>
+    <li>الحجم: <code>50</code> GB</li>
+    <li>اضغط <b>Create</b>.</li>
+  </ol>
+  <div class="note warn"><strong>القرص مربوط بمركز البيانات</strong>الـ Pod يجب أن يكون في المركز نفسه. لذلك اختر مركزاً فيه كروت متاحة الآن.</div>
+</section>
+
+<!-- 5 -->
+<section class="step" data-step="5">
+  <div class="step-head">
+    <span class="num">5</span>
+    <h2>أنشئ القالب (Template)</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>افتح <b>Templates</b> (أو <b>My Templates</b>) من القائمة الجانبية، ثم <b>New Template</b>، واملأ الحقول:</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>الحقل</th><th>القيمة</th><th>ملاحظة</th></tr></thead>
+    <tbody>
+      <tr><td>Template Name</td><td><code>aizzak-staging</code></td><td></td></tr>
+      <tr><td>Template Type</td><td><code>Pod</code></td><td></td></tr>
+      <tr><td>Compute Type</td><td><code>Nvidia GPU</code></td><td></td></tr>
+      <tr><td>Visibility</td><td><code>Private</code></td><td>⚠️ إلزامي. القالب العام يكشف كلمات السر للجميع</td></tr>
+      <tr><td>Container Image</td><td><code>anastawahia/aizzak-runpod:staging-1</code></td><td></td></tr>
+      <tr><td>Container Registry Credentials</td><td>فارغ</td><td>الصورة عامة</td></tr>
+      <tr><td>Container Start Command</td><td>فارغ</td><td>أي قيمة هنا تمنع الصورة من الإقلاع</td></tr>
+      <tr><td>Container Disk</td><td><code>20</code> GB</td><td></td></tr>
+      <tr><td>Volume Disk</td><td>اتركه كما هو</td><td>قرص الخطوة 4 يحلّ محلّه عند ربطه في الخطوة 6</td></tr>
+      <tr><td>Volume Mount Path</td><td><code>/workspace</code></td><td>⚠️ بالضبط هكذا</td></tr>
+      <tr><td>Expose HTTP Ports</td><td><code>80,9000</code></td><td>80 للتطبيق، و9000 لروابط الملفات</td></tr>
+      <tr><td>Expose TCP Ports</td><td><code>22</code></td><td>لـ SSH</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>متغيرات البيئة (Environment Variables)</h3>
+  <p>اعرض قيم الملف في طرفيتك. لا تنسخها إلى أي مكان غير واجهة RunPod:</p>
+  <div class="cmd"><pre>cat ~/aizzak-runpod-staging.env</pre></div>
+  <ul>
+    <li>إن وجدت زر <b>Raw Editor</b> فالصق الأسطر الثلاثة عشر كلها مرة واحدة.</li>
+    <li>وإلا فأضف كل سطر وحده: ما قبل <code>=</code> في خانة Key، وما بعده في خانة Value. لا مسافات ولا علامات تنصيص.</li>
+  </ul>
+  <div class="expect"><b>النتيجة المتوقعة:</b> 13 متغيراً، منها <code>FIREBASE_PROJECT_ID=aizzak-agent</code> و<code>APP_ENV=staging</code>. ثم اضغط <b>Save Template</b>.</div>
+  <div class="note warn"><strong>لا تضف إلى القالب</strong><code>VAULT_ROLE_ID</code> ولا <code>VAULT_SECRET_ID</code> ولا <code>DATABASE_URL</code>. الـ Pod يولّدها بنفسه عند كل إقلاع.</div>
+</section>
+
+<!-- 6 -->
+<section class="step" data-step="6">
+  <div class="step-head">
+    <span class="num">6</span>
+    <h2>أنشئ الـ Pod</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <ol>
+    <li>افتح <b>Pods</b>، ثم <b>Deploy</b>.</li>
+    <li>في أعلى الصفحة اختر <b>Network Volume</b>: <code>aizzak-staging-data</code>. بعدها تظهر كروت مركز البيانات نفسه فقط.</li>
+    <li>اختر كرتاً متاحاً بذاكرة 16GB، مثل RTX A4000 أو RTX 4000 Ada أو RTX A4500.</li>
+    <li>Pod Name: <code>aizzak-staging</code></li>
+    <li>اضغط <b>Change Template</b> واختر <code>aizzak-staging</code>.</li>
+    <li>GPU Count: <code>1</code></li>
+    <li>Instance Pricing: <b>On-Demand</b>. لا تختر Spot، فهو قد يتوقف في أي لحظة.</li>
+    <li>اضغط <b>Deploy On-Demand</b>.</li>
+  </ol>
+  <div class="expect"><b>النتيجة المتوقعة:</b> يظهر الـ Pod في قائمة Pods، وتحت اسمه معرّف قصير من حروف وأرقام. هذا هو <code>POD_ID</code>، فسجّله. في تفاصيل الـ Pod يظهر اسم القرص <code>aizzak-staging-data</code>.</div>
+</section>
+
+<!-- 7 -->
+<section class="step" data-step="7">
+  <div class="step-head">
+    <span class="num">7</span>
+    <h2>راقب الإقلاع الأول</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>افتح الـ Pod، ثم <b>Logs</b>.</p>
+  <ul>
+    <li>في البداية ينزّل RunPod الصورة (حوالي 3.6GB)، ويظهر ذلك في سجل <b>System</b>. هذا يأخذ بضع دقائق.</li>
+    <li>بعدها انتقل إلى سجل <b>Container</b>.</li>
+  </ul>
+  <p>ستظهر هذه المراحل بالترتيب تقريباً:</p>
+  <ol>
+    <li><code>[entrypoint] initialising a new PostgreSQL 16 cluster</code></li>
+    <li><code>[entrypoint] SSH authorised key installed</code></li>
+    <li><code>[entrypoint] public base URL: https://&lt;POD_ID&gt;-80.proxy.runpod.net</code></li>
+    <li><code>vault-start: unsealed and ready</code></li>
+    <li><code>[bootstrap] minting the app's AppRole login</code></li>
+    <li><code>[bootstrap] running migrations + grants (app.ops.provision)</code></li>
+    <li><code>[bootstrap] pulling gemma3:1b</code>: تحميل النموذج، مع أشرطة تقدّم كثيرة. هذا طبيعي.</li>
+    <li><code>[bootstrap] starting the API</code> ثم <code>[bootstrap] starting nginx</code></li>
+  </ol>
+  <div class="expect"><b>النتيجة المتوقعة:</b> آخر سطر:
+    <div class="out">[bootstrap] ✅ boot complete -- https://&lt;POD_ID&gt;-80.proxy.runpod.net/health</div>
+  </div>
+  <ul>
+    <li>قبل هذا السطر يعطي الرابط العام خطأ 502. هذا طبيعي، لأن الواجهة تُفتح آخر شيء.</li>
+    <li>سطر <code>[ERROR] ... path is already in use</code> من Vault لا ضرر منه.</li>
+  </ul>
+  <div class="note danger"><strong>توقّف وأخبرني إن ظهر</strong>
+    <ul>
+      <li>علامة ⛔: انسخ السطر الذي فيه مع 20 سطراً قبله.</li>
+      <li><code>/workspace is NOT a mounted volume</code>: القرص غير مربوط، وستضيع البيانات. لا تكمل.</li>
+      <li><code>PUBLIC_KEY unset</code>: مفتاح SSH لم يصل. يمكن أن تكمل حتى الخطوة 8، لكن الخطوة 9 لن تعمل.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="step" data-step="8">
+  <div class="step-head">
+    <span class="num">8</span>
+    <h2>تحقق من الرابط العام</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>في طرفية WSL، ضع معرّف الـ Pod بدل <code>xxxxxxxx</code>:</p>
+  <div class="cmd"><pre>POD_ID=xxxxxxxx</pre></div>
+  <div class="cmd"><pre>curl -s -w ' %{http_code}\n' https://$POD_ID-80.proxy.runpod.net/health</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ok"} 200</code></div>
+  <div class="cmd"><pre>curl -s -w ' %{http_code}\n' https://$POD_ID-80.proxy.runpod.net/health/ready</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ready"} 200</code></div>
+  <div class="cmd"><pre>curl -s -o /dev/null -w '%{http_code}\n' https://$POD_ID-9000.proxy.runpod.net/minio/health/live</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>200</code>. هذا يثبت أن منفذ روابط الملفات منشور.</div>
+</section>
+
+<!-- 9 -->
+<section class="step" data-step="9">
+  <div class="step-head">
+    <span class="num">9</span>
+    <h2>ادخل عبر SSH، وافحص، واحفظ مفتاح Vault</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>في صفحة الـ Pod اضغط <b>Connect</b>، وانسخ أمر <b>SSH over exposed TCP</b>. شكله:</p>
+  <div class="out">ssh root@IP -p PORT -i ~/.ssh/id_ed25519</div>
+  <p>في الأوامر التالية ضع الـ IP والمنفذ من ذلك الأمر بدل <code>IP</code> و<code>PORT</code>.</p>
+
+  <h3>أ. ادخل إلى الـ Pod</h3>
+  <div class="cmd"><pre>ssh root@IP -p PORT -i ~/.ssh/id_ed25519</pre></div>
+  <p>عند أول دخول اكتب <code>yes</code>. الأوامر من هنا حتى <code>exit</code> تُنفَّذ داخل الـ Pod.</p>
+
+  <h3>ب. حالة الخدمات</h3>
+  <div class="cmd"><pre>supervisorctl -c /etc/supervisor/supervisord.conf status</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> كل الخدمات <code>RUNNING</code>، ما عدا <code>bootstrap</code> فحالته <code>EXITED</code>.</div>
+
+  <h3>ج. كرت الشاشة</h3>
+  <div class="cmd"><pre>nvidia-smi --query-gpu=name,memory.total --format=csv</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> اسم الكرت وذاكرته، مثل <code>NVIDIA RTX A4000, 16376 MiB</code>.</div>
+
+  <h3>د. الفحص الأعمق</h3>
+  <p>يفحص قاعدة البيانات، وعزل بيانات كل مساحة عمل، وروابط الملفات:</p>
+  <div class="cmd"><pre>cd /app &amp;&amp; gosu aizzak sh -c 'pid=$(pgrep -o -f "gunicorn app.api.main"); xargs -0 -a /proc/$pid/environ sh -c '"'"'exec env -i "$@" /opt/venv/bin/python /app/deploy/smoke/stack_smoke.py'"'"' _'</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> رابط يذكر <code>&lt;POD_ID&gt;-9000.proxy.runpod.net</code>، وآخر سطر:
+    <div class="out">PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified</div>
+  </div>
+  <div class="cmd"><pre>exit</pre></div>
+
+  <h3>هـ. احفظ مفتاح Vault على جهازك</h3>
+  <p>هذا الملف هو المفتاح الوحيد لفتح Vault على هذا القرص. إن ضاع فلن تُقرأ أسرار Vault أبداً. الأمر ينسخه إلى جهازك دون أن يعرضه:</p>
+  <div class="cmd"><pre>(umask 077; ssh root@IP -p PORT -i ~/.ssh/id_ed25519 'cat /workspace/data/vault-init/init.json' &gt; ~/aizzak-vault-init-staging.json)</pre></div>
+  <div class="cmd"><pre>grep -c root_token ~/aizzak-vault-init-staging.json</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>1</code>.</div>
+  <div class="note danger"><strong>هذا الملف وملف الخطوة 2 هما مفاتيح كل شيء</strong>احفظ الاثنين خارج المشروع، ويُفضّل أن تكون معهما نسخة في مدير كلمات سر. لا تلصقهما في المحادثة.</div>
+</section>
+
+<!-- 10 -->
+<section class="step" data-step="10">
+  <div class="step-head">
+    <span class="num">10</span>
+    <h2>أخبرني بالنتيجة</h2>
+    <label><input type="checkbox"> تمّت</label>
+  </div>
+  <p>أرسل لي:</p>
+  <ul>
+    <li>معرّف الـ Pod (<code>POD_ID</code>) واسم الكرت.</li>
+    <li>نتائج الخطوة 8: الأسطر الثلاثة.</li>
+    <li>نتيجة الخطوة 9-ب، وآخر سطر من الخطوة 9-د.</li>
+  </ul>
+  <p>سأسجّل النشر في الوثائق: وسم الصورة، ومعرّف الـ Pod، والرابط، ونتيجة <code>/health</code>. لا ترسل محتوى ملف كلمات السر ولا ملف Vault.</p>
+  <p>إن فشلت خطوة فأرسل رقمها وما ظهر لك.</p>
+</section>
+
+<!-- 11 -->
+<section class="step" data-step="11">
+  <div class="step-head">
+    <span class="num">11</span>
+    <h2>الإيقاف والتحديث لاحقاً</h2>
+    <label><input type="checkbox"> قرأتها</label>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>ما تريده</th><th>ماذا تفعل</th><th>ماذا يحدث للبيانات</th></tr></thead>
+    <tbody>
+      <tr><td>توفير التكلفة حين لا تستخدمه</td><td><b>Stop</b></td><td>تبقى على القرص. يتوقف حساب الكرت، ويبقى حساب القرص</td></tr>
+      <tr><td>تشغيله من جديد</td><td><b>Start</b></td><td>يقلع في دقائق دون تحميل النموذج من جديد</td></tr>
+      <tr><td>صورة جديدة بعد تعديل الكود</td><td>ارفع بوسم جديد (<code>staging-2</code>)، ثم <b>Edit Pod</b> وغيّر الصورة</td><td>تبقى، والتحديثات على قاعدة البيانات تُطبَّق تلقائياً</td></tr>
+      <tr><td>حذف الـ Pod</td><td><b>Terminate</b></td><td>تبقى على قرص <code>aizzak-staging-data</code></td></tr>
+      <tr><td>حذف القرص</td><td>Storage، ثم حذف <code>aizzak-staging-data</code></td><td>⛔ تضيع كل البيانات نهائياً</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note warn"><strong>أعد تشغيل الـ Pod مرة كل 30 يوماً على الأقل</strong>دخول التطبيق إلى Vault يتجدّد عند كل إقلاع، وينتهي بعد 30 يوماً. هذه ثغرة مسجّلة (ث‑5) وسنعالجها في مرحلة الأمان.</div>
+</section>
+
+<h2 style="font-size:1.25rem;margin-top:36px">إذا واجهت مشكلة</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>ما يظهر لك</th><th>السبب الأرجح</th><th>ماذا تفعل</th></tr></thead>
+  <tbody>
+    <tr><td>لا يوجد كرت 16GB متاح في مركز القرص</td><td>الكروت محجوزة الآن</td><td>جرّب كرتاً آخر بذاكرة 16GB أو أكثر في المركز نفسه. إن لم يوجد، فأنشئ قرصاً جديداً في مركز آخر واحذف الفارغ</td></tr>
+    <tr><td>سجل System يقول <code>manifest unknown</code> أو <code>pull access denied</code></td><td>خطأ في اسم الصورة، أو الرفع لم يكتمل</td><td>راجع الخطوة 1 وحقل Container Image في القالب</td></tr>
+    <tr><td><code>⛔ ... is not set</code> في أول السجل</td><td>متغير ناقص في القالب</td><td>صحّح المتغيرات (Edit Pod أو Edit Template)، ثم أعد تشغيل الـ Pod</td></tr>
+    <tr><td><code>/workspace is NOT a mounted volume</code></td><td>القرص غير مربوط</td><td>احذف الـ Pod (لا بيانات فيه بعد) وأنشئه من جديد مع اختيار القرص في الخطوة 6</td></tr>
+    <tr><td>الرابط العام يعطي 502</td><td>الإقلاع لم ينتهِ</td><td>انتظر سطر <code>boot complete</code> في سجل Container</td></tr>
+    <tr><td><code>Permission denied (publickey)</code> في SSH</td><td>المفتاح أُضيف بعد إنشاء الـ Pod</td><td>تأكد من الخطوة 3، ثم أعد تشغيل الـ Pod</td></tr>
+    <tr><td>لا يوجد خيار <b>SSH over exposed TCP</b></td><td>المنفذ 22 غير منشور</td><td>Edit Pod، ثم أضف <code>22</code> في Expose TCP Ports</td></tr>
+    <tr><td><code>nvidia-smi: command not found</code> أو لا يظهر كرت</td><td>الـ Pod أُنشئ دون كرت</td><td>أخبرني قبل أن تكمل</td></tr>
+    <tr><td>الـ Pod يعيد التشغيل مرة بعد مرة</td><td>عطل في الإقلاع</td><td>انسخ آخر 50 سطراً من سجل Container وأرسلها لي</td></tr>
+    <tr><td>المحادثة أو البث ينقطع بعد حوالي 100 ثانية</td><td>حدّ وكيل RunPod</td><td>أخبرني، فله حل في إعداد المنافذ</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>آخر تحديث: 2026‑10‑10 · الفرع <code>runpod</code> · المرجع الكامل: <code>docs/deploy-runpod.md</code></footer>
+</div>
+
+<script>
+(function () {
+  // Copy buttons on every command block.
+  document.querySelectorAll(".cmd").forEach(function (block) {
+    var pre = block.querySelector("pre");
+    if (!pre) return;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "نسخ";
+    btn.addEventListener("click", function () {
+      var text = pre.textContent;
+      var done = function () {
+        btn.textContent = "نُسخ ✓";
+        setTimeout(function () { btn.textContent = "نسخ"; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(text); done(); });
+      } else {
+        fallback(text);
+        done();
+      }
+    });
+    block.appendChild(btn);
+  });
+
+  function fallback(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  // Step check-offs, remembered in this browser only.
+  var KEY = "aizzak-runpod-deploy-steps";
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  var steps = Array.prototype.slice.call(document.querySelectorAll("section.step"));
+  var text = document.getElementById("progress-text");
+  var bar = document.getElementById("progress-bar");
+
+  function refresh() {
+    var n = 0;
+    steps.forEach(function (s) {
+      var on = s.querySelector("input").checked;
+      s.classList.toggle("is-done", on);
+      if (on) n++;
+    });
+    text.textContent = n + " من " + steps.length + " خطوة";
+    bar.style.width = (100 * n / steps.length) + "%";
+  }
+
+  steps.forEach(function (s) {
+    var box = s.querySelector("input");
+    box.checked = !!saved[s.dataset.step];
+    box.addEventListener("change", function () {
+      saved[s.dataset.step] = box.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      refresh();
+    });
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>
