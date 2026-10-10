@@ -290,11 +290,22 @@ export VAULT_POLICY_FILE=/app/deploy/vault/app-policy.hcl
 
 if ! mountpoint -q /workspace 2>/dev/null; then
     log "⚠️  /workspace is NOT a mounted volume. All data will be LOST when this"
-    log "⚠️  Pod stops. Attach a volume or network volume at /workspace."
+    log "⚠️  Pod stops. Give the Pod a Volume Disk mounted at /workspace."
 fi
 
 mkdir -p "$DATA"/{postgres,redis,minio,qdrant,ollama,logs,vault,vault-init} \
          /var/run/postgresql /var/lib/nginx /var/log/nginx /run
+
+# A RunPod Network Volume refuses chown -- the first staging Pod (2026-10-10)
+# died on `chown: changing ownership of '/workspace/data/postgres': Operation
+# not permitted`, and RunPod restarted it into the same line forever. Neither
+# Postgres (its data directory must belong to its own user) nor Qdrant (no
+# network file systems) can run on one, so the volume is the Pod's own Volume
+# Disk. Probe once and name the cause instead of dying on a bare chown error.
+chown postgres:postgres "$DATA/postgres" 2>/dev/null \
+    || die "cannot chown under /workspace -- is it a RunPod Network Volume? \
+Postgres and Qdrant cannot run on one. Recreate the Pod with NO network volume \
+and a Volume Disk mounted at /workspace (docs/deploy-runpod.md §5.4)."
 chown -R postgres:postgres "$DATA/postgres" /var/run/postgresql
 chown -R aizzak:aizzak "$DATA/redis" "$DATA/minio" "$DATA/qdrant" "$DATA/ollama" "$DATA/logs" "$DATA/vault" "$DATA/vault-init"
 chmod 700 "$DATA/postgres"

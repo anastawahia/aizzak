@@ -10,13 +10,13 @@
 > - التشغيل المحلّيّ بـDocker Compose: [`quickstart.md`](quickstart.md).
 > - المرجع المُلزِم للقرارات التشغيليّة: [`design/08-local-runbook.md`](design/08-local-runbook.md).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)).
 
 > ⚠️ **مرحلة staging (قرار المالك، 2026‑10‑06):**
 > - كشف المكدّس للعامّة عبر رابط RunPod مسموح، والبيانات الحقيقيّة مسموحة.
 > - التقوية الأمنيّة مؤجّلةٌ إلى ما بعد أوّل إقلاعٍ على RunPod. كلّ ثغرةٍ تُكتشف تُسجَّل في [§8.4](#84-قائمة-الأمان-المؤجّلة-لمرحلة-staging) ولا توقف النشر.
 > - يجوز للوكلاء النشر دون إنسان: البناء والرفع، وإنشاء الـPod وتحديثه وإعادة تشغيله. ويُبلَّغ عن كلّ نشرٍ بأربعة أشياء: وسم الصورة، ومعرّف الـPod، والرابط، ونتيجة `/health`.
-> - **حذف Pod أو Network Volume يحتاج موافقة إنسان**، لأنّه يمحو البيانات.
+> - **حذف Pod أو Network Volume يحتاج موافقة إنسان**، لأنّه يمحو البيانات. ومع Volume Disk ‏([§5.4](#54-التخزين)) يمحو حذفُ الـPod بياناتِه معه.
 > - الإنتاج (الموجة 8) ما زال مؤجّلاً، وقرار إطلاقه بشريّ.
 
 ---
@@ -122,7 +122,7 @@ test -e ~/aizzak-runpod-staging.env || { install -m 600 /dev/null ~/aizzak-runpo
 
 > ⚠️ **لا تستعمل الرمز `%` في أيّ قيمة.** supervisord يفسّر `%(...)s` في ملفّ إعداده. `openssl rand -hex` يولّد أحرفاً سداسيّةً عشريّةً فقط.
 >
-> ⚠️ **احتفظ بالملفّ ما دام الـNetwork Volume قائماً.** العنقود يُهيَّأ بكلمة سرّ المستخدم الفائق مرّةً واحدة، وتغييرها بعد ذلك يكسر الإقلاع ([§9](#9-التشغيل-اليوميّ)).
+> ⚠️ **احتفظ بالملفّ ما دام قرص بيانات الـPod قائماً.** العنقود يُهيَّأ بكلمة سرّ المستخدم الفائق مرّةً واحدة، وتغييرها بعد ذلك يكسر الإقلاع ([§9](#9-التشغيل-اليوميّ)).
 
 | المتغيّر | الدور | ما يملكه |
 |---|---|---|
@@ -190,8 +190,8 @@ docker push anastawahia/aizzak-runpod:staging-1
 |---|---|---|
 | النوع | **GPU Pod** | Ollama هو المستفيد. على المعالج وحده يصير توليد النصّ بطيئاً جدّاً |
 | البطاقة | **16 ج.ب** (مثل RTX A4000 أو RTX 4000 Ada) | `gemma3:1b` صغير. ارفع الفئة فقط إن غيّرت النموذج إلى أكبر |
-| السحابة | **Secure Cloud** | أثبت من Community Cloud، وفيها Network Volumes |
-| المنطقة | مركزٌ يدعم Network Volumes | يلزم لثبات البيانات |
+| السحابة | **Secure Cloud** | أثبت من Community Cloud |
+| المنطقة | أيّ مركزٍ فيه بطاقة 16 ج.ب متاحة | قرص البيانات يُنشأ مع الـPod على جهازه، فلا قيد على المركز ([§5.4](#54-التخزين)) |
 
 ### 5.2 القالب
 
@@ -200,6 +200,7 @@ docker push anastawahia/aizzak-runpod:staging-1
 | **Container Image** | `anastawahia/aizzak-runpod:staging-1` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
 | **Container Start Command** | **فارغ** | الصورة تعرّف `CMD`. أيّ قيمةٍ هنا تلغيه |
 | **Container Disk** | **20 GB** | الصورة ≈ 3.6 ج.ب، وكلّ البيانات على `/workspace` |
+| **Volume Disk** | **50 GB** | قرص البيانات ([§5.4](#54-التخزين)). يُزاد لاحقاً ولا يُنقَص |
 | **Volume Mount Path** | `/workspace` | ⚠️ بالضبط هكذا. كلّ مسارات البيانات تحت `/workspace/data` |
 
 ### 5.3 المنافذ
@@ -220,14 +221,21 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 ### 5.4 التخزين
 
-| النوع | متى يُمحى؟ |
-|---|---|
-| **Container Disk** | عند **كلّ** إيقافٍ للـPod. كلّ ما هو خارج `/workspace` يضيع |
-| **Volume Disk** | عند حذف الـPod |
-| **Network Volume** | يبقى مستقلّاً عن الـPod |
+| النوع | متى يُمحى؟ | يصلح للمكدّس؟ |
+|---|---|---|
+| **Container Disk** | عند **كلّ** إيقافٍ للـPod. كلّ ما هو خارج `/workspace` يضيع | لا |
+| **Volume Disk** | عند حذف الـPod (Terminate) | **نعم، وهو المعتمد** |
+| **Network Volume** | يبقى مستقلّاً عن الـPod | **لا** |
 
-- **استعمل Network Volume بحجم 50 ج.ب.** أنشئه أوّلاً من `Storage → Network Volume → New`، في المركز نفسه الذي ستنشئ فيه الـPod.
-- **لا يمكن ربطه بـPod قائم.** اختره وقت إنشاء الـPod، وإلّا فعليك حذف الـPod وإنشاؤه من جديد.
+- **استعمل Volume Disk بحجم 50 ج.ب على `/workspace`، ولا تربط Network Volume.**
+- **لماذا لا Network Volume؟** أوّل Pod (2026‑10‑10) مات عند `chown: changing ownership of '/workspace/data/postgres': Operation not permitted`، وأعاد RunPod تشغيله بلا نهاية:
+  - القرص الشبكيّ يرفض تغيير مالك الملفّات، وPostgreSQL يرفض مجلّد بياناتٍ لا يملكه مستخدمه.
+  - وQdrant لا يعمل على أنظمة ملفّات الشبكة أصلاً، بنصّ وثائقه.
+  - `entrypoint.sh` يفحص ذلك الآن قبل تهيئة قاعدة البيانات، ويتوقّف برسالة `⛔ cannot chown under /workspace -- is it a RunPod Network Volume?`.
+- **ثمن هذا الخيار:**
+  - **Terminate يمحو البيانات.** لذلك يحتاج موافقة إنسان، وتؤخذ قبله نسخةٌ احتياطيّة ([§9](#9-التشغيل-اليوميّ)).
+  - **القرص مربوطٌ بالجهاز الذي نشأ عليه الـPod.** الإيقاف (Stop) يحرّر الكرت، فقد يؤجَّر لغيرك، ويقلع الـPod عند Start **بلا GPU**. حينها انتظر وأعد المحاولة، أو أقلعه بلا GPU لتأخذ نسخةً احتياطيّة ثمّ أنشئ Pod جديداً. لذلك تجنّب Stop إلّا عند الحاجة.
+  - عطل الجهاز نفسه يُفقد البيانات. هذا يرفع أولويّة ث‑6 ([§8.4](#84-قائمة-الأمان-المؤجّلة-لمرحلة-staging)).
 - إن لم يُربط حجم، فسيحذّر سجلّ الإقلاع: `⚠️ /workspace is NOT a mounted volume. All data will be LOST`.
 
 ### 5.5 متغيّرات البيئة
@@ -396,7 +404,7 @@ ssh -N -L 9001:127.0.0.1:9001 root@<IP> -p <PORT> -i ~/.ssh/id_ed25519
 | ث‑3 | Ollama يُثبَّت بـ`curl -fsSL https://ollama.com/install.sh \| sh` دون تثبيت إصدارٍ أو تحقّقٍ من البصمة (`deploy/runpod/Dockerfile`) | بناءان في يومين مختلفين قد يحملان Ollama مختلفاً، أو شيفرةً غير متوقّعة | تنزيل أرشيفٍ بإصدارٍ محدّد والتحقّق من `sha256` |
 | ث‑4 | لا HSTS على رابط الوكيل ([§8.3](#83-نطاقٌ-خاصّ-بدل-رابط-الوكيل-وhsts)) | لا حماية من تخفيض البروتوكول عند أوّل زيارة | نطاقٌ خاصّ ثابت ثمّ تفعيل HSTS له |
 | ث‑5 | `secret_id_ttl=720h` (30 يوماً) طويل، ولا شيء يجدّده إلّا إعادة تشغيل الـPod | `secret_id` مسروق يبقى صالحاً شهراً. وPod يعمل أكثر من 30 يوماً دون إعادة تشغيل يفقد دخوله إلى Vault عند أوّل تجديدٍ للتوكن | تجديدٌ دوريّ للـ`secret_id` وتقصير مدّته. وإلى أن يُنفَّذ: أعد تشغيل الـPod قبل 30 يوماً ([§9](#9-التشغيل-اليوميّ)) |
-| ث‑6 | لا نسخ احتياطيّ آليّ ولا مراقبة ولا تنبيهات داخل الـPod | فقدان الـvolume يعني فقدان البيانات، وعطلٌ صامت لا يراه أحد | `ops-scheduler` وشحن النسخ إلى تخزينٍ خارجيّ، ومراقبة `/health` من خارج الـPod |
+| ث‑6 | لا نسخ احتياطيّ آليّ ولا مراقبة ولا تنبيهات داخل الـPod | فقدان الـvolume يعني فقدان البيانات، وعطلٌ صامت لا يراه أحد. ومع Volume Disk ‏([§5.4](#54-التخزين)) يكفي لذلك حذف الـPod أو عطل جهازه | `ops-scheduler` وشحن النسخ إلى تخزينٍ خارجيّ، ومراقبة `/health` من خارج الـPod |
 | ث‑7 | مستودع الصورة على Docker Hub عامّ | أيّ أحدٍ يسحب الصورة ويرى إعدادات المكدّس. لا أسرار فيها (فحص 4‑ب في دليل البناء)، والكود عامٌّ على GitHub أصلاً | مستودعٌ خاصّ مع Registry Credentials في RunPod |
 | ث‑8 | SSH بالمستخدم root على منفذٍ عامّ | مفتاحٌ مسروق يعطي كلّ شيء، بما فيه `init.json` | مستخدمٌ غير root، أو إغلاق 22 وفتحه عند الحاجة فقط |
 | ث‑9 | التطبيق يعمل بـ`APP_ENV=staging` على بياناتٍ حقيقيّة مع الثغرات أعلاه | قبولٌ صريح من المالك للمرحلة | مراجعة هذه القائمة قبل أيّ انتقالٍ إلى الإنتاج (الموجة 8) |
@@ -412,10 +420,9 @@ ssh -N -L 9001:127.0.0.1:9001 root@<IP> -p <PORT> -i ~/.ssh/id_ed25519
 | العمليّة | الأثر | من ينفّذها |
 |---|---|---|
 | **Restart** | يُعيد الإقلاع، ويُصدر `secret_id` جديداً | الوكيل أو الإنسان |
-| **Stop** | يُمحى قرص الحاوية ويبقى `/workspace`. تدفع ثمن التخزين فقط | الوكيل أو الإنسان |
+| **Stop** | يُمحى قرص الحاوية ويبقى `/workspace`. تدفع ثمن التخزين فقط. ⚠️ يحرّر الكرت، فقد يقلع Start بلا GPU ([§5.4](#54-التخزين)) | الوكيل أو الإنسان |
 | **Start** | يسحب الصورة ثانيةً، ويجد العنقود قائماً فلا يعيد تهيئته | الوكيل أو الإنسان |
-| **Terminate** | يُحذف الـPod، ويبقى الـNetwork Volume | ⚠️ **موافقة إنسان** |
-| حذف الـNetwork Volume | تضيع كلّ البيانات | ⚠️ **موافقة إنسان** |
+| **Terminate** | يُحذف الـPod **ومعه قرص البيانات**. خذ نسخةً احتياطيّة أوّلاً | ⚠️ **موافقة إنسان** |
 
 > ⚠️ **أعد تشغيل الـPod مرّةً على الأقلّ كلّ 30 يوماً**، إلى أن يُعالَج ث‑5 في [§8.4](#84-قائمة-الأمان-المؤجّلة-لمرحلة-staging).
 
@@ -453,6 +460,8 @@ gosu postgres pg_dump -Fc -d aizzak > /workspace/backup-$(date +%F).dump
 | `app` في حالة `STOPPED  Not started` و`/health` لا يجيب | الإقلاع لم يكتمل بعد، خاصّةً في أوّل مرّة (تنزيل النموذج). انتظر `✅ boot complete` |
 | `exec format error` | الصورة بُنيت لـARM. أعد البناء بـ`--platform linux/amd64` |
 | `Downloading image` عالقٌ ثمّ يفشل | Container Disk صغير. ارفعه |
+| `chown: changing ownership of '/workspace/data/postgres': Operation not permitted` يتكرّر، أو `⛔ cannot chown under /workspace` | الـPod مربوطٌ بـNetwork Volume. احذفه وأنشئه بلا Network Volume، مع Volume Disk ‏50 ج.ب ([§5.4](#54-التخزين)) |
+| الـPod يقلع بعد Start بلا GPU (`nvidia-smi` لا يجد كرتاً) | كرت الجهاز صار مؤجَّراً لغيرك أثناء الإيقاف ([§5.4](#54-التخزين)) |
 | `[bootstrap] ⛔ PostgreSQL did not come up` | راجع سطور `postgres` في السجلّ. غالباً `/workspace` بلا حجمٍ مربوط أو صلاحيّاتٌ خاطئة |
 | `provisioning failed` | اقرأ التتبّع فوقه. غالباً `AIZZAK_OWNER_PASSWORD` لا يطابق حجماً قديماً، أو كلمة سرّ المستخدم الفائق تغيّرت ([§9](#9-التشغيل-اليوميّ)) |
 | `[with-vault] ⛔ … is not readable` | `app` أو `worker` بدأ قبل أن يُصدر الإقلاع دخول Vault. راجع سجلّ `bootstrap` |
@@ -506,8 +515,9 @@ supervisorctl -c /etc/supervisor/supervisord.conf restart app
 6. `vault-init/init.json` هو مفتاح كلّ الأسرار: انسخه احتياطيّاً ولا تطبعه.
 7. `FIREBASE_PROJECT_ID` الفارغ يعني تطبيقاً لا يقلع.
 8. `/health` الأخضر ليس دليلاً على مسار البيانات؛ الدليل هو `deploy/smoke/stack_smoke.py`.
-9. حذف Pod أو Network Volume يحتاج موافقة إنسان.
+9. حذف Pod يحتاج موافقة إنسان، لأنّه يمحو قرص بياناته معه.
 10. كلّ نشرٍ يُبلَّغ عنه: الوسم، ومعرّف الـPod، والرابط، ونتيجة `/health`.
+11. لا Network Volume: PostgreSQL وQdrant لا يعملان عليه. البيانات على Volume Disk.
 
 ---
 
@@ -516,7 +526,11 @@ supervisorctl -c /etc/supervisor/supervisord.conf restart app
 - [Runpod Pods — Overview](https://docs.runpod.io/pods/overview): «Docker Compose is not supported».
 - [Expose ports](https://docs.runpod.io/pods/configuration/expose-ports): وكيل HTTP، ومنافذ TCP، وحدّ المئة ثانية.
 - [Environment variables](https://docs.runpod.io/pods/templates/environment-variables): `RUNPOD_POD_ID` وغيره.
+- [Storage types](https://docs.runpod.io/pods/storage/types): Volume Disk يبقى عند الإيقاف ويُمحى عند الحذف.
+- [Zero GPUs](https://docs.runpod.io/pods/troubleshooting/zero-gpus): Pod بقرصٍ محلّيّ مربوطٌ بجهازه، وقد يقلع بلا GPU بعد الإيقاف.
 - [Network volumes](https://docs.runpod.io/storage/network-volumes): الثبات والربط وقت الإنشاء.
+- [Network volume permissions](https://www.answeroverflow.com/m/1306342259364597790): تقريرٌ من مجتمع RunPod بأنّ صلاحيّات PostgreSQL لا تُضبط على القرص الشبكيّ.
+- [Qdrant installation requirements](https://qdrant.tech/documentation/installation/): لا يعمل على NFS ولا على تخزين الكائنات.
 - [Connect to a Pod with SSH](https://docs.runpod.io/pods/configuration/use-ssh): sshd في صورةٍ مخصّصة.
 - [Global networking](https://docs.runpod.io/pods/networking): `<POD_ID>.runpod.internal`.
 

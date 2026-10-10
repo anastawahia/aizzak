@@ -231,13 +231,13 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
 
 <header>
   <h1>تشغيل الصورة على RunPod (بيئة staging)</h1>
-  <p>خطوات مرتّبة من واجهة RunPod في المتصفّح وطرفية WSL: تجهّز كلمات السر وقرص البيانات والقالب، ثم تنشئ الـ Pod وتتحقق منه. كل أمر له زر نسخ.</p>
+  <p>خطوات مرتّبة من واجهة RunPod في المتصفّح وطرفية WSL: تجهّز كلمات السر ومفتاح SSH والقالب، ثم تنشئ الـ Pod وتتحقق منه. كل أمر له زر نسخ.</p>
 </header>
 
 <div class="facts">
   <div class="fact"><b>الصورة</b><span><code>anastawahia/aizzak-runpod:staging-1</code></span></div>
   <div class="fact"><b>كرت الشاشة</b><span>GPU واحد، 16GB</span></div>
-  <div class="fact"><b>قرص البيانات</b><span>Network Volume بحجم 50GB</span></div>
+  <div class="fact"><b>قرص البيانات</b><span>Volume Disk بحجم 50GB</span></div>
   <div class="fact"><b>الإقلاع الأول</b><span>10 إلى 20 دقيقة</span></div>
 </div>
 
@@ -257,8 +257,18 @@ footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
   </ul>
 </div>
 
+<div class="note danger">
+  <strong>إن أنشأت Pod من قبل مع Network Volume</strong>
+  <ul>
+    <li>قاعدة البيانات وQdrant لا تعملان على Network Volume. الـ Pod يتوقف عند سطر <code>chown: ... Operation not permitted</code> ويعيد التشغيل بلا نهاية.</li>
+    <li>احذف ذلك الـ Pod (<b>Terminate</b>). لا بيانات فيه، وهو يُحسب عليك بالساعة.</li>
+    <li>القرص الشبكي <code>aizzak-staging-data</code> فارغ ولن نستعمله. احذفه من <b>Storage</b> إن أردت أن يتوقف حسابه الشهري.</li>
+    <li>الخطوات 1 إلى 3 تبقى كما فعلتها. ابدأ من الخطوة 4.</li>
+  </ul>
+</div>
+
 <div class="progress" aria-live="polite">
-  <span id="progress-text">0 من 11 خطوة</span>
+  <span id="progress-text">0 من 10 خطوات</span>
   <div class="bar"><i id="progress-bar"></i></div>
 </div>
 
@@ -320,43 +330,49 @@ fi</pre></div>
     <h2>أضف مفتاح SSH إلى حسابك في RunPod</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
-  <p>المفتاح يتيح لك الدخول إلى الـ Pod لتشخيص أي عطل ولحفظ مفتاح Vault (الخطوة 9). أضفه <b>قبل</b> إنشاء الـ Pod، لأن RunPod يسلّمه للـ Pod عند تشغيله.</p>
+  <p><b>ما هو؟</b> مفتاح SSH يتيح لك الدخول إلى الـ Pod من طرفيتك دون كلمة سر. هو ملفان على جهازك:</p>
+  <ul>
+    <li><code>id_ed25519</code>: الملف <b>السري</b>. يبقى على جهازك، ولا تنسخه إلى أي مكان.</li>
+    <li><code>id_ed25519.pub</code>: الملف <b>العام</b>. هذا ما تعطيه لـ RunPod.</li>
+  </ul>
+  <p><b>لماذا تحتاجه؟</b> في الخطوة 8 تدخل إلى الـ Pod لتفحصه، وتنسخ منه مفتاح Vault إلى جهازك. هذا لا يعمل دون المفتاح.</p>
+  <p><b>لماذا الآن؟</b> RunPod يضع المفتاح العام داخل الـ Pod لحظة تشغيله. إن أضفته بعد إنشاء الـ Pod فلن يصل إليه حتى تعيد تشغيله.</p>
+
+  <h3>أ. أنشئ المفتاح</h3>
+  <p>في طرفية Ubuntu (WSL). الأمر يبحث أولاً عن مفتاح موجود؛ إن وجده لا يغيّر شيئاً، وإلا أنشأ مفتاحاً جديداً دون أن يسألك عن شيء:</p>
   <div class="cmd"><pre>ls ~/.ssh/id_ed25519.pub 2&gt;/dev/null || ssh-keygen -t ed25519 -C "aizzak-runpod" -N "" -f ~/.ssh/id_ed25519</pre></div>
-  <div class="cmd"><pre>cat ~/.ssh/id_ed25519.pub</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> واحدة من اثنتين، وكلتاهما صحيحة:
+    <ul>
+      <li>عدة أسطر، أولها <code>Generating public/private ed25519 key pair.</code> وآخرها رسم داخل مربع. يعني أن المفتاح أُنشئ الآن. الرسم طبيعي، تجاهله.</li>
+      <li>سطر واحد ينتهي بـ <code>.ssh/id_ed25519.pub</code>. يعني أن عندك مفتاحاً من قبل.</li>
+    </ul>
+  </div>
+
+  <h3>ب. انسخ المفتاح العام</h3>
+  <p>هذا الأمر ينسخ الملف العام إلى حافظة ويندوز، كأنك ضغطت <code>Ctrl+C</code>:</p>
+  <div class="cmd"><pre>clip.exe &lt; ~/.ssh/id_ed25519.pub &amp;&amp; echo COPIED</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>COPIED</code>.</div>
+
+  <h3>ج. الصقه في RunPod</h3>
   <ol>
-    <li>انسخ السطر الذي يبدأ بـ <code>ssh-ed25519</code>.</li>
-    <li>في RunPod افتح <b>Settings</b>، ثم <b>SSH Public Keys</b>.</li>
-    <li>الصق السطر في سطر جديد، ثم احفظ.</li>
+    <li>افتح RunPod في المتصفح، ثم <b>Settings</b> من القائمة الجانبية.</li>
+    <li>ابحث عن قسم <b>SSH Public Keys</b>. فيه مربع نص.</li>
+    <li>إن كان المربع فارغاً فالصق بـ <code>Ctrl+V</code>. وإن كان فيه مفاتيح قديمة فلا تحذفها: اضغط في آخر سطر منها، ثم <code>Enter</code>، ثم الصق.</li>
+    <li>اضغط زر الحفظ تحت المربع (قد يكون اسمه <b>Update Public Key</b> أو <b>Save</b>).</li>
   </ol>
-  <div class="expect"><b>النتيجة المتوقعة:</b> المفتاح يظهر في القائمة. هذا مفتاح عام، ولا ضرر من رؤيته.</div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> بعد تحديث الصفحة يبقى في المربع سطر يبدأ بـ <code>ssh-ed25519</code>. هذا مفتاح عام، ولا ضرر من رؤيته.</div>
+  <div class="note danger"><strong>إن رأيت <code>BEGIN OPENSSH PRIVATE KEY</code> فتوقّف</strong>هذا هو الملف السري، وليس العام. لا تلصقه في RunPod ولا في أي مكان، وأعد الخطوة ب.</div>
+  <div class="note warn"><strong>استعمل طرفية Ubuntu نفسها في الخطوة 8</strong>المفتاح محفوظ داخل WSL، لا في ويندوز. لذلك لن يعمل الدخول من PowerShell.</div>
 </section>
 
 <!-- 4 -->
 <section class="step" data-step="4">
   <div class="step-head">
     <span class="num">4</span>
-    <h2>أنشئ قرص البيانات الدائم (Network Volume)</h2>
-    <label><input type="checkbox"> تمّت</label>
-  </div>
-  <p>كل بيانات المكدّس تُحفظ هنا: قاعدة البيانات، والملفات، وVault، والنموذج. القرص يبقى حتى لو أوقفت الـ Pod أو حذفته.</p>
-  <ol>
-    <li>افتح <b>Storage</b> من القائمة الجانبية، ثم <b>New Network Volume</b>.</li>
-    <li>اختر مركز بيانات (Datacenter) تظهر فيه كروت 16GB متاحة، مثل RTX A4000 أو RTX 4000 Ada أو RTX A4500.</li>
-    <li>الاسم: <code>aizzak-staging-data</code></li>
-    <li>الحجم: <code>50</code> GB</li>
-    <li>اضغط <b>Create</b>.</li>
-  </ol>
-  <div class="note warn"><strong>القرص مربوط بمركز البيانات</strong>الـ Pod يجب أن يكون في المركز نفسه. لذلك اختر مركزاً فيه كروت متاحة الآن.</div>
-</section>
-
-<!-- 5 -->
-<section class="step" data-step="5">
-  <div class="step-head">
-    <span class="num">5</span>
     <h2>أنشئ القالب (Template)</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
-  <p>افتح <b>Templates</b> (أو <b>My Templates</b>) من القائمة الجانبية، ثم <b>New Template</b>، واملأ الحقول:</p>
+  <p>افتح <b>Templates</b> (أو <b>My Templates</b>) من القائمة الجانبية، ثم <b>New Template</b>، واملأ الحقول. إن كان القالب <code>aizzak-staging</code> موجوداً من قبل، فافتحه بـ <b>Edit</b> وصحّح الحقول المختلفة:</p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>الحقل</th><th>القيمة</th><th>ملاحظة</th></tr></thead>
@@ -369,7 +385,7 @@ fi</pre></div>
       <tr><td>Container Registry Credentials</td><td>فارغ</td><td>الصورة عامة</td></tr>
       <tr><td>Container Start Command</td><td>فارغ</td><td>أي قيمة هنا تمنع الصورة من الإقلاع</td></tr>
       <tr><td>Container Disk</td><td><code>20</code> GB</td><td></td></tr>
-      <tr><td>Volume Disk</td><td>اتركه كما هو</td><td>قرص الخطوة 4 يحلّ محلّه عند ربطه في الخطوة 6</td></tr>
+      <tr><td>Volume Disk</td><td><code>50</code> GB</td><td>⚠️ هنا تُحفظ كل البيانات: قاعدة البيانات، والملفات، وVault، والنموذج</td></tr>
       <tr><td>Volume Mount Path</td><td><code>/workspace</code></td><td>⚠️ بالضبط هكذا</td></tr>
       <tr><td>Expose HTTP Ports</td><td><code>80,9000</code></td><td>80 للتطبيق، و9000 لروابط الملفات</td></tr>
       <tr><td>Expose TCP Ports</td><td><code>22</code></td><td>لـ SSH</td></tr>
@@ -387,30 +403,32 @@ fi</pre></div>
   <div class="note warn"><strong>لا تضف إلى القالب</strong><code>VAULT_ROLE_ID</code> ولا <code>VAULT_SECRET_ID</code> ولا <code>DATABASE_URL</code>. الـ Pod يولّدها بنفسه عند كل إقلاع.</div>
 </section>
 
-<!-- 6 -->
-<section class="step" data-step="6">
+<!-- 5 -->
+<section class="step" data-step="5">
   <div class="step-head">
-    <span class="num">6</span>
+    <span class="num">5</span>
     <h2>أنشئ الـ Pod</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
   <ol>
     <li>افتح <b>Pods</b>، ثم <b>Deploy</b>.</li>
-    <li>في أعلى الصفحة اختر <b>Network Volume</b>: <code>aizzak-staging-data</code>. بعدها تظهر كروت مركز البيانات نفسه فقط.</li>
-    <li>اختر كرتاً متاحاً بذاكرة 16GB، مثل RTX A4000 أو RTX 4000 Ada أو RTX A4500.</li>
+    <li>في أعلى الصفحة خانة <b>Network Volume</b>: <b>اتركها فارغة</b>. لا تختر أي قرص شبكي.</li>
+    <li>اختر كرتاً متاحاً بذاكرة 16GB، مثل RTX A4000 أو RTX 4000 Ada أو RTX A4500. أي مركز بيانات يصلح.</li>
     <li>Pod Name: <code>aizzak-staging</code></li>
     <li>اضغط <b>Change Template</b> واختر <code>aizzak-staging</code>.</li>
     <li>GPU Count: <code>1</code></li>
     <li>Instance Pricing: <b>On-Demand</b>. لا تختر Spot، فهو قد يتوقف في أي لحظة.</li>
+    <li>في ملخص الـ Pod أسفل الصفحة تأكد أن <b>Volume Disk</b> هو <code>50 GB</code>. إن لم يكن، فاضغط <b>Edit Template</b> وعدّله.</li>
     <li>اضغط <b>Deploy On-Demand</b>.</li>
   </ol>
-  <div class="expect"><b>النتيجة المتوقعة:</b> يظهر الـ Pod في قائمة Pods، وتحت اسمه معرّف قصير من حروف وأرقام. هذا هو <code>POD_ID</code>، فسجّله. في تفاصيل الـ Pod يظهر اسم القرص <code>aizzak-staging-data</code>.</div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> يظهر الـ Pod في قائمة Pods، وتحت اسمه معرّف قصير من حروف وأرقام. هذا هو <code>POD_ID</code>، فسجّله.</div>
+  <div class="note warn"><strong>لماذا لا Network Volume؟</strong>القرص الشبكي يرفض تغيير مالك الملفات، فلا تعمل عليه قاعدة البيانات ولا Qdrant. الثمن: Volume Disk يُحذف مع الـ Pod، فلا تحذف الـ Pod (Terminate) دون نسخة احتياطية. انظر الخطوة 10.</div>
 </section>
 
-<!-- 7 -->
-<section class="step" data-step="7">
+<!-- 6 -->
+<section class="step" data-step="6">
   <div class="step-head">
-    <span class="num">7</span>
+    <span class="num">6</span>
     <h2>راقب الإقلاع الأول</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
@@ -421,7 +439,7 @@ fi</pre></div>
   </ul>
   <p>ستظهر هذه المراحل بالترتيب تقريباً:</p>
   <ol>
-    <li><code>[entrypoint] initialising a new PostgreSQL 16 cluster</code></li>
+    <li><code>[entrypoint] initialising a new PostgreSQL 16 cluster</code>: يظهر في الدقيقة الأولى. ظهوره يعني أن القرص صالح.</li>
     <li><code>[entrypoint] SSH authorised key installed</code></li>
     <li><code>[entrypoint] public base URL: https://&lt;POD_ID&gt;-80.proxy.runpod.net</code></li>
     <li><code>vault-start: unsealed and ready</code></li>
@@ -441,15 +459,16 @@ fi</pre></div>
     <ul>
       <li>علامة ⛔: انسخ السطر الذي فيه مع 20 سطراً قبله.</li>
       <li><code>/workspace is NOT a mounted volume</code>: القرص غير مربوط، وستضيع البيانات. لا تكمل.</li>
-      <li><code>PUBLIC_KEY unset</code>: مفتاح SSH لم يصل. يمكن أن تكمل حتى الخطوة 8، لكن الخطوة 9 لن تعمل.</li>
+      <li><code>chown: ... Operation not permitted</code> يتكرر، أو <code>cannot chown under /workspace</code>: الـ Pod مربوط بـ Network Volume. لا تكمل.</li>
+      <li><code>PUBLIC_KEY unset</code>: مفتاح SSH لم يصل. يمكن أن تكمل حتى الخطوة 7، لكن الخطوة 8 لن تعمل.</li>
     </ul>
   </div>
 </section>
 
-<!-- 8 -->
-<section class="step" data-step="8">
+<!-- 7 -->
+<section class="step" data-step="7">
   <div class="step-head">
-    <span class="num">8</span>
+    <span class="num">7</span>
     <h2>تحقق من الرابط العام</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
@@ -463,10 +482,10 @@ fi</pre></div>
   <div class="expect"><b>النتيجة المتوقعة:</b> <code>200</code>. هذا يثبت أن منفذ روابط الملفات منشور.</div>
 </section>
 
-<!-- 9 -->
-<section class="step" data-step="9">
+<!-- 8 -->
+<section class="step" data-step="8">
   <div class="step-head">
-    <span class="num">9</span>
+    <span class="num">8</span>
     <h2>ادخل عبر SSH، وافحص، واحفظ مفتاح Vault</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
@@ -502,27 +521,27 @@ fi</pre></div>
   <div class="note danger"><strong>هذا الملف وملف الخطوة 2 هما مفاتيح كل شيء</strong>احفظ الاثنين خارج المشروع، ويُفضّل أن تكون معهما نسخة في مدير كلمات سر. لا تلصقهما في المحادثة.</div>
 </section>
 
-<!-- 10 -->
-<section class="step" data-step="10">
+<!-- 9 -->
+<section class="step" data-step="9">
   <div class="step-head">
-    <span class="num">10</span>
+    <span class="num">9</span>
     <h2>أخبرني بالنتيجة</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
   <p>أرسل لي:</p>
   <ul>
     <li>معرّف الـ Pod (<code>POD_ID</code>) واسم الكرت.</li>
-    <li>نتائج الخطوة 8: الأسطر الثلاثة.</li>
-    <li>نتيجة الخطوة 9-ب، وآخر سطر من الخطوة 9-د.</li>
+    <li>نتائج الخطوة 7: الأسطر الثلاثة.</li>
+    <li>نتيجة الخطوة 8-ب، وآخر سطر من الخطوة 8-د.</li>
   </ul>
   <p>سأسجّل النشر في الوثائق: وسم الصورة، ومعرّف الـ Pod، والرابط، ونتيجة <code>/health</code>. لا ترسل محتوى ملف كلمات السر ولا ملف Vault.</p>
   <p>إن فشلت خطوة فأرسل رقمها وما ظهر لك.</p>
 </section>
 
-<!-- 11 -->
-<section class="step" data-step="11">
+<!-- 10 -->
+<section class="step" data-step="10">
   <div class="step-head">
-    <span class="num">11</span>
+    <span class="num">10</span>
     <h2>الإيقاف والتحديث لاحقاً</h2>
     <label><input type="checkbox"> قرأتها</label>
   </div>
@@ -530,11 +549,10 @@ fi</pre></div>
   <table>
     <thead><tr><th>ما تريده</th><th>ماذا تفعل</th><th>ماذا يحدث للبيانات</th></tr></thead>
     <tbody>
-      <tr><td>توفير التكلفة حين لا تستخدمه</td><td><b>Stop</b></td><td>تبقى على القرص. يتوقف حساب الكرت، ويبقى حساب القرص</td></tr>
-      <tr><td>تشغيله من جديد</td><td><b>Start</b></td><td>يقلع في دقائق دون تحميل النموذج من جديد</td></tr>
+      <tr><td>توفير التكلفة حين لا تستخدمه</td><td><b>Stop</b></td><td>تبقى على القرص. يتوقف حساب الكرت، ويبقى حساب القرص. ⚠️ قد يؤجَّر الكرت لغيرك أثناء الإيقاف، فيقلع الـ Pod بعدها بلا GPU</td></tr>
+      <tr><td>تشغيله من جديد</td><td><b>Start</b></td><td>يقلع في دقائق دون تحميل النموذج من جديد، إن كان كرت الجهاز متاحاً</td></tr>
       <tr><td>صورة جديدة بعد تعديل الكود</td><td>ارفع بوسم جديد (<code>staging-2</code>)، ثم <b>Edit Pod</b> وغيّر الصورة</td><td>تبقى، والتحديثات على قاعدة البيانات تُطبَّق تلقائياً</td></tr>
-      <tr><td>حذف الـ Pod</td><td><b>Terminate</b></td><td>تبقى على قرص <code>aizzak-staging-data</code></td></tr>
-      <tr><td>حذف القرص</td><td>Storage، ثم حذف <code>aizzak-staging-data</code></td><td>⛔ تضيع كل البيانات نهائياً</td></tr>
+      <tr><td>حذف الـ Pod</td><td><b>Terminate</b></td><td>⛔ تضيع كل البيانات نهائياً، لأن القرص يُحذف معه. خذ نسخة احتياطية أولاً، وأخبرني قبلها</td></tr>
     </tbody>
   </table>
   </div>
@@ -546,10 +564,12 @@ fi</pre></div>
 <table>
   <thead><tr><th>ما يظهر لك</th><th>السبب الأرجح</th><th>ماذا تفعل</th></tr></thead>
   <tbody>
-    <tr><td>لا يوجد كرت 16GB متاح في مركز القرص</td><td>الكروت محجوزة الآن</td><td>جرّب كرتاً آخر بذاكرة 16GB أو أكثر في المركز نفسه. إن لم يوجد، فأنشئ قرصاً جديداً في مركز آخر واحذف الفارغ</td></tr>
-    <tr><td>سجل System يقول <code>manifest unknown</code> أو <code>pull access denied</code></td><td>خطأ في اسم الصورة، أو الرفع لم يكتمل</td><td>راجع الخطوة 1 وحقل Container Image في القالب</td></tr>
+    <tr><td>لا يوجد كرت 16GB متاح</td><td>الكروت محجوزة الآن</td><td>جرّب كرتاً آخر بذاكرة 16GB أو أكثر، أو مركز بيانات آخر</td></tr>
+    <tr><td>سجل System يقول <code>manifest unknown</code> أو <code>pull access denied</code></td><td>خطأ في اسم الصورة، أو الرفع لم يكتمل</td><td>راجع الخطوة 1 وحقل Container Image في القالب (الخطوة 4)</td></tr>
     <tr><td><code>⛔ ... is not set</code> في أول السجل</td><td>متغير ناقص في القالب</td><td>صحّح المتغيرات (Edit Pod أو Edit Template)، ثم أعد تشغيل الـ Pod</td></tr>
-    <tr><td><code>/workspace is NOT a mounted volume</code></td><td>القرص غير مربوط</td><td>احذف الـ Pod (لا بيانات فيه بعد) وأنشئه من جديد مع اختيار القرص في الخطوة 6</td></tr>
+    <tr><td><code>/workspace is NOT a mounted volume</code></td><td>Volume Disk صفر أو غير مربوط</td><td>احذف الـ Pod (لا بيانات فيه بعد)، وصحّح Volume Disk وVolume Mount Path في القالب (الخطوة 4)، ثم أنشئه من جديد</td></tr>
+    <tr><td><code>chown: ... Operation not permitted</code> يتكرر، أو <code>cannot chown under /workspace</code></td><td>الـ Pod مربوط بـ Network Volume</td><td>احذف الـ Pod (لا بيانات فيه بعد)، وأنشئه من جديد دون Network Volume (الخطوة 5)</td></tr>
+    <tr><td>الـ Pod يقلع بعد Start بلا GPU</td><td>كرت الجهاز أُجّر لغيرك أثناء الإيقاف</td><td>انتظر وأعد المحاولة لاحقاً، أو أخبرني</td></tr>
     <tr><td>الرابط العام يعطي 502</td><td>الإقلاع لم ينتهِ</td><td>انتظر سطر <code>boot complete</code> في سجل Container</td></tr>
     <tr><td><code>Permission denied (publickey)</code> في SSH</td><td>المفتاح أُضيف بعد إنشاء الـ Pod</td><td>تأكد من الخطوة 3، ثم أعد تشغيل الـ Pod</td></tr>
     <tr><td>لا يوجد خيار <b>SSH over exposed TCP</b></td><td>المنفذ 22 غير منشور</td><td>Edit Pod، ثم أضف <code>22</code> في Expose TCP Ports</td></tr>
@@ -600,7 +620,7 @@ fi</pre></div>
   }
 
   // Step check-offs, remembered in this browser only.
-  var KEY = "aizzak-runpod-deploy-steps";
+  var KEY = "aizzak-runpod-deploy-steps-v2";
   var saved = {};
   try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
   var steps = Array.prototype.slice.call(document.querySelectorAll("section.step"));
@@ -614,7 +634,7 @@ fi</pre></div>
       s.classList.toggle("is-done", on);
       if (on) n++;
     });
-    text.textContent = n + " من " + steps.length + " خطوة";
+    text.textContent = n + " من " + steps.length + (steps.length >= 3 && steps.length <= 10 ? " خطوات" : " خطوة");
     bar.style.width = (100 * n / steps.length) + "%";
   }
 
