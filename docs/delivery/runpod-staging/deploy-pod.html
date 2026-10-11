@@ -489,9 +489,10 @@ fi</pre></div>
     <h2>ادخل عبر SSH، وافحص، واحفظ مفتاح Vault</h2>
     <label><input type="checkbox"> تمّت</label>
   </div>
-  <p>في صفحة الـ Pod اضغط <b>Connect</b>، وانسخ أمر <b>SSH over exposed TCP</b>. شكله:</p>
-  <div class="out">ssh root@IP -p PORT -i ~/.ssh/id_ed25519</div>
-  <p>في الأوامر التالية ضع الـ IP والمنفذ من ذلك الأمر بدل <code>IP</code> و<code>PORT</code>.</p>
+  <p>في صفحة الـ Pod اضغط <b>Connect</b>، وانزل إلى قسم <b>Direct TCP ports</b>. فيه سطر شكله:</p>
+  <div class="out">tcp → 157.157.221.29:19979 → :22</div>
+  <p>الرقم قبل النقطتين هو <code>IP</code>، والرقم بعدها هو <code>PORT</code>. ضعهما في الأوامر التالية. السطر يجب أن ينتهي بـ <code>:22</code>.</p>
+  <div class="note warn"><strong>لا تستعمل أمر Basic SSH Terminal</strong>شكله <code>ssh XXXX@ssh.runpod.io</code>. يكفي للدخول، لكنه لا ينفّذ أمراً يُرسَل معه، فتفشل الخطوة هـ ويُكتب في الملف <code>Error: Your SSH client doesn't support PTY</code>. استعمل <code>root@IP -p PORT</code> من قسم Direct TCP ports.</div>
 
   <h3>أ. ادخل إلى الـ Pod</h3>
   <div class="cmd"><pre>ssh root@IP -p PORT -i ~/.ssh/id_ed25519</pre></div>
@@ -572,7 +573,9 @@ fi</pre></div>
     <tr><td>الـ Pod يقلع بعد Start بلا GPU</td><td>كرت الجهاز أُجّر لغيرك أثناء الإيقاف</td><td>انتظر وأعد المحاولة لاحقاً، أو أخبرني</td></tr>
     <tr><td>الرابط العام يعطي 502</td><td>الإقلاع لم ينتهِ</td><td>انتظر سطر <code>boot complete</code> في سجل Container</td></tr>
     <tr><td><code>Permission denied (publickey)</code> في SSH</td><td>المفتاح أُضيف بعد إنشاء الـ Pod</td><td>تأكد من الخطوة 3، ثم أعد تشغيل الـ Pod</td></tr>
-    <tr><td>لا يوجد خيار <b>SSH over exposed TCP</b></td><td>المنفذ 22 غير منشور</td><td>Edit Pod، ثم أضف <code>22</code> في Expose TCP Ports</td></tr>
+    <tr><td><code>Your SSH client doesn't support PTY</code>، أو نتيجة 8-هـ صفر</td><td>استُعمل أمر <code>ssh.runpod.io</code> (Basic SSH Terminal)</td><td>أعد 8-هـ بـ <code>root@IP -p PORT</code> من قسم <b>Direct TCP ports</b></td></tr>
+    <tr><td><code>Connection refused</code> مع <code>root@IP -p PORT</code></td><td>المنشور منفذ غير 22، فلا شيء يستمع عليه</td><td>Edit Pod، واجعل Expose TCP Ports <code>22</code>، وصحّحه في القالب أيضاً. المنفذ العام يتغيّر بعدها، فخذه من جديد</td></tr>
+    <tr><td>قسم <b>Direct TCP ports</b> فارغ، أو سطره لا ينتهي بـ <code>:22</code></td><td>المنفذ 22 غير منشور</td><td>Edit Pod، ثم أضف <code>22</code> في Expose TCP Ports</td></tr>
     <tr><td><code>nvidia-smi: command not found</code> أو لا يظهر كرت</td><td>الـ Pod أُنشئ دون كرت</td><td>أخبرني قبل أن تكمل</td></tr>
     <tr><td>الـ Pod يعيد التشغيل مرة بعد مرة</td><td>عطل في الإقلاع</td><td>انسخ آخر 50 سطراً من سجل Container وأرسلها لي</td></tr>
     <tr><td>المحادثة أو البث ينقطع بعد حوالي 100 ثانية</td><td>حدّ وكيل RunPod</td><td>أخبرني، فله حل في إعداد المنافذ</td></tr>
