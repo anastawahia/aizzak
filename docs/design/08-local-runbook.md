@@ -86,7 +86,7 @@ compose.pooler_clients      = 433   # من أصل 2000 (MAX_CLIENT_CONN — كا
 compose.postgres_backends   = 164   # من أصل 297  (max_connections 300 ناقصَ 3 محجوزةً للمستخدم الخارق — 161 قبل `5.7`، و162 قبل `monitoring-host-postgres` التي أضافت خلفيّتَي `postgres-exporter`)
 compose.app_rw_demand       = 380   # مقابل 110   (DEFAULT_POOL_SIZE 100 + RESERVE_POOL_SIZE 10)
 compose.web_concurrency_max = 19    # أعلى قيمةٍ تبقى تحت سقف العملاء — **لكلّ نسخة**، والنسخُ ثلاث
-runpod.postgres_backends    = 75    # من أصل 197  (max_connections 200 ناقصَ 3)
+runpod.postgres_backends    = 85    # من أصل 197  (max_connections 200 ناقصَ 3 — 75 قبل 2026‑10‑12، حين أضافت الصورة `worker-knowledge` و`worker-media`)
 runpod.web_concurrency_max  = 5     # أعلى قيمةٍ تبقى تحت سقف الخادم — لا مُجمِّعَ يمتصّ الفائض
 ```
 

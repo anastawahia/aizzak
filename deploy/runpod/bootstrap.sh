@@ -147,7 +147,7 @@ wait_for "embedding service" 90 curl -fsS "http://127.0.0.1:8080/health"
 # every group is provisioned before this process's first publish regardless
 # of when `worker` starts relative to it. See design/08-local-runbook.md §4.
 log "starting workers"
-supervisorctl -c /etc/supervisor/supervisord.conf start worker
+supervisorctl -c /etc/supervisor/supervisord.conf start worker worker-knowledge worker-media
 sleep 3
 
 log "starting outbox relay"

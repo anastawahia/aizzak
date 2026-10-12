@@ -919,7 +919,8 @@ def test_the_patterns_actually_find_something() -> None:
 
     # 6 since capacity 5.7 added `ops-scheduler` (one pooler connection).
     assert len(compose.runners) == 6, [r.name for r in compose.runners]
-    assert len(runpod.runners) == 3, [r.name for r in runpod.runners]
+    # 5 since 2026-10-12: one supervisord program per Streams worker.
+    assert len(runpod.runners) == 5, [r.name for r in runpod.runners]
     assert _pooler_clients(compose) > 0
     assert _direct_backends(runpod) > 0
     # The KEY, not its value: the value is what the ceiling tests above judge,

@@ -60,6 +60,8 @@ _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 _DISPATCHER = _REPO_ROOT / "src" / "app" / "workers" / "main.py"
+_SUPERVISORD = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
+_RUNPOD_BOOTSTRAP = _REPO_ROOT / "deploy" / "runpod" / "bootstrap.sh"
 
 # `export WORKER="${WORKER:-memory}"`.
 _ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}"')
@@ -69,6 +71,15 @@ _ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
 # Read as TEXT on purpose -- importing app.workers.main would drag in every
 # worker module (and its settings) to learn four dictionary keys.
 _RUNNERS_ENTRY = re.compile(r'^\s+"([a-z_]+)":\s+\w+\.run,\s*$', re.MULTILINE)
+# One supervisord section: its header, then every line up to the next header.
+_PROGRAM = re.compile(
+    r"^\[program:(?P<name>[^\]]+)\]\n(?P<body>(?:(?!\[program:).*\n)*)", re.MULTILINE
+)
+_DISPATCHER_COMMAND = re.compile(r"^command=.* -m app\.workers\.main\s*$", re.MULTILINE)
+# `environment=HOME="/home/aizzak",WORKER="knowledge"` -> knowledge.
+_PINNED_WORKER = re.compile(r'^environment=.*\bWORKER="([a-z_]+)"', re.MULTILINE)
+# `supervisorctl -c <conf> start worker worker-knowledge` -> the names.
+_BOOTSTRAP_START = re.compile(r"^supervisorctl .* start (?P<names>.+)$", re.MULTILINE)
 
 # `_RUNNERS` also dispatches `outbox_relay`, which 08 §4 lists among "أوامر
 # العمّال" but D-26 runs as its own single-instance service with its own
@@ -111,10 +122,10 @@ _REPLICATED = {"knowledge": 2}
 # `.env` present, which is what the shipped file promises.
 _INTERPOLATED_DEFAULT = re.compile(r"^\$\{[A-Z_]+:-(.*)\}$")
 
-# RunPod is ONE container running ONE worker chosen by `WORKER` (supervisord,
-# no Compose), so it still needs a default, and it still must be the worker
-# with live evidence behind it: a default is a promise to an operator who
-# typed nothing.
+# RunPod is ONE container under supervisord. It runs one [program:] per
+# Streams worker since 2026-10-12; `[program:worker]` alone still reads
+# `WORKER`, and the other two pin theirs. So the default must stay the one
+# worker no other program pins, or a stream goes unread.
 _EXPECTED_RUNPOD_DEFAULT = "memory"
 
 
@@ -155,6 +166,19 @@ def _env_example_worker() -> str:
         ".env.example: could not find a top-level `WORKER=<name>` line -- did its shape change?"
     )
     return match.group(1)
+
+
+def _runpod_consumers() -> dict[str, str]:
+    """`[program:]` name -> the worker it runs, for every program that runs the
+    dispatcher. A program that pins no `WORKER` runs entrypoint.sh's default."""
+    consumers: dict[str, str] = {}
+    for match in _PROGRAM.finditer(_SUPERVISORD.read_text(encoding="utf-8")):
+        body = match.group("body")
+        if not _DISPATCHER_COMMAND.search(body):
+            continue
+        pinned = _PINNED_WORKER.search(body)
+        consumers[match.group("name")] = pinned.group(1) if pinned else _entrypoint_worker_default()
+    return consumers
 
 
 def _replicated_services() -> dict[str, dict]:
@@ -363,8 +387,8 @@ def test_runpod_default_agrees_with_env_example() -> None:
     assert _env_example_worker() == _entrypoint_worker_default(), (
         f".env.example sets WORKER={_env_example_worker()!r} but "
         f"deploy/runpod/entrypoint.sh defaults it to "
-        f"{_entrypoint_worker_default()!r} -- the single-container path runs "
-        "one worker; both files must name the same one."
+        f"{_entrypoint_worker_default()!r} -- both files must name the worker "
+        "[program:worker] runs."
     )
 
 
@@ -391,10 +415,34 @@ def test_runpod_default_is_a_worker_compose_boots_unprofiled() -> None:
 
 
 def test_runpod_default_is_the_worker_whose_boot_is_best_proven() -> None:
-    """Being in the unprofiled set is necessary but not sufficient: RunPod
-    picks exactly ONE worker, and it should be the one with the longest live
-    record, not merely a permissible one. `memory` has been booting in
-    containers since docs/log/3.83.md; `knowledge`'s first container boot was
-    2026-08-03. Changing this is a real decision, not a tidy-up."""
+    """Being in the unprofiled set is necessary but not sufficient. Until
+    2026-10-12 RunPod ran exactly ONE worker, so this had to be the one with
+    the longest live record (`memory`, booting in containers since
+    docs/log/3.83.md). Now it must also be the one worker no other program
+    pins (`test_runpod_runs_one_consumer_per_streams_worker`), which is still
+    `memory`. Changing this is a real decision, not a tidy-up."""
     assert _entrypoint_worker_default() == _EXPECTED_RUNPOD_DEFAULT
     assert _env_example_worker() == _EXPECTED_RUNPOD_DEFAULT
+
+
+def test_runpod_runs_one_consumer_per_streams_worker() -> None:
+    """2026-10-12, Pod le15fwpryplqwa: the image ran `memory` only. A browser
+    upload registered its document, `knowledge.document.registered.v1` waited
+    in `stream.knowledge` with 0 consumers on `cg.knowledge`, and the document
+    stayed `pending` forever. Every worker the dispatcher knows needs exactly
+    one program; two would consume one stream twice and leave another unread."""
+    consumers = _runpod_consumers()
+    assert sorted(consumers.values()) == sorted(_dispatcher_streams_workers()), (
+        f"deploy/runpod/supervisord.conf runs {consumers}, but the dispatcher "
+        f"defines {sorted(_dispatcher_streams_workers())}. Each needs exactly one "
+        "[program:] -- a stream nobody reads never finishes its jobs."
+    )
+
+
+def test_runpod_bootstrap_starts_every_worker_program() -> None:
+    """Every application-plane program is `autostart=false`, so a program
+    bootstrap.sh never names stays STOPPED and its stream is unread anyway."""
+    text = _RUNPOD_BOOTSTRAP.read_text(encoding="utf-8")
+    started = {name for m in _BOOTSTRAP_START.finditer(text) for name in m["names"].split()}
+    missing = sorted(set(_runpod_consumers()) - started)
+    assert not missing, f"deploy/runpod/bootstrap.sh never starts {missing}"

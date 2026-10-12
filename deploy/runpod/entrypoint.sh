@@ -229,22 +229,20 @@ export USAGE_ROLLUP_PERIODS="${USAGE_ROLLUP_PERIODS:-day,month}"
 default_usage_limits='{"tokens":{"month":5000000},"cost_micros":{"month":50000000}}'
 export USAGE_DEFAULT_LIMITS="${USAGE_DEFAULT_LIMITS:-$default_usage_limits}"
 
-# ⚠️ THIS PATH RUNS EXACTLY ONE WORKER, and that is what still makes this
-# default matter. Compose stopped needing it in docs/log/3.133.md -- its one
-# parameterised `worker` service became `worker-memory`/`worker-knowledge`/
-# `worker-media`, so over there the memory and knowledge consumers simply run
-# side by side. This image cannot do that: it is a single container under
-# supervisord with one [program:worker], so it must pick.
+# `WORKER` now picks the consumer of [program:worker] only. supervisord.conf
+# runs all three Streams consumers, one program each, as Compose does since
+# docs/log/3.133.md; [program:worker-knowledge] and [program:worker-media] pin
+# their own value. Until 2026-10-12 this image ran ONE worker and nothing
+# indexed an upload (supervisord.conf, above [program:worker]).
 #
-# It picks `memory` on evidence, not capability. All three workers are wired
-# (`knowledge` since steps 15-16 of docs/deferred-adapters-plan.md, `media`
-# since steps 19-20), and both memory and knowledge now have measured
-# container boots (docs/log/3.105.md); memory simply has the longer record
-# (docs/log/3.83.md too), and a default is a promise to an operator who typed
-# nothing. Keep this in step with .env.example;
+# The default stays `memory`, so the three programs cover the three streams
+# exactly once. Keep this in step with .env.example;
 # tests/unit/test_deploy_worker_default.py fails if the two drift, and also
 # fails if this names a worker Compose is unwilling to boot unprofiled.
 export WORKER="${WORKER:-memory}"
+if [ "$WORKER" != "memory" ]; then
+    log "⚠️  WORKER=${WORKER}: [program:worker] now duplicates worker-${WORKER}, and nothing consumes stream.memory."
+fi
 
 # The model the routing table names below must be the model pulled at
 # bootstrap, or every LLM call 404s at Ollama.
