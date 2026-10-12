@@ -189,6 +189,22 @@ docker push anastawahia/aizzak-runpod:staging-1
 > ```
 >
 > الناتج: `anastawahia/aizzak-runpod:staging-2@sha256:4279d520d8cee59830e4c3aa8b0b07b327cbac609977b81bba96c38cad52a519`.
+>
+> - **ما فعلناه لـ`staging-3`:** بالطريقة نفسها، طبقةً صغيرةً فوق `staging-2`. تحمل إصلاح الروابط المُوقَّعة ([§5.3](#53-المنافذ))، وقيمة `shared_buffers` الجديدة في `deploy/postgres/postgresql.conf`. تحقّقنا من أنّ ملفّات `/app` الـ610 وسكربتات `/usr/local/bin` و`supervisord.conf` و`nginx.conf` مطابقةٌ للالتزام `346a743` بايتاً ببايت:
+>
+> ```dockerfile
+> FROM anastawahia/aizzak-runpod:staging-2@sha256:4279d520d8cee59830e4c3aa8b0b07b327cbac609977b81bba96c38cad52a519
+> COPY --chmod=755 deploy/runpod/entrypoint.sh /usr/local/bin/entrypoint.sh
+> COPY --chmod=644 deploy/runpod/nginx.conf /etc/nginx/nginx.conf
+> COPY --chown=aizzak:aizzak --chmod=644 deploy/runpod/entrypoint.sh deploy/runpod/nginx.conf deploy/runpod/Dockerfile /app/deploy/runpod/
+> COPY --chown=aizzak:aizzak --chmod=644 deploy/smoke/stack_smoke.py /app/deploy/smoke/stack_smoke.py
+> COPY --chown=aizzak:aizzak --chmod=644 deploy/postgres/postgresql.conf /app/deploy/postgres/postgresql.conf
+> LABEL org.opencontainers.image.revision="346a743"
+> ```
+>
+> الناتج: `anastawahia/aizzak-runpod:staging-3@sha256:15f30d190671be717508c65994f5eb1f28c8961b1eff2d81ee35647724666280`.
+>
+> ⚠️ **حالة الـPod الحاليّ `le15fwpryplqwa` (2026‑10‑12):** يعمل بـ`staging-2`، والإصلاح مطبَّقٌ عليه يدويّاً دون إعادة تشغيل (`/etc/nginx/nginx.conf` الجديد، و`MINIO_PUBLIC_ENDPOINT` في `[program:app]` داخل `supervisord.conf`، والنسختان القديمتان بلاحقة `.staging-2`). وأُنشئ **بلا Volume Disk** (`volumeInGb = 0`)، فبياناته كلّها على قرص الحاوية، ويمسحها أيّ إيقافٍ أو تعديل، ومعها الإصلاح اليدويّ. **التعديل القادم يجمع ثلاثة أشياء:** الصورة `staging-3`، وVolume Disk ‏50 ج.ب ([§5.4](#54-التخزين))، وحذف المنفذ 9000. وبعده احفظ مفتاح Vault الجديد ([§8.1](#81-مادّة-تهيئة-vault-على-القرص)).
 
 ---
 
@@ -211,7 +227,7 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 | الحقل | القيمة | ملاحظة |
 |---|---|---|
-| **Container Image** | `anastawahia/aizzak-runpod:staging-2` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
+| **Container Image** | `anastawahia/aizzak-runpod:staging-3` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
 | **Container Start Command** | **فارغ** | الصورة تعرّف `CMD`. أيّ قيمةٍ هنا تلغيه |
 | **Container Disk** | **20 GB** | الصورة ≈ 3.6 ج.ب، وكلّ البيانات على `/workspace` |
 | **Volume Disk** | **50 GB** | قرص البيانات ([§5.4](#54-التخزين)). يُزاد لاحقاً ولا يُنقَص |
@@ -444,8 +460,8 @@ ssh -N -L 9001:127.0.0.1:9001 root@<IP> -p <PORT> -i ~/.ssh/id_ed25519
 
 ### تحديث الصورة بعد تعديل الشيفرة
 
-1. ابنِ وارفع بوسمٍ جديد (`staging-2` مثلاً) كما في [§4](#4-بناء-الصورة-ورفعها).
-2. في RunPod: `Edit Pod → Container Image → anastawahia/aizzak-runpod:staging-2 → Save`.
+1. ابنِ وارفع بوسمٍ جديد (`staging-4` مثلاً) كما في [§4](#4-بناء-الصورة-ورفعها).
+2. في RunPod: `Edit Pod → Container Image → anastawahia/aizzak-runpod:staging-4 → Save`. ⚠️ على Pod بلا Volume Disk يمسح هذا كلّ البيانات.
 3. يعيد الـPod الإقلاع، وتُطبَّق الهجرات الجديدة تلقائيّاً عبر `aizzak-bootstrap.sh`.
 4. أبلغ عن النشر: الوسم، ومعرّف الـPod، والرابط، ونتيجة `/health`.
 
