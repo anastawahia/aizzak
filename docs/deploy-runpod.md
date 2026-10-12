@@ -10,7 +10,7 @@
 > - التشغيل المحلّيّ بـDocker Compose: [`quickstart.md`](quickstart.md).
 > - المرجع المُلزِم للقرارات التشغيليّة: [`design/08-local-runbook.md`](design/08-local-runbook.md).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)). وبعده كشف أوّل ملفٍّ مرفوع أنّ الصورة لا تشغّل عامل الفهرسة، فبقي المستند `pending`، فصار لكلّ عاملٍ برنامجه (الصورة `staging-4`).
 
 > ⚠️ **مرحلة staging (قرار المالك، 2026‑10‑06):**
 > - كشف المكدّس للعامّة عبر رابط RunPod مسموح، والبيانات الحقيقيّة مسموحة.
@@ -73,7 +73,7 @@
 | **لا TLS داخل الـPod** | وكيل RunPod ينهي TLS ويمرّر HTTP عاديّاً إلى المنفذ 80 |
 | **Ollama داخل الصورة** | في Compose هو على المضيف. هنا هو سبب استئجار الـGPU |
 | **بيئتا Python منفصلتان** | `/opt/venv` للتطبيق و`/opt/venv-emb` لـtorch، فلا يدخل torch اعتماديّات التطبيق |
-| **عاملٌ واحد (`WORKER=memory`)** | supervisord يشغّل `[program:worker]` واحداً. القيمة الافتراضيّة `memory` لأنّ سجلّها الحاويّ هو الأطول (`tests/unit/test_deploy_worker_default.py`) |
+| **كلّ عاملٍ بنسخةٍ واحدة** | supervisord يشغّل برنامجاً لكلّ عامل: `worker` (يقرأ `WORKER`، والقيمة الافتراضيّة `memory`)، و`worker-knowledge`، و`worker-media`. Compose يشغّل نسختين من knowledge. قبل `staging-4` كان في الصورة `worker` وحده، فلم يُفهرَس أيّ ملفّ (`tests/unit/test_deploy_worker_default.py`) |
 | **لا نسخ احتياطيّ ولا مراقبة آليّة** | لا `ops-scheduler` ولا Prometheus ولا تنبيهات داخل الصورة. مسجّلٌ في [§8.4](#84-قائمة-الأمان-المؤجّلة-لمرحلة-staging) |
 
 ---
@@ -139,7 +139,7 @@ test -e ~/aizzak-runpod-staging.env || { install -m 600 /dev/null ~/aizzak-runpo
 
 **ما لا تولّده بنفسك:**
 - **توكن Vault الجذر ومفتاح فكّ الختم:** يولّدهما `deploy/vault/start.sh` عند أوّل إقلاع ([§8.1](#81-مادّة-تهيئة-vault-على-القرص)).
-- **دخول التطبيق إلى Vault (AppRole):** `aizzak-bootstrap.sh` يصدر `secret_id` جديداً في **كلّ** إقلاع، ويكتبه في `/run/aizzak/vault-approle.env` (‏0600، على قرص الحاوية لا على الـvolume). الغلاف `aizzak-with-vault` يسلّمه لـ`app` و`worker` عند بدئهما. لا تضع `VAULT_ROLE_ID` ولا `VAULT_SECRET_ID` في القالب.
+- **دخول التطبيق إلى Vault (AppRole):** `aizzak-bootstrap.sh` يصدر `secret_id` جديداً في **كلّ** إقلاع، ويكتبه في `/run/aizzak/vault-approle.env` (‏0600، على قرص الحاوية لا على الـvolume). الغلاف `aizzak-with-vault` يسلّمه لـ`app` وللعمّال الثلاثة عند بدئها. لا تضع `VAULT_ROLE_ID` ولا `VAULT_SECRET_ID` في القالب.
 
 ---
 
@@ -204,7 +204,21 @@ docker push anastawahia/aizzak-runpod:staging-1
 >
 > الناتج: `anastawahia/aizzak-runpod:staging-3@sha256:15f30d190671be717508c65994f5eb1f28c8961b1eff2d81ee35647724666280`.
 >
-> ⚠️ **حالة الـPod الحاليّ `le15fwpryplqwa` (2026‑10‑12):** يعمل بـ`staging-2`، والإصلاح مطبَّقٌ عليه يدويّاً دون إعادة تشغيل (`/etc/nginx/nginx.conf` الجديد، و`MINIO_PUBLIC_ENDPOINT` في `[program:app]` داخل `supervisord.conf`، والنسختان القديمتان بلاحقة `.staging-2`). وأُنشئ **بلا Volume Disk** (`volumeInGb = 0`)، فبياناته كلّها على قرص الحاوية، ويمسحها أيّ إيقافٍ أو تعديل، ومعها الإصلاح اليدويّ. **التعديل القادم يجمع ثلاثة أشياء:** الصورة `staging-3`، وVolume Disk ‏50 ج.ب ([§5.4](#54-التخزين))، وحذف المنفذ 9000. وبعده احفظ مفتاح Vault الجديد ([§8.1](#81-مادّة-تهيئة-vault-على-القرص)).
+> - **ما فعلناه لـ`staging-4`:** طبقةً صغيرةً فوق `staging-3`. تضيف `[program:worker-knowledge]` و`[program:worker-media]`، فيُفهرَس الملفّ المرفوع ([§1](#الانحرافات-المقصودة-عن-مكدّس-compose)). تحقّقنا من أنّ الملفّات الأربعة في `/usr/local/bin` و`/etc` و`/app/deploy/runpod` مطابقةٌ للالتزام `4f6867e` بايتاً ببايت:
+>
+> ```dockerfile
+> FROM anastawahia/aizzak-runpod:staging-3@sha256:15f30d190671be717508c65994f5eb1f28c8961b1eff2d81ee35647724666280
+> COPY --chmod=755 deploy/runpod/entrypoint.sh /usr/local/bin/entrypoint.sh
+> COPY --chmod=755 deploy/runpod/bootstrap.sh /usr/local/bin/aizzak-bootstrap.sh
+> COPY --chmod=644 deploy/runpod/supervisord.conf /etc/supervisor/supervisord.conf
+> COPY --chown=aizzak:aizzak --chmod=644 deploy/runpod/entrypoint.sh deploy/runpod/supervisord.conf /app/deploy/runpod/
+> COPY --chown=aizzak:aizzak --chmod=755 deploy/runpod/bootstrap.sh /app/deploy/runpod/bootstrap.sh
+> LABEL org.opencontainers.image.revision="4f6867e"
+> ```
+>
+> الناتج: `anastawahia/aizzak-runpod:staging-4@sha256:57302e3daadef7afb7e8d4424c9fbd2110c9a21d625c4a25573ec254d24b246d`.
+>
+> ⚠️ **حالة الـPod الحاليّ `le15fwpryplqwa` (2026‑10‑12):** يعمل بـ`staging-2`، وإصلاحا `staging-3` و`staging-4` مطبَّقان عليه يدويّاً دون إعادة تشغيل: `/etc/nginx/nginx.conf` الجديد، و`MINIO_PUBLIC_ENDPOINT` في `[program:app]`، و`[program:worker-knowledge]` و`[program:worker-media]` في `supervisord.conf`. النسختان القديمتان بلاحقة `.staging-2`. وأُنشئ **بلا Volume Disk** (`volumeInGb = 0`)، فبياناته كلّها على قرص الحاوية، ويمسحها أيّ إيقافٍ أو تعديل، ومعها الإصلاح اليدويّ. **التعديل القادم يجمع ثلاثة أشياء:** الصورة `staging-4`، وVolume Disk ‏50 ج.ب ([§5.4](#54-التخزين))، وحذف المنفذ 9000. وبعده احفظ مفتاح Vault الجديد ([§8.1](#81-مادّة-تهيئة-vault-على-القرص)).
 
 ---
 
@@ -227,7 +241,7 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 | الحقل | القيمة | ملاحظة |
 |---|---|---|
-| **Container Image** | `anastawahia/aizzak-runpod:staging-3` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
+| **Container Image** | `anastawahia/aizzak-runpod:staging-4` | المستودع عامّ، فلا حاجة لـRegistry Credentials |
 | **Container Start Command** | **فارغ** | الصورة تعرّف `CMD`. أيّ قيمةٍ هنا تلغيه |
 | **Container Disk** | **20 GB** | الصورة ≈ 3.6 ج.ب، وكلّ البيانات على `/workspace` |
 | **Volume Disk** | **50 GB** | قرص البيانات ([§5.4](#54-التخزين)). يُزاد لاحقاً ولا يُنقَص |
@@ -307,12 +321,12 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 **المدّة المقيسة محلّيّاً (2026‑10‑09، على المعالج دون GPU):** نحو 7 دقائق لأوّل إقلاع، أغلبها تنزيل النموذج. ونحو دقيقةٍ لكلّ إقلاعٍ بعده. على RunPod يُضاف وقت سحب الصورة.
 
-> ⚠️ **قبل `boot complete` يكون `app` و`worker` و`outbox-relay` و`nginx` في حالة `STOPPED  Not started`، ولا يجيب `/health`.** هذا طبيعيّ وليس عطلاً: الإقلاع يبدأها بنفسه بعد اكتمال الخطوات السابقة.
+> ⚠️ **قبل `boot complete` يكون `app` و`worker` و`worker-knowledge` و`worker-media` و`outbox-relay` و`nginx` في حالة `STOPPED  Not started`، ولا يجيب `/health`.** هذا طبيعيّ وليس عطلاً: الإقلاع يبدأها بنفسه بعد اكتمال الخطوات السابقة.
 
 ### لماذا هذا الترتيب
 
 - **الهجرات قبل التطبيق:** `app.ops.provision` يمنح الصلاحيّات بعد الهجرات. بدونها يتّصل `app_rw` بلا أيّ صلاحيّة، ويجيب أوّل طلبٍ يلمس جدولاً بـ`permission denied`.
-- **دخول Vault قبل التطبيق:** لا يمكن أن يوجد `secret_id` قبل تهيئة Vault، فيُصدَر في الإقلاع ويُقرأ عند بدء `app` و`worker`.
+- **دخول Vault قبل التطبيق:** لا يمكن أن يوجد `secret_id` قبل تهيئة Vault، فيُصدَر في الإقلاع ويُقرأ عند بدء `app` والعمّال.
 - **nginx أخيراً:** لا تُفتح الحافّة إلّا بعد أن يجيب `/health` فعلاً.
 
 ### ليس عطلاً
@@ -460,8 +474,8 @@ ssh -N -L 9001:127.0.0.1:9001 root@<IP> -p <PORT> -i ~/.ssh/id_ed25519
 
 ### تحديث الصورة بعد تعديل الشيفرة
 
-1. ابنِ وارفع بوسمٍ جديد (`staging-4` مثلاً) كما في [§4](#4-بناء-الصورة-ورفعها).
-2. في RunPod: `Edit Pod → Container Image → anastawahia/aizzak-runpod:staging-4 → Save`. ⚠️ على Pod بلا Volume Disk يمسح هذا كلّ البيانات.
+1. ابنِ وارفع بوسمٍ جديد (`staging-5` مثلاً) كما في [§4](#4-بناء-الصورة-ورفعها).
+2. في RunPod: `Edit Pod → Container Image → anastawahia/aizzak-runpod:staging-5 → Save`. ⚠️ على Pod بلا Volume Disk يمسح هذا كلّ البيانات.
 3. يعيد الـPod الإقلاع، وتُطبَّق الهجرات الجديدة تلقائيّاً عبر `aizzak-bootstrap.sh`.
 4. أبلغ عن النشر: الوسم، ومعرّف الـPod، والرابط، ونتيجة `/health`.
 
@@ -496,11 +510,12 @@ gosu postgres pg_dump -Fc -d aizzak > /workspace/backup-$(date +%F).dump
 | الـPod يقلع بعد Start بلا GPU (`nvidia-smi` لا يجد كرتاً) | كرت الجهاز صار مؤجَّراً لغيرك أثناء الإيقاف ([§5.4](#54-التخزين)) |
 | `[bootstrap] ⛔ PostgreSQL did not come up` | راجع سطور `postgres` في السجلّ. غالباً `/workspace` بلا حجمٍ مربوط أو صلاحيّاتٌ خاطئة |
 | `provisioning failed` | اقرأ التتبّع فوقه. غالباً `AIZZAK_OWNER_PASSWORD` لا يطابق حجماً قديماً، أو كلمة سرّ المستخدم الفائق تغيّرت ([§9](#9-التشغيل-اليوميّ)) |
-| `[with-vault] ⛔ … is not readable` | `app` أو `worker` بدأ قبل أن يُصدر الإقلاع دخول Vault. راجع سجلّ `bootstrap` |
+| `[with-vault] ⛔ … is not readable` | `app` أو أحد العمّال بدأ قبل أن يُصدر الإقلاع دخول Vault. راجع سجلّ `bootstrap` |
 | التطبيق لا يقلع إطلاقاً | `FIREBASE_PROJECT_ID` فارغ |
 | 502 من رابط الوكيل | `supervisorctl status app`: إن كان `RUNNING` فراجع nginx، وإن كان `FATAL` فالسجلّ يحمل السبب |
 | البثّ ينقطع عند نحو 100 ثانية | حدّ وكيل RunPod. انشر `80` كمنفذ TCP ([§5.3](#53-المنافذ)) |
 | رفع الملفّ يفشل في الواجهة (`File upload failed (403)`)، وMinIO يردّ `SignatureDoesNotMatch` | الرابط المُوقَّع يذكر `<POD_ID>-9000`: صورةٌ أقدم من `staging-3`، أو `MINIO_PUBLIC_ENDPOINT` مضبوطٌ يدويّاً على 9000. وكيل RunPod يغيّر `Host` فيفشل التوقيع. استعمل `staging-3` أو أحدث، ولا تضبط المتغيّر يدويّاً ([§5.3](#53-المنافذ)) |
+| الملفّ يُرفع لكنّ الفهرسة لا تنتهي (المستند `pending`) | لا أحد يقرأ `stream.knowledge`: صورةٌ أقدم من `staging-4`، أو `worker-knowledge` متوقّف. افحص `supervisorctl status worker-knowledge` و`redis-cli -p 6379 xinfo groups stream.knowledge` (‏`consumers 0` يعني لا عامل). الحدث ينتظر في المجرى، فيُفهرَس المستند حين يبدأ العامل |
 | `POST /search` يعيد 503 | خدمة التضمين لم تحمّل النموذج بعد: `supervisorctl status embedding` |
 | نداءات LLM تفشل بـ404 | النموذج غير مسحوب: `ollama list`، ثمّ `ollama pull gemma3:1b` |
 | `secret does not exist in Vault` | الإقلاع لم يكتمل بعد. إن كان `bootstrap` في حالة `EXITED` برمزٍ غير 0 فاقرأ سجلّه |
