@@ -42,9 +42,12 @@ _PGDATA_CONF = "/var/lib/postgresql/data/postgresql.conf"
 # read from the file, because "the file sets what the plan asked for" is the
 # claim -- a test that derived the list from the file would assert that the
 # file agrees with itself.
+#
+# `shared_buffers` is 2GB, not step 2.1's 8GB: lowered by the owner in
+# 2e0e491 for the 12.67 GB development host (postgresql.conf's Memory note).
 _DECLARED = {
     "max_connections": "300",
-    "shared_buffers": "8GB",
+    "shared_buffers": "2GB",
     "effective_cache_size": "24GB",
     "work_mem": "16MB",
     "maintenance_work_mem": "1GB",
