@@ -387,7 +387,7 @@ fi</pre></div>
       <tr><td>Container Disk</td><td><code>20</code> GB</td><td></td></tr>
       <tr><td>Volume Disk</td><td><code>50</code> GB</td><td>⚠️ هنا تُحفظ كل البيانات: قاعدة البيانات، والملفات، وVault، والنموذج</td></tr>
       <tr><td>Volume Mount Path</td><td><code>/workspace</code></td><td>⚠️ بالضبط هكذا</td></tr>
-      <tr><td>Expose HTTP Ports</td><td><code>80,9000</code></td><td>80 للتطبيق، و9000 لروابط الملفات</td></tr>
+      <tr><td>Expose HTTP Ports</td><td><code>80</code></td><td>للتطبيق ولروابط الملفات معاً. لا تنشر 9000: وكيل RunPod يغيّر اسم المضيف فيرفض MinIO كل رابط يصله مباشرة</td></tr>
       <tr><td>Expose TCP Ports</td><td><code>22</code></td><td>لـ SSH</td></tr>
     </tbody>
   </table>
@@ -478,8 +478,8 @@ fi</pre></div>
   <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ok"} 200</code></div>
   <div class="cmd"><pre>curl -s -w ' %{http_code}\n' https://$POD_ID-80.proxy.runpod.net/health/ready</pre></div>
   <div class="expect"><b>النتيجة المتوقعة:</b> <code>{"status":"ready"} 200</code></div>
-  <div class="cmd"><pre>curl -s -o /dev/null -w '%{http_code}\n' https://$POD_ID-9000.proxy.runpod.net/minio/health/live</pre></div>
-  <div class="expect"><b>النتيجة المتوقعة:</b> <code>200</code>. هذا يثبت أن منفذ روابط الملفات منشور.</div>
+  <div class="cmd"><pre>curl -s https://$POD_ID-80.proxy.runpod.net/workspace-files/ | grep -o '&lt;Code&gt;[^&lt;]*&lt;/Code&gt;'</pre></div>
+  <div class="expect"><b>النتيجة المتوقعة:</b> <code>&lt;Code&gt;AccessDenied&lt;/Code&gt;</code>. الرد من MinIO نفسه، فهذا يثبت أن مسار روابط الملفات يصل إليه.</div>
 </section>
 
 <!-- 8 -->
@@ -509,7 +509,7 @@ fi</pre></div>
   <h3>د. الفحص الأعمق</h3>
   <p>يفحص قاعدة البيانات، وعزل بيانات كل مساحة عمل، وروابط الملفات:</p>
   <div class="cmd"><pre>cd /app &amp;&amp; gosu aizzak sh -c 'pid=$(pgrep -o -f "gunicorn app.api.main"); xargs -0 -a /proc/$pid/environ sh -c '"'"'exec env -i "$@" /opt/venv/bin/python /app/deploy/smoke/stack_smoke.py'"'"' _'</pre></div>
-  <div class="expect"><b>النتيجة المتوقعة:</b> رابط يذكر <code>&lt;POD_ID&gt;-9000.proxy.runpod.net</code>، وآخر سطر:
+  <div class="expect"><b>النتيجة المتوقعة:</b> رابط يذكر <code>&lt;POD_ID&gt;-80.proxy.runpod.net</code>، وسطر <code>[4] presigned PUT through the public address stored the bytes  OK</code> (رفع ملف تجريبي فعلي ثم حذفه)، وآخر سطر:
     <div class="out">PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified</div>
   </div>
   <div class="cmd"><pre>exit</pre></div>

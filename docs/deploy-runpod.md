@@ -10,7 +10,7 @@
 > - التشغيل المحلّيّ بـDocker Compose: [`quickstart.md`](quickstart.md).
 > - المرجع المُلزِم للقرارات التشغيليّة: [`design/08-local-runbook.md`](design/08-local-runbook.md).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)).
 
 > ⚠️ **مرحلة staging (قرار المالك، 2026‑10‑06):**
 > - كشف المكدّس للعامّة عبر رابط RunPod مسموح، والبيانات الحقيقيّة مسموحة.
@@ -48,7 +48,7 @@
 │                                                                │
 │  ── منشورٌ للعالم ──────────────────────────────────────────    │
 │  nginx       :80    ← https://<POD_ID>-80.proxy.runpod.net     │
-│  MinIO API   :9000  ← https://<POD_ID>-9000.proxy.runpod.net   │
+│    └ /workspace-files/ ← الروابط المُوقَّعة، تمرّ إلى MinIO :9000 │
 │  sshd        :22    (منفذ TCP، للصيانة)                         │
 │                                                                │
 │  ── داخليٌّ فقط على 127.0.0.1 ─────────────────────────────    │
@@ -221,11 +221,12 @@ docker push anastawahia/aizzak-runpod:staging-1
 
 | الحقل | القيمة |
 |---|---|
-| **Expose HTTP Ports** | `80,9000` |
+| **Expose HTTP Ports** | `80` |
 | **Expose TCP Ports** | `22` |
 
 - `80`: واجهة التطبيق على `https://<POD_ID>-80.proxy.runpod.net`.
-- `9000`: واجهة MinIO، **وهي إلزاميّة**. الروابط المُوقَّعة مسبقاً تُوقَّع بـSigV4 على اسم المضيف، و`entrypoint.sh` يشتقّ `MINIO_PUBLIC_ENDPOINT` من `RUNPOD_POD_ID` ليطابق هذا المنفذ. رابطٌ وُقِّع على `127.0.0.1:9000` لا يصلح للمتصفّح ولا يمكن تصحيحه بعد التوقيع.
+- **روابط الملفات المُوقَّعة تمرّ عبر `80` أيضاً، تحت `/workspace-files/`.** الرابط يُوقَّع بـSigV4 على اسم المضيف، ووكيل RunPod يستبدل ترويسة `Host` بعنوان الـPod الداخليّ (مثل `100.65.14.203:60576`) ويضع الاسم العامّ في `X-Forwarded-Host`. فكلّ رابطٍ يصل MinIO مباشرةً عبر `<POD_ID>-9000` يُرفض بـ`403 SignatureDoesNotMatch`، وهذا ما أفشل أوّل رفعٍ من الواجهة. لذلك يشتقّ `entrypoint.sh` قيمة `MINIO_PUBLIC_ENDPOINT` على `<POD_ID>-80.proxy.runpod.net`، وnginx يعيد الاسم العامّ إلى `Host` قبل أن يمرّر الطلب إلى MinIO (`$minio_signed_host` في `deploy/runpod/nginx.conf`).
+- `9000` **لا يُنشر**. Pod أُنشئ قبل `staging-3` بالقيمة `80,9000` يعمل كما هو، والمنفذ 9000 فيه زائد: احذفه عند أوّل تعديلٍ للـPod.
 - `22`: SSH كمنفذ **TCP** لا HTTP.
 - `9001` (كونسول MinIO) **لا يُنشر**. استعمل نفق SSH عند الحاجة ([§8.2](#82-السطح-المكشوف)).
 
@@ -348,7 +349,7 @@ supervisorctl -c /etc/supervisor/supervisord.conf status
 cd /app && gosu aizzak sh -c 'pid=$(pgrep -o -f "gunicorn app.api.main"); xargs -0 -a /proc/$pid/environ sh -c '"'"'exec env -i "$@" /opt/venv/bin/python /app/deploy/smoke/stack_smoke.py'"'"' _'
 ```
 
-المتوقّع في آخر سطر: `PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified`، والرابط المُوقَّع يذكر `<POD_ID>-9000.proxy.runpod.net`.
+المتوقّع في آخر سطر: `PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified`، والرابط المُوقَّع يذكر `<POD_ID>-80.proxy.runpod.net`. وقبله السطر `[4] presigned PUT through the public address stored the bytes  OK`: الفحص يرفع ملفّاً صغيراً فعلاً عبر وكيل RunPod ثمّ يحذفه، لأنّ قراءة نصّ الرابط وحدها لم تكشف عطل `Host`.
 
 ثمّ خدمة التضمين والنموذج والـGPU:
 
@@ -390,7 +391,8 @@ runpodctl send /workspace/data/vault-init/init.json
 | المنفذ | مكشوف؟ | التقييم |
 |---|---|---|
 | 80 (nginx) | ✅ عامّ | مقصود. المصادقة عبر Firebase وحرّاس RBAC، وفيه حدود الطلبات (`limit_req`) |
-| 9000 (MinIO API) | ✅ عامّ | إلزاميّ للروابط المُوقَّعة. الدلو خاصّ، والوصول بتوقيعٍ مؤقّتٍ فقط |
+| 9000 (MinIO API) | ⛔ غير منشور منذ `staging-3` | الروابط المُوقَّعة تمرّ عبر 80 ([§5.3](#53-المنافذ)). Pod قديمٌ ما زال ينشره: احذفه عند أوّل تعديل |
+| 80 تحت `/workspace-files/` | ✅ عامّ | يمرّ إلى MinIO. الدلو خاصّ، والوصول بتوقيعٍ مؤقّتٍ فقط. دلو النسخ الاحتياطيّة لا مسار له |
 | 22 (SSH) | ✅ عامّ | بمفتاحٍ فقط، بالمستخدم root |
 | 9001 (كونسول MinIO) | ⛔ غير منشور | عبر نفق SSH فقط |
 | البقيّة | ⛔ `127.0.0.1` | لا يصلها شيءٌ من خارج الـPod |
@@ -482,6 +484,7 @@ gosu postgres pg_dump -Fc -d aizzak > /workspace/backup-$(date +%F).dump
 | التطبيق لا يقلع إطلاقاً | `FIREBASE_PROJECT_ID` فارغ |
 | 502 من رابط الوكيل | `supervisorctl status app`: إن كان `RUNNING` فراجع nginx، وإن كان `FATAL` فالسجلّ يحمل السبب |
 | البثّ ينقطع عند نحو 100 ثانية | حدّ وكيل RunPod. انشر `80` كمنفذ TCP ([§5.3](#53-المنافذ)) |
+| رفع الملفّ يفشل في الواجهة (`File upload failed (403)`)، وMinIO يردّ `SignatureDoesNotMatch` | الرابط المُوقَّع يذكر `<POD_ID>-9000`: صورةٌ أقدم من `staging-3`، أو `MINIO_PUBLIC_ENDPOINT` مضبوطٌ يدويّاً على 9000. وكيل RunPod يغيّر `Host` فيفشل التوقيع. استعمل `staging-3` أو أحدث، ولا تضبط المتغيّر يدويّاً ([§5.3](#53-المنافذ)) |
 | `POST /search` يعيد 503 | خدمة التضمين لم تحمّل النموذج بعد: `supervisorctl status embedding` |
 | نداءات LLM تفشل بـ404 | النموذج غير مسحوب: `ollama list`، ثمّ `ollama pull gemma3:1b` |
 | `secret does not exist in Vault` | الإقلاع لم يكتمل بعد. إن كان `bootstrap` في حالة `EXITED` برمزٍ غير 0 فاقرأ سجلّه |
@@ -525,7 +528,7 @@ supervisorctl -c /etc/supervisor/supervisord.conf restart app
 2. كلّ ما هو خارج `/workspace` يضيع عند الإيقاف.
 3. `--platform linux/amd64` في كلّ بناء.
 4. وسمٌ جديدٌ لكلّ تحديث (`staging-N`).
-5. `MINIO_PUBLIC_ENDPOINT` يجب أن يطابق منفذاً منشوراً فعلاً، وإلّا فكلّ رابطٍ مُوقَّعٍ مكسور.
+5. `MINIO_PUBLIC_ENDPOINT` هو `<POD_ID>-80.proxy.runpod.net` (عبر nginx)، لا منفذ MinIO: وكيل RunPod يغيّر `Host`، فيكسر كلّ رابطٍ مُوقَّعٍ يصل MinIO مباشرةً.
 6. `vault-init/init.json` هو مفتاح كلّ الأسرار: انسخه احتياطيّاً ولا تطبعه.
 7. `FIREBASE_PROJECT_ID` الفارغ يعني تطبيقاً لا يقلع.
 8. `/health` الأخضر ليس دليلاً على مسار البيانات؛ الدليل هو `deploy/smoke/stack_smoke.py`.

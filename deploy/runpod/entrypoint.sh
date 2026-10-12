@@ -172,8 +172,15 @@ export DB_IDLE_IN_TRANSACTION_TIMEOUT_MS="${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:-1
 # ⚠️ MINIO_PUBLIC_ENDPOINT is not cosmetic. Presigned URLs are signed with
 # SigV4, which covers the HOST; a URL signed against 127.0.0.1:9000 cannot be
 # repointed at the browser afterwards -- not by nginx, not by string surgery.
+#
+# It names port 80 (nginx), NOT 9000 (MinIO). RunPod's proxy rewrites Host to
+# the Pod's internal address on the way in, so MinIO reached through
+# `<POD_ID>-9000` checks the signature against the wrong host and refuses
+# every presigned request (403 SignatureDoesNotMatch). nginx's
+# `/workspace-files/` location puts the public host back (nginx.conf,
+# `$minio_signed_host`).
 if [ -n "${RUNPOD_POD_ID:-}" ]; then
-    export MINIO_PUBLIC_ENDPOINT="${MINIO_PUBLIC_ENDPOINT:-${RUNPOD_POD_ID}-9000.proxy.runpod.net}"
+    export MINIO_PUBLIC_ENDPOINT="${MINIO_PUBLIC_ENDPOINT:-${RUNPOD_POD_ID}-80.proxy.runpod.net}"
     export MINIO_PUBLIC_SECURE="${MINIO_PUBLIC_SECURE:-true}"
     export OAUTH_REDIRECT_BASE_URL="${OAUTH_REDIRECT_BASE_URL:-https://${RUNPOD_POD_ID}-80.proxy.runpod.net}"
     export PUBLIC_BASE_URL="https://${RUNPOD_POD_ID}-80.proxy.runpod.net"
@@ -183,6 +190,10 @@ else
     export MINIO_PUBLIC_SECURE="${MINIO_PUBLIC_SECURE:-false}"
     export OAUTH_REDIRECT_BASE_URL="${OAUTH_REDIRECT_BASE_URL:-http://localhost}"
     export PUBLIC_BASE_URL="http://localhost"
+fi
+# nginx.conf routes exactly one bucket path to MinIO; it cannot read this.
+if [ "$MINIO_BUCKET" != "workspace-files" ]; then
+    log "⚠️  MINIO_BUCKET=${MINIO_BUCKET}, but nginx routes only /workspace-files/ -- presigned URLs will not reach MinIO."
 fi
 
 export FIREBASE_JWKS_CACHE_TTL="${FIREBASE_JWKS_CACHE_TTL:-3600}"

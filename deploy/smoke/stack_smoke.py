@@ -21,12 +21,23 @@ evidence.
   3. **Presigned URLs name the PUBLIC address** (7.1). The whole point of
      MINIO_PUBLIC_ENDPOINT: the URL handed to a browser must not say
      `minio:9000`.
+  4. **A presigned PUT through the public address actually stores bytes**
+     (RunPod only). [3] reads the URL and never sends it, and on RunPod that
+     was not enough: the first staging Pod passed [3] while every browser
+     upload failed `403 SignatureDoesNotMatch`, because RunPod's proxy
+     rewrites the Host that SigV4 signed (deploy/runpod/nginx.conf,
+     `$minio_signed_host`). Only a real round trip through the proxy proves
+     it. On Compose the public address is the operator's `localhost`, which
+     this container cannot reach, so the check runs only where
+     `RUNPOD_POD_ID` says the public address is reachable from inside.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 
+import httpx
 from sqlalchemy import text
 
 from app.framework.settings.settings import DatabaseSettings
@@ -41,6 +52,7 @@ from app.infrastructure.storage.minio_storage import (
 )
 
 _INTERNAL_HOST = "minio:9000"
+_PROBE_KEY = "smoke/presign-put-probe.txt"
 
 
 async def check_pgbouncer() -> None:
@@ -124,6 +136,27 @@ async def check_presign() -> None:
     if minio.public_endpoint and minio.public_endpoint not in url:
         raise SystemExit(f"FAIL: presigned URL does not name {minio.public_endpoint}")
     print("[3] presigned URL names the public address, not minio:9000  OK")
+
+    if not os.environ.get("RUNPOD_POD_ID"):
+        print("[4] presigned PUT round trip: skipped (not on RunPod)")
+        return
+    put_url = await storage.presign_put(_PROBE_KEY, 300, "text/plain")
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.put(
+                put_url, content=b"stack_smoke probe\n", headers={"Content-Type": "text/plain"}
+            )
+        if response.status_code != httpx.codes.OK:
+            code = "SignatureDoesNotMatch" if "SignatureDoesNotMatch" in response.text else ""
+            raise SystemExit(
+                f"FAIL: presigned PUT through {put_url.split('?')[0]} answered "
+                f"{response.status_code} {code} -- browser uploads are broken"
+            )
+        if await storage.get(_PROBE_KEY) != b"stack_smoke probe\n":
+            raise SystemExit("FAIL: presigned PUT answered 200 but the object is not in MinIO")
+    finally:
+        await storage.delete(_PROBE_KEY)
+    print("[4] presigned PUT through the public address stored the bytes  OK")
 
 
 async def main() -> None:

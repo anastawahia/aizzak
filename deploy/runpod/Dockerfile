@@ -169,9 +169,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aizzak-bootstrap.sh \
 
 # ── ports ─────────────────────────────────────────────────────────────────
 #   80   nginx -> the API. This is the ONE port an end user needs.
-#   9000 MinIO API. Published because PRESIGNED URLS ARE SIGNED AGAINST IT:
-#        SigV4 covers the host, so a URL the browser must open has to be
-#        signed against a host the browser can reach. Not fixable later.
+#   9000 MinIO API. NOT for publishing on RunPod: its proxy rewrites the
+#        Host that SigV4 signed, so presigned URLs are signed for :80 and
+#        reach MinIO through nginx's /workspace-files/ (nginx.conf,
+#        `$minio_signed_host`). Kept here for a plain `docker run`.
 #   9001 MinIO console (optional, operator convenience).
 # Everything else -- Postgres 5432, Redis 6379, Qdrant 6333, Vault 8200,
 # embedding 8080, Ollama 11434, app 8000 -- binds 127.0.0.1 ONLY and is never
