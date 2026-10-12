@@ -10,7 +10,7 @@
 > - التشغيل المحلّيّ بـDocker Compose: [`quickstart.md`](quickstart.md).
 > - المرجع المُلزِم للقرارات التشغيليّة: [`design/08-local-runbook.md`](design/08-local-runbook.md).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)). وبعده كشف أوّل ملفٍّ مرفوع أنّ الصورة لا تشغّل عامل الفهرسة، فبقي المستند `pending`، فصار لكلّ عاملٍ برنامجه (الصورة `staging-4`).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)). وبعده كشف أوّل ملفٍّ مرفوع أنّ الصورة لا تشغّل عامل الفهرسة، فبقي المستند `pending`، فصار لكلّ عاملٍ برنامجه (الصورة `staging-4`). وحين أُضيف Volume Disk إلى الـPod نفسه ظهر أنّه في مركز `EUR-IS-1` قرصٌ شبكيّ (MooseFS) يرفض `chown` كالـNetwork Volume تماماً ([§5.4](#54-التخزين)).
 
 > ⚠️ **مرحلة staging (قرار المالك، 2026‑10‑06):**
 > - كشف المكدّس للعامّة عبر رابط RunPod مسموح، والبيانات الحقيقيّة مسموحة.
@@ -218,7 +218,7 @@ docker push anastawahia/aizzak-runpod:staging-1
 >
 > الناتج: `anastawahia/aizzak-runpod:staging-4@sha256:57302e3daadef7afb7e8d4424c9fbd2110c9a21d625c4a25573ec254d24b246d`.
 >
-> ⚠️ **حالة الـPod الحاليّ `le15fwpryplqwa` (2026‑10‑12):** يعمل بـ`staging-2`، وإصلاحا `staging-3` و`staging-4` مطبَّقان عليه يدويّاً دون إعادة تشغيل: `/etc/nginx/nginx.conf` الجديد، و`MINIO_PUBLIC_ENDPOINT` في `[program:app]`، و`[program:worker-knowledge]` و`[program:worker-media]` في `supervisord.conf`. النسختان القديمتان بلاحقة `.staging-2`. وأُنشئ **بلا Volume Disk** (`volumeInGb = 0`)، فبياناته كلّها على قرص الحاوية، ويمسحها أيّ إيقافٍ أو تعديل، ومعها الإصلاح اليدويّ. **التعديل القادم يجمع ثلاثة أشياء:** الصورة `staging-4`، وVolume Disk ‏50 ج.ب ([§5.4](#54-التخزين))، وحذف المنفذ 9000. وبعده احفظ مفتاح Vault الجديد ([§8.1](#81-مادّة-تهيئة-vault-على-القرص)).
+> ⚠️ **حالة الـPod الحاليّ `le15fwpryplqwa` (2026‑10‑12، بعد التعديل):** يعمل بـ`staging-4`، والمنافذ `80/http` و`22/tcp` (ومعها `8888` و`8000` و`8001` من القالب، ولا يستمع عليها شيء). المنفذ 9000 حُذف. أُضيف Volume Disk ‏50 ج.ب، لكنّه MooseFS شبكيّ في هذا المركز فرفض `chown` ([§5.4](#54-التخزين))، فرُبط على `/runpod-volume` ولا يستعمله المكدّس. **`/workspace` إذن على قرص الحاوية، وأيّ إيقافٍ يمسح البيانات.** أُعيدت تهيئة كلّ شيء (قاعدة البيانات وVault والملفّات)، ولم تعد الإصلاحات اليدويّة لازمة لأنّ الصورة تحملها. الإقلاع والفحص الأعمق ([§7](#7-التحقّق)) نجحا، ومعه `[4]`.
 
 ---
 
@@ -273,6 +273,13 @@ docker push anastawahia/aizzak-runpod:staging-1
 | **Network Volume** | يبقى مستقلّاً عن الـPod | **لا** |
 
 - **استعمل Volume Disk بحجم 50 ج.ب على `/workspace`، ولا تربط Network Volume.**
+- ⚠️ **Volume Disk ليس محلّيّاً في كلّ مركز بيانات.** وثائق RunPod تصفه بـ«سريع (محلّيّ)»، لكنّ أوّل تجربةٍ له (2026‑10‑12، Pod `le15fwpryplqwa` في `EUR-IS-1`) ربطت `/workspace` هكذا:
+  ```text
+  mfs#eur-is-1.runpod.net:9421 /workspace fuse rw,nosuid,nodev,relatime,user_id=0,group_id=0,allow_other
+  ```
+  أي MooseFS عبر الشبكة: كلّ الملفّات يملكها root بصلاحيّة 777، و`chown` إلى أيّ مستخدمٍ آخر يُرفض (`Operation not permitted`)، فتوقّف الإقلاع عند `⛔ cannot chown under /workspace` كما مع الـNetwork Volume.
+  - **افحص قبل الاعتماد عليه:** `grep " /workspace " /proc/mounts`. إن ظهر `fuse` أو `mfs` فالقرص لا يصلح للمكدّس.
+  - **لم نجد بعدُ مركزاً يعطي Volume Disk محلّيّاً.** المرشّح Community Cloud، ولم يُجرَّب.
 - **لماذا لا Network Volume؟** أوّل Pod (2026‑10‑10) مات عند `chown: changing ownership of '/workspace/data/postgres': Operation not permitted`، وأعاد RunPod تشغيله بلا نهاية:
   - القرص الشبكيّ يرفض تغيير مالك الملفّات، وPostgreSQL يرفض مجلّد بياناتٍ لا يملكه مستخدمه.
   - وQdrant لا يعمل على أنظمة ملفّات الشبكة أصلاً، بنصّ وثائقه.
@@ -506,7 +513,7 @@ gosu postgres pg_dump -Fc -d aizzak > /workspace/backup-$(date +%F).dump
 | `app` في حالة `STOPPED  Not started` و`/health` لا يجيب | الإقلاع لم يكتمل بعد، خاصّةً في أوّل مرّة (تنزيل النموذج). انتظر `✅ boot complete` |
 | `exec format error` | الصورة بُنيت لـARM. أعد البناء بـ`--platform linux/amd64` |
 | `Downloading image` عالقٌ ثمّ يفشل | Container Disk صغير. ارفعه |
-| `chown: changing ownership of '/workspace/data/postgres': Operation not permitted` يتكرّر، أو `⛔ cannot chown under /workspace` | الـPod مربوطٌ بـNetwork Volume. احذفه وأنشئه بلا Network Volume، مع Volume Disk ‏50 ج.ب ([§5.4](#54-التخزين)) |
+| `chown: changing ownership of '/workspace/data/postgres': Operation not permitted` يتكرّر، أو `⛔ cannot chown under /workspace` | `/workspace` على قرصٍ شبكيّ: Network Volume، أو Volume Disk في مركزٍ يجعله MooseFS (مثل `EUR-IS-1`). افحص `grep " /workspace " /proc/mounts`. للعودة إلى العمل فوراً انقل القرص إلى مسارٍ آخر (`volumeMountPath=/runpod-volume`)، فيعمل المكدّس على قرص الحاوية بلا ديمومة ([§5.4](#54-التخزين)) |
 | الـPod يقلع بعد Start بلا GPU (`nvidia-smi` لا يجد كرتاً) | كرت الجهاز صار مؤجَّراً لغيرك أثناء الإيقاف ([§5.4](#54-التخزين)) |
 | `[bootstrap] ⛔ PostgreSQL did not come up` | راجع سطور `postgres` في السجلّ. غالباً `/workspace` بلا حجمٍ مربوط أو صلاحيّاتٌ خاطئة |
 | `provisioning failed` | اقرأ التتبّع فوقه. غالباً `AIZZAK_OWNER_PASSWORD` لا يطابق حجماً قديماً، أو كلمة سرّ المستخدم الفائق تغيّرت ([§9](#9-التشغيل-اليوميّ)) |
