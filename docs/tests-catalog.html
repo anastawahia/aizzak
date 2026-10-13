@@ -198,7 +198,7 @@ python3 -c "import xml.etree.ElementTree as E;print(E.parse('/tmp/r.xml').getroo
   <div class="card">
     <h3>التكامل الحيّ — يحتاج مكدّس Compose</h3>
     <p>أقلِع البنية، ثمّ حمّل <code>.env.test</code> في البيئة قبل <code>pytest</code>. نسيان التحميل لم يعد يُنتج أخطاءً منذ <code>b10b53e</code>: كلّ مسبارٍ حيٍّ يُجري مصافحةً حقيقيّة ويتخطّى بصدق.</p>
-    <pre><code>docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+    <pre><code>docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d
 cd /home/AIZZAK && set -a; . ./.env.test; set +a
 .venv/bin/pytest tests/integration -rs</code></pre>
     <p>ولجعل الغياب فشلاً صريحاً بدل تخطٍّ — وهو ما تفعله CI:</p>

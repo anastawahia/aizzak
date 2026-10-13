@@ -44,8 +44,11 @@
 #   7  the repository is public / unverifiable, or a tag of this version exists
 #   8  an image failed to BUILD (nothing has been pushed yet: all images are
 #      built before the first push)
-#   9  an image failed to PUSH, its digest is malformed, or the repository
-#      turned public after a push
+#   9  after `docker push` started: a push failed; a pushed tag's digest could not
+#      be read or is malformed; the --digest-file could not be written; or the
+#      repository did not answer exactly 404 (private) after a push -- public,
+#      rate limited, 5xx and timeouts all abort (fail closed). Every tag that
+#      reached the registry is listed with the ABANDONED message
 #
 # A release that failed after pushing something is ABANDONED, never resumed:
 # the tag-exists check refuses to push over it. Release the next number
@@ -157,8 +160,9 @@ require_ci_green() {
 require_buildx_amd64() {
   command -v docker >/dev/null 2>&1 || die 6 "docker is not installed"
   docker buildx version >/dev/null 2>&1 || die 6 "docker buildx is not available"
-  docker buildx inspect 2>/dev/null | grep -q "$PLATFORM" \
-    || die 6 "the buildx builder does not list $PLATFORM"
+  local builders
+  builders="$(docker buildx inspect 2>/dev/null)" || die 6 "docker buildx inspect failed"
+  [[ $builders == *"$PLATFORM"* ]] || die 6 "the buildx builder does not list $PLATFORM"
 }
 
 # Prints the HTTP status of the repository page, asked WITHOUT credentials.
@@ -173,9 +177,16 @@ require_repo_private() {
   local code
   code="$(hub_status)"
   case "$code" in
-    404) ;;
+    404)
+      # Unauthenticated, a private repository and a missing one look the same.
+      echo "release: note: HTTP 404 means private OR not created yet; $IMAGE_REPO must exist" \
+        "and be PRIVATE before the first push" >&2
+      ;;
     200) die 7 "$IMAGE_REPO is PUBLIC: make it private before releasing" ;;
-    *) die 7 "cannot verify that $IMAGE_REPO is private (HTTP $code)" ;;
+    *)
+      die 7 "cannot verify that $IMAGE_REPO is private (HTTP $code; only 404 is accepted," \
+        "and 404 also means the repository does not exist: create it PRIVATE first)"
+      ;;
   esac
 }
 
@@ -201,19 +212,28 @@ build_image() {
     .
 }
 
-# Pushes one image; on success sets LAST_REF to "<repo>:<tag>@sha256:<hex>".
+# Pushes one image. Returns 0 on success (LAST_REF = "<repo>:<tag>@sha256:<hex>");
+# 1 if `docker push` itself failed; 2 if the push succeeded but the digest could not be
+# read or is malformed; 3 if the digest file could not be written. From the moment
+# `docker push` succeeds the tag EXISTS in the registry, so it is recorded in PUSHED
+# (and in the digest file) before anything else can fail.
 push_image() {
-  local prefix="$1" version="$2" sha="$3" tag digest
+  local prefix="$1" version="$2" sha="$3" tag digest="digest-unknown" rc=0 slot
   tag="$(image_tag "$prefix" "$version")"
   docker push "$IMAGE_REPO:$tag" || return 1
-  digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE_REPO:$tag")" \
-    || return 1
-  [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-  LAST_REF="$IMAGE_REPO:$tag@$digest"
-  if [[ -n $DIGEST_FILE ]]; then
-    echo "$IMAGE_REPO:$tag $digest $sha" >>"$DIGEST_FILE"
+  slot=${#PUSHED[@]}
+  PUSHED+=("$IMAGE_REPO:$tag@$digest")
+  if ! digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' \
+    "$IMAGE_REPO:$tag")" || [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    digest="digest-unknown"
+    rc=2
   fi
-  return 0
+  PUSHED[slot]="$IMAGE_REPO:$tag@$digest"
+  LAST_REF="${PUSHED[slot]}"
+  if [[ -n $DIGEST_FILE ]]; then
+    echo "$IMAGE_REPO:$tag $digest $sha" >>"$DIGEST_FILE" || return 3
+  fi
+  return "$rc"
 }
 
 abandon() {
@@ -295,7 +315,7 @@ main() {
   fi
   require_buildx_amd64
   require_repo_private
-  local entry prefix dockerfile
+  local entry prefix dockerfile ref code
   for entry in "${IMAGES[@]}"; do
     prefix="${entry%% *}"
     require_tag_absent "$(image_tag "$prefix" "$VERSION")"
@@ -315,11 +335,22 @@ main() {
 
   for entry in "${IMAGES[@]}"; do
     prefix="${entry%% *}"
-    push_image "$prefix" "$VERSION" "$COMMIT" \
-      || abandon "push failed: $IMAGE_REPO:$(image_tag "$prefix" "$VERSION")"
-    PUSHED+=("$LAST_REF")
-    if [[ "$(hub_status)" == "200" ]]; then
-      abandon "$IMAGE_REPO turned PUBLIC after pushing $(image_tag "$prefix" "$VERSION")"
+    ref="$IMAGE_REPO:$(image_tag "$prefix" "$VERSION")"
+    if push_image "$prefix" "$VERSION" "$COMMIT"; then
+      :
+    else
+      case "$?" in
+        1) abandon "push failed: $ref" ;;
+        2) abandon "pushed $ref but its digest could not be read or is malformed" ;;
+        *) abandon "pushed $ref but the digest file could not be written: $DIGEST_FILE" ;;
+      esac
+    fi
+    # Fail closed: only an exact 404 (private) is acceptable after a push.
+    code="$(hub_status)"
+    if [[ $code == "200" ]]; then
+      abandon "$IMAGE_REPO turned PUBLIC after pushing $ref"
+    elif [[ $code != "404" ]]; then
+      abandon "cannot confirm $IMAGE_REPO is still private after pushing $ref (HTTP $code)"
     fi
   done
 

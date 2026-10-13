@@ -55,17 +55,46 @@ def test_stack_commands_documents_overlay_three_file_form_and_release_rows() -> 
     assert re.search(r"git tag v<YYYY\.M\.N>.*git push origin v<YYYY\.M\.N>", text)
 
 
-def test_no_documented_explicit_f_up_or_build_omits_the_overlay() -> None:
-    """An explicit -f ignores COMPOSE_FILE: any `up`/`build` listing -f must add the overlay."""
+def _logical_lines(text: str) -> list[tuple[int, str]]:
+    """(first line number, text) with backslash continuations joined."""
+    out: list[tuple[int, str]] = []
+    buf, start = "", 0
+    for no, line in enumerate(text.splitlines(), start=1):
+        if not buf:
+            start = no
+        stripped = line.rstrip()
+        if stripped.endswith("\\"):
+            buf += stripped[:-1] + " "
+            continue
+        out.append((start, buf + line))
+        buf = ""
+    if buf:
+        out.append((start, buf))
+    return out
+
+
+def _scanned_docs() -> list[Path]:
+    # docs/delivery/ is the per-feature delivery record (it quotes old commands on
+    # purpose, e.g. the "before" state), so it is the only exclusion.
+    docs = [
+        p
+        for p in sorted((_ROOT / "docs").rglob("*"))
+        if p.suffix in {".md", ".html"} and "delivery" not in p.relative_to(_ROOT / "docs").parts
+    ]
+    return [_README, *docs]
+
+
+def test_no_documented_explicit_f_up_build_or_run_omits_the_overlay() -> None:
+    """An explicit -f ignores COMPOSE_FILE: up/build/run with -f must add the overlay."""
     offenders: list[str] = []
-    for path in _DOCS:
-        for no, line in enumerate(_text(path).splitlines(), start=1):
+    for path in _scanned_docs():
+        for no, line in _logical_lines(_text(path)):
             if "docker compose" not in line or " -f docker-compose" not in line:
                 continue
-            if not re.search(r"\b(up|build)\b", line):
+            if not re.search(r"\b(up|build|run)\b", line):
                 continue
             if _OVERLAY not in line:
-                offenders.append(f"{path.name}:{no}: {line.strip()[:120]}")
+                offenders.append(f"{path.relative_to(_ROOT)}:{no}: {line.strip()[:120]}")
     assert not offenders, offenders
 
 

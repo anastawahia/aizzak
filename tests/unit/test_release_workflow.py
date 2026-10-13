@@ -114,7 +114,7 @@ def test_publish_needs_quality_and_every_job_is_time_boxed() -> None:
 
 
 def _signature(job: dict[str, Any]) -> list[tuple[Any, Any, Any]]:
-    return [(s.get("uses"), s.get("run"), s.get("with")) for s in _steps(job)]
+    return [(s.get("uses"), s.get("run"), s.get("with"), s.get("env")) for s in _steps(job)]
 
 
 def test_release_quality_is_ci_quality() -> None:
@@ -134,7 +134,10 @@ def test_every_run_step_is_valid_bash() -> None:
         assert syntax.returncode == 0, syntax.stderr
 
 
-def test_permissions_are_read_only_and_releases_never_cancel() -> None:
+def test_permissions_are_read_only_and_a_running_release_is_not_cancelled() -> None:
+    # `cancel-in-progress: false` protects the release that is RUNNING. GitHub still
+    # keeps at most one pending run per group and cancels an older pending one when a
+    # third arrives, so releases are serialised, not guaranteed to all run.
     wf = _load(_RELEASE)
     assert wf["permissions"] == {"contents": "read"}
     assert wf["concurrency"]["cancel-in-progress"] is False

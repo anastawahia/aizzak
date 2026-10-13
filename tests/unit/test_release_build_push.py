@@ -37,7 +37,15 @@ with open(os.environ["FAKE_CALLS"], "a") as f:
 def has(var, text):
     return any(p and p in text for p in os.environ.get(var, "").split(","))
 
+_JQ = ('if length==0 then "none" else '
+       '(sort_by(.createdAt)|last|"\\(.status)/\\(.conclusion)") end')
 if tool == "gh":
+    want = {"--repo": "anastawahia/aizzak", "--workflow": "ci.yml",
+            "--json": "status,conclusion,createdAt", "--jq": _JQ}
+    for flag, value in want.items():
+        if flag not in a or a[a.index(flag) + 1] != value:
+            print("fake gh: unexpected or missing " + flag, file=sys.stderr)
+            sys.exit(64)
     print(os.environ.get("FAKE_GH_OUTPUT", "completed/success"))
     sys.exit(int(os.environ.get("FAKE_GH_RC", "0")))
 
@@ -53,11 +61,17 @@ if tool == "curl":
 if a[:2] == ["buildx", "version"]:
     sys.exit(1 if os.environ.get("FAKE_DOCKER_NO_BUILDX") else 0)
 if a[:2] == ["buildx", "inspect"]:
-    print("Platforms: linux/amd64, linux/arm64")
+    print("Platforms: " + os.environ.get("FAKE_DOCKER_PLATFORMS", "linux/amd64, linux/arm64"))
     sys.exit(0)
 if a[:3] == ["buildx", "imagetools", "inspect"]:
     ref = a[-1]
     if "--format" in a:
+        if has("FAKE_DOCKER_FAIL_INSPECT", ref):
+            print("ERROR: inspect failed", file=sys.stderr)
+            sys.exit(1)
+        if has("FAKE_DOCKER_BAD_DIGEST", ref):
+            print("sha256:xyz")
+            sys.exit(0)
         print("sha256:" + hashlib.sha256(ref.encode()).hexdigest())
         sys.exit(0)
     if ref in os.environ.get("FAKE_DOCKER_EXISTING", "").split(","):
@@ -291,6 +305,8 @@ def test_build_calls_are_amd64_with_the_right_dockerfile_context_and_tag(tmp_pat
     }
     for argv in builds:
         assert argv[argv.index("--platform") + 1] == "linux/amd64"
+        for flag in ("--load", "--pull", "--provenance=false", "--sbom=false"):
+            assert flag in argv, flag
         assert argv[-1] == "."
         dockerfile = argv[argv.index("--file") + 1]
         assert argv[argv.index("--tag") + 1] == expected.pop(dockerfile)
@@ -469,3 +485,73 @@ def test_repository_turning_public_after_push_fails_loudly(tmp_path: Path) -> No
     assert run.proc.returncode == 9
     assert "PUBLIC" in run.err
     assert "release: OK" not in run.out
+
+
+# ── review fixes: once `docker push` succeeded, the tag is recorded ──────────
+
+
+def _assert_abandoned_with(run: Run, pushed_refs: list[str]) -> None:
+    assert run.proc.returncode == 9
+    assert "ABANDONED" in run.err and "2026.10.2" in run.err
+    assert "release: OK" not in run.out
+    for ref in pushed_refs:
+        assert ref in run.err
+
+
+@pytest.mark.parametrize("fault", ["FAKE_DOCKER_FAIL_INSPECT", "FAKE_DOCKER_BAD_DIGEST"])
+@pytest.mark.parametrize("which", ["first", "second"])
+def test_failure_after_a_successful_push_still_reports_the_tag_as_pushed(
+    tmp_path: Path, fault: str, which: str
+) -> None:
+    ref = _APP_REF if which == "first" else _EMB_REF
+    digest_file = tmp_path / "digests.txt"
+    run = _run(tmp_path, "--digest-file", str(digest_file), _VERSION, env={fault: ref})
+    expected = [ref] if which == "first" else [_APP_REF, ref]
+    _assert_abandoned_with(run, expected)
+    assert f"pushed {ref}" in run.err
+    assert f"{ref}@digest-unknown" in run.err
+    rows = [r.split()[0:2] for r in digest_file.read_text().splitlines()]
+    assert [ref, "digest-unknown"] in rows
+    # the first image failing stops the release before the second is pushed
+    assert len(run.pushes()) == (1 if which == "first" else 2)
+
+
+def test_digest_file_write_failure_aborts_and_never_prints_ok(tmp_path: Path) -> None:
+    run = _run(tmp_path, "--digest-file", str(tmp_path / "missing-dir" / "d.txt"), _VERSION)
+    _assert_abandoned_with(run, [_APP_REF])
+    assert "digest file" in run.err
+
+
+# ── S-1: after a push only an exact 404 is accepted ─────────────────────────
+
+
+@pytest.mark.parametrize("code", ["200", "429", "500", "503", "000"])
+@pytest.mark.parametrize("after", [1, 2])
+def test_visibility_after_push_fails_closed(tmp_path: Path, code: str, after: int) -> None:
+    codes = ",".join(["404"] * after + [code])
+    run = _run(tmp_path, _VERSION, env={"FAKE_CURL_CODES": codes})
+    pushed = [_APP_REF] if after == 1 else [_APP_REF, _EMB_REF]
+    _assert_abandoned_with(run, pushed)
+    assert (code in run.err) or ("PUBLIC" in run.err)
+    assert len(run.pushes()) == after
+
+
+def test_pre_push_404_note_says_the_repository_must_exist_and_be_private(tmp_path: Path) -> None:
+    run = _run(tmp_path, _VERSION)
+    assert run.proc.returncode == 0
+    assert "404" in run.err and "PRIVATE" in run.err
+
+
+def test_pre_push_non_404_message_says_404_also_means_missing(tmp_path: Path) -> None:
+    run = _run(tmp_path, _VERSION, env={"FAKE_CURL_CODES": "429"})
+    assert run.proc.returncode == 7
+    assert "does not exist" in run.err and "PRIVATE" in run.err
+
+
+# ── review #6: the amd64 branch ─────────────────────────────────────────────
+
+
+def test_builder_without_amd64_is_refused(tmp_path: Path) -> None:
+    run = _run(tmp_path, _VERSION, env={"FAKE_DOCKER_PLATFORMS": "linux/arm64"})
+    assert run.proc.returncode == 6
+    assert run.builds() == []

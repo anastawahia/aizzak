@@ -46,21 +46,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # `parsers` is NOT optional here, whatever its name in pyproject says.
-      # `tests/unit/test_knowledge_parsers.py` imports `fitz` at module level,
-      # so installing `[dev]` alone ends the whole job at COLLECTION --
-      # `ModuleNotFoundError: No module named 'fitz'`, "Interrupted: 1 error
-      # during collection", exit 2, zero tests run. Not one test fails; the
-      # suite never starts. That was true from the day this file was written
-      # and nobody saw it, because the `branches: [main]` defect above meant
-      # the workflow never ran at all -- the second defect hidden behind the
-      # first, exactly as the block below describes for the deleted
-      # integration job. Guarded now by
-      # `tests/unit/test_ci_workflow_truthfulness.py`.
-      #
-      # Installed rather than guarded with `importorskip`: these are unit
-      # tests of real parser adapters, and a test that skips itself into
-      # green is the failure mode this whole workflow was rewritten to stop.
+      # `parsers` is NOT optional: `tests/unit/test_knowledge_parsers.py` imports
+      # `fitz` at module level, so installing `[dev]` alone ends the job at
+      # COLLECTION with zero tests run. Installed rather than guarded with
+      # `importorskip`, so that a test cannot skip itself into green.
       - name: Install (editable + dev and parsers extras)
         run: |
           python -m pip install --upgrade pip
@@ -142,6 +131,12 @@ jobs:
           deploy/release/build-push.sh --gates-checked-by-workflow \
             --digest-file "${RUNNER_TEMP}/release-digests.txt" "${GITHUB_REF_NAME#v}"
 
+      # Right after the push, before anything else reads the job: the stored
+      # credential is not needed any more.
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout docker.io
+
       - name: Digests to the job summary
         if: always()
         run: |
@@ -164,6 +159,7 @@ jobs:
         if: always()
         run: df -h /
 
-      - name: Log out of Docker Hub
+      # Safety net: runs even if an earlier step was skipped or cancelled.
+      - name: Log out of Docker Hub (safety)
         if: always()
         run: docker logout docker.io
