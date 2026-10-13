@@ -113,7 +113,7 @@ def test_publish_needs_quality_and_every_job_is_time_boxed() -> None:
 # ── drift guard · bash · permissions ────────────────────────────────────────
 
 
-def _signature(job: dict[str, Any]) -> list[tuple[Any, Any, Any]]:
+def _signature(job: dict[str, Any]) -> list[tuple[Any, Any, Any, Any]]:
     return [(s.get("uses"), s.get("run"), s.get("with"), s.get("env")) for s in _steps(job)]
 
 
