@@ -9,6 +9,7 @@
 > - إنشاء الـPod من واجهة RunPod خطوةً بخطوة: [`delivery/runpod-staging/deploy-pod.html`](delivery/runpod-staging/deploy-pod.html).
 > - التشغيل المحلّيّ بـDocker Compose: [`quickstart.md`](quickstart.md).
 > - المرجع المُلزِم للقرارات التشغيليّة: [`design/08-local-runbook.md`](design/08-local-runbook.md).
+> - خطّة تطوير هذه النسخة (المقارنة مع Compose، والخطوات بالترتيب): [`runpod-plan.md`](runpod-plan.md).
 >
 > **آخر مطابقةٍ مع الواقع: 2026‑10‑10** (الصورة `staging-1` أقلعت محلّيّاً على قرصٍ نظيف، ونجح الإقلاعان الأوّل والثاني والفحص الأعمق). وفي اليوم نفسه كشف أوّل Pod على RunPod أنّ Network Volume لا يصلح للمكدّس، فصار التخزين Volume Disk ([§5.4](#54-التخزين)). وفي 2026‑10‑12 كشف أوّل رفعِ ملفٍّ من المتصفّح أنّ وكيل RunPod يغيّر ترويسة `Host`، فصارت الروابط المُوقَّعة تمرّ عبر nginx على المنفذ 80 (الصورة `staging-3`، [§5.3](#53-المنافذ)). وبعده كشف أوّل ملفٍّ مرفوع أنّ الصورة لا تشغّل عامل الفهرسة، فبقي المستند `pending`، فصار لكلّ عاملٍ برنامجه (الصورة `staging-4`). وحين أُضيف Volume Disk إلى الـPod نفسه ظهر أنّه في مركز `EUR-IS-1` قرصٌ شبكيّ (MooseFS) يرفض `chown` كالـNetwork Volume تماماً ([§5.4](#54-التخزين)).
 

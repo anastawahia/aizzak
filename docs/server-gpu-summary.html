@@ -1,0 +1,733 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>لوحة خادم الكرت</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Readex+Pro:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#F1F4F1;
+    --surface:#FFFFFF;
+    --surface-2:#E8EDE9;
+    --ink:#15211E;
+    --ink-2:#4E5D59;
+    --ink-3:#7C8B86;
+    --line:#D6DED8;
+    --accent:#0F6B62;
+    --done:#2F7A55;
+    --partial:#B7841C;
+    --blocked:#AF4A3C;
+    --pending:#8A9793;
+    --done-soft:#E2EFE7;
+    --partial-soft:#F6EDD6;
+    --blocked-soft:#F5E2DE;
+    --pending-soft:#E7EBE9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E1513;
+      --surface:#161E1B;
+      --surface-2:#1D2724;
+      --ink:#E6EDE9;
+      --ink-2:#A9B8B3;
+      --ink-3:#7E8D88;
+      --line:#293430;
+      --accent:#54B8AA;
+      --done:#5FB585;
+      --partial:#D6A945;
+      --blocked:#DC8073;
+      --pending:#8A9793;
+      --done-soft:#18291F;
+      --partial-soft:#2A2416;
+      --blocked-soft:#2C1D1A;
+      --pending-soft:#1E2523;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E1513;
+    --surface:#161E1B;
+    --surface-2:#1D2724;
+    --ink:#E6EDE9;
+    --ink-2:#A9B8B3;
+    --ink-3:#7E8D88;
+    --line:#293430;
+    --accent:#54B8AA;
+    --done:#5FB585;
+    --partial:#D6A945;
+    --blocked:#DC8073;
+    --pending:#8A9793;
+    --done-soft:#18291F;
+    --partial-soft:#2A2416;
+    --blocked-soft:#2C1D1A;
+    --pending-soft:#1E2523;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"IBM Plex Sans Arabic","Segoe UI",Tahoma,sans-serif;
+    font-size:16px;
+    line-height:1.75;
+    direction:rtl;
+    text-align:right;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:940px;margin:0 auto;padding:40px 24px 96px}
+  h1,h2,h3{font-family:"Readex Pro","IBM Plex Sans Arabic",sans-serif;text-wrap:balance;margin:0}
+
+  /* ---------- ترويسة ---------- */
+  .masthead{border-bottom:2px solid var(--ink);padding-bottom:28px;margin-bottom:36px}
+  .eyebrow{
+    font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin-bottom:14px;
+  }
+  h1{font-size:clamp(30px,5vw,44px);font-weight:600;line-height:1.25;letter-spacing:-.01em}
+  .standfirst{color:var(--ink-2);font-size:17px;max-width:62ch;margin-top:14px}
+  .meta{
+    display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:22px;
+    font-size:13px;color:var(--ink-3);font-variant-numeric:tabular-nums;
+  }
+  .meta b{color:var(--ink-2);font-weight:500}
+
+  /* ---------- شريط التقدّم ---------- */
+  .overview{margin-bottom:40px}
+  .bar{
+    display:flex;height:44px;border-radius:3px;overflow:hidden;
+    border:1px solid var(--line);background:var(--surface);
+  }
+  .bar span{
+    display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:600;color:#fff;
+    font-variant-numeric:tabular-nums;
+  }
+  .bar .s-done{background:var(--done)}
+  .bar .s-partial{background:var(--partial)}
+  .bar .s-blocked{background:var(--blocked)}
+  .bar .s-pending{background:var(--pending)}
+  .bar .s-deferred{background:repeating-linear-gradient(135deg,var(--pending) 0 6px,var(--ink-3) 6px 12px)}
+  .legend{
+    display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:16px;
+    font-size:13.5px;color:var(--ink-2);
+  }
+  .legend i{
+    width:11px;height:11px;border-radius:2px;display:inline-block;
+    margin-left:8px;vertical-align:-1px;
+  }
+  .k-done{background:var(--done)} .k-partial{background:var(--partial)}
+  .k-blocked{background:var(--blocked)} .k-pending{background:var(--pending)}
+  .k-deferred{background:repeating-linear-gradient(135deg,var(--pending) 0 3px,var(--ink-3) 3px 6px)}
+
+  /* ---------- الخلاصة ---------- */
+  .verdict{
+    background:var(--surface);border:1px solid var(--line);
+    border-right:4px solid var(--accent);
+    padding:24px 26px;margin-bottom:44px;border-radius:2px;
+  }
+  .verdict h2{font-size:19px;font-weight:600;margin-bottom:10px}
+  .verdict p{margin:0 0 12px;color:var(--ink-2);max-width:66ch}
+  .verdict p:last-child{margin-bottom:0}
+  .verdict strong{color:var(--ink);font-weight:600}
+
+  /* ---------- الأرقام ---------- */
+  .numbers{margin-bottom:52px}
+  .numbers h2{font-size:23px;font-weight:600;margin-bottom:6px}
+  .numbers > p{font-size:14px;color:var(--ink-3);margin:0 0 16px;max-width:70ch}
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);background:var(--surface)}
+  table{border-collapse:collapse;width:100%;min-width:600px;font-size:14.5px;font-variant-numeric:tabular-nums}
+  th,td{padding:11px 14px;text-align:right;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{
+    font-size:12.5px;font-weight:600;color:var(--ink-3);
+    background:var(--surface-2);letter-spacing:.02em;
+  }
+  tbody tr:last-child td{border-bottom:none}
+  td{color:var(--ink-2)}
+  td:first-child{color:var(--ink);font-weight:500}
+  td.good{color:var(--done);font-weight:600}
+  td.bad{color:var(--blocked);font-weight:600}
+  .note{font-size:13px;color:var(--ink-3);margin:12px 0 0;max-width:72ch}
+
+  /* ---------- الموجات ---------- */
+  .wave{margin-bottom:48px}
+  .wave-head{
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:4px;
+  }
+  .wave-num{
+    font-family:"Readex Pro",sans-serif;font-size:13px;font-weight:600;
+    color:var(--ink-3);letter-spacing:.06em;font-variant-numeric:tabular-nums;
+  }
+  .wave-head h2{font-size:23px;font-weight:600;flex:1;min-width:200px}
+  .wave-score{
+    font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .wave-note{font-size:14px;color:var(--ink-3);margin:10px 0 18px;max-width:70ch}
+
+  .steps{display:flex;flex-direction:column;gap:2px}
+  .step{
+    display:grid;grid-template-columns:auto 1fr;gap:0 18px;
+    background:var(--surface);border:1px solid var(--line);
+    border-right-width:4px;padding:18px 20px 18px 22px;
+  }
+  .step + .step{border-top:none}
+  .step.done{border-right-color:var(--done)}
+  .step.partial{border-right-color:var(--partial)}
+  .step.blocked{border-right-color:var(--blocked)}
+  .step.pending{border-right-color:var(--pending)}
+  .step.deferred{border-right-color:var(--pending);border-right-style:dashed}
+
+  .step-id{
+    font-family:"Readex Pro",sans-serif;font-size:14px;font-weight:600;
+    color:var(--ink-3);font-variant-numeric:tabular-nums;padding-top:1px;
+  }
+  .step-body{min-width:0}
+  .step-title{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;
+  }
+  .step-title h3{font-size:16.5px;font-weight:500;line-height:1.5}
+  .tag{
+    font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:2px;
+    letter-spacing:.02em;white-space:nowrap;
+  }
+  .tag.done{background:var(--done-soft);color:var(--done)}
+  .tag.partial{background:var(--partial-soft);color:var(--partial)}
+  .tag.blocked{background:var(--blocked-soft);color:var(--blocked)}
+  .tag.pending{background:var(--pending-soft);color:var(--ink-3)}
+  .tag.deferred{background:var(--pending-soft);color:var(--ink-2)}
+
+  .line{display:flex;gap:10px;font-size:14.5px;line-height:1.7;margin-top:5px}
+  .line dt{
+    flex:0 0 52px;color:var(--ink-3);font-size:12.5px;font-weight:600;
+    padding-top:3px;letter-spacing:.02em;
+  }
+  .line dd{margin:0;color:var(--ink-2);max-width:68ch}
+  .line.rest dd{color:var(--ink-2)}
+  .line.rest dt{color:var(--partial)}
+  .line.done-l dt{color:var(--done)}
+  dl{margin:0}
+
+  /* ---------- الحواجز ---------- */
+  .blockers{margin-top:56px;padding-top:36px;border-top:2px solid var(--ink)}
+  .blockers h2{font-size:24px;font-weight:600;margin-bottom:8px}
+  .blockers > p{color:var(--ink-2);max-width:64ch;margin:0 0 24px}
+  .bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px}
+  .bcard{background:var(--surface);border:1px solid var(--line);padding:20px 22px}
+  .bcard h3{font-size:16px;font-weight:600;margin-bottom:6px}
+  .bcard .who{
+    font-size:11.5px;font-weight:600;letter-spacing:.06em;
+    color:var(--blocked);margin-bottom:10px;
+  }
+  .bcard p{margin:0;font-size:14.5px;color:var(--ink-2);line-height:1.7}
+
+  .foot{
+    margin-top:48px;padding-top:20px;border-top:1px solid var(--line);
+    font-size:13px;color:var(--ink-3);
+  }
+  .foot code{
+    font-family:"IBM Plex Sans Arabic",monospace;background:var(--surface-2);
+    padding:1px 6px;border-radius:2px;color:var(--ink-2);direction:ltr;display:inline-block;
+  }
+
+  @media (max-width:620px){
+    .wrap{padding:28px 16px 72px}
+    .step{grid-template-columns:1fr;gap:6px}
+    .step-id{padding-top:0}
+    .line{flex-direction:column;gap:0}
+    .line dt{flex:none}
+    .bar span{font-size:11px}
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">خطّة · خادمٌ سحابيّ بكرت شاشة</div>
+    <h1>تشغيل المنصّة على خادمٍ سحابيّ بكرت شاشة</h1>
+    <p class="standfirst">
+      الخطّة تحوّل ملفّ التشغيل من «مكدّسٍ يعمل على جهاز المالك» إلى «حزمة تثبيتٍ تعمل على أيّ خادم». هذا ملخّصٌ لكلّ خطوة: ما المطلوب منها، ومتى تُعدّ منتهية.
+    </p>
+    <div class="meta">
+      <span><b>٢٨</b> خطوة في <b>٧</b> مراحل</span>
+      <span>كُتبت: <b>١٣ أكتوبر ٢٠٢٦</b></span>
+      <span>المصدر: <b>docs/server-gpu-plan.md</b></span>
+    </div>
+  </header>
+
+  <section class="overview">
+    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة، لم تبدأ أيٌّ منها">
+      <span class="s-pending" style="flex:28">٢٨ لم تبدأ</span>
+    </div>
+    <div class="legend">
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٠</span>
+      <span><i class="k-partial"></i>جارية — ٠</span>
+      <span><i class="k-pending"></i>لم تبدأ — ٢٨</span>
+    </div>
+  </section>
+
+  <div class="verdict">
+    <h2>الخلاصة في ثلاث جمل</h2>
+    <p>
+      <strong>المنصّة اليوم تعمل على جهاز التطوير وحده.</strong> ملفّ التشغيل يبني البرنامج من الشيفرة، ويقرأ إعداداته من المستودع، ومضبوطٌ على خادمٍ بـ٦٤ جيجابايت. وينتظر النموذجَ اللغويّ خارج المكدّس على جهاز المالك، ويشغّل المراقبة دائماً، ولا تستعمل أيٌّ من خدماته كرت الشاشة.
+    </p>
+    <p>
+      <strong>الخطّة تحوّله إلى حزمة تثبيت.</strong> خادمٌ جديد بكرت شاشة يصير منصّةً بثلاثة أوامر: تنزيل الحزمة، ثمّ تشغيل سكربت التثبيت، ثمّ انتظار «جاهز». الصور تُسحب جاهزة، والحجم يُختار على قدر الخادم، والنموذج اللغويّ والتضمين يعملان على الكرت، والمراقبة تُشغَّل أو تُطفأ بسطر.
+    </p>
+    <p>
+      <strong>ولا يتغيّر شيءٌ على جهاز المالك</strong> سوى سطرين في ملفّ إعداده المحلّيّ. <b>والبدء ينتظر المالك:</b> كلّ خطوةٍ تقريباً تلمس ملفّاتٍ محميّة فتحتاج موافقته، ومعها سبعة قرارات، أهمّها سجلّ الصور وحجم الخادم.
+    </p>
+  </div>
+
+  <!-- ======== الموانع ======== -->
+  <section class="numbers">
+    <h2>ما يمنع التشغيل على خادمٍ سحابيّ اليوم</h2>
+    <p>كلّ مانعٍ مأخوذٌ من ملفّ التشغيل نفسه، وله مرحلةٌ تعالجه.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>المانع</th><th>ماذا يعني على خادمٍ جديد</th><th>المرحلة</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>يبني البرنامج من الشيفرة</td><td>الخادم يحتاج المستودع كاملاً، ويبني ما بُني من قبل</td><td>١</td></tr>
+          <tr><td>النموذج اللغويّ على جهاز المالك، لا داخل المكدّس</td><td class="bad">كلّ محادثةٍ تفشل</td><td>٢</td></tr>
+          <tr><td>لا خدمة تستعمل الكرت</td><td>الكرت المدفوع لا يسرّع شيئاً</td><td>٢</td></tr>
+          <tr><td>مضبوطٌ على خادمٍ بـ٦٤ جيجابايت (مجموع الحدود نحو ٣٨ نواة و٥٩ جيجابايت)</td><td class="bad">على خادمٍ أصغر تتجاوز الحدودُ الذاكرة، ولا يحذّر أحد</td><td>٣</td></tr>
+          <tr><td>المراقبة دائماً: ١١ خدمة، نحو ٤٫٧ جيجابايت</td><td>ثقلٌ على الخادم الصغير</td><td>٤</td></tr>
+          <tr><td>يقرأ ٢٤ ملفّ إعدادٍ من المستودع</td><td>لا يعمل دون نسخة المستودع</td><td>٥</td></tr>
+          <tr><td>مفتاح الخزنة (Vault): أمر إصداره في الوثائق مكسور، وصلاحيّته ٣٠ يوماً</td><td>التثبيت يقف عند خطوةٍ يدويّة، والخادم يتعطّل بعد شهر</td><td>٥ و٦</td></tr>
+          <tr><td>روابط الملفّات تُوقَّع على «localhost»</td><td class="bad">الرفع والتنزيل من الإنترنت يفشلان</td><td>٦</td></tr>
+          <tr><td>شهادةٌ ذاتيّة التوقيع</td><td>المتصفّح يرفض الموقع</td><td>٦</td></tr>
+          <tr><td>النسخ الاحتياطيّة على قرص الخادم نفسه</td><td class="bad">عطل الخادم يُضيع البيانات والنسخ معاً</td><td>٦</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">وما هو جاهزٌ أصلاً ولا يحتاج عملاً: كلّ المنافذ مغلقةٌ عن الإنترنت ما عدا ٨٠ و٤٤٣، وخدمة التضمين تعرف الكرت وتختاره وحدها إن وجدته، وأدوات التحديث بلا توقّف وضبط النظام وتمرين الاسترجاع موجودة. والخطّة لا تلمس نسخة RunPod، فلها خطّتها: الـPod حاويةٌ لا يعمل Docker داخلها، وهذه الخطّة لخادمٍ عاديّ.</p>
+  </section>
+
+  <!-- ======== المرحلة 1 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ١</span>
+      <h2>صورٌ جاهزة بدل البناء على الخادم</h2>
+      <span class="wave-score">٠ من ٤</span>
+    </div>
+    <p class="wave-note">اليوم يبني الخادم البرنامج من الشيفرة، فيحتاج المستودع كاملاً. بعد هذه المرحلة يسحب صوراً جاهزة برقم إصدارٍ ثابت.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">١٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>فصل البناء عن التشغيل</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>ملفّ التشغيل يسمّي الصور فقط، والبناء في ملفٍّ منفصلٍ يستعمله جهاز المالك وحده.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>ملفّ التشغيل وحده يعمل في مجلّدٍ فارغ، وجهاز المالك يعطي النتيجة نفسها التي يعطيها اليوم.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">١٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سجلّ صورٍ وأرقام إصدارٍ ثابتة</h3><span class="tag pending">لم تبدأ · تنتظر قرار ١</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>ثلاث صور: البرنامج، والتضمين على المعالج، والتضمين على الكرت. تُحفظ في سجلٍّ خاصّ برقم إصدارٍ واحد، ولا تُستعمل «آخر نسخة» على أيّ خادم.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الصور تُسحب برقمها من جهازٍ مسجَّلٍ في السجلّ، ولا تُسحب من غيره.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">١٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سكربت البناء والرفع</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>أمرٌ واحد يبني الصور الثلاث ويرفعها ويطبع بصماتها. والرفع من جهاز المالك بطيء (قيس عند نحو ١٥٠ كيلوبايت في الثانية)، فهذا السكربت للطوارئ.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الصور الثلاث في السجلّ بالرقم نفسه، وبصماتها مكتوبة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">١٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>البناء والرفع من GitHub</h3><span class="tag pending">لم تبدأ · ليست شرطاً · تنتظر قرار ٦</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>نشر رقم إصدارٍ جديد يبني الصور ويرفعها تلقائيّاً، دون جهاز المالك.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>نشر الرقم يُنتج الصور الثلاث في السجلّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 2 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٢</span>
+      <h2>الكرت يعمل فعلاً</h2>
+      <span class="wave-score">٠ من ٦</span>
+    </div>
+    <p class="wave-note">هي سبب استئجار خادمٍ بكرت. اليوم لا تستعمل أيّ خدمةٍ في المكدّس الكرت، والنموذج اللغويّ يُنتظَر على جهاز المالك، فلا تعمل المحادثة على خادمٍ جديد أصلاً.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٢٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>متطلّبات الخادم</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>تعريف الكرت، وأداةٌ تربط Docker به. تُكتب خطوات تثبيتهما في الدليل، وسكربت التثبيت يفحصهما ولا يثبّتهما، لأنّ تثبيتهما يختلف من نظامٍ لآخر.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>حاويةٌ تجريبيّة على الخادم ترى الكرت.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٢٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>النموذج اللغويّ داخل المكدّس</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>خدمة Ollama برقم إصدارٍ ثابت، وقرصٌ دائمٌ للنماذج، وسحب النموذج مرّةً واحدة عند أوّل تشغيل. لا يصل إليها أحدٌ من خارج المكدّس.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>محادثةٌ تكتمل على خادمٍ جديد دون أيّ تثبيتٍ يدويّ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٢٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>إخراج جسر جهاز المالك من المسار العامّ</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>خدمةٌ صغيرة تصل المكدّس بالنموذج على جهاز المالك، والتطبيق يعتمد عليها اليوم. تصير اختياريّة، ويشغّلها جهاز المالك بسطرٍ في إعداده المحلّيّ.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>على جهاز المالك يعمل كلّ شيءٍ كما اليوم، وعلى الخادم لا يظهر الجسر.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٢٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>التضمين على الكرت</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>خدمة التضمين تعرف الكرت أصلاً، والناقص نسخة المكتبة التي تستعمله. صورةٌ ثانية للتضمين تحملها، ويُقاس حجمها قبل اعتمادها.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>نتائج البحث على الكرت مثلها على المعالج في مجموعة التقييم. فالحساب على الكرت أقلّ دقّةً بقليل، ولا يُفترض أنّ ذلك لا يغيّر شيئاً.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٢٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ملفّ الكرت</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>كلّ ما يخصّ الكرت في ملفٍّ إضافيّ، فيبقى المكدّس يعمل على خادمٍ بلا كرت. فيه: النموذج على الكرت، ونسخة تضمينٍ واحدة على الكرت بدل ثلاثٍ على المعالج، وصفحة مراقبة النظام تقرأ الكرت.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الخادم يُظهر النموذج والتضمين على الكرت، وصفحة مراقبة النظام تعرضه.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٢٫٦</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ذاكرة الكرت واختيار النموذج</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٣</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>النموذج والتضمين يتقاسمان ذاكرة الكرت. يُختار النموذج على قدر الكرت، ويبقى النموذج الحاليّ الصغير حتّى يُقاس غيره.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>تحت محادثاتٍ متزامنة وفهرسةٍ في الوقت نفسه، تبقى ذاكرة الكرت تحت ٩٠٪، ولا ينتقل النموذج إلى المعالج.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 3 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٣</span>
+      <h2>الحجم من ملفّ بدل أرقامٍ ثابتة</h2>
+      <span class="wave-score">٠ من ٤</span>
+    </div>
+    <p class="wave-note">اليوم كلّ حدٍّ رقمٌ ثابت لخادمٍ بـ٣٢ نواة و٦٤ جيجابايت. على خادمٍ أصغر يقبل Docker الحدود كما هي ولا يحذّر، ثمّ تنفد الذاكرة تحت الحمل.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٣٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>الحدود متغيّرات</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>كلّ حدٍّ للذاكرة والمعالج وعدد النسخ يصير متغيّراً قيمته رقم اليوم، فلا يتغيّر شيءٌ على جهاز المالك. ونحو ٣٠ اختباراً تقرأ ملفّ التشغيل تتعلّم القراءة الجديدة.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>جهاز المالك يعطي الحدود نفسها قبل التعديل وبعده، والاختبارات خضراء.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٣٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>قاعدة البيانات والذاكرة المؤقّتة حسب الحجم</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>إعداد قاعدة البيانات اليوم يفترض ٢٤ جيجابايت متاحة، فيخطئ في تقدير الكلفة على خادمٍ أصغر. ملفّ إعدادٍ لكلّ حجم، وحدود الذاكرة المؤقّتة متغيّرات.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>اختبارٌ يتحقّق أنّ ذاكرة قاعدة البيانات في كلّ حجمٍ تحت حدّها.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٣٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>ثلاثة أحجامٍ جاهزة</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٢</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>كبير: أرقام اليوم المقيسة، لخادمٍ بـ٦٤ جيجابايت. متوسّط: لـ٣٢ جيجابايت، وأرقامه تُقاس على الخادم. صغير: لـ١٦ جيجابايت، للتجربة فقط وبلا مراقبة. وسكربت التثبيت يقترح الحجم من ذاكرة الخادم.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>كلّ حجمٍ يقلع على خادمٍ بحجمه، ولا تُقتل أيّ خدمةٍ لنفاد الذاكرة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٣٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>فحص الميزانيّة لكلّ حجم</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>الأداة التي تجمع الحدود وتقارنها بالخادم تعرف الأحجام الثلاثة، وسكربت التثبيت يشغّلها قبل الإقلاع.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>حجمٌ لا يتّسع له خادمه يُفشل الاختبارات، ويرفضه سكربت التثبيت.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 4 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٤</span>
+      <h2>المراقبة اختياريّة</h2>
+      <span class="wave-score">٠ من ٢</span>
+    </div>
+    <p class="wave-note">إحدى عشرة خدمة مراقبة تعمل اليوم دائماً، وتأخذ نحو ٤٫٧ جيجابايت. تحقّقنا: لا خدمة أساسيّة تعتمد عليها، فإطفاؤها لا يكسر شيئاً.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٤٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>المراقبة بسطرٍ واحد</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٧</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>خدمات المراقبة كلّها تُشغَّل بسطرٍ في ملفّ الإعداد. مفعّلةٌ افتراضيّاً، وتُطفأ على الخادم الصغير. ودونها لا تنبيهات، وسكربت التثبيت يقول ذلك بوضوح.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>دونها تعمل المنصّة كاملة: الفحص الصحّيّ، ورفع ملفٍّ وفهرسته، والسؤال عنه.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٤٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>أرقام الكرت وتنبيهاته</h3><span class="tag pending">لم تبدأ · ليست شرطاً</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>ذاكرة الكرت وحمله وحرارته في لوحات المراقبة، وتنبيهان: امتلاء ذاكرته وارتفاع حرارته، ولكلٍّ منهما صفحة خطوات.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>التنبيهان يشتعلان في التجربة الصناعيّة حين يجب، ويصمتان حين لا يجب.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 5 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٥</span>
+      <h2>حزمة تثبيتٍ بدل المستودع</h2>
+      <span class="wave-score">٠ من ٣</span>
+    </div>
+    <p class="wave-note">بعد هذه المرحلة لا يحتاج الخادم المستودع: ملفٌّ مضغوطٌ واحد، وسكربتٌ يفعل الباقي.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٥٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>حزمة الإصدار</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>ملفٌّ مضغوطٌ واحد فيه: ملفّا التشغيل، وملفّات الإعداد الأربعة والعشرون، والأحجام، والسكربتات. لا شيفرة ولا أسرار. ولا يوضع الإعداد داخل الصور، لأنّ تعديل إعدادٍ واحد سيحتاج حينها بناء صورةٍ جديدة.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الحزمة تُفكّ في مجلّدٍ فارغ، وتُقرأ دون خطأ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٥٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>سكربت التثبيت</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>يفحص الخادم، ثمّ يولّد إحدى عشرة كلمة سرّ دون أن يطبعها، ثمّ يختار الحجم ويسحب الصور، ثمّ يُقلع الخدمات بالترتيب الصحيح، ثمّ يفحص ويطبع «جاهز». وأمر إصدار مفتاح الخزنة في الوثائق مكسور، فيصلحه السكربت وتُصحَّح الوثائق.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>خادمٌ جديد يصير منصّةً بأمرٍ واحد دون أيّ خطوةٍ يدويّة، وتشغيل السكربت مرّةً ثانية لا يغيّر شيئاً.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٥٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>التحديث على الخادم</h3><span class="tag pending">لم تبدأ · ليست شرطاً</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>أمرٌ واحد: نسخةٌ احتياطيّة، ثمّ سحب الإصدار الجديد، ثمّ تبديل الخدمات بلا توقّف بالأداة الموجودة أصلاً.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>تحديثٌ بين إصدارين دون خطوةٍ يدويّة، والرجوع إلى السابق مجرَّبٌ مرّةً واحدة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 6 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٦</span>
+      <h2>خادمٌ مكشوفٌ للإنترنت بأمان</h2>
+      <span class="wave-score">٠ من ٥</span>
+    </div>
+    <p class="wave-note">جهاز التطوير لا يراه أحد. الخادم السحابيّ يراه الجميع، فيحتاج شهادةً حقيقيّة، وروابط ملفّاتٍ تعمل من الخارج، ونسخاً لا تضيع معه.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٦٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>شهادةٌ حقيقيّة</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٤</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>اليوم تُصنع شهادةٌ ذاتيّة يرفضها المتصفّح. الاقتراح: شهادةٌ مجّانيّة من Let's Encrypt تُجدَّد وحدها.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الموقع يفتح بلا تحذير، وتجربة التجديد تنجح.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٦٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>روابط الملفّات من الإنترنت</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>اليوم تُوقَّع روابط الرفع والتنزيل على «localhost»، فلا تعمل من خارج الجهاز. الإصلاح مكتوبٌ ومجرَّبٌ في نسخة RunPod، ويُنقل كما هو.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>رفع ملفٍّ وتنزيله من جهازٍ خارج الخادم ينجحان.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٦٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>المنافذ وجدار الحماية</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>كلّ شيءٍ مغلقٌ عن الإنترنت أصلاً ما عدا ٨٠ و٤٤٣. يُضاف جدار حماية، ودخولٌ للخادم بمفتاحٍ لا بكلمة سرّ.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>فحصٌ من الخارج لا يجد مفتوحاً إلّا الدخول والموقع.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٦٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>النسخ خارج الخادم</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٥</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>اليوم تُحفظ النسخ الاحتياطيّة على قرص الخادم نفسه. تُنسخ باستمرار إلى تخزينٍ خارجيّ، ويُحفظ مفتاح الخزنة في مدير كلمات سرّ المالك، ثمّ تمرين استرجاعٍ على خادمٍ ثانٍ.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>الاسترجاع يبلغ أهداف خطّة السعة: لا تضيع أكثر من ٥ دقائق من البيانات، وتعود قاعدة البيانات خلال ساعة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٦٫٥</div>
+        <div class="step-body">
+          <div class="step-title"><h3>تجديد مفتاح الخزنة</h3><span class="tag pending">لم تبدأ · ليست شرطاً</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>مفتاح دخول الخدمات إلى الخزنة صالحٌ ٣٠ يوماً، ولا شيء يجدّده. الحاجة نفسها في نسخة RunPod، فيُكتب الحلّ مرّةً للاثنتين.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>بمفتاحٍ صلاحيّته ساعةٌ للتجربة، تعمل المنصّة ثلاث ساعاتٍ دون خطأ.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ======== المرحلة 7 ======== -->
+  <section class="wave">
+    <div class="wave-head">
+      <span class="wave-num">المرحلة ٧</span>
+      <h2>التحقّق والتوثيق</h2>
+      <span class="wave-score">٠ من ٤</span>
+    </div>
+    <p class="wave-note">الخطّة لا تنتهي بملفّاتٍ مكتوبة، بل بخادمٍ حقيقيّ ثُبّتت عليه المنصّة من الحزمة وحدها، وأرقامه مقيسة.</p>
+    <div class="steps">
+
+      <article class="step pending">
+        <div class="step-id">٧٫١</div>
+        <div class="step-body">
+          <div class="step-title"><h3>اختبارات الحزمة</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>ملفّ إعدادٍ جديد يُنسى في الحزمة يُفشل الاختبارات. هكذا نُسي عاملان في نسخة RunPod ولم يُكتشف ذلك إلّا بملفٍّ عالق.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>إضافة ملفّ إعدادٍ دون إضافته إلى الحزمة تُفشل الاختبارات.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٧٫٢</div>
+        <div class="step-body">
+          <div class="step-title"><h3>فحص الحزمة في GitHub</h3><span class="tag pending">لم تبدأ · ليست شرطاً · تنتظر قرار ٦</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>كلّ تركيبةٍ تُفحص مع كلّ تعديل: ثلاثة أحجام، مع الكرت وبدونه، ومع المراقبة وبدونها.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>تعديلٌ يكسر أيّ تركيبةٍ يُفشل الفحص.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٧٫٣</div>
+        <div class="step-body">
+          <div class="step-title"><h3>تجربةٌ على خادمٍ حقيقيّ بكرت</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٢</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>التثبيت من الحزمة وحدها، ثمّ رفع ملفٍّ والسؤال عنه ومحادثةٌ مع النموذج. ثمّ قياس سرعة التضمين على الكرت مقابل المعالج، وسرعة ردود النموذج. ثمّ تحديثٌ ورجوع، ثمّ إيقاف الخادم وتشغيله.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>وثيقةٌ فيها كلّ رقم، ومواصفات الخادم وكلفة ساعته، والثغرات المكتشفة.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="step pending">
+        <div class="step-id">٧٫٤</div>
+        <div class="step-body">
+          <div class="step-title"><h3>دليل التشغيل</h3><span class="tag pending">لم تبدأ</span></div>
+          <dl>
+            <div class="line"><dt>المطلوب</dt><dd>دليلٌ بالعربيّة: المتطلّبات، والتثبيت، والتحديث، والنسخ والاسترجاع، وجدول الأعطال.</dd></div>
+            <div class="line done-l"><dt>القبول</dt><dd>شخصٌ لم يكتب الدليل يثبّت به خادماً دون أن يسأل.</dd></div>
+          </dl>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section class="blockers">
+    <h2>ما ينتظره البدء</h2>
+    <p>لم تبدأ أيّ خطوة. البدء ينتظر المالك في أمرين: موافقته على تعديل الملفّات المحميّة، وقراراته. وأهمّها قرارا السجلّ وحجم الخادم.</p>
+    <div class="bgrid">
+      <div class="bcard">
+        <div class="who">يحجب: ٢٧ خطوة من ٢٨</div>
+        <h3>موافقة المالك على الملفّات المحميّة</h3>
+        <p>ملفّات التشغيل والنشر وGitHub محميّة، ولا تُعدَّل إلّا بموافقة المالك. موافقةٌ واحدة لكلّ مرحلةٍ بعد قراءة خطواتها تكفي. والخطوة الوحيدة التي يمكن أن تبدأ قبلها هي ٢٫١: كتابة متطلّبات الخادم.</p>
+      </div>
+      <div class="bcard">
+        <div class="who">يحجب: ١٫٢ و٣٫٣ و٧٫٣</div>
+        <h3>سجلّ الصور وحجم الخادم</h3>
+        <p>أين تُحفظ الصور؟ المقترح: Docker Hub، في حسابٍ خاصّ لا عامّ. وأيّ خادمٍ يُستأجر؟ المقترح: ٦٤ جيجابايت ذاكرة وكرت ٢٤ جيجابايت، ليعمل الحجم المقيس كما هو. الأصغر ممكن، لكنّ أرقامه تُقاس أوّلاً.</p>
+      </div>
+      <div class="bcard">
+        <div class="who">قرارات أخرى: ٥</div>
+        <h3>خمسة قراراتٍ أصغر</h3>
+        <p>النموذج اللغويّ على الكرت (يبقى الحاليّ حتّى القياس) · النطاق والشهادة (Let's Encrypt) · مكان النسخ خارج الخادم (الجواب نفسه لخطّة RunPod) · البناء في GitHub (نعم) · المراقبة افتراضيّاً (مفعّلة).</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot">
+    مبنيّ من <code>docs/server-gpu-plan.md</code> · فرع <code>runpod</code> · آخر تحديث ١٣ أكتوبر ٢٠٢٦ (كتابة الخطّة، ولم تبدأ أيّ خطوة).
+    التفاصيل الكاملة لكلّ خطوة، والملفّات التي تلمسها، في وثيقة الخطّة.
+  </p>
+
+</div>
