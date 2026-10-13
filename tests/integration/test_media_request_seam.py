@@ -68,7 +68,6 @@ async def _read_outbox(owner_dsn: str, aggregate_id: str) -> list[RowMapping]:
         await engine.dispose()
 
 
-@pytest.mark.anyio
 async def test_one_request_leaves_both_the_job_row_and_its_event(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -93,7 +92,6 @@ async def test_one_request_leaves_both_the_job_row_and_its_event(
     assert event_row["published_at"] is None, "the relay has not run yet"
 
 
-@pytest.mark.anyio
 async def test_the_stored_envelope_describes_the_stored_job(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -125,7 +123,6 @@ async def test_the_stored_envelope_describes_the_stored_job(
     assert payload["id"] == str(event_row["id"])
 
 
-@pytest.mark.anyio
 async def test_a_rejected_request_writes_neither_row(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:

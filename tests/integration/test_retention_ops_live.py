@@ -112,7 +112,6 @@ async def _count(owner_dsn: str, table: str) -> int:
         await engine.dispose()
 
 
-@pytest.mark.anyio
 async def test_sweep_outbox_deletes_old_published_rows_only(
     live_db: LiveDbDsns, retention_engine: AsyncEngine
 ) -> None:
@@ -150,7 +149,6 @@ async def test_sweep_outbox_deletes_old_published_rows_only(
     assert str(old_unpublished) in remaining
 
 
-@pytest.mark.anyio
 async def test_sweep_outbox_dry_run_counts_but_deletes_nothing(
     live_db: LiveDbDsns, retention_engine: AsyncEngine
 ) -> None:
@@ -170,7 +168,6 @@ async def test_sweep_outbox_dry_run_counts_but_deletes_nothing(
     assert after == before, "dry_run must delete nothing"
 
 
-@pytest.mark.anyio
 async def test_sweep_processed_events_deletes_old_but_not_new(
     live_db: LiveDbDsns, retention_engine: AsyncEngine
 ) -> None:
@@ -214,7 +211,6 @@ async def test_sweep_processed_events_deletes_old_but_not_new(
     assert new_still_there == 1
 
 
-@pytest.mark.anyio
 async def test_sweep_idempotency_keys_deletes_old_across_every_workspace_but_not_new(
     tenant_session: TenantSessionFactory, retention_engine: AsyncEngine
 ) -> None:
@@ -262,7 +258,6 @@ async def test_sweep_idempotency_keys_deletes_old_across_every_workspace_but_not
     assert str(old_two) not in {str(k) for k in remaining_two}
 
 
-@pytest.mark.anyio
 async def test_retention_sweeper_cannot_insert_or_update_any_of_the_three_tables(
     retention_engine: AsyncEngine,
 ) -> None:

@@ -63,7 +63,6 @@ async def owner_conn(live_db: LiveDbDsns) -> AsyncIterator[AsyncConnection]:
         await engine.dispose()
 
 
-@pytest.mark.anyio
 async def test_the_extension_exists_on_the_provisioned_cluster(owner_conn: AsyncConnection) -> None:
     """Not a tautology: this fails loudly on a cluster whose volume predates
     ``deploy/postgres/initdb/20-extensions.sh`` or whose operator has not
@@ -73,7 +72,6 @@ async def test_the_extension_exists_on_the_provisioned_cluster(owner_conn: Async
     assert await extension_installed(owner_conn) is True
 
 
-@pytest.mark.anyio
 async def test_the_ranking_contains_a_statement_this_test_just_ran(
     owner_conn: AsyncConnection,
 ) -> None:
@@ -93,7 +91,6 @@ async def test_the_ranking_contains_a_statement_this_test_just_ran(
     assert probe.database == "aizzak_test"
 
 
-@pytest.mark.anyio
 async def test_constants_are_normalised_so_no_literal_reaches_the_report(
     owner_conn: AsyncConnection,
 ) -> None:
@@ -124,7 +121,6 @@ async def test_constants_are_normalised_so_no_literal_reaches_the_report(
     assert "$1" in row.query
 
 
-@pytest.mark.anyio
 async def test_the_default_scope_returns_only_the_connected_databases_rows(
     owner_conn: AsyncConnection,
 ) -> None:
@@ -137,7 +133,6 @@ async def test_the_default_scope_returns_only_the_connected_databases_rows(
     assert {stat.database for stat in stats} == {"aizzak_test"}
 
 
-@pytest.mark.anyio
 async def test_stats_info_reports_the_two_numbers_that_qualify_a_report(
     owner_conn: AsyncConnection,
 ) -> None:

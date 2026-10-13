@@ -24,7 +24,7 @@ from redis.asyncio import Redis
 from app.framework.identifiers import new_uuid7
 from app.infrastructure.monitoring.metrics_source import queue_wait_seconds
 
-pytestmark = [pytest.mark.live_redis, pytest.mark.anyio]
+pytestmark = [pytest.mark.live_redis]
 
 
 async def _head_gap_s(redis: Redis, stream: str, group: str) -> float:

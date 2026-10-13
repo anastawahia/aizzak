@@ -48,11 +48,16 @@
 
 name: aizzak
 
+# The ONE application image every app-side process runs. This file only NAMES
+# it -- it never builds it (server-gpu-plan.md 1.1): a server pulls a released
+# image and has no source tree to build from. HOW it is built lives in
+# docker-compose.build.yml, which a development machine adds through
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml        (in .env)
+# The defaults are this machine's own image names. A server pulls the ONE
+# private repository, the image told apart by a tag prefix:
+#   APP_IMAGE_REPO=anastawahia/aizzak  APP_IMAGE_TAG=app-<YYYY.M.N>
 x-app-image: &app-image
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: aizzak/app:${APP_IMAGE_TAG:-dev}
+  image: ${APP_IMAGE_REPO:-aizzak/app}:${APP_IMAGE_TAG:-dev}
 
 # Every process built from the ONE image shares this environment; what
 # differs per process is the command and the DATABASE_URL role.
@@ -1235,10 +1240,9 @@ services:
           # reference host, and `tests/unit/test_resource_budget.py` would
           # (correctly) refuse it.
           memory: 1280m
-    image: aizzak/embedding:${EMBEDDING_IMAGE_TAG:-dev}
-    build:
-      context: .
-      dockerfile: services/embedding/Dockerfile
+    # Named only, like the application image (see x-app-image above); the
+    # build lives in docker-compose.build.yml.
+    image: ${EMBEDDING_IMAGE_REPO:-aizzak/embedding}:${EMBEDDING_IMAGE_TAG:-dev}
     environment:
       EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
       EMBEDDING_DIM: "384"

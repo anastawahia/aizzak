@@ -345,9 +345,14 @@ def test_integration_job_selects_real_markers_and_requires_live_dependencies() -
     )
     job_env = integration.get("env")
     assert isinstance(job_env, dict)
-    assert job_env.get("COMPOSE_FILE") == "docker-compose.yml:docker-compose.test.yml", (
+    assert job_env.get("COMPOSE_FILE") == (
+        "docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml"
+    ), (
         "the integration job must name docker-compose.test.yml explicitly; "
-        "that opt-in overlay is the only source of the test-database script"
+        "that opt-in overlay is the only source of the test-database script. "
+        "It must also name docker-compose.build.yml: `--build migrate` needs "
+        "the overlay that carries `build:`, since docker-compose.yml only "
+        "names the image"
     )
 
     steps = integration.get("steps")

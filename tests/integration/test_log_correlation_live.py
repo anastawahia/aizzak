@@ -53,7 +53,7 @@ from app.framework.types import Json
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer
 
-pytestmark = [pytest.mark.live_redis, pytest.mark.anyio]
+pytestmark = [pytest.mark.live_redis]
 
 _EVENT_TYPE = "memory.item.stored.v1"
 # `max_deliveries=1` so ONE `run_once` reaches the dead-letter branch: the

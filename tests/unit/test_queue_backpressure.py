@@ -38,8 +38,6 @@ from app.framework.settings import Settings
 from tests.unit.support_rate_limit import InMemoryRateLimiter
 from tests.unit.test_heavy_job_limit import _U1, _auth, _make_app, _operations
 
-pytestmark = pytest.mark.anyio
-
 _KEY = (KNOWLEDGE_STREAM, KNOWLEDGE_GROUP)
 
 

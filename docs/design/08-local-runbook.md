@@ -656,8 +656,8 @@ docker compose up -d      # الترتيب كلّه مُرمَّزٌ في depend
 **حزام الاختبارات الحيّ** يستعمل المكدّس نفسه، لكنّه يطلب ملف التجاوز صراحةً كي ينشر التضمين ويُحضِر سكربت قاعدة الاختبار:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.test.yml \
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml \
   exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh
 set -a; . ./.env.test; set +a
 REQUIRE_LIVE=1 pytest -rs

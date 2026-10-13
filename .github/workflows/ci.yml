@@ -88,9 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # The overlay is explicit: it alone mounts the opt-in test-database
-      # script. The production Compose file never provisions a test database.
-      COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml
+      # The overlays are explicit: the test one alone mounts the opt-in
+      # test-database script (the production Compose file never provisions a
+      # test database), and the build one is what lets `--build migrate` below
+      # build the image -- docker-compose.yml only names it.
+      COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml
     steps:
       - uses: actions/checkout@v4
 
@@ -172,7 +174,10 @@ jobs:
       # Ollama would pull a model on every run; the embedding image bakes
       # 3.74 GB of model weights. OpenAI and Exa need paid external keys.
       # The local services not excluded here are mandatory: REQUIRE_LIVE turns
-      # an unavailable dependency into a loud fixture failure.
+      # an unavailable dependency into a loud fixture failure. `-rfEs` lists
+      # every failed, errored and skipped test in the closing summary; with
+      # `-rs` alone the failures' names sat only in tracebacks thousands of
+      # lines above it (docs/integration-ci-fix-plan.md).
       - name: pytest (containerised integration harness)
         env:
           REQUIRE_LIVE: "1"
@@ -180,7 +185,7 @@ jobs:
           set -a
           . ./.env.test
           set +a
-          pytest -rs -m "not live_ollama and not live_embedding and not live_openai and not live_web_search"
+          pytest -rfEs -m "not live_ollama and not live_embedding and not live_openai and not live_web_search"
 
       - name: Tear down integration infrastructure
         if: always()

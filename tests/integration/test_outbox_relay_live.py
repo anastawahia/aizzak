@@ -114,7 +114,6 @@ async def _read_outbox_as_owner(owner_dsn: str, event_ids: list[str]) -> list[Ro
 # --------------------------------------------------------------------------- #
 # (1) full cycle: seed 3 rows -> run_once -> XRANGE + published_at + 2nd = 0   #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_run_once_publishes_the_seeded_rows_in_order_and_a_second_run_finds_nothing(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -162,7 +161,6 @@ async def test_run_once_publishes_the_seeded_rows_in_order_and_a_second_run_find
 # --------------------------------------------------------------------------- #
 # (2) attempts path: an unreachable Redis leaves the row unpublished          #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_a_publish_failure_leaves_the_row_unpublished_with_attempts_bumped(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -196,7 +194,6 @@ async def test_a_publish_failure_leaves_the_row_unpublished_with_attempts_bumped
 # --------------------------------------------------------------------------- #
 # (3) least-privilege negatives                                               #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_app_rw_cannot_select_or_update_the_outbox(
     sessionmaker_app: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -226,7 +223,6 @@ async def test_app_rw_cannot_select_or_update_the_outbox(
     assert getattr(update_exc.value.orig, "sqlstate", None) == "42501"
 
 
-@pytest.mark.anyio
 async def test_outbox_relay_cannot_insert_into_the_outbox(
     relay_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:

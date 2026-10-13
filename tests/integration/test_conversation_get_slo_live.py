@@ -106,7 +106,7 @@ skips it — see the ``skipif`` below):
 
 (the ``__main__`` block at the bottom runs the exact same coroutine the
 pytest test calls. Two packages, not one: ``pytest`` is only imported for
-``pytestmark``/``pytest.mark.anyio``, but ``prometheus-client`` is a HARD
+``pytestmark`` and the skip fixture, but ``prometheus-client`` is a HARD
 import of ``api/main.py`` itself (``api/metrics.py``, P1-3 step 10) that the
 running image predates — measured live: `git log --since=2026-07-26 --
 pyproject.toml` shows step 10 added it AFTER this image's build timestamp,
@@ -608,7 +608,6 @@ def _assert_slo_and_cleanup(report: LoadReport, proof: dict[str, int]) -> None:
     assert report.p99_s <= _BUDGET_P99_S, f"p99 {report.p99_s * 1000:.2f}ms > 300ms budget"
 
 
-@pytest.mark.anyio
 async def test_conversation_get_meets_p1_6_slo_budget() -> None:
     report, proof = await measure_conversation_get_slo()
     # `-s` (pytest's own capture-disable flag) is how an operator re-running

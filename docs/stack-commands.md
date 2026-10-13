@@ -8,7 +8,7 @@
 >
 > ⚠️ **كلّ أمرٍ هنا يُنفَّذ داخل WSL** (`Ubuntu-24.04`) من `/home/AIZZAK`، لا من Git‑Bash على ويندوز: قناة Git‑Bash لا تنفّذ ثنائيّات ELF (`Exec format error`).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑08‑13** (‏[§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات؛ ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media` وحذف آخر بروفايل في الملفّ).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑13** (صور جاهزة بدل البناء المحلّيّ: `docker-compose.build.yml` وسطر `COMPOSE_FILE` وقسم الإصدار؛ سبقتها [§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات، ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media`).
 
 ---
 
@@ -18,7 +18,7 @@
 
 | # | الأمر | الوظيفة |
 |---|---|---|
-| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — الخطوة الوحيدة قبل أوّل إقلاع |
+| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — ثمّ خطوة سطر `COMPOSE_FILE` (ليبني Compose الصورتين محلّيّاً؛ انظر الشرح) قبل أوّل إقلاع |
 | 2 | `docker compose up -d` | إقلاع المكدّس كاملاً بالترتيب الصحيح (بيانات ← تهيئة ← تطبيق ← حافّة) |
 | 3 | `docker compose up migrate` | تشغيل الهجرات الإحدى عشرة والمنح — بديل `alembic upgrade head` الممنوع |
 | 4 | `docker compose up -d nginx-certs` | توليد شهادة TLS الموقّعة ذاتيّاً عند رفض `https://localhost` الاتّصال |
@@ -78,9 +78,16 @@
 | 34‑ج | `python -m app.ops.slow_queries top` | أغلى الاستعلامات بالزمن التراكميّ من `pg_stat_statements` (خطّة السعة `0.4`) — **قراءةٌ محضة**؛ و`reset --yes` يصفّر العنقودَ كلَّه |
 | 34‑د | `python -m app.ops.load_seed run` | بذرةُ الحمل الواقعيّة (خطّة السعة `0.1` الشرط ٣): مليونُ رسالةٍ و100 ألف ملفٍّ ومليونُ متّجهٍ على 200 مساحةِ عمل، **عبر RLS**. و`plan` جفافٌ، و`status --export` يُخرج `LOAD_SEED_*`، و`purge --yes` يسترجع |
 | 34‑هـ | `deploy/load/run.sh peak` · `deploy/load/smoke.sh` | مولّدُ الحمل (خطّة السعة `0.1`): k6 من المضيف إن وُجد وإلّا من `--profile load` (`grafana/k6:1.3.0`)، و`LOAD_K6=host\|docker` يُلزم أحدَهما. و`smoke.sh` يُثبت الهيكلَ في نصف دقيقةٍ ببِركةٍ صناعيّة — 401 وعتبةٌ مُخفَقةٌ **بالتصميم** |
-| 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
+| 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
 | 36 | `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` | تزويد `aizzak_test` — **يدويٌّ، مرّةً واحدةً لكلّ حجم**، ولا يُشغَّل تلقائيّاً أبداً. مُعاد التشغيل بأمان |
-| 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
+| 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-compose.build.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
+
+### و) الإصدار
+
+| # | الأمر | الوظيفة |
+|---|---|---|
+| 38 | `deploy/release/build-push.sh <YYYY.M.N>` | **للطوارئ**: يبني الصورتين ويرفعهما إلى `anastawahia/aizzak` من جهازك (نحو 7 ساعات لصورة التضمين على اتّصال منزليّ) |
+| 39 | `git tag v<YYYY.M.N> <sha-on-master> && git push origin v<YYYY.M.N>` | **الطريق المعتاد**: دفع الوسم يشغّل `release.yml` فيبني ويرفع |
 
 **الأمر الجامع للبوّابات الخمس** (من ويندوز، بمسارات venv اللينكسيّة):
 
@@ -95,6 +102,8 @@ wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/AIZZAK && .venv/bin/ruff format --chec
 ## أ) الإعداد والإقلاع
 
 ### 1 · `cp .env.example .env`
+
+> ⭐ **ثمّ سطر `COMPOSE_FILE`.** `docker-compose.yml` صار يسمّي صورتَي التطبيق والتضمين فقط (`aizzak/app:dev` و`aizzak/embedding:dev` افتراضيّاً) ولا يبنيهما؛ والبناء في `docker-compose.build.yml`. أضف في `.env` السطر `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` (وتُوضع مع ملفّ WSL GPU في الوسط)، بالأوامر المبيَّنة في [`quickstart.md`](quickstart.md) §2.1. الـ`-f` الصريح يتجاهل `COMPOSE_FILE`، فيجب أن يسمّي `-f docker-compose.build.yml` بنفسه حيث يلزم البناء. ⚠️ بعد السطر، أيّ `git switch` إلى commit قديم يُفشل كلّ أمر `docker compose` (الملفّ غير موجود هناك): عطّل السطر بـ`#` مؤقّتاً.
 
 ينسخ قالب البيئة إلى الملفّ الفعليّ الذي يقرؤه Compose. النسخ وحده **لا يكفي**: القالب يحوي قيماً من طراز `change-me-*` وحقلاً فارغاً واحداً إلزاميّاً. عليك ملء:
 
@@ -444,7 +453,7 @@ docker compose --profile load run --rm k6 version
 ### 35 · الحزمة الاختباريّة — `docker-compose.test.yml`
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d
 ```
 
 **الصيغة المعتمَدة، ولا بديل لها:** Compose يقرأ `docker-compose.yml` و`docker-compose.override.yml` تلقائيّاً ولا يقرأ هذا الاسم أبداً، فالملفّ **لا يُدمَج إلّا بطلبٍ صريح**. وهذا هو سبب وجوده: نشر منفذ التضمين من `docker-compose.yml` نفسه — بـ`"${HOST_PORT_EMBEDDING:-8080}:8080"` — طُرح و**رُفض** (‏[`release-blockers-plan.md`](release-blockers-plan.md) ن‑3) لأنّ متغيّراً اختياريّاً «يفتح المنفذ دائماً بمجرّد ضبطه في `.env` قد يُنسى مفعَّلاً»، والافتراضيّ `:-8080` أخطر إذ ينشر بلا متغيّرٍ أصلاً. هنا المنفذ **مغلقٌ بالبناء**: أمر النشر لا يسمّي الملفّ، فلا وجود لمفتاح `ports` بالنسبة إليه.
@@ -463,8 +472,8 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
 ### 36 · تزويد قاعدة الاختبار — الأمر اليدويّ
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d postgres
-docker compose -f docker-compose.yml -f docker-compose.test.yml exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d postgres
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh
 ```
 
 **السطران كلاهما يحتاج `-f` الثانية**، لا الثاني وحده: بدونها لا وجود للتركيب أصلاً فلا وجود للسكربت.
@@ -487,7 +496,7 @@ REQUIRE_LIVE=1 pytest -rs
 ### 37 · قراءة الـGPU — `docker-compose.wsl-gpu.yml`
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app
+docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-compose.build.yml up -d app
 ```
 
 **العطل الذي يعالجه:** صفحة System Monitor كانت تعرض `nvidia-smi is not available on this host`. الواجهة سليمة والخادم سليم — [`system_stats.py`](../src/app/infrastructure/monitoring/system_stats.py) يبحث عن `nvidia-smi` بـ`shutil.which` ويُبلِّغ غيابه بدل أن يدّعي «لا بطاقات». البطاقة كانت مرئيّةً في WSL (`NVIDIA GeForce RTX 4060 Laptop GPU`) وغير ممرَّرةٍ إلى الحاوية: `DeviceRequests = null`.
@@ -507,7 +516,42 @@ gpu_error : None
 gpu       : index=0 · NVIDIA GeForce RTX 4060 Laptop GPU · util 0% · mem 1.16/8.0 GB (14.5%) · 50°C · 4.64 W
 ```
 
-⚠️ **الملفّ يُسمّى في كلّ `up` لاحق.** `docker compose up -d` مجرَّداً يعيد إنشاء `app` بلا التجاوز فتعود القراءة غائبة. لتثبيته لهذا المضيف وحده: `COMPOSE_FILE=docker-compose.yml:docker-compose.wsl-gpu.yml` في `.env` (‏وهو مُتَجاهَلٌ في git — القاعدة الذهبيّة 7).
+⚠️ **الملفّ يُسمّى في كلّ `up` لاحق.** `docker compose up -d` مجرَّداً يعيد إنشاء `app` بلا التجاوز فتعود القراءة غائبة. لتثبيته لهذا المضيف وحده: `COMPOSE_FILE=docker-compose.yml:docker-compose.wsl-gpu.yml:docker-compose.build.yml` في `.env` (‏وهو مُتَجاهَلٌ في git — القاعدة الذهبيّة 7).
+
+---
+
+### 38–39 · الإصدار — `deploy/release/build-push.sh` و`release.yml`
+
+```bash
+git tag v2026.10.1 <sha-on-master> && git push origin v2026.10.1   # 39: الطريق المعتاد (CI)
+deploy/release/build-push.sh 2026.10.1                               # 38: الطوارئ فقط
+```
+
+- **المستودع:** خاصٌّ واحد `anastawahia/aizzak` على Docker Hub، والصور تُميَّز ببادئة الوسم:
+
+  | الصورة | البادئة | المرجع للإصدار `2026.10.1` |
+  |---|---|---|
+  | التطبيق | `app` | `anastawahia/aizzak:app-2026.10.1` |
+  | التضمين على المعالج | `embedding` | `anastawahia/aizzak:embedding-2026.10.1` |
+  | التضمين على الكرت | `embedding-cuda` | محجوزة للخطوة 2.4، لا تُبنى الآن |
+
+  رقم الإصدار واحدٌ للصورتين. لا `dev` ولا `latest`. المستودع يجب أن يُنشأ **خاصّاً** قبل أوّل رفع (وإلّا أنشأه Docker Hub عامّاً بإعداد الحساب الافتراضيّ، والسكربت يرفض الرفع إن وجده عامّاً).
+- **على الخادم** يكتب `.env` الوسمين من الرقم نفسه:
+
+  ```
+  APP_IMAGE_REPO=anastawahia/aizzak
+  APP_IMAGE_TAG=app-<YYYY.M.N>
+  EMBEDDING_IMAGE_REPO=anastawahia/aizzak
+  EMBEDDING_IMAGE_TAG=embedding-<YYYY.M.N>
+  ```
+
+  وسمٌ بلا بادئة يفشل سحبه (`not found`)، ووسمٌ ببادئةٍ خاطئة يشغّل الصورة الخطأ.
+- **شروط السكربت** (ورموز الخروج في رأسه): الشجرة نظيفة، و`HEAD` على `origin/master`، وCI أخضر لهذا الـcommit (يتخطّاه CI لأنّ `needs: quality` هو الفحص)، وbuildx بـ`linux/amd64`، والمستودع خاصّ، ولا وسم بهذا الرقم. يبني الصورتين **كلتيهما** قبل أوّل رفع.
+- **رفعٌ جزئيّ = إصدارٌ مهجور:** إن رُفعت صورةٌ وفشلت الثانية، لا يُعاد الرقم ولا يُستكمل؛ أصدر الرقم التالي. السكربت يطبع ما رُفع.
+- **بعد أيّ رفع، كلّ ردٍّ غير `404` يُهجر الإصدار:** يفحص السكربت خصوصيّة المستودع بعد كلّ رفع، ولا يقبل إلّا `404` بالضبط. `200` (عامّ) أو `429` أو `5xx` أو انتهاء المهلة ⇒ يخرج بالرمز 9 ويطبع ما رُفع، والإصدار مهجور: أصدر الرقم التالي. (ومسار `--digest-file` غير القابل للكتابة يُرفض بالرمز 2 قبل أيّ بناء.)
+- **CI:** وسوم `v*` فقط. الأسرار `DOCKERHUB_USERNAME` و`DOCKERHUB_TOKEN` (يضعها الإنسان) في GitHub Environment اسمه `release` مقيَّدٍ بوسوم `v*`. مفتاح Docker Hub بصلاحيّة Read & Write بلا Delete.
+- **أين البصمات:** سطر سجلّ الوظيفة، وملخّص الوظيفة، والـartifact `release-digests`. (قد يُخفي السجلّ اسم المساحة إن طابق قيمةَ `DOCKERHUB_USERNAME`؛ الـartifact غير مُخفى.)
+- **مأزق الفروع القديمة** مع سطر `COMPOSE_FILE`: انظر الأمر 1.
 
 ---
 

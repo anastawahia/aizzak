@@ -186,7 +186,6 @@ async def _assert_file_landed(
     return row.storage_key.value
 
 
-@pytest.mark.anyio
 async def test_a_real_requested_job_flows_through_the_relay_to_the_real_generator(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,

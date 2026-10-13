@@ -185,7 +185,7 @@ docker compose exec -T app python -c "import urllib.request;print(urllib.request
 | توليد مراجعةٍ جديدة | `alembic revision -m "..."` | ‏data‑engineer |
 | إخراج SQL بلا اتّصال | `alembic upgrade <rev> --sql` (لمراجعةِ النصّ فقط) | ‏data‑engineer |
 | فحص الـDDL المتدرّج | `python -m app.ops.online_ddl` | ‏data‑engineer |
-| التطبيق على `aizzak_test` | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` ثمّ `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` ثمّ `python -m app.ops.provision` على DSN الاختبار | ‏data‑engineer |
+| التطبيق على `aizzak_test` | `docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d` ثمّ `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` ثمّ `python -m app.ops.provision` على DSN الاختبار | ‏data‑engineer |
 | التطبيق على `shared-dev` أو أيّ هدفٍ آخر | `docker compose up migrate` (أي `python -m app.ops.provision`) | **بشريٌّ فقط** |
 | ❌ **ممنوع** | `alembic upgrade head` — ‏`head` **غامضٌ** مع اثنتي عشرة سلسلةً، وAlembic يرفضه بـ«Multiple head revisions are present». التسلسلُ الحقيقيُّ مُرمَّزٌ في `app/ops/provision.py` **وحده** | — |
 

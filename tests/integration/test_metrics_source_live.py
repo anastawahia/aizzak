@@ -95,7 +95,6 @@ async def _seed_outbox_row(
     return event_id
 
 
-@pytest.mark.anyio
 async def test_outbox_age_is_zero_with_nothing_waiting_and_rises_with_a_seeded_row(
     live_db: LiveDbDsns, metrics_engine: AsyncEngine, redis_client: Redis
 ) -> None:
@@ -115,7 +114,6 @@ async def test_outbox_age_is_zero_with_nothing_waiting_and_rises_with_a_seeded_r
     assert 12.0 <= age < 60.0
 
 
-@pytest.mark.anyio
 async def test_outbox_age_ignores_published_rows_regardless_of_how_old(
     live_db: LiveDbDsns, metrics_engine: AsyncEngine, redis_client: Redis
 ) -> None:
@@ -129,7 +127,6 @@ async def test_outbox_age_ignores_published_rows_regardless_of_how_old(
     assert await source.outbox_oldest_unpublished_age_seconds() == 0.0
 
 
-@pytest.mark.anyio
 async def test_dlq_depth_reflects_a_real_xadd_and_xdel(
     metrics_engine: AsyncEngine, redis_client: Redis
 ) -> None:
@@ -159,7 +156,6 @@ async def test_dlq_depth_reflects_a_real_xadd_and_xdel(
     assert settled == baseline, "removing the entry must restore the prior depth"
 
 
-@pytest.mark.anyio
 async def test_two_independent_instances_report_the_identical_value(
     live_db: LiveDbDsns, live_redis: str
 ) -> None:
@@ -207,7 +203,6 @@ def _parse_gauge(body: str, name: str) -> float:
     raise AssertionError(f"metric {name!r} not found in:\n{body}")
 
 
-@pytest.mark.anyio
 async def test_a_real_http_scrape_reflects_a_change_in_the_underlying_row(
     live_db: LiveDbDsns, metrics_engine: AsyncEngine, redis_client: Redis
 ) -> None:

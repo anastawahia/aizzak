@@ -36,7 +36,6 @@ async def _cleanup(client: Redis, stream: str, groups: list[str]) -> None:
     await client.delete(stream)
 
 
-@pytest.mark.anyio
 async def test_an_unacked_entry_is_redelivered_on_the_next_read(redis_client: Redis) -> None:
     """Proves ``RedisStreamsConsumer.read``'s own "recovery pass" deviation
     (its class docstring) against REAL Redis: a plain ``>`` read alone could
@@ -71,7 +70,6 @@ async def test_an_unacked_entry_is_redelivered_on_the_next_read(redis_client: Re
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_two_groups_on_one_stream_each_independently_receive_the_entry(
     redis_client: Redis,
 ) -> None:
@@ -117,7 +115,6 @@ async def test_two_groups_on_one_stream_each_independently_receive_the_entry(
         await _cleanup(redis_client, stream, [group_a, group_b])
 
 
-@pytest.mark.anyio
 async def test_engine_redelivers_to_a_handler_that_raised_on_the_first_attempt(
     redis_client: Redis,
 ) -> None:
@@ -171,7 +168,6 @@ async def test_engine_redelivers_to_a_handler_that_raised_on_the_first_attempt(
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_ensure_group_is_idempotent_across_repeated_calls(redis_client: Redis) -> None:
     """A worker restart re-runs ``setup()`` -> ``ensure_group`` again on the
     same ``(stream, group)`` -- ``BUSYGROUP`` must be swallowed, not raised,
@@ -190,7 +186,6 @@ async def test_ensure_group_is_idempotent_across_repeated_calls(redis_client: Re
 # --------------------------------------------------------------------------- #
 # 5.2-ب: delivery counts + DLQ, live                                          #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_delivery_count_grows_across_recovery_redeliveries(redis_client: Redis) -> None:
     """The empirically-verified semantics ``StreamMessage.delivery_count``'s
     docstring documents, proven through the adapter itself against real
@@ -223,7 +218,6 @@ async def test_delivery_count_grows_across_recovery_redeliveries(redis_client: R
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_a_persistently_failing_handler_is_dead_lettered_after_n_attempts(
     redis_client: Redis,
 ) -> None:
@@ -288,7 +282,6 @@ async def test_a_persistently_failing_handler_is_dead_lettered_after_n_attempts(
         await redis_client.delete(dlq)
 
 
-@pytest.mark.anyio
 async def test_a_malformed_entry_is_dead_lettered_immediately(redis_client: Redis) -> None:
     """Policy 1 live: an entry with no ``ce`` field at all (a poison XADD
     from outside the producer path) moves to the DLQ on its FIRST delivery
@@ -355,7 +348,6 @@ def _live_consumer(redis_client: Redis, *, concurrency: int) -> StreamConsumer:
     )
 
 
-@pytest.mark.anyio
 async def test_a_concurrent_batch_beats_the_sequential_one_against_real_redis(
     redis_client: Redis,
 ) -> None:
@@ -411,7 +403,6 @@ async def test_a_concurrent_batch_beats_the_sequential_one_against_real_redis(
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_two_messages_about_one_subject_stay_serialised_on_real_redis(
     redis_client: Redis,
 ) -> None:
@@ -449,7 +440,6 @@ async def test_two_messages_about_one_subject_stay_serialised_on_real_redis(
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_a_concurrent_read_never_redelivers_what_is_still_in_flight(
     redis_client: Redis,
 ) -> None:

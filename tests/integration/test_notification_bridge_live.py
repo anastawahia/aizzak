@@ -62,7 +62,6 @@ def _consumer(redis_client: Redis) -> StreamConsumer:
     )
 
 
-@pytest.mark.anyio
 async def test_an_indexed_event_reaches_only_its_workspace_session(
     redis_client: Redis,
 ) -> None:
@@ -119,7 +118,6 @@ async def test_an_indexed_event_reaches_only_its_workspace_session(
         await _cleanup(redis_client, stream, group)
 
 
-@pytest.mark.anyio
 async def test_a_media_generated_event_pushes_the_job_result(
     redis_client: Redis,
 ) -> None:
@@ -167,7 +165,6 @@ async def test_a_media_generated_event_pushes_the_job_result(
         await _cleanup(redis_client, stream, group)
 
 
-@pytest.mark.anyio
 async def test_an_event_with_nobody_connected_is_acked_not_stuck(
     redis_client: Redis,
 ) -> None:

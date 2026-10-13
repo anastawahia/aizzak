@@ -31,8 +31,6 @@ import os
 import signal
 from collections.abc import Sequence
 
-import pytest
-
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.events.envelope import build_envelope
@@ -41,8 +39,6 @@ from app.framework.types import Json
 from app.infrastructure.messaging.consumers.engine import StreamConsumer, Subscription
 from app.infrastructure.messaging.redis_streams import ConsumerInfo, StreamMessage
 from app.workers.lifecycle import run_worker
-
-pytestmark = pytest.mark.anyio
 
 _STREAM = "stream.memory"
 _GROUP = "cg.memory"

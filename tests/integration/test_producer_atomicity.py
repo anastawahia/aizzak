@@ -107,7 +107,6 @@ def _real_service(tenant_session: TenantSessionFactory) -> MediaRequestService:
     )
 
 
-@pytest.mark.anyio
 async def test_the_job_row_and_its_outbox_row_commit_together(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -138,7 +137,6 @@ async def test_the_job_row_and_its_outbox_row_commit_together(
     assert str(rows[0]["workspace_id"]) == workspace_id
 
 
-@pytest.mark.anyio
 async def test_an_outbox_failure_rolls_back_the_aggregate_write_too(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:

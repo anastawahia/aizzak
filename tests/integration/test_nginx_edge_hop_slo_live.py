@@ -193,7 +193,6 @@ def _assert_sanity_ceiling(report: EdgeHopReport) -> None:
     )
 
 
-@pytest.mark.anyio
 async def test_nginx_edge_hop_latency_is_measured_separately_and_not_folded_in() -> None:
     report = await measure_nginx_edge_hop()
     # `-s` is how an operator re-running this test SEES this evidence.

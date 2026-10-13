@@ -262,7 +262,17 @@ testpaths = ["tests"]
 # package and reached only by this one test module.
 pythonpath = ["src", "."]
 asyncio_mode = "auto"
-addopts = "-q --strict-markers"
+# `-p no:anyio`: pytest-asyncio is the ONE async test runner. anyio's pytest
+# plugin also claims the async fixtures of any `@pytest.mark.anyio` test, and
+# which plugin wins depends on the order the two are loaded -- not guaranteed,
+# and different on CI than here. When anyio won, a fixture ran in anyio's loop
+# while its test ran in pytest-asyncio's, so CI's integration job failed with
+# `Event loop is closed` / `attached to a different loop` (46 tests) while
+# every local run passed (docs/integration-ci-fix-plan.md). With the plugin
+# off, `--strict-markers` rejects a reintroduced `pytest.mark.anyio` at
+# collection, here, instead of on CI. Guarded by
+# `tests/unit/test_single_async_test_runner.py`.
+addopts = "-q --strict-markers -p no:anyio"
 # Every marker below MUST be applied by at least one test. `--strict-markers`
 # only rejects an APPLIED marker that was never declared -- it says nothing
 # about a DECLARED marker that nothing applies, and that silent direction is

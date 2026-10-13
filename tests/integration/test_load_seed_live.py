@@ -44,7 +44,7 @@ from app.ops.load_seed import (
     tenant_transaction,
 )
 
-pytestmark = [pytest.mark.live_db, pytest.mark.anyio]
+pytestmark = [pytest.mark.live_db]
 
 _ANCHOR = datetime(2026, 9, 3, tzinfo=UTC)
 _BM25 = Bm25Params(k1=1.5, b=0.75, avg_len=32.0)

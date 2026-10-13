@@ -1,0 +1,165 @@
+name: Release images
+
+# Builds and pushes ONE release's platform images (server-gpu-plan.md 1.4) by
+# running deploy/release/build-push.sh -- the same script an operator runs, so
+# no build logic lives here. Fires ONLY on a pushed `v*` tag: no pull_request,
+# no branches, so a fork can never reach the registry secret. The repository is
+# PUBLIC: no step may print a credential. Guarded by
+# tests/unit/test_release_workflow.py.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Seconds, not minutes: a malformed tag or a commit that is not on master
+  # fails here, before the five gates spend a runner on it.
+  preflight:
+    if: github.repository == 'anastawahia/aizzak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag format and master ancestry
+        run: deploy/release/build-push.sh --preflight "${GITHUB_REF_NAME#v}"
+
+  # The five gates + alert rules, step for step the `quality` job of ci.yml
+  # (ci.yml does not run on tags). Drift between the two is a test failure.
+  quality:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # `parsers` is NOT optional: `tests/unit/test_knowledge_parsers.py` imports
+      # `fitz` at module level, so installing `[dev]` alone ends the job at
+      # COLLECTION with zero tests run. Installed rather than guarded with
+      # `importorskip`, so that a test cannot skip itself into green.
+      - name: Install (editable + dev and parsers extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,parsers]"
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: mypy --strict
+        run: mypy src
+
+      - name: import-linter
+        run: lint-imports
+
+      # The WHOLE suite -- unit + architecture + integration. No `-m` filter:
+      # every `tests/integration/` module is gated by a `live_*` marker whose
+      # fixture probes its service and skips honestly when unreachable, so on
+      # a bare runner they skip instead of failing. `-rs` prints the name and
+      # reason of every skip into the CI log, so the job states out loud what
+      # it did NOT run instead of hiding it behind a green check.
+      - name: pytest (full suite; live_* tests skip without local services)
+        run: pytest -rs
+
+      # Capacity 7.3: every alert rule fired on synthetic series (and held
+      # silent on the healthy shape) by the promtool of the image Compose
+      # pins, plus `amtool check-config`. Docker is on every ubuntu-latest
+      # runner; PyYAML came with `[dev]` above.
+      - name: alert rules (promtool test rules + amtool check-config)
+        run: deploy/prometheus/test-rules.sh
+        env:
+          PYTHON: python
+
+  publish:
+    needs: [preflight, quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Registry secrets are set
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=""
+          [ -n "${DOCKERHUB_USERNAME}" ] || missing="${missing} DOCKERHUB_USERNAME"
+          [ -n "${DOCKERHUB_TOKEN}" ] || missing="${missing} DOCKERHUB_TOKEN"
+          if [ -n "${missing}" ]; then
+            echo "::error::release secret(s) not set in environment 'release':${missing}"
+            exit 1
+          fi
+
+      # Measured on the first run; frees space only when short.
+      - name: Runner disk
+        run: |
+          df -h /
+          if [ "$(df --output=avail -k / | tail -1)" -lt 26214400 ]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+            df -h /
+          fi
+
+      - name: Log in to Docker Hub (token on stdin)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "${DOCKERHUB_TOKEN}" |
+            docker login docker.io --username "${DOCKERHUB_USERNAME}" --password-stdin
+
+      - name: Build and push (deploy/release/build-push.sh)
+        run: |
+          deploy/release/build-push.sh --gates-checked-by-workflow \
+            --digest-file "${RUNNER_TEMP}/release-digests.txt" "${GITHUB_REF_NAME#v}"
+
+      # Right after the push, before anything else reads the job: the stored
+      # credential is not needed any more.
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout docker.io
+
+      - name: Digests to the job summary
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/release-digests.txt" ]; then
+            cat "${RUNNER_TEMP}/release-digests.txt" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      # Unmasked record: a secret's value is masked in logs, so if
+      # DOCKERHUB_USERNAME equals the namespace the log shows
+      # `***/aizzak:app-<v>@sha256:...` (the tag prefix still tells the images apart).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-digests
+          path: ${{ runner.temp }}/release-digests.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Runner disk after
+        if: always()
+        run: df -h /
+
+      # Safety net: runs even if an earlier step was skipped or cancelled.
+      - name: Log out of Docker Hub (safety)
+        if: always()
+        run: docker logout docker.io

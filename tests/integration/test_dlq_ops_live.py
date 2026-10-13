@@ -35,7 +35,6 @@ async def _cleanup(client: Redis, stream: str, group: str) -> None:
     await client.delete(f"{stream}.dlq")
 
 
-@pytest.mark.anyio
 async def test_a_dead_lettered_entry_is_requeued_and_reaches_a_fresh_consumer_read(
     redis_client: Redis,
 ) -> None:
@@ -107,7 +106,6 @@ async def test_a_dead_lettered_entry_is_requeued_and_reaches_a_fresh_consumer_re
         await _cleanup(redis_client, stream, group)
 
 
-@pytest.mark.anyio
 async def test_a_ce_less_malformed_entry_is_visible_but_refused_on_requeue(
     redis_client: Redis,
 ) -> None:
