@@ -318,7 +318,7 @@
       <article class="step partial">
         <div class="step-id">١٫١</div>
         <div class="step-body">
-          <div class="step-title"><h3>فصل البناء عن التشغيل</h3><span class="tag partial">جارية · منفَّذ على فرع <code>feat/prebuilt-images</code>، ينتظر التحقّق</span></div>
+          <div class="step-title"><h3>فصل البناء عن التشغيل</h3><span class="tag partial">جارية · مدموج في <code>master</code>، بانتظار التحقّق</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>ملفّ التشغيل يسمّي الصور فقط، والبناء في ملفٍّ منفصلٍ يستعمله جهاز المالك وحده.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>ملفّ التشغيل وحده يعمل في مجلّدٍ فارغ، وجهاز المالك يعطي النتيجة نفسها التي يعطيها اليوم.</dd></div>
@@ -329,7 +329,7 @@
       <article class="step partial">
         <div class="step-id">١٫٢</div>
         <div class="step-body">
-          <div class="step-title"><h3>سجلّ صورٍ وأرقام إصدارٍ ثابتة</h3><span class="tag partial">جارية · منفَّذ على فرع <code>feat/prebuilt-images</code>، ينتظر التحقّق</span></div>
+          <div class="step-title"><h3>سجلّ صورٍ وأرقام إصدارٍ ثابتة</h3><span class="tag partial">جارية · مدموج في <code>master</code>، بانتظار التحقّق</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>صورتان الآن، البرنامج والتضمين على المعالج، في مستودعٍ خاصٍّ واحد، وكلٌّ منهما بوسمٍ يبدأ باسمها ثمّ رقم الإصدار. والثالثة، التضمين على الكرت، مكانٌ محجوز يُبنى في الخطوة ٢٫٤. ولا تُستعمل «آخر نسخة» على أيّ خادم.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>الصورتان تُسحبان برقم الإصدار من جهازٍ مسجَّلٍ في السجلّ، ولا تُسحبان من غيره.</dd></div>
@@ -340,7 +340,7 @@
       <article class="step partial">
         <div class="step-id">١٫٣</div>
         <div class="step-body">
-          <div class="step-title"><h3>سكربت البناء والرفع</h3><span class="tag partial">جارية · منفَّذ على فرع <code>feat/prebuilt-images</code>، ينتظر التحقّق</span></div>
+          <div class="step-title"><h3>سكربت البناء والرفع</h3><span class="tag partial">جارية · مدموج في <code>master</code>، بانتظار التحقّق</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>أمرٌ واحد يبني الصورتين (والثالثة بعد ٢٫٤) ويرفعهما ويطبع بصماتها. والرفع من جهاز المالك بطيء (قيس عند نحو ١٥٠ كيلوبايت في الثانية)، فهذا السكربت للطوارئ.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>الصورتان في المستودع برقم الإصدار نفسه، وبصماتهما مكتوبة.</dd></div>
@@ -351,7 +351,7 @@
       <article class="step partial">
         <div class="step-id">١٫٤</div>
         <div class="step-body">
-          <div class="step-title"><h3>البناء والرفع من GitHub</h3><span class="tag partial">جارية · منفَّذ على فرع <code>feat/prebuilt-images</code>، ينتظر التحقّق</span></div>
+          <div class="step-title"><h3>البناء والرفع من GitHub</h3><span class="tag partial">جارية · مدموج في <code>master</code>، بانتظار التحقّق</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>نشر رقم إصدارٍ جديد يبني الصور ويرفعها تلقائيّاً، دون جهاز المالك.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>نشر الرقم يُنتج الصورتين (والثالثة بعد ٢٫٤) في المستودع.</dd></div>
@@ -706,7 +706,7 @@
 
   <section class="blockers">
     <h2>ما ينتظره البدء</h2>
-    <p>المرحلة ١ (١٫١–١٫٤) منفَّذةٌ على فرع <code>feat/prebuilt-images</code> وتنتظر التحقّق؛ وقرارا السجلّ والبناء في GitHub حُسما (مستودعٌ خاصٌّ واحد ببادئات وسوم، ونعم). لم تبدأ بقيّة الخطوات، وتنتظر موافقة المالك على الملفّات المحميّة وقرار حجم الخادم.</p>
+    <p>المرحلة ١ (١٫١–١٫٤) مدموجةٌ في <code>master</code> وتنتظر التحقّق (بقي إعداد <code>.env</code> على جهاز المالك وأوّل إصدار)؛ وقرارا السجلّ والبناء في GitHub حُسما (مستودعٌ خاصٌّ واحد ببادئات وسوم، ونعم). لم تبدأ بقيّة الخطوات، وتنتظر موافقة المالك على الملفّات المحميّة وقرار حجم الخادم.</p>
     <div class="bgrid">
       <div class="bcard">
         <div class="who">يحجب: ٢٤ خطوة من ٢٨</div>
@@ -727,7 +727,7 @@
   </section>
 
   <p class="foot">
-    مبنيّ من <code>docs/server-gpu-plan.md</code> · فرع <code>runpod</code> · آخر تحديث ١٣ أكتوبر ٢٠٢٦ (المرحلة ١ منفَّذة على الفرع وتنتظر التحقّق).
+    مبنيّ من <code>docs/server-gpu-plan.md</code> · فرع <code>master</code> · آخر تحديث ١٤ أكتوبر ٢٠٢٦ (المرحلة ١ مدموجة في <code>master</code> وتنتظر التحقّق).
     التفاصيل الكاملة لكلّ خطوة، والملفّات التي تلمسها، في وثيقة الخطّة.
   </p>
 

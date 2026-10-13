@@ -41,7 +41,7 @@
 | AC-1.5 (مصحَّح §5.1: مقارنة `services` فقط) | **دليلٌ جزئيّ:**<br>- `test_overlay_renders_todays_build_and_image_names` (جرى هنا، لم يُتخطَّ).<br>- مراجعة الشيفرة قاست `services` من `master` ومن الفرع مع الملفّ الإضافيّ، بـ`.env.example`، بلا profile ومع `--profile backup`، فجاءت متطابقة حرفيّاً (`review.md`).<br>**الناقص:** المقارنة نفسها على `.env` المالك الحقيقيّ | ⏳ مؤجَّل بشرط (ش-2) |
 | AC-1.6 | `test_compose_build_overlay.py::test_base_file_alone_renders_and_builds_nothing` (جرى هنا). وكرّره QA يدويّاً: 35 خدمة، وما فيها `build` = 0 | ✅ مقبول |
 | AC-1.7 | `ci.yml:95` = `docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml`. ويثبّتها `test_ci_workflow_truthfulness.py::test_integration_job_selects_real_markers_and_requires_live_dependencies` | ✅ مقبول |
-| AC-1.8 | **دليلٌ جزئيّ:** `docker compose config -q` لتركيبة CI (الأساسيّ + test + build) نجح محلّيّاً (`test-plan.md` §3).<br>**الناقص:** تشغيل CI على الفرع لم يحدث بعد | ⏳ مؤجَّل، **وشرطٌ قبل الدمج** (ش-1) |
+| AC-1.8 | **دليلٌ جزئيّ:** `docker compose config -q` لتركيبة CI (الأساسيّ + test + build) نجح محلّيّاً (`test-plan.md` §3).<br>**الناقص:** تشغيل CI على الفرع لم يحدث بعد.<br>**تحديث 2026‑10‑14 (ش-1):** دُفعت commits الميزة ضمن [PR #3](https://github.com/anastawahia/aizzak/pull/3). في [run 38470311343](https://github.com/anastawahia/aizzak/actions/runs/38470311343):<br>- `quality` و`integration` خضراوان.<br>- خطوة `Provision` بنت `aizzak/app:dev` داخل CI (`naming to docker.io/aizzak/app:dev done`)، ولا `Pulling aizzak/app` فيها. Compose هناك لا يطبع كلمة `Building`، فمخرجات BuildKit هي دليل البناء.<br>- `release.yml` لم يعمل على الـPR.<br>جرى التحقّق بعد الدمج المحلّيّ لا قبله، لأنّ البوّابة ② كانت دمجاً بلا دفع | ✅ مقبول (2026‑10‑14) |
 | AC-1.9 | **دليلٌ جزئيّ:** الاختبار نفسه الذي في AC-1.5 يُظهر الصورتين `aizzak/app:dev` و`aizzak/embedding:dev` مع ملفّ البناء.<br>**الناقص:** البناء الفعليّ على `.env` المالك | ⏳ مؤجَّل بشرط (ش-2) |
 | AC-1.10 | البوّابات الخمس خضراء بعد `9a29215` (أعلاه). و`git diff master -- .importlinter` فارغ | ✅ مقبول |
 
@@ -156,7 +156,7 @@
 - البوّابات خضراء بلا تخطٍّ.
 
 **الشروط:**
-- **ش-1** (AC-1.8، أي CI الـPR أخضر) شرطٌ لازم **قبل** الدمج.
+- **ش-1** (AC-1.8، أي CI الـPR أخضر) شرطٌ لازم **قبل** الدمج. **تحقّق في 2026‑10‑14** عبر PR #3 (انظر AC-1.8).
 - **ش-2** يُنفَّذ عند الدمج على جهاز المالك.
 
 **ما لا يشمله هذا القبول:** الخطوات 1.1–1.4 في الخطّة لا تصير ✅ إلّا بعد ش-2 وش-4 كما في الجدول أعلاه. وإن فشل أيٌّ من ش-1 أو ش-4، تعود الميزة إلى **مرحلة البناء** (devops-engineer)، ثمّ تُعاد المراجعة والقبول للجزء المتغيّر.
