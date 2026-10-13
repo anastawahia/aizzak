@@ -1,0 +1,28 @@
+# Development overlay: HOW the two platform images are built
+# (server-gpu-plan.md 1.1). docker-compose.yml only names them; a server pulls
+# released images and never reads this file (it is not in the 5.1 bundle).
+#
+# Enable it on a development machine with ONE line in the environment file:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+# (with the WSL GPU overlay: docker-compose.yml:docker-compose.wsl-gpu.yml:docker-compose.build.yml)
+# A command that passes `-f` explicitly ignores COMPOSE_FILE and must add
+# `-f docker-compose.build.yml` itself.
+#
+# Only `build` belongs here (tests/unit/test_compose_build_overlay.py).
+services:
+  migrate: &app-build
+    build:
+      context: .
+      dockerfile: Dockerfile
+  app: *app-build
+  worker-memory: *app-build
+  worker-knowledge: *app-build
+  worker-media: *app-build
+  outbox-relay: *app-build
+  wal-shipper: *app-build
+  backup: *app-build
+  ops-scheduler: *app-build
+  embedding:
+    build:
+      context: .
+      dockerfile: services/embedding/Dockerfile

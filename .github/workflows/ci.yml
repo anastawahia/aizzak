@@ -88,9 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # The overlay is explicit: it alone mounts the opt-in test-database
-      # script. The production Compose file never provisions a test database.
-      COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml
+      # The overlays are explicit: the test one alone mounts the opt-in
+      # test-database script (the production Compose file never provisions a
+      # test database), and the build one is what lets `--build migrate` below
+      # build the image -- docker-compose.yml only names it.
+      COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml
     steps:
       - uses: actions/checkout@v4
 
