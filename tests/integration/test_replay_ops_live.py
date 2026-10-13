@@ -199,7 +199,6 @@ class _Harness:
         await self.redis.delete(f"{self.stream}.dlq")
 
 
-@pytest.mark.anyio
 async def test_a_batch_lost_with_its_stream_is_restored_exactly_once(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -287,7 +286,6 @@ async def test_a_batch_lost_with_its_stream_is_restored_exactly_once(
         await h.cleanup()
 
 
-@pytest.mark.anyio
 async def test_a_partial_loss_replays_only_what_the_stream_no_longer_holds(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -348,7 +346,6 @@ async def test_a_partial_loss_replays_only_what_the_stream_no_longer_holds(
         await h.cleanup()
 
 
-@pytest.mark.anyio
 async def test_what_the_relay_published_before_the_group_came_back_is_replayed(
     tenant_session: TenantSessionFactory,
     relay_engine: AsyncEngine,
@@ -390,7 +387,6 @@ async def test_what_the_relay_published_before_the_group_came_back_is_replayed(
         await h.cleanup()
 
 
-@pytest.mark.anyio
 async def test_rows_older_than_the_ledger_window_are_never_replayed(
     tenant_session: TenantSessionFactory,
     relay_engine: AsyncEngine,

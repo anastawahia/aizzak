@@ -181,7 +181,6 @@ async def _read_document_as_owner(
         await engine.dispose()
 
 
-@pytest.mark.anyio
 async def test_indexing_a_file_writes_its_document_and_its_event_in_one_transaction(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -269,7 +268,6 @@ async def test_indexing_a_file_writes_its_document_and_its_event_in_one_transact
         await redis_client.delete(stream)
 
 
-@pytest.mark.anyio
 async def test_indexing_the_same_file_twice_registers_exactly_one_document(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -503,7 +501,6 @@ async def _cleanup_index_run(
         await redis_client.delete(stream)
 
 
-@pytest.mark.anyio
 @pytest.mark.live_minio
 @pytest.mark.live_qdrant
 async def test_a_real_txt_file_flows_from_requested_all_the_way_to_indexed(

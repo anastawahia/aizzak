@@ -52,7 +52,6 @@ def _ctx(workspace_id: str) -> ExecutionContext:
     )
 
 
-@pytest.mark.anyio
 async def test_the_four_claim_outcomes_over_the_real_primary_key(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -82,7 +81,6 @@ async def test_the_four_claim_outcomes_over_the_real_primary_key(
     assert replay.response_body == {"file_id": "f-1", "expires_in": 900}
 
 
-@pytest.mark.anyio
 async def test_only_one_of_two_concurrent_claims_wins(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -103,7 +101,6 @@ async def test_only_one_of_two_concurrent_claims_wins(
     )
 
 
-@pytest.mark.anyio
 async def test_a_released_claim_frees_the_key_for_a_retry(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -122,7 +119,6 @@ async def test_a_released_claim_frees_the_key_for_a_retry(
     assert retried.outcome is ClaimOutcome.CLAIMED
 
 
-@pytest.mark.anyio
 async def test_release_cannot_undo_a_completed_key(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -139,7 +135,6 @@ async def test_release_cannot_undo_a_completed_key(
     assert still_there.response_body == {"file_id": "f-1"}
 
 
-@pytest.mark.anyio
 async def test_a_conflicting_claim_does_not_poison_the_enclosing_transaction(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -165,7 +160,6 @@ async def test_a_conflicting_claim_does_not_poison_the_enclosing_transaction(
             assert (await session.execute(text("SELECT 1"))).scalar_one() == 1
 
 
-@pytest.mark.anyio
 async def test_rls_isolates_one_workspaces_keys_from_anothers(
     tenant_session: TenantSessionFactory,
 ) -> None:

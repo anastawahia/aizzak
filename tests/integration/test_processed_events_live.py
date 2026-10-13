@@ -57,7 +57,6 @@ def _ctx(workspace_id: str) -> ExecutionContext:
     )
 
 
-@pytest.mark.anyio
 async def test_first_claim_wins_repeat_loses_and_groups_are_independent(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -71,7 +70,6 @@ async def test_first_claim_wins_repeat_loses_and_groups_are_independent(
     assert await ledger.claim(ctx, consumer_group="cg.notify", event_id=event_id) is True
 
 
-@pytest.mark.anyio
 async def test_a_claim_rolls_back_with_the_unit_of_work(
     tenant_session: TenantSessionFactory,
 ) -> None:
@@ -91,7 +89,6 @@ async def test_a_claim_rolls_back_with_the_unit_of_work(
     assert await ledger.claim(ctx, consumer_group="cg.knowledge", event_id=event_id) is True
 
 
-@pytest.mark.anyio
 async def test_a_duplicate_claim_does_not_poison_the_enclosing_transaction(
     live_db: LiveDbDsns,
     tenant_session: TenantSessionFactory,
@@ -154,7 +151,6 @@ async def test_a_duplicate_claim_does_not_poison_the_enclosing_transaction(
     assert count == 1
 
 
-@pytest.mark.anyio
 async def test_app_rw_can_neither_read_nor_delete_the_ledger(
     sessionmaker_app: async_sessionmaker[AsyncSession],
 ) -> None:

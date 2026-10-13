@@ -82,7 +82,6 @@ def _envelope(*, workspace_id: str, document_id: str) -> Json:
     )
 
 
-@pytest.mark.anyio
 async def test_two_sibling_bridge_processes_each_receive_the_notification(
     redis_client: Redis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -153,7 +152,6 @@ async def test_two_sibling_bridge_processes_each_receive_the_notification(
         await _cleanup(redis_client, stream, [group_a, group_b])
 
 
-@pytest.mark.anyio
 async def test_a_group_shared_between_two_processes_only_delivers_to_one(
     redis_client: Redis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -217,7 +215,6 @@ async def test_a_group_shared_between_two_processes_only_delivers_to_one(
         await _cleanup(redis_client, stream, [shared_group])
 
 
-@pytest.mark.anyio
 async def test_teardown_destroys_the_bridges_own_group_leaving_none_behind(
     redis_client: Redis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -252,7 +249,6 @@ async def test_teardown_destroys_the_bridges_own_group_leaving_none_behind(
         await _cleanup(redis_client, stream, [group])
 
 
-@pytest.mark.anyio
 async def test_sweep_stale_notify_groups_removes_a_dead_siblings_group_but_not_a_live_ones(
     redis_client: Redis,
 ) -> None:

@@ -255,7 +255,6 @@ def test_each_mapping_mints_a_fresh_event_id() -> None:
 # --------------------------------------------------------------------------- #
 # MediaRequestService — the inbound port                                       #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_request_queues_the_job_and_appends_its_event() -> None:
     jobs, outbox = _FakeMediaJobs(), _FakeOutbox()
 
@@ -273,7 +272,6 @@ async def test_request_queues_the_job_and_appends_its_event() -> None:
     assert records[0].aggregate_id == view.job_id
 
 
-@pytest.mark.anyio
 async def test_request_returns_a_handle_for_the_queued_job() -> None:
     """D-04: the agent gets a job to await, never a generated asset."""
     jobs, outbox = _FakeMediaJobs(), _FakeOutbox()
@@ -291,7 +289,6 @@ async def test_request_returns_a_handle_for_the_queued_job() -> None:
     assert view.kind == "video"
 
 
-@pytest.mark.anyio
 async def test_the_append_runs_under_the_callers_context() -> None:
     """Same ``ExecutionContext`` ⇒ same RLS scope as the aggregate write."""
     ctx = _ctx(workspace_id="ws-42")
@@ -308,7 +305,6 @@ async def test_the_append_runs_under_the_callers_context() -> None:
     assert outbox.calls[0][0] is ctx
 
 
-@pytest.mark.anyio
 async def test_a_rejected_request_never_reaches_the_outbox() -> None:
     """Validation runs before anything is queued (INV-MJ3), so an invalid
     request must not leave an event behind."""
@@ -322,7 +318,6 @@ async def test_a_rejected_request_never_reaches_the_outbox() -> None:
     assert outbox.calls == []
 
 
-@pytest.mark.anyio
 async def test_an_outbox_failure_is_surfaced_not_swallowed() -> None:
     """Swallowing would hand the user a job id for a job nothing will ever pick
     up — a queued row with no event is invisible to the Phase-5 worker."""
@@ -336,7 +331,6 @@ async def test_an_outbox_failure_is_surfaced_not_swallowed() -> None:
         )
 
 
-@pytest.mark.anyio
 async def test_the_append_runs_inside_the_units_of_work_transaction() -> None:
     """5.1-أ: if the append ever ran OUTSIDE ``uow.begin(ctx)``, an aggregate
     write could commit with no event and nothing else here would catch it —
@@ -382,7 +376,6 @@ async def test_the_append_runs_inside_the_units_of_work_transaction() -> None:
 # --------------------------------------------------------------------------- #
 # submit — the full-aggregate face (6.1-هـ-2)                                   #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_submit_returns_the_full_queued_aggregate() -> None:
     """The API face: 03 §2's ``MediaJobOut`` needs ``result_file_id``/``error``/
     ``created_at``, which the agent-facing ``RequestedMedia`` deliberately
@@ -408,7 +401,6 @@ async def test_submit_returns_the_full_queued_aggregate() -> None:
     assert records[0].aggregate_id == job.id
 
 
-@pytest.mark.anyio
 async def test_request_is_a_projection_of_submit() -> None:
     """One atomic core: ``request`` must carry ``submit``'s own job — a drift
     between the two faces would hand agents and API callers different jobs."""
@@ -429,7 +421,6 @@ async def test_request_is_a_projection_of_submit() -> None:
 # --------------------------------------------------------------------------- #
 # The whole seam: a real agent over the real service                           #
 # --------------------------------------------------------------------------- #
-@pytest.mark.anyio
 async def test_the_image_agent_runs_over_the_real_service() -> None:
     """The 4.7-d-2 deliverable, end to end: ``ImageAgent`` → the framework
     ``MediaRequesting`` seam → ``MediaRequestService`` → the outbox.

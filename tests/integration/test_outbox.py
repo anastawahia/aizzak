@@ -81,7 +81,6 @@ async def _read_rows(owner_dsn: str, event_ids: list[str]) -> list[RowMapping]:
         await engine.dispose()
 
 
-@pytest.mark.anyio
 async def test_append_writes_every_column_the_relay_needs(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -106,7 +105,6 @@ async def test_append_writes_every_column_the_relay_needs(
     assert row["causation_id"] is None
 
 
-@pytest.mark.anyio
 async def test_payload_round_trips_verbatim(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -119,7 +117,6 @@ async def test_payload_round_trips_verbatim(
     assert row["payload"] == record.payload
 
 
-@pytest.mark.anyio
 async def test_relay_owned_columns_are_left_to_the_database(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -134,7 +131,6 @@ async def test_relay_owned_columns_are_left_to_the_database(
     assert row["created_at"] >= before, "created_at must come from the server clock"
 
 
-@pytest.mark.anyio
 async def test_a_multi_event_append_lands_as_one_statement(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -147,7 +143,6 @@ async def test_a_multi_event_append_lands_as_one_statement(
     assert len(rows) == 3
 
 
-@pytest.mark.anyio
 async def test_empty_sequence_writes_nothing(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:
@@ -171,7 +166,6 @@ async def test_empty_sequence_writes_nothing(
     assert after == before
 
 
-@pytest.mark.anyio
 async def test_duplicate_event_id_surfaces_as_a_conflict_not_a_driver_error(
     live_db: LiveDbDsns, tenant_session: TenantSessionFactory
 ) -> None:

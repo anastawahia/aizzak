@@ -310,7 +310,6 @@ def _stub_payloads(
     return asked
 
 
-@pytest.mark.anyio
 async def test_publish_sends_only_replay_rows_in_order_with_their_stored_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -327,7 +326,6 @@ async def test_publish_sends_only_replay_rows_in_order_with_their_stored_envelop
     assert outcome.failure is None and outcome.vanished == 0
 
 
-@pytest.mark.anyio
 async def test_publish_stops_at_the_first_failure_and_says_how_far_it_got(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -340,7 +338,6 @@ async def test_publish_stops_at_the_first_failure_and_says_how_far_it_got(
     assert outcome.failure is not None
 
 
-@pytest.mark.anyio
 async def test_a_row_gone_before_its_payload_was_read_is_counted_not_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,7 +348,6 @@ async def test_a_row_gone_before_its_payload_was_read_is_counted_not_fatal(
     assert outcome.vanished == 1
 
 
-@pytest.mark.anyio
 async def test_payloads_are_read_a_page_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = [(_candidate(event_id=f"e{i}"), Verdict.REPLAY) for i in range(2_500)]
     asked = _stub_payloads(monkeypatch, {f"e{i}": {"id": f"e{i}"} for i in range(2_500)})
@@ -360,7 +356,6 @@ async def test_payloads_are_read_a_page_at_a_time(monkeypatch: pytest.MonkeyPatc
     assert [len(page) for page in asked] == [1_000, 1_000, 500]
 
 
-@pytest.mark.anyio
 async def test_run_provisions_groups_before_it_selects_and_publishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,7 +383,6 @@ async def test_run_provisions_groups_before_it_selects_and_publishes(
     assert calls == ["ensure_groups", "build_plan", "publish"]
 
 
-@pytest.mark.anyio
 async def test_run_refuses_before_publishing_anything_when_over_the_backstop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

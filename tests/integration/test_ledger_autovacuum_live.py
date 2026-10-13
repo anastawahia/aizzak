@@ -108,7 +108,6 @@ async def _visible_to_sweeper(engine: AsyncEngine, ids: list[str]) -> int:
 # ------------------------------------------- (1) the settings were stored --
 
 
-@pytest.mark.anyio
 async def test_every_watched_table_carries_an_absolute_vacuum_trigger(
     live_db: LiveDbDsns,
 ) -> None:
@@ -140,7 +139,6 @@ async def test_every_watched_table_carries_an_absolute_vacuum_trigger(
         assert int(row.threshold) > 0, f"{row.qualified} has no absolute floor"
 
 
-@pytest.mark.anyio
 async def test_the_rollups_reserve_page_space_and_the_ledgers_do_not(
     live_db: LiveDbDsns,
 ) -> None:
@@ -162,7 +160,6 @@ async def test_the_rollups_reserve_page_space_and_the_ledgers_do_not(
     assert outbox_has_fillfactor == 0
 
 
-@pytest.mark.anyio
 async def test_the_growth_report_reads_every_watched_table(live_db: LiveDbDsns) -> None:
     """The report's own SQL, against the real catalogue: a table renamed or a
     schema moved makes ``regclass`` raise rather than silently return fewer
@@ -185,7 +182,6 @@ async def test_the_growth_report_reads_every_watched_table(live_db: LiveDbDsns) 
 # -------------------------------------------- (2) the sweep can reach it --
 
 
-@pytest.mark.anyio
 async def test_the_sweep_deletes_past_the_cutoff_across_two_workspaces(
     retention_engine: AsyncEngine, tenant_session: TenantSessionFactory
 ) -> None:
@@ -217,7 +213,6 @@ async def test_the_sweep_deletes_past_the_cutoff_across_two_workspaces(
     )
 
 
-@pytest.mark.anyio
 async def test_a_dry_run_counts_the_same_rows_and_deletes_none(
     retention_engine: AsyncEngine, tenant_session: TenantSessionFactory
 ) -> None:
@@ -232,7 +227,6 @@ async def test_a_dry_run_counts_the_same_rows_and_deletes_none(
     assert await _visible_to_sweeper(retention_engine, [record]) == 1
 
 
-@pytest.mark.anyio
 async def test_the_sweep_role_cannot_touch_the_rollups(retention_engine: AsyncEngine) -> None:
     """The balance, not the detail: deleting a rollup row would hand a
     workspace back headroom it already spent. Enforced by the absence of a
@@ -247,7 +241,6 @@ async def test_the_sweep_role_cannot_touch_the_rollups(retention_engine: AsyncEn
 # ------------------------------------------ (3) nobody else was widened --
 
 
-@pytest.mark.anyio
 async def test_the_carve_out_did_not_widen_app_rw(
     tenant_session: TenantSessionFactory,
 ) -> None:

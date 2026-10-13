@@ -106,7 +106,6 @@ async def _seed_connection(
     return connection_id
 
 
-@pytest.mark.anyio
 async def test_sweep_persists_the_rewrapped_ciphertext_across_every_tenant_in_one_pass(
     tenant_session: TenantSessionFactory, transit_rotator_engine: AsyncEngine, live_db: LiveDbDsns
 ) -> None:
@@ -143,7 +142,6 @@ async def test_sweep_persists_the_rewrapped_ciphertext_across_every_tenant_in_on
     assert row_two == "vault:v2:bbb"
 
 
-@pytest.mark.anyio
 async def test_sweep_is_safe_to_rerun_and_skips_already_current_rows(
     tenant_session: TenantSessionFactory, transit_rotator_engine: AsyncEngine
 ) -> None:
@@ -161,7 +159,6 @@ async def test_sweep_is_safe_to_rerun_and_skips_already_current_rows(
     assert second.rewrapped == 0, "a row already at the current version must not be rewritten"
 
 
-@pytest.mark.anyio
 async def test_sweep_reaches_a_nullable_integrations_column_and_leaves_unset_rows_alone(
     tenant_session: TenantSessionFactory, transit_rotator_engine: AsyncEngine
 ) -> None:
@@ -188,7 +185,6 @@ async def test_sweep_reaches_a_nullable_integrations_column_and_leaves_unset_row
     assert result.rewrapped == 1
 
 
-@pytest.mark.anyio
 async def test_rewrap_all_sweeps_all_three_tables_against_the_real_schema(
     transit_rotator_engine: AsyncEngine,
 ) -> None:
@@ -205,7 +201,6 @@ async def test_rewrap_all_sweeps_all_three_tables_against_the_real_schema(
     assert all(r.rewrapped == 0 for r in results)  # nothing seeded in this test
 
 
-@pytest.mark.anyio
 async def test_transit_rotator_cannot_insert_delete_or_touch_any_other_column(
     transit_rotator_engine: AsyncEngine,
 ) -> None:

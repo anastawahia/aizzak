@@ -78,7 +78,6 @@ def _sibling_hubs(
     )
 
 
-@pytest.mark.anyio
 async def test_the_cap_is_enforced_across_two_separate_hubs_not_within_one(
     redis_client: Redis,
 ) -> None:
@@ -114,7 +113,6 @@ async def test_the_cap_is_enforced_across_two_separate_hubs_not_within_one(
         await _purge(redis_client, prefix)
 
 
-@pytest.mark.anyio
 async def test_simultaneous_registrations_never_overshoot_the_cap(redis_client: Redis) -> None:
     """The check-then-add race the design brief names: twelve registrations
     fired CONCURRENTLY across two sibling hubs against a ceiling of four.
@@ -144,7 +142,6 @@ async def test_simultaneous_registrations_never_overshoot_the_cap(redis_client: 
         await _purge(redis_client, prefix)
 
 
-@pytest.mark.anyio
 async def test_a_crashed_processes_entry_ages_out_but_a_renewed_one_does_not(
     redis_client: Redis,
 ) -> None:
@@ -203,7 +200,6 @@ async def test_a_crashed_processes_entry_ages_out_but_a_renewed_one_does_not(
         await _purge(redis_client, prefix)
 
 
-@pytest.mark.anyio
 async def test_unregister_frees_the_slot_for_the_other_sibling(redis_client: Redis) -> None:
     """A clean disconnect on worker 1 must free the slot for worker 2 --
     otherwise the global cap would be a one-way ratchet that only ever
@@ -229,7 +225,6 @@ async def test_unregister_frees_the_slot_for_the_other_sibling(redis_client: Red
         await _purge(redis_client, prefix)
 
 
-@pytest.mark.anyio
 async def test_renew_never_resurrects_a_released_entry(redis_client: Redis) -> None:
     """``ZADD XX``'s load-bearing half: a renewal that races a release must not
     re-create the slot it just gave back. Without ``XX`` the renewal loop would
