@@ -2,8 +2,9 @@
 
 # خطّة إصلاح اختبارات integration في CI — خلط حلقات asyncio
 
-> **الحالة:** منفَّذة، وCI أخضر · 2026‑10‑14 · بانتظار قرار الدمج ([PR #3](https://github.com/anastawahia/aizzak/pull/3))
+> **الحالة:** منفَّذة ومدموجة في `master` (`7a3f998`، [PR #3](https://github.com/anastawahia/aizzak/pull/3)) · 2026‑10‑14 · CI أخضر على الـPR وعلى `master`
 > **النتيجة:** [run 38470311343](https://github.com/anastawahia/aizzak/actions/runs/38470311343): ‏`quality` و`integration` أخضران. في `integration`: 5772 ناجح، و0 فشل، و0 خطأ، و5 متخطّاة كلّها متوقّعة. لم تظهر أعطال جديدة.
+> **بعد الدمج:** [run 38477071071](https://github.com/anastawahia/aizzak/actions/runs/38477071071) على `master` ‏`7a3f998`: الاثنان أخضران. في `integration`: 5773 ناجح، و0 فشل، و0 خطأ، و4 متخطّاة. اختبار مراجع الفروع الذي تخطّاه الـPR يعمل على `master` وينجح.
 > **الـ commits:** ‏`784b1c8` (حذف الوسم + `-p no:anyio` + الحارس) و`5db1654` (`-rfEs` في job ‏`integration` فقط، لأنّ `release.yml` يجب أن يطابق job ‏`quality` حرفيّاً).
 > **الهدف:** أن يصبح job ‏`integration` في CI أخضر، بإزالة الـ46 خطأً وفشلاً التي سببها خلط حلقات asyncio.
 > **المرجع:** [run 38373161101](https://github.com/anastawahia/aizzak/actions/runs/38373161101) على `master` ‏`de707f0`. شُغّل مرّتين في 2026‑10‑13 وكانت النتيجة نفسها بالضبط.
