@@ -52,6 +52,29 @@ cd /home/AIZZAK
 cp .env.example .env
 ```
 
+ثمّ **فعّل سطر `COMPOSE_FILE`** في `.env` ليبني Compose الصورتين محلّيّاً. ملفّ `docker-compose.yml` صار **يسمّي** صورتَي التطبيق والتضمين فقط ولا يبنيهما؛ والبناء في `docker-compose.build.yml`. أضف السطر بيدك (القالب يحمله معلَّقاً عمداً):
+
+```bash
+env | grep -c '^COMPOSE_FILE='     # يجب أن يطبع 0: متغيّرٌ مُصدَّر في الصدفة يغلب .env
+if grep -q '^COMPOSE_FILE=' .env; then
+  grep -q '^COMPOSE_FILE=.*docker-compose\.build\.yml' .env \
+    || sed -i '/^COMPOSE_FILE=/ s/$/:docker-compose.build.yml/' .env
+else
+  printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.build.yml\n' >> .env
+fi
+grep '^COMPOSE_FILE=' .env           # ليس سرّاً: يطبع هذا السطر وحده
+```
+
+| حالة `.env` قبل التعديل | النتيجة |
+|---|---|
+| لا سطر `COMPOSE_FILE` | `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` |
+| `COMPOSE_FILE=docker-compose.yml:docker-compose.wsl-gpu.yml` | `COMPOSE_FILE=docker-compose.yml:docker-compose.wsl-gpu.yml:docker-compose.build.yml` |
+| القيمة بين علامتَي تنصيص | `sed` يُلحق بعد العلامة فيكسرها — **عدّل السطر يدويّاً** |
+
+> ⚠️ **بدون هذا السطر** يحاول `docker compose up -d` سحب `aizzak/app:dev` من مساحةٍ على Docker Hub لا نملكها، **ولا يبني**.
+>
+> ⚠️ **مأزق الفروع القديمة:** بعد السطر، أيّ `git switch` إلى commit **قبل** هذه الميزة يُفشل كلّ أمر `docker compose` بـ«`docker-compose.build.yml`: no such file». عطّل السطر مؤقّتاً (`#`) عند العمل على فرعٍ قديم.
+
 ثمّ **املأ في `.env`** القيم التي تفشل الحاويات بدونها:
 
 | المفتاح | لماذا يجب تغييره |
@@ -83,8 +106,11 @@ grep "^MINIO_ROOT_USER=" .env   # معرّفٌ لا سرّ: لا قاعدةَ ط
 ### 2.2 الإقلاع
 
 ```bash
+docker compose build        # أوّل مرّةٍ على نسخةٍ جديدة: يبني الصورتين محلّيّاً قبل أيّ up
 docker compose up -d
 ```
+
+> 📌 **لماذا `build` أوّلاً؟** أمر `build` لا يسحب الصورة الهدف. فإن وُجدت الصورتان محلّيّاً لم يحاول `up` سحبهما من المساحة `aizzak` غير المحجوزة على Docker Hub. و`up -d` وحده على نسخةٍ جديدة يطبع أوّلاً `Pulling … authorization failed` ثمّ يبني: هذا سلوك Compose اليوم وليس عطلاً.
 
 > ⚠️ **على حجمٍ جديد:** دورُ `metrics_exporter` يُولد بلا كلمة سرّ، فشغّل الخطوةَ ① من [`08 §3.3‑ج`](design/08-local-runbook.md) مرّةً بعد أوّل `up -d`، وإلّا اشتعل `AizzakPostgresDown`.
 
@@ -224,11 +250,13 @@ docker compose restart vault
 
 اختبارات التكامل تعمل على قاعدة `aizzak_test` داخل Postgres الحاوي، بدورَي `aizzak_owner` (المُهاجِر) و`app_rw` (المحكوم بـRLS). ملف `.env.test` المحليّ يحمل الاعتمادات الفعلية والعناوين؛ وملف التجاوز لا يُقرأ ولا يزوّد القاعدة تلقائياً.
 
+> 📌 الأمران أدناه يسمّيان `-f` صراحةً، و`-f` الصريح **يتجاهل `COMPOSE_FILE`** في `.env` كلّه، فأُضيف إليهما `-f docker-compose.build.yml` ليبقى بناء الصورتين ممكناً.
+
 ```bash
 cd /home/AIZZAK && source .venv/bin/activate
 
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.test.yml \
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml \
   exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh
 set -a; source .env.test; set +a
 
@@ -293,6 +321,7 @@ GET  /api/v1/usage                    → ملخّص الاستهلاك
 | AppRole لا يُستعمل رغم ضبط `ROLE_ID`/`SECRET_ID` | `VAULT_TOKEN` غير فارغ — التوكن يفوز دائماً (§5.1) |
 | Vault يعمل ساعةً ثمّ يفشل كلّ سرّ | انتهاء `token_ttl` (توكن AppRole للتطبيق) بلا إعادة مصادقة — تحقّق أنّ `relogin` موصولٌ في جذر التركيب |
 | `role_id` غير صالحٍ بعد أوّل إقلاع | الدور أُنشئ بمعرّفٍ عشوائيّ لأنّ `AIZZAK_APPROLE_ROLE_ID`/`VAULT_ROLE_ID` لم يكونا مضبوطَين وقتها؛ ثبّتهما في `.env` وأعد تشغيل `vault-bootstrap` (‏`docker compose up -d vault-bootstrap`) — الدور نفسه يبقى بعد ذلك عبر أيّ إعادة تشغيل |
+| `pull access denied for aizzak/app` (أو `aizzak/embedding`) | سطر `COMPOSE_FILE` غائبٌ من `.env` (§2.1)، أو أمرٌ بـ`-f` صريحٍ نسي `-f docker-compose.build.yml` — الـ`-f` الصريح يتجاهل `COMPOSE_FILE` كلّه |
 | `https://localhost` يرفض الاتّصال | لم تُولَّد الشهادة: `docker compose up -d nginx-certs` ثمّ أعد تشغيل `nginx` |
 | نموّ ذاكرة Redis | `XLEN stream.<وحدة>` — المجاري إلحاقيّة و`XACK` لا يحذف (§4) |
 | 401 دائماً | صلاحية توكن Firebase / `FIREBASE_PROJECT_ID` |

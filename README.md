@@ -119,9 +119,10 @@ AIZZAK/
 │   ├── load/                      # ⭐ منصّة الحمل: خمسة سيناريوهات k6 · ملفّا ذروةٍ ومتوسّط
 │                                  #    run.sh (مضيف أو حاوية) · smoke.sh يُثبت الهيكل في 30 ث
 │                                  #    والبذرةُ نفسُها في src/app/ops/load_seed.py (0.1 الشرط ٣)
+│   ├── release/                   # build-push.sh: بناء صورتَي المنصّة ورفعهما (بادئةُ الوسم app-/embedding-)
 │   └── runpod/                    # صورةٌ واحدةٌ شاملة لـRunPod
-├── .github/workflows/ci.yml
-├── docker-compose.yml (+ .test · .wsl-gpu) · Dockerfile · .env.example
+├── .github/workflows/ci.yml · release.yml
+├── docker-compose.yml (+ .test · .wsl-gpu · .build) · Dockerfile · .env.example
 └── pyproject.toml · alembic.ini · .importlinter
 ```
 
@@ -151,6 +152,9 @@ AIZZAK/
 
 ```bash
 cp .env.example .env      # ⚠️ املأ كلمات السرّ + FIREBASE_PROJECT_ID (وإلّا لن يقلع التطبيق)
+# ثمّ أضف في .env السطر COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+#   (ليبني Compose الصورتين محلّيّاً؛ التفصيل في docs/quickstart.md §2.1)
+docker compose build      # أوّل مرّةٍ على نسخةٍ جديدة
 docker compose up -d
 curl -s http://localhost/health
 ```
