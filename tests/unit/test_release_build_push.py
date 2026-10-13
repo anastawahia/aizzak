@@ -86,6 +86,11 @@ if a[:2] == ["buildx", "build"]:
         sys.exit(1)
     sys.exit(0)
 if a[:1] == ["push"]:
+    broken = os.environ.get("FAKE_DOCKER_BREAK_FILE")
+    if broken:  # make the digest file unwritable after the first push
+        if os.path.exists(broken):
+            os.remove(broken)
+        os.mkdir(broken)
     if has("FAKE_DOCKER_FAIL_PUSH", a[1]):
         print("denied", file=sys.stderr)
         sys.exit(1)
@@ -516,8 +521,22 @@ def test_failure_after_a_successful_push_still_reports_the_tag_as_pushed(
     assert len(run.pushes()) == (1 if which == "first" else 2)
 
 
-def test_digest_file_write_failure_aborts_and_never_prints_ok(tmp_path: Path) -> None:
+def test_unwritable_digest_file_is_a_usage_error_before_any_call(tmp_path: Path) -> None:
     run = _run(tmp_path, "--digest-file", str(tmp_path / "missing-dir" / "d.txt"), _VERSION)
+    assert run.proc.returncode == 2
+    assert "digest-file" in run.err
+    assert run.calls == []
+
+
+def test_digest_file_failing_late_hits_the_backstop(tmp_path: Path) -> None:
+    digest_file = tmp_path / "d.txt"
+    run = _run(
+        tmp_path,
+        "--digest-file",
+        str(digest_file),
+        _VERSION,
+        env={"FAKE_DOCKER_BREAK_FILE": str(digest_file)},
+    )
     _assert_abandoned_with(run, [_APP_REF])
     assert "digest file" in run.err
 

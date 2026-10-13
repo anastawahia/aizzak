@@ -34,8 +34,9 @@
 # to run while the repository is public, and fails loudly if it turns public.
 #
 # Order and exit codes (the first failing check decides):
-#   2  bad usage: missing or malformed version, unknown option, or
-#      --gates-checked-by-workflow outside GitHub Actions
+#   2  bad usage: missing or malformed version, unknown option,
+#      --gates-checked-by-workflow outside GitHub Actions, or a --digest-file
+#      that cannot be written (checked before anything is built or pushed)
 #   3  not the repository root, or the working tree is dirty
 #   4  HEAD is not an ancestor of origin/master (or the fetch failed)
 #   5  CI for this commit is not completed/success (skipped with
@@ -45,7 +46,7 @@
 #   8  an image failed to BUILD (nothing has been pushed yet: all images are
 #      built before the first push)
 #   9  after `docker push` started: a push failed; a pushed tag's digest could not
-#      be read or is malformed; the --digest-file could not be written; or the
+#      be read or is malformed; the --digest-file could not be written after all (backstop); or the
 #      repository did not answer exactly 404 (private) after a push -- public,
 #      rate limited, 5xx and timeouts all abort (fail closed). Every tag that
 #      reached the registry is listed with the ABANDONED message
@@ -299,6 +300,16 @@ main() {
   fi
   if ((GATES_BY_WORKFLOW == 1)) && [[ ${GITHUB_ACTIONS:-} != "true" ]]; then
     usage_die "--gates-checked-by-workflow is only accepted inside GitHub Actions"
+  fi
+
+  # Fail before any build or push: a bad path found after the first push would
+  # burn a version number. The check in push_image stays as a backstop.
+  if [[ $MODE == "release" && -n $DIGEST_FILE ]]; then
+    # A probe file must not outlive the probe: it would dirty the tree checked next.
+    local existed=0
+    [[ -e $DIGEST_FILE ]] && existed=1
+    : >>"$DIGEST_FILE" 2>/dev/null || usage_die "cannot write --digest-file $DIGEST_FILE"
+    ((existed == 1)) || rm -f "$DIGEST_FILE"
   fi
 
   require_repo_root
