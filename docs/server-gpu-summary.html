@@ -255,13 +255,14 @@
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: أربع جارية وأربعٌ وعشرون لم تبدأ">
-      <span class="s-partial" style="flex:4">٤ جارية</span>
+    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: واحدة مكتملة وثلاث جارية وأربعٌ وعشرون لم تبدأ">
+      <span class="s-done" style="flex:1">١</span>
+      <span class="s-partial" style="flex:3">٣ جارية</span>
       <span class="s-pending" style="flex:24">٢٤ لم تبدأ</span>
     </div>
     <div class="legend">
-      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٠</span>
-      <span><i class="k-partial"></i>جارية — ٤</span>
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ١</span>
+      <span><i class="k-partial"></i>جارية — ٣</span>
       <span><i class="k-pending"></i>لم تبدأ — ٢٤</span>
     </div>
   </section>
@@ -315,10 +316,10 @@
     <p class="wave-note">اليوم يبني الخادم البرنامج من الشيفرة، فيحتاج المستودع كاملاً. بعد هذه المرحلة يسحب صوراً جاهزة برقم إصدارٍ ثابت.</p>
     <div class="steps">
 
-      <article class="step partial">
+      <article class="step done">
         <div class="step-id">١٫١</div>
         <div class="step-body">
-          <div class="step-title"><h3>فصل البناء عن التشغيل</h3><span class="tag partial">جارية · مدموج في <code>master</code>، بانتظار التحقّق</span></div>
+          <div class="step-title"><h3>فصل البناء عن التشغيل</h3><span class="tag done">مكتملة · ١٤ أكتوبر ٢٠٢٦</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>ملفّ التشغيل يسمّي الصور فقط، والبناء في ملفٍّ منفصلٍ يستعمله جهاز المالك وحده.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>ملفّ التشغيل وحده يعمل في مجلّدٍ فارغ، وجهاز المالك يعطي النتيجة نفسها التي يعطيها اليوم.</dd></div>
@@ -706,7 +707,7 @@
 
   <section class="blockers">
     <h2>ما ينتظره البدء</h2>
-    <p>المرحلة ١ (١٫١–١٫٤) مدموجةٌ في <code>master</code> وتنتظر التحقّق (بقي إعداد <code>.env</code> على جهاز المالك وأوّل إصدار)؛ وقرارا السجلّ والبناء في GitHub حُسما (مستودعٌ خاصٌّ واحد ببادئات وسوم، ونعم). لم تبدأ بقيّة الخطوات، وتنتظر موافقة المالك على الملفّات المحميّة وقرار حجم الخادم.</p>
+    <p>المرحلة ١ (١٫١–١٫٤) مدموجةٌ في <code>master</code>: ١٫١ اكتملت (ضُبط <code>.env</code> على جهاز المالك ونجح البناء)، و١٫٢–١٫٤ تنتظر إعداد Docker Hub وGitHub وأوّل إصدار؛ وقرارا السجلّ والبناء في GitHub حُسما (مستودعٌ خاصٌّ واحد ببادئات وسوم، ونعم). لم تبدأ بقيّة الخطوات، وتنتظر موافقة المالك على الملفّات المحميّة وقرار حجم الخادم.</p>
     <div class="bgrid">
       <div class="bcard">
         <div class="who">يحجب: ٢٤ خطوة من ٢٨</div>
@@ -727,7 +728,7 @@
   </section>
 
   <p class="foot">
-    مبنيّ من <code>docs/server-gpu-plan.md</code> · فرع <code>master</code> · آخر تحديث ١٤ أكتوبر ٢٠٢٦ (المرحلة ١ مدموجة في <code>master</code> وتنتظر التحقّق).
+    مبنيّ من <code>docs/server-gpu-plan.md</code> · فرع <code>master</code> · آخر تحديث ١٤ أكتوبر ٢٠٢٦ (١٫١ مكتملة، و١٫٢–١٫٤ تنتظر أوّل إصدار).
     التفاصيل الكاملة لكلّ خطوة، والملفّات التي تلمسها، في وثيقة الخطّة.
   </p>
 

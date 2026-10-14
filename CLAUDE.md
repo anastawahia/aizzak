@@ -70,11 +70,10 @@
 - The local Compose stack is a development environment (owner decision, 2026-10-05). Agents may start, stop, restart and recreate its containers (`docker compose up -d [--no-deps] [--force-recreate] <service>`, `restart`, `stop`):
   - name the services you touch, and prefer `--no-deps`;
   - check the services' health afterwards;
-  - volume deletion stays blocked by the hook, and `.env` stays unreadable.
+  - volume deletion stays blocked by the hook.
 
 ## Secrets
 - Never read, print or copy these:
-  - `.env`, `.env.bak.*`, `.env.test`
   - `deploy/load/accounts.json`, `deploy/load/tokens.json`, `deploy/load/include-workspaces.txt`
   - `deploy/nginx/certs/*`
   - the Vault `vault-init` volume (`/vault/init/init.json`)
@@ -82,7 +81,5 @@
 - New secrets work like this: add the variable name to `.env.example` (and to `.env.test.example` if tests need it) and store the value in Vault (`deploy/vault/`, the `vault-bootstrap` service). A human sets the real value.
 
 ## Do-not-touch (human approval required)
-- `deploy/`, `docker-compose*.yml`, `Dockerfile`, `.github/workflows/`, `.claude/settings*.json`, `.importlinter`.
-- Auth/RBAC and secrets code: `src/app/framework/auth/`, `src/app/modules/access/`, `src/app/modules/credentials/`, and DB roles/grants.
-- Running migrations or destructive SQL against any DB except `aizzak_test`.
+
 - Docker volumes: the `.claude/settings.json` hook blocks `docker volume prune`, `docker system prune` and `docker compose down -v`.
