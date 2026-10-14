@@ -49,6 +49,11 @@ _COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 # it, and its contract is the exit code of one `base`/`dump`/`status` run.
 # `wal-shipper` is deliberately NOT here: it is the standing half, and it
 # declares a heartbeat below.
+#
+# gpu-compose 2.2 adds `ollama-pull`: profile `local-llm`, one run that pulls the
+# models PROVIDER_ROUTING names and exits -- its contract is the exit code
+# (0 done, 2 bad routing, 3 Ollama unreachable, 4 a pull failed). The service it
+# pulls INTO, `ollama`, is standing and carries its own healthcheck.
 _ONE_SHOT = frozenset(
     {
         "migrate",
@@ -58,6 +63,7 @@ _ONE_SHOT = frozenset(
         "k6",
         "wal-archive-init",
         "backup",
+        "ollama-pull",
     }
 )
 

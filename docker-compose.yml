@@ -198,7 +198,11 @@ x-app-env: &app-env
   # asymmetry, since a variable present in both environments is exactly the
   # thing a later edit would "fix".
   EMBEDDING_CACHE_TTL_S: ${EMBEDDING_CACHE_TTL_S:-600}
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  # server-gpu-plan.md 2.2: the in-stack `ollama` service (profile
+  # `local-llm`) -- the same default the app's own settings carry
+  # (env_settings.py). This WSL machine's .env points at the bridge on :11435
+  # (profile `wsl-ollama`); any Ollama outside Compose is an absolute URL in .env.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
   EVENT_STREAM_PREFIX: ${EVENT_STREAM_PREFIX:-stream.}
   OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
   CONSUMER_BLOCK_MS: ${CONSUMER_BLOCK_MS:-5000}
@@ -255,7 +259,7 @@ x-app-env: &app-env
   # command that reads it.
   HEARTBEAT_DIR: ${HEARTBEAT_DIR:-/tmp/aizzak-heartbeat}
   HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S:-300}
-  PROVIDER_ROUTING: ${PROVIDER_ROUTING:-{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}}
+  PROVIDER_ROUTING: &provider-routing ${PROVIDER_ROUTING:-{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}},"embedding":{"default":{"provider":"embedding-local","model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"}}}}
   # capacity-plan 6.4: the llm route a chat turn falls back to when its cloud
   # provider fails before answering. Empty = no fallback; the route must
   # exist in PROVIDER_ROUTING and be local (keyless), or `app` refuses to boot
@@ -300,7 +304,8 @@ x-app-logging: &app-logging
       # recreated ships lines with no `attrs` and lands them all unlabelled.
       labels: "com.docker.compose.service,com.docker.compose.project"
 
-# `host.docker.internal` -- which OLLAMA_BASE_URL defaults to above -- is a
+# `host.docker.internal` -- which this WSL machine's .env names for the bridge
+# (:11435), as does any host whose Ollama lives outside Compose -- is a
 # Docker DESKTOP convenience that does not exist on Linux Docker: the name has
 # no resolver entry inside the container, so every LLM call died with
 # `ConnectError [Errno -2] Name or service not known` while Ollama sat healthy
@@ -341,6 +346,9 @@ x-worker-service: &worker-service
   depends_on:
     ollama-bridge:
       condition: service_started
+    ollama:
+      condition: service_healthy
+      required: false      # 2.2: profile local-llm -- absent on this WSL machine
     # This edge was MISSING until §3.111 even though DATABASE_URL has named
     # `pgbouncer:6432` all along -- see the note on `outbox-relay`.
     #
@@ -1640,6 +1648,99 @@ services:
     <<: *app-logging
     restart: unless-stopped
 
+  # ── Ollama INSIDE the stack (server-gpu-plan.md 2.2) ──────────────────────
+  # The platform's local LLM as a Compose service, for every host without an
+  # Ollama of its own: a server sets COMPOSE_PROFILES=local-llm, and
+  # OLLAMA_BASE_URL's default (x-app-env) already names this service. Behind
+  # a profile because THIS machine keeps its native WSL Ollama (ollama-bridge
+  # above, profile wsl-ollama): a default `up -d` starts neither, and each host
+  # opts into exactly one.
+  #
+  # INTERNAL ONLY -- `expose`, never `ports`: Ollama has no authentication, so
+  # it gets the embedding service's trust boundary exactly.
+  # CPU here; docker-compose.gpu.yml adds the GPU reservation.
+  ollama:
+    profiles: ["local-llm"]
+    deploy:
+      resources:
+        limits:
+          # ⚠️ ESTIMATES, measured by gpu-compose AC‑2.7 (CPU) and AC‑6.4 (GPU):
+          # gemma3:1b is 0.8 GB of weights, plus the KV cache for
+          # OLLAMA_NUM_PARALLEL x num_ctx 8192, plus compute buffers. Outside the
+          # standing ledger (profiled, 08 §2‑ز); a server's budget is step 3.4.
+          cpus: "4.0"
+          memory: 4g
+    # The native WSL Ollama's own version (Q‑5), so gemma3:1b behaves as measured
+    # here. Index digest on 2026-10-14:
+    # sha256:2c9595c555fd70a28363489ac03bd5bf9e7c5bdf2890373c3a830ffd7252ce6d
+    image: ollama/ollama:0.13.5
+    environment:
+      # 2.6. ONE model resident: loading another evicts this one instead of
+      # sitting beside it in VRAM (08 §2‑ي).
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      # Requests one loaded model serves at once; the rest wait in Ollama's own
+      # queue (OLLAMA_MAX_QUEUE, 512). EQUAL to OLLAMA_MAX_CONCURRENCY's default
+      # on purpose, and NOT because the stack sends at most this many: that
+      # guard is per API process (twelve of them; the workers run unguarded), so
+      # Ollama is the queue. VRAM grows with NUM_PARALLEL x num_ctx; the queue
+      # costs latency, not memory. Move both together and re-measure 08 §2‑ي
+      # (tests/unit/test_compose_local_llm.py).
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
+    volumes:
+      - ollama-models:/root/.ollama
+    expose:
+      - "11434"
+    # THE SHAPE IS FORCED BY THE IMAGE (measured): ubuntu:24.04 plus the ollama
+    # binary -- no curl, no wget. bash's /dev/tcp, the qdrant precedent above.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/11434 && printf 'GET /api/version HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '^HTTP/1.1 200 OK' <&3",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    <<: *app-logging
+
+  # One-shot: pull EXACTLY the Ollama models PROVIDER_ROUTING routes to, and
+  # never one already present -- a second run contacts no registry and works
+  # offline. A stock Python image running one standard-library file (the
+  # alert-sink precedent): nothing to build, read-only, unprivileged. Nothing
+  # waits for it: a chat before the first pull ends answers 502, it does not
+  # hold the boot. Re-run with `docker compose run --rm ollama-pull`.
+  ollama-pull:
+    profiles: ["local-llm"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+    image: python:3.12-slim
+    user: "65534:65534"
+    read_only: true
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    environment:
+      # ALWAYS the in-stack service, never the shared OLLAMA_BASE_URL: on a host
+      # with an outside Ollama that one points somewhere this must not write.
+      OLLAMA_BASE_URL: http://ollama:11434
+      # The value `app` resolves (the anchor in x-app-env), so the models pulled
+      # are the models routed -- LLM_FALLBACK_ROUTE included, since it may only
+      # name a route of this same table.
+      PROVIDER_ROUTING: *provider-routing
+    volumes:
+      - ./deploy/ollama/pull_models.py:/pull/pull_models.py:ro
+    command: ["python", "-u", "/pull/pull_models.py"]
+    restart: "no"
+    <<: *app-logging
+
   app:
     <<: [*app-image, *app-logging, *host-gateway]
     # ⭐ خطوة السعة 3.4 — ثلاثُ نسخٍ × `WEB_CONCURRENCY=4` = اثنتا عشرةَ
@@ -1669,6 +1770,9 @@ services:
     depends_on:
       ollama-bridge:
         condition: service_started
+      ollama:
+        condition: service_healthy
+        required: false      # 2.2: profile local-llm -- absent on this WSL machine
       pgbouncer:
         condition: service_healthy
       redis-stream:
@@ -3235,6 +3339,9 @@ services:
     <<: *app-logging
 volumes:
   postgres-data:
+  # Ollama's models (2.2): gemma3:1b is ~0.8 GB, pulled once by ollama-pull.
+  # Losing it costs a re-download, never data.
+  ollama-models:
   # WAL segments between `archive_command` and object storage (capacity 2.5).
   # Shared by exactly two services: `postgres` writes, `wal-shipper` deletes.
   # It is a SPOOL and not an archive -- a segment lives here for seconds, and

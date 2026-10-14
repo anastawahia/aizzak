@@ -28,11 +28,13 @@
 | `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية — **ثلاث نسخ** (`deploy.replicas: 3`) بخيطٍ واحدٍ مثبَّتٍ لكلٍّ (خطّة السعة `4.1`)؛ ينشرها ملفّ الاختبار على `127.0.0.1:8080` **بنسخةٍ واحدة** فقط |
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
 | `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL |
+| `ollama` | `ollama/ollama:0.13.5` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
 | `nginx-certs` | nginx:1.27 | — | شهادة TLS محلّية موقَّعة ذاتيّاً |
 | `migrate` | نفس صورة التطبيق | — | الهجرات + المنح (`app.ops.provision`) |
+| `ollama-pull` | `python:3.12-slim` | — | يسحب نماذج Ollama في `PROVIDER_ROUTING` ولا يعيد سحب موجود، profile `local-llm` |
 
 > التطبيق يصل Postgres **عبر PgBouncer** (`DATABASE_URL → pgbouncer:6432`)، لا مباشرةً.
 >
@@ -511,10 +513,10 @@ deploy: {resources: {limits: {cpus: "6.0", memory: 20G}}}
 ```bash
 deploy/resource-budget.sh                              # مقابل هذا المضيف
 deploy/resource-budget.sh --host-cpus 32 --host-memory-gb 64   # مقابل مضيف §6
-deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6
+deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull
 ```
 
-**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
+**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull`، وهاتان الأخيرتان من `gpu-compose` ‏2.2 تحت `local-llm`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
 
 **⚠️ ونسخُ `app` الثلاثُ تمنع مفتاحَين على هذه الخدمة إلى الأبد، وهما يفشلان فشلَين مختلفَين** — مقيسان على مسبارٍ بنسختَين:
 
@@ -2539,8 +2541,11 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 | `pgbouncer` | **يعبر الوصلة**: `psql ... -c 'select 1'` عبر المُجمِّع نفسه ⇒ اتّصالُ خادمٍ حقيقيٌّ إلى Postgres. (‏`pg_isready -p 6432` جُرِّب ورُفض: يقول «يقبل الاتّصالات» بمجرّد أن يستمع المُجمِّع — أي لا يزيد شيئاً على `service_started` الذي يحلّ محلّه.) الاعتماد هو `DB_USER`/`DB_PASSWORD` **من بيئة الحاوية نفسها** بـ`$$`، فلا يدخل شيءٌ حسّاسٌ في مخرجات `docker compose config` |
 | `qdrant` | `/readyz` (لا `/livez`: الأوّل «كلّ الشظايا تخدم»، والثاني «العمليّة حيّة») — عبر `/dev/tcp` في **bash صراحةً**، لأنّ الصورة لا تحمل `curl` ولا `wget`، و`CMD-SHELL` كان سيشغّل `sh` الذي لا يعرف `/dev/tcp` |
 | `ollama-bridge` | **من طرفٍ إلى طرف**: `wget` يدخل الجسر على 11435 ويخرج من Ollama الأصليّ على 11434. socat مستمعٌ وهدفه ميّت لا يمرّر شيئاً |
+| `ollama` | `/dev/tcp` في **bash صراحةً** إلى `/api/version`: الصورة (`ubuntu:24.04` وملفّ `ollama`) لا تحمل `curl` ولا `wget`، كما `qdrant`. `ollama list` يعمل لكنّه يقرأ النماذج من القرص، و`ollama -v` يخرج بـ0 والخادم ميّت |
 | `worker-memory` · `worker-knowledge` · `worker-media` · `outbox-relay` | **نبضٌ**، لأنّها لا تستمع على منفذٍ أصلاً — انظر أدناه |
 
+> 📌 **و`ollama` (الخدمة داخل المكدّس) يُنتظر بـ`service_healthy` مع `required: false`.** هو داخل دورة حياة Compose، فصحّته معنىً يُنتظر؛ و`required: false` يمنع أن يحبس عطلُه المكدّس، ويُسقط الحافّةَ حين لا يكون الـprofile `local-llm` مفعّلاً. وهي حافّة `ollama-pull` نفسُها: إن فشل `ollama` في الإقلاع شغّله Compose بتحذير، فيخرج `ollama-pull` بالرمز 3 «Ollama unreachable» — فشلٌ صاخب.
+>
 > 📌 **ولا شيء يعتمد على صحّة `ollama-bridge`، عمداً.** Ollama وحدةٌ أصليّةٌ في WSL خارج دورة حياة Compose؛ ربطُ إقلاع المكدّس بها يستبدل تدهوراً مرئيّاً بآخر خفيّ. «غير صحّي» هنا معناه «نداءات LLM ستفشل»، معروضاً في `docker compose ps` بدل أن يظهر في خطأ طلبٍ فقط.
 >
 > ✅ **وأُغلقت معها حافّةٌ مُعلَنةٌ منذ [§3.133](../log/3.133.md)**: `app` صارت تُعلن `qdrant` في `depends_on` (‏`service_healthy`) — عين عطب [§3.111](../log/3.111.md): `QDRANT_URL` تسمّي `qdrant:6333` من الطور الأوّل، والحافّة غير مُعلَنة ⇒ `docker compose up -d app` وحده كان يقلعها بلا مخزن المتّجهات. وحوافّ `pgbouncer`/`qdrant` كلّها صارت `service_healthy` بدل `service_started`.
