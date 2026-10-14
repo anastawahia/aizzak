@@ -6,7 +6,7 @@
 - **المشروع/المستودعات:** `/home/AIZZAK` (المستودع الوحيد)
 - **المصدر:** [`docs/server-gpu-plan.md`](../../server-gpu-plan.md) — المرحلة 2، الخطوات 2.1–2.6
 - **الـ Issue:** لا يوجد (الطلب من الخطّة مباشرة)
-- **الفروع:** `feat/gpu-compose` (يُنشأ من `master` بعد التصميم)
+- **الفروع:** `feat/gpu-compose` (من `master` ‏`1814998`). أوّل commit ‏`858f3ce`: وثائق التسليم
 - **آخر تحديث:** 2026-10-14 (التصميم ✅، البناء يبدأ)
 
 | # | المرحلة | الوكيل | الحالة | المخرج | ملاحظات |
@@ -16,7 +16,7 @@
 | 3 | UX | ux-designer | ⏭ | ux.md | لا واجهة: المستودع خلفيّ فقط |
 | 4 | التصميم | software-architect | ✅ | design.md | التصميم مكتوب: 8 commits (C1 backend-developer، C2–C7 devops-engineer، C8 qa-engineer)، و64 معياراً في §5.3. ⚠️ 1 (ملفٌّ محميٌّ جديد `deploy/ollama/pull_models.py`) حسمه المالك: الخيار (أ). لا ⚠️ مفتوح. AC‑5.7 وثمانية معايير أخرى بصياغة §5.4. انقطع الوكيل مرّةً بحدّ الاستعمال ثمّ أكمل |
 | 5 | البيانات | data-engineer | ⏭ | ترحيل | لا تغيير في المخطّط (§7 من الخطّة: لا تعديل لشيفرة التطبيق) |
-| 6 | الخلفية/البنية | devops-engineer | ⏸ | فرع + commits | |
+| 6 | الخلفية/البنية | backend-developer ثمّ devops-engineer | 🟡 | فرع + commits | C1 ✅ `3032cd9` (backend-developer): ملفّان فقط (`git show --stat` متحقَّق)، والبوّابات الخمس خضراء: pytest ‏5252 passed و1 skipped (اختبار lint-imports لأنّ `.venv/bin` ليس على PATH؛ البوّابة 4 نفسها خضراء). C2–C7 عند devops-engineer |
 | 7 | الواجهة | frontend-developer | ⏭ | فرع + commits | لا واجهة |
 | 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
 | 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
