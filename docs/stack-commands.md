@@ -8,7 +8,7 @@
 >
 > ⚠️ **كلّ أمرٍ هنا يُنفَّذ داخل WSL** (`Ubuntu-24.04`) من `/home/AIZZAK`، لا من Git‑Bash على ويندوز: قناة Git‑Bash لا تنفّذ ثنائيّات ELF (`Exec format error`).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑13** (صور جاهزة بدل البناء المحلّيّ: `docker-compose.build.yml` وسطر `COMPOSE_FILE` وقسم الإصدار؛ سبقتها [§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات، ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media`).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑14** (`gpu-compose`: سطر المالك `COMPOSE_PROFILES=wsl-ollama`، و`docker-compose.gpu.yml` وفحص المتطلّبات، وقسم «ز) الكرت على خادم»، وصورة CUDA في قسم الإصدار؛ سبقتها 2026‑10‑13: صور جاهزة بدل البناء المحلّيّ: `docker-compose.build.yml` وسطر `COMPOSE_FILE` وقسم الإصدار؛ سبقتها [§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات، ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media`).
 
 ---
 
@@ -18,7 +18,7 @@
 
 | # | الأمر | الوظيفة |
 |---|---|---|
-| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — ثمّ خطوة سطر `COMPOSE_FILE` (ليبني Compose الصورتين محلّيّاً؛ انظر الشرح) قبل أوّل إقلاع |
+| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — ثمّ خطوة سطر `COMPOSE_FILE` (ليبني Compose الصورتين محلّيّاً)، وعلى WSL سطر `COMPOSE_PROFILES=wsl-ollama` (ليقلع جسر Ollama الأصليّ)؛ انظر الشرح — قبل أوّل إقلاع |
 | 2 | `docker compose up -d` | إقلاع المكدّس كاملاً بالترتيب الصحيح (بيانات ← تهيئة ← تطبيق ← حافّة) |
 | 3 | `docker compose up migrate` | تشغيل الهجرات الإحدى عشرة والمنح — بديل `alembic upgrade head` الممنوع |
 | 4 | `docker compose up -d nginx-certs` | توليد شهادة TLS الموقّعة ذاتيّاً عند رفض `https://localhost` الاتّصال |
@@ -80,14 +80,23 @@
 | 34‑هـ | `deploy/load/run.sh peak` · `deploy/load/smoke.sh` | مولّدُ الحمل (خطّة السعة `0.1`): k6 من المضيف إن وُجد وإلّا من `--profile load` (`grafana/k6:1.3.0`)، و`LOAD_K6=host\|docker` يُلزم أحدَهما. و`smoke.sh` يُثبت الهيكلَ في نصف دقيقةٍ ببِركةٍ صناعيّة — 401 وعتبةٌ مُخفَقةٌ **بالتصميم** |
 | 35 | `docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d` | **الصيغة المعتمَدة للحزمة الاختباريّة** — الوحيدة التي تنشر منفذ التضمين وتُحضر سكربت قاعدة الاختبار |
 | 36 | `docker compose … exec -T postgres sh /opt/aizzak/testdb/20-test-database.sh` | تزويد `aizzak_test` — **يدويٌّ، مرّةً واحدةً لكلّ حجم**، ولا يُشغَّل تلقائيّاً أبداً. مُعاد التشغيل بأمان |
-| 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-compose.build.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host` |
+| 37 | `docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-compose.build.yml up -d app` | **قراءة الـGPU في صفحة System Monitor** — تمرير بطاقة WSL إلى حاوية `app` وحدها. بلا هذه الـ`-f` الثانية تبقى القراءة `nvidia-smi is not available on this host`. وعلى خادمٍ بأداة NVIDIA فالنظير هو الملفّ `docker-compose.gpu.yml` (القسم «ز»)، **ولا يُركَّب الملفّان معاً** |
 
 ### و) الإصدار
 
 | # | الأمر | الوظيفة |
 |---|---|---|
-| 38 | `deploy/release/build-push.sh <YYYY.M.N>` | **للطوارئ**: يبني الصورتين ويرفعهما إلى `anastawahia/aizzak` من جهازك (نحو 7 ساعات لصورة التضمين على اتّصال منزليّ) |
+| 38 | `deploy/release/build-push.sh <YYYY.M.N>` | **للطوارئ**: يبني الصور الثلاث ويرفعها إلى `anastawahia/aizzak` من جهازك (نحو 14 ساعة أو أكثر على اتّصال منزليّ؛ صورة CUDA نحو 3–3.5 ج.ب مضغوطة، تقدير) |
 | 39 | `git tag v<YYYY.M.N> <sha-on-master> && git push origin v<YYYY.M.N>` | **الطريق المعتاد**: دفع الوسم يشغّل `release.yml` فيبني ويرفع |
+
+### ز) الكرت على خادم
+
+| # | الأمر | الوظيفة |
+|---|---|---|
+| 40 | `deploy/gpu-preflight.sh [--smoke]` | **فحص متطلّبات الخادم** (تعريف NVIDIA · NVIDIA Container Toolkit · Docker · Compose ≥ 2.20): يفحص ولا يثبّت، ولكلّ نقصٍ رمزُ خروج. و`--smoke` يشغّل حاوية كرتٍ واحدة |
+| 41 | `.env` الخادم: `COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml` · `COMPOSE_PROFILES=local-llm` · `EMBEDDING_CUDA_IMAGE_REPO` و`EMBEDDING_CUDA_IMAGE_TAG` | **ملفّ الكرت وOllama داخل المكدّس**: أربعة أسطرٍ في `.env`، ولا شيء غيرها يفرّق الخادم بالكرت عن خادمٍ بالمعالج |
+| 42 | `docker compose run --rm ollama-pull` | يسحب نماذج Ollama التي يذكرها `PROVIDER_ROUTING` ولا يعيد سحب موجود: بعد الإقلاع الأوّل، وحين يذكر السجلّ نموذجاً غائباً |
+| 43 | `docker buildx build --platform linux/amd64 --load --build-arg EMBEDDING_REQUIREMENTS=requirements-cuda.txt -f services/embedding/Dockerfile -t aizzak/embedding-cuda:dev .` | بناء صورة CUDA **محلّيّاً للإثبات وحده**. مصدرها الوحيد في الإصدار `build-push.sh`، و`docker compose build` لا يبنيها أبداً |
 
 **الأمر الجامع للبوّابات الخمس** (من ويندوز، بمسارات venv اللينكسيّة):
 
@@ -104,6 +113,13 @@ wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/AIZZAK && .venv/bin/ruff format --chec
 ### 1 · `cp .env.example .env`
 
 > ⭐ **ثمّ سطر `COMPOSE_FILE`.** `docker-compose.yml` صار يسمّي صورتَي التطبيق والتضمين فقط (`aizzak/app:dev` و`aizzak/embedding:dev` افتراضيّاً) ولا يبنيهما؛ والبناء في `docker-compose.build.yml`. أضف في `.env` السطر `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` (وتُوضع مع ملفّ WSL GPU في الوسط)، بالأوامر المبيَّنة في [`quickstart.md`](quickstart.md) §2.1. الـ`-f` الصريح يتجاهل `COMPOSE_FILE`، فيجب أن يسمّي `-f docker-compose.build.yml` بنفسه حيث يلزم البناء. ⚠️ بعد السطر، أيّ `git switch` إلى commit قديم يُفشل كلّ أمر `docker compose` (الملفّ غير موجود هناك): عطّل السطر بـ`#` مؤقّتاً.
+
+> ⭐ **وسطر المالك الثاني: `COMPOSE_PROFILES=wsl-ollama`** (على WSL مع Ollama الأصليّ). `ollama-bridge` صار خلف profile بهذا الاسم، فلا يقلعه `docker compose up -d` إلّا بهذا السطر في `.env`. فسطرا المالك معاً: `COMPOSE_FILE` من الخطوة 1.1 **كما هو**، و`COMPOSE_PROFILES=wsl-ollama`.
+>
+> - **أيّ `--profile X` في أمرٍ يحلّ محلّ `COMPOSE_PROFILES`** (حتّى المقروء من `.env`) ولا يُضاف إليه، فيسقط الجسر من ذلك الأمر. اكتب `--profile wsl-ollama` معه، أو `COMPOSE_PROFILES=wsl-ollama,X docker compose …`.
+> - وبعد المرحلة 4.1 يصير السطر قائمةً: `COMPOSE_PROFILES=wsl-ollama,monitoring`.
+> - ⚠️ **ونسيان السطر يُسقط الجسر بصمت**: `up -d` لا يقلعه (وحاويته القديمة قد تبقى تعمل حتّى تُعاد)، فتفشل نداءات النموذج المحلّيّ وينذر `AizzakLlmCircuitOpen` ([`runbooks/alerts.md`](runbooks/alerts.md)).
+> - وعلى **خادمٍ** بلا WSL لا شيء من هذا يلزم: سطره `COMPOSE_PROFILES=local-llm` (القسم «ز» أدناه).
 
 ينسخ قالب البيئة إلى الملفّ الفعليّ الذي يقرؤه Compose. النسخ وحده **لا يكفي**: القالب يحوي قيماً من طراز `change-me-*` وحقلاً فارغاً واحداً إلزاميّاً. عليك ملء:
 
@@ -501,7 +517,9 @@ docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-com
 
 **العطل الذي يعالجه:** صفحة System Monitor كانت تعرض `nvidia-smi is not available on this host`. الواجهة سليمة والخادم سليم — [`system_stats.py`](../src/app/infrastructure/monitoring/system_stats.py) يبحث عن `nvidia-smi` بـ`shutil.which` ويُبلِّغ غيابه بدل أن يدّعي «لا بطاقات». البطاقة كانت مرئيّةً في WSL (`NVIDIA GeForce RTX 4060 Laptop GPU`) وغير ممرَّرةٍ إلى الحاوية: `DeviceRequests = null`.
 
-**ولماذا ملفُّ تجاوزٍ لا سطرٌ في `docker-compose.yml`؟** كلُّ ما فيه — `/dev/dxg` و`/usr/lib/wsl` — موجودٌ على مضيف WSL2 **وحده**. كتابته في الملفّ الأصل تجعل `up -d` يفشل فشلاً قاطعاً على مضيف اللينكس الذي يستهدفه [`deploy-linux-server.md`](deploy-linux-server.md) وعلى كلّ عدّاءٍ في CI. وهو النمط نفسه المعتمَد في **35** أعلاه: ملفٌّ لا يُدمَج إلّا بطلبٍ صريح، فلا وجود له عند المضيف الذي يكسره.
+**ولماذا ملفُّ تجاوزٍ لا سطرٌ في `docker-compose.yml`؟** كلُّ ما فيه — `/dev/dxg` و`/usr/lib/wsl` — موجودٌ على مضيف WSL2 **وحده**. كتابته في الملفّ الأصل تجعل `up -d` يفشل فشلاً قاطعاً على مضيف اللينكس الذي يستهدفه [`deploy-server.md`](deploy-server.md) وعلى كلّ عدّاءٍ في CI. وهو النمط نفسه المعتمَد في **35** أعلاه: ملفٌّ لا يُدمَج إلّا بطلبٍ صريح، فلا وجود له عند المضيف الذي يكسره.
+
+📌 **وعلى خادمٍ بالأداة** فالنظير العامّ هو `docker-compose.gpu.yml` (القسم «ز» أدناه): الحجز الصحيح `deploy.resources.reservations.devices` بدل تركيب مسارات WSL. **ولا يُركَّب الملفّان معاً**؛ وجهاز المالك يبقى على ملفّ WSL ما لم تُثبَّت الأداة عليه.
 
 **ولماذا لا `gpus: all`؟** لأنّها تمرُّ عبر NVIDIA Container Toolkit، وهي **غير مثبَّتة هنا** (`nvidia-ctk` غائب · `docker info` لا يذكر إلّا `runc` · لا وجود لـ`/etc/docker/daemon.json`)، وإضافةُ المفتاح بدونها تُفشل الحاوية بـ«could not select device driver». تثبيتها يحتاج `root` وإعادة تشغيل عفريت Docker؛ هذا الملفّ لا يحتاج أيّاً منهما ولا إعادة بناءٍ للصورة. والمقايضة صحيحةٌ لما نريده: الصفحة **تقرأ** البطاقة ولا تحسب عليها، والتركيبان أدناه يكفيان NVML — فيكفيان `nvidia-smi` — بلا منح الحاوية سياق CUDA لا شيفرة لديها تستعمله. فإن احتاجت خدمةٌ يوماً أن **تحسب** على البطاقة، فثبِّت العُدّة وامنح تلك الخدمة `gpus: all`؛ ولا يُوسَّع هذا الملفّ ليكون بديلاً عنها.
 
@@ -533,25 +551,78 @@ deploy/release/build-push.sh 2026.10.1                               # 38: ال�
   |---|---|---|
   | التطبيق | `app` | `anastawahia/aizzak:app-2026.10.1` |
   | التضمين على المعالج | `embedding` | `anastawahia/aizzak:embedding-2026.10.1` |
-  | التضمين على الكرت | `embedding-cuda` | محجوزة للخطوة 2.4، لا تُبنى الآن |
+  | التضمين على الكرت | `embedding-cuda` | `anastawahia/aizzak:embedding-cuda-2026.10.1` |
 
-  رقم الإصدار واحدٌ للصورتين. لا `dev` ولا `latest`. المستودع يجب أن يُنشأ **خاصّاً** قبل أوّل رفع (وإلّا أنشأه Docker Hub عامّاً بإعداد الحساب الافتراضيّ، والسكربت يرفض الرفع إن وجده عامّاً).
-- **على الخادم** يكتب `.env` الوسمين من الرقم نفسه:
+  رقم الإصدار واحدٌ للصور الثلاث. لا `dev` ولا `latest`. (والإصدار `2026.10.1` المنشور يحمل `app` و`embedding` فقط؛ أوّل إصدارٍ بالثلاث هو `2026.10.2` فما بعده، لأنّ السكربت يرفض رقماً وسمُ إحدى صوره موجود.) المستودع يجب أن يُنشأ **خاصّاً** قبل أوّل رفع (وإلّا أنشأه Docker Hub عامّاً بإعداد الحساب الافتراضيّ، والسكربت يرفض الرفع إن وجده عامّاً).
+- **على الخادم** يكتب `.env` الأوسمة من الرقم نفسه (وسطرا CUDA لخادم الكرت وحده، [القسم «ز»](#ز-الكرت-على-خادم)):
 
   ```
   APP_IMAGE_REPO=anastawahia/aizzak
   APP_IMAGE_TAG=app-<YYYY.M.N>
   EMBEDDING_IMAGE_REPO=anastawahia/aizzak
   EMBEDDING_IMAGE_TAG=embedding-<YYYY.M.N>
+  EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
+  EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
   ```
 
   وسمٌ بلا بادئة يفشل سحبه (`not found`)، ووسمٌ ببادئةٍ خاطئة يشغّل الصورة الخطأ.
-- **شروط السكربت** (ورموز الخروج في رأسه): الشجرة نظيفة، و`HEAD` على `origin/master`، وCI أخضر لهذا الـcommit (يتخطّاه CI لأنّ `needs: quality` هو الفحص)، وbuildx بـ`linux/amd64`، والمستودع خاصّ، ولا وسم بهذا الرقم. يبني الصورتين **كلتيهما** قبل أوّل رفع.
-- **رفعٌ جزئيّ = إصدارٌ مهجور:** إن رُفعت صورةٌ وفشلت الثانية، لا يُعاد الرقم ولا يُستكمل؛ أصدر الرقم التالي. السكربت يطبع ما رُفع.
+- **شروط السكربت** (ورموز الخروج في رأسه): الشجرة نظيفة، و`HEAD` على `origin/master`، وCI أخضر لهذا الـcommit (يتخطّاه CI لأنّ `needs: quality` هو الفحص)، وbuildx بـ`linux/amd64`، والمستودع خاصّ، ولا وسم بهذا الرقم. يبني الصور **الثلاث** قبل أوّل رفع، فيفشل بناءُ صورة CUDA قبل أن يُرفع شيء (الرمز 8).
+- **رفعٌ جزئيّ = إصدارٌ مهجور:** إن رُفعت صورةٌ وفشلت التالية، لا يُعاد الرقم ولا يُستكمل؛ أصدر الرقم التالي. السكربت يطبع ما رُفع.
 - **بعد أيّ رفع، كلّ ردٍّ غير `404` يُهجر الإصدار:** يفحص السكربت خصوصيّة المستودع بعد كلّ رفع، ولا يقبل إلّا `404` بالضبط. `200` (عامّ) أو `429` أو `5xx` أو انتهاء المهلة ⇒ يخرج بالرمز 9 ويطبع ما رُفع، والإصدار مهجور: أصدر الرقم التالي. (ومسار `--digest-file` غير القابل للكتابة يُرفض بالرمز 2 قبل أيّ بناء.)
 - **CI:** وسوم `v*` فقط. الأسرار `DOCKERHUB_USERNAME` و`DOCKERHUB_TOKEN` (يضعها الإنسان) في GitHub Environment اسمه `release` مقيَّدٍ بوسوم `v*`. مفتاح Docker Hub بصلاحيّة Read & Write بلا Delete.
 - **أين البصمات:** سطر سجلّ الوظيفة، وملخّص الوظيفة، والـartifact `release-digests`. (قد يُخفي السجلّ اسم المساحة إن طابق قيمةَ `DOCKERHUB_USERNAME`؛ الـartifact غير مُخفى.)
 - **مأزق الفروع القديمة** مع سطر `COMPOSE_FILE`: انظر الأمر 1.
+
+---
+
+## ز) الكرت على خادم
+
+> **ما هذا القسم؟** المرحلة 2 من خطّة خادم الكرت ([`server-gpu-plan.md`](server-gpu-plan.md))، بالأوامر 40–43. ⚠️ **أوامر الكرت هنا بصيغة `COMPOSE_FILE=…` في `.env` لا بـ`-f`**: الـ`-f` الصريح يتجاهل `COMPOSE_FILE`، ولا يجوز تركيب ملفّ الكرت مع `docker-compose.build.yml` (انظر 41). ولا يخلط الملفّان على جهاز المالك: هو على ملفّ WSL (الأمر 37) ما لم تُثبَّت الأداة عليه.
+
+### 40 · `deploy/gpu-preflight.sh [--smoke]`
+
+```bash
+deploy/gpu-preflight.sh            # فحوصٌ ثابتة، لا حاوية، بضع ثوانٍ
+deploy/gpu-preflight.sh --smoke    # + حاوية كرتٍ واحدة تطبع اسم الكرت من داخلها
+```
+
+يفحص أربعة أشياء ويطبع سطراً لكلٍّ منها (وكلّ الكروت إن تعدّدت): تعريف NVIDIA (`nvidia-smi` على `PATH`)، وDocker، ووقت التشغيل `nvidia` في `docker info` (أي NVIDIA Container Toolkit مضبوطةً لـDocker)، وإصدار Compose ≥ 2.20.0 (بمقارنةٍ عدديّة). **لا يثبّت شيئاً ولا يقرأ البيئة ولا يحتاج root.** رموز الخروج: **0** جاهز، و**10** لا كرت صالح (والتشغيل على المعالج ممكن)، و**11** Docker غير صالح، و**12** الكرت موجود والأداة غير مضبوطة (والنصيحة تُطبَع ولا تُنفَّذ)، و**13** Compose غائب أو قديم، و**14** فشلت حاوية `--smoke`. والجدول الكامل والأسبقيّة في [`deploy-server.md`](deploy-server.md).
+
+- **على هذا الجهاز اليوم** الرمز **12**: الكرت والتعريف وCompose سليمة، والأداة غير مثبّتة (`docker info` لا يعرض إلّا `runc`).
+- **مضيفٌ بـCDI أو Docker Desktop** قد لا يسجّل وقت التشغيل `nvidia` والكرت يعمل: نجاح `--smoke` يغلب غيابه.
+
+### 41 · `.env` الخادم — ملفّ الكرت وOllama داخل المكدّس
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+COMPOSE_PROFILES=local-llm
+EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
+EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
+```
+
+- **`docker-compose.gpu.yml`** يمسّ ثلاث خدماتٍ وحدها: `ollama` يحجز الكرت (مع `local-llm` فقط)، و`embedding` نسخةً **واحدة** من صورة CUDA بحدّ ذاكرةٍ ابتدائيّ `3g` وبـ`EMB_REQUIRE_CUDA=1`، و`app` يحجز القدرة `utility` وحدها لـ`nvidia-smi` في صفحة System Monitor. و`embedding-lb` أمامها دون تغيير.
+- **`EMB_REQUIRE_CUDA=1`** يجعل الحاوية ترفض الإقلاع دون CUDA (أداةٌ ناقصة، أو تعريفٌ قديم، أو صورة معالجٍ تحمل اسم CUDA) بدل أن تعمل على المعالج بصمت. وهذا ما يحرس **الأمر الذي لا يستطيع Compose منعه**: ⚠️ **لا يُركَّب ملفّ الكرت مع `docker-compose.build.yml`** أبداً، فملفّ البناء يبني `embedding` من متطلّبات المعالج ويسمّي الناتج باسم CUDA. صورة CUDA مصدرها `build-push.sh` (الإصدار) أو الأمر 43.
+- `.env` الخادم يحمل متغيّرات الصورتين (`EMBEDDING_IMAGE_*` للمعالج و`EMBEDDING_CUDA_IMAGE_*` للكرت) و**`COMPOSE_FILE` وحده يختار بينهما**: بلا ملفّ الكرت يعمل المكدّس نفسه على المعالج. والاسم المحلّيّ الافتراضيّ لصورة CUDA (`aizzak/embedding-cuda:dev`) غير اسم صورة المعالج، فخادمٌ نسي المتغيّرين يفشل في السحب ولا يشغّل torch المعالج.
+- وأيّ `--profile X` في أمرٍ يحلّ محلّ `COMPOSE_PROFILES`: على الخادم اكتب `COMPOSE_PROFILES=local-llm,X docker compose …`.
+- ميزانيّة ذاكرة الكرت وما يسكنه: [`design/08-local-runbook.md`](design/08-local-runbook.md) §2‑ي.
+
+### 42 · `docker compose run --rm ollama-pull`
+
+```bash
+docker compose run --rm ollama-pull
+```
+
+خدمةٌ لمرّةٍ واحدة تحت `local-llm`: تسحب **كلّ** نموذج Ollama يذكره `PROVIDER_ROUTING` (اليوم `gemma3:1b`) **ولا تعيد سحب موجود**، فالتشغيل الثاني لا يطلب شيئاً من السجلّ ويعمل والشبكة مقطوعة. لا شيء ينتظرها: محادثةٌ قبل السحب الأوّل تنتهي بـ502 ولا تحبس الإقلاع. رموز الخروج: **0** تمّ (ومنه «لا مسار يستعمل Ollama»)، و**2** `PROVIDER_ROUTING` غير صالح، و**3** Ollama لا يجيب، و**4** فشل سحبٌ (باسم النموذج). وتعمل **دائماً** على الخدمة داخل المكدّس لا على `OLLAMA_BASE_URL` المشترك.
+
+### 43 · بناء صورة CUDA محلّيّاً (للإثبات وحده)
+
+```bash
+docker buildx build --platform linux/amd64 --load \
+  --build-arg EMBEDDING_REQUIREMENTS=requirements-cuda.txt \
+  -f services/embedding/Dockerfile -t aizzak/embedding-cuda:dev .
+```
+
+الوسيط الوحيد `EMBEDDING_REQUIREMENTS` يختار ملفّ المتطلّبات (`requirements-cuda.txt` بإصدارات `requirements.txt` نفسها وفهرس `cu124`)، وبدونه تُبنى صورة المعالج كما كانت. هذا الأمر لا يحتاج كرتاً: يبني الصورة ويُثبت `torch.version.cuda`، لكنّ التشغيل على الكرت يحتاج الأداة. الحجم المحلّيّ يُقاس في وثائق تسليم `gpu-compose`. **ولا يغني عن `build-push.sh`** في الإصدار: الصورة المرفوعة تحمل وسمها وبصمتها من السكربت.
 
 ---
 
@@ -567,6 +638,6 @@ deploy/release/build-push.sh 2026.10.1                               # 38: ال�
 
 ---
 
-**للاستزادة:** [`quickstart.md`](quickstart.md) (المنافذ · جدول الأعطال · التحقّق اليدويّ من التدفّق الكامل) · [`design/08-local-runbook.md`](design/08-local-runbook.md) (المرجع المُلزِم) · [`deploy-linux-server.md`](deploy-linux-server.md) · [`deploy-runpod.md`](deploy-runpod.md).
+**للاستزادة:** [`quickstart.md`](quickstart.md) (المنافذ · جدول الأعطال · التحقّق اليدويّ من التدفّق الكامل) · [`design/08-local-runbook.md`](design/08-local-runbook.md) (المرجع المُلزِم) · [`deploy-server.md`](deploy-server.md) · [`deploy-runpod.md`](deploy-runpod.md).
 
 </div>

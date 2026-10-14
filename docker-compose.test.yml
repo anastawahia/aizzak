@@ -2,14 +2,16 @@
 # step أ-2). NOT merged automatically -- Compose reads `docker-compose.yml` and
 # `docker-compose.override.yml` on its own, never this name. It is asked for:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.build.yml up -d
+#
+# (An explicit `-f` ignores COMPOSE_FILE, so the build overlay is named too.)
 #
 # THAT is the point of the file existing at all. Publishing the embedding port
 # from `docker-compose.yml` -- as `"${HOST_PORT_EMBEDDING:-8080}:8080"` -- was
 # raised and REJECTED (release-blockers-plan.md ن-3): an optional variable
 # "opens the port permanently the moment a variable is set in `.env` that may
 # be left on by mistake". A `:-8080` default there is worse still, publishing
-# with no variable at all, on every host that boots by deploy-linux-server.md.
+# with no variable at all, on every host that boots by docs/deploy-server.md.
 # Here the port is shut BY CONSTRUCTION rather than by a flag someone must
 # remember: the deployment command does not name this file, so the `ports` key
 # below does not exist for it. `docker-compose.yml` is not edited, and ن-3's

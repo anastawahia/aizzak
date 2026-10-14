@@ -1068,9 +1068,11 @@ groups:
           response: >-
             `docker compose logs app | grep llm_guard` for the failure the
             circuit counted. A cloud provider: its status page and the
-            platform key's quota. `ollama`: `docker compose ps
-            ollama-bridge` and the host's Ollama. The circuit closes by
-            itself once a probe succeeds; there is nothing to reset.
+            platform key's quota. `ollama`: on WSL `docker compose ps
+            ollama-bridge` and the host's Ollama; on a server `docker
+            compose ps ollama` and `docker compose logs ollama`. The
+            circuit closes by itself once a probe succeeds; there is
+            nothing to reset.
 
   # ── The host (monitoring plan phase 2, row 1) ──────────────────────────
   - name: aizzak-host

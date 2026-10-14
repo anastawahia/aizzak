@@ -75,6 +75,13 @@ grep '^COMPOSE_FILE=' .env           # ليس سرّاً: يطبع هذا الس
 >
 > ⚠️ **مأزق الفروع القديمة:** بعد السطر، أيّ `git switch` إلى commit **قبل** هذه الميزة يُفشل كلّ أمر `docker compose` بـ«`docker-compose.build.yml`: no such file». عطّل السطر مؤقّتاً (`#`) عند العمل على فرعٍ قديم.
 
+ثمّ **من أين يأتي النموذج اللغويّ**، وهذا أيضاً سطرٌ في `.env` (القالب يحمله معلَّقاً عمداً، لأنّ CI ينسخه):
+
+- **على WSL مع Ollama الأصليّ** (جهاز المالك): `COMPOSE_PROFILES=wsl-ollama` و`OLLAMA_BASE_URL=http://host.docker.internal:11435`. الأوّل يُقلع الجسر `ollama-bridge` (خلف profile لا يقلع من تلقاء نفسه)، والثاني يوجّه التطبيق إليه.
+- **بلا Ollama أصليّ**: `COMPOSE_PROFILES=local-llm` وحده (لا `OLLAMA_BASE_URL`: قيمته الافتراضيّة هي الخدمة داخل المكدّس). ثمّ بعد الإقلاع الأوّل: `docker compose run --rm ollama-pull` ليسحب النموذج.
+
+⚠️ **ونسيان سطر `COMPOSE_PROFILES` على WSL يُسقط الجسر بصمت**، فتفشل نداءات النموذج المحلّيّ وينذر `AizzakLlmCircuitOpen`. وأيّ `--profile X` في أمرٍ **يحلّ محلّ** `COMPOSE_PROFILES` ولا يُضاف إليه ([`stack-commands.md`](stack-commands.md)، الأمر 1).
+
 ثمّ **املأ في `.env`** القيم التي تفشل الحاويات بدونها:
 
 | المفتاح | لماذا يجب تغييره |

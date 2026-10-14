@@ -706,6 +706,8 @@ EMB_BATCH_WINDOW_MS=0 EMBEDDING_CACHE_TTL_S=0 \
 ### 3.0 الإقلاع السريع
 ```bash
 cp .env.example .env      # املأ القيم غير السرّية؛ أسرار التطبيق تُبذَر في Vault
+# ثمّ مصدرُ النموذج اللغويّ، سطرٌ في .env (القالب يحمله معلَّقاً): COMPOSE_PROFILES=wsl-ollama
+# على WSL مع Ollama الأصليّ، أو COMPOSE_PROFILES=local-llm حيث لا Ollama أصليّ (ثمّ ollama-pull)
 docker compose up -d      # الترتيب كلّه مُرمَّزٌ في depends_on
 ```
 هذا وحده يكفي محليّاً: يرفع البيانات، ثمّ الخدمات الأربع لمرّةٍ واحدة (تهيئة Vault وMinIO والشهادة والهجرات)، ثمّ التطبيق والمُرحّل والحافّة.

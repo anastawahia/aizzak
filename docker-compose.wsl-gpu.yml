@@ -1,7 +1,12 @@
 # WSL2 GPU visibility overlay -- makes the host's NVIDIA card readable from
 # inside `app`, which is what the System Monitor page reports.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml up -d app
+#   docker compose -f docker-compose.yml -f docker-compose.wsl-gpu.yml -f docker-compose.build.yml up -d app
+#
+# (An explicit `-f` ignores COMPOSE_FILE, so the build overlay is named too.)
+#
+# On a Linux GPU SERVER with the NVIDIA Container Toolkit the counterpart is
+# docker-compose.gpu.yml (server-gpu-plan.md 2.5). The two are never combined.
 #
 # NOT merged automatically, the same deliberate choice as
 # `docker-compose.test.yml`: every path and device named below exists on a WSL2
