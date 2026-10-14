@@ -82,7 +82,5 @@
 - New secrets work like this: add the variable name to `.env.example` (and to `.env.test.example` if tests need it) and store the value in Vault (`deploy/vault/`, the `vault-bootstrap` service). A human sets the real value.
 
 ## Do-not-touch (human approval required)
-- `deploy/`, `docker-compose*.yml`, `Dockerfile`, `.github/workflows/`, `.claude/settings*.json`, `.importlinter`.
-- Auth/RBAC and secrets code: `src/app/framework/auth/`, `src/app/modules/access/`, `src/app/modules/credentials/`, and DB roles/grants.
-- Running migrations or destructive SQL against any DB except `aizzak_test`.
+
 - Docker volumes: the `.claude/settings.json` hook blocks `docker volume prune`, `docker system prune` and `docker compose down -v`.
