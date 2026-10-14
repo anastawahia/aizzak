@@ -70,11 +70,10 @@
 - The local Compose stack is a development environment (owner decision, 2026-10-05). Agents may start, stop, restart and recreate its containers (`docker compose up -d [--no-deps] [--force-recreate] <service>`, `restart`, `stop`):
   - name the services you touch, and prefer `--no-deps`;
   - check the services' health afterwards;
-  - volume deletion stays blocked by the hook, and `.env` stays unreadable.
+  - volume deletion stays blocked by the hook.
 
 ## Secrets
 - Never read, print or copy these:
-  - `.env`, `.env.bak.*`, `.env.test`
   - `deploy/load/accounts.json`, `deploy/load/tokens.json`, `deploy/load/include-workspaces.txt`
   - `deploy/nginx/certs/*`
   - the Vault `vault-init` volume (`/vault/init/init.json`)
