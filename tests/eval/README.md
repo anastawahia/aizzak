@@ -10,6 +10,8 @@ arrived on 2026-08-27 and closed decision **س-22**.
 | `hr_handbook_set.py` | the set itself — 15 questions in two languages with reference answers and gold patterns, plus 6 questions the corpus cannot answer |
 | `run_calibration.py` | the harness — runs the real `RetrieveContext.execute` per question, language and tuning variant, and prints one JSON line per probe |
 | `../unit/test_evaluation_set.py` | pins the set's shape, and checks the questions against `docs/hr-quiz-en.md` / `docs/hr-quiz.md` character for character |
+| `vector_parity.py` | **not `P-38`** — gpu-compose 2.4's measuring tool: CPU-against-CUDA vector parity (`compare`), the fixed input set (`build-set`) and the memory soak (`soak`); see the last section |
+| `../unit/test_vector_parity.py` | tests of that tool's maths, its set, and its two network subcommands against a fake service |
 
 Neither module is named `test_*`, so pytest collects nothing here: the harness
 needs a live stack and an indexed corpus, and arranging both is a runbook step
@@ -108,3 +110,21 @@ exactly why no unit test ever saw this.
 
 Zero false refusals: no answerable question returned an empty context at
 either floor.
+
+## `vector_parity.py` — gpu-compose 2.4 (not part of `P-38`)
+
+A measuring tool for the CUDA embedding image, written by QA for
+[`docs/delivery/gpu-compose`](../../docs/delivery/gpu-compose/design.md) §5.2. It needs two
+running embedding images, so it is a runbook step (design §5.5, P-4 and P-5), not a test:
+the file is not named `test_*`, and nothing here is collected by pytest.
+
+| subcommand | needs | what it does |
+|---|---|---|
+| `build-set --out set.json` | the platform package (`.venv/bin/python`) | the 42 question texts of `hr_handbook_set.py` plus the chunks of the HR handbook, parsed and chunked by the platform at `embedding_max_input_tokens = 512`; records the document's source and sha256 and a sha256 over every text in order |
+| `compare --cpu URL --gpu URL --set set.json` | the standard library | judges Q-3 (a) cosine >= 0.999 for every text, and (b) the top 10 chunks per question overlap by >= 9 with the same top chunk for all questions but one; prints one JSON document, exits 0 only if both hold, and refuses (exit 3) a pair that is not CPU against CUDA |
+| `soak --url URL --minutes 15 --concurrency 8 --batch 8` | the standard library | AC-4.11's load: concurrent `/embed` batches of ~350-word Arabic texts; reports requests, errors and latency (the container's memory is read from outside) |
+
+`docs/hr-no-table.docx` is no longer in the tree (`15a60b7` removed it), so `build-set` reads it
+from the commit that added it (`e105e47`) unless `--document` names a file. The chunk count
+is lower than the 221 recorded above: the tool skips semantic pre-splitting (it would need the
+embedding service it is measuring) and parent chunks.
