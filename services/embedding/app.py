@@ -30,6 +30,17 @@ GPU is present, else ``cpu``+fp32; L2-normalisation is ALWAYS on
 retrieval math (cosine similarity, ``knowledge``'s hybrid Qdrant collections)
 assumes unit vectors.
 
+``_choose_device`` makes that decision ONCE, and its result is the single
+value ``_load_model`` places the model on AND ``GET /health`` reports as
+``device``/``dtype`` -- so what is reported can never differ from what is
+used. The environment can REFUSE a device but never CHOOSE one:
+``EMB_REQUIRE_CUDA=1`` (set only by ``docker-compose.gpu.yml``) makes the
+process refuse to start when the decision is not ``cuda``, BEFORE the model is
+loaded, instead of silently serving a CUDA-named image from the CPU (a
+slower-by-orders-of-magnitude failure that shows up nowhere but latency).
+Any value other than unset/``""``/``"0"``/``"1"`` also refuses to start: a
+typo must not switch a guard off in silence.
+
 **Sequence length -- SET EXPLICITLY, never left to the checkpoint.**
 ``SentenceTransformer(model_name)`` adopts whatever ``max_seq_length`` the
 checkpoint's own ``sentence_bert_config.json`` ships, and for the baked
@@ -137,10 +148,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Final, Protocol
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -186,6 +197,31 @@ _DEFAULT_BATCH_WINDOW_MS = 5
 # and never a splitter: one request larger than this is dispatched whole.
 _DEFAULT_MAX_BATCH_TEXTS = 32
 
+# The numeric precision each device runs at -- the policy in the module
+# docstring, stated once so `_Device.dtype` (and through it `_load_model` and
+# `/health`) cannot disagree with it.
+_DTYPE_BY_DEVICE: Final[dict[str, str]] = {"cuda": "float16", "cpu": "float32"}
+# The ONLY accepted spellings of `EMB_REQUIRE_CUDA` (unset reads as `""`).
+_REQUIRE_CUDA_VALUES: Final[dict[str, bool]] = {"": False, "0": False, "1": True}
+
+
+@dataclass(frozen=True)
+class _Device:
+    """What ``_choose_device`` decided -- the ONE value ``_load_model`` places
+    the model on and ``/health`` reports, so the two cannot disagree."""
+
+    # "cuda" | "cpu"
+    name: str
+    # ``torch.version.cuda``: ``None`` on a CPU-only wheel, which is the tell
+    # that distinguishes "this image was built from the wrong requirements
+    # file" from "the GPU did not reach this container" (``_refusal``).
+    torch_cuda: str | None
+
+    @property
+    def dtype(self) -> str:
+        """``float16`` on ``cuda``, ``float32`` on ``cpu`` -- the device policy."""
+        return _DTYPE_BY_DEVICE[self.name]
+
 
 class Encoder(Protocol):
     """The read shape this module needs from a loaded ``SentenceTransformer``
@@ -229,6 +265,10 @@ class _ModelState:
     batch_window_ms: int = _DEFAULT_BATCH_WINDOW_MS
     max_batch_texts: int = _DEFAULT_MAX_BATCH_TEXTS
     batcher: _Batcher | None = None
+    # What `_choose_device` decided for the loaded model (`_Device.name` and
+    # `.dtype`), reported verbatim by `/health`. `None` while unloaded.
+    device: str | None = None
+    dtype: str | None = None
 
 
 _state = _ModelState()
@@ -243,7 +283,8 @@ def _pin_torch_threads(threads: int) -> int:
     this module's path entirely in the dev/CI venv, which has neither torch
     nor ``sentence_transformers`` installed (module docstring's "Lazy
     imports"). The unit suite exercises the pinned path by monkeypatching
-    THIS function, the same way it fakes ``_load_model``.
+    THIS function, the same way it fakes ``_load_model`` and
+    ``_choose_device`` (the only other places torch is imported).
 
     It returns ``torch.get_num_threads()`` rather than the argument: the two
     can differ (a build with a single-threaded ATen ignores the request), and
@@ -262,25 +303,78 @@ def _pin_torch_threads(threads: int) -> int:
     return int(torch.get_num_threads())
 
 
-def _load_model(model_name: str, max_seq_length: int) -> Encoder:
-    """Load the ``SentenceTransformer`` model, device-auto (module
-    docstring): ``cuda``+fp16 if ``torch.cuda.is_available()``, else
-    ``cpu``+fp32. Imported lazily -- see the module docstring's "Lazy
-    imports" paragraph (deliberate, hence the two ``noqa``s below: a
-    module-level import here is exactly what this function exists to
-    avoid).
+def _choose_device() -> _Device:
+    """``cuda`` iff ``torch.cuda.is_available()``, else ``cpu`` (module
+    docstring's device policy), plus ``torch.version.cuda`` so a refusal can
+    say WHICH kind of "no CUDA" this is (``_refusal``).
+
+    Imported lazily -- see the module docstring's "Lazy imports" paragraph.
+    The unit suite monkeypatches THIS function (or fakes the ``torch`` module
+    it imports), never the real library. This is the only place the device is
+    decided: nothing in the environment can pick one (``_require_cuda`` can
+    only refuse the result)."""
+    import torch  # noqa: PLC0415
+
+    name = "cuda" if torch.cuda.is_available() else "cpu"
+    return _Device(name=name, torch_cuda=torch.version.cuda)
+
+
+def _require_cuda(environ: Mapping[str, str] = os.environ) -> bool:
+    """``EMB_REQUIRE_CUDA``: unset / ``""`` / ``"0"`` -> ``False``, ``"1"`` ->
+    ``True``. Any other value raises ``RuntimeError`` naming the accepted
+    values -- a typo (``true``, ``yes``) must not switch a guard off in
+    silence. Set ONLY by ``docker-compose.gpu.yml``.
+
+    Read before any torch import, so a bad value is refused without paying
+    for one."""
+    raw = environ.get("EMB_REQUIRE_CUDA", "")
+    try:
+        return _REQUIRE_CUDA_VALUES[raw]
+    except KeyError:
+        raise RuntimeError(
+            f"EMB_REQUIRE_CUDA={raw!r} is not valid: set it to '1' (refuse to start without "
+            "CUDA) or '0' / empty / leave it unset (no requirement)"
+        ) from None
+
+
+def _refusal(device: _Device) -> str:
+    """The startup error for ``EMB_REQUIRE_CUDA=1`` on a non-``cuda`` device.
+
+    Two different faults look identical from outside (a container that never
+    becomes healthy), and the fix for each is in a different place, so the
+    message tells them apart by ``torch.version.cuda``: ``None`` means the
+    image's torch is a CPU wheel (built from ``requirements.txt``), anything
+    else means a CUDA wheel that found no GPU."""
+    if device.torch_cuda is None:
+        return (
+            "EMB_REQUIRE_CUDA=1 but this image's torch is a CPU build "
+            "(torch.version.cuda is None): it was built from requirements.txt, not "
+            "requirements-cuda.txt. Use the embedding-cuda-<version> release image."
+        )
+    return (
+        f"EMB_REQUIRE_CUDA=1 but torch is built for CUDA {device.torch_cuda} and no GPU "
+        "reached this container: check the NVIDIA driver and Container Toolkit "
+        "(deploy/gpu-preflight.sh) and the GPU reservation in docker-compose.gpu.yml"
+    )
+
+
+def _load_model(model_name: str, max_seq_length: int, device: _Device) -> Encoder:
+    """Load the ``SentenceTransformer`` model onto ``device`` -- the value
+    ``_choose_device`` returned, never a second opinion (module docstring):
+    ``cuda`` runs in fp16 (``.half()``), ``cpu`` in fp32. Imported lazily --
+    see the module docstring's "Lazy imports" paragraph (deliberate, hence
+    the ``noqa`` below: a module-level import here is exactly what this
+    function exists to avoid).
 
     ``max_seq_length`` is applied LAST -- to whatever object is about to be
     served, after the optional ``.half()``. That returns ``self`` today, but
     a loader step that ever returned a NEW object would otherwise carry the
     checkpoint's own 128 straight back into production, which is precisely
     the silent failure this line exists to prevent (module docstring)."""
-    import torch  # noqa: PLC0415
     from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer(model_name, device=device)
-    if device == "cuda":
+    model = SentenceTransformer(model_name, device=device.name)
+    if device.dtype == "float16":
         model = model.half()
     model.max_seq_length = max_seq_length
     return model
@@ -292,12 +386,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     dimensions = int(os.environ.get("EMBEDDING_DIM", str(_DEFAULT_DIM)))
     batch_size = int(os.environ.get("EMB_BATCH", str(_DEFAULT_BATCH)))
     max_seq_length = int(os.environ.get("EMB_MAX_SEQ_LEN", str(_DEFAULT_MAX_SEQ_LEN)))
+    # A bad value is refused HERE, with the other env reads and before torch is
+    # imported for any purpose -- see `_require_cuda`.
+    require_cuda = _require_cuda()
     # BEFORE the load, not after: `SentenceTransformer(...)` runs real tensor
     # work while it builds the model, and a pool sized after that is a pool
     # the load itself never saw.
     requested_threads = os.environ.get("EMB_TORCH_THREADS", "").strip()
     _state.torch_threads = _pin_torch_threads(int(requested_threads)) if requested_threads else None
-    _state.model = _load_model(model_name, max_seq_length)
+    device = _choose_device()
+    # BEFORE the load: a refusal must not first pay for a model it will never
+    # serve. Raising out of the lifespan makes uvicorn exit non-zero, which is
+    # the whole point -- the container never turns healthy.
+    if require_cuda and device.name != "cuda":
+        raise RuntimeError(_refusal(device))
+    _state.model = _load_model(model_name, max_seq_length, device)
+    _state.device = device.name
+    _state.dtype = device.dtype
     _state.model_name = model_name
     _state.dimensions = dimensions
     _state.batch_size = batch_size
@@ -331,6 +436,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         _state.model = None
         _state.model_name = ""
         _state.torch_threads = None
+        _state.device = None
+        _state.dtype = None
 
 
 app = FastAPI(title="AIZZAK Embedding Service", lifespan=_lifespan)
@@ -361,6 +468,11 @@ class HealthResponse(BaseModel):
     # optimised replica and a baseline one.
     batch_window_ms: int = _DEFAULT_BATCH_WINDOW_MS
     max_batch_texts: int = _DEFAULT_MAX_BATCH_TEXTS
+    # What the model was actually placed on and at what precision --
+    # `_choose_device`'s own decision, not an env var (module docstring), so a
+    # CUDA-named image quietly running on the CPU shows up here as `cpu`.
+    device: str | None = None
+    dtype: str | None = None
 
 
 def _estimate_tokens(texts: Sequence[str]) -> int:
@@ -606,7 +718,11 @@ async def health() -> HealthResponse:
     whose pin did, until the fleet is slower than a single container was.
     ``batch_window_ms``/``max_batch_texts`` complete the set (capacity 4.3):
     they are the difference between a batching replica and a baseline one,
-    and nothing else about the process makes that visible.
+    and nothing else about the process makes that visible. ``device``/``dtype``
+    (gpu-compose) are the same kind of field: ``_choose_device``'s own
+    decision, the one the loader placed the model by, so a CUDA-named image
+    running on the CPU reads ``cpu``/``float32`` here instead of being
+    inferred from latency.
 
     ⚠️ **And before 4.3 this route did not merely get slow under load -- it
     FAILED.** ``model.encode`` held the event loop for the whole of a forward
@@ -628,4 +744,6 @@ async def health() -> HealthResponse:
         torch_threads=_state.torch_threads,
         batch_window_ms=_state.batch_window_ms,
         max_batch_texts=_state.max_batch_texts,
+        device=_state.device,
+        dtype=_state.dtype,
     )
