@@ -38,11 +38,11 @@
 | AC-1.2 (§5.1: `APP_IMAGE_REPO`/`EMBEDDING_IMAGE_REPO`، 10 خدمات) | `test_compose_build_overlay.py::test_every_platform_image_service_has_a_build_entry`. ومنها `backup` | ✅ مقبول |
 | AC-1.3 | `test_compose_build_overlay.py::test_the_overlay_only_carries_build`. أيّ `pull_policy` يُفشله، كما قرّر المالك | ✅ مقبول |
 | AC-1.4 (§5.1) | `test_compose_build_overlay.py::test_platform_image_defaults_resolve_to_todays_local_names` | ✅ مقبول |
-| AC-1.5 (مصحَّح §5.1: مقارنة `services` فقط) | **دليلٌ جزئيّ:**<br>- `test_overlay_renders_todays_build_and_image_names` (جرى هنا، لم يُتخطَّ).<br>- مراجعة الشيفرة قاست `services` من `master` ومن الفرع مع الملفّ الإضافيّ، بـ`.env.example`، بلا profile ومع `--profile backup`، فجاءت متطابقة حرفيّاً (`review.md`).<br>**الناقص:** المقارنة نفسها على `.env` المالك الحقيقيّ | ⏳ مؤجَّل بشرط (ش-2) |
+| AC-1.5 (مصحَّح §5.1: مقارنة `services` فقط) | **دليلٌ جزئيّ:**<br>- `test_overlay_renders_todays_build_and_image_names` (جرى هنا، لم يُتخطَّ).<br>- مراجعة الشيفرة قاست `services` من `master` ومن الفرع مع الملفّ الإضافيّ، بـ`.env.example`، بلا profile ومع `--profile backup`، فجاءت متطابقة حرفيّاً (`review.md`).<br>**الناقص:** المقارنة نفسها على `.env` المالك الحقيقيّ<br>**تحديث 2026‑10‑14 (ش-2):** على `.env` المالك الحقيقيّ:<br>- «قبل»: `docker-compose.yml` من `de707f0` (رأس `master` قبل الدمج)، بـ`--project-directory /home/AIZZAK`. البصمتان: `6c26df36…` بلا profile، و`a7d3a7db…` مع `--profile backup`.<br>- كان في `.env` سطر `COMPOSE_FILE=` فارغ، فصار `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml`. الصيغة الثنائيّة لأنّ الحزمة كانت تعمل من `docker-compose.yml` وحده، بلا جسر WSL (يجيب Q-8).<br>- «بعد»: `svc` مرّتين و`svc --profile backup` مرّتين، فجاءت البصمتان نفسهما في كلّ مرّة | ✅ مقبول (2026‑10‑14) |
 | AC-1.6 | `test_compose_build_overlay.py::test_base_file_alone_renders_and_builds_nothing` (جرى هنا). وكرّره QA يدويّاً: 35 خدمة، وما فيها `build` = 0 | ✅ مقبول |
 | AC-1.7 | `ci.yml:95` = `docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml`. ويثبّتها `test_ci_workflow_truthfulness.py::test_integration_job_selects_real_markers_and_requires_live_dependencies` | ✅ مقبول |
 | AC-1.8 | **دليلٌ جزئيّ:** `docker compose config -q` لتركيبة CI (الأساسيّ + test + build) نجح محلّيّاً (`test-plan.md` §3).<br>**الناقص:** تشغيل CI على الفرع لم يحدث بعد.<br>**تحديث 2026‑10‑14 (ش-1):** دُفعت commits الميزة ضمن [PR #3](https://github.com/anastawahia/aizzak/pull/3). في [run 38470311343](https://github.com/anastawahia/aizzak/actions/runs/38470311343):<br>- `quality` و`integration` خضراوان.<br>- خطوة `Provision` بنت `aizzak/app:dev` داخل CI (`naming to docker.io/aizzak/app:dev done`)، ولا `Pulling aizzak/app` فيها. Compose هناك لا يطبع كلمة `Building`، فمخرجات BuildKit هي دليل البناء.<br>- `release.yml` لم يعمل على الـPR.<br>جرى التحقّق بعد الدمج المحلّيّ لا قبله، لأنّ البوّابة ② كانت دمجاً بلا دفع | ✅ مقبول (2026‑10‑14) |
-| AC-1.9 | **دليلٌ جزئيّ:** الاختبار نفسه الذي في AC-1.5 يُظهر الصورتين `aizzak/app:dev` و`aizzak/embedding:dev` مع ملفّ البناء.<br>**الناقص:** البناء الفعليّ على `.env` المالك | ⏳ مؤجَّل بشرط (ش-2) |
+| AC-1.9 | **دليلٌ جزئيّ:** الاختبار نفسه الذي في AC-1.5 يُظهر الصورتين `aizzak/app:dev` و`aizzak/embedding:dev` مع ملفّ البناء.<br>**الناقص:** البناء الفعليّ على `.env` المالك<br>**تحديث 2026‑10‑14 (ش-2):** على `.env` المالك:<br>- `docker compose config --images` يحوي `aizzak/app:dev` و`aizzak/embedding:dev`.<br>- `docker compose build app embedding` نجح برمز 0 في 11 دقيقة ونصف تقريباً، بلا `-f`، أي من `COMPOSE_FILE` وحده | ✅ مقبول (2026‑10‑14) |
 | AC-1.10 | البوّابات الخمس خضراء بعد `9a29215` (أعلاه). و`git diff master -- .importlinter` فارغ | ✅ مقبول |
 
 ## US-2 أسماء الصور ووسومٌ ثابتة (Must)
@@ -157,7 +157,7 @@
 
 **الشروط:**
 - **ش-1** (AC-1.8، أي CI الـPR أخضر) شرطٌ لازم **قبل** الدمج. **تحقّق في 2026‑10‑14** عبر PR #3 (انظر AC-1.8).
-- **ش-2** يُنفَّذ عند الدمج على جهاز المالك.
+- **ش-2** يُنفَّذ عند الدمج على جهاز المالك. **تحقّق في 2026‑10‑14** على `.env` المالك، نفّذه وكيلٌ وطبع البصمات وحدها (انظر AC-1.5 وAC-1.9).
 
 **ما لا يشمله هذا القبول:** الخطوات 1.1–1.4 في الخطّة لا تصير ✅ إلّا بعد ش-2 وش-4 كما في الجدول أعلاه. وإن فشل أيٌّ من ش-1 أو ش-4، تعود الميزة إلى **مرحلة البناء** (devops-engineer)، ثمّ تُعاد المراجعة والقبول للجزء المتغيّر.
 
