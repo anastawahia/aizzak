@@ -83,7 +83,8 @@ def test_digest_file_keeps_only_the_image_pushed_before_a_failure(tmp_path: Path
 def test_relative_digest_file_is_resolved_against_the_callers_directory(tmp_path: Path) -> None:
     run = _run(tmp_path, "--digest-file", "d.txt", _VERSION, cwd_rel="deploy")
     assert run.proc.returncode == 0, run.err
-    assert (run.repo / "deploy" / "d.txt").read_text().count("\n") == 2
+    # one row per image: app, embedding and (gpu-compose 2.4) embedding-cuda
+    assert (run.repo / "deploy" / "d.txt").read_text().count("\n") == 3
 
 
 def test_workflow_flag_inside_actions_still_requires_the_other_checks(tmp_path: Path) -> None:

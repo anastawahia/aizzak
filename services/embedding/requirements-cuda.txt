@@ -1,0 +1,15 @@
+# Pinned dependencies for the embedding SERVICE image, CUDA variant
+# (server-gpu-plan.md 2.4). The SAME pins as requirements.txt -- the one
+# difference is the index line (tests/unit/test_embedding_cuda_image.py compares
+# the two). Built ONLY with --build-arg EMBEDDING_REQUIREMENTS=requirements-cuda.txt,
+# by deploy/release/build-push.sh (tag prefix embedding-cuda-) or the one local
+# buildx command in docs/stack-commands.md -- never by docker-compose.build.yml.
+# torch's cu124 wheels carry their own CUDA 12.4 runtime: the host provides the
+# NVIDIA driver and NVIDIA Container Toolkit (deploy/gpu-preflight.sh checks both).
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.5.1
+sentence-transformers==3.3.1
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
