@@ -7,7 +7,7 @@
 - **المصدر:** [`docs/server-gpu-plan.md`](../../server-gpu-plan.md) — المرحلة 2، الخطوات 2.1–2.6
 - **الـ Issue:** لا يوجد (الطلب من الخطّة مباشرة)
 - **الفروع:** `feat/gpu-compose` (من `master` ‏`1814998`). أوّل commit ‏`858f3ce`: وثائق التسليم
-- **آخر تحديث:** 2026-10-14 (التصميم ✅، البناء يبدأ)
+- **آخر تحديث:** 2026-10-14 (البناء ✅ C1–C7، بانتظار تثبيت Toolkit ثمّ الفحص)
 
 | # | المرحلة | الوكيل | الحالة | المخرج | ملاحظات |
 |---|---|---|---|---|---|
@@ -16,7 +16,7 @@
 | 3 | UX | ux-designer | ⏭ | ux.md | لا واجهة: المستودع خلفيّ فقط |
 | 4 | التصميم | software-architect | ✅ | design.md | التصميم مكتوب: 8 commits (C1 backend-developer، C2–C7 devops-engineer، C8 qa-engineer)، و64 معياراً في §5.3. ⚠️ 1 (ملفٌّ محميٌّ جديد `deploy/ollama/pull_models.py`) حسمه المالك: الخيار (أ). لا ⚠️ مفتوح. AC‑5.7 وثمانية معايير أخرى بصياغة §5.4. انقطع الوكيل مرّةً بحدّ الاستعمال ثمّ أكمل |
 | 5 | البيانات | data-engineer | ⏭ | ترحيل | لا تغيير في المخطّط (§7 من الخطّة: لا تعديل لشيفرة التطبيق) |
-| 6 | الخلفية/البنية | backend-developer ثمّ devops-engineer | 🟡 | فرع + commits | C1 ✅ `3032cd9` (backend-developer): ملفّان فقط (`git show --stat` متحقَّق)، والبوّابات الخمس خضراء: pytest ‏5252 passed و1 skipped (اختبار lint-imports لأنّ `.venv/bin` ليس على PATH؛ البوّابة 4 نفسها خضراء). C2–C7 عند devops-engineer |
+| 6 | الخلفية/البنية | backend-developer ثمّ devops-engineer | ✅ | فرع + commits | C1 ✅ `3032cd9` (backend-developer). C2–C7 ✅ (devops-engineer): C2 `7a08169`، C3 `0109a3b`، C4 `402e331`، C5 `7212bf3`، C6 `f537e4c`، C7 `ed899de`. تحقّق المنسّق: الملفّات غير الاختبارات والوثائق 12 ملفّاً، كلّها في قائمة Q‑8 والخيار (أ)؛ لا شيء في `src` ولا `deploy/runpod` ولا `.importlinter`. أعاد المنسّق البوّابات على `ed899de`: 812 files already formatted، All checks passed، mypy 467 ملفّاً بلا أخطاء، 8 kept 0 broken، pytest ‏5392 passed بلا تخطٍّ، و`test-rules.sh` ‏OK (27 قاعدة). لم تُشغَّل أيّ حاوية للمكدّس |
 | 7 | الواجهة | frontend-developer | ⏭ | فرع + commits | لا واجهة |
 | 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
 | 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
@@ -49,5 +49,14 @@
   - **⚠️ 1 → الخيار (أ):** موافقةٌ على الملفّ المحميّ الجديد `deploy/ollama/pull_models.py`، يُربط في خدمة `ollama-pull` للقراءة فقط.
   - **موعد Toolkit:** بعد البناء وقبل الفحص. المنسّق ينبّه المالك حين ينتهي C1…C7، ويعطيه أوامر ملحق أ في `design.md`. المالك ينفّذها بنفسه.
   - **للعلم (لا قرار):** صورة CUDA متوقّعة بين 8 و9 ج.ب، وإن تجاوز القياس 10 ج.ب تُعرض على المالك قبل أوّل إصدار (NFR‑9). وسعة Docker Hub يتحقّق منها المالك.
+- **البناء C2–C7 (2026‑10‑14)، انحرافاتٌ صغيرة عن التصميم سجّلها devops-engineer** (للمراجعة، لا قرار):
+  - `gpu-preflight.sh`: مهلة `--smoke` ‏300 ث؛ وغياب الـruntime مع `--smoke` يطبع WARN ثمّ يحسم الفحص الحيّ (فشله → 12)؛ والمخرج كلّه على stdout.
+  - روابط NVIDIA وDocker في `docs/deploy-server.md` مكتوبةٌ من الذاكرة: يتحقّق منها المراجع.
+  - `pull_models.py`: فشل نموذجٍ لا يوقف البقيّة (4 في النهاية)؛ Ollama لا يُبلَغ → 3 فوراً؛ متغيّر انتظارٍ خاطئ → 2.
+  - `tests/unit/test_release_build_push_edges.py` تغيّر (صفّا digest → 3) في C5.
+  - §2‑ي: النسب أُعيد حسابها بالـMiB (14746 و22118).
+  - رابطٌ ميّت `deploy-linux-server.md` → `deploy-server.md` في `stack-commands.md` ورأس `docker-compose.test.yml` (تعليق).
+  - **لـC8:** ‏`tests/unit/test_gpu_preflight.py:489` يحمل نمط الأسرار حرفيّاً (`dckr_pat_|hf_…|sk-…`)؛ فحص AC‑7.6 يستثنيه أو يُصلَح بسطر.
+  - **باقٍ عمداً (D‑16، يغطّيه 7.4):** رأس `requirements.txt`، رأس `resource-budget.sh`، `architecture.md:93,650`، `deploy-runpod.md` §11، شجرة README.
 
 </div>
