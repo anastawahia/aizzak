@@ -27,7 +27,7 @@
 | `vault` | hashicorp/vault | 8200 | الأسرار + Transit (تخزين `file` دائم — release-blockers-plan.md §3 خطوة 1) |
 | `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية — **ثلاث نسخ** (`deploy.replicas: 3`) بخيطٍ واحدٍ مثبَّتٍ لكلٍّ (خطّة السعة `4.1`)؛ ينشرها ملفّ الاختبار على `127.0.0.1:8080` **بنسخةٍ واحدة** فقط |
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
-| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL |
+| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama` في `.env`) |
 | `ollama` | `ollama/ollama:0.13.5` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
@@ -475,8 +475,8 @@ create_index_concurrently:                indisvalid = true    ← أسقطت ا
 **الميزانيّةُ المحسوبة** — تُشتَقّ من `docker-compose.yml` ولا تُكتب بيد؛ `deploy/resource-budget.sh` يطبعها و`tests/unit/test_resource_budget.py` يقارنها بما هنا:
 
 ```text
-resources.standing_cpus       = 36.10   # سقفُ الخدمات الدائمة مجتمعةً — كانت 34.00 قبل `5.2`، و34.25 قبل `5.7`، و35.25 قبل `7.3`، و35.60 قبل `monitoring-host-postgres`
-resources.standing_memory_gb  = 57.53   # كانت 50.50 قبل `2.1`، و54.50 قبل `4.1`، و56.38 قبل `5.2`، و56.50 قبل `5.7`، و57.50 قبل `7.3`، و57.59 قبل `monitoring-host-postgres`
+resources.standing_cpus       = 35.60   # سقفُ الخدمات الدائمة مجتمعةً — كانت 34.00 قبل `5.2`، و34.25 قبل `5.7`، و35.25 قبل `7.3`، و35.60 قبل `monitoring-host-postgres`، و36.10 قبل `gpu-compose` (2.3)
+resources.standing_memory_gb  = 57.28   # كانت 50.50 قبل `2.1`، و54.50 قبل `4.1`، و56.38 قبل `5.2`، و56.50 قبل `5.7`، و57.50 قبل `7.3`، و57.59 قبل `monitoring-host-postgres`، و57.53 قبل `gpu-compose` (2.3)
 resources.reference_host_cpus = 32      # مضيف §6 المرجعيّ
 resources.reference_host_gb   = 64
 ```
@@ -484,6 +484,8 @@ resources.reference_host_gb   = 64
 **⚠️ و`5.7` أنفقت آخرَ ما بقي من هامش الذاكرة تقريباً.** `ops-scheduler` خدمةٌ **دائمة** (المهامُّ الليليّة لا تنتظر مشغّلاً يتذكّرها)، وسقفُها سقفُ خدمة `backup` نفسُه — **1 vCPU و1g** — لأنّ أثقلَ ما تشغّله هو `backup full` نفسُه. **⚠️ وذلك السقفُ نفسُه لم يُقَس:** وضعته `3.4` لخدمة `backup` مع سقوف الخدمات كلِّها، ولم تقِس `2.5` ذروةَ ذاكرتها، فذروةُ `backup full` الحقيقيّة أوّلُ ما يُقاس حين يُعاد تركيبُ الميزانيّة. فصار المجموعُ **57.50 من 57.60** التي يسمح بها هامشُ هذا الدفتر (‏64 − 6.4): **عُشرُ غيغابايت**. أيُّ خدمةٍ دائمةٍ تُضاف بعدها — أو أيُّ سقفٍ يُرفع — **يُسقط `test_the_standing_budget_fits_the_reference_host`**، وذلك مقصود: الدفترُ يقول الآن بصوتٍ عالٍ إنّ المضيفَ المرجعيَّ امتلأ، وإنّ الخطوةَ التالية التي تضيف شيئاً دائماً يجب أن تُعيد تركيبه (وهو دَينٌ مسجَّلٌ أصلاً لـ`5.3` في `د‑26`). والمعالجةُ **35.25 من 32** (‏1.10×) حجزٌ زائدٌ يُبلَّغ، بالحكم نفسِه الذي تشرحه الفقرةُ التالية.
 
 **⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّ نظرةً في إعادة تركيب الدفتر (`د‑26`).
+
+**⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
 
 **⚠️ و`7.3` أنفقت العُشرَ الباقي إلّا قليلاً.** خدمتا توصيل التنبيهات دائمتان (تنبيهٌ لا يصل حين يُحتاج ليس تنبيهاً): `alertmanager` بـ0.25 vCPU و**64m**، و`alert-sink` بـ0.1 vCPU و**32m** — نصفُ سقف المُصدِّرات وربعُه، لأنّ الهامشَ كان 102 ميغابايت لا أكثر. فصار المجموعُ **57.59 من 57.60**. والسقفان صغيران لأنّ العمليّتين صغيرتان، والمقيسُ بعد النشر في `capacity-status.md` (‏`7.3`). **والخطوةُ التالية التي تضيف شيئاً دائماً لا تجد مكاناً أصلاً**: إعادةُ تركيب الدفتر (`د‑26`) صارت شرطاً لا خياراً.
 
@@ -513,10 +515,10 @@ deploy: {resources: {limits: {cpus: "6.0", memory: 20G}}}
 ```bash
 deploy/resource-budget.sh                              # مقابل هذا المضيف
 deploy/resource-budget.sh --host-cpus 32 --host-memory-gb 64   # مقابل مضيف §6
-deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull
+deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull وollama-bridge
 ```
 
-**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull`، وهاتان الأخيرتان من `gpu-compose` ‏2.2 تحت `local-llm`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
+**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
 
 **⚠️ ونسخُ `app` الثلاثُ تمنع مفتاحَين على هذه الخدمة إلى الأبد، وهما يفشلان فشلَين مختلفَين** — مقيسان على مسبارٍ بنسختَين:
 
@@ -2547,6 +2549,8 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 > 📌 **و`ollama` (الخدمة داخل المكدّس) يُنتظر بـ`service_healthy` مع `required: false`.** هو داخل دورة حياة Compose، فصحّته معنىً يُنتظر؛ و`required: false` يمنع أن يحبس عطلُه المكدّس، ويُسقط الحافّةَ حين لا يكون الـprofile `local-llm` مفعّلاً. وهي حافّة `ollama-pull` نفسُها: إن فشل `ollama` في الإقلاع شغّله Compose بتحذير، فيخرج `ollama-pull` بالرمز 3 «Ollama unreachable» — فشلٌ صاخب.
 >
 > 📌 **ولا شيء يعتمد على صحّة `ollama-bridge`، عمداً.** Ollama وحدةٌ أصليّةٌ في WSL خارج دورة حياة Compose؛ ربطُ إقلاع المكدّس بها يستبدل تدهوراً مرئيّاً بآخر خفيّ. «غير صحّي» هنا معناه «نداءات LLM ستفشل»، معروضاً في `docker compose ps` بدل أن يظهر في خطأ طلبٍ فقط.
+>
+> 📌 **والجسر خلف profile `wsl-ollama`** (‏`gpu-compose` 2.3)، فكلّ حافّةٍ إليه `required: false` أيضاً: مضيفٌ بلا الـprofile يقلع بدونه، وخادمٌ لا يراه أصلاً. والحوافّ أربع: `app` والعمّال الثلاثة. ونسيانُ `COMPOSE_PROFILES=wsl-ollama` على جهاز المالك يُسقط الجسر بصمت، فتصير نداءات LLM `502` ويشتعل `AizzakLlmCircuitOpen`.
 >
 > ✅ **وأُغلقت معها حافّةٌ مُعلَنةٌ منذ [§3.133](../log/3.133.md)**: `app` صارت تُعلن `qdrant` في `depends_on` (‏`service_healthy`) — عين عطب [§3.111](../log/3.111.md): `QDRANT_URL` تسمّي `qdrant:6333` من الطور الأوّل، والحافّة غير مُعلَنة ⇒ `docker compose up -d app` وحده كان يقلعها بلا مخزن المتّجهات. وحوافّ `pgbouncer`/`qdrant` كلّها صارت `service_healthy` بدل `service_started`.
 

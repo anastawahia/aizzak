@@ -274,11 +274,95 @@ def test_every_ollama_route_is_gemma3_1b() -> None:
     assert _ollama_models(_env_example_routing()) == {"gemma3:1b"}
 
 
-# ── AC-8.1 (the part for this step) ─────────────────────────────────────────
+# ── AC-3.1 ──────────────────────────────────────────────────────────────────
+
+# `ollama-bridge` as it was on master 1814998, minus the profile this step adds. A pinned
+# dictionary, not a pattern: the claim is "nothing else about the bridge changed".
+_BRIDGE_ON_MASTER: dict[str, Any] = {
+    "deploy": {"resources": {"limits": {"cpus": "0.5", "memory": "256m"}}},
+    "image": "alpine/socat:1.8.0.3",
+    "network_mode": "host",
+    "command": "TCP-LISTEN:11435,bind=172.17.0.1,fork,reuseaddr TCP:127.0.0.1:11434",
+    "healthcheck": {
+        "test": [
+            "CMD",
+            "wget",
+            "-q",
+            "-T",
+            "4",
+            "-O",
+            "/dev/null",
+            "http://172.17.0.1:11435/api/version",
+        ],
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": 3,
+        "start_period": "10s",
+    },
+    "restart": "unless-stopped",
+}
 
 
-def test_env_example_offers_the_local_llm_profile_commented_only() -> None:
+def test_the_bridge_is_profiled_and_otherwise_unchanged() -> None:
+    bridge = dict(_services()["ollama-bridge"])
+    assert bridge.pop("profiles") == ["wsl-ollama"]
+    assert bridge.pop("logging")["driver"] == "json-file"
+    assert bridge == _BRIDGE_ON_MASTER
+
+
+# ── AC-3.2 ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", _OLLAMA_EDGES)
+def test_the_four_bridge_edges_are_optional(name: str) -> None:
+    edge = _edges(_services()[name])["ollama-bridge"]
+    assert edge == {"condition": "service_started", "required": False}
+
+
+def test_no_edge_requires_the_bridge() -> None:
+    offenders = [
+        f"{name}: {edge}"
+        for name, spec in _services().items()
+        for target, edge in _edges(spec).items()
+        if target == "ollama-bridge" and edge.get("required") is not False
+    ]
+    assert not offenders, offenders
+
+
+# ── AC-3.4 ──────────────────────────────────────────────────────────────────
+
+
+@_needs_compose
+def test_wsl_ollama_adds_exactly_the_bridge() -> None:
+    plain = _compose("config", "-q")
+    assert plain.returncode == 0, plain.stderr
+    assert "depends on undefined service" not in plain.stderr
+    with_bridge = _compose("config", "-q", profile="wsl-ollama")
+    assert with_bridge.returncode == 0, with_bridge.stderr
+    without = _service_names()
+    assert "ollama-bridge" not in without
+    assert _service_names("wsl-ollama") - without == {"ollama-bridge"}
+
+
+# ── AC-7.3 ──────────────────────────────────────────────────────────────────
+
+
+@_needs_compose
+def test_the_default_stack_is_the_28_standing_and_5_one_shots() -> None:
+    """The default `up -d` set is exactly the services with no `profiles:`, and the bridge
+    is not among them. (Master's own set is compared once by QA with `git show`.)"""
+    unprofiled = {name for name, spec in _services().items() if not spec.get("profiles")}
+    assert _service_names() == unprofiled
+    assert len(unprofiled) == 33, "28 standing + 5 one-shots"
+    assert "ollama-bridge" not in unprofiled
+
+
+# ── AC-3.5 and AC-8.1 (the profile lines) ───────────────────────────────────
+
+
+def test_env_example_offers_both_profiles_commented_only() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert re.search(r"^#COMPOSE_PROFILES=wsl-ollama$", text, re.MULTILINE)
     assert re.search(r"^#COMPOSE_PROFILES=local-llm$", text, re.MULTILINE)
     assert not re.search(r"^COMPOSE_PROFILES=", text, re.MULTILINE), (
         "CI copies this file and `_compose_config` does not clear COMPOSE_PROFILES"

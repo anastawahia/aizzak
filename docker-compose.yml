@@ -346,6 +346,7 @@ x-worker-service: &worker-service
   depends_on:
     ollama-bridge:
       condition: service_started
+      required: false      # 2.3: profile wsl-ollama -- absent on a server
     ollama:
       condition: service_healthy
       required: false      # 2.2: profile local-llm -- absent on this WSL machine
@@ -1613,9 +1614,13 @@ services:
   # the native WSL listener already owns 11434, so the bridge listens on
   # 11435 and forwards to 11434. The local `.env` therefore points containers
   # at `host.docker.internal:11435`; the live harness reaches native Ollama
-  # directly at `127.0.0.1:11434`. The generic Compose fallback remains 11434
-  # for hosts where Ollama is reachable there without this WSL bridge.
+  # directly at `127.0.0.1:11434`.
+  #
+  # Behind profile `wsl-ollama` (server-gpu-plan.md 2.3): this machine's .env
+  # carries `COMPOSE_PROFILES=wsl-ollama`; a server never starts it, and its
+  # default is the in-stack `ollama` service (profile `local-llm`).
   ollama-bridge:
+    profiles: ["wsl-ollama"]
     deploy:
       resources:
         limits:
@@ -1633,7 +1638,8 @@ services:
     # this service has no other way of announcing as healthy.
     #
     # 📌 NOTHING gates on this being healthy, deliberately. `app` and the three
-    # workers keep `condition: service_started` on this service (below):
+    # workers keep `condition: service_started` on this service (below), and
+    # `required: false`, so a host without the profile boots without it:
     # Ollama is a NATIVE WSL unit outside Compose's lifecycle, and making the
     # whole stack refuse to boot because a host service is down would trade a
     # visible degradation for an invisible one. Unhealthy here means "LLM
@@ -1770,6 +1776,7 @@ services:
     depends_on:
       ollama-bridge:
         condition: service_started
+        required: false      # 2.3: profile wsl-ollama -- absent on a server
       ollama:
         condition: service_healthy
         required: false      # 2.2: profile local-llm -- absent on this WSL machine
