@@ -1,0 +1,78 @@
+# GPU overlay (server-gpu-plan.md 2.5): everything that needs an NVIDIA GPU, in
+# ONE file a GPU server adds to COMPOSE_FILE -- leave it out and the same
+# docker-compose.yml runs on CPU. Three services, and only these keys
+# (tests/unit/test_compose_gpu_overlay.py):
+#   ollama     the LLM on the GPU (only with COMPOSE_PROFILES=local-llm)
+#   embedding  the CUDA image, ONE replica, on the GPU
+#   app        `utility` only: nvidia-smi for the System Monitor page, no compute
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#   COMPOSE_PROFILES=local-llm
+#   EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
+#   EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
+#
+# Prerequisites -- NVIDIA driver, NVIDIA Container Toolkit configured for
+# Docker, Compose >= 2.20 -- are what deploy/gpu-preflight.sh checks
+# (docs/deploy-server.md). Without the toolkit every service below fails to
+# start with "could not select device driver".
+#
+# ⚠️ NEVER together with docker-compose.build.yml: that overlay builds
+# `embedding` from requirements.txt (CPU torch) and would tag the result with
+# the CUDA name below. The CUDA image comes from deploy/release/build-push.sh
+# (or the one buildx command in docs/stack-commands.md), and EMB_REQUIRE_CUDA
+# makes a CPU build under this name refuse to start rather than run slowly.
+#
+# Not for this WSL development machine before the toolkit is installed: that
+# is docker-compose.wsl-gpu.yml, and the two are never combined.
+#
+# No `count`/`device_ids`: every GPU on the host is visible to both services;
+# the target server has one (decision 2). Pinning devices on a multi-GPU host
+# is measured in 7.3 and recorded in 08-local-runbook §2‑ي.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+  embedding:
+    # Named only, never built here (above). Its own local default -- never the
+    # CPU image's name, never a floating tag -- so a GPU host that forgot the
+    # two variables fails to pull instead of running CPU torch.
+    image: ${EMBEDDING_CUDA_IMAGE_REPO:-aizzak/embedding-cuda}:${EMBEDDING_CUDA_IMAGE_TAG:-dev}
+    deploy:
+      # ONE process on the GPU, fed by the batcher (capacity 4.3); three would
+      # hold three CUDA contexts and three copies of the model (08 §2‑ي).
+      # embedding-lb stays in front of it unchanged.
+      replicas: 1
+      resources:
+        limits:
+          # ⚠️ A STARTING VALUE, NOT A MEASUREMENT (FR‑19). The base file's 1280m
+          # was measured for a CPU process; a CUDA process maps the CUDA libraries
+          # and stages the fp32 weights in RAM before .half(). gpu-compose AC‑4.11
+          # (15 minutes of 8 concurrent /embed, batches of 8 Arabic chunks) keeps
+          # it if peak x 1.5 <= 3g, else replaces it with peak x 1.79 rounded up
+          # to 256m -- the base file's own margin.
+          memory: 3g
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    environment:
+      # Q‑10 (owner, 2026-10-14): refuse to start without CUDA. A missing toolkit,
+      # an old driver or a CPU build under this name would otherwise run on the
+      # CPU in silence -- the same vectors, far slower.
+      EMB_REQUIRE_CUDA: "1"
+
+  app:
+    # `utility` and nothing else: the toolkit mounts nvidia-smi and NVML so
+    # system_stats.py can read the card -- the server-side replacement for the
+    # WSL overlay -- and no CUDA context is granted.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [utility]
