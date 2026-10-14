@@ -52,9 +52,9 @@
 | AC-2.1 | `test_release_build_push.py::test_valid_tags_are_accepted[2026.10.1, 2026.1.12]` | ✅ مقبول |
 | AC-2.2 (§5.1، ومعها `app-2026.10.1`) | - `test_release_build_push.py::test_invalid_tags_are_refused_before_any_docker_call` (9 قيم).<br>- `test_release_build_push_edges.py::test_malformed_versions_the_stories_did_not_list_are_refused` | ✅ مقبول |
 | AC-2.3 (§5.1) | `test_release_build_push.py::test_image_list_has_two_images_and_reserves_cuda_for_2_4` | ✅ مقبول |
-| AC-2.4 | يحتاج إصداراً مرفوعاً. لا دليل قبل أوّل وسم. صيغة البصمة نفسها مثبتةٌ آليّاً في AC-3.5 | ⏳ مؤجَّل بشرط (ش-4) |
-| AC-2.5 | يحتاج المستودع الخاصّ موجوداً. لا دليل قبل أوّل وسم | ⏳ مؤجَّل بشرط (ش-4) |
-| AC-2.6 | **دليلٌ جزئيّ:** شكل السجلّ (الوسم ببادئته، والبصمة، والـcommit) مثبتٌ آليّاً في AC-3.5.<br>**الناقص:** السجلّ الحقيقيّ والـartifact `release-digests` بعد أوّل وسم | ⏳ مؤجَّل بشرط (ش-4) |
+| AC-2.4 | **تحديث 2026‑10‑14 (ش-4 د):** على جهاز المالك المسجَّل:<br>- `docker pull` للوسمين `app-2026.10.1` و`embedding-2026.10.1` نجح، و`RepoDigests` للأوّل = `sha256:b09587ca718e71e89681bfee572f6d2b2ce4ba553a2d5939c9269b67962e155c`.<br>- `docker buildx imagetools inspect` للصورتين يعطي البصمتين المطبوعتين في CI حرفيّاً (`app`: `b09587ca…`، و`embedding`: `dd817bb3…`) | ✅ مقبول (2026‑10‑14) |
+| AC-2.5 | **تحديث 2026‑10‑14 (ش-4 هـ):** بـ`DOCKER_CONFIG` فارغ، `docker pull` للوسمين يفشل بـ`pull access denied … may require 'docker login'`. والصفحة العامّة `hub.docker.com/v2/namespaces/anastawahia/repositories/aizzak` تعطي `404`، فتأكّد NOTE-1 | ✅ مقبول (2026‑10‑14) |
+| AC-2.6 | **دليلٌ جزئيّ:** شكل السجلّ (الوسم ببادئته، والبصمة، والـcommit) مثبتٌ آليّاً في AC-3.5.<br>**تحديث 2026‑10‑14 (ش-4 ج):** في [run 38500790209](https://github.com/anastawahia/aizzak/actions/runs/38500790209)، خطوة «Build and push»:<br>- سطرٌ لكلّ صورة: `…/aizzak:app-2026.10.1@sha256:b09587ca718e71e89681bfee572f6d2b2ce4ba553a2d5939c9269b67962e155c` و`…:embedding-2026.10.1@sha256:dd817bb384edc95aa84c4412e3c56874f0deecaf769082b123858c31a6836127`، ومعهما `release: commit 759c82dd…`.<br>- الـartifact `release-digests` فيه السطران نفسهما مع الـcommit.<br>- اسم المستخدم يظهر `***` لأنّه سرّ | ✅ مقبول (2026‑10‑14) |
 
 ## US-3 سكربت البناء والرفع (Must)
 
@@ -68,7 +68,7 @@
 | AC-3.6 (§5.1) | - `test_release_build_push.py::test_existing_tag_is_refused[app, embedding]`.<br>- `test_release_build_push.py::test_an_older_version_does_not_block_the_next`.<br>- `test_release_build_push_edges.py::test_existing_tag_for_one_prefix_builds_and_pushes_nothing` | ✅ مقبول |
 | AC-3.7 (§5.1) | - `test_release_build_push.py::test_second_push_failure_names_it_and_lists_what_was_pushed`.<br>- `test_release_build_push_edges.py::test_first_push_failure_reports_nothing_pushed_and_never_ok`.<br>- `test_release_build_push.py::test_failure_after_a_successful_push_still_reports_the_tag_as_pushed`: حالتان × صورتان، وهو إصلاح مراجعة #1.<br>- `test_release_build_push.py::test_digest_file_failing_late_hits_the_backstop`.<br>- `test_release_build_push.py::test_visibility_after_push_fails_closed`: هذا S-1 | ✅ مقبول |
 | AC-3.8 | - `test_release_build_push.py::test_script_text_hygiene`.<br>- `test_prebuilt_images_docs.py::test_no_shell_tracing_in_release_script_or_workflow`.<br>- `test_prebuilt_images_docs.py::test_release_script_is_valid_bash` | ✅ مقبول |
-| AC-3.9 | **دليلٌ جزئيّ:** سلوك البناء مثبتٌ ببدائل في AC-3.4.<br>**الناقص:** تشغيلٌ حقيقيّ يرفع الصورتين ويؤكّد `linux/amd64`. الطريق المعتاد CI، وهو AC-4.5، بسبب R-1 | ⏳ مؤجَّل بشرط (ش-4) |
+| AC-3.9 | **دليلٌ جزئيّ:** سلوك البناء مثبتٌ ببدائل في AC-3.4.<br>**تحديث 2026‑10‑14 (ش-4 ج):** السكربت نفسه رفع الصورتين من CI (AC-4.5)، وانتهى بـ`release: OK 2026.10.1 (2 images)`. وبعد السحب: `docker image inspect --format '{{.Os}}/{{.Architecture}}'` = `linux/amd64` للصورتين | ✅ مقبول (2026‑10‑14) |
 
 ## US-4 البناء والرفع من CI (Should)
 
@@ -78,9 +78,9 @@
 | AC-4.2 | - `test_release_workflow.py::test_registry_credentials_come_only_from_two_secrets_via_env_and_stdin`.<br>- `test_prebuilt_images_docs.py::test_docs_and_workflows_carry_no_registry_credential` | ✅ مقبول |
 | AC-4.3 | - `test_release_workflow.py::test_publishing_is_delegated_to_the_script`.<br>- `test_release_workflow.py::test_the_tag_is_read_from_the_environment_not_interpolated` | ✅ مقبول |
 | AC-4.4 | `test_release_workflow.py::test_publish_needs_quality_and_every_job_is_time_boxed`. وحارس الانحراف `::test_release_quality_is_ci_quality` صار يقارن `env` أيضاً | ✅ مقبول |
-| AC-4.5 | يحتاج السرّين والبيئة `release` وأوّل وسم `v*`. لا دليل قبل ذلك | ⏳ مؤجَّل بشرط (ش-4) |
-| AC-4.6 | **دليلٌ جزئيّ:** خطوة «Registry secrets are set» موجودة (`release.yml:99`)، ويفحصها `bash -n`.<br>**الناقص:** تشغيلٌ حقيقيّ بسرٍّ ناقص | ⏳ مؤجَّل بشرط (ش-4) |
-| AC-4.7 | **دليلٌ جزئيّ:** الرفض نفسه مثبتٌ آليّاً في `test_release_build_push.py::test_preflight_refuses_a_bad_tag`.<br>**الناقص:** تشغيلٌ حقيقيّ بوسمٍ سيّئ | ⏳ مؤجَّل بشرط (ش-4) |
+| AC-4.5 | **تحديث 2026‑10‑14 (ش-4 ج):** [run 38500790209](https://github.com/anastawahia/aizzak/actions/runs/38500790209) أخضر:<br>- المهامّ: `preflight` (6 ث)، و`quality` (3.5 د)، و`publish` (3 د).<br>- `app-2026.10.1` و`embedding-2026.10.1` في `anastawahia/aizzak`، والبصمتان في السجلّ وفي الـartifact.<br>- لا مفتاح في السجلّ: `grep -ci dckr_pat` على سجلّ التشغيل كلّه = 0.<br>- المحاولتان 2 و3 فشلتا عند `docker login` بمفتاحٍ خاطئ، قبل أيّ بناء. صحّحه المالك، فنجحت المحاولة 4 | ✅ مقبول (2026‑10‑14) |
+| AC-4.6 | **دليلٌ جزئيّ:** خطوة «Registry secrets are set» موجودة (`release.yml:99`)، ويفحصها `bash -n`.<br>**تحديث 2026‑10‑14 (ش-4 ب):** [run 38500790209](https://github.com/anastawahia/aizzak/actions/runs/38500790209)، المحاولة 1، و`DOCKERHUB_USERNAME` وحده في البيئة. فشل `publish` بعد 9 ثوانٍ عند «Registry secrets are set» بـ`release secret(s) not set in environment 'release': DOCKERHUB_TOKEN`، ولم يُبنَ شيء | ✅ مقبول (2026‑10‑14) |
+| AC-4.7 | **دليلٌ جزئيّ:** الرفض نفسه مثبتٌ آليّاً في `test_release_build_push.py::test_preflight_refuses_a_bad_tag`.<br>**تحديث 2026‑10‑14 (ش-4 أ):** دُفع `v2026.10.1-test`. في [run 38500738096](https://github.com/anastawahia/aizzak/actions/runs/38500738096) فشل `preflight` بعد 5 ثوانٍ بـ`'2026.10.1-test' is not a version: expected YYYY.M.N`، وتُخطّيت `quality` و`publish`. ثمّ حُذف الوسم من GitHub | ✅ مقبول (2026‑10‑14) |
 
 ## US-5 وثائق الأوامر (Should)
 
@@ -92,11 +92,8 @@
 | AC-5.4 | - `test_prebuilt_images_docs.py::test_modified_docs_stay_inside_an_rtl_div`.<br>- `test_prebuilt_images_docs.py::test_docs_and_workflows_carry_no_registry_credential`.<br>- قراءة QA للفروق (`test-plan.md`) | ✅ مقبول |
 
 **العدّ (36 معياراً):**
-- 26 ✅.
-- 10 ⏳ مؤجَّلة بشرط:
-  - **Must:** AC-1.5، وAC-1.8، وAC-1.9، وAC-2.4، وAC-2.5، وAC-2.6، وAC-3.9.
-  - **Should:** AC-4.5، وAC-4.6، وAC-4.7.
-- 0 🔴.
+- 36 ✅ (2026‑10‑14). المعايير العشرة المؤجّلة تحقّقت كلّها: AC-1.8 بـش-1، وAC-1.5 وAC-1.9 بـش-2، والسبعة الباقية بـش-4.
+- 0 ⏳، و0 🔴.
 
 ## الشروط والمتابعات (بالخطوة وصاحبها)
 
@@ -159,6 +156,8 @@
 - **ش-1** (AC-1.8، أي CI الـPR أخضر) شرطٌ لازم **قبل** الدمج. **تحقّق في 2026‑10‑14** عبر PR #3 (انظر AC-1.8).
 - **ش-2** يُنفَّذ عند الدمج على جهاز المالك. **تحقّق في 2026‑10‑14** على `.env` المالك، نفّذه وكيلٌ وطبع البصمات وحدها (انظر AC-1.5 وAC-1.9).
 
-**ما لا يشمله هذا القبول:** الخطوات 1.1–1.4 في الخطّة لا تصير ✅ إلّا بعد ش-2 وش-4 كما في الجدول أعلاه. وإن فشل أيٌّ من ش-1 أو ش-4، تعود الميزة إلى **مرحلة البناء** (devops-engineer)، ثمّ تُعاد المراجعة والقبول للجزء المتغيّر.
+**تحديث 2026‑10‑14:** تحقّق ش-3 وش-4، فصارت المعايير الـ36 كلّها ✅، وتُعلَّم الخطوات 1.1–1.4 ✅ في الخطّة. أوّل إصدار: `v2026.10.1` (`release-notes.md`).
+
+**ما لا يشمله هذا القبول (نصّ 2026‑10‑13):** الخطوات 1.1–1.4 في الخطّة لا تصير ✅ إلّا بعد ش-2 وش-4 كما في الجدول أعلاه. وإن فشل أيٌّ من ش-1 أو ش-4، تعود الميزة إلى **مرحلة البناء** (devops-engineer)، ثمّ تُعاد المراجعة والقبول للجزء المتغيّر.
 
 </div>
