@@ -7,7 +7,7 @@
 - **المصدر:** [`docs/server-gpu-plan.md`](../../server-gpu-plan.md) — المرحلة 2، الخطوات 2.1–2.6
 - **الـ Issue:** لا يوجد (الطلب من الخطّة مباشرة)
 - **الفروع:** `feat/gpu-compose` (من `master` ‏`1814998`). أوّل commit ‏`858f3ce`: وثائق التسليم
-- **آخر تحديث:** 2026-10-14 (البناء ✅ C1–C7، بانتظار تثبيت Toolkit ثمّ الفحص)
+- **آخر تحديث:** 2026-10-14 (Toolkit مثبّتة، الفحص يبدأ)
 
 | # | المرحلة | الوكيل | الحالة | المخرج | ملاحظات |
 |---|---|---|---|---|---|
@@ -18,7 +18,7 @@
 | 5 | البيانات | data-engineer | ⏭ | ترحيل | لا تغيير في المخطّط (§7 من الخطّة: لا تعديل لشيفرة التطبيق) |
 | 6 | الخلفية/البنية | backend-developer ثمّ devops-engineer | ✅ | فرع + commits | C1 ✅ `3032cd9` (backend-developer). C2–C7 ✅ (devops-engineer): C2 `7a08169`، C3 `0109a3b`، C4 `402e331`، C5 `7212bf3`، C6 `f537e4c`، C7 `ed899de`. تحقّق المنسّق: الملفّات غير الاختبارات والوثائق 12 ملفّاً، كلّها في قائمة Q‑8 والخيار (أ)؛ لا شيء في `src` ولا `deploy/runpod` ولا `.importlinter`. أعاد المنسّق البوّابات على `ed899de`: 812 files already formatted، All checks passed، mypy 467 ملفّاً بلا أخطاء، 8 kept 0 broken، pytest ‏5392 passed بلا تخطٍّ، و`test-rules.sh` ‏OK (27 قاعدة). لم تُشغَّل أيّ حاوية للمكدّس |
 | 7 | الواجهة | frontend-developer | ⏭ | فرع + commits | لا واجهة |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
+| 8 | الجودة | qa-engineer | 🟡 | test-plan.md + اختبارات | الجولة 1: C8 وخريطة المعايير بلا حاويات. الإثباتات P‑1…P‑6 تنتظر إذن المالك وذاكرةً ≥ 5 ج.ب |
 | 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
 | 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
@@ -58,5 +58,11 @@
   - رابطٌ ميّت `deploy-linux-server.md` → `deploy-server.md` في `stack-commands.md` ورأس `docker-compose.test.yml` (تعليق).
   - **لـC8:** ‏`tests/unit/test_gpu_preflight.py:489` يحمل نمط الأسرار حرفيّاً (`dckr_pat_|hf_…|sk-…`)؛ فحص AC‑7.6 يستثنيه أو يُصلَح بسطر.
   - **باقٍ عمداً (D‑16، يغطّيه 7.4):** رأس `requirements.txt`، رأس `resource-budget.sh`، `architecture.md:93,650`، `deploy-runpod.md` §11، شجرة README.
+- **ملحق أ نفّذه المالك (2026‑10‑14 نحو 14:38 بتوقيته):** NVIDIA Container Toolkit ‏`1.20.1-1` مثبّتة، و`systemctl restart docker` تمّ.
+  - `docker info` Runtimes: ‏`io.containerd.runc.v2 nvidia runc`.
+  - `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`: ‏`NVIDIA GeForce RTX 4060 ...`، التعريف 592.82، CUDA 13.1، ‏1015MiB / 8188MiB.
+  - `deploy/gpu-preflight.sh --smoke` على `ed899de`: الأسطر الخمسة OK، ثمّ `gpu-preflight: OK (ready for docker-compose.gpu.yml)`، ‏`rc=0` (دليلٌ للخطوة 1 من P‑3 وAC‑1.8).
+  - `docker compose ps` قبل وبعد: `diff` فارغ. و`curl -s http://localhost/health` → `{"status":"ok"}`.
+  - **بعدها مباشرةً (فحص المنسّق):** ‏`free -m` ‏available ‏4064 ‏MiB (أقلّ من شرط 5 ج.ب في §5.5)، والـswap ‏4056/4096. القرص 814G حرّة. ذاكرة الكرت 1034/8188 MiB.
 
 </div>
