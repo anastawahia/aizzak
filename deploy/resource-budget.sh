@@ -51,6 +51,7 @@ host_cpus=""
 host_memory_gb=""
 with_profiles=0
 size=""
+size_given=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,10 +67,15 @@ while [ $# -gt 0 ]; do
         echo "--size needs a value (a name from $SIZES_DIR)" >&2
         exit 2
       fi
-      size="$2"; shift 2 ;;
+      size="$2"; size_given=1; shift 2 ;;
     *) echo "usage: $0 [--host-cpus N] [--host-memory-gb G] [--with-profiles] [--size NAME]" >&2; exit 2 ;;
   esac
 done
+
+if [ "$size_given" = 1 ] && ! [[ "$size" =~ ^[a-z0-9-]+$ ]]; then
+  echo "unknown size '$size'; available: $(cd "$SIZES_DIR" 2>/dev/null && ls ./*.env 2>/dev/null | sed 's|^\./||; s|\.env$||' | sort | tr '\n' ' ')" >&2
+  exit 2
+fi
 
 if [ -z "$host_cpus" ]; then
   host_cpus="$(nproc)"
@@ -142,9 +148,9 @@ size_line = ""
 compose = yaml.safe_load(open(compose_file, encoding="utf-8"))
 if size:
     available = sorted(p.stem for p in Path(sizes_dir).glob("*.env"))
-    path = Path(sizes_dir) / f"{size}.env"
-    if not path.is_file():
+    if size not in available:
         usage_error(f"unknown size '{size}'; available: {' '.join(available)}")
+    path = Path(sizes_dir) / f"{size}.env"
     host = source = None
     for line in path.read_text(encoding="utf-8").splitlines():
         m = re.fullmatch(r"# host: cpus=([0-9.]+) memory_gb=([0-9.]+) mode=(cpu|gpu)", line)
@@ -175,13 +181,16 @@ for name, service in sorted(services.items()):
     if "cpus" not in limits or "memory" not in limits:
         missing.append(name)
         continue
-    replicas = int(resolve((service.get("deploy") or {}).get("replicas", 1), values))
-    row = (
-        name,
-        replicas,
-        float(resolve(limits["cpus"], values)),
-        to_bytes(resolve(limits["memory"], values)),
-    )
+    try:
+        replicas = int(resolve((service.get("deploy") or {}).get("replicas", 1), values))
+        row = (
+            name,
+            replicas,
+            float(resolve(limits["cpus"], values)),
+            to_bytes(resolve(limits["memory"], values)),
+        )
+    except ValueError as exc:
+        usage_error(f"{name}: a limit or replica count is not a number ({exc})")
     if set(service.get("profiles") or ()) - enabled:
         profiled.append(row)
     elif service.get("restart") == "no":

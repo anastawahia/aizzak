@@ -64,6 +64,7 @@ from tests.unit.support_compose import (
     load_compose,
     read_size,
     redis_bytes,
+    resolve,
     var_name,
 )
 
@@ -97,7 +98,7 @@ def _flag(service: str, name: str) -> str | None:
         return None
     index = command.index(name)
     assert index + 1 < len(command), f"{_COMPOSE.name}: `{service}` passes {name} with no value"
-    return command[index + 1]
+    return resolve(command[index + 1])
 
 
 # ------------------------------------------------------------------ the two servers --

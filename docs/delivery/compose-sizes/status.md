@@ -15,11 +15,11 @@
 | 3 | UX | ux-designer | ⏭ | | لا واجهة: المستودع خلفيّ فقط |
 | 4 | التصميم | software-architect | ✅ | design.md | المنفّذ: devops-engineer وحده (17 ملفّاً)؛ م‑1 صار ق‑0 |
 | 5 | البيانات | data-engineer | ⏭ | | لا تغيير في المخطّط |
-| 6 | الخلفية | devops-engineer | 🟡 | فرع + commits | Compose و`deploy/` والاختبارات |
+| 6 | الخلفية | devops-engineer | ✅ | `b45ebdd`، `8834ca0`، `b673e5e` | البوّابات 1–5 خضراء (أعادها المنسّق)؛ AC‑1.6: البصمتان متطابقتان |
 | 7 | الواجهة | frontend-developer | ⏭ | | لا واجهة |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
-| 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
-| 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
+| 8 | الجودة | qa-engineer | ✅ | test-plan.md | PASS: 24 من 26 لها اختبار، وAC‑2.7 وAC‑3.7 مؤجّلان إلى 7.3؛ N‑1 وN‑2 طفيفان؛ لا اختبارات جديدة |
+| 9 | مراجعة الشيفرة | code-reviewer | ✅ | review.md | PASS؛ 3 مهمّة (أمر `--env-file` في 08، عدّاد الملخّص، بطاقة 3.3) و3 تحسين؛ تُصلح في جولةٍ واحدة |
+| 10 | المراجعة الأمنية | security-reviewer | ✅ | security-review.md | PASS؛ م‑1 منخفضة (CWE‑22، `--size ../../`)، م‑2 معلومة (OOM في `small`، ق‑0) |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
 | 12 | بوابة ② الدمج | بشري | ⏸ | رابط PR | |
 | 13 | staging | devops-engineer | ⏸ | release-notes.md | |
@@ -30,7 +30,8 @@
 ## دورات الإعادة
 | المرحلة | الدورة | السبب | النتيجة |
 |---|---|---|---|
-| البناء (devops) | 1 | المنسّق أعاد pytest على `8834ca0`: فشل `test_compose_local_llm.py::test_the_bridge_is_profiled_and_otherwise_unchanged` (يقرأ حدود `ollama-bridge` نصّاً). الوكيل أفاد خطأً بـexit 0 | جارية |
+| البناء (devops) | 1 | المنسّق أعاد pytest على `8834ca0`: فشل `test_compose_local_llm.py::test_the_bridge_is_profiled_and_otherwise_unchanged` (يقرأ حدود `ollama-bridge` نصّاً). الوكيل أفاد خطأً بـexit 0 | ✅ `b673e5e`؛ المنسّق أعاد: `5576 passed, 1 skipped`، exit 0 |
+| المراجعتان (غير حاجبة) | 1 | CR‑1…CR‑6 وأمن م‑1، كلّها غير حاجبة، تُصلح في جولةٍ واحدة | جارية |
 
 ## قرارات وتصعيدات
 - 2026-10-16، قيود المالك لهذه الميزة: (1) جهاز التطوير محدود الموارد، ولا يُطالَب بتجاوز الاختبارات القاسية؛ (2) المكدّس لا يعمل إلّا عند الحاجة (لا مستخدمين حقيقيّين)؛ (3) أقلّ استهلاكٍ ممكن للرموز.

@@ -472,3 +472,37 @@ def test_the_runbook_size_table_carries_the_numbers_this_module_computes() -> No
             rf"{host_gb * 0.9:.2f}\s*\|"
         )
         assert re.search(row, text, re.M), f"08 §2-ز size table has no correct row for {size}"
+
+
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "", "Large", "huge", "a/b"])
+def test_size_names_are_validated_before_any_path_is_built(bad: str) -> None:
+    done = _run_size(bad)
+    assert done.returncode == 2, (bad, done.stdout, done.stderr)
+    assert "unknown size" in done.stderr
+
+
+def test_a_non_numeric_value_or_unresolved_variable_is_a_clean_usage_error(
+    tmp_path: Path,
+) -> None:
+    source = read_size("medium")
+    text = source.path.read_text(encoding="utf-8").replace(
+        f"APP_REPLICAS={source.values['APP_REPLICAS']}", "APP_REPLICAS=abc"
+    )
+    (tmp_path / "medium.env").write_text(text, encoding="utf-8")
+    done = _run_size("medium", SIZES_DIR=str(tmp_path))
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert "Traceback" not in done.stderr and "app" in done.stderr
+
+    compose = _compose()
+    compose["services"]["app"]["deploy"]["resources"]["limits"]["cpus"] = "${NO_DEFAULT}"
+    target = tmp_path / "docker-compose.yml"
+    target.write_text(yaml.safe_dump(compose), encoding="utf-8")
+    done = subprocess.run(
+        ["bash", str(_SCRIPT), "--host-cpus", "32", "--host-memory-gb", "64"],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env={**os.environ, "COMPOSE_FILE": str(target)},
+        check=False,
+    )
+    assert done.returncode == 2 and "Traceback" not in done.stderr
