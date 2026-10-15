@@ -255,14 +255,14 @@
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: خمسٌ مكتملة وتسعٌ جارية وأربع عشرة لم تبدأ">
-      <span class="s-done" style="flex:5">٥ مكتملة</span>
-      <span class="s-partial" style="flex:9">٩ جارية</span>
+    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: ثمانٍ مكتملة وستٌّ جارية وأربع عشرة لم تبدأ">
+      <span class="s-done" style="flex:8">٨ مكتملة</span>
+      <span class="s-partial" style="flex:6">٦ جارية</span>
       <span class="s-pending" style="flex:14">١٤ لم تبدأ</span>
     </div>
     <div class="legend">
-      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٥</span>
-      <span><i class="k-partial"></i>جارية — ٩</span>
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٨</span>
+      <span><i class="k-partial"></i>جارية — ٦</span>
       <span><i class="k-pending"></i>لم تبدأ — ١٤</span>
     </div>
   </section>
@@ -447,15 +447,15 @@
     <div class="wave-head">
       <span class="wave-num">المرحلة ٣</span>
       <h2>الحجم من ملفّ بدل أرقامٍ ثابتة</h2>
-      <span class="wave-score">٠ من ٤</span>
+      <span class="wave-score">٣ من ٤</span>
     </div>
     <p class="wave-note">اليوم كلّ حدٍّ رقمٌ ثابت لخادمٍ بـ٣٢ نواة و٦٤ جيجابايت. على خادمٍ أصغر يقبل Docker الحدود كما هي ولا يحذّر، ثمّ تنفد الذاكرة تحت الحمل.</p>
     <div class="steps">
 
-      <article class="step partial">
+      <article class="step done">
         <div class="step-id">٣٫١</div>
         <div class="step-body">
-          <div class="step-title"><h3>الحدود متغيّرات</h3><span class="tag partial">على الفرع · تنتظر المراجعة والدمج</span></div>
+          <div class="step-title"><h3>الحدود متغيّرات</h3><span class="tag done">مكتملة · ١٦ أكتوبر ٢٠٢٦</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>كلّ حدٍّ للذاكرة والمعالج وعدد النسخ يصير متغيّراً قيمته رقم اليوم، فلا يتغيّر شيءٌ على جهاز المالك. ونحو ٣٠ اختباراً تقرأ ملفّ التشغيل تتعلّم القراءة الجديدة.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>جهاز المالك يعطي الحدود نفسها قبل التعديل وبعده، والاختبارات خضراء.</dd></div>
@@ -463,10 +463,10 @@
         </div>
       </article>
 
-      <article class="step partial">
+      <article class="step done">
         <div class="step-id">٣٫٢</div>
         <div class="step-body">
-          <div class="step-title"><h3>قاعدة البيانات والذاكرة المؤقّتة حسب الحجم</h3><span class="tag partial">على الفرع · تنتظر المراجعة والدمج</span></div>
+          <div class="step-title"><h3>قاعدة البيانات والذاكرة المؤقّتة حسب الحجم</h3><span class="tag done">مكتملة · ١٦ أكتوبر ٢٠٢٦</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>إعداد قاعدة البيانات اليوم يفترض ٢٤ جيجابايت متاحة، فيخطئ في تقدير الكلفة على خادمٍ أصغر. ملفّ إعدادٍ لكلّ حجم، وحدود الذاكرة المؤقّتة متغيّرات.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>اختبارٌ يتحقّق أنّ ذاكرة قاعدة البيانات في كلّ حجمٍ تحت حدّها.</dd></div>
@@ -477,7 +477,7 @@
       <article class="step partial">
         <div class="step-id">٣٫٣</div>
         <div class="step-body">
-          <div class="step-title"><h3>ثلاثة أحجامٍ جاهزة</h3><span class="tag partial">على الفرع · تنتظر المراجعة والدمج</span></div>
+          <div class="step-title"><h3>ثلاثة أحجامٍ جاهزة</h3><span class="tag partial">مدموجة · تنتظر الخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>كبير: أرقام اليوم المقيسة، لخادمٍ بـ٦٤ جيجابايت. متوسّط: لـ٣٢ جيجابايت، وأرقامه تُقاس على الخادم. صغير: لـ١٦ جيجابايت، للتجربة فقط بوضع الكرت وبسقوفٍ مخفوضة تحت الذروة المقيسة، والمراقبة محسوبة. وسكربت التثبيت يقترح الحجم من ذاكرة الخادم.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>كلّ حجمٍ يقلع على خادمٍ بحجمه، ولا تُقتل أيّ خدمةٍ لنفاد الذاكرة.</dd></div>
@@ -485,10 +485,10 @@
         </div>
       </article>
 
-      <article class="step partial">
+      <article class="step done">
         <div class="step-id">٣٫٤</div>
         <div class="step-body">
-          <div class="step-title"><h3>فحص الميزانيّة لكلّ حجم</h3><span class="tag partial">على الفرع · تنتظر المراجعة والدمج</span></div>
+          <div class="step-title"><h3>فحص الميزانيّة لكلّ حجم</h3><span class="tag done">مكتملة · ١٦ أكتوبر ٢٠٢٦</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>الأداة التي تجمع الحدود وتقارنها بالخادم تعرف الأحجام الثلاثة، وسكربت التثبيت يشغّلها قبل الإقلاع.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>حجمٌ لا يتّسع له خادمه يُفشل الاختبارات، ويرفضه سكربت التثبيت.</dd></div>
