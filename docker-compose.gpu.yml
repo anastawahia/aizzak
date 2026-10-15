@@ -30,6 +30,13 @@
 # is measured in 7.3 and recorded in 08-local-runbook §2‑ي.
 services:
   ollama:
+    environment:
+      # B-5, measured on the RTX 4060 host (08 section 2-ya): the runner's host-side
+      # prompt cache (llama.cpp --cache-ram, default 8192 MiB) grew anon memory
+      # ~70 MB/s under 4 parallel ~3,000-token prompts -- 4.3 GB at the 4g limit
+      # (OOM kill, HTTP 500) and 9.7 GB with the limit raised to 9g. At 256 MiB the
+      # same 3-minute load peaked at 1.62 GB, 0 failures. Not measured on the CPU path.
+      LLAMA_ARG_CACHE_RAM: "256"
     deploy:
       resources:
         reservations:

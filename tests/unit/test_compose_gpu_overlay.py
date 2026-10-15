@@ -97,11 +97,12 @@ def test_the_overlay_has_only_services_and_exactly_three() -> None:
 
 def test_ollama_gets_exactly_one_gpu_reservation() -> None:
     assert _overlay()["services"]["ollama"] == {
+        "environment": {"LLAMA_ARG_CACHE_RAM": "256"},  # B-5: the only non-GPU key
         "deploy": {
             "resources": {
                 "reservations": {"devices": [{"driver": "nvidia", "capabilities": ["gpu"]}]}
             }
-        }
+        },
     }
 
 
@@ -233,7 +234,7 @@ def test_the_base_file_reserves_no_device() -> None:
 
 def test_the_ollama_knobs_live_in_the_base_file_only() -> None:
     """They hold on the CPU too, so they are not the GPU overlay's to set."""
-    assert "environment" not in _overlay()["services"]["ollama"]
+    assert set(_overlay()["services"]["ollama"]["environment"]) == {"LLAMA_ARG_CACHE_RAM"}
     text = _GPU.read_text(encoding="utf-8")
     for name in ("OLLAMA_MAX_LOADED_MODELS", "OLLAMA_NUM_PARALLEL"):
         assert name not in text, name
