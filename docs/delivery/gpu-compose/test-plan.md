@@ -4,7 +4,7 @@
 
 > **الجولة 3 (النهائيّة)** · 2026‑10‑15 · الفرع `feat/gpu-compose` عند `8d13cb0` (نظيف عند البدء). تاريخ الجولات: **1** (2026‑10‑14، عند `3fe51ea`، بلا حاويات؛ منها المصفوفة وبنود §3) · **2** (2026‑10‑14/15: P‑2 ✅، وP‑1 أخفقت بـ`ollama/ollama:0.13.5` بالرمز 412) · **3** (هذه: الصورة صارت `0.34.4`، وأُغلقت B‑1…B‑3 وO‑3، وP‑1 ⏸ محجوبة بالذاكرة).
 > المراجع: [`stories.md`](stories.md) (64 معياراً)، و[`design.md`](design.md) §5 (خطّة الاختبار §5.3، وصياغات §5.4، والإجراءات §5.5).
-> **الجولة 4 (2026‑10‑15، بطلب المالك، نفّذها المنسّق):** P‑1 وحده بأوامر §1.3 كما هي، والمكدّس الحيّ متوقّف: ✅ (AC‑2.7). وP‑3…P‑6 تأتي بعده واحداً واحداً بطلب المالك.
+> **الجولة 4 (2026‑10‑15، بطلب المالك، نفّذها المنسّق):** P‑1 ثمّ P‑3، كلٌّ بأوامر §1.3 كما هي، والمكدّس الحيّ متوقّف: ✅ (AC‑2.7، ثمّ AC‑1.8 وAC‑4.8 وAC‑5.9). وP‑4…P‑6 تأتي بعدهما واحداً واحداً بطلب المالك.
 >
 > **حاويات الجولة 3: لا شيء شُغِّل.** قراءات `free -m`: available ‏5035 ثمّ 5053 ثمّ 4992 م.ب (أقلّ من شرط §1.3 (أ): 5120)، والـswap ‏4094 ثمّ 4061 من 4096 (ممتلئ تقريباً)، والمكدّس الحيّ شغّال ومستعمَل؛ فلم يُشغَّل مشروع `aizzak-llm-proof` ولا أيّ حاوية. ولم يُقرأ `.env` ولا `deploy/load/*` ولا شهادات `nginx` ولا حجم `vault-init`. (الجولة 1: أوامر `docker compose` بـ`-p qa-config --env-file .env.example` و`config` وحده. الجولة 2: حاويات P‑1 وP‑2 في مشروعَين منفصلَين.)
 
@@ -25,7 +25,7 @@
 | AC‑1.5 | وحدة | `test_gpu_preflight.py::test_all_green_without_smoke_exits_0_and_starts_no_container` · `::test_smoke_runs_exactly_one_pinned_gpu_container` · `::test_the_smoke_image_in_the_script_is_the_pinned_one` · `::test_smoke_failure_is_exit_14_and_relays_dockers_message` · `::test_a_failed_pull_is_also_exit_14` (بصياغة §5.4: خياران بعد `nvidia-smi`) | ✅ |
 | AC‑1.6 | وحدة | `test_gpu_preflight.py::test_no_environment_value_reaches_the_output[5 سيناريوهات]` (`CANARY_SECRET` لا يظهر في stdout ولا stderr) | ✅ |
 | AC‑1.7 | محلّيّ | تشغيل QA اليوم: `deploy/gpu-preflight.sh` ← الرمز **0** في 0.3 ث، والأسطر الأربعة `OK` (تعريف 592.82 · Docker 29.6.1 · وقت التشغيل `nvidia` · Compose 5.3.1). **التوقّع الأصليّ (الرمز 12) سقط** لأنّ المالك ثبّت الأداة في ملحق أ؛ والمسار السلبيّ مغطّىً بـAC‑1.3 (وبما في §3 بند B‑1) | ✅ يدويّ (نُفِّذ) |
-| AC‑1.8 | أداة | ش‑3 (P‑3 الخطوة 1، `--smoke`). **دليلٌ جزئيّ:** المالك شغّل `deploy/gpu-preflight.sh --smoke` على `ed899de` ← الأسطر الخمسة OK ثمّ `gpu-preflight: OK (ready for docker-compose.gpu.yml)`، **`rc=0`** (`status.md`) | ⏳ ش‑3 |
+| AC‑1.8 | أداة | P‑3 الخطوة 1 (الجولة 4): `deploy/gpu-preflight.sh --smoke` ← خمسة أسطر OK، وsmoke يطبع `NVIDIA GeForce RTX 4060 Laptop GPU` من داخل `nvidia/cuda:12.4.1-base-ubuntu22.04`، و**`rc=0`** | ✅ يدويّ (نُفِّذ، الجولة 4) |
 | AC‑1.9 | نصّ+وحدة | `test_gpu_preflight.py::test_the_server_doc_lists_the_scripts_exit_codes` (مجموعة الرموز {0,2,10,11,12,13,14} في الجدول = في رأس السكربت، والأمر، و`<div dir="rtl">`، ولا سرّ) · قراءة QA للوثيقة · روابطها الخمسة تُجيب HTTP 200 (فُحصت اليوم، §3) | ✅ |
 | AC‑2.1 | وحدة | `test_compose_local_llm.py::test_the_ollama_service_shape` · `::test_the_ollama_image_is_the_pinned_version` | ✅ |
 | AC‑2.2 | وحدة | `test_compose_local_llm.py::test_the_ollama_pull_service_shape` · `test_healthcheck_coverage.py::test_one_shot_services_are_actually_one_shot` (و`ollama-pull` في `_ONE_SHOT`) | ✅ |
@@ -50,7 +50,7 @@
 | AC‑4.5 | config | `test_embedding_cuda_image.py::test_the_build_overlay_builds_embedding_without_the_cuda_arg` · `test_compose_gpu_overlay.py::test_only_the_release_script_builds_cuda_and_a_cpu_build_under_its_name_refuses` (أ) | ✅ |
 | AC‑4.6 | محلّيّ | P‑2 نُفِّذ في الجولة 2 (§1.3، النتائج): بناء `aizzak/embedding-cuda:dev` rc 0؛ `.Size` ‏4.13 ج.ب؛ `torch` ‏`2.5.1+cu124`/CUDA 12.4 مقابل `2.5.1+cpu`/`None` للمعالج؛ بلا كرت وبلا المتغيّر: `/health` ← `device=cpu` و`dtype=float32`؛ وبـ`EMB_REQUIRE_CUDA=1` بلا كرت: يرفض الإقلاع، الرمز 3 (وصورة معالج بالاسم CUDA ترفض بالرمز 3 وتسمّي `requirements-cuda.txt`) | ✅ يدويّ (نُفِّذ) |
 | AC‑4.7 | CI | ش‑4: أوّل وسم `v2026.10.2` فما بعد: الوسوم الثلاثة والبصمات و`publish` ≤ 60 د و«Runner disk after» ≥ 20 ج.ب | ⏳ ش‑4 |
-| AC‑4.8 | أداة | ش‑3 (P‑3 الخطوة 3): `/health` يقول `cuda`/`float16`. لا دليل جزئيّ على `/health` التضمين (رُئي الكرت من Ollama فقط، §1.3) | ⏳ ش‑3 |
+| AC‑4.8 | أداة | P‑3 الخطوة 3 (الجولة 4): `/health` في التضمين ← `"device":"cuda","dtype":"float16"`، بـ`EMB_REQUIRE_CUDA=1` | ✅ يدويّ (نُفِّذ، الجولة 4) |
 | AC‑4.9 | أداة | ش‑3 (P‑4) بـ`tests/eval/vector_parity.py compare` (الأداة مختبَرة هنا: `test_vector_parity.py`، §5) | ⏳ ش‑3 |
 | AC‑4.10 | خادم | ش‑5: `tests/eval/run_calibration.py` على الفهرسين (Q‑3 ج) | ⏳ ش‑5 |
 | AC‑4.11 | أداة | ش‑3 (P‑5) بـ`vector_parity.py soak` و`memory.peak` (الأداة مختبَرة: `test_vector_parity.py::test_soak_sends_the_ac_4_11_load_and_reports_it` · `::test_soak_exits_nonzero_when_the_service_errors`) | ⏳ ش‑3 |
@@ -62,7 +62,7 @@
 | AC‑5.6 | config | `test_compose_gpu_overlay.py::test_the_overlay_resolves_one_cuda_replica_and_leaves_the_balancer_alone[None,local-llm]` · `::test_the_overlay_changes_only_the_three_services_it_names` · وتحقّق QA يدويّ (§3) | ✅ |
 | AC‑5.7 | config (§5.4) | `test_compose_gpu_overlay.py::test_only_the_release_script_builds_cuda_and_a_cpu_build_under_its_name_refuses` (أ) `yml:build` ← صورة المعالج بلا وسيط (ب) `yml:gpu` ← CUDA بلا `build` (ج) `yml:gpu:build` ← `EMB_REQUIRE_CUDA=1` (د) الأساسيّ بلا الحارس · `::test_the_overlay_header_says_never_with_the_build_overlay`. وتحقّق QA يدويّ للتركيبتين غير المدعومتين (§3) | ✅ |
 | AC‑5.8 | وحدة | `test_compose_gpu_overlay.py::test_the_base_file_reserves_no_device` · `test_embedding_fleet.py::test_the_fleet_is_three_replicas` (دون تغيير) | ✅ |
-| AC‑5.9 | أداة | ش‑3 (P‑3 الخطوات 4–6: `/api/ps` و`memory.used` و`nvidia-smi` من `app`). **دليلٌ جزئيّ (الجولة 2):** الخطوة 6 تمّت: `app` على ملفّ الكرت يطبع `NVIDIA GeForce RTX 4060 Laptop GPU, 1021 MiB` (rc 0)؛ ولم يُقَس `size_vram == size` بعد | ⏳ ش‑3 |
+| AC‑5.9 | أداة | P‑3 الخطوات 4–6 (الجولة 4): `/api/ps` ← `size_vram == size` ‏(978,929,582)، و`offloaded 27/27 layers to GPU`، و`memory.used` ‏1188 → 2960 MiB، و`app nvidia-smi` يطبع الكرت (rc 0) | ✅ يدويّ (نُفِّذ، الجولة 4) |
 | AC‑5.10 | خادم | ش‑5: عمليّتان على الكرت و`/admin/system/stats` بلا `gpu_error` | ⏳ ش‑5 |
 | AC‑6.1 | نصّ+وحدة | `test_gpu_compose_hygiene.py::test_the_vram_budget_names_every_consumer_with_a_label` · `::test_the_vram_budget_arithmetic_is_right` (436,207,616 بايت، 777.5 م.ب، 7369/14746/22118، والنسب) · `::test_the_vram_budget_states_its_measurement_method_and_the_conditions` · قراءة QA (§3) | ✅ |
 | AC‑6.2 | وحدة | `test_compose_local_llm.py::test_ollama_concurrency_knobs_and_their_relation` · `test_compose_gpu_overlay.py::test_the_ollama_knobs_live_in_the_base_file_only` | ✅ |
@@ -88,11 +88,11 @@
 | الحالة | العدد | المعايير |
 |---|---|---|
 | ✅ آليّ يمرّ اليوم | **42** | AC‑1.1…1.6، 1.9 · AC‑2.1…2.6 · AC‑3.1…3.5 · AC‑4.1…4.5 · AC‑5.1…5.8 · AC‑6.1…6.3 · AC‑7.3…7.6 · AC‑8.1…8.4 |
-| ✅ يدويّ نُفِّذ | **5** | AC‑1.7، AC‑7.7، AC‑7.8 (بلا حاوية) · AC‑4.6 (P‑2، حاويات الجولة 2) · AC‑2.7 (P‑1، الجولة 4) |
-| ⏳ مؤجَّل بشرط ش‑n | **17** | ش‑1: AC‑3.7، AC‑7.9 · ش‑2: AC‑3.6، AC‑7.1، AC‑7.2 · **ش‑3 (بعد الدمج، قرار المالك 2026‑10‑15): AC‑1.8، AC‑4.8، AC‑4.9، AC‑4.11، AC‑5.9، AC‑6.4** · ش‑4: AC‑4.7 · ش‑5: AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
+| ✅ يدويّ نُفِّذ | **8** | AC‑1.7، AC‑7.7، AC‑7.8 (بلا حاوية) · AC‑4.6 (P‑2، حاويات الجولة 2) · AC‑2.7 (P‑1، الجولة 4) · AC‑1.8، AC‑4.8، AC‑5.9 (P‑3، الجولة 4) |
+| ⏳ مؤجَّل بشرط ش‑n | **14** | ش‑1: AC‑3.7، AC‑7.9 · ش‑2: AC‑3.6، AC‑7.1، AC‑7.2 · **ش‑3 (قرار المالك 2026‑10‑15): AC‑4.9، AC‑4.11، AC‑6.4** · ش‑4: AC‑4.7 · ش‑5: AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
 | 🔴 ناقص (بلا اختبار ولا إجراء) | **0** | — |
 
-المجموع 42 + 5 + 17 + 0 = 64، وكلّ معيارٍ في المصفوفة مرّة واحدة. (كان في الجولة 1: 42 آليّ · 3 يدويّ · 8 ⏸ · 11 ⏳.) ملاحظتان: (1) ش‑3 صارت ستّة معايير [أداة] مؤجّلة بقرار المالك لتوفير الاستعمال؛ الأداة مثبّتة وتُنفَّذ بعد الدمج بأوامر P‑3…P‑6 الجاهزة أدناه. (2) معايير ش‑5 الخمسة تحتاج خادماً حقيقيّاً (7.3) ولا يغني عنها شيءٌ هنا.
+المجموع 42 + 8 + 14 + 0 = 64، وكلّ معيارٍ في المصفوفة مرّة واحدة. (كان في الجولة 1: 42 آليّ · 3 يدويّ · 8 ⏸ · 11 ⏳.) ملاحظتان: (1) ش‑3 صارت ستّة معايير [أداة] مؤجّلة بقرار المالك لتوفير الاستعمال؛ الأداة مثبّتة وتُنفَّذ بعد الدمج بأوامر P‑3…P‑6 الجاهزة أدناه. (2) معايير ش‑5 الخمسة تحتاج خادماً حقيقيّاً (7.3) ولا يغني عنها شيءٌ هنا.
 
 ### 1.1 ما كتبتُه في C8
 
@@ -123,15 +123,15 @@
 | ش‑4 | أوّل إصدارٍ بعد الدمج (وسم `v2026.10.2` فما بعد) | الصور الثلاث برقمٍ واحد | AC‑4.7 |
 | ش‑5 | التجربة 7.3 على خادمٍ مستأجر | كلّ ما بقي | AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
 
-### 1.3 الإثباتات P‑1…P‑6: P‑1 ✅ · P‑2 ✅ · P‑3…P‑6 ⏸ مؤجّلة إلى ش‑3
+### 1.3 الإثباتات P‑1…P‑6: P‑1 ✅ · P‑2 ✅ · P‑3 ✅ · P‑4…P‑6 ⏸ مؤجّلة إلى ش‑3
 
-**الحالة:** P‑2 نُفِّذت (الجولة 2). P‑1 أخفقت بـ`0.13.5` (الجولة 2)، ومنعتها الذاكرة بـ`0.34.4` (الجولة 3)، ثمّ **✅ نجحت بـ`0.34.4` (الجولة 4)**. P‑3…P‑6 **⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15)** ولم تُنفَّذ. ما يلي أوامر جاهزة للتنفيذ، ولا تحتاج إلى `.env` ولا تمسّ المكدّس الحيّ.
+**الحالة:** P‑2 نُفِّذت (الجولة 2). P‑1 أخفقت بـ`0.13.5` (الجولة 2)، ومنعتها الذاكرة بـ`0.34.4` (الجولة 3)، ثمّ **✅ نجحت بـ`0.34.4` (الجولة 4)**. P‑3 **✅ (الجولة 4)**. P‑4…P‑6 **⏸ مؤجّلة إلى ش‑3 (قرار المالك 2026‑10‑15)**، ويُنفِّذها المنسّق هنا واحداً واحداً بطلب المالك. ما يلي أوامر جاهزة للتنفيذ، ولا تحتاج إلى `.env` ولا تمسّ المكدّس الحيّ.
 
 | الإجراء | المعيار | الحالة |
 |---|---|---|
 | P‑1 | AC‑2.7: `ollama` و`ollama-pull` على المعالج، مرّتان، وتوليدٌ واحد | الجولة 2 بـ`0.13.5`: ❌ 412، rc 4 · الجولة 3: ⏸ الذاكرة · **الجولة 4 بـ`0.34.4`: ✅** |
 | P‑2 | AC‑4.6: بناء صورة CUDA محلّيّاً، وحجمها، و`torch.version.cuda`، و`/health` بلا كرت، وحارس `EMB_REQUIRE_CUDA` | ✅ (الجولة 2) |
-| P‑3 | AC‑1.8 وAC‑4.8 وAC‑5.9: `--smoke`، و`/health` يقول `cuda`، و`size_vram == size`، و`nvidia-smi` من `app` | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
+| P‑3 | AC‑1.8 وAC‑4.8 وAC‑5.9: `--smoke`، و`/health` يقول `cuda`، و`size_vram == size`، و`nvidia-smi` من `app` | ✅ (الجولة 4) |
 | P‑4 | AC‑4.9: تطابق المتّجهات (`vector_parity.py compare`) | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
 | P‑5 | AC‑4.11: حمل 15 دقيقة على `embedding` وذاكرته القصوى (`vector_parity.py soak`) | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
 | P‑6 | AC‑6.4: حمل Ollama المتزامن مع حمل التضمين، وأعلى استعمال لذاكرة الكرت | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
@@ -171,13 +171,26 @@
 | قيمة غير صالحة `EMB_REQUIRE_CUDA=maybe` | «is not valid: set it to '1' (refuse to start without CUDA) or '0' / empty / leave it unset» ← rc 3 |
 | الجرد بعد P‑2 | لا حاوية للإثباتات باقية؛ الأحجام باقية |
 
-#### ش‑3: P‑3…P‑6 مؤجّلة إلى ما بعد الدمج (قرار المالك 2026‑10‑15)
+#### نتيجة P‑3 (AC‑1.8، AC‑4.8، AC‑5.9): ✅ (الجولة 4)
+
+**2026‑10‑15، 08:58–09:06 UTC؛ نفّذها المنسّق بأوامر «ش‑3، قبل P‑3…P‑6» ثمّ P‑3 أدناه، الخطوات 1–6؛ مشروع `aizzak-gpu-proof` بـ`.env.example`، والمكدّس الحيّ متوقّف (available ‏10992 م.ب).**
+- قبلها: Ollama الأصليّ بلا نموذج محمَّل (`/api/ps` ← `{"models":[]}` قبل التفريغ وبعده). خطّ الأساس `memory.used` ‏**1188 MiB**.
+- **الخطوة 1 (AC‑1.8):** driver وdocker وtoolkit وcompose وsmoke كلّها OK، وsmoke يطبع `NVIDIA GeForce RTX 4060 Laptop GPU (from inside nvidia/cuda:12.4.1-base-ubuntu22.04)`، ثمّ `gpu-preflight: OK (ready for docker-compose.gpu.yml)` ← **rc 0**.
+- **الخطوة 2:** `up -d --wait embedding embedding-lb ollama` ← الثلاث healthy، rc 0. و`ollama-pull` نزّل `gemma3:1b` من المحاولة الأولى ← rc 0 (حجم هذا المشروع كان فارغاً).
+- **الخطوة 3 (AC‑4.8):** `/health` ← `"device":"cuda","dtype":"float16"` و`dimensions` ‏384، بصورة `aizzak/embedding-cuda:dev` (بناء P‑2) و`EMB_REQUIRE_CUDA=1`.
+- **الخطوة 4 (AC‑5.9):** التوليد ← `True`؛ ثمّ `/api/ps` ← `gemma3:1b size 978929582 size_vram 978929582` ← **`size_vram == size`**. وسجلّ Ollama: `offloaded 27/27 layers to GPU`، و`inference compute … CUDA0 … RTX 4060 Laptop GPU … total="8.0 GiB"`.
+- **الخطوة 5:** `memory.used` ‏**1188 → 2960 MiB** (+1772 MiB للنموذج والتضمين معاً).
+- **الخطوة 6:** `run --rm --no-deps app nvidia-smi` ← `NVIDIA GeForce RTX 4060 Laptop GPU, 2960 MiB` ← rc 0.
+- ذاكرة الحاويات (`docker stats`): `embedding` ‏791.6 MiB من 3 GiB، و`ollama` ‏1.99 GiB من 4 GiB، و`embedding-lb` ‏12 MiB.
+- بعدها: `stop` للمشروع، بلا `-v` ولا `rm`؛ الأحجام باقية وفيها `gemma3:1b`، لـP‑5 وP‑6.
+
+#### ش‑3: P‑4…P‑6 مؤجّلة (قرار المالك 2026‑10‑15)
 
 لم تُنفَّذ. الأدلّة الجزئيّة المتوفّرة الآن (لا تغني عن الإجراءات):
 - **المالك:** `deploy/gpu-preflight.sh --smoke` على `ed899de` ← الأسطر الخمسة OK، `rc=0` (يخصّ AC‑1.8).
 - **الجولة 2، `ollama` على ملفّ الكرت بلا نموذج (`s3-ollama-gpu.txt`):** `DeviceRequests=[{"Driver":"nvidia","Count":-1,…,"Capabilities":[["gpu"]]}]`؛ وسجلّ Ollama: `inference compute … library=CUDA compute=8.9 name=CUDA0 description="NVIDIA GeForce RTX 4060 Laptop GPU" driver=13.1` و`total vram="8.0 GiB"`؛ و`nvidia-smi` داخل الحاوية ← `1027 MiB, 8188 MiB`.
 - **الجولة 2، الخطوة 6 من P‑3 (`p3-app-smi.txt`):** `run --rm --no-deps app nvidia-smi --query-gpu=name,memory.used --format=csv` ← `NVIDIA GeForce RTX 4060 Laptop GPU, 1021 MiB`، rc 0.
-- **لم يُثبَت بعد:** `/health` التضمين `cuda`/`float16` (AC‑4.8) · `size_vram == size` و`memory.used` (AC‑5.9) · تطابق المتّجهات (AC‑4.9) · حمل 15 د والذاكرة القصوى (AC‑4.11) · الحمل المتزامن (AC‑6.4).
+- **لم يُثبَت بعد:** تطابق المتّجهات (AC‑4.9) · حمل 15 د والذاكرة القصوى (AC‑4.11) · الحمل المتزامن (AC‑6.4).
 
 **قبل البدء، وبعد كلّ إجراء:** (أ) `free -m | sed -n 2p` ← عمود `available` **≥ 5120**. (ب) لا حمل شغّال (`k6` ولا `deploy/load`)، والمكدّس الحيّ يعمل كما هو. (ج) أحجام المشاريع المنفصلة **تبقى** وحذفها يحتاج موافقة (`CLAUDE.md`). (د) لا منفذ منشور إلّا `127.0.0.1` في P‑4. ولا `-v` في أيّ `down`.
 
