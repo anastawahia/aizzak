@@ -56,7 +56,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import yaml
+import pytest
 
 from app.framework.di.composition_root import _METRICS_MAX_OVERFLOW, _METRICS_POOL_SIZE
 from app.ops.scheduler import DSN_VARIABLES, JOBS, child_env
@@ -66,6 +66,7 @@ from app.workers.bootstrap import (
     _WORKER_MAX_OVERFLOW,
     _WORKER_POOL_SIZE,
 )
+from tests.unit.support_compose import SIZES, load_compose, read_size
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -331,8 +332,8 @@ def _api_pools(
     return tuple(pools)
 
 
-def _compose_topology() -> _Topology:
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+def _compose_topology(values: Mapping[str, str] | None = None) -> _Topology:
+    compose = load_compose(values)
     defaults = _env_example()
     runners: list[_Runner] = []
     unaccounted: list[str] = []
@@ -434,7 +435,7 @@ def _runpod_topology() -> _Topology:
 
 
 def _pgbouncer_env() -> dict[str, str]:
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     return {k: str(v) for k, v in compose["services"]["pgbouncer"]["environment"].items()}
 
 
@@ -449,7 +450,7 @@ def _pg_max_connections() -> int:
     on the command line is the day a file-only reader starts reporting a
     ceiling the server is not running with.
     """
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     for token in compose["services"]["postgres"].get("command", []):
         if str(token).startswith("max_connections="):
             return int(str(token).split("=", 1)[1])
@@ -558,7 +559,7 @@ def test_the_manual_tools_really_are_out_of_the_standing_budget() -> None:
     hole. Each of its services must be behind a profile (so `up -d` never
     starts it), and must reach Postgres DIRECTLY -- a manual tool pointed at
     the pooler would take a MAX_CLIENT_CONN seat this ledger did not count."""
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     excluded: set[str] = set()
     for name, service in sorted(compose["services"].items()):
         module = _module_of(service.get("command"))
@@ -601,7 +602,7 @@ def test_the_pre_flight_migrator_really_does_finish_first() -> None:
     concurrent with the steady state -- and that is true only while every
     standing database service waits for it to complete. This is the condition
     the exclusion rests on, checked rather than assumed."""
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     standing = {runner.name for runner in _compose_topology().runners}
     assert standing, "no standing services found -- the parser matched nothing"
 
@@ -618,7 +619,7 @@ def test_the_admin_sessions_this_ledger_counts_still_exist() -> None:
     """Two client sessions no `DATABASE_URL` describes, carried as literals.
     Both are load-bearing terms, so both are pinned to the thing that creates
     them."""
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     exporter = compose["services"]["pgbouncer-exporter"]["environment"]
     connection_string = str(exporter["PGBOUNCER_EXPORTER_CONNECTION_STRING"])
     assert f"@{_POOLER_ENDPOINT}/pgbouncer" in connection_string, (
@@ -942,7 +943,7 @@ def test_the_scheduler_is_one_connection_at_a_time() -> None:
         dsns = [key for key in child_env(job, environ) if key.endswith("DATABASE_URL")]
         assert len(dsns) <= 1, (job.task, dsns)
 
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     env = compose["services"]["ops-scheduler"]["environment"]
     assert _POOLER_ENDPOINT not in env["BACKUP_DATABASE_URL"]
     for key in (
@@ -951,3 +952,23 @@ def test_the_scheduler_is_one_connection_at_a_time() -> None:
         "TRANSIT_ROTATOR_DATABASE_URL",
     ):
         assert _POOLER_ENDPOINT in env[key], key
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_every_size_stays_inside_the_connection_ceilings(size: str) -> None:
+    """Replica counts change per size; the pooler and Postgres ceilings do not.
+    `max_connections` is absent from every size's .conf, so 300 holds everywhere."""
+    values = read_size(size).values
+    topology = _compose_topology(values)
+    assert not topology.unaccounted
+
+    clients = _pooler_clients(topology)
+    assert clients <= int(_pgbouncer_env()["MAX_CLIENT_CONN"]), f"{size}: {clients} clients"
+
+    backends = _postgres_backends(topology, _pool_ceiling())
+    assert backends <= _pg_max_connections() - _PG_SUPERUSER_RESERVED, f"{size}: {backends}"
+
+    conf = read_size(size).values["POSTGRES_CONFIG_FILE"].rsplit("/", 1)[1]
+    text = (_REPO_ROOT / "deploy" / "postgres" / "sizes" / conf).read_text(encoding="utf-8")
+    assert "max_connections" not in text
+    assert _pg_max_connections() == 300

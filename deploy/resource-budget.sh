@@ -5,6 +5,10 @@
 #   deploy/resource-budget.sh          report the budget against THIS host
 #   deploy/resource-budget.sh --host-cpus N --host-memory-gb G
 #                                      report it against a host you do not have
+#   deploy/resource-budget.sh --size NAME
+#                                      apply deploy/sizes/NAME.env (its mode, its
+#                                      limits) and judge it with a 10% memory margin
+#   env: COMPOSE_FILE, GPU_COMPOSE_FILE, SIZES_DIR   exit: 0 fits, 1 over, 2 usage
 #
 # ⚠️ THIS SCRIPT EXISTS BECAUSE DOCKER WILL NOT TELL YOU. Measured on the
 # development host these numbers were taken on (10 vCPU, 12.67 GB):
@@ -40,10 +44,14 @@
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+GPU_COMPOSE_FILE="${GPU_COMPOSE_FILE:-docker-compose.gpu.yml}"
+SIZES_DIR="${SIZES_DIR:-deploy/sizes}"
 
 host_cpus=""
 host_memory_gb=""
 with_profiles=0
+size=""
+size_given=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,12 +59,23 @@ while [ $# -gt 0 ]; do
     --host-memory-gb) host_memory_gb="$2"; shift 2 ;;
     --with-profiles) with_profiles=1; shift ;;
     -h | --help)
-      sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) echo "usage: $0 [--host-cpus N] [--host-memory-gb G] [--with-profiles]" >&2; exit 2 ;;
+    --size)
+      if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+        echo "--size needs a value (a name from $SIZES_DIR)" >&2
+        exit 2
+      fi
+      size="$2"; size_given=1; shift 2 ;;
+    *) echo "usage: $0 [--host-cpus N] [--host-memory-gb G] [--with-profiles] [--size NAME]" >&2; exit 2 ;;
   esac
 done
+
+if [ "$size_given" = 1 ] && ! [[ "$size" =~ ^[a-z0-9-]+$ ]]; then
+  echo "unknown size '$size'; available: $(cd "$SIZES_DIR" 2>/dev/null && ls ./*.env 2>/dev/null | sed 's|^\./||; s|\.env$||' | sort | tr '\n' ' ')" >&2
+  exit 2
+fi
 
 if [ -z "$host_cpus" ]; then
   host_cpus="$(nproc)"
@@ -68,12 +87,16 @@ if [ -z "$host_memory_gb" ]; then
   host_memory_gb="$(awk '/^MemTotal:/ {printf "%.2f", $2 / 1048576}' /proc/meminfo)"
 fi
 
-exec python3 - "$COMPOSE_FILE" "$host_cpus" "$host_memory_gb" "$with_profiles" <<'PY'
+exec python3 - "$COMPOSE_FILE" "$host_cpus" "$host_memory_gb" "$with_profiles" \
+  "$size" "$SIZES_DIR" "$GPU_COMPOSE_FILE" <<'PY'
+import copy
+import re
 import sys
+from pathlib import Path
 
 import yaml
 
-compose_file, host_cpus, host_memory_gb, with_profiles = sys.argv[1:5]
+compose_file, host_cpus, host_memory_gb, with_profiles, size, sizes_dir, gpu_file = sys.argv[1:8]
 host_cpus = float(host_cpus)
 host_memory_gb = float(host_memory_gb)
 with_profiles = with_profiles == "1"
@@ -90,7 +113,66 @@ def to_bytes(raw: object) -> int:
     return int(float(text))
 
 
+_INTERP = re.compile(r"\$\{([A-Z][A-Z0-9_]*):-([^}$]*)\}")
+
+
+def usage_error(message: str) -> None:
+    print(message, file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve(raw: object, values: dict) -> str:
+    """Whole-value `${NAME:-default}` only; empty == unset. Never reads the
+    environment or `.env`. Mirrors tests/unit/support_compose.py::resolve."""
+    text = str(raw)
+    if "$" not in text:
+        return text
+    match = _INTERP.fullmatch(text)
+    if match is None:
+        usage_error(f"unsupported interpolation: {text!r}")
+    return values.get(match.group(1)) or match.group(2)
+
+
+def merge(base: dict, extra: dict) -> dict:
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
+values: dict = {}
+enabled: set = set()
+size_line = ""
 compose = yaml.safe_load(open(compose_file, encoding="utf-8"))
+if size:
+    available = sorted(p.stem for p in Path(sizes_dir).glob("*.env"))
+    if size not in available:
+        usage_error(f"unknown size '{size}'; available: {' '.join(available)}")
+    path = Path(sizes_dir) / f"{size}.env"
+    host = source = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.fullmatch(r"# host: cpus=([0-9.]+) memory_gb=([0-9.]+) mode=(cpu|gpu)", line)
+        if m and host is None:
+            host = m.groups()
+        elif line.startswith("# source: ") and source is None:
+            source = line[len("# source: "):]
+        elif line.startswith("#") or not line.strip():
+            continue
+        else:
+            key, _, val = line.partition("=")
+            values[key] = val
+    if host is None:
+        usage_error(f"{path}: no valid '# host: cpus=N memory_gb=G mode=cpu|gpu' line")
+    size_cpus, size_gb, mode = host
+    if mode == "gpu":
+        merge(compose, yaml.safe_load(open(gpu_file, encoding="utf-8")) or {})
+        enabled.add("local-llm")
+    size_line = (
+        f"size {size} ({path}): mode {mode}, written for {float(size_cpus):g} vCPU /"
+        f" {float(size_gb):g} GB, source: {source}"
+    )
 services = compose["services"]
 
 standing, oneshot, profiled, missing = [], [], [], []
@@ -99,9 +181,17 @@ for name, service in sorted(services.items()):
     if "cpus" not in limits or "memory" not in limits:
         missing.append(name)
         continue
-    replicas = int((service.get("deploy") or {}).get("replicas", 1))
-    row = (name, replicas, float(limits["cpus"]), to_bytes(limits["memory"]))
-    if service.get("profiles"):
+    try:
+        replicas = int(resolve((service.get("deploy") or {}).get("replicas", 1), values))
+        row = (
+            name,
+            replicas,
+            float(resolve(limits["cpus"], values)),
+            to_bytes(resolve(limits["memory"], values)),
+        )
+    except ValueError as exc:
+        usage_error(f"{name}: a limit or replica count is not a number ({exc})")
+    if set(service.get("profiles") or ()) - enabled:
         profiled.append(row)
     elif service.get("restart") == "no":
         oneshot.append(row)
@@ -126,6 +216,8 @@ def show(title: str, rows: list[tuple[str, int, float, int]]) -> None:
         )
 
 
+if size_line:
+    print(size_line)
 show("standing (a default `docker compose up -d`)", standing)
 show("one-shot (completes before the steady state; capped, not counted)", oneshot)
 show(
@@ -154,7 +246,15 @@ else:
         f" but they cannot all be saturated at once."
     )
 
-if mem_total <= host_memory_gb:
+allowed = host_memory_gb * 0.9 if size else host_memory_gb
+if size and mem_total > allowed:
+    print(
+        f"  MEMORY  OVER     size {size}: {mem_total:.2f} GB of limits,"
+        f" {mem_total - allowed:.2f} GB over the {allowed:.2f} GB allowed on a"
+        f" {host_memory_gb:.2f} GB host (10% margin). Lower a limit in {path}."
+    )
+    status = 1
+elif mem_total <= allowed:
     print(
         f"  MEMORY  OK       {mem_total:.2f} of {host_memory_gb:.2f} GB"
         f" ({mem_total / host_memory_gb:.0%})"

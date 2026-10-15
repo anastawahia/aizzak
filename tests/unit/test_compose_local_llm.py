@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
+
+from tests.unit.support_compose import load_compose
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BASE = _ROOT / "docker-compose.yml"
@@ -46,7 +47,7 @@ _needs_compose = pytest.mark.skipif(
 
 
 def _load() -> dict[str, Any]:
-    data = yaml.safe_load(_BASE.read_text(encoding="utf-8"))
+    data = load_compose(files=(_BASE,))
     assert isinstance(data, dict)
     return data
 

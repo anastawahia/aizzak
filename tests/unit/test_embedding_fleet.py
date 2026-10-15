@@ -30,9 +30,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import yaml
-
 from app.framework.settings.settings import EmbeddingServiceSettings
+from tests.unit.support_compose import load_compose
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -46,7 +45,7 @@ _WORKER_BOOTSTRAP = _REPO_ROOT / "src" / "app" / "workers" / "bootstrap.py"
 
 
 def _compose(path: Path = _COMPOSE) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    return load_compose(files=(path,))
 
 
 def _service(name: str, path: Path = _COMPOSE) -> dict:

@@ -54,7 +54,19 @@ import ast
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+
+from tests.unit.support_compose import (
+    COMPOSE,
+    SIZES,
+    compose_bytes,
+    load_compose,
+    read_size,
+    redis_bytes,
+    resolve,
+    var_name,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -67,7 +79,7 @@ _CACHE = "redis-cache"
 
 
 def _compose() -> dict[str, Any]:
-    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    return load_compose()
 
 
 def _command(service: str) -> list[str]:
@@ -86,7 +98,7 @@ def _flag(service: str, name: str) -> str | None:
         return None
     index = command.index(name)
     assert index + 1 < len(command), f"{_COMPOSE.name}: `{service}` passes {name} with no value"
-    return command[index + 1]
+    return resolve(command[index + 1])
 
 
 # ------------------------------------------------------------------ the two servers --
@@ -347,3 +359,31 @@ def test_the_two_callers_that_moved_really_did_move() -> None:
         "5.2's own wording -- 'point RedisCache alone at the cache instance' -- would "
         "have moved, and moving it re-opens the residual risk revocation.py exists to close"
     )
+
+
+# ------------------------------------------------------------ per size --
+
+_MAXMEMORY_DEFAULTS = {_STREAM: "2gb", _CACHE: "1gb"}
+_CACHE_OVERHEAD = 768 * 1024**2  # container headroom above the cache's maxmemory
+
+
+def test_maxmemory_is_a_variable_with_todays_default() -> None:
+    raw = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    for service, default in _MAXMEMORY_DEFAULTS.items():
+        command = [str(t) for t in raw[service]["command"]]
+        got = command[command.index("--maxmemory") + 1]
+        name = var_name(service, "MAXMEMORY")
+        assert got == f"${{{name}:-{default}}}", got
+
+
+@pytest.mark.parametrize("size", [None, *SIZES], ids=["default", *SIZES])
+def test_each_size_keeps_container_headroom(size: str | None) -> None:
+    values = dict(read_size(size).values) if size else {}
+    services = load_compose(values)["services"]
+    for service, default in _MAXMEMORY_DEFAULTS.items():
+        maxmemory = redis_bytes(values.get(var_name(service, "MAXMEMORY"), default))
+        limit = compose_bytes(services[service]["deploy"]["resources"]["limits"]["memory"])
+        if service == _STREAM:
+            assert limit == maxmemory * 3 // 2, f"{size}: {service} is not 1.5x maxmemory"
+        else:
+            assert limit == maxmemory + _CACHE_OVERHEAD, f"{size}: {service} headroom"

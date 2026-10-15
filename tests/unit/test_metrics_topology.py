@@ -101,6 +101,7 @@ from app.framework.observability.metrics import (
     RATE_LIMIT_REJECTIONS_METRIC,
     WS_CONNECTIONS_METRIC,
 )
+from tests.unit.support_compose import load_compose
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -183,7 +184,7 @@ _COLLAPSING = ("max", "min", "avg")
 
 
 def _app_replicas() -> int:
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     return int((compose["services"]["app"].get("deploy") or {}).get("replicas", 1))
 
 

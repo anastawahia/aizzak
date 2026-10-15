@@ -437,8 +437,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${WAL_ARCHIVE_INIT_CPUS:-0.25}"
+          memory: ${WAL_ARCHIVE_INIT_MEM:-128m}
     image: postgres:16
     user: root
     volumes:
@@ -486,8 +486,8 @@ services:
           # server starts anyway and reports nothing (see the `shared_buffers`
           # note in the config file). The cgroup limit never fires here
           # because it is above the host's own memory -- that is `د-25`.
-          cpus: "6.0"
-          memory: 18g
+          cpus: "${POSTGRES_CPUS:-6.0}"
+          memory: ${POSTGRES_MEM:-18g}
     image: postgres:16
     depends_on:
       wal-archive-init:
@@ -727,6 +727,8 @@ services:
       # READS, not whether this one is present. A switch that removed the
       # mount would be a second thing to remember.
       - ./deploy/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      # Per-size tuning (deploy/sizes/*.env POSTGRES_CONFIG_FILE); read-only, inert unless selected.
+      - ./deploy/postgres/sizes:/etc/postgresql/sizes:ro
       - ./deploy/postgres/archive_wal.sh:/usr/local/bin/archive_wal.sh:ro
       # The spool `archive_command` writes into and `wal-shipper` drains. A
       # named volume rather than a bind: these segments are the difference
@@ -771,8 +773,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 256m
+          cpus: "${PGBOUNCER_CPUS:-1.0}"
+          memory: ${PGBOUNCER_MEM:-256m}
     # ⭐ THE HALF OF STEP 3.1 THAT DID NOT REACH THIS SERVICE, AND THE HALF
     # STEP 2.2 CANNOT SHIP WITHOUT. Docker's inherited soft `nofile` is 1024;
     # every client connection, every server connection and every listener is
@@ -993,8 +995,8 @@ services:
           # the COW pages a BGREWRITEAOF fork touches), so a cgroup equal to
           # `maxmemory` turns a rewrite into an OOM kill. The 1.5x is the
           # headroom, not slack.
-          cpus: "1.0"
-          memory: 3g
+          cpus: "${REDIS_STREAM_CPUS:-1.0}"
+          memory: ${REDIS_STREAM_MEM:-3g}
     image: redis:7
     # `--maxmemory 2gb` is DERIVED, not picked. Live measurement of this
     # stack's own entries: `stream.knowledge` holds 433 entries in 298,664
@@ -1020,7 +1022,7 @@ services:
         "--appendonly",
         "yes",
         "--maxmemory",
-        "2gb",
+        "${REDIS_STREAM_MAXMEMORY:-2gb}",
         "--maxmemory-policy",
         "noeviction",
       ]
@@ -1044,13 +1046,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
+          cpus: "${REDIS_CACHE_CPUS:-1.0}"
           # 2g -> 1792m (monitoring-host-postgres: pays for node-exporter +
           # postgres-exporter). Its ceiling is `--maxmemory 1gb` below, not
           # load: 15-day peak 21.0 MiB (cAdvisor), RSS 19.6 MiB
           # (redis_exporter), no fork/COW (`--save ""`). 768 MiB stays above
           # maxmemory for fragmentation and client buffers.
-          memory: 1792m
+          memory: ${REDIS_CACHE_MEM:-1792m}
     image: redis:7
     # `--maxmemory 1gb`, and the plan's own `2gb` is the number this step
     # declines. The two ceilings are not the same kind of number: on the
@@ -1079,7 +1081,7 @@ services:
         "--appendonly",
         "no",
         "--maxmemory",
-        "1gb",
+        "${REDIS_CACHE_MAXMEMORY:-1gb}",
         "--maxmemory-policy",
         "allkeys-lru",
       ]
@@ -1097,8 +1099,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "${MINIO_CPUS:-1.0}"
+          memory: ${MINIO_MEM:-2g}
     # Isolated by construction: its own volume and its own root credentials.
     # The opt-in bucket-scoped live-test account is provisioned by
     # `minio-bootstrap`; it never reuses the root identity.
@@ -1158,8 +1160,8 @@ services:
           # conditional on measured memory pressure and 3.84 of 8 GB is not
           # pressure -- it would trade recall for headroom this file already
           # has.
-          cpus: "3.0"
-          memory: 8g
+          cpus: "${QDRANT_CPUS:-3.0}"
+          memory: ${QDRANT_MEM:-8g}
     image: qdrant/qdrant:v1.13.4
     volumes:
       - qdrant-data:/qdrant/storage
@@ -1221,10 +1223,10 @@ services:
   # for why, and for the kill switch back to one replica.
   embedding:
     deploy:
-      replicas: 3
+      replicas: ${EMBEDDING_REPLICAS:-3}
       resources:
         limits:
-          cpus: "1.0"
+          cpus: "${EMBEDDING_CPUS:-1.0}"
           # ⚠️ 2g → 1280m (1.25 GiB), and it is a MEASUREMENT, not a trim to
           # make three replicas fit. Sampled on this stack under saturation
           # (8 concurrent `/embed` calls, batches of 8 realistic Arabic
@@ -1248,7 +1250,7 @@ services:
           # against the 57.60 GB that 08 §2-ز's headroom rule allows on §6's
           # reference host, and `tests/unit/test_resource_budget.py` would
           # (correctly) refuse it.
-          memory: 1280m
+          memory: ${EMBEDDING_MEM:-1280m}
     # Named only, like the application image (see x-app-image above); the
     # build lives in docker-compose.build.yml.
     image: ${EMBEDDING_IMAGE_REPO:-aizzak/embedding}:${EMBEDDING_IMAGE_TAG:-dev}
@@ -1377,8 +1379,8 @@ services:
           # already an order of magnitude more than it can use; 128m is
           # nginx's own footprint plus the 256 KB of proxy buffers
           # `embedding-lb.conf` declares.
-          cpus: "0.5"
-          memory: 128m
+          cpus: "${EMBEDDING_LB_CPUS:-0.5}"
+          memory: ${EMBEDDING_LB_MEM:-128m}
     image: nginx:1.27
     depends_on:
       embedding:
@@ -1434,8 +1436,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 512m
+          cpus: "${VAULT_CPUS:-1.0}"
+          memory: ${VAULT_MEM:-512m}
     image: hashicorp/vault:1.18
     entrypoint: ["/bin/sh", "/vault/scripts/start.sh"]
     environment:
@@ -1478,8 +1480,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 256m
+          cpus: "${VAULT_BOOTSTRAP_CPUS:-0.25}"
+          memory: ${VAULT_BOOTSTRAP_MEM:-256m}
     image: hashicorp/vault:1.18
     depends_on:
       vault:
@@ -1524,8 +1526,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 256m
+          cpus: "${MINIO_BOOTSTRAP_CPUS:-0.25}"
+          memory: ${MINIO_BOOTSTRAP_MEM:-256m}
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       minio:
@@ -1569,8 +1571,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1g
+          cpus: "${MIGRATE_CPUS:-1.0}"
+          memory: ${MIGRATE_MEM:-1g}
     depends_on:
       postgres:
         condition: service_healthy
@@ -1624,8 +1626,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256m
+          cpus: "${OLLAMA_BRIDGE_CPUS:-0.5}"
+          memory: ${OLLAMA_BRIDGE_MEM:-256m}
     image: alpine/socat:1.8.0.3
     network_mode: host
     command: >-
@@ -1674,8 +1676,8 @@ services:
           # gemma3:1b is 0.8 GB of weights, plus the KV cache for
           # OLLAMA_NUM_PARALLEL x num_ctx 8192, plus compute buffers. Outside the
           # standing ledger (profiled, 08 §2‑ز); a server's budget is step 3.4.
-          cpus: "4.0"
-          memory: 4g
+          cpus: "${OLLAMA_CPUS:-4.0}"
+          memory: ${OLLAMA_MEM:-4g}
     # Q‑5 (revised 2026-10-15): the last 0.34 patch, published 2026-09-24. 0.13.5
     # cannot pull gemma3:1b (the registry answers 412 "requires a newer version of
     # Ollama"), so this is NOT the native WSL Ollama's version. Index digest on
@@ -1726,8 +1728,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 64m
+          cpus: "${OLLAMA_PULL_CPUS:-0.25}"
+          memory: ${OLLAMA_PULL_MEM:-64m}
     image: python:3.12-slim
     user: "65534:65534"
     read_only: true
@@ -1770,11 +1772,11 @@ services:
     # `7.1` وأُعيد تأكيدُه في `3.2`، والذي جعل هذه الخطوةَ ممكنةً بلا لمسِ
     # حرفٍ في `deploy/nginx/`.
     deploy:
-      replicas: 3
+      replicas: ${APP_REPLICAS:-3}
       resources:
         limits:
-          cpus: "2.0"
-          memory: 2g
+          cpus: "${APP_CPUS:-2.0}"
+          memory: ${APP_MEM:-2g}
     depends_on:
       ollama-bridge:
         condition: service_started
@@ -1986,8 +1988,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1g
+          cpus: "${WORKER_MEMORY_CPUS:-1.0}"
+          memory: ${WORKER_MEMORY_MEM:-1g}
     environment:
       <<: [*app-env, *worker-env]
       WORKER: memory
@@ -2117,9 +2119,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
-      replicas: 2
+          cpus: "${WORKER_KNOWLEDGE_CPUS:-1.0}"
+          memory: ${WORKER_KNOWLEDGE_MEM:-2g}
+      replicas: ${WORKER_KNOWLEDGE_REPLICAS:-2}
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "knowledge"]
@@ -2151,8 +2153,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "${WORKER_MEDIA_CPUS:-1.0}"
+          memory: ${WORKER_MEDIA_MEM:-2g}
     environment:
       <<: [*app-env, *worker-env]
       WORKER: media
@@ -2244,9 +2246,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 512m
-      replicas: 1
+          cpus: "${OUTBOX_RELAY_CPUS:-1.0}"
+          memory: ${OUTBOX_RELAY_MEM:-512m}
+      replicas: ${OUTBOX_RELAY_REPLICAS:-1}
     # ت‑3. The relay beats on CLEAN cycles only (`OutboxRelay.run_forever`),
     # which is the whole point here: a relay that cannot reach Postgres or
     # Redis keeps looping, doubling its backoff, and staying `Up` forever --
@@ -2289,8 +2291,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256m
+          cpus: "${WAL_SHIPPER_CPUS:-0.5}"
+          memory: ${WAL_SHIPPER_MEM:-256m}
     user: "999:999"
     depends_on:
       # NOT `postgres`. This service holds no database credential and opens no
@@ -2341,8 +2343,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1g
+          cpus: "${BACKUP_CPUS:-1.0}"
+          memory: ${BACKUP_MEM:-1g}
     profiles: ["backup"]
     user: "999:999"
     depends_on:
@@ -2394,8 +2396,8 @@ services:
         limits:
           # One job at a time, and the heaviest is `backup full` -- the
           # `backup` service's own ceiling, for the same work.
-          cpus: "1.0"
-          memory: 1g
+          cpus: "${OPS_SCHEDULER_CPUS:-1.0}"
+          memory: ${OPS_SCHEDULER_MEM:-1g}
     user: "999:999"
     depends_on:
       postgres:
@@ -2467,8 +2469,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${NGINX_CERTS_CPUS:-0.25}"
+          memory: ${NGINX_CERTS_MEM:-128m}
     image: nginx:1.27
     volumes:
       - ./deploy/nginx/gen-cert.sh:/gen-cert.sh:ro
@@ -2481,8 +2483,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 512m
+          cpus: "${NGINX_CPUS:-2.0}"
+          memory: ${NGINX_MEM:-512m}
     image: nginx:1.27
     depends_on:
       app:
@@ -2630,8 +2632,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "${PROMETHEUS_CPUS:-1.0}"
+          memory: ${PROMETHEUS_MEM:-2g}
     image: prom/prometheus:v3.13.2
     depends_on:
       app:
@@ -2682,8 +2684,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 512m
+          cpus: "${GRAFANA_CPUS:-0.25}"
+          memory: ${GRAFANA_MEM:-512m}
     image: grafana/grafana:13.0.8
     depends_on:
       prometheus:
@@ -2735,8 +2737,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 64m
+          cpus: "${ALERTMANAGER_CPUS:-0.25}"
+          memory: ${ALERTMANAGER_MEM:-64m}
     image: prom/alertmanager:v0.34.1
     depends_on:
       alert-sink:
@@ -2771,8 +2773,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.1"
-          memory: 32m
+          cpus: "${ALERT_SINK_CPUS:-0.1}"
+          memory: ${ALERT_SINK_MEM:-32m}
     image: python:3.12-slim
     user: "65534:65534"
     read_only: true
@@ -2811,8 +2813,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${PGBOUNCER_EXPORTER_CPUS:-0.25}"
+          memory: ${PGBOUNCER_EXPORTER_MEM:-128m}
     image: prometheuscommunity/pgbouncer-exporter:v0.12.1
     depends_on:
       pgbouncer:
@@ -2865,8 +2867,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${REDIS_STREAM_EXPORTER_CPUS:-0.25}"
+          memory: ${REDIS_STREAM_EXPORTER_MEM:-128m}
     image: oliver006/redis_exporter:v1.90.0-alpine
     depends_on:
       redis-stream:
@@ -2888,8 +2890,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${REDIS_CACHE_EXPORTER_CPUS:-0.25}"
+          memory: ${REDIS_CACHE_EXPORTER_MEM:-128m}
     image: oliver006/redis_exporter:v1.90.0-alpine
     depends_on:
       redis-cache:
@@ -2924,8 +2926,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 64m
+          cpus: "${NODE_EXPORTER_CPUS:-0.25}"
+          memory: ${NODE_EXPORTER_MEM:-64m}
     image: prom/node-exporter:v1.12.1
     user: "65534:65534"
     read_only: true
@@ -2976,8 +2978,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128m
+          cpus: "${POSTGRES_EXPORTER_CPUS:-0.25}"
+          memory: ${POSTGRES_EXPORTER_MEM:-128m}
     image: prometheuscommunity/postgres-exporter:v0.20.1
     user: "65534:65534"
     read_only: true
@@ -3028,8 +3030,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 512m
+          cpus: "${CADVISOR_CPUS:-0.5}"
+          memory: ${CADVISOR_MEM:-512m}
     profiles: ["container-metrics"]
     image: gcr.io/cadvisor/cadvisor:v0.55.1
     command:
@@ -3069,8 +3071,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 1g
+          cpus: "${LOKI_CPUS:-0.5}"
+          memory: ${LOKI_MEM:-1g}
     image: grafana/loki:3.5.7
     command:
       - "-config.file=/etc/loki/loki.yml"
@@ -3100,8 +3102,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 512m
+          cpus: "${ALLOY_CPUS:-0.25}"
+          memory: ${ALLOY_MEM:-512m}
     image: grafana/alloy:v1.10.2
     depends_on:
       loki:
@@ -3174,8 +3176,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 2g
+          cpus: "${K6_CPUS:-2.0}"
+          memory: ${K6_MEM:-2g}
     # The generator's memory decides whether its numbers mean anything. The
     # 2026-09-26 peak run was killed at 17m29s by THIS limit (`dmesg`: memcg
     # OOM, task k6), and it had been thrashing against it for minutes first:
