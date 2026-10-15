@@ -28,7 +28,7 @@
 | `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية — **ثلاث نسخ** (`deploy.replicas: 3`) بخيطٍ واحدٍ مثبَّتٍ لكلٍّ (خطّة السعة `4.1`)؛ ينشرها ملفّ الاختبار على `127.0.0.1:8080` **بنسخةٍ واحدة** فقط |
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
 | `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama` في `.env`) |
-| `ollama` | `ollama/ollama:0.13.5` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
+| `ollama` | `ollama/ollama:0.34.4` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |

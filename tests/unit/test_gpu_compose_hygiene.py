@@ -92,7 +92,7 @@ def _from_images(dockerfile: str) -> list[str]:
 def test_the_pin_classifier_tells_a_pin_from_a_floating_reference() -> None:
     pinned = [
         "postgres:16",
-        "ollama/ollama:0.13.5",
+        "ollama/ollama:0.34.4",
         "gcr.io/cadvisor/cadvisor:v0.55.1",
         "registry.local:5000/team/image:1.2",
         "alpine@sha256:" + "a" * 64,
@@ -137,7 +137,7 @@ def test_the_compose_files_name_both_kinds_of_image() -> None:
     refs = [r for name in _COMPOSE_FILES for r in _images_in(yaml.safe_load(_text(name)))]
     assert len(refs) >= 30
     assert any(_PLATFORM_IMAGE.fullmatch(r) for r in refs), "the platform images"
-    assert "ollama/ollama:0.13.5" in refs and "python:3.12-slim" in refs
+    assert "ollama/ollama:0.34.4" in refs and "python:3.12-slim" in refs
     cuda = [r for r in refs if "EMBEDDING_CUDA" in r]
     assert len(cuda) == 1, "the overlay names the CUDA image once"
 
@@ -349,7 +349,7 @@ def test_the_runbook_service_table_places_the_bridge_and_the_new_services() -> N
     assert set(rows) == {"ollama-bridge", "ollama", "ollama-pull"}
     assert "profile `wsl-ollama`" in rows["ollama-bridge"]
     assert "profile `local-llm`" in rows["ollama"]
-    assert "ollama/ollama:0.13.5" in rows["ollama"]
+    assert "ollama/ollama:0.34.4" in rows["ollama"]
     assert "profile `local-llm`" in rows["ollama-pull"]
     ledger = re.search(r"resources\.standing_cpus\s*=\s*(\S+)", text)
     memory = re.search(r"resources\.standing_memory_gb\s*=\s*(\S+)", text)

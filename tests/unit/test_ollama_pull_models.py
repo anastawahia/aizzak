@@ -112,7 +112,7 @@ class FakeOllama:
             def do_GET(self) -> None:
                 outer.requests.append(("GET", self.path, None))
                 if self.path == "/api/version":
-                    self._json(200, {"version": "0.13.5"})
+                    self._json(200, {"version": "0.34.4"})
                 else:
                     self._json(404, {"error": "no such path"})
 

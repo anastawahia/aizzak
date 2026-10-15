@@ -140,8 +140,8 @@ def test_the_ollama_service_shape() -> None:
     assert svc["logging"]["driver"] == "json-file"
 
 
-def test_the_ollama_image_is_the_pinned_native_version() -> None:
-    assert _services()["ollama"]["image"] == "ollama/ollama:0.13.5"
+def test_the_ollama_image_is_the_pinned_version() -> None:
+    assert _services()["ollama"]["image"] == "ollama/ollama:0.34.4"
 
 
 # ── AC-2.2 ──────────────────────────────────────────────────────────────────

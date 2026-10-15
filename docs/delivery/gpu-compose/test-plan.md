@@ -25,7 +25,7 @@
 | AC‑1.7 | محلّيّ | تشغيل QA اليوم: `deploy/gpu-preflight.sh` ← الرمز **0** في 0.3 ث، والأسطر الأربعة `OK` (تعريف 592.82 · Docker 29.6.1 · وقت التشغيل `nvidia` · Compose 5.3.1). **التوقّع الأصليّ (الرمز 12) سقط** لأنّ المالك ثبّت الأداة في ملحق أ؛ والمسار السلبيّ مغطّىً بـAC‑1.3 (وبما في §3 بند B‑1) | ✅ يدويّ (نُفِّذ) |
 | AC‑1.8 | أداة | P‑3 الخطوة 1 (`--smoke`). دليلٌ مسبق من المالك في `status.md`: `--smoke` على `ed899de` ← الأسطر الخمسة OK، `rc=0` | ⏸ P‑3 |
 | AC‑1.9 | نصّ+وحدة | `test_gpu_preflight.py::test_the_server_doc_lists_the_scripts_exit_codes` (مجموعة الرموز {0,2,10,11,12,13,14} في الجدول = في رأس السكربت، والأمر، و`<div dir="rtl">`، ولا سرّ) · قراءة QA للوثيقة · روابطها الخمسة تُجيب HTTP 200 (فُحصت اليوم، §3) | ✅ |
-| AC‑2.1 | وحدة | `test_compose_local_llm.py::test_the_ollama_service_shape` · `::test_the_ollama_image_is_the_pinned_native_version` | ✅ |
+| AC‑2.1 | وحدة | `test_compose_local_llm.py::test_the_ollama_service_shape` · `::test_the_ollama_image_is_the_pinned_version` | ✅ |
 | AC‑2.2 | وحدة | `test_compose_local_llm.py::test_the_ollama_pull_service_shape` · `test_healthcheck_coverage.py::test_one_shot_services_are_actually_one_shot` (و`ollama-pull` في `_ONE_SHOT`) | ✅ |
 | AC‑2.3 | وحدة | `test_ollama_pull_models.py`: (أ) `::test_the_compose_default_routing_pulls_exactly_gemma3_1b` · (ب) `::test_the_env_example_routing_pulls_exactly_gemma3_1b_fallback_route_included` · (ج) `::test_a_mixed_table_pulls_each_ollama_model_once_and_nothing_else` · (د) `::test_no_ollama_route_pulls_nothing_and_exits_0` · (هـ) `::test_invalid_json_exits_2_with_no_http_call[7 قيم]` | ✅ |
 | AC‑2.4 | وحدة | `test_compose_local_llm.py::test_ollama_base_url_defaults_to_the_in_stack_service` · `::test_env_example_sets_no_other_ollama_base_url` | ✅ |

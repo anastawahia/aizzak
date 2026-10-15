@@ -1676,10 +1676,12 @@ services:
           # standing ledger (profiled, 08 §2‑ز); a server's budget is step 3.4.
           cpus: "4.0"
           memory: 4g
-    # The native WSL Ollama's own version (Q‑5), so gemma3:1b behaves as measured
-    # here. Index digest on 2026-10-14:
-    # sha256:2c9595c555fd70a28363489ac03bd5bf9e7c5bdf2890373c3a830ffd7252ce6d
-    image: ollama/ollama:0.13.5
+    # Q‑5 (revised 2026-10-15): the last 0.34 patch, published 2026-09-24. 0.13.5
+    # cannot pull gemma3:1b (the registry answers 412 "requires a newer version of
+    # Ollama"), so this is NOT the native WSL Ollama's version. Index digest on
+    # 2026-10-15:
+    # sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551
+    image: ollama/ollama:0.34.4
     environment:
       # 2.6. ONE model resident: loading another evicts this one instead of
       # sitting beside it in VRAM (08 §2‑ي).
