@@ -25,6 +25,8 @@ _SCRIPT = Path(__file__).resolve().parents[2] / "deploy" / "release" / "build-pu
 _VERSION = "2026.10.1"
 _APP_REF = f"anastawahia/aizzak:app-{_VERSION}"
 _EMB_REF = f"anastawahia/aizzak:embedding-{_VERSION}"
+_CUDA_REF = f"anastawahia/aizzak:embedding-cuda-{_VERSION}"
+_CUDA_BUILD_ARG = "EMBEDDING_REQUIREMENTS=requirements-cuda.txt"
 
 _FAKE_TOOLS = r"""
 import hashlib, json, os, sys
@@ -226,14 +228,15 @@ def test_invalid_tags_are_refused_before_any_docker_call(tmp_path: Path, version
     assert run.calls == []
 
 
-def test_image_list_has_two_images_and_reserves_cuda_for_2_4(tmp_path: Path) -> None:
+def test_image_list_has_three_images_and_no_reserved_slot(tmp_path: Path) -> None:
     run = _run(tmp_path, "--list-images")
     assert run.proc.returncode == 0
     assert run.out.splitlines() == [
         "app Dockerfile",
         "embedding services/embedding/Dockerfile",
-        "embedding-cuda reserved:2.4",
+        f"embedding-cuda services/embedding/Dockerfile {_CUDA_BUILD_ARG}",
     ]
+    assert "reserved" not in run.out
     assert run.calls == []
 
 
@@ -303,30 +306,58 @@ def test_build_calls_are_amd64_with_the_right_dockerfile_context_and_tag(tmp_pat
     run = _run(tmp_path, _VERSION)
     assert run.proc.returncode == 0, run.err
     builds = run.builds()
-    assert len(builds) == 2
-    expected = {
-        "Dockerfile": _APP_REF,
-        "services/embedding/Dockerfile": _EMB_REF,
+    assert len(builds) == 3
+    # Keyed by TAG, not by Dockerfile: two images share services/embedding/Dockerfile.
+    # tag -> (Dockerfile, build argument or None)
+    expected: dict[str, tuple[str, str | None]] = {
+        _APP_REF: ("Dockerfile", None),
+        _EMB_REF: ("services/embedding/Dockerfile", None),
+        _CUDA_REF: ("services/embedding/Dockerfile", _CUDA_BUILD_ARG),
     }
     for argv in builds:
         assert argv[argv.index("--platform") + 1] == "linux/amd64"
         for flag in ("--load", "--pull", "--provenance=false", "--sbom=false"):
             assert flag in argv, flag
         assert argv[-1] == "."
-        dockerfile = argv[argv.index("--file") + 1]
-        assert argv[argv.index("--tag") + 1] == expected.pop(dockerfile)
+        tag = argv[argv.index("--tag") + 1]
+        dockerfile, build_arg = expected.pop(tag)
+        assert argv[argv.index("--file") + 1] == dockerfile
+        given = [argv[i + 1] for i, x in enumerate(argv) if x == "--build-arg"]
+        assert given == ([build_arg] if build_arg else []), tag
         labels = {argv[i + 1] for i, x in enumerate(argv) if x == "--label"}
         assert len(labels) == 4
         assert f"org.opencontainers.image.revision={run.head}" in labels
         assert f"org.opencontainers.image.version={_VERSION}" in labels
+        prefix = tag.split(":", 1)[1].removesuffix(f"-{_VERSION}")
+        assert f"org.opencontainers.image.title=aizzak-{prefix}" in labels
         assert not [x for x in argv if re.search(r"(:|-)(dev|latest)\b", x)]
     assert not expected
-    # D-5: every build precedes the first push.
+    # D-5: every build precedes the first push -- the CUDA one too.
     docker = [
         a for a in run.tool_calls("docker") if a[:1] == ["push"] or a[:2] == ["buildx", "build"]
     ]
     kinds = [a[0] for a in docker]
-    assert kinds == ["buildx", "buildx", "push", "push"]
+    assert kinds == ["buildx"] * 3 + ["push"] * 3
+
+
+def test_the_cuda_build_call_is_the_embedding_one_plus_the_build_argument(tmp_path: Path) -> None:
+    """design.md §3.7: the third call is exactly the second with a build argument, its own
+    tag and its own title -- nothing else differs (a different base, a flag dropped)."""
+    run = _run(tmp_path, _VERSION)
+    assert run.proc.returncode == 0, run.err
+    by_tag = {argv[argv.index("--tag") + 1]: argv for argv in run.builds()}
+    embedding = by_tag[_EMB_REF]
+    cuda = by_tag[_CUDA_REF]
+    derived = list(embedding)
+    derived[derived.index("--tag") + 1] = _CUDA_REF
+    derived[derived.index("--file") : derived.index("--file")] = ["--build-arg", _CUDA_BUILD_ARG]
+    derived = [
+        "org.opencontainers.image.title=aizzak-embedding-cuda"
+        if x == "org.opencontainers.image.title=aizzak-embedding"
+        else x
+        for x in derived
+    ]
+    assert cuda == derived
 
 
 def test_success_prints_one_digest_line_per_image_and_the_commit(tmp_path: Path) -> None:
@@ -335,18 +366,16 @@ def test_success_prints_one_digest_line_per_image_and_the_commit(tmp_path: Path)
     assert run.proc.returncode == 0, run.err
     lines = run.out.splitlines()
     assert f"release: commit {run.head}" in lines
-    refs = [
-        ln
-        for ln in lines
-        if re.fullmatch(r"anastawahia/aizzak:(app|embedding)-2026\.10\.1@sha256:[0-9a-f]{64}", ln)
-    ]
-    assert sorted(r.split("-")[0].split(":")[1] for r in refs) == ["app", "embedding"]
-    assert lines[-1] == f"release: OK {_VERSION} (2 images)"
+    pattern = r"anastawahia/aizzak:(app|embedding|embedding-cuda)-2026\.10\.1@sha256:[0-9a-f]{64}"
+    matches = [re.fullmatch(pattern, ln) for ln in lines]
+    prefixes = sorted(m.group(1) for m in matches if m)
+    assert prefixes == ["app", "embedding", "embedding-cuda"]
+    assert lines[-1] == f"release: OK {_VERSION} (3 images)"
     rows = digest_file.read_text().splitlines()
-    assert len(rows) == 2
+    assert len(rows) == 3
     for row in rows:
         ref, digest, sha = row.split()
-        assert ref in (_APP_REF, _EMB_REF)
+        assert ref in (_APP_REF, _EMB_REF, _CUDA_REF)
         assert digest == "sha256:" + hashlib.sha256(ref.encode()).hexdigest()
         assert sha == run.head
 
@@ -354,7 +383,7 @@ def test_success_prints_one_digest_line_per_image_and_the_commit(tmp_path: Path)
 # ── AC-3.6 ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("existing", [_APP_REF, _EMB_REF])
+@pytest.mark.parametrize("existing", [_APP_REF, _EMB_REF, _CUDA_REF])
 def test_existing_tag_is_refused(tmp_path: Path, existing: str) -> None:
     run = _run(tmp_path, _VERSION, env={"FAKE_DOCKER_EXISTING": existing})
     assert run.proc.returncode == 7
@@ -464,10 +493,14 @@ def test_missing_buildx_is_refused_before_building(tmp_path: Path) -> None:
     assert run.builds() == []
 
 
-def test_build_failure_pushes_nothing(tmp_path: Path) -> None:
-    run = _run(tmp_path, _VERSION, env={"FAKE_DOCKER_FAIL_BUILD": "embedding-"})
+@pytest.mark.parametrize("failing", ["embedding-", "embedding-cuda-"])
+def test_build_failure_pushes_nothing(tmp_path: Path, failing: str) -> None:
+    # "embedding-cuda-" fails ONLY the third build: the first two have already built, and
+    # still nothing may be pushed (D-5, design.md §3.7).
+    run = _run(tmp_path, _VERSION, env={"FAKE_DOCKER_FAIL_BUILD": failing})
     assert run.proc.returncode == 8
     assert run.pushes() == []
+    assert len(run.builds()) == (2 if failing == "embedding-" else 3)
 
 
 def test_public_repository_is_refused_before_building(tmp_path: Path) -> None:
@@ -504,21 +537,22 @@ def _assert_abandoned_with(run: Run, pushed_refs: list[str]) -> None:
 
 
 @pytest.mark.parametrize("fault", ["FAKE_DOCKER_FAIL_INSPECT", "FAKE_DOCKER_BAD_DIGEST"])
-@pytest.mark.parametrize("which", ["first", "second"])
+@pytest.mark.parametrize("which", ["first", "second", "third"])
 def test_failure_after_a_successful_push_still_reports_the_tag_as_pushed(
     tmp_path: Path, fault: str, which: str
 ) -> None:
-    ref = _APP_REF if which == "first" else _EMB_REF
+    order = {"first": _APP_REF, "second": _EMB_REF, "third": _CUDA_REF}
+    ref = order[which]
     digest_file = tmp_path / "digests.txt"
     run = _run(tmp_path, "--digest-file", str(digest_file), _VERSION, env={fault: ref})
-    expected = [ref] if which == "first" else [_APP_REF, ref]
-    _assert_abandoned_with(run, expected)
+    position = list(order).index(which)
+    _assert_abandoned_with(run, list(order.values())[: position + 1])
     assert f"pushed {ref}" in run.err
     assert f"{ref}@digest-unknown" in run.err
     rows = [r.split()[0:2] for r in digest_file.read_text().splitlines()]
     assert [ref, "digest-unknown"] in rows
-    # the first image failing stops the release before the second is pushed
-    assert len(run.pushes()) == (1 if which == "first" else 2)
+    # a failing image stops the release before the next one is pushed
+    assert len(run.pushes()) == position + 1
 
 
 def test_unwritable_digest_file_is_a_usage_error_before_any_call(tmp_path: Path) -> None:
@@ -545,11 +579,11 @@ def test_digest_file_failing_late_hits_the_backstop(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("code", ["200", "429", "500", "503", "000"])
-@pytest.mark.parametrize("after", [1, 2])
+@pytest.mark.parametrize("after", [1, 2, 3])
 def test_visibility_after_push_fails_closed(tmp_path: Path, code: str, after: int) -> None:
     codes = ",".join(["404"] * after + [code])
     run = _run(tmp_path, _VERSION, env={"FAKE_CURL_CODES": codes})
-    pushed = [_APP_REF] if after == 1 else [_APP_REF, _EMB_REF]
+    pushed = [_APP_REF, _EMB_REF, _CUDA_REF][:after]
     _assert_abandoned_with(run, pushed)
     assert (code in run.err) or ("PUBLIC" in run.err)
     assert len(run.pushes()) == after

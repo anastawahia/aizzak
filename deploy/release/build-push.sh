@@ -22,7 +22,8 @@
 #   prefix          built from                      reference for 2026.10.1
 #   app             Dockerfile                      anastawahia/aizzak:app-2026.10.1
 #   embedding       services/embedding/Dockerfile   anastawahia/aizzak:embedding-2026.10.1
-#   embedding-cuda  RESERVED for plan step 2.4, NOT built here
+#   embedding-cuda  services/embedding/Dockerfile   anastawahia/aizzak:embedding-cuda-2026.10.1
+#                   with --build-arg EMBEDDING_REQUIREMENTS=requirements-cuda.txt
 #
 # There is no "dev", no "latest" and no "<prefix>-latest" tag.
 #
@@ -57,7 +58,8 @@
 #
 # CI is the normal route. Run this by hand only in an emergency: a push from a
 # home connection moves about 150 KB/s, roughly seven hours for the embedding
-# image.
+# image alone, and about 14 hours or more for all three (the CUDA image is
+# roughly 3-3.5 GB compressed -- an estimate).
 set -euo pipefail
 
 readonly IMAGE_REPO="anastawahia/aizzak"         # ONE private repository (owner, 2026-10-13)
@@ -66,12 +68,10 @@ readonly CI_WORKFLOW="ci.yml"
 readonly PLATFORM="linux/amd64"
 readonly HUB_API_URL="https://hub.docker.com/v2/repositories/anastawahia/aizzak/"
 readonly VERSION_RE='^20[0-9]{2}\.(1[0-2]|[1-9])\.[1-9][0-9]*$'
-readonly IMAGES=(                                 # "<tag prefix> <dockerfile>"
+readonly IMAGES=(                                 # "<tag prefix> <dockerfile> [<build arg NAME=VALUE>]"
   "app Dockerfile"
   "embedding services/embedding/Dockerfile"
-)
-readonly RESERVED_IMAGES=(                        # "<tag prefix> <plan step>" -- NOT built here
-  "embedding-cuda 2.4"                            # server-gpu-plan.md 2.4 adds requirements-cuda.txt
+  "embedding-cuda services/embedding/Dockerfile EMBEDDING_REQUIREMENTS=requirements-cuda.txt"
 )
 
 MODE="release"
@@ -119,9 +119,6 @@ list_images() {
   local entry
   for entry in "${IMAGES[@]}"; do
     echo "$entry"
-  done
-  for entry in "${RESERVED_IMAGES[@]}"; do
-    echo "${entry% *} reserved:${entry#* }"
   done
 }
 
@@ -201,10 +198,16 @@ require_tag_absent() {
   fi
 }
 
+# build_image <prefix> <dockerfile> <version> <sha> [<build arg NAME=VALUE>]
 build_image() {
-  local prefix="$1" dockerfile="$2" version="$3" sha="$4"
+  local prefix="$1" dockerfile="$2" version="$3" sha="$4" build_arg="${5:-}"
+  local arg_flags=()
+  if [[ -n $build_arg ]]; then
+    arg_flags=(--build-arg "$build_arg")
+  fi
   docker buildx build --platform "$PLATFORM" --pull --load \
     --provenance=false --sbom=false \
+    ${arg_flags[@]+"${arg_flags[@]}"} \
     --file "$dockerfile" --tag "$IMAGE_REPO:$(image_tag "$prefix" "$version")" \
     --label "org.opencontainers.image.revision=$sha" \
     --label "org.opencontainers.image.version=$version" \
@@ -326,7 +329,7 @@ main() {
   fi
   require_buildx_amd64
   require_repo_private
-  local entry prefix dockerfile ref code
+  local entry prefix dockerfile build_arg ref code
   for entry in "${IMAGES[@]}"; do
     prefix="${entry%% *}"
     require_tag_absent "$(image_tag "$prefix" "$VERSION")"
@@ -338,9 +341,8 @@ main() {
   # Build everything first: a failed build (a model download, say) must happen
   # before any push, so it leaves nothing in the registry.
   for entry in "${IMAGES[@]}"; do
-    prefix="${entry%% *}"
-    dockerfile="${entry#* }"
-    build_image "$prefix" "$dockerfile" "$VERSION" "$COMMIT" \
+    read -r prefix dockerfile build_arg <<<"$entry"
+    build_image "$prefix" "$dockerfile" "$VERSION" "$COMMIT" "$build_arg" \
       || die 8 "build failed: $IMAGE_REPO:$(image_tag "$prefix" "$VERSION") (nothing was pushed)"
   done
 

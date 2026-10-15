@@ -505,13 +505,24 @@ docker compose logs --since 15m app | grep llm_guard
 ```
 
 2. مزوّدٌ سحابيّ (`openai` مثلاً): صفحةُ حالته، ورصيدُ مفتاح المنصّة وحصّتُه.
-3. `ollama` المحلّيّ:
+3. `ollama` المحلّيّ، ومكانه يختلف بين الجهازين:
+
+   - **على جهاز WSL** (المالك، Ollama الأصليّ):
 
 ```bash
 docker compose ps ollama-bridge
 ```
 
-   ثمّ تأكّد أنّ Ollama يعمل على المضيف.
+   فإن كان الجسر **غائباً** من القائمة فالسبب غالباً نقصُ `COMPOSE_PROFILES=wsl-ollama` من `.env` (الجسر خلف profile، ونسيانُ السطر يُسقطه بصمت). وإلّا فتأكّد أنّ Ollama يعمل على المضيف.
+
+   - **على خادم** (Ollama داخل المكدّس بـ`COMPOSE_PROFILES=local-llm`):
+
+```bash
+docker compose ps ollama
+docker compose logs --since 15m ollama
+```
+
+   وإن ذكر السجلّ **نموذجاً غائباً** (لم يُسحب بعد، أو فشل السحب والشبكة مقطوعة) فشغّل `docker compose run --rm ollama-pull`: يسحب الغائب وحده ولا يلمس الموجود.
 4. لا شيء لإعادة ضبطه — القاطعُ يُغلق وحده حين تنجح محاولةُ اختبار ([`08 §4.25`](../design/08-local-runbook.md)).
 
 **كيف تعرف أنّه زال:** سطر `resolved` بعد أوّل محاولةٍ ناجحة.

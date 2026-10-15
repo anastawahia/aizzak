@@ -13,14 +13,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import time
 from collections.abc import Sequence
-from typing import Any
+from types import ModuleType, SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from services.embedding import app as service_app
+
+# The real `_choose_device`, captured at import: the autouse fixture below
+# replaces the module attribute for every test, and the few tests that exercise
+# the real decision (against a FAKE `torch` module) need the original back.
+_REAL_CHOOSE_DEVICE = service_app._choose_device
 
 
 class _FakeEncoder:
@@ -33,6 +40,9 @@ class _FakeEncoder:
     def __init__(self, *, dim: int = 4) -> None:
         self.dim = dim
         self.encode_calls: list[dict[str, Any]] = []
+        # The `_Device` each `_load_model` call received -- empty means the
+        # loader was never reached (the refuse-to-start tests rely on that).
+        self.loaded_on: list[service_app._Device] = []
         # Deliberately NOT 512, and not the checkpoint's own 128 either: a
         # sentinel no code path under test would ever choose, so
         # `max_seq_length == 512` can only mean the lifespan passed it.
@@ -75,19 +85,41 @@ def _reset_state() -> Any:
     service_app._state.model = None
     service_app._state.model_name = ""
     service_app._state.torch_threads = None
+    service_app._state.device = None
+    service_app._state.dtype = None
     yield
     service_app._state.model = None
     service_app._state.model_name = ""
     service_app._state.torch_threads = None
+    service_app._state.device = None
+    service_app._state.dtype = None
+
+
+_CPU = service_app._Device(name="cpu", torch_cuda=None)
+_CUDA = service_app._Device(name="cuda", torch_cuda="12.4")
+
+
+@pytest.fixture(autouse=True)
+def _cpu_device_and_no_require_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_choose_device`` answers ``cpu`` in every test, so ``torch`` is never
+    imported (module docstring's "Lazy imports"); a test that wants another
+    answer, or the real function, overrides it. ``EMB_REQUIRE_CUDA`` is
+    cleared too: a developer shell that exports it must not change what a
+    test sees."""
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CPU)
+    monkeypatch.delenv("EMB_REQUIRE_CUDA", raising=False)
 
 
 def _fake_loader(fake: _FakeEncoder) -> Any:
     """Mirrors the real ``_load_model``'s contract, INCLUDING the part this
     file exists to pin: the loader applies ``max_seq_length`` to the model it
     is about to hand back (``services/embedding/app.py``'s module docstring
-    -- the checkpoint ships 128, and nothing but this assignment moves it)."""
+    -- the checkpoint ships 128, and nothing but this assignment moves it).
+    It also records the ``_Device`` it was handed (``fake.loaded_on``): the
+    one decision the real loader places the model by."""
 
-    def _load(model_name: str, max_seq_length: int) -> _FakeEncoder:
+    def _load(model_name: str, max_seq_length: int, device: service_app._Device) -> _FakeEncoder:
+        fake.loaded_on.append(device)
         fake.max_seq_length = max_seq_length
         return fake
 
@@ -132,6 +164,10 @@ def test_health_is_200_with_the_loaded_models_identity_once_started(
         # without reading the compose file.
         "batch_window_ms": 5,
         "max_batch_texts": 32,
+        # gpu-compose -- `_choose_device`'s own decision (faked to `cpu` for the
+        # whole suite), never an environment variable.
+        "device": "cpu",
+        "dtype": "float32",
     }
 
 
@@ -219,8 +255,8 @@ def test_no_thread_pin_is_attempted_when_the_env_var_is_absent(
 ) -> None:
     """⚠️ THE GUARD IS WHAT KEEPS `import torch` OUT OF THIS SUITE. Unset is
     the default everywhere except `docker-compose.yml`, and on that path
-    `_pin_torch_threads` -- the only function in the module that imports torch
-    outside `_load_model` -- must not be called at all. A `_pin_torch_threads`
+    `_pin_torch_threads` -- a function that imports torch, like `_load_model`
+    and `_choose_device` -- must not be called at all. A `_pin_torch_threads`
     that raised would prove the same thing; this asserts the stronger property
     that it is never reached."""
     fake = _FakeEncoder()
@@ -257,6 +293,299 @@ def test_health_reports_the_thread_count_that_actually_took_effect(
 
     assert asked == [1]
     assert reported == 7
+
+
+# --------------------------------------------------------------------------- #
+# device / dtype -- `_choose_device`'s decision, reported and acted on        #
+# (gpu-compose, AC-4.3)                                                       #
+#                                                                             #
+# `torch` and `sentence_transformers` are never imported here. The lifespan   #
+# tests fake `_choose_device`/`_load_model`; the few tests that exercise the  #
+# REAL `_choose_device`/`_load_model` do it against stand-in modules put in   #
+# `sys.modules`, which is also what proves those two functions import torch   #
+# lazily and read nothing but its answers.                                    #
+# --------------------------------------------------------------------------- #
+def _fake_torch(*, cuda_available: bool, version_cuda: str | None) -> ModuleType:
+    module = ModuleType("torch")
+    module.__dict__.update(
+        cuda=SimpleNamespace(is_available=lambda: cuda_available),
+        version=SimpleNamespace(cuda=version_cuda),
+    )
+    return module
+
+
+def test_health_reports_cuda_and_float16_when_the_device_is_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-4.3, the second half: the SAME route answers `cuda`/`float16` when
+    the loader's decision is `cuda`, with every other field untouched."""
+    fake = _FakeEncoder(dim=4)
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CUDA)
+    monkeypatch.setenv("EMBEDDING_MODEL", "test-model")
+    monkeypatch.setenv("EMBEDDING_DIM", "4")
+    monkeypatch.delenv("EMB_MAX_SEQ_LEN", raising=False)
+
+    with TestClient(service_app.app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["device"] == "cuda"
+    assert body["dtype"] == "float16"
+    assert body["model"] == "test-model"
+    assert body["max_seq_length"] == 512
+
+
+def test_the_loader_places_the_model_on_the_chosen_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What `/health` reports and what the loader is handed are ONE object
+    (`_choose_device`'s return value), so they cannot disagree. Called once,
+    and with exactly that value."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CUDA)
+
+    with TestClient(service_app.app) as client:
+        reported = client.get("/health").json()
+
+    assert fake.loaded_on == [_CUDA]
+    assert (reported["device"], reported["dtype"]) == (_CUDA.name, _CUDA.dtype)
+
+
+def test_the_device_is_not_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-14: the device is decided by `_choose_device` alone. The REAL function
+    runs here (against a torch that has no GPU) while every plausible knob
+    asks for `cuda` -- none of them has any effect, and `/health` still says
+    what is true."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", _REAL_CHOOSE_DEVICE)
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(cuda_available=False, version_cuda="12.4")
+    )
+    for name in ("EMB_DEVICE", "EMB_DTYPE", "DEVICE", "TORCH_DEVICE", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.setenv(name, "cuda" if name.endswith("DEVICE") else "float16")
+
+    with TestClient(service_app.app) as client:
+        reported = client.get("/health").json()
+
+    assert fake.loaded_on == [service_app._Device(name="cpu", torch_cuda="12.4")]
+    assert (reported["device"], reported["dtype"]) == ("cpu", "float32")
+
+
+@pytest.mark.parametrize(
+    ("cuda_available", "version_cuda", "expected"),
+    [
+        (True, "12.4", ("cuda", "12.4", "float16")),
+        (False, "12.4", ("cpu", "12.4", "float32")),  # a CUDA wheel with no GPU in reach
+        (False, None, ("cpu", None, "float32")),  # a CPU wheel
+    ],
+    ids=["gpu", "cuda_wheel_no_gpu", "cpu_wheel"],
+)
+def test_choose_device_is_torchs_own_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    cuda_available: bool,
+    version_cuda: str | None,
+    expected: tuple[str, str | None, str],
+) -> None:
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(cuda_available=cuda_available, version_cuda=version_cuda)
+    )
+
+    device = _REAL_CHOOSE_DEVICE()
+
+    assert (device.name, device.torch_cuda, device.dtype) == expected
+
+
+class _FakeSentenceTransformer:
+    """Stands in for `sentence_transformers.SentenceTransformer`: ships the
+    checkpoint's 128, records its construction, and -- like a loader step that
+    returned a NEW object, which the real `_load_model` guards against --
+    `half()` hands back a fresh instance, so `max_seq_length` only survives if
+    it is applied LAST."""
+
+    constructed: ClassVar[list[tuple[str, str | None]]] = []
+
+    def __init__(self, model_name: str, device: str | None = None, *, halved: bool = False) -> None:
+        if not halved:
+            type(self).constructed.append((model_name, device))
+        self.halved = halved
+        self.max_seq_length = 128
+
+    def half(self) -> _FakeSentenceTransformer:
+        return _FakeSentenceTransformer("", halved=True)
+
+
+@pytest.mark.parametrize("device", [_CPU, _CUDA], ids=["cpu", "cuda"])
+def test_load_model_places_the_model_on_the_device_and_halves_it_only_on_cuda(
+    monkeypatch: pytest.MonkeyPatch, device: service_app._Device
+) -> None:
+    """The REAL `_load_model` against a stand-in `sentence_transformers`: the
+    model is built on `device.name`, `.half()` runs iff the dtype is float16,
+    and `max_seq_length` lands on the object that is actually returned."""
+    _FakeSentenceTransformer.constructed = []
+    module = ModuleType("sentence_transformers")
+    module.__dict__["SentenceTransformer"] = _FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    model = service_app._load_model("test-model", 512, device)
+
+    assert _FakeSentenceTransformer.constructed == [("test-model", device.name)]
+    assert isinstance(model, _FakeSentenceTransformer)
+    assert model.halved is (device.dtype == "float16")
+    assert model.max_seq_length == 512
+
+
+def test_the_device_and_dtype_are_cleared_when_the_lifespan_shuts_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(_FakeEncoder()))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CUDA)
+
+    with TestClient(service_app.app):
+        assert (service_app._state.device, service_app._state.dtype) == ("cuda", "float16")
+
+    assert (service_app._state.device, service_app._state.dtype) == (None, None)
+
+
+# --------------------------------------------------------------------------- #
+# EMB_REQUIRE_CUDA -- refuse to start rather than run a CUDA image on the CPU #
+# (gpu-compose, Q-10)                                                         #
+# --------------------------------------------------------------------------- #
+def _refused_start() -> RuntimeError:
+    """Enter the lifespan and hand back what it raised -- a failure here is
+    what makes uvicorn exit non-zero, so the container never turns healthy."""
+    with pytest.raises(RuntimeError) as caught, TestClient(service_app.app):
+        pass
+    return caught.value
+
+
+def test_require_cuda_refuses_a_cpu_start_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CPU build of torch (`torch.version.cuda is None`) under the CUDA
+    image's name. The loader is never called -- no point loading a model this
+    process will not serve -- and the message names the guard and the fix."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CPU)
+    monkeypatch.setenv("EMB_REQUIRE_CUDA", "1")
+
+    error = _refused_start()
+
+    assert fake.loaded_on == []
+    assert service_app._state.model is None
+    message = str(error)
+    assert "EMB_REQUIRE_CUDA" in message
+    assert "requirements-cuda.txt" in message
+    assert "CPU build" in message
+
+
+def test_require_cuda_with_a_cuda_torch_but_no_gpu_names_the_toolkit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OTHER fault, told apart from the first: torch is a CUDA wheel and no
+    GPU reached the container -- so the message sends the operator to the
+    driver/toolkit and the compose reservation, not to the image build."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(
+        service_app, "_choose_device", lambda: service_app._Device("cpu", torch_cuda="12.4")
+    )
+    monkeypatch.setenv("EMB_REQUIRE_CUDA", "1")
+
+    error = _refused_start()
+
+    assert fake.loaded_on == []
+    message = str(error)
+    assert "EMB_REQUIRE_CUDA" in message
+    assert "CUDA 12.4" in message
+    assert "Container Toolkit" in message
+    assert "deploy/gpu-preflight.sh" in message
+    assert "docker-compose.gpu.yml" in message
+    # ...and it is NOT the CPU-build message.
+    assert "requirements-cuda.txt" not in message
+    assert "CPU build" not in message
+
+
+def test_require_cuda_starts_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CUDA)
+    monkeypatch.setenv("EMB_REQUIRE_CUDA", "1")
+
+    with TestClient(service_app.app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert (response.json()["device"], response.json()["dtype"]) == ("cuda", "float16")
+    assert fake.loaded_on == [_CUDA]
+
+
+@pytest.mark.parametrize("value", [None, "", "0"], ids=["unset", "empty", "zero"])
+def test_require_cuda_off_by_default(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    """Off unless it is exactly `1`: the CPU stack (and the RunPod image, which
+    never sets it) starts on the CPU as before, and `/health` says so."""
+    fake = _FakeEncoder()
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: _CPU)
+    if value is not None:
+        monkeypatch.setenv("EMB_REQUIRE_CUDA", value)
+
+    with TestClient(service_app.app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert (response.json()["device"], response.json()["dtype"]) == ("cpu", "float32")
+    assert fake.loaded_on == [_CPU]
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "2", "True", "01", " 1", "1 ", "on"], ids=repr)
+def test_require_cuda_rejects_any_other_value(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """A typo must not switch a guard off in silence: refused at the very
+    first step -- before torch is touched for any purpose (`_choose_device`,
+    and the thread pin that also imports it) and before the loader."""
+    fake = _FakeEncoder()
+    decided: list[str] = []
+    pinned: list[int] = []
+    monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
+    monkeypatch.setattr(service_app, "_choose_device", lambda: (decided.append("called"), _CUDA)[1])
+    monkeypatch.setattr(
+        service_app, "_pin_torch_threads", lambda threads: (pinned.append(threads), 1)[1]
+    )
+    monkeypatch.setenv("EMB_TORCH_THREADS", "1")
+    monkeypatch.setenv("EMB_REQUIRE_CUDA", value)
+
+    error = _refused_start()
+
+    assert decided == []
+    assert pinned == []
+    assert fake.loaded_on == []
+    message = str(error)
+    assert "EMB_REQUIRE_CUDA" in message
+    assert repr(value) in message
+    assert "'1'" in message
+    assert "'0'" in message
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, False),
+        ({"EMB_REQUIRE_CUDA": ""}, False),
+        ({"EMB_REQUIRE_CUDA": "0"}, False),
+        ({"EMB_REQUIRE_CUDA": "1"}, True),
+    ],
+    ids=["unset", "empty", "zero", "one"],
+)
+def test_require_cuda_reads_the_mapping_it_is_given(
+    environ: dict[str, str], expected: bool
+) -> None:
+    assert service_app._require_cuda(environ) is expected
 
 
 # --------------------------------------------------------------------------- #

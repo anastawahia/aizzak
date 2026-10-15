@@ -49,6 +49,11 @@ _COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 # it, and its contract is the exit code of one `base`/`dump`/`status` run.
 # `wal-shipper` is deliberately NOT here: it is the standing half, and it
 # declares a heartbeat below.
+#
+# gpu-compose 2.2 adds `ollama-pull`: profile `local-llm`, one run that pulls the
+# models PROVIDER_ROUTING names and exits -- its contract is the exit code
+# (0 done, 2 bad routing, 3 Ollama unreachable, 4 a pull failed). The service it
+# pulls INTO, `ollama`, is standing and carries its own healthcheck.
 _ONE_SHOT = frozenset(
     {
         "migrate",
@@ -58,6 +63,7 @@ _ONE_SHOT = frozenset(
         "k6",
         "wal-archive-init",
         "backup",
+        "ollama-pull",
     }
 )
 
@@ -167,14 +173,27 @@ def test_the_bridge_is_probed_end_to_end_but_gates_nothing(compose: dict[str, An
     bridge's healthcheck crosses all the way into the NATIVE Ollama, so an
     unhealthy bridge means "LLM calls will fail". Nothing may gate on it,
     because a host service outside Compose's lifecycle must not be able to
-    stop the stack from booting."""
+    stop the stack from booting.
+
+    gpu-compose 2.3 adds the other half: the bridge sits behind profile
+    `wsl-ollama`, so on a server it does not exist at all -- every edge to it
+    is `required: false`, or `up -d` there would refuse to start. The edges are
+    the four services that call an LLM (`app` and the three workers, the last
+    three through `x-worker-service`), no more and no fewer."""
     assert "11435" in " ".join(compose["ollama-bridge"]["healthcheck"]["test"])
 
+    edges = []
     for name, spec in compose.items():
         condition = spec.get("depends_on", {}).get("ollama-bridge")
         if condition is None:
             continue
+        edges.append(name)
         assert condition["condition"] == "service_started", (
             f"{name} -> ollama-bridge must stay `service_started`: gating on a "
             f"native, non-Compose Ollama would make the whole stack refuse to boot"
         )
+        assert condition.get("required") is False, (
+            f"{name} -> ollama-bridge must be `required: false`: the bridge is behind "
+            f"profile `wsl-ollama` and does not exist on a server"
+        )
+    assert sorted(edges) == ["app", "worker-knowledge", "worker-media", "worker-memory"]

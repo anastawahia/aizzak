@@ -355,9 +355,17 @@ def test_the_patterns_actually_find_something() -> None:
     # postgres-exporter (0.25/128m), paid for by redis-cache 2g -> 1792m (its
     # 15-day peak is 21 MiB under a 1 GiB maxmemory) -> 36.10/57.53, 70 MiB
     # under the ceiling.
-    assert len(standing) == 29, sorted(standing)
+    # profiled 3 -> 5 since gpu-compose 2.2: `ollama` (4 vCPU / 4g, an estimate)
+    # and `ollama-pull` (0.25 / 64m) sit behind profile `local-llm`, so a default
+    # `up -d` starts neither and the standing ledger does not move (36.10/57.53).
+    # 28 since gpu-compose 2.3: `ollama-bridge` went behind profile `wsl-ollama`
+    # (0.5 vCPU / 256m) -> 35.60/57.28; profiled 3 -> 6 with `ollama` and
+    # `ollama-pull` (2.2) and the bridge. The owner's machine still runs the
+    # bridge (COMPOSE_PROFILES=wsl-ollama in its .env), but a server without WSL
+    # does not, so the REFERENCE host's ledger no longer counts it.
+    assert len(standing) == 28, sorted(standing)
     assert len(oneshot) == 5, sorted(oneshot)
-    assert len(profiled) == 3, sorted(profiled)
+    assert len(profiled) == 6, sorted(profiled)
     assert _to_bytes("512m") == 512 * 1024**2
     assert _to_bytes("2g") == 2 * 1024**3
     assert _SCRIPT.exists() and _SCRIPT.stat().st_mode & 0o111, "the script is not executable"

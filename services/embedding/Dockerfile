@@ -3,9 +3,13 @@
 # A SEPARATE deployable from the main `aizzak/app` image (`./Dockerfile`):
 # this container carries torch + sentence-transformers, which must never
 # enter the main app's dependency graph (`requirements.txt` in this
-# directory is the ONLY place they are pinned -- see that file).
+# directory, and its CUDA twin `requirements-cuda.txt` with the same pins, are
+# the ONLY places they are pinned -- see those files).
 #
 # Base tag PINNED (never `latest`) -- the ./Dockerfile precedent.
+#
+# CPU by default; the CUDA variant is the same file with one build argument
+# (EMBEDDING_REQUIREMENTS, below).
 
 FROM python:3.12-slim AS runtime
 
@@ -23,8 +27,13 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY services/embedding/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Which pinned dependency set this image installs (server-gpu-plan.md 2.4):
+# requirements.txt -- CPU torch, the default, so a build without the argument
+# installs exactly what it always did -- or requirements-cuda.txt for the
+# embedding-cuda-<v> release image (deploy/release/build-push.sh).
+ARG EMBEDDING_REQUIREMENTS=requirements.txt
+COPY services/embedding/${EMBEDDING_REQUIREMENTS} ./${EMBEDDING_REQUIREMENTS}
+RUN pip install --no-cache-dir -r "${EMBEDDING_REQUIREMENTS}"
 
 # Bakes the model weights INTO the image at build time -- the runtime env
 # below (HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE) then makes this baked cache
