@@ -8,8 +8,9 @@ OLLAMA_BASE_URL (default http://ollama:11434), OLLAMA_PULL_CONNECT_WAIT_S
 (default 30, how long to wait for Ollama to answer).
 
 Exit codes: 0 done (including "no route uses ollama") · 2 the configuration is not
-usable (PROVIDER_ROUTING) · 3 Ollama unreachable · 4 a pull failed (the model is
-named; the other models are still attempted).
+usable (PROVIDER_ROUTING, OLLAMA_BASE_URL, OLLAMA_PULL_CONNECT_WAIT_S) · 3 Ollama
+unreachable · 4 a pull failed (the model is named; the other models are still
+attempted).
 
 Nothing here echoes the environment: the log names models, never values.
 """
@@ -24,6 +25,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from typing import Any
@@ -211,9 +213,31 @@ def _connect_wait_s(environ: Mapping[str, str]) -> float:
         value = float(raw)
     except ValueError:
         value = -1.0
-    if value < 0 or math.isnan(value):
-        raise RoutingError("OLLAMA_PULL_CONNECT_WAIT_S must be a non-negative number of seconds")
+    # isfinite: "inf" would wait forever and "nan" never expires; both are config errors.
+    if not math.isfinite(value) or value < 0:
+        raise RoutingError(
+            "OLLAMA_PULL_CONNECT_WAIT_S must be a finite, non-negative number of seconds"
+        )
     return value
+
+
+def _base_url(environ: Mapping[str, str]) -> str:
+    """OLLAMA_BASE_URL, or the in-stack default. A value urllib cannot use (no http(s)
+    scheme, as in `ollama:11434`, or no host) is a configuration error no wait can fix:
+    reject it now (exit 2) instead of waiting out the connect window (exit 3)."""
+    raw = environ.get("OLLAMA_BASE_URL", "").strip().rstrip("/") or DEFAULT_BASE_URL
+    parts = urllib.parse.urlsplit(raw)
+    usable = parts.scheme in ("http", "https") and bool(parts.hostname)
+    try:
+        _ = parts.port  # raises ValueError for a port that is not a number in 0..65535
+    except ValueError:
+        usable = False
+    if not usable:
+        raise RoutingError(
+            "OLLAMA_BASE_URL must be an http:// or https:// URL with a host, "
+            "e.g. http://ollama:11434"
+        )
+    return raw
 
 
 def _ensure_model(base_url: str, model: str) -> int:
@@ -237,13 +261,13 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
     try:
         models = ollama_models(environ.get("PROVIDER_ROUTING", ""))
         wait_s = _connect_wait_s(environ)
+        base_url = _base_url(environ)
     except RoutingError as err:
         _fail(str(err))
         return EXIT_ROUTING
     if not models:
         _log("no route uses ollama -- nothing to pull")
         return EXIT_OK
-    base_url = environ.get("OLLAMA_BASE_URL", "").strip().rstrip("/") or DEFAULT_BASE_URL
     try:
         wait_reachable(base_url, within_s=wait_s)
     except OllamaError as err:

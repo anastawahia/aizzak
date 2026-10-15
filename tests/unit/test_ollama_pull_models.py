@@ -288,11 +288,81 @@ def test_a_bad_connect_wait_exits_2(
 ) -> None:
     server = fake()
     routing = _table(llm={"default": ("ollama", "gemma3:1b")})
-    for bad in ("abc", "-1", "nan"):
+    # B-3: "inf" (and any spelling of it) used to be accepted and waited forever.
+    for bad in ("abc", "-1", "nan", "inf", "-inf", "+inf", "Infinity", "1e999"):
         env = _env(routing, server.url, OLLAMA_PULL_CONNECT_WAIT_S=bad)
-        assert pm.main(env) == 2
+        assert pm.main(env) == 2, bad
     assert server.requests == []
     assert "OLLAMA_PULL_CONNECT_WAIT_S" in capsys.readouterr().err
+
+
+def test_a_finite_connect_wait_is_still_accepted(fake: Callable[..., FakeOllama]) -> None:
+    server = fake()
+    routing = _table(llm={"default": ("ollama", "gemma3:1b")})
+    for good in ("0", "0.5", "30", " 5 "):
+        env = _env(routing, server.url, OLLAMA_PULL_CONNECT_WAIT_S=good)
+        assert pm.main(env) == 0, good
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "ollama:11434",
+        "localhost:11434",
+        "ollama",
+        "//ollama:11434",
+        "ftp://ollama:11434",
+        "file:///etc/passwd",
+        "http://",
+        "http://ollama:notaport",
+        "http://ollama:99999",
+    ],
+)
+def test_a_base_url_urllib_cannot_use_exits_2_at_once(
+    bad: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # B-2: `ollama:11434` is a configuration error. It used to wait the whole
+    # connect window and then exit 3 ("unreachable ... unknown url type").
+    def never_wait(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a URL that cannot work must not be waited for")
+
+    monkeypatch.setattr(pm, "wait_reachable", never_wait)
+    routing = _table(llm={"default": ("ollama", "gemma3:1b")})
+    env = _env(routing, bad, OLLAMA_PULL_CONNECT_WAIT_S="30")
+    assert pm.main(env) == 2
+    assert "OLLAMA_BASE_URL" in capsys.readouterr().err
+
+
+def test_a_rejected_base_url_is_never_echoed(capsys: pytest.CaptureFixture[str]) -> None:
+    marker = f"marker-{uuid.uuid4().hex}"
+    routing = _table(llm={"default": ("ollama", "gemma3:1b")})
+    assert pm.main(_env(routing, f"{marker}:11434")) == 2
+    captured = capsys.readouterr()
+    assert marker not in captured.out + captured.err
+
+
+def test_an_https_base_url_passes_validation_and_an_unreachable_one_is_exit_3() -> None:
+    routing = _table(llm={"default": ("ollama", "gemma3:1b")})
+    env = _env(routing, "https://127.0.0.1:9/", OLLAMA_PULL_CONNECT_WAIT_S="0")
+    assert pm.main(env) == 3
+
+
+def test_run_as_a_script_a_scheme_less_url_and_an_infinite_wait_exit_2_fast() -> None:
+    routing = _table(llm={"default": ("ollama", "gemma3:1b")})
+    for extra in (
+        {"OLLAMA_BASE_URL": "ollama:11434"},
+        {"OLLAMA_BASE_URL": "http://127.0.0.1:9", "OLLAMA_PULL_CONNECT_WAIT_S": "inf"},
+    ):
+        done = subprocess.run(
+            [sys.executable, "-I", str(_SCRIPT)],
+            env={"PROVIDER_ROUTING": routing, **extra},
+            capture_output=True,
+            text=True,
+            timeout=10,  # the bug waited 30 s, or forever
+            check=False,
+        )
+        assert done.returncode == 2, (extra, done.stderr)
+        assert "ollama-pull: ERROR: OLLAMA_" in done.stderr
 
 
 # ── NFR-10: never pull what is already there ────────────────────────────────

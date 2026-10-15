@@ -18,11 +18,13 @@
 #
 # ── Why not `gpus: all` ────────────────────────────────────────────────────
 # `gpus: all` / `deploy.resources.reservations.devices` route through the
-# NVIDIA Container Toolkit, which is NOT installed here (`nvidia-ctk` absent,
-# `docker info` lists only `runc`, /etc/docker/daemon.json does not exist).
-# Adding that key without the toolkit fails the container outright with "could
-# not select device driver". Installing it needs root and a Docker daemon
-# restart; this overlay needs neither, and no image rebuild either.
+# NVIDIA Container Toolkit. It was NOT installed here when this file was written
+# (`nvidia-ctk` absent, `docker info` listed only `runc`); the owner installed
+# Toolkit 1.20.1 on 2026-10-14, so it is installed now. The overlay keeps this
+# design for hosts without it: adding that key without the toolkit fails the
+# container outright with "could not select device driver". Installing it needs
+# root and a Docker daemon restart; this overlay needs neither, and no image
+# rebuild either.
 #
 # THAT trade is the right one for what this buys: the page wants to READ the
 # card, not compute on it. The mounts below carry the driver's user-space half

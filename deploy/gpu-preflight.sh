@@ -69,7 +69,7 @@ usage: gpu-preflight.sh [--smoke]
 
 Checks the NVIDIA driver, Docker, the NVIDIA Container Toolkit and Docker Compose.
 Never installs anything. --smoke also runs one throwaway GPU container.
-Exit codes: 0 ready, 10 no GPU, 11 Docker, 12 toolkit, 13 Compose, 14 --smoke failed.
+Exit codes: 0 ready, 2 bad usage, 10 no GPU, 11 Docker, 12 toolkit, 13 Compose, 14 --smoke failed.
 USAGE
 }
 

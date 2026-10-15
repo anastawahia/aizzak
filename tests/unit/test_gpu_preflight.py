@@ -454,6 +454,7 @@ def test_help_and_unknown_arguments(tmp_path: Path) -> None:
     helped = _run(tmp_path / "help", "--help")
     assert helped.rc == 0
     assert "usage: gpu-preflight.sh" in helped.out
+    assert "2 bad usage" in helped.out, "O-3: --help names exit 2 too"
     assert helped.calls == []
     bad = _run(tmp_path / "bad", "--install")
     assert bad.rc == 2
