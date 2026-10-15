@@ -4,7 +4,7 @@
 
 > **الجولة 3 (النهائيّة)** · 2026‑10‑15 · الفرع `feat/gpu-compose` عند `8d13cb0` (نظيف عند البدء). تاريخ الجولات: **1** (2026‑10‑14، عند `3fe51ea`، بلا حاويات؛ منها المصفوفة وبنود §3) · **2** (2026‑10‑14/15: P‑2 ✅، وP‑1 أخفقت بـ`ollama/ollama:0.13.5` بالرمز 412) · **3** (هذه: الصورة صارت `0.34.4`، وأُغلقت B‑1…B‑3 وO‑3، وP‑1 ⏸ محجوبة بالذاكرة).
 > المراجع: [`stories.md`](stories.md) (64 معياراً)، و[`design.md`](design.md) §5 (خطّة الاختبار §5.3، وصياغات §5.4، والإجراءات §5.5).
-> **الجولة 4 (2026‑10‑15، بطلب المالك، نفّذها المنسّق):** P‑1 ثمّ P‑3 ثمّ P‑4، بأوامر §1.3، والمكدّس الحيّ متوقّف: ✅ (AC‑2.7، ثمّ AC‑1.8 وAC‑4.8 وAC‑5.9، ثمّ AC‑4.9 على 10 أسئلة بطلب المالك). وP‑5 وP‑6 تأتيان بعدها واحداً واحداً بطلب المالك.
+> **الجولة 4 (2026‑10‑15، بطلب المالك، نفّذها المنسّق):** P‑1 ثمّ P‑3 ثمّ P‑4 ثمّ P‑5، بأوامر §1.3، والمكدّس الحيّ متوقّف: ✅ (AC‑2.7، ثمّ AC‑1.8 وAC‑4.8 وAC‑5.9، ثمّ AC‑4.9 على 10 أسئلة، ثمّ AC‑4.11 بـ5 دقائق، والتقليصان بطلب المالك). وP‑6 تأتي بعدها بطلب المالك. وظهر عيبٌ طفيف في أداة الاختبار: B‑4 (نتيجة P‑5 في §1.3).
 >
 > **حاويات الجولة 3: لا شيء شُغِّل.** قراءات `free -m`: available ‏5035 ثمّ 5053 ثمّ 4992 م.ب (أقلّ من شرط §1.3 (أ): 5120)، والـswap ‏4094 ثمّ 4061 من 4096 (ممتلئ تقريباً)، والمكدّس الحيّ شغّال ومستعمَل؛ فلم يُشغَّل مشروع `aizzak-llm-proof` ولا أيّ حاوية. ولم يُقرأ `.env` ولا `deploy/load/*` ولا شهادات `nginx` ولا حجم `vault-init`. (الجولة 1: أوامر `docker compose` بـ`-p qa-config --env-file .env.example` و`config` وحده. الجولة 2: حاويات P‑1 وP‑2 في مشروعَين منفصلَين.)
 
@@ -53,7 +53,7 @@
 | AC‑4.8 | أداة | P‑3 الخطوة 3 (الجولة 4): `/health` في التضمين ← `"device":"cuda","dtype":"float16"`، بـ`EMB_REQUIRE_CUDA=1` | ✅ يدويّ (نُفِّذ، الجولة 4) |
 | AC‑4.9 | أداة | P‑4 (الجولة 4) بـ`tests/eval/vector_parity.py compare` على **10 أسئلة من 42** (بطلب المالك) و174 مقطعاً: أدنى cosine ‏0.9999990 (المتوسّط 0.9999995) على النصوص الـ184 كلّها، والتداخل في أعلى 10 ‏**10/10** لكلّ سؤال، وأعلى مقطع واحدٌ في 10/10، و`compare` ‏rc 0 | ✅ يدويّ (نُفِّذ، الجولة 4، مجموعة مخفّضة) |
 | AC‑4.10 | خادم | ش‑5: `tests/eval/run_calibration.py` على الفهرسين (Q‑3 ج) | ⏳ ش‑5 |
-| AC‑4.11 | أداة | ش‑3 (P‑5) بـ`vector_parity.py soak` و`memory.peak` (الأداة مختبَرة: `test_vector_parity.py::test_soak_sends_the_ac_4_11_load_and_reports_it` · `::test_soak_exits_nonzero_when_the_service_errors`) | ⏳ ش‑3 |
+| AC‑4.11 | أداة | P‑5 (الجولة 4) بـ`vector_parity.py soak`: **5 دقائق من 15 (بطلب المالك)**، 8 متزامنة ودفعات 8 نصوص عربيّة من 350 كلمة: 7,672 طلباً بلا خطأ (61,376 نصّاً، 25.6 طلب/ث، p95 ‏0.33 ث)، و`memory.peak` ‏1,248,911,360 بايت (1.16 GiB) من حدّ 3 GiB، أي هامش **2.58×** (المطلوب ≥ 1.5×)، و`OOMKilled=false` و`oom_kill 0` | ✅ يدويّ (نُفِّذ، الجولة 4، 5 دقائق) |
 | AC‑5.1 | وحدة | `test_compose_gpu_overlay.py::test_the_overlay_has_only_services_and_exactly_three` | ✅ |
 | AC‑5.2 | وحدة | `test_compose_gpu_overlay.py::test_ollama_gets_exactly_one_gpu_reservation` (المساواة الحرفيّة للقاموس) | ✅ |
 | AC‑5.3 | وحدة | `test_compose_gpu_overlay.py::test_embedding_is_one_cuda_replica_with_a_written_memory_limit` | ✅ |
@@ -88,11 +88,11 @@
 | الحالة | العدد | المعايير |
 |---|---|---|
 | ✅ آليّ يمرّ اليوم | **42** | AC‑1.1…1.6، 1.9 · AC‑2.1…2.6 · AC‑3.1…3.5 · AC‑4.1…4.5 · AC‑5.1…5.8 · AC‑6.1…6.3 · AC‑7.3…7.6 · AC‑8.1…8.4 |
-| ✅ يدويّ نُفِّذ | **9** | AC‑1.7، AC‑7.7، AC‑7.8 (بلا حاوية) · AC‑4.6 (P‑2، حاويات الجولة 2) · AC‑2.7 (P‑1، الجولة 4) · AC‑1.8، AC‑4.8، AC‑5.9 (P‑3، الجولة 4) · AC‑4.9 (P‑4 على 10 أسئلة، الجولة 4) |
-| ⏳ مؤجَّل بشرط ش‑n | **13** | ش‑1: AC‑3.7، AC‑7.9 · ش‑2: AC‑3.6، AC‑7.1، AC‑7.2 · **ش‑3 (قرار المالك 2026‑10‑15): AC‑4.11، AC‑6.4** · ش‑4: AC‑4.7 · ش‑5: AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
+| ✅ يدويّ نُفِّذ | **10** | AC‑1.7، AC‑7.7، AC‑7.8 (بلا حاوية) · AC‑4.6 (P‑2، حاويات الجولة 2) · AC‑2.7 (P‑1، الجولة 4) · AC‑1.8، AC‑4.8، AC‑5.9 (P‑3، الجولة 4) · AC‑4.9 (P‑4 على 10 أسئلة، الجولة 4) · AC‑4.11 (P‑5 بـ5 دقائق، الجولة 4) |
+| ⏳ مؤجَّل بشرط ش‑n | **12** | ش‑1: AC‑3.7، AC‑7.9 · ش‑2: AC‑3.6، AC‑7.1، AC‑7.2 · **ش‑3 (قرار المالك 2026‑10‑15): AC‑6.4** · ش‑4: AC‑4.7 · ش‑5: AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
 | 🔴 ناقص (بلا اختبار ولا إجراء) | **0** | — |
 
-المجموع 42 + 9 + 13 + 0 = 64، وكلّ معيارٍ في المصفوفة مرّة واحدة. (كان في الجولة 1: 42 آليّ · 3 يدويّ · 8 ⏸ · 11 ⏳.) ملاحظتان: (1) ش‑3 صارت ستّة معايير [أداة] مؤجّلة بقرار المالك لتوفير الاستعمال؛ الأداة مثبّتة وتُنفَّذ بعد الدمج بأوامر P‑3…P‑6 الجاهزة أدناه. (2) معايير ش‑5 الخمسة تحتاج خادماً حقيقيّاً (7.3) ولا يغني عنها شيءٌ هنا.
+المجموع 42 + 10 + 12 + 0 = 64، وكلّ معيارٍ في المصفوفة مرّة واحدة. (كان في الجولة 1: 42 آليّ · 3 يدويّ · 8 ⏸ · 11 ⏳.) ملاحظتان: (1) ش‑3 صارت ستّة معايير [أداة] مؤجّلة بقرار المالك لتوفير الاستعمال؛ الأداة مثبّتة وتُنفَّذ بعد الدمج بأوامر P‑3…P‑6 الجاهزة أدناه. (2) معايير ش‑5 الخمسة تحتاج خادماً حقيقيّاً (7.3) ولا يغني عنها شيءٌ هنا.
 
 ### 1.1 ما كتبتُه في C8
 
@@ -123,9 +123,9 @@
 | ش‑4 | أوّل إصدارٍ بعد الدمج (وسم `v2026.10.2` فما بعد) | الصور الثلاث برقمٍ واحد | AC‑4.7 |
 | ش‑5 | التجربة 7.3 على خادمٍ مستأجر | كلّ ما بقي | AC‑2.8، AC‑3.8، AC‑4.10، AC‑5.10، AC‑6.5 |
 
-### 1.3 الإثباتات P‑1…P‑6: P‑1 ✅ · P‑2 ✅ · P‑3 ✅ · P‑4 ✅ · P‑5 وP‑6 ⏸ مؤجّلتان إلى ش‑3
+### 1.3 الإثباتات P‑1…P‑6: P‑1 ✅ · P‑2 ✅ · P‑3 ✅ · P‑4 ✅ · P‑5 ✅ · P‑6 ⏸ مؤجّلة إلى ش‑3
 
-**الحالة:** P‑2 نُفِّذت (الجولة 2). P‑1 أخفقت بـ`0.13.5` (الجولة 2)، ومنعتها الذاكرة بـ`0.34.4` (الجولة 3)، ثمّ **✅ نجحت بـ`0.34.4` (الجولة 4)**. P‑3 وP‑4 **✅ (الجولة 4)**. P‑5 وP‑6 **⏸ مؤجّلتان إلى ش‑3 (قرار المالك 2026‑10‑15)**، ويُنفِّذها المنسّق هنا واحداً واحداً بطلب المالك. ما يلي أوامر جاهزة للتنفيذ، ولا تحتاج إلى `.env` ولا تمسّ المكدّس الحيّ.
+**الحالة:** P‑2 نُفِّذت (الجولة 2). P‑1 أخفقت بـ`0.13.5` (الجولة 2)، ومنعتها الذاكرة بـ`0.34.4` (الجولة 3)، ثمّ **✅ نجحت بـ`0.34.4` (الجولة 4)**. P‑3 وP‑4 وP‑5 **✅ (الجولة 4)**. P‑6 **⏸ مؤجّلة إلى ش‑3 (قرار المالك 2026‑10‑15)**، ويُنفِّذها المنسّق هنا واحداً واحداً بطلب المالك. ما يلي أوامر جاهزة للتنفيذ، ولا تحتاج إلى `.env` ولا تمسّ المكدّس الحيّ.
 
 | الإجراء | المعيار | الحالة |
 |---|---|---|
@@ -133,7 +133,7 @@
 | P‑2 | AC‑4.6: بناء صورة CUDA محلّيّاً، وحجمها، و`torch.version.cuda`، و`/health` بلا كرت، وحارس `EMB_REQUIRE_CUDA` | ✅ (الجولة 2) |
 | P‑3 | AC‑1.8 وAC‑4.8 وAC‑5.9: `--smoke`، و`/health` يقول `cuda`، و`size_vram == size`، و`nvidia-smi` من `app` | ✅ (الجولة 4) |
 | P‑4 | AC‑4.9: تطابق المتّجهات (`vector_parity.py compare`) | ✅ (الجولة 4، 10 أسئلة من 42 بطلب المالك) |
-| P‑5 | AC‑4.11: حمل 15 دقيقة على `embedding` وذاكرته القصوى (`vector_parity.py soak`) | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
+| P‑5 | AC‑4.11: حمل 15 دقيقة على `embedding` وذاكرته القصوى (`vector_parity.py soak`) | ✅ (الجولة 4، 5 دقائق بطلب المالك) |
 | P‑6 | AC‑6.4: حمل Ollama المتزامن مع حمل التضمين، وأعلى استعمال لذاكرة الكرت | ⏸ مؤجّلة إلى ش‑3 بعد الدمج (قرار المالك 2026‑10‑15) |
 
 #### نتيجة P‑1 (AC‑2.7): ✅ (الجولة 4)
@@ -197,13 +197,27 @@
 - بعدها: `docker rm -f parity-cpu parity-cuda` و`network rm aizzak-parity` ← rc 0. لا أحجام.
 - للمعيار حرفيّاً (42 سؤالاً) يكفي حذف خطوة التقليص: التشغيل كلّه أخذ 21 ثانية.
 
-#### ش‑3: P‑5 وP‑6 مؤجّلتان (قرار المالك 2026‑10‑15)
+#### نتيجة P‑5 (AC‑4.11): ✅ (الجولة 4، 5 دقائق)
+
+**2026‑10‑15، 09:17:33–09:22:43 UTC؛ نفّذها المنسّق بأوامر P‑5 أدناه على مشروع `aizzak-gpu-proof` (`up -d --wait embedding` ثمّ الحمل مباشرةً على `embedding:8080`)، بفرقين معلنين:**
+1. **5 دقائق لا 15، بطلب المالك** (`--minutes 5`، والتزامن 8 والدفعة 8 كما هي).
+2. **التركيب `/repo/tests/eval` لا `/eval`:** المحاولة الأولى بالأمر المكتوب أخفقت عند الاستيراد قبل أيّ حمل (B‑4 أدناه). `_REPO` لا يستعمله إلّا `build-set`، فتغيير التركيب لا يمسّ القياس. وصُحّح التركيب في أمرَي P‑5 وP‑6 أدناه.
+
+- قبل الحمل: `/health` ← `cuda`/`float16`؛ و`memory.peak` بعد الإقلاع 834,203,648 بايت؛ والحدّ 3,221,225,472.
+- الحمل: `duration_s` ‏300.2، و`requests_ok` ‏**7,672** و`requests_failed` ‏**0** (`errors` فارغ، `interrupted` false)، و61,376 نصّاً، و25.56 طلب/ث، والزمن p50 ‏0.312 ث وp95 ‏0.328 ث وp99 ‏0.347 ث والأقصى 0.610 ث. و`/health` بعده ← `cuda`/`float16`.
+- **الذاكرة:** `memory.peak` ‏**1,248,911,360 بايت (1.16 GiB)**، فالهامش 3,221,225,472 ÷ 1,248,911,360 = **2.58×** (المطلوب ≥ 1.5×)، والذروة دون 2,147,483,648، **فيبقى حدّ `3g` كما هو**. و`memory.events`: ‏`high 0`، `max 0`، `oom 0`، `oom_kill 0`. و`OOMKilled=false`، و`RestartCount` ‏0.
+- الكرت (60 عيّنة كلّ 5 ث): `memory.used` ثابت عند 1856 MiB، والاستعمال متوسّطه 34% وأقصاه 42%.
+- بعدها: `stop` للمشروع، بلا `-v`.
+
+**B‑4 (طفيف، أداة الاختبار):** `tests/eval/vector_parity.py:92` يحسب `_REPO = _HERE.parents[1]` عند الاستيراد، فيسقط بـ`IndexError: 1` كلّ أمرٍ يركّب `tests/eval` وحده على مجلّدٍ من مستوى واحد (`/eval`)، ومنه أمرا P‑5 وP‑6 كما كُتبا. الالتفاف: التركيب على `/repo/tests/eval`. الإصلاح (لـqa-engineer لاحقاً): حساب `_REPO` داخل `build_set` وحده، مع اختبارٍ يستورد الأداة من مجلّدٍ ضحل.
+
+#### ش‑3: P‑6 مؤجّلة (قرار المالك 2026‑10‑15)
 
 لم تُنفَّذ. الأدلّة الجزئيّة المتوفّرة الآن (لا تغني عن الإجراءات):
 - **المالك:** `deploy/gpu-preflight.sh --smoke` على `ed899de` ← الأسطر الخمسة OK، `rc=0` (يخصّ AC‑1.8).
 - **الجولة 2، `ollama` على ملفّ الكرت بلا نموذج (`s3-ollama-gpu.txt`):** `DeviceRequests=[{"Driver":"nvidia","Count":-1,…,"Capabilities":[["gpu"]]}]`؛ وسجلّ Ollama: `inference compute … library=CUDA compute=8.9 name=CUDA0 description="NVIDIA GeForce RTX 4060 Laptop GPU" driver=13.1` و`total vram="8.0 GiB"`؛ و`nvidia-smi` داخل الحاوية ← `1027 MiB, 8188 MiB`.
 - **الجولة 2، الخطوة 6 من P‑3 (`p3-app-smi.txt`):** `run --rm --no-deps app nvidia-smi --query-gpu=name,memory.used --format=csv` ← `NVIDIA GeForce RTX 4060 Laptop GPU, 1021 MiB`، rc 0.
-- **لم يُثبَت بعد:** حمل 15 د والذاكرة القصوى (AC‑4.11) · الحمل المتزامن (AC‑6.4).
+- **لم يُثبَت بعد:** الحمل المتزامن (AC‑6.4).
 
 **قبل البدء، وبعد كلّ إجراء:** (أ) `free -m | sed -n 2p` ← عمود `available` **≥ 5120**. (ب) لا حمل شغّال (`k6` ولا `deploy/load`)، والمكدّس الحيّ يعمل كما هو. (ج) أحجام المشاريع المنفصلة **تبقى** وحذفها يحتاج موافقة (`CLAUDE.md`). (د) لا منفذ منشور إلّا `127.0.0.1` في P‑4. ولا `-v` في أيّ `down`.
 
@@ -288,8 +302,8 @@ docker rm -f parity-cpu parity-cuda && docker network rm aizzak-parity
 
 ```bash
 docker network ls --format '{{.Name}}' | grep aizzak-gpu-proof          # the project's network name
-docker run --rm --network aizzak-gpu-proof_default -v /home/AIZZAK/tests/eval:/eval:ro python:3.12-slim \
-  python /eval/vector_parity.py soak --url http://embedding:8080 --minutes 15 --concurrency 8 --batch 8 | tee "$SCRATCH/soak.json"
+docker run --rm --network aizzak-gpu-proof_default -v /home/AIZZAK/tests/eval:/repo/tests/eval:ro python:3.12-slim \
+  python /repo/tests/eval/vector_parity.py soak --url http://embedding:8080 --minutes 15 --concurrency 8 --batch 8 | tee "$SCRATCH/soak.json"
 docker exec aizzak-gpu-proof-embedding-1 cat /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.events
 docker inspect --format '{{.State.OOMKilled}}' aizzak-gpu-proof-embedding-1     # false
 # the limit is 3g = 3221225472: it stays if peak x 1.5 <= 3221225472 (peak <= 2147483648), else the rule in
@@ -398,8 +412,8 @@ sys.exit(0 if out["pass"] else 1)
 EOF
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader -l 1 > "$OUT/vram.csv" & SMI=$!
 docker run --rm --network $NET -v "$OUT:/out:ro" python:3.12-slim python /out/ps_sampler.py http://ollama:11434 630 10 > "$OUT/ps.jsonl" & PS=$!
-docker run --rm --network $NET -v /home/AIZZAK/tests/eval:/eval:ro python:3.12-slim \
-  python /eval/vector_parity.py soak --url http://embedding:8080 --minutes 10 > "$OUT/soak.json" & SOAK=$!
+docker run --rm --network $NET -v /home/AIZZAK/tests/eval:/repo/tests/eval:ro python:3.12-slim \
+  python /repo/tests/eval/vector_parity.py soak --url http://embedding:8080 --minutes 10 > "$OUT/soak.json" & SOAK=$!
 docker run --rm --network $NET -v "$OUT:/out:ro" python:3.12-slim python /out/gen_load.py http://ollama:11434 4 10 > "$OUT/gen.json"
 wait $SOAK $PS; kill $SMI
 $G logs ollama | grep -iE 'offload|cpu' > "$OUT/offload.txt"; true
