@@ -43,11 +43,11 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 from starlette.testclient import TestClient
 
 from app.api.health import _DEFAULT_DRAIN_WINDOW_S, _MAX_DRAIN_WINDOW_S
 from app.framework.streaming import ConnectionHub
+from tests.unit.support_compose import load_compose
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.test_api_app_shell import _make_app
 
@@ -226,7 +226,7 @@ def test_the_app_healthcheck_probes_readiness_not_liveness() -> None:
     'startup done', which is the signal a rolling deploy actually needs" --
     while the compose healthcheck asked for the other one. `/health` answers
     200 from a process that has bound its socket and finished nothing else."""
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     probe = " ".join(str(part) for part in compose["services"]["app"]["healthcheck"]["test"])
 
     assert "/health/ready" in probe, (
@@ -528,3 +528,16 @@ def test_a_service_with_no_healthcheck_is_refused(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "no healthcheck" in result.stderr
     assert not any(c[:2] == ["compose", "up"] for c in calls)
+
+
+def test_the_target_count_comes_from_running_containers() -> None:
+    """AC-1.7: replica counts are variables now, and the roll must not read them.
+    The script's target is however many replicas are running."""
+    lines = [
+        ln
+        for ln in _SCRIPT.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    code = "\n".join(lines)
+    assert "replicas:" not in code and "safe_load" not in code
+    assert 'TARGET="${#OLD[@]}"' in code

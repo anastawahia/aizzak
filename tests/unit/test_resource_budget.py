@@ -54,7 +54,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tests.unit.support_compose import (
+    MODE_PROFILES,
+    SIZES,
+    compose_bytes,
+    load_compose,
+    read_size,
+    size_compose,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -75,35 +85,29 @@ _REFERENCE_HOST_GB = 64.0
 _MEMORY_HEADROOM_GB = 6.4
 
 _GB = 1024**3
-_SUFFIX = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 
 
-def _to_bytes(raw: object) -> int:
-    """Compose's own size grammar -- a bare integer is bytes, otherwise one of
-    b/k/m/g with an optional trailing `b`. Shared with the script, which parses
-    the same keys; `test_the_script_and_this_module_agree` is what keeps the
-    two implementations from answering differently."""
-    text = str(raw).strip().lower().removesuffix("b") or "0"
-    if text[-1] in _SUFFIX:
-        return int(float(text[:-1]) * _SUFFIX[text[-1]])
-    return int(float(text))
+_to_bytes = compose_bytes
 
 
 def _compose() -> dict:
-    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    return load_compose()
 
 
 def _limits(service: dict) -> dict:
     return ((service.get("deploy") or {}).get("resources") or {}).get("limits") or {}
 
 
-def _classify() -> tuple[dict, dict, dict]:
-    """standing / one-shot / profiled, by the same two keys the script reads."""
+def _classify(
+    compose: dict | None = None, profiles: frozenset[str] = frozenset()
+) -> tuple[dict, dict, dict]:
+    """standing / one-shot / profiled, by the same two keys the script reads.
+    A profile in `profiles` is enabled, so its services are classified by `restart`."""
     standing, oneshot, profiled = {}, {}, {}
-    for name, service in _compose()["services"].items():
+    for name, service in (compose or _compose())["services"].items():
         target = (
             profiled
-            if service.get("profiles")
+            if set(service.get("profiles") or ()) - profiles
             else oneshot
             if service.get("restart") == "no"
             else standing
@@ -262,6 +266,25 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_size(size: str, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(_SCRIPT), "--size", size, *args],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env={**os.environ, "COMPOSE_FILE": str(_COMPOSE), **env},
+        check=False,
+    )
+
+
+def _size_totals(size: str) -> tuple[float, float, float]:
+    parsed = read_size(size)
+    compose = size_compose(parsed)
+    standing, _, _ = _classify(compose, MODE_PROFILES[parsed.mode])
+    cpus, memory_gb = _totals(standing)
+    return cpus, memory_gb, parsed.host_memory_gb
+
+
 def test_the_script_and_this_module_agree() -> None:
     """Two implementations of one sum, which is the point: the script is what
     an operator runs and this module is what CI runs, and a ledger that two
@@ -370,3 +393,82 @@ def test_the_patterns_actually_find_something() -> None:
     assert _to_bytes("2g") == 2 * 1024**3
     assert _SCRIPT.exists() and _SCRIPT.stat().st_mode & 0o111, "the script is not executable"
     assert sys.version_info >= (3, 11)
+
+
+# ------------------------------------------------------------------ sizes --
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_the_script_and_this_module_agree_per_size(size: str) -> None:
+    cpus, memory_gb, _ = _size_totals(size)
+    parsed = read_size(size)
+    done = _run_size(
+        size, "--host-cpus", str(parsed.host_cpus), "--host-memory-gb", str(parsed.host_memory_gb)
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert f"{cpus:6.2f} vCPU  {memory_gb:7.2f} GB" in done.stdout, done.stdout
+    assert f"size {size} (" in done.stdout and f"mode {parsed.mode}" in done.stdout
+
+
+def test_the_script_refuses_an_unknown_or_missing_size() -> None:
+    unknown = _run_size("huge")
+    assert unknown.returncode == 2
+    assert "unknown size 'huge'; available: large medium small" in unknown.stderr
+    for args in (["--size"], ["--size", "--host-cpus", "1"]):
+        done = subprocess.run(
+            ["bash", str(_SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+            check=False,
+        )
+        assert done.returncode == 2, args
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_every_size_fits_the_host_its_header_names(size: str) -> None:
+    assert pytest.approx(_REFERENCE_HOST_GB * 0.10) == _MEMORY_HEADROOM_GB
+    _, memory_gb, host_gb = _size_totals(size)
+    assert memory_gb <= host_gb * 0.9, f"{size}: {memory_gb:.2f} GB over {host_gb * 0.9:.2f}"
+
+
+def test_a_size_over_its_host_fails_naming_it(tmp_path: Path) -> None:
+    source = read_size("medium")
+    _, memory_gb, host_gb = _size_totals("medium")
+    allowed = host_gb * 0.9
+    qdrant_gb = compose_bytes(source.values["QDRANT_MEM"]) / _GB
+    # raise qdrant until the total is `allowed` + 0.1 GB (in whole MB so Compose parses it)
+    new_mb = round((qdrant_gb + (allowed - memory_gb) + 0.1) * 1024)
+    text = source.path.read_text(encoding="utf-8").replace(
+        f"QDRANT_MEM={source.values['QDRANT_MEM']}", f"QDRANT_MEM={new_mb}m"
+    )
+    (tmp_path / "medium.env").write_text(text, encoding="utf-8")
+
+    over = read_size(tmp_path / "medium.env")
+    compose = size_compose(over)
+    standing, _, _ = _classify(compose, MODE_PROFILES[over.mode])
+    assert _totals(standing)[1] > allowed
+
+    done = _run_size(
+        "medium",
+        "--host-cpus",
+        str(source.host_cpus),
+        "--host-memory-gb",
+        str(source.host_memory_gb),
+        SIZES_DIR=str(tmp_path),
+    )
+    assert done.returncode == 1, done.stdout
+    assert "size medium" in done.stdout and "0.10 GB over" in done.stdout
+
+
+def test_the_runbook_size_table_carries_the_numbers_this_module_computes() -> None:
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    for size in SIZES:
+        cpus, memory_gb, host_gb = _size_totals(size)
+        host = read_size(size)
+        row = (
+            rf"^\|\s*`{size}`\s*\|\s*{host.mode}\s*\|\s*{host.host_cpus:.0f} / "
+            rf"{host.host_memory_gb:.0f}\s*\|\s*{cpus:.2f}\s*\|\s*{memory_gb:.2f}\s*\|\s*"
+            rf"{host_gb * 0.9:.2f}\s*\|"
+        )
+        assert re.search(row, text, re.M), f"08 §2-ز size table has no correct row for {size}"

@@ -516,6 +516,7 @@ deploy: {resources: {limits: {cpus: "6.0", memory: 20G}}}
 deploy/resource-budget.sh                              # مقابل هذا المضيف
 deploy/resource-budget.sh --host-cpus 32 --host-memory-gb 64   # مقابل مضيف §6
 deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull وollama-bridge
+deploy/resource-budget.sh --size large                 # حجمٌ من deploy/sizes/ (هامش ذاكرةٍ 10٪)
 ```
 
 **وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
@@ -535,6 +536,17 @@ ports:           النسخةُ 1 عملت، والنسخةُ 2: "Bind for 0.0.0
 والثاني هو الذي يستحقّ حارساً: `app` خدمةُ `expose` فقط، والحافّةُ تصلها **بالاسم** عبر `resolver` لا عبر `upstream` (قرارُ `7.1` الذي أعادت `3.2` تأكيدَه حيّاً) — وهو بعينه ما جعل `3.4` تضيف النسخَ **بلا لمسِ حرفٍ في `deploy/nginx/`**. منفذٌ منشورٌ يُضاف هنا لاحقاً سيبدو تسهيلاً وسيُنصّف الأسطولَ صامتاً.
 
 **وما يحجز ذاكرةَ الكرت (لا ذاكرةَ المضيف) جدولُه في `§2‑ي`** (‏`gpu-compose` 2.6): هذا الدفترُ يعدّ سقوفَ المضيف وحدها، وذاكرةُ الكرت حسابٌ آخر لا يدخل مجموعَه.
+
+
+**الأحجام (الخطوة `3.1`–`3.4` من خطّة خادم الكرت).** كلّ سقفٍ في `docker-compose.yml` صار `${<الخدمة>_CPUS|_MEM|_REPLICAS:-<رقم اليوم>}`، وملفّ `deploy/sizes/<الحجم>.env` يعطي قيماً أخرى بـ`--env-file`. القيم الافتراضيّة هي أرقام اليوم، فلا يتغيّر شيءٌ دون ملفّ. والأحجام الثلاثة كلّها بوضع الكرت (الملفّ الأساسيّ + `docker-compose.gpu.yml` + profile `local-llm`)، و`small` للتجربة فقط بسقوفٍ تحت ذروتها المقيسة ويُقبل فيه خطر `OOMKilled`. والمسموح = ذاكرة الخادم × 0.9.
+
+| الحجم | الوضع | الخادم (vCPU / GB) | vCPU | GB | المسموح (−10٪) |
+|---|---|---|---|---|---|
+| `large` | gpu | 32 / 64 | 37.60 | 57.53 | 57.60 |
+| `medium` | gpu | 16 / 32 | 19.35 | 28.41 | 28.80 |
+| `small` | gpu | 8 / 16 | 11.50 | 14.22 | 14.40 |
+
+**ميزانيّة خادم `ollama` (FR‑12):** تُحسب هنا لا في الدفتر المرجعيّ؛ فهي داخل هذه المجاميع لأنّ وضع الكرت يفعّل `local-llm` (`ollama` دائمة و`ollama-pull` مرّةً واحدة فلا تُعدّ). وكتلة `resources.*` أعلاه (35.60 و57.28) تبقى لوضع المعالج. أرقام `medium` و`small` مشتقّة وتُقاس في `7.3`.
 
 ### 2‑ح أسطولُ التضمين ومُوازِنُه — كيف يُرى التوزّع، وكيف يُعاد إلى نسخةٍ واحدة (خطّة السعة · الخطوتان `4.1` و`4.2`)
 

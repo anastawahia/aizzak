@@ -49,11 +49,10 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 
-import yaml
-
 from app.framework.settings import EventSettings, Limits
 from app.infrastructure.config import load_settings
 from app.workers.bootstrap import knowledge_stale_idle_ms
+from tests.unit.support_compose import load_compose
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -133,7 +132,7 @@ def _compose() -> dict[str, object]:
     # PyYAML resolves the `<<: [*app-env, *worker-env]` merge keys, so what
     # comes back per service is what Compose itself resolves -- verified
     # against `docker compose config` in §3.133.
-    return yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    return load_compose()
 
 
 def _compose_worker_services() -> dict[str, dict]:

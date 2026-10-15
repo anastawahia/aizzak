@@ -28,7 +28,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import yaml
+import pytest
+
+from tests.unit.support_compose import SIZES, compose_bytes, load_compose, read_size
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -62,7 +64,7 @@ _NOT_THE_TUNINGS = ("shared_preload_libraries", "archive_mode", "archive_command
 
 
 def _postgres_service() -> dict[str, object]:
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    compose = load_compose()
     return compose["services"]["postgres"]
 
 
@@ -236,3 +238,74 @@ def test_the_memory_limit_covers_what_these_knobs_can_actually_ask_for() -> None
         f"for {unambiguous}g -- before a single work_mem grant. `autovacuum_work_mem` "
         "is -1, which means autovacuum takes maintenance_work_mem PER WORKER."
     )
+
+
+# ------------------------------------------------------------ per-size files --
+
+_SIZE_CONFS = _REPO_ROOT / "deploy" / "postgres" / "sizes"
+_SIZE_KEYS = ("shared_buffers", "effective_cache_size", "maintenance_work_mem", "work_mem")
+_PG_UNITS = {"kB": 1024, "MB": 1024**2, "GB": 1024**3}
+
+
+def _pg_bytes(raw: str) -> int:
+    match = re.fullmatch(r"(\d+)(kB|MB|GB)", raw)
+    assert match, f"not a Postgres memory value: {raw!r}"
+    return int(match.group(1)) * _PG_UNITS[match.group(2)]
+
+
+def _size_lines(text: str) -> list[str]:
+    return [
+        ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def _size_settings(text: str) -> dict[str, str]:
+    return {
+        m.group(1): m.group(2)
+        for ln in _size_lines(text)
+        if (m := re.match(r"^([a-z_]+)\s*=\s*(\S+)$", ln))
+    }
+
+
+def _fit_problem(size: str, text: str) -> str | None:
+    """shared_buffers + (3 autovacuum workers + 1 manual) x maintenance_work_mem
+    must stay under the container limit, the same floor as the 2.1 test."""
+    values = read_size(size).values
+    limit = compose_bytes(values["POSTGRES_MEM"])
+    settings = _size_settings(text)
+    floor = _pg_bytes(settings["shared_buffers"]) + 4 * _pg_bytes(settings["maintenance_work_mem"])
+    if floor >= limit:
+        return f"size {size}: {floor / 1024**3:.2f} GB asked, POSTGRES_MEM {values['POSTGRES_MEM']}"
+    return None
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_each_size_file_includes_the_base_first_and_sets_only_memory(size: str) -> None:
+    text = (_SIZE_CONFS / f"{size}.conf").read_text(encoding="utf-8")
+    lines = _size_lines(text)
+    assert lines[0] == "include '/etc/postgresql/postgresql.conf'"
+    assert tuple(_size_settings(text)) == _SIZE_KEYS
+    assert len(lines) == 1 + len(_SIZE_KEYS)
+
+
+def test_the_sizes_directory_is_mounted_read_only() -> None:
+    volumes = [str(v) for v in _postgres_service()["volumes"]]  # type: ignore[index]
+    assert "./deploy/postgres/sizes:/etc/postgresql/sizes:ro" in volumes
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_each_size_fits_its_postgres_container(size: str, tmp_path: Path) -> None:
+    text = (_SIZE_CONFS / f"{size}.conf").read_text(encoding="utf-8")
+    assert _fit_problem(size, text) is None
+    inflated = re.sub(r"shared_buffers = \S+", "shared_buffers = 64GB", text)
+    problem = _fit_problem(size, inflated)
+    assert problem is not None and size in problem
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_each_size_stays_inside_its_host_and_shm(size: str) -> None:
+    parsed = read_size(size)
+    settings = _size_settings((_SIZE_CONFS / f"{size}.conf").read_text(encoding="utf-8"))
+    assert _pg_bytes(settings["effective_cache_size"]) < parsed.host_memory_gb * 1024**3
+    shm = compose_bytes(str(_postgres_service()["shm_size"]))
+    assert _pg_bytes(settings["maintenance_work_mem"]) <= shm  # ق-3: <=, large is equal today
