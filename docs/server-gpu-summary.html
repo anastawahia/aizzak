@@ -255,14 +255,15 @@
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: أربعٌ مكتملة وأربعٌ وعشرون لم تبدأ">
-      <span class="s-done" style="flex:4">٤ مكتملة</span>
-      <span class="s-pending" style="flex:24">٢٤ لم تبدأ</span>
+    <div class="bar" role="img" aria-label="ثمانٍ وعشرون خطوة: خمسٌ مكتملة وخمسٌ جارية وثماني عشرة لم تبدأ">
+      <span class="s-done" style="flex:5">٥ مكتملة</span>
+      <span class="s-partial" style="flex:5">٥ جارية</span>
+      <span class="s-pending" style="flex:18">١٨ لم تبدأ</span>
     </div>
     <div class="legend">
-      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٤</span>
-      <span><i class="k-partial"></i>جارية — ٠</span>
-      <span><i class="k-pending"></i>لم تبدأ — ٢٤</span>
+      <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٥</span>
+      <span><i class="k-partial"></i>جارية — ٥</span>
+      <span><i class="k-pending"></i>لم تبدأ — ١٨</span>
     </div>
   </section>
 
@@ -367,15 +368,15 @@
     <div class="wave-head">
       <span class="wave-num">المرحلة ٢</span>
       <h2>الكرت يعمل فعلاً</h2>
-      <span class="wave-score">٠ من ٦</span>
+      <span class="wave-score">١ من ٦</span>
     </div>
-    <p class="wave-note">هي سبب استئجار خادمٍ بكرت. اليوم لا تستعمل أيّ خدمةٍ في المكدّس الكرت، والنموذج اللغويّ يُنتظَر على جهاز المالك، فلا تعمل المحادثة على خادمٍ جديد أصلاً.</p>
+    <p class="wave-note"><b>دُمجت في ١٥ أكتوبر ٢٠٢٦ (PR ‎#7).</b> ملفّ الكرت وخدمة النموذج اللغويّ وصورة التضمين على الكرت كلّها في المستودع، وأُثبتت على كرت جهاز التطوير. الباقي يُقاس على الخادم المستأجر (التجربة ٧٫٣). هي سبب استئجار خادمٍ بكرت. اليوم لا تستعمل أيّ خدمةٍ في المكدّس الكرت، والنموذج اللغويّ يُنتظَر على جهاز المالك، فلا تعمل المحادثة على خادمٍ جديد أصلاً.</p>
     <div class="steps">
 
-      <article class="step pending">
+      <article class="step done">
         <div class="step-id">٢٫١</div>
         <div class="step-body">
-          <div class="step-title"><h3>متطلّبات الخادم</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>متطلّبات الخادم</h3><span class="tag done">مكتملة · ١٥ أكتوبر ٢٠٢٦</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>تعريف الكرت، وأداةٌ تربط Docker به. تُكتب خطوات تثبيتهما في الدليل، وسكربت التثبيت يفحصهما ولا يثبّتهما، لأنّ تثبيتهما يختلف من نظامٍ لآخر.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>حاويةٌ تجريبيّة على الخادم ترى الكرت.</dd></div>
@@ -383,10 +384,10 @@
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٢٫٢</div>
         <div class="step-body">
-          <div class="step-title"><h3>النموذج اللغويّ داخل المكدّس</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>النموذج اللغويّ داخل المكدّس</h3><span class="tag partial">مدموجة · تنتظر الخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>خدمة Ollama برقم إصدارٍ ثابت، وقرصٌ دائمٌ للنماذج، وسحب النموذج مرّةً واحدة عند أوّل تشغيل. لا يصل إليها أحدٌ من خارج المكدّس.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>محادثةٌ تكتمل على خادمٍ جديد دون أيّ تثبيتٍ يدويّ.</dd></div>
@@ -394,10 +395,10 @@
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٢٫٣</div>
         <div class="step-body">
-          <div class="step-title"><h3>إخراج جسر جهاز المالك من المسار العامّ</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>إخراج جسر جهاز المالك من المسار العامّ</h3><span class="tag partial">مدموجة · تنتظر سطر .env والخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>خدمةٌ صغيرة تصل المكدّس بالنموذج على جهاز المالك، والتطبيق يعتمد عليها اليوم. تصير اختياريّة، ويشغّلها جهاز المالك بسطرٍ في إعداده المحلّيّ.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>على جهاز المالك يعمل كلّ شيءٍ كما اليوم، وعلى الخادم لا يظهر الجسر.</dd></div>
@@ -405,10 +406,10 @@
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٢٫٤</div>
         <div class="step-body">
-          <div class="step-title"><h3>التضمين على الكرت</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>التضمين على الكرت</h3><span class="tag partial">مدموجة · تنتظر قرار حجم الصورة والخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>خدمة التضمين تعرف الكرت أصلاً، والناقص نسخة المكتبة التي تستعمله. صورةٌ ثانية للتضمين تحملها، ويُقاس حجمها قبل اعتمادها.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>نتائج البحث على الكرت مثلها على المعالج في مجموعة التقييم. فالحساب على الكرت أقلّ دقّةً بقليل، ولا يُفترض أنّ ذلك لا يغيّر شيئاً.</dd></div>
@@ -416,10 +417,10 @@
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٢٫٥</div>
         <div class="step-body">
-          <div class="step-title"><h3>ملفّ الكرت</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>ملفّ الكرت</h3><span class="tag partial">مدموجة · تنتظر الخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>كلّ ما يخصّ الكرت في ملفٍّ إضافيّ، فيبقى المكدّس يعمل على خادمٍ بلا كرت. فيه: النموذج على الكرت، ونسخة تضمينٍ واحدة على الكرت بدل ثلاثٍ على المعالج، وصفحة مراقبة النظام تقرأ الكرت.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>الخادم يُظهر النموذج والتضمين على الكرت، وصفحة مراقبة النظام تعرضه.</dd></div>
@@ -427,10 +428,10 @@
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٢٫٦</div>
         <div class="step-body">
-          <div class="step-title"><h3>ذاكرة الكرت واختيار النموذج</h3><span class="tag pending">لم تبدأ · تنتظر قرار ٣</span></div>
+          <div class="step-title"><h3>ذاكرة الكرت واختيار النموذج</h3><span class="tag partial">مدموجة · تنتظر الخادم</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>النموذج والتضمين يتقاسمان ذاكرة الكرت. يُختار النموذج على قدر الكرت، ويبقى النموذج الحاليّ الصغير حتّى يُقاس غيره.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>تحت محادثاتٍ متزامنة وفهرسةٍ في الوقت نفسه، تبقى ذاكرة الكرت تحت ٩٠٪، ولا ينتقل النموذج إلى المعالج.</dd></div>
