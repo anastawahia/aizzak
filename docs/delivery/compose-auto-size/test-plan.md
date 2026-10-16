@@ -33,7 +33,7 @@
 | AC‑3.7 | وحدة | ::test_dry_run_writes_nothing | ✅ |
 | AC‑4.1 | وحدة | ::test_the_budget_script_agrees_with_the_generator | ✅ |
 | AC‑4.2 | وحدة | ::test_the_budget_script_refuses_an_edited_block | ✅ |
-| AC‑4.3 | وحدة+يدوي | ::test_without_a_block_the_budget_is_the_reference_ledger + (جديد) test_the_named_size_files_match_master + مقارنة يدويّة لمخرج resource-budget.sh مع نسخة master (§3) | ✅ |
+| AC‑4.3 | وحدة+يدوي | ::test_without_a_block_the_budget_is_the_reference_ledger + مقارنة يدويّة (حُذف اختبار test_the_named_size_files_match_master؛ الدليل الآن مخرج `git diff --exit-code` في وصف الـPR، مع مقارنة لمخرج resource-budget.sh مع نسخة master §3) | ✅ |
 | AC‑5.1 | وحدة | ::test_dev_role_on_the_development_host_writes_a_dev_block | ✅ |
 | AC‑5.2 | وحدة | ::test_server_role_refuses_the_development_host | ✅ |
 | AC‑5.3 | وحدة | ::test_dev_floors_hold_and_never_pass_large | ✅ |
@@ -113,5 +113,17 @@ AC‑6.3 الزمن: `test_auto_size.py` و`test_auto_size_edges.py` معاً 12
 **الأخطاء:** BUG‑1 وBUG‑2 وBUG‑3 مُغلقة (مُتحقَّق منها). لا أخطاء جديدة.
 
 **الحكم (الجولة 1): PASS.**
+
+## الجولة 2 (إعادة اختبار بعد e05804a)
+
+**استكشافي (نسخ مؤقّتة، قيم حارسة لم تظهر في أي مخرج):** مفتاح حدّ متعارض بالأشكال `KEY: v` و`KEY:v` و`KEY : v` و`export KEY: v` و`export KEY : v` يُرفض برمز 3 بالاسم (#13). `COMPOSE_FILE` بأربعة أشكال (`: ` و`:` بلا مسافة و` : ` و`export`) يكتشف gpu (#13). فشل الاستبدال الثاني (`os.replace` على `.env`) يعطي رمز 3 برسالة تسمّي `.env` الحقيقيّ وتقول «auto.conf was put back» بلا Traceback، والملفّان متطابقان بايتاً (sha) ولا بقايا `.auto-size-tmp-*` (#14، #16). إعادة كتابة `.env` تعطي inode جديداً ووقت تعديل جديداً (بعد ضبطه على 2001) مع بقاء الصلاحيّات 0640 والمجموعة (#15).
+
+**التصحيح #18:** صفّ AC‑4.3 لم يعد يشير إلى الاختبار المحذوف؛ الدليل مخرج `git diff --exit-code` في وصف الـPR.
+
+**البوّابات:** ruff format 820 ملفّاً 0؛ ruff check 0؛ mypy 467 ملفّاً 0؛ lint-imports 8 kept 0؛ pytest unit+architecture+eval **5758 ناجحاً، 0 تخطٍّ** (رمز 0، 163 s)؛ test-rules.sh OK (27 قاعدة) رمز 0.
+
+**الأخطاء:** لا جديدة؛ #13 و#14 و#15 و#16 و#18 مُتحقَّق منها.
+
+**الحكم (الجولة 2): PASS.**
 
 </div>
