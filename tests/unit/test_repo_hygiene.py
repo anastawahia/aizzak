@@ -82,6 +82,8 @@ _MUST_BE_IGNORED: tuple[str, ...] = (
     "Thumbs.db",
     "desktop.ini",
     ".DS_Store",
+    "deploy/postgres/sizes/auto.conf",
+    "deploy/postgres/sizes/auto.conf.tmp1",
 )
 # The mirror: over-broad ignore rules silently drop real files from `git add`,
 # which is how content disappears without anyone noticing.
@@ -89,6 +91,7 @@ _MUST_NOT_BE_IGNORED: tuple[str, ...] = (
     ".env.example",
     "docs/ROADMAP.md",
     "docs/log/INDEX.md",
+    "deploy/postgres/sizes/large.conf",
     "pyproject.toml",
     "src/app/api/main.py",
     "tests/unit/test_repo_hygiene.py",

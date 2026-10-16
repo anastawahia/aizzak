@@ -21,6 +21,9 @@ venv/
 .env.local
 .env.save
 *.local
+# Written per machine by deploy/auto_size.py (and its temp files), pointed at by the
+# "aizzak auto-size" block in .env: a generated file, never content (compose-auto-size, Q-10).
+/deploy/postgres/sizes/auto.conf*
 
 # Build / dist
 build/
