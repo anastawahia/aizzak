@@ -33,6 +33,9 @@ htmlcov/
 !.env.example
 !.env.test.example
 *.local
+# Written per machine by deploy/auto_size.py (and its temp files); never baked into an image.
+deploy/postgres/sizes/auto.conf*
+**/.auto-size-tmp-*
 
 # Load-test accounts, tokens, seeds and results -- real development users'
 # credentials and data. `deploy/runpod/Dockerfile` copies `deploy/` whole, so
