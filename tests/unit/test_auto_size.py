@@ -64,12 +64,12 @@ az = _load()
 # ------------------------------------------------------------------ fixtures --
 
 
-def _stat_of(path: Path) -> tuple[bool, int, int]:
+def _stat_of(path: Path) -> tuple[bool, int, int, int]:
     try:
         info = path.stat()
     except FileNotFoundError:
-        return (False, 0, 0)
-    return (True, info.st_mtime_ns, info.st_size)
+        return (False, 0, 0, 0)
+    return (True, info.st_mtime_ns, info.st_size, info.st_ino)
 
 
 @pytest.fixture(autouse=True)
@@ -342,6 +342,16 @@ def test_gpu_mode_comes_from_compose_file(tree: Tree, run: Run) -> None:
     assert "memory_gb=64 mode=gpu" in tree.text()
 
 
+@pytest.mark.parametrize("sep", [": ", ":", " : "])
+def test_detect_reads_the_colon_spelling(sep: str) -> None:
+    dotenv = (
+        f"COMPOSE_FILE{sep}docker-compose.yml:docker-compose.gpu.yml\nCOMPOSE_PROFILES{sep}backup\n"
+    )
+    mode, profiles, _ = az.detect(dotenv, {}, None, None)
+    assert mode == "gpu"
+    assert profiles == frozenset({"backup"}) & az._known_profiles()
+
+
 def test_detection_order_is_flag_then_environment_then_dotenv() -> None:
     dotenv = "COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml\nCOMPOSE_PROFILES=backup\n"
     assert az.detect(dotenv, {}, None, None)[:2] == ("gpu", frozenset({"backup"}))
@@ -521,6 +531,26 @@ def test_a_conflicting_key_outside_the_block_is_refused_by_name(
     assert tree.sha() == before
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "QDRANT_MEM=6543m",
+        "QDRANT_MEM: 6543m",
+        "QDRANT_MEM:6543m",
+        "QDRANT_MEM : 6543m",
+        "export QDRANT_MEM: 6543m",
+    ],
+)
+def test_every_spelling_of_a_conflicting_key_is_refused(tree: Tree, run: Run, line: str) -> None:
+    # Compose reads `KEY: value` (also without a space, or after blanks) like `KEY=value`.
+    tree.env.write_text(tree.text() + line + "\n", encoding="utf-8")
+    before = tree.sha()
+    code, _, err = run("--host-cpus", "16", "--host-memory-gb", "32")
+    assert code == 3
+    assert "QDRANT_MEM" in err and "6543m" not in err
+    assert tree.sha() == before
+
+
 def test_the_template_postgres_config_file_is_overridden_by_the_block(tree: Tree, run: Run) -> None:
     assert _TEMPLATE_CONF in tree.text()
     assert run("--host-cpus", "16", "--host-memory-gb", "32")[0] == 0
@@ -591,10 +621,87 @@ def test_a_failed_write_leaves_no_temp_file(
         raise OSError("disk full")
 
     monkeypatch.setattr(az.os, "replace", boom)
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(az.EnvRefused, match="Nothing changed"):
         az.write_pair((target, "B=2\n", 0o600), (tmp_path / "other", "C=3\n", 0o600))
     assert target.read_text(encoding="utf-8") == "A=1\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == [".env"]
+
+
+def _tmp_leftovers(tree: Tree) -> list[Path]:
+    return list(tree.root.rglob(f"{az.TEMP_PREFIX}*"))
+
+
+def _fail_second_replace(monkeypatch: pytest.MonkeyPatch, *, also_restore: bool = False) -> None:
+    real = az.os.replace
+    calls: list[int] = []
+
+    def flaky(src: Any, dst: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2 or (also_restore and len(calls) == 3):
+            raise OSError(13, "Permission denied", str(src))
+        real(src, dst)
+
+    monkeypatch.setattr(az.os, "replace", flaky)
+
+
+@pytest.mark.parametrize("had_conf", [False, True])
+def test_a_failed_second_replace_restores_the_pair(
+    tree: Tree, run: Run, monkeypatch: pytest.MonkeyPatch, had_conf: bool
+) -> None:
+    if had_conf:
+        assert run("--host-cpus", "16", "--host-memory-gb", "32")[0] == 0
+    before_env = tree.sha()
+    before_conf = tree.conf.read_bytes() if had_conf else None
+    _fail_second_replace(monkeypatch)
+    code, out, err = run("--host-cpus", "64", "--host-memory-gb", "128")
+    assert code == 3
+    assert "Traceback" not in err
+    assert az.TEMP_PREFIX not in err and az.TEMP_PREFIX not in out
+    assert str(tree.env) in err or ".env" in err
+    assert "nothing changed" in err.lower()
+    assert tree.sha() == before_env
+    if had_conf:
+        assert tree.conf.read_bytes() == before_conf
+    else:
+        assert not tree.conf.exists()
+    assert _tmp_leftovers(tree) == []
+
+
+def test_a_failed_restore_says_the_pair_no_longer_matches(
+    tree: Tree, run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert run("--host-cpus", "16", "--host-memory-gb", "32")[0] == 0
+    _fail_second_replace(monkeypatch, also_restore=True)
+    code, _, err = run("--host-cpus", "64", "--host-memory-gb", "128")
+    assert code == 3
+    assert "no longer match" in err and "do not restart postgres" in err
+    assert az.TEMP_PREFIX not in err and "Traceback" not in err
+    assert _tmp_leftovers(tree) == []
+
+
+def test_a_rewritten_file_gets_a_fresh_mtime(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    target.write_text("A=1\n", encoding="utf-8")
+    os.utime(target, (1_000_000_000, 1_000_000_000))
+    old = target.stat()
+    az.write_pair((target, "A=2\n", 0o600), (tmp_path / "other", "B=1\n", 0o600))
+    new = target.stat()
+    assert new.st_mtime_ns > old.st_mtime_ns
+    assert new.st_ino != old.st_ino
+
+
+def test_an_unrelated_oserror_is_not_blamed_on_env(
+    tree: Tree, run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_bash(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory", "bash")
+
+    monkeypatch.setattr(az.subprocess, "run", no_bash)
+    code, _, err = run("--host-cpus", "16", "--host-memory-gb", "32")
+    assert code == 3
+    assert "cannot read" not in err
+    assert "bash" in err
+    assert "Nothing was written" in err
 
 
 def _docker_ok() -> bool:

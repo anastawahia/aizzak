@@ -89,7 +89,10 @@ DEV_PEAKS_MIB: Final[Mapping[str, str]] = {
 }
 
 _INTERP = re.compile(r"\$\{([A-Z][A-Z0-9_]*):-([^}$]*)\}")
-_ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+# Compose reads `KEY=value` and `KEY: value` (blanks before the separator, or none after it, are
+# fine) in .env, with an optional `export`. Checked with `docker compose config` v5.3.1.
+# Known limit: an escaped quote inside a double-quoted value is not unescaped by _unquote.
+_ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:](.*)$")
 _NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
 _HOST_CPUS = re.compile(r"# host: cpus=([0-9.]+) ")
 _SUFFIX = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
@@ -651,6 +654,7 @@ def stage(path: Path, text: str, mode: int) -> Path:
         if path.exists():
             owner = path.stat()
             shutil.copystat(path, tmp)  # mode, flags and xattrs (so POSIX ACLs) travel along
+            os.utime(tmp)  # copystat also copied the old mtime; the rewrite is a change
             try:
                 os.chown(tmp, owner.st_uid if os.geteuid() == 0 else -1, owner.st_gid)
             except OSError:
@@ -666,17 +670,56 @@ def stage(path: Path, text: str, mode: int) -> Path:
     return tmp
 
 
+def _real(exc: OSError, fallback: Path) -> str:
+    """The path an OSError is about, never a temp file (it is deleted by the time anyone reads)."""
+    name = exc.filename
+    if not isinstance(name, str) or Path(name).name.startswith(TEMP_PREFIX):
+        return str(fallback)
+    return name
+
+
 def write_pair(first: tuple[Path, str, int], second: tuple[Path, str, int]) -> None:
-    """Replace two files so that a failure to prepare either leaves both as they were."""
+    """Replace two files so that a failure leaves both as they were (EnvRefused, exit 3).
+
+    Both are staged first. If replacing the second fails after the first succeeded, the first is
+    put back from a hard-link backup (or removed when it did not exist before)."""
     staged: list[Path] = []
+    backup: Path | None = None
     try:
         for path, text, mode in (first, second):
             staged.append(stage(path, text, mode))
-        for tmp, (path, _, _) in zip(staged, (first, second), strict=True):
-            os.replace(tmp, path)
+        if first[0].exists():
+            backup = first[0].parent / f"{TEMP_PREFIX}old-{os.getpid()}"
+            backup.unlink(missing_ok=True)
+            os.link(first[0], backup)
+        try:
+            os.replace(staged[0], first[0])
+        except OSError as exc:
+            raise EnvRefused(
+                f"cannot write {_real(exc, first[0])} ({exc.strerror or exc})."
+                " Nothing changed; fix the cause and re-run."
+            ) from None
+        try:
+            os.replace(staged[1], second[0])
+        except OSError as exc:
+            reason = f"cannot write {_real(exc, second[0])} ({exc.strerror or exc})."
+            try:
+                if backup is not None:
+                    os.replace(backup, first[0])
+                    backup = None
+                else:
+                    first[0].unlink()
+            except OSError:
+                raise EnvRefused(
+                    f"{reason} {first[0].name} and {second[0].name} no longer match: do not"
+                    " restart postgres until a re-run succeeds."
+                ) from None
+            raise EnvRefused(f"{reason} {first[0].name} was put back; nothing changed.") from None
     finally:
         for tmp in staged:
             tmp.unlink(missing_ok=True)
+        if backup is not None:
+            backup.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- budget --
@@ -808,11 +851,10 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
             (conf_dir / CONF_RELATIVE.name, plan.conf, _PLAIN_CONF_MODE),
             (target, new_text, stat.S_IMODE(target.stat().st_mode)),
         )
-    except OSError as exc:
+    except OSError as exc:  # staging failed: nothing was replaced yet
         raise EnvRefused(
-            f"cannot write {exc.filename or env_path.name} ({exc.strerror}). Both files are staged"
-            " before either is replaced, so nothing changes unless the final rename failed:"
-            " fix the cause and re-run."
+            f"cannot write {_real(exc, env_path)} ({exc.strerror or exc})."
+            " Nothing changed; fix the cause and re-run."
         ) from None
     print(
         f"\nwrote {env_path} (auto-size block) and {conf_dir / CONF_RELATIVE.name}\n"
@@ -838,8 +880,9 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
         return EXIT_ENV
     except (OSError, UnicodeDecodeError) as exc:
         reason = getattr(exc, "strerror", None) or type(exc).__name__
+        what = exc.filename if isinstance(exc, OSError) and exc.filename else "its input"
         print(
-            f"auto-size: cannot read {env_path.name} ({reason}). Nothing was written.",
+            f"auto-size: cannot access {what} ({reason}). Nothing was written.",
             file=sys.stderr,
         )
         return EXIT_ENV
