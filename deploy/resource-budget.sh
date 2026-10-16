@@ -198,9 +198,12 @@ block_role = ""
 if block:
     block_path = Path(block)
     try:
-        block_lines = block_path.read_text(encoding="utf-8").splitlines()
+        block_lines = block_path.read_bytes().decode("utf-8").splitlines()
     except OSError as exc:
         usage_error(f"{block}: cannot read ({exc.strerror})")
+    except UnicodeDecodeError as exc:
+        bad = exc.object[: exc.start].count(b"\n") + 1
+        usage_error(f"{block}: line {bad} is not valid UTF-8")
     starts = [i for i, ln in enumerate(block_lines) if ln == BLOCK_START]
     ends = [i for i, ln in enumerate(block_lines) if ln == BLOCK_END]
     if not starts and not ends:
@@ -357,7 +360,7 @@ else:
 conf_value = values.get("POSTGRES_CONFIG_FILE", "") if block else ""
 if conf_value.startswith("/etc/postgresql/sizes/"):
     conf_name = conf_value.rsplit("/", 1)[1]
-    if not (block_path.resolve().parent / "deploy/postgres/sizes" / conf_name).is_file():
+    if not (block_path.absolute().parent / "deploy/postgres/sizes" / conf_name).is_file():
         print(
             f"\n  NO CONF   {conf_name} is missing beside {block}."
             "\n            Postgres would not start; re-run deploy/auto_size.py."

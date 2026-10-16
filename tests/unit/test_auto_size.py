@@ -592,7 +592,7 @@ def test_a_failed_write_leaves_no_temp_file(
 
     monkeypatch.setattr(az.os, "replace", boom)
     with pytest.raises(OSError, match="disk full"):
-        az.write_atomic(target, "B=2\n", 0o600)
+        az.write_pair((target, "B=2\n", 0o600), (tmp_path / "other", "C=3\n", 0o600))
     assert target.read_text(encoding="utf-8") == "A=1\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == [".env"]
 

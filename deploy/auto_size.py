@@ -30,6 +30,7 @@ import copy
 import math
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -56,10 +57,9 @@ DEV_ROUND_MIB: Final = 256
 REDIS_CACHE_OVERHEAD_MIB: Final = 768
 ECS_SHARE: Final = Fraction(3, 8)
 
-# The CPU ladder runs from `small` (8 vCPU) to `large` (32 vCPU), the two `# host:`
-# headers of deploy/sizes/{small,large}.env, in hundredths of a vCPU.
-_CC_FLOOR: Final = 800
-_CC_SPAN: Final = 2400
+MAX_HOST_CPUS: Final = 4096
+MAX_HOST_MEMORY_GB: Final = 4096
+TEMP_PREFIX: Final = ".auto-size-tmp-"  # one fixed, git- and docker-ignored name
 _GIB_MIB: Final = 1024
 _GB: Final = 1024**3
 _PLAIN_CONF_MODE: Final = 0o644
@@ -90,7 +90,8 @@ DEV_PEAKS_MIB: Final[Mapping[str, str]] = {
 
 _INTERP = re.compile(r"\$\{([A-Z][A-Z0-9_]*):-([^}$]*)\}")
 _ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
-_NUMBER = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+_NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
+_HOST_CPUS = re.compile(r"# host: cpus=([0-9.]+) ")
 _SUFFIX = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 _MEM = re.compile(r"^([0-9]+)([mg])$")
 _CONF_LINE = re.compile(r"^([a-z_]+)\s*=\s*([0-9]+)(MB|GB)$")
@@ -146,6 +147,19 @@ def _read_values(path: Path) -> dict[str, str]:
 def _ladder() -> tuple[dict[str, str], dict[str, str]]:
     sizes = REPO_ROOT / "deploy" / "sizes"
     return _read_values(sizes / "small.env"), _read_values(sizes / "large.env")
+
+
+@lru_cache(maxsize=1)
+def _cpu_ladder() -> tuple[int, int]:
+    """(floor, span) in hundredths of a vCPU: the `# host:` cpus of `small` and `large`."""
+    sizes = REPO_ROOT / "deploy" / "sizes"
+    ends = []
+    for name in ("small", "large"):
+        match = _HOST_CPUS.search((sizes / f"{name}.env").read_text(encoding="utf-8"))
+        if match is None:
+            raise ValueError(f"deploy/sizes/{name}.env has no '# host: cpus=' line")
+        ends.append(_cc(match.group(1)))
+    return ends[0], ends[1] - ends[0]
 
 
 def _conf_mib(path: Path) -> dict[str, int]:
@@ -259,9 +273,16 @@ def _standing_totals(
 
 
 def read_host(cpus: str | None, memory_gb: str | None) -> Host:
-    for flag, raw in (("--host-cpus", cpus), ("--host-memory-gb", memory_gb)):
-        if raw is not None and (not _NUMBER.match(raw) or float(raw) <= 0):
+    for flag, raw, top in (
+        ("--host-cpus", cpus, MAX_HOST_CPUS),
+        ("--host-memory-gb", memory_gb, MAX_HOST_MEMORY_GB),
+    ):
+        if raw is None:
+            continue
+        if not _NUMBER.fullmatch(raw) or float(raw) <= 0:
             raise UsageError(f"{flag} needs a positive number, got {raw!r}")
+        if not 1 <= float(raw) <= top:
+            raise UsageError(f"{flag} must be between 1 and {top}, got {raw!r}")
     if cpus is None:
         cpus = str(len(os.sched_getaffinity(0)))
     if memory_gb is None:
@@ -330,6 +351,7 @@ def _values(k: int, host: Host, role: Role, *, memory_bound_replicas: bool) -> d
     ones memory alone would allow, which is what the search for `k` has to budget for."""
     small, large = _ladder()
     host_cc = _cc(host.cpus)
+    cc_floor, cc_span = _cpu_ladder()
     cpu_replicas = math.floor(Fraction(host.cpus) / CPUS_PER_REPLICA)
     out: dict[str, str] = {}
     mem: dict[str, int] = {}
@@ -338,15 +360,15 @@ def _values(k: int, host: Host, role: Role, *, memory_bound_replicas: bool) -> d
         if key == "POSTGRES_CONFIG_FILE":
             out[key] = CONTAINER_CONF
         elif key.endswith("_CPUS"):
-            span = min(max(host_cc - _CC_FLOOR, 0), _CC_SPAN)
+            span = min(max(host_cc - cc_floor, 0), cc_span)
             lo, hi = _cc(low), _cc(big)
-            out[key] = _fmt_cpus(lo + (span * (hi - lo)) // _CC_SPAN)
+            out[key] = _fmt_cpus(lo + (span * (hi - lo)) // cc_span)
         elif key.endswith("_MEM"):
             mem[key] = _mem_mib(key, _mib(low), _mib(big), k, role)
             out[key] = _fmt_mib(mem[key])
         elif key.endswith("_REPLICAS"):
             lo, hi = int(low), int(big)
-            by_memory = lo + (2 * k * (hi - lo) + 1000) // 2000
+            by_memory = lo + (2 * k * (hi - lo) + STEPS) // (2 * STEPS)
             by_cpu = min(max(cpu_replicas, lo), hi)
             out[key] = str(by_memory if memory_bound_replicas else min(by_memory, by_cpu))
         elif key.endswith("_MAXMEMORY"):
@@ -492,17 +514,30 @@ def block_role(text: str) -> Role | None:
     span = find_block(text)
     if span is None:
         return None
-    for line in _lines(text)[span[0] : span[1] + 1]:
-        match = re.fullmatch(r"# role: (server|dev)", _bare(line))
-        if match:
-            return "dev" if match.group(1) == "dev" else "server"
+    for number, line in enumerate(_lines(text)[span[0] : span[1] + 1], start=span[0] + 1):
+        bare = _bare(line)
+        if not bare.startswith("# role:"):
+            continue
+        match = re.fullmatch(r"# role: (server|dev)", bare)
+        if match is None:
+            raise EnvRefused(
+                f"the auto-size block has a '# role:' line (.env line {number}) that is neither"
+                " server nor dev. Fix or delete the block by hand. Nothing was written."
+            )
+        return "dev" if match.group(1) == "dev" else "server"
     return None
 
 
 def _unquote(raw: str) -> str:
-    value = raw.strip()
-    quoted = re.fullmatch(r"""(['"])(.*)\1""", value)
-    return quoted.group(2) if quoted else value
+    """A value as Compose reads it: a quoted value ends at its closing quote (whatever follows
+    is ignored); an unquoted one ends at the first ' #'. Leading and trailing blanks go."""
+    value = raw.lstrip()
+    if value[:1] in ("'", '"'):
+        end = value.find(value[0], 1)
+        if end != -1:
+            return value[1:end]
+    cut = value.find(" #")
+    return (value if cut == -1 else value[:cut]).strip()
 
 
 def _outside(text: str) -> list[tuple[int, str]]:
@@ -603,30 +638,51 @@ def _template() -> dict[str, str]:
     return _read_values(path) if path.is_file() else {}
 
 
-def write_atomic(path: Path, text: str, mode: int) -> None:
-    """Temp file next to `path`, fsync, chmod, then os.replace. Never a half-written file."""
-    prefix = ".env.bak.auto-size-" if path.name.startswith(".env") else f"{path.name}."
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=prefix)
+def stage(path: Path, text: str, mode: int) -> Path:
+    """Write `text` to a temp file next to `path`: fsync, owner/group, ACL, mode. The caller
+    renames it with os.replace, or deletes it. `path` itself is not touched."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=TEMP_PREFIX)
     tmp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(tmp, mode)
-        if os.geteuid() == 0 and path.exists():
+        if path.exists():
             owner = path.stat()
-            os.chown(tmp, owner.st_uid, owner.st_gid)
-        os.replace(tmp, path)
+            shutil.copystat(path, tmp)  # mode, flags and xattrs (so POSIX ACLs) travel along
+            try:
+                os.chown(tmp, owner.st_uid if os.geteuid() == 0 else -1, owner.st_gid)
+            except OSError:
+                print(
+                    f"auto-size: warning: could not keep the group of {path.name}; check its"
+                    " group and mode.",
+                    file=sys.stderr,
+                )
+        os.chmod(tmp, mode)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    return tmp
+
+
+def write_pair(first: tuple[Path, str, int], second: tuple[Path, str, int]) -> None:
+    """Replace two files so that a failure to prepare either leaves both as they were."""
+    staged: list[Path] = []
+    try:
+        for path, text, mode in (first, second):
+            staged.append(stage(path, text, mode))
+        for tmp, (path, _, _) in zip(staged, (first, second), strict=True):
+            os.replace(tmp, path)
+    finally:
+        for tmp in staged:
+            tmp.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- budget --
 
 
-def budget_check(plan: Plan) -> tuple[int, str]:
+def budget_check(plan: Plan, shown: Path) -> tuple[int, str]:
     """Run `resource-budget.sh --block` on exactly what would be written (FR-14)."""
     with tempfile.TemporaryDirectory(prefix="auto-size-") as tmp:
         root = Path(tmp)
@@ -635,12 +691,13 @@ def budget_check(plan: Plan) -> tuple[int, str]:
         conf_dir.mkdir(parents=True)
         (conf_dir / CONF_RELATIVE.name).write_text(plan.conf, encoding="utf-8")
         (root / ".env").write_text(render_block(plan), encoding="utf-8")
+        block_path = root / ".env"
         done = subprocess.run(
             [
                 "bash",
                 str(REPO_ROOT / "deploy" / "resource-budget.sh"),
                 "--block",
-                str(root / ".env"),
+                str(block_path),
                 "--host-cpus",
                 plan.host.cpus,
                 "--host-memory-gb",
@@ -657,7 +714,8 @@ def budget_check(plan: Plan) -> tuple[int, str]:
             timeout=120,
             check=False,
         )
-    return done.returncode, done.stdout + done.stderr
+    report = (done.stdout + done.stderr).replace(str(block_path), str(shown))
+    return done.returncode, report
 
 
 # --------------------------------------------------------------------------- main --
@@ -711,8 +769,14 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
             f"{conf_dir} is missing: auto-size must run next to the Compose project."
             " Nothing was written."
         )
-    with open(env_path, encoding="utf-8", newline="") as handle:
-        text = handle.read()
+    raw = env_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        line = exc.object[: exc.start].count(b"\n") + 1
+        raise EnvRefused(
+            f"{env_path.name} line {line} is not valid UTF-8. Fix it by hand. Nothing was written."
+        ) from None
     role, role_from = _pick_role(args.role, text)
     mode, profiles, label = detect(text, environ, args.mode, args.profiles)
     plan = compute(host, role, mode, profiles)
@@ -724,7 +788,7 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
             " environment priority over .env, so the block does not take effect there.",
             file=sys.stderr,
         )
-    code, report = budget_check(plan)
+    code, report = budget_check(plan, env_path)
     if code != 0:
         print(report, file=sys.stderr, end="")
         print(
@@ -738,8 +802,18 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
         print(f"\n--dry-run: nothing written. The block would be:\n{render_block(plan)}")
         print(f"and {conf_dir / CONF_RELATIVE.name}:\n{plan.conf}")
         return EXIT_OK
-    write_atomic(conf_dir / CONF_RELATIVE.name, plan.conf, _PLAIN_CONF_MODE)
-    write_atomic(env_path, new_text, stat.S_IMODE(env_path.stat().st_mode))
+    target = env_path.resolve()  # the link is followed only here, to write the real file
+    try:
+        write_pair(
+            (conf_dir / CONF_RELATIVE.name, plan.conf, _PLAIN_CONF_MODE),
+            (target, new_text, stat.S_IMODE(target.stat().st_mode)),
+        )
+    except OSError as exc:
+        raise EnvRefused(
+            f"cannot write {exc.filename or env_path.name} ({exc.strerror}). Both files are staged"
+            " before either is replaced, so nothing changes unless the final rename failed:"
+            " fix the cause and re-run."
+        ) from None
     print(
         f"\nwrote {env_path} (auto-size block) and {conf_dir / CONF_RELATIVE.name}\n"
         "next: docker compose up -d\n"
@@ -751,9 +825,9 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
 def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    env_path = Path(args.env_file) if args.env_file else REPO_ROOT / ".env"
+    env_path = Path(args.env_file).absolute() if args.env_file else REPO_ROOT / ".env"
     try:
-        return _run(args, env_path.resolve(), os.environ if environ is None else environ)
+        return _run(args, env_path, os.environ if environ is None else environ)
     except UsageError as exc:
         parser.error(str(exc))
     except Refused as exc:
@@ -761,6 +835,13 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
         return EXIT_REFUSED
     except EnvRefused as exc:
         print(f"auto-size: {exc}", file=sys.stderr)
+        return EXIT_ENV
+    except (OSError, UnicodeDecodeError) as exc:
+        reason = getattr(exc, "strerror", None) or type(exc).__name__
+        print(
+            f"auto-size: cannot read {env_path.name} ({reason}). Nothing was written.",
+            file=sys.stderr,
+        )
         return EXIT_ENV
 
 
