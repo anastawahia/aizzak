@@ -27,6 +27,7 @@ file instead of a shell script.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,14 @@ EXPECTED_ALERTS = frozenset(
         "AizzakPostgresDown",
         "AizzakPostgresLockWaitHigh",
         "AizzakPostgresArchiveStalled",
+        # server-gpu-plan.md step 4.2 (docs/delivery/monitoring-profile/) -- the
+        # first rules about the CARD: its memory against step 2.6's own 90%
+        # bound, and its temperature (owner decision Q-5). Both read
+        # nvidia_gpu_exporter, which exists only with docker-compose.gpu.yml and
+        # profile `monitoring`; on any other host they have no series and stay
+        # inactive (an absent card is not an alert).
+        "AizzakGpuMemoryHigh",
+        "AizzakGpuTemperatureHigh",
         # The pipeline's heartbeat: the one rule that speaks by ARRIVING.
         "AizzakWatchdog",
     }
@@ -222,10 +231,16 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     Postgres's liveness, lock wait and WAL archiving -- the first rules about
     the host and about the server itself, which had no exporter until then.
 
+    Server-gpu-plan step 4.2 adds two: the card's memory (step 2.6's own 90%
+    bound) and its temperature (owner decision Q-5). They are the first rules
+    about the GPU, which had no exporter until then, and they have no series
+    at all on a host without ``docker-compose.gpu.yml``.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a TWENTY-EIGHTH entry needs its own
+    decision, never by drift -- so a THIRTIETH entry needs its own
     written reason (a ``docs/log/`` write-up, or a named step in
-    ``docs/capacity-plan.md``) first, not just a name added here.
+    ``docs/capacity-plan.md`` or ``docs/server-gpu-plan.md``) first, not just
+    a name added here.
 
     **What was refused until 7.3, and why.** Step 0.2 added RED and
     saturation metrics and step 0.3 plotted all of them, but no error-rate or
@@ -248,8 +263,8 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         "Vault-authentication gauge (ن-10), the two scrape-health rules (capacity-plan "
         "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
         "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5), the two "
-        "scheduled-task rules (step 5.7), the eleven of step 7.3 and the four of "
-        "monitoring-plan phase 2. A new "
+        "scheduled-task rules (step 5.7), the eleven of step 7.3, the four of "
+        "monitoring-plan phase 2 and the two GPU rules of server-gpu-plan 4.2. A new "
         "rule needs its own logged justification first, not just a name added to "
         "EXPECTED_ALERTS."
     )
@@ -740,6 +755,82 @@ def test_the_rule_script_checks_the_config_with_and_without_the_gpu_file() -> No
         "test-rules.sh no longer mounts scrape-gpu.yml where docker-compose.gpu.yml does"
     )
     assert script.count("check config /etc/prometheus/prometheus.yml") == 2
+
+
+# nvidia_gpu_exporter v1.15.1's names (internal/integration/testdata); the card's rules read
+# these and nothing else.
+_GPU_EXPORTER_METRICS = frozenset(
+    {
+        "nvidia_smi_memory_used_bytes",
+        "nvidia_smi_memory_total_bytes",
+        "nvidia_smi_utilization_gpu_ratio",
+        "nvidia_smi_temperature_gpu",
+        "nvidia_smi_gpu_info",
+    }
+)
+
+
+def test_the_gpu_rules_read_one_card_at_a_time() -> None:
+    """monitoring-profile AC-5.1: both rules are per card (the series carry `uuid`), read the
+    exporter's own metrics only, aggregate nothing and join nothing."""
+    doc = yaml.safe_load(_ALERTS_YML.read_text(encoding="utf-8"))
+    (group,) = [g for g in doc["groups"] if g["name"] == "aizzak-gpu"]
+    rules = {rule["alert"]: rule for rule in group["rules"]}
+    assert set(rules) == {"AizzakGpuMemoryHigh", "AizzakGpuTemperatureHigh"}
+
+    for name, rule in rules.items():
+        expr = " ".join(str(rule["expr"]).split())
+        used = set(re.findall(r"nvidia_smi_[a-z_]+", expr))
+        assert used and used <= _GPU_EXPORTER_METRICS, (name, used)
+        assert "nvidia_smi_gpu_info" not in expr, f"{name}: a join on info would disarm it"
+        for word in ("sum", "max", "min", "avg", "count", "by", "on", "ignoring", "group_left"):
+            assert not re.search(rf"\b{word}\b", expr), f"{name}: `{word}` aggregates or joins"
+        assert str(rule["for"]) == "5m", name
+        assert rule["labels"] == {"severity": "warning"}, name
+        for field in ("summary", "description", "reason", "response", "runbook_url"):
+            assert rule["annotations"].get(field), (name, field)
+
+    memory = " ".join(str(rules["AizzakGpuMemoryHigh"]["expr"]).split())
+    assert "> 0.90" in memory and "> 0)" in memory
+    assert {"nvidia_smi_memory_used_bytes", "nvidia_smi_memory_total_bytes"} == set(
+        re.findall(r"nvidia_smi_[a-z_]+", memory)
+    )
+    temperature = " ".join(str(rules["AizzakGpuTemperatureHigh"]["expr"]).split())
+    assert temperature.endswith("> 85")
+    assert "nvidia_smi_temperature_gpu" in temperature
+    reason = rules["AizzakGpuMemoryHigh"]["annotations"]["reason"]
+    assert "2.6" in reason and "90%" in reason
+    assert "Q-5" in rules["AizzakGpuTemperatureHigh"]["annotations"]["reason"]
+
+
+def _runbook_section(anchor: str) -> str:
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    start = text.index(f'<a id="{anchor}">')
+    end = text.find('<a id="', start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_the_gpu_runbook_sections_start_with_reading() -> None:
+    """AC-5.3: a section for each card alert that reads the card before it touches anything,
+    points at the memory table, says how to know it is over, and has an index line."""
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    for alert, anchor in (
+        ("AizzakGpuMemoryHigh", "aizzakgpumemoryhigh"),
+        ("AizzakGpuTemperatureHigh", "aizzakgputemperaturehigh"),
+    ):
+        section = _runbook_section(anchor)
+        assert section.index("nvidia-smi") < section.index("docker compose exec ollama ollama ps")
+        assert "2\u2011ي" in section, f"{alert}: no pointer to the memory table"
+        assert "كيف تعرف أنّه زال" in section
+        assert f"[`{alert}`](#{anchor})" in text, f"{alert}: no index line"
+
+
+def test_the_trial_log_lists_the_gpu_rules() -> None:
+    """AC-5.4: section 6 carries both, marked as awaiting the 7.3 trial."""
+    trial = _RUNBOOK.read_text(encoding="utf-8").split("## 6)", 1)[1]
+    for alert in ("AizzakGpuMemoryHigh", "AizzakGpuTemperatureHigh"):
+        (row,) = [line for line in trial.splitlines() if line.startswith(f"| `{alert}`")]
+        assert "بانتظار التجربة في 7.3" in row
 
 
 def test_the_backup_age_question_points_at_the_ops_task_rule() -> None:

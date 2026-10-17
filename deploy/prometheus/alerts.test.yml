@@ -816,6 +816,117 @@ tests:
         alertname: AizzakPostgresArchiveStalled
         exp_alerts: []
 
+  # ── aizzak-gpu (server-gpu-plan.md 4.2) ──────────────────────────────────
+  - name: two cards at 95 percent of their memory fire once each within for + 30s
+    interval: 15s
+    input_series:
+      - series: 'nvidia_smi_memory_used_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "7.6e9x40"
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "8e9x40"
+      - series: 'nvidia_smi_memory_used_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="bbbb"}'
+        values: "22.8e9x40"
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="bbbb"}'
+        values: "24e9x40"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts: []
+      - eval_time: 5m30s
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, job: nvidia-gpu, instance: "nvidia-gpu-exporter:9835", uuid: aaaa}
+          - exp_labels: {severity: warning, job: nvidia-gpu, instance: "nvidia-gpu-exporter:9835", uuid: bbbb}
+
+  - name: 85 percent for ten minutes, a four-minute burst and a failed reading are silent
+    interval: 15s
+    input_series:
+      - series: 'nvidia_smi_memory_used_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "6.8e9x40"
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "8e9x40"
+      - series: 'nvidia_smi_memory_used_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="bbbb"}'
+        values: "7.6e9x15 4e9x24"
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="bbbb"}'
+        values: "8e9x40"
+      - series: 'nvidia_smi_memory_used_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="cccc"}'
+        values: "1e9x40"
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="cccc"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts: []
+
+  - name: a card at 88 C for six minutes fires, one at 80 C does not
+    interval: 15s
+    input_series:
+      - series: 'nvidia_smi_temperature_gpu{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "88x40"
+      - series: 'nvidia_smi_temperature_gpu{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="bbbb"}'
+        values: "80x40"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AizzakGpuTemperatureHigh
+        exp_alerts: []
+      - eval_time: 5m30s
+        alertname: AizzakGpuTemperatureHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, job: nvidia-gpu, instance: "nvidia-gpu-exporter:9835", uuid: aaaa}
+
+  - name: a three-minute burst to 90 C is silent
+    interval: 15s
+    input_series:
+      - series: 'nvidia_smi_temperature_gpu{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "90x11 70x29"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AizzakGpuTemperatureHigh
+        exp_alerts: []
+
+  - name: a card that reports no temperature is silent
+    interval: 15s
+    input_series:
+      - series: 'nvidia_smi_memory_total_bytes{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835",uuid="aaaa"}'
+        values: "8e9x40"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AizzakGpuTemperatureHigh
+        exp_alerts: []
+
+  - name: a host without the GPU overlay has no GPU series, no GPU alert and no GPU target down
+    interval: 15s
+    input_series:
+      - series: 'up{job="node",instance="node-exporter:9100"}'
+        values: "1x40"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AizzakGpuTemperatureHigh
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts: []
+
+  - name: a dead GPU exporter on a GPU host is an ordinary target down
+    interval: 15s
+    input_series:
+      - series: 'up{job="nvidia-gpu",instance="nvidia-gpu-exporter:9835"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: AizzakScrapeTargetDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: nvidia-gpu, instance: "nvidia-gpu-exporter:9835"}
+      - eval_time: 45s
+        alertname: AizzakGpuMemoryHigh
+        exp_alerts: []
+
   # ── aizzak-meta (7.3) ─────────────────────────────────────────────────────
   - name: the watchdog fires with nothing at all to read
     interval: 15s

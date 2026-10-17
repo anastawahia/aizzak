@@ -72,6 +72,8 @@ docker compose logs --since 1h alert-sink
 | [`AizzakRateLimitedShareHigh`](#aizzakratelimitedsharehigh) | تحذير | أكثر من 5% من الطلبات تُرفض بـ429 |
 | [`AizzakRedisCacheDown`](#aizzakrediscachedown) | تحذير | Redis الذاكرة المخبّأة لا يردّ |
 | [`AizzakLlmCircuitOpen`](#aizzakllmcircuitopen) | تحذير | مزوّدُ نموذجٍ لغويّ مقطوعٌ منذ دقيقتين |
+| [`AizzakGpuMemoryHigh`](#aizzakgpumemoryhigh) | تحذير | ذاكرة الكرت ممتلئةٌ أكثر من 90% منذ 5 دقائق |
+| [`AizzakGpuTemperatureHigh`](#aizzakgputemperaturehigh) | تحذير | حرارة الكرت فوق 85°م منذ 5 دقائق |
 | [`AizzakOutboxCycleTimeHigh`](#aizzakoutboxcycletimehigh) | تحذير | الأحداث لا تُنشر من قاعدة البيانات |
 | [`AizzakDlqNotEmpty`](#aizzakdlqnotempty) | تحذير | رسالةٌ في طابور الرسائل الميّتة |
 | [`AizzakRedisStreamMemoryHigh`](#aizzakredisstreammemoryhigh) | تحذير | Redis المجاري ممتلئ 80% |
@@ -536,6 +538,65 @@ docker compose logs --since 15m ollama
 
 ---
 
+<a id="aizzakgpumemoryhigh"></a>
+
+### `AizzakGpuMemoryHigh` — ذاكرة الكرت ممتلئةٌ أكثر من 90% منذ 5 دقائق
+
+**ماذا يعني:**
+
+- النموذج اللغويّ والتضمين يتقاسمان ذاكرة الكرت. فوق الحدّ يرفض Ollama تحميل النموذج، أو ينقل طبقاتٍ إلى المعالج، فتبطؤ المحادثة كثيراً دون خطأ.
+- الحدّ هو حدّ قبول 2.6، والمقيس على كرت 8 ج.ب 0.35–0.37.
+- ⚠️ Ollama يُبقي النموذج محمَّلاً (`OLLAMA_KEEP_ALIVE`)، فاستعمالٌ ثابتٌ مرتفعٌ **تحت** الحدّ طبيعيّ.
+- التنبيه لكلّ كرت، بتسمية `uuid`.
+
+**الخطوات (قراءةٌ فقط أوّلاً):**
+
+1. على المضيف، من يحجز الذاكرة:
+
+```bash
+nvidia-smi
+```
+
+2. النموذج الذي يحمله Ollama وحصّته على الكرت:
+
+```bash
+docker compose exec ollama ollama ps
+```
+
+3. جدول ما يسكن الكرت في [`08-local-runbook.md`](../design/08-local-runbook.md) §2‑ي: نموذجٌ أكبر من المحسوب؟ أو `OLLAMA_NUM_PARALLEL` أعلى؟ أو نسخة تضمينٍ ثانية؟
+4. تغيير النموذج أو `OLLAMA_NUM_PARALLEL` قرارٌ بشريّ (قرار 3).
+
+**كيف تعرف أنّه زال:** تحت 90% خمس دقائق، وسطر `resolved`، وصفّ GPU في لوحة capacity تحت الخطّ الأحمر.
+
+---
+
+<a id="aizzakgputemperaturehigh"></a>
+
+### `AizzakGpuTemperatureHigh` — حرارة الكرت فوق 85°م منذ 5 دقائق
+
+**ماذا يعني:** قرب حدّه يخفض التعريف السرعة، فيبطؤ التوليد بلا خطأ. والحدّ يُضبط بعد 7.3 من حدّ الكرت نفسه.
+
+**الخطوات:**
+
+1. الحرارة وحدود الإبطاء وأسباب الخنق، على المضيف:
+
+```bash
+nvidia-smi -q -d TEMPERATURE,PERFORMANCE
+```
+
+2. ما يعمل الآن:
+
+```bash
+docker compose exec ollama ollama ps
+```
+
+3. جدول §2‑ي في [`08-local-runbook.md`](../design/08-local-runbook.md).
+4. التبريد عند المزوّد، وخفض الحمل قرارٌ بشريّ.
+
+**كيف تعرف أنّه زال:** تحت 85°م خمس دقائق، وسطر `resolved`.
+
+---
+
 ## 4) التحذيرات — المجاري والصادر والتخزين
 
 <a id="aizzakhostdiskhigh"></a>
@@ -704,7 +765,7 @@ docker compose exec -T app python -m app.ops.embedding_migration status --json
 docker compose ps
 ```
 
-2. متوقّفة؟ شغّلها بـ`docker compose up -d <اسم الخدمة>`.
+2. متوقّفة؟ شغّلها بـ`docker compose up -d <اسم الخدمة>`. وإن كان `job` هو `nvidia-gpu` فـ`docker compose ps nvidia-gpu-exporter` و`docker compose logs --since 15m nvidia-gpu-exporter`؛ ورسالة «could not select device driver» تعني أداة NVIDIA (`deploy/gpu-preflight.sh`).
 3. تعمل ولا تُقرأ؟ غالباً منفذٌ أو مسارٌ تغيّر. قائمةُ الأهداف وآخرُ خطأ:
 
 ```bash
@@ -806,6 +867,8 @@ docker compose logs --since 10m alert-sink
 | `AizzakDlqNotEmpty` | — | — | — | — |
 | `AizzakOpsTaskOverdue` | — | — | — | — |
 | `AizzakWatchdog` | — | — | — | — |
+| `AizzakGpuMemoryHigh` | — | — | بانتظار التجربة في 7.3 | — |
+| `AizzakGpuTemperatureHigh` | — | — | بانتظار التجربة في 7.3 | — |
 | (البقيّة) | — | — | — | — |
 
 </div>
