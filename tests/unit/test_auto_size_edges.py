@@ -18,7 +18,7 @@ from types import ModuleType
 
 import pytest
 
-from tests.unit.test_auto_size import _REAL_FILES, _stat_of
+from tests.unit.test_auto_size import _REAL_FILES, _budget, _stat_of
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "deploy" / "auto_size.py"
@@ -315,12 +315,7 @@ def test_a_non_utf8_env_is_refused_by_line_number(
 def test_the_budget_script_refuses_a_non_utf8_block_with_exit_2(tmp_path: Path) -> None:
     block = tmp_path / ".env"
     block.write_bytes(b"# ok\n\xff\n")
-    done = subprocess.run(
-        ["bash", str(REPO_ROOT / "deploy" / "resource-budget.sh"), "--block", str(block)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    done = _budget("--block", str(block))
     assert done.returncode == 2 and "line 2 is not valid UTF-8" in done.stderr
     assert "Traceback" not in done.stderr
 
@@ -356,15 +351,7 @@ def test_a_symlink_to_a_file_outside_the_project_uses_the_project_directory(
     assert link.is_symlink()
     assert _conf(link).is_file() and not (shared / "deploy").exists()
     assert (shared / "aizzak.env").read_text(encoding="utf-8").count(az.BLOCK_START) == 1
-    block = subprocess.run(
-        [
-            *("bash", str(REPO_ROOT / "deploy" / "resource-budget.sh"), "--block", str(link)),
-            *("--host-cpus", "16", "--host-memory-gb", "32"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    block = _budget("--block", str(link), "--host-cpus", "16", "--host-memory-gb", "32")
     assert block.returncode == 0 and "NO CONF" not in block.stdout, block.stdout[-300:]
 
 
