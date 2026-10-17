@@ -132,8 +132,9 @@ def _block_values(text: str) -> dict[str, str]:
 
 
 def _plan(
-    cpus: float, gb: float, role: str = "server", mode: str = "cpu", profiles: str = ""
+    cpus: float, gb: float, role: str = "server", mode: str = "cpu", profiles: str = "monitoring"
 ) -> Any:
+    # decision 7: a server runs monitoring, so the plan counts it unless a test says otherwise
     wanted = frozenset(p for p in profiles.split(",") if p)
     return az.compute(az.Host(f"{cpus:g}", f"{gb:g}"), role, mode, wanted)
 
@@ -290,7 +291,9 @@ def test_the_formula_matches_the_reference_table(
 
 def test_a_host_below_small_is_refused_naming_the_shortfall(tree: Tree, run: Run) -> None:
     before = tree.sha()
-    code, _, err = run("--host-cpus", "8", "--host-memory-gb", "15", "--mode", "gpu")
+    code, _, err = run(
+        "--host-cpus", "8", "--host-memory-gb", "15", "--mode", "gpu", "--profiles", "monitoring"
+    )
     assert code == 1
     assert all(token in err for token in ("gpu", "14.22", "13.50", "0.72"))
     assert tree.sha() == before
@@ -762,7 +765,8 @@ def test_the_budget_script_agrees_with_the_generator(
     tree: Tree, run: Run, cpus: int, gb: int, mode: str
 ) -> None:
     tree.env.write_text(tree.text() + f"GUARDED_PASSWORD={_SENTINEL}\n", encoding="utf-8")
-    assert run("--host-cpus", str(cpus), "--host-memory-gb", str(gb), "--mode", mode)[0] == 0
+    args = ("--host-cpus", str(cpus), "--host-memory-gb", str(gb), "--mode", mode)
+    assert run(*args, "--profiles", "monitoring")[0] == 0
     plan = _plan(cpus, gb, mode=mode)
     done = _budget("--block", str(tree.env), "--host-cpus", str(cpus), "--host-memory-gb", str(gb))
     assert done.returncode == 0, done.stdout + done.stderr
@@ -813,6 +817,37 @@ def test_the_budget_script_names_a_missing_auto_conf(tree: Tree, run: Run) -> No
     assert "Postgres would not start; re-run deploy/auto_size.py" in done.stdout
 
 
+def test_the_budget_block_follows_the_blocks_profiles(tree: Tree, run: Run) -> None:
+    """AC-2.3: `--block` says what Compose will run -- the block's `# profiles:` line."""
+    args = ("--host-cpus", "32", "--host-memory-gb", "64")
+    totals: dict[str, tuple[float, float]] = {}
+    for profiles, line in (
+        ("monitoring,wsl-ollama", "monitoring: counted (in the block's profiles)"),
+        ("wsl-ollama", "monitoring: NOT counted (not in the block's profiles)"),
+    ):
+        shutil.copy(_ENV_EXAMPLE, tree.env)
+        assert run(*args, "--profiles", profiles)[0] == 0
+        assert f"# profiles: {profiles}\n" in tree.text()
+        done = _budget("--block", str(tree.env), *args)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert line in done.stdout, done.stdout
+        match = re.search(r"TOTAL\s+([0-9.]+) vCPU\s+([0-9.]+) GB", done.stdout)
+        assert match, done.stdout
+        totals[profiles] = (float(match.group(1)), float(match.group(2)))
+    on, off = totals["monitoring,wsl-ollama"], totals["wsl-ollama"]
+    assert on[0] - off[0] == pytest.approx(3.60, abs=0.011)
+    assert on[1] - off[1] == pytest.approx(4.66, abs=0.011)  # 4768m, printed to 2 places
+
+
+def test_monitoring_is_a_known_profile_and_counts_only_when_named() -> None:
+    """AC-2.4: auto_size.py itself is unchanged -- it reads the profiles from Compose and
+    counts what COMPOSE_PROFILES names, which is what Compose runs."""
+    assert "monitoring" in az._known_profiles()
+    without, with_ = _plan(32, 64, mode="cpu", profiles=""), _plan(32, 64, mode="cpu")
+    assert (round(without.total_cpus, 2), round(without.total_memory_gb, 2)) == (32.00, 49.62)
+    assert (round(with_.total_cpus, 2), round(with_.total_memory_gb, 2)) == (35.60, 54.28)
+
+
 def test_without_a_block_the_budget_is_the_reference_ledger() -> None:
     done = _budget("--host-cpus", "32", "--host-memory-gb", "64")
     assert "35.60 vCPU" in done.stdout and "57.28 GB" in done.stdout
@@ -832,7 +867,7 @@ _DEV_FLOORS_MIB = {  # design.md 3-f: peak x 1.25 up to 256 MiB, never past larg
 
 
 def _dev_plan() -> Any:
-    return _plan(10, 12.67, role="dev", mode="cpu", profiles="wsl-ollama")
+    return _plan(10, 12.67, role="dev", mode="cpu", profiles="wsl-ollama,monitoring")
 
 
 def test_dev_role_on_the_development_host_writes_a_dev_block(tree: Tree, run: Run) -> None:
@@ -845,7 +880,7 @@ def test_dev_role_on_the_development_host_writes_a_dev_block(tree: Tree, run: Ru
 
 
 def test_server_role_refuses_the_development_host(tree: Tree, run: Run) -> None:
-    tree.env.write_text(tree.text() + "COMPOSE_PROFILES=wsl-ollama\n", encoding="utf-8")
+    tree.env.write_text(tree.text() + "COMPOSE_PROFILES=wsl-ollama,monitoring\n", encoding="utf-8")
     before = tree.sha()
     code, _, err = run("--role", "server", "--host-cpus", "10", "--host-memory-gb", "12.67")
     assert code == 1
@@ -875,7 +910,7 @@ def test_dev_overcommit_is_a_warning_with_the_ratio(tree: Tree, run: Run) -> Non
         "--host-memory-gb",
         "12.67",
         "--profiles",
-        "wsl-ollama",
+        "wsl-ollama,monitoring",
     )
     assert code == 0
     assert all(token in out for token in ("23.22", "12.67", "1.83x", "Warning only"))

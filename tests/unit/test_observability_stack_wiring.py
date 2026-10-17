@@ -272,13 +272,22 @@ def test_the_optional_target_is_the_one_behind_a_compose_profile() -> None:
     cAdvisor needs the Docker socket, so it is opted into for a measurement
     rather than granted to every ``up``, and the label is what stops its
     ordinary absence from holding a target-down alert firing forever. Either
-    half without the other is a bug."""
+    half without the other is a bug.
+
+    A service behind profile ``monitoring`` ALONE does not count: Prometheus, the scraper,
+    sits behind that same profile, so the service is never absent while the scraper is
+    running (monitoring-profile 4.1). A ``tier: optional`` label on one would only silence
+    the rule that should notice its death."""
     compose = _compose()
     optional_hosts: set[str] = set()
     for job in _prom()["scrape_configs"]:
         optional_hosts |= _labelled_static_hosts(job, "tier", "optional")
 
-    profiled = {name for name, service in compose["services"].items() if service.get("profiles")}
+    profiled = {
+        name
+        for name, service in compose["services"].items()
+        if set(service.get("profiles") or ()) - {"monitoring"}
+    }
     scraped = {host for job in _prom()["scrape_configs"] for host in _scraped_hosts(job)}
     assert optional_hosts == profiled & scraped, (
         f"{_PROM_YML}: the targets labelled `tier: optional` ({sorted(optional_hosts)}) must "

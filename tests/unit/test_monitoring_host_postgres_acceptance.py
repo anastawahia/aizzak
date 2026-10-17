@@ -199,10 +199,30 @@ _needs_compose = pytest.mark.skipif(
 )
 
 
-def _compose(env_file: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("METRICS_EXPORTER")}
+def _compose(
+    env_file: Path, *args: str, profile: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Rendered from the base file alone, whatever the caller's shell exports: CI's
+    `integration` job sets a three-file COMPOSE_FILE, and a stray COMPOSE_PROFILES would
+    change which services exist (monitoring-profile 4.1)."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("METRICS_EXPORTER") and k not in ("COMPOSE_FILE", "COMPOSE_PROFILES")
+    }
+    flags = ["--profile", profile] if profile else []
     return subprocess.run(
-        ["docker", "compose", "--env-file", str(env_file), "config", *args],
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_file),
+            "-f",
+            "docker-compose.yml",
+            *flags,
+            "config",
+            *args,
+        ],
         cwd=_ROOT,
         env=env,
         capture_output=True,
@@ -215,7 +235,7 @@ def _compose(env_file: Path, *args: str) -> subprocess.CompletedProcess[str]:
 @_needs_compose
 def test_compose_renders_both_exporters_as_standing_services_with_limits() -> None:
     """AC-1.1 / AC-3.1, from the rendered model rather than the raw YAML."""
-    done = _compose(_ROOT / ".env.example", "--format", "json")
+    done = _compose(_ROOT / ".env.example", "--format", "json", profile="monitoring")
     if done.returncode != 0 and "docker compose" in done.stderr and "unknown" in done.stderr:
         pytest.skip("docker compose plugin unavailable")
     assert done.returncode == 0, done.stderr
@@ -224,7 +244,7 @@ def test_compose_renders_both_exporters_as_standing_services_with_limits() -> No
         svc = services[name]
         limits = svc["deploy"]["resources"]["limits"]
         assert limits.get("cpus") and limits.get("memory"), name
-        assert "profiles" not in svc and "ports" not in svc, name
+        assert svc.get("profiles") == ["monitoring"] and "ports" not in svc, name
         assert ":" in svc["image"] and not svc["image"].endswith(":latest"), name
         assert str(svc.get("user", "")).split(":")[0] not in ("root", "0"), name
         for volume in svc.get("volumes", []):
@@ -238,15 +258,19 @@ def test_compose_renders_both_exporters_as_standing_services_with_limits() -> No
 
 
 @_needs_compose
-def test_compose_refuses_to_render_without_the_exporter_password(tmp_path: Path) -> None:
-    """AC-2.3: a `.env` that lacks the variable fails loudly and names it."""
+@pytest.mark.parametrize("profile", [None, "monitoring"])
+def test_compose_refuses_to_render_without_the_exporter_password(
+    tmp_path: Path, profile: str | None
+) -> None:
+    """AC-2.3 (and monitoring-profile AC-1.6): a `.env` that lacks the variable fails loudly
+    and names it, with the monitoring profile on or off."""
     source = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     env_file = tmp_path / "env"
     env_file.write_text(
         "\n".join(x for x in source if not x.startswith("METRICS_EXPORTER_PASSWORD=")) + "\n",
         encoding="utf-8",
     )
-    done = _compose(env_file, "--quiet")
+    done = _compose(env_file, "--quiet", profile=profile)
     assert done.returncode != 0
     assert "METRICS_EXPORTER_PASSWORD" in done.stderr
 
