@@ -601,7 +601,7 @@ EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
 EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
 ```
 
-- **`docker-compose.gpu.yml`** يمسّ ثلاث خدماتٍ وحدها: `ollama` يحجز الكرت (مع `local-llm` فقط)، و`embedding` نسخةً **واحدة** من صورة CUDA بحدّ ذاكرةٍ ابتدائيّ `3g` وبـ`EMB_REQUIRE_CUDA=1`، و`app` يحجز القدرة `utility` وحدها لـ`nvidia-smi` في صفحة System Monitor. و`embedding-lb` أمامها دون تغيير.
+- **`docker-compose.gpu.yml`** يمسّ ثلاث خدماتٍ وحدها: `ollama` يحجز الكرت (مع `local-llm` فقط)، و`embedding` نسخةً **واحدة** من صورة CUDA بحدّ ذاكرةٍ ابتدائيّ `3g` وبـ`EMB_REQUIRE_CUDA=1`، و`app` يحجز القدرة `utility` وحدها لـ`nvidia-smi` في صفحة System Monitor. و`embedding-lb` أمامها دون تغيير. **ومع `monitoring` يضيف `nvidia-gpu-exporter` ويربط لـ`prometheus` ملفّ أهدافه** (`deploy/prometheus/scrape-gpu.yml`): أرقام الكرت وتنبيهاه ولوحته.
 - **`EMB_REQUIRE_CUDA=1`** يجعل الحاوية ترفض الإقلاع دون CUDA (أداةٌ ناقصة، أو تعريفٌ قديم، أو صورة معالجٍ تحمل اسم CUDA) بدل أن تعمل على المعالج بصمت. وهذا ما يحرس **الأمر الذي لا يستطيع Compose منعه**: ⚠️ **لا يُركَّب ملفّ الكرت مع `docker-compose.build.yml`** أبداً، فملفّ البناء يبني `embedding` من متطلّبات المعالج ويسمّي الناتج باسم CUDA. صورة CUDA مصدرها `build-push.sh` (الإصدار) أو الأمر 43.
 - `.env` الخادم يحمل متغيّرات الصورتين (`EMBEDDING_IMAGE_*` للمعالج و`EMBEDDING_CUDA_IMAGE_*` للكرت) و**`COMPOSE_FILE` وحده يختار بينهما**: بلا ملفّ الكرت يعمل المكدّس نفسه على المعالج. والاسم المحلّيّ الافتراضيّ لصورة CUDA (`aizzak/embedding-cuda:dev`) غير اسم صورة المعالج، فخادمٌ نسي المتغيّرين يفشل في السحب ولا يشغّل torch المعالج.
 - وأيّ `--profile X` في أمرٍ يحلّ محلّ `COMPOSE_PROFILES`: على الخادم اكتب `COMPOSE_PROFILES=local-llm,monitoring,X docker compose …`.

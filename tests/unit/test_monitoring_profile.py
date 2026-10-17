@@ -355,3 +355,24 @@ def test_no_monitoring_means_no_alerts_is_said_where_it_is_read() -> None:
     section = _between(server, "## 2) المراقبة والتنبيهات", "---")
     for needle in ("/health", "من خارج الخادم", "لا تنبيهات"):
         assert needle in section, f"deploy-server.md §2 no longer says {needle!r}"
+
+
+def test_the_plan_names_the_third_exception() -> None:
+    """AC-3.6: rule 1 of the plan carries the third narrow exception, and the board rows 4.1
+    and 4.2 are no longer 'not started'."""
+    plan = _text(_DOCS / "server-gpu-plan.md")
+    rule_one = _between(plan, "1. **المكدّس المحلّيّ لا يتغيّر", "2. **الموافقة قبل التنفيذ")
+    assert "استثناءٌ ضيّق ثالث" in rule_one
+    assert "COMPOSE_PROFILES=wsl-ollama,monitoring" in rule_one
+    for step in ("4.1", "4.2"):
+        (row,) = [line for line in plan.splitlines() if line.startswith(f"| **{step}**")]
+        assert "⬜" not in row, f"board row {step} still says not started"
+
+
+def test_the_security_list_records_the_gpu_exporter_image() -> None:
+    """AC-4.7: a third-party image is a security-list entry, not a footnote -- and the new row
+    starts with its id, never a number (test_gpu_preflight counts `| <number> |` rows as exit
+    codes: test_gpu_preflight itself holds that)."""
+    text = _text(_DOCS / "deploy-server.md")
+    (row,) = [line for line in text.splitlines() if line.startswith("| ث\u20116 |")]
+    assert "utkuozdemir/nvidia_gpu_exporter" in row and "7aee2d42" in row

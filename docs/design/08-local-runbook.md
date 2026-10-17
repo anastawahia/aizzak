@@ -2645,6 +2645,7 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 | `qdrant` | `/readyz` (لا `/livez`: الأوّل «كلّ الشظايا تخدم»، والثاني «العمليّة حيّة») — عبر `/dev/tcp` في **bash صراحةً**، لأنّ الصورة لا تحمل `curl` ولا `wget`، و`CMD-SHELL` كان سيشغّل `sh` الذي لا يعرف `/dev/tcp` |
 | `ollama-bridge` | **من طرفٍ إلى طرف**: `wget` يدخل الجسر على 11435 ويخرج من Ollama الأصليّ على 11434. socat مستمعٌ وهدفه ميّت لا يمرّر شيئاً |
 | `ollama` | `/dev/tcp` في **bash صراحةً** إلى `/api/version`: الصورة (`ubuntu:24.04` وملفّ `ollama`) لا تحمل `curl` ولا `wget`، كما `qdrant`. `ollama list` يعمل لكنّه يقرأ النماذج من القرص، و`ollama -v` يخرج بـ0 والخادم ميّت |
+| `nvidia-gpu-exporter` | **الكرت من داخل الحاوية**: `nvidia-smi --query-gpu=uuid`، لأنّ الصورة distroless بلا shell ولا `wget`؛ ومنفذ المصدّر يغطّيه `AizzakScrapeTargetDown` |
 | `worker-memory` · `worker-knowledge` · `worker-media` · `outbox-relay` | **نبضٌ**، لأنّها لا تستمع على منفذٍ أصلاً — انظر أدناه |
 
 > 📌 **و`ollama` (الخدمة داخل المكدّس) يُنتظر بـ`service_healthy` مع `required: false`.** هو داخل دورة حياة Compose، فصحّته معنىً يُنتظر؛ و`required: false` يمنع أن يحبس عطلُه المكدّس، ويُسقط الحافّةَ حين لا يكون الـprofile `local-llm` مفعّلاً. وهي حافّة `ollama-pull` نفسُها: إن فشل `ollama` في الإقلاع شغّله Compose بتحذير، فيخرج `ollama-pull` بالرمز 3 «Ollama unreachable» — فشلٌ صاخب.
