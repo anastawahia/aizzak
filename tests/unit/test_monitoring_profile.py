@@ -295,3 +295,63 @@ def test_the_profile_key_does_not_change_any_config_hash(tmp_path: Path) -> None
     assert stripped.returncode == 0, stripped.stderr
     assert len(original.stdout.split("\n")) > len(MONITORING)
     assert sorted(original.stdout.splitlines()) == sorted(stripped.stdout.splitlines())
+
+
+# ── the written word: AC-2.6, AC-3.1, AC-3.5 ────────────────────────────────
+
+_DOCS: Final[Path] = REPO_ROOT / "docs"
+
+
+def _text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _between(text: str, start: str, end: str) -> str:
+    head = text.index(start)
+    return text[head : text.index(end, head + len(start))]
+
+
+def test_the_ledger_explains_monitoring_on_by_default() -> None:
+    """AC-2.6: the budget prose says monitoring is on by default and what it costs."""
+    runbook = _text(_DOCS / "design" / "08-local-runbook.md")
+    section = _between(runbook, "### 2\u2011ز", "### 2\u2011ح")
+    for needle in (
+        "قرار 7",
+        "--without-monitoring",
+        "3.60",
+        "4.66",
+        "2.35",
+        "2.41",
+        "1.40",
+        "1.66",
+    ):
+        assert needle in section, f"08 section 2-z no longer says {needle!r}"
+    not_counted = section[section.index("وما لا يُحسَب في المجموع") :]
+    assert "`monitoring`" in not_counted.split("\n", 1)[0], "'what is not counted' omits monitoring"
+
+
+@pytest.mark.parametrize("guide", ["stack-commands.md", "quickstart.md"])
+def test_both_guides_carry_the_monitoring_lines(guide: str) -> None:
+    """AC-3.1."""
+    text = _text(_DOCS / guide)
+    assert "COMPOSE_PROFILES=wsl-ollama,monitoring" in text
+    assert "COMPOSE_PROFILES=local-llm,monitoring" in text
+    assert "--without-monitoring" in text and "لا تنبيهات" in text
+    assert re.search(r"--profile X`[^\n]*يحلّ محلّ(\*\*)? `COMPOSE_PROFILES`", text)
+    assert "deploy/auto_size.py --role dev" in text
+
+
+def test_no_monitoring_means_no_alerts_is_said_where_it_is_read() -> None:
+    """AC-3.5: the runbook's §0 and the server guide's monitoring section."""
+    runbook = _text(_DOCS / "runbooks" / "alerts.md")
+    zero = _between(runbook, "## 0)", "## 1)")
+    for needle in (
+        "profile `monitoring`",
+        "AizzakWatchdog",
+        "docker compose ps prometheus alertmanager alert-sink",
+    ):
+        assert needle in zero, f"alerts.md §0 no longer says {needle!r}"
+    server = _text(_DOCS / "deploy-server.md")
+    section = _between(server, "## 2) المراقبة والتنبيهات", "---")
+    for needle in ("/health", "من خارج الخادم", "لا تنبيهات"):
+        assert needle in section, f"deploy-server.md §2 no longer says {needle!r}"

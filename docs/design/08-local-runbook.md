@@ -29,6 +29,7 @@
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
 | `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama` في `.env`) |
 | `ollama` | `ollama/ollama:0.34.4` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
+| `prometheus` · `grafana` · `alertmanager` · `alert-sink` · `loki` · `alloy` · المصدّرات الخمسة | صورٌ مثبّتة في `docker-compose.yml` | Grafana على `127.0.0.1:13000`، والبقيّة داخليّة | المراقبة والتنبيه والسجلّات — profile `monitoring` (مفعّل افتراضيّاً، قرار 7: `wsl-ollama,monitoring` على جهاز المالك، و`local-llm,monitoring` على الخادم) |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
@@ -487,6 +488,14 @@ resources.reference_host_gb   = 64
 
 **⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
 
+**⚠️ و`monitoring-profile` (4.1 من خطّة خادم الكرت) وضعت خدمات المراقبة الإحدى عشرة خلف profile `monitoring`، ولم يتحرّك رقم.**
+
+- المراقبة **مفعّلةٌ افتراضيّاً** (قرار 7)، فالدفتر وجدول الأحجام و`deploy/resource-budget.sh` يعدّونها كما كانوا.
+- حصّتها بحدود اليوم: `large` **3.60 vCPU و4.66 GB** (4768m)، و`medium` **2.35 و2.41** (2464m)، و`small` **1.40 و1.66** (1696m). ويضيف إليها وضعُ الكرت `nvidia-gpu-exporter` (4.2) بـ0.25 vCPU و64m.
+- والحكم على خادمٍ بلاها صريح: `deploy/resource-budget.sh --without-monitoring [--size …]` يطبع 32.00/52.62 للمرجعيّ، و34.00/52.88 و17.00/26.00 و10.10/12.56 للأحجام، ويقول إنّه لا تنبيهات دونها.
+- و`--block` يتبع سطر `# profiles:` في الكتلة كما يتبعه Compose.
+- وملفّات الأحجام لا تتغيّر، و`small` يبقى يعدّ المراقبة حتّى قياس 7.3 (Q‑6).
+
 **⚠️ و`7.3` أنفقت العُشرَ الباقي إلّا قليلاً.** خدمتا توصيل التنبيهات دائمتان (تنبيهٌ لا يصل حين يُحتاج ليس تنبيهاً): `alertmanager` بـ0.25 vCPU و**64m**، و`alert-sink` بـ0.1 vCPU و**32m** — نصفُ سقف المُصدِّرات وربعُه، لأنّ الهامشَ كان 102 ميغابايت لا أكثر. فصار المجموعُ **57.59 من 57.60**. والسقفان صغيران لأنّ العمليّتين صغيرتان، والمقيسُ بعد النشر في `capacity-status.md` (‏`7.3`). **والخطوةُ التالية التي تضيف شيئاً دائماً لا تجد مكاناً أصلاً**: إعادةُ تركيب الدفتر (`د‑26`) صارت شرطاً لا خياراً.
 
 **⚠️ و`4.1`/`4.2` هما أوّلُ ما جعل مجموعَ المعالجة يتجاوز المضيفَ المرجعيَّ — والتجاوزُ مُبلَّغٌ لا فاشل، عن عمد.** ثلاثُ نسخٍ من `embedding` بدل واحدةٍ تضيف 2 vCPU، و`embedding-lb` يضيف 0.5، فيصير المجموع **34.00 من 32** (‏1.06×) ويطبعه `deploy/resource-budget.sh` بوصفه `CPU OVERSUBSCRIBED`. وهذا **بالضبط** الحكمُ المزدوجُ الذي يقوم عليه هذا الدفتر: سقفُ المعالجة حصّةُ مجدولٍ لا حجزاً، فلا تستطيع أيُّ خدمةٍ تجاوزَ سقفها مهما اشتدّ حملُها، والذي لا يجوز هو أن **تُشبَع** كلُّها معاً. أمّا الذاكرة — القيدُ الصلب — فبقيت داخلَ الدفتر: النسخُ الثلاث **1280m لكلٍّ لا 2g**، وهو رقمٌ **مقيس** (‏381.9 ميغابايت مقيمةً في الخمول · 484.1 تحت الإشباع مبكّراً · **716.3 بعد نحو 200 طلبٍ مخدوم** — يرتفع مع ما خُدم ثمّ يستقرّ، وهو المقدارُ الذي ضُبط عليه السقف بـ1.79×) لا اقتطاعاً ليتّسع الحساب؛ ثلاثُ نسخٍ بـ2g كانت ستضع المجموعَ عند 58.62 غيغابايت في وجه 57.60 التي يسمح بها هامشُ هذا الدفتر، **ويرفضها `tests/unit/test_resource_budget.py` بحقّ**.
@@ -517,9 +526,10 @@ deploy/resource-budget.sh                              # مقابل هذا ال�
 deploy/resource-budget.sh --host-cpus 32 --host-memory-gb 64   # مقابل مضيف §6
 deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull وollama-bridge
 deploy/resource-budget.sh --size large                 # حجمٌ من deploy/sizes/ (هامش ذاكرةٍ 10٪)
+deploy/resource-budget.sh --without-monitoring --size small   # خادمٌ صغيرٌ بلا مراقبة (ولا تنبيهات)
 ```
 
-**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
+**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها. **والمراقبة (`monitoring`) ليست منها:** خلف profile منذ 4.1، لكنّها مفعّلةٌ افتراضيّاً فتُعدّ، ولا يُخرجها إلّا `--without-monitoring` أو كتلةٌ لا يحملها سطر `# profiles:` فيها. وسطر `--with-profiles` في الأوامر يبقى بقائمته الستّ.
 
 **⚠️ ونسخُ `app` الثلاثُ تمنع مفتاحَين على هذه الخدمة إلى الأبد، وهما يفشلان فشلَين مختلفَين** — مقيسان على مسبارٍ بنسختَين:
 

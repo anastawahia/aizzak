@@ -25,6 +25,13 @@ docker compose logs --since 1h alert-sink
 4. **التنبيهُ نفسُه قد يظهر في أكثر من سطر.** حين يتغيّر شيءٌ في مجموعةٍ من التنبيهات (تنبيهٌ جديدٌ بالاسم نفسه، أو زوال)، تُرسَل المجموعةُ كلُّها من جديد. السطرُ المكرَّر يعني «ما زال قائماً»، لا حدثاً جديداً.
 5. **قائمةُ ما يشتعل الآن** في Grafana: **Alerting ← Alert rules** (قواعد Prometheus) أو **Alerting ← Silences/Alerts** مع اختيار مصدر **Alertmanager**.
 
+> **⚠️ ومسارُ التنبيه نفسُه خلف profile `monitoring`** (خطّة خادم الكرت 4.1).
+>
+> - Prometheus وAlertmanager و`alert-sink` (ومعها Grafana وLoki وAlloy والمصدّرات) لا تقلع إلّا و`monitoring` في `COMPOSE_PROFILES`: على جهاز المالك `COMPOSE_PROFILES=wsl-ollama,monitoring`، وعلى الخادم `local-llm,monitoring`.
+> - **دونه لا مسار تنبيهٍ أصلاً،** ونبض `AizzakWatchdog` يغيب، ولا تنبيه يستطيع قول ذلك.
+> - تحقّق: `docker compose ps prometheus alertmanager alert-sink`.
+> - والخادم الصغير الذي يطفئ المراقبة عمداً يفحص `/health` من خارجه ([`deploy-server.md`](../deploy-server.md) §2).
+
 **الخطورة:**
 
 | الخطورة | المعنى | التكرار ما دام قائماً |
@@ -779,7 +786,7 @@ docker compose exec -T ops-scheduler python -m app.ops.scheduler status
 docker compose ps prometheus alertmanager alert-sink
 ```
 
-2. شغّل أيَّها متوقّف بـ`docker compose up -d <اسم الخدمة>`.
+2. شغّل أيَّها متوقّف بـ`docker compose up -d <اسم الخدمة>`. **وإن لم يكن `monitoring` في سطر `COMPOSE_PROFILES` في `.env` فلن يُقلعها `up -d` التالي**: أضفه إلى السطر أوّلاً.
 3. تأكّد من عودة النبض:
 
 ```bash
