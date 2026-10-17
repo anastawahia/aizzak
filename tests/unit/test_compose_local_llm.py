@@ -366,8 +366,11 @@ def test_the_default_stack_is_the_28_standing_and_5_one_shots() -> None:
 
 def test_env_example_offers_both_profiles_commented_only() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
-    assert re.search(r"^#COMPOSE_PROFILES=wsl-ollama$", text, re.MULTILINE)
-    assert re.search(r"^#COMPOSE_PROFILES=local-llm$", text, re.MULTILINE)
+    assert re.search(r"^#COMPOSE_PROFILES=wsl-ollama,monitoring$", text, re.MULTILINE)
+    assert re.search(r"^#COMPOSE_PROFILES=local-llm,monitoring$", text, re.MULTILINE)
+    # said once: the old bare lines must not stand next to the new ones
+    assert not re.search(r"^#COMPOSE_PROFILES=(wsl-ollama|local-llm)$", text, re.MULTILINE)
+    assert len(re.findall(r"^#COMPOSE_PROFILES=", text, re.MULTILINE)) == 2
     assert not re.search(r"^COMPOSE_PROFILES=", text, re.MULTILINE), (
         "CI copies this file and `_compose_config` does not clear COMPOSE_PROFILES"
     )
