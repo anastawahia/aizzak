@@ -100,6 +100,19 @@ KNOWN_METRICS = frozenset(
     }
 )
 
+# nvidia_gpu_exporter v1.15.1's names (internal/integration/testdata of that tag). The GPU row
+# of the capacity dashboard and the two card alerts read these and nothing else (4.2).
+GPU_EXPORTER_METRICS = frozenset(
+    {
+        "nvidia_smi_memory_used_bytes",
+        "nvidia_smi_memory_total_bytes",
+        "nvidia_smi_utilization_gpu_ratio",
+        "nvidia_smi_temperature_gpu",
+        "nvidia_smi_gpu_info",
+    }
+)
+_GPU_METRIC = re.compile(r"\bnvidia_smi_[a-z_]+")
+
 # prometheus_client renders a Histogram as three families; the dashboard has
 # to name `..._bucket` to compute a quantile at all, so the suffix is stripped
 # before the name is checked against the constants above.
@@ -592,3 +605,59 @@ def test_grafana_reaches_the_alertmanager_service() -> None:
     source = _load_yaml(_DATASOURCES / "alertmanager.yml")["datasources"][0]
     assert source["type"] == "alertmanager"
     assert source["url"] == "http://alertmanager:9093", source["url"]
+
+
+# ── The GPU row (server-gpu-plan.md 4.2) ───────────────────────────────────
+
+
+def _capacity_dashboard() -> dict[str, Any]:
+    (dashboard,) = [d for path, d in _dashboards() if path.name == "aizzak-capacity.json"]
+    return dashboard
+
+
+def test_the_gpu_row_shows_memory_load_and_temperature() -> None:
+    """AC-6.1: a row titled GPU at the bottom, three time series under it, each reading the
+    exporter's metric for what its title says."""
+    panels = _capacity_dashboard()["panels"]
+    rows = [p for p in panels if p["type"] == "row"]
+    gpu_row = rows[-1]
+    assert gpu_row["title"].startswith("GPU")
+    below = [
+        p for p in panels if p["type"] != "row" and p["gridPos"]["y"] > gpu_row["gridPos"]["y"]
+    ]
+    assert [p["title"] for p in below] == [
+        "GPU memory used (of total)",
+        "GPU load",
+        "GPU temperature",
+    ]
+    assert all(p["type"] == "timeseries" for p in below)
+    expressions = [" ".join(p["targets"][0]["expr"].split()) for p in below]
+    assert "nvidia_smi_memory_used_bytes" in expressions[0]
+    assert "nvidia_smi_memory_total_bytes" in expressions[0]
+    assert "nvidia_smi_utilization_gpu_ratio" in expressions[1]
+    assert "nvidia_smi_temperature_gpu" in expressions[2]
+    ids = [p["id"] for p in panels]
+    assert len(ids) == len(set(ids)), "a panel id is used twice"
+
+
+def test_every_gpu_metric_a_panel_or_rule_reads_is_one_the_exporter_emits() -> None:
+    """A typo here renders an empty panel or a rule that can never fire, and looks exactly like
+    a healthy card: so the names are held against the exporter's own list."""
+    found: set[str] = set()
+    for _, dashboard in _dashboards():
+        for panel in _panels(dashboard):
+            for target in panel.get("targets", ()):
+                found |= set(_GPU_METRIC.findall(target.get("expr", "")))
+    alerts = (_REPO_ROOT / "deploy" / "prometheus" / "alerts.yml").read_text(encoding="utf-8")
+    code = "\n".join(line for line in alerts.splitlines() if not line.lstrip().startswith("#"))
+    rule_exprs = [
+        rule["expr"]
+        for group in yaml.safe_load(code)["groups"]
+        for rule in group["rules"]
+        if "nvidia_smi_" in rule["expr"]
+    ]
+    assert rule_exprs, "no alert rule reads the card"
+    for expr in rule_exprs:
+        found |= set(_GPU_METRIC.findall(expr))
+    assert found, "no GPU metric found anywhere"
+    assert found <= GPU_EXPORTER_METRICS, sorted(found - GPU_EXPORTER_METRICS)

@@ -1943,6 +1943,247 @@
         "graphMode": "none",
         "textMode": "auto"
       }
+    },
+    {
+      "id": 31,
+      "type": "row",
+      "title": "GPU — memory, load, temperature (server-gpu-plan 4.2; GPU hosts only)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "panels": []
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "GPU memory used (of total)",
+      "description": "Share of each card's memory in use (nvidia-smi via nvidia_gpu_exporter). The red line is AizzakGpuMemoryHigh's 90%, step 2.6's own bound. Ollama keeps its model resident, so a flat line under it is normal. \"No data\" on a host without docker-compose.gpu.yml (this WSL machine) is expected",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 69
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "nvidia_smi_memory_used_bytes{job=\"nvidia-gpu\"} / (nvidia_smi_memory_total_bytes{job=\"nvidia-gpu\"} > 0) * on (uuid) group_left (name, index) nvidia_smi_gpu_info{job=\"nvidia-gpu\"}",
+          "legendFormat": "{{index}}: {{name}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "GPU load",
+      "description": "Share of time the card was busy (utilization.gpu). It rises with generation and embedding batches; it is not a memory measure. \"No data\" without the GPU overlay",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 69
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "nvidia_smi_utilization_gpu_ratio{job=\"nvidia-gpu\"} * on (uuid) group_left (name, index) nvidia_smi_gpu_info{job=\"nvidia-gpu\"}",
+          "legendFormat": "{{index}}: {{name}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "GPU temperature",
+      "description": "The red line is AizzakGpuTemperatureHigh's 85 C. Some virtual cards report no temperature: then only this panel says \"No data\"",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aizzak-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 69
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aizzak-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "nvidia_smi_temperature_gpu{job=\"nvidia-gpu\"} * on (uuid) group_left (name, index) nvidia_smi_gpu_info{job=\"nvidia-gpu\"}",
+          "legendFormat": "{{index}}: {{name}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ],
   "annotations": {
