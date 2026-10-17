@@ -4,7 +4,7 @@
 #
 #   deploy/prometheus/test-rules.sh
 #
-# Four checks, each with the binary of the image Compose actually runs, so a
+# Five checks, each with the binary of the image Compose actually runs, so a
 # rule that parses here parses in production:
 #   1. promtool check rules     -- alerts.yml is valid PromQL and YAML;
 #   2. promtool test rules      -- alerts.test.yml: every rule fires on the
@@ -14,7 +14,11 @@
 #   4. promtool check config    -- deploy/prometheus/prometheus.yml, with
 #                                  alerts.yml beside it as the container sees
 #                                  it (every scrape job parses, the rule file
-#                                  it names exists).
+#                                  it names exists), twice: (a) as a host
+#                                  without docker-compose.gpu.yml runs it, no
+#                                  scrape file under scrape.d/; (b) with
+#                                  scrape-gpu.yml mounted where that overlay
+#                                  mounts it, so the file it adds parses too.
 #
 # ⚠️ Step 2 runs against a COPY of alerts.yml with the annotations removed.
 # promtool compares annotations exactly, so keeping them would force every
@@ -75,10 +79,17 @@ echo "== amtool check-config (${am_image})"
 docker run --rm -v "$PWD/deploy/alertmanager:/am:ro" --entrypoint amtool \
   "$am_image" check-config /am/alertmanager.yml
 
-echo "== promtool check config (${prom_image})"
+echo "== promtool check config, no GPU overlay (${prom_image})"
 docker run --rm \
   -v "$PWD/deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
   -v "$PWD/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+  --entrypoint promtool "$prom_image" check config /etc/prometheus/prometheus.yml
+
+echo "== promtool check config, with docker-compose.gpu.yml's scrape file"
+docker run --rm \
+  -v "$PWD/deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -v "$PWD/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+  -v "$PWD/deploy/prometheus/scrape-gpu.yml:/etc/prometheus/scrape.d/gpu.yml:ro" \
   --entrypoint promtool "$prom_image" check config /etc/prometheus/prometheus.yml
 
 echo "test-rules: OK"

@@ -264,17 +264,17 @@ def test_a_huge_host_gets_large() -> None:
 
 
 _REFERENCE = [  # design.md 3-h, from the architect's model: (cpus, GB, mode, k*, vCPU, GB)
-    (8, 16, "gpu", 5, 11.50, 14.40),
+    (8, 16, "gpu", 3, 11.75, 14.38),
     (8, 16, "cpu", 85, 10.50, 14.38),
-    (12, 24, "gpu", 198, 14.90, 21.59),
+    (12, 24, "gpu", 196, 15.15, 21.58),
     (12, 24, "cpu", 249, 13.40, 20.00),
-    (16, 32, "gpu", 354, 19.82, 28.77),
+    (16, 32, "gpu", 353, 20.07, 28.79),
     (16, 32, "cpu", 427, 18.82, 28.79),
-    (24, 48, "gpu", 686, 28.01, 43.17),
+    (24, 48, "gpu", 685, 28.26, 43.20),
     (24, 48, "cpu", 749, 26.01, 41.90),
-    (32, 64, "gpu", 1000, 37.60, 57.53),
+    (32, 64, "gpu", 1000, 37.85, 57.59),
     (32, 64, "cpu", 1000, 35.60, 54.28),
-    (64, 24, "gpu", 198, 32.60, 21.59),
+    (64, 24, "gpu", 196, 32.85, 21.58),
     (64, 24, "cpu", 249, 28.60, 20.00),
     (8, 15, "cpu", 59, 10.50, 13.48),
 ]
@@ -295,7 +295,7 @@ def test_a_host_below_small_is_refused_naming_the_shortfall(tree: Tree, run: Run
         "--host-cpus", "8", "--host-memory-gb", "15", "--mode", "gpu", "--profiles", "monitoring"
     )
     assert code == 1
-    assert all(token in err for token in ("gpu", "14.22", "13.50", "0.72"))
+    assert all(token in err for token in ("gpu", "14.28", "13.50", "0.78"))
     assert tree.sha() == before
     assert not tree.conf.exists()
 

@@ -28,6 +28,7 @@ anything.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -64,6 +65,8 @@ from app.framework.observability.metrics import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _PROM_YML = _REPO_ROOT / "deploy" / "prometheus" / "prometheus.yml"
+_GPU_COMPOSE = _REPO_ROOT / "docker-compose.gpu.yml"
+_GPU_SCRAPE = _REPO_ROOT / "deploy" / "prometheus" / "scrape-gpu.yml"
 _DATASOURCES = _REPO_ROOT / "deploy" / "grafana" / "provisioning" / "datasources"
 _PROVIDERS = _REPO_ROOT / "deploy" / "grafana" / "provisioning" / "dashboards"
 _DASHBOARDS = _REPO_ROOT / "deploy" / "grafana" / "dashboards"
@@ -212,6 +215,59 @@ def test_every_scrape_target_names_a_service_that_exists() -> None:
                 f"{_PROM_YML}: job {job['job_name']!r} scrapes {host!r}, but it "
                 f"is not a service in {_COMPOSE.name}"
             )
+
+
+def test_every_gpu_scrape_target_names_a_service_the_gpu_file_defines() -> None:
+    """The jobs in scrape-gpu.yml exist only on a host with docker-compose.gpu.yml, so they
+    may name only services THAT file defines -- not the base file's, which would make the
+    target outlive the overlay (monitoring-profile 4.2)."""
+    defined = set(_load_yaml(_GPU_COMPOSE)["services"]) - set(_compose()["services"])
+    assert defined, "the GPU file defines no service of its own"
+    jobs = _load_yaml(_GPU_SCRAPE)["scrape_configs"]
+    assert jobs, "scrape-gpu.yml holds no job"
+    for job in jobs:
+        hosts = _scraped_hosts(job)
+        assert hosts, f"{_GPU_SCRAPE.name}: job {job['job_name']!r} has no target"
+        for host in hosts:
+            assert host in defined, (
+                f"{_GPU_SCRAPE.name}: job {job['job_name']!r} scrapes {host!r}, which "
+                f"{_GPU_COMPOSE.name} does not define (it defines {sorted(defined)})"
+            )
+
+
+def test_the_gpu_scrape_file_is_mounted_where_prometheus_looks() -> None:
+    """``scrape_config_files`` is a glob INSIDE the container; the GPU file's mount is what
+    puts scrape-gpu.yml under it. The base file mounts nothing there, so a host without the
+    overlay has no GPU job at all (the glob matches nothing)."""
+    prom = _prom()
+    assert prom["scrape_config_files"] == ["/etc/prometheus/scrape.d/*.yml"]
+    mounted = _bind_target(
+        _load_yaml(_GPU_COMPOSE)["services"]["prometheus"], "./deploy/prometheus/scrape-gpu.yml"
+    )
+    assert mounted is not None, f"{_GPU_COMPOSE.name} does not mount scrape-gpu.yml"
+    assert fnmatch.fnmatch(mounted, prom["scrape_config_files"][0]), (
+        f"{_GPU_COMPOSE.name} mounts scrape-gpu.yml at {mounted!r}, outside "
+        f"scrape_config_files {prom['scrape_config_files']}"
+    )
+    for mount in _compose()["services"]["prometheus"]["volumes"]:
+        assert "/scrape.d/" not in str(mount), "the base file must mount nothing under scrape.d/"
+    # parsed strictly by Prometheus: a matched file may hold `scrape_configs:` and nothing else
+    assert set(_load_yaml(_GPU_SCRAPE)) == {"scrape_configs"}
+
+
+def test_the_gpu_target_is_ordinary_and_its_job_unique() -> None:
+    """No ``tier: optional`` (AizzakScrapeTargetDown must fire the moment the exporter dies
+    on a GPU host), a job name no other file uses, and a port the service ``expose``s."""
+    jobs = _load_yaml(_GPU_SCRAPE)["scrape_configs"]
+    names = [job["job_name"] for job in jobs]
+    assert names == ["nvidia-gpu"]
+    assert not set(names) & {job["job_name"] for job in _prom()["scrape_configs"]}
+    for job in jobs:
+        for static in job["static_configs"]:
+            assert "labels" not in static, "an ordinary target carries no labels"
+    exporter = _load_yaml(_GPU_COMPOSE)["services"]["nvidia-gpu-exporter"]
+    ports = {t.rsplit(":", 1)[1] for s in jobs[0]["static_configs"] for t in s["targets"]}
+    assert ports == set(exporter["expose"])
 
 
 def test_the_app_is_scraped_directly_and_never_through_the_edge() -> None:

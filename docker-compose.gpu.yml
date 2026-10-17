@@ -1,13 +1,16 @@
 # GPU overlay (server-gpu-plan.md 2.5): everything that needs an NVIDIA GPU, in
 # ONE file a GPU server adds to COMPOSE_FILE -- leave it out and the same
-# docker-compose.yml runs on CPU. Three services, and only these keys
+# docker-compose.yml runs on CPU. Five entries, and only these keys
 # (tests/unit/test_compose_gpu_overlay.py):
 #   ollama     the LLM on the GPU (only with COMPOSE_PROFILES=local-llm)
 #   embedding  the CUDA image, ONE replica, on the GPU
 #   app        `utility` only: nvidia-smi for the System Monitor page, no compute
+#   prometheus ONE mount: the scrape job for the exporter below (4.2)
+#   nvidia-gpu-exporter  the card's numbers for Prometheus (4.2, only with
+#              COMPOSE_PROFILES=monitoring)
 #
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
-#   COMPOSE_PROFILES=local-llm
+#   COMPOSE_PROFILES=local-llm,monitoring
 #   EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
 #   EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
 #
@@ -83,3 +86,59 @@ services:
           devices:
             - driver: nvidia
               capabilities: [utility]
+
+  # 4.2 (server-gpu-plan.md): the exporter's scrape job, found by
+  # prometheus.yml's `scrape_config_files` glob. Without this mount the glob
+  # matches nothing and Prometheus has no `nvidia-gpu` target at all.
+  prometheus:
+    volumes:
+      - ./deploy/prometheus/scrape-gpu.yml:/etc/prometheus/scrape.d/gpu.yml:ro
+
+  # ── GPU numbers for Prometheus (server-gpu-plan.md 4.2) ─────────────────
+  # nvidia-smi read by utkuozdemir/nvidia_gpu_exporter (owner decision Q-4 (b),
+  # docs/delivery/monitoring-profile/). Here only, and only with profile
+  # `monitoring`: no GPU file, no exporter, no target, no alert.
+  # 1.15.1 (2026-09-02) is distroless and uid 65534: no shell and no wget, so
+  # the healthcheck runs the one binary the toolkit mounts -- nvidia-smi --
+  # and proves the card is readable from HERE; the HTTP side is
+  # AizzakScrapeTargetDown's (an ordinary target). Pinned by the multi-arch
+  # index digest, verified 2026-10-17 with `docker buildx imagetools inspect`
+  # (linux/amd64 manifest sha256:93b45e335c8286379e03ecd542354fa425e5ffb8e0e5761e60c1fb241212fda4).
+  # `utility` only, as `app` above: nvidia-smi + NVML, no CUDA context.
+  # Limits are fixed numbers, not size variables (A-4): 64m is `large`'s
+  # GPU-mode headroom (Q-8), held against measured peak x 1.5 (AC-4.6).
+  # YAML anchors do not cross files, so `logging` restates x-app-logging;
+  # tests/unit/test_compose_gpu_overlay.py holds the two equal.
+  nvidia-gpu-exporter:
+    profiles: ["monitoring"]
+    image: utkuozdemir/nvidia_gpu_exporter:1.15.1@sha256:7aee2d42836ad29d4adb2722b7cfdc806ec9cc8d45fd0b8971ebbad2d9f3d087
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - "--web.listen-address=:9835"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [utility]
+    expose:
+      - "9835"
+    healthcheck:
+      test: ["CMD", "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "com.docker.compose.service,com.docker.compose.project"

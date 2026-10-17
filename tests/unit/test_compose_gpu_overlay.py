@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,11 @@ _ENV_EXAMPLE = _ROOT / ".env.example"
 _CPU_IMAGE = "aizzak/embedding:dev"
 _CUDA_IMAGE = "aizzak/embedding-cuda:dev"
 _STRIPPED_FROM_ENV = frozenset({"COMPOSE_FILE", "COMPOSE_PROFILES"})
+_EXPORTER_IMAGE = (
+    "utkuozdemir/nvidia_gpu_exporter:1.15.1"
+    "@sha256:7aee2d42836ad29d4adb2722b7cfdc806ec9cc8d45fd0b8971ebbad2d9f3d087"
+)
+_SCRAPE_MOUNT = "./deploy/prometheus/scrape-gpu.yml:/etc/prometheus/scrape.d/gpu.yml:ro"
 
 
 def _docker_available() -> bool:
@@ -52,12 +58,12 @@ def _overlay() -> dict[str, Any]:
     return data
 
 
-def _config(*files: Path, profile: str | None = None) -> dict[str, Any]:
+def _config(*files: Path, profiles: Sequence[str] = ()) -> dict[str, Any]:
     env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_FROM_ENV}
     cmd = ["docker", "compose", "--env-file", str(_ENV_EXAMPLE)]
     for path in files:
         cmd += ["-f", str(path)]
-    if profile:
+    for profile in profiles:
         cmd += ["--profile", profile]
     cmd += ["config", "--format", "json"]
     done = subprocess.run(
@@ -86,10 +92,17 @@ def _keys_anywhere(node: object) -> set[str]:
 # ── AC-5.1 ──────────────────────────────────────────────────────────────────
 
 
-def test_the_overlay_has_only_services_and_exactly_three() -> None:
+def test_the_overlay_has_only_services_and_exactly_five() -> None:
+    """ollama, embedding, app (2.5), then prometheus (one mount) and the exporter (4.2)."""
     overlay = _overlay()
     assert set(overlay) == {"services"}
-    assert set(overlay["services"]) == {"ollama", "embedding", "app"}
+    assert set(overlay["services"]) == {
+        "ollama",
+        "embedding",
+        "app",
+        "prometheus",
+        "nvidia-gpu-exporter",
+    }
 
 
 # ── AC-5.2 ──────────────────────────────────────────────────────────────────
@@ -146,6 +159,69 @@ def test_app_gets_utility_only_and_no_wsl_path() -> None:
         assert forbidden not in text, forbidden
 
 
+# ── monitoring-profile AC-4.1 and AC-4.2 (the overlay's 4.2 entries) ──────────────
+
+
+def test_prometheus_gets_one_mount_and_nothing_else() -> None:
+    assert _overlay()["services"]["prometheus"] == {"volumes": [_SCRAPE_MOUNT]}
+
+
+def test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded() -> None:
+    exporter = _overlay()["services"]["nvidia-gpu-exporter"]
+    assert exporter == {
+        "profiles": ["monitoring"],
+        "image": _EXPORTER_IMAGE,
+        "user": "65534:65534",
+        "read_only": True,
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "command": ["--web.listen-address=:9835"],
+        "deploy": {
+            "resources": {
+                "limits": {"cpus": "0.25", "memory": "64m"},
+                "reservations": {"devices": [{"driver": "nvidia", "capabilities": ["utility"]}]},
+            }
+        },
+        "expose": ["9835"],
+        "healthcheck": {
+            "test": ["CMD", "nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+            "interval": "30s",
+            "timeout": "10s",
+            "retries": 3,
+            "start_period": "20s",
+        },
+        "restart": "unless-stopped",
+        "logging": exporter["logging"],
+    }
+    assert not set(exporter) & {
+        "ports",
+        "privileged",
+        "network_mode",
+        "pid",
+        "cap_add",
+        "devices",
+        "volumes",
+    }
+    assert "count" not in exporter["deploy"]["resources"]["reservations"]["devices"][0]
+
+
+def test_the_gpu_exporter_logs_like_every_other_service() -> None:
+    """Alloy drops lines without `attrs`: anchors do not cross files, so the overlay restates
+    `x-app-logging` and this keeps the two equal."""
+    anchor = yaml.safe_load(_BASE.read_text(encoding="utf-8"))["x-app-logging"]["logging"]
+    assert _overlay()["services"]["nvidia-gpu-exporter"]["logging"] == anchor
+
+
+@_needs_compose
+@pytest.mark.parametrize(
+    "profiles",
+    [(), ("local-llm",), ("monitoring",), ("local-llm", "monitoring")],
+)
+def test_the_exporter_exists_only_with_the_monitoring_profile(profiles: tuple[str, ...]) -> None:
+    services = _config(_BASE, _GPU, profiles=profiles)["services"]
+    assert ("nvidia-gpu-exporter" in services) == ("monitoring" in profiles)
+
+
 # ── AC-5.5 ──────────────────────────────────────────────────────────────────
 
 
@@ -164,8 +240,9 @@ def test_the_overlay_builds_publishes_and_names_nothing() -> None:
 def test_the_overlay_resolves_one_cuda_replica_and_leaves_the_balancer_alone(
     profile: str | None,
 ) -> None:
-    base = _config(_BASE, profile=profile)
-    with_gpu = _config(_BASE, _GPU, profile=profile)
+    profiles = (profile,) if profile else ()
+    base = _config(_BASE, profiles=profiles)
+    with_gpu = _config(_BASE, _GPU, profiles=profiles)
     embedding = with_gpu["services"]["embedding"]
     assert embedding["image"] == _CUDA_IMAGE
     assert embedding["deploy"]["replicas"] == 1
@@ -180,12 +257,26 @@ def test_the_overlay_resolves_one_cuda_replica_and_leaves_the_balancer_alone(
 
 
 @_needs_compose
-def test_the_overlay_changes_only_the_three_services_it_names() -> None:
-    base = _config(_BASE, profile="local-llm")["services"]
-    with_gpu = _config(_BASE, _GPU, profile="local-llm")["services"]
-    assert set(base) == set(with_gpu)
+@pytest.mark.parametrize("profiles", [("local-llm",), ("local-llm", "monitoring")])
+def test_the_overlay_changes_only_the_services_it_names(profiles: tuple[str, ...]) -> None:
+    """AC-4.2: three services changed as since 2.5; with `monitoring` also `prometheus` (the
+    one mount) and one service added, the exporter. Without it neither exists."""
+    base = _config(_BASE, profiles=profiles)["services"]
+    with_gpu = _config(_BASE, _GPU, profiles=profiles)["services"]
+    monitoring = "monitoring" in profiles
+    assert set(with_gpu) - set(base) == ({"nvidia-gpu-exporter"} if monitoring else set())
+    assert set(base) <= set(with_gpu)
     changed = {name for name in base if base[name] != with_gpu[name]}
-    assert changed == {"ollama", "embedding", "app"}
+    assert changed == {"ollama", "embedding", "app"} | ({"prometheus"} if monitoring else set())
+    if monitoring:
+        before, after = base["prometheus"], with_gpu["prometheus"]
+        added = [v for v in after["volumes"] if v not in before["volumes"]]
+        assert len(added) == 1 and len(after["volumes"]) == len(before["volumes"]) + 1
+        assert added[0]["target"] == "/etc/prometheus/scrape.d/gpu.yml"
+        assert added[0]["read_only"] is True
+        assert {k: v for k, v in after.items() if k != "volumes"} == {
+            k: v for k, v in before.items() if k != "volumes"
+        }
 
 
 # ── AC-5.7, in the wording of design.md §5.4 ────────────────────────────────

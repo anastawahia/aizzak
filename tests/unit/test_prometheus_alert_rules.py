@@ -727,6 +727,21 @@ def test_the_rule_script_also_checks_the_scrape_config() -> None:
     assert "check config" in script, "prometheus.yml is no longer syntax-checked in CI"
 
 
+def test_the_rule_script_checks_the_config_with_and_without_the_gpu_file() -> None:
+    """monitoring-profile AC-4.3: `promtool check config` runs once as a host without the GPU
+    overlay sees prometheus.yml, and once with scrape-gpu.yml mounted at the path
+    docker-compose.gpu.yml mounts it -- so the file that overlay adds is parsed too."""
+    script = (_REPO_ROOT / "deploy" / "prometheus" / "test-rules.sh").read_text(encoding="utf-8")
+    overlay = yaml.safe_load((_REPO_ROOT / "docker-compose.gpu.yml").read_text(encoding="utf-8"))
+    (mount,) = overlay["services"]["prometheus"]["volumes"]
+    host, container, mode = mount.split(":")
+    assert (host, mode) == ("./deploy/prometheus/scrape-gpu.yml", "ro")
+    assert f'-v "$PWD/{host[2:]}:{container}:{mode}"' in script, (
+        "test-rules.sh no longer mounts scrape-gpu.yml where docker-compose.gpu.yml does"
+    )
+    assert script.count("check config /etc/prometheus/prometheus.yml") == 2
+
+
 def test_the_backup_age_question_points_at_the_ops_task_rule() -> None:
     """AC-5.8: the age of the last backup is not a new rule -- it is the
     overdue rule's ledger metric, and the runbook must say so."""

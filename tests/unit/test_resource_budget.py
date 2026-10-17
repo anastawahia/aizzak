@@ -420,6 +420,24 @@ def test_the_script_and_this_module_agree_per_size(size: str) -> None:
 # drops it (a small server) and says there are no alerts then.
 
 _COUNTED = "monitoring: counted (on by default, decision 7)"
+# The exporter the GPU file adds under `monitoring` (4.2): fixed numbers, in GPU mode only.
+_GPU_EXPORTER_CPUS = 0.25
+_GPU_EXPORTER_BYTES = 64 * 1024**2
+_MONITORING_ELEVEN = frozenset(
+    {
+        "prometheus",
+        "grafana",
+        "alertmanager",
+        "alert-sink",
+        "pgbouncer-exporter",
+        "redis-stream-exporter",
+        "redis-cache-exporter",
+        "node-exporter",
+        "postgres-exporter",
+        "loki",
+        "alloy",
+    }
+)
 # The eleven services' own limits (vCPU, bytes) per size, from the compose file and the
 # size files: large 4768m, medium 2464m, small 1696m of memory.
 _ELEVENS_LIMITS = {
@@ -428,11 +446,11 @@ _ELEVENS_LIMITS = {
     "small": (1.40, 1696 * 1024**2),
 }
 # Totals (vCPU, GB) the script prints, with and without the profile (AC-2.1, AC-2.2).
-_BUDGET_WITH = {
+_BUDGET_WITH = {  # the sizes run in GPU mode, so 4.2's exporter is in them (0.25 vCPU, 64m)
     "ref": (35.60, 57.28),
-    "large": (37.60, 57.53),
-    "medium": (19.35, 28.41),
-    "small": (11.50, 14.22),
+    "large": (37.85, 57.59),
+    "medium": (19.60, 28.47),
+    "small": (11.75, 14.28),
 }
 _BUDGET_WITHOUT = {
     "ref": (32.00, 52.62),
@@ -492,9 +510,23 @@ def test_without_monitoring_each_total_drops_by_the_elevens_limits(key: str) -> 
         assert (with_gb - mod_gb) * _GB == pytest.approx(drop_bytes + _GPU_EXPORTER_BYTES, abs=1024)
 
 
-# What the GPU file adds to the monitoring share (4.2); 0 until the exporter exists.
-_GPU_EXPORTER_CPUS = 0.0
-_GPU_EXPORTER_BYTES = 0
+@pytest.mark.parametrize("size", SIZES)
+def test_the_monitoring_share_is_the_elevens_limits_plus_the_gpu_exporter(size: str) -> None:
+    """AC-4.5: what `--without-monitoring` returns is exactly the eleven services' limits and,
+    in GPU mode, the exporter's -- named, not a residue."""
+    parsed = read_size(size)
+    assert parsed.mode == "gpu"
+    compose = size_compose(parsed)
+    monitoring = {
+        name: spec
+        for name, spec in compose["services"].items()
+        if "monitoring" in (spec.get("profiles") or ())
+    }
+    assert set(monitoring) == _MONITORING_ELEVEN | {"nvidia-gpu-exporter"}
+    cpus, memory = _totals(monitoring)
+    drop_cpus, drop_bytes = _ELEVENS_LIMITS[size]
+    assert cpus == pytest.approx(drop_cpus + _GPU_EXPORTER_CPUS, abs=0.005)
+    assert memory * _GB == pytest.approx(drop_bytes + _GPU_EXPORTER_BYTES, abs=1024)
 
 
 def test_without_monitoring_the_standing_set_is_seventeen() -> None:

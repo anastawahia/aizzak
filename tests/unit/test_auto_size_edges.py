@@ -63,17 +63,17 @@ def _run(env: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int
     return code, captured.out, captured.err
 
 
-# AC-1.6 boundary: GPU mode needs 14.22 GB; the allowance is 90% of the host.
+# AC-1.6 boundary: GPU mode needs 14.28 GB; the allowance is 90% of the host.
 def test_the_refusal_threshold_is_exact_in_gpu_mode(
     env: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     before = _sha(env)
     # decision 7: the server counts monitoring, which COMPOSE_PROFILES names (--profiles here)
     gpu = ("--mode", "gpu", "--profiles", "monitoring")
-    code, _, err = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.79", *gpu)
+    code, _, err = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.86", *gpu)
     assert code == 1 and "gpu" in err
     assert _sha(env) == before
-    code, _, _ = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.8", *gpu)
+    code, _, _ = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.87", *gpu)
     assert code == 0
 
 

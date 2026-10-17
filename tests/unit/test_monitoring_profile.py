@@ -182,7 +182,7 @@ def test_exactly_the_eleven_carry_the_monitoring_profile() -> None:
     for name in sorted(MONITORING):
         assert _raw(COMPOSE)[name]["profiles"] == ["monitoring"], name
     overlay = {n for n, s in _raw(GPU_OVERLAY).items() if "monitoring" in _profiles(s)}
-    assert overlay <= GPU_MONITORING, f"the GPU file puts {sorted(overlay)} behind monitoring"
+    assert overlay == GPU_MONITORING, f"the GPU file puts {sorted(overlay)} behind monitoring"
 
 
 @pytest.mark.parametrize("name", sorted(MONITORING))
