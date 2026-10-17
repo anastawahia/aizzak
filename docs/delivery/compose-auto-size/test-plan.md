@@ -126,4 +126,16 @@ AC‑6.3 الزمن: `test_auto_size.py` و`test_auto_size_edges.py` معاً 12
 
 **الحكم (الجولة 2): PASS.**
 
+## الجولة 3 (CI)
+
+**العطل:** بعد دمج PR #11 فشل job الـ`integration` في CI على master (التشغيل 38963825508) وعلى الـPR (38952966441) باختبارين: `test_the_budget_script_refuses_a_non_utf8_block_with_exit_2` (`1 == 2`) و`test_a_symlink_to_a_file_outside_the_project_uses_the_project_directory` (`1 == 0`). job الـ`quality` نجح.
+
+**السبب:** `ci.yml` يصدّر `COMPOSE_FILE=docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml`، و`deploy/resource-budget.sh` يعامل `COMPOSE_FILE` مساراً واحداً (سلوك قديم موثَّق في `test_resource_budget.py`) فيفشل بـ`No such file or directory`. الاختباران استدعيا السكربت عبر `subprocess.run` دون تثبيت `COMPOSE_FILE` على عكس بقيّة المستدعين. عيب في اختباراتي أنا (لم يظهر محلّياً لأن المتغيّر غير مضبوط). لا عيب في كود المنتج.
+
+**الإصلاح:** الاختباران يستخدمان الآن المساعد `_budget` الموجود في `tests/unit/test_auto_size.py` (يثبّت `COMPOSE_FILE` على الملف الواحد ويعمل من جذر المستودع). الأقوال والنيّة لم تتغيّر. فحصت بقيّة استدعاءات `resource-budget.sh` و`auto_size.py` بالـsubprocess في `tests/`: كلّها تثبّت `COMPOSE_FILE` أو تمرّر بيئة مقيَّدة (`PATH`/`HOME`/`DOCKER_*`) أو تشغّل `main(..., environ={})`.
+
+**الدليل:** قبل الإصلاح ومع متغيّر CI: `2 failed` (`1 == 2` و`1 == 0`، stderr: `No such file or directory: 'docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml'`). بعده: `2 passed`. الحزمة كاملة (unit+architecture+eval) مع متغيّر CI: **5758 ناجحاً**، وبدونه: **5758 ناجحاً**، 0 تخطٍّ.
+
+**الحكم (الجولة 3): PASS.**
+
 </div>
