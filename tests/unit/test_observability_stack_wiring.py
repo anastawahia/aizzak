@@ -220,6 +220,11 @@ def test_every_scrape_target_names_a_service_that_exists() -> None:
             )
 
 
+_GPU_FIELDS_MAX = 214  # `nvidia-smi --help-query-gpu` fields, all numeric: the worst case
+_GPUS_MAX = 8
+_FIXED_SAMPLES = 56  # Go/process/exporter series that do not depend on the GPU count
+
+
 def test_every_gpu_scrape_job_bounds_what_a_hijacked_exporter_can_send() -> None:
     """SR-9: the exporter is a third-party image on a network Prometheus trusts. Each job
     caps the samples, labels and body of a scrape, and never follows a redirect. promtool
@@ -230,12 +235,29 @@ def test_every_gpu_scrape_job_bounds_what_a_hijacked_exporter_can_send() -> None
             assert isinstance(job.get(key), int) and job[key] > 0, f"{name}: {key} is not set"
         assert isinstance(job.get("label_value_length_limit"), int), f"{name}: no value limit"
         assert job["label_value_length_limit"] > 0
-        # Generous above ~400 samples for 8 GPUs, but not unbounded.
-        assert 400 < job["sample_limit"] <= 20000, job["sample_limit"]
+        # Measured with exporter 1.15.1 on one RTX 4060 (2026-10-18): 95 samples per GPU
+        # plus 56 fixed. The ceiling if all 214 `nvidia-smi --help-query-gpu` fields were
+        # numeric, on an 8-GPU server, is the floor; the upper bound keeps it a bound.
+        assert _GPU_FIELDS_MAX * _GPUS_MAX + _FIXED_SAMPLES <= job["sample_limit"] <= 20000, job[
+            "sample_limit"
+        ]
         assert re.fullmatch(r"\d+(KB|MB)", str(job.get("body_size_limit"))), (
             f"{name}: no body limit"
         )
         assert job.get("follow_redirects") is False, f"{name}: redirects are followed"
+        # SR-15: only the exporter's own families may be stored; a hijacked exporter must not
+        # inject `aizzak_*` series that the alert rules read without a `job` filter.
+        keeps = [
+            r
+            for r in job.get("metric_relabel_configs", [])
+            if r.get("action") == "keep" and r.get("source_labels") == ["__name__"]
+        ]
+        assert len(keeps) == 1, f"{name}: no keep rule on __name__"
+        keep = re.compile(keeps[0]["regex"])
+        assert keep.fullmatch("nvidia_smi_memory_used_bytes")
+        assert keep.fullmatch("nvidia_smi_gpu_info")
+        assert not keep.fullmatch("aizzak_ops_task_last_success_timestamp_seconds")
+        assert not keep.fullmatch("pgbouncer_pools_client_waiting_connections")
 
 
 def test_every_gpu_scrape_target_names_a_service_the_gpu_file_defines() -> None:
