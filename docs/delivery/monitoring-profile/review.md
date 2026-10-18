@@ -3,7 +3,9 @@
 # مراجعة الشيفرة: المراقبة اختياريّة وأرقام الكرت (`monitoring-profile`)
 
 - **النطاق المراجَع:** `git diff master...feat/monitoring-profile` في `/home/AIZZAK`: تسعة التزامات من `f2158a0` إلى `3880ff9`، و35 ملفّاً. قرأتُ كلّ ملفٍّ متغيّر كاملاً، لا مقاطع الفرق وحدها.
-- **الحكم:** **PASS**. لا ملاحظة حاجبة. فيه 4 ملاحظات مهمّة و7 تحسينات.
+- **الحكم:** **PASS** في الجولتين.
+  - **الجولة 0:** لا ملاحظة حاجبة. فيها 4 ملاحظات مهمّة و7 تحسينات، وأُصلحت كلّها في الجولة 1.
+  - **الجولة 1:** لا حاجب. فيها 3 ملاحظات مهمّة جديدة (#12…#14) و4 تحسينات (#15…#18). انظر القسم «الجولة 1» أسفل.
 - **خارج الحكم:** BUG‑1 (ذروة ذاكرة المصدّر، AC‑4.6). قبله المالك خطراً حتّى 7.3 في 2026‑10‑18، فلا يُطرح هنا حاجباً. لكنّ الملاحظة 3 تطلب تسجيل هذا القبول حيث يُقرأ.
 
 ## الملاحظات
@@ -110,5 +112,135 @@
 ### الإفساد
 - **الحارس الذي يمسك:** فحص `check config` الثاني. يفشل على ملفّ أهدافٍ معطوب، فهو يقرأ الملفّ المربوط فعلاً.
 - **الحارس الذي يفوّت:** حارس AC‑1.3 لا يرى `environment` في ملفّ الكرت (الملاحظة 2).
+
+---
+
+## الجولة 1 (إعادة العمل، `278defa..f5591c2`)
+
+- **النطاق:** `git diff 278defa..HEAD`: ستّة التزامات (`6d3b574` و`3802c25` و`88ea496` و`9ebf5a7` و`3467ba3`، ثمّ `f5591c2` لـQA)، و19 ملفّاً.
+  - قرأتُ كاملةً: `deploy/gpu-preflight.sh`، و`docker-compose.gpu.yml`، و`tests/unit/test_gpu_preflight.py`، و`tests/unit/test_compose_gpu_overlay.py`.
+  - وقرأتُ بقيّة الملفّات المعدّلة مع سياق كلّ تعديل.
+  - ومعها: `security-review.md` (SR‑1…SR‑8)، و`test-plan.md` §6، و`status.md` «قرارات وتصعيدات».
+- **الحكم:** **PASS**. لا حاجب. الملاحظات #1…#11 كلّها أُصلحت، ولا تراجع. فيها 3 ملاحظات مهمّة جديدة و4 تحسينات.
+- **نطاقٌ موسَّع بموافقة:** `deploy/gpu-preflight.sh` واختباره خارج قائمة design.md §2. وتعديلهما لـSR‑2 بموافقة المالك الصريحة (`status.md`، 2026‑10‑18).
+
+### حال الملاحظات #1…#11
+
+| # | الحال | الدليل |
+|---|---|---|
+| 1 | ✅ | `stack-commands.md:21` و`:123`، و`08-local-runbook.md:30` و`:756-757`، كلّها بـ`,monitoring`. وحارسٌ جديد يرفض السطر العاري في `stack-commands.md` و`quickstart.md` (`test_monitoring_profile.py:339-341`). |
+| 2 | ✅ | `_services()` يعيد `load_compose(files=(COMPOSE, GPU_OVERLAY))["services"]` (`test_monitoring_profile.py:117-122`). **أعدتُ الإفساد نفسه** على نسخةٍ في scratch: `PROBE_URL=http://prometheus:9090/-/ready` في `environment` لـ`embedding` داخل ملفّ الكرت. ففشل `test_no_service_outside_monitoring_names_a_monitoring_host`: ‏1 failed و26 passed. |
+| 3 | ✅ | **التعليق** (`docker-compose.gpu.yml:114-117`): «accepted risk … peak x 1.5 > 64m. Re-measure in 7.3». **الصفّان 4.1 و4.2** (`server-gpu-plan.md:133-134`): AC‑1.8 ✅، وAC‑6.3 ✅، وAC‑4.6 مقبولٌ باستثناء. ورقم الذروة فيهما صار قديماً بعد قياس QA (#17). |
+| 4 | ✅ | `architecture.html:231` و`:763`: 29. ولا «27 قاعدة» باقية في `docs/`. |
+| 5 | ✅ | `resource-budget.sh:312-313` يطبع «not in the block's profiles, counted by --with-profiles». و`test_block_with_profiles_does_not_claim_monitoring_is_uncounted` يثبت السطرين، مع `--with-profiles` ودونه. |
+| 6 | ✅ | `design.md:942-945`: ‏`up -d --force-recreate --no-deps prometheus`، بعد فحص AC‑3.3. |
+| 7 | ✅ | `GPU_EXPORTER_METRICS` معرَّفة مرّةً في `support_compose.py:36-47`، وتستوردها الوحدتان. |
+| 8 | ✅ | `08-local-runbook.md:33`، ويذكر شبكة `gpu-metrics` أيضاً. |
+| 9 | ✅ | `stack-commands.md:604`: «ثلاث خدماتٍ دائماً … ومع `monitoring` اثنتين أخريين». |
+| 10 | ✅ | `server-gpu-plan.md:457`: «الجواب (2026‑10‑17)» مع رابط Q‑1، والرابط يصل. |
+| 11 | ✅ | `stories.md:121`: أرقام ما بعد 4.2، وتطابق `test_resource_budget.py:450-453`. |
+
+### الملاحظات الجديدة
+
+| # | الشدة | الملف:السطر | الملاحظة | الإصلاح المطلوب |
+|---|---|---|---|---|
+| 12 | مهمة | `docs/deploy-server.md:101` | **سطرٌ فارغ يقطع جدول قائمة الأمان، فلا تظهر ث‑7 وث‑8 وث‑9 صفوفاً.** في Markdown ينتهي الجدول عند أوّل سطرٍ فارغ. والأسطر 102-104 بلا رأس جدول، فتصير فقرةً واحدة من نصٍّ فيه خطوطٌ عموديّة. **تحقّقتُ بالعرض:** ‏`markdown-it` (commonmark مع الجداول) يضع ث‑1…ث‑6 في `<tr>`، ثمّ `</table>` ثمّ `<p>\| ث‑7 …`. وتسجيل ث‑7…ث‑9 كان شرط PASS في المراجعة الأمنيّة. | حذف السطر 101. |
+| 13 | مهمة | `deploy/gpu-preflight.sh:25-27` و`:178` و`:184`؛ `docs/deploy-server.md:57`؛ `docs/stack-commands.md:593`؛ `tests/unit/test_gpu_preflight.py:400` | **`--smoke` لم يعد يغلب غياب وقت التشغيل على مضيفٍ بلا `nvidia-ctk`، والنصوص ما زالت تعد بالخروج 0.** حالة `absent` تُفشل `ctk`، فيُتخطّى `--smoke` (`:261`)، والخروج 12 دائماً. وهذه حال Docker Desktop المعتادة، فأداة NVIDIA فيه داخل آلته الافتراضيّة لا في التوزيعة. **السيناريو، شغّلتُه بمزيّفات الاختبار:** لا وقت تشغيل `nvidia`، و`--smoke`، ولا `nvidia-ctk` على PATH. فيقول سطر toolkit: «WARN … the live check (--smoke) below decides». ثمّ `ctk FAIL … not on PATH`، ثمّ `smoke SKIP`، ثمّ `FAIL 12 (NVIDIA Container Toolkit)`، ولا `docker run`. فمن يتبع التلميح «on a CDI-only or Docker Desktop host, run again with --smoke» يعود إلى 12 نفسه. **القرار نفسه صحيحٌ أمنيّاً** (SR‑2)، والعطب في النصوص. ومضيف CDI عليه `nvidia-ctk` عادةً، لأنّه يولّد ملفّ CDI، فيبقى `--smoke` صالحاً له. | **(أ)** تُصحَّح النصوص الخمسة: Docker Desktop، وأيّ مضيفٍ بلا `nvidia-ctk` على PATH، يخرج بـ12 عمداً، لأنّ إصدار الأداة لا يُقرأ. و«`--smoke` يغلب» يبقى لمضيف CDI وحده، وبشرط `ctk OK`. **(ب)** سطر WARN في `:178` لا يَعِد بأنّ `--smoke` «يقرّر» إن كان `ctk` سيمنعه. **(ج)** اختبارٌ للحالة: لا وقت تشغيل، و`--smoke`، و`ctk=False`، والنتيجة 12 بلا `docker run`. وإن أراد المالك إبقاء Docker Desktop مدعوماً فهذا قراره، مثلاً WARN بدل FAIL في `absent` مع `--smoke` ناجح. |
+| 14 | مهمة | `docs/runbooks/alerts.md:525` و`:527` | **خطوة إجراءٍ في دليل `AizzakLlmCircuitOpen` ما زالت بالسطر العاري.** وهي من صنف #1 وSR‑5. النصّ: «فالسبب غالباً نقصُ `COMPOSE_PROFILES=wsl-ollama` من `.env`». **السيناريو:** يرى المالك الجسر غائباً، فيضيف السطر إلى `.env` كما كُتب: `COMPOSE_PROFILES=wsl-ollama`. وعند أوّل إعادة إنشاء تسقط المراقبة كلّها بصمت، وهو العطب الذي تحرسه الميزة. والسطر 527 يصف الخادم بـ`COMPOSE_PROFILES=local-llm`. والحارس الجديد لا يرى الموضعين، فهو يفحص `stack-commands.md` و`quickstart.md` وحدهما. **أمّا `08-local-runbook.md:2656`** («ونسيانُ `COMPOSE_PROFILES=wsl-ollama` … يُسقط الجسر») فمقبول: سردٌ لا سطرٌ يُنسخ، ومعناه صحيح. | **السطر 525:** «نقصُ `wsl-ollama` من سطر `COMPOSE_PROFILES` في `.env` (والسطر كاملاً: `COMPOSE_PROFILES=wsl-ollama,monitoring`)». **السطر 527:** `COMPOSE_PROFILES=local-llm,monitoring`. **الحارس:** يُمدّ نمط `test_both_guides_carry_the_monitoring_lines` إلى `runbooks/alerts.md` و`design/08-local-runbook.md`، وفي 08 كانت أسطر §3.0 في #1. ومعه يُعاد صوغ `08:2656` إلى «نسيانُ `wsl-ollama` في `COMPOSE_PROFILES`»، كما في `stack-commands.md:120`. |
+| 15 | تحسين | `docs/stack-commands.md:590`؛ `docs/deploy-server.md:21` و§1.2 (`:29`) | **وصف الفحص لم يتبع فحص `ctk`.** الأمر 40 يقول «يفحص أربعة أشياء»، وهي الآن خمسة، ويعرّف 12 بـ«الأداة غير مضبوطة» وحده. وجدول المتطلّبات و§1.2 لا يذكران الحدّ 1.17.8، فمن يثبّت الأداة لا يعرفه حتّى يفشل الفحص. | **الأمر 40:** «خمسة أشياء … وإصدار `nvidia-ctk` ≥ 1.17.8»، و12: «… أو أقدم من 1.17.8». **جدول المتطلّبات:** «≥ 1.17.8 (`nvidia-ctk --version`)». |
+| 16 | تحسين | `docker-compose.gpu.yml:3-4` و`:8`؛ `tests/unit/test_compose_gpu_overlay.py:95-96` و`:165` | **رأس ملفّ الكرت وأسماء الاختبارات أضيق من المحتوى الآن.** الرأس يقول «Five entries, and only these keys» و«prometheus ONE mount». لكنّ الملفّ صار فيه مفتاح `networks:` أعلى، ويضمّ `prometheus` إلى شبكة. والاختباران `test_prometheus_gets_one_mount_and_nothing_else` و`…has_only_services_and_exactly_five` (في docstring: «prometheus (one mount)») يؤكّدان الشبكة أيضاً. | **الرأس:** «prometheus ONE mount and the `gpu-metrics` network»، وسطرٌ للشبكة العليا. **اسم الاختبار:** مثل `test_prometheus_gets_one_mount_and_the_gpu_network`. |
+| 17 | تحسين | `docker-compose.gpu.yml:115-117`؛ `docs/deploy-server.md:104` (ث‑9، عمود الأثر)؛ `docs/server-gpu-plan.md:134` | **أرقام الذروة كُتبت قبل قياس QA في الجولة 1، ولم تُحدَّث بعده.** التعليق: «WSL peak 54.1 MiB … (the peak may drop)». وث‑9: «لم يُعَد قياسها بهذين الخيارين». والصفّ 4.2: «ذروة 54.1 م.ب». **والمقيس بالخيارين** (`test-plan.md` §6‑ب): 56.2 MiB، فلم ينخفض. | **التعليق:** «WSL peak 56.2 MiB with both flags (54.1 without); x 1.5 > 64m; re-measure in 7.3». **ث‑9:** «أُعيد محلّيّاً: 56.2 م.ب بالخيارين، والحدّ خطرٌ مقبول». **الصفّ 4.2:** 56.2. |
+| 18 | تحسين | `docs/delivery/monitoring-profile/design.md:241` و`:270-272`، و§2 (`:52`) | **التصميم لا يذكر تغييرات المراجعة الأمنيّة.** مواصفة المصدّر في §3‑ج ما زالت بـ`command` واحد، وبلا `networks`، وفيها «والجمع متزامنٌ مع كلّ كشط». وقائمة الملفّات في §2 بلا `deploy/gpu-preflight.sh`. فمن يقبل الميزة (المرحلة 11)، أو يعيد القياس في 7.3، يقارن بعقدٍ قديم. | ملاحظةٌ قصيرة في §3‑ج و§2: «بعد المراجعة الأمنيّة (SR‑1 وSR‑2 وSR‑4، موافقة المالك 2026‑10‑18): …»، مع الإحالة إلى الالتزامات. |
+
+### الشيفرة الجديدة
+
+#### `deploy/gpu-preflight.sh`: فحص `ctk`
+- **قراءة الإصدار:**
+  - النمط `([0-9]+)\.([0-9]+)\.([0-9]+)` بلا تثبيت بداية، ويُطبَّق على السطر الأوّل وحده، ثمّ يُقارَن عدداً بـ`10#`.
+  - **شغّلتُ حالاتٍ إضافيّة بمزيّفات الاختبار نفسها** (ملفٌّ في scratch يستورد `_run`). وكلّها كما يُتوقّع:
+    - `…version 1.17.8` يليه سطر `commit:` ← 0. وكذلك `1.17.8-1` و`v1.17.8` و`1.17.08` ← 0.
+    - `1.18.0-rc.1` ← 0، فهو يُقرأ 1.18.0. و`1.17.7-rc.1` ← 12.
+    - ناتجٌ سطره الأوّل فارغ ← 12 «no usable answer». والخطأ هنا في اتّجاه الرفض، فهو آمن.
+    - `nvidia-ctk` معلَّق ← 12 «timed out after 5s»، في أقلّ من 20 ث.
+  - وعلى هذا الجهاز يطبع `nvidia-ctk --version` على stdout: ‏`NVIDIA Container Toolkit CLI version 1.20.1`، ثمّ `commit: …`، برمز 0.
+- **`set -euo pipefail`:** لا مسار يكسره.
+  - `run` يلتقط الرمز بـ`|| RC=$?`.
+  - والنمط داخل `if`.
+  - و`read <<<` يعيد 0.
+  - و`BASH_REMATCH` لا يُقرأ إلّا بعد تطابق.
+- **الرمز 12 والأسبقيّة:**
+  - لا يكون `CTK_STATE=skipped` إلّا مع فشل الكرت أو Docker، وهذان يخرجان قبله بـ10 أو 11.
+  - فشل الإصدار يأتي بعد 11 و13 و10، وقبل 14.
+  - رأس السكربت (`:35-37`) وجدول `deploy-server.md:67` متّفقان.
+  - وتحليل الاختبار للأسطر الرقميّة ما زال يطابق: `_script_exit_codes`، والنمط `^\|\s*(\d{1,2})\s*\|`. فأسطر التتمّة في الرأس لا تبدأ برقم، وصفوف ث‑7…ث‑9 تبدأ بـ«ث».
+- **`--smoke` لا يُشغَّل مع `ctk` غير OK** (`:261-264`). ويحرسه `test_an_old_toolkit_is_not_overridden_by_a_passing_smoke`: لا `docker run`. والثغرة الوحيدة في النصوص حوله (#13).
+- **لا يثبّت شيئاً:**
+  - المزيّف يرفض أيّ وسيطٍ غير `--version` برمز 64.
+  - و`test_never_installs_anything` يؤكّد أنّ كلّ نداءٍ هو `["--version"]`.
+
+#### `docker-compose.gpu.yml`: الشبكات والخيارات
+- **مضيفٌ بالملفّ الأساسيّ وحده لا يتغيّر:**
+  - `docker-compose.yml` مطابقٌ لـ`278defa` بايتاً ببايت، والشبكة الجديدة معرّفة في ملفّ الكرت وحده.
+  - وقستُ دون ملفّ الكرت: كلّ الخدمات على `default` وحده، ولا `gpu-metrics`.
+- **مع ملفّ الكرت و`monitoring` و`local-llm`** (قرأتُ مفاتيح الشبكات وحدها من `config --format json`):
+  - `prometheus` على `[default, gpu-metrics]`، والمصدّر على `[gpu-metrics]` وحده.
+  - `embedding` و`ollama` و`app` و`grafana` باقيةٌ على `default`، فلا تفقد خدمةٌ شبكتها.
+  - و`gpu-metrics` ‏`internal: true`.
+- **ودون `monitoring`** لا تظهر `gpu-metrics` في النموذج أصلاً.
+- **لا خدمة أخرى تحتاج الشبكة:**
+  - لا يذكر المصدّرَ غيرُ `scrape-gpu.yml` وحالات promtool.
+  - Grafana تسأل Prometheus على `default`.
+  - وAlloy يقرأ السجلّات من Docker، لا من الشبكة.
+- **الخياران `--collect.interval=15s` و`--web.max-requests=2`:**
+  - لم أتحقّق من مصدر v1.15.1 بنفسي.
+  - لكنّ QA شغّل المصدّر بهما 10 دقائق: `healthy`، و`restarts=0`، وPrometheus يكشطه. ولو كان الخيار مجهولاً لسقط الإقلاع.
+  - و15s تساوي `scrape_interval` العامّ.
+
+#### `deploy/resource-budget.sh`
+الفرع الجديد صحيح:
+- `with_profiles` قيمةٌ منطقيّة (`:140`).
+- و`counted` يضمّ الخدمات المؤجّلة معه (`:289`)، فالسطر يطابق المجموع.
+
+#### الاختبارات الجديدة والمعدّلة
+- **تؤكّد السلوك، لا الأسماء:**
+  - مقارنة الإصدار بسبع حالات، منها `1.17.10` و`1.9.30` ضدّ المقارنة النصّيّة.
+  - و`--smoke` لا يغلب الإصدار القديم.
+  - وغياب الأداة، والإجابة غير المقروءة بثلاث صور.
+  - وعزل الشبكة في النصّ وفي النموذج المدمج (`test_the_overlay_changes_only_the_services_it_names`، عبر `docker compose config`).
+  - وأثبت QA أنّ كلّ حارسٍ يفشل بإفساده.
+- **العزل عن البيئة:**
+  - `test_compose_gpu_overlay` و`test_monitoring_profile` يحذفان `COMPOSE_FILE` و`COMPOSE_PROFILES`، كما في الجولة 0.
+  - و`load_compose` لا يقرأ البيئة أصلاً.
+  - واختبارات `test_gpu_preflight` الجديدة تبني PATH والبيئة من الصفر.
+
+### الوثائق
+- **`deploy-server.md`:**
+  - §1.4 فيه الحدّ الأدنى، وجدول الرموز محدَّث.
+  - §2 فيه ما يغيب دون المراقبة (SR‑6)، ولا صفّ جدولٍ فيه يبدأ برقم.
+  - ث‑6 بنصّ العلاج الجديد.
+  - ث‑7…ث‑9 مكتوبة، لكنّها لا تظهر صفوفاً (#12).
+- **`stack-commands.md` و08:**
+  - الأسطر مصحَّحة (#1).
+  - وسطر «آخر مطابقة» (`stack-commands.md:11`) صار «سطر المالك الأوّل (profile الجسر)». هو تاريخٌ أُعيدت صياغته ليمرّ الحارس، وهذا مقبول.
+- **اللوحة:**
+  - الصفّان 4.1 و4.2 محدَّثان، وجواب قرار 7 مضاف.
+  - عدّ `server-gpu-summary.html` كما هو: 8 مكتملة، و9 جارية، و12 لم تبدأ، من 29 مقالة. والسطر المضاف «الحالة» تحت 4.2 صحيح.
+- **`architecture.html`:** ‏29 في الموضعين.
+- **المعرّفات:** النصّ العربيّ المضاف كلّه بالشرطة U+2011. والاستثناء الوحيد `AC-3.3` داخل تعليق bash في design.md، وهو كود.
+
+### ما شغّلتُه (HEAD `f5591c2`)
+| الفحص | النتيجة |
+|---|---|
+| `ruff format --check .` و`ruff check .` | 821 ملفّاً منسَّقة، وAll checks passed |
+| `lint-imports` | 8 kept، و0 broken |
+| `mypy src` | لم يُشغَّل: `src/` لم يتغيّر في `278defa..HEAD` |
+| 13 وحدة متأثّرة و`tests/architecture`، ببيئةٍ نظيفة (بلا `COMPOSE_FILE` ولا `COMPOSE_PROFILES`) | `530 passed`، ‏rc 0 |
+| الوحدات الـ13 نفسها، بـ`COMPOSE_FILE` الثلاثيّ كما في CI | `529 passed` |
+| `deploy/prometheus/test-rules.sh` | `test-rules: OK`، و29 قاعدة، و`check config` ناجحٌ بالوضعين، ‏rc 0 |
+| إفساد #2 على نسخةٍ في scratch | الحارس يمسك: 1 failed |
+| حالات `ctk` الإضافيّة وحالة #13، بمزيّفات `test_gpu_preflight` | 12 passed، كما وُصف أعلاه |
+
+- لم أشغّل `tests/integration`، ولا حاويةً غير حاويات promtool المؤقّتة في `test-rules.sh`.
+- نسخة scratch وملفّ الحالات خارج المستودع.
 
 </div>
