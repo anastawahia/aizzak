@@ -522,9 +522,9 @@ docker compose logs --since 15m app | grep llm_guard
 docker compose ps ollama-bridge
 ```
 
-   فإن كان الجسر **غائباً** من القائمة فالسبب غالباً نقصُ `COMPOSE_PROFILES=wsl-ollama` من `.env` (الجسر خلف profile، ونسيانُ السطر يُسقطه بصمت). وإلّا فتأكّد أنّ Ollama يعمل على المضيف.
+   فإن كان الجسر **غائباً** من القائمة فالسبب غالباً غياب `wsl-ollama` من سطر `COMPOSE_PROFILES` في `.env` (السطر الكامل `COMPOSE_PROFILES=wsl-ollama,monitoring`) (الجسر خلف profile، ونسيانُ السطر يُسقطه بصمت). وإلّا فتأكّد أنّ Ollama يعمل على المضيف.
 
-   - **على خادم** (Ollama داخل المكدّس بـ`COMPOSE_PROFILES=local-llm`):
+   - **على خادم** (Ollama داخل المكدّس بـ`COMPOSE_PROFILES=local-llm,monitoring`):
 
 ```bash
 docker compose ps ollama

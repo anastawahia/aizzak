@@ -2653,7 +2653,7 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 >
 > 📌 **ولا شيء يعتمد على صحّة `ollama-bridge`، عمداً.** Ollama وحدةٌ أصليّةٌ في WSL خارج دورة حياة Compose؛ ربطُ إقلاع المكدّس بها يستبدل تدهوراً مرئيّاً بآخر خفيّ. «غير صحّي» هنا معناه «نداءات LLM ستفشل»، معروضاً في `docker compose ps` بدل أن يظهر في خطأ طلبٍ فقط.
 >
-> 📌 **والجسر خلف profile `wsl-ollama`** (‏`gpu-compose` 2.3)، فكلّ حافّةٍ إليه `required: false` أيضاً: مضيفٌ بلا الـprofile يقلع بدونه، وخادمٌ لا يراه أصلاً. والحوافّ أربع: `app` والعمّال الثلاثة. ونسيانُ `COMPOSE_PROFILES=wsl-ollama` على جهاز المالك يُسقط الجسر بصمت، فتصير نداءات LLM `502` ويشتعل `AizzakLlmCircuitOpen`.
+> 📌 **والجسر خلف profile `wsl-ollama`** (‏`gpu-compose` 2.3)، فكلّ حافّةٍ إليه `required: false` أيضاً: مضيفٌ بلا الـprofile يقلع بدونه، وخادمٌ لا يراه أصلاً. والحوافّ أربع: `app` والعمّال الثلاثة. ونسيانُ `wsl-ollama` في `COMPOSE_PROFILES` على جهاز المالك يُسقط الجسر بصمت، فتصير نداءات LLM `502` ويشتعل `AizzakLlmCircuitOpen`.
 >
 > ✅ **وأُغلقت معها حافّةٌ مُعلَنةٌ منذ [§3.133](../log/3.133.md)**: `app` صارت تُعلن `qdrant` في `depends_on` (‏`service_healthy`) — عين عطب [§3.111](../log/3.111.md): `QDRANT_URL` تسمّي `qdrant:6333` من الطور الأوّل، والحافّة غير مُعلَنة ⇒ `docker compose up -d app` وحده كان يقلعها بلا مخزن المتّجهات. وحوافّ `pgbouncer`/`qdrant` كلّها صارت `service_healthy` بدل `service_started`.
 
