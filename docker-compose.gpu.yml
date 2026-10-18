@@ -1,7 +1,7 @@
 # GPU overlay (server-gpu-plan.md 2.5): everything that needs an NVIDIA GPU, in
 # ONE file a GPU server adds to COMPOSE_FILE -- leave it out and the same
-# docker-compose.yml runs on CPU. Five entries, and only these keys
-# (tests/unit/test_compose_gpu_overlay.py):
+# docker-compose.yml runs on CPU. Five service entries, plus one top-level network,
+# and only these keys (tests/unit/test_compose_gpu_overlay.py):
 #   ollama     the LLM on the GPU (only with COMPOSE_PROFILES=local-llm)
 #   embedding  the CUDA image, ONE replica, on the GPU
 #   app        `utility` only: nvidia-smi for the System Monitor page, no compute
@@ -9,6 +9,8 @@
 #              `gpu-metrics` network, so it can reach the exporter (SR-1)
 #   nvidia-gpu-exporter  the card's numbers for Prometheus (4.2, only with
 #              COMPOSE_PROFILES=monitoring), alone on `gpu-metrics` with Prometheus
+#   gpu-metrics (top-level network, `internal: true`) shared by the exporter and
+#              Prometheus only
 #
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 #   COMPOSE_PROFILES=local-llm,monitoring

@@ -109,10 +109,11 @@
   - و`test_compose_sizes`، و`test_deploy_worker_default`، و`test_compose_build_overlay`، و`test_edge_hardening`.
   - و`test_gpu_compose_hygiene` و`test_gpu_preflight`. الثاني يبقى أخضر ما دام لا صفّ رقميّ جديد في `deploy-server.md`.
 
-> **ملاحظة مؤرَّخة (2026‑10‑18): بعد المراجعة الأمنيّة (SR‑1، SR‑2، SR‑4، موافقة المالك 2026‑10‑18).** التصميم الأصليّ أعلاه كما كُتب، وتغيّر التنفيذ في ثلاثة أمور:
+> **ملاحظة مؤرَّخة (2026‑10‑18): بعد المراجعة الأمنيّة (SR‑1، SR‑2، SR‑4، موافقة المالك 2026‑10‑18).** التصميم الأصليّ أعلاه كما كُتب، وتغيّر التنفيذ في أربعة أمور:
 > - المصدّر على شبكة `gpu-metrics` ‏`internal: true` وحدها مع Prometheus، لا على `default` (SR‑1، الالتزام `6d3b574`).
 > - ومعه `--collect.interval=15s` و`--web.max-requests=2` (SR‑4، الالتزام `6d3b574`).
 > - و`deploy/gpu-preflight.sh` يفحص الحدّ الأدنى لـ`nvidia-ctk` (SR‑2، الالتزام `3802c25`)، وهو واختباره داخل النطاق بموافقة المالك.
+> - وبعد جولة المراجعة الثانية: حدود الكشط في `scrape-gpu.yml` (SR‑9)، وحدّ Docker Engine الأدنى 26.0.0 في الفحص (SR‑10)، وقاعدة `keep` لأسماء المقاييس في المهمّة (SR‑15).
 
 ## 3. العقود
 
@@ -282,11 +283,11 @@ monitoring: NOT counted (not in the block's profiles). Without it there are no a
 - **`test_every_compose_image_is_pinned`** يقبل `tag@sha256` (`tests/unit/test_gpu_compose_hygiene.py:41,48-49`).
 - **Compose يدمج `volumes`** في `prometheus` إلحاقاً بالمسار الهدف (قيس: 4 مداخل). و`merge()` في `resource-budget.sh` و`support_compose._merge` و`auto_size.py` يستبدل القائمة، لكنّها لا تقرأ غير الحدود والـprofiles و`restart`.
 
-> **ملاحظة مؤرَّخة (2026‑10‑18): بعد المراجعة الأمنيّة (SR‑1، SR‑2، SR‑4، موافقة المالك 2026‑10‑18).** التصميم الأصليّ أعلاه كما كُتب، وتغيّر التنفيذ في ثلاثة أمور:
+> **ملاحظة مؤرَّخة (2026‑10‑18): بعد المراجعة الأمنيّة (SR‑1، SR‑2، SR‑4، موافقة المالك 2026‑10‑18).** التصميم الأصليّ أعلاه كما كُتب، وتغيّر التنفيذ في أربعة أمور:
 > - المصدّر على شبكة `gpu-metrics` ‏`internal: true` وحدها مع Prometheus، لا على `default` (SR‑1، الالتزام `6d3b574`).
 > - ومعه `--collect.interval=15s` و`--web.max-requests=2` (SR‑4، الالتزام `6d3b574`).
 > - و`deploy/gpu-preflight.sh` يفحص الحدّ الأدنى لـ`nvidia-ctk` (SR‑2، الالتزام `3802c25`)، وهو واختباره داخل النطاق بموافقة المالك.
-> - وبعد جولة المراجعة الثانية: حدود الكشط في `scrape-gpu.yml` (SR‑9)، وحدّ Docker Engine الأدنى 26.0.0 في الفحص (SR‑10).
+> - وبعد جولة المراجعة الثانية: حدود الكشط في `scrape-gpu.yml` (SR‑9)، وحدّ Docker Engine الأدنى 26.0.0 في الفحص (SR‑10)، وقاعدة `keep` لأسماء المقاييس في المهمّة (SR‑15).
 
 ### 3‑د) هدف المصدّر في Prometheus (Q‑7)
 
