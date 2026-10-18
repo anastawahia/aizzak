@@ -127,4 +127,72 @@ deploy/prometheus/test-rules.sh -> ... SUCCESS: 29 rules found / test-rules: OK 
 
 **FAIL** — بوابات الجودة الست خضراء وكلّ معيار آليٍّ مغطّى باختبارٍ يؤكّده (وفسدت الحرّاس عند الإفساد)، وAC‑1.8 وAC‑6.3 أُثبتا حيّاً، لكنّ AC‑4.6 فشل في شرط Q‑8 (ذروة المصدّر × 1.5 أكبر من `64m`، BUG‑1)، وهو قرارٌ للمالك لا تعديلٌ لي.
 
+## 6. الجولة 1 (بعد المراجعتين، HEAD `3467ba3`)
+
+**ما أُعيد فحصه:** الإصلاحات الستّة منذ `3880ff9`: الشبكة الداخليّة `gpu-metrics`، وعلَمَا `--collect.interval=15s` و`--web.max-requests=2`، وفحص `ctk` في `deploy/gpu-preflight.sh` (≥ 1.17.8، الخروج 12)، وسطر «monitoring:» في `resource-budget.sh --block`، وحارس الملفّ المدموج في `test_monitoring_profile.py`، وحارس الأدلّة لـ`COMPOSE_PROFILES` العارية.
+
+### أ) إفساد الحرّاس (نسخة scratch خارج المستودع، حُذفت بعدها)
+
+| الإفساد | الاختبار الذي فشل | النتيجة |
+|---|---|---|
+| المصدّر على `default` أيضاً | `test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded` | ✅ |
+| `internal: true` ← `false` | `test_the_exporter_joins_no_network_but_an_internal_gpu_metrics` | ✅ |
+| `prometheus.networks` بلا `default` | `test_prometheus_gets_one_mount_and_nothing_else` | ✅ |
+| `--collect.interval=15s` ← `1s` | `test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded` | ✅ |
+| مقارنة `ctk`: `>=` ← `>` على رقم الإصدار الأخير | `…compared_semantically[exactly-the-minimum]` وغيره | ✅ |
+| مقارنة نصّيّة (lexical) بدل الرقميّة | `…compared_semantically[numeric-not-text]` و`[numeric-minor]` | ✅ |
+| الحالات المتوقّعة بلا إفساد | 1.17.8 ينجح، 1.20.1 ينجح، 2.0.0 ينجح، 1.17.10 ينجح، 1.17.7 يفشل (12)، 1.16.2 يفشل، 1.9.30 يفشل؛ غياب `nvidia-ctk` أو ناتج غير مقروء أو خروج ≠ 0 ← 12 | ✅ |
+
+لا حاجة إلى اختبارٍ جديد: كلّ إصلاح له اختبارٌ يفشل عند إفساده.
+
+### ب) القياس الحيّ (Procedure B)، المشروع `aizzak-gpumon-proof` بملفّ `docker-compose.gpu.yml` الجديد
+
+`free` المتاح 10829 م.ب قبل البدء. المصدّر `healthy` طوال 10 دقائق، `restarts=0`، `OOMKilled=false`.
+
+| القياس | الجولة السابقة | الآن | قاعدة Q‑8 (الذروة × 1.5 ≤ 64 MiB، أي ≤ 42.7 MiB) |
+|---|---|---|---|
+| `memory.peak` | 56692736 (54.1 MiB) | **58929152 (56.2 MiB)** | ❌ × 1.5 = 84.3 MiB |
+| `memory.current` عند 10 دقائق | — | 41816064 (39.9 MiB) | — |
+| `anon` / `file` | 7.5 / 16.6 م.ب | **8.2 MiB / 30.5 MiB** | الذروة في معظمها ذاكرة تخزين صفحات |
+| `docker stats` | ≈ 19.6 MiB | 21.6 MiB / 64 MiB، المعالج 0.10% | — |
+
+الخلاصة: العلَمان لم يخفضا الذروة (ارتفعت 2 م.ب، وهو ضمن التذبذب). لا OOM. الحدّ `64m` باقٍ بقرار المالك. **BUG‑1 يبقى «مقبولٌ من المالك، يُعاد قياسه في 7.3»** ولا يجعل الجولة FAIL.
+
+### ج) العزل والجمع
+
+| الفحص | الطريقة | النتيجة |
+|---|---|---|
+| الشبكة `gpu-metrics` | `docker network inspect` | `Internal=true`، عضواها: المصدّر وPrometheus فقط ✅ |
+| Prometheus يجمع `nvidia-gpu` عبرها | `/api/v1/targets` | `up` ✅؛ استعلامات `memory_used/total` و`utilization` و`temperature` ≥ 1، ونتيجة `gpu_info` فيها `name` و`uuid` ✅ |
+| المصدّر لا يصل إلى الإنترنت | حاوية `prom/prometheus` المحلّيّة (`--network container:<exporter>`) تتصل بـ`1.1.1.1:443` | فشل ✅ (الشاهد: من شبكة Prometheus نفسها يتّصل) |
+| المصدّر لا يرى خدمات `default` | حلّ الاسم والاتصال بـ`redis-stream:6379` | `bad address` ✅ (الشاهد: من Prometheus يتّصل) |
+| المصدّر يصل إلى نظيره فقط | `prometheus:9090` | يتّصل (متوقّع، هو العضو الآخر في `gpu-metrics`) ✅ |
+| Prometheus ما زال يجمع أهداف `default` | شغّلتُ `redis-stream` و`redis-stream-exporter` في المشروع scratch | `redis-stream` = `up` ✅ (بقيّة الأهداف `down` لأنّها لم تُشغَّل، وهذا متوقّع) |
+
+### د) فحص التجهيز على هذا المضيف
+
+`deploy/gpu-preflight.sh` (بلا `--smoke`: يقرأ الإصدارات فقط ولا يبدأ حاويات): driver OK (RTX 4060 Laptop, 592.82)، docker OK (29.6.1)، toolkit OK، **ctk OK 1.20.1 (>= 1.17.8)**، compose OK (5.3.1)، `OK (ready for docker-compose.gpu.yml)`، الخروج 0.
+
+### هـ) البوّابات على HEAD `3467ba3`
+
+| البوّابة | النتيجة |
+|---|---|
+| `ruff format --check .` | 821 files already formatted، 0 |
+| `ruff check .` | All checks passed، 0 |
+| `mypy src` | no issues found in 467 source files، 0 |
+| `lint-imports` | 8 kept, 0 broken، 0 |
+| `pytest -rs tests/unit tests/architecture tests/eval` | **5834 passed**, 7 warnings، 0 (لا skips) |
+| `tests/unit` مع `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.test.yml` | **5833 passed**, 7 warnings، 0 |
+| `deploy/prometheus/test-rules.sh` | 29 rules found, `test-rules: OK`، 0 |
+
+لم يُشغَّل `tests/integration`.
+
+### و) التنظيف
+
+`down --profile monitoring` على المشروع scratch أزال الحاويات والشبكتين. محاولة حذف الأحجام بخيار `-v` منعها حارس الأحجام (ت‑4)، فلم أحذف شيئاً. أحجام scratch الباقية للمالك (تُحذف بالاسم عبر `docker volume rm`): `aizzak-gpumon-proof_{grafana-data,minio-data,postgres-data,prometheus-data,qdrant-data,redis-data,vault-data,vault-init,wal-archive}`. مكدّس `aizzak` لم يُمسّ (يعمل `aizzak-cadvisor-1` وحده كما كان).
+
+### ز) الحكم
+
+**PASS** — كلّ إصلاحٍ مثبتٌ باختبارٍ يفشل عند إفساده، والعزل مثبتٌ حيّاً، والبوّابات خضراء. BUG‑1 (الذروة 56.2 MiB، × 1.5 > 64 MiB) مقبولٌ من المالك حتى إعادة القياس في 7.3، ولا أخطاء جديدة.
+
 </div>
