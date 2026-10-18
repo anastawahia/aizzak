@@ -35,7 +35,7 @@ from typing import Any, Final
 import pytest
 import yaml
 
-from tests.unit.support_compose import COMPOSE, GPU_OVERLAY, REPO_ROOT
+from tests.unit.support_compose import COMPOSE, GPU_OVERLAY, REPO_ROOT, load_compose
 
 ENV_EXAMPLE: Final[Path] = REPO_ROOT / ".env.example"
 
@@ -115,11 +115,11 @@ def _raw(path: Path) -> dict[str, Any]:
 
 
 def _services() -> dict[str, Any]:
-    """Every service of the base file and of the GPU file, as written."""
-    merged = dict(_raw(COMPOSE))
-    for name, spec in _raw(GPU_OVERLAY).items():
-        merged.setdefault(name, spec)
-    return merged
+    """Every service as `docker compose -f base -f gpu` merges them: the overlay's
+    `environment` entries on `ollama` and `embedding` are seen too (design.md 3-t)."""
+    services = load_compose(files=(COMPOSE, GPU_OVERLAY))["services"]
+    assert isinstance(services, dict)
+    return services
 
 
 def _edges(services: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -336,6 +336,9 @@ def test_both_guides_carry_the_monitoring_lines(guide: str) -> None:
     text = _text(_DOCS / guide)
     assert "COMPOSE_PROFILES=wsl-ollama,monitoring" in text
     assert "COMPOSE_PROFILES=local-llm,monitoring" in text
+    # SR-5: presence of the new form is not absence of the old one.
+    stale = re.findall(r"COMPOSE_PROFILES=(?:local-llm|wsl-ollama)(?!-|,|\w)", text)
+    assert not stale, f"{guide} still shows a profile line without monitoring: {stale}"
     assert "--without-monitoring" in text and "لا تنبيهات" in text
     assert re.search(r"--profile X`[^\n]*يحلّ محلّ(\*\*)? `COMPOSE_PROFILES`", text)
     assert "deploy/auto_size.py --role dev" in text

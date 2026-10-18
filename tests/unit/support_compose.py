@@ -33,6 +33,18 @@ MODE_PROFILES: Final[Mapping[str, frozenset[str]]] = {
 # plan's own profiles and auto_size.py follows COMPOSE_PROFILES -- putting monitoring in it
 # would make that test count what Compose does not run.
 DEFAULT_PROFILES: Final[frozenset[str]] = frozenset({"monitoring"})
+# nvidia_gpu_exporter v1.15.1's metric names (internal/integration/testdata of that tag), the
+# only ones the card's dashboard row and alerts may read (4.2). Defined once: a version bump
+# edits this and nothing else.
+GPU_EXPORTER_METRICS: Final[frozenset[str]] = frozenset(
+    {
+        "nvidia_smi_memory_used_bytes",
+        "nvidia_smi_memory_total_bytes",
+        "nvidia_smi_utilization_gpu_ratio",
+        "nvidia_smi_temperature_gpu",
+        "nvidia_smi_gpu_info",
+    }
+)
 SUFFIXES: Final = ("CPUS", "MEM", "REPLICAS", "MAXMEMORY")
 
 _INTERP = re.compile(r"\$\{([A-Z][A-Z0-9_]*):-([^}$]*)\}")

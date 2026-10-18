@@ -53,6 +53,7 @@ from app.framework.observability.metrics import (
     HTTP_REQUESTS_METRIC,
     RATE_LIMIT_REJECTIONS_METRIC,
 )
+from tests.unit.support_compose import GPU_EXPORTER_METRICS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALERTS_YML = _REPO_ROOT / "deploy" / "prometheus" / "alerts.yml"
@@ -757,19 +758,6 @@ def test_the_rule_script_checks_the_config_with_and_without_the_gpu_file() -> No
     assert script.count("check config /etc/prometheus/prometheus.yml") == 2
 
 
-# nvidia_gpu_exporter v1.15.1's names (internal/integration/testdata); the card's rules read
-# these and nothing else.
-_GPU_EXPORTER_METRICS = frozenset(
-    {
-        "nvidia_smi_memory_used_bytes",
-        "nvidia_smi_memory_total_bytes",
-        "nvidia_smi_utilization_gpu_ratio",
-        "nvidia_smi_temperature_gpu",
-        "nvidia_smi_gpu_info",
-    }
-)
-
-
 def test_the_gpu_rules_read_one_card_at_a_time() -> None:
     """monitoring-profile AC-5.1: both rules are per card (the series carry `uuid`), read the
     exporter's own metrics only, aggregate nothing and join nothing."""
@@ -781,7 +769,7 @@ def test_the_gpu_rules_read_one_card_at_a_time() -> None:
     for name, rule in rules.items():
         expr = " ".join(str(rule["expr"]).split())
         used = set(re.findall(r"nvidia_smi_[a-z_]+", expr))
-        assert used and used <= _GPU_EXPORTER_METRICS, (name, used)
+        assert used and used <= GPU_EXPORTER_METRICS, (name, used)
         assert "nvidia_smi_gpu_info" not in expr, f"{name}: a join on info would disarm it"
         for word in ("sum", "max", "min", "avg", "count", "by", "on", "ignoring", "group_left"):
             assert not re.search(rf"\b{word}\b", expr), f"{name}: `{word}` aggregates or joins"

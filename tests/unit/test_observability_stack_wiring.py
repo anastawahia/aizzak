@@ -61,6 +61,7 @@ from app.framework.observability.metrics import (
     RATE_LIMIT_REJECTIONS_METRIC,
     WS_CONNECTIONS_METRIC,
 )
+from tests.unit.support_compose import GPU_EXPORTER_METRICS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
@@ -100,17 +101,6 @@ KNOWN_METRICS = frozenset(
     }
 )
 
-# nvidia_gpu_exporter v1.15.1's names (internal/integration/testdata of that tag). The GPU row
-# of the capacity dashboard and the two card alerts read these and nothing else (4.2).
-GPU_EXPORTER_METRICS = frozenset(
-    {
-        "nvidia_smi_memory_used_bytes",
-        "nvidia_smi_memory_total_bytes",
-        "nvidia_smi_utilization_gpu_ratio",
-        "nvidia_smi_temperature_gpu",
-        "nvidia_smi_gpu_info",
-    }
-)
 _GPU_METRIC = re.compile(r"\bnvidia_smi_[a-z_]+")
 
 # prometheus_client renders a Histogram as three families; the dashboard has
