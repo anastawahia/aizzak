@@ -220,6 +220,24 @@ def test_every_scrape_target_names_a_service_that_exists() -> None:
             )
 
 
+def test_every_gpu_scrape_job_bounds_what_a_hijacked_exporter_can_send() -> None:
+    """SR-9: the exporter is a third-party image on a network Prometheus trusts. Each job
+    caps the samples, labels and body of a scrape, and never follows a redirect. promtool
+    (test-rules.sh) proves Prometheus accepts the keys."""
+    for job in _load_yaml(_GPU_SCRAPE)["scrape_configs"]:
+        name = job["job_name"]
+        for key in ("sample_limit", "label_limit", "label_name_length_limit"):
+            assert isinstance(job.get(key), int) and job[key] > 0, f"{name}: {key} is not set"
+        assert isinstance(job.get("label_value_length_limit"), int), f"{name}: no value limit"
+        assert job["label_value_length_limit"] > 0
+        # Generous above ~400 samples for 8 GPUs, but not unbounded.
+        assert 400 < job["sample_limit"] <= 20000, job["sample_limit"]
+        assert re.fullmatch(r"\d+(KB|MB)", str(job.get("body_size_limit"))), (
+            f"{name}: no body limit"
+        )
+        assert job.get("follow_redirects") is False, f"{name}: redirects are followed"
+
+
 def test_every_gpu_scrape_target_names_a_service_the_gpu_file_defines() -> None:
     """The jobs in scrape-gpu.yml exist only on a host with docker-compose.gpu.yml, so they
     may name only services THAT file defines -- not the base file's, which would make the

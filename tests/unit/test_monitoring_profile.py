@@ -344,6 +344,19 @@ def test_both_guides_carry_the_monitoring_lines(guide: str) -> None:
     assert "deploy/auto_size.py --role dev" in text
 
 
+@pytest.mark.parametrize(
+    "doc", [("runbooks", "alerts.md"), ("design", "08-local-runbook.md")], ids=["alerts", "08"]
+)
+def test_no_runbook_shows_a_compose_profiles_line_without_monitoring(doc: tuple[str, str]) -> None:
+    """SR-14: the same stale-line class as SR-5, in the runbooks. Only literal lines count (inside
+    a code fence or backticks); prose that names a profile for history is left alone."""
+    text = _text(_DOCS.joinpath(*doc))
+    literal = re.findall(r"`(COMPOSE_PROFILES=[^`\s]*)`", text)
+    in_fence = re.findall(r"^\s*#?\s*(COMPOSE_PROFILES=\S+)", text, re.MULTILINE)
+    stale = [ln for ln in (*literal, *in_fence) if "monitoring" not in ln]
+    assert not stale, f"{'/'.join(doc)} shows a profile line without monitoring: {stale}"
+
+
 def test_no_monitoring_means_no_alerts_is_said_where_it_is_read() -> None:
     """AC-3.5: the runbook's §0 and the server guide's monitoring section."""
     runbook = _text(_DOCS / "runbooks" / "alerts.md")
