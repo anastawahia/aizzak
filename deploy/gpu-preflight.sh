@@ -16,25 +16,29 @@
 #
 # Checks, all run, one line each:
 #   driver   nvidia-smi on PATH exits 0 and lists a GPU (every GPU is printed)
-#   docker   `docker info` answers
+#   docker   `docker info` answers, and the Engine is >= MIN_DOCKER_ENGINE
 #   toolkit  Docker lists an `nvidia` runtime            (skipped if driver/docker failed)
 #   ctk      `nvidia-ctk --version` >= MIN_NVIDIA_CTK     (skipped if driver/docker failed)
 #   compose  `docker compose version` >= MIN_COMPOSE      (depends_on.required)
 #   smoke    --smoke only: the live GPU container above
 #
-# --smoke decides over a missing `nvidia` runtime (the toolkit check): a CDI-only
-# host or Docker Desktop resolves --gpus and Compose's GPU reservation without
-# registering that runtime. It runs only when driver, docker and compose passed.
+# --smoke overrides a missing `nvidia` runtime (the toolkit check) only on a CDI host, and
+# only when the ctk check is OK: a CDI-only host resolves --gpus and Compose's GPU
+# reservation without registering that runtime. It runs only when driver, docker, compose
+# and ctk passed. A host with no `nvidia-ctk` on PATH (Docker Desktop, for example) exits 12
+# on purpose, even with --smoke, because the toolkit version cannot be read.
 #
 # Exit codes (docs/deploy-server.md carries the same table; a test compares them):
 #    0  ready for docker-compose.gpu.yml
 #    2  bad usage
 #   10  no usable NVIDIA GPU (nvidia-smi missing or failing); Docker and Compose are fine,
 #       so the stack can still run on CPU
-#   11  Docker unusable: no CLI, the server does not answer, or permission denied on the socket
+#   11  Docker unusable: no CLI, the server does not answer, permission denied on the socket,
+#       or an Engine older than MIN_DOCKER_ENGINE (or one whose version cannot be read)
 #   12  GPU present but the NVIDIA Container Toolkit is not configured for Docker
 #       (no `nvidia` runtime, and no passing --smoke), OR its version is below
-#       MIN_NVIDIA_CTK, missing or unreadable (--smoke does not override this one)
+#       MIN_NVIDIA_CTK (an -rc, alpha or beta of the minimum counts as below it), missing
+#       or unreadable (--smoke does not override this one)
 #   13  Docker Compose missing or older than MIN_COMPOSE
 #   14  --smoke: the static checks passed and the GPU container failed (Docker's message is shown)
 #
@@ -45,6 +49,10 @@
 set -euo pipefail
 
 readonly MIN_COMPOSE="2.20.0"                                 # depends_on.required
+# CVE-2024-29018: before 26.0.0 the embedded DNS server forwards external names from the host
+# network even for a container on an `internal: true` network, so the `gpu-metrics` isolation
+# (docker-compose.gpu.yml, SR-1) leaks through DNS. Fixed in 26.0.0 (SR-10).
+readonly MIN_DOCKER_ENGINE="26.0.0"
 # The toolkit's hooks run as root on the host and read the image's root and environment
 # before `user`, `cap_drop` and `no-new-privileges` apply. 1.17.8 is the first release with
 # the fixes for CVE-2024-0132, CVE-2025-23359 and CVE-2025-23266 (LD_PRELOAD in an image).
@@ -94,6 +102,31 @@ row() {
 
 say() {
   printf 'gpu-preflight: %s\n' "$*"
+}
+
+# version_ge <have x.y.z> <want x.y.z>: pure integer comparison (no `sort -V` on a bare PATH).
+version_ge() {
+  local -a have want
+  IFS=. read -r -a have <<<"$1"
+  IFS=. read -r -a want <<<"$2"
+  local i
+  for i in 0 1 2; do
+    if ((10#${have[i]} > 10#${want[i]})); then
+      return 0
+    fi
+    if ((10#${have[i]} < 10#${want[i]})); then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# is_prerelease <text after the x.y.z>: a leading -rc / ~rc / .rc / alpha / beta (SR-13).
+# Anything else (`-1`, `-0ubuntu1`, `+cuda`) is a package revision, not a pre-release.
+is_prerelease() {
+  local tail="${1,,}"
+  local re='^[-~.+_]?(rc|alpha|beta)'
+  [[ $tail =~ $re ]]
 }
 
 # run <timeout seconds> <command...>: stdout -> OUT, stderr -> ERR, status -> RC.
@@ -157,8 +190,20 @@ check_docker() {
     fi
     return 0
   fi
-  row docker OK "server ${OUT%%|*}"
+  local engine="${OUT%%|*}"
   RUNTIMES="${OUT#*|}"
+  local engine_re='^v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})'
+  if [[ ! $engine =~ $engine_re ]]; then
+    row docker FAIL "the Docker Engine version is unreadable; need >= $MIN_DOCKER_ENGINE"
+    return 0
+  fi
+  local shown="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]})).$((10#${BASH_REMATCH[3]}))"
+  if ! version_ge "$shown" "$MIN_DOCKER_ENGINE" ||
+    { [[ $shown == "$MIN_DOCKER_ENGINE" ]] && is_prerelease "${engine#"${BASH_REMATCH[0]}"}"; }; then
+    row docker FAIL "server $engine is older than $MIN_DOCKER_ENGINE: an internal network leaks through DNS (CVE-2024-29018); update Docker Engine"
+    return 0
+  fi
+  row docker OK "server $engine (>= $MIN_DOCKER_ENGINE)"
   DOCKER_OK=1
 }
 
@@ -175,13 +220,13 @@ check_toolkit() {
   fi
   TOOLKIT_STATE="missing"
   if ((SMOKE)); then
-    row toolkit WARN "Docker has no \`nvidia\` runtime; the live check (--smoke) below decides"
+    row toolkit WARN "Docker has no \`nvidia\` runtime; --smoke can override this only on a CDI host with a passing ctk check"
   else
     row toolkit FAIL "Docker has no \`nvidia\` runtime"
   fi
   row "" "" "fix: $FIX_ADVICE (docs/deploy-server.md)"
   if ((!SMOKE)); then
-    row "" "" "on a CDI-only or Docker Desktop host, run again with --smoke"
+    row "" "" "on a CDI host whose toolkit check passes (>= $MIN_NVIDIA_CTK), run again with --smoke"
   fi
 }
 
@@ -192,32 +237,32 @@ check_toolkit_version() {
   fi
   if ! command -v nvidia-ctk >/dev/null 2>&1; then
     CTK_STATE="absent"
-    row ctk FAIL "nvidia-ctk is not on PATH: the toolkit version cannot be checked (need >= $MIN_NVIDIA_CTK)"
+    row ctk FAIL "nvidia-ctk is not on PATH: the toolkit version cannot be checked, so this exits 12 on purpose, even with --smoke (need >= $MIN_NVIDIA_CTK)"
     return 0
   fi
   run "$PROBE_TIMEOUT_S" nvidia-ctk --version
-  local version_re='([0-9]+)\.([0-9]+)\.([0-9]+)'
+  local version_re='version ([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})'
   local line
   line=$(first_line "$OUT")
-  if [[ $RC -ne 0 || ! $line =~ $version_re ]]; then
+  local tail=""
+  if [[ $RC -eq 0 && $line =~ $version_re ]]; then
+    tail="${line#*"${BASH_REMATCH[0]}"}"
+  fi
+  # A fifth digit in a number (`1.17.18446744073709551624`) is garbage, not a version.
+  if [[ $RC -ne 0 || ! $line =~ $version_re || $tail == [0-9]* ]]; then
     CTK_STATE="unreadable"
     row ctk FAIL "nvidia-ctk --version gave no usable answer ($(why_failed)); need >= $MIN_NVIDIA_CTK"
     return 0
   fi
-  local have_major=$((10#${BASH_REMATCH[1]}))
-  local have_minor=$((10#${BASH_REMATCH[2]}))
-  local have_patch=$((10#${BASH_REMATCH[3]}))
-  local want_major want_minor want_patch
-  IFS=. read -r want_major want_minor want_patch <<<"$MIN_NVIDIA_CTK"
-  local shown="$have_major.$have_minor.$have_patch"
-  if ((have_major > want_major)) ||
-    ((have_major == want_major && have_minor > want_minor)) ||
-    ((have_major == want_major && have_minor == want_minor && have_patch >= want_patch)); then
+  local shown="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]})).$((10#${BASH_REMATCH[3]}))"
+  # A pre-release of the minimum itself is below it; a pre-release of a later version is not.
+  if version_ge "$shown" "$MIN_NVIDIA_CTK" &&
+    ! { [[ $shown == "$MIN_NVIDIA_CTK" ]] && is_prerelease "$tail"; }; then
     row ctk OK "$shown (>= $MIN_NVIDIA_CTK)"
     CTK_STATE="ok"
   else
     CTK_STATE="old"
-    row ctk FAIL "$shown is older than $MIN_NVIDIA_CTK: its root hooks have known container-escape CVEs; update the NVIDIA Container Toolkit"
+    row ctk FAIL "$shown${tail:+ ($tail)} is older than $MIN_NVIDIA_CTK: its root hooks have known container-escape CVEs; update the NVIDIA Container Toolkit"
   fi
 }
 

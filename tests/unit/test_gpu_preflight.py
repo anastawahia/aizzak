@@ -89,7 +89,7 @@ if a[:1] == ["info"]:
         fail("fake docker: unexpected info call %r" % (a,), 64)
     if env("FAKE_INFO_RC", "0") != "0":
         fail(env("FAKE_INFO_ERR", "Cannot connect to the Docker daemon"), env("FAKE_INFO_RC"))
-    print("29.6.1|" + env("FAKE_RUNTIMES"))
+    print(env("FAKE_SERVER_VERSION", "29.6.1") + "|" + env("FAKE_RUNTIMES"))
     sys.exit(0)
 if a[:3] == ["compose", "version", "--short"]:
     if env("FAKE_COMPOSE_RC", "0") != "0":
@@ -271,7 +271,7 @@ def test_missing_runtime_is_exit_12_with_the_advice_not_the_action(tmp_path: Pat
     assert "NVIDIA Container Toolkit" in run.out
     assert "nvidia-ctk runtime configure --runtime=docker" in run.out
     assert "restart docker" in run.out
-    assert "--smoke" in run.out, "the CDI / Docker Desktop hint"
+    assert "--smoke" in run.out, "the CDI-host hint"
     assert run.installer_calls() == [], "advice is printed, never run"
 
 
@@ -397,13 +397,26 @@ def test_no_docker_cli_is_exit_11(tmp_path: Path) -> None:
 
 
 def test_smoke_evidence_overrides_a_missing_runtime(tmp_path: Path) -> None:
-    """D-10: a CDI-only host or Docker Desktop has no `nvidia` runtime and a working GPU."""
+    """D-10: a CDI host has no `nvidia` runtime and a working GPU. It still has to have a
+    readable `nvidia-ctk` >= the minimum: the override needs the ctk check to be OK."""
     run = _run(tmp_path, "--smoke", env={"FAKE_RUNTIMES": _RUNC_ONLY})
     assert run.rc == 0, run.out + run.err
     assert len(run.docker_runs()) == 1
     assert "OK (ready for docker-compose.gpu.yml)" in run.out
     assert "FAIL" not in run.out
     assert run.installer_calls() == []
+
+
+def test_no_runtime_and_no_nvidia_ctk_is_exit_12_even_with_smoke(tmp_path: Path) -> None:
+    """Owner decision 2026-10-18: a host without `nvidia-ctk` on PATH (Docker Desktop, say)
+    exits 12 on purpose, because the toolkit version cannot be read; --smoke does not help."""
+    run = _run(tmp_path, "--smoke", ctk=False, env={"FAKE_RUNTIMES": _RUNC_ONLY})
+    assert run.rc == 12, run.out + run.err
+    assert run.docker_runs() == []
+    assert "nvidia-ctk is not on PATH" in run.out
+    assert "on purpose" in run.out
+    assert "smoke    SKIP" in run.out
+    assert "the live check (--smoke) below decides" not in run.out
 
 
 def test_a_failing_smoke_with_a_missing_runtime_is_still_exit_12(tmp_path: Path) -> None:
@@ -534,6 +547,64 @@ def test_an_unreadable_nvidia_ctk_answer_is_exit_12(tmp_path: Path, env: dict[st
     assert "gave no usable answer" in run.out
 
 
+@pytest.mark.parametrize(
+    ("line", "ok"),
+    [
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-rc.1", False, id="rc-dot"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8~rc1", False, id="rc-tilde"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-beta.2", False, id="beta"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-alpha", False, id="alpha"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-1", True, id="package-revision"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-0ubuntu1", True, id="ubuntu"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.18.0-rc.1", True, id="later-rc"),
+        pytest.param("version 1.17.8", True, id="short-line"),
+        pytest.param("NVIDIA Container Toolkit CLI 1.17.8 1.17.8", False, id="no-version-word"),
+        pytest.param(
+            "NVIDIA Container Toolkit CLI version 12345678901234567890.1.1", False, id="20-digits"
+        ),
+        pytest.param(
+            "NVIDIA Container Toolkit CLI version 1.17.18446744073709551624", False, id="wrap"
+        ),
+    ],
+)
+def test_the_toolkit_version_regex_is_anchored_and_prereleases_are_below(
+    tmp_path: Path, line: str, ok: bool
+) -> None:
+    """SR-13: `1.17.8-rc.1` is not 1.17.8; a distro revision `-1` is; absurd numbers are junk."""
+    run = _run(tmp_path, env=_ctk(line))
+    assert run.rc == (0 if ok else 12), run.out + run.err
+
+
+@pytest.mark.parametrize(
+    ("version", "ok"),
+    [
+        pytest.param("25.0.4", False, id="CVE-2024-29018"),
+        pytest.param("25.0.5", False, id="25-branch-still-below-26"),
+        pytest.param("26.0.0", True, id="exactly-the-minimum"),
+        pytest.param("26.0.0-rc1", False, id="rc-of-the-minimum"),
+        pytest.param("29.6.1", True, id="this-host"),
+        pytest.param("100.0.0", True, id="numeric-not-text"),
+        pytest.param("9.0.0", False, id="numeric-not-text-low"),
+        pytest.param("", False, id="unreadable-empty"),
+        pytest.param("garbage", False, id="unreadable-text"),
+    ],
+)
+def test_the_docker_engine_minimum_is_exit_11(tmp_path: Path, version: str, ok: bool) -> None:
+    """SR-10: CVE-2024-29018 -- DNS egress from `internal` networks before Engine 26.0.0."""
+    run = _run(tmp_path, env={"FAKE_SERVER_VERSION": version})
+    assert run.rc == (0 if ok else 11), run.out + run.err
+    if not ok:
+        assert "FAIL 11 (Docker)" in run.out
+        assert run.ctk_calls() == [], "the toolkit is not probed on an unusable Docker"
+
+
+def test_the_engine_minimum_lives_in_one_named_variable() -> None:
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert len(re.findall(r'^readonly MIN_DOCKER_ENGINE="26\.0\.0"$', text, re.MULTILINE)) == 1
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert code.count("26.0.0") == 1
+
+
 def test_the_toolkit_version_is_not_probed_without_a_driver_or_docker(tmp_path: Path) -> None:
     run = _run(tmp_path, tools=("docker",), env=_ctk("NVIDIA Container Toolkit CLI version 1.0.0"))
     assert run.rc == 10, run.out + run.err
@@ -587,3 +658,19 @@ def test_the_server_doc_lists_the_scripts_exit_codes() -> None:
     assert doc.startswith('<div dir="rtl">')
     assert doc.rstrip().endswith("</div>")
     assert not re.search(r"dckr_pat_|hf_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}", doc)
+
+
+def test_every_security_row_sits_in_one_contiguous_table() -> None:
+    """SR-11: a blank line between two rows ends the table, and the rows after it render as a
+    paragraph with literal pipes -- in the list the owner reads. Lines are read one by one,
+    so only a block-level check notices."""
+    lines = _DOC.read_text(encoding="utf-8").splitlines()
+    rows = [i for i, ln in enumerate(lines) if ln.startswith("| ث\u2011")]
+    assert len(rows) >= 9, "the security list lost rows"
+    header = next(
+        i for i in range(rows[0], -1, -1) if lines[i].startswith("| #") and "الثغرة" in lines[i]
+    )
+    for i in range(header, rows[-1] + 1):
+        assert lines[i].startswith("|"), (
+            f"line {i + 1} breaks the security table: {lines[i][:40]!r}"
+        )
