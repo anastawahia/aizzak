@@ -93,7 +93,7 @@ def _keys_anywhere(node: object) -> set[str]:
 
 
 def test_the_overlay_has_only_services_and_exactly_five() -> None:
-    """ollama, embedding, app (2.5), then prometheus (one mount) and the exporter (4.2)."""
+    """ollama, embedding, app (2.5), then prometheus (mount, network) and the exporter (4.2)."""
     overlay = _overlay()
     assert set(overlay) == {"services", "networks"}
     assert set(overlay["services"]) == {
@@ -162,7 +162,7 @@ def test_app_gets_utility_only_and_no_wsl_path() -> None:
 # ── monitoring-profile AC-4.1 and AC-4.2 (the overlay's 4.2 entries) ──────────────
 
 
-def test_prometheus_gets_one_mount_and_nothing_else() -> None:
+def test_prometheus_gets_one_mount_and_the_gpu_network() -> None:
     assert _overlay()["services"]["prometheus"] == {
         "volumes": [_SCRAPE_MOUNT],
         # `default` listed on purpose: a list replaces the implicit network (SR-1).
@@ -283,7 +283,8 @@ def test_the_overlay_resolves_one_cuda_replica_and_leaves_the_balancer_alone(
 @pytest.mark.parametrize("profiles", [("local-llm",), ("local-llm", "monitoring")])
 def test_the_overlay_changes_only_the_services_it_names(profiles: tuple[str, ...]) -> None:
     """AC-4.2: three services changed as since 2.5; with `monitoring` also `prometheus` (the
-    one mount) and one service added, the exporter. Without it neither exists."""
+    one mount and the `gpu-metrics` network) and one service added, the exporter.
+    Without it neither exists."""
     base = _config(_BASE, profiles=profiles)["services"]
     with_gpu = _config(_BASE, _GPU, profiles=profiles)["services"]
     monitoring = "monitoring" in profiles

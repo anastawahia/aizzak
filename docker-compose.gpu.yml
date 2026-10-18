@@ -5,9 +5,10 @@
 #   ollama     the LLM on the GPU (only with COMPOSE_PROFILES=local-llm)
 #   embedding  the CUDA image, ONE replica, on the GPU
 #   app        `utility` only: nvidia-smi for the System Monitor page, no compute
-#   prometheus ONE mount: the scrape job for the exporter below (4.2)
+#   prometheus ONE mount (the scrape job for the exporter below, 4.2) and the
+#              `gpu-metrics` network, so it can reach the exporter (SR-1)
 #   nvidia-gpu-exporter  the card's numbers for Prometheus (4.2, only with
-#              COMPOSE_PROFILES=monitoring)
+#              COMPOSE_PROFILES=monitoring), alone on `gpu-metrics` with Prometheus
 #
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 #   COMPOSE_PROFILES=local-llm,monitoring
@@ -113,8 +114,8 @@ services:
   # `utility` only, as `app` above: nvidia-smi + NVML, no CUDA context.
   # Limits are fixed numbers, not size variables (A-4): 64m is `large`'s
   # GPU-mode headroom (Q-8). 64m stays by owner decision 2026-10-18, an accepted
-  # risk: WSL peak 54.1 MiB, and peak x 1.5 > 64m. Re-measure in 7.3, and with
-  # --collect.interval / --web.max-requests below (the peak may drop).
+  # risk: WSL peak 56.2 MiB with both flags below (54.1 without), and
+  # peak x 1.5 > 64m; owner accepted, re-measure in 7.3.
   # Network: `gpu-metrics` only (internal, no egress, no route to Redis, Qdrant
   # or Vault); Prometheus joins it to scrape :9835 (SR-1).
   # YAML anchors do not cross files, so `logging` restates x-app-logging;
