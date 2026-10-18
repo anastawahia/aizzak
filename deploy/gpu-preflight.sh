@@ -18,6 +18,7 @@
 #   driver   nvidia-smi on PATH exits 0 and lists a GPU (every GPU is printed)
 #   docker   `docker info` answers
 #   toolkit  Docker lists an `nvidia` runtime            (skipped if driver/docker failed)
+#   ctk      `nvidia-ctk --version` >= MIN_NVIDIA_CTK     (skipped if driver/docker failed)
 #   compose  `docker compose version` >= MIN_COMPOSE      (depends_on.required)
 #   smoke    --smoke only: the live GPU container above
 #
@@ -32,7 +33,8 @@
 #       so the stack can still run on CPU
 #   11  Docker unusable: no CLI, the server does not answer, or permission denied on the socket
 #   12  GPU present but the NVIDIA Container Toolkit is not configured for Docker
-#       (no `nvidia` runtime, and no passing --smoke)
+#       (no `nvidia` runtime, and no passing --smoke), OR its version is below
+#       MIN_NVIDIA_CTK, missing or unreadable (--smoke does not override this one)
 #   13  Docker Compose missing or older than MIN_COMPOSE
 #   14  --smoke: the static checks passed and the GPU container failed (Docker's message is shown)
 #
@@ -43,6 +45,11 @@
 set -euo pipefail
 
 readonly MIN_COMPOSE="2.20.0"                                 # depends_on.required
+# The toolkit's hooks run as root on the host and read the image's root and environment
+# before `user`, `cap_drop` and `no-new-privileges` apply. 1.17.8 is the first release with
+# the fixes for CVE-2024-0132, CVE-2025-23359 and CVE-2025-23266 (LD_PRELOAD in an image).
+# TODO(7.3): review this minimum against the NVIDIA security bulletins (security-review SR-2).
+readonly MIN_NVIDIA_CTK="1.17.8"
 # Index digest on 2026-10-14:
 # sha256:0f6bfcbf267e65123bcc2287e2153dedfc0f24772fb5ce84afe16ac4b2fada95
 readonly SMOKE_IMAGE="nvidia/cuda:12.4.1-base-ubuntu22.04"
@@ -59,6 +66,7 @@ ERR_FILE=""
 DRIVER_OK=0
 DOCKER_OK=0
 COMPOSE_OK=0
+CTK_STATE="skipped"           # ok | old | unreadable | absent | skipped
 TOOLKIT_STATE="skipped"       # ok | missing | skipped
 SMOKE_STATE="not-run"         # not-run | ok | failed
 
@@ -67,7 +75,8 @@ usage() {
 usage: gpu-preflight.sh [--smoke]
        gpu-preflight.sh --help
 
-Checks the NVIDIA driver, Docker, the NVIDIA Container Toolkit and Docker Compose.
+Checks the NVIDIA driver, Docker, the NVIDIA Container Toolkit (runtime and version) and
+Docker Compose.
 Never installs anything. --smoke also runs one throwaway GPU container.
 Exit codes: 0 ready, 2 bad usage, 10 no GPU, 11 Docker, 12 toolkit, 13 Compose, 14 --smoke failed.
 USAGE
@@ -176,6 +185,42 @@ check_toolkit() {
   fi
 }
 
+check_toolkit_version() {
+  if ((!DRIVER_OK || !DOCKER_OK)); then
+    row ctk SKIP "needs a working driver and Docker"
+    return 0
+  fi
+  if ! command -v nvidia-ctk >/dev/null 2>&1; then
+    CTK_STATE="absent"
+    row ctk FAIL "nvidia-ctk is not on PATH: the toolkit version cannot be checked (need >= $MIN_NVIDIA_CTK)"
+    return 0
+  fi
+  run "$PROBE_TIMEOUT_S" nvidia-ctk --version
+  local version_re='([0-9]+)\.([0-9]+)\.([0-9]+)'
+  local line
+  line=$(first_line "$OUT")
+  if [[ $RC -ne 0 || ! $line =~ $version_re ]]; then
+    CTK_STATE="unreadable"
+    row ctk FAIL "nvidia-ctk --version gave no usable answer ($(why_failed)); need >= $MIN_NVIDIA_CTK"
+    return 0
+  fi
+  local have_major=$((10#${BASH_REMATCH[1]}))
+  local have_minor=$((10#${BASH_REMATCH[2]}))
+  local have_patch=$((10#${BASH_REMATCH[3]}))
+  local want_major want_minor want_patch
+  IFS=. read -r want_major want_minor want_patch <<<"$MIN_NVIDIA_CTK"
+  local shown="$have_major.$have_minor.$have_patch"
+  if ((have_major > want_major)) ||
+    ((have_major == want_major && have_minor > want_minor)) ||
+    ((have_major == want_major && have_minor == want_minor && have_patch >= want_patch)); then
+    row ctk OK "$shown (>= $MIN_NVIDIA_CTK)"
+    CTK_STATE="ok"
+  else
+    CTK_STATE="old"
+    row ctk FAIL "$shown is older than $MIN_NVIDIA_CTK: its root hooks have known container-escape CVEs; update the NVIDIA Container Toolkit"
+  fi
+}
+
 check_compose() {
   if ! command -v docker >/dev/null 2>&1; then
     row compose SKIP "needs the docker CLI"
@@ -211,6 +256,10 @@ check_smoke() {
   fi
   if ((!DRIVER_OK || !DOCKER_OK || !COMPOSE_OK)); then
     row smoke SKIP "needs a working driver, Docker and Compose"
+    return 0
+  fi
+  if [[ $CTK_STATE != "ok" ]]; then
+    row smoke SKIP "needs a toolkit version >= $MIN_NVIDIA_CTK (no GPU container on an old or unknown toolkit)"
     return 0
   fi
   run "$SMOKE_TIMEOUT_S" docker run --rm --gpus all "$SMOKE_IMAGE" \
@@ -263,6 +312,10 @@ verdict() {
     say "FAIL 12 (NVIDIA Container Toolkit)"
     return 12
   fi
+  if [[ $CTK_STATE == "old" || $CTK_STATE == "unreadable" || $CTK_STATE == "absent" ]]; then
+    say "FAIL 12 (NVIDIA Container Toolkit version, need >= $MIN_NVIDIA_CTK)"
+    return 12
+  fi
   if [[ $SMOKE_STATE == "failed" ]]; then
     say "FAIL 14 (--smoke: the GPU container failed)"
     return 14
@@ -294,6 +347,7 @@ main() {
   check_driver
   check_docker
   check_toolkit
+  check_toolkit_version
   check_compose
   check_smoke
   verdict
