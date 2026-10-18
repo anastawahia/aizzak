@@ -576,12 +576,37 @@ def test_the_toolkit_version_regex_is_anchored_and_prereleases_are_below(
 
 
 @pytest.mark.parametrize(
+    ("env", "code"),
+    [
+        pytest.param(
+            _ctk("NVIDIA Container Toolkit CLI version 1.17.8-rc1\x1b[2J\x1b]0;t\x07\x1b[32mOK"),
+            12,
+            id="ctk-suffix",
+        ),
+        pytest.param(
+            {"FAKE_SERVER_VERSION": "25.0.4\x1b[2J\x1b]0;t\x07\x1b[32mOK"}, 11, id="engine"
+        ),
+        pytest.param({"FAKE_SERVER_VERSION": "26.0.0-rc1\x1b[2J"}, 11, id="engine-rc"),
+    ],
+)
+def test_control_sequences_from_tool_output_never_reach_the_terminal(
+    tmp_path: Path, env: dict[str, str], code: int
+) -> None:
+    """SR-17: a FAIL row prints text the tool produced; an ESC in it must come out as `?`."""
+    run = _run(tmp_path, env=env)
+    assert run.rc == code, run.out + run.err
+    assert "\x1b" not in run.out + run.err
+    assert "\x07" not in run.out + run.err
+
+
+@pytest.mark.parametrize(
     ("version", "ok"),
     [
         pytest.param("25.0.4", False, id="CVE-2024-29018"),
         pytest.param("25.0.5", False, id="25-branch-still-below-26"),
         pytest.param("26.0.0", True, id="exactly-the-minimum"),
         pytest.param("26.0.0-rc1", False, id="rc-of-the-minimum"),
+        pytest.param("29.0.0-rc.1", True, id="later-rc"),
         pytest.param("29.6.1", True, id="this-host"),
         pytest.param("100.0.0", True, id="numeric-not-text"),
         pytest.param("9.0.0", False, id="numeric-not-text-low"),

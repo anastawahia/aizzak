@@ -44,7 +44,10 @@
 #
 # With several failures the exit code is the highest-precedence one: 11, then 13,
 # then 10, then 12. A platform failure (Docker, Compose) outranks a GPU one because it
-# also blocks a CPU run, so 10 means exactly "no GPU, but a CPU run is possible".
+# usually blocks a CPU run too, so 10 means "no GPU, but a CPU run is possible". The one
+# exception is the Docker Engine minimum: it protects the GPU overlay's internal network
+# (CVE-2024-29018), so a host with no GPU on an older Engine gets 11 although the CPU
+# stack would run -- it is a server minimum, to be updated before anything else.
 # Exit 1 is an unexpected error (set -e).
 set -euo pipefail
 
@@ -200,10 +203,11 @@ check_docker() {
   local shown="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]})).$((10#${BASH_REMATCH[3]}))"
   if ! version_ge "$shown" "$MIN_DOCKER_ENGINE" ||
     { [[ $shown == "$MIN_DOCKER_ENGINE" ]] && is_prerelease "${engine#"${BASH_REMATCH[0]}"}"; }; then
-    row docker FAIL "server $engine is older than $MIN_DOCKER_ENGINE: an internal network leaks through DNS (CVE-2024-29018); update Docker Engine"
+    local clean="${engine//[^[:print:]]/?}"
+    row docker FAIL "server $clean is older than $MIN_DOCKER_ENGINE: an internal network leaks through DNS (CVE-2024-29018); update Docker Engine"
     return 0
   fi
-  row docker OK "server $engine (>= $MIN_DOCKER_ENGINE)"
+  row docker OK "server $shown (>= $MIN_DOCKER_ENGINE)"
   DOCKER_OK=1
 }
 
@@ -262,6 +266,7 @@ check_toolkit_version() {
     CTK_STATE="ok"
   else
     CTK_STATE="old"
+    tail="${tail//[^[:print:]]/?}"
     row ctk FAIL "$shown${tail:+ ($tail)} is older than $MIN_NVIDIA_CTK: its root hooks have known container-escape CVEs; update the NVIDIA Container Toolkit"
   fi
 }
