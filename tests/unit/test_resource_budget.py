@@ -547,6 +547,31 @@ def test_without_monitoring_conflicts_are_usage_errors() -> None:
     assert "--without-monitoring and --with-profiles are mutually exclusive" in profiles.stderr
 
 
+def test_block_with_profiles_does_not_claim_monitoring_is_uncounted(tmp_path: Path) -> None:
+    """A block without `monitoring` plus --with-profiles: TOTAL counts the eleven, so the
+    line must not say NOT counted; without --with-profiles it still does."""
+    block = tmp_path / "env"
+    block.write_text(
+        "\n".join(
+            [
+                "# >>> aizzak auto-size >>>",
+                "# host: cpus=32 memory_gb=64 mode=cpu",
+                "# role: dev",
+                "# profiles: wsl-ollama",
+                "# source: test",
+                "# <<< aizzak auto-size <<<",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    plain = _run("--block", str(block))
+    assert "monitoring: NOT counted (not in the block's profiles)" in plain.stdout, plain.stdout
+    both = _run("--block", str(block), "--with-profiles")
+    assert "monitoring: not in the block's profiles, counted by --with-profiles" in both.stdout
+    assert "NOT counted" not in both.stdout, both.stdout
+
+
 def test_the_script_refuses_an_unknown_or_missing_size() -> None:
     unknown = _run_size("huge")
     assert unknown.returncode == 2

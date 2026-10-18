@@ -309,6 +309,8 @@ if size_line:
 if block:
     if MONITORING in enabled:
         print("monitoring: counted (in the block's profiles)")
+    elif with_profiles:
+        print("monitoring: not in the block's profiles, counted by --with-profiles")
     else:
         print(
             "monitoring: NOT counted (not in the block's profiles). Without it there are no"
