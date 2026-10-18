@@ -1,0 +1,37 @@
+# Mounted into `prometheus` by docker-compose.gpu.yml only (server-gpu-plan.md
+# 4.2); prometheus.yml's `scrape_config_files` glob finds it. An ORDINARY
+# target -- no `tier: optional` -- so AizzakScrapeTargetDown fires the moment
+# the exporter dies on a GPU host.
+#
+# Limits (SR-9). The exporter is a third-party image and Prometheus trusts its
+# output, so a compromised one must not be able to fill the TSDB or Prometheus'
+# memory. Measured 2026-10-18 with the pinned exporter 1.15.1 and the same flags
+# on one RTX 4060: 151 samples per scrape (95 per GPU + 56 fixed), a 30.5 KB body,
+# and a widest series of 12 labels (14 with `job` and `instance`). So 8 GPUs are
+# about 8 x 95 + 56 = 816 samples; the ceiling, if all 214 `nvidia-smi
+# --help-query-gpu` fields were numeric, is 8 x 214 + 56 = 1768. Every limit below
+# sits above that, yet small enough to bite. Going over a limit drops the WHOLE
+# scrape: `up` goes 0 and AizzakScrapeTargetDown fires, which is the signal we want.
+scrape_configs:
+  - job_name: nvidia-gpu
+    static_configs:
+      - targets: ["nvidia-gpu-exporter:9835"]
+    sample_limit: 5000            # samples per scrape; 816 measured for 8 GPUs, 1768 ceiling
+    label_limit: 30               # labels per sample; the widest series carries 14
+    label_name_length_limit: 64   # longest real label name is ~30 characters
+    label_value_length_limit: 256 # GPU name / UUID / PCI address are < 100
+    body_size_limit: 2MB          # 30.5 KB for one GPU (151 samples); 8 GPUs ~ 90 KB
+    # Never follow a 3xx: a hijacked exporter must not make Prometheus GET
+    # another service on the shared `default` network.
+    follow_redirects: false
+    # SR-15. The limits bound the SIZE of a scrape, not the NAMES in it. Without this a
+    # hijacked exporter could inject `aizzak_*` or `pgbouncer_*` series, which most
+    # alert rules read with no `job` filter, and silence them (a huge
+    # `aizzak_ops_task_last_success_timestamp_seconds` hides AizzakOpsTaskOverdue)
+    # while `up` stays 1. Keep only the families the exporter really emits (v1.15.1):
+    # nvidia_smi_*, its build info, and the Go, process and promhttp runtime series.
+    # `up` and `scrape_*` are synthetic and do not pass through relabeling.
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "nvidia_smi_.*|nvidia_gpu_exporter_.*|go_.*|process_.*|promhttp_.*"
+        action: keep

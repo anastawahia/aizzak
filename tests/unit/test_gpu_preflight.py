@@ -6,8 +6,9 @@ needs (so a real driver or a real Docker on the machine running the tests can
 never be reached). Every fake appends each call to ``calls.jsonl``; what the
 tests assert is the exit code, the output, and that sequence of calls.
 
-Six recording fakes (``apt-get``, ``yum``, ``dnf``, ``sudo``, ``systemctl`` and
-``nvidia-ctk``) must never be called: the script checks, it does not install.
+Five recording fakes (``apt-get``, ``yum``, ``dnf``, ``sudo`` and ``systemctl``) must never be
+called: the script checks, it does not install. ``nvidia-ctk`` is called for ``--version``
+alone (SR-2: the toolkit's minimum version) and for nothing else.
 ``timeout`` is the real one from coreutils. The fakes' behaviour is steered by
 ``FAKE_*`` variables (see ``_FAKE_TOOLS``).
 """
@@ -37,7 +38,7 @@ _WITH_NVIDIA = (
     '{"io.containerd.runc.v2":{"path":"runc"},'
     '"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}}'
 )
-_INSTALLERS = ("apt-get", "yum", "dnf", "sudo", "systemctl", "nvidia-ctk")
+_INSTALLERS = ("apt-get", "yum", "dnf", "sudo", "systemctl")
 _SMOKE_IMAGE = "nvidia/cuda:12.4.1-base-ubuntu22.04"
 _THIS_HOST_GPU = "NVIDIA GeForce RTX 4060 Laptop GPU, 592.82"
 _SYSTEM_TOOLS = ("bash", "cat", "mktemp", "rm", "timeout")
@@ -72,6 +73,14 @@ if tool == "nvidia-smi":
         print(gpu)
     sys.exit(0)
 
+if tool == "nvidia-ctk":
+    if a != ["--version"]:
+        fail("fake nvidia-ctk: only --version may be called, got %r" % (a,), 64)
+    if env("FAKE_CTK_RC", "0") != "0":
+        fail("nvidia-ctk: broken", env("FAKE_CTK_RC"))
+    print(env("FAKE_CTK_OUT", "NVIDIA Container Toolkit CLI version 1.17.8\ncommit: 0123abc"))
+    sys.exit(0)
+
 if tool != "docker":  # an installer: recorded above, must never be called
     sys.exit(0)
 
@@ -80,7 +89,7 @@ if a[:1] == ["info"]:
         fail("fake docker: unexpected info call %r" % (a,), 64)
     if env("FAKE_INFO_RC", "0") != "0":
         fail(env("FAKE_INFO_ERR", "Cannot connect to the Docker daemon"), env("FAKE_INFO_RC"))
-    print("29.6.1|" + env("FAKE_RUNTIMES"))
+    print(env("FAKE_SERVER_VERSION", "29.6.1") + "|" + env("FAKE_RUNTIMES"))
     sys.exit(0)
 if a[:3] == ["compose", "version", "--short"]:
     if env("FAKE_COMPOSE_RC", "0") != "0":
@@ -120,6 +129,9 @@ class Run:
     def docker_runs(self) -> list[list[str]]:
         return [a for a in self.argvs("docker") if a[:1] == ["run"]]
 
+    def ctk_calls(self) -> list[list[str]]:
+        return self.argvs("nvidia-ctk")
+
     def installer_calls(self) -> list[str]:
         return [str(c["tool"]) for c in self.calls if c["tool"] in _INSTALLERS]
 
@@ -128,6 +140,7 @@ def _run(
     tmp_path: Path,
     *args: str,
     tools: tuple[str, ...] = ("nvidia-smi", "docker"),
+    ctk: bool = True,
     env: dict[str, str] | None = None,
     script: Path = _SCRIPT,
 ) -> Run:
@@ -139,7 +152,7 @@ def _run(
         found = shutil.which(name)
         assert found, f"the test host has no {name}"
         (system_bin / name).symlink_to(found)
-    for tool in (*tools, *_INSTALLERS):
+    for tool in (*tools, *_INSTALLERS, *(("nvidia-ctk",) if ctk else ())):
         fake = fake_bin / tool
         fake.write_text(f"#!{sys.executable}\n{_FAKE_TOOLS}", encoding="utf-8")
         fake.chmod(0o755)
@@ -184,6 +197,7 @@ def test_never_installs_anything(tmp_path: Path, scenario: str) -> None:
     run = _run(tmp_path, *args, **kwargs)  # type: ignore[arg-type]
     assert run.rc == expected, run.out + run.err
     assert run.installer_calls() == []
+    assert all(call == ["--version"] for call in run.ctk_calls()), run.ctk_calls()
 
 
 def test_script_text_hygiene() -> None:
@@ -212,9 +226,21 @@ def test_script_text_hygiene() -> None:
 
 def test_install_and_service_commands_appear_only_in_the_advice_text() -> None:
     names = re.compile(r"\b(apt-get|yum|dnf|systemctl|nvidia-ctk|sudo)\b")
-    lines = [ln for ln in _SCRIPT.read_text(encoding="utf-8").splitlines() if names.search(ln)]
-    assert len(lines) == 1, lines
-    assert lines[0].startswith("readonly FIX_ADVICE="), lines[0]
+    code = [
+        ln.strip()
+        for ln in _SCRIPT.read_text(encoding="utf-8").splitlines()
+        if names.search(ln) and not ln.lstrip().startswith("#")
+    ]
+    advice = [ln for ln in code if ln.startswith("readonly FIX_ADVICE=")]
+    assert len(advice) == 1, code
+    # Past the advice, nvidia-ctk appears only to ask its version (SR-2), never to act.
+    others = [ln for ln in code if ln not in advice]
+    assert others, "the version probe is gone"
+    for line in others:
+        assert not re.search(r"\b(apt-get|yum|dnf|systemctl|sudo)\b", line), line
+        assert "nvidia-ctk" in line and re.search(
+            r"command -v nvidia-ctk|nvidia-ctk --version|row ctk FAIL \"nvidia-ctk is not", line
+        ), line
 
 
 # ── AC-1.2 ──────────────────────────────────────────────────────────────────
@@ -245,7 +271,7 @@ def test_missing_runtime_is_exit_12_with_the_advice_not_the_action(tmp_path: Pat
     assert "NVIDIA Container Toolkit" in run.out
     assert "nvidia-ctk runtime configure --runtime=docker" in run.out
     assert "restart docker" in run.out
-    assert "--smoke" in run.out, "the CDI / Docker Desktop hint"
+    assert "--smoke" in run.out, "the CDI-host hint"
     assert run.installer_calls() == [], "advice is printed, never run"
 
 
@@ -371,13 +397,26 @@ def test_no_docker_cli_is_exit_11(tmp_path: Path) -> None:
 
 
 def test_smoke_evidence_overrides_a_missing_runtime(tmp_path: Path) -> None:
-    """D-10: a CDI-only host or Docker Desktop has no `nvidia` runtime and a working GPU."""
+    """D-10: a CDI host has no `nvidia` runtime and a working GPU. It still has to have a
+    readable `nvidia-ctk` >= the minimum: the override needs the ctk check to be OK."""
     run = _run(tmp_path, "--smoke", env={"FAKE_RUNTIMES": _RUNC_ONLY})
     assert run.rc == 0, run.out + run.err
     assert len(run.docker_runs()) == 1
     assert "OK (ready for docker-compose.gpu.yml)" in run.out
     assert "FAIL" not in run.out
     assert run.installer_calls() == []
+
+
+def test_no_runtime_and_no_nvidia_ctk_is_exit_12_even_with_smoke(tmp_path: Path) -> None:
+    """Owner decision 2026-10-18: a host without `nvidia-ctk` on PATH (Docker Desktop, say)
+    exits 12 on purpose, because the toolkit version cannot be read; --smoke does not help."""
+    run = _run(tmp_path, "--smoke", ctk=False, env={"FAKE_RUNTIMES": _RUNC_ONLY})
+    assert run.rc == 12, run.out + run.err
+    assert run.docker_runs() == []
+    assert "nvidia-ctk is not on PATH" in run.out
+    assert "on purpose" in run.out
+    assert "smoke    SKIP" in run.out
+    assert "the live check (--smoke) below decides" not in run.out
 
 
 def test_a_failing_smoke_with_a_missing_runtime_is_still_exit_12(tmp_path: Path) -> None:
@@ -450,6 +489,162 @@ def test_a_hung_driver_probe_is_cut_off_by_the_timeout(tmp_path: Path) -> None:
     assert run.seconds < 20
 
 
+# ── SR-2: the toolkit's minimum version ───────────────────────────────────────
+
+
+def _ctk(version_line: str) -> dict[str, str]:
+    return {"FAKE_CTK_OUT": version_line}
+
+
+@pytest.mark.parametrize(
+    ("line", "ok"),
+    [
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8", True, id="exactly-the-minimum"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.20.1", True, id="newer-minor"),
+        pytest.param("NVIDIA Container Toolkit CLI version 2.0.0", True, id="newer-major"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.10", True, id="numeric-not-text"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.7", False, id="one-patch-below"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.16.2", False, id="CVE-2024-0132"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.9.30", False, id="numeric-minor"),
+    ],
+)
+def test_the_toolkit_version_is_compared_semantically(tmp_path: Path, line: str, ok: bool) -> None:
+    run = _run(tmp_path, env=_ctk(line))
+    assert run.rc == (0 if ok else 12), run.out + run.err
+    assert ("ctk      OK" in run.out) == ok, run.out
+    assert run.ctk_calls() == [["--version"]]
+    if not ok:
+        assert "older than 1.17.8" in run.out
+        assert "FAIL 12 (NVIDIA Container Toolkit version" in run.out
+
+
+def test_an_old_toolkit_is_not_overridden_by_a_passing_smoke(tmp_path: Path) -> None:
+    """The smoke container succeeds on a vulnerable toolkit too, so it cannot vouch for it --
+    and it is not even started on one."""
+    run = _run(tmp_path, "--smoke", env=_ctk("NVIDIA Container Toolkit CLI version 1.16.2"))
+    assert run.rc == 12, run.out + run.err
+    assert run.docker_runs() == []
+    assert "smoke    SKIP" in run.out
+
+
+def test_a_missing_nvidia_ctk_is_exit_12_not_a_pass(tmp_path: Path) -> None:
+    run = _run(tmp_path, ctk=False)
+    assert run.rc == 12, run.out + run.err
+    assert "nvidia-ctk is not on PATH" in run.out
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param(_ctk("nvidia-ctk: something unexpected"), id="no-version-in-the-text"),
+        pytest.param(_ctk(""), id="empty"),
+        pytest.param({"FAKE_CTK_RC": "3"}, id="nonzero"),
+    ],
+)
+def test_an_unreadable_nvidia_ctk_answer_is_exit_12(tmp_path: Path, env: dict[str, str]) -> None:
+    run = _run(tmp_path, env=env)
+    assert run.rc == 12, run.out + run.err
+    assert "gave no usable answer" in run.out
+
+
+@pytest.mark.parametrize(
+    ("line", "ok"),
+    [
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-rc.1", False, id="rc-dot"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8~rc1", False, id="rc-tilde"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-beta.2", False, id="beta"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-alpha", False, id="alpha"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-1", True, id="package-revision"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.17.8-0ubuntu1", True, id="ubuntu"),
+        pytest.param("NVIDIA Container Toolkit CLI version 1.18.0-rc.1", True, id="later-rc"),
+        pytest.param("version 1.17.8", True, id="short-line"),
+        pytest.param("NVIDIA Container Toolkit CLI 1.17.8 1.17.8", False, id="no-version-word"),
+        pytest.param(
+            "NVIDIA Container Toolkit CLI version 12345678901234567890.1.1", False, id="20-digits"
+        ),
+        pytest.param(
+            "NVIDIA Container Toolkit CLI version 1.17.18446744073709551624", False, id="wrap"
+        ),
+    ],
+)
+def test_the_toolkit_version_regex_is_anchored_and_prereleases_are_below(
+    tmp_path: Path, line: str, ok: bool
+) -> None:
+    """SR-13: `1.17.8-rc.1` is not 1.17.8; a distro revision `-1` is; absurd numbers are junk."""
+    run = _run(tmp_path, env=_ctk(line))
+    assert run.rc == (0 if ok else 12), run.out + run.err
+
+
+@pytest.mark.parametrize(
+    ("env", "code"),
+    [
+        pytest.param(
+            _ctk("NVIDIA Container Toolkit CLI version 1.17.8-rc1\x1b[2J\x1b]0;t\x07\x1b[32mOK"),
+            12,
+            id="ctk-suffix",
+        ),
+        pytest.param(
+            {"FAKE_SERVER_VERSION": "25.0.4\x1b[2J\x1b]0;t\x07\x1b[32mOK"}, 11, id="engine"
+        ),
+        pytest.param({"FAKE_SERVER_VERSION": "26.0.0-rc1\x1b[2J"}, 11, id="engine-rc"),
+    ],
+)
+def test_control_sequences_from_tool_output_never_reach_the_terminal(
+    tmp_path: Path, env: dict[str, str], code: int
+) -> None:
+    """SR-17: a FAIL row prints text the tool produced; an ESC in it must come out as `?`."""
+    run = _run(tmp_path, env=env)
+    assert run.rc == code, run.out + run.err
+    assert "\x1b" not in run.out + run.err
+    assert "\x07" not in run.out + run.err
+
+
+@pytest.mark.parametrize(
+    ("version", "ok"),
+    [
+        pytest.param("25.0.4", False, id="CVE-2024-29018"),
+        pytest.param("25.0.5", False, id="25-branch-still-below-26"),
+        pytest.param("26.0.0", True, id="exactly-the-minimum"),
+        pytest.param("26.0.0-rc1", False, id="rc-of-the-minimum"),
+        pytest.param("29.0.0-rc.1", True, id="later-rc"),
+        pytest.param("29.6.1", True, id="this-host"),
+        pytest.param("100.0.0", True, id="numeric-not-text"),
+        pytest.param("9.0.0", False, id="numeric-not-text-low"),
+        pytest.param("", False, id="unreadable-empty"),
+        pytest.param("garbage", False, id="unreadable-text"),
+    ],
+)
+def test_the_docker_engine_minimum_is_exit_11(tmp_path: Path, version: str, ok: bool) -> None:
+    """SR-10: CVE-2024-29018 -- DNS egress from `internal` networks before Engine 26.0.0."""
+    run = _run(tmp_path, env={"FAKE_SERVER_VERSION": version})
+    assert run.rc == (0 if ok else 11), run.out + run.err
+    if not ok:
+        assert "FAIL 11 (Docker)" in run.out
+        assert run.ctk_calls() == [], "the toolkit is not probed on an unusable Docker"
+
+
+def test_the_engine_minimum_lives_in_one_named_variable() -> None:
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert len(re.findall(r'^readonly MIN_DOCKER_ENGINE="26\.0\.0"$', text, re.MULTILINE)) == 1
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert code.count("26.0.0") == 1
+
+
+def test_the_toolkit_version_is_not_probed_without_a_driver_or_docker(tmp_path: Path) -> None:
+    run = _run(tmp_path, tools=("docker",), env=_ctk("NVIDIA Container Toolkit CLI version 1.0.0"))
+    assert run.rc == 10, run.out + run.err
+    assert run.ctk_calls() == []
+    assert "ctk      SKIP" in run.out
+
+
+def test_the_minimum_lives_in_one_named_variable_with_a_review_note() -> None:
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert len(re.findall(r'^readonly MIN_NVIDIA_CTK="1\.17\.8"$', text, re.MULTILINE)) == 1
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert code.count("1.17.8") == 1, "outside comments the number appears only in the variable"
+    assert "TODO(7.3)" in text and "security bulletins" in text
+
+
 def test_help_and_unknown_arguments(tmp_path: Path) -> None:
     helped = _run(tmp_path / "help", "--help")
     assert helped.rc == 0
@@ -488,3 +683,19 @@ def test_the_server_doc_lists_the_scripts_exit_codes() -> None:
     assert doc.startswith('<div dir="rtl">')
     assert doc.rstrip().endswith("</div>")
     assert not re.search(r"dckr_pat_|hf_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}", doc)
+
+
+def test_every_security_row_sits_in_one_contiguous_table() -> None:
+    """SR-11: a blank line between two rows ends the table, and the rows after it render as a
+    paragraph with literal pipes -- in the list the owner reads. Lines are read one by one,
+    so only a block-level check notices."""
+    lines = _DOC.read_text(encoding="utf-8").splitlines()
+    rows = [i for i, ln in enumerate(lines) if ln.startswith("| ث\u2011")]
+    assert len(rows) >= 9, "the security list lost rows"
+    header = next(
+        i for i in range(rows[0], -1, -1) if lines[i].startswith("| #") and "الثغرة" in lines[i]
+    )
+    for i in range(header, rows[-1] + 1):
+        assert lines[i].startswith("|"), (
+            f"line {i + 1} breaks the security table: {lines[i][:40]!r}"
+        )

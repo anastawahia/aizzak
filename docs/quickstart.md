@@ -77,10 +77,13 @@ grep '^COMPOSE_FILE=' .env           # ليس سرّاً: يطبع هذا الس
 
 ثمّ **من أين يأتي النموذج اللغويّ**، وهذا أيضاً سطرٌ في `.env` (القالب يحمله معلَّقاً عمداً، لأنّ CI ينسخه):
 
-- **على WSL مع Ollama الأصليّ** (جهاز المالك): `COMPOSE_PROFILES=wsl-ollama` و`OLLAMA_BASE_URL=http://host.docker.internal:11435`. الأوّل يُقلع الجسر `ollama-bridge` (خلف profile لا يقلع من تلقاء نفسه)، والثاني يوجّه التطبيق إليه.
-- **بلا Ollama أصليّ**: `COMPOSE_PROFILES=local-llm` وحده (لا `OLLAMA_BASE_URL`: قيمته الافتراضيّة هي الخدمة داخل المكدّس). ثمّ بعد الإقلاع الأوّل: `docker compose run --rm ollama-pull` ليسحب النموذج.
+- **على WSL مع Ollama الأصليّ** (جهاز المالك): `COMPOSE_PROFILES=wsl-ollama,monitoring` و`OLLAMA_BASE_URL=http://host.docker.internal:11435`. الأوّل يُقلع الجسر `ollama-bridge` (خلف profile لا يقلع من تلقاء نفسه) ومعه المراقبة (`monitoring`، مفعّلةٌ افتراضيّاً)، والثاني يوجّه التطبيق إليه.
+- **بلا Ollama أصليّ**: `COMPOSE_PROFILES=local-llm,monitoring` (لا `OLLAMA_BASE_URL`: قيمته الافتراضيّة هي الخدمة داخل المكدّس). ثمّ بعد الإقلاع الأوّل: `docker compose run --rm ollama-pull` ليسحب النموذج.
 
-⚠️ **ونسيان سطر `COMPOSE_PROFILES` على WSL يُسقط الجسر بصمت**، فتفشل نداءات النموذج المحلّيّ وينذر `AizzakLlmCircuitOpen`. وأيّ `--profile X` في أمرٍ **يحلّ محلّ** `COMPOSE_PROFILES` ولا يُضاف إليه ([`stack-commands.md`](stack-commands.md)، الأمر 1).
+⚠️ **ونسيان سطر `COMPOSE_PROFILES` على WSL يُسقط الجسر بصمت**، فتفشل نداءات النموذج المحلّيّ وينذر `AizzakLlmCircuitOpen`. **ونسيان `monitoring` فيه يُسقط مسار التنبيه كلّه**: لا Prometheus ولا Alertmanager ولا نبض `AizzakWatchdog`. وأيّ `--profile X` في أمرٍ **يحلّ محلّ** `COMPOSE_PROFILES` ولا يُضاف إليه ([`stack-commands.md`](stack-commands.md)، الأمر 1).
+
+- **الخادم الصغير وحده يحذف `monitoring`**، ولا تنبيهات حينئذٍ (`deploy/resource-budget.sh --without-monitoring` يحكم على ميزانيّته).
+- **من له كتلة `aizzak auto-size`** يعيد `deploy/auto_size.py --role dev` بعد تعديل السطر.
 
 ثمّ **املأ في `.env`** القيم التي تفشل الحاويات بدونها:
 

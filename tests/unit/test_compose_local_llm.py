@@ -350,11 +350,14 @@ def test_wsl_ollama_adds_exactly_the_bridge() -> None:
 
 @_needs_compose
 def test_the_default_stack_is_the_28_standing_and_5_one_shots() -> None:
-    """The default `up -d` set is exactly the services with no `profiles:`, and the bridge
-    is not among them. (Master's own set is compared once by QA with `git show`.)"""
+    """The services with no `profiles:` are what a bare `up -d` starts, and the bridge is not
+    among them. Since monitoring-profile (4.1) the eleven monitoring services are behind
+    profile `monitoring` too: 17 standing + 5 one-shots without it, 28 + 5 with it (the
+    owner's and a server's line, decision 7)."""
     unprofiled = {name for name, spec in _services().items() if not spec.get("profiles")}
     assert _service_names() == unprofiled
-    assert len(unprofiled) == 33, "28 standing + 5 one-shots"
+    assert len(unprofiled) == 22, "17 standing + 5 one-shots"
+    assert len(_service_names("monitoring")) == 33, "28 standing + 5 one-shots"
     assert "ollama-bridge" not in unprofiled
 
 
@@ -363,8 +366,11 @@ def test_the_default_stack_is_the_28_standing_and_5_one_shots() -> None:
 
 def test_env_example_offers_both_profiles_commented_only() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
-    assert re.search(r"^#COMPOSE_PROFILES=wsl-ollama$", text, re.MULTILINE)
-    assert re.search(r"^#COMPOSE_PROFILES=local-llm$", text, re.MULTILINE)
+    assert re.search(r"^#COMPOSE_PROFILES=wsl-ollama,monitoring$", text, re.MULTILINE)
+    assert re.search(r"^#COMPOSE_PROFILES=local-llm,monitoring$", text, re.MULTILINE)
+    # said once: the old bare lines must not stand next to the new ones
+    assert not re.search(r"^#COMPOSE_PROFILES=(wsl-ollama|local-llm)$", text, re.MULTILINE)
+    assert len(re.findall(r"^#COMPOSE_PROFILES=", text, re.MULTILINE)) == 2
     assert not re.search(r"^COMPOSE_PROFILES=", text, re.MULTILINE), (
         "CI copies this file and `_compose_config` does not clear COMPOSE_PROFILES"
     )

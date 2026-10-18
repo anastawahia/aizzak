@@ -27,8 +27,10 @@
 | `vault` | hashicorp/vault | 8200 | الأسرار + Transit (تخزين `file` دائم — release-blockers-plan.md §3 خطوة 1) |
 | `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية — **ثلاث نسخ** (`deploy.replicas: 3`) بخيطٍ واحدٍ مثبَّتٍ لكلٍّ (خطّة السعة `4.1`)؛ ينشرها ملفّ الاختبار على `127.0.0.1:8080` **بنسخةٍ واحدة** فقط |
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
-| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama` في `.env`) |
+| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama,monitoring` في `.env`) |
 | `ollama` | `ollama/ollama:0.34.4` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
+| `prometheus` · `grafana` · `alertmanager` · `alert-sink` · `loki` · `alloy` · المصدّرات الخمسة | صورٌ مثبّتة في `docker-compose.yml` | Grafana على `127.0.0.1:13000`، والبقيّة داخليّة | المراقبة والتنبيه والسجلّات — profile `monitoring` (مفعّل افتراضيّاً، قرار 7: `wsl-ollama,monitoring` على جهاز المالك، و`local-llm,monitoring` على الخادم) |
+| `nvidia-gpu-exporter` | `utkuozdemir/nvidia_gpu_exporter:1.15.1` (بصمة مثبّتة) | 9835 داخليّاً، على الشبكة الداخليّة `gpu-metrics` مع Prometheus وحده | أرقام الكرت (ذاكرة وحمل وحرارة) لـ Prometheus — في `docker-compose.gpu.yml` وحده، وبـ profile `monitoring` فقط: لا ملفّ الكرت فلا مصدّر ولا هدف ولا تنبيه |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
@@ -485,7 +487,15 @@ resources.reference_host_gb   = 64
 
 **⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّ نظرةً في إعادة تركيب الدفتر (`د‑26`).
 
-**⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
+**⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama,monitoring` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
+
+**⚠️ و`monitoring-profile` (4.1 من خطّة خادم الكرت) وضعت خدمات المراقبة الإحدى عشرة خلف profile `monitoring`، ولم يتحرّك رقم.**
+
+- المراقبة **مفعّلةٌ افتراضيّاً** (قرار 7)، فالدفتر وجدول الأحجام و`deploy/resource-budget.sh` يعدّونها كما كانوا.
+- حصّتها بحدود اليوم: `large` **3.60 vCPU و4.66 GB** (4768m)، و`medium` **2.35 و2.41** (2464m)، و`small` **1.40 و1.66** (1696m). ويضيف إليها وضعُ الكرت `nvidia-gpu-exporter` (4.2) بـ0.25 vCPU و64m.
+- والحكم على خادمٍ بلاها صريح: `deploy/resource-budget.sh --without-monitoring [--size …]` يطبع 32.00/52.62 للمرجعيّ، و34.00/52.88 و17.00/26.00 و10.10/12.56 للأحجام، ويقول إنّه لا تنبيهات دونها.
+- و`--block` يتبع سطر `# profiles:` في الكتلة كما يتبعه Compose.
+- وملفّات الأحجام لا تتغيّر، و`small` يبقى يعدّ المراقبة حتّى قياس 7.3 (Q‑6).
 
 **⚠️ و`7.3` أنفقت العُشرَ الباقي إلّا قليلاً.** خدمتا توصيل التنبيهات دائمتان (تنبيهٌ لا يصل حين يُحتاج ليس تنبيهاً): `alertmanager` بـ0.25 vCPU و**64m**، و`alert-sink` بـ0.1 vCPU و**32m** — نصفُ سقف المُصدِّرات وربعُه، لأنّ الهامشَ كان 102 ميغابايت لا أكثر. فصار المجموعُ **57.59 من 57.60**. والسقفان صغيران لأنّ العمليّتين صغيرتان، والمقيسُ بعد النشر في `capacity-status.md` (‏`7.3`). **والخطوةُ التالية التي تضيف شيئاً دائماً لا تجد مكاناً أصلاً**: إعادةُ تركيب الدفتر (`د‑26`) صارت شرطاً لا خياراً.
 
@@ -517,9 +527,10 @@ deploy/resource-budget.sh                              # مقابل هذا ال�
 deploy/resource-budget.sh --host-cpus 32 --host-memory-gb 64   # مقابل مضيف §6
 deploy/resource-budget.sh --with-profiles              # مع backup وcadvisor وk6 وollama وollama-pull وollama-bridge
 deploy/resource-budget.sh --size large                 # حجمٌ من deploy/sizes/ (هامش ذاكرةٍ 10٪)
+deploy/resource-budget.sh --without-monitoring --size small   # خادمٌ صغيرٌ بلا مراقبة (ولا تنبيهات)
 ```
 
-**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها.
+**وما لا يُحسَب في المجموع، وهو حسابٌ لا إغفال:** الخدماتُ التي تعمل **مرّةً وتنتهي** (‏`migrate` · `vault-bootstrap` · `minio-bootstrap` · `nginx-certs` · `wal-archive-init`) محدودةٌ بسقوفٍ **ولا تُعَدّ**: كلُّ خدمةٍ دائمةٍ تنتظرها بـ`service_completed_successfully`، فذاكرتُها لا تتزامن مع الحالة المستقرّة أصلاً — نفسُ الحجّة ونفسُ شكلِ البرهان في `§2‑ب` مع `app.ops.provision`، ويحرسها `test_the_one_shots_really_do_finish_before_the_standing_stack`. والخدماتُ خلف `profiles:` (‏`backup` · `cadvisor` · `k6` · `ollama` · `ollama-pull` · `ollama-bridge`، والثلاث الأخيرة من `gpu-compose` ‏2.2 و2.3: الأوليان تحت `local-llm`، والجسر تحت `wsl-ollama`) خارجَ المجموع لأنّ `docker compose up -d` لا يبدؤها، و`--with-profiles` يعدّها. **والمراقبة (`monitoring`) ليست منها:** خلف profile منذ 4.1، لكنّها مفعّلةٌ افتراضيّاً فتُعدّ، ولا يُخرجها إلّا `--without-monitoring` أو كتلةٌ لا يحملها سطر `# profiles:` فيها. وسطر `--with-profiles` في الأوامر يبقى بقائمته الستّ.
 
 **⚠️ ونسخُ `app` الثلاثُ تمنع مفتاحَين على هذه الخدمة إلى الأبد، وهما يفشلان فشلَين مختلفَين** — مقيسان على مسبارٍ بنسختَين:
 
@@ -542,9 +553,11 @@ ports:           النسخةُ 1 عملت، والنسخةُ 2: "Bind for 0.0.0
 
 | الحجم | الوضع | الخادم (vCPU / GB) | vCPU | GB | المسموح (−10٪) |
 |---|---|---|---|---|---|
-| `large` | gpu | 32 / 64 | 37.60 | 57.53 | 57.60 |
-| `medium` | gpu | 16 / 32 | 19.35 | 28.41 | 28.80 |
-| `small` | gpu | 8 / 16 | 11.50 | 14.22 | 14.40 |
+| `large` | gpu | 32 / 64 | 37.85 | 57.59 | 57.60 |
+| `medium` | gpu | 16 / 32 | 19.60 | 28.47 | 28.80 |
+| `small` | gpu | 8 / 16 | 11.75 | 14.28 | 14.40 |
+
+**4.2 (`monitoring-profile`):** ‏`nvidia-gpu-exporter` بحدَّين ثابتين في ملفّ الكرت (0.25 vCPU و64m)، فأضاف 0.25 vCPU و64 ميغابايت لكلّ حجم، وهامش `large` تحت 57.60 صار 6.4 م.ب. وهو داخل هذه المجاميع لأنّ الأحجام الثلاثة بوضع الكرت مع `monitoring` مفعّلة (قرار 7)؛ ودون المراقبة: `--without-monitoring`.
 
 **ميزانيّة خادم `ollama` (FR‑12):** تُحسب هنا لا في الدفتر المرجعيّ؛ فهي داخل هذه المجاميع لأنّ وضع الكرت يفعّل `local-llm` (`ollama` دائمة و`ollama-pull` مرّةً واحدة فلا تُعدّ). وكتلة `resources.*` أعلاه (35.60 و57.28) تبقى لوضع المعالج. أرقام `medium` و`small` مشتقّة وتُقاس في `7.3`.
 
@@ -740,8 +753,8 @@ EMB_BATCH_WINDOW_MS=0 EMBEDDING_CACHE_TTL_S=0 \
 ### 3.0 الإقلاع السريع
 ```bash
 cp .env.example .env      # املأ القيم غير السرّية؛ أسرار التطبيق تُبذَر في Vault
-# ثمّ مصدرُ النموذج اللغويّ، سطرٌ في .env (القالب يحمله معلَّقاً): COMPOSE_PROFILES=wsl-ollama
-# على WSL مع Ollama الأصليّ، أو COMPOSE_PROFILES=local-llm حيث لا Ollama أصليّ (ثمّ ollama-pull)
+# ثمّ مصدرُ النموذج اللغويّ، سطرٌ في .env (القالب يحمله معلَّقاً): COMPOSE_PROFILES=wsl-ollama,monitoring
+# على WSL مع Ollama الأصليّ، أو COMPOSE_PROFILES=local-llm,monitoring حيث لا Ollama أصليّ (ثمّ ollama-pull)
 docker compose up -d      # الترتيب كلّه مُرمَّزٌ في depends_on
 ```
 هذا وحده يكفي محليّاً: يرفع البيانات، ثمّ الخدمات الأربع لمرّةٍ واحدة (تهيئة Vault وMinIO والشهادة والهجرات)، ثمّ التطبيق والمُرحّل والحافّة.
@@ -2633,13 +2646,14 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 | `qdrant` | `/readyz` (لا `/livez`: الأوّل «كلّ الشظايا تخدم»، والثاني «العمليّة حيّة») — عبر `/dev/tcp` في **bash صراحةً**، لأنّ الصورة لا تحمل `curl` ولا `wget`، و`CMD-SHELL` كان سيشغّل `sh` الذي لا يعرف `/dev/tcp` |
 | `ollama-bridge` | **من طرفٍ إلى طرف**: `wget` يدخل الجسر على 11435 ويخرج من Ollama الأصليّ على 11434. socat مستمعٌ وهدفه ميّت لا يمرّر شيئاً |
 | `ollama` | `/dev/tcp` في **bash صراحةً** إلى `/api/version`: الصورة (`ubuntu:24.04` وملفّ `ollama`) لا تحمل `curl` ولا `wget`، كما `qdrant`. `ollama list` يعمل لكنّه يقرأ النماذج من القرص، و`ollama -v` يخرج بـ0 والخادم ميّت |
+| `nvidia-gpu-exporter` | **الكرت من داخل الحاوية**: `nvidia-smi --query-gpu=uuid`، لأنّ الصورة distroless بلا shell ولا `wget`؛ ومنفذ المصدّر يغطّيه `AizzakScrapeTargetDown` |
 | `worker-memory` · `worker-knowledge` · `worker-media` · `outbox-relay` | **نبضٌ**، لأنّها لا تستمع على منفذٍ أصلاً — انظر أدناه |
 
 > 📌 **و`ollama` (الخدمة داخل المكدّس) يُنتظر بـ`service_healthy` مع `required: false`.** هو داخل دورة حياة Compose، فصحّته معنىً يُنتظر؛ و`required: false` يمنع أن يحبس عطلُه المكدّس، ويُسقط الحافّةَ حين لا يكون الـprofile `local-llm` مفعّلاً. وهي حافّة `ollama-pull` نفسُها: إن فشل `ollama` في الإقلاع شغّله Compose بتحذير، فيخرج `ollama-pull` بالرمز 3 «Ollama unreachable» — فشلٌ صاخب.
 >
 > 📌 **ولا شيء يعتمد على صحّة `ollama-bridge`، عمداً.** Ollama وحدةٌ أصليّةٌ في WSL خارج دورة حياة Compose؛ ربطُ إقلاع المكدّس بها يستبدل تدهوراً مرئيّاً بآخر خفيّ. «غير صحّي» هنا معناه «نداءات LLM ستفشل»، معروضاً في `docker compose ps` بدل أن يظهر في خطأ طلبٍ فقط.
 >
-> 📌 **والجسر خلف profile `wsl-ollama`** (‏`gpu-compose` 2.3)، فكلّ حافّةٍ إليه `required: false` أيضاً: مضيفٌ بلا الـprofile يقلع بدونه، وخادمٌ لا يراه أصلاً. والحوافّ أربع: `app` والعمّال الثلاثة. ونسيانُ `COMPOSE_PROFILES=wsl-ollama` على جهاز المالك يُسقط الجسر بصمت، فتصير نداءات LLM `502` ويشتعل `AizzakLlmCircuitOpen`.
+> 📌 **والجسر خلف profile `wsl-ollama`** (‏`gpu-compose` 2.3)، فكلّ حافّةٍ إليه `required: false` أيضاً: مضيفٌ بلا الـprofile يقلع بدونه، وخادمٌ لا يراه أصلاً. والحوافّ أربع: `app` والعمّال الثلاثة. ونسيانُ `wsl-ollama` في `COMPOSE_PROFILES` على جهاز المالك يُسقط الجسر بصمت، فتصير نداءات LLM `502` ويشتعل `AizzakLlmCircuitOpen`.
 >
 > ✅ **وأُغلقت معها حافّةٌ مُعلَنةٌ منذ [§3.133](../log/3.133.md)**: `app` صارت تُعلن `qdrant` في `depends_on` (‏`service_healthy`) — عين عطب [§3.111](../log/3.111.md): `QDRANT_URL` تسمّي `qdrant:6333` من الطور الأوّل، والحافّة غير مُعلَنة ⇒ `docker compose up -d app` وحده كان يقلعها بلا مخزن المتّجهات. وحوافّ `pgbouncer`/`qdrant` كلّها صارت `service_healthy` بدل `service_started`.
 

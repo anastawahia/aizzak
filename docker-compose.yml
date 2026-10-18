@@ -2628,7 +2628,18 @@ services:
   # DLQ and now every request this platform serves, so it stays on the
   # internal network with `expose`, never `ports`, and the nginx edge already
   # 404s `/metrics` before the catch-all proxy can reach it.
+  # ── Profile `monitoring` (server-gpu-plan.md 4.1, decision 7) ────────────
+  # The eleven services of this block and of the log block below --
+  # prometheus, grafana, alertmanager, alert-sink, the five exporters, loki,
+  # alloy -- run only with `monitoring` in COMPOSE_PROFILES. On by default:
+  # the owner's line is COMPOSE_PROFILES=wsl-ollama,monitoring, a server's
+  # local-llm,monitoring. A small server may drop it and then has NO alert
+  # path at all. Nothing outside the eleven depends on them or names their
+  # hosts (tests/unit/test_monitoring_profile.py); their own edges out to
+  # app, pgbouncer, postgres and the two Redis are allowed. cadvisor keeps
+  # its own `container-metrics` profile.
   prometheus:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2681,6 +2692,7 @@ services:
   # the "stable local operator/test interface" this file's own header names.
   # Recorded as a decision in docs/capacity-status.md, not left implicit.
   grafana:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2730,6 +2742,7 @@ services:
   # are set through Grafana's Alertmanager datasource, which is the one
   # loopback door in.
   alertmanager:
+    profiles: ["monitoring"]
     # 64 MB, not the exporters' 128: the standing budget had 0.10 GB left
     # under its 57.60 ceiling (08 §2-ز), and these two services take 96 MB of
     # it. Measured at idle after deployment -- see docs/capacity-status.md
@@ -2770,6 +2783,7 @@ services:
   # nothing to pin but the interpreter. Read-only and unprivileged -- it
   # holds no state and needs none.
   alert-sink:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2810,6 +2824,7 @@ services:
   # uses, with the same identity -- no new grant, no new role, no widening of
   # anything that exists.
   pgbouncer-exporter:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2864,6 +2879,7 @@ services:
   # a failure that has two independent causes. 0.25 vCPU / 128 MB is what
   # telling them apart costs.
   redis-stream-exporter:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2887,6 +2903,7 @@ services:
     <<: *app-logging
 
   redis-cache-exporter:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2923,6 +2940,7 @@ services:
   # `node_filesystem_readonly{mountpoint="/"}` reads 1 because THIS mount is
   # :ro -- it says nothing about the host disk; no rule reads it.
   node-exporter:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -2975,6 +2993,7 @@ services:
   # queries.yaml is a single-file bind: an edit needs
   # `up -d --force-recreate --no-deps postgres-exporter`.
   postgres-exporter:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -3068,6 +3087,7 @@ services:
   # the same reason -- and one step stronger here, because these lines carry
   # far more than a counter does. Grafana proxies it; nothing else needs it.
   loki:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:
@@ -3099,6 +3119,7 @@ services:
   # socket is root on the host, 0.3 put cadvisor behind an opt-in profile
   # rather than grant it for free, and 0.6 cannot be opt-in).
   alloy:
+    profiles: ["monitoring"]
     deploy:
       resources:
         limits:

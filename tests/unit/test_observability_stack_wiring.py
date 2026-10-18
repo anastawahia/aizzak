@@ -28,6 +28,7 @@ anything.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -60,10 +61,13 @@ from app.framework.observability.metrics import (
     RATE_LIMIT_REJECTIONS_METRIC,
     WS_CONNECTIONS_METRIC,
 )
+from tests.unit.support_compose import GPU_EXPORTER_METRICS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _PROM_YML = _REPO_ROOT / "deploy" / "prometheus" / "prometheus.yml"
+_GPU_COMPOSE = _REPO_ROOT / "docker-compose.gpu.yml"
+_GPU_SCRAPE = _REPO_ROOT / "deploy" / "prometheus" / "scrape-gpu.yml"
 _DATASOURCES = _REPO_ROOT / "deploy" / "grafana" / "provisioning" / "datasources"
 _PROVIDERS = _REPO_ROOT / "deploy" / "grafana" / "provisioning" / "dashboards"
 _DASHBOARDS = _REPO_ROOT / "deploy" / "grafana" / "dashboards"
@@ -96,6 +100,8 @@ KNOWN_METRICS = frozenset(
         OPS_TASK_MAX_SUCCESS_AGE_METRIC,
     }
 )
+
+_GPU_METRIC = re.compile(r"\bnvidia_smi_[a-z_]+")
 
 # prometheus_client renders a Histogram as three families; the dashboard has
 # to name `..._bucket` to compute a quantile at all, so the suffix is stripped
@@ -214,6 +220,99 @@ def test_every_scrape_target_names_a_service_that_exists() -> None:
             )
 
 
+_GPU_FIELDS_MAX = 214  # `nvidia-smi --help-query-gpu` fields, all numeric: the worst case
+_GPUS_MAX = 8
+_FIXED_SAMPLES = 56  # Go/process/exporter series that do not depend on the GPU count
+
+
+def test_every_gpu_scrape_job_bounds_what_a_hijacked_exporter_can_send() -> None:
+    """SR-9: the exporter is a third-party image on a network Prometheus trusts. Each job
+    caps the samples, labels and body of a scrape, and never follows a redirect. promtool
+    (test-rules.sh) proves Prometheus accepts the keys."""
+    for job in _load_yaml(_GPU_SCRAPE)["scrape_configs"]:
+        name = job["job_name"]
+        for key in ("sample_limit", "label_limit", "label_name_length_limit"):
+            assert isinstance(job.get(key), int) and job[key] > 0, f"{name}: {key} is not set"
+        assert isinstance(job.get("label_value_length_limit"), int), f"{name}: no value limit"
+        assert job["label_value_length_limit"] > 0
+        # Measured with exporter 1.15.1 on one RTX 4060 (2026-10-18): 95 samples per GPU
+        # plus 56 fixed. The ceiling if all 214 `nvidia-smi --help-query-gpu` fields were
+        # numeric, on an 8-GPU server, is the floor; the upper bound keeps it a bound.
+        assert _GPU_FIELDS_MAX * _GPUS_MAX + _FIXED_SAMPLES <= job["sample_limit"] <= 20000, job[
+            "sample_limit"
+        ]
+        assert re.fullmatch(r"\d+(KB|MB)", str(job.get("body_size_limit"))), (
+            f"{name}: no body limit"
+        )
+        assert job.get("follow_redirects") is False, f"{name}: redirects are followed"
+        # SR-15: only the exporter's own families may be stored; a hijacked exporter must not
+        # inject `aizzak_*` series that the alert rules read without a `job` filter.
+        keeps = [
+            r
+            for r in job.get("metric_relabel_configs", [])
+            if r.get("action") == "keep" and r.get("source_labels") == ["__name__"]
+        ]
+        assert len(keeps) == 1, f"{name}: no keep rule on __name__"
+        keep = re.compile(keeps[0]["regex"])
+        assert keep.fullmatch("nvidia_smi_memory_used_bytes")
+        assert keep.fullmatch("nvidia_smi_gpu_info")
+        assert not keep.fullmatch("aizzak_ops_task_last_success_timestamp_seconds")
+        assert not keep.fullmatch("pgbouncer_pools_client_waiting_connections")
+
+
+def test_every_gpu_scrape_target_names_a_service_the_gpu_file_defines() -> None:
+    """The jobs in scrape-gpu.yml exist only on a host with docker-compose.gpu.yml, so they
+    may name only services THAT file defines -- not the base file's, which would make the
+    target outlive the overlay (monitoring-profile 4.2)."""
+    defined = set(_load_yaml(_GPU_COMPOSE)["services"]) - set(_compose()["services"])
+    assert defined, "the GPU file defines no service of its own"
+    jobs = _load_yaml(_GPU_SCRAPE)["scrape_configs"]
+    assert jobs, "scrape-gpu.yml holds no job"
+    for job in jobs:
+        hosts = _scraped_hosts(job)
+        assert hosts, f"{_GPU_SCRAPE.name}: job {job['job_name']!r} has no target"
+        for host in hosts:
+            assert host in defined, (
+                f"{_GPU_SCRAPE.name}: job {job['job_name']!r} scrapes {host!r}, which "
+                f"{_GPU_COMPOSE.name} does not define (it defines {sorted(defined)})"
+            )
+
+
+def test_the_gpu_scrape_file_is_mounted_where_prometheus_looks() -> None:
+    """``scrape_config_files`` is a glob INSIDE the container; the GPU file's mount is what
+    puts scrape-gpu.yml under it. The base file mounts nothing there, so a host without the
+    overlay has no GPU job at all (the glob matches nothing)."""
+    prom = _prom()
+    assert prom["scrape_config_files"] == ["/etc/prometheus/scrape.d/*.yml"]
+    mounted = _bind_target(
+        _load_yaml(_GPU_COMPOSE)["services"]["prometheus"], "./deploy/prometheus/scrape-gpu.yml"
+    )
+    assert mounted is not None, f"{_GPU_COMPOSE.name} does not mount scrape-gpu.yml"
+    assert fnmatch.fnmatch(mounted, prom["scrape_config_files"][0]), (
+        f"{_GPU_COMPOSE.name} mounts scrape-gpu.yml at {mounted!r}, outside "
+        f"scrape_config_files {prom['scrape_config_files']}"
+    )
+    for mount in _compose()["services"]["prometheus"]["volumes"]:
+        assert "/scrape.d/" not in str(mount), "the base file must mount nothing under scrape.d/"
+    # parsed strictly by Prometheus: a matched file may hold `scrape_configs:` and nothing else
+    assert set(_load_yaml(_GPU_SCRAPE)) == {"scrape_configs"}
+
+
+def test_the_gpu_target_is_ordinary_and_its_job_unique() -> None:
+    """No ``tier: optional`` (AizzakScrapeTargetDown must fire the moment the exporter dies
+    on a GPU host), a job name no other file uses, and a port the service ``expose``s."""
+    jobs = _load_yaml(_GPU_SCRAPE)["scrape_configs"]
+    names = [job["job_name"] for job in jobs]
+    assert names == ["nvidia-gpu"]
+    assert not set(names) & {job["job_name"] for job in _prom()["scrape_configs"]}
+    for job in jobs:
+        for static in job["static_configs"]:
+            assert "labels" not in static, "an ordinary target carries no labels"
+    exporter = _load_yaml(_GPU_COMPOSE)["services"]["nvidia-gpu-exporter"]
+    ports = {t.rsplit(":", 1)[1] for s in jobs[0]["static_configs"] for t in s["targets"]}
+    assert ports == set(exporter["expose"])
+
+
 def test_the_app_is_scraped_directly_and_never_through_the_edge() -> None:
     """``/metrics`` is 404'd at the nginx edge on purpose (P1-3's mzalaq #2,
     ``src/app/api/metrics.py``'s docstring): Prometheus text about the Outbox,
@@ -272,13 +371,22 @@ def test_the_optional_target_is_the_one_behind_a_compose_profile() -> None:
     cAdvisor needs the Docker socket, so it is opted into for a measurement
     rather than granted to every ``up``, and the label is what stops its
     ordinary absence from holding a target-down alert firing forever. Either
-    half without the other is a bug."""
+    half without the other is a bug.
+
+    A service behind profile ``monitoring`` ALONE does not count: Prometheus, the scraper,
+    sits behind that same profile, so the service is never absent while the scraper is
+    running (monitoring-profile 4.1). A ``tier: optional`` label on one would only silence
+    the rule that should notice its death."""
     compose = _compose()
     optional_hosts: set[str] = set()
     for job in _prom()["scrape_configs"]:
         optional_hosts |= _labelled_static_hosts(job, "tier", "optional")
 
-    profiled = {name for name, service in compose["services"].items() if service.get("profiles")}
+    profiled = {
+        name
+        for name, service in compose["services"].items()
+        if set(service.get("profiles") or ()) - {"monitoring"}
+    }
     scraped = {host for job in _prom()["scrape_configs"] for host in _scraped_hosts(job)}
     assert optional_hosts == profiled & scraped, (
         f"{_PROM_YML}: the targets labelled `tier: optional` ({sorted(optional_hosts)}) must "
@@ -527,3 +635,59 @@ def test_grafana_reaches_the_alertmanager_service() -> None:
     source = _load_yaml(_DATASOURCES / "alertmanager.yml")["datasources"][0]
     assert source["type"] == "alertmanager"
     assert source["url"] == "http://alertmanager:9093", source["url"]
+
+
+# ── The GPU row (server-gpu-plan.md 4.2) ───────────────────────────────────
+
+
+def _capacity_dashboard() -> dict[str, Any]:
+    (dashboard,) = [d for path, d in _dashboards() if path.name == "aizzak-capacity.json"]
+    return dashboard
+
+
+def test_the_gpu_row_shows_memory_load_and_temperature() -> None:
+    """AC-6.1: a row titled GPU at the bottom, three time series under it, each reading the
+    exporter's metric for what its title says."""
+    panels = _capacity_dashboard()["panels"]
+    rows = [p for p in panels if p["type"] == "row"]
+    gpu_row = rows[-1]
+    assert gpu_row["title"].startswith("GPU")
+    below = [
+        p for p in panels if p["type"] != "row" and p["gridPos"]["y"] > gpu_row["gridPos"]["y"]
+    ]
+    assert [p["title"] for p in below] == [
+        "GPU memory used (of total)",
+        "GPU load",
+        "GPU temperature",
+    ]
+    assert all(p["type"] == "timeseries" for p in below)
+    expressions = [" ".join(p["targets"][0]["expr"].split()) for p in below]
+    assert "nvidia_smi_memory_used_bytes" in expressions[0]
+    assert "nvidia_smi_memory_total_bytes" in expressions[0]
+    assert "nvidia_smi_utilization_gpu_ratio" in expressions[1]
+    assert "nvidia_smi_temperature_gpu" in expressions[2]
+    ids = [p["id"] for p in panels]
+    assert len(ids) == len(set(ids)), "a panel id is used twice"
+
+
+def test_every_gpu_metric_a_panel_or_rule_reads_is_one_the_exporter_emits() -> None:
+    """A typo here renders an empty panel or a rule that can never fire, and looks exactly like
+    a healthy card: so the names are held against the exporter's own list."""
+    found: set[str] = set()
+    for _, dashboard in _dashboards():
+        for panel in _panels(dashboard):
+            for target in panel.get("targets", ()):
+                found |= set(_GPU_METRIC.findall(target.get("expr", "")))
+    alerts = (_REPO_ROOT / "deploy" / "prometheus" / "alerts.yml").read_text(encoding="utf-8")
+    code = "\n".join(line for line in alerts.splitlines() if not line.lstrip().startswith("#"))
+    rule_exprs = [
+        rule["expr"]
+        for group in yaml.safe_load(code)["groups"]
+        for rule in group["rules"]
+        if "nvidia_smi_" in rule["expr"]
+    ]
+    assert rule_exprs, "no alert rule reads the card"
+    for expr in rule_exprs:
+        found |= set(_GPU_METRIC.findall(expr))
+    assert found, "no GPU metric found anywhere"
+    assert found <= GPU_EXPORTER_METRICS, sorted(found - GPU_EXPORTER_METRICS)

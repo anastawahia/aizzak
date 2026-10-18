@@ -35,6 +35,18 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# ── Scrape files an overlay adds (server-gpu-plan.md 4.2) ──────────────────
+# A glob, not a path. Prometheus reads every file it matches and NOTHING when
+# it matches none (config.GetScrapeConfigs, filepath.Glob -- v3.13.2). The
+# base Compose file mounts nothing under scrape.d/, so a host without
+# docker-compose.gpu.yml has no `nvidia-gpu` job, no `up` series for it and
+# therefore no AizzakScrapeTargetDown. docker-compose.gpu.yml mounts
+# scrape-gpu.yml here, and the exporter becomes an ordinary target that rule
+# covers. A matched file may hold `scrape_configs:` only (parsed strictly),
+# and its job names must not repeat this file's.
+scrape_config_files:
+  - /etc/prometheus/scrape.d/*.yml
+
 alerting:
   alertmanagers:
     - static_configs:

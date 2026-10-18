@@ -12,6 +12,9 @@
 #                                      judge the marked "aizzak auto-size" block of FILE
 #                                      (deploy/auto_size.py writes it): role server like
 #                                      --size, role dev as a warning only
+#   deploy/resource-budget.sh --without-monitoring [--size NAME]
+#                                      judge a host that does not run profile `monitoring`
+#                                      (counted by default, decision 7). No alerts without it
 #   env: COMPOSE_FILE, GPU_COMPOSE_FILE, SIZES_DIR   exit: 0 fits, 1 over, 2 usage
 #
 # ⚠️ THIS SCRIPT EXISTS BECAUSE DOCKER WILL NOT TELL YOU. Measured on the
@@ -45,6 +48,8 @@
 # reason, as the connection ledger's `_PRE_FLIGHT_MODULES` (08 §2-ب).
 # Profiled services (`backup`, `cadvisor`, `k6`) are excluded because a default
 # `docker compose up -d` never starts them; `--with-profiles` counts them.
+# `monitoring` is the exception: counted by default (decision 7); `--without-monitoring`
+# judges a host without it; `--block` follows the block's `# profiles:` line, as Compose does.
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
@@ -54,6 +59,7 @@ SIZES_DIR="${SIZES_DIR:-deploy/sizes}"
 host_cpus=""
 host_memory_gb=""
 with_profiles=0
+without_monitoring=0
 size=""
 size_given=0
 block=""
@@ -64,8 +70,9 @@ while [ $# -gt 0 ]; do
     --host-cpus) host_cpus="$2"; shift 2 ;;
     --host-memory-gb) host_memory_gb="$2"; shift 2 ;;
     --with-profiles) with_profiles=1; shift ;;
+    --without-monitoring) without_monitoring=1; shift ;;
     -h | --help)
-      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     --size)
@@ -80,9 +87,18 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       block="$2"; block_given=1; shift 2 ;;
-    *) echo "usage: $0 [--host-cpus N] [--host-memory-gb G] [--with-profiles] [--size NAME | --block FILE]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--host-cpus N] [--host-memory-gb G] [--with-profiles | --without-monitoring] [--size NAME | --block FILE]" >&2; exit 2 ;;
   esac
 done
+
+if [ "$without_monitoring" = 1 ] && [ "$block_given" = 1 ]; then
+  echo "--without-monitoring and --block are mutually exclusive: the block's '# profiles:' line already says whether monitoring runs" >&2
+  exit 2
+fi
+if [ "$without_monitoring" = 1 ] && [ "$with_profiles" = 1 ]; then
+  echo "--without-monitoring and --with-profiles are mutually exclusive: one removes a profile, the other counts them all" >&2
+  exit 2
+fi
 
 if [ "$size_given" = 1 ] && [ "$block_given" = 1 ]; then
   echo "--size and --block are mutually exclusive" >&2
@@ -105,7 +121,7 @@ if [ -z "$host_memory_gb" ]; then
 fi
 
 exec python3 - "$COMPOSE_FILE" "$host_cpus" "$host_memory_gb" "$with_profiles" \
-  "$size" "$SIZES_DIR" "$GPU_COMPOSE_FILE" "$block" <<'PY'
+  "$size" "$SIZES_DIR" "$GPU_COMPOSE_FILE" "$block" "$without_monitoring" <<'PY'
 import copy
 import re
 import sys
@@ -118,6 +134,7 @@ BLOCK_END = "# <<< aizzak auto-size <<<"
 compose_file, host_cpus, host_memory_gb, with_profiles, size, sizes_dir, gpu_file, block = (
     sys.argv[1:9]
 )
+without_monitoring = sys.argv[9] == "1"
 host_cpus = float(host_cpus)
 host_memory_gb = float(host_memory_gb)
 with_profiles = with_profiles == "1"
@@ -164,7 +181,8 @@ def merge(base: dict, extra: dict) -> dict:
 
 
 values: dict = {}
-enabled: set = set()
+MONITORING = "monitoring"  # decision 7 (server-gpu-plan.md §6): on by default
+enabled: set = set() if (block or without_monitoring) else {MONITORING}
 size_line = ""
 compose = yaml.safe_load(open(compose_file, encoding="utf-8"))
 if size:
@@ -288,6 +306,23 @@ def show(title: str, rows: list[tuple[str, int, float, int]]) -> None:
 
 if size_line:
     print(size_line)
+if block:
+    if MONITORING in enabled:
+        print("monitoring: counted (in the block's profiles)")
+    elif with_profiles:
+        print("monitoring: not in the block's profiles, counted by --with-profiles")
+    else:
+        print(
+            "monitoring: NOT counted (not in the block's profiles). Without it there are no"
+            " alerts at all: check /health from outside the host."
+        )
+elif without_monitoring:
+    print(
+        "monitoring: NOT counted (--without-monitoring). Without it there are no alerts"
+        " at all: check /health from outside the host."
+    )
+else:
+    print("monitoring: counted (on by default, decision 7)")
 show("standing (a default `docker compose up -d`)", standing)
 show("one-shot (completes before the steady state; capped, not counted)", oneshot)
 show(

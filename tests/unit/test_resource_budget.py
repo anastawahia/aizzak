@@ -58,6 +58,7 @@ import pytest
 import yaml
 
 from tests.unit.support_compose import (
+    DEFAULT_PROFILES,
     MODE_PROFILES,
     SIZES,
     compose_bytes,
@@ -99,10 +100,11 @@ def _limits(service: dict) -> dict:
 
 
 def _classify(
-    compose: dict | None = None, profiles: frozenset[str] = frozenset()
+    compose: dict | None = None, profiles: frozenset[str] = DEFAULT_PROFILES
 ) -> tuple[dict, dict, dict]:
     """standing / one-shot / profiled, by the same two keys the script reads.
-    A profile in `profiles` is enabled, so its services are classified by `restart`."""
+    A profile in `profiles` is enabled, so its services are classified by `restart`.
+    `monitoring` is enabled by default (decision 7); pass `frozenset()` for a host without it."""
     standing, oneshot, profiled = {}, {}, {}
     for name, service in (compose or _compose())["services"].items():
         target = (
@@ -277,10 +279,12 @@ def _run_size(size: str, *args: str, **env: str) -> subprocess.CompletedProcess[
     )
 
 
-def _size_totals(size: str) -> tuple[float, float, float]:
+def _size_totals(
+    size: str, profiles: frozenset[str] = DEFAULT_PROFILES
+) -> tuple[float, float, float]:
     parsed = read_size(size)
     compose = size_compose(parsed)
-    standing, _, _ = _classify(compose, MODE_PROFILES[parsed.mode])
+    standing, _, _ = _classify(compose, MODE_PROFILES[parsed.mode] | profiles)
     cpus, memory_gb = _totals(standing)
     return cpus, memory_gb, parsed.host_memory_gb
 
@@ -410,6 +414,164 @@ def test_the_script_and_this_module_agree_per_size(size: str) -> None:
     assert f"size {size} (" in done.stdout and f"mode {parsed.mode}" in done.stdout
 
 
+# ------------------------------------------------------------- monitoring --
+# Decision 7 (server-gpu-plan.md §6): `monitoring` is a profile (4.1) that is ON by default,
+# so the budget counts it and no number moves; `--without-monitoring` judges a host that
+# drops it (a small server) and says there are no alerts then.
+
+_COUNTED = "monitoring: counted (on by default, decision 7)"
+# The exporter the GPU file adds under `monitoring` (4.2): fixed numbers, in GPU mode only.
+_GPU_EXPORTER_CPUS = 0.25
+_GPU_EXPORTER_BYTES = 64 * 1024**2
+_MONITORING_ELEVEN = frozenset(
+    {
+        "prometheus",
+        "grafana",
+        "alertmanager",
+        "alert-sink",
+        "pgbouncer-exporter",
+        "redis-stream-exporter",
+        "redis-cache-exporter",
+        "node-exporter",
+        "postgres-exporter",
+        "loki",
+        "alloy",
+    }
+)
+# The eleven services' own limits (vCPU, bytes) per size, from the compose file and the
+# size files: large 4768m, medium 2464m, small 1696m of memory.
+_ELEVENS_LIMITS = {
+    "large": (3.60, 4768 * 1024**2),
+    "medium": (2.35, 2464 * 1024**2),
+    "small": (1.40, 1696 * 1024**2),
+}
+# Totals (vCPU, GB) the script prints, with and without the profile (AC-2.1, AC-2.2).
+_BUDGET_WITH = {  # the sizes run in GPU mode, so 4.2's exporter is in them (0.25 vCPU, 64m)
+    "ref": (35.60, 57.28),
+    "large": (37.85, 57.59),
+    "medium": (19.60, 28.47),
+    "small": (11.75, 14.28),
+}
+_BUDGET_WITHOUT = {
+    "ref": (32.00, 52.62),
+    "large": (34.00, 52.88),
+    "medium": (17.00, 26.00),
+    "small": (10.10, 12.56),
+}
+
+
+def _budget_for(key: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    if key == "ref":
+        return _run("--host-cpus", "32", "--host-memory-gb", "64", *extra)
+    host = read_size(key)
+    return _run_size(
+        key,
+        "--host-cpus",
+        str(host.host_cpus),
+        "--host-memory-gb",
+        str(host.host_memory_gb),
+        *extra,
+    )
+
+
+@pytest.mark.parametrize("key", ["ref", "large", "medium", "small"])
+def test_the_budget_counts_monitoring_by_default_and_says_so(key: str) -> None:
+    """AC-2.1."""
+    cpus, memory_gb = _BUDGET_WITH[key]
+    done = _budget_for(key)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert f"{cpus:6.2f} vCPU  {memory_gb:7.2f} GB" in done.stdout, done.stdout
+    assert _COUNTED in done.stdout, done.stdout
+
+
+@pytest.mark.parametrize("key", ["ref", "large", "medium", "small"])
+def test_without_monitoring_each_total_drops_by_the_elevens_limits(key: str) -> None:
+    """AC-2.2: the script and this module agree without the profile, and the drop is the
+    eleven services' own limits (plus the GPU exporter in GPU mode, once 4.2 adds it)."""
+    done = _budget_for(key, "--without-monitoring")
+    assert done.returncode == 0, done.stdout + done.stderr
+    cpus, memory_gb = _BUDGET_WITHOUT[key]
+    assert f"{cpus:6.2f} vCPU  {memory_gb:7.2f} GB" in done.stdout, done.stdout
+    assert "monitoring: NOT counted (--without-monitoring)" in done.stdout, done.stdout
+    assert "no alerts" in done.stdout
+    assert _COUNTED not in done.stdout
+
+    if key == "ref":
+        standing, _, _ = _classify(profiles=frozenset())
+    else:
+        standing, _, _ = _classify(size_compose(read_size(key)), MODE_PROFILES[read_size(key).mode])
+    mod_cpus, mod_gb = _totals(standing)
+    assert f"{mod_cpus:6.2f} vCPU  {mod_gb:7.2f} GB" in done.stdout, done.stdout
+
+    if key != "ref":
+        with_cpus, with_gb, _ = _size_totals(key)
+        drop_cpus, drop_bytes = _ELEVENS_LIMITS[key]
+        assert with_cpus - mod_cpus == pytest.approx(drop_cpus + _GPU_EXPORTER_CPUS, abs=0.005)
+        assert (with_gb - mod_gb) * _GB == pytest.approx(drop_bytes + _GPU_EXPORTER_BYTES, abs=1024)
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_the_monitoring_share_is_the_elevens_limits_plus_the_gpu_exporter(size: str) -> None:
+    """AC-4.5: what `--without-monitoring` returns is exactly the eleven services' limits and,
+    in GPU mode, the exporter's -- named, not a residue."""
+    parsed = read_size(size)
+    assert parsed.mode == "gpu"
+    compose = size_compose(parsed)
+    monitoring = {
+        name: spec
+        for name, spec in compose["services"].items()
+        if "monitoring" in (spec.get("profiles") or ())
+    }
+    assert set(monitoring) == _MONITORING_ELEVEN | {"nvidia-gpu-exporter"}
+    cpus, memory = _totals(monitoring)
+    drop_cpus, drop_bytes = _ELEVENS_LIMITS[size]
+    assert cpus == pytest.approx(drop_cpus + _GPU_EXPORTER_CPUS, abs=0.005)
+    assert memory * _GB == pytest.approx(drop_bytes + _GPU_EXPORTER_BYTES, abs=1024)
+
+
+def test_without_monitoring_the_standing_set_is_seventeen() -> None:
+    """AC-2.5."""
+    standing, oneshot, profiled = _classify(profiles=frozenset())
+    assert (len(standing), len(oneshot), len(profiled)) == (17, 5, 17)
+    standing, oneshot, profiled = _classify()
+    assert (len(standing), len(oneshot), len(profiled)) == (28, 5, 6)
+
+
+def test_without_monitoring_conflicts_are_usage_errors() -> None:
+    """AC-2.2: the two contradictions are refused, not silently resolved."""
+    block = _run("--without-monitoring", "--block", ".env.example")
+    assert block.returncode == 2, block.stdout + block.stderr
+    assert "--without-monitoring and --block are mutually exclusive" in block.stderr
+    profiles = _run("--without-monitoring", "--with-profiles")
+    assert profiles.returncode == 2, profiles.stdout + profiles.stderr
+    assert "--without-monitoring and --with-profiles are mutually exclusive" in profiles.stderr
+
+
+def test_block_with_profiles_does_not_claim_monitoring_is_uncounted(tmp_path: Path) -> None:
+    """A block without `monitoring` plus --with-profiles: TOTAL counts the eleven, so the
+    line must not say NOT counted; without --with-profiles it still does."""
+    block = tmp_path / "env"
+    block.write_text(
+        "\n".join(
+            [
+                "# >>> aizzak auto-size >>>",
+                "# host: cpus=32 memory_gb=64 mode=cpu",
+                "# role: dev",
+                "# profiles: wsl-ollama",
+                "# source: test",
+                "# <<< aizzak auto-size <<<",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    plain = _run("--block", str(block))
+    assert "monitoring: NOT counted (not in the block's profiles)" in plain.stdout, plain.stdout
+    both = _run("--block", str(block), "--with-profiles")
+    assert "monitoring: not in the block's profiles, counted by --with-profiles" in both.stdout
+    assert "NOT counted" not in both.stdout, both.stdout
+
+
 def test_the_script_refuses_an_unknown_or_missing_size() -> None:
     unknown = _run_size("huge")
     assert unknown.returncode == 2
@@ -446,7 +608,7 @@ def test_a_size_over_its_host_fails_naming_it(tmp_path: Path) -> None:
 
     over = read_size(tmp_path / "medium.env")
     compose = size_compose(over)
-    standing, _, _ = _classify(compose, MODE_PROFILES[over.mode])
+    standing, _, _ = _classify(compose, MODE_PROFILES[over.mode] | DEFAULT_PROFILES)
     assert _totals(standing)[1] > allowed
 
     done = _run_size(

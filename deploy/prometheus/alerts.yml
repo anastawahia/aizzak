@@ -1175,6 +1175,68 @@ groups:
             `docker compose exec -T postgres ls -ld
             /var/lib/postgresql/wal-archive`, then `df -h /`.
 
+  # ── The GPU (server-gpu-plan.md 4.2, docs/delivery/monitoring-profile/) ──
+  # Both read nvidia_gpu_exporter (docker-compose.gpu.yml, profile
+  # `monitoring`). On a host without the GPU overlay neither has a series, so
+  # both stay inactive -- an absent card is not an alert. A dead exporter on a
+  # GPU host is AizzakScrapeTargetDown{job="nvidia-gpu"}. One alert per card:
+  # the series carry `uuid`, and nothing here aggregates them. No join on
+  # nvidia_smi_gpu_info: a missing info series must not disarm the rule.
+  - name: aizzak-gpu
+    rules:
+      - alert: AizzakGpuMemoryHigh
+        expr: >-
+          nvidia_smi_memory_used_bytes{job="nvidia-gpu"}
+            / (nvidia_smi_memory_total_bytes{job="nvidia-gpu"} > 0)
+          > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory is {{ $value | humanizePercentage }} used (card {{ $labels.uuid }})"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakgpumemoryhigh"
+          description: >-
+            The LLM and the embedding service share this card's memory. Past
+            the ceiling Ollama refuses to load the model or moves layers to
+            the CPU, and every chat turn slows several-fold with no error.
+            Ollama keeps a loaded model resident (OLLAMA_KEEP_ALIVE), so a
+            high steady level UNDER the threshold is normal, not a leak.
+          reason: >-
+            0.90 is step 2.6's own acceptance bound (server-gpu-plan.md 2.6:
+            GPU memory stays under 90%); measured 0.35-0.37 of 8 GB under that
+            step's load (gpu-compose P-6). `for: 5m` ignores a model swap's
+            transient. `total > 0` drops a failed reading instead of dividing
+            by zero, so NaN never fires it.
+          response: >-
+            `nvidia-smi` on the host (which processes hold the memory), then
+            `docker compose exec ollama ollama ps` (model, size, share on the
+            GPU), then the table in docs/design/08-local-runbook.md 2-ي.
+            Changing the model or OLLAMA_NUM_PARALLEL is a human decision.
+      - alert: AizzakGpuTemperatureHigh
+        expr: nvidia_smi_temperature_gpu{job="nvidia-gpu"} > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU at {{ $value }} C for five minutes (card {{ $labels.uuid }})"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakgputemperaturehigh"
+          description: >-
+            The card has stayed above 85 C for five minutes. Near its limit
+            the driver lowers the clocks, and generation slows with no error
+            anywhere in the platform.
+          reason: >-
+            85 C sits near the common slowdown point of NVIDIA cards (owner
+            decision Q-5). Where the driver reports it, the exporter also
+            reads the card's own margin (nvidia_smi_temperature_gpu_tlimit);
+            the threshold is re-tuned from it after step 7.3. `for: 5m`
+            ignores a burst of load.
+          response: >-
+            `nvidia-smi -q -d TEMPERATURE,PERFORMANCE` on the host (the
+            temperature, the slowdown thresholds, the active throttle
+            reasons), then `docker compose exec ollama ollama ps` for what is
+            running. Cooling is the provider's; reducing load is a human
+            decision.
+
   # ── The pipeline's own heartbeat ────────────────────────────────────────
   # Always firing, by construction. Every rule above can only speak if
   # Prometheus evaluates, Alertmanager routes and the sink records; none of

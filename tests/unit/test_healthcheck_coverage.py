@@ -34,6 +34,7 @@ import yaml
 from app.framework.observability.heartbeat import HEARTBEAT_PROCESS_NAMES
 
 _COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+_GPU_COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.gpu.yml"
 
 # Services that run to completion and exit. Docker only ever reports a
 # healthcheck on a RUNNING container, so a check on a one-shot service is
@@ -93,6 +94,11 @@ def compose() -> dict[str, Any]:
     the literal text of each block."""
     loaded = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
     services: dict[str, Any] = loaded["services"]
+    # monitoring-profile 4.2: the GPU file DEFINES one service of its own, so it needs a
+    # healthcheck at birth like any other. Its entries for services the base file defines
+    # (ollama, embedding, app, prometheus) only patch them and are not services here.
+    overlay = yaml.safe_load(_GPU_COMPOSE.read_text(encoding="utf-8"))["services"]
+    services = {**services, **{n: s for n, s in overlay.items() if n not in services}}
     return services
 
 

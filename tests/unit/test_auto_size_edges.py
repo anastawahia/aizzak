@@ -63,24 +63,26 @@ def _run(env: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int
     return code, captured.out, captured.err
 
 
-# AC-1.6 boundary: GPU mode needs 14.22 GB; the allowance is 90% of the host.
+# AC-1.6 boundary: GPU mode needs 14.28 GB; the allowance is 90% of the host.
 def test_the_refusal_threshold_is_exact_in_gpu_mode(
     env: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     before = _sha(env)
-    code, _, err = _run(
-        env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.79", "--mode", "gpu"
-    )
+    # decision 7: the server counts monitoring, which COMPOSE_PROFILES names (--profiles here)
+    gpu = ("--mode", "gpu", "--profiles", "monitoring")
+    code, _, err = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.86", *gpu)
     assert code == 1 and "gpu" in err
     assert _sha(env) == before
-    code, _, _ = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.8", "--mode", "gpu")
+    code, _, _ = _run(env, capsys, "--host-cpus", "8", "--host-memory-gb", "15.87", *gpu)
     assert code == 0
 
 
 # AC-5.6: without a block and without --role the role is server, so the dev host is refused.
 def test_no_block_and_no_role_means_server(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     before = _sha(env)
-    code, _, err = _run(env, capsys, "--host-cpus", "10", "--host-memory-gb", "12.67")
+    code, _, err = _run(
+        env, capsys, "--host-cpus", "10", "--host-memory-gb", "12.67", "--profiles", "monitoring"
+    )
     assert code == 1 and "role server" in err and "11.40" in err
     assert _sha(env) == before
 

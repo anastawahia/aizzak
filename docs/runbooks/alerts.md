@@ -25,6 +25,13 @@ docker compose logs --since 1h alert-sink
 4. **التنبيهُ نفسُه قد يظهر في أكثر من سطر.** حين يتغيّر شيءٌ في مجموعةٍ من التنبيهات (تنبيهٌ جديدٌ بالاسم نفسه، أو زوال)، تُرسَل المجموعةُ كلُّها من جديد. السطرُ المكرَّر يعني «ما زال قائماً»، لا حدثاً جديداً.
 5. **قائمةُ ما يشتعل الآن** في Grafana: **Alerting ← Alert rules** (قواعد Prometheus) أو **Alerting ← Silences/Alerts** مع اختيار مصدر **Alertmanager**.
 
+> **⚠️ ومسارُ التنبيه نفسُه خلف profile `monitoring`** (خطّة خادم الكرت 4.1).
+>
+> - Prometheus وAlertmanager و`alert-sink` (ومعها Grafana وLoki وAlloy والمصدّرات) لا تقلع إلّا و`monitoring` في `COMPOSE_PROFILES`: على جهاز المالك `COMPOSE_PROFILES=wsl-ollama,monitoring`، وعلى الخادم `local-llm,monitoring`.
+> - **دونه لا مسار تنبيهٍ أصلاً،** ونبض `AizzakWatchdog` يغيب، ولا تنبيه يستطيع قول ذلك.
+> - تحقّق: `docker compose ps prometheus alertmanager alert-sink`.
+> - والخادم الصغير الذي يطفئ المراقبة عمداً يفحص `/health` من خارجه ([`deploy-server.md`](../deploy-server.md) §2).
+
 **الخطورة:**
 
 | الخطورة | المعنى | التكرار ما دام قائماً |
@@ -65,6 +72,8 @@ docker compose logs --since 1h alert-sink
 | [`AizzakRateLimitedShareHigh`](#aizzakratelimitedsharehigh) | تحذير | أكثر من 5% من الطلبات تُرفض بـ429 |
 | [`AizzakRedisCacheDown`](#aizzakrediscachedown) | تحذير | Redis الذاكرة المخبّأة لا يردّ |
 | [`AizzakLlmCircuitOpen`](#aizzakllmcircuitopen) | تحذير | مزوّدُ نموذجٍ لغويّ مقطوعٌ منذ دقيقتين |
+| [`AizzakGpuMemoryHigh`](#aizzakgpumemoryhigh) | تحذير | ذاكرة الكرت ممتلئةٌ أكثر من 90% منذ 5 دقائق |
+| [`AizzakGpuTemperatureHigh`](#aizzakgputemperaturehigh) | تحذير | حرارة الكرت فوق 85°م منذ 5 دقائق |
 | [`AizzakOutboxCycleTimeHigh`](#aizzakoutboxcycletimehigh) | تحذير | الأحداث لا تُنشر من قاعدة البيانات |
 | [`AizzakDlqNotEmpty`](#aizzakdlqnotempty) | تحذير | رسالةٌ في طابور الرسائل الميّتة |
 | [`AizzakRedisStreamMemoryHigh`](#aizzakredisstreammemoryhigh) | تحذير | Redis المجاري ممتلئ 80% |
@@ -513,9 +522,9 @@ docker compose logs --since 15m app | grep llm_guard
 docker compose ps ollama-bridge
 ```
 
-   فإن كان الجسر **غائباً** من القائمة فالسبب غالباً نقصُ `COMPOSE_PROFILES=wsl-ollama` من `.env` (الجسر خلف profile، ونسيانُ السطر يُسقطه بصمت). وإلّا فتأكّد أنّ Ollama يعمل على المضيف.
+   فإن كان الجسر **غائباً** من القائمة فالسبب غالباً غياب `wsl-ollama` من سطر `COMPOSE_PROFILES` في `.env` (السطر الكامل `COMPOSE_PROFILES=wsl-ollama,monitoring`) (الجسر خلف profile، ونسيانُ السطر يُسقطه بصمت). وإلّا فتأكّد أنّ Ollama يعمل على المضيف.
 
-   - **على خادم** (Ollama داخل المكدّس بـ`COMPOSE_PROFILES=local-llm`):
+   - **على خادم** (Ollama داخل المكدّس بـ`COMPOSE_PROFILES=local-llm,monitoring`):
 
 ```bash
 docker compose ps ollama
@@ -526,6 +535,65 @@ docker compose logs --since 15m ollama
 4. لا شيء لإعادة ضبطه — القاطعُ يُغلق وحده حين تنجح محاولةُ اختبار ([`08 §4.25`](../design/08-local-runbook.md)).
 
 **كيف تعرف أنّه زال:** سطر `resolved` بعد أوّل محاولةٍ ناجحة.
+
+---
+
+<a id="aizzakgpumemoryhigh"></a>
+
+### `AizzakGpuMemoryHigh` — ذاكرة الكرت ممتلئةٌ أكثر من 90% منذ 5 دقائق
+
+**ماذا يعني:**
+
+- النموذج اللغويّ والتضمين يتقاسمان ذاكرة الكرت. فوق الحدّ يرفض Ollama تحميل النموذج، أو ينقل طبقاتٍ إلى المعالج، فتبطؤ المحادثة كثيراً دون خطأ.
+- الحدّ هو حدّ قبول 2.6، والمقيس على كرت 8 ج.ب 0.35–0.37.
+- ⚠️ Ollama يُبقي النموذج محمَّلاً (`OLLAMA_KEEP_ALIVE`)، فاستعمالٌ ثابتٌ مرتفعٌ **تحت** الحدّ طبيعيّ.
+- التنبيه لكلّ كرت، بتسمية `uuid`.
+
+**الخطوات (قراءةٌ فقط أوّلاً):**
+
+1. على المضيف، من يحجز الذاكرة:
+
+```bash
+nvidia-smi
+```
+
+2. النموذج الذي يحمله Ollama وحصّته على الكرت:
+
+```bash
+docker compose exec ollama ollama ps
+```
+
+3. جدول ما يسكن الكرت في [`08-local-runbook.md`](../design/08-local-runbook.md) §2‑ي: نموذجٌ أكبر من المحسوب؟ أو `OLLAMA_NUM_PARALLEL` أعلى؟ أو نسخة تضمينٍ ثانية؟
+4. تغيير النموذج أو `OLLAMA_NUM_PARALLEL` قرارٌ بشريّ (قرار 3).
+
+**كيف تعرف أنّه زال:** تحت 90% خمس دقائق، وسطر `resolved`، وصفّ GPU في لوحة capacity تحت الخطّ الأحمر.
+
+---
+
+<a id="aizzakgputemperaturehigh"></a>
+
+### `AizzakGpuTemperatureHigh` — حرارة الكرت فوق 85°م منذ 5 دقائق
+
+**ماذا يعني:** قرب حدّه يخفض التعريف السرعة، فيبطؤ التوليد بلا خطأ. والحدّ يُضبط بعد 7.3 من حدّ الكرت نفسه.
+
+**الخطوات:**
+
+1. الحرارة وحدود الإبطاء وأسباب الخنق، على المضيف:
+
+```bash
+nvidia-smi -q -d TEMPERATURE,PERFORMANCE
+```
+
+2. ما يعمل الآن:
+
+```bash
+docker compose exec ollama ollama ps
+```
+
+3. جدول §2‑ي في [`08-local-runbook.md`](../design/08-local-runbook.md).
+4. التبريد عند المزوّد، وخفض الحمل قرارٌ بشريّ.
+
+**كيف تعرف أنّه زال:** تحت 85°م خمس دقائق، وسطر `resolved`.
 
 ---
 
@@ -697,7 +765,7 @@ docker compose exec -T app python -m app.ops.embedding_migration status --json
 docker compose ps
 ```
 
-2. متوقّفة؟ شغّلها بـ`docker compose up -d <اسم الخدمة>`.
+2. متوقّفة؟ شغّلها بـ`docker compose up -d <اسم الخدمة>`. وإن كان `job` هو `nvidia-gpu` فـ`docker compose ps nvidia-gpu-exporter` و`docker compose logs --since 15m nvidia-gpu-exporter`؛ ورسالة «could not select device driver» تعني أداة NVIDIA (`deploy/gpu-preflight.sh`).
 3. تعمل ولا تُقرأ؟ غالباً منفذٌ أو مسارٌ تغيّر. قائمةُ الأهداف وآخرُ خطأ:
 
 ```bash
@@ -779,7 +847,7 @@ docker compose exec -T ops-scheduler python -m app.ops.scheduler status
 docker compose ps prometheus alertmanager alert-sink
 ```
 
-2. شغّل أيَّها متوقّف بـ`docker compose up -d <اسم الخدمة>`.
+2. شغّل أيَّها متوقّف بـ`docker compose up -d <اسم الخدمة>`. **وإن لم يكن `monitoring` في سطر `COMPOSE_PROFILES` في `.env` فلن يُقلعها `up -d` التالي**: أضفه إلى السطر أوّلاً.
 3. تأكّد من عودة النبض:
 
 ```bash
@@ -799,6 +867,8 @@ docker compose logs --since 10m alert-sink
 | `AizzakDlqNotEmpty` | — | — | — | — |
 | `AizzakOpsTaskOverdue` | — | — | — | — |
 | `AizzakWatchdog` | — | — | — | — |
+| `AizzakGpuMemoryHigh` | — | — | بانتظار التجربة في 7.3 | — |
+| `AizzakGpuTemperatureHigh` | — | — | بانتظار التجربة في 7.3 | — |
 | (البقيّة) | — | — | — | — |
 
 </div>
