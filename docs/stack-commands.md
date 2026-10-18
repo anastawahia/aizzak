@@ -8,7 +8,7 @@
 >
 > ⚠️ **كلّ أمرٍ هنا يُنفَّذ داخل WSL** (`Ubuntu-24.04`) من `/home/AIZZAK`، لا من Git‑Bash على ويندوز: قناة Git‑Bash لا تنفّذ ثنائيّات ELF (`Exec format error`).
 >
-> **آخر مطابقةٍ مع الواقع: 2026‑10‑17** (`monitoring-profile`: سطر المالك `COMPOSE_PROFILES=wsl-ollama,monitoring`، و`resource-budget.sh --without-monitoring`، ومصدّر الكرت؛ سبقتها 2026‑10‑14: `gpu-compose`: سطر المالك `COMPOSE_PROFILES=wsl-ollama`، و`docker-compose.gpu.yml` وفحص المتطلّبات، وقسم «ز) الكرت على خادم»، وصورة CUDA في قسم الإصدار؛ سبقتها 2026‑10‑13: صور جاهزة بدل البناء المحلّيّ: `docker-compose.build.yml` وسطر `COMPOSE_FILE` وقسم الإصدار؛ سبقتها [§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات، ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media`).
+> **آخر مطابقةٍ مع الواقع: 2026‑10‑17** (`monitoring-profile`: سطر المالك `COMPOSE_PROFILES=wsl-ollama,monitoring`، و`resource-budget.sh --without-monitoring`، ومصدّر الكرت؛ سبقتها 2026‑10‑14: `gpu-compose`: سطر المالك الأوّل (profile الجسر)، و`docker-compose.gpu.yml` وفحص المتطلّبات، وقسم «ز) الكرت على خادم»، وصورة CUDA في قسم الإصدار؛ سبقتها 2026‑10‑13: صور جاهزة بدل البناء المحلّيّ: `docker-compose.build.yml` وسطر `COMPOSE_FILE` وقسم الإصدار؛ سبقتها [§3.133](log/3.133.md) — تقسيم `worker` إلى ثلاث خدمات، ثمّ [§3.134](log/3.134.md) — قياس إقلاع `media`).
 
 ---
 
@@ -18,7 +18,7 @@
 
 | # | الأمر | الوظيفة |
 |---|---|---|
-| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — ثمّ خطوة سطر `COMPOSE_FILE` (ليبني Compose الصورتين محلّيّاً)، وعلى WSL سطر `COMPOSE_PROFILES=wsl-ollama` (ليقلع جسر Ollama الأصليّ)؛ انظر الشرح — قبل أوّل إقلاع |
+| 1 | `cp .env.example .env` | إنشاء ملفّ البيئة من القالب — ثمّ خطوة سطر `COMPOSE_FILE` (ليبني Compose الصورتين محلّيّاً)، وعلى WSL سطر `COMPOSE_PROFILES=wsl-ollama,monitoring` (ليقلع جسر Ollama الأصليّ)؛ انظر الشرح — قبل أوّل إقلاع |
 | 2 | `docker compose up -d` | إقلاع المكدّس كاملاً بالترتيب الصحيح (بيانات ← تهيئة ← تطبيق ← حافّة) |
 | 3 | `docker compose up migrate` | تشغيل الهجرات الإحدى عشرة والمنح — بديل `alembic upgrade head` الممنوع |
 | 4 | `docker compose up -d nginx-certs` | توليد شهادة TLS الموقّعة ذاتيّاً عند رفض `https://localhost` الاتّصال |
@@ -120,7 +120,7 @@ wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/AIZZAK && .venv/bin/ruff format --chec
 > - ⚠️ **ونسيان `wsl-ollama` يُسقط الجسر بصمت**: `up -d` لا يقلعه (وحاويته القديمة قد تبقى تعمل حتّى تُعاد)، فتفشل نداءات النموذج المحلّيّ وينذر `AizzakLlmCircuitOpen` ([`runbooks/alerts.md`](runbooks/alerts.md)).
 > - ⚠️ **ونسيان `monitoring` يُطفئ Prometheus وAlertmanager و`alert-sink` بصمت** عند أوّل إعادة إنشاءٍ للحاويات، فيغيب نبض `AizzakWatchdog` ولا تنبيه يستطيع قول ذلك ([`runbooks/alerts.md`](runbooks/alerts.md) §0).
 > - ومن له كتلة `aizzak auto-size` في `.env` فليعدّل السطر **أوّلاً**، ثمّ يعيد `deploy/auto_size.py --role dev`: الكتلة تسجّل `# profiles:` فيها، والميزانيّة (`resource-budget.sh --block`) تتبعها.
-> - وعلى **خادمٍ** بلا WSL لا شيء من هذا يلزم: سطره `COMPOSE_PROFILES=local-llm` (القسم «ز» أدناه).
+> - وعلى **خادمٍ** بلا WSL لا شيء من هذا يلزم: سطره `COMPOSE_PROFILES=local-llm,monitoring` (القسم «ز» أدناه).
 
 ينسخ قالب البيئة إلى الملفّ الفعليّ الذي يقرؤه Compose. النسخ وحده **لا يكفي**: القالب يحوي قيماً من طراز `change-me-*` وحقلاً فارغاً واحداً إلزاميّاً. عليك ملء:
 
@@ -601,7 +601,7 @@ EMBEDDING_CUDA_IMAGE_REPO=anastawahia/aizzak
 EMBEDDING_CUDA_IMAGE_TAG=embedding-cuda-<YYYY.M.N>
 ```
 
-- **`docker-compose.gpu.yml`** يمسّ ثلاث خدماتٍ وحدها: `ollama` يحجز الكرت (مع `local-llm` فقط)، و`embedding` نسخةً **واحدة** من صورة CUDA بحدّ ذاكرةٍ ابتدائيّ `3g` وبـ`EMB_REQUIRE_CUDA=1`، و`app` يحجز القدرة `utility` وحدها لـ`nvidia-smi` في صفحة System Monitor. و`embedding-lb` أمامها دون تغيير. **ومع `monitoring` يضيف `nvidia-gpu-exporter` ويربط لـ`prometheus` ملفّ أهدافه** (`deploy/prometheus/scrape-gpu.yml`): أرقام الكرت وتنبيهاه ولوحته.
+- **`docker-compose.gpu.yml`** يمسّ ثلاث خدماتٍ دائماً: `ollama` يحجز الكرت (مع `local-llm` فقط)، و`embedding` نسخةً **واحدة** من صورة CUDA بحدّ ذاكرةٍ ابتدائيّ `3g` وبـ`EMB_REQUIRE_CUDA=1`، و`app` يحجز القدرة `utility` وحدها لـ`nvidia-smi` في صفحة System Monitor. و`embedding-lb` أمامها دون تغيير. **ومع `monitoring` يمسّ اثنتين أخريين: يضيف `nvidia-gpu-exporter` (على شبكةٍ داخليّة `gpu-metrics` لا ترى بقيّة المكدّس) ويربط لـ`prometheus` ملفّ أهدافه وتلك الشبكة** (`deploy/prometheus/scrape-gpu.yml`): أرقام الكرت وتنبيهاه ولوحته.
 - **`EMB_REQUIRE_CUDA=1`** يجعل الحاوية ترفض الإقلاع دون CUDA (أداةٌ ناقصة، أو تعريفٌ قديم، أو صورة معالجٍ تحمل اسم CUDA) بدل أن تعمل على المعالج بصمت. وهذا ما يحرس **الأمر الذي لا يستطيع Compose منعه**: ⚠️ **لا يُركَّب ملفّ الكرت مع `docker-compose.build.yml`** أبداً، فملفّ البناء يبني `embedding` من متطلّبات المعالج ويسمّي الناتج باسم CUDA. صورة CUDA مصدرها `build-push.sh` (الإصدار) أو الأمر 43.
 - `.env` الخادم يحمل متغيّرات الصورتين (`EMBEDDING_IMAGE_*` للمعالج و`EMBEDDING_CUDA_IMAGE_*` للكرت) و**`COMPOSE_FILE` وحده يختار بينهما**: بلا ملفّ الكرت يعمل المكدّس نفسه على المعالج. والاسم المحلّيّ الافتراضيّ لصورة CUDA (`aizzak/embedding-cuda:dev`) غير اسم صورة المعالج، فخادمٌ نسي المتغيّرين يفشل في السحب ولا يشغّل torch المعالج.
 - وأيّ `--profile X` في أمرٍ يحلّ محلّ `COMPOSE_PROFILES`: على الخادم اكتب `COMPOSE_PROFILES=local-llm,monitoring,X docker compose …`.

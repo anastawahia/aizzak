@@ -939,8 +939,10 @@ deploy/auto_size.py --role dev --dry-run | grep '^# profiles:'      #    -> cont
 deploy/auto_size.py --role dev && deploy/resource-budget.sh --block .env | grep '^monitoring:'   # -> counted (in the block's profiles)
 docker compose up -d && docker compose ps -q $M | sort | sha256sum | diff - <(sed -n 4p /tmp/mp-0.txt) && echo "still not recreated"
 # 7. AC-6.2: http://127.0.0.1:13000 -> capacity dashboard: the GPU row says "No data", no error; the rest as before.
-#    (Prometheus keeps its old rules until a reload; optional:
-#     docker compose exec -T prometheus wget -qO- --post-data= http://127.0.0.1:9090/-/reload )
+#    (Prometheus keeps its old files after `git pull`: both are bind-mounted file by file, so
+#     the container holds the old inode and a /-/reload re-reads the OLD rules. Recreate it,
+#     once the container-ID check of AC-3.3 is done:
+#     docker compose up -d --force-recreate --no-deps prometheus )
 ```
 
 ## 6. ترتيب التنفيذ والتوازي

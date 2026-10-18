@@ -27,9 +27,10 @@
 | `vault` | hashicorp/vault | 8200 | الأسرار + Transit (تخزين `file` دائم — release-blockers-plan.md §3 خطوة 1) |
 | `embedding` | `services/embedding/Dockerfile` | 8080 داخلياً | خدمة التضمين المركزية — **ثلاث نسخ** (`deploy.replicas: 3`) بخيطٍ واحدٍ مثبَّتٍ لكلٍّ (خطّة السعة `4.1`)؛ ينشرها ملفّ الاختبار على `127.0.0.1:8080` **بنسخةٍ واحدة** فقط |
 | `embedding-lb` | nginx:1.27 | 8080 داخلياً | مُوازِنُ الحمل الداخليّ أمام النسخ الثلاث (خطّة السعة `4.2`) — **وهو وحدَه ما يصله المحوِّل**؛ `EMBEDDING_SERVICE_URL` يشير إليه |
-| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama` في `.env`) |
+| `ollama-bridge` | alpine/socat | 11435 على مضيف WSL → 11434 | يصل الحاويات بخدمة Ollama الأصلية داخل WSL — profile `wsl-ollama` (جهاز المالك وحده: `COMPOSE_PROFILES=wsl-ollama,monitoring` في `.env`) |
 | `ollama` | `ollama/ollama:0.34.4` | 11434 داخليّاً | النموذج اللغويّ داخل المكدّس، profile `local-llm`؛ وعلى الكرت بـ`docker-compose.gpu.yml` |
 | `prometheus` · `grafana` · `alertmanager` · `alert-sink` · `loki` · `alloy` · المصدّرات الخمسة | صورٌ مثبّتة في `docker-compose.yml` | Grafana على `127.0.0.1:13000`، والبقيّة داخليّة | المراقبة والتنبيه والسجلّات — profile `monitoring` (مفعّل افتراضيّاً، قرار 7: `wsl-ollama,monitoring` على جهاز المالك، و`local-llm,monitoring` على الخادم) |
+| `nvidia-gpu-exporter` | `utkuozdemir/nvidia_gpu_exporter:1.15.1` (بصمة مثبّتة) | 9835 داخليّاً، على الشبكة الداخليّة `gpu-metrics` مع Prometheus وحده | أرقام الكرت (ذاكرة وحمل وحرارة) لـ Prometheus — في `docker-compose.gpu.yml` وحده، وبـ profile `monitoring` فقط: لا ملفّ الكرت فلا مصدّر ولا هدف ولا تنبيه |
 | **خدمات لمرّةٍ واحدة** | | | |
 | `vault-bootstrap` | hashicorp/vault | — | KV + Transit + بذر الأسرار + **AppRole** |
 | `minio-bootstrap` | pgsty/mc | — | إنشاء الدلو |
@@ -486,7 +487,7 @@ resources.reference_host_gb   = 64
 
 **⚠️ و`monitoring-host-postgres` أضافت خدمتَين دائمتَين (`node-exporter` بـ0.25 vCPU و**64m**، و`postgres-exporter` بـ0.25 و**128m**) ودفعت ثمنَهما من سقف `redis-cache`: ‏**2g ← 1792m**.** الدليلُ مقيس (Prometheus الحيّ، 15 يوماً): ذروةُ `redis-cache` **21.0 ميغابايت** (cAdvisor) و**19.6** مقيمةً (`redis_exporter`)، وسقفُه الأعلى يرسمه `--maxmemory 1gb` لا الحمل، و`--save ""` يعني لا `fork` ولا نسخ‑عند‑الكتابة؛ فيبقى 768 ميغابايت فوق `maxmemory` للتجزّؤ ومخازن العملاء — 91 ضعف الذروة. ولم يُمسّ `prometheus`، ولا الهامش `_MEMORY_HEADROOM_GB`. فصار المجموعُ **36.10 vCPU و57.53 GB** (الهامشُ تحت 57.60 صار **70.4 ميغابايت** بعد أن كان 6.4). والخدماتُ الثلاث الأخرى عند سقفها في 15 يوماً (`loki` 1020.8/1024 و`grafana` 511.7/512 و`alert-sink` 31.1/32) ولم تُمسّا: تستحقّ نظرةً في إعادة تركيب الدفتر (`د‑26`).
 
-**⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
+**⚠️ و`gpu-compose` (2.3) أخرجت الجسر من الدائمة.** ‏`ollama-bridge` (0.5 vCPU و256m) صار خلف profile `wsl-ollama`، فنزل المجموعُ إلى **35.60 vCPU و57.28 GB** (الهامشُ تحت 57.60 نحو 326 ميغابايت) والخدماتُ الدائمة من 29 إلى 28. جهاز المالك ما زال يشغّله بسطر `COMPOSE_PROFILES=wsl-ollama,monitoring` في `.env`، لكنّه لا يُعدّ على المضيف المرجعيّ، لأنّ خادماً بلا WSL لا يشغّله. وكذلك `ollama` و`ollama-pull` (2.2): خلف `local-llm` فلا يُعدّان، وسقف `ollama` (4 vCPU و4g) تقدير لم يُقَس بعد؛ ميزانيّةُ الخادم الذي يشغّله هي الخطوة 3.4 من `server-gpu-plan.md` لا هذا الدفتر.
 
 **⚠️ و`monitoring-profile` (4.1 من خطّة خادم الكرت) وضعت خدمات المراقبة الإحدى عشرة خلف profile `monitoring`، ولم يتحرّك رقم.**
 
@@ -752,8 +753,8 @@ EMB_BATCH_WINDOW_MS=0 EMBEDDING_CACHE_TTL_S=0 \
 ### 3.0 الإقلاع السريع
 ```bash
 cp .env.example .env      # املأ القيم غير السرّية؛ أسرار التطبيق تُبذَر في Vault
-# ثمّ مصدرُ النموذج اللغويّ، سطرٌ في .env (القالب يحمله معلَّقاً): COMPOSE_PROFILES=wsl-ollama
-# على WSL مع Ollama الأصليّ، أو COMPOSE_PROFILES=local-llm حيث لا Ollama أصليّ (ثمّ ollama-pull)
+# ثمّ مصدرُ النموذج اللغويّ، سطرٌ في .env (القالب يحمله معلَّقاً): COMPOSE_PROFILES=wsl-ollama,monitoring
+# على WSL مع Ollama الأصليّ، أو COMPOSE_PROFILES=local-llm,monitoring حيث لا Ollama أصليّ (ثمّ ollama-pull)
 docker compose up -d      # الترتيب كلّه مُرمَّزٌ في depends_on
 ```
 هذا وحده يكفي محليّاً: يرفع البيانات، ثمّ الخدمات الأربع لمرّةٍ واحدة (تهيئة Vault وMinIO والشهادة والهجرات)، ثمّ التطبيق والمُرحّل والحافّة.
