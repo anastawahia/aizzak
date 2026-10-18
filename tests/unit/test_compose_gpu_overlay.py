@@ -95,7 +95,7 @@ def _keys_anywhere(node: object) -> set[str]:
 def test_the_overlay_has_only_services_and_exactly_five() -> None:
     """ollama, embedding, app (2.5), then prometheus (one mount) and the exporter (4.2)."""
     overlay = _overlay()
-    assert set(overlay) == {"services"}
+    assert set(overlay) == {"services", "networks"}
     assert set(overlay["services"]) == {
         "ollama",
         "embedding",
@@ -163,7 +163,11 @@ def test_app_gets_utility_only_and_no_wsl_path() -> None:
 
 
 def test_prometheus_gets_one_mount_and_nothing_else() -> None:
-    assert _overlay()["services"]["prometheus"] == {"volumes": [_SCRAPE_MOUNT]}
+    assert _overlay()["services"]["prometheus"] == {
+        "volumes": [_SCRAPE_MOUNT],
+        # `default` listed on purpose: a list replaces the implicit network (SR-1).
+        "networks": ["default", "gpu-metrics"],
+    }
 
 
 def test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded() -> None:
@@ -175,7 +179,12 @@ def test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded() -> None:
         "read_only": True,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],
-        "command": ["--web.listen-address=:9835"],
+        "command": [
+            "--web.listen-address=:9835",
+            "--collect.interval=15s",
+            "--web.max-requests=2",
+        ],
+        "networks": ["gpu-metrics"],
         "deploy": {
             "resources": {
                 "limits": {"cpus": "0.25", "memory": "64m"},
@@ -203,6 +212,20 @@ def test_the_gpu_exporter_is_pinned_internal_unprivileged_and_bounded() -> None:
         "volumes",
     }
     assert "count" not in exporter["deploy"]["resources"]["reservations"]["devices"][0]
+
+
+def test_the_exporter_joins_no_network_but_an_internal_gpu_metrics() -> None:
+    """SR-1: a third-party image must not share `default` with the unauthenticated Redis,
+    Qdrant, Loki and Alertmanager; its one peer is Prometheus."""
+    overlay = _overlay()
+    assert overlay["services"]["nvidia-gpu-exporter"]["networks"] == ["gpu-metrics"]
+    assert overlay["networks"] == {"gpu-metrics": {"internal": True}}
+    others = [
+        name
+        for name, spec in overlay["services"].items()
+        if "gpu-metrics" in (spec.get("networks") or ())
+    ]
+    assert sorted(others) == ["nvidia-gpu-exporter", "prometheus"]
 
 
 def test_the_gpu_exporter_logs_like_every_other_service() -> None:
@@ -270,12 +293,15 @@ def test_the_overlay_changes_only_the_services_it_names(profiles: tuple[str, ...
     assert changed == {"ollama", "embedding", "app"} | ({"prometheus"} if monitoring else set())
     if monitoring:
         before, after = base["prometheus"], with_gpu["prometheus"]
+        assert set(after["networks"]) == set(before["networks"]) | {"gpu-metrics"}
+        assert "default" in after["networks"]
+        assert set(with_gpu["nvidia-gpu-exporter"]["networks"]) == {"gpu-metrics"}
         added = [v for v in after["volumes"] if v not in before["volumes"]]
         assert len(added) == 1 and len(after["volumes"]) == len(before["volumes"]) + 1
         assert added[0]["target"] == "/etc/prometheus/scrape.d/gpu.yml"
         assert added[0]["read_only"] is True
-        assert {k: v for k, v in after.items() if k != "volumes"} == {
-            k: v for k, v in before.items() if k != "volumes"
+        assert {k: v for k, v in after.items() if k not in ("volumes", "networks")} == {
+            k: v for k, v in before.items() if k not in ("volumes", "networks")
         }
 
 

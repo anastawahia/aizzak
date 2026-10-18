@@ -90,9 +90,14 @@ services:
   # 4.2 (server-gpu-plan.md): the exporter's scrape job, found by
   # prometheus.yml's `scrape_config_files` glob. Without this mount the glob
   # matches nothing and Prometheus has no `nvidia-gpu` target at all.
+  # Only single `:ro` FILES are mounted under scrape.d/ (never a host directory):
+  # every *.yml there becomes scrape configuration (security-review SR-7).
+  # `networks` lists `default` explicitly: a list replaces the implicit network,
+  # and without it Prometheus would lose every other target (SR-1).
   prometheus:
     volumes:
       - ./deploy/prometheus/scrape-gpu.yml:/etc/prometheus/scrape.d/gpu.yml:ro
+    networks: [default, gpu-metrics]
 
   # ── GPU numbers for Prometheus (server-gpu-plan.md 4.2) ─────────────────
   # nvidia-smi read by utkuozdemir/nvidia_gpu_exporter (owner decision Q-4 (b),
@@ -102,11 +107,16 @@ services:
   # the healthcheck runs the one binary the toolkit mounts -- nvidia-smi --
   # and proves the card is readable from HERE; the HTTP side is
   # AizzakScrapeTargetDown's (an ordinary target). Pinned by the multi-arch
-  # index digest, verified 2026-10-17 with `docker buildx imagetools inspect`
+  # index digest; same index digest on docker.io and ghcr.io; signature
+  # verification: docs/deploy-server.md ث‑6.
   # (linux/amd64 manifest sha256:93b45e335c8286379e03ecd542354fa425e5ffb8e0e5761e60c1fb241212fda4).
   # `utility` only, as `app` above: nvidia-smi + NVML, no CUDA context.
   # Limits are fixed numbers, not size variables (A-4): 64m is `large`'s
-  # GPU-mode headroom (Q-8), held against measured peak x 1.5 (AC-4.6).
+  # GPU-mode headroom (Q-8). 64m stays by owner decision 2026-10-18, an accepted
+  # risk: WSL peak 54.1 MiB, and peak x 1.5 > 64m. Re-measure in 7.3, and with
+  # --collect.interval / --web.max-requests below (the peak may drop).
+  # Network: `gpu-metrics` only (internal, no egress, no route to Redis, Qdrant
+  # or Vault); Prometheus joins it to scrape :9835 (SR-1).
   # YAML anchors do not cross files, so `logging` restates x-app-logging;
   # tests/unit/test_compose_gpu_overlay.py holds the two equal.
   nvidia-gpu-exporter:
@@ -118,6 +128,11 @@ services:
     security_opt: ["no-new-privileges:true"]
     command:
       - "--web.listen-address=:9835"
+      # Background collection (the request reads the last result) and at most two
+      # concurrent scrapes: no per-request nvidia-smi fan-out (SR-4). Both flags
+      # exist in v1.15.1 (internal/app/app.go).
+      - "--collect.interval=15s"
+      - "--web.max-requests=2"
     deploy:
       resources:
         limits:
@@ -127,6 +142,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: [utility]
+    networks: [gpu-metrics]
     expose:
       - "9835"
     healthcheck:
@@ -142,3 +158,9 @@ services:
         max-size: "10m"
         max-file: "3"
         labels: "com.docker.compose.service,com.docker.compose.project"
+
+networks:
+  # Exporter <-> Prometheus only. `internal`: no route out, and the exporter is
+  # not on `default`, so it cannot reach the stack's unauthenticated services.
+  gpu-metrics:
+    internal: true
