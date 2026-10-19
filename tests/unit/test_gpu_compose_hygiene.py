@@ -214,6 +214,8 @@ _SCRIPTS = (
     "deploy/gpu-preflight.sh",
     "deploy/ollama/pull_models.py",
     "deploy/release/build-push.sh",
+    "deploy/release/bundle.sh",
+    "deploy/release/install.sh",
 )
 # Files created by the branch, where a literal secret has no history to excuse it.
 _NEW_MACHINE_READ_FILES = (
