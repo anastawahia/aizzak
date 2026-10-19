@@ -293,7 +293,7 @@ def test_a_failure_staging_the_second_file_removes_the_first_temp(
         return real(path, text, mode)
 
     monkeypatch.setattr(az, "stage", flaky)
-    with pytest.raises(OSError, match="Permission denied"):
+    with pytest.raises(az.EnvRefused, match=r"cannot write .*two .*Permission denied"):
         az.write_pair((one, "A\n", 0o600), (two, "B\n", 0o600))
     assert one.read_text(encoding="utf-8") == "1\n" and not two.exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["one"]
@@ -424,3 +424,170 @@ def test_the_summary_names_the_real_env_not_a_deleted_temp_dir(
     code, out, err = _run(env, capsys, "--host-cpus", "16", "--host-memory-gb", "32")
     assert code == 0 and "auto-size-" not in out + err.replace(az.TEMP_PREFIX, "")
     assert f"block {env}:" in out
+
+
+# install-bundle AC-5.5 (FR-26): the generator is safe to run as root from an unpacked bundle.
+_FIT = ("--host-cpus", "16", "--host-memory-gb", "32")
+
+
+@pytest.fixture
+def owned_by_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every path look root-owned to check_trusted, so a test can isolate the symlink rule
+    from the ownership rule without being root."""
+    real = os.lstat
+
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        info = real(path)
+        fields = list(info)
+        fields[4] = 0
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(az.os, "lstat", lstat)
+
+
+def _tree_bytes(root: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_as_root_a_symlinked_env_is_refused_and_nothing_is_written(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(a) The link is judged with lstat and never followed."""
+    real = env.parent / "real.env"
+    env.rename(real)
+    env.symlink_to(real.name)
+    before = _tree_bytes(env.parent)
+
+    code = az.main(["--env-file", str(env), *_FIT], environ={}, euid=0)
+    err = capsys.readouterr().err
+
+    assert code == 3
+    assert "symbolic link" in err and str(env) in err
+    assert _SENTINEL not in err
+    assert _tree_bytes(env.parent) == before
+    assert not _conf(env).exists()
+
+
+@pytest.mark.parametrize("name", ["deploy", "deploy/postgres", "deploy/postgres/sizes"])
+def test_as_root_a_symlinked_directory_on_the_path_is_refused(
+    env: Path, capsys: pytest.CaptureFixture[str], name: str, owned_by_root: None
+) -> None:
+    target = env.parent / name
+    moved = env.parent / "moved"
+    target.rename(moved)
+    target.symlink_to(moved)
+
+    code = az.main(["--env-file", str(env), *_FIT], environ={}, euid=0)
+
+    assert code == 3
+    assert str(target) in capsys.readouterr().err
+    assert not list(moved.rglob("auto.conf")), "root wrote through the link"
+
+
+def test_as_root_an_existing_auto_conf_that_is_a_link_is_refused(
+    env: Path, capsys: pytest.CaptureFixture[str], owned_by_root: None
+) -> None:
+    other = env.parent / "elsewhere.conf"
+    other.write_text("x\n", encoding="utf-8")
+    _conf(env).symlink_to(other)
+
+    assert az.main(["--env-file", str(env), *_FIT], environ={}, euid=0) == 3
+    assert str(_conf(env)) in capsys.readouterr().err
+    assert other.read_text(encoding="utf-8") == "x\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="needs a file the caller owns that root does not")
+def test_as_root_a_file_owned_by_someone_else_is_refused_and_the_real_uid_is_not(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = _tree_bytes(env.parent)
+
+    refused = az.main(["--env-file", str(env), *_FIT], environ={}, euid=0)
+    err = capsys.readouterr().err
+    assert refused == 3
+    assert "not owned by root" in err and _SENTINEL not in err
+    assert _tree_bytes(env.parent) == before
+
+    # the same tree, run as the user who owns it, goes through
+    assert az.main(["--env-file", str(env), *_FIT], environ={}, euid=os.geteuid()) == 0
+
+
+def test_check_trusted_is_a_no_op_for_any_other_euid(env: Path) -> None:
+    real = env.parent / "real.env"
+    env.rename(real)
+    env.symlink_to(real.name)
+    az.check_trusted(env, 1000)  # a non-root caller keeps today's behaviour: links are fine
+    with pytest.raises(az.EnvRefused):
+        az.check_trusted(env, 0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unwritable_sizes_directory_names_auto_conf_not_env(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(c) review #20: the message is about the file that was being prepared."""
+    sizes = env.parent / "deploy" / "postgres" / "sizes"
+    before = _sha(env)
+    sizes.chmod(0o555)
+    try:
+        code = az.main(["--env-file", str(env), *_FIT], environ={})
+    finally:
+        sizes.chmod(0o700)
+    err = capsys.readouterr().err
+
+    assert code == 3
+    assert "auto.conf" in err
+    assert ".env (" not in err
+    assert _sha(env) == before
+    assert not list(sizes.iterdir())
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unwritable_project_directory_names_env(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half of review #20: when .env's own temp file is the one that fails."""
+    env.parent.chmod(0o555)
+    try:
+        code = az.main(["--env-file", str(env), *_FIT], environ={})
+    finally:
+        env.parent.chmod(0o700)
+    err = capsys.readouterr().err
+
+    assert code == 3
+    assert ".env" in err and "Traceback" not in err
+
+
+def test_a_world_readable_env_gets_a_warning_with_the_file_name_only(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(d) SR-11: the state install.sh leaves .env in (Q-4). A warning, never a failure."""
+    env.chmod(0o644)
+
+    code, out, err = _run(env, capsys, *_FIT)
+
+    assert code == 0
+    assert "auto-size: warning: .env can be read by users other than its owner" in err
+    assert "chmod 600 .env" in err
+    assert _SENTINEL not in out + err
+
+
+def test_a_private_env_gets_no_warning(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env.chmod(0o600)
+
+    code, _, err = _run(env, capsys, *_FIT)
+
+    assert code == 0
+    assert "can be read by users other than its owner" not in err
+
+
+def test_the_group_readable_bit_alone_also_warns(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env.chmod(0o640)
+
+    assert "can be read by users" in _run(env, capsys, *_FIT)[2]
