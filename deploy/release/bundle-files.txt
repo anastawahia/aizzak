@@ -1,0 +1,42 @@
+# What goes into aizzak-<VERSION>.tar.gz. The ONLY list: deploy/release/bundle.sh reads it from the
+# release tag, and tests/unit/test_release_bundle_guard.py reads it from the working tree.
+#
+# One path per line, relative to the repository root as it is at the tag. A trailing "/" means a
+# directory (every tracked file under it). "#" starts a comment. deploy/release/install.sh is NOT
+# listed: bundle.sh puts it at the root of the bundle by itself.
+docker-compose.yml
+docker-compose.gpu.yml
+.env.example
+deploy/sizes/
+deploy/auto_size.py
+deploy/gpu-preflight.sh
+deploy/host-tuning.sh
+deploy/resource-budget.sh
+deploy/rolling-deploy.sh
+# the 25 ./deploy/ bind mounts of the two Compose files (deploy/load and deploy/nginx/certs are
+# left out on purpose; tests/unit/test_release_bundle_guard.py names them and checks the rest)
+deploy/alertmanager/alertmanager.yml
+deploy/alertmanager/sink.py
+deploy/alloy/config.alloy
+deploy/grafana/dashboards/
+deploy/grafana/provisioning/
+deploy/loki/loki.yml
+deploy/minio/bootstrap.sh
+deploy/nginx/app-locations.conf
+deploy/nginx/embedding-lb.conf
+deploy/nginx/gen-cert.sh
+deploy/nginx/nginx.conf
+deploy/ollama/pull_models.py
+deploy/postgres-exporter/queries.yaml
+deploy/postgres/archive_wal.sh
+deploy/postgres/initdb/
+deploy/postgres/pg_hba.conf
+deploy/postgres/postgresql.conf
+deploy/postgres/sizes/
+deploy/prometheus/alerts.yml
+deploy/prometheus/prometheus.yml
+deploy/prometheus/scrape-gpu.yml
+deploy/vault/app-policy.hcl
+deploy/vault/bootstrap.sh
+deploy/vault/server.hcl
+deploy/vault/start.sh
