@@ -797,19 +797,24 @@ curl -sk https://localhost/health/ready   # readiness عبر TLS
 | الوضع | `VAULT_TOKEN` | `VAULT_ROLE_ID` | `VAULT_SECRET_ID` |
 |---|---|---|---|
 | Token (تجاوزٌ يدويّ — نادر) | توكنٌ جذرٌ حقيقيّ (§3.4) | — | — |
-| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئةٍ أخرى)** | **فارغ** | من Vault | يُحقن خارج الملفّ |
+| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئةٍ أخرى)** | **فارغ** | من Vault | في `.env` (يكتبه `install.sh` على الخادم)، أو من الصَّدَفة وهي تفوز |
 
 > ⚠️ `VAULT_TOKEN=` الفارغ **ليس قيمةً ناقصة، بل هو المُبدِّل**. تركُ توكنٍ مضبوطاً بجانب زوج AppRole يعني أنّ الزوج لا يُستعمل إطلاقاً — والنشر يبدو ناجحاً.
+
+> `VAULT_SECRET_ID` يُحفظ في `.env`، ويكتبه `deploy/release/install.sh` على الخادم بعد أن يسكّه من داخل حاوية `vault`. و`install.sh` لا يغيّر صلاحيّة `.env` (ث‑11 في `docs/deploy-server.md`). وقيمةٌ مُصدَّرة في الصَّدَفة تفوز على `.env`، فمثال التمرير من الصَّدَفة أدناه ما زال صحيحاً.
 
 `vault-bootstrap` يُنشئ الدور والسياسة في **كلّ** بيئة (بما فيها المحلّية)، لسببين: هذه الخطوة نفسها هي ما يعيد إنشاء الدور على أوّل إقلاعٍ أو بعد فقدان حجم `vault-data` (§3.4 — الحالة الوحيدة الآن التي تفقد فيها Vault شيئاً)؛ ومسارُ مصادقةٍ لا يُهيَّأ إلّا في الإنتاج هو مسارٌ **يُجرَّب أوّل مرّةٍ في الإنتاج**.
 
 ```bash
+# الأمران يقرآن توكن الجذر من init.json داخل الحاوية نفسها، فلا يغادرها ولا يُكتب في سطر أوامر.
+# بلا VAULT_ADDR وVAULT_TOKEN يفشل `vault` في الحاوية: لا توكن فيها، وعنوانه الافتراضيّ https.
+
 # 1) اقرأ role_id (غير سرّي — 05 §2). محلّياً مثبَّتٌ في .env فلا ينجرف.
-docker compose exec vault vault read -field=role_id auth/approle/role/app/role-id
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault read -field=role_id auth/approle/role/app/role-id'
 
 # 2) اسكك secret_id (سرّيّ). ⚠️ `exec` لا `run`: مخرجات exec لا يلتقطها
 #    سائق سجلّات json-file، ومخرجات خدمةٍ يلتقطها ويحتفظ بها.
-docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/secret-id
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault write -f -field=secret_id auth/approle/role/app/secret-id'
 
 # 3) أقلع بـAppRole وحدها — لا توكن إطلاقاً
 VAULT_TOKEN= VAULT_SECRET_ID='<الملتقَط أعلاه>' docker compose up -d app
@@ -822,7 +827,7 @@ VAULT_TOKEN= VAULT_SECRET_ID='<الملتقَط أعلاه>' docker compose up -
 
 **⚠️ عمر التوكن — مقيسٌ لا مُفترَض.** `token_ttl=1h` أعلاه حقيقيّ: قِيس على دورٍ مؤقّتٍ عمره ثماني ثوانٍ أنّ **KV وTransit كليهما** يبدآن بالفشل لحظة انتهاء التوكن. وVault على **مسار التشغيل** لا الإقلاع وحده (كلّ عمليّة `credentials`/`integrations` تمرّ بـTransit)، فالعَرَض تطبيقٌ يخدم الطلبات ساعةً ثمّ يعجز عن لمس أيّ سرّ مستأجِر — و`/health/ready` **أخضر طوال الوقت** لأنّه لا يسبر أيّ تبعيّة عمداً. العلاج مُنفَّذ: `VaultSecrets` يُعيد المصادقة **مرّةً واحدة** عند رفضٍ بـ403/401 ثمّ يعيد المحاولة (`create_approle_relogin`). محاولةٌ واحدة لا حلقة: الرفض الثاني يعني اعتماداً خاطئاً لا منتهياً، والحلقة تحوّل خطأ إعدادٍ إلى عاصفة تسجيل دخولٍ على Vault.
 
-> ⚠️ **`secret_id` ينقضي بعد 24 ساعة (ن‑10، `p1-hardening-plan.md §5‑ب`)، ولا شيء يُجدِّده اليوم — والفشل صامت.** `deploy/vault/bootstrap.sh` يضبط `secret_id_ttl=24h` (إلى جانب `token_ttl=1h`/`token_max_ttl=4h` أعلاه). محاولة `relogin` المذكورة أعلاه تستعمل نفس `VAULT_SECRET_ID` القديم — فإن كان **هو نفسه** منتهياً (لا التوكن وحده)، تفشل بـ`400 invalid role or secret ID`، وهو **بالضبط** نفس الخطأ الذي يعطيه زوجٌ خاطئٌ عمداً، فلا تُشتبَه بالنظرة الأولى بأنّها انقضاءً لا اعتماداً خاطئاً. **العرَض**: بعد أكثر من 24 ساعةً من الإقلاع، كلّ ما يعتمد على Vault (فكّ تعمية اعتمادات `credentials`/`integrations`، أسرار MinIO) يبدأ بالفشل بينما `docker compose ps` يستمرّ يقول `healthy` — لأنّ فحص الصحّة لا يلمس Vault إطلاقاً (نفس السبب الذي يُبقي `/health/ready` أخضر أثناء انقضاء التوكن أعلاه). **سكّ `secret_id` جديد**: كرّر §3.1's الخطوة 2 أعلاه (`docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/secret-id`) ثمّ أعِد تشغيل `app` بـ`VAULT_SECRET_ID` الجديد.
+> ⚠️ **`secret_id` ينقضي بعد 24 ساعة (ن‑10، `p1-hardening-plan.md §5‑ب`)، ولا شيء يُجدِّده اليوم — والفشل صامت.** `deploy/vault/bootstrap.sh` يضبط `secret_id_ttl=24h` (إلى جانب `token_ttl=1h`/`token_max_ttl=4h` أعلاه). محاولة `relogin` المذكورة أعلاه تستعمل نفس `VAULT_SECRET_ID` القديم — فإن كان **هو نفسه** منتهياً (لا التوكن وحده)، تفشل بـ`400 invalid role or secret ID`، وهو **بالضبط** نفس الخطأ الذي يعطيه زوجٌ خاطئٌ عمداً، فلا تُشتبَه بالنظرة الأولى بأنّها انقضاءً لا اعتماداً خاطئاً. **العرَض**: بعد أكثر من 24 ساعةً من الإقلاع، كلّ ما يعتمد على Vault (فكّ تعمية اعتمادات `credentials`/`integrations`، أسرار MinIO) يبدأ بالفشل بينما `docker compose ps` يستمرّ يقول `healthy` — لأنّ فحص الصحّة لا يلمس Vault إطلاقاً (نفس السبب الذي يُبقي `/health/ready` أخضر أثناء انقضاء التوكن أعلاه). **سكّ `secret_id` جديد**: كرّر §3.1's الخطوة 2 أعلاه (`docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault write -f -field=secret_id auth/approle/role/app/secret-id'`) ثمّ أعِد تشغيل `app` بـ`VAULT_SECRET_ID` الجديد.
 >
 > **القرار بين ثلاثة بدائل:** **(أ)** تجديدٌ دوريٌّ آليّ لـ`secret_id` (سايدكار أو `vault agent`) قبل الانقضاء · **(ب)** رفع `secret_id_ttl` مع توثيق المقايضة (نافذةٌ أطول لسرقة `secret_id` صالح) · **(ج)** قبول السلوك كما هو، مع **فحص صحّةٍ يكشفه** بدل إخفائه. ✅ **حُسم 2026‑07‑30 بـ(ب) للمكدّس المحلّيّ**: `secret_id_ttl=720h` في `deploy/vault/bootstrap.sh` مع تعليلٍ ملاصق. النشر الحقيقيّ يبقى على (أ) — التوقيت القصير مع تجديدٍ فعليّ.
 

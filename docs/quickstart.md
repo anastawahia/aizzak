@@ -201,15 +201,19 @@ docker compose exec redis-stream redis-cli XINFO CONSUMERS stream.media cg.media
 | الوضع | `VAULT_TOKEN` | `VAULT_ROLE_ID` | `VAULT_SECRET_ID` |
 |---|---|---|---|
 | Token (تجاوزٌ يدويّ — نادر) | توكنٌ جذرٌ حقيقيّ (§5.2) | — | — |
-| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئةٍ أخرى)** | **فارغ** | من Vault | يُحقن من الصَّدَفة، **لا من `.env`** |
+| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئةٍ أخرى)** | **فارغ** | من Vault | في `.env` (يكتبه `install.sh` على الخادم)، أو من الصَّدَفة وهي تفوز |
 
 > ⚠️ `VAULT_TOKEN=` الفارغ **ليس قيمةً ناقصة، بل هو المُبدِّل**. توكنٌ مضبوطٌ بجانب زوج AppRole يعني أنّ الزوج لا يُستعمل إطلاقاً — **والنشر يبدو ناجحاً**.
 
+الأمران الأوّلان يقرآن التوكن الجذر من `init.json` داخل الحاوية نفسها فلا يغادرها. وبلا `VAULT_ADDR` و`VAULT_TOKEN` يفشل `vault` فيها.
+
 ```bash
-docker compose exec vault vault read  -field=role_id   auth/approle/role/app/role-id
-docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/secret-id
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault read -field=role_id auth/approle/role/app/role-id'
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault write -f -field=secret_id auth/approle/role/app/secret-id'
 VAULT_TOKEN= VAULT_SECRET_ID='<الملتقَط>' docker compose up -d app
 ```
+
+على خادمٍ مثبَّتٍ بالحزمة يفعل ذلك `deploy/release/install.sh` وحده ويحفظ `VAULT_SECRET_ID` في `.env` (انظر `docs/deploy-server.md` §3)؛ وتمريره من الصَّدَفة، كما في السطر الأخير، يبقى صحيحاً ويفوز على `.env`.
 
 > `exec` لا `run`: مخرجات `exec` لا يلتقطها سائق سجلّات `json-file`، ومخرجات خدمةٍ يلتقطها **ويحتفظ بها**.
 
@@ -350,7 +354,7 @@ GET  /api/v1/usage                    → ملخّص الاستهلاك
 
 1. **Vault دائمٌ الآن — `docker compose restart vault` لا يمحو شيئاً** (§5.2)، لكنّ حجم `vault-init` (المفتاح + التوكن) عاديٌّ غير مُشفَّر: انسخه احتياطيّاً قبل أيّ اعتمادٍ حقيقيّ.
 2. **`VAULT_TOKEN` الفارغ هو المُبدِّل** — والتوكن يفوز دائماً حين يوجد.
-3. **`VAULT_SECRET_ID` لا يُكتب في `.env` أبداً**؛ يُمرَّر من الصَّدَفة.
+3. **`VAULT_SECRET_ID` يُحفظ في `.env`** (يكتبه `install.sh` على الخادم)؛ والصَّدَفة تفوز إن مُرِّر منها.
 4. **حاويةٌ `healthy` ليست دليلاً على مسار بيانات** — الدليل في `deploy/smoke/`.
 5. **`XACK` لا يحذف** — راقب `XLEN`.
 6. **لا `alembic upgrade head`** — بل `python -m app.ops.provision`.

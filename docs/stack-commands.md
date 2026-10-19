@@ -51,8 +51,8 @@
 
 | # | الأمر | الوظيفة |
 |---|---|---|
-| 19 | `docker compose exec vault vault read -field=role_id auth/approle/role/app/role-id` | قراءة `role_id` (معرّفٌ ثابت، ليس سرّاً) |
-| 20 | `docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/secret-id` | توليد `secret_id` جديد — **السرّ الوحيد في البيئة**، لمرّةٍ واحدة |
+| 19 | `docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault read -field=role_id auth/approle/role/app/role-id'` | قراءة `role_id` (معرّفٌ ثابت، ليس سرّاً) |
+| 20 | `docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault write -f -field=secret_id auth/approle/role/app/secret-id'` | توليد `secret_id` جديد — **السرّ الوحيد في البيئة**، لمرّةٍ واحدة؛ يفعله `install.sh` وحده على الخادم |
 | 21 | `VAULT_TOKEN= VAULT_SECRET_ID='<id>' docker compose up -d app` | إعادة إقلاع التطبيق بوضع AppRole؛ `VAULT_TOKEN=` الفارغ **هو المُبدِّل** |
 | 22 | `docker compose exec vault cat /vault/init/init.json` | قراءة مفتاح فكّ الختم والتوكن الجذر — نصٌّ عاديٌّ على حجم `vault-init` |
 | 23 | `docker cp vault-init-backup.json aizzak-vault-1:/vault/init/init.json` | استعادة مفتاح فكّ الختم إلى الحجم قبل إعادة إقلاع Vault |
@@ -256,25 +256,27 @@ docker compose up -d                                  # الثلاثة ضمن ا
 | الوضع | `VAULT_TOKEN` | `VAULT_ROLE_ID` | `VAULT_SECRET_ID` |
 |---|---|---|---|
 | Token (تجاوزٌ يدويّ — نادر) | توكنٌ جذرٌ حقيقيّ | — | — |
-| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئة)** | **فارغ** | من Vault | يُحقن من الصَّدَفة، **لا من `.env`** |
+| **AppRole (الوضع العاديّ، محلّيّاً وفي كلّ بيئة)** | **فارغ** | من Vault | في `.env` (يكتبه `install.sh` على الخادم)، أو من الصَّدَفة وهي تفوز |
 
 ⚠️ `VAULT_TOKEN=` الفارغ **ليس قيمةً ناقصة، بل هو المُبدِّل**. وتوكنٌ مضبوطٌ بجانب زوج AppRole يعني أنّ الزوج لا يُستعمل إطلاقاً — **والنشر يبدو ناجحاً**.
 
 ### 19 · قراءة `role_id`
 
 ```bash
-docker compose exec vault vault read -field=role_id auth/approle/role/app/role-id
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault read -field=role_id auth/approle/role/app/role-id'
 ```
+
+التوكن الجذر يُقرأ من `init.json` داخل الحاوية نفسها فلا يغادرها؛ وبلا `VAULT_ADDR` و`VAULT_TOKEN` يفشل `vault` فيها.
 
 `role_id` **معرّفٌ ثابتٌ لا سرّ** — يجوز وضعه في `.env` (ويُستحسن تثبيته بـ`AIZZAK_APPROLE_ROLE_ID`، وإلّا وُلِّد عشوائيّاً عند أوّل بذر).
 
 ### 20 · توليد `secret_id`
 
 ```bash
-docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/secret-id
+docker compose exec -T vault sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$(sed -n "s/.*\"root_token\": *\"\([^\"]*\)\".*/\1/p" /vault/init/init.json)"; vault write -f -field=secret_id auth/approle/role/app/secret-id'
 ```
 
-`-f` تعني «بلا حقول» — العمليّة كتابةٌ تولّد قيمةً جديدة. هذا **السرّ الوحيد في البيئة** و**لا يُكتب في `.env` أبداً**.
+`-f` تعني «بلا حقول» — العمليّة كتابةٌ تولّد قيمةً جديدة. هذا **السرّ الوحيد في البيئة**، و**يُحفظ في `.env`**: يكتبه `deploy/release/install.sh` على الخادم بعد أن يسكّه من داخل الحاوية، ولا يُطبع.
 
 ### 21 · إقلاع التطبيق بوضع AppRole
 
@@ -282,7 +284,7 @@ docker compose exec vault vault write -f -field=secret_id auth/approle/role/app/
 VAULT_TOKEN= VAULT_SECRET_ID='<الملتقَط>' docker compose up -d app
 ```
 
-يُمرَّر `VAULT_SECRET_ID` **من الصَّدَفة**: تفسير Compose يستشير البيئة الحقيقيّة أيضاً، **والصَّدَفة تفوز**. و`VAULT_TOKEN=` الفارغ يُبقي الوضع على AppRole.
+يُقرأ `VAULT_SECRET_ID` من `.env`، أو يُمرَّر **من الصَّدَفة**: تفسير Compose يستشير البيئة الحقيقيّة أيضاً، **والصَّدَفة تفوز**. و`VAULT_TOKEN=` الفارغ يُبقي الوضع على AppRole.
 
 ⚠️ **عمر التوكن مقيسٌ لا مُفترَض:** `token_ttl=1h` لتوكن AppRole الذي يستعمله التطبيق (لا علاقة له بالتوكن الجذر). وVault على **مسار التشغيل** لا الإقلاع وحده، فالعَرَض تطبيقٌ يخدم الطلبات ساعةً ثمّ يعجز عن لمس أيّ سرّ مستأجِر — و`/health/ready` أخضر طوال الوقت. العلاج منفَّذ: إعادة مصادقةٍ **واحدة** عند 403/401 ثمّ إعادة المحاولة.
 
@@ -632,7 +634,7 @@ docker buildx build --platform linux/amd64 --load \
 
 1. **Vault دائمٌ الآن — `docker compose restart vault` لا يمحو شيئاً**، لكنّ حجم `vault-init` نصٌّ عاديّ: انسخه احتياطيّاً قبل أيّ اعتمادٍ حقيقيّ.
 2. **`VAULT_TOKEN` الفارغ هو المُبدِّل** — والتوكن يفوز دائماً حين يوجد.
-3. **`VAULT_SECRET_ID` لا يُكتب في `.env` أبداً**؛ يُمرَّر من الصَّدَفة.
+3. **`VAULT_SECRET_ID` يُحفظ في `.env`** (يكتبه `install.sh` على الخادم)؛ والصَّدَفة تفوز إن مُرِّر منها.
 4. **حاويةٌ `healthy` ليست دليلاً على مسار بيانات** — الدليل في `deploy/smoke/`.
 5. **`XACK` لا يحذف** — راقب `XLEN`.
 6. **لا `alembic upgrade head`** — بل `python -m app.ops.provision`.

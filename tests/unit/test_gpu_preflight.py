@@ -674,7 +674,9 @@ def _script_exit_codes() -> set[int]:
 
 def test_the_server_doc_lists_the_scripts_exit_codes() -> None:
     doc = _DOC.read_text(encoding="utf-8")
-    in_doc = {int(m.group(1)) for m in re.finditer(r"^\|\s*(\d{1,2})\s*\|", doc, re.MULTILINE)}
+    # §1 only: the install section (§3) has a table of its own, with codes that overlap these
+    section = doc.split("\n## 1) ", 1)[1].split("\n## 2) ", 1)[0]
+    in_doc = {int(m.group(1)) for m in re.finditer(r"^\|\s*(\d{1,2})\s*\|", section, re.MULTILINE)}
     assert _script_exit_codes() == {0, 2, 10, 11, 12, 13, 14}
     assert in_doc == _script_exit_codes()
     assert "nvidia-ctk runtime configure --runtime=docker" in doc

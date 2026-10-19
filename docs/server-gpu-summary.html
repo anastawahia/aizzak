@@ -255,15 +255,15 @@
   </header>
 
   <section class="overview">
-    <div class="bar" role="img" aria-label="تسعٌ وعشرون خطوة: ثمانٍ مكتملة وتسعٌ جارية واثنتا عشرة لم تبدأ">
+    <div class="bar" role="img" aria-label="تسعٌ وعشرون خطوة: ثمانٍ مكتملة وإحدى عشرة جارية وعشرٌ لم تبدأ">
       <span class="s-done" style="flex:8">٨ مكتملة</span>
-      <span class="s-partial" style="flex:9">٩ جارية</span>
-      <span class="s-pending" style="flex:12">١٢ لم تبدأ</span>
+      <span class="s-partial" style="flex:11">١١ جارية</span>
+      <span class="s-pending" style="flex:10">١٠ لم تبدأ</span>
     </div>
     <div class="legend">
       <span><i class="k-done"></i>مكتملة ومُثبَتة بالقياس — ٨</span>
-      <span><i class="k-partial"></i>جارية — ٩</span>
-      <span><i class="k-pending"></i>لم تبدأ — ١٢</span>
+      <span><i class="k-partial"></i>جارية — ١١</span>
+      <span><i class="k-pending"></i>لم تبدأ — ١٠</span>
     </div>
   </section>
 
@@ -295,7 +295,7 @@
           <tr><td>لا خدمة تستعمل الكرت</td><td>الكرت المدفوع لا يسرّع شيئاً</td><td>٢</td></tr>
           <tr><td>مضبوطٌ على خادمٍ بـ٦٤ جيجابايت (مجموع الحدود نحو ٣٨ نواة و٥٩ جيجابايت)</td><td class="bad">على خادمٍ أصغر تتجاوز الحدودُ الذاكرة، ولا يحذّر أحد</td><td>٣</td></tr>
           <tr><td>المراقبة دائماً: ١١ خدمة، نحو ٤٫٧ جيجابايت</td><td>ثقلٌ على الخادم الصغير</td><td>٤</td></tr>
-          <tr><td>يقرأ ٢٤ ملفّ إعدادٍ من المستودع</td><td>لا يعمل دون نسخة المستودع</td><td>٥</td></tr>
+          <tr><td>يقرأ ٢٧ ملفّ إعدادٍ من المستودع (٢٥ منها تدخل الحزمة)</td><td>لا يعمل دون نسخة المستودع</td><td>٥</td></tr>
           <tr><td>مفتاح الخزنة (Vault): أمر إصداره في الوثائق مكسور، وصلاحيّته ٣٠ يوماً</td><td>التثبيت يقف عند خطوةٍ يدويّة، والخادم يتعطّل بعد شهر</td><td>٥ و٦</td></tr>
           <tr><td>روابط الملفّات تُوقَّع على «localhost»</td><td class="bad">الرفع والتنزيل من الإنترنت يفشلان</td><td>٦</td></tr>
           <tr><td>شهادةٌ ذاتيّة التوقيع</td><td>المتصفّح يرفض الموقع</td><td>٦</td></tr>
@@ -556,23 +556,23 @@
     <p class="wave-note">بعد هذه المرحلة لا يحتاج الخادم المستودع: ملفٌّ مضغوطٌ واحد، وسكربتٌ يفعل الباقي.</p>
     <div class="steps">
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٥٫١</div>
         <div class="step-body">
-          <div class="step-title"><h3>حزمة الإصدار</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>حزمة الإصدار</h3><span class="tag partial">مبنيّة في PR · تنتظر الدمج وحزمة الإصدار الحقيقيّة والخادم</span></div>
           <dl>
-            <div class="line"><dt>المطلوب</dt><dd>ملفٌّ مضغوطٌ واحد فيه: ملفّا التشغيل، وملفّات الإعداد الأربعة والعشرون، والأحجام، والسكربتات. لا شيفرة ولا أسرار. ولا يوضع الإعداد داخل الصور، لأنّ تعديل إعدادٍ واحد سيحتاج حينها بناء صورةٍ جديدة.</dd></div>
+            <div class="line"><dt>المطلوب</dt><dd>ملفٌّ مضغوطٌ واحد فيه: ملفّا التشغيل، وملفّات الإعداد الخمسة والعشرون المربوطة، والأحجام، والسكربتات. لا شيفرة ولا أسرار. ولا يوضع الإعداد داخل الصور، لأنّ تعديل إعدادٍ واحد سيحتاج حينها بناء صورةٍ جديدة.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>الحزمة تُفكّ في مجلّدٍ فارغ، وتُقرأ دون خطأ.</dd></div>
           </dl>
         </div>
       </article>
 
-      <article class="step pending">
+      <article class="step partial">
         <div class="step-id">٥٫٢</div>
         <div class="step-body">
-          <div class="step-title"><h3>سكربت التثبيت</h3><span class="tag pending">لم تبدأ</span></div>
+          <div class="step-title"><h3>سكربت التثبيت</h3><span class="tag partial">مبنيّة في PR · تنتظر الدمج والإثبات المحلّيّ والخادم</span></div>
           <dl>
-            <div class="line"><dt>المطلوب</dt><dd>يفحص الخادم، ثمّ يولّد إحدى عشرة كلمة سرّ دون أن يطبعها، ثمّ يختار الحجم ويسحب الصور، ثمّ يُقلع الخدمات بالترتيب الصحيح، ثمّ يفحص ويطبع «جاهز». وأمر إصدار مفتاح الخزنة في الوثائق مكسور، فيصلحه السكربت وتُصحَّح الوثائق.</dd></div>
+            <div class="line"><dt>المطلوب</dt><dd>يُشغَّل بـ<code>sudo ./install.sh --domain ... --firebase-project ...</code> بعد <code>docker login</code> بمفتاح قراءةٍ لهذا الخادم. يفحص الخادم، ثمّ يولّد ثلاث عشرة كلمة سرّ دون أن يطبعها، ثمّ يختار الحجم ويسحب الصور الغائبة وحدها، ثمّ يُقلع الخدمات بالترتيب الصحيح (وفيه كلمة سرّ دور المراقبة وانتظار سحب النموذج)، ثمّ يفحص ويطبع «جاهز». وأمر إصدار مفتاح الخزنة في الوثائق مكسور، فيصلحه السكربت وتُصحَّح الوثائق.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>خادمٌ جديد يصير منصّةً بأمرٍ واحد دون أيّ خطوةٍ يدويّة، وتشغيل السكربت مرّةً ثانية لا يغيّر شيئاً.</dd></div>
           </dl>
         </div>
@@ -581,7 +581,7 @@
       <article class="step pending">
         <div class="step-id">٥٫٣</div>
         <div class="step-body">
-          <div class="step-title"><h3>التحديث على الخادم</h3><span class="tag pending">لم تبدأ · ليست شرطاً</span></div>
+          <div class="step-title"><h3>التحديث على الخادم</h3><span class="tag pending">ميزةٌ تالية · ليست شرطاً</span></div>
           <dl>
             <div class="line"><dt>المطلوب</dt><dd>أمرٌ واحد: نسخةٌ احتياطيّة، ثمّ سحب الإصدار الجديد، ثمّ تبديل الخدمات بلا توقّف بالأداة الموجودة أصلاً.</dd></div>
             <div class="line done-l"><dt>القبول</dt><dd>تحديثٌ بين إصدارين دون خطوةٍ يدويّة، والرجوع إلى السابق مجرَّبٌ مرّةً واحدة.</dd></div>
