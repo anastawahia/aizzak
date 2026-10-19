@@ -57,6 +57,11 @@
 - Each alert has a section in `docs/runbooks/alerts.md`.
 - Delivery docs go in `docs/delivery/<slug>/`.
 
+## Writing docs and PR bodies
+- Write and edit docs with the Write and Edit tools, not from the shell (`cat > file <<EOF`, `echo >>`). The approval gate and the data-engineer guard read the whole Bash command text but only the path of a Write/Edit, so doc text inside a shell command triggers needless approval prompts.
+- Pass PR bodies from a file: write the body with Write to a file outside the repo, then `gh pr create --body-file <file>` (same for `gh pr edit`). Do not inline it in `--body "..."`.
+- This covers doc and PR text only. Never put commands in a file and run it to get past the approval hook.
+
 ## Staging & deploy
 - Staging target: a RunPod GPU Pod running the all-in-one image (`deploy/runpod/`, guide `docs/deploy-runpod.md`). It is reachable publicly through the RunPod proxy URL (`https://<POD_ID>-80.proxy.runpod.net`).
 - The local Compose stack on this host (`docker compose up -d`, rolling replace via `deploy/rolling-deploy.sh`) stays the development and live test environment.
