@@ -148,7 +148,7 @@ vault write auth/approle/role/app \
     token_max_ttl=4h \
     secret_id_ttl=720h >/dev/null
 
-# Pinning the role_id is a LOCAL convenience and is opt-in. Vault generates a
+# Pinning the role_id is opt-in; .env.example sets it for dev. Vault generates a
 # fresh role_id whenever the role is FIRST created; persistent storage means
 # it now survives every later restart on its own, but a wiped vault-data
 # volume (or the first-ever boot on a new host) still creates the role anew
@@ -157,8 +157,8 @@ vault write auth/approle/role/app \
 # AIZZAK_APPROLE_ROLE_ID makes the two agree by construction, on every boot,
 # unconditionally on whether this happens to be a fresh role or not. It is
 # safe to choose the value: 05 §2 classifies role_id as NON-SECRET (only
-# secret_id is sensitive). Leave it unset in any real deployment and read the
-# generated id once, as 08 §3.1 describes.
+# secret_id is sensitive). On a server, install.sh writes a random role_id into .env, so this pins
+# it; the development machine keeps the default aizzak-local-app.
 if [ -n "${AIZZAK_APPROLE_ROLE_ID:-}" ]; then
     vault write auth/approle/role/app/role-id \
         role_id="${AIZZAK_APPROLE_ROLE_ID}" >/dev/null
