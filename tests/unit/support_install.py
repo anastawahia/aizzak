@@ -1,7 +1,7 @@
 """Test harness for `deploy/release/install.sh` and `bundle.sh` (install-bundle, design.md 5.1).
 
 Nothing here touches Docker, a network or the real `.env`. The scripts run in a temporary tree with
-fake `docker`, `curl` and `df` first on PATH. Every fake call is appended to `calls.jsonl` with its
+fake `docker`, `curl` and `df` first on PATH. Every fake call is appended to `calls.log` with its
 argv, cwd, its whole environment and the sha256 of what came on stdin (never the stdin itself), so a
 test can assert both the ORDER of calls and that no secret travelled in an argument or a variable.
 
@@ -14,9 +14,13 @@ not carry the key.
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import functools
 import hashlib
+import io
 import json
+import marshal
 import os
 import re
 import shutil
@@ -253,19 +257,19 @@ class Harness:
     """One fake machine: where its files live and how to run the scripts on it."""
 
     root: Path  # the unpacked bundle
-    fake: Path  # state.json, calls.jsonl, model.json, bin/
+    fake: Path  # state.bin, calls.log, model.bin, bin/
     sysctl: Path
     sysctl_d: Path
     env: dict[str, str] = field(default_factory=dict)
 
     @property
     def calls_path(self) -> Path:
-        return self.fake / "calls.jsonl"
+        return self.fake / "calls.log"
 
     def calls(self) -> list[dict[str, Any]]:
         if not self.calls_path.exists():
             return []
-        return [json.loads(line) for line in self.calls_path.read_text().splitlines()]
+        return [ast.literal_eval(line) for line in self.calls_path.read_text().splitlines()]
 
     def tool_calls(self, tool: str) -> list[dict[str, Any]]:
         path = self.fake / "tools.log"
@@ -281,8 +285,8 @@ class Harness:
         return [c["argv"] for c in self.calls() if c["tool"] == "docker"]
 
     def state(self) -> dict[str, Any]:
-        path = self.fake / "state.json"
-        return json.loads(path.read_text()) if path.exists() else {}
+        path = self.fake / "state.bin"
+        return marshal.loads(path.read_bytes()) if path.exists() else {}
 
 
 def make_harness(tmp_path: Path, version: str = VERSION, *, preflight_rc: int = 0) -> Harness:
@@ -290,7 +294,7 @@ def make_harness(tmp_path: Path, version: str = VERSION, *, preflight_rc: int = 
     fake = tmp_path / "fake"
     bin_dir = fake / "bin"
     bin_dir.mkdir(parents=True)
-    (fake / "model.json").write_text(json.dumps(compose_model()), encoding="utf-8")
+    (fake / "model.bin").write_bytes(marshal.dumps(compose_model()))
     source = FAKE_SOURCE.read_text(encoding="utf-8")
     for name in ("docker", "curl", "df"):
         path = bin_dir / name
@@ -476,9 +480,10 @@ def run_function(
     )
 
 
-def env_tool(
+def env_tool_shell(
     h: Harness, *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    """`env_tool ARGS` through bash and a real interpreter, exactly as install.sh calls it."""
     return run_function(h, 'env_tool "$@"', *args, env=env)
 
 
@@ -497,7 +502,7 @@ def clone_harness(h: Harness, tmp_path: Path) -> Harness:
     old = h.fake.parent
     shutil.copytree(old, tmp_path / "clone", symlinks=True, dirs_exist_ok=True)
     new = tmp_path / "clone"
-    (new / "fake" / "calls.jsonl").unlink(missing_ok=True)  # the copy starts its own call log
+    (new / "fake" / "calls.log").unlink(missing_ok=True)  # the copy starts its own call log
     (new / "fake" / "tools.log").unlink(missing_ok=True)
     swap = {k: v.replace(str(old), str(new)) for k, v in h.env.items()}
     return Harness(
@@ -507,3 +512,50 @@ def clone_harness(h: Harness, tmp_path: Path) -> Harness:
         sysctl_d=new / "sysctl.d",
         env=swap,
     )
+
+
+_PROGRAM = re.search(
+    r"env_tool\(\) \{\n  python3 -I - \"\$@\" <<'PY'\n(.*?)\nPY\n",
+    INSTALL_SH.read_text(encoding="utf-8"),
+    re.S,
+)
+assert _PROGRAM is not None
+_PROGRAM_TAIL = "sys.exit(main(sys.argv[1:]))"
+
+
+@functools.cache
+def _env_tool_namespace() -> dict[str, Any]:
+    """The program embedded in install.sh, loaded as it is (not a copy) without its last line."""
+    assert _PROGRAM is not None
+    source = _PROGRAM.group(1).rstrip()
+    assert source.endswith(_PROGRAM_TAIL)
+    namespace: dict[str, Any] = {"__name__": "env_tool_under_test"}
+    exec(compile(source[: -len(_PROGRAM_TAIL)], "install.sh:env_tool", "exec"), namespace)
+    return namespace
+
+
+def env_tool(
+    h: Harness, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """`env_tool ARGS` of install.sh, run in this process: the same program text, a hundredth of
+    the cost of a shell plus an interpreter. Umask 022, as the script's callers have."""
+    del h
+    out, err = io.StringIO(), io.StringIO()
+    keys = {"AIZZAK_INSTALL_SECRET_ID", *(env or {})}
+    saved = {k: os.environ.pop(k, None) for k in keys}
+    os.environ.update(env or {})
+    umask = os.umask(0o022)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = _env_tool_namespace()["main"](list(args))
+            except SystemExit as exc:  # a bad option: the script's interpreter would print it
+                print(exc.code, file=err)
+                rc = 1
+    finally:
+        os.umask(umask)
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+    return subprocess.CompletedProcess(list(args), rc, out.getvalue(), err.getvalue())

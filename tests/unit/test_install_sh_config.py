@@ -10,6 +10,7 @@ none of the caller's COMPOSE_* variables. The tests skip, with the reason, when 
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -135,7 +136,7 @@ def _auto(
 
 
 def _run_all(jobs: list[Callable[[], None]]) -> None:
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
         for future in [pool.submit(job) for job in jobs]:
             future.result()
 
@@ -170,9 +171,11 @@ def test_every_combination_of_mode_monitoring_and_size_is_a_valid_bundle_project
             assert done.returncode == 0, done.stdout + done.stderr
         quiet = _compose(root, "config", "-q")
         assert quiet.returncode == 0, (mode_name, monitoring, size, quiet.stderr)
-        services = _compose(root, "config", "--services").stdout.split()
+        # one more call gives the services and every image (the text is read here, not printed)
+        resolved = json.loads(_compose(root, "config", "--format", "json", check=True).stdout)
+        services = resolved["services"]
         assert len(services) == _SERVICES[(mode_name, monitoring)], (mode_name, monitoring, size)
-        images = _compose(root, "config", "--images").stdout.split()
+        images = {svc["image"] for svc in services.values() if svc.get("image")}
         assert images and not [i for i in images if i.endswith((":dev", ":latest"))], images
         released = {i for i in images if i.startswith("anastawahia/aizzak:")}
         assert len(released) == 2, released

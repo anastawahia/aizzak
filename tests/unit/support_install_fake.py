@@ -1,10 +1,11 @@
 """The fake `docker`, `curl` and `df` for the install tests (see support_install.py).
 
-This file is COPIED three times into a temporary `bin/` (as `docker`, `curl` and `df`) and run
-as a script, so it imports the standard library only and finds its data relative to itself:
+This file is COPIED three times into a temporary `bin/` (as `docker`, `curl` and `df`) and run as a
+script, so it imports almost nothing: a call costs a few milliseconds and one install run makes
+about a hundred of them. Data files sit next to `bin/`:
 
-    <fake>/bin/<tool>   this file          <fake>/model.json   the Compose files as data
-    <fake>/state.json   images, containers <fake>/calls.jsonl  one line per call
+    <fake>/model.bin    the Compose files as data (marshal)   <fake>/state.bin   images, containers
+    <fake>/calls.log    one `repr` of a dict per call, read back with ast.literal_eval
 
 Every call is logged with argv, cwd, the whole environment and the sha256 of stdin (stdin itself is
 never written down). Behaviour is steered by FAKE_* variables the test puts in the environment.
@@ -13,15 +14,15 @@ never written down). Behaviour is steered by FAKE_* variables the test puts in t
 from __future__ import annotations
 
 import hashlib
-import json
+import marshal
 import os
-import re
 import sys
+import zlib
 
 BIN = os.path.dirname(os.path.abspath(__file__))
 FAKE = os.path.dirname(BIN)
-STATE = os.path.join(FAKE, "state.json")
-CALLS = os.path.join(FAKE, "calls.jsonl")
+STATE = os.path.join(FAKE, "state.bin")
+CALLS = os.path.join(FAKE, "calls.log")
 TOOL = os.path.basename(sys.argv[0])
 ARGS = sys.argv[1:]
 DEFAULT_SECRET_ID = "5b2a1c9e-4d3f-4a6b-8c7d-0e1f2a3b4c5d"
@@ -29,15 +30,34 @@ DEFAULT_SECRET_ID = "5b2a1c9e-4d3f-4a6b-8c7d-0e1f2a3b4c5d"
 
 def load_state() -> dict:
     if os.path.exists(STATE):
-        with open(STATE, encoding="utf-8") as handle:
-            return json.load(handle)
-    faults = json.loads(os.environ.get("FAKE_FAULTS", "{}"))
-    return {"images": [], "containers": [], "faults": faults, "n": 0}
+        with open(STATE, "rb") as handle:
+            return marshal.load(handle)
+    return {"images": [], "containers": [], "faults": faults_from_env(), "n": 0}
+
+
+def faults_from_env() -> dict:
+    """FAKE_FAULTS is `service:key=value,key=value;service:...`, for example
+    `migrate:exit=1,times=1;app:health=unhealthy`."""
+    faults: dict = {}
+    for part in os.environ.get("FAKE_FAULTS", "").split(";"):
+        if not part:
+            continue
+        service, _, rest = part.partition(":")
+        entry: dict = {}
+        for pair in rest.split(","):
+            key, _, value = pair.partition("=")
+            entry[key] = int(value) if value.isdigit() else value
+        faults[service] = entry
+    return faults
 
 
 def save_state(state: dict) -> None:
-    with open(STATE, "w", encoding="utf-8") as handle:
-        json.dump(state, handle)
+    with open(STATE, "wb") as handle:
+        marshal.dump(state, handle)
+
+
+def sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def log(stdin_sha256: str = "") -> None:
@@ -49,7 +69,7 @@ def log(stdin_sha256: str = "") -> None:
         "stdin_sha256": stdin_sha256,
     }
     with open(CALLS, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record) + "\n")
+        handle.write(repr(record) + "\n")
 
 
 def finish(text: str = "", rc: int = 0, *, err: bool = False) -> None:
@@ -61,9 +81,13 @@ def finish(text: str = "", rc: int = 0, *, err: bool = False) -> None:
 
 def curl() -> None:
     log()
-    codes = json.loads(os.environ.get("FAKE_CURL", "{}"))
-    key = "ready" if ARGS[-1].endswith("/health/ready") else "health"
-    sys.stdout.write(str(codes.get(key, 200)))
+    wanted = "ready" if ARGS[-1].endswith("/health/ready") else "health"
+    code = "200"
+    for pair in os.environ.get("FAKE_CURL", "").split(","):
+        key, _, value = pair.partition("=")
+        if key == wanted:
+            code = value
+    sys.stdout.write(code)
     sys.exit(0)
 
 
@@ -76,23 +100,25 @@ def df() -> None:
     sys.exit(0)
 
 
-def read_env(project: str | None) -> tuple[str, dict[str, str]]:
+def read_env(project: str | None) -> dict[str, str]:
     values: dict[str, str] = {}
-    text = ""
     path = os.path.join(project or os.getcwd(), ".env")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-        for line in text.splitlines():
-            found = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
-            if found:
-                values[found.group(1)] = found.group(2).strip().strip("'\"")
-    return text, values
+    if not os.path.exists(path):
+        return values
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if text.startswith("export "):
+                text = text[7:]
+            key, sep, value = text.partition("=")
+            if sep and key and key[0] != "#" and key.replace("_", "a").isalnum():
+                values[key] = value.strip().strip("'\"")
+    return values
 
 
 def active_services(values: dict[str, str]) -> tuple[dict, list[str]]:
-    with open(os.path.join(FAKE, "model.json"), encoding="utf-8") as handle:
-        model = json.load(handle)
+    with open(os.path.join(FAKE, "model.bin"), "rb") as handle:
+        model = marshal.load(handle)
     gpu = "docker-compose.gpu.yml" in values.get("COMPOSE_FILE", "")
     services = model["gpu" if gpu else "cpu"]
     wanted = {p for p in values.get("COMPOSE_PROFILES", "").split(",") if p}
@@ -101,9 +127,19 @@ def active_services(values: dict[str, str]) -> tuple[dict, list[str]]:
 
 
 def interpolate(text: str, values: dict[str, str]) -> str:
-    return re.sub(
-        r"\$\{([A-Z0-9_]+):?-([^}]*)\}", lambda m: values.get(m.group(1)) or m.group(2), text
-    )
+    """`${NAME:-default}` and `${NAME-default}`, which is all the image lines use."""
+    out = []
+    rest = text
+    while True:
+        start = rest.find("${")
+        if start < 0:
+            out.append(rest)
+            return "".join(out)
+        end = rest.index("}", start)
+        out.append(rest[:start])
+        name, _, default = rest[start + 2 : end].partition("-")
+        out.append(values.get(name.rstrip(":")) or default)
+        rest = rest[end + 1 :]
 
 
 def config_hash(service: str, values: dict[str, str], names: list[str]) -> str:
@@ -111,7 +147,7 @@ def config_hash(service: str, values: dict[str, str], names: list[str]) -> str:
     every variable its definition mentions (so VAULT_SECRET_ID counts for the services that carry
     it and for no other, which is what design.md 1 measured)."""
     body = "\n".join(f"{name}={values.get(name, '')}" for name in names)
-    return hashlib.sha256((service + "\n" + body).encode()).hexdigest()[:16]
+    return format(zlib.crc32((service + "\n" + body).encode()), "08x")
 
 
 def dependency_closure(services: dict, names: list[str], roots: list[str]) -> list[str]:
@@ -135,20 +171,21 @@ def plain_docker(rest: list[str]) -> None:
         if message:
             finish(message, int(os.environ.get("FAKE_MANIFEST_RC", "1")), err=True)
         finish("{}")
+    everywhere = os.environ.get("FAKE_ALL_IMAGES") == "1"
     if rest[:2] == ["image", "inspect"]:
         ref = rest[-1]
-        if ref not in load_state()["images"]:
+        if not everywhere and ref not in load_state()["images"]:
             finish("Error: No such image: " + ref, 1, err=True)
         if "--format" in rest:
             bad = os.environ.get("FAKE_BAD_DIGEST_FOR", "")
             finish("anastawahia/aizzak@sha256:" + "f" * 64 if bad and bad in ref else ref)
         finish("[{}]")
     if rest[:1] == ["pull"]:
-        state = load_state()
         ref = rest[1]
         fail = os.environ.get("FAKE_PULL_FAIL", "")
         if fail and fail in ref:
             finish("Error response from daemon: pull access denied for " + ref, 1, err=True)
+        state = load_state()
         if ref not in state["images"]:
             state["images"].append(ref)
         save_state(state)
@@ -204,7 +241,7 @@ def compose_up(
 
 def compose_exec(rest: list[str]) -> None:
     body = b"" if sys.stdin.isatty() else sys.stdin.buffer.read()
-    log(hashlib.sha256(body).hexdigest())
+    log(sha256_of(body))
     target = next(a for a in rest[1:] if a != "-T")
     if target == "vault":
         rc = int(os.environ.get("FAKE_MINT_RC", "0"))
@@ -227,7 +264,7 @@ def docker() -> None:
     project = None
     if rest[:1] == ["--project-directory"]:
         project, rest = rest[1], rest[2:]
-    _, values = read_env(project)
+    values = read_env(project)
     services, names = active_services(values)
     sub = rest[0] if rest else ""
     if sub == "exec":

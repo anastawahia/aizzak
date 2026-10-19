@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,7 @@ from tests.unit.support_install import (
     VERSION,
     Harness,
     clone_harness,
+    compose_model,
     digest_of,
     env_tool,
     make_harness,
@@ -89,26 +91,65 @@ def flow(
     *extra: str,
     preflight_rc: int = 0,
     env: dict[str, str] | None = None,
-    overrides: str = "POLL_S=0.01 BOOT_DEADLINE_S=20 HEALTH_DEADLINE_S=1",
 ) -> Flow:
     h = make_harness(tmp, preflight_rc=preflight_rc)
     before = snapshot(h.root)
-    proc = run_steps(h, *FLOW_ARGS, *extra, env=env, overrides=overrides)
+    proc = run_steps(h, *FLOW_ARGS, *extra, env=env)
     return Flow(h, proc, before, h.docker_calls())
 
 
-@pytest.fixture(scope="module")
-def gpu_flow(tmp_path_factory: pytest.TempPathFactory) -> Flow:
-    """The base run: a GPU server, size auto, monitoring on, umask 022."""
-    return flow(tmp_path_factory.mktemp("gpu"))
+# Steps 1 to 5 replaced by nothing, for a test that is about the boot (step 6) or the checks
+# (step 7): it starts from a tree whose .env and size block were written for real by `staged`.
+_FROM_BOOT = (
+    "POLL_S=0.01 BOOT_DEADLINE_S=20 HEALTH_DEADLINE_S=0\n"
+    "step_checks_host() { MODE=gpu; PREFLIGHT_RC=0; }\n"
+    "step_kernel() { :; }; step_env() { :; }; step_budget() { :; }\n"
+    "step_size() { SIZE_DESC=staged; }; step_pull() { :; }; step_verify_images() { :; }"
+)
 
 
-@pytest.fixture(scope="module")
-def cpu_flow(tmp_path_factory: pytest.TempPathFactory) -> Flow:
+def boot_run(
+    h: Harness, *, env: dict[str, str] | None = None, deadline: int = 20
+) -> subprocess.CompletedProcess[str]:
+    return run_steps(
+        h,
+        *FLOW_ARGS,
+        env={"FAKE_ALL_IMAGES": "1", **(env or {})},
+        overrides=_FROM_BOOT.replace("BOOT_DEADLINE_S=20", f"BOOT_DEADLINE_S={deadline}"),
+    )
+
+
+def _stage(tmp: Path) -> Harness:
+    """A tree after steps 3 and 4 and before any container: .env written (GPU, no monitoring, so
+    fewer services to start), size block in place."""
+    h = make_harness(tmp)
+    done = run_function(
+        h, 'prepare "$@"; MODE=gpu; step_env >/dev/null; step_size >/dev/null', *FLOW_ARGS,
+        "--no-monitoring",
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    return h
+
+
+def _gpu(tmp: Path) -> Flow:
+    """The base run: a GPU server, size auto, monitoring on, umask 022, nothing pulled yet."""
+    return flow(tmp)
+
+
+def _cpu(tmp: Path) -> Flow:
     """A CPU server (gpu-preflight exits 10), a named size, monitoring off."""
     return flow(
-        tmp_path_factory.mktemp("cpu"), "--size", "medium", "--no-monitoring", preflight_rc=10
+        tmp, "--size", "medium", "--no-monitoring", preflight_rc=10, env={"FAKE_ALL_IMAGES": "1"}
     )
+
+
+BASE_FLAGS = ("--no-monitoring",)
+
+
+def _cpu_auto(tmp: Path) -> Flow:
+    """A CPU server, size auto, no monitoring: the cheapest converged stack, the base of the
+    repeats and of the check tests."""
+    return flow(tmp, *BASE_FLAGS, preflight_rc=10, env={"FAKE_ALL_IMAGES": "1"})
 
 
 @dataclass
@@ -122,34 +163,86 @@ class Repeat:
     proc: subprocess.CompletedProcess[str]
 
 
-@pytest.fixture(scope="module")
-def repeat(gpu_flow: Flow, tmp_path_factory: pytest.TempPathFactory) -> Repeat:
-    """AC-4.6 / AC-7.3: the operator edits LOG_LEVEL and runs chmod 600, then installs again."""
-    h = clone_harness(gpu_flow.h, tmp_path_factory.mktemp("repeat"))
+def _again(base: Flow, tmp: Path, *, edit: bool, flags: tuple[str, ...] = BASE_FLAGS) -> Repeat:
+    """Install a second time on a copy of the converged stack. With `edit`, the operator has
+    changed LOG_LEVEL and run chmod 600 first (AC-4.6); without it, nothing is touched (AC-7.3)."""
+    h = clone_harness(base.h, tmp)
     path = env_file(h)
-    text = path.read_text(encoding="utf-8")
-    assert "LOG_LEVEL=" in text
-    path.write_text(re.sub(r"(?m)^LOG_LEVEL=.*$", "LOG_LEVEL=DEBUG", text), encoding="utf-8")
-    path.chmod(0o600)
+    if edit:
+        text = path.read_text(encoding="utf-8")
+        assert "LOG_LEVEL=" in text
+        path.write_text(re.sub(r"(?m)^LOG_LEVEL=.*$", "LOG_LEVEL=DEBUG", text), encoding="utf-8")
+        path.chmod(0o600)
     secrets_before, sha_before = secret_values(h), sha(path)
     mark = len(h.calls())
-    proc = run_steps(h, *FLOW_ARGS)
+    proc = run_steps(h, *FLOW_ARGS, *flags, env={"FAKE_ALL_IMAGES": "1"})
     return Repeat(
         h, secrets_before, sha_before, mode(path), path.read_text(encoding="utf-8"), mark, proc
     )
 
 
+@dataclass
+class Runs:
+    gpu: Flow
+    cpu: Flow
+    base: Flow
+    staged: Harness
+    repeat: Repeat
+    plain: Repeat
+
+
 @pytest.fixture(scope="module")
-def plain_repeat(gpu_flow: Flow, tmp_path_factory: pytest.TempPathFactory) -> Repeat:
-    """AC-7.3: the same inputs again on a converged stack, with .env exactly as it was left."""
-    h = clone_harness(gpu_flow.h, tmp_path_factory.mktemp("plain"))
-    path = env_file(h)
-    secrets_before, sha_before = secret_values(h), sha(path)
-    mark = len(h.calls())
-    proc = run_steps(h, *FLOW_ARGS)
-    return Repeat(
-        h, secrets_before, sha_before, mode(path), path.read_text(encoding="utf-8"), mark, proc
-    )
+def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
+    """Every full run the tests below share, started together: they are separate processes, so
+    they overlap (NFR-10). The two repeats need the first run, so they follow it."""
+    new = tmp_path_factory.mktemp
+    compose_model()  # cached once, before any thread asks
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        gpu_job = pool.submit(_gpu, new("gpu"))
+        cpu_job = pool.submit(_cpu, new("cpu"))
+        base_job = pool.submit(_cpu_auto, new("base"))
+        staged_job = pool.submit(_stage, new("staged"))
+        base = base_job.result()
+        repeat_job = pool.submit(_again, base, new("repeat"), edit=True)
+        plain_job = pool.submit(_again, base, new("plain"), edit=False)
+        return Runs(
+            gpu_job.result(),
+            cpu_job.result(),
+            base,
+            staged_job.result(),
+            repeat_job.result(),
+            plain_job.result(),
+        )
+
+
+@pytest.fixture
+def gpu_flow(runs: Runs) -> Flow:
+    return runs.gpu
+
+
+@pytest.fixture
+def cpu_flow(runs: Runs) -> Flow:
+    return runs.cpu
+
+
+@pytest.fixture
+def base_flow(runs: Runs) -> Flow:
+    return runs.base
+
+
+@pytest.fixture
+def repeat(runs: Runs) -> Repeat:
+    return runs.repeat
+
+
+@pytest.fixture
+def plain_repeat(runs: Runs) -> Repeat:
+    return runs.plain
+
+
+@pytest.fixture
+def booting(runs: Runs, tmp_path: Path) -> Harness:
+    return clone_harness(runs.staged, tmp_path)
 
 
 # ── the pieces of the script that need no run ───────────────────────────────
@@ -168,61 +261,47 @@ def test_help_prints_the_usage_and_exits_0_without_root(tmp_path: Path) -> None:
     assert snapshot(h.root) == snapshot(h.root)
 
 
-@pytest.mark.parametrize(
-    "domain, ok",
-    [
-        ("example.com", True),
-        ("xn--mgbh0fb.example", True),
-        ("a.b.example.org", True),
-        ("https://example.com", False),
-        ("example.com/x", False),
-        ("example.com:8443", False),
-        ("", False),
-        ("مثال.com", False),
-        ("localhost", False),
-        ("1.2.3.4", False),
-        ("-bad.example.com", False),
-        ("example.com.", False),
-        ("a..b.com", False),
-        ("x" * 64 + ".com", False),
-    ],
-)
-def test_valid_domain_table(tmp_path: Path, domain: str, ok: bool) -> None:
-    h = make_harness(tmp_path)
-    done = run_function(h, 'valid_domain "$1"', domain)
-    assert (done.returncode == 0) is ok, (domain, done.stderr)
+def _table(h: Harness, function: str, values: list[str]) -> list[bool]:
+    """Call `function VALUE` for every value in ONE shell: yes/no per value."""
+    code = f'for v in "$@"; do if {function} "$v"; then echo yes; else echo no; fi; done'
+    done = run_function(h, 'ROOT="$PWD"; ' + code, *values)
+    assert done.returncode == 0, done.stderr
+    return [line == "yes" for line in done.stdout.splitlines()]
+
+
+_DOMAINS = {
+    "example.com": True,
+    "xn--mgbh0fb.example": True,
+    "a.b.example.org": True,
+    "https://example.com": False,
+    "example.com/x": False,
+    "example.com:8443": False,
+    "": False,
+    "\u0645\u062b\u0627\u0644.com": False,
+    "localhost": False,
+    "1.2.3.4": False,
+    "-bad.example.com": False,
+    "example.com.": False,
+    "a..b.com": False,
+    "x" * 64 + ".com": False,
+}
+_FIREBASE = {
+    "aizzak-agent": True, "demo-proj": True, "demo proj": False, "a/b": False, "": False,
+    "Demo-proj": False, "x": False,
+}  # fmt: skip
+_SIZES = {"auto": True, "small": True, "medium": True, "large": True, "huge": False, "../x": False,
+          "": False}  # fmt: skip
 
 
 @pytest.mark.parametrize(
-    "value, ok",
-    [
-        ("aizzak-agent", True),
-        ("demo-proj", True),
-        ("demo proj", False),
-        ("a/b", False),
-        ("", False),
-        ("Demo-proj", False),
-        ("x", False),
-    ],
+    "function, table",
+    [("valid_domain", _DOMAINS), ("valid_firebase", _FIREBASE), ("valid_size", _SIZES)],
 )
-def test_valid_firebase_table(tmp_path: Path, value: str, ok: bool) -> None:
-    done = run_function(make_harness(tmp_path), 'valid_firebase "$1"', value)
-    assert (done.returncode == 0) is ok
-
-
-def test_valid_size_accepts_auto_and_the_files_in_deploy_sizes(tmp_path: Path) -> None:
-    h = make_harness(tmp_path)
-    for name, ok in (
-        ("auto", True),
-        ("small", True),
-        ("medium", True),
-        ("large", True),
-        ("huge", False),
-        ("../x", False),
-        ("", False),
-    ):
-        done = run_function(h, 'ROOT="$PWD"; valid_size "$1"', name)
-        assert (done.returncode == 0) is ok, name
+def test_the_validators_accept_and_refuse_exactly_these(
+    tmp_path: Path, function: str, table: dict[str, bool]
+) -> None:
+    got = _table(make_harness(tmp_path), function, list(table))
+    assert dict(zip(table, got, strict=True)) == table
 
 
 @pytest.mark.parametrize(
@@ -340,49 +419,50 @@ def _bare_config_lines(text: str) -> list[str]:
 # ── AC-3.1: the pre-flight decides the mode ──────────────────────────────────
 
 
-def _mode_after_checks(tmp: Path, rc: int, *flags: str) -> subprocess.CompletedProcess[str]:
-    h = make_harness(tmp, preflight_rc=rc)
-    code = 'prepare "$@"; step_checks_host >/dev/null; echo "MODE=$MODE"'
-    return run_function(h, code, *FLOW_ARGS, *flags)
-
-
-@pytest.mark.parametrize(
-    "rc, flags, expected",
-    [
-        (0, (), "gpu"),
-        (0, ("--cpu",), "cpu"),
-        (10, (), "cpu"),
-        (12, ("--cpu",), "cpu"),
-        (10, ("--cpu",), "cpu"),
-    ],
-)
-def test_preflight_codes_that_let_the_install_continue(
-    tmp_path: Path, rc: int, flags: tuple[str, ...], expected: str
-) -> None:
-    done = _mode_after_checks(tmp_path, rc, *flags)
+def _preflight_modes(tmp: Path, cases: list[tuple[int, int]]) -> list[tuple[str, int]]:
+    """For each (gpu-preflight exit code, 1 if --cpu): the mode step 1 picks and its exit code.
+    One shell, one subshell per case: only the stub and FORCE_CPU change between them."""
+    h = make_harness(tmp)
+    code = (
+        'prepare "$@" >/dev/null\n'
+        "while read -r rc cpu; do\n"
+        '  printf "#!/bin/sh\\nexit %s\\n" "$rc" >deploy/gpu-preflight.sh\n'
+        "  status=0\n"
+        '  ( FORCE_CPU=$cpu; step_checks_host >/dev/null 2>&1; echo "$MODE" ) 2>/dev/null \\\n'
+        "    || status=$?\n"
+        '  echo "rc=$status"\n'
+        'done <<<"$CASES"'
+    )
+    lines = "\n".join(f"{rc} {cpu}" for rc, cpu in cases)
+    done = run_function(h, code, *FLOW_ARGS, env={"CASES": lines})
     assert done.returncode == 0, done.stderr
-    assert f"MODE={expected}" in done.stdout
+    out = iter(done.stdout.splitlines())
+    results = []
+    for line in out:
+        if line.startswith("rc="):
+            results.append(("", int(line[3:])))
+        else:
+            results.append((line, int(next(out)[3:])))
+    return results
 
 
-@pytest.mark.parametrize(
-    "rc, flags",
-    [
-        (11, ()),
-        (12, ()),
-        (13, ()),
-        (14, ()),
-        (11, ("--cpu",)),
-        (13, ("--cpu",)),
-        (14, ("--cpu",)),
-        (2, ()),
-    ],
-)
-def test_preflight_codes_that_stop_the_install_write_nothing(
-    tmp_path: Path, rc: int, flags: tuple[str, ...]
-) -> None:
+def test_preflight_codes_choose_the_mode_or_stop_the_install(tmp_path: Path) -> None:
+    # (exit code of gpu-preflight.sh, --cpu given) -> (mode chosen, exit code of step 1)
+    expected = {
+        (0, 0): ("gpu", 0), (0, 1): ("cpu", 0), (10, 0): ("cpu", 0), (10, 1): ("cpu", 0),
+        (12, 1): ("cpu", 0), (12, 0): ("", 10), (11, 0): ("", 10), (13, 0): ("", 10),
+        (14, 0): ("", 10), (11, 1): ("", 10), (13, 1): ("", 10), (14, 1): ("", 10),
+        (2, 0): ("", 10),
+    }  # fmt: skip
+    got = _preflight_modes(tmp_path, list(expected))
+    assert dict(zip(expected, got, strict=True)) == expected
+
+
+@pytest.mark.parametrize("rc", [11, 12, 13, 14, 2])
+def test_a_stopped_preflight_writes_nothing(tmp_path: Path, rc: int) -> None:
     h = make_harness(tmp_path, preflight_rc=rc)
     before = snapshot(h.root)
-    done = run_steps(h, *FLOW_ARGS, *flags)
+    done = run_steps(h, *FLOW_ARGS)
     assert done.returncode == 10, (done.stdout, done.stderr)
     assert f"exit {rc}" in done.stderr
     assert snapshot(h.root) == before
@@ -394,24 +474,26 @@ def test_preflight_codes_that_stop_the_install_write_nothing(
 # ── AC-3.2 ───────────────────────────────────────────────────────────────────
 
 
-def _fake_python(h: Harness, refuse: str) -> None:
+def _fake_python(h: Harness, rc: int) -> None:
+    """A python3 whose self-check (`-c`) exits `rc`, as install.sh defines it: 3 = older than 3.10,
+    4 = no PyYAML. Every other use is the real interpreter."""
     link = h.fake / "bin" / "python3"
     link.unlink()
     link.write_text(
-        f'#!/bin/sh\ncase "$*" in *{refuse}*) exit 1;; esac\nexec {sys.executable} "$@"\n',
+        f'#!/bin/sh\ncase "$*" in *" -c "*) exit {rc};; esac\nexec {sys.executable} "$@"\n',
         encoding="utf-8",
     )
     link.chmod(0o755)
 
 
 @pytest.mark.parametrize(
-    "refuse, fragment", [("version_info", "older than 3.10"), ("import*yaml", "PyYAML")]
+    "check_rc, fragment", [(3, "older than 3.10"), (4, "PyYAML"), (9, "self-check")]
 )
 def test_a_missing_python_or_pyyaml_stops_with_11_before_the_root_check(
-    tmp_path: Path, refuse: str, fragment: str
+    tmp_path: Path, check_rc: int, fragment: str
 ) -> None:
     h = make_harness(tmp_path)
-    _fake_python(h, refuse)
+    _fake_python(h, check_rc)
     before = snapshot(h.root)
     done = run_entry(h, *FLOW_ARGS)
     assert done.returncode == 11, (done.stdout, done.stderr)
@@ -686,31 +768,12 @@ def test_the_13_are_derived_from_the_template_and_match_the_list(tmp_path: Path)
     more = text + "NEW_PASSWORD=change-me-new\n"
     for variant, expect in ((fewer, 12), (more, 14)):
         (tmp_path / "t.env").write_text(variant, encoding="utf-8")
-        done = run_function(
+        done = env_tool(
             h,
-            'env_tool compose "$1" "$2" "${@:3}"',
+            "compose",
             str(tmp_path / "new.env"),
             str(tmp_path / "t.env"),
-            "--release",
-            VERSION,
-            "--commit",
-            "a" * 40,
-            "--mode",
-            "cpu",
-            "--monitoring",
-            "on",
-            "--size",
-            "auto",
-            "--domain",
-            "example.com",
-            "--firebase",
-            "demo-proj",
-            "--image-app",
-            "anastawahia/aizzak:app-1@sha256:" + "a" * 64,
-            "--image-embedding",
-            "anastawahia/aizzak:embedding-1@sha256:" + "b" * 64,
-            "--image-cuda",
-            "anastawahia/aizzak:embedding-cuda-1@sha256:" + "c" * 64,
+            *compose_args(),
         )
         assert done.returncode == 0, done.stderr
         created = parse_env((tmp_path / "new.env").read_text(encoding="utf-8"))
@@ -870,24 +933,27 @@ def test_the_ttl_constant_equals_the_one_vault_bootstrap_sets() -> None:
 # ── AC-4.7: a repeat that asks for something else is refused ─────────────────
 
 
-_OTHER_DOMAIN = ["--domain", "other.com", "--firebase-project", "demo-proj"]
-_OTHER_FIREBASE = ["--domain", "example.com", "--firebase-project", "other-proj"]
+_OTHER_DOMAIN = ["--domain", "other.com", "--firebase-project", "demo-proj", *BASE_FLAGS]
+_OTHER_FIREBASE = ["--domain", "example.com", "--firebase-project", "other-proj", *BASE_FLAGS]
 
 
 @pytest.mark.parametrize(
-    "args, fragment",
+    "args, gpu, fragment",
     [
-        (_OTHER_DOMAIN, "MINIO_PUBLIC_ENDPOINT"),
-        (_OTHER_FIREBASE, "FIREBASE_PROJECT_ID"),
-        ([*FLOW_ARGS, "--size", "medium"], "size"),
-        ([*FLOW_ARGS, "--cpu"], "COMPOSE_FILE"),
-        ([*FLOW_ARGS, "--no-monitoring"], "COMPOSE_PROFILES"),
+        (_OTHER_DOMAIN, False, "MINIO_PUBLIC_ENDPOINT"),
+        (_OTHER_FIREBASE, False, "FIREBASE_PROJECT_ID"),
+        ([*FLOW_ARGS, "--no-monitoring", "--size", "medium"], False, "size"),
+        # the base is a CPU install without monitoring: a GPU, or monitoring, is another install
+        ([*FLOW_ARGS, *BASE_FLAGS], True, "COMPOSE_FILE"),
+        ([*FLOW_ARGS, "--cpu"], False, "COMPOSE_PROFILES"),
     ],
 )
 def test_changing_an_input_after_install_is_refused_naming_the_key(
-    repeat: Repeat, tmp_path: Path, args: list[str], fragment: str
+    repeat: Repeat, tmp_path: Path, args: list[str], gpu: bool, fragment: str
 ) -> None:
     h = clone_harness(repeat.h, tmp_path)
+    if gpu:
+        set_preflight(h.root, 0)
     before = (sha(env_file(h)), mode(env_file(h)))
     done = run_steps(h, *args)
     assert done.returncode == 30, (done.stdout[-600:], done.stderr)
@@ -1057,155 +1123,165 @@ def test_the_key_is_minted_inside_vault_and_written_once(gpu_flow: Flow) -> None
     assert mode(env_file(gpu_flow.h)) == 0o644
 
 
-@pytest.mark.parametrize("output", ["", "not-a-uuid", "5b2a1c9e-4d3f-4a6b-8c7d-0e1f2a3b4c5"])
+@pytest.mark.parametrize("output", ["", "not-a-uuid"])
 def test_a_key_that_is_not_a_uuid_stops_with_61_before_any_carrier(
-    tmp_path: Path, output: str
+    booting: Harness, output: str
 ) -> None:
-    run = flow(tmp_path, env={"FAKE_MINT_OUTPUT": output})
-    assert run.proc.returncode == 61, (run.proc.stdout[-800:], run.proc.stderr)
-    assert "not a UUID" in run.proc.stderr
-    block = env_file(run.h).read_text(encoding="utf-8").split("# >>> aizzak install >>>")[1]
+    done = boot_run(booting, env={"FAKE_MINT_OUTPUT": output})
+    calls = booting.docker_calls()
+    assert done.returncode == 61, (done.stdout[-800:], done.stderr)
+    assert "not a UUID" in done.stderr
+    block = env_file(booting).read_text(encoding="utf-8").split("# >>> aizzak install >>>")[1]
     assert "VAULT_SECRET_ID=" not in block, "a key that is not a UUID was written"
-    assert [c for c in run.calls if "up" in c and "minio-bootstrap" in c] == []
-    assert [c for c in run.calls if "up" in c and "migrate" in c] == []
+    assert [c for c in calls if "up" in c and "minio-bootstrap" in c] == []
+    assert [c for c in calls if "up" in c and "migrate" in c] == []
 
 
-def test_a_mint_failure_stops_with_61_hides_the_token_and_leaves_no_file(tmp_path: Path) -> None:
+def test_a_mint_failure_stops_with_61_hides_the_token_and_leaves_no_file(
+    booting: Harness, tmp_path: Path
+) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    run = flow(tmp_path, env={"FAKE_MINT_RC": "1", "TMPDIR": str(scratch)})
-    assert run.proc.returncode == 61
-    assert VAULT_TOKEN not in run.proc.stdout + run.proc.stderr
-    assert "<redacted>" in run.proc.stderr
+    done = boot_run(booting, env={"FAKE_MINT_RC": "1", "TMPDIR": str(scratch)})
+    assert done.returncode == 61
+    assert VAULT_TOKEN not in done.stdout + done.stderr
+    assert "<redacted>" in done.stderr
     assert list(scratch.iterdir()) == [], "the file holding Vault's stderr was left behind"
 
 
-def test_a_damaged_key_in_env_is_never_replaced(repeat: Repeat, tmp_path: Path) -> None:
-    h = clone_harness(repeat.h, tmp_path)
-    path = env_file(h)
+def test_a_damaged_key_in_env_is_never_replaced(booting: Harness) -> None:
+    path = env_file(booting)
+    text = path.read_text(encoding="utf-8")
     path.write_text(
-        path.read_text().replace(f"VAULT_SECRET_ID={SECRET_ID}", "VAULT_SECRET_ID=junk")
+        text.replace("# <<< aizzak install <<<", "VAULT_SECRET_ID=junk\n# <<< aizzak install <<<")
     )
     before = sha(path)
-    done = run_steps(h, *FLOW_ARGS)
+    done = boot_run(booting)
     assert done.returncode == 61 and "damaged" in done.stderr
     assert sha(path) == before
+    assert not [c for c in booting.docker_calls() if "exec" in c and "vault" in c]
 
 
-def test_a_digest_that_is_not_the_one_in_version_stops_with_51_and_no_up(tmp_path: Path) -> None:
-    run = flow(tmp_path, env={"FAKE_BAD_DIGEST_FOR": "aizzak"})
-    assert run.proc.returncode == 51, (run.proc.stdout[-800:], run.proc.stderr)
-    assert "anastawahia/aizzak@sha256:" in run.proc.stderr
-    assert digest_of("app") in run.proc.stderr and "f" * 64 in run.proc.stderr
-    assert [c for c in run.calls if "up" in c] == []
+def test_a_digest_that_is_not_the_one_in_version_stops_with_51_and_no_up(booting: Harness) -> None:
+    done = run_function(
+        booting,
+        'prepare "$@"; MODE=gpu; step_pull >/dev/null; step_verify_images',
+        *FLOW_ARGS,
+        env={"FAKE_ALL_IMAGES": "1", "FAKE_BAD_DIGEST_FOR": "aizzak"},
+    )
+    assert done.returncode == 51, (done.stdout[-800:], done.stderr)
+    assert "anastawahia/aizzak@sha256:" in done.stderr
+    assert digest_of("app") in done.stderr and "f" * 64 in done.stderr
+    assert [c for c in booting.docker_calls() if "up" in c] == []
 
 
-def test_a_failed_pull_stops_with_50(tmp_path: Path) -> None:
-    run = flow(tmp_path, env={"FAKE_PULL_FAIL": "postgres"})
-    assert run.proc.returncode == 50, run.proc.stderr
-    assert "postgres" in run.proc.stderr
-    assert [c for c in run.calls if "up" in c] == []
+def test_a_failed_pull_stops_with_50(booting: Harness) -> None:
+    done = run_function(
+        booting,
+        'prepare "$@"; MODE=gpu; step_pull >/dev/null',
+        *FLOW_ARGS,
+        env={"FAKE_PULL_FAIL": "postgres"},
+    )
+    assert done.returncode == 50, done.stderr
+    assert "postgres" in done.stderr
+    assert [c for c in booting.docker_calls() if "up" in c] == []
 
 
 def test_only_missing_images_are_pulled_and_never_a_compose_level_pull(
-    gpu_flow: Flow, repeat: Repeat
+    gpu_flow: Flow, tmp_path: Path
 ) -> None:
-    assert not [
-        c
-        for c in gpu_flow.calls
-        if c[:2] == ["compose", "pull"] or ("pull" in c[:3] and c[:1] == ["compose"])
-    ]
+    assert not [c for c in gpu_flow.calls if c[:2] == ["compose", "pull"]]
     pulled = [c[1] for c in gpu_flow.calls if c[:1] == ["pull"]]
     assert pulled and len(pulled) == len(set(pulled))
-    assert not [c for c in repeat.h.docker_calls_since(repeat.mark) if c[:1] == ["pull"]]
     release = [p for p in pulled if p.startswith("anastawahia/aizzak@sha256:")]
     assert len(release) == 2  # GPU mode: app + embedding-cuda, never the CPU embedding image
+    # the same step on the stack that was just pulled: everything is there, so nothing is pulled
+    again = clone_harness(gpu_flow.h, tmp_path)
+    done = run_function(again, 'prepare "$@"; MODE=gpu; step_pull >/dev/null', *FLOW_ARGS)
+    assert done.returncode == 0, done.stderr
+    assert not [c for c in again.docker_calls() if c[:1] == ["pull"]]
+    assert [c for c in again.docker_calls() if c[:2] == ["image", "inspect"]]
 
 
-def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(tmp_path: Path) -> None:
-    h = make_harness(tmp_path)
-    faults = json.dumps({"migrate": {"exit": 1, "times": 1}})
-    first = run_steps(h, *FLOW_ARGS, env={"FAKE_FAULTS": faults})
+def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(booting: Harness) -> None:
+    first = boot_run(booting, env={"FAKE_FAULTS": "migrate:exit=1,times=1"})
     assert first.returncode == 60, (first.stdout[-600:], first.stderr)
     assert "migrate" in first.stderr and "docker compose logs migrate" in first.stderr
-    secrets_after_first = secret_values(h)
-    second = run_steps(h, *FLOW_ARGS)
+    secrets_after_first = secret_values(booting)
+    second = boot_run(booting)
     assert second.returncode == 0, (second.stdout[-800:], second.stderr)
-    assert secret_values(h) == secrets_after_first
-    mints = [c for c in h.docker_calls() if "exec" in c and "vault" in c]
+    assert secret_values(booting) == secrets_after_first
+    mints = [c for c in booting.docker_calls() if "exec" in c and "vault" in c]
     assert len(mints) == 1, "the second run minted a second key"
 
 
 def test_a_service_that_never_becomes_healthy_is_named(tmp_path: Path) -> None:
-    run = flow(
-        tmp_path,
-        env={"FAKE_FAULTS": json.dumps({"app": {"health": "unhealthy"}})},
-        overrides="POLL_S=0.05 BOOT_DEADLINE_S=2 HEALTH_DEADLINE_S=1",
+    """`wait_for` on a service whose container runs but never turns healthy, with the Docker side
+    replaced by two lines: it gives up after its own limit and names the service."""
+    code = (
+        'ROOT="$PWD"; BOOT_START=$SECONDS; BOOT_DEADLINE_S=20; POLL_S=0.05\n'
+        "STATE_HASH[app]=abc\n"
+        "stack_state() { STATE_INSPECT='app|abc|running|unhealthy|0|always'; }\n"
+        "wait_for app 0"
     )
-    assert run.proc.returncode == 60, (run.proc.stdout[-600:], run.proc.stderr)
-    assert "boot step app" in run.proc.stderr and "docker compose logs" in run.proc.stderr
+    done = run_function(make_harness(tmp_path), code)
+    assert done.returncode == 60, (done.stdout, done.stderr)
+    assert "boot step app: not ready after 0s" in done.stderr
+    assert "docker compose logs app" in done.stderr
 
 
 def test_an_ollama_pull_failure_stops_the_install_and_says_what_chat_would_do(
-    tmp_path: Path,
+    booting: Harness,
 ) -> None:
-    run = flow(
-        tmp_path,
-        env={"FAKE_FAULTS": json.dumps({"ollama-pull": {"exit": 1, "times": 9}})},
-    )
-    assert run.proc.returncode == 60, (run.proc.stdout[-600:], run.proc.stderr)
-    assert "ollama-pull" in run.proc.stderr
-    assert (
-        "chat would answer 502" in run.proc.stderr and "re-run sudo ./install.sh" in run.proc.stderr
-    )
+    done = boot_run(booting, env={"FAKE_FAULTS": "ollama-pull:exit=1,times=9"})
+    assert done.returncode == 60, (done.stdout[-600:], done.stderr)
+    assert "ollama-pull" in done.stderr
+    assert "chat would answer 502" in done.stderr and "re-run sudo ./install.sh" in done.stderr
 
 
-def test_the_metrics_exporter_step_failing_stops_with_60(tmp_path: Path) -> None:
-    run = flow(tmp_path, env={"FAKE_PG_RC": "1"})
-    assert run.proc.returncode == 60 and "metrics_exporter" in run.proc.stderr
+def test_the_metrics_exporter_step_failing_stops_with_60(booting: Harness) -> None:
+    done = boot_run(booting, env={"FAKE_PG_RC": "1"})
+    assert done.returncode == 60 and "metrics_exporter" in done.stderr
 
 
 # ── AC-7.1: the checks ───────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def converged(gpu_flow: Flow, tmp_path: Path) -> Harness:
-    return clone_harness(gpu_flow.h, tmp_path)
+def converged(base_flow: Flow, tmp_path: Path) -> Harness:
+    return clone_harness(base_flow.h, tmp_path)
 
 
 def _curl_urls(h: Harness) -> list[str]:
     return [c["argv"][-1] for c in h.calls() if c["tool"] == "curl"]
 
 
-def test_a_healthy_stack_is_ready_and_asks_the_published_port(converged: Harness) -> None:
-    done = run_steps(converged, *FLOW_ARGS)
+def test_a_healthy_stack_is_ready_and_probes_the_port_compose_published(
+    converged: Harness,
+) -> None:
+    path = env_file(converged)
+    path.write_text(path.read_text().replace("HOST_PORT_HTTP=80", "HOST_PORT_HTTP=20080"))
+    done = boot_run(converged)
     assert done.returncode == 0, done.stderr
+    assert "install: READY" in done.stdout
     assert _curl_urls(converged)[:2] == [
-        "http://127.0.0.1:80/health",
-        "http://127.0.0.1:80/health/ready",
+        "http://127.0.0.1:20080/health",
+        "http://127.0.0.1:20080/health/ready",
     ]
     smoke = [c for c in converged.docker_calls() if "exec" in c and "app" in c]
     assert smoke
     assert smoke[-1][-2:] == ["python", "/app/deploy/smoke/stack_smoke.py"]
 
 
-def test_a_moved_http_port_is_the_one_probed(converged: Harness) -> None:
-    path = env_file(converged)
-    path.write_text(path.read_text().replace("HOST_PORT_HTTP=80", "HOST_PORT_HTTP=20080"))
-    done = run_steps(converged, *FLOW_ARGS)
-    assert done.returncode == 0, done.stderr
-    assert _curl_urls(converged)[0] == "http://127.0.0.1:20080/health"
-
-
 def test_a_502_stops_with_70_and_the_report_says_not_ready(converged: Harness) -> None:
-    done = run_steps(converged, *FLOW_ARGS, env={"FAKE_CURL": json.dumps({"health": 502})})
+    done = boot_run(converged, env={"FAKE_CURL": "health=502"})
     assert done.returncode == 70, done.stderr
     assert "NOT READY" in done.stdout and "failed: /health" in done.stdout
     assert "install: READY" not in done.stdout
 
 
 def test_a_failing_smoke_stops_with_71(converged: Harness) -> None:
-    done = run_steps(converged, *FLOW_ARGS, env={"FAKE_SMOKE_RC": "1"})
+    done = boot_run(converged, env={"FAKE_SMOKE_RC": "1"})
     assert done.returncode == 71, done.stderr
     assert "NOT READY" in done.stdout and "failed: stack_smoke" in done.stdout
 

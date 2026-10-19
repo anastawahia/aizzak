@@ -13,6 +13,7 @@ longer needed, a forbidden path that was listed, and an exclusion that excludes 
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import shutil
@@ -70,12 +71,23 @@ def compose_texts() -> list[str]:
     return [(REPO_ROOT / name).read_text(encoding="utf-8") for name in COMPOSE_FILES]
 
 
+@functools.cache
+def _load(text: str) -> Any:
+    """YAML of one document, parsed once: PyYAML needs ~80 ms for a Compose file. Never mutated."""
+    return yaml.safe_load(text) or {}
+
+
 def _services(texts: Iterable[str]) -> dict[str, dict[str, Any]]:
+    return copy.deepcopy(_merged(tuple(texts)))
+
+
+@functools.cache
+def _merged(texts: tuple[str, ...]) -> dict[str, dict[str, Any]]:
     """The services of all files, merged the way Compose merges an overlay: lists (`volumes`)
     are extended, maps (`depends_on`, `environment`) are united, anything else is replaced."""
     merged: dict[str, dict[str, Any]] = {}
     for text in texts:
-        loaded = yaml.safe_load(text) or {}
+        loaded = _load(text)
         for name, body in (loaded.get("services") or {}).items():
             target = merged.setdefault(name, {})
             for key, value in (body or {}).items():
@@ -199,7 +211,7 @@ def test_the_long_bind_syntax_and_variables_are_not_missed() -> None:
 
 def _with_new_bind(texts: list[str], source: str) -> list[str]:
     corrupted = copy.deepcopy(texts)
-    loaded = yaml.safe_load(corrupted[0])
+    loaded = copy.deepcopy(_load(corrupted[0]))
     loaded["services"]["nginx"]["volumes"].append(f"{source}:/etc/new:ro")
     corrupted[0] = yaml.safe_dump(loaded)
     return corrupted

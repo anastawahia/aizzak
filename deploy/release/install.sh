@@ -239,13 +239,26 @@ size_names() {
 }
 
 require_host_tools() {
-  local tool
+  local tool rc
   command -v python3 >/dev/null 2>&1 \
     || die 11 "python3 is not installed: install Python 3.10 or newer (sudo apt-get install python3)"
-  python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
-    || die 11 "python3 is older than 3.10: install Python 3.10 or newer"
-  python3 -I -c 'import yaml' 2>/dev/null \
-    || die 11 "PyYAML is missing for python3: sudo apt-get install python3-yaml"
+  # one interpreter start for both questions: exit 3 = older than 3.10, 4 = no PyYAML
+  rc=0
+  python3 -I -c '
+import sys
+if sys.version_info < (3, 10):
+    sys.exit(3)
+try:
+    import yaml
+except ImportError:
+    sys.exit(4)
+' 2>/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    3) die 11 "python3 is older than 3.10: install Python 3.10 or newer" ;;
+    4) die 11 "PyYAML is missing for python3: sudo apt-get install python3-yaml" ;;
+    *) die 11 "python3 could not run its self-check (exit $rc): reinstall python3 and python3-yaml" ;;
+  esac
   for tool in curl timeout flock df; do
     command -v "$tool" >/dev/null 2>&1 || die 11 "$tool is not installed (curl, coreutils and util-linux are needed)"
   done
