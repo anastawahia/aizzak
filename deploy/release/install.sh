@@ -207,7 +207,7 @@ parse_args() {
       *)
         (($# >= 2)) || die 2 "$opt needs a value"
         case "$opt" in
-          --domain) DOMAIN="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" ;;
+          --domain) DOMAIN="$(printf '%s' "$2" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ;;
           --firebase-project) FIREBASE_PROJECT="$2" ;;
           --size) SIZE="$2" ;;
         esac
@@ -1003,7 +1003,9 @@ release_images() {
 step_pull() {
   local images image ref deadline
   say "step 5/8: images"
-  images="$(compose 60 config --images 2>&1 | sort -u)" || die 30 "Compose refused the project; run: docker compose config --quiet"
+  # stderr stays out of the list: Compose warnings are not images
+  images="$(compose 60 config --images 2>/dev/null | sort -u)" \
+    || die 30 "Compose refused the project; run, with sudo and in $ROOT: docker compose config --quiet"
   [[ -n $images ]] || die 30 "Compose lists no images"
   PULL_LIST="$images"
   while IFS= read -r image; do
@@ -1162,7 +1164,10 @@ mint_secret_id() {
   esac
   err="$(mktemp)"
   if ! sid="$(compose 60 exec -T vault sh -c "$MINT_SCRIPT" 2>"$err")"; then
-    die 61 "minting VAULT_SECRET_ID failed:" "$(redact <"$err")"
+    # Vault's stderr may name the token: shorten and redact it, and delete the file, before dying.
+    sid="$(redact <"$err")"
+    rm -f "$err"
+    die 61 "minting VAULT_SECRET_ID failed:" "$sid"
   fi
   rm -f "$err"
   sid="$(printf '%s' "$sid" | tr -d '\r\n')"

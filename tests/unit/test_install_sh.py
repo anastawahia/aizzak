@@ -1070,11 +1070,14 @@ def test_a_key_that_is_not_a_uuid_stops_with_61_before_any_carrier(
     assert [c for c in run.calls if "up" in c and "migrate" in c] == []
 
 
-def test_a_mint_failure_stops_with_61_and_hides_the_token(tmp_path: Path) -> None:
-    run = flow(tmp_path, env={"FAKE_MINT_RC": "1"})
+def test_a_mint_failure_stops_with_61_hides_the_token_and_leaves_no_file(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    run = flow(tmp_path, env={"FAKE_MINT_RC": "1", "TMPDIR": str(scratch)})
     assert run.proc.returncode == 61
     assert VAULT_TOKEN not in run.proc.stdout + run.proc.stderr
     assert "<redacted>" in run.proc.stderr
+    assert list(scratch.iterdir()) == [], "the file holding Vault's stderr was left behind"
 
 
 def test_a_damaged_key_in_env_is_never_replaced(repeat: Repeat, tmp_path: Path) -> None:
