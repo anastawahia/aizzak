@@ -488,6 +488,25 @@ def test_as_root_a_symlinked_directory_on_the_path_is_refused(
     assert not list(moved.rglob("auto.conf")), "root wrote through the link"
 
 
+def test_as_root_a_symlinked_project_directory_is_refused(
+    env: Path, capsys: pytest.CaptureFixture[str], owned_by_root: None
+) -> None:
+    """(a) the directory .env sits in: reached through a link, root would write where it leads."""
+    link = env.parent.parent / f"{env.parent.name}-link"
+    link.symlink_to(env.parent)
+    before = _tree_bytes(env.parent)
+    try:
+        code = az.main(["--env-file", str(link / ".env"), *_FIT], environ={}, euid=0)
+        err = capsys.readouterr().err
+    finally:
+        link.unlink()
+
+    assert code == 3
+    assert f"{link} is a symbolic link" in err
+    assert _tree_bytes(env.parent) == before
+    assert not _conf(env).exists()
+
+
 def test_as_root_an_existing_auto_conf_that_is_a_link_is_refused(
     env: Path, capsys: pytest.CaptureFixture[str], owned_by_root: None
 ) -> None:

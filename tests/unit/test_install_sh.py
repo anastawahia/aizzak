@@ -1746,3 +1746,71 @@ def test_a_failed_write_leaves_env_and_no_temp_file(installed: tuple[Harness, Pa
 def test_env_tool_refuses_an_unknown_subcommand(tool: Harness) -> None:
     done = env_tool(tool, "format-disk")
     assert done.returncode == 2
+
+
+# ── QA additions (install-bundle test-plan.md) ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fault, code",
+    [
+        ({"FAKE_FAULTS": "migrate:exit=1,times=9"}, 60),  # the key is already minted and in .env
+        ({"FAKE_PG_RC": "1"}, 60),  # the step whose stdin carries a password
+        ({"FAKE_MINT_RC": "1"}, 61),  # Vault's own stderr, which may name the token
+    ],
+    ids=["migrate-fails", "metrics-exporter-fails", "mint-fails"],
+)
+def test_no_secret_is_printed_or_passed_on_a_failure_path(
+    booting: Harness, fault: dict[str, str], code: int
+) -> None:
+    """AC-4.2 on the paths where the script dies: the 13 passwords, the Vault token and the minted
+    key must be absent from the output, every argument and every variable a call received."""
+    done = boot_run(booting, env=fault)
+    assert done.returncode == code, (done.stdout[-600:], done.stderr)
+    seen = everything_visible(booting, done)
+    for key, value in secret_values(booting).items():
+        assert value not in seen, key
+    assert VAULT_TOKEN not in seen and SECRET_ID not in seen
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="QA-1 (minor): step_checks_host finds the install marker with grep -x, which a CRLF "
+    ".env never matches, so a repeat is judged a first install (disk check, exit 12)",
+)
+def test_a_crlf_env_still_counts_as_an_installed_server(tmp_path: Path) -> None:
+    h = make_harness(tmp_path)
+    assert _step_env(h, "cpu").returncode == 0
+    path = env_file(h)
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    done = run_function(
+        h, 'prepare "$@"; step_checks_host >/dev/null; echo "FIRST=$FIRST_INSTALL"', *FLOW_ARGS
+    )
+    assert "FIRST=0" in done.stdout, done.stdout
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="QA-2 (minor, security): atomic_write creates the temp file with the umask mode and "
+    "copies the existing mode only after fsync, so a .env already set to 0600 is briefly "
+    "rewritten as a 0644 copy holding every password (install.sh atomic_write)",
+)
+def test_a_0600_env_is_never_rewritten_through_a_more_open_temp_file(
+    tool: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "hand.env"
+    path.write_text((tool.root / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
+    path.chmod(0o600)
+    seen: list[int] = []
+    real_fsync = os.fsync
+
+    def spy(fd: int) -> None:
+        seen.extend(p.stat().st_mode & 0o077 for p in tmp_path.glob(".install-tmp-*"))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    done = run_compose(tool, path)
+    assert done.returncode == 0 and done.stdout.strip() == "adopted", done.stderr
+    assert seen, "the spy never saw the temp file"
+    assert seen == [0] * len(seen), "the temp file was group/world readable while it held secrets"
+    assert mode(path) == 0o600
