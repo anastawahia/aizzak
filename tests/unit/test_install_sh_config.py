@@ -169,10 +169,11 @@ def test_every_combination_of_mode_monitoring_and_size_is_a_valid_bundle_project
         elif size == "auto":
             done = _auto(root, mode_name, monitoring, _HOSTS["16/32"])
             assert done.returncode == 0, done.stdout + done.stderr
-        quiet = _compose(root, "config", "-q")
-        assert quiet.returncode == 0, (mode_name, monitoring, size, quiet.stderr)
-        # one more call gives the services and every image (the text is read here, not printed)
-        resolved = json.loads(_compose(root, "config", "--format", "json", check=True).stdout)
+        # `config --format json` exits 0 exactly when `config -q` does, and also gives the
+        # services and every image: one Compose start per combination, not two
+        done = _compose(root, "config", "--format", "json")
+        assert done.returncode == 0, (mode_name, monitoring, size, done.stderr)
+        resolved = json.loads(done.stdout)
         services = resolved["services"]
         assert len(services) == _SERVICES[(mode_name, monitoring)], (mode_name, monitoring, size)
         images = {svc["image"] for svc in services.values() if svc.get("image")}
@@ -219,7 +220,7 @@ def test_the_real_generator_in_the_bundle_fits_three_hosts_and_refuses_the_small
             check=False,
         )  # fmt: skip
         assert budget.returncode == 0, budget.stdout[-400:] + budget.stderr
-        assert _compose(root, "config", "-q").returncode == 0
+        assert _compose(root, "config", "--format", "json").returncode == 0
 
     jobs = []
     for i, (host, m) in enumerate(combos):

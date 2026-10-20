@@ -141,23 +141,36 @@ def test_the_mint_command_reads_the_token_inside_the_container() -> None:
 # ── AC-8.2: where the key lives ──────────────────────────────────────────────
 
 
+def key_policy_problems(body: str) -> list[str]:
+    """What is wrong with a document's statement about where VAULT_SECRET_ID lives: a sentence
+    that forbids .env, or no mention of install.sh writing it."""
+    problems = [
+        f"forbidden sentence: {sentence}" for sentence in FORBIDDEN_SENTENCES if sentence in body
+    ]
+    if not re.search(
+        r"VAULT_SECRET_ID[\s\S]{0,400}install\.sh|install\.sh[\s\S]{0,400}VAULT_SECRET_ID", body
+    ):
+        problems.append("does not say install.sh writes VAULT_SECRET_ID")
+    return problems
+
+
 @pytest.mark.parametrize("doc", KEY_DOCS, ids=lambda p: p.name)
 def test_no_document_still_says_the_key_must_not_be_in_env(doc: Path) -> None:
-    body = text(doc)
-    found = [s for s in FORBIDDEN_SENTENCES if s in body]
-    assert found == [], f"{doc.name}: {found}"
-    near = re.search(
-        r"VAULT_SECRET_ID[^\n]{0,300}install\.sh|install\.sh[^\n]{0,300}VAULT_SECRET_ID", body
-    )
-    assert near or re.search(
-        r"VAULT_SECRET_ID[\s\S]{0,400}install\.sh|install\.sh[\s\S]{0,400}VAULT_SECRET_ID", body
-    ), f"{doc.name} does not say install.sh writes VAULT_SECRET_ID"
+    assert key_policy_problems(text(doc)) == []
 
 
-def test_the_forbidden_sentences_are_found_when_present() -> None:
-    for sentence in FORBIDDEN_SENTENCES:
-        assert sentence in f"x {sentence} y"
-    assert "لا يُكتب في `.env` أبداً" not in text(VAULT_DOCS[1])
+@pytest.mark.parametrize("sentence", FORBIDDEN_SENTENCES)
+def test_the_key_policy_guard_flags_each_forbidden_sentence(sentence: str) -> None:
+    """The real guard, run on a fixture document that is good except for one sentence."""
+    good = "VAULT_SECRET_ID is written by install.sh into .env on a server."
+    assert key_policy_problems(good) == []
+    assert key_policy_problems(f"{good}\n{sentence}") == [f"forbidden sentence: {sentence}"]
+
+
+def test_the_key_policy_guard_flags_a_document_that_never_mentions_install_sh() -> None:
+    assert key_policy_problems("VAULT_SECRET_ID lives in .env.") == [
+        "does not say install.sh writes VAULT_SECRET_ID"
+    ]
 
 
 def test_no_document_says_install_sh_sets_env_to_0600() -> None:
