@@ -4,7 +4,7 @@
 
 > **الفرع:** `feat/install-bundle` بعد جولة الإصلاح الأولى (`0122db4` و`b23f3d0` من الباني، وفوقهما `0b48a98` منّي)؛ الجولة الأولى لـQA كانت عند `f187d1e`. **النطاق:** US‑1…US‑8، 47 معياراً (US‑9 وUS‑10 مؤجّلتان ولم تُختبرا).
 > **الطريقة:** اختبارات `tests/unit` وحدها. لا حاوية ولا مكدّس حيّ ولا `tests/integration`. كلّ أمر Compose جرى في نسخةٍ مؤقّتة تحت `/tmp/claude-1000/` و`.env` مبنيّ من `.env.example`، و`DOCKER_CONFIG` فارغ، وأوامر `config` وحدها (لا تتّصل بالـdaemon). لم يُقرأ `.env` الحقيقيّ ولا `config.json` ولا الملفّات السرّيّة.
-> **الحدّ:** الإثبات المحلّيّ (AC‑6.5 وAC‑7.4) **لم يُشغَّل**، وهو بيد المنسّق مع المالك (§6).
+> **الحدّ (جولة 1):** الإثبات المحلّيّ لم يكن قد شُغِّل. **جولة 2 (HEAD `c226090`):** شُغِّل بيد المالك؛ التشغيل 1 فشل بـQA‑7 فأُصلح في `dce2750`، والتشغيلان 2 و3 نجحا: AC‑6.5 وAC‑7.4 ✅ (§9).
 
 ## 1. مصفوفة التغطية
 
@@ -73,7 +73,7 @@
 | AC‑6.2 | وحدة | `::test_the_key_is_minted_inside_vault_and_written_once` (نصّ `MINT_SCRIPT` حرفيّاً، وسطر واحد، والصلاحيّة)، و`::test_a_key_that_is_not_a_uuid_stops_with_61_before_any_carrier[ ""، not-a-uuid]`، و`::test_a_damaged_key_in_env_is_never_replaced` | ✅ |
 | AC‑6.3 | وحدة | `::test_a_digest_that_is_not_the_one_in_version_stops_with_51_and_no_up`، و`::test_only_missing_images_are_pulled_and_never_a_compose_level_pull`، و`::test_a_failed_pull_stops_with_50` | ✅ |
 | AC‑6.4 | وحدة | `::test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes` (الرمز 60 و`docker compose logs migrate`؛ والثاني 0؛ الأسرار كما هي؛ إصدار واحد للمفتاح)، و`::test_an_ollama_pull_failure_stops_the_install...`، و`::test_the_metrics_exporter_step_failing_stops_with_60`، و`::test_a_service_that_never_becomes_healthy_is_named` | ✅ |
-| AC‑6.5 | محلّيّ | §6.1 | 🟡 |
+| AC‑6.5 | محلّيّ | §6.1، والنتيجة في §9: التشغيل 2 (`proof2.log`) والبنود التسعة كلّها. وانحدار QA‑7 يحرسه `test_install_sh_tty.py` | ✅ |
 | AC‑6.6 | خادم | 7.3 | ⏸ |
 
 ### US‑7: الفحوص والتقرير والتكرار
@@ -83,7 +83,7 @@
 | AC‑7.1 | وحدة | `::test_a_healthy_stack_is_ready_and_probes_the_port_compose_published` (منفذ 20080 من `port`)، و`::test_a_502_stops_with_70_and_the_report_says_not_ready`، و`::test_a_failing_smoke_stops_with_71` | ✅ |
 | AC‑7.2 | وحدة | `::test_the_report_with_monitoring_and_a_gpu` و`::test_the_report_without_monitoring_or_a_gpu` و`::test_the_forced_cpu_is_reported_as_the_choice` و`::test_the_expiry_is_the_minting_time_plus_720_hours` و`::test_a_0600_env_is_reported_as_done_with_one_mention` و`::test_the_report_is_plain_text_on_stdout_and_writes_no_file` | ✅ |
 | AC‑7.3 | وحدة | `::test_a_repeat_on_a_converged_stack_touches_nothing` (لا `up`، ولا `exec vault`، ولا `pull`، و«already converged»، وsha وصلاحيّة `.env`)، و`::test_no_call_anywhere_recreates_or_initialises`، و`::test_the_ttl_constant_equals_the_one_vault_bootstrap_sets`. **انظر §7:** الاختبار يقيس sha والصلاحيّة لا mtime، والمولِّد يعيد كتابة `.env` و`auto.conf` في كلّ تكرارٍ بحجم `auto` (البايتات نفسها) | ✅ |
-| AC‑7.4 | محلّيّ | §6.2 | 🟡 |
+| AC‑7.4 | محلّيّ | §6.2، والنتيجة في §9: التشغيل 3 (`proof3.log`) واللقطات `run2-*-{before,after}.txt` متطابقة بايتاً ببايت | ✅ |
 | AC‑7.5 | وحدة | `test_install_bundle_docs.py::test_the_header_and_the_document_list_the_same_exit_codes` (19 رمزاً في الاتّجاهين) و`::test_the_comparison_fails_when_either_side_loses_or_gains_a_code` و`::test_every_exit_the_script_takes_is_in_the_table` و`test_gpu_preflight.py::test_the_server_doc_lists_the_scripts_exit_codes`. **يقارن الرموز لا المعاني** (§7) | ✅ |
 | AC‑7.6 | خادم | 7.3 | ⏸ |
 
@@ -194,7 +194,7 @@ test-rules: OK
 
 ## 4. الأخطاء المكتشفة
 
-بعد جولة الإصلاح الأولى: **لا خطأ مفتوح** عدا ملاحظة QA‑7. الإصلاحات تحقّقتُ منها بالشيفرة والاختبار (التفاصيل في عمود الحالة).
+بعد جولة الإصلاح الأولى: **لا خطأ مفتوح** عدا ملاحظة bash (صارت QA‑8). **جولة 2:** كشف الإثبات المحلّيّ خطأً حاجباً جديداً، QA‑7 (الصفّ الأخير)، أُصلح في `dce2750`. الإصلاحات تحقّقتُ منها بالشيفرة والاختبار (التفاصيل في عمود الحالة).
 
 | # | الوصف | الشدة | خطوات إعادة الإنتاج | الحالة |
 |---|---|---|---|---|
@@ -204,11 +204,14 @@ test-rules: OK
 | QA‑4 | `bundle.sh --help` لا يعمل إلّا داخل المستودع (الرمز 3 قبل قراءة الوسائط). `main` ينادي `require_tools` و`require_repo_root` قبل `parse_args` (`bundle.sh:296-298`). `install.sh --help` يعمل في أيّ مكان. | minor | انسخ `bundle.sh` إلى `/tmp` وشغّله بـ`--help`. | **مُصلَح** (`0122db4`): فحص `--help`/`-h` في أوّل `main`. اختبار `test_help_works_outside_a_repository` يجتاز. |
 | QA‑5 | ملفّ بصماتٍ بنهايات CRLF يُرفض (5) برسالةٍ تبدو متناقضة: «built from commit X\r, but the tag is X». المتوقَّع رسالةٌ تسمّي النهايات. `bundle.sh:171-186`. | minor | حوّل `release-digests.txt` إلى CRLF وشغّل `bundle.sh`. | **مُصلَح بتغيير سلوك** (`0122db4`): ملفّ CRLF صار **يُقبل** وينتج أرشيفاً مطابقاً بايتاً ببايت. اختبار `test_a_digests_file_with_crlf_line_endings_builds_the_same_bundle` يجتاز. (يخالف نصّ كتبته «يُرفض»، وهو أنفع للمشغّل.) |
 | QA‑6 | **زمن الاختبارات يتجاوز NFR‑10 / AC‑8.5.** الزيادة في `pytest tests/unit` المقيسة 29 إلى 58 ث (أربعة أزواجٍ متتابعة، أدناها +15 ث في أهدأ لحظة) مقابل حدّ 15 ث، لا +11.4 ث التي ادّعاها الباني. أغلبها `test_install_sh.py` (17.9 ث) و`test_install_sh_config.py` (4.6 ث). التفاصيل والاقتراح في §1.3. | **major** | على شجرتين نظيفتين عند `13733ce` و`f187d1e`: `time pytest -p no:cacheprovider tests/unit` على كلٍّ بالتناوب مرّتين. **المتوقَّع:** الفرق ≤ 15 ث. **الفعلي:** +33 و+29 ث (بلا `.git`)، و+58 و+33 ث (مع `.git`). | **مُصلَح**: +10.6 إلى +12.1 ث في ثلاثة أزواج (§1.3). الهامش ضيّق. |
-| QA‑7 | **ملاحظة، لا خطأ:** يشترط `install.sh` bash ≥ 4 لكنّه يعمل بـ`set -u` ويوسّع مصفوفاتٍ فارغة (`"${args[@]}"` في `step_preflight`). في bash 4.0–4.3 هذا «unbound variable». الخوادم المستهدفة (Python ≥ 3.10، Compose ≥ 2.20) أحدث من ذلك عمليّاً، فلا أثر. الأنسب رفع الحدّ إلى 4.4 أو حراسة التوسعة. | info | — | للعلم |
+| QA‑8 | **ملاحظة، لا خطأ** (كانت مرقَّمة QA‑7 في الجولة 1، وأعدتُ ترقيمها لأنّ QA‑7 صار الخطأ الحاجب): يشترط `install.sh` bash ≥ 4 لكنّه يعمل بـ`set -u` ويوسّع مصفوفاتٍ فارغة (`"${args[@]}"` في `step_preflight`). في bash 4.0–4.3 هذا «unbound variable». الخوادم المستهدفة (Python ≥ 3.10، Compose ≥ 2.20) أحدث من ذلك عمليّاً، فلا أثر. الأنسب رفع الحدّ إلى 4.4 أو حراسة التوسعة. | info | — | للعلم |
+| QA‑7 | **`dk()` يعلّق كلّ نداء `docker compose exec` حين يكون stdin طرفيّة.** `dk()` يلفّ docker بـ`timeout`، و`timeout` يضع الابن في مجموعة عمليّاتٍ خلفيّة؛ و`compose exec -T` يُبقي stdin مفتوحاً فيقرأ الطرفيّة فيستلم SIGTTIN ويتوقّف بلا stderr حتّى تقتله المهلة (137). فشل إصدار `VAULT_SECRET_ID` برسالةٍ فارغة والخروج 61. `install.sh:332` (قبل الإصلاح)، ونداء gpu-preflight (`:879`). **وجدها الإثبات المحلّيّ، لا الاختبارات ولا أنا في الجولة 1.** | **blocking** | شغّل `sudo ./install.sh ...` من طرفيّة حقيقيّة (أو تحت `script`) على تثبيتٍ أوّل. **المتوقَّع:** يُصدَر المفتاح. **الفعلي:** الخروج 61 عند الخطوة 6/8 برسالةٍ فارغة؛ وبـ`</dev/null` يكون rc 0، ومن دونه 137. | **مُصلَح** (`dce2750`): `dk()` يضيف `</dev/null` حين `[[ -t 0 ]]` ويترك stdin كما هو غير ذلك (أنبوب كلمة سرّ `metrics_exporter` سليم)؛ وgpu-preflight بـ`</dev/null`. الانحدار: `tests/unit/test_install_sh_tty.py` (§9.1). تحقّقتُ منه بنفسي وبالتشغيلين 2 و3. |
 
 ## 5. الحكم
 
-**PASS** — بشرطٍ واحد باقٍ خارج يدي: نجاح الإثبات المحلّيّ (§6) لـAC‑6.5 وAC‑7.4. البوّابات الستّ خضراء (6131 ناجحاً، لا متخطّى، لا `xfail`)؛ 40 معياراً آليّاً ناجحة بتأكيداتٍ تطابق نصّها (وقد راجعتُ فرق الاختبارات مع `514c34e`: لم يُحذف اختبارٌ، وأعدتُ تأكيدين أسقطهما التسريع، §1.1)؛ NFR‑10 تحقّق (+10.6 إلى +12.1 ث من 15)؛ QA‑1…QA‑6 أُصلحت وتحقّقتُ منها؛ و5 معايير [خادم]/[مالك] خارج هذه المرحلة. لا خطأ مفتوح. الباقي: الإثبات المحلّيّ، وهامش الزمن الضيّق (3 ث).
+**الحكم النهائيّ (جولة 2): PASS.** السبب في سطرٍ واحد: QA‑7 (حاجب) وجده الإثبات المحلّيّ وأُصلح واختباره يفشل قبل الإصلاح وينجح بعده، وAC‑6.5 وAC‑7.4 نجحا على Docker حقيقيّ بأدلّةٍ مرقَّمة (§9)، ولا خطأ مفتوح. (نصّ الجولة 1 أدناه للتاريخ.)
+
+**جولة 1: PASS** — بشرطٍ واحد باقٍ خارج يدي: نجاح الإثبات المحلّيّ (§6) لـAC‑6.5 وAC‑7.4. البوّابات الستّ خضراء (6131 ناجحاً، لا متخطّى، لا `xfail`)؛ 40 معياراً آليّاً ناجحة بتأكيداتٍ تطابق نصّها (وقد راجعتُ فرق الاختبارات مع `514c34e`: لم يُحذف اختبارٌ، وأعدتُ تأكيدين أسقطهما التسريع، §1.1)؛ NFR‑10 تحقّق (+10.6 إلى +12.1 ث من 15)؛ QA‑1…QA‑6 أُصلحت وتحقّقتُ منها؛ و5 معايير [خادم]/[مالك] خارج هذه المرحلة. لا خطأ مفتوح. الباقي: الإثبات المحلّيّ، وهامش الزمن الضيّق (3 ث).
 
 ## 6. قائمة الإثبات المحلّيّ (AC‑6.5 وAC‑7.4)
 
@@ -266,6 +269,29 @@ test-rules: OK
 | AC‑7.3 | النصّ «لا شيء يُلمس»، والاختبار يقيس الحاويات (لا `up`) وsha و`mode` لـ`.env`، لا الملفّات الأخرى ولا mtime. وقد وجدتُ أنّ التكرار بحجم `auto` يعيد كتابة `.env` و`deploy/postgres/sizes/auto.conf` بالبايتات نفسها (يتغيّر mtime، وتتغيّر inode لأنّ الكتابة `os.replace`) | لا أثر على Compose (البصمة من المحتوى). أثرٌ نظريّ: ربطٌ لملفٍّ مفرد قد يرى inode قديماً. ربط `deploy/postgres/sizes` مجلّداً، فلا |
 | `test_help_prints_the_usage...` | (معالَج) لقطة قبل التشغيل وبعده | معالَج |
 | AC‑4.2 | كان يُفحص على التشغيلين الناجحين وحدهما (عولج بالاختبار المضاف §1.1) | معالَج |
+
+## 9. الجولة 2: QA‑7 والإثبات المحلّيّ
+
+### 9.1 فحص إصلاح QA‑7 واختباره
+
+- **هل يمسك الاختبار الخطأ؟ نعم، جرّبتُه.** نسخةٌ نظيفة من `dce2750^` (قبل الإصلاح) مع ملفّ `test_install_sh_tty.py` وحده: فشل الاختباران كلاهما (الأوّل بسبب `TERMINAL` في مخرج docker المزيّف، والثاني لغياب `</dev/null` في سطر gpu-preflight). الاختبار الأوّل يعطي `install.sh` طرفيّة حقيقيّة من `pty.fork()` ويستدعي `compose` كما تفعل الخطوات الثلاث (`exec -T vault`، `exec -T app`، وأنبوب كلمة السرّ إلى `exec -T postgres`)، ويقيس **ما هو stdin** لا «هل علّق». هذا كافٍ: العلّة هي تمرير الطرفيّة، والتعليق نتيجتها. ويؤكّد أنّ الأنبوب ما زال يوصل `the-password`.
+- **هل يبقى نداءٌ تحت `timeout` يرث طرفيّة؟ لا.** في `install.sh` سطران فقط فيهما `timeout`: `dk()` (`:336-338`) وgpu-preflight (`:879`، بـ`</dev/null`)، وكلّ `compose` يمرّ بـ`dk`. ولا `read` من الطرفيّة ولا `/dev/tty` في السكربت. (ثغرةٌ صغيرة: اختبار gpu-preflight فحصٌ نصّيّ للسطر لا تشغيل، فيحرس وجود `</dev/null` لا أثره؛ يكفي هنا لأنّ المسار الوحيد.)
+- **فرع `-t 0`:** إن كان stdin ملفّاً أو `/dev/null` أو أنبوباً فـ`-t 0` خطأ فيبقى كما هو، وهذا صحيح: لا SIGTTIN لغير الطرفيّة، والأنبوب مطلوب لكلمة سرّ `metrics_exporter`. وفي `$(...)` يبقى stdin هو الطرفيّة فيُصاد الفرع أيضاً. ولا فرق إن كان stdin مغلقاً.
+- **الاختبارات:** `PATH=/home/AIZZAK/.venv/bin:$PATH .venv/bin/pytest -rs tests/unit/test_install_sh_tty.py tests/unit/test_install_sh.py tests/unit/test_install_sh_config.py` ← `158 passed in 9.76s`، لا متخطّى. لم أغيّر اختباراً فلم أعد البوّابات الستّ؛ ولم أعد قياس NFR‑10 لأنّ الاختبار الجديد جزءٌ من الثانية الواحدة (الباني: نحو 0.01 ث)، والهامش القديم (+10.6 إلى +12.1 ث من 15) باقٍ.
+
+### 9.2 AC‑6.5 ✅ (التشغيل 2: مشروع `aizzak-install-proof2`، حزمة `2026.10.98` على `dce2750`)
+
+الدليل: `ib-proof/proof2.log` (فحصه المنسّق بعدٍّ فقط: 0 من 15 قيمةً سرّيّة، ولا `hv*`، ولا UUID) ورقم كلّ بندٍ في status.md الصفّ 8. بنود §6.1 التسعة كلّها: ① الخروج 0 و`install: READY` و`/health 200, /health/ready 200, stack_smoke PASS`؛ ② `initialized; unseal key` مرّة؛ ③ طول `VAULT_SECRET_ID` 36 في الحاويات الثماني ويساوي `.env`؛ ④ مشروع `aizzak` كخطّ الأساس؛ ⑤ 0 سرّ في السجلّ؛ ⑥ `.env` 644 و`root:root` والتذكير بـ`chmod 600`؛ ⑦ 0 `pull` أثناء `up` (فالمخاوف عن `repo:tag@sha256` لم تقع)؛ ⑧ الحاويات أحاديّة التشغيل الستّ بـ0 ومنها `minio-bootstrap` (A‑7)؛ ⑨ 0 ملفّ لـroot تحت `~/.docker`. هذا مسار `adopted`؛ مسار `created` يبقى لـ7.3 (كما في §6.3).
+
+### 9.3 AC‑7.4 ✅ (التشغيل 3: الأمر نفسه)
+
+الدليل: `ib-proof/proof3.log`، واللقطات `run2-{hash,containers,env,volumes}-{before,after}.txt` أزواجٌ متطابقة بايتاً ببايت (24 تجزئة، 24 حاوية بالمعرّف و`Created` و`StartedAt` والحالة، ومنها الستّ أحاديّة التشغيل، و8 أحجام، وsha256 لـ`.env`). الخروج 0، و`boot: already converged: no container touched`، و`boot: starting` صفر، و`host-tuning.sh: 0 changed`، و`env: unchanged`، و0 سحب.
+
+**حكمي على البند 4 (الأحداث):** قراءة «فارغ» على أنّها «لا حدث دورة حياة» **صحيحة**. نيّة البند (§6.2) «لا `create` ولا `start` ولا `die`»، وصياغتي «فارغ» كانت أضيق من نيّتي: لم أتوقّع فحوص الصحّة. أحداث `exec_create/exec_start/exec_die` (85 لكلّ نوع) هي أحداث **عمليّات exec** داخل حاوياتٍ قائمة، لا أحداث الحاوية نفسها (`create/start/die/stop/destroy/kill/restart`)، وهي من فحوص الصحّة الدوريّة (`healthcheck`) ونداءَي `exec` من التثبيت. وحاويةٌ أُعيد تشغيلها كانت ستظهر بـ`die` و`start` بلا لبس، وهذا يوافق تطابق `StartedAt` و`Created` في اللقطتين. فالبند محقَّق. **تعديل نصّ البند للمستقبل:** «لا حدث `create/start/die/stop/destroy/restart` للحاويات؛ أحداث `exec_*` متوقّعة».
+
+### 9.4 درسٌ
+
+**بيئة الاختبار الوحدويّ لم يكن فيها طرفيّة، فلم يظهر QA‑7 إلّا في طرفيّةٍ حقيقيّة.** كلّ اختبارات `install.sh` (قبل `dce2750`) تشغّل السكربت بلا stdin طرفيّة وبـdocker مزيّف، فأيّ علّةٍ تتعلّق بـ**البيئة التي يتفاعل معها العمليّ** (مجموعات العمليّات، SIGTTIN، stdin) خارج نطاقها، وأنا لم أسأل في الجولة 1 «ماذا لو كان stdin طرفيّة؟». الدرس: لأداةٍ يشغّلها بشرٌ من طرفيّة، يُشغَّل مسارٌ واحد على الأقلّ تحت `pty` (أو `script`) في الوحدة، ويُعدّ الإثبات المحلّيّ على Docker حقيقيّ بوّابةً لا شكليّة. (الإثبات المحلّيّ أدّى هنا الغرض الذي وُضع له.)
 
 ## 8. ملاحظاتٌ للمنسّق
 
