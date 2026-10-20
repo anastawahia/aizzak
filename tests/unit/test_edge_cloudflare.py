@@ -206,3 +206,38 @@ def test_the_real_ip_guard_fails_on_each_shape_it_exists_for() -> None:
     )
     assert inside_server != good
     assert any("outside http" in p for p in realip_problems(inside_server))
+
+
+# ── HSTS (AC-4.1, FR-16, FR-17) ──────────────────────────────────────────────
+
+
+def hsts_problems(entries: list[tuple[str, str]]) -> list[str]:
+    problems: list[str] = []
+    if entries != [("default", '""'), ("api.aizzak.com", '"max-age=31536000"')]:
+        problems.append(f"unexpected HSTS map: {entries}")
+    for host, value in entries:
+        if "includesubdomains" in value.lower() or "preload" in value.lower():
+            problems.append(f"{host}: includeSubDomains/preload")
+    return problems
+
+
+def test_hsts_names_the_api_host_alone_without_subdomains_or_preload() -> None:
+    entries = hsts_entries(_text())
+    assert entries == [("default", '""'), ("api.aizzak.com", '"max-age=31536000"')]
+    assert hsts_problems(entries) == []
+    assert "deploy-linux-server" not in _text()
+
+
+def test_the_hsts_guard_fails_on_a_second_host_includesubdomains_or_preload() -> None:
+    good = _text()
+    line = '"api.aizzak.com" "max-age=31536000";'
+    assert line in good
+    edits = [
+        good.replace(line, line + '\n        "other.example" "max-age=31536000";'),
+        good.replace(line, '"api.aizzak.com" "max-age=31536000; includeSubDomains";'),
+        good.replace(line, '"api.aizzak.com" "max-age=31536000; preload";'),
+        good.replace(line, ""),
+    ]
+    for text in edits:
+        assert text != good
+        assert hsts_problems(hsts_entries(text))
