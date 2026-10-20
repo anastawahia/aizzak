@@ -145,9 +145,9 @@ x-app-env: &app-env
   # blank .env entry survives into the container instead of being replaced.
   VAULT_TOKEN: ${VAULT_TOKEN-}
   VAULT_ROLE_ID: ${VAULT_ROLE_ID-}
-  # NEVER put this in .env (05 §3.3: "the only sensitive one in the
-  # environment"). It is read from the invoking shell -- Compose
-  # interpolation consults the real environment too, and the shell wins.
+  # Kept in .env on a server (05 §3.3): deploy/release/install.sh writes it there. A value
+  # exported in the invoking shell still wins, because Compose interpolation consults the
+  # real environment before .env.
   VAULT_SECRET_ID: ${VAULT_SECRET_ID-}
   FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
   FIREBASE_JWKS_CACHE_TTL: ${FIREBASE_JWKS_CACHE_TTL:-3600}
@@ -1504,7 +1504,7 @@ services:
       # SURVIVES a restart on its own; this pin's remaining job is the
       # first-ever boot (nothing to agree with yet) and recovering cleanly
       # if the vault-data volume is ever wiped without also editing .env.
-      # role_id is non-secret (05 §2). Unset in a real deployment.
+      # role_id is non-secret (05 §2). install.sh writes a random one per server; dev keeps the default.
       AIZZAK_APPROLE_ROLE_ID: ${VAULT_ROLE_ID-}
       # Capacity 5.7 -- the Transit key's declared rotation cycle. Vault
       # rotates the key itself on this period; `app.ops.rotate_transit sweep`

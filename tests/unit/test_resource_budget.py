@@ -336,6 +336,35 @@ def test_the_script_names_a_service_that_has_no_ceiling(tmp_path: Path) -> None:
     assert "NO LIMIT  qdrant" in done.stdout, done.stdout
 
 
+def test_a_planted_yaml_module_in_the_working_directory_is_never_imported(
+    tmp_path: Path,
+) -> None:
+    """install-bundle AC-5.5 (b), SR-6: the script can run as root from an unpacked bundle, and
+    `python3 -I` is what keeps a `yaml.py` sitting in the working directory out of it."""
+    marker = tmp_path / "imported"
+    (tmp_path / "yaml.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('x')\n", encoding="utf-8"
+    )
+
+    done = subprocess.run(
+        ["bash", str(_SCRIPT), "--host-cpus", "32", "--host-memory-gb", "64"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "COMPOSE_FILE": str(_COMPOSE)},
+        check=False,
+    )
+
+    assert not marker.exists(), "the planted yaml.py was imported"
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_the_script_runs_its_embedded_python_isolated() -> None:
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert "exec python3 -I - " in text
+    assert "exec python3 - " not in text
+
+
 # -------------------------------------------------------------- the written ledger --
 
 

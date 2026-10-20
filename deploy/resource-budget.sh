@@ -120,7 +120,9 @@ if [ -z "$host_memory_gb" ]; then
   host_memory_gb="$(awk '/^MemTotal:/ {printf "%.2f", $2 / 1048576}' /proc/meminfo)"
 fi
 
-exec python3 - "$COMPOSE_FILE" "$host_cpus" "$host_memory_gb" "$with_profiles" \
+# `-I` drops the working directory from sys.path and ignores PYTHON* variables, so a `yaml.py`
+# planted next to the Compose files is never imported by a script that may run as root (SR-6 (b)).
+exec python3 -I - "$COMPOSE_FILE" "$host_cpus" "$host_memory_gb" "$with_profiles" \
   "$size" "$SIZES_DIR" "$GPU_COMPOSE_FILE" "$block" "$without_monitoring" <<'PY'
 import copy
 import re

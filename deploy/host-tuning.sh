@@ -4,6 +4,9 @@
 #
 #   deploy/host-tuning.sh            apply (needs root)
 #   deploy/host-tuning.sh --check    report only; exit 1 if anything drifts
+#   --persist                        also keep the values across a reboot: writes
+#                                    $SYSCTL_D_DIR/90-aizzak.conf (default /etc/sysctl.d), and
+#                                    with --check a missing or different file is drift
 #
 # ⚠️ FOUR OF THE FIVE KNOBS STEP 3.5 NAMES DO NOT LIVE ON THE HOST, and this
 # script's job is as much to refuse them as to set the one that does. The
@@ -36,19 +39,24 @@ set -euo pipefail
 SYSCTL_ROOT="${SYSCTL_ROOT:-/proc/sys}"
 
 mode="apply"
-case "${1:-}" in
-  "") ;;
-  --check) mode="check" ;;
-  --apply) ;;
-  -h | --help)
-    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
-    exit 0
-    ;;
-  *)
-    echo "usage: $0 [--check|--apply]" >&2
-    exit 2
-    ;;
-esac
+persist=0
+# `/etc/sysctl.d` on a real host; overridable for the same reason as SYSCTL_ROOT.
+SYSCTL_D_DIR="${SYSCTL_D_DIR:-/etc/sysctl.d}"
+for arg in "$@"; do
+  case "$arg" in
+    --check) mode="check" ;;
+    --apply) mode="apply" ;;
+    --persist) persist=1 ;;
+    -h | --help)
+      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "usage: $0 [--check|--apply] [--persist]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # ── What this host owes the stack ────────────────────────────────────────────
 # One line per knob: `name<TAB>value<TAB>why`. A knob earns a line here by
@@ -114,6 +122,42 @@ while IFS=$'\t' read -r name want why; do
   printf 'changed %-24s %s -> %s   (%s)\n' "$name" "$have" "$want" "$why"
   changed=$((changed + 1))
 done <<<"$KNOBS"
+
+# ── --persist: the same table, kept across a reboot (server-gpu-plan.md 5.2) ──
+# `/proc/sys` forgets at reboot. The file is generated from KNOBS, so it cannot
+# drift from what the loop above sets, and it is written only when its content
+# differs: a repeat changes neither a byte nor the modification time.
+persist_content() {
+  printf '%s\n' "# Written by deploy/host-tuning.sh --persist (server-gpu-plan.md 5.2). Do not edit: re-run it."
+  while IFS=$'\t' read -r name want _why; do
+    [[ -n "$name" ]] || continue
+    printf '%s = %s\n' "$name" "$want"
+  done <<<"$KNOBS"
+}
+
+persist_knobs() {
+  local file="${SYSCTL_D_DIR}/90-aizzak.conf" tmp
+  if [[ -f "$file" && "$(cat "$file")" == "$(persist_content)" ]]; then
+    printf 'persist %s  ok\n' "$file"
+    return 0
+  fi
+  if [[ "$mode" == "check" ]]; then
+    printf 'DRIFT   persist %s  (missing or different; run with --apply --persist)\n' "$file"
+    drift=$((drift + 1))
+    return 0
+  fi
+  tmp="${file}.tmp.$$"
+  if ! { persist_content >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'FAILED  persist %s  (need root: sudo %s --apply --persist)\n' "$file" "$0" >&2
+    exit 3
+  fi
+  printf 'persist %s  written\n' "$file"
+  changed=$((changed + 1))
+}
+if [[ "$persist" -eq 1 ]]; then
+  persist_knobs
+fi
 
 # ── Measured, and deliberately NOT set ───────────────────────────────────────
 # `netdev_max_backlog` is the one other knob from step 3.5's list that really

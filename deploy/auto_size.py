@@ -687,7 +687,13 @@ def write_pair(first: tuple[Path, str, int], second: tuple[Path, str, int]) -> N
     backup: Path | None = None
     try:
         for path, text, mode in (first, second):
-            staged.append(stage(path, text, mode))
+            try:
+                staged.append(stage(path, text, mode))
+            except OSError as exc:  # review #20: name the file being prepared, not .env
+                raise EnvRefused(
+                    f"cannot write {_real(exc, path)} ({exc.strerror or exc})."
+                    " Nothing changed; fix the cause and re-run."
+                ) from None
         if first[0].exists():
             backup = first[0].parent / f"{TEMP_PREFIX}old-{os.getpid()}"
             backup.unlink(missing_ok=True)
@@ -799,13 +805,62 @@ def _summary(plan: Plan, role_from: str, label: str) -> str:
     )
 
 
-def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -> int:
+def check_trusted(env_path: Path, euid: int) -> None:
+    """When euid == 0 only: EnvRefused (exit 3) naming the path if .env, its directory,
+    <dir>/deploy, <dir>/deploy/postgres, <dir>/deploy/postgres/sizes, or an existing
+    auto.conf is a symlink (os.lstat) or not owned by uid 0. A no-op for any other euid.
+
+    A root process that writes through a link, or into a directory another user owns, can be
+    steered anywhere by that user (SR-6). The link is judged with lstat, so it is never followed.
+    """
+    if euid != 0:
+        return
+    base = env_path.parent
+    for path in (
+        env_path,
+        base,
+        base / "deploy",
+        base / "deploy" / "postgres",
+        base / CONF_RELATIVE.parent,
+        base / CONF_RELATIVE,
+    ):
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            continue  # absent: the checks that follow report it in their own words
+        if stat.S_ISLNK(info.st_mode):
+            raise EnvRefused(
+                f"{path} is a symbolic link; refusing to write through it as root."
+                " Nothing was written."
+            )
+        if info.st_uid != 0:
+            raise EnvRefused(
+                f"{path} is not owned by root (uid {info.st_uid}); refusing to write there as"
+                " root. Nothing was written."
+            )
+
+
+def warn_if_shared(env_path: Path) -> None:
+    """SR-11: if st_mode & 0o077, print to stderr
+    'auto-size: warning: .env can be read by users other than its owner (chmod 600 .env)'
+    -- the file name only, never a value. The exit code does not change."""
+    if env_path.stat().st_mode & 0o077:
+        print(
+            f"auto-size: warning: {env_path.name} can be read by users other than its owner"
+            f" (chmod 600 {env_path.name})",
+            file=sys.stderr,
+        )
+
+
+def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str], euid: int) -> int:
     host = read_host(args.host_cpus, args.host_memory_gb)
+    check_trusted(env_path, euid)
     if not env_path.is_file():
         raise EnvRefused(
             f"{env_path.name} does not exist; create it first: cp .env.example .env."
             " Nothing was created."
         )
+    warn_if_shared(env_path)
     conf_dir = env_path.parent / CONF_RELATIVE.parent
     if not conf_dir.is_dir():
         raise EnvRefused(
@@ -846,16 +901,10 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
         print(f"and {conf_dir / CONF_RELATIVE.name}:\n{plan.conf}")
         return EXIT_OK
     target = env_path.resolve()  # the link is followed only here, to write the real file
-    try:
-        write_pair(
-            (conf_dir / CONF_RELATIVE.name, plan.conf, _PLAIN_CONF_MODE),
-            (target, new_text, stat.S_IMODE(target.stat().st_mode)),
-        )
-    except OSError as exc:  # staging failed: nothing was replaced yet
-        raise EnvRefused(
-            f"cannot write {_real(exc, env_path)} ({exc.strerror or exc})."
-            " Nothing changed; fix the cause and re-run."
-        ) from None
+    write_pair(
+        (conf_dir / CONF_RELATIVE.name, plan.conf, _PLAIN_CONF_MODE),
+        (target, new_text, stat.S_IMODE(target.stat().st_mode)),
+    )
     print(
         f"\nwrote {env_path} (auto-size block) and {conf_dir / CONF_RELATIVE.name}\n"
         "next: docker compose up -d\n"
@@ -864,12 +913,21 @@ def _run(args: argparse.Namespace, env_path: Path, environ: Mapping[str, str]) -
     return EXIT_OK
 
 
-def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+    euid: int | None = None,
+) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     env_path = Path(args.env_file).absolute() if args.env_file else REPO_ROOT / ".env"
     try:
-        return _run(args, env_path, os.environ if environ is None else environ)
+        return _run(
+            args,
+            env_path,
+            os.environ if environ is None else environ,
+            os.geteuid() if euid is None else euid,
+        )
     except UsageError as exc:
         parser.error(str(exc))
     except Refused as exc:

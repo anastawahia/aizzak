@@ -59,6 +59,7 @@ and scraped by nothing (`د-17`).
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -328,3 +329,105 @@ def test_these_guards_can_actually_fail() -> None:
     assert _nginx_backlog("    listen 443 ssl;\n") == _NGINX_DEFAULT_BACKLOG
     assert _nginx_backlog("    listen 443 ssl backlog=8192;\n") == 8192
     assert _nginx_backlog("    listen 80 backlog=8192;\n    listen 443 ssl;\n") == 8192
+
+
+# ── --persist: the same table, kept across a reboot (server-gpu-plan.md 5.2) ─
+
+
+def _run_persist(tmp_root: Path, sysctl_d: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "SYSCTL_ROOT": str(tmp_root),
+            "SYSCTL_D_DIR": str(sysctl_d),
+        },
+        check=False,
+    )
+
+
+def test_persist_writes_one_file_generated_from_the_knob_table(tmp_path: Path) -> None:
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "0"))
+    sysctl_d = tmp_path / "sysctl.d"
+    sysctl_d.mkdir()
+
+    result = _run_persist(root, sysctl_d, "--apply", "--persist")
+
+    assert result.returncode == 0, result.stderr
+    written = sorted(path.name for path in sysctl_d.iterdir())
+    assert written == ["90-aizzak.conf"], written
+    body = (sysctl_d / "90-aizzak.conf").read_text(encoding="utf-8").splitlines()
+    assert body[0].startswith("# Written by deploy/host-tuning.sh --persist")
+    assert body[1:] == [f"{knob} = 1" for knob in _script_knobs()]
+    assert ((sysctl_d / "90-aizzak.conf").stat().st_mode & 0o777) == 0o644
+    assert "written" in result.stdout
+
+
+def test_persist_twice_changes_neither_a_byte_nor_the_mtime(tmp_path: Path) -> None:
+    """AC-3.5: the repeat is a no-op, shown by hash and by modification time."""
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "0"))
+    sysctl_d = tmp_path / "sysctl.d"
+    sysctl_d.mkdir()
+    target = sysctl_d / "90-aizzak.conf"
+
+    _run_persist(root, sysctl_d, "--persist")
+    before = (hashlib.sha256(target.read_bytes()).hexdigest(), target.stat().st_mtime_ns)
+    second = _run_persist(root, sysctl_d, "--persist", "--apply")
+
+    assert second.returncode == 0, second.stderr
+    assert (hashlib.sha256(target.read_bytes()).hexdigest(), target.stat().st_mtime_ns) == before
+    assert re.search(r"^persist .*90-aizzak\.conf\s+ok$", second.stdout, re.M), second.stdout
+
+
+def test_check_persist_reports_a_missing_or_different_file_as_drift(tmp_path: Path) -> None:
+    """AC-7.6 on the local side: `--check --persist` fails while the file is
+    absent or differs, and passes once `--apply --persist` has written it."""
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "1"))
+    sysctl_d = tmp_path / "sysctl.d"
+    sysctl_d.mkdir()
+    target = sysctl_d / "90-aizzak.conf"
+
+    missing = _run_persist(root, sysctl_d, "--check", "--persist")
+    assert missing.returncode == 1, missing.stdout
+    assert not target.exists(), "--check wrote the persist file"
+
+    _run_persist(root, sysctl_d, "--apply", "--persist")
+    assert _run_persist(root, sysctl_d, "--persist", "--check").returncode == 0
+
+    target.write_text("vm.overcommit_memory = 0\n", encoding="utf-8")
+    different = _run_persist(root, sysctl_d, "--check", "--persist")
+    assert different.returncode == 1, different.stdout
+    assert target.read_text(encoding="utf-8") == "vm.overcommit_memory = 0\n"
+
+
+def test_without_persist_the_script_never_touches_the_sysctl_d_directory(tmp_path: Path) -> None:
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "0"))
+    sysctl_d = tmp_path / "sysctl.d"
+    sysctl_d.mkdir()
+
+    assert _run_persist(root, sysctl_d).returncode == 0
+    assert list(sysctl_d.iterdir()) == []
+    assert _run_persist(root, sysctl_d, "--check").returncode == 0
+
+
+def test_persist_failure_exits_3_and_leaves_no_temp_file(tmp_path: Path) -> None:
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "1"))
+    missing_dir = tmp_path / "does-not-exist"
+
+    result = _run_persist(root, missing_dir, "--apply", "--persist")
+
+    assert result.returncode == 3, result.stderr
+    assert "need root" in result.stderr
+
+
+def test_unknown_arguments_exit_2_in_any_order(tmp_path: Path) -> None:
+    root = _fake_host(tmp_path, **dict.fromkeys(_script_knobs(), "1"))
+    sysctl_d = tmp_path / "sysctl.d"
+    sysctl_d.mkdir()
+
+    assert _run_persist(root, sysctl_d, "--persist", "--bogus").returncode == 2
+    assert _run_persist(root, sysctl_d, "--bogus").returncode == 2
+    assert _run_persist(root, sysctl_d, "--persist", "--check").returncode == 1
+    assert _run_persist(root, sysctl_d, "--check", "--persist").returncode == 1

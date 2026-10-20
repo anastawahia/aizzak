@@ -89,3 +89,8 @@ deploy/load/seeds/
 # a full copy of every tenant's data, per drill. `drill.json` inside each is
 # the part worth keeping, and it is small enough to paste.
 deploy/backup/results/
+
+# Release bundles (deploy/release/bundle.sh writes aizzak-<VERSION>.tar.gz into the current
+# directory by default, and a hidden temp file beside it while it works).
+/aizzak-*.tar.gz
+/.aizzak-*.tar.gz.tmp.*
