@@ -165,6 +165,7 @@ read_digests() {
   local line ref digest sha extra prefix want seen
   [[ -f $DIGESTS && -r $DIGESTS ]] || die 5 "cannot read the digests file: $DIGESTS"
   mapfile -t lines <"$DIGESTS" || die 5 "cannot read the digests file: $DIGESTS"
+  lines=("${lines[@]%$'\r'}")  # a file saved with CRLF line endings is read as if with LF
   ((${#lines[@]} == 3)) \
     || die 5 "the digests file must have exactly 3 lines (app, embedding, embedding-cuda); it has ${#lines[@]}"
   for line in "${lines[@]}"; do
@@ -293,6 +294,13 @@ publish() {
 }
 
 main() {
+  local arg
+  for arg in "$@"; do  # --help works anywhere, before any check of the repository
+    if [[ $arg == -h || $arg == --help ]]; then
+      usage
+      exit 0
+    fi
+  done
   require_tools
   require_repo_root
   parse_args "$@"

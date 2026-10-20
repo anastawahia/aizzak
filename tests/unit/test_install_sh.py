@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -182,6 +182,156 @@ def _again(base: Flow, tmp: Path, *, edit: bool, flags: tuple[str, ...] = BASE_F
 
 
 @dataclass
+class Out:
+    """A finished scenario: the machine it ran on and what each run printed."""
+
+    h: Harness
+    procs: list[subprocess.CompletedProcess[str]]
+    scratch: Path | None = None
+
+    @property
+    def proc(self) -> subprocess.CompletedProcess[str]:
+        return self.procs[-1]
+
+
+def _boot_out(
+    staged: Harness,
+    tmp: Path,
+    *,
+    env: dict[str, str] | None = None,
+    deadline: int = 20,
+    edit: Callable[[Harness], None] | None = None,
+    reruns: int = 0,
+    scratch: bool = False,
+) -> Out:
+    """Step 6 on a copy of the staged tree (the rest of the install is stubbed out)."""
+    h = clone_harness(staged, tmp / "m")
+    if edit is not None:
+        edit(h)
+    where: Path | None = None
+    run_env = dict(env or {})
+    if scratch:
+        where = tmp / "scratch"
+        where.mkdir()
+        run_env["TMPDIR"] = str(where)
+    procs = [boot_run(h, env=run_env, deadline=deadline)]
+    procs += [boot_run(h) for _ in range(reruns)]
+    return Out(h, procs, where)
+
+
+def _converged_out(
+    base: Flow, tmp: Path, *, env: dict[str, str] | None = None, port: str | None = None
+) -> Out:
+    h = clone_harness(base.h, tmp / "m")
+    if port:
+        path = env_file(h)
+        path.write_text(path.read_text().replace("HOST_PORT_HTTP=80", f"HOST_PORT_HTTP={port}"))
+    return Out(h, [boot_run(h, env=env)])
+
+
+def _refused_out(base: Flow, tmp: Path, args: list[str], gpu: bool) -> Out:
+    h = clone_harness(base.h, tmp / "m")
+    if gpu:
+        set_preflight(h.root, 0)
+    return Out(h, [run_steps(h, *args)])
+
+
+def _step_out(staged: Harness, tmp: Path, code: str, env: dict[str, str]) -> Out:
+    h = clone_harness(staged, tmp / "m")
+    return Out(h, [run_function(h, code, *FLOW_ARGS, env=env)])
+
+
+def _size_out(
+    tmp: Path,
+    *flags: str,
+    auto_rc: int | None = None,
+    budget_rc: int | None = None,
+    env: dict[str, str] | None = None,
+) -> Out:
+    h = make_harness(tmp / "m")
+    log = tmp / "stubs.log"
+    if auto_rc is not None:
+        stub_tool(h.root, "deploy/auto_size.py", auto_rc, log)
+    if budget_rc is not None:
+        stub_tool(h.root, "deploy/resource-budget.sh", budget_rc, log)
+    return Out(h, [run_steps(h, *FLOW_ARGS, *flags, env=env)], log)
+
+
+def _damage_key(h: Harness) -> None:
+    path = env_file(h)
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace("# <<< aizzak install <<<", "VAULT_SECRET_ID=junk\n# <<< aizzak install <<<")
+    )
+
+
+_OTHER_DOMAIN = ["--domain", "other.com", "--firebase-project", "demo-proj", *BASE_FLAGS]
+_OTHER_FIREBASE = ["--domain", "example.com", "--firebase-project", "other-proj", *BASE_FLAGS]
+# the base is a CPU install without monitoring: a GPU, or monitoring, is another install
+_REFUSED = {
+    "MINIO_PUBLIC_ENDPOINT": (_OTHER_DOMAIN, False),
+    "FIREBASE_PROJECT_ID": (_OTHER_FIREBASE, False),
+    "size": ([*FLOW_ARGS, *BASE_FLAGS, "--size", "medium"], False),
+    "COMPOSE_FILE": ([*FLOW_ARGS, *BASE_FLAGS], True),
+    "COMPOSE_PROFILES": ([*FLOW_ARGS, "--cpu"], False),
+}
+_CI_COMPOSE = "docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml"
+_PROBES = (
+    'prepare "$@"; MODE=gpu; step_pull >/dev/null; step_verify_images',
+    'prepare "$@"; MODE=gpu; step_pull >/dev/null',
+)
+
+
+def _jobs(staged_run: Future[Harness], base_run: Future[Flow]) -> dict[str, Callable[[Path], Out]]:
+    """Every short scenario the tests below look at. They are separate processes with their own
+    directories, so they run side by side (NFR-10); a test only reads what its scenario printed."""
+
+    def staged() -> Harness:
+        return staged_run.result()  # waits for the tree this scenario starts from
+
+    def base() -> Flow:
+        return base_run.result()
+
+    jobs: dict[str, Callable[[Path], Out]] = {
+        "mint-empty": lambda t: _boot_out(staged(), t, env={"FAKE_MINT_OUTPUT": ""}),
+        "mint-junk": lambda t: _boot_out(staged(), t, env={"FAKE_MINT_OUTPUT": "not-a-uuid"}),
+        "mint-fails": lambda t: _boot_out(staged(), t, env={"FAKE_MINT_RC": "1"}, scratch=True),
+        "damaged-key": lambda t: _boot_out(staged(), t, edit=_damage_key),
+        "migrate-once": lambda t: _boot_out(
+            staged(), t, env={"FAKE_FAULTS": "migrate:exit=1,times=1"}, reruns=1
+        ),
+        "migrate-always": lambda t: _boot_out(
+            staged(), t, env={"FAKE_FAULTS": "migrate:exit=1,times=9"}
+        ),
+        "ollama": lambda t: _boot_out(
+            staged(), t, env={"FAKE_FAULTS": "ollama-pull:exit=1,times=9"}
+        ),
+        "metrics": lambda t: _boot_out(staged(), t, env={"FAKE_PG_RC": "1"}),
+        "ready": lambda t: _converged_out(base(), t, port="20080"),
+        "502": lambda t: _converged_out(base(), t, env={"FAKE_CURL": "health=502"}),
+        "smoke": lambda t: _converged_out(base(), t, env={"FAKE_SMOKE_RC": "1"}),
+        "bad-digest": lambda t: _step_out(
+            staged(), t, _PROBES[0], {"FAKE_ALL_IMAGES": "1", "FAKE_BAD_DIGEST_FOR": "aizzak"}
+        ),
+        "pull-fails": lambda t: _step_out(staged(), t, _PROBES[1], {"FAKE_PULL_FAIL": "postgres"}),
+        "gen-1": lambda t: _size_out(t, auto_rc=1),
+        "gen-2": lambda t: _size_out(t, auto_rc=2),
+        "gen-3": lambda t: _size_out(t, auto_rc=3),
+        "budget-monitored": lambda t: _size_out(t, "--size", "medium", budget_rc=1),
+        "budget-ci-env": lambda t: _size_out(
+            t,
+            "--size",
+            "medium",
+            budget_rc=1,
+            env={"COMPOSE_FILE": _CI_COMPOSE, "SIZES_DIR": "/evil"},
+        ),
+    }
+    for key, (args, gpu) in _REFUSED.items():
+        jobs[f"refused-{key}"] = lambda t, a=args, g=gpu: _refused_out(base(), t, a, g)
+    return jobs
+
+
+@dataclass
 class Runs:
     gpu: Flow
     cpu: Flow
@@ -189,19 +339,23 @@ class Runs:
     staged: Harness
     repeat: Repeat
     plain: Repeat
+    ran: dict[str, Out]
 
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
-    """Every full run the tests below share, started together: they are separate processes, so
-    they overlap (NFR-10). The two repeats need the first run, so they follow it."""
+    """Every run the tests below look at, started together. They are separate processes in
+    separate directories, so they overlap (NFR-10); the tests only read the results."""
     new = tmp_path_factory.mktemp
     compose_model()  # cached once, before any thread asks
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=min(10, os.cpu_count() or 4)) as pool:
         gpu_job = pool.submit(_gpu, new("gpu"))
         cpu_job = pool.submit(_cpu, new("cpu"))
         base_job = pool.submit(_cpu_auto, new("base"))
         staged_job = pool.submit(_stage, new("staged"))
+        jobs = _jobs(staged_job, base_job)
+        dirs = {name: new(name.replace(":", "_")) for name in jobs}
+        futures = {name: pool.submit(job, dirs[name]) for name, job in jobs.items()}
         base = base_job.result()
         repeat_job = pool.submit(_again, base, new("repeat"), edit=True)
         plain_job = pool.submit(_again, base, new("plain"), edit=False)
@@ -212,7 +366,13 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
             staged_job.result(),
             repeat_job.result(),
             plain_job.result(),
+            {name: future.result() for name, future in futures.items()},
         )
+
+
+@pytest.fixture
+def ran(runs: Runs) -> dict[str, Out]:
+    return runs.ran
 
 
 @pytest.fixture
@@ -240,11 +400,6 @@ def plain_repeat(runs: Runs) -> Repeat:
     return runs.plain
 
 
-@pytest.fixture
-def booting(runs: Runs, tmp_path: Path) -> Harness:
-    return clone_harness(runs.staged, tmp_path)
-
-
 # ── the pieces of the script that need no run ───────────────────────────────
 
 
@@ -254,11 +409,13 @@ def test_the_script_is_valid_bash() -> None:
 
 def test_help_prints_the_usage_and_exits_0_without_root(tmp_path: Path) -> None:
     h = make_harness(tmp_path)
+    before = snapshot(h.root)
     done = run_entry(h, "--help")
     assert done.returncode == 0, done.stderr
     for word in ("--domain", "--firebase-project", "--size", "--cpu", "--no-monitoring"):
         assert word in done.stdout
-    assert snapshot(h.root) == snapshot(h.root)
+    assert snapshot(h.root) == before
+    assert h.calls() == []
 
 
 def _table(h: Harness, function: str, values: list[str]) -> list[bool]:
@@ -933,68 +1090,36 @@ def test_the_ttl_constant_equals_the_one_vault_bootstrap_sets() -> None:
 # ── AC-4.7: a repeat that asks for something else is refused ─────────────────
 
 
-_OTHER_DOMAIN = ["--domain", "other.com", "--firebase-project", "demo-proj", *BASE_FLAGS]
-_OTHER_FIREBASE = ["--domain", "example.com", "--firebase-project", "other-proj", *BASE_FLAGS]
-
-
-@pytest.mark.parametrize(
-    "args, gpu, fragment",
-    [
-        (_OTHER_DOMAIN, False, "MINIO_PUBLIC_ENDPOINT"),
-        (_OTHER_FIREBASE, False, "FIREBASE_PROJECT_ID"),
-        ([*FLOW_ARGS, "--no-monitoring", "--size", "medium"], False, "size"),
-        # the base is a CPU install without monitoring: a GPU, or monitoring, is another install
-        ([*FLOW_ARGS, *BASE_FLAGS], True, "COMPOSE_FILE"),
-        ([*FLOW_ARGS, "--cpu"], False, "COMPOSE_PROFILES"),
-    ],
-)
+@pytest.mark.parametrize("fragment", list(_REFUSED))
 def test_changing_an_input_after_install_is_refused_naming_the_key(
-    repeat: Repeat, tmp_path: Path, args: list[str], gpu: bool, fragment: str
+    ran: dict[str, Out], base_flow: Flow, fragment: str
 ) -> None:
-    h = clone_harness(repeat.h, tmp_path)
-    if gpu:
-        set_preflight(h.root, 0)
-    before = (sha(env_file(h)), mode(env_file(h)))
-    done = run_steps(h, *args)
-    assert done.returncode == 30, (done.stdout[-600:], done.stderr)
-    assert fragment in done.stderr
-    assert (sha(env_file(h)), mode(env_file(h))) == before
+    out = ran[f"refused-{fragment}"]
+    assert out.proc.returncode == 30, (out.proc.stdout[-600:], out.proc.stderr)
+    assert fragment in out.proc.stderr
+    assert (sha(env_file(out.h)), mode(env_file(out.h))) == (
+        sha(env_file(base_flow.h)),
+        mode(env_file(base_flow.h)),
+    )
 
 
 # ── AC-5.1 / AC-5.2 / AC-5.3: the size ───────────────────────────────────────
 
 
-def _size_run(
-    tmp: Path,
-    *flags: str,
-    auto_rc: int | None = None,
-    budget_rc: int | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[Harness, subprocess.CompletedProcess[str], Path]:
-    h = make_harness(tmp)
-    log = tmp / "stubs.log"
-    if auto_rc is not None:
-        stub_tool(h.root, "deploy/auto_size.py", auto_rc, log)
-    if budget_rc is not None:
-        stub_tool(h.root, "deploy/resource-budget.sh", budget_rc, log)
-    done = run_steps(h, *FLOW_ARGS, *flags, env=env)
-    return h, done, log
-
-
-def _stub_calls(log: Path) -> list[dict[str, object]]:
-    if not log.exists():
+def _stub_calls(log: Path | None) -> list[dict[str, object]]:
+    if log is None or not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines()]
 
 
 @pytest.mark.parametrize("rc, code", [(1, 40), (2, 41), (3, 41)])
 def test_the_generator_exit_codes_map_to_40_and_41_before_any_pull(
-    tmp_path: Path, rc: int, code: int
+    ran: dict[str, Out], rc: int, code: int
 ) -> None:
-    h, done, log = _size_run(tmp_path, auto_rc=rc)
-    assert done.returncode == code, (done.stdout[-800:], done.stderr)
-    assert [c for c in h.docker_calls() if c[:1] == ["pull"]] == []
-    call = _stub_calls(log)[0]
+    out = ran[f"gen-{rc}"]
+    assert out.proc.returncode == code, (out.proc.stdout[-800:], out.proc.stderr)
+    assert [c for c in out.h.docker_calls() if c[:1] == ["pull"]] == []
+    call = _stub_calls(out.scratch)[0]
     assert call["argv"][:6] == [
         "--role",
         "server",
@@ -1051,28 +1176,24 @@ def test_the_named_budget_is_called_with_the_size_and_without_monitoring(cpu_flo
     assert calls and calls[0]["argv"] == ["--size", "medium", "--without-monitoring"]
 
 
-def test_with_monitoring_the_budget_gets_no_without_flag(tmp_path: Path) -> None:
-    _, done, log = _size_run(tmp_path, "--size", "medium", budget_rc=1)
-    assert done.returncode == 40
-    assert _stub_calls(log)[0]["argv"] == ["--size", "medium"]
+def test_with_monitoring_the_budget_gets_no_without_flag(ran: dict[str, Out]) -> None:
+    out = ran["budget-monitored"]
+    assert out.proc.returncode == 40
+    assert _stub_calls(out.scratch)[0]["argv"] == ["--size", "medium"]
 
 
 def test_a_shell_exported_compose_file_does_not_reach_the_budget_and_stops_before_pull(
-    tmp_path: Path,
+    ran: dict[str, Out],
 ) -> None:
-    ci = "docker-compose.yml:docker-compose.test.yml:docker-compose.build.yml"
-    h, done, log = _size_run(
-        tmp_path, "--size", "medium", budget_rc=1, env={"COMPOSE_FILE": ci, "SIZES_DIR": "/evil"}
-    )
-    assert done.returncode == 40, done.stderr
-    call = _stub_calls(log)[0]
-    env = call["env"]
+    out = ran["budget-ci-env"]
+    assert out.proc.returncode == 40, out.proc.stderr
+    env = _stub_calls(out.scratch)[0]["env"]
     assert isinstance(env, dict)
     assert env["COMPOSE_FILE"] == "docker-compose.yml"
     assert env["GPU_COMPOSE_FILE"] == "docker-compose.gpu.yml"
     assert env["SIZES_DIR"] == "deploy/sizes"
-    assert "COMPOSE_FILE" in done.stdout
-    assert [c for c in h.docker_calls() if c[:1] == ["pull"]] == []
+    assert "COMPOSE_FILE" in out.proc.stdout
+    assert [c for c in out.h.docker_calls() if c[:1] == ["pull"]] == []
 
 
 # ── AC-6.1 ... AC-6.4: images and the first boot ─────────────────────────────
@@ -1123,68 +1244,55 @@ def test_the_key_is_minted_inside_vault_and_written_once(gpu_flow: Flow) -> None
     assert mode(env_file(gpu_flow.h)) == 0o644
 
 
-@pytest.mark.parametrize("output", ["", "not-a-uuid"])
+@pytest.mark.parametrize("scenario", ["mint-empty", "mint-junk"])
 def test_a_key_that_is_not_a_uuid_stops_with_61_before_any_carrier(
-    booting: Harness, output: str
+    ran: dict[str, Out], scenario: str
 ) -> None:
-    done = boot_run(booting, env={"FAKE_MINT_OUTPUT": output})
-    calls = booting.docker_calls()
-    assert done.returncode == 61, (done.stdout[-800:], done.stderr)
-    assert "not a UUID" in done.stderr
-    block = env_file(booting).read_text(encoding="utf-8").split("# >>> aizzak install >>>")[1]
+    out = ran[scenario]
+    calls = out.h.docker_calls()
+    assert out.proc.returncode == 61, (out.proc.stdout[-800:], out.proc.stderr)
+    assert "not a UUID" in out.proc.stderr
+    block = env_file(out.h).read_text(encoding="utf-8").split("# >>> aizzak install >>>")[1]
     assert "VAULT_SECRET_ID=" not in block, "a key that is not a UUID was written"
     assert [c for c in calls if "up" in c and "minio-bootstrap" in c] == []
     assert [c for c in calls if "up" in c and "migrate" in c] == []
 
 
 def test_a_mint_failure_stops_with_61_hides_the_token_and_leaves_no_file(
-    booting: Harness, tmp_path: Path
+    ran: dict[str, Out],
 ) -> None:
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    done = boot_run(booting, env={"FAKE_MINT_RC": "1", "TMPDIR": str(scratch)})
-    assert done.returncode == 61
-    assert VAULT_TOKEN not in done.stdout + done.stderr
-    assert "<redacted>" in done.stderr
-    assert list(scratch.iterdir()) == [], "the file holding Vault's stderr was left behind"
-
-
-def test_a_damaged_key_in_env_is_never_replaced(booting: Harness) -> None:
-    path = env_file(booting)
-    text = path.read_text(encoding="utf-8")
-    path.write_text(
-        text.replace("# <<< aizzak install <<<", "VAULT_SECRET_ID=junk\n# <<< aizzak install <<<")
+    out = ran["mint-fails"]
+    assert out.proc.returncode == 61
+    assert VAULT_TOKEN not in out.proc.stdout + out.proc.stderr
+    assert "<redacted>" in out.proc.stderr
+    assert out.scratch is not None and list(out.scratch.iterdir()) == [], (
+        "the file holding Vault's stderr was left behind"
     )
-    before = sha(path)
-    done = boot_run(booting)
-    assert done.returncode == 61 and "damaged" in done.stderr
-    assert sha(path) == before
-    assert not [c for c in booting.docker_calls() if "exec" in c and "vault" in c]
 
 
-def test_a_digest_that_is_not_the_one_in_version_stops_with_51_and_no_up(booting: Harness) -> None:
-    done = run_function(
-        booting,
-        'prepare "$@"; MODE=gpu; step_pull >/dev/null; step_verify_images',
-        *FLOW_ARGS,
-        env={"FAKE_ALL_IMAGES": "1", "FAKE_BAD_DIGEST_FOR": "aizzak"},
-    )
-    assert done.returncode == 51, (done.stdout[-800:], done.stderr)
-    assert "anastawahia/aizzak@sha256:" in done.stderr
-    assert digest_of("app") in done.stderr and "f" * 64 in done.stderr
-    assert [c for c in booting.docker_calls() if "up" in c] == []
+def test_a_damaged_key_in_env_is_never_replaced(ran: dict[str, Out]) -> None:
+    out = ran["damaged-key"]
+    assert out.proc.returncode == 61 and "damaged" in out.proc.stderr
+    assert "VAULT_SECRET_ID=junk" in env_file(out.h).read_text(encoding="utf-8")
+    assert len(re.findall(r"(?m)^VAULT_SECRET_ID=", env_file(out.h).read_text())) == 1
+    assert not [c for c in out.h.docker_calls() if "exec" in c and "vault" in c]
 
 
-def test_a_failed_pull_stops_with_50(booting: Harness) -> None:
-    done = run_function(
-        booting,
-        'prepare "$@"; MODE=gpu; step_pull >/dev/null',
-        *FLOW_ARGS,
-        env={"FAKE_PULL_FAIL": "postgres"},
-    )
-    assert done.returncode == 50, done.stderr
-    assert "postgres" in done.stderr
-    assert [c for c in booting.docker_calls() if "up" in c] == []
+def test_a_digest_that_is_not_the_one_in_version_stops_with_51_and_no_up(
+    ran: dict[str, Out],
+) -> None:
+    out = ran["bad-digest"]
+    assert out.proc.returncode == 51, (out.proc.stdout[-800:], out.proc.stderr)
+    assert "anastawahia/aizzak@sha256:" in out.proc.stderr
+    assert digest_of("app") in out.proc.stderr and "f" * 64 in out.proc.stderr
+    assert [c for c in out.h.docker_calls() if "up" in c] == []
+
+
+def test_a_failed_pull_stops_with_50(ran: dict[str, Out]) -> None:
+    out = ran["pull-fails"]
+    assert out.proc.returncode == 50, out.proc.stderr
+    assert "postgres" in out.proc.stderr
+    assert [c for c in out.h.docker_calls() if "up" in c] == []
 
 
 def test_only_missing_images_are_pulled_and_never_a_compose_level_pull(
@@ -1203,15 +1311,15 @@ def test_only_missing_images_are_pulled_and_never_a_compose_level_pull(
     assert [c for c in again.docker_calls() if c[:2] == ["image", "inspect"]]
 
 
-def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(booting: Harness) -> None:
-    first = boot_run(booting, env={"FAKE_FAULTS": "migrate:exit=1,times=1"})
+def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(
+    ran: dict[str, Out],
+) -> None:
+    out = ran["migrate-once"]
+    first, second = out.procs
     assert first.returncode == 60, (first.stdout[-600:], first.stderr)
     assert "migrate" in first.stderr and "docker compose logs migrate" in first.stderr
-    secrets_after_first = secret_values(booting)
-    second = boot_run(booting)
     assert second.returncode == 0, (second.stdout[-800:], second.stderr)
-    assert secret_values(booting) == secrets_after_first
-    mints = [c for c in booting.docker_calls() if "exec" in c and "vault" in c]
+    mints = [c for c in out.h.docker_calls() if "exec" in c and "vault" in c]
     assert len(mints) == 1, "the second run minted a second key"
 
 
@@ -1231,25 +1339,20 @@ def test_a_service_that_never_becomes_healthy_is_named(tmp_path: Path) -> None:
 
 
 def test_an_ollama_pull_failure_stops_the_install_and_says_what_chat_would_do(
-    booting: Harness,
+    ran: dict[str, Out],
 ) -> None:
-    done = boot_run(booting, env={"FAKE_FAULTS": "ollama-pull:exit=1,times=9"})
-    assert done.returncode == 60, (done.stdout[-600:], done.stderr)
-    assert "ollama-pull" in done.stderr
-    assert "chat would answer 502" in done.stderr and "re-run sudo ./install.sh" in done.stderr
+    proc = ran["ollama"].proc
+    assert proc.returncode == 60, (proc.stdout[-600:], proc.stderr)
+    assert "ollama-pull" in proc.stderr
+    assert "chat would answer 502" in proc.stderr and "re-run sudo ./install.sh" in proc.stderr
 
 
-def test_the_metrics_exporter_step_failing_stops_with_60(booting: Harness) -> None:
-    done = boot_run(booting, env={"FAKE_PG_RC": "1"})
-    assert done.returncode == 60 and "metrics_exporter" in done.stderr
+def test_the_metrics_exporter_step_failing_stops_with_60(ran: dict[str, Out]) -> None:
+    proc = ran["metrics"].proc
+    assert proc.returncode == 60 and "metrics_exporter" in proc.stderr
 
 
 # ── AC-7.1: the checks ───────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def converged(base_flow: Flow, tmp_path: Path) -> Harness:
-    return clone_harness(base_flow.h, tmp_path)
 
 
 def _curl_urls(h: Harness) -> list[str]:
@@ -1257,33 +1360,31 @@ def _curl_urls(h: Harness) -> list[str]:
 
 
 def test_a_healthy_stack_is_ready_and_probes_the_port_compose_published(
-    converged: Harness,
+    ran: dict[str, Out],
 ) -> None:
-    path = env_file(converged)
-    path.write_text(path.read_text().replace("HOST_PORT_HTTP=80", "HOST_PORT_HTTP=20080"))
-    done = boot_run(converged)
-    assert done.returncode == 0, done.stderr
-    assert "install: READY" in done.stdout
-    assert _curl_urls(converged)[:2] == [
+    out = ran["ready"]
+    assert out.proc.returncode == 0, out.proc.stderr
+    assert "install: READY" in out.proc.stdout
+    assert _curl_urls(out.h)[:2] == [
         "http://127.0.0.1:20080/health",
         "http://127.0.0.1:20080/health/ready",
     ]
-    smoke = [c for c in converged.docker_calls() if "exec" in c and "app" in c]
+    smoke = [c for c in out.h.docker_calls() if "exec" in c and "app" in c]
     assert smoke
     assert smoke[-1][-2:] == ["python", "/app/deploy/smoke/stack_smoke.py"]
 
 
-def test_a_502_stops_with_70_and_the_report_says_not_ready(converged: Harness) -> None:
-    done = boot_run(converged, env={"FAKE_CURL": "health=502"})
-    assert done.returncode == 70, done.stderr
-    assert "NOT READY" in done.stdout and "failed: /health" in done.stdout
-    assert "install: READY" not in done.stdout
+def test_a_502_stops_with_70_and_the_report_says_not_ready(ran: dict[str, Out]) -> None:
+    proc = ran["502"].proc
+    assert proc.returncode == 70, proc.stderr
+    assert "NOT READY" in proc.stdout and "failed: /health" in proc.stdout
+    assert "install: READY" not in proc.stdout
 
 
-def test_a_failing_smoke_stops_with_71(converged: Harness) -> None:
-    done = boot_run(converged, env={"FAKE_SMOKE_RC": "1"})
-    assert done.returncode == 71, done.stderr
-    assert "NOT READY" in done.stdout and "failed: stack_smoke" in done.stdout
+def test_a_failing_smoke_stops_with_71(ran: dict[str, Out]) -> None:
+    proc = ran["smoke"].proc
+    assert proc.returncode == 71, proc.stderr
+    assert "NOT READY" in proc.stdout and "failed: stack_smoke" in proc.stdout
 
 
 # ── AC-7.2: the report ───────────────────────────────────────────────────────
@@ -1752,32 +1853,22 @@ def test_env_tool_refuses_an_unknown_subcommand(tool: Harness) -> None:
 
 
 @pytest.mark.parametrize(
-    "fault, code",
-    [
-        ({"FAKE_FAULTS": "migrate:exit=1,times=9"}, 60),  # the key is already minted and in .env
-        ({"FAKE_PG_RC": "1"}, 60),  # the step whose stdin carries a password
-        ({"FAKE_MINT_RC": "1"}, 61),  # Vault's own stderr, which may name the token
-    ],
-    ids=["migrate-fails", "metrics-exporter-fails", "mint-fails"],
+    "scenario, code",
+    [("migrate-always", 60), ("metrics", 60), ("mint-fails", 61)],
 )
 def test_no_secret_is_printed_or_passed_on_a_failure_path(
-    booting: Harness, fault: dict[str, str], code: int
+    ran: dict[str, Out], scenario: str, code: int
 ) -> None:
     """AC-4.2 on the paths where the script dies: the 13 passwords, the Vault token and the minted
     key must be absent from the output, every argument and every variable a call received."""
-    done = boot_run(booting, env=fault)
-    assert done.returncode == code, (done.stdout[-600:], done.stderr)
-    seen = everything_visible(booting, done)
-    for key, value in secret_values(booting).items():
+    out = ran[scenario]
+    assert out.proc.returncode == code, (out.proc.stdout[-600:], out.proc.stderr)
+    seen = everything_visible(out.h, out.proc)
+    for key, value in secret_values(out.h).items():
         assert value not in seen, key
     assert VAULT_TOKEN not in seen and SECRET_ID not in seen
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-1 (minor): step_checks_host finds the install marker with grep -x, which a CRLF "
-    ".env never matches, so a repeat is judged a first install (disk check, exit 12)",
-)
 def test_a_crlf_env_still_counts_as_an_installed_server(tmp_path: Path) -> None:
     h = make_harness(tmp_path)
     assert _step_env(h, "cpu").returncode == 0
@@ -1789,12 +1880,6 @@ def test_a_crlf_env_still_counts_as_an_installed_server(tmp_path: Path) -> None:
     assert "FIRST=0" in done.stdout, done.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-2 (minor, security): atomic_write creates the temp file with the umask mode and "
-    "copies the existing mode only after fsync, so a .env already set to 0600 is briefly "
-    "rewritten as a 0644 copy holding every password (install.sh atomic_write)",
-)
 def test_a_0600_env_is_never_rewritten_through_a_more_open_temp_file(
     tool: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1814,3 +1899,17 @@ def test_a_0600_env_is_never_rewritten_through_a_more_open_temp_file(
     assert seen, "the spy never saw the temp file"
     assert seen == [0] * len(seen), "the temp file was group/world readable while it held secrets"
     assert mode(path) == 0o600
+
+
+def test_a_stale_temp_file_from_a_killed_run_is_removed_by_the_next_write(
+    installed: tuple[Harness, Path],
+) -> None:
+    """QA-3: a `.install-tmp-<pid>` left by `kill -9` would keep a readable copy of the secrets."""
+    h, path = installed
+    stale = path.parent / ".install-tmp-12345"
+    stale.write_text("SECRETS\n", encoding="utf-8")
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    assert not stale.exists()
+    assert list(path.parent.glob(".install-tmp-*")) == []

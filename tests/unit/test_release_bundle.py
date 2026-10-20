@@ -414,3 +414,36 @@ def test_the_header_check_fails_in_both_directions() -> None:
     assert _header_codes(dropped) != _EXERCISED | {1}
     added = text.replace("#   1  an unexpected", "#   9  invented\n#   1  an unexpected", 1)
     assert _header_codes(added) != _EXERCISED | {1}
+
+
+# ── QA-4 and QA-5 ────────────────────────────────────────────────────────────
+
+
+def test_help_works_outside_a_repository(tmp_path: Path) -> None:
+    """QA-4: --help prints the usage and exits 0 before any check of the repository."""
+    script = tmp_path / "deploy" / "release" / "bundle.sh"
+    script.parent.mkdir(parents=True)
+    shutil.copy2(BUNDLE_SH, script)
+    proc = subprocess.run(
+        ["bash", str(script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--digests" in proc.stderr
+
+
+def test_a_digests_file_with_crlf_line_endings_builds_the_same_bundle(
+    built: Built, tmp_path: Path
+) -> None:
+    """QA-5: a file saved on Windows is read as if with LF, so the archive is byte-identical."""
+    crlf = tmp_path / "digests-crlf.txt"
+    crlf.write_bytes(built.digests.read_bytes().replace(b"\n", b"\r\n"))
+    out = tmp_path / "out"
+    out.mkdir()
+    proc = run_bundle(built.repo, "--digests", str(crlf), "--out", str(out), VERSION)
+    assert proc.returncode == 0, proc.stderr
+    assert (out / built.archive.name).read_bytes() == built.archive.read_bytes()

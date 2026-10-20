@@ -453,24 +453,27 @@ def read_text(path):
 
 def atomic_write(path, text):
     """Temp file next to the target, fsync, rename. A new file takes the mode umask gives it
-    (0666 & ~umask); an existing one keeps its mode and owner. chmod is never run on the target."""
+    (0666 & ~umask); an existing one keeps its mode and owner, set on the open file BEFORE the
+    first byte is written, so the secrets are never in a file more open than the one they replace.
+    chmod is never run on the target. Temp files a killed run left behind are removed first."""
     target = Path(os.path.realpath(path))
+    for stale in target.parent.glob(".install-tmp-*"):
+        stale.unlink(missing_ok=True)
     tmp = target.with_name(f".install-tmp-{os.getpid()}")
-    tmp.unlink(missing_ok=True)
     existing = os.stat(target) if target.exists() else None
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
+        if existing is not None:
+            os.fchmod(fd, stat.S_IMODE(existing.st_mode))
+            try:
+                os.fchown(fd, existing.st_uid, existing.st_gid)
+            except PermissionError:
+                if os.geteuid() == 0:
+                    raise
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        if existing is not None:
-            os.chmod(tmp, stat.S_IMODE(existing.st_mode))
-            try:
-                os.chown(tmp, existing.st_uid, existing.st_gid)
-            except PermissionError:
-                if os.geteuid() == 0:
-                    raise
         os.replace(tmp, target)
         dfd = os.open(target.parent, os.O_RDONLY)
         try:
@@ -914,7 +917,10 @@ step_registry() {
 
 step_checks_host() {
   say "step 1/8: checks (nothing is written)"
-  if [[ -f $ROOT/.env ]] && grep -qxF '# >>> aizzak install >>>' "$ROOT/.env"; then FIRST_INSTALL=0; fi
+  # tr: a .env saved with CRLF line endings must still be recognised as an installed server
+  if [[ -f $ROOT/.env ]] && tr -d '\r' <"$ROOT/.env" | grep -qxF '# >>> aizzak install >>>'; then
+    FIRST_INSTALL=0
+  fi
   step_preflight
   step_disk
   step_registry
