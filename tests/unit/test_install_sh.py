@@ -1270,8 +1270,15 @@ def test_a_mint_failure_stops_with_61_hides_the_token_and_leaves_no_file(
     )
 
 
-def test_a_damaged_key_in_env_is_never_replaced(ran: dict[str, Out]) -> None:
+def test_a_damaged_key_in_env_is_never_replaced(ran: dict[str, Out], runs: Runs) -> None:
     out = ran["damaged-key"]
+    # QA (round 1): not one byte changed from the damaged file the run started with
+    started_with = (
+        env_file(runs.staged)
+        .read_text(encoding="utf-8")
+        .replace("# <<< aizzak install <<<", "VAULT_SECRET_ID=junk\n# <<< aizzak install <<<")
+    )
+    assert env_file(out.h).read_text(encoding="utf-8") == started_with
     assert out.proc.returncode == 61 and "damaged" in out.proc.stderr
     assert "VAULT_SECRET_ID=junk" in env_file(out.h).read_text(encoding="utf-8")
     assert len(re.findall(r"(?m)^VAULT_SECRET_ID=", env_file(out.h).read_text())) == 1
@@ -1312,7 +1319,7 @@ def test_only_missing_images_are_pulled_and_never_a_compose_level_pull(
 
 
 def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(
-    ran: dict[str, Out],
+    ran: dict[str, Out], runs: Runs
 ) -> None:
     out = ran["migrate-once"]
     first, second = out.procs
@@ -1321,6 +1328,8 @@ def test_a_migrate_failure_is_reported_by_name_and_the_rerun_resumes(
     assert second.returncode == 0, (second.stdout[-800:], second.stderr)
     mints = [c for c in out.h.docker_calls() if "exec" in c and "vault" in c]
     assert len(mints) == 1, "the second run minted a second key"
+    # QA (round 1): the two runs generated no password of their own
+    assert secret_values(out.h) == secret_values(runs.staged)
 
 
 def test_a_service_that_never_becomes_healthy_is_named(tmp_path: Path) -> None:
