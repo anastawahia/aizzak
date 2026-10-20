@@ -325,10 +325,18 @@ lock_bundle() {
 }
 
 # ── calling the outside world ───────────────────────────────────────────────
+# `timeout` moves its child into a new process group, a background group for the controlling
+# terminal. A docker CLI that reads a terminal stdin there gets SIGTTIN and stops, silently, until
+# the timeout kills it (QA-7: `compose exec -T` kept stdin open). So a terminal is never passed on;
+# a pipe or a file is (set_metrics_exporter_password sends the password through one).
 dk() {
   local secs="$1"
   shift
-  timeout -k 10 "$secs" docker "$@"
+  if [[ -t 0 ]]; then
+    timeout -k 10 "$secs" docker "$@" </dev/null
+  else
+    timeout -k 10 "$secs" docker "$@"
+  fi
 }
 
 compose() {
@@ -867,7 +875,8 @@ PY
 step_preflight() {
   local out rc=0 args=()
   ((GPU_SMOKE == 0)) || args+=(--smoke)
-  out="$(timeout -k 10 600 bash "$ROOT/deploy/gpu-preflight.sh" "${args[@]}" 2>&1)" || rc=$?
+  # stdin is /dev/null: under `timeout` a terminal stdin would stop the script (see dk).
+  out="$(timeout -k 10 600 bash "$ROOT/deploy/gpu-preflight.sh" "${args[@]}" 2>&1 </dev/null)" || rc=$?
   [[ -z $out ]] || printf '%s\n' "$out" | relay
   PREFLIGHT_RC="$rc"
   case "$rc" in
