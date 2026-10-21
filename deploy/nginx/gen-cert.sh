@@ -17,7 +17,7 @@
 #     regenerated BOTH here, which silently replaced an operator's
 #     certificate whose key had not been copied in yet.
 #   neither -> a self-signed development pair, written under random temporary
-#     names and published with `ln` (which never replaces), so a failed run
+#     names and published with `ln -T` (which never replaces), so a failed run
 #     leaves neither file instead of the half pair the rule above would then
 #     refuse, and a pair that appears meanwhile is never overwritten.
 # A dangling symbolic link counts as present: it is the operator's, not ours.
@@ -51,16 +51,22 @@ umask 077
 
 # The temporary files get random names made with O_EXCL (mktemp), never a fixed
 # name: a fixed `.server.key.new` that someone planted as a symbolic link in the
-# folder would be written through. They are published with `ln`, which fails
-# when the target already exists (a file, a symlink, even a dangling one),
-# where `mv` would silently replace a pair that appeared while we generated.
-TMP_KEY="" TMP_CERT="" PUBLISHED_KEY=""
+# folder would be written through. They are published with `ln -T`, which
+# fails when the target already exists (a file, a symlink, even a dangling
+# one) and, with -T, also when it is a directory or a symlink to one (without
+# it `ln` would put the link INSIDE that directory and succeed), where `mv`
+# would silently replace a pair that appeared while we generated.
+TMP_KEY="" TMP_CERT=""
 cleanup() {
     for f in "$TMP_KEY" "$TMP_CERT"; do
         [ -z "$f" ] || rm -f -- "$f"
     done
 }
 trap cleanup EXIT
+# dash does not run the EXIT trap when a signal kills it (docker stop sends
+# TERM): turn the signals into an exit so the temporary files are removed. The
+# trap runs once the foreground command (openssl) returns.
+trap 'exit 1' HUP INT TERM
 
 fail() {
     echo "nginx-certs: ERROR: $1" >&2
@@ -89,13 +95,20 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes \
 # the tightest mode that still works. (A hard link shares the mode.)
 chmod 600 "$TMP_KEY"
 chmod 644 "$TMP_CERT"
-ln "$TMP_KEY" "$KEY" 2>/dev/null ||
-    fail "server.key appeared while the certificate was being generated; left untouched, nothing was written"
-PUBLISHED_KEY=1
-if ! ln "$TMP_CERT" "$CERT" 2>/dev/null; then
-    # take back only the key this run published, so no half pair is left
-    [ -z "$PUBLISHED_KEY" ] || rm -f -- "$KEY"
-    fail "server.crt appeared while the certificate was being generated; left untouched, nothing was written"
+# `ln` can fail for another reason than a file that appeared (a filesystem
+# without hard links, a permission): say which one it was.
+publish_failed() {
+    if present "$1"; then
+        fail "$2 appeared while the certificate was being generated; left untouched, nothing was written"
+    fi
+    fail "could not publish $2 in $CERT_DIR (a filesystem without hard links?); nothing was written"
+}
+
+ln -T "$TMP_KEY" "$KEY" 2>/dev/null || publish_failed "$KEY" server.key
+if ! ln -T "$TMP_CERT" "$CERT" 2>/dev/null; then
+    # take back the key this run just published, so no half pair is left
+    rm -f -- "$KEY"
+    publish_failed "$CERT" server.crt
 fi
 
 echo "nginx-certs: wrote server.crt / server.key (self-signed, 825 days)"

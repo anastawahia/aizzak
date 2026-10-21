@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -32,37 +34,76 @@ while [ $# -gt 0 ]; do
 done
 exit 1
 """
-_PLANT_DURING = """#!/bin/sh
-echo operator > "$FAKE_PLANT"
+_SLOW = """#!/bin/sh
+touch "$FAKE_READY"
+sleep 1
 exit 0
+"""
+_PLANT_DURING = """#!/bin/sh
+case "${FAKE_PLANT_KIND:-file}" in
+    dir) mkdir "$FAKE_PLANT" ;;
+    dirlink) mkdir "$FAKE_PLANT.d" && ln -s "$FAKE_PLANT.d" "$FAKE_PLANT" ;;
+    *) echo operator > "$FAKE_PLANT" ;;
+esac
+exit 0
+"""
+_FAILING_LN = """#!/bin/sh
+echo "ln: failed to create hard link: Operation not permitted" >&2
+exit 1
 """
 
 
 def _run(
     cert_dir: Path,
     *,
-    fake_openssl: Literal["record", "fail-after-key", "plant-during", None],
+    fake_openssl: Literal["record", "fail-after-key", "plant-during", "slow", None],
     bin_dir: Path | None = None,
     plant: str | None = None,
+    plant_kind: str = "file",
+    failing_ln: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    env = _env(
+        cert_dir, fake_openssl, bin_dir=bin_dir, plant=plant, plant_kind=plant_kind,
+        failing_ln=failing_ln,
+    )  # fmt: skip
+    return subprocess.run(
+        ["sh", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False, timeout=60
+    )
+
+
+def _env(
+    cert_dir: Path,
+    fake_openssl: str | None,
+    *,
+    bin_dir: Path | None = None,
+    plant: str | None = None,
+    plant_kind: str = "file",
+    failing_ln: bool = False,
+) -> dict[str, str]:
     env = {"PATH": os.environ["PATH"], "AIZZAK_CERT_DIR": str(cert_dir)}
     if fake_openssl is not None:
         fake_dir = bin_dir or cert_dir.parent / "fakebin"
         fake_dir.mkdir(exist_ok=True)
         fake = fake_dir / "openssl"
         fake.write_text(
-            {"record": _RECORD, "fail-after-key": _FAIL_AFTER_KEY, "plant-during": _PLANT_DURING}[
-                fake_openssl
-            ]
+            {
+                "record": _RECORD,
+                "fail-after-key": _FAIL_AFTER_KEY,
+                "plant-during": _PLANT_DURING,
+                "slow": _SLOW,
+            }[fake_openssl]
         )
         fake.chmod(0o755)
+        if failing_ln:
+            (fake_dir / "ln").write_text(_FAILING_LN)
+            (fake_dir / "ln").chmod(0o755)
         env["PATH"] = f"{fake_dir}{os.pathsep}{env['PATH']}"
         env["FAKE_OPENSSL_LOG"] = str(cert_dir.parent / "openssl.log")
         if plant is not None:
             env["FAKE_PLANT"] = str(cert_dir / plant)
-    return subprocess.run(
-        ["sh", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False, timeout=60
-    )
+            env["FAKE_PLANT_KIND"] = plant_kind
+        env["FAKE_READY"] = str(cert_dir.parent / "ready")
+    return env
 
 
 def _snapshot(d: Path) -> dict[str, tuple[str, int]]:
@@ -182,6 +223,52 @@ def test_a_file_that_appears_while_generating_is_never_overwritten(
     assert (d / appears).read_text() == "operator\n"
     # no temporary file and no half pair of ours is left behind
     assert [p.name for p in d.iterdir()] == [appears]
+
+
+@pytest.mark.parametrize("kind", ["dir", "dirlink"])
+@pytest.mark.parametrize("appears", ["server.key", "server.crt"])
+def test_a_directory_that_appears_as_the_target_is_refused_not_filled(
+    tmp_path: Path, appears: str, kind: str
+) -> None:
+    d = _certs(tmp_path)
+    res = _run(d, fake_openssl="plant-during", plant=appears, plant_kind=kind)
+    assert res.returncode == 1
+    assert f"{appears} appeared" in res.stderr
+    target = d / appears
+    assert target.is_dir()
+    # nothing was linked INSIDE the directory, and nothing of ours is left
+    inner = target.resolve()
+    assert list(inner.iterdir()) == []
+    assert not [p for p in d.iterdir() if p.name.startswith(".server.")]
+    other = "server.crt" if appears == "server.key" else "server.key"
+    assert not (d / other).exists()
+
+
+def test_a_failing_ln_is_not_blamed_on_a_file_that_appeared(tmp_path: Path) -> None:
+    d = _certs(tmp_path)
+    res = _run(d, fake_openssl="record", failing_ln=True)
+    assert res.returncode == 1
+    assert "could not publish server.key" in res.stderr
+    assert "appeared" not in res.stderr
+    assert list(d.iterdir()) == []
+
+
+def test_a_termination_signal_removes_the_temporary_files(tmp_path: Path) -> None:
+    d = _certs(tmp_path)
+    env = _env(d, "slow")
+    proc = subprocess.Popen(
+        ["sh", str(_SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    ready = tmp_path / "ready"
+    deadline = time.monotonic() + 20
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    assert len(list(d.iterdir())) == 2  # the two temporary files exist while openssl runs
+    proc.send_signal(signal.SIGTERM)
+    proc.communicate(timeout=20)
+    assert proc.returncode == 1
+    assert list(d.iterdir()) == []
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
