@@ -204,13 +204,13 @@ chmod 600 .env
 
 | الإعداد | القيمة | النطاق | من ومتى |
 |---|---|---|---|
-| قاعدة Cache Rules: تجاوز التخزين | Bypass cache | `api.aizzak.com` وحده | لم يُطبَّق بعد |
-| قاعدة Single Redirect: HTTP إلى HTTPS | 308، مع الاستعلام | `api.aizzak.com` وحده | لم يُطبَّق بعد |
-| قاعدة Configuration Rules: SSL | Full (strict) | `api.aizzak.com` وحده | لم يُطبَّق بعد |
-| أدنى إصدار TLS | 1.2 | المنطقة كلّها | لم يُطبَّق بعد |
+| قاعدة Cache Rules: تجاوز التخزين | Bypass cache | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| قاعدة Single Redirect: HTTP إلى HTTPS | 308، مع الاستعلام | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| قاعدة Configuration Rules: SSL | Full (strict) | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| أدنى إصدار TLS | 1.2 (كان 1.0) | المنطقة كلّها | المالك من اللوحة، 2026‑10‑21 |
 | سجلّ DNS من النوع A، مُمرَّر | عنوان الخادم | `api.aizzak.com` | 7.3 |
 
-كلّ تغييرٍ في Cloudflare بموافقة المالك عليه بعينه، وقبله صورة وبعده صورة.
+كلّ تغييرٍ في Cloudflare بموافقة المالك عليه بعينه، وقبله صورة وبعده صورة. والبنود الأربعة الأولى طُبّقت من اللوحة لأنّ أداة الـAPI كانت معطّلة. فكانت الصورة مسباراً من الخارج قبل كلّ بندٍ وبعده، وتأكيد المالك من اللوحة، والتفصيل في `docs/delivery/cloudflare-tls/status.md`. والصورة الكاملة بالـAPI تُؤخذ قبل سجلّ DNS (`docs/delivery/cloudflare-tls/follow-ups.md`، PO‑1). وفي اللوحة الحاليّة تُنشأ Configuration Rules من Rules ← Overview ← Create rule. والرجوع: حذف القاعدة من Rules ← Overview، وإعادة أدنى TLS إلى 1.0 من SSL/TLS ← Edge Certificates.
 
 **توكن Cloudflare API** (لمن ينفّذ التغييرات بالـAPI لا باللوحة):
 - Custom Token لا Global API Key، لمنطقة `aizzak.com` وحدها، وبالصلاحيّات التي يحتاجها هذا الدليل وحدها: قراءة المنطقة، وتعديل DNS، وتعديل إعدادات المنطقة، وتعديل قواعد Configuration وRedirect وCache، و«SSL and Certificates» لإصدار شهادة المنشأ وإبطالها، وقراءة Bot Management.

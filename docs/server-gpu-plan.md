@@ -372,7 +372,7 @@
   - شهادة منشأ من Origin CA لهذا الاسم وحده، 15 سنة، ومفتاحها يولَّد على الخادم بطلب توقيع، في المسارين الحاليّين `deploy/nginx/certs/server.crt` و`server.key`، ثمّ `nginx -s reload`، بلا تغيير في Compose.
   - nginx يأخذ عنوان العميل من `CF-Connecting-IP` لنطاقات Cloudflare المنشورة وحدها.
   - `nginx-certs` (الشهادة الذاتيّة) يبقى للتطوير وللإقلاع الأوّل، ولا يكتب فوق شهادةٍ موجودة.
-  - HSTS لـ`api.aizzak.com` وحده بلا `includeSubDomains`، ولا يبلغ متصفّحاً قبل سجلّ DNS في 7.3.
+  - HSTS لـ`api.aizzak.com` وحده بلا `includeSubDomains`، ولا يبلغ متصفّحاً قبل سجلّ DNS في 7.3. والرجوع عنه `max-age=0`، وأثره باقٍ في كلّ متصفّحٍ رآه حتّى يعود إلى الموقع ([`deploy-server.md`](deploy-server.md) §4.6).
   - Let's Encrypt لم يُختَر. والتفاصيل في [`deploy-server.md`](deploy-server.md) §4.
 - **القبول:** `curl https://api.aizzak.com/health` ينجح دون `-k`، وشهادة المنشأ صالحةٌ سنةً على الأقلّ (`openssl x509 -checkend 31536000`)، وتمرين تدويرٍ واحد بلا ردٍّ غير 200. وذلك بدل «`--dry-run`»: لا تجديد لشهادةٍ مدّتها 15 سنة.
 
