@@ -2115,3 +2115,53 @@ def test_a_link_planted_at_the_temp_path_is_refused_and_nothing_is_written_throu
     else:
         assert victim.read_text(encoding="utf-8") == "VICTIM\n"
     assert (sha(path), mode(path)) == (digest, perm)
+
+
+@pytest.mark.parametrize("failing", ["fchown", "fchmod"])
+def test_the_temp_file_descriptor_is_closed_when_fchown_or_fchmod_raises(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    """QA (SR-2 design §4.6): the fd lives inside the `with`, so a refusal never leaks it."""
+    h, path = installed
+    path.chmod(0o640)
+    digest = sha(path)
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    opened: list[int] = []
+    real_open = os.open
+
+    def spy_open(p: str | os.PathLike[str], flags: int, mode_: int = 0o777, **kw: int) -> int:
+        fd = real_open(p, flags, mode_, **kw)
+        if Path(p).name.startswith(".install-tmp-"):
+            opened.append(fd)
+        return fd
+
+    def refuse(*_: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, failing, refuse)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 4 and "PermissionError while handling .env" in done.stderr
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])  # EBADF: closed (nothing else in the process reopened it)
+    assert sha(path) == digest and mode(path) == 0o640
+    assert list(path.parent.glob(".install-tmp-*")) == []
+
+
+def test_a_symlinked_env_is_rewritten_in_place_and_stays_a_link(
+    installed: tuple[Harness, Path], tmp_path: Path
+) -> None:
+    """realpath behaviour unchanged: the real file is replaced, the link and its mode survive."""
+    h, real = installed
+    real.chmod(0o640)
+    link = tmp_path / "link.env"
+    link.symlink_to(real)
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    before = sha(real)
+    done = env_tool(h, "size-block", str(link), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert sha(real) != before and mode(real) == 0o640
+    assert list(tmp_path.glob(".install-tmp-*")) == []
