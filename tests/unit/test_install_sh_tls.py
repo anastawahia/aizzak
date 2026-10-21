@@ -132,6 +132,17 @@ def test_a_certificate_for_another_name_warns_and_names_the_domain(tmp_path: Pat
     assert "install: READY" in done.stdout and "TLS: WARNING" in done.stdout
 
 
+def test_an_issuer_name_that_says_does_match_certificate_does_not_vouch_for_the_name(
+    tmp_path: Path,
+) -> None:
+    h = make_harness(tmp_path)
+    evil = _ca(tmp_path, "/O=AIZZAK Test/CN=Evil does match certificate")
+    _plant(h, _leaf(tmp_path, evil, "other.example"))
+    out = _state(h)
+    assert out.startswith("WARNING: the certificate does not cover example.com (issuer ")
+    assert not out.startswith("certificate for")
+
+
 def test_openssl_never_sees_the_key_and_the_marker_never_reaches_the_output(
     tmp_path: Path,
 ) -> None:

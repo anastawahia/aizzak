@@ -1335,7 +1335,8 @@ tls_state() {
     printf 'WARNING: the certificate expired on %s (issuer %s); docs/deploy-server.md §4' "$day" "$label"
     return 0
   fi
-  if [[ $out != *"does match certificate"* ]]; then
+  # only the -checkhost line decides: the issuer name above it is the certificate's own text
+  if [[ $out != *"Hostname $DOMAIN does match certificate"* ]]; then
     printf 'WARNING: the certificate does not cover %s (issuer %s, expires %s); docs/deploy-server.md §4' \
       "$DOMAIN" "$label" "$day"
     return 0
