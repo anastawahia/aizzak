@@ -251,8 +251,16 @@ chmod 600 .env
      sudo mv -f deploy/nginx/certs/origin.crt deploy/nginx/certs/server.crt &&
      sudo docker compose exec nginx nginx -t && sudo docker compose exec nginx nginx -s reload
    ```
-   وإن فشل `nginx -t` فلا `reload`: أعد الزوج العاملة (`sudo mv -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.crt` ومثله للمفتاح) ثمّ طبّق الرجوع (§4.4) إن لزم.
+   وإن فشل `nginx -t` فلا `reload`. أعد الزوج العاملة، وانقل الزوج الجديد جانباً أوّلاً حتّى لا يُمحى (فيبقى مفتاحه في `origin.key`، ولا حاجة إلى طلبٍ وشهادةٍ جديدين إن كان السبب غير الشهادة):
+   ```bash
+   sudo mv -f deploy/nginx/certs/server.crt deploy/nginx/certs/origin.crt &&
+     sudo mv -f deploy/nginx/certs/server.key deploy/nginx/certs/origin.key &&
+     sudo mv -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.crt &&
+     sudo mv -f deploy/nginx/certs/server.key.prev deploy/nginx/certs/server.key
+   ```
+   ثمّ طبّق الرجوع (§4.4) إن لزم.
 6. التحقّق المحلّيّ: `openssl s_client -connect 127.0.0.1:443 -servername api.aizzak.com -CAfile <جذر Origin CA ECC العامّ من وثائق Cloudflare> </dev/null 2>/dev/null | grep 'Verify return code'` يطبع `0 (ok)`. ثمّ من جهازٍ خارج الخادم: `curl -fsS https://api.aizzak.com/health`.
+7. بعد نجاح الفحص الخارجيّ في الخطوة 6 احذف النسختين المؤقّتتين، فإحداهما مفتاح الشهادة السابقة: `sudo rm -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.key.prev`.
 
 التقرير يطبع سطر `TLS:` في كلّ تثبيت:
 
@@ -272,10 +280,11 @@ chmod 600 .env
 
 1. سبرٌ خارجيّ كلّ ثانية: `while :; do curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 https://api.aizzak.com/health; sleep 1; done | tee probe.log`.
 2. سجّل معرّف الحاوية ووقت بدئها قبل التمرين: `docker inspect -f '{{.Id}} {{.State.StartedAt}}' $(sudo docker compose ps -q nginx)`.
-3. مفتاحٌ وطلبٌ ثانيان (`origin.key` و`origin.csr` من جديد)، وشهادةٌ ثانية، ثمّ الخطوتان 4 و5 من §4.2 (والخطوة 5 تنسخ الزوج العاملة إلى `*.prev` قبل الاستبدال، فاحتفظ بها إلى أن يثبت التدوير).
+3. مفتاحٌ وطلبٌ ثانيان (`origin.key` و`origin.csr` من جديد)، وشهادةٌ ثانية، ثمّ الخطوتان 4 و5 من §4.2 (والخطوة 5 تنسخ الزوج العاملة إلى `*.prev` قبل الاستبدال، وتحذفها الخطوة 7 بعد ثبوت التدوير. وعند فشل `nginx -t` تُطبَّق الاستعادة الموصوفة في الخطوة 5 بترتيبها: الجديد إلى `origin.*` أوّلاً).
 4. البصمة الجديدة في `s_client`، و`docker inspect` بعد التمرين بالقيمتين نفسيهما (لم تُعَد الحاوية).
 5. أبطل الشهادة الأولى من لوحة Cloudflare (Revoke) أو بـ`DELETE /certificates/<id>` بمعرّفها الذي سجّلته عند إصدارها (§4.2 الخطوة 3). وبالـAPI يلزم التوكن صلاحيّة «SSL and Certificates» (§4.1).
 6. `grep -vc '^200$' probe.log` يطبع 0.
+7. بعد تأكيد الإبطال (الخطوة 5) وخلوّ المسبار (الخطوة 6) احذف نسختي الزوج السابقة: `sudo rm -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.key.prev`. فـ`server.key.prev` هو مفتاح الشهادة المُبطَلة.
 
 ### 4.4 الرجوع
 
@@ -292,7 +301,7 @@ sudo docker compose exec nginx nginx -t && sudo docker compose exec nginx nginx 
 
 كتلة `realip` في `nginx.conf` تضع في `$remote_addr` قيمة `CF-Connecting-IP` لطلبٍ نظيره من نطاقات Cloudflare المنشورة وحدها. فيصير مفتاح حدّ المعدّل وحدّ الاتّصالات والسجلّ و`X-Real-IP` هو العميل لا حافّة Cloudflare. أيّ نظيرٍ آخر (الجهاز المحلّيّ، وفحوص `install.sh`، وعميلٌ يصل الأصل مباشرة) يبقى بعنوانه. ولا يُقرأ `X-Forwarded-For`. وطلبات Cloudflare Workers تصل بعنوان خروج الـWorker فتتقاسم حدّاً واحداً.
 
-حدّ الثقة هنا **كلّ عملاء Cloudflare** لا عميلنا وحده: طلبٌ من Worker في منطقةٍ أخرى يصل من نطاقات Cloudflare فيُقبل منه `CF-Connecting-IP` الذي يختاره. أثر ذلك على مفتاح حدّ المعدّل لكلّ عنوان وعلى سجلّ الوصول. **فلا يُبنى قبل 6.3 قرارُ `allow` أو `deny` أو تفويضٍ على `$remote_addr`.**
+حدّ الثقة هنا **كلّ عملاء Cloudflare** لا عميلنا وحده: طلبٌ من Worker في منطقةٍ أخرى يصل من نطاقات Cloudflare فيُقبل منه `CF-Connecting-IP` الذي يختاره. أثر ذلك على مفتاح حدّ المعدّل لكلّ عنوان وعلى سجلّ الوصول. **فلا يُبنى قبل 6.3 قرارُ `allow` أو `deny` أو تفويضٍ على `$remote_addr`.** ومعروفٌ ومؤجَّلٌ إلى 6.3 أيضاً: بعد `realip` يأخذ عملاء IPv6 مفتاح حدّ معدّلٍ لكلّ عنوان /128، فشبكةٌ واحدة من /64 تستطيع أخذ مفاتيح كثيرة.
 
 القائمة **نسخة** من `https://api.cloudflare.com/client/v4/ips` بتاريخها و`etag` في تعليق `nginx.conf`. المقارنة يوم الدمج:
 
@@ -349,7 +358,7 @@ diff ips-api.txt ips-conf.txt && echo SAME
 | ث‑11 | `.env` على الخادم يبقى على صلاحيّة `umask` (0644 غالباً): فيه كلمات السرّ الثلاث عشرة (Postgres وأدواره الثمانية، و`metrics_exporter`، وMinIO، وGrafana) و`VAULT_SECRET_ID`. قرار المالك (2026‑10‑19): `install.sh` لا يضبط الصلاحيّة، ويضبطها المالك بيده | أيّ مستخدمٍ على الخادم يقرأ الملفّ كلّه | `chmod 600 .env` بعد كلّ تثبيت. يذكّر به التقرير في كلّ تشغيل، ويحذّر منه `auto_size.py` (SR‑11) |
 | ث‑12 | حزمة التثبيت بلا توقيع: يُطبع sha256 عند صنعها ويقارنه المشغّل باليد | من يبدّل الحزمة في الطريق، أو يخدع المشغّل بحزمةٍ أخرى، يشغّل ما يشاء بصلاحيّة root عبر `sudo ./install.sh` | توقيع الحزمة (cosign أو GPG) ونشر المفتاح العامّ، في الموجة 8 |
 | ث‑13 | Cloudflare ينهي TLS ويرى النصّ الصريح: ترويسة `Authorization`، وتوكن WebSocket في الاستعلام (`?token=`، `03-api-spec.md:289`)، والأسئلة والأجوبة، ومحتوى الملفّات في 6.2. قبله المالك لمرحلة staging (Q‑9، 2026‑10‑20) | طرفٌ ثالث يرى كلّ حركة الـAPI | يُعاد النظر في الموجة 8 |
-| ث‑14 | الأصل يُبلَغ مباشرةً على 80 و443 متجاوزاً Cloudflare، حتّى 6.3 أو Authenticated Origin Pulls | تجاوز حماية Cloudflare وحدوده. وحدّ الثقة في `realip` هو كلّ عملاء Cloudflare: طلبٌ من Worker في منطقةٍ أخرى يختار `CF-Connecting-IP`، فيتأثّر مفتاح حدّ المعدّل لكلّ عنوان وسجلّ الوصول (لا قرار تفويض مبنيّ على العنوان، §4.5) | 6.3: حصر 80 و443 بنطاقات Cloudflare. وAuthenticated Origin Pulls معه (Q‑1) |
+| ث‑14 | الأصل يُبلَغ مباشرةً على 80 و443 متجاوزاً Cloudflare، حتّى 6.3 أو Authenticated Origin Pulls | تجاوز حماية Cloudflare وحدوده. وحدّ الثقة في `realip` هو كلّ عملاء Cloudflare: طلبٌ من Worker في منطقةٍ أخرى يختار `CF-Connecting-IP`، فيتأثّر مفتاح حدّ المعدّل لكلّ عنوان وسجلّ الوصول (لا قرار تفويض مبنيّ على العنوان، §4.5) | 6.3: Authenticated Origin Pulls بشهادةٍ **خاصّة بالمنطقة** يرفعها المالك (شهادة Cloudflare المشتركة لا تُغلق الثغرة)، و`realip` في خادم 443 وحده، والمنفذ 443 وحده مفتوحٌ لنطاقات Cloudflare (لا 80) (Q‑1) |
 | ث‑15 | مفتاح المنشأ `deploy/nginx/certs/server.key` ملفٌّ على القرص خارج Vault، صلاحيّته 0600 لـroot (Q‑8) | من يملك root أو مجموعة `docker` على الخادم يقرؤه، فينتحل الأصل أمام Cloudflare | إبطال الشهادة في Cloudflare وإصدار أخرى (§4.3). وتشفير القرص ومراجعة الموجة 8 |
 
 </div>

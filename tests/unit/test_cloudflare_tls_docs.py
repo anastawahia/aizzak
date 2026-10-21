@@ -181,3 +181,52 @@ def test_each_phrase_check_fails_on_an_edited_copy() -> None:
     assert plan_row_done(row) and not plan_row_done(row + " ⬜")
     gap = next(ln for ln in _read(_GUIDE).splitlines() if ln.startswith("| ث\u201113 |"))
     assert gap_row_ok(gap) and not gap_row_ok(gap + " | extra")
+
+
+_D = "deploy/nginx/certs/"
+_RM_PREV = f"rm -f {_D}server.crt.prev {_D}server.key.prev"
+
+
+def activation_step(four: str) -> str:
+    start = four.index("5. التفعيل")
+    return four[start : four.index("\n6. ", start)]
+
+
+def activation_is_safe(step: str) -> bool:
+    """Both working files are copied to .prev before the first mv, and the restore sets the new
+    pair aside (origin.*) before putting the .prev files back."""
+    first_mv = step.find("sudo mv -f")
+    copies = [f"cp -p {_D}server.{k} {_D}server.{k}.prev" for k in ("crt", "key")]
+    if first_mv < 0 or not all(0 <= step.find(c) < first_mv for c in copies):
+        return False
+    restore = step[step.find("nginx -t` فلا") :]
+    aside = [f"mv -f {_D}server.{k} {_D}origin.{k}" for k in ("crt", "key")]
+    back = [f"mv -f {_D}server.{k}.prev {_D}server.{k}" for k in ("crt", "key")]
+    spots = [restore.find(x) for x in (*aside, *back)]
+    return all(x >= 0 for x in spots) and max(spots[:2]) < min(spots[2:])
+
+
+def test_activation_keeps_the_working_pair_and_restores_it_without_losing_the_new_one() -> None:
+    four = section_four(_read(_GUIDE))
+    step = activation_step(four)
+    assert activation_is_safe(step)
+    # the two mutations QA reported surviving, and the overwrite the reviewer measured
+    no_key_copy = step.replace(f"cp -p {_D}server.key {_D}server.key.prev", "true")
+    assert not activation_is_safe(no_key_copy)
+    no_key_restore = step.replace(f"mv -f {_D}server.key.prev {_D}server.key", "true")
+    assert not activation_is_safe(no_key_restore)
+    no_crt_restore = step.replace(f"mv -f {_D}server.crt.prev {_D}server.crt", "true")
+    assert not activation_is_safe(no_crt_restore)
+    no_aside = step.replace(f"mv -f {_D}server.key {_D}origin.key", "true")
+    assert not activation_is_safe(no_aside)
+
+
+def test_the_previous_pair_is_deleted_after_the_check_and_after_the_revocation() -> None:
+    four = section_four(_read(_GUIDE))
+    install = four[four.index("### 4.2 ") : four.index("### 4.3 ")]
+    rotation = four[four.index("### 4.3 ") : four.index("### 4.4 ")]
+    # 4.2: after the external check (step 6); 4.3: after the revocation (step 5) and the probe
+    assert install.index("\n6. ") < install.index(_RM_PREV)
+    assert rotation.index("\n5. ") < rotation.index("\n6. ") < rotation.index(_RM_PREV)
+    assert _RM_PREV not in install[: install.index("\n6. ")]
+    assert _RM_PREV not in four.replace(_RM_PREV, "", 2)
