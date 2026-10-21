@@ -8,11 +8,13 @@ test machine is not root, so `prepare` and `run_steps` are called after `source`
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from collections.abc import Callable
@@ -20,6 +22,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -1900,7 +1903,7 @@ def test_a_0600_env_is_never_rewritten_through_a_more_open_temp_file(
     done = run_compose(tool, path)
     assert done.returncode == 0 and done.stdout.strip() == "adopted", done.stderr
     _assert_owner_only_throughout(calls)
-    assert [args for name, args, _, _ in calls if name == "fchmod"] == [(0o600,)]
+    assert [c.args for c in calls if c.name == "fchmod"] == [(0o600,)]
     assert mode(path) == 0o600
 
 
@@ -1920,15 +1923,68 @@ def test_a_stale_temp_file_from_a_killed_run_is_removed_by_the_next_write(
 
 # ── SR-2: the temp file of atomic_write ──────────────────────────────────────
 
+ACCESS = "system.posix_acl_access"
+DEFAULT = "system.posix_acl_default"
+USER_OBJ, USER, GROUP_OBJ, MASK, OTHER = 0x01, 0x02, 0x04, 0x10, 0x20
+NOBODY = 65534
+NOID = 0xFFFFFFFF
 
-def _watch_temp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[int, ...], int, int]]:
-    """Spy on os.open / fchown / fchmod / fsync for the `.install-tmp-*` file only. Each record is
-    (call, requested values, mode & 0o777, size): taken right AFTER the real call for `open` (the
-    moment of creation) and right BEFORE it for the others (the state the call finds)."""
-    calls: list[tuple[str, tuple[int, ...], int, int]] = []
+
+class TempCall(NamedTuple):
+    """One call on the `.install-tmp-*` file: the state it found (the state it made, for `open`)."""
+
+    name: str
+    args: tuple[int, ...]
+    perm: int  # st_mode & 0o777
+    size: int
+    acl: bytes | None  # the access ACL of the temp file, None when it has none
+    fd: int
+
+
+def _acl(*entries: tuple[int, ...]) -> bytes:
+    """A POSIX ACL in the kernel's xattr format: (tag, perm[, id]) entries, sorted by tag, id."""
+    full = sorted((e[0], e[1], e[2] if len(e) == 3 else NOID) for e in entries)
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", t, p, i) for t, p, i in full)
+
+
+def _acl_mask(raw: bytes) -> int:
+    for offset in range(4, len(raw), 8):
+        tag, perm, _ = struct.unpack_from("<HHI", raw, offset)
+        if tag == MASK:
+            return perm
+    raise AssertionError("an extended ACL without a mask entry")
+
+
+def _set_acl(path: Path, name: str, raw: bytes) -> None:
+    try:
+        os.setxattr(path, name, raw)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            pytest.skip("no POSIX ACLs on this file system")
+        raise
+
+
+def _access_acl(target: int | Path) -> bytes | None:
+    try:
+        return os.getxattr(target, ACCESS)
+    except OSError as exc:
+        if exc.errno in (errno.ENODATA, errno.ENOTSUP):
+            return None
+        raise
+
+
+def _watch_temp(monkeypatch: pytest.MonkeyPatch) -> list[TempCall]:
+    """Spy on os.open / fchown / setxattr / removexattr / fchmod / fsync for the `.install-tmp-*`
+    file only. Taken right AFTER the real call for `open` (the moment of creation) and right
+    BEFORE it for the others (the state the call finds). `setxattr` and `removexattr` are
+    recorded with no args."""
+    calls: list[TempCall] = []
     real_open, real_fchown, real_fchmod, real_fsync = os.open, os.fchown, os.fchmod, os.fsync
+    real_setxattr, real_removexattr = os.setxattr, os.removexattr
 
-    def is_temp(fd: int) -> bool:
+    def is_temp(fd: object) -> bool:
+        if not isinstance(fd, int):
+            return False
         try:
             return Path(os.readlink(f"/proc/self/fd/{fd}")).name.startswith(".install-tmp-")
         except OSError:
@@ -1936,7 +1992,7 @@ def _watch_temp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[int, .
 
     def record(name: str, args: tuple[int, ...], fd: int) -> None:
         st = os.fstat(fd)
-        calls.append((name, args, st.st_mode & 0o777, st.st_size))
+        calls.append(TempCall(name, args, st.st_mode & 0o777, st.st_size, _access_acl(fd), fd))
 
     def spy_open(path: str | os.PathLike[str], flags: int, mode_: int = 0o777, **kw: int) -> int:
         fd = real_open(path, flags, mode_, **kw)
@@ -1948,6 +2004,16 @@ def _watch_temp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[int, .
         if is_temp(fd):
             record("fchown", (uid, gid), fd)
         real_fchown(fd, uid, gid)
+
+    def spy_setxattr(fd: int, attr: str, value: bytes, flags: int = 0) -> None:
+        if is_temp(fd):
+            record("setxattr", (), fd)
+        real_setxattr(fd, attr, value, flags)
+
+    def spy_removexattr(fd: int, attr: str) -> None:
+        if is_temp(fd):
+            record("removexattr", (), fd)
+        real_removexattr(fd, attr)
 
     def spy_fchmod(fd: int, mode_: int) -> None:
         if is_temp(fd):
@@ -1964,23 +2030,21 @@ def _watch_temp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[int, .
 
     monkeypatch.setattr(os, "open", spy_open)
     monkeypatch.setattr(os, "fchown", spy_fchown)
+    monkeypatch.setattr(os, "setxattr", spy_setxattr)
+    monkeypatch.setattr(os, "removexattr", spy_removexattr)
     monkeypatch.setattr(os, "fchmod", spy_fchmod)
     monkeypatch.setattr(os, "fsync", spy_fsync)
     return calls
 
 
-def _assert_owner_only_throughout(
-    calls: list[tuple[str, tuple[int, ...], int, int]], *, through_fsync: bool = True
-) -> None:
-    """Owner-only at creation and at fchmod (empty); at fsync too when the final mode is 0600."""
-    names = [name for name, *_ in calls]
+def _assert_owner_only_throughout(calls: list[TempCall]) -> None:
+    """A 0600 target: owner-only at every call, and empty until fchmod."""
+    names = [c.name for c in calls]
     assert names.count("open") == 1 and "fchmod" in names and "fsync" in names, names
-    for name, _, perm, size in calls:
-        if name == "fsync" and not through_fsync:
-            continue
-        assert perm & 0o077 == 0, f"temp file was {perm:04o} at {name}"
-        if name in ("open", "fchmod"):
-            assert size == 0, f"bytes were written before {name}"
+    for c in calls:
+        assert c.perm & 0o077 == 0, f"temp file was {c.perm:04o} at {c.name}"
+        if c.name != "fsync":
+            assert c.size == 0, f"bytes were written before {c.name}"
 
 
 def test_set_secret_id_on_a_0600_env_never_opens_a_wider_temp_file(
@@ -1992,20 +2056,31 @@ def test_set_secret_id_on_a_0600_env_never_opens_a_wider_temp_file(
     done = env_tool(h, "set-secret-id", str(path), env={"AIZZAK_INSTALL_SECRET_ID": SECRET_ID})
     assert done.returncode == 0, done.stderr
     _assert_owner_only_throughout(calls)
+    assert [c.args for c in calls if c.name == "fchmod"] == [(0o600,)]
     assert f"VAULT_SECRET_ID={SECRET_ID}" in path.read_text(encoding="utf-8")
     assert mode(path) == 0o600
 
 
-def test_a_new_env_temp_file_is_owner_only_until_it_gets_the_umask_mode(
+def test_a_new_env_temp_file_is_born_with_its_final_mode(
     tool: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """AC-SR2.2: 0666 at open, nothing else: the kernel applies the umask (or the default ACL)."""
     path = tmp_path / "new.env"
     calls = _watch_temp(monkeypatch)
+    umasks: list[int] = []
+    real_umask = os.umask
+
+    def spy_umask(value: int) -> int:
+        umasks.append(value)
+        return real_umask(value)
+
+    monkeypatch.setattr(os, "umask", spy_umask)
     done = run_compose(tool, path)
     assert done.returncode == 0 and done.stdout.strip() == "created", done.stderr
-    _assert_owner_only_throughout(calls, through_fsync=False)
-    assert [args for name, args, _, _ in calls if name == "fchmod"] == [(0o644,)]
-    assert not [1 for name, *_ in calls if name == "fchown"]
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+    assert [(c.name, c.args) for c in calls if c.name != "fsync"] == [("open", (flags, 0o666))]
+    assert calls[0].perm == 0o644 and calls[0].size == 0
+    assert len(umasks) == 2 and umasks[0] == 0o022, "atomic_write must not touch the umask"
     assert mode(path) == 0o644
 
 
@@ -2022,6 +2097,29 @@ def test_a_new_env_takes_0666_minus_the_umask(tool: Harness, tmp_path: Path, uma
     assert list(tmp_path.glob(".install-tmp-*")) == []
 
 
+@pytest.mark.parametrize(
+    "default",
+    [
+        _acl((USER_OBJ, 7), (GROUP_OBJ, 0), (OTHER, 0)),
+        _acl((USER_OBJ, 7), (USER, 4, NOBODY), (GROUP_OBJ, 5), (MASK, 5), (OTHER, 0)),
+    ],
+    ids=["owner-only", "named-user"],
+)
+def test_a_new_env_gets_what_the_directory_default_acl_gives(
+    tool: Harness, tmp_path: Path, default: bytes
+) -> None:
+    """SR2-1: a new .env is what any new file in the directory is, default ACL included."""
+    _set_acl(tmp_path, DEFAULT, default)
+    path, ref = tmp_path / "new.env", tmp_path / "ref"
+    done = run_compose(tool, path)
+    assert done.returncode == 0 and done.stdout.strip() == "created", done.stderr
+    ref.touch()
+    assert mode(path) == mode(ref)
+    assert _access_acl(path) == _access_acl(ref)
+    if len(default) == 28:
+        assert mode(path) == 0o600
+
+
 def test_an_existing_env_gets_its_owner_then_its_mode_before_the_first_byte(
     installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2032,13 +2130,56 @@ def test_an_existing_env_gets_its_owner_then_its_mode_before_the_first_byte(
     calls = _watch_temp(monkeypatch)
     done = env_tool(h, "size-block", str(path), str(size_file), "medium")
     assert done.returncode == 0, done.stderr
-    assert [(name, args) for name, args, _, _ in calls] == [
+    assert [(c.name, c.args) for c in calls] == [
         ("open", (os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)),
         ("fchown", (before.st_uid, before.st_gid)),
+        ("removexattr", ()),
         ("fchmod", (0o640,)),
         ("fsync", ()),
     ]
-    assert [size for _, _, _, size in calls[:3]] == [0, 0, 0]
+    assert [c.size for c in calls[:4]] == [0, 0, 0, 0]
+    assert mode(path) == 0o640
+
+
+def test_an_existing_env_keeps_its_access_acl(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SR2-2 (a): a 0600 .env with `user:65534:r` (seen as 0640) keeps it through a rewrite."""
+    h, path = installed
+    path.chmod(0o600)
+    acl = _acl((USER_OBJ, 6), (USER, 4, NOBODY), (GROUP_OBJ, 0), (MASK, 4), (OTHER, 0))
+    _set_acl(path, ACCESS, acl)
+    before_acl, before_mode = _access_acl(path), mode(path)
+    assert before_acl is not None
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    calls = _watch_temp(monkeypatch)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    assert [c.name for c in calls] == ["open", "fchown", "setxattr", "fchmod", "fsync"]
+    for c in calls[:3]:
+        assert c.perm & 0o077 == 0 and c.size == 0, c
+    assert calls[3].acl == before_acl
+    assert _access_acl(path) == before_acl and mode(path) == before_mode
+
+
+def test_an_existing_env_does_not_take_the_directory_default_acl(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SR2-2 (b): a 0640 .env without an ACL, in a directory with a default ACL."""
+    h, path = installed
+    path.chmod(0o640)
+    default = _acl((USER_OBJ, 7), (USER, 4, NOBODY), (GROUP_OBJ, 5), (MASK, 5), (OTHER, 0))
+    _set_acl(path.parent, DEFAULT, default)
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    calls = _watch_temp(monkeypatch)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    opened = next(c for c in calls if c.name == "open")
+    assert opened.acl is not None and _acl_mask(opened.acl) == 0
+    assert next(c for c in calls if c.name == "fchmod").acl is None
+    with pytest.raises(OSError) as raised:
+        os.getxattr(path, ACCESS)
+    assert raised.value.errno == errno.ENODATA
     assert mode(path) == 0o640
 
 
@@ -2061,9 +2202,10 @@ def test_an_existing_env_keeps_its_group_through_a_rewrite(
 
 
 @pytest.mark.parametrize("euid", [1000, 0])
-def test_a_refused_fchown_is_ignored_unless_root(
+def test_a_refused_fchown_drops_the_group_bits_unless_root(
     installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch, euid: int
 ) -> None:
+    """AC-SR2.8: nothing is given to the creator's group; root still fails closed."""
     h, path = installed
     path.chmod(0o640)
     digest = sha(path)
@@ -2075,25 +2217,57 @@ def test_a_refused_fchown_is_ignored_unless_root(
     monkeypatch.setattr(os, "fchown", refuse)
     monkeypatch.setattr(os, "geteuid", lambda: euid)
     done = env_tool(h, "size-block", str(path), str(size_file), "medium")
-    assert mode(path) == 0o640
     assert list(path.parent.glob(".install-tmp-*")) == []
     if euid:
         assert done.returncode == 0, done.stderr
+        assert mode(path) == 0o600
     else:
         assert done.returncode == 4 and "PermissionError while handling .env" in done.stderr
         assert "Traceback" not in done.stderr
-        assert sha(path) == digest
+        assert sha(path) == digest and mode(path) == 0o640
 
 
-@pytest.mark.parametrize("dangling", [False, True])
-def test_a_link_planted_at_the_temp_path_is_refused_and_nothing_is_written_through_it(
-    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dangling: bool
+def test_a_non_root_writer_keeps_the_group_when_only_the_owner_is_refused(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, path = installed
+    path.chmod(0o640)
+    before = path.stat()
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    seen: list[tuple[int, int]] = []
+    real_fchown = os.fchown
+
+    def fake(fd: int, uid: int, gid: int) -> None:
+        seen.append((uid, gid))
+        if uid != -1:
+            raise PermissionError(1, "Operation not permitted")
+        real_fchown(fd, uid, gid)
+
+    monkeypatch.setattr(os, "fchown", fake)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    assert seen == [(before.st_uid, before.st_gid), (-1, before.st_gid)]
+    assert mode(path) == 0o640 and path.stat().st_gid == before.st_gid
+
+
+@pytest.mark.parametrize("new", [False, True], ids=["existing", "new"])
+@pytest.mark.parametrize("dangling", [False, True])
+def test_a_link_planted_at_the_temp_path_is_refused_and_nothing_is_written_through_it(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dangling: bool,
+    new: bool,
+) -> None:
+    if new:
+        h, path = request.getfixturevalue("tool"), tmp_path / "new.env"
+    else:
+        h, path = request.getfixturevalue("installed")
     victim = tmp_path / "victim"
     if not dangling:
         victim.write_text("VICTIM\n", encoding="utf-8")
-    digest, perm = sha(path), mode(path)
+    digest, perm = (None, None) if new else (sha(path), mode(path))
     size_file = h.root / "deploy" / "sizes" / "medium.env"
     seen: list[tuple[int, int]] = []
     real_open = os.open
@@ -2105,44 +2279,44 @@ def test_a_link_planted_at_the_temp_path_is_refused_and_nothing_is_written_throu
         return real_open(p, flags, mode_, **kw)
 
     monkeypatch.setattr(os, "open", plant)
-    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    if new:
+        done = run_compose(h, path)
+    else:
+        done = env_tool(h, "size-block", str(path), str(size_file), "medium")
     wanted = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
-    assert len(seen) == 1 and seen[0][0] & wanted == wanted and seen[0][1] == 0o600
+    assert len(seen) == 1 and seen[0][0] & wanted == wanted
+    assert seen[0][1] == (0o666 if new else 0o600)
     assert done.returncode == 4 and "FileExistsError while handling .env" in done.stderr
     assert "Traceback" not in done.stderr
     if dangling:
-        assert not victim.exists() and not victim.is_symlink()
+        assert not victim.exists()
     else:
         assert victim.read_text(encoding="utf-8") == "VICTIM\n"
-    assert (sha(path), mode(path)) == (digest, perm)
+    if new:
+        assert not path.exists()
+    else:
+        assert (sha(path), mode(path)) == (digest, perm)
 
 
-@pytest.mark.parametrize("failing", ["fchown", "fchmod"])
+@pytest.mark.parametrize("failing", ["fchown", "fchmod", "removexattr"])
 def test_the_temp_file_descriptor_is_closed_when_fchown_or_fchmod_raises(
     installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch, failing: str
 ) -> None:
-    """QA (SR-2 design §4.6): the fd lives inside the `with`, so a refusal never leaks it."""
+    """QA (SR-2 design §4.8): the fd lives inside the `with`, so a refusal never leaks it."""
     h, path = installed
     path.chmod(0o640)
     digest = sha(path)
     size_file = h.root / "deploy" / "sizes" / "medium.env"
-    opened: list[int] = []
-    real_open = os.open
+    calls = _watch_temp(monkeypatch)
 
-    def spy_open(p: str | os.PathLike[str], flags: int, mode_: int = 0o777, **kw: int) -> int:
-        fd = real_open(p, flags, mode_, **kw)
-        if Path(p).name.startswith(".install-tmp-"):
-            opened.append(fd)
-        return fd
+    def refuse(*_: object) -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
 
-    def refuse(*_: int) -> None:
-        raise PermissionError(1, "Operation not permitted")
-
-    monkeypatch.setattr(os, "open", spy_open)
     monkeypatch.setattr(os, failing, refuse)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     done = env_tool(h, "size-block", str(path), str(size_file), "medium")
     assert done.returncode == 4 and "PermissionError while handling .env" in done.stderr
+    opened = [c.fd for c in calls if c.name == "open"]
     assert len(opened) == 1
     with pytest.raises(OSError):
         os.fstat(opened[0])  # EBADF: closed (nothing else in the process reopened it)
