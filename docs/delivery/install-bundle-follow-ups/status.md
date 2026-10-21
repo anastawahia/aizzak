@@ -7,7 +7,7 @@
 - **الـ Issue:** لا يوجد. المدخل: طلب المالك (2026‑10‑21) «ابدأ العمل على الملاحظات المؤجَّلة واحدةً بعد الأخرى، من الأعلى أهمّيّةً إلى الأقلّ، وتوقّف بعد إتمام كلّ إصلاحٍ وتوثيقه»، و[`../install-bundle/follow-ups.md`](../install-bundle/follow-ups.md)
 - **الفروع:**
   - `fix/install-bundle-follow-ups` (من `master` ‏`4b44f54`): ‏SR‑2، مدموج في [PR #20](https://github.com/anastawahia/aizzak/pull/20) (`ea777ef`).
-  - `docs/install-bundle-follow-ups-sr12` (من `master` ‏`ea777ef`، أُنشئ 2026‑10‑22): وثائق فقط، أي تسجيل دمج SR‑2 وتسجيل SR‑12. لم يُرفع.
+  - `docs/install-bundle-follow-ups-sr12` (من `master` ‏`ea777ef`، أُنشئ 2026‑10‑22): وثائق فقط، أي تسجيل دمج SR‑2 وتسجيل SR‑12. رُفع بطلب المالك («افتح PR للوثائق فقط») في [PR #21](https://github.com/anastawahia/aizzak/pull/21)، وينتظر مراجعته ودمجه.
 - **آخر تحديث:** 2026‑10‑22 (SR‑2 مدموج، وSR‑12 مسجَّل. وSR‑1 أوقفه المالك قبل أن يبدأ)
 
 ## طريقة العمل
