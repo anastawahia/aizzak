@@ -351,6 +351,7 @@ compose() {
 env_tool() {
   python3 -I - "$@" <<'PY'
 import datetime
+import errno
 import os
 import re
 import secrets
@@ -459,26 +460,68 @@ def read_text(path):
         raise Refused(f"{Path(path).name} line {n} is not valid UTF-8") from None
 
 
+ACCESS_ACL = "system.posix_acl_access"
+NO_ACL = (errno.ENODATA, errno.ENOTSUP)  # none set / the file system has no ACLs (= EOPNOTSUPP)
+
+
+def access_acl(path):
+    """The POSIX access ACL of `path` as raw xattr bytes, or None when it has none (SR2-2)."""
+    try:
+        return os.getxattr(path, ACCESS_ACL)
+    except OSError as exc:
+        if exc.errno in NO_ACL:
+            return None
+        raise
+
+
+def set_access_acl(fd, acl):
+    """Give the open file exactly `acl`, or no access ACL when it is None: it may have inherited
+    one from the directory's default ACL (SR2-2)."""
+    if acl is not None:
+        os.setxattr(fd, ACCESS_ACL, acl)
+        return
+    try:
+        os.removexattr(fd, ACCESS_ACL)
+    except OSError as exc:
+        if exc.errno not in NO_ACL:
+            raise
+
+
 def atomic_write(path, text):
-    """Temp file next to the target, fsync, rename. A new file takes the mode umask gives it
-    (0666 & ~umask); an existing one keeps its mode and owner, set on the open file BEFORE the
-    first byte is written, so the secrets are never in a file more open than the one they replace.
-    chmod is never run on the target. Temp files a killed run left behind are removed first."""
+    """Temp file next to the target, fsync, rename. Temp files a killed run left behind are
+    removed first, and chmod is never run on the target.
+    A new file is created 0666, so the kernel applies the umask or the directory's default ACL,
+    as for any new file (Q-4): the temp file has its final permissions from the start.
+    An existing target's secrets are never in a file more open than it (SR-2): the temp file is
+    created owner-only (0600, O_EXCL | O_NOFOLLOW), then gets the target's owner, then its access
+    ACL (or none), then its mode, all before the first byte. A writer that is not root and cannot
+    give the owner keeps the target's group if it can, and otherwise drops the group bits and the
+    access ACL."""
     target = Path(os.path.realpath(path))
     for stale in target.parent.glob(".install-tmp-*"):
         stale.unlink(missing_ok=True)
     tmp = target.with_name(f".install-tmp-{os.getpid()}")
     existing = os.stat(target) if target.exists() else None
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    acl = None if existing is None else access_acl(target)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o666 if existing is None else 0o600)
     try:
-        if existing is not None:
-            os.fchmod(fd, stat.S_IMODE(existing.st_mode))
-            try:
-                os.fchown(fd, existing.st_uid, existing.st_gid)
-            except PermissionError:
-                if os.geteuid() == 0:
-                    raise
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            if existing is not None:
+                out = handle.fileno()
+                final_mode = stat.S_IMODE(existing.st_mode)
+                try:  # owner first: until the ACL and mode below, only the target's owner opens it
+                    os.fchown(out, existing.st_uid, existing.st_gid)
+                except PermissionError:
+                    if os.geteuid() == 0:
+                        raise
+                    try:  # SR2-3: keep the group at least, as deploy/auto_size.py does
+                        os.fchown(out, -1, existing.st_gid)
+                    except PermissionError:
+                        final_mode &= ~0o070  # the creator's group never gets the target's bits
+                        acl = None  # nor its ACL: drop what the directory's default ACL gave
+                set_access_acl(out, acl)  # the ACL before the mode: fchmod sets the ACL mask
+                os.fchmod(out, final_mode)
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
