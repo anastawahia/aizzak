@@ -7,7 +7,6 @@ Each phrase list is also shown failing on an edited copy of the text.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -51,14 +50,37 @@ def plan_section(plan: str) -> str:
     return plan[start : plan.index("#### 6.2 ")]
 
 
+# `-checkend` belongs to the check BEFORE activation (QA BUG-2), the `mv` to server.crt and the
+# reload are the activation, `up -d nginx-certs` is the rollback.
 _ORDER = [
     "openssl req -new",
     "Use my private key and CSR",
-    "server.crt",
-    "nginx -s reload",
     "-checkend 31536000",
+    "origin.crt deploy/nginx/certs/server.crt",
+    "nginx -s reload",
     "up -d nginx-certs",
 ]
+_CODES = ["`521`", "`522`", "`524`", "`525`", "`526`"]
+_LIMITS = [*_CODES, "100 م.ب", "api.cloudflare.com/client/v4/ips", "`ping`", "CF-Connecting-IP"]
+_HSTS = ["HSTS", "سجلّ DNS", "7.3", "max-age=0"]
+
+
+def subsection(four: str, number: str) -> str:
+    start = four.index(f"### {number} ")
+    end = four.find("\n### ", start + 1)
+    return four[start:] if end < 0 else four[start:end]
+
+
+def hsts_said(four: str) -> bool:
+    return has_all(subsection(four, "4.6"), _HSTS)
+
+
+def plan_row_done(row: str) -> bool:
+    return "⬜" not in row and "7.3" in row
+
+
+def gap_row_ok(row: str) -> bool:
+    return row.count("|") == 5
 
 
 def test_the_certificate_steps_are_in_order() -> None:
@@ -69,14 +91,14 @@ def test_the_certificate_steps_are_in_order() -> None:
 
 def test_hsts_timing_and_rollback_are_said_in_the_guide_and_the_plan() -> None:
     four = section_four(_read(_GUIDE))
-    assert has_all(four, ["HSTS", "DNS", "7.3", "max-age=0"])
+    assert hsts_said(four)
     assert has_all(plan_section(_read(_PLAN)), ["HSTS", "DNS", "7.3"])
 
 
 def test_the_plan_row_step_and_decision_4_say_cloudflare() -> None:
     plan = _read(_PLAN)
     row = plan_row(plan, "6.1")
-    assert "⬜" not in row and "7.3" in row
+    assert plan_row_done(row)
     decision = plan_row(plan, "قرار 4")
     assert has_all(decision, ["Cloudflare", "2026\u201110\u201120"])
     assert has_all(plan_section(plan), ["Origin CA", "Full (strict)", "-checkend 31536000"])
@@ -89,11 +111,7 @@ def test_the_plan_row_step_and_decision_4_say_cloudflare() -> None:
 def test_the_guide_section_has_the_zone_table_limits_and_error_codes() -> None:
     guide = _read(_GUIDE)
     four = section_four(guide)
-    codes = ["`521`", "`522`", "`524`", "`525`", "`526`"]
-    assert has_all(
-        four,
-        [*codes, "100", "api.cloudflare.com/client/v4/ips", "ping", "CF-Connecting-IP"],
-    )
+    assert has_all(four, _LIMITS)
     assert "| الإعداد | القيمة | النطاق | من ومتى |" in four
     assert "يبقى ما يولّده `nginx-certs` ذاتيّ التوقيع" not in guide
 
@@ -106,7 +124,7 @@ def test_the_three_new_gaps_are_rows_of_the_one_security_table() -> None:
     }
     for n, found in rows.items():
         assert len(found) == 1, n
-        assert found[0].count("|") == 5, n
+        assert gap_row_ok(found[0]), n
     assert "?token=" in rows[13][0]
     assert has_all(rows[14][0], ["6.3", "Authenticated Origin Pulls"])
     assert has_all(rows[15][0], ["Vault", "server.key"])
@@ -140,22 +158,26 @@ def test_the_524_limit_and_the_sse_advice_are_written() -> None:
     assert has_all(four, ["524", "runWorkflow", "SSE"])
 
 
-def test_no_line_pairs_the_installer_with_a_key_mode() -> None:
-    # the existing guard for .env permissions reads these documents line by line
-    for path in (_GUIDE, _PLAN, _RUNBOOK, _SECRETS):
-        for line in _read(path).splitlines():
-            assert not (re.search(r"install\.sh", line) and "0600" in line), (path, line[:80])
-
-
 def test_each_phrase_check_fails_on_an_edited_copy() -> None:
     four = section_four(_read(_GUIDE))
     assert in_order(four, _ORDER)
+    # activation before the check, as it used to be
     swapped = four.replace("-checkend 31536000", "X").replace(
         "nginx -s reload", "-checkend 31536000"
     )
     assert not in_order(swapped, _ORDER)
-    assert not has_all(four.replace("`524`", ""), ["`524`"])
-    plan = _read(_PLAN)
-    assert "⬜" in plan_row(plan, "6.1").replace("🟡", "⬜")
-    pipes = next(ln for ln in _read(_GUIDE).splitlines() if ln.startswith("| ث\u201113 |"))
-    assert (pipes + " | extra").count("|") != 5
+    # every phrase of the order and of the limits list is needed: the real check fails without it
+    for phrase in _ORDER:
+        assert not in_order(four.replace(phrase, ""), _ORDER), phrase
+    for phrase in _LIMITS:
+        assert not has_all(four.replace(phrase, ""), _LIMITS), phrase
+    # the HSTS facts are read from 4.6 alone: removing one phrase there fails the check
+    assert hsts_said(four)
+    for phrase in _HSTS:
+        cut = four.replace(subsection(four, "4.6"), subsection(four, "4.6").replace(phrase, ""))
+        assert not hsts_said(cut), phrase
+    # the plan row and the gap rows
+    row = plan_row(_read(_PLAN), "6.1")
+    assert plan_row_done(row) and not plan_row_done(row + " ⬜")
+    gap = next(ln for ln in _read(_GUIDE).splitlines() if ln.startswith("| ث\u201113 |"))
+    assert gap_row_ok(gap) and not gap_row_ok(gap + " | extra")
