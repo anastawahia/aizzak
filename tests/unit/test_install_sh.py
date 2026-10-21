@@ -2098,15 +2098,15 @@ def test_a_new_env_takes_0666_minus_the_umask(tool: Harness, tmp_path: Path, uma
 
 
 @pytest.mark.parametrize(
-    "default",
+    ("default", "owner_only"),
     [
-        _acl((USER_OBJ, 7), (GROUP_OBJ, 0), (OTHER, 0)),
-        _acl((USER_OBJ, 7), (USER, 4, NOBODY), (GROUP_OBJ, 5), (MASK, 5), (OTHER, 0)),
+        (_acl((USER_OBJ, 7), (GROUP_OBJ, 0), (OTHER, 0)), True),
+        (_acl((USER_OBJ, 7), (USER, 4, NOBODY), (GROUP_OBJ, 5), (MASK, 5), (OTHER, 0)), False),
     ],
     ids=["owner-only", "named-user"],
 )
 def test_a_new_env_gets_what_the_directory_default_acl_gives(
-    tool: Harness, tmp_path: Path, default: bytes
+    tool: Harness, tmp_path: Path, default: bytes, owner_only: bool
 ) -> None:
     """SR2-1: a new .env is what any new file in the directory is, default ACL included."""
     _set_acl(tmp_path, DEFAULT, default)
@@ -2116,7 +2116,7 @@ def test_a_new_env_gets_what_the_directory_default_acl_gives(
     ref.touch()
     assert mode(path) == mode(ref)
     assert _access_acl(path) == _access_acl(ref)
-    if len(default) == 28:
+    if owner_only:
         assert mode(path) == 0o600
 
 
@@ -2227,6 +2227,52 @@ def test_a_refused_fchown_drops_the_group_bits_unless_root(
         assert sha(path) == digest and mode(path) == 0o640
 
 
+def test_a_refused_fchown_drops_the_access_acl_too(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SR2-5: with no way to give the owner or the group, the target's ACL (`g::r`) must not be
+    copied onto the temp file: the creator's group would open it until fchmod."""
+    h, path = installed
+    path.chmod(0o600)
+    acl = _acl((USER_OBJ, 6), (USER, 4, NOBODY), (GROUP_OBJ, 4), (MASK, 4), (OTHER, 0))
+    _set_acl(path, ACCESS, acl)
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+    calls = _watch_temp(monkeypatch)
+
+    def refuse(fd: int, uid: int, gid: int) -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "fchown", refuse)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 0, done.stderr
+    names = [c.name for c in calls]
+    assert "removexattr" in names and "setxattr" not in names, names
+    at_chmod = next(c for c in calls if c.name == "fchmod")
+    assert at_chmod.perm & 0o070 == 0 and at_chmod.acl is None
+    assert _access_acl(path) is None and mode(path) == 0o600
+
+
+def test_an_unknown_error_reading_the_target_acl_is_raised_not_swallowed(
+    installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CR-SR2-5: only ENODATA/ENOTSUP mean "no ACL"; anything else stops the write (exit 4)."""
+    h, path = installed
+    path.chmod(0o640)
+    digest = sha(path)
+    size_file = h.root / "deploy" / "sizes" / "medium.env"
+
+    def broken(*_: object, **__: object) -> bytes:
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "getxattr", broken)
+    done = env_tool(h, "size-block", str(path), str(size_file), "medium")
+    assert done.returncode == 4 and "OSError while handling .env" in done.stderr
+    assert "Traceback" not in done.stderr
+    assert sha(path) == digest and mode(path) == 0o640
+    assert list(path.parent.glob(".install-tmp-*")) == []
+
+
 def test_a_non_root_writer_keeps_the_group_when_only_the_owner_is_refused(
     installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2299,7 +2345,7 @@ def test_a_link_planted_at_the_temp_path_is_refused_and_nothing_is_written_throu
 
 
 @pytest.mark.parametrize("failing", ["fchown", "fchmod", "removexattr"])
-def test_the_temp_file_descriptor_is_closed_when_fchown_or_fchmod_raises(
+def test_the_temp_file_descriptor_is_closed_when_fchown_removexattr_or_fchmod_raises(
     installed: tuple[Harness, Path], monkeypatch: pytest.MonkeyPatch, failing: str
 ) -> None:
     """QA (SR-2 design §4.8): the fd lives inside the `with`, so a refusal never leaks it."""

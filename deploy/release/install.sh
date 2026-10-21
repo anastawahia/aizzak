@@ -495,7 +495,8 @@ def atomic_write(path, text):
     An existing target's secrets are never in a file more open than it (SR-2): the temp file is
     created owner-only (0600, O_EXCL | O_NOFOLLOW), then gets the target's owner, then its access
     ACL (or none), then its mode, all before the first byte. A writer that is not root and cannot
-    give the owner keeps the target's group if it can, and otherwise drops the group bits."""
+    give the owner keeps the target's group if it can, and otherwise drops the group bits and the
+    access ACL."""
     target = Path(os.path.realpath(path))
     for stale in target.parent.glob(".install-tmp-*"):
         stale.unlink(missing_ok=True)
@@ -518,6 +519,7 @@ def atomic_write(path, text):
                         os.fchown(out, -1, existing.st_gid)
                     except PermissionError:
                         final_mode &= ~0o070  # the creator's group never gets the target's bits
+                        acl = None  # nor its ACL: drop what the directory's default ACL gave
                 set_access_acl(out, acl)  # the ACL before the mode: fchmod sets the ACL mask
                 os.fchmod(out, final_mode)
             handle.write(text)
