@@ -460,25 +460,33 @@ def read_text(path):
 
 
 def atomic_write(path, text):
-    """Temp file next to the target, fsync, rename. A new file takes the mode umask gives it
-    (0666 & ~umask); an existing one keeps its mode and owner, set on the open file BEFORE the
-    first byte is written, so the secrets are never in a file more open than the one they replace.
-    chmod is never run on the target. Temp files a killed run left behind are removed first."""
+    """Temp file next to the target, fsync, rename (SR-2). The temp file is created owner-only
+    (0600, O_EXCL | O_NOFOLLOW: never an existing file, never through a link), then gets its final
+    owner and then its final mode before the first byte is written: those of the existing target,
+    or 0666 & ~umask for a new one (Q-4). So at no moment are the secrets in a file more open than
+    the one they replace. chmod is never run on the target. Temp files a killed run left behind
+    are removed first."""
     target = Path(os.path.realpath(path))
     for stale in target.parent.glob(".install-tmp-*"):
         stale.unlink(missing_ok=True)
     tmp = target.with_name(f".install-tmp-{os.getpid()}")
     existing = os.stat(target) if target.exists() else None
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    if existing is None:
+        umask = os.umask(0o077)  # the standard library cannot read the umask without setting it
+        os.umask(umask)
+        final_mode = 0o666 & ~umask
+    else:
+        final_mode = stat.S_IMODE(existing.st_mode)
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
-        if existing is not None:
-            os.fchmod(fd, stat.S_IMODE(existing.st_mode))
-            try:
-                os.fchown(fd, existing.st_uid, existing.st_gid)
-            except PermissionError:
-                if os.geteuid() == 0:
-                    raise
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            if existing is not None:
+                try:  # owner first: until fchmod only the target's own owner can open it
+                    os.fchown(handle.fileno(), existing.st_uid, existing.st_gid)
+                except PermissionError:
+                    if os.geteuid() == 0:
+                        raise
+            os.fchmod(handle.fileno(), final_mode)
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
