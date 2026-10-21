@@ -132,11 +132,27 @@ def test_a_certificate_for_another_name_warns_and_names_the_domain(tmp_path: Pat
     assert "install: READY" in done.stdout and "TLS: WARNING" in done.stdout
 
 
-def test_an_issuer_name_that_says_does_match_certificate_does_not_vouch_for_the_name(
-    tmp_path: Path,
+_PHRASE = "Hostname example.com does match certificate"
+
+
+@pytest.mark.parametrize(
+    "issuer",
+    [
+        "/O=AIZZAK Test/CN=Evil does match certificate",
+        f"/O=AIZZAK Test/CN={_PHRASE}",
+        f"/O=AIZZAK Test/OU={_PHRASE}/CN=",
+        f"/O=AIZZAK Test/CN=x\n{_PHRASE}",
+    ],
+    ids=["partial-phrase", "full-phrase-cn", "full-phrase-ou", "newline-then-phrase"],
+)
+def test_an_issuer_name_carrying_the_phrase_does_not_vouch_for_the_name(
+    tmp_path: Path, issuer: str
 ) -> None:
     h = make_harness(tmp_path)
-    evil = _ca(tmp_path, "/O=AIZZAK Test/CN=Evil does match certificate")
+    try:
+        evil = _ca(tmp_path, issuer)
+    except subprocess.CalledProcessError:
+        pytest.skip("this openssl refuses to build that issuer name")
     _plant(h, _leaf(tmp_path, evil, "other.example"))
     out = _state(h)
     assert out.startswith("WARNING: the certificate does not cover example.com (issuer ")
