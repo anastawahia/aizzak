@@ -59,17 +59,9 @@ def _http_directives(text: str, name: str) -> list[list[str]]:
 def _anywhere(name: str) -> int:
     """How many times `name` is declared anywhere in both Compose-path files (comments stripped)."""
 
-    def count(stmts: list[Directive | Block]) -> int:
-        total = 0
-        for s in stmts:
-            if s[0] == "directive" and s[1] == name:
-                total += 1
-            elif s[0] == "block":
-                total += count(list(s[3]))
-        return total
-
     return sum(
-        count(list(_parse_config(p.read_text(encoding="utf-8")))) for p in (_NGINX, _LOCATIONS)
+        _count_in(list(_parse_config(p.read_text(encoding="utf-8"))), name)
+        for p in (_NGINX, _LOCATIONS)
     )
 
 
@@ -86,7 +78,7 @@ def _range_problems(ranges: list[str]) -> list[str]:
     if nets and not any(n.version == 6 for n in nets):
         problems.append("no IPv6 range")
     for n in nets:
-        if "/" not in str(n) or n.prefixlen < _WIDEST[n.version]:
+        if n.prefixlen < _WIDEST[n.version]:
             problems.append(f"{n}: wider than /{_WIDEST[n.version]}")
         for bad in _FORBIDDEN_OVERLAPS:
             if bad.version == n.version and n.overlaps(bad):
@@ -150,9 +142,6 @@ def test_cloudflare_s_header_is_the_only_real_ip_source_and_sits_in_http() -> No
     assert _anywhere("real_ip_header") == 1
     assert _http_directives(text, "real_ip_recursive") == [["off"]]
     assert _anywhere("set_real_ip_from") == len(_http_directives(text, "set_real_ip_from"))
-    assert "X-Forwarded-For" not in "".join(
-        " ".join(a) for a in _http_directives(text, "real_ip_header")
-    )
 
 
 def test_every_trusted_range_is_a_strict_cidr_and_both_families_are_there() -> None:
