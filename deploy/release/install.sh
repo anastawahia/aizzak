@@ -1295,6 +1295,57 @@ vault_volume() {
   printf '%s_vault-init' "${project:-aizzak}"
 }
 
+# One line for the report: the certificate nginx serves on :443 (cloudflare-tls FR-18). Reads
+# server.crt only, never the key file, and prints no certificate material. Always returns 0.
+tls_state() {
+  local crt="$ROOT/deploy/nginx/certs/server.crt" out chk not_after end_s day label hint=""
+  local -a hashes=()
+  if [[ -L $crt ]]; then
+    printf 'WARNING: deploy/nginx/certs/server.crt is a symbolic link; not read'
+    return 0
+  fi
+  if [[ ! -e $crt ]]; then
+    printf 'no certificate yet (deploy/nginx/certs/server.crt is missing)'
+    return 0
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    printf 'not checked: openssl is not installed on this host'
+    return 0
+  fi
+  out="$(timeout 10 openssl x509 -in "$crt" -noout -subject_hash -issuer_hash -enddate \
+    -issuer -nameopt sep_multiline,lname,utf8 2>/dev/null | relay)" || out=""
+  not_after="$(sed -n 's/^notAfter=//p' <<<"$out" | head -n 1)"
+  end_s="$(date -u -d "$not_after" +%s 2>/dev/null)" || end_s=""
+  if [[ -z $not_after || -z $end_s ]]; then
+    printf 'WARNING: deploy/nginx/certs/server.crt could not be read as a certificate'
+    return 0
+  fi
+  day="$(date -u -d "@$end_s" +%Y-%m-%d)"
+  mapfile -t hashes < <(head -n 2 <<<"$out")
+  if [[ ${#hashes[@]} -eq 2 && ${hashes[0]} == "${hashes[1]}" ]]; then
+    printf 'self-signed development certificate -- browsers will not trust https://%s; a real one: docs/deploy-server.md §4' "$DOMAIN"
+    return 0
+  fi
+  label="$(sed -n 's/^ *commonName=//p' <<<"$out" | head -n 1)"
+  [[ -n $label ]] || label="$(sed -n 's/^ *organizationalUnitName=//p' <<<"$out" | head -n 1)"
+  [[ -n $label ]] || label="$(sed -n 's/^ *organizationName=//p' <<<"$out" | head -n 1)"
+  label="${label:-unknown}"
+  if ((end_s <= $(date -u +%s))); then
+    printf 'WARNING: the certificate expired on %s (issuer %s); docs/deploy-server.md §4' "$day" "$label"
+    return 0
+  fi
+  # -checkhost runs alone and its whole output is compared: in a shared call the issuer name
+  # (certificate text, chosen by whoever issued it) comes before it and could contain the phrase
+  chk="$(timeout 10 openssl x509 -in "$crt" -noout -checkhost "$DOMAIN" 2>/dev/null)" || chk=""
+  if [[ $chk != "Hostname $DOMAIN does match certificate" ]]; then
+    printf 'WARNING: the certificate does not cover %s (issuer %s, expires %s); docs/deploy-server.md §4' \
+      "$DOMAIN" "$label" "$day"
+    return 0
+  fi
+  [[ $label != *"CloudFlare Origin"* ]] || hint=' -- trusted by Cloudflare only: keep the DNS record proxied'
+  printf 'certificate for %s, issuer %s, expires %s%s' "$DOMAIN" "$label" "$day" "$hint"
+}
+
 report() {
   local status="$1" minted expires mode
   if [[ $status == READY ]]; then
@@ -1304,6 +1355,7 @@ report() {
     say "install: NOT READY -- AIZZAK $RELEASE at https://$DOMAIN"
     say "  failed: $FAILED_CHECK"
   fi
+  say "  TLS: $(tls_state)"
   say "  size        $SIZE_DESC"
   if [[ $MODE == gpu ]]; then
     say "  GPU: yes    docker-compose.gpu.yml"

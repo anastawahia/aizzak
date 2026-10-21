@@ -2,7 +2,7 @@
 
 # تشغيل AIZZAK على خادمٍ بكرت NVIDIA
 
-> **ما هذه الوثيقة؟** هيكلٌ أوّل لدليل تشغيل الخادم. فيه الآن **قسم المتطلّبات** (الخطّة [`server-gpu-plan.md`](server-gpu-plan.md) الخطوة 2.1)، وقسم المراقبة والتنبيهات (4.1)، وقسم التثبيت (§3، الخطوتان 5.1 و5.2: حزمة الإصدار و`install.sh`)، وقائمة الأمان المؤجّلة (بدأت فارغة). يكمله دليل التشغيل الكامل في الخطوة 7.4 بعد تجربة الخادم الحقيقيّ (7.3). ويستدعي `install.sh` سكربت الفحص أدناه.
+> **ما هذه الوثيقة؟** هيكلٌ أوّل لدليل تشغيل الخادم. فيه الآن **قسم المتطلّبات** (الخطّة [`server-gpu-plan.md`](server-gpu-plan.md) الخطوة 2.1)، وقسم المراقبة والتنبيهات (4.1)، وقسم التثبيت (§3، الخطوتان 5.1 و5.2: حزمة الإصدار و`install.sh`)، وقسم الشهادة عبر Cloudflare (§4، الخطوة 6.1)، وقائمة الأمان المؤجّلة (بدأت فارغة). يكمله دليل التشغيل الكامل في الخطوة 7.4 بعد تجربة الخادم الحقيقيّ (7.3). ويستدعي `install.sh` سكربت الفحص أدناه.
 >
 > **الوثائق المرتبطة:**
 > - أوامر المكدّس: [`stack-commands.md`](stack-commands.md).
@@ -136,7 +136,7 @@ sudo ./install.sh --domain example.com --firebase-project aizzak-agent
 5. **الصور:** يُسحب الغائب وحده (لا `docker compose pull`، فلا يتحرّك وسمٌ لطرفٍ ثالث بين تثبيتين)، ثمّ يُتحقَّق أنّ ما سُحب هو ما في `VERSION`.
 6. **أوّل إقلاع بترتيبٍ ثابت:** `vault` ثمّ `vault-bootstrap`، ثمّ **سكّ `secret_id` من داخل حاوية `vault`** وكتابته في `.env`، ثمّ `minio-bootstrap` و`migrate`، ثمّ كلمة سرّ دور `metrics_exporter` في Postgres، ثمّ `ollama-pull` (فشله يوقف التثبيت: دونه تردّ المحادثة 502)، ثمّ الباقي. لا تُنشأ خدمةٌ تحمل المفتاح قبل أن يوجد.
 7. **الفحوص:** `/health` و`/health/ready` على المنفذ الذي نشره Compose فعلاً، ثمّ `stack_smoke.py`.
-8. **التقرير** على الشاشة فقط: الرابط، والحجم، والكرت، والمراقبة، وانتهاء `secret_id`، وتذكير بنسخ حجم `vault-init` خارج الخادم (6.4)، وتذكير بصلاحيّة `.env`.
+8. **التقرير** على الشاشة فقط: الرابط، والحجم، والكرت، والمراقبة، وانتهاء `secret_id`، وتذكير بنسخ حجم `vault-init` خارج الخادم (6.4)، وتذكير بصلاحيّة `.env`، وحال الشهادة (§4).
 
 ### 3.5 رموز الخروج
 
@@ -186,7 +186,156 @@ chmod 600 .env
 
 ### 3.8 ما لا يفعله
 
-لا يثبّت Docker ولا التعريف (§1: يفحصهما فقط). ولا يعالج ما تتكفّل به خطوات المرحلة 6: الشهادة الحقيقيّة (6.1: يبقى ما يولّده `nginx-certs` ذاتيّ التوقيع)، وروابط الملفّات العامّة (6.2)، والمنافذ وجدار الحماية (6.3)، ونسخ حجم `vault-init` خارج الخادم (6.4)، وتجديد `secret_id` قبل انقضائه (6.5: ينتهي بعد 720 ساعة من سكّه، والتقرير يطبع التاريخ). ولا يأخذ مفتاح السجلّ، ولا يضبط صلاحيّة `.env`، ولا يحدّث ولا يرجع (5.3)، ولا يحذف ملفّاً ولا حجماً.
+لا يثبّت Docker ولا التعريف (§1: يفحصهما فقط). ولا يعالج ما تتكفّل به خطوات المرحلة 6: روابط الملفّات العامّة (6.2)، والمنافذ وجدار الحماية (6.3)، ونسخ حجم `vault-init` خارج الخادم (6.4)، وتجديد `secret_id` قبل انقضائه (6.5: ينتهي بعد 720 ساعة من سكّه، والتقرير يطبع التاريخ). ولا يصنع الشهادة الحقيقيّة، فتضعها بخطوات §4 (والتقرير يقول حالها). ولا يأخذ مفتاح السجلّ، ولا يضبط صلاحيّة `.env`، ولا يحدّث ولا يرجع (5.3)، ولا يحذف ملفّاً ولا حجماً.
+
+---
+
+## 4) الشهادة عبر Cloudflare (6.1)
+
+الطريقة في أربعة أسطر:
+- اسم الـAPI `api.aizzak.com` يمرّ عبر Cloudflare (سجلّ DNS مُمرَّر)، فيرى الزائر شهادة Universal SSL العامّة.
+- Cloudflare يصل الأصل على 443 بوضع **Full (strict)** لهذا الاسم وحده، فيتحقّق من شهادة الأصل.
+- شهادة الأصل من **Cloudflare Origin CA** لهذا الاسم وحده، ومدّتها 15 سنة، فلا تجديد. ومفتاحها ECDSA P‑256 يولَّد على الخادم ولا يخرج منه.
+- nginx يأخذ عنوان العميل من `CF-Connecting-IP` لنطاقات Cloudflare وحدها (§4.5).
+
+التثبيت بـ`--domain api.aizzak.com`. وجهاز التطوير لا يتغيّر: يبقى على الشهادة الذاتيّة و`localhost`. واسمٌ أعمق من المستوى الأوّل (مثل `api.prod.aizzak.com`) لا تغطّيه Universal SSL المجّانيّة.
+
+### 4.1 إعدادات المنطقة
+
+| الإعداد | القيمة | النطاق | من ومتى |
+|---|---|---|---|
+| قاعدة Cache Rules: تجاوز التخزين | Bypass cache | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| قاعدة Single Redirect: HTTP إلى HTTPS | 308، مع الاستعلام | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| قاعدة Configuration Rules: SSL | Full (strict) | `api.aizzak.com` وحده | المالك من اللوحة، 2026‑10‑21 |
+| أدنى إصدار TLS | 1.2 (كان 1.0) | المنطقة كلّها | المالك من اللوحة، 2026‑10‑21 |
+| سجلّ DNS من النوع A، مُمرَّر | عنوان الخادم | `api.aizzak.com` | 7.3 |
+
+كلّ تغييرٍ في Cloudflare بموافقة المالك عليه بعينه، وقبله صورة وبعده صورة. والبنود الأربعة الأولى طُبّقت من اللوحة لأنّ أداة الـAPI كانت معطّلة. فكانت الصورة مسباراً من الخارج قبل كلّ بندٍ وبعده، وتأكيد المالك من اللوحة، والتفصيل في `docs/delivery/cloudflare-tls/status.md`. والصورة الكاملة بالـAPI تُؤخذ قبل سجلّ DNS (`docs/delivery/cloudflare-tls/follow-ups.md`، PO‑1). وفي اللوحة الحاليّة تُنشأ Configuration Rules من Rules ← Overview ← Create rule. والرجوع: حذف القاعدة من Rules ← Overview، وإعادة أدنى TLS إلى 1.0 من SSL/TLS ← Edge Certificates.
+
+**توكن Cloudflare API** (لمن ينفّذ التغييرات بالـAPI لا باللوحة):
+- Custom Token لا Global API Key، لمنطقة `aizzak.com` وحدها، وبالصلاحيّات التي يحتاجها هذا الدليل وحدها: قراءة المنطقة، وتعديل DNS، وتعديل إعدادات المنطقة، وتعديل قواعد Configuration وRedirect وCache، و«SSL and Certificates» لإصدار شهادة المنشأ وإبطالها، وقراءة Bot Management.
+- له تاريخ انتهاء بعد 7.3، ويُقيَّد بتصفية عنوان العميل (Client IP Address Filtering) على جهاز المشغّل.
+- توكنٌ آخر للقراءة فقط لأخذ اللقطات (`snap`).
+- يُبطَل التوكنان بعد 7.3.
+- لا يظهر التوكن في سطر أوامر `curl` (فيُرى في `ps`)؛ يُمرَّر من ملفٍّ بصلاحيّة 0600 بالخيار `-H @<ملف>`، أو من stdin بالخيار `--config -`. ولا يُكتب في ملفّ داخل المستودع.
+
+**لا يُلمس:** وضع `ssl` للمنطقة (يبقى `full`)، و`always_use_https` (مطفأ)، وHSTS المنطقة (مطفأ)، وUniversal SSL (مفعّل)، والجذر `aizzak.com` و`chat.` و`notify.` والبريد. وإن غيّر أحدٌ `ssl` إلى `flexible` فيرجع الاسم يتكلّم نصّاً صريحاً مع الأصل: افحصه بـ`GET /zones/<id>/settings/ssl` وأعده إلى `full`.
+
+### 4.2 شهادة المنشأ
+
+الأوامر من مجلّد الحزمة المفكوكة وبـ`sudo`. لا يُطبع المفتاح ولا يخرج من الخادم:
+
+1. المفتاح وطلب التوقيع على الخادم:
+   ```bash
+   sudo sh -c 'umask 077 && openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+     -keyout deploy/nginx/certs/origin.key -out deploy/nginx/certs/origin.csr -subj "/CN=api.aizzak.com"'
+   sudo cat deploy/nginx/certs/origin.csr
+   ```
+   وإن غاب `openssl` عن المضيف: الأمر نفسه داخل `sudo docker run --rm --network none` على صورة `nginx:1.27` بمجلّد الشهادات مربوطاً.
+2. في لوحة Cloudflare: SSL/TLS ← Origin Server ← Create Certificate ← «Use my private key and CSR» ← الصق الطلب ← احذف `*.aizzak.com` و`aizzak.com` من الأسماء واترك `api.aizzak.com` وحده ← 15 years ← Create. الطريق البديل (مفتاحٌ يولّده Cloudflare) أضعف، لأنّ المفتاح يمرّ بالمتصفّح.
+3. ضع الشهادة (PEM عامّ) في `deploy/nginx/certs/origin.crt` ثمّ `sudo chmod 644` لها. **سجّل معرّف الشهادة** الظاهر في اللوحة عند الإصدار (أو `.result.id` إن صدرت بالـAPI): خطوة الإبطال في §4.3 تحتاجه.
+4. تحقّق قبل التفعيل (تُطبع البصمات وحدها). الأمر في صدفةٍ فرعيّة حتّى لا تبقى صدفتك داخل مجلّد الشهادات:
+   ```bash
+   ( cd deploy/nginx/certs &&
+     sudo openssl x509 -in origin.crt -noout -ext subjectAltName -issuer -enddate &&
+     sudo openssl x509 -in origin.crt -noout -checkend 31536000 &&
+     sudo openssl x509 -in origin.crt -noout -pubkey | openssl pkey -pubin -outform DER | sha256sum &&
+     sudo openssl pkey -in origin.key -pubout -outform DER | sha256sum )
+   ```
+   البصمتان الأخيرتان متساويتان، وSAN فيه `api.aizzak.com` وحده، و`-checkend` يخرج بـ0 (الصلاحيّة سنةً على الأقلّ). وإن فشل أيٌّ منها فلا تفعّل.
+5. التفعيل: بالاسمين `server.crt` و`server.key` يرى nginx الملفّين الجديدين بلا إعادة إنشاء الحاوية (المجلّد مربوطٌ مجلّداً). الأسطر مسلسلةٌ بـ`&&` فلا `reload` بعد `mv` فاشل، وتُنسخ الشهادة العاملة إلى `*.prev` قبل أن تُستبدل:
+   ```bash
+   sudo cp -p deploy/nginx/certs/server.crt deploy/nginx/certs/server.crt.prev &&
+     sudo cp -p deploy/nginx/certs/server.key deploy/nginx/certs/server.key.prev &&
+     sudo mv -f deploy/nginx/certs/origin.key deploy/nginx/certs/server.key &&
+     sudo mv -f deploy/nginx/certs/origin.crt deploy/nginx/certs/server.crt &&
+     sudo docker compose exec nginx nginx -t && sudo docker compose exec nginx nginx -s reload
+   ```
+   وإن فشل `nginx -t` فلا `reload`. أعد الزوج العاملة، وانقل الزوج الجديد جانباً أوّلاً حتّى لا يُمحى (فيبقى مفتاحه في `origin.key`، ولا حاجة إلى طلبٍ وشهادةٍ جديدين إن كان السبب غير الشهادة):
+   ```bash
+   sudo mv -f deploy/nginx/certs/server.crt deploy/nginx/certs/origin.crt &&
+     sudo mv -f deploy/nginx/certs/server.key deploy/nginx/certs/origin.key &&
+     sudo mv -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.crt &&
+     sudo mv -f deploy/nginx/certs/server.key.prev deploy/nginx/certs/server.key
+   ```
+   ثمّ طبّق الرجوع (§4.4) إن لزم.
+6. التحقّق المحلّيّ: `openssl s_client -connect 127.0.0.1:443 -servername api.aizzak.com -CAfile <جذر Origin CA ECC العامّ من وثائق Cloudflare> </dev/null 2>/dev/null | grep 'Verify return code'` يطبع `0 (ok)`. ثمّ من جهازٍ خارج الخادم: `curl -fsS https://api.aizzak.com/health`.
+7. بعد نجاح الفحص الخارجيّ في الخطوة 6 احذف النسختين المؤقّتتين، فإحداهما مفتاح الشهادة السابقة: `sudo rm -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.key.prev`.
+
+التقرير يطبع سطر `TLS:` في كلّ تثبيت:
+
+| السطر | المعنى |
+|---|---|
+| `self-signed development certificate` | ما زالت الشهادة الذاتيّة: اتّبع الخطوات أعلاه |
+| `certificate for <النطاق>, issuer …, expires …` | شهادةٌ تغطّي النطاق. ومعها «trusted by Cloudflare only» إن كانت من Origin CA: أبقِ سجلّ DNS مُمرَّراً |
+| `WARNING: the certificate does not cover …` | الشهادة لاسمٍ آخر |
+| `WARNING: the certificate expired …` | انتهت صلاحيّتها |
+| `WARNING: deploy/nginx/certs/server.crt is a symbolic link; not read` | `server.crt` رابطٌ رمزيّ: لا يقرؤه التقرير (احتراز). ضع الملفّ نفسه |
+| `WARNING: deploy/nginx/certs/server.crt could not be read as a certificate` | الملفّ ليس شهادة PEM مقروءة: أعد نسخ الشهادة |
+| `no certificate yet` / `not checked` | لا شهادة بعد، أو لا `openssl` على المضيف |
+
+لا يتغيّر رمز الخروج في أيّ حالة. وإن وُجد `server.crt` وحده أو `server.key` وحده فخدمة `nginx-certs` تخرج بـ1 ولا تكتب شيئاً (§4.8).
+
+### 4.3 التدوير
+
+1. سبرٌ خارجيّ كلّ ثانية: `while :; do curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 https://api.aizzak.com/health; sleep 1; done | tee probe.log`.
+2. سجّل معرّف الحاوية ووقت بدئها قبل التمرين: `docker inspect -f '{{.Id}} {{.State.StartedAt}}' $(sudo docker compose ps -q nginx)`.
+3. مفتاحٌ وطلبٌ ثانيان (`origin.key` و`origin.csr` من جديد)، وشهادةٌ ثانية، ثمّ الخطوتان 4 و5 من §4.2 (والخطوة 5 تنسخ الزوج العاملة إلى `*.prev` قبل الاستبدال، وتحذفها الخطوة 7 بعد ثبوت التدوير. وعند فشل `nginx -t` تُطبَّق الاستعادة الموصوفة في الخطوة 5 بترتيبها: الجديد إلى `origin.*` أوّلاً).
+4. البصمة الجديدة في `s_client`، و`docker inspect` بعد التمرين بالقيمتين نفسيهما (لم تُعَد الحاوية).
+5. أبطل الشهادة الأولى من لوحة Cloudflare (Revoke) أو بـ`DELETE /certificates/<id>` بمعرّفها الذي سجّلته عند إصدارها (§4.2 الخطوة 3). وبالـAPI يلزم التوكن صلاحيّة «SSL and Certificates» (§4.1).
+6. `grep -vc '^200$' probe.log` يطبع 0.
+7. بعد تأكيد الإبطال (الخطوة 5) وخلوّ المسبار (الخطوة 6) احذف نسختي الزوج السابقة: `sudo rm -f deploy/nginx/certs/server.crt.prev deploy/nginx/certs/server.key.prev`. فـ`server.key.prev` هو مفتاح الشهادة المُبطَلة.
+
+### 4.4 الرجوع
+
+```bash
+sudo mkdir -p deploy/nginx/certs/aside
+sudo mv deploy/nginx/certs/server.crt deploy/nginx/certs/server.key deploy/nginx/certs/aside/
+sudo docker compose up -d nginx-certs
+sudo docker compose exec nginx nginx -t && sudo docker compose exec nginx nginx -s reload
+```
+
+فيعود الاسم يردّ **526** بقصد (strict يرفض الشهادة الذاتيّة). وإخراج الاسم من الخدمة كلّيّاً بحذف سجلّ DNS.
+
+### 4.5 عنوان العميل وقائمة نطاقات Cloudflare
+
+كتلة `realip` في `nginx.conf` تضع في `$remote_addr` قيمة `CF-Connecting-IP` لطلبٍ نظيره من نطاقات Cloudflare المنشورة وحدها. فيصير مفتاح حدّ المعدّل وحدّ الاتّصالات والسجلّ و`X-Real-IP` هو العميل لا حافّة Cloudflare. أيّ نظيرٍ آخر (الجهاز المحلّيّ، وفحوص `install.sh`، وعميلٌ يصل الأصل مباشرة) يبقى بعنوانه. ولا يُقرأ `X-Forwarded-For`. وطلبات Cloudflare Workers تصل بعنوان خروج الـWorker فتتقاسم حدّاً واحداً.
+
+حدّ الثقة هنا **كلّ عملاء Cloudflare** لا عميلنا وحده: طلبٌ من Worker في منطقةٍ أخرى يصل من نطاقات Cloudflare فيُقبل منه `CF-Connecting-IP` الذي يختاره. أثر ذلك على مفتاح حدّ المعدّل لكلّ عنوان وعلى سجلّ الوصول. **فلا يُبنى قبل 6.3 قرارُ `allow` أو `deny` أو تفويضٍ على `$remote_addr`.** ومعروفٌ ومؤجَّلٌ إلى 6.3 أيضاً: بعد `realip` يأخذ عملاء IPv6 مفتاح حدّ معدّلٍ لكلّ عنوان /128، فشبكةٌ واحدة من /64 تستطيع أخذ مفاتيح كثيرة.
+
+القائمة **نسخة** من `https://api.cloudflare.com/client/v4/ips` بتاريخها و`etag` في تعليق `nginx.conf`. المقارنة يوم الدمج:
+
+```bash
+curl -sS https://api.cloudflare.com/client/v4/ips | jq -r '.result.ipv4_cidrs[], .result.ipv6_cidrs[]' | sort > ips-api.txt
+sed -n 's/^[[:space:]]*set_real_ip_from[[:space:]]\+\([^;]*\);.*/\1/p' deploy/nginx/nginx.conf | sort > ips-conf.txt
+diff ips-api.txt ips-conf.txt && echo SAME
+```
+
+التحديث: في المستودع أوّلاً (والتاريخ في التعليق). ثمّ على الخادم حتّى يوجد `upgrade.sh`: انسخ `nginx.conf`، وافحصه في حاويةٍ مؤقّتة (`sudo docker run --rm --network none -v <المسار>/nginx.conf:/etc/nginx/nginx.conf:ro -v <المسار>/app-locations.conf:/etc/nginx/app-locations.conf:ro -v <المسار>/certs:/etc/nginx/certs:ro nginx:1.27 nginx -t`)، ثمّ **`sudo docker compose restart nginx`**. فـ`nginx.conf` مربوطٌ ملفّاً، و`nginx -s reload` بعد استبدال الملفّ يعيد تحميل النصّ القديم. ونطاقٌ جديد غير مدرج يجعل عملاءه يتقاسمون حدّاً واحداً حتّى التحديث.
+
+### 4.6 HSTS
+
+السطر في خريطة `nginx.conf`: `"api.aizzak.com" "max-age=31536000"`. **بلا `includeSubDomains` ولا `preload`:** منطقة `aizzak.com` تحمل موقع المالك في الجذر و`chat.` و`notify.` والبريد، وأيّ من الخيارين يفرض HTTPS على أسماءٍ لا يخدمها هذا المكدّس. والترويسة لا تبلغ متصفّحاً قبل أن يوجد سجلّ DNS للاسم (7.3، بعد ثبوت الشهادة)، وهذا معنى «بعد ثبوت الشهادة». والرجوع عنها `max-age=0`، وأثرها باقٍ في كلّ متصفّحٍ رآها حتّى يعود إلى الموقع. وخادمٌ مثبّتٌ بـ`--domain` آخر لا يأخذ HSTS من هذه الخريطة.
+
+### 4.7 حدود Cloudflare
+
+- جسم الطلب 100 م.ب كحدٍّ أقصى (والـAPI نفسه 2 م.ب، والملفّات حتّى 50 م.ب برابطٍ موقّع).
+- ردٌّ غير مبثوث يتجاوز 100 ثانية يصل العميلَ بالرمز `524` والعمل جارٍ على الخادم. والجواب المجمَّع لسير عملٍ طويل (`runWorkflow`) معرّضٌ لذلك، فيُنصح بالبثّ SSE (`text/event-stream`).
+- WebSocket: على العميل إرسال `ping` كلّ 30 ثانية حتّى يُقاس الحدّ في 7.3.
+- التخزين بحسب الامتداد، وقاعدة التجاوز (§4.1) تحسمه لاسم الـAPI.
+- Bot Fight Mode وBrowser Integrity Check و«Under Attack» قد تتحدّى عميل API.
+- أصلٌ للمتصفّح غير مدرجٍ في قائمة CORS يُرفض، وإضافة أصلٍ جديد تعديلٌ منفصل.
+
+### 4.8 جدول الأعطال
+
+| الرمز | المعنى | الفحص | العلاج |
+|---|---|---|---|
+| `521` | الأصل لا يجيب على 443، أو nginx متوقّف | `sudo docker compose ps nginx` ثمّ `curl -k https://127.0.0.1/health` على الخادم | شغّل nginx، وافتح 443 للخادم |
+| `522` | مهلة الاتّصال بالأصل | جدار حماية الخادم أو مزوّده | اسمح لنطاقات Cloudflare بالوصول إلى المنفذ 443 |
+| `524` | الردّ تجاوز 100 ثانية | زمن الطلب في سجلّ nginx | بثّ SSE بدل الجواب المجمَّع |
+| `525` | فشل مصافحة TLS مع الأصل | `sudo docker compose logs nginx` | تحقّق من الشهادة والمفتاح (§4.2) |
+| `526` | شهادة الأصل ذاتيّة أو لاسمٍ آخر أو منتهية | سطر `TLS:` في تقرير `install.sh` | ضع شهادة Origin CA صالحة (§4.2) |
+| `nginx-certs` خرج بـ1 | نصف زوجٍ في `deploy/nginx/certs` | رسالته على stderr تسمّي الناقص | ضع الملفّ الناقص، أو انقل الموجود جانباً |
 
 ---
 
@@ -208,5 +357,8 @@ chmod 600 .env
 | ث‑10 | `VAULT_SECRET_ID` محفوظٌ في `.env` على الخادم: `install.sh` يسكّه من داخل حاوية `vault` ويكتبه فيه (قرار المالك 2026‑10‑19، Q‑4). كان `05 §3.3` يمنع ذلك، وعُدّل النصّ | من يقرأ `.env` يملك `secret_id` صالحاً 720 ساعة، فيصادق على Vault بدور `app` (قراءة `secret/data/*` وتشفير Transit) إلى أن ينقضي أو يُبطَل | ضبط صلاحيّة `.env` (ث‑11). وبعد 6.5 يُجدَّد المفتاح قبل انقضائه فتقصر نافذة الأثر. ولا يُطبع المفتاح ولا يُسجَّل |
 | ث‑11 | `.env` على الخادم يبقى على صلاحيّة `umask` (0644 غالباً): فيه كلمات السرّ الثلاث عشرة (Postgres وأدواره الثمانية، و`metrics_exporter`، وMinIO، وGrafana) و`VAULT_SECRET_ID`. قرار المالك (2026‑10‑19): `install.sh` لا يضبط الصلاحيّة، ويضبطها المالك بيده | أيّ مستخدمٍ على الخادم يقرأ الملفّ كلّه | `chmod 600 .env` بعد كلّ تثبيت. يذكّر به التقرير في كلّ تشغيل، ويحذّر منه `auto_size.py` (SR‑11) |
 | ث‑12 | حزمة التثبيت بلا توقيع: يُطبع sha256 عند صنعها ويقارنه المشغّل باليد | من يبدّل الحزمة في الطريق، أو يخدع المشغّل بحزمةٍ أخرى، يشغّل ما يشاء بصلاحيّة root عبر `sudo ./install.sh` | توقيع الحزمة (cosign أو GPG) ونشر المفتاح العامّ، في الموجة 8 |
+| ث‑13 | Cloudflare ينهي TLS ويرى النصّ الصريح: ترويسة `Authorization`، وتوكن WebSocket في الاستعلام (`?token=`، `03-api-spec.md:289`)، والأسئلة والأجوبة، ومحتوى الملفّات في 6.2. قبله المالك لمرحلة staging (Q‑9، 2026‑10‑20) | طرفٌ ثالث يرى كلّ حركة الـAPI | يُعاد النظر في الموجة 8 |
+| ث‑14 | الأصل يُبلَغ مباشرةً على 80 و443 متجاوزاً Cloudflare، حتّى 6.3 أو Authenticated Origin Pulls | تجاوز حماية Cloudflare وحدوده. وحدّ الثقة في `realip` هو كلّ عملاء Cloudflare: طلبٌ من Worker في منطقةٍ أخرى يختار `CF-Connecting-IP`، فيتأثّر مفتاح حدّ المعدّل لكلّ عنوان وسجلّ الوصول (لا قرار تفويض مبنيّ على العنوان، §4.5) | 6.3: Authenticated Origin Pulls بشهادةٍ **خاصّة بالمنطقة** يرفعها المالك (شهادة Cloudflare المشتركة لا تُغلق الثغرة)، و`realip` في خادم 443 وحده، والمنفذ 443 وحده مفتوحٌ لنطاقات Cloudflare (لا 80) (Q‑1) |
+| ث‑15 | مفتاح المنشأ `deploy/nginx/certs/server.key` ملفٌّ على القرص خارج Vault، صلاحيّته 0600 لـroot (Q‑8) | من يملك root أو مجموعة `docker` على الخادم يقرؤه، فينتحل الأصل أمام Cloudflare | إبطال الشهادة في Cloudflare وإصدار أخرى (§4.3). وتشفير القرص ومراجعة الموجة 8 |
 
 </div>

@@ -285,7 +285,10 @@ def test_the_summary_matches_the_plan_and_its_bar_matches_its_articles() -> None
 
 
 def test_the_bar_check_fails_when_a_count_drifts() -> None:
-    drifted = text(SUMMARY).replace(
-        'class="s-partial" style="flex:11"', 'class="s-partial" style="flex:12"'
+    html = text(SUMMARY)
+    current = _flex(html, "partial")
+    drifted = html.replace(
+        f'class="s-partial" style="flex:{current}"', f'class="s-partial" style="flex:{current + 1}"'
     )
+    assert drifted != html
     assert _flex(drifted, "partial") != _articles(drifted).count("partial")
