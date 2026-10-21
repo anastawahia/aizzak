@@ -8,7 +8,35 @@
       "Bash(.venv/bin/pytest tests/unit *)",
       "Bash(.venv/bin/pytest tests/architecture *)",
       "Bash(.venv/bin/pytest tests/eval *)",
-      "Bash(deploy/prometheus/test-rules.sh)"
+      "Bash(deploy/prometheus/test-rules.sh)",
+      "Bash(docker compose *)",
+      "mcp__visualize__read_me",
+      "Read",
+      "Glob",
+      "Grep",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Bash",
+      "PowerShell",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Read(./deploy/load/accounts.json)",
+      "Read(./deploy/load/tokens.json)",
+      "Read(./deploy/load/include-workspaces.txt)",
+      "Read(./deploy/nginx/certs/**)"
+    ],
+    "ask": [
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(rm -rf /home/*)",
+      "Bash(rm -rf ~*)",
+      "Bash(git branch -D:*)"
     ]
   },
   "hooks": {
