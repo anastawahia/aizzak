@@ -16,9 +16,10 @@
 #   exactly one -> stop, name the missing one, write nothing. The old rule
 #     regenerated BOTH here, which silently replaced an operator's
 #     certificate whose key had not been copied in yet.
-#   neither -> a self-signed development pair, written under temporary names
-#     and renamed into place, so a failed run leaves neither file instead of
-#     the half pair the rule above would then refuse.
+#   neither -> a self-signed development pair, written under random temporary
+#     names and published with `ln` (which never replaces), so a failed run
+#     leaves neither file instead of the half pair the rule above would then
+#     refuse, and a pair that appears meanwhile is never overwritten.
 # A dangling symbolic link counts as present: it is the operator's, not ours.
 set -eu
 
@@ -46,10 +47,30 @@ if present "$CERT" || present "$KEY"; then
 fi
 
 echo "nginx-certs: generating a self-signed certificate for local TLS"
-NEW_KEY="$CERT_DIR/.server.key.new"
-NEW_CERT="$CERT_DIR/.server.crt.new"
-trap 'rm -f "$NEW_KEY" "$NEW_CERT"' EXIT
 umask 077
+
+# The temporary files get random names made with O_EXCL (mktemp), never a fixed
+# name: a fixed `.server.key.new` that someone planted as a symbolic link in the
+# folder would be written through. They are published with `ln`, which fails
+# when the target already exists (a file, a symlink, even a dangling one),
+# where `mv` would silently replace a pair that appeared while we generated.
+TMP_KEY="" TMP_CERT="" PUBLISHED_KEY=""
+cleanup() {
+    for f in "$TMP_KEY" "$TMP_CERT"; do
+        [ -z "$f" ] || rm -f -- "$f"
+    done
+}
+trap cleanup EXIT
+
+fail() {
+    echo "nginx-certs: ERROR: $1" >&2
+    exit 1
+}
+
+TMP_KEY="$(mktemp -p "$CERT_DIR" .server.key.XXXXXX 2>/dev/null)" ||
+    fail "cannot create files in $CERT_DIR (is deploy/nginx/certs read-only or not writable?); nothing was written"
+TMP_CERT="$(mktemp -p "$CERT_DIR" .server.crt.XXXXXX 2>/dev/null)" ||
+    fail "cannot create files in $CERT_DIR (is deploy/nginx/certs read-only or not writable?); nothing was written"
 
 # SAN is not optional cosmetics: every current client ignores the legacy CN
 # for hostname verification and reads subjectAltName only. Without it the
@@ -58,17 +79,24 @@ umask 077
 # literal address from inside the container while a developer's browser uses
 # the name.
 openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes \
-    -keyout "$NEW_KEY" -out "$NEW_CERT" \
+    -keyout "$TMP_KEY" -out "$TMP_CERT" \
     -subj "/CN=localhost/O=AIZZAK local development" \
-    -addext "subjectAltName=DNS:localhost,DNS:app,IP:127.0.0.1" >/dev/null 2>&1
+    -addext "subjectAltName=DNS:localhost,DNS:app,IP:127.0.0.1" >/dev/null 2>&1 ||
+    fail "openssl could not generate the development certificate; nothing was written"
 
 # The key is readable only by its owner. nginx reads it as root in the master
 # process before dropping to the `nginx` user, so 600 is sufficient and is
-# the tightest mode that still works.
-chmod 600 "$NEW_KEY"
-chmod 644 "$NEW_CERT"
-mv "$NEW_KEY" "$KEY"
-mv "$NEW_CERT" "$CERT"
+# the tightest mode that still works. (A hard link shares the mode.)
+chmod 600 "$TMP_KEY"
+chmod 644 "$TMP_CERT"
+ln "$TMP_KEY" "$KEY" 2>/dev/null ||
+    fail "server.key appeared while the certificate was being generated; left untouched, nothing was written"
+PUBLISHED_KEY=1
+if ! ln "$TMP_CERT" "$CERT" 2>/dev/null; then
+    # take back only the key this run published, so no half pair is left
+    [ -z "$PUBLISHED_KEY" ] || rm -f -- "$KEY"
+    fail "server.crt appeared while the certificate was being generated; left untouched, nothing was written"
+fi
 
 echo "nginx-certs: wrote server.crt / server.key (self-signed, 825 days)"
 echo "nginx-certs: ⚠️  DEVELOPMENT ONLY -- a real deployment mounts its own"

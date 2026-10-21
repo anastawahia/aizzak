@@ -32,23 +32,34 @@ while [ $# -gt 0 ]; do
 done
 exit 1
 """
+_PLANT_DURING = """#!/bin/sh
+echo operator > "$FAKE_PLANT"
+exit 0
+"""
 
 
 def _run(
     cert_dir: Path,
     *,
-    fake_openssl: Literal["record", "fail-after-key", None],
+    fake_openssl: Literal["record", "fail-after-key", "plant-during", None],
     bin_dir: Path | None = None,
+    plant: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {"PATH": os.environ["PATH"], "AIZZAK_CERT_DIR": str(cert_dir)}
     if fake_openssl is not None:
         fake_dir = bin_dir or cert_dir.parent / "fakebin"
         fake_dir.mkdir(exist_ok=True)
         fake = fake_dir / "openssl"
-        fake.write_text(_RECORD if fake_openssl == "record" else _FAIL_AFTER_KEY)
+        fake.write_text(
+            {"record": _RECORD, "fail-after-key": _FAIL_AFTER_KEY, "plant-during": _PLANT_DURING}[
+                fake_openssl
+            ]
+        )
         fake.chmod(0o755)
         env["PATH"] = f"{fake_dir}{os.pathsep}{env['PATH']}"
         env["FAKE_OPENSSL_LOG"] = str(cert_dir.parent / "openssl.log")
+        if plant is not None:
+            env["FAKE_PLANT"] = str(cert_dir / plant)
     return subprocess.run(
         ["sh", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False, timeout=60
     )
@@ -137,6 +148,53 @@ def test_a_failed_generation_leaves_neither_file(tmp_path: Path) -> None:
     # and the next run is not refused as a "half pair"
     retry = _run(d, fake_openssl="record")
     assert "ERROR" not in retry.stderr
+    assert "generating" in retry.stdout
+
+
+def test_a_symlink_planted_at_the_old_fixed_name_is_not_followed(tmp_path: Path) -> None:
+    d = _certs(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("precious")
+    victim.chmod(0o644)
+    for name in (".server.key.new", ".server.crt.new"):
+        (d / name).symlink_to(victim)
+    # the fake writes "partial" into whatever -keyout names, then fails
+    res = _run(d, fake_openssl="fail-after-key")
+    assert res.returncode != 0
+    assert victim.read_text() == "precious"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+    ok = _run(d, fake_openssl="record")
+    assert ok.returncode == 0, ok.stderr
+    assert victim.read_text() == "precious"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+    assert not (d / "server.key").is_symlink() and not (d / "server.crt").is_symlink()
+    assert (d / ".server.key.new").is_symlink() and (d / ".server.crt.new").is_symlink()
+
+
+@pytest.mark.parametrize("appears", ["server.key", "server.crt"])
+def test_a_file_that_appears_while_generating_is_never_overwritten(
+    tmp_path: Path, appears: str
+) -> None:
+    d = _certs(tmp_path)
+    res = _run(d, fake_openssl="plant-during", plant=appears)
+    assert res.returncode == 1
+    assert appears in res.stderr and "ERROR" in res.stderr
+    assert (d / appears).read_text() == "operator\n"
+    # no temporary file and no half pair of ours is left behind
+    assert [p.name for p in d.iterdir()] == [appears]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_read_only_directory_says_so_and_exits_non_zero(tmp_path: Path) -> None:
+    d = _certs(tmp_path)
+    d.chmod(0o555)
+    try:
+        res = _run(d, fake_openssl="record")
+    finally:
+        d.chmod(0o755)
+    assert res.returncode == 1
+    assert "ERROR" in res.stderr and "read-only" in res.stderr and str(d) in res.stderr
+    assert list(d.iterdir()) == []
 
 
 def test_the_default_directory_is_the_one_compose_mounts() -> None:
