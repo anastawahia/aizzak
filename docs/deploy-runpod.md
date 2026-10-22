@@ -387,7 +387,7 @@ supervisorctl -c /etc/supervisor/supervisord.conf status
 cd /app && gosu aizzak sh -c 'pid=$(pgrep -o -f "gunicorn app.api.main"); xargs -0 -a /proc/$pid/environ sh -c '"'"'exec env -i "$@" /opt/venv/bin/python /app/deploy/smoke/stack_smoke.py'"'"' _'
 ```
 
-المتوقّع في آخر سطر: `PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified`، والرابط المُوقَّع يذكر `<POD_ID>-80.proxy.runpod.net`. وقبله السطر `[4] presigned PUT through the public address stored the bytes  OK`: الفحص يرفع ملفّاً صغيراً فعلاً عبر وكيل RunPod ثمّ يحذفه، لأنّ قراءة نصّ الرابط وحدها لم تكشف عطل `Host`.
+المتوقّع في آخر سطر: `PASS: pgbouncer/OPS-02, RLS fail-closed, and presign addressing all verified`، والرابط المُوقَّع يذكر `<POD_ID>-80.proxy.runpod.net`. وقبله السطران `[4] presigned PUT through the public address stored the bytes  OK` و`[4] presigned GET through the public address returned the same bytes  OK`: الفحص يرفع ملفّاً صغيراً فعلاً عبر وكيل RunPod، ثمّ ينزّله عبر الرابط العامّ ويقارن البايتات، ثمّ يحذفه، لأنّ قراءة نصّ الرابط وحدها لم تكشف عطل `Host`.
 
 ثمّ خدمة التضمين والنموذج والـGPU:
 

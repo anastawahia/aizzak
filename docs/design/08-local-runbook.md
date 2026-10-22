@@ -14,7 +14,7 @@
 ## 2) طوبولوجيا Compose (الخدمات)
 | الخدمة | الصورة/المصدر | المنفذ | الدور |
 |--------|----------------|--------|-------|
-| `nginx` | nginx:1.27 | 80/443 | Reverse proxy · TLS · WS upgrade |
+| `nginx` | nginx:1.27 | 80/443 | Reverse proxy · TLS · WS upgrade · روابط الملفّات الموقّعة إلى MinIO على الخادم (`/workspace-files/`، `GET` و`HEAD` و`PUT`، 6.2) |
 | `app` | Dockerfile (هذا المستودع) | 8000 | FastAPI/Uvicorn (Gunicorn+UvicornWorker) — قابل للتوسّع |
 | `worker-memory` · `worker-knowledge` · `worker-media` | نفس الصورة، أمر واحد، `WORKER` حرفيّ لكلٍّ | — | مستهلكو Streams الثلاثة، **خدمةٌ لكلٍّ** ([§3.133](../log/3.133.md)). **ثلاثتهم ضمن `up -d` الافتراضيّ** منذ أن قِيس إقلاع `media` ([§3.134](../log/3.134.md)) — لا بروفايل في الملفّ بعد الآن. و**`worker-knowledge` وحدَه نسختان** (‏`deploy.replicas: 2`) — §4.0 |
 | `outbox-relay` | نفس الصورة، أمر مختلف | — | مُرحّل Outbox (نسخة واحدة) |
