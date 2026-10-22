@@ -174,6 +174,30 @@ def _route_header_problems(body: list[Statement]) -> list[str]:
     return problems
 
 
+_COPY_GUARDS = (
+    "$http_x_amz_copy_source",
+    "$http_x_amz_copy_source_range",
+    "$http_x_amz_meta_snowball_auto_extract",
+    "$http_x_minio_extract",
+)
+
+
+def _copy_guard_problems(body: list[Statement]) -> list[str]:
+    """SR-1: S3 CopyObject (and snowball extract) ride on unsigned request headers."""
+    guarded = {
+        "".join(args)[1:].split("!=")[0]
+        for name, args, inner in _iter_blocks(body)
+        if name == "if"
+        and "".join(args).endswith('!="")')
+        and inner == [("directive", "return", ["403"])]
+    }
+    return [
+        f'copy-guard: no `if ({v} != "") {{ return 403; }}`'
+        for v in _COPY_GUARDS
+        if v not in guarded
+    ]
+
+
 def _route_destination_problems(body: list[Statement]) -> list[str]:
     problems: list[str] = []
     if ["$aizzak_minio", '"minio:9000"'] not in direct(body, "set"):
@@ -225,6 +249,7 @@ def files_route_problems(locations_text: str, nginx_text: str) -> list[str]:
         problems.append("methods: need exactly `limit_except GET PUT { deny all; }`")
     return [
         *problems,
+        *_copy_guard_problems(body),
         *_route_destination_problems(body),
         *_route_header_problems(body),
         *_route_global_problems(tree, locations_text, nginx_text),
@@ -286,12 +311,30 @@ def test_the_files_route_guard_fails_on_each_regression() -> None:
             ),
             ngx,
         ),
+        "copy-guard": (
+            _swap(
+                loc,
+                'if ($http_x_amz_copy_source != "") {\n        return 403;',
+                'if ($http_x_amz_copy_source != "") {\n        return 404;',
+            ),
+            ngx,
+        ),
+        "copy-guard ": (
+            _swap(
+                loc,
+                'if ($http_x_amz_copy_source_range != "") {',
+                "if ($http_x_amz_copy_source_range) {",
+            ),
+            ngx,
+        ),
         "forbidden-variable": (loc, ngx + "\nmap $http_x_forwarded_host $x { default 1; }\n"),
         "resolver": (loc, re.sub(r"(?m)^\s*resolver\s+[^;]+;", "", ngx)),
     }
     for rule, (loc_text, ngx_text) in cases.items():
         problems = files_route_problems(loc_text, ngx_text)
-        assert any(p.startswith(rule) for p in problems), f"{rule}: not caught, got {problems}"
+        assert any(p.startswith(rule.strip()) for p in problems), (
+            f"{rule}: not caught, got {problems}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -351,7 +394,7 @@ def _structure_drift_problems(
     problems: list[str] = []
     in_compose = {s[1] for s in compose if s[0] == "block"}
     in_runpod = {s[1] for s in runpod if s[0] == "block"}
-    if in_compose != {"limit_except"} or in_runpod:
+    if in_compose != {"limit_except", "if"} or in_runpod:
         problems.append("limit_except must exist on Compose only")
     if not (
         direct(compose, "set") == [["$aizzak_minio", '"minio:9000"']]

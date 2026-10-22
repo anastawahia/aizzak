@@ -822,3 +822,37 @@ def test_the_access_log_never_holds_a_signature(harness: Harness) -> None:
         assert "?" not in json.loads(line)["path"]
     leaking = [ln for ln in err if "X-Amz-Signature" in ln]
     print(f"\n[AC-5.4] error-log lines carrying X-Amz-Signature after a 413: {len(leaking)}")
+
+
+# --------------------------------------------------------------------------- #
+# SR-1 -- CopyObject through a presigned PUT                                   #
+# --------------------------------------------------------------------------- #
+def test_a_copy_source_header_never_reaches_minio(harness: Harness) -> None:
+    victim = f"victim-ws/{secrets.token_hex(4)}"
+    harness.exec("store", "mc", "mb", "--ignore-existing", "local/aizzak-backups")
+    harness.exec("store", "sh", "-c", f"echo secret | mc pipe local/{_BUCKET}/{victim}")
+    harness.exec("store", "sh", "-c", "echo dump | mc pipe local/aizzak-backups/dump/db.dump")
+    path, _ = harness.make_file(1024)
+    sources = (
+        f"/{_BUCKET}/{victim}",
+        f"{_BUCKET}/{victim}",
+        "/aizzak-backups/dump/db.dump",
+    )
+    for header in (
+        "x-amz-copy-source",
+        "X-Amz-Copy-Source-Range",
+        "x-amz-meta-snowball-auto-extract",
+    ):
+        for source in sources:
+            key = _key("attacker")
+            value = "true" if "snowball" in header else source
+            answer = _put(
+                harness, harness.put_url(_OWN_NAME, key), path, "-H", f"{header}: {value}"
+            )
+            assert answer.status == 403, f"{header}: {source}"
+            assert "<Error>" not in answer.body()
+            assert harness.recorded(key) == []
+            assert harness.stored_sha(key) is None
+    # The same URL without the header still works: the guard is not a blanket refusal.
+    key = _key("attacker")
+    assert _put(harness, harness.put_url(_OWN_NAME, key), path).status == 200
