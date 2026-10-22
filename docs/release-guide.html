@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>دليل الإصدار والتثبيت</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2330;--mut:#5b6575;--ac:#1d6fd8;--code:#0f1722;--codefg:#e6edf3;--warn:#fff4d6;--wb:#e0b100}
+@media (prefers-color-scheme:dark){:root{--bg:#10151d;--card:#18202b;--fg:#e6edf3;--mut:#9aa7b8;--ac:#5aa2ff;--code:#0a0e14;--warn:#3a3012;--wb:#b08d00}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 system-ui,"Segoe UI",Tahoma,sans-serif}
+main{max-width:820px;margin:0 auto;padding:24px 16px 60px}
+h1{font-size:1.6rem;margin:0 0 4px}
+.sub{color:var(--mut);margin-bottom:24px}
+section{background:var(--card);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 3px #0002}
+h2{font-size:1.1rem;margin:0 0 8px}
+h2 span{background:var(--ac);color:#fff;border-radius:50%;display:inline-block;width:1.7em;height:1.7em;text-align:center;line-height:1.7em;margin-inline-end:8px;font-size:.9rem}
+.where{color:var(--mut);font-size:.85rem}
+pre{direction:ltr;text-align:left;background:var(--code);color:var(--codefg);padding:12px;border-radius:8px;overflow-x:auto;font-size:.88rem;margin:8px 0}
+.note{background:var(--warn);border-inline-start:4px solid var(--wb);padding:8px 12px;border-radius:6px;margin:8px 0;font-size:.93rem}
+code{direction:ltr;unicode-bidi:embed;background:#8884;padding:0 4px;border-radius:4px}
+</style>
+</head>
+<body>
+<main>
+<h1>دليل الإصدار والتثبيت</h1>
+<div class="sub">بناء الصور ← الوسم ← الحزمة ← التثبيت على الخادم الجديد. استبدل <code>2026.10.3</code> برقم إصدارك (الصيغة <code>YYYY.M.N</code> بلا حرف v).</div>
+
+<section>
+<h2><span>1</span>تأكد أن الكود جاهز</h2>
+<div class="where">على جهازك — داخل <code>/home/AIZZAK</code></div>
+<pre>git switch master && git pull
+git status            # يجب أن تكون الشجرة نظيفة
+.venv/bin/ruff format --check . && .venv/bin/ruff check . && .venv/bin/mypy src && .venv/bin/lint-imports</pre>
+<div class="note">الإصدار يُبنى فقط من commit موجود على <code>origin/master</code> وCI أخضر له.</div>
+</section>
+
+<section>
+<h2><span>2</span>الوسم = بناء الصور ورفعها (تلقائي)</h2>
+<div class="where">على جهازك</div>
+<pre>git tag v2026.10.3
+git push origin v2026.10.3</pre>
+<p>الوسم يشغّل GitHub Actions (<code>release.yml</code>): يبني الصور الثلاث (<code>app</code> و<code>embedding</code> و<code>embedding-cuda</code>) ويرفعها إلى <code>anastawahia/aizzak</code> على Docker Hub. تابعه:</p>
+<pre>gh run watch</pre>
+<div class="note">ظهور "Bypassed rule violations" عند دفع الوسم طبيعي: قاعدة GitHub تقيّد إنشاء الوسوم وأنت تتجاوزها بصلاحية المالك.<br>
+إن فشل بعد أن رُفعت صورة، الرقم يُهجر: أصدر الرقم التالي (<code>2026.10.4</code>). لا تعيد نفس الرقم.<br>
+ارفع وسماً واحداً فقط في كل مرة، فكل وسم يطلق بناءً كاملاً.<br>
+البناء اليدوي من جهازك للطوارئ فقط (بطيء جداً): <code>deploy/release/build-push.sh 2026.10.3</code></div>
+</section>
+
+<section>
+<h2><span>3</span>نزّل ملف البصمات</h2>
+<div class="where">على جهازك — بعد نجاح الخطوة 2</div>
+<pre>RUN=$(gh run list --workflow=release.yml --branch v2026.10.3 --limit 1 --json databaseId -q '.[0].databaseId')
+gh run download "$RUN" -n release-digests -D /tmp/rel
+cat /tmp/rel/release-digests.txt     # يجب أن ترى 3 أسطر</pre>
+<div class="note">الخيار <code>--branch v2026.10.3</code> ضروري: بدونه يؤخذ أحدث تشغيل مهما كان وسمه، وقد يكون ملغى أو فاشلاً بلا أثر ("no valid artifacts found").</div>
+</section>
+
+<section>
+<h2><span>4</span>اصنع الحزمة</h2>
+<div class="where">على جهازك — داخل <code>/home/AIZZAK</code></div>
+<pre>deploy/release/bundle.sh --digests /tmp/rel/release-digests.txt --out /tmp/rel 2026.10.3</pre>
+<p>يطبع مسار الحزمة <code>aizzak-2026.10.3.tar.gz</code> ومعها قيمة <b>sha256</b>. <b>احفظ هذه القيمة.</b></p>
+</section>
+
+<section>
+<h2><span>5</span>ارفع الحزمة إلى الخادم</h2>
+<div class="where">على جهازك</div>
+<pre>scp /tmp/rel/aizzak-2026.10.3.tar.gz USER@SERVER_IP:/tmp/</pre>
+</section>
+
+<section>
+<h2><span>6</span>جهّز الخادم (مرة واحدة فقط)</h2>
+<div class="where">على الخادم</div>
+<p>يلزم: Docker ≥ 26 وCompose ≥ 2.20، وPython 3.10+ مع PyYAML، وعلى الكرت: تعريف NVIDIA وContainer Toolkit ≥ 1.17.8.</p>
+<pre>sudo apt-get install -y python3-yaml
+sudo docker login docker.io -u anastawahia     # مفتاح قراءة فقط خاص بهذا الخادم</pre>
+</section>
+
+<section>
+<h2><span>7</span>تحقق وفكّ الحزمة</h2>
+<div class="where">على الخادم</div>
+<pre>sha256sum /tmp/aizzak-2026.10.3.tar.gz     # قارنها بقيمة الخطوة 4
+sudo tar -xzf /tmp/aizzak-2026.10.3.tar.gz -C /opt
+cd /opt/aizzak-2026.10.3</pre>
+<div class="note">إن اختلفت القيمة لا تكمل.</div>
+</section>
+
+<section>
+<h2><span>8</span>ثبّت</h2>
+<div class="where">على الخادم — داخل مجلد الحزمة</div>
+<pre>sudo ./install.sh --domain example.com --firebase-project aizzak-agent</pre>
+<p>خيارات مفيدة: <code>--cpu</code> (بلا كرت)، <code>--size small|medium|large</code>، <code>--no-monitoring</code>. النجاح ينتهي بـ <code>READY</code> ورمز خروج 0. إن توقف في المنتصف أعد نفس الأمر وسيكمل.</p>
+<div class="note">لا تشغّل <code>docker compose up</code> بيدك قبل أن ينتهي التثبيت.</div>
+</section>
+
+<section>
+<h2><span>9</span>بعد التثبيت</h2>
+<div class="where">على الخادم</div>
+<pre>chmod 600 .env
+curl -fsS https://example.com/health
+sudo docker compose ps</pre>
+<ul>
+<li>انسخ حجم <code>vault-init</code> إلى مكان آمن خارج الخادم.</li>
+<li>سجّل تاريخ انتهاء <code>VAULT_SECRET_ID</code> (ينتهي بعد 720 ساعة، ويطبعه التقرير).</li>
+<li>الشهادة والمنافذ: انظر <code>docs/deploy-server.md</code> §4–§5.</li>
+</ul>
+</section>
+
+<section>
+<h2>إن فشل شيء</h2>
+<ul>
+<li>رمز الخروج يدل على السبب: جدوله في <code>docs/deploy-server.md</code> §3.5 (مثلاً 13 = تسجيل دخول Docker ناقص، 60 = خطوة إقلاع فشلت).</li>
+<li>سجلات خدمة: <code>sudo docker compose logs SERVICE</code></li>
+<li>الترقية لإصدار جديد على خادم مثبّت ليست من عمل <code>install.sh</code> (مخطط لها في <code>upgrade.sh</code>، الخطوة 5.3).</li>
+</ul>
+</section>
+</main>
+</body>
+</html>
