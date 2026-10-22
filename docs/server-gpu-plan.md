@@ -96,6 +96,7 @@
      - خدمات المراقبة الإحدى عشرة خلف profile `monitoring`، فجهاز المالك يحتاج `monitoring` في سطر `COMPOSE_PROFILES`: **`COMPOSE_PROFILES=wsl-ollama,monitoring`**.
      - يعدّله المالك بنفسه، ويثبت بعد الدمج أنّ قائمة الخدمات وبصمات `config --hash` للإحدى عشرة لم تتغيّر، وأنّ `up -d` لم يُعد إنشاء أيٍّ منها.
      - **ونسيانه يُطفئ مسار التنبيه كلّه بصمت.**
+   - **استثناءٌ ضيّق رابع ([6.2](#62-روابط-الملفّات-العامّة)، قرار المالك 2026‑10‑22، Q‑7 في `docs/delivery/public-file-links/`):** مسار `/workspace-files/` في `deploy/nginx/app-locations.conf` يعمل على حافّة جهاز التطوير أيضاً، لأنّ الملفّ واحدٌ للخادم والجهاز. فطلبٌ إلى `localhost/workspace-files/…` على 80 أو 443 يصل MinIO لا التطبيق، ويبقى محتاجاً إلى توقيعٍ صالح. وحافّة الجهاز منشورةٌ على كلّ الواجهات، فيُبلَغ دلو التطبيق منها، وكان على `127.0.0.1:19000` وحده. ولا يتغيّر مسارٌ قائم: الروابط المحلّيّة موقّعةٌ على `localhost:19000` وتذهب إليه مباشرة، وبصمات `docker compose config --hash` لا تتغيّر.
 2. **الموافقة قبل التنفيذ:** كلّ تعديلٍ في `docker-compose*.yml` أو `deploy/` أو `Dockerfile` أو `services/embedding/Dockerfile` أو `.github/workflows/` يحتاج موافقة المالك (`CLAUDE.md`). عمود «موافقة» في اللوحة يقول ذلك لكلّ خطوة.
 3. **الاختبارات التي تقرأ Compose تتغيّر في الالتزام نفسه.** نحو 30 ملفّ اختبارٍ في `tests/unit/` يقرأ `docker-compose.yml` (منها `test_resource_budget.py` و`test_postgres_tuning.py` و`test_connection_budget.py` و`test_embedding_fleet.py`). كلّ قيمةٍ تصير `${VAR:-default}` يجب أن تقرأها هذه الاختبارات بقيمتها الافتراضيّة.
 4. **البوّابات الخمس خضراء قبل كلّ التزام** (`CLAUDE.md`، «Quality gates»)، ومعها `deploy/prometheus/test-rules.sh` إن تغيّرت التنبيهات.
@@ -379,11 +380,12 @@
 #### 6.2 روابط الملفّات العامّة
 
 - **المشكلة:** الروابط الموقّعة تُوقَّع على `MINIO_PUBLIC_ENDPOINT` ‏(`localhost:19000`)، وMinIO غير منشورٍ للخارج، وnginx في Compose لا يمرّر `/workspace-files/`.
-- **الطريقة:**
-  1. نقل `location ^~ /workspace-files/` وخريطة `$minio_signed_host` من `deploy/runpod/nginx.conf` (إصلاح `346a743`) إلى `deploy/nginx/app-locations.conf`.
-  2. `MINIO_PUBLIC_ENDPOINT=<النطاق>` و`MINIO_PUBLIC_SECURE=true`، يضبطهما `install.sh`.
-  3. MinIO يبقى على `127.0.0.1`. لا يُنشر منفذه.
-- **القبول:** فحص `[4]` في `stack_smoke.py` (رفعٌ وتنزيلٌ عبر الرابط العامّ) ينجح من جهازٍ خارج الخادم.
+- **الطريقة** (بوابة ① في `docs/delivery/public-file-links/`، 2026‑10‑22):
+  1. `location ^~ /workspace-files/` في `deploy/nginx/app-locations.conf` يمرّر إلى `minio:9000` باسمٍ يُحلّ مع كلّ طلب، **بلا خريطة**: `Host` الذي يصل MinIO هو `Host` العميل (`$http_host`)، و`X-Forwarded-Host` لا يُقرأ ولا يُمرَّر (Q‑1 (ب)). خريطة `$minio_signed_host` في RunPod سببها وكيلٌ يستبدل `Host`، وCloudflare يحفظه، و`map` لا يجوز داخل `server`. والمسار يقبل `GET` و`HEAD` و`PUT` وحدها، وجذر الدلو 404 من الحافّة (Q‑2 (ب)). وحدّ الجسم فيه 50 م.ب (`max_upload_bytes`)، والبثّ في الاتّجاهين. ويختلف عن مسار RunPod عمداً، واختبارٌ يحرس الفرق.
+  2. `MINIO_PUBLIC_ENDPOINT=<النطاق>` و`MINIO_PUBLIC_SECURE=true` يضبطهما `install.sh` منذ 5.2، فلا يتغيّر.
+  3. MinIO يبقى على `127.0.0.1`، واختبارٌ يحرس ذلك.
+  4. `[4]` في `stack_smoke.py` يرفع وينزّل عبر الرابط العامّ: على RunPod كما كان، وعلى خادم Compose بطلبٍ صريح `SMOKE_PUBLIC_ROUNDTRIP=1` بعد سجلّ DNS والشهادة. و`install.sh` لا يمرّره (Q‑4 (أ)).
+- **القبول** (Q‑5 (أ)، في 7.3): `[4]` على الخادم عبر الاسم العامّ، ورحلة `curl` من جهاز المالك: تسجيلٌ ثمّ رفعٌ ثمّ إتمامٌ ثمّ تنزيلٌ بالبصمة نفسها ([`deploy-server.md`](deploy-server.md) §5.3).
 
 #### 6.3 المنافذ وجدار الحماية
 

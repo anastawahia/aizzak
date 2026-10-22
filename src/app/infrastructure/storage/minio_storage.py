@@ -195,9 +195,12 @@ class MinioStorage:
         # DOCUMENTED LIMITATION: minio-py cannot sign request headers into a
         # presigned PUT, so ``content_type`` is advisory here -- the uploader
         # sends it, MinIO stores it, but the URL does not cryptographically
-        # pin it. The design already re-verifies uploads server-side at
-        # ``files.CompleteUpload`` (size/sha256/type against the registered
-        # metadata), which is the enforcement point that matters.
+        # pin it. Nothing re-verifies it afterwards either:
+        # ``files.CompleteUpload`` records the client-supplied checksum and
+        # never reads the stored object. The only server-side bound on an
+        # upload is the edge's body limit (``client_max_body_size`` on
+        # ``/workspace-files/``); the type is the uploader's choice (the th-17 row in
+        # docs/deploy-server.md).
         del content_type
 
         def _presign() -> str:

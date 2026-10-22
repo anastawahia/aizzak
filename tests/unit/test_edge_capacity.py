@@ -293,8 +293,12 @@ def test_the_two_edges_have_not_drifted() -> None:
         match = re.search(r"zone=api_req:\d+m\s+rate=(\d+r/s)", text)
         return match.group(1) if match else None
 
-    def burst(text: str) -> str | None:
-        match = re.search(r"limit_req\s+zone=api_req\s+burst=(\d+)", text)
+    def burst(text: str, path: str = "/", modifier: str = "") -> str | None:
+        # The `location /` block itself: the first `limit_req` in a file is
+        # the presigned-URL location's since 6.2 (RunPod) and must not be read.
+        match = re.search(
+            r"limit_req\s+zone=api_req\s+burst=(\d+)", _location_block(text, path, modifier)
+        )
         return match.group(1) if match else None
 
     def ws_conn(text: str) -> str | None:
@@ -303,6 +307,9 @@ def test_the_two_edges_have_not_drifted() -> None:
 
     assert rate(compose_edge) == rate(runpod)
     assert burst(compose_locations) == burst(runpod)
+    assert burst(compose_locations, "/workspace-files/", "^~") == burst(compose_locations), (
+        "the presigned-URL location and `location /` must meter at the same burst (6.2)"
+    )
     assert ws_conn(compose_locations) == ws_conn(runpod)
 
 
@@ -387,6 +394,38 @@ def _ws_location(text: str) -> str:
             if depth == 0:
                 return text[start : i + 1]
     raise AssertionError("unterminated `location /api/v1/ws` block")
+
+
+def _location_block(text: str, path: str, modifier: str = "") -> str:
+    """The first `location [<modifier>] <path> { ... }`, brace-matched (modifier
+    `""`, `=` or `^~`; `=` is the exact-match twin of the same path), as the
+    original text (so `text.replace(block, "")` works).
+
+    Braces after a `#` on a line are comments and are not counted."""
+    prefix = re.escape(modifier + " ") if modifier else ""
+    match = re.search(
+        rf"^[ \t]*location[ \t]+{prefix}{re.escape(path)}[ \t]*\{{",
+        text,
+        flags=re.MULTILINE,
+    )
+    assert match is not None, f"no `location {path}` block found"
+    start = match.start()
+    depth = 0
+    i = match.end() - 1
+    while i < len(text):
+        char = text[i]
+        if char == "#":
+            newline = text.find("\n", i)
+            i = len(text) if newline == -1 else newline
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    raise AssertionError(f"unterminated `location {path}` block")
 
 
 def _gunicorn_keepalive_s() -> float:
@@ -530,7 +569,11 @@ def test_the_websocket_handshake_still_carries_the_shared_proxy_headers() -> Non
         ),
     ):
         ws = _ws_location(whole_text)
-        shared = _proxy_headers(shared_text.replace(ws, ""))
+        # The presigned-URL location (6.2) repeats the list on purpose and adds
+        # an X-Forwarded-Host reset the server level does not carry: it is not
+        # part of the "shared" set this guard compares the WebSocket against.
+        files = _location_block(shared_text, "/workspace-files/", "^~")
+        shared = _proxy_headers(shared_text.replace(ws, "").replace(files, ""))
         assert shared, f"{name}: found no shared `proxy_set_header` directives."
         missing = shared - _proxy_headers(ws)
         assert not missing, (

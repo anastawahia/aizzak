@@ -21,25 +21,37 @@ evidence.
   3. **Presigned URLs name the PUBLIC address** (7.1). The whole point of
      MINIO_PUBLIC_ENDPOINT: the URL handed to a browser must not say
      `minio:9000`.
-  4. **A presigned PUT through the public address actually stores bytes**
-     (RunPod only). [3] reads the URL and never sends it, and on RunPod that
-     was not enough: the first staging Pod passed [3] while every browser
-     upload failed `403 SignatureDoesNotMatch`, because RunPod's proxy
-     rewrites the Host that SigV4 signed (deploy/runpod/nginx.conf,
-     `$minio_signed_host`). Only a real round trip through the proxy proves
-     it. On Compose the public address is the operator's `localhost`, which
-     this container cannot reach, so the check runs only where
-     `RUNPOD_POD_ID` says the public address is reachable from inside.
+  4. **A presigned PUT and GET through the public address round-trip the
+     bytes.** [3] reads the URL and never sends it, and on RunPod that was not
+     enough: the first staging Pod passed [3] while every browser upload
+     failed `403 SignatureDoesNotMatch`, because RunPod's proxy rewrites the
+     Host that SigV4 signed (deploy/runpod/nginx.conf, `$minio_signed_host`).
+     Only a real round trip proves it, and it runs only where the public
+     address is reachable from inside this container:
+       * on RunPod (`RUNPOD_POD_ID` is set), always;
+       * on a Compose server, only when the operator asks for it after the
+         name has a DNS record and the origin certificate is in place
+         (docs/deploy-server.md §5.3):
+             docker compose exec -T -e SMOKE_PUBLIC_ROUNDTRIP=1 app \
+                 python /app/deploy/smoke/stack_smoke.py
+         install.sh never sets it: the first install precedes both, and a
+         failure here would end it with exit 71;
+       * on the dev box it is skipped: the URLs name the operator's
+         localhost:19000, which from in here is this container itself.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
+from collections.abc import Callable, Mapping
+from typing import Protocol
 
 import httpx
 from sqlalchemy import text
 
+from app.framework.errors import NotFoundError
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.config import load_settings
 from app.infrastructure.config.vault_auth import load_vault_auth
@@ -52,7 +64,15 @@ from app.infrastructure.storage.minio_storage import (
 )
 
 _INTERNAL_HOST = "minio:9000"
+_ROUNDTRIP_ENV = "SMOKE_PUBLIC_ROUNDTRIP"
+# Byte-for-byte the line install.sh's output has always carried when [4] is
+# skipped (tests/unit/test_stack_smoke_roundtrip.py pins it).
+SKIPPED_LINE = "[4] presigned PUT round trip: skipped (not on RunPod)"
 _PROBE_KEY = "smoke/presign-put-probe.txt"
+_PROBE_BODY = b"stack_smoke probe\n"
+_PROBE_TTL_S = 300
+_S3_CODE = re.compile(r"<Code>([A-Za-z]+)</Code>")
+_SIGNATURE_PARAM = re.compile(r"X-Amz-[A-Za-z-]+=[^&\s'\"]+")
 
 
 async def check_pgbouncer() -> None:
@@ -137,26 +157,144 @@ async def check_presign() -> None:
         raise SystemExit(f"FAIL: presigned URL does not name {minio.public_endpoint}")
     print("[3] presigned URL names the public address, not minio:9000  OK")
 
-    if not os.environ.get("RUNPOD_POD_ID"):
-        print("[4] presigned PUT round trip: skipped (not on RunPod)")
-        return
-    put_url = await storage.presign_put(_PROBE_KEY, 300, "text/plain")
+    await check_public_roundtrip(os.environ, storage, lambda: httpx.AsyncClient(timeout=30))
+
+
+class ProbeStorage(Protocol):
+    """What [4] needs from MinioStorage (structural match, nothing new in src/)."""
+
+    async def presign_put(self, key: str, ttl_s: int, content_type: str) -> str: ...
+
+    async def presign_get(self, key: str, ttl_s: int) -> str: ...
+
+    async def get(self, key: str) -> bytes: ...
+
+    async def delete(self, key: str) -> None: ...
+
+
+def roundtrip_reason(environ: Mapping[str, str]) -> str | None:
+    """Why [4] runs here, or None to skip it.
+
+    "RUNPOD_POD_ID" when RunPod set it (today's rule, unchanged);
+    "SMOKE_PUBLIC_ROUNDTRIP=1" when the operator asked for it on a Compose server;
+    None otherwise -- the dev box, and every install.sh run.
+    Raises SystemExit, naming the variable, when it holds anything but "" or "1":
+    an operator who typed `=true` must not read "skipped" as "passed".
+    """
+    opt_in = environ.get(_ROUNDTRIP_ENV, "")
+    if opt_in not in ("", "1"):
+        raise SystemExit(f"FAIL: {_ROUNDTRIP_ENV} must be 1 or unset, got {opt_in!r}")
+    if environ.get("RUNPOD_POD_ID"):
+        return "RUNPOD_POD_ID"
+    if opt_in == "1":
+        return f"{_ROUNDTRIP_ENV}=1"
+    return None
+
+
+def _shown(url: str) -> str:
+    """A URL up to its '?': the query carries the signature."""
+    return url.split("?", 1)[0]
+
+
+def _scrub(text: str) -> str:
+    return _SIGNATURE_PARAM.sub("X-Amz-...=<redacted>", text)
+
+
+_CLOUDFLARE_ORIGIN_ERRORS = range(520, 531)
+_STATUS_HINTS: dict[int, str] = {
+    int(httpx.codes.REQUEST_ENTITY_TOO_LARGE): (
+        "over the edge's client_max_body_size or Cloudflare's 100 MB"
+    ),
+    int(
+        httpx.codes.NOT_FOUND
+    ): "this edge does not route /workspace-files/ (a release without 6.2)",
+    int(httpx.codes.FORBIDDEN): "refused by the edge (GET, HEAD and PUT only)",
+    int(httpx.codes.BAD_GATEWAY): "the edge could not reach MinIO",
+}
+
+
+def failure_hint(response: httpx.Response) -> str:
+    """One short reason for a non-200, in this order: the S3 `<Code>` from MinIO's
+    XML body; a Cloudflare challenge; then the status class."""
+    code = _S3_CODE.search(response.text)
+    if code:
+        return code.group(1)
+    if "cf-mitigated" in response.headers:
+        return "Cloudflare challenged this client (cf-mitigated)"
+    if response.status_code in _CLOUDFLARE_ORIGIN_ERRORS:
+        return "Cloudflare could not use the origin (docs/deploy-server.md §4.8)"
+    return _STATUS_HINTS.get(response.status_code, "unexpected answer")
+
+
+async def public_roundtrip(storage: ProbeStorage, http: httpx.AsyncClient) -> None:
+    """PUT the probe through the public URL, read it back inside, GET it through
+    the public URL and compare. The probe object is deleted in every case.
+    Raises SystemExit on any failure. No printed line and no message carries a
+    query string: URLs are shown up to '?'."""
+    put_url = await storage.presign_put(_PROBE_KEY, _PROBE_TTL_S, "text/plain")
+    base = _shown(put_url)
+    print(f"    PUT -> {base}")
     try:
-        async with httpx.AsyncClient(timeout=30) as http:
+        try:
             response = await http.put(
-                put_url, content=b"stack_smoke probe\n", headers={"Content-Type": "text/plain"}
+                put_url, content=_PROBE_BODY, headers={"Content-Type": "text/plain"}
             )
-        if response.status_code != httpx.codes.OK:
-            code = "SignatureDoesNotMatch" if "SignatureDoesNotMatch" in response.text else ""
+        except httpx.HTTPError as exc:
             raise SystemExit(
-                f"FAIL: presigned PUT through {put_url.split('?')[0]} answered "
-                f"{response.status_code} {code} -- browser uploads are broken"
+                f"FAIL: presigned PUT through {base} got no answer: "
+                f"{type(exc).__name__}: {_scrub(str(exc))} -- browser uploads are broken"
+            ) from None
+        if response.status_code != httpx.codes.OK:
+            raise SystemExit(
+                f"FAIL: presigned PUT through {base} answered {response.status_code} "
+                f"({failure_hint(response)}) -- browser uploads are broken"
             )
-        if await storage.get(_PROBE_KEY) != b"stack_smoke probe\n":
+        try:
+            stored: bytes | None = await storage.get(_PROBE_KEY)
+        except NotFoundError:  # MinioStorage.get raises for a missing key
+            stored = None
+        if stored != _PROBE_BODY:
             raise SystemExit("FAIL: presigned PUT answered 200 but the object is not in MinIO")
+        print("[4] presigned PUT through the public address stored the bytes  OK")
+
+        get_url = await storage.presign_get(_PROBE_KEY, _PROBE_TTL_S)
+        base = _shown(get_url)
+        print(f"    GET -> {base}")
+        try:
+            response = await http.get(get_url)
+        except httpx.HTTPError as exc:
+            raise SystemExit(
+                f"FAIL: presigned GET through {base} got no answer: "
+                f"{type(exc).__name__}: {_scrub(str(exc))} -- downloads are broken"
+            ) from None
+        if response.status_code != httpx.codes.OK:
+            raise SystemExit(
+                f"FAIL: presigned GET through {base} answered {response.status_code} "
+                f"({failure_hint(response)}) -- downloads are broken"
+            )
+        if response.content != _PROBE_BODY:
+            raise SystemExit(
+                f"FAIL: presigned GET through {base} returned {len(response.content)} bytes "
+                f"that differ from the {len(_PROBE_BODY)} uploaded -- downloads are broken"
+            )
+        print("[4] presigned GET through the public address returned the same bytes  OK")
     finally:
         await storage.delete(_PROBE_KEY)
-    print("[4] presigned PUT through the public address stored the bytes  OK")
+
+
+async def check_public_roundtrip(
+    environ: Mapping[str, str],
+    storage: ProbeStorage,
+    open_client: Callable[[], httpx.AsyncClient],
+) -> None:
+    """Check [4]: SKIPPED_LINE, or the reason and then public_roundtrip()."""
+    reason = roundtrip_reason(environ)
+    if reason is None:
+        print(SKIPPED_LINE)
+        return
+    print(f"    [4] runs: {reason}")
+    async with open_client() as http:
+        await public_roundtrip(storage, http)
 
 
 async def main() -> None:
