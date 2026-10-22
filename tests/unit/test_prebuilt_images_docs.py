@@ -37,10 +37,14 @@ def test_quickstart_adds_compose_file_between_env_copy_and_first_up() -> None:
     assert copy < line < first_up
 
 
-def test_readme_quick_start_mentions_the_overlay_before_up() -> None:
+def test_readme_defers_first_run_to_quickstart_and_keeps_overlay_before_up() -> None:
     text = _text(_README)
-    start = text.index("cp .env.example .env")
-    assert text.index(_OVERLAY, start) < text.index("docker compose up -d", start)
+    assert "docs/quickstart.md" in text, "the README must send readers to the quickstart"
+    # The commands live in the quickstart (guarded above). Should the README show
+    # them again, the overlay must still come before the first `up`.
+    if "docker compose up -d" in text:
+        start = text.index("cp .env.example .env") if "cp .env.example .env" in text else 0
+        assert text.index(_OVERLAY, start) < text.index("docker compose up -d", start)
 
 
 # ── AC-5.3 ──────────────────────────────────────────────────────────────────
