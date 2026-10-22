@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "آلية تنفيذ المهام الخلفية في AIZZAK",
+    "locale": "ar",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-background-jobs-20261022-171035/background-jobs.html",
+    "repository": {
+      "url": "https://github.com/anastawahia/aizzak.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "a411b32b2bc00bcd32270ea0b36d5a79fa60f8f4"
+    }
+  },
+  "lanes": [
+    { "id": "producer", "label": "واجهة API ووحدات الأعمال" },
+    { "id": "database", "label": "PostgreSQL" },
+    { "id": "relay", "label": "Outbox Relay وناقل الرسائل" },
+    { "id": "workers", "label": "عمّال الخلفية" },
+    { "id": "recovery", "label": "إعادة المحاولة والفشل", "variant": "exception" }
+  ],
+  "mainPath": ["request", "atomic", "relay_poll", "redis_stream", "worker", "effect", "ack", "complete"],
+  "nodes": [
+    {
+      "id": "request", "lane": "producer", "col": 0, "type": "backend",
+      "label": "طلب عملية ثقيلة", "sublabel": "مثل الفهرسة أو التلخيص أو توليد الوسائط أو فهرسة الذاكرة",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 103, "end_line": 117 }]
+    },
+    {
+      "id": "atomic", "lane": "database", "col": 1, "type": "database",
+      "label": "معاملة واحدة", "sublabel": "تحديث الحالة + INSERT في platform.outbox",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 46, "end_line": 50 }]
+    },
+    {
+      "id": "relay_poll", "lane": "relay", "col": 2, "type": "backend",
+      "label": "outbox-relay", "sublabel": "يستطلع الأحداث غير المنشورة",
+      "sources": [
+        { "path": "docs/design/04-event-catalog.md", "line": 74, "end_line": 80 },
+        { "path": "src/app/workers/outbox_relay.py", "line": 21, "end_line": 34 }
+      ]
+    },
+    {
+      "id": "redis_stream", "lane": "relay", "col": 3, "type": "messagebus",
+      "label": "Redis Streams", "sublabel": "XADD stream.<module> · مجرى لكل وحدة",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 29, "end_line": 41 }]
+    },
+    {
+      "id": "worker", "lane": "workers", "col": 4, "type": "backend",
+      "label": "Consumer Group والعامل", "sublabel": "XREADGROUP · knowledge / media / memory",
+      "sources": [
+        { "path": "docs/design/04-event-catalog.md", "line": 29, "end_line": 41 },
+        { "path": "docs/design/04-event-catalog.md", "line": 81, "end_line": 82 }
+      ]
+    },
+    {
+      "id": "effect", "lane": "database", "col": 5, "type": "database",
+      "label": "تنفيذ الأثر + منع التكرار", "sublabel": "الأثر ومعرّف الحدث في processed_events",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 84, "end_line": 93 }]
+    },
+    {
+      "id": "ack", "lane": "workers", "col": 5, "type": "messagebus",
+      "label": "إقرار XACK", "sublabel": "بعد نجاح المعالجة أو اكتشاف التكرار",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 84, "end_line": 93 }]
+    },
+    {
+      "id": "complete", "lane": "producer", "col": 5, "type": "backend",
+      "label": "اكتملت المهمة", "sublabel": "وتُنتج مهام المعرفة والوسائط أحداث حالة عند الحاجة",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 108, "end_line": 117 }]
+    },
+    {
+      "id": "retry", "lane": "recovery", "col": 4, "type": "messagebus",
+      "label": "فشل عابر", "sublabel": "لا XACK · تُعاد الرسالة للتسليم",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 46, "end_line": 52 }]
+    },
+    {
+      "id": "dlq", "lane": "recovery", "col": 5, "type": "messagebus",
+      "label": "طابور الرسائل الميتة", "sublabel": "stream.<module>.dlq بعد 5 محاولات مع سبب الفشل",
+      "sources": [{ "path": "docs/design/04-event-catalog.md", "line": 46, "end_line": 52 }]
+    }
+  ],
+  "edges": [
+    { "id": "write-outbox", "from": "request", "to": "atomic", "label": "حفظ الأثر والحدث ذرياً", "variant": "emphasis", "role": "main" },
+    { "id": "poll-outbox", "from": "atomic", "to": "relay_poll", "label": "صف غير منشور", "variant": "default", "role": "main" },
+    { "id": "publish-stream", "from": "relay_poll", "to": "redis_stream", "label": "XADD · at-least-once", "variant": "emphasis", "role": "main" },
+    { "id": "consume", "from": "redis_stream", "to": "worker", "label": "XREADGROUP", "variant": "default", "role": "main" },
+    { "id": "process", "from": "worker", "to": "effect", "label": "نفّذ الأثر وسجّل event_id", "variant": "default", "role": "main" },
+    { "id": "ack-success", "from": "effect", "to": "ack", "label": "نجاح", "variant": "emphasis", "role": "main" },
+    { "id": "done", "from": "ack", "to": "complete", "label": "أنهى الاستهلاك", "variant": "default", "role": "main" },
+    { "id": "failed", "from": "worker", "to": "retry", "label": "فشل المعالجة", "variant": "security", "role": "error" },
+    { "id": "redeliver", "from": "retry", "to": "redis_stream", "label": "إعادة التسليم", "variant": "dashed", "role": "return" },
+    { "id": "dead-letter", "from": "retry", "to": "dlq", "label": "استنفاد 5 محاولات", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "أنواع المهام",
+      "items": [
+        "knowledge: تسجيل مستند أو طلب تلخيص",
+        "media: توليد صورة أو وسيط",
+        "memory: فهرسة عنصر ذاكرة",
+        "القياس usage متزامن ولا يمر عبر هذا الناقل"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "ضمانات التسليم",
+      "items": [
+        "النشر at-least-once، لذلك قد يصل الحدث أكثر من مرة.",
+        "تسجيل (consumer_group, event_id) يجعل إعادة التنفيذ مكررةً آمنة؛ التكرار يُتجاهل ثم يُقرّ.",
+        "الحدث الفاشل يبقى بلا XACK ويعاد تسليمه؛ بعد خمس محاولات يُنقل إلى DLQ.",
+        "المخطط عربي؛ قد تبقى عناصر واجهة العارض الثابتة بالإنجليزية."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "running",
+  "type": "workflow",
+  "quality": "showcase",
+  "startedAt": "2026-10-22T14:12:17.669Z",
+  "specification": {
+    "path": "\\\\wsl.localhost\\Ubuntu-24.04\\home\\AIZZAK\\.archify\\workflow-background-jobs-20261022-171035\\candidate.json",
+    "sha256": "d18aa10152e78037638d26e963c8683cf4b6e7a8fb0157173c025e40de8dd644",
+    "bytes": 6596
+  },
+  "artifact": {
+    "path": "\\\\wsl.localhost\\Ubuntu-24.04\\home\\AIZZAK\\.archify\\workflow-background-jobs-20261022-171035\\background-jobs.html"
+  },
+  "stages": {},
+  "diagnostics": [],
+  "evidence": {
+    "receipt": "\\\\wsl.localhost\\Ubuntu-24.04\\home\\AIZZAK\\.archify\\workflow-background-jobs-20261022-171035\\background-jobs.finalize.json",
+    "summaryReceipt": "\\\\wsl.localhost\\Ubuntu-24.04\\home\\AIZZAK\\.archify\\workflow-background-jobs-20261022-171035\\background-jobs.finalize-summary.json"
+  },
+  "visualReview": "not-requested"
+}
