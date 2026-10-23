@@ -25,6 +25,7 @@ Two halves, matching the step's two halves:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -35,6 +36,7 @@ import yaml
 
 from app.api.main import CORRELATION_HEADER, REQUEST_ID_HEADER
 from app.framework.observability.context import (
+    bind_turn,
     correlation_id_var,
     event_id_var,
     log_context,
@@ -207,12 +209,39 @@ def test_the_http_middleware_binds_the_correlation_id() -> None:
     assert "request_id_var.set(request_id)" in source
 
 
-def test_the_context_dependency_binds_the_workspace() -> None:
+def test_the_principal_dependency_binds_the_workspace() -> None:
+    """The source half only: that the tenant is taken from the PRINCIPAL. That
+    the binding actually reaches a line is behaviour, and is pinned end to end
+    in ``test_api_app_shell.py`` -- this text check alone passed for the whole
+    time no request line carried a ``workspace_id`` (logging-restructure م-1)."""
     source = _text(_REPO_ROOT / "src" / "app" / "api" / "v1" / "dependencies.py")
     assert "workspace_id_var.set(principal.workspace_id)" in source, (
-        "the tenant must be bound from the PRINCIPAL in current_context -- binding it "
+        "the tenant must be bound from the PRINCIPAL in current_principal -- binding it "
         "from anything the client sends would be the tenant-isolation hole 03 §0 names"
     )
+
+
+def test_a_turn_binding_reaches_the_line() -> None:
+    def bound() -> dict[str, Any]:
+        bind_turn(agent_key="rag_agent", conversation_id="conv-1")
+        return _format()
+
+    # `bind_turn` is a bare `set()`; a copied context keeps it out of this test.
+    payload = contextvars.copy_context().run(bound)
+
+    assert payload["conversation_id"] == "conv-1"
+    assert payload["agent_key"] == "rag_agent"
+
+
+def test_an_extra_field_with_a_turn_name_wins_over_the_binding() -> None:
+    """Lines that already name their agent explicitly (``agent_lifecycle.*``)
+    keep the value they wrote."""
+
+    def bound() -> dict[str, Any]:
+        bind_turn(agent_key="outer", conversation_id="conv-1")
+        return _format({"agent_key": "inner"})
+
+    assert contextvars.copy_context().run(bound)["agent_key"] == "inner"
 
 
 def test_the_consumer_engine_binds_all_three_around_dispatch() -> None:

@@ -42,6 +42,7 @@ from app.api.main import (
     PROBLEM_MEDIA_TYPE,
     create_app,
 )
+from app.api.middleware.access_log import HTTP_REQUEST_EVENT
 from app.api.v1.dependencies import ApiServices, Context, Principal
 from app.api.v1.dto.problem import ProblemDetails
 from app.api.v1.websocket.streaming import WsPrincipal
@@ -50,6 +51,7 @@ from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.lifecycle import Disposable
 from app.framework.errors import AppError, NotFoundError, RateLimitedError, UnauthorizedError
+from app.framework.observability.pseudonymity import pseudonymous_id
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.providers.resolver import ResolvedProvider
@@ -64,6 +66,7 @@ from tests.unit.support_files_media import build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
 from tests.unit.support_knowledge import build_knowledge
+from tests.unit.support_log_lines import json_lines
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
 from tests.unit.support_workspace_usage import build_workspace_usage
 
@@ -178,6 +181,12 @@ def _make_app(
             "correlation_id": ctx.correlation_id,
             "roles": sorted(ctx.roles),
         }
+
+    @app.get("/api/v1/_logs")
+    async def _logs(ctx: Context) -> dict[str, str]:
+        # A line written FROM a route, the way every agent and module line is.
+        logging.getLogger("tests.app_shell.probe").info("probe.route_line")
+        return {"ok": "yes"}
 
     @app.get("/api/v1/_notfound")
     async def _notfound(ctx: Context) -> dict[str, str]:
@@ -430,6 +439,47 @@ def test_correlation_flows_into_context() -> None:
     assert body["workspace_id"] == _W1
     assert body["correlation_id"] == supplied
     assert body["roles"] == ["member"]
+
+
+# --------------------------------------------------------------------------- #
+# Log lines (logging-restructure phase 1)                                      #
+# --------------------------------------------------------------------------- #
+def test_a_routes_lines_carry_the_principals_workspace() -> None:
+    """م-1, end to end through the real pipeline: before the fix the tenant
+    was bound in ``current_context``, a plain ``def`` FastAPI runs on a COPY
+    of the context, and no line of any request carried a ``workspace_id``."""
+    client = TestClient(_make_app())
+    with json_lines() as captured:
+        response = client.get("/api/v1/_logs", headers=_auth())
+
+    assert response.status_code == 200
+    (route_line,) = captured.named("probe.route_line")
+    assert route_line["workspace_id"] == pseudonymous_id(_W1)
+    (request_line,) = captured.named(HTTP_REQUEST_EVENT)
+    assert request_line["workspace_id"] == pseudonymous_id(_W1)
+    assert request_line["route"] == "/api/v1/_logs"
+    assert request_line["correlation_id"] == response.headers[CORRELATION_HEADER]
+
+
+def test_the_request_line_is_the_last_line_of_the_request() -> None:
+    client = TestClient(_make_app())
+    with json_lines() as captured:
+        client.get("/api/v1/_logs", headers=_auth())
+
+    app_lines = [line["message"] for line in captured.lines if line["logger"] != "httpx"]
+    assert app_lines[-1] == HTTP_REQUEST_EVENT
+
+
+def test_a_refused_bearer_is_one_warning_line_without_a_tenant() -> None:
+    client = TestClient(_make_app())
+    with json_lines() as captured:
+        response = client.get("/api/v1/_logs", headers=_auth("bad"))
+
+    assert response.status_code == 401
+    (request_line,) = captured.named(HTTP_REQUEST_EVENT)
+    assert request_line["level"] == "WARNING"
+    assert "workspace_id" not in request_line
+    assert not captured.named("probe.route_line")
 
 
 # --------------------------------------------------------------------------- #

@@ -60,6 +60,7 @@ from app.api.errors import (
 )
 from app.api.health import health_router
 from app.api.metrics import metrics_router
+from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.auth import ApiAuthenticator
 from app.api.middleware.inflight import InFlightLimitMiddleware
 from app.api.middleware.metrics import RedMetricsMiddleware
@@ -238,6 +239,11 @@ def create_app(
             max_in_flight=services.settings.rate_limit.max_in_flight,
         )
     app.add_middleware(RedMetricsMiddleware)
+    # The `http.request` line (logging-restructure phase 1), added after the
+    # metrics layer and therefore OUTSIDE it: the line's `duration_ms` covers
+    # everything the caller waited for, an in-flight refusal included, and it
+    # is written after every other line the request produced.
+    app.add_middleware(AccessLogMiddleware)
 
     # Health + metrics at the ROOT (unversioned, unauthenticated); everything
     # else under the configured prefix so the wire path is `/api/v1/...` (03

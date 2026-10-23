@@ -1,7 +1,8 @@
 """Structured JSON logging (10-code-standards §10, 07-nfr-slo §7).
 
 One JSON object per line, always carrying the ambient ``correlation_id`` /
-``workspace_id`` / ``event_id`` / ``request_id`` when present. ``extra=``
+``workspace_id`` / ``event_id`` / ``request_id`` -- and, inside an agent turn,
+``conversation_id`` / ``agent_key`` -- when present. ``extra=``
 fields on a log call are merged in (after redaction). Configure once at process
 start via ``configure_logging`` from the composition root / worker entrypoint.
 
@@ -23,6 +24,8 @@ import logging
 from typing import Any
 
 from app.framework.observability.context import (
+    agent_key_var,
+    conversation_id_var,
     correlation_id_var,
     event_id_var,
     request_id_var,
@@ -82,6 +85,8 @@ class JsonFormatter(logging.Formatter):
             ("correlation_id", correlation_id_var),
             ("event_id", event_id_var),
             (WORKSPACE_FIELD, workspace_id_var),
+            ("conversation_id", conversation_id_var),
+            ("agent_key", agent_key_var),
         ):
             value = ctx_var.get()
             if value is not None:
@@ -127,6 +132,15 @@ _ADOPTED_LOGGERS: tuple[str, ...] = (
     "uvicorn.access",
 )
 
+# Loggers held above the process level. `uvicorn.access` wrote a line when a
+# response STARTED, with no duration, no route template and no tenant; the
+# app's own `http.request` line (`api/middleware/access_log.py`) replaces it
+# (logging-restructure phase 1). It writes only at INFO, so WARNING silences it
+# while still letting anything louder through.
+_LEVEL_FLOORS: dict[str, int] = {
+    "uvicorn.access": logging.WARNING,
+}
+
 
 def configure_logging(level: str = "INFO") -> None:
     """Install the JSON formatter on the root logger (idempotent).
@@ -150,6 +164,9 @@ def configure_logging(level: str = "INFO") -> None:
         adopted = logging.getLogger(name)
         adopted.handlers.clear()
         adopted.propagate = True
+
+    for name, floor in _LEVEL_FLOORS.items():
+        logging.getLogger(name).setLevel(floor)
 
 
 def get_logger(name: str) -> logging.Logger:
