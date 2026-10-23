@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
 from typing import ClassVar
@@ -28,6 +29,7 @@ from app.agents.orchestrator import (
     OrchestratorDependencies,
     _TokenMeter,
 )
+from app.api.v1.sse import sse_stream
 from app.framework.agent_runtime.base_agent import (
     AgentDependencies,
     AgentEvent,
@@ -48,12 +50,14 @@ from app.framework.errors import (
     RateLimitedError,
     ValidationError,
 )
+from app.framework.observability.context import bind_turn
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.providers.resolver import ResolvedProvider
 from app.modules.conversations.ports.inbound import AppendedMessage, StartedConversation
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from tests.unit.support_access import build_authorization
+from tests.unit.support_log_lines import json_lines
 
 _WORKSPACE = "018f0000-0000-7000-8000-000000000001"
 # Spaces plan step 12 — a request that opens a FRESH thread has to name the
@@ -1502,6 +1506,63 @@ async def test_invoke_once_returns_the_persisted_turn() -> None:
     assert turn.message.role == "assistant"
     assert turn.message.seq == 2
     assert turn.final["file_id"] == "f-1"
+
+
+# --------------------------------------------------------------------------- #
+# Log binding (logging-restructure phase 1, م-10)                              #
+# --------------------------------------------------------------------------- #
+class _LoggingAgent(BaseAgent):
+    """Writes a line on each side of a yield, the way a real agent's
+    retrieval and provider calls write theirs."""
+
+    metadata = _metadata("logger", capabilities=frozenset())
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        logging.getLogger("tests.orchestrator.probe").info("probe.in_turn")
+        yield AgentEvent(type="token", data={"delta": "do"})
+        logging.getLogger("tests.orchestrator.probe").info("probe.in_turn")
+        yield AgentEvent(type="final", data={"text": "done"})
+
+
+async def test_every_line_of_a_streamed_turn_names_its_conversation_and_agent() -> None:
+    """Through the real SSE encoder, which pulls each event in a task of its
+    own -- the path that rules out binding inside the agent's generator. A
+    request opening a NEW thread is the hard case: its id exists only once
+    the orchestrator has opened it."""
+    orchestrator = _turn_orchestrator(_LoggingAgent, _FakeThreads())
+
+    with json_lines() as captured:
+        events = await orchestrator.invoke(
+            _ctx(), "logger", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        )
+        async for _ in sse_stream(events):
+            pass
+
+    lines = captured.named("probe.in_turn")
+    assert len(lines) == 2
+    for line in lines:
+        assert line["conversation_id"] == "conv-new"
+        assert line["agent_key"] == "logger"
+
+
+async def test_a_new_thread_does_not_inherit_the_previous_turns_conversation() -> None:
+    """A WebSocket runs turn after turn in ONE task, so a binding left over
+    from the turn before must be cleared, not kept."""
+    bind_turn(agent_key="earlier", conversation_id="conv-earlier")
+    orchestrator = _turn_orchestrator(_LoggingAgent, None)
+
+    with json_lines() as captured:
+        async for _ in await orchestrator.invoke(
+            _ctx(), "logger", AgentRequest(space_id=_SPACE, conversation_id=None, input={})
+        ):
+            pass
+
+    for line in captured.named("probe.in_turn"):
+        assert "conversation_id" not in line
+        assert line["agent_key"] == "logger"
 
 
 async def test_invoke_once_raises_an_in_flight_failure_as_the_problem_it_is() -> None:

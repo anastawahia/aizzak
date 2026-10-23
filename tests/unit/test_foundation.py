@@ -181,6 +181,15 @@ def test_configure_logging_is_idempotent() -> None:
     assert len(logging.getLogger().handlers) == 1
 
 
+def test_uvicorns_access_line_is_silenced_even_at_debug() -> None:
+    """The app's own ``http.request`` line replaces it (logging-restructure
+    phase 1); anything uvicorn says above INFO still gets through."""
+    configure_logging("DEBUG")
+    access = logging.getLogger("uvicorn.access")
+    assert not access.isEnabledFor(logging.INFO)
+    assert access.isEnabledFor(logging.WARNING)
+
+
 # --------------------------------------------------------------------------- #
 # settings contract                                                            #
 # --------------------------------------------------------------------------- #

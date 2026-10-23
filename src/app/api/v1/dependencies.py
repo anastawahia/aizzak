@@ -36,6 +36,7 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.agents.orchestrator import AgentOrchestrator
+from app.api.middleware.access_log import bind_request_workspace
 from app.api.middleware.queue_backpressure import QueueBackpressure
 from app.api.middleware.rate_limit import ApiRateLimiter, HeavyJobRateLimiter
 from app.framework.agent_runtime.registry import AgentRegistry
@@ -368,6 +369,7 @@ def _bearer_token(credentials: HTTPAuthorizationCredentials | None) -> str:
 
 
 async def current_principal(
+    request: Request,
     authenticator: Annotated[HttpAuthenticator, Depends(get_authenticator)],
     services: Annotated[ApiServices, Depends(get_services)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
@@ -390,8 +392,22 @@ async def current_principal(
     included. That is the honest order — charging a request to a user before
     knowing which user it is would mean charging it to the wrong one — and it
     is cheap after 1.1, which is why 1.1 came first.
+
+    **The tenant is bound for logging HERE** (the second of the log-binding
+    sites, ``observability/context.py``), from the PRINCIPAL and never from
+    the client (03 §0: "لا يُمرَّر من العميل"). It used to be bound in
+    ``current_context``, a plain ``def`` that FastAPI runs in a worker thread
+    on a COPY of the context -- so the ``set()`` died with the copy and no
+    line of any request ever carried a ``workspace_id`` (logging-restructure
+    م-1). This function is ``async`` and runs in the request's own task, so
+    the binding reaches every line the route and the agents below it write.
+    It is also stamped on ``request.state`` for the one reader that runs
+    OUTSIDE that task: the ``http.request`` line (``middleware/access_log``).
+    Bound before the rate check, so a 429 line names its tenant too.
     """
     principal = await authenticator.authenticate(_bearer_token(credentials))
+    workspace_id_var.set(principal.workspace_id)
+    bind_request_workspace(request, principal.workspace_id)
     if services.rate_limiter is not None:
         await services.rate_limiter.check(
             user_id=principal.user_id, workspace_id=principal.workspace_id
@@ -413,14 +429,9 @@ def current_context(
     route ran, so it is always present here.
     """
     correlation_id: Uuid = request.state.correlation_id
-    # Capacity 0.6: the second of the three log-binding sites. It is HERE and
-    # not in the auth middleware because this is the first point at which the
-    # tenant is both known and authoritative -- `authenticate` mints its own
-    # provisioning correlation id and returns a `Principal`, but the decision
-    # that this request runs as this workspace is made on the line below. The
-    # formatter pseudonymises the value before it is ever written
-    # (`observability/pseudonymity.py`); nothing here is logged raw.
-    workspace_id_var.set(principal.workspace_id)
+    # The tenant's log binding is NOT here any more: this is a plain `def`, so
+    # FastAPI runs it on a copy of the context and a `set()` would be lost.
+    # `current_principal` binds it -- see its docstring.
     return ExecutionContext(
         workspace_id=principal.workspace_id,
         user_id=principal.user_id,

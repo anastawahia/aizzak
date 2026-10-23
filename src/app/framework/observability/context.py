@@ -10,8 +10,8 @@ codebase ever *set* them: the formatter read three context variables that were
 always ``None``, so every JSON line the platform emitted carried no correlation id
 at all. The mechanism was complete and the wiring was missing, which is the
 worst of the three possible states -- a reader of ``logging.py`` would have
-concluded correlation ids were shipping. They are set in exactly three places
-now, and each is named in ``log_context``'s docstring below.
+concluded correlation ids were shipping. Every place that sets them is named
+in ``log_context``'s docstring below.
 """
 
 from __future__ import annotations
@@ -28,6 +28,33 @@ workspace_id_var: ContextVar[str | None] = ContextVar("workspace_id", default=No
 # meaning on the API side -- an HTTP request is not an event -- so it is bound
 # by the consumer engine alone and simply absent from every app line.
 event_id_var: ContextVar[str | None] = ContextVar("event_id", default=None)
+# The agent turn a line belongs to (logging-restructure phase 1, م-10). Bound
+# by the orchestrator as a turn opens, so the retrieval, provider and agent
+# lines of one turn can be gathered by conversation as well as by request.
+conversation_id_var: ContextVar[str | None] = ContextVar("conversation_id", default=None)
+agent_key_var: ContextVar[str | None] = ContextVar("agent_key", default=None)
+
+
+def bind_turn(*, agent_key: str, conversation_id: str | None = None) -> None:
+    """Bind the agent turn for every line written from here on in this task.
+
+    A plain ``set()``, NOT ``log_context``, and the shape is forced: an agent
+    turn is an async generator, and the SSE layer pulls each of its events in
+    a task of its own (``api/v1/sse.py``), so a value set inside the generator
+    would live in one pull's context copy and be gone by the next, and a
+    restoring ``reset`` would raise for a token made in another context. Bound
+    instead BEFORE the stream is handed out, in the request's own task, it is
+    inherited by every task the stream later runs in. Safe for the reason the
+    HTTP middleware gives: each request runs in its own context copy. The
+    orchestrator is the only caller, and it runs in the API process only.
+
+    Unlike ``log_context``, ``None`` CLEARS ``conversation_id``: a WebSocket
+    runs turn after turn in one task, and a new thread (no id until the
+    orchestrator opens it, which binds again then) must not inherit the id of
+    the turn before it.
+    """
+    agent_key_var.set(agent_key)
+    conversation_id_var.set(conversation_id)
 
 
 @contextmanager
@@ -49,14 +76,16 @@ def log_context(
     (The HTTP middleware has the opposite shape -- each request already runs in
     its own context copy -- and sets the variables directly.)
 
-    The three binding sites, so this is greppable from here:
+    The binding sites, so this is greppable from here:
 
     * ``api/main.py``'s correlation middleware -- request id and correlation id,
       taken from the edge's headers or minted.
-    * ``api/v1/dependencies.py``'s ``current_context`` -- the workspace id, from
-      the PRINCIPAL and never from the client.
+    * ``api/v1/dependencies.py``'s ``current_principal`` -- the workspace id,
+      from the PRINCIPAL and never from the client.
     * ``infrastructure/messaging/consumers/engine.py`` -- all three, from the
       envelope, around one handler dispatch. This helper's caller.
+    * ``agents/orchestrator.py`` -- the conversation id and agent key, through
+      ``bind_turn`` above.
 
     ``None`` for an argument means "leave whatever is bound alone", not "clear
     it": a worker envelope without a ``correlationid`` extension must not erase

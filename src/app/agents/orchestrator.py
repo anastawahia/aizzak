@@ -78,6 +78,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ForbiddenError, RateLimitedError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.observability import get_logger
+from app.framework.observability.context import bind_turn
 from app.framework.observability.metrics import llm_fallback_total
 from app.framework.ports.llm_provider import (
     LlmChunk,
@@ -1340,6 +1341,10 @@ class AgentOrchestrator:
         message behind for a run that never started.
         """
         record = _TurnRecord(meter=_TokenMeter())
+        # Every line of this turn names it, pre-flight included (logging-
+        # restructure م-10). Bound here, before the stream exists, and not
+        # inside it -- `bind_turn` explains why the generator is the wrong place.
+        bind_turn(agent_key=agent_key, conversation_id=req.conversation_id)
         # Authorization FIRST — before the credential lookup `_resolve_llm`
         # performs, before quota, before anything. A refusal must cost nothing
         # (FR-132's rule, and a forbidden caller deserves it even more than a
@@ -1404,6 +1409,11 @@ class AgentOrchestrator:
             # through, still pre-flight, still mappable to a response.
             agent = self._deps.agents.create(agent_key, ctx, deps)
             record.conversation_id = await self._open_turn(ctx, agent_key, req)
+            # Again, for a turn that just OPENED its thread: only now is there
+            # an id to bind. `None` means the conversations seam is unwired,
+            # and then the request's own id (bound above) is the best there is.
+            if record.conversation_id is not None:
+                bind_turn(agent_key=agent_key, conversation_id=record.conversation_id)
         except Exception:
             await self._give_back(ctx, record.reservation_id)
             raise

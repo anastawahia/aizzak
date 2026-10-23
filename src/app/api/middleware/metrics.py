@@ -102,13 +102,16 @@ class RedMetricsMiddleware:
             # into this same scope dict while handling the request
             # (`starlette.routing`'s `scope.update(child_scope)`), so before
             # the call there is nothing to resolve.
-            route = _route_label(scope)
+            route = route_label(scope)
             http_requests_total.labels(route=route, method=method, status=str(status)).inc()
             http_request_duration_seconds.labels(route=route, method=method).observe(elapsed)
 
 
-def _route_label(scope: Scope) -> str:
-    """The full path template of the route that handled this request."""
+def route_label(scope: Scope) -> str:
+    """The full path template of the route that handled this request.
+
+    Public because the ``http.request`` log line (``access_log.py``) names
+    the route the same way the metrics do, so one template finds both."""
     route = scope.get("route")
     # `path_format` is the template with Starlette's converters stripped
     # (`/files/{path:path}` -> `/files/{path}`), which is both the more
