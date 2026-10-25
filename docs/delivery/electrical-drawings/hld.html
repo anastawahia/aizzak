@@ -1,0 +1,1047 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>وكيل التشخيص الكهربائيّ</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@600;700&display=swap">
+<style>
+/* Layout: one RTL reading column (68ch) with full-width figures up to 1080px; the hero carries a drawing-sheet title block */
+:root {
+  --bg: #F2F5F8;
+  --surface: #FFFFFF;
+  --surface-2: #E8EDF2;
+  --ink: #14202B;
+  --muted: #566574;
+  --rule: #CBD5DE;
+  --accent: #0B5FA5;
+  --accent-soft: #E0EBF6;
+  --llm: #6A4BB8;
+  --llm-soft: #EEE9FA;
+  --ok: #1B7843;
+  --ok-soft: #E1F2E7;
+  --warn: #9C5A00;
+  --warn-soft: #FAEFD9;
+  --bad: #B42318;
+  --bad-soft: #FBE6E3;
+  --font-display: "Noto Kufi Arabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  --font-body: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E141A; --surface: #151E27; --surface-2: #1C2733; --ink: #E3EAF1; --muted: #9AAAB9;
+    --rule: #2B3A48; --accent: #5BA8EC; --accent-soft: #14293D; --llm: #A78EEB; --llm-soft: #231C3A;
+    --ok: #55C688; --ok-soft: #10291B; --warn: #E3A54A; --warn-soft: #2D2110; --bad: #F2867C; --bad-soft: #341614;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E141A; --surface: #151E27; --surface-2: #1C2733; --ink: #E3EAF1; --muted: #9AAAB9;
+  --rule: #2B3A48; --accent: #5BA8EC; --accent-soft: #14293D; --llm: #A78EEB; --llm-soft: #231C3A;
+  --ok: #55C688; --ok-soft: #10291B; --warn: #E3A54A; --warn-soft: #2D2110; --bad: #F2867C; --bad-soft: #341614;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.8; }
+.page {
+  max-width: 1080px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 64px;
+  padding-block: 40px 80px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font-family: var(--font-display); font-size: clamp(30px, 5vw, 44px); line-height: 1.35; font-weight: 700; }
+h2 { font-family: var(--font-display); font-size: 24px; line-height: 1.5; font-weight: 700; }
+h3 { font-size: 17px; font-weight: 700; line-height: 1.6; }
+p { margin: 0; }
+ul, ol { margin: 0; padding-inline-start: 1.3em; }
+li + li { margin-top: 4px; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.prose { max-width: 68ch; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; }
+.latin { font-family: var(--font-mono); font-size: .92em; }
+section { display: grid; gap: 18px; }
+
+/* hero */
+.hero { display: grid; gap: 22px; }
+.eyebrow { font-size: 13.5px; font-weight: 600; color: var(--accent); letter-spacing: .02em; }
+.lead { font-size: 18px; line-height: 1.9; max-width: 64ch; }
+.titleblock {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px;
+  background: var(--rule); border: 1.5px solid var(--ink); border-radius: 4px; overflow: hidden;
+}
+.titleblock div { background: var(--surface); padding: 8px 14px; display: grid; gap: 2px; min-width: 0; }
+.titleblock dt { font-size: 12px; color: var(--muted); }
+.titleblock dd { margin: 0; font-size: 14.5px; font-weight: 600; }
+.toc ol { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 14.5px; }
+.toc li + li { margin-top: 0; }
+
+/* pills */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 999px;
+  padding: 1px 11px; font-size: 13px; font-weight: 600; line-height: 1.9; white-space: nowrap;
+}
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.rev, .pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.no { background: var(--surface-2); color: var(--muted); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.pill.llm { background: var(--llm-soft); color: var(--llm); }
+
+/* principle */
+.principle { display: grid; gap: 16px; }
+.quote {
+  font-family: var(--font-display); font-size: clamp(19px, 2.6vw, 23px); line-height: 1.75; font-weight: 600;
+  max-width: 40ch;
+}
+.split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.side { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.side.compute { border-color: var(--accent); }
+.side.model { border-color: var(--llm); }
+.side h3 { font-size: 16px; }
+.side.compute h3 { color: var(--accent); }
+.side.model h3 { color: var(--llm); }
+
+/* figures */
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.fig-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.fig-id { font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 14px; }
+.fig-title { font-weight: 700; font-size: 16px; }
+.fig-scroll { overflow-x: auto; }
+.fig-scroll svg { display: block; width: 100%; height: auto; }
+.fig-scroll svg.w-lg { min-width: 880px; }
+.fig-scroll svg.w-md { min-width: 860px; }
+.fig-scroll svg.w-sm { min-width: 820px; }
+figcaption { font-size: 14.5px; color: var(--muted); max-width: 80ch; line-height: 1.8; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13.5px; color: var(--muted); list-style: none; padding: 0; }
+.legend li { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.sw { width: 22px; height: 14px; border-radius: 4px; display: inline-block; }
+.sw.compute { border: 1.6px solid var(--accent); background: var(--surface); }
+.sw.model { border: 1.6px solid var(--llm); background: var(--llm-soft); }
+.sw.gate { border: 1.3px dashed var(--muted); border-radius: 7px; background: var(--bg); }
+.sw.gatekey { border: 2px solid var(--accent); border-radius: 7px; background: var(--accent-soft); }
+
+/* svg diagram styling (page CSS reaches inline SVG) */
+.d text { font-family: var(--font-body); font-size: 13px; fill: var(--ink); }
+.d .tt { font-size: 15px; font-weight: 700; }
+.d .ts { font-size: 12px; fill: var(--muted); }
+.d .tl { font-size: 12.5px; font-weight: 600; fill: var(--muted); }
+.d .tg { font-size: 12.5px; }
+.d .tb { font-weight: 700; }
+.d .tacc { fill: var(--accent); }
+.d .tllm { fill: var(--llm); }
+.d .twarn { fill: var(--warn); }
+.d .tbad { fill: var(--bad); }
+.d .tinv { fill: var(--surface); font-weight: 700; }
+.d .tinvs { fill: var(--surface); font-size: 12px; }
+.d .tmono { font-family: var(--font-mono); font-size: 11.5px; fill: var(--muted); }
+.d .b { fill: var(--surface); stroke: var(--rule); stroke-width: 1.2; }
+.d .ba { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; }
+.d .ba2 { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.2; }
+.d .bl { fill: var(--llm-soft); stroke: var(--llm); stroke-width: 1.6; }
+.d .bw { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.2; }
+.d .bbad { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.2; }
+.d .bfill { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
+.d .lane { fill: var(--surface-2); }
+.d .g { fill: var(--bg); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.d .gk { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.d .chip { fill: var(--accent); }
+.d .ln { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.d .ln-l { stroke: var(--llm); }
+.d .lead { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; fill: none; }
+.d .zone { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 7 5; }
+.d .sep { stroke: var(--rule); stroke-width: 1; }
+.d .mk { fill: var(--muted); }
+.d .mk-l { fill: var(--llm); }
+
+/* phases */
+.phases { display: grid; gap: 18px; }
+.phase { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 20px 22px; display: grid; gap: 16px; min-width: 0; }
+.phase-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.pid {
+  font-family: var(--font-display); font-weight: 700; font-size: 14px; color: var(--surface);
+  background: var(--accent); border-radius: 999px; padding: 2px 12px; line-height: 1.9;
+}
+.phase-head h3 { font-size: 19px; font-family: var(--font-display); }
+.size { font-size: 13px; color: var(--muted); border: 1px solid var(--rule); border-radius: 999px; padding: 0 10px; line-height: 1.9; }
+.facts { display: grid; grid-template-columns: 9.5em minmax(0, 1fr); gap: 10px 18px; margin: 0; }
+.facts dt { font-weight: 600; color: var(--muted); font-size: 14.5px; }
+.facts dd { margin: 0; min-width: 0; }
+.flow { list-style: none; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 0; }
+.flow li { display: inline-flex; align-items: center; margin: 0; }
+.flow li + li::before { content: "←"; color: var(--muted); padding-inline: 8px; }
+.flow span { background: var(--surface-2); border: 1px solid var(--rule); border-radius: 8px; padding: 2px 10px; font-size: 14px; line-height: 1.8; }
+.gate {
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+  border: 1.3px dashed var(--muted); border-radius: 10px; padding: 10px 14px; background: var(--bg);
+}
+.gate b { font-size: 13.5px; white-space: nowrap; }
+.gate.key { border: 2px solid var(--accent); background: var(--accent-soft); }
+.gate.key b { color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.stat { background: var(--bg); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.stat .k { font-size: 13px; color: var(--muted); }
+.stat .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat .v.ok { color: var(--ok); }
+.stat .v.warn { color: var(--warn); }
+.stat .n { font-size: 13.5px; color: var(--muted); line-height: 1.7; }
+.sub { display: grid; gap: 12px; }
+
+/* connection rules */
+.rules { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.rule { background: var(--bg); border: 1px solid var(--rule); border-radius: 10px; padding: 10px; display: grid; gap: 8px; align-content: start; justify-items: start; min-width: 0; }
+.rule svg { display: block; width: 100%; height: auto; background: var(--surface); border-radius: 6px; }
+.rule p { font-size: 14px; line-height: 1.7; }
+.r .w { stroke: var(--ink); stroke-width: 2.4; fill: none; stroke-linecap: round; }
+.r .wc { stroke: var(--accent); stroke-width: 2.4; fill: none; stroke-linecap: round; }
+.r .dot { fill: var(--ink); }
+.r .term { fill: var(--surface); stroke: var(--ink); stroke-width: 2; }
+.r .bb { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 3 3; }
+.checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 28px; }
+
+/* agent */
+.steps { counter-reset: s; list-style: none; padding: 0; display: grid; gap: 10px; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: baseline; margin: 0; }
+.steps li::before {
+  content: counter(s); font-weight: 700; font-size: 13px; color: var(--accent); text-align: center;
+  border: 1.5px solid var(--accent); border-radius: 999px; width: 26px; height: 26px; line-height: 23px;
+  font-variant-numeric: tabular-nums;
+}
+.levels { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.levels .arrow { color: var(--muted); }
+.answer { background: var(--bg); border: 1px solid var(--rule); border-radius: 12px; padding: 16px; display: grid; gap: 12px; font-size: 14.5px; }
+.answer-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.answer-head b { font-size: 15px; }
+.kv { display: grid; grid-template-columns: 7em minmax(0, 1fr); gap: 6px 14px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; min-width: 0; }
+.hyp { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; }
+.hyp .ev { grid-column: 1 / -1; color: var(--muted); font-size: 13.5px; }
+.answer-foot { display: flex; flex-wrap: wrap; gap: 8px; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.two > * { min-width: 0; }
+
+/* safety */
+.pillars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; list-style: none; padding: 0; }
+.pillars li { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; margin: 0; display: grid; gap: 4px; align-content: start; }
+.pillars b { font-size: 15px; }
+.pillars span { font-size: 14px; color: var(--muted); line-height: 1.7; }
+.rules5 { display: grid; gap: 6px; }
+
+/* tables */
+.tbl-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { text-align: start; padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; background: var(--surface-2); white-space: nowrap; }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .en { display: block; color: var(--muted); font-size: 12.5px; }
+.decisions td:first-child { font-weight: 600; width: 34%; }
+
+/* scope + questions */
+.scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.scope > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.questions { display: grid; gap: 12px; padding-inline-start: 1.6em; }
+.questions li { padding-inline-start: 4px; margin: 0; }
+.questions li::marker { font-weight: 700; color: var(--accent); }
+footer { border-top: 1px solid var(--rule); padding-top: 18px; font-size: 14px; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .split, .two, .scope, .checks { grid-template-columns: minmax(0, 1fr); }
+  .stats, .rules, .pillars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .titleblock { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .facts dd + dt { margin-top: 10px; }
+  .phase { padding: 16px; }
+  figure { padding: 12px; }
+}
+@media (max-width: 420px) {
+  .stats, .rules, .pillars { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+
+<div class="page" dir="rtl" lang="ar">
+
+<header class="hero">
+  <div class="eyebrow">AIZZAK · تصميمٌ عالي المستوى (HLD) · للمراجعة الفنّيّة</div>
+  <h1>وكيل التشخيص الكهربائيّ</h1>
+  <p class="lead">يرفع المستخدم مخطّط تحكّمٍ صناعيّ بصيغة PDF، فتقرؤه المنصّة وتبني منه رسمًا كهربائيًّا موثوقًا. ثمّ يسأل مثلًا: «لماذا لا يغلق القاطع؟». فيجيب الوكيل بأسبابٍ محتملة، ولكلّ سببٍ دليلٌ في المخطّط: الإصدار والصفحة والموضع. ويذكر ما هو مجهول، ويقترح القياس التالي الآمن الذي يفصل بين الأسباب.</p>
+  <dl class="titleblock">
+    <div><dt>المنصّة</dt><dd>AIZZAK، خادمٌ متعدّد المستأجرين</dd></div>
+    <div><dt>الوثيقة</dt><dd>تصميمٌ عالي المستوى</dd></div>
+    <div><dt>الغرض</dt><dd>مراجعة التصميم، بعد التقييم الفنّيّ الأوّل</dd></div>
+    <div><dt>التاريخ</dt><dd class="num">2026‑10‑25</dd></div>
+    <div><dt>الحالة</dt><dd>م‑0 تمّت · م‑1 إلى م‑4 لم تبدأ</dd></div>
+    <div><dt>المدّة المقدّرة</dt><dd>نحو 18 أسبوعًا قبل الإضافات الأخيرة، غير مؤكّدة، ويراها التقييم متفائلة</dd></div>
+  </dl>
+  <nav class="toc" aria-label="المحتويات">
+    <ol>
+      <li><a href="#changes">ما تغيّر بعد التقييم</a></li>
+      <li><a href="#idea">الفكرة</a></li>
+      <li><a href="#overview">الصورة الكاملة</a></li>
+      <li><a href="#phases">المراحل</a></li>
+      <li><a href="#agent">كيف يجيب الوكيل</a></li>
+      <li><a href="#safety">ضمانات السلامة</a></li>
+      <li><a href="#decisions">قرارات التصميم</a></li>
+      <li><a href="#metrics">معايير القبول</a></li>
+      <li><a href="#scope">النطاق</a></li>
+      <li><a href="#questions">أسئلة المراجعين وأجوبتها</a></li>
+    </ol>
+  </nav>
+</header>
+
+<section id="changes">
+  <h2>ما تغيّر بعد التقييم</h2>
+  <p class="prose">راجع مراجعٌ فنّيّ نسخة 2026‑10‑24 من هذه الصفحة، وأقرّ المالك أغلب توصياته. فتغيّر التصميم في هذه النقاط:</p>
+  <ul class="checks">
+    <li><b>تشخيصٌ مبنيّ على النموذج:</b> العطل الذي يفسّر ما رآه الفنّيّ، لا ما يمنع التنشيط فقط.</li>
+    <li><b>القياس التالي:</b> يقترح الوكيل القياس الآمن الذي يفصل بين الفرضيّات، ومعه القراءة المتوقّعة.</li>
+    <li><b>المحرّك يرتّب الفرضيّات،</b> والنموذج يشرح فقط.</li>
+    <li><b>الاتّصال المزدوج</b> بدل التوالي والتوازي، ولا تنشيط عبر حملٍ آخر.</li>
+    <li><b>الحالة الصريحة</b> لمرحّل القفل ووضع القاطع، والجهاز الذكيّ صندوقٌ أسود، والتحليل المشروط على المجاهيل.</li>
+    <li><b>الحجز بمصدر رسمٍ كامل،</b> ومقاييس على مستوى الشبكة بحدود ثقة.</li>
+    <li><b>الصفحات المساندة</b> مصدر حقيقةٍ مستقلّ، وأدلّةٌ مرئيّة على صورة الصفحة.</li>
+    <li><b>قيود سلامةٍ</b> على توصيات القياس، وأسماءٌ مستعارة قبل النموذج السحابيّ.</li>
+  </ul>
+  <p class="prose muted">ومؤجّل: محاكي التسلسل والمؤقّتات. ومفتوح: قاعدة T بلا نقطة (<a href="#questions">الأسئلة</a>).</p>
+</section>
+
+<section id="idea" class="principle">
+  <h2>الفكرة في سطرين</h2>
+  <p class="quote">إذا كان الرسم الكهربائيّ خاطئًا، فكلّ نموذجٍ فوقه يعطي جوابًا مقنعًا وخاطئًا.</p>
+  <p class="prose">لذلك الطريقة هجينة: منطقٌ هندسيّ رمزيّ يحسب ويرتّب، ونموذج لغةٍ يشرح فقط. ولا تبدأ طبقة التشخيص قبل أن تنجح التوصيلات.</p>
+  <div class="split">
+    <div class="side compute">
+      <h3>المحرّك الهندسيّ يحسب</h3>
+      <ul>
+        <li>يقرأ الخطوط والنصوص من ملفّ PDF بإحداثيّاتها.</li>
+        <li>يبني الشبكات الكهربائيّة من الأسلاك والأطراف.</li>
+        <li>يتتبّع الدائرة، ويحدّد ما يمنع تنشيطها، وما يتوقّف إن تعطّل عنصرٌ فيها.</li>
+        <li>يبحث عن العطل الذي يفسّر ما رآه الفنّيّ، ويرتّب الفرضيّات، ولكلٍّ منها دليل.</li>
+        <li>يقترح القياس التالي الآمن.</li>
+      </ul>
+    </div>
+    <div class="side model">
+      <h3>نموذج اللغة يشرح فقط</h3>
+      <ul>
+        <li>يختار الأداة التالية في أثناء الإجابة.</li>
+        <li>يكتب الشرح بلغةٍ مفهومة، ولا يغيّر الترتيب ولا المستوى.</li>
+        <li>لا يرى ملفّ المخطّط، بل نتائج الأدوات المهيكلة.</li>
+        <li>لا يرى أسماء أجهزة المصنع: تصله بأسماءٍ مستعارة.</li>
+        <li>لا ينشئ فرضيّة، ولا يحكم بأنّ عطلًا مؤكّد.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="overview">
+  <h2>الصورة الكاملة</h2>
+  <p class="prose">أربع مراحل تُبنى بالترتيب. كلّ مرحلةٍ تعطي التي بعدها مدخلها، وبين كلّ مرحلتين بوّابة قياس. ولا يُعبر من البوّابة إلّا بالأرقام.</p>
+  <figure>
+    <div class="fig-head"><span class="fig-id">ش‑1</span><span class="fig-title">من ملفّ المخطّط إلى جوابٍ بأدلّة</span></div>
+    <div class="fig-scroll">
+      <svg class="d w-lg" viewBox="0 0 1000 770" role="img" aria-label="المالك يرفع المخطّط ويراجع ويسأل. أربع مراحل متتابعة: الاستخراج، ثمّ الرموز والتوصيلات، ثمّ منطق الدائرة، ثمّ وكيل التشخيص، وبين كلّ مرحلتين بوّابة قياس. المراحل تكتب إلى تخزين الكائنات وقاعدة البيانات، ونموذج اللغة لا يتّصل إلّا بالوكيل.">
+        <defs>
+          <marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk"/></marker>
+          <marker id="f1l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-l"/></marker>
+        </defs>
+
+        <text x="905" y="26" text-anchor="middle" class="tl">المالك (المستخدم)</text>
+        <text x="530" y="26" text-anchor="middle" class="tl">المراحل: كلّ مرحلةٍ تبني على التي قبلها</text>
+        <text x="125" y="26" text-anchor="middle" class="tl">التخزين والخدمات</text>
+        <rect class="lane" x="830" y="40" width="150" height="715" rx="12"/>
+        <rect class="lane" x="20" y="40" width="210" height="715" rx="12"/>
+
+        <line class="ln" x1="530" y1="154" x2="530" y2="207" marker-end="url(#f1a)"/>
+        <line class="ln" x1="530" y1="314" x2="530" y2="367" marker-end="url(#f1a)"/>
+        <line class="ln" x1="530" y1="474" x2="530" y2="527" marker-end="url(#f1a)"/>
+        <line class="ln" x1="530" y1="634" x2="530" y2="689" marker-end="url(#f1a)"/>
+
+        <rect class="ba" x="300" y="50" width="460" height="104" rx="10"/>
+        <rect class="chip" x="706" y="62" width="42" height="24" rx="12"/>
+        <text class="tinv" x="727" y="79" text-anchor="middle">م‑1</text>
+        <text class="tt" x="530" y="80" text-anchor="middle">الأساس والاستخراج</text>
+        <text x="530" y="104" text-anchor="middle">يسجّل إصدار المخطّط ثابتًا، ولا يُعدَّل بعده</text>
+        <text x="530" y="122" text-anchor="middle">عاملٌ في الخلفيّة يقرأ كلّ صفحة: الاتّجاه والكلمات والخطوط والصورة</text>
+        <text x="530" y="140" text-anchor="middle">ويكشف الصفحات المكرّرة</text>
+
+        <rect class="g" x="340" y="166" width="380" height="30" rx="15"/>
+        <text class="tg" x="530" y="186" text-anchor="middle">بوّابة: إحداثيّاتٌ صحيحة · أرقام الأطراف ≥ 98%</text>
+
+        <rect class="ba" x="300" y="210" width="460" height="104" rx="10"/>
+        <rect class="chip" x="706" y="222" width="42" height="24" rx="12"/>
+        <text class="tinv" x="727" y="239" text-anchor="middle">م‑2</text>
+        <rect class="bw" x="312" y="222" width="60" height="24" rx="12"/>
+        <text class="twarn tb" x="342" y="239" text-anchor="middle">الأخطر</text>
+        <text class="tt" x="530" y="240" text-anchor="middle">الرموز والتوصيلات والمراجعة</text>
+        <text x="530" y="264" text-anchor="middle">يصنّف الأشكال، ويتعرّف على الرموز وأسماء الأجهزة وأرقام الأطراف</text>
+        <text x="530" y="282" text-anchor="middle">يبني الشبكات من الأسلاك ونقاط التفرّع والمراجع بين الصفحات</text>
+        <text x="530" y="300" text-anchor="middle">يفحص الاتّساق، ويرسل كلّ مشكوكٍ فيه إلى مراجعة المالك</text>
+
+        <rect class="gk" x="340" y="326" width="380" height="30" rx="15"/>
+        <text class="tg tacc tb" x="530" y="346" text-anchor="middle">بوّابة حاسمة: دقّة التوصيل ≥ 99% · صفر أخطاءٍ خطيرة</text>
+
+        <rect class="ba" x="300" y="370" width="460" height="104" rx="10"/>
+        <rect class="chip" x="706" y="382" width="42" height="24" rx="12"/>
+        <text class="tinv" x="727" y="399" text-anchor="middle">م‑3</text>
+        <text class="tt" x="530" y="400" text-anchor="middle">محرّك منطق الدائرة</text>
+        <text x="530" y="424" text-anchor="middle">كلّ قيمة: صحيح أو خطأ أو مجهول، والمجهول لا يُفترض أبدًا</text>
+        <text x="530" y="442" text-anchor="middle">يتتبّع المسار، ويشتقّ شروط التنشيط والمنع والفصل</text>
+        <text x="530" y="460" text-anchor="middle">يفحص جهد الملفّ، ويحسب أثر العطل، ويشخّص، بلا نموذج لغة</text>
+
+        <rect class="g" x="340" y="486" width="380" height="30" rx="15"/>
+        <text class="tg" x="530" y="506" text-anchor="middle">بوّابة: أسئلة القبول تُجاب صحيحةً بلا نموذج لغة</text>
+
+        <rect class="ba" x="300" y="530" width="460" height="104" rx="10"/>
+        <rect class="chip" x="706" y="542" width="42" height="24" rx="12"/>
+        <text class="tinv" x="727" y="559" text-anchor="middle">م‑4</text>
+        <text class="tt" x="530" y="560" text-anchor="middle">وكيل التشخيص</text>
+        <text x="530" y="584" text-anchor="middle">يستدعي الأدوات بترتيبٍ ثابت، على إصدارٍ واحدٍ جاهز</text>
+        <text x="530" y="602" text-anchor="middle">نموذج اللغة يختار الأداة ويشرح، ولا يحسب ولا يرتّب</text>
+        <text x="530" y="620" text-anchor="middle">يُفحص الجواب قبل إرساله: لا فرضيّة بلا دليل</text>
+
+        <rect class="g" x="340" y="646" width="380" height="30" rx="15"/>
+        <text class="tg" x="530" y="666" text-anchor="middle">بوّابة: تغطية ≥ 90% · صفر ادّعاءٍ بلا دليل · صفر قياسٍ ممنوع</text>
+
+        <rect class="b" x="330" y="692" width="400" height="52" rx="10"/>
+        <text class="tb" x="530" y="714" text-anchor="middle">جوابٌ بأدلّة: الإصدار · الصفحة · الموضع</text>
+        <text class="ts" x="530" y="734" text-anchor="middle">مع المجهول والقياس التالي الآمن · فحصٌ فقط، لا تحكّم</text>
+
+        <rect class="b" x="837" y="78" width="136" height="48" rx="8"/>
+        <text class="tb" x="905" y="98" text-anchor="middle">يرفع المخطّط</text>
+        <text class="ts" x="905" y="116" text-anchor="middle">ملفّ PDF</text>
+        <line class="ln" x1="837" y1="102" x2="763" y2="102" marker-end="url(#f1a)"/>
+
+        <rect class="b" x="837" y="238" width="136" height="48" rx="8"/>
+        <text class="tb" x="905" y="258" text-anchor="middle">يراجع</text>
+        <text class="ts" x="905" y="276" text-anchor="middle">النقاط المشكوك فيها</text>
+        <line class="ln" x1="834" y1="262" x2="763" y2="262" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+
+        <rect class="b" x="837" y="546" width="136" height="48" rx="8"/>
+        <text class="tb" x="905" y="566" text-anchor="middle">يسأل</text>
+        <text class="ts" x="905" y="584" text-anchor="middle">ويسجّل ملاحظاتٍ ميدانيّة</text>
+        <line class="ln" x1="837" y1="570" x2="763" y2="570" marker-end="url(#f1a)"/>
+
+        <rect class="b" x="837" y="694" width="136" height="48" rx="8"/>
+        <text class="tb" x="905" y="714" text-anchor="middle">يستلم الجواب</text>
+        <text class="ts" x="905" y="732" text-anchor="middle">ويقرّر الفحص في الموقع</text>
+        <line class="ln" x1="730" y1="718" x2="834" y2="718" marker-end="url(#f1a)"/>
+
+        <rect class="b" x="35" y="62" width="180" height="82" rx="8"/>
+        <text class="tb" x="125" y="88" text-anchor="middle">تخزين الكائنات</text>
+        <text class="ts" x="125" y="110" text-anchor="middle">ملفّ المخطّط الأصليّ</text>
+        <text class="ts" x="125" y="128" text-anchor="middle">صور الصفحات وملفّات الخطوط</text>
+        <line class="ln" x1="300" y1="102" x2="218" y2="102" marker-end="url(#f1a)"/>
+        <text class="ts" x="259" y="94" text-anchor="middle">يكتب</text>
+
+        <rect class="b" x="35" y="222" width="180" height="232" rx="8"/>
+        <text class="tb" x="125" y="248" text-anchor="middle">قاعدة البيانات</text>
+        <text class="tmono" x="125" y="266" text-anchor="middle">PostgreSQL</text>
+        <text x="125" y="298" text-anchor="middle">الإصدارات والصفحات</text>
+        <text x="125" y="320" text-anchor="middle">الرسم الكهربائيّ</text>
+        <text x="125" y="342" text-anchor="middle">مهامّ المراجعة وقراراتها</text>
+        <text x="125" y="364" text-anchor="middle">الفرضيّات والملاحظات</text>
+        <line class="sep" x1="55" y1="390" x2="195" y2="390"/>
+        <text class="ts tacc" x="125" y="414" text-anchor="middle">معزولةٌ لكلّ مستأجر</text>
+        <text class="ts" x="125" y="434" text-anchor="middle">سجلّ القرارات للإضافة فقط</text>
+        <line class="ln" x1="300" y1="262" x2="218" y2="262" marker-end="url(#f1a)"/>
+        <text class="ts" x="259" y="254" text-anchor="middle">يكتب الرسم</text>
+        <line class="ln" x1="215" y1="422" x2="297" y2="422" marker-end="url(#f1a)"/>
+        <text class="ts" x="257" y="414" text-anchor="middle">يُحمَّل كاملًا</text>
+
+        <rect class="b" x="35" y="534" width="180" height="50" rx="8"/>
+        <text class="tb" x="125" y="555" text-anchor="middle">الكتيّبات</text>
+        <text class="ts" x="125" y="574" text-anchor="middle">بحثٌ موجود في المنصّة</text>
+        <line class="ln" x1="300" y1="559" x2="218" y2="559" marker-end="url(#f1a)"/>
+        <text class="ts" x="259" y="551" text-anchor="middle">يبحث</text>
+
+        <rect class="bl" x="35" y="594" width="180" height="56" rx="8"/>
+        <text class="tb tllm" x="125" y="617" text-anchor="middle">نموذج لغة سحابيّ</text>
+        <text class="ts" x="125" y="638" text-anchor="middle">لا يرى المخطّط ولا أسماءه</text>
+        <line class="ln ln-l" x1="297" y1="620" x2="218" y2="620" marker-start="url(#f1l)" marker-end="url(#f1l)"/>
+        <text class="ts tllm" x="258" y="612" text-anchor="middle">نتائج أدوات</text>
+      </svg>
+    </div>
+    <ul class="legend">
+      <li><span class="sw compute"></span>حسابٌ هندسيّ حتميّ</li>
+      <li><span class="sw model"></span>نموذج اللغة</li>
+      <li><span class="sw gate"></span>بوّابة قياس بين مرحلتين</li>
+      <li><span class="sw gatekey"></span>البوّابة الحاسمة: لا تشخيص قبلها</li>
+    </ul>
+    <figcaption>المالك يرفع المخطّط، ويراجع ما يُشكّ فيه، ثمّ يسأل. والمراحل الأربع تُبنى بالترتيب، ولكلّ مرحلةٍ بوّابة خروج. ونموذج اللغة لا يتّصل إلّا بالوكيل، ولا يصله إلّا نتائج الأدوات، بأسماءٍ مستعارة.</figcaption>
+  </figure>
+</section>
+
+<section id="phases">
+  <h2>المراحل</h2>
+  <p class="prose">سبقت المراحلَ الأربع تجربةُ جدوى (م‑0) على مخطّطٍ حقيقيّ. ولكلّ مرحلةٍ هنا: لماذا هي في مكانها، وما تفعله، وما تُخرجه، وبوّابة الخروج منها.</p>
+
+  <div class="phases">
+
+    <article class="phase">
+      <div class="phase-head">
+        <span class="pid">م‑0</span><h3>الجدوى</h3>
+        <span class="pill ok">تمّت للتوصيلات</span>
+        <span class="pill warn">النصوص تنتظر ملفًّا</span>
+      </div>
+      <p class="prose">أكبر مجهولٍ كان جودة المخطّطات الحقيقيّة، فقيست قبل أيّ التزام. جُرّب سكربتٌ خارج المنصّة على مخطّطٍ حقيقيّ لمغذّي 11 ك.ف من 6 صفحات، وقُورنت نتيجته بمرجعٍ مقروء.</p>
+      <div class="stats">
+        <div class="stat"><span class="k">هل المخطّط متّجه؟</span><span class="v ok">نعم</span><span class="n">الأسلاك والأطراف تُقرأ بإحداثيّاتٍ دقيقة، بلا معالجة صور.</span></div>
+        <div class="stat"><span class="k">التوصيلات، على صفحةٍ محجوزة</span><span class="v">اكتمال 100% · دقّة 91%</span><span class="n">سبب الخطأ معروف: رمزٌ مرسومٌ فوق سلك.</span></div>
+        <div class="stat"><span class="k">أسماء الأطراف بـOCR</span><span class="v warn">52%</span><span class="n">الحروف مرسومةٌ خطوطًا. الحلّ: نسخةٌ من المخطّط نفسه بنصٍّ حقيقيّ.</span></div>
+        <div class="stat"><span class="k">الأداء لصفحة A0</span><span class="v">≈ 1 ثانية</span><span class="n">و6 ثوانٍ مع OCR، وأقلّ من 300 م.ب ذاكرة، بلا GPU.</span></div>
+      </div>
+      <p class="prose muted">واكتُشف أيضًا أنّ الصفحات 4–6 نسخةٌ من 1–3، وأنّ الخطّ المتقطّع له معنى: قلب كابلٍ بين لوحتين، أو حدود لوحة.</p>
+    </article>
+
+    <article class="phase">
+      <div class="phase-head">
+        <span class="pid">م‑1</span><h3>الأساس والاستخراج</h3>
+        <span class="size">حجمٌ كبير</span>
+        <span class="pill no">لم تبدأ</span>
+      </div>
+      <dl class="facts">
+        <dt>لماذا هنا</dt>
+        <dd>كلّ ما بعدها يحتاج إصدارًا مسجَّلًا، وصفحاتٍ مستخرجة بإحداثيّاتٍ صحيحة، وعاملًا يعالجها في الخلفيّة.</dd>
+        <dt>التدفّق</dt>
+        <dd><ol class="flow">
+          <li><span>رفع الملفّ</span></li>
+          <li><span>تسجيل إصدارٍ ثابت</span></li>
+          <li><span>معالجةٌ في الخلفيّة</span></li>
+          <li><span>تصحيح الاتّجاه</span></li>
+          <li><span>الكلمات بإحداثيّاتها</span></li>
+          <li><span>الخطوط والمسارات</span></li>
+          <li><span>صورة الصفحة</span></li>
+          <li><span>كشف الصفحات المكرّرة</span></li>
+        </ol></dd>
+        <dt>ويُبنى معها</dt>
+        <dd>حدود الحجم وعدد الصفحات، والمقاييس والتنبيهات، والمجموعة الذهبيّة وأداة التقييم (ومنها مقاييس الشبكة وحدود الثقة)، ومولّد مخطّطاتٍ اصطناعيّة للاختبار.</dd>
+        <dt>المخرَج</dt>
+        <dd>صفحاتٌ مستخرجة: كلماتٌ وخطوطٌ وصورة، كلّها بإحداثيّاتٍ صحيحة. وكلّ كلمةٍ من OCR تُحفظ «غير مؤكّدة»، ولا تُقبل اسمًا دون مراجعة.</dd>
+      </dl>
+      <div class="gate"><b>بوّابة الخروج</b><span>الإحداثيّات صحيحة على المجموعة الذهبيّة · أرقام الأطراف ≥ 98% من النسخة النصّيّة · عزل المستأجرين مختبَر · صفحة A0 تحت حدّ الذاكرة.</span></div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-head">
+        <span class="pid">م‑2</span><h3>الرموز والتوصيلات والمراجعة</h3>
+        <span class="size">حجمٌ كبير جدًّا</span>
+        <span class="pill warn">الأخطر</span>
+        <span class="pill no">لم تبدأ</span>
+      </div>
+      <dl class="facts">
+        <dt>لماذا الأخطر</dt>
+        <dd>الخطآن الخطيران في م‑0 كانا رمزين مرسومين على سلك. وبلا معرفة الرموز تخرج 100 إلى 164 نقطة مراجعةٍ في الصفحة. وكلّ ما بعدها يقف على صحّة هذه المرحلة.</dd>
+        <dt>التدفّق</dt>
+        <dd><ol class="flow">
+          <li><span>توسيع المجموعة الذهبيّة إلى 30–50 صفحة من مصدرين، وحجز مصدرٍ كامل</span></li>
+          <li><span>تصنيف الأشكال</span></li>
+          <li><span>التعرّف على الرموز</span></li>
+          <li><span>أسماء الأجهزة وأرقام الأطراف</span></li>
+          <li><span>الأسلاك والشبكات</span></li>
+          <li><span>المراجع بين الصفحات والكابلات</span></li>
+          <li><span>الصفحات المساندة</span></li>
+          <li><span>فحوص الاتّساق</span></li>
+          <li><span>مراجعة المالك</span></li>
+        </ol></dd>
+        <dt>تصنيف الأشكال</dt>
+        <dd>الطرف حلقةٌ مغلقة، ونقطة التفرّع حلقةٌ أصغر مملوءة، والسلك خطٌّ أفقيّ أو عموديّ، والمائل جزء رمزٍ أو وصلة، والمتقطّع قطعٌ قصيرة بفراغاتٍ منتظمة. والمقاسات «ملفّ تعريفٍ» لكلّ مصدر رسم، لا ثوابت في الشيفرة.</dd>
+        <dt>الرموز</dt>
+        <dd>قواعد هندسيّة ومطابقة قوالب متّجهة، بلا تعلّمٍ آليّ في الإصدار الأوّل. المجموعة الأولى: تلامسات NO وNC، وملفّ المرحّل، وتلامسات القاطع المساعدة 52a و52b، ومرحّل القفل 86، ومفتاح الاختيار 43، والقاطع الصغير والمصهر، والمصباح، والضاغط، وCT وPT، ومرحّل الحماية الرقميّ (IED) بمداخله ومخارجه. والقوالب من صفحة دليل الرموز حين توجد.</dd>
+        <dt>الصفحات المساندة</dt>
+        <dd>صفحاتٌ غير الدوائر هي مصدر حقيقةٍ مستقلّ عن الرسم وعن كاتب المرجع: دليل الرموز، وجداول الإسناد تحت الملفّات، وجداول أوضاع مفتاح الاختيار، وقوائم الأجهزة، ومخطّطات الأطراف والكابلات.</dd>
+      </dl>
+
+      <div class="sub">
+        <h3>قواعد التوصيل</h3>
+        <div class="rules">
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><path class="w" d="M14 46 H62 V12"/></svg>
+            <p>سلكان يلتقيان بطرفيهما (زاوية)</p>
+            <span class="pill ok">اتّصال</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="w" x1="10" y1="24" x2="110" y2="24"/><line class="w" x1="60" y1="24" x2="60" y2="58"/><circle class="dot" cx="60" cy="24" r="4.5"/></svg>
+            <p>سلكٌ يمرّ بنقطة تفرّع</p>
+            <span class="pill ok">اتّصال</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="w" x1="10" y1="32" x2="77" y2="32"/><circle class="term" cx="85" cy="32" r="7"/></svg>
+            <p>سلكٌ ينتهي عند طرف</p>
+            <span class="pill ok">يتّصل بالطرف</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="w" x1="10" y1="32" x2="110" y2="32"/><line class="w" x1="60" y1="6" x2="60" y2="58"/></svg>
+            <p>تقاطعٌ بلا نقطة</p>
+            <span class="pill no">لا اتّصال</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="w" x1="10" y1="20" x2="110" y2="20"/><line class="w" x1="60" y1="20" x2="60" y2="58"/></svg>
+            <p>سلكٌ ينتهي على منتصف سلكٍ (T) بلا نقطة</p>
+            <span class="pill rev">لا اتّصال · مراجعة</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="w" x1="8" y1="46" x2="44" y2="46"/><line class="w" x1="76" y1="18" x2="112" y2="18"/><line class="wc" x1="44" y1="46" x2="76" y2="18"/></svg>
+            <p>خطٌّ مائل بين نهايتي سلكين</p>
+            <span class="pill rev">وصلةٌ مرشّحة · مراجعة</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><line class="wc" x1="25" y1="32" x2="95" y2="32" stroke-dasharray="7 5"/><circle class="term" cx="18" cy="32" r="7"/><circle class="term" cx="102" cy="32" r="7"/></svg>
+            <p>خطٌّ متقطّع بين طرفين</p>
+            <span class="pill rev">قلب كابلٍ مرشّح · مراجعة</span>
+          </div>
+          <div class="rule">
+            <svg class="r" viewBox="0 0 120 64" aria-hidden="true"><rect class="bb" x="32" y="12" width="56" height="40" rx="3"/><line class="w" x1="6" y1="40" x2="40" y2="40"/><line class="w" x1="40" y1="40" x2="72" y2="24"/><line class="w" x1="80" y1="40" x2="114" y2="40"/><line class="w" x1="80" y1="33" x2="80" y2="40"/></svg>
+            <p>خطوطٌ داخل مربّع رمز</p>
+            <span class="pill acc">رمز، لا سلك</span>
+          </div>
+        </div>
+        <p class="prose muted">هذه القواعد ثوابتُ في الشيفرة. والمرشّح لا يُدمج في شبكة حتى يقبله المالك في المراجعة. والرمز غير المعروف يصير مهمّة مراجعة، ولا يُعامل سلكًا أبدًا.</p>
+        <p class="prose muted"><b>وأُضيفت بعد التقييم:</b> الشبكات المربوطة بالاسم أو برقم السلك، وأطراف رموزٍ لا تُرسم حلقات، وسماحيّة الفجوات الصغيرة عند نهايات الأسلاك، والقطع المتراكبة، والجسور في الشرائط، ومجموعات الاختبار. <b>وقاعدة T بلا نقطة قيد النظر:</b> قد تصير إعدادًا لكلّ مصدر، فتُعدّ اتّصالًا بعد التعرّف على الرموز.</p>
+      </div>
+
+      <div class="sub">
+        <h3>فحوص الاتّساق الآليّة</h3>
+        <ul class="checks">
+          <li>لا يتكرّر اسم طرفٍ في الشريط نفسه.</li>
+          <li>عدد القلوب المستعملة لا يزيد على مواصفة الكابل، مثل <span class="latin">4x2.5</span> = أربعة قلوب.</li>
+          <li>المراجع بين الأوراق تتطابق في الطرفين.</li>
+          <li>لا شبكة تجمع جهدين معروفين مختلفين، مثل + و− للتيّار المستمرّ، أو 11 ك.ف مع دائرةٍ ثانويّة.</li>
+          <li>كلّ نقطة تفرّعٍ تلمس سلكين على الأقلّ.</li>
+          <li>لا سلك ينتهي دون أن يلمس شيئًا (سلكٌ معلّق).</li>
+          <li>الروابط بين الملفّ وتلامساته، وعددها، تطابق جدول الإسناد تحت الملفّ.</li>
+          <li>الشبكات تطابق مخطّطات الأطراف والكابلات.</li>
+        </ul>
+        <p class="prose muted">خطأ الفحص يمنع الوصول إلى التشخيص. والتحذير يُعرض فقط. وعدم التطابق مع صفحةٍ مساندة خطأ، لأنّها مصدر حقيقةٍ مستقلّ.</p>
+      </div>
+
+      <dl class="facts">
+        <dt>المخرَج</dt>
+        <dd>رسمٌ كهربائيّ لكلّ إصدار: أجهزةٌ وأطرافٌ وشبكاتٌ وروابطُ وظيفيّة (الملفّ وتلامساته) ومراجع. ولكلّ عنصرٍ دليله (الصفحة والموضع، وقصٌّ مرئيّ من الصفحة) وثقته وحالة تحقّقه.</dd>
+        <dt>وبعد البوّابة</dt>
+        <dd>ثلاثة منتجاتٍ لا تحجب م‑3: تقريرٌ بأخطاء المخطّط نفسه، ومقارنة إصدارين على مستوى الشبكات، وتصدير الشبكات وقوائم الأطراف.</dd>
+      </dl>
+      <div class="gate key"><b>بوّابة الخروج الحاسمة</b><span>مقاييس م‑2 على المحجوز، ومنه مصدر رسمٍ كامل لم تره القواعد. وأوّلها دقّة التوصيل ≥ 99%، وصفر دمجٍ خاطئ بين شبكتين، وصفر أخطاءٍ خطيرة، ولكلّ رقمٍ حدّ ثقته. وإن لم تُعبر، لا ننتقل إلى م‑3 ولا م‑4، بل نراجع القواعد أو الخطّة.</span></div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-head">
+        <span class="pid">م‑3</span><h3>محرّك منطق الدائرة</h3>
+        <span class="size">حجمٌ كبير جدًّا</span>
+        <span class="pill no">لم تبدأ</span>
+      </div>
+      <dl class="facts">
+        <dt>لماذا قبل الوكيل</dt>
+        <dd>الفرضيّات يحسبها هذا المحرّك ويرتّبها، لا النموذج. فإن أخطأ هنا، أخطأ الوكيل بثقة.</dd>
+        <dt>التدفّق</dt>
+        <dd><ol class="flow">
+          <li><span>تحميل رسم الإصدار كلّه إلى الذاكرة</span></li>
+          <li><span>سلوك كلّ عنصر</span></li>
+          <li><span>تتبّع المسار من التغذية إلى الرجوع</span></li>
+          <li><span>تصنيف الدوائر</span></li>
+          <li><span>فحص جهد الملفّ</span></li>
+          <li><span>شرط التنشيط</span></li>
+          <li><span>تصنيف الشروط</span></li>
+          <li><span>تقييم الحالة مع الملاحظات</span></li>
+          <li><span>شروط المنع</span></li>
+          <li><span>تحليل تأثير العطل</span></li>
+          <li><span>التشخيص</span></li>
+        </ol></dd>
+        <dt>المنطق</dt>
+        <dd>كلّ قيمةٍ صحيح أو خطأ أو مجهول، والمجهول لا يُفترض أبدًا. وكلّ عنصرٍ موصلٌ أو مفتاحٌ أو حمل. وشرط التنشيط بالاتّصال المزدوج: مرّةً يُعدّ كلّ مجهولٍ مفتوحًا، ومرّةً مغلقًا، فيصحّ مع أيّ شكلٍ للدائرة، لا مع التوالي والتوازي فقط. والملفّ لا يُعدّ منشَّطًا عبر حملٍ آخر، كمصباحٍ على التوالي. ويُكشف تلامس الإمساك (Seal‑in)، وتُحسب دوائره بالتكرار حتى الاستقرار.</dd>
+        <dt>المجهول والحالة</dt>
+        <dd>إن بقي الناتج مجهولًا، يُعطى لكلّ تركيبةٍ من المجاهيل المؤثّرة، ويُسمّى المجهول الأكثر حسمًا ليُسأل عنه. ومرحّل القفل 86 ووضع القاطع مدخلاتٌ صريحة، لا تُستنتج من الملفّ. والجهاز الذكيّ (IED) صندوقٌ أسود، مخارجه مجهولة ما لم تُلاحَظ. والمؤقّت مجهولٌ ما لم يُلاحَظ، فالزمن والتسلسل مؤجّلان.</dd>
+        <dt>تصنيف الشروط</dt>
+        <dd>سماح (Permissive)، ومنع (Interlock)، وفصل (Trip)، بحسب وظيفة الجهاز، مثل 86 و27 و52b.</dd>
+        <dt>مثال</dt>
+        <dd>في دائرة إغلاقٍ ومرحّل القفل 86 مفصول، يظهر 86 شرطَ منع. ومع مدخلٍ مجهول يبقى الناتج مجهولًا، ولا يُخمَّن.</dd>
+        <dt>جهد الملفّ</dt>
+        <dd>جهد كلّ ملفٍّ المقنّن ونوعه، مثل 110 فولت مستمرّ، يُقارن بالتغذية التي تصله عبر المسار. والنتيجة: يطابق، أو لا يطابق، أو مجهول. وعدم التطابق مهمّة مراجعة تمنع الجاهزيّة حتى يقرّر المالك: قراءةٌ خاطئة فتُصحَّح، أو كما في المخطّط فيبقى تحذيرًا ظاهرًا. والسماح ليس هامشًا ثابتًا: نطاق تشغيل الملفّ (من IEC 62271‑1 أو بيانات الصانع) يُقارن بجهد البطّاريّة الفعليّ في التعويم والشحن ونهاية التفريغ.</dd>
+        <dt>أثر العطل</dt>
+        <dd>السؤال العكسيّ: «إذا احترق المصهر F2، ماذا يتوقّف؟». يُفرض العطل على عنصرٍ واحد، فيظهر نوعان من الأثر: ما تتغيّر حالته الآن، مثل مصباحٍ ينطفئ، وما يفقد وظيفته ولو جاء أمره، مثل ملفّ الإغلاق بعد فصل تغذية التحكّم. وما يعتمد على مدخلٍ مجهول يُعرض «قد يتأثّر». والقصر بين شبكتين يُفرض بدمجهما في الذاكرة.</dd>
+        <dt>التشخيص</dt>
+        <dd>أيّ عطلٍ يفسّر ما رآه الفنّيّ؟ يُفرض كلّ عطلٍ مرشّح، ويبقى ما لا يناقض أيّ ملاحظة. عطلٌ واحد أوّلًا، ثمّ عطلان. وإن لم يفسّر عطلان، فالجواب أنّ الملاحظات تناقض المخطّط، فقد تكون اللوحة عُدّلت دون مخطّطها. والترتيب من احتماليّةٍ أوّليّة لكلّ نوع عنصرٍ وطريقة عطله، تحدّثها الملاحظات.</dd>
+        <dt>قيود القياس</dt>
+        <dd>كلّ شبكةٍ تُصنَّف: ثانويّ CT أو PT، أو دائرة فصل، أو تغذية بطّاريّة. ولا يُقترح قياسٌ يفتح ثانويّ CT أو يفصل طرفًا في دائرة فصل. والقياس غير تدخّليّ افتراضًا، والتدخّليّ يحتاج شخصًا مخوّلًا وتصريح عمل.</dd>
+        <dt>المخرَج</dt>
+        <dd>لكلّ ملفٍّ أو خرج: حالته، وشروط منعه، ومطابقة جهده، وما هو مجهول، والأدلّة. ولكلّ عطلٍ مفروض: المخارج المتأثّرة، ومسار كلٍّ منها من العطل. ولكلّ عرَضٍ وملاحظات: التشخيصات المتّسقة مرتّبة، والقراءات المتوقّعة عند نقاط الاختبار.</dd>
+      </dl>
+      <div class="gate"><b>بوّابة الخروج</b><span>كلّ أسئلة القبول المعروفة تُجاب صحيحةً بلا نموذج لغة. ولا يُقبل «مجهول» إلّا حيث يقوله المرجع نفسه. وكلّ عطلٍ مفردٍ يُحقن في دائرةٍ اصطناعيّة يجده التشخيص.</span></div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-head">
+        <span class="pid">م‑4</span><h3>وكيل التشخيص</h3>
+        <span class="size">حجمٌ كبير</span>
+        <span class="pill no">لم تبدأ</span>
+      </div>
+      <dl class="facts">
+        <dt>لماذا أخيرًا</dt>
+        <dd>النموذج هنا يشرح فقط، والحساب والترتيب كلّه في م‑2 وم‑3.</dd>
+        <dt>التدفّق</dt>
+        <dd><ol class="flow">
+          <li><span>حلقة أدواتٍ عامّة في الإطار</span></li>
+          <li><span>مخطِّط القياس التالي</span></li>
+          <li><span>اثنتا عشرة أداة تشخيص</span></li>
+          <li><span>الفرضيّات والملاحظات الميدانيّة</span></li>
+          <li><span>الأسماء المستعارة</span></li>
+          <li><span>الوكيل</span></li>
+          <li><span>فحص الجواب</span></li>
+          <li><span>سقف الكلفة</span></li>
+          <li><span>اختبارات القبول والسلامة</span></li>
+        </ol></dd>
+        <dt>النموذج</dt>
+        <dd>نموذجٌ سحابيّ يدعم استدعاء الأدوات. والنموذج المحلّيّ احتياطٌ للشرح فقط، لأنّه لا يدعم الأدوات. ولا تصل النموذجَ السحابيّ أسماء الأجهزة، ولا أرقام المخطّطات، ولا رموز المعدّات: تُستبدل برموزٍ مستعارة، وتعيدها الشيفرة في الجواب.</dd>
+        <dt>القياس التالي</dt>
+        <dd>لكلّ قياسٍ ممكن تُحسب القراءة المتوقّعة تحت كلّ فرضيّة. ثمّ يُختار القياس المسموح الذي يفصل بين الفرضيّات أكثر من غيره. وكلفة القياس وخطره بالأرقام لاحقًا.</dd>
+        <dt>الاختبار</dt>
+        <dd>معيار حقن الأعطال، بلا مهندس: يُحقن عطلٌ معروف وتُولَّد ملاحظاته، ثمّ يُقاس هل وُجد، وفي أيّ مرتبة، وبعد كم قياس.</dd>
+        <dt>الكلفة</dt>
+        <dd>تُقاس كلفة جلسة التشخيص الواحدة، ثمّ يُضبط سقفٌ شهريّ مع تنبيهٍ قبل بلوغه.</dd>
+        <dt>المخرَج</dt>
+        <dd>جوابٌ مهيكل: فرضيّاتٌ بأدلّةٍ وتقييم، والقياس التالي الآمن، وحدود التحليل، و«فحص فقط». والتفصيل في <a href="#agent">كيف يجيب الوكيل</a>.</dd>
+      </dl>
+      <div class="gate"><b>بوّابة الخروج</b><span>تغطية الفرضيّات الصحيحة ≥ 90%، وصفر ادّعاءٍ مؤكّدٍ بلا دليل، وصفر توصية قياسٍ ممنوعة.</span></div>
+    </article>
+
+  </div>
+</section>
+
+<section id="agent">
+  <h2>كيف يجيب الوكيل</h2>
+  <p class="prose">الوكيل يدير حلقة أدوات. كلّ أداةٍ تعيد نتيجةً مهيكلة محدودة الحجم، ومعها مراجع أدلّتها. والنموذج يقرّر الأداة التالية، ثمّ يكتب الشرح. أمّا حقائق الجواب، أي الفرضيّات ومستوياتها وأدلّتها والقياسات، فتنسخها الشيفرة من نتائج الأدوات.</p>
+  <figure>
+    <div class="fig-head"><span class="fig-id">ش‑2</span><span class="fig-title">حلقة الأدوات وحدّ الثقة</span></div>
+    <div class="fig-scroll">
+      <svg class="d w-md" viewBox="0 0 1000 480" role="img" aria-label="سؤال المالك يصل إلى الوكيل. الوكيل يتبادل نتائج مهيكلة مع نموذج اللغة، ويستدعي ثلاث مجموعات أدوات داخل منطقة الحساب الحتميّ: أدوات المخطّط الثماني، وثلاث أدواتٍ من المحرّك هي الفرضيّات وأثر العطل والقياس التالي، وبحث الكتيّبات. ثمّ يمرّ الجواب المقترح بفاحص الجواب، فإمّا يصل المالك أو يُرفض.">
+        <defs>
+          <marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk"/></marker>
+          <marker id="f2l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-l"/></marker>
+        </defs>
+
+        <rect class="zone" x="20" y="44" width="540" height="356" rx="14"/>
+        <text class="tacc tb" x="290" y="32" text-anchor="middle">منطقة الحساب الحتميّ: كلّ نتيجةٍ لها دليلٌ في المخطّط</text>
+
+        <rect class="b" x="36" y="60" width="208" height="236" rx="10"/>
+        <text class="tl" x="140" y="82" text-anchor="middle">وحدة المخطّطات</text>
+        <rect class="ba" x="52" y="96" width="176" height="74" rx="8"/>
+        <text class="tt" x="140" y="126" text-anchor="middle">الرسم الكهربائيّ</text>
+        <text class="ts" x="140" y="150" text-anchor="middle">إصدارٌ واحد جاهز · أدلّة</text>
+        <line class="ln" x1="140" y1="170" x2="140" y2="201" marker-end="url(#f2a)"/>
+        <text class="ts" x="188" y="191" text-anchor="middle">يُحمَّل</text>
+        <rect class="ba" x="52" y="204" width="176" height="74" rx="8"/>
+        <text class="tt" x="140" y="234" text-anchor="middle">محرّك منطق الدائرة</text>
+        <text class="ts" x="140" y="258" text-anchor="middle">تتبّع · تقييم · أثر عطل · تشخيص</text>
+
+        <rect class="b" x="36" y="318" width="208" height="64" rx="10"/>
+        <text class="tt" x="140" y="344" text-anchor="middle">الكتيّبات</text>
+        <text class="ts" x="140" y="366" text-anchor="middle">تشرح فقط، لا تنشئ اتّصالًا</text>
+
+        <rect class="b" x="300" y="64" width="232" height="116" rx="10"/>
+        <text class="tt" x="416" y="88" text-anchor="middle">أدوات المخطّط (8)</text>
+        <text class="ts" x="416" y="110" text-anchor="middle">البحث عن جهاز · أطرافه</text>
+        <text class="ts" x="416" y="130" text-anchor="middle">تتبّع الدائرة · شروط التحكّم</text>
+        <text class="ts" x="416" y="150" text-anchor="middle">Interlocks · تقييم الدائرة</text>
+        <text class="ts" x="416" y="170" text-anchor="middle">الأدلّة · حالة التحقّق</text>
+        <line class="ln" x1="300" y1="133" x2="231" y2="133" marker-end="url(#f2a)"/>
+        <text class="ts" x="270" y="125" text-anchor="middle">يستعلم</text>
+
+        <rect class="ba2" x="300" y="204" width="232" height="78" rx="10"/>
+        <text class="tt" x="416" y="234" text-anchor="middle">الفرضيّات · الأثر · القياس التالي</text>
+        <text class="ts tacc" x="416" y="258" text-anchor="middle">ثلاث أدواتٍ يحسبها المحرّك، لا النموذج</text>
+        <line class="ln" x1="300" y1="241" x2="231" y2="241" marker-end="url(#f2a)"/>
+        <text class="ts" x="270" y="233" text-anchor="middle">يستدعي</text>
+
+        <rect class="b" x="300" y="318" width="232" height="64" rx="10"/>
+        <text class="tt" x="416" y="344" text-anchor="middle">بحث الكتيّبات</text>
+        <text class="ts" x="416" y="366" text-anchor="middle">مقيّدٌ بالمصنع والمحادثة</text>
+        <line class="ln" x1="300" y1="350" x2="247" y2="350" marker-end="url(#f2a)"/>
+        <text class="ts" x="272" y="342" text-anchor="middle">يبحث</text>
+
+        <line class="ln" x1="600" y1="122" x2="600" y2="350"/>
+        <line class="ln" x1="640" y1="225" x2="600" y2="225"/>
+        <line class="ln" x1="600" y1="122" x2="535" y2="122" marker-end="url(#f2a)"/>
+        <line class="ln" x1="600" y1="243" x2="535" y2="243" marker-end="url(#f2a)"/>
+        <line class="ln" x1="600" y1="350" x2="535" y2="350" marker-end="url(#f2a)"/>
+        <text class="ts" x="620" y="216" text-anchor="middle">يستدعي</text>
+
+        <rect class="bl" x="640" y="34" width="160" height="82" rx="10"/>
+        <text class="tt tllm" x="720" y="60" text-anchor="middle">نموذج اللغة</text>
+        <text class="ts" x="720" y="82" text-anchor="middle">يختار الأداة، ويشرح فقط</text>
+        <text class="ts" x="720" y="102" text-anchor="middle">لا يرى المخطّط ولا أسماءه</text>
+        <line class="ln ln-l" x1="720" y1="119" x2="720" y2="165" marker-start="url(#f2l)" marker-end="url(#f2l)"/>
+        <text class="ts tllm" x="768" y="146" text-anchor="middle">نتائج مهيكلة</text>
+
+        <rect class="ba" x="640" y="168" width="160" height="114" rx="10"/>
+        <text class="tt" x="720" y="196" text-anchor="middle">الوكيل الكهربائيّ</text>
+        <text class="ts" x="720" y="220" text-anchor="middle">حلقة أدواتٍ بحدود:</text>
+        <text class="ts" x="720" y="240" text-anchor="middle">دورات · مهلة · حجم نتيجة</text>
+        <text class="ts" x="720" y="262" text-anchor="middle">إصدارٌ واحد لكلّ محادثة</text>
+
+        <line class="ln" x1="720" y1="282" x2="720" y2="327" marker-end="url(#f2a)"/>
+        <text class="ts" x="768" y="310" text-anchor="middle">جوابٌ مقترح</text>
+
+        <rect class="ba" x="640" y="330" width="160" height="96" rx="10"/>
+        <text class="tt" x="720" y="354" text-anchor="middle">فاحص الجواب</text>
+        <text class="ts" x="720" y="376" text-anchor="middle">يرفض فرضيّةً بلا دليل</text>
+        <text class="ts" x="720" y="396" text-anchor="middle">أو قياسًا ممنوعًا</text>
+        <text class="ts" x="720" y="414" text-anchor="middle">ويضيف «فحص فقط» والحدود</text>
+        <line class="ln" x1="720" y1="426" x2="720" y2="451" marker-end="url(#f2a)"/>
+        <text class="ts tbad" x="720" y="470" text-anchor="middle">يُرفض، ويُعدّ في مقياس الرفض</text>
+
+        <rect class="b" x="840" y="168" width="140" height="82" rx="10"/>
+        <text class="tt" x="910" y="194" text-anchor="middle">سؤال المالك</text>
+        <text class="ts" x="910" y="216" text-anchor="middle">«لماذا لا يغلق</text>
+        <text class="ts" x="910" y="236" text-anchor="middle">القاطع؟»</text>
+        <line class="ln" x1="840" y1="210" x2="803" y2="210" marker-end="url(#f2a)"/>
+
+        <rect class="b" x="840" y="330" width="140" height="96" rx="10"/>
+        <text class="tt" x="910" y="354" text-anchor="middle">الجواب</text>
+        <text class="ts" x="910" y="376" text-anchor="middle">أسبابٌ محتملة بأدلّة</text>
+        <text class="ts" x="910" y="396" text-anchor="middle">والمجهول</text>
+        <text class="ts" x="910" y="414" text-anchor="middle">والقياس التالي</text>
+        <line class="ln" x1="800" y1="378" x2="837" y2="378" marker-end="url(#f2a)"/>
+      </svg>
+    </div>
+    <figcaption>الحساب كلّه داخل المنطقة المتقطّعة. ونموذج اللغة خارجها: لا يصله إلّا نتائج الأدوات المهيكلة بأسماءٍ مستعارة، فلا يرى ملفّ المخطّط ولا أسماء المصنع، ولا ينشئ فرضيّة ولا يغيّر ترتيبها. وكلّ جوابٍ يمرّ بالفاحص قبل أن يصل المالك.</figcaption>
+  </figure>
+
+  <div class="two">
+    <div class="sub">
+      <h3>ترتيب العمل في كلّ سؤال</h3>
+      <ol class="steps">
+        <li><span>يتأكّد أنّ المحادثة مربوطةٌ بإصدارٍ جاهزٍ للتشخيص. وإن لم يوجد، يقول ذلك ولا يجيب عن التوصيلات.</span></li>
+        <li><span>يبحث عن الجهاز. وإن تعدّدت النتائج، يسأل المستخدم أيّها يقصد، ولا يخمّن.</span></li>
+        <li><span>يتتبّع الدائرة، ويقرأ شروط التحكّم والـInterlocks.</span></li>
+        <li><span>يقيّم الدائرة، ثمّ يطلب التشخيص من المحرّك: الأعطال التي تفسّر الملاحظات، مرتّبة.</span></li>
+        <li><span>يبحث في الكتيّبات عن كلّ جهازٍ في الفرضيّات. وأسبابها في قسمٍ منفصل، بثقةٍ أدنى.</span></li>
+        <li><span>يجمع الأدلّة: الصفحة والموضع لكلّ فرضيّة.</span></li>
+        <li><span>إن بقيت أكثر من فرضيّة، يطلب القياس التالي الآمن، ومعه القراءة المتوقّعة لكلّ فرضيّة.</span></li>
+      </ol>
+      <p class="prose muted">سؤال التوصيلات يذهب إلى الرسم أوّلًا. وسؤال الصيانة أو المواصفات يذهب إلى الكتيّبات. وسؤال «ماذا يتأثّر إن…؟» يذهب إلى أداة أثر العطل.</p>
+    </div>
+
+    <div class="sub">
+      <h3>مستويات الحكم على الفرضيّة</h3>
+      <div class="levels">
+        <span class="pill no">محتمل</span><span class="arrow">←</span>
+        <span class="pill acc">متّسقٌ مع الملاحظات</span><span class="arrow">←</span>
+        <span class="pill ok">مؤكّد</span>
+      </div>
+      <p class="prose">«مؤكّد» لا يُعطى إلّا بملاحظةٍ ميدانيّةٍ مسجّلة، مثل «جهد ملفّ الإغلاق صفر». والملاحظة مربوطةٌ بالأطراف: جهدٌ بين طرفين، أو حالة تلامسٍ أو مصباحٍ أو علمٍ أو قاطع. وكلّ ملاحظةٍ جديدة تعيد التشخيص، فتُقصي فرضيّاتٍ أو تؤيّدها.</p>
+
+      <div class="answer">
+        <div class="answer-head"><b>شكل الجواب</b><span class="pill warn">مثالٌ توضيحيّ، لا نتيجةٌ حقيقيّة</span></div>
+        <dl class="kv">
+          <dt>السؤال</dt><dd>لماذا لا يغلق القاطع؟</dd>
+          <dt>الإصدار</dt><dd>مخطّط المغذّي، الإصدار B، جاهزٌ للتشخيص</dd>
+          <dt>الملاحظة</dt><dd>لا جهد على طرفي ملفّ الإغلاق بعد أمر الإغلاق</dd>
+        </dl>
+        <div class="hyp">
+          <span>مرحّل القفل 86 في وضع الفصل</span><span class="pill acc">متّسقٌ مع الملاحظات</span>
+          <span class="ev">تلامس 86 على التوالي مع ملفّ الإغلاق، فيفسّر الملاحظة · الدليل: ص 2، موضع تلامس 86</span>
+        </div>
+        <div class="hyp">
+          <span>تغذية دائرة الإغلاق مفصولة</span><span class="pill acc">متّسقٌ مع الملاحظات</span>
+          <span class="ev">يفسّر الملاحظة نفسها · الدليل: ص 2، القاطع الصغير للتغذية</span>
+        </div>
+        <dl class="kv">
+          <dt>القياس التالي</dt><dd>الجهد بعد القاطع الصغير لتغذية الإغلاق، بلا فصل أيّ طرف · المتوقّع: 110 فولت إن كان السبب 86، وصفرٌ إن كانت التغذية مفصولة</dd>
+        </dl>
+        <div class="answer-foot"><span class="pill acc">فحصٌ فقط، لا تحكّم بأيّ معدّة</span><span class="pill warn">الرسم لم يراجعه مهندس</span><span class="pill warn">يغطّي الدائرة المرسومة فقط</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="safety">
+  <h2>ضمانات السلامة</h2>
+  <p class="prose">ثلاث طبقات تمنع الجواب المقنع الخاطئ: إصدارٌ لا يصل إلى التشخيص قبل أن يكتمل، وقواعد سلامةٍ ثابتة في الشيفرة، وتحقّقٌ بلا مهندس له حدودٌ معلنة.</p>
+
+  <figure>
+    <div class="fig-head"><span class="fig-id">ش‑3</span><span class="fig-title">دورة حياة إصدار المخطّط</span></div>
+    <div class="fig-scroll">
+      <svg class="d w-sm" viewBox="0 0 1000 240" role="img" aria-label="الإصدار يمرّ بالحالات: مسجّل، ثمّ يُستخرج، ثمّ مُستخرج، ثمّ يحتاج مراجعة، ثمّ الرسم جاهز، ثمّ جاهز للتشخيص. وإن لم توجد نقاط مراجعة يقفز من مستخرج إلى الرسم جاهز. وقد يفشل الاستخراج.">
+        <defs>
+          <marker id="f3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk"/></marker>
+        </defs>
+
+        <path class="ln" d="M598,100 C598,44 278,44 278,97" marker-end="url(#f3a)"/>
+        <text class="ts" x="438" y="44" text-anchor="middle">لا نقاط مراجعة</text>
+
+        <rect class="b" x="856" y="100" width="124" height="48" rx="24"/>
+        <text class="tb" x="918" y="120" text-anchor="middle">مسجَّل</text>
+        <text class="ts" x="918" y="138" text-anchor="middle">بعد الرفع</text>
+
+        <rect class="b" x="696" y="100" width="124" height="48" rx="24"/>
+        <text class="tb" x="758" y="120" text-anchor="middle">يُستخرج</text>
+        <text class="ts" x="758" y="138" text-anchor="middle">في الخلفيّة</text>
+
+        <rect class="b" x="536" y="100" width="124" height="48" rx="24"/>
+        <text class="tb" x="598" y="120" text-anchor="middle">مُستخرج</text>
+        <text class="ts" x="598" y="138" text-anchor="middle">الصفحات جاهزة</text>
+
+        <rect class="bw" x="376" y="100" width="124" height="48" rx="24"/>
+        <text class="tb twarn" x="438" y="120" text-anchor="middle">يحتاج مراجعة</text>
+        <text class="ts" x="438" y="138" text-anchor="middle">نقاطٌ مشكوك فيها</text>
+
+        <rect class="ba" x="216" y="100" width="124" height="48" rx="24"/>
+        <text class="tb" x="278" y="120" text-anchor="middle">الرسم جاهز</text>
+        <text class="ts" x="278" y="138" text-anchor="middle">الشبكات مبنيّة</text>
+
+        <rect class="bfill" x="20" y="100" width="160" height="48" rx="24"/>
+        <text class="tinv" x="100" y="120" text-anchor="middle">جاهزٌ للتشخيص</text>
+        <text class="tinvs" x="100" y="138" text-anchor="middle">يُسمح بالسؤال</text>
+
+        <line class="ln" x1="856" y1="124" x2="823" y2="124" marker-end="url(#f3a)"/>
+        <line class="ln" x1="696" y1="124" x2="663" y2="124" marker-end="url(#f3a)"/>
+        <line class="ln" x1="536" y1="124" x2="503" y2="124" marker-end="url(#f3a)"/>
+        <line class="ln" x1="376" y1="124" x2="343" y2="124" marker-end="url(#f3a)"/>
+        <line class="ln" x1="216" y1="124" x2="183" y2="124" marker-end="url(#f3a)"/>
+
+        <line class="lead" x1="359" y1="130" x2="359" y2="158"/>
+        <text class="ts" x="359" y="174" text-anchor="middle">قرار المالك في كلّ مهمّة</text>
+        <text class="ts" x="359" y="192" text-anchor="middle">ثمّ إعادة بناء الرسم</text>
+        <line class="lead" x1="199" y1="130" x2="199" y2="158"/>
+        <text class="ts" x="199" y="174" text-anchor="middle">فحوص الاتّساق بلا أخطاء</text>
+
+        <line class="ln" x1="758" y1="148" x2="758" y2="183" marker-end="url(#f3a)"/>
+        <rect class="bbad" x="718" y="186" width="80" height="36" rx="18"/>
+        <text class="tb tbad" x="758" y="209" text-anchor="middle">فشل</text>
+      </svg>
+    </div>
+    <figcaption>التتبّع والتقييم والتشخيص لا تعمل إلّا على إصدارٍ «جاهزٍ للتشخيص». فلا يصل إليها إصدارٌ فيه مهمّة مراجعةٍ مفتوحة أو خطأ فحص. والإصدار لا يُعدَّل بعد تسجيله، والتعديل إصدارٌ جديد.</figcaption>
+  </figure>
+
+  <div class="two">
+    <div class="sub">
+      <h3>قواعد السلامة الستّ</h3>
+      <p class="prose muted">ثوابتُ في الشيفرة، ولكلٍّ منها اختبار. وليست تعليماتٍ للنموذج.</p>
+      <ol class="rules5">
+        <li>لا اتّصال لمجرّد التقاطع.</li>
+        <li>لا يُعدّ تلامس NO مغلقًا دون حالةٍ أو دليل.</li>
+        <li>لا خلط بين إصدارات المخطّط في تحليلٍ واحد.</li>
+        <li>لا عطل مؤكّد من فرضيّة نموذجٍ وحدها. ولا يغيّر النموذج فرضيّةً، ولا مستواها، ولا دليلها.</li>
+        <li>كلّ اتّصالٍ غير موثوق يُعرض للمستخدم.</li>
+        <li>لا توصية قياسٍ تفتح ثانويّ CT أو تفصل طرفًا في دائرة فصل. والقياس غير تدخّليّ افتراضًا.</li>
+      </ol>
+    </div>
+    <div class="sub">
+      <h3>التحقّق بلا مهندس</h3>
+      <p class="prose">لا يتوفّر مهندسٌ مراجع الآن، فلا تنتظره الخطّة. ويحلّ محلّه ما في البطاقات أدناه. وتعويضًا عن غيابه، يقول كلّ جواب: «الرسم لم يراجعه مهندس» و«فحص فقط»، ويذكر حدود تحليله.</p>
+      <p class="prose muted">هذا البديل أضعف من مهندس، ولذلك يبقى القياس على المحجوز، ويُعلن كلّ رقمٍ بحدّ ثقته، ويبقى التنبيه في كلّ جواب.</p>
+    </div>
+  </div>
+  <ul class="pillars">
+    <li><b>مرجعٌ مقروء</b><span>كلّ صفحةٍ في المجموعة الذهبيّة تُقرأ بالعين، طرفًا طرفًا، ويُكتب ما يتّصل بكلّ طرف.</span></li>
+    <li><b>مصدرٌ محجوز وصفحاتٌ محجوزة</b><span>مصدر رسمٍ كامل لم تره القواعد، وثلث صفحات الباقي بالقرعة، قبل كتابة أيّ قاعدة. فرقمها هو الرقم النزيه.</span></li>
+    <li><b>فحوص اتّساقٍ آليّة</b><span>لا تحتاج مرجعًا، وتمسك أخطاءً مثل شبكةٍ تجمع جهدين مختلفين.</span></li>
+    <li><b>المالك يراجع</b><span>كلّ نقطةٍ مشكوكٍ فيها مهمّةٌ يقرّرها المالك، وقراراته سجلٌّ للإضافة فقط.</span></li>
+    <li><b>صفحاتٌ مساندة</b><span>جداول الإسناد ومخطّطات الأطراف مصدر حقيقةٍ لم يكتبه كاتب المرجع، فتمسك خطأه إن أساء فهم اصطلاح.</span></li>
+    <li><b>حقن الأعطال</b><span>أعطالٌ معروفة تُحقن في المخطّطات بملاحظاتها، فيُقاس التشخيص بلا مهندس.</span></li>
+  </ul>
+</section>
+
+<section id="decisions">
+  <h2>قرارات التصميم</h2>
+  <div class="tbl-wrap">
+    <table class="decisions">
+      <thead><tr><th>القرار</th><th>لماذا</th></tr></thead>
+      <tbody>
+        <tr><td>استخراجٌ هندسيّ من خطوط PDF، لا نموذج رؤية</td><td>المخطّطات متّجهة، وثبت ذلك في م‑0. والهندسة تأخذ نحو ثانيةٍ لصفحة A0، بلا GPU.</td></tr>
+        <tr><td>النصوص من نسخةٍ بنصٍّ حقيقيّ، وOCR احتياطٌ غير مؤكّد</td><td>حروف المخطّط الأوّل مرسومةٌ خطوطًا، وOCR قرأ 52% فقط من أسماء الأطراف، وبأخطاء.</td></tr>
+        <tr><td>مصدر الحقيقة: الأطراف والشبكات</td><td>الشبكة مجموعة أطرافٍ متّصلة كهربائيًّا، لا علاقة «متّصل» بين جهازين. وعلاقة الملفّ بتلامساته رابطٌ وظيفيّ منفصل، لا اتّصال.</td></tr>
+        <tr><td>الرسم في PostgreSQL، لا قاعدة رسومٍ بيانيّة (قرار المالك)</td><td>الإصدار الواحد بضعة آلافٍ من الأطراف على الأكثر، ويُحمَّل كلّه إلى الذاكرة للتحليل. وسؤال «هل المسار مكهربٌ بحالة التلامسات؟» يحسبه المحرّك بالمنطق الثلاثيّ، ولا تعرف هذا المنطق لغة استعلام الرسوم. والعزل بين المستأجرين بالآليّة القائمة، والكتابة في معاملةٍ واحدة، ولا خدمة جديدة. ويبقى الطريق إلى Neo4j نسخةً مشتقّة: منفذ قراءةٍ واحد للرسم، وحدثٌ بعد كلّ بناء.</td></tr>
+        <tr><td>الإصدار ثابت، والتحليل على إصدارٍ واحد</td><td>التعديل إصدارٌ جديد. ومفتاحٌ مركّب يمنع ربط عنصرٍ بإصدارٍ آخر.</td></tr>
+        <tr><td>لا بحث دلاليّ (متّجهات) في المخطّطات</td><td>سؤال التوصيل جوابه قاطع، والبحث الدلاليّ يعيد ما «يشبه» السؤال. وتقطيع نصّ الصفحة يفصل الرمز عن سلكه.</td></tr>
+        <tr><td>تشخيصٌ مبنيّ على النموذج، لا تعداد الموانع</td><td>تعداد الموانع يجيب «ما الذي في المسار»، ولا يجيب «أيّ عطلٍ يفسّر ما رآه الفنّيّ». والتشخيص يكشف أيضًا لوحةً عُدّلت دون مخطّطها، فلا يفرض فرضيّة.</td></tr>
+        <tr><td>الفرضيّات وترتيبها من المحرّك، والنموذج يشرح فقط</td><td>كلّ فرضيّةٍ لها مصدرٌ رمزيّ ودليل. والنظام يقوم على الحتميّة، فلا يُترك الترتيب لنموذج. والنموذج لا يرى ملفّ المخطّط.</td></tr>
+        <tr><td>الحجز بالمصدر، لا بالصفحة</td><td>القواعد تُضبط على أسلوب رسّام. فالصفحات المحجوزة من المصدر نفسه تقيس الحفظ لا التعميم.</td></tr>
+        <tr><td>نموذجٌ سحابيّ يدعم استدعاء الأدوات</td><td>النموذج المحلّيّ الحاليّ لا يدعم الأدوات، فيبقى احتياطًا للشرح فقط.</td></tr>
+        <tr><td>أسماءٌ مستعارة قبل النموذج السحابيّ</td><td>نتائج الأدوات تحمل أسماء أجهزة المصنع وأرقام مخطّطاته. فتُستبدل قبل الإرسال، وتعيدها الشيفرة في الجواب.</td></tr>
+        <tr><td>محاكي التسلسل والمؤقّتات مؤجّل</td><td>يحتاج عناصر ذات حالة وزمن. وحتى ذلك الحين: حالةٌ صريحة لمرحّل القفل ووضع القاطع، وتحليلٌ مشروط، والمؤقّت مجهولٌ ما لم يُلاحَظ.</td></tr>
+        <tr><td>وحدةٌ جديدة ووكيلٌ جديد فوق ما في المنصّة</td><td>يُعاد استخدام الرفع والتخزين والكتيّبات والمحادثات وعدّ الكلفة والعمّال في الخلفيّة. وعاملٌ واحد يعالج صفحةً واحدة في كلّ مرّة، لضيق ذاكرة جهاز التطوير.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="metrics">
+  <h2>معايير القبول</h2>
+  <p class="prose">تُقاس كلّها على المحجوز من المجموعة الذهبيّة: مصدر رسمٍ كامل لم تره القواعد، وصفحاتٌ محجوزة من غيره، على مرجعٍ مقروء. وكلّ رقمٍ يُعلن بحدّ ثقته، فصفر أخطاءٍ في n حالة يعني أنّ الخطأ قد يبلغ نحو 3 من n.</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>المقياس</th><th>الهدف</th><th>البوّابة</th><th>آخر قياس (م‑0)</th></tr></thead>
+      <tbody>
+        <tr><td>دقّة التوصيل<span class="en">Connection Precision</span></td><td class="n">≥ 99%</td><td>م‑2</td><td>91%، والسبب رمزٌ فوق سلك</td></tr>
+        <tr><td>اكتمال التوصيل<span class="en">Connection Recall</span></td><td class="n">≥ 95%</td><td>م‑2</td><td class="n">100%</td></tr>
+        <tr><td>اكتمال كشف الرموز<span class="en">Symbol Recall</span></td><td class="n">≥ 95%</td><td>م‑2</td><td class="muted">لم يُقس</td></tr>
+        <tr><td>مطابقة اسم الجهاز<span class="en">Tag Exact Match</span></td><td class="n">≥ 98%</td><td>م‑2</td><td class="muted">لم يُقس</td></tr>
+        <tr><td>دقّة رقم الطرف<span class="en">Terminal Number Accuracy</span></td><td class="n">≥ 98%</td><td>م‑1، م‑2</td><td>52% بـOCR</td></tr>
+        <tr><td>مطابقة المراجع بين الصفحات<span class="en">Cross‑Page Matching</span></td><td class="n">≥ 98%</td><td>م‑2</td><td class="muted">لم يُقس</td></tr>
+        <tr><td>دمجٌ خاطئ بين شبكتين<span class="en">Net Merge</span></td><td class="n">0</td><td>م‑2</td><td>1: مدخل K01 في شبكة السالب</td></tr>
+        <tr><td>تقسيمٌ خاطئ لشبكة<span class="en">Net Split، موزونًا بأهمّيّة الدائرة</span></td><td>يُحسم في تصميم م‑2</td><td>م‑2</td><td class="muted">لم يُقس</td></tr>
+        <tr><td>أخطاءٌ خطيرة<span class="en">شبكةٌ تجمع جهدين مختلفين، أو رمزٌ عُدّ سلكًا، أو أيّ دمجٍ خاطئ</span></td><td class="n">0</td><td>م‑2</td><td>2</td></tr>
+        <tr><td>تغطية الفرضيّات الصحيحة</td><td class="n">≥ 90%</td><td>م‑4</td><td class="muted">—</td></tr>
+        <tr><td>ادّعاءاتٌ مؤكّدة بلا دليل</td><td class="n">0</td><td>م‑4</td><td class="muted">—</td></tr>
+        <tr><td>توصية قياسٍ ممنوعة</td><td class="n">0</td><td>م‑4</td><td class="muted">—</td></tr>
+        <tr><td>جودة التشخيص<span class="en">السبب في أوّل ثلاث، والقياسات حتى العزل، ونسبة «مجهول»، والزمن والكلفة</span></td><td>يُقاس ويُعلن</td><td>م‑4</td><td class="muted">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="scope">
+  <h2>النطاق</h2>
+  <div class="scope">
+    <div>
+      <h3>في الإصدار الأوّل</h3>
+      <ul>
+        <li>مستخدمٌ واحد هو المالك: يرفع ويراجع ويسأل.</li>
+        <li>معيار رموزٍ واحد: أرقام أجهزة ANSI برموزٍ قريبة من IEC.</li>
+        <li>مخطّطاتٌ متّجهة بصيغة PDF.</li>
+        <li>الاختبار عبر الـAPI، فلا واجهة أماميّة بعد.</li>
+        <li>المخطّطات الحقيقيّة تبقى على جهاز التطوير، ولا تُرفع إلى بيئةٍ عامّة قبل التصليب الأمنيّ.</li>
+        <li>الأجهزة الذكيّة صندوقٌ أسود، والجواب يقول ذلك.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>خارج الإصدار الأوّل</h3>
+      <ul>
+        <li>الواجهة الأماميّة: عارض المخطّط وشاشة المراجعة.</li>
+        <li>المخطّطات الممسوحة، وتدريب نموذج رؤية.</li>
+        <li>ملفّات DWG وEPLAN الأصليّة.</li>
+        <li>PLC وSCADA.</li>
+        <li>التحكّم بالقواطع أو بأيّ معدّة.</li>
+        <li>عمل الفريق: فنّيٌّ يسأل ومهندسٌ يراجع.</li>
+        <li>معايير رموزٍ أخرى، والربط بهيكل المعدّات في المصنع وسجلّات صيانتها.</li>
+        <li>محاكي التسلسل والمؤقّتات ومنع الضخّ (anti‑pumping).</li>
+        <li>منطق الأجهزة الذكيّة من كتيّباتها، وكلفة القياس وخطره بالأرقام.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="questions">
+  <h2>أسئلة المراجعين وأجوبتها</h2>
+  <p class="prose">هذه الأسئلة طُرحت في نسخة 2026‑10‑24، وأجاب عنها التقييم الفنّيّ في 2026‑10‑25. ولكلّ سؤالٍ هنا خلاصة الجواب وما تغيّر في التصميم. والسؤال 6 حسمه المالك قبل التقييم، ويبقى برقمه.</p>
+  <ol class="questions prose">
+    <li><b>قواعد التوصيل الثماني:</b> هل تكفي لمخطّطات ANSI وIEC التي تعرفونها؟ وما الحالات التي تنقصها؟<br><span class="muted"><b>الجواب:</b> لا تكفي. فأُضيفت الشبكات المربوطة بالاسم أو برقم السلك، وأطراف رموزٍ لا تُرسم حلقات، وسماحيّة الفجوات، والقطع المتراكبة، والجسور في الشرائط، ومجموعات الاختبار. <b>وقاعدة T بلا نقطة ما زالت مفتوحة:</b> في الممارسة الشائعة هي اتّصال، لكن في م‑0 لو عُدّت اتّصالًا لدُمج ثانويّ CT مع خطّ 11 ك.ف.</span></li>
+    <li><b>المنطق الثلاثيّ:</b> هل يكفي، مع التكرار حتى الاستقرار، لدوائر الإمساك والمؤقّتات ومرحّل القفل؟<br><span class="muted"><b>الجواب:</b> لا يكفي للمؤقّتات ولا للتسلسل. فصار مرحّل القفل ووضع القاطع مدخلاتٍ صريحة، ودخل التحليل المشروط على المجاهيل. والمحاكي ذو الحالة مؤجّلٌ إلى ما بعد م‑4.</span></li>
+    <li><b>البوّابة الحاسمة:</b> هل دقّة توصيلٍ 99% وصفر أخطاءٍ خطيرة شرطٌ مناسب قبل أيّ تشخيص؟<br><span class="muted"><b>الجواب:</b> مناسب، بشرط أن يُقاس على مستوى الشبكة، موزونًا، وبحدود ثقة. فأُضيف «صفر دمجٍ خاطئ بين شبكتين»، وصار كلّ رقمٍ يُعلن بحدّ ثقته.</span></li>
+    <li><b>المجموعة الذهبيّة:</b> هل تكفي 30–50 صفحة، ثلثها محجوز، لقياسٍ موثوق؟ وما أنواع الدوائر التي يجب أن تشملها؟<br><span class="muted"><b>الجواب:</b> تكفي للتطوير لا للقياس، إلّا إذا جاءت من عدّة مصادر. فصارت من مصدري رسمٍ على الأقلّ، ويُحجز مصدرٌ كامل. وتشمل الإغلاق، والفصل ومراقبته، وشحن الزنبرك، والإشارة والإنذار، والتعشيق، وثانويّ CT وPT، وتوزيع التيّار المستمرّ.</span></li>
+    <li><b>حدود الجواب:</b> في غياب مهندسٍ مراجع، هل يكفي «فحص فقط»، وأن «مؤكّد» لا يُعطى إلّا بملاحظةٍ ميدانيّة؟<br><span class="muted"><b>الجواب:</b> يكفيان حدًّا أدنى، مع أمرين أُضيفا: قيود السلامة على توصيات القياس، والتصريح بأنّ التحليل يغطّي الدائرة المرسومة فقط ويفترض أنّ اللوحة تطابق مخطّطها.</span></li>
+    <li><b>التخزين (حُسم بقرار المالك ق‑15):</b> يبقى الرسم في PostgreSQL، ويُحمَّل كاملًا إلى الذاكرة، ولا قاعدة رسومٍ بيانيّة في الإصدار الأوّل. والطريق إلى Neo4j نسخةً مشتقّة محفوظ: المحرّك يقرأ الرسم عبر منفذٍ واحد، وكلّ بناءٍ للرسم ينشر حدثًا برقمه. ويُعاد النظر إن تحقّق شرطٌ من ثلاثة: أسئلةٌ تشمل المصنع كلّه لا يتّسع رسمها في الذاكرة، أو ربطٌ بهيكل المعدّات والصيانة، أو تتبّعٌ أبطأ من ثانية على أكبر إصدار. والأسباب في <a href="#decisions">قرارات التصميم</a>.</li>
+    <li><b>فحص جهد الملفّ وأثر العطل:</b> هل يكفي فرض عطلٍ واحد في كلّ تحليل، فتحًا للدائرة أو تلامسًا عالقًا؟ وكيف تُعالج القصر (Short)، وهو يغيّر الشبكات نفسها؟ وما مدى السماح المناسب في جهد الملفّ، مثل 110 و125 فولت مستمرّ للبطّاريّة نفسها؟<br><span class="muted"><b>الجواب:</b> عطلٌ واحد أوّلًا، وعطلان إن فشل التفسير. والقصر يُفرض بدمج الشبكتين في الذاكرة. والسماح ليس هامشًا ثابتًا: نطاق تشغيل الملفّ من IEC 62271‑1 أو من بيانات الصانع، مقابل جهد البطّاريّة الفعليّ في التعويم والشحن ونهاية التفريغ. وأُدخلت الثلاثة.</span></li>
+  </ol>
+</section>
+
+<footer>
+  المرجع الملزم: خطّة التنفيذ، ونتيجة تجربة م‑0 (2026‑10‑24)، والتقييم الفنّيّ للتصميم (2026‑10‑25). حُدّثت هذه الصفحة بعد التقييم في 2026‑10‑25. وهي تبسيطٌ للمراجعة، وحُذفت منها التفاصيل التنفيذيّة عمدًا.
+</footer>
+
+</div>

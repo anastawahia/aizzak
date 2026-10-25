@@ -90,6 +90,15 @@ deploy/load/seeds/
 # the part worth keeping, and it is small enough to paste.
 deploy/backup/results/
 
+# Real plant drawings (docs/delivery/electrical-drawings/plan.md, step 0.2). The
+# first one was saved next to its delivery docs, untracked but not ignored, so one
+# `git add -A` would have published a live plant's wiring. Real drawings and the
+# golden set live outside the repository (/home/anas/aizzak-golden/); unit tests
+# generate synthetic ones. The whole class is ignored, not that one file, in either
+# case: drawings exported on Windows often end in .PDF or .DWG.
+docs/delivery/**/*.[pP][dD][fF]
+docs/delivery/**/*.[dD][wW][gG]
+
 # Release bundles (deploy/release/bundle.sh writes aizzak-<VERSION>.tar.gz into the current
 # directory by default, and a hidden temp file beside it while it works).
 /aizzak-*.tar.gz
