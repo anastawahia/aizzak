@@ -106,7 +106,8 @@ def test_no_documented_explicit_f_up_build_or_run_omits_the_overlay() -> None:
 
 
 def test_modified_docs_stay_inside_an_rtl_div() -> None:
-    for path in _DOCS:
+    # The README is written in English, so only the Arabic docs carry the RTL wrapper.
+    for path in (_QUICKSTART, _STACK):
         text = _text(path).rstrip()
         assert text.startswith('<div dir="rtl">'), path.name
         assert text.endswith("</div>"), path.name

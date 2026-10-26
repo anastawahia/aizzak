@@ -17,7 +17,7 @@
 
 ## Quality gates
 - Run from `/home/AIZZAK` inside WSL/Linux, using `.venv` (stdlib venv, Python 3.12). Install with `pip install -e ".[dev,parsers]"`.
-- Run in this order (same as CI job `quality`; `README.md` "البوّابات الخمس"):
+- Run in this order (same as CI job `quality`; `README.md` "Quality gates"):
   1. `.venv/bin/ruff format --check .`
   2. `.venv/bin/ruff check .`
   3. `.venv/bin/mypy src` (strict)
@@ -50,8 +50,8 @@
 - Style: line length 100, double quotes (`docs/design/10-code-standards.md`, `[tool.ruff]`).
 
 ## Docs conventions
-- Docs are written in Arabic; code, comments and commit messages are in English.
-- Top-level docs (README, ROADMAP, architecture, capacity-*, quickstart, stack-commands, runbooks) are wrapped in `<div dir="rtl">` … `</div>`. `docs/design/*` and `Requirements-v1.md` are not wrapped.
+- Docs are written in Arabic; code, comments and commit messages are in English. Exception: `README.md` is in English and is not wrapped in an RTL div.
+- Top-level docs (ROADMAP, architecture, capacity-*, quickstart, stack-commands, runbooks) are wrapped in `<div dir="rtl">` … `</div>`. `docs/design/*` and `Requirements-v1.md` are not wrapped.
 - IDs use a non-breaking hyphen (U+2011): `FR‑01`, `D‑12`, `ق‑1` (decision), `ح‑3` (bottleneck), `د‑29` (measurement). Capacity steps look like `5.6`, `7.3`.
 - Plan and status are kept apart: `capacity-plan.md` is the plan, `capacity-status.md` is the status. Every capacity status change also updates `docs/capacity-summary.html`.
 - Each alert has a section in `docs/runbooks/alerts.md`.
