@@ -1,0 +1,1479 @@
+{
+  "generated": "2026-10-25",
+  "schema_note": "full_name is the unique key. stars/last_push/license/archived from GitHub Search API on 2026-10-25.",
+  "weights": {
+    "relevance": 0.3,
+    "depth": 0.2,
+    "reusability": 0.2,
+    "evidence": 0.15,
+    "maturity": 0.15
+  },
+  "needs": {
+    "1": "فهم بلاغ العطل (عربي/إنجليزي، رموز إنذار، تاغات، قراءات)",
+    "2": "استرجاع دقيق مع مطابقة حرفية للتاغات",
+    "3": "تتبع المسار عبر المراجع المتقاطعة والأسلاك والأطراف وI/O",
+    "4": "ترتيب الأسباب واختيار نقاط القياس",
+    "5": "إسناد كل معلومة إلى مصدرها",
+    "6": "قواعد السلامة",
+    "7": "التعلم من الحالات المحلولة"
+  },
+  "counts": {
+    "scanned_relevant_candidates": 82,
+    "unique_repos_returned_by_queries": 1751,
+    "shortlist": 20,
+    "deep": 12,
+    "reserve": 6
+  },
+  "projects": [
+    {
+      "full_name": "Canary-ECAD/ecad-view",
+      "study_level": "deep",
+      "stars": 6,
+      "last_push": "2026-10-20",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "مشروع مجتمعي مستقل غير تابع لـ EPLAN (حسب الـ README).",
+      "language_stack": "TypeScript؛ React (apps/web)؛ sql.js (SQLite WASM)؛ 7-zip WASM؛ three.js؛ أغلفة Tauri/Capacitor",
+      "input_types": [
+        "EPLAN .epdz (أرشيف 7z يحوي صفحات SVG وmanifest.db وملفات .e3d و.aml)"
+      ],
+      "tasks": [
+        "تحليل صيغة EPLAN",
+        "فهرسة الأجهزة",
+        "تنقل المراجع المتقاطعة",
+        "استخراج الاتصالات ونقاط الانقطاع"
+      ],
+      "architecture": "(1) فك أرشيف .epdz داخل المتصفح → (2) قراءة manifest.db عبر sql.js: جداول package وproperty وpage_package وpage_functions وpage_interruptionpoints وlocation_package وinstallationspace_package → (3) بناء كائنات: Function (التعيين ep.20001، رقم القطعة ep.20100)، وmergedconnection (المصدر ep.31019، الهدف ep.31020، الجهد/potential ep.33003 أو ep.20045، اللون ep.31004، المقطع ep.31007، الطول ep.31003)، وinterruptionpoint (التعيين ep.20001، المرجع المتقاطع ep.19007، والصفحات التي يظهر فيها) → (4) عرض صفحات SVG وربط معرّفات عناصر SVG (IdX_Y) بالحزم، وتحويل روابط jumpToFunction الأصلية إلى تنقل داخلي بين ظهورات الجهاز → (5) فهرس أجهزة مجمّع من رموز كل الصفحات (المفتاح = التعيين بدون نقطة الاتصال) → (6) تحليل AutomationML المضمّن في worker، وعرض 3D لصيغة E3D.",
+      "methodology_models": "تحليل حتمي للصيغة (لا تعلم آلي). تقسيم معرّفات البنية عبر regex `(?:==|=|\\+\\+|\\+|&)([^=+&#]+)`.",
+      "datasets_results": "ملفات عينات مرفقة واختبار `npm run test:samples` لمفسّر E3D. لا مقاييس دقة منشورة.",
+      "verified_in_code": "تحققت في packages/e3d-core/src/manifest.ts من استعلامات SQL المذكورة ومعرّفات الخصائص، وفي structure.ts من الـ regex، وفي apps/web/src/devices.ts من DeviceIndex (elementId ↔ designation)، وفي aml/amlWorker.ts من parseAml. لم أقرأ ملفات .tsx (لم تُنسخ في النسخة الجزئية)؛ لذا فإن تحويل روابط jumpToFunction إلى تنقل مأخوذ من الـ README ومن تعليق في manifest.ts يذكر أن معرّف العنصر هو نفسه المستخدم في روابط jumpToFunction.",
+      "strengths": [
+        "يتيح بيانات اتصال منظمة (مصدر/هدف/جهد/لون/مقطع) ونقاط انقطاع عبر الصفحات وربط الصفحة بالوظيفة دون ترخيص EPLAN",
+        "روابط المراجع المتقاطعة موجودة أصلاً في SVG المصدَّر (jumpToFunction)",
+        "يعمل محلياً بالكامل؛ ترخيص MIT"
+      ],
+      "weaknesses": [
+        "دلالات معرّفات الخصائص (ep.31019...) مستنتجة من الكود وتعليقاته وليست من توثيق رسمي لـ EPLAN — **ملاحظة الباحث**",
+        "يعتمد على وجود تصدير .epdz بهذه الجداول؛ خاص بـ EPLAN فقط",
+        "مشروع حديث (أُنشئ 2026-07-13) بلا مقاييس"
+      ],
+      "reusable_components": [
+        {
+          "component": "packages/e3d-core (manifest.ts, structure.ts, aml parser)",
+          "license": "MIT",
+          "dependencies": "sql.js"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 5,
+        "depth": 4,
+        "reusability": 5,
+        "evidence": 2,
+        "maturity": 4
+      },
+      "sources": [
+        "https://github.com/Canary-ECAD/ecad-view"
+      ],
+      "weighted_score": 4.2,
+      "url": "https://github.com/Canary-ECAD/ecad-view",
+      "rank": 1
+    },
+    {
+      "full_name": "Canary-ECAD/eplan-mcp",
+      "study_level": "deep",
+      "stars": 128,
+      "last_push": "2026-10-16",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT للكود. مجموعة صور الرموز المرتبطة (covaga/IEC-electrical-symbols-dataset) موسومة MIT على Hugging Face لكن مصدرها مكتبات رموز EPLAN — أصل الحقوق غير واضح (**ملاحظة الباحث**).",
+      "language_stack": "Python (MCP, pythonnet) يولّد سكربتات C# تُنفَّذ داخل EPLAN؛ Cloudflare Workers للـ RAG (مستودع منفصل)",
+      "input_types": [
+        "نسخة EPLAN Electric P8 / EEC Pro 2026 قيد التشغيل (Remote Client)",
+        "وثائق EPLAN (RAG بعيد)",
+        "صور رموز"
+      ],
+      "tasks": [
+        "وصول أدوات إلى نموذج بيانات EPLAN",
+        "تصدير الاتصالات/الوظائف/الصفحات",
+        "بحث وثائقي",
+        "بحث رموز بالصورة"
+      ],
+      "architecture": "خادم MCP → اتصال بـ EPLAN عبر Remote Client → 183 أداة typed، كل أداة تنفذ EPLAN action داخل سكربت C# في QuietMode؛ كتالوج ~1,050 action مستخرج من MFTools.xml؛ أدوات Live DataModel عبر reflection وقت التشغيل (LockingStep، والبحث عن الأنواع في الـ assemblies المحمّلة لتجاوز إعادة تسمية DataModelu→DataModelNetu): live_query_functions، live_query_pages، live_set_function_text، live_set_connection_designations، live_read_check_messages؛ وأدوات data_exchange: export_connections (XMExportConnectionsAction → TXT/XLSX/XML)، export_functions، export_pages، dc_export، export_potential_definitions؛ وتصدير PDF/DXF/DWG وAAS. RAG الوثائق: إصدار 2026 بـ Vectorize + bge (دلالي)، وإصدار 2027 بـ SQLite FTS5/bm25 (حرفي). RAG رموز: 33,502 صورة رمز مضمّنة بـ CLIP ViT-B/32.",
+      "methodology_models": "Tool calling حتمي فوق EPLAN API؛ RAG هجين على مستوى الخوادم؛ CLIP لصور الرموز.",
+      "datasets_results": "لا أرقام. الـ README يذكر مقارنة نوعية: \"FTS5 wins exact-name lookups, semantic search wins when the query shares no vocabulary\" دون جدول نتائج (لم أتحقق منها).",
+      "verified_in_code": "قرأت mcp_server/api/actions/live.py (الدوال الخمس وملاحظات reflection)، وdata_exchange.py (export_connections ومعاملاته)، وexport_.py (تصدير PDF/DXF/DWG). وجود extensions/symbol_search.py. لم أشغّل شيئاً.",
+      "strengths": [
+        "وصول مباشر إلى النموذج المرجعي (الوظائف، تعيينات نقاط الاتصال، قوائم الاتصالات، رسائل الفحص)",
+        "سطح أدوات واسع مع وضع discovery (13 أداة بدل 199)",
+        "نشاط وصيانة واضحان (128 نجمة، تحديث 2026-10)"
+      ],
+      "weaknesses": [
+        "يتطلب EPLAN مرخصاً قيد التشغيل على Windows مع تفعيل الوصول البعيد",
+        "يحوي أدوات كتابة تعدّل المشروع — **ملاحظة الباحث**: أثر سلامة إذا عُرضت لوكيل",
+        "خوادم RAG طرف ثالث بعيدة"
+      ],
+      "reusable_components": [
+        {
+          "component": "eplan-p8-mcp-server (action wrappers, live DataModel reflection)",
+          "license": "MIT",
+          "dependencies": "pythonnet, mcp, EPLAN P8 مرخص"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 5,
+        "depth": 4,
+        "reusability": 3,
+        "evidence": 2,
+        "maturity": 5
+      },
+      "sources": [
+        "https://github.com/Canary-ECAD/eplan-mcp",
+        "https://huggingface.co/datasets/covaga/IEC-electrical-symbols-dataset"
+      ],
+      "weighted_score": 3.95,
+      "url": "https://github.com/Canary-ECAD/eplan-mcp",
+      "rank": 2
+    },
+    {
+      "full_name": "mateus-aleixo/maintenance-qa-agent",
+      "study_level": "deep",
+      "stars": 1,
+      "last_push": "2026-10-12",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python 3.11؛ SQLite FTS5؛ bge-small-en-v1.5؛ أي LLM متوافق مع OpenAI؛ AWS Lambda + Terraform",
+      "input_types": [
+        "كتيبات صيانة PDF (كتيبات US Army عامة الملكية، مثل TM 9-8000)"
+      ],
+      "tasks": [
+        "استرجاع هجين",
+        "إجابة مع استشهاد",
+        "امتناع معاير (selective prediction)",
+        "وكيل أدوات"
+      ],
+      "architecture": "ingest → Store (SQLite: FTS5 BM25 + متجهات bge-small-en-v1.5 بجيب تمام brute-force) → دمج RRF → LLM خارجي يولّد إجابة بمراجع → درجة ثقة (اتفاق العينات × دعم الاستشهادات، أو P(YES) من logprobs) → ConformalGate (conformal risk control؛ Angelopoulos et al. 2022؛ fallback لمجموعات Mondrian عند min_group=30) يقرر الإجابة أو الامتناع؛ judge LLM يُستخدم دون اتصال للمعايرة فقط؛ وكيل بأدوات (بحث، حاسبة، RUL API).",
+      "methodology_models": "RRF؛ conformal risk control؛ تقييم بـ LLM-as-judge؛ مقارنة نماذج 3B/7B/14B.",
+      "datasets_results": "على 100 سؤال: خطر الإجابة على سؤال لا يجيب عنه المصدر 0.260 → 0.031 عند تغطية 64% (α=0.1 متحقق)؛ خطر أي خطأ 0.540 → 0.312 عند 64% (α=0.4 متحقق، 0.2 لا). AUC الدرجة 0.51→0.75؛ بوابة logprob AUC 0.697→0.821. على 206 سؤال تغطية 63%. نموذج 14B: خطأ أساسي 0.373 لكن أفضل α=0.20 عند تغطية 30%. (من الـ README وdocs/results.md)",
+      "verified_in_code": "قرأت src/conformal_rag/conformal.py وanswer.py وembed.py وconfig.py وdocs/model-card.md؛ ملفات runs/*.json موجودة.",
+      "strengths": [
+        "ضمان إحصائي خالٍ من التوزيع لمعدل الخطأ بين الأسئلة المُجاب عنها",
+        "توثيق صريح للنتائج السلبية",
+        "MIT وكود صغير معياري"
+      ],
+      "weaknesses": [
+        "إنجليزي فقط (bge-small-en)",
+        "مجال كتيبات عامة (سيارات/جيش) لا مخططات كهربائية",
+        "الضمان مرتبط بالنموذج المولِّد الذي عُويرت عليه البوابة (كما في الـ model card)"
+      ],
+      "reusable_components": [
+        {
+          "component": "src/conformal_rag/conformal.py (ConformalGate)",
+          "license": "MIT",
+          "dependencies": "numpy"
+        },
+        {
+          "component": "Store + RRF hybrid retrieval",
+          "license": "MIT",
+          "dependencies": "sqlite3 (FTS5), sentence-transformers (اختياري)"
+        }
+      ],
+      "needs_covered": [
+        2,
+        5,
+        6
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 5,
+        "reusability": 5,
+        "evidence": 5,
+        "maturity": 4
+      },
+      "sources": [
+        "https://github.com/mateus-aleixo/maintenance-qa-agent"
+      ],
+      "weighted_score": 3.95,
+      "url": "https://github.com/mateus-aleixo/maintenance-qa-agent",
+      "rank": 3
+    },
+    {
+      "full_name": "hkoziolek/DiagEx-Repro",
+      "study_level": "deep",
+      "stars": 4,
+      "last_push": "2026-05-02",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_note": "Apache-2.0 للكود؛ مواصفة DEXPI 2.0 المضمّنة CC-BY 4.0. يذكر ARCHITECTURE.md أنه استبدل pyDEXPI (AGPL-3.0) للبقاء على Apache-2.0.",
+      "language_stack": "Python 3.11+؛ PyMuPDF للتحويل إلى صور؛ Claude Opus 4.7 (vision + tool use)؛ Pydantic v2",
+      "input_types": [
+        "P&ID PDF (10 مخططات عامة)"
+      ],
+      "tasks": [
+        "رقمنة P&ID بلا تدريب (zero-shot) إلى DEXPI 2.0",
+        "أسئلة وأجوبة على المخطط (Phase 1)"
+      ],
+      "architecture": "PDF → تحويل إلى صور بـ pymupdf → صورة overview + شبكة tiles → وكيل VLM بأدوات: get_overview، list_tiles، get_tile، get_region، annotate، lookup_symbol (مكتبات ISA-5.1 وISO 10628 وSAMA بصيغة JSON)، list_annotations، finish → ReconciledGraph بكود Python حتمي (إزالة التكرار، وصل الخطوط عبر stitch hints، تحكيم التاغات؛ تمرير تحكيم LLM محدود ثانوي) → DEXPI 2.0 builder → JSON/XML/SVG/drawio.",
+      "methodology_models": "VLM للإدراك فقط + تسوية حتمية؛ تقييم بمقاييس F1 على مستوى الرسم البياني؛ تشغيل مسجَّل (cassettes) لإعادة الإنتاج.",
+      "datasets_results": "Phase 2 (results/phase2/report.md): F1 المعدات 0.67–1.00، F1 الأجهزة 0.79–1.00، F1 الحواف حيث قيست 0.21 (butane1) و0.40 (dexpi-reference) و0.25 (tennessee1)؛ الكلفة $0.63–$10.35 لكل P&ID ومجموعها $38.17 لعشرة. Ablation بلا tiles (3 مخططات): F1 المعدات −0.189، F1 الأجهزة −0.257، مطابقة OCR للتاغ −0.169.",
+      "verified_in_code": "قرأت docs/ARCHITECTURE.md وsrc/diagex/agent/tools.py (الأدوات) وتقارير results/ وLICENSE؛ وجود eval/cassettes.",
+      "strengths": [
+        "إعادة إنتاج صارمة وخريطة رقم→CSV→أمر",
+        "فصل واضح بين إدراك LLM والتسوية الحتمية",
+        "تقرير كلفة وزمن لكل مخطط"
+      ],
+      "weaknesses": [
+        "مجال P&ID لا كهربائي",
+        "يعتمد على API تجاري",
+        "الاتصال (edges) ضعيف نسبياً",
+        "10 مخططات فقط؛ الورقة قيد المراجعة"
+      ],
+      "reusable_components": [
+        {
+          "component": "تصميم أدوات overview/tile/region + eval harness (eval/scoring.py)",
+          "license": "Apache-2.0",
+          "dependencies": "anthropic SDK, pymupdf"
+        },
+        {
+          "component": "src/diagex/dexpi (نماذج DEXPI 2.0 Pydantic)",
+          "license": "Apache-2.0 / CC-BY 4.0 للمواصفة",
+          "dependencies": "pydantic"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 5,
+        "reusability": 4,
+        "evidence": 5,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/hkoziolek/DiagEx-Repro"
+      ],
+      "weighted_score": 3.9,
+      "url": "https://github.com/hkoziolek/DiagEx-Repro",
+      "rank": 4
+    },
+    {
+      "full_name": "EPDF-Extractor/indu-doc-transformer",
+      "study_level": "deep",
+      "stars": 1,
+      "last_push": "2025-10-31",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT للكود؛ يعتمد على PyMuPDF (AGPL-3.0) — أثر على إعادة الاستخدام (**ملاحظة الباحث**).",
+      "language_stack": "Python 3.13؛ PyMuPDF؛ pdfplumber؛ pandas؛ NetworkX؛ Lark؛ peewee؛ lxml؛ NiceGUI",
+      "input_types": [
+        "PDF متجهي مولَّد من EPLAN (صفحات التقارير)"
+      ],
+      "tasks": [
+        "كشف نوع الصفحة",
+        "استخراج الجداول",
+        "تحليل التاغات (جوانب IEC 81346)",
+        "بناء نموذج اتصالات",
+        "تصدير AutomationML وقاعدة بيانات"
+      ],
+      "architecture": "Manager ينسّق plugins → EPLAN PDF plugin: detect_page_type من نص الصفحة (إنجليزي/ألماني: Connection list، Terminal diagram/Klemmenplan، Cable overview/Kabelübersicht، Cable diagram، PLC diagram، Topology: Routed cables / connections، Wires parts list، Structure identifier overview، device tag list/artikelstückliste) → footers_extractor (حجم الورق A4/A3/A1 وحقول التذييل) → TableExtractor بمناطق ROI لكل نوع صفحة (page_settings.json؛ أعمدة مفتاحية مثل src_pin_tag/dst_pin_tag، strip_pin، plc_addr) → نموذج God (XTargets للأجهزة/الكابلات/صفوف الأطراف، Pins، Links، Connections، Aspects بفواصل = و+ و- من config.json) + PagesObjectsMapper (كائن ↔ صفحة) → Exporters: AML (lxml) وDB (peewee) → واجهة NiceGUI؛ وقواعد بحث Lark: `TAGWORD /([=+-.][A-Za-z0-9_]+)+/` مع مرشحات `@attr=value`.",
+      "methodology_models": "استخراج قاعدي بالـ ROI من نص وجداول PDF؛ معرّفات حتمية (md5 لنص التاغ).",
+      "datasets_results": "لا مقاييس منشورة؛ اختبارات وحدة (tests/god_tests: الإنشاء، التغطية، عدم التكرار).",
+      "verified_in_code": "قرأت common_page_utils.py (PageType)، page_settings.json (9 أنواع صفحات وأعمدتها)، lark_parser.py (القواعد)، tag.py (Aspect)، god.py (PagesObjectsMapper)، pyproject.toml (الاعتماديات). تحققت بـ grep أنه لا يحلل صفحات المخطط (multi-line) نفسها — صفحات التقارير فقط.",
+      "strengths": [
+        "يستهدف تحديداً مخططات الأطراف وقوائم الاتصالات ومخطط PLC (plc_addr) من PDF الخاص بـ EPLAN",
+        "جوانب IEC 81346 قابلة للضبط",
+        "ربط كل كائن بصفحته يدعم الإسناد",
+        "بنية plugins"
+      ],
+      "weaknesses": [
+        "إعدادات ROI مرتبطة بقوالب تقارير محددة (يوجد page_setup_wizard)",
+        "لا يحلل رسوم صفحات المخطط",
+        "مجتمع صغير وآخر push في 2025-10؛ 9 issues مفتوحة"
+      ],
+      "reusable_components": [
+        {
+          "component": "src/indu_doc/tag.py + lark_parser.py",
+          "license": "MIT",
+          "dependencies": "lark"
+        },
+        {
+          "component": "plugins/eplan_pdfs/table_extractor.py + page_processor.py",
+          "license": "MIT",
+          "dependencies": "PyMuPDF (AGPL-3.0), pdfplumber, pandas"
+        },
+        {
+          "component": "exporters/aml_builder",
+          "license": "MIT",
+          "dependencies": "lxml"
+        }
+      ],
+      "needs_covered": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 5,
+        "depth": 4,
+        "reusability": 4,
+        "evidence": 2,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/EPDF-Extractor/indu-doc-transformer"
+      ],
+      "weighted_score": 3.85,
+      "url": "https://github.com/EPDF-Extractor/indu-doc-transformer",
+      "rank": 5
+    },
+    {
+      "full_name": "Azure-Samples/digitization-of-piping-and-instrument-diagrams",
+      "study_level": "deep",
+      "stars": 143,
+      "last_push": "2026-01-27",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT (Microsoft).",
+      "language_stack": "Python (FastAPI)؛ OpenCV (ximgproc)؛ Shapely؛ NetworkX؛ Azure ML AutoML؛ Azure AI Document Intelligence؛ Azure SQL Graph",
+      "input_types": [
+        "صور P&ID نقطية (raster)"
+      ],
+      "tasks": [
+        "كشف رموز",
+        "كشف نصوص وربطها بالرموز",
+        "كشف خطوط",
+        "بناء رسم بياني",
+        "تخزين الرسم البياني"
+      ],
+      "architecture": "خمسة مكونات كنقاط REST منفصلة مع إمكانية تصحيح بشري بين الخطوات: (1) كشف الرموز بـ Azure ML AutoML (الوثائق تذكر YOLOv2؛ 3 فئات E/P/I و32 رمزاً من Dataset-P&ID) → (2) OCR بـ Azure Document Intelligence (Read عالي الدقة) + رمادي/ثنائي، وقواعد ربط النص داخل الرمز/قربه، ومرشحات regex (رفض مقاسات بالبوصة) → (3) كشف الخطوط: حذف صناديق الرموز والنصوص، Zhang–Suen thinning، ثم cv2.HoughLinesP → (4) بناء الرسم: هندسة Shapely، تمديد الخطوط، مطابقة خط↔رمز/نص/خط، أسهم للاتجاه، NetworkX، ثم BFS يمر عبر عقد الخطوط والأسهم حتى يصل إلى أصول، ومرور انتشار (propagation) → (5) التخزين في SQL Graph: عقد PnID وSheet وAsset وAssetType وConnector (موصل خارج الصفحة بمعرّف ~4 أحرف)، وحواف BelongsTo وIsPartOf وConnectedTo وLabeledWith وResidesIn وOutputsTo وInputsTo.",
+      "methodology_models": "Object detection (AutoML)؛ OCR سحابي؛ Hough probabilistic؛ قواعد هندسية؛ BFS.",
+      "datasets_results": "Dataset-P&ID الاصطناعية (500 مخطط). الوثائق تستشهد بورقة JCDE 2022 (دقة/استدعاء >90/90) ولم أجد مقاييس خاصة بالمشروع.",
+      "verified_in_code": "تحققت من src/app/utils/regex_utils.py، واستدعاء cv2.HoughLinesP وcv2.ximgproc.thinning(THINNING_ZHANGSUEN)، واستخدام NetworkX وShapely في services/graph_construction، وتصميم SQL في docs/design-db.md، وكود BFS في docs/graph-construction-design.md.",
+      "strengths": [
+        "واجهات معيارية مع إنسان في الحلقة بين كل خطوة",
+        "نمذجة صريحة لموصلات الصفحات (cross-sheet)",
+        "وثائق تصميم مفصلة واختبارات"
+      ],
+      "weaknesses": [
+        "P&ID لا كهرباء",
+        "ارتباط بخدمات Azure (OCR وAutoML)",
+        "اتجاه التدفق خارج نطاق التصميم (حسب الوثيقة)",
+        "لا معيار أداء خاص"
+      ],
+      "reusable_components": [
+        {
+          "component": "services/graph_construction (Shapely + NetworkX)",
+          "license": "MIT",
+          "dependencies": "shapely, networkx"
+        },
+        {
+          "component": "services/line_detection (preprocessor + Hough)",
+          "license": "MIT",
+          "dependencies": "opencv-contrib-python"
+        },
+        {
+          "component": "مخطط قاعدة الرسم البياني (design-db.md)",
+          "license": "MIT",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 5,
+        "reusability": 4,
+        "evidence": 3,
+        "maturity": 4
+      },
+      "sources": [
+        "https://github.com/Azure-Samples/digitization-of-piping-and-instrument-diagrams",
+        "https://devblogs.microsoft.com/ise/engineering-document-pid-digitization/"
+      ],
+      "weighted_score": 3.75,
+      "url": "https://github.com/Azure-Samples/digitization-of-piping-and-instrument-diagrams",
+      "rank": 6
+    },
+    {
+      "full_name": "arabaya3/PanelPilot",
+      "study_level": "deep",
+      "stars": 0,
+      "last_push": "2026-10-24",
+      "archived": false,
+      "license": null,
+      "license_note": "**لا يوجد ترخيص** (لا ملف LICENSE في الجذر، وحقل الترخيص فارغ في الـ API) — افتراضياً كل الحقوق محفوظة؛ لا يجوز إعادة استخدام الكود.",
+      "language_stack": "Python (FastAPI)؛ OpenSearch (BM25 + kNN)؛ Redis؛ واجهة ويب (EN/AR/HE)؛ docker compose (5 خدمات)؛ OpenAI gpt-4o-mini افتراضياً أو Anthropic؛ تضمينات text-embedding-3-small 1024-d أو Voyage",
+      "input_types": [
+        "كتيبات المصنّعين والمعايير (المدونة غير مرفقة)",
+        "صور رموز الأعطال",
+        "كود PLC (IEC 61131-3 ST)"
+      ],
+      "tasks": [
+        "أسئلة تشخيص مع cite-or-refuse",
+        "حسابات حتمية (مقاطع الكابلات، اختيار VFD، BOM)",
+        "مراجعة كود PLC",
+        "تصدير تصاميم (DXF/QET/AML/ECAD)"
+      ],
+      "architecture": "سؤال → query_classifier بقواعد (regex لرموز الأعطال F0001/E-024/AL 5091 وأرقام البارامترات، مقابل وصف الأعراض) → أوزان مزج BM25/متجه لكل نوع (افتراضي 0.6/0.4؛ لرموز الأعطال وزن المتجه 0.15) مع تطبيع min-max في search pipeline لـ OpenSearch → أرضية صلة مطلقة + \"anchors\" رقمية (أرقام الرموز ذات ≥3 خانات يجب أن تظهر كأرقام كاملة) → cite_or_refuse.evaluate_confidence (بوابة واحدة لكل المسارات؛ الثقة من الاسترجاع لا من النموذج؛ الرفض يتجاوز التوليد؛ عتبة احتياطية 1.0) → توليد منظم (DiagnosisStep: citation_ids إلزامية وغير مكررة، وseverity إلزامية) → localisation (التأليف بلغة المهندس مع إبقاء الرموز والوحدات بأحرف لاتينية) + query_translation (سؤال عربي/عبري → استعلام بحث إنجليزي يحفظ الرموز) → فصل فهرس staging عن production مع طابور تحقق.",
+      "methodology_models": "استرجاع هجين موزون حسب نوع السؤال؛ بوابة حتمية للاستشهاد؛ مخرجات منظمة؛ أدوات حساب حتمية.",
+      "datasets_results": "اختبارات وحدة ومشغّل تقييم؛ لا مقاييس منشورة. الـ README يذكر أن أسئلة التشخيص تُرفض حالياً لأن الفهرس فارغ.",
+      "verified_in_code": "قرأت apps/api/app/ai/guardrails/cite_or_refuse.py، retrieval/hybrid_search.py، retrieval/query_classifier.py، retrieval/relevance.py (anchors_of/is_anchored)، ai/localisation.py، ai/query_translation.py، models/schemas/responses.py. grep: لا قواعد LOTO أو IEC 60204-1 أو NFPA 70E (يوجد فقط ذكر arc-flash في تعليق حول severity).",
+      "strengths": [
+        "أقرب تصميم مفتوح لاستكشاف أعطال المهندس الكهربائي/التحكم مع دعم عربي",
+        "معالجة صريحة للرموز في الاسترجاع والترجمة",
+        "توثيق نمط فشل حقيقي: سؤال عربي عن مصدر التوقف الطارئ لم يصل إلى الفقرة لأن ساق BM25 لا يطابق العربية"
+      ],
+      "weaknesses": [
+        "بلا ترخيص",
+        "بلا مدونة ولا مقاييس",
+        "يعتمد على LLM وتضمينات سحابية"
+      ],
+      "reusable_components": [
+        {
+          "component": "لا شيء قانونياً (بلا ترخيص) — أنماط تصميم فقط",
+          "license": "None",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        1,
+        2,
+        5,
+        6
+      ],
+      "scores": {
+        "relevance": 5,
+        "depth": 5,
+        "reusability": 1,
+        "evidence": 2,
+        "maturity": 4
+      },
+      "sources": [
+        "https://github.com/arabaya3/PanelPilot"
+      ],
+      "weighted_score": 3.6,
+      "url": "https://github.com/arabaya3/PanelPilot",
+      "rank": 7
+    },
+    {
+      "full_name": "uniwire-dev/uniwire",
+      "study_level": "shortlist",
+      "stars": 4,
+      "last_push": "2026-10-24",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_note": "Apache-2.0.",
+      "language_stack": "Python؛ JSON Schema منشور؛ PyPI؛ خادم MCP",
+      "input_types": [
+        "ملف *.uniwire.json (صيغة تأليف)"
+      ],
+      "tasks": [
+        "تمثيل معرفة لتركيبات كهربائية",
+        "اشتقاق رسم أطراف/عقد اتصال",
+        "توليد SLD ومخطط متعدد الخطوط",
+        "قوائم أسلاك/كابلات",
+        "فحص قواعد"
+      ],
+      "architecture": "(حسب الـ README) شجرة تغذية كعمود فقري + روابط (تحويل، ربط قضبان، تأريض، تحكم، تعشيق interlocks، فصل trips، قياسات، نواقل بيانات) → اشتقاق آلي لرسم terminal/connectivity-node مع تعيينات إلى CIM وIFC وIEC 61850 SCL؛ 53 نوع عقدة (قواطع، RCD، كونتاكتورات، بادئات محركات، صفوف أطراف، وحدات PLC...)؛ ملفات قواعد (iec60364، nfc15100...)؛ قواعد ترقيم الأسلاك؛ صادرات CSV؛ أدوات LLM (describe بمعرّفات ثابتة، patch، MCP).",
+      "methodology_models": "نموذج بيانات typed بحقول ذات وحدات؛ توليد حتمي لـ SVG/PDF.",
+      "datasets_results": "لا مقاييس.",
+      "verified_in_code": "الـ README فقط (لم يُنسخ).",
+      "strengths": [
+        "مخطط صريح للأجهزة والأطراف والأسلاك مع تعيين إلى CIM/SCL",
+        "واجهات موجهة للنماذج اللغوية بمعرّفات ثابتة"
+      ],
+      "weaknesses": [
+        "صيغة تأليف (توزيع جهد منخفض) لا تحليل لمخططات قائمة",
+        "حديث؛ تحقق على مستوى الـ README فقط"
+      ],
+      "reusable_components": [
+        {
+          "component": "JSON Schema + نموذج البيانات",
+          "license": "Apache-2.0",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 4,
+        "depth": 4,
+        "reusability": 5,
+        "evidence": 1,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/uniwire-dev/uniwire"
+      ],
+      "weighted_score": 3.6,
+      "url": "https://github.com/uniwire-dev/uniwire",
+      "rank": 8
+    },
+    {
+      "full_name": "dimitri009/STA",
+      "study_level": "deep",
+      "stars": 3,
+      "last_push": "2026-09-07",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT؛ أوزان RF-DETR على HF بترخيص Apache-2.0.",
+      "language_stack": "Python 3.10؛ PaddleOCR 3.4 (PP-OCRv5)؛ RF-DETR 1.4؛ SAHI 0.11؛ SciPy؛ OpenCV",
+      "input_types": [
+        "صور P&ID ممسوحة"
+      ],
+      "tasks": [
+        "OCR مقسّم وتوحيده",
+        "كشف رموز",
+        "ربط الرمز بالتاغ"
+      ],
+      "architecture": "قص المخطط → tiles 1280×1280 بتداخل 640 → PP-OCRv5 لكل tile → إزالة التكرار بـ IoU والاحتواء (مكونات متصلة) → دمج سطور متجاورة بالرسم (مثال \"FIT\"+\"101\" → \"FIT 101\") → كشف رموز RF-DETR مع SAHI (1280، تداخل 20%) → مصفوفة كلفة (مسافة، محاذاة أفقية، مكافأة احتواء −1000، مكافأة نمط التاغ −200، تفضيل النصوص متعددة الأحرف) → خوارزمية Hungarian (scipy linear_sum_assignment) مع سقف كلفة → Excel/JSON.",
+      "methodology_models": "PP-OCRv5، RF-DETR، SAHI، مطابقة ثنائية مثلى (Hungarian).",
+      "datasets_results": "ورقة DocEng 2026 (حسب نتيجة البحث؛ لم أقرأها)؛ بطاقة النموذج على HF تذكر دقة/استدعاء عاليين على 32 فئة (لم أتحقق من الأرقام).",
+      "verified_in_code": "قرأت PID_pipeline_.py: `TAG_REGEX = ^[A-Z]{1,5}-?\\d{1,5}[A-Z]?$`، دوال dedup/merge، _association_cost، linear_sum_assignment، معاملات tiles.",
+      "strengths": [
+        "ربط عالمي أمثل بدل الأقرب جشعياً",
+        "تحقق من نمط التاغ داخل دالة الكلفة",
+        "كود قصير مقروء"
+      ],
+      "weaknesses": [
+        "تاغات ISA (P&ID) لا IEC 81346",
+        "ملف واحد 829 سطراً",
+        "لا كشف خطوط ولا اتصال"
+      ],
+      "reusable_components": [
+        {
+          "component": "OCR tiling + dedup + merge، وربط Hungarian",
+          "license": "MIT",
+          "dependencies": "paddleocr (Apache-2.0), rfdetr (Apache-2.0), sahi (MIT), scipy"
+        }
+      ],
+      "needs_covered": [
+        1,
+        2,
+        5
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 4,
+        "reusability": 4,
+        "evidence": 3,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/dimitri009/STA",
+        "https://huggingface.co/dimtri009/rfdetr-pid-detector"
+      ],
+      "weighted_score": 3.4,
+      "url": "https://github.com/dimitri009/STA",
+      "rank": 9
+    },
+    {
+      "full_name": "rakexhs/fixit-lens",
+      "study_level": "deep",
+      "stars": 1,
+      "last_push": "2026-07-26",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python (FastAPI)؛ BM25 + TF-IDF؛ Gemini/OpenAI مع mock حتمي؛ SwiftUI وExpo",
+      "input_types": [
+        "صور (ملصقات، رموز أخطاء، أضواء تحذير)",
+        "كتيبات بصيغة markdown"
+      ],
+      "tasks": [
+        "استخراج بصري",
+        "استرجاع هجين",
+        "تصنيف خطر قبل التوليد",
+        "خطوات بمراجع"
+      ],
+      "architecture": "بوابة جودة الصورة → استخراج بصري سحابي بمخطط JSON (OCR، فئة الجهاز، الماركة/الطراز، رموز الأخطاء) مع failover → تطبيع → استرجاع BM25 + TF-IDF → مصنّف سلامة قاعدي مستقل عن LLM (safety_rules.yaml: 12 فئة محظورة منها mains wiring وexposed wire وrepeated breaker trips، وكلمات خطر عالٍ/متوسط، 4 مستويات) → توليد → citation_validator يُبقي فقط الخطوات التي لها citation_ids غير فارغة وكلها ضمن معرّفات القطع المسترجعة، ويحسب نسبة التغطية.",
+      "methodology_models": "قواعد كلمات مفتاحية للسلامة؛ تحقق بنيوي من الاستشهاد.",
+      "datasets_results": "مجموعة تقييم: 32 حالة استرجاع، 27 حالة سلامة، 6 حالات OCR (حسب الـ README؛ لم أشغّلها).",
+      "verified_in_code": "قرأت backend/app/rag/citation_validator.py وbackend/app/safety/classifier.py وsafety_rules.yaml.",
+      "strengths": [
+        "ثابت مفروض في الكود: لا استشهاد + لا تصنيف سلامة = لا تعليمات إصلاح",
+        "فئات كهربائية محظورة صريحة"
+      ],
+      "weaknesses": [
+        "مجال الأجهزة المنزلية",
+        "مطابقة كلمات إنجليزية فقط",
+        "لا تضمينات كثيفة"
+      ],
+      "reusable_components": [
+        {
+          "component": "citation_validator.py + safety classifier/policy",
+          "license": "MIT",
+          "dependencies": "pyyaml"
+        }
+      ],
+      "needs_covered": [
+        1,
+        5,
+        6
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 4,
+        "reusability": 5,
+        "evidence": 3,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/rakexhs/fixit-lens"
+      ],
+      "weighted_score": 3.3,
+      "url": "https://github.com/rakexhs/fixit-lens",
+      "rank": 10
+    },
+    {
+      "full_name": "qelectrotech/qelectrotech-source-mirror",
+      "study_level": "shortlist",
+      "stars": 590,
+      "last_push": "2026-10-24",
+      "archived": false,
+      "license": "GPL-2.0",
+      "license_note": "GPL-2.0 (copyleft).",
+      "language_stack": "C++ / Qt",
+      "input_types": [
+        "مشاريع .qet بصيغة XML (folios، elements، conductors)"
+      ],
+      "tasks": [
+        "رسم مخططات كهربائية مفتوح المصدر",
+        "مراجع متقاطعة master/slave",
+        "ترقيم آلي للموصلات",
+        "جداول أطراف",
+        "تصدير قوائم أجزاء CSV"
+      ],
+      "architecture": "(حسب الـ README) محرر مخططات بصيغة XML مفتوحة للمشاريع والعناصر وكتل العنوان؛ مراجع متقاطعة تتحدث آلياً؛ أنماط ترقيم للموصلات والرموز والصفحات؛ تصدير SVG/PNG.",
+      "methodology_models": "غير منطبق (أداة CAD).",
+      "datasets_results": "غير منطبق.",
+      "verified_in_code": "الـ README فقط. توجد أدوات مجتمعية تقرأ .qet (acolomb/qet_terminal_tables، plc-user/QET_Klemmenplan) وPanelPilot يصدّر إلى QET.",
+      "strengths": [
+        "صيغة XML مفتوحة لمخططات كهربائية بمراجع متقاطعة — مصدر محتمل لمخططات مقروءة آلياً",
+        "مجتمع كبير ونشط"
+      ],
+      "weaknesses": [
+        "GPL-2.0",
+        "ليست أداة تحليل",
+        "تفاصيل الصيغة غير موثقة في الـ README"
+      ],
+      "reusable_components": [
+        {
+          "component": "صيغة .qet XML (مرجع)",
+          "license": "GPL-2.0",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3
+      ],
+      "scores": {
+        "relevance": 4,
+        "depth": 3,
+        "reusability": 3,
+        "evidence": 1,
+        "maturity": 5
+      },
+      "sources": [
+        "https://github.com/qelectrotech/qelectrotech-source-mirror"
+      ],
+      "weighted_score": 3.3,
+      "url": "https://github.com/qelectrotech/qelectrotech-source-mirror",
+      "rank": 11
+    },
+    {
+      "full_name": "hyogrin/electronic-single-line-diagram-detection",
+      "study_level": "shortlist",
+      "stars": 5,
+      "last_push": "2026-03-11",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python؛ PyMuPDF؛ SAM 2.1 (خادم FastAPI)؛ Azure OpenAI Vision",
+      "input_types": [
+        "PDF متجهي لمخططات أحادية الخط (SLD)"
+      ],
+      "tasks": [
+        "كشف مناطق اللوحات (panels)"
+      ],
+      "architecture": "الخطوة 1: VLM يحدد منطقة المخطط (دون الملاحظات/كتلة العنوان) ويستخرج نص NOTE → الخطوة 2: تحويل PDF→SVG بـ PyMuPDF، استخراج قطع أفقية/رأسية من الطبقة 3، تجميع القطع الخطية (dash-dot/line بتسامح ±25px، dotted بقمم histogram ±14px) إلى شبكة، بذور من النص المتجهي (أسماء لوحات متوقعة) مع fallback إلى VLM، ثم البحث عن الحدود. أربع استراتيجيات: قاعدية، SAM+flood fill، VLM فقط، وهجينة بدمج درجات الثقة.",
+      "methodology_models": "هندسة متجهية + SAM 2.1 + VLM.",
+      "datasets_results": "لا مقاييس.",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "مقارنة صريحة لأربع استراتيجيات على PDF متجهي",
+        "استغلال طبقات المتجهات"
+      ],
+      "weaknesses": [
+        "يتطلب ملف أسماء لوحات متوقعة لكل PDF",
+        "يعتمد على تسمية طبقة محددة",
+        "بلا مقاييس"
+      ],
+      "reusable_components": [
+        {
+          "component": "استخراج قطع SVG وتجميعها",
+          "license": "MIT",
+          "dependencies": "pymupdf (AGPL-3.0)"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3
+      ],
+      "scores": {
+        "relevance": 4,
+        "depth": 4,
+        "reusability": 4,
+        "evidence": 1,
+        "maturity": 2
+      },
+      "sources": [
+        "https://github.com/hyogrin/electronic-single-line-diagram-detection"
+      ],
+      "weighted_score": 3.25,
+      "url": "https://github.com/hyogrin/electronic-single-line-diagram-detection",
+      "rank": 12
+    },
+    {
+      "full_name": "dzakybd/pid-parser",
+      "study_level": "shortlist",
+      "stars": 7,
+      "last_push": "2026-10-15",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python؛ Pillow/NumPy/SciPy؛ Agent skill + LangChain Deep Agents",
+      "input_types": [
+        "صور P&ID (PID2Graph)"
+      ],
+      "tasks": [
+        "كشف رموز بـ VLM على tiles",
+        "اتصال بالرؤية التقليدية (thresholding + CCL)",
+        "تصدير CSV/SQL/GraphML/Cypher"
+      ],
+      "architecture": "tiles → VLM يعطي الرموز وصناديقها → connect.py (عتبة + connected-component labeling) للاتصال → validate.py (قواعد: معرّفات، أنواع، حواف معلقة، صمامات معزولة) → export.py.",
+      "methodology_models": "VLM (Claude Sonnet 5.5 / gpt-6-luna حسب الـ README) + CCL.",
+      "datasets_results": "ورقة واحدة كثيفة dpid-269 (190 رمزاً، 732 زوجاً): صورة كاملة بـ VLM — F1 الرموز 0.84 وF1 الاتصال 0.29؛ tiles + connect.py — 0.99 و0.96؛ مع صناديق الحقيقة connect.py وحده 0.98؛ قراءة الأنابيب بالوكيل ≤0.22. Tiles مقابل صورة كاملة على 3 أوراق: 0.96 مقابل 0.60–0.86 لـ F1 الرموز.",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "ablation دقيق يبيّن أين يفشل VLM (الاتصال)",
+        "تصدير مباشر إلى قواعد رسم بياني"
+      ],
+      "weaknesses": [
+        "تقييم على ورقة واحدة",
+        "يفقد خطوط الإشارة المتقطعة",
+        "يتطلب صناديق دقيقة وخطوطاً نظيفة"
+      ],
+      "reusable_components": [
+        {
+          "component": "connect.py / validate.py / export.py",
+          "license": "MIT",
+          "dependencies": "numpy, scipy, pillow"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 3,
+        "reusability": 4,
+        "evidence": 3,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/dzakybd/pid-parser"
+      ],
+      "weighted_score": 3.2,
+      "url": "https://github.com/dzakybd/pid-parser",
+      "rank": 13
+    },
+    {
+      "full_name": "DynMEP/MEPdetect",
+      "study_level": "deep",
+      "stars": 1,
+      "last_push": "2026-08-03",
+      "archived": false,
+      "license": "AGPL-3.0",
+      "license_note": "**AGPL-3.0** (copyleft شبكي)؛ ويستخدم Ultralytics YOLO11 (AGPL-3.0).",
+      "language_stack": "Python (FastAPI)؛ PyMuPDF؛ NumPy؛ OpenCV/pytesseract؛ Ultralytics YOLO11؛ docker compose (6 خدمات)",
+      "input_types": [
+        "PDF متجهي",
+        "PDF/صور نقطية",
+        "DXF"
+      ],
+      "tasks": [
+        "كشف رموز كهربائية",
+        "تتبع الدوائر وبناء netlist",
+        "دمج الدوائر عبر الصفحات",
+        "مطابقة/تسوية"
+      ],
+      "architecture": "file_processor → detection_engine (YOLO11) → pdf_geometry: page.get_drawings() + page.get_text('words')، تحويل الدوران إلى فضاء الصورة، تجميع الخطوط حسب سماكة القلم (lineweight) لعزل أسلاك الفروع، كشف رؤوس أسهم homerun هندسياً، عدّ علامات الموصلات، regex لتاغ الدائرة مع استبعاد مراجع الصفحات (`^[EMPAS]\\d{3,4}-\\d{1,2}$`) → segment_graph: UnionFind على القطع؛ وصل عند تشارك النهايات أو انتهاء قطعة على داخل أخرى (tap) بنفس التسامح؛ فهرس شبكي مكاني → مسار raster بديل (ثنائية، حجب صناديق الرموز، تنحيف، عقد التقاطع، OCR للتاغات حول homerun) → circuit_tracer.merge_cross_sheet_circuits (نفس تاغ الدائرة في صفحة أخرى = نفس الدائرة) → reconcile (MATCH/MISMATCH/MISSING/INFO) → CSV/Excel/DXF/PDF.",
+      "methodology_models": "YOLO11 للرموز؛ هندسة متجهية حتمية؛ Union-Find؛ Tesseract.",
+      "datasets_results": "اختبارات وحدة (test_vector_tracing، test_cross_sheet، test_reconcile، ...)؛ لا مقاييس دقة.",
+      "verified_in_code": "قرأت mepdetect-backend/pdf_geometry.py وsegment_graph.py (docstrings والدوال)، وcircuit_tracer.merge_cross_sheet_circuits، وtests/test_cross_sheet.py.",
+      "strengths": [
+        "تصميم \"المتجه أولاً\" مع تعليل صريح (التحويل إلى بكسل يفقد الاتصال)",
+        "ربط عبر الصفحات بالتاغ",
+        "تقرير تسوية"
+      ],
+      "weaknesses": [
+        "AGPL",
+        "مخططات المباني (homeruns للوحات) لا مخططات تحكم صناعية",
+        "بلا مقاييس",
+        "مستودع موجّه لخدمة تجارية (auth، billing)"
+      ],
+      "reusable_components": [
+        {
+          "component": "segment_graph.py + pdf_geometry.py",
+          "license": "AGPL-3.0",
+          "dependencies": "pymupdf (AGPL-3.0), numpy"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 4,
+        "depth": 4,
+        "reusability": 2,
+        "evidence": 2,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/DynMEP/MEPdetect"
+      ],
+      "weighted_score": 3.15,
+      "url": "https://github.com/DynMEP/MEPdetect",
+      "rank": 14
+    },
+    {
+      "full_name": "JJunjie97/CircuitDiagOCR",
+      "study_level": "deep",
+      "stars": 0,
+      "last_push": "2026-08-21",
+      "archived": false,
+      "license": null,
+      "license_note": "**لا يوجد ترخيص** — الـ README يصرح بأن الرؤية العامة لا تمنح حق النسخ أو التعديل أو إعادة التوزيع.",
+      "language_stack": "Python 3.11؛ uv؛ pywebview؛ RapidOCR (اختياري)",
+      "input_types": [
+        "صور مخططات مولّدة من برامج EDA (KiCad/Altium/EasyEDA/OrCAD)",
+        "wire mask + pin terminals (JSON)"
+      ],
+      "tasks": [
+        "استعادة طوبولوجيا حتمية",
+        "تمييز junction عن crossing",
+        "Pin → Physical Net → Logical Net مع أدلة بكسل"
+      ],
+      "architecture": "wire mask + pins → تنظيف محافظ + Zhang–Suen skeleton + حقل مسافة → تجميع بكسلات الدرجة ≥3 إلى branch sites بالمسافة الجيوديسية → تتبع 3/4 أذرع، مماس PCA وعرض الخط → الثلاثي: وصل؛ الرباعي: كشف نقطة الوصل (انتفاخ العرض/حبر زائد) أو تزويج المماسات الأكثر استقامة → port groups → مكونات متصلة → شبكات فيزيائية/منطقية + مسارات دليل؛ ستة مخرجات قابلة للتدقيق ومخططات JSON؛ مقاييس: exact pin partition، pairwise P/R/F1، split/merge.",
+      "methodology_models": "هندسة صورة حتمية؛ لا تعلم عميق في النواة.",
+      "datasets_results": "(حسب docs/DATASET_COMPARISON.md، تشغيل محلي لم أعده) اصطناعي junction_smoke_v1: 60/60 مقابل 36/60 لـ CCL البسيط؛ junction_mesh_v1: 12/12 مقابل 3/12. بيانات حقيقية: صورة CGHD واحدة 0/1 (CCL 1/1)؛ مجموعة SINA الفرعية 13 صورة: 9/13 (69.23%) مقابل 11/13 (84.62%) لـ CCL.",
+      "verified_in_code": "قائمة الوحدات (site_graph.py، reconstruct.py، evaluation.py، junction_dataset.py)، والـ README، وdocs/DATASET_COMPARISON.md وdocs/UPSTREAM_PROJECTS.md.",
+      "strengths": [
+        "منطق صريح للتقاطع/الوصل مع أدلة",
+        "إبلاغ صادق بنتائج سلبية على بيانات حقيقية",
+        "تدقيق تراخيص SINA وPCBnet وNetlistify"
+      ],
+      "weaknesses": [
+        "بلا ترخيص",
+        "أداؤه على البيانات الحقيقية أقل من CCL البسيط",
+        "صور EDA فقط"
+      ],
+      "reusable_components": [
+        {
+          "component": "لا شيء قانونياً — منهجية ومقاييس فقط",
+          "license": "None",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        3,
+        5
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 5,
+        "reusability": 1,
+        "evidence": 4,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/JJunjie97/CircuitDiagOCR"
+      ],
+      "weighted_score": 3.15,
+      "url": "https://github.com/JJunjie97/CircuitDiagOCR",
+      "rank": 15
+    },
+    {
+      "full_name": "OlivierLAVAUD/industrial-agent-harness",
+      "study_level": "shortlist",
+      "stars": 0,
+      "last_push": "2026-10-23",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_note": "Apache-2.0.",
+      "language_stack": "Python؛ LangGraph؛ Neo4j؛ Streamlit",
+      "input_types": [
+        "رسم معرفة Neo4j (معدات، أعراض، تاريخ، إجراءات)"
+      ],
+      "tasks": [
+        "GraphRAG متعدد القفزات",
+        "بوابة موافقة بشرية",
+        "سجل تدقيق مقاوم للعبث"
+      ],
+      "architecture": "وكيل LangGraph → GraphRAG (معدة → عرض → تاريخ → إجراء) → اقتراح إجراء → الـ harness يعترض ويطبق policy.yaml (`require_approval`) ويحجب التنفيذ حتى موافقة بشرية → سجل JSONL بـ HMAC-SHA256 لكل حدث مع تسلسل prev_hash.",
+      "methodology_models": "human-in-the-loop إلزامي؛ تدقيق تشفيري.",
+      "datasets_results": "لا مقاييس؛ سيناريو مرجعي واحد (P-204 اهتزاز).",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "بوابة موافقة حاجبة بدل توصية",
+        "سجل تدقيق قابل للتحقق وربط بمواد AI Act"
+      ],
+      "weaknesses": [
+        "إثبات مفهوم؛ README بالفرنسية؛ سيناريو واحد"
+      ],
+      "reusable_components": [
+        {
+          "component": "harness/audit.py + policy",
+          "license": "Apache-2.0",
+          "dependencies": "langgraph, neo4j"
+        }
+      ],
+      "needs_covered": [
+        5,
+        6
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 4,
+        "reusability": 4,
+        "evidence": 2,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/OlivierLAVAUD/industrial-agent-harness"
+      ],
+      "weighted_score": 2.95,
+      "url": "https://github.com/OlivierLAVAUD/industrial-agent-harness",
+      "rank": 16
+    },
+    {
+      "full_name": "mehrabfajar/FaultTrace",
+      "study_level": "shortlist",
+      "stars": 0,
+      "last_push": "2026-09-03",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python",
+      "input_types": [
+        "إنذار HMI",
+        "قواعد اعتماد PLC",
+        "إشارات حالية",
+        "أحداث حديثة (آلة اصطناعية)"
+      ],
+      "tasks": [
+        "ترتيب الأسباب الجذرية",
+        "تحديد شرط PLC الحاجب",
+        "اقتراح الفحص التالي"
+      ],
+      "architecture": "عرض HMI + اعتماديات PLC + إشارات + أحداث اختيارية → تقييم أدلة بأوزان ثابتة (توافق الإنذار 0.40، تطابق الاعتماد 0.35، الإشارات 0.25؛ ومع الزمن 0.35/0.30/0.25/0.10) → فرضيات مرتبة → الشرط الحاجب → شرح → الفحص التالي.",
+      "methodology_models": "تقييم قاعدي شفاف بأوزان غير متعلمة.",
+      "datasets_results": "آلة CNC اصطناعية؛ مقارنة ثلاثة إعدادات (HMI فقط، منطق، منطق+زمن)؛ لا أرقام منشورة في الـ README المقروء.",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "يربط الإنذار بمنطق PLC الحاجب وبالفحص التالي"
+      ],
+      "weaknesses": [
+        "اصطناعي بالكامل؛ أوزان ثابتة"
+      ],
+      "reusable_components": [
+        {
+          "component": "نموذج تقييم الأدلة",
+          "license": "MIT",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        1,
+        3,
+        4
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 3,
+        "reusability": 4,
+        "evidence": 2,
+        "maturity": 2
+      },
+      "sources": [
+        "https://github.com/mehrabfajar/FaultTrace"
+      ],
+      "weighted_score": 2.9,
+      "url": "https://github.com/mehrabfajar/FaultTrace",
+      "rank": 17
+    },
+    {
+      "full_name": "process-intelligence-research/pyDEXPI",
+      "study_level": "shortlist",
+      "stars": 237,
+      "last_push": "2026-04-17",
+      "archived": false,
+      "license": "AGPL-3.0",
+      "license_note": "**AGPL-3.0**.",
+      "language_stack": "Python؛ Pydantic؛ NetworkX",
+      "input_types": [
+        "DEXPI Proteus XML"
+      ],
+      "tasks": [
+        "نموذج بيانات DEXPI",
+        "تحويل إلى رسم NetworkX",
+        "تصدير SVG",
+        "توليد اصطناعي"
+      ],
+      "architecture": "(حسب الـ README) نموذج DEXPI 1.3 كفئات Pydantic → محمّل Proteus XML → toolkit للتحليل → محلل إلى NetworkX → SVG.",
+      "methodology_models": "غير منطبق (مكتبة نموذج بيانات).",
+      "datasets_results": "ورقة مرتبطة (Goldstein et al.)؛ لا مقاييس.",
+      "verified_in_code": "الـ README فقط؛ وDiagEx يذكر استبداله بسبب AGPL.",
+      "strengths": [
+        "تمثيل رسم بياني لمعيار تبادل صناعي"
+      ],
+      "weaknesses": [
+        "AGPL؛ مجال P&ID"
+      ],
+      "reusable_components": [
+        {
+          "component": "DEXPI model + graph parser",
+          "license": "AGPL-3.0",
+          "dependencies": "pydantic, networkx"
+        }
+      ],
+      "needs_covered": [
+        3
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 4,
+        "reusability": 2,
+        "evidence": 3,
+        "maturity": 4
+      },
+      "sources": [
+        "https://github.com/process-intelligence-research/pyDEXPI"
+      ],
+      "weighted_score": 2.85,
+      "url": "https://github.com/process-intelligence-research/pyDEXPI",
+      "rank": 18
+    },
+    {
+      "full_name": "deepkick/pid2graph-vlm-eval",
+      "study_level": "shortlist",
+      "stars": 3,
+      "last_push": "2026-04-11",
+      "archived": false,
+      "license": null,
+      "license_note": "لا ملف LICENSE في المستودع؛ ترويسة الـ README (لـ HF Space) تذكر `license: mit` — غير مؤكد كترخيص للمستودع.",
+      "language_stack": "Python؛ Gradio؛ Claude API (messages.parse + Pydantic)",
+      "input_types": [
+        "صور P&ID (PID2Graph OPEN100)"
+      ],
+      "tasks": [
+        "تقييم استخراج رسم بياني بـ VLM بلا تدريب"
+      ],
+      "architecture": "VLM بمخرجات منظمة (Pydantic GraphOut، temperature=0) → اختياري tiling 2×2 مع إزالة تكرار وseam filter → مقارنة مع graphml الحقيقة بعد ترشيح الرموز الدلالية وطيّ الحواف عبر البدائيات.",
+      "methodology_models": "Claude Opus 4.6 (حسب الـ README).",
+      "datasets_results": "12 مخطط OPEN100: العقد single-shot P 0.941 / R 0.699 / F1 0.802؛ tiled + seam filter F1 0.884؛ الحواف single-shot F1 0.030؛ استدعاء الصمامات 0.50.",
+      "verified_in_code": "الـ README وقائمة الملفات (18 ملفاً).",
+      "strengths": [
+        "قياس كمي على بيانات حقيقية مفتوحة"
+      ],
+      "weaknesses": [
+        "ترخيص غير مؤكد",
+        "12 مخططاً فقط"
+      ],
+      "reusable_components": [
+        {
+          "component": "سكربت التقييم",
+          "license": "غير مؤكد",
+          "dependencies": "anthropic, networkx"
+        }
+      ],
+      "needs_covered": [
+        2,
+        3
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 3,
+        "reusability": 2,
+        "evidence": 4,
+        "maturity": 2
+      },
+      "sources": [
+        "https://github.com/deepkick/pid2graph-vlm-eval"
+      ],
+      "weighted_score": 2.8,
+      "url": "https://github.com/deepkick/pid2graph-vlm-eval",
+      "rank": 19
+    },
+    {
+      "full_name": "ScorpioPxg/IndustryGraphRAG",
+      "study_level": "deep",
+      "stars": 5,
+      "last_push": "2026-08-26",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python (FastAPI)؛ Vue 3؛ Neo4j 5؛ langextract؛ rapidfuzz؛ jieba؛ OpenAI-compatible LLM",
+      "input_types": [
+        "22 مستند DOCX صناعي اصطناعي (كتيبات، تقارير أعطال، سجلات صيانة، معايير) بالصينية"
+      ],
+      "tasks": [
+        "استخراج رسم معرفة",
+        "دمج/محاذاة الكيانات",
+        "استرجاع مسارات سببية",
+        "إعادة ترتيب وشرح بـ LLM"
+      ],
+      "architecture": "استخراج بـ langextract وفق schema (7 أنواع: Equipment، Component، Symptom، Cause، Solution، Threshold، Document؛ وعلاقات منها HAS_COMPONENT، HAS_SYMPTOM، CAUSED_BY، SOLVED_BY، OCCURS_ON، APPLIES_TO، RELATED_TO، MENTIONED_IN) → دمج (rapidfuzz) → استيراد Neo4j → تقطيع وصف العرض بـ jieba → مطابقة CONTAINS → Cypher: Equipment→Component→Symptom→Cause→Solution مع RELATED_TO*1..2 للأسباب الجذرية، وfallback عبر OCCURS_ON → LLM يعيد ترتيب المسارات ويولد (سبب جذري، توصية، مستوى ثقة، استدلال، وقاية).",
+      "methodology_models": "GraphRAG بمسارات سببية مستخرجة؛ تقييم keyword hit وMRR مقابل RAG نصي.",
+      "datasets_results": "مدونة اصطناعية مرفقة؛ evaluation/evaluate.py يحسب MRR وإصابات الكلمات؛ لا أرقام في الجزء المقروء من الـ README.",
+      "verified_in_code": "قرأت retrieval/causal_chain.py (استعلامات Cypher)، extraction/prompts.py (قيود العلاقات)، requirements.txt، evaluation/evaluate.py.",
+      "strengths": [
+        "مسارات عرض→سبب→حل تُعرض كأدلة",
+        "استخراج مقيد بـ schema"
+      ],
+      "weaknesses": [
+        "مدونة اصطناعية",
+        "تقطيع صيني فقط (jieba)",
+        "مطابقة CONTAINS حرفية",
+        "الـ README نفسه يصرح بأن المسارات علاقات مستخرجة لا سببية مُثبتة إحصائياً"
+      ],
+      "reusable_components": [
+        {
+          "component": "schema + causal_chain Cypher",
+          "license": "MIT",
+          "dependencies": "neo4j, langextract, jieba"
+        }
+      ],
+      "needs_covered": [
+        4,
+        5,
+        7
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 3,
+        "reusability": 4,
+        "evidence": 2,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/ScorpioPxg/IndustryGraphRAG"
+      ],
+      "weighted_score": 2.75,
+      "url": "https://github.com/ScorpioPxg/IndustryGraphRAG",
+      "rank": 20
+    },
+    {
+      "full_name": "sad123-yx/PIDCon",
+      "study_level": "reserve",
+      "stars": 13,
+      "last_push": "2025-04-25",
+      "archived": false,
+      "license": null,
+      "license_note": "**لا يوجد ترخيص**؛ البيانات على Baidu Disk.",
+      "language_stack": "Python؛ GCNConv (PyTorch Geometric حسب الـ README)",
+      "input_types": [
+        "صور P&ID"
+      ],
+      "tasks": [
+        "تعرف علاقات الاتصال بـ GNN"
+      ],
+      "architecture": "رسم مرشح بين المكونات/القطع → GCN بطبقات قابلة للتغيير، ومسافة midpoint أو box.",
+      "methodology_models": "Graph Neural Network.",
+      "datasets_results": "PIDCon: 600 صورة، 82 فئة، 7,212 زوج اتصال. GNN: Accuracy 0.989، Precision 0.938، Recall 0.989، F1 0.963، GED 0.017، NCA 0.975؛ position-based F1 0.933.",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "مقاييس اتصال متعددة (GED، NCA)"
+      ],
+      "weaknesses": [
+        "بلا ترخيص؛ مجموعة البيانات جزئية وعلى Baidu"
+      ],
+      "reusable_components": [],
+      "needs_covered": [
+        3
+      ],
+      "scores": {
+        "relevance": 3,
+        "depth": 4,
+        "reusability": 1,
+        "evidence": 4,
+        "maturity": 2
+      },
+      "sources": [
+        "https://github.com/sad123-yx/PIDCon"
+      ],
+      "weighted_score": 2.8,
+      "url": "https://github.com/sad123-yx/PIDCon",
+      "rank": null
+    },
+    {
+      "full_name": "IPVS-AS/BDSN-FDC",
+      "study_level": "reserve",
+      "stars": 1,
+      "last_push": "2025-11-09",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python؛ pgmpy؛ pysmile/GeNIe (xdsl)",
+      "input_types": [
+        "بيانات FMECA وحالات أعطال نموذجية"
+      ],
+      "tasks": [
+        "شبكة بايزية لتشخيص الأعطال وتصحيحها"
+      ],
+      "architecture": "أنطولوجيا → شبكة بايزية مولدة من بيانات FMECA (تحديد بارامترات heuristic) → استدلال؛ خوارزمية PEMFP.",
+      "methodology_models": "Bayesian networks.",
+      "datasets_results": "تحليل زمن الاستدلال (inference_time_evaluation.py).",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "ربط FMECA بشبكة بايزية"
+      ],
+      "weaknesses": [
+        "تصنيع عام لا كهرباء"
+      ],
+      "reusable_components": [
+        {
+          "component": "bdsn_pgmpy_bayesian_network.py",
+          "license": "MIT",
+          "dependencies": "pgmpy"
+        }
+      ],
+      "needs_covered": [
+        4
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 3,
+        "reusability": 4,
+        "evidence": 3,
+        "maturity": 2
+      },
+      "sources": [
+        "https://github.com/IPVS-AS/BDSN-FDC"
+      ],
+      "weighted_score": 2.75,
+      "url": "https://github.com/IPVS-AS/BDSN-FDC",
+      "rank": null
+    },
+    {
+      "full_name": "andrefdre/EplanInOut2xlsx",
+      "study_level": "reserve",
+      "stars": 0,
+      "last_push": "2026-05-15",
+      "archived": false,
+      "license": "GPL-3.0",
+      "license_note": "GPL-3.0.",
+      "language_stack": "Python",
+      "input_types": [
+        "PDF مولَّد من EPLAN"
+      ],
+      "tasks": [
+        "استخراج مداخل/مخارج PLC إلى Excel (لـ TIA Portal)"
+      ],
+      "architecture": "غير موثقة؛ قسم About في الـ README منسوخ من مشروع آخر (سحابة نقاط).",
+      "methodology_models": "غير معروف.",
+      "datasets_results": "لا.",
+      "verified_in_code": "الـ README فقط (جودة منخفضة).",
+      "strengths": [
+        "هدف مطابق لاحتياج I/O"
+      ],
+      "weaknesses": [
+        "توثيق غير موثوق؛ أُنشئ ودُفع في اليوم نفسه"
+      ],
+      "reusable_components": [],
+      "needs_covered": [
+        3
+      ],
+      "scores": {
+        "relevance": 5,
+        "depth": 1,
+        "reusability": 3,
+        "evidence": 1,
+        "maturity": 1
+      },
+      "sources": [
+        "https://github.com/andrefdre/EplanInOut2xlsx"
+      ],
+      "weighted_score": 2.6,
+      "url": "https://github.com/andrefdre/EplanInOut2xlsx",
+      "rank": null
+    },
+    {
+      "full_name": "wanghaoyu6661/Hand-Drawn-Circuit-Diagram-Recognition",
+      "study_level": "reserve",
+      "stars": 3,
+      "last_push": "2026-03-08",
+      "archived": false,
+      "license": null,
+      "license_note": "**لا يوجد ترخيص في الجذر** (\"for research purposes\")؛ أوزان HF why0722/hcd-circuit-weights بترخيص Apache-2.0.",
+      "language_stack": "Python؛ YOLOv10؛ PARSeq؛ HAWP؛ ViTPose (MMPose)",
+      "input_types": [
+        "صور دوائر مرسومة يدوياً"
+      ],
+      "tasks": [
+        "كشف مكونات",
+        "OCR",
+        "كشف خطوط wireframe",
+        "منافذ المكونات",
+        "SPICE netlist"
+      ],
+      "architecture": "9 مراحل في scripts/run_all.sh: YOLOv10 → PARSeq → إخفاء مناطق المكونات → HAWP → merge_points → remove_components → build_connections (بحث جيران مع حدود درجة للعقد/الأطراف وزاوية فصل دنيا) → build_final_json → build_spice_netlists.",
+      "methodology_models": "YOLOv10، PARSeq، HAWP، ViTPose للمنافذ.",
+      "datasets_results": "5 أمثلة مع حقيقة أرضية وسكربت تقييم.",
+      "verified_in_code": "قرأت run_all.sh وbuild_connections.py (المعاملات).",
+      "strengths": [
+        "يدمج كشف المنافذ (keypoints) مع wireframe parsing"
+      ],
+      "weaknesses": [
+        "بلا ترخيص؛ دوائر إلكترونية يدوية"
+      ],
+      "reusable_components": [],
+      "needs_covered": [
+        3
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 4,
+        "reusability": 1,
+        "evidence": 3,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/wanghaoyu6661/Hand-Drawn-Circuit-Diagram-Recognition",
+        "https://huggingface.co/why0722/hcd-circuit-weights"
+      ],
+      "weighted_score": 2.5,
+      "url": "https://github.com/wanghaoyu6661/Hand-Drawn-Circuit-Diagram-Recognition",
+      "rank": null
+    },
+    {
+      "full_name": "crown-sports/netops-fault-lab",
+      "study_level": "reserve",
+      "stars": 1,
+      "last_push": "2026-10-23",
+      "archived": false,
+      "license": "MIT",
+      "license_note": "MIT.",
+      "language_stack": "Python (مكتبة قياسية فقط للاستدلال)",
+      "input_types": [
+        "طوبولوجيا شبكة ونتائج probes (JSON)"
+      ],
+      "tasks": [
+        "ترتيب الروابط المشتبه بها",
+        "اقتراح القياس التالي"
+      ],
+      "architecture": "نموذج احتمالي (عطل رابط واحد على الأكثر، مسارات معروفة) → احتمالات المرشحين → اقتراح probe يفصل بينهم → إضافة النتيجة والتكرار.",
+      "methodology_models": "تشخيص بايزي + اختيار قياس تالٍ.",
+      "datasets_results": "أمثلة اصطناعية (49.8%/49.8% → 96.7% بعد probe واحد).",
+      "verified_in_code": "الـ README فقط.",
+      "strengths": [
+        "مثال عملي على اختيار نقطة القياس التالية"
+      ],
+      "weaknesses": [
+        "مجال شبكات الاتصالات لا كهرباء"
+      ],
+      "reusable_components": [
+        {
+          "component": "منطق التشخيص واختيار probe",
+          "license": "MIT",
+          "dependencies": "—"
+        }
+      ],
+      "needs_covered": [
+        4
+      ],
+      "scores": {
+        "relevance": 1,
+        "depth": 3,
+        "reusability": 4,
+        "evidence": 2,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/crown-sports/netops-fault-lab"
+      ],
+      "weighted_score": 2.45,
+      "url": "https://github.com/crown-sports/netops-fault-lab",
+      "rank": null
+    },
+    {
+      "full_name": "jitendra-bhandari/Masala-CHAI",
+      "study_level": "reserve",
+      "stars": 128,
+      "last_push": "2026-08-09",
+      "archived": false,
+      "license": null,
+      "license_note": "**لا يوجد ترخيص** في الـ API.",
+      "language_stack": "Python / Jupyter",
+      "input_types": [
+        "صور مخططات دوائر تماثلية من كتب"
+      ],
+      "tasks": [
+        "توليد SPICE netlist بـ LLM",
+        "مجموعة بيانات"
+      ],
+      "architecture": "(حسب الورقة 2411.14299) وسم المكونات → ضبط الـ prompt → تحقق من netlist.",
+      "methodology_models": "YOLOv8 + Deep Hough (حسب مراجعة طرف ثالث؛ لم أتحقق) + LLM.",
+      "datasets_results": "7,500 مخطط من 10 كتب؛ SINA تقارنه بدقة إجمالية 35.5% على 40 مخططاً.",
+      "verified_in_code": "لا (بيانات الـ API فقط).",
+      "strengths": [
+        "مدونة كبيرة للمخططات التماثلية"
+      ],
+      "weaknesses": [
+        "بلا ترخيص؛ إلكترونيات تماثلية"
+      ],
+      "reusable_components": [],
+      "needs_covered": [
+        3
+      ],
+      "scores": {
+        "relevance": 2,
+        "depth": 3,
+        "reusability": 1,
+        "evidence": 4,
+        "maturity": 3
+      },
+      "sources": [
+        "https://github.com/jitendra-bhandari/Masala-CHAI",
+        "https://arxiv.org/abs/2411.14299"
+      ],
+      "weighted_score": 2.45,
+      "url": "https://github.com/jitendra-bhandari/Masala-CHAI",
+      "rank": null
+    }
+  ]
+}
