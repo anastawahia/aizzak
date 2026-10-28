@@ -71,9 +71,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _SCRIPT = _REPO_ROOT / "deploy" / "host-tuning.sh"
 _EDGE = _REPO_ROOT / "deploy" / "nginx" / "nginx.conf"
-_RUNPOD_EDGE = _REPO_ROOT / "deploy" / "runpod" / "nginx.conf"
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
-_RUNPOD_SUPERVISOR = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
 
 # nginx's own default when a `listen` directive carries no `backlog=`
 # (`NGX_LISTEN_BACKLOG`, 511 on Linux), and gunicorn's when no `--backlog` is
@@ -178,9 +176,9 @@ def test_the_knobs_moved_out_are_still_named_where_they_went() -> None:
         )
     nofile = re.search(r"^elsewhere nofile .*?(?=^elsewhere |^ELSEWHERE|\Z)", report, re.M | re.S)
     assert nofile is not None, "`nofile` left the host script with nothing said about it"
-    assert "supervisord.conf" in nofile.group() and "not a sysctl" in nofile.group(), (
+    assert "docker-compose.yml" in nofile.group() and "not a sysctl" in nofile.group(), (
         "`nofile` is RLIMIT_NOFILE, not a sysctl, and the report must say where it IS set "
-        "on both publishers (capacity 3.1)"
+        "(capacity 3.1)"
     )
 
 
@@ -285,24 +283,6 @@ def test_every_listener_facing_the_login_burst_states_its_own_queue() -> None:
         assert "net.core.somaxconn" in _sysctls(service), (
             f"`{service}` accepts §0's connections and inherits its accept queue ceiling"
         )
-
-
-def test_the_runpod_edge_cannot_raise_what_compose_states(tmp_path: Path) -> None:
-    """The second publisher, and the reason its number is different rather than
-    drifted: `deploy/runpod/` has no Compose file and supervisord cannot set a
-    sysctl, so that edge lives on whatever `somaxconn` its container was given.
-    Its `listen` may therefore not promise more than the kernel default this
-    step measured -- there is nothing on that path that could back it."""
-    del tmp_path
-    asked = _nginx_backlog(_RUNPOD_EDGE.read_text(encoding="utf-8"))
-    assert asked <= 4096, (
-        f"the RunPod edge asks for a backlog of {asked} and nothing on that path can raise "
-        "somaxconn to meet it; supervisord has no sysctl of any kind (grep `minfds` for the "
-        "one limit it CAN set, capacity 3.1)"
-    )
-    assert "sysctl" not in _RUNPOD_SUPERVISOR.read_text(encoding="utf-8").lower(), (
-        "supervisord.conf appears to set a sysctl, which supervisor cannot do"
-    )
 
 
 def test_these_guards_can_actually_fail() -> None:

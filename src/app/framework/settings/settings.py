@@ -1252,8 +1252,7 @@ class Settings(BaseModel):
     # `redis` above, which is deliberate and is the م-8 off switch: an
     # environment that has not been split keeps one instance and behaves
     # exactly as it did before this step, rather than resolving a hostname
-    # that does not exist there (`deploy/runpod/` was exactly that environment
-    # until this step wired it a second server). `infrastructure/config/
+    # that does not exist there. `infrastructure/config/
     # env_settings.py` is where the fallback is applied, so the collapse is
     # visible at the one place that reads the environment.
     cache_redis: RedisSettings = Field(default_factory=RedisSettings)

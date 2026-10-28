@@ -50,7 +50,7 @@ readonly PREFIXES=(app embedding embedding-cuda)    # the order of the VERSION f
 # tag and the list, so this is the second line of defence, not the first.
 readonly FORBIDDEN_RE=(
   '^docker-compose\.(build|test|wsl-gpu)\.yml$'
-  '^deploy/(load|runpod|postgres/testdb|backup/results)/'
+  '^deploy/(load|postgres/testdb|backup/results)/'
   '^(src|tests)/'
   '(^|/)\.env([^/]*)$'
   '(^|/)init\.json$'

@@ -22,13 +22,11 @@ evidence.
      MINIO_PUBLIC_ENDPOINT: the URL handed to a browser must not say
      `minio:9000`.
   4. **A presigned PUT and GET through the public address round-trip the
-     bytes.** [3] reads the URL and never sends it, and on RunPod that was not
-     enough: the first staging Pod passed [3] while every browser upload
-     failed `403 SignatureDoesNotMatch`, because RunPod's proxy rewrites the
-     Host that SigV4 signed (deploy/runpod/nginx.conf, `$minio_signed_host`).
-     Only a real round trip proves it, and it runs only where the public
-     address is reachable from inside this container:
-       * on RunPod (`RUNPOD_POD_ID` is set), always;
+     bytes.** [3] reads the URL and never sends it, and that is not enough: a
+     proxy that rewrites the Host SigV4 signed passes [3] while every browser
+     upload fails `403 SignatureDoesNotMatch`. Only a real round trip proves
+     it, and it runs only where the public address is reachable from inside
+     this container:
        * on a Compose server, only when the operator asks for it after the
          name has a DNS record and the origin certificate is in place
          (docs/deploy-server.md §5.3):
@@ -65,9 +63,9 @@ from app.infrastructure.storage.minio_storage import (
 
 _INTERNAL_HOST = "minio:9000"
 _ROUNDTRIP_ENV = "SMOKE_PUBLIC_ROUNDTRIP"
-# Byte-for-byte the line install.sh's output has always carried when [4] is
-# skipped (tests/unit/test_stack_smoke_roundtrip.py pins it).
-SKIPPED_LINE = "[4] presigned PUT round trip: skipped (not on RunPod)"
+# The line install.sh's output carries when [4] is skipped
+# (tests/unit/test_stack_smoke_roundtrip.py pins it).
+SKIPPED_LINE = "[4] presigned PUT round trip: skipped (SMOKE_PUBLIC_ROUNDTRIP unset)"
 _PROBE_KEY = "smoke/presign-put-probe.txt"
 _PROBE_BODY = b"stack_smoke probe\n"
 _PROBE_TTL_S = 300
@@ -175,7 +173,6 @@ class ProbeStorage(Protocol):
 def roundtrip_reason(environ: Mapping[str, str]) -> str | None:
     """Why [4] runs here, or None to skip it.
 
-    "RUNPOD_POD_ID" when RunPod set it (today's rule, unchanged);
     "SMOKE_PUBLIC_ROUNDTRIP=1" when the operator asked for it on a Compose server;
     None otherwise -- the dev box, and every install.sh run.
     Raises SystemExit, naming the variable, when it holds anything but "" or "1":
@@ -184,8 +181,6 @@ def roundtrip_reason(environ: Mapping[str, str]) -> str | None:
     opt_in = environ.get(_ROUNDTRIP_ENV, "")
     if opt_in not in ("", "1"):
         raise SystemExit(f"FAIL: {_ROUNDTRIP_ENV} must be 1 or unset, got {opt_in!r}")
-    if environ.get("RUNPOD_POD_ID"):
-        return "RUNPOD_POD_ID"
     if opt_in == "1":
         return f"{_ROUNDTRIP_ENV}=1"
     return None

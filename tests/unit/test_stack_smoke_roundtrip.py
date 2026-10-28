@@ -107,13 +107,11 @@ async def _run(
     ("environ", "expected"),
     [
         ({}, None),
-        ({"RUNPOD_POD_ID": "x"}, "RUNPOD_POD_ID"),
         ({"SMOKE_PUBLIC_ROUNDTRIP": "1"}, "SMOKE_PUBLIC_ROUNDTRIP=1"),
-        ({"RUNPOD_POD_ID": "x", "SMOKE_PUBLIC_ROUNDTRIP": "1"}, "RUNPOD_POD_ID"),
         ({"SMOKE_PUBLIC_ROUNDTRIP": ""}, None),
     ],
 )
-def test_the_round_trip_runs_on_runpod_or_on_request_and_is_skipped_otherwise(
+def test_the_round_trip_runs_on_request_and_is_skipped_otherwise(
     environ: dict[str, str], expected: str | None
 ) -> None:
     assert smoke.roundtrip_reason(environ) == expected
@@ -130,7 +128,9 @@ def test_an_opt_in_value_other_than_1_stops_with_a_message(value: str) -> None:
 async def test_a_skipped_round_trip_prints_today_s_line_and_sends_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert smoke.SKIPPED_LINE == "[4] presigned PUT round trip: skipped (not on RunPod)"
+    assert (
+        smoke.SKIPPED_LINE == "[4] presigned PUT round trip: skipped (SMOKE_PUBLIC_ROUNDTRIP unset)"
+    )
     probe = _Probe()
 
     def forbidden() -> httpx.AsyncClient:
@@ -142,13 +142,8 @@ async def test_a_skipped_round_trip_prints_today_s_line_and_sends_nothing(
     assert probe.presigned == [] and probe.deleted == []
 
 
-@pytest.mark.parametrize(
-    "environ", [{"RUNPOD_POD_ID": "pod"}, {"SMOKE_PUBLIC_ROUNDTRIP": "1"}], ids=["runpod", "opt-in"]
-)
-async def test_runpod_and_the_opt_in_both_upload_then_download(
-    environ: dict[str, str], capsys: pytest.CaptureFixture[str]
-) -> None:
-    _, seen, failure = await _run(_good, environ)
+async def test_the_opt_in_uploads_then_downloads(capsys: pytest.CaptureFixture[str]) -> None:
+    _, seen, failure = await _run(_good, {"SMOKE_PUBLIC_ROUNDTRIP": "1"})
 
     assert failure is None
     assert seen == [("PUT", _PUT_URL), ("GET", _GET_URL)]

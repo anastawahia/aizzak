@@ -1,13 +1,14 @@
-"""The Compose worker topology, and the `WORKER` default RunPod still needs,
-must not drift -- from each other, from the dispatcher that defines the valid
-names, or from the evidence that justifies which workers boot by default
+"""The Compose worker topology must not drift -- from the dispatcher that
+defines the valid names, or from the evidence that justifies which workers
+boot by default
 (release-blockers-plan.md §3, step 3 · pre-release-review.md P0-4 ·
 stream-topology-plan.md §6-أ).
 
 ⭐ RESHAPED when `worker` was split into `worker-memory` / `worker-knowledge` /
 `worker-media` (docs/log/3.133.md). What this file guarded before was a single
 parameterised service whose `WORKER: ${WORKER:-<name>}` fallback had to agree
-with RunPod's. That service is gone, and with it BOTH drift vectors it had:
+with a second deployment's. That service is gone, and with it the drift vector
+it had:
 
   * Compose now hardcodes a literal `WORKER` per service, so the second,
     subtler defect this file was written for -- Compose auto-loads `.env`, and
@@ -16,11 +17,6 @@ with RunPod's. That service is gone, and with it BOTH drift vectors it had:
     `docker compose config` rather than the file -- cannot recur at all. It is
     designed out, not merely fixed, and `test_compose_worker_values_are_literal`
     keeps it that way.
-  * The two deployment paths no longer default to "the same worker" because
-    Compose no longer defaults to ANY worker; it runs all the evidenced ones.
-    The surviving cross-path invariant is weaker but real, and asserted below:
-    RunPod's default must be a name Compose declares AND one Compose is
-    willing to boot unprofiled.
 
 What replaces the old value check is the rule the split was granted under: a
 worker rides in the default `docker compose up -d` **iff** its containerised
@@ -56,29 +52,15 @@ from tests.unit.support_compose import load_compose
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
-_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 _DISPATCHER = _REPO_ROOT / "src" / "app" / "workers" / "main.py"
-_SUPERVISORD = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
-_RUNPOD_BOOTSTRAP = _REPO_ROOT / "deploy" / "runpod" / "bootstrap.sh"
 
-# `export WORKER="${WORKER:-memory}"`.
-_ENTRYPOINT_WORKER_DEFAULT = re.compile(r'export WORKER="\$\{WORKER:-([a-z_]+)\}"')
 # A plain dotenv assignment: `WORKER=memory`, start of line.
 _ENV_EXAMPLE_WORKER = re.compile(r"^WORKER=([a-z_]+)\s*$", re.MULTILINE)
 # A `_RUNNERS` entry in the dispatcher: `"knowledge": knowledge_worker.run,`.
 # Read as TEXT on purpose -- importing app.workers.main would drag in every
 # worker module (and its settings) to learn four dictionary keys.
 _RUNNERS_ENTRY = re.compile(r'^\s+"([a-z_]+)":\s+\w+\.run,\s*$', re.MULTILINE)
-# One supervisord section: its header, then every line up to the next header.
-_PROGRAM = re.compile(
-    r"^\[program:(?P<name>[^\]]+)\]\n(?P<body>(?:(?!\[program:).*\n)*)", re.MULTILINE
-)
-_DISPATCHER_COMMAND = re.compile(r"^command=.* -m app\.workers\.main\s*$", re.MULTILINE)
-# `environment=HOME="/home/aizzak",WORKER="knowledge"` -> knowledge.
-_PINNED_WORKER = re.compile(r'^environment=.*\bWORKER="([a-z_]+)"', re.MULTILINE)
-# `supervisorctl -c <conf> start worker worker-knowledge` -> the names.
-_BOOTSTRAP_START = re.compile(r"^supervisorctl .* start (?P<names>.+)$", re.MULTILINE)
 
 # `_RUNNERS` also dispatches `outbox_relay`, which 08 §4 lists among "أوامر
 # العمّال" but D-26 runs as its own single-instance service with its own
@@ -121,12 +103,6 @@ _REPLICATED = {"knowledge": 2}
 # `.env` present, which is what the shipped file promises.
 _INTERPOLATED_DEFAULT = re.compile(r"^\$\{[A-Z_]+:-(.*)\}$")
 
-# RunPod is ONE container under supervisord. It runs one [program:] per
-# Streams worker since 2026-10-12; `[program:worker]` alone still reads
-# `WORKER`, and the other two pin theirs. So the default must stay the one
-# worker no other program pins, or a stream goes unread.
-_EXPECTED_RUNPOD_DEFAULT = "memory"
-
 
 def _compose() -> dict[str, object]:
     # PyYAML resolves the `<<: [*app-env, *worker-env]` merge keys, so what
@@ -148,16 +124,6 @@ def _dispatcher_streams_workers() -> frozenset[str]:
     return names - _NOT_A_STREAMS_WORKER
 
 
-def _entrypoint_worker_default() -> str:
-    text = _ENTRYPOINT.read_text(encoding="utf-8")
-    match = _ENTRYPOINT_WORKER_DEFAULT.search(text)
-    assert match is not None, (
-        "deploy/runpod/entrypoint.sh: could not find "
-        '`export WORKER="${WORKER:-<name>}"` -- did its shape change?'
-    )
-    return match.group(1)
-
-
 def _env_example_worker() -> str:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
     match = _ENV_EXAMPLE_WORKER.search(text)
@@ -165,19 +131,6 @@ def _env_example_worker() -> str:
         ".env.example: could not find a top-level `WORKER=<name>` line -- did its shape change?"
     )
     return match.group(1)
-
-
-def _runpod_consumers() -> dict[str, str]:
-    """`[program:]` name -> the worker it runs, for every program that runs the
-    dispatcher. A program that pins no `WORKER` runs entrypoint.sh's default."""
-    consumers: dict[str, str] = {}
-    for match in _PROGRAM.finditer(_SUPERVISORD.read_text(encoding="utf-8")):
-        body = match.group("body")
-        if not _DISPATCHER_COMMAND.search(body):
-            continue
-        pinned = _PINNED_WORKER.search(body)
-        consumers[match.group("name")] = pinned.group(1) if pinned else _entrypoint_worker_default()
-    return consumers
 
 
 def _replicated_services() -> dict[str, dict]:
@@ -217,7 +170,6 @@ def test_the_patterns_actually_find_something() -> None:
         "branch this file dropped in §3.134 rather than widening the ledger."
     )
     assert _compose_worker_services()
-    assert _entrypoint_worker_default() in _MEASURED
     assert _env_example_worker() in _MEASURED
 
 
@@ -377,71 +329,3 @@ def test_the_replicated_workers_build_cannot_be_stolen_by_its_sibling() -> None:
         "whether `F-4`'s derivation is still what protects the replica "
         "before trusting the pair."
     )
-
-
-def test_runpod_default_agrees_with_env_example() -> None:
-    """`.env.example` is what every documented setup copies to `.env` as step
-    one, and RunPod's entrypoint sources it. Two files naming two different
-    workers means the image runs one thing and its own template says another."""
-    assert _env_example_worker() == _entrypoint_worker_default(), (
-        f".env.example sets WORKER={_env_example_worker()!r} but "
-        f"deploy/runpod/entrypoint.sh defaults it to "
-        f"{_entrypoint_worker_default()!r} -- both files must name the worker "
-        "[program:worker] runs."
-    )
-
-
-def test_runpod_default_is_a_worker_compose_boots_unprofiled() -> None:
-    """The cross-path invariant that SURVIVES the split. Compose no longer
-    has a default worker to agree with -- it runs every evidenced one -- so
-    what must still hold is weaker and still real: the single worker RunPod
-    picks for an operator who typed nothing has to be one Compose declares,
-    and one Compose is willing to boot without an opt-in profile. Anything
-    else means the two deployment paths disagree about which worker is safe
-    to run unattended."""
-    default = _entrypoint_worker_default()
-    unprofiled = {
-        body["environment"]["WORKER"]
-        for body in _compose_worker_services().values()
-        if not body.get("profiles")
-    }
-    assert default in unprofiled, (
-        f"deploy/runpod/entrypoint.sh defaults WORKER to {default!r}, but "
-        f"Compose only boots {sorted(unprofiled)} without an explicit "
-        "profile -- one path is running unattended what the other treats as "
-        "needing a deliberate opt-in."
-    )
-
-
-def test_runpod_default_is_the_worker_whose_boot_is_best_proven() -> None:
-    """Being in the unprofiled set is necessary but not sufficient. Until
-    2026-10-12 RunPod ran exactly ONE worker, so this had to be the one with
-    the longest live record (`memory`, booting in containers since
-    docs/log/3.83.md). Now it must also be the one worker no other program
-    pins (`test_runpod_runs_one_consumer_per_streams_worker`), which is still
-    `memory`. Changing this is a real decision, not a tidy-up."""
-    assert _entrypoint_worker_default() == _EXPECTED_RUNPOD_DEFAULT
-    assert _env_example_worker() == _EXPECTED_RUNPOD_DEFAULT
-
-
-def test_runpod_runs_one_consumer_per_streams_worker() -> None:
-    """2026-10-12, Pod le15fwpryplqwa: the image ran `memory` only. A browser
-    upload registered its document, `knowledge.document.registered.v1` waited
-    in `stream.knowledge` with 0 consumers on `cg.knowledge`, and the document
-    stayed `pending` forever. Every worker the dispatcher knows needs exactly
-    one program; two would consume one stream twice and leave another unread."""
-    consumers = _runpod_consumers()
-    assert sorted(consumers.values()) == sorted(_dispatcher_streams_workers()), (
-        f"deploy/runpod/supervisord.conf runs {consumers}, but the dispatcher "
-        f"defines {sorted(_dispatcher_streams_workers())}. Each needs exactly one "
-        "[program:] -- a stream nobody reads never finishes its jobs."
-    )
-
-
-def test_runpod_bootstrap_starts_every_worker_program() -> None:
-    """Every application-plane program is `autostart=false`, so a program
-    bootstrap.sh never names stays STOPPED and its stream is unread anyway."""
-    text = _RUNPOD_BOOTSTRAP.read_text(encoding="utf-8")
-    started = {name for m in _BOOTSTRAP_START.finditer(text) for name in m["names"].split()}
-    missing = sorted(set(_runpod_consumers()) - started)
-    assert not missing, f"deploy/runpod/bootstrap.sh never starts {missing}"

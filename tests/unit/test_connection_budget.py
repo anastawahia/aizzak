@@ -1,4 +1,4 @@
-"""Every Postgres connection these deployments can open, added up and compared
+"""Every Postgres connection the Compose stack can open, added up and compared
 with what the servers underneath will accept -- capacity step 2.3
 (docs/capacity-plan.md §5 wave 2). The ledger this computes is written out in
 prose in `docs/design/08-local-runbook.md` §2-ب, and the last test here is what
@@ -21,23 +21,15 @@ they are wrong in opposite directions -- the client ceiling is roughly six times
 the demand while `DEFAULT_POOL_SIZE` is a quarter of it. A guard that checked
 only the first would pass a stack whose real constraint it never looked at.
 
-⭐ AND THERE ARE TWO DEPLOYMENTS. `deploy/runpod/` runs the same three processes
-with NO POOLER AT ALL (`08 §2`: "اتّصالٌ مباشرٌ على 127.0.0.1:5432"), so every
-pool slot there is a real Postgres backend and the multiplexing that gives the
-Compose stack its slack does not exist. That is the tighter of the two by a wide
-margin -- see `test_raising_web_concurrency_bites_five_turns_sooner_on_runpod`,
-which is the concrete answer to a question `deploy/runpod/entrypoint.sh:139`
-invites an operator to ask and nothing anywhere answered.
-
 WHAT IS DELIBERATELY NOT COUNTED, and why it is a modelled fact rather than an
-omission: `app.ops.provision` (the `migrate` service, and RunPod's bootstrap)
-opens a `NullPool` connection, but it runs to COMPLETION before any standing
-service starts -- every one of them declares `migrate:
-service_completed_successfully`. Its connection never coexists with the steady
-state, so adding it would inflate the sum with a term that cannot be
-simultaneous. `test_the_pre_flight_migrator_really_does_finish_first` is what
-keeps that true; the day someone relaxes that condition, the exclusion stops
-being free and the test says so. The other one-shot tools (`app.ops.retention`,
+omission: `app.ops.provision` (the `migrate` service) opens a `NullPool`
+connection, but it runs to COMPLETION before any standing service starts --
+every one of them declares `migrate: service_completed_successfully`. Its
+connection never coexists with the steady state, so adding it would inflate
+the sum with a term that cannot be simultaneous.
+`test_the_pre_flight_migrator_really_does_finish_first` is what keeps that
+true; the day someone relaxes that condition, the exclusion stops being free
+and the test says so. The other one-shot tools (`app.ops.retention`,
 `rotate_transit`, `purge`, `slow_queries`, `load_seed`) are `NullPool` too and
 have no standing process at all -- 08 §4's invocations are manual.
 
@@ -71,8 +63,6 @@ from tests.unit.support_compose import SIZES, load_compose, read_size
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
-_RUNPOD_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
-_RUNPOD_SUPERVISORD = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
 _RUNBOOK = _REPO_ROOT / "docs" / "design" / "08-local-runbook.md"
 
 # Postgres's own default, restated here because a ceiling nobody wrote down is
@@ -170,24 +160,6 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?)([^}]*))?\}")
 _DSN_PATTERN = re.compile(
     r"^postgresql\+asyncpg://(?P<role>[^:]+):[^@]*@(?P<endpoint>[^/]+)/",
 )
-_EXPORT_PATTERN = re.compile(
-    r'^export (?P<name>[A-Z_][A-Z0-9_]*)="\$\{(?P=name):-(?P<value>[^}"]*)\}"',
-    re.MULTILINE,
-)
-_PROGRAM_PATTERN = re.compile(
-    r"^\[program:(?P<name>[^\]]+)\]\n(?P<body>(?:(?!\[program:).*\n)*)",
-    re.MULTILINE,
-)
-_COMMAND_PATTERN = re.compile(r"^command=(?P<command>.+)$", re.MULTILINE)
-_RUNPOD_MAX_CONNECTIONS = re.compile(r'echo "max_connections = (?P<value>\d+)"')
-
-# RunPod's own virtualenv for the application. `embedding` runs out of
-# `/opt/venv-emb` and the bootstrap out of `/usr/local/bin`, so this prefix is
-# exactly "the processes that can hold a SQLAlchemy pool" and nothing else.
-_RUNPOD_APP_VENV = "/opt/venv/bin/"
-# `app` and `worker` start through this wrapper, which only adds the Vault
-# AppRole login to the environment and then execs the real command.
-_RUNPOD_VAULT_WRAPPER = "/usr/local/bin/aizzak-with-vault "
 
 
 # --------------------------------------------------------------- the model --
@@ -307,7 +279,7 @@ def _pool_from_dsn(raw: str, size: int, overflow: int, env: Mapping[str, str]) -
 
 def _module_of(command: object) -> str | None:
     """The module a `python -m ...` entrypoint runs, or None for anything else
-    (in both files that means the gunicorn API server)."""
+    (in Compose that means the gunicorn API server)."""
     parts = command if isinstance(command, list) else str(command or "").split()
     if "-m" not in parts:
         return None
@@ -377,59 +349,6 @@ def _compose_topology(values: Mapping[str, str] | None = None) -> _Topology:
             unaccounted.append(f"{name} ({module})")
             continue
         runners.append(_Runner(name=name, processes=processes, replicas=replicas, pools=pools))
-
-    return _Topology(runners=tuple(runners), unaccounted=tuple(unaccounted))
-
-
-def _runpod_exports() -> dict[str, str]:
-    text = _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8")
-    return {m.group("name"): m.group("value") for m in _EXPORT_PATTERN.finditer(text)}
-
-
-def _runpod_topology() -> _Topology:
-    supervisord = _RUNPOD_SUPERVISORD.read_text(encoding="utf-8")
-    exports = _runpod_exports()
-    # RunPod exports one DSN per role rather than naming them per program, so
-    # the endpoint is read from the exports and the role from the entrypoint
-    # each program runs -- the same rule as Compose, different file.
-    entrypoint = _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8")
-    dsns = dict(re.findall(r'^export ([A-Z_]*DATABASE_URL)="([^"]+)"', entrypoint, re.MULTILINE))
-    runners: list[_Runner] = []
-    unaccounted: list[str] = []
-
-    for match in _PROGRAM_PATTERN.finditer(supervisord):
-        command_match = _COMMAND_PATTERN.search(match.group("body"))
-        if command_match is None:
-            continue
-        command = command_match.group("command").removeprefix(_RUNPOD_VAULT_WRAPPER)
-        if not command.startswith(_RUNPOD_APP_VENV):
-            continue
-        module = _module_of(command)
-        if module in _PRE_FLIGHT_MODULES:
-            continue
-        if module is None:
-            processes = int(exports["WEB_CONCURRENCY"])
-            env = {
-                "DB_POOL_SIZE": exports["DB_POOL_SIZE"],
-                "DB_MAX_OVERFLOW": exports["DB_MAX_OVERFLOW"],
-                "DATABASE_URL": dsns["DATABASE_URL"],
-                "METRICS_DATABASE_URL": dsns["METRICS_DATABASE_URL"],
-            }
-            dsn_keys = sorted(key for key in env if key.endswith("DATABASE_URL"))
-            pools = _api_pools(dsn_keys, env, exports)
-        elif module in _ENTRYPOINT_POOLS:
-            size, overflow = _ENTRYPOINT_POOLS[module]
-            processes = 1
-            key = "RELAY_DATABASE_URL" if "relay" in module else "DATABASE_URL"
-            pools = (_pool_from_dsn(dsns[key], size, overflow, exports),)
-        else:
-            unaccounted.append(f"{match.group('name')} ({module})")
-            continue
-        # RunPod is supervisord on one host: no replicas exist there at all,
-        # which is half of why its ceiling is the tighter one.
-        runners.append(
-            _Runner(name=match.group("name"), processes=processes, replicas=1, pools=pools)
-        )
 
     return _Topology(runners=tuple(runners), unaccounted=tuple(unaccounted))
 
@@ -528,14 +447,6 @@ def _postgres_backends(topology: _Topology, pool_ceiling: int) -> int:
     return _server_backends(topology, pool_ceiling) + _POSTGRES_EXPORTER_BACKENDS
 
 
-def _direct_backends(topology: _Topology) -> int:
-    """RunPod has no pooler, so every pool slot is a backend."""
-    return sum(
-        runner.instances * sum(pool.connections for pool in runner.pools)
-        for runner in topology.runners
-    )
-
-
 def _highest_fitting_web_concurrency(
     topology: _Topology, ceiling: int, measure: Callable[[_Topology], int]
 ) -> int:
@@ -586,7 +497,6 @@ def test_every_database_touching_service_is_accounted_for() -> None:
     fails HERE, on the day it is written, rather than being quietly absent from
     a sum that keeps reading as green."""
     compose = _compose_topology()
-    runpod = _runpod_topology()
 
     assert compose.unaccounted == (), (
         f"Compose service(s) {compose.unaccounted} open a database connection under an "
@@ -594,7 +504,6 @@ def test_every_database_touching_service_is_accounted_for() -> None:
         "(a standing pool) or `_PRE_FLIGHT_MODULES` (runs to completion first), and "
         "update docs/design/08-local-runbook.md §2-ب to match."
     )
-    assert runpod.unaccounted == (), f"RunPod program(s) {runpod.unaccounted} are unmodelled"
 
 
 def test_the_pre_flight_migrator_really_does_finish_first() -> None:
@@ -754,78 +663,6 @@ def test_app_rw_is_the_role_the_pooler_actually_throttles() -> None:
     )
 
 
-# ------------------------------------------ ceiling three: RunPod, no pooler --
-
-
-def test_the_runpod_image_stays_inside_its_own_max_connections() -> None:
-    topology = _runpod_topology()
-    declared = _RUNPOD_MAX_CONNECTIONS.search(_RUNPOD_ENTRYPOINT.read_text(encoding="utf-8"))
-    assert declared is not None, "deploy/runpod/entrypoint.sh no longer sets max_connections"
-    ceiling = int(declared.group("value")) - _PG_SUPERUSER_RESERVED
-    backends = _direct_backends(topology)
-
-    assert backends <= ceiling, (
-        f"the RunPod image opens {backends} direct backends against {ceiling} available. "
-        "There is no pooler in that image to multiplex them."
-    )
-
-
-def test_the_same_knob_has_a_different_ceiling_on_each_publisher() -> None:
-    """⭐ The finding 2.3 existed to make visible -- and 3.4 REVERSED IT.
-
-    The same knob, in the same repository, has different room on the two
-    deployments, because Compose puts a pooler between the app and Postgres and
-    the RunPod image does not. 2.3 measured that and 08 §2-ب wrote it down with
-    RunPod as the tighter one, "the one an operator must budget against".
-
-    ⚠️ THAT SENTENCE IS NOW FALSE, and by exactly the thing 3.4 changed:
-    replicas multiply the Compose side and RunPod has none (supervisord on one
-    host). MEASURED both ways at each candidate:
-
-        wc=4:  compose  420 clients / 500      runpod  140 backends / 197
-        wc=5:  compose  522 clients / 500      runpod  174 backends / 197
-        wc=6:  compose  624 clients / 500      runpod  208 backends / 197
-
-    So the ceilings are **Compose 4, RunPod 5** and the tighter deployment is
-    now the one with the pooler in it. This test therefore no longer asserts
-    WHICH is tighter -- that is a fact about today's replica count and it has
-    already flipped once. It asserts that the two are DIFFERENT, that each
-    publisher's shipped default fits its own ceiling, and that both ceilings
-    can still be exceeded (a ceiling nothing can cross is not one).
-    """
-    compose = _compose_topology()
-    runpod = _runpod_topology()
-    declared = _RUNPOD_MAX_CONNECTIONS.search(_RUNPOD_ENTRYPOINT.read_text(encoding="utf-8"))
-    assert declared is not None
-    runpod_ceiling = int(declared.group("value")) - _PG_SUPERUSER_RESERVED
-    client_ceiling = int(_pgbouncer_env()["MAX_CLIENT_CONN"])
-
-    compose_room = _highest_fitting_web_concurrency(compose, client_ceiling, _pooler_clients)
-    runpod_room = _highest_fitting_web_concurrency(runpod, runpod_ceiling, _direct_backends)
-
-    assert compose_room != runpod_room, (
-        "the two publishers now have the SAME WEB_CONCURRENCY ceiling. That is the one "
-        "outcome 08 §2-ب's two-number ledger would stop being worth its length for -- "
-        "check it rather than deleting this test."
-    )
-    # Both ceilings BITE: one turn past each, the sum leaves its own bound.
-    assert _pooler_clients(compose.with_web_concurrency(compose_room + 1)) > client_ceiling
-    assert _direct_backends(runpod.with_web_concurrency(runpod_room + 1)) > runpod_ceiling
-
-    # And each publisher's shipped default is inside its own ceiling -- the
-    # mistake this whole module exists to catch is a default nobody re-derived
-    # after changing something else, which is precisely what 3.4 did.
-    assert int(_env_example()["WEB_CONCURRENCY"]) <= compose_room, (
-        f".env.example ships WEB_CONCURRENCY={_env_example()['WEB_CONCURRENCY']} against a "
-        f"Compose ceiling of {compose_room}. With `deploy.replicas` on `app` this knob "
-        "multiplies by the replica count, so the ceiling moved when 3.4 did."
-    )
-    assert int(_runpod_exports()["WEB_CONCURRENCY"]) <= runpod_room, (
-        f"deploy/runpod/entrypoint.sh ships WEB_CONCURRENCY="
-        f"{_runpod_exports()['WEB_CONCURRENCY']} against a ceiling of {runpod_room}"
-    )
-
-
 # ------------------------------------------------------ the written ledger --
 
 
@@ -873,10 +710,6 @@ def test_the_runbook_ledger_carries_the_numbers_this_module_computes() -> None:
     reads as authoritative. So every figure in §2-ب is recomputed from the
     deployment files here and compared with what the document claims."""
     compose = _compose_topology()
-    runpod = _runpod_topology()
-    declared = _RUNPOD_MAX_CONNECTIONS.search(_RUNPOD_ENTRYPOINT.read_text(encoding="utf-8"))
-    assert declared is not None
-    runpod_ceiling = int(declared.group("value")) - _PG_SUPERUSER_RESERVED
     client_ceiling = int(_pgbouncer_env()["MAX_CLIENT_CONN"])
 
     computed = {
@@ -885,10 +718,6 @@ def test_the_runbook_ledger_carries_the_numbers_this_module_computes() -> None:
         "compose.app_rw_demand": _demand_by_role(compose)["app_rw"],
         "compose.web_concurrency_max": _highest_fitting_web_concurrency(
             compose, client_ceiling, _pooler_clients
-        ),
-        "runpod.postgres_backends": _direct_backends(runpod),
-        "runpod.web_concurrency_max": _highest_fitting_web_concurrency(
-            runpod, runpod_ceiling, _direct_backends
         ),
     }
 
@@ -913,21 +742,13 @@ def test_env_example_states_the_ceiling_next_to_the_knob() -> None:
 
 def test_the_patterns_actually_find_something() -> None:
     """Every parser here can silently match nothing and leave a green sum of
-    zero. The `test_deploy_worker_default.py` precedent, applied to five
-    patterns rather than one."""
+    zero. The `test_deploy_worker_default.py` precedent, applied to every
+    pattern rather than one."""
     compose = _compose_topology()
-    runpod = _runpod_topology()
 
     # 6 since capacity 5.7 added `ops-scheduler` (one pooler connection).
     assert len(compose.runners) == 6, [r.name for r in compose.runners]
-    # 5 since 2026-10-12: one supervisord program per Streams worker.
-    assert len(runpod.runners) == 5, [r.name for r in runpod.runners]
     assert _pooler_clients(compose) > 0
-    assert _direct_backends(runpod) > 0
-    # The KEY, not its value: the value is what the ceiling tests above judge,
-    # and asserting it here would make this sentinel fail for the wrong reason
-    # the day someone legitimately changes the default.
-    assert int(_runpod_exports()["WEB_CONCURRENCY"]) >= 1
     assert set(_ENTRYPOINT_POOLS) == {"app.workers.main", "app.workers.outbox_relay"}
 
 

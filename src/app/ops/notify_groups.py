@@ -9,7 +9,7 @@ only inspects groups whose name begins with *its own* ``socket.gethostname()``
 -- deliberately, so one replica can never destroy another replica's group no
 matter how pid numbers collide across hosts. That guard is correct and
 nothing here weakens it. But it has an unavoidable consequence: under Compose
-(and RunPod), a recreated container gets a NEW hostname, so the groups the OLD
+a recreated container gets a NEW hostname, so the groups the OLD
 container left behind are named after a host that will never boot again.
 Nothing was permitted to sweep them, because the only process permitted to was
 dead. They accumulated monotonically -- measured 2026-08-13 on the local

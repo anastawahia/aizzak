@@ -329,9 +329,8 @@ def build_relay_from_env() -> tuple[
     write to it, because the relay is the ONLY producer on these streams
     (stream-topology-plan.md §1-د) and is therefore the one place a single
     call sequenced before ``run_forever`` covers every process that ever
-    boots (Compose's ``outbox-relay`` service AND RunPod's
-    ``supervisord.conf``, which run this exact entrypoint --
-    stream-topology-plan.md §1-هـ, no extra line needed in either). The real
+    boots (Compose's ``outbox-relay`` service, which runs this exact
+    entrypoint -- stream-topology-plan.md §1-هـ, no extra line needed). The real
     alternative to provisioning here was never architectural purity; it was
     a manual ordering rule in a runbook (stream-topology-plan.md §2's
     rejected alternatives (ب)/(ج)), which a forgotten deploy step could

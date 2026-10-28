@@ -1,8 +1,6 @@
-"""The edge (nginx) must actually enforce a rate limit, security headers, and
-a per-host-gated HSTS setting -- and the TWO deployment paths
-(`deploy/nginx/{nginx.conf,app-locations.conf}` for Compose,
-`deploy/runpod/nginx.conf` for the single-Pod image) must not drift apart on
-any of it (P1-7, `docs/p1-hardening-plan.md` §3 step 9).
+"""The edge (nginx, `deploy/nginx/{nginx.conf,app-locations.conf}`) must
+actually enforce a rate limit, security headers, and a per-host-gated HSTS
+setting (P1-7, `docs/p1-hardening-plan.md` §3 step 9).
 
 **The gap this closes.** Before this step, `server_tokens off` was the ONLY
 hardening either edge config carried: no `limit_req`/`limit_conn` at all, so
@@ -24,7 +22,7 @@ that is safe only because `limit_req` gates request ADMISSION, not an
 in-flight stream.
 
 Same shape as `test_deploy_worker_default.py` (step 3) and
-`test_role_provisioning_wiring.py` (step 8's review): two files claiming to
+`test_role_provisioning_wiring.py` (step 8's review): files claiming to
 agree and nothing that checked.
 
 **⭐ This module SHIPPED BROKEN once already, and a purely textual guard is
@@ -37,10 +35,9 @@ merge with it. So `:443` -- the actual production path -- silently shipped
 ZERO of the three security headers on every response, while `:80` shipped all
 three (verified live: a throwaway `nginx:1.27 --rm` container proxying the
 broken config to a real backend returned all three headers on `:80` and none
-on `:443`). `deploy/runpod/nginx.conf` had the identical shape with only ONE
-server block, so it lost all three on every single request, not just some.
+on `:443`).
 
-`test_security_headers_present_in_both_deployment_paths` below -- which only
+`test_security_headers_present` below -- which only
 checks that the header text appears SOMEWHERE in the file -- PASSED against
 that broken config, because the text genuinely was there, just in a scope
 that never reached a real response. A regex over the raw file cannot see
@@ -61,7 +58,6 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_NGINX = _REPO_ROOT / "deploy" / "nginx" / "nginx.conf"
 _COMPOSE_LOCATIONS = _REPO_ROOT / "deploy" / "nginx" / "app-locations.conf"
-_RUNPOD_NGINX = _REPO_ROOT / "deploy" / "runpod" / "nginx.conf"
 
 _API_SPEC = _REPO_ROOT / "docs" / "design" / "03-api-spec.md"
 _REQUIREMENTS = _REPO_ROOT / "docs" / "Requirements-v1.md"
@@ -248,87 +244,57 @@ def _partial_add_header_scopes(
     return violations
 
 
-def test_both_zone_directives_are_findable_and_identical() -> None:
+def test_both_zone_directives_are_findable() -> None:
     """A regex that silently matches nothing would pass forever while
     checking nothing (the 3.69 lesson, restated in every wiring guard in this
-    repo) -- so require a match before comparing."""
-    compose_req = _LIMIT_REQ_ZONE_RE.search(_text(_COMPOSE_NGINX))
-    runpod_req = _LIMIT_REQ_ZONE_RE.search(_text(_RUNPOD_NGINX))
-    assert compose_req is not None, (
+    repo) -- so require a match."""
+    assert _LIMIT_REQ_ZONE_RE.search(_text(_COMPOSE_NGINX)) is not None, (
         f"{_COMPOSE_NGINX}: no `limit_req_zone $binary_remote_addr zone=...` line found"
     )
-    assert runpod_req is not None, (
-        f"{_RUNPOD_NGINX}: no `limit_req_zone $binary_remote_addr zone=...` line found"
-    )
-    assert compose_req.groups() == runpod_req.groups(), (
-        f"limit_req_zone drifted between the two deployment paths: "
-        f"{_COMPOSE_NGINX.name}={compose_req.groups()!r} vs "
-        f"{_RUNPOD_NGINX.name}={runpod_req.groups()!r}"
-    )
-
-    compose_conn = _LIMIT_CONN_ZONE_RE.search(_text(_COMPOSE_NGINX))
-    runpod_conn = _LIMIT_CONN_ZONE_RE.search(_text(_RUNPOD_NGINX))
-    assert compose_conn is not None, (
+    assert _LIMIT_CONN_ZONE_RE.search(_text(_COMPOSE_NGINX)) is not None, (
         f"{_COMPOSE_NGINX}: no `limit_conn_zone $binary_remote_addr zone=...` line found"
-    )
-    assert runpod_conn is not None, (
-        f"{_RUNPOD_NGINX}: no `limit_conn_zone $binary_remote_addr zone=...` line found"
-    )
-    assert compose_conn.groups() == runpod_conn.groups(), (
-        f"limit_conn_zone drifted between the two deployment paths: "
-        f"{_COMPOSE_NGINX.name}={compose_conn.groups()!r} vs "
-        f"{_RUNPOD_NGINX.name}={runpod_conn.groups()!r}"
     )
 
 
 def test_health_carries_neither_limit_req_nor_limit_conn() -> None:
-    for path, text in (
-        (_COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        locations = _locations(text)
-        assert "/health" in locations, f"{path}: no `location /health {{...}}` block found"
-        body = locations["/health"]
-        assert "limit_req" not in body, (
-            f"{path}: `/health` must never carry `limit_req` -- it starves the "
-            "10s orchestrator healthcheck, not an attacker (§3.76's `unhealthy`-at-504 lesson)"
-        )
-        assert "limit_conn" not in body, f"{path}: `/health` must never carry `limit_conn` either"
+    path, text = _COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)
+    locations = _locations(text)
+    assert "/health" in locations, f"{path}: no `location /health {{...}}` block found"
+    body = locations["/health"]
+    assert "limit_req" not in body, (
+        f"{path}: `/health` must never carry `limit_req` -- it starves the "
+        "10s orchestrator healthcheck, not an attacker (§3.76's `unhealthy`-at-504 lesson)"
+    )
+    assert "limit_conn" not in body, f"{path}: `/health` must never carry `limit_conn` either"
 
 
 def test_ws_carries_limit_conn_but_never_limit_req() -> None:
-    for path, text in (
-        (_COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        locations = _locations(text)
-        assert "/api/v1/ws" in locations, f"{path}: no `location /api/v1/ws {{...}}` block found"
-        body = locations["/api/v1/ws"]
-        assert "limit_conn" in body, (
-            f"{path}: `/api/v1/ws` should bound concurrent connections per IP (`limit_conn`)"
-        )
-        assert "limit_req" not in body, (
-            f"{path}: `/api/v1/ws` must never carry `limit_req` -- a WebSocket handshake "
-            "is one request, then the socket stays open; a long-lived connection is "
-            "not a repeated request"
-        )
+    path, text = _COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)
+    locations = _locations(text)
+    assert "/api/v1/ws" in locations, f"{path}: no `location /api/v1/ws {{...}}` block found"
+    body = locations["/api/v1/ws"]
+    assert "limit_conn" in body, (
+        f"{path}: `/api/v1/ws` should bound concurrent connections per IP (`limit_conn`)"
+    )
+    assert "limit_req" not in body, (
+        f"{path}: `/api/v1/ws` must never carry `limit_req` -- a WebSocket handshake "
+        "is one request, then the socket stays open; a long-lived connection is "
+        "not a repeated request"
+    )
 
 
 def test_root_location_carries_limit_req() -> None:
-    for path, text in (
-        (_COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        locations = _locations(text)
-        assert "/" in locations, f"{path}: no `location / {{...}}` block found"
-        body = locations["/"]
-        assert "limit_req" in body, (
-            f"{path}: `location /` (the auth/authz path, and SSE) has no `limit_req` -- "
-            "this is the exact gap P1-7 exists to close"
-        )
+    path, text = _COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)
+    locations = _locations(text)
+    assert "/" in locations, f"{path}: no `location / {{...}}` block found"
+    body = locations["/"]
+    assert "limit_req" in body, (
+        f"{path}: `location /` (the auth/authz path, and SSE) has no `limit_req` -- "
+        "this is the exact gap P1-7 exists to close"
+    )
 
 
-def test_metrics_is_blocked_at_the_edge_in_both_deployment_paths() -> None:
+def test_metrics_is_blocked_at_the_edge() -> None:
     """P1-3's own mzalaq #2 (`docs/p1-hardening-plan.md` §3 step 10):
     `/metrics` must never be reachable through this edge -- Prometheus text
     about the Outbox/DLQ internals is operator information, the SAME
@@ -339,22 +305,19 @@ def test_metrics_is_blocked_at_the_edge_in_both_deployment_paths() -> None:
     must refuse LOCALLY (`return 404;`), never `proxy_pass` to the app at
     all, or a scraper reaching this edge would see it just like any other
     path."""
-    for path, text in (
-        (_COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        locations = _locations(text)
-        assert "/metrics" in locations, f"{path}: no `location /metrics {{...}}` block found"
-        body = locations["/metrics"]
-        assert "proxy_pass" not in body, (
-            f"{path}: `/metrics` must be answered locally, never proxied to the app -- "
-            "this location exists specifically so a scraper reaching this edge cannot "
-            "see it at all"
-        )
-        assert "return 404" in body, f"{path}: `/metrics` should refuse with a plain 404"
+    path, text = _COMPOSE_LOCATIONS, _text(_COMPOSE_LOCATIONS)
+    locations = _locations(text)
+    assert "/metrics" in locations, f"{path}: no `location /metrics {{...}}` block found"
+    body = locations["/metrics"]
+    assert "proxy_pass" not in body, (
+        f"{path}: `/metrics` must be answered locally, never proxied to the app -- "
+        "this location exists specifically so a scraper reaching this edge cannot "
+        "see it at all"
+    )
+    assert "return 404" in body, f"{path}: `/metrics` should refuse with a plain 404"
 
 
-def test_security_headers_present_in_both_deployment_paths() -> None:
+def test_security_headers_present() -> None:
     """NECESSARY, but proven NOT SUFFICIENT -- keep reading before trusting a
     green result here. This only checks that the header text appears
     SOMEWHERE in the file; it says nothing about which nginx SCOPE it lives
@@ -365,13 +328,10 @@ def test_security_headers_present_in_both_deployment_paths() -> None:
     see. Reads the Compose path as `nginx.conf` + `app-locations.conf`
     combined (`_compose_combined_text`) -- the `add_header` lines live in the
     latter, not the former; see that helper's docstring for why."""
-    for label, text in (
-        ("deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        for name, value in _SECURITY_HEADERS:
-            pattern = re.compile(rf"add_header\s+{re.escape(name)}\s+{re.escape(value)}\s+always;")
-            assert pattern.search(text), f"{label}: missing `add_header {name} {value} always;`"
+    label, text = "deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()
+    for name, value in _SECURITY_HEADERS:
+        pattern = re.compile(rf"add_header\s+{re.escape(name)}\s+{re.escape(value)}\s+always;")
+        assert pattern.search(text), f"{label}: missing `add_header {name} {value} always;`"
 
 
 def test_no_scope_declares_a_partial_add_header_set() -> None:
@@ -400,38 +360,33 @@ def test_no_scope_declares_a_partial_add_header_set() -> None:
     compose_tree = _splice_app_locations(
         _parse_config(_text(_COMPOSE_NGINX)), compose_app_locations
     )
-    runpod_tree = _parse_config(_text(_RUNPOD_NGINX))
 
-    for path, tree in ((_COMPOSE_NGINX, compose_tree), (_RUNPOD_NGINX, runpod_tree)):
-        violations = _partial_add_header_scopes(tree)
-        assert not violations, (
-            f"{path}: found scope(s) declaring a PARTIAL `add_header` set -- each of these "
-            "silently overrides any parent's headers with less, per nginx's own inheritance "
-            f"rule (a child with ANY `add_header` inherits NONE from its parent): {violations!r}"
-        )
+    violations = _partial_add_header_scopes(compose_tree)
+    assert not violations, (
+        f"{_COMPOSE_NGINX}: found scope(s) declaring a PARTIAL `add_header` set -- each of "
+        "these silently overrides any parent's headers with less, per nginx's own inheritance "
+        f"rule (a child with ANY `add_header` inherits NONE from its parent): {violations!r}"
+    )
 
 
 def test_hsts_is_a_real_gated_setting_not_a_literal_or_a_comment() -> None:
     """Reads the Compose path combined (`_compose_combined_text`): the `map`
     itself is only legal in `nginx.conf`'s `http` block, while the
     `add_header` that consumes it lives in `app-locations.conf`."""
-    for label, text in (
-        ("deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        assert _HSTS_MAP_RE.search(text), (
-            f'{label}: no `map $host $hsts_header {{ default ""; ... }}` -- HSTS must be '
-            "a real, per-host-gated setting (P1-7), not prose describing its own absence"
-        )
-        assert _HSTS_GATED_ADD_HEADER_RE.search(text), (
-            f"{label}: no `add_header Strict-Transport-Security $hsts_header always;` -- "
-            "the map exists but nothing consumes it"
-        )
-        assert not _HSTS_LITERAL_RE.search(text), (
-            f"{label}: found a LITERAL, unconditional Strict-Transport-Security value -- "
-            "this defeats the per-host gate and would poison `localhost` for every "
-            "other project on the machine the moment this file is used for local dev (§3.76)"
-        )
+    label, text = "deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()
+    assert _HSTS_MAP_RE.search(text), (
+        f'{label}: no `map $host $hsts_header {{ default ""; ... }}` -- HSTS must be '
+        "a real, per-host-gated setting (P1-7), not prose describing its own absence"
+    )
+    assert _HSTS_GATED_ADD_HEADER_RE.search(text), (
+        f"{label}: no `add_header Strict-Transport-Security $hsts_header always;` -- "
+        "the map exists but nothing consumes it"
+    )
+    assert not _HSTS_LITERAL_RE.search(text), (
+        f"{label}: found a LITERAL, unconditional Strict-Transport-Security value -- "
+        "this defeats the per-host gate and would poison `localhost` for every "
+        "other project on the machine the moment this file is used for local dev (§3.76)"
+    )
 
 
 def test_cors_is_an_edge_allow_list_and_not_application_middleware() -> None:
@@ -447,13 +402,10 @@ def test_cors_is_an_edge_allow_list_and_not_application_middleware() -> None:
         "if ($request_method = OPTIONS)",
         "return 204;",
     )
-    for label, text in (
-        ("deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()),
-        (_RUNPOD_NGINX, _text(_RUNPOD_NGINX)),
-    ):
-        for token in expected:
-            assert token in text, f"{label}: missing CORS allow-list element {token!r}"
-        assert "Access-Control-Allow-Origin *" not in text, f"{label}: wildcard CORS is forbidden"
+    label, text = "deploy/nginx/{nginx.conf,app-locations.conf}", _compose_combined_text()
+    for token in expected:
+        assert token in text, f"{label}: missing CORS allow-list element {token!r}"
+    assert "Access-Control-Allow-Origin *" not in text, f"{label}: wildcard CORS is forbidden"
 
     for candidate in (_REPO_ROOT / "src").rglob("*.py"):
         assert "CORSMiddleware" not in candidate.read_text(encoding="utf-8"), (

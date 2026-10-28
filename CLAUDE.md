@@ -63,14 +63,10 @@
 - This covers doc and PR text only. Never put commands in a file and run it to get past the approval hook.
 
 ## Staging & deploy
-- Staging target: a RunPod GPU Pod running the all-in-one image (`deploy/runpod/`, guide `docs/deploy-runpod.md`). It is reachable publicly through the RunPod proxy URL (`https://<POD_ID>-80.proxy.runpod.net`).
+- There is no staging target. The RunPod staging project was cancelled (owner decision, 2026-10-28). Its files were moved out of the repo to `/home/AIZZAK-runpod-backup/`. Do not plan or deploy work for RunPod.
 - The local Compose stack on this host (`docker compose up -d`, rolling replace via `deploy/rolling-deploy.sh`) stays the development and live test environment.
 - Nothing deploys automatically on push; CI only tests.
-- Staging phase (owner decision, 2026-10-06):
-  - Public exposure of the stack through RunPod is allowed. Real data is allowed.
-  - Security hardening is deferred until after the first RunPod boot. Record each gap you find in the staging security list in `docs/deploy-runpod.md`; do not block a staging deploy on it.
-  - Agents may deploy to RunPod without a human: build and push the image, create, update and restart the Pod. Report each deploy (image tag, Pod ID, URL, `/health` result).
-  - Deleting a Pod or a network volume still needs human approval (it destroys data).
+- A server deploy follows `docs/deploy-server.md`. Deploying to any server is a human decision.
 - Wave 8, the production gate, stays deferred (`docs/capacity-status.md`). The production launch is still a human decision.
 - The local Compose stack is a development environment (owner decision, 2026-10-05). Agents may start, stop, restart and recreate its containers (`docker compose up -d [--no-deps] [--force-recreate] <service>`, `restart`, `stop`):
   - name the services you touch, and prefer `--no-deps`;

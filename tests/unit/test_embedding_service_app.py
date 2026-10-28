@@ -528,8 +528,8 @@ def test_require_cuda_starts_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("value", [None, "", "0"], ids=["unset", "empty", "zero"])
 def test_require_cuda_off_by_default(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
-    """Off unless it is exactly `1`: the CPU stack (and the RunPod image, which
-    never sets it) starts on the CPU as before, and `/health` says so."""
+    """Off unless it is exactly `1`: the CPU stack starts on the CPU as before,
+    and `/health` says so."""
     fake = _FakeEncoder()
     monkeypatch.setattr(service_app, "_load_model", _fake_loader(fake))
     monkeypatch.setattr(service_app, "_choose_device", lambda: _CPU)

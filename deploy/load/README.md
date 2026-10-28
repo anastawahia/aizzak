@@ -515,7 +515,7 @@ not meant to; what is being measured is the cost of TLS termination.
   4,090 `[crit] ... Cannot assign requested address` lines at 700 rps. Capacity
   3.2 gave the `nginx` service its own `ip_local_port_range` plus
   `tcp_tw_reuse: "1"` (the kernel default of 2 covers loopback only, which is
-  why the RunPod publisher was never exposed and this bridge always was).
+  why a loopback destination is never exposed and this bridge always was).
 
 - **The reach of a single source IP — was the binding limit, and is no longer
   (`د‑8`).** The edge rate-limits on `$binary_remote_addr`, and at the time of this

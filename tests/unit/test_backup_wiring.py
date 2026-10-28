@@ -41,7 +41,6 @@ _HBA = _REPO_ROOT / "deploy" / "postgres" / "pg_hba.conf"
 _ARCHIVE_SH = _REPO_ROOT / "deploy" / "postgres" / "archive_wal.sh"
 _ROLES_SH = _REPO_ROOT / "deploy" / "postgres" / "initdb" / "10-roles.sh"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
-_RUNPOD_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _MINIO_BOOTSTRAP = _REPO_ROOT / "deploy" / "minio" / "bootstrap.sh"
 _DRILL = _REPO_ROOT / "deploy" / "backup" / "restore_drill.sh"
 
@@ -56,11 +55,11 @@ def _compose() -> str:
 # --------------------------------------------------------------- the role --
 
 
-def test_the_backup_role_exists_in_all_four_places() -> None:
+def test_the_backup_role_exists_in_all_three_places() -> None:
     """The `test_role_provisioning_wiring.py` guard, applied to the one role
     it does NOT cover: `backup_operator` is deliberately absent from
     `_require_roles` (no migration names it in a policy), so nothing else
-    compares these four sources for it."""
+    compares these three sources for it."""
     missing = []
     if f"CREATE ROLE {BACKUP_ROLE} " not in _ROLES_SH.read_text(encoding="utf-8"):
         missing.append("deploy/postgres/initdb/10-roles.sh")
@@ -68,8 +67,6 @@ def test_the_backup_role_exists_in_all_four_places() -> None:
         missing.append("docker-compose.yml (postgres, with :?)")
     if f"{_PASSWORD_VAR}=" not in _ENV_EXAMPLE.read_text(encoding="utf-8"):
         missing.append(".env.example")
-    if _PASSWORD_VAR not in _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8"):
-        missing.append("deploy/runpod/entrypoint.sh")
 
     assert not missing, f"{BACKUP_ROLE} is not wired in: {missing}"
 
@@ -103,16 +100,6 @@ def test_the_role_reads_every_table_through_a_predefined_role_not_a_grant_list()
     """A hand-maintained grant list stops covering tables added by later
     migrations, and it does so silently -- the dump succeeds and is short."""
     assert f"GRANT pg_read_all_data TO {BACKUP_ROLE}" in _ROLES_SH.read_text("utf-8")
-
-
-def test_the_runpod_deployment_requires_the_password_before_it_boots() -> None:
-    """`deploy/runpod/bootstrap.sh` runs the SAME `10-roles.sh` under
-    `set -u`, so an unset variable there does not skip the role -- it aborts
-    the whole cluster bootstrap."""
-    entrypoint = _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8")
-    required_block = entrypoint.split("for required in", 1)[1].split("do", 1)[0]
-
-    assert _PASSWORD_VAR in required_block
 
 
 # ------------------------------------------------------------- archiving --

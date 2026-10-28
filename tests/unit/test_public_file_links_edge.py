@@ -3,8 +3,8 @@
 On a server the app signs upload and download URLs for the public name
 (``https://<domain>/workspace-files/<workspace>/<file>?X-Amz-...``), and
 ``deploy/nginx/app-locations.conf`` passes them to MinIO. These tests read the
-Compose edge, the RunPod edge and ``docker-compose.yml`` structurally (the
-parser in ``test_edge_hardening.py``, as ``test_edge_cloudflare.py`` does) and
+Compose edge and ``docker-compose.yml`` structurally (the parser in
+``test_edge_hardening.py``, as ``test_edge_cloudflare.py`` does) and
 each guard is also shown failing on an edited copy, so none passes vacuously.
 
 No Docker and no network. What nginx really does with these locations is
@@ -33,7 +33,6 @@ from tests.unit.test_files_use_cases import _SPACE, _ctx, _FakeFiles, _transfers
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOCATIONS = _REPO_ROOT / "deploy" / "nginx" / "app-locations.conf"
 _NGINX = _REPO_ROOT / "deploy" / "nginx" / "nginx.conf"
-_RUNPOD = _REPO_ROOT / "deploy" / "runpod" / "nginx.conf"
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 
@@ -338,115 +337,6 @@ def test_the_files_route_guard_fails_on_each_regression() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# AC-3.2 -- the two edges differ exactly where the owner decided              #
-# --------------------------------------------------------------------------- #
-_IDENTICAL = (
-    "client_max_body_size",
-    "proxy_request_buffering",
-    "proxy_buffering",
-    "proxy_read_timeout",
-    "proxy_send_timeout",
-    "limit_req",
-)
-_HANDLED = {*_IDENTICAL, "proxy_pass", "set", "proxy_set_header", "proxy_hide_header"}
-
-
-def files_drift_problems(compose_locations_text: str, runpod_text: str) -> list[str]:
-    problems: list[str] = []
-    compose = _files_body(compose_locations_text)
-    runpod = _files_body(runpod_text)
-    for name in _IDENTICAL:
-        if sorted(direct(compose, name)) != sorted(direct(runpod, name)):
-            problems.append(f"{name} differs between the Compose and RunPod files locations")
-
-    def names(body: list[Statement], directive: str) -> set[str]:
-        return {a[0].lower() for a in direct(body, directive) if a}
-
-    set_c, set_r = names(compose, "proxy_set_header"), names(runpod, "proxy_set_header")
-    if set_c - set_r != {"x-forwarded-host"} or set_r - set_c:
-        problems.append(
-            f"proxy_set_header names differ beyond X-Forwarded-Host: "
-            f"compose-only {sorted(set_c - set_r)}, runpod-only {sorted(set_r - set_c)}"
-        )
-    values_c = {a[0].lower(): a[1:] for a in direct(compose, "proxy_set_header") if a}
-    values_r = {a[0].lower(): a[1:] for a in direct(runpod, "proxy_set_header") if a}
-    if values_c.get("host") != ["$http_host"] or values_r.get("host") != ["$minio_signed_host"]:
-        problems.append("Host must be $http_host on Compose and $minio_signed_host on RunPod")
-    if values_c.get("x-forwarded-proto") != ["$scheme"] or values_r.get("x-forwarded-proto") != [
-        "https"
-    ]:
-        problems.append("X-Forwarded-Proto must be $scheme on Compose and https on RunPod")
-    hide_c, hide_r = names(compose, "proxy_hide_header"), names(runpod, "proxy_hide_header")
-    if (
-        hide_c - hide_r != {"strict-transport-security", "x-content-type-options"}
-        or hide_r - hide_c
-    ):
-        problems.append("proxy_hide_header differs beyond HSTS and nosniff (Compose only)")
-    return [
-        *problems,
-        *_structure_drift_problems(compose, runpod, compose_locations_text, runpod_text),
-    ]
-
-
-def _structure_drift_problems(
-    compose: list[Statement], runpod: list[Statement], compose_text: str, runpod_text: str
-) -> list[str]:
-    problems: list[str] = []
-    in_compose = {s[1] for s in compose if s[0] == "block"}
-    in_runpod = {s[1] for s in runpod if s[0] == "block"}
-    if in_compose != {"limit_except", "if"} or in_runpod:
-        problems.append("limit_except must exist on Compose only")
-    if not (
-        direct(compose, "set") == [["$aizzak_minio", '"minio:9000"']]
-        and direct(compose, "proxy_pass") == [["http://$aizzak_minio$request_uri"]]
-        and not direct(runpod, "set")
-        and direct(runpod, "proxy_pass") == [["http://127.0.0.1:9000"]]
-    ):
-        problems.append("destination: Compose names minio per request, RunPod a literal loopback")
-    exact_c = [1 for _, a, _ in _iter_blocks(_parse_config(compose_text)) if a == ["=", _PREFIX]]
-    exact_r = [1 for _, a, _ in _iter_blocks(_parse_config(runpod_text)) if a == ["=", _PREFIX]]
-    if len(exact_c) != 1 or exact_r:
-        problems.append("the exact bucket-root location must exist on Compose only")
-    for scope, other, label in ((compose, runpod, "Compose"), (runpod, compose, "RunPod")):
-        for stmt in scope:
-            if stmt[0] == "directive" and stmt[1] not in _HANDLED and not direct(other, stmt[1]):
-                problems.append(f"{stmt[1]} is on the {label} files location only")
-    return problems
-
-
-def test_the_two_files_locations_differ_exactly_where_the_owner_decided() -> None:
-    assert files_drift_problems(_read(_LOCATIONS), _read(_RUNPOD)) == []
-
-
-def test_the_drift_guard_fails_when_either_side_is_unified() -> None:
-    loc, run = _read(_LOCATIONS), _read(_RUNPOD)
-    host = "proxy_set_header Host              $http_host;"
-    assert files_drift_problems(
-        _swap(loc, host, "proxy_set_header Host              $minio_signed_host;"), run
-    )
-    assert files_drift_problems(_swap(loc, '    proxy_set_header X-Forwarded-Host  "";\n', ""), run)
-    assert files_drift_problems(
-        loc,
-        _swap(
-            run,
-            "proxy_pass http://127.0.0.1:9000;",
-            "proxy_pass http://127.0.0.1:9000;\n            limit_except GET PUT { deny all; }",
-        ),
-    )
-    assert files_drift_problems(
-        _swap(loc, "client_max_body_size    50m;", "client_max_body_size    60m;"), run
-    )
-    assert files_drift_problems(
-        _swap(
-            loc,
-            "    proxy_buffering         off;",
-            "    proxy_buffering         off;\n    add_header X-T 1;",
-        ),
-        run,
-    )
-
-
-# --------------------------------------------------------------------------- #
 # AC-5.5 -- MinIO stays on loopback                                           #
 # --------------------------------------------------------------------------- #
 def unbound_ports(service: Mapping[str, object]) -> list[str]:
@@ -483,7 +373,7 @@ def test_the_loopback_guard_fails_on_a_port_published_everywhere() -> None:
 # AC-6.4 -- the route names the bucket                                        #
 # --------------------------------------------------------------------------- #
 def bucket_binding_problems(
-    locations_text: str, runpod_text: str, compose_text: str, env_example_text: str
+    locations_text: str, compose_text: str, env_example_text: str
 ) -> list[str]:
     def first_segment(text: str) -> set[str]:
         return {
@@ -494,7 +384,6 @@ def bucket_binding_problems(
 
     names: dict[str, set[str]] = {
         "app-locations.conf": first_segment(locations_text),
-        "runpod/nginx.conf": first_segment(runpod_text),
         "docker-compose.yml": set(re.findall(r"\$\{MINIO_BUCKET:-([^}]+)\}", compose_text)),
         ".env.example": set(re.findall(r"(?m)^MINIO_BUCKET=(\S+)\s*$", env_example_text)),
     }
@@ -506,20 +395,17 @@ def bucket_binding_problems(
 
 
 def test_the_route_names_the_bucket_compose_and_env_example_default_to() -> None:
-    problems = bucket_binding_problems(
-        _read(_LOCATIONS), _read(_RUNPOD), _read(_COMPOSE), _read(_ENV_EXAMPLE)
-    )
+    problems = bucket_binding_problems(_read(_LOCATIONS), _read(_COMPOSE), _read(_ENV_EXAMPLE))
     assert problems == []
     assert MinioSettings().bucket == _PREFIX.strip("/")
 
 
 def test_the_bucket_guard_fails_when_one_name_moves_alone() -> None:
-    loc, run, comp, env = (_read(p) for p in (_LOCATIONS, _RUNPOD, _COMPOSE, _ENV_EXAMPLE))
-    assert bucket_binding_problems(loc.replace("/workspace-files/", "/files/"), run, comp, env)
+    loc, comp, env = (_read(p) for p in (_LOCATIONS, _COMPOSE, _ENV_EXAMPLE))
+    assert bucket_binding_problems(loc.replace("/workspace-files/", "/files/"), comp, env)
     assert bucket_binding_problems(
-        loc, run, comp.replace("MINIO_BUCKET:-workspace-files", "MINIO_BUCKET:-x"), env
+        loc, comp.replace("MINIO_BUCKET:-workspace-files", "MINIO_BUCKET:-x"), env
     )
     assert bucket_binding_problems(
-        loc, run, comp, env.replace("MINIO_BUCKET=workspace-files", "MINIO_BUCKET=x")
+        loc, comp, env.replace("MINIO_BUCKET=workspace-files", "MINIO_BUCKET=x")
     )
-    assert bucket_binding_problems(loc, run.replace("/workspace-files/", "/files/"), comp, env)

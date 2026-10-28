@@ -650,8 +650,7 @@ services:
       # status` reports `archived_count`/`last_archived_wal` and the spool
       # depth rather than `failed_count`, and why this line names `sh`: the
       # same precedent `nginx-certs` (`entrypoint: ["/bin/sh", "/gen-cert.sh"]`)
-      # and `runpod/bootstrap.sh` (`bash /app/deploy/...`) already follow for
-      # every mode-0644 script in this repository.
+      # already follows for a mode-0644 script in this repository.
       - -c
       - archive_command=/bin/sh /usr/local/bin/archive_wal.sh %p %f
       # The RPO knob, and the only number here an operator should expect to
@@ -1883,8 +1882,7 @@ services:
     # ⚠️ **ولماذا هنا وليس في `deploy/gunicorn.conf.py`:** ‏nginx يرفع حدَّه
     # بنفسه (`worker_rlimit_nofile`) لأنّه يبدأ بصلاحيّة الجذر؛ وgunicorn لا
     # يملك إعداداً مكافئاً. فنصفُ الرقم عند الحافّة في ملفِّ الحافّة، ونصفُه
-    # هنا — وعلى مسار RunPod في `minfds` من `supervisord.conf`، إذ لا Compose
-    # هناك. ثلاثةُ مواضعَ لرقمٍ واحد، ويحرسها `test_edge_capacity.py`.
+    # هنا. موضعان لرقمٍ واحد، ويحرسهما `test_edge_capacity.py`.
     ulimits:
       nofile:
         soft: 65536
@@ -1941,10 +1939,8 @@ services:
     # 45 = gunicorn's 30 plus margin. The arbiter was measured exiting 30.1-30.3s
     # after SIGTERM in the worst case and 0.45s with nothing in flight, which is
     # what a deploy actually costs: this window is only spent when there is
-    # something to wait for. The same number is `stopwaitsecs=45` in
-    # `deploy/runpod/supervisord.conf`, whose own default was also 10 (read out
-    # of supervisor's source), and `tests/unit/test_gunicorn_flags.py` fails the
-    # build if either publisher's outer window drops back below the inner one.
+    # something to wait for. `tests/unit/test_gunicorn_flags.py` fails the
+    # build if this outer window drops back below the inner one.
     #
     # ⚠️ Scoped to `app` on purpose. The workers and the relay have their own
     # in-flight semantics (a message half-handled is not a response half-written)
@@ -2198,7 +2194,7 @@ services:
   # the stream-topology-plan.md fix (log/3.107.md), build_relay_from_env
   # returns an ensure_topology() closure that this process awaits before
   # its own run_forever(), so every group exists before this relay's first
-  # publish -- on Compose, RunPod, and bare `python -m` alike. See 08 §4.
+  # publish -- on Compose and bare `python -m` alike. See 08 §4.
   outbox-relay:
     <<: [*app-image, *app-logging]
     depends_on:
@@ -2568,9 +2564,9 @@ services:
     #     tw_reuse=1, bridge destination     6,000 of 6,000
     #     tw_reuse=0, loopback destination   1,007 of 6,000  (control)
     #
-    # So `deploy/runpod/nginx.conf`, which proxies to a LITERAL 127.0.0.1:8000,
-    # has been immune to this since before it was written -- and the Compose
-    # path, which cannot use a literal address, never was. Reuse is gated on the
+    # So an edge that proxies to a LITERAL 127.0.0.1 address is immune to this
+    # by default -- and the Compose path, which cannot use a literal address,
+    # never was. Reuse is gated on the
     # TIME_WAIT socket being older than one second, so this raises the recycle
     # ceiling from range/60s to roughly range/1s; it is safe because TCP
     # timestamps are on by default at both ends and it applies to OUTGOING

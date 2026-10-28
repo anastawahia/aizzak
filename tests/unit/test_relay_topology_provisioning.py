@@ -1,9 +1,8 @@
 """Unit tests for ``stream-topology-plan.md`` §3 — the outbox relay must
 provision every static consumer group (``STATIC_CONSUMER_TOPOLOGY``) BEFORE
 its first publish, on every entrypoint that ever runs it
-(``app.workers.outbox_relay.run``, which both the Compose ``outbox-relay``
-service and RunPod's ``supervisord.conf`` execute unchanged — the plan's
-§1-هـ, "no extra line needed in either").
+(``app.workers.outbox_relay.run``, which the Compose ``outbox-relay``
+service executes unchanged — the plan's §1-هـ, "no extra line needed").
 
 Hermetic, the ``test_redis_blocking_timeouts.py`` precedent restated: every
 client factory ``build_relay_from_env`` calls (``create_engine``/

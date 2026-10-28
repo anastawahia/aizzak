@@ -174,10 +174,9 @@ EXPOSE 8000
 # lifecycle through it, and nothing else reports that.
 #
 # ── The three explicit flags (capacity 3.3) ───────────────────────────────────
-# Until this step this line ended at `--bind` while `deploy/runpod/supervisord.
-# conf` passed `--timeout 120 --graceful-timeout 30`: one repository, one
-# process, two different servers. Both publishers now carry the same three, and
-# each number is written because it was measured, not because it is a default.
+# Until this step this line ended at `--bind`, so every flag rode gunicorn's
+# defaults. Each number is now written because it was measured, not because it
+# is a default.
 #
 # `--timeout 30` IS NOT A REQUEST TIMEOUT, and this is the flag the step's own
 # acceptance criterion is easiest to misread. Under `UvicornWorker` the worker
@@ -218,14 +217,13 @@ EXPOSE 8000
 # 0.10s and the arbiter exited at 0.45s, because `api/v1/websocket/streaming.py`
 # returns on `WebSocketDisconnect`.
 #
-# `--keep-alive 65` is the flag `deploy/runpod/nginx.conf` has been waiting for
-# by name since 3.2. MEASURED app-side: an idle upstream connection is dropped
-# after 2.0s at gunicorn's default and 65.0s with this flag. ⚠️ It is INERT on
-# this publisher and shipped anyway: the Compose edge sends `Connection: close`
-# (it refuses an `upstream` block, 3.2's resolver decision) and holds no
+# `--keep-alive 65`: MEASURED app-side, an idle upstream connection is dropped
+# after 2.0s at gunicorn's default and 65.0s with this flag. ⚠️ It is INERT
+# behind the Compose edge and shipped anyway: that edge sends `Connection:
+# close` (it refuses an `upstream` block, 3.2's resolver decision) and holds no
 # persistent upstream socket at all -- measured live, 60 requests through the
-# real edge left 124 sockets in TIME_WAIT and 0 ESTABLISHED. It governs RunPod's
-# pool, and the two command lines must not drift again to say so.
+# real edge left 124 sockets in TIME_WAIT and 0 ESTABLISHED. It matters only to
+# an edge that pools upstream connections.
 #
 # ⚠️ `--max-requests` IS DELIBERATELY ABSENT. The plan asks for `--max-requests
 # 2000 --max-requests-jitter 200` against an UNMEASURED memory leak, and its

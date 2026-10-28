@@ -2,7 +2,7 @@
 
 `deploy/release/bundle-files.txt` is the one list of what `aizzak-<V>.tar.gz` carries. A Compose
 file that gains a `./deploy/...` bind mount the list forgot would build a bundle that boots into
-"no such file" on a server (RunPod's `staging-4` was exactly that, `server-gpu-plan.md:414`).
+"no such file" on a server.
 
 The guard reads the two Compose files as YAML, in every service and every volume spelling, and
 compares the bind sources with the list. Every comparison is shown failing in BOTH directions on
@@ -277,7 +277,7 @@ def test_every_listed_path_is_tracked_by_git() -> None:
 
 def test_the_bundle_never_names_a_secret_or_a_dev_file() -> None:
     _, listed = _real()
-    forbidden = ("deploy/load", "deploy/runpod", "certs", "init.json", "auto.conf", "tests", "src")
+    forbidden = ("deploy/load", "certs", "init.json", "auto.conf", "tests", "src")
     for path in listed:
         parts = path.split("/")
         assert not any(bad in parts or path == bad for bad in forbidden), path

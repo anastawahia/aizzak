@@ -6,11 +6,9 @@ PROCESS.** A worker asked to stop now DRAINS: it stops reading, finishes the
 messages it has already taken out of the stream within
 ``WORKER_DRAIN_TIMEOUT_S``, and only then is cancelled
 (``workers/lifecycle.py``). That inner window is worth exactly nothing unless
-the process supervisor's outer one is wider than it -- and BOTH publishers
-shipped the default. Compose's ``stop_grace_period`` default is 10 s and
-supervisord's ``stopwaitsecs`` default is 10 s (read out of supervisor's own
-source, ``integer(get(section, 'stopwaitsecs', 10))``), against a drain of 30.
-So without this step's two edits the drain could never once have completed:
+the process supervisor's outer one is wider than it -- and Compose shipped
+the default. Its ``stop_grace_period`` default is 10 s, against a drain of 30.
+So without this step's edit the drain could never once have completed:
 ``SIGKILL`` at ten seconds, mid-handler, on every single restart -- and now
 ``WORKER_CONCURRENCY`` jobs truncated at a time instead of one, which is
 precisely the multiplication the drain was added to prevent.
@@ -39,8 +37,6 @@ from app.framework.settings.settings import EventSettings
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
-_SUPERVISORD = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
-_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 
 # The three Compose services that run `python -m app.workers.main`, i.e. every
 # service `workers/lifecycle.run_worker` governs. Named rather than derived so
@@ -55,9 +51,6 @@ _WORKER_SERVICES = ("worker-knowledge", "worker-media", "worker-memory")
 _TEARDOWN_MARGIN_S = 5.0
 
 _DURATION = re.compile(r"^(?P<value>\d+(?:\.\d+)?)(?P<unit>ms|s|m|h)?$")
-_SUPERVISOR_PROGRAM = re.compile(
-    r"^\[program:(?P<name>[^\]]+)\]\n(?P<body>(?:(?!\[program:).*\n)*)", re.MULTILINE
-)
 
 
 def _seconds(raw: object) -> float:
@@ -116,52 +109,28 @@ def test_every_worker_service_outlives_its_own_drain() -> None:
         assert _seconds(grace) >= _drain_default() + _TEARDOWN_MARGIN_S
 
 
-def test_the_runpod_workers_outlive_their_own_drain_too() -> None:
-    """The other publisher, and the one whose omission was invisible: a
-    supervisord `[program:]` block with no `stopwaitsecs` inherits 10, and
-    nothing in the file says so. Every program that runs the dispatcher
-    drains -- `worker`, and since 2026-10-12 `worker-knowledge` and
-    `worker-media` too."""
-    workers = {
-        match.group("name"): match.group("body")
-        for match in _SUPERVISOR_PROGRAM.finditer(_SUPERVISORD.read_text(encoding="utf-8"))
-        if re.search(r"^command=.* -m app\.workers\.main\s*$", match.group("body"), re.MULTILINE)
-    }
-    assert {"worker", "worker-knowledge", "worker-media"} <= set(workers)
-
-    for name, body in workers.items():
-        found = re.search(r"^stopwaitsecs=(?P<value>\d+)", body, re.MULTILINE)
-        assert found is not None, f"[program:{name}] has no stopwaitsecs: it inherits 10s"
-        assert float(found.group("value")) >= _drain_default() + _TEARDOWN_MARGIN_S
-
-
-def test_both_publishers_ship_the_same_drain_the_contract_defines() -> None:
-    """A drain that differs per publisher is a ladder nobody can reason about.
-    Both files interpolate the same key with the same fallback, and both
-    fallbacks equal the `EventSettings` default -- so `.env` moves one number
-    and the whole ladder moves with it."""
+def test_compose_ships_the_drain_the_contract_defines() -> None:
+    """Compose interpolates the key with a fallback equal to the
+    `EventSettings` default, and `.env.example` names the same number -- so
+    `.env` moves one number and the whole ladder moves with it."""
     compose_env = _services()["worker-memory"]["environment"]
     assert isinstance(compose_env, dict)
     rendered = yaml.safe_dump(_compose()["x-app-env"])
-    entrypoint = _ENTRYPOINT.read_text(encoding="utf-8")
     shipped = _drain_default()
 
     assert f"WORKER_DRAIN_TIMEOUT_S: ${{WORKER_DRAIN_TIMEOUT_S:-{shipped:g}}}" in rendered
-    assert f'WORKER_DRAIN_TIMEOUT_S="${{WORKER_DRAIN_TIMEOUT_S:-{shipped:g}}}"' in entrypoint
     assert _env_example()["WORKER_DRAIN_TIMEOUT_S"] == f"{shipped:g}"
 
 
 def test_the_shipped_concurrency_agrees_across_every_file_that_names_it() -> None:
     """`WORKER_CONCURRENCY` decides three things at once (the DB pool, the
-    `XREADGROUP` COUNT, and peak RSS), so a publisher that ships a different
+    `XREADGROUP` COUNT, and peak RSS), so a file that ships a different
     default is shipping a different connection budget -- and
     `test_connection_budget.py` would be recomputing a stack nobody runs."""
     shipped = EventSettings().worker_concurrency
     rendered = yaml.safe_dump(_compose()["x-app-env"])
-    entrypoint = _ENTRYPOINT.read_text(encoding="utf-8")
 
     assert f"WORKER_CONCURRENCY: ${{WORKER_CONCURRENCY:-{shipped}}}" in rendered
-    assert f'WORKER_CONCURRENCY="${{WORKER_CONCURRENCY:-{shipped}}}"' in entrypoint
     assert _env_example()["WORKER_CONCURRENCY"] == str(shipped)
 
 

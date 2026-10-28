@@ -13,9 +13,8 @@
 #   Docker Compose -- 0.0.0.0  (the per-service CONTAINER is the isolation
 #                      boundary; every sibling service in this stack binds
 #                      0.0.0.0 inside its own container the same way)
-#   RunPod         -- 127.0.0.1 (one Pod = one container = one network
-#                      namespace for EVERYTHING; loopback is the only
-#                      boundary that deployment has at all)
+#   one container  -- 127.0.0.1 (every process shares one network namespace,
+#                      so loopback is the only boundary there is)
 #
 # ⚠️ `disable_mlock = true` is a deliberate simplification, not an oversight.
 # Locking Vault's memory (via CAP_IPC_LOCK) stops secrets from being paged to
