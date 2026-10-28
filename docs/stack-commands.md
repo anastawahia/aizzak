@@ -229,7 +229,7 @@ docker compose up -d                                  # الثلاثة ضمن ا
 >
 > ✅ **ومنذ [§3.137](log/3.137.md) لم يعد هذا فعلاً يدويّاً**: العامل الحيّ يكنس إخوته الموتى كلّ `CONSUMER_SWEEP_INTERVAL_S` بالتسلسل الآمن نفسه (استردادٌ ⇒ إعادةُ تحقّق ⇒ حذفٌ أو رفض)، والخروج النظيف يحذف قيدَ العمليّة قبل موتها. يبقى الأمر 15 هو **مقياس الحياة** كما هو — وشبَحٌ باقٍ بعد نشرٍ حديثٍ صار بذاته إشارةَ خللٍ تستحقّ نظرةً في سطور `consumers.sweep_refused`.
 >
-> ⭐ **قيمة `WORKER` في `.env` لم تعد تعني شيئاً لـCompose** — كانت `${WORKER:-...}` تجعل `.env` يغلب `docker-compose.yml` بصمت، ولا يُكشَف إلّا بـ`docker compose config`. تبقى ذات معنىً لصورة **RunPod** (حاويةٌ واحدة ⇒ عاملٌ واحد) ولـ`python -m app.workers.main` المجرّد.
+> ⭐ **قيمة `WORKER` في `.env` لم تعد تعني شيئاً لـCompose** — كانت `${WORKER:-...}` تجعل `.env` يغلب `docker-compose.yml` بصمت، ولا يُكشَف إلّا بـ`docker compose config`. تبقى ذات معنىً لـ`python -m app.workers.main` المجرّد وحده.
 >
 > فإن انهار عاملٌ اليوم فهو **عطلٌ حقيقيٌّ يستحقّ القراءة**: بيئةٌ لا نقصُ كود (‏Vault · سرّ MinIO مشوَّه · `PROVIDER_ROUTING` يسمّي مزوّداً بلا محوّل) — والرسالة تسمّي السبب. و`media` وحده يضيف حاجة اعتمادٍ مخزَّنٍ باسم `image:openai`، وغيابُه يُفشل **المهمّة** لا الإقلاع — ولهذا لم يمنع غيابُه قياسَ الإقلاع في §3.134.
 
@@ -642,6 +642,6 @@ docker buildx build --platform linux/amd64 --load \
 
 ---
 
-**للاستزادة:** [`quickstart.md`](quickstart.md) (المنافذ · جدول الأعطال · التحقّق اليدويّ من التدفّق الكامل) · [`design/08-local-runbook.md`](design/08-local-runbook.md) (المرجع المُلزِم) · [`deploy-server.md`](deploy-server.md) · [`deploy-runpod.md`](deploy-runpod.md).
+**للاستزادة:** [`quickstart.md`](quickstart.md) (المنافذ · جدول الأعطال · التحقّق اليدويّ من التدفّق الكامل) · [`design/08-local-runbook.md`](design/08-local-runbook.md) (المرجع المُلزِم) · [`deploy-server.md`](deploy-server.md).
 
 </div>

@@ -112,8 +112,8 @@ vault auth enable approle 2>/dev/null || true
 # The policy lives in its own file (deploy/vault/app-policy.hcl) rather than
 # a heredoc here: it is the artifact a security review reads, and it is
 # derived from the call sites in vault_secrets.py, not from this script.
-# Compose mounts it at /app-policy.hcl; the RunPod image has no such mount and
-# points VAULT_POLICY_FILE at its own copy under /app/deploy/vault/.
+# Compose mounts it at /app-policy.hcl; a layout without that mount points
+# VAULT_POLICY_FILE at its own copy.
 vault policy write app "${VAULT_POLICY_FILE:-/app-policy.hcl}" >/dev/null
 
 # TTLs verbatim from 08 §3.1. ⚠️ `token_ttl` is load-bearing and short:

@@ -32,13 +32,12 @@ target and the report would blame the platform." That sentence is equally true
 of the platform receiving them, and of the edge proxying them, and neither had
 been raised.
 
-⚠️ ONE NUMBER, THREE PLACES, BECAUSE THE THREE PROCESSES RAISE IT DIFFERENTLY.
+⚠️ ONE NUMBER, TWO PLACES, BECAUSE THE TWO PROCESSES RAISE IT DIFFERENTLY.
 nginx raises its own with `worker_rlimit_nofile` (it starts as root, and the
-hard limit is already 1,048,576), so the edge needs no Compose entry and one
-line covers both publishers. gunicorn has no equivalent setting, so the app's
-half is `ulimits:` in `docker-compose.yml` on the Compose path and `minfds` in
-`supervisord.conf` on the RunPod path. Nothing compares the three, which is
-exactly the shape `test_connection_budget.py` was written for one wave earlier.
+hard limit is already 1,048,576), so the edge needs no Compose entry. gunicorn
+has no equivalent setting, so the app's half is `ulimits:` in
+`docker-compose.yml`. Nothing compares the two, which is exactly the shape
+`test_connection_budget.py` was written for one wave earlier.
 
 ⚠️ AND `worker_connections` IS A PROMISE, NOT A RESOURCE -- the trap this file's
 first test exists to make unrepeatable. Measured on `nginx:1.27` with 16384
@@ -84,8 +83,8 @@ changes nothing inside while reading like a fix. Same lesson as 3.1's `nofile`
 
 ⚠️ THE THIRD FINDING WAS NOT ABOUT PORTS AT ALL. `proxy_set_header` obeys the
 same array-inheritance rule this repository documented at length for
-`add_header`: a level that declares one replaces the whole inherited set. Both
-publishers' `/api/v1/ws` locations declared two (Upgrade, Connection), so every
+`add_header`: a level that declares one replaces the whole inherited set. The
+`/api/v1/ws` location declared two (Upgrade, Connection), so every
 WebSocket handshake reached the app with no X-Real-IP, no X-Forwarded-For, no
 X-Forwarded-Proto, no X-Correlation-Id, no X-Request-Id and `Host` defaulted to
 `$proxy_host`. Measured against the repository's own files, unmodified. That
@@ -107,8 +106,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _EDGE = _REPO_ROOT / "deploy" / "nginx" / "nginx.conf"
 _EDGE_LOCATIONS = _REPO_ROOT / "deploy" / "nginx" / "app-locations.conf"
-_RUNPOD_EDGE = _REPO_ROOT / "deploy" / "runpod" / "nginx.conf"
-_RUNPOD_SUPERVISOR = _REPO_ROOT / "deploy" / "runpod" / "supervisord.conf"
 
 # `docs/capacity-plan.md` §0, the binding target: 500 concurrent users holding
 # up to 3 tabs each. Every floor below is DERIVED from this, never typed twice
@@ -151,12 +148,6 @@ _TIME_WAIT_S = 60
 # under pressure is a budget nobody has sized.
 _SOURCE_PORT_FLOOR = _RPS_TARGET * _TIME_WAIT_S
 
-# gunicorn's default when no `--keep-alive` is passed, which is the situation on
-# both publishers until capacity 3.3. An upstream keepalive pool that holds a
-# socket LONGER than the app will is a 502 waiting for a request nginx is not
-# allowed to retry.
-_GUNICORN_DEFAULT_KEEPALIVE_S = 2
-
 
 def _directive(text: str, name: str) -> int | None:
     """The value of a bare `name <number>;` directive, ignoring comments.
@@ -185,13 +176,8 @@ def _nofile_soft(service: dict[str, object]) -> int | None:
 
 
 def _edge_files() -> list[tuple[str, str]]:
-    """Both publishers' edges. `deploy/runpod/nginx.conf` has no `include`d
-    sibling, so it repeats what `app-locations.conf` holds for Compose -- which
-    is precisely why it is checked rather than trusted."""
-    return [
-        ("deploy/nginx/nginx.conf", _EDGE.read_text(encoding="utf-8")),
-        ("deploy/runpod/nginx.conf", _RUNPOD_EDGE.read_text(encoding="utf-8")),
-    ]
+    """The edge's top-level config, the file that sets the worker knobs."""
+    return [("deploy/nginx/nginx.conf", _EDGE.read_text(encoding="utf-8"))]
 
 
 def test_worker_connections_never_promises_more_than_the_descriptor_budget() -> None:
@@ -246,10 +232,10 @@ def test_one_edge_worker_alone_clears_the_whole_socket_population() -> None:
         )
 
 
-def test_the_app_declares_a_descriptor_limit_on_both_publishers() -> None:
-    """The number the measurement actually found, and the reason it needs two
-    homes: nginx raises its own limit and gunicorn cannot, so `app` depends on
-    whatever launches it -- Compose on one path, supervisord on the other."""
+def test_the_app_declares_a_descriptor_limit() -> None:
+    """The number the measurement actually found, and the reason it needs a
+    home of its own: nginx raises its own limit and gunicorn cannot, so `app`
+    depends on whatever launches it -- Compose."""
     compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
     app_soft = _nofile_soft(compose["services"]["app"])
 
@@ -264,53 +250,24 @@ def test_the_app_declares_a_descriptor_limit_on_both_publishers() -> None:
         f"{_APP_FLOOR} sockets plus its connection pools."
     )
 
-    supervisor = _RUNPOD_SUPERVISOR.read_text(encoding="utf-8")
-    minfds = re.search(r"^minfds\s*=\s*(\d+)\s*$", supervisor, flags=re.MULTILINE)
-    assert minfds is not None, (
-        "deploy/runpod/supervisord.conf sets no `minfds`, and supervisord's "
-        "default is 1024 -- the RunPod path would keep exactly the wall the "
-        "Compose path just lost. 2.3's rule, unchanged: a budget that covers "
-        "one publisher and not the other is not a budget."
-    )
-    assert int(minfds.group(1)) >= _APP_FLOOR
 
-
-def test_the_two_edges_have_not_drifted() -> None:
-    """`deploy/runpod/nginx.conf` cannot `include` `app-locations.conf`, so it
-    carries its own copy of the same four numbers. Copies drift -- that is the
-    whole argument for the `include` on the Compose side, and this is the only
-    protection the side without one can have."""
-    compose_edge = _EDGE.read_text(encoding="utf-8")
+def test_the_presigned_url_location_meters_at_the_api_burst() -> None:
+    """6.2: the presigned-URL location and `location /` share one zone, and
+    must meter at the same burst."""
     compose_locations = _EDGE_LOCATIONS.read_text(encoding="utf-8")
-    runpod = _RUNPOD_EDGE.read_text(encoding="utf-8")
-
-    for knob in ("worker_connections", "worker_rlimit_nofile"):
-        assert _directive(compose_edge, knob) == _directive(runpod, knob), (
-            f"`{knob}` differs between the two edges."
-        )
-
-    def rate(text: str) -> str | None:
-        match = re.search(r"zone=api_req:\d+m\s+rate=(\d+r/s)", text)
-        return match.group(1) if match else None
 
     def burst(text: str, path: str = "/", modifier: str = "") -> str | None:
-        # The `location /` block itself: the first `limit_req` in a file is
-        # the presigned-URL location's since 6.2 (RunPod) and must not be read.
+        # The `location /` block itself: the first `limit_req` in the file is
+        # the presigned-URL location's since 6.2 and must not be read.
         match = re.search(
             r"limit_req\s+zone=api_req\s+burst=(\d+)", _location_block(text, path, modifier)
         )
         return match.group(1) if match else None
 
-    def ws_conn(text: str) -> str | None:
-        match = re.search(r"limit_conn\s+ws_conn\s+(\d+)", text)
-        return match.group(1) if match else None
-
-    assert rate(compose_edge) == rate(runpod)
-    assert burst(compose_locations) == burst(runpod)
+    assert burst(compose_locations) is not None
     assert burst(compose_locations, "/workspace-files/", "^~") == burst(compose_locations), (
         "the presigned-URL location and `location /` must meter at the same burst (6.2)"
     )
-    assert ws_conn(compose_locations) == ws_conn(runpod)
 
 
 def test_the_ws_ceiling_clears_a_single_nated_office() -> None:
@@ -356,22 +313,8 @@ def _sysctl(service: dict[str, object], key: str) -> str | None:
     return str(value) if value is not None else None
 
 
-def _seconds(value: str) -> float:
-    """nginx's time suffixes, for the two directives this module reads."""
-    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
-    for suffix, scale in sorted(units.items(), key=lambda kv: -len(kv[0])):
-        if value.endswith(suffix):
-            return float(value[: -len(suffix)]) * scale
-    return float(value)
-
-
 def _proxy_headers(text: str) -> set[str]:
-    """The header NAMES a chunk of nginx config sets, lower-cased.
-
-    Names, not values: the two publishers legitimately differ on
-    `X-Forwarded-Proto` ($scheme behind Compose's two server blocks, pinned
-    `https` behind RunPod's single one, which sits behind RunPod's own TLS
-    proxy). What may never differ is WHICH headers are sent."""
+    """The header NAMES a chunk of nginx config sets, lower-cased."""
     return {
         m.group(1).lower()
         for m in re.finditer(r"^\s*proxy_set_header\s+([A-Za-z0-9-]+)", text, flags=re.MULTILINE)
@@ -428,26 +371,6 @@ def _location_block(text: str, path: str, modifier: str = "") -> str:
     raise AssertionError(f"unterminated `location {path}` block")
 
 
-def _gunicorn_keepalive_s() -> float:
-    """What the app will actually hold an idle upstream socket for.
-
-    Read from the command lines rather than assumed, so that the day capacity
-    3.3 adds `--keep-alive 65` this guard loosens itself instead of having to
-    be edited."""
-    sources = [
-        (_REPO_ROOT / "Dockerfile").read_text(encoding="utf-8"),
-        _RUNPOD_SUPERVISOR.read_text(encoding="utf-8"),
-        (_REPO_ROOT / "deploy" / "gunicorn.conf.py").read_text(encoding="utf-8"),
-    ]
-    found = [
-        float(m.group(1))
-        for text in sources
-        for m in re.finditer(r"--keep-alive[= ](\d+)|^keepalive\s*=\s*(\d+)", text)
-        if m.group(1)
-    ]
-    return min(found) if found else float(_GUNICORN_DEFAULT_KEEPALIVE_S)
-
-
 def test_the_edge_declares_a_source_port_budget() -> None:
     """The half of the edge nobody had counted: nginx as a CLIENT.
 
@@ -477,17 +400,16 @@ def test_the_edge_declares_a_source_port_budget() -> None:
     reuse = _sysctl(nginx, "net.ipv4.tcp_tw_reuse")
     assert reuse == "1", (
         f"`net.ipv4.tcp_tw_reuse` is {reuse!r}. The kernel's default of 2 means "
-        "'loopback only', which is why `deploy/runpod/nginx.conf` -- proxying "
-        "to a literal 127.0.0.1:8000 -- was never exposed and the Compose "
-        "bridge always was. MEASURED, paced 300 conn/s into a 1,000-port range: "
+        "'loopback only', so the Compose bridge is never covered by it. "
+        "MEASURED, paced 300 conn/s into a 1,000-port range: "
         "tw_reuse=2 to a bridge peer connected 999 of 6,000; tw_reuse=1 "
         "connected 6,000 of 6,000."
     )
 
 
-def test_only_the_publisher_with_nothing_to_resolve_pools_upstream() -> None:
+def test_the_compose_edge_never_pools_upstream() -> None:
     """An anti-regression, because `keepalive` is the obvious thing to add here
-    and it is a 502 on one of the two paths.
+    and it is a 502 on Compose.
 
     RE-CONFIRMED LIVE in 3.2 rather than inherited from 7.1: with the app forced
     onto a new address and no edge restarted, the variable edge answered 200 and
@@ -514,89 +436,34 @@ def test_only_the_publisher_with_nothing_to_resolve_pools_upstream() -> None:
     )
 
 
-def test_the_runpod_pool_never_outlives_the_app_that_feeds_it() -> None:
-    """RunPod CAN pool -- it proxies to a literal loopback address, so there is
-    no name to go stale -- and the pool has exactly one way to hurt: holding a
-    socket the app has already closed. nginx does not replay a POST by default,
-    so that lands as a 502 on a request nobody can retry.
-
-    The bound is read from the gunicorn command lines, not hard-coded, so
-    capacity 3.3's `--keep-alive 65` loosens this guard by itself."""
-    runpod = _RUNPOD_EDGE.read_text(encoding="utf-8")
-    pool = re.search(r"^\s*keepalive\s+(\d+)\s*;", runpod, flags=re.MULTILINE)
-    if pool is None:
-        return
-
-    idle = re.search(r"^\s*keepalive_timeout\s+(\S+)\s*;", runpod, flags=re.MULTILINE)
-    assert idle is not None, (
-        "deploy/runpod/nginx.conf pools upstream connections but sets no "
-        "`keepalive_timeout`, so it keeps them for nginx's 60s default while "
-        "gunicorn drops them after its own `--keep-alive`."
-    )
-    app_side = _gunicorn_keepalive_s()
-    assert _seconds(idle.group(1)) < app_side, (
-        f"the pool holds an idle socket for {idle.group(1)} while the app closes "
-        f"it after {app_side}s. Raise gunicorn's `--keep-alive` (capacity 3.3) "
-        "in the same change, never this alone."
-    )
-    assert 'proxy_set_header Connection       "";' in runpod, (
-        "`keepalive` without an empty `Connection` header pools nothing at all "
-        "-- measured: 0 established upstream sockets with `close` left in place."
-    )
-
-
 def test_the_websocket_handshake_still_carries_the_shared_proxy_headers() -> None:
     """The `add_header` trap, one directive over, found live in 3.2.
 
     `proxy_set_header` is an inherited ARRAY: a level that declares one replaces
-    all of it. Both `/api/v1/ws` locations declared Upgrade and Connection, and
+    all of it. The `/api/v1/ws` location declared Upgrade and Connection, and
     therefore sent NONE of the six the server level declares. Measured against
     these files unmodified: `host=app:8000 | xff= | corr=` on the WebSocket
     path against `host=aizzak.test | xff=127.0.0.1 | corr=<minted>` on `/`.
 
     Asserted as a SUPERSET of whatever the shared level carries, so a seventh
     shared header added later cannot quietly skip this location."""
-    for name, shared_text, whole_text in (
-        (
-            "deploy/nginx/app-locations.conf",
-            _EDGE_LOCATIONS.read_text(encoding="utf-8"),
-            _EDGE_LOCATIONS.read_text(encoding="utf-8"),
-        ),
-        (
-            "deploy/runpod/nginx.conf",
-            _RUNPOD_EDGE.read_text(encoding="utf-8"),
-            _RUNPOD_EDGE.read_text(encoding="utf-8"),
-        ),
-    ):
-        ws = _ws_location(whole_text)
-        # The presigned-URL location (6.2) repeats the list on purpose and adds
-        # an X-Forwarded-Host reset the server level does not carry: it is not
-        # part of the "shared" set this guard compares the WebSocket against.
-        files = _location_block(shared_text, "/workspace-files/", "^~")
-        shared = _proxy_headers(shared_text.replace(ws, "").replace(files, ""))
-        assert shared, f"{name}: found no shared `proxy_set_header` directives."
-        missing = shared - _proxy_headers(ws)
-        assert not missing, (
-            f"{name}: `location /api/v1/ws` declares `proxy_set_header` of its "
-            f"own and therefore inherits NOTHING, so it drops {sorted(missing)}. "
-            "nginx offers no way to add to an inherited set from a nested level "
-            "-- the list has to be repeated in full."
-        )
-        assert "upgrade" in _proxy_headers(ws)
-
-
-def test_the_websocket_header_set_is_the_same_on_both_publishers() -> None:
-    """Names only. The two legitimately differ on `X-Forwarded-Proto`'s VALUE
-    ($scheme behind Compose's two server blocks, pinned `https` behind RunPod's
-    single one), and on `Connection` at the shared level, which is half of
-    RunPod's keepalive pool and measurably wrong on Compose."""
-    compose_ws = _proxy_headers(_ws_location(_EDGE_LOCATIONS.read_text(encoding="utf-8")))
-    runpod_ws = _proxy_headers(_ws_location(_RUNPOD_EDGE.read_text(encoding="utf-8")))
-    assert compose_ws == runpod_ws, (
-        f"the two WebSocket locations send different headers: "
-        f"only Compose {sorted(compose_ws - runpod_ws)}, "
-        f"only RunPod {sorted(runpod_ws - compose_ws)}."
+    name = "deploy/nginx/app-locations.conf"
+    text = _EDGE_LOCATIONS.read_text(encoding="utf-8")
+    ws = _ws_location(text)
+    # The presigned-URL location (6.2) repeats the list on purpose and adds
+    # an X-Forwarded-Host reset the server level does not carry: it is not
+    # part of the "shared" set this guard compares the WebSocket against.
+    files = _location_block(text, "/workspace-files/", "^~")
+    shared = _proxy_headers(text.replace(ws, "").replace(files, ""))
+    assert shared, f"{name}: found no shared `proxy_set_header` directives."
+    missing = shared - _proxy_headers(ws)
+    assert not missing, (
+        f"{name}: `location /api/v1/ws` declares `proxy_set_header` of its "
+        f"own and therefore inherits NOTHING, so it drops {sorted(missing)}. "
+        "nginx offers no way to add to an inherited set from a nested level "
+        "-- the list has to be repeated in full."
     )
+    assert "upgrade" in _proxy_headers(ws)
 
 
 def test_the_source_port_guards_can_actually_fail() -> None:
@@ -604,11 +471,6 @@ def test_the_source_port_guards_can_actually_fail() -> None:
     `test_ops_slow_queries.py` set for a tuning gate."""
     assert _sysctl({"image": "x"}, "net.ipv4.tcp_tw_reuse") is None
     assert _sysctl({"sysctls": {"net.ipv4.tcp_tw_reuse": 1}}, "net.ipv4.tcp_tw_reuse") == "1"
-
-    assert _seconds("1s") == 1.0
-    assert _seconds("500ms") == 0.5
-    assert _seconds("1m") == 60.0
-    assert _seconds("65") == 65.0
 
     # The exact shape that was shipping: a location declaring two headers of its
     # own, which silently discards the six above it.

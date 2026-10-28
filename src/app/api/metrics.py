@@ -16,8 +16,8 @@ through the public edge** (mzalaq #2 of the design brief): Prometheus text
 about the Outbox/DLQ is operator information, the SAME trust boundary the
 embedding service already draws with ``expose:`` instead of ``ports:``
 (``docker-compose.yml``, ``release-blockers-plan.md``'s rejected-port
-precedent, n-3). ``deploy/nginx/app-locations.conf`` and ``deploy/runpod/
-nginx.conf`` both answer this path with a local ``404`` before it ever
+precedent, n-3). ``deploy/nginx/app-locations.conf`` answers this path with
+a local ``404`` before it ever
 reaches ``location /``'s catch-all proxy — enforced there, not here, because
 an application-layer check can be bypassed by anything that talks to the
 container directly on its Compose-internal address (``app:8000``), which a
@@ -26,7 +26,7 @@ real Prometheus scraper is expected to do.
 **Why a FRESH ``CollectorRegistry`` every request, never the module-global
 default one ``prometheus_client`` ships.** The design brief's central
 pitfall: gunicorn's own default ``WEB_CONCURRENCY=2`` (``Dockerfile``,
-``deploy/runpod/supervisord.conf``, ``docker-compose.yml``) means "the API"
+``docker-compose.yml``) means "the API"
 is at least two SIBLING processes, each with an independent Python heap. A
 ``Gauge`` registered once at import time and ``.set()`` on every scrape would
 answer with THAT process's own last-written value — whichever sibling

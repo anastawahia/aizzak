@@ -25,11 +25,10 @@ never state anything reads back after a restart.
 
 **Per-process file, not per-container.** The name is supplied by the caller
 (``memory``/``knowledge``/``media``/``outbox-relay``) rather than defaulted to
-one shared path, because Compose is not the only topology: RunPod runs
-``worker`` AND ``outbox-relay`` inside a single container
-(``deploy/runpod/supervisord.conf`` tier 3), where one shared path would let a
-dead process ride on a live sibling's beat -- the exact false-healthy this
-module exists to prevent.
+one shared path, because Compose is not the only topology: anything that runs
+``worker`` AND ``outbox-relay`` on one filesystem would, with one shared path,
+let a dead process ride on a live sibling's beat -- the exact false-healthy
+this module exists to prevent.
 
 **A failed beat never kills the process.** An observability aid that can take
 a worker down is a net loss of availability, so ``OSError`` is caught. It is

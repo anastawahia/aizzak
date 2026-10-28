@@ -151,7 +151,6 @@ def git(cwd: Path, *args: str) -> str:
 TRACKED_TRAPS = (
     "src/app/x.py",
     "tests/x.py",
-    "deploy/runpod/x",
     "deploy/load/tokens.json",
     "docker-compose.build.yml",
 )

@@ -106,8 +106,8 @@ groups:
             while a genuine outage (which does not self-heal) is still caught
             within a couple of minutes.
           response: >-
-            Check `docker compose logs outbox-relay` / the RunPod
-            [program:outbox-relay] log first (08-local-runbook.md §7); the
+            Check `docker compose logs outbox-relay` first
+            (08-local-runbook.md §7); the
             relay reads platform.outbox and republishes on restart, so
             restarting it (never manual data surgery) is the first repair.
 

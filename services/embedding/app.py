@@ -82,8 +82,7 @@ Unset, this changes NOTHING -- torch keeps its own default and this module
 never imports it for the purpose. It is set explicitly per replica in
 ``docker-compose.yml`` (alongside ``OMP_NUM_THREADS``, which OpenMP reads
 before torch is even imported), because the right number is a property of
-the cgroup a replica runs in, not of the model baked into the image: the
-single-container GPU deployment (``deploy/runpod/``) wants a different one.
+the cgroup a replica runs in, not of the model baked into the image.
 ``GET /health`` reports the EFFECTIVE count for the reason it reports
 ``max_seq_length``: a pin that silently did not take is invisible from
 outside the container, and «أبطأ من واحدة» is exactly what it looks like.

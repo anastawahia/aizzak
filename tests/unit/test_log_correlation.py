@@ -50,7 +50,6 @@ _ALLOY = _REPO_ROOT / "deploy" / "alloy" / "config.alloy"
 _LOKI = _REPO_ROOT / "deploy" / "loki" / "loki.yml"
 _NGINX = _REPO_ROOT / "deploy" / "nginx" / "nginx.conf"
 _NGINX_LOCATIONS = _REPO_ROOT / "deploy" / "nginx" / "app-locations.conf"
-_RUNPOD_NGINX = _REPO_ROOT / "deploy" / "runpod" / "nginx.conf"
 _ENGINE = _REPO_ROOT / "src" / "app" / "infrastructure" / "messaging" / "consumers" / "engine.py"
 
 # The identifiers the plan names for the aggregated store, plus the edge's
@@ -334,27 +333,6 @@ def test_the_edge_passes_both_ids_upstream() -> None:
             f"`location /api/v1/ws` does not send {header}. It declares "
             "`proxy_set_header` directives of its own, so it inherits none of "
             "the ones above it -- the list has to be repeated in full."
-        )
-
-
-def test_the_runpod_edge_says_all_of_it_again() -> None:
-    """RunPod is ONE container that reads neither ``docker-compose.yml`` nor
-    ``deploy/nginx/`` -- the same drift 0.4 guarded for ``pg_stat_statements``.
-    Without this, correlation ids work on Compose and are silently absent on
-    the Pod, which is the deployment an operator is least able to debug."""
-    conf = _text(_RUNPOD_NGINX)
-    assert "log_format aizzak_json escape=json" in conf
-    assert "map $http_x_correlation_id $aizzak_correlation_id" in conf
-    assert f"proxy_set_header {CORRELATION_HEADER} $aizzak_correlation_id;" in conf
-    assert f"proxy_set_header {REQUEST_ID_HEADER}     $request_id;" in conf
-    assert "access_log  /dev/stdout  aizzak_json;" in conf
-
-    # And the same WebSocket location that was dropping both on Compose --
-    # this file had the identical shape (capacity 3.2).
-    ws = conf[conf.index("location /api/v1/ws") :]
-    for header in (CORRELATION_HEADER, REQUEST_ID_HEADER):
-        assert re.search(rf"^\s*proxy_set_header\s+{header}\s", ws, re.M), (
-            f"the Pod's `location /api/v1/ws` does not send {header}."
         )
 
 

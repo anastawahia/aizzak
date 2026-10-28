@@ -139,7 +139,7 @@ genuinely live connection could ever be aged out of the count.
 **Why ageing rather than the ``sweep_stale_notify_groups`` pattern** (P0-2's
 orphan cleanup, ``framework/di/composition_root.py``): that sweep is
 host-scoped by construction — it only inspects names carrying its OWN
-hostname, because a pid means nothing across hosts. Under Compose/RunPod a
+hostname, because a pid means nothing across hosts. Under Compose a
 container's hostname is its container id, which CHANGES on every recreate, so
 entries left by a container that is never recreated under the same name would
 never be swept by anyone — a permanently spent slot. Ageing is bounded

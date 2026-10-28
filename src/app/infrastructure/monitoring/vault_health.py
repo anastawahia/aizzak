@@ -79,7 +79,7 @@ processes with independent heaps, so anything remembered between requests
 answers with whichever sibling caught the scrape (the P0-2 defect,
 ``docs/log/3.81.md``). It is accepted instead, on a measured fact: **nothing
 scrapes this endpoint today** — there is no Prometheus service in
-``docker-compose.yml`` or the RunPod image, deliberately. Whoever adds the
+``docker-compose.yml``, deliberately. Whoever adds the
 scraper inherits the ordering rule, which is written in the alert rule's own
 ``annotations.response`` and in ``08-local-runbook.md`` §3.1: **stop the
 scraper as well as ``app`` before unlocking and minting.**

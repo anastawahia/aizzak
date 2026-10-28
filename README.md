@@ -84,7 +84,7 @@ Integration tests under `tests/integration/` require live services and are skipp
 | Running the services and Compose commands | [Quickstart](docs/quickstart.md) · [Stack commands](docs/stack-commands.md) |
 | Modules, request flow and architecture decisions | [Architecture](docs/architecture.md) |
 | Detailed design, API, events and permissions | [Design documents](docs/design/README.md) · [OpenAPI contract](docs/design/openapi.yaml) |
-| Deployment | [Server deployment](docs/deploy-server.md) · [RunPod deployment](docs/deploy-runpod.md) |
+| Deployment | [Server deployment](docs/deploy-server.md) |
 | Adding an agent or a business module | [Agent authoring guide](docs/design/11-agent-authoring-guide.md) · [Module authoring guide](docs/design/12-module-authoring-guide.md) |
 | Operations and alerts | [Alert runbooks](docs/runbooks/alerts.md) |
 | Capacity work | [Capacity plan](docs/capacity-plan.md) · [Capacity status](docs/capacity-status.md) |

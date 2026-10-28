@@ -679,7 +679,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <li><b>PITR مبنيّ:</b> <code>wal-shipper</code> + مرساةٌ ماديّة (<code>pg_basebackup</code>) — لأنّ دُفعةً منطقيّةً + WAL لا تُنتج استرجاعاً زمنيّاً. والنسخُ ليليٌّ في <code>ops-scheduler</code>، و<code>purge</code> يرفض العمل ما لم ينجح <code>backup</code> في الدورة نفسها.</li>
       <li><b>التزويدُ خطوةُ نشرٍ لا هجرة:</b> خدمةُ <code>migrate</code> وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها، وقفلُ جلسةٍ يغطّي الأطوار الثلاثة فلا تتسابق نسختان على المنح.</li>
       <li><b>ثلاثُ نسخٍ تشتري إتاحةً:</b> نشرٌ متدرّجٌ نسخةً بعد نسخة يصرّف اتصالاتِ WebSocket قبل الإيقاف (<code>deploy/rolling-deploy.sh</code>).</li>
-      <li><b>منشوران:</b> RunPod بلا مُجمِّع، فسقفُ <code>WEB_CONCURRENCY</code> عليه <b>5</b> مقابل <b>19 لكلّ نسخة</b> على Compose (سقفُ عملاء المُجمِّع 2,000).</li>
+      <li><b>سقفُ الاتّصالات:</b> <code>WEB_CONCURRENCY</code> على Compose سقفُه <b>19 لكلّ نسخة</b> (سقفُ عملاء المُجمِّع 2,000).</li>
       <li><b>كلُّ خدمةٍ بسقف موارد</b>، والدفترُ المحروسُ في <code>deploy/resource-budget.sh</code>.</li>
     </ul>
   </section>

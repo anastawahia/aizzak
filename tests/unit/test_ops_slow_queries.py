@@ -44,8 +44,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _EXTENSIONS_SH = _REPO_ROOT / "deploy" / "postgres" / "initdb" / "20-extensions.sh"
 _TESTDB_SH = _REPO_ROOT / "deploy" / "postgres" / "testdb" / "20-test-database.sh"
-_RUNPOD_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
-_RUNPOD_BOOTSTRAP = _REPO_ROOT / "deploy" / "runpod" / "bootstrap.sh"
 
 _NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
@@ -488,26 +486,3 @@ def test_the_test_database_is_not_allowed_to_reset_the_servers_statistics() -> N
     assert "GRANT EXECUTE ON FUNCTION pg_stat_statements_reset" not in _TESTDB_SH.read_text(
         encoding="utf-8"
     )
-
-
-def test_the_runpod_deployment_enables_the_extension_the_same_way() -> None:
-    """RunPod is one container that initialises its own cluster -- it never
-    reads ``/docker-entrypoint-initdb.d`` and never sees Compose's
-    ``command:``. Without both halves said again in its own idiom, ``python
-    -m app.ops.slow_queries`` would work on the Compose stack and fail on a
-    Pod, which is the kind of asymmetry that is only ever discovered while
-    trying to diagnose something else."""
-    entrypoint = _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8")
-    bootstrap = _RUNPOD_BOOTSTRAP.read_text(encoding="utf-8")
-
-    assert "shared_preload_libraries = 'pg_stat_statements'" in entrypoint
-    assert "20-extensions.sh" in bootstrap
-
-
-def test_the_runpod_bootstrap_creates_the_extension_after_the_roles() -> None:
-    """Load-bearing order, the same one the initdb filenames encode: the
-    extension script grants ``pg_read_all_stats`` to ``aizzak_owner``, which
-    ``10-roles.sh`` has to have created first."""
-    bootstrap = _RUNPOD_BOOTSTRAP.read_text(encoding="utf-8")
-
-    assert bootstrap.index("10-roles.sh") < bootstrap.index("20-extensions.sh")

@@ -198,8 +198,8 @@ elsewhere net.core.somaxconn           docker-compose.yml (nginx, app) -- namesp
 elsewhere net.ipv4.ip_local_port_range docker-compose.yml (nginx, k6) -- namespaced; capacity 3.2 measured the
                                        HOST range at 4,096 ports, six times narrower than the container default
 elsewhere net.ipv4.tcp_tw_reuse        docker-compose.yml (nginx) -- namespaced; capacity 3.2
-elsewhere nofile (RLIMIT_NOFILE)       docker-compose.yml `ulimits:` and deploy/runpod/supervisord.conf
-                                       `minfds` -- not a sysctl at all. Docker hands every container the
+elsewhere nofile (RLIMIT_NOFILE)       docker-compose.yml `ulimits:` -- not a sysctl at all.
+                                       Docker hands every container the
                                        daemon's soft limit; capacity 3.1 measured a gunicorn worker pinned at
                                        exactly 1024 with the host's own limit at 1,048,576
 ELSEWHERE

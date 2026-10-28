@@ -309,7 +309,6 @@ def test_cpu_oversubscription_is_reported_not_refused(run: Run) -> None:
 def test_nothing_runs_the_generator_on_its_own() -> None:
     watched = [*REPO_ROOT.glob("docker-compose*.yml"), REPO_ROOT / "deploy" / "rolling-deploy.sh"]
     watched += REPO_ROOT.glob("**/Dockerfile*")
-    watched += (REPO_ROOT / "deploy" / "runpod").glob("*")
     watched = [p for p in watched if p.is_file() and ".venv" not in p.parts]
     assert len(watched) > 5
     for path in watched:

@@ -599,7 +599,7 @@ async def _sweep_stale_notify_groups(
     1. **Host-scoped by construction.** Only groups whose name starts with
        THIS process's own ``hostname`` are even inspected — a different
        replica's groups (a different container, a different hostname under
-       the default Compose/RunPod topology) are never touched, sweep or no
+       the default Compose topology) are never touched, sweep or no
        sweep, regardless of what pid numbers happen to collide across hosts.
     2. **Liveness-checked, not merely "not mine".** Every surviving
        candidate's trailing segment is a pid, and it is destroyed ONLY if

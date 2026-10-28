@@ -133,7 +133,7 @@ def test_the_archive_has_no_link_no_absolute_path_and_no_dotdot(built: Built) ->
 _FORBIDDEN = (
     re.compile(r"(^|/)docker-compose\.(build|test|wsl-gpu)\.yml$"),
     re.compile(r"(^|/)(src|tests)/"),
-    re.compile(r"(^|/)deploy/(load|runpod|nginx/certs)(/|$)"),
+    re.compile(r"(^|/)deploy/(load|nginx/certs)(/|$)"),
     re.compile(r"(^|/)deploy/postgres/(testdb|sizes/auto\.conf)"),
     re.compile(r"(^|/)deploy/backup/results"),
     re.compile(r"(^|/)\.env($|\.(?!example$))"),

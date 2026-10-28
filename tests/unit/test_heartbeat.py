@@ -49,7 +49,7 @@ def test_path_is_dir_plus_name_plus_suffix() -> None:
 
 def test_each_process_gets_its_own_file() -> None:
     """The property that stops a dead process from riding on a live sibling's
-    beat -- RunPod runs `worker` and `outbox-relay` in ONE container."""
+    beat -- two processes that share one filesystem must never share a path."""
     paths = {heartbeat_path("/hb", name) for name in HEARTBEAT_PROCESS_NAMES}
     assert len(paths) == len(HEARTBEAT_PROCESS_NAMES)
 

@@ -57,7 +57,6 @@ flowchart LR
 | المكدّس الحيّ — قاعدة الاختبار | **`test`** | `aizzak_test` (‏**13 م.ب**، مالكها `aizzak_owner`) | ‏`deploy/postgres/testdb/20-test-database.sh`؛ ‏`tests/integration/conftest.py` يثبّت الاسم | ⚠️ **على العنقود نفسه الذي يحمل `aizzak`** — انظر التحذير أسفل الجدول |
 | المكدّس الحيّ — بقيّة المخازن | **`shared-dev`** | ‏redis‑stream · redis‑cache · Qdrant · MinIO · Vault | ‏`.env.test.example` يوجّه `TEST_REDIS_URL` و`TEST_QDRANT_URL` و`TEST_VAULT_ADDR` إلى **المنافذ الحيّة نفسها** | ⚠️ **لا نسخةَ اختبارٍ منفصلةً لها**؛ وبعضُ اختبارات التكامل **يُفرِغها** |
 | حزمة CI المعزولة | **`test`** | عنقودٌ جديدٌ في وظيفة `integration` | ‏`.github/workflows/ci.yml:93` — `COMPOSE_FILE=docker-compose.yml:docker-compose.test.yml`، ‏`REQUIRE_LIVE=1`، وتهدمه بـ`down -v` | **البيئةُ الوحيدة القابلةُ للرمي فعلاً** |
-| RunPod | **لا يوجد هدفٌ قائم** | — | ‏`deploy/runpod/` صورةٌ شاملةٌ موجودة؛ ‏`CLAUDE.md`: «‏**لا يوجد هدف staging**» | لم تُنشَر؛ ولا تحوي بيانات |
 
 **التصنيفات ثبّتها المالك في 2026‑10‑05.** المجهولُ = `production`. قواعدُ كلّ صنفٍ في `references/safety.md` §2 من إضافة `data-engineer`، ويشدّدها القسم **٨** أدناه.
 

@@ -41,7 +41,7 @@ VAULT_CONFIG_RENDERED="/tmp/vault-server-rendered.hcl"
 INIT_FILE="$VAULT_INIT_DIR/init.json"
 
 log() { printf 'vault-start: %s\n' "$*"; }
-# Takes the server down with this script: under supervisord (RunPod) an exit
+# Takes the server down with this script: under a process supervisor an exit
 # here is followed by a restart, and a server left behind keeps :8200 bound,
 # so every retry after the first dies on "address already in use".
 die() {

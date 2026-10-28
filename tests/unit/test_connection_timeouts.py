@@ -21,12 +21,6 @@ of operation", which is true and tells an operator nothing. Whenever a pooler
 ceiling drops below a client budget, every incident of that kind gets diagnosed
 as a network fault. These tests are what stop the two sets from crossing.
 
-⭐ AND THERE ARE TWO DEPLOYMENTS, exactly as in the budget ledger.
-`deploy/runpod/` runs the same processes with NO POOLER AT ALL (`08 §2`), so
-none of the backstops exist there and the per-path budgets are the whole of it.
-That makes the RunPod exports load-bearing rather than decorative, which is what
-`test_runpod_exports_the_same_four_timeouts` is for.
-
 Same shape as `test_connection_budget.py` and `test_deploy_worker_default.py`:
 several files have to agree and nothing compared them. The `.env.example` half
 is not optional for the reason those record -- Compose auto-loads `.env`, every
@@ -55,7 +49,6 @@ from app.workers.bootstrap import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
-_RUNPOD_ENTRYPOINT = _REPO_ROOT / "deploy" / "runpod" / "entrypoint.sh"
 _NGINX_LOCATIONS = _REPO_ROOT / "deploy" / "nginx" / "app-locations.conf"
 
 # The four keys the request path is configured with, and the one of them that
@@ -81,10 +74,6 @@ _ENV_FIELD_OF = {
 }
 
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?)([^}]*))?\}")
-_EXPORT_PATTERN = re.compile(
-    r'^export (?P<name>[A-Z_][A-Z0-9_]*)="\$\{(?P=name):-(?P<value>[^}"]*)\}"',
-    re.MULTILINE,
-)
 # `location / { ... proxy_read_timeout 300s; }` -- the edge hop a hung database
 # call is stuck behind. Deliberately NOT the `/api/v1/ws` block above it, which
 # is an hour long because a socket that stays open is what it is for.
@@ -141,11 +130,6 @@ def _pgbouncer_env() -> dict[str, str]:
     return {k: str(v) for k, v in _compose()["services"]["pgbouncer"]["environment"].items()}
 
 
-def _runpod_exports() -> dict[str, str]:
-    text = _RUNPOD_ENTRYPOINT.read_text(encoding="utf-8")
-    return {m.group("name"): m.group("value") for m in _EXPORT_PATTERN.finditer(text)}
-
-
 # ------------------------------------------------- the four keys, one value --
 
 
@@ -182,18 +166,6 @@ def test_only_pool_recycle_is_shared_with_the_other_processes() -> None:
                 f"{key} is in x-app-env, so the relay and the three workers now read "
                 "the API server's budget instead of the background one"
             )
-
-
-def test_runpod_exports_the_same_four_timeouts() -> None:
-    """The second deployment (`08 §2`) has NO POOLER, so every backstop below
-    is absent there and these four are the whole of its protection."""
-    exports = _runpod_exports()
-    defaults = _env_example()
-    for key in _REQUEST_KEYS:
-        assert key in exports, f"deploy/runpod/entrypoint.sh never exports {key}"
-        assert float(exports[key]) == float(defaults[key]), (
-            f"{key}: RunPod exports {exports[key]}, Compose deploys {defaults[key]}"
-        )
 
 
 # --------------------------------------------------------------- the ladder --

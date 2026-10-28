@@ -1,8 +1,7 @@
 # Build-context exclusions.
 #
 # Without this file the context handed to `docker build` includes .venv (460
-# MB), .git and every tool cache -- uploaded to the daemon on EVERY build,
-# and on a RunPod deployment that context crosses a home uplink.
+# MB), .git and every tool cache -- uploaded to the daemon on EVERY build.
 #
 # Mirrors .gitignore where the reasons coincide, and adds the things git
 # tracks but an image must never carry: .env (secrets) and tests/.
@@ -38,8 +37,8 @@ deploy/postgres/sizes/auto.conf*
 **/.auto-size-tmp-*
 
 # Load-test accounts, tokens, seeds and results -- real development users'
-# credentials and data. `deploy/runpod/Dockerfile` copies `deploy/` whole, so
-# without these lines they ride into an image that may be pushed publicly.
+# credentials and data. Any image that copies `deploy/` whole would carry
+# them without these lines, and an image may be pushed publicly.
 deploy/load/accounts.json
 deploy/load/tokens.json
 deploy/load/include-workspaces.txt
