@@ -1,0 +1,55 @@
+# Licence and vulnerability policy of deploy/supply-chain/supply_chain_check.py
+# (PLT-19). Widening it is an owner decision: every entry that widens the
+# policy names that decision. tests/unit/test_supply_chain_check.py pins the
+# [allow].spdx list below to NFR-LIC-01.
+version = 1
+
+[allow]
+# NFR-LIC-01: MIT, BSD, Apache-2.0, MPL-2.0, PSF, ISC, AGPL-3.0 (SRS D-01).
+spdx = ["MIT", "BSD-2-Clause", "BSD-3-Clause", "LicenseRef-BSD", "Apache-2.0", "MPL-2.0",
+        "PSF-2.0", "Python-2.0", "ISC", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+# SRS D-32 (INC0-Q-4): permissive ids the owner approved in addition. Each entry
+# carries its decision; the checker refuses an entry without one.
+approved = [
+  { id = "MIT-0", decision = "SRS D-32" },
+  { id = "MIT-CMU", decision = "SRS D-32" },
+  { id = "0BSD", decision = "SRS D-32" },
+  { id = "Zlib", decision = "SRS D-32" },
+  { id = "CC0-1.0", decision = "SRS D-32" },
+  { id = "LicenseRef-Public-Domain", decision = "SRS D-32" },  # Unlicense-equivalent
+]
+exceptions = []
+
+[flag]
+agpl = ["AGPL-3.0-only", "AGPL-3.0-or-later"]
+
+[fonts]            # SRS D-26: OFL-1.1 for font files only, never for code
+spdx = ["OFL-1.1"]
+extensions = [".ttf", ".otf", ".ttc", ".woff", ".woff2"]
+
+[aliases]          # maps text to SPDX; never widens [allow]
+"MIT License" = "MIT"
+"BSD License" = "LicenseRef-BSD"
+"Apache Software License" = "Apache-2.0"
+"Apache License 2.0" = "Apache-2.0"
+"Apache 2.0" = "Apache-2.0"
+"3-Clause BSD License" = "BSD-3-Clause"
+"BSD 3-Clause License" = "BSD-3-Clause"
+"Mozilla Public License 2.0 (MPL 2.0)" = "MPL-2.0"
+"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License" = "AGPL-3.0-only OR LicenseRef-Artifex-Commercial"
+
+# Package decisions: the owner chose the licence of a package whose metadata is
+# not a plain allowed expression. Unlike [aliases] they are not re-checked
+# against [allow]; an entry without `decision` is invalid and ignored.
+
+[[package]]
+name = "pyphen"
+expression = "LGPL-2.1-or-later"
+reason = "Triple-licensed (GPL-2.0-or-later, LGPL-2.1-or-later, MPL-1.1); the LGPL branch is chosen. It is compatible with AGPL-3.0 through the 'or later' clause."
+decision = "SRS D-32"
+
+[[package]]
+name = "pycryptodome"
+expression = "BSD-2-Clause AND LicenseRef-Public-Domain"
+reason = "BSD-2-Clause code plus public-domain code (Unlicense-equivalent)."
+decision = "SRS D-32"

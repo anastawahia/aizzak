@@ -190,3 +190,42 @@ jobs:
       - name: Tear down integration infrastructure
         if: always()
         run: docker compose down -v --remove-orphans
+
+  # PLT-19 (INC-0) -- NFR-LIC-02 · NFR-LIC-07 · NFR-SEC-04, DEC-09: SBOM,
+  # licence policy and known vulnerabilities of the RUNTIME closure the image
+  # installs. Quality evaluation stays OUT of CI (SRS D-23).
+  #
+  # A top-level job, NOT a step of `quality`: release.yml mirrors `quality`
+  # step for step and `tests/unit/test_release_workflow.py` pins that. It needs
+  # nothing from `quality` and runs beside it.
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: SBOM, licence policy and known vulnerabilities (runtime closure)
+        run: deploy/supply-chain/scan.sh
+
+      - name: Report
+        if: always()
+        run: cat build/supply-chain/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the SBOM and the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ github.sha }}
+          path: |
+            build/supply-chain/sbom.cdx.json
+            build/supply-chain/audit.json
+            build/supply-chain/runtime-freeze.txt
+            build/supply-chain/report.md
+          retention-days: 90
