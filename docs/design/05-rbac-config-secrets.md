@@ -28,6 +28,7 @@
 `integrations:read` · `integrations:manage` ·
 `usage:read` · `usage:manage` ·
 `access:read` · `access:manage` ·
+`electrical:read` · `electrical:diagnose` · `electrical:manage` · `electrical:eval` ·
 `platform:admin`
 
 > **وحدة `memory` — بلا صلاحيات في الكتالوج (مقصود):** `memory` وحدة **داخلية بالكامل** يديرها الوكيل (المُنسِّق) أثناء التنفيذ ولا تعرّض أي سطح API مباشر للمستخدم (لا مسار في `03-api-spec.md`)؛ لذا لا `memory:read`/`memory:manage`. الوصول إلى عناصر الذاكرة محكومٌ ضمناً بعزل المستأجر (RLS على `memory.memory_items`) وبحدود الوكيل، لا بصلاحية RBAC مباشرة. تُضاف صلاحيات صريحة لاحقاً فقط إن كُشِف سطح API للذاكرة.
@@ -61,9 +62,14 @@
 | usage:manage | ✓ | ✓ | — | — | — |
 | access:read | ✓ | ✓ | — | — | ✓ |
 | access:manage | ✓ | ✓ | — | — | — |
+| electrical:read | ✓ | ✓ | ✓ | ✓ | — |
+| electrical:diagnose | ✓ | ✓ | ✓ | — | — |
+| electrical:manage | ✓ | ✓ | — | — | — |
+| electrical:eval | ✓ | ✓ | — | — | — |
 | platform:admin | — | — | — | — | ✓ |
 
 > `platform_admin` عمداً بلا وصول لمحتوى المستأجر (محادثات/ملفات) — دعمٌ لا اطّلاع؛ يُوسَّع عند الحاجة.
+> صلاحيات `electrical:*` (WireTwin، SRS D-25) على الأدوار القائمة بلا دور جديد؛ و`platform_admin` بلا أيٍّ منها لأن الدعم عابر للمستأجرين ولا يرى محتواهم. و`electrical:review` غائبة عمداً حتى R2 (FR‑HIL‑06).
 > منح `platform_admin` صلاحية `workspace:manage` مقصورٌ على **إعدادات/إدارة المساحة** (تعليق/تهيئة على مستوى المنصّة) لا على المحتوى؛ أمّا `workspace:transfer` (نقل الملكية) و`workspace:archive` (الأرشفة) فتبقيان **حصريّتين للمالك (`owner`)** اتّساقاً مع وصف الأدوار (§1.1).
 
 ### 1.4 الفرض

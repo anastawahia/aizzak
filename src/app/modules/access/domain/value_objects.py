@@ -59,6 +59,12 @@ class Permission(StrEnum):
     USAGE_MANAGE = "usage:manage"
     ACCESS_READ = "access:read"
     ACCESS_MANAGE = "access:manage"
+    # WireTwin (SRS D-25, DEC-11): on the EXISTING roles, no new RoleName.
+    # `electrical:review` (FR-HIL-06, R2) is deliberately absent until R2.
+    ELECTRICAL_READ = "electrical:read"
+    ELECTRICAL_DIAGNOSE = "electrical:diagnose"
+    ELECTRICAL_MANAGE = "electrical:manage"
+    ELECTRICAL_EVAL = "electrical:eval"
     PLATFORM_ADMIN = "platform:admin"
 
 
@@ -104,6 +110,8 @@ RoleCatalog: dict[RoleName, frozenset[Permission]] = {
             Permission.WORKFLOWS_RUN,
             Permission.INTEGRATIONS_READ,
             Permission.USAGE_READ,
+            Permission.ELECTRICAL_READ,
+            Permission.ELECTRICAL_DIAGNOSE,
         }
     ),
     RoleName.VIEWER: frozenset(
@@ -118,6 +126,7 @@ RoleCatalog: dict[RoleName, frozenset[Permission]] = {
             Permission.WORKFLOWS_READ,
             Permission.INTEGRATIONS_READ,
             Permission.USAGE_READ,
+            Permission.ELECTRICAL_READ,
         }
     ),
     # Platform admin: cross-tenant support only — never tenant content (05 §1.3).
