@@ -235,8 +235,8 @@ not only before the run.
 
 **And uploads go somewhere else than reads.** The seed's heaviest tenants
 are over the platform's own ceilings (13 of 500 content spaces above the
-1 GiB byte cap, one tenant above 10,000 files), so every upload into their
-content space is `409` -- the ceiling working, measured as failure: 59% of the
+space byte cap, `Limits.max_space_bytes`, 1 GiB when this was measured; one
+tenant above 10,000 files), so every upload into their content space is `409` -- the ceiling working, measured as failure: 59% of the
 2026-09-28 step run's errors (`د‑33`). `refresh` therefore also writes
 `upload_space_id`: a space of the same tenant with room under both ceilings,
 or `null` when there is none. `index_file.js` uploads only through entries
@@ -408,7 +408,7 @@ that does not match the files.** Both learned from the first §0.1-valid run
   fastest "reads" in the profile, inside the 150 ms budget it then passed.
   A refusal here names the route, the status, the code and whose fault it
   is (`422` → the scenario drifted from the router; `409
-  spaces.quota_exceeded` → that space is at its 1 GiB ceiling, so the probe
+  spaces.quota_exceeded` → that space is at its byte ceiling (`Limits.max_space_bytes`), so the probe
   samples five spaces across the pool before calling the corpus unindexable).
   It costs ~10 requests and leaves one conversation, one 9‑byte file and one
   indexed document behind; a preflight that only read could not prove the

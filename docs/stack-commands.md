@@ -66,11 +66,12 @@
 | 25 | `ruff format --check .` | البوّابة 1 — تنسيقٌ موحّد (بلا `--check` تُصلَّح الملفّات مكانها) |
 | 26 | `ruff check .` | البوّابة 2 — الفحص الساكن (‏lint) |
 | 27 | `mypy src` | البوّابة 3 — تحقّق الأنواع الصارم على `src/` |
-| 28 | `lint-imports` | البوّابة 4 — ثمانية عقود طبقاتٍ في `.importlinter` (‏D‑17)، الصفر خرقاً |
+| 28 | `lint-imports` | البوّابة 4 — تسعة عقود طبقاتٍ في `.importlinter` (‏D‑17)، الصفر خرقاً |
 | 29 | `pytest` | البوّابة 5 — الحزمة كاملةً؛ اعتماد محلي غائب يتخطّى افتراضاً |
 | 29‑ب | `set -a; . ./.env.test; set +a` | **شرط تشغيل `tests/integration`** — تحميل اعتمادات `TEST_*` قبل `pytest`؛ بدونه تتخطّى الحزمة كلّها بسببٍ مُعلَن |
 | 30 | `pytest -rs` | المِثل، مع طباعة **اسم وسبب** كلّ تخطٍّ — الفرق بين تخطٍّ سليمٍ ومقنّع |
 | 31 | `pytest -m live_db` | مسبارٌ حيٌّ واحد فوق PostgreSQL الحاوي (وكذا `live_qdrant`, `live_minio` …) |
+| 31‑ب | `deploy/supply-chain/scan.sh` | **فحص سلسلة التوريد (`PLT‑19`)** — SBOM وسياسة التراخيص والثغرات المعروفة لاعتماديات وقت التشغيل. يحتاج الشبكة (PyPI وقاعدة الثغرات)، ولا يمسّ أيّ خدمة. يكتب في `build/supply-chain/` |
 | 32 | `alembic revision -m "..."` | توليد هجرةٍ جديدة (بلا مفاتيح أجنبيّة عابرةٍ بين المخطّطات) |
 | 33 | `python -m app.ops.retention` | مكنسة الاحتفاظ — تشغيلٌ **يدويّ**، لا خدمةٌ دائمة |
 | 34 | `python -m app.ops.rotate_transit` | تدوير مفتاح Vault Transit — تشغيلٌ **يدويّ** بدور مقصورٍ على `ciphertext_ref` |
@@ -363,7 +364,7 @@ docker run --rm -v alpha-infra_pg-data:/dest -v /home/volume-archive:/src alpine
 
 ### 28 · `lint-imports`
 
-**البوّابة المعماريّة.** ينفّذ ثمانية عقودٍ في `.importlinter` (‏`D‑17`) تفرض قاعدة الاعتماد آليّاً: الاتّجاه للداخل فقط · `domain/` لا يستورد شيئاً تقنيّاً · **لا أحد يستورد `infrastructure/` إلّا `framework/di/composition_root.py`**. آخر قياس: ✅ **8/0**.
+**البوّابة المعماريّة.** ينفّذ تسعة عقودٍ في `.importlinter` (‏`D‑17`) تفرض قاعدة الاعتماد آليّاً: الاتّجاه للداخل فقط · `domain/` لا يستورد شيئاً تقنيّاً · **لا أحد يستورد `infrastructure/` إلّا `framework/di/composition_root.py`**. آخر قياس: ✅ **9/0**.
 
 ### 29–31 · `pytest`
 
@@ -411,6 +412,15 @@ pytest -m live_db
 MinIO مثالٌ مقصود: `_MINIO_SECRET_DEFAULT` هي `aizzak-test-secret`، وبعد تدوير الحساب كانت تنتج `SignatureDoesNotMatch` في كلّ اختبار؛ اليوم تردّ المصافحة `AccessDenied` مرّةً واحدةً ويُعلَن السبب. وحارس D‑1 يظلّ يرفض اختلاف `MINIO_TEST_SECRET_KEY` و`TEST_MINIO_SECRET_KEY` عندما يكونان مضبوطين معاً، لكنه لا يربط الاسمين بنيوياً.
 
 ⚠️ الوسم `integration` **حُذف**: كان مُعلَناً في `pyproject.toml` وغيرَ مستعمَلٍ على أيّ اختبار، فـ`pytest -m "not integration"` لم يكن يستثني شيئاً و`pytest -m integration` كان يجمع صفراً **ويخضرّ**. لا تكتبه في أمرٍ جديد — البوّابة هي `pytest` وحدها.
+
+### 31‑ب · `deploy/supply-chain/scan.sh`
+
+المدخل الوحيد لفحص سلسلة التوريد (`PLT‑19`، NFR‑LIC‑07، NFR‑SEC‑04)، وهو ما تشغّله وظيفة `supply-chain` في `ci.yml` بالأمر نفسه. يبني بيئةً كما يبنيها `Dockerfile` (`pip install '.[parsers]'` ثم إزالة `aizzak-platform`)، ويولّد SBOM بصيغة CycloneDX 1.6، ويفحص الثغرات بـ`pip-audit`، ثمّ يطبّق `deploy/supply-chain/license-policy.toml` بفاحصٍ بالمكتبة القياسية وحدها (`supply_chain_check.py`). رمز الخروج: 0 نجاح · 1 مخالفة (ترخيصٌ خارج السياسة أو ثغرةٌ بلا استثناء صالح) · 2 مدخلٌ ناقص (فحصٌ لم يجرِ، فلا يمرّ فحصٌ فارغ).
+
+- **المخرجات** في `build/supply-chain/` (مُتجاهَلة في git): `sbom.cdx.json` و`audit.json` و`runtime-freeze.txt` و`report.md`. والتقرير يذكر مكوّنات AGPL (تُعلَّم ولا تُرفض) وترخيص الجذر.
+- **ما يُفحص** اعتماديات وقت التشغيل وحدها، لا `[dev]`، ولا حزم نظام التشغيل في الصور (`PLT‑17`).
+- **الاستثناءات:** كلّ ترخيصٍ يُضاف إلى السياسة يحمل قرار مالك (`decision = "SRS D‑32"`)، واستثناء الثغرة مؤرَّخ لا يتجاوز 90 يوماً بموافقة المالك. لا يضيف وكيلٌ أيّاً منهما.
+- يحتاج الشبكة؛ وانقطاعها في منتصف `pip-audit` يخرج بـ2 لا بنجاحٍ كاذب، فأعد التشغيل.
 
 ### 32 · `alembic revision -m "..."`
 

@@ -89,37 +89,69 @@ def _files_body(text: str) -> list[Statement]:
 # --------------------------------------------------------------------------- #
 # AC-1.4 -- the body ceiling                                                  #
 # --------------------------------------------------------------------------- #
-def body_limit_problems(locations_text: str, max_upload_bytes: int) -> list[str]:
+def body_limit_problems(
+    locations_text: str, max_single_put_bytes: int, part_bytes: int
+) -> list[str]:
     limits = direct(_files_body(locations_text), "client_max_body_size")
     if len(limits) != 1:
         return [f"expected one client_max_body_size in the files location, found {len(limits)}"]
     ceiling = size_bytes(limits[0][0])
     problems = []
-    if ceiling != max_upload_bytes:
+    if ceiling != max_single_put_bytes:
         problems.append(
-            f"client_max_body_size {limits[0][0]} ({ceiling}) != max_upload_bytes "
-            f"({max_upload_bytes}): raise both together"
+            f"client_max_body_size {limits[0][0]} ({ceiling}) != max_single_put_bytes "
+            f"({max_single_put_bytes}): raise both together"
+        )
+    if part_bytes >= ceiling:
+        problems.append(
+            f"multipart_part_bytes ({part_bytes}) is not below client_max_body_size "
+            f"{limits[0][0]} ({ceiling}): a signed part would be refused with 413"
         )
     if ceiling >= _CLOUDFLARE_FREE_BODY_LIMIT:
         problems.append(f"client_max_body_size {ceiling} is not under Cloudflare's 100 MB")
     return problems
 
 
-def test_the_body_limit_is_the_app_s_upload_limit_and_under_cloudflare_s() -> None:
-    assert body_limit_problems(_read(_LOCATIONS), Limits().max_upload_bytes) == []
+def test_the_body_limit_is_the_single_put_limit_with_parts_below_it_and_under_cloudflare_s() -> (
+    None
+):
+    limits = Limits()
+    assert (
+        body_limit_problems(
+            _read(_LOCATIONS), limits.max_single_put_bytes, limits.multipart_part_bytes
+        )
+        == []
+    )
+
+
+def test_the_edge_limit_never_exceeds_the_file_size_limit() -> None:
+    # `max_upload_bytes` becomes 1 GiB (PLT-01): the whole file reaches the bucket as
+    # parts, each one a request under the edge ceiling, so the edge must not follow it.
+    limits = Limits()
+    assert limits.max_single_put_bytes <= limits.max_upload_bytes
 
 
 def test_the_body_limit_guard_fails_when_one_number_moves_alone() -> None:
     real = _read(_LOCATIONS)
-    app = Limits().max_upload_bytes
-    assert app == 52_428_800
+    put, part = Limits().max_single_put_bytes, Limits().multipart_part_bytes
+    assert put == 52_428_800
     assert body_limit_problems(
-        _swap(real, "client_max_body_size    50m;", "client_max_body_size    51m;"), app
+        _swap(real, "client_max_body_size    50m;", "client_max_body_size    51m;"), put, part
     )
-    assert body_limit_problems(real, 60 * 1024 * 1024)
+    assert body_limit_problems(real, 60 * 1024 * 1024, part)
     over = _swap(real, "client_max_body_size    50m;", "client_max_body_size    200m;")
-    problems = body_limit_problems(over, 209_715_200)
+    problems = body_limit_problems(over, 209_715_200, part)
     assert len(problems) == 1 and "Cloudflare" in problems[0]
+
+
+def test_the_body_limit_guard_fails_when_a_part_is_not_below_the_edge_limit() -> None:
+    real = _read(_LOCATIONS)
+    put = Limits().max_single_put_bytes
+    at_the_limit = body_limit_problems(real, put, put)
+    assert len(at_the_limit) == 1 and "multipart_part_bytes" in at_the_limit[0]
+    above = body_limit_problems(real, put, put + 1)
+    assert len(above) == 1 and "413" in above[0]
+    assert body_limit_problems(real, put, put - 1) == []
 
 
 # --------------------------------------------------------------------------- #
