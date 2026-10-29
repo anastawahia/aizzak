@@ -7,12 +7,12 @@
 | المعرّف | `electrical-drawings` |
 | المنتج | WireTwin (المعرّف `wiretwin`) |
 | نوع الوثيقة | تصميم عالي المستوى فقط: مكوّنات ومنافذ وعقود على مستوى المورد والحدث. **لا شيفرة ولا DDL ولا تواقيع** |
-| الإصدار | 0.5 (مسودة للمراجعة، بعد الجولة الثانية من إعادة العمل) |
+| الإصدار | 0.16 (مسودة للمراجعة، بعد الجولة الثانية من إعادة العمل) |
 | التاريخ | 2026-10-29 |
-| المدخل الملزم | [`requirements.md`](requirements.md) الإصدار 0.7؛ القرارات SRS D-01..D-22 محسومة |
+| المدخل الملزم | [`requirements.md`](requirements.md) الإصدار 0.15؛ القرارات SRS D-01..D-31 محسومة |
 | المدخل المساند | [`../research/ele-open-source/`](../research/ele-open-source/) (`00-summary.md`، `02-techniques-matrix.md`، `01-catalog.md`، `03-datasets-and-benchmarks.md`) |
 | الوثائق الحاكمة | `CLAUDE.md`، `docs/architecture.md` (arch D‑01…D‑26)، `docs/design/00…12`، `docs/design/openapi.yaml`، `.importlinter`، `docker-compose.yml`، `docker-compose.gpu.yml`، `docs/deploy-server.md` |
-| الحالة | مسودة. فيها خمسة عشر قراراً ⚠️ معلّقاً (DEC‑04..DEC‑18، §18.3) تحجب الزيادات التي تمسّها، وثلاثة قرارات محسومة (DEC‑01..DEC‑03). وفي §18.4 ستة صفوف تعارض مفتوحة بين SRS ووثائق المنصة، كلها محالة إلى تلك القرارات، وثلاثة صفوف محسومة: واحد بـSRS D-22، وواحد بـDEC‑02، وآخر في التصميم |
+| الحالة | مسودة. لا قرار ⚠️ معلّقاً كاملاً. بقي قرار محسوم جزئياً (DEC‑07، §18.3: بقي محرك OCR وترقية التضمين)، وهو يحجب INC‑3 وINC‑8P وحدهما. وسبعة عشر قراراً محسوماً (DEC‑01..DEC‑06، DEC‑08..DEC‑18). وفي §18.4 صفوف التعارض التسعة بين SRS ووثائق المنصة كلها محسومة: واحد بـSRS D-22، وواحد بـDEC‑02، وواحد بـDEC‑08، وواحد بـDEC‑10، وواحد بـDEC‑11، وواحد بـDEC‑12، وواحد بـDEC‑15، وواحد بـDEC‑17، وآخر في التصميم |
 
 **سجل الإصدارات**
 
@@ -23,6 +23,17 @@
 | 2026-10-29 | 0.4 | تحرير بطلب المالك: بند «المشكلة» في القرارات DEC‑11..DEC‑16 وDEC‑18 (§18.3)، يشرح ما يعالجه كل قرار. وكان البند قائماً في DEC‑17. لا تغيير في الخيارات ولا التوصيات ولا ما يحجبه كل قرار |
 | 2026-10-28 | 0.3 | إعادة العمل 2. **(أ) SRS D-22 (SRS 0.7) يحسم DEC‑03:** لا مراجعات. الوثيقة ملف مرفوع واحد، 1:1 مع `file_id`، ومعرّفاتها الحتمية مشتقة من `file_id` (§8.7). صارت أحداث المجموع `revision` أحداثاً للمجموع `document`، وأُزيل حدث تغيير المراجعة الفعالة (`electrical.document.effective_revision_changed.v1`)، وأُضيف `electrical.document.purged.v1` (§7.8). وصار قسم النموذج لكل وثيقة، وبادئة MinIO بالوثيقة. وأُضيف التطهير بمرحلتين (§8.8)، وتدفق الاستبدال بالاسم ومعاينته وحارس التسجيل (§8.11، §14.4). أُزيل `PLT‑02` وأُضيف `PLT‑24`. وأُعيدت صياغة RSK‑08، وأُضيف RSK‑17 وRSK‑18 والقراران DEC‑17 وDEC‑18. **(ب) أُلغي مشروع staging على RunPod** (قرار المالك 2026-10-28، `CLAUDE.md` «Staging & deploy»): بقي هدفان، المكدّس المحلي وخادم GPU وفق `docs/deploy-server.md` (§4.4). أُزيل RSK‑10 وبند (هـ) من DEC‑15، وعُدّلت DEC‑04 وDEC‑07 وDEC‑08 وDEC‑14 وPLT‑10 وPLT‑17 وINC‑11 دون حسمها |
 | 2026-10-29 | 0.5 | قرار المالك: **DEC‑02 حُسم بالخيار (ب)**، رفع الحدود العامة في `Limits` (1 GB لكل ملف، وحصة فضاء أكبر) مع بقاء الرفع المجزأ القابل للاستئناف. عُدّل `PLT‑01` (§5.7) وADR‑29 (§15) وINC‑0 (لم يعد محجوباً بـDEC‑02) وصف التعارض 1 (§18.4) |
+| 2026-10-29 | 0.6 | قرار المالك: **DEC‑04 حُسم بالخيار (أ)**، خدمة `ele-parse` معزولة على شبكة Docker داخلية، مع تأكيد إلغاء النشر على RunPod. عُدّل ADR‑04 (§15) وINC‑1 (لم يعد محجوباً بـDEC‑04) |
+| 2026-10-29 | 0.7 | قرارات المالك: **DEC‑05 (أ)** مخزن الرسم في Postgres تحت RLS؛ و**DEC‑06 (أ)** الحساب المتزامن داخل `app` بتفريغ إلى خيط وسقف تزامن و`429`؛ و**DEC‑07 جزئياً**: كرت GPU واحد بميزانيات VRAM (أ)، والنموذج المحلي من عائلة Qwen، وبقي محرك OCR وترقية التضمين؛ و**DEC‑08 (أ)** امتدادات في السجل عبر Loki. عُدّلت ADR‑11 وADR‑21 وADR‑26 وADR‑28 (§15)، وما تحجبه INC‑6 وINC‑9 وINC‑10 وINC‑11 (§16)، وصف التعارض 4 (§18.4) |
+| 2026-10-29 | 0.8 | قرار المالك: **DEC‑09 حُسم بخيار رابع (د)** (SRS D-23، SRS 0.8): تقييم جودة التحليل والاسترجاع في مهمة مستقلة خارج CI، ونتائجه ليست شرطاً للدمج بل لتفعيل إصدار أو نموذج، ويبقى في CI SBOM وفحص التراخيص والثغرات. عُدّل صف التقييم في §13.7، وM-25 وM-26 في §11، وADR‑27 (§15)، وINC‑0 وINC‑11 (§16)، وR-06 (§18.1) |
+| 2026-10-29 | 0.9 | قرار المالك: **DEC‑10 حُسم بالتأجيل** (SRS D-24، SRS 0.9): لا يُعدَّل الترخيص الآن، فيبقى `Proprietary`، ولا يُبنى مسار عرض الشيفرة؛ وسيقرر المالك لاحقاً تغيير الترخيص أو استبدال المكتبات المرخصة بـAGPL، مع تذكير قبل الإطلاق في الإنتاج. عُدّل PLT‑19 (§5)، وجدول المسارات (§12)، و§13.8، وADR‑32 (§15)، وINC‑0 وINC‑11 (§16)، وR-03 (§18.1)، وDEC‑13، وصف التعارض 5 (§18.4) |
+| 2026-10-29 | 0.10 | قرار المالك: **DEC‑11 حُسم** (SRS D-25، SRS 0.10): لا أدوار جديدة ولا أدوار خاصة بالفني أو المهندس أو غيرهم؛ صلاحيات `electrical:*` على أدوار المنصة القائمة. ويعمل `wiretwin_agent` مع الوكيل المقترح «المساعد الذكي» لخدمة الموظفين، والمساعد يستطيع استدعاء كل الوكلاء ومنهم `wiretwin_agent` (SRS FR-AGT-15). عُدّل جدول الفاعلين والشكل 1 (§3)، وPLT‑13 وأُضيف PLT‑25 (§5)، وأُضيف §11.11، و§12.3، وADR‑31 (§15)، وINC‑0 وINC‑10 (§16)، وأُضيف RSK‑19 (§18.2)، وصف التعارض 3 (§18.4) |
+| 2026-10-29 | 0.11 | قرار المالك: **DEC‑12 حُسم بالتوصية**: تُقَرّ حزمة تغييرات عقود المنصة الإضافية مرة واحدة (`PLT‑03`، `PLT‑04`، `PLT‑05`، `PLT‑09`، `PLT‑10`، `PLT‑11`، `PLT‑12`، `PLT‑15`)، وكلٌّ يُنفَّذ في زيادته مع اختبار عقده. لا تغيير في SRS. عُدّلت أعمدة العقود في §5، و§9 (القراءة بالمعرّف)، وINC‑8P وINC‑10 (§16)، وصف التعارض 6 (§18.4) |
+| 2026-10-29 | 0.12 | قرار المالك: **DEC‑13 حُسم بالتوصية** (SRS D-26، SRS 0.11): تُقَرّ قائمة الاعتماديات الجديدة، ويُقَرّ OFL-1.1 للخطوط صراحةً. عُدّلت أعمدة التراخيص في §6، و§13.4 و§13.8، وADR‑05 وADR‑06 وADR‑12 وADR‑15 وADR‑16 وADR‑24 (§15)، وINC‑1 وINC‑4 وINC‑8 (§16) |
+| 2026-10-29 | 0.13 | قرار المالك: **DEC‑14 حُسم بخيار جديد** (SRS D-27، SRS 0.12): كل القياس على المضيف المحلي (نحو 13 GB، و10 أنوية، وRTX 4060 Laptop بـ8 GB)، ولا قياس خارجه، وكل اختبار قياس يُحجَّم ليناسبه. عُدّل جدول الهدفين (§4.4)، ومقاييس الإشباع (§13.2)، و§13.3، وصف التقييم (§13.7)، والنموذج المحلي (§11.6)، وINC‑11 (§16)، وR-19 وأُضيف R-22 وR-23 (§18.1)، وRSK‑01 (§18.2) |
+| 2026-10-29 | 0.14 | قرار المالك: **DEC‑16 حُسم بإعادة دراسة NFR-PRIV-01** (SRS D-28، SRS 0.13): بيانات المستخدم لا تُحذف تلقائياً أبداً، ولا تُحذف إلا بفعل صريح من المستخدم؛ وسجل التدقيق لا يُحذف أبداً؛ ولا يُكنس تلقائياً إلا البيانات التقنية المؤقتة بمدة ثابتة للنظام. فلا يمنح `retention_sweeper` إلا جداول تلك البيانات، بنمط الخيار (أ). عُدّل `ops-scheduler` (§4)، وPLT‑04 وPLT‑14 وPLT‑22 (§5.7)، والأدوار (§8.2)، والمشتقات (§8.3)، و§8.8، وجدول المسارات (§12)، وINC‑11 (§16)، وجدول التتبّع (§17)، وأُضيف R-24 (§18.1) |
+| 2026-10-29 | 0.15 | قرار المالك: **DEC‑17 حُسم بخيار رابع (د)** (SRS D-29، SRS 0.14): الوكيل المتاح للمستخدمين مستقبلاً هو «المساعد الذكي» وحده، ويفهرس WireTwin و`knowledge` على مستوى الفضاء (المنطقة) بوسوم النظام والمعدّة والقسم. والاستبدال بالاسم صار مشروطاً بتطابق الوسوم، وهو تغيير في `files` يشترك فيه المساعد الذكي (FR-31 وFR-32 فيه). وبالتوصيات: مشروع واحد لكل فضاء، ونوع الملف لا يدخل في التطابق، وإعادة الوسم تكنس كإعادة التسمية. أُضيف `PLT‑26` وRSK‑20، وعُدّل `PLT‑24` و§8.11 وجدول المسارات (§12) وعزل الفضاء (§13) وADR‑30 وINC‑1 وجدول التتبّع والصف 8 في §18.4 |
+| 2026-10-29 | 0.16 | قرارا المالك بالتوصية: **DEC‑15** (SRS D-30): تُقَرّ التفسيرات الأربعة (أ..د)، وعُدّلت في SRS NFR-I18N-01 وFR-INT-07 وNFR-SCAL-05. و**DEC‑18 (أ)، الحدّ الضيق** (SRS D-31): ما يبقى بعد حذف الملف أو استبداله اعتمده إنسان أو هو سجلّ لما جرى، ولا يُسترجع منه شيء ولا يُستشهد به بوصفه مخططاً حياً. وعُدّلت في SRS FR-ING-03 وFR-INT-13 وFR-GRD-06 وDATA-07. عُدّلت §4.3 و§8.6 و§8.8 وجدول §8.11 و§9.6 و§11.6 و§12.4 و§13.7، وADR‑30 (§15)، وINC‑4 وINC‑9 وINC‑11 (§16، بلا حاجب)، وR-21 (§18.1)، والصف 7 في §18.4 |
 
 ## 0. كيفية قراءة الوثيقة
 
@@ -92,7 +103,7 @@
 | دعم الصينية في وحدة المعرفة (FR-INT-15) | `knowledge` (تغيير منصة `PLT‑05`) | INC‑8P |
 | التشخيص بالاتساق واختيار القياس الفاصل وحلقة القياس | `diagnostics`، `circuits` | INC‑9 |
 | الوكيل بنموذج محلي افتراضي وسحابي بالإعداد، والإسناد وحقول الحقيقة، والحد الأدنى للسلامة، وفهم البلاغ بثلاث لغات ومسرد المصطلحات | `wiretwin_agent`، `diagnostics`، `search` | INC‑10 |
-| إطار التقييم والمجموعة الذهبية وبوابات CI، والتدقيق، والتوسّع بالموارد، وREST وWebSocket | كل المكوّنات، و`PLT‑*` | INC‑1..INC‑11 (يتراكم) |
+| إطار التقييم والمجموعة الذهبية ومهمة التقييم المستقلة، والتدقيق، والتوسّع بالموارد، وREST وWebSocket | كل المكوّنات، و`PLT‑*` | INC‑1..INC‑11 (يتراكم) |
 
 ### 1.3 R2 وR3 والمؤجل: نقاط توسعة فقط
 
@@ -111,7 +122,7 @@
 | وسم دوائر الأمان (FR-KG-07) | R2 | وسم على الكيانات في `circuits`، وترتيب طابور المراجعة في `drawings` يقرؤه |
 | التعلم من الحالات (FR-LRN-01..03، FR-LRN-05) | R2/R3 | مكتبة الحالات والاحتمالات المسبقة المحدّثة في `diagnostics` |
 | مقارنة المراجعات (FR-ING-11) | — | أُزيل في الإصدار 0.3 (SRS D-22): أُزيلت FR-ING-11 من SRS، ولا مراجعات تُقارَن، فلا نقطة توسعة لها |
-| سجل HMAC (FR-ADM-06)، والمراجع (FR-HIL-06)، ونقاط المراجعة بين المراحل (FR-HIL-04) | R2 | سجلات التدقيق append-only في كل قسم (ADR‑25)، وحالة «بانتظار اعتماد» في طبقة التصحيحات |
+| سجل HMAC (FR-ADM-06)، واعتماد التصحيحات بصلاحية لا بدور (FR-HIL-06، DEC‑11)، ونقاط المراجعة بين المراحل (FR-HIL-04) | R2 | سجلات التدقيق append-only في كل قسم (ADR‑25)، وحالة «بانتظار اعتماد» في طبقة التصحيحات |
 | MCP والتصدير والـWebhooks (FR-API-05..07، FR-KG-08) | R2 | الأدوات نفسها خلف خادم MCP للقراءة فقط، وكتّاب تصدير في `circuits`، وأحداث `*.completed` مصدراً للـWebhooks |
 | التوجيه لكل مهمة وميزانية المشروع (FR-AGT-08، FR-ADM-05) | R2 | مفاتيح قدرة إضافية في جدول التوجيه، و`PLT‑09` (أكثر من نموذج في دور واحد) |
 | قبول PDF محمي بكلمة مرور (FR-ING-07) | R2 | كلمة المرور تمرّ إلى `ele-parse` عابرة ولا تُخزَّن |
@@ -168,7 +179,7 @@
 | NFR-ACC-02 (ECE ≤ 0.05) | الثقة الخام من القواعد ليست احتمالاً | طبقة معايرة لكل نوع حقيقة تُلائَم على المجموعة الذهبية وتُصدَر بإصدار (ADR‑38) | §13.7 |
 | NFR-REP-01..03 | سلسلة مراحل طويلة ونموذج لغوي غير حتمي | بصمة إصدار على كل حقيقة وإجابة؛ مراحل حتمية؛ cassettes | §13.6 |
 | NFR-I18N-01..04 | ثلاث لغات أسئلة ولغتا مصدر في الصفحة نفسها | تقطيع صيني يحمي المعرّفات اللاتينية؛ تطبيع للبحث مع حفظ الأصل؛ عزل ثنائي الاتجاه؛ خطوط CJK بديلة | §13.4 |
-| NFR-LIC-06 وNFR-LIC-07 | المنصة كلها تُتاح بـAGPL-3.0 | فحص تراخيص وSBOM في CI؛ مسار عرض الشيفرة المطابقة للإصدار (DEC‑09، DEC‑10) | §13.8 |
+| NFR-LIC-06 وNFR-LIC-07 | المنصة كلها تُتاح بـAGPL-3.0 (أُجّل بـSRS D-24: يبقى `Proprietary` حتى يقرر المالك) | فحص تراخيص وSBOM في CI (DEC‑09)؛ ولا مسار لعرض الشيفرة الآن (DEC‑10) | §13.8 |
 | NFR-OBS-02 وNFR-OBS-03 | المنصة بلا تتبّع موزّع (`docs/design/07-nfr-slo.md` §7)، والخادم الصغير قد يُشغَّل دون المراقبة (`docs/deploy-server.md` §2) | سجلات امتدادات مرتبطة بمعرّف الارتباط، أو OpenTelemetry (DEC‑08)؛ مقاييس إشباع لكل مرحلة | §13.2 |
 
 ## 3. منظور السياق (C4 · L1)
@@ -188,6 +199,7 @@ graph TD
         ELE["WireTwin<br/>الوحدة electrical: drawings · circuits · search · diagnostics · shared<br/>+ wiretwin_agent"]
         KN["وحدة المعرفة knowledge<br/>النظام القائم (SRS D-12)"]
         PLAT["قدرات المنصة<br/>files · spaces · access · usage · conversations · orchestrator"]
+        SA["المساعد الذكي smart_assistant<br/>وكيل مقترح · يخدم الموظفين أنفسهم"]
     end
 
     FB["Firebase Auth<br/>الهوية فقط"]
@@ -208,16 +220,18 @@ graph TD
     AIZZAK --> LLML
     AIZZAK -.->|إعداد صريح| LLMC
     ELE --> OCR
+    SA -->|يستدعي بسياق المستخدم · FR-AGT-15| ELE
     AIZZAK --> EMB
 ```
 
-*الشكل 1. السياق. المتقطع يعني «بالإعداد فقط» أو «في R2».*
+*الشكل 1. السياق. المتقطع يعني «بالإعداد فقط» أو «في R2». الفاعلون فئات احتياج لا أدوار: كلهم موظفون بأدوار المنصة القائمة (DEC‑11).*
 
 | الفاعل أو النظام | التفاعل | الحدّ |
 |---|---|---|
-| فني ومهندس الصيانة | بلاغ عطل، أسئلة، حلقة قياس، فتح الاستشهادات على الصفحة | عبر الواجهة الأمامية؛ الصلاحيتان `electrical:read` و`electrical:diagnose` |
-| مهندس التحكم ومهندس التشغيل | تتبّع، عناوين PLC، تقارير التحقق المتبادل | `electrical:read` |
-| مسؤول التوثيق | رفع المخططات وتسجيلها في المشروع، تأكيد ملف الإعداد، التصحيحات، طابور المراجعة | `electrical:manage` |
+| فني ومهندس الصيانة | بلاغ عطل، أسئلة، حلقة قياس، فتح الاستشهادات على الصفحة | عبر الواجهة الأمامية؛ دور المنصة `member`، وفيه `electrical:read` و`electrical:diagnose` |
+| مهندس التحكم ومهندس التشغيل | تتبّع، عناوين PLC، تقارير التحقق المتبادل | دور المنصة `member` (`electrical:read`) |
+| مسؤول التوثيق | رفع المخططات وتسجيلها في المشروع، تأكيد ملف الإعداد، التصحيحات، طابور المراجعة | دور المنصة `admin` أو `owner` (`electrical:manage`) |
+| المساعد الذكي (`smart_assistant`، مقترح) | وكيل آخر يخدم الموظفين أنفسهم من قاعدة المعرفة المركزية | يستطيع استدعاء كل الوكلاء ومنهم `wiretwin_agent`، بسياق المستخدم نفسه (§11.11، SRS FR-AGT-15، DEC‑11) |
 | مدير النظام | النشر، الصلاحيات، توجيه النماذج، الحصص | قدرات المنصة القائمة (`access`، `usage`، `PROVIDER_ROUTING`) |
 | النظام القائم (`knowledge`) | يفهرس الوثائق النصية ويسترجعها | في العملية نفسها، عبر `KnowledgeRetrieval` وحده (FR-INT-01) |
 | Firebase | الهوية | يُورث كما هو (FR-ADM-01) |
@@ -251,7 +265,7 @@ graph TD
 | `minio` | قائمة | مشتقات الصفحات تحت بادئة مساحة العمل | — | قرص |
 | `qdrant` | قائمة | صندوق `ele-<workspace_id>` (RSK‑03) | — | ذاكرة |
 | `outbox-relay` | قائمة | ينشر الأحداث الجديدة؛ نسخة واحدة (arch §14) | — | — |
-| `ops-scheduler` | قائمة | مهام دورية جديدة: الاحتفاظ، وتنظيف الملفات المؤقتة، وكشف المهام العالقة | — | — |
+| `ops-scheduler` | قائمة | مهام دورية جديدة: كنس البيانات التقنية المؤقتة (NFR-PRIV-04)، وتنظيف الملفات المؤقتة، وكشف المهام العالقة | — | — |
 | `migrate` | قائمة | سلسلة الهجرات الجديدة الواحدة `electrical` | — | — |
 | المراقبة (Prometheus، Grafana، Loki، Alertmanager) | قائمة | مقاييس وتنبيهات جديدة | — | — |
 
@@ -329,7 +343,7 @@ graph TD
 
 المجموعات الخمس كلها على المجرى الواحد `stream.electrical`. ويبقى التوسّع لكل مرحلة (NFR-SCAL-04) لأن وحدة التوسّع مجموعةُ الاستهلاك ونسخ دورها، لا عدد الوحدات ولا عدد المجاري: كل مجموعة تقرأ المجرى مستقلة عن غيرها (سلوك يثبته `test_two_groups_on_one_stream_each_independently_receive_the_entry` في `tests/integration/test_stream_consumer_live.py`)، وتُقِرّ الأنواع التي لا معالج لها فيها دون مطالبة (`framework/events/topology.py`، الجزء (d)). والكلفة أن كل مجموعة تقرأ كل أحداث الوحدة ثم تتخطّى ما ليس لها، وهي بالمئات لكل وثيقة (§7.8).
 
-مهام الاستيعاب تصطفّ عند الذروة ولا تُرفض. يُعلن موضع المهمة وزمنها المتوقع من عمر الطابور ومعدّل الإنجاز المقيس (NFR-SCAL-05). وهذا يختلف عن ضغط الفهرسة العكسي في `knowledge` (`api/middleware/queue_backpressure.py`) الذي يرفض الرفع الجديد بـ`429` حين يتجاوز انتظار أقدم مدخل 120 ث. لا يُرفض تسجيل وثيقة في WireTwin بسبب الحمل إلا عند حدّ حماية أعلى بكثير، يحمي `redis-stream` (`noeviction`) من الامتلاء، وهو حدّ إعداد. أما الطلبات التفاعلية فتتبع سياسة المنصة: رفض فوري بـ`Retry-After` (`ق‑6`).
+مهام الاستيعاب تصطفّ عند الذروة ولا تُرفض. يُعلن موضع المهمة وزمنها المتوقع من عمر الطابور ومعدّل الإنجاز المقيس (NFR-SCAL-05). وهذا يختلف عن ضغط الفهرسة العكسي في `knowledge` (`api/middleware/queue_backpressure.py`) الذي يرفض الرفع الجديد بـ`429` حين يتجاوز انتظار أقدم مدخل 120 ث. لا يُرفض تسجيل وثيقة في WireTwin بسبب الحمل إلا عند حدّ حماية أعلى بكثير، يحمي `redis-stream` (`noeviction`) من الامتلاء، وهو حدّ إعداد. فالطابور معلن الموضع والزمن، لا صامت (✅ DEC‑15 (د)، SRS D-30). أما الطلبات التفاعلية فتتبع سياسة المنصة: رفض فوري بـ`Retry-After` (`ق‑6`).
 
 ### 4.4 التطوير المحلي مقابل خادم GPU
 
@@ -342,7 +356,7 @@ graph TD
 | النموذج اللغوي | نموذج صغير لاختبارات الدخان فقط | النموذج المحلي المختار (DEC‑07) |
 | العزل | `ele-parse` على شبكة Docker داخلية (DEC‑04) | الشبكة الداخلية نفسها. لها سابقة على الخادم: الشبكة `gpu-metrics` بـ`internal: true` في `docker-compose.gpu.yml`. وحدّ Docker Engine الأدنى (26.0.0)، الذي يفرضه `deploy/gpu-preflight.sh`، يحمي الشبكات الداخلية (CVE‑2024‑29018، `docs/deploy-server.md` §1.4) |
 | المراقبة | Prometheus وGrafana وLoki قائمة | مفعّلة افتراضياً (`COMPOSE_PROFILES=local-llm,monitoring`)، ومعها مصدّر الكرت `nvidia-gpu-exporter` (`docs/deploy-server.md` §2). فقياسات الإشباع تُؤخذ هناك، إلا على خادم صغير شُغّل دون المراقبة |
-| القياس | المسار المتجهي والاستعلامات على عيّنات صغيرة | أهداف GPU (NFR-PERF-05)، والوكيل بالنموذج المحلي الحقيقي؛ وبيئة قياس التوسّع في DEC‑14 |
+| القياس | **كل القياس هنا (✅ DEC‑14، SRS D-27)** بأحجام تناسب المضيف: المسار المتجهي، والاستعلامات، وأهداف GPU (NFR-PERF-05) على كرت RTX 4060 Laptop (8 GB)، والوكيل بالنموذج المحلي، والتوسّع حتى أكبر مضاعف يتسع له، والتقييم المستقل | لا قياس عليه (✅ DEC‑14) |
 
 **قيد الذاكرة المحلي حاكم.** المكدّس محجّم لمضيف 64 GB، والمضيف المحلي 13 GB. لذلك يبقى ملف `electrical` معطّلاً افتراضياً على المكدّس الحي إلى أن يُقبل R1، ويُفعَّل عند العمل عليه فقط (RSK‑01).
 
@@ -546,34 +560,36 @@ graph LR
 
 ### 5.7 بنود العمل في المنصة (خارج الوحدة الجديدة)
 
-بعد DEC‑01 (ب) صار كل بند كان يتكرّر لكل وحدة بنداً واحداً للوحدة `electrical`: مدخل واحد في كل جدول تسجيل، ومشارك واحد في كل تسلسل حذف، ومجرى واحد. وبقيت المعرّفات `PLT‑01..PLT‑23` كما هي؛ تغيّر مضمون `PLT‑04` و`PLT‑09` و`PLT‑11` و`PLT‑14` و`PLT‑16` و`PLT‑18` و`PLT‑20` و`PLT‑23`. وفي الإصدار 0.3 أُزيل `PLT‑02` (SRS D-22) مع بقاء صفّه، وأُضيف `PLT‑24`، وتغيّر مضمون `PLT‑04` و`PLT‑10` و`PLT‑17`.
+بعد DEC‑01 (ب) صار كل بند كان يتكرّر لكل وحدة بنداً واحداً للوحدة `electrical`: مدخل واحد في كل جدول تسجيل، ومشارك واحد في كل تسلسل حذف، ومجرى واحد. وبقيت المعرّفات `PLT‑01..PLT‑23` كما هي؛ تغيّر مضمون `PLT‑04` و`PLT‑09` و`PLT‑11` و`PLT‑14` و`PLT‑16` و`PLT‑18` و`PLT‑20` و`PLT‑23`. وفي الإصدار 0.3 أُزيل `PLT‑02` (SRS D-22) مع بقاء صفّه، وأُضيف `PLT‑24`، وتغيّر مضمون `PLT‑04` و`PLT‑10` و`PLT‑17`. وفي الإصدار 0.15 أُضيف `PLT‑26` (DEC‑17، SRS D-29)، وتغيّر مضمون `PLT‑24`.
 
 | المعرّف | البند | السبب | الموضع في المنصة | يمسّ عقداً؟ | الزيادة |
 |---|---|---|---|---|---|
 | PLT‑01 | رفع الحدود العامة (`max_upload_bytes` إلى 1 GB، و`max_space_bytes`)، ورفع مجزأ قابل للاستئناف | FR-ING-02 | `files` (حالات الاستعمال، `Limits`، المسارات، `openapi.yaml`)، و`StorageProvider` (توقيع الرفع متعدد الأجزاء)، و`docs/design/07-nfr-slo.md` §4 | نعم (✅ DEC‑02، الخيار ب) | INC‑0 |
 | PLT‑02 | أُزيل في الإصدار 0.3 (SRS D-22، وبه حُسم DEC‑03): كان استثناء ملفات المراجعات من قاعدة الاستبدال بالاسم. صارت قاعدة س‑29 تسري دون تغيير، ويشارك WireTwin فيها بمشارك الحذف (`PLT‑04`) وبربط فحص السميّ (`PLT‑24`) | — | — | — | — |
-| PLT‑03 | قراءة متدفقة أو مجزأة من التخزين | `StorageProvider.get` يعيد البايتات كاملة (`docs/design/02-port-contracts.md` §1.6)، والملف حتى 1 GB | `framework/ports/storage_provider.py` و`MinioStorage` | إضافة (DEC‑12) | INC‑1 |
-| PLT‑04 | مشارك واحد للوحدة في تسلسلات الحذف والتطهير | FR-INT-13، FR-ING-03، NFR-PRIV-01 | `framework/di/file_deletion.py` و`space_deletion.py`: مشارك واحد `electrical` في كلٍّ منهما، يركّبه جذر التركيب من منافذ تطهير الأقسام بترتيب ثابت (§8.8). و`DeleteFileService` يقبل اليوم مشاركاً واحداً (`knowledge`)، فيُضاف إليه معامل ثانٍ بالبروتوكول `FileContentPurge` نفسه؛ والاستبدال بالاسم يصله دون تغيير، لأن `ReplaceNamesakesService` يحذف بـ`DeleteFileService` (`file_replacement.py`)؛ وخدمة تسلسل لحذف المشروع في `framework/di/`؛ و`app/ops/purge.py`: مدخل واحد للـschema `electrical` في `_SCHEMA_ORDER` وصناديق `ele-`؛ و`app/ops/payload_indexes.py` و`app/ops/embedding_migration.py`: أسرة صناديق `ele-` مرة واحدة. ونطاق النسخ الاحتياطي لا يتغيّر: `backup_operator` يملك `pg_read_all_data` و`BYPASSRLS` فيشمل كل جدول جديد دون منح (`deploy/postgres/initdb/10-roles.sh`) | إضافة | INC‑1 يضيف المشارك المركّب ومنفذ `drawings`؛ ثم تضيف كل زيادة منفذ تطهير قسمها إلى المركّب نفسه دون مسّ ملفي التسلسل |
-| PLT‑05 | دعم الصينية في `knowledge` | FR-INT-15 | `knowledge/domain/tokenization.py` (تقطيع CJK يحمي المعرّفات اللاتينية، وكشف `zh`)، و`knowledge/adapters/parsers/image_ocr.py` (اليوم `ara+eng` عبر tesseract)، وقياس نموذج التضمين وترقيته عبر `app.ops.embedding_migration` | سلوك (DEC‑12) | INC‑8P |
+| PLT‑03 | قراءة متدفقة أو مجزأة من التخزين | `StorageProvider.get` يعيد البايتات كاملة (`docs/design/02-port-contracts.md` §1.6)، والملف حتى 1 GB | `framework/ports/storage_provider.py` و`MinioStorage` | إضافة (✅ DEC‑12) | INC‑1 |
+| PLT‑04 | مشارك واحد للوحدة في تسلسلات الحذف والتطهير | FR-INT-13، FR-ING-03، NFR-PRIV-03 | `framework/di/file_deletion.py` و`space_deletion.py`: مشارك واحد `electrical` في كلٍّ منهما، يركّبه جذر التركيب من منافذ تطهير الأقسام بترتيب ثابت (§8.8). و`DeleteFileService` يقبل اليوم مشاركاً واحداً (`knowledge`)، فيُضاف إليه معامل ثانٍ بالبروتوكول `FileContentPurge` نفسه؛ والاستبدال بالاسم يصله دون تغيير، لأن `ReplaceNamesakesService` يحذف بـ`DeleteFileService` (`file_replacement.py`)؛ وخدمة تسلسل لحذف المشروع في `framework/di/`؛ و`app/ops/purge.py`: مدخل واحد للـschema `electrical` في `_SCHEMA_ORDER` وصناديق `ele-`؛ و`app/ops/payload_indexes.py` و`app/ops/embedding_migration.py`: أسرة صناديق `ele-` مرة واحدة. ونطاق النسخ الاحتياطي لا يتغيّر: `backup_operator` يملك `pg_read_all_data` و`BYPASSRLS` فيشمل كل جدول جديد دون منح (`deploy/postgres/initdb/10-roles.sh`) | إضافة | INC‑1 يضيف المشارك المركّب ومنفذ `drawings`؛ ثم تضيف كل زيادة منفذ تطهير قسمها إلى المركّب نفسه دون مسّ ملفي التسلسل |
+| PLT‑05 | دعم الصينية في `knowledge` | FR-INT-15 | `knowledge/domain/tokenization.py` (تقطيع CJK يحمي المعرّفات اللاتينية، وكشف `zh`)، و`knowledge/adapters/parsers/image_ocr.py` (اليوم `ara+eng` عبر tesseract)، وقياس نموذج التضمين وترقيته عبر `app.ops.embedding_migration` | سلوك (✅ DEC‑12) | INC‑8P |
 | PLT‑06 | منع ازدواج الفهرسة | FR-INT-07 | `knowledge`: الفهرسة اليدوية تسأل منفذاً يعلنه عن ملكية الملف، ويربطه جذر التركيب بـ`drawings.DrawingFileOwnership` | إضافة | INC‑8 |
 | PLT‑07 | توسيع `RetrievedChunk` و`KnowledgeRetrieval` بالبيانات الوصفية والترشيح | FR-INT-14 (S) | `knowledge/ports/*`، و`deps_ports.RetrievedChunkView`، و`RetrievedChunkOut` في `openapi.yaml`، و`tests/unit/test_retrieved_chunk_contract.py` | نعم | R2 |
 | PLT‑08 | مستهلك لأحداث المعرفة | FR-INT-11 (S) | مجموعة جديدة على `stream.knowledge` في `STATIC_CONSUMER_TOPOLOGY` | إضافة | R2 |
-| PLT‑09 | مقعد الوكيل | SRS AC-09، FR-AGT-* | حقل اختياري واحد `electrical` في `AgentDependencies` (على سابقة `knowledge: KnowledgeAccess`، حقل لكل وحدة)، ببروتوكول بنيوي جديد في `framework/agent_runtime/deps_ports.py` يجمع منافذ الأقسام التي يحتاجها الوكيل؛ و`agents/orchestrator.py` يملؤه، وجذر التركيب يربطه | إضافة (DEC‑12) | INC‑6 (منافذ `circuits`)، INC‑10 (البقية) |
-| PLT‑10 | منفذ `OcrProvider` وخدمة `ocr` | FR-RAS-01، FR-VEC-08، FR-INT-15 | `framework/ports/`، ومحوّل في `infrastructure/ai_providers/`، و`services/ocr/`، وCompose وتراكب GPU، وصورة إصدار جديدة (`PLT‑17`) | منفذ جديد (DEC‑07، DEC‑12) | INC‑3 |
+| PLT‑09 | مقعد الوكيل | SRS AC-09، FR-AGT-* | حقل اختياري واحد `electrical` في `AgentDependencies` (على سابقة `knowledge: KnowledgeAccess`، حقل لكل وحدة)، ببروتوكول بنيوي جديد في `framework/agent_runtime/deps_ports.py` يجمع منافذ الأقسام التي يحتاجها الوكيل؛ و`agents/orchestrator.py` يملؤه، وجذر التركيب يربطه | إضافة (✅ DEC‑12) | INC‑6 (منافذ `circuits`)، INC‑10 (البقية) |
+| PLT‑10 | منفذ `OcrProvider` وخدمة `ocr` | FR-RAS-01، FR-VEC-08، FR-INT-15 | `framework/ports/`، ومحوّل في `infrastructure/ai_providers/`، و`services/ocr/`، وCompose وتراكب GPU، وصورة إصدار جديدة (`PLT‑17`) | منفذ جديد (DEC‑07، ✅ DEC‑12) | INC‑3 |
 | PLT‑11 | الطوبولوجيا والإشعارات ومخططات الأحداث | §7.8 | `framework/events/topology.py`: مجرى واحد `stream.electrical` في `PUBLISHED_STREAMS`، وخمس روابط (مجموعة لكل دور) في `STATIC_CONSUMER_TOPOLOGY` بأنواع أحداثها؛ ومفتاح واحد في `_NOTIFY_STREAMS` في جذر التركيب؛ وملف JSON Schema لكل نوع في `docs/design/events/schemas/`؛ والجدولان §2 و§4 في `04-event-catalog.md`؛ و`tests/unit/test_stream_topology.py`. ومراقبة `stream.electrical.dlq` (ت‑6) يفعّلها دور واحد فقط، لأن الأدوار الخمسة تقرأ المجرى نفسه (`infrastructure/messaging/consumers/engine.py`) | إضافة | INC‑1 فصاعداً |
-| PLT‑12 | أنواع رسائل WebSocket جديدة بحقل `seq` | FR-API-02، FR-API-03 | `03-api-spec.md` §3.2، وطبقة WS في `api/` | إضافة (DEC‑12) | INC‑10 |
-| PLT‑13 | صلاحيات RBAC جديدة | FR-ADM-01 | كتالوج الأدوار في `access`، و`05-rbac-config-secrets.md` §1 | نعم (DEC‑11) | INC‑1 |
-| PLT‑14 | التجهيز والمنح | SRS AC-09 | هجرة في سلسلة `platform` تنشئ schema `electrical` (سابقة `migrations/versions/platform/0004_spaces_schema.py`: السلسلة لا تنشئ schema جدول نسخها)؛ وسطر `migrations/versions/electrical` في `version_locations` في `alembic.ini`؛ ومدخل واحد في `MIGRATION_CHAINS` وفي `_MODULE_SCHEMAS`، وجداول الأقسام المستأجَرة في `_TENANT_TABLES` (`app/ops/provision.py`)؛ ومنح `app_rw` تأتي منها؛ ومنح `workspace_purger` في `PURGE_GRANTS`؛ ومنح `retention_sweeper` للاحتفاظ (§8.8، DEC‑16)؛ ولا منح لـ`backup_operator`؛ ولا دور جديد في `10-roles.sh`؛ وامتداد `pg_trgm` إن اختير (`deploy/postgres/initdb/20-extensions.sh`) | إعداد نشر (DEC‑13)؛ والاحتفاظ (DEC‑16) | INC‑1، والاحتفاظ في INC‑11 |
+| PLT‑12 | أنواع رسائل WebSocket جديدة بحقل `seq` | FR-API-02، FR-API-03 | `03-api-spec.md` §3.2، وطبقة WS في `api/` | إضافة (✅ DEC‑12) | INC‑10 |
+| PLT‑13 | صلاحيات RBAC جديدة، بلا أدوار جديدة | FR-ADM-01 | كتالوج الصلاحيات في `access` (صفوف `electrical:*` على الأدوار القائمة)، و`05-rbac-config-secrets.md` §1.3 | نعم (✅ DEC‑11) | INC‑1 |
+| PLT‑14 | التجهيز والمنح | SRS AC-09 | هجرة في سلسلة `platform` تنشئ schema `electrical` (سابقة `migrations/versions/platform/0004_spaces_schema.py`: السلسلة لا تنشئ schema جدول نسخها)؛ وسطر `migrations/versions/electrical` في `version_locations` في `alembic.ini`؛ ومدخل واحد في `MIGRATION_CHAINS` وفي `_MODULE_SCHEMAS`، وجداول الأقسام المستأجَرة في `_TENANT_TABLES` (`app/ops/provision.py`)؛ ومنح `app_rw` تأتي منها؛ ومنح `workspace_purger` في `PURGE_GRANTS`؛ ومنح `retention_sweeper` على جداول البيانات التقنية المؤقتة وحدها (المهام المنتهية وسجلات الصادرات)، ولا منح له على جداول بيانات المستخدم (§8.8، ✅ DEC‑16)؛ ولا منح لـ`backup_operator`؛ ولا دور جديد في `10-roles.sh`؛ وامتداد `pg_trgm` إن اختير (`deploy/postgres/initdb/20-extensions.sh`) | إعداد نشر (DEC‑13)؛ والكنس التقني (✅ DEC‑16) | INC‑1، والكنس التقني في INC‑11 |
 | PLT‑15 | رموز أخطاء `electrical.*` | FR-API-08 | `ERROR_CATALOG` في `framework/errors.py`، و`03-api-spec.md` §4 | إضافة | كل زيادة |
 | PLT‑16 | عقود import-linter | SRS AC-07 | `.importlinter` (§5.6): مدخل في `modules-independent`، وتوسيع `domain-purity` و`application-boundaries`، وعقد `electrical-contexts`، ومدخل في `agents-independent`، وعقد `wiretwin-agent-via-ports`؛ مع هيكل الوحدة الفارغ؛ ثم تحديث عدد العقود (8 ← 10) حيث يُذكر (`PLT‑23`) | نعم (DEC‑01، محسوم) | INC‑0 (العقود 1..4)، INC‑10 (5، 6) |
 | PLT‑17 | النشر | SRS AC-06، NFR-DEP-01 | على هدفَي Compose (§4.4): `docker-compose.yml` (خدمات، وملفات تشغيل، وشبكة داخلية، وحجم مؤقت)، و`docker-compose.gpu.yml`، ودفتر الموارد، وأحجام الخادم (`deploy/sizes/`). وخط صور الإصدار: صورتا `ele-parse` و`ocr` في `deploy/release/build-push.sh` و`.github/workflows/release.yml`، وفي `deploy/release/bundle.sh` الذي يقبل اليوم ثلاث صور فقط (`app` و`embedding` و`embedding-cuda`)، وبصمتاهما في `VERSION` (`docs/deploy-server.md` §3) | إعداد نشر وCI (DEC‑04، DEC‑07) | INC‑1، INC‑3 |
 | PLT‑18 | المراقبة | NFR-OBS-01..03 | مقاييس، وقواعد تنبيه بأقسامها في `docs/runbooks/alerts.md` وحالات `promtool` (ومنها تنبيه DLQ واحد لـ`stream.electrical.dlq`)، ولوحة Grafana، والتتبّع (DEC‑08) | إضافة | كل زيادة، وINC‑11 |
-| PLT‑19 | التراخيص والسلسلة البرمجية | NFR-LIC-02، NFR-LIC-06، NFR-LIC-07، NFR-SEC-04 | `license` في `pyproject.toml` (اليوم `Proprietary`)، وملف `LICENSE`، ومسار عرض الشيفرة، وSBOM وفحص التراخيص والثغرات في `.github/workflows/ci.yml` | نعم (DEC‑09، DEC‑10) | INC‑0، INC‑11 |
+| PLT‑19 | التراخيص والسلسلة البرمجية | NFR-LIC-02، NFR-LIC-06، NFR-LIC-07، NFR-SEC-04 | SBOM وفحص التراخيص والثغرات في `.github/workflows/ci.yml`. ولا يُمسّ `license` في `pyproject.toml` (يبقى `Proprietary`)، ولا ملف `LICENSE`، ولا مسار عرض الشيفرة (DEC‑10، تذكير للمالك) | نعم (DEC‑09، DEC‑10) | INC‑0 |
 | PLT‑20 | توجيه النماذج | FR-AGT-07، FR-AGT-14 | `PROVIDER_ROUTING` (مفتاح القدرة `wiretwin_agent`)، و`LLM_FALLBACK_ROUTE`، و`LLM_PRICES`، و`ollama-pull` | إعداد (DEC‑07) | INC‑10 |
 | PLT‑21 | قسم إعداد جديد | NFR-CFG-01، NFR-SCAL-05 | `framework/settings/settings.py`، و`infrastructure/config/env_settings.py`، و`.env.example` (بلا أسرار) | إضافة | INC‑1 |
-| PLT‑22 | مهام دورية جديدة | NFR-PRIV-01، P-06 | كتالوج `framework/observability/scheduled_tasks.py` و`TaskLedger`: الاحتفاظ، وتنظيف المؤقت، وكشف المهام العالقة، وكشف الوثائق المستبعدة وبقايا الكنس (§8.8، §8.11) | إضافة | INC‑5، INC‑11 |
+| PLT‑22 | مهام دورية جديدة | NFR-PRIV-04، P-06 | كتالوج `framework/observability/scheduled_tasks.py` و`TaskLedger`: كنس البيانات التقنية المؤقتة، وتنظيف المؤقت، وكشف المهام العالقة، وكشف الوثائق المستبعدة وبقايا الكنس (§8.8، §8.11) | إضافة | INC‑5، INC‑11 |
 | PLT‑23 | الوثائق الحاكمة | SRS AC-09 | `docs/architecture.md` (وحدة جديدة واحدة ومنافذها وخدماتها، وعدد العقود في D‑17)، و`docs/design/01..05، 07`، و`openapi.yaml`، وذكر «8 عقود» في `docs/quickstart.md` و`docs/stack-commands.md` و`CLAUDE.md` (الأخير بموافقة بشرية) | — | كل زيادة |
-| PLT‑24 | ربط فحص السميّ الأقدم | FR-ING-03، FR-INT-13 (§8.11) | جذر التركيب وحده: يُربط المنفذ `OlderNamesakes` الذي يعلنه `drawings` بحالة الاستعمال القائمة `FindNamesakes` في `files`، وهي نفسها التي يسألها `ReplaceNamesakesService`. فلا تُعاد صياغة قاعدة «الاسم نفسه» في WireTwin، ولا يتغيّر شيء في `files` ولا في `FilesQuery` | لا (ربط) | INC‑1 |
+| PLT‑24 | ربط فحص السميّ الأقدم | FR-ING-03، FR-INT-13 (§8.11) | جذر التركيب وحده: يُربط المنفذ `OlderNamesakes` الذي يعلنه `drawings` بحالة الاستعمال القائمة `FindNamesakes` في `files`، وهي نفسها التي يسألها `ReplaceNamesakesService`. فلا تُعاد صياغة قاعدة «الاسم والوسوم نفسها» في WireTwin، وتطابق الوسوم يأتي من `FindNamesakes` بعد `PLT‑26`. ويضيف الربط إلى جوابها السميّين بوسوم مختلفة، للمعاينة وحدها (RSK‑20) | لا (ربط) | INC‑1 |
+| PLT‑25 | استدعاء وكيل من وكيل | SRS FR-AGT-15، SRS D-25 | `agents/orchestrator.py`: يستدعي المساعد الذكي وكيلاً آخر عبر المنسّق لا بالاستيراد (عقد `agents-independent` في `.importlinter`)، بسياق المستخدم الأصلي، مع فحص صلاحيات الوكيل المستدعى. واليوم لا آلية لذلك: محرّك الـWorkflows ثابت بالكود وكتالوجه فارغ (`docs/architecture.md`). **تملكه ميزة المساعد الذكي وتصميمها**، لا WireTwin | نعم (عقد المنسّق) | خارج زيادات WireTwin؛ وINC‑10 يجهّز جانب WireTwin |
+| PLT‑26 | وسوم التصنيف على الملف ونطاق الاستبدال بالاسم | SRS FR-ING-13، FR-ING-03، SRS D-29 (DEC‑17) | `files`: وسوم النظام والمعدّة والقسم على صفّ الملف، تُحدَّد في `registerFile` وتُعدَّل بنداء إعادة وسم، ويحملها `files.file.uploaded.v1` (إضافة)؛ و`live_namesakes` يطابق الاسم والوسوم معاً، والوسم الغائب لا يطابق إلا غائباً، فالملفات بلا وسوم تتبع القاعدة كما كانت؛ وإعادة الوسم تكنس كما تكنس `renameFile`؛ و`openapi.yaml` و`01-data-model.md` §2.6. **بند واحد يخدم WireTwin والمساعد الذكي (FR-31 وFR-32 فيه)،** ويُبنى مرة واحدة: في م‑2 من المساعد الذكي، أو في زيادة منصة تسبقهما | نعم (عقد `files` وس‑29) | قبل INC‑1 |
 
 ### 5.8 لماذا وحدة واحدة بأربعة أقسام
 
@@ -603,14 +619,14 @@ graph LR
 | الاعتماد (SRS AC-03) | القرار | المستوى | المحوّلات المرشحة | الترخيص |
 |---|---|---|---|---|
 | تحليل PDF | **منفذ جديد** `PdfExtraction`: بدائيات، وأحرف وكلمات، وطبقات OCG، وXObjects، وروابط، وإشارات مرجعية، وبيانات وصفية، وإشارات تصنيف الصفحة | قسم (`drawings`) | عميل لـ`ele-parse` الذي يشغّل PyMuPDF؛ ومحوّل وهمي من ملفات مثبّتة | PyMuPDF AGPL-3.0 (مستعمل اليوم في `knowledge/adapters/parsers/pdf_text.py`)؛ بديل احتياطي pypdfium2 (Apache-2.0/BSD-3) |
-| التصيير إلى صور | **منفذ جديد** `PageRendering`: مستويات تكبير ومربعات، وتصيير منطقة للـOCR | قسم (`drawings`) | الخدمة نفسها `ele-parse` (PyMuPDF)، بخطوط CJK بديلة | AGPL-3.0؛ الخطوط OFL-1.1 (DEC‑13) |
+| التصيير إلى صور | **منفذ جديد** `PageRendering`: مستويات تكبير ومربعات، وتصيير منطقة للـOCR | قسم (`drawings`) | الخدمة نفسها `ele-parse` (PyMuPDF)، بخطوط CJK بديلة | AGPL-3.0؛ الخطوط OFL-1.1 (✅ DEC‑13، SRS D-26) |
 | OCR | **منفذ إطار جديد** `OcrProvider`: التعرّف على مناطق بلغات محددة، بدفعات، مع الثقة والصناديق والزاوية | إطار، لأن `drawings` و`knowledge` تستعملانه (FR-INT-15) | `ExternalOcrProvider` إلى `ocr-lb` ثم نسخ `ocr`: نماذج PP-OCRv5 عبر PaddlePaddle أو RapidOCR/ONNX Runtime؛ وخط أساس Tesseract `chi_sim+eng` على CPU | Apache-2.0 (PaddleOCR وPaddlePaddle وRapidOCR وTesseract)، MIT (ONNX Runtime). الاختيار بالقياس (M-29، M-30، L-06؛ DEC‑07) |
 | كاشف الرموز النقطي | **منفذ إطار جديد** `SymbolDetector` في R2 (FR-RAS-02)؛ لا شيء في R1 | إطار (R2) | RF-DETR مع SAHI؛ أو Ultralytics YOLO | Apache-2.0، MIT؛ أو AGPL-3.0 (مقبول) |
 | النموذج اللغوي (محلي وسحابي) | **إعادة استعمال** `LLMProvider` و`ProviderResolver` و`LlmFallback` و`LlmPricing` وطبقات المُنسِّق (`_MeteredLLM`، `_BilledRoute`) | إطار (قائم) | `OllamaLLM` محلياً (افتراضي)، و`OpenAILLM` سحابياً بالإعداد. محوّلات Claude وGemini وOpenRouter ملفات فارغة اليوم (`docs/architecture.md` §15) | — |
 | النموذج البصري | **منفذ إطار جديد** `VisionLanguageProvider` في R2 (FR-RAS-04 بصفته مدققاً، وFR-NLU-06)، أو توسيع رسائل `LLMProvider` بأجزاء صور، وهذا تغيير عقد | إطار (R2) | نموذج رؤية محلي عبر Ollama؛ أو OpenAI | يُحدَّد ترخيص النموذج حجماً بحجم (NFR-LIC-04) |
 | الترجمة | **منفذ جديد** `QueryTranslation` تقوده سياسة «المسرد أولاً وحفظ المعرّفات حرفياً» في نطاق `search`، ومحوّله يستدعي `LLMProvider` | قسم (`search`)؛ لا تقنية جديدة، فلا منفذ إطار | المحلي عبر مفتاح قدرة في جدول التوجيه | — (يُتجنَّب NLLB لترخيصه CC-BY-NC، NFR-LIC-04) |
 | التضمين | **إعادة استعمال** `EmbeddingProvider` (`embedding-lb` ثم ثلاث نسخ، ومتجه الاستعلام مخبّأ في `redis-cache`) | إطار (قائم) | النموذج الحالي `paraphrase-multilingual-MiniLM-L12-v2` يُقاس على M-21. والمرشحان للترقية: BGE-M3، multilingual-e5 (DEC‑07) | Apache-2.0، MIT |
-| الفهرس الحرفي | **منفذ جديد** `IdentifierIndex` (مستودع للقسم). والساق الحرفية للنصوص الوصفية تعيد استعمال `HybridVectorStore.search_sparse` | قسم (`search`) + إطار (قائم) | جدول أشكال في Postgres بفهرس B-tree، والمطابقة التقريبية بـ`pg_trgm` أو داخل التطبيق (DEC‑13)؛ وBM25 متفرّق في Qdrant بتقطيع CJK | PostgreSQL License؛ Apache-2.0 |
+| الفهرس الحرفي | **منفذ جديد** `IdentifierIndex` (مستودع للقسم). والساق الحرفية للنصوص الوصفية تعيد استعمال `HybridVectorStore.search_sparse` | قسم (`search`) + إطار (قائم) | جدول أشكال في Postgres بفهرس B-tree، والمطابقة التقريبية بـ`pg_trgm` (✅ DEC‑13)؛ وBM25 متفرّق في Qdrant بتقطيع CJK | PostgreSQL License؛ Apache-2.0 |
 | مخزن المتجهات | **إعادة استعمال** `HybridVectorStore` (`QdrantVectorStore`)، بصندوق `ele-<workspace_id>` على نمط `kn-` و`mem-` | إطار (قائم) | Qdrant | Apache-2.0 |
 | مخزن الرسم | **منفذا مستودع** للقسم: `GraphStore` (الكتابة والقراءة) و`TraversalQueries` (التتبّع) | قسم (`circuits`) (DEC‑05) | جداول Postgres تحت RLS مع استعلامات تكرارية مقيّدة (موصى به)؛ وبدائل: Apache AGE، أو Neo4j، أو مسرّع داخل العملية | PostgreSQL License؛ AGE Apache-2.0؛ Neo4j Community GPL-3.0 (خارج القائمة المسموحة)؛ rustworkx Apache-2.0 |
 | النظام القائم (`knowledge`) | **منفذ يعلنه المستهلك** `TextKnowledge`، ويربطه جذر التركيب ببنية `KnowledgeRetrieval` (FR-INT-01). ولا استيراد لـ`knowledge` ولا قراءة لجداوله أو صندوق `kn-` | قسم (`search`) | `KnowledgeRetrievalService` القائم، مع اختبار عقد لما يُعتمد عليه (`retrieve` ومعه `space_id` إلزامياً، وحقول `RetrievedChunk`) | — |
@@ -621,7 +637,7 @@ graph LR
 | إعادة الترتيب | **إعادة استعمال** `RerankProvider` في R2 (FR-IDX-13) | إطار (قائم) | `ExternalRerankProvider` | — |
 | الاستهلاك والحصص | **إعادة استعمال** المنفذين الواردين في `usage`: الحجز ثم الشحن، وميزانية الكلفة. يستدعيهما المُنسِّق للمحادثات، وجذر تركيب العامل لأي استدعاء نموذج في العمّال (سابقة `workers/summary_metering.py`) | `usage` (قائم) | — | — |
 | المراقبة | **إعادة استعمال** السجلّ المهيكل بمعرّف الارتباط، وسجلّ المقاييس، و`TaskLedger`، وقواعد التنبيه | إطار (قائم) | — | — |
-| النوى الحسابية (فهرس مكاني لقطع الصفحة، مطابقة مثلى، أشكال هندسية) | **منفذ جديد** `GeometryKernel` حتى يبقى النطاق stdlib، ويكون للنواة الحتمية بديل وهمي | قسم (`drawings`) | تنفيذ بايثون نقي أولاً؛ وShapely (STRtree)، وSciPy (`linear_sum_assignment`)، وNumPy إن أثبت القياس الحاجة (NFR-PERF-01) | BSD-3 (DEC‑13) |
+| النوى الحسابية (فهرس مكاني لقطع الصفحة، مطابقة مثلى، أشكال هندسية) | **منفذ جديد** `GeometryKernel` حتى يبقى النطاق stdlib، ويكون للنواة الحتمية بديل وهمي | قسم (`drawings`) | تنفيذ بايثون نقي أولاً؛ وShapely (STRtree)، وSciPy (`linear_sum_assignment`)، وNumPy إن أثبت القياس الحاجة (NFR-PERF-01) | BSD-3 (✅ DEC‑13) |
 
 **ما لا يُضاف عمداً.** لا إطار وكلاء خارجي (LangChain أو LangGraph)، فالمنصة تملك `BaseAgent` و`ToolRegistry` (arch D‑08). ولا محرّك بحث جديد (OpenSearch أو Elasticsearch)، فـQdrant الهجين وPostgres يكفيان. ولا قاعدة رسم في R1 إلا بقرار DEC‑05.
 
@@ -778,7 +794,7 @@ flowchart TD
 
 - **schema جديد واحد `electrical`**، وجداول كل قسم فيه ببادئة اسمه: `drawings_*`، و`circuits_*`، و`search_*`، و`diagnostics_*`. كل قسم يقرأ جداوله ويكتبها وحده، ولا FK بين جداول قسمين، والمرجعية بالمعرّف فقط، على DAT‑02 بين الوحدات (§5.2).
 - **سلسلة هجرات واحدة** في `migrations/versions/electrical/` بـ`version_table_schema` `electrical`. وينشئ الـschema نفسه هجرةٌ في سلسلة `platform`، لأن السلسلة لا تستطيع إنشاء schema جدول نسخها (سابقة `migrations/versions/platform/0004_spaces_schema.py`). وللسلسلة سطر في `version_locations` في `alembic.ini`، ومدخل في `MIGRATION_CHAINS` و`_MODULE_SCHEMAS`، وجداولها المستأجَرة في `_TENANT_TABLES` (`app/ops/provision.py`). تُطبَّق عبر `python -m app.ops.provision` وحده، ولا `alembic upgrade head` مباشرة (CLAUDE.md).
-- **الأدوار.** لا أدوار لكل وحدة في المنصة: كل الوحدات تتصل بالدور المشترك `app_rw`، والأدوار الأخرى وظيفية (`outbox_relay`، و`retention_sweeper`، و`metrics_reader`، و`transit_rotator`، و`workspace_purger`، و`backup_operator`؛ `deploy/postgres/initdb/10-roles.sh`). يملك الجداول `aizzak_owner`. ويعمل `app_rw` تحت RLS بمنح CRUD تصدرها أداة التجهيز من `_TENANT_TABLES`. ويحتاج `workspace_purger` منحاً في `PURGE_GRANTS` (USAGE على `electrical`، وSELECT وDELETE على جداوله). ولا يحتاج `backup_operator` منحاً، فهو يملك `pg_read_all_data` و`BYPASSRLS`، فيشمل كل جدول جديد تلقائياً. ولا دور جديد في R1 على التوصية (دور الاحتفاظ في DEC‑16)، والخدمة المعزولة `ele-parse` لا تتصل بقاعدة البيانات أصلاً (`PLT‑14`).
+- **الأدوار.** لا أدوار لكل وحدة في المنصة: كل الوحدات تتصل بالدور المشترك `app_rw`، والأدوار الأخرى وظيفية (`outbox_relay`، و`retention_sweeper`، و`metrics_reader`، و`transit_rotator`، و`workspace_purger`، و`backup_operator`؛ `deploy/postgres/initdb/10-roles.sh`). يملك الجداول `aizzak_owner`. ويعمل `app_rw` تحت RLS بمنح CRUD تصدرها أداة التجهيز من `_TENANT_TABLES`. ويحتاج `workspace_purger` منحاً في `PURGE_GRANTS` (USAGE على `electrical`، وSELECT وDELETE على جداوله). ولا يحتاج `backup_operator` منحاً، فهو يملك `pg_read_all_data` و`BYPASSRLS`، فيشمل كل جدول جديد تلقائياً. ولا دور جديد في R1: الكنس التقني يجري بالدور القائم `retention_sweeper` (✅ DEC‑16)، والخدمة المعزولة `ele-parse` لا تتصل بقاعدة البيانات أصلاً (`PLT‑14`).
 - **RLS.** كل جدول مستأجَر يحمل `workspace_id`، وعليه `ENABLE` و`FORCE ROW LEVEL SECURITY` وسياسة `tenant_isolation` بصيغة `NULLIF(current_setting('app.workspace_id', true), '')::uuid` (`docs/design/01-data-model.md` §3)، و`SET LOCAL` في كل معاملة.
 - **الفضاء والمشروع.** يُرشَّح عليهما في `WHERE` كل مستودع، لا في سياسة، على قرار المنصة الصريح (§3 هناك). يحمل كل جدول مستأجَر `space_id` و`project_id` حيث ينطبق، بفهارس تتصدّرها `workspace_id` (`docs/design/01-data-model.md` §5).
 - **أعمدة الترشيح المولَّدة.** أي عمود مطبّع يُرشَّح عليه تحت RLS يكون عموداً مولَّداً مخزّناً لا فهرس تعبير، لأن الدوال غير `LEAKPROOF` لا تصير شرط فهرس على جدول `FORCE ROW LEVEL SECURITY` (`docs/design/01-data-model.md` §2.6). وينطبق هذا على أشكال المعرّفات المطبّعة.
@@ -787,7 +803,7 @@ flowchart TD
 ### 8.3 MinIO: المشتقات
 
 - كل مشتق تحت بادئة مساحة العمل: `<workspace_id>/ele/<document_id>/…`، فتطهير الوثيقة يمحو بادئتها (§8.8). وهي البادئة نفسها التي يمحوها `app/ops/purge.py` (`INV-F1`)، فيلحقها تطهير مساحة العمل دون منطق جديد.
-- **المحتوى:** حزمة بدائيات ونص لكل صفحة (صيغة ثنائية بإصدار، ADR‑05)، ومخرجات OCR، ومربعات التصيير بمستوياتها، وصادرات المشروع (NFR-PRIV-01).
+- **المحتوى:** حزمة بدائيات ونص لكل صفحة (صيغة ثنائية بإصدار، ADR‑05)، ومخرجات OCR، ومربعات التصيير بمستوياتها، وصادرات المشروع (NFR-PRIV-03). والصادرات وحدها بيانات تقنية مؤقتة، تُكنس بعد انتهاء رابطها (NFR-PRIV-04)؛ وبقية المشتقات تبقى ما بقيت وثيقتها.
 - **ليست نسخة من الملف.** المشتقات ليست الملف الأصلي، فلا تخالف FR-INT-07. أما النسخة المؤقتة التي يقرأ منها `ele-parse` فتعيش في حجم مؤقت مدة المهمة، وتمحوها مهمة دورية (`PLT‑22`).
 
 ### 8.4 Qdrant
@@ -814,7 +830,7 @@ flowchart TD
 - **طرق الاستخراج** تعداد ثابت: هندسة متجهية، ونص متجهي، وجدول تقرير، ورابط داخلي، وOCR، ونموذج بصري (R2)، وإدخال بشري، ومصدر مستورد (W)، ومقطع من النظام القائم.
 - **الإشارة إليه.** كل حقيقة في `drawings` وكل كيان وعلاقة في `circuits` يحمل معرّف دليل واحداً على الأقل (FR-KG-02، FR-CON-10). وتشير إليه `circuits` و`search` و`diagnostics` بالمعرّف، ويُحلّ عبر `EvidenceLookup`.
 - **مسار «افتح على الصفحة» (FR-GRD-06، FR-API-04).** معرّف الدليل يقود إلى الصفحة والمربعات، ثم إلى طبقة التظليل: صناديق ومسارات في إحداثيات الصفحة، مع تحويلها إلى إحداثيات الصورة.
-- **استشهاد المخطط ثابت بالبناء.** يشير إلى (وثيقة، دليل)، فيبقى صالحاً ما دام ملف الوثيقة قائماً. وبعد حذفه أو استبداله يُحلّ إلى «مصدر محذوف» ولا يُفتح (FR-INT-13)، وما يُحفظ معه من لقطة في DEC‑18.
+- **استشهاد المخطط ثابت بالبناء.** يشير إلى (وثيقة، دليل)، فيبقى صالحاً ما دام ملف الوثيقة قائماً. وبعد حذفه أو استبداله يُحلّ إلى «مصدر محذوف» ولا يُفتح (FR-INT-13). وفي الجلسة والتقرير تُحفظ معه لقطة استشهاد دنيا: المعرّف كما طُبع، ووسم الصفحة، واسم الملف، ونص قصير (✅ DEC‑18، SRS D-31).
 
 ### 8.7 الوثيقة والإصدارات والهوية (SRS D-22)
 
@@ -829,27 +845,29 @@ flowchart TD
 
 ### 8.8 الاحتفاظ والتصدير والحذف المتزامن
 
-- **الاحتفاظ (NFR-PRIV-01).** سياسة لكل مشروع: مدة بقاء الجلسات المغلقة وتقاريرها، وسجلات المهام المنتهية، والصادرات، وسجل التدقيق. تنفّذها مهمة دورية في `ops-scheduler` بدور وظيفي لا بدور للوحدة، و`role_guard` يتحقق من الدور، وتُبقي سجل التدقيق. والتوصية توسيع الدور القائم `retention_sweeper` بمنح على جداول `electrical` التي يكنسها، يمرّ بها على مساحات العمل ويضبط `app.workspace_id` لكلٍّ منها تحت سياسة `tenant_isolation` العادية (نمط `workspace_purger` في `app/ops/provision.py`)، لا بسياسات `USING (true)`. وهذا يمسّ عبور المستأجرين، فهو قرار (⚠️ DEC‑16).
-- **التصدير.** حزمة كاملة للمشروع، تُبنى مهمةً ثقيلة وتُسلَّم برابط موقّع.
-- **حذف المشروع.** خدمة تسلسل جديدة في `framework/di/` على شكل `space_deletion.py`. أولاً وسم المشروع، ثم تطهير `search` (نقاط Qdrant قبل الصفوف)، ثم `circuits`، ثم `diagnostics`، ثم `drawings` (كائنات MinIO قبل الصفوف). كل خطوة في معاملتها، وكلها مثالية، فإعادة التشغيل هي الإصلاح.
+- **الاحتفاظ: بيانات المستخدم لا تُحذف تلقائياً (NFR-PRIV-01، SRS D-28، ✅ DEC‑16).** لا مهمة دورية تحذف ملفاً أو وثيقة أو نموذجاً أو دليلاً أو تصحيحاً أو جلسة أو تقريراً، مهما طال عمرها. ولا يحذفها إلا فعل صريح من المستخدم: حذف ملف أو استبداله بالاسم، أو حذف المشروع، أو حذف الفضاء. وسجل التدقيق لا يُحذف أبداً. ولا مدة احتفاظ لكل مشروع.
+- **كنس البيانات التقنية المؤقتة (NFR-PRIV-04).** مهمة دورية في `ops-scheduler` تحذف ثلاثة أنواع فقط: الصادرات بعد انتهاء رابطها (كائناتها في MinIO وصفوفها)، وسجلات المهام المنتهية، والنسخ المؤقتة التي يقرأ منها `ele-parse` (`PLT‑22`). والمدة ثابتة على مستوى النظام لكل نوع، في قسم الإعداد (`PLT‑21`)، على نمط نوافذ `app/ops/retention.py` (نافذة لكل جدول بحسب ما يقرؤه). تعمل المهمة بالدور القائم `retention_sweeper`، و`role_guard` يتحقق منه. وللدور SELECT وDELETE على جداول هذه الأنواع وحدها، ولا منح له على أي جدول لبيانات المستخدم، فلا يستطيع حذفها ولو أخطأ. يمرّ على مساحات العمل ويضبط `app.workspace_id` لكلٍّ منها تحت سياسة `tenant_isolation` العادية (نمط `workspace_purger` في `app/ops/provision.py`)، بلا سياسات `USING (true)`، فإن نسي الضبط حذف صفراً.
+- **التصدير (NFR-PRIV-03).** حزمة كاملة للمشروع، تُبنى مهمةً ثقيلة وتُسلَّم برابط موقّع. والحزمة نسخة للتنزيل، فتُكنس بعد انتهاء رابطها، ويبقى المشروع نفسه.
+- **حذف المشروع (NFR-PRIV-03).** بصلاحية `electrical:manage` وحدها (دور المنصة `admin` أو `owner`، ✅ DEC‑11)، وبتأكيد صريح في الطلب، ويُعرض على المستخدم تصدير المشروع قبله. ويبقى سجل التدقيق، ويُضاف إليه حدث للحذف نفسه. والتنفيذ خدمة تسلسل جديدة في `framework/di/` على شكل `space_deletion.py`. أولاً وسم المشروع، ثم تطهير `search` (نقاط Qdrant قبل الصفوف)، ثم `circuits`، ثم `diagnostics`، ثم `drawings` (كائنات MinIO قبل الصفوف). كل خطوة في معاملتها، وكلها مثالية، فإعادة التشغيل هي الإصلاح.
 - **مشارك واحد للوحدة.** في تسلسلي حذف الملف والفضاء القائمين يدخل مشارك واحد `electrical`، يركّبه جذر التركيب من منافذ تطهير الأقسام بترتيب ثابت؛ فلا يعرف ملفا التسلسل الأقسام، ولا يستورد قسم قسماً. وتضيف كل زيادة منفذ قسمها إلى المركّب نفسه (`PLT‑04`).
 - **حذف ملف أو استبداله بالاسم (FR-INT-13، FR-ING-03).** يُضاف المشارك `electrical` إلى `DeleteFileService` (`framework/di/file_deletion.py`) معاملاً ثانياً بعد `knowledge`، منفّذاً بروتوكول `FileContentPurge` نفسه. والاستبدال بالاسم يمرّ به نفسه، لأن `ReplaceNamesakesService` يحذف الملف الأقدم بـ`DeleteFileService` (`framework/di/file_replacement.py`). فلا يعرف المشارك أهو حذف أم استبدال، ولا يحتاج أن يعرف. ويعمل بمرحلتين:
   1. **مرحلة متزامنة تُخرج الوثيقة من كل قراءة**، داخل الطلب نفسه، بثلاث خطوات: يحلّ `drawings` الملف إلى وثيقته، فيسِمها `purging` ويُلحق `electrical.document.purged.v1` في المعاملة نفسها. ثم يحذف `search` نقاطها من صندوق `ele-` بمرشّح `document_id`. ثم يكتب `circuits` جيلاً للمشروع بلا قسمها (§8.5). كل خطوة صفّ واحد أو نداء واحد، فلا يطول `completeFile` ولا `renameFile` بحجم المخطط (RSK‑17). ولأن كل قراءة في الأقسام ترشّح بالوثائق الحية وأقسام الجيل الحالي، لا يبقى الملف قابلاً للبحث ولا للاستشهاد بعد الخطوة الأولى.
   2. **مرحلة لاحقة تكنس البيانات.** مستهلكو `document.purged` في الأدوار الثلاثة يحذفون: صفوف الوثيقة ومشتقاتها في MinIO (`drawings`)؛ وصفوف قسمها، ثم يعيدون ربط الأقسام الباقية فيصدر `model.updated` (`circuits`)؛ وصفوف فهرسها، مع إعادة حذف النقاط مثالياً (`search`). ومهمة دورية تتحقق أن لا صفوف بقيت لوثيقة مطهَّرة (`PLT‑22`).
-  - **ما يُطهَّر:** كل ما مفتاحه الوثيقة، وهو أوسع ما تعدّه SRS (اتحاد FR-INT-13 وFR-ING-03): صفحاتها وحقائقها وأدلتها واختلافاتها وجودتها وتقرير توصيفها وملف إعدادها الخاص وتصحيحاتها وتسمياتها الذهبية الحية، وقسم نموذجها وروابطه، ونقاط فهرسها وصفوفه، ومشتقاتها في MinIO. أما ما خرج من الملف إلى مستوى أعلى فحدّه في ⚠️ DEC‑18.
+  - **ما يُطهَّر:** كل ما مفتاحه الوثيقة، وهو أوسع ما تعدّه SRS (اتحاد FR-INT-13 وFR-ING-03): صفحاتها وحقائقها وأدلتها واختلافاتها وجودتها وتقرير توصيفها وملف إعدادها الخاص وتصحيحاتها وتسمياتها الذهبية الحية، وقسم نموذجها وروابطه، ونقاط فهرسها وصفوفه، ومشتقاتها في MinIO.
+  - **ما يبقى** (✅ DEC‑18، الحدّ الضيق، SRS D-31): ما خرج من الملف إلى مستوى أعلى، واعتمده إنسان أو هو سجلّ لما جرى. وهو مدخل مكتبة رموز المشروع (قالب هندسي مطبّع، مصدره «مصدر محذوف»)، واللقطات الذهبية المصدَّرة (سجلّ لا يُشغَّل إلا ما دام ملفها ببصمته موجوداً، §13.7)، والجلسات المغلقة وتقاريرها بلقطة الاستشهاد الدنيا. ولا يُسترجع منها شيء ولا يُستشهد بها بوصفها مخططاً حياً.
   - **المثالية.** كل خطوة مثالية، وإعادة `DELETE /files/{id}` تكمل تسلسلاً انقطع، كما في المنصة. ولا تتعايش نسختان من الملف (§8.11).
-- **سجل التدقيق يبقى** (NFR-PRIV-01). أحداث التدقيق append-only ولا يطهّرها حذف الملف. حدث التصحيح يحمل الفاعل والزمن والفعل ومعرّفات الهدف والسبب، ولا يحمل القيم المصحَّحة، فلا يصير نسخة من التصحيح. ويُضاف حدث تدقيق للتطهير نفسه: الملف والوثيقة والمشروع وعدد ما حُذف من تصحيحات وتسميات ذهبية. ويحكم بقاءها كلها سياسة الاحتفاظ.
+- **سجل التدقيق يبقى** (NFR-PRIV-01). أحداث التدقيق append-only ولا يطهّرها حذف الملف. حدث التصحيح يحمل الفاعل والزمن والفعل ومعرّفات الهدف والسبب، ولا يحمل القيم المصحَّحة، فلا يصير نسخة من التصحيح. ويُضاف حدث تدقيق للتطهير نفسه: الملف والوثيقة والمشروع وعدد ما حُذف من تصحيحات وتسميات ذهبية. ولا يُحذف شيء منها أبداً (NFR-PRIV-01).
 - **حذف فضاء.** يُضاف المشارك نفسه إلى `DeleteSpaceService` (`framework/di/space_deletion.py`)، ويضمّ هنا `diagnostics` أيضاً، قبل `files`.
 - **تطهير مساحة العمل.** يمحو `app/ops/purge.py` صناديق `ele-` والـschema `electrical` (مدخل واحد في `_SCHEMA_ORDER` بجداول الأقسام بترتيب الحذف) مع ما يمحوه اليوم (`PLT‑04`).
 - **الجلسات.** حذف الملف لا يحذف جلسة، أما حذف الفضاء فيحذفها.
   - **الجلسة المفتوحة** على مشروع طُهّرت منه وثيقة تحسب دورها التالي على الجيل الجديد. وتُسقط من فرضياتها ما لم يعد دليله يُحلّ، فالبوابة ترفضه أصلاً (FR-AGT-06 (ج)، FR-GRD-03)، وتعلن ذلك للمستخدم.
-  - **الجلسة المغلقة** تبقى سجلاً، واستشهاداتها بالملف المحذوف تُحلّ إلى «مصدر محذوف» ولا تُفتح. وما يُحفظ فيها من لقطة الاستشهاد في ⚠️ DEC‑18.
+  - **الجلسة المغلقة** تبقى سجلاً، واستشهاداتها بالملف المحذوف تُحلّ إلى «مصدر محذوف» ولا تُفتح. وتحفظ هي وتقريرها لقطة الاستشهاد الدنيا، فيبقى التقرير المؤرشف مقروءاً (✅ DEC‑18).
 
 ### 8.9 ثبات الاستشهاد بوحدة المعرفة (FR-INT-16، DATA-08)
 
 - **ما يُحفظ.** كل مرجع إلى مقطع معرفة يُحفظ في الجلسة بحقوله الدنيا (`chunk_id`، `document_id`، `file_name`، والصفحة أو القسم) وببصمة نصه، ونصّ المقطع المستشهد به فقط.
 - **عند الفتح** تتحقق `search.KnowledgeRefVerification` من البصمة عبر `TextKnowledge`. فإن اختلفت بُحث عن المقطع بنصّه في الوثيقة نفسها، وإلا عُرض المرجع «قديماً» لا مكسوراً.
-- **بلا قراءة بالمعرّف.** `KnowledgeRetrieval` لا يملك قراءة مقطع بمعرّفه، فقط `retrieve` و`answer` و`list_document_names` (`knowledge/ports/inbound.py`). لذلك يجري التحقق بحثاً بنص المقطع المحفوظ مقيّداً بالفضاء، ثم مطابقة `document_id` والبصمة في النتائج: المعرّف نفسه بالبصمة نفسها يعني «صالح»، ومعرّف آخر بالبصمة نفسها يعني «أُعيد توجيهه»، وغيابها يعني «قديم». وإضافة قراءة بالمعرّف إلى المنفذ تحسين اختياري إضافي يدخل حزمة DEC‑12 إن أثبت القياس الحاجة.
+- **بلا قراءة بالمعرّف.** `KnowledgeRetrieval` لا يملك قراءة مقطع بمعرّفه، فقط `retrieve` و`answer` و`list_document_names` (`knowledge/ports/inbound.py`). لذلك يجري التحقق بحثاً بنص المقطع المحفوظ مقيّداً بالفضاء، ثم مطابقة `document_id` والبصمة في النتائج: المعرّف نفسه بالبصمة نفسها يعني «صالح»، ومعرّف آخر بالبصمة نفسها يعني «أُعيد توجيهه»، وغيابها يعني «قديم». وإضافة قراءة بالمعرّف إلى المنفذ تحسين اختياري إضافي، ليس من حزمة DEC‑12 المُقَرّة؛ يعود إلى المالك بنداً جديداً إن أثبت القياس الحاجة.
 - **السبب.** معرّف المقطع حتمي من (الوثيقة، الترتيب) في `knowledge` (`knowledge/domain/collections.py`)، فقد يشير بعد إعادة الفهرسة إلى نص آخر.
 
 ### 8.10 النسخ الاحتياطي والاستعادة (NFR-REL-03)
@@ -860,12 +878,12 @@ flowchart TD
 
 ### 8.11 الاستبدال بالاسم (س‑29، SRS D-22)
 
-قاعدة المنصة تسري دون تغيير، ولا يغيّر WireTwin شيئاً في `files`. يشارك فيها من ثلاثة مواضع: مشارك الحذف (§8.8)، وحارس التسجيل، ومعاينة الاستبدال. والتسلسل كاملاً في §14.4.
+نطاق القاعدة الفضاء والاسم ووسوم النظام والمعدّة والقسم معاً (DEC‑17، SRS D-29). والوسوم ملك `files` (`PLT‑26`)، لأن الكنس يجري عند الإتمام قبل أن يعلم WireTwin بالملف. والوسم الغائب لا يطابق إلا غائباً، ونوع الملف لا يدخل في التطابق: كتيّب `knowledge` ومخطط بالاسم والوسوم نفسها ملف واحد محدَّث. ولا يغيّر WireTwin القاعدة ولا يعيد صياغتها. يشارك فيها من ثلاثة مواضع: مشارك الحذف (§8.8)، وحارس التسجيل، ومعاينة الاستبدال. والتسلسل كاملاً في §14.4.
 
 **المسار.**
 1. يسجّل العميل الملف الجديد في `files` (`registerFile`)، فيصير صفّاً بانتظار البايتات. التسجيل لا يحذف شيئاً.
-2. **المعاينة (اختيارية، ويوصى بها العميل):** `GET /electrical/files/{file_id}/replacement-preview` يسأل `OlderNamesakes` (المربوط بـ`FindNamesakes`، `PLT‑24`). وجوابه: الملفات الأقدم بالاسم نفسه في الفضاء، وما يخصّ WireTwin منها (المشروع، والوثيقة، وعدد التصحيحات والتسميات الذهبية التي ستُحذف)، وهل المحتوى مطابق إن أرسل العميل البصمة. والتراجع هنا لا يكلّف شيئاً.
-3. يرفع العميل البايتات ثم يتمّ الرفع (`completeFile`). فيكنس `ReplaceNamesakesService` كل ملف أقدم بالاسم نفسه عبر `DeleteFileService`، ويطهّر المشارك `electrical` وثيقة كل منها بمرحلتيه (§8.8). وإعادة التسمية (`renameFile`) تكنس بالطريقة نفسها.
+2. **المعاينة (اختيارية، ويوصى بها العميل):** `GET /electrical/files/{file_id}/replacement-preview` يسأل `OlderNamesakes` (المربوط بـ`FindNamesakes`، `PLT‑24`). وجوابه: الملفات الأقدم بالاسم والوسوم نفسها في الفضاء، وهي التي ستُحذف؛ والملفات بالاسم نفسه ووسوم مختلفة، وهي باقية، ليتنبّه الرافع إلى وسم خاطئ (RSK‑20)؛ وما يخصّ WireTwin منها (المشروع، والوثيقة، وعدد التصحيحات والتسميات الذهبية التي ستُحذف)، وهل المحتوى مطابق إن أرسل العميل البصمة. والتراجع هنا لا يكلّف شيئاً.
+3. يرفع العميل البايتات ثم يتمّ الرفع (`completeFile`). فيكنس `ReplaceNamesakesService` كل ملف أقدم بالاسم نفسه عبر `DeleteFileService`، ويطهّر المشارك `electrical` وثيقة كل منها بمرحلتيه (§8.8). وإعادة التسمية (`renameFile`) وإعادة الوسم (`PLT‑26`) تكنسان بالطريقة نفسها.
 4. يسجّل العميل الملف الجديد وثيقةً في المشروع: `POST /electrical/projects/{id}/documents {file_id}`. فيُستوعب من البداية (§14.1)، بلا تصحيحات، وبلا مطابقة كيانات، وبلا نقل لملف الإعداد الخاص.
 
 **الملف الجديد لا ينضمّ إلى المشروع وحده.** يُسجَّل بنداء صريح، على سابقة `indexFile` في `knowledge`: الإتمام لم يعد يبدأ الفهرسة، ولا شيء يُفهرس إلا بندائه (`docs/design/openapi.yaml`). والانضمام الآلي يحتاج ثلاثة أشياء غير متاحة دون تغيير منصة:
@@ -883,14 +901,14 @@ flowchart TD
 
 | # | السؤال | الحسم | الموضع |
 |---|---|---|---|
-| 1 | FR-INT-13 تعدّ النموذج والفهارس والروابط، وFR-ING-03 وSRS D-22 تضيفان الأدلة والتصحيحات | يحكم الأوسع: يُطهَّر كل ما مفتاحه الوثيقة في الأقسام ومشتقاتها في MinIO. وحدّ ما خرج من الملف إلى مستوى أعلى في DEC‑18. ويُستحسن أن توحّد SRS نصّ FR-INT-13 مع FR-ING-03 | §8.8 |
+| 1 | FR-INT-13 تعدّ النموذج والفهارس والروابط، وFR-ING-03 وSRS D-22 تضيفان الأدلة والتصحيحات | يحكم الأوسع: يُطهَّر كل ما مفتاحه الوثيقة في الأقسام ومشتقاتها في MinIO. وما خرج من الملف إلى مستوى أعلى يبقى بالحدّ الضيق (✅ DEC‑18). ووحّدت SRS 0.15 نصّ FR-INT-13 مع FR-ING-03 (D-31) | §8.8 |
 | 2 | فشل الكنس يُسجَّل ولا يُفشل الرفع، فقد يتعايش ملفان بالاسم نفسه | حارس التسجيل، واستبعاد الوثيقة الأقدم أو اليتيمة حين تُكشف، وإكمال الحذف بمسار المنصة. بلا تغيير منصة (RSK‑18) | هنا |
 | 3 | الملف نفسه بايتاً يُرفع بالاسم نفسه، فتحذف المنصة الأقدم قبل أن يفحص WireTwin التكرار (FR-ING-02) | استبدال عادي: يُستوعب من جديد، وتضيع التصحيحات (R-21). ولا يقع «صفر ملفات»، لأن الكنس يسبق التسجيل. ويبقى فحص FR-ING-02 للمحتوى نفسه باسم آخر في المشروع (STG‑01). والمعاينة تعلن تطابق المحتوى قبل الإتمام، فيمكن التراجع | STG‑01، هنا |
-| 4 | نطاق س‑29 الفضاء، ونطاق FR-ING-02 المشروع، والفضاء قد يحمل مشاريع وكتيبات | ⚠️ DEC‑17 | §18.3 |
-| 5 | إعادة التسمية | تبقى ضمن القاعدة كما في SRS. الوثيقة لا تنسخ الاسم، فتسمية ملفها لا تمسّها، والملف الأقدم الذي صار سميّاً يُطهَّر بالتسلسل نفسه. ولا معاينة لها، لأن `FindNamesakes` يسأل عن ملف باسمه الحالي لا عن اسم لم يُطبَّق | هنا، §7.5 |
-| 6 | ما غذّته التصحيحات المعتمدة خارج الملف (مكتبة الرموز، المصنّف، المجموعة الذهبية) | ⚠️ DEC‑18 | §18.3 |
+| 4 | نطاق س‑29 الفضاء، ونطاق FR-ING-02 المشروع، والفضاء قد يحمل مشاريع وكتيبات | ✅ DEC‑17 (د): مشروع واحد لكل فضاء، فيتطابق النطاقان؛ والاستبدال بالاسم والوسوم معاً (`PLT‑26`)؛ والكتيّب والمخطط بالاسم والوسوم نفسها ملف واحد محدَّث | §18.3 |
+| 5 | إعادة التسمية وإعادة الوسم | تبقيان ضمن القاعدة كما في SRS (D-29 لإعادة الوسم). الوثيقة لا تنسخ الاسم، فتسمية ملفها لا تمسّها، والملف الأقدم الذي صار سميّاً يُطهَّر بالتسلسل نفسه. ولا معاينة لها، لأن `FindNamesakes` يسأل عن ملف باسمه الحالي لا عن اسم لم يُطبَّق | هنا، §7.5 |
+| 6 | ما غذّته التصحيحات المعتمدة خارج الملف (مكتبة الرموز، المصنّف، المجموعة الذهبية) | ✅ DEC‑18 (أ): يبقى مدخل المكتبة قالباً مصدره «مصدر محذوف»، والنماذج المدرّبة بإصداراتها (R2)، واللقطات الذهبية المصدَّرة سجلاً لا يُشغَّل بعد حذف ملفه | §8.8، §18.3 |
 | 7 | سجل تدقيق التصحيحات المحذوفة | يبقى (NFR-PRIV-01)، بلا القيم المصحَّحة، ومعه حدث تدقيق للتطهير نفسه | §8.8 |
-| 8 | الجلسات والتقارير والحالات المغلقة تستشهد بالملف المستبدل، وFR-GRD-06 يطلب أن يُفتح كل استشهاد | الجلسة المفتوحة تعيد الحساب على الجيل الجديد، وتُسقط ما لم يعد يُحلّ وتعلنه. والمغلقة تُحلّ استشهاداتها إلى «مصدر محذوف»، لأن FR-INT-13 تمنع الاستشهاد بملف محذوف. وما يُحفظ من لقطة الاستشهاد في ⚠️ DEC‑18 | §8.8 |
+| 8 | الجلسات والتقارير والحالات المغلقة تستشهد بالملف المستبدل، وFR-GRD-06 يطلب أن يُفتح كل استشهاد | الجلسة المفتوحة تعيد الحساب على الجيل الجديد، وتُسقط ما لم يعد يُحلّ وتعلنه. والمغلقة تُحلّ استشهاداتها إلى «مصدر محذوف»، لأن FR-INT-13 تمنع الاستشهاد بملف محذوف. وتُحفظ فيها وفي تقاريرها لقطة الاستشهاد الدنيا (✅ DEC‑18)، ويُقرأ FR-GRD-06 على الاستشهاد الحي (SRS D-31) | §8.8 |
 | 9 | ملف الإعداد المؤكَّد للوثيقة | يُطهَّر مع الوثيقة ويُعاد اكتشافه في STG‑01، ولا يُنقل بالاسم: النقل بالاسم مطابقة بين ملفين، وFR-ING-03 تطلب الاستيعاب «من البداية». ويبقى ملف إعداد المشروع (FR-ING-01) ويبدأ منه الاقتراح، فإن طابقه الاكتشاف بثقة فوق العتبة لم يُطلب تأكيد (FR-ING-12) | STG‑01 |
 | 10 | الفهرس المرحلي (FR-IDX-11، R2) يترك نافذة لا يُعثر فيها على المخطط | في R1 لا فهرس مرحلي، والنافذة هي ما قبله المالك في R-21: الحذف بعد الرفع لا بعد الاستيعاب. وفيها تعلن حالة المصادر أن في المشروع وثيقة قيد الاستيعاب، ولا يُقال «غير موجود» دون ذلك (FR-GRD-07). وفي R2 يمرّ محتوى الملف الجديد بالفهرس المرحلي، ولا يبقى القديم ليملأ النافذة (SRS D-22) | §9.2، §11.4 |
 
@@ -979,7 +997,7 @@ flowchart LR
 | البند | المتطلب | المضمون | الإصدار |
 |---|---|---|---|
 | PLT‑05 | FR-INT-15 (M) | تقطيع BM25 صيني يحمي المعرّفات اللاتينية في `knowledge/domain/tokenization.py`؛ كشف `zh` في `detect_language` (اليوم عربي ولاتيني فقط)؛ OCR صيني في `image_ocr.py` (اليوم `ara+eng`)؛ قياس نموذج التضمين على M-21 وM-31، وترقيته عبر `embedding_migration` إن قصّر (DEC‑07) | R1 (INC‑8P) |
-| PLT‑06 | FR-INT-07 (M) | الفهرسة اليدوية في `knowledge` ترفض ملفاً تملكه `drawings` بوصفه وثيقة مخطط، عبر منفذ يعلنه المستهلك. والصفحات النصية داخل ملفات المخططات تُفهرس في R1 في `search` بنوع `text_page`؛ وتوجيهها إلى `knowledge` يحتاج فهرسة جزء من ملف، وهي غير موجودة اليوم (R2) | R1 (INC‑8) |
+| PLT‑06 | FR-INT-07 (M) | الفهرسة اليدوية في `knowledge` ترفض ملفاً تملكه `drawings` بوصفه وثيقة مخطط، عبر منفذ يعلنه المستهلك. والصفحات النصية داخل ملفات المخططات تُفهرس في R1 في `search` بنوع `text_page`؛ وتوجيهها إلى `knowledge` يحتاج فهرسة جزء من ملف، وهي غير موجودة اليوم (R2، ✅ DEC‑15 (ج)) | R1 (INC‑8) |
 | PLT‑04 (جزء) | FR-INT-13 (M) | مشاركون جدد في تسلسلي حذف الملف والفضاء (§8.8) | R1 |
 | PLT‑07 | FR-INT-14 (S) | البيانات الوصفية والترشيح في `RetrievedChunk` و`KnowledgeRetrieval`، وتحديث `RetrievedChunkOut` واختبار عقده | R2 |
 | PLT‑08 | FR-INT-11 (S) | مجموعة استهلاك على `stream.knowledge` لمزامنة الروابط | R2 |
@@ -1168,26 +1186,26 @@ flowchart LR
 ### 11.6 توجيه النموذج والكلفة (FR-AGT-07، FR-AGT-14، NFR-CST-02، NFR-SEC-06)
 
 - **الافتراضي محلي.** مفتاح القدرة `wiretwin_agent` في `PROVIDER_ROUTING` يشير افتراضياً إلى Ollama على GPU. والسحابة لا تُستعمل إلا بإعداد صريح لمفتاح بعينه، أو بتثبيت المحادثة على مسار سحابي (`PUT /conversations/{id}/model`)، وهذا إعداد صريح أيضاً.
-- **ق‑1.** القرار «السحابي للتفاعلي» (`docs/capacity-status.md`) لا يغيّر هذا الافتراض لهذا الوكيل، لأن SRS D-13 قرار لاحق خاص بهذا النظام. والتفسير معروض للإقرار في DEC‑15.
+- **ق‑1.** القرار «السحابي للتفاعلي» (`docs/capacity-status.md`) لا يغيّر هذا الافتراض لهذا الوكيل، لأن SRS D-13 قرار لاحق خاص بهذا النظام. وأقرّ المالك هذا التفسير (✅ DEC‑15 (ب)، SRS D-30).
 - **التحويل (FR-AGT-14).** `LlmFallback` قبل أول مقطع، ويُخبَر المستخدم بإطار `notice` القائم.
 - **في حلقة الأدوات** قد يحدث تعطل السحابة بعد بدء البثّ، فلا تحويل حينها بل قطع، وهذه سياسة المنصة (arch D‑16). ولذلك يحسم الوكيل اختيار الأدوات بنداءات غير مبثوثة، ولا يبثّ إلا الشرح النهائي (RSK‑07).
 - **الحصص.** يحجز المُنسِّق ويشحن عبر `usage`، والميزانية النافدة توقف المحلي والسحابي معاً (`docs/architecture.md` §07).
 - **كلفة الجلسة (NFR-CST-02).** تُجمع من أدوارها في `diagnostics`، ولها سقف من الإعداد. ميزانية المشروع والتوجيه لكل مهمة في R2 (FR-AGT-08).
-- **النموذج المحلي.** الافتراضي اليوم `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات. اختيار النموذج قرار (DEC‑07)، ويُفعَّل بعد اجتياز بوابات التقييم (FR-EVAL-12).
+- **النموذج المحلي.** الافتراضي اليوم `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات. اختار المالك عائلة Qwen (DEC‑07)، ويُختار الحجم بالقياس على المضيف المحلي (DEC‑14)، فالمرشح ما يتسع له كرته (8 GB) بجانب التضمين وOCR، أو يُقاس منفرداً، ويُفعَّل بعد اجتياز بوابات التقييم (FR-EVAL-12).
 
 ### 11.7 مقاومة حقن التعليمات (FR-AGT-13، NFR-SEC-05)
 
 1. نصوص المخططات والكتيبات ونتائج المعرفة والمستخدمين الآخرين تدخل رسائل النموذج **بيانات مقتبسة موسومة بمصدرها** داخل نتائج الأدوات، ولا تدخل دور النظام أبداً.
 2. **لا يملك النموذج صلاحية.** كل أداة تُنفَّذ بسياق المستخدم وRBAC الخاص به. ولا أداة كتابة إلا تسجيل الملاحظة، ولا تُحتسب الملاحظة إلا بتأكيد بشري.
 3. **البوابة** تُسقط كل ما لا يُسند إلى نتيجة أداة، فيضيع أثر أي تعليمة مزروعة في المخرج.
-4. **مجموعة اختبارات** بوثائق مزروعة بتعليمات (M-26) في بوابات CI.
+4. **مجموعة اختبارات** بوثائق مزروعة بتعليمات (M-26) في التقييم المستقل (FR-EVAL-08، DEC‑09).
 
 ### 11.8 الحد الأدنى للسلامة (FR-SAF-04، FR-SAF-09، UC-08)
 
 - **التجاوز مستحيل بنيوياً.** لا يوجد في مفردات القياس فعل تجاوز، فلا يستطيع المحرك اقتراحه (§10.7).
 - **طلب التجاوز** يقابله رفض واضح وبديل تشخيصي (تتبّع سبب فصل دائرة الأمان) بتعليمات مُصدَرة، ويُسجَّل حدث تدقيق.
 - **الصياغة.** لا يقول النظام إن دائرة آمنة للعمل؛ التحقق من انعدام الجهد مسؤولية الشخص المؤهل.
-- **الاختبار.** مجموعة انحدار من 50 طلباً على الأقل بالعربية والإنجليزية (M-25) في بوابات CI (FR-EVAL-08).
+- **الاختبار.** مجموعة انحدار من 50 طلباً على الأقل بالعربية والإنجليزية (M-25) في التقييم المستقل (FR-EVAL-08، DEC‑09)، شرطاً لتفعيل أي إصدار أو نموذج.
 
 ### 11.9 التدهور (FR-AGT-11، NFR-REL-04)
 
@@ -1203,6 +1221,17 @@ flowchart LR
 
 خادم MCP للقراءة فقط، يعرض الأدوات نفسها بالصلاحيات نفسها. والمنصة اليوم تملك عميل MCP بعيداً لا خادماً (`docs/design/02-port-contracts.md` §1.12)، فهذا مكوّن جديد في R2 (ADR‑36).
 
+### 11.11 الاستدعاء من المساعد الذكي (SRS FR-AGT-15، DEC‑11)
+
+يستطيع الوكيل المقترح «المساعد الذكي» (`smart_assistant`، `docs/delivery/smart-assistant`) استدعاء كل الوكلاء، ومنهم `wiretwin_agent` (SRS D-25). وآلية الاستدعاء (`PLT‑25`) تملكها ميزة المساعد الذكي. وما يلتزم به WireTwin من جهته:
+
+- **عبر المنسّق لا بالاستيراد.** الوكلاء مستقلون بعقد `agents-independent`، فلا يستورد المساعد شيئاً من `wiretwin_agent`، ولا العكس. ويُضاف `wiretwin_agent` إلى ذلك العقد.
+- **سياق المستخدم الأصلي.** يعمل `wiretwin_agent` بسياق تنفيذ المستخدم نفسه: مساحة العمل، والفضاء، والصلاحيات (FR-INT-10). والمنسّق يفحص `agents:invoke` و`electrical:read` (و`electrical:diagnose` لأدوات التشخيص) على المستخدم لا على المساعد، فالاستدعاء لا يرفع الصلاحيات.
+- **الإجابة تُنقل كما هي.** يعيد `wiretwin_agent` إجابته المنظمة بعد `AnswerGate` (§11.4): الاستشهادات، وحالة الثقة، وتحذيرات السلامة (§11.8). ولا يحذف المساعد شيئاً منها، ولا يعيد صياغة الحقائق أو القيم أو المعرّفات.
+- **حلقة التشخيص.** الجلسة تبقى في `diagnostics` مرتبطة بالمستخدم والمشروع. والمساعد يمرّر نتائج القياس إليها، ولا يحسب الفرضيات ولا يرتّبها (FR-DIAG-08).
+- **التدقيق والاستهلاك.** يُسجَّل في الحدث أن المستدعي `smart_assistant`، ولحساب أي مستخدم، ويُحسب الاستهلاك على الوكيلين كلٌّ بخطواته.
+- **الحدود.** تسري حدود FR-AGT-10 (عدد الأدوات والزمن والكلفة) على الاستدعاء كما تسري على الطلب المباشر.
+
 ## 12. سطح الواجهات
 
 ### 12.1 موارد REST
@@ -1217,7 +1246,7 @@ flowchart LR
 
 | المورد | المسار الأساس | العمليات | الصلاحية | المتطلبات |
 |---|---|---|---|---|
-| المشاريع | `/electrical/projects` | سرد بالفضاء، إنشاء (و`409` إن كان للفضاء مشروع، إن أُقرّ DEC‑17 (أ))، قراءة، تعديل، حذف (تسلسل)، تصدير | قراءة: `electrical:read`؛ كتابة وحذف وتصدير: `electrical:manage` | FR-ING-01، FR-KG-09، NFR-PRIV-01 |
+| المشاريع | `/electrical/projects` | سرد بالفضاء، إنشاء (و`409` إن كان للفضاء مشروع حيّ، بفهرس فريد جزئي، DEC‑17)، قراءة، تعديل، حذف (تسلسل، بتأكيد صريح في الطلب)، تصدير | قراءة: `electrical:read`؛ كتابة وحذف وتصدير: `electrical:manage` | FR-ING-01، FR-KG-09، NFR-PRIV-03 |
 | ملف إعداد المشروع والوثيقة | `/electrical/projects/{id}/profile`، `/electrical/documents/{id}/profile` | قراءة، واستبدال بإصدار جديد (يُتحقق منه، NFR-CFG-02) | `electrical:manage` | FR-ING-01، FR-ADM-04 |
 | الوثائق | `/electrical/projects/{id}/documents`، `/electrical/documents/{id}` | تسجيل وثيقة من `file_id` (`202` ومعها `job_id`؛ و`409` إن كان الملف وثيقة أصلاً أو بقي له سميٌّ أقدم حيّ، §8.11)، وسرد (الاسم من `files`) بحالة كل وثيقة، وقراءة، وتأكيد ملف الإعداد المقترح، وإعادة معالجة صفحات | قراءة: `electrical:read`؛ وغيرها: `electrical:manage` | FR-ING-02، 03، 05، 12 |
 | معاينة الاستبدال | `/electrical/files/{file_id}/replacement-preview` | قراءة قبل `completeFile`: الملفات الأقدم بالاسم نفسه في الفضاء التي سيحذفها الإتمام، وما يخصّ WireTwin منها (المشروع، والوثيقة، وعدد التصحيحات والتسميات الذهبية)، وتطابق المحتوى إن أُرسلت البصمة. لمسار الرفع وحده (§8.11) | `electrical:read` | FR-ING-03، R-21 |
@@ -1237,7 +1266,7 @@ flowchart LR
 | جلسات التشخيص | `/electrical/diagnosis-sessions`، `/electrical/diagnosis-sessions/{id}`، و`…/observations`، `…/measurement-results`، `…/steps/{step_id}/rejection`، `…/next-measurement`، `…/events`، `…/close`، `…/report` | فتح ضمن مشروع ومحادثة، وحالة الجلسة بحقول الحقيقة كاملة دون نموذج (FR-AGT-11)، وملاحظة، ونتيجة قياس، ورفض خطوة، والأحداث بعد `seq`، والإغلاق، والتقرير وتصديره | `electrical:diagnose` (والقراءة `electrical:read`) | FR-DIAG-*، FR-AGT-09، FR-AGT-11، DATA-07 |
 | التقييم | `/electrical/eval/gold-labels`، `/electrical/eval/runs` | تسميات ذهبية لكل صفحة، ونتائج التشغيلات | `electrical:eval` | FR-EVAL-01..03، FR-EVAL-11..13 |
 | التدقيق | `/electrical/audit-events` | سرد بالتصفية | `electrical:manage` | FR-ADM-03 |
-| عرض الشيفرة (المنصة كلها) | خارج `/electrical`، مثلاً `/api/v1/about/source` | بصمة الإصدار ورابط الشيفرة المطابقة | مستخدم مصادَق (DEC‑10) | NFR-LIC-06 |
+| عرض الشيفرة (المنصة كلها) — **مؤجَّل، لا يُبنى الآن** | خارج `/electrical`، مثلاً `/api/v1/about/source` | بصمة الإصدار ورابط الشيفرة المطابقة | مستخدم مصادَق | NFR-LIC-06 (البند 2 معلّق، DEC‑10، SRS D-24) |
 
 **الوكيل** يُستدعى عبر سطح المنصة القائم (`POST /agents/{key}/invoke` ورسالة `invoke` على `/ws`)، لا عبر مسار جديد.
 
@@ -1256,17 +1285,20 @@ flowchart LR
 
 **الاستئناف دون فقد أحداث.** لكل جلسة ولكل مهمة سجل أحداث دائم في القسم المالك، مرقّم بـ`seq`. فالعميل الذي انقطع يطلب ما بعد آخر `seq` رآه عبر REST (`…/events?after_seq=`)، ثم يكمل على WS. هذا لا يغيّر دلالة WS القائمة: المستهلك البطيء يُغلَق بـ`1013` ويعيد الاتصال، على `03 §3.2`. والرموز المبثوثة (`token`) عابرة؛ والجواب النهائي محفوظ في `conversations`.
 
-### 12.3 الصلاحيات (FR-ADM-01؛ DEC‑11)
+### 12.3 الصلاحيات (FR-ADM-01؛ ✅ DEC‑11)
 
-صلاحيات جديدة بصيغة `resource:action` على الأدوار الأربعة القائمة دون أدوار جديدة. والمصفوفة الموقّعة في `docs/design/05-rbac-config-secrets.md` §1.3 تُضاف إليها صفوف.
+صلاحيات جديدة بصيغة `resource:action` على أدوار المنصة القائمة. **لا أدوار جديدة، ولا أدوار خاصة بالفني أو المهندس أو المراجع أو غيرهم** (SRS D-25). والمصفوفة الموقّعة في `docs/design/05-rbac-config-secrets.md` §1.3 تُضاف إليها صفوف فقط.
 
-| الصلاحية | owner | admin | member | viewer | الحاجة في SRS |
+| الصلاحية | owner | admin | member | viewer | ما تتيحه |
 |---|:--:|:--:|:--:|:--:|---|
-| `electrical:read` | ✓ | ✓ | ✓ | ✓ | قارئ |
-| `electrical:diagnose` | ✓ | ✓ | ✓ | — | فني، مهندس |
-| `electrical:manage` | ✓ | ✓ | — | — | مسؤول التوثيق، مدير |
-| `electrical:review` (R2، FR-HIL-06) | ✓ | ✓ | — | — | مراجع التوثيق |
-| `electrical:eval` | ✓ | ✓ | — | — | فريق التقييم |
+| `electrical:read` | ✓ | ✓ | ✓ | ✓ | قراءة المخططات والبحث والتتبّع والمحاكاة |
+| `electrical:diagnose` | ✓ | ✓ | ✓ | — | جلسات التشخيص وتسجيل القياسات |
+| `electrical:manage` | ✓ | ✓ | — | — | رفع المخططات وتسجيلها، وملف الإعداد، والتصحيحات |
+| `electrical:review` (R2، FR-HIL-06) | ✓ | ✓ | — | — | اعتماد التصحيحات قبل دخولها الإنتاج |
+| `electrical:eval` | ✓ | ✓ | — | — | المجموعة الذهبية وتشغيلات التقييم |
+
+- **فئات SRS §3.1 فئات احتياج لا أدوار.** الفني والمهندس يعملان بالدور نفسه (`member`)، ويختار المسؤول دور كل موظف.
+- **مع المساعد الذكي.** يعمل `wiretwin_agent` مع الوكيل المقترح `smart_assistant` (`docs/delivery/smart-assistant`) لخدمة الموظفين، والمساعد يستطيع استدعاءه (§11.11). والاستدعاء لا يرفع الصلاحيات: تُفحص صلاحيات `electrical:*` للمستخدم الأصلي لا للمساعد. إن أضافت تلك الميزة أدواراً للموظفين في مساحة المؤسسة، أُضيفت إليها صفوف `electrical:*` بالطريقة نفسها، بلا أدوار لـWireTwin. وتفاصيل ذلك تُحسم في تصميم المساعد الذكي وتصميم INC‑0 التفصيلي (انظر DEC‑11).
 
 ### 12.4 الأخطاء (FR-API-08)
 
@@ -1283,7 +1315,7 @@ flowchart LR
   - `electrical.source_unavailable` (503).
   - `electrical.analysis_budget_exceeded` (422، بلوغ حدّ زمن الحساب).
 - **رموز المنصة** تُستعمل حيث تكفي: `common.not_found`، و`authz.forbidden`، و`common.rate_limited`، و`usage.quota_exceeded`.
-- **اللغة (NFR-I18N-01).** الرمز ثابت آلي. و`title` بالإنجليزية كما في المنصة، و`detail` بلغة المستخدم في مسارات `/electrical` حسب `Accept-Language`، والعميل يترجم بالرمز. أما توطين أخطاء المنصة كلها فخارج هذا العمل (§18.4).
+- **اللغة (NFR-I18N-01).** الرمز ثابت آلي. و`title` بالإنجليزية كما في المنصة، و`detail` بلغة المستخدم في مسارات `/electrical` حسب `Accept-Language`، والعميل يترجم بالرمز. أما توطين أخطاء المنصة كلها فخارج هذا العمل (✅ DEC‑15 (أ)، SRS D-30).
 
 ### 12.5 تغييرات `docs/design/openapi.yaml`
 
@@ -1300,7 +1332,7 @@ flowchart LR
 | الطبقة | التكتيك | المتطلب |
 |---|---|---|
 | مساحة العمل | RLS على كل جدول مستأجَر، و`flt` يحمل `workspace_id` دائماً في Qdrant، وبادئة مساحة العمل في MinIO، والعمّال يضبطون السياق من امتداد `workspaceid` في المظروف | FR-KG-09، arch D‑23 |
-| الفضاء والمشروع | ترشيح في المستودعات، و`space` بفهرس `is_tenant` في Qdrant. المشروع ينتمي إلى فضاء واحد، وملفات وثائقه من الفضاء نفسه (يُتحقق منه عبر `DrawingFiles`). وهل يحمل الفضاء مشروعاً واحداً أم أكثر قرار (DEC‑17). ولا بحث ولا تتبّع يعبر الفضاء | FR-KG-09، FR-INT-10 |
+| الفضاء والمشروع | ترشيح في المستودعات، و`space` بفهرس `is_tenant` في Qdrant. المشروع ينتمي إلى فضاء واحد، وملفات وثائقه من الفضاء نفسه (يُتحقق منه عبر `DrawingFiles`). وللفضاء مشروع واحد (DEC‑17). والنظام والمعدّة والقسم وسوم من `files` (`PLT‑26`) تُكتب في الفهارس، ويُضيَّق بها البحث داخل الفضاء ولا توسّعه. ولا بحث ولا تتبّع يعبر الفضاء | FR-KG-09، FR-INT-10، FR-ING-13 |
 | الملفات المرفوعة | `ele-parse` معزول: بلا شبكة خارجية ولا أسرار ولا قاعدة بيانات، ونظام ملفات للقراءة فقط، ومستخدم غير جذري، وحدود زمن وذاكرة لكل صفحة في عملية فرعية، ورفض الملف التالف برسالة واضحة (DEC‑04) | FR-ING-06، NFR-SEC-02 |
 | النقل | TLS عند `nginx` على الهدفين، وأمامه Cloudflare على الخادم (`docs/deploy-server.md` §4). ولا جديد | NFR-SEC-01 |
 | الأسرار | لا سرّ جديد في R1. مفاتيح السحابة تبقى في `credentials` عبر Vault Transit. و`.env.example` يتلقى أسماء الإعدادات غير السرية فقط | NFR-SEC-04 |
@@ -1326,7 +1358,7 @@ flowchart LR
   | البوابة | نسب الرفض والحذف وإعادة التوليد |
   | الاستهلاك | الرموز والكلفة لكل جلسة ولكل صفحة استعملت نموذجاً |
 
-- **مقاييس الإشباع لكل مرحلة (NFR-OBS-03).** CPU والذاكرة لكل حاوية من cAdvisor (قائم خلف `--profile container-metrics`)، وGPU من مُصدِّر الكرت القائم على الخادم (`nvidia-gpu-exporter` في `docker-compose.gpu.yml`، `docs/deploy-server.md` §2)، وهو يقيس الكرت كله لا كل خدمة (DEC‑08). عليها يُبنى قرار زيادة الموارد (SRS D-16).
+- **مقاييس الإشباع لكل مرحلة (NFR-OBS-03).** CPU والذاكرة لكل حاوية من cAdvisor (قائم خلف `--profile container-metrics`)، وGPU من مُصدِّر الكرت القائم على الخادم (`nvidia-gpu-exporter` في `docker-compose.gpu.yml`، `docs/deploy-server.md` §2). والقياس على المضيف المحلي وحده (DEC‑14)، فيُشغَّل المُصدِّر نفسه محلياً لحملات القياس، أو تُؤخذ قراءات `nvidia-smi` إن تعذّر. وهو يقيس الكرت كله لا كل خدمة (DEC‑08). عليها يُبنى قرار زيادة الموارد (SRS D-16).
 - **التنبيهات.** تنبيه لكل مما يلي، ولكلٍّ قسم في `docs/runbooks/alerts.md` وحالتا `promtool` (تُشعله وتُصمته)، على قاعدة المنصة:
   - عمر الطابور فوق عتبة لكل مرحلة.
   - مهمة عالقة.
@@ -1338,17 +1370,17 @@ flowchart LR
 
 ### 13.3 أهداف الأداء والسعة لكل وحدة موارد
 
-العتاد المرجعي (SRS §5.2): 8 أنوية، و32 GB، وSSD، لعامل واحد. وأهداف OCR والنموذج المحلي لكل GPU.
+العتاد المرجعي (SRS §5.2): 8 أنوية، و32 GB، وSSD، لعامل واحد. **وبيئة القياس الوحيدة المضيف المحلي (✅ DEC‑14، SRS D-27):** نحو 13 GB يتقاسمها مع المكدّس الحي، و10 أنوية، وكرت RTX 4060 Laptop بـ8 GB. وكل اختبار يُحجَّم ليناسبه: الهدف الذي يتجاوز قدرته يُقاس بأكبر حجم يتسع له، ويذكر التقرير الحجم المقيس (SRS R-23). وتتبع حملات القياس نظافة التشغيل المعتمدة في المنصة: تفريغ طابور الفهرسة، والإحماء، ورموز جديدة.
 
 | الهدف | وحدة القياس | التكتيك | أداة القياس |
 |---|---|---|---|
-| NFR-PERF-01 | دور `pages` + `ele-parse` على 8 أنوية | توازي الصفحات (§7.3) | أداة دفعات على مجموعة 500 صفحة (على نهج `deploy/load/backlog.js`) |
-| NFR-PERF-02 | مشروع اصطناعي بحجم NFR-SCAL-01 | §9.7، §8.5 | k6 (`--profile load`) على مسارات البحث والرسم |
+| NFR-PERF-01 | دور `pages` + `ele-parse` على المضيف المحلي | توازي الصفحات (§7.3) | أداة دفعات على مجموعة 500 صفحة (على نهج `deploy/load/backlog.js`) |
+| NFR-PERF-02 | مشروع اصطناعي بأكبر حجم يتسع له المضيف، نحو NFR-SCAL-01 | §9.7، §8.5 | k6 (`--profile load`) على مسارات البحث والرسم |
 | NFR-PERF-03، NFR-PERF-06 | دور واحد للوكيل | §11.2، §9.2 | قياس زمن أول حدث وأزمنة السوق |
-| NFR-PERF-05 | GPU واحدة | §7.1 (STG‑03) | مجموعة صفحات SHX ونقطية |
+| NFR-PERF-05 | كرت المضيف (RTX 4060 Laptop، 8 GB) | §7.1 (STG‑03) | مجموعة صفحات SHX ونقطية |
 | NFR-PERF-07 | عملية `app` واحدة | §10.11 | معيار حقن الأعطال |
-| NFR-SCAL-02 | وحدة مرجعية: 200 مشروع و50 جلسة متزامنة | تزامن مقيّد ونسخ | k6 |
-| NFR-SCAL-03 (كفاءة ≥ 0.8 حتى 4×) | 1× ثم 2× ثم 4× نسخاً لكل مرحلة | §4.3 | بيئة قياس (DEC‑14) |
+| NFR-SCAL-02 | أكبر عدد يتسع له المضيف، نحو 200 مشروع و50 جلسة متزامنة | تزامن مقيّد ونسخ | k6 |
+| NFR-SCAL-03 (كفاءة ≥ 0.8) | من 1× حتى أكبر مضاعف يتسع له المضيف، نسخاً للمرحلة المختنقة | §4.3 | المضيف المحلي (✅ DEC‑14) |
 
 ### 13.4 اللغات والاتجاه (NFR-I18N-01..04)
 
@@ -1356,7 +1388,7 @@ flowchart LR
 - **لغات المصدر:** الإنجليزية والصينية المبسطة، منفردتين أو في الصفحة نفسها (SRS D-20). تُكشف لغة كل كتلة نص وكل صفحة وكل مجموعة، وتُخزَّن مع النص.
 - **التطبيع للبحث** (ومنه الحروف كاملة العرض) مع حفظ النص الأصلي وحروف المعرّف كما ظهرت.
 - **العزل ثنائي الاتجاه** في المخرجات العربية (§11.5).
-- **خطوط CJK بديلة** مضمّنة في صورة `ele-parse` للتصيير دون إنترنت، ويُوسم كل استبدال خط في بيانات الصفحة (NFR-I18N-04؛ الترخيص في DEC‑13).
+- **خطوط CJK بديلة** مضمّنة في صورة `ele-parse` للتصيير دون إنترنت، ويُوسم كل استبدال خط في بيانات الصفحة (NFR-I18N-04؛ الترخيص OFL-1.1 مُقَرّ بـ✅ DEC‑13 وSRS D-26).
 - **إضافة لغة** (الصينية التقليدية، الألمانية) بالإعداد: قوالب أنواع الصفحات، ورؤوس جداول التقارير، والمسرد، ولغات OCR (NFR-MNT-04).
 
 ### 13.5 الإعداد (NFR-CFG-01، NFR-CFG-02، NFR-SCAL-05)
@@ -1381,7 +1413,7 @@ flowchart LR
 | العنصر | التصميم |
 |---|---|
 | تقرير التوصيف (FR-EVAL-14) | ناتج STG‑01، مع تجميع بعد STG‑02 وSTG‑03، لكل مجموعة وثائق. يُشغَّل على العيّنات **أولاً** (INC‑1)، فيحدّد توزيع المجموعة الذهبية وترتيب مكتبات الرموز |
-| المجموعة الذهبية (FR-EVAL-02، §8.3) | الملفات في مساحة عمل وفضاء مخصّصين للتقييم. والتسميات طبقة «ذهبية» في `drawings` بالشكل نفسه للتصحيحات (رمز، تاغ، اتصال، مرجع، حقل كتلة عنوان، نوع صفحة)، تُحرَّر بالواجهات نفسها بصلاحية `electrical:eval`. وتُصدَّر لقطة بإصدار وبصمة. والتسميات الحية تتبع وثيقتها: استبدال ملف ذهبي بالاسم يطهّرها (SRS D-22)، والمعاينة تعدّها قبل الإتمام (§8.11)؛ وما يبقى من لقطاتها المصدَّرة في DEC‑18 |
+| المجموعة الذهبية (FR-EVAL-02، §8.3) | الملفات في مساحة عمل وفضاء مخصّصين للتقييم. والتسميات طبقة «ذهبية» في `drawings` بالشكل نفسه للتصحيحات (رمز، تاغ، اتصال، مرجع، حقل كتلة عنوان، نوع صفحة)، تُحرَّر بالواجهات نفسها بصلاحية `electrical:eval`. وتُصدَّر لقطة بإصدار وبصمة. والتسميات الحية تتبع وثيقتها: استبدال ملف ذهبي بالاسم يطهّرها (SRS D-22)، والمعاينة تعدّها قبل الإتمام (§8.11). ولقطاتها المصدَّرة تبقى سجلاً ببصمتها، ولا تُشغَّل إلا ما دام ملفها ببصمته موجوداً، ويذكر تقرير التقييم ما استُبعد منها (✅ DEC‑18) |
 | الحقيقة شبه الآلية (FR-EVAL-03، R2) | السجلات المتفق عليها من مصدرين في STG‑10 تُقترح تسميات تنتظر اعتماداً بشرياً |
 | حقن أخطاء التوثيق (FR-EVAL-04) | محوّل على مستوى الحقائق: حذف سلك، وتبديل مرجع، وتغيير رقم طرف، وحذف صف تقرير. يقيس STG‑10 وM-13 |
 | معيار حقن الأعطال (FR-EVAL-15) | يستعمل `CircuitAnalysis` لحقن أعطال معروفة في نماذج المجموعة الذهبية ونماذج اصطناعية، ويولّد ملاحظاتها، ويدير جلسة `diagnostics` كاملة دون مهندس، ويجيب كل قياس مقترح بقراءته من العطل المحقون. يقيس M-22 وM-23 (مقابل الترتيب العشوائي والتنصيف) وM-33 وM-34. ويُشغَّل الوكيل بـcassettes أو بنموذج مزيّف يحاول تغيير الحقائق (M-35) |
@@ -1389,7 +1421,7 @@ flowchart LR
 | التفصيل (FR-EVAL-13) | كل مقياس مفصّل حسب معيار الرموز ولغة المخطط ونوع النص والمورّد، ولكل نموذج مُعدّ (FR-EVAL-12) |
 | المعايرة (NFR-ACC-02، ADR‑38) | تُلائَم دوال معايرة لكل نوع حقيقة (اتصال، تاغ) على قسم من المجموعة الذهبية، وتُصدَر بإصدار، ويُقاس ECE (M-14) على قسم آخر |
 | الكلفة والزمن (FR-EVAL-07) | لكل صفحة ولكل جلسة في كل تقرير |
-| البوابات (FR-EVAL-08) | مهمة تقييم تقارن بالحدود في SRS §8، وتمنع الدمج عند الانخفاض. وتشمل M-25 وM-26 وM-35. موضع التشغيل والبيانات في DEC‑09 |
+| التقييم المستقل (FR-EVAL-08) | مهمة تقييم خارج CI على المضيف المحلي، وفيه GPU والمجموعة الذهبية (DEC‑14)، تُشغَّل يدوياً أو بجدول أو قبل الإصدار. تقارن بالحدود في SRS §8 وبالقياس السابق، وتُخرج تقريراً يذكر الالتزام المقيس. ولا تمنع الدمج؛ بل لا يُفعَّل إصدار ولا نموذج قبل تقرير ناجح (FR-EVAL-12). وتشمل M-25 وM-26 وM-35 (✅ DEC‑09، SRS D-23) |
 | الحذف والبدائل (FR-EVAL-09، R2) | التشغيل نفسه بخيارات خط معالجة مختلفة، ويوثَّق السلبي كالإيجابي |
 | الموضع | `tests/eval/electrical/` (بجانب `tests/eval/` القائم)، وأداة تشغيل في `app/ops/`، والنتائج JSON بإصدار في MinIO وفي المستودع للملخصات |
 
@@ -1403,12 +1435,13 @@ flowchart LR
 ### 13.8 التراخيص (NFR-LIC-01..07)
 
 - **في CI** (DEC‑09): SBOM وفحص تراخيص آلي يرفض غير المتوافق مع AGPL-3.0 (مثل GPL-2.0-only والمكتبات المملوكة المربوطة في العملية)، ويعلّم مكوّنات AGPL.
-- **ترخيص المنصة.** يُغيَّر `license` في `pyproject.toml` (اليوم `Proprietary`)، ويُضاف ملف `LICENSE` (AGPL-3.0). وتُعرض الشيفرة المطابقة للإصدار العامل عبر مسار مصادَق ومعه بصمة الإصدار (DEC‑10، SRS D-18).
+- **ترخيص المنصة (✅ DEC‑10، SRS D-24).** لا يُعدَّل الترخيص الآن: يبقى `license` في `pyproject.toml` على `Proprietary`، ولا يُضاف ملف `LICENSE`، ولا يُبنى مسار عرض الشيفرة. سيقرر المالك لاحقاً بنفسه تغيير الترخيص أو استبدال المكتبات المرخصة بـAGPL.
+- **⏰ تذكير للمالك.** يُحسم الترخيص قبل الإطلاق في الإنتاج أو قبل إتاحة المنصة لمستخدمين عبر الشبكة. المكتبات المعنية: PyMuPDF (في `knowledge` اليوم، وفي `ele-parse`)، وUltralytics إن اختير في R2، وشيفرة MEPdetect إن نُقلت. ويبقى فحص التوافق مع AGPL في CI حتى يبقى الخياران مفتوحين.
 - **ما لا يدخل الشيفرة المتاحة.** الأسرار والبيانات خارجها أصلاً: ملفات `deploy/load/*.json` وشهادات `deploy/nginx/certs/` في `.gitignore`.
 - **الأنماط بلا ترخيص.** لا شيفرة من مستودعات بلا ترخيص (PanelPilot، CircuitDiagOCR، PIDCon): أنماط فقط (NFR-LIC-03).
 - **النماذج والبيانات.** يُوثَّق ترخيص كل نموذج (OCR، LLM، تضمين) وكل مجموعة بيانات منفصلاً (NFR-LIC-04).
 - **مكتبات رموز المصنّعين وصورها** لا تُضمَّن قبل التحقق من حق الاستعمال (NFR-LIC-05). فمجموعة `covaga` مثلاً أصل حقوقها غير واضح (`01-catalog.md` #2).
-- **ترخيص خارج القائمة** يمرّ عبر DEC‑13. مثاله خطوط CJK بترخيص OFL-1.1.
+- **ترخيص خارج القائمة** يحتاج قرار مالك. وقد أُقرّ OFL-1.1 للخطوط وحدها (✅ DEC‑13، SRS D-26)، فيقبله فحص التراخيص في CI لملفات الخطوط فقط، ويرفضه لأي حزمة شيفرة.
 
 ### 13.9 الكلفة (NFR-CST)
 
@@ -1623,35 +1656,35 @@ sequenceDiagram
 | ADR‑01 | تفكيك الوحدات | SRS AC-02، SRS AC-09 | **المختار:** وحدة واحدة `app.modules.electrical` مرتّبة بالأقسام أولاً (`drawings` و`circuits` و`search` و`diagnostics`، لكلٍّ `domain/application/ports/adapters`)، وعقد طبقات داخلي يفصل الأقسام (§5.2، §5.6، §5.8) | مرفوضة: أربع وحدات وحزمة عليا `app.kernels.electrical`؛ والنواة في `app.framework`؛ ووحدة واحدة مرتّبة بالطبقات أولاً | — | ✅ DEC‑01، حسمه المالك في 2026-10-28 بالخيار (ب) |
 | ADR‑02 | موضع محلّل المعرّفات المشترك | FR-ID-12 | **المختار:** `app.modules.electrical.shared`، حزمة نقية هي الطبقة السفلى في عقد `electrical-contexts`، ومصدر في `domain-purity` (§5.4، §5.6) | مرفوضة: حزمة عليا `app.kernels.electrical`؛ وداخل `app.framework` | — | ✅ DEC‑01 (محسوم) |
 | ADR‑03 | مكتبة PDF | FR-VEC-01..11، L-02 | PyMuPDF، وهي مستعملة اليوم في `knowledge` | pypdfium2؛ pdfminer.six/pdfplumber (أضعف في CID والتصيير) | AGPL-3.0 (مقبول، SRS D-01، SRS D-18) | لا |
-| ADR‑04 | عزل المحلّل | FR-ING-06، NFR-SEC-02 | خدمة `ele-parse` على شبكة داخلية فقط، وحجم مؤقت للقراءة فقط، وعمليات فرعية بحدود | عمليات فرعية داخل العامل؛ gVisor أو nsjail | — | ⚠️ DEC‑04 |
-| ADR‑05 | صيغة مشتقات الصفحات | NFR-PERF-01، DATA-04 | ثنائية بإصدار (msgpack + zstd) | Arrow/Parquet (أثقل اعتمادية)؛ JSON + gzip (أبطأ وأكبر) | Apache-2.0، BSD-3 | لا (الاعتماديتان في DEC‑13) |
-| ADR‑06 | النوى الحسابية الهندسية | FR-CON-02، FR-SYM-05، NFR-PERF-01 | خلف منفذ `GeometryKernel`: بايثون نقي أولاً، ثم Shapely وSciPy وNumPy إن أثبت القياس | NumPy كاملاً من البداية | BSD-3 | ⚠️ DEC‑13 (إن أُضيفت) |
+| ADR‑04 | عزل المحلّل | FR-ING-06، NFR-SEC-02 | خدمة `ele-parse` على شبكة داخلية فقط، وحجم مؤقت للقراءة فقط، وعمليات فرعية بحدود | عمليات فرعية داخل العامل؛ gVisor أو nsjail | — | ✅ DEC‑04 (أ) |
+| ADR‑05 | صيغة مشتقات الصفحات | NFR-PERF-01، DATA-04 | ثنائية بإصدار (msgpack + zstd) | Arrow/Parquet (أثقل اعتمادية)؛ JSON + gzip (أبطأ وأكبر) | Apache-2.0، BSD-3 | لا (الاعتماديتان مُقَرّتان، ✅ DEC‑13) |
+| ADR‑06 | النوى الحسابية الهندسية | FR-CON-02، FR-SYM-05، NFR-PERF-01 | خلف منفذ `GeometryKernel`: بايثون نقي أولاً، ثم Shapely وSciPy وNumPy إن أثبت القياس | NumPy كاملاً من البداية | BSD-3 | ✅ DEC‑13 (مُقَرّة، وتُضاف إن أثبت القياس) |
 | ADR‑07 | ربط النص بالرمز | FR-SYM-05، T-08 | مطابقة مثلى (Hungarian) بدالة كلفة وسقف | جشعة (مرفوضة في SRS) | BSD-3 أو تنفيذ نقي | لا |
 | ADR‑08 | التعرّف المتجهي على الرموز | FR-SYM-01..04، FR-SYM-13 | مطابقة قوالب على بدائيات بعد التطبيع (دوران، انعكاس، تحجيم)، ومكتبة لكل معيار تبدأ بـIEC 60617 وGB/T 4728، و«علّم مرة» بالتكافؤ الهندسي | مصنّف متجهي مدرَّب (FR-SYM-09، R2)؛ تضمين صور (R3) | — | لا |
 | ADR‑09 | محرك OCR | FR-RAS-01، M-29، M-30، L-06 | نماذج PP-OCRv5 (عبر RapidOCR/ONNX Runtime أو PaddlePaddle) على GPU، وTesseract `chi_sim+eng` خط أساس | EasyOCR؛ docTR؛ OCR سحابي (مرفوض: كلفة، والمسار يجب أن يعمل محلياً) | Apache-2.0، MIT | ⚠️ DEC‑07 |
 | ADR‑10 | نشر OCR | NFR-SCAL-04، SRS AC-10 | deployable منفصل خلف موازن، على سابقة التضمين (انحراف arch D‑14) | داخل صورة التطبيق (يُدخل أطر GPU في رسم الاستيراد) | — | ⚠️ DEC‑07 |
-| ADR‑11 | مخزن الرسم | FR-KG-01..04، NFR-PERF-02، NFR-SCAL-01 | جداول Postgres تحت RLS، وإسقاط توصيل، واستعلامات تكرارية مقيّدة، ودائرة وظيفية في الذاكرة | Apache AGE؛ Neo4j Community؛ مسرّع داخل العملية | PostgreSQL؛ Apache-2.0؛ GPL-3.0 (خارج القائمة) | ⚠️ DEC‑05 |
-| ADR‑12 | مسرّع التتبّع (شرطي) | NFR-PERF-02 | لقطة مضغوطة لكل جيل في `redis-cache` يتتبّعها rustworkx، فقط إن قصّر القياس | NetworkX (أبطأ) | Apache-2.0؛ BSD-3 | ⚠️ DEC‑13 (إن أُضيف) |
+| ADR‑11 | مخزن الرسم | FR-KG-01..04، NFR-PERF-02، NFR-SCAL-01 | جداول Postgres تحت RLS، وإسقاط توصيل، واستعلامات تكرارية مقيّدة، ودائرة وظيفية في الذاكرة | Apache AGE؛ Neo4j Community؛ مسرّع داخل العملية | PostgreSQL؛ Apache-2.0؛ GPL-3.0 (خارج القائمة) | ✅ DEC‑05 (أ) |
+| ADR‑12 | مسرّع التتبّع (شرطي) | NFR-PERF-02 | لقطة مضغوطة لكل جيل في `redis-cache` يتتبّعها rustworkx، فقط إن قصّر القياس | NetworkX (أبطأ) | Apache-2.0؛ BSD-3 | ✅ DEC‑13 (rustworkx مُقَرّ، ويُضاف إن قصّر القياس) |
 | ADR‑13 | صيغة المحاكاة | FR-KG-05، FR-KG-10 | منطق Kleene ثلاثي القيم على رسم توصيل، ونقطة ثابتة بحدّ تكرار، وتنفيذ نقي | محاكي دوائر عددي (خارج النطاق؛ لا قيم مكوّنات) | — | لا |
 | ADR‑14 | التشخيص واختيار القياس | FR-DIAG-02..07، G-06 | اتساق بتقليم التعارضات، وعطلان على الأكثر، وكسب معلومات متوقع بعد مرشّح السلامة، وتنفيذ نقي (لا تنفيذ مصان لـGDE، `02-techniques-matrix.md` §5) | شبكة بايزية (pgmpy، T-33، اختياري)؛ قواعد ثابتة (FaultTrace) | MIT (إن أُضيف pgmpy) | لا |
-| ADR‑15 | فهرس المعرّفات الحرفي والمطابقة التقريبية | FR-IDX-01، FR-IDX-07، NFR-PERF-02 | جدول أشكال في Postgres بـB-tree، والمطابقة التقريبية بـ`pg_trgm` | مطابقة تقريبية داخل التطبيق على أشكال المشروع؛ n-gram حرفي متفرّق في Qdrant | PostgreSQL | ⚠️ DEC‑13 (`pg_trgm` يغيّر إعداد النشر) |
-| ADR‑16 | الساق الحرفية الوصفية والتقطيع الصيني | FR-IDX-02، FR-IDX-15 | BM25 متفرّق في Qdrant الهجين، وn-gram حرفي صيني يحمي المعرّفات اللاتينية | jieba بمعجم كهربائي، بالقياس | MIT (jieba) | ⚠️ DEC‑13 (إن أُضيف jieba) |
+| ADR‑15 | فهرس المعرّفات الحرفي والمطابقة التقريبية | FR-IDX-01، FR-IDX-07، NFR-PERF-02 | جدول أشكال في Postgres بـB-tree، والمطابقة التقريبية بـ`pg_trgm` | مطابقة تقريبية داخل التطبيق على أشكال المشروع؛ n-gram حرفي متفرّق في Qdrant | PostgreSQL | ✅ DEC‑13 (`pg_trgm` مُقَرّ؛ يُضاف إلى `deploy/postgres/initdb/20-extensions.sh` في INC‑8) |
+| ADR‑16 | الساق الحرفية الوصفية والتقطيع الصيني | FR-IDX-02، FR-IDX-15 | BM25 متفرّق في Qdrant الهجين، وn-gram حرفي صيني يحمي المعرّفات اللاتينية | jieba بمعجم كهربائي، بالقياس | MIT (jieba) | ✅ DEC‑13 (jieba مُقَرّ، ويُضاف بالقياس) |
 | ADR‑17 | التضمين الكثيف | FR-IDX-02، FR-INT-15، M-21 | نموذج المنصة الحالي، يُقاس أولاً | BGE-M3؛ multilingual-e5؛ ترقية عبر `embedding_migration` | Apache-2.0؛ MIT | ⚠️ DEC‑07 (الترقية) |
 | ADR‑18 | الدمج | FR-IDX-04، FR-INT-03 | RRF بالترتيب بأوزان لكل صنف سؤال | درجات مطبّعة (min-max أو z) | — | لا |
 | ADR‑19 | كشف اللغة | FR-NLU-01، NFR-I18N-02 | نسب الأبجديات (Han، لاتيني، عربي)، توسيعاً لـ`detect_language` في `knowledge` | lingua-py؛ fastText LID (نموذجه CC-BY-SA) | stdlib | لا |
 | ADR‑20 | الترجمة | FR-NLU-04، FR-NLU-08، FR-NLU-09 | النموذج المحلي عبر مفتاح قدرة، والمسرد أولاً، والمعرّفات محجوبة، والنتائج مخبّأة | Marian/OPUS-MT محلياً؛ NLLB (مرفوض: CC-BY-NC) | — | لا |
-| ADR‑21 | النموذج اللغوي المحلي | FR-AGT-07، FR-EVAL-12، SRS D-09، SRS D-13 | نموذج تعليمات يجيد استدعاء الأدوات بالعربية والإنجليزية والصينية (المرشح عائلة Qwen3 بين 8B و32B)، يُختار بالقياس على المجموعة الذهبية | نماذج أخرى مفتوحة الأوزان بترخيص مقبول؛ الإبقاء على `gemma3:1b` (لا يكفي) | Apache-2.0 للمرشح (يُتحقق لكل حجم، NFR-LIC-04) | ⚠️ DEC‑07 |
+| ADR‑21 | النموذج اللغوي المحلي | FR-AGT-07، FR-EVAL-12، SRS D-09، SRS D-13 | نموذج تعليمات يجيد استدعاء الأدوات بالعربية والإنجليزية والصينية (عائلة Qwen، والمرشح Qwen3 بين 8B و32B)، ويُختار الحجم بالقياس على المجموعة الذهبية | نماذج أخرى مفتوحة الأوزان بترخيص مقبول؛ الإبقاء على `gemma3:1b` (لا يكفي) | Apache-2.0 للمرشح (يُتحقق لكل حجم، NFR-LIC-04) | ✅ DEC‑07 (عائلة Qwen) |
 | ADR‑22 | إطار الوكيل | FR-AGT-02، arch D‑08 | `BaseAgent` و`ToolRegistry` في المنصة، ومنفّذ أدوات بمخططات | LangChain؛ LangGraph (اعتمادية ثقيلة مكرّرة لقدرة قائمة) | — | لا |
 | ADR‑23 | الفهرس المكاني | FR-IDX-03 | أنواع Postgres الهندسية بفهرس GiST (أصلي، بلا امتداد) على صناديق الحقائق | PostGIS (امتداد ثقيل)؛ شبكة دلاء داخل التطبيق | PostgreSQL | لا |
-| ADR‑24 | خطوط CJK البديلة | NFR-I18N-04 | Noto Sans/Serif CJK في صورة `ele-parse` | Source Han (الترخيص نفسه) | OFL-1.1 (خارج القائمة المسموحة) | ⚠️ DEC‑13 |
+| ADR‑24 | خطوط CJK البديلة | NFR-I18N-04 | Noto Sans/Serif CJK في صورة `ele-parse` | Source Han (الترخيص نفسه) | OFL-1.1 (مُقَرّ للخطوط، SRS D-26) | ✅ DEC‑13 |
 | ADR‑25 | سجل التدقيق | FR-ADM-03، FR-ADM-06 (R2) | جدول أحداث append-only في كل قسم بشكل موحّد (لأن كل قسم يكتب جداوله وحده)، ومسار قراءة موحّد في API؛ وسلسلة HMAC في R2؛ واستدعاءات النماذج من الجلسة و`usage` | مرفق تدقيق مستأجَر في المنصة (`platform.*` ومنفذ إطار) يخدم كل الوحدات | — | لا (ويُستحسن عرضه على المالك مع DEC‑12 إن رُغب في مرفق منصة) |
-| ADR‑26 | التتبّع الموزّع ومُصدِّر GPU | NFR-OBS-02، NFR-OBS-03 | امتدادات في السجل عبر Loki في R1، ومُصدِّر الكرت القائم على الخادم (`nvidia-gpu-exporter`) لمقاييس الإشباع | OpenTelemetry مع Jaeger أو Tempo | Apache-2.0 (Jaeger)؛ AGPL-3.0 (Tempo) | ⚠️ DEC‑08 |
-| ADR‑27 | المجموعة الذهبية وبوابات CI | FR-EVAL-08، NFR-LIC-02، NFR-SEC-04 | بوابة اصطناعية وعامة في CI، وبوابة كاملة في مهمة تقييم معزولة | كل شيء في GitHub CI | — | ⚠️ DEC‑09 |
-| ADR‑28 | موضع الحساب المتزامن | NFR-PERF-03، NFR-PERF-07، NFR-SCAL-02 | في `app`، بتفريغ إلى خيط وسقف تزامن لكل عملية و`429` | deployable حساب مستقل؛ عبر المجاري (يكسر 2 ث) | — | ⚠️ DEC‑06 |
+| ADR‑26 | التتبّع الموزّع ومُصدِّر GPU | NFR-OBS-02، NFR-OBS-03 | امتدادات في السجل عبر Loki في R1، ومُصدِّر الكرت القائم على الخادم (`nvidia-gpu-exporter`) لمقاييس الإشباع | OpenTelemetry مع Jaeger أو Tempo | Apache-2.0 (Jaeger)؛ AGPL-3.0 (Tempo) | ✅ DEC‑08 (أ) |
+| ADR‑27 | المجموعة الذهبية وبوابات CI | FR-EVAL-08، NFR-LIC-02، NFR-SEC-04 | تقييم الجودة في مهمة مستقلة خارج CI، ليس شرطاً للدمج بل لتفعيل إصدار أو نموذج؛ وفي CI يبقى SBOM وفحص التراخيص والثغرات | بوابات في CI شرطاً للدمج؛ المجموعة الذهبية في مخزن يجلبه CI؛ كل شيء في المستودع | — | ✅ DEC‑09 (د)، SRS D-23 |
+| ADR‑28 | موضع الحساب المتزامن | NFR-PERF-03، NFR-PERF-07، NFR-SCAL-02 | في `app`، بتفريغ إلى خيط وسقف تزامن لكل عملية و`429` | deployable حساب مستقل؛ عبر المجاري (يكسر 2 ث) | — | ✅ DEC‑06 (أ) |
 | ADR‑29 | حدود الرفع | FR-ING-02 | رفع الحدود العامة (1 GB لكل ملف، وحصة فضاء أكبر) ورفع متعدد الأجزاء | حدّ لكل غرض (PDF المخططات حتى 1 GB)؛ إبقاء الحدود | — | ✅ DEC‑02 (ب) |
-| ADR‑30 | الوثيقة وقاعدة الاستبدال بالاسم | FR-ING-03، س‑29، SRS D-22 | **المختار:** لا مراجعات؛ الوثيقة ملف واحد (1:1 مع `file_id`)، وقاعدة س‑29 تسري دون تغيير. ويشارك WireTwin فيها بمشارك الحذف `electrical` بمرحلتيه، وحارس التسجيل، ومعاينة الاستبدال (§8.7، §8.8، §8.11) | سقطت بقرار المالك: استثناء ملفات `drawings` من الاستبدال؛ واسم فريد لكل مراجعة؛ ومراجعة س‑29 | — | ✅ DEC‑03، حسمه المالك في 2026-10-28 (SRS D-22)؛ ونطاقه على المشاريع ⚠️ DEC‑17، وما يبقى بعد الاستبدال ⚠️ DEC‑18 |
-| ADR‑31 | الصلاحيات | FR-ADM-01 | صلاحيات جديدة على الأدوار الأربعة | أدوار جديدة (فني، مهندس، مراجع توثيق) | — | ⚠️ DEC‑11 |
-| ADR‑32 | عرض الشيفرة المصدرية | NFR-LIC-06، SRS D-18 | مسار مصادَق يعيد بصمة الإصدار ورابط أرشيف الشيفرة المطابقة الذي يُبنى في خط الإصدار | مستودع عام مرآة | AGPL-3.0 | ⚠️ DEC‑10 |
+| ADR‑30 | الوثيقة وقاعدة الاستبدال بالاسم | FR-ING-03، س‑29، SRS D-22، SRS D-29 | **المختار:** لا مراجعات؛ الوثيقة ملف واحد (1:1 مع `file_id`)، وقاعدة س‑29 بنطاق الفضاء والاسم والوسوم (`PLT‑26`)، ومشروع واحد لكل فضاء. ويشارك WireTwin فيها بمشارك الحذف `electrical` بمرحلتيه، وحارس التسجيل، ومعاينة الاستبدال (§8.7، §8.8، §8.11) | سقطت بقرار المالك: استثناء ملفات `drawings` من الاستبدال؛ واسم فريد لكل مراجعة؛ ومراجعة س‑29 | — | ✅ DEC‑03، حسمه المالك في 2026-10-28 (SRS D-22)؛ ونطاقه ✅ DEC‑17 (2026-10-29، SRS D-29)، وما يبقى بعد الاستبدال ✅ DEC‑18 (2026-10-29، SRS D-31) |
+| ADR‑31 | الصلاحيات | FR-ADM-01، SRS D-25 | صلاحيات `electrical:*` جديدة على أدوار المنصة القائمة، بلا أدوار جديدة ولا أدوار خاصة بفئات المستخدمين | أدوار جديدة (فني، مهندس، مراجع توثيق) | — | ✅ DEC‑11 (أ) |
+| ADR‑32 | عرض الشيفرة المصدرية | NFR-LIC-06، SRS D-18 | مؤجَّل: لا يُبنى مسار لعرض الشيفرة، والترخيص يبقى `Proprietary` حتى يقرر المالك (SRS D-24) | مسار مصادَق بأرشيف الشيفرة؛ مستودع عام مرآة | — | ✅ DEC‑10 (تأجيل) |
 | ADR‑33 | الامتناع المعاير (R2) | FR-GRD-05، T-39 | conformal risk control بمجموعات Mondrian، بتنفيذ في `diagnostics` ومعايرة في أداة التقييم | عتبة ثابتة | MIT (مرجع maintenance-qa-agent) | لا (R2) |
 | ADR‑34 | كاشف الرموز النقطي (R2) | FR-RAS-02 | RF-DETR مع SAHI خلف `SymbolDetector` | Ultralytics YOLO | Apache-2.0؛ AGPL-3.0 | يُقرَّر في R2 |
 | ADR‑35 | النموذج البصري (R2) | FR-RAS-04، FR-NLU-06 | نموذج رؤية محلي عبر Ollama خلف `VisionLanguageProvider` | توسيع `LLMProvider` بالصور | يُتحقق لكل نموذج | يُقرَّر في R2 |
@@ -1674,19 +1707,19 @@ sequenceDiagram
 
 | الزيادة | الاسم | النطاق (معرّفات SRS) | تعتمد على | قرارات تحجبها | المقاييس التي تُفتح |
 |---|---|---|---|---|---|
-| INC‑0 | تمهيد المنصة | `PLT‑01`، `PLT‑13`، `PLT‑16` (العقود 1..4 مع هيكل الوحدة `electrical` الفارغ)، وفي `PLT‑19` نص الترخيص وSBOM وفحص التراخيص (و`PLT‑02` أُزيل في الإصدار 0.3). يغطي جانب المنصة من FR-ING-02، وFR-ADM-01، وNFR-LIC-02 وNFR-LIC-06 وNFR-LIC-07، وSRS AC-07 | — | DEC‑09، DEC‑10، DEC‑11 | — |
-| INC‑1 | النواة والتسجيل والفحص والتوصيف | CMP‑06 `shared` (FR-ID-01، 03..10، 12، 13)؛ `drawings`: المشاريع وملفات الإعداد والوثائق والمهام وحالة الصفحة (FR-ING-01..06، 08، 10، 12)؛ الاستبدال بالاسم: مشارك الحذف ومنفذ `drawings` فيه بمرحلتيه، وحارس التسجيل، والمعاينة، والوثيقة المستبعدة (FR-ING-03، §8.11)؛ `ele-parse` وSTG‑00 وSTG‑01؛ FR-EVAL-14 على العيّنات؛ هيكل إطار التقييم (FR-EVAL-01)؛ `PLT‑03`، `PLT‑04` (المشارك المركّب `electrical` ومنفذ `drawings` فيه)، `PLT‑11`، `PLT‑14`، `PLT‑17` (ملف `electrical`)، `PLT‑21`، `PLT‑24` | INC‑0 | DEC‑04، DEC‑13، DEC‑17 | M-04 (اختبارات النواة)، M-32، تقرير التوصيف |
+| INC‑0 | تمهيد المنصة | `PLT‑01`، `PLT‑13`، `PLT‑16` (العقود 1..4 مع هيكل الوحدة `electrical` الفارغ)، وفي `PLT‑19` SBOM وفحص التراخيص دون تغيير نص الترخيص (DEC‑10) (و`PLT‑02` أُزيل في الإصدار 0.3). يغطي جانب المنصة من FR-ING-02، وFR-ADM-01، وNFR-LIC-02 وNFR-LIC-07، وSRS AC-07 | — | — | — |
+| INC‑1 | النواة والتسجيل والفحص والتوصيف | CMP‑06 `shared` (FR-ID-01، 03..10، 12، 13)؛ `drawings`: المشاريع وملفات الإعداد والوثائق والمهام وحالة الصفحة (FR-ING-01..06، 08، 10، 12)؛ الاستبدال بالاسم: مشارك الحذف ومنفذ `drawings` فيه بمرحلتيه، وحارس التسجيل، والمعاينة، والوثيقة المستبعدة (FR-ING-03، §8.11)؛ `ele-parse` وSTG‑00 وSTG‑01؛ FR-EVAL-14 على العيّنات؛ هيكل إطار التقييم (FR-EVAL-01)؛ `PLT‑03`، `PLT‑04` (المشارك المركّب `electrical` ومنفذ `drawings` فيه)، `PLT‑11`، `PLT‑14`، `PLT‑17` (ملف `electrical`)، `PLT‑21`، `PLT‑24`؛ وقراءة الوسوم وكتابتها في الوثيقة (FR-ING-13) | INC‑0، و`PLT‑26` في المنصة | — | M-04 (اختبارات النواة)، M-32، تقرير التوصيف |
 | INC‑2 | الاستخراج المتجهي والتخطيط والعرض | STG‑02 وSTG‑04 وSTG‑05؛ نموذج الدليل (DATA-01..06)؛ FR-VEC-01..07، 09..11؛ FR-LAY-01..04، 06؛ FR-ID-02؛ FR-API-04؛ FR-IDX-03؛ NFR-I18N-03، 04؛ طبقة التسميات الذهبية (FR-EVAL-02) | INC‑1 | — | M-01..M-05، والجزء المتجهي من M-29، وجزء من NFR-PERF-01 |
-| INC‑3 | OCR والنص الصيني المرسوم | `PLT‑10`، وSTG‑03 (FR-VEC-08، FR-VEC-11، FR-RAS-01)، وNFR-PERF-05 | INC‑2 | DEC‑07 | M-29 (الكشف)، M-30 |
-| INC‑4 | الرموز والاتصال | مكتبات IEC 60617 وGB/T 4728 بترتيب تقرير التوصيف؛ STG‑06 وSTG‑07 (FR-SYM-01..08، 10، 13؛ FR-CON-01..04، 06، 08..11)؛ «علّم مرة» (FR-SYM-03)؛ `GeometryKernel` | INC‑2 (بالتوازي مع INC‑3) | DEC‑13، DEC‑18 (مصير مدخل «علّم مرة» بعد استبدال ملفه) | M-06..M-09 |
+| INC‑3 | OCR والنص الصيني المرسوم | `PLT‑10`، وSTG‑03 (FR-VEC-08، FR-VEC-11، FR-RAS-01)، وNFR-PERF-05 | INC‑2 | DEC‑07 (محرك OCR) | M-29 (الكشف)، M-30 |
+| INC‑4 | الرموز والاتصال | مكتبات IEC 60617 وGB/T 4728 بترتيب تقرير التوصيف؛ STG‑06 وSTG‑07 (FR-SYM-01..08، 10، 13؛ FR-CON-01..04، 06، 08..11)؛ «علّم مرة» (FR-SYM-03)؛ `GeometryKernel` | INC‑2 (بالتوازي مع INC‑3) | — | M-06..M-09 |
 | INC‑5 | المراجع والتقارير والتحقق المتبادل والجودة والتصحيحات | STG‑08..11 (FR-XREF-01..05، FR-REP-01..05، FR-XV-01..04، FR-QA-01..04، FR-SRC-07)؛ FR-HIL-01..03؛ UC-06؛ FR-EVAL-04؛ `PLT‑22` (كشف المهام العالقة والوثائق المستبعدة وبقايا الكنس) | INC‑4 (ويستفيد من INC‑3) | — | M-10..M-13، خط أساس M-14 |
-| INC‑6 | النموذج الموحّد واستعلاماته | `circuits`: STG‑12؛ FR-KG-01..04، 09؛ FR-SYM-06؛ FR-CON-05، 07؛ FR-XREF-04؛ أجيال المشروع، وإخراج قسم الوثيقة المطهَّرة وإعادة ربط الباقية (FR-ING-03، §8.8)؛ API الرسم (UC-03)؛ منفذ تطهير `circuits` في المشارك المركّب (`PLT‑04`)؛ منافذ `circuits` في مقعد الوكيل (`PLT‑09`) | INC‑5 | DEC‑05، DEC‑06 | تتبّع NFR-PERF-02، وNFR-SCAL-01 على مشروع اصطناعي |
+| INC‑6 | النموذج الموحّد واستعلاماته | `circuits`: STG‑12؛ FR-KG-01..04، 09؛ FR-SYM-06؛ FR-CON-05، 07؛ FR-XREF-04؛ أجيال المشروع، وإخراج قسم الوثيقة المطهَّرة وإعادة ربط الباقية (FR-ING-03، §8.8)؛ API الرسم (UC-03)؛ منفذ تطهير `circuits` في المشارك المركّب (`PLT‑04`)؛ منافذ `circuits` في مقعد الوكيل (`PLT‑09`) | INC‑5 | — | تتبّع NFR-PERF-02، وNFR-SCAL-01 على مشروع اصطناعي |
 | INC‑7 | المحاكاة وحقن الأعطال | FR-KG-05، 06، 10، 11؛ API المحاكاة والأثر؛ مولّد سيناريوهات FR-EVAL-15 | INC‑6 | — | جانب المحاكاة من M-33 |
-| INC‑8 | الفهرسة والاسترجاع الموحّد | `search`: STG‑13؛ FR-IDX-01، 02، 04..08، 10، 14، 15؛ FR-INT-01..10، 12، 13، 16؛ FR-MAN-03، 05؛ FR-NLU-02 (الحتمي)، 03، 04، 08، 09؛ `PLT‑06`؛ منفذ تطهير `search` في المشارك المركّب (`PLT‑04`)؛ جانب البحث من UC-02 وUC-05 وUC-09 | INC‑6 (بالتوازي مع INC‑7) | DEC‑13 (`pg_trgm`) | M-15، خط أساس M-16، M-21، M-31، بحث المعرّف في NFR-PERF-02، NFR-PERF-06 |
-| INC‑8P | دعم الصينية في وحدة المعرفة (تسليم منصة) | `PLT‑05` (FR-INT-15) | INC‑0؛ ويعيد استعمال `OcrProvider` إن سبقه INC‑3 | DEC‑07 (ترقية التضمين)، DEC‑12 | M-21 وM-31 لساق المعرفة |
-| INC‑9 | التشخيص | `diagnostics`: FR-DIAG-01..08، 10، 11، 13، 14؛ FR-AGT-09، FR-AGT-11؛ نواة `AnswerGate`؛ REST الجلسات | INC‑7، INC‑8 | DEC‑06، DEC‑18 (لقطة الاستشهاد في الجلسة والتقرير) | M-22، M-23، M-33، M-34، NFR-PERF-07 |
-| INC‑10 | الوكيل | `wiretwin_agent`: FR-AGT-01..03، 05..07، 10، 12..14؛ FR-GRD-01..04، 06..08؛ FR-NLU-01..09؛ FR-SAF-04، FR-SAF-09؛ FR-API-02، 03؛ `PLT‑09`، `PLT‑12`، `PLT‑16` (العقدان 5 و6)، `PLT‑20`؛ UC-02 وUC-04 وUC-05 وUC-08 وUC-09 كاملة | INC‑8، INC‑9 | DEC‑07، DEC‑12 | M-17..M-19، M-25، M-26، M-35، NFR-PERF-03 |
-| INC‑11 | التقييم الكامل والتشغيل والقبول | توحيد FR-EVAL-01..08، 11..13 وبوابات CI؛ NFR-OBS (التنبيهات واللوحات والتتبّع)؛ NFR-PRIV-01 (الاحتفاظ والتصدير وحذف المشروع)؛ تمرين NFR-REL-03؛ مسار عرض الشيفرة (NFR-LIC-06)؛ إكمال FR-ADM-03 وFR-ADM-04؛ قياسات GPU على خادم بكرت (`docs/deploy-server.md`؛ والنشر عليه قرار بشري)؛ NFR-SCAL-03 | كل ما سبق | DEC‑08، DEC‑09، DEC‑10، DEC‑14، DEC‑16، DEC‑18 (اللقطات الذهبية المصدَّرة) | M-27، M-28، وكل المقاييس على المجموعة الذهبية الكاملة (قبول R1، NFR-ACC-01) |
+| INC‑8 | الفهرسة والاسترجاع الموحّد | `search`: STG‑13؛ FR-IDX-01، 02، 04..08، 10، 14، 15؛ FR-INT-01..10، 12، 13، 16؛ FR-MAN-03، 05؛ FR-NLU-02 (الحتمي)، 03، 04، 08، 09؛ `PLT‑06`؛ منفذ تطهير `search` في المشارك المركّب (`PLT‑04`)؛ جانب البحث من UC-02 وUC-05 وUC-09 | INC‑6 (بالتوازي مع INC‑7) | — | M-15، خط أساس M-16، M-21، M-31، بحث المعرّف في NFR-PERF-02، NFR-PERF-06 |
+| INC‑8P | دعم الصينية في وحدة المعرفة (تسليم منصة) | `PLT‑05` (FR-INT-15) | INC‑0؛ ويعيد استعمال `OcrProvider` إن سبقه INC‑3 | DEC‑07 (ترقية التضمين) | M-21 وM-31 لساق المعرفة |
+| INC‑9 | التشخيص | `diagnostics`: FR-DIAG-01..08، 10، 11، 13، 14؛ FR-AGT-09، FR-AGT-11؛ نواة `AnswerGate`؛ REST الجلسات | INC‑7، INC‑8 | — | M-22، M-23، M-33، M-34، NFR-PERF-07 |
+| INC‑10 | الوكيل | `wiretwin_agent`: FR-AGT-01..03، 05..07، 10، 12..15 (جانب WireTwin من الاستدعاء، §11.11)؛ FR-GRD-01..04، 06..08؛ FR-NLU-01..09؛ FR-SAF-04، FR-SAF-09؛ FR-API-02، 03؛ `PLT‑09`، `PLT‑12`، `PLT‑16` (العقدان 5 و6)، `PLT‑20`؛ UC-02 وUC-04 وUC-05 وUC-08 وUC-09 كاملة | INC‑8، INC‑9 | — | M-17..M-19، M-25، M-26، M-35، NFR-PERF-03 |
+| INC‑11 | التقييم الكامل والتشغيل والقبول | توحيد FR-EVAL-01..08، 11..13 ومهمة التقييم المستقلة؛ NFR-OBS (التنبيهات واللوحات والتتبّع)؛ NFR-PRIV-01 وNFR-PRIV-03 وNFR-PRIV-04 (لا حذف تلقائي لبيانات المستخدم، والتصدير، وحذف المشروع عند الطلب، وكنس البيانات التقنية المؤقتة)؛ تمرين NFR-REL-03؛ إكمال FR-ADM-03 وFR-ADM-04؛ قياسات GPU على كرت المضيف المحلي؛ NFR-SCAL-03 حتى أكبر مضاعف يتسع له المضيف (DEC‑14) | كل ما سبق | — | M-27، M-28، وكل المقاييس على المجموعة الذهبية الكاملة (قبول R1، NFR-ACC-01) |
 
 ```mermaid
 graph LR
@@ -1723,7 +1756,7 @@ graph LR
 
 | المجال | المكوّن المالك | مكوّنات مساندة | الزيادة |
 |---|---|---|---|
-| FR-ING | `drawings` | `ele-parse`، `files` (`PLT‑01`، `PLT‑24`)، و`framework/di` (FR-ING-03 عبر مشارك الحذف، `PLT‑04`) | INC‑0، INC‑1 |
+| FR-ING | `drawings` | `ele-parse`، `files` (`PLT‑01`، `PLT‑24`، `PLT‑26`)، و`framework/di` (FR-ING-03 عبر مشارك الحذف، `PLT‑04`) | INC‑0، INC‑1 |
 | FR-VEC | `drawings` | `ele-parse`، `OcrProvider` | INC‑2، INC‑3 |
 | FR-LAY | `drawings` | — | INC‑2 |
 | FR-ID | CMP‑06 (القواعد)، و`drawings` (البنية الموروثة والتحقق في الصفحة) | `search`، `diagnostics` | INC‑1، INC‑2 |
@@ -1764,7 +1797,7 @@ graph LR
 | NFR-SCAL-01، 02 | أقسام الرسم، وتزامن مقيّد | §8.5، §10.11 |
 | NFR-REL-01..04 | عزل الصفحة، ومجارٍ دائمة، وإعادة النشر، والتدهور، والنسخ الاحتياطي | §7.6، §7.7، §8.10، §11.9 |
 | NFR-SEC-01..06 | RLS والفضاء، والمحلّل المعزول، وVault، والسحابة معطلة افتراضياً، ومقاومة الحقن | §13.1، §11.7 |
-| NFR-PRIV-01، 02 | الاحتفاظ والتصدير والحذف المتسلسل، وتقليل البيانات الشخصية (معرّف المستخدم فقط في التدقيق) | §8.8 |
+| NFR-PRIV-01..04 | لا حذف تلقائي لبيانات المستخدم وسجل التدقيق باقٍ، وتقليل البيانات الشخصية (معرّف المستخدم فقط في التدقيق)، والتصدير والحذف المتسلسل للمشروع عند الطلب، وكنس البيانات التقنية المؤقتة وحدها | §8.8 |
 | NFR-OBS-01..03 | السجلات المرتبطة، والامتدادات، ومقاييس الإشباع، والتنبيهات | §13.2 |
 | NFR-MNT-01..04 | قالب الوحدات داخل كل قسم، وعقود import-linter ومنها عقد الأقسام الداخلي، وقواعد وبيانات بإصدارات (معايير، واصطلاحات، وصيغ PLC، وقوالب، ولغات، ومحوّل استرجاع) | §5، §13.5 |
 | NFR-REP-01..03 | بصمة الإصدار، والحتمية، وcassettes | §7.4، §13.6 |
@@ -1797,10 +1830,10 @@ graph LR
 |---|---|
 | R-01 تباين الموردين | اقتراح ملف الإعداد في STG‑01، وقواعد ومكتبات بيانات بإصدارات (NFR-MNT-04)، وتفصيل المقاييس حسب المورّد (§13.7) |
 | R-02 نص نقطي أو SHX | تصنيف الصفحة في STG‑01، وفرع OCR في STG‑03، ووسم المصدر وثقة أدنى، ونسبة الحاجة في تقرير التوصيف |
-| R-03 مخالفة AGPL | فحص التراخيص وSBOM في CI، ومسار عرض الشيفرة (DEC‑09، DEC‑10) |
+| R-03 مخالفة AGPL | فحص التراخيص وSBOM في CI (DEC‑09). ولا مسار لعرض الشيفرة: الترخيص يبقى `Proprietary` حتى يقرر المالك تغييره أو استبدال المكتبات، والتذكير قبل الإطلاق في الإنتاج (DEC‑10، SRS D-24) |
 | R-04 غياب بيانات تقييم عامة | المجموعة الذهبية وطبقتها، والتحقق المتبادل مؤشراً تقديرياً، وحقن الأخطاء (§13.7) |
 | R-05 هلوسة النموذج | حقول الحقيقة من `diagnostics`، والبوابة، وM-35 بنموذج مزيّف (§10.10) |
-| R-06 السلامة مع تأجيل سياستها | مفردات قياس بلا فعل تجاوز، وحالة الآلة إلزامية، وM-25 في CI (§11.8) |
+| R-06 السلامة مع تأجيل سياستها | مفردات قياس بلا فعل تجاوز، وحالة الآلة إلزامية، وM-25 في التقييم المستقل شرطاً لتفعيل الإصدار (§11.8، DEC‑09) |
 | R-07 أداء المشاريع الضخمة | أقسام الرسم، وإسقاط التوصيل، وتوازي الصفحات، والتزايد (§7، §8.5) |
 | R-08 الاسترجاع العربي | صيغ اللغة، والمسرد، وM-21 مفصّلاً لكل زوج لغات (§9.2) |
 | R-09 حقن التعليمات | §11.7، وM-26 |
@@ -1813,15 +1846,18 @@ graph LR
 | R-16 إرسال إلى السحابة دون قصد | المحلي افتراضي لكل قدرة، والسحابة بمسار صريح، والتدقيق و`usage` (§11.6) |
 | R-17 المعرفة لا تدعم الصينية | `PLT‑05` تسليماً مستقلاً (INC‑8P)، وقياس M-21 وM-31 |
 | R-18 تطوّر عقود المنصة | منافذ يعلنها المستهلك بربط يفحصه mypy عند جذر التركيب، واختبارات عقد (§6) |
-| R-19 زيادة الموارد دون ضابط | مقاييس الإشباع، وكفاءة التوسّع (DEC‑14) |
+| R-19 زيادة الموارد دون ضابط | مقاييس الإشباع، وكفاءة التوسّع على المضيف المحلي (DEC‑14) |
 | R-20 اتساع R1 | اثنتا عشرة زيادة كلٌّ منها نافعة وحدها، وأقدم قيمة في INC‑1 (تقرير التوصيف) ثم INC‑2 وINC‑8 (§16) |
-| R-21 الاستبدال بالاسم يحذف التصحيحات، والمشروع يبقى بلا نموذج للملف إن فشل استيعاب البديل | معاينة الاستبدال تعدّ قبل الإتمام ما سيُحذف وتعلن تطابق المحتوى، فيمكن التراجع (§8.11). والملف الجديد يمرّ بالجودة وطابور المراجعة (FR-QA-01، FR-QA-02)، والتصحيح يُعاد بالواجهة نفسها (FR-HIL-01). وحالة المصادر تعلن الوثيقة قيد الاستيعاب (§9.2). وحدّ ما يبقى بعد الاستبدال في DEC‑18 |
+| R-21 الاستبدال بالاسم يحذف التصحيحات، والمشروع يبقى بلا نموذج للملف إن فشل استيعاب البديل | معاينة الاستبدال تعدّ قبل الإتمام ما سيُحذف وتعلن تطابق المحتوى، فيمكن التراجع (§8.11). والملف الجديد يمرّ بالجودة وطابور المراجعة (FR-QA-01، FR-QA-02)، والتصحيح يُعاد بالواجهة نفسها (FR-HIL-01). وحالة المصادر تعلن الوثيقة قيد الاستيعاب (§9.2). وما اعتمده المستخدم إلى مستوى المشروع (مدخل مكتبة الرموز) يبقى بعد الاستبدال (✅ DEC‑18) |
+| R-22 انخفاض الجودة يُكتشف متأخراً | تقرير التقييم يذكر الالتزام ويقارن بالقياس السابق، وتشغيل بجدول، وتقرير ناجح قبل تفعيل إصدار أو نموذج (DEC‑09) |
+| R-23 أهداف أكبر من المضيف المحلي لا تُثبت بالقياس | لا حدود مثبّتة في الشيفرة (NFR-SCAL-05)، ومقاييس الإشباع (§13.2)، وتقرير يذكر الحجم المقيس؛ وإعادة القياس على نشر أكبر قرار المالك (DEC‑14) |
+| R-24 بيانات المستخدم لا تُحذف تلقائياً، فيكبر التخزين | حصص الفضاء (`Limits`، DEC‑02)، ومراقبة نمو الجداول (`app/ops/table_growth.py`) والتخزين (`PLT‑18`)، وحذف الملف أو المشروع بيد المستخدم، وكنس الصادرات وسجلات المهام المنتهية (§8.8، DEC‑16) |
 
 ### 18.2 مخاطر تصميمية جديدة
 
 | المعرّف | الخطر | الأثر | المعالجة |
 |---|---|---|---|
-| RSK‑01 | المضيف المحلي 13 GB، والمكدّس محجّم لـ64 GB | لا يتسع لعمّال WireTwin وخدماته بجانب المكدّس الحي | ملف `electrical` معطّل افتراضياً، وعامل واحد بكل الأدوار في التطوير، ومسار GPU على خادم وفق `docs/deploy-server.md` (§4.4) |
+| RSK‑01 | المضيف المحلي 13 GB، والمكدّس محجّم لـ64 GB | لا يتسع لعمّال WireTwin وخدماته بجانب المكدّس الحي | ملف `electrical` معطّل افتراضياً، وعامل واحد بكل الأدوار في التطوير، ومسار GPU على خادم وفق `docs/deploy-server.md` (§4.4). والقياس كله محلياً (DEC‑14)، فحملات القياس تُحجَّم لتناسب المضيف، وقد تحتاج إيقاف خدمات لا تُقاس مؤقتاً |
 | RSK‑02 | تزاحم الكرت على خادم GPU بين Ollama وOCR والتضمين | نفاد الذاكرة أو زمن أعلى من NFR-PERF-05 | ميزانيات VRAM وطوابير مستقلة، واختيار الـGPU في DEC‑07 |
 | RSK‑03 | ذاكرة Qdrant، وهي اليوم أكبر مستهلك على المضيف | صناديق `ele-` تضغطها أكثر | فهرسة النصوص الوصفية ذات المعنى فقط لا كل كتلة، وتخزين على القرص أو تكميم بالإعداد، وقياس الحجم في INC‑8 |
 | RSK‑04 | تتبّع على مليون نقطة في Postgres | تجاوز NFR-PERF-02 | الإسقاط على مستوى الشبكة، والقياس مبكراً في INC‑6، والمسرّع الشرطي (DEC‑05) |
@@ -1839,10 +1875,12 @@ graph LR
 | RSK‑16 | `knowledge` لا تستطيع استيراد `shared` | تتباعد قواعد حماية المعرّفات اللاتينية في التقطيع الصيني بين `search` و`knowledge` (`PLT‑05`) | مجموعة حالات اختبار مشتركة البيانات (ملف حالات يقرؤه اختباران) تُشغَّل على المقسّمين؛ وإعادة النظر في الموضع بقرار جديد إن احتاجت وحدة ثالثة المحلّل (§5.4) |
 | RSK‑17 | التطهير يجري داخل طلب `completeFile` أو `renameFile`، لأن كنس المنصة متزامن (`framework/di/file_replacement.py`) | تطهير وثيقة من 5,000 صفحة صفاً صفاً يطيل الطلب أو يتجاوز مهلته، فيصير كنساً فاشلاً | المرحلتان (§8.8): المتزامنة وسمٌ وجيل جديد وحذف نقاط بمرشّح في Qdrant، والكنس بحدث. ويُقاس زمن المرحلة المتزامنة على وثيقة بحجم NFR-SCAL-01 في INC‑1 (`drawings`) وINC‑8 (Qdrant) |
 | RSK‑18 | كنس فاشل يترك ملفين بالاسم نفسه، أو وثيقةً ملفها محذوف (`file_replacement.py` يسجّل الفشل ولا يُفشل الرفع) | تتعايش وثيقتان باسم واحد، خلافاً لـFR-INT-13 | حارس التسجيل (`409`)؛ واستبعاد الوثيقة الأقدم أو اليتيمة من كل قراءة حين تُكشف (عند التسجيل، وبناء الجيل، والمهمة الدورية)، مع تنبيه؛ وإكمال الحذف بـ`DELETE /files/{id}`، مسار المنصة نفسه (§8.11). ويبقى بين الفشل والكشف وقت أقصاه دورة المهمة الدورية |
+| RSK‑19 | المساعد الذكي يستدعي `wiretwin_agent` (SRS FR-AGT-15) | يسقط استشهاداً أو تحذير سلامة حين ينقل الإجابة، أو يرى المستخدم عبره ما لا يملكه | صلاحيات المستخدم الأصلي تُفحص في كل استدعاء (§11.11)؛ والإجابة منظمة بعد `AnswerGate` وتُنقل كما هي؛ واختبار عقد بين الوكيلين يتحقق من بقاء الاستشهادات والتحذيرات، ويُضاف إلى التقييم المستقل (M-25) |
+| RSK‑20 | الاستبدال مشروط بتطابق الوسوم (DEC‑17، SRS R-25) | مخطط محدَّث يُرفع بوسم خاطئ لا يحل محل القديم، فتبقى الوثيقتان حيّتين ويُستشهد بالقديمة | المعاينة تعرض السميّين بوسوم مختلفة قبل الإتمام (§8.11)؛ وإعادة الوسم تكنس كإعادة التسمية (`PLT‑26`)؛ والحذف بيد المستخدم |
 
 ### 18.3 القرارات ⚠️ (تحتاج إنساناً)
 
-كل قرار ⚠️ هنا يحجب الزيادات المذكورة فيه حتى يُحسم. والتوصية رأي المعماري، لا قرار. أما DEC‑01 وDEC‑02 وDEC‑03 فقد حسمها المالك، وتبقى هنا سجلاً.
+كل قرار ⚠️ هنا يحجب الزيادات المذكورة فيه حتى يُحسم. والتوصية رأي المعماري، لا قرار. وقد حسم المالك كل القرارات (✅) عدا بقية DEC‑07، وتبقى المحسومة هنا سجلاً.
 
 **✅ DEC‑01: تفكيك الوحدات والنواة المشتركة (حسمه المالك في 2026-10-28)**
 - **المصادر:** `.importlinter` (`modules-independent` و`domain-purity` و`application-boundaries`)؛ و`docs/architecture.md` §14 («إبقاء Framework نحيفاً»)؛ وFR-ID-12؛ وSRS AC-02.
@@ -1885,93 +1923,105 @@ graph LR
 - **ما ترتّب عليه:** إزالة `PLT‑02` وإضافة `PLT‑24`؛ والوثيقة ملف واحد بلا مراجعات (§8.7)؛ وأحداث المجموع `document` بدل `revision` (§7.8)؛ والتطهير بمرحلتين (§8.8)؛ وتدفق الاستبدال وحارسه ومعاينته (§8.11، §14.4)؛ والقراران الجديدان DEC‑17 وDEC‑18.
 - **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑04: آلية عزل محلّل الـPDF**
+**✅ DEC‑04: آلية عزل محلّل الـPDF (حسمه المالك في 2026-10-29)**
 - **المصادر:** FR-ING-06، وNFR-SEC-02 («دون صلاحيات شبكة»). وعلى الخادم: الشبكة الداخلية `gpu-metrics` (`internal: true`) في `docker-compose.gpu.yml`، و`docs/deploy-server.md` §1.4 (حدّ Docker Engine الأدنى 26.0.0 يحمي الشبكات الداخلية من CVE‑2024‑29018، ويفرضه `deploy/gpu-preflight.sh`).
-- **الخيارات:**
-  - (أ) خدمة `ele-parse` على شبكة Docker داخلية لا يصلها إلا عامل WireTwin (`worker-electrical`)، بلا أسرار ولا قاعدة بيانات ولا إنترنت، وحجم مؤقت للقراءة فقط، وعمليات فرعية بحدود زمن وذاكرة لكل صفحة.
+- **القرار: الخيار (أ)، خدمة `ele-parse`.** خدمة مستقلة على شبكة Docker داخلية لا يصلها إلا عامل WireTwin (`worker-electrical`)، بلا أسرار ولا قاعدة بيانات ولا إنترنت، وحجم مؤقت للقراءة فقط، وعمليات فرعية بحدود زمن وذاكرة لكل صفحة.
+- **الأسباب:**
+  - يحقق نص NFR-SEC-02: المحلّل بلا صلاحيات شبكة.
+  - ينطبق كاملاً على الهدفين (§4.4)، المكدّس المحلي وخادم GPU، لأنهما Compose واحد.
+  - للخادم سابقة من الشبكة الداخلية (`gpu-metrics`)، وفحص ما قبل التثبيت يفرض إصدار Docker الذي يحميها.
+  - أكّد المالك مع القرار أن النشر على RunPod أُلغي (2026-10-28). فلا هدف بحاوية واحدة يعجز عن شبكة داخلية، وهو ما كان يقيّد هذا الخيار قبل الإصدار 0.3 (RSK‑10 المُزال).
+- **ما ترتّب عليه:** خدمة `ele-parse` (§4.1)، والعزل في §4.4 و§13، وADR‑04 (§15)، و`PLT‑17` (الشبكة الداخلية والحجم المؤقت في `docker-compose.yml` و`docker-compose.gpu.yml`، وصورة إصدار جديدة في خط الإصدار).
+- **الخيارات المرفوضة:**
   - (ب) عمليات فرعية بحدود داخل العامل نفسه، ويبقى للعامل وصول شبكي، وهذا يخالف النص.
   - (ج) بيئة تشغيل معزولة (gVisor، nsjail) تغيّر المضيف.
-- **التوصية:** (أ). وهو ينطبق كاملاً على الهدفين (§4.4)، لأنهما Compose واحد. ولا شيء في `docs/deploy-server.md` يمنع شبكة داخلية: للخادم سابقة منها (`gpu-metrics`)، وفحص ما قبل التثبيت يفرض الإصدار الذي يحميها.
-- **النوع:** تغيير إعداد نشر وأمن، وصورة إصدار جديدة في خط الإصدار (`PLT‑17`).
-- **يحجب:** INC‑1.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑05: مخزن الرسم**
+**✅ DEC‑05: مخزن الرسم (حسمه المالك في 2026-10-29)**
 - **المصادر:** SRS AC-03 («مخزن الرسم» خلف منفذ)، وNFR-PERF-02، وNFR-SCAL-01، و`docs/architecture.md` §01 (لا تقنية في مسار الطلب إلا خلف منفذ).
-- **الخيارات:**
-  - (أ) Postgres تحت RLS بإسقاط توصيل واستعلامات تكرارية؛ بلا بنية جديدة.
+- **القرار: الخيار (أ).** Postgres تحت RLS بإسقاط توصيل واستعلامات تكرارية، بلا بنية جديدة. والرسم خلف منفذَي `circuits` (`GraphStore` و`TraversalQueries`، §6، §8.5).
+- **الأسباب:** لا خدمة ولا امتداد جديدان، ويبقى عزل المستأجر بـRLS كما في بقية المنصة.
+- **الخيارات المرفوضة:**
   - (ب) Apache AGE: امتداد يغيّر صورة Postgres، وسلوك RLS على جداوله غير مثبت.
   - (ج) Neo4j Community: GPL-3.0 خارج القائمة، وJVM على مضيف ضيق، وبلا RLS فيُعاد بناء عزل المستأجر.
-  - (د) (أ) ومعه مسرّع داخل العملية بلقطة في `redis-cache`.
-- **التوصية:** (أ)، ثم (د) فقط إن قصّر القياس في INC‑6.
-- **يحجب:** INC‑6.
+  - (د) (أ) ومعه مسرّع داخل العملية بلقطة في `redis-cache`. لم يختره المالك الآن. إن قصّر قياس NFR-PERF-02 في INC‑6 (RSK‑04)، يعود المسرّع إلى المالك قراراً جديداً (ADR‑12).
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑06: أين يجري الحساب المتزامن الثقيل (التتبّع، والمحاكاة، والتشخيص)**
+**✅ DEC‑06: أين يجري الحساب المتزامن الثقيل (التتبّع، والمحاكاة، والتشخيص) (حسمه المالك في 2026-10-29)**
 - **المصادر:** NFR-PERF-03، وNFR-PERF-07، وNFR-SCAL-02. ودفتر سعة `app` (ثلاث نسخ × 4 عمليات = 12، تحت سقف عملاء PgBouncer، `docker-compose.yml`).
-- **الخيارات:**
-  - (أ) داخل `app` بتفريغ إلى خيط، وسقف تزامن لكل عملية، و`429` مع `Retry-After`.
-  - (ب) deployable حساب مستقل من الصورة نفسها خلف نداء داخلي.
+- **القرار: الخيار (أ).** الحساب داخل `app` بتفريغ إلى خيط، وسقف تزامن لكل عملية، و`429` مع `Retry-After` عند التشبّع (§10.11).
+- **الأسباب:** لا deployable جديد، ولا يمرّ الحساب بالمجاري فيبقى هدف الثانيتين (NFR-PERF-07) ممكناً.
+- **الخيارات المرفوضة:**
+  - (ب) deployable حساب مستقل من الصورة نفسها خلف نداء داخلي. إن أظهر القياس أن الحساب يزاحم بقية مسارات `app` (RSK‑12)، يعود الانتقال إليه إلى المالك.
   - (ج) عبر المجاري، فيضيف زمن دورة Outbox ويكسر هدف الثانيتين.
-- **التوصية:** (أ)، بشرط قياس صريح ينقل إلى (ب).
-- **يحجب:** INC‑6 وINC‑9.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑07: النماذج وخدمات GPU وتحجيمها**
+**◐ DEC‑07: النماذج وخدمات GPU وتحجيمها (حسمه المالك جزئياً في 2026-10-29)**
 - **المصادر:** FR-AGT-07 (يعمل كاملاً بالمحلي)، وFR-RAS-01، وNFR-PERF-05، وFR-INT-15، وNFR-DEP-03، وSRS D-09، وSRS D-16.
 - **الواقع اليوم:** النموذج المحلي الافتراضي `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات.
-- **ما يُقرَّر:**
-  1. النموذج المحلي (المرشح عائلة Qwen3 بين 8B و32B، Apache-2.0).
-  2. محرك OCR وخدمته المنفصلة (ADR‑09، ADR‑10).
-  3. ترقية التضمين إن قصّر في M-21 (ADR‑17)، وهي تعيد تضمين صناديق المعرفة القائمة عبر `embedding_migration`.
-  4. فئة الكرت على خادم GPU (`docs/deploy-server.md` §1)، وهل يكفي كرت واحد للنموذج اللغوي والتضمين وOCR.
-- **خيارات الـGPU:**
-  - (أ) كرت واحد أكبر تتقاسمه الخدمات بميزانيات VRAM.
+- **ما يُقرَّر، وما حُسم منه:**
+  1. ✅ النموذج المحلي: **عائلة Qwen** بدل `gemma3:1b` (المرشح Qwen3 بين 8B و32B، Apache-2.0). ويُختار الحجم بالقياس على المجموعة الذهبية (FR-EVAL-12)، ويُتحقق من ترخيص كل حجم (NFR-LIC-04). ويُفعَّل بعد اجتياز بوابات التقييم.
+  2. ⚠️ محرك OCR وخدمته المنفصلة (ADR‑09، ADR‑10). لم يُحسم.
+  3. ⚠️ ترقية التضمين إن قصّر في M-21 (ADR‑17)، وهي تعيد تضمين صناديق المعرفة القائمة عبر `embedding_migration`. لم يُحسم.
+  4. ✅ فئة الكرت على خادم GPU (`docs/deploy-server.md` §1): **الخيار (أ)**، كرت واحد أكبر تتقاسمه الخدمات (النموذج اللغوي والتضمين وOCR) بميزانيات VRAM.
+- **خيارات الـGPU المرفوضة:**
   - (ب) كرت ثانٍ للنموذج اللغوي، أو خادم منفصل له.
   - (ج) نموذج سحابي للوكيل بالإعداد. يجيزه SRS D-13، لكنه لا يعفي من العمل محلياً.
-- **التوصية:** (أ) للخادم الأول، والاختيار النهائي بالقياس على المجموعة الذهبية (FR-EVAL-12).
+- **ما ترتّب عليه:** ميزانيات VRAM وطوابير مستقلة على الكرت الواحد (RSK‑02)، وتغيير النموذج في `PROVIDER_ROUTING` و`ollama-pull` (`PLT‑20`)، وADR‑21 (§15).
 - **الأثر:** كلفة وأداء وخدمة جديدة، وصورة إصدار جديدة لـ`ocr` (`PLT‑17`).
-- **يحجب:** INC‑3 وINC‑8P (الترقية) وINC‑10.
+- **يحجب:** INC‑3 (محرك OCR) وINC‑8P (ترقية التضمين). ولم يعد يحجب INC‑10.
 
-**⚠️ DEC‑08: التتبّع الموزّع ومُصدِّر GPU**
+**✅ DEC‑08: التتبّع الموزّع ومُصدِّر GPU (حسمه المالك في 2026-10-29)**
 - **المصادر:** NFR-OBS-02 وNFR-OBS-03. وفي المقابل `docs/design/07-nfr-slo.md` §7: «لا تتبّعٌ موزَّع».
-- **الخيارات:**
-  - (أ) امتدادات في السجل عبر Loki، بلا خدمة جديدة.
+- **القرار: الخيار (أ).** امتدادات في السجل عبر Loki، بلا خدمة جديدة (§13.2). وتبقى `docs/design/07-nfr-slo.md` §7 صحيحة، فلا تعارض معها.
+- **مُصدِّر GPU:** صار قائماً على الخادم: `nvidia-gpu-exporter` في `docker-compose.gpu.yml` مع ملف المراقبة (`docs/deploy-server.md` §2)، فيُعاد استعماله ولا خدمة جديدة. وهو يقيس الكرت كله لا كل خدمة، فتوزيع الإشباع بين OCR وOllama يُقرأ من مقاييس الخدمتين نفسيهما.
+- **الخيارات المرفوضة:**
   - (ب) OpenTelemetry مع Jaeger (Apache-2.0) أو Tempo (AGPL-3.0)، وهي خدمات وإعداد جديدان.
-- **مُصدِّر GPU:** صار قائماً على الخادم: `nvidia-gpu-exporter` في `docker-compose.gpu.yml` مع ملف المراقبة (`docs/deploy-server.md` §2)، فيُعاد استعماله ولا خدمة جديدة. وهو يقيس الكرت كله لا كل خدمة، فتوزيع الإشباع بين OCR وOllama يُقرأ من مقاييس الخدمتين نفسيهما. فبقي في القرار التتبّع وحده.
-- **التوصية:** (أ) لـR1، مع المُصدِّر القائم.
-- **يحجب:** INC‑11، ويمسّ كل زيادة جزئياً.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑09: بوابات CI وموضع المجموعة الذهبية**
+**✅ DEC‑09: بوابات CI وموضع المجموعة الذهبية (حسمه المالك في 2026-10-29، SRS D-23)**
 - **المصادر:** FR-EVAL-08، وNFR-LIC-02، وNFR-LIC-07، وNFR-SEC-04، و`.github/workflows/ci.yml` (وظيفتا `quality` و`integration`)، وCLAUDE.md (البيانات الحية لا تُلمس دون موافقة).
 - **القيدان:** المجموعة الذهبية مخططات حقيقية للمنشأة. والبوابات التي تحتاج النموذج المحلي تحتاج GPU لا يوفرها عدّاء GitHub.
-- **الخيارات:**
-  - (أ) في GitHub CI: SBOM، وفحص التراخيص والثغرات، وبوابات على مجموعة اصطناعية وعامة مرخّصة، والوكيل بـcassettes. وبوابة كاملة على المجموعة الذهبية بالنموذج الحقيقي في مهمة تقييم معزولة (عدّاء ذاتي أو الحاضنة المعزولة)، شرطاً لدمج ما يمسّ الاستخراج أو التشخيص.
+- **القرار: الخيار (د)، وهو خيار المالك لا أحد الخيارات الثلاثة.** أعاد المالك كتابة FR-EVAL-08 وعدّل FR-EVAL-12 (SRS D-23، SRS 0.8):
+  - **تقييم جودة التحليل والاسترجاع يخرج من CI.** لا يجري عند كل تغيير، ونتائجه **ليست شرطاً للدمج**.
+  - **يجري في مهمة تقييم مستقلة** على جهاز يملك GPU والمجموعة الذهبية (صار المضيف المحلي بـDEC‑14)، فلا تغادر المخططات أجهزة المنشأة. يُشغَّل يدوياً، أو بجدول ثابت، أو قبل كل إصدار.
+  - **يُخرج تقريراً** يقارن كل مقياس إلزامي بحده في SRS §8 وبالقياس السابق، ويذكر الالتزام الذي قيس عليه.
+  - **يشمل اختبارات السلامة** (M-25 لمنع اقتراح تجاوز الحماية، FR-SAF-04) **واختبارات حقن التعليمات** (M-26)، وM-35.
+  - **الشرط الوحيد:** لا يُفعَّل إصدار ولا نموذج في الإنتاج قبل تقرير تقييم ناجح (FR-EVAL-12).
+  - **يبقى في GitHub CI** ما لا يحتاج المجموعة الذهبية ولا GPU: SBOM وفحص التراخيص والثغرات (NFR-LIC-02، NFR-LIC-07، NFR-SEC-04)، واختبارات الشيفرة وعقود import-linter كما هي اليوم.
+- **ما ترتّب عليه:** صف البوابات في §13.7، والسلامة وحقن التعليمات في §11، وADR‑27 (§15)، وINC‑11 (§16)، وR-06 (§18.1). وأضافت SRS الخطر R-22: انخفاض الجودة يُكتشف متأخراً.
+- **الخيارات المرفوضة:**
+  - (أ) بوابات اصطناعية وعامة في GitHub CI، وبوابة كاملة على المجموعة الذهبية في مهمة معزولة، شرطاً للدمج. وكانت توصية المعماري.
   - (ب) المجموعة الذهبية في مخزن خاص يجلبه CI بسرّ.
   - (ج) كل شيء في المستودع.
-- **التوصية:** (أ).
-- **يحجب:** INC‑0 (الفحوص) وINC‑11.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑10: عرض الشيفرة المصدرية (AGPL) وتغيير نص الترخيص**
-- **المصادر:** NFR-LIC-06 وSRS D-18 (القرار متخذ). وفي المقابل `pyproject.toml`: `license = { text = "Proprietary" }`.
-- **ما بقي:** القناة والضوابط.
-- **الخيارات:**
-  - (أ) مسار مصادَق يعيد بصمة الإصدار ورابط أرشيف الشيفرة المطابقة للصورة العاملة، يُبنى في خط الإصدار ويُفحص بحثاً عن الأسرار قبل نشره.
-  - (ب) مستودع عام مرآة.
-- **التوصية:** (أ). الشيفرة تكشف طوبولوجيا النشر ولا تكشف الأسرار، فهي في Vault والملفات الحساسة في `.gitignore`.
-- **يحجب:** INC‑0 (نص الترخيص) وINC‑11 (المسار).
+**✅ DEC‑10: عرض الشيفرة المصدرية (AGPL) وتغيير نص الترخيص (حسمه المالك في 2026-10-29)**
+- **المصادر:** NFR-LIC-06 وSRS D-18. وفي المقابل `pyproject.toml`: `license = { text = "Proprietary" }`.
+- **القرار:** لا يُعدَّل الترخيص الآن. يبقى `Proprietary` كما هو، ولا يُضاف ملف `LICENSE`، ولا يُبنى مسار عرض الشيفرة. وسيقرر المالك لاحقاً بنفسه أحد أمرين: تغيير الترخيص، أو استبدال المكتبات المرخصة بـAGPL. سُجّل في SRS قراراً D-24.
+- **الأسباب:** قرار المالك. الترخيص وتبديل المكتبات قراره هو، ويتخذه في وقت لاحق.
+- **ما ترتّب عليه:**
+  - خرج نص الترخيص من INC‑0، وخرج مسار عرض الشيفرة من INC‑11 (ADR‑32 مؤجَّل).
+  - يبقى في CI: SBOM وفحص التراخيص، ومعه فحص التوافق مع AGPL (NFR-LIC-07)، حتى يبقى الخياران مفتوحين.
+  - ارتفع تقدير الخطر R-03 في SRS إلى متوسط حتى يُحسم الترخيص.
+  - **⏰ تذكير للمالك:** يُحسم الترخيص قبل الإطلاق في الإنتاج أو قبل إتاحة المنصة لمستخدمين عبر الشبكة. المكتبات المعنية: PyMuPDF (مستعملة اليوم في `knowledge`، وستُستعمل في `ele-parse`)، وUltralytics إن اختيرت في R2، وشيفرة MEPdetect إن نُقلت.
+- **الخيارات المرفوضة الآن:** (أ) مسار مصادَق بأرشيف الشيفرة، وكانت توصية المعماري؛ و(ب) مستودع عام مرآة. ويعودان إن اختار المالك تغيير الترخيص.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑11: الصلاحيات (RBAC)**
-- **المصادر:** FR-ADM-01 (قارئ، فني، مهندس، مراجع توثيق، مدير). وفي المقابل `docs/design/05-rbac-config-secrets.md` §1: طقم أدوار موقّع (`OQ‑01`، `DD‑10`).
-- **المشكلة:** تطلب SRS خمسة أنواع من المستخدمين، ولكل نوع حدود في ما يفعله. وفي مساحة العمل أربعة أدوار فقط (`owner` و`admin` و`member` و`viewer`)، في طقم موقّع ومعتمد. فلا يقابل كلَّ نوع دورٌ واحد. والطريقان كلاهما له ثمن:
-  - تُضاف صلاحيات جديدة وتوزَّع على الأدوار الأربعة، فيصير الفني والمهندس دوراً واحداً (`member`) بالصلاحيات نفسها.
-  - أو تُضاف أدوار جديدة، فيُعاد فتح الطقم الموقّع.
+**✅ DEC‑11: الصلاحيات (RBAC) (حسمه المالك في 2026-10-29)**
+- **المصادر:** FR-ADM-01 في SRS 0.9 (قارئ، فني، مهندس، مراجع توثيق، مدير). وفي المقابل `docs/design/05-rbac-config-secrets.md` §1: طقم أدوار موقّع (`OQ‑01`، `DD‑10`).
+- **القرار:** لا أدوار جديدة، ولا أدوار خاصة بالفني أو المهندس أو غيرهم. يلتزم WireTwin بأدوار منصة AIZZAK القائمة، وتُضاف صلاحيات `electrical:*` إليها (§12.3). وهذا الخيار (أ). ويعمل `wiretwin_agent` مع الوكيل المقترح «المساعد الذكي» (`docs/delivery/smart-assistant`) لخدمة الموظفين. **والمساعد يستطيع استدعاء كل الوكلاء، ومنهم `wiretwin_agent`** (أضافه المالك في اليوم نفسه). سُجّل في SRS قراراً D-25، ومعه FR-AGT-15.
+- **الأسباب:** قرار المالك. يبقى الطقم الموقّع كما هو، ولا تُفتح أدوار لكل فئة.
+- **ما ترتّب عليه:**
+  - أعادت SRS 0.10 كتابة FR-ADM-01 وFR-HIL-06: صلاحيات النظام على الأدوار القائمة، واعتماد التصحيحات (R2) صلاحية `electrical:review` لا دور «مراجع». ولا دور لمسؤول السلامة عند تفعيل FR-SAF.
+  - الفني والمهندس كلاهما `member` بالصلاحيات نفسها.
+  - استدعاء المساعد لـ`wiretwin_agent` عبر المنسّق بسياق المستخدم الأصلي، والإجابة تُنقل باستشهاداتها وتحذيراتها (§11.11). والآلية `PLT‑25` تملكها ميزة المساعد الذكي، وجانب WireTwin في INC‑10. وأُضيف RSK‑19.
+  - صار INC‑0 بلا قرار حاجب. وحُسم صف التعارض 3 (§18.4).
+  - **تبعية مع المساعد الذكي تُحسم في تصميمه:** متطلبات المساعد الذكي (مسودة) تضيف أدواراً للموظفين في مساحة المؤسسة (FR‑14 هناك)، وتمنع حسابات تلك المساحة من كل وكيل غير المساعد (FR‑15 وFR‑11 هناك). وبما أن المساعد يستدعي `wiretwin_agent` بصلاحيات المستخدم، يلزم أن تُضاف صفوف `electrical:*` إلى أدوار الموظفين إن أُقرّت، وأن يُعدَّل FR‑15 هناك ليسمح بهذا الاستدعاء. وتُضاف قدرة الاستدعاء (`PLT‑25`) إلى متطلبات المساعد الذكي. ولم تُعدَّل وثائق المساعد الذكي في هذه الدورة.
+- **الخيارات المرفوضة:** (ب) أدوار جديدة.
+- **يحجب:** لا شيء بعد الحسم.
 
-  ولا تُبنى نقاط النهاية قبل أن يُعرف من يحقّ له استدعاء كل منها.
-- **الخيارات:**
-  - (أ) صلاحيات `electrical:*` جديدة موزّعة على الأدوار الأربعة (§12.3)؛ والفني والمهندس كلاهما `member`.
-  - (ب) أدوار جديدة.
-- **التوصية:** (أ)، ويُعاد النظر في دور المراجع في R2 (FR-HIL-06).
-- **يحجب:** INC‑0.
-
-**⚠️ DEC‑12: حزمة تغييرات عقود المنصة الإضافية**
+**✅ DEC‑12: حزمة تغييرات عقود المنصة الإضافية (حسمه المالك في 2026-10-29)**
 - **المصادر:** SRS AC-09، وSRS AC-10، و`docs/design/02-port-contracts.md`، و`03-api-spec.md` §3.2، و`04-event-catalog.md`.
 - **المشكلة:** لا يعمل WireTwin بعقود المنصة كما هي اليوم، وهذه العقود وثائق ملزمة لا تُعدَّل إلا بقرار. ثلاثة أمثلة:
   - `StorageProvider.get` يحمّل الملف كاملاً في الذاكرة، وملف المخطط قد يبلغ 1 GB (`PLT‑03`).
@@ -1989,14 +2039,20 @@ graph LR
   - `PLT‑12`: أنواع رسائل WS بحقل `seq`.
   - `PLT‑15`: رموز الأخطاء.
 - **الطبيعة:** كلها إضافية بقيم افتراضية لا تكسر مستهلكاً قائماً، وكلٌّ في زيادته مع اختبار عقده.
-- **التوصية:** إقرارها حزمةً واحدة.
-- **يحجب:** INC‑1 فصاعداً.
+- **القرار:** إقرارها حزمةً واحدة، وهي توصية المعماري. فلا يُطلب الإذن عند كل زيادة.
+- **ما ترتّب عليه:**
+  - يُنفَّذ كل بند في زيادته مع اختبار عقده، وتُعدَّل الوثيقة الحاكمة المعنية (`02-port-contracts.md`، `03-api-spec.md` §3.2، `04-event-catalog.md`) في الزيادة نفسها.
+  - حُسم صف التعارض 6 (§18.4). وخرج DEC‑12 من حواجز INC‑8P وINC‑10.
+  - **الإقرار للبنود الثمانية أعلاه وحدها.** كل بند عقد جديد يظهر بعدها يعود إلى المالك: القراءة بالمعرّف في `KnowledgeRetrieval` (§9)، وسلسلة HMAC مرفقاً للمنصة (ADR‑25)، واستدعاء وكيل من وكيل (`PLT‑25`، تملكه ميزة المساعد الذكي).
+  - إن ظهر أثناء التنفيذ أن أحد البنود يكسر مستهلكاً قائماً، يتوقف البند ويعود إلى المالك، لأن الإقرار قام على أنها كلها إضافية.
+- **الخيارات المرفوضة:** طلب الإذن عند كل زيادة.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑13: اعتماديات وتراخيص جديدة**
+**✅ DEC‑13: اعتماديات وتراخيص جديدة (حسمه المالك في 2026-10-29)**
 - **المصادر:** NFR-LIC-01، وNFR-LIC-07، وSRS AC-08، و`deploy/postgres/initdb/20-extensions.sh` (اليوم `pg_stat_statements` وحده).
 - **المشكلة:** يحتاج التصميم مكتبات لا تستعملها المنصة اليوم. وكل مكتبة جديدة تحتاج موافقة على ثلاثة أمور:
   1. أن يكون ترخيصها في القائمة المسموحة (NFR-LIC-01).
-  2. أن تتوافق مع AGPL، لأن المنصة كلها ستُتاح بها (NFR-LIC-07، SRS D-18).
+  2. أن تتوافق مع AGPL، حتى يبقى خيار إتاحة المنصة بها مفتوحاً (NFR-LIC-07، SRS D-18، وأُجّل تنفيذه بـSRS D-24).
   3. أثرها على صورة الإصدار وإعداد النشر.
 
   والعقدة الأكبر خطوط Noto CJK: ترخيصها OFL-1.1 خارج القائمة، والقائمة تشترط قراراً موثقاً لكل ترخيص خارجها. وبدون هذه الخطوط تظهر الكتابة الصينية مربعات فارغة في الصفحات التي لم تُضمَّن خطوطها، فتخالف NFR-I18N-04. وكذلك `pg_trgm`: امتداد في Postgres يغيّر إعداد النشر، فهو أكثر من مكتبة بايثون.
@@ -2007,10 +2063,17 @@ graph LR
   - بيئة OCR في صورة منفصلة: PaddlePaddle، أو RapidOCR مع ONNX Runtime.
   - jieba (اختياري)، وrustworkx (شرطي).
   - **خطوط Noto CJK بترخيص OFL-1.1، وهو خارج القائمة المسموحة.**
-- **التوصية:** إقرار القائمة، وإقرار OFL-1.1 للخطوط صراحةً. الخطوط بيانات تصيير لا شيفرة مربوطة، وتوزيعها بجانب AGPL جائز.
-- **يحجب:** INC‑1 وINC‑4 وINC‑8.
+- **القرار:** إقرار القائمة، وإقرار OFL-1.1 للخطوط صراحةً، وهي توصية المعماري. الخطوط بيانات تصيير لا شيفرة مربوطة، وتوزيعها بجانب AGPL جائز. سُجّل في SRS قراراً D-26، وأُضيف OFL-1.1 إلى NFR-LIC-01 مقصوراً على الخطوط.
+- **ما ترتّب عليه:**
+  - البنود الشرطية (Shapely وNumPy وSciPy، وjieba، وrustworkx) مُقَرّة مسبقاً، ولا تُضاف إلا إن أثبت القياس الحاجة كما في ADR‑06 وADR‑12 وADR‑16.
+  - `pg_trgm` يُضاف إلى `deploy/postgres/initdb/20-extensions.sh` في INC‑8.
+  - فحص التراخيص في CI يقبل OFL-1.1 لملفات الخطوط وحدها (§13.8).
+  - بيئة OCR (PaddlePaddle، أو RapidOCR مع ONNX Runtime) مُقَرّة ترخيصاً، واختيار المحرك نفسه باقٍ في DEC‑07.
+  - أي اعتمادية خارج هذه القائمة تعود إلى المالك.
+  - خرج DEC‑13 من حواجز INC‑1 وINC‑4 وINC‑8.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑14: بيئة قياس السعة والتوسّع**
+**✅ DEC‑14: بيئة قياس السعة والتوسّع (حسمه المالك في 2026-10-29)**
 - **المصادر:** NFR-SCAL-03 (كفاءة ≥ 0.8 حتى أربعة أضعاف)، وNFR-OBS-03، وM-27، والمضيف المحلي 13 GB، و`docs/deploy-server.md` (خادم Compose بكرت ومراقبة مفعّلة افتراضياً؛ والنشر عليه قرار بشري). والمكدّس Compose على مضيف واحد، فلا توزيع على عدة مضيفين.
 - **المشكلة:** تشترط SRS أن تكبر السعة مع الموارد بكفاءة 0.8 على الأقل حتى أربعة أضعاف الموارد المرجعية. والموارد المرجعية 8 أنوية و32 GB لكل عامل، فأربعة أضعافها 32 نواة و128 GB. ولا يُثبت هذا الشرط إلا قياس فعلي على 1× ثم 2× ثم 4× (M-27). ولا بيئة اليوم تتسع لذلك:
   - المضيف المحلي فيه 13 GB فقط.
@@ -2021,10 +2084,17 @@ graph LR
   - (أ) مضيف أكبر مؤقت يشغّل Compose مع المراقبة، لحملات قياس محددة؛ وفيه كلفة.
   - (ب) خادم GPU نفسه (`docs/deploy-server.md`) إن اتّسع لأربعة أضعاف: بلا كلفة إضافية، لكنه يزاحم استعماله الفعلي، ويحتاج قرار النشر عليه.
   - (ج) قياس 1× و2× فقط والاستقراء، وهذا يخالف M-27.
-- **التوصية:** (أ).
-- **يحجب:** قبول INC‑11.
+- **القرار: خيار جديد (د).** القياس على المضيف المحلي وحده، وفيه نحو 13 GB ذاكرة، و10 أنوية، وكرت RTX 4060 Laptop بـ8 GB. لا قياس خارج المضيف المحلي، وكل اختبارات القياس يجب أن تناسب قدرته. والقرار يخالف NFR-SCAL-03 وM-27، فسُجّل في SRS قراراً D-27.
+- **ما ترتّب عليه:**
+  - SRS 0.12: صار المضيف المحلي بيئة القياس (§5.2). وأُعيدت كتابة NFR-SCAL-03 وM-27: كفاءة ≥ 0.8 من 1× حتى أكبر مضاعف يتسع له المضيف، ولا يُقاس ما بعده. وتُقاس NFR-SCAL-01 وNFR-SCAL-02 بأكبر حجم يتسع له، ويذكر التقرير الحجم المقيس. ويجري التقييم المستقل محلياً (FR-EVAL-08). وأُضيف R-23.
+  - لا قياس على خادم GPU (§4.4). وقياسات GPU في INC‑11 على كرت المضيف، ومُصدِّر الكرت يُشغَّل محلياً لحملات القياس (§13.2).
+  - حجم Qwen يُختار بما يتسع له كرت 8 GB بجانب التضمين وOCR، أو يُقاس منفرداً (§11.6). والمرشحون الأكبر (حتى 32B) لا يُقاسون محلياً.
+  - المكدّس الحي على المضيف نفسه، فتتبع حملات القياس نظافة التشغيل (تفريغ الطابور، والإحماء)، وقد تحتاج إيقاف خدمات لا تُقاس مؤقتاً (RSK‑01).
+  - خرج DEC‑14 من حواجز INC‑11.
+- **الخيارات المرفوضة:** (أ) مضيف أكبر مؤقت، وكانت توصية المعماري؛ و(ب) خادم GPU؛ و(ج) القياس على 1× و2× والاستقراء إلى 4×.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑15: تفسيرات لتعارضات صغيرة (تُقَرّ ولا تُحسم صامتاً)**
+**✅ DEC‑15: تفسيرات لتعارضات صغيرة (تُقَرّ ولا تُحسم صامتاً؛ حسمه المالك في 2026-10-29)**
 - **المشكلة:** في أربعة مواضع تقول SRS شيئاً، وتقول وثائق المنصة الملزمة شيئاً آخر. والفرق في كل موضع صغير، لا يحتاج قراراً مستقلاً. فاختار المعماري لكل موضع تفسيراً يوفّق بين النصّين. لكن التفسير يغيّر معنى نصّ ملزم، فلا يجوز أن يمرّ دون علم المالك. مثال: تطلب SRS أن تنتظر مهام الاستيعاب في طابور ولا تُرفض (NFR-SCAL-05)، والمنصة تردّ بـ`429` فوراً عند الضغط، وتمنع الطابور الصامت (`ق‑6`). والمطلوب إقرار كل تفسير أو رفضه.
 - **(أ) NFR-I18N-01 مقابل `03-api-spec.md` §4.** الرموز ثابتة و`title` بالإنجليزية. التفسير: `detail` بلغة المستخدم في مسارات `/electrical`، والعميل يترجم بالرمز. أما توطين أخطاء المنصة كلها فخارج هذا العمل.
 - **(ب) `ق‑1` مقابل SRS D-13.** `ق‑1` («السحابي للمسار التفاعلي»، `docs/capacity-status.md`) وSRS D-13 (المحلي افتراضي لكل مهمة). التفسير: لهذا الوكيل المحلي افتراضي، والسحابة بالإعداد، وهو ما تفعله المنصة للمحادثات منذ `6.2`.
@@ -2032,10 +2102,16 @@ graph LR
 - **(د) NFR-SCAL-05 مقابل `ق‑6`.** NFR-SCAL-05: «مهام الاستيعاب تصطفّ ولا تُرفض». و`ق‑6`: «التشبّع يُجاب `429` فوراً… لا طابوراً صامتاً»، ومنه طابور الفهرسة. التفسير: طابور **معلن** الموضع والزمن ليس صامتاً، ولا يُرفض إلا عند حدّ حماية لـ`redis-stream`.
 - **(هـ) أُزيل في الإصدار 0.3** (إلغاء RunPod، قرار المالك 2026-10-28): كان تفسير NFR-SEC-02 وNFR-REL-03 وNFR-DEP-01 على حاوية RunPod الواحدة. وعلى هدفَي Compose تتحقق الثلاثة دون تفسير: العزل الشبكي (DEC‑04)، والنسخ الاحتياطي بآلية المنصة (§8.10)، وملفات التشغيل (§4.2).
 - **التوصية:** إقرار التفسيرات الأربعة الباقية.
-- **يحجب:** لا شيء مباشرة، لكنها تثبّت نطاق INC‑8 وINC‑10 وINC‑11.
+- **القرار:** إقرار التفسيرات الأربعة الباقية (أ..د)، وهي توصية المعماري. سُجّل في SRS قراراً D-30.
+- **ما ترتّب عليه:**
+  - SRS 0.15: عُدّلت NFR-I18N-01 (`detail` بلغة المستخدم، والرمز ثابت و`title` بالإنجليزية)، وFR-INT-07 (الصفحات النصية في R1 تُفهرس هنا، وتوجيهها إلى `knowledge` في R2)، وNFR-SCAL-05 (لا يُرفض الاستيعاب إلا عند حدّ حماية الطابور). وتفسير (ب) لا يغيّر نصّاً في SRS، لأن SRS D-13 يقول به أصلاً، فسُجّل في D-30 وحده.
+  - المتن يطبّق التفسيرات من قبل: الأخطاء (§12.4)، والنموذج المحلي (§11.6)، وPLT‑06 (§9.6)، والاصطفاف (§4.3). وأُشير فيها إلى القرار.
+  - حُسم الصف 7 في §18.4.
+  - أي تعارض جديد يظهر في التنفيذ بين SRS ووثائق المنصة يعود إلى المالك، ولا يُفسَّر صامتاً.
+- **يحجب:** لا شيء بعد الحسم. وثبت نطاق INC‑8 وINC‑10 وINC‑11.
 
-**⚠️ DEC‑16: الدور الذي ينفّذ احتفاظ WireTwin عبر المستأجرين (جديد في الإصدار 0.2)**
-- **المصادر:** NFR-PRIV-01؛ و`app/ops/provision.py` (`RETENTION_GRANTS`، و`PURGE_GRANTS` وشرحه)؛ و`migrations/versions/usage/0004_usage_autovacuum.py`؛ و`deploy/postgres/initdb/10-roles.sh`؛ و§8.8.
+**✅ DEC‑16: الدور الذي ينفّذ احتفاظ WireTwin عبر المستأجرين (حسمه المالك في 2026-10-29)**
+- **المصادر:** NFR-PRIV-01 (قبل SRS 0.13)؛ و`app/ops/provision.py` (`RETENTION_GRANTS`، و`PURGE_GRANTS` وشرحه)؛ و`migrations/versions/usage/0004_usage_autovacuum.py`؛ و`deploy/postgres/initdb/10-roles.sh`؛ و§8.8.
 - **المشكلة:** تطلب SRS سياسة احتفاظ تحذف ما انتهت مدته من بيانات كل المشاريع (NFR-PRIV-01)، أي من كل مساحات العمل. لكن جداول `electrical` تحت `FORCE ROW LEVEL SECURITY`، والدور الذي يتصل به التطبيق (`app_rw`) لا يرى إلا مساحة العمل المضبوطة في المعاملة. فمهمة الاحتفاظ تحتاج دوراً يعبر بين المستأجرين، وكل دور عابر يُضعف عزلهم. والسؤال: أي دور يُستعمل، وما حدود عبوره؟
 - **لماذا ظهر الآن:** كان الإصدار 0.1 يقول إن الاحتفاظ يجري «بدوره الخاص»، ويقول في موضع آخر «لا دور جديد في R1»، فتناقض.
 - **الخيارات:**
@@ -2043,9 +2119,17 @@ graph LR
   - (ب) توسيع `retention_sweeper` بسياسات RLS مقيّدة بالدور `USING (true)` على تلك الجداول (سابقة `usage/0004`): استعلامات أبسط، ووصول أوسع عبر المستأجرين.
   - (ج) دور وظيفي جديد للاحتفاظ في `10-roles.sh`.
 - **التوصية:** (أ). لا دور جديد، ولا استثناء RLS عام، وفشله آمن.
-- **يحجب:** INC‑11 (الاحتفاظ) وحده.
+- **القرار: إعادة دراسة المتطلب نفسه، ثم الخيار (أ) على نطاق أضيق.** رأى المالك أن حذف البيانات عملية حساسة، وأن بيانات المستخدمين تُحفظ ولا تُحذف تلقائياً. فسُجّل في SRS قراراً D-28.
+- **ما ترتّب عليه:**
+  - SRS 0.13: أُعيدت كتابة NFR-PRIV-01 (لا حذف تلقائي لبيانات المستخدم، وسجل التدقيق لا يُحذف أبداً)، وأُضيف NFR-PRIV-03 (التصدير، وحذف المشروع عند الطلب بصلاحية إدارته وتأكيد صريح وعرض التصدير قبله) وNFR-PRIV-04 (كنس البيانات التقنية المؤقتة وحدها بمدة ثابتة للنظام)، وأُضيف R-24.
+  - لم يعد في WireTwin احتفاظ يحذف بيانات المستخدم عبر المستأجرين. والكنس الآلي الباقي يمسّ الصادرات المنتهية وسجلات المهام المنتهية وحدها (§8.8).
+  - يجري هذا الكنس بالخيار (أ): `retention_sweeper` بمنح SELECT وDELETE على جداول هذه البيانات وحدها، ويضبط `app.workspace_id` لكل مساحة، بلا `USING (true)`. ولا منح له على جداول بيانات المستخدم، فلا يستطيع حذفها ولو أخطأ (`PLT‑14`).
+  - عُدّل `ops-scheduler` (§4)، و`PLT‑04` و`PLT‑14` و`PLT‑22`، والأدوار (§8.2)، والمشتقات (§8.3)، و§8.8، وجدول المسارات (§12)، وINC‑11، وجدول التتبّع (§17)، وأُضيف R-24 (§18.1).
+  - خرج DEC‑16 من حواجز INC‑11.
+- **الخيارات المرفوضة:** (ب) سياسات `USING (true)`؛ و(ج) دور جديد. ورُفضت معهما «مدة احتفاظ لكل مشروع» تحذف الجلسات وتقاريرها وسجل التدقيق.
+- **يحجب:** لا شيء بعد الحسم.
 
-**⚠️ DEC‑17: كم مشروعاً يحمل الفضاء، ونطاق الاستبدال بالاسم (جديد في الإصدار 0.3)**
+**✅ DEC‑17: كم مشروعاً يحمل الفضاء، ونطاق الاستبدال بالاسم (جديد في الإصدار 0.3، حسمه المالك في 2026-10-29)**
 - **المصادر:** SRS D-22 وFR-ING-03 (س‑29 «دون تغيير»)؛ وFR-ING-02 (منع التكرار «داخل المشروع»)؛ وFR-KG-09 (المشروع في فضاء واحد، ولا تحدّ الفضاء بمشروع)؛ وFR-INT-10 (ساقا الاسترجاع بالفضاء نفسه)؛ و`files/ports/repository.py` (`live_namesakes`: نطاق القاعدة الفضاء، س‑32)؛ و`framework/di/file_replacement.py`.
 - **المشكلة:** س‑29 تعمل على الفضاء، والمشروع جزء منه. والحذف يجري في `completeFile`، قبل أن يعلم WireTwin بالملف الجديد. فإن حمل الفضاء مشروعين، حذف رفعٌ في المشروع الثاني وثيقةَ المشروع الأول التي تحمل الاسم نفسه، بلا سؤال. وأسماء ملفات الموردين العامة («Schaltplan.pdf»، «=A1.pdf») تتصادم فعلاً. ويحذف كتيّبٌ في `knowledge` مخططاً بالاسم نفسه في الفضاء نفسه، والعكس، في كل خيار، لأن هذه هي القاعدة.
 - **الخيارات:**
@@ -2053,10 +2137,20 @@ graph LR
   - (ب) عدة مشاريع في الفضاء، ومعاينة الاستبدال (§8.11) تحذّر قبل الإتمام. **الكلفة:** الحذف العابر للمشاريع يبقى ممكناً بتأكيد المستخدم، أو بعميل لا يستدعي المعاينة، أو بإعادة تسمية لا معاينة لها.
   - (ج) تغيير منصة يقيّد س‑29 بالمشروع أو بالغرض. يخالف «دون تغيير» في SRS D-22، ويمسّ عقد `files` و`completeFile` و`renameFile`.
 - **التوصية:** (أ). يجعل القاعدة التي اختارها المالك تقع على الحدّ الذي يفهمه المستخدم، بلا تغيير منصة، والكلفة ملفات مكرّرة لا بيانات مفقودة.
-- **ما حُسم دون قرار، لأنه لا يتغيّر بالخيار:** حارس التسجيل والوثيقة المستبعدة لفشل الكنس (§8.11، RSK‑18)، والملف نفسه بايتاً بالاسم نفسه (استبدال عادي، §8.11).
-- **يحجب:** INC‑1 (إنشاء المشروع وتسجيل الوثيقة).
+- **القرار: خيار رابع (د)، يجمع (أ) وتغيير المنصة في (ج) بالوسوم لا بالمشروع** (SRS D-29). خطة المالك أن يكون «المساعد الذكي» وحده الوكيل المتاح للمستخدمين مستقبلاً، وأن يفهرس WireTwin و`knowledge` البيانات والمخططات على مستوى الفضاء (المنطقة)، موسومةً بالنظام والمعدّة والقسم. فالاستبدال بالاسم يشترط تطابق الوسوم أيضاً. وأقرّ المالك التوصيات في الأسئلة الثلاثة التي نشأت منه:
+  1. مشروع WireTwin واحد لكل فضاء، كما في (أ)، والنظام والمعدّة والقسم وسوم داخله لا مشاريع.
+  2. نوع الملف لا يدخل في التطابق: الكتيّب والمخطط بالاسم والوسوم نفسها ملف واحد محدَّث.
+  3. إعادة وسم ملف تكنس كما تكنس إعادة التسمية.
+- **لماذا لا يخالف «دون تغيير» بعد الآن:** SRS D-29 يعدّل D-22 في نطاق القاعدة وحده، فصار التغيير قرار مالك. والوسم الغائب لا يطابق إلا غائباً، فالملفات بلا وسوم، ومنها ملفات وكيل RAG اليوم، تتبع القاعدة كما كانت (قرار المساعد الذكي ق‑1).
+- **ما ترتّب عليه:**
+  - SRS 0.14: أُعيدت كتابة FR-ING-03، وعُدّلت FR-ING-01 وFR-KG-09 وFR-INT-10، وأُضيف FR-ING-13 وR-25.
+  - أُضيف `PLT‑26` (الوسوم في `files` ونطاق `live_namesakes` وإعادة الوسم)، وهو البند نفسه الذي تطلبه FR-31 وFR-32 في المساعد الذكي، فيُبنى مرة واحدة قبل INC‑1. وعُدّل `PLT‑24`.
+  - عُدّلت §8.11 (المعاينة تعرض السميّين بوسوم مختلفة)، وجدول المسارات (§12: `409` لمشروع ثانٍ)، وعزل الفضاء (§13)، وADR‑30، وINC‑1، وجدول التتبّع، والصف 8 في §18.4. وأُضيف RSK‑20.
+- **الخيارات المرفوضة:** (ب) عدة مشاريع بتحذير؛ و(ج) تقييد القاعدة بالمشروع.
+- **ما حُسم دون قرار، لأنه لا يتغيّر بالخيار:** حارس التسجيل والوثيقة المستبعدة لفشل الكنس (§8.11، RSK‑18)، والملف نفسه بايتاً بالاسم والوسوم نفسها (استبدال عادي، §8.11).
+- **يحجب:** لا شيء بعد الحسم. ويعتمد INC‑1 على `PLT‑26` في المنصة.
 
-**⚠️ DEC‑18: ما يبقى بعد حذف ملف أو استبداله (جديد في الإصدار 0.3)**
+**✅ DEC‑18: ما يبقى بعد حذف ملف أو استبداله (جديد في الإصدار 0.3، حسمه المالك في 2026-10-29)**
 - **المصادر:** SRS D-22 وFR-ING-03 («كل ما اشتُق منه»)؛ وFR-INT-13 (لا استشهاد بملف محذوف)؛ وFR-GRD-06 (كل استشهاد يُفتح)؛ وDATA-07 (الجلسات قابلة للتصدير والأرشفة)؛ وDATA-08 (نصّ مقطع المعرفة المستشهد به يُحفظ في الجلسة)؛ وFR-DIAG-10؛ وFR-SYM-03؛ وFR-HIL-05 وFR-SYM-09 (R2)؛ وFR-EVAL-02؛ وNFR-PRIV-01.
 - **المشكلة:** عند حذف ملف أو استبداله تتعارض متطلبات SRS:
   - FR-ING-03 وSRS D-22 تطلبان حذف «كل ما اشتُق منه».
@@ -2073,7 +2167,17 @@ graph LR
   - (أ) حدّ ضيق: يبقى ما اعتمده إنسان إلى مستوى المشروع وما هو سجلّ. مدخل المكتبة قالب هندسي مطبّع، يُعرض مصدره «مصدر محذوف». والنماذج المدرّبة تبقى بإصداراتها (R2). واللقطات الذهبية تبقى سجلاً للتقييم، ولا تُشغَّل إلا ما دام ملفها ببصمته موجوداً. والجلسات والتقارير تبقى بلقطتها، واستشهاداتها تُعرض «مصدر محذوف» ولا تُفتح. فيُقرأ FR-GRD-06 على الاستشهاد الحي، وتغلب FR-INT-13 بعد الحذف.
   - (ب) حدّ واسع: يُطهَّر أيضاً مدخل المكتبة، وتُبنى نسخة منها بدونه، وتُحذف عيّنات الملف من اللقطات الذهبية، وتُمحى لقطات الاستشهاد من الجلسات والتقارير فتبقى المعرّفات وحدها. فيضيع ما علّمه المستخدم، ويصير التقرير المؤرشف غير مقروء.
 - **التوصية:** (أ). ما يبقى فيه اعتمده إنسان أو هو سجلّ لما جرى، ولا يُسترجع منه شيء ولا يُستشهد به بوصفه مخططاً حياً.
-- **يحجب:** INC‑4 (مصدر مدخل «علّم مرة»)، وINC‑9 (لقطة الاستشهاد في الجلسة والتقرير)، وINC‑11 (معاملة اللقطات الذهبية المصدَّرة). ولا يحجب INC‑2 ولا INC‑5، لأن التصحيحات والتسميات الحية تُطهَّر في الخيارين.
+- **القرار: (أ)، الحدّ الضيق**، وهو توصية المعماري: ما يبقى فيه اعتمده إنسان أو هو سجلّ لما جرى، ولا يُسترجع منه شيء ولا يُستشهد به بوصفه مخططاً حياً. سُجّل في SRS قراراً D-31.
+- **ما ترتّب عليه:**
+  - SRS 0.15: عُدّلت FR-ING-03 وFR-INT-13 («كل ما اشتُق منه» لا يشمل ما خرج إلى مستوى أعلى)، وFR-GRD-06 (يُفتح الاستشهاد الحي، والاستشهاد بملف محذوف يُعرض «مصدر محذوف»)، وDATA-07 (لقطة الاستشهاد الدنيا في الجلسة والتقرير).
+  - **مدخل المكتبة** (FR-SYM-03): قالب هندسي مطبّع يبقى في مكتبة المشروع، ومصدره يُعرض «مصدر محذوف». ولا يحمل صورة من الملف ولا معرّف دليل يُفتح. وفي R2 تبقى النماذج المدرّبة بإصداراتها (FR-HIL-05، FR-SYM-09).
+  - **اللقطات الذهبية المصدَّرة** (FR-EVAL-02): تبقى سجلاً للتقييم ببصمتها، ولا تُشغَّل إلا ما دام ملفها ببصمته موجوداً. وتقرير التقييم يذكر ما استُبعد منها (§13.7).
+  - **الجلسات المغلقة وتقاريرها** (DATA-07، FR-DIAG-10): تبقى بلقطة الاستشهاد الدنيا (المعرّف كما طُبع، ووسم الصفحة، واسم الملف، ونص قصير)، واستشهاداتها تُعرض «مصدر محذوف» ولا تُفتح (§8.6، §8.8).
+  - لا يُسترجع شيء مما بقي ولا يُستشهد به في إجابة جديدة، فلا يخالف FR-INT-13.
+  - عُدّلت §8.6 و§8.8 وجدول §8.11 (الصفوف 1 و6 و8) و§13.7، وخرج DEC‑18 من حواجز INC‑4 وINC‑9 وINC‑11 (§16).
+  - حذف المشروع كله (NFR-PRIV-03) يحذف هذه أيضاً، لأنها ملك المشروع.
+- **الخيارات المرفوضة:** (ب) الحدّ الواسع.
+- **يحجب:** لا شيء بعد الحسم.
 
 ### 18.4 التعارضات بين SRS والوثائق الحاكمة
 
@@ -2081,12 +2185,12 @@ graph LR
 |---|---|---|---|
 | 1 | FR-ING-02 (1 GB، رفع مجزأ قابل للاستئناف) | `docs/design/07-nfr-slo.md` §4 (50 MB، و1 GiB للفضاء)، و`Limits` في `framework/settings/settings.py`، و`03-api-spec.md` §1 (PUT موقّع واحد) | **محسوم:** تُرفع الحدود العامة وتُعدَّل الوثائق الحاكمة في INC‑0 (✅ DEC‑02، الخيار ب) |
 | 2 | FR-ING-03 في SRS 0.6 (المراجعة لا تحذف السابقة) | س‑29 القاعدة 1 (`framework/di/file_replacement.py`، `03-api-spec.md` Files) | **محسوم:** أعادت SRS 0.7 كتابة FR-ING-03 لتتبع س‑29 دون تغيير (SRS D-22)، فلا تعارض (✅ DEC‑03) |
-| 3 | FR-ADM-01 (أدوار بحسب الحاجة) | طقم الأدوار الموقّع (`05-rbac-config-secrets.md` §1) | ⚠️ DEC‑11 |
-| 4 | NFR-OBS-02 (تتبّع موزّع) | `07-nfr-slo.md` §7 (لا تتبّع موزّع) | ⚠️ DEC‑08 |
-| 5 | NFR-LIC-06 (المنصة بـAGPL-3.0) | `pyproject.toml` (`Proprietary`) | ⚠️ DEC‑10 (القرار في SRS D-18، والتنفيذ معلّق) |
-| 6 | FR-API-03 (استئناف دون فقد بـ`seq`) | `03-api-spec.md` §3.2 (المستهلك البطيء يُغلَق بـ`1013` ويعيد العميل حالته، بلا `seq`) | ⚠️ DEC‑12: أنواع رسائل إضافية وإعادة عبر REST (§12.2)، دون تغيير دلالة WS القائمة |
-| 7 | NFR-I18N-01، SRS D-13، FR-INT-07، NFR-SCAL-05 | `03 §4`، `ق‑1`، قدرة `knowledge`، `ق‑6` | ⚠️ DEC‑15. وأُزيل منه في الإصدار 0.3 بند RunPod (NFR-SEC-02 وNFR-REL-03 وNFR-DEP-01)، فهي تتحقق على هدفَي Compose |
-| 8 | FR-ING-02 (التكرار داخل المشروع)، وFR-KG-09 (لا حدّ لعدد مشاريع الفضاء) | س‑29 تعمل على الفضاء (`files/ports/repository.py`، `live_namesakes`، س‑32) | ⚠️ DEC‑17 |
+| 3 | FR-ADM-01 (أدوار بحسب الحاجة) | طقم الأدوار الموقّع (`05-rbac-config-secrets.md` §1) | **محسوم:** لا أدوار جديدة؛ صلاحيات على الأدوار القائمة، وأعادت SRS 0.10 كتابة FR-ADM-01 (SRS D-25)، فيبقى الطقم الموقّع كما هو (✅ DEC‑11، الخيار أ) |
+| 4 | NFR-OBS-02 (تتبّع موزّع) | `07-nfr-slo.md` §7 (لا تتبّع موزّع) | **محسوم:** امتدادات في السجل عبر Loki بلا خدمة تتبّع، فتبقى §7 صحيحة (✅ DEC‑08، الخيار أ) |
+| 5 | NFR-LIC-06 (المنصة بـAGPL-3.0) | `pyproject.toml` (`Proprietary`) | **محسوم:** أُجّل البندان 1 و2 من NFR-LIC-06 بـSRS D-24، فيبقى `Proprietary` ولا تعارض الآن؛ والتذكير قبل الإطلاق في الإنتاج (✅ DEC‑10) |
+| 6 | FR-API-03 (استئناف دون فقد بـ`seq`) | `03-api-spec.md` §3.2 (المستهلك البطيء يُغلَق بـ`1013` ويعيد العميل حالته، بلا `seq`) | **محسوم:** أنواع رسائل إضافية بحقل `seq` وإعادة عبر REST (§12.2)، دون تغيير دلالة WS القائمة؛ ويُعدَّل `03-api-spec.md` §3.2 بإضافة في INC‑10 (✅ DEC‑12، `PLT‑12`) |
+| 7 | NFR-I18N-01، SRS D-13، FR-INT-07، NFR-SCAL-05 | `03 §4`، `ق‑1`، قدرة `knowledge`، `ق‑6` | **محسوم:** أقرّ المالك التفسيرات الأربعة (SRS D-30)، وعُدّلت NFR-I18N-01 وFR-INT-07 وNFR-SCAL-05 في SRS 0.15 (✅ DEC‑15). وأُزيل منه في الإصدار 0.3 بند RunPod (NFR-SEC-02 وNFR-REL-03 وNFR-DEP-01)، فهي تتحقق على هدفَي Compose |
+| 8 | FR-ING-02 (التكرار داخل المشروع)، وFR-KG-09 (لا حدّ لعدد مشاريع الفضاء) | س‑29 تعمل على الفضاء (`files/ports/repository.py`، `live_namesakes`، س‑32) | **محسوم:** مشروع واحد لكل فضاء، فيتطابق نطاقا FR-ING-02 وFR-KG-09 مع الفضاء، والاستبدال بالاسم والوسوم معاً بتغيير منصة يقرّه SRS D-29 (✅ DEC‑17، `PLT‑26`) |
 | 9 | FR-INT-13 («لا تتعايش نسختان») | `framework/di/file_replacement.py` (فشل الكنس يُسجَّل ولا يُفشل الرفع) | **حُسم في التصميم** دون تغيير منصة: حارس التسجيل والوثيقة المستبعدة (§8.11، RSK‑18) |
 | — | صندوق Qdrant جديد `ele-<ws>` | CLAUDE.md: «صندوق Qdrant لكل مساحة عمل (ق‑3)» | **ليس تعارضاً:** الشيفرة تحمل صندوقاً لكل مساحة عمل لكل وحدة (`kn-` و`mem-`، `knowledge/domain/collections.py`)، و`ele-` على النمط نفسه (§8.4) |
 | — | FR-AGT-08 (نماذج لكل مهمة، وميزانية مشروع) | المُنسِّق يحلّ مساراً واحداً للدور، و`usage` بنطاقات (مساحة، وكيل، مزوّد) (`01-data-model.md` §2.10) | ليس تعارضاً في R1 (المتطلب S). يحتاج تغيير منصة في R2 (`PLT‑09`، §1.3) |
