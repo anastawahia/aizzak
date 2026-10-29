@@ -50,6 +50,15 @@ decision = "SRS D-32"
 
 [[package]]
 name = "pycryptodome"
-expression = "BSD-2-Clause AND LicenseRef-Public-Domain"
-reason = "BSD-2-Clause code plus public-domain code (Unlicense-equivalent)."
+expression = "BSD-2-Clause AND Unlicense AND MIT"
+reason = "As declared; SRS D-32 names Unlicense as the equivalent of LicenseRef-Public-Domain."
 decision = "SRS D-32"
+
+[[package]]
+name = "pypdfium2"
+# Its declared BSD-3-Clause and Apache-2.0, plus the licences of the libraries built into
+# the bundled PDFium binary (notices in the wheel). For THIS package only: none of these
+# ids is in [allow] or in the approved list.
+expression = "BSD-3-Clause AND Apache-2.0 AND LicenseRef-AGG-2.3 AND FTL AND Unicode-3.0 AND IJG AND libpng-2.0 AND (Apache-2.0 WITH LLVM-exception) AND CC-BY-4.0"
+reason = "PDFium binary: Anti-Grain Geometry 2.3, FreeType (FTL), Unicode-3.0, IJG, libpng-2.0, Apache-2.0 with LLVM exception (llvm-libc), CC-BY-4.0."
+decision = "SRS D-33"

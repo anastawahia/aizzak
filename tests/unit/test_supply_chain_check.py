@@ -145,7 +145,7 @@ def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None
     for entry in raw["allow"]["approved"]:
         assert entry["decision"] == "SRS D-32", entry
     for entry in raw.get("package", []):
-        assert entry["decision"] == "SRS D-32", entry
+        assert entry["decision"] in {"SRS D-32", "SRS D-33"}, entry
         assert entry["reason"], entry
 
 
@@ -564,3 +564,21 @@ def test_exit_2_on_a_broken_policy(tmp_path: Path) -> None:
 
 def test_exit_2_when_the_sbom_has_no_components(tmp_path: Path) -> None:
     assert _run(tmp_path, _sbom(), _audit(("a", "1", [])), "a==1\n") == 2
+
+
+def test_the_pdfium_licences_are_decided_for_pypdfium2_alone() -> None:
+    policy = sc.load_policy(_DIR / "license-policy.toml")
+    decision = policy.packages["pypdfium2"]
+    assert decision.decision == "SRS D-33"
+    expr = sc.parse_expression(decision.expression)
+    pdfium_ids = {
+        "LicenseRef-AGG-2.3", "FTL", "Unicode-3.0", "IJG", "libpng-2.0", "CC-BY-4.0",
+    }  # fmt: skip
+    assert pdfium_ids <= sc.expression_ids(expr)
+    # None of them leaked into the global lists ...
+    assert not pdfium_ids & (policy.allowed | policy.approved)
+    # ... so any other package declaring them is refused.
+    for licence in (*sorted(pdfium_ids), "Apache-2.0 WITH LLVM-exception"):
+        component = _component("some-other-package", [_expr(licence)])
+        report = sc.check_licences(_sbom(component), policy)
+        assert report.violations, licence
