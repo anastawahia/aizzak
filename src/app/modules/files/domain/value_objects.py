@@ -11,8 +11,10 @@ Identifiers stay plain UUIDv7 text; the domain imports no framework.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 
 from app.modules.files.domain.errors import InvalidFileInput
 
@@ -23,6 +25,13 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 # not here.
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_UPLOAD_ID_LEN = 1024
+
+# S3 protocol limits (PLT-01): every part but the last is at least 5 MiB, and an
+# upload has at most 10,000 parts. `framework.settings.settings` restates both
+# (the framework may not import a module); a test pins them equal.
+MIN_PART_BYTES: Final = 5_242_880
+MAX_PARTS: Final = 10_000
 
 
 class FileStatus(StrEnum):
@@ -122,3 +131,67 @@ class Sha256:
         if not _SHA256_RE.match(normalized):
             raise InvalidFileInput("checksum must be a 64-character hex sha256 digest")
         object.__setattr__(self, "value", normalized)
+
+
+class UploadMode(StrEnum):
+    """How the bytes of a registered file arrive (FR-ING-02)."""
+
+    SINGLE = "single"  # one presigned PUT, <= Limits.max_single_put_bytes
+    MULTIPART = "multipart"  # presigned UploadPart URLs, assembled at completion
+
+
+@dataclass(frozen=True, slots=True)
+class MultipartUpload:
+    """The storage-side multipart session of one file. Fixed at registration
+    and never re-pointed (INV-F5), like every field that describes the bytes."""
+
+    upload_id: str
+    part_bytes: int
+
+    def __post_init__(self) -> None:
+        if not self.upload_id or len(self.upload_id) > _MAX_UPLOAD_ID_LEN:
+            raise InvalidFileInput(f"upload id must be 1..{_MAX_UPLOAD_ID_LEN} characters")
+        if self.part_bytes < MIN_PART_BYTES:
+            raise InvalidFileInput(f"part size must be at least {MIN_PART_BYTES} bytes")
+
+    def part_count(self, size_bytes: int) -> int:
+        """``max(1, ceil(size_bytes / part_bytes))``."""
+        return max(1, -(-size_bytes // self.part_bytes))
+
+    def expected_size(self, part_number: int, size_bytes: int) -> int:
+        """``part_bytes`` for every part but the last; the remainder for the last."""
+        count = self.part_count(size_bytes)
+        if not 1 <= part_number <= count:
+            raise InvalidFileInput(f"part number must be 1..{count}")
+        if part_number < count:
+            return self.part_bytes
+        return size_bytes - (count - 1) * self.part_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class PartsCheck:
+    """What a comparison of stored parts against the declared size found."""
+
+    missing: tuple[int, ...]  # sorted part numbers storage does not hold
+    wrong_size: tuple[int, ...]  # sorted part numbers of an unexpected size
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing and not self.wrong_size
+
+
+def check_parts(
+    upload: MultipartUpload, size_bytes: int, uploaded: Mapping[int, int]
+) -> PartsCheck:
+    """Compare what storage holds (``{part_number: size}``) with what the declared
+    size requires. Parts numbered above ``part_count`` are ignored: no URL is ever
+    signed for one, and S3 drops unlisted parts at completion."""
+    missing: list[int] = []
+    wrong_size: list[int] = []
+    for number in range(1, upload.part_count(size_bytes) + 1):
+        held = uploaded.get(number)
+        if held is None:
+            missing.append(number)
+        elif held != upload.expected_size(number, size_bytes):
+            wrong_size.append(number)
+    return PartsCheck(missing=tuple(missing), wrong_size=tuple(wrong_size))

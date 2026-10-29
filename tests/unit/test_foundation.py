@@ -20,6 +20,9 @@ from app.framework.pagination import (
     encode_seq_cursor,
 )
 from app.framework.settings import Settings
+from app.framework.settings import settings as settings_module
+from app.framework.settings.settings import Limits
+from app.modules.files.domain import value_objects as files_vo
 
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +204,54 @@ def test_settings_defaults_match_design() -> None:
     # 07-nfr-slo §4 approved limits.
     assert settings.limits.max_upload_bytes == 52_428_800
     assert settings.integrations.mcp_allowed_transports == ("http", "sse")
+
+
+def test_limits_defaults_for_the_multipart_upload() -> None:
+    # PLT-01 (INC-0). `max_upload_bytes` (50 MiB) and `max_space_bytes` (1 GiB)
+    # keep their current values in this commit; they move to 1 GiB / 10 GiB
+    # together with the multipart routes.
+    limits = Limits()
+    assert limits.max_upload_bytes == 52_428_800
+    assert limits.max_space_bytes == 1_073_741_824
+    assert limits.max_single_put_bytes == 50 * 1024 * 1024
+    assert limits.multipart_part_bytes == 16 * 1024 * 1024
+    assert limits.knowledge_max_index_bytes == 100 * 1024 * 1024 == 104_857_600
+
+
+def test_limits_accept_the_target_values() -> None:
+    # What INC-0 ends at: 1 GiB files, 10 GiB spaces -> 64 parts of 16 MiB.
+    limits = Limits(max_upload_bytes=1_073_741_824, max_space_bytes=10_737_418_240)
+    assert limits.max_upload_bytes == 1024**3
+    assert limits.max_space_bytes == 10 * 1024**3
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"multipart_part_bytes": 5_242_879},  # below S3's 5 MiB minimum
+        {"multipart_part_bytes": 52_428_801},  # above the single-request ceiling
+        {
+            "max_upload_bytes": 10_001 * 5_242_880,
+            "multipart_part_bytes": 5_242_880,
+        },  # > 10,000 parts
+    ],
+)
+def test_limits_reject_a_part_size_that_cannot_be_signed(overrides: dict[str, int]) -> None:
+    with pytest.raises(ValueError, match=r"multipart|parts"):
+        Limits(**overrides)
+
+
+def test_limits_accept_the_part_size_bounds() -> None:
+    assert Limits(multipart_part_bytes=5_242_880).multipart_part_bytes == 5_242_880
+    assert Limits(multipart_part_bytes=52_428_800).multipart_part_bytes == 52_428_800
+    exactly = Limits(max_upload_bytes=10_000 * 5_242_880, multipart_part_bytes=5_242_880)
+    assert exactly.max_upload_bytes == 10_000 * 5_242_880
+
+
+def test_the_s3_constants_match_between_the_framework_and_files() -> None:
+    # The framework may not import `app.modules`, so it restates them (settings.py).
+    assert settings_module._S3_MIN_PART_BYTES == files_vo.MIN_PART_BYTES
+    assert settings_module._S3_MAX_PARTS == files_vo.MAX_PARTS
 
 
 def test_settings_is_immutable() -> None:

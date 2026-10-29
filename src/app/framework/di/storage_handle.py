@@ -28,31 +28,34 @@ was never called.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.framework.errors import AppError
-from app.framework.ports.storage_provider import StorageProvider
+from app.framework.ports.storage_provider import ObjectStorage, StoredPart
 
 
 class StorageHandle:
-    """A ``StorageProvider`` (structural match) that delegates to an adapter
-    bound after construction — ``None`` until ``bind`` runs at startup."""
+    """An ``ObjectStorage`` (``StorageProvider`` plus ``MultipartStorage``,
+    structural match) that delegates to an adapter bound after construction —
+    ``None`` until ``bind`` runs at startup."""
 
     __slots__ = ("_provider",)
 
     def __init__(self) -> None:
-        self._provider: StorageProvider | None = None
+        self._provider: ObjectStorage | None = None
 
     @property
     def is_bound(self) -> bool:
         return self._provider is not None
 
-    def bind(self, provider: StorageProvider) -> None:
+    def bind(self, provider: ObjectStorage) -> None:
         """Install the real adapter. Called once, by the Composition Root's
         ``connect_storage``; a second call replaces the provider, which is
         harmless because ``connect_storage`` itself is idempotent and nothing
         else holds a reference to bind."""
         self._provider = provider
 
-    def _require(self) -> StorageProvider:
+    def _require(self) -> ObjectStorage:
         if self._provider is None:
             raise AppError("object storage is not configured", code="common.internal")
         return self._provider
@@ -71,3 +74,22 @@ class StorageHandle:
 
     async def presign_put(self, key: str, ttl_s: int, content_type: str) -> str:
         return await self._require().presign_put(key, ttl_s, content_type)
+
+    async def start_multipart(self, key: str, content_type: str) -> str:
+        return await self._require().start_multipart(key, content_type)
+
+    async def presign_upload_part(
+        self, key: str, upload_id: str, part_number: int, ttl_s: int
+    ) -> str:
+        return await self._require().presign_upload_part(key, upload_id, part_number, ttl_s)
+
+    async def list_parts(self, key: str, upload_id: str) -> Sequence[StoredPart]:
+        return await self._require().list_parts(key, upload_id)
+
+    async def complete_multipart(
+        self, key: str, upload_id: str, parts: Sequence[StoredPart]
+    ) -> None:
+        await self._require().complete_multipart(key, upload_id, parts)
+
+    async def object_size(self, key: str) -> int | None:
+        return await self._require().object_size(key)

@@ -1,4 +1,5 @@
-"""MinIO adapter for the ``StorageProvider`` port (02-port-contracts §1.6).
+"""MinIO adapter for the ``StorageProvider`` and ``MultipartStorage`` ports
+(02-port-contracts §1.6).
 
 Phase 2.4. Same split as ``cache/redis_cache.py`` (2.3): a factory builds
 the technology client, a thin adapter class implements the port over it
@@ -17,7 +18,8 @@ minio-py is a SYNCHRONOUS client (urllib3). Every port method offloads the
 blocking call through ``asyncio.to_thread`` so the event loop stays free
 (ARC "async in all I/O"; the same treatment planned for the sync knowledge
 parsers). One thread per in-flight storage call is acceptable at v1's file
-sizes/limits (07-nfr §4: ≤25 MB objects).
+sizes/limits (07-nfr §4: a part is 16 MiB; one whole object reaches 1 GiB only
+through the multipart methods, never through ``put``/``get``).
 
 Error policy -- translate, and keep the one caller-branchable case distinct:
 ``S3Error(code="NoSuchKey")`` on ``get`` becomes ``NotFoundError``
@@ -33,16 +35,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from datetime import timedelta
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 import urllib3
 from minio import Minio
+from minio.datatypes import Part
 from minio.deleteobjects import DeleteObject
 from minio.error import MinioException, S3Error
 
-from app.framework.errors import AppError, NotFoundError
+from app.framework.errors import AppError, ConflictError, NotFoundError
+from app.framework.ports.storage_provider import StoredPart
 
 if TYPE_CHECKING:
     from app.framework.settings.settings import MinioSettings
@@ -123,7 +128,8 @@ def create_minio_signing_client(
 
 
 class MinioStorage:
-    """MinIO-backed ``StorageProvider`` (02 §1.6, structural Protocol match).
+    """MinIO-backed ``ObjectStorage`` -- ``StorageProvider`` plus
+    ``MultipartStorage`` (02 §1.6, structural Protocol match).
 
     One adapter instance serves ONE bucket (``MinioSettings.bucket``): the
     port's keys are already workspace-prefixed by the ``files`` module
@@ -213,15 +219,116 @@ class MinioStorage:
         except (MinioException, urllib3.exceptions.HTTPError, OSError, ValueError) as exc:
             raise _translate(exc) from exc
 
+    # -- MultipartStorage (PLT-01) --------------------------------------------
+    # minio-py 7.2 exposes create/list/complete of a multipart upload only as
+    # underscore methods (the public `put_object` drives them itself, from a
+    # stream). They are used here, behind the port, and pinned by
+    # `tests/unit/test_minio_multipart_api.py` so an upgrade that changes them
+    # fails CI rather than production (INC0-D-4).
+
+    async def start_multipart(self, key: str, content_type: str) -> str:
+        def _start() -> str:
+            return str(
+                self._client._create_multipart_upload(
+                    self._bucket, key, {"Content-Type": content_type}
+                )
+            )
+
+        try:
+            return await asyncio.to_thread(_start)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise _translate(exc) from exc
+
+    async def presign_upload_part(
+        self, key: str, upload_id: str, part_number: int, ttl_s: int
+    ) -> str:
+        # Pure HMAC work against the PUBLIC address, like `presign_put`.
+        def _presign() -> str:
+            return str(
+                self._signing_client.get_presigned_url(
+                    "PUT",
+                    self._bucket,
+                    key,
+                    expires=timedelta(seconds=ttl_s),
+                    extra_query_params={"uploadId": upload_id, "partNumber": str(part_number)},
+                )
+            )
+
+        try:
+            return await asyncio.to_thread(_presign)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError, ValueError) as exc:
+            raise _translate(exc) from exc
+
+    async def list_parts(self, key: str, upload_id: str) -> Sequence[StoredPart]:
+        def _list() -> list[StoredPart]:
+            found: list[StoredPart] = []
+            marker: str | None = None
+            while True:
+                page = self._client._list_parts(
+                    self._bucket, key, upload_id, max_parts=1000, part_number_marker=marker
+                )
+                found.extend(
+                    StoredPart(int(p.part_number), int(p.size or 0), str(p.etag))
+                    for p in page.parts
+                )
+                if not page.is_truncated or not page.next_part_number_marker:
+                    return found
+                marker = str(page.next_part_number_marker)
+
+        try:
+            return await asyncio.to_thread(_list)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise _translate(exc) from exc
+
+    async def complete_multipart(
+        self, key: str, upload_id: str, parts: Sequence[StoredPart]
+    ) -> None:
+        def _complete() -> None:
+            self._client._complete_multipart_upload(
+                self._bucket, key, upload_id, [Part(p.part_number, p.etag) for p in parts]
+            )
+
+        try:
+            await asyncio.to_thread(_complete)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise _translate(exc) from exc
+
+    async def object_size(self, key: str) -> int | None:
+        def _stat() -> int | None:
+            try:
+                return int(self._client.stat_object(self._bucket, key).size or 0)
+            except S3Error as exc:
+                if exc.code in ("NoSuchKey", "NoSuchObject"):
+                    return None
+                raise
+
+        try:
+            return await asyncio.to_thread(_stat)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise _translate(exc) from exc
+
+
+# S3 codes of a multipart completion the storage refused: the caller's parts,
+# not the infrastructure, are at fault (a ``common.conflict``, not a 500).
+_PART_REJECTED_CODES = frozenset({"InvalidPart", "InvalidPartOrder", "EntityTooSmall"})
+
 
 def _translate(exc: Exception) -> AppError:
     """Map a driver-level failure onto the shared framework hierarchy
     (03-api-spec §4). ``NoSuchKey`` is the one caller-branchable case
     (``common.not_found``/404); everything else -- connection refused,
     timeout, AccessDenied, NoSuchBucket, invalid expiry -- folds into the
-    500-class ``common.internal`` (R6 precedent)."""
-    if isinstance(exc, S3Error) and exc.code == "NoSuchKey":
-        return NotFoundError("object does not exist in storage")
+    500-class ``common.internal`` (R6 precedent). The multipart methods add
+    two more: ``NoSuchUpload`` (the upload is gone) is a ``NotFoundError`` and
+    a rejected part list (``InvalidPart``/``InvalidPartOrder``/
+    ``EntityTooSmall``) a ``ConflictError``."""
+    if isinstance(exc, S3Error):
+        if exc.code == "NoSuchKey":
+            return NotFoundError("object does not exist in storage")
+        if exc.code == "NoSuchUpload":
+            return NotFoundError("multipart upload does not exist in storage")
+        if exc.code in _PART_REJECTED_CODES:
+            return ConflictError("storage rejected the uploaded parts")
     return AppError("storage operation failed", code="common.internal")
 
 

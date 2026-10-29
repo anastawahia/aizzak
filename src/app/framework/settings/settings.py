@@ -12,11 +12,19 @@ here as configuration, not hard-coded at call sites.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Final, Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.framework.types import Json
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
+
+# S3 protocol limits for multipart uploads, restated here because the framework
+# may not import `app.modules` (contract framework-kernel); the tests pin them
+# equal to the `files.domain` constants of the same name.
+_S3_MIN_PART_BYTES: Final = 5_242_880  # every part but the last is >= 5 MiB
+_S3_MAX_PARTS: Final = 10_000
 
 
 class DatabaseSettings(BaseModel):
@@ -990,6 +998,16 @@ class Limits(BaseModel):
     model_config = _FROZEN
 
     max_upload_bytes: int = 52_428_800  # 50 MB
+    # PLT-01 (WireTwin INC-0), added ahead of the flip of `max_upload_bytes` to
+    # 1 GiB and of `max_space_bytes` to 10 GiB (both land with the multipart
+    # routes). A presigned PUT carries no size of its own, so the edge's body
+    # limit is what bounds its bytes (`client_max_body_size 50m`, under
+    # Cloudflare's 100 MB). Above it an upload is multipart.
+    max_single_put_bytes: int = 52_428_800  # 50 MiB
+    multipart_part_bytes: int = 16_777_216  # 16 MiB
+    # What the knowledge worker may load whole (`storage.get`), checked before
+    # it reads a byte. Above it the document fails as `knowledge.too_large`.
+    knowledge_max_index_bytes: int = 104_857_600  # 100 MiB
     # deferred-adapters-plan.md step 16 (§1-ج) reconciled this whitelist with
     # the ONE thing that actually consumes a `knowledge`-bound upload: the
     # `_ROUTES` dispatch table in `knowledge/adapters/parsers/extractor.py`.
@@ -1206,6 +1224,24 @@ class Limits(BaseModel):
     max_connectors: int = 50
     max_mcp_servers: int = 20
     max_discovered_tools: int = 200
+
+    @model_validator(mode="after")
+    def _multipart_is_signable(self) -> Self:
+        """Fail at boot rather than at the first upload: a part below S3's
+        minimum, above the single-request ceiling, or a ceiling that needs more
+        than 10,000 parts cannot be completed."""
+        if not _S3_MIN_PART_BYTES <= self.multipart_part_bytes <= self.max_single_put_bytes:
+            raise ValueError(
+                "multipart_part_bytes must lie between S3's 5 MiB part minimum and "
+                "max_single_put_bytes"
+            )
+        parts = -(-self.max_upload_bytes // self.multipart_part_bytes)
+        if parts > _S3_MAX_PARTS:
+            raise ValueError(
+                f"max_upload_bytes needs {parts} parts of multipart_part_bytes; "
+                f"S3 allows {_S3_MAX_PARTS}"
+            )
+        return self
 
 
 class Settings(BaseModel):

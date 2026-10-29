@@ -19,7 +19,12 @@ from app.framework.ports.llm_provider import (
 from app.framework.ports.mcp_client import MCPClient, McpTarget, McpTool
 from app.framework.ports.rerank_provider import RerankedDocument, RerankProvider
 from app.framework.ports.secrets_provider import SecretsProvider
-from app.framework.ports.storage_provider import StorageProvider
+from app.framework.ports.storage_provider import (
+    MultipartStorage,
+    ObjectStorage,
+    StorageProvider,
+    StoredPart,
+)
 from app.framework.ports.vector_store import (
     HybridVectorStore,
     SparseVector,
@@ -50,12 +55,15 @@ __all__ = [
     "MCPClient",
     "McpTarget",
     "McpTool",
+    "MultipartStorage",
     "OAuthTokens",
+    "ObjectStorage",
     "RerankProvider",
     "RerankedDocument",
     "SecretsProvider",
     "SparseVector",
     "StorageProvider",
+    "StoredPart",
     "StreamEvent",
     "VectorHit",
     "VectorPoint",
