@@ -152,3 +152,35 @@ def test_a_star_source_really_matches_the_four_sections() -> None:
         for layer in ("domain", "application")
     }
     assert all((ELECTRICAL / m.split(".")[-2] / m.split(".")[-1]).is_dir() for m in matched)
+
+
+# --------------------------------------------------------------------------- #
+# The count in the live documents (PLT-23, INC0-AC-8)                         #
+# --------------------------------------------------------------------------- #
+# `CLAUDE.md` is deliberately absent: it is edited by the owner at merge
+# (INC0-Q-7), and dated records under `docs/delivery/` are never rewritten.
+_NINE = {
+    "docs/architecture.md": "تسعةُ عقودٍ في `.importlinter`",
+    "docs/architecture.html": "تسعةُ عقودٍ في <code>.importlinter</code>",
+    "docs/quickstart.md": "9 عقود",
+    "docs/stack-commands.md": "تسعة عقود",
+    "docs/design/09-testing-strategy.md": "استقلال أقسام `electrical`",
+}
+_STALE = (
+    "8 عقود",
+    "ثمانية عقود",
+    "ثمانيةُ عقود",
+    "ثمانيةُ عقودٍ",
+    "العقودُ الثمانية",
+    "العقود الثمانية",
+    "8 contracts",
+    "8 kept",
+)
+
+
+@pytest.mark.parametrize("path", sorted(_NINE))
+def test_the_live_docs_state_nine_contracts_and_no_stale_count(path: str) -> None:
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+    assert _NINE[path] in text, f"{path} does not state the nine-contract count"
+    stale = [phrase for phrase in _STALE if phrase in text]
+    assert not stale, f"{path} still carries a stale contract count: {stale}"

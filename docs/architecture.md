@@ -57,7 +57,7 @@
 · `Interface Segregation` · `Domain‑Driven Design` · **`Modular Monolith`** · **`Hexagonal`**
 · **`Plugin Architecture`** · **`Event‑Driven`**
 
-**والمبادئ مفروضةٌ آليّاً لا موصوفة:** ثمانيةُ عقودٍ في `.importlinter` تُشغَّل في CI ضمن
+**والمبادئ مفروضةٌ آليّاً لا موصوفة:** تسعةُ عقودٍ في `.importlinter` تُشغَّل في CI ضمن
 **البوّابات الخمس** (`ruff format --check` · `ruff check` · `mypy --strict` · `lint-imports` ·
 `pytest`) — [§09](#09--قواعد-الاعتماد). وفي الوظيفة نفسِها تُختبَر قواعدُ التنبيه بـ`promtool test rules`
 و`amtool check-config` (‏`deploy/prometheus/test-rules.sh`).
@@ -243,7 +243,7 @@ graph TD
 graph TD
     API["طبقة الواجهة (API)<br/>15 موجّهاً · WebSocket · SSE · 7 وسائط"]
     Agents["طبقة الوكلاء (Agents)<br/>5 وكلاء + Orchestrator"]
-    Modules["وحدات الأعمال (Modules)<br/>12 وحدة · Domain · Application · Ports"]
+    Modules["وحدات الأعمال (Modules)<br/>13 وحدة · Domain · Application · Ports"]
     Framework["طبقة الإطار (Framework)<br/>24 منفذاً · Registry · DI · EventBus · Tools · Providers"]
     Infra["البنية التحتية (Adapters)<br/>Repositories · Redis × 2 · MinIO · Qdrant<br/>Vault · Firebase · OpenAI/Ollama خلف ProviderGuard"]
 
@@ -260,7 +260,7 @@ graph TD
 |---|---|---|---|
 | **الواجهة (API)** | `src/app/api/` | محوّل قيادة | 15 موجّهاً `‎/api/v1`، WebSocket، SSE، DTO — و**سبعُ وسائط**: سقفُ الطلبات الجارية (`inflight`) · مقاييسُ RED · المصادقة (+ `Principal` مخبّأ) · RBAC · حدُّ المعدّل بدلوَين · المهامُّ الثقيلة لكلّ مستخدم · **الضغطُ العكسيّ لطابور الفهرسة** — بلا منطق أعمال |
 | **الوكلاء** | `src/app/agents/` | منسّق | BaseAgent، دورة الحياة، Orchestrator (عدٌّ وتسعيرٌ وتحويلٌ حول كلّ نداء نموذج)، استخدام Tools — ينسّق فقط |
-| **الوحدات** | `src/app/modules/` | النواة | 12 وحدة: Domain (نقي) + Application (Use‑Cases) + Ports |
+| **الوحدات** | `src/app/modules/` | النواة | 13 وحدة: Domain (نقي) + Application (Use‑Cases) + Ports |
 | **الإطار** | `src/app/framework/` | الكِرنل | PluginLoader، Registries، WorkflowEngine، EventBus، ToolRegistry، **24 منفذاً مشتركاً**، ConnectionHub، Observability (+ كتالوج المهامّ الدوريّة)، **`providers/`** (Resolver · Fallback · Pricing · Catalog)، Settings، Composition Root |
 | **البنية التحتية** | `src/app/infrastructure/` | محوّل مُقاد | تنفيذ المنافذ فوق Postgres/Redis/MinIO/Qdrant/Vault/Firebase ومزوّدي النماذج — ومنها `monitoring/` (‏`RedisTaskLedger` · `VaultProbe` · `SqlRedisMetricsSource`) و`messaging/stream_retention.py` |
 
@@ -309,11 +309,14 @@ graph TD
     subgraph c6 ["إدارة المنصّة"]
         AdminM["Admin<br/>تطبيقيّةٌ بلا نطاق"]
     end
+    subgraph c7 ["WireTwin"]
+        Electrical["Electrical<br/>هيكلٌ فارغ منذ INC‑0"]
+    end
 
     Files -. حدث .-> Knowledge
 ```
 
-*Fig 4 — Business Modules Map (**12** في v1)*
+*Fig 4 — Business Modules Map (**13** في v1)*
 
 | # | الوحدة | schema | domain | منافذ | ملاحظة |
 |---|---|---|---|---|---|
@@ -329,6 +332,7 @@ graph TD
 | 10 | `integrations` | ✅ | ✅ | 3 | OAuth · MCP بعيد — المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان ([§15](#15--ما-ليس-مبنيّاً-بعد)) |
 | 11 | `usage` | ✅ | ✅ | 2 | منافذُ واردة · `reserve`/`commit` · **ميزانيّةُ كلفة** |
 | 12 | **`admin`** | ✗ | ✗ | 4 | **أُضيفت بعد الاعتماد** |
+| 13 | **`electrical`** | ✗ | ✗ | 0 | هيكل فارغ منذ INC‑0 (WireTwin): أربعة أقسام و`shared`؛ schema وسلسلة هجرات في INC‑1 |
 
 > **`spaces` ليست مستأجراً، وهذا هو التصميم.** الفضاءُ **محورُ الملكية داخل** مساحة العمل: كلُّ ملفٍّ
 > وكلُّ محادثةٍ ينتمي إلى واحدٍ بالضبط، وما يراه الحديثُ هو محتوى فضائه. لكنّ **مساحةَ العمل تبقى حدَّ
@@ -404,7 +408,7 @@ stateDiagram-v2
 المنافذ تُعرَّف في **Framework**، والمحوّلات في **Infrastructure**، والربط في **Composition Root**
 عبر Manual DI (عكس الاعتماد). لا يستورد أحدٌ المحوّلات المحسوسة إلا Composition Root.
 
-`src/app/framework/ports/` يحمل **24 وحدةَ منفذٍ** تعرّف **25 بروتوكولاً** — وكلُّ منفذٍ يُخرج تقنيةً
+`src/app/framework/ports/` يحمل **24 وحدةَ منفذٍ** تعرّف **27 بروتوكولاً** — وكلُّ منفذٍ يُخرج تقنيةً
 كانت ستُستورد مباشرةً. **وأسماءُ المحوّلات أدناه هي أسماءُ الأصناف في الشيفرة.**
 
 **منافذ مُقادة (Driven) — التقنيات الخارجية:**
@@ -418,7 +422,7 @@ stateDiagram-v2
 | `VideoProvider` | ⚠️ — **ملفٌّ فارغ** | — |
 | `WebSearchProvider` | `ExaWebSearchAdapter` — ⚠️ **مكتوبٌ غيرُ موصول** | خارجي |
 | `VectorStore` / `HybridVectorStore` | `QdrantVectorStore` (صندوقٌ لكلّ مساحة · مراجعاتٌ واسمٌ مستعار) | Qdrant |
-| `StorageProvider` | `MinioStorage` | MinIO |
+| `StorageProvider` / `MultipartStorage` | `MinioStorage` (ويحقّق `ObjectStorage` = الاثنين؛ والرفعُ المجزّأ القابل للاستئناف للوحدة `files` وحدها) | MinIO |
 | `CacheProvider` | `RedisCache` × 2 — **المحفوظ** (الافتراضيّ، `redis-stream`) و**القابلُ للطرد** (`redis-cache`) | Redis |
 | `EventPublisher` | `RedisStreamsPublisher` | Redis |
 | `RateLimiter` | `RedisRateLimiter` (Lua ذرّيّ · دلوان في نداءٍ واحد) | Redis |
@@ -458,7 +462,7 @@ stateDiagram-v2
 
 ## 09 · قواعد الاعتماد
 
-مفروضة آلياً عبر `import-linter` في CI (**D‑17**) — **ثمانيةُ عقود**، تُشغَّل ضمن البوّابات الخمس.
+مفروضة آلياً عبر `import-linter` في CI (**D‑17**) — **تسعةُ عقود**، تُشغَّل ضمن البوّابات الخمس.
 
 | الطبقة | تعتمد على | يُمنع استيراده |
 |---|---|---|
@@ -469,9 +473,15 @@ stateDiagram-v2
 | **Framework** | stdlib + تجريداته | API · Agents · Modules · Infrastructure |
 | **Infrastructure** | Framework · Ports | — (لا يستوردها إلا Composition Root) |
 
-**العقودُ الثمانية بالاسم:** الطبقاتُ الخمس · نقاءُ النطاق · حدودُ التطبيق · استقلالُ الوحدات ·
+**العقودُ التسعة بالاسم:** الطبقاتُ الخمس · نقاءُ النطاق · حدودُ التطبيق · استقلالُ الوحدات ·
 استقلالُ الوكلاء · الوكلاءُ بلا API/Infra · البنيةُ التحتيّة عبر Composition Root وحدَه · الكِرنلُ لا
-يستورد الخارج.
+يستورد الخارج · أقسامُ `electrical` مستقلّةٌ و`shared` في القاع.
+
+> **التاسع (`electrical-contexts`) جديدٌ في INC‑0 (WireTwin)،** والثلاثةُ التي قبله من القائمة اتّسعت لتبلغ
+> الوحدةَ الجديدة دون `ignore_imports` جديد: نقاءُ النطاق وحدودُ التطبيق يشملان أقسامَ `electrical.*`
+> (النجمةُ تطابق مكوِّناً واحداً فلا تبلغ عمقَ القسم)، واستقلالُ الوحدات يعدّ `electrical` وحدةً واحدة. والعقدُ
+> الجديد من نوع `layers` بحاوية `app.modules.electrical`: الأقسامُ الأربعة (`drawings` · `circuits` ·
+> `search` · `diagnostics`) مستقلّةٌ بعضها عن بعض و`shared` طبقةٌ تحتها، و`exhaustive` يكسره إن ظهر ابنٌ خامس.
 
 > **واستثناءان مُوقَّعان، لا ثغرتان.** ‏`framework.di.composition_root` مسموحٌ له وحدَه أن يستورد
 > `app.modules.**` و`app.agents.orchestrator` — لأنّ ربطَ المُحسوس بالمجرَّد **هو** عملُه، ولا سبيلَ
@@ -685,13 +695,13 @@ graph TD
 | D‑08 | Tool System | أداة = محوّل فوق Ports + ToolRegistry مستقل |
 | D‑09 | Workflow definition | ثابت بالكود + WorkflowRegistry |
 | D‑10 | Streaming | WebSocket تفاعلي + SSE للردّ الواحد |
-| D‑11 | Modules map | ~~10 وحدات~~ → **12 وحدة** (انظر أدناه) |
+| D‑11 | Modules map | ~~10 وحدات~~ → **13 وحدة** (انظر أدناه) |
 | D‑12 | Workflow conversation | محادثة خاصة بالـ Workflow |
 | D‑13 | Plugin discovery | مسح مجلد + importlib |
 | D‑14 | EmbeddingProvider | خارجي فقط |
 | D‑15 | LLM adapters | أصلي لكل مزوّد |
 | D‑16 | Provider routing | ProviderResolver بلا Fallback → **انظر الانحراف أدناه** |
-| D‑17 | فرض القواعد | import‑linter في CI (8 عقود) |
+| D‑17 | فرض القواعد | import‑linter في CI (9 عقود) |
 | D‑18 | نشر الأحداث | Transactional Outbox |
 | D‑19 | دلالات التسليم | at‑least‑once + Idempotent + DLQ (N=5) |
 | D‑20 | Streams topology | مجرى لكل وحدة + Consumer Groups |
@@ -711,8 +721,8 @@ graph TD
 > - **أسرار موحّدة** عبر Vault Transit للموضعين `credentials` + `integrations` (SEC‑07).
 
 > **انحرافاتٌ مُنفَّذة عن السجلّ — ما بُني فخالف النصّ، وسببُه:**
-> - **`D‑11` صار 12 وحدة:** ‏`spaces` (محورُ ملكيّةٍ داخل المستأجر، ليست مستأجراً) و`admin` (تطبيقيّةٌ
->   بلا نطاقٍ ولا schema). المحجوزُ **3** كما هو.
+> - **`D‑11` صار 13 وحدة:** ‏`spaces` (محورُ ملكيّةٍ داخل المستأجر، ليست مستأجراً) و`admin` (تطبيقيّةٌ
+>   بلا نطاقٍ ولا schema) و`electrical` (WireTwin: هيكلٌ فارغ من أربعة أقسام و`shared` منذ INC‑0، بلا schema). المحجوزُ **3** كما هو.
 > - **`D‑14` استقرّ على خدمةٍ داخليّة:** المزوّدُ «خارجيٌّ» عن `app.*` كما نصّ القرار، لكنّه
 >   **deployable خاصٌّ بنا** — لإبقاء `torch` خارج رسم استيراد التطبيق. ثلاثُ نسخٍ خلف موازِن، ومتّجهُ
 >   الاستعلام مخبّأٌ في `redis-cache`، و**تبديلُ نموذج التضمين مسارٌ لا حادثة**: صناديقُ بمراجعات،
@@ -760,7 +770,7 @@ graph TD
 | التوصية | الحالة |
 |---|---|
 | **Schema لكل Module** داخل Postgres | ✅ **نُفِّذت** — 12 سلسلةَ هجرات، `version_table_schema` لكلّ وحدة |
-| **إبقاء Framework نحيفاً** | 🟡 **قائمة** — الكِرنل نما إلى 24 منفذاً، و`providers/` صار يحمل التحويلَ والتسعير، و`observability/` يحمل كتالوجَ المهامّ الدوريّة. النموُّ في التجريدات لا في المنطق، والعقودُ الثمانية تحرسه — لكنّ الحراسةَ اتّجاهيّةٌ لا حجميّة |
+| **إبقاء Framework نحيفاً** | 🟡 **قائمة** — الكِرنل نما إلى 24 منفذاً، و`providers/` صار يحمل التحويلَ والتسعير، و`observability/` يحمل كتالوجَ المهامّ الدوريّة. النموُّ في التجريدات لا في المنطق، والعقودُ التسعة تحرسه — لكنّ الحراسةَ اتّجاهيّةٌ لا حجميّة |
 | **Outbox Relay** نقطة فشل | 🟡 **قائمة — لكنّها مرئيّةٌ وقابلةٌ للاسترداد** — نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل أيضاً قصَّ المجاري. لكنّ تأخّرَها ينبّه (`AizzakOutboxCycleTimeHigh`)، وقصَّها مهمّةٌ في `TaskLedger`، وما فقده Redis يُعاد من `outbox` (`app.ops.replay`) |
 | **ProviderResolver بلا Fallback (D‑16)** | 🟢 **حُسمت** — تحويلٌ في اتّجاهٍ واحد (سحابيّ → محلّيّ)، وقاطعُ دارةٍ لكلّ مزوّد. والمقايضةُ الباقية: لا تحويلَ بين مزوّدَين سحابيَّين، ولا من محلّيٍّ إلى سحابيّ |
 | **نقاط توسعة Observability** | ✅ **استُهلكت** — `correlation_id` يعبر الحافّةَ والتطبيقَ والعامل في استعلامٍ واحد، و**33 مقياساً**، و**29 قاعدةَ تنبيهٍ تصل** — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوبٌ وحالةٌ تُشعله صناعيّاً |
@@ -791,7 +801,7 @@ graph TD
 
 **منصة الوكلاء الذكية — وثيقة المعمارية v2.2 · مطابَقة للشيفرة (2026‑10‑04)**
 
-`15 مرحلة · 26 قراراً · 12 وحدة · 24 منفذاً · 8 عقود · 35 خدمة · 0 مخالفة حرجة`
+`15 مرحلة · 26 قراراً · 13 وحدة · 24 منفذاً · 9 عقود · 35 خدمة · 0 مخالفة حرجة`
 
 </div>
 

@@ -62,10 +62,11 @@ def test_import_contracts():
 1. **الطبقات** (inward): `api → agents → modules → framework`.
 2. **نقاء النطاق**: `modules.*.domain` لا يستورد framework/infra/تقنيات.
 3. **حدود التطبيق**: `modules.*.application` بلا FastAPI/infra.
-4. **استقلال الوحدات**: الوحدات **العشر** (بما فيها `integrations` و`usage`) لا تستورد بعضها؛ استدعاء `usage`/`integrations` عبر منافذها الواردة فقط.
+4. **استقلال الوحدات**: الوحدات (بما فيها `integrations` و`usage` و`spaces`، و`electrical` وحدةً واحدة) لا تستورد بعضها؛ استدعاء `usage`/`integrations` عبر منافذها الواردة فقط.
 5. **استقلال الوكلاء**: الوكلاء لا يستوردون بعضهم ولا API/infra.
 6. **عزل البنية التحتية**: لا أحد يستورد `infrastructure` إلا Composition Root.
 7. **نحافة الكِرنل**: `framework` لا يستورد الطبقات الخارجية.
+8. **استقلال أقسام `electrical`** (WireTwin، `PLT‑16`): الأقسام الأربعة (`drawings` · `circuits` · `search` · `diagnostics`) لا تستورد بعضها، و`shared` في القاع ولا يستورد قسماً (`exhaustive`: ابنٌ خامس غير معلن يكسر العقد). والعقود 2 و3 و4 اتّسعت لتبلغ الوحدة الجديدة (النجمة تطابق مكوّناً واحداً فلا تبلغ `electrical.<قسم>.domain`) دون `ignore_imports`. ويثبت `tests/architecture/test_electrical_contracts.py` أن كلَّ عقدٍ جديد أو موسَّع **يفشل فعلاً** حين يُخرق، وأن `test_import_contracts.py` يعدّ تسعة عقود ويثبّت `ignore_imports` على المسموح به وحده.
 
 ## 5) اختبارات العقود (Contract)
 - **منافذ ↔ محوّلات:** طقم اختبار مشترك (parametrized) يُشغَّل على كل محوّل مقابل عقد المنفذ ⇒ قابلية الاستبدال (Liskov).
@@ -79,7 +80,7 @@ def test_import_contracts():
 - عزل: قاعدة `aizzak_test` الدائمة في PostgreSQL الحاوي، لا schema/DB مؤقّتة لكلّ اختبار — العزل عبر معرّفاتٍ/بادئاتٍ فريدة (‏`UUIDv7`) تُكنَس صراحةً في كلّ اختبار، ومعاملاتٌ تُلغى حيث يلائم. تُنشأ الأدوار الستّة عند تهيئة حجم Postgres، ويعيد المحضن الهجرات والمنح لكلّ جلسة (‏01-data-model §6: منح الأدوار خطوةُ نشرٍ لا DDL).
 
 ## 7) البوّابات (CI Gates)
-`quality` يشغّل `ruff format --check` → `ruff check` → `mypy --strict` → `lint-imports` → `pytest -rs`؛ البنية المحليّة غائبة على العدّاء فتظهر تخطّياتها بأسبابها. بعده تشغّل وظيفة `integration` ملف التجاوز وسكربتات التزويد نفسها، ثم تختبر الاعتمادات المحلية المختارة تحت `REQUIRE_LIVE=1`. Ollama/التضمين مستبعدان من الوظيفة البعيدة لحجم النموذج/الصورة، وOpenAI/Exa لاحتياجهما مفاتيح مدفوعة. أي فشل ⇒ كسر البناء.
+`quality` يشغّل `ruff format --check` → `ruff check` → `mypy --strict` → `lint-imports` → `pytest -rs`؛ البنية المحليّة غائبة على العدّاء فتظهر تخطّياتها بأسبابها. بعده تشغّل وظيفة `integration` ملف التجاوز وسكربتات التزويد نفسها، ثم تختبر الاعتمادات المحلية المختارة تحت `REQUIRE_LIVE=1`. Ollama/التضمين مستبعدان من الوظيفة البعيدة لحجم النموذج/الصورة، وOpenAI/Exa لاحتياجهما مفاتيح مدفوعة. وظيفة ثالثة `supply-chain` (PLT‑19، NFR‑LIC‑02/NFR‑SEC‑04) تولّد SBOM بصيغة CycloneDX وتفحص التراخيص بسياسة NFR‑LIC‑01 والثغرات المعروفة لاعتماديات **وقت التشغيل** التي تدخل صورة `app` (لا أدوات التطوير)، بالأمر نفسه `deploy/supply-chain/scan.sh` محلياً وفي CI. **تقييم الجودة خارج CI** (SRS D‑23). أي فشل ⇒ كسر البناء.
 
 ## 8) أهداف التغطية
 > تُقاس عبر **`pytest-cov`** (`--cov` + `--cov-report`)، وتُفرض العتبات الرقمية أدناه في CI (مثل `--cov-fail-under`).
