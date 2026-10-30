@@ -185,6 +185,18 @@ mc mb --ignore-existing "aizzak/${test_bucket}" >/dev/null
 # bucket itself, object verbs under it -- and NOTHING at the server level, so
 # `mc ls` on this account lists exactly one bucket and a read of any other
 # fails with AccessDenied.
+#
+# Multipart uploads (PLT-01): S3 authorises CreateMultipartUpload, UploadPart
+# and CompleteMultipartUpload under s3:PutObject, which is already here. Two
+# multipart calls are separate actions and were denied in CI until added:
+#   s3:ListMultipartUploadParts -- ListParts: MinioStorage.list_parts, the
+#                                  resume progress and the check before
+#                                  completing an upload;
+#   s3:AbortMultipartUpload     -- AbortMultipartUpload: the live test that
+#                                  stands in for MinIO's stale-upload sweep.
+# s3:ListBucketMultipartUploads (bucket-level) is NOT granted: nothing calls it.
+# The app itself signs with the root credentials (secret/minio), so this
+# account is the only scoped one and only the test harness uses it.
 policy_file=/tmp/aizzak-test-policy.json
 cat >"${policy_file}" <<EOF
 {
@@ -197,7 +209,10 @@ cat >"${policy_file}" <<EOF
     },
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+        "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload"
+      ],
       "Resource": ["arn:aws:s3:::${test_bucket}/*"]
     }
   ]
