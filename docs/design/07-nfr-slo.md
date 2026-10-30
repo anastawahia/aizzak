@@ -34,12 +34,17 @@
 | نمو التوسّع | أفقي: زيادة نسخ App/Worker خلف نفس طبقة البيانات |
 
 ## 4) الحدود الرقمية (Limits · `LIMITS_*`)
+> **ملاحظة (`INC0‑F‑11`):** حدود `Limits` **ثوابت في الشيفرة** (`framework/settings/settings.py`) لا متغيّرات بيئة؛ والعنوان `LIMITS_*` تسمية تاريخية، ولا اسم `LIMITS_…` موجود في `.env.example`. وتغيير قيمة يعني تغيير الشيفرة.
+
 | الحدّ | القيمة الافتراضية | الفرض |
 |------|-------------------|-------|
-| أقصى حجم ملف مرفوع | 50 MB | `files.too_large` (413) |
+| أقصى حجم ملف مرفوع | 1 GiB = 1,073,741,824 بايت (`Limits.max_upload_bytes`؛ كان 50 MiB) | `files.too_large` (413) |
+| أقصى حجم لرفع بطلب PUT واحد | 50 MiB = 52,428,800 بايت (`Limits.max_single_put_bytes`) — يساوي `client_max_body_size` في الحافة | `files.multipart_required` (413) — ما فوقه يُسجَّل بـ`POST /files/multipart` |
+| حجم جزء الرفع المجزّأ | 16 MiB (`Limits.multipart_part_bytes`): بين حدّ S3 الأدنى 5 MiB و`max_single_put_bytes`؛ 64 جزءاً لـ1 GiB (والحدّ الأعلى لـS3 10,000 جزء) | يرفضه المُدقّق عند الإقلاع إن لم يُوقَّع |
+| أقصى حجم ملف تفهرسه `knowledge` | 100 MiB = 104,857,600 بايت (`Limits.knowledge_max_index_bytes`) — العامل يحمّل الملف كاملاً في ذاكرة 1–2 GiB | `knowledge.too_large` (422): تصير الوثيقة `failed`؛ الملف يُخزَّن ولا يُفهرس |
 | أنواع MIME المسموحة | قائمة بيضاء (pdf, txt, md, docx, png, jpg, webp) | `files.unsupported_type` (415) |
 | أقصى عدد ملفات/Workspace | 10,000 | 409 |
-| **حصّة تخزين/Space** | 1 GiB = 1,073,741,824 بايت (`LIMITS_MAX_SPACE_BYTES`) | `spaces.quota_exceeded` (409) — يُفحص **قبل توقيع رابط الرفع** تحت قفل صفّ الوحدة |
+| **حصّة تخزين/Space** | 10 GiB = 10,737,418,240 بايت (`Limits.max_space_bytes`؛ كانت 1 GiB) | `spaces.quota_exceeded` (409) — يُفحص **قبل توقيع رابط الرفع** تحت قفل صفّ الوحدة |
 | أقصى رموز إدخال/طلب LLM | 32,000 | `agent.input_too_large` (422) |
 | أقصى رموز إخراج/طلب | 4,096 | يُقصّ حسب النموذج |
 | أقصى مقاطع استرجاع RAG (k) | 50 | يُقيَّد في DTO |

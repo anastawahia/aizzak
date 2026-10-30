@@ -24,8 +24,10 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.space_quota import SpaceQuotaService
+from app.framework.errors import ConflictError, NotFoundError
 from app.framework.pagination import Page, decode_id_cursor, encode_id_cursor
 from app.framework.ports.event_outbox import OutboxRecord
+from app.framework.ports.storage_provider import StoredPart
 from app.framework.settings.settings import Limits, MinioSettings
 from app.modules.files.application.use_cases import (
     CompleteUpload,
@@ -33,6 +35,9 @@ from app.modules.files.application.use_cases import (
     FileTransferService,
     FileUseCases,
     FindNamesakes,
+    MultipartRegistrar,
+    MultipartUploadService,
+    RegisteredMultipartUpload,
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
@@ -284,6 +289,66 @@ class RecordingStorage:
         return f"https://put/{key}"
 
 
+class FakeMultipartStorage:
+    """An in-memory ``MultipartStorage``: upload ids, the parts PUT to them,
+    and the objects ``complete_multipart`` joins them into.
+
+    ``put_part`` plays the client's presigned ``PUT``. ``expire`` plays
+    MinIO's stale-upload sweep. Joining checks what S3 checks: each listed part
+    exists with the listed ETag.
+    """
+
+    def __init__(self) -> None:
+        self.uploads: dict[str, dict[int, tuple[int, str]]] = {}
+        self.keys: dict[str, str] = {}
+        self.objects: dict[str, int] = {}
+        self.presigned_parts: list[tuple[str, str, int, int]] = []
+        self.completed: list[tuple[str, str, tuple[int, ...]]] = []
+        self.listed = 0
+        self._next = 0
+
+    async def start_multipart(self, key: str, content_type: str) -> str:
+        self._next += 1
+        upload_id = f"upload-{self._next}"
+        self.uploads[upload_id] = {}
+        self.keys[upload_id] = key
+        return upload_id
+
+    async def presign_upload_part(
+        self, key: str, upload_id: str, part_number: int, ttl_s: int
+    ) -> str:
+        self.presigned_parts.append((key, upload_id, part_number, ttl_s))
+        return f"https://part/{key}?uploadId={upload_id}&partNumber={part_number}"
+
+    async def list_parts(self, key: str, upload_id: str) -> Sequence[StoredPart]:
+        self.listed += 1
+        if upload_id not in self.uploads:
+            raise NotFoundError("upload gone")
+        return [StoredPart(n, s, e) for n, (s, e) in sorted(self.uploads[upload_id].items())]
+
+    async def complete_multipart(
+        self, key: str, upload_id: str, parts: Sequence[StoredPart]
+    ) -> None:
+        held = self.uploads.get(upload_id)
+        if held is None:
+            raise NotFoundError("upload gone")
+        for part in parts:
+            if held.get(part.part_number, (0, ""))[1] != part.etag:
+                raise ConflictError("invalid part")
+        self.completed.append((key, upload_id, tuple(p.part_number for p in parts)))
+        self.objects[key] = sum(held[p.part_number][0] for p in parts)
+        del self.uploads[upload_id]
+
+    async def object_size(self, key: str) -> int | None:
+        return self.objects.get(key)
+
+    def put_part(self, upload_id: str, part_number: int, size: int) -> None:
+        self.uploads[upload_id][part_number] = (size, f"etag-{part_number}-{size}")
+
+    def expire(self, upload_id: str) -> None:
+        self.uploads.pop(upload_id, None)
+
+
 class RecordingOutbox:
     """Minimal ``EventOutbox`` — records every append call, in order."""
 
@@ -354,6 +419,10 @@ class FilesMediaStack:
     # registers through, so a router test exercises the same quota gate
     # production does instead of the bare registrar it used to reach.
     space_quota: SpaceQuotaService[RegisteredUpload]
+    # PLT-01 -- what `POST /api/v1/files/multipart` registers through, and the
+    # in-memory storage whose parts a test PUTs and whose upload it expires.
+    multipart_quota: SpaceQuotaService[RegisteredMultipartUpload]
+    multipart_storage: FakeMultipartStorage
     # The file cascade (`framework/di/file_deletion.py`) — what `DELETE
     # /api/v1/files/{id}` goes through since the delete started reaching the
     # index. On the stack rather than built per test file for `space_quota`'s
@@ -402,8 +471,14 @@ def build_files_media(
     storage = RecordingStorage()
     outbox = RecordingOutbox()
     uow = NoopUnitOfWork()
+    multipart_storage = FakeMultipartStorage()
+    register = RegisterUpload(files_repo, limits, spaces, multipart=multipart_storage)
+    multipart = MultipartUploadService(
+        files_repo, multipart_storage, put_ttl_s=minio.presign_put_ttl_s
+    )
+    multipart_registrar = MultipartRegistrar(register)
     transfers = FileTransferService(
-        RegisterUpload(files_repo, limits, spaces),
+        register,
         files_repo,
         storage,
         put_ttl_s=minio.presign_put_ttl_s,
@@ -417,7 +492,9 @@ def build_files_media(
     knowledge_purge = RecordingFileKnowledgePurge()
     # The same single-instance rule `file_delete` above follows, one step out:
     # the cascade wraps the bundle's OWN `complete`/`rename`/`namesakes`.
-    file_complete = CompleteUploadService(CompleteUpload(files_repo), outbox, uow)
+    file_complete = CompleteUploadService(
+        CompleteUpload(files_repo), outbox, uow, assembler=multipart
+    )
     file_rename = RenameFile(files_repo)
     namesakes = FindNamesakes(files_repo)
     file_deletion = DeleteFileService(file_delete, knowledge=knowledge_purge)
@@ -429,6 +506,8 @@ def build_files_media(
             delete=file_delete,
             namesakes=namesakes,
             space_totals=SummariseSpaces(files_repo),
+            multipart=multipart,
+            multipart_registrar=multipart_registrar,
         ),
         media=MediaUseCases(
             requests=MediaRequestService(RequestMedia(media_repo, limits), outbox, uow),
@@ -447,6 +526,10 @@ def build_files_media(
         space_quota=SpaceQuotaService(
             transfers, spaces, files_repo, uow, limits, RecordingQuotaLock()
         ),
+        multipart_quota=SpaceQuotaService(
+            multipart_registrar, spaces, files_repo, uow, limits, RecordingQuotaLock()
+        ),
+        multipart_storage=multipart_storage,
         file_deletion=file_deletion,
         file_replacement=ReplaceNamesakesService(
             file_complete, file_rename, namesakes=namesakes, erase=file_deletion

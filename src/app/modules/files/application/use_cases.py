@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import (
+    AppError,
     ConflictError,
     NotFoundError,
     TooLargeError,
@@ -35,7 +36,7 @@ from app.framework.errors import (
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import EventOutbox
-from app.framework.ports.storage_provider import StorageProvider
+from app.framework.ports.storage_provider import MultipartStorage, StorageProvider, StoredPart
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.settings.settings import Limits
 from app.framework.types import Uuid
@@ -47,8 +48,11 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    MultipartUpload,
     Sha256,
     StorageKey,
+    UploadMode,
+    check_parts,
 )
 from app.modules.files.ports.inbound import FileView
 from app.modules.files.ports.repository import FileRepository, SpaceFileTotals
@@ -123,10 +127,17 @@ class RegisterUpload:
     thing the decision's order forbids.
     """
 
-    def __init__(self, files: FileRepository, limits: Limits, spaces: ActiveSpaces) -> None:
+    def __init__(
+        self,
+        files: FileRepository,
+        limits: Limits,
+        spaces: ActiveSpaces,
+        multipart: MultipartStorage | None = None,
+    ) -> None:
         self._files = files
         self._limits = limits
         self._spaces = spaces
+        self._multipart = multipart
 
     async def execute(
         self,
@@ -136,6 +147,7 @@ class RegisterUpload:
         name: str,
         content_type: str,
         size_bytes: int,
+        mode: UploadMode = UploadMode.SINGLE,
     ) -> File:
         try:
             file_name = FileName(name)
@@ -155,6 +167,16 @@ class RegisterUpload:
                 f"file exceeds the {self._limits.max_upload_bytes} byte limit",
                 code="files.too_large",
             )
+        # PLT-01: a presigned PUT carries no size of its own and the edge
+        # bounds it at `max_single_put_bytes`, so anything above is multipart.
+        if mode is UploadMode.SINGLE and size_bytes > self._limits.max_single_put_bytes:
+            raise TooLargeError(
+                f"file exceeds the {self._limits.max_single_put_bytes} byte single-upload "
+                "limit; register it as a multipart upload",
+                code="files.multipart_required",
+            )
+        if mode is UploadMode.MULTIPART and size_bytes < 1:
+            raise ValidationError("size_bytes must be at least 1 for a multipart upload")
         if space_id is not None and await self._spaces.get_active(ctx, space_id) is None:
             raise NotFoundError("space not found")
         if await self._files.count(ctx) >= self._limits.max_files_per_workspace:
@@ -163,8 +185,19 @@ class RegisterUpload:
                 code="files.too_many",
             )
 
-        now = utc_now()
         file_id = new_uuid7()
+        storage_key = StorageKey.for_file(ctx.workspace_id, file_id)
+        session: MultipartUpload | None = None
+        if mode is UploadMode.MULTIPART:
+            # Inside the caller's quota lock, so the lock now spans one round
+            # trip to storage (INC0-D-5). A failed insert afterwards leaves an
+            # orphan upload that storage sweeps after its stale-upload expiry.
+            if self._multipart is None:
+                raise AppError("multipart upload is not configured", code="common.internal")
+            upload_id = await self._multipart.start_multipart(storage_key.value, media_type.value)
+            session = MultipartUpload(upload_id, self._limits.multipart_part_bytes)
+
+        now = utc_now()
         file = File(
             id=file_id,
             workspace_id=ctx.workspace_id,
@@ -172,7 +205,7 @@ class RegisterUpload:
             name=file_name,
             content_type=media_type,
             size_bytes=size_bytes,
-            storage_key=StorageKey.for_file(ctx.workspace_id, file_id),
+            storage_key=storage_key,
             checksum=None,
             status=FileStatus.UPLOADED,
             uploaded_by=ctx.user_id,
@@ -180,6 +213,7 @@ class RegisterUpload:
             updated_at=now,
             deleted_at=None,
             version=1,
+            multipart=session,
         )
         await self._files.add(ctx, file)
         return file
@@ -481,13 +515,24 @@ class CompleteUploadService:
     """
 
     def __init__(
-        self, complete_upload: CompleteUpload, outbox: EventOutbox, uow: UnitOfWork
+        self,
+        complete_upload: CompleteUpload,
+        outbox: EventOutbox,
+        uow: UnitOfWork,
+        *,
+        assembler: MultipartUploadService | None = None,
     ) -> None:
         self._complete_upload = complete_upload
         self._outbox = outbox
         self._uow = uow
+        self._assembler = assembler
 
     async def complete(self, ctx: ExecutionContext, *, file_id: Uuid, checksum: str | None) -> File:
+        # PLT-01: a multipart file is assembled by storage BEFORE the unit of
+        # work opens -- no network I/O under an open transaction (R2). A
+        # single-PUT file costs one primary-key read here and nothing else.
+        if self._assembler is not None:
+            await self._assembler.assemble(ctx, file_id)
         async with self._uow.begin(ctx):
             file, events = await self._complete_upload.execute(
                 ctx, file_id=file_id, checksum=checksum
@@ -542,6 +587,185 @@ class SoftDeleteFileService:
             ]
             await self._outbox.append(ctx, records)
             return file
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredMultipartUpload:
+    """A registered multipart file plus the geometry the client cuts it by."""
+
+    file: File
+    part_bytes: int
+    part_count: int
+
+
+class MultipartRegistrar:
+    """``UploadRegistrar[RegisteredMultipartUpload]``
+    (``framework/di/space_quota.py``) -- the multipart twin of
+    ``FileTransferService.register``, so ``POST /files/multipart`` passes the
+    same quota, file-count and idempotency gates as ``POST /files``."""
+
+    def __init__(self, register: RegisterUpload) -> None:
+        self._register = register
+
+    async def register(
+        self,
+        ctx: ExecutionContext,
+        *,
+        space_id: Uuid,
+        name: str,
+        content_type: str,
+        size_bytes: int,
+    ) -> RegisteredMultipartUpload:
+        file = await self._register.execute(
+            ctx,
+            space_id=space_id,
+            name=name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            mode=UploadMode.MULTIPART,
+        )
+        session = file.multipart
+        if session is None:  # pragma: no cover - MULTIPART always yields a session
+            raise AppError("multipart session missing", code="common.internal")
+        return RegisteredMultipartUpload(
+            file=file,
+            part_bytes=session.part_bytes,
+            part_count=session.part_count(file.size_bytes),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SignedPart:
+    part_number: int
+    upload_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class SignedParts:
+    parts: tuple[SignedPart, ...]
+    expires_in: int
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedPart:
+    part_number: int
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class UploadProgress:
+    file_id: Uuid
+    part_bytes: int
+    part_count: int
+    uploaded: tuple[UploadedPart, ...]
+
+
+class MultipartUploadService:
+    """The resumable-upload faces of a registered multipart file: sign part
+    URLs, report what storage holds, and assemble the object at completion.
+
+    Every method opens with the same guard: the file must exist for this
+    workspace and not be deleted (404), must be multipart (409), and must still
+    be ``uploaded`` (409). Nothing here runs under a unit of work -- the calls
+    are storage round trips, which may not sit inside a transaction (R2).
+    """
+
+    def __init__(self, files: FileRepository, storage: MultipartStorage, *, put_ttl_s: int) -> None:
+        self._files = files
+        self._storage = storage
+        self._put_ttl_s = put_ttl_s
+
+    async def _open_upload(
+        self, ctx: ExecutionContext, file_id: Uuid
+    ) -> tuple[File, MultipartUpload]:
+        file = await self._files.get(ctx, file_id)
+        if file is None or file.deleted_at is not None:
+            raise NotFoundError("file not found")
+        if file.multipart is None:
+            raise ConflictError("file was registered as a single upload")
+        if file.status is not FileStatus.UPLOADED:
+            raise ConflictError("file upload is already complete")
+        return file, file.multipart
+
+    async def sign_parts(
+        self, ctx: ExecutionContext, file_id: Uuid, part_numbers: Sequence[int]
+    ) -> SignedParts:
+        file, session = await self._open_upload(ctx, file_id)
+        count = session.part_count(file.size_bytes)
+        if len(set(part_numbers)) != len(part_numbers):
+            raise ValidationError("part numbers must not repeat")
+        if any(not 1 <= n <= count for n in part_numbers):
+            raise ValidationError(f"part numbers must lie in 1..{count}")
+        signed: list[SignedPart] = []
+        for n in part_numbers:
+            url = await self._storage.presign_upload_part(
+                file.storage_key.value, session.upload_id, n, self._put_ttl_s
+            )
+            signed.append(SignedPart(n, url))
+        return SignedParts(parts=tuple(signed), expires_in=self._put_ttl_s)
+
+    async def progress(self, ctx: ExecutionContext, file_id: Uuid) -> UploadProgress:
+        file, session = await self._open_upload(ctx, file_id)
+        try:
+            held = await self._storage.list_parts(file.storage_key.value, session.upload_id)
+        except NotFoundError as exc:
+            raise ConflictError(
+                "multipart upload no longer exists in storage", code="files.upload_expired"
+            ) from exc
+        return UploadProgress(
+            file_id=file.id,
+            part_bytes=session.part_bytes,
+            part_count=session.part_count(file.size_bytes),
+            uploaded=tuple(
+                UploadedPart(p.part_number, p.size_bytes)
+                for p in sorted(held, key=lambda p: p.part_number)
+            ),
+        )
+
+    async def assemble(self, ctx: ExecutionContext, file_id: Uuid) -> None:
+        """Verify the parts and have storage join them. Returns at once for a
+        single-PUT or already-complete file (``CompleteUpload`` judges those).
+        Repeating it after a successful join is safe."""
+        file = await self._files.get(ctx, file_id)
+        if (
+            file is None
+            or file.deleted_at is not None
+            or file.multipart is None
+            or file.status is not FileStatus.UPLOADED
+        ):
+            return
+        session = file.multipart
+        key = file.storage_key.value
+        try:
+            held = await self._storage.list_parts(key, session.upload_id)
+        except NotFoundError:
+            await self._joined_earlier(key, file.size_bytes)
+            return
+        sizes = {p.part_number: p.size_bytes for p in held}
+        check = check_parts(session, file.size_bytes, sizes)
+        if not check.complete:
+            problems = sorted({*check.missing, *check.wrong_size})
+            raise ConflictError(
+                f"{len(problems)} part(s) missing or of unexpected size; first: {problems[:5]}",
+                code="files.upload_incomplete",
+            )
+        count = session.part_count(file.size_bytes)
+        ordered: list[StoredPart] = sorted(
+            (p for p in held if p.part_number <= count), key=lambda p: p.part_number
+        )
+        try:
+            await self._storage.complete_multipart(key, session.upload_id, ordered)
+        except NotFoundError:
+            # A concurrent completion joined the parts first.
+            await self._joined_earlier(key, file.size_bytes)
+
+    async def _joined_earlier(self, key: str, size_bytes: int) -> None:
+        """The upload id is gone: either an earlier attempt already joined it
+        (an object of exactly the declared size exists) or storage swept it."""
+        if await self._storage.object_size(key) != size_bytes:
+            raise ConflictError(
+                "multipart upload no longer exists in storage", code="files.upload_expired"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,3 +912,8 @@ class FileUseCases:
     # are sums over this module's table; the spaces router holds both bundles
     # and is the only place the two halves meet.
     space_totals: SummariseSpaces
+    # PLT-01: the resumable-upload faces (sign parts, progress, assemble), and
+    # the registrar that `framework/di/space_quota.py` gates `POST
+    # /files/multipart` through -- both built over the one `RegisterUpload`.
+    multipart: MultipartUploadService
+    multipart_registrar: MultipartRegistrar

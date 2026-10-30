@@ -139,7 +139,7 @@ class WorkerMediaGenerator:
             # `conversations` does not carry one until step 7 -- there is
             # nothing truthful to write here before then, and inventing one
             # (the workspace's first space, say) would file media under a
-            # space the requester never chose and charge its 1 GiB quota for
+            # space the requester never chose and charge its `Limits.max_space_bytes` quota for
             # it. Row 8-b's `SET NOT NULL` is the check that this was not
             # simply forgotten.
             space_id=None,

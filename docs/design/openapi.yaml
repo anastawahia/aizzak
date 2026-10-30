@@ -332,7 +332,7 @@ paths:
     get:
       tags: [spaces]
       operationId: listSpaces
-      description: "The workspace's active spaces, newest first, each with what it holds. `bytes_used` counts ACTIVE files only and is what the 1 GiB per-space quota is measured against."
+      description: "The workspace's active spaces, newest first, each with what it holds. `bytes_used` counts ACTIVE files only and is what the per-space byte quota (`Limits.max_space_bytes`) is measured against."
       parameters: [ { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SpacePage" } } } }
@@ -374,17 +374,46 @@ paths:
     post:
       tags: [files]
       operationId: registerFile
-      description: Register an upload; returns a presigned PUT URL (MinIO).
+      description: "Register a single-request upload; returns a presigned PUT URL (MinIO). The edge bounds a single PUT at 50 MiB (`Limits.max_single_put_bytes`): a larger `size_bytes` is 413 `files.multipart_required` and must be registered with `registerMultipartFile`. Above `Limits.max_upload_bytes` (1 GiB) it is 413 `files.too_large`."
       parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FileRegisterIn" } } } }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/FileRegisterOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
+  /files/multipart:
+    post:
+      tags: [files]
+      operationId: registerMultipartFile
+      description: "Register a resumable multipart upload (any size up to `Limits.max_upload_bytes`, 1 GiB). Same quota, file-cap and idempotency rules as `registerFile`. Protocol: (1) this call returns `part_size_bytes` and `part_count`; part `n` starts at byte `(n-1)*part_size_bytes` and is `part_size_bytes` long except the last, which is the remainder. (2) `signFileUploadParts` for a batch of part numbers, then `PUT` each part to its URL WITHOUT an `Authorization` header; a URL is valid for `expires_in` seconds, so request them shortly before use. (3) After an interruption, `getFileUpload` and re-upload the parts that are missing or of the wrong size. (4) `completeFile`. An abandoned upload is swept by the storage after its stale-upload expiry (24 h by default)."
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FileRegisterIn" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/FileMultipartRegisterOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /files/{id}/upload:
+    get:
+      tags: [files]
+      operationId: getFileUpload
+      description: "The parts storage already holds for a multipart upload, for resuming. Permission `files:write` (a step of the write protocol). 409 `common.conflict` for a single-PUT or already completed file, 409 `files.upload_expired` once storage swept the upload."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FileUploadOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /files/{id}/upload/part-urls:
+    post:
+      tags: [files]
+      operationId: signFileUploadParts
+      description: "Presigned `PUT` URLs for 1 to 100 distinct part numbers, each within `1..part_count`. 422 for a number out of range or repeated."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FilePartUrlsIn" } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FilePartUrlsOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /files/{id}/complete:
     post:
       tags: [files]
       operationId: completeFile
-      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name is deleted together with its index, so a re-upload under an existing name updates that file instead of leaving two copies answering the same question. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged."
+      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name is deleted together with its index, so a re-upload under an existing name updates that file instead of leaving two copies answering the same question. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/FileCompleteIn" } } } }
       responses:
@@ -1155,10 +1184,29 @@ components:
     FileRegisterIn:
       type: object
       required: [space_id, name, content_type, size_bytes]
-      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the 1 GiB quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0} }
+      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the per-space byte quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0} }
     FileRegisterOut:
       type: object
       properties: { file_id: {type: string, format: uuid}, upload_url: {type: string}, expires_in: {type: integer} }
+    FileMultipartRegisterOut:
+      type: object
+      properties: { file_id: {type: string, format: uuid}, part_size_bytes: {type: integer}, part_count: {type: integer} }
+    FilePartUrlsIn:
+      type: object
+      required: [part_numbers]
+      properties: { part_numbers: { type: array, minItems: 1, maxItems: 100, items: { type: integer, minimum: 1, maximum: 10000 } } }
+    FilePartUrlOut:
+      type: object
+      properties: { part_number: {type: integer}, upload_url: {type: string} }
+    FilePartUrlsOut:
+      type: object
+      properties: { parts: { type: array, items: { $ref: "#/components/schemas/FilePartUrlOut" } }, expires_in: {type: integer} }
+    FileUploadedPartOut:
+      type: object
+      properties: { part_number: {type: integer}, size_bytes: {type: integer} }
+    FileUploadOut:
+      type: object
+      properties: { file_id: {type: string, format: uuid}, part_size_bytes: {type: integer}, part_count: {type: integer}, uploaded_parts: { type: array, items: { $ref: "#/components/schemas/FileUploadedPartOut" } } }
     FileCompleteIn:
       type: object
       properties: { checksum: {type: string, nullable: true} }

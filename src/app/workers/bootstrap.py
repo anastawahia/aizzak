@@ -1639,6 +1639,7 @@ async def build_knowledge_worker_from_env() -> tuple[
         DocumentContentExtractor(limits=settings.limits),
         providers,
         timeout_s=settings.limits.parser_timeout_seconds,
+        max_bytes=settings.limits.knowledge_max_index_bytes,
     )
     # Hoisted out of `BuildSummary`'s argument list by `F-7`: the delivery
     # handler reads back the summary the build just wrote, and two adapters

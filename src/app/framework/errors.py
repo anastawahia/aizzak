@@ -110,6 +110,13 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "files.too_large": ProblemSpec(413, "File exceeds maximum size"),
         "files.unsupported_type": ProblemSpec(415, "Unsupported file type"),
         "files.too_many": ProblemSpec(409, "Workspace file limit reached"),
+        # PLT-01 (WireTwin INC-0): resumable multipart uploads. `multipart_required`
+        # is a single-PUT registration above `Limits.max_single_put_bytes`;
+        # `upload_incomplete` a completion with a missing or wrong-sized part;
+        # `upload_expired` an upload storage has already swept.
+        "files.multipart_required": ProblemSpec(413, "File needs a multipart upload"),
+        "files.upload_incomplete": ProblemSpec(409, "Multipart upload is incomplete"),
+        "files.upload_expired": ProblemSpec(409, "Multipart upload no longer exists"),
         # -- knowledge ------------------------------------------------------ #
         # `knowledge.not_indexed` (409 in 03 §4) is absent for the same reason
         # (§3.64): none of the three knowledge routes is per-document
@@ -126,6 +133,9 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # the same terminal path `knowledge.parse_failed` already takes.
         "knowledge.zip_bomb": ProblemSpec(422, "Document archive failed the zip-bomb guard"),
         "knowledge.parse_timeout": ProblemSpec(422, "Document parsing timed out"),
+        # PLT-01 / INC0-Q-2: the indexing worker loads a file whole, so a file
+        # above `Limits.knowledge_max_index_bytes` is failed up front.
+        "knowledge.too_large": ProblemSpec(422, "Document exceeds the indexing size limit"),
         "knowledge.search_unavailable": ProblemSpec(503, "Knowledge search is not available"),
         # س-32, owner decision 2026-08-26 — the space guard
         # (`knowledge/application/retrieval.py::require_space_scope`). Its own

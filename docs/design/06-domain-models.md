@@ -125,12 +125,16 @@ EV  MemoryForgotten(memory_id, occurred_at)
 ```text
 AR  File { id, workspace_id, name: FileName, content_type: ContentType, size_bytes,
            storage_key: StorageKey, checksum: Sha256, status: FileStatus,
-           uploaded_by, created_at, deleted_at, version }
+           uploaded_by, created_at, deleted_at, version, multipart: MultipartUpload | None }
 VO  FileName     (1..255، مُنقّى من مسارات)
 VO  ContentType  (MIME مسموح ضمن قائمة بيضاء)
 VO  StorageKey   (مفتاح كائن MinIO: workspace_id/uuid)
 VO  Sha256       (بصمة للتحقّق ومنع التكرار)
 VO  FileStatus   (uploaded | scanning | ready | quarantined)
+VO  UploadMode   (single | multipart)                                   # كيف تصل بايتات الملف (FR‑ING‑02)
+VO  MultipartUpload { upload_id: str (1..1024), part_bytes: int (≥ 5 MiB) }   # جلسة الرفع المجزّأ في التخزين
+      part_count(size) = max(1, ceil(size / part_bytes)) · expected_size(n, size) = part_bytes إلا الأخير فالباقي
+FN  check_parts(upload, size_bytes, uploaded: {رقم: حجم}) -> PartsCheck{missing, wrong_size}   # الزائد فوق part_count يُهمل
 EV  FileUploaded(file_id, workspace_id, content_type, size_bytes, occurred_at)   # عالمي → knowledge
 EV  FileDeleted(file_id, workspace_id, occurred_at)
 ```
@@ -138,7 +142,8 @@ EV  FileDeleted(file_id, workspace_id, occurred_at)
 - **INV‑F2:** لا يُتاح ملف للاستخدام إلا بحالة `ready`.
 - **INV‑F3:** أي وكيل داخل الـWorkspace يقرأ أي ملف `ready` (مِلكية على مستوى Workspace لا الوكيل).
 - **INV‑F4 (‏`BE‑RAG‑006`):** الاسم هو الحقل الوحيد القابل للتعديل بعد التسجيل، و**امتداده ثابت**: `File.rename` يقبل اسماً بامتدادٍ مطابق أو بلا امتداد (فيرث الحاليّ) ويرفض ما عداه. البايتات و`content_type` و`storage_key` و`size_bytes` لا يمسّها شيء، فالامتداد ادّعاءٌ عنها يجب أن يظلّ صادقاً. وإعادة التسمية **لا تبثّ حدثاً**: `knowledge` يفهرس بـ`file_id` ولا يخزّن اسماً، فلا مستهلِك لحدثٍ كهذا.
-- **Use‑cases:** `RegisterUpload`, `CompleteUpload`, `ListFiles`, `RenameFile`, `SoftDeleteFile`.
+- **INV‑F5 (‏`PLT‑01`):** الملف المجزّأ يملك `MultipartUpload` واحداً منذ تسجيله، ثابتاً لا يُعاد توجيهه (كسائر ما يصف البايتات). ولا يصير `ready` إلا بعد أن يجمّع التخزين أجزاءه `1..part_count` بالأحجام المتوقعة، فيساوي الكائن المخزَّن `size_bytes` المعلَن بالضبط. الجلسة عمودان في `files.files` (`upload_id`، `part_bytes`) بقيد يوجبهما معاً أو يمنعهما معاً.
+- **Use‑cases:** `RegisterUpload` (بوضع `UploadMode`)، `MultipartRegistrar`، `MultipartUploadService` (`sign_parts` · `progress` · `assemble`)، `CompleteUpload`، `ListFiles`، `RenameFile`، `SoftDeleteFile`. و`CompleteUploadService` يستدعي `assemble` **قبل** فتح وحدة العمل (لا I/O شبكي تحت معاملة مفتوحة).
 
 ---
 

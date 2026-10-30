@@ -22,7 +22,7 @@
 | Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` |
 | Models | `/api/v1/models` | GET(list) |
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
-| Files | `/api/v1/files` | POST(register) · POST `{id}/complete` · GET(list) · GET · PATCH · DELETE |
+| Files | `/api/v1/files` | POST(register) · POST `/multipart` · GET `{id}/upload` · POST `{id}/upload/part-urls` · POST `{id}/complete` · GET(list) · GET · PATCH · DELETE |
 | Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · **POST `/documents`** · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
 | Media | `/api/v1/media` | POST `/jobs` · GET `/jobs/{id}` |
 | Workflows | `/api/v1/workflows` | GET(list) · POST `{key}/run` · GET `/runs/{id}` |
@@ -130,11 +130,32 @@ class ConversationFileOut(BaseModel): file_id: str; pinned_at: datetime
 # Files
 # `space_id` إلزاميّ: هو الوحدة التي تُحمَّل عليها الحصّة، ويُفحص السقف **قبل توقيع رابط
 # الرفع** لا بعده — تحت قفل صفّ الوحدة، وإلّا مرّ رفعان متزامنان بـ600 MiB لكلٍّ منهما
-# على المجموع نفسه فحملت الوحدة 1.2 GiB. تجاوزٌ ⇒ `spaces.quota_exceeded` (409).
+# على المجموع نفسه فحملت الوحدة أكثر من حصّتها (`Limits.max_space_bytes`). تجاوزٌ ⇒ `spaces.quota_exceeded` (409).
 class FileRegisterIn(BaseModel):
     name: str; content_type: str; size_bytes: int; space_id: str
 class FileRegisterOut(BaseModel):
     file_id: str; upload_url: str; expires_in: int       # presigned PUT (MinIO)
+# ⚠️ **الرفع بطلب PUT واحد محدود بـ50 MiB (`Limits.max_single_put_bytes`)** لأن حدّ الحافة
+# (`client_max_body_size 50m`، تحت حدّ Cloudflare 100 MB) هو ما يحدّ بايتاته؛ ما فوقه ⇒ `413
+# files.multipart_required`، وحدّ الملف 1 GiB (`Limits.max_upload_bytes`) ⇒ `413 files.too_large`.
+# **الرفع المجزّأ (`PLT‑01`)**: (1) `POST /files/multipart` بـ`FileRegisterIn` نفسه (يمرّ بحصّة
+# الوحدة وسقف الملفات ومفتاح التكرار) ⇒ `FileMultipartRegisterOut`؛ الجزء `n` يبدأ عند البايت
+# `(n-1)·part_size_bytes` وطوله `part_size_bytes` إلا الأخير فهو الباقي. (2) `POST
+# /files/{id}/upload/part-urls` بأرقام (1..100، كلٌّ في `1..part_count`، بلا تكرار) ثم `PUT` كل
+# جزء إلى رابطه **دون ترويسة `Authorization`**؛ والرابط صالح `expires_in` ثانية فيُطلب قبيل
+# الاستعمال. (3) بعد الانقطاع `GET /files/{id}/upload` ثم تُرفع الأجزاء الناقصة أو الخاطئة
+# الحجم. (4) `POST /files/{id}/complete`: يتحقّق الخادم من الأجزاء `1..part_count` بأحجامها
+# ويجمّعها ثم يمرّ في مسار الإتمام نفسه (حدث `files.file.uploaded.v1` واستبدال السميّ بقاعدة
+# س‑29)؛ جزء ناقص ⇒ `409 files.upload_incomplete` ولا يتغيّر شيء، وإعادة الإتمام بعد تجميع نجح
+# آمنة. الرفع المهجور يكنسه MinIO بعد مدته (24 ساعة افتراضياً) ⇒ `409 files.upload_expired`.
+class FileMultipartRegisterOut(BaseModel):
+    file_id: str; part_size_bytes: int; part_count: int
+class FilePartUrlsIn(BaseModel): part_numbers: list[int]       # 1..100 رقماً، كلٌّ في 1..10000
+class FilePartUrlOut(BaseModel): part_number: int; upload_url: str
+class FilePartUrlsOut(BaseModel): parts: list[FilePartUrlOut]; expires_in: int
+class FileUploadedPartOut(BaseModel): part_number: int; size_bytes: int
+class FileUploadOut(BaseModel):
+    file_id: str; part_size_bytes: int; part_count: int; uploaded_parts: list[FileUploadedPartOut]
 class FileCompleteIn(BaseModel): checksum: str | None = None
 # ⚠️ **إتمامُ الرفع باسمٍ تحمله الوحدة أصلاً يستبدل صاحبَه** (‏س-29 القاعدة ١، قرار
 # المالك 2026‑08‑25): الملفّ الأقدم يُحذف **مع فهرسه**. لا يتغيّر شيءٌ في الجسد ولا في
@@ -347,12 +368,16 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `files.too_large` | 413 | تجاوز حجم الرفع |
 | `files.unsupported_type` | 415 | نوع MIME خارج القائمة البيضاء |
 | `files.too_many` | 409 | بلوغ سقف ملفات المساحة |
+| `files.multipart_required` | 413 | تسجيل رفع بطلب PUT واحد بحجم فوق `max_single_put_bytes` (50 MiB) — يُسجَّل بـ`POST /files/multipart` |
+| `files.upload_incomplete` | 409 | إتمام رفع مجزّأ وجزءٌ ناقص أو بحجم غير متوقَّع — لا يتغيّر شيء، ويكمل العميل الأجزاء ثم يعيد |
+| `files.upload_expired` | 409 | الرفع المجزّأ كنسه MinIO (مهجور) — يُعاد التسجيل |
 | `spaces.duplicate_name` | 409 | اسم وحدةٍ مستعمَل في المساحة (من `23505` على `ux_spaces_ws_name`، لا من قراءةٍ مسبقة) |
-| `spaces.quota_exceeded` | 409 | بلوغ حصّة بايتات الوحدة (1 GiB) عند تسجيل رفع — **لا 413**: الحمولة مشروعة وحالةُ الوحدة هي المانع، والعلاج حذفُ شيء. ولا `usage.quota_exceeded` (429): تلك ميزانيّة فترةٍ تنقضي، وهذه ستبقى متجاوَزةً غداً |
+| `spaces.quota_exceeded` | 409 | بلوغ حصّة بايتات الوحدة (`Limits.max_space_bytes`، 10 GiB) عند تسجيل رفع — **لا 413**: الحمولة مشروعة وحالةُ الوحدة هي المانع، والعلاج حذفُ شيء. ولا `usage.quota_exceeded` (429): تلك ميزانيّة فترةٍ تنقضي، وهذه ستبقى متجاوَزةً غداً |
 | `spaces.cross_space_pin` | 409 | تثبيت ملفٍّ من وحدةٍ أخرى في خيطٍ (‏`02 §2`) — **لا 422**: الطلب سليم والملفّ مقروء، والعلاج «ثبِّته في خيطٍ من وحدته أو ارفع **نسخة**» (لا نقل) |
 | `knowledge.unsupported_type` | 415 | امتداد مستند لا مُحلِّل له |
 | `knowledge.empty_content` | 422 | مستند بلا محتوى للتحليل |
 | `knowledge.parse_failed` | 422 | تعذّر تحليل المستند |
+| `knowledge.too_large` | 422 | ملف أكبر من `Limits.knowledge_max_index_bytes` (100 MiB): لا يُفهرس، وتصير وثيقته `failed` بهذا الرمز (لا يظهر ردّ مشكلة، يظهر في حالة الوثيقة) |
 | `knowledge.search_unavailable` | 503 | البحث المعرفيّ غير منشور (لا مِحوَل تضمين) |
 | `media.invalid_params` | 422 | معاملات توليد خارج الحدود |
 | `media.unsupported_kind` | 422 | نوع وسائط لا مولّد له بعد (الفيديو) — يظهر في `error` المهمّة لا كردّ مشكلة |

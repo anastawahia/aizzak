@@ -61,7 +61,11 @@ from app.modules.admin.application.providers import PlatformProviderUseCases
 from app.modules.admin.application.users import PlatformAdminUseCases
 from app.modules.conversations.application.use_cases import ConversationUseCases
 from app.modules.credentials.application.use_cases import CredentialUseCases
-from app.modules.files.application.use_cases import FileUseCases, RegisteredUpload
+from app.modules.files.application.use_cases import (
+    FileUseCases,
+    RegisteredMultipartUpload,
+    RegisteredUpload,
+)
 from app.modules.files.domain.entities import File
 from app.modules.integrations.application.use_cases import IntegrationsUseCases
 from app.modules.knowledge.application.use_cases import KnowledgeUseCases
@@ -254,11 +258,14 @@ class ApiServices:
     file_replacement: ReplaceNamesakesService[File] | None = None
     # The third space-shaped field, and the only one an EXISTING route needs:
     # `POST /files` registers through it instead of through
-    # `files.transfers.register`, so the 1 GiB ceiling (§3.3) is consulted
+    # `files.transfers.register`, so the `Limits.max_space_bytes` ceiling (§3.3) is consulted
     # under the space's row lock. Generic in its result, and the parameter is
     # `RegisteredUpload` — the concrete type the Composition Root's binding
     # infers — so this bundle keeps the exact shape the router returns.
     space_quota: SpaceQuotaService[RegisteredUpload] | None = None
+    # PLT-01: `space_quota`'s twin for `POST /files/multipart`. Fails closed the
+    # same way when unwired -- never a fallback to the unmetered registrar.
+    multipart_quota: SpaceQuotaService[RegisteredMultipartUpload] | None = None
     # Optional only for small hermetic applications that predate the platform
     # directory. Production wiring always supplies it; the route fails closed
     # if a test application accidentally reaches the admin surface unwired.

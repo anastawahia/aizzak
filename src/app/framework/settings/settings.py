@@ -997,12 +997,11 @@ class Limits(BaseModel):
 
     model_config = _FROZEN
 
-    max_upload_bytes: int = 52_428_800  # 50 MB
-    # PLT-01 (WireTwin INC-0), added ahead of the flip of `max_upload_bytes` to
-    # 1 GiB and of `max_space_bytes` to 10 GiB (both land with the multipart
-    # routes). A presigned PUT carries no size of its own, so the edge's body
-    # limit is what bounds its bytes (`client_max_body_size 50m`, under
-    # Cloudflare's 100 MB). Above it an upload is multipart.
+    max_upload_bytes: int = 1_073_741_824  # 1 GiB -- FR-ING-02, DEC-02 (b); was 50 MiB
+    # PLT-01 (WireTwin INC-0). A presigned PUT carries no size of its own, so
+    # the edge's body limit is what bounds its bytes (`client_max_body_size
+    # 50m`, under Cloudflare's 100 MB). Above it an upload is multipart:
+    # `files.multipart_required`.
     max_single_put_bytes: int = 52_428_800  # 50 MiB
     multipart_part_bytes: int = 16_777_216  # 16 MiB
     # What the knowledge worker may load whole (`storage.get`), checked before
@@ -1041,13 +1040,13 @@ class Limits(BaseModel):
         "image/webp",
     )
     max_files_per_workspace: int = 10_000
-    # `docs/spaces-backend-plan.md` decision 4 / §3.3 -- 1 GiB of BYTES per
+    # `docs/spaces-backend-plan.md` decision 4 / §3.3 -- 10 GiB of BYTES per
     # SPACE, and deliberately a second limit rather than a replacement for the
     # count above: `max_files_per_workspace` bounds the row count of a whole
     # tenant (what protects the table), this bounds the stored volume of one
     # space (what protects the tenant's own budget). Enforced under a row lock
     # by `framework/di/space_quota.py`, never by a bare read-then-write.
-    max_space_bytes: int = 1_073_741_824
+    max_space_bytes: int = 10_737_418_240  # 10 GiB -- INC0-Q-1; was 1 GiB
     # Embedded-image OCR guardrails (rag-indexing-plan.md §3.8, decision
     # س-10). Plan step 5 (`P-09` `P-11`) reads them here rather than from the
     # environment: alpha spreads eleven OCR knobs across `os.getenv` calls and

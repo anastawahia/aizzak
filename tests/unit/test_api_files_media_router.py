@@ -39,6 +39,7 @@ from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
+from app.framework.settings.settings import Limits
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
 from tests.unit.support_access import build_authorization
@@ -120,7 +121,7 @@ class _FakeWsAuth:
 
 
 def _make_app(
-    *, file_deletion: bool = True, file_replacement: bool = True
+    *, file_deletion: bool = True, file_replacement: bool = True, multipart: bool = True
 ) -> tuple[FastAPI, FilesMediaStack]:
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
@@ -151,6 +152,7 @@ def _make_app(
         file_replacement=stack.file_replacement if file_replacement else None,
         media=stack.media,
         space_quota=stack.space_quota,
+        multipart_quota=stack.multipart_quota if multipart else None,
         workspace=_WORKSPACE_USAGE.workspace,
         usage=_WORKSPACE_USAGE.usage,
         credentials=_CREDENTIALS.credentials,
@@ -234,7 +236,17 @@ def test_register_refusals_speak_the_catalog() -> None:
             "space_id": _SPACE,
             "name": "x.pdf",
             "content_type": "application/pdf",
-            "size_bytes": 10**9,
+            "size_bytes": 2 * 1024**3,
+        },
+        headers=_auth(),
+    )
+    needs_multipart = client.post(
+        "/api/v1/files",
+        json={
+            "space_id": _SPACE,
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 50 * 1024**2 + 1,
         },
         headers=_auth(),
     )
@@ -244,6 +256,10 @@ def test_register_refusals_speak_the_catalog() -> None:
         "files.unsupported_type",
     )
     assert (too_large.status_code, too_large.json()["code"]) == (413, "files.too_large")
+    assert (needs_multipart.status_code, needs_multipart.json()["code"]) == (
+        413,
+        "files.multipart_required",
+    )
     assert stack.file_repository.rows == {}
     assert stack.storage.presigned_puts == []
 
@@ -927,3 +943,288 @@ def test_a_failed_create_releases_its_key_so_the_retry_can_proceed() -> None:
     retried = client.post("/api/v1/files", json=ok, headers=_idem("k-5"))
     assert retried.status_code == 201
     assert len(stack.file_repository.rows) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Files — resumable multipart upload (PLT-01)                                  #
+# --------------------------------------------------------------------------- #
+_PART = 16 * 1024**2
+_BIG = 3 * _PART + 5  # 4 parts, the last of 5 bytes
+
+
+def _register_multipart(client: TestClient, **overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "space_id": _SPACE,
+        "name": "plan.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": _BIG,
+    }
+    body.update(overrides)
+    response = client.post("/api/v1/files/multipart", json=body, headers=_auth())
+    assert response.status_code == 201, response.text
+    out: dict[str, object] = response.json()
+    return out
+
+
+def _upload_id(stack: FilesMediaStack, file_id: object) -> str:
+    session = stack.file_repository.rows[str(file_id)].multipart
+    assert session is not None
+    return session.upload_id
+
+
+def test_multipart_register_answers_the_geometry_and_opens_a_storage_upload() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+
+    out = _register_multipart(client)
+
+    assert (out["part_size_bytes"], out["part_count"]) == (_PART, 4)
+    row = stack.file_repository.rows[str(out["file_id"])]
+    assert row.is_multipart and row.status.value == "uploaded"
+    assert stack.storage.presigned_puts == []  # no single-PUT URL was minted
+    assert _upload_id(stack, out["file_id"]) in stack.multipart_storage.uploads
+
+
+def test_multipart_register_is_gated_by_the_space_quota_and_the_file_limit() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    ten_gib = 10 * 1024**3
+
+    too_large = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": _SPACE,
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 1024**3 + 1,
+        },
+        headers=_auth(),
+    )
+    zero = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": _SPACE,
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 0,
+        },
+        headers=_auth(),
+    )
+    unknown_space = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": "nope",
+            "name": "x.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+        },
+        headers=_auth(),
+    )
+
+    assert (too_large.status_code, too_large.json()["code"]) == (413, "files.too_large")
+    assert zero.status_code == 422
+    assert unknown_space.status_code == 404
+    assert stack.file_repository.rows == {}
+    assert stack.multipart_storage.uploads == {}
+    assert ten_gib == Limits().max_space_bytes
+
+
+def test_multipart_register_replays_on_the_same_idempotency_key() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    body = {
+        "space_id": _SPACE,
+        "name": "plan.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": _BIG,
+    }
+    headers = {**_auth(), "Idempotency-Key": "k-1"}
+
+    first = client.post("/api/v1/files/multipart", json=body, headers=headers)
+    second = client.post("/api/v1/files/multipart", json=body, headers=headers)
+    different = client.post(
+        "/api/v1/files/multipart", json={**body, "size_bytes": _BIG + 1}, headers=headers
+    )
+
+    assert (first.status_code, second.status_code) == (201, 201)
+    assert second.json() == first.json()
+    assert len(stack.file_repository.rows) == 1
+    assert len(stack.multipart_storage.uploads) == 1
+    assert different.status_code == 409
+
+
+def test_multipart_register_fails_closed_when_the_quota_is_unwired() -> None:
+    app, stack = _make_app(multipart=False)
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": _SPACE,
+            "name": "a.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 5,
+        },
+        headers=_auth(),
+    )
+    assert (response.status_code, response.json()["code"]) == (500, "common.internal")
+    assert stack.file_repository.rows == {}
+
+
+def test_part_urls_are_signed_for_the_requested_numbers_only() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    out = _register_multipart(client)
+    file_id = out["file_id"]
+    upload_id = _upload_id(stack, file_id)
+
+    response = client.post(
+        f"/api/v1/files/{file_id}/upload/part-urls", json={"part_numbers": [4, 1]}, headers=_auth()
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    key = stack.file_repository.rows[str(file_id)].storage_key.value
+    assert [p["part_number"] for p in body["parts"]] == [4, 1]
+    assert body["parts"][0]["upload_url"].endswith(f"uploadId={upload_id}&partNumber=4")
+    assert body["expires_in"] == 900
+    assert stack.multipart_storage.presigned_parts == [
+        (key, upload_id, 4, 900),
+        (key, upload_id, 1, 900),
+    ]
+
+
+def test_part_urls_refuse_out_of_range_repeated_and_oversized_requests() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    url = f"/api/v1/files/{file_id}/upload/part-urls"
+
+    for numbers in ([0], [5], [1, 1], [], list(range(1, 102))):
+        response = client.post(url, json={"part_numbers": numbers}, headers=_auth())
+        assert response.status_code == 422, numbers
+
+
+def test_part_urls_and_progress_are_404_for_an_unknown_file_and_409_for_a_single_put() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    single = _register(client)["file_id"]
+
+    for method, path in (
+        ("post", "/api/v1/files/nope/upload/part-urls"),
+        ("get", "/api/v1/files/nope/upload"),
+    ):
+        response = getattr(client, method)(
+            path, headers=_auth(), **({"json": {"part_numbers": [1]}} if method == "post" else {})
+        )
+        assert response.status_code == 404
+    response = client.get(f"/api/v1/files/{single}/upload", headers=_auth())
+    assert (response.status_code, response.json()["code"]) == (409, "common.conflict")
+
+
+def test_progress_lists_what_storage_holds_and_expires_with_the_upload() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    upload_id = _upload_id(stack, file_id)
+    stack.multipart_storage.put_part(upload_id, 2, _PART)
+    stack.multipart_storage.put_part(upload_id, 1, _PART)
+
+    response = client.get(f"/api/v1/files/{file_id}/upload", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "file_id": file_id,
+        "part_size_bytes": _PART,
+        "part_count": 4,
+        "uploaded_parts": [
+            {"part_number": 1, "size_bytes": _PART},
+            {"part_number": 2, "size_bytes": _PART},
+        ],
+    }
+    stack.multipart_storage.expire(upload_id)
+    gone = client.get(f"/api/v1/files/{file_id}/upload", headers=_auth())
+    assert (gone.status_code, gone.json()["code"]) == (409, "files.upload_expired")
+
+
+def test_complete_with_a_missing_part_is_409_and_changes_nothing_then_succeeds() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    upload_id = _upload_id(stack, file_id)
+    for number, size in ((1, _PART), (2, _PART), (4, 5)):
+        stack.multipart_storage.put_part(upload_id, number, size)
+
+    incomplete = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert (incomplete.status_code, incomplete.json()["code"]) == (409, "files.upload_incomplete")
+    assert stack.file_repository.rows[str(file_id)].status.value == "uploaded"
+    assert stack.outbox.calls == []
+    assert stack.multipart_storage.completed == []
+
+    stack.multipart_storage.put_part(upload_id, 3, _PART)
+    done = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "ready"
+    key = stack.file_repository.rows[str(file_id)].storage_key.value
+    assert stack.multipart_storage.completed == [(key, upload_id, (1, 2, 3, 4))]
+    assert stack.multipart_storage.objects[key] == _BIG
+    assert len(stack.outbox.calls) == 1 and len(stack.outbox.calls[0][1]) == 1
+
+
+def test_complete_with_a_wrong_sized_part_is_409() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    upload_id = _upload_id(stack, file_id)
+    for number, size in ((1, _PART), (2, _PART - 1), (3, _PART), (4, 5)):
+        stack.multipart_storage.put_part(upload_id, number, size)
+
+    response = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert (response.status_code, response.json()["code"]) == (409, "files.upload_incomplete")
+
+
+def test_complete_of_a_swept_upload_is_409_expired() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    stack.multipart_storage.expire(_upload_id(stack, file_id))
+
+    response = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert (response.status_code, response.json()["code"]) == (409, "files.upload_expired")
+
+
+def test_complete_after_an_assembly_whose_commit_was_lost_still_succeeds() -> None:
+    """The join succeeded but the response was lost: the upload id is gone, the
+    object exists at the declared size, and the retry completes the file."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]
+    upload_id = _upload_id(stack, file_id)
+    key = stack.file_repository.rows[str(file_id)].storage_key.value
+    stack.multipart_storage.expire(upload_id)
+    stack.multipart_storage.objects[key] = _BIG
+
+    response = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+
+
+def test_complete_of_a_multipart_file_replaces_the_older_namesake() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    older = _register(client, name="plan.pdf")["file_id"]
+    client.post(f"/api/v1/files/{older}/complete", headers=_auth())
+    file_id = _register_multipart(client)["file_id"]
+    upload_id = _upload_id(stack, file_id)
+    for number, size in ((1, _PART), (2, _PART), (3, _PART), (4, 5)):
+        stack.multipart_storage.put_part(upload_id, number, size)
+
+    response = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    assert stack.file_repository.rows[str(older)].deleted_at is not None
+    assert stack.knowledge_purge.calls == [str(older)]

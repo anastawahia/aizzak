@@ -69,7 +69,7 @@ class FileRepository(Protocol):
 
     async def bytes_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> int:
         """Total ``size_bytes`` of the ACTIVE files owned by one space — the
-        left-hand side of the 1 GiB quota (``docs/spaces-backend-plan.md``
+        left-hand side of the per-space byte quota (``docs/spaces-backend-plan.md``
         §3.3, step 5). ``0`` for an unknown or empty space.
 
         ``space_id`` is an OPAQUE identifier here: this module does not know

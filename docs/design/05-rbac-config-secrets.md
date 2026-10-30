@@ -165,6 +165,9 @@
 | `POST /agents/{k}/invoke` | `agents:invoke` |
 | `POST /conversations/{id}/messages` | `conversations:write` |
 | `DELETE /files/{id}` | `files:delete` |
+| `POST /files/multipart` | `files:write` |
+| `GET /files/{id}/upload` | `files:write` (خطوة من بروتوكول الكتابة — الاستئناف — لا قراءة لمحتوى الملف) |
+| `POST /files/{id}/upload/part-urls` | `files:write` |
 | `POST /media/jobs` | `media:create` |
 | `POST /workflows/{k}/run` | `workflows:run` |
 | `POST /credentials` | `credentials:manage` |
