@@ -580,6 +580,31 @@ def test_an_exception_of_exactly_90_days_covers(tmp_path: Path) -> None:
     assert _status(tmp_path, exception) == ("excepted", 0)
 
 
+@pytest.mark.parametrize(
+    ("added", "expires"),
+    [
+        ("2027-01-20", "2027-04-19"),  # SR-5: valid on its own terms, 171 days from today
+        ((_TODAY + timedelta(days=1)).isoformat(), (_TODAY + timedelta(days=2)).isoformat()),
+    ],
+)
+def test_an_exception_added_in_the_future_makes_the_policy_invalid(
+    tmp_path: Path, added: str, expires: str
+) -> None:
+    with pytest.raises(sc.InputError, match="future"):
+        _status(tmp_path, _exception(added=added, expires=expires))
+
+
+def test_an_exception_never_covers_more_than_90_days_from_today(tmp_path: Path) -> None:
+    # added <= today and expires - added <= 90 together cap what is left of it.
+    longest = _exception(added=_TODAY.isoformat(), expires=(_TODAY + timedelta(90)).isoformat())
+    assert _status(tmp_path, longest) == ("excepted", 0)
+    for days in (91, 120, 171):
+        later = (_TODAY + timedelta(days)).isoformat()
+        for added in (_TODAY.isoformat(), (_TODAY + timedelta(days - 90)).isoformat()):
+            with pytest.raises(sc.InputError):
+                _status(tmp_path, _exception(added=added, expires=later))
+
+
 def test_an_exception_without_a_decision_makes_the_policy_invalid(tmp_path: Path) -> None:
     with pytest.raises(sc.InputError, match="decision"):
         _policy(tmp_path, _exception(decision=""))
@@ -724,6 +749,16 @@ def test_exit_2_on_a_malformed_audit(tmp_path: Path) -> None:
 def test_exit_2_on_a_broken_policy(tmp_path: Path) -> None:
     sbom = _sbom(_component("a", [_id("MIT")]))
     assert _run(tmp_path, sbom, _audit(("a", "1", [])), "a==1\n", policy="version = [") == 2
+
+
+def test_exit_2_on_an_exception_added_in_the_future(tmp_path: Path) -> None:
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1")]))
+    policy = _POLICY + _exception(added="2027-01-20", expires="2027-04-19")
+    assert _run(tmp_path, sbom, audit, "lib==1.0\n", policy=policy) == 2
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "NOT RUN" in report
+    assert "future" in report
 
 
 def test_exit_2_when_the_sbom_has_no_components(tmp_path: Path) -> None:

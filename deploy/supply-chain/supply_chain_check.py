@@ -653,6 +653,15 @@ def _exception_problem(exc: VulnException, today: date) -> str | None:
 def check_vulnerabilities(
     audit: Mapping[str, Any], frozen: Sequence[str], policy: Policy, today: date
 ) -> VulnReport:
+    for exc in policy.vulnerabilities:
+        # load_policy caps `expires - added` at 90 days; this caps what is LEFT of
+        # it, which a future `added` would otherwise stretch past 90 from today.
+        if exc.added > today:
+            raise InputError(
+                f"policy: [[vulnerability]] {exc.id!r} is dated {exc.added}, after today "
+                f"({today}); an exception cannot start in the future"
+            )
+
     deps = audit.get("dependencies")
     if not isinstance(deps, list):
         raise InputError("audit: no `dependencies` list -- the vulnerability scan did not run")
