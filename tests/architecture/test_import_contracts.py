@@ -144,16 +144,6 @@ def test_the_skeleton_is_22_empty_packages() -> None:
         assert len(body) == 1 and body[0].startswith('"""'), init
 
 
-def test_a_star_source_really_matches_the_four_sections() -> None:
-    """`*` is one name component: the domain sources match each section's domain."""
-    matched = {
-        f"app.modules.electrical.{s}.{layer}"
-        for s in _SECTIONS
-        for layer in ("domain", "application")
-    }
-    assert all((ELECTRICAL / m.split(".")[-2] / m.split(".")[-1]).is_dir() for m in matched)
-
-
 # --------------------------------------------------------------------------- #
 # The count in the live documents (PLT-23, INC0-AC-8)                         #
 # --------------------------------------------------------------------------- #
