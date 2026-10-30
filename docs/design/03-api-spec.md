@@ -380,7 +380,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `knowledge.unsupported_type` | 415 | امتداد مستند لا مُحلِّل له |
 | `knowledge.empty_content` | 422 | مستند بلا محتوى للتحليل |
 | `knowledge.parse_failed` | 422 | تعذّر تحليل المستند |
-| `knowledge.too_large` | 422 | ملف أكبر من `Limits.knowledge_max_index_bytes` (100 MiB): لا يُفهرس، وتصير وثيقته `failed` بهذا الرمز (لا يظهر ردّ مشكلة، يظهر في حالة الوثيقة) |
+| `knowledge.too_large` | 422 | ملف أكبر من `Limits.knowledge_max_index_bytes` (100 MiB): لا يُفهرس، وتصير وثيقته `failed` ويُسجَّل السبب نصّاً في حالتها: رسالةُ الخطأ لا الرمز، كما في `knowledge.parse_timeout`. فلا ردّ مشكلةٍ يحمل الرمز، ولا يميّزه العميل آلياً من فشل التحليل |
 | `knowledge.search_unavailable` | 503 | البحث المعرفيّ غير منشور (لا مِحوَل تضمين) |
 | `media.invalid_params` | 422 | معاملات توليد خارج الحدود |
 | `media.unsupported_kind` | 422 | نوع وسائط لا مولّد له بعد (الفيديو) — يظهر في `error` المهمّة لا كردّ مشكلة |

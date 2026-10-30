@@ -309,14 +309,11 @@ graph TD
     subgraph c6 ["إدارة المنصّة"]
         AdminM["Admin<br/>تطبيقيّةٌ بلا نطاق"]
     end
-    subgraph c7 ["WireTwin"]
-        Electrical["Electrical<br/>هيكلٌ فارغ منذ INC‑0"]
-    end
 
     Files -. حدث .-> Knowledge
 ```
 
-*Fig 4 — Business Modules Map (**13** في v1)*
+*Fig 4 — Business Modules Map (**12** وحدةً عاملة في v1؛ والثالثة عشرة `electrical` هيكلٌ فارغ منذ INC‑0، في الجدول أدناه)*
 
 | # | الوحدة | schema | domain | منافذ | ملاحظة |
 |---|---|---|---|---|---|
