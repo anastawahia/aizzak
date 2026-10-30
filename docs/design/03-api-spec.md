@@ -148,6 +148,9 @@ class FileRegisterOut(BaseModel):
 # ويجمّعها ثم يمرّ في مسار الإتمام نفسه (حدث `files.file.uploaded.v1` واستبدال السميّ بقاعدة
 # س‑29)؛ جزء ناقص ⇒ `409 files.upload_incomplete` ولا يتغيّر شيء، وإعادة الإتمام بعد تجميع نجح
 # آمنة. الرفع المهجور يكنسه MinIO بعد مدته (24 ساعة افتراضياً) ⇒ `409 files.upload_expired`.
+# **الخطوات (2) و(3) و(4) للملفّ المجزّأ لمن سجّله وحده** (SR‑1، CWE‑639): `files:write` صلاحيةٌ على
+# مستوى المساحة، لكنّ روابط الأجزاء وقائمتها لصاحب الرفع؛ وعضوٌ آخر في المساحة نفسها ⇒ `404
+# common.not_found`، كالمستأجر الغريب، فلا يعلم أنّ الرفع موجود.
 class FileMultipartRegisterOut(BaseModel):
     file_id: str; part_size_bytes: int; part_count: int
 class FilePartUrlsIn(BaseModel): part_numbers: list[int]       # 1..100 رقماً، كلٌّ في 1..10000

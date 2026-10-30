@@ -202,8 +202,9 @@ async def register_multipart_file(
 async def get_file_upload(file_id: str, services: Services, ctx: Context) -> FileUploadOut:
     """What storage already holds of a multipart upload, for resuming after an
     interruption. ``files:write``, not a read: it is a step of the write
-    protocol, not a view of the file's content. 404 for an unknown, foreign or
-    deleted file; 409 for a single-PUT or already complete one, and
+    protocol, not a view of the file's content. The registrant's alone (SR-1):
+    404 for an unknown, foreign, deleted, or ANOTHER MEMBER'S file; 409 for a
+    single-PUT or already complete one, and
     ``files.upload_expired`` once storage has swept the upload."""
     progress = await services.files.multipart.progress(ctx, file_id)
     return FileUploadOut(
@@ -223,7 +224,8 @@ async def sign_file_upload_parts(
 ) -> FilePartUrlsOut:
     """Presigned ``PUT`` URLs for the requested part numbers (1..100 per call,
     each within ``1..part_count``, no repeats). They expire after
-    ``expires_in`` seconds, so ask shortly before uploading."""
+    ``expires_in`` seconds, so ask shortly before uploading. The registrant's
+    alone (SR-1): another member of the workspace is answered 404."""
     signed = await services.files.multipart.sign_parts(ctx, file_id, body.part_numbers)
     return FilePartUrlsOut(
         parts=[

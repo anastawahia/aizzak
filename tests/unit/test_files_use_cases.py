@@ -1182,6 +1182,77 @@ async def test_every_method_guards_unknown_foreign_deleted_single_and_finished_f
             await call(finished.id, mine)
 
 
+def _member(user_id: str | None, workspace_id: str = "w1") -> ExecutionContext:
+    """Another caller in the SAME workspace as ``_ctx()`` (whose user is ``u1``)."""
+    return ExecutionContext(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        correlation_id="corr",
+        roles=frozenset({"member"}),
+    )
+
+
+async def test_another_member_of_the_workspace_cannot_sign_list_or_assemble_the_upload() -> None:
+    """SR-1 (CWE-639): ``files:write`` is workspace-wide, but the part URLs and
+    the progress listing of a multipart upload are its registrant's alone. A
+    colleague is answered 404 -- as another tenant is -- and storage is never
+    asked anything on their behalf."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    service = _service(files, storage)
+    file = await _multipart_file(files, storage)  # registered by `u1`
+    _put_all(storage, file)  # every part is there, so only the owner check stops it
+    colleague = _member("u2")
+
+    with pytest.raises(NotFoundError):
+        await service.sign_parts(colleague, file.id, [1])
+    with pytest.raises(NotFoundError):
+        await service.progress(colleague, file.id)
+    with pytest.raises(NotFoundError):
+        await service.assemble(colleague, file.id)
+
+    assert storage.presigned_parts == []
+    assert storage.listed == 0
+    assert storage.completed == []
+
+
+async def test_another_member_cannot_complete_the_upload_and_nothing_changes() -> None:
+    """The completion path as a whole: ``assemble`` refusing is what stops
+    ``CompleteUpload`` from marking the colleague's file ``ready`` without an
+    assembled object, so the 404 must come from it rather than a silent return."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    outbox = _FakeOutbox()
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, _FakeUnitOfWork(), assembler=_service(files, storage)
+    )
+
+    with pytest.raises(NotFoundError):
+        await complete.complete(_member("u2"), file_id=file.id, checksum=None)
+
+    assert files.rows[file.id].status is FileStatus.UPLOADED
+    assert outbox.calls == []
+    assert storage.completed == []
+
+    done = await complete.complete(_ctx(), file_id=file.id, checksum=None)  # the registrant
+    assert done.status is FileStatus.READY
+
+
+@pytest.mark.parametrize("registrant", [None, "u1"])
+async def test_a_missing_identity_on_either_side_matches_nothing(registrant: str | None) -> None:
+    """Fails closed: a context with no user never matches, not even a row with
+    no ``uploaded_by`` (``None == None`` must not open the door)."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    file.uploaded_by = registrant
+
+    with pytest.raises(NotFoundError):
+        await _service(files, storage).sign_parts(_member(None), file.id, [1])
+    if registrant is None:
+        with pytest.raises(NotFoundError):
+            await _service(files, storage).progress(_ctx(), file.id)
+
+
 async def test_progress_lists_the_held_parts_and_reports_expiry() -> None:
     files, storage = _FakeFiles(), FakeMultipartStorage()
     file = await _multipart_file(files, storage)

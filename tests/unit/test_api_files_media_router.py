@@ -67,6 +67,10 @@ _W1 = "018f0000-0000-7000-8000-0000000000w1"
 _SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
+# SR-1: a second member of the SAME workspace, for the registrant-only faces of
+# a multipart upload.
+_COLLEAGUE = "colleague"
+_U2 = "018f0000-0000-7000-8000-0000000000u2"
 _SHA = "a" * 64
 
 
@@ -108,6 +112,8 @@ class _FakeResolver:
 # duplicating it here would leave the same claim in two places to drift.
 class _FakeAuth:
     async def authenticate(self, token: str) -> Principal:
+        if token == _COLLEAGUE:
+            return Principal(workspace_id=_W1, user_id=_U2, roles=frozenset({"owner"}))
         if token != _GOOD:
             raise UnauthorizedError("bad token", code="auth.invalid_token")
         return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset({"owner"}))
@@ -1228,3 +1234,35 @@ def test_complete_of_a_multipart_file_replaces_the_older_namesake() -> None:
     assert response.status_code == 200, response.text
     assert stack.file_repository.rows[str(older)].deleted_at is not None
     assert stack.knowledge_purge.calls == [str(older)]
+
+
+def test_another_member_of_the_workspace_gets_404_on_part_urls_progress_and_complete() -> None:
+    """SR-1 (CWE-639) on the wire: a colleague holding ``files:write`` in the
+    same workspace -- here even an owner -- cannot sign parts into, list, or
+    complete someone else's multipart upload. 404, as for another tenant, and
+    nothing is signed, listed or assembled on their behalf."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register_multipart(client)["file_id"]  # registered by `_U1`
+    upload_id = _upload_id(stack, file_id)
+    for number, size in ((1, _PART), (2, _PART), (3, _PART), (4, 5)):
+        stack.multipart_storage.put_part(upload_id, number, size)
+    colleague = _auth(_COLLEAGUE)
+
+    signed = client.post(
+        f"/api/v1/files/{file_id}/upload/part-urls", json={"part_numbers": [1]}, headers=colleague
+    )
+    progress = client.get(f"/api/v1/files/{file_id}/upload", headers=colleague)
+    completed = client.post(f"/api/v1/files/{file_id}/complete", headers=colleague)
+
+    for response in (signed, progress, completed):
+        assert (response.status_code, response.json()["code"]) == (404, "common.not_found")
+    assert stack.multipart_storage.presigned_parts == []
+    assert stack.multipart_storage.listed == 0
+    assert stack.multipart_storage.completed == []
+    assert stack.file_repository.rows[str(file_id)].status.value == "uploaded"
+    assert stack.outbox.calls == []
+
+    # The registrant is unaffected.
+    done = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+    assert (done.status_code, done.json()["status"]) == (200, "ready")

@@ -166,8 +166,10 @@
 | `POST /conversations/{id}/messages` | `conversations:write` |
 | `DELETE /files/{id}` | `files:delete` |
 | `POST /files/multipart` | `files:write` |
-| `GET /files/{id}/upload` | `files:write` (خطوة من بروتوكول الكتابة — الاستئناف — لا قراءة لمحتوى الملف) |
-| `POST /files/{id}/upload/part-urls` | `files:write` |
+| `GET /files/{id}/upload` | `files:write` (خطوة من بروتوكول الكتابة — الاستئناف — لا قراءة لمحتوى الملف)، **ولمن سجّل الملف وحده** |
+| `POST /files/{id}/upload/part-urls` | `files:write`، **ولمن سجّل الملف وحده** |
+
+> **تحقّقٌ على مستوى الكائن فوق الصلاحية (SR‑1، CWE‑639):** روابط أجزاء الرفع المجزّأ وقائمتها وإتمامه لمن سجّله (`uploaded_by`) وحده. فعضوٌ آخر يحمل `files:write` في المساحة نفسها ⇒ `404`، كالمستأجر الغريب. والسبب أنّ هذه الروابط تُعاد إصدارها، بخلاف رابط PUT الواحد الذي لا يُعطى إلا مرّةً لمن سجّل.
 | `POST /media/jobs` | `media:create` |
 | `POST /workflows/{k}/run` | `workflows:run` |
 | `POST /credentials` | `credentials:manage` |

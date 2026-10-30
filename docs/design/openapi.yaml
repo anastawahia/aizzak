@@ -394,7 +394,7 @@ paths:
     get:
       tags: [files]
       operationId: getFileUpload
-      description: "The parts storage already holds for a multipart upload, for resuming. Permission `files:write` (a step of the write protocol). 409 `common.conflict` for a single-PUT or already completed file, 409 `files.upload_expired` once storage swept the upload."
+      description: "The parts storage already holds for a multipart upload, for resuming. Permission `files:write` (a step of the write protocol), and **the registrant only**: another member of the workspace gets 404, as another tenant does. 409 `common.conflict` for a single-PUT or already completed file, 409 `files.upload_expired` once storage swept the upload."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FileUploadOut" } } } }
@@ -403,7 +403,7 @@ paths:
     post:
       tags: [files]
       operationId: signFileUploadParts
-      description: "Presigned `PUT` URLs for 1 to 100 distinct part numbers, each within `1..part_count`. 422 for a number out of range or repeated."
+      description: "Presigned `PUT` URLs for 1 to 100 distinct part numbers, each within `1..part_count`. **The registrant only**: another member of the workspace gets 404, as another tenant does. 422 for a number out of range or repeated."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FilePartUrlsIn" } } } }
       responses:
@@ -413,7 +413,7 @@ paths:
     post:
       tags: [files]
       operationId: completeFile
-      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name is deleted together with its index, so a re-upload under an existing name updates that file instead of leaving two copies answering the same question. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe."
+      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name is deleted together with its index, so a re-upload under an existing name updates that file instead of leaving two copies answering the same question. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe. Only the member who registered a multipart file may complete it; another member gets 404."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/FileCompleteIn" } } } }
       responses:

@@ -252,6 +252,34 @@ async def test_another_workspace_can_neither_read_sign_nor_complete_the_upload(
         await stack.complete.complete(stranger, file_id=file_id, checksum=None)
 
 
+async def test_another_member_of_the_same_workspace_gets_404_and_writes_nothing(
+    stack: _Stack, repo_spaces: SqlSpaceRepository
+) -> None:
+    """SR-1 against the real row: ``uploaded_by`` as the repository hydrates it
+    is what the registrant check compares, and a colleague under the same RLS
+    context is refused before storage is asked anything."""
+    ws = new_uuid7()
+    owner = _ctx(ws)
+    space = _space(ws)
+    await repo_spaces.add(owner, space)
+    file_id = await _register(stack, owner, space.id, size=10)
+    colleague = _ctx(ws)  # same workspace, another user id
+
+    with pytest.raises(NotFoundError):
+        await stack.multipart.sign_parts(colleague, file_id, [1])
+    with pytest.raises(NotFoundError):
+        await stack.multipart.progress(colleague, file_id)
+    await stack.upload_part(owner, file_id, 1, b"x" * 10)
+    with pytest.raises(NotFoundError):
+        await stack.complete.complete(colleague, file_id=file_id, checksum=None)
+    still = await stack.files.get(owner, file_id)
+    assert still is not None and still.status is FileStatus.UPLOADED
+    assert await stack.storage.object_size(still.storage_key.value) is None
+
+    done = await stack.complete.complete(owner, file_id=file_id, checksum=None)
+    assert done.status is FileStatus.READY
+
+
 async def test_a_swept_upload_is_reported_expired(
     stack: _Stack, repo_spaces: SqlSpaceRepository
 ) -> None:

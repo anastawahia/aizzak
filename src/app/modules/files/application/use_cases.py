@@ -665,9 +665,21 @@ class MultipartUploadService:
     URLs, report what storage holds, and assemble the object at completion.
 
     Every method opens with the same guard: the file must exist for this
-    workspace and not be deleted (404), must be multipart (409), and must still
-    be ``uploaded`` (409). Nothing here runs under a unit of work -- the calls
-    are storage round trips, which may not sit inside a transaction (R2).
+    workspace and not be deleted (404), must belong to the caller (404), must
+    be multipart (409), and must still be ``uploaded`` (409). Nothing here runs
+    under a unit of work -- the calls are storage round trips, which may not
+    sit inside a transaction (R2).
+
+    **Only the registrant may write into an in-flight upload** (SR-1, CWE-639).
+    ``files:write`` is a workspace-wide permission, and before multipart
+    uploads it never reached another member's bytes: the one presigned PUT was
+    handed to whoever registered the file, once, and no route re-issued it.
+    Part URLs and the progress listing are re-issuable, so without this check
+    any member could sign parts into a colleague's upload, and the resume
+    protocol (upload only what ``progress`` does not list) would then have the
+    colleague complete a file whose bytes are someone else's. Another member is
+    answered 404, as another tenant is: the caller has no right to learn that
+    the upload exists.
     """
 
     def __init__(self, files: FileRepository, storage: MultipartStorage, *, put_ttl_s: int) -> None:
@@ -679,7 +691,7 @@ class MultipartUploadService:
         self, ctx: ExecutionContext, file_id: Uuid
     ) -> tuple[File, MultipartUpload]:
         file = await self._files.get(ctx, file_id)
-        if file is None or file.deleted_at is not None:
+        if file is None or file.deleted_at is not None or not _registered_by_caller(ctx, file):
             raise NotFoundError("file not found")
         if file.multipart is None:
             raise ConflictError("file was registered as a single upload")
@@ -725,7 +737,11 @@ class MultipartUploadService:
     async def assemble(self, ctx: ExecutionContext, file_id: Uuid) -> None:
         """Verify the parts and have storage join them. Returns at once for a
         single-PUT or already-complete file (``CompleteUpload`` judges those).
-        Repeating it after a successful join is safe."""
+        Repeating it after a successful join is safe.
+
+        A multipart upload registered by another member is a 404 HERE, not a
+        silent return: returning would let ``CompleteUpload`` mark the file
+        ``ready`` with no assembled object behind it (SR-1)."""
         file = await self._files.get(ctx, file_id)
         if (
             file is None
@@ -734,6 +750,8 @@ class MultipartUploadService:
             or file.status is not FileStatus.UPLOADED
         ):
             return
+        if not _registered_by_caller(ctx, file):
+            raise NotFoundError("file not found")
         session = file.multipart
         key = file.storage_key.value
         try:
@@ -766,6 +784,17 @@ class MultipartUploadService:
             raise ConflictError(
                 "multipart upload no longer exists in storage", code="files.upload_expired"
             )
+
+
+def _registered_by_caller(ctx: ExecutionContext, file: File) -> bool:
+    """``True`` iff the caller is the user who registered ``file``.
+
+    Fails closed on a missing identity on either side: a context with no user
+    (a stream consumer, ``user_id=None``) matches nothing, and neither does a
+    row with no ``uploaded_by``. A multipart file is only ever registered by an
+    authenticated request, so in practice both are set; the point is that
+    ``None == None`` can never open the door."""
+    return ctx.user_id is not None and file.uploaded_by == ctx.user_id
 
 
 @dataclass(frozen=True, slots=True)
