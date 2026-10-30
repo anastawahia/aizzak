@@ -957,5 +957,9 @@ class FileUseCases:
     # PLT-01: the resumable-upload faces (sign parts, progress, assemble), and
     # the registrar that `framework/di/space_quota.py` gates `POST
     # /files/multipart` through -- both built over the one `RegisterUpload`.
+    # No router calls `multipart_registrar`: it is here only so the Composition
+    # Root can hand it to `multipart_quota`, and `POST /files/multipart` goes
+    # through that quota. Calling the registrar directly would skip the space
+    # ceiling, which is `transfers.register`'s rule on `POST /files` too.
     multipart: MultipartUploadService
     multipart_registrar: MultipartRegistrar
