@@ -127,11 +127,15 @@ class _FakeWsAuth:
 
 
 def _make_app(
-    *, file_deletion: bool = True, file_replacement: bool = True, multipart: bool = True
+    *,
+    file_deletion: bool = True,
+    file_replacement: bool = True,
+    multipart: bool = True,
+    limits: Limits | None = None,
 ) -> tuple[FastAPI, FilesMediaStack]:
     registry = InMemoryAgentRegistry()
     conversations = build_conversations()
-    stack = build_files_media(spaces=InMemorySpaces(active={_SPACE}))
+    stack = build_files_media(limits, spaces=InMemorySpaces(active={_SPACE}))
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
             agents=registry,
@@ -991,10 +995,9 @@ def test_multipart_register_answers_the_geometry_and_opens_a_storage_upload() ->
     assert _upload_id(stack, out["file_id"]) in stack.multipart_storage.uploads
 
 
-def test_multipart_register_is_gated_by_the_space_quota_and_the_file_limit() -> None:
+def test_multipart_register_refuses_oversize_zero_bytes_and_an_unknown_space() -> None:
     app, stack = _make_app()
     client = TestClient(app)
-    ten_gib = 10 * 1024**3
 
     too_large = client.post(
         "/api/v1/files/multipart",
@@ -1032,7 +1035,28 @@ def test_multipart_register_is_gated_by_the_space_quota_and_the_file_limit() -> 
     assert unknown_space.status_code == 404
     assert stack.file_repository.rows == {}
     assert stack.multipart_storage.uploads == {}
-    assert ten_gib == Limits().max_space_bytes
+
+
+def test_multipart_register_at_the_workspace_file_cap_opens_no_upload() -> None:
+    """CR #6: ``files.too_many`` is decided BEFORE ``start_multipart``, so a
+    refused registration leaves no orphan upload in storage."""
+    app, stack = _make_app(limits=Limits(max_files_per_workspace=0))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": _SPACE,
+            "name": "plan.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": _BIG,
+        },
+        headers=_auth(),
+    )
+
+    assert (response.status_code, response.json()["code"]) == (409, "files.too_many")
+    assert stack.file_repository.rows == {}
+    assert stack.multipart_storage.uploads == {}
 
 
 def test_multipart_register_replays_on_the_same_idempotency_key() -> None:
