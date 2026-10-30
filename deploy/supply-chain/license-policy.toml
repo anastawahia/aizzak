@@ -40,16 +40,26 @@ extensions = [".ttf", ".otf", ".ttc", ".woff", ".woff2"]
 
 # Package decisions: the owner chose the licence of a package whose metadata is
 # not a plain allowed expression. Unlike [aliases] they are not re-checked
-# against [allow]; an entry without `decision` is invalid and ignored.
+# against [allow]. Each one holds only for what the owner decided ON:
+#   declared  the licence entries the SBOM carried (order-free, as report.md prints
+#             them), and
+#   versions  the releases decided for (`==`, or a lower and an upper bound).
+# A release that declares anything else, or falls outside the range, is a
+# violation ("stale decision"): it goes back to the owner. An entry whose
+# `decision` is not an owner decision id makes the policy invalid (exit 2).
 
 [[package]]
 name = "pyphen"
+declared = ["GPL-2.0-or-later", "MPL-1.1", "GNU Lesser General Public License v2 or later (LGPLv2+)"]
+versions = ">=0.18.1,<0.19"
 expression = "LGPL-2.1-or-later"
 reason = "Triple-licensed (GPL-2.0-or-later, LGPL-2.1-or-later, MPL-1.1); the LGPL branch is chosen. It is compatible with AGPL-3.0 through the 'or later' clause."
 decision = "SRS D-32"
 
 [[package]]
 name = "pycryptodome"
+declared = ["BSD-2-Clause AND Unlicense AND MIT"]
+versions = ">=4.2.0,<4.3"
 expression = "BSD-2-Clause AND Unlicense AND MIT"
 reason = "As declared; SRS D-32 names Unlicense as the equivalent of LicenseRef-Public-Domain."
 decision = "SRS D-32"
@@ -58,7 +68,11 @@ decision = "SRS D-32"
 name = "pypdfium2"
 # Its declared BSD-3-Clause and Apache-2.0, plus the licences of the libraries built into
 # the bundled PDFium binary (notices in the wheel). For THIS package only: none of these
-# ids is in [allow] or in the approved list.
+# ids is in [allow] or in the approved list. ONE release: the notices that were reviewed
+# are those of the 5.14.0 wheel, and a new release can bundle another PDFium build
+# without changing its metadata.
+declared = ["BSD-3-Clause, Apache-2.0, dependency licenses"]
+versions = "==5.14.0"
 expression = "BSD-3-Clause AND Apache-2.0 AND LicenseRef-AGG-2.3 AND FTL AND Unicode-3.0 AND IJG AND libpng-2.0 AND (Apache-2.0 WITH LLVM-exception) AND CC-BY-4.0"
 reason = "PDFium binary: Anti-Grain Geometry 2.3, FreeType (FTL), Unicode-3.0, IJG, libpng-2.0, Apache-2.0 with LLVM exception (llvm-libc), CC-BY-4.0."
 decision = "SRS D-33"

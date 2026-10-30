@@ -170,9 +170,71 @@ def _unmet(expr: Expr, ok_ids: frozenset[str], exceptions: frozenset[str]) -> li
 # ---------------------------------------------------------------------------
 
 
+# An owner decision: an SRS decision (`SRS D-32`) or an increment question of an LLD
+# (`INC0-Q-10`). ASCII only: the policy is matched as text, so the U+2011 hyphen of
+# the Arabic docs, or Arabic-Indic digits, would be another string.
+_DECISION_ID = re.compile(r"SRS D-[0-9]+|INC[0-9]+-Q-[0-9]+")
+
+# A version range of a [[package]] decision: comparisons on plain release numbers.
+_VERSION_CLAUSE = re.compile(r"(==|!=|>=|<=|>|<)\s*([0-9]+(?:\.[0-9]+)*)")
+_RELEASE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+
+VersionRange = tuple[tuple[str, tuple[int, ...]], ...]
+
+
+def _release(text: str) -> tuple[int, ...] | None:
+    """``5.14.0`` -> ``(5, 14)``; None for anything but a plain release number."""
+    if not _RELEASE.fullmatch(text):
+        return None
+    parts = [int(p) for p in text.split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def parse_versions(text: str) -> VersionRange:
+    """Parse ``>=4.2.0,<4.3`` or ``==5.14.0``. The range must be closed above.
+
+    An open range (``>=0.18``) would pass every future release unreviewed, which is
+    exactly what binding a decision to versions exists to stop.
+    """
+    clauses: list[tuple[str, tuple[int, ...]]] = []
+    for raw in text.split(","):
+        found = _VERSION_CLAUSE.fullmatch(raw.strip())
+        release = _release(found.group(2)) if found else None
+        if found is None or release is None:
+            raise ValueError(f"not a version range: {text!r}")
+        clauses.append((found.group(1), release))
+    ops = {op for op, _ in clauses}
+    if "==" not in ops and not ({">=", ">"} & ops and {"<", "<="} & ops):
+        raise ValueError(f"version range {text!r} needs `==`, or a lower and an upper bound")
+    return tuple(clauses)
+
+
+def version_in(version: str, versions: VersionRange) -> bool:
+    """False for a pre-, post-, dev or local release: it is not what was reviewed."""
+    release = _release(version)
+    if release is None:
+        return False
+    checks = {
+        "==": release.__eq__,
+        "!=": release.__ne__,
+        ">=": release.__ge__,
+        "<=": release.__le__,
+        ">": release.__gt__,
+        "<": release.__lt__,
+    }
+    return all(checks[op](bound) for op, bound in versions)
+
+
 @dataclass(frozen=True)
 class PackageDecision:
-    expression: str
+    expression: Expr  # the licence the owner chose for the package
+    # What the owner decided ON. The decision holds only while the SBOM still says
+    # this, for a version in this range; anything else is a stale decision.
+    declared: tuple[str, ...]  # the declared licence entries, as the report shows them
+    versions: VersionRange
+    versions_text: str
     reason: str
     decision: str
 
@@ -183,8 +245,8 @@ class VulnException:
     package: str
     reason: str
     decision: str
-    added: date | None
-    expires: date | None
+    added: date
+    expires: date
 
 
 @dataclass(frozen=True)
@@ -219,11 +281,89 @@ def _section(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
-def _date(value: object) -> date | None:
-    return value if isinstance(value, date) else None
+def _entries(data: Mapping[str, Any], key: str, where: str) -> list[Mapping[str, Any]]:
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(e, dict) for e in value):
+        raise InputError(f"policy: {where} must be a list of tables")
+    return value
+
+
+def _text(entry: Mapping[str, Any], key: str, where: str) -> str:
+    value = entry.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InputError(f"policy: {where} needs a non-empty `{key}`: {entry!r}")
+    return value.strip()
+
+
+def _decision(entry: Mapping[str, Any], where: str) -> str:
+    """The owner decision an entry rests on. Free text is refused: it names no one."""
+    value = entry.get("decision")
+    if not isinstance(value, str) or not _DECISION_ID.fullmatch(value):
+        raise InputError(
+            f"policy: {where} needs `decision` naming an owner decision "
+            f"(`SRS D-<n>` or `INC<n>-Q-<n>`, ASCII hyphens), got {value!r}"
+        )
+    return value
+
+
+def _calendar_date(entry: Mapping[str, Any], key: str, where: str) -> date:
+    value = entry.get(key)
+    # tomllib gives `datetime` (a `date` subclass) for a time-of-day value: refused.
+    if type(value) is not date:
+        raise InputError(f"policy: {where} needs `{key}` as a TOML date (YYYY-MM-DD): {entry!r}")
+    return value
+
+
+def _package_decision(entry: Mapping[str, Any]) -> tuple[str, PackageDecision]:
+    name = _text(entry, "name", "a [[package]] entry")
+    where = f"[[package]] {name!r}"
+    try:
+        expression = parse_expression(_text(entry, "expression", where))
+    except ValueError as exc:
+        raise InputError(f"policy: {where}: {exc}") from exc
+    declared = entry.get("declared")
+    if not isinstance(declared, list) or not all(isinstance(d, str) for d in declared):
+        raise InputError(
+            f"policy: {where} needs `declared`, the licence entries the decision was made on"
+        )
+    versions_text = _text(entry, "versions", where)
+    try:
+        versions = parse_versions(versions_text)
+    except ValueError as exc:
+        raise InputError(f"policy: {where}: {exc}") from exc
+    return normalise_name(name), PackageDecision(
+        expression=expression,
+        declared=tuple(declared),
+        versions=versions,
+        versions_text=versions_text,
+        reason=_text(entry, "reason", where),
+        decision=_decision(entry, where),
+    )
+
+
+def _vulnerability_exception(entry: Mapping[str, Any]) -> VulnException:
+    """One dated exception. What does not depend on the day is checked here."""
+    vid = _text(entry, "id", "a [[vulnerability]] entry")
+    where = f"[[vulnerability]] {vid!r}"
+    added = _calendar_date(entry, "added", where)
+    expires = _calendar_date(entry, "expires", where)
+    if expires < added:
+        raise InputError(f"policy: {where} expires ({expires}) before it was added ({added})")
+    if (expires - added).days > MAX_EXCEPTION_DAYS:
+        raise InputError(f"policy: {where} lives longer than {MAX_EXCEPTION_DAYS} days")
+    return VulnException(
+        id=vid,
+        package=normalise_name(_text(entry, "package", where)),
+        reason=_text(entry, "reason", where),
+        decision=_decision(entry, where),
+        added=added,
+        expires=expires,
+    )
 
 
 def load_policy(path: Path) -> Policy:
+    """Read and validate the policy. An entry that widens it without a valid owner
+    decision makes the whole policy invalid (exit 2), rather than being skipped."""
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -233,17 +373,10 @@ def load_policy(path: Path) -> Policy:
 
     allow = _section(data, "allow")
     approved: set[str] = set()
-    for entry in allow.get("approved", []):
-        if not (
-            isinstance(entry, dict)
-            and isinstance(entry.get("id"), str)
-            and isinstance(entry.get("decision"), str)
-            and entry["decision"].strip()
-        ):
-            raise InputError(
-                f"policy: every [allow].approved entry needs `id` and `decision`: {entry!r}"
-            )
-        approved.add(entry["id"])
+    for entry in _entries(allow, "approved", "[allow].approved"):
+        spdx = _text(entry, "id", "an [allow].approved entry")
+        _decision(entry, f"[allow].approved {spdx!r}")
+        approved.add(spdx)
 
     fonts = _section(data, "fonts")
     aliases = _section(data, "aliases")
@@ -251,29 +384,18 @@ def load_policy(path: Path) -> Policy:
         raise InputError("policy: [aliases] must map text to text")
 
     packages: dict[str, PackageDecision] = {}
-    for entry in data.get("package", []):
-        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
-            raise InputError(f"policy: a [[package]] entry needs a `name`: {entry!r}")
-        packages[normalise_name(entry["name"])] = PackageDecision(
-            expression=str(entry.get("expression", "")),
-            reason=str(entry.get("reason", "")),
-            decision=str(entry.get("decision", "")),
-        )
+    for entry in _entries(data, "package", "[[package]]"):
+        name, decision = _package_decision(entry)
+        if name in packages:
+            raise InputError(f"policy: two [[package]] decisions for {name!r}")
+        packages[name] = decision
 
     vulnerabilities: list[VulnException] = []
-    for entry in data.get("vulnerability", []):
-        if not isinstance(entry, dict):
-            raise InputError(f"policy: a [[vulnerability]] entry must be a table: {entry!r}")
-        vulnerabilities.append(
-            VulnException(
-                id=str(entry.get("id", "")),
-                package=normalise_name(str(entry.get("package", ""))),
-                reason=str(entry.get("reason", "")),
-                decision=str(entry.get("decision", "")),
-                added=_date(entry.get("added")),
-                expires=_date(entry.get("expires")),
-            )
-        )
+    for entry in _entries(data, "vulnerability", "[[vulnerability]]"):
+        exception = _vulnerability_exception(entry)
+        if any((e.package, e.id) == (exception.package, exception.id) for e in vulnerabilities):
+            raise InputError(f"policy: two exceptions for {exception.package} {exception.id}")
+        vulnerabilities.append(exception)
 
     return Policy(
         allowed=frozenset(_strings(allow, "spdx")),
@@ -298,7 +420,7 @@ class LicenceRow:
     name: str
     version: str
     licence: str  # the expression as evaluated, or the raw text that could not be read
-    basis: str  # "allowed" | "approved" | "package decision" | "font" | "violation"
+    basis: str  # "allowed" | "approved" | "package decision (<id>)" | "font" | "violation"
     agpl: bool
 
 
@@ -402,30 +524,51 @@ def _is_font_file(component: Mapping[str, Any], policy: Policy) -> bool:
     return component.get("type") == "file" and name.endswith(policy.font_extensions)
 
 
+def _decided(
+    component: Mapping[str, Any], decision: PackageDecision, policy: Policy
+) -> tuple[LicenceRow, str | None]:
+    """A component the owner decided on, provided it is still what was decided on.
+
+    The decision names the expression and is not re-checked against [allow] (SRS
+    D-32: pyphen is LGPL-2.1-or-later, which [allow] lacks). But it holds only for
+    the declared licence data and the versions it was made on: a release that
+    declares something else, or lies outside the range, goes back to the owner.
+    """
+    name = str(component.get("name", ""))
+    version = str(component.get("version", ""))
+    declared = sorted(_licence_texts(component))
+    stale: list[str] = []
+    if not version_in(version, decision.versions):
+        stale.append(f"version {version} is outside {decision.versions_text}")
+    if declared != sorted(decision.declared):
+        stale.append(
+            f"it now declares {declared}, the decision was made on {sorted(decision.declared)}"
+        )
+    if stale:
+        row = LicenceRow(
+            name, version, "; ".join(declared) or "(none declared)", "violation", False
+        )
+        return row, (
+            f"{name} {version}: the {decision.decision} decision is stale "
+            f"({'; '.join(stale)}) -- it needs the owner"
+        )
+    agpl = bool(expression_ids(decision.expression) & policy.agpl)
+    text = expression_text(decision.expression)
+    return LicenceRow(name, version, text, f"package decision ({decision.decision})", agpl), None
+
+
 def _check_component(component: Mapping[str, Any], policy: Policy) -> tuple[LicenceRow, str | None]:
     name = str(component.get("name", ""))
     version = str(component.get("version", ""))
     decision = policy.packages.get(normalise_name(name))
-
-    if decision is not None and decision.decision.strip():
-        # The owner's decision names the expression; it is not re-checked against
-        # [allow] (SRS D-32: pyphen is LGPL-2.1-or-later, which [allow] lacks).
-        try:
-            expr = parse_expression(decision.expression)
-        except ValueError:
-            row = LicenceRow(name, version, decision.expression, "violation", False)
-            return row, f"{name}: the package decision has an unreadable expression"
-        agpl = bool(expression_ids(expr) & policy.agpl)
-        return LicenceRow(name, version, expression_text(expr), "package decision", agpl), None
+    if decision is not None:
+        return _decided(component, decision, policy)
 
     expr_or_none = component_expression(component, policy)
     raw = "; ".join(_licence_texts(component)) or "(none declared)"
-    note = ""
-    if decision is not None:
-        note = " (the [[package]] decision has no `decision` id, so it is not valid)"
     if expr_or_none is None:
         row = LicenceRow(name, version, raw, "violation", False)
-        return row, f"{name} {version}: licence cannot be read: {raw}{note}"
+        return row, f"{name} {version}: licence cannot be read: {raw}"
 
     font = _is_font_file(component, policy)
     ok_ids = policy.allowed | policy.approved | (policy.font_licences if font else frozenset())
@@ -435,7 +578,7 @@ def _check_component(component: Mapping[str, Any], policy: Policy) -> tuple[Lice
     agpl = bool(ids & policy.agpl)
     if unmet:
         row = LicenceRow(name, version, text, "violation", agpl)
-        return row, f"{name} {version}: {text} -- not allowed: {', '.join(unmet)}{note}"
+        return row, f"{name} {version}: {text} -- not allowed: {', '.join(unmet)}"
     if font and ids & policy.font_licences:
         return LicenceRow(name, version, text, "font", agpl), None
     basis = "approved" if ids & (policy.approved - policy.allowed) else "allowed"
@@ -498,17 +641,12 @@ def _frozen_names(frozen: Sequence[str]) -> set[str]:
 
 
 def _exception_problem(exc: VulnException, today: date) -> str | None:
-    """Why an exception is not valid, or None when it is."""
-    if not exc.decision.strip():
-        return "no `decision`"
-    if exc.expires is None or exc.added is None:
-        return "`added` and `expires` are required"
+    """Why a (well-formed) exception does not cover today, or None when it does.
+
+    The decision id, the dates and the 90-day span are checked by load_policy.
+    """
     if exc.expires < today:
         return f"expired on {exc.expires}"
-    if (exc.expires - exc.added).days > MAX_EXCEPTION_DAYS:
-        return f"lives longer than {MAX_EXCEPTION_DAYS} days"
-    if (today - exc.added).days > MAX_EXCEPTION_DAYS:
-        return f"older than {MAX_EXCEPTION_DAYS} days"
     return None
 
 

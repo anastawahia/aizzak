@@ -79,15 +79,21 @@ extensions = [".ttf", ".woff2"]
 
 [[package]]
 name = "Odd_Package"
+declared = ["GPL-3.0-only", "Some Prose Licence"]
+versions = ">=1.0,<2"
 expression = "LGPL-2.1-or-later"
 reason = "chosen branch"
 decision = "SRS D-32"
-
-[[package]]
-name = "undecided"
-expression = "LGPL-2.1-or-later"
-reason = "no decision id"
 """
+
+_ODD = (
+    '\n[[package]]\nname = "odd"\ndeclared = ["GPL-3.0-only"]\nversions = "{versions}"\n'
+    'expression = "MIT"\nreason = "r"\ndecision = "{decision}"\n'
+)
+
+
+def _odd(versions: str = "==1.0", decision: str = "SRS D-32") -> str:
+    return _ODD.format(versions=versions, decision=decision)
 
 
 def _policy(tmp_path: Path, extra: str = "") -> Any:
@@ -144,9 +150,26 @@ def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None
     raw = tomllib.loads((_DIR / "license-policy.toml").read_text(encoding="utf-8"))
     for entry in raw["allow"]["approved"]:
         assert entry["decision"] == "SRS D-32", entry
+    decisions = {entry["name"]: entry["decision"] for entry in raw.get("package", [])}
+    assert decisions == {
+        "pyphen": "SRS D-32",
+        "pycryptodome": "SRS D-32",
+        "pypdfium2": "SRS D-33",
+    }
     for entry in raw.get("package", []):
-        assert entry["decision"] in {"SRS D-32", "SRS D-33"}, entry
         assert entry["reason"], entry
+        assert entry["declared"], entry
+        assert entry["versions"], entry
+    # INC0-Q-10 (owner, 2026-10-30) is the only decision behind a vulnerability exception.
+    for entry in raw.get("vulnerability", []):
+        assert entry["decision"] == "INC0-Q-10", entry
+
+
+def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
+    decision = sc.load_policy(_DIR / "license-policy.toml").packages["pypdfium2"]
+    assert decision.versions_text == "==5.14.0"
+    assert sc.version_in("5.14.0", decision.versions)
+    assert not sc.version_in("5.14.1", decision.versions)
 
 
 def test_an_approved_entry_without_a_decision_is_refused(tmp_path: Path) -> None:
@@ -297,21 +320,128 @@ def test_ofl_on_a_font_file_does_not_allow_other_unknown_ids(tmp_path: Path) -> 
     )
 
 
-def test_a_package_decision_overrides_the_metadata(tmp_path: Path) -> None:
-    component = _component("odd-package", [_id("GPL-3.0-only")])
+_DECIDED_ON = [_id("GPL-3.0-only"), _name("Some Prose Licence")]
+
+
+def test_a_package_decision_applies_to_what_it_was_decided_on(tmp_path: Path) -> None:
+    # Order-free: the SBOM may list the same entries in another order.
+    component = _component("odd-package", list(reversed(_DECIDED_ON)))
     report = sc.check_licences(_sbom(component), _policy(tmp_path))
     assert not report.violations
-    assert report.rows[0].basis == "package decision"
+    assert report.rows[0].basis == "package decision (SRS D-32)"
     assert report.rows[0].licence == "LGPL-2.1-or-later"
 
 
-def test_a_package_decision_without_a_decision_id_is_invalid(tmp_path: Path) -> None:
-    ok = _component("undecided", [_id("MIT")])
-    bad = _component("undecided", [_id("GPL-3.0-only")])
-    assert not _violations(tmp_path, ok)
-    violations = _violations(tmp_path, bad)
-    assert violations
-    assert "decision" in violations[0]
+@pytest.mark.parametrize(
+    "licenses",
+    [
+        [_id("GPL-3.0-only")],  # an entry dropped
+        [*_DECIDED_ON, _id("SSPL-1.0")],  # an entry added
+        [_id("GPL-2.0-only"), _name("Some Prose Licence")],  # an entry changed
+        [],  # nothing declared any more
+    ],
+)
+def test_a_package_decision_is_stale_when_the_declared_licence_changes(
+    tmp_path: Path, licenses: list[dict[str, Any]]
+) -> None:
+    report = sc.check_licences(_sbom(_component("odd-package", licenses)), _policy(tmp_path))
+    assert len(report.violations) == 1
+    assert "SRS D-32 decision is stale" in report.violations[0]
+    assert "needs the owner" in report.violations[0]
+    assert report.rows[0].basis == "violation"
+
+
+@pytest.mark.parametrize("version", ["0.9", "2.0", "2", "1.5rc1", "1.5.post1", "1.5+local", ""])
+def test_a_package_decision_is_stale_outside_its_version_range(
+    tmp_path: Path, version: str
+) -> None:
+    component = _component("odd-package", _DECIDED_ON)
+    component["version"] = version
+    violations = sc.check_licences(_sbom(component), _policy(tmp_path)).violations
+    assert len(violations) == 1
+    assert "is outside >=1.0,<2" in violations[0]
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.0.0", "1.5", "1.99.3"])
+def test_a_package_decision_holds_inside_its_version_range(tmp_path: Path, version: str) -> None:
+    component = _component("odd-package", _DECIDED_ON)
+    component["version"] = version
+    assert not sc.check_licences(_sbom(component), _policy(tmp_path)).violations
+
+
+@pytest.mark.parametrize(
+    ("spec", "inside", "outside"),
+    [
+        ("==5.14.0", ["5.14", "5.14.0", "5.14.0.0"], ["5.14.1", "5.13.9", "5.15"]),
+        (">=4.2.0,<4.3", ["4.2", "4.2.0", "4.2.9"], ["4.1.9", "4.3", "4.3.0", "5"]),
+        (">1,<=2,!=1.5", ["1.1", "2", "2.0"], ["1", "1.5.0", "2.0.1"]),
+    ],
+)
+def test_version_ranges(spec: str, inside: list[str], outside: list[str]) -> None:
+    versions = sc.parse_versions(spec)
+    assert all(sc.version_in(v, versions) for v in inside)
+    assert not any(sc.version_in(v, versions) for v in outside)
+
+
+@pytest.mark.parametrize(
+    "versions", ["", ">=1.0", "<2", "!=1.5", "~=1.0", "==1.*", ">=1.0;<2", "==1.0a1", "1.0"]
+)
+def test_an_open_or_unreadable_version_range_makes_the_policy_invalid(
+    tmp_path: Path, versions: str
+) -> None:
+    with pytest.raises(sc.InputError):
+        _policy(tmp_path, _odd(versions=versions))
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "",
+        "anything",
+        "TODO",
+        "owner 2026-10-30",
+        "SRS D-32 and SRS D-33",
+        "srs d-32",
+        "SRS D\u201132",  # U+2011, as the Arabic docs write it: another string
+        "INC0\u2011Q\u20114",
+        "SRS D-\u0663\u0662",  # Arabic-Indic digits
+    ],
+)
+def test_a_free_text_decision_makes_the_policy_invalid(tmp_path: Path, decision: str) -> None:
+    approved = (
+        'version = 1\n[allow]\nspdx = ["MIT"]\n'
+        f'approved = [{{ id = "Zlib", decision = "{decision}" }}]\n'
+    )
+    for text in (
+        _POLICY + _odd(decision=decision),
+        _POLICY + _exception(decision=decision),
+        approved,
+    ):
+        path = tmp_path / "policy.toml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(sc.InputError, match="owner decision"):
+            sc.load_policy(path)
+
+
+@pytest.mark.parametrize("decision", ["SRS D-32", "SRS D-1", "INC0-Q-10", "INC12-Q-3"])
+def test_owner_decision_ids_are_accepted(tmp_path: Path, decision: str) -> None:
+    policy = _policy(tmp_path, _odd(decision=decision) + _exception(decision=decision))
+    assert policy.packages["odd"].decision == decision
+    assert policy.vulnerabilities[0].decision == decision
+
+
+@pytest.mark.parametrize("missing", ["declared", "versions", "expression", "reason"])
+def test_a_package_decision_missing_a_field_makes_the_policy_invalid(
+    tmp_path: Path, missing: str
+) -> None:
+    lines = [ln for ln in _odd().splitlines() if not ln.startswith(f"{missing} =")]
+    with pytest.raises(sc.InputError, match=missing):
+        _policy(tmp_path, "\n".join(lines) + "\n")
+
+
+def test_two_decisions_for_one_package_make_the_policy_invalid(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError, match="two"):
+        _policy(tmp_path, _odd() + _odd())
 
 
 def test_agpl_components_are_flagged_not_refused(tmp_path: Path) -> None:
@@ -367,7 +497,7 @@ def _exception(**fields: str) -> str:
         "id": "PYSEC-1",
         "package": "lib",
         "reason": "waiting for the fix",
-        "decision": "owner 2026-10-30",
+        "decision": "INC0-Q-5",
         "added": "2026-10-20",
         "expires": "2026-11-20",
     }
@@ -444,27 +574,61 @@ def test_an_expired_exception_does_not_cover(tmp_path: Path) -> None:
     assert "expired" in status
 
 
-def test_an_exception_without_a_decision_does_not_cover(tmp_path: Path) -> None:
-    status, violations = _status(tmp_path, _exception(decision=""))
-    assert violations == 1
-    assert "decision" in status
+def test_an_exception_of_exactly_90_days_covers(tmp_path: Path) -> None:
+    expires = (_TODAY + timedelta(days=90)).isoformat()
+    exception = _exception(added=_TODAY.isoformat(), expires=expires)
+    assert _status(tmp_path, exception) == ("excepted", 0)
 
 
-def test_an_exception_that_lives_longer_than_90_days_does_not_cover(tmp_path: Path) -> None:
+def test_an_exception_without_a_decision_makes_the_policy_invalid(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError, match="decision"):
+        _policy(tmp_path, _exception(decision=""))
+
+
+def test_an_exception_that_lives_longer_than_90_days_makes_the_policy_invalid(
+    tmp_path: Path,
+) -> None:
     expires = (_TODAY + timedelta(days=91)).isoformat()
-    status, violations = _status(tmp_path, _exception(added=_TODAY.isoformat(), expires=expires))
-    assert violations == 1
-    assert "90" in status
+    with pytest.raises(sc.InputError, match="90 days"):
+        _policy(tmp_path, _exception(added=_TODAY.isoformat(), expires=expires))
 
 
-def test_an_exception_older_than_90_days_does_not_cover(tmp_path: Path) -> None:
+def test_an_exception_older_than_90_days_makes_the_policy_invalid(tmp_path: Path) -> None:
     added = (_TODAY - timedelta(days=91)).isoformat()
     expires = (_TODAY + timedelta(days=1)).isoformat()
-    assert _status(tmp_path, _exception(added=added, expires=expires))[1] == 1
+    with pytest.raises(sc.InputError, match="90 days"):
+        _policy(tmp_path, _exception(added=added, expires=expires))
 
 
-def test_an_exception_without_dates_does_not_cover(tmp_path: Path) -> None:
-    assert _status(tmp_path, _exception(added="", expires=""))[1] == 1
+def test_an_exception_that_expires_before_it_was_added_makes_the_policy_invalid(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(sc.InputError, match="before"):
+        _policy(tmp_path, _exception(added="2026-10-20", expires="2026-10-19"))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"added": "", "expires": ""},
+        {"expires": ""},
+        {"added": '"2026-10-20"'},  # a string, not a TOML date
+        {"expires": "2026-11-20T00:00:00"},  # a datetime, not a date
+    ],
+)
+def test_an_exception_without_proper_dates_makes_the_policy_invalid(
+    tmp_path: Path, fields: dict[str, str]
+) -> None:
+    with pytest.raises(sc.InputError, match="TOML date"):
+        _policy(tmp_path, _exception(**fields))
+
+
+@pytest.mark.parametrize("missing", ["id", "package", "reason"])
+def test_an_exception_missing_a_field_makes_the_policy_invalid(
+    tmp_path: Path, missing: str
+) -> None:
+    with pytest.raises(sc.InputError, match=missing):
+        _policy(tmp_path, _exception(**{missing: ""}))
 
 
 def test_a_missing_dependencies_list_means_the_scan_did_not_run(tmp_path: Path) -> None:
@@ -570,7 +734,7 @@ def test_the_pdfium_licences_are_decided_for_pypdfium2_alone() -> None:
     policy = sc.load_policy(_DIR / "license-policy.toml")
     decision = policy.packages["pypdfium2"]
     assert decision.decision == "SRS D-33"
-    expr = sc.parse_expression(decision.expression)
+    expr = decision.expression
     pdfium_ids = {
         "LicenseRef-AGG-2.3", "FTL", "Unicode-3.0", "IJG", "libpng-2.0", "CC-BY-4.0",
     }  # fmt: skip
