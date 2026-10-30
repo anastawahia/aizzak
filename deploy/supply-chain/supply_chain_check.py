@@ -7,8 +7,10 @@ so it runs on the bare interpreter of a CI runner, before anything of the
 project is installed.
 
 It fails CLOSED. A component whose licence cannot be read, a text with no alias,
-a vulnerability no valid exception covers, an audit that skipped a package: each
-is a violation or a missing input, never a pass.
+a package decision the release no longer matches, a vulnerability no valid
+exception covers, an SBOM component the audit never saw, an audit that skipped a
+package, a policy entry without an owner decision id: each is a violation or a
+bad input, never a pass.
 
 Exit code: 0 pass, 1 violation, 2 bad or missing input (the scan did not run).
 """
@@ -624,9 +626,31 @@ class VulnRow:
 
 
 @dataclass(frozen=True)
+class ExceptionRow:
+    id: str
+    package: str
+    decision: str
+    added: date
+    expires: date
+    state: str  # "applied" | "not reported by this audit" | "expired on <date>"
+
+
+@dataclass(frozen=True)
 class VulnReport:
     audited: int
     rows: tuple[VulnRow, ...]
+    violations: tuple[str, ...]
+    exceptions: tuple[ExceptionRow, ...] = ()
+
+    @property
+    def excepted(self) -> int:
+        return sum(1 for r in self.rows if r.status == "excepted")
+
+
+@dataclass(frozen=True)
+class CoverageReport:
+    components: int
+    missing: tuple[tuple[str, str, str], ...]  # (name, version, why) of each unaudited one
     violations: tuple[str, ...]
 
 
@@ -662,14 +686,8 @@ def check_vulnerabilities(
                 f"({today}); an exception cannot start in the future"
             )
 
-    deps = audit.get("dependencies")
-    if not isinstance(deps, list):
-        raise InputError("audit: no `dependencies` list -- the vulnerability scan did not run")
-
-    audited: set[str] = set()
-    for dep in deps:
-        if isinstance(dep, dict) and "skip_reason" not in dep and isinstance(dep.get("name"), str):
-            audited.add(normalise_name(dep["name"]))
+    deps = _dependencies(audit)
+    audited = _audited(deps)
     wanted = _frozen_names(frozen)
     if not wanted:
         raise InputError("freeze: no packages -- the runtime environment is empty")
@@ -693,29 +711,100 @@ def check_vulnerabilities(
 
     rows: list[VulnRow] = []
     violations: list[str] = []
+    applied: set[tuple[str, str]] = set()
     for (package, version, vid), (aliases, fixes) in sorted(advisories.items()):
-        status = _vulnerability_status(package, {vid, *aliases}, policy, today)
+        status, used = _vulnerability_status(package, {vid, *aliases}, policy, today)
+        if used is not None:
+            applied.add((used.package, used.id))
         rows.append(
             VulnRow(package, version, vid, tuple(sorted(aliases)), tuple(sorted(fixes)), status)
         )
         if status != "excepted":
             fixed = ", ".join(sorted(fixes)) if fixes else "NO FIXED VERSION"
             violations.append(f"{package} {version}: {vid} (fix: {fixed})")
-    return VulnReport(len(audited), tuple(rows), tuple(violations))
+
+    exceptions = tuple(
+        ExceptionRow(
+            e.id,
+            e.package,
+            e.decision,
+            e.added,
+            e.expires,
+            "applied"
+            if (e.package, e.id) in applied
+            else _exception_problem(e, today) or "not reported by this audit",
+        )
+        for e in policy.vulnerabilities
+    )
+    return VulnReport(len(audited), tuple(rows), tuple(violations), exceptions)
 
 
-def _vulnerability_status(package: str, ids: set[str], policy: Policy, today: date) -> str:
+def _vulnerability_status(
+    package: str, ids: set[str], policy: Policy, today: date
+) -> tuple[str, VulnException | None]:
     problems: list[str] = []
     for exc in policy.vulnerabilities:
         if exc.package != package or exc.id not in ids:
             continue
         problem = _exception_problem(exc, today)
         if problem is None:
-            return "excepted"
+            return "excepted", exc
         problems.append(f"{exc.id}: {problem}")
     if problems:
-        return f"VIOLATION (exception invalid: {'; '.join(problems)})"
-    return "VIOLATION"
+        return f"VIOLATION (exception invalid: {'; '.join(problems)})", None
+    return "VIOLATION", None
+
+
+def _dependencies(audit: Mapping[str, Any]) -> list[Any]:
+    deps = audit.get("dependencies")
+    if not isinstance(deps, list):
+        raise InputError("audit: no `dependencies` list -- the vulnerability scan did not run")
+    return deps
+
+
+def _audited(deps: Sequence[Any]) -> set[str]:
+    return {
+        normalise_name(d["name"])
+        for d in deps
+        if isinstance(d, dict) and "skip_reason" not in d and isinstance(d.get("name"), str)
+    }
+
+
+def check_coverage(
+    sbom: Mapping[str, Any], audit: Mapping[str, Any], frozen: Sequence[str]
+) -> CoverageReport:
+    """Every component of the SBOM must have been audited; each one that was not is
+    named, with why, and is a violation.
+
+    The SBOM describes the environment, the audit covers the freeze, and the two can
+    drift apart: `pip` did (CR #2) -- in the SBOM, out of a `pip freeze` without
+    `--all`, and so out of the audit, while the report said "No known vulnerability".
+    """
+    deps = _dependencies(audit)
+    audited = _audited(deps)
+    skipped = {
+        normalise_name(str(d.get("name", ""))): str(d["skip_reason"])
+        for d in deps
+        if isinstance(d, dict) and "skip_reason" in d
+    }
+    frozen_names = _frozen_names(frozen)
+    components = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
+    missing: list[tuple[str, str, str]] = []
+    for component in components:
+        name = str(component.get("name", ""))
+        key = normalise_name(name)
+        if key in audited:
+            continue
+        if key in skipped:
+            why = f"pip-audit skipped it: {skipped[key]}"
+        elif key not in frozen_names:
+            why = "not in runtime-freeze.txt, so pip-audit never saw it"
+        else:
+            why = "frozen, but absent from audit.json"
+        missing.append((name, str(component.get("version", "")), why))
+    missing.sort()
+    violations = tuple(f"{n} {v}: not audited -- {why}" for n, v, why in missing)
+    return CoverageReport(len(components), tuple(missing), violations)
 
 
 # ---------------------------------------------------------------------------
@@ -723,9 +812,13 @@ def _vulnerability_status(package: str, ids: set[str], policy: Policy, today: da
 # ---------------------------------------------------------------------------
 
 
-def render(licences: LicenceReport, vulns: VulnReport) -> str:
+def _failed(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> bool:
+    return bool(licences.violations or vulns.violations or coverage.violations)
+
+
+def render(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> str:
     out: list[str] = ["# Supply chain report", ""]
-    verdict = "FAIL" if licences.violations or vulns.violations else "PASS"
+    verdict = "FAIL" if _failed(licences, vulns, coverage) else "PASS"
     out += [f"**Result: {verdict}**", ""]
 
     out += ["## Root component", ""]
@@ -753,6 +846,15 @@ def render(licences: LicenceReport, vulns: VulnReport) -> str:
     out.append("")
 
     out += [f"## Known vulnerabilities ({vulns.audited} packages audited)", ""]
+    if coverage.missing:
+        out += [f"**{len(coverage.missing)} SBOM component(s) not audited:**", ""]
+        out += [f"- {n} {v}: {why}" for n, v, why in coverage.missing]
+    else:
+        out.append(
+            f"Not audited: none. Every SBOM component was audited "
+            f"({coverage.components} of {coverage.components})."
+        )
+    out.append("")
     if vulns.violations:
         out += [f"**{len(vulns.violations)} unexcepted finding(s):**", ""]
         out += [f"- {v}" for v in vulns.violations]
@@ -769,6 +871,20 @@ def render(licences: LicenceReport, vulns: VulnReport) -> str:
         ]
     else:
         out.append("No known vulnerability.")
+    out.append("")
+
+    out += ["## Vulnerability exceptions (dated, owner-approved, at most 90 days)", ""]
+    if vulns.exceptions:
+        out += [
+            "| Advisory | Package | Decision | Added | Expires | State |",
+            "|---|---|---|---|---|---|",
+        ]
+        out += [
+            f"| {e.id} | {e.package} | {e.decision} | {e.added} | {e.expires} | {e.state} |"
+            for e in vulns.exceptions
+        ]
+    else:
+        out.append("None in the policy.")
     out.append("")
     return "\n".join(out)
 
@@ -811,6 +927,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise InputError(f"freeze {args.freeze}: {exc}") from exc
         licences = check_licences(sbom, policy)
         vulns = check_vulnerabilities(audit, frozen, policy, args.today or date.today())
+        coverage = check_coverage(sbom, audit, frozen)
     except (InputError, AttributeError, TypeError, KeyError) as exc:  # malformed shape: fail closed
         message = f"supply-chain: the scan did not run: {exc}"
         print(message, file=sys.stderr)
@@ -820,13 +937,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return 2
 
-    report = render(licences, vulns)
-    args.report.write_text(report, encoding="utf-8")
-    failed = bool(licences.violations or vulns.violations)
+    args.report.write_text(render(licences, vulns, coverage), encoding="utf-8")
+    failed = _failed(licences, vulns, coverage)
     print(
-        f"supply-chain: {len(licences.rows)} components, {len(licences.violations)} licence "
-        f"violation(s); {vulns.audited} packages audited, {len(vulns.violations)} "
-        f"vulnerability finding(s) -> {'FAIL' if failed else 'PASS'}"
+        f"supply-chain: {len(_frozen_names(frozen))} frozen; {len(licences.rows)} components, "
+        f"{len(licences.violations)} licence violation(s), {len(coverage.missing)} not audited; "
+        f"{vulns.audited} packages audited, {len(vulns.violations)} vulnerability finding(s), "
+        f"{vulns.excepted} excepted -> {'FAIL' if failed else 'PASS'}"
     )
     return 1 if failed else 0
 

@@ -165,6 +165,28 @@ def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None
         assert entry["decision"] == "INC0-Q-10", entry
 
 
+# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the
+# `app` image: the same six) when the owner took INC0-Q-10.
+_PIP_ADVISORIES = {
+    "PYSEC-2026-1795",
+    "PYSEC-2026-1796",
+    "PYSEC-2026-196",
+    "PYSEC-2026-2875",
+    "PYSEC-2026-2876",
+    "PYSEC-2026-3721",
+}
+
+
+def test_the_shipped_exceptions_are_the_pip_advisories_of_inc0_q_10_alone() -> None:
+    exceptions = sc.load_policy(_DIR / "license-policy.toml").vulnerabilities
+    assert {e.id for e in exceptions} == _PIP_ADVISORIES
+    for e in exceptions:
+        assert e.package == "pip", e
+        assert e.decision == "INC0-Q-10", e
+        assert (e.added, e.expires) == (date(2026, 10, 30), date(2027, 1, 28)), e
+        assert "PLT-17" in e.reason, e
+
+
 def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
     decision = sc.load_policy(_DIR / "license-policy.toml").packages["pypdfium2"]
     assert decision.versions_text == "==5.14.0"
@@ -454,8 +476,10 @@ def test_agpl_components_are_flagged_not_refused(tmp_path: Path) -> None:
 def test_the_report_names_agpl_components_and_the_root_licence(tmp_path: Path) -> None:
     policy = _policy(tmp_path)
     licences = sc.check_licences(_sbom(_component("pymupdf", [_name("Dual")])), policy)
-    vulns = sc.check_vulnerabilities(_audit(("a", "1", [])), ["a==1"], policy, _TODAY)
-    text = sc.render(licences, vulns)
+    audit = _audit(("pymupdf", "1.0", []))
+    vulns = sc.check_vulnerabilities(audit, ["pymupdf==1.0"], policy, _TODAY)
+    coverage = sc.check_coverage(_sbom(_component("pymupdf", [_name("Dual")])), audit, [])
+    text = sc.render(licences, vulns, coverage)
     assert "AGPL-flagged components" in text
     assert "pymupdf" in text
     assert "`aizzak-platform` declares `Proprietary`" in text
@@ -656,6 +680,85 @@ def test_an_exception_missing_a_field_makes_the_policy_invalid(
         _policy(tmp_path, _exception(**{missing: ""}))
 
 
+def test_the_report_lists_every_exception_and_whether_it_applied(tmp_path: Path) -> None:
+    policy = _policy(
+        tmp_path,
+        _exception()
+        + _exception(id="PYSEC-2", expires="2026-10-29")
+        + _exception(id="PYSEC-3", decision="SRS D-7"),
+    )
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1"), _vuln("PYSEC-2")]))
+    vulns = sc.check_vulnerabilities(audit, ["lib==1.0"], policy, _TODAY)
+    states = {e.id: e.state for e in vulns.exceptions}
+    assert states == {
+        "PYSEC-1": "applied",
+        "PYSEC-2": "expired on 2026-10-29",
+        "PYSEC-3": "not reported by this audit",
+    }
+    assert vulns.excepted == 1
+    assert len(vulns.violations) == 1  # PYSEC-2: its exception expired
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    text = sc.render(
+        sc.check_licences(sbom, policy), vulns, sc.check_coverage(sbom, audit, ["lib==1.0"])
+    )
+    assert "| PYSEC-1 | lib | INC0-Q-5 | 2026-10-20 | 2026-11-20 | applied |" in text
+    assert "| PYSEC-3 | lib | SRS D-7 |" in text
+
+
+def test_the_report_says_when_the_policy_has_no_exception(tmp_path: Path) -> None:
+    policy = _policy(tmp_path)
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", []))
+    text = sc.render(
+        sc.check_licences(sbom, policy),
+        sc.check_vulnerabilities(audit, ["lib==1.0"], policy, _TODAY),
+        sc.check_coverage(sbom, audit, ["lib==1.0"]),
+    )
+    assert "None in the policy." in text
+
+
+# ── coverage: every SBOM component must have been audited (CR #2) ───────────
+
+
+def test_the_report_says_explicitly_that_every_component_was_audited(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []), ("pip", "24.0", []))
+    coverage = sc.check_coverage(sbom, audit, ["a==1.0", "pip==24.0"])
+    assert coverage.missing == ()
+    assert not coverage.violations
+    policy = _policy(tmp_path)
+    vulns = sc.check_vulnerabilities(audit, ["a==1.0", "pip==24.0"], policy, _TODAY)
+    text = sc.render(sc.check_licences(sbom, policy), vulns, coverage)
+    assert "Not audited: none. Every SBOM component was audited (2 of 2)." in text
+    assert "Result: PASS" in text
+
+
+def test_a_component_left_out_of_the_freeze_is_named_and_is_a_violation(tmp_path: Path) -> None:
+    # The CR #2 shape: `pip freeze` without `--all` keeps pip in the SBOM, out of the audit.
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []))
+    coverage = sc.check_coverage(sbom, audit, ["a==1.0"])
+    assert coverage.missing == (
+        ("pip", "1.0", "not in runtime-freeze.txt, so pip-audit never saw it"),
+    )
+    assert coverage.violations == (
+        "pip 1.0: not audited -- not in runtime-freeze.txt, so pip-audit never saw it",
+    )
+    policy = _policy(tmp_path)
+    vulns = sc.check_vulnerabilities(audit, ["a==1.0"], policy, _TODAY)
+    text = sc.render(sc.check_licences(sbom, policy), vulns, coverage)
+    assert "**1 SBOM component(s) not audited:**" in text
+    assert "- pip 1.0: not in runtime-freeze.txt" in text
+    assert "Result: FAIL" in text
+
+
+def test_a_component_pip_audit_skipped_is_named_with_its_reason() -> None:
+    sbom = _sbom(_component("local-only", [_id("MIT")]))
+    audit = {"dependencies": [{"name": "local-only", "skip_reason": "not on PyPI"}]}
+    coverage = sc.check_coverage(sbom, audit, [])
+    assert coverage.missing == (("local-only", "1.0", "pip-audit skipped it: not on PyPI"),)
+
+
 def test_a_missing_dependencies_list_means_the_scan_did_not_run(tmp_path: Path) -> None:
     with pytest.raises(sc.InputError):
         sc.check_vulnerabilities({}, ["lib==1.0"], _policy(tmp_path), _TODAY)
@@ -759,6 +862,24 @@ def test_exit_2_on_an_exception_added_in_the_future(tmp_path: Path) -> None:
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "NOT RUN" in report
     assert "future" in report
+
+
+def test_exit_1_when_an_sbom_component_was_not_audited(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    assert _run(tmp_path, sbom, _audit(("a", "1", [])), "a==1\n") == 1
+    assert "not audited" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_the_summary_line_counts_frozen_unaudited_and_excepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1")]))
+    assert _run(tmp_path, sbom, audit, "lib==1.0\n", policy=_POLICY + _exception()) == 0
+    assert capsys.readouterr().out.strip() == (
+        "supply-chain: 1 frozen; 1 components, 0 licence violation(s), 0 not audited; "
+        "1 packages audited, 0 vulnerability finding(s), 1 excepted -> PASS"
+    )
 
 
 def test_exit_2_when_the_sbom_has_no_components(tmp_path: Path) -> None:

@@ -15,10 +15,11 @@
 # Five steps:
 #   1. a venv built the way the Dockerfile builds /opt/venv: `pip install
 #      '.[parsers]'`, then `pip uninstall aizzak-platform`. `[dev]` never
-#      enters the image, so it is not scanned. The freeze leaves out `pip`
-#      itself (no `--all`): the installer is image tooling that the base image
-#      decides, not a dependency the platform imports -- PLT-17 judges it with
-#      the image (INC0-Q-6);
+#      enters the image, so it is not scanned. `pip freeze --all` keeps `pip`
+#      in the frozen set, so it is audited like every other package: it ships
+#      in the image's /opt/venv and is on its PATH (INC0-Q-10). The pip here is
+#      the one THIS interpreter seeds, which need not be the image's (the image
+#      seeds /opt/venv from the base image's Python); PLT-17 scans the image;
 #   2. a second venv holding only the two pinned tools of requirements.txt;
 #   3. the SBOM;
 #   4. pip-audit over the frozen set. Its exit code is kept, not acted on: the
@@ -42,7 +43,7 @@ rm -rf -- "$out/runtime"
 "$python_bin" -m venv "$out/runtime"
 "$out/runtime/bin/pip" install --quiet --disable-pip-version-check '.[parsers]'
 "$out/runtime/bin/pip" uninstall --quiet --yes aizzak-platform
-"$out/runtime/bin/pip" freeze >"$out/runtime-freeze.txt"
+"$out/runtime/bin/pip" freeze --all >"$out/runtime-freeze.txt"
 echo "$(wc -l <"$out/runtime-freeze.txt") packages frozen"
 
 echo "== scan tools (deploy/supply-chain/requirements.txt)"

@@ -76,3 +76,61 @@ versions = "==5.14.0"
 expression = "BSD-3-Clause AND Apache-2.0 AND LicenseRef-AGG-2.3 AND FTL AND Unicode-3.0 AND IJG AND libpng-2.0 AND (Apache-2.0 WITH LLVM-exception) AND CC-BY-4.0"
 reason = "PDFium binary: Anti-Grain Geometry 2.3, FreeType (FTL), Unicode-3.0, IJG, libpng-2.0, Apache-2.0 with LLVM exception (llvm-libc), CC-BY-4.0."
 decision = "SRS D-33"
+
+# Vulnerability exceptions. Each one names the advisory pip-audit reports (or an
+# alias of it), the package, why, the owner decision, and two TOML dates: it lives
+# at most 90 days (`expires - added`), cannot start after today, and stops covering
+# its advisory once expired. A malformed entry makes the policy invalid (exit 2).
+#
+# INC0-Q-10 (owner, 2026-10-30): `pip` is audited (scan.sh freezes with `--all`)
+# and the advisories pip-audit reports on it are accepted until 2027-01-28. Both
+# the pip this scan seeds (24.0) and the one in the `app` image (25.0.1) carry
+# exactly these six. No other package is excepted.
+
+[[vulnerability]]
+id = "PYSEC-2026-1795"
+package = "pip"
+reason = "CVE-2025-8869, fixed in pip 25.3. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-1796"
+package = "pip"
+reason = "CVE-2026-1703, fixed in pip 26.0. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-196"
+package = "pip"
+reason = "CVE-2026-8643, fixed in pip 26.1.2. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-2875"
+package = "pip"
+reason = "CVE-2026-3219, fixed in pip 26.1. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-2876"
+package = "pip"
+reason = "CVE-2026-6357, fixed in pip 26.1. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-3721"
+package = "pip"
+reason = "CVE-2026-13346, fixed in pip 26.2. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
