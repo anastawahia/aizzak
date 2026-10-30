@@ -145,7 +145,7 @@ MAX_WS_PER_USER = 3.0
 #: pins them to ``Limits``. An upload space must sit this far BELOW both, so
 #: that the run's own uploads (a few per tenant, ~70 KiB each) cannot fill it
 #: mid-run.
-SPACE_BYTE_CEILING = 1_073_741_824
+SPACE_BYTE_CEILING = 10_737_418_240
 WORKSPACE_FILE_CEILING = 10_000
 UPLOAD_HEADROOM_BYTES = 64 * 1024 * 1024
 UPLOAD_HEADROOM_FILES = 100

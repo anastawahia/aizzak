@@ -183,6 +183,7 @@ def _make_app(
         spaces=spaces.use_cases if wired else None,
         space_deletion=deletion if wired else None,
         space_quota=files_media.space_quota if wired else None,
+        multipart_quota=files_media.multipart_quota if wired else None,
     )
     app = create_app(services, http_authenticator=_FakeAuth(), ws_authenticator=_FakeWsAuth())
     return app, spaces, files_media, conversations, knowledge_purge
@@ -195,9 +196,11 @@ def _create(client: TestClient, name: str = "Research") -> dict[str, object]:
     return body
 
 
-def _upload(client: TestClient, space_id: str, *, name: str, size: int) -> str:
+def _upload(
+    client: TestClient, space_id: str, *, name: str, size: int, multipart: bool = False
+) -> str:
     response = client.post(
-        "/api/v1/files",
+        "/api/v1/files/multipart" if multipart else "/api/v1/files",
         json={
             "space_id": space_id,
             "name": name,
@@ -547,8 +550,11 @@ def test_uploading_into_a_deleted_space_is_404_too() -> None:
 
 def test_the_quota_is_enforced_on_the_wire_now_that_the_route_goes_through_it() -> None:
     """Step 12's other half: ``POST /files`` registers through
-    ``SpaceQuotaService`` rather than the bare registrar, so the 1 GiB
-    ceiling (§3.3) is a real refusal rather than a number nothing consults."""
+    ``SpaceQuotaService`` rather than the bare registrar, so the
+    ``Limits.max_space_bytes`` ceiling (§3.3) is a real refusal rather than a
+    number nothing consults. A file is as large as the per-file cap allows
+    (1 GiB), so the space is filled through ``POST /files/multipart`` (PLT-01),
+    the only route that accepts that size; the refusal is checked on both."""
     app, _, _, _, _ = _make_app()
     client = TestClient(app)
     space_id = _create(client)["id"]
@@ -561,7 +567,7 @@ def test_the_quota_is_enforced_on_the_wire_now_that_the_route_goes_through_it() 
     filled = 0
     index = 0
     while filled + per_file <= ceiling:
-        _upload(client, space_id, name=f"f{index}.pdf", size=per_file)
+        _upload(client, space_id, name=f"f{index}.pdf", size=per_file, multipart=True)
         filled += per_file
         index += 1
 
@@ -578,6 +584,17 @@ def test_the_quota_is_enforced_on_the_wire_now_that_the_route_goes_through_it() 
 
     assert response.status_code == 409
     assert response.json()["code"] == "spaces.quota_exceeded"
+    last = client.post(
+        "/api/v1/files/multipart",
+        json={
+            "space_id": space_id,
+            "name": "last.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": ceiling - filled + 1,
+        },
+        headers=_AUTH,
+    )
+    assert (last.status_code, last.json()["code"]) == (409, "spaces.quota_exceeded")
 
 
 # --------------------------------------------------------------------------- #

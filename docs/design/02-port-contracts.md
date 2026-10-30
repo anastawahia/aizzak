@@ -133,6 +133,21 @@ class StorageProvider(Protocol):
     async def presign_get(self, key: str, ttl_s: int) -> str: ...
     async def presign_put(self, key: str, ttl_s: int, content_type: str) -> str: ...
 ```
+> **الرفع المجزّأ القابل للاستئناف (`PLT‑01`، INC‑0): منفذ شقيق لا توسيع.** `StorageProvider` يُحقن في الوكلاء (`AgentDependencies.storage`)، والقدرة الأوسع لا تُحقن حيث لا تلزم (كما `delete_prefix`)، فيأتي الرفع المجزّأ بمنفذ إطار آخر في الملف نفسه، يُحقن في وحدة `files` وحدها، ويحقّقه المحوّل `MinioStorage` والمقبض `StorageHandle` معاً:
+> ```python
+> @dataclass(frozen=True, slots=True)
+> class StoredPart: part_number: int; size_bytes: int; etag: str
+>
+> class MultipartStorage(Protocol):
+>     async def start_multipart(self, key: str, content_type: str) -> str: ...      # CreateMultipartUpload → upload_id
+>     async def presign_upload_part(self, key: str, upload_id: str, part_number: int, ttl_s: int) -> str: ...  # توقيع محلي للعنوان العام
+>     async def list_parts(self, key: str, upload_id: str) -> Sequence[StoredPart]: ...   # كل الصفحات
+>     async def complete_multipart(self, key: str, upload_id: str, parts: Sequence[StoredPart]) -> None: ...
+>     async def object_size(self, key: str) -> int | None: ...                       # HEAD؛ None لا كائن
+>
+> class ObjectStorage(StorageProvider, MultipartStorage, Protocol): ...   # ما هو MinioStorage وStorageHandle
+> ```
+> **عقد الأخطاء كعقد `StorageProvider`:** `NotFoundError` حالة يتفرّع عليها المستدعي (`list_parts`/`complete_multipart` حين يزول الرفع: `NoSuchUpload`)، و`ConflictError` حين يرفض التخزين قائمة الأجزاء (`InvalidPart` · `InvalidPartOrder` · `EntityTooSmall`)، وما سواها `common.internal`؛ ولا يخرج نوع من minio أو urllib3. يستعمل المحوّل الطرق الخاصة في minio‑py (`_create_multipart_upload` · `_list_parts` · `_complete_multipart_upload`) لأن المكتبة لا تكشف غيرها، ويثبّتها اختبار إنذار (`tests/unit/test_minio_multipart_api.py`) فيفشل CI لا الإنتاج إن تغيّرت.
 
 ### 1.7 `CacheProvider` — `cache_provider.py` (Redis)
 ```python

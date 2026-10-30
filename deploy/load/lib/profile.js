@@ -228,8 +228,9 @@ function assertEveryRouteAnswers() {
   // The index chain, in the order the scenario runs it, up to the worker.
   //
   // Its first call is the one probe that can be refused for a reason that is
-  // about the TOKEN rather than about the platform: a space at its 1 GiB
-  // ceiling answers `409 spaces.quota_exceeded`. On the dev-2026-09-17 corpus
+  // about the TOKEN rather than about the platform: a space at its byte
+  // ceiling (`Limits.max_space_bytes`, 1 GiB when measured) answers
+  // `409 spaces.quota_exceeded`. On the dev-2026-09-17 corpus
   // 13 of the pool's 500 spaces are over it -- the seeder writes rows
   // directly and the ceiling is only enforced on registration -- and they are
   // pool entries 0 to 12, because the token file is ordered by space size.

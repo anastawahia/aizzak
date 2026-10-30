@@ -133,6 +133,12 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/files/{}", "patch"): Permission.FILES_WRITE,
     ("/api/v1/files/{}", "delete"): Permission.FILES_DELETE,  # 05 §4
     ("/api/v1/files/{}/complete", "post"): Permission.FILES_WRITE,
+    # PLT-01: the resumable-upload protocol is the write path of a file, so all
+    # three routes take `files:write` -- `GET .../upload` included, which is a
+    # step of that protocol (resume) and not a read of the file's content.
+    ("/api/v1/files/multipart", "post"): Permission.FILES_WRITE,
+    ("/api/v1/files/{}/upload", "get"): Permission.FILES_WRITE,
+    ("/api/v1/files/{}/upload/part-urls", "post"): Permission.FILES_WRITE,
     ("/api/v1/media/jobs", "post"): Permission.MEDIA_CREATE,  # 05 §4
     ("/api/v1/media/jobs/{}", "get"): Permission.MEDIA_READ,
     ("/api/v1/workspace", "get"): Permission.WORKSPACE_READ,
@@ -289,6 +295,7 @@ def _build_app() -> tuple[FastAPI, _RoleAuth]:
             media=files_media.media,
             spaces=spaces.use_cases,
             space_quota=files_media.space_quota,
+            multipart_quota=files_media.multipart_quota,
             workspace=workspace_usage.workspace,
             usage=workspace_usage.usage,
             credentials=build_credentials().credentials,

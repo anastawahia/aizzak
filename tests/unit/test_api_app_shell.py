@@ -831,6 +831,9 @@ def test_production_wiring_hands_the_api_layer_all_three_space_faces(
     assert services.spaces is not None
     assert services.space_deletion is not None
     assert services.space_quota is not None
+    # PLT-01 (CR #1): `POST /files/multipart` fails CLOSED without it, exactly
+    # as `POST /files` does without `space_quota`.
+    assert services.multipart_quota is not None
     # The cascade marks with the very `DeleteSpace` the bundle carries — one
     # object, so the mark's idempotence rule cannot be changed in one and
     # missed in the other (`_build_spaces_seam`).

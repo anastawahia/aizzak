@@ -14,8 +14,9 @@ must produce the same completion an absent body does.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FileRegisterIn(BaseModel):
@@ -25,8 +26,8 @@ class FileRegisterIn(BaseModel):
     Required, with no default. A file belongs to exactly one space (decision
     1) and cannot be moved afterwards (decision 3), so the one moment its
     owner can be stated is this one — and a default would let a client that
-    forgot become a client that chose. It is also what the 1 GiB quota is
-    measured against (§3.3), so an absent space is an upload measured against
+    forgot become a client that chose. It is also what the `Limits.max_space_bytes`
+    quota is measured against (§3.3), so an absent space is an upload measured against
     nothing.
     """
 
@@ -40,6 +41,42 @@ class FileRegisterOut(BaseModel):
     file_id: str
     upload_url: str
     expires_in: int
+
+
+class FileMultipartRegisterOut(BaseModel):
+    """``POST /files/multipart`` -- the geometry the client cuts the file by:
+    part ``n`` starts at byte ``(n - 1) * part_size_bytes`` and every part is
+    ``part_size_bytes`` long except the last, which is the remainder."""
+
+    file_id: str
+    part_size_bytes: int
+    part_count: int
+
+
+class FilePartUrlsIn(BaseModel):
+    part_numbers: list[Annotated[int, Field(ge=1, le=10_000)]] = Field(min_length=1, max_length=100)
+
+
+class FilePartUrlOut(BaseModel):
+    part_number: int
+    upload_url: str
+
+
+class FilePartUrlsOut(BaseModel):
+    parts: list[FilePartUrlOut]
+    expires_in: int
+
+
+class FileUploadedPartOut(BaseModel):
+    part_number: int
+    size_bytes: int
+
+
+class FileUploadOut(BaseModel):
+    file_id: str
+    part_size_bytes: int
+    part_count: int
+    uploaded_parts: list[FileUploadedPartOut]
 
 
 class FileCompleteIn(BaseModel):

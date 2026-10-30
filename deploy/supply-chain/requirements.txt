@@ -1,0 +1,6 @@
+# CI-only tools of deploy/supply-chain/scan.sh (PLT-19). They run beside the
+# platform, never inside it, so they are not part of NFR-LIC-07's runtime
+# closure. Both are Apache-2.0. Pinned with `==` on purpose: the tool that
+# judges the dependencies must not change between two runs of the same commit.
+cyclonedx-bom==7.6.0
+pip-audit==2.10.1

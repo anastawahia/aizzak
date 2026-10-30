@@ -61,6 +61,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    MultipartUpload,
     Sha256,
     StorageKey,
 )
@@ -102,6 +103,12 @@ files = Table(
     # because PostgreSQL derives it from `name` on every write and a value
     # supplied here would be rejected (`428C9`) rather than merely redundant.
     Column("name_key", Text, nullable=True),
+    # `migrations/versions/files/0005_file_multipart.py` (PLT-01) -- the
+    # storage-side session of a multipart upload. Both NULL for a single-PUT
+    # file, both set otherwise (CHECK `ck_files_multipart_shape`). Written by
+    # `add` and, like `content_type`, never by `save`.
+    Column("upload_id", Text, nullable=True),
+    Column("part_bytes", Integer, nullable=True),
     schema="files",
 )
 
@@ -151,6 +158,8 @@ class SqlFileRepository:
             updated_at=file.updated_at,
             deleted_at=file.deleted_at,
             version=file.version,
+            upload_id=file.multipart.upload_id if file.multipart else None,
+            part_bytes=file.multipart.part_bytes if file.multipart else None,
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -161,7 +170,8 @@ class SqlFileRepository:
     async def save(self, ctx: ExecutionContext, file: File) -> None:
         # Optimistic lock: only a row still at `file.version` is updated.
         # `content_type`/`size_bytes`/`storage_key`/`uploaded_by`/`space_id`
-        # never change after creation (no domain mutator touches them), and
+        # (and the multipart `upload_id`/`part_bytes`) never change after
+        # creation (no domain mutator touches them), and
         # leaving them out of the UPDATE is what enforces that at the adapter
         # -- for `space_id` that is decision 3, "no moving a file between
         # spaces", made unwritable rather than merely undocumented. Only the
@@ -463,6 +473,11 @@ def _hydrate(row: RowMapping) -> File:
         updated_at=row["updated_at"],
         deleted_at=row["deleted_at"],
         version=row["version"],
+        multipart=(
+            MultipartUpload(upload_id=row["upload_id"], part_bytes=row["part_bytes"])
+            if row["upload_id"] is not None
+            else None
+        ),
     )
 
 

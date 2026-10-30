@@ -337,6 +337,13 @@ def test_the_files_and_media_bundles_are_wired_over_the_shared_handle(
     media bundle carries `GetJobStatus`'s first-ever construction."""
     assert isinstance(booted.files, FileUseCases)
     assert booted.files.transfers._storage is booted.storage
+    # PLT-01 (CR #1): the multipart path, by identity. Dropping any of these
+    # bindings boots fine and fails no other test: without the assembler a
+    # multipart file turns `ready` with no object behind it (INV-F5), and
+    # without storage on the registrar `POST /files/multipart` 500s.
+    assert booted.files.complete._assembler is booted.files.multipart
+    assert booted.files.multipart._storage is booted.storage
+    assert booted.files.transfers._register._multipart is booted.storage
     assert isinstance(booted.media, MediaUseCases)
     assert isinstance(booted.media.get_status, GetJobStatus)
     # One atomic service behind both media faces (agents + API).
@@ -371,6 +378,10 @@ def test_the_spaces_bundle_is_wired_and_shares_its_mark_with_the_cascade(
     # refuse/observe the same row, or a space could be emptied while an upload
     # is being admitted into it.
     assert booted.space_quota._spaces is store
+    # Its multipart twin (PLT-01): the same store's row lock, over the
+    # bundle's own registrar.
+    assert booted.multipart_quota._registrar is booted.files.multipart_registrar
+    assert booted.multipart_quota._spaces is store
 
 
 def test_both_active_space_seams_are_bound_to_one_query_instance(

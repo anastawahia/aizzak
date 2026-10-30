@@ -13,6 +13,7 @@ import pytest
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import (
+    AppError,
     ConflictError,
     NotFoundError,
     TooLargeError,
@@ -22,6 +23,7 @@ from app.framework.errors import (
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import OutboxRecord
+from app.framework.ports.storage_provider import StoredPart
 from app.framework.settings.settings import Limits, MinioSettings
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
@@ -30,6 +32,8 @@ from app.modules.files.application.use_cases import (
     FilesQueryService,
     FileTransferService,
     ListFiles,
+    MultipartRegistrar,
+    MultipartUploadService,
     RegisterUpload,
     RenameFile,
     SoftDeleteFile,
@@ -37,9 +41,16 @@ from app.modules.files.application.use_cases import (
 )
 from app.modules.files.domain.entities import File
 from app.modules.files.domain.events import FileDeleted, FileEvent, FileUploaded
-from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
+from app.modules.files.domain.value_objects import (
+    ContentType,
+    FileName,
+    FileStatus,
+    StorageKey,
+    UploadMode,
+)
 from app.modules.files.ports.inbound import FilesQuery
 from app.modules.files.ports.repository import FileRepository
+from tests.unit.support_files_media import FakeMultipartStorage
 
 # The space every test registers into unless it is testing the check itself.
 _SPACE = "sp-1"
@@ -990,3 +1001,416 @@ async def test_rename_cannot_reach_another_tenants_file() -> None:
     with pytest.raises(NotFoundError):
         await RenameFile(files).execute(_ctx("w2"), file.id, name="stolen.txt")
     assert files.rows[file.id].name.value == "seed.txt"
+
+
+# --------------------------------------------------------------------------- #
+# PLT-01 -- single-PUT ceiling and the multipart upload                        #
+# --------------------------------------------------------------------------- #
+_MIB = 1024 * 1024
+_GIB = 1024 * _MIB
+_PART = 16 * _MIB
+
+
+async def _register_with(
+    files: _FakeFiles,
+    storage: FakeMultipartStorage | None,
+    size: int,
+    mode: UploadMode,
+    limits: Limits | None = None,
+) -> File:
+    use_case = RegisterUpload(files, limits or Limits(), _FakeSpaces(_SPACE), multipart=storage)
+    return await use_case.execute(
+        _ctx(),
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=size,
+        mode=mode,
+    )
+
+
+async def test_a_single_put_up_to_50_mib_registers_as_before() -> None:
+    files = _FakeFiles()
+    file = await _register_with(files, None, 50 * _MIB, UploadMode.SINGLE)
+    assert file.size_bytes == 50 * _MIB
+    assert file.multipart is None
+
+
+async def test_a_single_put_above_50_mib_needs_multipart() -> None:
+    files = _FakeFiles()
+    with pytest.raises(TooLargeError) as exc_info:
+        await _register_with(files, None, 50 * _MIB + 1, UploadMode.SINGLE)
+    assert exc_info.value.code == "files.multipart_required"
+    assert exc_info.value.status == 413
+    assert files.rows == {}
+
+
+@pytest.mark.parametrize("mode", [UploadMode.SINGLE, UploadMode.MULTIPART])
+async def test_above_one_gib_is_too_large_in_both_modes(mode: UploadMode) -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    with pytest.raises(TooLargeError) as exc_info:
+        await _register_with(files, storage, _GIB + 1, mode)
+    assert exc_info.value.code == "files.too_large"
+    assert files.rows == {} and storage.uploads == {}
+
+
+async def test_one_gib_exactly_registers_as_a_64_part_multipart_upload() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+
+    file = await _register_with(files, storage, _GIB, UploadMode.MULTIPART)
+
+    assert file.multipart is not None
+    assert file.multipart.part_bytes == _PART
+    assert file.multipart.part_count(file.size_bytes) == 64
+    assert file.multipart.upload_id in storage.uploads
+    assert storage.keys[file.multipart.upload_id] == file.storage_key.value
+    assert files.rows[file.id] is file
+
+
+async def test_a_multipart_registration_of_zero_bytes_is_a_validation_error() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    with pytest.raises(ValidationError):
+        await _register_with(files, storage, 0, UploadMode.MULTIPART)
+    assert storage.uploads == {}
+
+
+async def test_a_multipart_registration_without_storage_fails_closed() -> None:
+    files = _FakeFiles()
+    with pytest.raises(AppError) as exc_info:
+        await _register_with(files, None, 10, UploadMode.MULTIPART)
+    assert exc_info.value.code == "common.internal"
+    assert files.rows == {}
+
+
+async def test_a_multipart_registration_opens_no_upload_when_the_space_is_unknown() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    use_case = RegisterUpload(files, Limits(), _FakeSpaces(), multipart=storage)
+    with pytest.raises(NotFoundError):
+        await use_case.execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="plan.pdf",
+            content_type="application/pdf",
+            size_bytes=10,
+            mode=UploadMode.MULTIPART,
+        )
+    assert storage.uploads == {}
+
+
+async def test_the_multipart_registrar_reports_the_geometry() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    register = RegisterUpload(files, Limits(), _FakeSpaces(_SPACE), multipart=storage)
+
+    registered = await MultipartRegistrar(register).register(
+        _ctx(),
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=3 * _PART + 5,
+    )
+
+    assert (registered.part_bytes, registered.part_count) == (_PART, 4)
+    assert registered.file.is_multipart
+
+
+async def _multipart_file(
+    files: _FakeFiles, storage: FakeMultipartStorage, size: int = 3 * _PART + 5
+) -> File:
+    return await _register_with(files, storage, size, UploadMode.MULTIPART)
+
+
+def _service(files: _FakeFiles, storage: FakeMultipartStorage) -> MultipartUploadService:
+    return MultipartUploadService(files, storage, put_ttl_s=900)
+
+
+def _put_all(storage: FakeMultipartStorage, file: File) -> str:
+    assert file.multipart is not None
+    upload_id = file.multipart.upload_id
+    for n in range(1, file.multipart.part_count(file.size_bytes) + 1):
+        storage.put_part(upload_id, n, file.multipart.expected_size(n, file.size_bytes))
+    return upload_id
+
+
+async def test_sign_parts_signs_exactly_the_requested_numbers() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+
+    signed = await _service(files, storage).sign_parts(_ctx(), file.id, [3, 1])
+
+    assert [p.part_number for p in signed.parts] == [3, 1]
+    assert signed.expires_in == 900
+    assert [c[2] for c in storage.presigned_parts] == [3, 1]
+
+
+@pytest.mark.parametrize("numbers", [[0], [5], [1, 1], [-1]])
+async def test_sign_parts_rejects_a_number_out_of_range_or_repeated(numbers: list[int]) -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    with pytest.raises(ValidationError):
+        await _service(files, storage).sign_parts(_ctx(), file.id, numbers)
+    assert storage.presigned_parts == []
+
+
+async def test_every_method_guards_unknown_foreign_deleted_single_and_finished_files() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    service = _service(files, storage)
+    mine = _ctx()
+    single = _seed_file(files, mine)
+    deleted = await _multipart_file(files, storage)
+    deleted.deleted_at = utc_now()
+    finished = await _multipart_file(files, storage)
+    finished.status = FileStatus.READY
+    foreign = await _multipart_file(files, storage)
+
+    for call in (
+        lambda fid, c: service.sign_parts(c, fid, [1]),
+        lambda fid, c: service.progress(c, fid),
+    ):
+        with pytest.raises(NotFoundError):
+            await call("unknown", mine)
+        with pytest.raises(NotFoundError):
+            await call(foreign.id, _ctx("other-workspace"))
+        with pytest.raises(NotFoundError):
+            await call(deleted.id, mine)
+        with pytest.raises(ConflictError):
+            await call(single.id, mine)
+        with pytest.raises(ConflictError):
+            await call(finished.id, mine)
+
+
+def _member(user_id: str | None, workspace_id: str = "w1") -> ExecutionContext:
+    """Another caller in the SAME workspace as ``_ctx()`` (whose user is ``u1``)."""
+    return ExecutionContext(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        correlation_id="corr",
+        roles=frozenset({"member"}),
+    )
+
+
+async def test_another_member_of_the_workspace_cannot_sign_list_or_assemble_the_upload() -> None:
+    """SR-1 (CWE-639): ``files:write`` is workspace-wide, but the part URLs and
+    the progress listing of a multipart upload are its registrant's alone. A
+    colleague is answered 404 -- as another tenant is -- and storage is never
+    asked anything on their behalf."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    service = _service(files, storage)
+    file = await _multipart_file(files, storage)  # registered by `u1`
+    _put_all(storage, file)  # every part is there, so only the owner check stops it
+    colleague = _member("u2")
+
+    with pytest.raises(NotFoundError):
+        await service.sign_parts(colleague, file.id, [1])
+    with pytest.raises(NotFoundError):
+        await service.progress(colleague, file.id)
+    with pytest.raises(NotFoundError):
+        await service.assemble(colleague, file.id)
+
+    assert storage.presigned_parts == []
+    assert storage.listed == 0
+    assert storage.completed == []
+
+
+async def test_another_member_cannot_complete_the_upload_and_nothing_changes() -> None:
+    """The completion path as a whole: ``assemble`` refusing is what stops
+    ``CompleteUpload`` from marking the colleague's file ``ready`` without an
+    assembled object, so the 404 must come from it rather than a silent return."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    outbox = _FakeOutbox()
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, _FakeUnitOfWork(), assembler=_service(files, storage)
+    )
+
+    with pytest.raises(NotFoundError):
+        await complete.complete(_member("u2"), file_id=file.id, checksum=None)
+
+    assert files.rows[file.id].status is FileStatus.UPLOADED
+    assert outbox.calls == []
+    assert storage.completed == []
+
+    done = await complete.complete(_ctx(), file_id=file.id, checksum=None)  # the registrant
+    assert done.status is FileStatus.READY
+
+
+@pytest.mark.parametrize("registrant", [None, "u1"])
+async def test_a_missing_identity_on_either_side_matches_nothing(registrant: str | None) -> None:
+    """Fails closed: a context with no user never matches, not even a row with
+    no ``uploaded_by`` (``None == None`` must not open the door)."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    file.uploaded_by = registrant
+
+    with pytest.raises(NotFoundError):
+        await _service(files, storage).sign_parts(_member(None), file.id, [1])
+    if registrant is None:
+        with pytest.raises(NotFoundError):
+            await _service(files, storage).progress(_ctx(), file.id)
+
+
+async def test_progress_lists_the_held_parts_and_reports_expiry() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    assert file.multipart is not None
+    storage.put_part(file.multipart.upload_id, 2, _PART)
+    storage.put_part(file.multipart.upload_id, 1, _PART)
+
+    progress = await _service(files, storage).progress(_ctx(), file.id)
+
+    assert (progress.part_bytes, progress.part_count) == (_PART, 4)
+    assert [(p.part_number, p.size_bytes) for p in progress.uploaded] == [(1, _PART), (2, _PART)]
+
+    storage.expire(file.multipart.upload_id)
+    with pytest.raises(ConflictError) as exc_info:
+        await _service(files, storage).progress(_ctx(), file.id)
+    assert exc_info.value.code == "files.upload_expired"
+
+
+async def test_assemble_with_a_missing_or_wrong_sized_part_never_completes() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    assert file.multipart is not None
+    upload_id = file.multipart.upload_id
+    storage.put_part(upload_id, 1, _PART)
+    storage.put_part(upload_id, 2, _PART - 1)  # wrong size
+    storage.put_part(upload_id, 4, 5)  # part 3 missing
+
+    with pytest.raises(ConflictError) as exc_info:
+        await _service(files, storage).assemble(_ctx(), file.id)
+
+    assert exc_info.value.code == "files.upload_incomplete"
+    assert "2 part(s)" in str(exc_info.value)
+    assert storage.completed == []
+
+
+async def test_assemble_joins_the_parts_in_order_and_ignores_strays() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    upload_id = _put_all(storage, file)
+    storage.put_part(upload_id, 9, 123)  # beyond part_count: never signed, dropped
+
+    await _service(files, storage).assemble(_ctx(), file.id)
+
+    assert storage.completed == [(file.storage_key.value, upload_id, (1, 2, 3, 4))]
+    assert storage.objects[file.storage_key.value] == file.size_bytes
+
+
+class _SilentlyFailingJoin(FakeMultipartStorage):
+    """``CompleteMultipartUpload`` answering 200 with its error in the body:
+    minio-py returns normally, and no object (or a wrong one) is left behind.
+    The upload and its parts stay, as S3 leaves them after a failed join."""
+
+    def __init__(self, leaves: int | None) -> None:
+        super().__init__()
+        self._leaves = leaves
+
+    async def complete_multipart(
+        self, key: str, upload_id: str, parts: Sequence[StoredPart]
+    ) -> None:
+        self.completed.append((key, upload_id, tuple(p.part_number for p in parts)))
+        if self._leaves is not None:
+            self.objects[key] = self._leaves
+
+
+@pytest.mark.parametrize("leaves", [None, 3])
+async def test_a_join_that_produced_no_object_of_the_declared_size_is_incomplete(
+    leaves: int | None,
+) -> None:
+    """SR-2: the join is proven by its result. No object, or one of another
+    size, is ``files.upload_incomplete``, the file stays ``uploaded`` and no
+    event is appended."""
+    files = _FakeFiles()
+    storage = _SilentlyFailingJoin(leaves)
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    outbox = _FakeOutbox()
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, _FakeUnitOfWork(), assembler=_service(files, storage)
+    )
+
+    with pytest.raises(ConflictError) as exc_info:
+        await complete.complete(_ctx(), file_id=file.id, checksum=None)
+
+    assert exc_info.value.code == "files.upload_incomplete"
+    assert len(storage.completed) == 1  # the join WAS attempted
+    assert files.rows[file.id].status is FileStatus.UPLOADED
+    assert outbox.calls == []
+    assert file.multipart is not None
+    assert file.multipart.upload_id in storage.uploads  # still resumable
+
+
+async def test_assemble_again_after_a_join_is_safe_and_a_sweep_is_expired() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    service = _service(files, storage)
+
+    await service.assemble(_ctx(), file.id)
+    await service.assemble(_ctx(), file.id)  # upload id gone, object has the size
+    assert len(storage.completed) == 1
+
+    other = await _multipart_file(files, storage)
+    assert other.multipart is not None
+    storage.expire(other.multipart.upload_id)
+    with pytest.raises(ConflictError) as exc_info:
+        await service.assemble(_ctx(), other.id)
+    assert exc_info.value.code == "files.upload_expired"
+
+
+async def test_assemble_does_nothing_for_single_put_ready_deleted_or_unknown_files() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    service = _service(files, storage)
+    single = _seed_file(files, _ctx())
+    ready = await _multipart_file(files, storage)
+    ready.status = FileStatus.READY
+
+    for file_id in (single.id, ready.id, "unknown"):
+        await service.assemble(_ctx(), file_id)
+
+    assert storage.listed == 0 and storage.completed == []
+
+
+class _OrderTrace:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+
+async def test_complete_assembles_before_the_unit_of_work_and_a_single_file_skips_it() -> None:
+    files = _FakeFiles()
+    trace = _OrderTrace()
+
+    class _TracingUow:
+        @asynccontextmanager
+        async def begin(self, ctx: ExecutionContext) -> AsyncIterator[None]:
+            trace.events.append("uow:begin")
+            yield
+
+    class _TracingStorage(FakeMultipartStorage):
+        async def complete_multipart(self, key, upload_id, parts):  # type: ignore[no-untyped-def]
+            trace.events.append("complete_multipart")
+            await super().complete_multipart(key, upload_id, parts)
+
+    storage = _TracingStorage()
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    outbox = _FakeOutbox()
+    service = CompleteUploadService(
+        CompleteUpload(files), outbox, _TracingUow(), assembler=_service(files, storage)
+    )
+
+    done = await service.complete(_ctx(), file_id=file.id, checksum=None)
+
+    assert trace.events == ["complete_multipart", "uow:begin"]
+    assert done.status is FileStatus.READY
+    assert len(outbox.calls) == 1
+
+    single = _seed_file(files, _ctx())
+    listed_before = storage.listed
+    await service.complete(_ctx(), file_id=single.id, checksum=None)
+    assert storage.listed == listed_before  # the assembler never touched storage

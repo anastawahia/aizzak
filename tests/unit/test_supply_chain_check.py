@@ -1,0 +1,904 @@
+"""The supply-chain checker and its policy (PLT-19, O3/O4/O6).
+
+``deploy/supply-chain/supply_chain_check.py`` applies ``license-policy.toml`` to a
+CycloneDX SBOM and a pip-audit result. It is the one place NFR-LIC-07 (licences)
+and NFR-SEC-04 (known vulnerabilities) are enforced, so what it must REFUSE is
+tested as hard as what it lets through: an unreadable licence, an unknown text, a
+library under OFL, an advisory nothing valid covers, an audit that skipped a
+package. Each of those is a violation or exit 2, never a pass.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tomllib
+from datetime import date, timedelta
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+_DIR = Path(__file__).resolve().parents[2] / "deploy" / "supply-chain"
+_TODAY = date(2026, 10, 30)
+
+# NFR-LIC-01 as SRS D-01 / D-26 state it. A second copy on purpose: widening
+# [allow].spdx must fail here until a human edits the test too.
+_NFR_LIC_01 = [
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "LicenseRef-BSD",
+    "Apache-2.0",
+    "MPL-2.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "ISC",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+]
+# SRS D-32 (INC0-Q-4).
+_D32_APPROVED = {"MIT-0", "MIT-CMU", "0BSD", "Zlib", "CC0-1.0", "LicenseRef-Public-Domain"}
+
+
+def _load_checker() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "supply_chain_check", _DIR / "supply_chain_check.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
+sc = _load_checker()
+
+_POLICY = """
+version = 1
+
+[allow]
+spdx = ["MIT", "BSD-3-Clause", "LicenseRef-BSD", "Apache-2.0", "AGPL-3.0-only"]
+approved = [{ id = "Zlib", decision = "SRS D-32" }]
+exceptions = ["Classpath-exception-2.0"]
+
+[flag]
+agpl = ["AGPL-3.0-only"]
+
+[fonts]
+spdx = ["OFL-1.1"]
+extensions = [".ttf", ".woff2"]
+
+[aliases]
+"MIT License" = "MIT"
+"BSD License" = "LicenseRef-BSD"
+"Dual" = "AGPL-3.0-only OR LicenseRef-Commercial"
+
+[[package]]
+name = "Odd_Package"
+declared = ["GPL-3.0-only", "Some Prose Licence"]
+versions = ">=1.0,<2"
+expression = "LGPL-2.1-or-later"
+reason = "chosen branch"
+decision = "SRS D-32"
+"""
+
+_ODD = (
+    '\n[[package]]\nname = "odd"\ndeclared = ["GPL-3.0-only"]\nversions = "{versions}"\n'
+    'expression = "MIT"\nreason = "r"\ndecision = "{decision}"\n'
+)
+
+
+def _odd(versions: str = "==1.0", decision: str = "SRS D-32") -> str:
+    return _ODD.format(versions=versions, decision=decision)
+
+
+def _policy(tmp_path: Path, extra: str = "") -> Any:
+    path = tmp_path / "policy.toml"
+    path.write_text(_POLICY + extra, encoding="utf-8")
+    return sc.load_policy(path)
+
+
+def _component(
+    name: str, licenses: list[dict[str, Any]] | None, kind: str = "library"
+) -> dict[str, Any]:
+    component: dict[str, Any] = {"type": kind, "name": name, "version": "1.0"}
+    if licenses is not None:
+        component["licenses"] = licenses
+    return component
+
+
+def _sbom(*components: dict[str, Any], root_licence: str = "Proprietary") -> dict[str, Any]:
+    root = {"name": "aizzak-platform", "type": "application", "version": "0.1.0"}
+    if root_licence:
+        root["licenses"] = [{"license": {"name": root_licence}}]
+    return {"metadata": {"component": root}, "components": list(components)}
+
+
+def _id(spdx: str) -> dict[str, Any]:
+    return {"license": {"id": spdx}}
+
+
+def _name(text: str) -> dict[str, Any]:
+    return {"license": {"name": text}}
+
+
+def _expr(text: str) -> dict[str, Any]:
+    return {"expression": text}
+
+
+def _violations(tmp_path: Path, *components: dict[str, Any]) -> tuple[str, ...]:
+    return sc.check_licences(_sbom(*components), _policy(tmp_path)).violations
+
+
+# ── the shipped policy ──────────────────────────────────────────────────────
+
+
+def test_allowed_list_is_nfr_lic_01_and_the_approved_list_is_srs_d_32() -> None:
+    policy = sc.load_policy(_DIR / "license-policy.toml")
+    assert sorted(policy.allowed) == sorted(_NFR_LIC_01)
+    assert policy.approved == _D32_APPROVED
+    assert policy.exceptions == frozenset()
+    assert policy.font_licences == {"OFL-1.1"}
+    assert policy.agpl == {"AGPL-3.0-only", "AGPL-3.0-or-later"}
+
+
+def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None:
+    raw = tomllib.loads((_DIR / "license-policy.toml").read_text(encoding="utf-8"))
+    for entry in raw["allow"]["approved"]:
+        assert entry["decision"] == "SRS D-32", entry
+    decisions = {entry["name"]: entry["decision"] for entry in raw.get("package", [])}
+    assert decisions == {
+        "pyphen": "SRS D-32",
+        "pycryptodome": "SRS D-32",
+        "pypdfium2": "SRS D-33",
+    }
+    for entry in raw.get("package", []):
+        assert entry["reason"], entry
+        assert entry["declared"], entry
+        assert entry["versions"], entry
+    # INC0-Q-10 (owner, 2026-10-30) is the only decision behind a vulnerability exception.
+    for entry in raw.get("vulnerability", []):
+        assert entry["decision"] == "INC0-Q-10", entry
+
+
+# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the
+# `app` image: the same six) when the owner took INC0-Q-10.
+_PIP_ADVISORIES = {
+    "PYSEC-2026-1795",
+    "PYSEC-2026-1796",
+    "PYSEC-2026-196",
+    "PYSEC-2026-2875",
+    "PYSEC-2026-2876",
+    "PYSEC-2026-3721",
+}
+
+
+def test_the_shipped_exceptions_are_the_pip_advisories_of_inc0_q_10_alone() -> None:
+    exceptions = sc.load_policy(_DIR / "license-policy.toml").vulnerabilities
+    assert {e.id for e in exceptions} == _PIP_ADVISORIES
+    for e in exceptions:
+        assert e.package == "pip", e
+        assert e.decision == "INC0-Q-10", e
+        assert (e.added, e.expires) == (date(2026, 10, 30), date(2027, 1, 28)), e
+        assert "PLT-17" in e.reason, e
+
+
+def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
+    decision = sc.load_policy(_DIR / "license-policy.toml").packages["pypdfium2"]
+    assert decision.versions_text == "==5.14.0"
+    assert sc.version_in("5.14.0", decision.versions)
+    assert not sc.version_in("5.14.1", decision.versions)
+
+
+def test_an_approved_entry_without_a_decision_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "policy.toml"
+    path.write_text(
+        'version = 1\n[allow]\nspdx = ["MIT"]\napproved = [{ id = "Zlib" }]\n', encoding="utf-8"
+    )
+    with pytest.raises(sc.InputError):
+        sc.load_policy(path)
+
+
+def test_a_policy_with_the_wrong_version_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "policy.toml"
+    path.write_text('version = 2\n[allow]\nspdx = ["MIT"]\n', encoding="utf-8")
+    with pytest.raises(sc.InputError):
+        sc.load_policy(path)
+
+
+# ── expressions ─────────────────────────────────────────────────────────────
+
+
+def test_and_binds_tighter_than_or_and_with_tighter_than_and() -> None:
+    assert sc.parse_expression("A OR B AND C") == sc.Or(
+        (sc.Id("A"), sc.And((sc.Id("B"), sc.Id("C"))))
+    )
+    assert sc.parse_expression("(A OR B) AND C") == sc.And(
+        (sc.Or((sc.Id("A"), sc.Id("B"))), sc.Id("C"))
+    )
+    assert sc.parse_expression("A WITH X AND B") == sc.And((sc.With("A", "X"), sc.Id("B")))
+
+
+@pytest.mark.parametrize(
+    "text", ["", "(", "A AND", "A B", "A OR OR B", "(A", "A)", "WITH X", "(A OR B) WITH X"]
+)
+def test_a_malformed_expression_is_an_error(text: str) -> None:
+    with pytest.raises(ValueError):
+        sc.parse_expression(text)
+
+
+def test_expression_text_round_trips() -> None:
+    text = "(A OR B) AND C WITH X"
+    assert sc.expression_text(sc.parse_expression(text)) == "(A OR B) AND C WITH X"
+
+
+# ── licences ────────────────────────────────────────────────────────────────
+
+
+def test_allowed_and_approved_licences_pass(tmp_path: Path) -> None:
+    assert not _violations(
+        tmp_path,
+        _component("a", [_id("MIT")]),
+        _component("b", [_expr("BSD-3-Clause AND Zlib")]),
+    )
+
+
+def test_or_needs_one_allowed_branch_and_and_needs_all(tmp_path: Path) -> None:
+    assert not _violations(tmp_path, _component("a", [_expr("GPL-3.0-only OR MIT")]))
+    assert _violations(tmp_path, _component("b", [_expr("GPL-3.0-only AND MIT")]))
+    assert _violations(tmp_path, _component("c", [_expr("GPL-3.0-only OR SSPL-1.0")]))
+
+
+def test_with_needs_an_allowed_base_and_a_listed_exception(tmp_path: Path) -> None:
+    assert not _violations(tmp_path, _component("a", [_expr("MIT WITH Classpath-exception-2.0")]))
+    assert _violations(tmp_path, _component("b", [_expr("MIT WITH LLVM-exception")]))
+    assert _violations(
+        tmp_path, _component("c", [_expr("GPL-2.0-only WITH Classpath-exception-2.0")])
+    )
+
+
+def test_an_unknown_licence_text_is_a_violation(tmp_path: Path) -> None:
+    violations = _violations(tmp_path, _component("a", [_name("Some Bespoke Terms")]))
+    assert len(violations) == 1
+    assert "a 1.0" in violations[0]
+
+
+def test_a_component_with_no_licence_is_a_violation(tmp_path: Path) -> None:
+    assert _violations(tmp_path, _component("a", None))
+    assert _violations(tmp_path, _component("b", []))
+
+
+def test_an_alias_maps_text_to_an_allowed_expression(tmp_path: Path) -> None:
+    assert not _violations(tmp_path, _component("a", [_name("MIT License")]))
+    assert not _violations(
+        tmp_path, _component("b", [_name("License :: OSI Approved :: BSD License")])
+    )
+
+
+def test_an_alias_never_widens_the_allowed_list(tmp_path: Path) -> None:
+    path = tmp_path / "p.toml"
+    path.write_text(
+        _POLICY.replace('"Dual" =', '"Odd" = "GPL-3.0-only"\n"Dual" ='), encoding="utf-8"
+    )
+    policy = sc.load_policy(path)
+    report = sc.check_licences(_sbom(_component("a", [_name("Odd")])), policy)
+    assert report.violations
+
+
+def test_several_entries_without_an_expression_are_an_and(tmp_path: Path) -> None:
+    assert not _violations(tmp_path, _component("a", [_id("MIT"), _id("Apache-2.0")]))
+    assert _violations(tmp_path, _component("b", [_id("MIT"), _id("GPL-2.0-only")]))
+
+
+def test_an_expression_wins_over_the_other_entries(tmp_path: Path) -> None:
+    assert not _violations(tmp_path, _component("a", [_name("junk text"), _expr("MIT")]))
+
+
+def test_spdx_ids_win_over_classifier_names(tmp_path: Path) -> None:
+    component = _component("a", [_id("MIT"), _name("License :: OSI Approved :: Weird License")])
+    assert not _violations(tmp_path, component)
+
+
+def test_classifiers_win_over_free_text(tmp_path: Path) -> None:
+    free_text = {
+        "license": {"name": "declared license of 'a'", "text": {"content": "Dual License"}}
+    }
+    component = _component("a", [_name("License :: OSI Approved :: MIT License"), free_text])
+    assert not _violations(tmp_path, component)
+
+
+def test_free_text_is_read_when_there_is_no_classifier(tmp_path: Path) -> None:
+    free_text = {"license": {"name": "declared license of 'a'", "text": {"content": "MIT License"}}}
+    assert not _violations(tmp_path, _component("a", [free_text]))
+    unknown = {"license": {"name": "declared license of 'b'", "text": {"content": "Dual License"}}}
+    assert _violations(tmp_path, _component("b", [unknown]))
+
+
+def test_an_attached_licence_file_is_evidence_not_a_declaration(tmp_path: Path) -> None:
+    attached = {
+        "license": {
+            "name": "declared license file: LICENSE.txt",
+            "text": {"content": "TUlU", "encoding": "base64"},
+        }
+    }
+    assert not _violations(tmp_path, _component("a", [_id("MIT"), attached]))
+    assert _violations(tmp_path, _component("b", [attached]))
+
+
+def test_ofl_is_refused_for_a_library_and_accepted_for_a_font_file(tmp_path: Path) -> None:
+    assert _violations(tmp_path, _component("lib", [_id("OFL-1.1")]))
+    assert _violations(tmp_path, _component("data.bin", [_id("OFL-1.1")], kind="file"))
+    assert not _violations(tmp_path, _component("Amiri-Regular.ttf", [_id("OFL-1.1")], kind="file"))
+    assert not _violations(tmp_path, _component("x.WOFF2", [_id("OFL-1.1")], kind="file"))
+
+
+def test_ofl_on_a_font_file_does_not_allow_other_unknown_ids(tmp_path: Path) -> None:
+    assert _violations(
+        tmp_path, _component("f.ttf", [_expr("OFL-1.1 AND GPL-3.0-only")], kind="file")
+    )
+
+
+_DECIDED_ON = [_id("GPL-3.0-only"), _name("Some Prose Licence")]
+
+
+def test_a_package_decision_applies_to_what_it_was_decided_on(tmp_path: Path) -> None:
+    # Order-free: the SBOM may list the same entries in another order.
+    component = _component("odd-package", list(reversed(_DECIDED_ON)))
+    report = sc.check_licences(_sbom(component), _policy(tmp_path))
+    assert not report.violations
+    assert report.rows[0].basis == "package decision (SRS D-32)"
+    assert report.rows[0].licence == "LGPL-2.1-or-later"
+
+
+@pytest.mark.parametrize(
+    "licenses",
+    [
+        [_id("GPL-3.0-only")],  # an entry dropped
+        [*_DECIDED_ON, _id("SSPL-1.0")],  # an entry added
+        [_id("GPL-2.0-only"), _name("Some Prose Licence")],  # an entry changed
+        [],  # nothing declared any more
+    ],
+)
+def test_a_package_decision_is_stale_when_the_declared_licence_changes(
+    tmp_path: Path, licenses: list[dict[str, Any]]
+) -> None:
+    report = sc.check_licences(_sbom(_component("odd-package", licenses)), _policy(tmp_path))
+    assert len(report.violations) == 1
+    assert "SRS D-32 decision is stale" in report.violations[0]
+    assert "needs the owner" in report.violations[0]
+    assert report.rows[0].basis == "violation"
+
+
+@pytest.mark.parametrize("version", ["0.9", "2.0", "2", "1.5rc1", "1.5.post1", "1.5+local", ""])
+def test_a_package_decision_is_stale_outside_its_version_range(
+    tmp_path: Path, version: str
+) -> None:
+    component = _component("odd-package", _DECIDED_ON)
+    component["version"] = version
+    violations = sc.check_licences(_sbom(component), _policy(tmp_path)).violations
+    assert len(violations) == 1
+    assert "is outside >=1.0,<2" in violations[0]
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.0.0", "1.5", "1.99.3"])
+def test_a_package_decision_holds_inside_its_version_range(tmp_path: Path, version: str) -> None:
+    component = _component("odd-package", _DECIDED_ON)
+    component["version"] = version
+    assert not sc.check_licences(_sbom(component), _policy(tmp_path)).violations
+
+
+@pytest.mark.parametrize(
+    ("spec", "inside", "outside"),
+    [
+        ("==5.14.0", ["5.14", "5.14.0", "5.14.0.0"], ["5.14.1", "5.13.9", "5.15"]),
+        (">=4.2.0,<4.3", ["4.2", "4.2.0", "4.2.9"], ["4.1.9", "4.3", "4.3.0", "5"]),
+        (">1,<=2,!=1.5", ["1.1", "2", "2.0"], ["1", "1.5.0", "2.0.1"]),
+    ],
+)
+def test_version_ranges(spec: str, inside: list[str], outside: list[str]) -> None:
+    versions = sc.parse_versions(spec)
+    assert all(sc.version_in(v, versions) for v in inside)
+    assert not any(sc.version_in(v, versions) for v in outside)
+
+
+@pytest.mark.parametrize(
+    "versions", ["", ">=1.0", "<2", "!=1.5", "~=1.0", "==1.*", ">=1.0;<2", "==1.0a1", "1.0"]
+)
+def test_an_open_or_unreadable_version_range_makes_the_policy_invalid(
+    tmp_path: Path, versions: str
+) -> None:
+    with pytest.raises(sc.InputError):
+        _policy(tmp_path, _odd(versions=versions))
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "",
+        "anything",
+        "TODO",
+        "owner 2026-10-30",
+        "SRS D-32 and SRS D-33",
+        "srs d-32",
+        "SRS D\u201132",  # U+2011, as the Arabic docs write it: another string
+        "INC0\u2011Q\u20114",
+        "SRS D-\u0663\u0662",  # Arabic-Indic digits
+    ],
+)
+def test_a_free_text_decision_makes_the_policy_invalid(tmp_path: Path, decision: str) -> None:
+    approved = (
+        'version = 1\n[allow]\nspdx = ["MIT"]\n'
+        f'approved = [{{ id = "Zlib", decision = "{decision}" }}]\n'
+    )
+    for text in (
+        _POLICY + _odd(decision=decision),
+        _POLICY + _exception(decision=decision),
+        approved,
+    ):
+        path = tmp_path / "policy.toml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(sc.InputError, match="owner decision"):
+            sc.load_policy(path)
+
+
+@pytest.mark.parametrize("decision", ["SRS D-32", "SRS D-1", "INC0-Q-10", "INC12-Q-3"])
+def test_owner_decision_ids_are_accepted(tmp_path: Path, decision: str) -> None:
+    policy = _policy(tmp_path, _odd(decision=decision) + _exception(decision=decision))
+    assert policy.packages["odd"].decision == decision
+    assert policy.vulnerabilities[0].decision == decision
+
+
+@pytest.mark.parametrize("missing", ["declared", "versions", "expression", "reason"])
+def test_a_package_decision_missing_a_field_makes_the_policy_invalid(
+    tmp_path: Path, missing: str
+) -> None:
+    lines = [ln for ln in _odd().splitlines() if not ln.startswith(f"{missing} =")]
+    with pytest.raises(sc.InputError, match=missing):
+        _policy(tmp_path, "\n".join(lines) + "\n")
+
+
+def test_two_decisions_for_one_package_make_the_policy_invalid(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError, match="two"):
+        _policy(tmp_path, _odd() + _odd())
+
+
+def test_agpl_components_are_flagged_not_refused(tmp_path: Path) -> None:
+    component = _component("pymupdf", [_name("Dual")])
+    report = sc.check_licences(_sbom(component), _policy(tmp_path))
+    assert not report.violations
+    assert [r.name for r in report.rows if r.agpl] == ["pymupdf"]
+
+
+def test_the_report_names_agpl_components_and_the_root_licence(tmp_path: Path) -> None:
+    policy = _policy(tmp_path)
+    licences = sc.check_licences(_sbom(_component("pymupdf", [_name("Dual")])), policy)
+    audit = _audit(("pymupdf", "1.0", []))
+    vulns = sc.check_vulnerabilities(audit, ["pymupdf==1.0"], policy, _TODAY)
+    coverage = sc.check_coverage(_sbom(_component("pymupdf", [_name("Dual")])), audit, [])
+    text = sc.render(licences, vulns, coverage)
+    assert "AGPL-flagged components" in text
+    assert "pymupdf" in text
+    assert "`aizzak-platform` declares `Proprietary`" in text
+    assert "DEC-10" in text
+    assert "SRS D-24" in text
+    assert "Result: PASS" in text
+
+
+def test_the_root_component_is_reported_and_not_evaluated(tmp_path: Path) -> None:
+    report = sc.check_licences(_sbom(_component("a", [_id("MIT")])), _policy(tmp_path))
+    assert not report.violations
+    assert report.root_licence == "Proprietary"
+
+
+@pytest.mark.parametrize(
+    "sbom",
+    [{}, {"metadata": {}, "components": []}, _sbom(), {"metadata": {"component": {}}}],
+)
+def test_an_empty_or_rootless_sbom_is_not_a_pass(tmp_path: Path, sbom: dict[str, Any]) -> None:
+    with pytest.raises(sc.InputError):
+        sc.check_licences(sbom, _policy(tmp_path))
+
+
+# ── vulnerabilities ─────────────────────────────────────────────────────────
+
+
+def _audit(*deps: tuple[str, str, list[dict[str, Any]]]) -> dict[str, Any]:
+    return {"dependencies": [{"name": n, "version": v, "vulns": vs} for n, v, vs in deps]}
+
+
+def _vuln(
+    vid: str, fixes: list[str] | None = None, aliases: list[str] | None = None
+) -> dict[str, Any]:
+    return {"id": vid, "fix_versions": fixes or [], "aliases": aliases or []}
+
+
+def _exception(**fields: str) -> str:
+    base = {
+        "id": "PYSEC-1",
+        "package": "lib",
+        "reason": "waiting for the fix",
+        "decision": "INC0-Q-5",
+        "added": "2026-10-20",
+        "expires": "2026-11-20",
+    }
+    base.update(fields)
+    body = "\n".join(
+        f"{k} = {v}" if k in {"added", "expires"} else f'{k} = "{v}"'
+        for k, v in base.items()
+        if v != ""
+    )
+    return f"\n[[vulnerability]]\n{body}\n"
+
+
+def test_a_known_vulnerability_is_a_violation(tmp_path: Path) -> None:
+    report = sc.check_vulnerabilities(
+        _audit(("lib", "1.0", [_vuln("PYSEC-1", ["1.1"])])), ["lib==1.0"], _policy(tmp_path), _TODAY
+    )
+    assert len(report.violations) == 1
+    assert "PYSEC-1" in report.violations[0]
+    assert "1.1" in report.violations[0]
+
+
+def test_a_vulnerability_without_a_fix_says_so(tmp_path: Path) -> None:
+    report = sc.check_vulnerabilities(
+        _audit(("lib", "1.0", [_vuln("PYSEC-1")])), ["lib==1.0"], _policy(tmp_path), _TODAY
+    )
+    assert "NO FIXED VERSION" in report.violations[0]
+
+
+def test_a_clean_audit_passes(tmp_path: Path) -> None:
+    report = sc.check_vulnerabilities(
+        _audit(("lib", "1.0", [])), ["lib==1.0"], _policy(tmp_path), _TODAY
+    )
+    assert not report.violations
+    assert report.audited == 1
+
+
+def test_the_same_advisory_listed_twice_counts_once(tmp_path: Path) -> None:
+    report = sc.check_vulnerabilities(
+        _audit(("lib", "1.0", [_vuln("PYSEC-1", ["1.1"]), _vuln("PYSEC-1", ["1.1.0"])])),
+        ["lib==1.0"],
+        _policy(tmp_path),
+        _TODAY,
+    )
+    assert len(report.rows) == 1
+    assert report.rows[0].fix_versions == ("1.1", "1.1.0")
+
+
+def _status(tmp_path: Path, extra: str, vuln: dict[str, Any] | None = None) -> tuple[str, int]:
+    report = sc.check_vulnerabilities(
+        _audit(("Lib", "1.0", [vuln or _vuln("PYSEC-1")])),
+        ["Lib==1.0"],
+        _policy(tmp_path, extra),
+        _TODAY,
+    )
+    return report.rows[0].status, len(report.violations)
+
+
+def test_a_dated_exception_with_a_decision_covers_the_advisory(tmp_path: Path) -> None:
+    assert _status(tmp_path, _exception()) == ("excepted", 0)
+
+
+def test_an_exception_matches_an_alias_too(tmp_path: Path) -> None:
+    vuln = _vuln("PYSEC-9", aliases=["CVE-2026-1"])
+    assert _status(tmp_path, _exception(id="CVE-2026-1"), vuln) == ("excepted", 0)
+
+
+def test_an_exception_for_another_package_covers_nothing(tmp_path: Path) -> None:
+    assert _status(tmp_path, _exception(package="other"))[1] == 1
+
+
+def test_an_expired_exception_does_not_cover(tmp_path: Path) -> None:
+    status, violations = _status(tmp_path, _exception(expires="2026-10-29"))
+    assert violations == 1
+    assert "expired" in status
+
+
+def test_an_exception_of_exactly_90_days_covers(tmp_path: Path) -> None:
+    expires = (_TODAY + timedelta(days=90)).isoformat()
+    exception = _exception(added=_TODAY.isoformat(), expires=expires)
+    assert _status(tmp_path, exception) == ("excepted", 0)
+
+
+@pytest.mark.parametrize(
+    ("added", "expires"),
+    [
+        ("2027-01-20", "2027-04-19"),  # SR-5: valid on its own terms, 171 days from today
+        ((_TODAY + timedelta(days=1)).isoformat(), (_TODAY + timedelta(days=2)).isoformat()),
+    ],
+)
+def test_an_exception_added_in_the_future_makes_the_policy_invalid(
+    tmp_path: Path, added: str, expires: str
+) -> None:
+    with pytest.raises(sc.InputError, match="future"):
+        _status(tmp_path, _exception(added=added, expires=expires))
+
+
+def test_an_exception_never_covers_more_than_90_days_from_today(tmp_path: Path) -> None:
+    # added <= today and expires - added <= 90 together cap what is left of it.
+    longest = _exception(added=_TODAY.isoformat(), expires=(_TODAY + timedelta(90)).isoformat())
+    assert _status(tmp_path, longest) == ("excepted", 0)
+    for days in (91, 120, 171):
+        later = (_TODAY + timedelta(days)).isoformat()
+        for added in (_TODAY.isoformat(), (_TODAY + timedelta(days - 90)).isoformat()):
+            with pytest.raises(sc.InputError):
+                _status(tmp_path, _exception(added=added, expires=later))
+
+
+def test_an_exception_without_a_decision_makes_the_policy_invalid(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError, match="decision"):
+        _policy(tmp_path, _exception(decision=""))
+
+
+def test_an_exception_that_lives_longer_than_90_days_makes_the_policy_invalid(
+    tmp_path: Path,
+) -> None:
+    expires = (_TODAY + timedelta(days=91)).isoformat()
+    with pytest.raises(sc.InputError, match="90 days"):
+        _policy(tmp_path, _exception(added=_TODAY.isoformat(), expires=expires))
+
+
+def test_an_exception_older_than_90_days_makes_the_policy_invalid(tmp_path: Path) -> None:
+    added = (_TODAY - timedelta(days=91)).isoformat()
+    expires = (_TODAY + timedelta(days=1)).isoformat()
+    with pytest.raises(sc.InputError, match="90 days"):
+        _policy(tmp_path, _exception(added=added, expires=expires))
+
+
+def test_an_exception_that_expires_before_it_was_added_makes_the_policy_invalid(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(sc.InputError, match="before"):
+        _policy(tmp_path, _exception(added="2026-10-20", expires="2026-10-19"))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"added": "", "expires": ""},
+        {"expires": ""},
+        {"added": '"2026-10-20"'},  # a string, not a TOML date
+        {"expires": "2026-11-20T00:00:00"},  # a datetime, not a date
+    ],
+)
+def test_an_exception_without_proper_dates_makes_the_policy_invalid(
+    tmp_path: Path, fields: dict[str, str]
+) -> None:
+    with pytest.raises(sc.InputError, match="TOML date"):
+        _policy(tmp_path, _exception(**fields))
+
+
+@pytest.mark.parametrize("missing", ["id", "package", "reason"])
+def test_an_exception_missing_a_field_makes_the_policy_invalid(
+    tmp_path: Path, missing: str
+) -> None:
+    with pytest.raises(sc.InputError, match=missing):
+        _policy(tmp_path, _exception(**{missing: ""}))
+
+
+def test_the_report_lists_every_exception_and_whether_it_applied(tmp_path: Path) -> None:
+    policy = _policy(
+        tmp_path,
+        _exception()
+        + _exception(id="PYSEC-2", expires="2026-10-29")
+        + _exception(id="PYSEC-3", decision="SRS D-7"),
+    )
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1"), _vuln("PYSEC-2")]))
+    vulns = sc.check_vulnerabilities(audit, ["lib==1.0"], policy, _TODAY)
+    states = {e.id: e.state for e in vulns.exceptions}
+    assert states == {
+        "PYSEC-1": "applied",
+        "PYSEC-2": "expired on 2026-10-29",
+        "PYSEC-3": "not reported by this audit",
+    }
+    assert vulns.excepted == 1
+    assert len(vulns.violations) == 1  # PYSEC-2: its exception expired
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    text = sc.render(
+        sc.check_licences(sbom, policy), vulns, sc.check_coverage(sbom, audit, ["lib==1.0"])
+    )
+    assert "| PYSEC-1 | lib | INC0-Q-5 | 2026-10-20 | 2026-11-20 | applied |" in text
+    assert "| PYSEC-3 | lib | SRS D-7 |" in text
+
+
+def test_the_report_says_when_the_policy_has_no_exception(tmp_path: Path) -> None:
+    policy = _policy(tmp_path)
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", []))
+    text = sc.render(
+        sc.check_licences(sbom, policy),
+        sc.check_vulnerabilities(audit, ["lib==1.0"], policy, _TODAY),
+        sc.check_coverage(sbom, audit, ["lib==1.0"]),
+    )
+    assert "None in the policy." in text
+
+
+# ── coverage: every SBOM component must have been audited (CR #2) ───────────
+
+
+def test_the_report_says_explicitly_that_every_component_was_audited(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []), ("pip", "24.0", []))
+    coverage = sc.check_coverage(sbom, audit, ["a==1.0", "pip==24.0"])
+    assert coverage.missing == ()
+    assert not coverage.violations
+    policy = _policy(tmp_path)
+    vulns = sc.check_vulnerabilities(audit, ["a==1.0", "pip==24.0"], policy, _TODAY)
+    text = sc.render(sc.check_licences(sbom, policy), vulns, coverage)
+    assert "Not audited: none. Every SBOM component was audited (2 of 2)." in text
+    assert "Result: PASS" in text
+
+
+def test_a_component_left_out_of_the_freeze_is_named_and_is_a_violation(tmp_path: Path) -> None:
+    # The CR #2 shape: `pip freeze` without `--all` keeps pip in the SBOM, out of the audit.
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []))
+    coverage = sc.check_coverage(sbom, audit, ["a==1.0"])
+    assert coverage.missing == (
+        ("pip", "1.0", "not in runtime-freeze.txt, so pip-audit never saw it"),
+    )
+    assert coverage.violations == (
+        "pip 1.0: not audited -- not in runtime-freeze.txt, so pip-audit never saw it",
+    )
+    policy = _policy(tmp_path)
+    vulns = sc.check_vulnerabilities(audit, ["a==1.0"], policy, _TODAY)
+    text = sc.render(sc.check_licences(sbom, policy), vulns, coverage)
+    assert "**1 SBOM component(s) not audited:**" in text
+    assert "- pip 1.0: not in runtime-freeze.txt" in text
+    assert "Result: FAIL" in text
+
+
+def test_a_component_pip_audit_skipped_is_named_with_its_reason() -> None:
+    sbom = _sbom(_component("local-only", [_id("MIT")]))
+    audit = {"dependencies": [{"name": "local-only", "skip_reason": "not on PyPI"}]}
+    coverage = sc.check_coverage(sbom, audit, [])
+    assert coverage.missing == (("local-only", "1.0", "pip-audit skipped it: not on PyPI"),)
+
+
+def test_a_missing_dependencies_list_means_the_scan_did_not_run(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError):
+        sc.check_vulnerabilities({}, ["lib==1.0"], _policy(tmp_path), _TODAY)
+
+
+def test_an_audit_with_fewer_packages_than_the_freeze_is_input_error(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError, match="other"):
+        sc.check_vulnerabilities(
+            _audit(("lib", "1.0", [])), ["lib==1.0", "other==2"], _policy(tmp_path), _TODAY
+        )
+
+
+def test_a_skipped_package_is_not_an_audited_package(tmp_path: Path) -> None:
+    audit = {"dependencies": [{"name": "lib", "skip_reason": "not on PyPI"}]}
+    with pytest.raises(sc.InputError):
+        sc.check_vulnerabilities(audit, ["lib==1.0"], _policy(tmp_path), _TODAY)
+
+
+def test_an_empty_freeze_is_input_error(tmp_path: Path) -> None:
+    with pytest.raises(sc.InputError):
+        sc.check_vulnerabilities(
+            _audit(("lib", "1.0", [])), ["", "# nothing"], _policy(tmp_path), _TODAY
+        )
+
+
+def test_package_names_are_compared_after_pep_503_normalisation(tmp_path: Path) -> None:
+    report = sc.check_vulnerabilities(
+        _audit(("Typing_Extensions", "4", [])), ["typing-extensions==4"], _policy(tmp_path), _TODAY
+    )
+    assert not report.violations
+
+
+# ── the command line: 0 pass · 1 violation · 2 bad input ────────────────────
+
+
+def _run(tmp_path: Path, sbom: Any, audit: Any, freeze: str, policy: str = _POLICY) -> int:
+    files = {"sbom.json": sbom, "audit.json": audit}
+    for name, content in files.items():
+        if content is not None:
+            (tmp_path / name).write_text(json.dumps(content), encoding="utf-8")
+    (tmp_path / "freeze.txt").write_text(freeze, encoding="utf-8")
+    (tmp_path / "policy.toml").write_text(policy, encoding="utf-8")
+    return int(
+        sc.main(
+            [
+                "--sbom", str(tmp_path / "sbom.json"),
+                "--audit", str(tmp_path / "audit.json"),
+                "--freeze", str(tmp_path / "freeze.txt"),
+                "--policy", str(tmp_path / "policy.toml"),
+                "--report", str(tmp_path / "report.md"),
+                "--today", _TODAY.isoformat(),
+            ]
+        )
+    )  # fmt: skip
+
+
+def test_exit_0_on_a_clean_scan_and_the_report_is_written(tmp_path: Path) -> None:
+    code = _run(tmp_path, _sbom(_component("a", [_id("MIT")])), _audit(("a", "1", [])), "a==1\n")
+    assert code == 0
+    assert "Result: PASS" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_exit_1_on_a_licence_violation(tmp_path: Path) -> None:
+    code = _run(
+        tmp_path, _sbom(_component("a", [_id("GPL-3.0-only")])), _audit(("a", "1", [])), "a==1\n"
+    )
+    assert code == 1
+    assert "Result: FAIL" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_exit_1_on_a_vulnerability(tmp_path: Path) -> None:
+    audit = _audit(("a", "1", [_vuln("PYSEC-1", ["2"])]))
+    assert _run(tmp_path, _sbom(_component("a", [_id("MIT")])), audit, "a==1\n") == 1
+
+
+def test_exit_2_when_the_audit_file_is_absent(tmp_path: Path) -> None:
+    assert _run(tmp_path, _sbom(_component("a", [_id("MIT")])), None, "a==1\n") == 2
+    assert "NOT RUN" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_exit_2_when_the_audit_has_fewer_packages_than_the_freeze(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]))
+    assert _run(tmp_path, sbom, _audit(("a", "1", [])), "a==1\nb==2\n") == 2
+
+
+def test_exit_2_on_a_malformed_audit(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]))
+    assert _run(tmp_path, sbom, {"dependencies": [{"name": "a", "vulns": [None]}]}, "a==1\n") == 2
+
+
+def test_exit_2_on_a_broken_policy(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]))
+    assert _run(tmp_path, sbom, _audit(("a", "1", [])), "a==1\n", policy="version = [") == 2
+
+
+def test_exit_2_on_an_exception_added_in_the_future(tmp_path: Path) -> None:
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1")]))
+    policy = _POLICY + _exception(added="2027-01-20", expires="2027-04-19")
+    assert _run(tmp_path, sbom, audit, "lib==1.0\n", policy=policy) == 2
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "NOT RUN" in report
+    assert "future" in report
+
+
+def test_exit_1_when_an_sbom_component_was_not_audited(tmp_path: Path) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    assert _run(tmp_path, sbom, _audit(("a", "1", [])), "a==1\n") == 1
+    assert "not audited" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_the_summary_line_counts_frozen_unaudited_and_excepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sbom = _sbom(_component("lib", [_id("MIT")]))
+    audit = _audit(("lib", "1.0", [_vuln("PYSEC-1")]))
+    assert _run(tmp_path, sbom, audit, "lib==1.0\n", policy=_POLICY + _exception()) == 0
+    assert capsys.readouterr().out.strip() == (
+        "supply-chain: 1 frozen; 1 components, 0 licence violation(s), 0 not audited; "
+        "1 packages audited, 0 vulnerability finding(s), 1 excepted -> PASS"
+    )
+
+
+def test_exit_2_when_the_sbom_has_no_components(tmp_path: Path) -> None:
+    assert _run(tmp_path, _sbom(), _audit(("a", "1", [])), "a==1\n") == 2
+
+
+def test_the_pdfium_licences_are_decided_for_pypdfium2_alone() -> None:
+    policy = sc.load_policy(_DIR / "license-policy.toml")
+    decision = policy.packages["pypdfium2"]
+    assert decision.decision == "SRS D-33"
+    expr = decision.expression
+    pdfium_ids = {
+        "LicenseRef-AGG-2.3", "FTL", "Unicode-3.0", "IJG", "libpng-2.0", "CC-BY-4.0",
+    }  # fmt: skip
+    assert pdfium_ids <= sc.expression_ids(expr)
+    # None of them leaked into the global lists ...
+    assert not pdfium_ids & (policy.allowed | policy.approved)
+    # ... so any other package declaring them is refused.
+    for licence in (*sorted(pdfium_ids), "Apache-2.0 WITH LLVM-exception"):
+        component = _component("some-other-package", [_expr(licence)])
+        report = sc.check_licences(_sbom(component), policy)
+        assert report.violations, licence

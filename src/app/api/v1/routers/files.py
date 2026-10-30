@@ -1,10 +1,16 @@
 """The Files router — ``/api/v1/files`` (03-api-spec §1 · FR-100) — Phase
 6.1-هـ-3.
 
-Six routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
+Nine routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 
-* ``POST /files`` — register an upload slot (201 + presigned PUT);
-* ``POST /files/{id}/complete`` — mark the uploaded bytes ready (200);
+* ``POST /files`` — register an upload slot (201 + presigned PUT, up to
+  ``Limits.max_single_put_bytes``);
+* ``POST /files/multipart`` — register a resumable multipart upload (201), for
+  any size up to ``Limits.max_upload_bytes`` (PLT-01);
+* ``POST /files/{id}/upload/part-urls`` — presigned URLs for chosen parts;
+* ``GET /files/{id}/upload`` — which parts storage holds (resume);
+* ``POST /files/{id}/complete`` — mark the uploaded bytes ready (200); for a
+  multipart file the parts are verified and assembled first;
 * ``GET /files`` — the workspace's active files, paginated (API-04 envelope);
 * ``GET /files/{id}`` — one file, bare;
 * ``PATCH /files/{id}`` — rename (200; the extension is immutable, INV-F4);
@@ -49,10 +55,16 @@ from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
 from app.api.v1.dto.files import (
     FileCompleteIn,
+    FileMultipartRegisterOut,
     FileOut,
+    FilePartUrlOut,
+    FilePartUrlsIn,
+    FilePartUrlsOut,
     FileRegisterIn,
     FileRegisterOut,
     FileRenameIn,
+    FileUploadedPartOut,
+    FileUploadOut,
 )
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
 from app.api.v1.idempotency import IdempotencyKey, idempotent
@@ -105,7 +117,7 @@ async def register_file(
     """
 
     # `services.space_quota`, NOT `services.files.transfers` — this is the line
-    # that turns the 1 GiB limit from measured into enforced (spaces plan §3.3,
+    # that turns the space byte limit from measured into enforced (spaces plan §3.3,
     # step 12). The coordination service takes the space's row lock, sums the
     # space's active bytes and only then calls the very registrar this route
     # used to call directly, all in one unit of work; calling the registrar
@@ -142,6 +154,87 @@ async def register_file(
     )
 
 
+@router.post("/multipart", status_code=201, dependencies=[Depends(require(Permission.FILES_WRITE))])
+async def register_multipart_file(
+    body: FileRegisterIn,
+    services: Services,
+    ctx: Context,
+    idempotency_key: IdempotencyKey = None,
+) -> FileMultipartRegisterOut:
+    """Register a resumable multipart upload (201), for files above
+    ``Limits.max_single_put_bytes`` (or any size up to ``max_upload_bytes``).
+
+    Goes through ``services.multipart_quota`` -- the space quota, the file cap
+    and the idempotency ledger apply exactly as on ``POST /files``. The client
+    then asks ``POST /files/{id}/upload/part-urls`` for URLs, ``PUT``s each part
+    (no ``Authorization`` header), may ask ``GET /files/{id}/upload`` after an
+    interruption, and finishes with ``POST /files/{id}/complete``."""
+    quota = services.multipart_quota
+    if quota is None:
+        raise AppError("space quota is not configured on this deployment", code="common.internal")
+
+    async def _register() -> FileMultipartRegisterOut:
+        registered = await quota.register(
+            ctx,
+            space_id=body.space_id,
+            name=body.name,
+            content_type=body.content_type,
+            size_bytes=body.size_bytes,
+        )
+        return FileMultipartRegisterOut(
+            file_id=registered.file.id,
+            part_size_bytes=registered.part_bytes,
+            part_count=registered.part_count,
+        )
+
+    return await idempotent(
+        services.idempotency,
+        ctx,
+        endpoint="POST /files/multipart",
+        key=idempotency_key,
+        body=body,
+        model=FileMultipartRegisterOut,
+        run=_register,
+    )
+
+
+@router.get("/{file_id}/upload", dependencies=[Depends(require(Permission.FILES_WRITE))])
+async def get_file_upload(file_id: str, services: Services, ctx: Context) -> FileUploadOut:
+    """What storage already holds of a multipart upload, for resuming after an
+    interruption. ``files:write``, not a read: it is a step of the write
+    protocol, not a view of the file's content. The registrant's alone (SR-1):
+    404 for an unknown, foreign, deleted, or ANOTHER MEMBER'S file; 409 for a
+    single-PUT or already complete one, and
+    ``files.upload_expired`` once storage has swept the upload."""
+    progress = await services.files.multipart.progress(ctx, file_id)
+    return FileUploadOut(
+        file_id=progress.file_id,
+        part_size_bytes=progress.part_bytes,
+        part_count=progress.part_count,
+        uploaded_parts=[
+            FileUploadedPartOut(part_number=p.part_number, size_bytes=p.size_bytes)
+            for p in progress.uploaded
+        ],
+    )
+
+
+@router.post("/{file_id}/upload/part-urls", dependencies=[Depends(require(Permission.FILES_WRITE))])
+async def sign_file_upload_parts(
+    file_id: str, body: FilePartUrlsIn, services: Services, ctx: Context
+) -> FilePartUrlsOut:
+    """Presigned ``PUT`` URLs for the requested part numbers (1..100 per call,
+    each within ``1..part_count``, no repeats). They expire after
+    ``expires_in`` seconds, so ask shortly before uploading. The registrant's
+    alone (SR-1): another member of the workspace is answered 404."""
+    signed = await services.files.multipart.sign_parts(ctx, file_id, body.part_numbers)
+    return FilePartUrlsOut(
+        parts=[
+            FilePartUrlOut(part_number=p.part_number, upload_url=p.upload_url) for p in signed.parts
+        ],
+        expires_in=signed.expires_in,
+    )
+
+
 @router.post("/{file_id}/complete", dependencies=[Depends(require(Permission.FILES_WRITE))])
 async def complete_file(
     file_id: str, services: Services, ctx: Context, body: FileCompleteIn | None = None
@@ -161,6 +254,13 @@ async def complete_file(
     bundle's own service here would leave two files with one name, both
     indexed, answering the same question twice — the shape the audit records
     as cause #7.
+
+    **A multipart file is assembled first** (PLT-01): the cascade runs
+    ``CompleteUploadService``, which checks that storage holds every part at its
+    expected size and joins them before the unit of work opens. A missing or
+    wrong-sized part is ``409 files.upload_incomplete`` and changes nothing; a
+    swept upload is ``409 files.upload_expired``. Repeating the call after a
+    successful join is safe.
 
     The response body is unchanged and so is every status: the sweep runs
     after the completion has succeeded and cannot turn it into a failure (the

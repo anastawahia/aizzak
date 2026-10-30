@@ -43,6 +43,20 @@ def test_platform_admin_sees_no_tenant_content() -> None:
     assert Permission.FILES_READ not in catalog
 
 
+# WireTwin (SRS D-25, 05 §1.3): who holds each `electrical:*` permission.
+_ELECTRICAL_MATRIX = {
+    Permission.ELECTRICAL_READ: {
+        RoleName.OWNER,
+        RoleName.ADMIN,
+        RoleName.MEMBER,
+        RoleName.VIEWER,
+    },
+    Permission.ELECTRICAL_DIAGNOSE: {RoleName.OWNER, RoleName.ADMIN, RoleName.MEMBER},
+    Permission.ELECTRICAL_MANAGE: {RoleName.OWNER, RoleName.ADMIN},
+    Permission.ELECTRICAL_EVAL: {RoleName.OWNER, RoleName.ADMIN},
+}
+
+
 @pytest.mark.parametrize(
     ("role", "permission", "expected"),
     [
@@ -57,6 +71,11 @@ def test_platform_admin_sees_no_tenant_content() -> None:
         (RoleName.VIEWER, Permission.AGENTS_INVOKE, False),
         (RoleName.PLATFORM_ADMIN, Permission.PLATFORM_ADMIN, True),
         (RoleName.PLATFORM_ADMIN, Permission.FILES_READ, False),
+        *[
+            (role, permission, role in granted)
+            for permission, granted in _ELECTRICAL_MATRIX.items()
+            for role in RoleName
+        ],
     ],
 )
 def test_permission_matrix(role: RoleName, permission: Permission, expected: bool) -> None:
@@ -70,3 +89,21 @@ def test_permission_granted_unions_roles() -> None:
 
 def test_permission_granted_empty_roles_denies() -> None:
     assert permission_granted(frozenset(), Permission.WORKSPACE_READ) is False
+
+
+def test_electrical_permissions_are_the_four_and_no_role_was_added() -> None:
+    assert {p.value for p in Permission if p.value.startswith("electrical:")} == {
+        "electrical:read",
+        "electrical:diagnose",
+        "electrical:manage",
+        "electrical:eval",
+    }
+    # `electrical:review` arrives with FR-HIL-06 in R2, not before.
+    assert "electrical:review" not in {p.value for p in Permission}
+    assert {r.value for r in RoleName} == {
+        "owner",
+        "admin",
+        "member",
+        "viewer",
+        "platform_admin",
+    }

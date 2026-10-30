@@ -30,8 +30,9 @@ from collections.abc import AsyncIterator
 import pytest
 from minio import Minio
 
-from app.framework.errors import AppError, NotFoundError
+from app.framework.errors import AppError, ConflictError, NotFoundError
 from app.framework.identifiers import new_uuid7
+from app.framework.ports.storage_provider import StoredPart
 from app.framework.settings.settings import MinioSettings
 from app.infrastructure.storage.minio_storage import MinioStorage, create_minio_client
 from tests.integration.conftest import LiveMinio
@@ -242,3 +243,83 @@ async def test_out_of_scope_bucket_is_denied_not_leaked(
         await foreign.get(object_prefix + "nope.bin")
 
     assert excinfo.value.code == "common.internal"
+
+
+# --------------------------------------------------------------------------- #
+# (13)+ multipart / resumable uploads (PLT-01)                                #
+# --------------------------------------------------------------------------- #
+_FIVE_MIB = 5 * 1024 * 1024
+
+
+async def test_a_multipart_upload_round_trips_through_real_signed_part_urls(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    """start -> sign two parts -> PUT them unauthenticated -> list -> complete
+    -> the object exists at exactly the summed size and reads back whole."""
+    key = object_prefix + "big.bin"
+    first = b"a" * _FIVE_MIB
+    last = b"tail"
+
+    upload_id = await minio_storage.start_multipart(key, "application/octet-stream")
+    assert upload_id
+    for number, data in ((1, first), (2, last)):
+        url = await minio_storage.presign_upload_part(key, upload_id, number, ttl_s=120)
+        status = await asyncio.to_thread(_http_put, url, data, "application/octet-stream")
+        assert status == 200
+
+    # The object is invisible until completion.
+    assert await minio_storage.object_size(key) is None
+    held = await minio_storage.list_parts(key, upload_id)
+    assert [(p.part_number, p.size_bytes) for p in held] == [(1, len(first)), (2, len(last))]
+    assert all(p.etag for p in held)
+
+    await minio_storage.complete_multipart(key, upload_id, held)
+
+    assert await minio_storage.object_size(key) == len(first) + len(last)
+    assert await minio_storage.get(key) == first + last
+
+
+async def test_list_parts_after_a_partial_upload_reports_only_what_arrived(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    key = object_prefix + "resume.bin"
+    upload_id = await minio_storage.start_multipart(key, "application/octet-stream")
+    assert await minio_storage.list_parts(key, upload_id) == []
+    url = await minio_storage.presign_upload_part(key, upload_id, 2, ttl_s=120)
+    await asyncio.to_thread(_http_put, url, b"x" * 10, "application/octet-stream")
+
+    held = await minio_storage.list_parts(key, upload_id)
+
+    assert [(p.part_number, p.size_bytes) for p in held] == [(2, 10)]
+
+
+async def test_a_gone_upload_is_not_found_for_list_and_complete(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    key = object_prefix + "gone.bin"
+
+    with pytest.raises(NotFoundError):
+        await minio_storage.list_parts(key, "no-such-upload-id")
+    with pytest.raises(NotFoundError):
+        await minio_storage.complete_multipart(key, "no-such-upload-id", [StoredPart(1, 1, "e")])
+
+
+async def test_a_wrong_etag_is_a_conflict_not_an_internal_error(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    key = object_prefix + "bad-etag.bin"
+    upload_id = await minio_storage.start_multipart(key, "application/octet-stream")
+    url = await minio_storage.presign_upload_part(key, upload_id, 1, ttl_s=120)
+    await asyncio.to_thread(_http_put, url, b"x" * 10, "application/octet-stream")
+
+    with pytest.raises(ConflictError) as excinfo:
+        await minio_storage.complete_multipart(key, upload_id, [StoredPart(1, 10, "0" * 32)])
+
+    assert excinfo.value.code == "common.conflict"
+    assert await minio_storage.object_size(key) is None
+
+
+async def test_object_size_of_a_missing_key_is_none(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    assert await minio_storage.object_size(object_prefix + "never.bin") is None

@@ -329,7 +329,10 @@ from app.modules.files.application.use_cases import (
     FileTransferService,
     FileUseCases,
     FindNamesakes,
+    MultipartRegistrar,
+    MultipartUploadService,
     PurgeSpaceFiles,
+    RegisteredMultipartUpload,
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
@@ -1092,7 +1095,14 @@ def _build_file_services(
     the mark, nothing but the cascade may spend it) applied to a module whose
     every write now has a cross-module consequence.
     """
-    complete = CompleteUploadService(CompleteUpload(files), outbox, tenant_session)
+    # PLT-01: ONE `RegisterUpload` behind both registration faces (single PUT
+    # and multipart) and ONE `MultipartUploadService`, which is also the
+    # assembler `complete` runs before its unit of work opens.
+    multipart = MultipartUploadService(files, storage, put_ttl_s=settings.minio.presign_put_ttl_s)
+    register = RegisterUpload(files, settings.limits, spaces, multipart=storage)
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, tenant_session, assembler=multipart
+    )
     rename = RenameFile(files)
     mark = SoftDeleteFileService(SoftDeleteFile(files), outbox, tenant_session)
     # س-29 rule 1's `files` half -- which live files a newly completed or
@@ -1101,7 +1111,7 @@ def _build_file_services(
     namesakes = FindNamesakes(files)
     bundle = FileUseCases(
         transfers=FileTransferService(
-            RegisterUpload(files, settings.limits, spaces),
+            register,
             files,
             storage,
             put_ttl_s=settings.minio.presign_put_ttl_s,
@@ -1115,6 +1125,8 @@ def _build_file_services(
         # /api/v1/spaces` shows. The same repository the quota sums, so the
         # number a client reads is the number the ceiling is measured against.
         space_totals=SummariseSpaces(files),
+        multipart=multipart,
+        multipart_registrar=MultipartRegistrar(register),
     )
     cascade = DeleteFileService(mark, knowledge=knowledge)
     return (
@@ -1132,10 +1144,15 @@ def _build_space_services(
     mark: DeleteSpace,
     files: SqlFileRepository,
     transfers: FileTransferService,
+    multipart: MultipartRegistrar,
     storage: StorageHandle,
     knowledge: PurgeSpaceKnowledge,
     conversations: PurgeSpaceConversations,
-) -> tuple[SpaceQuotaService[RegisteredUpload], DeleteSpaceService]:
+) -> tuple[
+    SpaceQuotaService[RegisteredUpload],
+    SpaceQuotaService[RegisteredMultipartUpload],
+    DeleteSpaceService,
+]:
     """The two cross-module space services — ``spaces-backend-plan.md`` steps
     5 and 11 (§3.3 and §3.6).
 
@@ -1172,13 +1189,18 @@ def _build_space_services(
     quota = SpaceQuotaService(
         transfers, spaces, files, tenant_session, limits, AdvisoryQuotaLock(tenant_session)
     )
+    # PLT-01: the same quota over the multipart registrar, so a resumable
+    # upload is measured and locked exactly like a single one.
+    multipart_quota = SpaceQuotaService(
+        multipart, spaces, files, tenant_session, limits, AdvisoryQuotaLock(tenant_session)
+    )
     deletion = DeleteSpaceService(
         mark,
         knowledge=knowledge,
         files=PurgeSpaceFiles(files, storage),
         conversations=conversations,
     )
-    return quota, deletion
+    return quota, multipart_quota, deletion
 
 
 def _build_conversations(
@@ -1735,7 +1757,7 @@ class CompositionRoot:
     # goes through `space_deletion` below, because a mark without the other six
     # steps hides a workspace's data instead of erasing it.
     spaces: SpaceUseCases
-    # `spaces-backend-plan.md` step 5 — registration gated on the space's 1 GiB
+    # `spaces-backend-plan.md` step 5 — registration gated on the space's
     # quota, under the space's row lock. Held HERE rather than inside
     # `FileUseCases`: the bundle is the files module's own packaging, and this
     # service is deliberately not the files module's (§3.3 — the lock is on a
@@ -1743,6 +1765,9 @@ class CompositionRoot:
     # it since plan step 12, and plan step 13 is what carries it onto
     # `ApiServices` — until that binding the route failed closed.
     space_quota: SpaceQuotaService[RegisteredUpload]
+    # PLT-01: `space_quota`'s twin for `POST /api/v1/files/multipart` -- the
+    # same lock, the same sum, a registrar that opens a multipart upload.
+    multipart_quota: SpaceQuotaService[RegisteredMultipartUpload]
     # `spaces-backend-plan.md` step 11 — the cascade that empties a deleted
     # space (§3.6). Held beside `space_quota` and for the same reason: it is
     # not the files module's, not the spaces module's, and not any one
@@ -2136,13 +2161,14 @@ class CompositionRoot:
         # `spaces-backend-plan.md` steps 5 and 11 -- the two cross-module
         # space services (helper above, which is where the bindings are
         # explained). Built together because they are the same idea twice.
-        space_quota, space_deletion = _build_space_services(
+        space_quota, multipart_quota, space_deletion = _build_space_services(
             tenant_session,
             settings.limits,
             spaces=space_repository,
             mark=space_use_cases.delete,
             files=file_repository,
             transfers=files_use_cases.transfers,
+            multipart=files_use_cases.multipart_registrar,
             storage=storage,
             knowledge=purge_space_knowledge,
             conversations=purge_space_conversations,
@@ -2241,6 +2267,7 @@ class CompositionRoot:
             files=files_use_cases,
             spaces=space_use_cases,
             space_quota=space_quota,
+            multipart_quota=multipart_quota,
             space_deletion=space_deletion,
             # The file cascade (`framework/di/file_deletion.py`) — the second
             # cross-module deletion service, and the reason `DELETE

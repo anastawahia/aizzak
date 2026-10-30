@@ -11,11 +11,17 @@ from app.framework.clock import utc_now
 from app.modules.files.domain.entities import File
 from app.modules.files.domain.errors import FileStateError, InvalidFileInput
 from app.modules.files.domain.value_objects import (
+    MAX_PARTS,
+    MIN_PART_BYTES,
     ContentType,
     FileName,
     FileStatus,
+    MultipartUpload,
+    PartsCheck,
     Sha256,
     StorageKey,
+    UploadMode,
+    check_parts,
 )
 
 _SHA = "a" * 64
@@ -312,3 +318,92 @@ def test_quarantine_leaves_the_space_alone_too() -> None:
     file = _file(FileStatus.SCANNING)
     file.quarantine(utc_now())
     assert file.space_id == "s1"
+
+
+# --------------------------------------------------------------------------- #
+# Multipart upload (PLT-01, INV-F5)                                            #
+# --------------------------------------------------------------------------- #
+_PART = MIN_PART_BYTES * 2  # 10 MiB: small enough to keep the arithmetic readable
+
+
+def test_upload_mode_values() -> None:
+    assert {m.value for m in UploadMode} == {"single", "multipart"}
+
+
+def test_s3_constants() -> None:
+    assert MIN_PART_BYTES == 5 * 1024 * 1024
+    assert MAX_PARTS == 10_000
+
+
+@pytest.mark.parametrize("upload_id", ["", "x" * 1025])
+def test_multipart_upload_rejects_a_bad_upload_id(upload_id: str) -> None:
+    with pytest.raises(InvalidFileInput):
+        MultipartUpload(upload_id, _PART)
+
+
+def test_multipart_upload_rejects_a_part_below_the_s3_minimum() -> None:
+    with pytest.raises(InvalidFileInput):
+        MultipartUpload("u", MIN_PART_BYTES - 1)
+    assert MultipartUpload("u" * 1024, MIN_PART_BYTES).part_bytes == MIN_PART_BYTES
+
+
+@pytest.mark.parametrize(
+    ("size", "count", "last"),
+    [
+        (1, 1, 1),  # a single tiny part
+        (0, 1, 0),  # the floor is one part
+        (_PART - 1, 1, _PART - 1),
+        (_PART, 1, _PART),  # exact multiple: no empty trailing part
+        (_PART + 1, 2, 1),  # one byte over: a one-byte last part
+        (_PART * 3, 3, _PART),
+        (_PART * 3 + 7, 4, 7),
+    ],
+)
+def test_part_count_and_expected_size(size: int, count: int, last: int) -> None:
+    upload = MultipartUpload("u", _PART)
+    assert upload.part_count(size) == count
+    for n in range(1, count):
+        assert upload.expected_size(n, size) == _PART
+    assert upload.expected_size(count, size) == last
+    assert sum(upload.expected_size(n, size) for n in range(1, count + 1)) == size
+
+
+@pytest.mark.parametrize("number", [0, 3, -1])
+def test_expected_size_rejects_a_part_outside_the_range(number: int) -> None:
+    with pytest.raises(InvalidFileInput):
+        MultipartUpload("u", _PART).expected_size(number, _PART + 1)
+
+
+def test_check_parts_complete() -> None:
+    upload = MultipartUpload("u", _PART)
+    check = check_parts(upload, _PART + 5, {1: _PART, 2: 5})
+    assert check == PartsCheck(missing=(), wrong_size=())
+    assert check.complete
+
+
+def test_check_parts_reports_missing_and_wrong_size_sorted() -> None:
+    upload = MultipartUpload("u", _PART)
+    check = check_parts(upload, _PART * 4 + 5, {4: _PART + 1, 2: _PART - 1, 5: 5})
+    assert check.missing == (1, 3)
+    assert check.wrong_size == (2, 4)
+    assert not check.complete
+
+
+def test_check_parts_ignores_parts_beyond_the_count() -> None:
+    upload = MultipartUpload("u", _PART)
+    check = check_parts(upload, _PART, {1: _PART, 2: 123, 99: 1})
+    assert check.complete
+
+
+def test_check_parts_treats_a_zero_byte_part_as_held() -> None:
+    upload = MultipartUpload("u", _PART)
+    assert check_parts(upload, 0, {1: 0}).complete
+    assert check_parts(upload, 0, {}).missing == (1,)
+
+
+def test_file_is_single_put_by_default_and_multipart_when_given_a_session() -> None:
+    single = _file()
+    assert single.multipart is None
+    assert single.is_multipart is False
+    single.multipart = MultipartUpload("u", _PART)
+    assert single.is_multipart is True

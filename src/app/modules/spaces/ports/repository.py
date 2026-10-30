@@ -13,7 +13,7 @@ earlier and be wrong under concurrency exactly when it matters. The adapter
 translates the resulting ``23505`` into ``spaces.duplicate_name``.
 
 **No ``count``.** There is no cap on the number of spaces — the quota this
-plan introduces is 1 GiB of BYTES per space (§3.3), enforced against
+plan introduces is `Limits.max_space_bytes` of BYTES per space (§3.3), enforced against
 ``files``, not here.
 """
 

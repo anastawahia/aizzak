@@ -730,12 +730,13 @@ def create_production_app() -> FastAPI:
         # `space_deletion` are what `/api/v1/spaces` answers with instead of
         # `common.internal`, and `space_quota` is what `POST /api/v1/files`
         # registers through since step 12. That last one is the reason this is
-        # not cosmetic wiring — without it the 1 GiB ceiling (§3.3) is a
+        # not cosmetic wiring — without it the `Limits.max_space_bytes` ceiling (§3.3) is a
         # number no route reads, and the upload route fails CLOSED rather than
         # falling back to the unmeasured registrar.
         spaces=root.spaces,
         space_deletion=root.space_deletion,
         space_quota=root.space_quota,
+        multipart_quota=root.multipart_quota,
         # The file cascade — what makes `DELETE /api/v1/files/{id}` empty the
         # file's index as well as mark its row. Not cosmetic wiring either:
         # without it the route fails CLOSED (`common.internal`) rather than

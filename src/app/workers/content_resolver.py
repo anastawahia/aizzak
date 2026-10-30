@@ -68,7 +68,7 @@ class WorkerDocumentContentResolver:
     """The real ``DocumentContentResolver`` (``bootstrap.py``'s Protocol --
     structural conformance, proven at the wiring site)."""
 
-    __slots__ = ("_extractor", "_files", "_providers", "_storage", "_timeout_s")
+    __slots__ = ("_extractor", "_files", "_max_bytes", "_providers", "_storage", "_timeout_s")
 
     def __init__(
         self,
@@ -78,6 +78,7 @@ class WorkerDocumentContentResolver:
         providers: ProviderResolver,
         *,
         timeout_s: float = Limits().parser_timeout_seconds,
+        max_bytes: int = Limits().knowledge_max_index_bytes,
     ) -> None:
         self._files = files
         self._storage = storage
@@ -88,6 +89,8 @@ class WorkerDocumentContentResolver:
         # precedent, so a caller that does not care (a test) gets the plan's
         # own default rather than an unbounded wait.
         self._timeout_s = timeout_s
+        # INC0-Q-2: the largest file this worker will load whole.
+        self._max_bytes = max_bytes
 
     async def resolve(
         self, ctx: ExecutionContext, *, file_id: Uuid
@@ -104,6 +107,16 @@ class WorkerDocumentContentResolver:
         if file is None:
             raise NotFoundError(f"file {file_id} not found")
 
+        # INC0-Q-2: `storage.get` below loads the whole object into a worker
+        # that has 1-2 GiB, and uploads may now reach 1 GiB. Decided on the
+        # descriptor, before a byte is read, and failed the way
+        # `knowledge.parse_timeout` is: explicitly, never skipped silently.
+        if file.size_bytes > self._max_bytes:
+            raise ValidationError(
+                f"{file.name.value!r} is {file.size_bytes} bytes; the indexing limit is "
+                f"{self._max_bytes}",
+                code="knowledge.too_large",
+            )
         data = await self._storage.get(file.storage_key.value)
         # §3.6 (plan step 15): `sha256(bytes)`, never `mtime` -- the model is
         # object-based, not file-based (rag-indexing-plan.md's own words).

@@ -24,6 +24,7 @@ from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import Limits
 
 _GIB = 1_073_741_824
+_TEN_GIB = 10 * _GIB
 
 
 def _ctx() -> ExecutionContext:
@@ -133,12 +134,14 @@ def _build(
 # --------------------------------------------------------------------------- #
 # (0) the number itself                                                       #
 # --------------------------------------------------------------------------- #
-def test_the_default_quota_is_the_one_gibibyte_the_plan_decided() -> None:
-    """Plan decision 4 is "1 GiB per space, by SIZE not by count", and it is a
-    decision — not a value to be nudged. Every other test here passes an
-    explicit ceiling, so without this line the shipped default is the one
-    number in this step that nothing checks."""
-    assert Limits().max_space_bytes == _GIB
+def test_the_default_quota_is_the_ten_gibibytes_the_owner_decided() -> None:
+    """Plan decision 4 is a quota "by SIZE not by count", and its size is a
+    decision — not a value to be nudged (1 GiB at first, 10 GiB since
+    INC0-Q-1, so that one 1 GiB file and its replacement fit with room to
+    spare). Every other test here passes an explicit ceiling, so without this
+    line the shipped default is the one number in this step that nothing
+    checks."""
+    assert Limits().max_space_bytes == _TEN_GIB
 
 
 # --------------------------------------------------------------------------- #
@@ -172,7 +175,7 @@ async def test_an_upload_that_fits_is_registered_under_the_lock_in_one_unit_of_w
 # (2) the ceiling                                                             #
 # --------------------------------------------------------------------------- #
 async def test_an_upload_that_would_cross_the_ceiling_is_refused_before_it_is_registered() -> None:
-    service, registrar, trace = _build(used=_GIB - 1024)
+    service, registrar, trace = _build(used=_TEN_GIB - 1024)
 
     with pytest.raises(ConflictError) as exc_info:
         await service.register(
@@ -193,10 +196,10 @@ async def test_an_upload_that_would_cross_the_ceiling_is_refused_before_it_is_re
 
 
 async def test_filling_the_space_exactly_to_the_ceiling_is_allowed() -> None:
-    """``>`` and not ``>=``: a 1 GiB quota that refuses the byte that makes the
-    space exactly 1 GiB is a 1 GiB-minus-one quota, and the off-by-one would
+    """``>`` and not ``>=``: a quota that refuses the byte that makes the
+    space exactly full is a one-byte-smaller quota, and the off-by-one would
     only ever be found by the one user who hit it."""
-    service, registrar, _ = _build(used=_GIB - 2048)
+    service, registrar, _ = _build(used=_TEN_GIB - 2048)
     space = new_uuid7()
 
     await service.register(
@@ -211,7 +214,7 @@ async def test_filling_the_space_exactly_to_the_ceiling_is_allowed() -> None:
 
 
 async def test_one_byte_past_the_ceiling_is_refused() -> None:
-    service, registrar, _ = _build(used=_GIB - 2047)
+    service, registrar, _ = _build(used=_TEN_GIB - 2047)
 
     with pytest.raises(ConflictError):
         await service.register(
@@ -263,7 +266,7 @@ async def test_a_space_that_cannot_be_locked_is_a_404_and_nothing_else_happens()
 # (4) the deferral to the per-file cap                                        #
 # --------------------------------------------------------------------------- #
 async def test_a_file_larger_than_the_per_file_cap_is_left_to_the_registrar() -> None:
-    """A 2 GiB upload into an EMPTY 1 GiB space must not be answered "the space
+    """An upload above the per-file cap into an EMPTY space must not be answered "the space
     is full" — that is true and useless. ``RegisterUpload`` owns
     ``files.too_large`` (413) and answers with the number the client can act
     on, so this service steps aside and lets the call through to it."""

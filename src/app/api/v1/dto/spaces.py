@@ -17,7 +17,7 @@ rename. The counters are therefore always present; ``POST`` fills them with
 zeros without asking anyone, which is not an assumption but the definition of
 a row that was inserted one statement ago.
 
-``bytes_used`` is measured against ``Limits.max_space_bytes`` (§3.3, 1 GiB) and
+``bytes_used`` is measured against ``Limits.max_space_bytes`` (§3.3) and
 counts ACTIVE files only — a soft-deleted file has already given its bytes
 back to the quota, so a listing that still counted them would contradict the
 limit it exists to describe.
@@ -34,7 +34,7 @@ class SpaceCreateIn(BaseModel):
     """``POST /spaces`` — a space has exactly one thing to say about itself.
 
     No ``id`` and no quota field: the identifier is the server's (UUIDv7) and
-    the 1 GiB limit is the operator's setting, not a per-space value a client
+    the byte limit is the operator's setting, not a per-space value a client
     may propose. The name's rules (1..120 characters, no control characters)
     are the domain's ``SpaceName``, so an invalid one is a 422 with the
     domain's own reason rather than a Pydantic constraint duplicated here —

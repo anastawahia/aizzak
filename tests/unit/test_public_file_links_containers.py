@@ -47,6 +47,7 @@ import pytest
 import yaml
 from minio import Minio
 
+from app.framework.settings.settings import Limits
 from app.infrastructure.storage.minio_storage import MinioStorage
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,7 +62,9 @@ _BUCKET = "workspace-files"
 _OWN_NAME = "api.aizzak.test"
 _PUBLIC_NAME = "api.aizzak.com"
 _ALLOWED_ORIGIN = "https://aizzak-agent.web.app"
-_MAX_UPLOAD = 52_428_800
+# The edge ceiling is the single-PUT limit (PLT-01, INC0-Q-3), not the 1 GiB limit of a
+# whole file: a big file reaches the bucket as parts, each one a request below it.
+_MAX_UPLOAD = Limits().max_single_put_bytes
 _PROBE_KEY = "smoke/presign-put-probe.txt"
 
 
@@ -441,6 +444,34 @@ http {
         self, host: str, key: str, ttl_s: int = 900, content_type: str = "text/plain"
     ) -> str:
         return asyncio.run(self._signer(host).presign_put(key, ttl_s, content_type))
+
+    def part_url(self, host: str, key: str, upload_id: str, part_number: int) -> str:
+        """The URL the app hands out for one part (the real ``presign_upload_part``)."""
+        signer = self._signer(host)
+        return asyncio.run(signer.presign_upload_part(key, upload_id, part_number, 900))
+
+    def direct_url(self, method: str, key: str, **query: str) -> str:
+        """A URL for the store on the internal network, signed for ``minio-store:9000``.
+
+        The app calls MinIO there and never through the edge, so this is how the
+        harness plays the server-side calls of a multipart upload: create, complete.
+        """
+        client = Minio(
+            "minio-store:9000",
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+            secure=False,
+            region="us-east-1",
+        )
+        return str(
+            client.get_presigned_url(
+                method,
+                _BUCKET,
+                key,
+                expires=timedelta(seconds=300),
+                extra_query_params=dict(query) or None,
+            )
+        )
 
     def get_url(self, host: str, key: str, ttl_s: int = 300) -> str:
         return asyncio.run(self._signer(host).presign_get(key, ttl_s))
@@ -856,3 +887,102 @@ def test_a_copy_source_header_never_reaches_minio(harness: Harness) -> None:
     # The same URL without the header still works: the guard is not a blanket refusal.
     key = _key("attacker")
     assert _put(harness, harness.put_url(_OWN_NAME, key), path).status == 200
+
+
+# --------------------------------------------------------------------------- #
+# INC0-Q-3 -- presigned UploadPart through the edge                            #
+# --------------------------------------------------------------------------- #
+def _start_upload(h: Harness, key: str) -> str:
+    """CreateMultipartUpload, server-side (app -> minio:9000), as the app does it."""
+    answer = h.curl(h.direct_url("POST", key, uploads=""), "-X", "POST", check=False)
+    assert answer.status == 200
+    found = re.search(r"<UploadId>([^<]+)</UploadId>", answer.body())
+    assert found is not None
+    return found.group(1)
+
+
+def test_a_signed_part_through_the_edge_reaches_minio_and_completes(harness: Harness) -> None:
+    key = _key("part")
+    upload_id = _start_upload(harness, key)
+    path, digest = harness.make_file(5_242_880)
+    url = harness.part_url(_OWN_NAME, key, upload_id, 1)
+    answer = _put(harness, url, path, content_type="application/octet-stream")
+    assert answer.status == 200
+    etags = answer.all("etag")
+    assert len(etags) == 1
+    seen = harness.recorded(key)
+    assert [(r["method"], r["host"]) for r in seen] == [("PUT", _OWN_NAME)]
+    assert "partNumber=1" in str(seen[0]["uri"])
+    # A part is not an object: nothing is readable until the server completes the upload.
+    assert harness.stored_sha(key) is None
+
+    etag = etags[0].strip('"')
+    xml = (
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber>"
+        f"<ETag>{etag}</ETag></Part></CompleteMultipartUpload>"
+    )
+    harness.client_exec("sh", "-c", f"printf '%s' '{xml}' > /tmp/complete.xml")
+    complete = harness.curl(
+        harness.direct_url("POST", key, uploadId=upload_id),
+        "-X",
+        "POST",
+        "--data-binary",
+        "@/tmp/complete.xml",
+        check=False,
+    )
+    assert complete.status == 200
+    assert harness.stored_sha(key) == digest
+
+
+def test_a_part_over_the_edge_limit_is_refused_by_the_edge(harness: Harness) -> None:
+    key = _key("part")
+    upload_id = _start_upload(harness, key)
+    path, _ = harness.make_file(_MAX_UPLOAD + 1)
+    url = harness.part_url(_OWN_NAME, key, upload_id, 1)
+    answer = _put(harness, url, path, content_type="application/octet-stream")
+    assert answer.status == 413
+    assert "<Error>" not in answer.body()
+    assert harness.recorded(key) == []
+
+
+def test_creating_completing_and_aborting_an_upload_never_come_through_the_edge(
+    harness: Harness,
+) -> None:
+    key = _key("part")
+    upload_id = _start_upload(harness, key)
+    create = harness.curl(
+        harness.method_url(_OWN_NAME, "POST", key, uploads=""), "-X", "POST", check=False
+    )
+    complete = harness.curl(
+        harness.method_url(_OWN_NAME, "POST", key, uploadId=upload_id), "-X", "POST", check=False
+    )
+    abort = harness.curl(
+        harness.method_url(_OWN_NAME, "DELETE", key, uploadId=upload_id),
+        "-X",
+        "DELETE",
+        check=False,
+    )
+    for answer in (create, complete, abort):
+        assert answer.status in (403, 405)
+        assert "<Error>" not in answer.body()
+    assert harness.recorded(key) == []
+
+
+def test_a_copy_source_on_a_part_never_reaches_minio(harness: Harness) -> None:
+    victim = f"victim-ws/{secrets.token_hex(4)}"
+    harness.exec("store", "sh", "-c", f"echo secret | mc pipe local/{_BUCKET}/{victim}")
+    key = _key("part")
+    upload_id = _start_upload(harness, key)
+    path, _ = harness.make_file(1024)
+    url = harness.part_url(_OWN_NAME, key, upload_id, 1)
+    answer = _put(
+        harness,
+        url,
+        path,
+        "-H",
+        f"x-amz-copy-source: /{_BUCKET}/{victim}",
+        content_type="application/octet-stream",
+    )
+    assert answer.status == 403
+    assert "<Error>" not in answer.body()
+    assert harness.recorded(key) == []

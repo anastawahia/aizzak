@@ -50,6 +50,11 @@ widening of the window: two registrations into the SAME space serialise for
 the length of one presign call. The alternative is to release the lock before
 the insert, which is the exact race the lock exists to prevent.
 
+For a multipart registration (PLT-01) the registrar opens the upload instead
+(``MultipartStorage.start_multipart``), so the same lock now spans ONE round
+trip to MinIO. Still one registrar call, still bounded; and if the insert fails
+afterwards the orphan upload is swept by MinIO's own stale-upload expiry.
+
 ⚠️ **And 2.7 widened WHO waits, not how long.** The window is unchanged — one
 registrar call — but the contention set is now the WORKSPACE rather than the
 space, because the file cap is a workspace ceiling. Two spaces of one tenant

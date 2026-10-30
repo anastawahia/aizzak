@@ -28,6 +28,7 @@
 `integrations:read` · `integrations:manage` ·
 `usage:read` · `usage:manage` ·
 `access:read` · `access:manage` ·
+`electrical:read` · `electrical:diagnose` · `electrical:manage` · `electrical:eval` ·
 `platform:admin`
 
 > **وحدة `memory` — بلا صلاحيات في الكتالوج (مقصود):** `memory` وحدة **داخلية بالكامل** يديرها الوكيل (المُنسِّق) أثناء التنفيذ ولا تعرّض أي سطح API مباشر للمستخدم (لا مسار في `03-api-spec.md`)؛ لذا لا `memory:read`/`memory:manage`. الوصول إلى عناصر الذاكرة محكومٌ ضمناً بعزل المستأجر (RLS على `memory.memory_items`) وبحدود الوكيل، لا بصلاحية RBAC مباشرة. تُضاف صلاحيات صريحة لاحقاً فقط إن كُشِف سطح API للذاكرة.
@@ -61,9 +62,14 @@
 | usage:manage | ✓ | ✓ | — | — | — |
 | access:read | ✓ | ✓ | — | — | ✓ |
 | access:manage | ✓ | ✓ | — | — | — |
+| electrical:read | ✓ | ✓ | ✓ | ✓ | — |
+| electrical:diagnose | ✓ | ✓ | ✓ | — | — |
+| electrical:manage | ✓ | ✓ | — | — | — |
+| electrical:eval | ✓ | ✓ | — | — | — |
 | platform:admin | — | — | — | — | ✓ |
 
 > `platform_admin` عمداً بلا وصول لمحتوى المستأجر (محادثات/ملفات) — دعمٌ لا اطّلاع؛ يُوسَّع عند الحاجة.
+> صلاحيات `electrical:*` (WireTwin، SRS D-25) على الأدوار القائمة بلا دور جديد؛ و`platform_admin` بلا أيٍّ منها لأن الدعم عابر للمستأجرين ولا يرى محتواهم. و`electrical:review` غائبة عمداً حتى R2 (FR‑HIL‑06).
 > منح `platform_admin` صلاحية `workspace:manage` مقصورٌ على **إعدادات/إدارة المساحة** (تعليق/تهيئة على مستوى المنصّة) لا على المحتوى؛ أمّا `workspace:transfer` (نقل الملكية) و`workspace:archive` (الأرشفة) فتبقيان **حصريّتين للمالك (`owner`)** اتّساقاً مع وصف الأدوار (§1.1).
 
 ### 1.4 الفرض
@@ -159,6 +165,11 @@
 | `POST /agents/{k}/invoke` | `agents:invoke` |
 | `POST /conversations/{id}/messages` | `conversations:write` |
 | `DELETE /files/{id}` | `files:delete` |
+| `POST /files/multipart` | `files:write` |
+| `GET /files/{id}/upload` | `files:write` (خطوة من بروتوكول الكتابة — الاستئناف — لا قراءة لمحتوى الملف)، **ولمن سجّل الملف وحده** |
+| `POST /files/{id}/upload/part-urls` | `files:write`، **ولمن سجّل الملف وحده** |
+
+> **تحقّقٌ على مستوى الكائن فوق الصلاحية (SR‑1، CWE‑639):** روابط أجزاء الرفع المجزّأ وقائمتها وإتمامه لمن سجّله (`uploaded_by`) وحده. فعضوٌ آخر يحمل `files:write` في المساحة نفسها ⇒ `404`، كالمستأجر الغريب. والسبب أنّ هذه الروابط تُعاد إصدارها، بخلاف رابط PUT الواحد الذي لا يُعطى إلا مرّةً لمن سجّل.
 | `POST /media/jobs` | `media:create` |
 | `POST /workflows/{k}/run` | `workflows:run` |
 | `POST /credentials` | `credentials:manage` |

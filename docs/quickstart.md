@@ -291,7 +291,7 @@ pytest -m live_qdrant                # وهكذا لكلّ مسبار live_*
 ```bash
 ruff format . && ruff check .
 mypy src
-lint-imports                          # عقود الطبقات (.importlinter) — 8 عقود، الصفر خرقاً
+lint-imports                          # عقود الطبقات (.importlinter) — 9 عقود، الصفر خرقاً
 pytest                                # الحزمة كاملةً (09-testing-strategy §7)
 alembic revision -m "..."             # هجرة جديدة (لا FK عابراً بين schemas)
 ```

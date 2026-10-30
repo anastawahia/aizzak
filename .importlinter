@@ -37,6 +37,8 @@ name = Domain is pure (no technical imports)
 type = forbidden
 source_modules =
     app.modules.*.domain
+    app.modules.electrical.*.domain
+    app.modules.electrical.shared
 forbidden_modules =
     app.framework
     app.infrastructure
@@ -52,6 +54,10 @@ forbidden_modules =
     minio
     hvac
 allow_indirect_imports = False
+# WireTwin (HLD §5.6 contract 2): `*` matches ONE name component in
+# import-linter 2.13 (ModuleExpression), so `app.modules.*.domain` never
+# reaches `app.modules.electrical.drawings.domain`. The two sources above
+# WIDEN what this contract forbids; nothing is ignored.
 
 # ---------------------------------------------------------------------------
 # 3) Application layer may use domain + framework(ports) only — not FastAPI,
@@ -62,6 +68,7 @@ name = Application depends on domain + framework only
 type = forbidden
 source_modules =
     app.modules.*.application
+    app.modules.electrical.*.application
 forbidden_modules =
     app.api
     app.agents
@@ -70,6 +77,7 @@ forbidden_modules =
     starlette
     sqlalchemy
     redis
+# WireTwin (HLD §5.6 contract 3): the same one-component `*`, the same remedy.
 
 # ---------------------------------------------------------------------------
 # 4) Modules are independent of each other (Modular Monolith boundary).
@@ -93,6 +101,10 @@ modules =
     app.modules.integrations
     app.modules.usage
     app.modules.spaces
+    app.modules.electrical
+# WireTwin (HLD §5.6 contract 1, INC-0): ONE entry for the whole module, as the
+# header above requires of every new package. Its four sections are kept
+# apart by `electrical-contexts` below, not here.
 # `spaces-backend-plan.md` step 14 — the module built in step 1 takes its place
 # here, as the header above requires of every new package. Nothing in the tree
 # violates it today; the entry is what keeps that true. `spaces` is the one
@@ -189,3 +201,20 @@ ignore_imports =
 # would break contract 6 INDIRECTLY (agents -> composition_root ->
 # app.infrastructure).
 unmatched_ignore_imports_alerting = warn
+
+# ---------------------------------------------------------------------------
+# 8) WireTwin's sections (HLD §5.6 contract 4, DEC-01 (b)). Four independent
+#    sections over one pure floor: no section imports another, directly or
+#    through a chain; `shared` imports no section; any section may import
+#    `shared`. `exhaustive` fails the contract the day a fifth child appears
+#    under the container without being declared here.
+# ---------------------------------------------------------------------------
+[importlinter:contract:electrical-contexts]
+name = WireTwin sections are independent and shared is the floor
+type = layers
+containers =
+    app.modules.electrical
+layers =
+    drawings | circuits | search | diagnostics
+    shared
+exhaustive = true

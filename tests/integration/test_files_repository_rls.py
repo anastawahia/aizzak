@@ -31,6 +31,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    MultipartUpload,
     Sha256,
     StorageKey,
 )
@@ -67,6 +68,7 @@ def _file(
     now: datetime | None = None,
     deleted_at: datetime | None = None,
     version: int = 1,
+    multipart: MultipartUpload | None = None,
 ) -> File:
     fid = file_id or new_uuid7()
     at = now or utc_now()
@@ -85,6 +87,7 @@ def _file(
         updated_at=at,
         deleted_at=deleted_at,
         version=version,
+        multipart=multipart,
     )
 
 
@@ -128,6 +131,30 @@ async def _write_name_as_owner(owner_dsn: str, workspace_id: str, file_id: str, 
             await conn.execute(
                 text("UPDATE files.files SET name = :name WHERE id = :id"),
                 {"name": name, "id": file_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _write_multipart_as_owner(
+    owner_dsn: str, workspace_id: str, file_id: str, upload_id: str | None, part_bytes: int | None
+) -> None:
+    """Force the two multipart columns past the aggregate, as the table owner.
+
+    `MultipartUpload` refuses an empty id and a part under 5 MiB, and cannot
+    express "half set" at all -- so the DATABASE's `ck_files_multipart_shape`
+    can only be tested from outside the domain. Same GUC-first shape as
+    `_write_name_as_owner` (the owner is policy-subject under FORCE RLS).
+    """
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            await conn.execute(
+                text("UPDATE files.files SET upload_id = :u, part_bytes = :p WHERE id = :id"),
+                {"u": upload_id, "p": part_bytes, "id": file_id},
             )
     finally:
         await engine.dispose()
@@ -809,3 +836,125 @@ async def test_an_empty_file_name_is_refused_by_the_database_too(
     # And the row is untouched: a rejected write is a rejected write, so the
     # bulk read still answers with the real name.
     assert await repo_files.ready_names(ctx, [file.id]) == {file.id: "handbook.pdf"}
+
+
+# --------------------------------------------------------------------------- #
+# PLT-01 -- `upload_id` / `part_bytes` (migration 0005_file_multipart)        #
+# --------------------------------------------------------------------------- #
+_PART = 16 * 1024 * 1024
+
+
+async def test_the_multipart_session_round_trips(repo_files: SqlFileRepository) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    multipart = MultipartUpload(upload_id="up-1.AbC_9~x", part_bytes=_PART)
+    file = _file(workspace_id=ws, size_bytes=3 * _PART + 1, multipart=multipart)
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.multipart == multipart
+    assert reloaded.is_multipart
+
+
+async def test_a_single_put_file_reads_back_without_a_multipart_session(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.multipart is None
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    assert (row["upload_id"], row["part_bytes"]) == (None, None)
+
+
+async def test_a_save_leaves_the_multipart_session_alone(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    """`upload_id`/`part_bytes` describe the storage-side session and are fixed
+    at registration, like `content_type`: absent from the UPDATE on purpose.
+    The aggregate's field is reassigned directly because no supported code
+    path can -- the adapter has to refuse it on its own."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    original = MultipartUpload(upload_id="original-session", part_bytes=_PART)
+    file = _file(workspace_id=ws, size_bytes=2 * _PART, multipart=original)
+    await repo_files.add(ctx, file)
+
+    file.multipart = MultipartUpload(upload_id="hijacked-session", part_bytes=2 * _PART)
+    file.rename(FileName("renamed.pdf"), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.name.value == "renamed.pdf"
+    assert reloaded.multipart == original
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    assert (row["upload_id"], row["part_bytes"]) == ("original-session", _PART)
+
+
+async def test_another_tenant_cannot_read_a_multipart_session(
+    repo_files: SqlFileRepository,
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    file = _file(
+        workspace_id=ws_a,
+        multipart=MultipartUpload(upload_id="tenant-a-session", part_bytes=_PART),
+    )
+    await repo_files.add(_ctx(ws_a), file)
+
+    assert await repo_files.get(_ctx(ws_b), file.id) is None
+    mine = await repo_files.get(_ctx(ws_a), file.id)
+    assert mine is not None
+    assert mine.multipart is not None
+
+
+@pytest.mark.parametrize(
+    ("upload_id", "part_bytes"),
+    [
+        ("only-an-id", None),  # half set: id without a part size
+        (None, _PART),  # half set: part size without an id
+        ("", _PART),  # empty id
+        ("x" * 1025, _PART),  # id over 1024 characters
+        ("short-parts", 5_242_879),  # one byte under the S3 minimum
+    ],
+)
+async def test_the_database_refuses_a_malformed_multipart_session(
+    repo_files: SqlFileRepository,
+    live_db: LiveDbDsns,
+    upload_id: str | None,
+    part_bytes: int | None,
+) -> None:
+    """`ck_files_multipart_shape`, forced past the aggregate as the owner."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    with pytest.raises(IntegrityError):
+        await _write_multipart_as_owner(live_db.owner, ws, file.id, upload_id, part_bytes)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.multipart is None
+
+
+async def test_the_database_accepts_the_boundary_multipart_sessions(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    await _write_multipart_as_owner(live_db.owner, ws, file.id, "x" * 1024, 5_242_880)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.multipart == MultipartUpload(upload_id="x" * 1024, part_bytes=5_242_880)

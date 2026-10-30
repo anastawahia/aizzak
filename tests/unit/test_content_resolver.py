@@ -34,7 +34,9 @@ def _ctx() -> ExecutionContext:
     )
 
 
-def _file(*, name: str = "notes.txt", content_type: str = "text/plain") -> File:
+def _file(
+    *, name: str = "notes.txt", content_type: str = "text/plain", size_bytes: int = 64
+) -> File:
     now = utc_now()
     return File(
         id=new_uuid7(),
@@ -42,7 +44,7 @@ def _file(*, name: str = "notes.txt", content_type: str = "text/plain") -> File:
         space_id=None,
         name=FileName(name),
         content_type=ContentType(content_type),
-        size_bytes=64,
+        size_bytes=size_bytes,
         storage_key=StorageKey(f"ws-1/{name}"),
         checksum=None,
         status=FileStatus.READY,
@@ -276,3 +278,54 @@ async def test_resolve_defaults_its_timeout_to_the_plan_chosen_setting() -> None
     )
 
     assert resolver._timeout_s == 300
+
+
+async def test_resolve_defaults_its_size_cap_to_the_setting() -> None:
+    resolver = WorkerDocumentContentResolver(
+        _FakeFiles(_file()),  # type: ignore[arg-type]
+        _FakeStorage(),  # type: ignore[arg-type]
+        DocumentContentExtractor(),
+        _FakeProviders(),  # type: ignore[arg-type]
+    )
+
+    assert resolver._max_bytes == 104_857_600
+
+
+async def test_a_file_above_the_indexing_cap_fails_as_too_large_without_reading_it() -> None:
+    """INC0-Q-2 / DEC-02: uploads reach 1 GiB but the worker loads a file whole
+    into 1-2 GiB of memory. The size on the descriptor decides, before
+    ``storage.get`` is asked for a byte."""
+    file = _file(size_bytes=101)
+    storage = _FakeStorage()
+    providers = _FakeProviders()
+    resolver = WorkerDocumentContentResolver(
+        _FakeFiles(file),  # type: ignore[arg-type]
+        storage,  # type: ignore[arg-type]
+        DocumentContentExtractor(),
+        providers,  # type: ignore[arg-type]
+        max_bytes=100,
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        await resolver.resolve(_ctx(), file_id=file.id)
+
+    assert exc_info.value.code == "knowledge.too_large"
+    assert exc_info.value.status == 422
+    assert storage.keys == []
+    assert providers.calls == 0
+
+
+async def test_a_file_exactly_at_the_indexing_cap_is_read() -> None:
+    file = _file(size_bytes=100)
+    storage = _FakeStorage()
+    resolver = WorkerDocumentContentResolver(
+        _FakeFiles(file),  # type: ignore[arg-type]
+        storage,  # type: ignore[arg-type]
+        DocumentContentExtractor(),
+        _FakeProviders(),  # type: ignore[arg-type]
+        max_bytes=100,
+    )
+
+    await resolver.resolve(_ctx(), file_id=file.id)
+
+    assert storage.keys == [file.storage_key.value]

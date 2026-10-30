@@ -72,6 +72,7 @@ Every change must pass the same gates that CI runs (`.github/workflows/ci.yml`),
 | 4 | Architecture contracts | `.venv/bin/lint-imports` |
 | 5 | Tests | `.venv/bin/pytest -rs` |
 | 6 | Alert rules (requires Docker) | `deploy/prometheus/test-rules.sh` |
+| 7 | Supply chain: SBOM, licences, known vulnerabilities (requires network) | `deploy/supply-chain/scan.sh` |
 
 Integration tests under `tests/integration/` require live services and are skipped automatically when those services are unavailable.
 

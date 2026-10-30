@@ -7,7 +7,7 @@ owned by — an opaque ownership axis INSIDE the tenant, never a tenant of its
 own. Behaviour lives on the aggregate; mutations touch only ``status``,
 ``checksum``, ``deleted_at``, ``name`` (INV-F4 — the one descriptive field a
 rename may change) and ``updated_at``. Everything that describes the BYTES —
-``content_type``, ``size_bytes``, ``storage_key`` — has no mutator at all,
+``content_type``, ``size_bytes``, ``storage_key``, ``multipart`` — has no mutator at all,
 which is what keeps the descriptor honest about the object it points at.
 The optimistic ``version`` is advanced by the repository on
 ``save`` (02-port-contracts §2). Identifiers are UUIDv7 text (``str``);
@@ -24,6 +24,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    MultipartUpload,
     Sha256,
     StorageKey,
 )
@@ -65,6 +66,14 @@ class File:
     updated_at: datetime
     deleted_at: datetime | None
     version: int
+    # FR-ING-02 / PLT-01 -- the multipart session; None for a single-PUT file.
+    # Defaulted, unlike `space_id`: every existing construction site means
+    # "single PUT", and the default is exactly that statement.
+    multipart: MultipartUpload | None = None
+
+    @property
+    def is_multipart(self) -> bool:
+        return self.multipart is not None
 
     def mark_scanning(self, now: datetime) -> None:
         """``uploaded -> scanning`` once the antivirus scan begins."""

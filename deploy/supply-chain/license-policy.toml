@@ -1,0 +1,136 @@
+# Licence and vulnerability policy of deploy/supply-chain/supply_chain_check.py
+# (PLT-19). Widening it is an owner decision: every entry that widens the
+# policy names that decision. tests/unit/test_supply_chain_check.py pins the
+# [allow].spdx list below to NFR-LIC-01.
+version = 1
+
+[allow]
+# NFR-LIC-01: MIT, BSD, Apache-2.0, MPL-2.0, PSF, ISC, AGPL-3.0 (SRS D-01).
+spdx = ["MIT", "BSD-2-Clause", "BSD-3-Clause", "LicenseRef-BSD", "Apache-2.0", "MPL-2.0",
+        "PSF-2.0", "Python-2.0", "ISC", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+# SRS D-32 (INC0-Q-4): permissive ids the owner approved in addition. Each entry
+# carries its decision; the checker refuses an entry without one.
+approved = [
+  { id = "MIT-0", decision = "SRS D-32" },
+  { id = "MIT-CMU", decision = "SRS D-32" },
+  { id = "0BSD", decision = "SRS D-32" },
+  { id = "Zlib", decision = "SRS D-32" },
+  { id = "CC0-1.0", decision = "SRS D-32" },
+  { id = "LicenseRef-Public-Domain", decision = "SRS D-32" },  # Unlicense-equivalent
+]
+exceptions = []
+
+[flag]
+agpl = ["AGPL-3.0-only", "AGPL-3.0-or-later"]
+
+[fonts]            # SRS D-26: OFL-1.1 for font files only, never for code
+spdx = ["OFL-1.1"]
+extensions = [".ttf", ".otf", ".ttc", ".woff", ".woff2"]
+
+[aliases]          # maps text to SPDX; never widens [allow]
+"MIT License" = "MIT"
+"BSD License" = "LicenseRef-BSD"
+"Apache Software License" = "Apache-2.0"
+"Apache License 2.0" = "Apache-2.0"
+"Apache 2.0" = "Apache-2.0"
+"3-Clause BSD License" = "BSD-3-Clause"
+"BSD 3-Clause License" = "BSD-3-Clause"
+"Mozilla Public License 2.0 (MPL 2.0)" = "MPL-2.0"
+"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License" = "AGPL-3.0-only OR LicenseRef-Artifex-Commercial"
+
+# Package decisions: the owner chose the licence of a package whose metadata is
+# not a plain allowed expression. Unlike [aliases] they are not re-checked
+# against [allow]. Each one holds only for what the owner decided ON:
+#   declared  the licence entries the SBOM carried (order-free, as report.md prints
+#             them), and
+#   versions  the releases decided for (`==`, or a lower and an upper bound).
+# A release that declares anything else, or falls outside the range, is a
+# violation ("stale decision"): it goes back to the owner. An entry whose
+# `decision` is not an owner decision id makes the policy invalid (exit 2).
+
+[[package]]
+name = "pyphen"
+declared = ["GPL-2.0-or-later", "MPL-1.1", "GNU Lesser General Public License v2 or later (LGPLv2+)"]
+versions = ">=0.18.1,<0.19"
+expression = "LGPL-2.1-or-later"
+reason = "Triple-licensed (GPL-2.0-or-later, LGPL-2.1-or-later, MPL-1.1); the LGPL branch is chosen. It is compatible with AGPL-3.0 through the 'or later' clause."
+decision = "SRS D-32"
+
+[[package]]
+name = "pycryptodome"
+declared = ["BSD-2-Clause AND Unlicense AND MIT"]
+versions = ">=4.2.0,<4.3"
+expression = "BSD-2-Clause AND Unlicense AND MIT"
+reason = "As declared; SRS D-32 names Unlicense as the equivalent of LicenseRef-Public-Domain."
+decision = "SRS D-32"
+
+[[package]]
+name = "pypdfium2"
+# Its declared BSD-3-Clause and Apache-2.0, plus the licences of the libraries built into
+# the bundled PDFium binary (notices in the wheel). For THIS package only: none of these
+# ids is in [allow] or in the approved list. ONE release: the notices that were reviewed
+# are those of the 5.14.0 wheel, and a new release can bundle another PDFium build
+# without changing its metadata.
+declared = ["BSD-3-Clause, Apache-2.0, dependency licenses"]
+versions = "==5.14.0"
+expression = "BSD-3-Clause AND Apache-2.0 AND LicenseRef-AGG-2.3 AND FTL AND Unicode-3.0 AND IJG AND libpng-2.0 AND (Apache-2.0 WITH LLVM-exception) AND CC-BY-4.0"
+reason = "PDFium binary: Anti-Grain Geometry 2.3, FreeType (FTL), Unicode-3.0, IJG, libpng-2.0, Apache-2.0 with LLVM exception (llvm-libc), CC-BY-4.0."
+decision = "SRS D-33"
+
+# Vulnerability exceptions. Each one names the advisory pip-audit reports (or an
+# alias of it), the package, why, the owner decision, and two TOML dates: it lives
+# at most 90 days (`expires - added`), cannot start after today, and stops covering
+# its advisory once expired. A malformed entry makes the policy invalid (exit 2).
+#
+# INC0-Q-10 (owner, 2026-10-30): `pip` is audited (scan.sh freezes with `--all`)
+# and the advisories pip-audit reports on it are accepted until 2027-01-28. Both
+# the pip this scan seeds (24.0) and the one in the `app` image (25.0.1) carry
+# exactly these six. No other package is excepted.
+
+[[vulnerability]]
+id = "PYSEC-2026-1795"
+package = "pip"
+reason = "CVE-2025-8869, fixed in pip 25.3. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-1796"
+package = "pip"
+reason = "CVE-2026-1703, fixed in pip 26.0. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-196"
+package = "pip"
+reason = "CVE-2026-8643, fixed in pip 26.1.2. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-2875"
+package = "pip"
+reason = "CVE-2026-3219, fixed in pip 26.1. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-2876"
+package = "pip"
+reason = "CVE-2026-6357, fixed in pip 26.1. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
+
+[[vulnerability]]
+id = "PYSEC-2026-3721"
+package = "pip"
+reason = "CVE-2026-13346, fixed in pip 26.2. pip ships in the app image's /opt/venv; it is upgraded there with PLT-17 before this exception expires."
+decision = "INC0-Q-10"
+added = 2026-10-30
+expires = 2027-01-28
