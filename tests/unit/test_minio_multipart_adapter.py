@@ -112,6 +112,23 @@ async def test_list_parts_of_one_untruncated_page_asks_once() -> None:
     assert len(client.list_calls) == 1
 
 
+async def test_list_parts_of_a_truncated_page_without_a_marker_is_internal() -> None:
+    """CR #5: never a silent partial list. The loop cannot ask for the next
+    page, and a short answer would read as missing parts."""
+    client = _FakeClient(
+        [
+            _Page([_Part(1, 10, "a")], True, 1),
+            _Page([_Part(2, 10, "b")], True, None),
+        ]
+    )
+
+    with pytest.raises(AppError) as caught:
+        await _storage(client).list_parts("k", "u")
+
+    assert caught.value.code == "common.internal"
+    assert len(client.list_calls) == 2
+
+
 async def test_list_parts_of_a_vanished_upload_is_not_found() -> None:
     client = _FakeClient(raises=_s3_error("NoSuchUpload"))
 

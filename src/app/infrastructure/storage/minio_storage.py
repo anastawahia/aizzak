@@ -271,8 +271,16 @@ class MinioStorage:
                     StoredPart(int(p.part_number), int(p.size or 0), str(p.etag))
                     for p in page.parts
                 )
-                if not page.is_truncated or not page.next_part_number_marker:
+                if not page.is_truncated:
                     return found
+                if not page.next_part_number_marker:
+                    # A truncated page that names no next page: returning what
+                    # we have would make `progress` under-report and `assemble`
+                    # call a complete upload incomplete. Say so instead.
+                    raise AppError(
+                        "storage listed a truncated page of parts without a marker",
+                        code="common.internal",
+                    )
                 marker = str(page.next_part_number_marker)
 
         try:
