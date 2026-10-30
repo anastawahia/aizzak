@@ -23,6 +23,7 @@ from app.framework.errors import (
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.ports.event_outbox import OutboxRecord
+from app.framework.ports.storage_provider import StoredPart
 from app.framework.settings.settings import Limits, MinioSettings
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
@@ -1298,6 +1299,50 @@ async def test_assemble_joins_the_parts_in_order_and_ignores_strays() -> None:
 
     assert storage.completed == [(file.storage_key.value, upload_id, (1, 2, 3, 4))]
     assert storage.objects[file.storage_key.value] == file.size_bytes
+
+
+class _SilentlyFailingJoin(FakeMultipartStorage):
+    """``CompleteMultipartUpload`` answering 200 with its error in the body:
+    minio-py returns normally, and no object (or a wrong one) is left behind.
+    The upload and its parts stay, as S3 leaves them after a failed join."""
+
+    def __init__(self, leaves: int | None) -> None:
+        super().__init__()
+        self._leaves = leaves
+
+    async def complete_multipart(
+        self, key: str, upload_id: str, parts: Sequence[StoredPart]
+    ) -> None:
+        self.completed.append((key, upload_id, tuple(p.part_number for p in parts)))
+        if self._leaves is not None:
+            self.objects[key] = self._leaves
+
+
+@pytest.mark.parametrize("leaves", [None, 3])
+async def test_a_join_that_produced_no_object_of_the_declared_size_is_incomplete(
+    leaves: int | None,
+) -> None:
+    """SR-2: the join is proven by its result. No object, or one of another
+    size, is ``files.upload_incomplete``, the file stays ``uploaded`` and no
+    event is appended."""
+    files = _FakeFiles()
+    storage = _SilentlyFailingJoin(leaves)
+    file = await _multipart_file(files, storage)
+    _put_all(storage, file)
+    outbox = _FakeOutbox()
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, _FakeUnitOfWork(), assembler=_service(files, storage)
+    )
+
+    with pytest.raises(ConflictError) as exc_info:
+        await complete.complete(_ctx(), file_id=file.id, checksum=None)
+
+    assert exc_info.value.code == "files.upload_incomplete"
+    assert len(storage.completed) == 1  # the join WAS attempted
+    assert files.rows[file.id].status is FileStatus.UPLOADED
+    assert outbox.calls == []
+    assert file.multipart is not None
+    assert file.multipart.upload_id in storage.uploads  # still resumable
 
 
 async def test_assemble_again_after_a_join_is_safe_and_a_sweep_is_expired() -> None:

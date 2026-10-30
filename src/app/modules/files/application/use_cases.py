@@ -776,6 +776,19 @@ class MultipartUploadService:
         except NotFoundError:
             # A concurrent completion joined the parts first.
             await self._joined_earlier(key, file.size_bytes)
+            return
+        # SR-2 (CWE-754): an S3 CompleteMultipartUpload may answer 200 and put
+        # its error in the BODY (it streams keep-alive whitespace while it
+        # works), and minio-py does not read that body. So the join is proven
+        # by its result -- an object of exactly the declared size (INV-F5) --
+        # before `CompleteUpload` may mark the file ready. A failed join leaves
+        # the upload and its parts in place, so the answer is the one the
+        # client already knows how to act on: check the parts, complete again.
+        if await self._storage.object_size(key) != file.size_bytes:
+            raise ConflictError(
+                "storage did not produce the assembled object; check the parts and complete again",
+                code="files.upload_incomplete",
+            )
 
     async def _joined_earlier(self, key: str, size_bytes: int) -> None:
         """The upload id is gone: either an earlier attempt already joined it

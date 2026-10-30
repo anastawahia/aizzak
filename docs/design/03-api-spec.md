@@ -372,7 +372,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `files.unsupported_type` | 415 | نوع MIME خارج القائمة البيضاء |
 | `files.too_many` | 409 | بلوغ سقف ملفات المساحة |
 | `files.multipart_required` | 413 | تسجيل رفع بطلب PUT واحد بحجم فوق `max_single_put_bytes` (50 MiB) — يُسجَّل بـ`POST /files/multipart` |
-| `files.upload_incomplete` | 409 | إتمام رفع مجزّأ وجزءٌ ناقص أو بحجم غير متوقَّع — لا يتغيّر شيء، ويكمل العميل الأجزاء ثم يعيد |
+| `files.upload_incomplete` | 409 | إتمام رفع مجزّأ وجزءٌ ناقص أو بحجم غير متوقَّع، أو لم يُنتج التخزين كائناً بالحجم المعلَن بعد التجميع (SR‑2: ردّ 200 بخطأ في جسمه) — لا يتغيّر شيء، ويكمل العميل الأجزاء ثم يعيد |
 | `files.upload_expired` | 409 | الرفع المجزّأ كنسه MinIO (مهجور) — يُعاد التسجيل |
 | `spaces.duplicate_name` | 409 | اسم وحدةٍ مستعمَل في المساحة (من `23505` على `ux_spaces_ws_name`، لا من قراءةٍ مسبقة) |
 | `spaces.quota_exceeded` | 409 | بلوغ حصّة بايتات الوحدة (`Limits.max_space_bytes`، 10 GiB) عند تسجيل رفع — **لا 413**: الحمولة مشروعة وحالةُ الوحدة هي المانع، والعلاج حذفُ شيء. ولا `usage.quota_exceeded` (429): تلك ميزانيّة فترةٍ تنقضي، وهذه ستبقى متجاوَزةً غداً |
