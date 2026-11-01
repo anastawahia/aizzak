@@ -51,6 +51,8 @@ _EXPECTED_IGNORES = {
 }
 _SECTIONS = ("drawings", "circuits", "search", "diagnostics")
 _LAYERS = ("domain", "application", "ports", "adapters")
+# Packages added after INC-0 (their `__init__.py` may hold code); everything else is original.
+_NEW_PACKAGES = {"shared/rules/__init__.py"}
 
 
 def _lint_imports_exe() -> str:
@@ -128,20 +130,31 @@ def test_the_widened_contracts_reach_the_electrical_sections() -> None:
     assert "app.modules.electrical" in _lines(contracts["modules-independent"]["modules"])
 
 
-def test_the_skeleton_is_22_empty_packages() -> None:
-    inits = sorted(ELECTRICAL.rglob("__init__.py"))
-    assert len(inits) == 22
-    # Nothing but the five packages directly under the container (`exhaustive`).
+def test_the_skeleton_invariants_hold() -> None:
+    """The skeleton keeps its shape while `shared` fills with code (INC1-AC-4, PR-B).
+
+    Five packages directly under the container (`exhaustive`), four layers per section,
+    and every `__init__.py` that existed in INC-0 keeps its single docstring line. The
+    only new package is `shared/rules`, which carries the rule model and the packaged
+    `identifiers.toml`.
+    """
     assert sorted(p.name for p in ELECTRICAL.iterdir() if p.name != "__pycache__") == sorted(
         ["__init__.py", "shared", *_SECTIONS]
     )
     for section in _SECTIONS:
         for layer in _LAYERS:
             assert (ELECTRICAL / section / layer / "__init__.py").is_file()
-    for init in inits:
-        # One docstring line, no imports: the module stays empty until INC-1.
-        body = [ln for ln in init.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        assert len(body) == 1 and body[0].startswith('"""'), init
+    inits = {p.relative_to(ELECTRICAL).as_posix() for p in ELECTRICAL.rglob("__init__.py")}
+    original = inits - _NEW_PACKAGES
+    assert len(original) == 22
+    assert inits >= _NEW_PACKAGES
+    for name in sorted(original):
+        # One docstring line, no imports: the original packages stay empty.
+        body = [
+            ln for ln in (ELECTRICAL / name).read_text(encoding="utf-8").splitlines() if ln.strip()
+        ]
+        assert len(body) == 1 and body[0].startswith('"""'), name
+    assert (ELECTRICAL / "shared" / "rules" / "identifiers.toml").is_file()
 
 
 # --------------------------------------------------------------------------- #

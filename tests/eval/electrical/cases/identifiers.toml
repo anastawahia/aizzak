@@ -1,0 +1,1913 @@
+# Core identifier cases for M-04 (FR-EVAL-01). Every format of SRS Appendix A, plus the
+# same forms in other spellings and the malformed forms that must be FLAGGED, not dropped.
+# `source`: appendix-a | vendor-c (FR-ID-14, not claimed) | extra | invalid | invalid-or-prose.
+# `kind = "none"` means "no identifier at all". Absent optional fields mean none/empty.
+
+[[case]]
+id = "c001"
+text = "-K5"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c002"
+text = "=A1-K5"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "-K5"]
+canonical = "=A1-K5"
+search_keys = ["=A1-K5", "=A1K5", "K5"]
+
+[[case]]
+id = "c003"
+text = "=A1+P2-K5"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "+P2", "-K5"]
+canonical = "=A1+P2-K5"
+search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+
+[[case]]
+id = "c004"
+text = "==PLANT=A1++SITE+P2-K5"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["==PLANT", "=A1", "++SITE", "+P2", "-K5"]
+canonical = "==PLANT=A1++SITE+P2-K5"
+search_keys = ["==PLANT=A1++SITE+P2-K5", "==PLANT=A1++SITE+P2K5", "K5"]
+
+[[case]]
+id = "c005"
+text = "KM1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c006"
+text = "KA3"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "relay"
+canonical = "KA3"
+search_keys = ["KA3", "3KA"]
+
+[[case]]
+id = "c007"
+text = "KT1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "time_relay"
+canonical = "KT1"
+search_keys = ["KT1", "1KT"]
+
+[[case]]
+id = "c008"
+text = "QF2"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "circuit_breaker"
+canonical = "QF2"
+search_keys = ["QF2", "2QF"]
+
+[[case]]
+id = "c009"
+text = "FU1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "fuse"
+canonical = "FU1"
+search_keys = ["FU1", "1FU"]
+
+[[case]]
+id = "c010"
+text = "FR1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "thermal_relay"
+canonical = "FR1"
+search_keys = ["FR1", "1FR"]
+
+[[case]]
+id = "c011"
+text = "SB1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "pushbutton"
+canonical = "SB1"
+search_keys = ["SB1", "1SB"]
+
+[[case]]
+id = "c012"
+text = "SA2"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "selector_switch"
+canonical = "SA2"
+search_keys = ["SA2", "2SA"]
+
+[[case]]
+id = "c013"
+text = "SQ3"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "limit_switch"
+canonical = "SQ3"
+search_keys = ["SQ3", "3SQ"]
+
+[[case]]
+id = "c014"
+text = "HL2"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "indicator_lamp"
+canonical = "HL2"
+search_keys = ["HL2", "2HL"]
+
+[[case]]
+id = "c015"
+text = "1KM"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "1KM"
+search_keys = ["1KM", "KM1"]
+
+[[case]]
+id = "c016"
+text = "2QF"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "circuit_breaker"
+canonical = "2QF"
+search_keys = ["2QF", "QF2"]
+
+[[case]]
+id = "c017"
+text = "ＫＭ１"
+source = "appendix-a"
+script = "fullwidth"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c018"
+text = "CR1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+device_class = "control_relay"
+canonical = "CR1"
+search_keys = ["CR1", "1CR"]
+
+[[case]]
+id = "c019"
+text = "M1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+device_class = "motor_starter"
+canonical = "M1"
+search_keys = ["M1", "1M"]
+
+[[case]]
+id = "c020"
+text = "PB1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+device_class = "pushbutton"
+canonical = "PB1"
+search_keys = ["PB1", "1PB"]
+
+[[case]]
+id = "c021"
+text = "LT1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+device_class = "indicator_lamp"
+canonical = "LT1"
+search_keys = ["LT1", "1LT"]
+
+[[case]]
+id = "c022"
+text = "TB1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+device_class = "terminal_block"
+canonical = "TB1"
+search_keys = ["TB1", "1TB"]
+
+[[case]]
+id = "c023"
+text = "-K5:A1"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+connection_point = "A1"
+pole_role = "coil"
+canonical = "-K5:A1"
+search_keys = ["-K5:A1", "K5:A1", "K5A1", "K5"]
+
+[[case]]
+id = "c024"
+text = "-K5:13"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+connection_point = "13"
+pole_role = "aux_no"
+canonical = "-K5:13"
+search_keys = ["-K5:13", "K5:13", "K513", "K5"]
+
+[[case]]
+id = "c025"
+text = "-Q1:2"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-Q1"]
+connection_point = "2"
+pole_role = "main_pole"
+canonical = "-Q1:2"
+search_keys = ["-Q1:2", "Q1:2", "Q12", "Q1"]
+
+[[case]]
+id = "c026"
+text = "KM1:A1"
+source = "appendix-a"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "A1"
+device_class = "contactor"
+pole_role = "coil"
+canonical = "KM1:A1"
+search_keys = ["KM1:A1", "KM1A1", "KM1", "1KM"]
+
+[[case]]
+id = "c027"
+text = "-X1:14"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = ["-X1"]
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "-X1:14"
+search_keys = ["-X1:14", "X1:14", "X114"]
+
+[[case]]
+id = "c028"
+text = "X1.14"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1.14"
+search_keys = ["X1.14", "X114", "X1:14"]
+
+[[case]]
+id = "c029"
+text = "X1-14"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1-14"
+search_keys = ["X1-14", "X114", "X1:14"]
+
+[[case]]
+id = "c030"
+text = "=A1+P2-X1:14"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "+P2", "-X1"]
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "=A1+P2-X1:14"
+search_keys = ["=A1+P2-X1:14", "=A1+P2X114", "X1:14"]
+
+[[case]]
+id = "c031"
+text = "XT1:5"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "5"
+device_class = "terminal_strip"
+canonical = "XT1:5"
+search_keys = ["XT1:5", "XT15"]
+
+[[case]]
+id = "c032"
+text = "1XT-5"
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "5"
+device_class = "terminal_strip"
+canonical = "1XT-5"
+search_keys = ["1XT-5", "1XT5", "1XT:5"]
+
+[[case]]
+id = "c033"
+text = "XT1：5"
+source = "appendix-a"
+script = "fullwidth"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "5"
+device_class = "terminal_strip"
+canonical = "XT1:5"
+search_keys = ["XT1:5", "XT15"]
+
+[[case]]
+id = "c034"
+text = "123"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "123"
+search_keys = ["123"]
+
+[[case]]
+id = "c035"
+text = "W123"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "W123"
+search_keys = ["W123"]
+
+[[case]]
+id = "c036"
+text = "12.3-1"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "page_column"
+canonical = "12.3-1"
+search_keys = ["12.3-1", "1231"]
+
+[[case]]
+id = "c037"
+text = "L1-5"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "voltage_based"
+canonical = "L1-5"
+search_keys = ["L1-5", "L15"]
+
+[[case]]
+id = "c038"
+text = "U11"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "voltage_based"
+canonical = "U11"
+search_keys = ["U11"]
+
+[[case]]
+id = "c039"
+text = "V11"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "voltage_based"
+canonical = "V11"
+search_keys = ["V11"]
+
+[[case]]
+id = "c040"
+text = "W11"
+source = "appendix-a"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "W11"
+search_keys = ["W11"]
+
+[[case]]
+id = "c041"
+text = "I0.0"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "I0.0"
+search_keys = ["I0.0", "%I0.0", "E0.0"]
+plc = { family = "s7_en", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c042"
+text = "Q4.7"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "Q4.7"
+search_keys = ["Q4.7", "%Q4.7", "A4.7"]
+plc = { family = "s7_en", area = "Q", width = "bit", byte = 4, bit = 7 }
+
+[[case]]
+id = "c043"
+text = "M10.1"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "M10.1"
+search_keys = ["M10.1", "%M10.1"]
+plc = { family = "s7_en", area = "M", width = "bit", byte = 10, bit = 1 }
+
+[[case]]
+id = "c044"
+text = "IW64"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "IW64"
+search_keys = ["IW64", "%IW64", "EW64"]
+plc = { family = "s7_en", area = "I", width = "word", byte = 64 }
+
+[[case]]
+id = "c045"
+text = "PIW256"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "PIW256"
+search_keys = ["PIW256", "%IW256:P", "PEW256"]
+plc = { family = "s7_en", area = "PI", width = "word", byte = 256 }
+
+[[case]]
+id = "c046"
+text = "E0.0"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "E0.0"
+search_keys = ["E0.0", "I0.0", "%I0.0"]
+plc = { family = "s7_de", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c047"
+text = "A4.7"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "A4.7"
+search_keys = ["A4.7", "Q4.7", "%Q4.7"]
+plc = { family = "s7_de", area = "Q", width = "bit", byte = 4, bit = 7 }
+
+[[case]]
+id = "c048"
+text = "PEW256"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "PEW256"
+search_keys = ["PEW256", "PIW256", "%IW256:P"]
+plc = { family = "s7_de", area = "PI", width = "word", byte = 256 }
+
+[[case]]
+id = "c049"
+text = "%I0.0"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%I0.0"
+search_keys = ["%I0.0", "I0.0", "E0.0"]
+plc = { family = "tia", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c050"
+text = "%Q4.7"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%Q4.7"
+search_keys = ["%Q4.7", "Q4.7", "A4.7"]
+plc = { family = "tia", area = "Q", width = "bit", byte = 4, bit = 7 }
+
+[[case]]
+id = "c051"
+text = "%IW64"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%IW64"
+search_keys = ["%IW64", "IW64", "EW64"]
+plc = { family = "tia", area = "I", width = "word", byte = 64 }
+
+[[case]]
+id = "c052"
+text = "DB10.DBX2.3"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB10.DBX2.3"
+search_keys = ["DB10.DBX2.3"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 2, bit = 3, db_number = 10 }
+
+[[case]]
+id = "c053"
+text = "DB10.DBW4"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB10.DBW4"
+search_keys = ["DB10.DBW4"]
+plc = { family = "s7_db", area = "DB", width = "word", byte = 4, db_number = 10 }
+
+[[case]]
+id = "c054"
+text = "V100.0"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "V100.0"
+search_keys = ["V100.0"]
+plc = { family = "s7_200", area = "V", width = "bit", byte = 100, bit = 0 }
+
+[[case]]
+id = "c055"
+text = "VW100"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "VW100"
+search_keys = ["VW100"]
+plc = { family = "s7_200", area = "V", width = "word", byte = 100 }
+
+[[case]]
+id = "c056"
+text = "AIW16"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "AIW16"
+search_keys = ["AIW16"]
+plc = { family = "s7_200", area = "AI", width = "word", byte = 16 }
+
+[[case]]
+id = "c057"
+text = "AQW16"
+source = "appendix-a"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "AQW16"
+search_keys = ["AQW16"]
+plc = { family = "s7_200", area = "AQ", width = "word", byte = 16 }
+
+[[case]]
+id = "c058"
+text = "/12.3"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "slash_page_dot_column"
+canonical = "/12.3"
+search_keys = ["/12.3", "123"]
+
+[[case]]
+id = "c059"
+text = "12.3"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "page_dot_column"
+canonical = "12.3"
+search_keys = ["12.3", "123"]
+
+[[case]]
+id = "c060"
+text = "=A1/12.3"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "prefixed_slash"
+canonical = "=A1/12.3"
+search_keys = ["=A1/12.3", "=A1123"]
+
+[[case]]
+id = "c061"
+text = "12/3"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "page_slash_column"
+canonical = "12/3"
+search_keys = ["12/3", "123"]
+
+[[case]]
+id = "c062"
+text = "L1"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "L1"
+search_keys = ["L1"]
+
+[[case]]
+id = "c063"
+text = "L2"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "L2"
+search_keys = ["L2"]
+
+[[case]]
+id = "c064"
+text = "L3"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "L3"
+search_keys = ["L3"]
+
+[[case]]
+id = "c065"
+text = "N"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "N"
+search_keys = ["N"]
+
+[[case]]
+id = "c066"
+text = "PE"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "PE"
+search_keys = ["PE"]
+
+[[case]]
+id = "c067"
+text = "L+"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "L+"
+search_keys = ["L+"]
+
+[[case]]
+id = "c068"
+text = "M"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "M"
+search_keys = ["M"]
+
+[[case]]
+id = "c069"
+text = "+24V"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "+24V"
+search_keys = ["+24V"]
+
+[[case]]
+id = "c070"
+text = "0V"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "0V"
+search_keys = ["0V"]
+
+[[case]]
+id = "c071"
+text = "24VDC"
+source = "appendix-a"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "24VDC"
+search_keys = ["24VDC"]
+
+[[case]]
+id = "c072"
+text = "-W1"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-W1"]
+canonical = "-W1"
+search_keys = ["-W1", "W1"]
+
+[[case]]
+id = "c073"
+text = "=A1-W12"
+source = "appendix-a"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "-W12"]
+canonical = "=A1-W12"
+search_keys = ["=A1-W12", "=A1W12", "W12"]
+
+[[case]]
+id = "c074"
+text = "%IX0.0"
+source = "vendor-c"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.unsupported_form"]
+canonical = "%IX0.0"
+search_keys = ["%IX0.0", "IX0.0", "IX00"]
+
+[[case]]
+id = "c075"
+text = "Local:1:I.Data.0"
+source = "vendor-c"
+kind = "none"
+
+[[case]]
+id = "c076"
+text = "I:1/0"
+source = "vendor-c"
+kind = "none"
+
+[[case]]
+id = "c077"
+text = "X0"
+source = "vendor-c"
+kind = "none"
+
+[[case]]
+id = "c078"
+text = "Y0"
+source = "vendor-c"
+kind = "none"
+
+[[case]]
+id = "c079"
+text = "－Ｋ５"
+source = "extra"
+script = "fullwidth"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c080"
+text = "＝Ａ１＋Ｐ２－Ｋ５"
+source = "extra"
+script = "fullwidth"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "+P2", "-K5"]
+canonical = "=A1+P2-K5"
+search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+
+[[case]]
+id = "c081"
+text = "－Ｘ１：１４"
+source = "extra"
+script = "fullwidth"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = ["-X1"]
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "-X1:14"
+search_keys = ["-X1:14", "X1:14", "X114"]
+
+[[case]]
+id = "c082"
+text = "Ｘ１．１４"
+source = "extra"
+script = "fullwidth"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1.14"
+search_keys = ["X1.14", "X114", "X1:14"]
+
+[[case]]
+id = "c083"
+text = "％Ｉ０．０"
+source = "extra"
+script = "fullwidth"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%I0.0"
+search_keys = ["%I0.0", "I0.0", "E0.0"]
+plc = { family = "tia", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c084"
+text = "ＤＢ１０．ＤＢＸ２．３"
+source = "extra"
+script = "fullwidth"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB10.DBX2.3"
+search_keys = ["DB10.DBX2.3"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 2, bit = 3, db_number = 10 }
+
+[[case]]
+id = "c085"
+text = "／１２．３"
+source = "extra"
+script = "fullwidth"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "slash_page_dot_column"
+canonical = "/12.3"
+search_keys = ["/12.3", "123"]
+
+[[case]]
+id = "c086"
+text = "２ＱＦ"
+source = "extra"
+script = "fullwidth"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "circuit_breaker"
+canonical = "2QF"
+search_keys = ["2QF", "QF2"]
+
+[[case]]
+id = "c087"
+text = "-k5"
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c088"
+text = "km1"
+source = "extra"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c089"
+text = "x1.14"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1.14"
+search_keys = ["X1.14", "X114", "X1:14"]
+
+[[case]]
+id = "c090"
+text = "xt1:5"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "5"
+device_class = "terminal_strip"
+canonical = "XT1:5"
+search_keys = ["XT1:5", "XT15"]
+
+[[case]]
+id = "c091"
+text = "i0.0"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "I0.0"
+search_keys = ["I0.0", "%I0.0", "E0.0"]
+plc = { family = "s7_en", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c092"
+text = "iw64"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "IW64"
+search_keys = ["IW64", "%IW64", "EW64"]
+plc = { family = "s7_en", area = "I", width = "word", byte = 64 }
+
+[[case]]
+id = "c093"
+text = "-K05"
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K05"]
+canonical = "-K05"
+search_keys = ["-K05", "K05", "K5"]
+
+[[case]]
+id = "c094"
+text = "= A1 + P2 - K5"
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=A1", "+P2", "-K5"]
+canonical = "=A1+P2-K5"
+search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+
+[[case]]
+id = "c095"
+text = "X 1 . 14"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1.14"
+search_keys = ["X1.14", "X114", "X1:14"]
+
+[[case]]
+id = "c096"
+text = "KM 1"
+source = "extra"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c097"
+text = "-X01:014"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = ["-X01"]
+connection_point = "014"
+device_class = "terminal_strip"
+canonical = "-X01:014"
+search_keys = ["-X01:014", "X01:014", "X1:14", "X114"]
+
+[[case]]
+id = "c098"
+text = "X1:PE"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "PE"
+device_class = "terminal_strip"
+canonical = "X1:PE"
+search_keys = ["X1:PE", "X1PE"]
+
+[[case]]
+id = "c099"
+text = "TB1:2"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+connection_point = "2"
+device_class = "terminal_block"
+canonical = "TB1:2"
+search_keys = ["TB1:2", "TB12"]
+
+[[case]]
+id = "c100"
+text = "TB1.2"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "nfpa_jic"
+aspects = []
+connection_point = "2"
+device_class = "terminal_block"
+canonical = "TB1.2"
+search_keys = ["TB1.2", "TB12", "TB1:2"]
+
+[[case]]
+id = "c101"
+text = "-XT1:3"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = ["-XT1"]
+connection_point = "3"
+device_class = "terminal_strip"
+canonical = "-XT1:3"
+search_keys = ["-XT1:3", "XT1:3", "XT13"]
+
+[[case]]
+id = "c102"
+text = "1XT:5"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "5"
+device_class = "terminal_strip"
+canonical = "1XT:5"
+search_keys = ["1XT:5", "1XT5"]
+
+[[case]]
+id = "c103"
+text = "X1:1~X1:2"
+source = "extra"
+kind = "bridge"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "1~2"
+device_class = "terminal_strip"
+canonical = "X1:1~X1:2"
+search_keys = ["X1:1~X1:2", "X11~X12"]
+
+[[case]]
+id = "c104"
+text = "X1:1~3"
+source = "extra"
+kind = "bridge"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "1~3"
+device_class = "terminal_strip"
+canonical = "X1:1~3"
+search_keys = ["X1:1~3", "X11~3", "X1:1~X1:3"]
+
+[[case]]
+id = "c105"
+text = "-X1:1~-X1:2"
+source = "extra"
+kind = "bridge"
+valid = true
+convention = "iec_81346"
+aspects = ["-X1"]
+connection_point = "1~2"
+device_class = "terminal_strip"
+canonical = "-X1:1~-X1:2"
+search_keys = ["-X1:1~-X1:2", "X1:1~-X1:2", "X11~X12", "X1:1~X1:2"]
+
+[[case]]
+id = "c106"
+text = "%IW256:P"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%IW256:P"
+search_keys = ["%IW256:P", "PIW256", "PEW256"]
+plc = { family = "tia", area = "PI", width = "word", byte = 256 }
+
+[[case]]
+id = "c107"
+text = "%QW80"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%QW80"
+search_keys = ["%QW80", "QW80", "AW80"]
+plc = { family = "tia", area = "Q", width = "word", byte = 80 }
+
+[[case]]
+id = "c108"
+text = "%MW10"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%MW10"
+search_keys = ["%MW10", "MW10"]
+plc = { family = "tia", area = "M", width = "word", byte = 10 }
+
+[[case]]
+id = "c109"
+text = "%MB4"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%MB4"
+search_keys = ["%MB4", "MB4"]
+plc = { family = "tia", area = "M", width = "byte", byte = 4 }
+
+[[case]]
+id = "c110"
+text = "%ID0"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%ID0"
+search_keys = ["%ID0", "ID0", "ED0"]
+plc = { family = "tia", area = "I", width = "dword", byte = 0 }
+
+[[case]]
+id = "c111"
+text = "IB1"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "IB1"
+search_keys = ["IB1", "%IB1", "EB1"]
+plc = { family = "s7_en", area = "I", width = "byte", byte = 1 }
+
+[[case]]
+id = "c112"
+text = "QD8"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "QD8"
+search_keys = ["QD8", "%QD8", "AD8"]
+plc = { family = "s7_en", area = "Q", width = "dword", byte = 8 }
+
+[[case]]
+id = "c113"
+text = "MW10"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "MW10"
+search_keys = ["MW10", "%MW10"]
+plc = { family = "s7_en", area = "M", width = "word", byte = 10 }
+
+[[case]]
+id = "c114"
+text = "MB4"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "MB4"
+search_keys = ["MB4", "%MB4"]
+plc = { family = "s7_en", area = "M", width = "byte", byte = 4 }
+
+[[case]]
+id = "c115"
+text = "MD0"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "MD0"
+search_keys = ["MD0", "%MD0"]
+plc = { family = "s7_en", area = "M", width = "dword", byte = 0 }
+
+[[case]]
+id = "c116"
+text = "PQW80"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "PQW80"
+search_keys = ["PQW80", "%QW80:P", "PAW80"]
+plc = { family = "s7_en", area = "PQ", width = "word", byte = 80 }
+
+[[case]]
+id = "c117"
+text = "PIB0"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "PIB0"
+search_keys = ["PIB0", "%IB0:P", "PEB0"]
+plc = { family = "s7_en", area = "PI", width = "byte", byte = 0 }
+
+[[case]]
+id = "c118"
+text = "AW4"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "AW4"
+search_keys = ["AW4", "QW4", "%QW4"]
+plc = { family = "s7_de", area = "Q", width = "word", byte = 4 }
+
+[[case]]
+id = "c119"
+text = "EB1"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "EB1"
+search_keys = ["EB1", "IB1", "%IB1"]
+plc = { family = "s7_de", area = "I", width = "byte", byte = 1 }
+
+[[case]]
+id = "c120"
+text = "PAW64"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "PAW64"
+search_keys = ["PAW64", "PQW64", "%QW64:P"]
+plc = { family = "s7_de", area = "PQ", width = "word", byte = 64 }
+
+[[case]]
+id = "c121"
+text = "MW10.1"
+source = "extra"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_on_non_bit_width"]
+canonical = "MW10.1"
+search_keys = ["MW10.1"]
+plc = { family = "s7_en", area = "M", width = "word", byte = 10, bit = 1 }
+
+[[case]]
+id = "c122"
+text = "DB1.DBD8"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB1.DBD8"
+search_keys = ["DB1.DBD8"]
+plc = { family = "s7_db", area = "DB", width = "dword", byte = 8, db_number = 1 }
+
+[[case]]
+id = "c123"
+text = "DB10.DBB1"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB10.DBB1"
+search_keys = ["DB10.DBB1"]
+plc = { family = "s7_db", area = "DB", width = "byte", byte = 1, db_number = 10 }
+
+[[case]]
+id = "c124"
+text = "VB5"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "VB5"
+search_keys = ["VB5"]
+plc = { family = "s7_200", area = "V", width = "byte", byte = 5 }
+
+[[case]]
+id = "c125"
+text = "VD8"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "VD8"
+search_keys = ["VD8"]
+plc = { family = "s7_200", area = "V", width = "dword", byte = 8 }
+
+[[case]]
+id = "c126"
+text = "V0.7"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "V0.7"
+search_keys = ["V0.7"]
+plc = { family = "s7_200", area = "V", width = "bit", byte = 0, bit = 7 }
+
+[[case]]
+id = "c127"
+text = "DB10.DBX2"
+source = "extra"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_missing"]
+canonical = "DB10.DBX2"
+search_keys = ["DB10.DBX2"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 2, db_number = 10 }
+
+[[case]]
+id = "c128"
+text = "12.3"
+source = "extra"
+hint = "connection_point"
+kind = "none"
+
+[[case]]
+id = "c129"
+text = "13"
+source = "extra"
+hint = "connection_point"
+kind = "connection_point"
+valid = true
+aspects = []
+connection_point = "13"
+pole_role = "aux_no"
+canonical = "13"
+search_keys = ["13"]
+
+[[case]]
+id = "c130"
+text = "95"
+source = "extra"
+hint = "connection_point"
+kind = "connection_point"
+valid = true
+aspects = []
+connection_point = "95"
+pole_role = "overload_nc"
+canonical = "95"
+search_keys = ["95"]
+
+[[case]]
+id = "c131"
+text = "1"
+source = "extra"
+hint = "connection_point"
+kind = "connection_point"
+valid = true
+aspects = []
+connection_point = "1"
+pole_role = "main_pole"
+canonical = "1"
+search_keys = ["1"]
+
+[[case]]
+id = "c132"
+text = "A2"
+source = "extra"
+hint = "connection_point"
+kind = "connection_point"
+valid = true
+aspects = []
+connection_point = "A2"
+pole_role = "coil"
+canonical = "A2"
+search_keys = ["A2"]
+
+[[case]]
+id = "c133"
+text = "12.3"
+source = "extra"
+hint = "wire_number"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "page_column"
+canonical = "12.3"
+search_keys = ["12.3", "123"]
+
+[[case]]
+id = "c134"
+text = "W11"
+source = "extra"
+hint = "wire_number"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "W11"
+search_keys = ["W11"]
+
+[[case]]
+id = "c135"
+text = "123"
+source = "extra"
+hint = "cross_reference"
+kind = "none"
+
+[[case]]
+id = "c136"
+text = "-K5"
+source = "extra"
+hint = "reference_designation"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c137"
+text = "1KM"
+source = "extra"
+hint = "reference_designation"
+kind = "none"
+
+[[case]]
+id = "c138"
+text = "L1-12"
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "voltage_based"
+canonical = "L1-12"
+search_keys = ["L1-12", "L112"]
+
+[[case]]
+id = "c139"
+text = "U1-5"
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "voltage_based"
+canonical = "U1-5"
+search_keys = ["U1-5", "U15"]
+
+[[case]]
+id = "c140"
+text = "W"
+source = "extra"
+kind = "none"
+
+[[case]]
+id = "c141"
+text = "0042"
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "0042"
+search_keys = ["0042", "42"]
+
+[[case]]
+id = "c142"
+text = "W00123"
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "W00123"
+search_keys = ["W00123", "W123"]
+
+[[case]]
+id = "c143"
+text = "L4-5"
+source = "extra"
+kind = "none"
+
+[[case]]
+id = "c144"
+text = "hello"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c145"
+text = "x"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c146"
+text = "--"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c147"
+text = "-"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c148"
+text = "12 apples"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c149"
+text = "price: $5"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c150"
+text = "KX1"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c151"
+text = "ABCD1234"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c152"
+text = "I0.8"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_out_of_range"]
+canonical = "I0.8"
+search_keys = ["I0.8"]
+plc = { family = "s7_en", area = "I", width = "bit", byte = 0, bit = 8 }
+
+[[case]]
+id = "c153"
+text = "Q4.9"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_out_of_range"]
+canonical = "Q4.9"
+search_keys = ["Q4.9"]
+plc = { family = "s7_en", area = "Q", width = "bit", byte = 4, bit = 9 }
+
+[[case]]
+id = "c154"
+text = "IW64.1"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_on_non_bit_width"]
+canonical = "IW64.1"
+search_keys = ["IW64.1"]
+plc = { family = "s7_en", area = "I", width = "word", byte = 64, bit = 1 }
+
+[[case]]
+id = "c155"
+text = "%I0"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_missing"]
+canonical = "%I0"
+search_keys = ["%I0"]
+plc = { family = "tia", area = "I", width = "bit", byte = 0 }
+
+[[case]]
+id = "c156"
+text = "%I0.9"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_out_of_range"]
+canonical = "%I0.9"
+search_keys = ["%I0.9"]
+plc = { family = "tia", area = "I", width = "bit", byte = 0, bit = 9 }
+
+[[case]]
+id = "c157"
+text = "DB10.DBX2.8"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_out_of_range"]
+canonical = "DB10.DBX2.8"
+search_keys = ["DB10.DBX2.8"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 2, bit = 8, db_number = 10 }
+
+[[case]]
+id = "c158"
+text = "DB10.DBW4.1"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_on_non_bit_width"]
+canonical = "DB10.DBW4.1"
+search_keys = ["DB10.DBW4.1"]
+plc = { family = "s7_db", area = "DB", width = "word", byte = 4, bit = 1, db_number = 10 }
+
+[[case]]
+id = "c159"
+text = "VW100.2"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_on_non_bit_width"]
+canonical = "VW100.2"
+search_keys = ["VW100.2"]
+plc = { family = "s7_200", area = "V", width = "word", byte = 100, bit = 2 }
+
+[[case]]
+id = "c160"
+text = "PIW256.0"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.bit_on_non_bit_width"]
+canonical = "PIW256.0"
+search_keys = ["PIW256.0"]
+plc = { family = "s7_en", area = "PI", width = "word", byte = 256, bit = 0 }
+
+[[case]]
+id = "c161"
+text = "%MW1:P"
+source = "invalid"
+kind = "plc_address"
+valid = false
+aspects = []
+issues = ["plc.peripheral_marker"]
+canonical = "%MW1:P"
+search_keys = ["%MW1:P"]
+plc = { family = "tia", area = "M", width = "word", byte = 1 }
+
+[[case]]
+id = "c162"
+text = "-K5:"
+source = "invalid"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["-K5"]
+issues = ["connection_point.empty"]
+canonical = "-K5:"
+search_keys = ["-K5:", "K5:", "K5"]
+
+[[case]]
+id = "c163"
+text = "-K5:A1:B2"
+source = "invalid"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["-K5"]
+issues = ["connection_point.multiple"]
+canonical = "-K5:A1:B2"
+search_keys = ["-K5:A1:B2", "K5:A1:B2", "K5A1B2", "K5"]
+
+[[case]]
+id = "c164"
+text = "=A1-"
+source = "invalid"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["=A1"]
+issues = ["aspect.malformed"]
+canonical = "=A1-"
+search_keys = ["=A1-", "=A1"]
+
+[[case]]
+id = "c165"
+text = "--K5"
+source = "invalid"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = []
+issues = ["aspect.malformed"]
+canonical = "--K5"
+search_keys = ["--K5", "K5"]
+
+[[case]]
+id = "c166"
+text = "-K5:TOOLONG1"
+source = "invalid"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["-K5"]
+issues = ["connection_point.malformed"]
+canonical = "-K5:TOOLONG1"
+search_keys = ["-K5:TOOLONG1", "K5:TOOLONG1", "K5TOOLONG1", "K5"]
+
+[[case]]
+id = "c167"
+text = "KM1:"
+source = "invalid"
+kind = "letter_code"
+valid = false
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+issues = ["connection_point.empty"]
+canonical = "KM1:"
+search_keys = ["KM1:", "KM1", "1KM"]
+
+[[case]]
+id = "c168"
+text = "1XT-"
+source = "invalid"
+kind = "terminal"
+valid = false
+convention = "cn_letter_codes"
+aspects = []
+device_class = "terminal_strip"
+issues = ["connection_point.empty"]
+canonical = "1XT-"
+search_keys = ["1XT-", "1XT"]
+
+[[case]]
+id = "c169"
+text = "X1."
+source = "invalid"
+kind = "terminal"
+valid = false
+convention = "iec_81346"
+aspects = []
+device_class = "terminal_strip"
+issues = ["connection_point.empty"]
+canonical = "X1."
+search_keys = ["X1.", "X1"]
+
+[[case]]
+id = "c170"
+text = "X1:"
+source = "invalid"
+kind = "terminal"
+valid = false
+convention = "iec_81346"
+aspects = []
+device_class = "terminal_strip"
+issues = ["connection_point.empty"]
+canonical = "X1:"
+search_keys = ["X1:", "X1"]
+
+[[case]]
+id = "c171"
+text = "X1:1~"
+source = "invalid"
+kind = "bridge"
+valid = false
+convention = "iec_81346"
+aspects = []
+device_class = "terminal_strip"
+issues = ["bridge.right_not_terminal"]
+canonical = "X1:1~"
+search_keys = ["X1:1~", "X11~"]
