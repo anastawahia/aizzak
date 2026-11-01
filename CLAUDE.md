@@ -12,7 +12,7 @@
 
 ## Branches
 - Main branch: `master`. CI runs on push to `master` and on every PR (`.github/workflows/ci.yml`).
-- `capacity`, `rag-agent-scenarios`, `retrieval`, `summarization-scenarios-plan`: old branches, fully merged into `master` (`git branch --no-merged master` is empty). Do not base work on them, and do not push to or delete them.
+- Old merged branches were deleted locally and on GitHub (owner decision, 2026-11-02). `codex/account-context` (local, not merged) was kept.
 - Feature work goes on a new branch from `master`.
 
 ## Quality gates
