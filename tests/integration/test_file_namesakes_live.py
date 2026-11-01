@@ -32,8 +32,8 @@ from __future__ import annotations
 import unicodedata
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
@@ -44,6 +44,13 @@ from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import FindNamesakes, RegisterUpload
 from app.modules.files.domain.entities import File
+from app.modules.files.domain.value_objects import (
+    ContentType,
+    FileName,
+    FileStatus,
+    FileTags,
+    StorageKey,
+)
 from app.modules.spaces.adapters.sql_repository import SqlSpaceRepository
 from app.modules.spaces.application.use_cases import SpacesQueryService
 from app.modules.spaces.domain.entities import Space
@@ -102,6 +109,46 @@ async def _upload(
     return await RegisterUpload(
         SqlFileRepository(tenant_session), Limits(), SpacesQueryService(spaces)
     ).execute(ctx, space_id=space_id, name=name, content_type="application/pdf", size_bytes=1024)
+
+
+async def _tagged(
+    repo: SqlFileRepository,
+    ctx: ExecutionContext,
+    space_id: str | None,
+    name: str,
+    tags: FileTags,
+    *,
+    content_type: str = "application/pdf",
+) -> File:
+    """One registered file CARRYING tags, written through the repository.
+
+    ``RegisterUpload`` gains its ``tags`` parameter in S3 (the application
+    layer), after this data-layer step; the predicate under test reads the
+    stored columns, so the row is built the way ``RegisterUpload`` builds it --
+    an UPLOADED file at the current instant -- and added through the same
+    ``add``. ``new_uuid7`` ids and ``utc_now`` timestamps are monotonic, so the
+    order of calls is the ``(created_at, id)`` order the predicate reads."""
+    at = utc_now()
+    file_id = new_uuid7()
+    file = File(
+        id=file_id,
+        workspace_id=ctx.workspace_id,
+        space_id=space_id,
+        name=FileName(name),
+        content_type=ContentType(content_type),
+        size_bytes=1024,
+        storage_key=StorageKey(f"{ctx.workspace_id}/{file_id}"),
+        checksum=None,
+        status=FileStatus.UPLOADED,
+        uploaded_by=ctx.user_id,
+        created_at=at,
+        updated_at=at,
+        deleted_at=None,
+        version=1,
+        tags=tags,
+    )
+    await repo.add(ctx, file)
+    return file
 
 
 async def _soft_delete(
@@ -361,6 +408,288 @@ async def test_the_name_key_is_an_index_condition_and_not_a_filter(
     assert "ix_files_space_name" in plan, plan
     index_cond = next(line for line in plan.splitlines() if "Index Cond" in line)
     assert "name_key" in index_cond, plan
+
+
+# --------------------------------------------------------------------------- #
+# PLT-26 -- the tags are part of "the same file" (INC1-AC-2)                  #
+# --------------------------------------------------------------------------- #
+_SYS = FileTags(system="SYS-1")
+_SYS_EQ = FileTags(system="SYS-1", equipment="EQ-7")
+_ALL = FileTags(system="SYS-1", equipment="EQ-7", department="elec")
+
+
+async def _space_in(repo_spaces: SqlSpaceRepository, ws: str) -> tuple[ExecutionContext, Space]:
+    ctx = _ctx(ws)
+    space = _space(ws, "Research")
+    await repo_spaces.add(ctx, space)
+    return ctx, space
+
+
+async def test_two_untagged_files_still_replace_each_other(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """The rule as it was: an absent tag matches an absent tag, so the files
+    that predate the tags -- all of them -- behave exactly as before."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    older = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+    newer = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+
+    assert await repo.live_namesakes(ctx, newer) == [older.id]
+
+
+async def test_the_same_three_tags_are_the_same_file(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    older = await _tagged(repo, ctx, space.id, "report.pdf", _ALL)
+    newer = await _tagged(repo, ctx, space.id, "report.pdf", _ALL)
+
+    assert await repo.live_namesakes(ctx, newer) == [older.id]
+
+
+async def test_a_tagged_and_an_untagged_file_never_replace_each_other(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """An absent tag matches ONLY an absent tag, in BOTH directions -- the
+    newer one is the tagged file in one case and the untagged one in the other,
+    so neither a wildcard NULL nor a one-sided comparison can pass both."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    untagged = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+    tagged = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+    untagged_again = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+
+    assert await repo.live_namesakes(ctx, tagged) == []
+    # The newest untagged file finds the OLDER untagged one and not the tagged one.
+    assert await repo.live_namesakes(ctx, untagged_again) == [untagged.id]
+
+
+@pytest.mark.parametrize(
+    ("stored", "arriving"),
+    [
+        (FileTags(system="SYS-1"), FileTags(system="SYS-2")),
+        (FileTags(equipment="EQ-7"), FileTags(equipment="EQ-8")),
+        (FileTags(department="elec"), FileTags(department="mech")),
+        (_ALL, FileTags(system="SYS-1", equipment="EQ-7", department="mech")),
+        # The same value under a DIFFERENT tag is a different tag.
+        (FileTags(system="X"), FileTags(equipment="X")),
+        (FileTags(equipment="X"), FileTags(department="X")),
+        # Literal comparison: no case fold, no trimming beyond FileTags' own.
+        (FileTags(system="sys-1"), FileTags(system="SYS-1")),
+        # One tag set where the other is a strict superset.
+        (_SYS, _SYS_EQ),
+    ],
+)
+async def test_one_differing_tag_keeps_both_files(
+    tenant_session: TenantSessionFactory,
+    repo_spaces: SqlSpaceRepository,
+    stored: FileTags,
+    arriving: FileTags,
+) -> None:
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    await _tagged(repo, ctx, space.id, "report.pdf", stored)
+    newer = await _tagged(repo, ctx, space.id, "report.pdf", arriving)
+
+    assert await repo.live_namesakes(ctx, newer) == []
+
+
+async def test_the_file_type_does_not_enter_the_match(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """A handbook and a drawing with the same name and the same tags are ONE
+    file: the type is not part of the rule (lld-inc-1 §3.3.1)."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    older = await _tagged(
+        repo, ctx, space.id, "plant.pdf", _ALL, content_type="application/octet-stream"
+    )
+    newer = await _tagged(repo, ctx, space.id, "plant.pdf", _ALL, content_type="application/pdf")
+
+    assert await repo.live_namesakes(ctx, newer) == [older.id]
+
+
+async def test_tags_decide_inside_a_spaceless_bucket_too(
+    tenant_session: TenantSessionFactory,
+) -> None:
+    repo = SqlFileRepository(tenant_session)
+    ctx = _ctx(new_uuid7())
+    same = await _tagged(repo, ctx, None, "report.pdf", _SYS)
+    await _tagged(repo, ctx, None, "report.pdf", FileTags(system="other"))
+    newer = await _tagged(repo, ctx, None, "report.pdf", _SYS)
+
+    assert await repo.live_namesakes(ctx, newer) == [same.id]
+
+
+# `live_name_conflicts` -- the files a replacement will NOT touch ------------- #
+async def test_a_conflict_is_a_same_name_file_with_different_tags(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    other = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="other"))
+    mine = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+
+    assert await repo.live_name_conflicts(ctx, mine) == [other.id]
+
+
+async def test_a_conflict_is_found_when_only_one_side_is_null(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """The case ``NOT(col = value)`` loses: with a NULL on either side ``=`` is
+    NULL and so is its negation, so the row would be silently dropped. Both
+    directions, and per tag column."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    untagged = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+    only_system = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="S"))
+    only_equipment = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(equipment="E"))
+    only_department = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(department="D"))
+
+    # The untagged file conflicts with all three tagged ones (stored side set,
+    # argument side NULL) ...
+    assert await repo.live_name_conflicts(ctx, untagged) == sorted(
+        [only_system.id, only_equipment.id, only_department.id]
+    )
+    # ... and each tagged file conflicts with the untagged one (stored NULL,
+    # argument set) and with the two other tagged ones.
+    assert await repo.live_name_conflicts(ctx, only_system) == sorted(
+        [untagged.id, only_equipment.id, only_department.id]
+    )
+
+
+async def test_a_conflict_ignores_age_unlike_a_namesake(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """``live_namesakes`` is "registered BEFORE"; a conflict is "of any age" --
+    the older and the newer differing file both appear."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    older = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="a"))
+    mine = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="b"))
+    newer = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="c"))
+
+    assert await repo.live_name_conflicts(ctx, mine) == [older.id, newer.id]
+
+
+async def test_a_conflict_excludes_the_file_itself_and_its_namesakes(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+    mine = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+
+    assert await repo.live_name_conflicts(ctx, mine) == []
+
+
+async def test_the_two_reads_partition_the_same_name_files(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """Every OTHER same-name file is a namesake-or-newer-namesake (same tags) or
+    a conflict (different tags): no file is in neither and none in both."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    same_older = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+    differing = await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+    mine = await _tagged(repo, ctx, space.id, "REPORT.pdf", _SYS)
+
+    assert await repo.live_namesakes(ctx, mine) == [same_older.id]
+    assert await repo.live_name_conflicts(ctx, mine) == [differing.id]
+
+
+async def test_a_conflict_is_scoped_to_name_space_workspace_and_liveness(
+    tenant_session: TenantSessionFactory,
+    sessionmaker_app: async_sessionmaker[AsyncSession],
+    repo_spaces: SqlSpaceRepository,
+) -> None:
+    ws = new_uuid7()
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, ws)
+    other_space = _space(ws, "Archive")
+    await repo_spaces.add(ctx, other_space)
+    # Each of these differs in tags and is nevertheless NOT a conflict:
+    await _tagged(repo, ctx, space.id, "another-name.pdf", FileTags(system="x"))
+    await _tagged(repo, ctx, other_space.id, "report.pdf", FileTags(system="x"))
+    gone = await _tagged(repo, ctx, space.id, "report.pdf", FileTags(system="x"))
+    await _soft_delete(sessionmaker_app, ws, gone.id)
+    foreign_ws = new_uuid7()
+    foreign_ctx, foreign_space = await _space_in(repo_spaces, foreign_ws)
+    await _tagged(repo, foreign_ctx, foreign_space.id, "report.pdf", FileTags(system="x"))
+    mine = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+
+    assert await repo.live_name_conflicts(ctx, mine) == []
+
+
+async def test_a_conflict_is_found_across_case_and_normalisation(
+    tenant_session: TenantSessionFactory, repo_spaces: SqlSpaceRepository
+) -> None:
+    """ "The same name" is the ``name_key`` here exactly as in ``live_namesakes``."""
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, new_uuid7())
+    other = await _tagged(repo, ctx, space.id, _ARABIC_NFC, FileTags(system="x"))
+    mine = await _tagged(repo, ctx, space.id, _ARABIC_NFD, FileTags(system="y"))
+
+    assert await repo.live_name_conflicts(ctx, mine) == [other.id]
+
+
+async def _explain_captured(app_engine: AsyncEngine, ws: str, call: object) -> tuple[str, str]:
+    """Run ``call`` (an awaitable returning nothing useful) while recording the
+    LAST statement the adapter sent, then EXPLAIN exactly that statement and
+    its parameters on a session with ``enable_seqscan = off``. Returns
+    ``(sql, plan)``. The adapter's own statement, not a hand-written copy of it
+    -- a copy would keep passing while the adapter drifted."""
+    captured: list[tuple[str, tuple[object, ...]]] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        if "files.files" in statement and statement.lstrip().upper().startswith("SELECT"):
+            captured.append((statement, tuple(parameters)))
+
+    event.listen(app_engine.sync_engine, "before_cursor_execute", record)
+    try:
+        await call  # type: ignore[misc]
+    finally:
+        event.remove(app_engine.sync_engine, "before_cursor_execute", record)
+    assert captured, "the adapter issued no SELECT on files.files"
+    statement, parameters = captured[-1]
+    async with async_sessionmaker(app_engine)() as session:
+        await session.execute(text("SET LOCAL enable_seqscan = off"))
+        await session.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+        conn = await session.connection()
+        rows = (await conn.exec_driver_sql("EXPLAIN " + statement, parameters)).all()
+    return statement, "\n".join(row[0] for row in rows)
+
+
+@pytest.mark.parametrize("read", ["live_namesakes", "live_name_conflicts"])
+async def test_the_tag_condition_is_a_filter_and_name_key_stays_an_index_condition(
+    app_engine: AsyncEngine,
+    tenant_session: TenantSessionFactory,
+    repo_spaces: SqlSpaceRepository,
+    read: str,
+) -> None:
+    """INC1-D-4: no fourth index. ``IS [NOT] DISTINCT FROM`` is not a btree
+    search operator, so the tag condition must land in ``Filter`` and the
+    ``name_key`` equality must still be an ``Index Cond`` on
+    ``ix_files_space_name`` -- with TAGGED files in the table, and on the
+    statements the adapter really issues (``test_the_name_key_is_an_index_
+    condition_and_not_a_filter`` above guards the bare lookup)."""
+    ws = new_uuid7()
+    repo = SqlFileRepository(tenant_session)
+    ctx, space = await _space_in(repo_spaces, ws)
+    await _tagged(repo, ctx, space.id, "report.pdf", _ALL)
+    await _tagged(repo, ctx, space.id, "report.pdf", FileTags())
+    mine = await _tagged(repo, ctx, space.id, "report.pdf", _SYS)
+
+    statement, plan = await _explain_captured(app_engine, ws, getattr(repo, read)(ctx, mine))
+
+    assert "ix_files_space_name" in plan, plan
+    index_cond = next(line for line in plan.splitlines() if "Index Cond" in line)
+    assert "name_key" in index_cond, plan
+    # And the tag condition is what the planner kept OUT of the search key.
+    assert "tag_system" not in index_cond, plan
+    assert "tag_system" in plan, f"the statement carries no tag condition:\n{statement}"
 
 
 async def test_the_use_case_refuses_an_id_it_cannot_read(

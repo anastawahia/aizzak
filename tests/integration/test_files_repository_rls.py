@@ -31,6 +31,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     MultipartUpload,
     Sha256,
     StorageKey,
@@ -69,6 +70,7 @@ def _file(
     deleted_at: datetime | None = None,
     version: int = 1,
     multipart: MultipartUpload | None = None,
+    tags: FileTags | None = None,
 ) -> File:
     fid = file_id or new_uuid7()
     at = now or utc_now()
@@ -88,6 +90,7 @@ def _file(
         deleted_at=deleted_at,
         version=version,
         multipart=multipart,
+        tags=tags or FileTags(),
     )
 
 
@@ -155,6 +158,39 @@ async def _write_multipart_as_owner(
             await conn.execute(
                 text("UPDATE files.files SET upload_id = :u, part_bytes = :p WHERE id = :id"),
                 {"u": upload_id, "p": part_bytes, "id": file_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _write_tags_as_owner(
+    owner_dsn: str,
+    workspace_id: str,
+    file_id: str,
+    *,
+    system: str | None,
+    equipment: str | None,
+    department: str | None,
+) -> None:
+    """Force the three tag columns past the aggregate, as the table owner.
+
+    `FileTags` refuses an empty or over-long value, so the DATABASE's own
+    `ck_files_tags_shape` can only be tested from outside the domain. Same
+    GUC-first shape as `_write_name_as_owner` (the owner is policy-subject under
+    FORCE RLS, so an unset GUC would make this a no-op that silently "passed").
+    """
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            await conn.execute(
+                text(
+                    "UPDATE files.files SET tag_system = :s, tag_equipment = :e, "
+                    "tag_department = :d WHERE id = :id"
+                ),
+                {"s": system, "e": equipment, "d": department, "id": file_id},
             )
     finally:
         await engine.dispose()
@@ -958,3 +994,214 @@ async def test_the_database_accepts_the_boundary_multipart_sessions(
     reloaded = await repo_files.get(ctx, file.id)
     assert reloaded is not None
     assert reloaded.multipart == MultipartUpload(upload_id="x" * 1024, part_bytes=5_242_880)
+
+
+# --------------------------------------------------------------------------- #
+# PLT-26 -- the classification tags (migration 0006_file_tags, INC1-AC-1)     #
+# --------------------------------------------------------------------------- #
+_TAGS = FileTags(system="SYS-1", equipment="EQ-7", department="elec")
+
+
+async def test_the_three_tags_round_trip(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, tags=_TAGS)
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == _TAGS
+    # And as the columns hold them, so a swapped pair of columns in Table/add/
+    # _hydrate (which would round-trip through itself) cannot hide.
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    assert (row["tag_system"], row["tag_equipment"], row["tag_department"]) == (
+        "SYS-1",
+        "EQ-7",
+        "elec",
+    )
+
+
+async def test_an_untagged_file_stores_and_reads_back_null_never_empty(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == FileTags()
+    assert reloaded.tags.is_empty
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    assert (row["tag_system"], row["tag_equipment"], row["tag_department"]) == (None, None, None)
+
+
+async def test_a_partial_tag_set_keeps_each_tag_in_its_own_column(
+    repo_files: SqlFileRepository,
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, tags=FileTags(equipment="EQ-7"))
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == FileTags(system=None, equipment="EQ-7", department=None)
+
+
+async def test_a_tag_keeps_its_exact_unicode_form(repo_files: SqlFileRepository) -> None:
+    """`FileTags` NFC-normalises; the database must hand back exactly what it
+    was given, Arabic included (compared literally everywhere, INV-F6)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    tags = FileTags(system="نظام التحكم", equipment="مضخة-٣", department="كهرباء")
+    file = _file(workspace_id=ws, tags=tags)
+    await repo_files.add(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == tags
+
+
+async def test_save_writes_a_retag(repo_files: SqlFileRepository, live_db: LiveDbDsns) -> None:
+    """The tags joined `name` in `save`'s UPDATE. The in-memory fake stores the
+    object it was handed, so only a real round trip proves the columns are
+    written, and written to the RIGHT columns."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, tags=FileTags(system="old-system", department="old-dept"))
+    await repo_files.add(ctx, file)
+
+    assert file.retag(FileTags(system="new-system", equipment="new-equipment"), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == FileTags(system="new-system", equipment="new-equipment")
+    assert reloaded.version == 2
+    row = await _fetch_row_as_owner(live_db.owner, ws, file.id)
+    assert row is not None
+    # `department` went from set to NULL: a removed tag must be CLEARED, not kept.
+    assert (row["tag_system"], row["tag_equipment"], row["tag_department"]) == (
+        "new-system",
+        "new-equipment",
+        None,
+    )
+
+
+async def test_save_can_clear_every_tag(repo_files: SqlFileRepository) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, tags=_TAGS)
+    await repo_files.add(ctx, file)
+
+    assert file.retag(FileTags(), utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags.is_empty
+
+
+async def test_a_save_that_changes_something_else_rewrites_the_tags_unchanged(
+    repo_files: SqlFileRepository,
+) -> None:
+    """The argument `save` makes for `name`: every other caller re-writes what
+    it just read, so the tags survive a status transition untouched."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws, tags=_TAGS)
+    await repo_files.add(ctx, file)
+
+    file.soft_delete(utc_now())
+    await repo_files.save(ctx, file)
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.deleted_at is not None
+    assert reloaded.tags == _TAGS
+
+
+async def test_a_retag_cannot_reach_another_tenants_file(repo_files: SqlFileRepository) -> None:
+    """Two-layer isolation on the write path (DD-04): the foreign `save` is a
+    stale-version conflict and the row keeps its tags."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    file = _file(workspace_id=ws_a, tags=_TAGS)
+    await repo_files.add(_ctx(ws_a), file)
+
+    foreign = _file(workspace_id=ws_a, file_id=file.id, tags=FileTags(system="hijacked"))
+    with pytest.raises(ConflictError):
+        await repo_files.save(_ctx(ws_b), foreign)
+
+    mine = await repo_files.get(_ctx(ws_a), file.id)
+    assert mine is not None
+    assert mine.tags == _TAGS
+
+
+async def test_another_tenant_cannot_read_a_files_tags(repo_files: SqlFileRepository) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    file = _file(workspace_id=ws_a, tags=_TAGS)
+    await repo_files.add(_ctx(ws_a), file)
+
+    assert await repo_files.get(_ctx(ws_b), file.id) is None
+    page = await repo_files.list(_ctx(ws_b), space_id=None, limit=10, cursor=None)
+    assert page.data == []
+    listed = await repo_files.list(_ctx(ws_a), space_id=None, limit=10, cursor=None)
+    assert [f.tags for f in listed.data] == [_TAGS]
+
+
+@pytest.mark.parametrize(
+    ("system", "equipment", "department"),
+    [
+        ("", None, None),  # an empty string is not "absent"
+        (None, "", None),
+        (None, None, ""),
+        ("x" * 129, None, None),  # one character over the limit
+        (None, "x" * 129, None),
+        (None, None, "x" * 129),
+        ("ok", "ok", ""),  # one bad tag spoils the row
+    ],
+)
+async def test_the_database_refuses_a_malformed_tag(
+    repo_files: SqlFileRepository,
+    live_db: LiveDbDsns,
+    system: str | None,
+    equipment: str | None,
+    department: str | None,
+) -> None:
+    """`ck_files_tags_shape`, forced past the aggregate as the owner."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    with pytest.raises(IntegrityError):
+        await _write_tags_as_owner(
+            live_db.owner, ws, file.id, system=system, equipment=equipment, department=department
+        )
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags.is_empty
+
+
+async def test_the_database_accepts_the_boundary_tags(
+    repo_files: SqlFileRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    file = _file(workspace_id=ws)
+    await repo_files.add(ctx, file)
+
+    await _write_tags_as_owner(
+        live_db.owner, ws, file.id, system="x", equipment="y" * 128, department=None
+    )
+
+    reloaded = await repo_files.get(ctx, file.id)
+    assert reloaded is not None
+    assert reloaded.tags == FileTags(system="x", equipment="y" * 128)
