@@ -25,8 +25,10 @@ Four families, each a claim the AC makes that no other test pins:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +36,13 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from app.framework.clock import utc_now
+from app.framework.context.execution_context import ExecutionContext
 from app.framework.settings.settings import Limits
+from app.modules.files.domain.entities import File
 from app.modules.files.domain.errors import InvalidFileInput
-from app.modules.files.domain.value_objects import MAX_TAG_CHARS, FileTags, TagKind
+from app.modules.files.domain.value_objects import MAX_TAG_CHARS, FileStatus, FileTags, TagKind
+from tests.unit.support_files_media import InMemoryFileRepository
 from tests.unit.test_api_files_media_router import (
     _BIG,
     _SPACE,
@@ -44,6 +50,10 @@ from tests.unit.test_api_files_media_router import (
     _make_app,
     _register,
 )
+from tests.unit.test_file_replacement import _PUMP
+from tests.unit.test_file_replacement import _build as _repl_build
+from tests.unit.test_file_replacement import _ctx as _repl_ctx
+from tests.unit.test_file_replacement import _seed as _repl_seed
 
 _ROOT = Path(__file__).resolve().parents[2]
 _NO_SPACE = "018f0000-0000-7000-8000-0000000000zz"
@@ -338,3 +348,366 @@ def test_a_non_breaking_space_is_whitespace_not_a_value() -> None:
 def test_the_keys_of_a_mapping_are_case_sensitive() -> None:
     with pytest.raises(InvalidFileInput):
         FileTags.from_mapping({"System": "x"})
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-3) -- the forbidden-character rule, walked exhaustively    #
+# --------------------------------------------------------------------------- #
+_FORBIDDEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def test_every_code_point_is_judged_by_its_unicode_category() -> None:
+    """All 1,114,112 code points, one by one, in the middle of a value: refused
+    exactly when the category is one of the seven forbidden ones. Pins the rule
+    as a whole -- a category dropped from (or added to) the set, or a stray
+    allow-list, changes this -- instead of the dozen samples the unit tests use.
+    Nothing but ordinary spaces, letters, marks, numbers, punctuation and
+    symbols may survive."""
+    wrong: list[str] = []
+    accepted: set[str] = set()
+    refused: set[str] = set()
+    for code_point in range(0x110000):
+        char = chr(code_point)
+        category = unicodedata.category(char)
+        try:
+            FileTags(system=f"a{char}b")
+        except InvalidFileInput:
+            refused.add(category)
+            if category not in _FORBIDDEN:
+                wrong.append(f"U+{code_point:04X} ({category}) refused")
+        else:
+            accepted.add(category)
+            if category in _FORBIDDEN:
+                wrong.append(f"U+{code_point:04X} ({category}) accepted")
+
+    assert wrong == []
+    assert refused == _FORBIDDEN  # each forbidden category really has members
+    assert not accepted & _FORBIDDEN
+    assert {"Zs", "Lo", "Ll", "Lu", "Mn", "Mc", "Nd", "So", "Po"} <= accepted
+
+
+@pytest.mark.parametrize(
+    ("raw", "kept"),
+    [
+        ("\t\u0085x\u2028 ", "x"),  # control and separator whitespace at both ends
+        ("\x1f x \x1c", "x"),  # C0 information separators are str.strip whitespace
+        ("\u2029x\u2029", "x"),
+        ("  \u00a0مضخة-7\u3000", "مضخة-7"),
+    ],
+)
+def test_edge_whitespace_is_stripped_before_the_category_check(raw: str, kept: str) -> None:
+    assert FileTags(system=raw).system == kept
+
+
+@pytest.mark.parametrize("raw", ["\x00x", "x\x00", "\u200bx", "x\u200b", "\ufeffx", "\u202ex"])
+def test_edge_characters_that_are_not_whitespace_are_refused_not_stripped(raw: str) -> None:
+    """`strip()` removes only whitespace. A NUL, a zero-width space, a BOM or a
+    bidi override at an edge is a forbidden character, never silently trimmed
+    away -- that would store a value the caller did not send."""
+    with pytest.raises(InvalidFileInput):
+        FileTags(system=raw)
+
+
+def test_a_value_that_is_only_invisible_is_refused() -> None:
+    for raw in ("\u200b", "\u200b\u200d", "\ufeff", "\u00ad", " \u200b "):
+        with pytest.raises(InvalidFileInput):
+            FileTags(equipment=raw)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ẹ́",  # combining marks stack, NFC reorders and composes
+        "أ",  # alef + hamza above (Mn) -> NFC alef-hamza
+        "مَضخة",  # Arabic with a fatha (Mn)
+        "กิ",  # Thai base + vowel mark
+        "\U0001f468\u200d\U0001f469",  # a ZWJ emoji sequence is refused (Cf inside)
+    ],
+)
+def test_combining_marks_pass_and_a_zwj_sequence_does_not(value: str) -> None:
+    if "\u200d" in value:
+        with pytest.raises(InvalidFileInput):
+            FileTags(system=value)
+    else:
+        assert FileTags(system=value).system == unicodedata.normalize("NFC", value)
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-3 / B-1) -- over the wire, on every route that takes tags  #
+# --------------------------------------------------------------------------- #
+# JSON escapes, because a lone surrogate cannot be encoded by httpx itself.
+_HOSTILE_ESCAPES = {
+    "surrogate": "a\\ud800b",
+    "nul": "a\\u0000b",
+    "zwsp": "a\\u200bb",
+    "bom": "\\ufeffa",
+    "bidi-override": "a\\u202eb",
+    "bidi-isolate": "a\\u2066b",
+    "private-use": "a\\ue000b",
+    "unassigned": "a\\u0378b",
+    "line-separator": "a\\u2028b",
+    "c1-control": "a\\u0085b",
+}
+
+
+def _raw(path_body: str) -> dict[str, Any]:
+    return {"content": path_body, "headers": {**_auth(), "Content-Type": "application/json"}}
+
+
+@pytest.mark.parametrize("label", sorted(_HOSTILE_ESCAPES))
+@pytest.mark.parametrize("path", _PATHS)
+def test_a_forbidden_character_at_registration_is_a_422_that_never_echoes_it(
+    path: str, label: str
+) -> None:
+    escaped = _HOSTILE_ESCAPES[label]
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    body = (
+        f'{{"space_id":"{_SPACE}","name":"plan.pdf","content_type":"application/pdf",'
+        f'"size_bytes":{_BIG},"tags":{{"department":"{escaped}"}}}}'
+    )
+
+    response = client.post(path, **_raw(body))
+
+    assert response.status_code == 422, (label, response.text)
+    assert response.json()["code"] == "common.validation_error"
+    for char in json.loads(f'"{escaped}"'):
+        if unicodedata.category(char) in _FORBIDDEN:
+            assert char not in response.text
+            assert f"\\u{ord(char):04x}" not in response.text.lower()
+    assert stack.file_repository.rows == {}
+    assert stack.storage.presigned_puts == []
+    assert stack.multipart_storage.uploads == {}
+
+
+@pytest.mark.parametrize("label", sorted(_HOSTILE_ESCAPES))
+def test_a_forbidden_character_in_a_retag_is_a_422_and_changes_nothing(label: str) -> None:
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    file_id = str(_register(client, tags={"system": "keep-me"})["file_id"])
+    saved = list(stack.file_repository.saved)
+
+    response = client.put(
+        f"/api/v1/files/{file_id}/tags",
+        **_raw(f'{{"system":"keep-me","equipment":"{_HOSTILE_ESCAPES[label]}"}}'),
+    )
+
+    assert response.status_code == 422, (label, response.text)
+    assert stack.file_repository.saved == saved
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == {"system": "keep-me"}
+    assert stack.knowledge_purge.calls == []
+
+
+def test_allowed_text_of_other_scripts_registers_and_reads_back_unchanged() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    tags = {"system": "مضخة الماء \u0667", "equipment": "泵房-3号", "department": "😀 é"}
+    file_id = str(_register(client, tags=tags)["file_id"])
+
+    got = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
+
+    assert got["tags"] == {
+        "system": "مضخة الماء \u0667",
+        "equipment": "泵房-3号",
+        "department": "😀 é",  # NFC-composed, the emoji and the space kept
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-1 / S-4) -- who is swept, and what the audit line says     #
+# --------------------------------------------------------------------------- #
+_NOT_READY = [status for status in FileStatus if status is not FileStatus.READY]
+
+
+def test_the_not_ready_statuses_are_exactly_the_three_the_contract_names() -> None:
+    """The openapi text says `uploaded`, `scanning`, `quarantined`. If a status
+    is ever added (a `failed`, say) this fails, so the sweep rule is re-read."""
+    assert {s.value for s in _NOT_READY} == {"uploaded", "scanning", "quarantined"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", _NOT_READY)
+async def test_a_no_op_rename_or_retag_of_a_file_that_is_not_ready_deletes_nothing(
+    status: FileStatus,
+) -> None:
+    """Even when the file already collides with an older namesake (the state a
+    failed sweep leaves), a write that changes nothing on a not-ready file
+    still destroys nothing -- the status, not the write, decides."""
+    ctx = _repl_ctx()
+    files = InMemoryFileRepository()
+    older = _repl_seed(
+        files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP
+    )
+    held = _repl_seed(files, ctx, name="plan.pdf", tags=_PUMP, status=status)
+    service, erase = _repl_build(files)
+    saves = len(files.saved)
+
+    await service.rename(ctx, held.id, name="plan.pdf")
+    await service.retag(ctx, held.id, tags=_PUMP.as_mapping())
+
+    assert len(files.saved) == saves  # both really were no-ops
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_no_op_rename_of_a_ready_file_still_sweeps() -> None:
+    ctx = _repl_ctx()
+    files = InMemoryFileRepository()
+    older = _repl_seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1))
+    ready = _repl_seed(files, ctx, name="plan.pdf")
+    service, erase = _repl_build(files)
+
+    await service.rename(ctx, ready.id, name="plan.pdf")
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_a_retag_that_makes_a_file_not_ready_never_happens_and_status_is_untouched() -> None:
+    """A re-tag/rename must not change the lifecycle status (a quarantined file
+    stays quarantined), otherwise the sweep gate could be walked around."""
+    ctx = _repl_ctx()
+    files = InMemoryFileRepository()
+    _repl_seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    held = _repl_seed(files, ctx, name="draft.pdf", status=FileStatus.QUARANTINED)
+    service, _ = _repl_build(files)
+
+    renamed = await service.rename(ctx, held.id, name="plan.pdf")
+    retagged = await service.retag(ctx, held.id, tags=_PUMP.as_mapping())
+
+    assert renamed.status is FileStatus.QUARANTINED
+    assert retagged.status is FileStatus.QUARANTINED
+    assert files.rows[held.id].status is FileStatus.QUARANTINED
+
+
+class _LookupFails(InMemoryFileRepository):
+    async def live_namesakes(self, ctx: ExecutionContext, file: File) -> list[str]:
+        raise RuntimeError("postgres is down: secret-plan.pdf pump-7")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["complete", "rename", "retag"])
+async def test_a_failed_lookup_is_logged_with_the_audit_fields_and_does_not_fail_the_call(
+    caplog: pytest.LogCaptureFixture, source: str
+) -> None:
+    ctx = _repl_ctx()
+    files = _LookupFails()
+    row = _repl_seed(
+        files,
+        ctx,
+        name="draft.pdf",
+        tags=_PUMP,
+        status=FileStatus.UPLOADED if source == "complete" else FileStatus.READY,
+    )
+    service, erase = _repl_build(files)
+
+    with caplog.at_level(logging.INFO):
+        if source == "complete":
+            out = await service.complete(ctx, file_id=row.id, checksum=None)
+        elif source == "rename":
+            out = await service.rename(ctx, row.id, name="secret-plan.pdf")
+        else:
+            out = await service.retag(ctx, row.id, tags={"system": "pump-7"})
+
+    assert out.status is FileStatus.READY  # the call succeeded
+    assert erase.deleted == []
+    (record,) = [r for r in caplog.records if r.getMessage() == "file.replacement.lookup_failed"]
+    assert record.__dict__["user_id"] == "u1"
+    assert record.__dict__["source"] == source
+    assert record.__dict__["workspace_id"] == "w1"
+    assert record.__dict__["file_id"] == row.id
+    # The exception text is in the traceback (exc_info), the extra fields are not.
+    extra = {k: v for k, v in record.__dict__.items() if k in _AUDIT_KEYS}
+    assert "secret-plan" not in str(extra) and "pump-7" not in str(extra)
+
+
+_AUDIT_KEYS = {"file_id", "workspace_id", "user_id", "source", "replaced_id"}
+
+
+@pytest.mark.asyncio
+async def test_no_sweep_log_field_ever_carries_a_name_or_a_tag_value() -> None:
+    """Whatever the source, every record the service emits holds ids and the
+    source word only: names and tags are customer data (and a tag may be a
+    UUID of another system)."""
+    ctx = _repl_ctx()
+    files = InMemoryFileRepository()
+    older = _repl_seed(
+        files, ctx, name="secret-plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP
+    )
+    newer = _repl_seed(files, ctx, name="draft.pdf", tags=_PUMP)
+    service, _ = _repl_build(files, fails={older.id})
+    handler = _Capture()
+    logger = logging.getLogger("app.framework.di.file_replacement")
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        await service.rename(ctx, newer.id, name="secret-plan.pdf")
+        await service.retag(ctx, newer.id, tags=_PUMP.as_mapping())
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+    assert handler.records, "the failed purge should have been logged"
+    for record in handler.records:
+        extras = {
+            k: v
+            for k, v in record.__dict__.items()
+            if k not in _STD_LOG_ATTRS and k not in {"exc_info", "exc_text", "stack_info"}
+        }
+        assert set(extras) <= _AUDIT_KEYS, extras
+        assert "secret-plan" not in str(extras) and "pump-7" not in str(extras)
+        assert "secret-plan" not in record.getMessage() and "pump-7" not in record.getMessage()
+        assert extras["source"] in {"complete", "rename", "retag"}
+
+
+class _Capture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+_STD_LOG_ATTRS = set(logging.LogRecord("x", 0, "x", 0, "x", None, None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+}
+
+
+# At the route: a quarantined file is renamed and re-tagged (200), destroys
+# nothing, stays quarantined -- and a ready file re-tagged onto an older one
+# still does replace it.
+def test_the_routes_sweep_for_a_ready_file_and_not_for_a_quarantined_one() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    older = str(_register(client, tags=_TAGS_ROUTE)["file_id"])
+    client.post(f"/api/v1/files/{older}/complete", json={}, headers=_auth())
+    held = str(_register(client, name="draft.pdf")["file_id"])
+    stack.file_repository.rows[held].status = FileStatus.QUARANTINED
+
+    tagged = client.put(f"/api/v1/files/{held}/tags", json=_TAGS_ROUTE, headers=_auth())
+    renamed = client.patch(f"/api/v1/files/{held}", json={"name": "report.pdf"}, headers=_auth())
+
+    assert tagged.status_code == 200 and renamed.status_code == 200, (tagged.text, renamed.text)
+    assert stack.knowledge_purge.calls == []
+    assert stack.file_repository.rows[older].deleted_at is None
+    assert stack.file_repository.rows[held].status is FileStatus.QUARANTINED
+    assert tagged.json()["status"] == "quarantined"
+
+    ready = str(_register(client, name="other.pdf")["file_id"])
+    client.post(f"/api/v1/files/{ready}/complete", json={}, headers=_auth())
+    client.put(f"/api/v1/files/{ready}/tags", json=_TAGS_ROUTE, headers=_auth())
+    assert stack.knowledge_purge.calls == []  # still a different name
+    swept = client.patch(f"/api/v1/files/{ready}", json={"name": "report.pdf"}, headers=_auth())
+
+    assert swept.status_code == 200
+    # `older` and the quarantined `held` (now its namesake too) are both OLDER
+    # than the ready file that arrived, so both go.
+    assert sorted(stack.knowledge_purge.calls) == sorted([older, held])
+
+
+_TAGS_ROUTE = {"system": "sys-1", "equipment": "pump-7"}

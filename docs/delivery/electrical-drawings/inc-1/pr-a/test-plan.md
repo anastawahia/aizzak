@@ -5,7 +5,7 @@
 - الفرع: `feat/electrical-drawings-inc-1-pr-a` على `master@4bc6417`. الإيداعات المفحوصة: `c12504d` (S1) و`0cd5fe6` (S2) و`ce733d0` (S3) و`2e0b7e8` (S3 docs).
 - المرجع الحاكم: `docs/delivery/electrical-drawings/docs/lld-inc-1.md` §3.1 و§3.3.1–§3.3.4 و§4.1 و§5.1–§5.2.
 - النطاق: `INC1‑AC‑1` و`INC1‑AC‑2` و`INC1‑AC‑3` وحصة `PR‑A` من `INC1‑AC‑16`. ما سواها «ليس في هذا الـPR» (`PR‑B..D`).
-- الاختبارات الجديدة التي كتبتُها: `tests/unit/test_files_tags_qa.py` (37 حالة اختبار بعد التوسيع بالمعاملات، و0 تغيير في كود المنتج).
+- الاختبارات الجديدة التي كتبتُها: `tests/unit/test_files_tags_qa.py` (37 حالة اختبار بعد التوسيع بالمعاملات في الجولة الأولى، ثم 100 بعد جولة إعادة العمل §6؛ و0 تغيير في كود المنتج).
 
 ## 1. مصفوفة التغطية
 
@@ -174,12 +174,130 @@ test-rules: OK
 
 | # | الوصف | الشدة | خطوات إعادة الإنتاج | الحالة |
 |---|---|---|---|---|
-| B‑1 | **surrogate مفرد في الوسم يمرّ المجال ثم ينهار الحفظ بـ500.** `_clean_tag` لا يتحقق من قابلية الترميز UTF‑8. الجسم JSON صالح (`"\ud800"`) فيقبله pydantic، ثم يرفضه `asyncpg` عند الكتابة (`DataError: surrogates not allowed`) ويُترجَم إلى `common.internal` 500 بدل 422. المتوقع حسب `INC1‑AC‑1` بند «وسم غير صالح ← 422». الفعلي: 500 على `POST /files` و`/files/multipart` و`PUT /files/{id}/tags` (متوقَّع من المسار، لا شيء يُحفظ؛ انظر الملاحظة أدناه عن الرفع اليتيم) | minor | (1) `POST /api/v1/files` بجسم خام `{"space_id":"<sp>","name":"s.pdf","content_type":"application/pdf","size_bytes":10,"tags":{"system":"\ud800"}}` ← على المكدّس الداخلي 201 (المجال قبله)؛ (2) في قاعدة حقيقية: `await conn.fetchval("select $1::text", "\ud800")` ← `asyncpg.exceptions.DataError: invalid input for query argument $1 … surrogates not allowed` (تحققتُ على `postgres:16` مؤقت)؛ والمحوّل `sql_repository._translate` (`sql_repository.py:573-593`) يحوّل أي `DBAPIError` غير معروف إلى `common.internal`. المالك: **backend-developer**، الموضع المشتبه: `src/app/modules/files/domain/value_objects.py:213-226` (`_clean_tag`: أضف رفض ما لا يُرمَّز UTF‑8 كأن تجرّب `cleaned.encode("utf-8")` وتُلقي `InvalidFileInput`). نمط أعمّ يمسّ `FileName` (`value_objects.py:55-69`) أيضاً (سابق للـPR). لا يحجب الدمج. | مفتوح (غير حاجب) |
+| B‑1 | **surrogate مفرد في الوسم يمرّ المجال ثم ينهار الحفظ بـ500.** `_clean_tag` لا يتحقق من قابلية الترميز UTF‑8. الجسم JSON صالح (`"\ud800"`) فيقبله pydantic، ثم يرفضه `asyncpg` عند الكتابة (`DataError: surrogates not allowed`) ويُترجَم إلى `common.internal` 500 بدل 422. المتوقع حسب `INC1‑AC‑1` بند «وسم غير صالح ← 422». الفعلي: 500 على `POST /files` و`/files/multipart` و`PUT /files/{id}/tags` (متوقَّع من المسار، لا شيء يُحفظ؛ انظر الملاحظة أدناه عن الرفع اليتيم) | minor | (1) `POST /api/v1/files` بجسم خام `{"space_id":"<sp>","name":"s.pdf","content_type":"application/pdf","size_bytes":10,"tags":{"system":"\ud800"}}` ← على المكدّس الداخلي 201 (المجال قبله)؛ (2) في قاعدة حقيقية: `await conn.fetchval("select $1::text", "\ud800")` ← `asyncpg.exceptions.DataError: invalid input for query argument $1 … surrogates not allowed` (تحققتُ على `postgres:16` مؤقت)؛ والمحوّل `sql_repository._translate` (`sql_repository.py:573-593`) يحوّل أي `DBAPIError` غير معروف إلى `common.internal`. المالك: **backend-developer**، الموضع المشتبه: `src/app/modules/files/domain/value_objects.py:213-226` (`_clean_tag`: أضف رفض ما لا يُرمَّز UTF‑8 كأن تجرّب `cleaned.encode("utf-8")` وتُلقي `InvalidFileInput`). نمط أعمّ يمسّ `FileName` (`value_objects.py:55-69`) أيضاً (سابق للـPR). لا يحجب الدمج. | ~~مفتوح~~ **مُغلق** في `f5c48e6` (راجع «الجولة الأولى من إعادة العمل» أدناه) |
 
 لا أخطاء blocking أو major. ملاحظة لـB‑1: في المسار المجزأ يُفتح الرفع في التخزين (`start_multipart`) قبل الإدراج الفاشل، فيبقى رفع يتيم يكنسه التخزين بعد انتهاء المدة (التوثيق في `use_cases.py` سطر «A failed insert afterwards leaves an orphan upload»)؛ وهذا سلوك موثّق مسبقاً لأي فشل إدراج.
 
 ## 5. الحكم
 
-**PASS** — البوابات الست خضراء، وكل بند من `INC1‑AC‑1/2/3` وحصة `PR‑A` من `INC1‑AC‑16` له اختبار ناجح أو فحص يدوي معلَّل، ولا أخطاء blocking أو major (خلل minor واحد B‑1 غير حاجب)، وترتيب الحصة قبل تحليل الوسم ليس خللاً مقابل `INC1‑AC‑1` لأن لا شيء يُنفق ولا رفع يُفتح.
+**PASS** (حكم `ae13a38`؛ الحكم المحدَّث بعد إعادة العمل في القسم التالي) — البوابات الست خضراء، وكل بند من `INC1‑AC‑1/2/3` وحصة `PR‑A` من `INC1‑AC‑16` له اختبار ناجح أو فحص يدوي معلَّل، ولا أخطاء blocking أو major (خلل minor واحد B‑1 غير حاجب)، وترتيب الحصة قبل تحليل الوسم ليس خللاً مقابل `INC1‑AC‑1` لأن لا شيء يُنفق ولا رفع يُفتح.
+
+---
+
+## 6. الجولة الأولى من إعادة العمل (2026‑11‑01، `HEAD` = `080199a`)
+
+- المفحوص: `f5c48e6` (الوسوم ترفض ما لا يُرمَّز UTF‑8 والفئات Cc وCf وCs وCo وCn وZl وZp؛ قرار المالك `S‑3`، الوسوم فقط و`name` كما هو) و`080199a` (قرار المالك `S‑1`: الكنس عند إعادة التسمية وإعادة الوسم لملف `ready` وحده، والإتمام يكنس دائماً؛ حقلا التدقيق `user_id` و`source`؛ تعديلات `openapi.yaml`). وثيقة `LLD` بإصدارها 0.3 (تعديلات غير مودَعة بعد) هي المرجع.
+- `git diff ae13a38..HEAD --stat`: `src/` ملفات ثلاثة فقط (`routers/files.py` تعليقات، `file_replacement.py`، `value_objects.py`) و`docs/design/{03,06,openapi}`. **لا SQL ولا هجرة ولا مستودع** (`sql_repository.py` و`migrations/` خارج الفرق)، لذا اختبارات `E3`/`E4` الحيّة (`test_files_repository_rls.py`، `test_file_namesakes_live.py`) غير متأثرة ولم تُعد تشغيلها. لم يُشغَّل `tests/integration` على المكدّس الحيّ.
+- كود المنتج: لم ألمس شيئاً. أضفتُ اختبارات في `tests/unit/test_files_tags_qa.py` فقط (+374 سطراً، وحُذف منه 4 أسطر هي نفسي: تعليق، وتأكيد `maxLength` على `FileTagsIn` الذي ألغاه قرار `S‑1`، فحلّ محلّه تأكيد غياب `maxLength` وحضور وصف الحدّ و`required` في `FileTagsOut`، وسطر استيراد). لم يُحذف أو يُخفَّف أي تأكيد للمطوّرين.
+
+### 6.1 حالة `B‑1`
+
+**مُغلق.** `_clean_tag` يجرّب `cleaned.encode("utf-8")` ويُلقي `InvalidFileInput` (`value_objects.py:236-242`) فيصير الـsurrogate المفرد 422 `common.validation_error` ولا يصل إلى `asyncpg`. الدليل (اختبارات تمرّ كلها):
+
+| المسار | الاختبار |
+|---|---|
+| المجال | `test_files_domain.py::test_a_tag_that_cannot_be_encoded_as_utf8_is_refused_explicitly`، والمعامَلان `\ud800` و`\udfff` في `::test_tags_refuse_invisible_and_reordering_characters_by_unicode_category` |
+| `PUT /files/{id}/tags` | `test_api_files_media_router.py::test_retag_with_a_lone_surrogate_is_422_and_never_saves` (422، لا `save`، الوسوم القديمة سليمة، القيمة لا تُرجَع في الجواب) |
+| `POST /files/multipart` (لا رفع يُفتح) | `test_api_files_media_router.py::test_multipart_register_with_a_lone_surrogate_never_starts_an_upload` (`multipart_storage.uploads == {}` ولا صف) |
+| `POST /files` و`/files/multipart` و`PUT …/tags` | **جديد** `test_files_tags_qa.py::test_a_forbidden_character_at_registration_is_a_422_that_never_echoes_it` و`::test_a_forbidden_character_in_a_retag_is_a_422_and_changes_nothing` (عشرة أشكال خطرة ومنها surrogate، بجسم JSON خام) |
+
+الرفع اليتيم الذي ذكرتُه في الجولة السابقة لم يعد ممكناً لهذا السبب: الرفض في المجال قبل `start_multipart`.
+
+### 6.2 إعادة تخطيط `INC1‑AC‑1` على صياغة 0.3
+
+| البند (0.3) | الاختبار | الحالة |
+|---|---|---|
+| الرفض للفئات Cc وCf وCs وCo وCn وZl وZp | `test_files_domain.py::test_tags_refuse_invisible_and_reordering_characters_by_unicode_category` (17 محرفاً نموذجياً على الأنواع الثلاثة، والرسالة تسمّي النوع ولا تعيد القيمة)؛ **جديد** `test_files_tags_qa.py::test_every_code_point_is_judged_by_its_unicode_category` (كل نقاط الترميز الـ1,114,112 في وسط قيمة: مرفوضة إن وفقط إن كانت فئتها من السبع، وكل فئة ممنوعة لها أعضاء فعلاً) | ✅ |
+| المسموح: Zs وحروف كل الكتابات والعلامات المركِّبة والإيموجي | `test_files_domain.py::test_tags_accept_ordinary_text_of_any_script`؛ **جديد** `test_combining_marks_pass_and_a_zwj_sequence_does_not`، `test_allowed_text_of_other_scripts_registers_and_reads_back_unchanged` (عربي وCJK وإيموجي وعلامة مركِّبة عبر `POST` ثم `GET`) | ✅ |
+| قصّ المسافات والتحكّم الحافّي قبل الفحص | `test_files_domain.py::test_control_characters_at_the_edges_are_stripped_not_refused`؛ **جديد** `test_edge_whitespace_is_stripped_before_the_category_check` (`\t` و`\x85` و` ` و` ` و`\x1c`/`\x1f` وNBSP وIDEOGRAPHIC SPACE)، و`test_edge_characters_that_are_not_whitespace_are_refused_not_stripped` (NUL وZWSP وBOM وبديل الاتجاه على الحافة: يُرفض ولا يُقصّ)، و`test_a_value_that_is_only_invisible_is_refused` | ✅ |
+| 422 قبل أي كتابة أو رفع وقبل رفع مجزأ، وقد يجيب الفضاء/الحصة أولاً بـ404/409 ولا يُنفق شيئاً | `test_files_tags_qa.py::test_a_domain_bad_tag_into_a_full_space_spends_nothing`، `::test_a_domain_bad_tag_into_an_unknown_space_spends_nothing` (أُضيف المحرف `U+200B` إلى مجموعة الأجسام)، `::test_a_wire_bad_tag_is_a_422_before_the_quota_is_even_entered`، والجديد أعلاه | ✅ |
+| `error` لا يردّد القيمة | الوحدة (`char not in str(err.value)`) والواجهة (الجديد: لا المحرف ولا صيغة `\uXXXX` في الجواب) | ✅ |
+| بقية البنود (التطبيع، الحدّ 128، التخزين `NULL`، الإرجاع في `FileOut`، `PUT` يستبدل كاملةً، لا كتابة عند التطابق، المحذوف 409) | لم تتغيّر، انظر §1 (كلها خضراء في التشغيل أدناه) | ✅ |
+
+### 6.3 إعادة تخطيط `INC1‑AC‑2` على صياغة 0.3
+
+| البند (0.3) | الاختبار | الحالة |
+|---|---|---|
+| الإتمام يكنس دائماً (بما فيه ملف سجّلته إعادة تسمية/وسم وهو وعدٌ فقط) | `test_file_replacement.py::test_re_tagging_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes[uploaded/scanning]` و`::test_renaming_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes` (ثم `complete` يحذف الأقدم)، `test_api_files_media_router.py::test_retag_and_rename_of_a_file_that_is_not_ready_destroy_nothing_until_it_completes` (على المسار) | ✅ |
+| إعادة التسمية وإعادة الوسم لملف `ready` يكنسان | `test_file_replacement.py::test_re_tagging_onto_an_older_files_tags_replaces_it` وإخوته، `test_api…::test_retag_onto_an_older_files_name_and_tags_replaces_it`؛ **جديد** `test_a_no_op_rename_of_a_ready_file_still_sweeps` | ✅ |
+| إعادة الوسم بلا تغيير لملف `ready` تكنس | `test_file_replacement.py::test_a_no_op_re_tag_still_sweeps` | ✅ |
+| ملف غير `ready` (`uploaded`/`scanning`/`quarantined`) لا يكنس شيئاً عند إعادة التسمية أو الوسم | `test_file_replacement.py::test_a_quarantined_file_renamed_or_re_tagged_destroys_nothing`؛ **جديد** `test_files_tags_qa.py::test_a_no_op_rename_or_retag_of_a_file_that_is_not_ready_deletes_nothing[uploaded/scanning/quarantined]` (الحالة الأصعب: الملف يصادم أقدم فعلاً وكتابته no‑op، ومع ذلك لا حذف)، `::test_the_not_ready_statuses_are_exactly_the_three_the_contract_names` (يفشل إن أُضيفت حالة جديدة فتُعاد قراءة القاعدة)، `::test_a_retag_that_makes_a_file_not_ready_never_happens_and_status_is_untouched`، `::test_the_routes_sweep_for_a_ready_file_and_not_for_a_quarantined_one` (على المسار: 200 و`knowledge_purge.calls == []` والحالة تبقى `quarantined`، ثم ملف `ready` يكنس) | ✅ |
+| فشل الكنس لا يُفشل الطلب | `test_a_failed_purge_does_not_fail_the_re_tag`؛ **جديد** `test_a_failed_lookup_is_logged_with_the_audit_fields_and_does_not_fail_the_call[complete/rename/retag]` | ✅ |
+| التدقيق: `user_id` و`source` في سجلات الكنس، بلا اسم ولا وسم | `test_file_replacement.py::test_the_sweep_logs_who_acted_and_through_which_entry_point`، `::test_the_failed_sweep_logs_carry_the_audit_fields_and_no_name_or_tag`؛ **جديد** سجل `lookup_failed` (الاختبار السابق)، و`test_no_sweep_log_field_ever_carries_a_name_or_a_tag_value` (كل سجل يصدره الخدمة: الحقول الإضافية ⊆ `{file_id, workspace_id, user_id, source, replaced_id}`، وأي نص اسم أو وسم غير موجود في الرسالة ولا الحقول) | ✅ |
+| `name_key` شرط فهرس؛ الغائب يطابق الغائب؛ نوع الملف لا يدخل؛ الاختبارات القائمة لم تتغيّر | غير متأثر (لا SQL في الدلتا)؛ §1؛ `git diff ae13a38..HEAD -- tests/` لا يحذف سطر تأكيد واحداً من اختبارات المطوّرين | ✅ |
+
+### 6.4 العقود (`INC1‑AC‑3.d/e`) بعد الدلتا
+
+`openapi.yaml`: `FileTagsIn` بلا `maxLength` ووصفه يذكر 128 «بعد التطبيع والقصّ» والفئات الممنوعة؛ و`FileTagsOut.required` للمفاتيح الثلاثة. قارنتُ `app.openapi()` الحيّ بالملف: الخصائص و`required` متطابقة الآن، فـ**الملاحظة O‑5 زالت**. `test_one_tag_limit_and_one_key_set_across_domain_openapi_event_and_migration` عُدّل ليؤكد ذلك (لا ضعف: يتحقق من غياب `maxLength` وحضور 128 في الوصف و`required`).
+
+### 6.5 الاستكشافي (جديد)
+
+| السيناريو | الفعلي | الحكم |
+|---|---|---|
+| كل نقطة ترميز (1,114,112) في وسط قيمة | مرفوضة: Cc 65، Cf 170، Cn 825,345، Zl 1، Zp 1، Cs 2,048، Co 137,468. مقبولة: Zs 17 وLo 131,612 وLl وLu وMn 1,985 وMc وNd وSo 6,634 … صفر مخالفة للقاعدة. المسح كله 3.7 ثانية | ✅ (صار اختباراً دائماً) |
+| تحكّم/فاصل حافّي `\t \x85  ` + مسافة | يُقصّ إلى `x` | ✅ |
+| `\x00x` و`x\x00` و`​x` و`x﻿` | مرفوض (ليست مسافات فلا تُقصّ) | ✅ |
+| `U+200B` وحده / `" ​ "` / `​‍` | مرفوض (O‑1 السابقة صارت مرفوضة بقرار المالك) | ✅ |
+| NBSP داخل القيمة وIDEOGRAPHIC SPACE حولها | `pump 7` يمرّ؛ حول القيمة يُقصّ؛ NBSP وحده يُرفض كفارغ | ✅ |
+| تسلسل إيموجي بـZWJ (👨‍👩) | مرفوض (Cf داخلي). إيموجي مفرد وعلامات مركِّبة وعربي بحركات وCJK: مقبولة | ✅ ملاحظة O‑6 أدناه |
+| surrogate مفرد في JSON خام على الطرق الثلاث | 422 في كلها، لا صف ولا رفع ولا `save`، والقيمة لا تُرجَع | ✅ (B‑1) |
+| ملف `quarantined` عبر الواجهة: `PUT …/tags` ثم `PATCH` الاسم على اسم/وسوم ملف أقدم | 200 و200، `knowledge_purge.calls == []`، الحالة تبقى `quarantined`، الأقدم لم يُحذف | ✅ |
+| `uploaded` و`scanning` بالطريقة نفسها (وكتابة no‑op تصادم أقدم) | لا حذف | ✅ |
+| `ready` بإعادة وسم بلا تغيير مع أقدم مصادم | يكنس | ✅ |
+| ملف `ready` وصل لاحقاً بالاسم والوسوم نفسها لملف `quarantined` أقدم | الـ`quarantined` الأقدم يُحذف أيضاً (هو «حيّ أقدم» بالتعريف) | ✅ يطابق LLD؛ O‑7 |
+| فشل البحث عن السميّين (`live_namesakes` يرمي) | الطلب ينجح، السجل `file.replacement.lookup_failed` فيه `user_id` و`source` و`workspace_id` و`file_id` | ✅ |
+| حقول سجلات الكنس | معرّفات فقط؛ لا اسم ولا قيمة وسم، حتى حين يحتوي نص الاستثناء الاسم (يذهب إلى `exc_info` لا إلى الحقول) | ✅ |
+| `FileStatus` الحالية | أربع قيم فقط (لا `failed`)؛ غير الجاهزة ثلاث، وهي ما يذكره `openapi` | ✅ |
+| 375px / RTL | لا واجهة في هذا المستودع | غير قابل للتطبيق |
+
+ملاحظات غير ملزمة:
+- O‑6: تسلسلات الإيموجي المركّبة بـZWJ (عائلة، أشخاص بمهنة، أعلام بعلامات `U+E00xx`) ترفضها القاعدة لأنها تحتوي Cf. هذا نتيجة مباشرة لقرار `S‑3` (يعدّه المالك صحيحاً لأن الوسم مرجع تقني) لكن يستحق جملة في وثيقة الواجهة لو ظهر عميل يرسل إيموجي مركّباً. إيموجي المفرد مقبول.
+- O‑7: ملف `quarantined` الأقدم يُكنس حين يصل ملف `ready` بالاسم والوسوم نفسها. سلوك قائم قبل هذه الدلتا ومتّسق مع «الأقدم الحيّ»؛ أذكره فقط لأن المنع من الكنس مقصور على الملف الجديد لا على القديم.
+- `C0` الفاصلة `\x1c..\x1f` و`\x85` تُقصّ على الحواف (لأن `str.strip` يعدّها مسافات) وتُرفض داخل القيمة؛ سلوك مقصود وفق الوثيقة («قصّ ثم فحص»).
+
+### 6.6 بوابات الجولة (من `/home/AIZZAK` بـ`.venv`)
+
+```
+$ .venv/bin/ruff format --check .
+870 files already formatted
+
+$ .venv/bin/ruff check .
+All checks passed!
+
+$ .venv/bin/mypy src
+Success: no issues found in 490 source files
+
+$ .venv/bin/lint-imports
+Layered architecture (inward only) KEPT
+Domain is pure (no technical imports) KEPT
+Application depends on domain + framework only KEPT
+Business modules do not import each other KEPT
+Agents do not import each other KEPT
+Agents never import API or Infrastructure KEPT
+Infrastructure imported only by Composition Root KEPT
+Framework does not import outer layers KEPT
+WireTwin sections are independent and shared is the floor KEPT
+
+Contracts: 9 kept, 0 broken.
+
+$ .venv/bin/pytest -rs tests/unit tests/architecture tests/eval
+6753 passed, 19 skipped, 7 warnings in 362.90s (0:06:02)
+
+$ deploy/prometheus/test-rules.sh
+Checking /etc/prometheus/alerts.yml
+  SUCCESS: 29 rules found
+
+test-rules: OK
+```
+
+الـ19 المتخطّاة هي نفسها (`test_public_file_links_containers.py`، حزمة حاويات اختيارية `RUN_EDGE_FILES_TEST=1`) ولا علاقة لها بالوسوم. لم أضف أي مرشّح. (6651 ← 6753: +102 حالة اختبار، منها 63 لي في هذه الجولة و39 للمطوّرين.)
+
+### 6.7 الأخطاء
+
+لا أخطاء جديدة. `B‑1` مُغلق (§6.1). لا blocking ولا major ولا minor مفتوحة.
+
+### 6.8 الحكم المحدَّث
+
+**PASS** — البوابات الست خضراء، `INC1‑AC‑1` و`INC1‑AC‑2` (صياغة 0.3) و`INC1‑AC‑3` وحصة `PR‑A` من `INC1‑AC‑16` كلها ✅ بلا بند بلا تغطية، `B‑1` مُغلق ولا أخطاء مفتوحة، وكود المنتج لم يُلمس. قيد وحيد معلن: اختبارات `E3`/`E4` الحيّة لم تُعد (لا SQL في الدلتا، ولا تشغيل على المكدّس الحيّ).
 
 </div>
