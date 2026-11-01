@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.modules.electrical.shared.kinds import IdentifierKind, NormalizedForms, ParsedIdentifier
-from app.modules.electrical.shared.rules import IdentifierRules
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 
 def parse_voltage(

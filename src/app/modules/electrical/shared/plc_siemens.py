@@ -20,6 +20,7 @@ query in one family finds a drawing written in another.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.kinds import (
     IdentifierKind,
@@ -29,25 +30,34 @@ from app.modules.electrical.shared.kinds import (
     PlcFamily,
 )
 from app.modules.electrical.shared.normalization import dedupe, strip_leading_zeros
-from app.modules.electrical.shared.rules import IdentifierRules
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 MAX_BIT = 7
 _WIDTHS = {"B": "byte", "W": "word", "D": "dword"}
 _LETTER = {"byte": "B", "word": "W", "dword": "D"}
-_TIA = re.compile(r"%(?P<area>[IQM])(?P<w>[BWD])?(?P<byte>\d{1,5})(?:\.(?P<bit>\d+))?(?P<per>:P)?")
+_TIA = re.compile(
+    r"%(?P<area>[IQM])(?P<w>[BWD])?(?P<byte>\d{1,5})(?:\.(?P<bit>\d{1,3}))?(?P<per>:P)?", re.ASCII
+)
 _EN = re.compile(
     r"(?:P(?P<parea>[IQ])(?P<pw>[BWD])|(?P<area>[IQM])(?P<w>[BWD])?)"
-    r"(?P<byte>\d{1,5})(?:\.(?P<bit>\d+))?"
+    r"(?P<byte>\d{1,5})(?:\.(?P<bit>\d{1,3}))?",
+    re.ASCII,
 )
 _DE = re.compile(
     r"(?:P(?P<parea>[EA])(?P<pw>[BWD])|(?P<area>[EAM])(?P<w>[BWD])?)"
-    r"(?P<byte>\d{1,5})(?:\.(?P<bit>\d+))?"
+    r"(?P<byte>\d{1,5})(?:\.(?P<bit>\d{1,3}))?",
+    re.ASCII,
 )
-_DB = re.compile(r"DB(?P<db>\d{1,5})\.DB(?P<w>[XBWD])(?P<byte>\d{1,5})(?:\.(?P<bit>\d+))?")
+_DB = re.compile(
+    r"DB(?P<db>\d{1,5})\.DB(?P<w>[XBWD])(?P<byte>\d{1,5})(?:\.(?P<bit>\d{1,3}))?", re.ASCII
+)
 _S7_200 = re.compile(
-    r"(?:(?P<aarea>AI|AQ)W(?P<abyte>\d{1,5})|V(?P<w>[BWD])?(?P<byte>\d{1,5})(?:\.(?P<bit>\d+))?)"
+    r"(?:(?P<aarea>AI|AQ)W(?P<abyte>\d{1,5})|V(?P<w>[BWD])?(?P<byte>\d{1,5})(?:\.(?P<bit>\d{1,3}))?)",
+    re.ASCII,
 )
-_PERCENT_SHAPE = re.compile(r"%[A-Z][A-Z0-9.:]*")
+_PERCENT_SHAPE = re.compile(r"%[A-Z][A-Z0-9.:]*", re.ASCII)
 _GERMAN = {"I": "E", "Q": "A", "PI": "PE", "PQ": "PA"}
 _FROM_GERMAN = {"E": "I", "A": "Q", "PE": "PI", "PA": "PQ"}
 

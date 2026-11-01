@@ -4,4 +4,4 @@ from __future__ import annotations
 
 from typing import Final
 
-SHARED_VERSION: Final = "1.0.0"
+SHARED_VERSION: Final = "1.1.0"

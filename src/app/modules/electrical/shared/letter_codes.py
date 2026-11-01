@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.connection_points import check_label, role_of
 from app.modules.electrical.shared.kinds import (
@@ -18,7 +19,9 @@ from app.modules.electrical.shared.kinds import (
     ParsedIdentifier,
 )
 from app.modules.electrical.shared.normalization import strip_leading_zeros, with_keys
-from app.modules.electrical.shared.rules import IdentifierRules
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 
 def pick_convention(rules: IdentifierRules, *candidates: Convention) -> Convention | None:
@@ -50,8 +53,8 @@ def device_class_of(rules: IdentifierRules, code: str) -> str | None:
 def _patterns(separator: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
     tail = rf"(?:{re.escape(separator)}(?P<cp>.*))?"
     return (
-        re.compile(rf"(?P<code>[A-Z]{{1,3}})(?P<num>\d{{1,4}}){tail}", re.DOTALL),
-        re.compile(rf"(?P<num>\d{{1,4}})(?P<code>[A-Z]{{1,3}}){tail}", re.DOTALL),
+        re.compile(rf"(?P<code>[A-Z]{{1,3}})(?P<num>\d{{1,4}}){tail}", re.DOTALL | re.ASCII),
+        re.compile(rf"(?P<num>\d{{1,4}})(?P<code>[A-Z]{{1,3}}){tail}", re.DOTALL | re.ASCII),
     )
 
 

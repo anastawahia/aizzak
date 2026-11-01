@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.kinds import IdentifierKind, NormalizedForms, ParsedIdentifier
-from app.modules.electrical.shared.rules import IdentifierRules
 
-_LABEL = re.compile(r"[A-Z0-9]{1,6}")
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
+
+_LABEL = re.compile(r"[A-Z0-9]{1,6}", re.ASCII)
 
 
 def is_valid_label(label: str) -> bool:

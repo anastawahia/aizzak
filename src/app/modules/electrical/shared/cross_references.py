@@ -3,7 +3,7 @@ dominant format of a bag of tokens."""
 
 from __future__ import annotations
 
-import re
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.kinds import (
     ConventionTally,
@@ -11,14 +11,17 @@ from app.modules.electrical.shared.kinds import (
     NormalizedForms,
     ParsedIdentifier,
 )
-from app.modules.electrical.shared.rules import IdentifierRules
+from app.modules.electrical.shared.patterns import compiled
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 
 def parse_cross_reference(
     canonical: str, forms: NormalizedForms, rules: IdentifierRules
 ) -> ParsedIdentifier | None:
     for name, pattern in rules.cross_reference_formats.items():
-        if re.fullmatch(pattern, canonical):
+        if compiled(pattern).fullmatch(canonical):
             return ParsedIdentifier(
                 kind=IdentifierKind.CROSS_REFERENCE,
                 convention=None,

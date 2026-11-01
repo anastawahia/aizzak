@@ -52,13 +52,21 @@ class PlcAddress:
 
 @dataclass(frozen=True, slots=True)
 class NormalizedForms:  # FR-ID-09
-    original: str  # exactly as it appeared (DATA-06)
-    canonical: str  # full-width folded, upper-cased, unified separators
-    search_keys: tuple[str, ...]  # without leading zeros, without the leading "-", ...
+    original: str  # exactly as it appeared (DATA-06, NFR-I18N-03)
+    canonical: str  # full-width and digit folded, upper-cased, unified separators
+    # Retrieval only (S-6): without leading zeros, without the leading "-", plus the keys
+    # each kind adds. Two identifiers may share a key; identity is (kind, canonical).
+    search_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class ParsedIdentifier:
+    """One parsed identifier. Its identity is (``kind``, ``forms.canonical``); the
+    ``forms.search_keys`` are for retrieval and never an equality test (S-6).
+
+    ``valid`` is False when any issue invalidates it; the only non-invalidating issue is
+    ``text.bidi_control`` (FR-ID-10: flagged, never dropped)."""
+
     kind: IdentifierKind
     convention: Convention | None
     forms: NormalizedForms

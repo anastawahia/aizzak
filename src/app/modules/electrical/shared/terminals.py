@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.connection_points import check_label, is_valid_label
 from app.modules.electrical.shared.kinds import (
@@ -27,10 +28,12 @@ from app.modules.electrical.shared.kinds import (
 from app.modules.electrical.shared.letter_codes import pick_convention
 from app.modules.electrical.shared.normalization import strip_leading_zeros, with_keys
 from app.modules.electrical.shared.reference_designation import split_chain
-from app.modules.electrical.shared.rules import IdentifierRules
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 BRIDGE_SEPARATOR = "~"
-_CHARSET = re.compile(r"[A-Z0-9_=+\-&#.:/~]+")
+_CHARSET = re.compile(r"[A-Z0-9_=+\-&#.:/~]+", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,10 +54,10 @@ def _patterns(prefixes: tuple[str, ...], separator: str) -> tuple[re.Pattern[str
     alt = "|".join(re.escape(p) for p in sorted(prefixes, key=lambda p: (-len(p), p)))
     glue = rf"[.\-{re.escape(separator)}]"
     return (
-        re.compile(rf"(?P<strip>(?:{alt})\d{{1,4}}){glue}(?P<point>.*)"),
-        re.compile(rf"(?P<strip>\d{{1,4}}(?:{alt})){glue}(?P<point>.*)"),
-        re.compile(rf"(?:{alt})\d{{1,4}}"),
-        re.compile(rf"(?P<prefix>{alt})(?P<num>\d{{1,4}})"),
+        re.compile(rf"(?P<strip>(?:{alt})\d{{1,4}}){glue}(?P<point>.*)", re.ASCII),
+        re.compile(rf"(?P<strip>\d{{1,4}}(?:{alt})){glue}(?P<point>.*)", re.ASCII),
+        re.compile(rf"(?:{alt})\d{{1,4}}", re.ASCII),
+        re.compile(rf"(?P<prefix>{alt})(?P<num>\d{{1,4}})", re.ASCII),
     )
 
 
@@ -151,6 +154,8 @@ def parse_bridge(
     right_unified: str
     if right is not None and (right.point is not None or right.issues):
         issues.extend(right.issues)
+        if right.strip != left.strip:
+            issues.append("bridge.different_strips")  # the second strip would be lost
         right_point = right.point
         right_unified = right.unified(separator)
     elif is_valid_label(right_text):

@@ -11,14 +11,20 @@ that order, and a caller who knows better passes ``hint``:
 * ``M10.1`` is a PLC address, ``M1`` an NFPA letter code, ``M`` a voltage label.
 
 ``None`` means "no identifier at all"; a malformed identifier comes back with
-``valid=False`` and its issues (FR-ID-10), never dropped.
+``valid=False`` and its issues (FR-ID-10), never dropped. Hidden characters in the text
+(control, format, default-ignorable) are dropped from the canonical form but flagged
+``text.hidden_character`` (invalid); bidi controls are flagged ``text.bidi_control`` and
+the identifier stays valid. Identity is (``kind``, ``canonical``); ``search_keys`` are
+for retrieval only.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.connection_points import parse_connection_point
 from app.modules.electrical.shared.cross_references import parse_cross_reference
@@ -31,17 +37,25 @@ from app.modules.electrical.shared.kinds import (
     PlcFamily,
 )
 from app.modules.electrical.shared.letter_codes import parse_letter_code
-from app.modules.electrical.shared.normalization import normalize
+from app.modules.electrical.shared.normalization import (
+    NON_INVALIDATING_ISSUES,
+    normalize,
+    text_issues,
+)
 from app.modules.electrical.shared.plc_siemens import parse_plc_address
 from app.modules.electrical.shared.reference_designation import parse_reference_designation
-from app.modules.electrical.shared.rules import IdentifierRules
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 from app.modules.electrical.shared.terminals import parse_bridge, parse_terminal
 from app.modules.electrical.shared.voltages import parse_voltage
 from app.modules.electrical.shared.wire_numbers import parse_wire_number
 
-MAX_TEXT_CHARS = 200  # longer text is prose, and bounds every regular expression
+# Longer text is prose. The bound applies to the raw text AND to the canonical form (NFKC
+# can expand one character into many), so it bounds every regular expression's input.
+MAX_TEXT_CHARS = 200
 
-_Parse = Callable[[str, NormalizedForms, IdentifierRules], ParsedIdentifier | None]
+_Parse = Callable[[str, NormalizedForms, "IdentifierRules"], ParsedIdentifier | None]
 
 _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
     (IdentifierKind.PLC_ADDRESS, parse_plc_address),
@@ -54,6 +68,15 @@ _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
     (IdentifierKind.WIRE_NUMBER, parse_wire_number),
     (IdentifierKind.CONNECTION_POINT, parse_connection_point),
 )
+
+
+def _flag_text(found: ParsedIdentifier, issues: tuple[str, ...]) -> ParsedIdentifier:
+    """FR-ID-10: hidden characters and bidi controls are reported, never silent."""
+    if not issues:
+        return found
+    all_issues = tuple(dict.fromkeys((*found.issues, *issues)))
+    invalidating = any(i not in NON_INVALIDATING_ISSUES for i in issues)
+    return replace(found, valid=found.valid and not invalidating, issues=all_issues)
 
 
 class IdentifierParser:
@@ -70,14 +93,14 @@ class IdentifierParser:
         if not text.strip() or len(text) > MAX_TEXT_CHARS:
             return None
         forms = normalize(text)
-        if not any(ch.isalnum() for ch in forms.canonical):
+        if len(forms.canonical) > MAX_TEXT_CHARS or not any(ch.isalnum() for ch in forms.canonical):
             return None
         for kind, parse in _ORDER:
             if hint is not None and kind is not hint:
                 continue
             found = parse(forms.canonical, forms, self._rules)
             if found is not None:
-                return found
+                return _flag_text(found, text_issues(text))
         return None
 
     def tally(self, tokens: Iterable[str]) -> ConventionTally:

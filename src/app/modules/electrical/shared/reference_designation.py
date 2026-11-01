@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.connection_points import check_label, role_of
 from app.modules.electrical.shared.kinds import (
@@ -23,10 +24,12 @@ from app.modules.electrical.shared.kinds import (
 )
 from app.modules.electrical.shared.letter_codes import device_class_of, pick_convention
 from app.modules.electrical.shared.normalization import with_keys
-from app.modules.electrical.shared.rules import IdentifierRules
 
-_PROSE = re.compile(r"[A-Z0-9_=+\-&#.:/]+")
-_LEADING_LETTERS = re.compile(r"[A-Z]+")
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
+
+_PROSE = re.compile(r"[A-Z0-9_=+\-&#.:/]+", re.ASCII)
+_LEADING_LETTERS = re.compile(r"[A-Z]+", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +42,7 @@ class Chain:
 @lru_cache(maxsize=32)
 def _element(prefixes: tuple[str, ...]) -> re.Pattern[str]:
     alternatives = "|".join(re.escape(p) for p in sorted(prefixes, key=lambda p: (-len(p), p)))
-    return re.compile(rf"({alternatives})([A-Z0-9_]+)")
+    return re.compile(rf"({alternatives})([A-Z0-9_]+)", re.ASCII)
 
 
 def split_chain(canonical: str, rules: IdentifierRules) -> Chain | None:

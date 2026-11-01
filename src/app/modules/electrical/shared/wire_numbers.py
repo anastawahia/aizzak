@@ -6,17 +6,20 @@ order wins, and its name is the identifier's ``variant``.
 
 from __future__ import annotations
 
-import re
+from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.kinds import IdentifierKind, NormalizedForms, ParsedIdentifier
-from app.modules.electrical.shared.rules import IdentifierRules
+from app.modules.electrical.shared.patterns import compiled
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 
 def parse_wire_number(
     canonical: str, forms: NormalizedForms, rules: IdentifierRules
 ) -> ParsedIdentifier | None:
     for name, pattern in rules.wire_number_patterns.items():
-        if re.fullmatch(pattern, canonical):
+        if compiled(pattern).fullmatch(canonical):
             return ParsedIdentifier(
                 kind=IdentifierKind.WIRE_NUMBER,
                 convention=None,

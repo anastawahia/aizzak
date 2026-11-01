@@ -17,9 +17,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
-from app.modules.electrical.shared.kinds import Convention, PlcFamily
+from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
+from app.modules.electrical.shared.normalization import canonical_form
+from app.modules.electrical.shared.parser import IdentifierParser
+from app.modules.electrical.shared.patterns import compiled
 
 _ASPECT_CHARS = frozenset("=+-&#")
+MAX_EXTRA_VOLTAGE_LABELS = 64  # LLD 3.3.6: DrawingProfile.voltage_labels <= 64
+MAX_VOLTAGE_LABEL_CHARS = 16  # ... each <= 16 characters
+_VOLTAGE_LABEL = re.compile(r"[A-Z0-9+\-]+", re.ASCII)
 
 
 class RuleError(ValueError):
@@ -63,7 +69,8 @@ class IdentifierRules:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> IdentifierRules:
-        """Validates shape and compiles every regex once; RuleError otherwise."""
+        """Validates shape and that every regex compiles (``compiled`` caches the compiled
+        form, so a match never recompiles); RuleError otherwise."""
         reference = _table(data, "reference_designation")
         aspects = _strings(reference, "aspects", "reference_designation")
         extras = _strings(reference, "extra_aspects", "reference_designation")
@@ -81,7 +88,7 @@ class IdentifierRules:
         xref = _string_map(_table(data, "cross_references"), "cross_references")
         for name, pattern in (*wire.items(), *xref.items()):
             try:
-                re.compile(pattern)
+                compiled(pattern)
             except re.error as exc:
                 raise RuleError(f"rule {name!r} is not a valid regular expression: {exc}") from exc
 
@@ -103,7 +110,8 @@ class IdentifierRules:
                 }
             ),
             voltage_labels=tuple(
-                label.upper() for label in _strings(_table(data, "voltages"), "labels", "voltages")
+                canonical_form(label)
+                for label in _strings(_table(data, "voltages"), "labels", "voltages")
             ),
             connection_point_separator=separator,
         )
@@ -118,7 +126,13 @@ class IdentifierRules:
             self.plc_families & profile.plc_families if profile.plc_families else self.plc_families
         )
         extra_aspects = (
-            tuple(a for a in self.extra_aspects if a in profile.extra_aspects)
+            tuple(
+                _pick(
+                    dict.fromkeys(self.extra_aspects, ""),
+                    profile.extra_aspects,
+                    "extra aspect",
+                )
+            )
             if profile.extra_aspects
             else self.extra_aspects
         )
@@ -136,20 +150,53 @@ class IdentifierRules:
             if profile.cross_reference_format is not None
             else self.cross_reference_formats
         )
-        voltages = tuple(
-            dict.fromkeys(
-                (*self.voltage_labels, *(v.upper() for v in profile.extra_voltage_labels))
-            )
-        )
-        return replace(
+        narrowed = replace(
             self,
             conventions=conventions,
             plc_families=plc_families,
             extra_aspects=extra_aspects,
             wire_number_patterns=wire,
             cross_reference_formats=xref,
-            voltage_labels=voltages,
         )
+        extras = narrowed._checked_voltage_labels(profile.extra_voltage_labels)
+        return replace(
+            narrowed, voltage_labels=tuple(dict.fromkeys((*self.voltage_labels, *extras)))
+        )
+
+    def _checked_voltage_labels(self, labels: tuple[str, ...]) -> tuple[str, ...]:
+        """Normalise the profile's extra voltage labels and reject any that is empty, too
+        long, outside ``[A-Z0-9+-]``, too many, or that the parser would read as another
+        kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``)."""
+        if len(labels) > MAX_EXTRA_VOLTAGE_LABELS:
+            raise RuleError(f"at most {MAX_EXTRA_VOLTAGE_LABELS} extra voltage labels")
+        checked: list[str] = []
+        for raw in labels:
+            label = canonical_form(raw)
+            if (
+                not label
+                or len(label) > MAX_VOLTAGE_LABEL_CHARS
+                or _VOLTAGE_LABEL.fullmatch(label) is None
+            ):
+                raise RuleError(
+                    f"voltage label must be 1..{MAX_VOLTAGE_LABEL_CHARS} characters of A-Z 0-9 + -"
+                )
+            other = self._other_kind(label)
+            if other is not None:
+                raise RuleError(f"voltage label would be read as a {other.value}")
+            checked.append(label)
+        return tuple(dict.fromkeys(checked))
+
+    def _other_kind(self, label: str) -> IdentifierKind | None:
+        """The kind a label would be read as if it were not a voltage, or None. A negative
+        rail such as ``-48V`` (a designation whose code starts with a digit) is allowed."""
+        found = IdentifierParser(self).parse(label)
+        if found is None or found.kind is IdentifierKind.VOLTAGE:
+            return None
+        if found.kind is IdentifierKind.REFERENCE_DESIGNATION and not any(
+            a.code[:1].isalpha() for a in found.aspects
+        ):
+            return None
+        return found.kind
 
     @property
     def all_aspects(self) -> tuple[str, ...]:
