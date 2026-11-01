@@ -210,10 +210,22 @@ class TagKind(StrEnum):
     DEPARTMENT = "department"
 
 
+# Unicode general categories a tag may not contain: controls (Cc: C0/C1), format
+# characters (Cf: zero-width, BOM, soft hyphen, bidi overrides/isolates, tag
+# characters), surrogates (Cs), private use (Co), unassigned (Cn) and the line and
+# paragraph separators (Zl, Zp). These are invisible or reorder what is shown, so
+# two tags that read the same would compare different (and a bidi override can
+# make one read as another). Ordinary spaces (Zs, e.g. NBSP) and every letter,
+# mark, digit and symbol of any script stay allowed.
+_FORBIDDEN_TAG_CATEGORIES: Final = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
 def _clean_tag(kind: TagKind, value: str | None) -> str | None:
     """NFC-normalise and strip one present tag value, then check it. ``None`` is
     ABSENT and stays so; an empty or whitespace-only value is invalid, never
-    folded into absence (an absent tag is omitted or null, not empty)."""
+    folded into absence (an absent tag is omitted or null, not empty).
+
+    Every message names the tag kind and never echoes the value."""
     if value is None:
         return None
     cleaned = unicodedata.normalize("NFC", value).strip()
@@ -221,17 +233,28 @@ def _clean_tag(kind: TagKind, value: str | None) -> str | None:
         raise InvalidFileInput(f"tag {kind.value!r} must not be empty")
     if len(cleaned) > MAX_TAG_CHARS:
         raise InvalidFileInput(f"tag {kind.value!r} must be at most {MAX_TAG_CHARS} characters")
-    if _CONTROL_CHAR_RE.search(cleaned):
-        raise InvalidFileInput(f"tag {kind.value!r} must not contain control characters")
+    try:
+        # A lone surrogate cannot be encoded: it would pass here and fail at the
+        # database driver as a 500 instead of this 422.
+        cleaned.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidFileInput(f"tag {kind.value!r} must be valid UTF-8 text") from None
+    if any(unicodedata.category(ch) in _FORBIDDEN_TAG_CATEGORIES for ch in cleaned):
+        raise InvalidFileInput(
+            f"tag {kind.value!r} must not contain control, format, surrogate, "
+            "private-use, unassigned or line-separator characters"
+        )
     return cleaned
 
 
 @dataclass(frozen=True, slots=True)
 class FileTags:
     """Opaque classification references (INC1-Q-1 (b)). A present value is
-    NFC-normalised and stripped, then must be 1..``MAX_TAG_CHARS`` long with no
-    control character. It is compared EXACTLY -- no case fold: ``files`` never
-    interprets it. ``None`` is ABSENT, and absent matches only absent."""
+    NFC-normalised and stripped, then must be 1..``MAX_TAG_CHARS`` long and free of
+    invisible or reordering characters (Unicode categories Cc, Cf, Cs, Co, Cn, Zl,
+    Zp; ordinary spaces and every script's letters are fine). It is compared
+    EXACTLY -- no case fold: ``files`` never interprets it. ``None`` is ABSENT,
+    and absent matches only absent."""
 
     system: str | None = None
     equipment: str | None = None

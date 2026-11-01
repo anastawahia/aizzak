@@ -5,7 +5,7 @@ Four families, each a claim the AC makes that no other test pins:
 
 * **Nothing is spent by a refused tag, whichever refusal answers first.**
   ``SpaceQuotaService`` runs BEFORE ``RegisterUpload`` parses the tags, so a
-  tag the DOMAIN refuses (empty, over 128, a control character) loses the
+  tag the DOMAIN refuses (empty, over 128, a forbidden character) loses the
   precedence to an unknown space (404) or a full one (409). That is the same
   order a bad ``name`` has always had and it is not what AC-1 forbids: AC-1
   says "before any limit is spent and before a multipart upload is opened",
@@ -55,6 +55,7 @@ _DOMAIN_BAD: list[dict[str, str]] = [
     {"system": "\u00a0"},
     {"system": "x" * (MAX_TAG_CHARS + 1)},
     {"equipment": "a\x00b"},
+    {"system": "a\u200bb"},  # zero-width space (Cf)
 ]
 # What pydantic refuses (FileTagsIn), before the handler runs at all.
 _WIRE_BAD: list[dict[str, Any]] = [{"section": "elec"}, {"System": "x"}, {"system": 7}]
@@ -291,8 +292,16 @@ def test_one_tag_limit_and_one_key_set_across_domain_openapi_event_and_migration
     assert {p["maxLength"] for p in event_tags["properties"].values()} == {MAX_TAG_CHARS}
     assert {p["minLength"] for p in event_tags["properties"].values()} == {1}
 
-    spec_in = spec["components"]["schemas"]["FileTagsIn"]["properties"]
-    assert {p["maxLength"] for p in spec_in.values()} == {MAX_TAG_CHARS}
+    # The 128 limit counts AFTER NFC and trimming, which a JSON-schema
+    # `maxLength` (raw length) cannot express: stating it would reject a padded
+    # or decomposed value the server accepts. So the input schema carries no
+    # `maxLength` and its description states the limit and the order.
+    spec_in_schema = spec["components"]["schemas"]["FileTagsIn"]
+    assert all("maxLength" not in p for p in spec_in_schema["properties"].values())
+    assert str(MAX_TAG_CHARS) in spec_in_schema["description"]
+    assert "AFTER normalisation and trimming" in spec_in_schema["description"]
+    spec_out = spec["components"]["schemas"]["FileTagsOut"]
+    assert set(spec_out["required"]) == kinds
 
     bounds = re.findall(r"char_length\(tag_\w+\)\s+BETWEEN 1 AND (\d+)", migration)
     assert len(bounds) == 3

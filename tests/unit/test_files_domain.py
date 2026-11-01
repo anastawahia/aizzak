@@ -3,6 +3,7 @@ Pure: no infrastructure, no ports."""
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 
 import pytest
@@ -474,6 +475,78 @@ def test_tags_refuse_an_empty_or_blank_value(value: str) -> None:
 def test_tags_refuse_a_control_character(value: str) -> None:
     with pytest.raises(InvalidFileInput):
         FileTags(department=value)
+
+
+@pytest.mark.parametrize(
+    ("char", "category"),
+    [
+        ("\u0085", "Cc"),  # C1 control (NEL, inside the value)
+        ("\u009f", "Cc"),
+        ("\u200b", "Cf"),  # zero-width space
+        ("\u200d", "Cf"),  # zero-width joiner
+        ("\ufeff", "Cf"),  # BOM / zero-width no-break space
+        ("\u00ad", "Cf"),  # soft hyphen
+        ("\u202e", "Cf"),  # right-to-left override
+        ("\u2066", "Cf"),  # bidi isolate
+        ("\u2069", "Cf"),  # pop directional isolate
+        ("\U000e0041", "Cf"),  # tag character
+        ("\ud800", "Cs"),  # lone high surrogate
+        ("\udfff", "Cs"),  # lone low surrogate
+        ("\ue000", "Co"),  # private use
+        ("\U000f0000", "Co"),  # supplementary private use
+        ("\u0378", "Cn"),  # unassigned
+        ("\u2028", "Zl"),  # line separator
+        ("\u2029", "Zp"),  # paragraph separator
+    ],
+)
+def test_tags_refuse_invisible_and_reordering_characters_by_unicode_category(
+    char: str, category: str
+) -> None:
+    """INC-1 rework (S-3): a tag is an opaque reference compared exactly, so a
+    character that is invisible or reorders the display would make two tags that
+    read the same compare different."""
+    assert unicodedata.category(char) == category
+    for kind in TagKind:
+        with pytest.raises(InvalidFileInput) as err:
+            FileTags(**{kind.value: f"a{char}b"})
+        assert kind.value in str(err.value)
+        assert char not in str(err.value)  # the message never echoes the value
+
+
+def test_a_tag_that_cannot_be_encoded_as_utf8_is_refused_explicitly() -> None:
+    """Review B-1: it must be an `InvalidFileInput` (422), not a database-driver
+    error (500) -- and it holds even before the category check."""
+    value = "a\ud800b"
+    with pytest.raises(UnicodeEncodeError):
+        value.encode("utf-8")
+    with pytest.raises(InvalidFileInput):
+        FileTags(system=value)
+    with pytest.raises(InvalidFileInput):
+        FileTags.from_mapping({"equipment": value})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "مضخة-7",  # Arabic letters
+        "كهرباء",
+        "泵房-3号",  # CJK
+        "ポンプ",
+        "Σ-pump_1.2/3",  # Greek, punctuation
+        "pump\u00a07",  # NBSP inside the value (Zs) is allowed
+        "a b",
+        "\U0001f600",  # an emoji (So)
+        "e\u0301",  # a combining mark (Mn), NFC-composed to one letter
+    ],
+)
+def test_tags_accept_ordinary_text_of_any_script(value: str) -> None:
+    assert FileTags(system=value).system == unicodedata.normalize("NFC", value)
+
+
+def test_control_characters_at_the_edges_are_stripped_not_refused() -> None:
+    """`strip()` runs before the category check (NFC, then strip, then check),
+    as it always did for the ASCII whitespace controls."""
+    assert FileTags(system="\t\u0085x\u2028 ").system == "x"
 
 
 def test_tags_take_a_uuid_as_text() -> None:
