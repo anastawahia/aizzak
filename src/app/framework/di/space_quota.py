@@ -65,6 +65,7 @@ this one, deliberately and by name.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -112,6 +113,7 @@ class UploadRegistrar[R](Protocol):
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> R: ...
 
 
@@ -147,6 +149,7 @@ class SpaceQuotaService[R]:
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> R:
         async with self._uow.begin(ctx):
             # 2.7 -- BEFORE the space's own row lock, and the order is the
@@ -190,4 +193,7 @@ class SpaceQuotaService[R]:
                 name=name,
                 content_type=content_type,
                 size_bytes=size_bytes,
+                # PLT-26: passed DOWN unread. The quota is about bytes; what a
+                # tag means (and whether it is valid) is `files`' to say.
+                tags=tags,
             )

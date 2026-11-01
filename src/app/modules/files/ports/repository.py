@@ -148,8 +148,8 @@ class FileRepository(Protocol):
 
     async def live_namesakes(self, ctx: ExecutionContext, file: File) -> Sequence[Uuid]:
         """The ids of the ACTIVE files ``file`` REPLACES — same space, same
-        name, registered before it (س-29 rule 1, owner decision 2026-08-25;
-        ``docs/rag-fidelity-audit.md`` §4-هـ-2).
+        name, the SAME TAGS, registered before it (س-29 rule 1, owner decision
+        2026-08-25; ``docs/rag-fidelity-audit.md`` §4-هـ-2; PLT-26).
 
         The whole aggregate is the argument rather than four loose values,
         for ``add``/``save``' reason: the question is about a file, and every
@@ -199,8 +199,30 @@ class FileRepository(Protocol):
         and the space's quota exactly as a ``ready`` one does, and abandoning
         an upload must not leave a name reserved forever.
 
+        **The SAME TAGS** (PLT-26, INV-F6): ``tags.system``, ``tags.equipment``
+        and ``tags.department`` must each be equal to ``file``'s, and an absent
+        tag matches only an absent one -- so files without tags follow the rule
+        exactly as they did before tags existed. The file TYPE plays no part: a
+        datasheet and a drawing with one name and one tag set are one file to
+        this rule. The comparison is literal (the tag is an opaque reference
+        token, ``files`` never interprets it), and it is a filter applied after
+        the ``name_key`` lookup, never a search key of its own.
+
         Returns an empty sequence when nothing matches — the ordinary case,
         and never an error.
+        """
+        ...
+
+    async def live_name_conflicts(self, ctx: ExecutionContext, file: File) -> Sequence[Uuid]:
+        """The ids of the ACTIVE files in the same space with the same name
+        whose tags DIFFER from ``file``'s, of any age, ``file`` itself
+        excluded -- the files a replacement will NOT touch (RSK-20).
+
+        The complement of ``live_namesakes`` on the tags and blind to age: a
+        read for a replacement PREVIEW (``FindNamesakes.preview``). Nothing in
+        ``files`` acts on it. Ordered by id, so two previews of one state are
+        equal. Differing is NULL-safe: a file tagged where ``file`` is not (and
+        the reverse) differs. Empty when there is none.
         """
         ...
 

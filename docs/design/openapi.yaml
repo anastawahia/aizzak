@@ -413,11 +413,21 @@ paths:
     post:
       tags: [files]
       operationId: completeFile
-      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name is deleted together with its index, so a re-upload under an existing name updates that file instead of leaving two copies answering the same question. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe. Only the member who registered a multipart file may complete it; another member gets 404."
+      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds, with the same tags, is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name AND the same three classification tags (`system`, `equipment`, `department`; an absent tag matches only an absent one, and the file type plays no part) is deleted together with its index, so a re-upload under an existing name and tags updates that file instead of leaving two copies answering the same question. Files without tags follow the rule exactly as before. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one, while a tag is an opaque reference compared literally. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe. Only the member who registered a multipart file may complete it; another member gets 404."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/FileCompleteIn" } } } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/FileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /files/{id}/tags:
+    put:
+      tags: [files]
+      operationId: retagFile
+      description: "Replace the file's three classification tags (`system`, `equipment`, `department`) in full: a tag that is absent or null in the body is REMOVED, so `{}` untags the file. An absent tag matches only an absent one, so an untagged file keeps today's replacement rule; the file type plays no part. **A tag set that makes an OLDER live file in the same space a namesake (same name, same tags) REPLACES it**, its row and its index, exactly as `renameFile` does (owner decision س-29 rule 1); a NEWER file is never replaced. The replacement runs AFTER the re-tag has succeeded and cannot turn it into a failure, and a re-tag that changes nothing still runs it. Re-sending the tags the file already has writes nothing and does not bump `updated_at`. Any status may be re-tagged, but a soft-deleted file is 409 `common.conflict`, an unknown or another tenant's file is 404 `common.not_found`, and a malformed tag or an unknown key is 422 `common.validation_error`. Permission `files:write`, the same as registering and renaming."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FileTagsIn" } } } }
+      responses:
+        "200": { description: Re-tagged, content: { application/json: { schema: { $ref: "#/components/schemas/FileOut" } } } }
         default: { $ref: "#/components/responses/Problem" }
   /files/{id}:
     get:
@@ -430,7 +440,7 @@ paths:
     patch:
       tags: [files]
       operationId: renameFile
-      description: "Rename a file — the ONLY mutable field it has. The bytes, the `content_type`, the `storage_key` and the `size_bytes` are all fixed at registration, and nothing here touches storage or the index: `knowledge.documents` keys on `file_id` and the Qdrant payload carries no name, so the rename itself costs no re-index. **But renaming a file onto a name an OLDER file in the same space already holds replaces that older file** — its row and its index — under the same rule `completeFile` states (owner decision س-29 rule 1), because a rename can create the collision an upload can. Renaming onto a NEWER file's name replaces nothing: fresh content supersedes stale, never the reverse. **The extension is immutable**: a name whose extension matches the current one (case-insensitively) is stored as sent; a name with NO extension inherits the current one; a name with a DIFFERENT extension is 422. The extension is the user-visible claim about bytes that cannot change, so letting it change would make the displayed name lie — and hand a download the wrong OS handler. Directory components are stripped and control characters refused (the same `FileName` sanitation as registration). Renaming to the current name is a no-op that still answers 200, WITHOUT bumping `updated_at` or the version. Any status may be renamed — fixing the name of a half-uploaded or quarantined file is exactly when it is wanted — but a soft-deleted file is 409, like every other write. Permission `files:write`, the same as registering."
+      description: "Rename a file. Its classification tags change through `retagFile`, not here; the bytes, the `content_type`, the `storage_key` and the `size_bytes` are all fixed at registration, and nothing here touches storage or the index: `knowledge.documents` keys on `file_id` and the Qdrant payload carries no name, so the rename itself costs no re-index. **But renaming a file onto a name AND tags that an OLDER file in the same space already holds replaces that older file** — its row and its index — under the same rule `completeFile` states (owner decision س-29 rule 1), because a rename can create the collision an upload can. Renaming onto a NEWER file's name replaces nothing: fresh content supersedes stale, never the reverse. **The extension is immutable**: a name whose extension matches the current one (case-insensitively) is stored as sent; a name with NO extension inherits the current one; a name with a DIFFERENT extension is 422. The extension is the user-visible claim about bytes that cannot change, so letting it change would make the displayed name lie — and hand a download the wrong OS handler. Directory components are stripped and control characters refused (the same `FileName` sanitation as registration). Renaming to the current name is a no-op that still answers 200, WITHOUT bumping `updated_at` or the version. Any status may be renamed — fixing the name of a half-uploaded or quarantined file is exactly when it is wanted — but a soft-deleted file is 409, like every other write. Permission `files:write`, the same as registering."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/FileRenameIn" } } } }
       responses:
@@ -1183,8 +1193,9 @@ components:
       properties: { data: { type: array, items: { $ref: "#/components/schemas/SpaceOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
     FileRegisterIn:
       type: object
+      description: "`tags` is optional. A malformed tag (empty, over 128 characters, with a control character) or an unknown key is 422 `common.validation_error`, before any limit is spent and before a multipart upload is opened. The tags decide what a later same-name completion replaces."
       required: [space_id, name, content_type, size_bytes]
-      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the per-space byte quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0} }
+      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the per-space byte quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0}, tags: { $ref: "#/components/schemas/FileTagsIn" } }
     FileRegisterOut:
       type: object
       properties: { file_id: {type: string, format: uuid}, upload_url: {type: string}, expires_in: {type: integer} }
@@ -1214,6 +1225,21 @@ components:
       type: object
       required: [name]
       properties: { name: {type: string, maxLength: 255} }
+    FileTagsIn:
+      type: object
+      additionalProperties: false
+      description: "The three optional classification tags of a file. An absent or null tag means no such tag. A present value is an opaque reference token (it may be a UUID as text): NFC-normalised and stripped, then 1 to 128 characters with no control character, and compared literally - there is no case fold. An unknown key is refused (422) rather than dropped, because a dropped tag would leave the file untagged and so able to replace untagged namesakes."
+      properties:
+        system: {type: string, maxLength: 128, nullable: true}
+        equipment: {type: string, maxLength: 128, nullable: true}
+        department: {type: string, maxLength: 128, nullable: true}
+    FileTagsOut:
+      type: object
+      description: "A file's tags as read. All three keys are always present; an absent tag is null."
+      properties:
+        system: {type: string, nullable: true}
+        equipment: {type: string, nullable: true}
+        department: {type: string, nullable: true}
     FileOut:
       type: object
       properties:
@@ -1224,6 +1250,7 @@ components:
         status: {type: string, enum: [uploaded, scanning, ready, quarantined]}
         download_url: {type: string, nullable: true}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+        tags: { $ref: "#/components/schemas/FileTagsOut" }
     FilePage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/FileOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }

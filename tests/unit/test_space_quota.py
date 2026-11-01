@@ -12,7 +12,7 @@ every value-based assertion and still lets two concurrent uploads through.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
 import pytest
@@ -100,6 +100,10 @@ class _FakeRegistrar:
         # this registered into" is the assertion that keeps the sum above
         # measuring the same thing the insert below spends.
         self.calls: list[tuple[str, str, str, int]] = []
+        # PLT-26: the `tags` argument of each call, EXACTLY as received -- the
+        # quota passes it down unread, so identity (not just equality) is the
+        # assertion.
+        self.tags_seen: list[Mapping[str, str | None] | None] = []
 
     async def register(
         self,
@@ -109,9 +113,11 @@ class _FakeRegistrar:
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> str:
         self._trace.append("register")
         self.calls.append((space_id, name, content_type, size_bytes))
+        self.tags_seen.append(tags)
         return f"registered:{name}"
 
 
@@ -169,6 +175,49 @@ async def test_an_upload_that_fits_is_registered_under_the_lock_in_one_unit_of_w
     # into binding. Without it the sum above would keep reading NULL and every
     # space would look empty forever, with no test on the ORDER noticing.
     assert registrar.calls == [(space, "report.pdf", "application/pdf", 2048)]
+
+
+async def test_the_tags_are_passed_down_to_the_registrar_unread() -> None:
+    """PLT-26: the quota is about bytes. The mapping the caller sent reaches the
+    registrar as the SAME object -- not copied, not filtered, not validated --
+    and a call that sent none reaches it as ``None``."""
+    service, registrar, _ = _build()
+    tags: dict[str, str | None] = {"system": "sys-1", "department": None, "bogus": "x"}
+
+    await service.register(
+        _ctx(),
+        space_id=new_uuid7(),
+        name="report.pdf",
+        content_type="application/pdf",
+        size_bytes=1,
+        tags=tags,
+    )
+    await service.register(
+        _ctx(),
+        space_id=new_uuid7(),
+        name="report.pdf",
+        content_type="application/pdf",
+        size_bytes=1,
+    )
+
+    assert registrar.tags_seen[0] is tags
+    assert registrar.tags_seen[1] is None
+
+
+async def test_a_refused_upload_never_reaches_the_registrar_with_tags_either() -> None:
+    service, registrar, _ = _build(used=_TEN_GIB)
+
+    with pytest.raises(ConflictError):
+        await service.register(
+            _ctx(),
+            space_id=new_uuid7(),
+            name="report.pdf",
+            content_type="application/pdf",
+            size_bytes=1,
+            tags={"system": "sys-1"},
+        )
+
+    assert registrar.tags_seen == []
 
 
 # --------------------------------------------------------------------------- #

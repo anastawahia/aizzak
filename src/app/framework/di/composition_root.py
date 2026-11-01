@@ -336,6 +336,7 @@ from app.modules.files.application.use_cases import (
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
+    RetagFile,
     SoftDeleteFile,
     SoftDeleteFileService,
     SummariseSpaces,
@@ -1089,9 +1090,9 @@ def _build_file_services(
     and the purge's order — mark first, then empty the index — is a rule that
     gets one home.
 
-    The bundle carries ``complete``, ``rename`` and ``delete``, and no router
-    may spend any of the three: ``routers/files.py`` reaches all three through
-    a cascade. That is the ``SpaceUseCases.delete`` rule (the bundle carries
+    The bundle carries ``complete``, ``rename``, ``retag`` and ``delete``, and
+    no router may spend any of the four: ``routers/files.py`` reaches all four
+    through a cascade. That is the ``SpaceUseCases.delete`` rule (the bundle carries
     the mark, nothing but the cascade may spend it) applied to a module whose
     every write now has a cross-module consequence.
     """
@@ -1104,6 +1105,9 @@ def _build_file_services(
         CompleteUpload(files), outbox, tenant_session, assembler=multipart
     )
     rename = RenameFile(files)
+    # PLT-26 -- `RenameFile`'s twin, bare for the same reason (no event). The
+    # SAME instance goes into the bundle and into the replacement cascade.
+    retag = RetagFile(files)
     mark = SoftDeleteFileService(SoftDeleteFile(files), outbox, tenant_session)
     # س-29 rule 1's `files` half -- which live files a newly completed or
     # renamed one replaces. Read-only: the delete that goes with it spans
@@ -1127,12 +1131,13 @@ def _build_file_services(
         space_totals=SummariseSpaces(files),
         multipart=multipart,
         multipart_registrar=MultipartRegistrar(register),
+        retag=retag,
     )
     cascade = DeleteFileService(mark, knowledge=knowledge)
     return (
         bundle,
         cascade,
-        ReplaceNamesakesService(complete, rename, namesakes=namesakes, erase=cascade),
+        ReplaceNamesakesService(complete, rename, retag=retag, namesakes=namesakes, erase=cascade),
     )
 
 

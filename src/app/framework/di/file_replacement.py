@@ -74,6 +74,14 @@ delete a file is surprising, and it is the deliberate side of the trade: the
 alternative is a rule the product applies only to files that happened to
 arrive after it.
 
+**A re-tag is the third source** (PLT-26). "Same name" now means the name AND
+the three classification tags, so changing the tags can create the collision a
+rename or an upload can: re-tagging a file onto the tag set of an older live
+file with its name replaces that file. ``retag`` shares the one sweep, and a
+re-tag that changes nothing sweeps too, for the rename's reason. The tags are
+opaque here: this file passes the mapping through to ``RetagFile`` and never
+reads it.
+
 **Retrieval is not left holding a deleted file.** ``DeleteFileService`` marks
 the row before it purges, so from the first step the old file is invisible to
 every listing and every download; the window in which its corpus outlives it
@@ -83,7 +91,7 @@ is the same one that cascade already documents, and re-running ``DELETE
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -125,11 +133,24 @@ class FileRenamer[R](Protocol):
     async def execute(self, ctx: ExecutionContext, file_id: Uuid, *, name: str) -> R: ...
 
 
+class FileRetagger[R](Protocol):
+    """``RetagFile.execute`` — replace a file's three classification tags.
+
+    The bare use-case, for ``FileRenamer``'s reason: a re-tag produces no
+    events (INC1-D-5), so there is no ``…Service`` wrapper to bind to and none
+    is missing.
+    """
+
+    async def execute(
+        self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
+    ) -> R: ...
+
+
 class NamesakeFinder(Protocol):
     """``FindNamesakes.execute`` — the ids of the live files this one replaces.
 
     Every part of the rule ("same name" up to case and Unicode normalisation,
-    same space, strictly older, not deleted) lives behind this call, in
+    same tags, same space, strictly older, not deleted) lives behind this call, in
     ``FileRepository.live_namesakes`` and the index it is written against.
     This service never re-states any of it, so the two cannot drift.
     """
@@ -151,13 +172,14 @@ class FileEraser(Protocol):
 
 
 class ReplaceNamesakesService[R]:
-    """Complete or rename a file, then destroy the files it replaced.
+    """Complete, rename or RE-TAG a file, then destroy the files it replaced.
 
-    Two entry points because a collision has two sources — an upload arriving
-    under an existing name, and a rename creating the clash after the fact.
-    The audit names both (``RenameFile`` "can create the same collision after
-    the fact, so an implementation owes BOTH paths"), and they share one sweep
-    so neither can implement a different rule.
+    Three entry points because a collision has three sources — an upload
+    arriving under an existing name and tags, a rename creating the clash after
+    the fact, and a re-tag doing the same. The audit names the first two
+    (``RenameFile`` "can create the same collision after the fact, so an
+    implementation owes BOTH paths"), and they share one sweep so none can
+    implement a different rule.
     """
 
     def __init__(
@@ -165,11 +187,13 @@ class ReplaceNamesakesService[R]:
         complete: FileCompleter[R],
         rename: FileRenamer[R],
         *,
+        retag: FileRetagger[R],
         namesakes: NamesakeFinder,
         erase: FileEraser,
     ) -> None:
         self._complete = complete
         self._rename = rename
+        self._retag = retag
         self._namesakes = namesakes
         self._erase = erase
 
@@ -182,6 +206,15 @@ class ReplaceNamesakesService[R]:
         renamed = await self._rename.execute(ctx, file_id, name=name)
         await self._sweep(ctx, file_id)
         return renamed
+
+    async def retag(
+        self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
+    ) -> R:
+        retagged = await self._retag.execute(ctx, file_id, tags=tags)
+        # A no-op re-tag still sweeps, like a no-op rename: it repairs a space
+        # a failed sweep left with two files of one name and tag set.
+        await self._sweep(ctx, file_id)
+        return retagged
 
     async def _sweep(self, ctx: ExecutionContext, file_id: Uuid) -> None:
         """Delete every live file ``file_id`` replaced, one independent step

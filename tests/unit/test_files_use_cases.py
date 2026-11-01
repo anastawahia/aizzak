@@ -31,11 +31,13 @@ from app.modules.files.application.use_cases import (
     CompleteUploadService,
     FilesQueryService,
     FileTransferService,
+    FindNamesakes,
     ListFiles,
     MultipartRegistrar,
     MultipartUploadService,
     RegisterUpload,
     RenameFile,
+    RetagFile,
     SoftDeleteFile,
     SoftDeleteFileService,
 )
@@ -45,12 +47,13 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     StorageKey,
     UploadMode,
 )
 from app.modules.files.ports.inbound import FilesQuery
 from app.modules.files.ports.repository import FileRepository
-from tests.unit.support_files_media import FakeMultipartStorage
+from tests.unit.support_files_media import FakeMultipartStorage, InMemoryFileRepository
 
 # The space every test registers into unless it is testing the check itself.
 _SPACE = "sp-1"
@@ -1414,3 +1417,332 @@ async def test_complete_assembles_before_the_unit_of_work_and_a_single_file_skip
     listed_before = storage.listed
     await service.complete(_ctx(), file_id=single.id, checksum=None)
     assert storage.listed == listed_before  # the assembler never touched storage
+
+
+# --------------------------------------------------------------------------- #
+# PLT-26 -- classification tags                                                #
+# --------------------------------------------------------------------------- #
+_TAGS = {"system": "sys-1", "equipment": "pump-7", "department": "elec"}
+
+
+async def test_register_stores_the_tags_normalised() -> None:
+    """INC1-AC-1: NFC and stripped, the absent ones absent (never empty)."""
+    files = _FakeFiles()
+
+    file = await _register(files).execute(
+        _ctx(),
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        tags={"system": "  sys\u0041\u030a  ", "equipment": None},
+    )
+
+    assert file.tags == FileTags(system="sys\u00c5", equipment=None, department=None)
+    assert files.rows[file.id].tags == file.tags
+
+
+async def test_register_without_tags_is_untagged() -> None:
+    files = _FakeFiles()
+    for given in (None, {}):
+        file = await _register(files).execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="plan.pdf",
+            content_type="application/pdf",
+            size_bytes=10,
+            tags=given,
+        )
+        assert file.tags.is_empty
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"system": ""},
+        {"system": "   "},
+        {"system": "x" * 129},
+        {"equipment": "a\x00b"},
+        {"department": "a\nb"},
+        {"section": "elec"},
+    ],
+)
+async def test_a_bad_tag_is_a_422_before_any_limit_is_spent(bad: dict[str, str]) -> None:
+    """The tags are parsed in the FIRST block with the name and content type:
+    a workspace already at its file cap, an oversize file and an unknown space
+    would each answer differently, and the bad tag must win over all three."""
+    files = _FakeFiles()
+    spaces = _FakeSpaces()  # no live space: the lookup would be a 404
+    use_case = RegisterUpload(files, Limits(max_files_per_workspace=0), spaces)
+
+    with pytest.raises(ValidationError):
+        await use_case.execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="plan.pdf",
+            content_type="application/pdf",
+            size_bytes=10**12,
+            tags=bad,
+        )
+
+    assert spaces.asked == []
+    assert files.rows == {}
+
+
+async def test_a_bad_tag_opens_no_multipart_upload() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    use_case = RegisterUpload(files, Limits(), _FakeSpaces(_SPACE), multipart=storage)
+
+    with pytest.raises(ValidationError):
+        await use_case.execute(
+            _ctx(),
+            space_id=_SPACE,
+            name="plan.pdf",
+            content_type="application/pdf",
+            size_bytes=10,
+            mode=UploadMode.MULTIPART,
+            tags={"system": ""},
+        )
+
+    assert storage.uploads == {}
+    assert files.rows == {}
+
+
+async def test_the_multipart_registrar_and_the_transfer_service_pass_the_tags_down() -> None:
+    files = _FakeFiles()
+    storage = FakeMultipartStorage()
+    register = RegisterUpload(files, Limits(), _FakeSpaces(_SPACE), multipart=storage)
+
+    multipart = await MultipartRegistrar(register).register(
+        _ctx(),
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        tags=_TAGS,
+    )
+    single = await FileTransferService(
+        register, files, _FakeStorage(), put_ttl_s=60, get_ttl_s=60
+    ).register(
+        _ctx(),
+        space_id=_SPACE,
+        name="plan2.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        tags=_TAGS,
+    )
+
+    assert multipart.file.tags == FileTags(**_TAGS)
+    assert single.file.tags == FileTags(**_TAGS)
+
+
+async def test_complete_upload_publishes_the_tags_read_from_the_row() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    registered = await _register(files).execute(
+        ctx,
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        tags=_TAGS,
+    )
+
+    _, events = await CompleteUpload(files).execute(ctx, file_id=registered.id, checksum=None)
+
+    event = events[0]
+    assert isinstance(event, FileUploaded)
+    assert event.tags == FileTags(**_TAGS)
+
+
+async def test_the_readable_view_carries_the_present_tags_only() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    tagged = await _register(files).execute(
+        ctx,
+        space_id=_SPACE,
+        name="plan.pdf",
+        content_type="application/pdf",
+        size_bytes=10,
+        tags={"equipment": "pump-7"},
+    )
+    bare = await _register(files).execute(
+        ctx, space_id=_SPACE, name="b.pdf", content_type="application/pdf", size_bytes=10
+    )
+    for file in (tagged, bare):
+        await CompleteUpload(files).execute(ctx, file_id=file.id, checksum=None)
+
+    query = FilesQueryService(files)
+    tagged_view = await query.get_readable(ctx, tagged.id)
+    bare_view = await query.get_readable(ctx, bare.id)
+
+    assert tagged_view is not None and tagged_view.tags == {"equipment": "pump-7"}
+    assert bare_view is not None and bare_view.tags == {}
+
+
+async def test_retag_replaces_all_three_tags_and_saves() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    retagged = await RetagFile(files).execute(ctx, file.id, tags=_TAGS)
+
+    assert retagged.tags == FileTags(**_TAGS)
+    assert files.saved == [file.id]
+
+    # A full replacement: a missing key removes that tag.
+    again = await RetagFile(files).execute(ctx, file.id, tags={"system": "sys-9"})
+    assert again.tags == FileTags(system="sys-9")
+    assert again.tags.equipment is None
+    assert files.saved == [file.id, file.id]
+
+
+async def test_re_tagging_with_the_tags_it_has_never_writes() -> None:
+    """INC1-AC-1: no `save`, so `version` and `updated_at` do not move."""
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+    await RetagFile(files).execute(ctx, file.id, tags=_TAGS)
+    files.saved.clear()
+    stamp = files.rows[file.id].updated_at
+
+    again = await RetagFile(files).execute(ctx, file.id, tags=dict(_TAGS))
+
+    assert files.saved == []
+    assert again.updated_at == stamp
+
+
+async def test_an_empty_mapping_untags_the_file() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+    await RetagFile(files).execute(ctx, file.id, tags=_TAGS)
+
+    untagged = await RetagFile(files).execute(ctx, file.id, tags={})
+
+    assert untagged.tags.is_empty
+
+
+@pytest.mark.parametrize("bad", [{"system": ""}, {"system": "x" * 129}, {"nope": "x"}])
+async def test_retag_with_a_bad_tag_is_a_422_and_writes_nothing(bad: dict[str, str]) -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx)
+
+    with pytest.raises(ValidationError):
+        await RetagFile(files).execute(ctx, file.id, tags=bad)
+
+    assert files.saved == []
+    assert files.rows[file.id].tags.is_empty
+
+
+async def test_retag_of_a_deleted_file_is_a_conflict() -> None:
+    files = _FakeFiles()
+    ctx = _ctx()
+    file = _seed_file(files, ctx, deleted_at=utc_now())
+
+    with pytest.raises(ConflictError):
+        await RetagFile(files).execute(ctx, file.id, tags=_TAGS)
+    assert files.saved == []
+
+
+async def test_retag_of_an_unknown_or_foreign_file_is_not_found() -> None:
+    files = _FakeFiles()
+    file = _seed_file(files, _ctx("w1"))
+
+    with pytest.raises(NotFoundError):
+        await RetagFile(files).execute(_ctx(), new_uuid7(), tags=_TAGS)
+    with pytest.raises(NotFoundError):
+        await RetagFile(files).execute(_ctx("w2"), file.id, tags=_TAGS)
+    assert files.rows[file.id].tags.is_empty
+
+
+def _namesake(
+    files: InMemoryFileRepository,
+    ctx: ExecutionContext,
+    *,
+    name: str = "plan.pdf",
+    tags: FileTags | None = None,
+    age_s: int = 0,
+    deleted: bool = False,
+    space_id: str | None = _SPACE,
+) -> File:
+    now = utc_now()
+    created = datetime.fromtimestamp(now.timestamp() - age_s, tz=now.tzinfo)
+    file_id = new_uuid7()
+    file = File(
+        id=file_id,
+        workspace_id=ctx.workspace_id,
+        space_id=space_id,
+        name=FileName(name),
+        content_type=ContentType("application/pdf"),
+        size_bytes=1,
+        storage_key=StorageKey.for_file(ctx.workspace_id, file_id),
+        checksum=None,
+        status=FileStatus.READY,
+        uploaded_by=ctx.user_id,
+        created_at=created,
+        updated_at=created,
+        deleted_at=now if deleted else None,
+        version=1,
+        tags=tags or FileTags(),
+    )
+    files.rows[file.id] = file
+    return file
+
+
+async def test_preview_splits_the_namesakes_into_replaced_and_kept() -> None:
+    """INC1-AC-2: `replaced` is what the operation deletes NOW (older, same
+    tags); `kept` is the same name under other tags, of ANY age."""
+    files = InMemoryFileRepository()
+    ctx = _ctx()
+    pump = FileTags(**_TAGS)
+    subject = _namesake(files, ctx, tags=pump)
+    older_same = _namesake(files, ctx, tags=pump, age_s=100)
+    newer_same = _namesake(files, ctx, tags=pump, age_s=-100)
+    older_other = _namesake(files, ctx, tags=FileTags(system="sys-2"), age_s=100)
+    newer_untagged = _namesake(files, ctx, age_s=-100)
+    _namesake(files, ctx, name="other.pdf", tags=FileTags(system="sys-2"), age_s=100)
+    _namesake(files, ctx, tags=FileTags(system="sys-2"), deleted=True, age_s=100)
+    _namesake(files, ctx, tags=FileTags(system="sys-2"), space_id="sp-2", age_s=100)
+    _namesake(files, _ctx("w2"), tags=FileTags(system="sys-2"), age_s=100)
+
+    preview = await FindNamesakes(files).preview(ctx, subject.id)
+
+    assert preview.replaced == (older_same.id,)
+    assert preview.kept == tuple(sorted((older_other.id, newer_untagged.id)))
+    assert newer_same.id not in preview.replaced + preview.kept
+    # `execute` is unchanged: it IS the `replaced` half.
+    assert await FindNamesakes(files).execute(ctx, subject.id) == preview.replaced
+
+
+async def test_preview_is_empty_for_a_file_alone_under_its_name() -> None:
+    files = InMemoryFileRepository()
+    ctx = _ctx()
+    only = _namesake(files, ctx)
+
+    preview = await FindNamesakes(files).preview(ctx, only.id)
+
+    assert (preview.replaced, preview.kept) == ((), ())
+
+
+async def test_preview_of_an_unknown_or_foreign_file_is_not_found() -> None:
+    files = InMemoryFileRepository()
+    other = _namesake(files, _ctx("w1"))
+
+    with pytest.raises(NotFoundError):
+        await FindNamesakes(files).preview(_ctx(), new_uuid7())
+    with pytest.raises(NotFoundError):
+        await FindNamesakes(files).preview(_ctx("w2"), other.id)
+
+
+async def test_preview_writes_nothing() -> None:
+    files = InMemoryFileRepository()
+    ctx = _ctx()
+    subject = _namesake(files, ctx)
+    _namesake(files, ctx, tags=FileTags(system="sys-2"), age_s=5)
+
+    await FindNamesakes(files).preview(ctx, subject.id)
+
+    assert files.saved == []

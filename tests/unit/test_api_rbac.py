@@ -133,6 +133,10 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/files/{}", "patch"): Permission.FILES_WRITE,
     ("/api/v1/files/{}", "delete"): Permission.FILES_DELETE,  # 05 §4
     ("/api/v1/files/{}/complete", "post"): Permission.FILES_WRITE,
+    # PLT-26: re-tagging is `files:write`, rename's permission -- it destroys
+    # nothing by itself, and the replacement it can cause is the one a rename or
+    # an upload causes (INC1-R-2: the capability is not new).
+    ("/api/v1/files/{}/tags", "put"): Permission.FILES_WRITE,
     # PLT-01: the resumable-upload protocol is the write path of a file, so all
     # three routes take `files:write` -- `GET .../upload` included, which is a
     # step of that protocol (resume) and not a read of the file's content.

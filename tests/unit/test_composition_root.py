@@ -38,7 +38,7 @@ from app.framework.ports.llm_provider import LLMProvider
 from app.framework.providers.resolver import ResolvedProvider
 from app.infrastructure.config import load_settings
 from app.infrastructure.storage.minio_storage import MinioStorage
-from app.modules.files.application.use_cases import FileUseCases
+from app.modules.files.application.use_cases import FileUseCases, RetagFile
 from app.modules.knowledge.application.use_cases import KnowledgeRetrievalService
 from app.modules.media.application.use_cases import GetJobStatus, MediaUseCases
 from app.modules.spaces.application.use_cases import SpacesQueryService, SpaceUseCases
@@ -344,6 +344,14 @@ def test_the_files_and_media_bundles_are_wired_over_the_shared_handle(
     assert booted.files.complete._assembler is booted.files.multipart
     assert booted.files.multipart._storage is booted.storage
     assert booted.files.transfers._register._multipart is booted.storage
+    # PLT-26: ONE `RetagFile` behind the bundle AND the replacement cascade.
+    # Dropping the binding fails at construction (`retag` is keyword-only and
+    # required), but two instances would type-check and diverge silently -- so
+    # the identity, by the `_build_file_services` single-instance rule.
+    assert isinstance(booted.files.retag, RetagFile)
+    assert booted.file_replacement._retag is booted.files.retag
+    assert booted.file_replacement._rename is booted.files.rename
+    assert booted.file_replacement._namesakes is booted.files.namesakes
     assert isinstance(booted.media, MediaUseCases)
     assert isinstance(booted.media.get_status, GetJobStatus)
     # One atomic service behind both media faces (agents + API).
