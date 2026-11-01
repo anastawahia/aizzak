@@ -44,6 +44,7 @@ from app.modules.files.application.use_cases import (
     MultipartUploadService,
     RegisterUpload,
     RenameFile,
+    RetagFile,
     SoftDeleteFile,
     SoftDeleteFileService,
 )
@@ -134,6 +135,7 @@ class _Stack:
         self.replacement = ReplaceNamesakesService(
             self.complete,
             RenameFile(self.files),
+            retag=RetagFile(self.files),
             namesakes=FindNamesakes(self.files),
             erase=DeleteFileService(mark, knowledge=_NoIndex()),
         )
