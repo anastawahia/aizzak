@@ -5,8 +5,10 @@ the workspace (INV-F3); its bytes live in MinIO, addressed by ``storage_key``
 (INV-F1). Since the spaces plan's step 6 it also carries the ``space_id`` it is
 owned by — an opaque ownership axis INSIDE the tenant, never a tenant of its
 own. Behaviour lives on the aggregate; mutations touch only ``status``,
-``checksum``, ``deleted_at``, ``name`` (INV-F4 — the one descriptive field a
-rename may change) and ``updated_at``. Everything that describes the BYTES —
+``checksum``, ``deleted_at``, ``name`` (INV-F4 — a rename may change the name
+and nothing about the bytes), ``tags`` (INV-F6 — the classification tags describe
+the file, not its bytes, so ``retag`` alone changes them, as ``rename`` alone
+changes the name) and ``updated_at``. Everything that describes the BYTES —
 ``content_type``, ``size_bytes``, ``storage_key``, ``multipart`` — has no mutator at all,
 which is what keeps the descriptor honest about the object it points at.
 The optimistic ``version`` is advanced by the repository on
@@ -16,7 +18,7 @@ timestamps are timezone-aware UTC (DD-03).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.modules.files.domain.errors import FileStateError, InvalidFileInput
@@ -24,6 +26,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     MultipartUpload,
     Sha256,
     StorageKey,
@@ -70,6 +73,11 @@ class File:
     # Defaulted, unlike `space_id`: every existing construction site means
     # "single PUT", and the default is exactly that statement.
     multipart: MultipartUpload | None = None
+    # PLT-26 -- the classification tags (INV-F6). Defaulted for `multipart`'s
+    # reason: every existing construction site means "untagged". A factory, not
+    # `= FileTags()`: ruff RUF009 refuses a call in a dataclass default, and the
+    # two build the same empty value.
+    tags: FileTags = field(default_factory=FileTags)
 
     @property
     def is_multipart(self) -> bool:
@@ -148,6 +156,25 @@ class File:
             return
         self.name = new_name
         self.updated_at = now
+
+    def retag(self, tags: FileTags, now: datetime) -> bool:
+        """Replace all three classification tags at once (PLT-26, INV-F6).
+
+        Returns ``False`` -- and writes nothing, ``updated_at`` included -- when
+        the file already carries exactly these tags (``rename``'s no-op rule: a
+        "modified at" that moves when nothing was modified is a false record).
+        Otherwise ``True``. The caller decides what a no-op still owes (the
+        same-name sweep runs either way).
+
+        Any status may be retagged, like a rename: tags have no bearing on the
+        status machine. A soft-deleted file is refused like every other write.
+        """
+        self._guard_not_deleted()
+        if tags == self.tags:
+            return False
+        self.tags = tags
+        self.updated_at = now
+        return True
 
     def soft_delete(self, now: datetime) -> None:
         """Soft-delete. Idempotent: deleting an already-deleted file is a no-op."""

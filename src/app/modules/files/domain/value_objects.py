@@ -11,6 +11,7 @@ Identifiers stay plain UUIDv7 text; the domain imports no framework.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,6 +27,9 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_UPLOAD_ID_LEN = 1024
+
+# PLT-26 -- a classification tag is an opaque reference token (INC1-Q-1 (b)).
+MAX_TAG_CHARS: Final = 128
 
 # S3 protocol limits (PLT-01): every part but the last is at least 5 MiB, and an
 # upload has at most 10,000 parts. `framework.settings.settings` restates both
@@ -195,3 +199,78 @@ def check_parts(
         elif held != upload.expected_size(number, size_bytes):
             wrong_size.append(number)
     return PartsCheck(missing=tuple(missing), wrong_size=tuple(wrong_size))
+
+
+class TagKind(StrEnum):
+    """The three classification tags a file may carry (SRS FR-ING-13, D-29;
+    smart-assistant FR-31). ``department`` is SRS's «القسم» (INC1-D-2)."""
+
+    SYSTEM = "system"
+    EQUIPMENT = "equipment"
+    DEPARTMENT = "department"
+
+
+def _clean_tag(kind: TagKind, value: str | None) -> str | None:
+    """NFC-normalise and strip one present tag value, then check it. ``None`` is
+    ABSENT and stays so; an empty or whitespace-only value is invalid, never
+    folded into absence (an absent tag is omitted or null, not empty)."""
+    if value is None:
+        return None
+    cleaned = unicodedata.normalize("NFC", value).strip()
+    if not cleaned:
+        raise InvalidFileInput(f"tag {kind.value!r} must not be empty")
+    if len(cleaned) > MAX_TAG_CHARS:
+        raise InvalidFileInput(f"tag {kind.value!r} must be at most {MAX_TAG_CHARS} characters")
+    if _CONTROL_CHAR_RE.search(cleaned):
+        raise InvalidFileInput(f"tag {kind.value!r} must not contain control characters")
+    return cleaned
+
+
+@dataclass(frozen=True, slots=True)
+class FileTags:
+    """Opaque classification references (INC1-Q-1 (b)). A present value is
+    NFC-normalised and stripped, then must be 1..``MAX_TAG_CHARS`` long with no
+    control character. It is compared EXACTLY -- no case fold: ``files`` never
+    interprets it. ``None`` is ABSENT, and absent matches only absent."""
+
+    system: str | None = None
+    equipment: str | None = None
+    department: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "system", _clean_tag(TagKind.SYSTEM, self.system))
+        object.__setattr__(self, "equipment", _clean_tag(TagKind.EQUIPMENT, self.equipment))
+        object.__setattr__(self, "department", _clean_tag(TagKind.DEPARTMENT, self.department))
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, str | None]) -> FileTags:
+        """Build from a ``{kind: value}`` mapping. A key that is not a ``TagKind``
+        is refused (a silently dropped tag would make the file look untagged and
+        so replace what the uploader never meant to); a missing key or ``None``
+        is an absent tag; ``""`` or whitespace is invalid."""
+        known = {kind.value for kind in TagKind}
+        unknown = sorted(key for key in raw if key not in known)
+        if unknown:
+            raise InvalidFileInput(f"unknown tag key: {unknown[0]!r}")
+        return cls(
+            system=raw.get(TagKind.SYSTEM.value),
+            equipment=raw.get(TagKind.EQUIPMENT.value),
+            department=raw.get(TagKind.DEPARTMENT.value),
+        )
+
+    def as_mapping(self) -> dict[str, str]:
+        """Present tags only, keyed by ``TagKind`` values -- the event's and the
+        ``FileView``'s shape."""
+        present: dict[str, str] = {}
+        for kind, value in (
+            (TagKind.SYSTEM, self.system),
+            (TagKind.EQUIPMENT, self.equipment),
+            (TagKind.DEPARTMENT, self.department),
+        ):
+            if value is not None:
+                present[kind.value] = value
+        return present
+
+    @property
+    def is_empty(self) -> bool:
+        return self.system is None and self.equipment is None and self.department is None
