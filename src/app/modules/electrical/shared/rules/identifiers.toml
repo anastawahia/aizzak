@@ -1,0 +1,79 @@
+# Identifier rules (FR-ID-01, 03..08, 13). DATA, not code (INC1-D-19): any change bumps
+# `version`. Regular expressions are written and reviewed here; a document's profile
+# selects them by NAME and never carries one.
+version = "1.0.0"
+
+[reference_designation]
+aspects = ["=", "+", "-"]
+extra_aspects = ["==", "++", "&", "#"]
+connection_point_separator = ":"
+
+# code -> suggested device class (FR-ID-13)
+[cn_letter_codes]
+KM = "contactor"
+KA = "relay"
+KT = "time_relay"
+KV = "voltage_relay"
+QF = "circuit_breaker"
+QS = "isolator"
+FU = "fuse"
+FR = "thermal_relay"
+SB = "pushbutton"
+SA = "selector_switch"
+SQ = "limit_switch"
+HL = "indicator_lamp"
+XT = "terminal_strip"
+
+[nfpa_codes]
+CR = "control_relay"
+M = "motor_starter"
+PB = "pushbutton"
+LT = "indicator_lamp"
+TB = "terminal_block"
+
+[terminals]
+prefixes = ["X", "XT", "TB"]
+
+# Selected by NAME in the profile. First match in file order wins.
+[wire_numbers]
+sequential = '^W?\d{1,5}$'
+page_column = '^\d{1,4}\.\d{1,2}(-\d{1,3})?$'
+voltage_based = '^(?:(?:L[1-3]|[UVW])\d{1,3}(?:-\d{1,3})?|L[1-3]-\d{1,3})$'
+
+[cross_references]
+slash_page_dot_column = '^/(\d{1,4})\.(\d{1,2})$'
+page_dot_column = '^(\d{1,4})\.(\d{1,2})$'
+prefixed_slash = '^(=[A-Z0-9]+)/(\d{1,4})\.(\d{1,2})$'
+page_slash_column = '^(\d{1,4})/(\d{1,2})$'
+
+# label -> pole role (FR-ID-07)
+[connection_points]
+A1 = "coil"
+A2 = "coil"
+1 = "main_pole"
+2 = "main_pole"
+3 = "main_pole"
+4 = "main_pole"
+5 = "main_pole"
+6 = "main_pole"
+13 = "aux_no"
+14 = "aux_no"
+23 = "aux_no"
+24 = "aux_no"
+33 = "aux_no"
+34 = "aux_no"
+43 = "aux_no"
+44 = "aux_no"
+21 = "aux_nc"
+22 = "aux_nc"
+31 = "aux_nc"
+32 = "aux_nc"
+41 = "aux_nc"
+42 = "aux_nc"
+95 = "overload_nc"
+96 = "overload_nc"
+97 = "overload_no"
+98 = "overload_no"
+
+[voltages]
+labels = ["L1", "L2", "L3", "N", "PE", "L+", "L-", "M", "+24V", "0V", "24VDC"]
