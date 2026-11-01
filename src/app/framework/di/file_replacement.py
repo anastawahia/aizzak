@@ -71,13 +71,13 @@ alternative (destroy first, then complete) trades that for the one failure
 that cannot be undone.
 
 **The sweep restores the rule; it does not react to a change.** A rename to
-the name a file already has is a no-op in ``RenameFile`` and still sweeps
-here, so a space that already holds two files of one name — uploaded before
-this feature shipped, or left behind by a sweep that failed — is repaired by
-the next write on the newer of them. That a request which changed nothing can
-delete a file is surprising, and it is the deliberate side of the trade: the
-alternative is a rule the product applies only to files that happened to
-arrive after it.
+the name a file already has is a no-op in ``RenameFile`` and, when the file is
+``ready``, still sweeps here, so a space that already holds two files of one
+name — uploaded before this feature shipped, or left behind by a sweep that
+failed — is repaired by the next write on the newer of them. That a request
+which changed nothing can delete a file is surprising, and it is the deliberate
+side of the trade: the alternative is a rule the product applies only to files
+that happened to arrive after it.
 
 **A re-tag is the third source** (PLT-26). "Same name" now means the name AND
 the three classification tags, so changing the tags can create the collision a

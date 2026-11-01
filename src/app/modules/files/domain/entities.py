@@ -164,7 +164,8 @@ class File:
         the file already carries exactly these tags (``rename``'s no-op rule: a
         "modified at" that moves when nothing was modified is a false record).
         Otherwise ``True``. The caller decides what a no-op still owes (the
-        same-name sweep runs either way).
+        same-name sweep: a no-op re-tag of a READY file still sweeps, one of a
+        file that is not ready sweeps nothing).
 
         Any status may be retagged, like a rename: tags have no bearing on the
         status machine. A soft-deleted file is refused like every other write.

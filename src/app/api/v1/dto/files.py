@@ -25,7 +25,8 @@ class FileTagsIn(BaseModel):
     otherwise be dropped in silence and the file stay untagged, which under
     س-29 means "replaces untagged namesakes" (INC1-D-1) -- the first DTO in the
     repository with ``extra="forbid"``, on purpose. The sanitation (NFC, strip,
-    1..128, no control character) is the domain's, like ``name``'s, and a
+    1..128, none of the Unicode categories Cc, Cf, Cs, Co, Cn, Zl, Zp,
+    and encodable as UTF-8) is the domain's, like ``name``'s, and a
     violation is a 422 from the use-case."""
 
     model_config = ConfigDict(extra="forbid")

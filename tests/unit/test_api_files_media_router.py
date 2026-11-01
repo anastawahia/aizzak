@@ -883,6 +883,26 @@ def test_retag_with_a_lone_surrogate_is_422_and_never_saves() -> None:
     assert stack.file_repository.rows[file_id].tags.as_mapping() == _TAGS
 
 
+def test_single_register_with_a_lone_surrogate_tag_is_422_and_writes_no_row() -> None:
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    body = (
+        f'{{"space_id":"{_SPACE}","name":"plan.pdf","content_type":"application/pdf",'
+        f'"size_bytes":10,"tags":{_SURROGATE_TAGS}}}'
+    )
+    response = client.post(
+        "/api/v1/files",
+        content=body,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert "ud800" not in response.text and "\ud800" not in response.text  # never echoed
+    assert stack.file_repository.rows == {}
+
+
 def test_multipart_register_with_a_lone_surrogate_never_starts_an_upload() -> None:
     app, stack = _make_app()
     client = TestClient(app, raise_server_exceptions=False)

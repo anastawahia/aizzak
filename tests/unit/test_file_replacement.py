@@ -720,11 +720,14 @@ async def test_re_tagging_a_file_with_no_proven_bytes_destroys_nothing_until_it_
 
 
 @pytest.mark.asyncio
-async def test_renaming_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes() -> None:
+@pytest.mark.parametrize("status", [FileStatus.UPLOADED, FileStatus.SCANNING])
+async def test_renaming_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes(
+    status: FileStatus,
+) -> None:
     ctx = _ctx()
     files = InMemoryFileRepository()
     older = _seed(files, ctx, name="report.pdf", created_at=utc_now() - timedelta(days=1))
-    promise = _seed(files, ctx, name="draft.pdf", status=FileStatus.UPLOADED)
+    promise = _seed(files, ctx, name="draft.pdf", status=status)
     service, erase = _build(files)
 
     renamed = await service.rename(ctx, promise.id, name="report.pdf")
