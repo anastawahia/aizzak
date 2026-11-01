@@ -21,6 +21,7 @@ failure.
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -688,3 +689,130 @@ async def test_a_failing_re_tag_sweeps_nothing() -> None:
 
     assert erase.deleted == []
     assert files.rows[older.id].deleted_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-1): a rename or re-tag sweeps only a READY file            #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [FileStatus.UPLOADED, FileStatus.SCANNING])
+async def test_re_tagging_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes(
+    status: FileStatus,
+) -> None:
+    """Nothing existing may be destroyed for a promise: a file that is still
+    `uploaded` has no bytes on record, so re-tagging it onto an older ready
+    file's name and tags replaces nothing -- the completion afterwards does."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    promise = _seed(files, ctx, name="plan.pdf", status=status)
+    service, erase = _build(files)
+
+    retagged = await service.retag(ctx, promise.id, tags=_PUMP.as_mapping())
+
+    assert retagged.tags == _PUMP  # the re-tag itself succeeded
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+    await service.complete(ctx, file_id=promise.id, checksum=None)
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes() -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="report.pdf", created_at=utc_now() - timedelta(days=1))
+    promise = _seed(files, ctx, name="draft.pdf", status=FileStatus.UPLOADED)
+    service, erase = _build(files)
+
+    renamed = await service.rename(ctx, promise.id, name="report.pdf")
+
+    assert renamed.name.value == "report.pdf"  # the rename itself succeeded
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+    await service.complete(ctx, file_id=promise.id, checksum=None)
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_a_quarantined_file_renamed_or_re_tagged_destroys_nothing() -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    held = _seed(files, ctx, name="draft.pdf", status=FileStatus.QUARANTINED)
+    service, erase = _build(files)
+
+    await service.rename(ctx, held.id, name="plan.pdf")
+    await service.retag(ctx, held.id, tags=_PUMP.as_mapping())
+
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-4): the audit fields of the sweep's log lines              #
+# --------------------------------------------------------------------------- #
+def _records(caplog: pytest.LogCaptureFixture, message: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == message]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["complete", "rename", "retag"])
+async def test_the_sweep_logs_who_acted_and_through_which_entry_point(
+    caplog: pytest.LogCaptureFixture, source: str
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(
+        files,
+        ctx,
+        name="plan.pdf" if source != "rename" else "draft.pdf",
+        tags=_PUMP if source != "retag" else None,
+        status=FileStatus.UPLOADED if source == "complete" else FileStatus.READY,
+    )
+    service, _ = _build(files)
+
+    with caplog.at_level(logging.INFO):
+        if source == "complete":
+            await service.complete(ctx, file_id=newer.id, checksum=None)
+        elif source == "rename":
+            await service.rename(ctx, newer.id, name="plan.pdf")
+        else:
+            await service.retag(ctx, newer.id, tags=_PUMP.as_mapping())
+
+    (record,) = _records(caplog, "file.replacement.replaced")
+    assert record.__dict__["user_id"] == "u1"
+    assert record.__dict__["source"] == source
+    assert record.__dict__["file_id"] == newer.id
+    assert record.__dict__["replaced_id"] == older.id
+
+
+@pytest.mark.asyncio
+async def test_the_failed_sweep_logs_carry_the_audit_fields_and_no_name_or_tag(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="secret-plan.pdf", created_at=utc_now() - timedelta(days=1))
+    newer = _seed(files, ctx, name="draft.pdf", tags=_PUMP)
+    service, _ = _build(files, fails={older.id})
+
+    with caplog.at_level(logging.INFO):
+        await service.rename(ctx, newer.id, name="secret-plan.pdf")
+        await service.retag(ctx, newer.id, tags={})
+
+    (failed,) = _records(caplog, "file.replacement.delete_failed")
+    assert failed.__dict__["user_id"] == "u1"
+    # The rename found no namesake (the older file is untagged); the re-tag that
+    # removed the tags made them namesakes, so the failed purge is the re-tag's.
+    assert failed.__dict__["source"] == "retag"
+    assert failed.__dict__["replaced_id"] == older.id
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.__dict__}"
+        assert "secret-plan" not in rendered
+        assert "pump-7" not in rendered

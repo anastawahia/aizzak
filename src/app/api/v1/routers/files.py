@@ -354,7 +354,10 @@ async def rename_file(
     owes both. Renaming a file onto a name an OLDER file in the same space
     already holds replaces that older file; renaming one onto a NEWER file's
     name replaces nothing, because the rule is that fresh content supersedes
-    stale and never the reverse."""
+    stale and never the reverse. Only a READY file replaces anything: renaming
+    a file whose bytes were never proven (``uploaded``, ``scanning``) or that is
+    quarantined onto an older file's name changes the name and destroys
+    nothing -- the completion that makes it ready does the replacing."""
     replacement = services.file_replacement
     if replacement is None:
         raise AppError(_UNREPLACED, code="common.internal")
@@ -368,7 +371,8 @@ async def retag_file(file_id: str, body: FileTagsIn, services: Services, ctx: Co
     ``equipment``, ``department``. A FULL replacement -- a key that is absent or
     ``null`` removes that tag -- so ``{}`` untags the file. Unknown keys are a
     422 (``FileTagsIn`` forbids them), as are an empty or whitespace-only value,
-    one over 128 characters and one with a control character; a soft-deleted
+    one over 128 characters and one with a control, format, surrogate,
+    private-use, unassigned or line-separator character; a soft-deleted
     file is 409 and an unknown or foreign one 404. Re-sending the tags the file
     already has changes nothing (``updated_at`` included).
 
@@ -380,7 +384,10 @@ async def retag_file(file_id: str, body: FileTagsIn, services: Services, ctx: Co
     of an OLDER live file in its space replaces that file, index and all; onto a
     NEWER file's, nothing, because fresh content supersedes stale and never the
     reverse. The sweep runs after the re-tag has succeeded and cannot turn it
-    into a failure, and a re-tag that changes nothing sweeps too."""
+    into a failure, and a re-tag of a READY file that changes nothing sweeps
+    too. A file that is not ready (``uploaded``, ``scanning``, ``quarantined``)
+    sweeps nothing: it has no proven bytes to supersede anything with, and
+    completing it later does the replacing."""
     replacement = services.file_replacement
     if replacement is None:
         raise AppError(_UNREPLACED, code="common.internal")

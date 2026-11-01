@@ -740,6 +740,11 @@ def _bad_tag_bodies() -> list[dict[str, object]]:
         {"system": "x" * 129},
         {"equipment": "a\u0000b"},
         {"department": "a\u0007b"},
+        {"system": "a\u200bb"},  # zero-width space (Cf)
+        {"system": "a\u0085b"},  # C1 control (Cc)
+        {"system": "a\u202eb"},  # bidi override (Cf)
+        {"system": "a\ue000b"},  # private use (Co)
+        {"system": "a\u2028b"},  # line separator (Zl)
         {"section": "elec"},  # unknown key: refused, not dropped (INC1-D-1)
         {"system": 7},
     ]
@@ -852,6 +857,52 @@ def test_retag_with_a_bad_tag_is_422_and_changes_nothing() -> None:
     assert stack.file_repository.rows[file_id].tags.as_mapping() == _TAGS
 
 
+# httpx cannot encode a lone surrogate itself, so the body is sent as the JSON
+# escape a hostile client would use.
+_SURROGATE_TAGS = '{"system":"a\\ud800b","equipment":"a\\ud800b"}'
+
+
+def test_retag_with_a_lone_surrogate_is_422_and_never_saves() -> None:
+    """Review B-1: a value that cannot be encoded as UTF-8 used to pass the
+    domain and fail at the database driver as a 500."""
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    file_id = str(_register(client, tags=_TAGS)["file_id"])
+    saved_before = list(stack.file_repository.saved)
+
+    response = client.put(
+        f"/api/v1/files/{file_id}/tags",
+        content=_SURROGATE_TAGS,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert "ud800" not in response.text and "\ud800" not in response.text  # never echoed
+    assert stack.file_repository.saved == saved_before
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == _TAGS
+
+
+def test_multipart_register_with_a_lone_surrogate_never_starts_an_upload() -> None:
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    body = (
+        f'{{"space_id":"{_SPACE}","name":"plan.pdf","content_type":"application/pdf",'
+        f'"size_bytes":{_BIG},"tags":{_SURROGATE_TAGS}}}'
+    )
+    response = client.post(
+        "/api/v1/files/multipart",
+        content=body,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert stack.multipart_storage.uploads == {}
+    assert stack.file_repository.rows == {}
+
+
 def test_retag_of_a_deleted_file_is_409_and_of_an_unknown_one_404() -> None:
     app, _ = _make_app()
     client = TestClient(app)
@@ -909,6 +960,26 @@ def test_completing_replaces_only_the_namesake_with_the_same_tags() -> None:
     assert stack.knowledge_purge.calls == [tagged]
     listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
     assert sorted(row["id"] for row in listed) == sorted([str(untagged), str(newer)])
+
+
+def test_retag_and_rename_of_a_file_that_is_not_ready_destroy_nothing_until_it_completes() -> None:
+    """Review S-1 at the route: a registered-but-uncompleted file has no proven
+    bytes, so re-tagging or renaming it onto an older file replaces nothing;
+    completing it does."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client, tags=_TAGS)["file_id"]
+    _complete(client, first)
+    promise = _register(client, name="draft.pdf")["file_id"]
+
+    assert _put_tags(client, promise, _TAGS).status_code == 200
+    renamed = client.patch(f"/api/v1/files/{promise}", json={"name": "report.pdf"}, headers=_auth())
+    assert renamed.status_code == 200, renamed.text
+    assert stack.knowledge_purge.calls == []
+
+    _complete(client, promise)
+
+    assert stack.knowledge_purge.calls == [first]
 
 
 def test_retag_fails_closed_when_the_replacement_is_unwired() -> None:
