@@ -6,8 +6,8 @@
 |---|---|
 | المعرّف | `electrical-drawings` · الزيادة `INC‑1` |
 | نوع الوثيقة | تصميم تفصيلي: ملفات، وتواقيع، وDDL، ونص العقود، وخطة اختبار. **لا شيفرة تُكتب في هذه الدورة** |
-| الإصدار | 0.2 (مُقَرّ للبناء) |
-| التاريخ | 2026-10-31 (0.1 في اليوم نفسه) |
+| الإصدار | 0.3 (مُقَرّ للبناء؛ تصحيح من مراجعة `PR‑A`) |
+| التاريخ | 2026-11-01 (0.3: قرارا المالك في S‑1 وS‑3 من `inc-1/pr-a/security-review.md`، ونص ترتيب 422). 0.2 و0.1 في 2026-10-31 |
 | المدخل الملزم | [`hld.md`](hld.md) 0.16 (§4، §5.2، §5.4، §5.6، §5.7، §6، §7، §8.1–8.3، §8.7، §8.8، §8.11، §12، §13، §14.1، §14.4، §16، §18)، و[`requirements.md`](requirements.md) 0.17، و[`lld-inc-0.md`](lld-inc-0.md) 0.2 (مبنيّ ومدموج في PR #26) |
 | المدخل المساند | `docs/delivery/smart-assistant/requirements.md` (FR‑18..FR‑32، م‑2، م‑3) و`study.md` §5.2 و§5.6، و`inc-0/security-review.md`، و`inc-0/review.md`، و`status.md` |
 | الوثائق الحاكمة | `CLAUDE.md`، و`docs/design/00…12`، و`docs/design/openapi.yaml`، و`docs/design/events/schemas/`، و`docs/architecture.md`، و`.importlinter`، و`.github/workflows/ci.yml` |
@@ -287,7 +287,7 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 
 | الطريقة | المسار | الطلب | الاستجابة | الأخطاء | الصلاحية |
 |---|---|---|---|---|---|
-| POST | `/files` (`registerFile`، قائم) | `FileRegisterIn` + **`tags?: FileTagsIn`** | `201 FileRegisterOut` كما هو | كما اليوم، و`422 common.validation_error` لوسم فارغ أو أطول من 128 أو فيه محرف تحكّم أو مفتاح مجهول | `files:write` |
+| POST | `/files` (`registerFile`، قائم) | `FileRegisterIn` + **`tags?: FileTagsIn`** | `201 FileRegisterOut` كما هو | كما اليوم، و`422 common.validation_error` لوسم فارغ أو أطول من 128 أو فيه محرف من الفئات Cc وCf وCs وCo وCn وZl وZp (0.3) أو مفتاح مجهول | `files:write` |
 | POST | `/files/multipart` (`registerMultipartFile`، قائم) | كذلك | `201 FileMultipartRegisterOut` كما هو | كذلك | `files:write` |
 | PUT | `/files/{id}/tags` (**`retagFile`، جديد**) | `FileTagsIn {system?, equipment?, department?}`، استبدال كامل: المفتاح الغائب أو `null` يزيل الوسم | `200 FileOut` | `404 common.not_found` (مجهول أو لمستأجر آخر)، و`409 common.conflict` (محذوف)، و`422 common.validation_error` | `files:write` |
 | POST | `/files/{id}/complete`، PATCH `/files/{id}` (قائمان) | كما هما | كما هما | كما هما. **والاستبدال صار بالاسم والوسوم معاً** | `files:write` |
@@ -411,7 +411,9 @@ class TagKind(StrEnum):
 class FileTags:
     """Opaque classification references (INC1-Q-1 (b)). A present value is
     NFC-normalised and stripped, then must be 1..MAX_TAG_CHARS long with no
-    control character. It is compared EXACTLY -- no case fold: `files` never
+    character of Unicode category Cc, Cf, Cs, Co, Cn, Zl or Zp (0.3, owner's
+    S-3: controls, invisible/bidi format, surrogates, private use, unassigned,
+    line/paragraph separators; Zs such as NBSP is allowed). It is compared EXACTLY -- no case fold: `files` never
     interprets it. `None` is ABSENT, and absent matches only absent."""
 
     system: str | None = None
@@ -498,7 +500,9 @@ class RegisterUpload:
         tags: Mapping[str, str | None] | None = None,  # PLT-26
     ) -> File: ...
     # Tags are parsed in the FIRST block, beside FileName/ContentType, so a bad
-    # tag is a 422 before any limit is spent and before `start_multipart`.
+    # tag is a 422 before any write, upload or `start_multipart` (0.3: the
+    # framework's space-existence and quota checks may still answer 404/409
+    # first; they spend nothing).
 
 
 class RetagFile:
@@ -580,8 +584,11 @@ class ReplaceNamesakesService[R]:
         self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
     ) -> R:
         retagged = await self._retag.execute(ctx, file_id, tags=tags)
-        await self._sweep(ctx, file_id)  # a no-op re-tag still sweeps, like rename
+        if retagged is ready:  # 0.3, owner's S-1: nothing destroyed for a promise
+            await self._sweep(ctx, file_id)  # a no-op re-tag of a READY file still sweeps
         return retagged
+    # `rename` follows the same rule (0.3). A file not yet `ready` sweeps nothing
+    # here; `complete` sweeps later with its name and tags as they are then.
 ```
 
 ```python
@@ -2335,8 +2342,8 @@ CREATE INDEX ix_drawings_characterizations_project
 
 | المعرّف | المعيار | المصدر |
 |---|---|---|
-| INC1‑AC‑1 | **الوسوم على الملف:** يقبل التسجيل (بطلب PUT واحد ومجزأً) وسوماً اختيارية ثلاثة، ويُطبّعها (NFC، وقص المسافات) ويرفض الفارغ والأطول من 128 ومحرف التحكّم والمفتاح المجهول بـ422 قبل إنفاق أي حدّ وقبل فتح رفع مجزأ. وتُحفظ وتُعاد في `FileOut`، والغائب `null` في الجواب ولا يُخزَّن فارغاً. و`PUT /files/{id}/tags` يستبدلها كاملة، والإعادة بالوسوم نفسها لا تكتب ولا تغيّر `updated_at`، والملف المحذوف 409 | SRS FR-ING-13، `PLT‑26` |
-| INC1‑AC‑2 | **الاستبدال بالاسم والوسوم:** عند الإتمام وإعادة التسمية وإعادة الوسم، يُحذف الأقدم الحيّ في الفضاء نفسه بالاسم نفسه **والوسوم نفسها** وحده. والغائب يطابق الغائب وحده، فالملفات بلا وسوم تتبع القاعدة كما كانت، واختبارات الاستبدال القائمة لا تتغيّر وتبقى خضراء. ونوع الملف لا يدخل. وإعادة الوسم بلا تغيير تكنس أيضاً. ويبقى `name_key` شرط فهرس في خطة الاستعلام | SRS FR-ING-03، SRS D-29، س‑29، FR‑31 (المساعد الذكي) |
+| INC1‑AC‑1 | **الوسوم على الملف:** يقبل التسجيل (بطلب PUT واحد ومجزأً) وسوماً اختيارية ثلاثة، ويُطبّعها (NFC، وقص المسافات) ويرفض الفارغ والأطول من 128 والمحرف من الفئات Cc وCf وCs وCo وCn وZl وZp (المحارف الخفية والاتجاهية والبديل المنفرد، 0.3) والمفتاح المجهول بـ422 قبل أي كتابة أو رفع وقبل فتح رفع مجزأ (وقد يجيب فحص وجود الفضاء وحصته أولاً بـ404 أو 409، ولا يُنفق شيئاً). وتُحفظ وتُعاد في `FileOut`، والغائب `null` في الجواب ولا يُخزَّن فارغاً. و`PUT /files/{id}/tags` يستبدلها كاملة، والإعادة بالوسوم نفسها لا تكتب ولا تغيّر `updated_at`، والملف المحذوف 409 | SRS FR-ING-13، `PLT‑26` |
+| INC1‑AC‑2 | **الاستبدال بالاسم والوسوم:** عند الإتمام، وعند إعادة التسمية وإعادة الوسم لملف `ready` وحده (0.3، S‑1)، يُحذف الأقدم الحيّ في الفضاء نفسه بالاسم نفسه **والوسوم نفسها** وحده. والغائب يطابق الغائب وحده، فالملفات بلا وسوم تتبع القاعدة كما كانت، واختبارات الاستبدال القائمة لا تتغيّر وتبقى خضراء. ونوع الملف لا يدخل. وإعادة الوسم بلا تغيير لملف `ready` تكنس أيضاً، وإعادة تسمية ملف غير `ready` أو إعادة وسمه لا تحذف شيئاً. ويبقى `name_key` شرط فهرس في خطة الاستعلام | SRS FR-ING-03، SRS D-29، س‑29، FR‑31 (المساعد الذكي) |
 | INC1‑AC‑3 | **العقود لـ`PLT‑26`:** يحمل `files.file.uploaded.v1` الحقل `tags` حين يوجد وسم وحده، ويغيب المفتاح الغائب ولا `null`، ويُصادَق بالمخطط. و`openapi.yaml` يعلن `retagFile` وحقلي `tags`، ويطابق التطبيق في الاتجاهين. و`01` §2.6 و`02` و`03` و`04` و`05` §4 و`06` §6 محدّثة | SRS FR-ING-13، FR‑32 (المساعد الذكي)، SRS AC-09 |
 | INC1‑AC‑4 | **النواة:** يحلّل المحلّل كل مثال في ملحق أ من SRS إلى نوعه واصطلاحه وجوانبه ونقطة اتصاله وأشكاله الثلاثة (الأصلي، والمطبّع، ومفاتيح البحث)، ومنها الحروف كاملة العرض وكل صيغ S7. وغير الصالح يُعلَّم ولا يُسقط. والقواعد من ملف بإصدار، و`shared` بالمكتبة القياسية وبلا I/O (العقدان `domain-purity` و`electrical-contexts` يبقيان محفوظين). وM-04 على مجموعة الحالات = 1.0 (والهدف ≥ 0.995) | FR-ID-01، 03..10، 12، 13؛ M-04 |
 | INC1‑AC‑5 | **المشاريع وملفات الإعداد:** مشروع واحد لكل فضاء (الثاني `409 electrical.project_exists`، والفضاء المجهول 404). والقراءة والسرد والتعديل. وملف المشروع وتجاوزه للوثيقة بإصدارات متتالية لا تُعدَّل، ولكلٍّ بصمة، والملف غير الصالح يُرفض بـ`422 electrical.invalid_profile` يسمّي الحقل. والصلاحيات كما في §3.3.16 | FR-ING-01، FR-ADM-04، NFR-CFG-02، SRS D-29 |
@@ -2559,7 +2566,7 @@ CREATE INDEX ix_drawings_characterizations_project
 | المعرّف | الخطر | الأثر | المعالجة |
 |---|---|---|---|
 | INC1‑R‑1 | وسم خاطئ أو بحالة أحرف مختلفة (`Pump` و`pump`) لا يطابق | يبقى الملفان حيّين ويُستشهد بالقديم (RSK‑20، SRS R-25) | المعاينة تعرض `kept`، وإعادة الوسم تكنس، والكتالوج في المساعد الذكي يجعل القيمة مختارة لا مكتوبة |
-| INC1‑R‑2 | العضو يملك `files:write` لا `files:delete` ولا `electrical:manage`، ومع ذلك يحذف وثيقة WireTwin وتصحيحاتها برفع ملف بالاسم والوسوم نفسها أو بتسمية أو وسم | فقد عمل بشري بيد من لا يملك إدارته | قاعدة س‑29 قائمة بقرار المالك قبل WireTwin، وINC‑1 لا يزيد قدرة جديدة (الوسم كالتسمية). والمعاينة تحذّر. وللمالك أن يطلب لاحقاً تقييد الكنس بصلاحية |
+| INC1‑R‑2 | العضو يملك `files:write` لا `files:delete` ولا `electrical:manage`، ومع ذلك يحذف وثيقة WireTwin وتصحيحاتها برفع ملف بالاسم والوسوم نفسها أو بتسمية أو وسم | فقد عمل بشري بيد من لا يملك إدارته | قاعدة س‑29 قائمة بقرار المالك قبل WireTwin، وINC‑1 لا يزيد قدرة جديدة (الوسم كالتسمية). والمعاينة تحذّر. **0.3 (S‑1):** أُغلق الشكل الذي بلا بايتات (تسجيل بالاسم ثم إعادة وسم أو تسمية بلا رفع)، فالتسمية والوسم يكنسان لملف `ready` وحده. وللمالك أن يطلب لاحقاً تقييد الكنس بصلاحية |
 | INC1‑R‑3 | M-32 دون الهدف (0.90) في INC‑1: المعيار الرمزي مستنتج قبل التعرّف على الرموز (INC‑4)، والعتبات أولية | تأكيد يدوي أكثر | التقرير يذكر أساس كل حقل، والعتبات في ملف الإعداد، وتُضبط على العيّنات في P1 بعد الدمج (✅ `INC1‑Q‑4` (ج)، `INC1‑R‑15`) |
 | INC1‑R‑4 | عيّنة واحدة معروفة اليوم | توصيف لا يمثّل المنشأة، وتوزيع ذهبي خاطئ (SRS §8.3) | يُعالج في P1 بعد الدمج؛ والتقرير يعلن حجمه |
 | INC1‑R‑5 | ذاكرة المضيف المحلي (13 GB، `host-memory-limits`) | الملف `electrical` يضيف نحو 3.5 GB حدوداً | معطّل افتراضياً، و`WORKER_CONCURRENCY` 1، وحملات القياس قد تحتاج إيقاف خدمات (RSK‑01) |

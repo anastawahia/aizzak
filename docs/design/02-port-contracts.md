@@ -286,6 +286,8 @@ class FileRepository(Protocol):
     async def ready_names(self, ctx, file_ids: Sequence[Uuid]) -> Mapping[Uuid, str]: ...
     # ── وما كسبته من س-29 القاعدة ١ (قرار المستخدم 2026‑08‑25): قراءةٌ سادسة ──
     async def live_namesakes(self, ctx, file: File) -> Sequence[Uuid]: ...       # ما يستبدله هذا الملفّ
+    # ── وما كسبته من `PLT‑26` (وسوم الملف، INC‑1): قراءةٌ سابعة، مكمّلة للسادسة ──
+    async def live_name_conflicts(self, ctx, file: File) -> Sequence[Uuid]: ...  # ما **لن** يستبدله: الاسمُ نفسه بوسومٍ مختلفة
     # قاعدةُ `get`+`is_ready` نفسها مدفوعةً إلى SQL (`status='ready'` و`deleted_at IS NULL`،
     # INV-F2/F3): المجهولُ والمحذوفُ والمحجورُ ونصفُ المرفوع **غائبون** من الخريطة لا
     # حاضرين بنصٍّ فارغ — قاعدةُ `totals_by_space` عينها (الاستعلام يعيد ما وُجد)، وهي ما
@@ -327,11 +329,37 @@ class FileRepository(Protocol):
     #   يحذف كلٌّ الآخر. وهو أيضاً دلالةُ القرار نفسها: الجديدُ يَجُبُّ القديم ولا عكس.
     # • **المحذوفُ ناعماً مستثنى** (قاعدةُ `bytes_in_space`)، و**الحالةُ ليست شرطاً**:
     #   صفٌّ أقدمُ ما يزال `uploaded` يحجز الاسم والحصّة كما يحجزهما `ready`.
+    # • **الوسومُ نفسُها** (`PLT‑26`، `INV‑F6`): `tag_system` و`tag_equipment` و`tag_department`
+    #   كلٌّ منها يساوي وسمَ الوسيط، والوسمُ الغائب (`NULL`) **لا يطابق إلا غائباً**
+    #   (`IS NOT DISTINCT FROM`؛ فالمساواة `=` لا تطابق `NULL` أبداً). فالملفات بلا وسوم
+    #   تتبع القاعدة كما كانت. **ونوعُ الملف لا يدخل في التطابق**: كتيّبٌ ومخطّطٌ بالاسم
+    #   والوسوم نفسها ملفٌّ واحد. والوسمُ رمزٌ مرجعيٌّ معتم يُقارن حرفياً (بلا طيّ حالة
+    #   الأحرف)، فـ`files` لا يفسّره. وهو **مرشِّحٌ بعد بحث `name_key`** لا مفتاح بحث: لا فهرس
+    #   للوسوم (01 §2.6)، فيبقى `name_key` شرطَ فهرس.
+    #
+    # ── `live_name_conflicts`: معرّفات الملفّات الحيّة التي **لن** يستبدلها هذا الملفّ ──
+    # قراءةٌ لمعاينة الاستبدال وحدها (RSK‑20): لا شيء في `files` يتصرّف بناءً عليها. الوحدة
+    # نفسها والاسم نفسه (`name_key`) والحيّ غير المحذوف، **مع استثناء الملف نفسه** و**أيّاً كان
+    # العمر**، بشرط أن يختلف وسمٌ واحدٌ على الأقل (`IS DISTINCT FROM` لكل عمود، لا
+    # `NOT (a = b)`: فهذه تُسقط بصمتٍ الصفَّ الموسوم حيث الوسيط غير موسوم وعكسه، لأن
+    # `NULL = x` هو `NULL` ونفيه `NULL`). مرتَّبةٌ بالمعرّف فمعاينتان لحالةٍ واحدة متساويتان.
+    # فمع `live_namesakes` تقسمان ملفّات الاسم الواحد في الوحدة قسمين: ما يُستبدل (الأقدم
+    # بالوسوم نفسها) وما يبقى (وسومٌ مختلفة، وأيّ عمر)؛ والأحدثُ بالوسوم نفسها لا في هذا ولا ذاك.
 
 # files/ports/inbound.py  (تستدعيه الوكلاء/knowledge بلا استيراد مباشر للوحدة)
 @dataclass(frozen=True, slots=True)
 class FileView: file_id: str; space_id: str | None; name: str; content_type: str
                 size_bytes: int; storage_key: str; status: str
+                tags: Mapping[str, str] = field(default_factory=dict)   # PLT‑26 — آخر حقل، بقيمة افتراضية فارغة
+# `tags` **الوسومُ الحاضرة وحدها** (`{"system": "...", ...}`)، و`{}` لملفٍّ بلا وسوم — لا
+# مفتاح بقيمة `None`: الوسم الغائب غائبٌ من الخريطة، كما هو غائبٌ من الحدث. أنواعٌ بسيطة لا
+# `FileTags`: كل مستهلك وحدةٌ أخرى ولا يجوز له تسمية نوعٍ من `files`. وافتراضيّتُها هي ما يُبقي
+# توقيع `FilesQuery` وكلَّ بناءٍ لـ`FileView` في الوحدات الأخرى واختباراتها كما هو (INC1‑D‑30).
+# **`FindNamesakes.preview`** (طبقة تطبيق `files`، لا منفذ): `execute` كما كانت (ما يستبدله
+# الملف)، و`preview(ctx, file_id) -> NamesakePreview(replaced, kept)` تضيف إليها `kept` من
+# `live_name_conflicts`. قراءةٌ لا تحذف ولا تكتب، و`NotFoundError` لمعرّفٍ مجهول أو أجنبي.
+# يستعملها جذر التركيب لمعاينة الاستبدال (`PLT‑24`)، لأن `FindNamesakes` وحدها لا تعرف
+# السميّين بوسومٍ مختلفة (INC1‑F‑1).
 class FilesQuery(Protocol):
     async def get_readable(self, ctx, file_id: Uuid) -> FileView | None: ...
     async def names_for_files(self, ctx, file_ids: Sequence[Uuid]) -> Mapping[Uuid, str]: ...

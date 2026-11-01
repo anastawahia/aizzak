@@ -18,12 +18,20 @@ it was built from and has no other way to learn it. An OPTIONAL added field
 keeps the type at ``v1`` (04 §6), and an old envelope replayed without the
 key simply registers a document with no space — the same state every document
 already has today.
+
+``tags`` (PLT-26) rides on it for the same reason: the three classification
+tags are a fact about the file its consumer would otherwise read back out of
+the files module. It is the LAST field and defaulted, so every existing
+construction site still means "untagged"; on the wire only the PRESENT tags are
+published (``FileTags.as_mapping``), never an empty or ``null`` one.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+
+from app.modules.files.domain.value_objects import FileTags
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +46,8 @@ class FileUploaded:
     storage_key: str
     checksum: str | None
     occurred_at: datetime
+    # PLT-26: carried for the consumer, like space_id. A factory for RUF009.
+    tags: FileTags = field(default_factory=FileTags)
 
 
 @dataclass(frozen=True, slots=True)

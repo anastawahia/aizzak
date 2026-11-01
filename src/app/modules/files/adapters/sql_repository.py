@@ -38,11 +38,13 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    and_,
     cast,
     delete,
     func,
     insert,
     literal,
+    or_,
     select,
     text,
     tuple_,
@@ -51,6 +53,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ConflictError
@@ -61,6 +64,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     MultipartUpload,
     Sha256,
     StorageKey,
@@ -109,6 +113,13 @@ files = Table(
     # `add` and, like `content_type`, never by `save`.
     Column("upload_id", Text, nullable=True),
     Column("part_bytes", Integer, nullable=True),
+    # `migrations/versions/files/0006_file_tags.py` (PLT-26) -- the three
+    # classification tags (INV-F6). NULL is the only spelling of "absent" (CHECK
+    # `ck_files_tags_shape` refuses ''). Written by `add` AND by `save`: unlike
+    # the multipart session they are mutable (`File.retag`).
+    Column("tag_system", Text, nullable=True),
+    Column("tag_equipment", Text, nullable=True),
+    Column("tag_department", Text, nullable=True),
     schema="files",
 )
 
@@ -160,6 +171,9 @@ class SqlFileRepository:
             version=file.version,
             upload_id=file.multipart.upload_id if file.multipart else None,
             part_bytes=file.multipart.part_bytes if file.multipart else None,
+            tag_system=file.tags.system,
+            tag_equipment=file.tags.equipment,
+            tag_department=file.tags.department,
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -176,9 +190,11 @@ class SqlFileRepository:
         # -- for `space_id` that is decision 3, "no moving a file between
         # spaces", made unwritable rather than merely undocumented. Only the
         # fields `mark_scanning`/`complete`/`quarantine`/`soft_delete`/
-        # `rename` can change are written. `name` joined them in BE-RAG-006:
+        # `rename`/`retag` can change are written. `name` joined them in BE-RAG-006:
         # for every OTHER caller it re-writes the value just hydrated, a
-        # provable no-op, which is why one `save` still serves them all.
+        # provable no-op, which is why one `save` still serves them all. The
+        # three tags (PLT-26, `retag`) joined `name` for the same reason and
+        # with the same argument.
         stmt = (
             update(files)
             .where(
@@ -188,6 +204,9 @@ class SqlFileRepository:
             )
             .values(
                 name=file.name.value,
+                tag_system=file.tags.system,
+                tag_equipment=file.tags.equipment,
+                tag_department=file.tags.department,
                 status=file.status.value,
                 checksum=file.checksum.value if file.checksum else None,
                 deleted_at=file.deleted_at,
@@ -357,26 +376,17 @@ class SqlFileRepository:
         #    are NOT leakproof, so under `FORCE ROW LEVEL SECURITY` an
         #    expression index over them can never be a search key. Measured
         #    both ways -- see the migration.
-        argument_key = func.lower(func.normalize(file.name.value, text("NFC")))
-        # NULL-safe, but SPELLED as a branch rather than as
-        # `IS NOT DISTINCT FROM`. Both say what the port promises -- "no
-        # space" is one bucket and not a wildcard, so `= NULL` (which matches
-        # nothing) would let a spaceless file replace nothing at all. The
-        # difference is that `IS NOT DISTINCT FROM` is not a btree-searchable
-        # operator in PostgreSQL, so it would demote `ix_files_space_name` to
-        # a `workspace_id`-prefix scan with a filter on top. The caller always
-        # holds a concrete row, so which of the two branches applies is known
-        # here and never at run time in SQL.
-        same_space = (
-            files.c.space_id.is_(None)
-            if file.space_id is None
-            else files.c.space_id == file.space_id
-        )
+        argument_key = _argument_key(file)
+        same_space = _in_space(file)
         stmt = select(files.c.id).where(
             files.c.workspace_id == ctx.workspace_id,
             same_space,
             files.c.name_key == argument_key,
             files.c.deleted_at.is_(None),
+            # PLT-26: the SAME tags -- all three equal, an absent tag matching
+            # only an absent one. A filter after the `name_key` lookup, never a
+            # search key (`0006_file_tags.py`, INC1-D-4).
+            _same_tags(file),
             # STRICTLY older, as a tuple so ties on `created_at` still order
             # totally. This is what makes the relation antisymmetric -- two
             # rows can never each be older than the other -- and antisymmetry
@@ -392,6 +402,35 @@ class SqlFileRepository:
                 literal(file.created_at, files.c.created_at.type),
                 literal(file.id, files.c.id.type),
             ),
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).scalars().all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return list(rows)
+
+    async def live_name_conflicts(self, ctx: ExecutionContext, file: File) -> Sequence[UuidStr]:
+        # The complement of `live_namesakes` on the TAGS and blind to age: the
+        # ACTIVE files in the same space under the same name whose tags differ
+        # from `file`'s, `file` itself excluded -- the files a replacement will
+        # NOT touch (RSK-20). A read for a preview; nothing acts on it.
+        #
+        # `_different_tags` is `OR(col IS DISTINCT FROM value)`, NOT
+        # `NOT(col = value)`: with a NULL on either side `=` is NULL and so is
+        # its negation, which would silently drop exactly the row that is
+        # tagged where `file` is not (and the reverse).
+        stmt = (
+            select(files.c.id)
+            .where(
+                files.c.workspace_id == ctx.workspace_id,
+                _in_space(file),
+                files.c.name_key == _argument_key(file),
+                files.c.deleted_at.is_(None),
+                files.c.id != file.id,
+                _different_tags(file),
+            )
+            .order_by(files.c.id)
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -448,6 +487,51 @@ class SqlFileRepository:
         return len(deleted)
 
 
+def _argument_key(file: File) -> ColumnElement[str]:
+    """The ARGUMENT side of the ``name_key`` comparison: the stored column's own
+    expression applied to the name here, deliberately NOT normalised in Python
+    (see ``live_namesakes``)."""
+    return func.lower(func.normalize(file.name.value, text("NFC")))
+
+
+def _in_space(file: File) -> ColumnElement[bool]:
+    """``file``'s space as a predicate, NULL-safe but SPELLED as a branch.
+
+    "No space" is one bucket and not a wildcard, so a bare ``= NULL`` (which
+    matches nothing) would let a spaceless file replace nothing at all. It is a
+    branch rather than ``IS NOT DISTINCT FROM`` because that is not a
+    btree-searchable operator in PostgreSQL: it would demote
+    ``ix_files_space_name`` to a ``workspace_id``-prefix scan with a filter on
+    top. The caller always holds a concrete row, so which branch applies is
+    known here and never at run time in SQL.
+    """
+    return (
+        files.c.space_id.is_(None) if file.space_id is None else files.c.space_id == file.space_id
+    )
+
+
+def _tag_pairs(tags: FileTags) -> tuple[tuple[ColumnElement[str], str | None], ...]:
+    return (
+        (files.c.tag_system, tags.system),
+        (files.c.tag_equipment, tags.equipment),
+        (files.c.tag_department, tags.department),
+    )
+
+
+def _same_tags(file: File) -> ColumnElement[bool]:
+    """All three stored tags equal ``file``'s, an absent one matching only an
+    absent one (``IS NOT DISTINCT FROM``: ``=`` would never match NULL). One
+    function for the rule, shared with ``_different_tags`` so it lives once."""
+    return and_(*(column.is_not_distinct_from(value) for column, value in _tag_pairs(file.tags)))
+
+
+def _different_tags(file: File) -> ColumnElement[bool]:
+    """At least one stored tag differs from ``file``'s -- the exact negation of
+    ``_same_tags``, built with ``IS DISTINCT FROM`` and NOT as ``NOT(a = b)``,
+    which is NULL (so drops the row) whenever either side is NULL."""
+    return or_(*(column.is_distinct_from(value) for column, value in _tag_pairs(file.tags)))
+
+
 def _paginate[T](
     rows: Sequence[RowMapping], limit: int, hydrate: Callable[[RowMapping], T]
 ) -> Page[T]:
@@ -477,6 +561,11 @@ def _hydrate(row: RowMapping) -> File:
             MultipartUpload(upload_id=row["upload_id"], part_bytes=row["part_bytes"])
             if row["upload_id"] is not None
             else None
+        ),
+        tags=FileTags(
+            system=row["tag_system"],
+            equipment=row["tag_equipment"],
+            department=row["tag_department"],
         ),
     )
 

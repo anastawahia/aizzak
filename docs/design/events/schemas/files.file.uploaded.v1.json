@@ -14,6 +14,17 @@
       "type": "string",
       "format": "uuid",
       "description": "the file's owning space; ABSENT when it has none (spaces plan step 8) — an added optional field, so the type stays v1"
+    },
+    "tags": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "system": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "equipment": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "department": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "description": "the file's classification tags (PLT-26); ABSENT when it has none, and an absent tag is absent from the object — never null. An added optional field, so the type stays v1"
     }
   },
   "additionalProperties": false

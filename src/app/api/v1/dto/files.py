@@ -16,7 +16,33 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class FileTagsIn(BaseModel):
+    """The three optional classification tags (PLT-26). Absent or ``null`` is
+    "no such tag". Unknown keys are REFUSED: a misspelt tag ("section") would
+    otherwise be dropped in silence and the file stay untagged, which under
+    س-29 means "replaces untagged namesakes" (INC1-D-1) -- the first DTO in the
+    repository with ``extra="forbid"``, on purpose. The sanitation (NFC, strip,
+    1..128, none of the Unicode categories Cc, Cf, Cs, Co, Cn, Zl, Zp,
+    and encodable as UTF-8) is the domain's, like ``name``'s, and a
+    violation is a 422 from the use-case."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system: str | None = None
+    equipment: str | None = None
+    department: str | None = None
+
+
+class FileTagsOut(BaseModel):
+    """A file's tags as read: all three keys always present, ``null`` for an
+    absent tag (the stored form is a NULL column, never an empty string)."""
+
+    system: str | None
+    equipment: str | None
+    department: str | None
 
 
 class FileRegisterIn(BaseModel):
@@ -35,6 +61,7 @@ class FileRegisterIn(BaseModel):
     name: str
     content_type: str
     size_bytes: int
+    tags: FileTagsIn | None = None
 
 
 class FileRegisterOut(BaseModel):
@@ -84,10 +111,12 @@ class FileCompleteIn(BaseModel):
 
 
 class FileRenameIn(BaseModel):
-    """The one mutable field a file has. Required, not optional: a PATCH body
-    that may legally be empty asks the server to guess what "no change" means,
-    and the sanitation/extension policy that decides what this string becomes
-    lives in the domain (``File.rename``), not in a Pydantic constraint."""
+    """The new name. Required, not optional: a PATCH body that may legally be
+    empty asks the server to guess what "no change" means, and the
+    sanitation/extension policy that decides what this string becomes lives in
+    the domain (``File.rename``), not in a Pydantic constraint. The tags are
+    changed by ``PUT /files/{id}/tags`` instead (INC1-D-3), whose body is a full
+    replacement for the same reason."""
 
     name: str
 
@@ -100,3 +129,4 @@ class FileOut(BaseModel):
     status: str
     download_url: str | None
     created_at: datetime
+    tags: FileTagsOut

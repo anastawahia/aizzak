@@ -41,6 +41,7 @@ from app.modules.files.application.use_cases import (
     RegisteredUpload,
     RegisterUpload,
     RenameFile,
+    RetagFile,
     SoftDeleteFile,
     SoftDeleteFileService,
     SummariseSpaces,
@@ -188,6 +189,10 @@ class InMemoryFileRepository:
         # missed "Report.pdf" vs "report.pdf" and every Arabic name typed on a
         # second keyboard. `normalize` then `casefold` is the same order as
         # SQL's `lower(normalize(name, NFC))`.
+        #
+        # PLT-26: the SAME TAGS too. `FileTags` is a frozen dataclass of three
+        # `str | None`, so `==` is exactly "each of the three equal, an absent
+        # tag matching only an absent one" -- `IS NOT DISTINCT FROM` per column.
         return sorted(
             row.id
             for row in self.rows.values()
@@ -195,7 +200,24 @@ class InMemoryFileRepository:
             and row.space_id == file.space_id
             and _name_key(row.name.value) == _name_key(file.name.value)
             and row.deleted_at is None
+            and row.tags == file.tags
             and (row.created_at, row.id) < (file.created_at, file.id)
+        )
+
+    async def live_name_conflicts(self, ctx: ExecutionContext, file: File) -> list[str]:
+        # Faithful to `SqlFileRepository.live_name_conflicts`: same workspace,
+        # space and name key, ACTIVE, `file` itself excluded, tags DIFFERENT
+        # (`!=` on the dataclass: any one of the three differing, None included),
+        # of any age, ordered by id.
+        return sorted(
+            row.id
+            for row in self.rows.values()
+            if row.workspace_id == ctx.workspace_id
+            and row.space_id == file.space_id
+            and _name_key(row.name.value) == _name_key(file.name.value)
+            and row.deleted_at is None
+            and row.id != file.id
+            and row.tags != file.tags
         )
 
     async def storage_keys_in_space(self, ctx: ExecutionContext, space_id: str) -> list[str]:
@@ -496,6 +518,7 @@ def build_files_media(
         CompleteUpload(files_repo), outbox, uow, assembler=multipart
     )
     file_rename = RenameFile(files_repo)
+    file_retag = RetagFile(files_repo)
     namesakes = FindNamesakes(files_repo)
     file_deletion = DeleteFileService(file_delete, knowledge=knowledge_purge)
     return FilesMediaStack(
@@ -508,6 +531,7 @@ def build_files_media(
             space_totals=SummariseSpaces(files_repo),
             multipart=multipart,
             multipart_registrar=multipart_registrar,
+            retag=file_retag,
         ),
         media=MediaUseCases(
             requests=MediaRequestService(RequestMedia(media_repo, limits), outbox, uow),
@@ -532,7 +556,7 @@ def build_files_media(
         multipart_storage=multipart_storage,
         file_deletion=file_deletion,
         file_replacement=ReplaceNamesakesService(
-            file_complete, file_rename, namesakes=namesakes, erase=file_deletion
+            file_complete, file_rename, retag=file_retag, namesakes=namesakes, erase=file_deletion
         ),
         knowledge_purge=knowledge_purge,
     )

@@ -14,7 +14,12 @@ Two things follow, and they pull in opposite directions:
   a row and presigns a PUT; the bytes may never arrive. So the sweep cannot
   run in ``RegisterUpload``, and does not: it runs here, after
   ``CompleteUpload`` has recorded that they landed. That is the decision's own
-  order — "رفعٌ أوّلًا ثمّ حذف" — read strictly.
+  order — "رفعٌ أوّلًا ثمّ حذف" — read strictly. The rule holds for a rename
+  and a re-tag too: a file that is still only a promise (``uploaded`` or
+  ``scanning``, no proven bytes) or is ``quarantined`` can be renamed or
+  re-tagged onto an older file's name and tags, and that must destroy nothing;
+  so those two sweep only when the file they return is ``ready``, and a
+  completion — which is what makes the file ready — sweeps as ever.
 * The NEWER file wins, never the older. ``FileRepository.live_namesakes``
   returns only rows strictly older than the one that just arrived, so a
   replacement always runs in the direction the decision states. A rename that
@@ -66,13 +71,25 @@ alternative (destroy first, then complete) trades that for the one failure
 that cannot be undone.
 
 **The sweep restores the rule; it does not react to a change.** A rename to
-the name a file already has is a no-op in ``RenameFile`` and still sweeps
-here, so a space that already holds two files of one name — uploaded before
-this feature shipped, or left behind by a sweep that failed — is repaired by
-the next write on the newer of them. That a request which changed nothing can
-delete a file is surprising, and it is the deliberate side of the trade: the
-alternative is a rule the product applies only to files that happened to
-arrive after it.
+the name a file already has is a no-op in ``RenameFile`` and, when the file is
+``ready``, still sweeps here, so a space that already holds two files of one
+name — uploaded before this feature shipped, or left behind by a sweep that
+failed — is repaired by the next write on the newer of them. That a request
+which changed nothing can delete a file is surprising, and it is the deliberate
+side of the trade: the alternative is a rule the product applies only to files
+that happened to arrive after it.
+
+**A re-tag is the third source** (PLT-26). "Same name" now means the name AND
+the three classification tags, so changing the tags can create the collision a
+rename or an upload can: re-tagging a READY file onto the tag set of an older
+live file with its name replaces that file. ``retag`` shares the one sweep, and
+a re-tag that changes nothing sweeps too (when the file is ready), for the
+rename's reason. The tags are opaque here: this file passes the mapping through
+to ``RetagFile`` and never reads it.
+
+**Audit.** Both sweep log lines carry the acting user (``user_id``) and the
+source of the sweep (``complete``, ``rename`` or ``retag``); neither ever carries
+a file name or a tag value.
 
 **Retrieval is not left holding a deleted file.** ``DeleteFileService`` marks
 the row before it purges, so from the first step the old file is invisible to
@@ -83,14 +100,27 @@ is the same one that cascade already documents, and re-running ``DELETE
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol
+from collections.abc import Mapping, Sequence
+from typing import Literal, Protocol
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.observability import get_logger
 from app.framework.types import Uuid
 
 _logger = get_logger(__name__)
+
+_READY = "ready"
+
+SweepSource = Literal["complete", "rename", "retag"]
+
+
+class HasStatus(Protocol):
+    """What the service reads from the file a use case returns: its lifecycle
+    status, as text (``files``' ``FileStatus`` is a ``StrEnum``, so it fits).
+    Structural, so this file still imports no module."""
+
+    @property
+    def status(self) -> str: ...
 
 
 class FileCompleter[R](Protocol):
@@ -125,11 +155,24 @@ class FileRenamer[R](Protocol):
     async def execute(self, ctx: ExecutionContext, file_id: Uuid, *, name: str) -> R: ...
 
 
+class FileRetagger[R](Protocol):
+    """``RetagFile.execute`` — replace a file's three classification tags.
+
+    The bare use-case, for ``FileRenamer``'s reason: a re-tag produces no
+    events (INC1-D-5), so there is no ``…Service`` wrapper to bind to and none
+    is missing.
+    """
+
+    async def execute(
+        self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
+    ) -> R: ...
+
+
 class NamesakeFinder(Protocol):
     """``FindNamesakes.execute`` — the ids of the live files this one replaces.
 
     Every part of the rule ("same name" up to case and Unicode normalisation,
-    same space, strictly older, not deleted) lives behind this call, in
+    same tags, same space, strictly older, not deleted) lives behind this call, in
     ``FileRepository.live_namesakes`` and the index it is written against.
     This service never re-states any of it, so the two cannot drift.
     """
@@ -150,14 +193,15 @@ class FileEraser(Protocol):
     async def delete(self, ctx: ExecutionContext, file_id: Uuid) -> object: ...
 
 
-class ReplaceNamesakesService[R]:
-    """Complete or rename a file, then destroy the files it replaced.
+class ReplaceNamesakesService[R: HasStatus]:
+    """Complete, rename or RE-TAG a file, then destroy the files it replaced.
 
-    Two entry points because a collision has two sources — an upload arriving
-    under an existing name, and a rename creating the clash after the fact.
-    The audit names both (``RenameFile`` "can create the same collision after
-    the fact, so an implementation owes BOTH paths"), and they share one sweep
-    so neither can implement a different rule.
+    Three entry points because a collision has three sources — an upload
+    arriving under an existing name and tags, a rename creating the clash after
+    the fact, and a re-tag doing the same. The audit names the first two
+    (``RenameFile`` "can create the same collision after the fact, so an
+    implementation owes BOTH paths"), and they share one sweep so none can
+    implement a different rule.
     """
 
     def __init__(
@@ -165,25 +209,41 @@ class ReplaceNamesakesService[R]:
         complete: FileCompleter[R],
         rename: FileRenamer[R],
         *,
+        retag: FileRetagger[R],
         namesakes: NamesakeFinder,
         erase: FileEraser,
     ) -> None:
         self._complete = complete
         self._rename = rename
+        self._retag = retag
         self._namesakes = namesakes
         self._erase = erase
 
     async def complete(self, ctx: ExecutionContext, *, file_id: Uuid, checksum: str | None) -> R:
         completed = await self._complete.complete(ctx, file_id=file_id, checksum=checksum)
-        await self._sweep(ctx, file_id)
+        await self._sweep(ctx, file_id, source="complete")
         return completed
 
     async def rename(self, ctx: ExecutionContext, file_id: Uuid, *, name: str) -> R:
         renamed = await self._rename.execute(ctx, file_id, name=name)
-        await self._sweep(ctx, file_id)
+        # Only a ready file has proven bytes; renaming a promise onto an older
+        # file's name must not destroy that file (module docstring).
+        if renamed.status == _READY:
+            await self._sweep(ctx, file_id, source="rename")
         return renamed
 
-    async def _sweep(self, ctx: ExecutionContext, file_id: Uuid) -> None:
+    async def retag(
+        self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
+    ) -> R:
+        retagged = await self._retag.execute(ctx, file_id, tags=tags)
+        # A no-op re-tag of a READY file still sweeps, like a no-op rename: it
+        # repairs a space a failed sweep left with two files of one name and tag
+        # set. A file that is not ready sweeps nothing, for the rename's reason.
+        if retagged.status == _READY:
+            await self._sweep(ctx, file_id, source="retag")
+        return retagged
+
+    async def _sweep(self, ctx: ExecutionContext, file_id: Uuid, *, source: SweepSource) -> None:
         """Delete every live file ``file_id`` replaced, one independent step
         each.
 
@@ -199,7 +259,12 @@ class ReplaceNamesakesService[R]:
         except Exception:
             _logger.exception(
                 "file.replacement.lookup_failed",
-                extra={"file_id": file_id, "workspace_id": ctx.workspace_id},
+                extra={
+                    "file_id": file_id,
+                    "workspace_id": ctx.workspace_id,
+                    "user_id": ctx.user_id,
+                    "source": source,
+                },
             )
             return
         for older in replaced:
@@ -216,6 +281,8 @@ class ReplaceNamesakesService[R]:
                         "file_id": file_id,
                         "replaced_id": older,
                         "workspace_id": ctx.workspace_id,
+                        "user_id": ctx.user_id,
+                        "source": source,
                     },
                 )
             else:
@@ -225,5 +292,7 @@ class ReplaceNamesakesService[R]:
                         "file_id": file_id,
                         "replaced_id": older,
                         "workspace_id": ctx.workspace_id,
+                        "user_id": ctx.user_id,
+                        "source": source,
                     },
                 )

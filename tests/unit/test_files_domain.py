@@ -3,6 +3,7 @@ Pure: no infrastructure, no ports."""
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 
 import pytest
@@ -10,16 +11,20 @@ import pytest
 from app.framework.clock import utc_now
 from app.modules.files.domain.entities import File
 from app.modules.files.domain.errors import FileStateError, InvalidFileInput
+from app.modules.files.domain.events import FileUploaded
 from app.modules.files.domain.value_objects import (
     MAX_PARTS,
+    MAX_TAG_CHARS,
     MIN_PART_BYTES,
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     MultipartUpload,
     PartsCheck,
     Sha256,
     StorageKey,
+    TagKind,
     UploadMode,
     check_parts,
 )
@@ -407,3 +412,236 @@ def test_file_is_single_put_by_default_and_multipart_when_given_a_session() -> N
     assert single.is_multipart is False
     single.multipart = MultipartUpload("u", _PART)
     assert single.is_multipart is True
+
+
+# --------------------------------------------------------------------------- #
+# FileTags + File.retag -- PLT-26 (INC1-AC-1, INV-F6)                          #
+# --------------------------------------------------------------------------- #
+def test_tag_kinds_are_the_three_wire_keys() -> None:
+    assert [kind.value for kind in TagKind] == ["system", "equipment", "department"]
+    assert MAX_TAG_CHARS == 128
+
+
+def test_tags_default_to_all_absent() -> None:
+    tags = FileTags()
+    assert (tags.system, tags.equipment, tags.department) == (None, None, None)
+    assert tags.is_empty is True
+    assert tags.as_mapping() == {}
+
+
+def test_a_new_file_is_untagged() -> None:
+    assert _file().tags == FileTags()
+
+
+def test_tags_are_stripped() -> None:
+    assert FileTags(system="  KKS-01  ").system == "KKS-01"
+
+
+def test_tags_are_nfc_normalised_so_composed_and_decomposed_alef_hamza_match() -> None:
+    composed = "\u0623"  # alef with hamza above, one code point
+    decomposed = "\u0627\u0654"  # alef + combining hamza above
+    assert composed != decomposed
+    assert FileTags(system=decomposed).system == composed
+    assert FileTags(system=composed) == FileTags(system=decomposed)
+
+
+def test_tags_are_compared_literally_with_no_case_fold() -> None:
+    assert FileTags(system="Pump-A") != FileTags(system="pump-a")
+
+
+def test_absent_matches_only_absent() -> None:
+    assert FileTags(system="a") != FileTags()
+    assert FileTags() == FileTags()
+
+
+def test_tags_accept_the_boundary_length_and_refuse_one_more() -> None:
+    assert len(FileTags(equipment="x" * MAX_TAG_CHARS).equipment or "") == MAX_TAG_CHARS
+    with pytest.raises(InvalidFileInput):
+        FileTags(equipment="x" * (MAX_TAG_CHARS + 1))
+
+
+def test_the_length_limit_counts_the_stripped_value() -> None:
+    assert FileTags(system=" " + "x" * MAX_TAG_CHARS + " ").system == "x" * MAX_TAG_CHARS
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+def test_tags_refuse_an_empty_or_blank_value(value: str) -> None:
+    for kind in TagKind:
+        with pytest.raises(InvalidFileInput):
+            FileTags(**{kind.value: value})
+
+
+@pytest.mark.parametrize("value", ["a\x00b", "a\nb", "a\x7fb", "a\tb"])
+def test_tags_refuse_a_control_character(value: str) -> None:
+    with pytest.raises(InvalidFileInput):
+        FileTags(department=value)
+
+
+@pytest.mark.parametrize(
+    ("char", "category"),
+    [
+        ("\u0085", "Cc"),  # C1 control (NEL, inside the value)
+        ("\u009f", "Cc"),
+        ("\u200b", "Cf"),  # zero-width space
+        ("\u200d", "Cf"),  # zero-width joiner
+        ("\ufeff", "Cf"),  # BOM / zero-width no-break space
+        ("\u00ad", "Cf"),  # soft hyphen
+        ("\u202e", "Cf"),  # right-to-left override
+        ("\u2066", "Cf"),  # bidi isolate
+        ("\u2069", "Cf"),  # pop directional isolate
+        ("\U000e0041", "Cf"),  # tag character
+        ("\ud800", "Cs"),  # lone high surrogate
+        ("\udfff", "Cs"),  # lone low surrogate
+        ("\ue000", "Co"),  # private use
+        ("\U000f0000", "Co"),  # supplementary private use
+        ("\u0378", "Cn"),  # unassigned
+        ("\u2028", "Zl"),  # line separator
+        ("\u2029", "Zp"),  # paragraph separator
+    ],
+)
+def test_tags_refuse_invisible_and_reordering_characters_by_unicode_category(
+    char: str, category: str
+) -> None:
+    """INC-1 rework (S-3): a tag is an opaque reference compared exactly, so a
+    character that is invisible or reorders the display would make two tags that
+    read the same compare different."""
+    assert unicodedata.category(char) == category
+    for kind in TagKind:
+        with pytest.raises(InvalidFileInput) as err:
+            FileTags(**{kind.value: f"a{char}b"})
+        assert kind.value in str(err.value)
+        assert char not in str(err.value)  # the message never echoes the value
+
+
+def test_a_tag_that_cannot_be_encoded_as_utf8_is_refused_explicitly() -> None:
+    """Review B-1: it must be an `InvalidFileInput` (422), not a database-driver
+    error (500) -- and it holds even before the category check."""
+    value = "a\ud800b"
+    with pytest.raises(UnicodeEncodeError):
+        value.encode("utf-8")
+    with pytest.raises(InvalidFileInput):
+        FileTags(system=value)
+    with pytest.raises(InvalidFileInput):
+        FileTags.from_mapping({"equipment": value})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "مضخة-7",  # Arabic letters
+        "كهرباء",
+        "泵房-3号",  # CJK
+        "ポンプ",
+        "Σ-pump_1.2/3",  # Greek, punctuation
+        "pump\u00a07",  # NBSP inside the value (Zs) is allowed
+        "a b",
+        "\U0001f600",  # an emoji (So)
+        "e\u0301",  # a combining mark (Mn), NFC-composed to one letter
+    ],
+)
+def test_tags_accept_ordinary_text_of_any_script(value: str) -> None:
+    assert FileTags(system=value).system == unicodedata.normalize("NFC", value)
+
+
+def test_control_characters_at_the_edges_are_stripped_not_refused() -> None:
+    """`strip()` runs before the category check (NFC, then strip, then check),
+    as it always did for the ASCII whitespace controls."""
+    assert FileTags(system="\t\u0085x\u2028 ").system == "x"
+
+
+def test_tags_take_a_uuid_as_text() -> None:
+    uuid = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+    assert FileTags(system=uuid).system == uuid
+
+
+def test_from_mapping_reads_the_three_keys_and_treats_missing_or_null_as_absent() -> None:
+    tags = FileTags.from_mapping({"system": "S", "equipment": None})
+    assert tags == FileTags(system="S")
+    assert FileTags.from_mapping({}) == FileTags()
+
+
+def test_from_mapping_normalises_like_the_constructor() -> None:
+    assert FileTags.from_mapping({"department": "  Elec  "}).department == "Elec"
+
+
+def test_from_mapping_refuses_an_unknown_key() -> None:
+    with pytest.raises(InvalidFileInput):
+        FileTags.from_mapping({"system": "S", "owner": "x"})
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_from_mapping_refuses_an_empty_value(value: str) -> None:
+    with pytest.raises(InvalidFileInput):
+        FileTags.from_mapping({"system": value})
+
+
+def test_as_mapping_lists_present_tags_only_by_kind_value() -> None:
+    tags = FileTags(system="S", department="D")
+    assert tags.as_mapping() == {"system": "S", "department": "D"}
+    assert tags.is_empty is False
+
+
+def test_retag_replaces_all_three_and_stamps_updated_at() -> None:
+    file = _file(FileStatus.READY)
+    file.tags = FileTags(system="old", equipment="old")
+    before = file.updated_at
+    later = utc_now()
+    changed = file.retag(FileTags(department="D"), later)
+    assert changed is True
+    assert file.tags == FileTags(department="D")  # full replacement: old ones gone
+    assert file.updated_at == later
+    assert later >= before
+
+
+def test_retag_to_the_same_tags_is_a_no_op_that_leaves_updated_at_alone() -> None:
+    file = _file(FileStatus.READY)
+    file.tags = FileTags(system="S")
+    stamped = file.updated_at
+    assert file.retag(FileTags(system="  S "), utc_now()) is False
+    assert file.tags == FileTags(system="S")
+    assert file.updated_at == stamped
+
+
+def test_retag_of_an_untagged_file_to_no_tags_is_a_no_op() -> None:
+    file = _file(FileStatus.READY)
+    stamped = file.updated_at
+    assert file.retag(FileTags(), utc_now()) is False
+    assert file.updated_at == stamped
+
+
+def test_retag_to_no_tags_clears_them() -> None:
+    file = _file(FileStatus.READY)
+    file.tags = FileTags(system="S")
+    assert file.retag(FileTags(), utc_now()) is True
+    assert file.tags.is_empty
+
+
+def test_retag_refuses_a_deleted_file_and_changes_nothing() -> None:
+    file = _file(FileStatus.READY, deleted_at=utc_now())
+    stamped = file.updated_at
+    with pytest.raises(FileStateError):
+        file.retag(FileTags(system="S"), utc_now())
+    assert file.tags == FileTags()
+    assert file.updated_at == stamped
+
+
+@pytest.mark.parametrize("status", list(FileStatus))
+def test_retag_works_in_every_status(status: FileStatus) -> None:
+    file = _file(status)
+    assert file.retag(FileTags(system="S"), utc_now()) is True
+    assert file.status is status
+
+
+def test_retag_leaves_the_name_and_the_bytes_descriptor_alone() -> None:
+    file = _file(FileStatus.READY)
+    name, key, size = file.name, file.storage_key, file.size_bytes
+    file.retag(FileTags(system="S"), utc_now())
+    assert (file.name, file.storage_key, file.size_bytes) == (name, key, size)
+
+
+def test_file_uploaded_carries_tags_last_and_defaults_to_untagged() -> None:
+    now = utc_now()
+    plain = FileUploaded("f", "w", "s", "application/pdf", 1, "w/f", None, now)
+    assert plain.tags == FileTags()
+    tagged = FileUploaded("f", "w", "s", "application/pdf", 1, "w/f", None, now, FileTags("S"))
+    assert tagged.tags.as_mapping() == {"system": "S"}

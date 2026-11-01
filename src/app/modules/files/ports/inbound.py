@@ -21,7 +21,7 @@ answers both because both are the files module's own facts.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -44,6 +44,11 @@ class FileView:
     size_bytes: int
     storage_key: str
     status: str
+    # PLT-26 -- the present classification tags only ({"system": "...", ...});
+    # {} when untagged. Plain types: every consumer is another module and may
+    # not name `FileTags`. Defaulted (INC1-D-30), so no existing construction
+    # of a view changes.
+    tags: Mapping[str, str] = field(default_factory=dict)
 
 
 class FilesQuery(Protocol):

@@ -48,6 +48,7 @@ from app.modules.files.domain.value_objects import (
     ContentType,
     FileName,
     FileStatus,
+    FileTags,
     MultipartUpload,
     Sha256,
     StorageKey,
@@ -79,6 +80,14 @@ class RegisterUpload:
     router — where no lock was ever taken. One extra indexed primary-key read
     inside an open transaction is a cheap price for a check that does not
     depend on which caller arrived.
+
+    **``tags``** (PLT-26) are the file's three optional classification tags.
+    They are parsed in the FIRST block, beside the name and the content type,
+    so a bad tag is a 422 before any limit is spent, before the space lookup
+    and before ``start_multipart`` opens an upload that nothing would ever
+    finish. They are stored as given -- NFC and stripped by ``FileTags`` -- and
+    they decide what a later same-name completion replaces: the replacement
+    needs the name AND the tags to match (``FileRepository.live_namesakes``).
 
     ``space_id`` is required-but-nullable, with no default. ``None`` means "no
     space", which is a real state until plan row 8-b makes the column
@@ -148,10 +157,12 @@ class RegisterUpload:
         content_type: str,
         size_bytes: int,
         mode: UploadMode = UploadMode.SINGLE,
+        tags: Mapping[str, str | None] | None = None,
     ) -> File:
         try:
             file_name = FileName(name)
             media_type = ContentType(content_type)
+            file_tags = FileTags.from_mapping(tags) if tags else FileTags()
         except FileError as exc:
             raise ValidationError(str(exc)) from exc
 
@@ -214,6 +225,7 @@ class RegisterUpload:
             deleted_at=None,
             version=1,
             multipart=session,
+            tags=file_tags,
         )
         await self._files.add(ctx, file)
         return file
@@ -264,14 +276,30 @@ class CompleteUpload:
             file.storage_key.value,
             None if sha is None else sha.value,
             now,
+            # The row's tags, read back off the aggregate like `space_id`
+            # (PLT-26): a consumer files or indexes by them, and the aggregate
+            # is the one place that knows them.
+            file.tags,
         )
         return file, (event,)
 
 
+@dataclass(frozen=True, slots=True)
+class NamesakePreview:
+    """What a completion, rename or re-tag of one file would do to its
+    namesakes, as ids (``FindNamesakes.preview``)."""
+
+    # What the operation deletes NOW: the older live files with this name AND
+    # these tags (``live_namesakes``).
+    replaced: tuple[Uuid, ...]
+    # Same name, different tags: they stay (RSK-20). Of any age.
+    kept: tuple[Uuid, ...]
+
+
 class FindNamesakes:
     """The ids of the ACTIVE files one file REPLACES — same space, same name,
-    registered before it (س-29 rule 1, owner decision 2026-08-25;
-    ``docs/rag-fidelity-audit.md`` §4-هـ-2).
+    the same tags, registered before it (س-29 rule 1, owner decision
+    2026-08-25; ``docs/rag-fidelity-audit.md`` §4-هـ-2; PLT-26).
 
     **A read, and only a read.** It does not delete, because it cannot: the
     replacement destroys the older file's INDEX as well as its row, and the
@@ -299,6 +327,18 @@ class FindNamesakes:
         if file is None:
             raise NotFoundError("file not found")
         return tuple(await self._files.live_namesakes(ctx, file))
+
+    async def preview(self, ctx: ExecutionContext, file_id: Uuid) -> NamesakePreview:
+        """``execute`` plus the files the operation will NOT touch: same name,
+        different tags (``live_name_conflicts``). A read for a replacement
+        preview (``electrical`` asks it through the Composition Root); it
+        deletes nothing and writes nothing. Same 404 as ``execute``."""
+        file = await self._files.get(ctx, file_id)
+        if file is None:
+            raise NotFoundError("file not found")
+        replaced = tuple(await self._files.live_namesakes(ctx, file))
+        kept = tuple(await self._files.live_name_conflicts(ctx, file))
+        return NamesakePreview(replaced=replaced, kept=kept)
 
 
 class ListFiles:
@@ -404,6 +444,50 @@ class RenameFile:
         return file
 
 
+class RetagFile:
+    """Re-tag a file (PLT-26). ``RenameFile``'s twin: the raw mapping becomes
+    ``FileTags`` here (all three at once -- a full replacement, so a missing key
+    or ``None`` REMOVES that tag), and the domain's two error kinds are
+    translated into the framework's 422/409.
+
+    **No event, and none is missing** (INC1-D-5): nothing consumes one yet, and
+    a catalogue row is a promise to publish. Whoever first writes tags into an
+    index (FR-32 of the assistant, WireTwin's INC-8) adds the event with the
+    consumer.
+
+    **A no-op does not write**, for ``RenameFile``'s reason: ``save`` bumps
+    ``version`` and ``updated_at`` unconditionally, and a "modified at" that
+    moves when nothing was modified is a false record.
+
+    ⚠️ **The replacement a new tag set can cause is NOT here.** Re-tagging a
+    file onto the name-and-tags of an older live file in its space replaces
+    that file, exactly as a rename does; ``framework/di/file_replacement.py``
+    owns that consequence because it reaches a module ``files`` may not
+    import.
+    """
+
+    def __init__(self, files: FileRepository) -> None:
+        self._files = files
+
+    async def execute(
+        self, ctx: ExecutionContext, file_id: Uuid, *, tags: Mapping[str, str | None]
+    ) -> File:
+        file = await self._files.get(ctx, file_id)
+        if file is None:
+            raise NotFoundError("file not found")
+        try:
+            new_tags = FileTags.from_mapping(tags)
+        except FileError as exc:
+            raise ValidationError(str(exc)) from exc
+        try:
+            changed = file.retag(new_tags, utc_now())
+        except FileStateError as exc:
+            raise ConflictError(str(exc)) from exc
+        if changed:
+            await self._files.save(ctx, file)
+        return file
+
+
 class SoftDeleteFile:
     """Soft-delete a file. Idempotent — re-deleting emits no new event."""
 
@@ -479,6 +563,7 @@ class FilesQueryService:
             size_bytes=file.size_bytes,
             storage_key=file.storage_key.value,
             status=file.status.value,
+            tags=file.tags.as_mapping(),
         )
 
     async def names_for_files(
@@ -615,6 +700,7 @@ class MultipartRegistrar:
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> RegisteredMultipartUpload:
         file = await self._register.execute(
             ctx,
@@ -623,6 +709,7 @@ class MultipartRegistrar:
             content_type=content_type,
             size_bytes=size_bytes,
             mode=UploadMode.MULTIPART,
+            tags=tags,
         )
         session = file.multipart
         if session is None:  # pragma: no cover - MULTIPART always yields a session
@@ -882,6 +969,7 @@ class FileTransferService:
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> RegisteredUpload:
         file = await self._register.execute(
             ctx,
@@ -889,6 +977,7 @@ class FileTransferService:
             name=name,
             content_type=content_type,
             size_bytes=size_bytes,
+            tags=tags,
         )
         upload_url = await self._storage.presign_put(
             file.storage_key.value, self._put_ttl_s, file.content_type.value
@@ -963,3 +1052,7 @@ class FileUseCases:
     # ceiling, which is `transfers.register`'s rule on `POST /files` too.
     multipart: MultipartUploadService
     multipart_registrar: MultipartRegistrar
+    # PLT-26: the bare re-tag use-case, for `rename`'s reason -- it produces no
+    # event, and the route reaches it through `framework/di/file_replacement.py`
+    # (a new tag set can create the collision an upload can).
+    retag: RetagFile

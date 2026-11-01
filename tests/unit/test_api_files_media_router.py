@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator, Sequence
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
 from app.api.main import create_app
@@ -669,6 +670,372 @@ def test_rename_requires_a_bearer() -> None:
     response = client.patch("/api/v1/files/anything", json={"name": "x.pdf"})
 
     assert response.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# Files — classification tags (PLT-26)                                          #
+# --------------------------------------------------------------------------- #
+_TAGS = {"system": "sys-1", "equipment": "pump-7", "department": "elec"}
+_NO_TAGS = {"system": None, "equipment": None, "department": None}
+
+
+def _complete(client: TestClient, file_id: object) -> None:
+    response = client.post(f"/api/v1/files/{file_id}/complete", json={}, headers=_auth())
+    assert response.status_code == 200, response.text
+
+
+def _put_tags(client: TestClient, file_id: object, body: object) -> Response:
+    return client.put(f"/api/v1/files/{file_id}/tags", json=body, headers=_auth())
+
+
+def test_register_with_tags_stores_them_and_every_read_returns_them() -> None:
+    """INC1-AC-1: tags on the wire at registration, and `FileOut.tags` on the
+    complete, get and list faces, with all three keys always present."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = str(_register(client, tags={"system": "  sys-1  ", "equipment": "pump-7"})["file_id"])
+
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == {
+        "system": "sys-1",
+        "equipment": "pump-7",
+    }
+    expected = {"system": "sys-1", "equipment": "pump-7", "department": None}
+    completed = client.post(f"/api/v1/files/{file_id}/complete", json={}, headers=_auth()).json()
+    read = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
+    assert completed["tags"] == read["tags"] == expected
+    assert [row["tags"] for row in listed] == [expected]
+
+
+def test_an_untagged_file_reads_all_three_tags_as_null() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    assert client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()["tags"] == _NO_TAGS
+
+
+def test_register_accepts_null_tags_and_an_empty_object_as_untagged() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    for tags in (None, {}, _NO_TAGS):
+        file_id = _register(client, name=f"p{len(str(tags))}.pdf", tags=tags)["file_id"]
+        read = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
+        assert read["tags"] == _NO_TAGS
+
+
+def test_multipart_register_carries_the_tags_too() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+
+    out = _register_multipart(client, tags=_TAGS)
+
+    assert stack.file_repository.rows[str(out["file_id"])].tags.as_mapping() == _TAGS
+
+
+def _bad_tag_bodies() -> list[dict[str, object]]:
+    return [
+        {"system": ""},
+        {"system": "   "},
+        {"system": "x" * 129},
+        {"equipment": "a\u0000b"},
+        {"department": "a\u0007b"},
+        {"system": "a\u200bb"},  # zero-width space (Cf)
+        {"system": "a\u0085b"},  # C1 control (Cc)
+        {"system": "a\u202eb"},  # bidi override (Cf)
+        {"system": "a\ue000b"},  # private use (Co)
+        {"system": "a\u2028b"},  # line separator (Zl)
+        {"section": "elec"},  # unknown key: refused, not dropped (INC1-D-1)
+        {"system": 7},
+    ]
+
+
+def test_a_bad_tag_at_registration_is_a_422_and_spends_nothing() -> None:
+    """INC1-AC-1: before any limit is spent and before a multipart upload is
+    opened -- no row, no presigned URL, no storage upload."""
+    app, stack = _make_app()
+    client = TestClient(app)
+
+    for tags in _bad_tag_bodies():
+        for path, size in (("/api/v1/files", 10), ("/api/v1/files/multipart", _BIG)):
+            response = client.post(
+                path,
+                json={
+                    "space_id": _SPACE,
+                    "name": "plan.pdf",
+                    "content_type": "application/pdf",
+                    "size_bytes": size,
+                    "tags": tags,
+                },
+                headers=_auth(),
+            )
+            assert response.status_code == 422, (path, tags, response.text)
+            assert response.json()["code"] == "common.validation_error"
+
+    assert stack.file_repository.rows == {}
+    assert stack.storage.presigned_puts == []
+    assert stack.multipart_storage.uploads == {}
+
+
+def test_a_bad_tag_wins_over_an_unsupported_type_and_an_oversize_file() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/files",
+        json={
+            "space_id": _SPACE,
+            "name": "x.bin",
+            "content_type": "application/x-msdownload",
+            "size_bytes": 2 * 1024**3,
+            "tags": {"system": ""},
+        },
+        headers=_auth(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+    assert stack.file_repository.rows == {}
+
+
+def test_retag_replaces_all_three_tags_and_answers_the_whole_file() -> None:
+    """INC1-AC-1: a full replacement -- the missing key and the `null` both
+    remove the tag -- answering `200 FileOut`."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = str(_register(client, tags=_TAGS)["file_id"])
+    _complete(client, file_id)
+
+    response = _put_tags(client, file_id, {"system": "sys-2", "equipment": None})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == file_id
+    assert body["tags"] == {"system": "sys-2", "equipment": None, "department": None}
+    assert body["status"] == "ready"
+    assert str(body["download_url"]).startswith("https://get/")
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == {"system": "sys-2"}
+    read = client.get(f"/api/v1/files/{file_id}", headers=_auth()).json()
+    assert read["tags"] == body["tags"]
+
+
+def test_retag_with_an_empty_object_untags_the_file() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client, tags=_TAGS)["file_id"]
+
+    body = _put_tags(client, file_id, {}).json()
+
+    assert body["tags"] == _NO_TAGS
+
+
+def test_re_tagging_with_the_tags_it_has_does_not_write() -> None:
+    """INC1-AC-1: no `save` (so no `version`/`updated_at` bump), and still 200."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = str(_register(client, tags=_TAGS)["file_id"])
+    stamp = stack.file_repository.rows[file_id].updated_at
+    saved_before = list(stack.file_repository.saved)
+
+    response = _put_tags(client, file_id, _TAGS)
+
+    assert response.status_code == 200
+    assert stack.file_repository.saved == saved_before
+    assert stack.file_repository.rows[file_id].updated_at == stamp
+
+
+def test_retag_with_a_bad_tag_is_422_and_changes_nothing() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = str(_register(client, tags=_TAGS)["file_id"])
+
+    for body in _bad_tag_bodies():
+        response = _put_tags(client, file_id, body)
+        assert response.status_code == 422, (body, response.text)
+        assert response.json()["code"] == "common.validation_error"
+
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == _TAGS
+
+
+# httpx cannot encode a lone surrogate itself, so the body is sent as the JSON
+# escape a hostile client would use.
+_SURROGATE_TAGS = '{"system":"a\\ud800b","equipment":"a\\ud800b"}'
+
+
+def test_retag_with_a_lone_surrogate_is_422_and_never_saves() -> None:
+    """Review B-1: a value that cannot be encoded as UTF-8 used to pass the
+    domain and fail at the database driver as a 500."""
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    file_id = str(_register(client, tags=_TAGS)["file_id"])
+    saved_before = list(stack.file_repository.saved)
+
+    response = client.put(
+        f"/api/v1/files/{file_id}/tags",
+        content=_SURROGATE_TAGS,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert "ud800" not in response.text and "\ud800" not in response.text  # never echoed
+    assert stack.file_repository.saved == saved_before
+    assert stack.file_repository.rows[file_id].tags.as_mapping() == _TAGS
+
+
+def test_single_register_with_a_lone_surrogate_tag_is_422_and_writes_no_row() -> None:
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    body = (
+        f'{{"space_id":"{_SPACE}","name":"plan.pdf","content_type":"application/pdf",'
+        f'"size_bytes":10,"tags":{_SURROGATE_TAGS}}}'
+    )
+    response = client.post(
+        "/api/v1/files",
+        content=body,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert "ud800" not in response.text and "\ud800" not in response.text  # never echoed
+    assert stack.file_repository.rows == {}
+
+
+def test_multipart_register_with_a_lone_surrogate_never_starts_an_upload() -> None:
+    app, stack = _make_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    body = (
+        f'{{"space_id":"{_SPACE}","name":"plan.pdf","content_type":"application/pdf",'
+        f'"size_bytes":{_BIG},"tags":{_SURROGATE_TAGS}}}'
+    )
+    response = client.post(
+        "/api/v1/files/multipart",
+        content=body,
+        headers={**_auth(), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "common.validation_error"
+    assert stack.multipart_storage.uploads == {}
+    assert stack.file_repository.rows == {}
+
+
+def test_retag_of_a_deleted_file_is_409_and_of_an_unknown_one_404() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+    client.delete(f"/api/v1/files/{file_id}", headers=_auth())
+
+    deleted = _put_tags(client, file_id, _TAGS)
+    unknown = _put_tags(client, "no-such-file", _TAGS)
+
+    assert deleted.status_code == 409
+    assert deleted.json()["code"] == "common.conflict"
+    assert unknown.status_code == 404
+    assert unknown.json()["code"] == "common.not_found"
+
+
+def test_retag_requires_a_bearer() -> None:
+    app, _ = _make_app()
+
+    response = TestClient(app).put("/api/v1/files/anything/tags", json={})
+
+    assert response.status_code == 401
+
+
+def test_retag_onto_an_older_files_name_and_tags_replaces_it() -> None:
+    """INC1-AC-2 at the route: re-tagging goes through the cascade, so the
+    older file loses its row AND its index."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client, tags=_TAGS)["file_id"]
+    _complete(client, first)
+    second = _register(client)["file_id"]
+    _complete(client, second)
+    assert stack.knowledge_purge.calls == []  # untagged vs tagged: both stay
+
+    response = _put_tags(client, second, _TAGS)
+
+    assert response.status_code == 200
+    assert stack.knowledge_purge.calls == [first]
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
+    assert [row["id"] for row in listed] == [second]
+
+
+def test_completing_replaces_only_the_namesake_with_the_same_tags() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    tagged = _register(client, tags=_TAGS)["file_id"]
+    untagged = _register(client)["file_id"]
+    _complete(client, tagged)
+    _complete(client, untagged)
+    assert stack.knowledge_purge.calls == []
+
+    newer = _register(client, tags=_TAGS)["file_id"]
+    _complete(client, newer)
+
+    assert stack.knowledge_purge.calls == [tagged]
+    listed = client.get(f"/api/v1/files?space_id={_SPACE}", headers=_auth()).json()["data"]
+    assert sorted(row["id"] for row in listed) == sorted([str(untagged), str(newer)])
+
+
+def test_retag_and_rename_of_a_file_that_is_not_ready_destroy_nothing_until_it_completes() -> None:
+    """Review S-1 at the route: a registered-but-uncompleted file has no proven
+    bytes, so re-tagging or renaming it onto an older file replaces nothing;
+    completing it does."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    first = _register(client, tags=_TAGS)["file_id"]
+    _complete(client, first)
+    promise = _register(client, name="draft.pdf")["file_id"]
+
+    assert _put_tags(client, promise, _TAGS).status_code == 200
+    renamed = client.patch(f"/api/v1/files/{promise}", json={"name": "report.pdf"}, headers=_auth())
+    assert renamed.status_code == 200, renamed.text
+    assert stack.knowledge_purge.calls == []
+
+    _complete(client, promise)
+
+    assert stack.knowledge_purge.calls == [first]
+
+
+def test_retag_fails_closed_when_the_replacement_is_unwired() -> None:
+    """Never a fallback to `services.files.retag`: that call works, which is
+    why the fallback would be invisible -- a 200 that skipped the sweep."""
+    app, _ = _make_app(file_replacement=False)
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+
+    response = _put_tags(client, file_id, _TAGS)
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "common.internal"
+
+
+def test_the_same_idempotency_key_with_other_tags_is_a_conflict() -> None:
+    """The ledger fingerprints the whole body, so the tags are part of it."""
+    app, _ = _make_app()
+    client = TestClient(app)
+    body = {
+        "space_id": _SPACE,
+        "name": "plan.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 10,
+    }
+    first = client.post(
+        "/api/v1/files", json={**body, "tags": _TAGS}, headers={**_auth(), **_idem("k-tags")}
+    )
+    second = client.post(
+        "/api/v1/files",
+        json={**body, "tags": {"system": "other"}},
+        headers={**_auth(), **_idem("k-tags")},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
 
 
 # --------------------------------------------------------------------------- #

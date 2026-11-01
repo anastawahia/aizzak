@@ -104,7 +104,7 @@ sequenceDiagram
 
 | النوع (type) | المنتِج → المستهلك | subject | الحمولة (data) |
 |--------------|--------------------|---------|-----------------|
-| `files.file.uploaded.v1` | files → — (لا مستهلك) | file_id | `{file_id, content_type, size_bytes, storage_key, space_id?}` |
+| `files.file.uploaded.v1` | files → — (لا مستهلك) | file_id | `{file_id, content_type, size_bytes, storage_key, space_id?, tags?}` |
 | `knowledge.document.registered.v1` | knowledge(API) → knowledge(worker) | document_id | `{document_id, file_id}` |
 | `knowledge.document.indexed.v1` | knowledge → notify | document_id | `{document_id, chunk_count}` |
 | `knowledge.document.indexing_failed.v1` | knowledge → notify | document_id | `{document_id, reason}` |
@@ -115,6 +115,8 @@ sequenceDiagram
 | `media.job.generated.v1` | media(worker) → notify | job_id | `{job_id, result_file_id}` |
 | `media.job.failed.v1` | media(worker) → notify | job_id | `{job_id, reason}` |
 | `memory.item.stored.v1` | memory → memory(worker) | memory_id | `{memory_id, agent_key, content_ref}` |
+
+> **`tags?` في `files.file.uploaded.v1` (`PLT‑26`):** كائنٌ اختياريٌّ يحمل **الوسوم الحاضرة وحدها** من `system` و`equipment` و`department` (كلٌّ نصٌّ 1..128)، **ويغيب المفتاح كله حين لا وسم** — لا `null` ولا `{}` (`minProperties: 1`)، والوسمُ الغائب غائبٌ من الكائن لا `null` فيه. يُقرأ من صفّ الملف عند الإتمام كما يُقرأ `space_id`. حقلٌ اختياريٌّ مضاف فيبقى النوع `v1`. ولا حدث لإعادة الوسم في INC‑1 (INC1‑D‑5)؛ من يكتب الوسوم في فهرسٍ يضيفه مع مستهلكه.
 
 > **مَن يُنتج `knowledge.document.registered.v1`؟** الـAPI، منذ صارت الفهرسة يدويّة: `POST /knowledge/documents` (فهرسةٌ أولى، `IndexFileService`) و`POST /knowledge/reindex` (إعادة بناء، `ReindexService`) — كلاهما يسجّل مستنداً `pending` ويُلحِق هذا الحدث في المعاملة نفسها. لم يعد لعامل المعرفة منتِجٌ لهذا الحدث ولا مشترَكٌ في `stream.files`؛ يستهلكه فقط.
 

@@ -22,7 +22,7 @@
 | Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` |
 | Models | `/api/v1/models` | GET(list) |
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
-| Files | `/api/v1/files` | POST(register) · POST `/multipart` · GET `{id}/upload` · POST `{id}/upload/part-urls` · POST `{id}/complete` · GET(list) · GET · PATCH · DELETE |
+| Files | `/api/v1/files` | POST(register) · POST `/multipart` · GET `{id}/upload` · POST `{id}/upload/part-urls` · POST `{id}/complete` · GET(list) · GET · PATCH · PUT `{id}/tags` · DELETE |
 | Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · **POST `/documents`** · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
 | Media | `/api/v1/media` | POST `/jobs` · GET `/jobs/{id}` |
 | Workflows | `/api/v1/workflows` | GET(list) · POST `{key}/run` · GET `/runs/{id}` |
@@ -133,6 +133,7 @@ class ConversationFileOut(BaseModel): file_id: str; pinned_at: datetime
 # على المجموع نفسه فحملت الوحدة أكثر من حصّتها (`Limits.max_space_bytes`). تجاوزٌ ⇒ `spaces.quota_exceeded` (409).
 class FileRegisterIn(BaseModel):
     name: str; content_type: str; size_bytes: int; space_id: str
+    tags: FileTagsIn | None = None                       # PLT‑26 — اختياري
 class FileRegisterOut(BaseModel):
     file_id: str; upload_url: str; expires_in: int       # presigned PUT (MinIO)
 # ⚠️ **الرفع بطلب PUT واحد محدود بـ50 MiB (`Limits.max_single_put_bytes`)** لأن حدّ الحافة
@@ -166,7 +167,7 @@ class FileCompleteIn(BaseModel): checksum: str | None = None
 # `GET /files` بعده يعيد صفًّا واحداً حيث كان صفّان. والاتّجاه ملزم: **الأحدث يَجُبّ
 # الأقدم ولا عكس**، والمقارنة على `lower(normalize(name, NFC))` داخل الوحدة وحدها.
 # ولا شيء يقع عند **التسجيل**: رابط رفعٍ موقَّعٌ وعدٌ، ووعدٌ لا يُقايَض بملفٍّ قائم.
-# الاسمُ هو الحقل الوحيد القابل للتعديل في الملف؛ والامتدادُ **غير قابل للتعديل**:
+# الاسمُ والوسومُ هما الحقلان القابلان للتعديل في الملف (الوسوم: `PUT /files/{id}/tags` أدناه)؛ والامتدادُ **غير قابل للتعديل**:
 # مطابقٌ (بلا حساسيةٍ لحالة الأحرف) ⇒ يُخزَّن كما أُرسل · بلا امتداد ⇒ يرث الحاليّ ·
 # مختلفٌ ⇒ 422. الامتداد ادّعاءٌ عن البايتات، والبايتات لا تتغيّر؛ فتغييره يجعل
 # الاسم المعروض كذبةً ويُسلّم التنزيل إلى مُشغّل نظامٍ خاطئ. ولا حدث ولا إعادة فهرسة:
@@ -175,9 +176,38 @@ class FileCompleteIn(BaseModel): checksum: str | None = None
 # تصنع التصادم بعد الرفع، فتسميةُ ملفٍّ باسم ملفٍّ **أقدم** في وحدته تحذف ذاك مع فهرسه.
 # فالجملة «لا إعادة فهرسة» تبقى صحيحةً عن `RenameFile` نفسه، لا عن المسار.
 class FileRenameIn(BaseModel): name: str
+# ── وسوم الملف (`PLT‑26`، INC‑1) ──
+# ثلاثة وسومٍ اختيارية: `system` و`equipment` و`department` (**القسم** بمعنى الإدارة: كهرباء،
+# ميكانيك؛ لا `section` لئلا يلتبس بأقسام وحدة `electrical`، INC1‑D‑2). الوسمُ **رمزٌ مرجعيٌّ
+# معتم** (قد يكون UUID نصاً): يُطبَّع NFC ويُقصّ، ثم 1..128 محرفاً (يُعدّ بعد التطبيع والقصّ) ويُرفض فيه كلُّ محرفٍ من فئات Unicode‏ `Cc` و`Cf` و`Cs` و`Co` و`Cn` و`Zl` و`Zp` (تحكّم وتنسيق وبدائل منفردة واستعمال خاص وغير معيَّن وفواصل أسطر)، وكذلك ما لا يُرمَّز UTF‑8؛ وتُقبل المسافات العادية (`Zs`) وحروف كل الكتابات؛ ويُقارن
+# **حرفياً** بلا طيّ حالة الأحرف. الغائبُ أو `null` = لا وسم، ولا يُخزَّن ولا يُنشر فارغاً.
+# `FileTagsIn` يرفض المفتاح المجهول (`extra="forbid"`، أول DTO كذلك): وسمٌ مكتوبٌ خطأً
+# («section») يُسقَط بصمتٍ فيصير الملف «بلا وسوم» فيستبدل ما لم يقصده الرافع (INC1‑D‑1).
+# وسمٌ فارغٌ أو أطول من 128 أو فيه محرفٌ محظور أو مفتاحٌ مجهول ⇒ `422 common.validation_error`
+# **قبل أي كتابة وقبل أي رابط رفع وقبل فتح رفعٍ مجزّأ** (يُحلَّل الوسم في
+# أول كتلة من `RegisterUpload` مع الاسم). على أن الطلب يمرّ أولاً بقفل الوحدة وفحص حصّتها
+# (`SpaceQuotaService` تمرّر الوسوم دون أن تقرأها): فوحدةٌ مجهولة ⇒ `404` وحصّةٌ ممتلئة ⇒
+# `409 spaces.quota_exceeded` قبل `422` الوسم.
+class FileTagsIn(BaseModel):                             # model_config = ConfigDict(extra="forbid")
+    system: str | None = None; equipment: str | None = None; department: str | None = None
+class FileTagsOut(BaseModel):                            # المفاتيح الثلاثة حاضرةٌ دائماً
+    system: str | None; equipment: str | None; department: str | None
+# `PUT /files/{id}/tags` (`retagFile`، `files:write`) ⇒ `200 FileOut`: **استبدالٌ كامل** للوسوم
+# الثلاثة؛ المفتاح الغائب أو `null` يزيل الوسم، فـ`{}` يُزيل الكل. مسارٌ مستقل لا حقلٌ في
+# `PATCH /files/{id}` لأن `FileRenameIn.name` إلزامي، وحقلٌ اختياري بجانبه يجعل «لا تغيير» و«إزالة»
+# متطابقين (INC1‑D‑3). الأخطاء: `404 common.not_found` (مجهول أو لمستأجر آخر) · `409
+# common.conflict` (ملفٌّ محذوف) · `422 common.validation_error`. إعادةٌ بالوسوم نفسها لا تكتب
+# ولا تغيّر `updated_at`. ولا حدث لإعادة الوسم في INC‑1 (INC1‑D‑5).
+# ⚠️ **والاستبدال بالاسم صار بالاسم والوسوم معاً** (س‑29 القاعدة ١، `INV‑F6`): عند الإتمام
+# وإعادة التسمية وإعادة الوسم يُحذف مع فهرسه الأقدمُ الحيّ في الوحدة نفسها بالاسم نفسه
+# **والوسوم الثلاثة نفسها**؛ والوسمُ الغائب يطابق الغائب وحده، فالملفات بلا وسوم تتبع القاعدة
+# كما كانت. ونوع الملف لا يدخل. و`PUT .../tags` يكنس كما يكنس `PATCH` — حتى حين لا يغيّر شيئاً —
+# **لكن `PATCH` و`PUT .../tags` لا يكنسان إلا إذا كان الملف `ready`**: ملفٌّ ما زال وعداً (`uploaded`/`scanning`)
+# أو محجوراً يُعاد تسميته أو وسمه فوق اسم ملفٍّ أقدم ووسومه لا يحذف شيئاً؛ و`complete` هو من يكنس حين يجعله `ready`.
 class FileOut(BaseModel):
     id: str; name: str; content_type: str; size_bytes: int
     status: str; download_url: str | None; created_at: datetime   # presigned GET عند ready
+    tags: FileTagsOut                                             # PLT‑26 — null لكل وسمٍ غائب
 
 # Knowledge
 class KnowledgeSearchIn(BaseModel):

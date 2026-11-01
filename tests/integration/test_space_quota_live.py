@@ -30,6 +30,7 @@ each arithmetic test to the one column it is about.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 
 import pytest
 from sqlalchemy import text
@@ -132,6 +133,7 @@ class _FakeRegistrar:
         name: str,
         content_type: str,
         size_bytes: int,
+        tags: Mapping[str, str | None] | None = None,
     ) -> str:
         self.calls += 1
         self.spaces.append(space_id)

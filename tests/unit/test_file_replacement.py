@@ -21,6 +21,7 @@ failure.
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -29,16 +30,23 @@ import pytest
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.file_replacement import ReplaceNamesakesService
-from app.framework.errors import ConflictError, NotFoundError
+from app.framework.errors import ConflictError, NotFoundError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.modules.files.application.use_cases import (
     CompleteUpload,
     CompleteUploadService,
     FindNamesakes,
     RenameFile,
+    RetagFile,
 )
 from app.modules.files.domain.entities import File
-from app.modules.files.domain.value_objects import ContentType, FileName, FileStatus, StorageKey
+from app.modules.files.domain.value_objects import (
+    ContentType,
+    FileName,
+    FileStatus,
+    FileTags,
+    StorageKey,
+)
 from tests.unit.support_files_media import (
     InMemoryFileRepository,
     NoopUnitOfWork,
@@ -74,6 +82,7 @@ def _seed(
     created_at: datetime | None = None,
     status: FileStatus = FileStatus.READY,
     deleted_at: datetime | None = None,
+    tags: FileTags | None = None,
 ) -> File:
     now = created_at or utc_now()
     file_id = new_uuid7()
@@ -92,6 +101,7 @@ def _seed(
         updated_at=now,
         deleted_at=deleted_at,
         version=1,
+        tags=tags or FileTags(),
     )
     files.rows[file.id] = file
     return file
@@ -129,6 +139,7 @@ def _build(
         ReplaceNamesakesService(
             CompleteUploadService(CompleteUpload(files), RecordingOutbox(), uow),
             RenameFile(files),
+            retag=RetagFile(files),
             namesakes=FindNamesakes(files),
             erase=erase,
         ),
@@ -509,3 +520,302 @@ async def test_a_failing_completion_sweeps_nothing() -> None:
 
     assert erase.deleted == []
     assert files.rows[older.id].deleted_at is None
+
+
+# --------------------------------------------------------------------------- #
+# PLT-26 -- "the same name" is the name AND the three tags                     #
+# --------------------------------------------------------------------------- #
+_PUMP = FileTags(system="sys-1", equipment="pump-7", department="elec")
+
+
+@pytest.mark.asyncio
+async def test_completing_replaces_only_the_namesake_with_the_same_tags() -> None:
+    """INC1-AC-2: an older file of the same name but ANOTHER tag set stays; the
+    one with the same set goes."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    day = utc_now() - timedelta(days=1)
+    same = _seed(files, ctx, name="plan.pdf", created_at=day, tags=_PUMP)
+    other = _seed(
+        files,
+        ctx,
+        name="plan.pdf",
+        created_at=day,
+        tags=FileTags(system="sys-2", equipment="pump-7", department="elec"),
+    )
+    untagged = _seed(files, ctx, name="plan.pdf", created_at=day)
+    arriving = _seed(files, ctx, name="plan.pdf", status=FileStatus.UPLOADED, tags=_PUMP)
+    service, erase = _build(files)
+
+    await service.complete(ctx, file_id=arriving.id, checksum=None)
+
+    assert erase.deleted == [same.id]
+    assert files.rows[other.id].deleted_at is None
+    assert files.rows[untagged.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_an_absent_tag_matches_only_an_absent_one() -> None:
+    """The backward-compatibility half: files without tags follow the rule as
+    they always did, and a tagged file never replaces (or is replaced by) an
+    untagged one."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    day = utc_now() - timedelta(days=1)
+    bare_old = _seed(files, ctx, name="plan.pdf", created_at=day)
+    tagged_old = _seed(files, ctx, name="plan.pdf", created_at=day, tags=_PUMP)
+    bare_new = _seed(files, ctx, name="plan.pdf", status=FileStatus.UPLOADED)
+    service, erase = _build(files)
+
+    await service.complete(ctx, file_id=bare_new.id, checksum=None)
+
+    assert erase.deleted == [bare_old.id]
+    assert files.rows[tagged_old.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_the_file_type_plays_no_part_in_the_match() -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    older.content_type = ContentType("application/pdf")
+    newer = _seed(files, ctx, name="plan.pdf", status=FileStatus.UPLOADED, tags=_PUMP)
+    newer.content_type = ContentType("text/plain")
+    service, erase = _build(files)
+
+    await service.complete(ctx, file_id=newer.id, checksum=None)
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_re_tagging_onto_an_older_files_tags_replaces_it() -> None:
+    """INC1-AC-2: re-tagging creates the collision an upload or a rename can, and
+    shares their sweep."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(files, ctx, name="plan.pdf")
+    service, erase = _build(files)
+    assert erase.deleted == []
+
+    retagged = await service.retag(
+        ctx, newer.id, tags={"system": "sys-1", "equipment": "pump-7", "department": "elec"}
+    )
+
+    assert retagged.tags == _PUMP
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_re_tagging_onto_a_newer_files_tags_replaces_nothing() -> None:
+    """Fresh content supersedes stale and never the reverse."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1))
+    newer = _seed(files, ctx, name="plan.pdf", tags=_PUMP)
+    service, erase = _build(files)
+
+    await service.retag(ctx, older.id, tags=_PUMP.as_mapping())
+
+    assert erase.deleted == []
+    assert files.rows[newer.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_re_tagging_away_from_a_collision_replaces_nothing() -> None:
+    """Removing a tag moves the file OUT of its namesake's set."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(files, ctx, name="plan.pdf", tags=_PUMP)
+    service, erase = _build(files)
+
+    await service.retag(ctx, newer.id, tags={"system": "sys-1"})
+
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_no_op_re_tag_still_sweeps() -> None:
+    """`rename`'s rule: re-sending the tags a file already has changes nothing
+    in the file and still restores the rule for it, so a space a failed sweep
+    left with two files of one name and tag set is repaired by the next write."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(files, ctx, name="plan.pdf", tags=_PUMP)
+    saves_before = len(files.saved)
+    service, erase = _build(files)
+
+    await service.retag(ctx, newer.id, tags=_PUMP.as_mapping())
+
+    assert len(files.saved) == saves_before  # nothing written ...
+    assert erase.deleted == [older.id]  # ... and the sweep ran
+
+
+@pytest.mark.asyncio
+async def test_a_failed_purge_does_not_fail_the_re_tag() -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(files, ctx, name="plan.pdf")
+    service, _ = _build(files, fails={older.id})
+
+    retagged = await service.retag(ctx, newer.id, tags=_PUMP.as_mapping())
+
+    assert retagged.tags == _PUMP
+    assert files.rows[older.id].deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_re_tag_sweeps_nothing() -> None:
+    """An unknown file, an invalid tag and a deleted file are each refused
+    BEFORE the sweep, so a rejected re-tag destroys nothing."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1))
+    live = _seed(files, ctx, name="plan.pdf")
+    gone = _seed(files, ctx, name="plan.pdf", deleted_at=utc_now())
+    service, erase = _build(files)
+
+    with pytest.raises(NotFoundError):
+        await service.retag(ctx, new_uuid7(), tags={})
+    with pytest.raises(ValidationError):
+        await service.retag(ctx, live.id, tags={"section": "x"})
+    with pytest.raises(ConflictError):
+        await service.retag(ctx, gone.id, tags={})
+
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-1): a rename or re-tag sweeps only a READY file            #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [FileStatus.UPLOADED, FileStatus.SCANNING])
+async def test_re_tagging_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes(
+    status: FileStatus,
+) -> None:
+    """Nothing existing may be destroyed for a promise: a file that is still
+    `uploaded` has no bytes on record, so re-tagging it onto an older ready
+    file's name and tags replaces nothing -- the completion afterwards does."""
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    promise = _seed(files, ctx, name="plan.pdf", status=status)
+    service, erase = _build(files)
+
+    retagged = await service.retag(ctx, promise.id, tags=_PUMP.as_mapping())
+
+    assert retagged.tags == _PUMP  # the re-tag itself succeeded
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+    await service.complete(ctx, file_id=promise.id, checksum=None)
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [FileStatus.UPLOADED, FileStatus.SCANNING])
+async def test_renaming_a_file_with_no_proven_bytes_destroys_nothing_until_it_completes(
+    status: FileStatus,
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="report.pdf", created_at=utc_now() - timedelta(days=1))
+    promise = _seed(files, ctx, name="draft.pdf", status=status)
+    service, erase = _build(files)
+
+    renamed = await service.rename(ctx, promise.id, name="report.pdf")
+
+    assert renamed.name.value == "report.pdf"  # the rename itself succeeded
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+    await service.complete(ctx, file_id=promise.id, checksum=None)
+
+    assert erase.deleted == [older.id]
+
+
+@pytest.mark.asyncio
+async def test_a_quarantined_file_renamed_or_re_tagged_destroys_nothing() -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    held = _seed(files, ctx, name="draft.pdf", status=FileStatus.QUARANTINED)
+    service, erase = _build(files)
+
+    await service.rename(ctx, held.id, name="plan.pdf")
+    await service.retag(ctx, held.id, tags=_PUMP.as_mapping())
+
+    assert erase.deleted == []
+    assert files.rows[older.id].deleted_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Rework round 1 (S-4): the audit fields of the sweep's log lines              #
+# --------------------------------------------------------------------------- #
+def _records(caplog: pytest.LogCaptureFixture, message: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == message]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["complete", "rename", "retag"])
+async def test_the_sweep_logs_who_acted_and_through_which_entry_point(
+    caplog: pytest.LogCaptureFixture, source: str
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP)
+    newer = _seed(
+        files,
+        ctx,
+        name="plan.pdf" if source != "rename" else "draft.pdf",
+        tags=_PUMP if source != "retag" else None,
+        status=FileStatus.UPLOADED if source == "complete" else FileStatus.READY,
+    )
+    service, _ = _build(files)
+
+    with caplog.at_level(logging.INFO):
+        if source == "complete":
+            await service.complete(ctx, file_id=newer.id, checksum=None)
+        elif source == "rename":
+            await service.rename(ctx, newer.id, name="plan.pdf")
+        else:
+            await service.retag(ctx, newer.id, tags=_PUMP.as_mapping())
+
+    (record,) = _records(caplog, "file.replacement.replaced")
+    assert record.__dict__["user_id"] == "u1"
+    assert record.__dict__["source"] == source
+    assert record.__dict__["file_id"] == newer.id
+    assert record.__dict__["replaced_id"] == older.id
+
+
+@pytest.mark.asyncio
+async def test_the_failed_sweep_logs_carry_the_audit_fields_and_no_name_or_tag(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(files, ctx, name="secret-plan.pdf", created_at=utc_now() - timedelta(days=1))
+    newer = _seed(files, ctx, name="draft.pdf", tags=_PUMP)
+    service, _ = _build(files, fails={older.id})
+
+    with caplog.at_level(logging.INFO):
+        await service.rename(ctx, newer.id, name="secret-plan.pdf")
+        await service.retag(ctx, newer.id, tags={})
+
+    (failed,) = _records(caplog, "file.replacement.delete_failed")
+    assert failed.__dict__["user_id"] == "u1"
+    # The rename found no namesake (the older file is untagged); the re-tag that
+    # removed the tags made them namesakes, so the failed purge is the re-tag's.
+    assert failed.__dict__["source"] == "retag"
+    assert failed.__dict__["replaced_id"] == older.id
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.__dict__}"
+        assert "secret-plan" not in rendered
+        assert "pump-7" not in rendered

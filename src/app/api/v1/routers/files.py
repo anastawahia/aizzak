@@ -1,7 +1,7 @@
 """The Files router — ``/api/v1/files`` (03-api-spec §1 · FR-100) — Phase
 6.1-هـ-3.
 
-Nine routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
+Ten routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 
 * ``POST /files`` — register an upload slot (201 + presigned PUT, up to
   ``Limits.max_single_put_bytes``);
@@ -14,12 +14,15 @@ Nine routes, each a thin delegate over the ``FileUseCases`` bundle (§3.60):
 * ``GET /files`` — the workspace's active files, paginated (API-04 envelope);
 * ``GET /files/{id}`` — one file, bare;
 * ``PATCH /files/{id}`` — rename (200; the extension is immutable, INV-F4);
+* ``PUT /files/{id}/tags`` — replace the file's three classification tags (200,
+  PLT-26; the replacement rule is the rename's, INV-F6);
 * ``DELETE /files/{id}`` — delete it AND its index (204, idempotent).
 
-**Three of the six routes reach a cross-module cascade rather than the
-``FileUseCases`` bundle** (``framework/di/``): ``POST /files`` registers under
-the space quota's row lock, ``complete``/``PATCH`` replace a file that already
-held the name (س-29 rule 1), and ``DELETE`` destroys the index with the row.
+**Five of the ten routes reach a cross-module cascade rather than the
+``FileUseCases`` bundle** (``framework/di/``): ``POST /files`` and ``POST
+/files/multipart`` register under the space quota's row lock, ``complete``/
+``PATCH``/``PUT .../tags`` replace a file that already held the name and tags
+(س-29 rule 1), and ``DELETE`` destroys the index with the row.
 All three span ``files`` and a module ``files`` may not import, which is why
 none of them is a bundle field.
 
@@ -63,6 +66,8 @@ from app.api.v1.dto.files import (
     FileRegisterIn,
     FileRegisterOut,
     FileRenameIn,
+    FileTagsIn,
+    FileTagsOut,
     FileUploadedPartOut,
     FileUploadOut,
 )
@@ -94,7 +99,19 @@ def _to_file_out(read: ReadFile) -> FileOut:
         status=file.status.value,
         download_url=read.download_url,
         created_at=file.created_at,
+        tags=FileTagsOut(
+            system=file.tags.system,
+            equipment=file.tags.equipment,
+            department=file.tags.department,
+        ),
     )
+
+
+def _tags_of(body: FileRegisterIn) -> dict[str, str | None] | None:
+    """The request's tags as the plain mapping the use-cases take (the files
+    module's ``FileTags`` is not the API layer's to build). ``None`` when the
+    client sent none."""
+    return None if body.tags is None else body.tags.model_dump()
 
 
 @router.post("", status_code=201, dependencies=[Depends(require(Permission.FILES_WRITE))])
@@ -136,6 +153,7 @@ async def register_file(
             name=body.name,
             content_type=body.content_type,
             size_bytes=body.size_bytes,
+            tags=_tags_of(body),
         )
         return FileRegisterOut(
             file_id=registered.file.id,
@@ -180,6 +198,7 @@ async def register_multipart_file(
             name=body.name,
             content_type=body.content_type,
             size_bytes=body.size_bytes,
+            tags=_tags_of(body),
         )
         return FileMultipartRegisterOut(
             file_id=registered.file.id,
@@ -317,7 +336,8 @@ async def get_file(file_id: str, services: Services, ctx: Context) -> FileOut:
 async def rename_file(
     file_id: str, body: FileRenameIn, services: Services, ctx: Context
 ) -> FileOut:
-    """Rename a file (BE-RAG-006) — the only field of it that may change.
+    """Rename a file (BE-RAG-006). Its tags change through ``PUT
+    /files/{id}/tags``; the bytes' descriptors never change.
 
     ``files:write``, the same permission that registered it: renaming destroys
     nothing, so requiring ``files:delete`` would leave a member able to upload
@@ -334,11 +354,44 @@ async def rename_file(
     owes both. Renaming a file onto a name an OLDER file in the same space
     already holds replaces that older file; renaming one onto a NEWER file's
     name replaces nothing, because the rule is that fresh content supersedes
-    stale and never the reverse."""
+    stale and never the reverse. Only a READY file replaces anything: renaming
+    a file whose bytes were never proven (``uploaded``, ``scanning``) or that is
+    quarantined onto an older file's name changes the name and destroys
+    nothing -- the completion that makes it ready does the replacing."""
     replacement = services.file_replacement
     if replacement is None:
         raise AppError(_UNREPLACED, code="common.internal")
     file = await replacement.rename(ctx, file_id, name=body.name)
+    return _to_file_out(await services.files.transfers.describe(file))
+
+
+@router.put("/{file_id}/tags", dependencies=[Depends(require(Permission.FILES_WRITE))])
+async def retag_file(file_id: str, body: FileTagsIn, services: Services, ctx: Context) -> FileOut:
+    """Replace the file's three classification tags (PLT-26): ``system``,
+    ``equipment``, ``department``. A FULL replacement -- a key that is absent or
+    ``null`` removes that tag -- so ``{}`` untags the file. Unknown keys are a
+    422 (``FileTagsIn`` forbids them), as are an empty or whitespace-only value,
+    one over 128 characters and one with a control, format, surrogate,
+    private-use, unassigned or line-separator character; a soft-deleted
+    file is 409 and an unknown or foreign one 404. Re-sending the tags the file
+    already has changes nothing (``updated_at`` included).
+
+    ``files:write``, the permission that registered the file and renames it.
+
+    **The route goes through ``services.file_replacement`` and NOT through
+    ``services.files.retag``**, ``rename_file``'s reason: a new tag set can
+    create the collision an upload can. Re-tagging a file onto the name AND tags
+    of an OLDER live file in its space replaces that file, index and all; onto a
+    NEWER file's, nothing, because fresh content supersedes stale and never the
+    reverse. The sweep runs after the re-tag has succeeded and cannot turn it
+    into a failure, and a re-tag of a READY file that changes nothing sweeps
+    too. A file that is not ready (``uploaded``, ``scanning``, ``quarantined``)
+    sweeps nothing: it has no proven bytes to supersede anything with, and
+    completing it later does the replacing."""
+    replacement = services.file_replacement
+    if replacement is None:
+        raise AppError(_UNREPLACED, code="common.internal")
+    file = await replacement.retag(ctx, file_id, tags=body.model_dump())
     return _to_file_out(await services.files.transfers.describe(file))
 
 
