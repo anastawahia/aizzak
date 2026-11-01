@@ -125,25 +125,28 @@ EV  MemoryForgotten(memory_id, occurred_at)
 ```text
 AR  File { id, workspace_id, name: FileName, content_type: ContentType, size_bytes,
            storage_key: StorageKey, checksum: Sha256, status: FileStatus,
-           uploaded_by, created_at, deleted_at, version, multipart: MultipartUpload | None }
+           uploaded_by, created_at, deleted_at, version, multipart: MultipartUpload | None,
+           tags: FileTags }                                             # PLT‑26 — آخر حقل، الافتراضي «بلا وسوم»
 VO  FileName     (1..255، مُنقّى من مسارات)
 VO  ContentType  (MIME مسموح ضمن قائمة بيضاء)
 VO  StorageKey   (مفتاح كائن MinIO: workspace_id/uuid)
 VO  Sha256       (بصمة للتحقّق ومنع التكرار)
 VO  FileStatus   (uploaded | scanning | ready | quarantined)
+VO  FileTags     { system, equipment, department: str | None }    # PLT‑26: رمزٌ مرجعيٌّ معتم، NFC + قصّ، 1..128 بلا محرف تحكّم
 VO  UploadMode   (single | multipart)                                   # كيف تصل بايتات الملف (FR‑ING‑02)
 VO  MultipartUpload { upload_id: str (1..1024), part_bytes: int (≥ 5 MiB) }   # جلسة الرفع المجزّأ في التخزين
       part_count(size) = max(1, ceil(size / part_bytes)) · expected_size(n, size) = part_bytes إلا الأخير فالباقي
 FN  check_parts(upload, size_bytes, uploaded: {رقم: حجم}) -> PartsCheck{missing, wrong_size}   # الزائد فوق part_count يُهمل
-EV  FileUploaded(file_id, workspace_id, content_type, size_bytes, occurred_at)   # عالمي → knowledge
+EV  FileUploaded(file_id, workspace_id, content_type, size_bytes, occurred_at, tags)   # عالمي → knowledge؛ tags آخر حقل (PLT‑26)
 EV  FileDeleted(file_id, workspace_id, occurred_at)
 ```
 - **INV‑F1:** `storage_key` مسبوق بـ`workspace_id/` (عزل على مستوى الكائن).
 - **INV‑F2:** لا يُتاح ملف للاستخدام إلا بحالة `ready`.
 - **INV‑F3:** أي وكيل داخل الـWorkspace يقرأ أي ملف `ready` (مِلكية على مستوى Workspace لا الوكيل).
-- **INV‑F4 (‏`BE‑RAG‑006`):** الاسم هو الحقل الوحيد القابل للتعديل بعد التسجيل، و**امتداده ثابت**: `File.rename` يقبل اسماً بامتدادٍ مطابق أو بلا امتداد (فيرث الحاليّ) ويرفض ما عداه. البايتات و`content_type` و`storage_key` و`size_bytes` لا يمسّها شيء، فالامتداد ادّعاءٌ عنها يجب أن يظلّ صادقاً. وإعادة التسمية **لا تبثّ حدثاً**: `knowledge` يفهرس بـ`file_id` ولا يخزّن اسماً، فلا مستهلِك لحدثٍ كهذا.
+- **INV‑F4 (‏`BE‑RAG‑006`):** الاسمُ (ومعه الوسوم، INV‑F6) هو ما يقبل التعديل بعد التسجيل، و**امتداده ثابت**: `File.rename` يقبل اسماً بامتدادٍ مطابق أو بلا امتداد (فيرث الحاليّ) ويرفض ما عداه. البايتات و`content_type` و`storage_key` و`size_bytes` لا يمسّها شيء، فالامتداد ادّعاءٌ عنها يجب أن يظلّ صادقاً. وإعادة التسمية **لا تبثّ حدثاً**: `knowledge` يفهرس بـ`file_id` ولا يخزّن اسماً، فلا مستهلِك لحدثٍ كهذا.
 - **INV‑F5 (‏`PLT‑01`):** الملف المجزّأ يملك `MultipartUpload` واحداً منذ تسجيله، ثابتاً لا يُعاد توجيهه (كسائر ما يصف البايتات). ولا يصير `ready` إلا بعد أن يجمّع التخزين أجزاءه `1..part_count` بالأحجام المتوقعة، فيساوي الكائن المخزَّن `size_bytes` المعلَن بالضبط. الجلسة عمودان في `files.files` (`upload_id`، `part_bytes`) بقيد يوجبهما معاً أو يمنعهما معاً.
-- **Use‑cases:** `RegisterUpload` (بوضع `UploadMode`)، `MultipartRegistrar`، `MultipartUploadService` (`sign_parts` · `progress` · `assemble`)، `CompleteUpload`، `ListFiles`، `RenameFile`، `SoftDeleteFile`. و`CompleteUploadService` يستدعي `assemble` **قبل** فتح وحدة العمل (لا I/O شبكي تحت معاملة مفتوحة).
+- **INV‑F6 (‏`PLT‑26`):** الوسوم الثلاثة (`system` و`equipment` و`department`) تصف الملف لا بايتاته، فتتغيّر بـ`File.retag` وحده، كما يتغيّر الاسم بـ`rename` وحده (INV‑F4). الوسمُ الغائب `None`، ولا يُخزَّن ولا يُنشر فارغاً؛ والقيمة الحاضرة رمزٌ مرجعيٌّ معتم يُطبَّع (NFC وقصّ المسافات) ثم يُشترط فيه 1..128 محرفاً بلا محرف تحكّم، ويُقارن **حرفياً** بلا طيّ حالة الأحرف (`files` لا يفسّره). و`retag` استبدالٌ كامل للثلاثة؛ وإعادةٌ بالوسوم نفسها تعيد `False` ولا تكتب ولا تغيّر `updated_at` (قاعدة `rename`)، وملفٌّ محذوف يُرفض (`FileStateError`)، وأي حالةٍ أخرى تُقبل. **والاستبدال بالاسم** (س‑29 القاعدة ١) يقع بين ملفين في الوحدة نفسها إذا تطابق الاسم (`lower(normalize(name, NFC))`) **وتطابق كل وسمٍ من الثلاثة حرفياً**، والغائب يطابق الغائب وحده؛ ونوع الملف لا يدخل في التطابق. ولا حدث لإعادة الوسم (INC1‑D‑5): `FileUploaded` وحده يحمل `tags`، وغائبةً حين لا وسم.
+- **Use‑cases:** `RegisterUpload` (بوضع `UploadMode`)، `MultipartRegistrar`، `MultipartUploadService` (`sign_parts` · `progress` · `assemble`)، `CompleteUpload`، `ListFiles`، `RenameFile`، `RetagFile`، `SoftDeleteFile`. و`CompleteUploadService` يستدعي `assemble` **قبل** فتح وحدة العمل (لا I/O شبكي تحت معاملة مفتوحة).
 
 ---
 

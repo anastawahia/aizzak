@@ -166,6 +166,7 @@
 | `POST /conversations/{id}/messages` | `conversations:write` |
 | `DELETE /files/{id}` | `files:delete` |
 | `POST /files/multipart` | `files:write` |
+| `PUT /files/{id}/tags` | `files:write` (إعادة وسم الملف، `PLT‑26`؛ كإعادة التسمية `PATCH /files/{id}`: لا تحذف بنفسها، لكنّ مجموعة وسومٍ جديدة قد تُصيّر ملفاً أقدم سميّاً فيُستبدل — القاعدة نفسها التي يملكها `files:write` عند الرفع والتسمية، فلا قدرة جديدة؛ INC1‑R‑2) |
 | `GET /files/{id}/upload` | `files:write` (خطوة من بروتوكول الكتابة — الاستئناف — لا قراءة لمحتوى الملف)، **ولمن سجّل الملف وحده** |
 | `POST /files/{id}/upload/part-urls` | `files:write`، **ولمن سجّل الملف وحده** |
 
