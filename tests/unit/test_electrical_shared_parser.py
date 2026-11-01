@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import sys
 
 import pytest
 
@@ -109,10 +108,24 @@ def test_the_tally_reports_conventions_and_plc_families() -> None:
     assert tally.plc_families == {PlcFamily.S7_EN: 1, PlcFamily.S7_DE: 1, PlcFamily.TIA: 1}
 
 
-def test_the_kernel_imports_only_the_standard_library_and_itself() -> None:
+_ALLOWED_IMPORTS = frozenset(
+    {
+        "__future__", "re", "unicodedata", "dataclasses", "enum", "functools", "typing",
+        "collections", "itertools", "types",
+    }
+)  # fmt: skip
+_FORBIDDEN_CALLS = frozenset({"open", "eval", "exec", "compile", "__import__", "input"})
+_FORBIDDEN_ATTRIBUTES = frozenset({"read_text", "read_bytes", "write_text", "write_bytes", "open"})
+
+
+def test_the_kernel_imports_only_an_allowlist_of_pure_modules_and_itself() -> None:
+    """INC1-AC-4 "no I/O": the allowlist forbids os, pathlib, io, subprocess, socket,
+    importlib, shutil, tempfile... by default, not by a blocklist that can be outgrown."""
     root = pathlib.Path(__file__).resolve().parents[2] / "src/app/modules/electrical/shared"
-    stdlib = set(sys.stdlib_module_names)
-    for path in root.rglob("*.py"):
+    own = "app.modules.electrical.shared"
+    files = sorted(root.rglob("*.py"))
+    assert len(files) >= 14
+    for path in files:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names: list[str] = []
             if isinstance(node, ast.Import):
@@ -121,8 +134,12 @@ def test_the_kernel_imports_only_the_standard_library_and_itself() -> None:
                 names = [node.module]
             for name in names:
                 top = name.split(".")[0]
-                own = name.startswith("app.modules.electrical.shared")
-                assert top in stdlib or own, f"{path.name} imports {name}"
-            # no file I/O in the kernel: the rules arrive as a mapping
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                assert node.func.id != "open", f"{path.name} opens a file"
+                assert top in _ALLOWED_IMPORTS or name.startswith(own), (
+                    f"{path.name} imports {name}"
+                )
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name):
+                    assert func.id not in _FORBIDDEN_CALLS, f"{path.name} calls {func.id}"
+                if isinstance(func, ast.Attribute):
+                    assert func.attr not in _FORBIDDEN_ATTRIBUTES, f"{path.name} calls .{func.attr}"

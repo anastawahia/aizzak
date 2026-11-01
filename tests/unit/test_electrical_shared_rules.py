@@ -39,8 +39,8 @@ def _selection(**changes: Any) -> RuleSelection:
 
 def test_the_rules_file_is_packaged_and_versioned() -> None:
     rules = load_rules()
-    assert rules.version == _raw()["version"] == "1.0.0"
-    assert SHARED_VERSION == "1.0.0"
+    assert rules.version == _raw()["version"] == "1.0.0"  # the rules DATA did not change
+    assert SHARED_VERSION == "1.1.0"  # the normalisation output did (PR-B rework)
     assert rules.aspects == ("=", "+", "-")
     assert set(rules.extra_aspects) == {"==", "++", "&", "#"}
     assert rules.cn_letter_codes["KM"] == "contactor"

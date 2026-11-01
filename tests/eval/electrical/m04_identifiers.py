@@ -85,7 +85,7 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
                 "width": parsed.plc.width,
                 "byte": parsed.plc.byte,
                 **({"bit": parsed.plc.bit} if parsed.plc.bit is not None else {}),
-                **({"db_number": parsed.plc.db_number} if parsed.plc.db_number else {}),
+                **({"db_number": parsed.plc.db_number} if parsed.plc.db_number is not None else {}),
             }
             if parsed.plc
             else None

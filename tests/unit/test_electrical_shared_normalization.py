@@ -36,9 +36,9 @@ def test_the_canonical_form_folds_width_dashes_space_and_case(text: str, canonic
     assert canonical_form(text) == canonical
 
 
-def test_search_keys_drop_the_leading_dash_zeros_and_separators() -> None:
+def test_search_keys_drop_the_leading_dash_and_zeros_but_never_a_separator() -> None:
     keys = normalize("-X01:014").search_keys
-    assert keys == ("-X01:014", "X01:014", "X1:14", "X114")
+    assert keys == ("-X01:014", "X01:014", "X1:14")
 
 
 def test_f0001_f_0001_and_f_minus_0001_share_a_search_key() -> None:

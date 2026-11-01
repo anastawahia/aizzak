@@ -23,7 +23,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["=A1", "-K5"]
 canonical = "=A1-K5"
-search_keys = ["=A1-K5", "=A1K5", "K5"]
+search_keys = ["=A1-K5", "K5"]
 
 [[case]]
 id = "c003"
@@ -34,7 +34,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["=A1", "+P2", "-K5"]
 canonical = "=A1+P2-K5"
-search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+search_keys = ["=A1+P2-K5", "K5"]
 
 [[case]]
 id = "c004"
@@ -45,7 +45,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["==PLANT", "=A1", "++SITE", "+P2", "-K5"]
 canonical = "==PLANT=A1++SITE+P2-K5"
-search_keys = ["==PLANT=A1++SITE+P2-K5", "==PLANT=A1++SITE+P2K5", "K5"]
+search_keys = ["==PLANT=A1++SITE+P2-K5", "K5"]
 
 [[case]]
 id = "c005"
@@ -275,7 +275,7 @@ aspects = ["-K5"]
 connection_point = "A1"
 pole_role = "coil"
 canonical = "-K5:A1"
-search_keys = ["-K5:A1", "K5:A1", "K5A1", "K5"]
+search_keys = ["-K5:A1", "K5:A1", "K5"]
 
 [[case]]
 id = "c024"
@@ -288,7 +288,7 @@ aspects = ["-K5"]
 connection_point = "13"
 pole_role = "aux_no"
 canonical = "-K5:13"
-search_keys = ["-K5:13", "K5:13", "K513", "K5"]
+search_keys = ["-K5:13", "K5:13", "K5"]
 
 [[case]]
 id = "c025"
@@ -301,7 +301,7 @@ aspects = ["-Q1"]
 connection_point = "2"
 pole_role = "main_pole"
 canonical = "-Q1:2"
-search_keys = ["-Q1:2", "Q1:2", "Q12", "Q1"]
+search_keys = ["-Q1:2", "Q1:2", "Q1"]
 
 [[case]]
 id = "c026"
@@ -315,7 +315,7 @@ connection_point = "A1"
 device_class = "contactor"
 pole_role = "coil"
 canonical = "KM1:A1"
-search_keys = ["KM1:A1", "KM1A1", "KM1", "1KM"]
+search_keys = ["KM1:A1", "KM1", "1KM"]
 
 [[case]]
 id = "c027"
@@ -328,7 +328,7 @@ aspects = ["-X1"]
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "-X1:14"
-search_keys = ["-X1:14", "X1:14", "X114"]
+search_keys = ["-X1:14", "X1:14"]
 
 [[case]]
 id = "c028"
@@ -341,7 +341,7 @@ aspects = []
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "X1.14"
-search_keys = ["X1.14", "X114", "X1:14"]
+search_keys = ["X1.14", "X1:14"]
 
 [[case]]
 id = "c029"
@@ -354,7 +354,7 @@ aspects = []
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "X1-14"
-search_keys = ["X1-14", "X114", "X1:14"]
+search_keys = ["X1-14", "X1:14"]
 
 [[case]]
 id = "c030"
@@ -367,7 +367,7 @@ aspects = ["=A1", "+P2", "-X1"]
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "=A1+P2-X1:14"
-search_keys = ["=A1+P2-X1:14", "=A1+P2X114", "X1:14"]
+search_keys = ["=A1+P2-X1:14", "X1:14"]
 
 [[case]]
 id = "c031"
@@ -380,7 +380,7 @@ aspects = []
 connection_point = "5"
 device_class = "terminal_strip"
 canonical = "XT1:5"
-search_keys = ["XT1:5", "XT15"]
+search_keys = ["XT1:5"]
 
 [[case]]
 id = "c032"
@@ -393,7 +393,7 @@ aspects = []
 connection_point = "5"
 device_class = "terminal_strip"
 canonical = "1XT-5"
-search_keys = ["1XT-5", "1XT5", "1XT:5"]
+search_keys = ["1XT-5", "1XT:5"]
 
 [[case]]
 id = "c033"
@@ -407,7 +407,7 @@ aspects = []
 connection_point = "5"
 device_class = "terminal_strip"
 canonical = "XT1:5"
-search_keys = ["XT1:5", "XT15"]
+search_keys = ["XT1:5"]
 
 [[case]]
 id = "c034"
@@ -440,7 +440,7 @@ valid = true
 aspects = []
 variant = "page_column"
 canonical = "12.3-1"
-search_keys = ["12.3-1", "1231"]
+search_keys = ["12.3-1"]
 
 [[case]]
 id = "c037"
@@ -451,7 +451,7 @@ valid = true
 aspects = []
 variant = "voltage_based"
 canonical = "L1-5"
-search_keys = ["L1-5", "L15"]
+search_keys = ["L1-5"]
 
 [[case]]
 id = "c038"
@@ -682,7 +682,7 @@ valid = true
 aspects = []
 variant = "slash_page_dot_column"
 canonical = "/12.3"
-search_keys = ["/12.3", "123"]
+search_keys = ["/12.3"]
 
 [[case]]
 id = "c059"
@@ -693,7 +693,7 @@ valid = true
 aspects = []
 variant = "page_dot_column"
 canonical = "12.3"
-search_keys = ["12.3", "123"]
+search_keys = ["12.3"]
 
 [[case]]
 id = "c060"
@@ -704,7 +704,7 @@ valid = true
 aspects = []
 variant = "prefixed_slash"
 canonical = "=A1/12.3"
-search_keys = ["=A1/12.3", "=A1123"]
+search_keys = ["=A1/12.3"]
 
 [[case]]
 id = "c061"
@@ -715,7 +715,7 @@ valid = true
 aspects = []
 variant = "page_slash_column"
 canonical = "12/3"
-search_keys = ["12/3", "123"]
+search_keys = ["12/3"]
 
 [[case]]
 id = "c062"
@@ -837,7 +837,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["=A1", "-W12"]
 canonical = "=A1-W12"
-search_keys = ["=A1-W12", "=A1W12", "W12"]
+search_keys = ["=A1-W12", "W12"]
 
 [[case]]
 id = "c074"
@@ -848,7 +848,7 @@ valid = false
 aspects = []
 issues = ["plc.unsupported_form"]
 canonical = "%IX0.0"
-search_keys = ["%IX0.0", "IX0.0", "IX00"]
+search_keys = ["%IX0.0", "IX0.0"]
 
 [[case]]
 id = "c075"
@@ -896,7 +896,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["=A1", "+P2", "-K5"]
 canonical = "=A1+P2-K5"
-search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+search_keys = ["=A1+P2-K5", "K5"]
 
 [[case]]
 id = "c081"
@@ -910,7 +910,7 @@ aspects = ["-X1"]
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "-X1:14"
-search_keys = ["-X1:14", "X1:14", "X114"]
+search_keys = ["-X1:14", "X1:14"]
 
 [[case]]
 id = "c082"
@@ -924,7 +924,7 @@ aspects = []
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "X1.14"
-search_keys = ["X1.14", "X114", "X1:14"]
+search_keys = ["X1.14", "X1:14"]
 
 [[case]]
 id = "c083"
@@ -960,7 +960,7 @@ valid = true
 aspects = []
 variant = "slash_page_dot_column"
 canonical = "/12.3"
-search_keys = ["/12.3", "123"]
+search_keys = ["/12.3"]
 
 [[case]]
 id = "c086"
@@ -1009,7 +1009,7 @@ aspects = []
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "X1.14"
-search_keys = ["X1.14", "X114", "X1:14"]
+search_keys = ["X1.14", "X1:14"]
 
 [[case]]
 id = "c090"
@@ -1022,7 +1022,7 @@ aspects = []
 connection_point = "5"
 device_class = "terminal_strip"
 canonical = "XT1:5"
-search_keys = ["XT1:5", "XT15"]
+search_keys = ["XT1:5"]
 
 [[case]]
 id = "c091"
@@ -1066,7 +1066,7 @@ valid = true
 convention = "iec_81346"
 aspects = ["=A1", "+P2", "-K5"]
 canonical = "=A1+P2-K5"
-search_keys = ["=A1+P2-K5", "=A1+P2K5", "K5"]
+search_keys = ["=A1+P2-K5", "K5"]
 
 [[case]]
 id = "c095"
@@ -1079,7 +1079,7 @@ aspects = []
 connection_point = "14"
 device_class = "terminal_strip"
 canonical = "X1.14"
-search_keys = ["X1.14", "X114", "X1:14"]
+search_keys = ["X1.14", "X1:14"]
 
 [[case]]
 id = "c096"
@@ -1104,7 +1104,7 @@ aspects = ["-X01"]
 connection_point = "014"
 device_class = "terminal_strip"
 canonical = "-X01:014"
-search_keys = ["-X01:014", "X01:014", "X1:14", "X114"]
+search_keys = ["-X01:014", "X01:014", "X1:14"]
 
 [[case]]
 id = "c098"
@@ -1117,7 +1117,7 @@ aspects = []
 connection_point = "PE"
 device_class = "terminal_strip"
 canonical = "X1:PE"
-search_keys = ["X1:PE", "X1PE"]
+search_keys = ["X1:PE"]
 
 [[case]]
 id = "c099"
@@ -1130,7 +1130,7 @@ aspects = []
 connection_point = "2"
 device_class = "terminal_block"
 canonical = "TB1:2"
-search_keys = ["TB1:2", "TB12"]
+search_keys = ["TB1:2"]
 
 [[case]]
 id = "c100"
@@ -1143,7 +1143,7 @@ aspects = []
 connection_point = "2"
 device_class = "terminal_block"
 canonical = "TB1.2"
-search_keys = ["TB1.2", "TB12", "TB1:2"]
+search_keys = ["TB1.2", "TB1:2"]
 
 [[case]]
 id = "c101"
@@ -1156,7 +1156,7 @@ aspects = ["-XT1"]
 connection_point = "3"
 device_class = "terminal_strip"
 canonical = "-XT1:3"
-search_keys = ["-XT1:3", "XT1:3", "XT13"]
+search_keys = ["-XT1:3", "XT1:3"]
 
 [[case]]
 id = "c102"
@@ -1169,7 +1169,7 @@ aspects = []
 connection_point = "5"
 device_class = "terminal_strip"
 canonical = "1XT:5"
-search_keys = ["1XT:5", "1XT5"]
+search_keys = ["1XT:5"]
 
 [[case]]
 id = "c103"
@@ -1182,7 +1182,7 @@ aspects = []
 connection_point = "1~2"
 device_class = "terminal_strip"
 canonical = "X1:1~X1:2"
-search_keys = ["X1:1~X1:2", "X11~X12"]
+search_keys = ["X1:1~X1:2"]
 
 [[case]]
 id = "c104"
@@ -1195,7 +1195,7 @@ aspects = []
 connection_point = "1~3"
 device_class = "terminal_strip"
 canonical = "X1:1~3"
-search_keys = ["X1:1~3", "X11~3", "X1:1~X1:3"]
+search_keys = ["X1:1~3", "X1:1~X1:3"]
 
 [[case]]
 id = "c105"
@@ -1208,7 +1208,7 @@ aspects = ["-X1"]
 connection_point = "1~2"
 device_class = "terminal_strip"
 canonical = "-X1:1~-X1:2"
-search_keys = ["-X1:1~-X1:2", "X1:1~-X1:2", "X11~X12", "X1:1~X1:2"]
+search_keys = ["-X1:1~-X1:2", "X1:1~-X1:2", "X1:1~X1:2"]
 
 [[case]]
 id = "c106"
@@ -1523,7 +1523,7 @@ valid = true
 aspects = []
 variant = "page_column"
 canonical = "12.3"
-search_keys = ["12.3", "123"]
+search_keys = ["12.3"]
 
 [[case]]
 id = "c134"
@@ -1572,7 +1572,7 @@ valid = true
 aspects = []
 variant = "voltage_based"
 canonical = "L1-12"
-search_keys = ["L1-12", "L112"]
+search_keys = ["L1-12"]
 
 [[case]]
 id = "c139"
@@ -1583,7 +1583,7 @@ valid = true
 aspects = []
 variant = "voltage_based"
 canonical = "U1-5"
-search_keys = ["U1-5", "U15"]
+search_keys = ["U1-5"]
 
 [[case]]
 id = "c140"
@@ -1809,7 +1809,7 @@ convention = "iec_81346"
 aspects = ["-K5"]
 issues = ["connection_point.multiple"]
 canonical = "-K5:A1:B2"
-search_keys = ["-K5:A1:B2", "K5:A1:B2", "K5A1B2", "K5"]
+search_keys = ["-K5:A1:B2", "K5:A1:B2", "K5"]
 
 [[case]]
 id = "c164"
@@ -1821,7 +1821,7 @@ convention = "iec_81346"
 aspects = ["=A1"]
 issues = ["aspect.malformed"]
 canonical = "=A1-"
-search_keys = ["=A1-", "=A1"]
+search_keys = ["=A1-"]
 
 [[case]]
 id = "c165"
@@ -1845,7 +1845,7 @@ convention = "iec_81346"
 aspects = ["-K5"]
 issues = ["connection_point.malformed"]
 canonical = "-K5:TOOLONG1"
-search_keys = ["-K5:TOOLONG1", "K5:TOOLONG1", "K5TOOLONG1", "K5"]
+search_keys = ["-K5:TOOLONG1", "K5:TOOLONG1", "K5"]
 
 [[case]]
 id = "c167"
@@ -1910,4 +1910,229 @@ aspects = []
 device_class = "terminal_strip"
 issues = ["bridge.right_not_terminal"]
 canonical = "X1:1~"
-search_keys = ["X1:1~", "X11~"]
+search_keys = ["X1:1~"]
+
+# --- PR-B rework: non-Latin digits fold to ASCII in `canonical` (the original is kept) ---
+
+[[case]]
+id = "c172"
+text = "KM١"
+source = "extra"
+script = "arabic-indic"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c173"
+text = "X١:١٤"
+source = "extra"
+script = "arabic-indic"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1:14"
+search_keys = ["X1:14"]
+
+[[case]]
+id = "c174"
+text = "I٠.٠"
+source = "extra"
+script = "arabic-indic"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "I0.0"
+search_keys = ["I0.0", "%I0.0", "E0.0"]
+plc = { family = "s7_en", area = "I", width = "bit", byte = 0, bit = 0 }
+
+[[case]]
+id = "c175"
+text = "١٢.٣"
+source = "extra"
+script = "arabic-indic"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "page_dot_column"
+canonical = "12.3"
+search_keys = ["12.3"]
+
+[[case]]
+id = "c176"
+text = "W١٢٣"
+source = "extra"
+script = "arabic-indic"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "W123"
+search_keys = ["W123"]
+
+[[case]]
+id = "c177"
+text = "-K٥"
+source = "extra"
+script = "arabic-indic"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["-K5"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c178"
+text = "KM۱"
+source = "extra"
+script = "extended-arabic-indic"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c179"
+text = "X۱:۱۴"
+source = "extra"
+script = "extended-arabic-indic"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+canonical = "X1:14"
+search_keys = ["X1:14"]
+
+[[case]]
+id = "c180"
+text = "%IW۶۴"
+source = "extra"
+script = "extended-arabic-indic"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "%IW64"
+search_keys = ["%IW64", "IW64", "EW64"]
+plc = { family = "tia", area = "I", width = "word", byte = 64 }
+
+[[case]]
+id = "c181"
+text = "DB۱۰.DBX۲.۳"
+source = "extra"
+script = "extended-arabic-indic"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB10.DBX2.3"
+search_keys = ["DB10.DBX2.3"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 2, bit = 3, db_number = 10 }
+
+[[case]]
+id = "c182"
+text = "L١"
+source = "extra"
+script = "arabic-indic"
+kind = "voltage"
+valid = true
+aspects = []
+canonical = "L1"
+search_keys = ["L1"]
+
+# --- a data block numbered 0 is compared too ---
+
+[[case]]
+id = "c183"
+text = "DB0.DBX0.0"
+source = "extra"
+kind = "plc_address"
+valid = true
+aspects = []
+canonical = "DB0.DBX0.0"
+search_keys = ["DB0.DBX0.0"]
+plc = { family = "s7_db", area = "DB", width = "bit", byte = 0, bit = 0, db_number = 0 }
+
+# --- hidden characters: dropped from the canonical form, flagged, never silent (FR-ID-10) ---
+
+[[case]]
+id = "c184"
+text = "-K5\u0000"
+source = "invalid"
+script = "hidden"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["-K5"]
+issues = ["text.hidden_character"]
+canonical = "-K5"
+search_keys = ["-K5", "K5"]
+
+[[case]]
+id = "c185"
+text = "KM1️"
+source = "invalid"
+script = "hidden"
+kind = "letter_code"
+valid = false
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+issues = ["text.hidden_character"]
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+[[case]]
+id = "c186"
+text = "K͏M1"
+source = "invalid"
+script = "hidden"
+kind = "letter_code"
+valid = false
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+issues = ["text.hidden_character"]
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+# bidi controls: reported, the identifier stays valid (S-3)
+[[case]]
+id = "c187"
+text = "KM‮1"
+source = "extra"
+script = "bidi"
+kind = "letter_code"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+issues = ["text.bidi_control"]
+canonical = "KM1"
+search_keys = ["KM1", "1KM"]
+
+# a bridge across two strips is flagged (the second strip would be lost)
+[[case]]
+id = "c188"
+text = "X1:1~X2:3"
+source = "invalid"
+kind = "bridge"
+valid = false
+convention = "iec_81346"
+aspects = []
+connection_point = "1~3"
+device_class = "terminal_strip"
+issues = ["bridge.different_strips"]
+canonical = "X1:1~X2:3"
+search_keys = ["X1:1~X2:3"]
