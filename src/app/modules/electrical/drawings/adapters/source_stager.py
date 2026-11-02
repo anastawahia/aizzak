@@ -57,8 +57,16 @@ class StreamingSourceStager:
             fd = await asyncio.to_thread(self._open, part)
             try:
                 async for chunk in chunks:
-                    digest.update(chunk)
                     size += len(chunk)
+                    if size > expected_size:
+                        # stop at the first byte too many: the stage volume is shared and a
+                        # swapped, far larger object must not be copied to it before it is refused
+                        raise ValidationError(
+                            f"the stored object is larger than the {expected_size} bytes the "
+                            "file row says",
+                            code="electrical.source_unreadable",
+                        )
+                    digest.update(chunk)
                     await asyncio.to_thread(os.write, fd, chunk)
                 await asyncio.to_thread(os.fsync, fd)
             finally:

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import sys
@@ -230,11 +231,16 @@ def to_json(report: Mapping[str, Any]) -> str:
 def _lines(title: str, counts: Mapping[str, Any]) -> list[str]:
     if not counts:
         return [f"- {title}: none"]
-    return [f"- {title}: " + ", ".join(f"{k} {v}" for k, v in counts.items())]
+    return [f"- {title}: " + ", ".join(f"{_cell(k)} {v}" for k, v in counts.items())]
 
 
 def _cell(text: str) -> str:
-    return text.replace("|", "\\|")
+    """A value from a drawing (a producer, a file name) as safe text in a Markdown viewer that
+    renders HTML and links: HTML-escaped, link brackets and the table bar escaped."""
+    escaped = html.escape(str(text), quote=True)
+    for char in ("|", "[", "]"):
+        escaped = escaped.replace(char, "\\" + char)
+    return escaped
 
 
 def render_markdown(report: Mapping[str, Any]) -> str:
