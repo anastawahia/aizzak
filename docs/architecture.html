@@ -179,9 +179,9 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
 
   <div class="stats" role="list">
     <div class="stat" role="listitem"><b>13</b><span>وحدة أعمال</span></div>
-    <div class="stat" role="listitem"><b>24</b><span>منفذاً · 27 بروتوكولاً</span></div>
+    <div class="stat" role="listitem"><b>24</b><span>منفذاً · 28 بروتوكولاً</span></div>
     <div class="stat" role="listitem"><b>8</b><span>عقود import‑linter</span></div>
-    <div class="stat" role="listitem"><b>35</b><span>خدمة Compose</span></div>
+    <div class="stat" role="listitem"><b>37</b><span>خدمة Compose</span></div>
     <div class="stat" role="listitem"><b>33</b><span>مقياساً</span></div>
     <div class="stat" role="listitem"><b>23</b><span>قاعدةَ تنبيه</span></div>
   </div>
@@ -228,7 +228,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td><code>embed</code></td><td>خدمة تضمين منفصلة <b>× 3</b> خلف <code>embedding-lb</code></td><td><code>torch</code> خارج رسم استيراد <code>app.*</code>. والموازِنُ والنسخُ وحدةٌ واحدة: نسخٌ بلا موازِن عطبٌ صامت؛ وداخلها تجميعُ دفعاتٍ ديناميكيّ (<code>EMB_BATCH_WINDOW_MS</code>)</td></tr>
           <tr><td><code>search</code></td><td>Exa <span class="pill warn">غير موصول</span></td><td>المحوّلُ مكتوب ولا يُبنى بلا مفتاح؛ الوكيلُ الذي يطلبه يفشل بـ500 نظيف</td></tr>
           <tr><td><code>metrics</code></td><td>Prometheus + Grafana</td><td>33 مقياساً، ولوحتا Grafana: السعة والسجلّات</td></tr>
-          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code></td><td>قاعدةٌ بلا موجِّهٍ لا تصل أحداً: 29 قاعدةً تُوجَّه إلى <code>alert-sink</code> — <b>محلّيّاً فقط</b>؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
+          <tr><td><code>alerts</code></td><td>Alertmanager + <code>alert-sink</code></td><td>قاعدةٌ بلا موجِّهٍ لا تصل أحداً: 31 قاعدةً تُوجَّه إلى <code>alert-sink</code> — <b>محلّيّاً فقط</b>؛ لكلٍّ إجراءٌ في <code>docs/runbooks/alerts.md</code> وحالتان في <code>promtool</code></td></tr>
           <tr><td><code>logs</code></td><td>Loki + Alloy</td><td>سجلٌّ مهيكلٌ واحد بـ<code>correlation_id</code> عبر الحافّة والتطبيق والعامل</td></tr>
           <tr><td><code>probes</code></td><td>pgbouncer · redis-stream · redis-cache exporters · cAdvisor <i>(profile)</i></td><td>إشباعُ المُجمِّع وخادمَي Redis والحاويات</td></tr>
           <tr><td><code>sched</code></td><td><code>ops-scheduler</code></td><td>عشرُ مهامّ دوريّة تكتب نجاحَها في <code>TaskLedger</code>، وتنبيهان لمتأخّرةٍ أو غيرِ مسلَّحة</td></tr>
@@ -237,7 +237,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         </tbody>
       </table>
     </div>
-    <div class="call"><b>القيدُ الحاكمُ لإضافة الخدمات.</b> المنشورُ <b>35 خدمة</b> (32 افتراضيّاً + 3 خلف <code>profile</code>)، وما دخل منها مسارَ الطلب (<code>redis-cache</code> · <code>embedding-lb</code>) دخله <b>خلف منفذٍ قائم</b>. القاعدة: <b>لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في <code>framework/ports/</code></b>.</div>
+    <div class="call"><b>القيدُ الحاكمُ لإضافة الخدمات.</b> المنشورُ <b>37 خدمة</b> (32 افتراضيّاً + 5 خلف <code>profile</code>)، وما دخل منها مسارَ الطلب (<code>redis-cache</code> · <code>embedding-lb</code>) دخله <b>خلف منفذٍ قائم</b>. القاعدة: <b>لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في <code>framework/ports/</code></b>.</div>
   </section>
 
   <!-- 02 PHASES -->
@@ -374,12 +374,12 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <table>
         <thead><tr><th>المجلّد</th><th>الدور</th></tr></thead>
         <tbody>
-          <tr><td><code>workers/</code></td><td><b>ثلاثة عمّال + مُرحّل</b>: <code>memory_worker</code> · <code>knowledge_worker</code> · <code>media_worker</code> · <code>outbox_relay</code> — ومعها <code>bootstrap</code> و<code>summary_metering</code> (عدُّ التلخيص). الصورة نفسُها، أمرٌ مختلف</td></tr>
+          <tr><td><code>workers/</code></td><td><b>ثلاثة عمّال + مُرحّل (ورابعٌ خلف الملف <code>electrical</code>)</b>: <code>memory_worker</code> · <code>knowledge_worker</code> · <code>media_worker</code> · <code>electrical_worker</code> · <code>outbox_relay</code> — ومعها <code>bootstrap</code> و<code>electrical_bootstrap</code> و<code>summary_metering</code> (عدُّ التلخيص). الصورة نفسُها، أمرٌ مختلف</td></tr>
           <tr><td><code>ops/</code></td><td><b>23 وحدة: 21 نقطةَ دخول + مكتبتان</b> (<code>online_ddl</code> · <code>role_guard</code>): <code>provision</code> · <code>backup</code> · <code>retention</code> · <code>purge</code> · <code>revoke</code> · <code>rotate_transit</code> · <code>dlq</code> · <code>healthcheck</code> · <code>scheduler</code> · <code>stream_trim</code> · <code>replay</code> · <code>embedding_migration</code> · … — وأدواتُ القياس والتشخيص</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="call"><b><code>alembic upgrade head</code> ليس أمراً يملكه هذا المستودع.</b> اثنتا عشرةَ سلسلةَ هجراتٍ مستقلّة (<code>version_table_schema</code> لكلّ وحدة)، فـ<code>head</code> ملتبس. الاستدعاءُ الحقيقيّ <code>python -m app.ops.provision</code> (خدمةُ <code>migrate</code>): السلاسلُ بالترتيب ثمّ المنح.</div>
+    <div class="call"><b><code>alembic upgrade head</code> ليس أمراً يملكه هذا المستودع.</b> ثلاثَ عشرةَ سلسلةَ هجراتٍ مستقلّة (<code>version_table_schema</code> لكلّ وحدة)، فـ<code>head</code> ملتبس. الاستدعاءُ الحقيقيّ <code>python -m app.ops.provision</code> (خدمةُ <code>migrate</code>): السلاسلُ بالترتيب ثمّ المنح.</div>
   </section>
 
   <!-- 06 MODULES -->
@@ -408,7 +408,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         <g class="c-coral"><rect x="210" y="222" width="140" height="56" rx="7"/><text class="t" x="280" y="246" text-anchor="middle" font-size="13">Media</text><text class="ts" x="280" y="264" text-anchor="middle" font-size="11">صور / فيديو</text></g>
         <g class="c-gray"><rect x="540" y="222" width="130" height="56" rx="7"/><text class="t" x="605" y="246" text-anchor="middle" font-size="13">Admin</text><text class="ts" x="605" y="264" text-anchor="middle" font-size="11">تطبيقيّةٌ بلا نطاق</text></g>
       </svg>
-      <figcaption>Fig 4 — Business Modules Map (12 وحدةً عاملة في v1؛ والثالثة عشرة <code>electrical</code> هيكلٌ فارغ منذ INC‑0، في الجدول أدناه)</figcaption>
+      <figcaption>Fig 4 — Business Modules Map (12 وحدةً عاملة في v1؛ والثالثة عشرة <code>electrical</code> لها schema وسلسلة هجرات منذ INC‑1، وقسمٌ واحدٌ مبنيٌّ (<code>drawings</code>) و<code>shared</code>، في الجدول أدناه)</figcaption>
     </figure>
     <div class="table-scroll">
       <table>
@@ -426,7 +426,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td class="num">10</td><td><code>integrations</code></td><td>✅</td><td>✅</td><td class="num">3</td><td>المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان <span class="pill warn">§15</span></td></tr>
           <tr><td class="num">11</td><td><code>usage</code></td><td>✅</td><td>✅</td><td class="num">2</td><td>منافذُ واردة · <code>reserve</code>/<code>commit</code> · ميزانيّةُ كلفة</td></tr>
           <tr><td class="num">12</td><td><code>admin</code> <span class="pill new">بعد الاعتماد</span></td><td>✗</td><td>✗</td><td class="num">4</td><td>تطبيقيّةٌ بلا نطاقٍ ولا schema — عمداً</td></tr>
-          <tr><td class="num">13</td><td><code>electrical</code> <span class="pill new">INC‑0</span></td><td>✗</td><td>✗</td><td class="num">0</td><td>WireTwin: هيكل فارغ (أربعة أقسام و<code>shared</code>)؛ schema في INC‑1</td></tr>
+          <tr><td class="num">13</td><td><code>electrical</code> <span class="pill new">INC‑1</span></td><td>✅</td><td>✅</td><td class="num">0</td><td>WireTwin: schema <code>electrical</code> وسلسلته منذ INC‑1، وقسم <code>drawings</code> و<code>shared</code>؛ والأقسام الثلاثة الأخرى (<code>circuits</code> · <code>diagnostics</code> · <code>search</code>) فارغة</td></tr>
         </tbody>
       </table>
     </div>
@@ -468,7 +468,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
   <!-- 08 PORTS -->
   <section id="ports">
     <div class="sec-head"><span class="sec-no">08</span><h2>المنافذ والمحوّلات</h2><span class="sub">Ports &amp; Adapters</span></div>
-    <p>المنافذ تُعرَّف في Framework، والمحوّلات في Infrastructure، والربط في Composition Root عبر Manual DI. <code>framework/ports/</code> يحمل <b>24 وحدةَ منفذٍ تعرّف 27 بروتوكولاً</b>. وأسماءُ المحوّلات أدناه هي <b>أسماءُ الأصناف في الشيفرة</b>.</p>
+    <p>المنافذ تُعرَّف في Framework، والمحوّلات في Infrastructure، والربط في Composition Root عبر Manual DI. <code>framework/ports/</code> يحمل <b>24 وحدةَ منفذٍ تعرّف 28 بروتوكولاً</b>. وأسماءُ المحوّلات أدناه هي <b>أسماءُ الأصناف في الشيفرة</b>.</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Port</th><th>Adapter(s)</th><th>Backing</th></tr></thead>
@@ -559,7 +559,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       </svg>
       <figcaption>Fig 6 — Event-Driven Message Flow</figcaption>
     </figure>
-    <h3 class="sub-h">الطوبولوجيا الفعليّة — أربعةُ مجارٍ، وثلاثُ مجموعاتٍ ساكنة</h3>
+    <h3 class="sub-h">الطوبولوجيا الفعليّة — خمسةُ مجارٍ، وأربعُ مجموعاتٍ ساكنة</h3>
     <div class="table-scroll">
       <table>
         <thead><tr><th>المجرى</th><th>المنتِج</th><th>Consumer Group</th><th>العامل</th></tr></thead>
@@ -567,6 +567,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td><code>stream.knowledge</code></td><td>knowledge</td><td><code>cg.knowledge</code></td><td><code>knowledge_worker</code> (× 2)</td></tr>
           <tr><td><code>stream.media</code></td><td>media (API)</td><td><code>cg.media</code></td><td><code>media_worker</code></td></tr>
           <tr><td><code>stream.memory</code></td><td>memory</td><td><code>cg.memory</code></td><td><code>memory_worker</code></td></tr>
+          <tr><td><code>stream.electrical</code></td><td>electrical (<code>drawings</code>)</td><td><code>cg.electrical.document</code></td><td><code>electrical_worker</code> <i>(خلف الملف <code>electrical</code>)</i></td></tr>
           <tr><td><code>stream.files</code></td><td>files</td><td><b>— لا مستهلك</b></td><td>—</td></tr>
           <tr><td><code>*</code> (فشل)</td><td>العامل</td><td>—</td><td><code>stream.&lt;m&gt;.dlq</code></td></tr>
         </tbody>
@@ -632,7 +633,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
 
   <!-- 12 DEPLOYMENT -->
   <section id="deploy">
-    <div class="sec-head"><span class="sec-no">12</span><h2>معمارية النشر</h2><span class="sub">Docker Compose · 35 خدمة</span></div>
+    <div class="sec-head"><span class="sec-no">12</span><h2>معمارية النشر</h2><span class="sub">Docker Compose · 37 خدمة</span></div>
     <p>خمسٌ وثلاثون خدمة (32 افتراضيّاً + 3 خلف <code>profile</code>): Nginx يوازن على نسخ App بلا حالة، والعمّال ومُرحّل Outbox والمُجدوِل عملياتٌ مستقلة، وكلها تصل خدمات البيانات عبر PgBouncer.</p>
     <figure class="figure">
       <svg viewBox="0 0 680 460" role="img" xmlns="http://www.w3.org/2000/svg"><title>طوبولوجيا النشر</title><desc>العميل عبر Nginx إلى ثلاث نسخ من التطبيق؛ العمّال والتضمين بجانبها؛ المُرحّل والمُجدوِل والتهيئة تحتها؛ ثم خدمات البيانات، فالنسخ الاحتياطي والملاحظة.</desc>
@@ -653,7 +654,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
         <g class="c-teal"><rect x="450" y="150" width="190" height="62" rx="8"/><text class="t" x="545" y="176" text-anchor="middle" font-size="13">embedding × 3</text><text class="ts" x="545" y="195" text-anchor="middle" font-size="11">خلف embedding-lb</text></g>
         <g class="c-amber"><rect x="40" y="240" width="190" height="44" rx="7"/><text class="t" x="135" y="259" text-anchor="middle" font-size="12.5">outbox-relay × 1</text><text class="ts" x="135" y="275" text-anchor="middle" font-size="10.5">poll → publish · قصّ</text></g>
         <g class="c-amber"><rect x="245" y="240" width="190" height="44" rx="7"/><text class="t" x="340" y="259" text-anchor="middle" font-size="12.5">ops-scheduler</text><text class="ts" x="340" y="275" text-anchor="middle" font-size="10.5">backup · retention · purge · rotate</text></g>
-        <g class="c-gray"><rect x="450" y="240" width="190" height="44" rx="7"/><text class="t" x="545" y="259" text-anchor="middle" font-size="12.5">migrate</text><text class="ts" x="545" y="275" text-anchor="middle" font-size="10.5">12 سلسلة + المنح · ثمّ تنتهي</text></g>
+        <g class="c-gray"><rect x="450" y="240" width="190" height="44" rx="7"/><text class="t" x="545" y="259" text-anchor="middle" font-size="12.5">migrate</text><text class="ts" x="545" y="275" text-anchor="middle" font-size="10.5">13 سلسلة + المنح · ثمّ تنتهي</text></g>
         <g class="c-gray"><rect x="40" y="316" width="600" height="54" rx="8"/><text class="t" x="340" y="338" text-anchor="middle" font-size="12.5">خدمات البيانات (مُدارة ذاتياً)</text><text class="ts" x="340" y="356" text-anchor="middle" font-size="11">PgBouncer · PostgreSQL · redis-stream · redis-cache · MinIO · Qdrant · Vault</text></g>
         <g class="c-gray"><rect x="40" y="396" width="290" height="44" rx="7"/><text class="t" x="185" y="415" text-anchor="middle" font-size="12.5">wal-shipper + backup</text><text class="ts" x="185" y="431" text-anchor="middle" font-size="10.5">PITR · استرجاعٌ زمنيّ</text></g>
         <g class="c-purple"><rect x="350" y="396" width="290" height="44" rx="7"/><text class="t" x="495" y="415" text-anchor="middle" font-size="12.5">الملاحظة والتنبيه</text><text class="ts" x="495" y="431" text-anchor="middle" font-size="10.5">Prometheus · Grafana · Alertmanager · Loki · Alloy</text></g>
@@ -672,11 +673,13 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td>النسخ الاحتياطيّ</td><td><code>wal-shipper</code> · <code>backup</code> <i>(profile)</i></td><td class="num">2</td></tr>
           <tr><td>الملاحظة والتنبيه</td><td><code>prometheus</code> · <code>grafana</code> · <code>alertmanager</code> · <code>alert-sink</code> · <code>loki</code> · <code>alloy</code> · 3 exporters · <code>cadvisor</code> <i>(profile)</i></td><td class="num">10</td></tr>
           <tr><td>الحمل</td><td><code>k6</code> <i>(profile)</i></td><td class="num">1</td></tr>
+          <tr><td>WireTwin (الملف <code>electrical</code>)</td><td><code>ele-parse</code> <i>(profile)</i> · <code>worker-electrical</code> <i>(profile)</i></td><td class="num">2</td></tr>
         </tbody>
       </table>
     </div>
     <h3 class="sub-h">ملاحظاتُ النشر</h3>
     <ul class="tight">
+      <li><b>WireTwin خلف الملف <code>electrical</code></b> (<code>docker compose --profile electrical</code>): <code>ele-parse</code> و<code>worker-electrical</code>، ولا يُقلعان في <code>up -d</code> العاديّ. <code>ele-parse</code> محلِّلُ PDF (PyMuPDF) يقرأ ملفاتٍ عدائيّة، فيُعطى لا شيء يُسرق ولا مكانَ يذهب إليه: بلا سرٍّ ولا DSN ولا متغيّر Vault، وعلى شبكةٍ واحدة <code>aizzak_ele-parse</code> بـ<code>internal: true</code> (بلا مسارٍ خارج، فلا يبلغ Postgres ولا Redis ولا Qdrant ولا MinIO)، وجذرٌ للقراءة فقط، و<code>cap_drop: ALL</code>، ومستخدمٌ غير جذر (uid 10001)، وحجمُ التجهيز <code>ele-stage</code> للقراءة فقط، وحدودٌ صلبة (≤ 64 عمليّة، وكلُّ طلبٍ في عمليّةٍ فرعيّة تحت <code>setrlimit</code>). و<code>worker-electrical</code> على الشبكتين: يستهلك <code>stream.electrical</code> بالمجموعة <code>cg.electrical.document</code>، ويبثّ الـPDF من MinIO إلى <code>ele-stage</code>، ويطلب التحليلَ من <code>ele-parse</code> عبر HTTP، وحاجتُه من Vault هي حاجةُ <code>worker-knowledge</code> نفسُها فلا سرَّ جديد. وتفعيلُ الملف يشترط تطبيقَ الهجرة <code>electrical/0001</code> عبر <code>migrate</code> (قرارٌ بشريّ). وللملف قاعدتا تنبيهٍ: <code>AizzakElectricalQueueWaitHigh</code> و<code>AizzakElectricalDocumentsExcluded</code>.</li>
       <li><b>PITR مبنيّ:</b> <code>wal-shipper</code> + مرساةٌ ماديّة (<code>pg_basebackup</code>) — لأنّ دُفعةً منطقيّةً + WAL لا تُنتج استرجاعاً زمنيّاً. والنسخُ ليليٌّ في <code>ops-scheduler</code>، و<code>purge</code> يرفض العمل ما لم ينجح <code>backup</code> في الدورة نفسها.</li>
       <li><b>التزويدُ خطوةُ نشرٍ لا هجرة:</b> خدمةُ <code>migrate</code> وكلُّ خدمةٍ دائمةٍ تنتظر اكتمالَها، وقفلُ جلسةٍ يغطّي الأطوار الثلاثة فلا تتسابق نسختان على المنح.</li>
       <li><b>ثلاثُ نسخٍ تشتري إتاحةً:</b> نشرٌ متدرّجٌ نسخةً بعد نسخة يصرّف اتصالاتِ WebSocket قبل الإيقاف (<code>deploy/rolling-deploy.sh</code>).</li>
@@ -711,13 +714,13 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
           <tr><td>D‑17</td><td>فرض القواعد</td><td>import‑linter في CI</td><td>9 عقود</td></tr>
           <tr><td>D‑18</td><td>نشر الأحداث</td><td>Transactional Outbox</td><td>+ إعادةُ نشرٍ منه</td></tr>
           <tr><td>D‑19</td><td>دلالات التسليم</td><td>at‑least‑once + Idempotent + DLQ</td><td>N = 5</td></tr>
-          <tr class="dev"><td>D‑20</td><td>Streams topology</td><td>مجرى لكل وحدة + Consumer Groups</td><td>4 مجارٍ · <code>stream.files</code> بلا مستهلك</td></tr>
+          <tr class="dev"><td>D‑20</td><td>Streams topology</td><td>مجرى لكل وحدة + Consumer Groups</td><td>5 مجارٍ · <code>stream.files</code> بلا مستهلك</td></tr>
           <tr><td>D‑21</td><td>PgBouncer</td><td>Transaction pooling</td><td></td></tr>
           <tr><td>D‑22</td><td>Vault auth</td><td>AppRole</td><td></td></tr>
           <tr><td>D‑23</td><td>عزل المستأجرين</td><td>RLS أصلية + ترشيح تطبيقي</td><td></td></tr>
           <tr><td>D‑24</td><td>RBAC</td><td>Role → Permissions</td><td></td></tr>
           <tr><td>D‑25</td><td>التحقق من التوكن</td><td>JWT محلي بمفاتيح مُخزّنة</td><td>+ Principal مخبّأ</td></tr>
-          <tr><td>D‑26</td><td>Orchestration</td><td>Docker Compose</td><td>35 خدمة</td></tr>
+          <tr><td>D‑26</td><td>Orchestration</td><td>Docker Compose</td><td>37 خدمة</td></tr>
         </tbody>
       </table>
     </div>
@@ -725,11 +728,11 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
     <div class="call warn">
       <p><b>انحرافاتٌ مُنفَّذة عن السجلّ — وسببُها:</b></p>
       <ul class="tight">
-        <li><b>D‑11:</b> 13 وحدة — <code>spaces</code> محورُ ملكيّةٍ داخل المستأجر، و<code>admin</code> تطبيقيّةٌ بلا نطاقٍ ولا schema، و<code>electrical</code> (WireTwin) هيكلٌ فارغ منذ INC‑0. المحجوزُ 3 كما هو.</li>
+        <li><b>D‑11:</b> 13 وحدة — <code>spaces</code> محورُ ملكيّةٍ داخل المستأجر، و<code>admin</code> تطبيقيّةٌ بلا نطاقٍ ولا schema، و<code>electrical</code> (WireTwin) له schema وسلسلة هجرات منذ INC‑1، وقسم <code>drawings</code> و<code>shared</code> مبنيّان، والأقسام الثلاثة الأخرى فارغة. المحجوزُ 3 كما هو.</li>
         <li><b>D‑14:</b> خدمةٌ داخليّةٌ خاصّةٌ بنا لإبقاء <code>torch</code> خارج رسم الاستيراد؛ ثلاثُ نسخٍ خلف موازِن، وتخبئةُ متّجه الاستعلام، وتبديلُ نموذج التضمين ذرّيٌّ عبر اسمٍ مستعار.</li>
         <li><b>D‑15:</b> مبنيٌّ لـ<code>openai</code> و<code>ollama</code>؛ ملفّاتُ <code>claude</code>/<code>gemini</code>/<code>openrouter</code> فارغة.</li>
         <li><b>D‑16:</b> دورٌ تعذّر نموذجُه السحابيُّ قبل أن يقول كلمة يُجيبه المحلّيّ ويُخبَر المستخدم — <b>اتّجاهٌ واحد</b>، بالإعداد <code>LLM_FALLBACK_ROUTE</code>، والعكسُ ممنوعٌ بالإقلاع. وبعد أوّل مقطعٍ قطعٌ لا تحويل.</li>
-        <li><b>D‑20:</b> أربعةُ مجارٍ، و<code>stream.files</code> بلا مستهلكٍ عمداً.</li>
+        <li><b>D‑20:</b> خمسةُ مجارٍ، و<code>stream.files</code> بلا مستهلكٍ عمداً.</li>
       </ul>
     </div>
     <div class="call">
@@ -757,11 +760,11 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
       <table>
         <thead><tr><th>التوصية</th><th>الحالة</th><th>التفصيل</th></tr></thead>
         <tbody>
-          <tr><td>Schema لكل Module</td><td><span class="pill ok">نُفِّذت</span></td><td>12 سلسلةَ هجرات، <code>version_table_schema</code> لكلّ وحدة</td></tr>
+          <tr><td>Schema لكل Module</td><td><span class="pill ok">نُفِّذت</span></td><td>13 سلسلةَ هجرات، <code>version_table_schema</code> لكلّ وحدة</td></tr>
           <tr><td>إبقاء Framework نحيفاً</td><td><span class="pill warn">قائمة</span></td><td>24 منفذاً، و<code>providers/</code> يحمل التحويلَ والتسعير، و<code>observability/</code> كتالوجَ المهامّ. النموُّ في التجريدات لا في المنطق — لكنّ العقودَ تحرس الاتّجاهَ لا الحجم</td></tr>
           <tr><td>Outbox Relay نقطة فشل</td><td><span class="pill warn">قائمة · مرئيّة</span></td><td>نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل قصَّ المجاري أيضاً. لكنّ تأخّرَها ينبّه (<code>AizzakOutboxCycleTimeHigh</code>)، وما فقده Redis يُعاد من <code>outbox</code> (<code>app.ops.replay</code>)</td></tr>
           <tr><td>ProviderResolver بلا Fallback (D‑16)</td><td><span class="pill ok">حُسمت</span></td><td>تحويلٌ سحابيّ → محلّيّ، وقاطعُ دارةٍ لكلّ مزوّد. الباقي: لا تحويلَ بين سحابيَّين ولا من محلّيٍّ إلى سحابيّ</td></tr>
-          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و29 قاعدةَ تنبيه — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوب</td></tr>
+          <tr><td>نقاط توسعة Observability</td><td><span class="pill ok">استُهلكت</span></td><td><code>correlation_id</code> عبر الحافّة والتطبيق والعامل، و33 مقياساً، و31 قاعدةَ تنبيه — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوب</td></tr>
         </tbody>
       </table>
     </div>
@@ -793,7 +796,7 @@ ul.tight{margin:6px 0 14px;padding-inline-start:22px}ul.tight li{margin:5px 0}
 
   <div class="foot">
     <span>منصة الوكلاء الذكية — وثيقة المعمارية v2.2 · مطابَقة للشيفرة (2026‑10‑04)</span>
-    <span class="mono">15 مرحلة · 26 قراراً · 13 وحدة · 24 منفذاً · 9 عقود · 35 خدمة · 0 مخالفة حرجة</span>
+    <span class="mono">15 مرحلة · 26 قراراً · 13 وحدة · 24 منفذاً · 9 عقود · 37 خدمة · 0 مخالفة حرجة</span>
   </div>
 
 </main>
