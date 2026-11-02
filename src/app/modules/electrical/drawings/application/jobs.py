@@ -101,7 +101,9 @@ class JobService:
     async def cancel(self, ctx: ExecutionContext, job_id: Uuid) -> JobView:
         async def work() -> IngestionJob:
             job, _ = await self._require(ctx, job_id)
-            if job.status is JobStatus.CANCELLED or job.cancel_requested_at is not None:
+            if job.status is JobStatus.CANCELLED or (
+                job.status is JobStatus.RUNNING and job.cancel_requested_at is not None
+            ):
                 return job  # repeated: 200, nothing written
             now = self._clock()
             try:

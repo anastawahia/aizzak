@@ -9,8 +9,10 @@ State machine (the table in LLD 3.3.6)::
     queued · awaiting_confirmation · running ──cancel──▶ cancelled
     running ──request_cancel──▶ (cancel_requested_at; the worker cancels at the next batch)
 
-A transient fault (ele-parse down, MinIO) changes nothing here: the message is redelivered and
-the lease guards against a double run. ``version`` is the repository's optimistic-lock counter.
+A transient fault (ele-parse down, MinIO) leaves the job ``running`` but the run releases its
+lease (``release_lease``): the message is redelivered and the next run takes the job over, while
+a lease that is still live guards against a double run. ``version`` is the repository's
+optimistic-lock counter.
 """
 
 from __future__ import annotations
@@ -103,6 +105,15 @@ class IngestionJob:
         self.lease_until = now + timedelta(seconds=lease_s)
         self.updated_at = now
 
+    def release_lease(self, now: datetime) -> None:
+        """A run that is ending on a fault gives its lease back so the redelivery of the same
+        message (the engine's retry) takes the job over at once instead of finding a live lease
+        and being dropped. ``is_stale`` reads ``lease_until < now``, so the lease ends a tick
+        BEFORE ``now``."""
+        self._require(JobStatus.RUNNING, "release the lease of")
+        self.lease_until = now - timedelta(microseconds=1)
+        self.updated_at = now
+
     def next_seq(self) -> int:
         """The sequence number of the next progress event (strictly increasing)."""
         self.seq += 1
@@ -112,6 +123,7 @@ class IngestionJob:
         """``running -> awaiting_confirmation``: the proposed profile needs a person."""
         self._require(JobStatus.RUNNING, "await confirmation of")
         self.status = JobStatus.AWAITING_CONFIRMATION
+        self.cancel_requested_at = None  # a request is about the run that has just ended
         self.lease_until = None
         self.updated_at = now
 
@@ -132,6 +144,7 @@ class IngestionJob:
     def succeed(self, now: datetime) -> None:
         self._require(JobStatus.RUNNING, "succeed")
         self.status = JobStatus.SUCCEEDED
+        self.cancel_requested_at = None
         self._finish(now)
 
     def fail(self, code: str, detail: str, now: datetime) -> None:
@@ -139,6 +152,7 @@ class IngestionJob:
         self.status = JobStatus.FAILED
         self.failure_code = code
         self.failure_detail = detail[:MAX_FAILURE_DETAIL_CHARS]
+        self.cancel_requested_at = None
         self._finish(now)
 
     def request_cancel(self, now: datetime) -> None:

@@ -25,6 +25,8 @@ from app.modules.electrical.drawings.domain.profile import (
 
 Clock = Callable[[], datetime]
 _SHA256: Final = re.compile(r"[0-9a-f]{64}", re.ASCII)
+# the code of a job cancelled because its document stopped being live (purge, replacement)
+DOCUMENT_NOT_LIVE: Final = "electrical.document_not_live"
 
 
 def invalid_profile(exc: InvalidProfile) -> ValidationError:

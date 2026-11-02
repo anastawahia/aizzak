@@ -23,7 +23,12 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.ports.event_outbox import EventOutbox
 from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.types import Uuid
-from app.modules.electrical.drawings.application._common import Clock, emit, job_completed
+from app.modules.electrical.drawings.application._common import (
+    DOCUMENT_NOT_LIVE,
+    Clock,
+    emit,
+    job_completed,
+)
 from app.modules.electrical.drawings.domain.document import Document, DocumentStatus
 from app.modules.electrical.drawings.domain.events import DocumentPurged, DrawingsEvent
 from app.modules.electrical.drawings.ports.ledger import ProcessedEvents
@@ -34,7 +39,6 @@ from app.modules.electrical.drawings.ports.repository import (
     ProjectRepository,
 )
 
-DOCUMENT_NOT_LIVE = "electrical.document_not_live"
 _PAGE = 200
 
 

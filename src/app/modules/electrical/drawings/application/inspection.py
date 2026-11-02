@@ -18,7 +18,9 @@ crash resumes from the last one.
    unfinished pages in batches: each batch checks for a cancellation or a purge, asks ele-parse
    (a failed range is retried page by page and only the failing page is recorded ``failed``:
    NFR-REL-01), classifies and tallies each page, and commits the pages, the lease extension and
-   (rate-limited) ``job.progressed``. ``InspectionUnavailable`` propagates so the engine redelivers.
+   (rate-limited) ``job.progressed``. A fault (``InspectionUnavailable``, a database error)
+   RELEASES the run's own lease and propagates, so the engine's redelivery of the same message
+   takes the job over at once (and, past its limit, dead-letters it).
 6. PROPOSAL AND CHARACTERIZATION. From the stored rows: ``detect_profile`` and ``characterize``;
    the last transaction STARTS WITH the idempotency claim, then writes the characterization, the
    proposed profile version, the document state and the job's end.
@@ -40,6 +42,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
+from datetime import datetime
 from enum import Enum
 from typing import Final, NoReturn
 
@@ -52,12 +55,13 @@ from app.framework.ports.unit_of_work import UnitOfWork
 from app.framework.settings.settings import ElectricalSettings
 from app.framework.types import Uuid
 from app.modules.electrical.drawings.application._common import (
+    DOCUMENT_NOT_LIVE,
     Clock,
     emit,
     job_completed,
     new_profile_version,
 )
-from app.modules.electrical.drawings.domain.characterization import characterize
+from app.modules.electrical.drawings.domain.characterization import Characterization, characterize
 from app.modules.electrical.drawings.domain.classification import classify_page
 from app.modules.electrical.drawings.domain.document import (
     Document,
@@ -90,7 +94,7 @@ from app.modules.electrical.drawings.domain.profile import (
     DrawingProfile,
     ProfileSource,
 )
-from app.modules.electrical.drawings.domain.profile_detection import detect_profile
+from app.modules.electrical.drawings.domain.profile_detection import ProfileProposal, detect_profile
 from app.modules.electrical.drawings.ports.files import DrawingFiles
 from app.modules.electrical.drawings.ports.ledger import ProcessedEvents
 from app.modules.electrical.drawings.ports.liveness import Liveness
@@ -113,8 +117,14 @@ PDF_REJECTED: Final = "electrical.pdf_rejected"
 TOO_MANY_PAGES: Final = "electrical.too_many_pages"
 SOURCE_UNREADABLE: Final = "electrical.source_unreadable"
 DUPLICATE_DOCUMENT: Final = "electrical.duplicate_document"
-DOCUMENT_NOT_LIVE: Final = "electrical.document_not_live"
 _MAX_CREATOR_CHARS: Final = 512  # ck_drawings_documents_pdf_*
+_RELEASE_TRIES: Final = 3  # optimistic-lock retries when a run gives its lease back
+# ``failure_detail`` for a PDF whose summary could not be read: fixed texts, one per reason
+_SUMMARY_FAILED: Final = {
+    StageReason.PARSE_TIMEOUT: "the PDF could not be opened in time (parse_timeout)",
+    StageReason.MEMORY_LIMIT: "the PDF needs more memory than the limit to open (memory_limit)",
+    StageReason.PARSE_ERROR: "the PDF could not be parsed (parse_error)",
+}
 
 
 class _Fingerprint(Enum):
@@ -249,15 +259,51 @@ class InspectDocument:
             document, job = await self._take(ctx, job_id=job_id, event_id=event_id)
         except _Stop:
             return
-        log = {"job_id": job.id, "document_id": document.id}
-        _logger.info("electrical.inspect.started", extra={**log, "attempt": job.attempt})
-        base = await self._effective_profile(ctx, document)
+        attempt = job.attempt  # this run's token: only it may write the job while it is running
+        _logger.info(
+            "electrical.inspect.started",
+            extra={"job_id": job.id, "document_id": document.id, "attempt": attempt},
+        )
         try:
+            base = await self._effective_profile(ctx, document)
             if await self._has_remaining_work(ctx, document):
                 await self._inspect(ctx, document, job, event_id, base)
-            await self._conclude(ctx, document.id, job.id, event_id, base)
+            await self._conclude(ctx, document.id, job.id, event_id, base, attempt)
         except _Stop:
             return
+        except Exception:
+            # a fault: the lease this run holds is of no use to anyone now, and left alive it
+            # would turn the engine's redelivery of this very message away (a job `running`
+            # with no worker, never retried, never dead-lettered)
+            await self._release_lease(ctx, job.id, attempt)
+            raise
+
+    async def _release_lease(self, ctx: ExecutionContext, job_id: Uuid, attempt: int) -> None:
+        """Give this run's lease back in a short transaction, guarded by the run's ``attempt``
+        (a later takeover or a resume has another one and keeps what it holds). Never raises:
+        the fault being handled is the one to report."""
+        for _ in range(_RELEASE_TRIES):
+            try:
+                async with self._uow.begin(ctx):
+                    job = await self._jobs.get(ctx, job_id)
+                    if job is None or not self._owned(job, attempt):
+                        return
+                    job.release_lease(self._clock())
+                    await self._jobs.save(ctx, job)
+                return
+            except ConflictError:
+                continue  # the job moved under us (a cancel request): read it again
+            except Exception as exc:
+                _logger.warning(
+                    "electrical.inspect.release_failed",
+                    extra={"job_id": job_id, "error": type(exc).__name__},
+                )
+                return
+
+    @staticmethod
+    def _owned(job: IngestionJob, attempt: int) -> bool:
+        """The run that took the job at ``attempt`` still owns it."""
+        return job.status is JobStatus.RUNNING and job.attempt == attempt
 
     # ------------------------------------------------------------- 1. lease
     async def _take(
@@ -446,7 +492,15 @@ class InspectDocument:
         base: DrawingProfile,
         event_id: str,
     ) -> None:
-        summary = await self._pdf.summary(source)
+        try:
+            summary = await self._pdf.summary(source)
+        except PageRangeFailed as exc:
+            # the file cannot even be opened within the limits: not a page's fault, the file's
+            _logger.info(
+                "electrical.inspect.pdf_rejected",
+                extra={"job_id": job.id, "document_id": document.id, "code": exc.reason.value},
+            )
+            await self._fail(ctx, job.id, event_id, PDF_REJECTED, _SUMMARY_FAILED[exc.reason])
         if summary.page_count > self._settings.max_pages:
             await self._fail(
                 ctx,
@@ -479,23 +533,29 @@ class InspectDocument:
         last_emit: float | None = None
         for start in range(0, len(todo), batch_size):
             batch = todo[start : start + batch_size]
-            await self._honour_cancel_and_purge(ctx, document.id, job.id, event_id)
+            await self._honour_cancel_and_purge(ctx, document.id, job.id, event_id, job.attempt)
             results = await self._classify(
-                source, batch, base.classification, {"job_id": job.id, "document_id": document.id}
+                ctx,
+                source,
+                batch,
+                base.classification,
+                job,
             )
             is_last = start + batch_size >= len(todo)
             last_emit = await self._commit_batch(
-                ctx, document.id, job.id, results, is_last, last_emit
+                ctx, document.id, job.id, job.attempt, results, is_last, last_emit
             )
             self._liveness.beat()
 
     async def _classify(
         self,
+        ctx: ExecutionContext,
         source: StagedSource,
         batch: Sequence[int],
         thresholds: ClassificationThresholds,
-        log: dict[str, str],
+        job: IngestionJob,
     ) -> list[PageResult]:
+        log = {"job_id": job.id, "document_id": job.document_id}
         results: list[PageResult] = []
         for first, last in _runs(batch):
             try:
@@ -508,10 +568,21 @@ class InspectDocument:
                     if n not in got
                 )
             except PageRangeFailed:
-                # a range that failed is asked again page by page: only the culprit is lost
+                # a range that failed is asked again page by page: only the culprit is lost. The
+                # page-by-page pass can outlast the lease (each page has its own time limit), so
+                # the lease is extended after every page, which also proves we still own the job.
                 for number in range(first, last + 1):
                     results.append(await self._one_page(source, number, thresholds, log))
+                    await self._keep_lease(ctx, job.id, job.attempt)
         return sorted(results, key=lambda r: r.classification.page_no)
+
+    async def _keep_lease(self, ctx: ExecutionContext, job_id: Uuid, attempt: int) -> None:
+        async with self._uow.begin(ctx):
+            job = await self._jobs.get(ctx, job_id)
+            if job is None or not self._owned(job, attempt):
+                raise _Stop  # taken over, resumed, cancelled or purged: write nothing more
+            job.extend_lease(self._clock(), self._settings.job_lease_s)
+            await self._jobs.save(ctx, job)
 
     async def _one_page(
         self,
@@ -548,18 +619,18 @@ class InspectDocument:
         return failed_page(number, reason, attempts)
 
     async def _honour_cancel_and_purge(
-        self, ctx: ExecutionContext, document_id: Uuid, job_id: Uuid, event_id: str
+        self, ctx: ExecutionContext, document_id: Uuid, job_id: Uuid, event_id: str, attempt: int
     ) -> None:
         document = await self._documents.get(ctx, document_id)
         job = await self._jobs.get(ctx, job_id)
-        if job is None or job.status is not JobStatus.RUNNING:
-            raise _Stop  # cancelled by a purge: nothing more to say
+        if job is None or not self._owned(job, attempt):
+            raise _Stop  # cancelled by a purge, or taken over: nothing more to say
         if document is None or not document.is_live:
             await self._stop_not_live(ctx, job_id, event_id)
         if job.cancel_requested_at is not None:
             async with self._uow.begin(ctx):
                 fresh = await self._jobs.get(ctx, job_id)
-                if fresh is None or fresh.status is not JobStatus.RUNNING:
+                if fresh is None or not self._owned(fresh, attempt):
                     raise _Stop
                 now = self._clock()
                 fresh.cancel(now)
@@ -576,6 +647,7 @@ class InspectDocument:
         ctx: ExecutionContext,
         document_id: Uuid,
         job_id: Uuid,
+        attempt: int,
         results: Sequence[PageResult],
         is_last: bool,
         last_emit: float | None,
@@ -584,8 +656,8 @@ class InspectDocument:
         async with self._uow.begin(ctx):
             document = await self._documents.lock_live(ctx, document_id)
             job = await self._jobs.get(ctx, job_id)
-            if document is None or job is None or job.status is not JobStatus.RUNNING:
-                raise _Stop  # purged under us: write nothing
+            if document is None or job is None or not self._owned(job, attempt):
+                raise _Stop  # purged or taken over under us: write nothing
             now = self._clock()
             await self._pages.record(ctx, document_id, results)
             job.extend_lease(now, self._settings.job_lease_s)
@@ -626,6 +698,7 @@ class InspectDocument:
         job_id: Uuid,
         event_id: str,
         base: DrawingProfile,
+        attempt: int,
     ) -> None:
         document = await self._documents.get(ctx, document_id)
         if document is None:
@@ -661,58 +734,24 @@ class InspectDocument:
                 raise _Stop  # a duplicate delivery: already done
             locked = await self._documents.lock_live(ctx, document_id)
             job = await self._jobs.get(ctx, job_id)
-            if locked is None or job is None or job.status is not JobStatus.RUNNING:
+            if locked is None or job is None or not self._owned(job, attempt):
                 raise _Stop
             now = self._clock()
-            await self._characterizations.put(ctx, record, project_id=locked.project_id)
-            events: list[DrawingsEvent] = []
-            succeeded = True
-            if locked.profile_state is ProfileState.CONFIRMED:
-                job.succeed(now)  # a person already decided; the detection changes nothing
+            if job.cancel_requested_at is not None:
+                # asked for while the last batch was running (or after it): honoured here, in
+                # the transaction that would have ended the job, so the request is never lost
+                job.cancel(now)
+                await self._jobs.save(ctx, job)
+                await emit(ctx, self._outbox, [job_completed(job, now)])
+                cancelled = True
             else:
-                await self._profiles.append(
-                    ctx,
-                    new_profile_version(
-                        ctx,
-                        project_id=locked.project_id,
-                        document_id=locked.id,
-                        source=ProfileSource.DETECTED,
-                        profile=proposal.profile,
-                        now=now,
-                        confidence=proposal.confidence,
-                        mixed_standards=proposal.mixed_standards,
-                        detection={
-                            "field_confidence": dict(proposal.field_confidence),
-                            "basis": {k: list(v) for k, v in proposal.basis.items()},
-                        },
-                        created_by=job.created_by,
-                    ),
-                )
-                accepted = proposal.confidence >= base.auto_accept_confidence
-                locked.set_profile_state(
-                    ProfileState.ACCEPTED if accepted else ProfileState.PROPOSED, now
-                )
-                succeeded = accepted
-                if accepted:
-                    job.succeed(now)
-                else:
-                    job.await_confirmation(now)
-                events.append(
-                    DocumentProfileProposed(
-                        document_id=locked.id,
-                        workspace_id=locked.workspace_id,
-                        job_id=job.id,
-                        confidence=proposal.confidence,
-                        needs_confirmation=not accepted,
-                        mixed_standards=proposal.mixed_standards,
-                        occurred_at=now,
-                    )
-                )
-            if succeeded:
-                events.append(job_completed(job, now))
-            await self._documents.save(ctx, locked)
-            await self._jobs.save(ctx, job)
-            await emit(ctx, self._outbox, events)
+                cancelled = False
+                succeeded = await self._settle(ctx, locked, job, record, proposal, base, now)
+        if cancelled:
+            _logger.info(
+                "electrical.inspect.cancelled", extra={"job_id": job_id, "document_id": document_id}
+            )
+            return
         _logger.info(
             "electrical.inspect.finished",
             extra={
@@ -721,6 +760,70 @@ class InspectDocument:
                 "needs_confirmation": not succeeded,
             },
         )
+
+    async def _settle(
+        self,
+        ctx: ExecutionContext,
+        locked: Document,
+        job: IngestionJob,
+        record: Characterization,
+        proposal: ProfileProposal,
+        base: DrawingProfile,
+        now: datetime,
+    ) -> bool:
+        """The ordinary end, inside ``_conclude``'s transaction: the characterization, the
+        proposed profile version, the document's state and the job's end. ``True`` when the job
+        ``succeeded`` (it did not wait for a person)."""
+        await self._characterizations.put(ctx, record, project_id=locked.project_id)
+        events: list[DrawingsEvent] = []
+        succeeded = True
+        if locked.profile_state is ProfileState.CONFIRMED:
+            job.succeed(now)  # a person already decided; the detection changes nothing
+        else:
+            await self._profiles.append(
+                ctx,
+                new_profile_version(
+                    ctx,
+                    project_id=locked.project_id,
+                    document_id=locked.id,
+                    source=ProfileSource.DETECTED,
+                    profile=proposal.profile,
+                    now=now,
+                    confidence=proposal.confidence,
+                    mixed_standards=proposal.mixed_standards,
+                    detection={
+                        "field_confidence": dict(proposal.field_confidence),
+                        "basis": {k: list(v) for k, v in proposal.basis.items()},
+                    },
+                    created_by=job.created_by,
+                ),
+            )
+            accepted = proposal.confidence >= base.auto_accept_confidence
+            locked.set_profile_state(
+                ProfileState.ACCEPTED if accepted else ProfileState.PROPOSED, now
+            )
+            succeeded = accepted
+            if accepted:
+                job.succeed(now)
+            else:
+                job.await_confirmation(now)
+            events.append(
+                DocumentProfileProposed(
+                    document_id=locked.id,
+                    workspace_id=locked.workspace_id,
+                    job_id=job.id,
+                    confidence=proposal.confidence,
+                    needs_confirmation=not accepted,
+                    mixed_standards=proposal.mixed_standards,
+                    occurred_at=now,
+                )
+            )
+        if succeeded:
+            events.append(job_completed(job, now))
+        await self._documents.save(ctx, locked)
+        await self._jobs.save(ctx, job)
+        await emit(ctx, self._outbox, events)
+        return succeeded
 
     # ------------------------------------------------------------ endings
     async def _fail(

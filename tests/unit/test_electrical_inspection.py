@@ -79,6 +79,12 @@ async def _run(
     await stack.inspector(pdf, **kwargs).run(stack.ctx, job_id=job_id, event_id=event_id)
 
 
+async def _classifications(pages: Any, ctx: Any, document_id: str) -> list[Any]:
+    """The stored classifications, page order (the page listing, its rows that have one)."""
+    listing = await pages.list(ctx, document_id, limit=100, cursor=None)
+    return [row.classification for row in listing.data if row.classification is not None]
+
+
 async def _job(stack: Stack, job_id: str) -> Any:
     job = await stack.jobs.get(stack.ctx, job_id)
     assert job is not None
@@ -112,7 +118,7 @@ async def test_an_ingestion_fingerprints_classifies_and_proposes(stack: Stack) -
     assert document.profile_state is ProfileState.ACCEPTED and document.is_live
     counts = await stack.pages.stage_counts(stack.ctx, doc_id, Stage.CLASSIFY)
     assert counts == {StageStatus.SUCCEEDED: 4}
-    assert [c.kind for c in await stack.pages.classifications(stack.ctx, doc_id)] == [
+    assert [c.kind for c in await _classifications(stack.pages, stack.ctx, doc_id)] == [
         PageKind.VECTOR_TEXT
     ] * 4
     detected = await stack.profiles.latest(
@@ -379,18 +385,60 @@ async def test_ele_parse_unavailable_is_raised_so_the_engine_redelivers(stack: S
 
 
 # ------------------------------------------------------------------ the contract of the lease
-async def test_a_live_lease_turns_a_second_run_away_without_a_claim(stack: Stack) -> None:
+async def test_a_live_lease_held_by_a_running_peer_turns_a_second_run_away_without_a_claim(
+    stack: Stack,
+) -> None:
+    """A run that is REALLY still working (its lease is live, it released nothing) is not
+    doubled: the second delivery returns without a claim and without touching the file."""
     _, job_id = await _registered(stack)
-    stack.pdf = _pdf(unavailable=True)
-    with pytest.raises(InspectionUnavailable):
-        await _run(stack, job_id, event_id="e1")
-    stack.pdf = _pdf()
+    peer = stack.jobs.rows[job_id]
+    assert peer.take_lease(stack.clock(), stack.settings.job_lease_s)  # another worker's run
+    await stack.jobs.save(stack.ctx, peer)
     staged_before = len(stack.stager.staged)
 
-    await _run(stack, job_id, event_id="e2")  # redelivered while the lease is alive
+    await _run(stack, job_id, event_id="e2", pdf=_pdf())
 
     assert (await _job(stack, job_id)).status is JobStatus.RUNNING
     assert len(stack.stager.staged) == staged_before and stack.ledger.claimed == []
+
+
+async def test_the_redelivery_of_the_same_event_after_a_transient_fault_completes_the_job(
+    stack: Stack,
+) -> None:
+    """The engine redelivers the message at once after the handler raised. The failed run gave
+    its lease back, so the very next delivery of the SAME event takes the job over and finishes
+    it (it used to find a live lease, return, and be acknowledged: a job `running` for ever)."""
+    doc_id, job_id = await _registered(stack)
+    stack.pdf = _pdf(unavailable=True)
+    with pytest.raises(InspectionUnavailable):
+        await _run(stack, job_id, event_id="e1")
+    released = await _job(stack, job_id)
+    assert released.status is JobStatus.RUNNING and released.is_stale(stack.clock())
+    assert released.attempt == 1
+
+    await _run(stack, job_id, event_id="e1", pdf=_pdf())  # the same event id, no time passed
+
+    job = await _job(stack, job_id)
+    assert job.status is JobStatus.SUCCEEDED and job.attempt == 2
+    assert stack.ledger.claimed == ["e1"]
+    assert await stack.characterizations.get(stack.ctx, doc_id) is not None
+
+
+async def test_a_run_gives_back_only_the_lease_it_holds(stack: Stack) -> None:
+    """The release is guarded by the run's attempt: a run that was taken over (or a job resumed)
+    must not end the lease of the run that holds the job now."""
+    _, job_id = await _registered(stack)
+    job = stack.jobs.rows[job_id]
+    assert job.take_lease(stack.clock(), stack.settings.job_lease_s)
+    await stack.jobs.save(stack.ctx, job)
+    lease = (await _job(stack, job_id)).lease_until
+
+    inspector = stack.inspector(_pdf())
+    await inspector._release_lease(stack.ctx, job_id, attempt=job.attempt + 5)  # a stale run
+    assert (await _job(stack, job_id)).lease_until == lease
+
+    await inspector._release_lease(stack.ctx, job_id, attempt=job.attempt)  # the owner
+    assert (await _job(stack, job_id)).is_stale(stack.clock())
 
 
 async def test_an_expired_lease_is_taken_over_and_the_attempt_counted(stack: Stack) -> None:
