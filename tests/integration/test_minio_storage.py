@@ -23,6 +23,8 @@ exception.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator
@@ -323,3 +325,49 @@ async def test_object_size_of_a_missing_key_is_none(
     minio_storage: MinioStorage, object_prefix: str
 ) -> None:
     assert await minio_storage.object_size(object_prefix + "never.bin") is None
+
+
+# --------------------------------------------------------------------------- #
+# PLT-03 (WireTwin INC-1): the bounded-memory read                            #
+# --------------------------------------------------------------------------- #
+async def test_read_chunks_streams_a_20_mib_object_in_8_mib_parts_byte_for_byte(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    """INC1-AC-7: the object comes back as consecutive parts of at most ``chunk_bytes`` (here
+    8 MiB: 8 + 8 + 4), in order, and the bytes concatenate to what was put."""
+    key = object_prefix + "drawing.pdf"
+    chunk = 8 * 1024 * 1024
+    payload = os.urandom(20 * 1024 * 1024)
+    await minio_storage.put(key, payload, "application/pdf")
+
+    parts = [part async for part in minio_storage.read_chunks(key, chunk_bytes=chunk)]
+
+    assert [len(part) for part in parts] == [chunk, chunk, 20 * 1024 * 1024 - 2 * chunk]
+    assert hashlib.sha256(b"".join(parts)).digest() == hashlib.sha256(payload).digest()
+
+
+async def test_read_chunks_of_a_missing_object_is_not_found(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    with pytest.raises(NotFoundError) as excinfo:
+        async for _ in minio_storage.read_chunks(object_prefix + "never.pdf", chunk_bytes=65_536):
+            pass
+    assert excinfo.value.code == "common.not_found"
+
+
+async def test_read_chunks_can_be_closed_early_and_the_next_read_still_works(
+    minio_storage: MinioStorage, object_prefix: str
+) -> None:
+    """The caller may stop after the first part (`aclose`); the connection is released then,
+    so a later read of the same object is served."""
+    key = object_prefix + "partial.bin"
+    payload = os.urandom(300_000)
+    await minio_storage.put(key, payload, "application/octet-stream")
+
+    stream = minio_storage.read_chunks(key, chunk_bytes=65_536)
+    first = await anext(stream)
+    await stream.aclose()
+    assert first == payload[:65_536]
+
+    again = b"".join([part async for part in minio_storage.read_chunks(key, chunk_bytes=65_536)])
+    assert again == payload

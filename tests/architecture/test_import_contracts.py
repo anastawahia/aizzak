@@ -52,7 +52,11 @@ _EXPECTED_IGNORES = {
 _SECTIONS = ("drawings", "circuits", "search", "diagnostics")
 _LAYERS = ("domain", "application", "ports", "adapters")
 # Packages added after INC-0 (their `__init__.py` may hold code); everything else is original.
-_NEW_PACKAGES = {"shared/rules/__init__.py"}
+_NEW_PACKAGES = {
+    "shared/rules/__init__.py",
+    # S7: the packaged data of drawings' adapters (producers.toml), read with importlib.resources
+    "drawings/adapters/data/__init__.py",
+}
 
 
 def _lint_imports_exe() -> str:
@@ -135,8 +139,8 @@ def test_the_skeleton_invariants_hold() -> None:
 
     Five packages directly under the container (`exhaustive`), four layers per section,
     and every `__init__.py` that existed in INC-0 keeps its single docstring line. The
-    only new package is `shared/rules`, which carries the rule model and the packaged
-    `identifiers.toml`.
+    new packages are `shared/rules` (the rule model and the packaged `identifiers.toml`) and
+    `drawings/adapters/data` (the packaged `producers.toml`).
     """
     assert sorted(p.name for p in ELECTRICAL.iterdir() if p.name != "__pycache__") == sorted(
         ["__init__.py", "shared", *_SECTIONS]
