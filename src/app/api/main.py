@@ -76,6 +76,7 @@ from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.agents import router as agents_router
 from app.api.v1.routers.conversations import router as conversations_router
 from app.api.v1.routers.credentials import router as credentials_router
+from app.api.v1.routers.electrical import router as electrical_router
 from app.api.v1.routers.files import router as files_router
 from app.api.v1.routers.integrations import router as integrations_router
 from app.api.v1.routers.integrations_public import router as integrations_public_router
@@ -266,6 +267,7 @@ def create_app(
     app.include_router(usage_router, prefix=prefix)
     app.include_router(credentials_router, prefix=prefix)
     app.include_router(knowledge_router, prefix=prefix)
+    app.include_router(electrical_router, prefix=prefix)  # WireTwin; 503 while the flag is off
     # The PUBLIC callback first, then the authenticated routes (6.1-و-4-2).
     # Order is belt and braces rather than necessity — `/connections/oauth/
     # callback` matches no authenticated path, since 03 defines no
@@ -744,6 +746,10 @@ def create_production_app() -> FastAPI:
         # left a deleted file's chunks and points answering searches.
         file_deletion=root.file_deletion,
         file_replacement=root.file_replacement,
+        # WireTwin (INC-1): the root's OWN bundle, the one the file and space cascades also
+        # hold participants of. Without it every `/electrical` route fails CLOSED
+        # (`common.internal`); with the flag off they answer 503 `electrical.disabled`.
+        electrical=root.electrical,
         media=root.media,
         workspace=root.workspace,
         presence=root.presence,

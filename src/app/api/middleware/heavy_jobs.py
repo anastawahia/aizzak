@@ -7,10 +7,12 @@ One dependency, declared beside the route it bounds, exactly as ``require`` is:
         Depends(require(Permission.MEDIA_CREATE)), Depends(heavy_job)
     ])
 
-**Which routes, and the rule that decides it.** The four operations that answer
-**202**, and nothing else. 202 is not incidental in this API — it is the status
-every route uses to say "a worker will do this later, here is the job to await"
-(``routers/media.py``, ``routers/knowledge.py``), so the set of 202s IS the set
+**Which routes, and the rule that decides it.** The operations that answer
+**202**, and nothing else: the four of the original set (``createMediaJob`` and three in
+``routers/knowledge.py``) and, since WireTwin (INC-1), four in ``routers/electrical.py``
+(register a document, confirm a profile, reprocess, resume a job). 202 is not incidental in
+this API — it is the status every route uses to say "a worker will do this later, here is the
+job to await" (``routers/media.py``, ``routers/knowledge.py``), so the set of 202s IS the set
 of queue entrances, and ``test_heavy_job_limit.py`` pins the two to each other
 in BOTH directions rather than leaving four decorators to be kept in step by
 hand. A fifth queueing route added without this guard fails that test on the

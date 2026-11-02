@@ -21,6 +21,7 @@ tags:
   - name: spaces
   - name: files
   - name: knowledge
+  - name: electrical
   - name: media
   - name: workflows
   - name: credentials
@@ -781,6 +782,201 @@ paths:
         "200": { description: OK, headers: { X-Correlation-Id: { $ref: "#/components/headers/CorrelationId" } }, content: { application/json: { schema: { $ref: "#/components/schemas/UsageLimitPage" } } } }
         default: { $ref: "#/components/responses/Problem" }
 
+  # ---- WireTwin (electrical-drawings INC-1). Every operation below answers 503 `electrical.disabled`
+  # while the deployment runs with ELECTRICAL_ENABLED=false, BEFORE the permission is checked, so a
+  # caller without permission still hears "not enabled". Permissions: `electrical:read` for reads and
+  # the replacement preview, `electrical:manage` for every other verb (owner/admin; a member reads and
+  # previews, a viewer reads). The four operations that answer 202 are queue entrances: they take
+  # `Idempotency-Key` and are charged to the 30 job/min budget (429 `common.rate_limited`).
+  /electrical/projects:
+    get:
+      tags: [electrical]
+      operationId: listElectricalProjects
+      description: "The space's WireTwin project: a page of zero or one (one project per space). `space_id` is required; an unknown or foreign space answers an empty page, a listing is not an existence oracle. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/SpaceId" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectPage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [electrical]
+      operationId: createElectricalProject
+      description: "Create the space's project together with its first profile version: `default`, or the given `profile` body as `user`. A second project in the space is 409 `electrical.project_exists`; an unknown, foreign or deleted space is 404 `common.not_found`; an invalid profile is 422 `electrical.invalid_profile` naming the field and never echoing what was sent; a bad name is 422 `common.validation_error`. Permission `electrical:manage`."
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectIn" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/projects/{id}:
+    get:
+      tags: [electrical]
+      operationId: getElectricalProject
+      description: "One project. Unknown or another tenant's is 404. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [electrical]
+      operationId: updateElectricalProject
+      description: "Rename or re-describe the project. An absent field is left alone and a blank `description` clears it; changing nothing writes nothing. A concurrent edit that loses the race is 409 `common.conflict`. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectPatchIn" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalProjectOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/projects/{id}/profile:
+    get:
+      tags: [electrical]
+      operationId: getProjectProfile
+      description: "The project's current profile version. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DrawingProfileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [electrical]
+      operationId: replaceProjectProfile
+      description: "Append a `user` version of the project's profile; versions are never edited. Documents already processed are NOT reprocessed (see `reprocessDocument`). An invalid body is 422 `electrical.invalid_profile`: the error names the field path and lists the names the server knows, and never echoes the unknown name or value the client sent. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DrawingProfileIn" } } } }
+      responses:
+        "200": { description: A new version, content: { application/json: { schema: { $ref: "#/components/schemas/DrawingProfileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/projects/{id}/documents:
+    get:
+      tags: [electrical]
+      operationId: listElectricalDocuments
+      description: "The project's documents, newest first, each with its file's current name (null once the file is unreadable). `tags` is null in a list (it rides on the single read). A document being purged is out of every read; `status` filters `active` or `excluded`. Permission `electrical:read`."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [active, excluded] } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalDocumentPage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [electrical]
+      operationId: registerElectricalDocument
+      description: "STG-00: register a `ready` PDF of the project's space as a drawing document. The document, its `queued` job and `electrical.document.registered.v1` are written in one unit of work (202); the worker takes it from there. The guard answers in this order and the first refusal is the answer, writing nothing: 404 `common.not_found` (the project, or a file that is unknown, unfinished, foreign or deleted); 415 `electrical.not_a_pdf`; 422 `electrical.file_not_in_project_space`; 409 `electrical.document_exists` (the file already has a document, ACTIVE OR EXCLUDED: the unique index counts every document that is not being purged, so an excluded document keeps its file until it is purged); 409 `electrical.namesake_not_replaced` (an older file with the same name and tags is still live; the detail names it); 409 `electrical.duplicate_document` (only when `checksum` is sent and the same content is already an active document of the project); 429 `electrical.ingestion_queue_full` with `Retry-After`; 429 `common.rate_limited` (the 30 job/min budget, charged before the handler). `checksum` is a SHA-256 as 64 hexadecimal characters of either case, otherwise 422 `common.validation_error`. It is an early warning, not a guarantee: the worker recomputes the hash from the bytes and is the judge. A repeated `Idempotency-Key` with the same body replays the first answer. Registration also excludes the project's active documents whose file is no longer readable (counted in `aizzak_ele_documents_excluded_total`). Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentRegisterIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentRegisteredOut" } } } }
+        "429": { description: "`electrical.ingestion_queue_full` (with `Retry-After`) or `common.rate_limited`", headers: { Retry-After: { schema: { type: integer } } }, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/projects/{id}/characterization:
+    get:
+      tags: [electrical]
+      operationId: getProjectCharacterization
+      description: "The project's characterization, DERIVED on every read from its ACTIVE documents' records (an excluded or purging document is out of it), so it always equals the sum of what it lists. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/CharacterizationReportOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}:
+    get:
+      tags: [electrical]
+      operationId: getElectricalDocument
+      description: "One document with its file's name and tags (read from `files` in the same call) and its latest job. A document being purged is 404. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ElectricalDocumentOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}/profile:
+    get:
+      tags: [electrical]
+      operationId: getDocumentProfile
+      description: "The profile the document is processed under (the document's own version when its state is `accepted` or `confirmed`, otherwise the project's) and, while it awaits a person, the latest detected `proposal` with the per-field confidence and the basis STG-01 stored with it (empty maps for a version that stored none). With the default `auto_accept_confidence` of 0.90 a proposal is never accepted without a person (INC1-R-16): the symbol-standard confidence is capped below 0.9 until the thresholds are tuned on real drawings. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EffectiveProfileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [electrical]
+      operationId: replaceDocumentProfile
+      description: "A person's override of THIS document's profile: a `user` version, and the document becomes `confirmed` under it. 409 `electrical.job_conflict` while a job of the document awaits confirmation (confirm it with `confirmDocumentProfile` instead); 422 `electrical.invalid_profile` as for the project. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DrawingProfileIn" } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EffectiveProfileOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}/profile-confirmation:
+    post:
+      tags: [electrical]
+      operationId: confirmDocumentProfile
+      description: "Confirm the proposal as it is (no body, or an absent `body`) or as edited, and requeue the job that awaited it (202). 409 `electrical.job_conflict` when no job of the document awaits confirmation; 422 `electrical.invalid_profile` for an edited body. Charged to the 30 job/min budget. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/ProfileConfirmIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/IngestionJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}/reprocessing:
+    post:
+      tags: [electrical]
+      operationId: reprocessDocument
+      description: "A new `reprocess` job for the whole document or the listed pages (1..1000 positive integers without repeats; a repeat is 422), 202. 409 `electrical.job_conflict` while another job of the document is open; 409 `electrical.profile_unconfirmed` while the proposal awaits a person; 422 for a page outside `1..page_count`. Charged to the 30 job/min budget. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/ReprocessIn" } } } }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/IngestionJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}/pages:
+    get:
+      tags: [electrical]
+      operationId: listDocumentPages
+      description: "The document's pages by page number, each with the state of its stages. One page failing does not fail the job (NFR-REL-01): its state is here, not in an HTTP status. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentPagePage" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/documents/{id}/characterization:
+    get:
+      tags: [electrical]
+      operationId: getDocumentCharacterization
+      description: "The document's characterization record (FR-EVAL-14). 404 until STG-01 has characterized it. `creator` and `producer` are the PDF's own metadata, untrusted text: control, format and hidden characters arrive escaped (`\\u202e`, `\\x0d`). Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/CharacterizationOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/ingestion-jobs/{id}:
+    get:
+      tags: [electrical]
+      operationId: getIngestionJob
+      description: "The job with what is derived at read time: `counts` (pages per status of the classify stage; keys present only when non-zero, and `{}` inside a list), `queue_position` and `estimated_wait_s` while queued (the estimate is null without history), and `stale: true` once a running job's lease has expired. Permission `electrical:read`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/IngestionJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/ingestion-jobs/{id}/cancel:
+    post:
+      tags: [electrical]
+      operationId: cancelIngestionJob
+      description: "Cancel: at once for a waiting job, at the next batch boundary for a running one; repeating it writes nothing. 409 `electrical.job_conflict` for a finished job. Not charged to the job budget (cancelling removes work). Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/IngestionJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/ingestion-jobs/{id}/resume:
+    post:
+      tags: [electrical]
+      operationId: resumeIngestionJob
+      description: "Return the SAME job to `queued`; only its unfinished pages are processed again. Allowed from `failed`, `cancelled`, and `running` once its lease has expired. 409 `electrical.job_conflict` otherwise; 409 `electrical.profile_unconfirmed` while it awaits confirmation. Charged to the 30 job/min budget. Permission `electrical:manage`."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/IngestionJobOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /electrical/files/{id}/replacement-preview:
+    get:
+      tags: [electrical]
+      operationId: previewFileReplacement
+      description: "What registering or re-tagging this file would replace (PLT-24): the older same-name-and-tags files it would delete with their drawing documents and projects, and the same-name files kept because their tags differ. With `checksum` (a SHA-256 as 64 hexadecimal characters of either case, otherwise 422) each affected document says whether its content is identical (`content_identical`; null without a checksum or a recorded hash). Writes nothing. An unknown, foreign or deleted file is 404. Permission `electrical:read`."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: checksum, in: query, required: false, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ReplacementPreviewOut" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+
   # Health probes live outside the /api/v1 base and require no auth (03 §0, §1).
   # The per-path `servers: [{ url: / }]` override anchors them at the server root
   # instead of resolving under the global `servers: /api/v1`.
@@ -1502,3 +1698,214 @@ components:
     UsageLimitPage:
       type: object
       properties: { data: { type: array, items: { $ref: "#/components/schemas/UsageLimitOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    # ---- WireTwin (electrical-drawings INC-1) ----
+    ElectricalProjectIn:
+      type: object
+      required: [space_id, name]
+      properties:
+        space_id: { type: string, format: uuid }
+        name: { type: string, description: "1..200 characters after sanitation (control, format, surrogate, private-use and unassigned characters are refused)." }
+        description: { type: string, nullable: true, description: "At most 2,000 characters." }
+        profile: { type: object, nullable: true, additionalProperties: true, description: "A DrawingProfile body (see `DrawingProfileIn`); the default profile when absent." }
+    ElectricalProjectPatchIn:
+      type: object
+      properties:
+        name: { type: string, nullable: true }
+        description: { type: string, nullable: true, description: "Blank clears it." }
+    ElectricalProjectOut:
+      type: object
+      required: [id, space_id, name, description, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        created_at: { type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$" }
+        updated_at: { type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$" }
+    ElectricalProjectPage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/ElectricalProjectOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    DrawingProfileIn:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: object
+          additionalProperties: true
+          description: "Strict: `schema` must be 1; an unknown field, a wrong type, a bad enumeration value or an out-of-range number is 422 `electrical.invalid_profile` naming the field path. An absent key takes its default. Fields: symbol_standard (iec_60617, gbt_4728, nfpa_jic, vendor), vendor_library (only with `vendor`), identifier_convention (iec_81346, gbt_5094, cn_letter_codes, nfpa_jic), extra_aspects, cross_reference_format, junction_convention, plc_vendor, plc_families, languages (en, zh), wire_number_patterns (NAMES of packaged patterns, never regular expressions), voltage_labels, auto_accept_confidence (0.5..1.0, default 0.90), classification (thresholds). The error never echoes an unknown name or value the client sent."
+    DrawingProfileOut:
+      type: object
+      required: [version, source, fingerprint, body, created_at]
+      properties:
+        version: { type: integer, description: "1, 2, ... per owner (the project, or a document); append-only." }
+        source: { type: string, enum: [default, user, detected, confirmed] }
+        fingerprint: { type: string, description: "SHA-256 of the canonical body: equal profiles, equal fingerprints." }
+        body: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$" }
+    ProfileProposalOut:
+      type: object
+      required: [confidence, field_confidence, mixed_standards, basis, body]
+      properties:
+        confidence: { type: number, description: "The lowest field confidence." }
+        field_confidence: { type: object, additionalProperties: { type: number }, description: "Per detected field (identifier_convention, symbol_standard, cross_reference_format, plc_families, languages); empty for a version that stored none." }
+        mixed_standards: { type: boolean }
+        basis: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Why: tokens, producer, language, symbol; empty for a version that stored none." }
+        body: { type: object, additionalProperties: true }
+    EffectiveProfileOut:
+      type: object
+      required: [state, effective, project_version, proposal]
+      properties:
+        state: { type: string, enum: [none, proposed, accepted, confirmed] }
+        effective: { $ref: "#/components/schemas/DrawingProfileOut" }
+        project_version: { type: integer }
+        proposal: { allOf: [ { $ref: "#/components/schemas/ProfileProposalOut" } ], nullable: true }
+    DocumentRegisterIn:
+      type: object
+      required: [file_id]
+      properties:
+        file_id: { type: string, format: uuid }
+        checksum: { type: string, nullable: true, maxLength: 128, description: "SHA-256 of the file as 64 hexadecimal characters of either case; anything else is 422. An early warning, not a guarantee: STG-01 recomputes the hash from the bytes." }
+    ProfileConfirmIn:
+      type: object
+      properties:
+        body: { type: object, nullable: true, additionalProperties: true, description: "An edited profile; absent or null confirms the proposal as it is." }
+    ReprocessIn:
+      type: object
+      properties:
+        pages: { type: array, nullable: true, minItems: 1, maxItems: 1000, items: { type: integer, minimum: 1 }, description: "Pages to reprocess, without repeats; absent means every page." }
+    IngestionJobOut:
+      type: object
+      required: [id, document_id, kind, status, stage, pages, counts, seq, attempt, failure_code, failure_detail, queue_position, estimated_wait_s, stale, created_at, started_at, finished_at]
+      properties:
+        id: { type: string, format: uuid }
+        document_id: { type: string, format: uuid }
+        kind: { type: string, enum: [ingest, reprocess] }
+        status: { type: string, enum: [queued, running, awaiting_confirmation, succeeded, failed, cancelled] }
+        stage: { type: string, nullable: true, enum: [classify] }
+        pages: { type: array, nullable: true, items: { type: integer }, description: "The subset of a reprocess job; null means every page." }
+        counts: { type: object, additionalProperties: { type: integer }, description: "Pages per status of the classify stage (pending, running, succeeded, failed, needs_review), derived at read time; only non-zero keys, and `{}` inside a list." }
+        seq: { type: integer, description: "Progress sequence, +1 per published progress event." }
+        attempt: { type: integer }
+        failure_code: { type: string, nullable: true, description: "An error-catalogue code (`electrical.pdf_rejected`, `electrical.too_many_pages`, `electrical.source_unreadable`, `electrical.duplicate_document`)." }
+        failure_detail: { type: string, nullable: true }
+        queue_position: { type: integer, nullable: true, description: "Only while queued." }
+        estimated_wait_s: { type: number, nullable: true, description: "Position x the median run of the last twenty succeeded jobs; null without history." }
+        stale: { type: boolean, description: "A running job whose lease has expired (the worker died); it can be resumed." }
+        created_at: { type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$" }
+        started_at: { type: string, format: date-time, nullable: true, pattern: "Z$" }
+        finished_at: { type: string, format: date-time, nullable: true, pattern: "Z$" }
+    ElectricalDocumentOut:
+      type: object
+      required: [id, project_id, file_id, file_name, tags, status, exclusion_reason, page_count, content_sha256, profile_state, latest_job, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        file_id: { type: string, format: uuid }
+        file_name: { type: string, nullable: true, description: "From `files`; null once the file is unreadable." }
+        tags: { allOf: [ { $ref: "#/components/schemas/FileTagsOut" } ], nullable: true, description: "From `files` on the single read; null in a list." }
+        status: { type: string, enum: [active, excluded, purging] }
+        exclusion_reason: { type: string, nullable: true, enum: [duplicate_content, file_unreadable] }
+        page_count: { type: integer, nullable: true }
+        content_sha256: { type: string, nullable: true }
+        profile_state: { type: string, enum: [none, proposed, accepted, confirmed] }
+        latest_job: { allOf: [ { $ref: "#/components/schemas/IngestionJobOut" } ], nullable: true }
+        created_at: { type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$" }
+    ElectricalDocumentPage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/ElectricalDocumentOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    DocumentRegisteredOut:
+      type: object
+      required: [document, job]
+      properties:
+        document: { $ref: "#/components/schemas/ElectricalDocumentOut" }
+        job: { $ref: "#/components/schemas/IngestionJobOut" }
+    PageStageOut:
+      type: object
+      required: [stage, status, reason, attempts]
+      properties:
+        stage: { type: string, enum: [classify] }
+        status: { type: string, enum: [pending, running, succeeded, failed, needs_review] }
+        reason: { type: string, nullable: true, enum: [parse_timeout, memory_limit, parse_error, ambiguous_classification] }
+        attempts: { type: integer }
+    DocumentPageOut:
+      type: object
+      required: [page_no, kind, language, needs_ocr, stages]
+      properties:
+        page_no: { type: integer }
+        kind: { type: string, nullable: true, enum: [vector_text, vector_outlined, vector_garbled, raster, mixed, empty], description: "Null while the classify stage is pending." }
+        language: { type: string, nullable: true, enum: [en, zh, mixed, none] }
+        needs_ocr: { type: boolean, nullable: true }
+        stages: { type: array, items: { $ref: "#/components/schemas/PageStageOut" } }
+    DocumentPagePage:
+      type: object
+      properties: { data: { type: array, items: { $ref: "#/components/schemas/DocumentPageOut" } }, meta: { $ref: "#/components/schemas/PageMeta" } }
+    CharacterizationOut:
+      type: object
+      description: "One document's characterization record (FR-EVAL-14). `creator` and `producer` are untrusted PDF metadata and arrive escaped."
+      required: [document_id, content_sha256, producer_family, creator, producer, page_count, text_kinds, page_languages, document_language, conventions, symbol_standard_guess, symbol_standard_basis, plc_families, cross_reference_formats, ocr_needed_pages, cid_fonts_without_tounicode, pipeline_version, shared_version, rules_version, mixed_standards]
+      properties:
+        document_id: { type: string, format: uuid }
+        content_sha256: { type: string }
+        producer_family: { type: string, nullable: true }
+        creator: { type: string, nullable: true }
+        producer: { type: string, nullable: true }
+        page_count: { type: integer }
+        text_kinds: { type: object, additionalProperties: { type: integer } }
+        page_languages: { type: object, additionalProperties: { type: integer } }
+        document_language: { type: string, enum: [en, zh, bilingual, none] }
+        conventions: { type: object, additionalProperties: { type: integer } }
+        symbol_standard_guess: { type: string }
+        symbol_standard_basis: { type: array, items: { type: string } }
+        plc_families: { type: object, additionalProperties: { type: integer } }
+        cross_reference_formats: { type: object, additionalProperties: { type: integer } }
+        ocr_needed_pages: { type: integer }
+        cid_fonts_without_tounicode: { type: integer }
+        pipeline_version: { type: string }
+        shared_version: { type: string }
+        rules_version: { type: string }
+        mixed_standards: { type: boolean }
+    CharacterizationReportOut:
+      type: object
+      description: "A project's characterization, derived from its ACTIVE documents' records."
+      required: [documents, pages, producers, text_kinds, document_languages, conventions, symbol_standards, plc_families, ocr_needed_ratio, mixed_standard_documents, versions]
+      properties:
+        documents: { type: integer }
+        pages: { type: integer }
+        producers: { type: object, additionalProperties: { type: integer }, description: "Documents per producer family (`unknown` when none matches)." }
+        text_kinds: { type: object, additionalProperties: { type: integer }, description: "Pages per kind." }
+        document_languages: { type: object, additionalProperties: { type: integer } }
+        conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed convention." }
+        symbol_standards: { type: object, additionalProperties: { type: integer } }
+        plc_families: { type: object, additionalProperties: { type: integer } }
+        ocr_needed_ratio: { type: number }
+        mixed_standard_documents: { type: integer }
+        versions: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Every pipeline, shared and rules version seen, so a mixed set says so." }
+    AffectedDocumentOut:
+      type: object
+      required: [document_id, project_id, status, content_identical]
+      properties:
+        document_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, excluded] }
+        content_identical: { type: boolean, nullable: true, description: "True or false when both the request's checksum and the document's recorded SHA-256 exist; otherwise null." }
+    ReplacedFileOut:
+      type: object
+      required: [file_id, name, documents]
+      properties:
+        file_id: { type: string, format: uuid }
+        name: { type: string, nullable: true }
+        documents: { type: array, items: { $ref: "#/components/schemas/AffectedDocumentOut" } }
+    KeptNamesakeOut:
+      type: object
+      required: [file_id, name, tags]
+      properties:
+        file_id: { type: string, format: uuid }
+        name: { type: string, nullable: true }
+        tags: { $ref: "#/components/schemas/FileTagsOut" }
+    ReplacementPreviewOut:
+      type: object
+      required: [file_id, replaced, kept]
+      properties:
+        file_id: { type: string, format: uuid }
+        replaced: { type: array, items: { $ref: "#/components/schemas/ReplacedFileOut" } }
+        kept: { type: array, items: { $ref: "#/components/schemas/KeptNamesakeOut" } }

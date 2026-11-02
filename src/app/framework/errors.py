@@ -120,8 +120,9 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # -- electrical (WireTwin, electrical-drawings INC-1, LLD 3.3.13) ---- #
         # Each code is here because some code emits it (the catalog mirrors behaviour). The
         # job-failure codes (`pdf_rejected`, `too_many_pages`, `source_unreadable`) are the
-        # `failure_code` a worker stores (INC1-D-29). `electrical.disabled` (503, the flag
-        # dependency) arrives with the routes that raise it.
+        # `failure_code` a worker stores (INC1-D-29). `electrical.disabled` (503) is the flag
+        # dependency of `api/v1/routers/electrical.py` (INC1-D-12).
+        "electrical.disabled": ProblemSpec(503, "WireTwin is not enabled on this deployment"),
         "electrical.project_exists": ProblemSpec(409, "The space already has a WireTwin project"),
         "electrical.invalid_profile": ProblemSpec(422, "Drawing profile is invalid"),
         "electrical.not_a_pdf": ProblemSpec(415, "Only PDF files can be registered as drawings"),

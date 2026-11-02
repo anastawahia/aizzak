@@ -629,6 +629,24 @@ def test_both_cascades_hold_the_drawings_participant_and_the_bundle_is_wired(
     assert booted.electrical.documents is not None and booted.electrical.jobs is not None
 
 
+def test_the_drawings_bundle_the_api_consumes_shares_one_set_of_bindings(
+    booted: CompositionRoot,
+) -> None:
+    """Identity of the bindings (the INC-0 review's note 1), for the bundle ``ApiServices`` takes
+    from the root (S8): one ``JobService`` behind registration and the job routes, one repository
+    per aggregate behind every service that reads it, ``files``' own query behind both the
+    registration guard and the replacement preview, and the queue limit read from settings."""
+    bundle = booted.electrical
+    assert bundle.documents._job_service is bundle.jobs
+    assert bundle.documents._documents is bundle.replacement._documents
+    assert bundle.documents._documents is bundle.characterization._documents
+    assert bundle.documents._projects is bundle.characterization._projects
+    assert bundle.documents._files is bundle.replacement._files
+    assert bundle.documents._queue_limit == booted.settings.electrical.queue_protection_limit
+    assert bundle.jobs._documents is bundle.documents._documents
+    assert bundle.jobs._pages is bundle.documents._pages
+
+
 # --------------------------------------------------------------------------- #
 # 3.81 (P0-2): per-process notify group lifecycle                            #
 # --------------------------------------------------------------------------- #
