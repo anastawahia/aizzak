@@ -6,8 +6,8 @@
 |---|---|
 | المعرّف | `electrical-drawings` · الزيادة `INC‑1` |
 | نوع الوثيقة | تصميم تفصيلي: ملفات، وتواقيع، وDDL، ونص العقود، وخطة اختبار. **لا شيفرة تُكتب في هذه الدورة** |
-| الإصدار | 0.3 (مُقَرّ للبناء؛ تصحيح من مراجعة `PR‑A`) |
-| التاريخ | 2026-11-01 (0.3: قرارا المالك في S‑1 وS‑3 من `inc-1/pr-a/security-review.md`، ونص ترتيب 422). 0.2 و0.1 في 2026-10-31 |
+| الإصدار | 0.4 (مُقَرّ للبناء؛ تصحيح من مراجعة `PR‑B`) |
+| التاريخ | 2026-11-02 (0.4: من مراجعة `PR‑B` في `inc-1/pr-b/`: `rules` حزمة لا ملف، و`patterns.py`، وعقد الهوية (`kind`، `canonical`) وطيّ الأرقام إلى ASCII في الشكل المطبّع، ونمط `voltage_based` يطابق `L1-5` من ملحق أ). 2026-11-01 (0.3: قرارا المالك في S‑1 وS‑3 من `inc-1/pr-a/security-review.md`، ونص ترتيب 422). 0.2 و0.1 في 2026-10-31 |
 | المدخل الملزم | [`hld.md`](hld.md) 0.16 (§4، §5.2، §5.4، §5.6، §5.7، §6، §7، §8.1–8.3، §8.7، §8.8، §8.11، §12، §13، §14.1، §14.4، §16، §18)، و[`requirements.md`](requirements.md) 0.17، و[`lld-inc-0.md`](lld-inc-0.md) 0.2 (مبنيّ ومدموج في PR #26) |
 | المدخل المساند | `docs/delivery/smart-assistant/requirements.md` (FR‑18..FR‑32، م‑2، م‑3) و`study.md` §5.2 و§5.6، و`inc-0/security-review.md`، و`inc-0/review.md`، و`status.md` |
 | الوثائق الحاكمة | `CLAUDE.md`، و`docs/design/00…12`، و`docs/design/openapi.yaml`، و`docs/design/events/schemas/`، و`docs/architecture.md`، و`.importlinter`، و`.github/workflows/ci.yml` |
@@ -140,8 +140,8 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 
 | # | المسار | إ/ت | المسؤولية | الخطوة |
 |---|---|---|---|---|
-| B15 | `src/app/modules/electrical/shared/{version,kinds,rules,normalization,reference_designation,letter_codes,terminals,wire_numbers,plc_siemens,cross_references,connection_points,voltages,parser}.py` | إ (13) | المحلّل الموحّد (§3.3.5). المكتبة القياسية وحدها، بلا I/O | S4 |
-| B16 | `src/app/modules/electrical/shared/rules/__init__.py`، `…/rules/identifiers.toml` | إ (2) | ملف القواعد بإصداره، بيانات لا شيفرة (`INC1‑D‑19`) | S4 |
+| B15 | `src/app/modules/electrical/shared/{version,kinds,normalization,patterns,reference_designation,letter_codes,terminals,wire_numbers,plc_siemens,cross_references,connection_points,voltages,parser}.py` | إ (13) | المحلّل الموحّد (§3.3.5). المكتبة القياسية وحدها، بلا I/O. (0.4: لا `rules.py`، فالاسم حزمة في B16؛ و`patterns.py` يترجم الأنماط مرة واحدة بـ`re.ASCII`) | S4 |
+| B16 | `src/app/modules/electrical/shared/rules/__init__.py`، `…/rules/identifiers.toml` | إ (2) | ملف القواعد بإصداره، بيانات لا شيفرة (`INC1‑D‑19`). ونموذج القواعد (§3.3.5 `rules`) في `rules/__init__.py` (0.4) | S4 |
 | BT10 | `tests/unit/test_electrical_shared_{normalization,reference_designation,letter_codes,terminals_wires,plc_siemens,cross_references,rules,parser}.py` | إ (8) | كل صيغة في ملحق أ من SRS (FR-ID-12)، والصالح وغير الصالح | S4 |
 | BT11 | `tests/eval/electrical/{__init__.py,README.md,framework.py,m04_identifiers.py}`، `…/cases/identifiers.toml` | إ (5) | هيكل إطار التقييم (FR-EVAL-01) ومقياس M-04 ومجموعة حالاته (§3.3.17) | S4 |
 | BT12 | `tests/unit/test_electrical_eval_framework.py` | إ | شكل التقرير، والمقارنة بين تشغيلين، وحساب M-04 | S4 |
@@ -781,8 +781,11 @@ class PlcAddress:
 @dataclass(frozen=True, slots=True)
 class NormalizedForms:  # FR-ID-09
     original: str  # exactly as it appeared (DATA-06)
-    canonical: str  # full-width folded, upper-cased, unified separators
+    canonical: str  # NFKC (full-width folded), Nd digits to ASCII, upper-cased, dashes unified,
+    # whitespace and hidden characters dropped (flagged text.hidden_character); "." and ":" kept
     search_keys: tuple[str, ...]  # without leading zeros, without the leading "-", ...
+    # 0.4 (PR-B review): identity is (kind, canonical); search_keys serve retrieval only and
+    # never drop a separator between two digits (X1:14 and X11:4 share no key).
 
 
 @dataclass(frozen=True, slots=True)
@@ -811,7 +814,7 @@ class ConventionTally:
 ```
 
 ```python
-# src/app/modules/electrical/shared/rules.py
+# src/app/modules/electrical/shared/rules/__init__.py  (0.4: a package, see B16)
 @dataclass(frozen=True, slots=True)
 class RuleSelection:
     """What a document's profile chooses, by NAME only (drawings builds it)."""
@@ -900,7 +903,7 @@ prefixes = ["X", "XT", "TB"]
 [wire_numbers]          # selected by NAME in the profile
 sequential    = '^W?\d{1,5}$'
 page_column   = '^\d{1,4}\.\d{1,2}(-\d{1,3})?$'
-voltage_based = '^(L[1-3]|[UVW])\d{1,3}(-\d{1,3})?$'
+voltage_based = '^(?:(?:L[1-3]|[UVW])\d{1,3}(?:-\d{1,3})?|L[1-3]-\d{1,3})$'  # 0.4: matches Appendix A L1-5
 
 [cross_references]
 slash_page_dot_column = '^/(\d{1,4})\.(\d{1,2})$'          # /12.3
