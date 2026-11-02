@@ -11,9 +11,10 @@ import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
 from app.modules.electrical.shared.parser import IdentifierParser
-from app.modules.electrical.shared.rules import IdentifierRules, RuleError, RuleSelection
+from app.modules.electrical.shared.rules import IdentifierRules, RuleError
 from app.modules.electrical.shared.version import SHARED_VERSION
 from tests.eval.electrical.m04_identifiers import load_rules
+from tests.unit.support_electrical_shared import _selection
 
 
 def _raw() -> dict[str, Any]:
@@ -25,22 +26,10 @@ def _raw() -> dict[str, Any]:
     return tomllib.loads(text)
 
 
-def _selection(**changes: Any) -> RuleSelection:
-    base: dict[str, Any] = {
-        "conventions": frozenset(),
-        "plc_families": frozenset(),
-        "extra_aspects": (),
-        "wire_number_patterns": (),
-        "cross_reference_format": None,
-        "extra_voltage_labels": (),
-    }
-    return RuleSelection(**{**base, **changes})
-
-
 def test_the_rules_file_is_packaged_and_versioned() -> None:
     rules = load_rules()
     assert rules.version == _raw()["version"] == "1.0.0"  # the rules DATA did not change
-    assert SHARED_VERSION == "1.1.1"  # the normalisation output did (PR-B rework 2)
+    assert SHARED_VERSION == "1.1.2"  # the normalisation output did (PR-B rework 3)
     assert rules.aspects == ("=", "+", "-")
     assert set(rules.extra_aspects) == {"==", "++", "&", "#"}
     assert rules.cn_letter_codes["KM"] == "contactor"

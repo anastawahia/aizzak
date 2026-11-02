@@ -156,8 +156,12 @@ def test_a_combining_mark_makes_no_identifier_documented_deviation(text: str) ->
 
 
 @pytest.mark.parametrize(
-    ("device", "wire"), [("-K5-13", "13"), ("-X1-5", "5"), ("-Q1-3", "3"), ("=A1-K5-3", "3")]
+    ("device", "wire", "code"),
+    [("-K5-13", "13", "K5"), ("-X1-5", "5", "X1"), ("-Q1-3", "3", "Q1"), ("=A1-K5-3", "3", "K5")],
 )
-def test_qa_n1_a_hyphen_chain_does_not_leak_a_bare_number_key(device: str, wire: str) -> None:
+def test_qa_n1_a_hyphen_chain_does_not_leak_a_bare_number_key(
+    device: str, wire: str, code: str
+) -> None:
     keys = set(parse(device).forms.search_keys)
+    assert code in keys  # the device is still found by its product code
     assert keys.isdisjoint(parse(wire).forms.search_keys)

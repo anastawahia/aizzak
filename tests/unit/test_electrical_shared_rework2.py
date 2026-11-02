@@ -10,8 +10,7 @@ import pytest
 from app.modules.electrical.shared.normalization import canonical_form, text_issues
 from app.modules.electrical.shared.rules import RuleError
 from tests.eval.electrical.m04_identifiers import load_rules
-from tests.unit.support_electrical_shared import parse
-from tests.unit.test_electrical_shared_hardening import _selection
+from tests.unit.support_electrical_shared import _selection, parse
 
 _BIDI = {0x200E, 0x200F, 0x061C, *range(0x202A, 0x202F), *range(0x2066, 0x206A)}
 
@@ -85,3 +84,8 @@ def test_a_bridge_across_the_same_strip_written_with_leading_zeros_is_clean() ->
     assert "bridge.different_strips" not in found.issues
     other = parse("X1:1~X2:2")
     assert other is not None and "bridge.different_strips" in other.issues
+
+
+def test_the_raw_length_error_names_the_raw_limit() -> None:
+    with pytest.raises(RuleError, match="at most 64 characters"):
+        load_rules().narrowed(_selection(extra_voltage_labels=("A" * 65,)))
