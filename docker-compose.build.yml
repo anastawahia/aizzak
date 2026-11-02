@@ -18,6 +18,7 @@ services:
   worker-memory: *app-build
   worker-knowledge: *app-build
   worker-media: *app-build
+  worker-electrical: *app-build
   outbox-relay: *app-build
   wal-shipper: *app-build
   backup: *app-build
@@ -26,3 +27,11 @@ services:
     build:
       context: .
       dockerfile: services/embedding/Dockerfile
+  # WireTwin (INC-1, O2): the isolated PDF parser. Its own small image, built from the repo
+  # root so `services/__init__.py` and `services/ele_parse/` are in the context. Behind the
+  # `electrical` profile in docker-compose.yml, so `docker compose build` skips it unless the
+  # profile is enabled.
+  ele-parse:
+    build:
+      context: .
+      dockerfile: services/ele_parse/Dockerfile

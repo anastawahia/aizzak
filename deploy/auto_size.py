@@ -6,7 +6,7 @@
 
 It writes two things and nothing else:
 
-  * a marked block in `.env` holding the 85 keys of `deploy/sizes/large.env`, and
+  * a marked block in `.env` holding the 89 keys of `deploy/sizes/large.env`, and
   * `deploy/postgres/sizes/auto.conf` (not in git), which the block points Postgres at.
 
 Every number comes from the named size files (`small`, `large`) and the Compose
@@ -126,7 +126,7 @@ class Plan:
     profiles: tuple[str, ...]
     host: Host
     k: int
-    values: dict[str, str]  # the 85 keys of large.env, in its order
+    values: dict[str, str]  # the 89 keys of large.env, in its order
     conf: str  # auto.conf text
     total_cpus: float
     total_memory_gb: float
@@ -350,7 +350,7 @@ def _mem_mib(key: str, small: int, large: int, k: int, role: Role) -> int:
 
 
 def _values(k: int, host: Host, role: Role, *, memory_bound_replicas: bool) -> dict[str, str]:
-    """The 85 keys for step `k`. With `memory_bound_replicas` the replica counts are the
+    """The 89 keys for step `k`. With `memory_bound_replicas` the replica counts are the
     ones memory alone would allow, which is what the search for `k` has to budget for."""
     small, large = _ladder()
     host_cc = _cc(host.cpus)

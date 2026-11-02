@@ -180,7 +180,7 @@ def test_the_block_carries_exactly_the_keys_of_large(tmp_path: Path) -> None:
     plan = _plan(32, 64, mode="gpu")
     large = read_size("large").values
     assert list(plan.values) == list(large)
-    assert len(plan.values) == 85
+    assert len(plan.values) == 89
     block = tmp_path / "block.env"
     block.write_text(az.render_block(plan), encoding="utf-8")
     parsed = read_size(block)  # what sits between the markers is a valid size file

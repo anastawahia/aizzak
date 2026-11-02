@@ -29,6 +29,10 @@ _ENV_EXAMPLE = _ROOT / ".env.example"
 
 _APP_IMAGE = "${APP_IMAGE_REPO:-aizzak/app}:"
 _EMBEDDING_IMAGE = "${EMBEDDING_IMAGE_REPO:-aizzak/embedding}:"
+# WireTwin (INC-1, O8): the third image. `ele-parse` is not a platform release image yet (it is
+# built locally only, LLD INC1-Q-3), so it is listed apart from `_platform_services()`.
+_ELE_PARSE_IMAGE = "${ELE_PARSE_IMAGE_REPO:-aizzak/ele-parse}:"
+_ELE_PARSE_DOCKERFILE = "services/ele_parse/Dockerfile"
 
 
 def _compose_available() -> bool:
@@ -77,13 +81,13 @@ def _platform_services() -> dict[str, str]:
     return expected
 
 
-def _compose_config(*files: str, profile: str | None = None) -> dict[str, Any]:
+def _compose_config(*files: str, profile: str | tuple[str, ...] | None = None) -> dict[str, Any]:
     env = {k: v for k, v in os.environ.items() if k != "COMPOSE_FILE"}
     cmd = ["docker", "compose", "--env-file", str(_ENV_EXAMPLE)]
     for f in files:
         cmd += ["-f", f]
-    if profile:
-        cmd += ["--profile", profile]
+    for name in (profile,) if isinstance(profile, str) else (profile or ()):
+        cmd += ["--profile", name]
     cmd += ["config", "--format", "json"]
     done = subprocess.run(
         cmd, cwd=_ROOT, env=env, capture_output=True, text=True, timeout=120, check=False
@@ -108,13 +112,19 @@ def test_base_file_has_no_build_key_in_any_service_or_extension() -> None:
 
 def test_every_platform_image_service_has_a_build_entry() -> None:
     expected = _platform_services()
-    assert len(expected) == 10, sorted(expected)
+    assert len(expected) == 11, sorted(expected)
     assert "backup" in expected
+    assert "worker-electrical" in expected
     overlay = _services(_OVERLAY)
-    assert set(overlay) == set(expected)
+    assert set(overlay) == set(expected) | {"ele-parse"}
     for name, dockerfile in expected.items():
         build = overlay[name]["build"]
         assert build == {"context": ".", "dockerfile": dockerfile}, name
+    assert overlay["ele-parse"]["build"] == {
+        "context": ".",
+        "dockerfile": _ELE_PARSE_DOCKERFILE,
+    }
+    assert _services(_BASE)["ele-parse"]["image"].startswith(_ELE_PARSE_IMAGE)
 
 
 # ── AC-1.3 ──────────────────────────────────────────────────────────────────
@@ -149,14 +159,19 @@ def test_platform_image_defaults_resolve_to_todays_local_names() -> None:
 
 @_needs_compose
 def test_overlay_renders_todays_build_and_image_names() -> None:
-    cfg = _compose_config("docker-compose.yml", "docker-compose.build.yml", profile="backup")
+    cfg = _compose_config(
+        "docker-compose.yml", "docker-compose.build.yml", profile=("backup", "electrical")
+    )
     built = {n: s for n, s in cfg["services"].items() if "build" in s}
-    expected = _platform_services()
+    expected = {**_platform_services(), "ele-parse": _ELE_PARSE_DOCKERFILE}
     assert set(built) == set(expected)
     for name, svc in built.items():
         assert svc["build"]["context"] == str(_ROOT), name
         assert svc["build"]["dockerfile"] == expected[name], name
-        want = "aizzak/embedding:dev" if name == "embedding" else "aizzak/app:dev"
+        want = {
+            "embedding": "aizzak/embedding:dev",
+            "ele-parse": "aizzak/ele-parse:dev",
+        }.get(name, "aizzak/app:dev")
         assert svc["image"] == want, name
     assert not any("pull_policy" in s for s in cfg["services"].values())
 

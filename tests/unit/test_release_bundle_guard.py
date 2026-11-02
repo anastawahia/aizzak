@@ -50,8 +50,10 @@ REQUIRED_EXTRA: frozenset[str] = frozenset(
         "deploy/rolling-deploy.sh",
     }
 )
-# The nine services that hold VAULT_SECRET_ID (measured: `grep VAULT_SECRET_ID` in the anchor
+# The ten services that hold VAULT_SECRET_ID (measured: `grep VAULT_SECRET_ID` in the anchor
 # every one of them merges). None may be created before install.sh has minted the key (FR-20).
+# The tenth, `worker-electrical` (WireTwin INC-1 S9), merges the same worker anchor; it sits
+# behind the `electrical` profile, so install.sh's default `up` never creates it either.
 CARRIERS = frozenset(
     {
         "app",
@@ -59,6 +61,7 @@ CARRIERS = frozenset(
         "ops-scheduler",
         "outbox-relay",
         "wal-shipper",
+        "worker-electrical",
         "worker-knowledge",
         "worker-media",
         "worker-memory",
@@ -342,7 +345,7 @@ def test_the_yaml_reading_agrees_with_docker_compose_config(tmp_path: Path) -> N
 # ── AC-6.1 (static half): nothing that holds the key is created before it exists ─────────────
 
 
-def test_the_nine_carriers_are_exactly_the_services_that_name_the_secret() -> None:
+def test_the_ten_carriers_are_exactly_the_services_that_name_the_secret() -> None:
     assert carriers(_services(compose_texts())) == CARRIERS
 
 

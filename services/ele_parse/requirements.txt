@@ -1,0 +1,5 @@
+# The ONLY third-party dependency of the ele-parse image (INC1-D-8, DEC-04): PyMuPDF, pinned
+# to the version CI resolves for the project's own `pymupdf>=1.24,<2` (pyproject.toml,
+# `parsers` extra) on 2026-11-02. It ships as a self-contained manylinux wheel, so the image
+# needs no compiler. Licence: AGPL-3.0 -- flagged by `deploy/supply-chain/scan.sh` (PR-D, O16).
+pymupdf==1.28.2
