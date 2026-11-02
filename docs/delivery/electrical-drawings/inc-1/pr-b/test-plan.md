@@ -153,4 +153,36 @@ test-rules: OK
 ### 6.5 الحكم بعد إعادة 1
 **PASS** — البوابات الست خضراء مرتين بلا تقطع، B‑1 وB‑3 وB‑4 مغلقة بمدخلاتها الأصلية، وكل أمثلة ملحق أ ما زالت مطابقة للـSRS يدوياً. لا blocking ولا major؛ minor مفتوحة: B‑2 (قرار)، N‑1، N‑2، وملاحظتا علامات الدمج و`I0.9999`.
 
+## 7. إعادة 2 (بعد `9dd8157` و`19e4b9f`، `SHARED_VERSION` 1.1.1)
+
+### 7.1 النتائج
+| البند | النتيجة |
+|---|---|
+| N‑1 | مغلق. `-K5-13` ← `('-K5-13','K5-13','K5')`، `-X1-5` ← `X1`، `-Q1-3` ← `Q1`، `=A1-K5-3` ← `('=A1-K5-3','K5')`؛ لا مفتاح رقم عار. أُزيل `xfail` وصار الاختبار عادياً ويمر |
+| #9 (`_TAG` على الصيغة القانونية) | `-K-5` ← مفاتيح `('-K-5','K-5','K')` ولا يلتقي مع `-K5` |
+| #10 (`\x1c..\x1f`، `\x85`) | `KM\x1c1` و`\x85KM1` و`KM1\u2060` تُحلَّل `letter_code` بمفاتيح `KM1`/`1KM` (والعلم `text.hidden_character` مغطى في `test_electrical_shared_rework2.py`) |
+| قواعد التصادم (`test_electrical_shared_rework1.py`) | أُعيد تشغيلها مع `rework2`: كلها خضراء، لا تصادم جديد، والمفاتيح المشتركة المتبقية هي المقصودة فقط |
+| استكشاف سريع للمسارات المتغيرة | `-X1:14` و`X1:14` يلتقيان على `X1:14`؛ `K5` و`K5-13` وحدهما لا يُحلَّلان (متوقع)؛ لا استثناء في أي مدخل |
+| اختبارات جديدة | لا حاجة: `test_electrical_shared_rework2.py` (87 سطراً) يغطي #9–#12 وR1‑1..3 |
+
+### 7.2 البوابات (إعادة 2)
+```
+$ .venv/bin/ruff format --check .   -> 901 files already formatted
+$ .venv/bin/ruff check .            -> All checks passed!
+$ .venv/bin/mypy src                -> Success: no issues found in 504 source files
+$ .venv/bin/lint-imports            -> Contracts: 9 kept, 0 broken.
+$ .venv/bin/pytest -rs tests/unit tests/architecture tests/eval
+  7381 passed, 19 skipped, 7 warnings in 303.51s (0:05:03)
+$ deploy/prometheus/test-rules.sh   -> SUCCESS: 29 rules found / test-rules: OK
+```
+الـ19 تخطياً هي نفسها (`RUN_EDGE_FILES_TEST=1`). لا `xfailed` بعد الآن.
+
+### 7.3 مفتوح (متابعات للمالك، غير محجوبة)
+- N‑2: `-X1.14` يُصنَّف تعيين مرجع (`X1.14`، `X1`) ولا يلتقي مع طرف `X1:14` (غياب لا تصادم). minor.
+- B‑2: قرار المالك المفتوح من الجولة الأولى. minor.
+- ملاحظتا علامات الدمج و`I0.9999` (minor، مقبولتان).
+
+### 7.4 الحكم بعد إعادة 2
+**PASS** — البوابات الست خضراء، N‑1 مغلق، لا تصادم جديد، لا أخطاء جديدة، ولا blocking أو major.
+
 </div>
