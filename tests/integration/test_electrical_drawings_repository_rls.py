@@ -769,6 +769,39 @@ async def test_a_lost_race_on_a_profile_version_is_a_conflict(
         assert state == "23505", doc
 
 
+async def test_detection_round_trips_and_its_size_check_rejects_an_oversized_value(
+    repos: _Repos, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx, project, document = await _seed(repos, ws)
+    detection = {
+        "field_confidence": {"symbol_standard": 0.9, "languages": 0.75},
+        "basis": {"symbol": ["tokens", "producer"]},
+    }
+    stored = await repos.profiles.append(
+        ctx, replace(_profile_version(project, document.id), detection=detection)
+    )
+    latest = await repos.profiles.latest(ctx, project_id=project.id, document_id=document.id)
+    assert latest == stored and latest.detection == detection
+    # a version without a detection stores NULL and reads back None
+    plain = await repos.profiles.append(ctx, _profile_version(project))
+    assert plain.detection is None
+    assert (await repos.profiles.latest(ctx, project_id=project.id, document_id=None)) == plain
+    oversized = await _raw_sqlstate(
+        live_db.owner,
+        ws,
+        "INSERT INTO electrical.drawings_profile_versions (id, workspace_id, project_id, "
+        "document_id, version, source, body, fingerprint, detection) VALUES "
+        "(:id, :w, :project, NULL, 9, 'detected', '{}'::jsonb, :fp, "
+        "jsonb_build_object('x', repeat('a', 17000)))",
+        id=new_uuid7(),
+        w=ws,
+        project=project.id,
+        fp=DrawingProfile.default().fingerprint(),
+    )
+    assert oversized == "23514"
+
+
 # --------------------------------------------------------------------------------------
 # characterizations
 # --------------------------------------------------------------------------------------

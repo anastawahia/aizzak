@@ -633,7 +633,7 @@ CREATE POLICY tenant_isolation ON spaces.spaces
 | `drawings_jobs` | `id`، `document_id → documents` | `ux_drawings_jobs_open (workspace_id, document_id) WHERE status IN ('queued','running','awaiting_confirmation')` ← `job_conflict`؛ `ix_drawings_jobs_queue ... WHERE status='queued'` |
 | `drawings_pages` | `(workspace_id, document_id, page_no)` | `kind`/`language`/`needs_ocr` تبقى `NULL` حتى تُصنَّف الصفحة؛ `signals jsonb` مختصرة ≤ 16 KiB |
 | `drawings_page_stages` | `(workspace_id, document_id, page_no, stage)` | FK مركّب إلى `drawings_pages`؛ `ck_drawings_page_stages_stage` يقبل `'classify'` وحدها (تُوسَّع بكل مرحلة جديدة)؛ `(status IN ('failed','needs_review')) = (reason IS NOT NULL)` |
-| `drawings_profile_versions` | `id` | إصدارات ملف الإعداد **إلحاقية**؛ فهرسان جزئيان فريدان: `ux_drawings_profiles_project (… WHERE document_id IS NULL)` و`ux_drawings_profiles_document (… WHERE document_id IS NOT NULL)`؛ `confidence real` |
+| `drawings_profile_versions` | `id` | إصدارات ملف الإعداد **إلحاقية**؛ فهرسان جزئيان فريدان: `ux_drawings_profiles_project (… WHERE document_id IS NULL)` و`ux_drawings_profiles_document (… WHERE document_id IS NOT NULL)`؛ `confidence real`؛ `detection jsonb NULL` (≤ 16384 بايت) يحفظ `{field_confidence, basis}` للإصدار `detected` فقط |
 | `drawings_characterizations` | `(workspace_id, document_id)` | تقرير FR‑EVAL‑14 في `report jsonb` ≤ 256 KiB، والإصدارات الثلاثة أعمدة |
 
 - **RLS** على الجداول السبعة بـ`workspace_id` وحده (`ENABLE` + `FORCE` + `tenant_isolation` بصيغة `NULLIF`)، والوحدة والمشروع مرشِّحان في `WHERE` كل مستودع (§3). و`trg_touch` على الخمسة التي فيها `updated_at` (كل الجداول عدا `profile_versions` و`characterizations`).

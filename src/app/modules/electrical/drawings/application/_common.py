@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, ValidationError
@@ -107,6 +107,7 @@ def new_profile_version(
     confidence: float | None = None,
     mixed_standards: bool = False,
     created_by: str | None = None,
+    detection: Mapping[str, Any] | None = None,
 ) -> ProfileVersion:
     """A version to append; the repository assigns the real ``version`` number."""
     return ProfileVersion(
@@ -122,6 +123,7 @@ def new_profile_version(
         mixed_standards=mixed_standards,
         created_by=created_by if created_by is not None else ctx.user_id,
         created_at=now,
+        detection=detection,
     )
 
 

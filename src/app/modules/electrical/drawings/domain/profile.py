@@ -263,6 +263,8 @@ class ProfileVersion:
     mixed_standards: bool
     created_by: str | None
     created_at: datetime
+    # DETECTED only: {"field_confidence": {...}, "basis": {...}} as plain JSON (LLD 4.3).
+    detection: Mapping[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------------------

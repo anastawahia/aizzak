@@ -223,6 +223,7 @@ drawings_profile_versions = Table(
     Column("fingerprint", Text, nullable=False),
     Column("confidence", Float(24), nullable=True),
     Column("mixed_standards", Boolean, nullable=False),
+    Column("detection", JSONB, nullable=True),
     Column("created_by", _uuid_col, nullable=True),
     Column("created_at", _timestamptz, nullable=False),
     schema=_SCHEMA,
@@ -445,6 +446,7 @@ def _profile_version(row: RowMapping) -> ProfileVersion:
         mixed_standards=row["mixed_standards"],
         created_by=row["created_by"],
         created_at=row["created_at"],
+        detection=row["detection"],
     )
 
 
@@ -497,6 +499,7 @@ class SqlProfileRepository(_Base):
                 fingerprint=version.fingerprint,
                 confidence=version.confidence,
                 mixed_standards=version.mixed_standards,
+                detection=version.detection,
                 created_by=version.created_by,
                 created_at=version.created_at,
             )

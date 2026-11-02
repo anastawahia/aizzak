@@ -263,6 +263,8 @@ def upgrade() -> None:
           fingerprint     text NOT NULL CHECK (fingerprint ~ '^[0-9a-f]{64}$'),
           confidence      real NULL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
           mixed_standards boolean NOT NULL DEFAULT false,
+          detection       jsonb NULL
+                          CHECK (detection IS NULL OR octet_length(detection::text) <= 16384),
           created_by      uuid NULL,
           created_at      timestamptz NOT NULL DEFAULT now()
         );

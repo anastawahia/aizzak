@@ -121,6 +121,10 @@ async def test_an_ingestion_fingerprints_classifies_and_proposes(stack: Stack) -
     assert detected is not None and detected.source is ProfileSource.DETECTED
     assert detected.profile.identifier_convention is Convention.IEC_81346
     assert detected.confidence is not None and detected.confidence >= 0.5
+    assert detected.detection is not None  # the proposal's field_confidence and basis, as JSON
+    assert set(detected.detection) == {"field_confidence", "basis"}
+    assert detected.detection["field_confidence"]
+    assert all(isinstance(v, list) for v in detected.detection["basis"].values())
     stored = await stack.characterizations.get(stack.ctx, doc_id)
     assert stored is not None and stored.producer_family == "eplan" and stored.page_count == 4
     types = stack.outbox.types()

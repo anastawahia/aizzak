@@ -681,6 +681,10 @@ class InspectDocument:
                         now=now,
                         confidence=proposal.confidence,
                         mixed_standards=proposal.mixed_standards,
+                        detection={
+                            "field_confidence": dict(proposal.field_confidence),
+                            "basis": {k: list(v) for k, v in proposal.basis.items()},
+                        },
                         created_by=job.created_by,
                     ),
                 )
