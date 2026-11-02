@@ -793,7 +793,7 @@ docker compose exec -T redis-stream redis-cli XINFO GROUPS stream.electrical
 docker compose exec -T app python -m app.ops.dlq peek stream.electrical.dlq
 ```
 
-6. الطابورُ طويلٌ فقط (وثائقُ كبيرة كثيرة) والعاملُ سليم؟ هذا قرارُ سعة: `ELE_PARSE_MAX_CHILDREN` و`WORKER_CONCURRENCY_ELECTRICAL` (ويُرفع معهما `ELE_PARSE_MEM`). **لا ترفعهما قبل القياس**؛ وقد تُعدّل العتبةُ 1,800 بعد القياس بقرار، لا لإسكات التنبيه.
+6. الطابورُ طويلٌ فقط (وثائقُ كبيرة كثيرة) والعاملُ سليم؟ هذا قرارُ سعة: `ELE_PARSE_MAX_CHILDREN` و`WORKER_CONCURRENCY_ELECTRICAL` (ويُرفع معهما `ELE_PARSE_MEM`). **لا ترفعهما قبل القياس، ولا ترفع `WORKER_CONCURRENCY_ELECTRICAL` ولا عدد نسخ `worker-electrical` فوق 1 إطلاقاً دون عزلٍ بين المستأجرين:** هذا قرارٌ أمنيّ لا سعة (`docs/design/08-local-runbook.md` §4.29)؛ وقد تُعدّل العتبةُ 1,800 بعد القياس بقرار، لا لإسكات التنبيه.
 
 **كيف تعرف أنّه زال:** الانتظارُ يهبط تحت 1,800 ثانية، وسطر `resolved`.
 

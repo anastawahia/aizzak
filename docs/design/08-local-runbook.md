@@ -2663,6 +2663,8 @@ docker compose --profile electrical ps ele-parse worker-electrical
 
 **الإيقاف والتراجع:** `docker compose --profile electrical stop ele-parse worker-electrical` (الرسائلُ تنتظر على المجرى ولا شيء يضيع)، وجعلُ `ELECTRICAL_ENABLED=false` يُعيد المسارات إلى 503. وحجمُ `ele-stage` نسخةٌ مؤقتة لفحصٍ واحد؛ **لا يُحذف بـ`docker volume rm`** (يمنعه الخطّاف)، والعاملُ يكنس ما تركه عند إقلاعه.
 
+**خاصيّة أمنيّة: التزامن 1 ونسخة واحدة.** لا عزلَ بين المستأجرين **داخل** `ele-parse`: الخادمُ وطفلُ كلّ طلبٍ بالمستخدم نفسه (`10001`)، وحجمُ المرحلة الواحد يحمل ملفّات كلّ مساحات العمل. فلو نجح ملفٌّ عدائيّ في تنفيذ شيفرةٍ داخل MuPDF لقرأ كلَّ ملفٍّ موجودٍ على الحجم في تلك اللحظة. واليوم لا يوجد عليه إلا ملفُّ المهمة الجارية، لأنّ `WORKER_CONCURRENCY_ELECTRICAL=1` ولأنّ `worker-electrical` نسخةٌ واحدة (والكنسُ عند الإقلاع يحذف ما بقي). **فرفعُ `WORKER_CONCURRENCY_ELECTRICAL` أو عددِ نسخ `worker-electrical` قرارٌ أمنيّ لا قرارُ سعة**، يستلزم قبله عزلاً بين المستأجرين (حجمُ مرحلةٍ لكلّ مساحة عمل، أو `ele-parse` لكلّ مساحة). ويحرس ذلك اختبارٌ في `tests/unit/test_compose_electrical_profile.py`. (ورفضُ `ele-parse` يصل إلى `failure_detail` بنصٍّ ثابتٍ من الكتالوج لا بنصّه هو، وقراءةُ مخرجات الطفل بسقفٍ يقتله عند تجاوزه.)
+
 **السقوف والتنبيهات:** الأرقامُ تقديرات (`INC1‑R‑5`) في `deploy/sizes/*.env` وتفصيلُها في §2‑ز. وتنبيهان جديدان: `AizzakElectricalQueueWaitHigh` (انتظار أكثر من 1,800 ث لـ15 دقيقة) و`AizzakElectricalDocumentsExcluded`، و`AizzakStreamQueueWaitHigh` لم يعد يشمل `stream.electrical` (انظر `docs/runbooks/alerts.md`).
 
 ## 5) فحص الصحّة — من يُعلن حياته، وبأيّ دليل ([§3.136](../log/3.136.md) · ت‑3)

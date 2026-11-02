@@ -192,6 +192,22 @@ def test_the_worker_writes_the_stage_volume_and_the_parser_only_reads_it(
     assert parser["volumes"] == [f"ele-stage:{_STAGE_MOUNT}:ro"]
 
 
+def test_electrical_concurrency_is_one_and_the_worker_has_no_replicas(
+    worker: dict[str, Any],
+) -> None:
+    """C-3: ele-parse has no isolation BETWEEN tenants (one uid, one stage volume holding every
+    workspace's files). The only thing keeping a compromised parser from reading another
+    tenant's file is that one inspection runs at a time on one worker. Raising either is a
+    security decision, not a capacity one (docs/design/08-local-runbook.md 4.29)."""
+    assert worker["environment"]["WORKER_CONCURRENCY"] == "${WORKER_CONCURRENCY_ELECTRICAL:-1}"
+    assert "replicas" not in worker.get("deploy", {})
+    assert "scale" not in worker
+    example = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    for line in example.splitlines():
+        if line.strip().startswith("WORKER_CONCURRENCY_ELECTRICAL="):
+            assert line.split("=", 1)[1].split("#")[0].strip() in ("", "1")
+
+
 def test_the_stage_volume_is_a_named_volume(compose: dict[str, Any]) -> None:
     assert "ele-stage" in compose["volumes"]
 
