@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -38,6 +39,7 @@ MAX_VENDOR_LIBRARY_CHARS: Final = 100
 PLC_VENDORS: Final = frozenset({"siemens"})  # FR-ID-14 is C: one vendor in R1
 LANGUAGES: Final = frozenset({"en", "zh"})
 _ASPECT_CHARS: Final = frozenset("=+-&#")
+_FORBIDDEN_TEXT_CATEGORIES: Final = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
 MIN_AUTO_ACCEPT: Final = 0.5
 MAX_AUTO_ACCEPT: Final = 1.0
 DEFAULT_AUTO_ACCEPT: Final = 0.90  # M-32's R1 target
@@ -314,7 +316,7 @@ def _languages(body: Mapping[str, Any], default: frozenset[str]) -> frozenset[st
     if items is None:
         return default
     for i, item in enumerate(items):
-        if item not in LANGUAGES:
+        if not isinstance(item, str) or item not in LANGUAGES:  # a list/dict is unhashable
             raise InvalidProfile(
                 f"languages[{i}]", f"must be one of: {', '.join(sorted(LANGUAGES))}"
             )
@@ -384,6 +386,10 @@ def _vendor_library(body: Mapping[str, Any], symbol: SymbolStandard) -> str | No
         raise InvalidProfile("vendor_library", "must be a non-empty string or null")
     if len(value) > MAX_VENDOR_LIBRARY_CHARS:
         raise InvalidProfile("vendor_library", f"at most {MAX_VENDOR_LIBRARY_CHARS} characters")
+    if any(unicodedata.category(c) in _FORBIDDEN_TEXT_CATEGORIES for c in value):
+        # the same classes a project name refuses: control, format (bidi, zero-width),
+        # surrogate, private-use and unassigned characters; the value is not echoed
+        raise InvalidProfile("vendor_library", "must not contain control or hidden characters")
     if symbol is not SymbolStandard.VENDOR:
         raise InvalidProfile("vendor_library", "allowed only with symbol_standard 'vendor'")
     return value.strip()
@@ -391,7 +397,7 @@ def _vendor_library(body: Mapping[str, Any], symbol: SymbolStandard) -> str | No
 
 def _plc_vendor(body: Mapping[str, Any]) -> str:
     value = body.get("plc_vendor", "siemens")
-    if value not in PLC_VENDORS:
+    if not isinstance(value, str) or value not in PLC_VENDORS:  # a list/dict is unhashable
         raise InvalidProfile("plc_vendor", f"must be one of: {', '.join(sorted(PLC_VENDORS))}")
     return str(value)
 

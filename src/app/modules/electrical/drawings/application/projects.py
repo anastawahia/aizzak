@@ -13,7 +13,7 @@ field. Reads never hide a project from its own workspace; another tenant's is a 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
@@ -43,15 +43,50 @@ from app.modules.electrical.drawings.domain.project import (
 from app.modules.electrical.drawings.ports.repository import ProfileRepository, ProjectRepository
 from app.modules.electrical.drawings.ports.rules import RuleSource
 from app.modules.electrical.drawings.ports.spaces import ActiveSpaces
+from app.modules.electrical.shared.normalization import canonical_form
+from app.modules.electrical.shared.rules import RuleError
+
+_VOLTAGE_LABEL_TEXT = (
+    "each label must be 1..16 characters of A-Z 0-9 + - with a letter or a digit, "
+    "and must not be readable as another kind of identifier (a rail such as -48V or +24V is)"
+)
 
 
 def parse_profile(rules: RuleSource, body: Mapping[str, object]) -> DrawingProfile:
-    """``DrawingProfile.from_body`` over the packaged rule names, errors as 422."""
-    known = frozenset(rules.identifier_rules().wire_number_patterns)
+    """``DrawingProfile.from_body`` over the packaged rule names, errors as 422.
+
+    The profile is then run through the same narrowing a document is parsed with
+    (``IdentifierRules.narrowed``), so a voltage label that would hide ``-K5`` / ``KM1`` /
+    ``X1:14``, one made of signs or holding a hidden character, and an aspect the rules do not
+    have are refused HERE, at the trust boundary (INC1-Q-5, R2-2). The messages are fixed:
+    ``narrowed`` echoes the client's text, this does not. Labels are stored canonical."""
+    packaged = rules.identifier_rules()
     try:
-        return DrawingProfile.from_body(body, known_patterns=known)
+        profile = DrawingProfile.from_body(
+            body, known_patterns=frozenset(packaged.wire_number_patterns)
+        )
     except InvalidProfile as exc:
         raise invalid_profile(exc) from exc
+    selection = profile.rule_selection()
+    try:
+        packaged.narrowed(replace(selection, extra_voltage_labels=()))
+    except RuleError:
+        raise invalid_profile(
+            InvalidProfile(
+                "extra_aspects", f"unknown aspect; known: {', '.join(packaged.extra_aspects)}"
+            )
+        ) from None
+    try:
+        # under EVERY convention (a label must not hide `KM1` in a Chinese drawing either), and
+        # under the profile's own, the way a document is parsed with it
+        packaged.narrowed(replace(selection, conventions=frozenset()))
+        packaged.narrowed(selection)
+    except RuleError:
+        raise invalid_profile(InvalidProfile("voltage_labels", _VOLTAGE_LABEL_TEXT)) from None
+    return replace(
+        profile,
+        voltage_labels=tuple(sorted({canonical_form(label) for label in profile.voltage_labels})),
+    )
 
 
 @dataclass(frozen=True, slots=True)
