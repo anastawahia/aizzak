@@ -66,9 +66,12 @@ deleted by this sweep, so it needs an explicit delete of its own). One
 transaction per (workspace, schema): ``knowledge`` (summaries, chunks,
 reindex_job_items, documents, reindex_jobs, summary_jobs) -> ``conversations``
 (messages, conversation_files, conversations) -> ``media`` -> ``memory`` ->
-``files`` (after knowledge/conversations/media, so no dangling logical ref
+``electrical`` (page_stages, pages, characterizations, jobs, profile_versions,
+documents, projects: electrical-drawings INC-1) -> ``files`` (after
+knowledge/conversations/media/electrical, so no dangling logical ref
 from ``documents.file_id``/``conversation_files.file_id``/
-``media_jobs.result_file_id``) -> ``integrations`` (mcp_servers, connections)
+``media_jobs.result_file_id``/``drawings_documents.file_id``) ->
+``integrations`` (mcp_servers, connections)
 -> ``credentials`` (workspace-scoped rows only -- platform rows with
 ``workspace_id IS NULL`` are structurally unreachable via RLS) -> ``usage``
 -> ``access`` -> ``workspace`` (user_presence) -> ``spaces`` (last of the
@@ -342,7 +345,7 @@ async def purge_objects(
 class _SchemaSpec:
     """One schema's tables, in the delete order the module docstring's
     "Order inside Postgres" paragraph fixes -- FK-forced within a schema,
-    and the eleven schemas themselves ordered so no later schema's row can
+    and the twelve schemas themselves ordered so no later schema's row can
     dangle a logical reference into an earlier, already-emptied one."""
 
     schema: str
@@ -382,6 +385,22 @@ _SCHEMA_ORDER: tuple[_SchemaSpec, ...] = (
     ),
     _SchemaSpec("media", ("media.media_jobs",)),
     _SchemaSpec("memory", ("memory.memory_items",)),
+    # electrical-drawings INC-1: BEFORE `files`, because a document points at its file
+    # (`file_id`, logical -- no FK) and nothing may dangle a reference into an emptied schema.
+    # Inside the schema the order is FK-forced: page_stages -> pages -> characterizations ->
+    # jobs -> profile_versions -> documents (all four children reference it) -> projects.
+    _SchemaSpec(
+        "electrical",
+        (
+            "electrical.drawings_page_stages",
+            "electrical.drawings_pages",
+            "electrical.drawings_characterizations",
+            "electrical.drawings_jobs",
+            "electrical.drawings_profile_versions",
+            "electrical.drawings_documents",
+            "electrical.drawings_projects",
+        ),
+    ),
     _SchemaSpec("files", ("files.files",)),
     _SchemaSpec(
         "integrations",

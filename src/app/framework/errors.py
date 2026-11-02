@@ -117,6 +117,19 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "files.multipart_required": ProblemSpec(413, "File needs a multipart upload"),
         "files.upload_incomplete": ProblemSpec(409, "Multipart upload is incomplete"),
         "files.upload_expired": ProblemSpec(409, "Multipart upload no longer exists"),
+        # -- electrical (WireTwin, electrical-drawings INC-1, LLD 3.3.13) ---- #
+        # Only the four the SQL adapter raises from a unique index
+        # (`drawings/adapters/sql_repository.py`); the catalog is a MIRROR of
+        # behaviour, so the rest of the section's codes arrive with the code
+        # that emits them.
+        "electrical.project_exists": ProblemSpec(409, "The space already has a WireTwin project"),
+        "electrical.document_exists": ProblemSpec(409, "File is already a drawing document"),
+        "electrical.duplicate_document": ProblemSpec(
+            409, "The same content is already a document of this project"
+        ),
+        "electrical.job_conflict": ProblemSpec(
+            409, "Ingestion job is not in a state that allows this"
+        ),
         # -- knowledge ------------------------------------------------------ #
         # `knowledge.not_indexed` (409 in 03 §4) is absent for the same reason
         # (§3.64): none of the three knowledge routes is per-document
