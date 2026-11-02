@@ -555,6 +555,119 @@ tests:
         alertname: AizzakStreamQueueWaitHigh
         exp_alerts: []
 
+  # WireTwin (INC-1, INC1-AC-14, INC1-R-13). stream.electrical queues on purpose, so the
+  # general two-minute rule must stay silent about it while STILL firing for the other
+  # streams (the knowledge series below is the proof the exclusion did not widen), and the
+  # electrical rule fires on its own, longer threshold after fifteen minutes.
+  - name: an electrical queue is judged by its own rule and the general rule skips it
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.electrical",group="cg.electrical.document",instance="a:8000",job="aizzak-app"}'
+        values: "4000x120"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.electrical",group="cg.electrical.document",instance="b:8000",job="aizzak-app"}'
+        values: "4000x120"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "200x120"
+    alert_rule_test:
+      # The general rule: knowledge only, never the electrical stream.
+      - eval_time: 7m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, stream: stream.knowledge, group: cg.knowledge}
+      - eval_time: 25m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, stream: stream.knowledge, group: cg.knowledge}
+      # The electrical rule: pending until fifteen minutes, then once per group.
+      - eval_time: 14m
+        alertname: AizzakElectricalQueueWaitHigh
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: AizzakElectricalQueueWaitHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, stream: stream.electrical, group: cg.electrical.document}
+
+  # A wait that is long by the general standard but ordinary for drawings: both silent. And the
+  # electrical rule does not read another stream's wait.
+  - name: an electrical wait under half an hour and a long knowledge wait stay out of the electrical rule
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.electrical",group="cg.electrical.document",instance="a:8000",job="aizzak-app"}'
+        values: "1700x120"
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.knowledge",group="cg.knowledge",instance="a:8000",job="aizzak-app"}'
+        values: "5000x120"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AizzakElectricalQueueWaitHigh
+        exp_alerts: []
+
+  - name: an electrical queue that is short is silent for both rules
+    interval: 15s
+    input_series:
+      - series: 'aizzak_stream_queue_wait_seconds{stream="stream.electrical",group="cg.electrical.document",instance="a:8000",job="aizzak-app"}'
+        values: "600x120"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AizzakElectricalQueueWaitHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: AizzakStreamQueueWaitHigh
+        exp_alerts: []
+
+  # An exclusion counted by two app replicas: one alert per reason, not per instance.
+  - name: an exclusion in the last hour fires once per reason
+    interval: 1m
+    input_series:
+      - series: 'aizzak_ele_documents_excluded_total{reason="file_unreadable",instance="a:8000",job="aizzak-app"}'
+        values: "0+1x240"
+      - series: 'aizzak_ele_documents_excluded_total{reason="file_unreadable",instance="b:8000",job="aizzak-app"}'
+        values: "0+1x240"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AizzakElectricalDocumentsExcluded
+        exp_alerts:
+          - exp_labels: {severity: warning, reason: file_unreadable}
+
+  # The FIRST exclusion creates the series already at 1: `increase()` has nothing to subtract
+  # from, which is why the rule has a second branch. It must fire for the first hour...
+  - name: the very first exclusion, a series born at 1, fires
+    interval: 1m
+    input_series:
+      - series: 'aizzak_ele_documents_excluded_total{reason="file_unreadable",instance="a:8000",job="aizzak-app"}'
+        values: "_x120 1x400"
+    alert_rule_test:
+      - eval_time: 119m
+        alertname: AizzakElectricalDocumentsExcluded
+        exp_alerts: []
+      - eval_time: 130m
+        alertname: AizzakElectricalDocumentsExcluded
+        exp_alerts:
+          - exp_labels: {severity: warning, reason: file_unreadable}
+
+  # ...and fall silent once the count has stood still for the hour: a counter that does not
+  # move, however high, is history. Nor does a flat series fire when it is simply old.
+  - name: an old exclusion count that has stopped moving is silent
+    interval: 1m
+    input_series:
+      - series: 'aizzak_ele_documents_excluded_total{reason="file_unreadable",instance="a:8000",job="aizzak-app"}'
+        values: "_x120 1x400"
+      - series: 'aizzak_ele_documents_excluded_total{reason="file_unreadable",instance="b:8000",job="aizzak-app"}'
+        values: "7x520"
+    alert_rule_test:
+      - eval_time: 200m
+        alertname: AizzakElectricalDocumentsExcluded
+        exp_alerts: []
+
+  - name: no exclusion at all is silent
+    interval: 1m
+    input_series:
+      - series: 'aizzak_http_requests_total{route="/api/v1/spaces",method="GET",status="200",instance="a:8000",job="aizzak-app"}'
+        values: "0+10x240"
+    alert_rule_test:
+      - eval_time: 200m
+        alertname: AizzakElectricalDocumentsExcluded
+        exp_alerts: []
+
   # 100 served + 10 refused per 15s: 9% of requests refused.
   - name: one request in eleven refused with 429 fires
     interval: 15s
