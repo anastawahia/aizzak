@@ -102,5 +102,5 @@ def test_the_dataset_fingerprint_changes_when_a_case_changes() -> None:
 
 def test_build_report_records_the_versions_of_what_was_measured() -> None:
     report = build_report(commit="c" * 40, created_at="2026-11-02T00:00:00Z", run_id="x")
-    assert dict(report.versions) == {"shared": "1.1.0", "rules": "1.0.0"}
+    assert dict(report.versions) == {"shared": "1.1.1", "rules": "1.0.0"}
     assert report.metrics[0].metric_id == "M-04" and report.metrics[0].value == 1.0

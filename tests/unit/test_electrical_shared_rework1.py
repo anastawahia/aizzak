@@ -155,12 +155,9 @@ def test_a_combining_mark_makes_no_identifier_documented_deviation(text: str) ->
     assert PARSER.parse(text) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-N1 (minor): the last `-` aspect of a chain becomes a search key, so "
-    "`-K5-13` is found by the wire number `13`; fix in reference_designation.py:~88",
+@pytest.mark.parametrize(
+    ("device", "wire"), [("-K5-13", "13"), ("-X1-5", "5"), ("-Q1-3", "3"), ("=A1-K5-3", "3")]
 )
-@pytest.mark.parametrize(("device", "wire"), [("-K5-13", "13"), ("-X1-5", "5"), ("-Q1-3", "3")])
 def test_qa_n1_a_hyphen_chain_does_not_leak_a_bare_number_key(device: str, wire: str) -> None:
     keys = set(parse(device).forms.search_keys)
     assert keys.isdisjoint(parse(wire).forms.search_keys)

@@ -60,6 +60,10 @@ _COLLISION_GROUPS = [
     ["L-", "L", "L1"],  # (f) a voltage sign is not a separator
     ["XT1:5", "XT15"],
     ["1.1", "11"],
+    ["-K-5", "-K5"],  # (g) a designation is not a plain tag
+    ["-KM-1", "KM1"],  # (-KM1 and KM1 legitimately share the key KM1, as -K5 and K5)
+    ["-KM-1", "-KM1"],
+    ["-X-14", "-X14"],
 ]
 
 
@@ -168,7 +172,10 @@ def test_extra_voltage_labels_are_normalised_and_deduplicated() -> None:
 
 @pytest.mark.parametrize(
     "label",
-    ["", " ", "x" * 17, "A B:C", "L1/2", "-K5", "KM1", "x1:14", "-X1:14", "=A1-K5", "W11", "I0.0"],
+    [
+        *("", " ", "x" * 17, "A B:C", "L1/2", "-K5", "KM1", "x1:14", "-X1:14", "=A1-K5"),
+        *("W11", "I0.0", "--K5", "+-K5", "-+K5", "-1KM", "-1K5"),
+    ],
 )
 def test_an_invalid_or_hijacking_voltage_label_is_a_rule_error(label: str) -> None:
     with pytest.raises(RuleError):
