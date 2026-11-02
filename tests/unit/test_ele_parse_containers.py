@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.test_electrical_pr_c_rework2 import _fonts_pdf
+
 _IMAGE = os.environ.get("ELE_PARSE_TEST_IMAGE", "aizzak/ele-parse:dev")
 _LABEL = "aizzak.harness=ele-parse-containers"
 _STAGE = "/var/lib/aizzak/ele-stage"
@@ -259,6 +261,25 @@ def test_a_page_that_makes_mupdf_warn_is_still_inspected_in_the_read_only_contai
     )
     assert status == 200, body
     assert len(json.loads(body)["pages"]) == 2
+
+
+def test_a_pdf_of_huge_font_tables_gets_a_small_clean_answer_in_the_container(
+    box: _Box, stage: Path
+) -> None:
+    """C-2 in the real sandbox: 32 fonts of 4,095-character /Subtype shared by 5 pages."""
+    name = _make_pdf(stage)
+    crafted = f"{name.partition('/')[0]}/{uuid.uuid4()}.pdf"
+    _fonts_pdf(stage / crafted, pages=5)
+    (stage / crafted).chmod(0o644)
+    status, body = _call(
+        box.name,
+        "http://127.0.0.1:8090/v1/documents/pages",
+        {"file": crafted, "first_page": 1, "last_page": 5},
+    )
+    assert status == 200, body[:200]
+    assert len(body) < 100_000  # it was ~12 MB
+    fonts = [f for page in json.loads(body)["pages"] for f in page["fonts"]]
+    assert fonts and all(len(f["font_type"]) <= 32 and len(f["name"]) <= 96 for f in fonts)
 
 
 @pytest.mark.parametrize(
