@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
-from app.modules.electrical.shared.normalization import canonical_form
+from app.modules.electrical.shared.normalization import canonical_form, text_issues
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.patterns import compiled
 
@@ -27,8 +27,12 @@ MAX_EXTRA_VOLTAGE_LABELS = 64  # LLD 3.3.6: DrawingProfile.voltage_labels <= 64
 MAX_VOLTAGE_LABEL_CHARS = 16  # ... each <= 16 characters
 MAX_RAW_VOLTAGE_LABEL_CHARS = 64  # checked before normalisation (NFKC can expand a character)
 _VOLTAGE_LABEL = re.compile(r"[A-Z0-9+\-]+", re.ASCII)
-# a negative / positive rail written as a designation: ``-48V``, ``+24V``, ``-12``
-_RAIL_CODE = re.compile(r"\d{1,4}V?", re.ASCII)
+# a rail written as a designation. ``-`` keeps ``-48V`` and ``-12``; ``+`` REQUIRES the ``V``
+# (INC1-Q-5): ``+24V`` is a rail, ``+1`` is a location aspect of IEC 81346.
+_RAIL_CODE = {
+    "-": re.compile(r"\d{1,4}V?", re.ASCII),
+    "+": re.compile(r"\d{1,4}V", re.ASCII),
+}
 
 
 class RuleError(ValueError):
@@ -170,8 +174,10 @@ class IdentifierRules:
         """Normalise the profile's extra voltage labels and reject any that is empty, too
         long, outside ``[A-Z0-9+-]``, too many, or that the parser would read as another
         kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``). A rail
-        such as ``-48V`` is allowed: only a VALID single-aspect designation with prefix ``+``
-        or ``-`` and a code of 1..4 digits and an optional ``V`` (so a bare ``-12`` too)."""
+        such as ``-48V`` is allowed: only a VALID single-aspect designation with prefix ``-`` and
+        a code of 1..4 digits and an optional ``V`` (so a bare ``-12`` too), or prefix ``+`` and
+        1..4 digits and a ``V`` (INC1-Q-5). A label that is made of ``+`` / ``-`` only, or holds
+        a hidden character, is rejected (R2-2)."""
         if len(labels) > MAX_EXTRA_VOLTAGE_LABELS:
             raise RuleError(f"at most {MAX_EXTRA_VOLTAGE_LABELS} extra voltage labels")
         checked: list[str] = []
@@ -180,11 +186,14 @@ class IdentifierRules:
                 raise RuleError(
                     f"voltage label must be at most {MAX_RAW_VOLTAGE_LABEL_CHARS} characters"
                 )
+            if text_issues(raw):  # R2-2: reported, never silently dropped
+                raise RuleError("voltage label must not contain a hidden character")
             label = canonical_form(raw)
             if (
                 not label
                 or len(label) > MAX_VOLTAGE_LABEL_CHARS
                 or _VOLTAGE_LABEL.fullmatch(label) is None
+                or not any(ch.isalnum() for ch in label)  # R2-2: ``+`` / ``--`` say nothing
             ):
                 raise RuleError(
                     f"voltage label must be 1..{MAX_VOLTAGE_LABEL_CHARS} characters of A-Z 0-9 + -"
@@ -197,8 +206,8 @@ class IdentifierRules:
 
     def _other_kind(self, label: str) -> IdentifierKind | None:
         """The kind a label would be read as if it were not a voltage, or None. A rail such
-        as ``-48V`` or ``+24`` is allowed: a VALID single-aspect designation whose prefix is
-        ``+`` or ``-`` and whose code matches ``\\d{1,4}V?``."""
+        as ``-48V`` or ``+24V`` is allowed: a VALID single-aspect designation whose prefix is
+        ``-`` and whose code matches ``\\d{1,4}V?``, or ``+`` and ``\\d{1,4}V``."""
         found = IdentifierParser(self).parse(label)
         if found is None or found.kind is IdentifierKind.VOLTAGE:
             return None
@@ -206,8 +215,8 @@ class IdentifierRules:
             found.kind is IdentifierKind.REFERENCE_DESIGNATION
             and found.valid
             and len(found.aspects) == 1
-            and found.aspects[0].prefix in ("+", "-")
-            and _RAIL_CODE.fullmatch(found.aspects[0].code)
+            and (rail := _RAIL_CODE.get(found.aspects[0].prefix)) is not None
+            and rail.fullmatch(found.aspects[0].code)
         ):
             return None
         return found.kind

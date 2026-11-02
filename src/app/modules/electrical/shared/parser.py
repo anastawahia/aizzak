@@ -14,12 +14,17 @@ that order, and a caller who knows better passes ``hint``:
 ``valid=False`` and its issues (FR-ID-10), never dropped. Hidden characters in the text
 (control, format, default-ignorable) are dropped from the canonical form but flagged
 ``text.hidden_character`` (invalid); bidi controls are flagged ``text.bidi_control`` and
-the identifier stays valid. Identity is (``kind``, ``canonical``); ``search_keys`` are
+the identifier stays valid. Combining marks that stay after normalisation (``KM1`` + U+0301,
+``Ké``) are never silently dropped (INC1-Q-6): when the text without them is an identifier it
+comes back ``valid=False`` with ``text.non_ascii``, its canonical form keeping the marks;
+text in another script (Chinese prose, Cyrillic) that no mark-free ASCII form explains is
+no identifier. Identity is (``kind``, ``canonical``); ``search_keys`` are
 for retrieval only.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import replace
@@ -38,6 +43,7 @@ from app.modules.electrical.shared.kinds import (
 )
 from app.modules.electrical.shared.letter_codes import parse_letter_code
 from app.modules.electrical.shared.normalization import (
+    ISSUE_NON_ASCII,
     NON_INVALIDATING_ISSUES,
     normalize,
     text_issues,
@@ -95,6 +101,13 @@ class IdentifierParser:
         forms = normalize(text)
         if len(forms.canonical) > MAX_TEXT_CHARS or not any(ch.isalnum() for ch in forms.canonical):
             return None
+        if not forms.canonical.isascii():
+            return self._parse_non_ascii(text, forms, hint)
+        return self._first(forms, hint, text)
+
+    def _first(
+        self, forms: NormalizedForms, hint: IdentifierKind | None, text: str
+    ) -> ParsedIdentifier | None:
         for kind, parse in _ORDER:
             if hint is not None and kind is not hint:
                 continue
@@ -102,6 +115,28 @@ class IdentifierParser:
             if found is not None:
                 return _flag_text(found, text_issues(text))
         return None
+
+    def _parse_non_ascii(
+        self, text: str, forms: NormalizedForms, hint: IdentifierKind | None
+    ) -> ParsedIdentifier | None:
+        """INC1-Q-6: the identifier hiding behind non-ASCII characters is reported invalid,
+        under its own canonical form (so it never collides with the plain one)."""
+        skeleton = "".join(
+            ch
+            for ch in unicodedata.normalize("NFD", forms.canonical)
+            if unicodedata.category(ch) not in ("Mn", "Me")
+        )
+        if not skeleton.isascii() or not any(ch.isalnum() for ch in skeleton):
+            return None  # other scripts (Chinese prose, Cyrillic) are no identifier here
+        found = self._first(normalize(skeleton), hint, text)
+        if found is None:
+            return None
+        return replace(
+            found,
+            forms=NormalizedForms(forms.original, forms.canonical, (forms.canonical,)),
+            valid=False,
+            issues=tuple(dict.fromkeys((*found.issues, ISSUE_NON_ASCII))),
+        )
 
     def tally(self, tokens: Iterable[str]) -> ConventionTally:
         conventions: Counter[Convention] = Counter()
@@ -114,6 +149,8 @@ class IdentifierParser:
             if found is None:
                 continue
             parsed += 1
+            if ISSUE_NON_ASCII in found.issues:
+                continue  # lookalike / mixed-script text is no evidence of a convention
             if found.convention is not None:
                 conventions[found.convention] += 1
             if found.plc is not None:
