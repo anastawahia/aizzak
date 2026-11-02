@@ -334,6 +334,9 @@ def test_no_agent_reads_the_files_seam_directly() -> None:
         "framework/errors.py",  # names it in a comment
         "modules/conversations/application/use_cases.py",  # its own §3.5 rule
         "modules/conversations/ports/files.py",
+        # WireTwin's own declaration of the seam (INC-1): a port, bound to `FilesQuery` in the
+        # Composition Root. Not an agent, and the same register-time precondition as `IndexFile`.
+        "modules/electrical/drawings/ports/files.py",
         "modules/files/adapters/sql_repository.py",
         "modules/files/application/use_cases.py",
         "modules/files/ports/inbound.py",
