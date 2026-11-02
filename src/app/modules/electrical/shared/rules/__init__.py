@@ -178,7 +178,7 @@ class IdentifierRules:
         for raw in labels:
             if len(raw) > MAX_RAW_VOLTAGE_LABEL_CHARS:
                 raise RuleError(
-                    f"voltage label must be at most {MAX_VOLTAGE_LABEL_CHARS} characters"
+                    f"voltage label must be at most {MAX_RAW_VOLTAGE_LABEL_CHARS} characters"
                 )
             label = canonical_form(raw)
             if (
@@ -196,8 +196,9 @@ class IdentifierRules:
         return tuple(dict.fromkeys(checked))
 
     def _other_kind(self, label: str) -> IdentifierKind | None:
-        """The kind a label would be read as if it were not a voltage, or None. A negative
-        rail such as ``-48V`` (a designation whose code starts with a digit) is allowed."""
+        """The kind a label would be read as if it were not a voltage, or None. A rail such
+        as ``-48V`` or ``+24`` is allowed: a VALID single-aspect designation whose prefix is
+        ``+`` or ``-`` and whose code matches ``\\d{1,4}V?``."""
         found = IdentifierParser(self).parse(label)
         if found is None or found.kind is IdentifierKind.VOLTAGE:
             return None

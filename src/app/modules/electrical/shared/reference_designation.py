@@ -94,7 +94,9 @@ def parse_reference_designation(
         letters = _LEADING_LETTERS.match(product.code)
         device_class = device_class_of(rules, letters[0]) if letters else None
         keys.append(product.code)
-        if chain.connection_point:
+        # the connection point belongs to the LAST aspect only: after ``-K5-13`` it is a
+        # point of the sub-element 13, not of the device K5
+        if chain.connection_point and product is chain.aspects[-1]:
             keys.append(f"{product.code}{rules.connection_point_separator}{chain.connection_point}")
     return ParsedIdentifier(
         kind=IdentifierKind.REFERENCE_DESIGNATION,
