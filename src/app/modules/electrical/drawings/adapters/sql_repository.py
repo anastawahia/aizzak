@@ -36,6 +36,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from enum import StrEnum
 from typing import Any, Final
+from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
@@ -272,6 +273,22 @@ def _paginate_id[T](
     return Page(data=[hydrate(row) for row in page_rows], next_cursor=next_cursor, limit=limit)
 
 
+_UUID_TEXT_LENGTH: Final = 36  # 8-4-4-4-12 hex digits and four hyphens
+
+
+def _is_uuid(value: str) -> bool:
+    """Whether ``value`` can be compared with a ``uuid`` column. A client may send anything as an
+    id; one that is not a UUID names nothing, so the lookup answers "not found" (as for an
+    unknown id) instead of letting the driver refuse the parameter (a 500)."""
+    if not isinstance(value, str) or len(value) != _UUID_TEXT_LENGTH:
+        return False
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _unique_violation(text: str) -> ConflictError:
     """A ``23505`` named by the index that fired. Literal codes, one branch per index:
     ``test_error_catalog`` finds the raise sites by source."""
@@ -331,11 +348,15 @@ def _project(row: RowMapping) -> Project:
 
 class SqlProjectRepository(_Base):
     async def get(self, ctx: ExecutionContext, project_id: UuidStr) -> Project | None:
+        if not _is_uuid(project_id):
+            return None
         t = drawings_projects
         stmt = select(t).where(t.c.id == project_id, t.c.workspace_id == ctx.workspace_id)
         return await self._one(ctx, stmt)
 
     async def get_by_space(self, ctx: ExecutionContext, space_id: UuidStr) -> Project | None:
+        if not _is_uuid(space_id):
+            return None
         t = drawings_projects
         stmt = select(t).where(t.c.workspace_id == ctx.workspace_id, t.c.space_id == space_id)
         return await self._one(ctx, stmt)
@@ -384,6 +405,8 @@ class SqlProjectRepository(_Base):
     async def list_by_space(
         self, ctx: ExecutionContext, space_id: UuidStr, *, limit: int, cursor: str | None
     ) -> Page[Project]:
+        if not _is_uuid(space_id):
+            return Page(data=[], next_cursor=None, limit=limit)
         t = drawings_projects
         conditions = [t.c.workspace_id == ctx.workspace_id, t.c.space_id == space_id]
         if cursor is not None:
@@ -554,6 +577,8 @@ def _stored_reason(document: Document) -> str | None:
 
 class SqlDocumentRepository(_Base):
     async def get(self, ctx: ExecutionContext, document_id: UuidStr) -> Document | None:
+        if not _is_uuid(document_id):
+            return None
         t = drawings_documents
         stmt = select(t).where(t.c.id == document_id, t.c.workspace_id == ctx.workspace_id)
         rows = await self._all(ctx, stmt)
@@ -562,6 +587,8 @@ class SqlDocumentRepository(_Base):
     async def lock_live(self, ctx: ExecutionContext, document_id: UuidStr) -> Document | None:
         """``SELECT ... FOR SHARE`` of an ACTIVE document, inside the caller's unit of work: a
         purge's ``UPDATE ... status = 'purging'`` then waits for the writer to commit."""
+        if not _is_uuid(document_id):
+            return None
         t = drawings_documents
         stmt = (
             select(t)
@@ -755,6 +782,8 @@ def _job(row: RowMapping) -> IngestionJob:
 
 class SqlJobRepository(_Base):
     async def get(self, ctx: ExecutionContext, job_id: UuidStr) -> IngestionJob | None:
+        if not _is_uuid(job_id):
+            return None
         t = drawings_jobs
         stmt = select(t).where(t.c.id == job_id, t.c.workspace_id == ctx.workspace_id)
         return await self._one(ctx, stmt)
@@ -1412,6 +1441,8 @@ class SqlCharacterizationRepository(_Base):
             raise _translate(exc) from exc
 
     async def get(self, ctx: ExecutionContext, document_id: UuidStr) -> Characterization | None:
+        if not _is_uuid(document_id):
+            return None
         t = drawings_characterizations
         stmt = select(t).where(t.c.workspace_id == ctx.workspace_id, t.c.document_id == document_id)
         try:
