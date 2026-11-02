@@ -33,6 +33,7 @@ from app.modules.electrical.drawings.adapters import ele_parse_client, sql_repos
 from app.modules.electrical.drawings.adapters.ele_parse_client import EleParseClient
 from app.modules.electrical.drawings.adapters.source_stager import StreamingSourceStager
 from app.modules.electrical.drawings.application import _common, purge
+from app.modules.electrical.drawings.application.inspection import _Stop
 from app.modules.electrical.drawings.application.projects import parse_profile
 from app.modules.electrical.drawings.domain.errors import InvalidProfile, PageRangeFailed
 from app.modules.electrical.drawings.domain.job import JobStatus
@@ -608,3 +609,57 @@ def test_document_not_live_is_one_constant() -> None:
 
 
 _ = (Sequence, NotFoundError)  # imported for the type checkers of the fixtures above
+
+
+# ======================== #6 a run that was taken over ends nothing: _fail, _stop_not_live, ...
+async def _taken_over(stack: Stack) -> tuple[Any, str, str, int]:
+    """A job running at attempt 2 (another run holds it); returns (inspector, doc, job, the STALE
+    attempt 1 of the run that lost it)."""
+    doc_id, job_id = await _registered(stack)
+    job = stack.jobs.rows[job_id]
+    assert job.take_lease(stack.clock(), stack.settings.job_lease_s)
+    await stack.jobs.save(stack.ctx, job)
+    stale = job.attempt
+    stack.jobs.rows[job_id].attempt += 1
+    return stack.inspector(_pdf()), doc_id, job_id, stale
+
+
+def _untouched(stack: Stack, job_id: str) -> None:
+    job = stack.jobs.rows[job_id]
+    assert job.status is JobStatus.RUNNING and job.failure_code is None
+    assert stack.ledger.claimed == [] and stack.outbox.data("electrical.job.completed.v1") == []
+
+
+async def test_a_stale_run_cannot_fail_the_job() -> None:
+    stack = build_stack()
+    inspector, _, job_id, stale = await _taken_over(stack)
+    with pytest.raises(_Stop):
+        await inspector._fail(stack.ctx, job_id, stale, "e1", "electrical.pdf_rejected", "x")
+    _untouched(stack, job_id)
+
+
+async def test_a_stale_run_cannot_stop_the_job_as_not_live() -> None:
+    stack = build_stack()
+    inspector, _, job_id, stale = await _taken_over(stack)
+    with pytest.raises(_Stop):
+        await inspector._stop_not_live(stack.ctx, job_id, stale, "e1")
+    _untouched(stack, job_id)
+
+
+async def test_a_stale_run_cannot_exclude_the_document_as_a_duplicate() -> None:
+    stack = build_stack()
+    inspector, doc_id, job_id, stale = await _taken_over(stack)
+    source = StagedSource("w/d.pdf", "a" * 64, 1)
+    with pytest.raises(_Stop):
+        await inspector._exclude_duplicate(stack.ctx, doc_id, job_id, stale, source, "e1")
+    _untouched(stack, job_id)
+    assert stack.documents.rows[doc_id].is_live
+
+
+async def test_the_owner_still_ends_its_own_job_through_each_helper() -> None:
+    stack = build_stack()
+    inspector, _, job_id, _ = await _taken_over(stack)
+    mine = stack.jobs.rows[job_id].attempt
+    with pytest.raises(_Stop):
+        await inspector._fail(stack.ctx, job_id, mine, "e1", "electrical.pdf_rejected", "x")
+    assert stack.jobs.rows[job_id].status is JobStatus.FAILED

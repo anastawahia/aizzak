@@ -367,7 +367,12 @@ class InspectDocument:
         file = await self._files.get_readable(ctx, document.file_id)
         if file is None:
             await self._fail(
-                ctx, job.id, event_id, SOURCE_UNREADABLE, "the file is no longer readable"
+                ctx,
+                job.id,
+                job.attempt,
+                event_id,
+                SOURCE_UNREADABLE,
+                "the file is no longer readable",
             )
         try:
             source = await self._stager.stage(
@@ -379,14 +384,14 @@ class InspectDocument:
         except (NotFoundError, ValidationError) as exc:
             if isinstance(exc, ValidationError) and exc.code != SOURCE_UNREADABLE:
                 raise
-            await self._fail(ctx, job.id, event_id, SOURCE_UNREADABLE, str(exc))
+            await self._fail(ctx, job.id, job.attempt, event_id, SOURCE_UNREADABLE, str(exc))
         try:
-            await self._record_fingerprint(ctx, document.id, job.id, source, event_id)
+            await self._record_fingerprint(ctx, document.id, job.id, job.attempt, source, event_id)
             try:
                 await self._pages_stage(ctx, document, job, source, base, event_id)
             except PdfRejected as exc:
                 _logger.info("electrical.inspect.pdf_rejected", extra={**log, "code": exc.code})
-                await self._fail(ctx, job.id, event_id, PDF_REJECTED, exc.detail)
+                await self._fail(ctx, job.id, job.attempt, event_id, PDF_REJECTED, exc.detail)
         finally:
             await self._stager.discard(source)
 
@@ -395,6 +400,7 @@ class InspectDocument:
         ctx: ExecutionContext,
         document_id: Uuid,
         job_id: Uuid,
+        attempt: int,
         source: StagedSource,
         event_id: str,
     ) -> None:
@@ -402,17 +408,18 @@ class InspectDocument:
         reprocessing must see the bytes the document was first read from."""
         outcome = await self._try_record(ctx, document_id, source)
         if outcome is _Fingerprint.GONE:
-            await self._stop_not_live(ctx, job_id, event_id)
+            await self._stop_not_live(ctx, job_id, attempt, event_id)
         if outcome is _Fingerprint.CHANGED:
             await self._fail(
                 ctx,
                 job_id,
+                attempt,
                 event_id,
                 SOURCE_UNREADABLE,
                 "the file's content changed since it was first read",
             )
         if outcome is _Fingerprint.DUPLICATE:
-            await self._exclude_duplicate(ctx, document_id, job_id, source, event_id)
+            await self._exclude_duplicate(ctx, document_id, job_id, attempt, source, event_id)
 
     async def _try_record(
         self, ctx: ExecutionContext, document_id: Uuid, source: StagedSource
@@ -449,14 +456,15 @@ class InspectDocument:
         ctx: ExecutionContext,
         document_id: Uuid,
         job_id: Uuid,
+        attempt: int,
         source: StagedSource,
         event_id: str,
     ) -> NoReturn:
         async with self._uow.begin(ctx):
             document = await self._documents.lock_live(ctx, document_id)
             job = await self._jobs.get(ctx, job_id)
-            if document is None or job is None or job.status is not JobStatus.RUNNING:
-                raise _Stop
+            if document is None or job is None or not self._owned(job, attempt):
+                raise _Stop  # taken over: write nothing
             now = self._clock()
             twin = await self._documents.active_with_content(
                 ctx, document.project_id, source.sha256
@@ -500,11 +508,14 @@ class InspectDocument:
                 "electrical.inspect.pdf_rejected",
                 extra={"job_id": job.id, "document_id": document.id, "code": exc.reason.value},
             )
-            await self._fail(ctx, job.id, event_id, PDF_REJECTED, _SUMMARY_FAILED[exc.reason])
+            await self._fail(
+                ctx, job.id, job.attempt, event_id, PDF_REJECTED, _SUMMARY_FAILED[exc.reason]
+            )
         if summary.page_count > self._settings.max_pages:
             await self._fail(
                 ctx,
                 job.id,
+                job.attempt,
                 event_id,
                 TOO_MANY_PAGES,
                 f"the PDF has {summary.page_count} pages; the limit is {self._settings.max_pages}",
@@ -517,7 +528,7 @@ class InspectDocument:
         async with self._uow.begin(ctx):
             locked = await self._documents.lock_live(ctx, document.id)
             if locked is None:
-                await self._stop_not_live(ctx, job.id, event_id)
+                await self._stop_not_live(ctx, job.id, job.attempt, event_id)
             locked.record_inspection(
                 sha256=source.sha256,
                 page_count=summary.page_count,
@@ -626,7 +637,7 @@ class InspectDocument:
         if job is None or not self._owned(job, attempt):
             raise _Stop  # cancelled by a purge, or taken over: nothing more to say
         if document is None or not document.is_live:
-            await self._stop_not_live(ctx, job_id, event_id)
+            await self._stop_not_live(ctx, job_id, attempt, event_id)
         if job.cancel_requested_at is not None:
             async with self._uow.begin(ctx):
                 fresh = await self._jobs.get(ctx, job_id)
@@ -827,13 +838,19 @@ class InspectDocument:
 
     # ------------------------------------------------------------ endings
     async def _fail(
-        self, ctx: ExecutionContext, job_id: Uuid, event_id: str, code: str, detail: str
+        self,
+        ctx: ExecutionContext,
+        job_id: Uuid,
+        attempt: int,
+        event_id: str,
+        code: str,
+        detail: str,
     ) -> NoReturn:
         """End the job ``failed`` with a catalogue code, then leave ``run``."""
         async with self._uow.begin(ctx):
             job = await self._jobs.get(ctx, job_id)
-            if job is None or job.status is not JobStatus.RUNNING:
-                raise _Stop
+            if job is None or not self._owned(job, attempt):
+                raise _Stop  # taken over: write nothing
             now = self._clock()
             job.fail(code, detail, now)
             await self._jobs.save(ctx, job)
@@ -846,15 +863,18 @@ class InspectDocument:
         )
         raise _Stop
 
-    async def _stop_not_live(self, ctx: ExecutionContext, job_id: Uuid, event_id: str) -> NoReturn:
+    async def _stop_not_live(
+        self, ctx: ExecutionContext, job_id: Uuid, attempt: int, event_id: str
+    ) -> NoReturn:
         """The document stopped being active under a running job: cancel it and leave."""
         async with self._uow.begin(ctx):
             job = await self._jobs.get(ctx, job_id)
-            if job is not None and job.status is JobStatus.RUNNING:
-                now = self._clock()
-                job.cancel(now, code=DOCUMENT_NOT_LIVE)
-                await self._jobs.save(ctx, job)
-                await emit(ctx, self._outbox, [job_completed(job, now)])
+            if job is None or not self._owned(job, attempt):
+                raise _Stop  # taken over: write nothing
+            now = self._clock()
+            job.cancel(now, code=DOCUMENT_NOT_LIVE)
+            await self._jobs.save(ctx, job)
+            await emit(ctx, self._outbox, [job_completed(job, now)])
             await self._ledger.claim(ctx, event_id=event_id)
         raise _Stop
 
