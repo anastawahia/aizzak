@@ -14,7 +14,6 @@ from app.modules.electrical.drawings.domain.characterization import Characteriza
 from app.modules.electrical.drawings.domain.document import Document, DocumentStatus
 from app.modules.electrical.drawings.domain.job import IngestionJob
 from app.modules.electrical.drawings.domain.pages import (
-    PageClassification,
     PageEvidence,
     PageResult,
     PageRow,
@@ -66,8 +65,6 @@ class DocumentRepository(Protocol):
     async def not_purging_for_file(
         self, ctx: ExecutionContext, file_id: Uuid
     ) -> Sequence[Document]: ...
-
-    async def live_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> Sequence[Document]: ...
 
     async def active_files(self, ctx: ExecutionContext, project_id: Uuid) -> Mapping[Uuid, Uuid]:
         """document_id -> file_id of the project's ACTIVE documents."""
@@ -150,10 +147,6 @@ class PageRepository(Protocol):
     async def stage_counts(
         self, ctx: ExecutionContext, document_id: Uuid, stage: Stage
     ) -> Mapping[StageStatus, int]: ...
-
-    async def classifications(
-        self, ctx: ExecutionContext, document_id: Uuid
-    ) -> Sequence[PageClassification]: ...
 
     async def list(
         self, ctx: ExecutionContext, document_id: Uuid, *, limit: int, cursor: str | None

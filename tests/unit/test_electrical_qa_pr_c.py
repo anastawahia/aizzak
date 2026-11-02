@@ -706,11 +706,6 @@ _LENIENT_NOT_UUIDS = [
 ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-5: _is_uuid trusts uuid.UUID(), which is more lenient than the database driver; "
-    "such an id still reaches asyncpg and ends as a 500",
-)
 @pytest.mark.parametrize("value", _LENIENT_NOT_UUIDS)
 def test_the_sql_adapter_refuses_what_the_driver_would_refuse(value: str) -> None:
     with pytest.raises(ValueError):
@@ -718,11 +713,6 @@ def test_the_sql_adapter_refuses_what_the_driver_would_refuse(value: str) -> Non
     assert sql_repository._is_uuid(value) is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-5: decode_id_cursor has the same lenient check (platform, shared by files, "
-    "conversations and electrical)",
-)
 @pytest.mark.parametrize("value", _LENIENT_NOT_UUIDS)
 def test_an_id_cursor_the_driver_would_refuse_is_rejected_as_a_cursor(value: str) -> None:
     with pytest.raises(AppError):

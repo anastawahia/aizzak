@@ -26,9 +26,9 @@ from app.framework.errors import ConflictError
 from app.framework.identifiers import new_uuid7
 from app.infrastructure.persistence.outbox import SqlEventOutbox
 from app.infrastructure.persistence.rls import TenantSessionFactory
+from app.modules.electrical.drawings.application._common import DOCUMENT_NOT_LIVE
 from app.modules.electrical.drawings.application.jobs import JobService
 from app.modules.electrical.drawings.application.purge import (
-    DOCUMENT_NOT_LIVE,
     PurgeFileDocuments,
     PurgeSpaceDrawings,
     SweepPurgedDocument,

@@ -94,9 +94,6 @@ async def test_the_reads_stop_seeing_a_purging_document_at_once(stack: Stack) ->
         await stack.services["characterization"].for_document(stack.ctx, doc_id)
     assert await stack.characterizations.for_project(stack.ctx, project_id) == []
     assert await stack.documents.active_files(stack.ctx, project_id) == {}
-    assert (
-        await stack.documents.live_in_space(stack.ctx, stack.documents.rows[doc_id].space_id) == []
-    )
     listed = await stack.document_service.list(
         stack.ctx, project_id, status=None, limit=10, cursor=None
     )

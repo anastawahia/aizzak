@@ -16,6 +16,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -449,7 +450,6 @@ async def test_lock_live_reads_active_only_and_reads_are_status_filtered(repos: 
 
     assert (await repos.documents.lock_live(ctx, live.id)) == live
     assert await repos.documents.lock_live(ctx, excluded.id) is None
-    assert _ids(await repos.documents.live_in_space(ctx, project.space_id)) == [live.id]
     assert set(await repos.documents.active_files(ctx, project.id)) == {live.id}
     # the other tenant cannot lock it
     assert await repos.documents.lock_live(_ctx(new_uuid7()), live.id) is None
@@ -566,9 +566,33 @@ async def test_queue_position_open_count_and_recent_run_seconds(repos: _Repos) -
     assert list(await repos.jobs.recent_run_seconds(ctx, limit=5)) == pytest.approx([42.0])
 
 
+async def _classifications(repos: _Repos, ctx: ExecutionContext, document_id: str) -> list[Any]:
+    """The stored classifications in page order (the page listing's rows that have one)."""
+    listing = await repos.pages.list(ctx, document_id, limit=100, cursor=None)
+    return [row.classification for row in listing.data if row.classification is not None]
+
+
 # --------------------------------------------------------------------------------------
 # pages
 # --------------------------------------------------------------------------------------
+async def test_a_document_of_the_page_limit_is_seeded_under_the_drivers_parameter_limit(
+    repos: _Repos,
+) -> None:
+    """ELE_MAX_PAGES is 5,000: one multi-row INSERT of that many stage rows is 35,000 bound
+    parameters and asyncpg refuses more than 32,767 (it failed from 4,682 pages)."""
+    ctx, _, document = await _seed(repos, new_uuid7())
+    pages = list(range(1, 5001))
+    await repos.pages.seed(ctx, document.id, pages, Stage.CLASSIFY, PIPELINE_VERSION)
+    await repos.pages.seed(ctx, document.id, pages, Stage.CLASSIFY, PIPELINE_VERSION)  # a resume
+    assert await repos.pages.stage_counts(ctx, document.id, Stage.CLASSIFY) == {
+        StageStatus.PENDING: 5000
+    }
+    assert await repos.pages.unfinished(ctx, document.id, Stage.CLASSIFY) == pages
+    # the rows are the tenant's: another workspace sees none of them
+    other = _ctx(new_uuid7())
+    assert await repos.pages.stage_counts(other, document.id, Stage.CLASSIFY) == {}
+
+
 async def test_pages_seed_record_resume_and_read(repos: _Repos) -> None:
     ctx, _, document = await _seed(repos, new_uuid7())
     await repos.pages.seed(ctx, document.id, [1, 2, 3, 4], Stage.CLASSIFY, PIPELINE_VERSION)
@@ -577,7 +601,7 @@ async def test_pages_seed_record_resume_and_read(repos: _Repos) -> None:
     assert await repos.pages.stage_counts(ctx, document.id, Stage.CLASSIFY) == {
         StageStatus.PENDING: 4
     }
-    assert list(await repos.pages.classifications(ctx, document.id)) == []
+    assert await _classifications(repos, ctx, document.id) == []
 
     await repos.pages.record(
         ctx,
@@ -600,14 +624,14 @@ async def test_pages_seed_record_resume_and_read(repos: _Repos) -> None:
         StageStatus.NEEDS_REVIEW: 1,
         StageStatus.FAILED: 1,
     }
-    classified = await repos.pages.classifications(ctx, document.id)
+    classified = await _classifications(repos, ctx, document.id)
     assert [c.page_no for c in classified] == [1, 2, 3, 4]
     assert classified[1].kind is PageKind.RASTER and classified[1].needs_ocr
     assert classified[2].reason is StageReason.AMBIGUOUS_CLASSIFICATION
 
     # a re-run of one page replaces its classification and stage in place
     await repos.pages.record(ctx, document.id, [_result(4, PageKind.RASTER, attempts=2)])
-    again = {c.page_no: c for c in await repos.pages.classifications(ctx, document.id)}
+    again = {c.page_no: c for c in await _classifications(repos, ctx, document.id)}
     assert again[4].kind is PageKind.RASTER and again[4].status is StageStatus.SUCCEEDED
 
     first = await repos.pages.list(ctx, document.id, limit=3, cursor=None)
@@ -874,7 +898,7 @@ async def test_sweep_document_deletes_in_order_only_while_purging_and_only_its_o
         )  # fmt: skip
         assert left == [(0,)], table
     assert await repos.documents.get(ctx, keeper.id) is not None
-    assert len(list(await repos.pages.classifications(ctx, keeper.id))) == 2
+    assert len(await _classifications(repos, ctx, keeper.id)) == 2
     assert await repos.characterizations.get(ctx, keeper.id) is not None
     # the project (and the profile of the project itself) are not the sweep's business
     assert await repos.projects.get(ctx, project.id) is not None

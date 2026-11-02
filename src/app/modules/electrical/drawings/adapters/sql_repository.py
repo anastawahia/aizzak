@@ -31,12 +31,12 @@ aggregate as it is and only asserts the pairing.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from enum import StrEnum
 from typing import Any, Final
-from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
@@ -75,6 +75,7 @@ from app.framework.pagination import (
     decode_seq_cursor,
     encode_id_cursor,
     encode_seq_cursor,
+    is_uuid_text,
 )
 from app.framework.types import Uuid as UuidStr
 from app.modules.electrical.drawings.domain.characterization import Characterization
@@ -273,20 +274,18 @@ def _paginate_id[T](
     return Page(data=[hydrate(row) for row in page_rows], next_cursor=next_cursor, limit=limit)
 
 
-_UUID_TEXT_LENGTH: Final = 36  # 8-4-4-4-12 hex digits and four hyphens
+_SIGNALS_BUDGET_BYTES: Final = 15_000  # under the CHECK's 16,384, jsonb text adds a little
+_FONT_TYPE_CHARS: Final = 32
+_INT4_MAX: Final = 2**31 - 1  # page_no is an int4
+SEED_CHUNK_PAGES: Final = 1_000  # 7 parameters a row: far under the driver's 32,767
 
 
 def _is_uuid(value: str) -> bool:
     """Whether ``value`` can be compared with a ``uuid`` column. A client may send anything as an
     id; one that is not a UUID names nothing, so the lookup answers "not found" (as for an
-    unknown id) instead of letting the driver refuse the parameter (a 500)."""
-    if not isinstance(value, str) or len(value) != _UUID_TEXT_LENGTH:
-        return False
-    try:
-        UUID(value)
-    except ValueError:
-        return False
-    return True
+    unknown id) instead of letting the driver refuse the parameter (a 500). The check is the
+    driver's own strictness (canonical ASCII hex), not ``uuid.UUID()``'s."""
+    return is_uuid_text(value)
 
 
 def _unique_violation(text: str) -> ConflictError:
@@ -612,19 +611,6 @@ class SqlDocumentRepository(_Base):
                 t.c.workspace_id == ctx.workspace_id,
                 t.c.file_id == file_id,
                 t.c.status != DocumentStatus.PURGING.value,
-            )
-            .order_by(t.c.id)
-        )
-        return await self._all(ctx, stmt)
-
-    async def live_in_space(self, ctx: ExecutionContext, space_id: UuidStr) -> Sequence[Document]:
-        t = drawings_documents
-        stmt = (
-            select(t)
-            .where(
-                t.c.workspace_id == ctx.workspace_id,
-                t.c.space_id == space_id,
-                t.c.status == DocumentStatus.ACTIVE.value,
             )
             .order_by(t.c.id)
         )
@@ -960,7 +946,7 @@ def _abridged_signals(signals: PageSignals) -> dict[str, Any]:
         "fonts": [
             {
                 "name": font.name[:96],
-                "font_type": font.font_type,
+                "font_type": font.font_type[:_FONT_TYPE_CHARS],
                 "cid": font.cid,
                 "embedded": font.embedded,
                 "has_tounicode": font.has_tounicode,
@@ -1028,6 +1014,10 @@ def _stored_signals(result: PageResult) -> dict[str, Any]:
     stored = _abridged_signals(result.signals)
     if result.tally is not None:
         stored["tally"] = _tally_json(result.tally)
+    if len(json.dumps(stored, ensure_ascii=False).encode()) > _SIGNALS_BUDGET_BYTES:
+        # Unreachable with the fields clipped above and by ele-parse; kept so that a page that
+        # still would not fit the column's CHECK (16 KiB) costs its font table, not the batch.
+        stored["fonts"] = []
     return stored
 
 
@@ -1063,12 +1053,36 @@ class SqlPageRepository(_Base):
         if not pages:
             return
         ws = ctx.workspace_id
-        page_stmt = (
+        try:
+            async with self._tenant_session(ctx) as session:
+                # asyncpg refuses a statement with more than 32,767 parameters (7 per stage
+                # row): a document is seeded in chunks, in the one transaction.
+                for at in range(0, len(pages), SEED_CHUNK_PAGES):
+                    chunk = pages[at : at + SEED_CHUNK_PAGES]
+                    await session.execute(self._page_insert(ws, document_id, chunk))
+                    await session.execute(
+                        self._stage_insert(ws, document_id, chunk, stage, pipeline_version)
+                    )
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
+    @staticmethod
+    def _page_insert(ws: UuidStr, document_id: UuidStr, pages: Sequence[int]) -> Any:
+        return (
             pg_insert(drawings_pages)
             .values([{"workspace_id": ws, "document_id": document_id, "page_no": n} for n in pages])
             .on_conflict_do_nothing(index_elements=["workspace_id", "document_id", "page_no"])
         )
-        stage_stmt = (
+
+    @staticmethod
+    def _stage_insert(
+        ws: UuidStr,
+        document_id: UuidStr,
+        pages: Sequence[int],
+        stage: Stage,
+        pipeline_version: str,
+    ) -> Any:
+        return (
             pg_insert(drawings_page_stages)
             .values(
                 [
@@ -1088,12 +1102,6 @@ class SqlPageRepository(_Base):
                 index_elements=["workspace_id", "document_id", "page_no", "stage"]
             )
         )
-        try:
-            async with self._tenant_session(ctx) as session:
-                await session.execute(page_stmt)
-                await session.execute(stage_stmt)
-        except DBAPIError as exc:
-            raise _translate(exc) from exc
 
     async def record(
         self, ctx: ExecutionContext, document_id: UuidStr, results: Sequence[PageResult]
@@ -1192,35 +1200,6 @@ class SqlPageRepository(_Base):
             raise _translate(exc) from exc
         return {StageStatus(status): int(count) for status, count in rows}
 
-    async def classifications(
-        self, ctx: ExecutionContext, document_id: UuidStr
-    ) -> Sequence[PageClassification]:
-        p, s = drawings_pages, drawings_page_stages
-        stmt = (
-            select(p.c.page_no, p.c.kind, p.c.language, p.c.needs_ocr, s.c.status, s.c.reason)
-            .join(
-                s,
-                and_(
-                    s.c.workspace_id == p.c.workspace_id,
-                    s.c.document_id == p.c.document_id,
-                    s.c.page_no == p.c.page_no,
-                    s.c.stage == Stage.CLASSIFY.value,
-                ),
-            )
-            .where(
-                p.c.workspace_id == ctx.workspace_id,
-                p.c.document_id == document_id,
-                p.c.kind.is_not(None),
-            )
-            .order_by(p.c.page_no)
-        )
-        try:
-            async with self._tenant_session(ctx) as session:
-                rows = (await session.execute(stmt)).all()
-        except DBAPIError as exc:
-            raise _translate(exc) from exc
-        return [_classification(*row) for row in rows]
-
     async def reset(
         self,
         ctx: ExecutionContext,
@@ -1302,7 +1281,7 @@ class SqlPageRepository(_Base):
         p, s = drawings_pages, drawings_page_stages
         conditions = [p.c.workspace_id == ctx.workspace_id, p.c.document_id == document_id]
         if cursor is not None:
-            conditions.append(p.c.page_no > decode_seq_cursor(cursor))
+            conditions.append(p.c.page_no > decode_seq_cursor(cursor, maximum=_INT4_MAX))
         page_stmt = select(p).where(*conditions).order_by(p.c.page_no).limit(limit + 1)
         try:
             async with self._tenant_session(ctx) as session:

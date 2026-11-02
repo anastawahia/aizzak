@@ -578,7 +578,11 @@ async def test_the_fake_page_repository_resumes_from_the_unfinished_pages() -> N
     assert list(await pages.unfinished(ctx, "d1", Stage.CLASSIFY)) == [1, 3]
     counts = await pages.stage_counts(ctx, "d1", Stage.CLASSIFY)
     assert counts == {"pending": 2, "succeeded": 1}
-    assert [c.page_no for c in await pages.classifications(ctx, "d1")] == [2]
+    assert [
+        r.page_no
+        for r in (await pages.list(ctx, "d1", limit=9, cursor=None)).data
+        if r.classification
+    ] == [2]
     listing = await pages.list(ctx, "d1", limit=2, cursor=None)
     assert [r.page_no for r in listing.data] == [1, 2] and listing.next_cursor is not None
     rest = await pages.list(ctx, "d1", limit=2, cursor=listing.next_cursor)
