@@ -180,4 +180,47 @@ docker rmi aizzak/ele-parse:qa
 
 ملاحظة أمان: مجموعة `tests/integration/conftest.py` تقتطع الجداول في كل اختبار (`truncate_tables` تلقائي) وتعيد بناء المخطط، وافتراضات DSN تشير إلى المكدّس الحيّ؛ فلم يُشغَّل شيء منها قبل ضبط كل المتغيّرات السبعة والـRedis والـMinIO على المنافذ المؤقتة، وفحصتُ قبل أول تشغيل أن `TEST_DATABASE_URL` لا يحوي 15432 ولا 16379 (والمنافذ المؤقتة عشوائية بالبناء).
 
+---
+
+## 7. إعادة 1 (بعد جولة الإصلاح الأولى، الرأس `f550e4a`)
+
+### 7.1 إغلاق الأخطاء
+
+| # | الإصلاح | دليل الإغلاق | الحالة |
+|---|---|---|---|
+| QA‑1 (major) | `196a151`: يحفظ الطفل الواصف 1 على واصف خاص ويوجّه 1 إلى `/dev/null` قبل استيراد PyMuPDF، و`mupdf_display_errors(False)`، وفشل التخصيص ⇒ `507 memory_limit` | اختبار التكرار (كان xfail) يمرّ. جرّبتُ خمسة أنواع تلف: تدفق محتوى فاسد، Flate مكسور، خط/موارد مفقودة، `Resources` يشير إلى كائن غير موجود، `Annots` بمرجع مفقود، كل واحد بالعمليتين `pages` و`summary` ونطاق 1..3 ثم 2..2 ثم 3..3: في كل الحالات 3 صفحات (أو صفحة واحدة للنطاق)، وstdout يبدأ بـ`{` وstderr فارغ. قنبلة الضغط في صفحة 2: النطاق «1..1» ينجح و«2..2» يعطي `507 memory_limit` (إضافة: `test_a_bomb_on_page_two_does_not_hurt_a_range_that_is_only_page_one`). قنبلة صورة (600 م.ب. Flate) لا تُفكّ أصلاً: `OK`. طفل يموت قبل الكتابة (JSON فاسد، `{}`): الخروج 4، stdout فارغ ⇒ `500 parse_error` نظيف لا جواب ناقص؛ stdout مغلق من الأب: الخروج 4 بلا تعليق. حاوية `--read-only --cap-drop ALL --user 10001`: `/dev/null` متاح، واختبار جديد في `test_ele_parse_containers.py` (PDF بتدفق تالف عبر HTTP) ⇒ 200 وصفحتان. «false positive» لـ`is_allocation_failure`: النمط يطابق `...alloc... failed` في أي `RuntimeError` (مثلاً اسم ملف فيه الكلمتان)، وأثره 507 بدل 500 فقط، فلا أراه خطأً. | مغلق |
+| QA‑2 (minor) | `e70fcbb`: `_Handler.timeout = 30` | الاختبار يمرّ (الاتصال النصف‑مفتوح يُغلَق). ملاحظة: المهلة لكل عملية قراءة، فعميل يرسل بايتاً كل 20 ث يبقى (slow‑drip)؛ الشبكة داخلية والأثر ضئيل، لا خطأ جديد. | مغلق |
+| QA‑3 (minor) | `865d3c1`: `_is_uuid` في محوّل SQL للكهرباء | حالة التكرار الأصلية (`"nope"`, `""`, `"not-a-uuid"`) تعيد `None` دون لمس القاعدة في المستودعات الأربعة (`get`, `lock_live`, `get_by_space`, `list_by_space`)، وكل مسارات الكهرباء تمرّ على `get` محروس قبل أي استعلام آخر (مراجعة الشيفرة). **لكن الحراسة ناقصة**: انظر QA‑5. `file_id` في الجسم و`space_id` في `POST /projects` يذهبان إلى `files`/`spaces` (قرار المنسّق: متابعة منصّة) | أُغلق للحالة المبلَّغة، وفُتح QA‑5 للباقي |
+| QA‑4 (minor) | `f550e4a`: نصّا 409 يذكران `resume` و`PUT profile` | اختبار التثبيت الموجود يمرّ والنصان يحتويان `resume` و`PUT /electrical/documents/{id}/profile` | مغلق |
+
+### 7.2 أخطاء جديدة
+
+| # | الوصف | الشدة | إعادة الإنتاج | المالك | الحالة |
+|---|---|---|---|---|---|
+| **QA‑5** | `_is_uuid` يعتمد على `uuid.UUID()` وهو أكثر تسامحاً من مفسّر asyncpg: يقبل شرطة سفلية وإشارة `+` ومسافة بادئة ونهاية سطر وأرقاماً عربية‑هندية (`"\u0660"*32+"----"` طولها 36)، فيصل المعرّف إلى القاعدة ويرفضه asyncpg ⇒ `DBAPIError` ⇒ 500 كما في QA‑3. جرّبتُ على PostgreSQL مؤقت (127.0.0.1:44627، أُزيلت): underscore/plus/lead‑space/trail‑nl/arabic كلها `guard=True` ثم `DBAPIError`. النمط نفسه في `decode_id_cursor` (منصّة، يشترك فيه files وconversations والكهرباء): مؤشّر (cursor) = base64 لإحدى هذه الصيغ ⇒ 500 على `GET .../documents?cursor=` و`GET /projects?cursor=`. وكذلك مؤشّر الصفحات `decode_seq_cursor` يقبل `99999999999` فيتجاوز `int32` لعمود `page_no` ⇒ `DataError` (تحقّقتُ من سلوك asyncpg، لم أشغّل المسار كاملاً). الأثر: 500 يحرّك تنبيه معدل الأخطاء بيد مستدعٍ مصادَق، دون تسريب بيانات. | minor | `pytest tests/unit/test_electrical_qa_pr_c.py -k "driver_would_refuse or id_cursor_the_driver"` (xfail strict، عشرة حالات). المقترح: `_is_uuid` = `re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value)` وإعادة استعمالها في `decode_id_cursor`، ورفض `abs(seq) > 2**31-1` في مؤشّر الصفحات. `sql_repository.py:_is_uuid` (~276‑289)، `framework/pagination.py:77-92` | backend‑developer (الجزء المشترك قرار منصّة) | مفتوح |
+| QA‑6 | `POST /electrical/projects` بجسم `space_id` ليس UUID يصل إلى `spaces.get_active` ومنه إلى مستودع `spaces` (`spaces.c.id == space_id`) ⇒ 500؛ ومثله `file_id` في تسجيل الوثيقة. ليس من الفرع (من مراجعة الشيفرة `modules/spaces/adapters/sql_repository.py:91-99`؛ لم يُشغَّل)، ويقع تحت قرار «متابعة منصّة» نفسه. | minor | `POST /api/v1/electrical/projects {"space_id":"nope","name":"x"}` بمصادَق مدير. | backend‑developer (منصّة) | مفتوح، متابعة |
+
+### 7.3 ما أضفته
+
+- `tests/unit/test_electrical_qa_pr_c.py`: تحذيرات MuPDF الأخرى (8 حالات)، قنبلة صفحة 2 مقابل نطاق صفحة 1، طفل يموت قبل الكتابة، وxfail strict لـQA‑5 (10 حالات).
+- `tests/unit/test_ele_parse_containers.py`: PDF بتدفق تالف داخل الحاوية `--read-only`.
+
+### 7.4 البوابات (الرأس `f550e4a` مع اختباراتي)
+
+```
+ruff format --check .   981 files already formatted
+ruff check .            All checks passed!
+mypy src                Success: no issues found in 547 source files
+lint-imports            Contracts: 9 kept, 0 broken.
+pytest -rs (1)          8103 passed, 713 skipped, 10 xfailed, 7 warnings in 262.97s   (exit 0)
+pytest -rs (2)          8103 passed, 714 skipped, 10 xfailed, 7 warnings in 259.25s   (exit 0)
+test-rules.sh           31 rules found / test-rules: OK
+```
+
+المتخطّاة: 713 في التشغيل الأول و714 في الثاني (أضفتُ بينهما اختبار الحاوية الاختياري)، وكلها حيّ/opt‑in كما في الجولة السابقة. حاوية `ele-parse` على صورة مؤقتة `aizzak/ele-parse:qa2` (أُزيلت): «17 passed». لم يُلمس المكدّس الحيّ ولا الوسم `:dev`؛ PostgreSQL المؤقت للفحص أُزيل.
+
+### 7.5 الحكم بعد الإعادة 1
+
+**PASS** — لا خطأ blocking أو major مفتوح، والبوابات الست خضراء، وQA‑1 (major) أُغلق بدليل على أنواع تلف متعددة وعلى الحاوية المقيّدة. يبقى مفتوحاً minor: QA‑5 (حراسة المعرّف ناقصة، تُصلَح بتعبير نمطي صارم من سطر واحد) وQA‑6 (متابعة منصّة معروفة)، لا يمنعان الدمج بتقديري لكن الأفضل إغلاق QA‑5 قبله لأن إصلاح QA‑3 ادّعى معالجة «كل معرّف ليس UUID».
+
 </div>

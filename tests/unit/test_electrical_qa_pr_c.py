@@ -31,10 +31,12 @@ from typing import Any
 
 import pymupdf
 import pytest
+from asyncpg.pgproto import pgproto
 from services.ele_parse import app, child, contract, sandbox
 
-from app.framework.errors import ConflictError, NotFoundError
+from app.framework.errors import AppError, ConflictError, NotFoundError
 from app.framework.observability.metrics import ele_documents_excluded_total
+from app.framework.pagination import decode_id_cursor, encode_id_cursor
 from app.modules.electrical.drawings.adapters import sql_repository
 from app.modules.electrical.drawings.domain.document import ExclusionReason, ProfileState
 from app.modules.electrical.drawings.domain.errors import JobStateError
@@ -692,3 +694,113 @@ async def test_a_lookup_by_an_id_that_is_no_uuid_is_none_without_touching_the_da
         assert await repo.get_by_space(ctx, "nope") is None
         page = await repo.list_by_space(ctx, "nope", limit=5, cursor=None)
         assert list(page.data) == [] and page.next_cursor is None
+
+
+# --------------------------------------- QA-5: forms Python's UUID() takes and the driver refuses
+_LENIENT_NOT_UUIDS = [
+    "0190f1d2-0000-7000-8000-0000000_0000",  # an underscore: int(hex, 16) allows it
+    "+190f1d2-0000-7000-8000-000000000000",  # a sign
+    " 0190f1d2-0000-7000-8000-00000000000",  # a leading space
+    "0190f1d2-0000-7000-8000-00000000000\n",  # a trailing newline
+    "\u0660" * 32 + "----",  # Arabic-Indic digits
+]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="QA-5: _is_uuid trusts uuid.UUID(), which is more lenient than the database driver; "
+    "such an id still reaches asyncpg and ends as a 500",
+)
+@pytest.mark.parametrize("value", _LENIENT_NOT_UUIDS)
+def test_the_sql_adapter_refuses_what_the_driver_would_refuse(value: str) -> None:
+    with pytest.raises(ValueError):
+        pgproto.UUID(value)  # the driver's own parser: these are errors there
+    assert sql_repository._is_uuid(value) is False
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="QA-5: decode_id_cursor has the same lenient check (platform, shared by files, "
+    "conversations and electrical)",
+)
+@pytest.mark.parametrize("value", _LENIENT_NOT_UUIDS)
+def test_an_id_cursor_the_driver_would_refuse_is_rejected_as_a_cursor(value: str) -> None:
+    with pytest.raises(AppError):
+        decode_id_cursor(encode_id_cursor(value))
+
+
+def test_a_non_utf8_or_oversized_stdout_consumer_cannot_break_the_answer_channel(
+    tmp_path: Path,
+) -> None:
+    """The child that dies before writing leaves the parent an empty stdout and exit 4: a
+    500 parse_error, never a half answer."""
+    done = subprocess.run(
+        sandbox.child_argv(sandbox.Limits(512, 30)),
+        input=b"not json",
+        capture_output=True,
+        env={"PYTHONPATH": str(sandbox.ROOT), "PATH": "/usr/bin:/bin"},
+        cwd=sandbox.ROOT,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == child.EXIT_FAILED and done.stdout == b""
+    with pytest.raises(contract.ContractError) as raised:
+        sandbox._answer(done.returncode, done.stdout)
+    assert (raised.value.status, raised.value.code) == (500, "parse_error")
+
+
+@pytest.mark.parametrize("op", ["pages", "summary"])
+@pytest.mark.parametrize("damage", ["flate", "missing_font", "bad_resources", "bad_annots"])
+def test_other_native_warnings_never_cost_a_page(tmp_path: Path, op: str, damage: str) -> None:
+    doc = pymupdf.open()
+    for i in range(3):
+        doc.new_page().insert_text((40, 60), f"-K{i}")
+    if damage == "flate":
+        x = doc[0].get_contents()[0]
+        doc.update_stream(x, b"\x78\x9c garbage", compress=False)
+        doc.xref_set_key(x, "Filter", "/FlateDecode")
+    elif damage == "missing_font":
+        x = doc[2].get_contents()[0]
+        doc.update_stream(x, b"BT /NOPE 12 Tf (hi) Tj ET /Im9 Do /Gs9 gs Q Q", compress=False)
+    elif damage == "bad_resources":
+        doc.xref_set_key(doc[1].xref, "Resources", "99999 0 R")
+    else:
+        doc.xref_set_key(doc[1].xref, "Annots", "[99999 0 R 3 0 R]")
+    path = tmp_path / "d.pdf"
+    doc.save(str(path))
+    doc.close()
+    result = sandbox.run_child(
+        {"op": op, "path": str(path), "first": 1, "last": 3, "token_sample": 10},
+        timeout_s=30,
+        limits=sandbox.Limits(512, 30),
+    )
+    assert len(result["pages"]) == 3 if op == "pages" else result["page_count"] == 3
+
+
+def test_a_bomb_on_page_two_does_not_hurt_a_range_that_is_only_page_one(tmp_path: Path) -> None:
+    doc = pymupdf.open()
+    for _ in range(2):
+        doc.new_page().insert_text((40, 60), "x")
+    x = doc[1].get_contents()[0]
+    doc.update_stream(
+        x,
+        zlib.compress(b"BT /helv 12 Tf (" + b"a" * (300 * 1024 * 1024) + b") Tj ET", 9),
+        compress=False,
+    )
+    doc.xref_set_key(x, "Filter", "/FlateDecode")
+    path = tmp_path / "b.pdf"
+    doc.save(str(path))
+    doc.close()
+    ok = sandbox.run_child(
+        {"op": "pages", "path": str(path), "first": 1, "last": 1, "token_sample": 5},
+        timeout_s=60,
+        limits=sandbox.Limits(256, 60),
+    )
+    assert [p["page_no"] for p in ok["pages"]] == [1]
+    with pytest.raises(contract.ContractError) as raised:
+        sandbox.run_child(
+            {"op": "pages", "path": str(path), "first": 2, "last": 2, "token_sample": 5},
+            timeout_s=60,
+            limits=sandbox.Limits(256, 60),
+        )
+    assert (raised.value.status, raised.value.code) == (507, "memory_limit")

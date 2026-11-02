@@ -236,6 +236,31 @@ def test_a_staged_pdf_is_summarised_and_the_answer_is_deterministic(box: _Box, s
     assert pages[0] == 200 and len(json.loads(pages[1])["pages"]) == 2
 
 
+def test_a_page_that_makes_mupdf_warn_is_still_inspected_in_the_read_only_container(
+    box: _Box, stage: Path
+) -> None:
+    """QA-1 in the real sandbox: fd 1 is pointed at /dev/null under ``--read-only`` with every
+    capability dropped, and a damaged content stream no longer costs the page."""
+    name = _make_pdf(stage)
+    pymupdf = pytest.importorskip("pymupdf")
+    path = stage / name
+    damaged = f"{name.partition('/')[0]}/{uuid.uuid4()}.pdf"
+    pdf = pymupdf.open(path)
+    pdf.update_stream(
+        pdf[0].get_contents()[0], b"BT /helv 12 Tf (hi) Tj ET\n)))) <<<< ] 1 2 foo", compress=False
+    )
+    pdf.save(stage / damaged)
+    pdf.close()
+    (stage / damaged).chmod(0o644)
+    status, body = _call(
+        box.name,
+        "http://127.0.0.1:8090/v1/documents/pages",
+        {"file": damaged, "first_page": 1, "last_page": 2},
+    )
+    assert status == 200, body
+    assert len(json.loads(body)["pages"]) == 2
+
+
 @pytest.mark.parametrize(
     "bad",
     [
