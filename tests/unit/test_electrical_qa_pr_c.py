@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import subprocess
+import sys
 import threading
+import zlib
 from collections.abc import Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -28,10 +31,11 @@ from typing import Any
 
 import pymupdf
 import pytest
-from services.ele_parse import app, sandbox
+from services.ele_parse import app, child, contract, sandbox
 
 from app.framework.errors import ConflictError, NotFoundError
 from app.framework.observability.metrics import ele_documents_excluded_total
+from app.modules.electrical.drawings.adapters import sql_repository
 from app.modules.electrical.drawings.domain.document import ExclusionReason, ProfileState
 from app.modules.electrical.drawings.domain.errors import JobStateError
 from app.modules.electrical.drawings.domain.job import IngestionJob, JobStatus
@@ -238,6 +242,10 @@ async def test_cancelling_a_proposal_leaves_two_ways_out_and_resume_is_one_of_th
     with pytest.raises(ConflictError) as reprocess:
         await stack.document_service.reprocess(stack.ctx, doc_id, pages=None)
     assert reprocess.value.code == "electrical.profile_unconfirmed"
+    # QA-4: both answers name the exits that work, in the same words
+    for answer in (str(confirm.value), str(reprocess.value)):
+        assert "ingestion-jobs/{id}/resume" in answer, answer
+        assert "documents/{id}/profile" in answer, answer
 
     view = await stack.job_service.resume(stack.ctx, job_id)  # the way out
     assert view.job.status is JobStatus.QUEUED
@@ -435,11 +443,6 @@ def _damaged_content_pdf(path: Path) -> Path:
     return path
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-1: MuPDF writes its syntax warnings on the child's stdout, so the JSON answer is "
-    "not JSON and the page fails with parse_error (services/ele_parse/child.py:76)",
-)
 def test_a_page_with_a_damaged_content_stream_is_still_inspected(tmp_path: Path) -> None:
     path = _damaged_content_pdf(tmp_path / "damaged.pdf")
     result = sandbox.run_child(
@@ -448,6 +451,77 @@ def test_a_page_with_a_damaged_content_stream_is_still_inspected(tmp_path: Path)
         limits=sandbox.Limits(512, 30),
     )
     assert [page["page_no"] for page in result["pages"]] == [1]
+
+
+def _bomb_pdf(path: Path) -> Path:
+    """A one-page PDF whose content stream is one 300 MiB string literal, Flate-compressed to
+    ~0.3 MiB: MuPDF has to hold the whole literal, which a 256 MiB limit refuses."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "x")  # gives the page a content stream to replace
+    xref = page.get_contents()[0]
+    doc.update_stream(
+        xref,
+        zlib.compress(b"BT /helv 12 Tf (" + b"a" * (300 * 1024 * 1024) + b") Tj ET", 9),
+        compress=False,
+    )
+    doc.xref_set_key(xref, "Filter", "/FlateDecode")
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_a_decompression_bomb_ends_in_memory_limit_not_parse_error(tmp_path: Path) -> None:
+    path = _bomb_pdf(tmp_path / "bomb.pdf")
+    with pytest.raises(contract.ContractError) as raised:
+        sandbox.run_child(
+            {"op": "pages", "path": str(path), "first": 1, "last": 1, "token_sample": 50},
+            timeout_s=60,
+            limits=sandbox.Limits(256, 60),
+        )
+    assert (raised.value.status, raised.value.code) == (507, "memory_limit")
+
+
+def test_allocation_failures_are_told_apart_from_other_errors() -> None:
+    assert child.is_allocation_failure(RuntimeError("code=2: realloc (268435456 bytes) failed"))
+    assert child.is_allocation_failure(RuntimeError("code=2: calloc (4104 x 1 bytes) failed"))
+    assert not child.is_allocation_failure(RuntimeError("code=7: syntax error"))
+    assert not child.is_allocation_failure(ValueError("realloc failed"))
+
+
+def test_native_noise_on_fd_1_never_reaches_the_answer_channel(tmp_path: Path) -> None:
+    program = (
+        "import os, sys, json;"
+        "from services.ele_parse import child;"
+        "fd = child._claim_answer_channel();"
+        "os.write(1, b'MuPDF error: noise');"
+        "child._write_answer(fd, {'ok': True, 'result': {}})"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        env={"PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+        check=True,
+    )
+    assert json.loads(done.stdout) == {"ok": True, "result": {}}
+
+
+def test_a_client_that_connects_and_goes_quiet_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert app._Handler.timeout == app.SOCKET_TIMEOUT_S == 30.0
+    monkeypatch.setattr(app._Handler, "timeout", 0.3)
+    srv = app.make_server(app.Config(stage_root=tmp_path, port=0), host="127.0.0.1")
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5) as sock:
+            sock.sendall(b"POST /v1/documents/summary HTTP/1.1\r\nContent-Length: 50\r\n\r\n")
+            assert sock.recv(1024) == b""  # the server closed the half-open request
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
 
 
 def test_a_summary_of_the_same_damaged_file_is_fine_which_is_why_the_defect_hides(
@@ -581,3 +655,40 @@ def test_an_excluded_document_cannot_be_reprocessed_confirmed_or_resumed(env: En
         assert response.status_code == 409 and _problem(response)["code"].startswith(
             "electrical."
         ), response.text
+
+
+# ------------------------------------------------------------------- QA-3: ids that are no UUID
+@pytest.mark.parametrize(
+    "value",
+    ["nope", "", "not-a-uuid", "1" * 36, "0190f1d2-0000-7000-8000-00000000000g", "{x}" * 12],
+)
+def test_the_sql_adapter_recognises_a_value_that_is_not_a_uuid(value: str) -> None:
+    assert sql_repository._is_uuid(value) is False
+
+
+def test_the_sql_adapter_accepts_a_canonical_uuid() -> None:
+    assert sql_repository._is_uuid("0190f1d2-0000-7000-8000-000000000000") is True
+
+
+@pytest.mark.parametrize("repo_name", ["documents", "jobs", "projects", "characterizations"])
+async def test_a_lookup_by_an_id_that_is_no_uuid_is_none_without_touching_the_database(
+    repo_name: str,
+) -> None:
+    def boom(_ctx: Any) -> Any:
+        raise AssertionError("the database must not be asked")
+
+    repos: dict[str, Any] = {
+        "documents": sql_repository.SqlDocumentRepository(boom),
+        "jobs": sql_repository.SqlJobRepository(boom),
+        "projects": sql_repository.SqlProjectRepository(boom),
+        "characterizations": sql_repository.SqlCharacterizationRepository(boom),
+    }
+    repo = repos[repo_name]
+    ctx = make_ctx()
+    assert await repo.get(ctx, "nope") is None
+    if repo_name == "documents":
+        assert await repo.lock_live(ctx, "nope") is None
+    if repo_name == "projects":
+        assert await repo.get_by_space(ctx, "nope") is None
+        page = await repo.list_by_space(ctx, "nope", limit=5, cursor=None)
+        assert list(page.data) == [] and page.next_cursor is None

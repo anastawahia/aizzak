@@ -240,12 +240,6 @@ async def test_a_cancel_and_a_lease_claim_racing_never_lose_the_cancellation(
     assert outcomes  # at least one shape was seen; both are correct
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-3: a path id that is not a UUID reaches a uuid column; asyncpg refuses it and the "
-    "adapter turns that into AppError(common.internal) = HTTP 500 instead of a 404 "
-    "(sql_repository.py _translate, :303-308; the files module behaves the same)",
-)
 async def test_an_id_that_is_not_a_uuid_is_simply_not_found(
     tenant_session: TenantSessionFactory,
 ) -> None:

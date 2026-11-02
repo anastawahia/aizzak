@@ -362,7 +362,10 @@ class DocumentService:
             job = await self._jobs.open_for_document(ctx, document.id)
             if job is None or job.status is not JobStatus.AWAITING_CONFIRMATION:
                 raise ConflictError(
-                    "no job of this document awaits confirmation", code="electrical.job_conflict"
+                    "no job of this document awaits confirmation: if it was cancelled, resume "
+                    "the job (POST /electrical/ingestion-jobs/{id}/resume) or replace the "
+                    "profile (PUT /electrical/documents/{id}/profile)",
+                    code="electrical.job_conflict",
                 )
             profile = edited
             if profile is None:
@@ -413,7 +416,11 @@ class DocumentService:
         subset = self._pages_in_range(document, pages)
         if document.profile_state is ProfileState.PROPOSED:
             raise ConflictError(
-                "the document profile awaits confirmation", code="electrical.profile_unconfirmed"
+                "the document profile is not confirmed yet: confirm the proposal "
+                "(POST /electrical/documents/{id}/profile-confirmation) or replace it "
+                "(PUT /electrical/documents/{id}/profile); if its job was cancelled, resume "
+                "the job (POST /electrical/ingestion-jobs/{id}/resume)",
+                code="electrical.profile_unconfirmed",
             )
         now = self._clock()
         job = new_job(ctx, document_id=document.id, kind=JobKind.REPROCESS, pages=subset, now=now)
