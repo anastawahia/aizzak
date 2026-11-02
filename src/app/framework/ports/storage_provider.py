@@ -1,9 +1,10 @@
-"""StorageProvider driven port (02-port-contracts §1.6 · MinIO), and its sibling
-``MultipartStorage`` for resumable uploads (PLT-01)."""
+"""StorageProvider driven port (02-port-contracts §1.6 · MinIO), and its siblings
+``MultipartStorage`` for resumable uploads (PLT-01) and ``StreamingStorage`` for bounded-memory
+reads (PLT-03)."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -59,5 +60,15 @@ class MultipartStorage(Protocol):
         ...
 
 
-class ObjectStorage(StorageProvider, MultipartStorage, Protocol):
-    """Both faces -- what `MinioStorage` and `StorageHandle` are."""
+class StreamingStorage(Protocol):
+    """A bounded-memory read of one object (02 §1.6, PLT-03): consecutive chunks of at most
+    `chunk_bytes`, in order. NotFoundError when there is no object; anything else
+    common.internal. The caller consumes the iterator fully or closes it (`aclose`): the
+    adapter releases the connection then. Bound into `drawings` ONLY; agents keep
+    `StorageProvider`."""
+
+    def read_chunks(self, key: str, *, chunk_bytes: int) -> AsyncIterator[bytes]: ...
+
+
+class ObjectStorage(StorageProvider, MultipartStorage, StreamingStorage, Protocol):
+    """Every face -- what `MinioStorage` and `StorageHandle` are."""

@@ -12,7 +12,8 @@ a parameter would corrupt uploads while every gate stays green.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from typing import Any
 
 import pytest
 
@@ -68,6 +69,14 @@ class _RecordingProvider:
     async def object_size(self, key: str) -> int | None:
         self.calls.append(("object_size", key))
         return 42
+
+    def read_chunks(self, key: str, *, chunk_bytes: int) -> AsyncIterator[bytes]:
+        self.calls.append(("read_chunks", key, chunk_bytes))
+        return self._chunks(key)
+
+    async def _chunks(self, key: str) -> AsyncIterator[bytes]:
+        yield b"one-" + key.encode()
+        yield b"two"
 
 
 # --------------------------------------------------------------------------- #
@@ -144,3 +153,42 @@ async def test_a_bound_handle_delegates_the_multipart_methods_verbatim() -> None
     assert url == "https://part/a/k1?uploadId=upload-for-a/k1&partNumber=2"
     assert list(held) == [StoredPart(1, 5, "etag-1")]
     assert size == 42
+
+
+# --------------------------------------------------------------------------- #
+# read_chunks (PLT-03, B19): passed straight through, unbound is common.internal #
+# --------------------------------------------------------------------------- #
+def test_an_unbound_handle_refuses_read_chunks_at_the_call() -> None:
+    handle = StorageHandle()
+
+    with pytest.raises(AppError) as excinfo:
+        handle.read_chunks("a/k", chunk_bytes=65_536)
+
+    assert excinfo.value.code == "common.internal"
+    assert excinfo.value.status == 500
+
+
+async def test_a_bound_handle_streams_through_the_adapter_verbatim() -> None:
+    handle = StorageHandle()
+    provider = _RecordingProvider()
+    handle.bind(provider)
+
+    stream = handle.read_chunks("a/k9", chunk_bytes=1024)
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == [b"one-a/k9", b"two"]
+    assert provider.calls == [("read_chunks", "a/k9", 1024)]
+
+
+async def test_the_handle_hands_back_the_adapters_own_iterator_so_aclose_reaches_it() -> None:
+    handle = StorageHandle()
+    provider = _RecordingProvider()
+    handle.bind(provider)
+
+    stream: Any = handle.read_chunks("a/k", chunk_bytes=1024)
+
+    assert hasattr(stream, "aclose")
+    assert await anext(stream) == b"one-a/k"
+    await stream.aclose()
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)

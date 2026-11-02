@@ -28,7 +28,7 @@ was never called.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 from app.framework.errors import AppError
 from app.framework.ports.storage_provider import ObjectStorage, StoredPart
@@ -93,3 +93,8 @@ class StorageHandle:
 
     async def object_size(self, key: str) -> int | None:
         return await self._require().object_size(key)
+
+    def read_chunks(self, key: str, *, chunk_bytes: int) -> AsyncIterator[bytes]:
+        """Passed straight through, so the caller's ``aclose`` reaches the adapter. An
+        unbound handle raises ``common.internal`` at the call, before any iteration."""
+        return self._require().read_chunks(key, chunk_bytes=chunk_bytes)

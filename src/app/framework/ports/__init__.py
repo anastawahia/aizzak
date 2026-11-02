@@ -24,6 +24,7 @@ from app.framework.ports.storage_provider import (
     ObjectStorage,
     StorageProvider,
     StoredPart,
+    StreamingStorage,
 )
 from app.framework.ports.vector_store import (
     HybridVectorStore,
@@ -65,6 +66,7 @@ __all__ = [
     "StorageProvider",
     "StoredPart",
     "StreamEvent",
+    "StreamingStorage",
     "VectorHit",
     "VectorPoint",
     "VectorStore",
