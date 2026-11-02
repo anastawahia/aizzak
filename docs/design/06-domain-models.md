@@ -299,6 +299,41 @@ EV  LimitExceeded(workspace_id, scope, metric, occurred_at)                    #
 
 ---
 
+## 11) `electrical` — قسم `drawings` (WireTwin، `electrical-drawings` INC‑1)
+
+> الوحدة الثالثة عشرة (`electrical`) أربعة أقسام مستقلة (`drawings` · `circuits` · `search` · `diagnostics`) فوق نواةٍ بلا I/O (`shared`)؛ وفي INC‑1 يحمل **`drawings` وحده** نطاقاً. المصدر الملزِم [`lld-inc-1.md` §3.3.6](../delivery/electrical-drawings/docs/lld-inc-1.md). النطاق مكتبة قياسية و`shared` وحدها (العقد `domain-purity`). كل مرجع خارج القسم بالمعرّف (`space_id` · `file_id`) لا بمفتاح أجنبي.
+
+```
+Aggregate Project            { id, workspace_id, space_id, name 1..200, description ≤ 2000, version }   # مشروع واحد لكل فضاء (SRS D‑29)
+Aggregate Document           { id, project_id, space_id, file_id, status: active|excluded|purging, exclusion_reason?,
+                               content_sha256?, page_count?, pdf_creator?, pdf_producer?, profile_state, pipeline_version?, version }
+Aggregate IngestionJob       { id, document_id, kind: ingest|reprocess, pages?: (int,...), status, stage?, failure_code?, failure_detail?,
+                               attempt, lease_until?, seq, cancel_requested_at?, version }
+Entity    ProfileVersion     { id, project_id, document_id?, version, source: default|user|detected|confirmed, profile: DrawingProfile,
+                               fingerprint, confidence?, mixed_standards, detection? }                  # إلحاقي: لا يُعدَّل إصدار
+VO        DrawingProfile     { symbol_standard, vendor_library?, identifier_convention, extra_aspects, cross_reference_format, junction_convention,
+                               plc_vendor, plc_families, languages, wire_number_patterns (أسماء لا تعابير)، voltage_labels,
+                               auto_accept_confidence 0.5..1.0 (0.90), classification: ClassificationThresholds }
+Entity    Characterization   { document_id, producer_family?, text_kinds, page_languages, conventions, symbol_standard_guess + basis,
+                               plc_families, ocr_needed_pages, pipeline/shared/rules versions, mixed_standards }   # سجلّ FR‑EVAL‑14 لكل وثيقة
+Events    DocumentRegistered · JobRequested · DocumentProfileProposed · JobProgressed · JobCompleted · DocumentPurged   # 04 §4
+```
+
+**آلة حالة المهمة:** `queued → running` (العامل يأخذ العقد `lease_until`) ← `succeeded` | `failed` | `cancelled` | `awaiting_confirmation`؛ `awaiting_confirmation → queued` (التأكيد) | `cancelled`؛ `failed | cancelled → queued` (الاستئناف)؛ و`running` بعقدٍ منتهٍ → `queued` (الاستئناف `attempt + 1`)، أو يستولي عليه العامل نفسه حين يصله الحدث (`attempt + 1`، العقد يردّ التشغيل الثاني المتزامن). **الحالات المفتوحة ثلاث** (`queued` · `running` · `awaiting_confirmation`).
+**آلة حالة الوثيقة:** `active → excluded` (`duplicate_content` أو `file_unreadable`)، وأي حالة `→ purging` (طرف نهائي؛ التكرار يعيد `False` ولا يكتب).
+
+**الثوابت (INV‑E):**
+- **INV‑E1 — مشروع واحد لكل فضاء، ووثيقة واحدة لكل ملف:** الفهرسان الفريدان `ux_drawings_projects_space` و`ux_drawings_documents_file` (`WHERE status <> 'purging'`) يحسمان السباق (`23505` ← `project_exists` · `document_exists`). والوثيقة **المستبعَدة تحتفظ بملفها** حتى تُكنس: تسجيل ملفها ثانيةً `409 electrical.document_exists` أيضاً.
+- **INV‑E2 — المحتوى مرة واحدة في المشروع:** `ux_drawings_documents_content` (`WHERE status = 'active'`)؛ المكرَّر يُستبعد ويُفشل مهمته `electrical.duplicate_document`.
+- **INV‑E3 — مهمة مفتوحة واحدة لكل وثيقة:** `ux_drawings_jobs_open`؛ الثانية `electrical.job_conflict`.
+- **INV‑E4 — ملف الإعداد إلحاقي ومرقَّم لكل مالك** (المشروع، أو وثيقة): الإصدار `max + 1` تحت الفهرس الفريد، والسباق الخاسر يعيد المحاولة مرة. والبصمة SHA‑256 للجسد القانوني ثابتة لترتيب مفاتيح مختلف. والجسد **لا يحمل تعبيراً نمطياً أبداً** (يختار الأنماط بأسمائها، `INC1‑D‑19`).
+- **INV‑E5 — لا قبول آلي بلا بيّنة:** ثقة الاقتراح أدنى ثقة حقوله؛ وثقة معيار الرموز المستنتج ≤ `SYMBOL_CONFIDENCE_FACTOR` = 0.8 بالبناء (الرموز تُستنتج ولا تُرى قبل INC‑4)، والعتبة الافتراضية 0.90. **فلا وثيقة بالإعداد الافتراضي تبلغ `succeeded` بلا شخص: كل وثيقة `awaiting_confirmation`** (`INC1‑R‑16`، قرار المالك 2026-11-02: يبقى حتى P1 الذي يضبط المعامل أو العتبة على العيّنات). والمسار الآلي مختبَر بعتبة أدنى.
+- **INV‑E6 — صفحة واحدة لا تُفشل المهمة** (NFR‑REL‑01): تُسجَّل `failed` بسببها وتكمل البقية؛ وحالتها في `listDocumentPages` لا في رمز HTTP.
+- **INV‑E7 — الوثيقة المطهَّرة تخرج من كل قراءة فوراً:** `purging` يُعلَّم في معاملة الحذف مع إلغاء مهمتها وإلحاق `document.purged`، ثم يكنس العامل صفوفها بترتيب المفاتيح؛ والتكرار مثاليّ في المرحلتين.
+- **INV‑E8 — النص غير الموثوق يُهرَّب عند الخروج:** Creator وProducer من ملف PDF (وأسماء الملفات في تقارير الأدوات) تصل إلى السجلات والتقارير والاستجابات بعد استبدال محارف التحكم والتنسيق والخفية والاتجاهية بصيغة `\xNN`/`\uNNNN` (`escape_untrusted_text`، R1‑4). ولا يصل نصّ معرّف خام (`original`) إلى سجل أو تقرير في هذا القسم: يُعدّ ولا يُحتفظ به.
+
+---
+
 ## علاقات عابرة للوحدات (بالإشارة فقط — لا FK)
 
 | من | إلى | الآلية |

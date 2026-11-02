@@ -33,7 +33,10 @@
 | `stream.knowledge` | knowledge | `cg.notify.<host>.<pid>` | جسر الإشعارات → WebSocket |
 | `stream.media` | media (API) | `cg.media` | media_worker (يولّد) |
 | `stream.memory` | memory | `cg.memory` | memory_worker (يفهرس المتجهات) |
+| `stream.electrical` | electrical (API + العامل) | `cg.electrical.document` + `cg.notify.<host>.<pid>` | `worker-electrical` (دور `document`: STG‑01 والكنس) + جسر الإشعارات |
 | `*` (فشل) | العامل | — | `stream.<m>.dlq` بعد N محاولات |
+
+- **`stream.electrical` (WireTwin، INC‑1، `PLT‑11`):** مجرى جديد بمجموعة دائمة واحدة `cg.electrical.document` يقرؤها دور `document` في `worker-electrical` (وحده في INC‑1) بثلاثة معالجات: `electrical.document.registered.v1` و`electrical.job.requested.v1` ← `InspectDocument.run` (STG‑01)، و`electrical.document.purged.v1` ← `SweepPurgedDocument` (المرحلة 2 من التطهير). وطابوره الميت `stream.electrical.dlq` يغطيه `AizzakDlqNotEmpty` القائم. ويقرؤه الجسر بمجموعاته `cg.notify.<host>.<pid>` لثلاثة أنواع وحدها (`profile_proposed` · `job.progressed` · `job.completed`، §4). المطالبة بالمعلّق `max(consumer_stale_idle_s, 2 × ELE_JOB_LEASE_S)` فلا يطالب شقيقٌ برسالة فحص حيّ؛ وإن طالب ردّه عقد المهمة (`lease_until`). التسلسل `STATIC_CONSUMER_TOPOLOGY` صار فيه **أربعة** أزواج، و`_NOTIFY_STREAMS` **ثلاثة** مجارٍ (`stream.knowledge` · `stream.media` · `stream.electrical`) — تحرسها `test_stream_topology.py` و`test_composition_root.py`. وتنبيه `AizzakStreamQueueWaitHigh` (120 ثانية) **يستثني** `stream.electrical` لأن الطابور فيه مقصود (DEC‑15 (د))، ويحلّ محلّه `AizzakElectricalQueueWaitHigh` (INC‑1، S9).
 
 - ⚠️ **`stream.files` بلا مجموعةِ استهلاكٍ عمداً منذ صارت الفهرسة يدويّة.** كان `cg.knowledge` يقرؤه ويسجّل مستنداً لكلّ رفعٍ مكتمل — أي أنّ إتمام الرفع كان أمراً بالفهرسة ولم يُسأل أحد. صار التسجيل طلباً صريحاً (`POST /knowledge/documents`) يكتب المستند وحدثه في معاملةٍ واحدة، فلم يبقَ لهذا المجرى قارئ. ولا يُنشأ له صفٌّ في `STATIC_CONSUMER_TOPOLOGY`: مجموعةٌ لا يقرؤها أحد يتضخّم تأخّرها (lag) برفعةٍ كلَّ مرّة إلى الأبد، وتأخّرُ مجموعةٍ مهجورة هو بالضبط الإشارة التي يجب أن يثق بها المشغّل. الحدث **ما يزال يُنشر** (‏`XADD` لا يحتاج مجموعة) لأنّه واقعةٌ صادقة عن مساحة العمل.
 - اسم الإدخال في Redis: `XADD stream.<module> * ce <json>`.
@@ -115,8 +118,16 @@ sequenceDiagram
 | `media.job.generated.v1` | media(worker) → notify | job_id | `{job_id, result_file_id}` |
 | `media.job.failed.v1` | media(worker) → notify | job_id | `{job_id, reason}` |
 | `memory.item.stored.v1` | memory → memory(worker) | memory_id | `{memory_id, agent_key, content_ref}` |
+| `electrical.document.registered.v1` | electrical(API) → electrical(worker) | document_id | `{document_id, project_id, file_id, job_id}` |
+| `electrical.job.requested.v1` | electrical(API) → electrical(worker) | job_id | `{job_id, document_id, reason}` — `reason` ∈ `confirmation` · `reprocess` · `resume` |
+| `electrical.document.profile_proposed.v1` | electrical(worker) → notify | document_id | `{document_id, job_id, confidence, needs_confirmation, mixed_standards}` |
+| `electrical.job.progressed.v1` | electrical(worker) → notify | job_id | `{job_id, document_id, seq, stage, done, total, failed, needs_review}` — `seq` متزايد، مقيّد المعدّل |
+| `electrical.job.completed.v1` | electrical(API + worker) → notify | job_id | `{job_id, document_id, status, failure_code?}` — `failure_code` يغيب (لا `null`) بلا فشل |
+| `electrical.document.purged.v1` | electrical → electrical(worker) | document_id | `{document_id, project_id, file_id}` |
 
 > **`tags?` في `files.file.uploaded.v1` (`PLT‑26`):** كائنٌ اختياريٌّ يحمل **الوسوم الحاضرة وحدها** من `system` و`equipment` و`department` (كلٌّ نصٌّ 1..128)، **ويغيب المفتاح كله حين لا وسم** — لا `null` ولا `{}` (`minProperties: 1`)، والوسمُ الغائب غائبٌ من الكائن لا `null` فيه. يُقرأ من صفّ الملف عند الإتمام كما يُقرأ `space_id`. حقلٌ اختياريٌّ مضاف فيبقى النوع `v1`. ولا حدث لإعادة الوسم في INC‑1 (INC1‑D‑5)؛ من يكتب الوسوم في فهرسٍ يضيفه مع مستهلكه.
+
+> **أحداث WireTwin الستة (INC‑1):** كلها على `stream.electrical`، ومعاملتها واحدة: **كل حدث يُكتب في المعاملة التي غيّرت الحالة** (التسجيل: الوثيقة + المهمة + `registered`؛ التقدّم: الصفحات + `seq` + `progressed`؛ النهاية: التوصيف + الوثيقة + الملف المقترح + `profile_proposed` + `completed` + مطالبة `processed_events`؛ الإلغاء والتطهير كذلك)، فلا حدث بلا حالة ولا حالة بلا حدث. يستهلك العاملُ ثلاثة (`registered` · `job.requested` · `purged`) ويستهلك الجسرُ ثلاثة (`profile_proposed` · `progressed` · `completed`). ولا `null` في أي حمولة: الاختياري يغيب. وحدث `purged` يُلحَق في معاملة الحذف نفسها (المرحلة 1 من التطهير) ويكنس العامل صفوف الوثيقة بعده؛ وضياعه تعالجه `app.ops.replay` القائم (INC1‑R‑14).
 
 > **مَن يُنتج `knowledge.document.registered.v1`؟** الـAPI، منذ صارت الفهرسة يدويّة: `POST /knowledge/documents` (فهرسةٌ أولى، `IndexFileService`) و`POST /knowledge/reindex` (إعادة بناء، `ReindexService`) — كلاهما يسجّل مستنداً `pending` ويُلحِق هذا الحدث في المعاملة نفسها. لم يعد لعامل المعرفة منتِجٌ لهذا الحدث ولا مشترَكٌ في `stream.files`؛ يستهلكه فقط.
 
@@ -162,4 +173,10 @@ sequenceDiagram
 - [`events/schemas/media.job.generated.v1.json`](events/schemas/media.job.generated.v1.json)
 - [`events/schemas/media.job.failed.v1.json`](events/schemas/media.job.failed.v1.json)
 - [`events/schemas/memory.item.stored.v1.json`](events/schemas/memory.item.stored.v1.json)
+- [`events/schemas/electrical.document.registered.v1.json`](events/schemas/electrical.document.registered.v1.json)
+- [`events/schemas/electrical.job.requested.v1.json`](events/schemas/electrical.job.requested.v1.json)
+- [`events/schemas/electrical.document.profile_proposed.v1.json`](events/schemas/electrical.document.profile_proposed.v1.json)
+- [`events/schemas/electrical.job.progressed.v1.json`](events/schemas/electrical.job.progressed.v1.json)
+- [`events/schemas/electrical.job.completed.v1.json`](events/schemas/electrical.job.completed.v1.json)
+- [`events/schemas/electrical.document.purged.v1.json`](events/schemas/electrical.document.purged.v1.json)
 > جميع الأحداث الثمانية العالمية في الجدول (§4) لها الآن ملف JSON Schema مستقل بنفس النمط؛ الـ`dataschema` في المظروف يشير إليه.
