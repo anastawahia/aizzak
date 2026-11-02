@@ -74,6 +74,9 @@ _SUFFIX = ".heartbeat"
 # LOOP is turning -- it beats while a job runs, too, since a nightly backup
 # may legitimately take an hour. Whether the JOBS succeed is a different
 # question with a different answer: the task ledger (`scheduled_tasks.py`).
+#
+# `electrical` (WireTwin INC-1) is the seventh: `worker-electrical` beats once per consumer pass
+# and between page ranges, so a document of thousands of pages does not read as a hang.
 HEARTBEAT_PROCESS_NAMES = (
     "memory",
     "knowledge",
@@ -81,6 +84,7 @@ HEARTBEAT_PROCESS_NAMES = (
     "outbox-relay",
     "wal-shipper",
     "ops-scheduler",
+    "electrical",
 )
 
 

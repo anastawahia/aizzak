@@ -26,11 +26,13 @@ import pytest
 from app.agents.orchestrator import AgentOrchestrator
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.di.composition_root import (
+    _NOTIFY_STREAMS,
     CompositionRoot,
     _pid_is_alive,
     _RoutedEmbeddingResolver,
     _sweep_stale_notify_groups,
 )
+from app.framework.di.electrical_purge import ElectricalFilePurge, ElectricalSpacePurge
 from app.framework.di.lifecycle import dispose_all
 from app.framework.errors import ValidationError
 from app.framework.ports.embedding_provider import EmbeddingProvider
@@ -38,6 +40,11 @@ from app.framework.ports.llm_provider import LLMProvider
 from app.framework.providers.resolver import ResolvedProvider
 from app.infrastructure.config import load_settings
 from app.infrastructure.storage.minio_storage import MinioStorage
+from app.modules.electrical.drawings.application.purge import (
+    PurgeFileDocuments,
+    PurgeSpaceDrawings,
+)
+from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from app.modules.files.application.use_cases import FileUseCases, RetagFile
 from app.modules.knowledge.application.use_cases import KnowledgeRetrievalService
 from app.modules.media.application.use_cases import GetJobStatus, MediaUseCases
@@ -590,11 +597,36 @@ def test_the_notification_bridge_is_wired_over_the_shared_hub(
     assert {sub.stream for sub in booted.notify_subscriptions} == {
         "stream.knowledge",
         "stream.media",
+        "stream.electrical",  # WireTwin: profile_proposed, job.progressed, job.completed
     }
     expected_group = f"cg.notify.{socket.gethostname()}.{os.getpid()}"
     assert all(sub.group == expected_group for sub in booted.notify_subscriptions)
     # The hub's cap is the injected 07 §4 limit, not a bare default.
     assert booted.hub.user_connection_count("nobody") == 0
+
+
+def test_the_notify_bridge_hears_exactly_the_three_electrical_types() -> None:
+    assert _NOTIFY_STREAMS["stream.electrical"] == (
+        "electrical.document.profile_proposed.v1",
+        "electrical.job.progressed.v1",
+        "electrical.job.completed.v1",
+    )
+
+
+def test_both_cascades_hold_the_drawings_participant_and_the_bundle_is_wired(
+    booted: CompositionRoot,
+) -> None:
+    """Identity of the bindings (the INC-0 review's note 1): the framework participants wrap
+    drawings' OWN phase-1 purge use cases, and the space cascade lists ``electrical`` before
+    ``files``."""
+    file_side = booted.file_deletion._electrical
+    space_side = booted.space_deletion._electrical
+    assert isinstance(file_side, ElectricalFilePurge)
+    assert isinstance(file_side._drawings, PurgeFileDocuments)
+    assert isinstance(space_side, ElectricalSpacePurge)
+    assert isinstance(space_side._drawings, PurgeSpaceDrawings)
+    assert isinstance(booted.electrical, DrawingsUseCases)
+    assert booted.electrical.documents is not None and booted.electrical.jobs is not None
 
 
 # --------------------------------------------------------------------------- #

@@ -75,6 +75,14 @@ _NOT_A_STREAMS_WORKER = frozenset({"outbox_relay"})
 # process is consuming and not merely alive -- and by nothing else.
 _MEASURED = frozenset({"memory", "knowledge", "media"})
 
+# WireTwin's worker (electrical-drawings INC-1): dispatched by `_RUNNERS` but NOT a default-stack
+# worker. Its Compose service is behind the `electrical` profile (LLD 3.3.10, S9) and the whole
+# feature ships OFF (`ELECTRICAL_ENABLED=false`), so it is not in the measured-boot ledger above
+# and must never ride in `docker compose up -d` -- the "profiled branch" this file's docstring
+# says an unmeasured worker takes. The tests below compare the DEFAULT stack with the ledger and
+# check that this name, when the service exists, is profiled.
+_PROFILED = frozenset({"electrical"})
+
 # The SECOND ledger, and the one wave 6 of
 # `summarization-scenarios-implementation-plan.md` added: how many replicas
 # each worker runs, listing only those that run more than one. The owner's
@@ -121,7 +129,7 @@ def _dispatcher_streams_workers() -> frozenset[str]:
     assert names, (
         "src/app/workers/main.py: could not find any `_RUNNERS` entry -- did its shape change?"
     )
-    return names - _NOT_A_STREAMS_WORKER
+    return names - _NOT_A_STREAMS_WORKER - _PROFILED
 
 
 def _env_example_worker() -> str:
@@ -182,7 +190,7 @@ def test_compose_declares_one_service_per_streams_worker() -> None:
     reachable: one service per name, no name unserved, none invented."""
     services = _compose_worker_services()
     declared = {name: body["environment"]["WORKER"] for name, body in services.items()}
-    assert set(declared.values()) == _dispatcher_streams_workers(), (
+    assert set(declared.values()) - _PROFILED == _dispatcher_streams_workers(), (
         f"docker-compose.yml declares workers {sorted(declared.values())} but "
         f"app/workers/main.py::_RUNNERS dispatches "
         f"{sorted(_dispatcher_streams_workers())} -- a name in the dispatcher "
@@ -199,6 +207,17 @@ def test_compose_declares_one_service_per_streams_worker() -> None:
             f"service {service_name!r} selects worker {worker!r} -- the name "
             "an operator types must say which worker they get."
         )
+
+
+def test_a_profiled_worker_is_dispatched_and_never_in_the_default_stack() -> None:
+    """`electrical` is in `_RUNNERS` (``python -m app.workers.main electrical`` works) and, when
+    its Compose service exists, that service carries a profile: the default stack boots only
+    measured workers."""
+    dispatched = frozenset(_RUNNERS_ENTRY.findall(_DISPATCHER.read_text(encoding="utf-8")))
+    assert dispatched >= _PROFILED
+    for name, body in _compose_worker_services().items():
+        if body["environment"]["WORKER"] in _PROFILED:
+            assert body.get("profiles"), f"{name} is a profiled worker but carries no profile"
 
 
 def test_compose_worker_values_are_literal() -> None:

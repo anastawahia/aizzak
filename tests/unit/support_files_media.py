@@ -55,6 +55,7 @@ from app.modules.media.application.use_cases import (
     RequestMedia,
 )
 from app.modules.media.domain.entities import MediaJob
+from tests.unit.support_electrical import RecordingElectricalPurge
 
 
 def _name_key(name: str) -> str:
@@ -520,7 +521,9 @@ def build_files_media(
     file_rename = RenameFile(files_repo)
     file_retag = RetagFile(files_repo)
     namesakes = FindNamesakes(files_repo)
-    file_deletion = DeleteFileService(file_delete, knowledge=knowledge_purge)
+    file_deletion = DeleteFileService(
+        file_delete, knowledge=knowledge_purge, electrical=RecordingElectricalPurge()
+    )
     return FilesMediaStack(
         files=FileUseCases(
             transfers=transfers,

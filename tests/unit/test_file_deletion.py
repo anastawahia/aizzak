@@ -84,19 +84,26 @@ def _seed_file(
 class _CountingPurge:
     """A ``FileContentPurge`` that says WHEN it ran and with which id."""
 
-    def __init__(self, trace: list[str], count: int) -> None:
+    def __init__(self, trace: list[str], count: int, name: str = "knowledge") -> None:
         self._trace = trace
         self._count = count
+        self._name = name
         self.calls: list[str] = []
+        self.electrical: _CountingPurge | None = None  # the cascade's second participant
 
     async def execute(self, ctx: ExecutionContext, file_id: str) -> int:
-        self._trace.append("knowledge")
+        self._trace.append(self._name)
         self.calls.append(file_id)
         return self._count
 
 
+def _electrical(purge: _CountingPurge) -> _CountingPurge:
+    assert purge.electrical is not None
+    return purge.electrical
+
+
 def _build_service(
-    *, documents: int = 2
+    *, documents: int = 2, drawings: int = 3
 ) -> tuple[DeleteFileService, InMemoryFileRepository, _CountingPurge, list[str]]:
     trace: list[str] = []
     files = InMemoryFileRepository()
@@ -110,6 +117,8 @@ def _build_service(
             return await self._inner.delete(ctx, file_id)
 
     purge = _CountingPurge(trace, documents)
+    electrical = _CountingPurge(trace, drawings, "electrical")
+    purge.electrical = electrical
     # The REAL atomic service, not the bare use-case: `FileMarker` binds to the
     # face that pairs the soft delete with its outbox append, and a cascade
     # wired to the use-case underneath would drop the events on the floor the
@@ -119,6 +128,7 @@ def _build_service(
             SoftDeleteFileService(SoftDeleteFile(files), RecordingOutbox(), NoopUnitOfWork())
         ),
         knowledge=purge,
+        electrical=electrical,
     )
     return service, files, purge, trace
 
@@ -126,7 +136,7 @@ def _build_service(
 # --------------------------------------------------------------------------- #
 # (1) the two steps, in the module docstring's order                          #
 # --------------------------------------------------------------------------- #
-async def test_the_cascade_marks_the_file_first_then_empties_its_corpus() -> None:
+async def test_the_cascade_marks_the_file_first_then_empties_its_corpus_then_its_drawings() -> None:
     """The order is the design. Purging first would risk the failure that
     cannot be undone — a live, still-listed file whose index was destroyed
     under it — while marking first risks only the state being repaired here,
@@ -137,10 +147,13 @@ async def test_the_cascade_marks_the_file_first_then_empties_its_corpus() -> Non
 
     result = await service.delete(ctx, file.id)
 
-    assert trace == ["mark", "knowledge"]
+    assert trace == ["mark", "knowledge", "electrical"]  # PLT-04: electrical AFTER knowledge
     assert files.rows[file.id].deleted_at is not None
     assert purge.calls == [file.id]
-    assert result == FileDeletion(file_id=file.id, documents=2)
+    assert _electrical(purge).calls == [file.id]
+    # each count under its OWN name: both purges share one protocol, so a keyword swapped at
+    # the wiring site is invisible to mypy and this is what catches it
+    assert result == FileDeletion(file_id=file.id, documents=2, drawings=3)
 
 
 async def test_a_file_this_workspace_does_not_own_is_a_404_and_nothing_is_purged() -> None:
@@ -153,7 +166,7 @@ async def test_a_file_this_workspace_does_not_own_is_a_404_and_nothing_is_purged
         await service.delete(_ctx(), new_uuid7())
 
     assert trace == ["mark"]
-    assert purge.calls == []
+    assert purge.calls == [] and _electrical(purge).calls == []
 
 
 async def test_deleting_an_already_deleted_file_runs_the_whole_cascade_again() -> None:
@@ -169,21 +182,29 @@ async def test_deleting_an_already_deleted_file_runs_the_whole_cascade_again() -
 
     await service.delete(ctx, file.id)
 
-    assert trace == ["mark", "knowledge"]
+    assert trace == ["mark", "knowledge", "electrical"]
     assert purge.calls == [file.id, file.id]
+    assert _electrical(purge).calls == [file.id, file.id]
 
 
 async def test_a_never_indexed_file_still_deletes_cleanly() -> None:
     """The common case on this path: most files are never indexed at all, and
     a purge that found nothing is a 204 rather than a 404."""
-    service, files, _purge, _trace = _build_service(documents=0)
+    service, files, _purge, _trace = _build_service(documents=0, drawings=0)
     ctx = _ctx()
     file = _seed_file(files, ctx)
 
     result = await service.delete(ctx, file.id)
 
-    assert result == FileDeletion(file_id=file.id, documents=0)
+    assert result == FileDeletion(file_id=file.id, documents=0, drawings=0)
     assert files.rows[file.id].deleted_at is not None
+
+
+async def test_electrical_is_a_required_keyword_so_a_forgotten_participant_fails_at_build() -> None:
+    """The participant has no default: a wiring site that forgets it must fail where it is
+    built, not silently leave drawings behind."""
+    with pytest.raises(TypeError):
+        DeleteFileService(object(), knowledge=object())
 
 
 # --------------------------------------------------------------------------- #

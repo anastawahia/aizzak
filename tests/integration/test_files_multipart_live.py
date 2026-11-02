@@ -64,7 +64,8 @@ _SIZE = 2 * 5 * _MIB + 7  # parts of 5 MiB, 5 MiB and 7 bytes
 
 
 class _NoIndex:
-    """The knowledge half of the delete cascade: this suite has no index."""
+    """The knowledge half of the delete cascade: this suite has no index (and no drawings: the
+    same shape serves the ``electrical`` participant)."""
 
     async def execute(self, ctx: ExecutionContext, file_id: str) -> int:
         return 0
@@ -137,7 +138,7 @@ class _Stack:
             RenameFile(self.files),
             retag=RetagFile(self.files),
             namesakes=FindNamesakes(self.files),
-            erase=DeleteFileService(mark, knowledge=_NoIndex()),
+            erase=DeleteFileService(mark, knowledge=_NoIndex(), electrical=_NoIndex()),
         )
 
     async def upload_part(

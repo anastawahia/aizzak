@@ -119,11 +119,13 @@ class FileDeletion:
     purged a file's four documents or none of them. ``documents`` is
     ``knowledge``'s own top-level row count — normally ``0`` (a file that was
     never indexed) or ``1``, and more than one when a re-index left a
-    replacement beside its source.
+    replacement beside its source. ``drawings`` is ``electrical``'s: the
+    drawing documents it marked ``purging`` (WireTwin, PLT-04).
     """
 
     file_id: Uuid
     documents: int
+    drawings: int
 
 
 class DeleteFileService:
@@ -140,11 +142,21 @@ class DeleteFileService:
       bytes do not, and an undelete would re-index rather than un-hide.
     * ``conversations`` is untouched: a pin names a file, and a pin to a
       deleted file already resolves to nothing.
+
+    A third step joined with WireTwin: ``electrical`` takes the file's drawing
+    documents out of every read (``electrical_purge.py``). It is a REQUIRED
+    keyword, like ``knowledge``, so a wiring site that forgets it fails where
+    it is built instead of silently leaving drawings behind. Order: mark ->
+    knowledge -> electrical; each step is idempotent, so ``DELETE /files/{id}``
+    again completes an interrupted cascade.
     """
 
-    def __init__(self, mark: FileMarker, *, knowledge: FileContentPurge) -> None:
+    def __init__(
+        self, mark: FileMarker, *, knowledge: FileContentPurge, electrical: FileContentPurge
+    ) -> None:
         self._mark = mark
         self._knowledge = knowledge
+        self._electrical = electrical
 
     async def delete(self, ctx: ExecutionContext, file_id: Uuid) -> FileDeletion:
         # Step 1. Raises `NotFoundError` for an id this workspace does not
@@ -152,4 +164,7 @@ class DeleteFileService:
         # cannot tell an unindexed file from an absent one.
         await self._mark.delete(ctx, file_id)
         documents = await self._knowledge.execute(ctx, file_id)
-        return FileDeletion(file_id=file_id, documents=documents)
+        # Step 3 (WireTwin, PLT-04): the drawing documents of the file leave every read, in
+        # their own transaction. Only PHASE 1: the sweep of their rows is a worker's.
+        drawings = await self._electrical.execute(ctx, file_id)
+        return FileDeletion(file_id=file_id, documents=documents, drawings=drawings)

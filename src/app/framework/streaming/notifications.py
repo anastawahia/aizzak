@@ -60,16 +60,21 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.streaming.hub import ConnectionHub
 from app.framework.types import Json
 
-# The four global event types 04 §4 marks for ``cg.notify`` — the worker
-# results a live client cares about. Exposed so the composition root maps
-# each onto this one handler across the two streams that carry them
-# (``stream.knowledge`` / ``stream.media``), and so a test can assert the
-# bridge covers exactly the catalog's set, no more, no less.
+# The global event types 04 §4 marks for ``cg.notify`` — the worker results a
+# live client cares about: four from ``knowledge`` and ``media``, and WireTwin's
+# three (electrical-drawings INC-1, LLD 3.3.11). Exposed so the composition root
+# maps each onto this one handler across the streams that carry them
+# (``stream.knowledge`` / ``stream.media`` / ``stream.electrical``), and so a
+# test can assert the bridge covers exactly the catalog's set, no more, no less.
+# They travel as the existing ``notification`` message: no new message type.
 NOTIFY_EVENT_TYPES: tuple[str, ...] = (
     "knowledge.document.indexed.v1",
     "knowledge.document.indexing_failed.v1",
     "media.job.generated.v1",
     "media.job.failed.v1",
+    "electrical.document.profile_proposed.v1",
+    "electrical.job.progressed.v1",
+    "electrical.job.completed.v1",
 )
 
 # (ctx, envelope) -> None, the engine's ``EventHandler`` shape expressed

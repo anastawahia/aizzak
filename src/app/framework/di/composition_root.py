@@ -188,6 +188,7 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.plugin_loader import PluginLoader, PluginLoadReport
 from app.framework.agent_runtime.registry import AgentRegistry, InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.electrical_purge import ElectricalFilePurge, ElectricalSpacePurge
 from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.lifecycle import Disposable
@@ -321,6 +322,26 @@ from app.modules.credentials.application.use_cases import (
     ResolveCredential,
     RevokeCredential,
 )
+from app.modules.electrical.drawings.adapters.rule_files import PackagedRuleSource
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlCharacterizationRepository,
+    SqlPageRepository,
+    SqlProfileRepository,
+    SqlProjectRepository,
+)
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlDocumentRepository as SqlDrawingDocumentRepository,
+)
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlJobRepository as SqlDrawingJobRepository,
+)
+from app.modules.electrical.drawings.application.characterization import CharacterizationService
+from app.modules.electrical.drawings.application.documents import DocumentService
+from app.modules.electrical.drawings.application.jobs import JobService
+from app.modules.electrical.drawings.application.projects import ProjectService
+from app.modules.electrical.drawings.application.purge import PurgeFileDocuments, PurgeSpaceDrawings
+from app.modules.electrical.drawings.application.replacement import ReplacementPreviewService
+from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
     CompleteUpload,
@@ -492,6 +513,13 @@ _NOTIFY_STREAMS: dict[str, tuple[str, ...]] = {
     "stream.media": (
         "media.job.generated.v1",
         "media.job.failed.v1",
+    ),
+    # WireTwin (LLD 3.3.11): the three types that tell a client what its ingestion is doing.
+    # The other three travel on the same stream for the worker's group (topology.py).
+    "stream.electrical": (
+        "electrical.document.profile_proposed.v1",
+        "electrical.job.progressed.v1",
+        "electrical.job.completed.v1",
     ),
 }
 
@@ -1071,6 +1099,7 @@ def _build_file_services(
     storage: StorageHandle,
     outbox: EventOutbox,
     knowledge: PurgeFileKnowledge,
+    electrical: ElectricalFilePurge,
 ) -> tuple[FileUseCases, DeleteFileService, ReplaceNamesakesService[File]]:
     """The files bundle (6.1-هـ-2) and the TWO cross-module cascades that
     spend it — ``file_deletion.py``'s and ``file_replacement.py``'s.
@@ -1133,7 +1162,10 @@ def _build_file_services(
         multipart_registrar=MultipartRegistrar(register),
         retag=retag,
     )
-    cascade = DeleteFileService(mark, knowledge=knowledge)
+    # WireTwin (PLT-04): `electrical` is a REQUIRED keyword, so a wiring site that forgets the
+    # participant fails where it is built. The replacement and the delete route share it
+    # through `cascade`.
+    cascade = DeleteFileService(mark, knowledge=knowledge, electrical=electrical)
     return (
         bundle,
         cascade,
@@ -1152,6 +1184,7 @@ def _build_space_services(
     multipart: MultipartRegistrar,
     storage: StorageHandle,
     knowledge: PurgeSpaceKnowledge,
+    electrical: ElectricalSpacePurge,
     conversations: PurgeSpaceConversations,
 ) -> tuple[
     SpaceQuotaService[RegisteredUpload],
@@ -1202,10 +1235,70 @@ def _build_space_services(
     deletion = DeleteSpaceService(
         mark,
         knowledge=knowledge,
+        electrical=electrical,  # before `files` (HLD §8.8)
         files=PurgeSpaceFiles(files, storage),
         conversations=conversations,
     )
     return quota, multipart_quota, deletion
+
+
+def _build_electrical(
+    tenant_session: TenantSessionFactory,
+    settings: Settings,
+    *,
+    files: SqlFileRepository,
+    files_query: FilesQueryService,
+    spaces: SpacesQueryService,
+    outbox: EventOutbox,
+) -> tuple[DrawingsUseCases, ElectricalFilePurge, ElectricalSpacePurge]:
+    """WireTwin's ``drawings`` bundle and its two cascade participants (LLD 3.3.3, 3.3.8).
+
+    Built before the file and space cascades because both HOLD a participant. The bundle is
+    what the API will consume (``ApiServices.electrical``, S8); the participants are
+    ``framework/di/electrical_purge.py``'s, bound to drawings' own phase-1 purge use cases.
+
+    ``files_query`` and ``spaces`` are the SAME instances every other module binds (one answer
+    to "is this file readable?"); ``namesakes`` is a second ``FindNamesakes`` over the same
+    repository because the bundle's own is built later, inside ``_build_file_services``, which
+    needs the participant built here first. The use case is stateless, so two instances are one
+    rule. The rule files are read here once: a file that does not validate fails the boot.
+    """
+    rules = PackagedRuleSource()
+    projects = SqlProjectRepository(tenant_session)
+    profiles = SqlProfileRepository(tenant_session)
+    documents = SqlDrawingDocumentRepository(tenant_session)
+    jobs = SqlDrawingJobRepository(tenant_session)
+    pages = SqlPageRepository(tenant_session)
+    characterizations = SqlCharacterizationRepository(tenant_session)
+    namesakes = FindNamesakes(files)
+    job_service = JobService(jobs, documents, pages, outbox, tenant_session)
+    bundle = DrawingsUseCases(
+        projects=ProjectService(projects, profiles, spaces, rules, tenant_session),
+        documents=DocumentService(
+            projects,
+            documents,
+            jobs,
+            pages,
+            profiles,
+            files_query,
+            namesakes,
+            rules,
+            job_service,
+            outbox,
+            tenant_session,
+            queue_protection_limit=settings.electrical.queue_protection_limit,
+        ),
+        jobs=job_service,
+        replacement=ReplacementPreviewService(namesakes, files_query, documents),
+        characterization=CharacterizationService(projects, documents, characterizations),
+    )
+    return (
+        bundle,
+        ElectricalFilePurge(drawings=PurgeFileDocuments(documents, jobs, outbox, tenant_session)),
+        ElectricalSpacePurge(
+            drawings=PurgeSpaceDrawings(projects, documents, jobs, outbox, tenant_session)
+        ),
+    )
 
 
 def _build_conversations(
@@ -1795,6 +1888,10 @@ class CompositionRoot:
     # the same reason and over the same two modules: the replacement destroys
     # the older file's index, which `files` may not reach.
     file_replacement: ReplaceNamesakesService[File]
+    # WireTwin's drawings bundle (electrical-drawings INC-1). Built here because the file and
+    # space cascades hold its purge participants; `ApiServices.electrical` and the routes that
+    # consume it arrive with S8.
+    electrical: DrawingsUseCases
     media: MediaUseCases
     # 6.1-و-1 — the workspace/usage bundles the API layer consumes. Each
     # carries ONLY the client-reachable use-cases: `workspace` leaves out
@@ -2139,8 +2236,24 @@ class CompositionRoot:
 
         # 6.1-ج-2/ج-3 — the module's two faces, built together by the helper
         # so they share ONE repository instance (see `_build_conversations`).
-        conversations, conversation_threads, purge_space_conversations = _build_conversations(
-            tenant_session, provider_resolver, files_query, spaces_query
+        #
+        # WireTwin's drawings bundle and its two cascade participants ride on the same
+        # assignment (the `_build_embedding`/`_build_rerank` precedent: `from_env` is at its
+        # statement ceiling). They are built BEFORE the file and space cascades below, which
+        # hold a participant each.
+        (
+            (conversations, conversation_threads, purge_space_conversations),
+            (electrical, electrical_file_purge, electrical_space_purge),
+        ) = (
+            _build_conversations(tenant_session, provider_resolver, files_query, spaces_query),
+            _build_electrical(
+                tenant_session,
+                settings,
+                files=file_repository,
+                files_query=files_query,
+                spaces=spaces_query,
+                outbox=outbox,
+            ),
         )
 
         # 6.1-هـ-1 — the storage slot, empty here by necessity (module
@@ -2161,6 +2274,7 @@ class CompositionRoot:
             storage=storage,
             outbox=outbox,
             knowledge=purge_file_knowledge,
+            electrical=electrical_file_purge,
         )
 
         # `spaces-backend-plan.md` steps 5 and 11 -- the two cross-module
@@ -2176,6 +2290,7 @@ class CompositionRoot:
             multipart=files_use_cases.multipart_registrar,
             storage=storage,
             knowledge=purge_space_knowledge,
+            electrical=electrical_space_purge,
             conversations=purge_space_conversations,
         )
 
@@ -2290,6 +2405,7 @@ class CompositionRoot:
             # misses the other.
             file_deletion=file_deletion,
             file_replacement=file_replacement,
+            electrical=electrical,
             media=media,
             workspace=workspace,
             presence=RecordUserPresence(SqlUserPresenceStore(tenant_session)),

@@ -35,11 +35,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.electrical_purge import ElectricalFilePurge
 from app.framework.di.file_deletion import DeleteFileService
 from app.framework.errors import NotFoundError
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import Limits
+from app.infrastructure.persistence.outbox import SqlEventOutbox
 from app.infrastructure.persistence.rls import TenantSessionFactory
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlDocumentRepository as SqlDrawingDocumentRepository,
+)
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlJobRepository as SqlDrawingJobRepository,
+)
+from app.modules.electrical.drawings.application.purge import PurgeFileDocuments
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
     CompleteUpload,
@@ -155,6 +164,15 @@ def _service(tenant_session: TenantSessionFactory, vectors: _RecordingVectors) -
             _NoopUnitOfWork(),  # type: ignore[arg-type]
         ),
         knowledge=PurgeFileKnowledge(SqlDocumentRepository(tenant_session), vectors),
+        # WireTwin's participant, on the real repositories (PLT-04)
+        electrical=ElectricalFilePurge(
+            drawings=PurgeFileDocuments(
+                SqlDrawingDocumentRepository(tenant_session),
+                SqlDrawingJobRepository(tenant_session),
+                SqlEventOutbox(tenant_session),
+                tenant_session,
+            )
+        ),
     )
 
 

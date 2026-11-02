@@ -49,12 +49,14 @@ from app.framework.events.topology import (
 )
 from app.infrastructure.messaging.consumers.engine import Subscription
 from app.infrastructure.monitoring.metrics_source import DLQ_SOURCE_STREAMS
+from app.modules.electrical.drawings.application.event_mapping import STREAM as _ELECTRICAL_STREAM
 from app.modules.files.application.event_mapping import STREAM as _FILES_STREAM
 from app.modules.knowledge.application.event_mapping import STREAM as _KNOWLEDGE_STREAM
 from app.modules.knowledge.application.indexing import IndexDocument
 from app.modules.media.application.event_mapping import STREAM as _MEDIA_STREAM
 from app.modules.memory.application.event_mapping import STREAM as _MEMORY_STREAM
 from app.workers.bootstrap import build_knowledge_worker, build_media_worker, build_memory_worker
+from app.workers.electrical_bootstrap import build_electrical_worker
 
 
 class _Unused:
@@ -114,7 +116,23 @@ def _built_subscriptions() -> tuple[Subscription, ...]:
         batch_count=10,
         max_deliveries=5,
     )
-    return (*knowledge_subscriptions, *media_subscriptions, *memory_subscriptions)
+    # WireTwin's worker (LLD 3.3.15): role `document` is the whole of INC-1
+    _, electrical_subscriptions = build_electrical_worker(
+        redis_client=placeholder,  # type: ignore[arg-type]
+        roles=frozenset({"document"}),
+        inspect=placeholder,  # type: ignore[arg-type]
+        sweep=placeholder,  # type: ignore[arg-type]
+        consumer_name="topology-guard-electrical",
+        block_ms=5000,
+        batch_count=10,
+        max_deliveries=5,
+    )
+    return (
+        *knowledge_subscriptions,
+        *media_subscriptions,
+        *memory_subscriptions,
+        *electrical_subscriptions,
+    )
 
 
 def _built_pairs() -> frozenset[tuple[str, str]]:
@@ -122,7 +140,7 @@ def _built_pairs() -> frozenset[tuple[str, str]]:
     return frozenset((s.stream, s.group) for s in _built_subscriptions())
 
 
-def test_table_has_exactly_the_three_pairs_named_by_the_plan() -> None:
+def test_table_has_exactly_the_four_pairs_named_by_the_plan() -> None:
     """Four until manual indexing retired ``(stream.files, cg.knowledge)``:
     the knowledge worker no longer reads that stream, and a group provisioned
     for a reader that never comes back would lag by one per upload forever.
@@ -133,7 +151,7 @@ def test_table_has_exactly_the_three_pairs_named_by_the_plan() -> None:
     ``stream.knowledge`` would show up here as a fourth pair -- and would
     bring a second pending list and a second dead-letter queue with it, to
     answer one event type."""
-    assert len(STATIC_CONSUMER_TOPOLOGY) == 3
+    assert len(STATIC_CONSUMER_TOPOLOGY) == 4  # the fourth is WireTwin's cg.electrical.document
     assert all(isinstance(binding, ConsumerBinding) for binding in STATIC_CONSUMER_TOPOLOGY)
     for binding in STATIC_CONSUMER_TOPOLOGY:
         assert binding.stream, "a blank stream would still pass every set-equality check below"
@@ -153,17 +171,19 @@ def test_every_table_stream_matches_its_owning_modules_stream_constant() -> None
         _KNOWLEDGE_STREAM,
         _MEDIA_STREAM,
         _MEMORY_STREAM,
+        _ELECTRICAL_STREAM,
     }
     assert _FILES_STREAM not in table_streams
 
 
-def test_table_matches_exactly_what_the_three_workers_build_no_more_no_less() -> None:
+def test_table_matches_exactly_what_the_four_workers_build_no_more_no_less() -> None:
     built = _built_pairs()
-    assert len(built) == 3, f"expected exactly 3 built (stream, group) pairs, got {sorted(built)}"
+    assert len(built) == 4, f"expected exactly 4 built (stream, group) pairs, got {sorted(built)}"
     table = frozenset((binding.stream, binding.group) for binding in STATIC_CONSUMER_TOPOLOGY)
     assert table == built, (
         f"STATIC_CONSUMER_TOPOLOGY {sorted(table)} does not match what "
-        "build_knowledge_worker/build_media_worker/build_memory_worker actually build "
+        "build_knowledge_worker/build_media_worker/build_memory_worker/build_electrical_worker "
+        "actually build "
         f"{sorted(built)} -- missing from the table: {sorted(built - table)}, "
         f"extra in the table: {sorted(table - built)}"
     )
@@ -220,7 +240,7 @@ def test_no_binding_group_is_a_per_process_notify_group() -> None:
         )
 
 
-def test_published_streams_are_exactly_the_four_modules_streams() -> None:
+def test_published_streams_are_exactly_the_five_modules_streams() -> None:
     """Capacity 5.5: the list the stream trimmer manages and the stream gauges
     report. Checked against the four modules' own `STREAM` constants, so a
     module that publishes to a stream this list does not name fails here --
@@ -229,8 +249,9 @@ def test_published_streams_are_exactly_the_four_modules_streams() -> None:
 
     Anchored on the count as well as on the set (the 3.69 lesson): an empty
     tuple equals nothing, but four blank-free names are what is claimed."""
-    assert len(PUBLISHED_STREAMS) == 4
+    assert len(PUBLISHED_STREAMS) == 5
     assert set(PUBLISHED_STREAMS) == {
+        _ELECTRICAL_STREAM,
         _FILES_STREAM,
         _KNOWLEDGE_STREAM,
         _MEDIA_STREAM,
@@ -244,6 +265,20 @@ def test_every_consumed_stream_is_a_published_one() -> None:
     the published list."""
     consumed = {binding.stream for binding in STATIC_CONSUMER_TOPOLOGY}
     assert consumed <= set(PUBLISHED_STREAMS)
+
+
+def test_the_electrical_binding_names_the_three_types_the_document_role_handles() -> None:
+    """INC1-AC-12: four bindings, five streams, and the new worker's handler map equals the
+    table's event types (the generic test above compares them for every group; this one pins
+    the literal set so a rename shows up here by name)."""
+    (binding,) = [b for b in STATIC_CONSUMER_TOPOLOGY if b.group == "cg.electrical.document"]
+    assert binding.stream == "stream.electrical" == _ELECTRICAL_STREAM
+    assert binding.event_types == {
+        "electrical.document.registered.v1",
+        "electrical.job.requested.v1",
+        "electrical.document.purged.v1",
+    }
+    assert "stream.electrical" in DLQ_SOURCE_STREAMS  # stream.electrical.dlq is watched
 
 
 def test_no_dead_letter_stream_is_ever_managed() -> None:

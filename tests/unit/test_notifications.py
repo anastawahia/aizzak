@@ -132,7 +132,7 @@ def test_the_bridge_covers_exactly_the_notify_catalog() -> None:
     assert wired == set(NOTIFY_EVENT_TYPES)
 
 
-def test_build_notification_consumer_wires_the_given_group_over_two_streams() -> None:
+def test_build_notification_consumer_wires_the_given_group_over_three_streams() -> None:
     """``group`` is a caller-supplied parameter (3.81, P0-2's fix: one group
     PER PROCESS, never a hardcoded shared literal) — every subscription wired
     by one call carries exactly the group that call was given."""
@@ -148,12 +148,17 @@ def test_build_notification_consumer_wires_the_given_group_over_two_streams() ->
     )
 
     by_stream = {sub.stream: sub for sub in subscriptions}
-    assert set(by_stream) == {"stream.knowledge", "stream.media"}
+    assert set(by_stream) == {"stream.knowledge", "stream.media", "stream.electrical"}
     for sub in subscriptions:
         assert sub.group == "cg.notify.host-a.4242"
     assert set(by_stream["stream.knowledge"].handlers) == {
         "knowledge.document.indexed.v1",
         "knowledge.document.indexing_failed.v1",
+    }
+    assert set(by_stream["stream.electrical"].handlers) == {
+        "electrical.document.profile_proposed.v1",
+        "electrical.job.progressed.v1",
+        "electrical.job.completed.v1",
     }
     assert set(by_stream["stream.media"].handlers) == {
         "media.job.generated.v1",

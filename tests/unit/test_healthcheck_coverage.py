@@ -86,6 +86,12 @@ _HEARTBEAT_SERVICES = {
 }
 
 
+# WireTwin (INC-1): the process name `worker-electrical` stamps its beat under. Its Compose
+# service (behind the `electrical` profile) arrives with S9; until then the name is declared
+# here so it cannot be forgotten, and S9 moves it into `_HEARTBEAT_SERVICES`.
+_AWAITING_COMPOSE = {"electrical"}
+
+
 @pytest.fixture(scope="module")
 def compose() -> dict[str, Any]:
     """PyYAML resolves the ``<<`` merge keys the file uses for
@@ -140,6 +146,15 @@ def test_heartbeat_checks_name_a_process_the_workers_actually_beat_as(
         assert test[3] == "app.ops.healthcheck", f"{service}: not the heartbeat checker"
         assert test[4] == process, f"{service}: checks {test[4]!r}, should check {process!r}"
         assert process in HEARTBEAT_PROCESS_NAMES
+
+
+def test_every_heartbeat_name_has_a_service_that_checks_it_or_is_awaiting_its_service() -> None:
+    """A heartbeat name nothing checks is a process whose death nobody sees. `electrical` is
+    the one name whose service is not in Compose yet (S9); the set below is the debt, and it
+    must be paid to the last name (the assertion fails the moment S9 adds the service)."""
+    checked = set(_HEARTBEAT_SERVICES.values())
+    assert set(HEARTBEAT_PROCESS_NAMES) - checked == _AWAITING_COMPOSE
+    assert "electrical" in HEARTBEAT_PROCESS_NAMES
 
 
 def test_worker_services_check_the_same_process_they_run(compose: dict[str, Any]) -> None:
