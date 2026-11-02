@@ -82,6 +82,7 @@ LLM_IN_FLIGHT_METRIC = "aizzak_llm_in_flight"
 LLM_GUARD_METRIC = "aizzak_llm_guard_total"
 LLM_CIRCUIT_OPEN_METRIC = "aizzak_llm_circuit_open"
 LLM_FALLBACK_METRIC = "aizzak_llm_fallback_total"
+ELE_DOCUMENTS_EXCLUDED_METRIC = "aizzak_ele_documents_excluded_total"
 
 # The route label for a request that matched no route -- one fixed string, so
 # 404 traffic costs exactly one time series no matter how many distinct URLs
@@ -301,6 +302,16 @@ embedding_cache_total = Counter(
     "repeat. Only the API process builds this cache, so only `app` targets "
     "report it.",
     ["result"],
+)
+
+ele_documents_excluded_total = Counter(
+    ELE_DOCUMENTS_EXCLUDED_METRIC,
+    "WireTwin documents taken out of a project's live set at REGISTRATION, by reason "
+    "(`file_unreadable`: the active document's file is no longer readable). Counted in the "
+    "`app` processes that run registration, because the workers expose no /metrics "
+    "(electrical-drawings INC1-D-22). `AizzakElectricalDocumentsExcluded` alerts on any "
+    "increase in an hour: an exclusion is a person's drawing silently leaving a project.",
+    ["reason"],
 )
 
 
