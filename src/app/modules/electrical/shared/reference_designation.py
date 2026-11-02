@@ -83,7 +83,11 @@ def parse_reference_designation(
     )
     if convention is None:
         return None
-    product = next((a for a in reversed(chain.aspects) if a.prefix == "-"), None)
+    # the product aspect: the last ``-`` aspect whose code is a product code (starts with a
+    # letter); a trailing number (``-K5-13``) is a sub-element and never a device key
+    product = next(
+        (a for a in reversed(chain.aspects) if a.prefix == "-" and a.code[:1].isalpha()), None
+    )
     device_class: str | None = None
     keys: list[str] = []
     if product is not None:

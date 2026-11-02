@@ -154,7 +154,7 @@ def parse_bridge(
     right_unified: str
     if right is not None and (right.point is not None or right.issues):
         issues.extend(right.issues)
-        if right.strip != left.strip:
+        if strip_leading_zeros(right.strip) != strip_leading_zeros(left.strip):
             issues.append("bridge.different_strips")  # the second strip would be lost
         right_point = right.point
         right_unified = right.unified(separator)

@@ -9,10 +9,10 @@ default-ignorable code points), and upper-cases.
 ``search_keys`` are the forms a search may match on, most specific first: the canonical
 form, without the leading ``-`` / ``%``, without leading zeros (``F0001`` -> ``F1``) and,
 for a plain tag, without the separator between its letters and digits (T-21: ``F0001`` =
-``F 0001`` = ``F-0001``). Each kind's parser adds only the keys that are safe for it (the
-unified ``STRIP:POINT`` of a terminal, ``KM1`` / ``1KM`` of a letter code, the PLC
-spellings). A separator is NEVER dropped from a key: ``X1:14`` and ``X11:4`` must not
-meet, nor ``12.3`` and wire ``123``.
+``F 0001`` = ``F-0001``; a designation such as ``-K-5`` is not a plain tag). Each kind's
+parser adds only the keys that are safe for it (the unified ``STRIP:POINT`` of a terminal,
+``KM1`` / ``1KM`` of a letter code, the PLC spellings). A separator is NEVER dropped from a key:
+``X1:14`` and ``X11:4`` must not meet, nor ``12.3`` and wire ``123``.
 
 **Identity is (``kind``, ``canonical``).** ``search_keys`` are for retrieval only (S-6):
 two different identifiers may legitimately share a key (``-K5`` and ``K5``), so a key is
@@ -32,7 +32,8 @@ _DASHES = dict.fromkeys(
     (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFE58, 0xFE63, 0xFF0D), "-"
 )
 _LEADING_ZEROS = re.compile(r"(?<!\d)0+(?=\d)", re.ASCII)
-# a plain tag: letters, ONE separator, digits (``F-0001``); T-21 says it equals ``F0001``
+# a plain tag: letters, ONE separator, digits (``F-0001``); T-21 says it equals ``F0001``.
+# Matched on the canonical form, so ``-K-5`` (a designation) is never read as the tag ``K5``.
 _TAG = re.compile(r"(?P<letters>[A-Z]+)[-._](?P<digits>[0-9]+)", re.ASCII)
 
 # Bidirectional controls: LRM, RLM, ALM, LRE..RLO, LRI..PDI. Dropped from the canonical
@@ -49,6 +50,7 @@ _IGNORABLE = frozenset(
         *range(0x180B, 0x1810),  # Mongolian free variation selectors, vowel separator
         0x2800,  # Braille pattern blank
         0x3164, 0xFFA0,  # Hangul / half-width Hangul filler
+        *range(0x2060, 0x2070),  # word joiner .. nominal digit shapes (2065 is unassigned)
         *range(0xFE00, 0xFE10),  # variation selectors
         *range(0xFFF0, 0xFFF9),
         *range(0x1BCA0, 0x1BCA4),
@@ -62,10 +64,16 @@ ISSUE_BIDI = "text.bidi_control"
 NON_INVALIDATING_ISSUES = frozenset({ISSUE_BIDI})  # flagged, but the identifier stays valid
 
 
+def _is_space(ch: str) -> bool:
+    """Whitespace: tab, LF, CR, VT, FF and the space separators (Zs, Zl, Zp). Other
+    controls that ``str.isspace`` accepts (U+001C..U+001F, U+0085) are NOT whitespace."""
+    return ch in "\t\n\r\v\f" or unicodedata.category(ch) in ("Zs", "Zl", "Zp")
+
+
 def _is_hidden(ch: str) -> bool:
     """Invisible and not whitespace: control (Cc), format (Cf) or default-ignorable."""
     code = ord(ch)
-    if ch.isspace():
+    if _is_space(ch):
         return False
     return unicodedata.category(ch) in ("Cc", "Cf") or code in _IGNORABLE
 
@@ -81,7 +89,7 @@ def _fold(text: str) -> str:
 
 
 def canonical_form(text: str) -> str:
-    kept = "".join(ch for ch in _fold(text) if not ch.isspace() and not _is_hidden(ch))
+    kept = "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
     return kept.upper()
 
 
@@ -115,7 +123,7 @@ def normalize(text: str) -> NormalizedForms:
     canonical = canonical_form(text)
     stripped = canonical.lstrip("-%")
     no_zeros = strip_leading_zeros(stripped)
-    tag = _TAG.fullmatch(stripped)
+    tag = _TAG.fullmatch(canonical)
     tag_key = f"{tag['letters']}{strip_leading_zeros(tag['digits'])}" if tag else ""
     return NormalizedForms(
         original=text,

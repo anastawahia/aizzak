@@ -44,12 +44,12 @@ from app.modules.electrical.shared.normalization import (
 )
 from app.modules.electrical.shared.plc_siemens import parse_plc_address
 from app.modules.electrical.shared.reference_designation import parse_reference_designation
-
-if TYPE_CHECKING:
-    from app.modules.electrical.shared.rules import IdentifierRules
 from app.modules.electrical.shared.terminals import parse_bridge, parse_terminal
 from app.modules.electrical.shared.voltages import parse_voltage
 from app.modules.electrical.shared.wire_numbers import parse_wire_number
+
+if TYPE_CHECKING:
+    from app.modules.electrical.shared.rules import IdentifierRules
 
 # Longer text is prose. The bound applies to the raw text AND to the canonical form (NFKC
 # can expand one character into many), so it bounds every regular expression's input.

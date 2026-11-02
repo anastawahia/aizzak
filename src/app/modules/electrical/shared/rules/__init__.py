@@ -25,7 +25,10 @@ from app.modules.electrical.shared.patterns import compiled
 _ASPECT_CHARS = frozenset("=+-&#")
 MAX_EXTRA_VOLTAGE_LABELS = 64  # LLD 3.3.6: DrawingProfile.voltage_labels <= 64
 MAX_VOLTAGE_LABEL_CHARS = 16  # ... each <= 16 characters
+MAX_RAW_VOLTAGE_LABEL_CHARS = 64  # checked before normalisation (NFKC can expand a character)
 _VOLTAGE_LABEL = re.compile(r"[A-Z0-9+\-]+", re.ASCII)
+# a negative / positive rail written as a designation: ``-48V``, ``+24V``, ``-12``
+_RAIL_CODE = re.compile(r"\d{1,4}V?", re.ASCII)
 
 
 class RuleError(ValueError):
@@ -166,11 +169,17 @@ class IdentifierRules:
     def _checked_voltage_labels(self, labels: tuple[str, ...]) -> tuple[str, ...]:
         """Normalise the profile's extra voltage labels and reject any that is empty, too
         long, outside ``[A-Z0-9+-]``, too many, or that the parser would read as another
-        kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``)."""
+        kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``). A rail
+        such as ``-48V`` is allowed: only a VALID single-aspect designation with prefix ``+``
+        or ``-`` and a code of 1..4 digits and an optional ``V`` (so a bare ``-12`` too)."""
         if len(labels) > MAX_EXTRA_VOLTAGE_LABELS:
             raise RuleError(f"at most {MAX_EXTRA_VOLTAGE_LABELS} extra voltage labels")
         checked: list[str] = []
         for raw in labels:
+            if len(raw) > MAX_RAW_VOLTAGE_LABEL_CHARS:
+                raise RuleError(
+                    f"voltage label must be at most {MAX_VOLTAGE_LABEL_CHARS} characters"
+                )
             label = canonical_form(raw)
             if (
                 not label
@@ -192,8 +201,12 @@ class IdentifierRules:
         found = IdentifierParser(self).parse(label)
         if found is None or found.kind is IdentifierKind.VOLTAGE:
             return None
-        if found.kind is IdentifierKind.REFERENCE_DESIGNATION and not any(
-            a.code[:1].isalpha() for a in found.aspects
+        if (
+            found.kind is IdentifierKind.REFERENCE_DESIGNATION
+            and found.valid
+            and len(found.aspects) == 1
+            and found.aspects[0].prefix in ("+", "-")
+            and _RAIL_CODE.fullmatch(found.aspects[0].code)
         ):
             return None
         return found.kind
