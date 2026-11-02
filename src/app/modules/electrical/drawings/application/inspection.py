@@ -467,8 +467,8 @@ class InspectDocument:
             locked.record_inspection(
                 sha256=source.sha256,
                 page_count=summary.page_count,
-                creator=_clip(summary.creator),
-                producer=_clip(summary.producer),
+                creator=clip_metadata(summary.creator),
+                producer=clip_metadata(summary.producer),
                 pipeline_version=PIPELINE_VERSION,
                 now=self._clock(),
             )
@@ -756,8 +756,10 @@ class InspectDocument:
         raise _Stop
 
 
-def _clip(text: str | None) -> str | None:
+def clip_metadata(text: str | None) -> str | None:
+    """A PDF's Creator / Producer as the document row stores them (the column's bound); the
+    offline characterization tool clips the same way so both build the same record."""
     return None if text is None else text[:_MAX_CREATOR_CHARS]
 
 
-__all__ = ["InspectDocument", "combine_tallies", "failed_page"]
+__all__ = ["InspectDocument", "clip_metadata", "combine_tallies", "failed_page"]

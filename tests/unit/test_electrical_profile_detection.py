@@ -30,6 +30,7 @@ from app.modules.electrical.drawings.domain.profile import (
     SymbolStandard,
 )
 from app.modules.electrical.drawings.domain.profile_detection import (
+    SYMBOL_CONFIDENCE_FACTOR,
     ProducerSignature,
     ProfileProposal,
     detect_profile,
@@ -396,3 +397,27 @@ def test_a_report_aggregates_documents_and_lists_every_version_seen() -> None:
     assert sum(report.document_languages.values()) == 3
     assert aggregate([]).documents == 0 and aggregate([]).ocr_needed_ratio == 0.0
     assert aggregate(items) == aggregate(list(reversed(items)))  # order never matters
+
+
+def test_inc1_r16_the_default_threshold_is_unreachable_until_the_samples_tune_it() -> None:
+    """INC1-R-16 (owner decision, 2026-11-02): the symbol standard is inferred, never seen, so its
+    confidence is at most ``SYMBOL_CONFIDENCE_FACTOR``; the overall confidence is the lowest
+    field's, and the default ``auto_accept_confidence`` is 0.90. A default document therefore
+    always awaits a person, however clean its identifiers. P1 tunes the factor or the threshold
+    on real drawings; this test fails the day either moves, so it never changes by accident."""
+    assert SYMBOL_CONFIDENCE_FACTOR < BASE.auto_accept_confidence == 0.90
+    clean = ConventionTally(
+        conventions={Convention.IEC_81346: 5_000},
+        plc_families={},
+        cross_reference_formats={},
+        identifiers=5_000,
+        tokens=5_000,
+    )
+    proposal = detect_profile(
+        base=BASE,
+        summary=make_summary(creator="EPLAN Electric P8"),
+        pages=[],
+        tally=clean,
+        producers=[ProducerSignature("EPLAN", "eplan", SymbolStandard.IEC_60617, 1.0)],
+    )
+    assert proposal.confidence <= SYMBOL_CONFIDENCE_FACTOR < BASE.auto_accept_confidence
