@@ -23,6 +23,10 @@ import pymupdf
 
 from services.ele_parse import contract
 
+# Second layer after the child's fd 1 redirect (QA-1): MuPDF's own error/warning printing off.
+pymupdf.TOOLS.mupdf_display_errors(False)
+pymupdf.TOOLS.mupdf_display_warnings(False)
+
 _CURVE_MAX_EXTENT_PT: Final = 10.0  # a curve this small is a stroke of a glyph, not a drawing
 _PDF_HEADER: Final = b"%PDF-"
 _HEADER_WINDOW: Final = 1_024  # a PDF may be preceded by junk; the header sits within it

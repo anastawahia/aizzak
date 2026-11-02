@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
+import re
 import signal
 import sys
 from collections.abc import Sequence
@@ -52,6 +54,35 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "code": exc.code, "detail": exc.detail}
 
 
+def _claim_answer_channel() -> int:
+    """Save the real stdout (the JSON answer channel) on a private descriptor and point fd 1 at
+    /dev/null, so anything a native library prints (MuPDF writes "error: ..." lines to fd 1)
+    can never mix into the answer. Called before PyMuPDF is imported."""
+    answer_fd = os.dup(1)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    os.close(devnull)
+    return answer_fd
+
+
+def _write_answer(fd: int, answer: dict[str, Any]) -> None:
+    data = json.dumps(answer, sort_keys=True, separators=(",", ":")).encode()
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+_ALLOCATION_FAILURE = re.compile(
+    r"\b(?:malloc|calloc|realloc|alloc)\b.*\bfailed\b|out of memory", re.I
+)
+
+
+def is_allocation_failure(exc: BaseException) -> bool:
+    """MuPDF reports an allocation that the address-space limit refused as a ``RuntimeError``
+    ("code=2: realloc (N bytes) failed"), not as ``MemoryError``; it is still "out of memory"."""
+    return isinstance(exc, RuntimeError) and _ALLOCATION_FAILURE.search(str(exc)) is not None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ele-parse-child")
     parser.add_argument("--memory-mb", type=int, required=True)
@@ -64,14 +95,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # an ordinary error instead. Nothing here writes a file anyway (no bytecode, read-only fs).
     signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
     sys.dont_write_bytecode = True
+    answer_fd = _claim_answer_channel()
     try:
         request = json.loads(sys.stdin.buffer.read())
         answer = handle(request)
-        sys.stdout.write(json.dumps(answer, sort_keys=True, separators=(",", ":")))
-        sys.stdout.flush()
+        _write_answer(answer_fd, answer)
     except MemoryError:
         return EXIT_MEMORY
     except Exception as exc:
+        if is_allocation_failure(exc):
+            return EXIT_MEMORY
         sys.stderr.write(type(exc).__name__)
         return EXIT_FAILED
     return 0
