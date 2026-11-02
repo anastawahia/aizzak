@@ -28,6 +28,7 @@ from services.ele_parse import SERVICE_VERSION, contract, sandbox
 
 PYMUPDF_VERSION_KEY: Final = "pymupdf_version"
 RETRY_AFTER_S: Final = 5
+SOCKET_TIMEOUT_S: Final = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,9 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "ele-parse"
     sys_version = ""
+    # A client that connects and goes quiet must not park a thread forever (QA-2). The timeout
+    # covers reading the request; the child's own deadline covers the work.
+    timeout = SOCKET_TIMEOUT_S
 
     # -- routing -----------------------------------------------------------------
     def do_GET(self) -> None:
