@@ -275,6 +275,24 @@ def test_purging_is_reachable_from_any_status_and_idempotent() -> None:
     assert doc.purging_at == later(5) and doc.updated_at == later(5)  # nothing written
 
 
+def test_purging_an_excluded_document_clears_its_exclusion_reason() -> None:
+    """``ck_drawings_documents_exclusion``: a reason exists only on an EXCLUDED document, so
+    the transition to PURGING takes it away (S6 found the old code kept it)."""
+    doc = make_document()
+    doc.exclude(ExclusionReason.FILE_UNREADABLE, later(1))
+    assert doc.exclusion_reason is ExclusionReason.FILE_UNREADABLE
+    assert doc.mark_purging(later(2)) is True
+    assert doc.status is DocumentStatus.PURGING and doc.exclusion_reason is None
+    # the pairing holds for every status the aggregate can be in after any transition
+    for status in DocumentStatus:
+        other = make_document()
+        if status is DocumentStatus.EXCLUDED:
+            other.exclude(ExclusionReason.DUPLICATE_CONTENT, later(1))
+        elif status is DocumentStatus.PURGING:
+            other.mark_purging(later(1))
+        assert (other.status is DocumentStatus.EXCLUDED) == (other.exclusion_reason is not None)
+
+
 def test_an_inspection_is_recorded_on_a_live_document_only() -> None:
     doc = make_document()
     doc.record_inspection(

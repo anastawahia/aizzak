@@ -23,11 +23,10 @@ Optimistic ``save`` (project, document, job): the ``UPDATE`` matches ``version``
 ``workspace_id``, ``space_id``, ``project_id``, ``file_id``, ``kind``, ``pages``,
 ``created_*``) are left out of the ``UPDATE``, which is what enforces it at the adapter.
 
-**A PURGING document is stored without its exclusion reason.** ``ck_drawings_documents_
-exclusion`` says ``(status = 'excluded') = (exclusion_reason IS NOT NULL)`` while the domain's
-``mark_purging`` leaves the reason of a document that was EXCLUDED in place; writing it as is
-would fail the CHECK and block the purge of every excluded document. A document being purged is
-invisible to every read and the reason is of no use to anyone, so ``save`` writes it as NULL.
+**The exclusion reason follows the status.** ``ck_drawings_documents_exclusion`` says
+``(status = 'excluded') = (exclusion_reason IS NOT NULL)``; the domain keeps the two together
+(``Document.exclude`` sets both, ``mark_purging`` clears the reason), so ``save`` writes the
+aggregate as it is and only asserts the pairing.
 """
 
 from __future__ import annotations
@@ -539,10 +538,10 @@ def _document(row: RowMapping) -> Document:
 
 
 def _stored_reason(document: Document) -> str | None:
-    """See the module docstring: a PURGING document is written without its reason."""
-    if document.status is DocumentStatus.PURGING or document.exclusion_reason is None:
-        return None
-    return document.exclusion_reason.value
+    """The reason as stored. The domain keeps it paired with EXCLUDED (see the module
+    docstring); the assertion names a violation before the CHECK does."""
+    assert (document.status is DocumentStatus.EXCLUDED) == (document.exclusion_reason is not None)
+    return None if document.exclusion_reason is None else document.exclusion_reason.value
 
 
 class SqlDocumentRepository(_Base):

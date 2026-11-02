@@ -75,10 +75,13 @@ class Document:
 
     def mark_purging(self, now: datetime) -> bool:
         """Any status -> ``PURGING``. ``False`` (and nothing written) when it already is, so a
-        re-run of a cascade is a no-op (idempotent)."""
+        re-run of a cascade is a no-op (idempotent). The exclusion reason goes with the
+        ``EXCLUDED`` status it explained: ``ck_drawings_documents_exclusion`` allows a reason
+        only on an excluded document."""
         if self.status is DocumentStatus.PURGING:
             return False
         self.status = DocumentStatus.PURGING
+        self.exclusion_reason = None
         self.purging_at = now
         self.updated_at = now
         return True
