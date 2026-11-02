@@ -9,6 +9,7 @@ gives the same bytes on every run (FR-ING-05).
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Final
 
@@ -19,6 +20,13 @@ MAX_FONTS: Final = 32
 MAX_TOKEN_CHARS: Final = 32
 MAX_FONT_NAME_CHARS: Final = 96
 MAX_METADATA_CHARS: Final = 512
+MAX_FONT_TYPE_CHARS: Final = 32
+# One page's signals as JSON: 200 tokens of 32 characters, all non-ASCII (6 bytes each when
+# escaped), plus 32 fonts, come to about 40 KiB, so a page past this is not a drawing page.
+MAX_PAGE_JSON_BYTES: Final = 64 * 1024
+# The child's whole answer (a range of up to 200 pages in the worker): bigger is a fault.
+MAX_ANSWER_BYTES: Final = 16 * 1024 * 1024
+MAX_STDERR_BYTES: Final = 4 * 1024
 
 _UUID: Final = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 FILE_PATTERN: Final = re.compile(rf"{_UUID}/{_UUID}\.pdf", re.ASCII)
@@ -81,3 +89,11 @@ def clip(text: str | None, limit: int) -> str | None:
         return None
     text = text.strip()
     return text[:limit] if text else None
+
+
+def clean(text: object, limit: int) -> str:
+    """A string from the PDF as the contract carries it: control and format characters (Cc, Cf:
+    line breaks, bidi marks, zero-width characters) dropped, then cut to ``limit``. The cut comes
+    last, so the result never holds more than ``limit`` characters."""
+    kept = "".join(c for c in str(text) if unicodedata.category(c) not in ("Cc", "Cf"))
+    return kept[:limit]

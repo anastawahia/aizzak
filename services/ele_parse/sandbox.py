@@ -25,6 +25,7 @@ import resource
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,14 @@ DEFAULT_ARGV: Final = (sys.executable, "-m", "services.ele_parse.child")
 _NOFILE: Final = 64
 _REJECTIONS: Final = frozenset({contract.NOT_PDF, contract.CORRUPT, contract.ENCRYPTED})
 _EXIT_MEMORY: Final = 3
+_REJECTION_TEXT: Final = {
+    contract.NOT_PDF: "the file is not a PDF",
+    contract.CORRUPT: "the PDF is damaged and cannot be read",
+    contract.ENCRYPTED: "the PDF is encrypted",
+    contract.BAD_RANGE: "the page range is outside the document",
+}
+_READ_CHUNK: Final = 64 * 1024
+_JOIN_S: Final = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,13 +105,30 @@ def run_child(
         start_new_session=True,
         close_fds=True,
     )
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    # Both pipes are read with a ceiling: a hostile child cannot fill this server's memory with
+    # an answer (or a diagnostic) of any size; past the ceiling it is killed.
+    out = _BoundedReader(process, process.stdout, contract.MAX_ANSWER_BYTES)
+    err = _BoundedReader(process, process.stderr, contract.MAX_STDERR_BYTES)
+    out.start()
+    err.start()
     try:
-        stdout, _stderr = process.communicate(json.dumps(request).encode(), timeout=timeout_s)
+        with contextlib.suppress(OSError):  # a child that is already gone cannot be written to
+            process.stdin.write(json.dumps(request).encode())
+            process.stdin.close()
+        process.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         _kill(process)
+        out.join(_JOIN_S)
+        err.join(_JOIN_S)
         raise contract.ContractError(
             504, "timeout", "the request exceeded its time limit"
         ) from None
+    out.join(_JOIN_S)
+    err.join(_JOIN_S)
+    if out.overflowed or err.overflowed:
+        raise contract.ContractError(500, "parse_error", "the child's answer exceeded its bound")
+    stdout = out.data()
     code = process.returncode
     if code < 0:
         if -code == signal.SIGXCPU:
@@ -125,14 +151,52 @@ def _answer(code: int, stdout: bytes) -> dict[str, Any]:
         return result
     reason = str(answer.get("code"))
     if reason in _REJECTIONS or reason == contract.BAD_RANGE:
-        raise contract.ContractError(422, reason, str(answer.get("detail", reason)))
+        # a fixed text per code: nothing the child wrote (it ran the file's bytes) is repeated
+        raise contract.ContractError(422, reason, _REJECTION_TEXT.get(reason, reason))
     raise contract.ContractError(500, "parse_error", f"the child refused: {reason}")
 
 
-def _kill(process: subprocess.Popen[bytes]) -> None:
+class _BoundedReader(threading.Thread):
+    """Reads one pipe of the child up to ``limit`` bytes; on the first byte past it the child's
+    process group is killed and ``overflowed`` is set."""
+
+    def __init__(self, process: subprocess.Popen[bytes], stream: Any, limit: int) -> None:
+        super().__init__(daemon=True)
+        self._process = process
+        self._stream = stream
+        self._limit = limit
+        self._chunks: list[bytes] = []
+        self.overflowed = False
+
+    def run(self) -> None:
+        total = 0
+        fd = self._stream.fileno()
+        while True:
+            try:
+                chunk = os.read(fd, _READ_CHUNK)
+            except OSError:
+                break
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > self._limit:
+                self.overflowed = True
+                _kill_group(self._process)
+                break
+            self._chunks.append(chunk)
+
+    def data(self) -> bytes:
+        return b"".join(self._chunks)
+
+
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
-    process.communicate()
+
+
+def _kill(process: subprocess.Popen[bytes]) -> None:
+    _kill_group(process)
+    process.wait()
 
 
 def cpu_seconds_for(timeout_s: float) -> int:

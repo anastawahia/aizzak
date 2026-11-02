@@ -193,8 +193,12 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         """Access lines carry method, path and status only: a path is a pair of UUIDs, never
         drawing text."""
+        # ``command`` / ``path`` are not set when the request line never parsed (an idle
+        # connection that timed out, a malformed line), and this is then called to log the error.
+        command = getattr(self, "command", None) or "-"
+        path = (getattr(self, "path", None) or "-").split("?")[0]
         status = args[1] if len(args) > 1 else ""
-        print(f"ele-parse {self.command} {self.path.split('?')[0]} {status}", flush=True)
+        print(f"ele-parse {command} {path} {status}", flush=True)
 
 
 def _pymupdf_version() -> str:

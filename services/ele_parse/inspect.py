@@ -14,6 +14,9 @@ parent server stays free of PyMuPDF.
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,24 +68,35 @@ def _is_latin_letter(char: str) -> bool:
 @contextmanager
 def open_document(path: Path) -> Iterator[Any]:
     """The opened ``pymupdf.Document``, closed after. ``Rejected`` for a file that is not a PDF,
-    is damaged, or is encrypted."""
+    is damaged, or is encrypted.
+
+    The file is opened ONCE, without following a symbolic link in its last component
+    (``O_NOFOLLOW``), checked on that descriptor (a regular file, the header) and handed to
+    PyMuPDF as ``/proc/self/fd/N``: what is checked is what is parsed, and the format is
+    declared (``filetype="pdf"``) so a polyglot file cannot pick another parser."""
     try:
-        with path.open("rb") as handle:
-            head = handle.read(_HEADER_WINDOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         raise Rejected(contract.CORRUPT, f"the file cannot be read: {exc.strerror}") from exc
-    if _PDF_HEADER not in head:
-        raise Rejected(contract.NOT_PDF, "the file is not a PDF (no %PDF- header)")
     try:
-        document = pymupdf.open(path)
-    except Exception as exc:  # PyMuPDF raises several types for a damaged file
-        raise Rejected(contract.CORRUPT, f"the PDF cannot be opened: {type(exc).__name__}") from exc
-    try:
-        if document.needs_pass or document.is_encrypted:
-            raise Rejected(contract.ENCRYPTED, "the PDF is encrypted")
-        yield document
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Rejected(contract.CORRUPT, "the file cannot be read: not a regular file")
+        if _PDF_HEADER not in os.pread(fd, _HEADER_WINDOW, 0):
+            raise Rejected(contract.NOT_PDF, "the file is not a PDF (no %PDF- header)")
+        try:
+            document = pymupdf.open(f"/proc/self/fd/{fd}", filetype="pdf")
+        except Exception as exc:  # PyMuPDF raises several types for a damaged file
+            raise Rejected(
+                contract.CORRUPT, f"the PDF cannot be opened: {type(exc).__name__}"
+            ) from exc
+        try:
+            if document.needs_pass or document.is_encrypted:
+                raise Rejected(contract.ENCRYPTED, "the PDF is encrypted")
+            yield document
+        finally:
+            document.close()
     finally:
-        document.close()
+        os.close(fd)
 
 
 def summarize(document: Any) -> dict[str, Any]:
@@ -165,16 +179,19 @@ def _image_area_ratio(page: Any) -> float:
 
 def _fonts(document: Any, page: Any) -> list[dict[str, Any]]:
     fonts: dict[tuple[str, str], dict[str, Any]] = {}
-    for xref, ext, kind, basefont, _name, encoding, *_ in page.get_fonts(full=True):
-        name = str(basefont)[: contract.MAX_FONT_NAME_CHARS]
-        key = (name, str(kind))
+    for xref, ext, raw_kind, basefont, _name, encoding, *_ in page.get_fonts(full=True):
+        # /Subtype and /BaseFont are the file's own text (MuPDF allows 4,095 characters): both
+        # are cleaned and cut, so a font table cannot make a page's answer large.
+        name = contract.clean(basefont, contract.MAX_FONT_NAME_CHARS)
+        kind = contract.clean(raw_kind, contract.MAX_FONT_TYPE_CHARS)
+        key = (name, kind)
         if key in fonts:
             continue
         has_map = document.xref_get_key(xref, "ToUnicode")[0] != "null"
         fonts[key] = {
             "name": name,
-            "font_type": str(kind),
-            "cid": str(kind) in _CID_FONT_TYPES or str(encoding).startswith("Identity"),
+            "font_type": kind,
+            "cid": kind in _CID_FONT_TYPES or str(encoding).startswith("Identity"),
             "embedded": str(ext) != "n/a",
             "has_tounicode": has_map,
         }
@@ -208,10 +225,16 @@ def page_signals(document: Any, number: int, token_sample: int) -> dict[str, Any
     }
 
 
+def page_json_bytes(signals: dict[str, Any]) -> int:
+    return len(json.dumps(signals, sort_keys=True, separators=(",", ":")).encode())
+
+
 def inspect_pages(document: Any, first: int, last: int, token_sample: int) -> list[dict[str, Any]]:
     """Signals of pages ``first..last`` (clamped to the document); a range wholly beyond it is
-    ``bad_range``."""
+    ``bad_range``. A page whose signals would not fit ``MAX_PAGE_JSON_BYTES`` is left OUT: the
+    caller reads a missing page as one that failed to parse, and the rest of the range stands."""
     count = int(document.page_count)
     if first > count:
         raise contract.ContractError(422, contract.BAD_RANGE, f"the PDF has {count} pages")
-    return [page_signals(document, n, token_sample) for n in range(first, min(last, count) + 1)]
+    pages = (page_signals(document, n, token_sample) for n in range(first, min(last, count) + 1))
+    return [p for p in pages if page_json_bytes(p) <= contract.MAX_PAGE_JSON_BYTES]

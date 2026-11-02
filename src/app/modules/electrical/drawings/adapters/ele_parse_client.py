@@ -10,6 +10,7 @@ stage volume or the contract: ``common.internal``, loud and not retried as if tr
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
@@ -30,7 +31,19 @@ from app.modules.electrical.drawings.domain.pages import (
 from app.modules.electrical.drawings.ports.source import StagedSource
 
 SCHEMA: Final = 1
-_REJECTIONS: Final = frozenset({"not_pdf", "corrupt", "encrypted"})
+# What the job's ``failure_detail`` says for a refusal: the CATALOGUE's text, never the service's
+# (it ran the file's bytes: whatever it wrote could be a hostile file speaking to the client).
+_REJECTIONS: Final = {
+    "not_pdf": "the file is not a PDF",
+    "corrupt": "the PDF is damaged and cannot be read",
+    "encrypted": "the PDF is encrypted",
+}
+MAX_RESPONSE_BYTES: Final = 24 * 1024 * 1024  # ele-parse bounds its answer at 16 MiB
+_MAX_FONTS: Final = 32
+_MAX_TOKENS: Final = 1_000
+_MAX_NAME_CHARS: Final = 96
+_MAX_TYPE_CHARS: Final = 32
+_MAX_TOKEN_CHARS: Final = 32
 
 
 def summary_from_json(raw: Mapping[str, Any]) -> PdfSummary:
@@ -63,15 +76,15 @@ def signals_from_json(raw: Mapping[str, Any]) -> PageSignals:
         link_count=int(raw["link_count"]),
         fonts=tuple(
             FontSignal(
-                name=str(font["name"]),
-                font_type=str(font["font_type"]),
+                name=str(font["name"])[:_MAX_NAME_CHARS],
+                font_type=str(font["font_type"])[:_MAX_TYPE_CHARS],
                 cid=bool(font["cid"]),
                 embedded=bool(font["embedded"]),
                 has_tounicode=bool(font["has_tounicode"]),
             )
-            for font in raw["fonts"]
+            for font in raw["fonts"][:_MAX_FONTS]
         ),
-        tokens=tuple(str(token) for token in raw["tokens"]),
+        tokens=tuple(str(token)[:_MAX_TOKEN_CHARS] for token in raw["tokens"][:_MAX_TOKENS]),
     )
 
 
@@ -98,18 +111,25 @@ class EleParseClient:
 
     async def _post(self, path: str, payload: Mapping[str, object]) -> Mapping[str, Any]:
         try:
-            response = await self._http.post(path, json=payload, timeout=self._timeout_s)
+            async with self._http.stream(
+                "POST", path, json=payload, timeout=self._timeout_s
+            ) as response:
+                status = response.status_code
+                raw = await _read_bounded(response)
         except httpx.HTTPError as exc:  # transport, timeout, protocol: transient
             raise InspectionUnavailable(f"ele-parse is unreachable: {type(exc).__name__}") from exc
-        status = response.status_code
+        if raw is None:
+            # an answer past the bound is a fault of this range, never a reason to hold it in
+            # memory: asked again page by page, the page that causes it alone is lost
+            raise PageRangeFailed(StageReason.PARSE_ERROR)
         if status == httpx.codes.OK:
-            return _json(response)
-        error = _error_body(response)
+            return _json(raw)
+        error = _error_body(raw)
         if status == httpx.codes.UNPROCESSABLE_ENTITY:
             code = error.get("code")
-            if code in _REJECTIONS:
-                raise PdfRejected(str(code), str(error.get("detail", code)))
-            raise AppError(f"ele-parse refused the request: {code}", code="common.internal")
+            if isinstance(code, str) and code in _REJECTIONS:
+                raise PdfRejected(code, _REJECTIONS[code])
+            raise AppError("ele-parse refused the request", code="common.internal")
         if status == httpx.codes.GATEWAY_TIMEOUT:
             raise PageRangeFailed(StageReason.PARSE_TIMEOUT)
         if status == httpx.codes.INSUFFICIENT_STORAGE:
@@ -118,15 +138,24 @@ class EleParseClient:
             raise PageRangeFailed(StageReason.PARSE_ERROR)
         if status in (httpx.codes.BAD_REQUEST, httpx.codes.NOT_FOUND):
             raise AppError(
-                f"ele-parse could not use the staged file ({status} {error.get('code')})",
-                code="common.internal",
+                f"ele-parse could not use the staged file ({status})", code="common.internal"
             )
         raise InspectionUnavailable(f"ele-parse answered {status}")
 
 
-def _json(response: httpx.Response) -> Mapping[str, Any]:
+async def _read_bounded(response: httpx.Response) -> bytes | None:
+    """The body, or ``None`` once it is past ``MAX_RESPONSE_BYTES`` (read no further)."""
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body += chunk
+        if len(body) > MAX_RESPONSE_BYTES:
+            return None
+    return bytes(body)
+
+
+def _json(raw: bytes) -> Mapping[str, Any]:
     try:
-        body = response.json()
+        body = json.loads(raw)
     except ValueError as exc:
         raise _contract_error("response") from exc
     if not isinstance(body, dict):
@@ -134,9 +163,9 @@ def _json(response: httpx.Response) -> Mapping[str, Any]:
     return body
 
 
-def _error_body(response: httpx.Response) -> Mapping[str, Any]:
+def _error_body(raw: bytes) -> Mapping[str, Any]:
     try:
-        body = response.json()
+        body = json.loads(raw)
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
