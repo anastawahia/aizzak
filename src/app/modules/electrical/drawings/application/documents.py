@@ -51,6 +51,7 @@ from app.modules.electrical.drawings.domain.document import (
     ExclusionReason,
     ProfileState,
 )
+from app.modules.electrical.drawings.domain.errors import DOCUMENT_EXISTS_DETAIL
 from app.modules.electrical.drawings.domain.events import (
     DocumentRegistered,
     JobRequested,
@@ -160,9 +161,7 @@ class DocumentService:
                 code="electrical.file_not_in_project_space",
             )
         if await self._documents.not_purging_for_file(ctx, file_id):  # 5
-            raise ConflictError(
-                "the file is already a drawing document", code="electrical.document_exists"
-            )
+            raise ConflictError(DOCUMENT_EXISTS_DETAIL, code="electrical.document_exists")
         older = await self._namesakes.execute(ctx, file_id)
         if older:  # 6: a sweep that failed; the cure is deleting the older file
             raise ConflictError(

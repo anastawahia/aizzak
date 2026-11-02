@@ -7,7 +7,17 @@ code, and the application layer catches these at its boundary and maps them onto
 
 from __future__ import annotations
 
+from typing import Final
+
 from app.modules.electrical.drawings.domain.pages import StageReason
+
+# The text of ``409 electrical.document_exists``: said once, for the application guard, the SQL
+# adapter's translation of ``ux_drawings_documents_file`` and the in-memory fake. The unique
+# index counts every row that is not ``purging``, an EXCLUDED document included.
+DOCUMENT_EXISTS_DETAIL: Final = (
+    "the file already has a drawing document, active or excluded: "
+    "an excluded document keeps its file until it is purged"
+)
 
 
 class DrawingsError(Exception):

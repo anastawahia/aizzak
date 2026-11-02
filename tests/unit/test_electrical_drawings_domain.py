@@ -105,7 +105,7 @@ def test_an_empty_body_with_a_schema_is_the_default() -> None:
         ({}, "schema"),
         ({"schema": 2}, "schema"),
         ({"schema": True}, "schema"),
-        (body(surprise=1), "surprise"),
+        (body(surprise=1), "body"),  # S-8: an unknown name is not echoed as the path
         (body(symbol_standard="made_up"), "symbol_standard"),
         (body(identifier_convention=3), "identifier_convention"),
         (body(cross_reference_format="nope"), "cross_reference_format"),
@@ -130,7 +130,7 @@ def test_an_empty_body_with_a_schema_is_the_default() -> None:
         (body(vendor_library="acme"), "vendor_library"),
         (body(symbol_standard="vendor", vendor_library=""), "vendor_library"),
         (body(classification=[]), "classification"),
-        (body(classification={"min_text": 3}), "classification.min_text"),
+        (body(classification={"min_text": 3}), "classification"),
         (body(classification={"min_text_chars": 2.5}), "classification.min_text_chars"),
         (body(classification={"min_text_chars": -1}), "classification.min_text_chars"),
         (body(classification={"garbled_ratio": 1.5}), "classification.garbled_ratio"),
@@ -143,6 +143,30 @@ def test_from_body_rejects_naming_the_field_path(raw: dict[str, Any], path: str)
         DrawingProfile.from_body(raw, known_patterns=KNOWN)
     assert caught.value.path == path
     assert path in str(caught.value)
+
+
+_HOSTILE = "evil\u202e\u200bname<script>" + "x" * 300
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        body(**{_HOSTILE: 1}),
+        body(classification={_HOSTILE: 1}),
+        body(wire_number_patterns=[_HOSTILE]),
+    ],
+)
+def test_an_invalid_profile_never_echoes_what_the_client_sent(raw: dict[str, Any]) -> None:
+    """S-8 (PR-B security review): the 422 names the field and lists what the SERVER knows; the
+    unknown name or value the client supplied (any length, any script, bidi controls) is not
+    reflected in the path, the message or the string form."""
+    with pytest.raises(InvalidProfile) as caught:
+        DrawingProfile.from_body(raw, known_patterns=KNOWN)
+    for text in (caught.value.path, caught.value.message, str(caught.value)):
+        assert "evil" not in text
+        assert "\u202e" not in text
+        assert "<script>" not in text
+        assert len(text) < 300
 
 
 def test_from_body_rejects_a_body_that_is_not_an_object() -> None:

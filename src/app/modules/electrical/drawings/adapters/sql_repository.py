@@ -83,6 +83,7 @@ from app.modules.electrical.drawings.domain.document import (
     ExclusionReason,
     ProfileState,
 )
+from app.modules.electrical.drawings.domain.errors import DOCUMENT_EXISTS_DETAIL
 from app.modules.electrical.drawings.domain.job import IngestionJob, JobKind, JobStatus
 from app.modules.electrical.drawings.domain.pages import (
     FontSignal,
@@ -279,9 +280,7 @@ def _unique_violation(text: str) -> ConflictError:
             "The space already has a WireTwin project", code="electrical.project_exists"
         )
     if "ux_drawings_documents_file" in text:
-        return ConflictError(
-            "File is already a drawing document", code="electrical.document_exists"
-        )
+        return ConflictError(DOCUMENT_EXISTS_DETAIL, code="electrical.document_exists")
     if "ux_drawings_documents_content" in text:
         return ConflictError(
             "The same content is already a document of this project",

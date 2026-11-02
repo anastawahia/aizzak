@@ -134,7 +134,9 @@ class DrawingProfile:
             raise InvalidProfile("body", "must be an object")
         for key in body:
             if key not in _TOP_KEYS:
-                raise InvalidProfile(str(key), "unknown field")
+                # S-8: a client-sent name is never echoed (it is untrusted text of any length
+                # or script); the answer lists the names the SERVER knows.
+                raise InvalidProfile("body", f"unknown field; allowed: {', '.join(_TOP_KEYS)}")
         schema = body.get("schema")
         if isinstance(schema, bool) or schema != PROFILE_SCHEMA:
             raise InvalidProfile("schema", f"must be {PROFILE_SCHEMA}")
@@ -337,7 +339,10 @@ def _names(body: Mapping[str, Any], key: str, known: frozenset[str]) -> tuple[st
     names = _strings(items, key)
     for i, name in enumerate(names):
         if name not in known:
-            raise InvalidProfile(f"{key}[{i}]", f"unknown pattern {name!r}")
+            # S-8: the unknown name is not echoed; the packaged names are listed instead.
+            raise InvalidProfile(
+                f"{key}[{i}]", f"unknown pattern name; known: {', '.join(sorted(known))}"
+            )
     return tuple(sorted(set(names)))
 
 
@@ -409,7 +414,9 @@ def _thresholds(raw: object, default: ClassificationThresholds) -> Classificatio
         raise InvalidProfile("classification", "must be an object")
     for key in raw:
         if key not in _THRESHOLD_RANGES:
-            raise InvalidProfile(f"classification.{key}", "unknown field")
+            raise InvalidProfile(
+                "classification", f"unknown field; allowed: {', '.join(_THRESHOLD_RANGES)}"
+            )
     values: dict[str, Any] = {}
     for name, (kind, low, high) in _THRESHOLD_RANGES.items():
         if name in raw:

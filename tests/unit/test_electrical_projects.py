@@ -77,7 +77,7 @@ async def test_an_unknown_or_deleted_space_is_a_404(stack: Stack) -> None:
     ("body", "path"),
     [
         ({"schema": 2}, "schema"),
-        ({"schema": 1, "nonsense": 1}, "nonsense"),
+        ({"schema": 1, "nonsense": 1}, "body"),  # S-8: the unknown name is not echoed
         ({"schema": 1, "identifier_convention": "nope"}, "identifier_convention"),
         ({"schema": 1, "auto_accept_confidence": 2}, "auto_accept_confidence"),
         ({"schema": 1, "wire_number_patterns": ["no-such-pattern"]}, "wire_number_patterns"),
@@ -90,6 +90,7 @@ async def test_an_invalid_profile_is_a_422_naming_the_field_and_writes_nothing(
     with pytest.raises(ValidationError) as raised:
         await _create(stack, profile=body)
     assert raised.value.code == "electrical.invalid_profile" and path in raised.value.detail
+    assert "nonsense" not in raised.value.detail and "no-such-pattern" not in raised.value.detail
     assert stack.projects.rows == {} and stack.uow.begun == 0
 
 

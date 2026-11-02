@@ -46,6 +46,7 @@ from app.modules.electrical.drawings.domain.document import (
     ProfileState,
 )
 from app.modules.electrical.drawings.domain.errors import (
+    DOCUMENT_EXISTS_DETAIL,
     InspectionUnavailable,
     PageRangeFailed,
     PdfRejected,
@@ -342,9 +343,7 @@ class InMemoryDocumentRepository:
             r.file_id == document.file_id and r.status is not DocumentStatus.PURGING
             for r in self._mine(ctx)
         ):  # ux_drawings_documents_file: WHERE status <> 'purging'
-            raise ConflictError(
-                "File is already a drawing document", code="electrical.document_exists"
-            )
+            raise ConflictError(DOCUMENT_EXISTS_DETAIL, code="electrical.document_exists")
         self.rows[document.id] = copy(document)
 
     async def save(self, ctx: ExecutionContext, document: Document) -> None:
