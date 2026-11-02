@@ -118,18 +118,34 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         "files.upload_incomplete": ProblemSpec(409, "Multipart upload is incomplete"),
         "files.upload_expired": ProblemSpec(409, "Multipart upload no longer exists"),
         # -- electrical (WireTwin, electrical-drawings INC-1, LLD 3.3.13) ---- #
-        # Only the four the SQL adapter raises from a unique index
-        # (`drawings/adapters/sql_repository.py`); the catalog is a MIRROR of
-        # behaviour, so the rest of the section's codes arrive with the code
-        # that emits them.
+        # Each code is here because some code emits it (the catalog mirrors behaviour). The
+        # job-failure codes (`pdf_rejected`, `too_many_pages`, `source_unreadable`) are the
+        # `failure_code` a worker stores (INC1-D-29). `electrical.disabled` (503, the flag
+        # dependency) arrives with the routes that raise it.
         "electrical.project_exists": ProblemSpec(409, "The space already has a WireTwin project"),
+        "electrical.invalid_profile": ProblemSpec(422, "Drawing profile is invalid"),
+        "electrical.not_a_pdf": ProblemSpec(415, "Only PDF files can be registered as drawings"),
+        "electrical.file_not_in_project_space": ProblemSpec(422, "File belongs to another space"),
         "electrical.document_exists": ProblemSpec(409, "File is already a drawing document"),
+        "electrical.namesake_not_replaced": ProblemSpec(
+            409, "An older file with this name and tags is still live"
+        ),
         "electrical.duplicate_document": ProblemSpec(
             409, "The same content is already a document of this project"
+        ),
+        "electrical.ingestion_queue_full": ProblemSpec(
+            429, "Ingestion queue protection limit reached"
         ),
         "electrical.job_conflict": ProblemSpec(
             409, "Ingestion job is not in a state that allows this"
         ),
+        "electrical.profile_unconfirmed": ProblemSpec(
+            409, "The document profile awaits confirmation"
+        ),
+        "electrical.pdf_rejected": ProblemSpec(422, "PDF could not be opened"),
+        "electrical.too_many_pages": ProblemSpec(422, "PDF exceeds the page limit"),
+        "electrical.source_unreadable": ProblemSpec(422, "The file's bytes could not be read"),
+        "electrical.document_not_live": ProblemSpec(409, "The document is no longer live"),
         # -- knowledge ------------------------------------------------------ #
         # `knowledge.not_indexed` (409 in 03 §4) is absent for the same reason
         # (§3.64): none of the three knowledge routes is per-document

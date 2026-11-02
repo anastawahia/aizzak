@@ -85,7 +85,9 @@ from app.modules.electrical.drawings.domain.document import (
 )
 from app.modules.electrical.drawings.domain.job import IngestionJob, JobKind, JobStatus
 from app.modules.electrical.drawings.domain.pages import (
+    FontSignal,
     PageClassification,
+    PageEvidence,
     PageKind,
     PageLanguage,
     PageResult,
@@ -102,7 +104,7 @@ from app.modules.electrical.drawings.domain.profile import (
     SymbolStandard,
 )
 from app.modules.electrical.drawings.domain.project import Project
-from app.modules.electrical.shared.kinds import Convention, PlcFamily
+from app.modules.electrical.shared.kinds import Convention, ConventionTally, PlcFamily
 
 _metadata = MetaData()
 
@@ -395,14 +397,18 @@ class SqlProjectRepository(_Base):
         return _paginate_id(rows, limit, _project)
 
     async def delete_in_space(self, ctx: ExecutionContext, space_id: UuidStr) -> int:
-        t = drawings_projects
-        stmt = (
-            delete(t)
-            .where(t.c.workspace_id == ctx.workspace_id, t.c.space_id == space_id)
-            .returning(t.c.id)
+        """The space's project and the PROJECT's profile versions (``document_id IS NULL``), in
+        one transaction. A document's own versions go with the document (``DrawingsSweep``)."""
+        t, v = drawings_projects, drawings_profile_versions
+        ws = ctx.workspace_id
+        project_ids = select(t.c.id).where(t.c.workspace_id == ws, t.c.space_id == space_id)
+        versions = delete(v).where(
+            v.c.workspace_id == ws, v.c.document_id.is_(None), v.c.project_id.in_(project_ids)
         )
+        stmt = delete(t).where(t.c.workspace_id == ws, t.c.space_id == space_id).returning(t.c.id)
         try:
             async with self._tenant_session(ctx) as session:
+                await session.execute(versions)
                 return len((await session.execute(stmt)).all())
         except DBAPIError as exc:
             raise _translate(exc) from exc
@@ -933,6 +939,67 @@ def _abridged_signals(signals: PageSignals) -> dict[str, Any]:
     }
 
 
+def _tally_json(tally: ConventionTally) -> dict[str, Any]:
+    return {
+        "conventions": {c.value: n for c, n in tally.conventions.items()},
+        "plc_families": {f.value: n for f, n in tally.plc_families.items()},
+        "cross_reference_formats": dict(tally.cross_reference_formats),
+        "identifiers": tally.identifiers,
+        "tokens": tally.tokens,
+    }
+
+
+def _tally(stored: Mapping[str, Any]) -> ConventionTally:
+    return ConventionTally(
+        conventions=_by_enum(stored.get("conventions", {}), Convention),
+        plc_families=_by_enum(stored.get("plc_families", {}), PlcFamily),
+        cross_reference_formats={
+            key: int(n) for key, n in sorted(stored.get("cross_reference_formats", {}).items())
+        },
+        identifiers=int(stored.get("identifiers", 0)),
+        tokens=int(stored.get("tokens", 0)),
+    )
+
+
+def _signals(page_no: int, stored: Mapping[str, Any]) -> PageSignals:
+    """The abridged signals read back: the numbers and the fonts, no token sample."""
+    return PageSignals(
+        page_no=page_no,
+        width_pt=float(stored["width_pt"]),
+        height_pt=float(stored["height_pt"]),
+        rotation=int(stored["rotation"]),
+        char_count=int(stored["char_count"]),
+        unmapped_char_count=int(stored["unmapped_char_count"]),
+        pua_char_count=int(stored["pua_char_count"]),
+        cjk_char_count=int(stored["cjk_char_count"]),
+        latin_char_count=int(stored["latin_char_count"]),
+        word_count=int(stored["word_count"]),
+        vector_path_count=int(stored["vector_path_count"]),
+        short_curve_path_count=int(stored["short_curve_path_count"]),
+        image_count=int(stored["image_count"]),
+        image_area_ratio=float(stored["image_area_ratio"]),
+        link_count=int(stored["link_count"]),
+        fonts=tuple(
+            FontSignal(
+                name=font["name"],
+                font_type=font["font_type"],
+                cid=bool(font["cid"]),
+                embedded=bool(font["embedded"]),
+                has_tounicode=bool(font["has_tounicode"]),
+            )
+            for font in stored.get("fonts", ())
+        ),
+        tokens=(),
+    )
+
+
+def _stored_signals(result: PageResult) -> dict[str, Any]:
+    stored = _abridged_signals(result.signals)
+    if result.tally is not None:
+        stored["tally"] = _tally_json(result.tally)
+    return stored
+
+
 def _classification(
     page_no: int,
     kind: str,
@@ -1015,7 +1082,7 @@ class SqlPageRepository(_Base):
                         kind=c.kind.value,
                         language=c.language.value,
                         needs_ocr=c.needs_ocr,
-                        signals=_abridged_signals(result.signals),
+                        signals=_stored_signals(result),
                     )
                     await session.execute(
                         page.on_conflict_do_update(
@@ -1122,6 +1189,80 @@ class SqlPageRepository(_Base):
         except DBAPIError as exc:
             raise _translate(exc) from exc
         return [_classification(*row) for row in rows]
+
+    async def reset(
+        self,
+        ctx: ExecutionContext,
+        document_id: UuidStr,
+        pages: Sequence[int] | None,
+        stage: Stage,
+    ) -> int:
+        s = drawings_page_stages
+        conditions = [
+            s.c.workspace_id == ctx.workspace_id,
+            s.c.document_id == document_id,
+            s.c.stage == stage.value,
+            s.c.status != StageStatus.PENDING.value,
+        ]
+        if pages is not None:
+            conditions.append(s.c.page_no.in_(list(pages)))
+        stmt = (
+            update(s)
+            .where(*conditions)
+            .values(
+                status=StageStatus.PENDING.value, reason=None, attempts=0, updated_at=func.now()
+            )
+            .returning(s.c.page_no)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                return len((await session.execute(stmt)).all())
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
+    async def evidence(self, ctx: ExecutionContext, document_id: UuidStr) -> Sequence[PageEvidence]:
+        p, s = drawings_pages, drawings_page_stages
+        stmt = (
+            select(
+                p.c.page_no,
+                p.c.kind,
+                p.c.language,
+                p.c.needs_ocr,
+                s.c.status,
+                s.c.reason,
+                p.c.signals,
+            )
+            .join(
+                s,
+                and_(
+                    s.c.workspace_id == p.c.workspace_id,
+                    s.c.document_id == p.c.document_id,
+                    s.c.page_no == p.c.page_no,
+                    s.c.stage == Stage.CLASSIFY.value,
+                ),
+            )
+            .where(
+                p.c.workspace_id == ctx.workspace_id,
+                p.c.document_id == document_id,
+                p.c.kind.is_not(None),
+                p.c.signals.is_not(None),
+                s.c.status.in_((StageStatus.SUCCEEDED.value, StageStatus.NEEDS_REVIEW.value)),
+            )
+            .order_by(p.c.page_no)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                rows = (await session.execute(stmt)).all()
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+        return [
+            PageEvidence(
+                classification=_classification(*row[:6]),
+                signals=_signals(row[0], row[6]),
+                tally=_tally(row[6]["tally"]) if "tally" in row[6] else None,
+            )
+            for row in rows
+        ]
 
     async def list(
         self, ctx: ExecutionContext, document_id: UuidStr, *, limit: int, cursor: str | None

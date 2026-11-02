@@ -15,6 +15,7 @@ from app.modules.electrical.drawings.domain.document import Document, DocumentSt
 from app.modules.electrical.drawings.domain.job import IngestionJob
 from app.modules.electrical.drawings.domain.pages import (
     PageClassification,
+    PageEvidence,
     PageResult,
     PageRow,
     StageStatus,
@@ -157,6 +158,20 @@ class PageRepository(Protocol):
     async def list(
         self, ctx: ExecutionContext, document_id: Uuid, *, limit: int, cursor: str | None
     ) -> Page[PageRow]: ...
+
+    async def reset(
+        self, ctx: ExecutionContext, document_id: Uuid, pages: Sequence[int] | None, stage: Stage
+    ) -> int:
+        """Return the stage rows of ``pages`` (every page when ``None``) to ``pending``, their
+        reason and attempts cleared: a reprocessing starts from a clean stage. Additive to the
+        LLD (``seed`` never overwrites). Returns the rows changed."""
+        ...
+
+    async def evidence(self, ctx: ExecutionContext, document_id: Uuid) -> Sequence[PageEvidence]:
+        """Every page whose classify stage finished (succeeded or needs_review), in page
+        order, with its stored signals (no token sample) and tally. Additive to the LLD: a
+        resumed job folds in what an earlier run recorded."""
+        ...
 
 
 class CharacterizationRepository(Protocol):

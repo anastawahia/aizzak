@@ -14,7 +14,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from copy import copy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -23,7 +24,21 @@ from typing import Any
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, NotFoundError, ValidationError
 from app.framework.pagination import Page
+from app.framework.ports.event_outbox import OutboxRecord
+from app.framework.settings.settings import ElectricalSettings
 from app.framework.types import Uuid
+from app.modules.electrical.drawings.adapters.rule_files import PackagedRuleSource
+from app.modules.electrical.drawings.application.characterization import CharacterizationService
+from app.modules.electrical.drawings.application.documents import DocumentService
+from app.modules.electrical.drawings.application.inspection import InspectDocument
+from app.modules.electrical.drawings.application.jobs import JobService
+from app.modules.electrical.drawings.application.projects import ProjectService
+from app.modules.electrical.drawings.application.purge import (
+    PurgeFileDocuments,
+    PurgeSpaceDrawings,
+    SweepPurgedDocument,
+)
+from app.modules.electrical.drawings.application.replacement import ReplacementPreviewService
 from app.modules.electrical.drawings.domain.characterization import Characterization
 from app.modules.electrical.drawings.domain.document import (
     Document,
@@ -39,6 +54,7 @@ from app.modules.electrical.drawings.domain.job import IngestionJob, JobKind, Jo
 from app.modules.electrical.drawings.domain.pages import (
     FontSignal,
     PageClassification,
+    PageEvidence,
     PageResult,
     PageRow,
     PageSignals,
@@ -184,6 +200,15 @@ def _page(rows: list[Any], limit: int, cursor: str | None) -> Page[Any]:
     return Page(data=chunk, next_cursor=token, limit=limit)
 
 
+def _check_exclusion(document: Document) -> None:
+    """``ck_drawings_documents_exclusion``: ``(status = 'excluded') = (reason IS NOT NULL)``."""
+    if (document.status is DocumentStatus.EXCLUDED) != (document.exclusion_reason is not None):
+        raise AssertionError(
+            f"ck_drawings_documents_exclusion: status={document.status.value} "
+            f"reason={document.exclusion_reason}"
+        )
+
+
 def _check_version(stored: Any | None, incoming: Any, what: str) -> None:
     if stored is None:
         raise NotFoundError(f"{what} does not exist")
@@ -312,13 +337,18 @@ class InMemoryDocumentRepository:
         return None
 
     async def add(self, ctx: ExecutionContext, document: Document) -> None:
-        if any(r.file_id == document.file_id for r in self._mine(ctx)):
+        _check_exclusion(document)
+        if any(
+            r.file_id == document.file_id and r.status is not DocumentStatus.PURGING
+            for r in self._mine(ctx)
+        ):  # ux_drawings_documents_file: WHERE status <> 'purging'
             raise ConflictError(
                 "File is already a drawing document", code="electrical.document_exists"
             )
         self.rows[document.id] = copy(document)
 
     async def save(self, ctx: ExecutionContext, document: Document) -> None:
+        _check_exclusion(document)
         stored = self.rows.get(document.id)
         _check_version(
             stored if stored and stored.workspace_id == ctx.workspace_id else None,
@@ -471,6 +501,39 @@ class InMemoryPageRepository:
             and k[3] is stage
             and self._status(k) not in done
         )
+
+    async def reset(
+        self, ctx: ExecutionContext, document_id: Uuid, pages: Sequence[int] | None, stage: Stage
+    ) -> int:
+        changed = 0
+        for key in list(self.stages):
+            ws, doc, page_no, key_stage = key
+            if (ws, doc, key_stage) != (ctx.workspace_id, document_id, stage):
+                continue
+            if pages is not None and page_no not in pages:
+                continue
+            if self._status(key) is not StageStatus.PENDING:
+                self.stages[key] = None
+                changed += 1
+        return changed
+
+    async def evidence(self, ctx: ExecutionContext, document_id: Uuid) -> Sequence[PageEvidence]:
+        finished = {StageStatus.SUCCEEDED, StageStatus.NEEDS_REVIEW}
+        out: list[PageEvidence] = []
+        for (ws, doc, page_no), result in sorted(self.results.items(), key=lambda kv: kv[0][2]):
+            if (ws, doc) != (ctx.workspace_id, document_id):
+                continue
+            if self._status((ws, doc, page_no, Stage.CLASSIFY)) not in finished:
+                continue
+            # what the SQL adapter stores: the numbers and fonts, never the token sample
+            out.append(
+                PageEvidence(
+                    classification=result.classification,
+                    signals=replace(result.signals, tokens=()),
+                    tally=result.tally,
+                )
+            )
+        return out
 
     async def stage_counts(
         self, ctx: ExecutionContext, document_id: Uuid, stage: Stage
@@ -667,3 +730,385 @@ class FakeStager:
 
 def later(seconds: float) -> datetime:
     return NOW + timedelta(seconds=seconds)
+
+
+# --------------------------------------------------------------------------------------
+# unit of work, outbox, ledger, clock, the seams of files / spaces, the sweep
+# --------------------------------------------------------------------------------------
+class Clock:
+    """A settable instant: ``clock()`` is what every service takes as its ``clock=``."""
+
+    def __init__(self, now: datetime = NOW) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> datetime:
+        self.now = self.now + timedelta(seconds=seconds)
+        return self.now
+
+
+class Trace:
+    """One ordered log shared by the unit of work, the outbox and the ledger, so a test can
+    assert that an effect, its outbox row and its claim happened INSIDE one ``begin``."""
+
+    def __init__(self) -> None:
+        self.entries: list[str] = []
+
+    def add(self, entry: str) -> None:
+        self.entries.append(entry)
+
+
+class FakeUnitOfWork:
+    """``UnitOfWork`` over the in-memory stores: ``begin`` snapshots their dict/list state (the
+    containers: a store REPLACES the objects it holds on every write) and restores it when the
+    block raises, so atomicity is observable (a failed outbox append leaves no document and no
+    job behind)."""
+
+    def __init__(self, trace: Trace, *stores: object) -> None:
+        self.trace = trace
+        self.stores = list(stores)
+        self.begun = 0
+        self.depth = 0
+
+    @asynccontextmanager
+    async def begin(self, ctx: ExecutionContext) -> AsyncIterator[None]:
+        del ctx
+        assert self.depth == 0, "units of work must not nest"
+        snapshot = [
+            (store, {k: copy(v) for k, v in vars(store).items() if isinstance(v, dict | list)})
+            for store in self.stores
+        ]
+        self.begun += 1
+        self.depth += 1
+        self.trace.add("begin")
+        try:
+            yield
+        except BaseException:
+            for store, saved in snapshot:
+                vars(store).update(saved)
+            self.trace.add("rollback")
+            raise
+        else:
+            self.trace.add("commit")
+        finally:
+            self.depth -= 1
+
+
+class RecordingOutbox:
+    def __init__(self, trace: Trace, uow: FakeUnitOfWork | None = None) -> None:
+        self.trace = trace
+        self.uow = uow
+        self.records: list[OutboxRecord] = []
+        self.fail = False
+
+    async def append(self, ctx: ExecutionContext, records: Sequence[OutboxRecord]) -> None:
+        del ctx
+        if self.uow is not None:
+            assert self.uow.depth == 1, "an outbox append must happen inside a unit of work"
+        if self.fail:
+            raise RuntimeError("the outbox is down")
+        self.records.extend(records)
+        self.trace.add(f"outbox:{','.join(r.event_type.split('.', 1)[1] for r in records)}")
+
+    def types(self) -> list[str]:
+        return [r.event_type for r in self.records]
+
+    def data(self, event_type: str) -> list[dict[str, Any]]:
+        return [dict(r.payload["data"]) for r in self.records if r.event_type == event_type]
+
+
+class FakeLedger:
+    """``ProcessedEvents``: a claim is kept (and traced) when the block commits."""
+
+    def __init__(self, trace: Trace, uow: FakeUnitOfWork | None = None) -> None:
+        self.trace = trace
+        self.uow = uow
+        self.claimed: list[str] = []
+
+    async def claim(self, ctx: ExecutionContext, *, event_id: Uuid) -> bool:
+        del ctx
+        if self.uow is not None:
+            assert self.uow.depth == 1, "a claim must happen inside a unit of work"
+        self.trace.add(f"claim:{event_id}")
+        if event_id in self.claimed:
+            return False
+        self.claimed.append(event_id)
+        return True
+
+
+class FakeLiveness:
+    def __init__(self) -> None:
+        self.beats = 0
+
+    def beat(self) -> None:
+        self.beats += 1
+
+
+@dataclass(frozen=True)
+class FakeNamesakeView:
+    replaced: Sequence[str] = ()
+    kept: Sequence[str] = ()
+
+
+class FakeNamesakes:
+    """``OlderNamesakes``: what a registration of ``file_id`` would replace / leave."""
+
+    def __init__(self) -> None:
+        self.views: dict[str, FakeNamesakeView] = {}
+
+    def set(self, file_id: str, *, replaced: Sequence[str] = (), kept: Sequence[str] = ()) -> None:
+        self.views[file_id] = FakeNamesakeView(tuple(replaced), tuple(kept))
+
+    async def execute(self, ctx: ExecutionContext, file_id: Uuid) -> Sequence[Uuid]:
+        return list(self.views.get(file_id, FakeNamesakeView()).replaced)
+
+    async def preview(self, ctx: ExecutionContext, file_id: Uuid) -> FakeNamesakeView:
+        if file_id == "missing":
+            raise NotFoundError("file not found")
+        return self.views.get(file_id, FakeNamesakeView())
+
+
+@dataclass(frozen=True)
+class FakeSpace:
+    space_id: str
+
+
+class FakeSpaces:
+    def __init__(self, *space_ids: str) -> None:
+        self.live = set(space_ids)
+
+    async def get_active(self, ctx: ExecutionContext, space_id: Uuid) -> FakeSpace | None:
+        return FakeSpace(space_id) if space_id in self.live else None
+
+
+class FakeSweep:
+    """``DrawingsSweep`` over the in-memory stores: deletes a PURGING document and everything
+    under it, in one go, and counts the rows."""
+
+    def __init__(
+        self,
+        documents: InMemoryDocumentRepository,
+        jobs: InMemoryJobRepository,
+        pages: InMemoryPageRepository,
+        profiles: InMemoryProfileRepository,
+        characterizations: InMemoryCharacterizationRepository,
+    ) -> None:
+        self.documents, self.jobs, self.pages = documents, jobs, pages
+        self.profiles, self.characterizations = profiles, characterizations
+
+    async def sweep_document(self, ctx: ExecutionContext, document_id: Uuid) -> int:
+        doc = self.documents.rows.get(document_id)
+        if doc is None or doc.workspace_id != ctx.workspace_id or doc.status.value != "purging":
+            return 0
+        total = 1
+        del self.documents.rows[document_id]
+        for key in [k for k in self.pages.stages if k[1] == document_id]:
+            del self.pages.stages[key]
+            total += 1
+        for key in [k for k in self.pages.results if k[1] == document_id]:
+            del self.pages.results[key]
+            total += 1
+        for job_id in [j for j, r in self.jobs.rows.items() if r.document_id == document_id]:
+            del self.jobs.rows[job_id]
+            total += 1
+        for char_key in [k for k in self.characterizations.rows if k[1] == document_id]:
+            del self.characterizations.rows[char_key]
+            total += 1
+        before = len(self.profiles.rows)
+        self.profiles.rows = [v for v in self.profiles.rows if v.document_id != document_id]
+        return total + before - len(self.profiles.rows)
+
+
+# --------------------------------------------------------------------------------------
+# a whole drawings stack over the fakes
+# --------------------------------------------------------------------------------------
+IEC_TOKENS = tuple(f"-K{n}" for n in range(1, 31))  # 30 IEC 81346 designations
+CN_TOKENS = tuple(f"KM{n}" for n in range(1, 31))  # 30 Chinese letter codes
+ELECTRICAL_SETTINGS = ElectricalSettings(
+    inspect_batch_pages=2, progress_min_interval_s=0.0, queue_protection_limit=3
+)
+
+
+def make_font(
+    name: str, font_type: str, cid: bool, embedded: bool, has_tounicode: bool
+) -> FontSignal:
+    return FontSignal(name, font_type, cid, embedded, has_tounicode)
+
+
+def tokens_page(page_no: int, tokens: Sequence[str], **changes: Any) -> PageSignals:
+    return make_signals(page_no, tokens=tuple(tokens), **changes)
+
+
+@dataclass
+class Stack:
+    """Everything a drawings test wants, built over the in-memory fakes with a fixed clock."""
+
+    ctx: ExecutionContext
+    clock: Clock
+    trace: Trace
+    uow: FakeUnitOfWork
+    outbox: RecordingOutbox
+    ledger: FakeLedger
+    liveness: FakeLiveness
+    projects: InMemoryProjectRepository
+    profiles: InMemoryProfileRepository
+    documents: InMemoryDocumentRepository
+    jobs: InMemoryJobRepository
+    pages: InMemoryPageRepository
+    characterizations: InMemoryCharacterizationRepository
+    files: FakeDrawingFiles
+    stager: FakeStager
+    namesakes: FakeNamesakes
+    spaces: FakeSpaces
+    sweep_store: FakeSweep
+    settings: ElectricalSettings
+    rules: Any
+    pdf: FakePdfInspection | None = None
+    services: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def project_service(self) -> Any:
+        return self.services["projects"]
+
+    @property
+    def document_service(self) -> Any:
+        return self.services["documents"]
+
+    @property
+    def job_service(self) -> Any:
+        return self.services["jobs"]
+
+    def inspector(self, pdf: FakePdfInspection | None = None, **kwargs: Any) -> Any:
+        """A fresh ``InspectDocument`` over this stack's stores and the given inspection double."""
+
+        self.pdf = pdf or self.pdf
+        assert self.pdf is not None, "give the stack a FakePdfInspection first"
+        return InspectDocument(
+            self.documents,
+            self.jobs,
+            self.pages,
+            self.profiles,
+            self.characterizations,
+            self.files,
+            self.stager,
+            self.pdf,
+            self.rules,
+            self.ledger,
+            self.outbox,
+            self.uow,
+            self.liveness,
+            self.settings,
+            clock=self.clock,
+            **kwargs,
+        )
+
+
+def build_stack(
+    *, settings: ElectricalSettings | None = None, workspace_id: str = WS, space_id: str = SPACE
+) -> Stack:
+    settings = settings or ELECTRICAL_SETTINGS
+    trace = Trace()
+    clock = Clock()
+    projects = InMemoryProjectRepository()
+    profiles = InMemoryProfileRepository()
+    documents = InMemoryDocumentRepository()
+    jobs = InMemoryJobRepository()
+    pages = InMemoryPageRepository()
+    characterizations = InMemoryCharacterizationRepository(documents)
+    files = FakeDrawingFiles()
+    stager = FakeStager()
+    namesakes = FakeNamesakes()
+    spaces = FakeSpaces(space_id)
+    uow = FakeUnitOfWork(trace, projects, profiles, documents, jobs, pages, characterizations)
+    outbox = RecordingOutbox(trace, uow)
+    ledger = FakeLedger(trace, uow)
+    rules = PackagedRuleSource()
+    sweep_store = FakeSweep(documents, jobs, pages, profiles, characterizations)
+    uow.stores.extend([ledger, outbox])  # a claim and an outbox row roll back with the unit
+    job_service = JobService(jobs, documents, pages, outbox, uow, clock=clock)
+    stack = Stack(
+        ctx=make_ctx(workspace_id),
+        clock=clock,
+        trace=trace,
+        uow=uow,
+        outbox=outbox,
+        ledger=ledger,
+        liveness=FakeLiveness(),
+        projects=projects,
+        profiles=profiles,
+        documents=documents,
+        jobs=jobs,
+        pages=pages,
+        characterizations=characterizations,
+        files=files,
+        stager=stager,
+        namesakes=namesakes,
+        spaces=spaces,
+        sweep_store=sweep_store,
+        settings=settings,
+        rules=rules,
+    )
+    stack.services = {
+        "projects": ProjectService(projects, profiles, spaces, rules, uow, clock=clock),
+        "jobs": job_service,
+        "documents": DocumentService(
+            projects,
+            documents,
+            jobs,
+            pages,
+            profiles,
+            files,
+            namesakes,
+            rules,
+            job_service,
+            outbox,
+            uow,
+            queue_protection_limit=settings.queue_protection_limit,
+            clock=clock,
+        ),
+        "replacement": ReplacementPreviewService(namesakes, files, documents),
+        "characterization": CharacterizationService(projects, documents, characterizations),
+        "purge_file": PurgeFileDocuments(documents, jobs, outbox, uow, clock=clock),
+        "purge_space": PurgeSpaceDrawings(projects, documents, jobs, outbox, uow, clock=clock),
+        "sweep": SweepPurgedDocument(sweep_store, ledger, uow),
+    }
+    return stack
+
+
+async def seed_project(stack: Stack, **profile: Any) -> Any:
+    """A project in the stack's space (default profile unless a body is given)."""
+    detail = await stack.project_service.create(
+        stack.ctx, space_id=SPACE, name="Plant 7", description=None, profile=profile or None
+    )
+    stack.uow.begun = 0  # what a test counts starts after its set-up
+    stack.trace.entries.clear()
+    return detail.project
+
+
+async def seed_file(
+    stack: Stack, file_id: str, *, body: bytes = b"%PDF-1.7 fake", **changes: Any
+) -> FakeDrawingFile:
+    """A readable PDF file of the stack's space whose bytes the stager can read."""
+    key = f"{stack.ctx.workspace_id}/{file_id}"
+    file = FakeDrawingFile(
+        file_id=file_id, storage_key=key, size_bytes=len(body), name=f"{file_id}.pdf", **changes
+    )
+    stack.files.add(file, workspace_id=stack.ctx.workspace_id)
+    stack.stager.bodies[key] = body
+    return file
+
+
+class RecordingElectricalPurge:
+    """A cascade participant for suites that are not about drawings (the files / spaces
+    stacks): it counts its calls and reports ``marked`` documents. ``FileContentPurge`` and
+    ``SpaceContentPurge`` have the same shape, so it serves both."""
+
+    def __init__(self, marked: int = 0) -> None:
+        self.marked = marked
+        self.calls: list[str] = []
+
+    async def execute(self, ctx: ExecutionContext, subject: Uuid) -> int:
+        self.calls.append(subject)
+        return self.marked

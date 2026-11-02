@@ -62,7 +62,7 @@ from app.modules.electrical.drawings.domain.profile import (
     SymbolStandard,
 )
 from app.modules.electrical.drawings.domain.project import Project
-from app.modules.electrical.shared.kinds import Convention, PlcFamily
+from app.modules.electrical.shared.kinds import Convention, ConventionTally, PlcFamily
 from tests.integration.conftest import LiveDbDsns
 from tests.unit.support_electrical import make_signals
 
@@ -423,8 +423,8 @@ async def test_the_same_bytes_are_one_active_document_per_project(repos: _Repos)
 
 
 async def test_an_excluded_document_can_still_be_purged(repos: _Repos) -> None:
-    """The CHECK ties the reason to the EXCLUDED status; the domain keeps the reason on
-    ``mark_purging``, so the adapter writes a PURGING row without it (module docstring)."""
+    """The CHECK ties the reason to the EXCLUDED status; ``mark_purging`` clears the reason, so
+    the PURGING row is written without it."""
     ctx, _, document = await _seed(repos, new_uuid7())
     document.exclude(ExclusionReason.FILE_UNREADABLE, utc_now())
     await repos.documents.save(ctx, document)
@@ -618,6 +618,60 @@ async def test_pages_seed_record_resume_and_read(repos: _Repos) -> None:
     assert [row.page_no for row in rest.data] == [4] and rest.next_cursor is None
     assert rest.data[0].attempts == 2
     assert await repos.pages.unfinished(_ctx(new_uuid7()), document.id, Stage.CLASSIFY) == []
+
+
+async def test_evidence_reads_back_finished_pages_with_their_tally_and_reset_reopens_them(
+    repos: _Repos,
+) -> None:
+    """S7: a resumed job folds in what an earlier run recorded (signals without the token
+    sample, plus the tally), failed pages are not evidence, and ``reset`` returns stage rows to
+    pending."""
+    ctx, _, document = await _seed(repos, new_uuid7())
+    await repos.pages.seed(ctx, document.id, [1, 2, 3], Stage.CLASSIFY, PIPELINE_VERSION)
+    tally = ConventionTally(
+        conventions={Convention.IEC_81346: 7, Convention.NFPA_JIC: 2},
+        plc_families={PlcFamily.S7_EN: 3},
+        cross_reference_formats={"slash_page_dot_column": 1},
+        identifiers=12,
+        tokens=40,
+    )
+    page_one = replace(_result(1), tally=tally)
+    await repos.pages.record(
+        ctx,
+        document.id,
+        [
+            page_one,
+            _result(2, PageKind.RASTER),
+            _result(3, PageKind.EMPTY, status=StageStatus.FAILED, reason=StageReason.PARSE_ERROR),
+        ],
+    )
+    evidence = await repos.pages.evidence(ctx, document.id)
+    assert [e.classification.page_no for e in evidence] == [1, 2]  # page 3 failed
+    assert evidence[0].tally == tally and evidence[1].tally is None
+    assert evidence[0].signals.tokens == ()
+    assert evidence[0].signals.char_count == make_signals(1).char_count
+    assert evidence[1].classification.kind is PageKind.RASTER
+
+    assert await repos.pages.reset(ctx, document.id, [2, 3], Stage.CLASSIFY) == 2
+    assert await repos.pages.unfinished(ctx, document.id, Stage.CLASSIFY) == [2, 3]
+    assert await repos.pages.reset(ctx, document.id, [2, 3], Stage.CLASSIFY) == 0  # nothing left
+    assert [e.classification.page_no for e in await repos.pages.evidence(ctx, document.id)] == [1]
+    assert await repos.pages.reset(ctx, document.id, None, Stage.CLASSIFY) == 1
+    assert await repos.pages.unfinished(ctx, document.id, Stage.CLASSIFY) == [1, 2, 3]
+    assert await repos.pages.reset(_ctx(new_uuid7()), document.id, None, Stage.CLASSIFY) == 0
+
+
+async def test_delete_in_space_also_deletes_the_projects_own_profile_versions(
+    repos: _Repos,
+) -> None:
+    ws = new_uuid7()
+    ctx, project, document = await _seed(repos, ws)
+    await repos.profiles.append(ctx, _profile_version(project))  # the project's series
+    await repos.profiles.append(ctx, _profile_version(project, document.id))  # the document's
+    assert await repos.projects.delete_in_space(ctx, project.space_id) == 1
+    assert await repos.profiles.latest(ctx, project_id=project.id, document_id=None) is None
+    # the document's own series goes with the document (sweep), not with the project
+    assert await repos.profiles.latest(ctx, project_id=project.id, document_id=document.id)
 
 
 async def test_a_pending_page_lists_without_a_classification(repos: _Repos) -> None:

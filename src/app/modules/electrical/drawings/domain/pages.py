@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.modules.electrical.drawings.domain.pipeline import Stage
+from app.modules.electrical.shared.kinds import ConventionTally
 
 
 class PageKind(StrEnum):  # FR-ING-08, plus EMPTY (INC1-D-18)
@@ -111,6 +112,10 @@ class PageResult:
     classification: PageClassification
     signals: PageSignals
     attempts: int = 1
+    # Additive to the LLD shape: what the page's tokens said about the drawing's conventions
+    # (``IdentifierParser.tally``). Stored with the signals so a resumed job can fold the pages
+    # an earlier run finished without reading their text again (LLD 3.3.8, step 5).
+    tally: ConventionTally | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,3 +126,15 @@ class PageRow:
     classification: PageClassification | None  # None while the classify stage is pending
     stages: Mapping[Stage, StageStatus]
     attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class PageEvidence:
+    """What a finished page contributes to the document's proposal and characterization:
+    its classification, its stored (abridged: no token sample) signals and its tally. Additive
+    to the LLD: the port had no way to read a finished page's evidence back (see
+    ``PageRepository.evidence``)."""
+
+    classification: PageClassification
+    signals: PageSignals
+    tally: ConventionTally | None
