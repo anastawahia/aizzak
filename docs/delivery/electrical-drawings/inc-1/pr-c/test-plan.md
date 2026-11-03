@@ -223,4 +223,54 @@ test-rules.sh           31 rules found / test-rules: OK
 
 **PASS** — لا خطأ blocking أو major مفتوح، والبوابات الست خضراء، وQA‑1 (major) أُغلق بدليل على أنواع تلف متعددة وعلى الحاوية المقيّدة. يبقى مفتوحاً minor: QA‑5 (حراسة المعرّف ناقصة، تُصلَح بتعبير نمطي صارم من سطر واحد) وQA‑6 (متابعة منصّة معروفة)، لا يمنعان الدمج بتقديري لكن الأفضل إغلاق QA‑5 قبله لأن إصلاح QA‑3 ادّعى معالجة «كل معرّف ليس UUID».
 
+---
+
+## 8. إعادة 2 (بعد جولة الإصلاح الثانية، الرأس `7190940`)
+
+### 8.1 إغلاق QA‑5
+
+| البند | الدليل | الحالة |
+|---|---|---|
+| حالات QA‑5 العشر | `test_electrical_qa_pr_c.py` تمرّ الآن دون `xfail` (لا علامة بقيت في الملف) | مغلق |
+| متغيّرات إضافية (16 نصاً غير قانوني) | أحرف كبيرة مع شرطة سفلية، أقواس معقوفة، صيغة URN، 32 رقماً بلا شرطات، 35 و37 حرفاً، بايت NUL (في الآخر وفي الأول وبعد UUID كامل)، مسافة بادئة، سطر جديد في النهاية وبعد UUID كامل (فخّ `$`)، أرقام كاملة العرض وعربية‑هندية، حرف غير ست‑عشري، نص فارغ: كلها `is_uuid_text` و`_is_uuid` = False و`decode_id_cursor` يرفض (`test_noncanonical_uuid_text_is_refused_by_every_guard`) | مغلق |
+| القانوني يمرّ | حروف صغيرة وكبيرة ومختلطة وأصفار؛ ومحلّل asyncpg نفسه يقبلها (`pgproto.UUID`)؛ غير النصوص (`None`, `int`, `bytes`, `list`) False؛ مؤشّرات تالفة (فارغ، `!!!`، 5000 حرف، بايتات غير UTF‑8) ترفضها كلتا الدالتين دون استثناء غير `AppError` | مغلق |
+| مؤشّر الصفحات int32 | على `SqlPageRepository.list` بجلسة مسجِّلة: `±(2^31‑1)` و0 تصل القاعدة؛ `2^31` و`2^31+1` و`99999999999` و`‑2^31` و`2^63` ⇒ `ValidationError` والجلسة لم تُستدعَ | مغلق |
+| مؤشّر المحادثات bigint | `decode_seq_cursor` دون `maximum` يقبل `2^31` و`2^40` و`2^63‑1`؛ ومحوّل المحادثات لا يمرّر `maximum` (اختبار على المصدر) | مغلق |
+| files/conversations/spaces… | `test_files_repository_rls.py` و`test_conversations_repository_rls.py` على PostgreSQL مؤقت: 110 نجاح مع المسارات الأخرى؛ كل `decode_id_cursor` في الأجسام الأخرى يقبل كل UUID قانوني (اختبار الحدّ أعلاه) | مغلق |
+
+### 8.2 الفحص الاستكشافي على سلوك الجولة 2
+
+| الحالة | الطريقة | النتيجة |
+|---|---|---|
+| عطل عابر ⇒ تحرير العقد ⇒ إعادة التسليم | `InspectionUnavailable` في `pages`، ثم نفس `event_id` | الأول يرفع، الوظيفة `running` وعقدها منتهٍ والدفتر فارغ؛ الثاني يكمل ويطالب بـ`e1`؛ الثالث لا أثر (`test_a_transient_fault_releases_the_lease_and_the_redelivery_completes`). والمطوّرون: التحرير بحارس `attempt` |
+| تشغيل متقادم (استُولي عليه) لا يكتب عبر أي مساعد | اختبارات المطوّرين (`_fail`, `_stop_not_live`, `_exclude_duplicate`, الصفحة‑بصفحة، `_keep_lease`) راجعتها وتحقّقتُ أنها تفشل على الشيفرة السابقة (الحارس `_owned` غائب فيها) | سليم |
+| إلغاء أثناء الدفعة الوحيدة؛ إلغاء ثانٍ على `awaiting_confirmation` | `test_a_cancel_asked_during_the_only_batch…` و`…second_cancel…` | الأول `cancelled` مع حدث ودفتر؛ الثاني يلغي فعلاً. سليم |
+| `seed` بـ5000 صفحة وإعادة البذر | وحدة: 10 جمل كلها دون 32767 معامل؛ حيّ: `test_electrical_drawings_repository_rls.py` (يبذر 5000 على PostgreSQL مؤقت) ويعيد | سليم |
+| فشل `summary` | الأسباب الثلاثة ⇒ `electrical.pdf_rejected` بنص ثابت يحوي السبب | سليم |
+| PUT profile | 422 لـ`+1` و`--` و`-K5` و`KM1` و`X1:14` وملصقات بأحرف مخفية و`=+` وقيم غير قابلة للتجزئة وأحرف مخفية في `vendor_library`؛ أضفتُ 10 أجسام عدائية بعلامة `ZQXHOSTILE`: لا تظهر في أي نص استجابة؛ 200 وقانوني لـ`+24V` و`‑48v`⇒`‑48V` | سليم |
+| حدود ele‑parse | جداول خطوط ضخمة، جواب أكبر من الحدّ، فيض stderr، نصوص رفض ثابتة، `O_NOFOLLOW` وارتباط رمزي ومجلّد (اختبارات المطوّرين مع تشغيل الطفل الحقيقي) + حاوية مقيّدة 18 نجاحاً | سليم |
+| المُحمِّل يتوقف عند أول بايت فوق `expected_size`؛ هروب تقرير Markdown | اختبارات المطوّرين تمرّ | سليم |
+
+### 8.3 أخطاء جديدة
+
+لا شيء. الملاحظة الوحيدة: QA‑6 (`space_id`/`file_id` ليس UUID في جسم `POST`) ما زال مفتوحاً كمتابعة منصّة minor كما في الإعادة 1، لم يتغيّر.
+
+### 8.4 البوابات (الرأس `7190940` مع اختباراتي)
+
+```
+ruff format --check .   983 files already formatted
+ruff check .            All checks passed!
+mypy src                Success: no issues found in 547 source files
+lint-imports            Contracts: 9 kept, 0 broken.
+pytest -rs (1)          8214 passed, 716 skipped, 7 warnings in 272.34s (0:04:32)   (exit 0)
+pytest -rs (2)          8214 passed, 716 skipped, 7 warnings in 269.72s (0:04:29)   (exit 0)
+test-rules.sh           SUCCESS: 31 rules found / test-rules: OK
+```
+
+المتخطّى (716) هو الحيّ/opt‑in. الصورة المؤقتة `aizzak/ele-parse:qa3` (أُزيلت؛ بقي الوسم `dev` وحده): `RUN_ELE_PARSE_CONTAINER_TEST=1` ⇒ 18 passed. الاختبارات الحيّة على حاويات مؤقتة بمنافذ عشوائية (PostgreSQL 16 وRedis 7 وMinIO، `--rm`، أُوقفت وأُزيلت): `test_electrical_drawings_repository_rls.py` + `test_electrical_ingestion_live.py` + `test_electrical_qa_live.py` + `test_minio_storage.py` = 66 passed (دون xfail)، وcascades/files/conversations = 110 passed. ضُبطت المتغيّرات السبعة للـDSN والـRedis وMinIO قبل أول تشغيل مع فحص عدم وجود 15432/16379/16380، وQdrant/Vault/Ollama/embedding على منفذ ميّت. لم يُلمس المكدّس الحيّ.
+
+### 8.5 الحكم بعد الإعادة 2
+
+**PASS**. كل البوابات خضراء، QA‑5 مغلق، لا خطأ blocking أو major أو جديد. يبقى QA‑6 (minor، متابعة منصّة).
+
 </div>
