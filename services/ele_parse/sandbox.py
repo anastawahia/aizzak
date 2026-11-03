@@ -113,6 +113,23 @@ def run_child(
     out.start()
     err.start()
     try:
+        return _collect(process, request, timeout_s, out, err)
+    finally:
+        # the readers use the descriptors directly: nobody else closes the child's pipes
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                pipe.close()
+
+
+def _collect(
+    process: subprocess.Popen[bytes],
+    request: dict[str, Any],
+    timeout_s: float,
+    out: _BoundedReader,
+    err: _BoundedReader,
+) -> dict[str, Any]:
+    assert process.stdin is not None
+    try:
         with contextlib.suppress(OSError):  # a child that is already gone cannot be written to
             process.stdin.write(json.dumps(request).encode())
             process.stdin.close()
@@ -153,7 +170,7 @@ def _answer(code: int, stdout: bytes) -> dict[str, Any]:
     if reason in _REJECTIONS or reason == contract.BAD_RANGE:
         # a fixed text per code: nothing the child wrote (it ran the file's bytes) is repeated
         raise contract.ContractError(422, reason, _REJECTION_TEXT.get(reason, reason))
-    raise contract.ContractError(500, "parse_error", f"the child refused: {reason}")
+    raise contract.ContractError(500, "parse_error", "the child refused the request")
 
 
 class _BoundedReader(threading.Thread):
@@ -163,14 +180,14 @@ class _BoundedReader(threading.Thread):
     def __init__(self, process: subprocess.Popen[bytes], stream: Any, limit: int) -> None:
         super().__init__(daemon=True)
         self._process = process
-        self._stream = stream
+        self._fd = stream.fileno()  # taken now: the stream is closed by the caller later
         self._limit = limit
         self._chunks: list[bytes] = []
         self.overflowed = False
 
     def run(self) -> None:
         total = 0
-        fd = self._stream.fileno()
+        fd = self._fd
         while True:
             try:
                 chunk = os.read(fd, _READ_CHUNK)

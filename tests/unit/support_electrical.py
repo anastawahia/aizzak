@@ -54,7 +54,6 @@ from app.modules.electrical.drawings.domain.errors import (
 from app.modules.electrical.drawings.domain.job import IngestionJob, JobKind, JobStatus
 from app.modules.electrical.drawings.domain.pages import (
     FontSignal,
-    PageClassification,
     PageEvidence,
     PageResult,
     PageRow,
@@ -321,9 +320,6 @@ class InMemoryDocumentRepository:
             if r.file_id == file_id and r.status is not DocumentStatus.PURGING
         ]
 
-    async def live_in_space(self, ctx: ExecutionContext, space_id: Uuid) -> Sequence[Document]:
-        return [copy(r) for r in self._mine(ctx) if r.space_id == space_id and r.is_live]
-
     async def active_files(self, ctx: ExecutionContext, project_id: Uuid) -> Mapping[Uuid, Uuid]:
         return {
             r.id: r.file_id for r in self._mine(ctx) if r.project_id == project_id and r.is_live
@@ -543,15 +539,6 @@ class InMemoryPageRepository:
                 status = self._status(k)
                 counts[status] = counts.get(status, 0) + 1
         return counts
-
-    async def classifications(
-        self, ctx: ExecutionContext, document_id: Uuid
-    ) -> Sequence[PageClassification]:
-        return [
-            r.classification
-            for (ws, doc, _), r in sorted(self.results.items(), key=lambda kv: kv[0][2])
-            if ws == ctx.workspace_id and doc == document_id
-        ]
 
     async def list(
         self, ctx: ExecutionContext, document_id: Uuid, *, limit: int, cursor: str | None

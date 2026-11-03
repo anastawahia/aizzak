@@ -299,6 +299,11 @@ class InspectDocument:
                     extra={"job_id": job_id, "error": type(exc).__name__},
                 )
                 return
+        # every try met a conflict: the lease stays, and the redelivery will be turned away
+        _logger.warning(
+            "electrical.inspect.release_failed",
+            extra={"job_id": job_id, "error": "ConflictError"},
+        )
 
     @staticmethod
     def _owned(job: IngestionJob, attempt: int) -> bool:

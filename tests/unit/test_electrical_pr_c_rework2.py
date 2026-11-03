@@ -7,12 +7,17 @@ use the real child process on small PDFs written in ``tmp_path``.
 
 from __future__ import annotations
 
+import gc
 import html
+import json
+import logging
 import sys
-from collections.abc import AsyncIterator, Sequence
+import warnings
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -22,7 +27,7 @@ from services.ele_parse import __main__ as ele_cli
 from services.ele_parse import app, contract, inspect, sandbox
 from sqlalchemy.dialects.postgresql import asyncpg as asyncpg_dialect
 
-from app.framework.errors import NotFoundError, ValidationError
+from app.framework.errors import ConflictError, ValidationError
 from app.framework.pagination import (
     decode_id_cursor,
     decode_seq_cursor,
@@ -608,9 +613,6 @@ def test_document_not_live_is_one_constant() -> None:
     assert _common.DOCUMENT_NOT_LIVE == "electrical.document_not_live"
 
 
-_ = (Sequence, NotFoundError)  # imported for the type checkers of the fixtures above
-
-
 # ======================== #6 a run that was taken over ends nothing: _fail, _stop_not_live, ...
 async def _taken_over(stack: Stack) -> tuple[Any, str, str, int]:
     """A job running at attempt 2 (another run holds it); returns (inspector, doc, job, the STALE
@@ -663,3 +665,84 @@ async def test_the_owner_still_ends_its_own_job_through_each_helper() -> None:
     with pytest.raises(_Stop):
         await inspector._fail(stack.ctx, job_id, mine, "e1", "electrical.pdf_rejected", "x")
     assert stack.jobs.rows[job_id].status is JobStatus.FAILED
+
+
+# ====== round 3: review j-1, j-2, j-6 and security C-15
+def test_the_childs_pipes_are_closed_on_every_path() -> None:
+    script = 'import sys;sys.stdin.read();print(\'{"ok":true,"result":{}}\')'
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ResourceWarning)
+        for _ in range(5):
+            sandbox.run_child({}, timeout_s=10, limits=_LIMITS, argv=_stub(script))
+            gc.collect()  # an unclosed pipe warns when it is collected
+
+
+def test_a_pipe_is_closed_after_a_timeout_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    real = sandbox.subprocess.Popen
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        process = real(*args, **kwargs)
+        seen.append(process)
+        return process
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", spy)
+    script = "import sys,time;sys.stdin.read();time.sleep(30)"
+    with pytest.raises(contract.ContractError):
+        sandbox.run_child({}, timeout_s=0.5, limits=_LIMITS, argv=_stub(script))
+    process = seen[0]
+    assert process.stdout.closed and process.stderr.closed and process.stdin.closed
+
+
+def test_a_refusal_with_an_unknown_code_does_not_repeat_the_childs_text() -> None:
+    script = (
+        "import json,sys;sys.stdin.read();"
+        "print(json.dumps({'ok':False,'code':'HOSTILE-CODE /etc/passwd'}))"
+    )
+    with pytest.raises(contract.ContractError) as raised:
+        sandbox.run_child({}, timeout_s=10, limits=_LIMITS, argv=_stub(script))
+    assert (raised.value.status, raised.value.code) == (500, "parse_error")
+    assert raised.value.detail == "the child refused the request"
+
+
+def test_32_fonts_with_four_byte_names_cost_their_font_table_not_the_batch() -> None:
+    fonts = tuple(
+        FontSignal(
+            name="\U0001f600" * 96,
+            font_type="\U0001f600" * 32,
+            cid=True,
+            embedded=True,
+            has_tounicode=True,
+        )
+        for _ in range(32)
+    )
+    signals = replace(make_signals(), fonts=fonts)
+    assert len(
+        json.dumps(sql_repository._abridged_signals(signals), ensure_ascii=False).encode()
+    ) > (sql_repository._SIGNALS_BUDGET_BYTES)
+    result = SimpleNamespace(signals=signals, tally=None)
+
+    stored = sql_repository._stored_signals(result)  # type: ignore[arg-type]
+
+    assert stored["fonts"] == []
+    assert len(json.dumps(stored, ensure_ascii=False).encode()) < 16_384
+    assert stored["char_count"] == signals.char_count
+
+
+async def test_a_lease_that_cannot_be_given_back_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stack = build_stack()
+    inspector, _, job_id, stale = await _taken_over(stack)
+    stack.jobs.rows[job_id].attempt = stale  # this run owns it again
+
+    async def conflict(*_: Any, **__: Any) -> None:
+        raise ConflictError("moved")
+
+    stack.jobs.save = conflict  # type: ignore[method-assign]
+    caplog.set_level(logging.WARNING)
+
+    await inspector._release_lease(stack.ctx, job_id, stale)
+
+    records = [r for r in caplog.records if r.message == "electrical.inspect.release_failed"]
+    assert len(records) == 1 and records[0].job_id == job_id  # type: ignore[attr-defined]

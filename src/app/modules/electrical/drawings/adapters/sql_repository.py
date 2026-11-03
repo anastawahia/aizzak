@@ -1015,8 +1015,9 @@ def _stored_signals(result: PageResult) -> dict[str, Any]:
     if result.tally is not None:
         stored["tally"] = _tally_json(result.tally)
     if len(json.dumps(stored, ensure_ascii=False).encode()) > _SIGNALS_BUDGET_BYTES:
-        # Unreachable with the fields clipped above and by ele-parse; kept so that a page that
-        # still would not fit the column's CHECK (16 KiB) costs its font table, not the batch.
+        # A hostile file reaches this: 32 fonts with 4-byte names (96 chars + a 32-char type)
+        # come to about 19 KB. The page costs its font table, not the batch and not the
+        # column's CHECK (16 KiB); the numbers alone are far under the budget.
         stored["fonts"] = []
     return stored
 
