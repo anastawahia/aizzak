@@ -990,8 +990,10 @@ groups:
             `ele-parse` 503/504/507 answers, `XINFO GROUPS stream.electrical`
             on redis-stream for pending counts, and `python -m app.ops.dlq
             peek stream.electrical`. A queue that is only long: raise
-            ELE_PARSE_MAX_CHILDREN / WORKER_CONCURRENCY_ELECTRICAL after
-            measuring, never blindly.
+            ELE_PARSE_MAX_CHILDREN after measuring; never raise
+            WORKER_CONCURRENCY_ELECTRICAL or add worker-electrical replicas
+            above 1 without tenant isolation (security, not capacity:
+            08-local-runbook 4.29).
 
       # WireTwin (INC-1, INC1-D-22, INC1-AC-14). Counted by the `app` processes (registration
       # is where a document leaves a project's live set; the workers have no /metrics). An
