@@ -74,6 +74,26 @@ def test_import_contracts():
 - **الأحداث:** كل حمولة حدث تُحقَّق مقابل JSON Schema في `events/schemas/` قبل النشر وفي الاختبار.
 - **الإضافات (Plugins):** اختبار أن `PluginLoader` يكتشف وكيلاً بمجرد `manifest.py` + `BaseAgent`، ويعزل المعطوب دون إسقاط النواة.
 
+### 5.1) اختبارات WireTwin وأماكنها (`electrical-drawings` INC‑1)
+
+> المصدر الملزِم [`lld-inc-1.md` §5](../delivery/electrical-drawings/docs/lld-inc-1.md). المبدأ: النطاق النقي بوحدة، والمحوّل بتكامل حيّ، والحدود بمعماري، والعقد بمقارنة مع `openapi.yaml`. المحلي يشغّل `pytest tests/unit tests/architecture tests/eval` وحدها (المكدّس الحيّ مستعمل)؛ و`live_*` في وظيفة CI `integration` أو على حاويات مؤقتة بموافقة.
+
+| الطبقة | ما يُختبر | أين |
+|--------|-----------|-----|
+| نواة `shared` (CMP‑06) | كل صيغة في ملحق أ من SRS (FR‑ID‑12)، الصالح وغير الصالح، وتطبيع كامل العرض، والتصادمات | `tests/unit/test_electrical_shared_*.py` |
+| نطاق `drawings` | المجاميع وآلات الحالة والبصمة وتصنيف الصفحة واكتشاف الملف والتوصيف | `test_electrical_drawings_domain.py` · `…_classification.py` · `…_profile_detection.py` (بما فيه **INC1‑R‑16**: العتبة الافتراضية لا تُبلغ) · `…_characterization.py` |
+| التطبيق | STG‑00 بكل فروعه والذرّية · STG‑01 · المهام · التطهير · تخطيط الأحداث | `test_electrical_registration.py` · `…_inspection.py` · `…_jobs.py` · `…_purge.py` · `…_event_mapping.py`، على متجر ذاكرة (`support_electrical.py`) و`FakePdfInspection` من ملفات فحص JSON |
+| الواجهة | العشرون مساراً بأخطائها، **العلم يسبق الصلاحية (503)**، الصلاحية لكل مسار، `Idempotency-Key`، `heavy_job`، `Retry-After`، العدّاد، **لا صدى لما يرسله العميل** (S‑8)، وتهريب نص الملف (R1‑4) | `test_api_electrical_router.py` (BT23) · `test_api_rbac.py` (`EXPECTED`) · `test_heavy_job_limit.py` (مجموعة 202 = المحروسة) · `test_api_app_shell.py` / `test_composition_root.py` (الربط) |
+| العقد | مخططات DTO ↔ `openapi.yaml` في الاتجاهين (الخصائص و`required`)، والعمليات والترقيم والمغلّف | `test_api_conventions.py` + مقارنة المخططات في BT23 |
+| خدمة `ele-parse` (CMP‑07) | الفحص على PDFs تُولَّد بـPyMuPDF في `tmp_path`، رفض المسار، المهلة، حدّ الذاكرة، الحتمية، ووضع CLI | `test_ele_parse_service.py` |
+| الأداة والتقييم | `app.ops.electrical_characterize` تعطي **السجلّ نفسه** الذي يخزّنه العامل (تُشغَّل الاثنان على ملف الفحص نفسه)، وM‑04 وM‑32 والمقارنة بين تشغيلين | `test_ops_electrical_characterize.py` · `test_electrical_m32.py` · `test_electrical_eval_framework.py`، على `tests/unit/fixtures/electrical/` (ملفات فحص وتسميات **اصطناعية**، فيها حالات خاطئة عمداً) |
+| المعماري | بادئة كل `Table` وschema `electrical` · عقود الاستيراد التسعة · لا `ignore_imports` جديد | `tests/architecture/test_electrical_tables.py` · `test_import_contracts.py` |
+| تكامل حيّ | RLS للمستودعات وقيودها وفهارسها الفريدة · `read_chunks` على MinIO · **STG‑00 ثم STG‑01 بالمخازن الحقيقية** (Postgres وMinIO وRedis، والعامل مبنيّ بـ`build_electrical_worker` على مجرى ومجموعة فريدين، وفاحص في العملية نفسها، وتسليمان لرسالة واحدة ⇒ صف واحد في `processed_events`) | `test_electrical_drawings_repository_rls.py` · `test_minio_storage.py` · `test_electrical_ingestion_live.py` (`live_db` + `live_minio` + `live_redis`) |
+| عُدّة الحاوية (اختيارية، S9) | عزل `ele-parse`: لا شبكة، لا كتابة على `/`، غير جذر، قتل بالمهلة | `test_ele_parse_containers.py` (`RUN_ELE_PARSE_CONTAINER_TEST=1`، شبكة معزولة وحاويات مؤقتة) |
+
+- **`tests/eval/electrical/` خارج CI** (SRS D‑23): أدوات لا اختبارات (لا بادئة `test_`)، لا يجمعها pytest. M‑04 (`m04_identifiers.py`) قيمته 1.0 بالبناء لأن حالاته نفسها يقرؤها اختبار النواة؛ وM‑32 (`m32_profile_detection.py`) يأخذ مجلد ملفات فحص وملف تسميات **وسيطين** فلا مسار ثابت في الشيفرة، ويُختبر حسابه في INC‑1 على ملفات اصطناعية وتسميات محسوبة يدوياً. **تشغيله على عيّنات المالك وتسمياتها (P1) بعد الدمج** وخارج INC‑1، ومعه ضبط العتبات (`INC1‑R‑15`، `INC1‑R‑16`).
+- **ما لا يُشغَّل محلياً دون موافقة:** `live_*` أعلاه على المكدّس الحيّ (يعيد بناء مخطط `aizzak_test` ويمسّ Redis وMinIO فيه). تُشغَّل على حاويات `--rm` بلا أحجام مسمّاة ومنافذ loopback عشوائية، أو في CI.
+
 ## 6) بيانات وتهيئة الاختبار
 - Fixtures: `execution_context(workspace_id, roles)` لضبط RLS في اختبارات التكامل.
 - مصنع كيانات (builders) لكل Aggregate.

@@ -420,6 +420,19 @@ x-heartbeat-healthcheck: &heartbeat-healthcheck
   retries: 3
   start_period: 90s
 
+# WireTwin (INC-1, O1): the electrical settings that `app` (the 202 gate, the queue
+# protection) and `worker-electrical` (the inspection) both read. Merged into those two
+# services' `environment:` only -- not into `x-app-env` -- so no other process's config changes.
+# All non-secret; the names are in `.env.example`, the defaults are `ElectricalSettings`'.
+x-electrical-env: &electrical-env
+  ELE_PARSE_TIMEOUT_S: ${ELE_PARSE_TIMEOUT_S:-330}
+  ELE_STAGE_CHUNK_BYTES: ${ELE_STAGE_CHUNK_BYTES:-8388608}
+  ELE_INSPECT_BATCH_PAGES: ${ELE_INSPECT_BATCH_PAGES:-200}
+  ELE_MAX_PAGES: ${ELE_MAX_PAGES:-5000}
+  ELE_QUEUE_PROTECTION_LIMIT: ${ELE_QUEUE_PROTECTION_LIMIT:-1000}
+  ELE_PROGRESS_MIN_INTERVAL_S: ${ELE_PROGRESS_MIN_INTERVAL_S:-2}
+  ELE_JOB_LEASE_S: ${ELE_JOB_LEASE_S:-600}
+
 services:
   # ────────────────────────────── data plane ──────────────────────────────
   # A named volume's mount point is created root:root when the path does not
@@ -1819,7 +1832,12 @@ services:
       vault-bootstrap:
         condition: service_completed_successfully
     environment:
-      <<: *app-env
+      <<: [*app-env, *electrical-env]
+      # WireTwin (INC-1, O1): the /electrical routes answer 503 `electrical.disabled`
+      # until this is true. Turning it on needs the `electrical/0001` migration
+      # applied through `migrate` first (a human decision, docs/stack-commands.md).
+      # `app` is NOT on the `ele-parse` network: the API never talks to the parser.
+      ELECTRICAL_ENABLED: ${ELECTRICAL_ENABLED:-false}
       # app_rw: NOINHERIT, no BYPASSRLS, not a table owner -- the RLS policy
       # is what confines it (01 §3). Through pgbouncer, never port 5432.
       DATABASE_URL: postgresql+asyncpg://app_rw:${APP_RW_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-aizzak}
@@ -2186,6 +2204,92 @@ services:
     healthcheck:
       <<: *heartbeat-healthcheck
       test: ["CMD", "python", "-m", "app.ops.healthcheck", "media"]
+
+  # ── electrical (WireTwin, INC-1) ────────────────────────────────────────
+  # Behind the `electrical` profile: a plain `up -d` starts NEITHER service, and
+  # the profile is only safe to enable once `electrical/0001` is applied through
+  # `migrate` (a human decision; docs/stack-commands.md). docs/design/08 §2-ج.
+  #
+  # `ele-parse` (CMP-07, DEC-04, INC1-AC-9) is the PDF parser kept in a box: it
+  # runs PyMuPDF, an engine that reads hostile files, so it is given nothing to
+  # steal and nowhere to go. NO secret, NO DSN, NO Vault variable (a test greps
+  # for SECRET|PASSWORD|TOKEN|VAULT|DATABASE|REDIS|MINIO); ONE network and that
+  # network is `internal: true` (no route out, and it is not `default`, so it
+  # cannot reach Postgres, Redis, Qdrant or MinIO); a read-only root, a
+  # non-root uid, no capabilities, `no-new-privileges`, the stage volume
+  # read-only, and hard limits. Each request also runs in a child process under
+  # `setrlimit` (LLD 3.3.10). Only `worker-electrical` shares its network.
+  ele-parse:
+    <<: *app-logging
+    profiles: ["electrical"]
+    image: ${ELE_PARSE_IMAGE_REPO:-aizzak/ele-parse}:${ELE_PARSE_IMAGE_TAG:-dev}
+    user: "10001:10001"              # the app image's uid, so the stage files (0640) are readable
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=64m"]
+    networks: [ele-parse]            # ONLY the internal network: no default, no egress
+    volumes:
+      - ele-stage:/var/lib/aizzak/ele-stage:ro
+    environment:                     # no secret, no DSN, no Vault (DEC-04)
+      ELE_PARSE_STAGE_ROOT: /var/lib/aizzak/ele-stage
+      ELE_PARSE_PORT: "8090"
+      ELE_PARSE_PAGE_TIMEOUT_S: ${ELE_PARSE_PAGE_TIMEOUT_S:-10}
+      ELE_PARSE_RANGE_TIMEOUT_S: ${ELE_PARSE_RANGE_TIMEOUT_S:-300}
+      ELE_PARSE_MEMORY_MB: ${ELE_PARSE_MEMORY_MB:-1024}
+      ELE_PARSE_MAX_CHILDREN: ${ELE_PARSE_MAX_CHILDREN:-2}
+      ELE_PARSE_TOKEN_SAMPLE: ${ELE_PARSE_TOKEN_SAMPLE:-200}
+    deploy:
+      resources:
+        limits:
+          cpus: "${ELE_PARSE_CPUS:-1.0}"
+          memory: ${ELE_PARSE_MEM:-2560m}   # MAX_CHILDREN x MEMORY_MB + the server; an estimate (INC1-R-5)
+          # The process cap. NOT the service-level `pids_limit:` the LLD sketched: Compose
+          # 5.3.1 refuses `pids_limit` next to `deploy.resources.limits` ("can't set distinct
+          # values"), and this is the same cap spelled the way it accepts.
+          pids: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=2).status != 200)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+  # The `document` role of the WireTwin ingestion worker (CMP-09): consumes
+  # `stream.electrical` as `cg.electrical.document`, streams the PDF from MinIO
+  # into the stage volume (writes it; `ele-parse` reads it), and asks `ele-parse`
+  # over HTTP. Its Vault need is `worker-knowledge`'s own (the MinIO credential
+  # through `bind_minio`), so there is no new secret. On BOTH networks: `default`
+  # is listed because a `networks:` list replaces the implicit one.
+  worker-electrical:
+    <<: [*app-image, *app-logging, *host-gateway, *worker-service]
+    profiles: ["electrical"]
+    networks: [default, ele-parse]
+    volumes:
+      - ele-stage:/var/lib/aizzak/ele-stage
+    environment:
+      <<: [*app-env, *worker-env, *electrical-env]
+      WORKER: electrical
+      ELECTRICAL_WORKER_ROLES: document
+      ELE_PARSE_URL: http://ele-parse:8090
+      ELE_STAGE_DIR: /var/lib/aizzak/ele-stage
+      # One inspection at a time: each waits on `ele-parse` and holds a staged
+      # copy of its file on the volume (LLD 3.3.15).
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY_ELECTRICAL:-1}
+      # A beat cannot land while a handler runs, and one inspection may run up
+      # to `ELE_PARSE_RANGE_TIMEOUT_S` (300 s) plus the retries -- the
+      # `worker-media` / `worker-knowledge` reasoning, same 600.
+      HEARTBEAT_MAX_AGE_S: ${HEARTBEAT_MAX_AGE_S_ELECTRICAL:-600}
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_ELECTRICAL_CPUS:-1.0}"
+          memory: ${WORKER_ELECTRICAL_MEM:-1g}
+    healthcheck:
+      <<: *heartbeat-healthcheck
+      test: ["CMD", "python", "-m", "app.ops.healthcheck", "electrical"]
 
   # SINGLE instance (08 §2). Consumer groups are still created at `$`
   # (stream tail, redis_streams.py:235, unchanged) -- that fact is why a
@@ -3365,8 +3469,20 @@ services:
     # on a container that exits by design reports on nothing.
     restart: "no"
     <<: *app-logging
+networks:
+  # `ele-parse` <-> `worker-electrical` only (INC1-AC-9). `internal: true`: no
+  # route out, and `ele-parse` is on no other network. Docker 26.0.0 or newer
+  # (docs/deploy-server.md); the gpu-metrics network is the precedent.
+  ele-parse:
+    internal: true
+
 volumes:
   postgres-data:
+  # WireTwin's stage volume (INC-1, LLD 4.6): `worker-electrical` writes the PDF
+  # here (`<workspace>/<document>.pdf`, 0640, uid 10001) and `ele-parse` mounts
+  # it `:ro`. A cache that lives for one inspection -- the worker deletes the file
+  # in a `finally` and sweeps stale ones at boot -- and never a copy of record.
+  ele-stage:
   # Ollama's models (2.2): gemma3:1b is ~0.8 GB, pulled once by ollama-pull.
   # Losing it costs a re-download, never data.
   ollama-models:

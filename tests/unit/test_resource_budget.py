@@ -421,7 +421,9 @@ def test_the_patterns_actually_find_something() -> None:
     # does not, so the REFERENCE host's ledger no longer counts it.
     assert len(standing) == 28, sorted(standing)
     assert len(oneshot) == 5, sorted(oneshot)
-    assert len(profiled) == 6, sorted(profiled)
+    # profiled 6 -> 8 since WireTwin INC-1 S9: `ele-parse` (1 vCPU / 2560m) and `worker-electrical`
+    # (1 vCPU / 1g) sit behind profile `electrical`, so the standing ledger does not move.
+    assert len(profiled) == 8, sorted(profiled)
     assert _to_bytes("512m") == 512 * 1024**2
     assert _to_bytes("2g") == 2 * 1024**3
     assert _SCRIPT.exists() and _SCRIPT.stat().st_mode & 0o111, "the script is not executable"
@@ -561,9 +563,9 @@ def test_the_monitoring_share_is_the_elevens_limits_plus_the_gpu_exporter(size: 
 def test_without_monitoring_the_standing_set_is_seventeen() -> None:
     """AC-2.5."""
     standing, oneshot, profiled = _classify(profiles=frozenset())
-    assert (len(standing), len(oneshot), len(profiled)) == (17, 5, 17)
+    assert (len(standing), len(oneshot), len(profiled)) == (17, 5, 19)
     standing, oneshot, profiled = _classify()
-    assert (len(standing), len(oneshot), len(profiled)) == (28, 5, 6)
+    assert (len(standing), len(oneshot), len(profiled)) == (28, 5, 8)
 
 
 def test_without_monitoring_conflicts_are_usage_errors() -> None:

@@ -160,7 +160,7 @@ def test_an_unknown_extra_aspect_is_a_rule_error_not_a_silent_drop() -> None:
 def test_extra_voltage_labels_are_normalised_and_deduplicated() -> None:
     rules = load_rules().narrowed(
         _selection(
-            extra_voltage_labels=("-48v", "\uff0d48V", "\uff4c\uff19", "+12\u200bv"),
+            extra_voltage_labels=("-48v", "\uff0d48V", "\uff4c\uff19", "+12v"),
         )
     )
     assert "-48V" in rules.voltage_labels and rules.voltage_labels.count("-48V") == 1

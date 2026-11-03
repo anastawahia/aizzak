@@ -10,7 +10,7 @@ import pytest
 from app.modules.electrical.shared.normalization import canonical_form, text_issues
 from app.modules.electrical.shared.rules import RuleError
 from tests.eval.electrical.m04_identifiers import load_rules
-from tests.unit.support_electrical_shared import _selection, parse
+from tests.unit.support_electrical_shared import PARSER, _selection, parse
 
 _BIDI = {0x200E, 0x200F, 0x061C, *range(0x202A, 0x202F), *range(0x2066, 0x206A)}
 
@@ -65,6 +65,34 @@ def test_rail_labels_are_accepted(label: str) -> None:
     assert label in load_rules().narrowed(_selection(extra_voltage_labels=(label,))).voltage_labels
 
 
+@pytest.mark.parametrize("label", ["+1", "+24", "+12345V", "++24V"])
+def test_a_plus_label_requires_the_v_unit(label: str) -> None:
+    # INC1-Q-5: ``+1`` is a location aspect of IEC 81346, not a rail
+    with pytest.raises(RuleError):
+        load_rules().narrowed(_selection(extra_voltage_labels=(label,)))
+
+
+def test_a_minus_label_keeps_the_optional_v_unit() -> None:
+    rules = load_rules().narrowed(_selection(extra_voltage_labels=("+24V", "-12", "-48V")))
+    assert {"+24V", "-12", "-48V"} <= set(rules.voltage_labels)
+
+
+@pytest.mark.parametrize("label", ["+", "-", "--", "+-", "-" * 16])
+def test_a_label_without_a_letter_or_digit_is_rejected(label: str) -> None:
+    # R2-2: it says nothing, and the parser would never read anything by it
+    with pytest.raises(RuleError):
+        load_rules().narrowed(_selection(extra_voltage_labels=(label,)))
+
+
+@pytest.mark.parametrize(
+    "label", ["-4\u200b8V", "-48\u2065V", "+12\u200bv", "L\u00ad9", "-48V\u202e"]
+)
+def test_a_label_with_a_hidden_character_is_rejected_not_stripped(label: str) -> None:
+    # R2-2: the parser flags the same text invalid; the profile must not silently clean it
+    with pytest.raises(RuleError, match="hidden"):
+        load_rules().narrowed(_selection(extra_voltage_labels=(label,)))
+
+
 @pytest.mark.parametrize("label", ["--K5", "+-K5", "-+K5", "-1KM", "-1K5", "-12345V"])
 def test_designation_like_labels_are_rejected(label: str) -> None:
     with pytest.raises(RuleError):
@@ -89,3 +117,25 @@ def test_a_bridge_across_the_same_strip_written_with_leading_zeros_is_clean() ->
 def test_the_raw_length_error_names_the_raw_limit() -> None:
     with pytest.raises(RuleError, match="at most 64 characters"):
         load_rules().narrowed(_selection(extra_voltage_labels=("A" * 65,)))
+
+
+def test_non_ascii_leftovers_are_flagged_per_kind() -> None:
+    # INC1-Q-6, beside the M-04 cases: every kind keeps its own reading but is invalid
+    for text, kind in (
+        ("KM1\u0301", "letter_code"),
+        ("-K5\u0301", "reference_designation"),
+        ("X1:14\u0301", "terminal"),
+    ):
+        found = parse(text)
+        assert found.kind.value == kind and not found.valid
+        assert "text.non_ascii" in found.issues
+
+
+def test_other_scripts_without_an_ascii_form_stay_no_identifier() -> None:
+    assert PARSER.parse("\u7ee7\u7535\u5668") is None
+    assert PARSER.parse("\u041a\u041c1") is None  # Cyrillic homoglyphs are not a mark
+
+
+def test_a_flagged_non_ascii_token_is_no_evidence_for_a_convention() -> None:
+    tally = PARSER.tally(["-K5", "KM1\u0301", "-K6\u0301"])
+    assert tally.identifiers == 3 and sum(tally.conventions.values()) == 1

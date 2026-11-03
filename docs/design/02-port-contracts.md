@@ -145,8 +145,14 @@ class StorageProvider(Protocol):
 >     async def complete_multipart(self, key: str, upload_id: str, parts: Sequence[StoredPart]) -> None: ...
 >     async def object_size(self, key: str) -> int | None: ...                       # HEAD؛ None لا كائن
 >
-> class ObjectStorage(StorageProvider, MultipartStorage, Protocol): ...   # ما هو MinioStorage وStorageHandle
+> class ObjectStorage(StorageProvider, MultipartStorage, StreamingStorage, Protocol): ...   # ما هو MinioStorage وStorageHandle
 > ```
+> **القراءة المتدفقة (`StreamingStorage`، `PLT‑03`، WireTwin INC‑1): منفذ شقيق ثالث.** `StorageProvider.get` يقرأ الكائن كله في الذاكرة، وملف مخطط قد يبلغ 100 MB؛ فيأتي منفذ إطار ثالث في الملف نفسه، يُحقن في قسم `drawings` وحده (`StreamingSourceStager`)، والوكلاء يبقون على `StorageProvider`:
+> ```python
+> class StreamingStorage(Protocol):
+>     def read_chunks(self, key: str, *, chunk_bytes: int) -> AsyncIterator[bytes]: ...   # أجزاء متتالية ≤ chunk_bytes
+> ```
+> العقد: ذاكرة جزء واحد (`ELE_STAGE_CHUNK_BYTES`، 8 MiB افتراضاً)، `NotFoundError` حين لا كائن، وما سواه `common.internal`؛ يستهلك المستدعي المكرِّر كاملاً أو يغلقه (`aclose`) فيحرّر المحوّل الاتصال في `finally`. وغير المربوط في `StorageHandle` يجيب `common.internal`. يثبّته `test_minio_streaming_adapter.py` (على عميل مزيّف) و`test_storage_handle.py`، وحيّاً `test_minio_storage.py` (`live_minio`: كائن 20 MiB بأجزاء 8 MiB يعيد البايتات نفسها).
 > **عقد الأخطاء كعقد `StorageProvider`:** `NotFoundError` حالة يتفرّع عليها المستدعي (`list_parts`/`complete_multipart` حين يزول الرفع: `NoSuchUpload`)، و`ConflictError` حين يرفض التخزين قائمة الأجزاء (`InvalidPart` · `InvalidPartOrder` · `EntityTooSmall`)، وما سواها `common.internal`؛ ولا يخرج نوع من minio أو urllib3. يستعمل المحوّل الطرق الخاصة في minio‑py (`_create_multipart_upload` · `_list_parts` · `_complete_multipart_upload`) لأن المكتبة لا تكشف غيرها، ويثبّتها اختبار إنذار (`tests/unit/test_minio_multipart_api.py`) فيفشل CI لا الإنتاج إن تغيّرت.
 
 ### 1.7 `CacheProvider` — `cache_provider.py` (Redis)
@@ -638,6 +644,35 @@ class ConnectionRepository(Protocol):
     async def update_tokens(self, ctx, conn_id: Uuid, token_ref: str, key_id: str, expires_at) -> None: ...  # تجديد كسول
 ```
 > النمط نفسه يتكرّر لـ `memory`, `media`, `workspace`, `credentials`, `integrations`, `usage`. **لا وحدة تستورد Repository وحدة أخرى** — فقط Inbound Port محقون. منافذ `usage` الواردة **متزامنة بلا أحداث** (`FR‑131`, `EVT‑10`).
+
+**`electrical` — قسم `drawings` (WireTwin، `electrical-drawings` INC‑1؛ المصدر الملزِم [`lld-inc-1.md` §3.3.7](../delivery/electrical-drawings/docs/lld-inc-1.md)).** منافذ القسم في `modules/electrical/drawings/ports/`، لا يستورد القسمُ شيئاً من وحدة أخرى: ما يحتاجه من `files` و`spaces` يعلنه هو ويربطه جذر التركيب بنيوياً (نمط `knowledge/ports/files.py`)، فيتحوّل تغيّر في `FilesQuery` إلى سطر أحمر عند الربط.
+```python
+# drawings/ports/repository.py — ستة مستودعات + منفذ الكنس؛ كل طريقة تأخذ ctx أولاً (RLS، DD‑04)
+class ProjectRepository(Protocol):          # get · get_by_space · add (project_exists) · save (version) · list_by_space · delete_in_space
+class ProfileRepository(Protocol):          # latest(project_id, document_id|None) · append → النسخة (max+1 تحت الفهرس الفريد؛ السباق ConflictError وتعيد المحاولة مرة)
+class DocumentRepository(Protocol):         # get · lock_live · not_purging_for_file · live_in_space · active_files · active_with_content
+                                            # · add (document_exists | duplicate_document) · save · list_by_project(status, limit, cursor)
+class JobRepository(Protocol):              # get · add (job_conflict) · save · open_for_document · latest_for_document
+                                            # · open_count (حماية الطابور) · queue_position · recent_run_seconds
+class PageRepository(Protocol):             # seed · record · unfinished · stage_counts · classifications · list · reset · evidence
+class CharacterizationRepository(Protocol): # put · get · for_project (النشطة وحدها)
+class DrawingsSweep(Protocol):              # sweep_document(ctx, document_id) -> int: المرحلة 2 من التطهير، لوثيقة purging وحدها
+
+# drawings/ports/ — المنافذ المقروءة والمكتوبة عبر حدود القسم
+class DrawingFiles(Protocol):               # get_readable(ctx, file_id) -> DrawingFile | None (جاهز، غير محذوف، في المستأجر) · names_for_files(ctx, ids) -> {id: name}
+class OlderNamesakes(Protocol):             # execute(ctx, file_id) -> [الأقدم السميّ] · preview(ctx, file_id) -> NamesakeView(replaced, kept)
+class ActiveSpaces(Protocol):               # get_active(ctx, space_id) -> ActiveSpace | None
+class PdfInspection(Protocol):              # summary(source) -> PdfSummary · pages(source, first, last) -> [PageSignals]
+class SourceStager(Protocol):               # stage(ctx, document_id, storage_key, expected_size) -> StagedSource(name, sha256, size_bytes) · discard(source)
+class RuleSource(Protocol):                 # identifier_rules() · producer_signatures() — تُقرأ مرة عند البناء
+class ProcessedEvents(Protocol):            # claim(ctx, event_id) -> bool — مطالبة DD‑09 داخل معاملة الأثر
+class Liveness(Protocol):                   # beat() — نبض العامل بين الدفعات
+# drawings/ports/inbound.py — ما يربطه الإطار بتسلسلات الحذف (المرحلة 1 من التطهير فقط)
+class DrawingsFilePurge(Protocol):          # execute(ctx, file_id) -> int
+class DrawingsSpacePurge(Protocol):         # execute(ctx, space_id) -> int
+```
+> **أخطاء المنافذ:** `PdfInspection` يرفع أخطاء النطاق وحدها — `PdfRejected(code, detail)` لملف يرفضه ele‑parse (`not_pdf` · `corrupt` · `encrypted`)، و`PageRangeFailed(reason)` لمدى انتهت مهلته أو بلغ حدّ الذاكرة فيُعاد صفحةً صفحة، و`InspectionUnavailable` لعطل نقل **عابر** يُرفع كما هو ليعيد المحرّك التسليم (arch D‑19). لا نوع من httpx يعبر المنفذ. والمستودعات ترفع `ConflictError` برمز الكتالوج (`electrical.project_exists` · `document_exists` · `duplicate_document` · `job_conflict`) حين يرفض الفهرس الفريد، فالمعاملات تحسم السباق لا القراءة السابقة.
+> **ما لا يحمله حزمة الواجهة `DrawingsUseCases`** (`projects` · `documents` · `jobs` · `replacement` · `characterization`): `InspectDocument` و`SweepPurgedDocument` للعامل، و`PurgeFileDocuments` و`PurgeSpaceDrawings` لتسلسلَي الحذف. فلا مسار يحذف وثيقة بنفسه: لا يبلغها إلا حذف ملف أو فضاء.
 
 ---
 

@@ -55,6 +55,7 @@ from app.modules.spaces.application.use_cases import DeleteSpace
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import ConversationsStack, build_conversations
 from tests.unit.support_credentials import build_credentials
+from tests.unit.support_electrical import RecordingElectricalPurge
 from tests.unit.support_files_media import FilesMediaStack, build_files_media
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
 from tests.unit.support_integrations import build_integrations
@@ -148,6 +149,7 @@ def _make_app(
     deletion = DeleteSpaceService(
         DeleteSpace(spaces.repository),
         knowledge=knowledge_purge,
+        electrical=RecordingElectricalPurge(),
         files=PurgeSpaceFiles(files_media.file_repository, files_media.storage),
         conversations=PurgeSpaceConversations(conversations.repository),
     )

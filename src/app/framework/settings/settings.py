@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.framework.types import Json
 
@@ -685,6 +685,61 @@ class UsageSettings(BaseModel):
     )
 
 
+# The worker roles INC-1 knows (LLD 3.3.12). Later increments append their own
+# (`pages`, `ocr`, `model`, `index`) together with the consumer that reads them.
+ELECTRICAL_WORKER_ROLES: Final = ("document",)
+
+
+class ElectricalSettings(BaseModel):
+    """WireTwin's platform configuration (HLD §13.5, NFR-CFG-01). Structure,
+    not domain: thresholds and conventions live in the drawing profile.
+
+    Every field is non-secret (05 §2). ``enabled`` is False as shipped: the API then
+    answers ``electrical.disabled`` on every WireTwin route (INC1-D-12).
+    """
+
+    model_config = _FROZEN
+
+    enabled: bool = False  # ELECTRICAL_ENABLED
+    ele_parse_url: str = "http://ele-parse:8090"  # ELE_PARSE_URL
+    # ELE_PARSE_TIMEOUT_S -- above ele-parse's own range ceiling (300 s), so the
+    # service times out first and says why
+    ele_parse_timeout_s: float = Field(default=330.0, gt=0)
+    stage_dir: str = "/var/lib/aizzak/ele-stage"  # ELE_STAGE_DIR
+    stage_chunk_bytes: int = Field(default=8_388_608, ge=65_536, le=67_108_864)
+    inspect_batch_pages: int = Field(default=200, ge=1, le=1_000)  # ELE_INSPECT_BATCH_PAGES
+    max_pages: int = Field(default=5_000, ge=1)  # ELE_MAX_PAGES -- FR-ING-02 "at least 5,000"
+    queue_protection_limit: int = Field(default=1_000, ge=1)  # ELE_QUEUE_PROTECTION_LIMIT
+    progress_min_interval_s: float = Field(default=2.0, ge=0)  # ELE_PROGRESS_MIN_INTERVAL_S
+    job_lease_s: int = Field(default=600, ge=60)  # ELE_JOB_LEASE_S
+    worker_roles: tuple[str, ...] = ELECTRICAL_WORKER_ROLES  # ELECTRICAL_WORKER_ROLES
+
+    @field_validator("ele_parse_url")
+    @classmethod
+    def _url_is_http(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")) or value.endswith("/"):
+            raise ValueError("ele_parse_url must be an http(s) URL without a trailing slash")
+        return value
+
+    @field_validator("stage_dir")
+    @classmethod
+    def _stage_dir_is_absolute(cls, value: str) -> str:
+        if not value.startswith("/") or value == "/":
+            raise ValueError("stage_dir must be an absolute directory, not the root")
+        return value
+
+    @field_validator("worker_roles")
+    @classmethod
+    def _roles_are_known(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unknown = sorted(set(value) - set(ELECTRICAL_WORKER_ROLES))
+        if not value or unknown or len(set(value)) != len(value):
+            raise ValueError(
+                f"worker_roles must be a non-empty, duplicate-free subset of "
+                f"{ELECTRICAL_WORKER_ROLES}" + (f"; unknown: {unknown}" if unknown else "")
+            )
+        return value
+
+
 class SparseSettings(BaseModel):
     """Okapi BM25's shape parameters — the sparse leg's scoring model
     (rag-fidelity-audit.md §3-ج, closed 2026-08-27).
@@ -1321,6 +1376,8 @@ class Settings(BaseModel):
     health: HealthSettings = Field(default_factory=HealthSettings)
     integrations: IntegrationsSettings = Field(default_factory=IntegrationsSettings)
     usage: UsageSettings = Field(default_factory=UsageSettings)
+    # WireTwin (INC-1, PLT-21): the electrical-drawings section's platform knobs.
+    electrical: ElectricalSettings = Field(default_factory=ElectricalSettings)
     limits: Limits = Field(default_factory=Limits)
     # rag-retrieval-plan.md §4 row 18 (`P-30` `P-40`, س-24) — the hybrid
     # retrieval tuning knobs, in ONE place instead of scattered across

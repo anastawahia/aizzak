@@ -24,6 +24,7 @@
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
 | Files | `/api/v1/files` | POST(register) · POST `/multipart` · GET `{id}/upload` · POST `{id}/upload/part-urls` · POST `{id}/complete` · GET(list) · GET · PATCH · PUT `{id}/tags` · DELETE |
 | Knowledge | `/api/v1/knowledge` | POST `/search` · GET `/documents` · **POST `/documents`** · GET `/documents/{id}` · POST `/reindex` · GET `/reindex/{id}` · POST `/reindex/{id}/cancel` · POST `/documents/{id}/summary` · GET `/documents/{id}/summary` · DELETE `/documents/{id}/summary` · GET `/documents/{id}/summary/export` · GET `/summary-jobs/{id}` · POST `/summary-jobs/{id}/cancel` |
+| Electrical (WireTwin) | `/api/v1/electrical` | عشرون عملية: `projects` (POST · GET(list) · GET · PATCH `{id}` · GET/PUT `{id}/profile` · GET `{id}/characterization` · POST/GET `{id}/documents`) · `documents` (GET `{id}` · GET/PUT `{id}/profile` · POST `{id}/profile-confirmation` · POST `{id}/reprocessing` · GET `{id}/pages` · GET `{id}/characterization`) · `ingestion-jobs` (GET `{id}` · POST `{id}/cancel` · POST `{id}/resume`) · GET `files/{id}/replacement-preview` |
 | Media | `/api/v1/media` | POST `/jobs` · GET `/jobs/{id}` |
 | Workflows | `/api/v1/workflows` | GET(list) · POST `{key}/run` · GET `/runs/{id}` |
 | Credentials | `/api/v1/credentials` | GET · POST · DELETE |
@@ -305,7 +306,48 @@ class UsageLimitOut(BaseModel):
     metric: Literal['tokens','cost_micros']; period: Literal['day','month']; limit_value: int
 class UsageLimitsPutIn(BaseModel):
     limits: list[UsageLimitOut]        # استبدال طقم الحدود القابلة للإعداد (owner/admin)
+
+# Electrical — WireTwin (INC‑1) — الأشكال في `src/app/api/v1/dto/electrical.py`، والعقد الملزِم `openapi.yaml`
+# الطلبات
+class ElectricalProjectIn(BaseModel):
+    space_id: str; name: str; description: str | None = None
+    profile: dict[str, Any] | None = None         # جسد DrawingProfile؛ الافتراضي إن غاب. الصارم: schema=1، حقل مجهول/نوع خاطئ/قيمة خارج المدى ⇒ 422
+class ElectricalProjectPatchIn(BaseModel): name: str | None = None; description: str | None = None
+class DrawingProfileIn(BaseModel): body: dict[str, Any]
+class DocumentRegisterIn(BaseModel):
+    file_id: str
+    checksum: str | None = None     # SHA‑256 هكس 64 خانة بأيّ حالة أحرف وإلا 422؛ إنذار مبكر لا ضمان (يعيد STG‑01 حسابه من البايتات)
+class ProfileConfirmIn(BaseModel): body: dict[str, Any] | None = None   # فارغ = قبول الاقتراح كما هو
+class ReprocessIn(BaseModel): pages: list[int] | None = None            # 1..1000 رقماً موجباً بلا تكرار؛ غيابها = كل الصفحات
+# الاستجابات
+class ElectricalProjectOut(BaseModel): id: str; space_id: str; name: str; description: str | None; created_at: datetime; updated_at: datetime
+class DrawingProfileOut(BaseModel): version: int; source: Literal['default','user','detected','confirmed']; fingerprint: str; body: dict[str, Any]; created_at: datetime
+class ProfileProposalOut(BaseModel):
+    confidence: float; field_confidence: dict[str, float]; mixed_standards: bool
+    basis: dict[str, list[str]]; body: dict[str, Any]   # الحقلان من `drawings_profile_versions.detection`؛ فارغان لإصدار لم يحفظ شيئاً
+class EffectiveProfileOut(BaseModel):
+    state: Literal['none','proposed','accepted','confirmed']; effective: DrawingProfileOut
+    project_version: int; proposal: ProfileProposalOut | None
+class IngestionJobOut(BaseModel):
+    id: str; document_id: str; kind: Literal['ingest','reprocess']
+    status: Literal['queued','running','awaiting_confirmation','succeeded','failed','cancelled']
+    stage: str | None; pages: list[int] | None; counts: dict[str, int]    # الصفحات لكل حالة، مشتقّ عند القراءة؛ {} داخل القوائم
+    seq: int; attempt: int; failure_code: str | None; failure_detail: str | None
+    queue_position: int | None; estimated_wait_s: float | None; stale: bool
+    created_at: datetime; started_at: datetime | None; finished_at: datetime | None
+class ElectricalDocumentOut(BaseModel):
+    id: str; project_id: str; file_id: str; file_name: str | None; tags: FileTagsOut | None   # الاسم والوسوم من `files`؛ الوسوم null في القوائم
+    status: Literal['active','excluded','purging']; exclusion_reason: str | None
+    page_count: int | None; content_sha256: str | None; profile_state: str
+    latest_job: IngestionJobOut | None; created_at: datetime
+class DocumentRegisteredOut(BaseModel): document: ElectricalDocumentOut; job: IngestionJobOut
+class DocumentPageOut(BaseModel): page_no: int; kind: str | None; language: str | None; needs_ocr: bool | None; stages: list[PageStageOut]
+class CharacterizationOut(BaseModel): ...         # سجلّ FR‑EVAL‑14 لوثيقة؛ `creator`/`producer` نصٌّ غير موثوق من الملف، يصل مُهرَّباً
+class CharacterizationReportOut(BaseModel): ...   # تقرير المشروع، مشتقّ عند كل قراءة من وثائقه النشطة
+class ReplacementPreviewOut(BaseModel): file_id: str; replaced: list[ReplacedFileOut]; kept: list[KeptNamesakeOut]
+# القوائم الثلاث ملفوفة بـ`{data, meta}`: ElectricalProjectPage · ElectricalDocumentPage · DocumentPagePage
 ```
+> **الأمان في الأشكال:** (1) رسالة `422 electrical.invalid_profile` تسمّي مسار الحقل وتسرد ما يعرفه **الخادم** (الحقول المسموحة، وأسماء أنماط الأسلاك المعبّأة) ولا تُرجع أبداً الاسم أو القيمة المجهولة التي أرسلها العميل (مراجعة أمن `PR‑B`، S‑8). (2) نصوص الملف الخام (Creator وProducer) تصل في `CharacterizationOut` وفي تقرير أداة التوصيف مُهرَّبة: تُبدَل محارف التحكم والتنسيق والخفية والاتجاهية بـ`\xNN` و`\uNNNN` (R1‑4). (3) `limit` في `GET …/documents/{id}/pages` هو `Limit` العام (≤ 100، الافتراضي 20)، لا 200 كما كان في أول تصميم: اختبار الاتفاقيات يفرض حدّاً واحداً على كل قائمة.
 
 ## 3) بروتوكول البثّ (D‑10)
 
@@ -359,6 +401,13 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 ```
 - `final` هنا يحمل مفاتيح الوكيل الطرفيّة نفسها التي يحملها إطار SSE (§3.1) — بما فيها `citations` لـ`rag_agent` بشكلها المفهوم `{document_id, file_name, page, chunk_id, rank}` — لا مجرّد ما في المثال أعلاه.
 - **الإشعارات غير المتزامنة** (نتائج العمّال: فهرسة/توليد) تُدفع كـ`notification` على اتصال الـWS الحيّ للمستأجر — الجسر: العامل ينشر حدثاً عالمياً ⇒ مُشترِك WS يوجّهه لجلسات الـ`workspace_id`.
+- **إشعارات WireTwin (ثلاثة أنواع فقط، INC‑1):** يعيد الجسر نشر ثلاثة أحداث من `stream.electrical` كـ`notification` على اتصال المستأجر — ولا يعيد نشر `document.registered` ولا `job.requested` ولا `document.purged` (أحداث عامل لا شاشة):
+  ```json
+  {"type":"notification","event":"electrical.job.progressed.v1","data":{"job_id":"…","document_id":"…","seq":7,"stage":"classify","done":120,"total":400,"failed":0,"needs_review":3}}
+  {"type":"notification","event":"electrical.document.profile_proposed.v1","data":{"document_id":"…","job_id":"…","confidence":0.8,"needs_confirmation":true,"mixed_standards":false}}
+  {"type":"notification","event":"electrical.job.completed.v1","data":{"job_id":"…","document_id":"…","status":"succeeded|failed|cancelled","failure_code":"electrical.pdf_rejected"}}
+  ```
+  `seq` متزايد لكل مهمة والإرسال مقيّد المعدّل (`ELE_PROGRESS_MIN_INTERVAL_S`)، فيتجاهل العميل ما `seq` فيه أقل مما رآه. و`needs_confirmation: true` يعني أن المهمة `awaiting_confirmation` وأن الشاشة تعرض الاقتراح (`GET /electrical/documents/{id}/profile`). و`failure_code` غائب (لا `null`) حين لا فشل. والمخططات في [`events/schemas/electrical.*.v1.json`](events/schemas/).
 - حدود: رسالة ≤ 64KB، اتصالات متزامنة/مستخدم محدودة (انظر `07`).
 - **ومستهلكٌ لا يلحق يُغلَق بـ`1013` (Try Again Later) — والعميلُ يعيد الاتصال ثمّ يجدّد حالته** (خطّةُ السعة `3.6`): لكلّ جلسةٍ صندوقُ بريدٍ محدود، ومتى تراكم فيه ما يتجاوز حدَّه — أي أنّ النظير توقّف عن القراءة فعليّاً — أُخرجت الجلسةُ وأُغلقت بهذا الرمز بدل أن تُسقَط إشعاراتُها صمتاً. **الإسقاطُ الصامتُ ليس خياراً هنا**: كلُّ `notification` نتيجةُ عملٍ ينتظرها المستخدم، وإسقاطُ واحدةٍ بلا إشارةٍ يترك واجهةً تعرض حالةً خاطئةً بلا ما ينبّه إليها. فالإغلاقُ هو الإشارة، وإعادةُ الاتصال هي التصحيح.
 
@@ -424,6 +473,21 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
 | `integrations.mcp_transport_unsupported` | 422 | نقل MCP غير مدعوم (مسموح `http`/`sse` فقط — v1) |
 | `integrations.mcp_unreachable` | 502 | تعذّر الوصول لخادم MCP البعيد |
 | `integrations.tools_unavailable` | 503 | كتالوج الأدوات غير منشور (لا مِحوَل موصّلات/MCP) |
+| `electrical.disabled` | 503 | `ELECTRICAL_ENABLED=false`: كل مسار `/electrical` يجيب به **قبل** حارس الصلاحية (INC1‑D‑12) |
+| `electrical.project_exists` | 409 | للمساحة مشروع WireTwin بالفعل (مشروع واحد لكل فضاء، من `23505` على `ux_drawings_projects_space`) |
+| `electrical.invalid_profile` | 422 | ملف إعداد غير صالح؛ يسمّي مسار الحقل ويسرد ما يعرفه الخادم **ولا يردّد ما أرسله العميل** |
+| `electrical.not_a_pdf` | 415 | تسجيل ملف غير PDF وثيقةً |
+| `electrical.file_not_in_project_space` | 422 | ملف من مساحة غير مساحة المشروع |
+| `electrical.document_exists` | 409 | للملف وثيقة بالفعل: **نشطة أو مستبعَدة** (الفهرس الفريد يعدّ كل ما ليس `purging`؛ المستبعَدة تحتفظ بملفها حتى تُكنس) |
+| `electrical.namesake_not_replaced` | 409 | ملف أقدم بالاسم والوسوم نفسها ما زال حيّاً (كنسٌ فشل): يُحذف الأقدم ثم يُعاد التسجيل |
+| `electrical.duplicate_document` | 409 | المحتوى نفسه وثيقة نشطة في المشروع (عند إرسال `checksum`، ويُفشل مهمة STG‑01 حين يكشفه العامل) |
+| `electrical.ingestion_queue_full` | 429 | بلوغ `ELE_QUEUE_PROTECTION_LIMIT` من المهام المفتوحة؛ مع `Retry-After` |
+| `electrical.job_conflict` | 409 | المهمة ليست في حالة تسمح بالعملية (مفتوحة أخرى، أو منتهية، أو لا مهمة تنتظر التأكيد) |
+| `electrical.profile_unconfirmed` | 409 | اقتراح ملف الإعداد ينتظر شخصاً (`reprocess`، `resume`) |
+| `electrical.pdf_rejected` | 422 | ele‑parse يرفض الملف (تالف/مشفّر/ليس PDF) — **رمز فشل مهمة** يحفظه العامل لا ردّ HTTP |
+| `electrical.too_many_pages` | 422 | تجاوز `ELE_MAX_PAGES` — رمز فشل مهمة |
+| `electrical.source_unreadable` | 422 | تعذّرت قراءة بايتات الملف أو اختلف حجمها عن الصف — رمز فشل مهمة |
+| `electrical.document_not_live` | 409 | الوثيقة لم تعد حيّة — رمز إلغاء مهمة |
 | `usage.quota_exceeded` | 429 | تجاوز **حصّة** الرموز/الطلبات (يعيده المُنسِّق عند رفض الفرض؛ `LimitDecision.reason='quota_exceeded'`) |
 | `usage.budget_exceeded` | 429 | تجاوز **الميزانية** (التكلفة `cost_micros`) (يعيده المُنسِّق عند رفض الفرض؛ `LimitDecision.reason='budget_exceeded'`) |
 

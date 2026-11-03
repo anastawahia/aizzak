@@ -127,6 +127,20 @@
 | `USAGE_DEFAULT_LIMITS` | `{"tokens":{"month":...}}` | حدود افتراضية قابلة للتخصيص لكل Workspace (FR‑133) |
 | `LIMITS_*` | — | الحدود الرقمية (انظر `07-nfr-slo.md`) |
 
+| `ELECTRICAL_ENABLED` | `false` | تفعيل WireTwin (INC‑1، `INC1‑D‑12`). مغلقٌ افتراضياً: كل مسار `/api/v1/electrical` يجيب `503 electrical.disabled` قبل حارس الصلاحية |
+| `ELE_PARSE_URL` | `http://ele-parse:8090` | عنوان خدمة `ele-parse` على الشبكة الداخلية (بلا أسرار) |
+| `ELE_PARSE_TIMEOUT_S` | `330` | مهلة طلب العامل إلى `ele-parse` (> سقف المدى في الخدمة نفسها) |
+| `ELE_STAGE_DIR` | `/var/lib/aizzak/ele-stage` | الحجم المؤقت الذي يكتب فيه العامل نسخة الـPDF ويقرؤها `ele-parse` للقراءة فقط |
+| `ELE_STAGE_CHUNK_BYTES` | `8388608` | حجم جزء القراءة المتدفقة من MinIO (65,536 .. 67,108,864) |
+| `ELE_INSPECT_BATCH_PAGES` | `200` | صفحات كل دفعة فحص ومعاملة (1 .. 1,000) |
+| `ELE_MAX_PAGES` | `5000` | سقف صفحات الوثيقة (FR‑ING‑02 «5,000 على الأقل»)؛ فوقه `electrical.too_many_pages` |
+| `ELE_QUEUE_PROTECTION_LIMIT` | `1000` | سقف المهام المفتوحة في المساحة؛ فوقه `429 electrical.ingestion_queue_full` |
+| `ELE_PROGRESS_MIN_INTERVAL_S` | `2.0` | أدنى فاصل بين إشعاري تقدّم لمهمة واحدة |
+| `ELE_JOB_LEASE_S` | `600` | عقد المهمة الجارية (≥ 60)؛ انتهاؤه يجعل المهمة `stale` قابلة للاستئناف |
+| `ELECTRICAL_WORKER_ROLES` | `document` | أدوار `worker-electrical` (قائمة بفواصل؛ INC‑1 يعرف دوراً واحداً) |
+
+> **مفاتيح WireTwin إحدى عشرة لا عشرة** (ما نصّ عليه LLD §3.3.12 عدّها بلا `ELECTRICAL_WORKER_ROLES`): كلها **غير سرّية**، يقرؤها `env_settings.py` وحده (`DD‑11`) ويقدّمها `Settings.electrical` (`ElectricalSettings`). ولا سرّ جديد في INC‑1: `ele-parse` بلا أسرار، والعامل يقرأ اعتماد MinIO الموجود في Vault كما يفعل `worker-knowledge`. أمّا مفاتيح `ele-parse` نفسه (`ELE_PARSE_*`: الذاكرة والمهلة والعيّنة...) فتخصّ حاويته وحدها ولا يقرؤها `Settings`. العتبات والاصطلاحات ليست هنا: هي في **ملف إعداد المشروع** (`DrawingProfile`، NFR‑CFG‑01) لا في البيئة.
+
 ---
 
 ## 3) كتالوج الأسرار (Vault · سرّي)
@@ -180,5 +194,14 @@
 | `GET /usage` | `usage:read` |
 | `PUT /usage/limits` | `usage:manage` |
 | `PATCH /workspace` | `workspace:manage` |
+| `GET /electrical/projects` · `GET /electrical/projects/{id}` · `GET …/{id}/profile` · `GET …/{id}/documents` · `GET …/{id}/characterization` | `electrical:read` (WireTwin، INC‑1) |
+| `POST /electrical/projects` · `PATCH /electrical/projects/{id}` · `PUT …/{id}/profile` · `POST …/{id}/documents` | `electrical:manage` |
+| `GET /electrical/documents/{id}` · `GET …/{id}/profile` · `GET …/{id}/pages` · `GET …/{id}/characterization` | `electrical:read` |
+| `PUT /electrical/documents/{id}/profile` · `POST …/{id}/profile-confirmation` · `POST …/{id}/reprocessing` | `electrical:manage` |
+| `GET /electrical/ingestion-jobs/{id}` · `GET /electrical/files/{id}/replacement-preview` | `electrical:read` |
+| `POST /electrical/ingestion-jobs/{id}/cancel` · `POST …/{id}/resume` | `electrical:manage` |
 
 > `PATCH /workspace` (تعديل إعدادات المساحة) يتطلّب `workspace:manage` ⇒ متاح لـ`owner`/`admin`/`platform_admin`. أمّا `workspace:transfer` و`workspace:archive` فصلاحيتان **حصريّتان للمالك** بلا مسار API مخصّص في v1 (لا يعرّضهما `03-api-spec.md` بعد) — نقطتا توسعة تُربَطان بمساريهما عند إضافتهما.
+
+> **WireTwin (`electrical:*`، INC‑1): عشرون عملية، صلاحية واحدة لكل عملية** (يفرضها `test_api_rbac.py`): `electrical:read` للقراءات ومعاينة الاستبدال، و`electrical:manage` لما سواها (إنشاء المشروع وتعديله، وملفات الإعداد، وتسجيل الوثيقة، والتأكيد وإعادة المعالجة، والإلغاء والاستئناف). فالعضو (`member`) يقرأ ويعاين ولا يسجّل ولا يغيّر ملف إعداد، والمشاهد (`viewer`) يقرأ، و`owner`/`admin` يملكان الاثنتين، ولا شيء لـ`platform_admin`. **لا صلاحية جديدة** (أنشأ INC‑0 الأربع). والمفتاح `ELECTRICAL_ENABLED=false` يسبق الصلاحية: يجيب كل مسار 503 قبل أن يُسأل عنها.
+

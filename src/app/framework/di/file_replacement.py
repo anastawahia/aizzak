@@ -230,6 +230,8 @@ class ReplaceNamesakesService[R: HasStatus]:
         # file's name must not destroy that file (module docstring).
         if renamed.status == _READY:
             await self._sweep(ctx, file_id, source="rename")
+        else:
+            self._log_deferred(ctx, file_id, source="rename")
         return renamed
 
     async def retag(
@@ -241,7 +243,27 @@ class ReplaceNamesakesService[R: HasStatus]:
         # set. A file that is not ready sweeps nothing, for the rename's reason.
         if retagged.status == _READY:
             await self._sweep(ctx, file_id, source="retag")
+        else:
+            self._log_deferred(ctx, file_id, source="retag")
         return retagged
+
+    @staticmethod
+    def _log_deferred(ctx: ExecutionContext, file_id: Uuid, *, source: SweepSource) -> None:
+        """Name the actor of a rename or re-tag that swept nothing (PR-A review S-8).
+
+        The file is not ``ready``, so nothing is destroyed now; whoever completes it later
+        is the one the ``replaced`` line will name. This line keeps the person who set the
+        name and tags on record. Ids only: no name and no tag value.
+        """
+        _logger.info(
+            "file.replacement.deferred",
+            extra={
+                "file_id": file_id,
+                "workspace_id": ctx.workspace_id,
+                "user_id": ctx.user_id,
+                "source": source,
+            },
+        )
 
     async def _sweep(self, ctx: ExecutionContext, file_id: Uuid, *, source: SweepSource) -> None:
         """Delete every live file ``file_id`` replaced, one independent step

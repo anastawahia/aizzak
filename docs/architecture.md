@@ -85,15 +85,15 @@
 | `embed` خدمة التضمين | **deployable منفصل** (`services/embedding/`) — **ثلاثُ نسخ خلف `embedding-lb`** (nginx) | `torch`/`sentence-transformers` وزنٌ ثقيل؛ تعيش في صورتها وحدَها ولا تدخل رسمَ استيراد `app.*`. والموازِنُ والنسخُ وحدةٌ واحدة: نسخٌ بلا موازِنٍ أمامها **عطبٌ صامت** لا تحسينٌ ناقص. وداخلها **تجميعُ دفعاتٍ ديناميكيّ** (`EMB_BATCH_WINDOW_MS`) |
 | `search` البحث في الويب | **Exa** (`WebSearchProvider`) — ⚠️ **مكتوبٌ غيرُ موصول** | المحوّلُ موجود، لكنّ Composition Root لا يبنيه بلا مفتاح: حقلُ `web_search` في تبعيّات الوكيل `None`، والوكيلُ الذي يطلبه يفشل بـ500 نظيفٍ لا بجوابٍ خاطئٍ صامت |
 | `metrics` المقاييس | **Prometheus** + **Grafana** | **33 مقياساً** باسمه في `src/app`، ولوحتا Grafana: السعة والسجلّات |
-| `alerts` التنبيه | **Alertmanager** + **`alert-sink`** | قاعدةٌ بلا موجِّهٍ تُقيَّم ولا تصل أحداً. **29 قاعدة** تُوجَّه إلى `alert-sink` — **محلّيّاً فقط**، بلا قناةٍ خارجيّة — ولكلٍّ قسمٌ في [`docs/runbooks/alerts.md`](runbooks/alerts.md) وحالتان في `promtool` (تُشعلها وتُصمتها) |
+| `alerts` التنبيه | **Alertmanager** + **`alert-sink`** | قاعدةٌ بلا موجِّهٍ تُقيَّم ولا تصل أحداً. **31 قاعدة** تُوجَّه إلى `alert-sink` — **محلّيّاً فقط**، بلا قناةٍ خارجيّة — ولكلٍّ قسمٌ في [`docs/runbooks/alerts.md`](runbooks/alerts.md) وحالتان في `promtool` (تُشعلها وتُصمتها) |
 | `logs` السجلّات | **Loki** + **Alloy** | سجلٌّ مهيكلٌ واحدٌ قابلٌ للبحث بـ`correlation_id` عبر الحافّة والتطبيق والعامل |
 | `probes` المجسّات | `pgbouncer-exporter` · `redis-stream-exporter` · `redis-cache-exporter` · **cAdvisor** (خلف `--profile container-metrics`) | إشباعُ المُجمِّع وخادمَي Redis والحاويات — أرقامٌ لا يعرفها التطبيقُ عن نفسه |
 | `sched` المُجدوِل | **`ops-scheduler`** (الصورة نفسُها، `python -m app.ops.scheduler run`) | مهمّةٌ مجدولةٌ تفشل صامتةً أسوأُ من غياب المهمّة: **عشرُ مهامّ دوريّة** تكتب نجاحَها في `TaskLedger`، وتنبيهان لمهمّةٍ متأخّرةٍ أو لم يُسلّحها أحد |
 | `load` توليد الحمل | **k6** (خلف `--profile load`) | أداةُ قياس السعة (`deploy/load/`)؛ لا تُقلع في التشغيل العاديّ ولا تدخل مسارَ الطلب |
 | `ollama` نموذجٌ محلّيّ | **Ollama** (عبر `ollama-bridge`) | المسارُ الافتراضيُّ المحلّيّ، **ومقصدُ التحويل** حين يتعذّر النموذجُ السحابيّ |
 
-> **القيدُ الحاكمُ لإضافة الخدمات.** منشورُ Compose **خمسٌ وثلاثون خدمة** — اثنتان وثلاثون تُقلع
-> افتراضيّاً، وثلاثٌ خلف `profile` (`backup` · `cadvisor` · `k6`). وما دخل منها مسارَ الطلب
+> **القيدُ الحاكمُ لإضافة الخدمات.** منشورُ Compose **سبعٌ وثلاثون خدمة** — اثنتان وثلاثون تُقلع
+> افتراضيّاً، وخمسٌ خلف `profile` (`backup` · `cadvisor` · `k6` · `ele-parse` · `worker-electrical`). وما دخل منها مسارَ الطلب
 > (`redis-cache` · `embedding-lb`) دخله **خلف منفذٍ قائم** (`CacheProvider` · `EmbeddingProvider`)،
 > والمراقبةُ والتنبيهُ **يُلاحِظان** ولا تُخدَم منهما استجابة. فالقاعدة:
 > **لا تقنيةَ تدخل مسارَ الطلب إلّا خلف منفذٍ في `framework/ports/`**.
@@ -268,10 +268,10 @@ graph TD
 
 | المجلّد | الدور |
 |---|---|
-| `src/app/workers/` | **ثلاثة عمّال + مُرحّل**: `memory_worker` · `knowledge_worker` · `media_worker` · `outbox_relay` — ومعها `bootstrap` و`content_resolver` و`media_generation` و`summary_metering` (عدُّ التلخيص). الصورة نفسُها، أمرٌ مختلف |
+| `src/app/workers/` | **ثلاثة عمّال + مُرحّل (ورابعٌ خلف الملف `electrical`)**: `memory_worker` · `knowledge_worker` · `media_worker` · `electrical_worker` · `outbox_relay` — ومعها `bootstrap` و`electrical_bootstrap` و`content_resolver` و`media_generation` و`summary_metering` (عدُّ التلخيص). الصورة نفسُها، أمرٌ مختلف |
 | `src/app/ops/` | **ثلاثٌ وعشرون وحدة: إحدى وعشرون نقطةَ دخولٍ تشغيليّة** — `provision` (الهجرات ثمّ المنح) · `backup` · `retention` · `purge` · `revoke` · `rotate_transit` · `dlq` · `healthcheck` · `payload_indexes` · `slow_queries` · `explain_hot_paths` · `table_growth` · `notify_groups` · `load_seed` · `scheduler` · `stream_trim` · `replay` · `embedding_migration` · `qdrant_capacity` · `notify_cost` · `mint_load_tokens` — **ومكتبتان** تستوردهما الأدوات: `online_ddl` و`role_guard` |
 
-> **`alembic upgrade head` ليس أمراً يملكه هذا المستودع.** المنصّةُ تُشغّل **اثنتَي عشرةَ سلسلةَ هجراتٍ
+> **`alembic upgrade head` ليس أمراً يملكه هذا المستودع.** المنصّةُ تُشغّل **ثلاثَ عشرةَ سلسلةَ هجراتٍ
 > مستقلّة** (‏`version_table_schema` لكلّ وحدة)، فـ`head` ملتبسٌ وAlembic يرفضه. الاستدعاءُ الحقيقيُّ
 > `python -m app.ops.provision` (خدمةُ `migrate`) — يُشغّل السلاسل بالترتيب ثمّ يُصدر المنحَ التي لا
 > تُصدرها أيُّ هجرة.
@@ -313,7 +313,7 @@ graph TD
     Files -. حدث .-> Knowledge
 ```
 
-*Fig 4 — Business Modules Map (**12** وحدةً عاملة في v1؛ والثالثة عشرة `electrical` هيكلٌ فارغ منذ INC‑0، في الجدول أدناه)*
+*Fig 4 — Business Modules Map (**12** وحدةً عاملة في v1؛ والثالثة عشرة `electrical` لها schema وسلسلة هجرات منذ INC‑1، وقسمٌ واحدٌ مبنيٌّ (`drawings`) و`shared`، في الجدول أدناه)*
 
 | # | الوحدة | schema | domain | منافذ | ملاحظة |
 |---|---|---|---|---|---|
@@ -329,7 +329,7 @@ graph TD
 | 10 | `integrations` | ✅ | ✅ | 3 | OAuth · MCP بعيد — المنطقُ والتسجيلُ موصولان، والمحوّلان فارغان ([§15](#15--ما-ليس-مبنيّاً-بعد)) |
 | 11 | `usage` | ✅ | ✅ | 2 | منافذُ واردة · `reserve`/`commit` · **ميزانيّةُ كلفة** |
 | 12 | **`admin`** | ✗ | ✗ | 4 | **أُضيفت بعد الاعتماد** |
-| 13 | **`electrical`** | ✗ | ✗ | 0 | هيكل فارغ منذ INC‑0 (WireTwin): أربعة أقسام و`shared`؛ schema وسلسلة هجرات في INC‑1 |
+| 13 | **`electrical`** | ✅ | ✅ | 0 | WireTwin: schema `electrical` وسلسلته منذ INC‑1، وقسم `drawings` و`shared`؛ والأقسام الثلاثة الأخرى (`circuits` · `diagnostics` · `search`) فارغة |
 
 > **`spaces` ليست مستأجراً، وهذا هو التصميم.** الفضاءُ **محورُ الملكية داخل** مساحة العمل: كلُّ ملفٍّ
 > وكلُّ محادثةٍ ينتمي إلى واحدٍ بالضبط، وما يراه الحديثُ هو محتوى فضائه. لكنّ **مساحةَ العمل تبقى حدَّ
@@ -346,7 +346,7 @@ graph TD
 > منها في `src/app/modules/`. و`ops-scheduler` **ليس** `scheduling`: الأوّلُ يشغّل أدواتِ تشغيلٍ للمنصّة،
 > والثانيةُ وحدةُ أعمالٍ لمهامّ المستخدمين ولم تُبنَ.
 
-> **مِلكيّةُ الجداول مفروضةٌ بـschema لكلّ وحدة:** اثنتا عشرةَ سلسلةَ هجراتٍ (إحدى عشرةَ وحدةً +
+> **مِلكيّةُ الجداول مفروضةٌ بـschema لكلّ وحدة:** ثلاثَ عشرةَ سلسلةَ هجراتٍ (اثنتا عشرةَ وحدةً +
 > `platform`)، لكلٍّ `version_table_schema` خاصّتُها.
 
 ---
@@ -405,7 +405,7 @@ stateDiagram-v2
 المنافذ تُعرَّف في **Framework**، والمحوّلات في **Infrastructure**، والربط في **Composition Root**
 عبر Manual DI (عكس الاعتماد). لا يستورد أحدٌ المحوّلات المحسوسة إلا Composition Root.
 
-`src/app/framework/ports/` يحمل **24 وحدةَ منفذٍ** تعرّف **27 بروتوكولاً** — وكلُّ منفذٍ يُخرج تقنيةً
+`src/app/framework/ports/` يحمل **24 وحدةَ منفذٍ** تعرّف **28 بروتوكولاً** — وكلُّ منفذٍ يُخرج تقنيةً
 كانت ستُستورد مباشرةً. **وأسماءُ المحوّلات أدناه هي أسماءُ الأصناف في الشيفرة.**
 
 **منافذ مُقادة (Driven) — التقنيات الخارجية:**
@@ -524,13 +524,14 @@ graph LR
 
 *Fig 6 — Event-Driven Message Flow*
 
-**الطوبولوجيا الفعليّة — أربعةُ مجارٍ، وثلاثُ مجموعاتٍ ساكنة:**
+**الطوبولوجيا الفعليّة — خمسةُ مجارٍ، وأربعُ مجموعاتٍ ساكنة:**
 
 | المجرى | المنتِج | Consumer Group | العامل |
 |---|---|---|---|
 | `stream.knowledge` | knowledge | `cg.knowledge` | `knowledge_worker` (× 2) |
 | `stream.media` | media (API) | `cg.media` | `media_worker` |
 | `stream.memory` | memory | `cg.memory` | `memory_worker` |
+| `stream.electrical` | electrical (`drawings`) | `cg.electrical.document` | `electrical_worker` *(خلف الملف `electrical`)* |
 | `stream.files` | files | **— لا مستهلك** | — |
 | `*` (فشل) | العامل | — | `stream.<m>.dlq` |
 
@@ -613,7 +614,7 @@ graph TD
 
 ## 12 · معمارية النشر
 
-**Docker Compose** — **خمسٌ وثلاثون خدمة** (اثنتان وثلاثون افتراضيّاً + ثلاثٌ خلف `profile`)، قابلةٌ
+**Docker Compose** — **سبعٌ وثلاثون خدمة** (اثنتان وثلاثون افتراضيّاً + خمسٌ خلف `profile`)، قابلةٌ
 للتوسّع الأفقي: Nginx يوازن على نسخ App (Gunicorn+Uvicorn) بلا حالة، والعمّال الثلاثة ومُرحّل Outbox
 والمُجدوِل عملياتٌ مستقلة، وكلها تصل خدمات البيانات عبر PgBouncer (Transaction pooling).
 
@@ -626,7 +627,7 @@ graph TD
     Outbox["outbox-relay × 1<br/>poll → publish · قصّ"]
     Sched["ops-scheduler<br/>backup · retention · purge · rotate"]
     Embed["embedding × 3<br/>خلف embedding-lb"]
-    Provision["migrate<br/>12 سلسلة + المنح"]
+    Provision["migrate<br/>13 سلسلة + المنح"]
     Data["خدمات البيانات (مُدارة ذاتياً)<br/>PgBouncer · PostgreSQL · redis-stream · redis-cache · MinIO · Qdrant · Vault"]
     Backup["wal-shipper + backup<br/>PITR"]
     Obs["Prometheus · Grafana · Alertmanager → alert-sink<br/>Loki · Alloy · exporters · cAdvisor"]
@@ -648,7 +649,7 @@ graph TD
 
 *Fig 8 — Deployment Topology*
 
-**الخدمات الخمس والثلاثون بحسب الدور:**
+**الخدمات السبع والثلاثون بحسب الدور:**
 
 | الدور | الخدمات | العدد |
 |---|---|---|
@@ -660,9 +661,11 @@ graph TD
 | النسخ الاحتياطيّ | `wal-shipper` · `backup` *(profile)* | 2 |
 | الملاحظة والتنبيه | `prometheus` · `grafana` · `alertmanager` · `alert-sink` · `loki` · `alloy` · `pgbouncer-exporter` · `redis-stream-exporter` · `redis-cache-exporter` · `cadvisor` *(profile)* | 10 |
 | الحمل | `k6` *(profile)* | 1 |
+| WireTwin (الملف `electrical`) | `ele-parse` *(profile)* · `worker-electrical` *(profile)* | 2 |
 
 **ملاحظاتُ النشر:**
 
+- **WireTwin خلف الملف `electrical`** (`docker compose --profile electrical`): `ele-parse` و`worker-electrical`، ولا يُقلعان في `up -d` العاديّ. `ele-parse` محلِّلُ PDF (PyMuPDF) يقرأ ملفاتٍ عدائيّة، فيُعطى **لا شيء يُسرق ولا مكانَ يذهب إليه**: بلا سرٍّ ولا DSN ولا متغيّر Vault، وعلى شبكةٍ واحدة `aizzak_ele-parse` بـ`internal: true` (بلا مسارٍ خارج، وليست `default`، فلا يبلغ Postgres ولا Redis ولا Qdrant ولا MinIO)، وجذرٌ للقراءة فقط (`read_only`)، و`cap_drop: ALL`، و`no-new-privileges`، ومستخدمٌ غير جذر (uid 10001)، وحجمُ التجهيز `ele-stage` للقراءة فقط، وحدودٌ صلبة (≤ 64 عمليّة، وذاكرةٌ ومعالِجاتٌ فرعيّةٌ محدودة، وكلُّ طلبٍ في عمليّةٍ فرعيّة تحت `setrlimit`). و`worker-electrical` على الشبكتين (`default` و`aizzak_ele-parse`): يستهلك `stream.electrical` بالمجموعة `cg.electrical.document`، ويبثّ الـPDF من MinIO إلى `ele-stage` (يكتبه، و`ele-parse` يقرؤه)، ويطلب التحليلَ من `ele-parse` عبر HTTP؛ وحاجتُه من Vault هي حاجةُ `worker-knowledge` نفسُها (اعتمادُ MinIO)، فلا سرَّ جديد. وتفعيلُ الملف يشترط تطبيقَ الهجرة `electrical/0001` عبر `migrate` (قرارٌ بشريّ). وللملف قاعدتا تنبيهٍ: `AizzakElectricalQueueWaitHigh` و`AizzakElectricalDocumentsExcluded`.
 - **الاسترجاعُ الزمنيّ (PITR) مبنيّ.** ‏`wal-shipper` يشحن المقاطع و`backup` يأخذ المرساةَ
   الماديّة (`pg_basebackup`) — لأنّ **دُفعةً منطقيّةً + رفَّ WAL لا يُنتج استرجاعاً زمنيّاً بحال**:
   المنطقيّةُ تُستعاد في عنقودٍ بمُعرِّفِ نظامٍ جديد، والمقطعُ المؤرشَفُ سجلٌّ ماديٌّ يرفضه أيُّ عنقودٍ
@@ -719,7 +722,7 @@ graph TD
 
 > **انحرافاتٌ مُنفَّذة عن السجلّ — ما بُني فخالف النصّ، وسببُه:**
 > - **`D‑11` صار 13 وحدة:** ‏`spaces` (محورُ ملكيّةٍ داخل المستأجر، ليست مستأجراً) و`admin` (تطبيقيّةٌ
->   بلا نطاقٍ ولا schema) و`electrical` (WireTwin: هيكلٌ فارغ من أربعة أقسام و`shared` منذ INC‑0، بلا schema). المحجوزُ **3** كما هو.
+>   بلا نطاقٍ ولا schema) و`electrical` (WireTwin: schema وسلسلة هجرات منذ INC‑1، وقسم `drawings` و`shared` مبنيّان، والأقسام الثلاثة الأخرى فارغة). المحجوزُ **3** كما هو.
 > - **`D‑14` استقرّ على خدمةٍ داخليّة:** المزوّدُ «خارجيٌّ» عن `app.*` كما نصّ القرار، لكنّه
 >   **deployable خاصٌّ بنا** — لإبقاء `torch` خارج رسم استيراد التطبيق. ثلاثُ نسخٍ خلف موازِن، ومتّجهُ
 >   الاستعلام مخبّأٌ في `redis-cache`، و**تبديلُ نموذج التضمين مسارٌ لا حادثة**: صناديقُ بمراجعات،
@@ -730,7 +733,7 @@ graph TD
 >   النموذجُ المحلّيّ ويُخبَر المستخدم — **في اتّجاهٍ واحدٍ فقط**، وبالإعداد `LLM_FALLBACK_ROUTE` (فارغُه
 >   يُطفئه). والعكسُ ممنوعٌ بالإقلاع لا بالعُرف: مستأجرٌ أبقى محادثاته محلّيّةً لا تُرسَل إلى سحابةٍ لأنّ
 >   Ollama كان يُعاد تشغيله. وبعد أوّل مقطعٍ لا تحويل، بل قطع.
-> - **`D‑20` لم يعد «مجرًى لكلّ وحدة» حرفيّاً:** أربعةُ مجارٍ، و`stream.files` **بلا مستهلكٍ عمداً** —
+> - **`D‑20` لم يعد «مجرًى لكلّ وحدة» حرفيّاً:** خمسةُ مجارٍ، و`stream.files` **بلا مستهلكٍ عمداً** —
 >   [§10](#10--العمارة-المدفوعة-بالأحداث).
 
 > **وقراراتٌ لاحقة تُكمل السجلّ دون أن تخالفه:**
@@ -744,7 +747,7 @@ graph TD
 > - **`reserve`/`commit`** لسقوف `usage`، و**ميزانيّةُ كلفةٍ لكلّ مساحة** بأسعارٍ حقيقيّة، والنافدةُ توقف
 >   المحادثاتِ المحلّيّةَ أيضاً — [§08](#08--المنافذ-والمحوّلات).
 > - **دورٌ ثامنٌ بـ`BYPASSRLS`** للنسخ الاحتياطيّ وحدَه — [§11](#11--معمارية-الأمن).
-> - **schema لكلّ وحدة:** اثنتا عشرةَ سلسلةَ هجرات.
+> - **schema لكلّ وحدة:** ثلاثَ عشرةَ سلسلةَ هجرات.
 > - **التنبيهاتُ تصل محلّيّاً فقط:** ‏`alert-sink` سجلٌّ لا قناةٌ خارجيّة.
 
 ---
@@ -766,11 +769,11 @@ graph TD
 
 | التوصية | الحالة |
 |---|---|
-| **Schema لكل Module** داخل Postgres | ✅ **نُفِّذت** — 12 سلسلةَ هجرات، `version_table_schema` لكلّ وحدة |
+| **Schema لكل Module** داخل Postgres | ✅ **نُفِّذت** — 13 سلسلةَ هجرات، `version_table_schema` لكلّ وحدة |
 | **إبقاء Framework نحيفاً** | 🟡 **قائمة** — الكِرنل نما إلى 24 منفذاً، و`providers/` صار يحمل التحويلَ والتسعير، و`observability/` يحمل كتالوجَ المهامّ الدوريّة. النموُّ في التجريدات لا في المنطق، والعقودُ التسعة تحرسه — لكنّ الحراسةَ اتّجاهيّةٌ لا حجميّة |
 | **Outbox Relay** نقطة فشل | 🟡 **قائمة — لكنّها مرئيّةٌ وقابلةٌ للاسترداد** — نسخةٌ واحدةٌ بلا انتخاب قائد، وتحمل أيضاً قصَّ المجاري. لكنّ تأخّرَها ينبّه (`AizzakOutboxCycleTimeHigh`)، وقصَّها مهمّةٌ في `TaskLedger`، وما فقده Redis يُعاد من `outbox` (`app.ops.replay`) |
 | **ProviderResolver بلا Fallback (D‑16)** | 🟢 **حُسمت** — تحويلٌ في اتّجاهٍ واحد (سحابيّ → محلّيّ)، وقاطعُ دارةٍ لكلّ مزوّد. والمقايضةُ الباقية: لا تحويلَ بين مزوّدَين سحابيَّين، ولا من محلّيٍّ إلى سحابيّ |
-| **نقاط توسعة Observability** | ✅ **استُهلكت** — `correlation_id` يعبر الحافّةَ والتطبيقَ والعامل في استعلامٍ واحد، و**33 مقياساً**، و**29 قاعدةَ تنبيهٍ تصل** — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوبٌ وحالةٌ تُشعله صناعيّاً |
+| **نقاط توسعة Observability** | ✅ **استُهلكت** — `correlation_id` يعبر الحافّةَ والتطبيقَ والعامل في استعلامٍ واحد، و**33 مقياساً**، و**31 قاعدةَ تنبيهٍ تصل** — منها ميزانيّةُ الخطأ بمعدّلَي احتراق 14.4× و6× — ولكلٍّ إجراءٌ مكتوبٌ وحالةٌ تُشعله صناعيّاً |
 
 ---
 

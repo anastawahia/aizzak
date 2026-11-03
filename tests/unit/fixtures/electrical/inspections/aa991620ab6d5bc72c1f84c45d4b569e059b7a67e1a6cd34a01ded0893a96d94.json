@@ -1,0 +1,36 @@
+{
+ "pages": [
+  {
+   "char_count": 480,
+   "cjk_char_count": 0,
+   "fonts": [],
+   "height_pt": 595.0,
+   "image_area_ratio": 0.0,
+   "image_count": 0,
+   "latin_char_count": 480,
+   "link_count": 0,
+   "page_no": 1,
+   "pua_char_count": 0,
+   "rotation": 0,
+   "short_curve_path_count": 0,
+   "tokens": [
+    "-K1",
+    "-K2",
+    "-K3"
+   ],
+   "unmapped_char_count": 0,
+   "vector_path_count": 300,
+   "width_pt": 842.0,
+   "word_count": 90
+  }
+ ],
+ "schema": 1,
+ "summary": {
+  "creator": null,
+  "encrypted": false,
+  "outline_count": 0,
+  "page_count": 1,
+  "pdf_version": "1.7",
+  "producer": null
+ }
+}

@@ -746,8 +746,10 @@ def test_the_patterns_actually_find_something() -> None:
     pattern rather than one."""
     compose = _compose_topology()
 
-    # 6 since capacity 5.7 added `ops-scheduler` (one pooler connection).
-    assert len(compose.runners) == 6, [r.name for r in compose.runners]
+    # 6 since capacity 5.7 added `ops-scheduler` (one pooler connection); 7 since WireTwin INC-1
+    # S9 added `worker-electrical` (behind the `electrical` profile, counted all the same: the
+    # ledger is a ceiling for every service the file defines, not a snapshot of one `up -d`).
+    assert len(compose.runners) == 7, [r.name for r in compose.runners]
     assert _pooler_clients(compose) > 0
     assert set(_ENTRYPOINT_POOLS) == {"app.workers.main", "app.workers.outbox_relay"}
 

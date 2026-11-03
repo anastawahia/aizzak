@@ -926,8 +926,13 @@ groups:
       # of the QUIET SPELL (the gap to the last delivered id), so it would
       # fire every morning. `queue_wait` is how long the oldest undelivered
       # entry has actually waited (capacity 5.3, the port's own docstring).
+      #
+      # `stream.electrical` is EXCLUDED (WireTwin INC-1, INC1-D-22): a queue there is
+      # intended (a 5,000-page drawing is inspected for minutes, and a project uploads many),
+      # so a two-minute wait on it is normal and would fire every upload session.
+      # `AizzakElectricalQueueWaitHigh` below watches it with its own, longer threshold.
       - alert: AizzakStreamQueueWaitHigh
-        expr: max by (stream, group) (aizzak_stream_queue_wait_seconds) > 120
+        expr: max by (stream, group) (aizzak_stream_queue_wait_seconds{stream!="stream.electrical"}) > 120
         for: 5m
         labels:
           severity: warning
@@ -952,6 +957,78 @@ groups:
             counts. Stopped: start it -- nothing is lost while the entries
             wait (5.5's trim keeps them). Sustained load above what the
             workers can do: 08 §4.18 (WORKER_CONCURRENCY) and §4.0.
+
+      # WireTwin (INC-1, INC1-D-22, INC1-AC-14). Same gauge as the rule above, but only the
+      # electrical stream, with a threshold that fits its work: one `cg.electrical.document`
+      # worker at concurrency 1 inspects a large drawing set for minutes, so waiting is the
+      # design (DEC-15 (d)). 1,800 s is a first figure to be MEASURED on real drawings
+      # (INC1-R-5), not a promise; `for: 15m` ignores one long document.
+      - alert: AizzakElectricalQueueWaitHigh
+        expr: max by (stream, group) (aizzak_stream_queue_wait_seconds{stream="stream.electrical"}) > 1800
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Drawing work has waited more than half an hour for {{ $labels.group }}"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakelectricalqueuewaithigh"
+          description: >-
+            The oldest entry on stream.electrical that {{ $labels.group }} has
+            not yet been handed has waited more than 1,800 seconds, for
+            fifteen minutes. Uploaded drawings are not being inspected as
+            fast as they arrive, or the worker is not running at all (its
+            Compose profile `electrical` is off, or the container is down).
+          reason: >-
+            WireTwin queues on purpose (a large drawing is minutes of work at
+            one inspection at a time), so the general 120 s rule skips this
+            stream. Half an hour for fifteen minutes is a queue that is not
+            draining, not a long document. The figure is provisional until it
+            is measured on real drawings (INC1-R-5).
+          response: >-
+            `docker compose ps worker-electrical ele-parse` (both need
+            `--profile electrical`). Stopped: start them. Running: the
+            worker's log for the document being inspected and for
+            `ele-parse` 503/504/507 answers, `XINFO GROUPS stream.electrical`
+            on redis-stream for pending counts, and `python -m app.ops.dlq
+            peek stream.electrical`. A queue that is only long: raise
+            ELE_PARSE_MAX_CHILDREN after measuring; never raise
+            WORKER_CONCURRENCY_ELECTRICAL or add worker-electrical replicas
+            above 1 without tenant isolation (security, not capacity:
+            08-local-runbook 4.29).
+
+      # WireTwin (INC-1, INC1-D-22, INC1-AC-14). Counted by the `app` processes (registration
+      # is where a document leaves a project's live set; the workers have no /metrics). An
+      # exclusion is a person's drawing silently leaving a project, so ANY one in an hour
+      # raises this. `increase()` cannot see the step from "no series" to 1 (a Prometheus
+      # counter's first sample has nothing to subtract from), and the first exclusion is the
+      # one that matters, so the second branch catches a series that did not exist an hour ago.
+      - alert: AizzakElectricalDocumentsExcluded
+        expr: >-
+          sum by (reason) (increase(aizzak_ele_documents_excluded_total[1h])) > 0
+          or
+          sum by (reason) (aizzak_ele_documents_excluded_total unless aizzak_ele_documents_excluded_total offset 1h) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A drawing was excluded from a project in the last hour ({{ $labels.reason }})"
+          runbook_url: "https://github.com/anastawahia/aizzak/blob/master/docs/runbooks/alerts.md#aizzakelectricaldocumentsexcluded"
+          description: >-
+            At least one WireTwin document was taken out of its project's
+            live set at registration in the last hour, for the reason in the
+            label (`file_unreadable`: the active document's file can no
+            longer be read). Nothing is deleted, but the project's drawings
+            are no longer all there.
+          reason: >-
+            Any exclusion is a drawing a person uploaded and then lost from
+            view, with no other symptom (no error, no latency). Zero is the
+            normal count, so the threshold is "above zero in an hour" with no
+            `for:`.
+          response: >-
+            Which document and project: the documents list of the
+            project(s) that registered a file in that hour
+            (`GET /api/v1/electrical/projects/{id}/documents`; the excluded
+            one carries `exclusion_reason`). Then why its file is
+            unreadable: the object in MinIO, and the files module's own
+            state for it. Re-upload is the owner's decision.
 
       # 429 is not an error (plan §7 item 4) and is not in the budget above.
       # It IS the platform turning people away, and 7.3 names its rate.

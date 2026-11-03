@@ -246,6 +246,13 @@ def test_purge_role_gets_select_delete_on_every_tenant_table_it_empties() -> Non
         "usage.usage_rollups",
         "usage.limits",
         "usage.reservations",
+        "electrical.drawings_projects",
+        "electrical.drawings_documents",
+        "electrical.drawings_jobs",
+        "electrical.drawings_pages",
+        "electrical.drawings_page_stages",
+        "electrical.drawings_profile_versions",
+        "electrical.drawings_characterizations",
     )
     for table in tables:
         matches = [s for s in PURGE_GRANTS if f" ON {table} TO " in s]
@@ -363,3 +370,33 @@ def test_a_chain_that_reads_another_chains_table_is_ordered_after_it() -> None:
                 f"{chain_dir.name} reads {table} in {readers} but is applied "
                 f"before the {provider} chain that creates it"
             )
+
+
+_ELECTRICAL_TABLES = (
+    "electrical.drawings_projects",
+    "electrical.drawings_documents",
+    "electrical.drawings_jobs",
+    "electrical.drawings_pages",
+    "electrical.drawings_page_stages",
+    "electrical.drawings_profile_versions",
+    "electrical.drawings_characterizations",
+)
+
+
+def test_the_seven_electrical_tables_are_granted_to_app_rw_with_full_crud() -> None:
+    """INC-1 (LLD 4.5): `electrical` is a module schema, so `app_rw` gets USAGE on it and
+    CRUD on each of the seven `drawings_*` tables (RLS, not the grant, confines it)."""
+    assert any("ON SCHEMA electrical TO app_rw" in s for s in APP_RW_GRANTS)
+    for table in _ELECTRICAL_TABLES:
+        matches = [s for s in APP_RW_GRANTS if f" ON {table} TO app_rw" in s]
+        assert len(matches) == 1, f"{table} missing (or duplicated) in APP_RW_GRANTS"
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert privilege in matches[0]
+
+
+def test_electrical_is_the_thirteenth_chain_and_the_last() -> None:
+    """The twelve existing chains keep their order; `electrical` reads no other chain's
+    table (its references are logical), so it is appended."""
+    assert len(MIGRATION_CHAINS) == 13
+    assert MIGRATION_CHAINS[-1] == ("electrical@head", "electrical")
+    assert [r for r, _ in MIGRATION_CHAINS].count("electrical@head") == 1

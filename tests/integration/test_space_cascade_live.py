@@ -31,10 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.di.electrical_purge import ElectricalSpacePurge
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.errors import NotFoundError
 from app.framework.identifiers import new_uuid7
 from app.framework.settings.settings import Limits
+from app.infrastructure.persistence.outbox import SqlEventOutbox
 from app.infrastructure.persistence.rls import TenantSessionFactory
 from app.modules.conversations.adapters.sql_repository import SqlConversationRepository
 from app.modules.conversations.application.use_cases import (
@@ -44,6 +46,14 @@ from app.modules.conversations.application.use_cases import (
     SoftDeleteConversation,
     StartConversation,
 )
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlDocumentRepository as SqlDrawingDocumentRepository,
+)
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    SqlJobRepository as SqlDrawingJobRepository,
+)
+from app.modules.electrical.drawings.adapters.sql_repository import SqlProjectRepository
+from app.modules.electrical.drawings.application.purge import PurgeSpaceDrawings
 from app.modules.files.adapters.sql_repository import SqlFileRepository
 from app.modules.files.application.use_cases import (
     CompleteUpload,
@@ -150,6 +160,15 @@ def _service(
     return DeleteSpaceService(
         DeleteSpace(SqlSpaceRepository(tenant_session)),
         knowledge=PurgeSpaceKnowledge(documents, vectors),
+        electrical=ElectricalSpacePurge(
+            drawings=PurgeSpaceDrawings(
+                SqlProjectRepository(tenant_session),
+                SqlDrawingDocumentRepository(tenant_session),
+                SqlDrawingJobRepository(tenant_session),
+                SqlEventOutbox(tenant_session),
+                tenant_session,
+            )
+        ),
         files=PurgeSpaceFiles(files, storage),
         conversations=PurgeSpaceConversations(SqlConversationRepository(tenant_session)),
     )

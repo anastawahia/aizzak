@@ -50,6 +50,7 @@ from app.api.metrics import (
 from app.framework.observability.metrics import (
     DB_POOL_CAPACITY_METRIC,
     DB_POOL_IN_USE_METRIC,
+    ELE_DOCUMENTS_EXCLUDED_METRIC,
     HTTP_REQUESTS_METRIC,
     RATE_LIMIT_REJECTIONS_METRIC,
 )
@@ -170,6 +171,12 @@ EXPECTED_ALERTS = frozenset(
         # inactive (an absent card is not an alert).
         "AizzakGpuMemoryHigh",
         "AizzakGpuTemperatureHigh",
+        # WireTwin INC-1 (docs/delivery/electrical-drawings/docs/lld-inc-1.md INC1-D-22,
+        # INC1-AC-14) -- the thirtieth and thirty-first. The first is the stream the general
+        # two-minute rule now skips (a drawing queue is intended, DEC-15 (d)), with a
+        # threshold of its own; the second is a person's drawing silently leaving a project.
+        "AizzakElectricalQueueWaitHigh",
+        "AizzakElectricalDocumentsExcluded",
         # The pipeline's heartbeat: the one rule that speaks by ARRIVING.
         "AizzakWatchdog",
     }
@@ -237,8 +244,14 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
     about the GPU, which had no exporter until then, and they have no series
     at all on a host without ``docker-compose.gpu.yml``.
 
+    WireTwin INC-1 (S9) adds two, the thirtieth and thirty-first, and the
+    brief names them (INC1-AC-14): ``AizzakElectricalQueueWaitHigh``, because
+    the queue on ``stream.electrical`` is intended and the general rule now
+    skips it, and ``AizzakElectricalDocumentsExcluded``, a counter that is
+    zero by construction and whose only symptom is a drawing that is gone.
+
     That is the bar this guard enforces -- growth by a justified, logged
-    decision, never by drift -- so a THIRTIETH entry needs its own
+    decision, never by drift -- so a THIRTY-SECOND entry needs its own
     written reason (a ``docs/log/`` write-up, or a named step in
     ``docs/capacity-plan.md`` or ``docs/server-gpu-plan.md``) first, not just
     a name added here.
@@ -265,7 +278,8 @@ def test_the_file_declares_exactly_the_expected_alerts() -> None:
         "Wave 0 step 0.3), the shadow-corpus write counter (step 4.5), the two "
         "redis-stream rules (step 5.2), the two stream-trim rules (step 5.5), the two "
         "scheduled-task rules (step 5.7), the eleven of step 7.3, the four of "
-        "monitoring-plan phase 2 and the two GPU rules of server-gpu-plan 4.2. A new "
+        "monitoring-plan phase 2, the two GPU rules of server-gpu-plan 4.2 and the two "
+        "WireTwin rules of INC-1 (INC1-AC-14). A new "
         "rule needs its own logged justification first, not just a name added to "
         "EXPECTED_ALERTS."
     )
@@ -673,6 +687,10 @@ def test_the_saturation_rules_read_the_numbers_the_baseline_was_measured_in() ->
     queue = _rule_named(rules, "AizzakStreamQueueWaitHigh")["expr"]
     assert STREAM_QUEUE_WAIT_METRIC in queue and STREAM_LAG_METRIC not in queue, queue
     assert "> 120" in queue, "plan §7 item 5 and QUEUE_LAG_CEILING_S: two minutes"
+    # WireTwin (INC1-AC-14, INC1-R-13): the general rule skips the electrical stream, and ONLY
+    # that stream -- a wider exclusion would silence the other queues.
+    assert queue.count("stream!=") == 1 and 'stream!="stream.electrical"' in queue, queue
+    assert "stream.knowledge" not in queue and "stream.media" not in queue, queue
 
     shed = _rule_named(rules, "AizzakRateLimitedShareHigh")["expr"]
     assert RATE_LIMIT_REJECTIONS_METRIC in shed and HTTP_REQUESTS_METRIC in shed, shed
@@ -829,3 +847,25 @@ def test_the_backup_age_question_points_at_the_ops_task_rule() -> None:
     end = text.find('<a id="', start + 1)
     section = text[start : end if end != -1 else len(text)]
     assert 'aizzak_ops_task_last_success_timestamp_seconds{task="backup"}' in section
+
+
+def test_the_electrical_rules_read_their_own_stream_and_thresholds() -> None:
+    """INC1-AC-14. The electrical queue rule reads the SAME gauge as the general one, but only
+    the electrical stream, at the half-hour DEC-15 (d) makes ordinary for drawings; the
+    exclusion rule reads the `app` counter and has no `for:` (any exclusion in an hour)."""
+    rules = _load_rules()
+    queue = _rule_named(rules, "AizzakElectricalQueueWaitHigh")
+    assert STREAM_QUEUE_WAIT_METRIC in queue["expr"]
+    assert 'stream="stream.electrical"' in queue["expr"] and "> 1800" in queue["expr"]
+    assert queue["for"] == "15m"
+    assert queue["labels"]["severity"] == "warning"
+    # The two queue rules partition the stream: between them every stream is judged once.
+    general = _rule_named(rules, "AizzakStreamQueueWaitHigh")["expr"]
+    assert 'stream!="stream.electrical"' in general
+
+    excluded = _rule_named(rules, "AizzakElectricalDocumentsExcluded")
+    assert ELE_DOCUMENTS_EXCLUDED_METRIC in excluded["expr"]
+    assert "[1h]" in excluded["expr"], "any exclusion in an hour"
+    assert " offset 1h" in excluded["expr"], "a series born at 1 is invisible to increase()"
+    assert "for" not in excluded or str(excluded["for"]) in {"0s", "0"}
+    assert excluded["labels"]["severity"] == "warning"

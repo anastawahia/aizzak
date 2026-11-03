@@ -6,8 +6,8 @@
 |---|---|
 | المعرّف | `electrical-drawings` · الزيادة `INC‑1` |
 | نوع الوثيقة | تصميم تفصيلي: ملفات، وتواقيع، وDDL، ونص العقود، وخطة اختبار. **لا شيفرة تُكتب في هذه الدورة** |
-| الإصدار | 0.4 (مُقَرّ للبناء؛ تصحيح من مراجعة `PR‑B`) |
-| التاريخ | 2026-11-02 (0.4: من مراجعة `PR‑B` في `inc-1/pr-b/`: `rules` حزمة لا ملف، و`patterns.py`، وعقد الهوية (`kind`، `canonical`) وطيّ الأرقام إلى ASCII في الشكل المطبّع، ونمط `voltage_based` يطابق `L1-5` من ملحق أ). 2026-11-01 (0.3: قرارا المالك في S‑1 وS‑3 من `inc-1/pr-a/security-review.md`، ونص ترتيب 422). 0.2 و0.1 في 2026-10-31 |
+| الإصدار | 0.6 (مُقَرّ للبناء؛ تصحيحات من بناء `PR‑C`) |
+| التاريخ | 2026-11-02 (0.6، من S5..S8 في `PR‑C`: نطاق `INC1‑Q‑6` بإقرار المالك، و`INC1‑R‑16` بقراره، وعمود `detection` في §4.3، و11 مفتاحاً لا 10، وأربعة مسارات 202 لا ثلاثة، وحدّ صفحات الوثيقة 100). 2026-11-02 (0.5: `INC1‑Q‑5..7` في §7.1 بالتوصية). 2026-11-02 (0.4: من مراجعة `PR‑B` في `inc-1/pr-b/`: `rules` حزمة لا ملف، و`patterns.py`، وعقد الهوية (`kind`، `canonical`) وطيّ الأرقام إلى ASCII في الشكل المطبّع، ونمط `voltage_based` يطابق `L1-5` من ملحق أ). 2026-11-01 (0.3: قرارا المالك في S‑1 وS‑3 من `inc-1/pr-a/security-review.md`، ونص ترتيب 422). 0.2 و0.1 في 2026-10-31 |
 | المدخل الملزم | [`hld.md`](hld.md) 0.16 (§4، §5.2، §5.4، §5.6، §5.7، §6، §7، §8.1–8.3، §8.7، §8.8، §8.11، §12، §13، §14.1، §14.4، §16، §18)، و[`requirements.md`](requirements.md) 0.17، و[`lld-inc-0.md`](lld-inc-0.md) 0.2 (مبنيّ ومدموج في PR #26) |
 | المدخل المساند | `docs/delivery/smart-assistant/requirements.md` (FR‑18..FR‑32، م‑2، م‑3) و`study.md` §5.2 و§5.6، و`inc-0/security-review.md`، و`inc-0/review.md`، و`status.md` |
 | الوثائق الحاكمة | `CLAUDE.md`، و`docs/design/00…12`، و`docs/design/openapi.yaml`، و`docs/design/events/schemas/`، و`docs/architecture.md`، و`.importlinter`، و`.github/workflows/ci.yml` |
@@ -156,7 +156,7 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 | B19 | `src/app/framework/di/storage_handle.py` | ت | `read_chunks` تمريراً، وغير المربوط يجيب `common.internal` | S5 |
 | B20 | `src/app/infrastructure/storage/minio_storage.py` | ت | `read_chunks` فوق `get_object` بالأجزاء (§3.3.9) | S5 |
 | B21 | `src/app/framework/settings/settings.py` | ت | `ElectricalSettings` والحقل `Settings.electrical` (§3.3.12) | S5 |
-| B22 | `src/app/infrastructure/config/env_settings.py` | ت | المفاتيح العشرة (§3.3.12) | S5 |
+| B22 | `src/app/infrastructure/config/env_settings.py` | ت | المفاتيح الأحد عشر (§3.3.12) | S5 |
 | B23 | `src/app/framework/errors.py` | ت | الرموز في §3.3.13، كلٌّ في الخطوة التي تُصدره (`test_error_catalog.py` يشترط موضع إصدار) | S7، S8 |
 | B24 | `src/app/framework/events/topology.py` | ت | `cg.electrical.document` و`stream.electrical` (§3.3.11) | S7 |
 | B25 | `src/app/framework/di/electrical_purge.py` | إ | المشارك المركّب `electrical`: `ElectricalFilePurge` و`ElectricalSpacePurge` (§3.3.3) | S5 |
@@ -212,7 +212,7 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 | BD1 | `docs/design/02-port-contracts.md` | ت | §1.6: `StreamingStorage`. و§2: `FileView.tags`، و`live_name_conflicts`، و`FindNamesakes.preview` |
 | BD2 | `docs/design/03-api-spec.md` | ت | §1 (صف Files وصف Electrical)، و§2 (DTO)، و§3.2 (أنواع الإشعار الثلاثة)، و§4 (الرموز) |
 | BD3 | `docs/design/04-event-catalog.md` | ت | §2 (`stream.electrical`، والمجموعة، والطابور الميت)، و§4 (الأنواع الستة، و`tags` في `files.file.uploaded.v1`) |
-| BD4 | `docs/design/05-rbac-config-secrets.md` | ت | §2 (المفاتيح العشرة، غير سرّية)، و§4 (21 صفاً) |
+| BD4 | `docs/design/05-rbac-config-secrets.md` | ت | §2 (المفاتيح الأحد عشر، غير سرّية)، و§4 (21 صفاً) |
 | BD5 | `docs/design/06-domain-models.md` | ت | §6 (INV‑F6)، وقسم جديد لمجاميع `drawings` ولازماتها |
 | BD6 | `docs/design/07-nfr-slo.md` | ت | §4: `ELE_MAX_PAGES` و`ELE_QUEUE_PROTECTION_LIMIT` وحدّا `ele-parse` |
 | BD7 | `docs/design/09-testing-strategy.md` | ت | اختبارات WireTwin وأماكنها، و`tests/eval/electrical/` خارج CI (SRS D-23) |
@@ -252,7 +252,7 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 | O8 | `tests/unit/test_compose_build_overlay.py` | ت | مدخلا البناء الجديدان | S9 |
 | O9 | `tests/unit/test_compose_electrical_profile.py` | إ | فحص ثابت لـ`docker-compose.yml` (§5.2، INC1‑AC‑9) | S9 |
 | O10 | `tests/unit/test_ele_parse_containers.py` | إ | عُدّة حاويات اختيارية (`RUN_ELE_PARSE_CONTAINER_TEST=1`) على نمط `test_public_file_links_containers.py` | S9 |
-| O11 | `.env.example` | ت | أسماء المفاتيح العشرة ومفاتيح `ele-parse` الخمسة ومفاتيح الأحجام، بلا قيم سرّية | S9 |
+| O11 | `.env.example` | ت | أسماء المفاتيح الأحد عشر ومفاتيح `ele-parse` الخمسة ومفاتيح الأحجام، بلا قيم سرّية | S9 |
 | O12 | `deploy/prometheus/alerts.yml` | ت | استثناء `stream.electrical` من `AizzakStreamQueueWaitHigh` (`:929-950`)، و`AizzakElectricalQueueWaitHigh`، و`AizzakElectricalDocumentsExcluded` | S9 |
 | O13 | `deploy/prometheus/alerts.test.yml` | ت | حالتا إشعال وإصمات لكل قاعدة جديدة، وحالة تثبت أن القاعدة القديمة صمتت عن `stream.electrical` | S9 |
 | O14 | `docs/runbooks/alerts.md` | ت | قسمان جديدان، وتعديل قسم `AizzakStreamQueueWaitHigh` | S9 |
@@ -293,7 +293,7 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 | POST | `/files/{id}/complete`، PATCH `/files/{id}` (قائمان) | كما هما | كما هما | كما هما. **والاستبدال صار بالاسم والوسوم معاً** | `files:write` |
 | GET | `/files`، `/files/{id}` (قائمان) | كما هما | `FileOut` + **`tags: FileTagsOut`** | كما هما | `files:read` |
 
-**(ب) `electrical` (عشرون عملية، الوسم `electrical`).** كل مسار يجيب `503 electrical.disabled` حين `ELECTRICAL_ENABLED=false` (`INC1‑D‑12`)، قبل حارس الصلاحية لا بعده، لأن السؤال عن صلاحية ميزة غير موجودة لا معنى له. والعمليات الثلاث التي تجيب 202 عليها `heavy_job` (`test_heavy_job_limit.py:368`) و`Idempotency-Key`.
+**(ب) `electrical` (عشرون عملية، الوسم `electrical`).** كل مسار يجيب `503 electrical.disabled` حين `ELECTRICAL_ENABLED=false` (`INC1‑D‑12`)، قبل حارس الصلاحية لا بعده، لأن السؤال عن صلاحية ميزة غير موجودة لا معنى له. والعمليات الأربع التي تجيب 202 (التسجيل والتأكيد وإعادة المعالجة والاستئناف؛ صُحّح من «الثلاث» في S8) عليها `heavy_job` (`test_heavy_job_limit.py:368`) و`Idempotency-Key`.
 
 | الطريقة | المسار (`operationId`) | الطلب | الاستجابة | الأخطاء | الصلاحية |
 |---|---|---|---|---|---|
@@ -308,10 +308,10 @@ INC‑1 أول زيادة تحمل قدرة لـWireTwin. تبدأ بتغيير 
 | GET | `/electrical/projects/{id}/characterization` (`getProjectCharacterization`) | — | `200 CharacterizationReportOut` | `404` | `electrical:read` |
 | GET | `/electrical/documents/{id}` (`getElectricalDocument`) | — | `200 ElectricalDocumentOut` (ومعه الوسوم من `files` وآخر مهمة) | `404` | `electrical:read` |
 | GET | `/electrical/documents/{id}/profile` (`getDocumentProfile`) | — | `200 EffectiveProfileOut` | `404` | `electrical:read` |
-| PUT | `/electrical/documents/{id}/profile` (`replaceDocumentProfile`) | `DrawingProfileIn` | `200 EffectiveProfileOut` | `404`، `422 electrical.invalid_profile`، `409 electrical.job_conflict` (مهمة جارية) | `electrical:manage` |
+| PUT | `/electrical/documents/{id}/profile` (`replaceDocumentProfile`) | `DrawingProfileIn` | `200 EffectiveProfileOut` | `404`، `422 electrical.invalid_profile`، `409 electrical.job_conflict` (لا مهمة تنتظر التأكيد، كما §3.3.8؛ صُحّح من «مهمة جارية» بمراجعة `PR‑C`) | `electrical:manage` |
 | POST | `/electrical/documents/{id}/profile-confirmation` (`confirmDocumentProfile`) | `ProfileConfirmIn {body?}` (فارغ = قبول الاقتراح كما هو)؛ `Idempotency-Key` | `202 IngestionJobOut` | `404`، `409 electrical.job_conflict` (لا مهمة بانتظار التأكيد)، `422 electrical.invalid_profile` | `electrical:manage` |
 | POST | `/electrical/documents/{id}/reprocessing` (`reprocessDocument`) | `ReprocessIn {pages?: [int]}` (1..1000 رقم بلا تكرار)؛ `Idempotency-Key` | `202 IngestionJobOut` | `404`، `409 electrical.job_conflict` (مهمة مفتوحة)، `409 electrical.profile_unconfirmed`، `422` (صفحة خارج `1..page_count`) | `electrical:manage` |
-| GET | `/electrical/documents/{id}/pages` (`listDocumentPages`) | `limit` (≤ 200)، `cursor` (على `page_no` تصاعدياً) | `200 DocumentPagePage` | `404` | `electrical:read` |
+| GET | `/electrical/documents/{id}/pages` (`listDocumentPages`) | `limit` (`Limit` المشترك، ≤ 100؛ صُحّح من 200 في S8 لأن `test_api_conventions.py` يفرض حداً واحداً)، `cursor` (على `page_no` تصاعدياً) | `200 DocumentPagePage` | `404` | `electrical:read` |
 | GET | `/electrical/documents/{id}/characterization` (`getDocumentCharacterization`) | — | `200 CharacterizationOut` | `404` (أو لم يجرِ STG‑01 بعد) | `electrical:read` |
 | GET | `/electrical/ingestion-jobs/{id}` (`getIngestionJob`) | — | `200 IngestionJobOut` | `404` | `electrical:read` |
 | POST | `/electrical/ingestion-jobs/{id}/cancel` (`cancelIngestionJob`) | — | `200 IngestionJobOut` | `404`، `409 electrical.job_conflict` (منتهية) | `electrical:manage` |
@@ -1792,7 +1792,7 @@ class Settings(BaseModel):
     electrical: ElectricalSettings = Field(default_factory=ElectricalSettings)
 ```
 
-المفاتيح العشرة يقرؤها `infrastructure/config/env_settings.py` وحده (DD‑11)، وكلها **غير سرّية**، وتُضاف أسماؤها إلى `.env.example` (`O11`) و`05` §2 (`BD4`). ومفاتيح `ele-parse` الخمسة تخصّ تلك الحاوية وحدها، فلا يقرؤها `Settings`. ولا سرّ جديد في INC‑1: `ele-parse` بلا أسرار، والعامل يقرأ اعتماد MinIO الموجود في Vault كما يفعل `worker-knowledge`.
+المفاتيح الأحد عشر يقرؤها `infrastructure/config/env_settings.py` وحده (DD‑11)، وكلها **غير سرّية**، وتُضاف أسماؤها إلى `.env.example` (`O11`) و`05` §2 (`BD4`). ومفاتيح `ele-parse` الخمسة تخصّ تلك الحاوية وحدها، فلا يقرؤها `Settings`. ولا سرّ جديد في INC‑1: `ele-parse` بلا أسرار، والعامل يقرأ اعتماد MinIO الموجود في Vault كما يفعل `worker-knowledge`.
 
 #### 3.3.13 رموز الأخطاء (`PLT‑15`)
 
@@ -1965,7 +1965,7 @@ class ReplacementPreviewOut(BaseModel):
     kept: list[KeptNamesakeOut]
 ```
 
-والصفحات `Page[T]` القائمة: `ElectricalProjectPage` و`ElectricalDocumentPage` و`DocumentPagePage`. وفي `routers/electrical.py` موجّه واحد `APIRouter(prefix="/electrical", tags=["electrical"], dependencies=[Depends(current_principal), Depends(electrical_enabled)])`. ومسارات 202 الثلاثة بـ`Depends(require(...))` ثم `Depends(heavy_job)` بهذا الترتيب (`api/middleware/heavy_jobs.py`)، وجسمها داخل `idempotent(services.idempotency, ctx, endpoint=…)` كما في `register_file` (`routers/files.py:146-154`). و`services.electrical is None` ← `common.internal`، يفشل مغلقاً كما `space_quota`.
+والصفحات `Page[T]` القائمة: `ElectricalProjectPage` و`ElectricalDocumentPage` و`DocumentPagePage`. وفي `routers/electrical.py` موجّه واحد `APIRouter(prefix="/electrical", tags=["electrical"], dependencies=[Depends(current_principal), Depends(electrical_enabled)])`. ومسارات 202 الأربعة بـ`Depends(require(...))` ثم `Depends(heavy_job)` بهذا الترتيب (`api/middleware/heavy_jobs.py`)، وجسمها داخل `idempotent(services.idempotency, ctx, endpoint=…)` كما في `register_file` (`routers/files.py:146-154`). و`services.electrical is None` ← `common.internal`، يفشل مغلقاً كما `space_quota`.
 
 #### 3.3.15 العامل `worker-electrical` (CMP‑09)
 
@@ -2278,6 +2278,8 @@ CREATE TABLE electrical.drawings_profile_versions (
   fingerprint     text NOT NULL CHECK (fingerprint ~ '^[0-9a-f]{64}$'),
   confidence      real NULL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
   mixed_standards boolean NOT NULL DEFAULT false,
+  detection       jsonb NULL CHECK (detection IS NULL OR octet_length(detection::text) <= 16384),
+                  -- {field_confidence, basis} of a 'detected' version (PR-C S7 finding; §3.3.14)
   created_by      uuid NULL,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
@@ -2356,7 +2358,7 @@ CREATE INDEX ix_drawings_characterizations_project
 | INC1‑AC‑9 | **عزل `ele-parse`:** خلف الملف `electrical`، على شبكة `internal: true` وحدها بلا وصول خارجي، بلا أسرار ولا متغيّر DSN ولا Vault، ونظام ملفات للقراءة فقط، ومستخدم غير جذري، و`cap_drop: [ALL]`، و`no-new-privileges`، وحجم مؤقت للقراءة فقط، وحدود موارد. وكل طلب في عملية فرعية بحدّ ذاكرة ومهلة، والمسار خارج الجذر أو الرابط الرمزي مرفوض. و`app` ليس على شبكته | FR-ING-06، NFR-SEC-02، DEC‑04 |
 | INC1‑AC‑10 | **مشارك الحذف (`PLT‑04`):** حذف الملف واستبداله بالاسم وإعادة تسميته وإعادة وسمه تجعل وثيقته `purging` وتلحق `electrical.document.purged.v1` وتلغي مهمتها، كله في معاملة واحدة داخل الطلب، فتخرج من كل قراءة في `drawings` فوراً. ثم يكنس العامل صفوفها. والتكرار مثاليّ في المرحلتين. وحذف الفضاء يطهّر وثائقه ومشروعه. وتطهير مساحة العمل يشمل الـschema `electrical` | FR-ING-03، FR-INT-13، HLD §8.8، NFR-PRIV-01 |
 | INC1‑AC‑11 | **المعاينة (`PLT‑24`):** تذكر الملفات التي سيحذفها الإتمام ووثائقها ومشاريعها، والسميّين بوسوم مختلفة الباقين ووسومهم، و`content_identical` حين تُرسل البصمة. و404 لملف مجهول أو أجنبي. ولا تكتب شيئاً | FR-ING-03، R-21، RSK‑20 |
-| INC1‑AC‑12 | **ربط المنصة:** `stream.electrical` في `PUBLISHED_STREAMS`، و`cg.electrical.document` بأنواعه الثلاثة، وأنواع الإشعار الثلاثة. والـschema والسلسلة الثالثة عشرة عبر `provision`، والمنح، وRLS على الجداول السبعة. والرموز الخمسة عشر في الكتالوج ولكلٍّ موضع إصدار. والمفاتيح العشرة في الإعداد و`.env.example` بلا سرّ. والعلم `ELECTRICAL_ENABLED=false` يجعل كل مسار `/electrical` 503. والعقود تسعة، ولا `ignore_imports` جديد. وكل جدول في محوّلات قسم يحمل بادئته | `PLT‑11`، `PLT‑14`، `PLT‑15`، `PLT‑21`، SRS AC-07 |
+| INC1‑AC‑12 | **ربط المنصة:** `stream.electrical` في `PUBLISHED_STREAMS`، و`cg.electrical.document` بأنواعه الثلاثة، وأنواع الإشعار الثلاثة. والـschema والسلسلة الثالثة عشرة عبر `provision`، والمنح، وRLS على الجداول السبعة. والرموز الخمسة عشر في الكتالوج ولكلٍّ موضع إصدار. والمفاتيح الأحد عشر في الإعداد و`.env.example` بلا سرّ. والعلم `ELECTRICAL_ENABLED=false` يجعل كل مسار `/electrical` 503. والعقود تسعة، ولا `ignore_imports` جديد. وكل جدول في محوّلات قسم يحمل بادئته | `PLT‑11`، `PLT‑14`، `PLT‑15`، `PLT‑21`، SRS AC-07 |
 | INC1‑AC‑13 | **التوصيف والتقييم، بلا عيّنات:** (1) بعد STG‑01 لكل وثيقة سجل توصيف فيه كل حقل يعدّده FR-EVAL-14 (البرامج المنتجة، وأنواع النص، ولغات الصفحات والوثيقة، والاصطلاحات، والمعيار المستنتج وأساسه، وعائلات PLC، ونسبة الحاجة إلى OCR) وإصداراته الثلاثة، وللمشروع تقرير مجمّع مشتق يطابق مجموع سجلات وثائقه النشطة. (2) أداة `app.ops.electrical_characterize` تُخرج من ملفات الفحص المثبّتة التقرير نفسه بايتاً ببايت الذي يحسبه العامل من المدخلات نفسها، دون قاعدة ولا شبكة. (3) هيكل الإطار يكتب تقريراً JSON فيه الالتزام والإصدارات وبصمة المدخلات، ويقارن تشغيلين. (4) حساب M-32 على ملفات فحص اصطناعية وتسميات مثبّتة يعطي القيمة المحسوبة يدوياً لها، لكل حقل وللاثنين معاً. **وخارج هذا المعيار** (✅ `INC1‑Q‑4` (ج)): التشغيل على عيّنات المالك، والتقرير المجمّع عليها، وقياس M-32 عليها، وضبط العتبات (§1.4) | FR-EVAL-01، FR-EVAL-14، M-32، SRS D-23 |
 | INC1‑AC‑14 | **المراقبة (`PLT‑18`):** `stream.electrical.dlq` يغطيه `AizzakDlqNotEmpty` القائم. و`AizzakStreamQueueWaitHigh` لم يعد يشتعل لـ`stream.electrical`، ويشتعل بدله `AizzakElectricalQueueWaitHigh` بعتبته. و`AizzakElectricalDocumentsExcluded` يشتعل على أي استبعاد في ساعة. ولكلٍّ قسم في `docs/runbooks/alerts.md` وحالتا `promtool`. والسجلات تحمل `job_id` و`document_id` و`page` حيث تنطبق | NFR-OBS-01، HLD §13.2 |
 | INC1‑AC‑15 | **سلسلة التوريد (`PR‑D`):** `pip` في صورة `app` وبيئة الفحص بالإصدار المثبّت نفسه، والاستثناءات الستة محذوفة، و`scan.sh` يفحص اعتماديات `ele-parse` أيضاً ويعلّم PyMuPDF (AGPL)، وينجح | `INC0‑Q‑10`، SR‑11، NFR-LIC-02، NFR-SEC-04 |
@@ -2386,7 +2388,7 @@ CREATE INDEX ix_drawings_characterizations_project
 | | تكامل (`live_db`) | `test_electrical_drawings_repository_rls.py` (E12) | الفهرس الفريد للفضاء، وإصدارات ملف الإعداد وفهرساها الجزئيان |
 | INC1‑AC‑6 | وحدة | `test_electrical_registration.py` (BT18) | كل فرع رفض بالترتيب ولا كتابة؛ الوثيقة والمهمة والحدث في وحدة عمل واحدة (المزيّف يسجّل ترتيب `begin`)؛ الاستبعاد عند التسجيل وقيمته في `RegisteredDocument.excluded` |
 | | وحدة (موجّه) | `test_api_electrical_router.py` (BT23) | الرموز على السلك، و`Idempotency-Key`، و`Retry-After`، وزيادة العدّاد |
-| | عقد | `test_heavy_job_limit.py` | آلي: المسارات الثلاثة ذات 202 محروسة |
+| | عقد | `test_heavy_job_limit.py` | آلي: المسارات الأربعة ذات 202 محروسة |
 | | تكامل (`live_db`) | `test_electrical_drawings_repository_rls.py` (E12) | تسجيلان متزامنان للملف نفسه: واحد ينجح والثاني `electrical.document_exists` |
 | INC1‑AC‑7 | وحدة | `test_electrical_classification.py` (BT16) | قاعدة لكل نوع وحدودها، و`needs_review` عند الهامش، واللغة |
 | | وحدة | `test_electrical_profile_detection.py` (BT17) | IEC وGB/T والحروف الصينية وNFPA، والاختلاط، والعيّنة الصغيرة بثقة صفر، والحتمية (التشغيل مرتين يعطي البايتات نفسها) |
@@ -2482,6 +2484,14 @@ CREATE INDEX ix_drawings_characterizations_project
 | `INC1‑Q‑2` | شكل التسليم | (ب) وثيقة واحدة وأربعة PRs | ✅ (ب) | `PR‑A..PR‑D` كما في §6 |
 | `INC1‑Q‑3` | نطاق `PLT‑17` في الإصدار وسلسلة التوريد | (أ) ترقية `pip` وفحص اعتماديات `ele-parse` الآن، وصورة الإصدار وفحص الصور المبنية في خطوة «جاهزية الخادم» | ✅ (أ) | `PR‑D` = O15..O18. **ويتغيّر توقيت `INC0‑Q‑6` (أ):** فحص الصور (حزم النظام وصورة التضمين) لم يعد «مع `PLT‑17` في INC‑1»، بل في خطوة «جاهزية الخادم» قبل أول نشر لـWireTwin على خادم، ومعه صورة إصدار `ele-parse` وأداة حزم النظام |
 | `INC1‑Q‑4` | العيّنات والتسميات وما يُلتزم من التقرير | (أ) خارج المكدّس على حاوية `ele-parse` معزولة، والتقرير المجمّع وحده في المستودع | ✅ **(ج)، خلاف التوصية** | التوصيف على العيّنات بعد دمج INC‑1 (§1.4، P1 في §6). INC‑1 يسلّم الأداة والهيكل وحساب M-32 مختبرة على مدخلات اصطناعية (INC1‑AC‑13)، ويُضاف `INC1‑R‑15` و`INC1‑F‑21` |
+
+**الحسم (المالك، 2026-11-02، من مراجعة `PR‑B` في `inc-1/pr-b/`):** التوصية في `INC1‑Q‑5` و`INC1‑Q‑6` و`INC1‑Q‑7`. تُنفَّذ الأولى والثانية في `PR‑C` (S5) على النواة `shared`، ويرفع ذلك `SHARED_VERSION`.
+
+| القرار | الموضوع | التوصية | الحسم | أثره |
+|---|---|---|---|---|
+| `INC1‑Q‑5` | تسمية الجهد الإضافية في ملف الإعداد التي تبدأ بـ`+` (R2‑3 في `security-review.md`) | تشترط الحرف `V` (`+24V` نعم، و`+1` لا)، لأن `+1` رمز موقع في IEC 81346 | ✅ التوصية | `_RAIL_CODE` في `shared/rules/__init__.py`: لـ`+` يصير `\d{1,4}V`، ويبقى `-` بـ`\d{1,4}V?`؛ ومعه اختبار يرفض `+1` ويقبل `+24V` |
+| `INC1‑Q‑6` | ما يبقى غير ASCII بعد التطبيع، ومنه علامات التشكيل المركّبة (S‑7 وبقية S‑2) | لا يُسقط: يُعاد المعرّف `valid=False` بالسبب `text.non_ascii` (FR‑ID‑10) | ✅ التوصية | `normalization.py` و`parser.py`: `KM1` مع U+0301 يعود مُعلَّماً بدل `None`؛ ومعه حالات في `cases/identifiers.toml`. **نطاقه (أقرّه المالك 2026-11-02، S5 من `PR‑C`):** يُعلَّم ما يصير معرّفاً بعد حذف العلامات (التشكيل واللاتينية المنبورة)، ويبقى النص الصيني والسيريلي المتشابه (`КМ1`) `None`، ولا يُعدّ المُعلَّم دليلاً على الاصطلاح في `tally` |
+| `INC1‑Q‑7` | عقد الهوية (S‑6) | الهوية = (`kind`، `canonical`)، و`search_keys` للاسترجاع وحده، ولا يُحذف فاصل بين رقمين (§3.3.5 `NormalizedForms`) | ✅ التوصية | ملزم لمفهرس INC‑2 ولكل مستهلك في `PR‑C`: لا مقارنة هوية بمفاتيح البحث |
 
 النص أدناه سجلّ كما عُرض على المالك، والحسم في رأس كل قرار.
 
@@ -2583,6 +2593,9 @@ CREATE INDEX ix_drawings_characterizations_project
 | INC1‑R‑13 | خطأ في تعبير استثناء `stream.electrical` من التنبيه القديم | تنبيه يصمت عن مجرى آخر | حالة `promtool` تثبت أن القاعدة القديمة ما زالت تشتعل لـ`stream.knowledge` |
 | INC1‑R‑14 | ضياع حدث `document.purged` | صفوف وثيقة `purging` لا تُكنس | لا تُقرأ أصلاً، و`app.ops.replay` القائم يعيد النشر، والكشف الدوري في `PLT‑22` |
 | INC1‑R‑15 | عتبات التصنيف (`ClassificationThresholds`) وثقة القبول الآلي (`auto_accept_confidence` = 0.90) تُسلَّم دون أن يتحقق منها قياس على مخططات حقيقية، حتى يجري P1 (✅ `INC1‑Q‑4` (ج)) | صفحات تُصنَّف خطأً (مثلاً SHX تُعدّ متجهية سليمة فلا تُوجَّه إلى OCR في INC‑3)، واقتراحات تُقبل آلياً وهي خاطئة أو تُطلب لها تأكيدات زائدة. ويتأخر تحديد توزيع المجموعة الذهبية وترتيب مكتبات الرموز | العتبات في ملف الإعداد لا في الشيفرة، فتُضبط بلا إصدار جديد؛ و`needs_review` عند الهامش؛ والتقرير يذكر أساس كل حقل وإصدار العتبات. ويُوصى بإجراء P1 قبل بدء INC‑2، وتُعاد معالجة ما استُوعب قبل الضبط (FR-ING-05) |
+| INC1‑R‑16 | (من S7 في `PR‑C`، 2026-11-02) ثقة المعيار الرمزي المستنتج ≤ 0.8 بالبناء (`SYMBOL_CONFIDENCE_FACTOR` في `profile_detection.py`)، والثقة الكلية = أدناها، و`auto_accept_confidence` الافتراضي 0.90. فلا قبول آلي بالإعداد الافتراضي، وتنتهي كل وثيقة `awaiting_confirmation` | تأكيد يدوي لكل وثيقة حتى P1 | **قرار المالك (2026-11-02): يبقى كما هو حتى P1.** المسار الآلي مختبر بعتبات أدنى، ويُضبط المعامل أو العتبة على العيّنات في P1 مع `INC1‑R‑15` |
+| INC1‑R‑17 | (أمن `PR‑C` C‑3، 2026-11-03) لا عزل بين المستأجرين داخل `ele-parse`: مستخدم واحد وحجم `ele-stage` واحد لكل المستأجرين | ثغرة تنفيذ في MuPDF تقرأ ملفات مستأجر آخر المرحلية | **قرار المالك:** يُقبل في INC‑1 بشرط «تزامن 1 ونسخة واحدة» لـ`worker-electrical` موثّقاً شرطاً أمنياً، ونصوص رفض ثابتة وحدّ لمخرج الطفل؛ والعزل الأقوى شرط قبل الإنتاج. **(C‑13، 2026-11-03):** التزامن 1 يحصر التعرّض في الملفات المرحلية معاً فقط، ولا يمنع طفلاً مخترَقاً من ترك عملية مقيمة (`setsid`) تقرأ ملفات المهام اللاحقة؛ فقتل كل عملية باقية بعد كل طفل (الخادم PID 1) مع اختبار حاوية جزء من شرط ما قبل الإنتاج (قرار المالك) |
+| INC1‑R‑18 | (أمن `PR‑C` C‑6، 2026-11-03) طابور `stream.electrical` FIFO لكل المستأجرين، والحدّ لكل فضاء | مستأجر يُبطئ الآخرين | **قرار المالك:** التقاسم العادل متابعة قبل الإنتاج |
 
 ### 7.4 تعارضات وجدتُها في HLD وSRS والوثائق الحاكمة
 
@@ -2633,7 +2646,7 @@ CREATE INDEX ix_drawings_characterizations_project
 - **`docs/design/02-port-contracts.md` (BD1):** §1.6 `StreamingStorage` و`ObjectStorage`، و§2 `FileView.tags` و`live_name_conflicts` و`FindNamesakes.preview`.
 - **`docs/design/03-api-spec.md` (BD2):** §1 صف Files (`retagFile`) وصف Electrical بالموارد، و§2 DTO، و§3.2 أنواع الإشعار الثلاثة، و§4 الرموز الخمسة عشر.
 - **`docs/design/04-event-catalog.md` (BD3):** §2 `stream.electrical` والمجموعة وطابوره الميت، و§4 الأنواع الستة، و`tags` في `files.file.uploaded.v1`، و§7 المخططات.
-- **`docs/design/05-rbac-config-secrets.md` (BD4):** §2 المفاتيح العشرة (غير سرّية)، و§4 الصفوف الـ21.
+- **`docs/design/05-rbac-config-secrets.md` (BD4):** §2 المفاتيح الأحد عشر (غير سرّية)، و§4 الصفوف الـ21.
 - **`docs/design/06-domain-models.md` (BD5):** INV‑F6، وقسم لمجاميع `drawings` (`Project` و`Document` و`IngestionJob` و`ProfileVersion`) ولازماتها.
 - **`docs/design/07-nfr-slo.md` (BD6):** §4 الحدود الجديدة، بالملاحظة نفسها التي أضافها INC‑0: `ELE_*` متغيّرات بيئة، بخلاف `Limits`.
 - **`docs/design/08-local-runbook.md` (O6):** دفتر الموارد بالخدمتين، وتشغيل الملف `electrical` وإيقافه.

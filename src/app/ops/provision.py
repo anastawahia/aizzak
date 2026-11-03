@@ -108,7 +108,7 @@ METRICS_ROLE = "metrics_reader"
 TRANSIT_ROTATOR_ROLE = "transit_rotator"
 # BE-ADM-014 (docs/design refs, `app.ops.purge`): the workspace content-purge
 # sweep's own role. A workspace tombstoned by BE-ADM-006 and past its
-# retention window is emptied across eleven schemas, and the SAME "RLS wall"
+# retention window is emptied across twelve schemas, and the SAME "RLS wall"
 # `retention_sweeper`/`transit_rotator` hit applies here too -- widening
 # `app_rw` to reach every tenant's rows would undo the isolation guarantee the
 # whole platform stands on. Unlike those two, this role gets NO blanket
@@ -152,9 +152,14 @@ MIGRATION_CHAINS: tuple[tuple[str, str | None], ...] = (
     ("knowledge@head", "knowledge"),
     ("integrations@head", "integrations"),
     ("usage@head", "usage"),
+    # LAST: `electrical` reads no other chain's table (its references to `spaces.spaces` and
+    # `files.files` are logical), so nothing orders it before anything. It is thirteenth
+    # because it is newest (electrical-drawings INC-1, LLD 4.3); its schema comes from
+    # `platform/0006_electrical_schema.py`.
+    ("electrical@head", "electrical"),
 )
 
-# Every tenant table of all eleven modules gets full CRUD: `app_rw` is
+# Every tenant table of all twelve modules gets full CRUD: `app_rw` is
 # NOINHERIT, without BYPASSRLS and not a table owner, so the RLS policy —
 # not the grant — is what confines it to one workspace (01 §3).
 _TENANT_TABLES: tuple[str, ...] = (
@@ -195,6 +200,16 @@ _TENANT_TABLES: tuple[str, ...] = (
     # and DELETEs it when the charge lands, and RLS -- not the grant --
     # confines both to one workspace.
     "usage.reservations",
+    # electrical-drawings INC-1 (`migrations/versions/electrical/
+    # 0001_electrical_drawings.py`) -- the seven WireTwin drawings tables. Same CRUD as every
+    # other tenant table; RLS on `workspace_id`, not the grant, confines it to one workspace.
+    "electrical.drawings_projects",
+    "electrical.drawings_documents",
+    "electrical.drawings_jobs",
+    "electrical.drawings_pages",
+    "electrical.drawings_page_stages",
+    "electrical.drawings_profile_versions",
+    "electrical.drawings_characterizations",
 )
 
 _MODULE_SCHEMAS: tuple[str, ...] = (
@@ -209,6 +224,7 @@ _MODULE_SCHEMAS: tuple[str, ...] = (
     "media",
     "integrations",
     "usage",
+    "electrical",
 )
 
 
@@ -343,7 +359,7 @@ TRANSIT_ROTATOR_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, UPDATE (auth_ref) ON integrations.mcp_servers TO {TRANSIT_ROTATOR_ROLE}",
 )
 
-# BE-ADM-014's purge role: USAGE on every schema it reaches (the eleven module
+# BE-ADM-014's purge role: USAGE on every schema it reaches (the twelve module
 # schemas whose rows it deletes, plus `platform` for `admin_audit_log`), a
 # narrow COLUMN-scoped read/write pair on the two identity tables
 # (`workspace.workspaces`/`workspace.users`), and plain SELECT+DELETE on
@@ -378,6 +394,7 @@ PURGE_GRANTS: tuple[str, ...] = (
     f"GRANT USAGE ON SCHEMA media TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA integrations TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA usage TO {PURGE_ROLE}",
+    f"GRANT USAGE ON SCHEMA electrical TO {PURGE_ROLE}",
     f"GRANT USAGE ON SCHEMA platform TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON spaces.spaces TO {PURGE_ROLE}",
     f"GRANT SELECT (id, owner_user_id, status, purged_at), UPDATE (status, purged_at) "
@@ -405,12 +422,19 @@ PURGE_GRANTS: tuple[str, ...] = (
     f"GRANT SELECT, DELETE ON usage.usage_rollups TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON usage.limits TO {PURGE_ROLE}",
     f"GRANT SELECT, DELETE ON usage.reservations TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_projects TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_documents TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_jobs TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_pages TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_page_stages TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_profile_versions TO {PURGE_ROLE}",
+    f"GRANT SELECT, DELETE ON electrical.drawings_characterizations TO {PURGE_ROLE}",
     f"GRANT SELECT, INSERT ON platform.admin_audit_log TO {PURGE_ROLE}",
 )
 
 
 def run_migrations(owner_url: str) -> None:
-    """Apply all twelve chains in dependency order (``MIGRATION_CHAINS``).
+    """Apply all thirteen chains in dependency order (``MIGRATION_CHAINS``).
 
     The root log level is saved and restored around the Alembic run, and that
     is not cosmetic: ``migrations/env.py`` calls ``fileConfig`` on

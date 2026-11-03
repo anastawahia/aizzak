@@ -91,8 +91,8 @@ def test_every_limit_and_replica_count_is_a_named_variable() -> None:
             counts["replicas"] += 1
             match = _VAR.match(str(service["deploy"]["replicas"]))
             assert match and match.group(1) == var_name(name, "REPLICAS")
-    assert counts == {"cpus": 39, "memory": 39, "replicas": 4}
-    assert len(_expected_keys()) == 85
+    assert counts == {"cpus": 41, "memory": 41, "replicas": 4}
+    assert len(_expected_keys()) == 89
 
 
 # ------------------------------------------------------------------ AC-1.2 ---
@@ -135,7 +135,7 @@ def test_a_size_file_has_a_header_and_exactly_the_derived_keys(size: str) -> Non
     assert parsed.host_cpus > 0 and parsed.host_memory_gb > 0
     assert parsed.source.startswith(("measured", "derived"))
     assert set(parsed.values) == set(_expected_keys())
-    assert len(parsed.values) == 85
+    assert len(parsed.values) == 89
 
 
 @pytest.mark.parametrize("size", SIZES)

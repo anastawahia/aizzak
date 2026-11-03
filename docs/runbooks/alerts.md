@@ -68,7 +68,9 @@ docker compose logs --since 1h alert-sink
 | [`AizzakDbPoolSaturated`](#aizzakdbpoolsaturated) | تحذير | مسبحُ اتصالات حاويةٍ ممتلئٌ 90% |
 | [`AizzakPgbouncerClientsWaiting`](#aizzakpgbouncerclientswaiting) | تحذير | طلباتٌ تنتظر اتصالاً عند PgBouncer |
 | [`AizzakEventLoopBlocked`](#aizzakeventloopblocked) | تحذير | عمليّةٌ في التطبيق تتجمّد أكثر من ثانية |
-| [`AizzakStreamQueueWaitHigh`](#aizzakstreamqueuewaithigh) | تحذير | عملٌ في طابورٍ ينتظر أكثر من دقيقتين |
+| [`AizzakStreamQueueWaitHigh`](#aizzakstreamqueuewaithigh) | تحذير | عملٌ في طابورٍ (غير الرسومات) ينتظر أكثر من دقيقتين |
+| [`AizzakElectricalQueueWaitHigh`](#aizzakelectricalqueuewaithigh) | تحذير | رسوماتٌ تنتظر الفحص أكثر من نصف ساعة |
+| [`AizzakElectricalDocumentsExcluded`](#aizzakelectricaldocumentsexcluded) | تحذير | رسمٌ استُبعد من مشروعٍ في الساعة الأخيرة |
 | [`AizzakRateLimitedShareHigh`](#aizzakratelimitedsharehigh) | تحذير | أكثر من 5% من الطلبات تُرفض بـ429 |
 | [`AizzakRedisCacheDown`](#aizzakrediscachedown) | تحذير | Redis الذاكرة المخبّأة لا يردّ |
 | [`AizzakLlmCircuitOpen`](#aizzakllmcircuitopen) | تحذير | مزوّدُ نموذجٍ لغويّ مقطوعٌ منذ دقيقتين |
@@ -424,6 +426,8 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 
 **ماذا يعني:** أقدمُ رسالةٍ لم تُسلَّم لعاملٍ تنتظر أكثر من 120 ثانية، منذ 5 دقائق. المستنداتُ لا تُفهرس (أو الوسائط لا تُعالج) بسرعة وصولها. وعلى طابور الفهرسة، الواجهةُ ترفض الرفعَ الجديد بـ429 الآن.
 
+> **لماذا لا يشمل هذا التنبيهُ `stream.electrical`:** انتظارُ الرسوماتِ مقصودٌ في WireTwin (رسمٌ من آلاف الصفحات يُفحص دقائق، وعاملٌ واحدٌ بتزامن 1، قرار DEC‑15 (د))، فدقيقتان عندها حالةٌ عاديّة وكانتا ستُشعلان التنبيه في كلّ جلسة رفع. لذلك استُثني ذلك المجرى بتعبير القاعدة (`stream!="stream.electrical"`) وله تنبيهٌ بحدٍّ أطول: [`AizzakElectricalQueueWaitHigh`](#aizzakelectricalqueuewaithigh). وما عداه من المجاري ما زال هنا بحدّ 120 ثانية (INC1‑R‑13).
+
 **الخطوات:**
 
 1. اعرف العاملَ من اسم المجموعة في التنبيه: `cg.knowledge` ← `worker-knowledge` · `cg.media` ← `worker-media` · `cg.memory` ← `worker-memory`.
@@ -749,6 +753,73 @@ docker compose exec -T app python -m app.ops.embedding_migration status --json
 
 ---
 
+<a id="aizzakelectricalqueuewaithigh"></a>
+
+### `AizzakElectricalQueueWaitHigh` — رسوماتٌ تنتظر الفحص أكثر من نصف ساعة
+
+**ماذا يعني:** أقدمُ رسالةٍ على `stream.electrical` لم تُسلَّم لعامل `cg.electrical.document` تنتظر أكثر من **1,800 ثانية**، منذ 15 دقيقة. الرسوماتُ المرفوعة لا تُفحص بسرعة وصولها، أو أنّ العاملَ لا يعمل أصلاً. الحدُّ **رقمٌ أوّليّ** سيُقاس على رسوماتٍ حقيقيّة (INC1‑R‑5)، وليس وعداً. (الانتظارُ القصير على هذا المجرى طبيعيّ ولا يُشعل شيئاً.)
+
+> **الخدمتان خلف profile `electrical` وهما معطّلتان افتراضياً.** إن لم تكن قد فعّلتَ الميزة فلا رسائل على هذا المجرى أصلاً. وإن وصلتك رسائلُ ولا عاملَ يعمل فالتنبيه صحيح: الملف غير مفعَّل أو الحاوية متوقّفة.
+
+**الخطوات:**
+
+1. هل الخدمتان تعملان؟
+
+```bash
+docker compose --profile electrical ps worker-electrical ele-parse
+```
+
+2. متوقّفتان؟ شغّلهما — لا شيء ضاع، الرسائلُ تنتظر (والهجرة `electrical/0001` يجب أن تكون مطبَّقة عبر `migrate` قبل ذلك، وإلا فشل العامل عند الإقلاع):
+
+```bash
+docker compose --profile electrical up -d --no-deps ele-parse worker-electrical
+```
+
+3. تعملان؟ اقرأ سجلَّ العامل بحثاً عن الوثيقة التي يفحصها ولماذا تطول، وعن ردود `ele-parse` (`503` مشغول، `504` مهلة، `507` ذاكرة):
+
+```bash
+docker compose --profile electrical logs --since 30m worker-electrical ele-parse
+```
+
+4. وحالةُ المجموعة والمعلَّق:
+
+```bash
+docker compose exec -T redis-stream redis-cli XINFO GROUPS stream.electrical
+```
+
+5. هل هناك رسائلُ ميّتة؟ (يغطّيها أيضاً [`AizzakDlqNotEmpty`](#aizzakdlqnotempty)):
+
+```bash
+docker compose exec -T app python -m app.ops.dlq peek stream.electrical.dlq
+```
+
+6. الطابورُ طويلٌ فقط (وثائقُ كبيرة كثيرة) والعاملُ سليم؟ هذا قرارُ سعة يخصّ `ELE_PARSE_MAX_CHILDREN` وحده (ويُرفع معه `ELE_PARSE_MEM`)، **ولا يُرفع قبل القياس. أمّا `WORKER_CONCURRENCY_ELECTRICAL` وعدد نسخ `worker-electrical` فلا يُرفعان فوق 1 إطلاقاً دون عزلٍ بين المستأجرين:** هذا قرارٌ أمنيّ لا سعة (`docs/design/08-local-runbook.md` §4.29). التزامن 1 ونسخة واحدة يحدّان التعرّضَ للملفّات المرحَّلة في وقتٍ واحد فقط، ولا يمنعان طفلاً مخترَقاً من ترك عمليةٍ باقية (`setsid`) تقرأ لاحقاً ملفّات مستأجرين آخرين؛ وقتلُ المتبقّيات بعد كلّ طفل مع عزلٍ أقوى شرطان قبل الإنتاج (`INC1‑R‑17`)؛ وقد تُعدّل العتبةُ 1,800 بعد القياس بقرار، لا لإسكات التنبيه.
+
+**كيف تعرف أنّه زال:** الانتظارُ يهبط تحت 1,800 ثانية، وسطر `resolved`.
+
+---
+
+<a id="aizzakelectricaldocumentsexcluded"></a>
+
+### `AizzakElectricalDocumentsExcluded` — رسمٌ استُبعد من مشروعٍ في الساعة الأخيرة
+
+**ماذا يعني:** وثيقةٌ واحدةٌ على الأقلّ في WireTwin خرجت من المجموعة الحيّة لمشروعها عند التسجيل، والسببُ في وسم `reason` (`file_unreadable`: ملفُ الوثيقة الفعّالة لم يعد قابلاً للقراءة). لا شيء حُذف، لكنّ رسوماتِ المشروع لم تعد كلُّها حاضرة، **ولا عَرَضَ آخر** (لا خطأ ولا بطء). والعدّ الطبيعيّ صفر، فيُشعل التنبيهَ أيُّ استبعاد في ساعة، بلا مهلة انتظار.
+
+**الخطوات:**
+
+1. اعرف المشروع: من رفع أو سجّل ملفاً في الساعة الأخيرة. ثم اقرأ وثائقه، والمستبعَدةُ تحمل `exclusion_reason`:
+
+```
+GET /api/v1/electrical/projects/{project_id}/documents
+```
+
+2. لماذا لم يعد ملفُها قابلاً للقراءة؟ تحقّق من الكائن في MinIO ومن حالة الملف في وحدة الملفات (هل حُذف أو لم يكتمل)، فالسببُ هناك لا في WireTwin.
+3. لا تُصلح بالتعديل اليدويّ في قاعدة البيانات. إعادةُ رفع الرسم قرارُ صاحبه، وإن تكرّر الاستبعادُ فهذا عيبٌ في وحدة الملفات يُرفع إلى المطوّر.
+
+**كيف تعرف أنّه زال:** يزول التنبيه بعد ساعة بلا استبعادٍ جديد (النافذةُ ساعة)، ويصل سطر `resolved`.
+
+---
+
 ## 5) التحذيرات — المراقبة والمهامّ المجدولة
 
 <a id="aizzakscrapetargetdown"></a>
@@ -869,6 +940,8 @@ docker compose logs --since 10m alert-sink
 | `AizzakWatchdog` | — | — | — | — |
 | `AizzakGpuMemoryHigh` | — | — | بانتظار التجربة في 7.3 | — |
 | `AizzakGpuTemperatureHigh` | — | — | بانتظار التجربة في 7.3 | — |
+| `AizzakElectricalQueueWaitHigh` | — | — | بانتظار تفعيل ملف `electrical` | — |
+| `AizzakElectricalDocumentsExcluded` | — | — | بانتظار تفعيل ملف `electrical` | — |
 | (البقيّة) | — | — | — | — |
 
 </div>

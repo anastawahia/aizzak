@@ -1,4 +1,4 @@
-"""MinIO adapter for the ``StorageProvider`` and ``MultipartStorage`` ports
+"""MinIO adapter for the ``StorageProvider``, ``MultipartStorage`` and ``StreamingStorage`` ports
 (02-port-contracts §1.6).
 
 Phase 2.4. Same split as ``cache/redis_cache.py`` (2.3): a factory builds
@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import timedelta
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -45,6 +45,7 @@ from minio import Minio
 from minio.datatypes import Part
 from minio.deleteobjects import DeleteObject
 from minio.error import MinioException, S3Error
+from urllib3 import BaseHTTPResponse
 
 from app.framework.errors import AppError, ConflictError, NotFoundError
 from app.framework.ports.storage_provider import StoredPart
@@ -314,6 +315,38 @@ class MinioStorage:
             return await asyncio.to_thread(_stat)
         except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
             raise _translate(exc) from exc
+
+    async def read_chunks(self, key: str, *, chunk_bytes: int) -> AsyncIterator[bytes]:
+        """``StreamingStorage``: the object in consecutive chunks of at most ``chunk_bytes``
+        (PLT-03). One chunk is in memory at a time, however large the object. The response is
+        closed and its connection released in ``finally``, also when the caller stops early
+        (``aclose``) or a read fails. ``NoSuchKey`` is a ``NotFoundError``, as in ``get``."""
+        if chunk_bytes <= 0:
+            raise ValueError("chunk_bytes must be positive")
+
+        def _open() -> BaseHTTPResponse:
+            return self._client.get_object(self._bucket, key)
+
+        try:
+            response = await asyncio.to_thread(_open)
+        except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise _translate(exc) from exc
+
+        def _close() -> None:
+            response.close()
+            response.release_conn()
+
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(response.read, chunk_bytes)
+                except (MinioException, urllib3.exceptions.HTTPError, OSError) as exc:
+                    raise _translate(exc) from exc
+                if not chunk:
+                    return
+                yield chunk
+        finally:
+            await asyncio.shield(asyncio.to_thread(_close))
 
 
 # S3 codes of a multipart completion the storage refused: the caller's parts,

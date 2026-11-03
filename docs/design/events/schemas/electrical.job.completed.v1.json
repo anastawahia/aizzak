@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.platform/electrical.job.completed.v1.json",
+  "title": "electrical.job.completed.v1 data",
+  "type": "object",
+  "required": [
+    "job_id",
+    "document_id",
+    "status"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "document_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "failure_code": {
+      "type": "string",
+      "pattern": "^electrical\\.[a-z_]+$"
+    }
+  },
+  "additionalProperties": false
+}

@@ -83,6 +83,9 @@ _HEARTBEAT_SERVICES = {
     # Capacity 5.7. The scheduling loop: it beats every tick and while a job
     # runs, so a nightly backup that takes an hour does not read as a hang.
     "ops-scheduler": "ops-scheduler",
+    # WireTwin (INC-1, S9). Behind the `electrical` profile, so it is absent from a default
+    # `up -d`, but it is a standing worker like the three above and carries the same check.
+    "worker-electrical": "electrical",
 }
 
 
@@ -142,10 +145,17 @@ def test_heartbeat_checks_name_a_process_the_workers_actually_beat_as(
         assert process in HEARTBEAT_PROCESS_NAMES
 
 
+def test_every_heartbeat_name_has_a_service_that_checks_it() -> None:
+    """A heartbeat name nothing checks is a process whose death nobody sees."""
+    checked = set(_HEARTBEAT_SERVICES.values())
+    assert set(HEARTBEAT_PROCESS_NAMES) - checked == set()
+    assert "electrical" in HEARTBEAT_PROCESS_NAMES
+
+
 def test_worker_services_check_the_same_process_they_run(compose: dict[str, Any]) -> None:
     """`WORKER=media` with a healthcheck reading `memory`'s file would report
     a dead media worker as healthy for as long as the memory worker lives."""
-    for service in ("worker-memory", "worker-knowledge", "worker-media"):
+    for service in ("worker-memory", "worker-knowledge", "worker-media", "worker-electrical"):
         assert compose[service]["environment"]["WORKER"] == _HEARTBEAT_SERVICES[service]
 
 
@@ -184,8 +194,8 @@ def test_the_bridge_is_probed_end_to_end_but_gates_nothing(compose: dict[str, An
     gpu-compose 2.3 adds the other half: the bridge sits behind profile
     `wsl-ollama`, so on a server it does not exist at all -- every edge to it
     is `required: false`, or `up -d` there would refuse to start. The edges are
-    the four services that call an LLM (`app` and the three workers, the last
-    three through `x-worker-service`), no more and no fewer."""
+    the services that call an LLM or share the worker block (`app` and the four
+    workers, the last four through `x-worker-service`), no more and no fewer."""
     assert "11435" in " ".join(compose["ollama-bridge"]["healthcheck"]["test"])
 
     edges = []
@@ -202,4 +212,10 @@ def test_the_bridge_is_probed_end_to_end_but_gates_nothing(compose: dict[str, An
             f"{name} -> ollama-bridge must be `required: false`: the bridge is behind "
             f"profile `wsl-ollama` and does not exist on a server"
         )
-    assert sorted(edges) == ["app", "worker-knowledge", "worker-media", "worker-memory"]
+    assert sorted(edges) == [
+        "app",
+        "worker-electrical",
+        "worker-knowledge",
+        "worker-media",
+        "worker-memory",
+    ]

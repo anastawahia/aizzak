@@ -151,8 +151,16 @@ COPY deploy/smoke/ ./deploy/smoke/
 # processes, wiped at arbiter boot and gone with the container -- deliberately
 # NOT a volume, and it does not make the statement above any less true of the
 # platform's data.
+#
+# WireTwin (INC-1, S9): the mount point of the `ele-stage` volume, created here so a
+# NEW named volume mounted over it inherits uid 10001 ownership. Without it Docker makes the
+# volume root:root and `worker-electrical` (this image, uid 10001) could not write the staged
+# PDF. Empty and unused by every other service; `ele-parse` creates the same path the same way.
 RUN useradd --create-home --uid 10001 aizzak \
-    && chown -R aizzak:aizzak /app
+    && chown -R aizzak:aizzak /app \
+    && mkdir -p /var/lib/aizzak/ele-stage \
+    && chown aizzak:aizzak /var/lib/aizzak/ele-stage \
+    && chmod 0750 /var/lib/aizzak/ele-stage
 USER aizzak
 
 EXPOSE 8000

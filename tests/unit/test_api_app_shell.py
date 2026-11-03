@@ -59,6 +59,7 @@ from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
 from app.infrastructure.monitoring.vault_health import VaultProbe
+from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
 from tests.unit.support_credentials import build_credentials
@@ -838,6 +839,39 @@ def test_production_wiring_hands_the_api_layer_all_three_space_faces(
     # object, so the mark's idempotence rule cannot be changed in one and
     # missed in the other (`_build_spaces_seam`).
     assert services.space_deletion._mark is services.spaces.delete
+
+
+# --------------------------------------------------------------------------- #
+# WireTwin (INC-1 S8): the drawings bundle reaches the API layer              #
+# --------------------------------------------------------------------------- #
+def test_production_wiring_hands_the_api_layer_the_drawings_bundle_and_the_flag_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ApiServices.electrical`` defaults to ``None`` and every ``/electrical`` route then fails
+    CLOSED (``common.internal``), so a production factory that forgot it would ship a feature
+    whose routes all 500 with no exception at boot. The bundle must be the root's own (the one
+    the file and space cascades also hold participants of), and the feature must be OFF unless
+    ``ELECTRICAL_ENABLED`` says otherwise (INC1-D-12)."""
+    captured: dict[str, Any] = {}
+
+    def _capture(services: Any, **kwargs: Any) -> FastAPI:
+        captured["services"] = services
+        return FastAPI()
+
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-project")
+    monkeypatch.delenv("ELECTRICAL_ENABLED", raising=False)
+    monkeypatch.setenv(
+        "PROVIDER_ROUTING", '{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}}}'
+    )
+    monkeypatch.setattr(main_module, "create_app", _capture)
+
+    main_module.create_production_app()
+
+    services = captured["services"]
+    assert services.electrical is not None
+    assert isinstance(services.electrical, DrawingsUseCases)
+    assert services.electrical.documents is not None and services.electrical.jobs is not None
+    assert services.settings.electrical.enabled is False
 
 
 # --------------------------------------------------------------------------- #

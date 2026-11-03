@@ -1,0 +1,75 @@
+# PDF producer signatures (FR-EVAL-14, INC1-D-19): data, not code. A pattern is a case-insensitive
+# substring of the PDF's Creator or Producer; `family` names the program; `symbol_hint` (optional)
+# is the symbol standard that program's drawings usually follow; `weight` (0 < w <= 1) is how
+# strongly the hint counts against the identifier convention's own vote (1.0 for the convention).
+# The hint only MOVES a proposal, it never decides one: the characterization report measures
+# whether these are right, and the owner's samples tune them (INC1 section 1.4).
+version = "1"
+
+[[producer]]
+pattern = "EPLAN"
+family = "eplan"
+symbol_hint = "iec_60617"
+weight = 0.5
+
+[[producer]]
+pattern = "AutoCAD Electrical"
+family = "autocad_electrical"
+weight = 0.3
+
+[[producer]]
+pattern = "AutoCAD"
+family = "autocad"
+weight = 0.2
+
+[[producer]]
+pattern = "SEE Electrical"
+family = "see_electrical"
+symbol_hint = "iec_60617"
+weight = 0.4
+
+[[producer]]
+pattern = "SOLIDWORKS Electrical"
+family = "solidworks_electrical"
+symbol_hint = "iec_60617"
+weight = 0.4
+
+[[producer]]
+pattern = "WSCAD"
+family = "wscad"
+symbol_hint = "iec_60617"
+weight = 0.4
+
+[[producer]]
+pattern = "E3.series"
+family = "zuken_e3"
+symbol_hint = "iec_60617"
+weight = 0.4
+
+[[producer]]
+pattern = "ZWCAD"
+family = "zwcad"
+symbol_hint = "gbt_4728"
+weight = 0.4
+
+[[producer]]
+pattern = "GstarCAD"
+family = "gstarcad"
+symbol_hint = "gbt_4728"
+weight = 0.4
+
+[[producer]]
+pattern = "CAXA"
+family = "caxa"
+symbol_hint = "gbt_4728"
+weight = 0.5
+
+[[producer]]
+pattern = "Microsoft Print to PDF"
+family = "print_to_pdf"
+weight = 0.1
+
+[[producer]]
+pattern = "Adobe PDF Library"
+family = "adobe_pdf_library"
+weight = 0.1

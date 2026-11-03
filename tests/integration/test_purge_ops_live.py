@@ -245,6 +245,79 @@ async def _seed_content(
             ),
             {"id": file_id, "ws": ws, "key": f"{ws}/{file_id}", "space": space_id},
         )
+        # electrical-drawings INC-1: exactly one row in each of the seven
+        # `electrical.drawings_*` tables. The document points at the workspace's
+        # seeded file (logical ref) and space; the children chain through the
+        # document (FK) and the page (composite FK for the stage).
+        project_id = new_uuid7()
+        el_document_id = new_uuid7()
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_projects (id, workspace_id, space_id, name) "
+                "VALUES (:id, :ws, :space, 'Plant')"
+            ),
+            {"id": project_id, "ws": ws, "space": space_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_documents "
+                "(id, workspace_id, space_id, project_id, file_id) "
+                "VALUES (:id, :ws, :space, :project, :file_id)"
+            ),
+            {
+                "id": el_document_id,
+                "ws": ws,
+                "space": space_id,
+                "project": project_id,
+                "file_id": file_id,
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_jobs "
+                "(id, workspace_id, document_id, kind, pipeline_version) "
+                "VALUES (:id, :ws, :doc, 'ingest', '1')"
+            ),
+            {"id": new_uuid7(), "ws": ws, "doc": el_document_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_pages (workspace_id, document_id, page_no) "
+                "VALUES (:ws, :doc, 1)"
+            ),
+            {"ws": ws, "doc": el_document_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_page_stages "
+                "(workspace_id, document_id, page_no, stage, status, pipeline_version) "
+                "VALUES (:ws, :doc, 1, 'classify', 'pending', '1')"
+            ),
+            {"ws": ws, "doc": el_document_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_profile_versions "
+                "(id, workspace_id, project_id, document_id, version, source, body, fingerprint) "
+                "VALUES (:id, :ws, :project, :doc, 1, 'user', CAST('{}' AS jsonb), :fp)"
+            ),
+            {
+                "id": new_uuid7(),
+                "ws": ws,
+                "project": project_id,
+                "doc": el_document_id,
+                "fp": "a" * 64,
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO electrical.drawings_characterizations "
+                "(workspace_id, document_id, project_id, report, pipeline_version, "
+                "shared_version, rules_version) "
+                "VALUES (:ws, :doc, :project, CAST('{}' AS jsonb), '1', '1', '1')"
+            ),
+            {"ws": ws, "doc": el_document_id, "project": project_id},
+        )
         await session.execute(
             text(
                 "INSERT INTO integrations.connections (id, workspace_id, connector_key) "

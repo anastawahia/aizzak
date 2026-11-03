@@ -168,7 +168,13 @@ _SOURCES_ENV_FILE = re.compile(r"(?:^|[\s;&|(])(?:source|\.)\s+\S*\.env\b", re.M
 # dummy credential for the throwaway test bucket.
 _PLACEHOLDER = re.compile(r"change-me[\w-]*")
 _DUMMY_VALUES = frozenset({"aizzak-test-secret"})
-_SECRET_NAME = re.compile(r"^[A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY)[A-Z0-9_]*=(.*)$", re.M)
+_SECRET_NAME = re.compile(
+    r"^(?!ELE_PARSE_TOKEN_SAMPLE=)[A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY)[A-Z0-9_]*=(.*)$",
+    re.M,
+)
+# `ELE_PARSE_TOKEN_SAMPLE` (WireTwin INC-1 S9, LLD 3.3.10) counts text tokens in a PDF page's
+# signal sample; the name contains TOKEN but it is a number, not a credential. It is the one
+# named exemption -- any other key whose name says TOKEN still has to be a placeholder.
 
 # Every file the branch added or changed, explicitly: a rename or a new file is a decision to
 # make here, not a silent exemption.

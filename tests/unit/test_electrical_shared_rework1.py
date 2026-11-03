@@ -149,10 +149,12 @@ def test_canonical_form_is_idempotent_and_ascii_digits_only() -> None:
 
 
 @pytest.mark.parametrize("text", ["KM1\u0301", "K\u0301M1"])
-def test_a_combining_mark_makes_no_identifier_documented_deviation(text: str) -> None:
-    # Declared by the developer: combining marks are not stripped. Pinned so a change is
-    # deliberate (the identifier is dropped as "no identifier", not flagged).
-    assert PARSER.parse(text) is None
+def test_a_combining_mark_is_flagged_not_dropped(text: str) -> None:
+    # INC1-Q-6: combining marks are not stripped; the identifier is reported invalid
+    found = PARSER.parse(text)
+    assert found is not None and not found.valid
+    assert found.issues == ("text.non_ascii",)
+    assert not found.forms.canonical.isascii()  # it never collides with the plain KM1
 
 
 @pytest.mark.parametrize(

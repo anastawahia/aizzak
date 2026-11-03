@@ -59,7 +59,8 @@ decision = "SRS D-32"
 [[package]]
 name = "pycryptodome"
 declared = ["BSD-2-Clause AND Unlicense AND MIT"]
-versions = ">=4.2.0,<4.3"
+# Widened to 4.3.x by the owner (2026-11-03): 4.3.0 declares the same licence.
+versions = ">=4.2.0,<4.4"
 expression = "BSD-2-Clause AND Unlicense AND MIT"
 reason = "As declared; SRS D-32 names Unlicense as the equivalent of LicenseRef-Public-Domain."
 decision = "SRS D-32"

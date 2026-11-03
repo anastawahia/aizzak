@@ -2136,3 +2136,53 @@ device_class = "terminal_strip"
 issues = ["bridge.different_strips"]
 canonical = "X1:1~X2:3"
 search_keys = ["X1:1~X2:3"]
+
+# what stays non-ASCII after normalisation is flagged, never dropped (INC1-Q-6)
+[[case]]
+id = "c189"
+text = "KM1́"
+source = "invalid"
+script = "combining"
+kind = "letter_code"
+valid = false
+convention = "cn_letter_codes"
+aspects = []
+device_class = "contactor"
+issues = ["text.non_ascii"]
+canonical = "KM1́"
+search_keys = ["KM1́"]
+
+[[case]]
+id = "c190"
+text = "-K5́"
+source = "invalid"
+script = "combining"
+kind = "reference_designation"
+valid = false
+convention = "iec_81346"
+aspects = ["-K5"]
+issues = ["text.non_ascii"]
+canonical = "-K5́"
+search_keys = ["-K5́"]
+
+[[case]]
+id = "c191"
+text = "X1:14́"
+source = "invalid"
+script = "combining"
+kind = "terminal"
+valid = false
+convention = "iec_81346"
+aspects = []
+connection_point = "14"
+device_class = "terminal_strip"
+issues = ["text.non_ascii"]
+canonical = "X1:14́"
+search_keys = ["X1:14́"]
+
+[[case]]
+id = "c192"
+text = "继电器"
+source = "extra"
+script = "cjk"
+kind = "none"

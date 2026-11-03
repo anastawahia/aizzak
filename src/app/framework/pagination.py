@@ -47,9 +47,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from dataclasses import dataclass
 from typing import NoReturn
-from uuid import UUID
 
 from app.framework.errors import ValidationError
 from app.framework.types import Uuid
@@ -58,6 +58,14 @@ from app.framework.types import Uuid
 # decoder. `urlsafe_b64decode` has no `validate` parameter, which is exactly
 # how the lenient behaviour got in.
 _URLSAFE = b"-_"
+# ASCII hex in the canonical 8-4-4-4-12 form and nothing else: ``uuid.UUID()`` also takes
+# underscores, signs, blanks and non-ASCII digits, which the database driver then refuses.
+_UUID_TEXT = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+
+
+def is_uuid_text(value: object) -> bool:
+    """Whether ``value`` is a canonical UUID text the database driver accepts as a ``uuid``."""
+    return isinstance(value, str) and _UUID_TEXT.fullmatch(value) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +92,7 @@ def decode_id_cursor(cursor: str) -> Uuid:
     letting the database reject it — as a 500.
     """
     raw = _decode(cursor)
-    try:
-        UUID(raw)
-    except ValueError:
+    if not is_uuid_text(raw):
         _reject()
     return raw
 
@@ -96,13 +102,17 @@ def encode_seq_cursor(last_seq: int) -> str:
     return _encode(str(last_seq))
 
 
-def decode_seq_cursor(cursor: str) -> int:
-    """Decode a ``seq`` cursor back to its ordinal, or reject it."""
+def decode_seq_cursor(cursor: str, *, maximum: int | None = None) -> int:
+    """Decode a ``seq`` cursor back to its ordinal, or reject it. ``maximum`` bounds the
+    magnitude to what the compared column holds (an ``int4`` refuses a larger parameter)."""
     raw = _decode(cursor)
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         _reject()
+    if maximum is not None and abs(value) > maximum:
+        _reject()
+    return value
 
 
 def _encode(payload: str) -> str:

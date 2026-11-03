@@ -47,7 +47,7 @@ from app.framework.di.file_deletion import DeleteFileService
 from app.framework.di.file_replacement import ReplaceNamesakesService
 from app.framework.di.space_deletion import DeleteSpaceService
 from app.framework.di.space_quota import SpaceQuotaService
-from app.framework.errors import UnauthorizedError
+from app.framework.errors import AppError, UnauthorizedError
 from app.framework.observability.context import workspace_id_var
 from app.framework.ports.idempotency_store import IdempotencyStore
 from app.framework.ports.system_stats import SystemStatsSource
@@ -61,6 +61,7 @@ from app.modules.admin.application.providers import PlatformProviderUseCases
 from app.modules.admin.application.users import PlatformAdminUseCases
 from app.modules.conversations.application.use_cases import ConversationUseCases
 from app.modules.credentials.application.use_cases import CredentialUseCases
+from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from app.modules.files.application.use_cases import (
     FileUseCases,
     RegisteredMultipartUpload,
@@ -335,6 +336,14 @@ class ApiServices:
     # a test application can wire either without the other. Optional for the
     # same reason as its neighbours, and the routes fail closed when absent.
     providers: PlatformProviderUseCases | None = None
+    # WireTwin (electrical-drawings INC-1, `PR-C` S8): the drawings bundle
+    # `/api/v1/electrical` delegates to. Built by the Composition Root because the file and
+    # space cascades hold its purge participants too, so it is the root's own instance and
+    # not a second one. Optional for the hermetic applications that predate the module; the
+    # routes FAIL CLOSED (`common.internal`) when it is unwired, the `space_quota` rule: a
+    # missing bundle must be loud, not an empty answer. Whether the feature is ON is a
+    # separate question, `electrical_enabled` below.
+    electrical: DrawingsUseCases | None = None
 
 
 def get_services(request: Request) -> ApiServices:
@@ -373,6 +382,17 @@ def _bearer_token(credentials: HTTPAuthorizationCredentials | None) -> str:
     if credentials is None:
         raise UnauthorizedError("missing bearer token", code="auth.missing_token")
     return credentials.credentials
+
+
+async def electrical_enabled(services: Annotated[ApiServices, Depends(get_services)]) -> None:
+    """``503 electrical.disabled`` while ``ELECTRICAL_ENABLED`` is false (INC1-D-12).
+
+    The ``/electrical`` router hangs this AFTER ``current_principal`` and BEFORE any route's
+    permission guard: an unauthenticated caller hears 401, and an authenticated one is told the
+    feature is absent rather than that it lacks a permission on something that does not exist.
+    """
+    if not services.settings.electrical.enabled:
+        raise AppError("WireTwin is not enabled on this deployment", code="electrical.disabled")
 
 
 async def current_principal(

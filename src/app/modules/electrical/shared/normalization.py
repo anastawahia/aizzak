@@ -61,6 +61,7 @@ _IGNORABLE = frozenset(
 
 ISSUE_HIDDEN = "text.hidden_character"
 ISSUE_BIDI = "text.bidi_control"
+ISSUE_NON_ASCII = "text.non_ascii"  # INC1-Q-6: what stays non-ASCII (e.g. a combining mark)
 NON_INVALIDATING_ISSUES = frozenset({ISSUE_BIDI})  # flagged, but the identifier stays valid
 
 

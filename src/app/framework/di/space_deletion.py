@@ -89,14 +89,16 @@ class SpaceDeletion:
     whose whole job is to leave nothing behind: a cascade that silently deleted
     zero of a space's three thousand documents looks identical to a correct one
     from the outside. Each number is that module's own top-level row count —
-    documents, files, threads — never the total of every child table it swept,
-    which would be an unstable number nobody could predicate on.
+    documents, files, threads, drawing documents — never the total of every
+    child table it swept, which would be an unstable number nobody could
+    predicate on.
     """
 
     space_id: Uuid
     documents: int
     files: int
     conversations: int
+    drawings: int
 
 
 class DeleteSpaceService:
@@ -106,6 +108,8 @@ class DeleteSpaceService:
 
     1. **mark** — so the space stops being listed before anything is destroyed.
     2-4. **knowledge** — its points before its rows (that module's own rule).
+    2b. **electrical** — WireTwin's drawing documents and project (phase 1 of
+        their purge), BEFORE the files they point at.
     5-6. **files** — its objects before its rows.
     7. **conversations** — last, because its threads are what a user reads the
        rest through; a thread whose files and corpus are gone is a thread that
@@ -118,11 +122,13 @@ class DeleteSpaceService:
         mark: SpaceMarker,
         *,
         knowledge: SpaceContentPurge,
+        electrical: SpaceContentPurge,
         files: SpaceContentPurge,
         conversations: SpaceContentPurge,
     ) -> None:
         self._mark = mark
         self._knowledge = knowledge
+        self._electrical = electrical
         self._files = files
         self._conversations = conversations
 
@@ -132,6 +138,9 @@ class DeleteSpaceService:
         # below, none of which can tell an empty space from an absent one.
         await self._mark.execute(ctx, space_id)
         documents = await self._knowledge.execute(ctx, space_id)
+        # WireTwin (HLD §8.8): before `files`, so the drawing documents are out of every read
+        # (and their project gone) while the files they point at still exist.
+        drawings = await self._electrical.execute(ctx, space_id)
         files = await self._files.execute(ctx, space_id)
         conversations = await self._conversations.execute(ctx, space_id)
         return SpaceDeletion(
@@ -139,4 +148,5 @@ class DeleteSpaceService:
             documents=documents,
             files=files,
             conversations=conversations,
+            drawings=drawings,
         )

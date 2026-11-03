@@ -135,12 +135,29 @@ STATIC_CONSUMER_TOPOLOGY: tuple[ConsumerBinding, ...] = (
         group="cg.memory",
         event_types=frozenset({"memory.item.stored.v1"}),
     ),
+    # WireTwin (electrical-drawings INC-1, LLD 3.3.11). The group is the `document` role of
+    # `worker-electrical`: registered and job.requested -> inspect, purged -> sweep. The role's
+    # sister groups (pages, ocr, model, index) join with their consumers (HLD §7.8): a group
+    # without a reader would pin the trim (RSK-14). `profile_proposed`, `job.progressed` and
+    # `job.completed` are NOT here: only the per-process notify family reads them.
+    ConsumerBinding(
+        stream="stream.electrical",
+        group="cg.electrical.document",
+        event_types=frozenset(
+            {
+                "electrical.document.registered.v1",
+                "electrical.job.requested.v1",
+                "electrical.document.purged.v1",
+            }
+        ),
+    ),
 )
 
 # Every stream the relay publishes to -- the set capacity 5.5's trimmer
 # manages (`infrastructure/messaging/stream_retention.py`) and the stream
 # gauges on `/metrics` report. A superset of the table above by exactly
-# `stream.files`, which is published and read by nobody.
+# `stream.files`, which is published and read by nobody. (`stream.electrical`, WireTwin's, is in
+# both.)
 #
 # Written out, and never discovered with `SCAN stream.*`, for two reasons the
 # live Redis makes concrete: the same server holds `stream.<m>.dlq` --
@@ -149,6 +166,7 @@ STATIC_CONSUMER_TOPOLOGY: tuple[ConsumerBinding, ...] = (
 # table above: `tests/unit/test_stream_topology.py` compares it with the four
 # modules' own `STREAM` constants.
 PUBLISHED_STREAMS: tuple[str, ...] = (
+    "stream.electrical",
     "stream.files",
     "stream.knowledge",
     "stream.media",

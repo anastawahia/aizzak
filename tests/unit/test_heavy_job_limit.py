@@ -384,7 +384,15 @@ def test_the_guard_is_on_exactly_the_operations_that_answer_202() -> None:
     assert queueing == guarded
     # And the set is not accidentally empty, which would make the equality
     # above true and meaningless.
-    assert len(queueing) == 4
+    # The four from before WireTwin (media job, three knowledge) and its four queue entrances:
+    # register a document, confirm a profile, reprocess, resume a job.
+    assert len(queueing) == 8
+    assert {path for _method, path in queueing if "/electrical/" in path} == {
+        "/api/v1/electrical/projects/{project_id}/documents",
+        "/api/v1/electrical/documents/{document_id}/profile-confirmation",
+        "/api/v1/electrical/documents/{document_id}/reprocessing",
+        "/api/v1/electrical/ingestion-jobs/{job_id}/resume",
+    }
 
 
 def test_every_guarded_operation_is_charged_after_its_permission_is_checked() -> None:

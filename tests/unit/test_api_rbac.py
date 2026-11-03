@@ -195,6 +195,30 @@ EXPECTED: dict[tuple[str, str], Permission] = {
     ("/api/v1/integrations/mcp-servers", "post"): Permission.INTEGRATIONS_MANAGE,
     ("/api/v1/integrations/mcp-servers/{}", "delete"): Permission.INTEGRATIONS_MANAGE,  # 05 §4
     ("/api/v1/integrations/tools", "get"): Permission.INTEGRATIONS_READ,  # 05 §4
+    # WireTwin (INC-1, LLD 3.3.16): `electrical:read` reads and previews, `electrical:manage`
+    # registers, confirms, reprocesses, cancels, resumes and changes any profile. No new
+    # permission: INC-0 created both. A member reads and previews (the matrix gives it read and
+    # diagnose), a viewer reads, and `platform_admin` holds neither.
+    ("/api/v1/electrical/projects", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/projects", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/projects/{}", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/projects/{}", "patch"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/projects/{}/profile", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/projects/{}/profile", "put"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/projects/{}/documents", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/projects/{}/documents", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/projects/{}/characterization", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/documents/{}", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/documents/{}/profile", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/documents/{}/profile", "put"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/documents/{}/profile-confirmation", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/documents/{}/reprocessing", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/documents/{}/pages", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/documents/{}/characterization", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/ingestion-jobs/{}", "get"): Permission.ELECTRICAL_READ,
+    ("/api/v1/electrical/ingestion-jobs/{}/cancel", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/ingestion-jobs/{}/resume", "post"): Permission.ELECTRICAL_MANAGE,
+    ("/api/v1/electrical/files/{}/replacement-preview", "get"): Permission.ELECTRICAL_READ,
 }
 
 # The operations no guard may sit on: two liveness probes, one OAuth

@@ -124,12 +124,14 @@ def _build_service() -> tuple[
 
     purges = {
         "knowledge": _CountingPurge(trace, "knowledge", 7),
+        "electrical": _CountingPurge(trace, "electrical", 2),
         "files": _CountingPurge(trace, "files", 3),
         "conversations": _CountingPurge(trace, "conversations", 5),
     }
     service = DeleteSpaceService(
         _TracingMarker(DeleteSpace(spaces)),
         knowledge=purges["knowledge"],
+        electrical=purges["electrical"],
         files=purges["files"],
         conversations=purges["conversations"],
     )
@@ -149,13 +151,17 @@ async def test_the_cascade_marks_the_space_first_then_empties_every_module() -> 
 
     result = await service.delete(ctx, space.id)
 
-    assert trace == ["mark", "knowledge", "files", "conversations"]
+    # WireTwin's participant comes right after knowledge and BEFORE files (HLD §8.8): the
+    # drawing documents leave every read while the files they point at still exist
+    assert trace == ["mark", "knowledge", "electrical", "files", "conversations"]
     assert spaces.rows[space.id].deleted_at is not None
     assert all(purge.calls == [space.id] for purge in purges.values())
     # Every count under its OWN name: the three purges share one protocol, so
     # a keyword swapped at the wiring site is invisible to mypy and this is
     # what catches it.
-    assert result == SpaceDeletion(space_id=space.id, documents=7, files=3, conversations=5)
+    assert result == SpaceDeletion(
+        space_id=space.id, documents=7, files=3, conversations=5, drawings=2
+    )
 
 
 async def test_a_space_this_workspace_does_not_own_is_a_404_and_nothing_is_destroyed() -> None:
@@ -184,7 +190,7 @@ async def test_deleting_an_already_deleted_space_runs_the_whole_cascade_again() 
 
     await service.delete(ctx, space.id)
 
-    assert trace == ["mark", "knowledge", "files", "conversations"]
+    assert trace == ["mark", "knowledge", "electrical", "files", "conversations"]
     assert all(purge.calls == [space.id, space.id] for purge in purges.values())
 
 

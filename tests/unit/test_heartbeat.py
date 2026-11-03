@@ -54,6 +54,14 @@ def test_each_process_gets_its_own_file() -> None:
     assert len(paths) == len(HEARTBEAT_PROCESS_NAMES)
 
 
+def test_the_electrical_worker_has_its_own_heartbeat_file() -> None:
+    """WireTwin (INC-1): `worker-electrical` beats as `electrical`, a file of its own, so it can
+    never ride on a sibling worker's beat."""
+    assert "electrical" in HEARTBEAT_PROCESS_NAMES
+    assert heartbeat_path("/var/run/hb", "electrical") == Path("/var/run/hb/electrical.heartbeat")
+    assert heartbeat_path("/hb", "electrical") != heartbeat_path("/hb", "memory")
+
+
 @pytest.mark.parametrize("directory", ["", "   "])
 def test_an_empty_directory_disables_the_heartbeat(directory: str) -> None:
     assert heartbeat_path(directory, "memory") is None
@@ -187,6 +195,18 @@ def test_a_disabled_heartbeat_never_reports_healthy(monkeypatch: pytest.MonkeyPa
 
     assert code == 2
     assert "HEARTBEAT_DIR" in message
+
+
+def test_the_electrical_process_is_a_valid_healthcheck_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_settings(monkeypatch, _settings(str(tmp_path)))
+    code, message = healthcheck.check("electrical")
+    assert (
+        code == 1 and "no heartbeat yet" in message
+    )  # known name, no beat: unhealthy, not "unknown"
+    build_heartbeat(str(tmp_path), "electrical").beat()
+    assert healthcheck.check("electrical")[0] == 0
 
 
 def test_a_missing_file_is_unhealthy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

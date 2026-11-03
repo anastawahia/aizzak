@@ -18,6 +18,8 @@
 | `app` | Dockerfile (هذا المستودع) | 8000 | FastAPI/Uvicorn (Gunicorn+UvicornWorker) — قابل للتوسّع |
 | `worker-memory` · `worker-knowledge` · `worker-media` | نفس الصورة، أمر واحد، `WORKER` حرفيّ لكلٍّ | — | مستهلكو Streams الثلاثة، **خدمةٌ لكلٍّ** ([§3.133](../log/3.133.md)). **ثلاثتهم ضمن `up -d` الافتراضيّ** منذ أن قِيس إقلاع `media` ([§3.134](../log/3.134.md)) — لا بروفايل في الملفّ بعد الآن. و**`worker-knowledge` وحدَه نسختان** (‏`deploy.replicas: 2`) — §4.0 |
 | `outbox-relay` | نفس الصورة، أمر مختلف | — | مُرحّل Outbox (نسخة واحدة) |
+| `worker-electrical` | نفس صورة التطبيق، `WORKER=electrical` | — | عامل WireTwin بدور `document` (`cg.electrical.document`) — **خلف profile `electrical`**، معطّل افتراضياً (§4.29) |
+| `ele-parse` | `services/ele_parse/Dockerfile` (تُبنى محلياً) | 8090 على شبكةٍ داخلية فقط | محلّل PDF المعزول (PyMuPDF): شبكة `internal: true` وحدها، بلا أسرار ولا قاعدة بيانات، ونظام ملفات للقراءة فقط — **خلف profile `electrical`** (§4.29) |
 | `postgres` | postgres:16 | 5432 | قاعدة البيانات (RLS) |
 | `pgbouncer` | edoburu/pgbouncer | 6432 | Transaction pooling |
 | `redis-stream` | redis:7 | 6379 | مجارٍ + سجلّ WS + محدِّد المعدّل + قائمة المنع — `noeviction` عند `maxmemory 2gb` (`5.2`) |
@@ -71,6 +73,7 @@
 | `worker-memory` | 1 | `DATABASE_URL` | `app_rw` | **5+0** | 5 |
 | `worker-knowledge` | 2 (`deploy.replicas`) | `DATABASE_URL` | `app_rw` | **5+0** | 10 |
 | `worker-media` | 1 | `DATABASE_URL` | `app_rw` | **5+0** | 5 |
+| `worker-electrical` (WireTwin · INC‑1 · S9، **خلف profile `electrical`**) | 1 | `DATABASE_URL` | `app_rw` | **5+0** | 5 |
 | `outbox-relay` | 1 | `DATABASE_URL` | `outbox_relay` | 2+0 | 2 |
 | `ops-scheduler` (`5.7`) | 1 | **مهمّةٌ واحدةٌ في كلّ لحظة** | `retention_sweeper` **أو** `workspace_purger` **أو** `transit_rotator` | `NullPool` | 1 |
 | `pgbouncer-exporter` | 1 | قاعدةُ الإدارة الوهميّة | `postgres` | — | 1 |
@@ -86,9 +89,9 @@
 **والميزانيّةُ المحسوبة** — هذه الأرقامُ ليست مكتوبةً بيد؛ الاختبارُ يشتقّها من الملفّات ويقارنها بما هنا:
 
 ```text
-compose.pooler_clients      = 433   # من أصل 2000 (MAX_CLIENT_CONN — كانت 500 قبل `2.2`، و432 قبل `5.7`)
+compose.pooler_clients      = 438   # من أصل 2000 (MAX_CLIENT_CONN — كانت 500 قبل `2.2`، و432 قبل `5.7`، و433 قبل `worker-electrical`)
 compose.postgres_backends   = 164   # من أصل 297  (max_connections 300 ناقصَ 3 محجوزةً للمستخدم الخارق — 161 قبل `5.7`، و162 قبل `monitoring-host-postgres` التي أضافت خلفيّتَي `postgres-exporter`)
-compose.app_rw_demand       = 380   # مقابل 110   (DEFAULT_POOL_SIZE 100 + RESERVE_POOL_SIZE 10)
+compose.app_rw_demand       = 385   # (380 قبل `worker-electrical`) مقابل 110   (DEFAULT_POOL_SIZE 100 + RESERVE_POOL_SIZE 10)
 compose.web_concurrency_max = 19    # أعلى قيمةٍ تبقى تحت سقف العملاء — **لكلّ نسخة**، والنسخُ ثلاث
 ```
 
@@ -539,6 +542,8 @@ ports:           النسخةُ 1 عملت، والنسخةُ 2: "Bind for 0.0.0
 
 **وما يحجز ذاكرةَ الكرت (لا ذاكرةَ المضيف) جدولُه في `§2‑ي`** (‏`gpu-compose` 2.6): هذا الدفترُ يعدّ سقوفَ المضيف وحدها، وذاكرةُ الكرت حسابٌ آخر لا يدخل مجموعَه.
 
+**⚠️ وملفّ `electrical` (WireTwin · INC‑1 · S9) خارج هذا الدفتر عمداً، ولا يتّسع فيه.** ‏`ele-parse` و`worker-electrical` خلف profile لا يبدأ بـ`up -d` عادي، فالمجموعُ الدائم لم يتحرّك (35.60 vCPU / 57.28 GB، و`large` 37.85 / 57.59)، والمعلَّقةُ بملفّات التشغيل صارت **8 بعد أن كانت 6**. لكنّ سقفيهما عند `large` **2.0 vCPU و3.5 GB** (`ele-parse` ‏1.0 / 2560m، و`worker-electrical` ‏1.0 / 1g)، وهامش `large` تحت 57.60 هو **0.01 GB**. فتفعيلُ الملفّ على المضيف المرجعيّ بأحجام `large` يتجاوز الدفترَ بنحو 3.5 GB، ولا يخفيه إلا خفضُ سقفٍ آخر أو قبولُه بقرار. والأرقامُ **تقديرات** (`ELE_PARSE_MAX_CHILDREN × ELE_PARSE_MEMORY_MB` + الخادم) تُقاس قبل أي حملة (`INC1‑R‑5`)، وأحجامُ `medium` و`small` أصغر (`ele-parse` ‏1.0 / 1536m ثم 0.5 / 768m، والعامل 0.5 / 768m ثم 0.25 / 512m). تحقّق: `deploy/resource-budget.sh --size large --with-profiles` (يعدّ كلَّ الملفّات المعلَّقة لا `electrical` وحده).
+
 
 **الأحجام (الخطوة `3.1`–`3.4` من خطّة خادم الكرت).** كلّ سقفٍ في `docker-compose.yml` صار `${<الخدمة>_CPUS|_MEM|_REPLICAS:-<رقم اليوم>}`، وملفّ `deploy/sizes/<الحجم>.env` يعطي قيماً أخرى بـ`--env-file .env --env-file deploy/sizes/<الحجم>.env` (ذكر `--env-file` يعطّل القراءة التلقائيّة لـ`.env`، فبدونه الأول يبدأ المكدّس بلا أسرار ولا `VAULT_SECRET_ID`). القيم الافتراضيّة هي أرقام اليوم، فلا يتغيّر شيءٌ دون ملفّ. والأحجام الثلاثة كلّها بوضع الكرت (الملفّ الأساسيّ + `docker-compose.gpu.yml` + profile `local-llm`)، و`small` للتجربة فقط بسقوفٍ تحت ذروتها المقيسة ويُقبل فيه خطر `OOMKilled`. والمسموح = ذاكرة الخادم × 0.9.
 
@@ -552,7 +557,7 @@ ports:           النسخةُ 1 عملت، والنسخةُ 2: "Bind for 0.0.0
 
 **ميزانيّة خادم `ollama` (FR‑12):** تُحسب هنا لا في الدفتر المرجعيّ؛ فهي داخل هذه المجاميع لأنّ وضع الكرت يفعّل `local-llm` (`ollama` دائمة و`ollama-pull` مرّةً واحدة فلا تُعدّ). وكتلة `resources.*` أعلاه (35.60 و57.28) تبقى لوضع المعالج. أرقام `medium` و`small` مشتقّة وتُقاس في `7.3`.
 
-**حدودٌ تُحسب تلقائيّاً من الجهاز (`compose-auto-size`، خطوة `3.5` من خطّة خادم الكرت).** الأحجام المسمّاة أعلاه أرقامٌ ثابتة؛ و`deploy/auto_size.py` يحسب الحدود من معالجات الجهاز وذاكرته بالاستيفاء بين `small` و`large`، ويكتبها في **كتلةٍ معلَّمة** في `.env` (مفاتيح `large.env` الـ85)، ويكتب لـPostgres ملفّ `deploy/postgres/sizes/auto.conf` (خارج git). لا يعمل من تلقاء نفسه: لا `entrypoint` ولا `healthcheck` ولا `rolling-deploy.sh` يستدعيه، ولا يمسّ `docker-compose*.yml` ولا ملفّات الأحجام.
+**حدودٌ تُحسب تلقائيّاً من الجهاز (`compose-auto-size`، خطوة `3.5` من خطّة خادم الكرت).** الأحجام المسمّاة أعلاه أرقامٌ ثابتة؛ و`deploy/auto_size.py` يحسب الحدود من معالجات الجهاز وذاكرته بالاستيفاء بين `small` و`large`، ويكتبها في **كتلةٍ معلَّمة** في `.env` (مفاتيح `large.env` الـ89)، ويكتب لـPostgres ملفّ `deploy/postgres/sizes/auto.conf` (خارج git). لا يعمل من تلقاء نفسه: لا `entrypoint` ولا `healthcheck` ولا `rolling-deploy.sh` يستدعيه، ولا يمسّ `docker-compose*.yml` ولا ملفّات الأحجام.
 
 ```bash
 deploy/auto_size.py --role server --dry-run     # يعرض ما سيكتبه دون أن يكتب شيئاً
@@ -568,7 +573,7 @@ docker compose up -d && docker compose restart postgres   # Postgres يقرأ au
 | `dev` | النسخ وإعدادات Postgres وRedis من الجهاز، وحدّ كلّ خدمة ≥ ذروتها المقيسة × 1.25 (مقرّبةً إلى 256 ميغابايت) و≤ `large` (جدول `DEV_PEAKS_MIB` في السكربت) | التجاوز **تحذيرٌ لا رفض**: المجموع ونسبته إلى ذاكرة الجهاز، ورمز الخروج 0 |
 
 - **الدور** من `--role`، وإلّا من سطر `# role:` في الكتلة الموجودة، وإلّا `server`. **والوضع** (cpu أو gpu) والـprofiles كما يراها Compose: الخيار ثمّ بيئة العمليّة ثمّ `.env`.
-- **لا يكتب خارج الكتلة** (بين `# >>> aizzak auto-size >>>` و`# <<< aizzak auto-size <<<`). مفتاحٌ من الـ85 معرَّف خارجها يوقفه (رمز الخروج 3)، لأنّ Compose يأخذ آخر تعريف دون رسالة؛ والاستثناء الوحيد سطر `POSTGRES_CONFIG_FILE` الذي نُسخ من `.env.example` قبل الكتلة. ولا يطبع أيّ قيمة من `.env`.
+- **لا يكتب خارج الكتلة** (بين `# >>> aizzak auto-size >>>` و`# <<< aizzak auto-size <<<`). مفتاحٌ من الـ89 معرَّف خارجها يوقفه (رمز الخروج 3)، لأنّ Compose يأخذ آخر تعريف دون رسالة؛ والاستثناء الوحيد سطر `POSTGRES_CONFIG_FILE` الذي نُسخ من `.env.example` قبل الكتلة. ولا يطبع أيّ قيمة من `.env`.
 - **الرجوع** إلى قيم المستودع: احذف الكتلة بعلامتيها ثمّ `docker compose up -d` و`docker compose restart postgres`. وحذف `auto.conf` اختياريّ. وبلا `auto.conf` يرفض `resource-budget.sh --block` الكتلة (Postgres لا يقلع)، فيُعاد تشغيل الأمر على أيّ جهازٍ نُسخ إليه `.env`.
 - **قياسات السعة على جهاز التطوير (Q‑13):** مع الكتلة تصير النسخ 1، فلا تُقارَن تشغيلات k6 بقياسات الموجات السابقة (3 نسخ). شغّلها بـ`--size large` أو بعد حذف الكتلة.
 - لا يغيّر أيّ تعديلٍ في `.wslconfig` شيئاً حتّى يُعاد تشغيل الأمر.
@@ -2629,6 +2634,38 @@ docker compose exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
 - **⚠️ تشغيلُ حملٍ فوق نقطة الانكسار يُشعل تنبيهات الإشباع وميزانيّة الخطأ.** هذا عملُها. أسكتها للتشغيل من Grafana.
 - **⚠️ تنبيهٌ واحدٌ لا يصل أبداً:** موتُ `alertmanager` نفسِه (‏`AizzakScrapeTargetDown{job="alertmanager"}` يشتعل في Prometheus ولا طريقَ له). يُعرَف من **توقّف نبض `AizzakWatchdog`** في سجلّ `alert-sink` أكثرَ من عشر دقائق.
 - **قناةٌ خارجيّة** (تيليغرام أو بريد) يومَ يختارها المالك: مستقبِلٌ ثانٍ في `alertmanager.yml` بمسارٍ `continue: true`، وسرُّه في `.env` عبر حقلٍ `*_file` — لا في الملفّ. `alert-sink` يبقى سجلاً لما خرج.
+
+### 4.29 ملفّ `electrical` — WireTwin: `ele-parse` المعزول و`worker-electrical` (INC‑1 · S9 · INC1‑AC‑9)
+
+**ما هو.** خدمتان خلف profile اسمه `electrical`، **معطّلتان افتراضياً**: `up -d` عادياً لا يبدأ أيّاً منهما. ‏`ele-parse` يفحص ملفّات PDF بـPyMuPDF (محرّكٌ يقرأ ملفاتٍ لا يُوثَق بها)، و`worker-electrical` يستهلك `stream.electrical` ويمرّر له كلَّ ملف عبر HTTP. والميزة كلُّها معطّلة أيضاً بعلم `ELECTRICAL_ENABLED=false`: مسارات `/api/v1/electrical/*` تردّ 503 `electrical.disabled`.
+
+**العزل (DEC‑04):** ‏`ele-parse` على شبكة `ele-parse` وحدها، وهي `internal: true` (لا طريق للخارج، وليست `default` فلا تصل Postgres ولا Redis ولا Qdrant ولا MinIO). بلا أسرار ولا `DATABASE_URL` ولا Vault في بيئتها. نظام الملفات للقراءة فقط (و`/tmp` بـtmpfs صغير)، ومستخدمٌ غيرُ جذري `10001`، و`cap_drop: [ALL]`، و`no-new-privileges`، وحجمُ المرحلة `:ro`، وسقوفُ CPU وذاكرة وعدد عمليات. وكلُّ طلبٍ في عمليةٍ فرعيةٍ بحدّ ذاكرةٍ ومهلة. و`worker-electrical` وحده يشاركها الشبكة (ويبقى على `default` ليصل Redis وPostgres وMinIO وVault)، و`app` ليس عليها. وفحصُ هذا الشكل آليّ: `tests/unit/test_compose_electrical_profile.py` (ملفّ)، و`tests/unit/test_ele_parse_containers.py` (حاويات مؤقتة، بيئةٌ اختيارية).
+
+**قبل أي تفعيل (قرارٌ بشريّ، بهذا الترتيب):**
+
+1. الهجرة `electrical/0001` تُطبَّق عبر خدمة `migrate` وحدها (لا `alembic upgrade` مباشرةً). بدونها يفشل العامل عند الإقلاع.
+2. بناء الصورتين محلياً. أضِف إلى `.env` السطر `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` إن لم يكن، ثم:
+
+```bash
+docker compose --profile electrical build ele-parse worker-electrical
+```
+
+3. تشغيل الخدمتين وحدهما (دون لمس بقيّة المكدّس):
+
+```bash
+docker compose --profile electrical up -d --no-deps ele-parse worker-electrical
+docker compose --profile electrical ps ele-parse worker-electrical
+```
+
+4. جعل `ELECTRICAL_ENABLED=true` في `.env` ثم إعادة إنشاء `app` (`docker compose up -d --no-deps app`)، أو بالنشر المتدرّج §4.15. وهذا آخر خطوة.
+
+**فحصُ العزل بيدك** (حاوية مؤقتة لا تلمس المكدّس): `docker run --rm --pull never --network none --read-only --cap-drop ALL -v <مجلد>:/in:ro aizzak/ele-parse:dev python -m services.ele_parse inspect /in/<ملف>.pdf` يطبع JSON الفحص ولا يملك شبكة. الأمر نفسه يغذّي أداة التوصيف (`docs/stack-commands.md`).
+
+**الإيقاف والتراجع:** `docker compose --profile electrical stop ele-parse worker-electrical` (الرسائلُ تنتظر على المجرى ولا شيء يضيع)، وجعلُ `ELECTRICAL_ENABLED=false` يُعيد المسارات إلى 503. وحجمُ `ele-stage` نسخةٌ مؤقتة لفحصٍ واحد؛ **لا يُحذف بـ`docker volume rm`** (يمنعه الخطّاف)، والعاملُ يكنس ما تركه عند إقلاعه.
+
+**خاصيّة أمنيّة: التزامن 1 ونسخة واحدة.** لا عزلَ بين المستأجرين **داخل** `ele-parse`: الخادمُ وطفلُ كلّ طلبٍ بالمستخدم نفسه (`10001`)، وحجمُ المرحلة الواحد يحمل ملفّات كلّ مساحات العمل. فلو نجح ملفٌّ عدائيّ في تنفيذ شيفرةٍ داخل MuPDF لقرأ كلَّ ملفٍّ موجودٍ على الحجم في تلك اللحظة. واليوم لا يوجد عليه في اللحظة الواحدة إلا ملفُّ المهمة الجارية، لأنّ `WORKER_CONCURRENCY_ELECTRICAL=1` ولأنّ `worker-electrical` نسخةٌ واحدة (والكنسُ عند الإقلاع يحذف ما بقي). **لكنّ هذا يحدّ التعرّضَ للملفّات المرحَّلة في وقتٍ واحد فقط، ولا يمنع طفلاً مخترَقاً من ترك عمليةٍ باقية (`setsid`) تقرأ لاحقاً ملفّات مستأجرين آخرين تُرحَّل بعده.** وقتلُ كلّ عمليةٍ متبقّية بعد كلّ طفل (الخادم هو PID 1) مع اختبار حاوية، وعزلٌ أقوى بين المستأجرين (حاوية أو حجم لكلّ طلب أو لكلّ مساحة عمل)، شرطان قبل الإنتاج (`INC1‑R‑17`). **فرفعُ `WORKER_CONCURRENCY_ELECTRICAL` أو عددِ نسخ `worker-electrical` قرارٌ أمنيّ لا قرارُ سعة**، يستلزم قبله عزلاً بين المستأجرين (حجمُ مرحلةٍ لكلّ مساحة عمل، أو `ele-parse` لكلّ مساحة). ويحرس ذلك اختبارٌ في `tests/unit/test_compose_electrical_profile.py`. (ورفضُ `ele-parse` يصل إلى `failure_detail` بنصٍّ ثابتٍ من الكتالوج لا بنصّه هو، وقراءةُ مخرجات الطفل بسقفٍ يقتله عند تجاوزه.)
+
+**السقوف والتنبيهات:** الأرقامُ تقديرات (`INC1‑R‑5`) في `deploy/sizes/*.env` وتفصيلُها في §2‑ز. وتنبيهان جديدان: `AizzakElectricalQueueWaitHigh` (انتظار أكثر من 1,800 ث لـ15 دقيقة) و`AizzakElectricalDocumentsExcluded`، و`AizzakStreamQueueWaitHigh` لم يعد يشمل `stream.electrical` (انظر `docs/runbooks/alerts.md`).
 
 ## 5) فحص الصحّة — من يُعلن حياته، وبأيّ دليل ([§3.136](../log/3.136.md) · ت‑3)
 

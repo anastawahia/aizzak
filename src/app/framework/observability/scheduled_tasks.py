@@ -80,9 +80,11 @@ class ScheduledTask:
 
 def _worker_service(group: str) -> str:
     # `cg.knowledge` -> `worker-knowledge`: the Compose naming the three
-    # consumers were split into (docs/log/3.133.md). A guard test checks that
-    # every runner named in this table is a service that exists.
-    return f"worker-{group.removeprefix('cg.')}"
+    # consumers were split into (docs/log/3.133.md). A group may name a ROLE of its
+    # worker after a dot -- WireTwin's `cg.electrical.document` is the `document` role of
+    # `worker-electrical` -- so only the first component is the worker. A guard test checks
+    # that every runner named in this table is a service that exists.
+    return f"worker-{group.removeprefix('cg.').split('.')[0]}"
 
 
 SCHEDULED_TASKS: tuple[ScheduledTask, ...] = (

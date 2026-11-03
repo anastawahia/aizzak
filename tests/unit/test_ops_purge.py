@@ -592,3 +592,22 @@ def test_the_purge_role_holds_no_delete_grant_the_sweep_never_uses() -> None:
             continue
         table = statement.removeprefix("GRANT SELECT, DELETE ON ").split(" TO ")[0]
         assert table in swept, f"{table} is granted DELETE but never swept"
+
+
+def test_electrical_is_emptied_before_files_and_before_spaces_in_fk_order() -> None:
+    """electrical-drawings INC-1 (LLD 4.5): a document points at its file (`file_id`,
+    logical), so `electrical` precedes `files`; inside the schema every child precedes the
+    table it references (page_stages -> pages -> characterizations -> jobs ->
+    profile_versions -> documents -> projects)."""
+    order = [spec.schema for spec in purge_module._SCHEMA_ORDER]
+    assert order.index("electrical") < order.index("files") < order.index("spaces")
+    (spec,) = [s for s in purge_module._SCHEMA_ORDER if s.schema == "electrical"]
+    assert spec.tables == (
+        "electrical.drawings_page_stages",
+        "electrical.drawings_pages",
+        "electrical.drawings_characterizations",
+        "electrical.drawings_jobs",
+        "electrical.drawings_profile_versions",
+        "electrical.drawings_documents",
+        "electrical.drawings_projects",
+    )

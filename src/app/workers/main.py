@@ -21,9 +21,16 @@ import os
 import sys
 from collections.abc import Awaitable, Callable
 
-from app.workers import knowledge_worker, media_worker, memory_worker, outbox_relay
+from app.workers import (
+    electrical_worker,
+    knowledge_worker,
+    media_worker,
+    memory_worker,
+    outbox_relay,
+)
 
 _RUNNERS: dict[str, Callable[[], Awaitable[None]]] = {
+    "electrical": electrical_worker.run,
     "knowledge": knowledge_worker.run,
     "media": media_worker.run,
     "memory": memory_worker.run,

@@ -16,6 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.framework.settings.settings import (
     AuthSettings,
     DatabaseSettings,
+    ElectricalSettings,
     EmbeddingServiceSettings,
     EventSettings,
     FirebaseSettings,
@@ -239,6 +240,21 @@ class _EnvSettings(BaseSettings):
     mcp_allowed_transports: str = Field("http,sse", alias="MCP_ALLOWED_TRANSPORTS")
     oauth_refresh_skew_s: int = Field(60, alias="OAUTH_REFRESH_SKEW_S")
 
+    # WireTwin (INC-1, PLT-21). The keys the Compose `electrical` profile and the API
+    # read; none is secret. `ELECTRICAL_WORKER_ROLES` is a comma list, like the other
+    # list-valued keys. The ranges are the contract's (`ElectricalSettings`).
+    electrical_enabled: bool = Field(False, alias="ELECTRICAL_ENABLED")
+    ele_parse_url: str = Field("http://ele-parse:8090", alias="ELE_PARSE_URL")
+    ele_parse_timeout_s: float = Field(330.0, alias="ELE_PARSE_TIMEOUT_S", gt=0)
+    ele_stage_dir: str = Field("/var/lib/aizzak/ele-stage", alias="ELE_STAGE_DIR")
+    ele_stage_chunk_bytes: int = Field(8_388_608, alias="ELE_STAGE_CHUNK_BYTES")
+    ele_inspect_batch_pages: int = Field(200, alias="ELE_INSPECT_BATCH_PAGES")
+    ele_max_pages: int = Field(5_000, alias="ELE_MAX_PAGES")
+    ele_queue_protection_limit: int = Field(1_000, alias="ELE_QUEUE_PROTECTION_LIMIT")
+    ele_progress_min_interval_s: float = Field(2.0, alias="ELE_PROGRESS_MIN_INTERVAL_S")
+    ele_job_lease_s: int = Field(600, alias="ELE_JOB_LEASE_S")
+    electrical_worker_roles: str = Field("document", alias="ELECTRICAL_WORKER_ROLES")
+
     usage_rollup_periods: str = Field("day,month", alias="USAGE_ROLLUP_PERIODS")
     usage_default_limits: dict[str, Any] = Field(default_factory=dict, alias="USAGE_DEFAULT_LIMITS")
 
@@ -344,4 +360,17 @@ def load_settings() -> Settings:
             oauth_refresh_skew_s=env.oauth_refresh_skew_s,
         ),
         usage=UsageSettings(**usage_kwargs),
+        electrical=ElectricalSettings(
+            enabled=env.electrical_enabled,
+            ele_parse_url=env.ele_parse_url,
+            ele_parse_timeout_s=env.ele_parse_timeout_s,
+            stage_dir=env.ele_stage_dir,
+            stage_chunk_bytes=env.ele_stage_chunk_bytes,
+            inspect_batch_pages=env.ele_inspect_batch_pages,
+            max_pages=env.ele_max_pages,
+            queue_protection_limit=env.ele_queue_protection_limit,
+            progress_min_interval_s=env.ele_progress_min_interval_s,
+            job_lease_s=env.ele_job_lease_s,
+            worker_roles=_split_csv(env.electrical_worker_roles),
+        ),
     )

@@ -46,6 +46,9 @@
 | 16 | `docker compose restart worker-knowledge` | إعادة تشغيل مستهلكٍ واحدٍ دون مسّ الآخرَين — ما كان مستحيلاً قبل التقسيم |
 | 17 | `docker compose up -d outbox-relay` | إقلاع مُرحّل Outbox: من جدول `platform.outbox` إلى مجاري Redis |
 | 18 | `docker compose exec redis-stream redis-cli XLEN stream.<module>` | قياس طول المجرى — `XACK` لا يحذف، فالنموّ بلا حدٍّ سلوكٌ افتراضيّ |
+| 18‑ب | `docker compose --profile electrical up -d --no-deps ele-parse worker-electrical` | تشغيل ملفّ `electrical` (WireTwin) — **معطّل افتراضياً**، ولا يُشغَّل قبل تطبيق الهجرة `electrical/0001` عبر `migrate` (قرارٌ بشريّ) |
+| 18‑ج | `docker run --rm --pull never --network none --read-only --cap-drop ALL -v <مجلد>:/in:ro aizzak/ele-parse:dev python -m services.ele_parse inspect /in/<ملف>.pdf` | فحص PDF بـ`ele-parse` **خارج المكدّس** وبلا شبكة؛ يطبع JSON على `stdout` |
+| 18‑د | `.venv/bin/python -m app.ops.electrical_characterize --inspections <مجلد> --out <ملف.json>` | أداة التوصيف على مخرجات 18‑ج؛ بلا قاعدة بيانات ولا شبكة |
 
 ### د) الأسرار — Vault وAppRole
 
@@ -245,6 +248,55 @@ docker compose up -d                                  # الثلاثة ضمن ا
 ⚠️ **`XACK` لا يحذف.** مجاري Redis سجلٌّ إلحاقيّ: `XACK` يمسح قائمة المعلَّق فقط، فـ`stream.<وحدة>` ينمو بلا حدٍّ **حتّى مع عمّالٍ أصحّاء يُقرّون كلّ شيء**، وRedis هنا على `maxmemory 0`/`noeviction` ⇒ لا سقف في أيّ طبقة.
 
 العلاج المنفَّذ هو `STREAM_MAXLEN` (افتراضيّ 100000؛ `0` يعطّل القصّ). لكن **راقب `XLEN` ولا تعامل السقف كحلّ**: القصّ قد يُسقط مدخلاتٍ لم يقرأها مستهلكٌ متعثّر وصفُّ الـoutbox موسومٌ `published` سلفاً ⇒ **فقدٌ حقيقيّ لا إعادة تسليم**.
+
+### 18‑ب · ملفّ `electrical` — `ele-parse` و`worker-electrical` (WireTwin · INC‑1)
+
+خدمتان خلف profile `electrical`، **معطّلتان افتراضياً**: `docker compose up -d` لا يبدأ أيّاً منهما، ولا تُفعَّل الميزة إلا بعلم `ELECTRICAL_ENABLED=true` أيضاً (قبلها `/api/v1/electrical/*` تردّ 503). الشرح الكامل والعزل في [`08 §4.29`](design/08-local-runbook.md).
+
+```bash
+# 0) الهجرة أولاً، بقرارٍ بشريّ، وعبر migrate وحدها (لا alembic مباشرةً)
+docker compose up migrate
+# 1) بناء الصورتين محلياً (يلزم COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml في .env)
+docker compose --profile electrical build ele-parse worker-electrical
+# 2) الخدمتان وحدهما، دون إعادة إنشاء شيء آخر
+docker compose --profile electrical up -d --no-deps ele-parse worker-electrical
+docker compose --profile electrical ps ele-parse worker-electrical      # كلتاهما healthy
+# 3) آخر خطوة: ELECTRICAL_ENABLED=true في .env ثم
+docker compose up -d --no-deps app
+```
+
+- **الإيقاف:** `docker compose --profile electrical stop ele-parse worker-electrical`. الرسائل تنتظر على المجرى. و`ELECTRICAL_ENABLED=false` يُعيد المسارات إلى 503.
+- **`--profile electrical` في كلّ أمر** يخصّ الخدمتين، وإلا قال Compose «no such service». ويمكن بدلاً منه إضافة `electrical` إلى `COMPOSE_PROFILES` في `.env`.
+- **الحجم المؤقّت `ele-stage`** نسخةٌ مؤقتة لفحصٍ واحد ينظّفها العامل؛ حذفه بـ`docker volume rm` يمنعه الخطّاف، ولا حاجة إليه.
+- **`ele-parse` لا يصله أحد من المضيف:** شبكته `internal: true` ولا منفذ منشور. فالفحص اليدويّ يمرّ عبر 18‑ج لا عبر `curl`.
+
+### 18‑ج · `ele-parse inspect` — حاوية مؤقتة معزولة
+
+يفحص PDF محلياً بلا شبكة ولا كتابة، وهو ما تقوم عليه أداة التوصيف وملفّات الاختبار المثبّتة. المجلد يُركَّب **للقراءة فقط**، ويُكتب الناتج بتحويل `stdout`:
+
+```bash
+docker run --rm --pull never --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --tmpfs /tmp:size=64m \
+  -v /مسار/العيّنات:/in:ro aizzak/ele-parse:dev \
+  python -m services.ele_parse inspect /in/ملف.pdf > مجلد-الفحوص/<sha256-الملف>.json
+```
+
+- الصورة تُبنى بـ18‑ب (الخطوة 1) أو `docker build -f services/ele_parse/Dockerfile -t aizzak/ele-parse:dev .`.
+- اسم ملف الناتج هو **SHA‑256 للـPDF** (`sha256sum`)، فأداة التوصيف لا تقبل غير ذلك هويةً للملف.
+- رمز الخروج 2 وسطر `code: detail` على `stderr` يعنيان أنّ الملف مرفوض (غير PDF، تالف، مشفّر)، ولا يُكتب له ناتج.
+
+### 18‑د · أداة التوصيف — `app.ops.electrical_characterize`
+
+تشغّل الدوال النقية نفسها التي يشغّلها العامل على مخرجات 18‑ج وتكتب تقريراً مجمّعاً بالأعداد والبصمات. لا تفتح قاعدة بيانات ولا شبكة، فتعمل من `.venv` على المضيف.
+
+```bash
+.venv/bin/python -m app.ops.electrical_characterize \
+  --inspections مجلد-الفحوص --out تقرير.json --markdown تقرير.md
+```
+
+- بلا `--with-names` لا تحمل المخرجات أسماء ملفات. وكلّ نصٍّ جاء من PDF أو من اسم ملف يُهرَّب قبل الكتابة.
+- أول تشغيل على عيّنات المالك خارج INC‑1 (بعد الدمج)، والتقرير المجمّع وحده يدخل المستودع بقرار المالك.
+- بيئة `scan.sh` الثانية لاعتماديات `ele-parse` تأتي مع `PR‑D` (S11) ولا تُوثَّق هنا قبلها.
 
 ---
 

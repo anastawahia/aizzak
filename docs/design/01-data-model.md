@@ -5,7 +5,7 @@
 
 ## 0) الاصطلاحات
 
-**Schemas (إحدى عشرة وحدة v1):** `spaces · workspace · access · credentials · conversations · memory · files · knowledge · media · integrations · usage` + `platform` (بنية الأحداث).
+**Schemas (إحدى عشرة وحدة v1 + `electrical` لـWireTwin):** `spaces · workspace · access · credentials · conversations · memory · files · knowledge · media · integrations · usage · electrical` + `platform` (بنية الأحداث). `electrical` أحدثها (§2.12).
 > `spaces` أحدثها (‏§2.11، [`spaces-backend-plan.md`](../spaces-backend-plan.md))، وتُذكر **أوّلاً** كما في `_MODULE_SCHEMAS` و`MIGRATION_CHAINS` في [`ops/provision.py`](../../src/app/ops/provision.py): ثلاث سلاسل تملأ `space_id` بالرجوع إلى صفوف هذا الجدول، فوجودُه يسبقها بالضرورة (‏§6).
 > **محجوزة لا مُنشأة في v1** (`FR‑110`, DAT‑01): `scheduling · sandbox · runs` — تُضاف بهجرة مستقلّة عند اعتمادها.
 
@@ -622,6 +622,26 @@ CREATE POLICY tenant_isolation ON spaces.spaces
 
 **الحذف حذفٌ متسلسل** يعبر خمس وحدات + Qdrant + MinIO؛ يعيش في **خدمة تنسيق** عند جذر التركيب لا في وحدة (سابقة [`app/ops/purge.py`](../../src/app/ops/purge.py))، بلا وحدة عملٍ جامعة: كلّ خطوةٍ معاملتُها وكلٌّ منها عديمةُ الأثر عند التكرار، فسلسلةٌ انقطعت يُصلحها إعادةُ التشغيل. والوسمُ (‏`deleted_at` على صفّ الوحدة) **أوّلًا** كي لا يرى المستخدم وحدةً نصف-محذوفة.
 
+### 2.12 `electrical` (وحدة WireTwin — `electrical-drawings` INC‑1)
+
+**قسم `drawings`: سبعة جداول ببادئة `drawings_`** في المخطّط `electrical` (الأقسام `circuits · search · diagnostics` تضيف جداولها في زياداتها). المصدر الملزِم: [`lld-inc-1.md` §4.3](../delivery/electrical-drawings/docs/lld-inc-1.md)، والهجرة [`electrical/0001_electrical_drawings.py`](../../migrations/versions/electrical/0001_electrical_drawings.py). **المخطّط نفسه لا تُنشئه هذه السلسلة** بل [`platform/0006_electrical_schema.py`](../../migrations/versions/platform/0006_electrical_schema.py) (السبب نفسه في §2.11: `electrical.alembic_version` يُنشأ قبل أوّل `upgrade()`).
+
+| الجدول | المفتاح | أبرز القيود والفهارس |
+|---|---|---|
+| `drawings_projects` | `id` | `ux_drawings_projects_space (workspace_id, space_id)` — مشروعٌ واحد للوحدة (SRS D‑29)، `23505` ← `electrical.project_exists` |
+| `drawings_documents` | `id` | `ux_drawings_documents_file (workspace_id, file_id) WHERE status <> 'purging'` ← `document_exists`؛ `ux_drawings_documents_content (workspace_id, project_id, content_sha256) WHERE status='active' AND content_sha256 IS NOT NULL` ← `duplicate_document`؛ `ck_drawings_documents_exclusion`: `(status='excluded') = (exclusion_reason IS NOT NULL)` |
+| `drawings_jobs` | `id`، `document_id → documents` | `ux_drawings_jobs_open (workspace_id, document_id) WHERE status IN ('queued','running','awaiting_confirmation')` ← `job_conflict`؛ `ix_drawings_jobs_queue ... WHERE status='queued'` |
+| `drawings_pages` | `(workspace_id, document_id, page_no)` | `kind`/`language`/`needs_ocr` تبقى `NULL` حتى تُصنَّف الصفحة؛ `signals jsonb` مختصرة ≤ 16 KiB |
+| `drawings_page_stages` | `(workspace_id, document_id, page_no, stage)` | FK مركّب إلى `drawings_pages`؛ `ck_drawings_page_stages_stage` يقبل `'classify'` وحدها (تُوسَّع بكل مرحلة جديدة)؛ `(status IN ('failed','needs_review')) = (reason IS NOT NULL)` |
+| `drawings_profile_versions` | `id` | إصدارات ملف الإعداد **إلحاقية**؛ فهرسان جزئيان فريدان: `ux_drawings_profiles_project (… WHERE document_id IS NULL)` و`ux_drawings_profiles_document (… WHERE document_id IS NOT NULL)`؛ `confidence real`؛ `detection jsonb NULL` (≤ 16384 بايت) يحفظ `{field_confidence, basis}` للإصدار `detected` فقط |
+| `drawings_characterizations` | `(workspace_id, document_id)` | تقرير FR‑EVAL‑14 في `report jsonb` ≤ 256 KiB، والإصدارات الثلاثة أعمدة |
+
+- **RLS** على الجداول السبعة بـ`workspace_id` وحده (`ENABLE` + `FORCE` + `tenant_isolation` بصيغة `NULLIF`)، والوحدة والمشروع مرشِّحان في `WHERE` كل مستودع (§3). و`trg_touch` على الخمسة التي فيها `updated_at` (كل الجداول عدا `profile_versions` و`characterizations`).
+- **المفاتيح الأجنبية داخل القسم وحده**؛ `space_id` و`file_id` و`documents.project_id` مراجع **منطقية** (`DD‑01`)، فتطهير الوحدة يحذف المشروع قبل أن يكنس العامل وثائقه. ولا `ON DELETE CASCADE`: يُفرَّغ كل جدول بعبارة صريحة تُعدّ (`app.ops.purge`)، بترتيب `page_stages ← pages ← characterizations ← jobs ← profile_versions ← documents ← projects`، و`electrical` **قبل** `files` لأن الوثيقة تشير إلى ملفها.
+- **المنح:** `app_rw` يأخذ USAGE وCRUD (`_TENANT_TABLES`، `_MODULE_SCHEMAS`)؛ و`workspace_purger` USAGE و`SELECT, DELETE` (`PURGE_GRANTS`). لا منح لـ`retention_sweeper` ولا `metrics_reader` ولا `backup_operator` (يملك `BYPASSRLS`)، ولا دور جديد.
+- **الوثيقة المُطهَّرة (`purging`) تُكتب بلا `exclusion_reason`:** القيد يربط السبب بحالة `excluded`، و`Document.mark_purging` لا يمسح السبب، فالمحوّل يكتبه `NULL` عند `purging` (وإلا امتنع تطهير كل وثيقة استُبعدت قبلًا).
+- **التراجع يُسقط البيانات:** `downgrade` يحذف الجداول السبعة بكل صفوفها، وتراجع `platform/0006` يُسقط المخطّط بـ`CASCADE`. ملفات `files` باقية. الأولى ترك الجداول وإيقاف `ELECTRICAL_ENABLED`.
+
 ---
 
 ## 3) عزل المستأجر — RLS (تنفيذ `DD‑04`, D‑23)
@@ -740,7 +760,7 @@ CREATE TABLE platform.stream_offsets (
 - UUIDv7 يقلّل تضخّم صفحات B‑Tree مقارنةً بـv4 تحت الإدراج.
 
 ## 6) استراتيجية الهجرات (Alembic)
-- **سلسلة هجرات لكل وحدة** (‏**إحدى عشرة سلسلة** v1 + سلسلة الأساس = 12 مدخلة في `MIGRATION_CHAINS`) ضمن `version_table_schema` منفصل لكل وحدة (`DAT‑03`)، تُدار مركزياً بأمر واحد؛ سلسلة تمهيدية تُنشئ الـschemas والامتدادات وجداول `platform`.
+- **سلسلة هجرات لكل وحدة** (‏**اثنتا عشرة سلسلة** = إحدى عشرة v1 + `electrical`، + سلسلة الأساس = **13 مدخلة** في `MIGRATION_CHAINS`، و`electrical` آخرها لأنها لا تقرأ جدول سلسلة أخرى) ضمن `version_table_schema` منفصل لكل وحدة (`DAT‑03`)، تُدار مركزياً بأمر واحد؛ سلسلة تمهيدية تُنشئ الـschemas والامتدادات وجداول `platform`.
 - **`spaces` تلي الأساس مباشرةً وقبل كلّ سلسلةٍ كسبت `space_id`** (‏§2.11): ترحيلات تلك الأعمدة الثلاثة تملأ نفسها بالرجوع إلى صفوف `spaces.spaces`، فالجدول يجب أن يكون موجودًا. **ولا FK يفرض هذا الترتيب** (المرجعيّة منطقيّة، `DD‑01`) — ولهذا بالذات يُكتب الترتيب في `MIGRATION_CHAINS` بدل تركه لـAlembic ليكتشفه. و`workspace` تسبق الثلاثة كذلك، ولسببٍ أحدّ: `workspace.workspaces` بلا RLS (جدولُ جذر المستأجر، §2.1)، فهي الجدول الوحيد الذي يستطيع مُرحِّلٌ ليس superuser ولا `BYPASSRLS` أن يعدّده **قبل** أن يعرف أيّ مساحةٍ يضبط `app.workspace_id` عليها — وفراغُها هناك يعني أنّ كلّ backfill يمرّ ناجحًا وهو لا يفعل شيئًا.
 - `alembic.ini` يوجّه `version_table_schema` لكل وحدة بمعزل ⇒ إضافة وحدة جديدة = **سلسلة هجرات مستقلّة** بلا مساس بالقائم (`FR‑111`).
 - ترتيب البذر: schemas → جداول المنصّة → جداول الوحدات → سياسات RLS → الأدوار/الصلاحيات (`app_rw`).

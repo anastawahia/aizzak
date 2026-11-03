@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.platform/electrical.document.registered.v1.json",
+  "title": "electrical.document.registered.v1 data",
+  "type": "object",
+  "required": [
+    "document_id",
+    "project_id",
+    "file_id",
+    "job_id"
+  ],
+  "properties": {
+    "document_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "file_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false
+}

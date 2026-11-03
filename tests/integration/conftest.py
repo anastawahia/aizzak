@@ -212,6 +212,8 @@ _MODULE_SCHEMAS = (
     "media",
     "integrations",
     "usage",
+    # electrical-drawings INC-1: created by migrations/versions/platform/0006_electrical_schema.py.
+    "electrical",
 )
 
 

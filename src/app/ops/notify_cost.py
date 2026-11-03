@@ -90,6 +90,7 @@ from app.infrastructure.messaging.redis_streams import RedisStreamsConsumer, Red
 NOTIFY_STREAM_TYPES: tuple[tuple[str, str], ...] = (
     ("stream.knowledge", "knowledge.document.indexed.v1"),
     ("stream.media", "media.job.generated.v1"),
+    ("stream.electrical", "electrical.job.progressed.v1"),
 )
 
 # Reported individually; everything else lands in `other`. These are the

@@ -1,0 +1,22 @@
+{
+ "735152d4e620a8be704b60fa1bc38b9eacdd922d9b6af3bb744b169956b5c066": {
+  "identifier_convention": "iec_81346",
+  "symbol_standard": "iec_60617"
+ },
+ "7390b35e0e2df0f633603868bc0e5074d08c51ef34e017149baf52e5f78ef98f": {
+  "identifier_convention": "iec_81346",
+  "symbol_standard": "gbt_4728"
+ },
+ "aa991620ab6d5bc72c1f84c45d4b569e059b7a67e1a6cd34a01ded0893a96d94": {
+  "identifier_convention": "iec_81346",
+  "symbol_standard": "iec_60617"
+ },
+ "c1620deb974b1d93e04a3b6ee2fdd1a547dc26a835b71a38508bc10e11146cc0": {
+  "identifier_convention": "cn_letter_codes",
+  "symbol_standard": "gbt_4728"
+ },
+ "dcf12366ed24912b4e0f867781b366ce011bfab2c94ad7bc3b6975bad97fae7c": {
+  "identifier_convention": "gbt_5094",
+  "symbol_standard": "gbt_4728"
+ }
+}

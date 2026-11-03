@@ -819,3 +819,54 @@ async def test_the_failed_sweep_logs_carry_the_audit_fields_and_no_name_or_tag(
         rendered = f"{record.getMessage()} {record.__dict__}"
         assert "secret-plan" not in rendered
         assert "pump-7" not in rendered
+
+
+# --------------------------------------------------------------------------- #
+# PR-A review S-8 (owner decision 2026-11-02, option a): the actor of a        #
+# rename / re-tag that swept nothing is logged                                 #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["rename", "retag"])
+@pytest.mark.parametrize("status", [FileStatus.UPLOADED, FileStatus.SCANNING])
+async def test_a_rename_or_retag_of_a_file_that_is_not_ready_logs_the_actor_and_sweeps_nothing(
+    caplog: pytest.LogCaptureFixture, source: str, status: FileStatus
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    older = _seed(
+        files, ctx, name="secret-plan.pdf", created_at=utc_now() - timedelta(days=1), tags=_PUMP
+    )
+    promise = _seed(files, ctx, name="draft.pdf", status=status)
+    service, erase = _build(files)
+
+    with caplog.at_level(logging.INFO):
+        if source == "rename":
+            await service.rename(ctx, promise.id, name="secret-plan.pdf")
+        else:
+            await service.retag(ctx, promise.id, tags=_PUMP.as_mapping())
+
+    (record,) = _records(caplog, "file.replacement.deferred")
+    assert record.levelno == logging.INFO
+    assert record.__dict__["user_id"] == "u1"
+    assert record.__dict__["source"] == source
+    assert record.__dict__["file_id"] == promise.id
+    assert record.__dict__["workspace_id"] == "w1"
+    rendered = f"{record.getMessage()} {record.__dict__}"
+    assert "secret-plan" not in rendered and "pump-7" not in rendered
+    assert erase.deleted == [] and files.rows[older.id].deleted_at is None  # no behaviour change
+
+
+@pytest.mark.asyncio
+async def test_a_ready_file_swept_by_rename_or_retag_logs_no_deferred_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx = _ctx()
+    files = InMemoryFileRepository()
+    ready = _seed(files, ctx, name="plan.pdf")
+    service, _ = _build(files)
+
+    with caplog.at_level(logging.INFO):
+        await service.rename(ctx, ready.id, name="plan2.pdf")
+        await service.retag(ctx, ready.id, tags=_PUMP.as_mapping())
+
+    assert _records(caplog, "file.replacement.deferred") == []
