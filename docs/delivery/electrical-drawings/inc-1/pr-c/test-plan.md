@@ -273,4 +273,26 @@ test-rules.sh           SUCCESS: 31 rules found / test-rules: OK
 
 **PASS**. كل البوابات خضراء، QA‑5 مغلق، لا خطأ blocking أو major أو جديد. يبقى QA‑6 (minor، متابعة منصّة).
 
+## 9. فشل CI `integration` على PR #31
+
+**العَرَض.** التشغيل 41587265114 (المهمة 125758604632): `test_purge_ops_live.py::test_purge_all_empties_only_the_eligible_workspace` ⇒ `electrical.drawings_page_stages for <inside_window ws>: expected 1, got 0` (السطر 343، مستدعىً من 473). الإجمالي: `1 failed, 8871 passed, 42 skipped`.
+
+**السبب.** `_assert_all_tables_count` يمشي على كل جداول `_SCHEMA_ORDER` في `app.ops.purge`، وأضافت PR‑C (الإيداع `32b6a61`، S6) المواصفة `electrical` بسبعة جداول؛ أمّا مُهيِّئ البيانات `_seed_content` في الاختبار فلم يُدخل أي صف كهربائي، فكان لكل مساحة عمل صفر صفوف هناك. العيب في الاختبار لا في الشيفرة: الحذف نفسه (`purge.py`) سليم والعدّ على المساحة المؤهَّلة كان 0 أصلاً.
+
+**الإصلاح (اختبار فقط).** في `tests/integration/test_purge_ops_live.py` يُدخل `_seed_content` الآن صفاً واحداً بالضبط في كل جدول من الجداول السبعة لكل مساحة عمل، بمفاتيح أجنبية وقيود CHECK صالحة: `drawings_projects` (على مساحة الاختبار) ثم `drawings_documents` (`file_id` = ملف المساحة المبذور) ثم `drawings_jobs` (`ingest`) و`drawings_pages` (صفحة 1) و`drawings_page_stages` (`classify`/`pending`) و`drawings_profile_versions` (إصدار 1 `user`) و`drawings_characterizations`. بقية التأكيدات في الملف (الجداول الأخرى، `space_id`، حالة الأرشفة، سجل التدقيق) لم تتغيّر ولا تحتاج الجداول الكهربائية.
+
+**التحقق** (بيئة CI نفسها `docker-compose.test.yml` لكن بمشروع مؤقت `-p qaelec` ومنافذ 25432/26379/26380/29000/26333/28200 وكل متغيّرات `TEST_*` مضبوطة؛ التهيئة عبر `app.ops.provision`؛ أُزيل المشروع وأحجامه المسمّاة صراحةً):
+
+```
+بدون الإصلاح  test_purge_ops_live.py            1 failed, 5 passed in 12.08s   (يعيد فشل CI نفسه)
+مع الإصلاح    test_purge_ops_live.py + test_electrical_drawings_repository_rls.py
+                                                 47 passed in 34.25s
+الحزمة الحيّة كاملة (بمرشّح CI: not live_ollama/embedding/openai/web_search)
+                                                 639 passed, 3 skipped, 21 deselected, 16 errors in 338.46s
+```
+
+الأخطاء الـ16 كلها `setup` في `test_vault_secrets.py` و`test_rotate_transit_cycle_live.py` لأن `TEST_VAULT_TOKEN` لم يُقرأ من حجم `vault-init` (حظره حارس الجلسة)، لا علاقة لها بالتغيير؛ لا فشل في أي اختبار آخر.
+
+**البوابات**: `ruff format --check` 983 files already formatted؛ `ruff check` All checks passed!؛ `mypy src` Success: no issues found in 547 source files؛ `lint-imports` Contracts: 9 kept, 0 broken.؛ `pytest -rs tests/unit tests/architecture tests/eval` 8219 passed, 37 skipped؛ `test-rules.sh` test-rules: OK.
+
 </div>
