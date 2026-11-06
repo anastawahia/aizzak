@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tomllib
 from datetime import date, timedelta
@@ -160,31 +161,107 @@ def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None
         assert entry["reason"], entry
         assert entry["declared"], entry
         assert entry["versions"], entry
-    # INC0-Q-10 (owner, 2026-10-30) is the only decision behind a vulnerability exception.
-    for entry in raw.get("vulnerability", []):
-        assert entry["decision"] == "INC0-Q-10", entry
+    # INC1-Q-3 (a): the six INC0-Q-10 pip exceptions are gone with the pip upgrade, and the
+    # shipped policy holds no vulnerability exception at all.
+    assert raw.get("vulnerability", []) == []
 
 
-# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the
-# `app` image: the same six) when the owner took INC0-Q-10.
-_PIP_ADVISORIES = {
-    "PYSEC-2026-1795",
-    "PYSEC-2026-1796",
-    "PYSEC-2026-196",
-    "PYSEC-2026-2875",
-    "PYSEC-2026-2876",
-    "PYSEC-2026-3721",
+def test_the_shipped_policy_holds_no_vulnerability_exception() -> None:
+    assert sc.load_policy(_DIR / "license-policy.toml").vulnerabilities == ()
+
+
+# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the `app` image)
+# when the owner took INC0-Q-10. The pip pin must fix them all: 26.2 is the highest fix.
+_PIP_FIXED_IN = {
+    "PYSEC-2026-1795": (25, 3),
+    "PYSEC-2026-1796": (26, 0),
+    "PYSEC-2026-196": (26, 1, 2),
+    "PYSEC-2026-2875": (26, 1),
+    "PYSEC-2026-2876": (26, 1),
+    "PYSEC-2026-3721": (26, 2),
 }
 
+_ROOT = _DIR.parents[1]
 
-def test_the_shipped_exceptions_are_the_pip_advisories_of_inc0_q_10_alone() -> None:
-    exceptions = sc.load_policy(_DIR / "license-policy.toml").vulnerabilities
-    assert {e.id for e in exceptions} == _PIP_ADVISORIES
-    for e in exceptions:
-        assert e.package == "pip", e
-        assert e.decision == "INC0-Q-10", e
-        assert (e.added, e.expires) == (date(2026, 10, 30), date(2027, 1, 28)), e
-        assert "PLT-17" in e.reason, e
+
+def _pip_pins() -> dict[str, str]:
+    """The pip version each of the places that must agree pins."""
+    arg = re.compile(r"^ARG PIP_VERSION=(\S+)$", re.MULTILINE)
+    scan = re.compile(r"^pip_version=(\S+)$", re.MULTILINE)
+    req = re.compile(r"^pip==(\S+) \\$", re.MULTILINE)
+    texts = {
+        "Dockerfile": ((_ROOT / "Dockerfile"), arg),
+        "services/ele_parse/Dockerfile": ((_ROOT / "services/ele_parse/Dockerfile"), arg),
+        "deploy/supply-chain/scan.sh": ((_DIR / "scan.sh"), scan),
+        "services/ele_parse/requirements.txt": (
+            (_ROOT / "services/ele_parse/requirements.txt"),
+            req,
+        ),
+    }
+    pins: dict[str, str] = {}
+    for name, (path, pattern) in texts.items():
+        found = pattern.findall(path.read_text(encoding="utf-8"))
+        assert len(found) == 1, f"{name}: expected exactly one pip pin, found {found}"
+        pins[name] = found[0]
+    return pins
+
+
+def test_the_pip_pin_is_one_version_everywhere_and_fixes_every_inc0_q_10_advisory() -> None:
+    pins = _pip_pins()
+    assert len(set(pins.values())) == 1, pins
+    version = tuple(int(p) for p in pins["deploy/supply-chain/scan.sh"].split("."))
+    for advisory, fixed in _PIP_FIXED_IN.items():
+        assert version >= fixed, (advisory, version, fixed)
+
+
+def test_the_app_dockerfile_installs_the_pinned_pip_before_the_project() -> None:
+    text = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    pip_step = text.index('pip install --no-cache-dir "pip==${PIP_VERSION}"')
+    project_step = text.index("pip install --no-cache-dir '.[parsers]'")
+    assert pip_step < project_step
+
+
+def test_scan_sh_pins_pip_before_installing_the_project() -> None:
+    text = (_DIR / "scan.sh").read_text(encoding="utf-8")
+    pip_step = text.index('"pip==$pip_version"')
+    project_step = text.index("--disable-pip-version-check '.[parsers]'")
+    assert pip_step < project_step
+
+
+def test_the_ele_parse_requirements_pin_pymupdf_once_and_hash_every_line() -> None:
+    lines = [
+        ln
+        for ln in (_ROOT / "services/ele_parse/requirements.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    text = "\n".join(lines).replace("\\\n", " ")
+    requirements = [r for r in text.splitlines() if r.strip()]
+    assert requirements, "no requirement left"
+    pymupdf = [r for r in requirements if re.match(r"pymupdf\b", r, re.IGNORECASE)]
+    assert len(pymupdf) == 1, pymupdf
+    assert re.match(r"pymupdf==\d+(\.\d+)+ ", pymupdf[0]), pymupdf[0]
+    for requirement in requirements:
+        assert re.match(r"[A-Za-z0-9_.-]+==\d+(\.\d+)* ", requirement), requirement
+        hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})(?: |$)", requirement)
+        assert hashes, f"no hash: {requirement}"
+        assert requirement.count("--hash=") == len(hashes), requirement
+
+
+def test_the_ele_parse_dockerfile_pins_the_base_by_digest_and_installs_with_hashes() -> None:
+    text = (_ROOT / "services/ele_parse/Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"^FROM python:3\.12-slim-bookworm@sha256:[0-9a-f]{64}$", text, re.MULTILINE)
+    assert "pip install --no-cache-dir --require-hashes -r requirements.txt" in text
+
+
+def test_scan_sh_scans_the_ele_parse_environment_and_keeps_the_worse_exit_code() -> None:
+    text = (_DIR / "scan.sh").read_text(encoding="utf-8")
+    assert "services/ele_parse/requirements.txt" in text
+    assert "--require-hashes" in text
+    assert text.count("supply_chain_check.py") >= 2
+    assert "if ((rc_ele > rc)); then rc=$rc_ele; fi" in text
+    assert 'exit "$rc"' in text
 
 
 def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
@@ -902,3 +979,28 @@ def test_the_pdfium_licences_are_decided_for_pypdfium2_alone() -> None:
         component = _component("some-other-package", [_expr(licence)])
         report = sc.check_licences(_sbom(component), policy)
         assert report.violations, licence
+
+
+def test_the_label_names_the_environment_in_the_report_and_the_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]))
+    for name, content in (("sbom.json", sbom), ("audit.json", _audit(("a", "1", [])))):
+        (tmp_path / name).write_text(json.dumps(content), encoding="utf-8")
+    (tmp_path / "freeze.txt").write_text("a==1\n", encoding="utf-8")
+    (tmp_path / "policy.toml").write_text(_POLICY, encoding="utf-8")
+    argv = [
+        "--sbom", str(tmp_path / "sbom.json"),
+        "--audit", str(tmp_path / "audit.json"),
+        "--freeze", str(tmp_path / "freeze.txt"),
+        "--policy", str(tmp_path / "policy.toml"),
+        "--report", str(tmp_path / "report.md"),
+        "--label", "ele-parse image",
+    ]  # fmt: skip
+    assert sc.main(argv) == 0
+    assert (
+        (tmp_path / "report.md")
+        .read_text(encoding="utf-8")
+        .startswith("# Supply chain report -- ele-parse image")
+    )
+    assert capsys.readouterr().out.startswith("supply-chain [ele-parse image]: ")

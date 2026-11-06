@@ -39,7 +39,16 @@ COPY src/ ./src/
 # under the source layout and a Python stdlib directory under a site-packages
 # install. Keeping ONE layout in dev and in the image keeps that resolution
 # true in both, instead of making the container a special case.
+#
+# pip in /opt/venv is upgraded FIRST, to the one version below (INC0-Q-10, INC1-Q-3 (a), O15).
+# The base image seeds an older pip (25.0.1) that carries six advisories; /opt/venv ships in the
+# runtime stage and is on its PATH. 26.2 is the lowest release that fixes all six (the highest
+# fix is PYSEC-2026-3721, CVE-2026-13346, in 26.2). The same version is pinned in
+# services/ele_parse/Dockerfile and deploy/supply-chain/scan.sh;
+# tests/unit/test_supply_chain_check.py fails when the three differ.
+ARG PIP_VERSION=26.2
 RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir "pip==${PIP_VERSION}" \
     && /opt/venv/bin/pip install --no-cache-dir '.[parsers]' \
     && /opt/venv/bin/pip uninstall --yes aizzak-platform
 

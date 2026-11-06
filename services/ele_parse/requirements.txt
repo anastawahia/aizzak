@@ -1,5 +1,20 @@
-# The ONLY third-party dependency of the ele-parse image (INC1-D-8, DEC-04): PyMuPDF, pinned
-# to the version CI resolves for the project's own `pymupdf>=1.24,<2` (pyproject.toml,
-# `parsers` extra) on 2026-11-02. It ships as a self-contained manylinux wheel, so the image
-# needs no compiler. Licence: AGPL-3.0 -- flagged by `deploy/supply-chain/scan.sh` (PR-D, O16).
-pymupdf==1.28.2
+# Dependencies of the ele-parse image (INC1-D-8, DEC-04), installed with `pip install
+# --require-hashes` (services/ele_parse/Dockerfile) and by deploy/supply-chain/scan.sh (PR-D,
+# O16), so every line carries the hashes pip may accept. A requirement without a hash, or a
+# version other than the one pinned, fails the install.
+#
+# pymupdf: the one third-party runtime dependency, pinned to the version CI resolved for the
+# project's own `pymupdf>=1.24,<2` (pyproject.toml, `parsers` extra) on 2026-11-02. It has no
+# dependencies of its own and ships as a self-contained abi3 wheel, so the image needs no
+# compiler. Hashes: the two manylinux_2_28 wheels (linux/amd64, the platform build-push.sh
+# builds, and linux/aarch64); no sdist, so a platform without a wheel fails instead of
+# compiling. Licence: AGPL-3.0 -- flagged by `deploy/supply-chain/scan.sh`.
+pymupdf==1.28.2 \
+    --hash=sha256:397d6715c1f0df7548a92d0afd8ce370fc48fa47aeefac16be2bc04a16a8227f \
+    --hash=sha256:3050a233dde1211efe89ada74e2add6238436434159f46097a1423aad2842545
+
+# pip itself: upgraded in the same install (the base image seeds an older pip with six known
+# advisories, INC0-Q-10). Same version as ./Dockerfile and deploy/supply-chain/scan.sh;
+# tests/unit/test_supply_chain_check.py fails when they differ.
+pip==26.2 \
+    --hash=sha256:931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad

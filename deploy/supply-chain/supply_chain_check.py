@@ -812,12 +812,21 @@ def check_coverage(
 # ---------------------------------------------------------------------------
 
 
+def _title(label: str | None) -> str:
+    return f"# Supply chain report -- {label}" if label else "# Supply chain report"
+
+
 def _failed(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> bool:
     return bool(licences.violations or vulns.violations or coverage.violations)
 
 
-def render(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> str:
-    out: list[str] = ["# Supply chain report", ""]
+def render(
+    licences: LicenceReport,
+    vulns: VulnReport,
+    coverage: CoverageReport,
+    label: str | None = None,
+) -> str:
+    out: list[str] = [_title(label), ""]
     verdict = "FAIL" if _failed(licences, vulns, coverage) else "PASS"
     out += [f"**Result: {verdict}**", ""]
 
@@ -911,6 +920,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--freeze", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--label", default=None, help="environment name, added to the report title")
     parser.add_argument("--today", type=date.fromisoformat, default=None, help=argparse.SUPPRESS)
     try:
         args = parser.parse_args(argv)
@@ -933,14 +943,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(message, file=sys.stderr)
         with contextlib.suppress(OSError):
             args.report.write_text(
-                f"# Supply chain report\n\n**Result: NOT RUN**\n\n{exc}\n", encoding="utf-8"
+                f"{_title(args.label)}\n\n**Result: NOT RUN**\n\n{exc}\n", encoding="utf-8"
             )
         return 2
 
-    args.report.write_text(render(licences, vulns, coverage), encoding="utf-8")
+    args.report.write_text(render(licences, vulns, coverage, args.label), encoding="utf-8")
     failed = _failed(licences, vulns, coverage)
+    tag = f" [{args.label}]" if args.label else ""
     print(
-        f"supply-chain: {len(_frozen_names(frozen))} frozen; {len(licences.rows)} components, "
+        f"supply-chain{tag}: {len(_frozen_names(frozen))} frozen; "
+        f"{len(licences.rows)} components, "
         f"{len(licences.violations)} licence violation(s), {len(coverage.missing)} not audited; "
         f"{vulns.audited} packages audited, {len(vulns.violations)} vulnerability finding(s), "
         f"{vulns.excepted} excepted -> {'FAIL' if failed else 'PASS'}"
