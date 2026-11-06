@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tomllib
 from datetime import date, timedelta
@@ -160,31 +161,149 @@ def test_every_widening_entry_of_the_shipped_policy_names_its_decision() -> None
         assert entry["reason"], entry
         assert entry["declared"], entry
         assert entry["versions"], entry
-    # INC0-Q-10 (owner, 2026-10-30) is the only decision behind a vulnerability exception.
-    for entry in raw.get("vulnerability", []):
-        assert entry["decision"] == "INC0-Q-10", entry
+    # INC1-Q-3 (a): the six INC0-Q-10 pip exceptions are gone with the pip upgrade, and the
+    # shipped policy holds no vulnerability exception at all.
+    assert raw.get("vulnerability", []) == []
 
 
-# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the
-# `app` image: the same six) when the owner took INC0-Q-10.
-_PIP_ADVISORIES = {
-    "PYSEC-2026-1795",
-    "PYSEC-2026-1796",
-    "PYSEC-2026-196",
-    "PYSEC-2026-2875",
-    "PYSEC-2026-2876",
-    "PYSEC-2026-3721",
+def test_the_shipped_policy_holds_no_vulnerability_exception() -> None:
+    assert sc.load_policy(_DIR / "license-policy.toml").vulnerabilities == ()
+
+
+# The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the `app` image)
+# when the owner took INC0-Q-10, and the one it cannot report: pip vendors certifi, pip 26.2
+# vendors certifi 2026.06.17, which still trusts the compromised emSign root
+# (GHSA-6q48-6c7w-9gw2), and pip-audit cannot see inside pip/_vendor. 26.2.2 is the floor
+# (the coordinator's decision); the pin itself is 26.3, which vendors certifi 2026.10.23.
+_PIP_FIXED_IN = {
+    "PYSEC-2026-1795": (25, 3),
+    "PYSEC-2026-1796": (26, 0),
+    "PYSEC-2026-196": (26, 1, 2),
+    "PYSEC-2026-2875": (26, 1),
+    "PYSEC-2026-2876": (26, 1),
+    "PYSEC-2026-3721": (26, 2),
+    "GHSA-6q48-6c7w-9gw2 (vendored certifi trusts the emSign root)": (26, 2, 2),
 }
 
+_ROOT = _DIR.parents[1]
 
-def test_the_shipped_exceptions_are_the_pip_advisories_of_inc0_q_10_alone() -> None:
-    exceptions = sc.load_policy(_DIR / "license-policy.toml").vulnerabilities
-    assert {e.id for e in exceptions} == _PIP_ADVISORIES
-    for e in exceptions:
-        assert e.package == "pip", e
-        assert e.decision == "INC0-Q-10", e
-        assert (e.added, e.expires) == (date(2026, 10, 30), date(2027, 1, 28)), e
-        assert "PLT-17" in e.reason, e
+# The places that hold the pip pin and the pattern that finds it in each.
+_PIP_PIN_FILES = (
+    "deploy/supply-chain/pip-bootstrap.txt",
+    "services/ele_parse/Dockerfile",
+    "services/ele_parse/requirements.txt",
+)
+
+
+def _pip_pins() -> dict[str, str]:
+    """The pip version each of the places that must agree pins."""
+    arg = re.compile(r"^ARG PIP_VERSION=(\S+)$", re.MULTILINE)
+    req = re.compile(r"^pip==(\S+) \\$", re.MULTILINE)
+    patterns = {
+        "deploy/supply-chain/pip-bootstrap.txt": req,
+        "services/ele_parse/Dockerfile": arg,
+        "services/ele_parse/requirements.txt": req,
+    }
+    assert tuple(patterns) == _PIP_PIN_FILES
+    pins: dict[str, str] = {}
+    for name, pattern in patterns.items():
+        found = pattern.findall((_ROOT / name).read_text(encoding="utf-8"))
+        assert len(found) == 1, f"{name}: expected exactly one pip pin, found {found}"
+        pins[name] = found[0]
+    return pins
+
+
+def test_the_pip_pin_is_one_version_everywhere_and_fixes_every_known_advisory() -> None:
+    pins = _pip_pins()
+    assert len(set(pins.values())) == 1, pins
+    version = tuple(int(p) for p in pins["deploy/supply-chain/pip-bootstrap.txt"].split("."))
+    for advisory, fixed in _PIP_FIXED_IN.items():
+        assert version >= fixed, (advisory, version, fixed)
+
+
+def test_the_app_dockerfile_installs_the_hashed_pip_before_the_project() -> None:
+    text = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert not re.search(r"^ARG PIP_VERSION", text, re.MULTILINE), "the pin lives in the file"
+    bootstrap = "pip install --no-cache-dir --require-hashes -r pip-bootstrap.txt"
+    assert bootstrap in text
+    assert "COPY deploy/supply-chain/pip-bootstrap.txt ./pip-bootstrap.txt" in text
+    assert text.index(bootstrap) < text.index("pip install --no-cache-dir '.[parsers]'")
+    # The file must reach the build context.
+    ignored = (_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert not any(
+        ln.strip() in {"deploy/", "deploy/supply-chain/", "deploy/supply-chain/*", "*.txt"}
+        for ln in ignored
+    )
+
+
+def test_the_app_runtime_stage_removes_the_base_images_own_pip() -> None:
+    """Only the /opt/venv pip is left in the image, so what scan.sh scans is what ships."""
+    text = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    runtime = text[text.index("AS runtime") :]
+    run = re.search(r"^RUN rm -rf (?:.*\\\n)*.*$", runtime, re.MULTILINE)
+    assert run is not None, "no `RUN rm -rf` pip-removal step in the runtime stage"
+    step = run.group(0)
+    removed = set(step.replace("\\", " ").split())
+    for target in (
+        "/usr/local/bin/pip",
+        "/usr/local/bin/pip3",
+        "/usr/local/bin/pip3.12",
+        "/usr/local/lib/python3.12/site-packages/pip",
+        "/usr/local/lib/python3.12/site-packages/pip-*.dist-info",
+    ):
+        assert target in removed, (target, step)
+    # After the venv is copied in, and before anything that could be handed a pip to use.
+    assert runtime.index("COPY --from=builder /opt/venv /opt/venv") < runtime.index(step)
+    # Nothing after it in the stage runs pip.
+    assert not re.search(
+        r"\bpip3?\b\s+(install|uninstall|freeze|list)", runtime[runtime.index(step) + len(step) :]
+    )
+
+
+def test_scan_sh_installs_the_hashed_pip_before_the_project() -> None:
+    text = (_DIR / "scan.sh").read_text(encoding="utf-8")
+    assert "pip_version" not in text, "the pin lives in pip-bootstrap.txt only"
+    hashed = "--require-hashes \\\n  -r deploy/supply-chain/pip-bootstrap.txt"
+    assert hashed in text, "the pip bootstrap must be hash-checked"
+    pip_step = text.index(hashed)
+    project_step = text.index("--disable-pip-version-check '.[parsers]'")
+    assert pip_step < project_step
+
+
+def test_the_ele_parse_requirements_pin_pymupdf_once_and_hash_every_line() -> None:
+    lines = [
+        ln
+        for ln in (_ROOT / "services/ele_parse/requirements.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    text = "\n".join(lines).replace("\\\n", " ")
+    requirements = [r for r in text.splitlines() if r.strip()]
+    assert requirements, "no requirement left"
+    pymupdf = [r for r in requirements if re.match(r"pymupdf\b", r, re.IGNORECASE)]
+    assert len(pymupdf) == 1, pymupdf
+    assert re.match(r"pymupdf==\d+(\.\d+)+ ", pymupdf[0]), pymupdf[0]
+    for requirement in requirements:
+        assert re.match(r"[A-Za-z0-9_.-]+==\d+(\.\d+)* ", requirement), requirement
+        hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})(?: |$)", requirement)
+        assert hashes, f"no hash: {requirement}"
+        assert requirement.count("--hash=") == len(hashes), requirement
+
+
+def test_the_ele_parse_dockerfile_pins_the_base_by_digest_and_installs_with_hashes() -> None:
+    text = (_ROOT / "services/ele_parse/Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"^FROM python:3\.12-slim-bookworm@sha256:[0-9a-f]{64}$", text, re.MULTILINE)
+    assert "pip install --no-cache-dir --require-hashes -r requirements.txt" in text
+
+
+def test_scan_sh_scans_the_ele_parse_environment_and_keeps_the_worse_exit_code() -> None:
+    text = (_DIR / "scan.sh").read_text(encoding="utf-8")
+    assert "services/ele_parse/requirements.txt" in text
+    assert "--require-hashes" in text
+    assert text.count("supply_chain_check.py") >= 2
+    assert "if ((rc_ele > rc)); then rc=$rc_ele; fi" in text
+    assert 'exit "$rc"' in text
 
 
 def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
@@ -902,3 +1021,49 @@ def test_the_pdfium_licences_are_decided_for_pypdfium2_alone() -> None:
         component = _component("some-other-package", [_expr(licence)])
         report = sc.check_licences(_sbom(component), policy)
         assert report.violations, licence
+
+
+def test_the_label_names_the_environment_in_the_report_and_the_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sbom = _sbom(_component("a", [_id("MIT")]))
+    for name, content in (("sbom.json", sbom), ("audit.json", _audit(("a", "1", [])))):
+        (tmp_path / name).write_text(json.dumps(content), encoding="utf-8")
+    (tmp_path / "freeze.txt").write_text("a==1\n", encoding="utf-8")
+    (tmp_path / "policy.toml").write_text(_POLICY, encoding="utf-8")
+    argv = [
+        "--sbom", str(tmp_path / "sbom.json"),
+        "--audit", str(tmp_path / "audit.json"),
+        "--freeze", str(tmp_path / "freeze.txt"),
+        "--policy", str(tmp_path / "policy.toml"),
+        "--report", str(tmp_path / "report.md"),
+        "--label", "ele-parse image",
+    ]  # fmt: skip
+    assert sc.main(argv) == 0
+    assert (
+        (tmp_path / "report.md")
+        .read_text(encoding="utf-8")
+        .startswith("# Supply chain report -- ele-parse image")
+    )
+    assert capsys.readouterr().out.startswith("supply-chain [ele-parse image]: ")
+
+
+def test_a_labelled_report_does_not_call_every_environment_runtime() -> None:
+    """ele-parse has `freeze.txt`, not `runtime-freeze.txt`; no label, no change."""
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []))
+    unlabelled = sc.check_coverage(sbom, audit, ["a==1.0"])
+    assert unlabelled.missing == (
+        ("pip", "1.0", "not in runtime-freeze.txt, so pip-audit never saw it"),
+    )
+    labelled = sc.check_coverage(sbom, audit, ["a==1.0"], "ele-parse image")
+    assert labelled.missing == (
+        ("pip", "1.0", "not in the freeze file, so pip-audit never saw it"),
+    )
+    assert "runtime" not in labelled.violations[0]
+    policy = sc.load_policy(_DIR / "license-policy.toml")
+    with pytest.raises(sc.InputError, match=r"the runtime environment is empty"):
+        sc.check_vulnerabilities(audit, [], policy, _TODAY)
+    with pytest.raises(sc.InputError, match=r"the ele-parse image environment is empty") as info:
+        sc.check_vulnerabilities(audit, [], policy, _TODAY, "ele-parse image")
+    assert "runtime" not in str(info.value)

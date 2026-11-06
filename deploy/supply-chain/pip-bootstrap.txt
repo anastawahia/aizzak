@@ -1,0 +1,15 @@
+# The ONE pip that the app image's /opt/venv and the scan.sh runtime venv are built with
+# (INC0-Q-10, INC1-Q-3 (a), O15; PR-D rework). Installed with `pip install --require-hashes -r`
+# by the root Dockerfile (builder stage) and by deploy/supply-chain/scan.sh, BEFORE the project.
+# Why hashes: the venv is seeded with the base image's pip 25.0.1, and that pip is the one that
+# downloads this one; the hash makes the download independent of the TLS roots it trusts.
+#
+# Why 26.3 and not the lowest release that fixes the six pip advisories (26.2): pip vendors
+# certifi, and pip 26.2 vendors certifi 2026.06.17, which still trusts the compromised emSign
+# root (GHSA-6q48-6c7w-9gw2). pip 26.3 vendors certifi 2026.10.23, which does not. pip-audit
+# cannot see inside pip/_vendor, so the floor (26.2.2) is enforced by
+# tests/unit/test_supply_chain_check.py instead. The same version is pinned in
+# services/ele_parse/Dockerfile and services/ele_parse/requirements.txt (ele-parse installs it
+# in its own hash-checked install); the same test fails when the three differ.
+pip==26.3 \
+    --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13

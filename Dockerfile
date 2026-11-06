@@ -39,7 +39,19 @@ COPY src/ ./src/
 # under the source layout and a Python stdlib directory under a site-packages
 # install. Keeping ONE layout in dev and in the image keeps that resolution
 # true in both, instead of making the container a special case.
+#
+# pip in /opt/venv is upgraded FIRST, to the one version in deploy/supply-chain/pip-bootstrap.txt
+# (INC0-Q-10, INC1-Q-3 (a), O15). The base image seeds an older pip (25.0.1) that carries six
+# advisories, and that same pip runs this bootstrap, so the install is hash-checked
+# (--require-hashes): the download no longer depends on the TLS roots pip 25.0.1 trusts. The pin
+# is 26.3 and not 26.2 because pip vendors certifi and 26.2's copy still trusts the compromised
+# emSign root (GHSA-6q48-6c7w-9gw2); pip-audit cannot see inside pip/_vendor, so the floor
+# (26.2.2) is held by tests/unit/test_supply_chain_check.py. The same pin lives in
+# services/ele_parse/Dockerfile and services/ele_parse/requirements.txt; the test fails when the
+# three differ. deploy/supply-chain/scan.sh installs from the same file.
+COPY deploy/supply-chain/pip-bootstrap.txt ./pip-bootstrap.txt
 RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --require-hashes -r pip-bootstrap.txt \
     && /opt/venv/bin/pip install --no-cache-dir '.[parsers]' \
     && /opt/venv/bin/pip uninstall --yes aizzak-platform
 
@@ -112,6 +124,17 @@ http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
+
+# The base image's OWN pip (25.0.1, six advisories, and outside the scan) is removed: nothing at
+# runtime uses it. The app runs from /opt/venv, whose pip is the pinned one and is the only pip
+# left (PATH reaches only /opt/venv/bin/pip), so `find / -name 'pip-*.dist-info'` finds one copy
+# and what scan.sh scans is the pip the image ships (INC1-AC-15, PR-D rework). No later step of
+# this stage runs pip. `ensurepip/_bundled/pip-25.0.1-py3-none-any.whl` is a file, not an installed
+# pip, and is left alone: it is what `python -m venv`/`ensurepip` seed from, and removing it
+# would break them for no gain at runtime (see the unit test for what is pinned).
+RUN rm -rf /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.12 \
+        /usr/local/lib/python3.12/site-packages/pip \
+        /usr/local/lib/python3.12/site-packages/pip-*.dist-info
 
 WORKDIR /app
 

@@ -675,7 +675,11 @@ def _exception_problem(exc: VulnException, today: date) -> str | None:
 
 
 def check_vulnerabilities(
-    audit: Mapping[str, Any], frozen: Sequence[str], policy: Policy, today: date
+    audit: Mapping[str, Any],
+    frozen: Sequence[str],
+    policy: Policy,
+    today: date,
+    label: str | None = None,
 ) -> VulnReport:
     for exc in policy.vulnerabilities:
         # load_policy caps `expires - added` at 90 days; this caps what is LEFT of
@@ -690,7 +694,9 @@ def check_vulnerabilities(
     audited = _audited(deps)
     wanted = _frozen_names(frozen)
     if not wanted:
-        raise InputError("freeze: no packages -- the runtime environment is empty")
+        # Without a label the text is the historical one (the scan had one environment).
+        env = f"{label} environment" if label else "runtime environment"
+        raise InputError(f"freeze: no packages -- the {env} is empty")
     missing = sorted(wanted - audited)
     if missing:
         raise InputError(
@@ -771,7 +777,10 @@ def _audited(deps: Sequence[Any]) -> set[str]:
 
 
 def check_coverage(
-    sbom: Mapping[str, Any], audit: Mapping[str, Any], frozen: Sequence[str]
+    sbom: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    frozen: Sequence[str],
+    label: str | None = None,
 ) -> CoverageReport:
     """Every component of the SBOM must have been audited; each one that was not is
     named, with why, and is a violation.
@@ -798,7 +807,9 @@ def check_coverage(
         if key in skipped:
             why = f"pip-audit skipped it: {skipped[key]}"
         elif key not in frozen_names:
-            why = "not in runtime-freeze.txt, so pip-audit never saw it"
+            # The file is runtime-freeze.txt for the app image and freeze.txt for ele-parse.
+            freeze_file = "the freeze file" if label else "runtime-freeze.txt"
+            why = f"not in {freeze_file}, so pip-audit never saw it"
         else:
             why = "frozen, but absent from audit.json"
         missing.append((name, str(component.get("version", "")), why))
@@ -812,12 +823,21 @@ def check_coverage(
 # ---------------------------------------------------------------------------
 
 
+def _title(label: str | None) -> str:
+    return f"# Supply chain report -- {label}" if label else "# Supply chain report"
+
+
 def _failed(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> bool:
     return bool(licences.violations or vulns.violations or coverage.violations)
 
 
-def render(licences: LicenceReport, vulns: VulnReport, coverage: CoverageReport) -> str:
-    out: list[str] = ["# Supply chain report", ""]
+def render(
+    licences: LicenceReport,
+    vulns: VulnReport,
+    coverage: CoverageReport,
+    label: str | None = None,
+) -> str:
+    out: list[str] = [_title(label), ""]
     verdict = "FAIL" if _failed(licences, vulns, coverage) else "PASS"
     out += [f"**Result: {verdict}**", ""]
 
@@ -911,6 +931,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--freeze", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--label", default=None, help="environment name, added to the report title")
     parser.add_argument("--today", type=date.fromisoformat, default=None, help=argparse.SUPPRESS)
     try:
         args = parser.parse_args(argv)
@@ -926,21 +947,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             raise InputError(f"freeze {args.freeze}: {exc}") from exc
         licences = check_licences(sbom, policy)
-        vulns = check_vulnerabilities(audit, frozen, policy, args.today or date.today())
-        coverage = check_coverage(sbom, audit, frozen)
+        vulns = check_vulnerabilities(audit, frozen, policy, args.today or date.today(), args.label)
+        coverage = check_coverage(sbom, audit, frozen, args.label)
     except (InputError, AttributeError, TypeError, KeyError) as exc:  # malformed shape: fail closed
         message = f"supply-chain: the scan did not run: {exc}"
         print(message, file=sys.stderr)
         with contextlib.suppress(OSError):
             args.report.write_text(
-                f"# Supply chain report\n\n**Result: NOT RUN**\n\n{exc}\n", encoding="utf-8"
+                f"{_title(args.label)}\n\n**Result: NOT RUN**\n\n{exc}\n", encoding="utf-8"
             )
         return 2
 
-    args.report.write_text(render(licences, vulns, coverage), encoding="utf-8")
+    args.report.write_text(render(licences, vulns, coverage, args.label), encoding="utf-8")
     failed = _failed(licences, vulns, coverage)
+    tag = f" [{args.label}]" if args.label else ""
     print(
-        f"supply-chain: {len(_frozen_names(frozen))} frozen; {len(licences.rows)} components, "
+        f"supply-chain{tag}: {len(_frozen_names(frozen))} frozen; "
+        f"{len(licences.rows)} components, "
         f"{len(licences.violations)} licence violation(s), {len(coverage.missing)} not audited; "
         f"{vulns.audited} packages audited, {len(vulns.violations)} vulnerability finding(s), "
         f"{vulns.excepted} excepted -> {'FAIL' if failed else 'PASS'}"
