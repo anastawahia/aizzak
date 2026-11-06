@@ -20,13 +20,17 @@
 #                       and its freeze. Its raw SBOM and audit.json stay in this directory.
 #
 # Steps:
-#   1. RUNTIME venv built the way the Dockerfile builds /opt/venv: `pip install
-#      pip==<pip_version>`, then `pip install '.[parsers]'`, then `pip uninstall
-#      aizzak-platform`. `[dev]` never enters the image, so it is not scanned.
-#      `pip freeze --all` keeps `pip` in the frozen set, so it is audited like every other
-#      package (INC0-Q-10). The pip version below is the ONE pin of ./Dockerfile and
-#      services/ele_parse/Dockerfile (tests/unit/test_supply_chain_check.py fails when the
-#      three differ), so the scanned pip is the pip the images ship;
+#   1. RUNTIME venv built the way the Dockerfile builds /opt/venv: `pip install --require-hashes
+#      -r deploy/supply-chain/pip-bootstrap.txt` (the pinned pip), then `pip install
+#      '.[parsers]'`, then `pip uninstall aizzak-platform`. `[dev]` never enters the image, so
+#      it is not scanned. `pip freeze --all` keeps `pip` in the frozen set, so it is audited
+#      like every other package (INC0-Q-10). pip-bootstrap.txt is the file ./Dockerfile
+#      installs from too, and the same pin is in services/ele_parse/Dockerfile and
+#      requirements.txt (tests/unit/test_supply_chain_check.py fails when they differ). The
+#      scanned pip is the /opt/venv pip, which is the only pip the app image keeps: its runtime
+#      stage removes the base image's own pip. The scan cannot see inside pip/_vendor
+#      (pip-audit reads package metadata), so the floor on the pin, 26.2.2 (the certifi with
+#      the compromised emSign root, GHSA-6q48-6c7w-9gw2), is a unit test, not a scan result;
 #   2. ELE-PARSE venv built from services/ele_parse/requirements.txt with `--require-hashes`,
 #      the way services/ele_parse/Dockerfile installs it. PyMuPDF is AGPL-3.0 and is flagged
 #      in the report for this environment too;
@@ -52,21 +56,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# The ONE pip pin (see above). 26.2 is the lowest release that fixes all six advisories
-# of INC0-Q-10 (the highest fix, PYSEC-2026-3721 / CVE-2026-13346, is in 26.2).
-pip_version=26.2
-
 python_bin="${PYTHON:-python3}"
 out=build/supply-chain
 ele="$out/ele-parse"
 mkdir -p "$out"
+# An aborted run must leave no PASS evidence of an earlier one behind: the three outputs
+# written before the first check, and the report, go first.
+rm -f -- "$out/report.md" "$out/report-runtime.md" "$out/sbom.cdx.json" \
+  "$out/runtime-freeze.txt"
 rm -rf -- "$ele"
 mkdir -p "$ele"
 
-echo "== runtime environment (pip==$pip_version, then pip install '.[parsers]', as the Dockerfile does)"
+echo "== runtime environment (pinned pip from pip-bootstrap.txt, then pip install '.[parsers]', as the Dockerfile does)"
 rm -rf -- "$out/runtime"
 "$python_bin" -m venv "$out/runtime"
-"$out/runtime/bin/pip" install --quiet --disable-pip-version-check "pip==$pip_version"
+"$out/runtime/bin/pip" install --quiet --disable-pip-version-check --require-hashes \
+  -r deploy/supply-chain/pip-bootstrap.txt
 "$out/runtime/bin/pip" install --quiet --disable-pip-version-check '.[parsers]'
 "$out/runtime/bin/pip" uninstall --quiet --yes aizzak-platform
 "$out/runtime/bin/pip" freeze --all >"$out/runtime-freeze.txt"
@@ -134,13 +139,14 @@ if ((rc_ele > rc)); then rc=$rc_ele; fi
 
 # One report.md for CI: both reports, the pymupdf note, the ele-parse freeze.
 pymupdf_of() { sed -n 's/^[Pp]y[Mm]u[Pp][Dd][Ff]==//p' "$1" | head -n 1; }
+pip_of() { sed -n 's/^pip==//p' "$1" | head -n 1; }
 v_runtime="$(pymupdf_of "$out/runtime-freeze.txt")"
 v_ele="$(pymupdf_of "$ele/freeze.txt")"
 {
   echo "# Supply chain scan: two environments"
   echo
-  echo "- runtime (app image): \`$out/runtime-freeze.txt\`, pip $pip_version"
-  echo "- ele-parse image: \`$ele/freeze.txt\`, pip $pip_version, installed with --require-hashes"
+  echo "- runtime (app image): \`$out/runtime-freeze.txt\`, pip $(pip_of "$out/runtime-freeze.txt")"
+  echo "- ele-parse image: \`$ele/freeze.txt\`, pip $(pip_of "$ele/freeze.txt"), installed with --require-hashes"
   echo
   echo "## pymupdf in the two environments"
   echo

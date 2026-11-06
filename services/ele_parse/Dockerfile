@@ -24,10 +24,12 @@ WORKDIR /app
 COPY services/ele_parse/requirements.txt ./requirements.txt
 
 # The pip of the base image carries six known advisories (INC0-Q-10); requirements.txt upgrades it
-# in the same hash-checked install. PIP_VERSION is the same pin as ./Dockerfile and
-# deploy/supply-chain/scan.sh (tests/unit/test_supply_chain_check.py fails when they differ); the
-# check after the install fails the build when requirements.txt disagrees with it.
-ARG PIP_VERSION=26.2
+# in the same hash-checked install. PIP_VERSION is the same pin as
+# deploy/supply-chain/pip-bootstrap.txt (the app image and scan.sh) and requirements.txt
+# (tests/unit/test_supply_chain_check.py fails when they differ or fall below 26.2.2); the check
+# after the install fails the build when requirements.txt disagrees with it. 26.3: the pip 26.2
+# line vendors a certifi that still trusts the compromised emSign root (GHSA-6q48-6c7w-9gw2).
+ARG PIP_VERSION=26.3
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
     && test "$(pip --version | cut -d' ' -f2)" = "${PIP_VERSION}"
 

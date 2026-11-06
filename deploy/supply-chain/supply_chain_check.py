@@ -675,7 +675,11 @@ def _exception_problem(exc: VulnException, today: date) -> str | None:
 
 
 def check_vulnerabilities(
-    audit: Mapping[str, Any], frozen: Sequence[str], policy: Policy, today: date
+    audit: Mapping[str, Any],
+    frozen: Sequence[str],
+    policy: Policy,
+    today: date,
+    label: str | None = None,
 ) -> VulnReport:
     for exc in policy.vulnerabilities:
         # load_policy caps `expires - added` at 90 days; this caps what is LEFT of
@@ -690,7 +694,9 @@ def check_vulnerabilities(
     audited = _audited(deps)
     wanted = _frozen_names(frozen)
     if not wanted:
-        raise InputError("freeze: no packages -- the runtime environment is empty")
+        # Without a label the text is the historical one (the scan had one environment).
+        env = f"{label} environment" if label else "runtime environment"
+        raise InputError(f"freeze: no packages -- the {env} is empty")
     missing = sorted(wanted - audited)
     if missing:
         raise InputError(
@@ -771,7 +777,10 @@ def _audited(deps: Sequence[Any]) -> set[str]:
 
 
 def check_coverage(
-    sbom: Mapping[str, Any], audit: Mapping[str, Any], frozen: Sequence[str]
+    sbom: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    frozen: Sequence[str],
+    label: str | None = None,
 ) -> CoverageReport:
     """Every component of the SBOM must have been audited; each one that was not is
     named, with why, and is a violation.
@@ -798,7 +807,9 @@ def check_coverage(
         if key in skipped:
             why = f"pip-audit skipped it: {skipped[key]}"
         elif key not in frozen_names:
-            why = "not in runtime-freeze.txt, so pip-audit never saw it"
+            # The file is runtime-freeze.txt for the app image and freeze.txt for ele-parse.
+            freeze_file = "the freeze file" if label else "runtime-freeze.txt"
+            why = f"not in {freeze_file}, so pip-audit never saw it"
         else:
             why = "frozen, but absent from audit.json"
         missing.append((name, str(component.get("version", "")), why))
@@ -936,8 +947,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             raise InputError(f"freeze {args.freeze}: {exc}") from exc
         licences = check_licences(sbom, policy)
-        vulns = check_vulnerabilities(audit, frozen, policy, args.today or date.today())
-        coverage = check_coverage(sbom, audit, frozen)
+        vulns = check_vulnerabilities(audit, frozen, policy, args.today or date.today(), args.label)
+        coverage = check_coverage(sbom, audit, frozen, args.label)
     except (InputError, AttributeError, TypeError, KeyError) as exc:  # malformed shape: fail closed
         message = f"supply-chain: the scan did not run: {exc}"
         print(message, file=sys.stderr)

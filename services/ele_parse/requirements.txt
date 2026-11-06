@@ -14,7 +14,9 @@ pymupdf==1.28.2 \
     --hash=sha256:3050a233dde1211efe89ada74e2add6238436434159f46097a1423aad2842545
 
 # pip itself: upgraded in the same install (the base image seeds an older pip with six known
-# advisories, INC0-Q-10). Same version as ./Dockerfile and deploy/supply-chain/scan.sh;
-# tests/unit/test_supply_chain_check.py fails when they differ.
-pip==26.2 \
-    --hash=sha256:931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad
+# advisories, INC0-Q-10). 26.3 and not 26.2: pip 26.2 vendors certifi 2026.06.17, which still
+# trusts the compromised emSign root (GHSA-6q48-6c7w-9gw2); 26.3 vendors 2026.10.23, which does
+# not. Same version as services/ele_parse/Dockerfile and deploy/supply-chain/pip-bootstrap.txt;
+# tests/unit/test_supply_chain_check.py fails when they differ or fall below 26.2.2.
+pip==26.3 \
+    --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13
