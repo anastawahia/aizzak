@@ -171,7 +171,10 @@ def test_the_shipped_policy_holds_no_vulnerability_exception() -> None:
 
 
 # The advisories pip-audit reported on pip (24.0 in the scan venv, 25.0.1 in the `app` image)
-# when the owner took INC0-Q-10. The pip pin must fix them all: 26.2 is the highest fix.
+# when the owner took INC0-Q-10, and the one it cannot report: pip vendors certifi, pip 26.2
+# vendors certifi 2026.06.17, which still trusts the compromised emSign root
+# (GHSA-6q48-6c7w-9gw2), and pip-audit cannot see inside pip/_vendor. 26.2.2 is the floor
+# (the coordinator's decision); the pin itself is 26.3, which vendors certifi 2026.10.23.
 _PIP_FIXED_IN = {
     "PYSEC-2026-1795": (25, 3),
     "PYSEC-2026-1796": (26, 0),
@@ -179,51 +182,90 @@ _PIP_FIXED_IN = {
     "PYSEC-2026-2875": (26, 1),
     "PYSEC-2026-2876": (26, 1),
     "PYSEC-2026-3721": (26, 2),
+    "GHSA-6q48-6c7w-9gw2 (vendored certifi trusts the emSign root)": (26, 2, 2),
 }
 
 _ROOT = _DIR.parents[1]
+
+# The places that hold the pip pin and the pattern that finds it in each.
+_PIP_PIN_FILES = (
+    "deploy/supply-chain/pip-bootstrap.txt",
+    "services/ele_parse/Dockerfile",
+    "services/ele_parse/requirements.txt",
+)
 
 
 def _pip_pins() -> dict[str, str]:
     """The pip version each of the places that must agree pins."""
     arg = re.compile(r"^ARG PIP_VERSION=(\S+)$", re.MULTILINE)
-    scan = re.compile(r"^pip_version=(\S+)$", re.MULTILINE)
     req = re.compile(r"^pip==(\S+) \\$", re.MULTILINE)
-    texts = {
-        "Dockerfile": ((_ROOT / "Dockerfile"), arg),
-        "services/ele_parse/Dockerfile": ((_ROOT / "services/ele_parse/Dockerfile"), arg),
-        "deploy/supply-chain/scan.sh": ((_DIR / "scan.sh"), scan),
-        "services/ele_parse/requirements.txt": (
-            (_ROOT / "services/ele_parse/requirements.txt"),
-            req,
-        ),
+    patterns = {
+        "deploy/supply-chain/pip-bootstrap.txt": req,
+        "services/ele_parse/Dockerfile": arg,
+        "services/ele_parse/requirements.txt": req,
     }
+    assert tuple(patterns) == _PIP_PIN_FILES
     pins: dict[str, str] = {}
-    for name, (path, pattern) in texts.items():
-        found = pattern.findall(path.read_text(encoding="utf-8"))
+    for name, pattern in patterns.items():
+        found = pattern.findall((_ROOT / name).read_text(encoding="utf-8"))
         assert len(found) == 1, f"{name}: expected exactly one pip pin, found {found}"
         pins[name] = found[0]
     return pins
 
 
-def test_the_pip_pin_is_one_version_everywhere_and_fixes_every_inc0_q_10_advisory() -> None:
+def test_the_pip_pin_is_one_version_everywhere_and_fixes_every_known_advisory() -> None:
     pins = _pip_pins()
     assert len(set(pins.values())) == 1, pins
-    version = tuple(int(p) for p in pins["deploy/supply-chain/scan.sh"].split("."))
+    version = tuple(int(p) for p in pins["deploy/supply-chain/pip-bootstrap.txt"].split("."))
     for advisory, fixed in _PIP_FIXED_IN.items():
         assert version >= fixed, (advisory, version, fixed)
 
 
-def test_the_app_dockerfile_installs_the_pinned_pip_before_the_project() -> None:
+def test_the_app_dockerfile_installs_the_hashed_pip_before_the_project() -> None:
     text = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    pip_step = text.index('pip install --no-cache-dir "pip==${PIP_VERSION}"')
-    project_step = text.index("pip install --no-cache-dir '.[parsers]'")
-    assert pip_step < project_step
+    assert not re.search(r"^ARG PIP_VERSION", text, re.MULTILINE), "the pin lives in the file"
+    bootstrap = "pip install --no-cache-dir --require-hashes -r pip-bootstrap.txt"
+    assert bootstrap in text
+    assert "COPY deploy/supply-chain/pip-bootstrap.txt ./pip-bootstrap.txt" in text
+    assert text.index(bootstrap) < text.index("pip install --no-cache-dir '.[parsers]'")
+    # The file must reach the build context.
+    ignored = (_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert not any(
+        ln.strip() in {"deploy/", "deploy/supply-chain/", "deploy/supply-chain/*", "*.txt"}
+        for ln in ignored
+    )
 
 
-def test_scan_sh_pins_pip_before_installing_the_project() -> None:
+def test_the_app_runtime_stage_removes_the_base_images_own_pip() -> None:
+    """Only the /opt/venv pip is left in the image, so what scan.sh scans is what ships."""
+    text = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    runtime = text[text.index("AS runtime") :]
+    run = re.search(r"^RUN rm -rf (?:.*\\\n)*.*$", runtime, re.MULTILINE)
+    assert run is not None, "no `RUN rm -rf` pip-removal step in the runtime stage"
+    step = run.group(0)
+    removed = set(step.replace("\\", " ").split())
+    for target in (
+        "/usr/local/bin/pip",
+        "/usr/local/bin/pip3",
+        "/usr/local/bin/pip3.12",
+        "/usr/local/lib/python3.12/site-packages/pip",
+        "/usr/local/lib/python3.12/site-packages/pip-*.dist-info",
+    ):
+        assert target in removed, (target, step)
+    # After the venv is copied in, and before anything that could be handed a pip to use.
+    assert runtime.index("COPY --from=builder /opt/venv /opt/venv") < runtime.index(step)
+    # Nothing after it in the stage runs pip.
+    assert not re.search(
+        r"\bpip3?\b\s+(install|uninstall|freeze|list)", runtime[runtime.index(step) + len(step) :]
+    )
+
+
+def test_scan_sh_installs_the_hashed_pip_before_the_project() -> None:
     text = (_DIR / "scan.sh").read_text(encoding="utf-8")
-    pip_step = text.index('"pip==$pip_version"')
+    assert "pip_version" not in text, "the pin lives in pip-bootstrap.txt only"
+    hashed = "--require-hashes \\\n  -r deploy/supply-chain/pip-bootstrap.txt"
+    assert hashed in text, "the pip bootstrap must be hash-checked"
+    pip_step = text.index(hashed)
     project_step = text.index("--disable-pip-version-check '.[parsers]'")
     assert pip_step < project_step
 
@@ -1004,3 +1046,24 @@ def test_the_label_names_the_environment_in_the_report_and_the_summary(
         .startswith("# Supply chain report -- ele-parse image")
     )
     assert capsys.readouterr().out.startswith("supply-chain [ele-parse image]: ")
+
+
+def test_a_labelled_report_does_not_call_every_environment_runtime() -> None:
+    """ele-parse has `freeze.txt`, not `runtime-freeze.txt`; no label, no change."""
+    sbom = _sbom(_component("a", [_id("MIT")]), _component("pip", [_id("MIT")]))
+    audit = _audit(("a", "1.0", []))
+    unlabelled = sc.check_coverage(sbom, audit, ["a==1.0"])
+    assert unlabelled.missing == (
+        ("pip", "1.0", "not in runtime-freeze.txt, so pip-audit never saw it"),
+    )
+    labelled = sc.check_coverage(sbom, audit, ["a==1.0"], "ele-parse image")
+    assert labelled.missing == (
+        ("pip", "1.0", "not in the freeze file, so pip-audit never saw it"),
+    )
+    assert "runtime" not in labelled.violations[0]
+    policy = sc.load_policy(_DIR / "license-policy.toml")
+    with pytest.raises(sc.InputError, match=r"the runtime environment is empty"):
+        sc.check_vulnerabilities(audit, [], policy, _TODAY)
+    with pytest.raises(sc.InputError, match=r"the ele-parse image environment is empty") as info:
+        sc.check_vulnerabilities(audit, [], policy, _TODAY, "ele-parse image")
+    assert "runtime" not in str(info.value)
