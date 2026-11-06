@@ -139,6 +139,21 @@ def test_the_shipped_pip_pin_is_at_or_above_the_certifi_floor() -> None:
     assert tuple(int(p) for p in PIP.split(".")) >= (26, 2, 2), PIP
 
 
+def test_the_pip_hash_is_the_same_in_the_bootstrap_and_the_ele_parse_requirements() -> None:
+    def _hash(rel: str) -> str:
+        found = re.search(
+            r"^pip==\S+ \\\n\s+--hash=sha256:([0-9a-f]{64})\s*$",
+            (_ROOT / rel).read_text(),
+            re.MULTILINE,
+        )
+        assert found, rel
+        return found.group(1)
+
+    assert _hash("deploy/supply-chain/pip-bootstrap.txt") == _hash(
+        "services/ele_parse/requirements.txt"
+    )
+
+
 def test_the_pip_bootstrap_file_holds_only_the_hashed_pip_pin() -> None:
     lines = [
         ln
@@ -618,7 +633,9 @@ def test_a_stale_output_of_an_earlier_run_is_never_read_as_fresh(
     assert "NOT RUN" in (scan.out / "report.md").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("stale", ["report.md", "sbom.cdx.json", "runtime-freeze.txt"])
+@pytest.mark.parametrize(
+    "stale", ["report.md", "report-runtime.md", "sbom.cdx.json", "runtime-freeze.txt", "audit.json"]
+)
 def test_an_aborted_run_leaves_no_output_of_an_earlier_run(scan: _Scan, stale: str) -> None:
     """QA-1: a run that dies before it writes anything must not leave a PASS report behind."""
     scan.out.mkdir(parents=True)

@@ -60,10 +60,10 @@ python_bin="${PYTHON:-python3}"
 out=build/supply-chain
 ele="$out/ele-parse"
 mkdir -p "$out"
-# An aborted run must leave no PASS evidence of an earlier one behind: the three outputs
-# written before the first check, and the report, go first.
+# An aborted run must leave no PASS evidence of an earlier one behind: the outputs
+# written before the first check, and the reports, go first.
 rm -f -- "$out/report.md" "$out/report-runtime.md" "$out/sbom.cdx.json" \
-  "$out/runtime-freeze.txt"
+  "$out/runtime-freeze.txt" "$out/audit.json"
 rm -rf -- "$ele"
 mkdir -p "$ele"
 

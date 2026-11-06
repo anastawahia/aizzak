@@ -93,4 +93,6 @@ decision = "SRS D-33"
 #
 # History: INC0-Q-10 (owner, 2026-10-30) excepted six pip advisories until 2027-01-28. They
 # were deleted with the pip upgrade of INC-1 PR-D (INC1-Q-3 (a), O15..O17): `pip` is pinned
-# to 26.2 in ./Dockerfile, services/ele_parse/Dockerfile and scan.sh, which fixes all six.
+# to 26.3 in deploy/supply-chain/pip-bootstrap.txt (read by ./Dockerfile and scan.sh),
+# services/ele_parse/Dockerfile and services/ele_parse/requirements.txt, which fixes all six;
+# the floor is 26.2.2 (certifi), enforced by tests/unit/test_supply_chain_check.py.
