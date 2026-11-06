@@ -10,8 +10,8 @@
 
 | المعيار | نوع الاختبار | الملف/الاختبار | الحالة |
 |---|---|---|---|
-| `INC1‑AC‑15` (1): `pip` في صورة `app` وبيئة الفحص بالإصدار المثبّت نفسه (26.2) | وحدة + **QA** | `test_supply_chain_check.py::test_the_pip_pin_is_one_version_everywhere_and_fixes_every_inc0_q_10_advisory` (المواضع الأربعة: `Dockerfile` و`services/ele_parse/Dockerfile` و`scan.sh` و`requirements.txt`)، `::test_the_app_dockerfile_installs_the_pinned_pip_before_the_project`، `::test_scan_sh_pins_pip_before_installing_the_project`؛ **جديد** `test_supply_chain_scan_pr_d.py::test_a_pip_pin_that_differs_in_any_one_of_the_four_places_fails` (4 حالات: كل موضع على حدة في نسخة مُحوَّرة)، `::test_a_pip_pin_that_no_longer_fixes_the_six_advisories_fails_even_when_uniform`، `::test_the_ele_parse_environment_is_installed_with_require_hashes_from_its_file` (ترتيب `pip==26.2` قبل `.[parsers]` في استدعاءات `pip` الفعلية)؛ تشغيل: `pip 26.2` في صورة `ele-parse` مبنيّة فعلاً (§3، س12) | ✅ |
-| `INC1‑AC‑15` (2): الاستثناءات الستة لـ`pip` محذوفة | وحدة + **QA** | `test_supply_chain_check.py::test_the_shipped_policy_holds_no_vulnerability_exception`، `::test_every_widening_entry_of_the_shipped_policy_names_its_decision` (`raw.get("vulnerability") == []`)؛ **جديد** `test_supply_chain_scan_pr_d.py::test_no_vulnerability_exception_is_left_to_hide_a_pip_advisory` (السياسة الحقيقية والفاحص الحقيقي: `pip 25.0.1` مع `PYSEC-2026-3721` مخالفة لا مستثناة)؛ تشغيل: `scan.sh` بـ`pip_version=25.0.1` يخرج بـ1 مع 6 ثغرات (§3، س7) | ✅ |
+| `INC1‑AC‑15` (1): `pip` في صورة `app` وبيئة الفحص بالإصدار المثبّت نفسه (26.3؛ صُحّح في الجولة 2، كان 26.2) | وحدة + **QA** | `test_supply_chain_check.py::test_the_pip_pin_is_one_version_everywhere_and_fixes_every_inc0_q_10_advisory` (صار `..._fixes_every_known_advisory`، والمواضع **ثلاثة** بعد الجولة 1: `pip-bootstrap.txt` و`services/ele_parse/Dockerfile` و`services/ele_parse/requirements.txt`؛ و`Dockerfile` الجذر و`scan.sh` لا يحملان رقماً، يقرآن الملف)، `::test_the_app_dockerfile_installs_the_hashed_pip_before_the_project`، `::test_scan_sh_installs_the_hashed_pip_before_the_project`؛ **جديد** `test_supply_chain_scan_pr_d.py::test_a_pip_pin_that_differs_in_any_one_of_the_of_the_places_fails` (3 حالات بعد الجولة 1: كل موضع من `base._PIP_PIN_FILES` على حدة في نسخة مُحوَّرة)، `::test_a_pip_pin_that_no_longer_fixes_the_six_advisories_fails_even_when_uniform`، `::test_the_ele_parse_environment_is_installed_with_require_hashes_from_its_file` (ترتيب التثبيت المجزّأ من `pip-bootstrap.txt` قبل `.[parsers]` في استدعاءات `pip` الفعلية)؛ تشغيل: `pip 26.3` في صورة `ele-parse` مبنيّة فعلاً (§3، س12) | ✅ |
+| `INC1‑AC‑15` (2): الاستثناءات الستة لـ`pip` محذوفة | وحدة + **QA** | `test_supply_chain_check.py::test_the_shipped_policy_holds_no_vulnerability_exception`، `::test_every_widening_entry_of_the_shipped_policy_names_its_decision` (`raw.get("vulnerability") == []`)؛ **جديد** `test_supply_chain_scan_pr_d.py::test_no_vulnerability_exception_is_left_to_hide_a_pip_advisory` (السياسة الحقيقية والفاحص الحقيقي: `pip 25.0.1` مع `PYSEC-2026-3721` مخالفة لا مستثناة)؛ تشغيل (الجولة 1، والمتغيّر `pip_version` لم يعد موجوداً): `scan.sh` بـ`pip 25.0.1` في `ele-parse` يخرج بـ1 مع 6 ثغرات (§3، س7) | ✅ |
 | `INC1‑AC‑15` (3): `scan.sh` يفحص اعتماديات `ele-parse` أيضاً (SBOM وتدقيق وسياسة) | وحدة + **QA** + تشغيل | `test_supply_chain_check.py::test_scan_sh_scans_the_ele_parse_environment_and_keeps_the_worse_exit_code`؛ **جديد** `test_supply_chain_scan_pr_d.py::test_both_environments_clean_exit_zero_and_the_report_holds_both` (سطر ملخّص ومجلد `ele-parse/` بـ`sbom` و`audit` و`freeze` وتقرير لكل بيئة)، `::test_the_ele_parse_environment_is_installed_with_require_hashes_from_its_file`؛ تشغيل `scan.sh` الحقيقي: سطران `supply-chain [runtime (app image)]` و`[ele-parse image]`، 2 مجمَّدان و2 مدقَّقان | ✅ |
 | `INC1‑AC‑15` (4): `pymupdf` معلَّمة AGPL في البيئتين | **QA** + تشغيل | **جديد** `test_both_environments_clean_exit_zero_and_the_report_holds_both` (بعد دورة الإعادة 1: سطر `- pymupdf <الإصدار>: AGPL-3.0-only` في كل قسم من القسمين، لا عدّ الكلمة)؛ تشغيل `scan.sh` الحقيقي: `report.md` يحمل «AGPL-flagged components … pymupdf 1.28.2» في قسمَي `runtime` و`ele-parse`؛ **جديد** `::test_pymupdf_without_a_licence_in_the_ele_parse_environment_alone_fails_the_scan` (ترخيص غير مسموح لـ`pymupdf` في `ele-parse` وحدها ← 1) | ✅ |
 | `INC1‑AC‑15` (5): `scan.sh` ينجح (PASS) | تشغيل | `deploy/supply-chain/scan.sh` على الرأس: خروج 0، والبيئتان PASS (§2) | ✅ |
@@ -21,7 +21,7 @@
 | `INC1‑AC‑15` / `O19` (جزء `scan.sh`): `docs/stack-commands.md` يطابق السلوك | قراءة + تشغيل | §31‑ب: بيئتان، رمز الخروج الأسوأ، مجلد `ele-parse/`، رفع `ci.yml` للملفات الأربعة وحدها، ملاحظة `pymupdf`، `--require-hashes`، «لا استثناء ثغرات اليوم»، التأجيل إلى «جاهزية الخادم»: كلها طابقت `scan.sh` وسلوكه المُجرَّب (§3، س12) | ✅ |
 | `INC1‑AC‑16` (حصة `PR‑D`): البوابات الست خضراء، و`scan.sh` أخضر، ولا سطر في `rag_agent` ولا `knowledge` | بوابات | §2. `git diff master..HEAD --stat -- src/app/agents/rag_agent src/app/modules/knowledge` = 0 سطر. وإيداع `PR‑D` لا يمسّ `src/` ولا `.importlinter`. والاختبارات القائمة: عُدِّل منها اختبار واحد (`test_the_shipped_exceptions_are_the_pip_advisories_of_inc0_q_10_alone` حُذف) وحلقة التحقق من `INC0‑Q‑10` في اختبار آخر، واستُبدلا بما هو أقوى (`vulnerability == []` والتحقق من إصلاح الستة) وفق `O18`؛ لم يُضعَّف غيرهما | ✅ |
 | `C‑12` (أ): الصورة الأساس مثبّتة بالبصمة | وحدة + تشغيل | `test_supply_chain_check.py::test_the_ele_parse_dockerfile_pins_the_base_by_digest_and_installs_with_hashes`؛ و`docker buildx imagetools inspect python:3.12-slim-bookworm@sha256:935c3c5b…` ← `application/vnd.oci.image.index.v1+json` بقوائم `linux/amd64` و`linux/arm/v7` وغيرهما (فهرس متعدّد المعماريات كما يقول الوسم والتعليق) | ✅ |
-| `C‑12` (ب): `--require-hashes` | وحدة + تشغيل | `test_the_ele_parse_requirements_pin_pymupdf_once_and_hash_every_line`، `::test_the_shipped_files_say_the_hash_check_covers_pip_itself` (`pip==26.2` بتجزئته في الملف نفسه، والتثبيت واحد مع `--require-hashes` وفحص `pip --version`)؛ بناء حقيقي: انظر §3 س8 وس12 | ✅ |
+| `C‑12` (ب): `--require-hashes` | وحدة + تشغيل | `test_the_ele_parse_requirements_pin_pymupdf_once_and_hash_every_line`، `::test_the_shipped_files_say_the_hash_check_covers_pip_itself` (`pip==26.3` بتجزئته في الملف نفسه، والتثبيت واحد مع `--require-hashes` وفحص `pip --version`)؛ بناء حقيقي: انظر §3 س8 وس12 | ✅ |
 | `C‑12` (ج): فحص الصورة المبنية | — | مؤجَّل بقرار المالك `INC1‑Q‑3` (أ)، خارج PR‑D | غير مطلوب |
 
 لا معيار بلا تغطية.
@@ -64,14 +64,14 @@ scan.sh exit code: 0 (runtime and ele-parse, the worse of the two)
 | 2 | ترخيص مخالف في `ele-parse` وحدها | إضافة `pyphen==0.17.0` (خارج مدى القرار) بتجزئته | خروج 1 | `ele-parse image`: مخالفة ترخيص واحدة FAIL، `runtime` PASS، خروج 1 | ✅ |
 | 3 | SBOM مفقود لـ`ele-parse` | حذف `ele-parse/sbom.cdx.json` بعد خطوة SBOM | خروج 2 لا نجاح | `Result: NOT RUN` في تقرير `ele-parse`، `exit code: 2`؛ وفي المحاكاة: `skip` ← 2، و`cyclonedx-py` يفشل ← خروج غير صفري بلا تشغيل أي فاحص | ✅ |
 | 4 | تدقيق `ele-parse` لم يُنتج ملفاً | حذف `ele-parse/audit.json` بعد التدقيق | خروج 2 | `NOT RUN`، `exit code: 2` (الفاحص يعمل على `runtime` ويمرّ، ولا يقنّع الثاني) | ✅ |
-| 5 | `runtime` فاشل و`ele-parse` ناجح | `pip_version=25.0.1` في `scan.sh` | خروج 1 | `runtime`: 6 ثغرات FAIL، `ele-parse` PASS، خروج 1 | ✅ |
+| 5 | `runtime` فاشل و`ele-parse` ناجح | (الجولة 1: المتغيّر `pip_version` حُذف؛ يُعاد بتجميد `runtime` فيه `pip==25.0.1`، انظر الاختبار `test_a_vulnerable_pip_in_one_environment_alone_fails_the_scan`) | خروج 1 | `runtime`: 6 ثغرات FAIL، `ele-parse` PASS، خروج 1 | ✅ |
 | 6 | تدقيق `runtime` مفقود و`ele-parse` ناجح | حذف `audit.json` الأعلى | خروج 2 | `runtime` NOT RUN، `ele-parse` PASS، خروج 2 | ✅ |
 | 7 | الأسوأ من الاثنين بالترتيبين | محاكاة: (1 و2) و(2 و1) | خروج 2 | خروج 2 في الحالتين | ✅ |
 | 8 | تجزئة مُعبَث بها | تغيير حرف في تجزئة `pymupdf` + نتائج قديمة مزروعة (`report.md` بـ«PASS STALE» و`ele-parse/audit.json`) | فشل التثبيت وخروج غير صفري | `THESE PACKAGES DO NOT MATCH THE HASHES`، خروج 1. مجلد `ele-parse/` أُفرغ فلا يُقرأ قديمه. لكن `build/supply-chain/report.md` القديم بقي (انظر **QA‑1**) | ✅ مع ملاحظة |
 | 9 | `set -e` وقديم الملفات | محاكاة: `audit.json` أو `sbom.cdx.json` أو `ele-parse/audit.json` أو `ele-parse/sbom.cdx.json` قديم **كامل وصالح** (يطابق التجميد والـSBOM الكاملين، فيمرّ لو قُرئ) + إنتاج جديد مفقود | لا يُقرأ القديم: خروج 2 | خروج 2 في الحالات الأربع. **صُحّح في دورة الإعادة 1:** الصيغة السابقة كانت فارغة، فمثبّتها القديم ناقص فيخرج 2 سواء حُذف أم لا (قاسته المراجعة: الاختبار ينجح دون السطرين). الآن المثبّت كامل، والإثبات بالتحوير: دون سطور `rm` في `scan.sh` (الحذف في أول السكربت و`rm -f audit.json`) يفشل الاختبار بخروج 0 | ✅ |
 | 10 | `--label` والمخرج الافتراضي | تشغيل `supply_chain_check.py` على `master` وعلى الرأس بالمدخلات نفسها بلا `--label` | مطابقة بايت ببايت | تقرير وسطر ملخّص متطابقان (`cmp`)، والاختبارات القائمة خضراء بلا تعديل | ✅ |
 | 11 | ملاحظة تعارض `pymupdf` | محاكاة: `runtime` 1.28.3 مقابل `ele-parse` 1.28.2 ثم متساويان | ملاحظة لا فشل | «the versions DIFFER» أو «The versions are the same.»، خروج 0 | ✅ |
-| 12 | `--require-hashes` في الصورة، و`pip` في الاستدعاء نفسه | بناء `services/ele_parse/Dockerfile` الحقيقي بوسم مؤقت `qa-prd-eleparse:t1`، ثم نسخة بتجزئة مُعبَث بها، ثم `--build-arg PIP_VERSION=26.1` | الأول ينجح بـ`pip 26.2` و`pymupdf 1.28.2` فقط، والآخران يفشلان | الأول: `pip 26.2` و`pymupdf==1.28.2`. الثاني: `exit code: 1` من خطوة `RUN`. الثالث: `exit code: 1` من فحص `pip --version` بعد التثبيت. حُذفت الصورة (`docker rmi`) | ✅ |
+| 12 | `--require-hashes` في الصورة، و`pip` في الاستدعاء نفسه | بناء `services/ele_parse/Dockerfile` الحقيقي بوسم مؤقت `qa-prd-eleparse:t1`، ثم نسخة بتجزئة مُعبَث بها، ثم `--build-arg PIP_VERSION=26.1` (جولة 2: `ARG PIP_VERSION=26.3` باقٍ في `ele_parse/Dockerfile` كفحص بعد التثبيت) | الأول ينجح بـ`pip 26.3` و`pymupdf 1.28.2` فقط، والآخران يفشلان | الأول: `pip 26.3` و`pymupdf==1.28.2` (الجولة 1 كانت 26.2). الثاني: `exit code: 1` من خطوة `RUN`. الثالث: `exit code: 1` من فحص `pip --version` بعد التثبيت. حُذفت الصورة (`docker rmi`) | ✅ |
 | 13 | الفهرس متعدّد المعماريات | `docker buildx imagetools inspect` (قراءة فقط) على البصمة المثبّتة | فهرس OCI | `application/vnd.oci.image.index.v1+json`، `linux/amd64` و`linux/arm/v7` وغيرهما | ✅ |
 | 14 | مطابقة الوثائق (`docs/stack-commands.md` §31‑ب، السطران 296 و467‑480) | قراءة السطور مقابل `scan.sh` | تطابق | تطابق في كل ادعاء (المخرجات، الأسوأ من الاثنين، الاستثناءات الصفرية، التأجيل) | ✅ |
 | 15 | بقايا ادعاءات قديمة (استثناء `pip`، ملكية `PLT‑17` لـ`pip`، بيئة واحدة) | `grep` على المستودع كله | لا بقايا خارج التاريخ | بقايا واحدة فعلية: `docs/deploy-server.md:469` (**QA‑2**). والباقي سجلّ تاريخي (تعليق `license-policy.toml:94`، وثائق `inc-0`) أو تعليقات تشرح الحذف. `docs/capacity-status.md` و`capacity-summary.html` لا يذكران سلسلة التوريد: لا أثر | ✅ مع ملاحظة |
@@ -83,13 +83,71 @@ scan.sh exit code: 0 (runtime and ele-parse, the worse of the two)
 
 | # | الوصف | الشدة | خطوات إعادة الإنتاج | الحالة |
 |---|---|---|---|---|
-| QA‑1 | `scan.sh` لا يحذف في أول سطر `report.md` و`sbom.cdx.json` و`runtime-freeze.txt` الأعلى من تشغيل سابق. فإذا انقطع التشغيل الجديد بـ`set -e` (مثلاً تجزئة مُعبَث بها) بقي `report.md` القديم بنتيجة «PASS» في `build/supply-chain/` رغم خروج غير صفري. لا أثر في CI (نسخة نظيفة والخروج غير صفري يُحمِّر الوظيفة)، وأثره محلي فقط. `scan.sh:62-64` يحذف `ele-parse/` و`audit.json` وحدهما | منخفضة | زرع `build/supply-chain/report.md` بنص «PASS STALE»؛ تغيير حرف في تجزئة `pymupdf` في `services/ele_parse/requirements.txt`؛ تشغيل `scan.sh` ← خروج 1 والملف القديم باقٍ | مفتوحة (devops) |
-| QA‑2 | `docs/deploy-server.md:469` (ث‑18) ما زال يقول إن قاعدة `ele-parse` «وسمٌ قابلٌ للتغيّر بلا بصمة» ويجعل «بصمة للقاعدة» أول العلاج، وقد نفّذه `PR‑D` (C‑12). الجملة تضلّل قارئ «جاهزية الخادم» | منخفضة (وثائق) | قراءة السطر 469 مقابل `services/ele_parse/Dockerfile:15` | مفتوحة (devops) |
+| QA‑1 | `scan.sh` لا يحذف في أول سطر `report.md` و`sbom.cdx.json` و`runtime-freeze.txt` الأعلى من تشغيل سابق. فإذا انقطع التشغيل الجديد بـ`set -e` (مثلاً تجزئة مُعبَث بها) بقي `report.md` القديم بنتيجة «PASS» في `build/supply-chain/` رغم خروج غير صفري. لا أثر في CI (نسخة نظيفة والخروج غير صفري يُحمِّر الوظيفة)، وأثره محلي فقط. `scan.sh:62-64` يحذف `ele-parse/` و`audit.json` وحدهما | منخفضة | زرع `build/supply-chain/report.md` بنص «PASS STALE»؛ تغيير حرف في تجزئة `pymupdf` في `services/ele_parse/requirements.txt`؛ تشغيل `scan.sh` ← خروج 1 والملف القديم باقٍ | **مغلقة في الجولة 2** (انظر §6) |
+| QA‑2 | `docs/deploy-server.md:469` (ث‑18) ما زال يقول إن قاعدة `ele-parse` «وسمٌ قابلٌ للتغيّر بلا بصمة» ويجعل «بصمة للقاعدة» أول العلاج، وقد نفّذه `PR‑D` (C‑12). الجملة تضلّل قارئ «جاهزية الخادم» | منخفضة (وثائق) | قراءة السطر 469 مقابل `services/ele_parse/Dockerfile:15` | **مغلقة في الجولة 2** (انظر §6) |
 
-ملاحظات لا تُعدّ أخطاء: (1) `ci.yml:214` يسمّي الخطوة «(runtime closure)» وهي الآن تفحص بيئتين، وتسمية فقط وCI مقصود ألّا يتغيّر (`INC1‑Q‑3` (أ))؛ (2) `Dockerfile` الجذر يثبّت `pip==${PIP_VERSION}` بلا تجزئة وصورته الأساس بوسم لا ببصمة، وهذا خارج `C‑12` (الذي يخصّ `ele-parse`)؛ (3) وقت `scan.sh` 40 ثانية دافئاً، ومهلة CI 15 دقيقة تكفي.
+ملاحظات لا تُعدّ أخطاء: (1) `ci.yml:214` يسمّي الخطوة «(runtime closure)» وهي الآن تفحص بيئتين، وتسمية فقط وCI مقصود ألّا يتغيّر (`INC1‑Q‑3` (أ))؛ (2) (صُحّح في الجولة 2: `Dockerfile` الجذر صار يثبّت `pip` من `pip-bootstrap.txt` بالتجزئة؛ وبقيت صورته الأساس بوسم لا ببصمة، `INC1‑R‑19`/`ث‑19`) وهذا خارج `C‑12` (الذي يخصّ `ele-parse`)؛ (3) وقت `scan.sh` 40 ثانية دافئاً، ومهلة CI 15 دقيقة تكفي.
 
 ## 5. الحكم
 
 **PASS** — البوابات السبع خضراء (`scan.sh` بخروج 0)، وكل بنود `INC1‑AC‑15` وحصة `PR‑D` من `INC1‑AC‑16` و`C‑12` (البصمة و`--require-hashes`) مغطّاة باختبار مُشغَّل، والفحص يفشل حيث يجب (7 تشغيلات حقيقية و34 اختبار محاكاة وانجراف)، ولا خطأ حاجب أو كبير، وفيه ملاحظتان منخفضتان (QA‑1، QA‑2).
+
+(حكم الجولة 1 أعلاه تاريخي؛ حكم الجولة 2 في §6.)
+
+## 6. إعادة الاختبار بعد جولة الإصلاح 1 (الرأس `cc6e5a9`، النطاق `054bcad..HEAD`)
+
+لم أُضِف اختباراً: الاختبارات الموجودة (`test_supply_chain_check.py` و`test_supply_chain_scan_pr_d.py`، 3 إيداعات للمطوّر) تثبت ما تدّعيه بعد التجربة أدناه. هذا الإيداع يعدّل `test-plan.md` وحده، وصُحّحت الصفوف الكاذبة في §1 و§3 و§4 (26.2 صارت 26.3، و`pip_version` حُذف، والمواضع الأربعة ثلاثة، وQA‑1/QA‑2 مغلقتان).
+
+### 6.1 البوابات على `cc6e5a9`
+
+```
+$ .venv/bin/ruff format --check .
+984 files already formatted
+$ .venv/bin/ruff check .
+All checks passed!
+$ .venv/bin/mypy src
+Success: no issues found in 547 source files
+$ .venv/bin/lint-imports
+Contracts: 9 kept, 0 broken.
+$ .venv/bin/pytest -rs tests/unit tests/architecture tests/eval
+8278 passed, 37 skipped, 7 warnings in 305.05s (0:05:05)
+$ deploy/prometheus/test-rules.sh
+  SUCCESS: 31 rules found
+
+test-rules: OK
+$ deploy/supply-chain/scan.sh
+scan.sh exit code: 0 (runtime and ele-parse, the worse of the two)   (RC=0 من الغلاف)
+```
+
+التخطّيات الـ37 هي نفسها (حزم حاويات اختيارية ومتغيرات `RUN_*`)، ولا تخصّ PR‑D. لم أشغّل `tests/integration` ولا المكدّس الحيّ.
+
+### 6.2 إغلاق ما طُلب
+
+| البند | الدليل | الحكم |
+|---|---|---|
+| QA‑1 (بقاء `report.md` القديم بعد انقطاع) | `scan.sh` صار يحذف في أوله `report.md` و`report-runtime.md` و`sbom.cdx.json` و`runtime-freeze.txt` و`ele-parse/` و`audit.json`. اختبار جديد `test_an_aborted_run_leaves_no_output_of_an_earlier_run` (3 حالات). **تشغيل حقيقي:** نسخة `git archive` بتجزئة مُعبَثة وبـ`report.md` يحمل «PASS STALE»: خروج 1، ولم يبقَ `report.md` | ✅ مغلق |
+| QA‑2 (`deploy-server.md` ث‑18) | الصف يقول الآن «مثبّتة بالوسم وببصمة الفهرس»، وأضيف ث‑19 لـ`app` | ✅ مغلق |
+| #2 (اختبار المخرجات القديمة) | المثبّت القديم صار كاملاً وصالحاً. **تحوير بيدي** على نسخة مؤقتة: حذف سطور `rm` الثلاثة من `scan.sh` ← فشل الحالات الأربع (`audit.json` و`sbom.cdx.json` و`ele-parse/audit.json` و`ele-parse/sbom.cdx.json`) بخروج 0، مع الاختبارات الثلاثة الجديدة؛ وحذف `rm -rf "$ele"` وحده يُفشل حالتَي `ele-parse` | ✅ يثبت ما يدّعي |
+| #3 (`AGPL` في القسمين) | **تحوير بيدي:** `agpl = []` في `license-policy.toml` ← يفشل `test_both_environments_clean_exit_zero...` عند `- pymupdf 1.28.3: AGPL-3.0-only` (الاختبار يقسم التقرير بحسب البيئة ويفحص سطر المكوّن تحت العنوان لا عدّ الكلمة). والتشغيل الحقيقي: `- pymupdf 1.28.2: AGPL-3.0-only OR LicenseRef-Artifex-Commercial` في القسمين | ✅ يثبت ما يدّعي |
+| التجزئة المعبَث بها في مسار `Dockerfile` | `docker build --target builder` على نسخة بتجزئة `sha256:00000000…` ← فشل خطوة `RUN` (`THESE PACKAGES DO NOT MATCH THE HASHES`)؛ ونسخة نظيفة تبني. ثم صورة `app` كاملة بوسم فريد حُذفت | ✅ |
+| التجزئة المعبَث بها في `scan.sh` | تشغيل حقيقي: `Expected sha256 00000000…  Got f3b60b20…`، خروج 1 | ✅ |
+| `pip-bootstrap.txt` مصدر واحد | `grep` عن `26.2\|pip_version\|PIP_VERSION` في `deploy` و`Dockerfile` و`.github` و`docs/stack-commands.md`: لا رقم في `Dockerfile` الجذر ولا `scan.sh`؛ والاختباران `test_the_app_dockerfile_installs_the_hashed_pip_before_the_project` (لا `ARG PIP_VERSION`، ويتحقق من `.dockerignore`) و`test_scan_sh_installs_the_hashed_pip_before_the_project` (لا `pip_version`) يثبّتان ذلك. وفي تشغيل الاختبارات المزيّفة: استدعاء `runtime: install … --require-hashes -r deploy/supply-chain/pip-bootstrap.txt` | ✅ |
+| اختبار الانجراف يغطي المواضع المتبقية الثلاثة | `_PIP_PIN_FILES` = `pip-bootstrap.txt` و`ele_parse/Dockerfile` و`ele_parse/requirements.txt`، مع `assert tuple(patterns) == _PIP_PIN_FILES`؛ و`test_a_pip_pin_that_differs_in_any_one_of_the_places_fails` ثلاث حالات؛ والأرضية 26.2.2 مفحوصة بـ`test_the_pip_floor_is_the_certifi_fix...` | ✅ |
+| حذف `pip` من مرحلة التشغيل لا يكسر مساراً حقيقياً | صورة `app` كاملة، `--network none --read-only --cap-drop ALL`: `which -a pip` = `/opt/venv/bin/pip` وحده (26.3)؛ `python -m pip` = 26.3 من `/opt/venv`؛ `find / -name 'pip-*.dist-info'` = نسخة واحدة (`/opt/venv`، 26.3)؛ `import app, gunicorn, alembic, uvicorn` ✅؛ `gunicorn` و`alembic` و`curl` (فحص الصحة) و`pg_dump 16.15` ✅؛ `pytesseract` و`weasyprint` ✅؛ `python -m venv` يعمل. وقراءة `docker-compose.yml` و`src`: لا أمر ولا فحص صحة ولا نقطة دخول تنادي `pip`. `python -m app.ops.provision` فشل فقط بحل اسم قاعدة البيانات (`--network none`) لا بسبب `pip` | ✅ |
+| INC1‑AC‑15 مع LLD 0.7 (O15، O16، INC1‑R‑19، INC1‑R‑20) | (1) `pip` واحد بالإصدار نفسه 26.3 في الصورة وبيئة الفحص (من الملف نفسه)؛ (2) الاستثناءات الستة محذوفة (`vulnerability == []`)؛ (3) `scan.sh` يفحص `ele-parse`؛ (4) `pymupdf` AGPL معلَّمة في القسمين؛ (5) `scan.sh` خروج 0 والبيئتان PASS (89 و2 مكوّناً). وعبارة O15 «لا يبقى في الصورة إلا نسخة واحدة» صحيحة للتوزيعة المثبّتة؛ وتبقى عجلة `ensurepip/_bundled/pip-25.0.1-py3-none-any.whl` ملفاً (معلنة في `Dockerfile` وفي سجلّ المنسّق). وINC1‑R‑19 وINC1‑R‑20 مخاطر معروضة على المالك لا بنود قبول، وما يخصّهما (`ث‑19` في `deploy-server.md`) موجود | ✅ |
+
+### 6.3 الأخطاء
+
+لا حاجب ولا كبير. منخفضة:
+
+| # | الوصف | الشدة | إعادة الإنتاج | المالك |
+|---|---|---|---|---|
+| QA2‑1 | تعليق `deploy/supply-chain/license-policy.toml:96` ما زال يقول إن `pip` مثبّت «to 26.2 in ./Dockerfile, services/ele_parse/Dockerfile and scan.sh». كاذب الآن: الإصدار 26.3 في `pip-bootstrap.txt` و`ele_parse/Dockerfile` و`requirements.txt` | منخفضة (تعليق) | `grep -n "26.2" deploy/supply-chain/license-policy.toml` | devops |
+
+ملاحظة لا خطأ: عجلة `pip-25.0.1` في `ensurepip/_bundled` باقية في الصورتين، ولا تُعدّ توزيعة مثبّتة، لكن فاحص صور مستقبلياً (`INC1‑Q‑3` (أ)) قد يعلّمها.
+
+### 6.4 الحكم
+
+**PASS** — البوابات السبع خضراء (`scan.sh` بخروج 0)، وQA‑1 وQA‑2 مغلقتان بدليل، واختبارا #2 و#3 يفشلان فعلاً عند التحوير، والتجزئة المعبَث بها تُفشل مساري `Dockerfile` و`scan.sh`، وحذف `pip` النظام لا يكسر مساراً حقيقياً في صورة `app` كاملة، ولا خطأ حاجباً أو كبيراً (QA2‑1 تعليق فقط).
 
 </div>
