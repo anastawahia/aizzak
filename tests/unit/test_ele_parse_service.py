@@ -78,6 +78,27 @@ def corrupt_pdf(path: Path) -> Path:
     return path
 
 
+def curve_pdf(path: Path, *, extra_shapes: bool = False) -> Path:
+    """One page with a real Bezier curve 6 pt across (stroke-sized) and one 200 pt across; with
+    ``extra_shapes`` also a line, a rectangle and a quad (``l``, ``re``, ``qu`` items)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=842, height=595)
+    if extra_shapes:
+        page.draw_line((40, 80), (400, 80))
+        page.draw_rect(pymupdf.Rect(40, 100, 200, 160))
+        page.draw_quad(pymupdf.Quad((300, 100), (400, 100), (300, 160), (400, 160)))
+    small = page.new_shape()
+    small.draw_bezier((100, 300), (102, 296), (105, 296), (106, 300))
+    small.finish()
+    small.commit()
+    if not extra_shapes:
+        big = page.new_shape()
+        big.draw_bezier((100, 400), (150, 300), (250, 500), (300, 400))
+        big.finish()
+        big.commit()
+    return _save(doc, path)
+
+
 def request(op: str, path: Path, **extra: Any) -> dict[str, Any]:
     return {"op": op, "path": str(path), "token_sample": 50, **extra}
 
@@ -500,6 +521,36 @@ def test_the_config_reads_the_five_variables_and_nothing_else() -> None:
     assert (config.range_timeout_s, config.memory_mb, config.max_children) == (70.0, 512, 3)
     assert config.token_sample == 99
     assert app.Config.from_env({}).max_children == 2  # the shipped defaults
+
+
+# ------------------------------------------------------------------ curves in _paths (F0-AC-1/2)
+def test_f0_ac_1_a_real_bezier_page_is_read_and_only_the_small_curve_is_counted(
+    tmp_path: Path,
+) -> None:
+    pdf = curve_pdf(tmp_path / "c.pdf")
+
+    answer = child.handle(request("pages", pdf, first=1, last=1))
+    assert answer["ok"], answer
+    page = answer["result"]["pages"][0]
+    assert page["vector_path_count"] == 2
+    assert page["short_curve_path_count"] == 1  # the 6 pt curve, not the 200 pt one
+
+    report = inspect_file(pdf, app.Config(stage_root=tmp_path))  # a real child per range
+    assert "failed_pages" not in report
+    pages = json.loads(json.dumps(report["pages"]))
+    assert pages[0]["short_curve_path_count"] == 1
+
+
+def test_f0_ac_2_lines_rects_and_quads_do_not_break_the_page_or_count_as_curves(
+    tmp_path: Path,
+) -> None:
+    pdf = curve_pdf(tmp_path / "m.pdf", extra_shapes=True)
+
+    answer = child.handle(request("pages", pdf, first=1, last=1))
+    assert answer["ok"], answer
+    page = answer["result"]["pages"][0]
+    assert page["vector_path_count"] >= 4
+    assert page["short_curve_path_count"] == 1  # only the bezier
 
 
 # ----------------------------------------------------------------------------------- the CLI

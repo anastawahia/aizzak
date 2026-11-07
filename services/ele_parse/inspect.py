@@ -158,8 +158,8 @@ def _paths(page: Any) -> tuple[int, int]:
         for item in path.get("items", ()):
             if item[0] != "c":
                 continue
-            xs = [point.x for point in item[1:]]
-            ys = [point.y for point in item[1:]]
+            xs = [point[0] for point in item[1:]]  # cdrawings gives tuples, not Points
+            ys = [point[1] for point in item[1:]]
             if max(max(xs) - min(xs), max(ys) - min(ys)) <= _CURVE_MAX_EXTENT_PT:
                 curves += 1
     return len(paths), curves
