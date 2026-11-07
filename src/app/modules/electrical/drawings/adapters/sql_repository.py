@@ -1350,7 +1350,9 @@ def _characterization_report(item: Characterization) -> dict[str, Any]:
         "page_languages": {k.value: v for k, v in item.page_languages.items()},
         "document_language": item.document_language,
         "conventions": {k.value: v for k, v in item.conventions.items()},
-        "symbol_standard_guess": item.symbol_standard_guess.value,
+        "symbol_standard_guess": (
+            None if item.symbol_standard_guess is None else item.symbol_standard_guess.value
+        ),
         "symbol_standard_basis": list(item.symbol_standard_basis),
         "plc_families": {k.value: v for k, v in item.plc_families.items()},
         "cross_reference_formats": dict(item.cross_reference_formats),
@@ -1362,6 +1364,7 @@ def _characterization_report(item: Characterization) -> dict[str, Any]:
 
 def _characterization(row: RowMapping) -> Characterization:
     report: Mapping[str, Any] = row["report"]
+    guess = report["symbol_standard_guess"]
     return Characterization(
         document_id=row["document_id"],
         content_sha256=report["content_sha256"],
@@ -1373,7 +1376,7 @@ def _characterization(row: RowMapping) -> Characterization:
         page_languages=_by_enum(report["page_languages"], PageLanguage),
         document_language=report["document_language"],
         conventions=_by_enum(report["conventions"], Convention),
-        symbol_standard_guess=SymbolStandard(report["symbol_standard_guess"]),
+        symbol_standard_guess=None if guess is None else SymbolStandard(guess),
         symbol_standard_basis=tuple(report["symbol_standard_basis"]),
         plc_families=_by_enum(report["plc_families"], PlcFamily),
         cross_reference_formats={

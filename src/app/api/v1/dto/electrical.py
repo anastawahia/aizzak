@@ -165,7 +165,7 @@ class CharacterizationOut(BaseModel):
     page_languages: dict[str, int]
     document_language: str
     conventions: dict[str, int]
-    symbol_standard_guess: str
+    symbol_standard_guess: str | None
     symbol_standard_basis: list[str]
     plc_families: dict[str, int]
     cross_reference_formats: dict[str, int]
@@ -175,6 +175,7 @@ class CharacterizationOut(BaseModel):
     shared_version: str
     rules_version: str
     mixed_standards: bool
+    failed_pages: int
 
 
 class CharacterizationReportOut(BaseModel):
@@ -182,6 +183,7 @@ class CharacterizationReportOut(BaseModel):
 
     documents: int
     pages: int
+    failed_pages: int
     producers: dict[str, int]
     text_kinds: dict[str, int]
     document_languages: dict[str, int]

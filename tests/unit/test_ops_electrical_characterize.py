@@ -19,6 +19,7 @@ import pytest
 
 from app.modules.electrical.drawings.adapters.rule_files import PackagedRuleSource
 from app.modules.electrical.drawings.domain.characterization import aggregate
+from app.modules.electrical.drawings.domain.pages import StageReason
 from app.ops.electrical_characterize import (
     InspectionFileError,
     build_report,
@@ -26,6 +27,7 @@ from app.ops.electrical_characterize import (
     load_inspection,
     load_inspections,
     main,
+    render_markdown,
     to_json,
     to_plain,
 )
@@ -64,6 +66,82 @@ async def test_the_tool_computes_the_record_the_worker_stores(path: Path, tmp_pa
     assert json.dumps(to_plain(ours), sort_keys=True) == json.dumps(
         to_plain(replace(stored, document_id=sha)), sort_keys=True
     )
+
+
+def _without_page_two(tmp_path: Path, source: Path, sha: str) -> tuple[Path, str]:
+    """A pinned three-page inspection with page 2 left out, as ``inspect`` leaves out a page it
+    could not read; returns the file in ``tmp_path`` and the text of the original."""
+    original = source.read_text(encoding="utf-8")
+    data = json.loads(original)
+    assert [p["page_no"] for p in data["pages"]] == [1, 2, 3]
+    data["pages"] = [p for p in data["pages"] if p["page_no"] != 2]
+    target = tmp_path / f"{sha}.json"
+    target.write_text(json.dumps(data), encoding="utf-8")
+    return target, original
+
+
+@pytest.mark.parametrize("how", ["parse_error", "left_out"])
+async def test_f0_ac_4_a_failed_or_left_out_page_is_counted_alike_by_the_tool_and_the_worker(
+    how: str, tmp_path: Path
+) -> None:
+    three_pages = [p for p in PINNED if json.loads(p.read_text())["summary"]["page_count"] == 3]
+    body = b"%PDF-1.7 f0 " + how.encode()
+    sha = hashlib.sha256(body).hexdigest()
+    tool_file, original = _without_page_two(tmp_path, three_pages[0], sha)
+    assert len(PINNED) == 5  # the pinned set is untouched
+    stack = build_stack()
+    project = await seed_project(stack)
+    await seed_file(stack, "f1", body=body)
+    registered = await stack.document_service.register(
+        stack.ctx, project.id, file_id="f1", checksum=None
+    )
+    failures = {2: StageReason.PARSE_ERROR} if how == "parse_error" else None
+    pdf = FakePdfInspection.from_json(original, failures=failures)
+    if how == "left_out":
+        pdf = FakePdfInspection.from_json(tool_file.read_text(encoding="utf-8"))
+    await stack.inspector(pdf).run(stack.ctx, job_id=registered.job.id, event_id="e1")
+
+    stored = await stack.characterizations.get(stack.ctx, registered.document.id)
+    assert stored is not None
+    ours = characterize_inspection(load_inspection(tool_file), rules=RULES)
+
+    assert json.dumps(to_plain(ours), sort_keys=True) == json.dumps(
+        to_plain(replace(stored, document_id=sha)), sort_keys=True
+    )
+    assert ours.failed_pages == stored.failed_pages == 1
+    assert ours.page_count == 3
+
+
+def test_f0_ac_3_the_json_and_the_markdown_show_the_failed_pages() -> None:
+    report = build_report(load_inspections(FIXTURES), rules=RULES)
+    assert report["report"]["failed_pages"] == 0
+    assert all(d["failed_pages"] == 0 for d in report["documents"])
+    assert all("failed_pages" in d for d in report["documents"])
+    text = render_markdown(report)
+    pages = report["report"]["pages"]
+    assert f"- failed pages: 0 of {pages}\n- OCR needed ratio" in text
+    assert "| sha256 | pages | failed |" in text
+
+
+def test_f0_ac_3_a_dropped_page_reaches_the_json_and_the_markdown(tmp_path: Path) -> None:
+    three_pages = [p for p in PINNED if json.loads(p.read_text())["summary"]["page_count"] == 3]
+    _without_page_two(tmp_path, three_pages[0], "d" * 64)
+    report = build_report(load_inspections(tmp_path), rules=RULES)
+    assert report["report"]["failed_pages"] == 1 and report["report"]["pages"] == 3
+    assert report["documents"][0]["failed_pages"] == 1
+    assert "- failed pages: 1 of 3" in render_markdown(report)
+
+
+def test_f0_ac_6_the_markdown_claims_no_symbol_standard_without_evidence(
+    tmp_path: Path,
+) -> None:
+    _inspection(tmp_path, "e" * 64 + ".json", page_count=0)
+    report = build_report(load_inspections(tmp_path), rules=RULES)
+    assert report["documents"][0]["symbol_standard_guess"] is None
+    assert report["report"]["symbol_standards"] == {"unknown": 1}
+    text = render_markdown(report)
+    assert "iec_60617" not in text
+    assert "symbol standards: unknown 1" in text
 
 
 def test_the_project_report_is_the_aggregate_of_the_documents_it_lists() -> None:
@@ -159,7 +237,7 @@ def test_the_cli_writes_the_json_and_the_markdown(
     )
     text = md.read_text(encoding="utf-8")
     assert text.startswith("# WireTwin characterization")
-    assert "| sha256 | pages |" in text
+    assert "| sha256 | pages | failed |" in text
 
 
 def test_the_tool_needs_no_network_and_no_database(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,6 +20,10 @@ from app.framework.errors import AppError, NotFoundError, ValidationError
 from app.modules.electrical.drawings.adapters.ele_parse_client import EleParseClient
 from app.modules.electrical.drawings.adapters.rule_files import PackagedRuleSource, parse_producers
 from app.modules.electrical.drawings.adapters.source_stager import StreamingSourceStager
+from app.modules.electrical.drawings.adapters.sql_repository import (
+    _characterization,
+    _characterization_report,
+)
 from app.modules.electrical.drawings.domain.errors import (
     InspectionUnavailable,
     PageRangeFailed,
@@ -345,3 +349,52 @@ def test_a_file_that_is_not_toml_or_not_valid_rules_fails_the_boot() -> None:
     with pytest.raises(RuleError):
         PackagedRuleSource.from_texts("version = '1'", "version = '1'")  # no rule tables
     assert good.identifier_rules().version
+
+
+# --- F0-AC-7: characterization rows stored before and after F0 ---------------------------
+def _stored_row(**report: Any) -> Any:  # stands for a RowMapping
+    body: dict[str, Any] = {
+        "content_sha256": "a" * 64,
+        "producer_family": None,
+        "creator": None,
+        "producer": None,
+        "page_count": 5,
+        "text_kinds": {"vector_text": 2},
+        "page_languages": {"en": 2},
+        "document_language": "en",
+        "conventions": {},
+        "symbol_standard_guess": "iec_60617",
+        "symbol_standard_basis": ["convention:iec_81346"],
+        "plc_families": {},
+        "cross_reference_formats": {},
+        "ocr_needed_pages": 0,
+        "cid_fonts_without_tounicode": 0,
+    }  # no ``mixed_standards`` and no ``failed_pages``: a row written before F0
+    body.update(report)
+    return {
+        "document_id": "d1",
+        "report": body,
+        "pipeline_version": "1.0.0",
+        "shared_version": "1",
+        "rules_version": "1",
+    }
+
+
+def test_f0_ac_7_a_row_stored_before_f0_reads_and_derives_its_failed_pages() -> None:
+    record = _characterization(_stored_row())
+    assert record.symbol_standard_guess is SymbolStandard.IEC_60617
+    assert record.page_count == 5 and sum(record.text_kinds.values()) == 2
+    assert record.failed_pages == 3
+    assert record.mixed_standards is False
+
+
+def test_f0_ac_7_a_row_with_a_null_guess_reads_and_round_trips() -> None:
+    record = _characterization(_stored_row(symbol_standard_guess=None, symbol_standard_basis=[]))
+    assert record.symbol_standard_guess is None
+    written = _characterization_report(record)
+    assert written["symbol_standard_guess"] is None
+    assert "failed_pages" not in written  # derived, never stored
+    again = _characterization(_stored_row(**written))
+    assert again == record
+    kept = _characterization_report(_characterization(_stored_row()))
+    assert kept["symbol_standard_guess"] == "iec_60617"

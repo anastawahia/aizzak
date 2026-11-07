@@ -1842,7 +1842,7 @@ components:
     CharacterizationOut:
       type: object
       description: "One document's characterization record (FR-EVAL-14). `creator` and `producer` are untrusted PDF metadata and arrive escaped."
-      required: [document_id, content_sha256, producer_family, creator, producer, page_count, text_kinds, page_languages, document_language, conventions, symbol_standard_guess, symbol_standard_basis, plc_families, cross_reference_formats, ocr_needed_pages, cid_fonts_without_tounicode, pipeline_version, shared_version, rules_version, mixed_standards]
+      required: [document_id, content_sha256, producer_family, creator, producer, page_count, text_kinds, page_languages, document_language, conventions, symbol_standard_guess, symbol_standard_basis, plc_families, cross_reference_formats, ocr_needed_pages, cid_fonts_without_tounicode, pipeline_version, shared_version, rules_version, mixed_standards, failed_pages]
       properties:
         document_id: { type: string, format: uuid }
         content_sha256: { type: string }
@@ -1854,7 +1854,7 @@ components:
         page_languages: { type: object, additionalProperties: { type: integer } }
         document_language: { type: string, enum: [en, zh, bilingual, none] }
         conventions: { type: object, additionalProperties: { type: integer } }
-        symbol_standard_guess: { type: string }
+        symbol_standard_guess: { type: string, nullable: true, description: "Null when no identifier convention was seen in the document's text." }
         symbol_standard_basis: { type: array, items: { type: string } }
         plc_families: { type: object, additionalProperties: { type: integer } }
         cross_reference_formats: { type: object, additionalProperties: { type: integer } }
@@ -1864,18 +1864,20 @@ components:
         shared_version: { type: string }
         rules_version: { type: string }
         mixed_standards: { type: boolean }
+        failed_pages: { type: integer, description: "Pages with no classification (page_count minus the classified pages)." }
     CharacterizationReportOut:
       type: object
       description: "A project's characterization, derived from its ACTIVE documents' records."
-      required: [documents, pages, producers, text_kinds, document_languages, conventions, symbol_standards, plc_families, ocr_needed_ratio, mixed_standard_documents, versions]
+      required: [documents, pages, failed_pages, producers, text_kinds, document_languages, conventions, symbol_standards, plc_families, ocr_needed_ratio, mixed_standard_documents, versions]
       properties:
         documents: { type: integer }
         pages: { type: integer }
+        failed_pages: { type: integer, description: "Pages with no classification, across the documents; still counted in `pages` and in the OCR ratio's denominator." }
         producers: { type: object, additionalProperties: { type: integer }, description: "Documents per producer family (`unknown` when none matches)." }
         text_kinds: { type: object, additionalProperties: { type: integer }, description: "Pages per kind." }
         document_languages: { type: object, additionalProperties: { type: integer } }
         conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed convention." }
-        symbol_standards: { type: object, additionalProperties: { type: integer } }
+        symbol_standards: { type: object, additionalProperties: { type: integer }, description: "Documents per symbol standard; `unknown` when no convention was seen." }
         plc_families: { type: object, additionalProperties: { type: integer } }
         ocr_needed_ratio: { type: number }
         mixed_standard_documents: { type: integer }

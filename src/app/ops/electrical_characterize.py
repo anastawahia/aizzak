@@ -51,6 +51,7 @@ from app.modules.electrical.drawings.application.inspection import (
     combine_tallies,
 )
 from app.modules.electrical.drawings.domain.characterization import (
+    UNKNOWN_SYMBOL_STANDARD,
     Characterization,
     aggregate,
     characterize,
@@ -208,6 +209,7 @@ def build_report(
     documents: list[dict[str, Any]] = []
     for item, record in zip(items, records, strict=True):
         entry = _present(to_plain(record))
+        entry["failed_pages"] = record.failed_pages
         if with_names:
             entry["file"] = escape_untrusted_text(item.file_name, limit=120)
         documents.append(entry)
@@ -250,6 +252,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- inspections: {report['inspections']}",
         f"- documents: {summary['documents']}, pages: {summary['pages']}",
+        f"- failed pages: {summary['failed_pages']} of {summary['pages']}",
         f"- OCR needed ratio: {summary['ocr_needed_ratio']:.4f}",
         f"- mixed-standard documents: {summary['mixed_standard_documents']}",
         *_lines("producers", summary["producers"]),
@@ -264,8 +267,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Documents",
         "",
-        "| sha256 | pages | producer | language | convention | symbols |",
-        "|---|---|---|---|---|---|",
+        "| sha256 | pages | failed | producer | language | convention | symbols |",
+        "|---|---|---|---|---|---|---|",
     ]
     for doc in report["documents"]:
         conventions = doc["conventions"]
@@ -273,8 +276,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         label = _cell(doc.get("file", doc["content_sha256"][:16]))
         producer = _cell(doc["producer_family"] or doc["producer"] or "-")
         out.append(
-            f"| {label} | {doc['page_count']} | {producer} | "
-            f"{doc['document_language']} | {top} | {doc['symbol_standard_guess']} |"
+            f"| {label} | {doc['page_count']} | {doc['failed_pages']} | {producer} | "
+            f"{doc['document_language']} | {top} | "
+            f"{doc['symbol_standard_guess'] or UNKNOWN_SYMBOL_STANDARD} |"
         )
     return "\n".join(out) + "\n"
 

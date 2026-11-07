@@ -275,7 +275,9 @@ def _characterization_out(item: Characterization) -> CharacterizationOut:
         page_languages={lang.value: n for lang, n in item.page_languages.items()},
         document_language=item.document_language,
         conventions={c.value: n for c, n in item.conventions.items()},
-        symbol_standard_guess=item.symbol_standard_guess.value,
+        symbol_standard_guess=(
+            None if item.symbol_standard_guess is None else item.symbol_standard_guess.value
+        ),
         symbol_standard_basis=list(item.symbol_standard_basis),
         plc_families={f.value: n for f, n in item.plc_families.items()},
         cross_reference_formats=dict(item.cross_reference_formats),
@@ -285,6 +287,7 @@ def _characterization_out(item: Characterization) -> CharacterizationOut:
         shared_version=item.shared_version,
         rules_version=item.rules_version,
         mixed_standards=item.mixed_standards,
+        failed_pages=item.failed_pages,
     )
 
 
@@ -292,11 +295,12 @@ def _report_out(report: CharacterizationReport) -> CharacterizationReportOut:
     return CharacterizationReportOut(
         documents=report.documents,
         pages=report.pages,
+        failed_pages=report.failed_pages,
         producers=dict(report.producers),
         text_kinds={kind.value: n for kind, n in report.text_kinds.items()},
         document_languages=dict(report.document_languages),
         conventions={c.value: n for c, n in report.conventions.items()},
-        symbol_standards={s.value: n for s, n in report.symbol_standards.items()},
+        symbol_standards=dict(report.symbol_standards),
         plc_families={f.value: n for f, n in report.plc_families.items()},
         ocr_needed_ratio=report.ocr_needed_ratio,
         mixed_standard_documents=report.mixed_standard_documents,
