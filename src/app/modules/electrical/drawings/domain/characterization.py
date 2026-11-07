@@ -33,6 +33,7 @@ from app.modules.electrical.shared.kinds import Convention, ConventionTally, Plc
 from app.modules.electrical.shared.version import SHARED_VERSION
 
 UNKNOWN_PRODUCER: Final = "unknown"
+UNKNOWN_SYMBOL_STANDARD: Final = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +48,7 @@ class Characterization:
     page_languages: Mapping[PageLanguage, int]
     document_language: str  # en | zh | bilingual | none
     conventions: Mapping[Convention, int]
-    symbol_standard_guess: SymbolStandard
+    symbol_standard_guess: SymbolStandard | None  # None: no convention was seen
     symbol_standard_basis: tuple[str, ...]
     plc_families: Mapping[PlcFamily, int]
     cross_reference_formats: Mapping[str, int]
@@ -60,16 +61,23 @@ class Characterization:
     # without re-deriving it from a tally it no longer holds.
     mixed_standards: bool = False
 
+    @property
+    def failed_pages(self) -> int:
+        """Pages with no classification. ``text_kinds`` holds every classified page and only
+        those, so a record stored before this property reads right as it is."""
+        return max(0, self.page_count - sum(self.text_kinds.values()))
+
 
 @dataclass(frozen=True, slots=True)
 class CharacterizationReport:  # a project's, or the offline tool's
     documents: int
     pages: int
+    failed_pages: int
     producers: Mapping[str, int]  # documents per producer family
     text_kinds: Mapping[PageKind, int]  # pages
     document_languages: Mapping[str, int]
     conventions: Mapping[Convention, int]  # documents by proposed convention
-    symbol_standards: Mapping[SymbolStandard, int]
+    symbol_standards: Mapping[str, int]  # enum order, then UNKNOWN_SYMBOL_STANDARD
     plc_families: Mapping[PlcFamily, int]  # documents that use the family
     ocr_needed_ratio: float
     mixed_standard_documents: int
@@ -109,6 +117,7 @@ def characterize(
 ) -> Characterization:
     """``rules_version`` is keyword-only and additive to the LLD signature: neither the
     tally nor the proposal knows which rules produced them."""
+    ranked = ranked_conventions(tally.conventions)
     languages = _count([p.language for p in pages], list(PageLanguage))
     fonts = {
         font.name for page in signals for font in page.fonts if font.cid and not font.has_tounicode
@@ -123,8 +132,8 @@ def characterize(
         text_kinds=_count([p.kind for p in pages], list(PageKind)),
         page_languages=languages,
         document_language=document_language(languages),
-        conventions=dict(ranked_conventions(tally.conventions)),
-        symbol_standard_guess=proposal.profile.symbol_standard,
+        conventions=dict(ranked),
+        symbol_standard_guess=proposal.profile.symbol_standard if ranked else None,
         symbol_standard_basis=proposal.basis.get("symbol", ()),
         plc_families={f: n for f, n in sorted(tally.plc_families.items()) if n > 0},
         cross_reference_formats=dict(sorted(tally.cross_reference_formats.items())),
@@ -135,6 +144,14 @@ def characterize(
         rules_version=rules_version,
         mixed_standards=proposal.mixed_standards,
     )
+
+
+def _symbol_standards(items: Sequence[Characterization]) -> dict[str, int]:
+    counted = Counter(i.symbol_standard_guess for i in items)
+    result = {s.value: counted[s] for s in SymbolStandard if counted[s] > 0}
+    if counted[None] > 0:
+        result[UNKNOWN_SYMBOL_STANDARD] = counted[None]
+    return result
 
 
 def aggregate(items: Sequence[Characterization]) -> CharacterizationReport:
@@ -153,16 +170,12 @@ def aggregate(items: Sequence[Characterization]) -> CharacterizationReport:
     return CharacterizationReport(
         documents=len(items),
         pages=pages,
+        failed_pages=sum(i.failed_pages for i in items),
         producers=dict(sorted(producers.items())),
         text_kinds={k: text_kinds[k] for k in PageKind if text_kinds[k] > 0},
         document_languages=dict(sorted(Counter(i.document_language for i in items).items())),
         conventions={c: conventions[c] for c in Convention if conventions[c] > 0},
-        symbol_standards=dict(
-            sorted(
-                Counter(i.symbol_standard_guess for i in items).items(),
-                key=lambda kv: list(SymbolStandard).index(kv[0]),
-            )
-        ),
+        symbol_standards=_symbol_standards(items),
         plc_families={f: plc[f] for f in PlcFamily if plc[f] > 0},
         ocr_needed_ratio=ocr / pages if pages else 0.0,
         mixed_standard_documents=sum(1 for i in items if i.mixed_standards),

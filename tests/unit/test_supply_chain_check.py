@@ -313,6 +313,18 @@ def test_the_pdfium_decision_is_bound_to_the_one_reviewed_release() -> None:
     assert not sc.version_in("5.14.1", decision.versions)
 
 
+def test_the_pypdfium2_pin_in_pyproject_matches_the_policy() -> None:
+    pyproject = _DIR.parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    pins = [
+        dep.replace(" ", "")
+        for dep in data["project"]["optional-dependencies"]["parsers"]
+        if dep.replace(" ", "").lower().startswith("pypdfium2")
+    ]
+    decision = sc.load_policy(_DIR / "license-policy.toml").packages["pypdfium2"]
+    assert pins == [f"pypdfium2{decision.versions_text}"]
+
+
 def test_an_approved_entry_without_a_decision_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "policy.toml"
     path.write_text(

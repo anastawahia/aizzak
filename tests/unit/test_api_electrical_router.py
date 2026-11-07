@@ -40,6 +40,7 @@ from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
 from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from app.modules.electrical.drawings.domain.document import DocumentStatus, ExclusionReason
+from app.modules.electrical.drawings.domain.pages import StageReason
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
 from tests.unit.support_credentials import build_credentials
@@ -761,6 +762,43 @@ async def test_the_characterization_of_a_document_and_of_the_project(env: Env) -
     assert report["versions"]["shared"] == [record["shared_version"]]
     assert env.get("/documents/nope/characterization").status_code == 404
     assert env.get("/projects/nope/characterization").status_code == 404
+
+
+async def test_f0_ac_3_failed_pages_reach_both_characterization_responses(env: Env) -> None:
+    project = env.project()
+    env.file("f1")
+    registered = env.register(project["id"], "f1").json()
+    pdf = FakePdfInspection(
+        make_summary(page_count=3, creator="EPLAN Electric P8"),
+        [tokens_page(n, IEC_TOKENS) for n in range(1, 4)],
+        failures={2: StageReason.PARSE_ERROR},
+    )
+    await env.run_worker(registered["job"]["id"], pdf)
+    record = env.get(f"/documents/{registered['document']['id']}/characterization").json()
+    assert record["page_count"] == 3 and record["failed_pages"] == 1
+    report = env.get(f"/projects/{project['id']}/characterization").json()
+    assert report["pages"] == 3 and report["failed_pages"] == 1
+
+
+async def test_f0_ac_3_a_document_with_every_page_read_has_no_failed_pages(env: Env) -> None:
+    project, registered = await _ingested(env)
+    record = env.get(f"/documents/{registered['document']['id']}/characterization").json()
+    assert record["failed_pages"] == 0
+    assert env.get(f"/projects/{project['id']}/characterization").json()["failed_pages"] == 0
+
+
+async def test_f0_ac_6_a_document_without_a_convention_claims_no_symbol_standard(
+    env: Env,
+) -> None:
+    project = env.project()
+    env.file("f1")
+    registered = env.register(project["id"], "f1").json()
+    await env.run_worker(registered["job"]["id"], _pdf(tokens=()))
+    record = env.get(f"/documents/{registered['document']['id']}/characterization").json()
+    assert record["symbol_standard_guess"] is None and record["conventions"] == {}
+    assert not any(b.startswith("convention:") for b in record["symbol_standard_basis"])
+    report = env.get(f"/projects/{project['id']}/characterization").json()
+    assert report["symbol_standards"] == {"unknown": 1}
 
 
 async def test_a_document_not_yet_characterized_is_a_404(env: Env) -> None:

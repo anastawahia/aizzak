@@ -142,10 +142,12 @@ def _symbol(
     convention_confidence: float,
     hits: Sequence[ProducerSignature],
     zh_share: float,
+    *,
+    observed: bool,  # a convention was seen in the tokens, not taken from the base profile
 ) -> tuple[SymbolStandard, float, tuple[str, ...]]:
     scores: defaultdict[SymbolStandard, float] = defaultdict(float)
     scores[_SYMBOL_OF[convention]] += 1.0
-    basis = [f"convention:{convention.value}"]
+    basis = [f"convention:{convention.value}"] if observed else []
     for hit in hits:
         if hit.symbol_hint is not None:
             scores[hit.symbol_hint] += hit.weight
@@ -171,7 +173,7 @@ def detect_profile(
     hits = matching_producers(summary, producers)
     en_share, zh_share = _language_shares(pages)
     symbol, symbol_confidence, symbol_basis = _symbol(
-        convention, convention_confidence, hits, zh_share
+        convention, convention_confidence, hits, zh_share, observed=bool(token_basis)
     )
 
     xref_counts = sorted(

@@ -7,7 +7,7 @@ The rules run in order and the first that holds decides the kind:
    ``raster_area_ratio`` of the page.
 3. ``VECTOR_GARBLED``: ``(unmapped + pua) / char_count >= garbled_ratio``.
 4. ``VECTOR_OUTLINED``: fewer than ``min_text_chars`` characters and at least
-   ``outlined_curves_min`` stroke-sized curves.
+   ``outlined_curves_min`` stroke-sized curves or vector paths (one threshold for both).
 5. ``MIXED``: sound text, and the image signal or the curve signal above HALF its threshold.
 6. ``VECTOR_TEXT``.
 
@@ -60,7 +60,10 @@ def _kind(signals: PageSignals, t: ClassificationThresholds) -> PageKind:
         return PageKind.RASTER
     if signals.char_count > 0 and _garbled_ratio(signals) >= t.garbled_ratio:
         return PageKind.VECTOR_GARBLED
-    if little_text and signals.short_curve_path_count >= t.outlined_curves_min:
+    if little_text and (
+        signals.short_curve_path_count >= t.outlined_curves_min
+        or signals.vector_path_count >= t.outlined_curves_min
+    ):
         return PageKind.VECTOR_OUTLINED
     if not little_text and (
         signals.image_area_ratio >= t.raster_area_ratio / 2

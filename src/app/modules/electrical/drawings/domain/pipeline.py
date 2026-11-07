@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
-PIPELINE_VERSION: Final = "1.0.0"  # bumps whenever a stage's output can change
+PIPELINE_VERSION: Final = "1.1.0"  # bumps whenever a stage's output can change
 
 
 class Stage(StrEnum):

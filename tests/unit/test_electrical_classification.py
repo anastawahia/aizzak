@@ -83,6 +83,34 @@ def test_text_drawn_as_curves_is_outlined() -> None:
     assert kind_of(short_curve_path_count=2000) is not PageKind.VECTOR_OUTLINED
 
 
+def test_f0_ac_5_many_vector_paths_with_little_text_are_outlined() -> None:
+    low = {"char_count": 3, "latin_char_count": 3}
+    assert kind_of(**low, vector_path_count=400) is PageKind.VECTOR_OUTLINED  # boundary in
+    assert kind_of(**low, vector_path_count=399) is PageKind.VECTOR_TEXT
+    no_text = classify_page(make_signals(**empty(vector_path_count=5000)), T)
+    assert no_text.kind is PageKind.VECTOR_OUTLINED and no_text.needs_ocr
+    assert no_text.status.value != "needs_review"  # near the paths threshold is not ambiguous
+    near = classify_page(make_signals(**low, vector_path_count=401), T)
+    assert near.kind is PageKind.VECTOR_OUTLINED and near.reason is None
+
+
+def test_f0_ac_5_the_paths_arm_uses_the_configured_threshold() -> None:
+    custom = ClassificationThresholds(outlined_curves_min=50)
+    low = make_signals(char_count=3, latin_char_count=3, vector_path_count=50)
+    assert classify_page(low, custom).kind is PageKind.VECTOR_OUTLINED
+    below = make_signals(char_count=3, latin_char_count=3, vector_path_count=49)
+    assert classify_page(below, custom).kind is PageKind.VECTOR_TEXT
+
+
+def test_f0_ac_5_sound_text_with_many_paths_stays_vector_text_and_other_kinds_hold() -> None:
+    assert kind_of(vector_path_count=5000) is PageKind.VECTOR_TEXT  # not MIXED
+    # RASTER and VECTOR_GARBLED come before the new rule
+    scan = {"char_count": 3, "latin_char_count": 3, "image_count": 1, "image_area_ratio": 0.9}
+    assert kind_of(**scan, vector_path_count=5000) is PageKind.RASTER
+    garbled = {"char_count": 100, "unmapped_char_count": 100, "vector_path_count": 5000}
+    assert kind_of(**garbled) is PageKind.VECTOR_GARBLED
+
+
 def test_sound_text_with_a_big_image_or_many_curves_is_mixed() -> None:
     by_image = classify_page(make_signals(image_count=1, image_area_ratio=0.30), T)
     assert by_image.kind is PageKind.MIXED and by_image.needs_ocr
