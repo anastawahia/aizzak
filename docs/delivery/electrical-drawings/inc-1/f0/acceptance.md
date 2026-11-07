@@ -5,6 +5,7 @@
 - **الفرع والنطاق:** `fix/ele-parse-curves`، و`HEAD` = `fa030c4`، والتغيير `git diff 1ce3cc6..HEAD`.
 - **المستودع عام:** أعداد فقط هنا، ولا اسم ملف ولا وسم.
 - **معنى الحكم:** `F0‑AC‑1..7` محكومة الآن. و`F0‑AC‑8` لا يُحكم قبل الدمج (انظر قسمه أدناه).
+- **تحقق الشرط (المنسّق، 2026-11-07):** نُفذت الخطوة 11و على `e78bb0a` بعد الدمج، وطابقت الأرقام `F0‑AC‑8` كلها، فلا يسقط القبول. والأعداد في `inc-1/characterization.md` §8.
 
 | AC | الدليل (اختبار/لقطة/مخرج) | الحكم |
 |---|---|---|
@@ -15,7 +16,7 @@
 | F0‑AC‑5 | `test_f0_ac_5_many_vector_paths_with_little_text_are_outlined`: 400 داخل، و399 خارج، و5,000 بلا نص تعطي `VECTOR_OUTLINED` و`needs_ocr`. `test_f0_ac_5_the_paths_arm_uses_the_configured_threshold`: 50 و49 بعتبة مخصصة. `test_f0_ac_5_sound_text_with_many_paths_stays_vector_text_and_other_kinds_hold`: `RASTER` و`VECTOR_GARBLED` قبل القاعدة، وليس `MIXED`. واختبار `MIXED` القديم لم يتغيّر. `test_f0_qa_pipeline_version_is_1_1_0`. | ✅ مقبول |
 | F0‑AC‑6 | `test_f0_ac_6_without_an_observed_convention_there_is_no_symbol_claim` (`None`، والأساس بلا `convention:`، ومع منتج له تلميح أيضاً)، و`test_f0_ac_6_the_report_counts_unclaimed_documents_under_unknown` (المجموع = `documents`)، و`test_f0_ac_6_the_markdown_claims_no_symbol_standard_without_evidence` (`iec_60617` غائب، والخلية `unknown`)، و`test_f0_ac_6_a_document_without_a_convention_claims_no_symbol_standard` على الواجهة. | ✅ مقبول |
 | F0‑AC‑7 | `test_f0_ac_7_the_proposed_profile_and_its_confidence_do_not_change_without_symbols`، و`test_f0_ac_7_a_row_stored_before_f0_reads_and_derives_its_failed_pages` (صف بلا `mixed_standards`: 5 صفحات و2 مصنفة تعطي 3)، و`test_f0_ac_7_a_row_with_a_null_guess_reads_and_round_trips`. **وتحقق مستقل:** شغّلتُ `detect_profile` من `1ce3cc6` ومن `HEAD` على 120 حالة، فتطابق المعيار والثقة وثقة الحقول والبصمة تماماً. | ✅ مقبول |
-| F0‑AC‑8 | لا دليل على المعيار نفسه، لأنه لا يتحقق إلا من `master` المدموج. والموجود معاينة فقط: `test-plan.md` §3، وهي مطابقة لكل الأرقام. أعدتُ تشغيل الأداة على مخرجات الفحص من `HEAD`، فخرج التقرير مطابقاً بايتاً ببايت للتقرير الخام، وبلا `iec_60617` في Markdown. | ⏳ لم يُحكم، وليس ✅ |
+| F0‑AC‑8 | لا دليل على المعيار نفسه، لأنه لا يتحقق إلا من `master` المدموج. والموجود معاينة فقط: `test-plan.md` §3، وهي مطابقة لكل الأرقام. أعدتُ تشغيل الأداة على مخرجات الفحص من `HEAD`، فخرج التقرير مطابقاً بايتاً ببايت للتقرير الخام، وبلا `iec_60617` في Markdown. | ⏳ لم يُحكم عند هذه المراجعة |
 
 ## ما تحققتُ منه بنفسي
 
