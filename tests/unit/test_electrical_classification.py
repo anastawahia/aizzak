@@ -94,6 +94,14 @@ def test_f0_ac_5_many_vector_paths_with_little_text_are_outlined() -> None:
     assert near.kind is PageKind.VECTOR_OUTLINED and near.reason is None
 
 
+def test_f0_ac_5_the_paths_arm_uses_the_configured_threshold() -> None:
+    custom = ClassificationThresholds(outlined_curves_min=50)
+    low = make_signals(char_count=3, latin_char_count=3, vector_path_count=50)
+    assert classify_page(low, custom).kind is PageKind.VECTOR_OUTLINED
+    below = make_signals(char_count=3, latin_char_count=3, vector_path_count=49)
+    assert classify_page(below, custom).kind is PageKind.VECTOR_TEXT
+
+
 def test_f0_ac_5_sound_text_with_many_paths_stays_vector_text_and_other_kinds_hold() -> None:
     assert kind_of(vector_path_count=5000) is PageKind.VECTOR_TEXT  # not MIXED
     # RASTER and VECTOR_GARBLED come before the new rule

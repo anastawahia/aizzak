@@ -123,13 +123,23 @@ def test_f0_ac_3_the_json_and_the_markdown_show_the_failed_pages() -> None:
     assert "| sha256 | pages | failed |" in text
 
 
+def _row_cells(text: str, label: str) -> list[str]:
+    """The cells of the Documents table row whose first cell is ``label``."""
+    rows = [ln for ln in text.splitlines() if ln.startswith(f"| {label} |")]
+    assert len(rows) == 1
+    return [c.strip() for c in rows[0].strip("|").split("|")]
+
+
 def test_f0_ac_3_a_dropped_page_reaches_the_json_and_the_markdown(tmp_path: Path) -> None:
     three_pages = [p for p in PINNED if json.loads(p.read_text())["summary"]["page_count"] == 3]
     _without_page_two(tmp_path, three_pages[0], "d" * 64)
     report = build_report(load_inspections(tmp_path), rules=RULES)
     assert report["report"]["failed_pages"] == 1 and report["report"]["pages"] == 3
     assert report["documents"][0]["failed_pages"] == 1
-    assert "- failed pages: 1 of 3" in render_markdown(report)
+    text = render_markdown(report)
+    assert "- failed pages: 1 of 3" in text
+    cells = _row_cells(text, "d" * 16)
+    assert cells[:3] == ["d" * 16, "3", "1"]  # sha, pages, failed
 
 
 def test_f0_ac_6_the_markdown_claims_no_symbol_standard_without_evidence(
@@ -142,6 +152,9 @@ def test_f0_ac_6_the_markdown_claims_no_symbol_standard_without_evidence(
     text = render_markdown(report)
     assert "iec_60617" not in text
     assert "symbol standards: unknown 1" in text
+    cells = _row_cells(text, "e" * 16)
+    assert cells[1] == "0" and cells[2] == "0"
+    assert cells[-1] == "unknown"  # never the string "None"
 
 
 def test_the_project_report_is_the_aggregate_of_the_documents_it_lists() -> None:

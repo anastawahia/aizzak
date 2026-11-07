@@ -63,15 +63,26 @@ def test_f0_qa_a_page_with_no_drawings_has_no_paths() -> None:
     assert _paths(pymupdf.open().new_page()) == (0, 0)
 
 
-def test_f0_qa_a_degenerate_curve_does_not_raise() -> None:
+def test_f0_qa_a_degenerate_bezier_is_stored_as_a_line_and_counts_no_curve() -> None:
     doc = pymupdf.open()
     page = doc.new_page()
     shape = page.new_shape()
     shape.draw_bezier((100, 100), (100, 100), (100, 100), (100, 100))
     shape.finish()
     shape.commit()
-    paths, curves = _paths(page)  # PyMuPDF may store it as a line; either way no crash
-    assert paths == 1 and curves in (0, 1)
+    assert _paths(page) == (1, 0)  # PyMuPDF stores it as a line item: no curve, no crash
+
+
+def test_f0_qa_a_curve_item_with_four_points_is_counted() -> None:
+    doc = pymupdf.open()
+    page = doc.new_page()
+    shape = page.new_shape()
+    shape.draw_curve((10, 10), (14, 6), (18, 10))  # a real "c" item
+    shape.finish()
+    shape.commit()
+    items = [it[0] for d in page.get_drawings() for it in d["items"]]
+    assert "c" in items
+    assert _paths(page) == (1, 1)
 
 
 def test_f0_qa_curves_inside_a_form_xobject_are_read() -> None:
@@ -107,7 +118,7 @@ def test_f0_qa_no_text_many_paths_and_a_small_image_is_outlined() -> None:
     assert found.kind is PageKind.VECTOR_OUTLINED and found.needs_ocr
 
 
-def test_f0_qa_a_big_image_beats_many_paths_and_an_image_only_page_is_not_empty() -> None:
+def test_f0_qa_a_big_image_beats_many_paths_and_a_blank_page_is_empty() -> None:
     big = make_signals(
         char_count=0,
         latin_char_count=0,
@@ -117,10 +128,20 @@ def test_f0_qa_a_big_image_beats_many_paths_and_an_image_only_page_is_not_empty(
         image_area_ratio=0.95,
     )
     assert classify_page(big, T).kind is PageKind.RASTER  # RASTER runs before the new rule
-    nothing = make_signals(
+    blank = make_signals(
         char_count=0, latin_char_count=0, word_count=0, vector_path_count=0, image_count=0
     )
-    assert classify_page(nothing, T).kind is PageKind.EMPTY
+    assert classify_page(blank, T).kind is PageKind.EMPTY
+    # an image-only page (no text, no paths, a small image) is not empty
+    image_only = make_signals(
+        char_count=0,
+        latin_char_count=0,
+        word_count=0,
+        vector_path_count=0,
+        image_count=1,
+        image_area_ratio=0.01,
+    )
+    assert classify_page(image_only, T).kind is not PageKind.EMPTY
 
 
 # --------------------------------------------------------------------- failed_pages / report
