@@ -150,6 +150,11 @@ parsers = [
     # against this line, and `flavor="stream"` / `.accuracy` / `._bbox` were
     # verified present on it before this pin was written.
     "camelot-py>=2.0,<3",
+    # Transitive of camelot-py (it asks for `pypdfium2>=4`), pinned here on
+    # purpose: deploy/supply-chain/license-policy.toml approves this one
+    # release under SRS D-33 (the bundled PDFium notices were reviewed on it).
+    # Raising the pin needs a new owner review of those notices first.
+    "pypdfium2==5.14.0",
 ]
 
 [tool.hatch.build.targets.wheel]
