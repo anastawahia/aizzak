@@ -58,6 +58,7 @@ from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
+from app.infrastructure.config import env_settings
 from app.infrastructure.monitoring.vault_health import VaultProbe
 from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from tests.unit.support_access import build_authorization
@@ -860,6 +861,8 @@ def test_production_wiring_hands_the_api_layer_the_drawings_bundle_and_the_flag_
 
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-project")
     monkeypatch.delenv("ELECTRICAL_ENABLED", raising=False)
+    # Hermetic: read no host `.env` (a deployed stack may set the flag there).
+    monkeypatch.setitem(env_settings._EnvSettings.model_config, "env_file", None)
     monkeypatch.setenv(
         "PROVIDER_ROUTING", '{"llm":{"default":{"provider":"ollama","model":"gemma3:1b"}}}'
     )

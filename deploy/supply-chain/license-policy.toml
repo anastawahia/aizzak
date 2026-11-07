@@ -60,7 +60,9 @@ decision = "SRS D-32"
 name = "pycryptodome"
 declared = ["BSD-2-Clause AND Unlicense AND MIT"]
 # Widened to 4.3.x by the owner (2026-11-03): 4.3.0 declares the same licence.
-versions = ">=4.2.0,<4.4"
+# Widened to 4.4.x by the owner (2026-11-08): 4.4.0 declares the same licence.
+# Bounded the same way in pyproject.toml, so a 4.5 release cannot be installed unreviewed.
+versions = ">=4.2.0,<4.5"
 expression = "BSD-2-Clause AND Unlicense AND MIT"
 reason = "As declared; SRS D-32 names Unlicense as the equivalent of LicenseRef-Public-Domain."
 decision = "SRS D-32"
