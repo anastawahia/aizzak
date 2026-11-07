@@ -325,6 +325,20 @@ def test_the_pypdfium2_pin_in_pyproject_matches_the_policy() -> None:
     assert pins == [f"pypdfium2{decision.versions_text}"]
 
 
+def test_the_pycryptodome_bound_in_pyproject_matches_the_policy() -> None:
+    pyproject = _DIR.parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    bounds = [
+        dep.replace(" ", "")
+        for dep in data["project"]["dependencies"]
+        if dep.replace(" ", "").lower().startswith("pycryptodome")
+    ]
+    decision = sc.load_policy(_DIR / "license-policy.toml").packages["pycryptodome"]
+    assert bounds == [f"pycryptodome{decision.versions_text}"]
+    assert sc.version_in("4.4.0", decision.versions)
+    assert not sc.version_in("4.5.0", decision.versions)
+
+
 def test_an_approved_entry_without_a_decision_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "policy.toml"
     path.write_text(
