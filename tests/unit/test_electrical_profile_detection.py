@@ -4,12 +4,14 @@ producer hints and determinism (FR-ING-12)."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Sequence
 
 import pytest
 
 from app.modules.electrical.drawings.domain.characterization import (
+    UNKNOWN_SYMBOL_STANDARD,
     Characterization,
     aggregate,
     characterize,
@@ -421,3 +423,95 @@ def test_inc1_r16_the_default_threshold_is_unreachable_until_the_samples_tune_it
         producers=[ProducerSignature("EPLAN", "eplan", SymbolStandard.IEC_60617, 1.0)],
     )
     assert proposal.confidence <= SYMBOL_CONFIDENCE_FACTOR < BASE.auto_accept_confidence
+
+
+# --- F0: failed pages and the symbol claim that needs evidence ------------------------
+def _record(
+    tokens: Sequence[str],
+    *,
+    page_count: int,
+    classified: int,
+    kind_signals: dict[str, int] | None = None,
+    doc: str = "d",
+    producers: Sequence[ProducerSignature] = (),
+    creator: str | None = None,
+) -> Characterization:
+    signals = [make_signals(n, **(kind_signals or {})) for n in range(1, classified + 1)]
+    classes = [classify_page(s, T) for s in signals]
+    tally = PARSER.tally(tokens)
+    summary = make_summary(page_count=page_count, creator=creator)
+    proposal = detect_profile(
+        base=BASE, summary=summary, pages=classes, tally=tally, producers=producers
+    )
+    return characterize(
+        doc, "c" * 64, summary, classes, signals, tally, proposal, producers, rules_version="1"
+    )
+
+
+def test_f0_ac_3_a_page_with_no_classification_is_failed_and_an_empty_one_is_not() -> None:
+    assert _record(iec(60), page_count=3, classified=2).failed_pages == 1
+    assert _record(iec(60), page_count=3, classified=3).failed_pages == 0
+    empty_page = {"char_count": 0, "latin_char_count": 0, "vector_path_count": 0}
+    record = _record([], page_count=2, classified=2, kind_signals=empty_page)
+    assert dict(record.text_kinds) == {PageKind.EMPTY: 2} and record.failed_pages == 0
+
+
+def test_f0_ac_3_the_report_sums_the_failed_pages_of_its_documents() -> None:
+    items = [
+        _record(iec(60), page_count=3, classified=2, doc="d1"),
+        _record(iec(60), page_count=2, classified=2, doc="d2"),
+        _record(iec(60), page_count=4, classified=1, doc="d3"),
+    ]
+    report = aggregate(items)
+    assert report.failed_pages == 1 + 0 + 3
+    assert report.pages == 9  # the failed pages stay in the denominator
+
+
+def test_f0_ac_6_without_an_observed_convention_there_is_no_symbol_claim() -> None:
+    found = propose([])
+    assert found.profile.symbol_standard is SymbolStandard.IEC_60617  # the proposal as it was
+    assert not any(b.startswith("convention:") for b in found.basis["symbol"])
+    hinted = propose(
+        [],
+        producers=[ProducerSignature("EPLAN", "eplan", SymbolStandard.IEC_60617, 0.5)],
+        creator="EPLAN",
+    )
+    assert "producer:eplan" in hinted.basis["symbol"]
+    assert not any(b.startswith("convention:") for b in hinted.basis["symbol"])
+    assert _record([], page_count=2, classified=2).symbol_standard_guess is None
+    assert (
+        _record(
+            [], page_count=2, classified=2, producers=[EPLAN], creator="EPLAN"
+        ).symbol_standard_guess
+        is None
+    )
+    seen = _record(iec(60), page_count=2, classified=2)
+    assert seen.symbol_standard_guess is SymbolStandard.IEC_60617
+    assert any(b.startswith("convention:") for b in seen.symbol_standard_basis)
+
+
+def test_f0_ac_6_the_report_counts_unclaimed_documents_under_unknown() -> None:
+    items = [
+        _record([], page_count=2, classified=2, doc="a"),
+        _record([], page_count=2, classified=2, doc="b"),
+        _record(iec(60), page_count=2, classified=2, doc="c"),
+        _record(chinese(60), page_count=2, classified=2, doc="d"),
+    ]
+    report = aggregate(items)
+    assert report.symbol_standards == {
+        SymbolStandard.IEC_60617.value: 1,
+        SymbolStandard.GBT_4728.value: 1,
+        UNKNOWN_SYMBOL_STANDARD: 2,
+    }
+    assert sum(report.symbol_standards.values()) == report.documents
+    assert aggregate(items[:2]).symbol_standards == {"unknown": 2}
+
+
+def test_f0_ac_7_the_proposed_profile_and_its_confidence_do_not_change_without_symbols() -> None:
+    found = propose([])
+    assert found.profile.symbol_standard is SymbolStandard.IEC_60617
+    assert found.confidence == 0.0
+    assert found.field_confidence["symbol_standard"] == 0.0
+    # nothing else was detected but the languages, so the profile is the base plus those
+    same = dataclasses.replace(BASE, languages=found.profile.languages)
+    assert found.profile.fingerprint() == same.fingerprint()
