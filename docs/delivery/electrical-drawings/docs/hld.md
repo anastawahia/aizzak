@@ -7,12 +7,12 @@
 | المعرّف | `electrical-drawings` |
 | المنتج | WireTwin (المعرّف `wiretwin`) |
 | نوع الوثيقة | تصميم عالي المستوى فقط: مكوّنات ومنافذ وعقود على مستوى المورد والحدث. **لا شيفرة ولا DDL ولا تواقيع** |
-| الإصدار | 0.17 (مسودة للمراجعة، بعد الجولة الثانية من إعادة العمل) |
-| التاريخ | 2026-11-07 |
-| المدخل الملزم | [`requirements.md`](requirements.md) الإصدار 0.18؛ القرارات SRS D-01..D-34 محسومة |
+| الإصدار | 0.18 (مسودة للمراجعة، بعد دورة F1) |
+| التاريخ | 2026-11-08 |
+| المدخل الملزم | [`requirements.md`](requirements.md) الإصدار 0.19؛ القرارات SRS D-01..D-35 محسومة |
 | المدخل المساند | [`../research/ele-open-source/`](../research/ele-open-source/) (`00-summary.md`، `02-techniques-matrix.md`، `01-catalog.md`، `03-datasets-and-benchmarks.md`) |
 | الوثائق الحاكمة | `CLAUDE.md`، `docs/architecture.md` (arch D‑01…D‑26)، `docs/design/00…12`، `docs/design/openapi.yaml`، `.importlinter`، `docker-compose.yml`، `docker-compose.gpu.yml`، `docs/deploy-server.md` |
-| الحالة | مسودة. لا قرار ⚠️ معلّقاً كاملاً. بقي قرار محسوم جزئياً (DEC‑07، §18.3: بقي محرك OCR وترقية التضمين)، وهو يحجب INC‑3 وINC‑8P وحدهما. وسبعة عشر قراراً محسوماً (DEC‑01..DEC‑06، DEC‑08..DEC‑18). وفي §18.4 صفوف التعارض التسعة بين SRS ووثائق المنصة كلها محسومة: واحد بـSRS D-22، وواحد بـDEC‑02، وواحد بـDEC‑08، وواحد بـDEC‑10، وواحد بـDEC‑11، وواحد بـDEC‑12، وواحد بـDEC‑15، وواحد بـDEC‑17، وآخر في التصميم |
+| الحالة | مسودة. لا قرار ⚠️ معلّقاً كاملاً. بقي قرار محسوم جزئياً (DEC‑07، §18.3: بقيت ترقية التضمين وحدها)، وهو يحجب INC‑8P وحده. وفرع GPU في INC‑3 شرطي يقرره قياس تلك الزيادة، لا قرار معلّق. وثمانية عشر قراراً محسوماً (DEC‑01..DEC‑06، DEC‑08..DEC‑19)، آخرها DEC‑19 (2026-11-08، SRS D-35). وفي §18.4 صفوف التعارض التسعة بين SRS ووثائق المنصة كلها محسومة: واحد بـSRS D-22، وواحد بـDEC‑02، وواحد بـDEC‑08، وواحد بـDEC‑10، وواحد بـDEC‑11، وواحد بـDEC‑12، وواحد بـDEC‑15، وواحد بـDEC‑17، وآخر في التصميم |
 
 **سجل الإصدارات**
 
@@ -35,6 +35,7 @@
 | 2026-10-29 | 0.15 | قرار المالك: **DEC‑17 حُسم بخيار رابع (د)** (SRS D-29، SRS 0.14): الوكيل المتاح للمستخدمين مستقبلاً هو «المساعد الذكي» وحده، ويفهرس WireTwin و`knowledge` على مستوى الفضاء (المنطقة) بوسوم النظام والمعدّة والقسم. والاستبدال بالاسم صار مشروطاً بتطابق الوسوم، وهو تغيير في `files` يشترك فيه المساعد الذكي (FR-31 وFR-32 فيه). وبالتوصيات: مشروع واحد لكل فضاء، ونوع الملف لا يدخل في التطابق، وإعادة الوسم تكنس كإعادة التسمية. أُضيف `PLT‑26` وRSK‑20، وعُدّل `PLT‑24` و§8.11 وجدول المسارات (§12) وعزل الفضاء (§13) وADR‑30 وINC‑1 وجدول التتبّع والصف 8 في §18.4 |
 | 2026-10-29 | 0.16 | قرارا المالك بالتوصية: **DEC‑15** (SRS D-30): تُقَرّ التفسيرات الأربعة (أ..د)، وعُدّلت في SRS NFR-I18N-01 وFR-INT-07 وNFR-SCAL-05. و**DEC‑18 (أ)، الحدّ الضيق** (SRS D-31): ما يبقى بعد حذف الملف أو استبداله اعتمده إنسان أو هو سجلّ لما جرى، ولا يُسترجع منه شيء ولا يُستشهد به بوصفه مخططاً حياً. وعُدّلت في SRS FR-ING-03 وFR-INT-13 وFR-GRD-06 وDATA-07. عُدّلت §4.3 و§8.6 و§8.8 وجدول §8.11 و§9.6 و§11.6 و§12.4 و§13.7، وADR‑30 (§15)، وINC‑4 وINC‑9 وINC‑11 (§16، بلا حاجب)، وR-21 (§18.1)، والصف 7 في §18.4 |
 | 2026-11-07 | 0.17 | قرار المالك (SRS D-34، SRS 0.18): يجوز أن تخرج المخططات من المضيف، وأن يقرأها Claude. عُدّل DEC‑09 (§18.3). والتقييم باقٍ على المضيف المحلي، ولا تُودَع المخططات في المستودع |
+| 2026-11-08 | 0.18 | قرارات المالك في دورة F1 (`../inc-1/f1/design.md`، SRS D-35، SRS 0.19). **DEC‑19 (أ):** يُسترجع النص المرسوم خطوطاً بالهندسة أولاً، والتصويت معطّل افتراضياً، والمسح الاحتياطي مقصور على ما لم تغطّه السطور وعلى كتلة العنوان؛ وأُضيف ADR‑39. **بقية DEC‑07 (2):** RapidOCR على ONNX Runtime على CPU داخل الابن المحدود في `ele-parse`، والنموذج يختاره قياس القبول `F1‑MS‑1` في INC‑2؛ وخدمة `ocr` على GPU و`OcrProvider` شرطيان في INC‑3، وحصة OCR في VRAM صفر في R1؛ وعُدّل لفظ DEC‑13؛ ومراجعة إشعارات ثنائيات ONNX Runtime وOpenCV إلزامية عند البناء. **الخطة:** انتقل استرجاع النص المرسوم خطوطاً والمسح الاحتياطي ورابطة `cg.electrical.ocr` من INC‑3 إلى INC‑2، وبقي في INC‑3 المسار النقطي والنص الصيني وفرع GPU. عُدّلت §1.1 و§1.2 وP-05 و§2.3 و§3 و§4.1..§4.4 و§5.1 وCMP‑01 و`PLT‑10` و`PLT‑17` و§6 و§7.1 و§7.2 و§7.4 و§7.8 و§8.3 و§8.6 و§11.6 و§11.9 و§13.2 و§13.3 و§13.7 و§13.8 و§14.1 وADR‑09 وADR‑10 و§16 و§17 و§18.1..§18.3، وأُضيف RSK‑21..RSK‑27 |
 
 ## 0. كيفية قراءة الوثيقة
 
@@ -80,9 +81,9 @@
    - `diagnostics`: جلسات التشخيص وبوابة الإسناد.
 2. **نواة مشتركة نقية داخل الوحدة** `app.modules.electrical.shared` لمحلّل المعرّفات الموحّد (FR-ID-12) والتطبيع والكميات والتصنيف الدلالي، بلا حزمة عليا جديدة.
 3. **وكيل إضافة واحد** `wiretwin_agent` («WireTwin Agent») يكتشفه `PluginLoader` (arch D‑13).
-4. **خدمتان منفصلتان**: محلّل PDF معزول `ele-parse`، وخدمة OCR على GPU `ocr`.
+4. **خدمة معزولة** `ele-parse` لتحليل PDF واسترجاع النص المرسوم خطوطاً على CPU، وخدمة `ocr` على GPU شرطية للصفحات النقطية (INC‑3).
 
-الاستيعاب عمل ثقيل يجري خارج مسار الطلب عبر Outbox وRedis Streams (arch D‑04، D‑18، D‑19، D‑20)، في عمّال من صورة التطبيق نفسها. ولكل مرحلة ثقيلة مجموعة استهلاك خاصة تتوسّع وحدها (NFR-SCAL-04). المسار المتجهي يعمل على CPU وحده (P-05). الـOCR خدمة GPU خلف منفذ إطار جديد. والنموذج اللغوي المحلي يُستدعى عبر منفذ `LLMProvider` القائم وجدول توجيهه.
+الاستيعاب عمل ثقيل يجري خارج مسار الطلب عبر Outbox وRedis Streams (arch D‑04، D‑18، D‑19، D‑20)، في عمّال من صورة التطبيق نفسها. ولكل مرحلة ثقيلة مجموعة استهلاك خاصة تتوسّع وحدها (NFR-SCAL-04). المسار المتجهي يعمل على CPU وحده (P-05). وOCR النص المرسوم خطوطاً داخل `ele-parse` خلف منفذ القسم، وفرع GPU شرطي خلف منفذ إطار (DEC‑07، DEC‑19). والنموذج اللغوي المحلي يُستدعى عبر منفذ `LLMProvider` القائم وجدول توجيهه.
 
 النواة الحتمية في طبقتي النطاق والتطبيق للأقسام، وتشمل: الاستخراج، والاتصال، والتتبّع، والمحاكاة ثلاثية القيم، والتشخيص بالاتساق، واختيار القياس، وبوابة الإسناد. أما النموذج اللغوي في الوكيل فيفهم البلاغ ويختار الأدوات ويكتب حقول الشرح فقط (P-04، SRS D-21).
 
@@ -95,7 +96,8 @@
 | الامتداد داخل AIZZAK بقواعدها ومنافذها | كل المكوّنات، و`PLT‑*` | INC‑0 |
 | تقرير توصيف العينات (FR-EVAL-14) واكتشاف ملف الإعداد (FR-ING-12) | `drawings`، `ele-parse`، `shared` | INC‑1 |
 | الاستيعاب المتجهي وتحليل الصفحة والمعرّفات بكل اصطلاحاتها وعناوين Siemens | `drawings`، `shared`، `ele-parse` | INC‑1، INC‑2 |
-| النص الصيني وOCR للنص المرسوم خطوطاً | `drawings`، `ocr`، `OcrProvider` | INC‑3 |
+| النص المرسوم خطوطاً بالهندسة أولاً | `drawings`، `ele-parse` | INC‑2 |
+| الصفحات النقطية والنص الصيني المرسوم | `drawings`، `ocr` (شرطي)، `OcrProvider` | INC‑3 |
 | الرموز متعددة المعايير بنموذج محايد، والاتصال | `drawings`، `shared` | INC‑4 |
 | المراجع وصفحات التقارير والتحقق المتبادل ومؤشرات الجودة والتصحيحات | `drawings` | INC‑5 |
 | النموذج الموحّد واستعلاماته | `circuits` | INC‑6 |
@@ -160,7 +162,7 @@
 | P-02 الدقة قبل التغطية | لكل حقيقة ثقة معايرة وحالة (`auto` · `confirmed` · `corrected` · `disputed`). «المجهول» في المحاكاة لا يُفترض أبداً. وبوابة الإسناد ترفض عند نقص الأدلة |
 | P-03 كل حقيقة مرتبطة بدليل | سجل الدليل (DATA-01) تملكه `drawings`، وكل كيان وعلاقة وإجابة تحمل معرّفات أدلة. ومسار «افتح على الصفحة» يحلّ الدليل إلى صورة الصفحة وطبقة التظليل |
 | P-04 نواة حتمية | الاستخراج والاتصال والتتبّع والمحاكاة والتشخيص واختيار القياس في نطاقات الأقسام النقية. وحقول الحقيقة يملؤها `diagnostics`، والنموذج يملأ حقول الشرح |
-| P-05 المتجه أولاً | المرحلة الأساسية تقرأ هندسة الـPDF ونصّه. وأما الصورة فللعرض، ولـOCR مناطق موسومة فقط (FR-VEC-10) |
+| P-05 المتجه أولاً | المرحلة الأساسية تقرأ هندسة الـPDF ونصّه. وأما الصورة فللعرض، ولـOCR سطور النص التي عزلتها الهندسة، ثم ما لم تغطّه احتياطاً (FR-VEC-10، DEC‑19) |
 | P-06 لا فشل صامت | لكل زوج (صفحة، مرحلة) حالة وسبب. والمهمة العالقة تكشفها مهمة دورية وتنبيه |
 | P-07 قابلية القياس | إطار التقييم يُبنى من الزيادة الأولى، وكل زيادة تشحن مقاييسها وبواباتها |
 | P-08 السلطة للإنسان | طبقة تصحيحات فوق الاستخراج الآلي تتقدم عليه، وتبقى عند إعادة استيعاب الملف نفسه، وتُحذف معه إن استُبدل بالاسم (FR-HIL-02، FR-HIL-03، R-21) |
@@ -171,7 +173,7 @@
 |---|---|---|---|
 | NFR-PERF-01: 3 ث للصفحة، و500 صفحة في 25 دقيقة على CPU | المسار المتجهي كثيف هندسياً (عشرات آلاف البدائيات للصفحة) | توازي على مستوى دفعات الصفحات؛ مجمّع عمليات في `ele-parse` بحجم الأنوية؛ لا تحويل إلى صورة؛ مشتقات ثنائية في MinIO؛ كتابة الحقائق دفعةً لكل صفحة | §7.3 |
 | NFR-PERF-02: بحث المعرّف ≤ 300 ms، والتتبّع ≤ 1 ث (p95، 5,000 صفحة) | مليون نقطة اتصال | جدول أشكال تطبيع بفهرس B-tree مقيّد بالمشروع؛ وإسقاط «توصيل» على مستوى الشبكة لتتبّع مقيّد العمق؛ ومسرّع مقيس عند الحاجة (DEC‑05) | §8.5، §9.7 |
-| NFR-PERF-05: صفحة OCR في ≤ 15 ث لكل GPU | الـGPU مشتركة مع النموذج المحلي | OCR للمناطق الموسومة فقط؛ تقطيع ودفعات بإعداد لكل محرك؛ طابور مرحلة مستقل (DEC‑07) | §7.1 |
+| NFR-PERF-05: صفحة يُسترجع نصها بـOCR في ≤ 15 ث (SRS D-35) | النص المرسوم خطوطاً في كل صفحات المورد الأول تقريباً | الهندسة أولاً: التعرّف على السطور المعزولة على CPU، والمسح لما لم يُغطَّ وحده، وطابور مستقل للمسح، وGPU للصفحات النقطية إن احتاجها القياس (DEC‑07، DEC‑19) | §7.1 |
 | NFR-PERF-06 وNFR-PERF-03 | ساق المعرفة ساق خارجية عن الوحدة | تشغيل السوقين بالتوازي بمهلة، ودمج O(k)، وأحداث تقدّم مبكرة قبل أي عمل حاجب | §9.2 |
 | NFR-PERF-07: تشخيص عطل واحد ≤ 2 ث | حقن عطل لكل عنصر ثم محاكاة | تقييد الحساب بالدائرة الوظيفية، ومحاكاة تزايدية، وتخبئة القراءات المتوقعة لكل فرضية، وتنفيذ مقيّد التزامن (DEC‑06) | §10.11 |
 | NFR-SCAL-01..05 | 100,000 جهاز ومليون نقطة، وتوسّع بكفاءة ≥ 0.8 | مجموعة استهلاك لكل مرحلة ثقيلة؛ عدد النسخ من الإعداد؛ الاستيعاب يصطفّ عند الذروة ويُعلن موضعه؛ الطلبات التفاعلية تُرفض عند التشبّع بـ`429` و`Retry-After` (سياسة `ق‑6`) | §4.3 |
@@ -206,7 +208,7 @@ graph TD
     FB["Firebase Auth<br/>الهوية فقط"]
     LLML["نموذج لغوي محلي<br/>Ollama على GPU · الافتراضي (SRS D-13)"]
     LLMC["مزوّدو السحابة<br/>OpenAI اليوم · بالإعداد فقط لكل مهمة"]
-    OCR["خدمة OCR على GPU<br/>deployable داخلي جديد"]
+    OCR["خدمة OCR على GPU<br/>deployable داخلي شرطي (INC‑3)"]
     EMB["خدمة التضمين<br/>قائمة · embedding-lb"]
 
     Tech --> FE
@@ -220,7 +222,7 @@ graph TD
     AIZZAK --> FB
     AIZZAK --> LLML
     AIZZAK -.->|إعداد صريح| LLMC
-    ELE --> OCR
+    ELE -.->|شرطي · الصفحات النقطية| OCR
     SA -->|يستدعي بسياق المستخدم · FR-AGT-15| ELE
     AIZZAK --> EMB
 ```
@@ -238,7 +240,7 @@ graph TD
 | Firebase | الهوية | يُورث كما هو (FR-ADM-01) |
 | Ollama على GPU | فهم البلاغ، اختيار الأدوات، الشرح، الترجمة | عبر `LLMProvider` وجدول التوجيه (arch D‑15، D‑16) |
 | مزوّد سحابي | المهام نفسها، بإعداد صريح لكل قدرة | التحويل إلى المحلي عبر `LlmFallback` (FR-AGT-14) |
-| خدمة OCR | نص المناطق المرسومة خطوطاً، والصفحات النقطية، والنص الصيني المشوّه | عبر منفذ `OcrProvider` الجديد |
+| خدمة OCR على GPU (شرطية، INC‑3) | الصفحات النقطية والنص الصيني المشوّه، إن لم يكفِ CPU. أما النص المرسوم خطوطاً فيُقرأ داخل `ele-parse` على CPU (DEC‑19) | عبر منفذ `OcrProvider` إن بُني |
 | مسؤول السلامة، وMCP، وCMMS | مؤجلة | نقاط توسعة (§1.3) |
 
 ## 4. منظور الحاويات والنشر (C4 · L2)
@@ -253,11 +255,11 @@ graph TD
 | `app` (× 3، gunicorn) | قائمة وتُوسَّع | موجّهات `/api/v1/electrical`، والوكيل، وجسر الإشعارات للمجاري الجديدة، والحساب المتزامن (تتبّع، محاكاة، تشخيص؛ DEC‑06) | النسخ | CPU |
 | `worker-electrical` بدور `document` | جديدة | STG‑01 وSTG‑08..11، وتقدّم المهمة واكتمالها | النسخ | CPU، ذاكرة |
 | `worker-electrical` بدور `pages` | جديدة | STG‑02 وSTG‑04..07، واستخراج صفوف التقارير (STG‑09) | النسخ، وهي الأكثر | CPU (عبر `ele-parse`) |
-| `worker-electrical` بدور `ocr` | جديدة | STG‑03 | النسخ، بقدر سعة `ocr` | GPU (عبر الخدمة) |
+| `worker-electrical` بدور `ocr` | جديدة | STG‑03: المسح الاحتياطي (INC‑2)، والصفحات النقطية (INC‑3) | النسخ، بقدر سعة `ele-parse` | CPU عبر `ele-parse`، وGPU عبر `ocr` إن أُضيف |
 | `worker-electrical` بدور `model` | جديدة | STG‑12 (بناء النموذج وتحديثه تزايدياً) | النسخ | CPU، Postgres |
 | `worker-electrical` بدور `index` | جديدة | STG‑13 | النسخ | التضمين، Qdrant |
-| `ele-parse` | deployable جديد | تحليل PDF وتصييره معزولاً (PyMuPDF): بلا شبكة خارجية ولا أسرار، بحدود زمن وذاكرة لكل صفحة (DEC‑04) | النسخ | CPU |
-| `ocr` (× N) + `ocr-lb` | deployable جديد | OCR صيني وإنجليزي مختلط على GPU، بدفعات (DEC‑07) | نسخ خلف موازن، على سابقة `embedding-lb` | GPU |
+| `ele-parse` | deployable جديد | تحليل PDF وتصييره معزولاً (PyMuPDF): بلا شبكة خارجية ولا أسرار، بحدود زمن وذاكرة لكل صفحة (DEC‑04)؛ ومعه عزل سطور النص والتعرّف عليها والمسح الاحتياطي بـRapidOCR على ONNX Runtime، في الابن المحدود نفسه (DEC‑19، DEC‑07) | النسخ | CPU |
+| `ocr` (× N) + `ocr-lb` | deployable شرطي (INC‑3) | OCR للصفحات النقطية والنص الصيني على GPU، بدفعات، إن لم يكفِ CPU (DEC‑07) | نسخ خلف موازن، على سابقة `embedding-lb` | GPU |
 | `ollama` | قائمة | النموذج اللغوي المحلي، بنموذج أكبر مما هو اليوم (DEC‑07) | طابور Ollama (`OLLAMA_NUM_PARALLEL`) | GPU |
 | `embedding` (× 3) + `embedding-lb` | قائمة | تضمين النصوص الوصفية للمخططات | النسخ | CPU/GPU |
 | `postgres` + `pgbouncer` | قائمة | schema جديد واحد `electrical` | — | — |
@@ -284,9 +286,9 @@ graph TD
     WOcr["worker-electrical<br/>ocr"]
     WMod["worker-electrical<br/>model"]
     WIdx["worker-electrical<br/>index"]
-    Parse["ele-parse × N<br/>شبكة داخلية فقط · بلا أسرار"]
-    OCRLB["ocr-lb"]
-    OCR["ocr × N<br/>GPU"]
+    Parse["ele-parse × N<br/>شبكة داخلية فقط · بلا أسرار<br/>+ سطور النص وOCR على CPU"]
+    OCRLB["ocr-lb<br/>شرطي (INC‑3)"]
+    OCR["ocr × N<br/>GPU · شرطي (INC‑3)"]
     Oll["ollama<br/>GPU"]
     EmbLB["embedding-lb → embedding × 3"]
     PG["Postgres<br/>schema electrical<br/>drawings_* · circuits_* · search_* · diagnostics_*"]
@@ -308,7 +310,8 @@ graph TD
     RS -.-> WIdx
     WDoc --> Parse
     WPg --> Parse
-    WOcr --> OCRLB --> OCR
+    WOcr --> Parse
+    WOcr -.->|شرطي · INC‑3| OCRLB --> OCR
     WDoc --> PG
     WPg --> PG
     WPg --> MinIO
@@ -319,25 +322,25 @@ graph TD
     WDoc --> MinIO
 ```
 
-*الشكل 2. الحاويات. المتقطع استهلاك من المجاري.*
+*الشكل 2. الحاويات. المتقطع استهلاك من المجاري، والمتقطع الموسوم «شرطي» فرع GPU في INC‑3 إن احتيج إليه.*
 
 ### 4.2 مسار CPU وحده، وملفات التشغيل
 
 | ملف التشغيل | ما يُقلعه | الغرض |
 |---|---|---|
-| `electrical` | `worker-electrical` بكل الأدوار عدا `ocr`، و`ele-parse` | المسار المتجهي الكامل على CPU وحده (FR-VEC-10، SRS D-09) |
-| `electrical-ocr` (مع `docker-compose.gpu.yml`) | `ocr`، و`ocr-lb`، ودور `ocr` | الفرع النقطي ونص SHX والنص الصيني المشوّه |
+| `electrical` | `worker-electrical` بكل الأدوار ومنها `ocr` على CPU، و`ele-parse` بمحرك التعرّف | المسار المتجهي الكامل ومعه استرجاع النص المرسوم خطوطاً، على CPU وحده (FR-VEC-10، SRS D-09، SRS D-35) |
+| `electrical-ocr` (مع `docker-compose.gpu.yml`؛ INC‑3، إن احتيج إليه) | `ocr`، و`ocr-lb` | الصفحات النقطية والنص الصيني حين لا يكفي CPU |
 | `local-llm` (قائم) | `ollama` و`ollama-pull` | التشغيل دون إنترنت بالنماذج المحلية وحدها (NFR-DEP-01، NFR-DEP-03) |
 
-دون `electrical-ocr` لا تفشل الصفحة التي تحتاج OCR بصمت. تنتهي مرحلتها بحالة `needs_review` وسبب `ocr_unavailable` (P-06)، وتُعاد معالجتها حين تتوفر الخدمة (FR-ING-05).
+دون `electrical-ocr` يُقرأ النص المرسوم خطوطاً كاملاً، لأن استرجاعه في `ele-parse` على CPU (DEC‑19). وأما الصفحة النقطية، إن بُني فرع GPU في INC‑3 وكان معطّلاً، فلا تفشل بصمت: تنتهي مرحلتها بحالة `needs_review` وسبب `ocr_unavailable` (P-06)، وتُعاد معالجتها حين تتوفر الخدمة (FR-ING-05).
 
 ### 4.3 التوسّع لكل مرحلة (NFR-SCAL-03..05)
 
 | المرحلة | مجموعة الاستهلاك | وحدة التوسّع | مقياس الإشباع الذي يُبنى عليه القرار |
 |---|---|---|---|
 | الفحص والمراحل على مستوى الوثيقة (STG‑01، STG‑08..11) | `cg.electrical.document` | نسخ `worker-electrical/document` | عمر أقدم مدخل في المجموعة، CPU العملية |
-| المراحل على مستوى الصفحة (STG‑02، STG‑04..07، STG‑09) | `cg.electrical.pages` | نسخ `worker-electrical/pages` + نسخ `ele-parse` | عمر أقدم مدخل، CPU لـ`ele-parse`، زمن الصفحة |
-| OCR (STG‑03) | `cg.electrical.ocr` | نسخ `ocr` (GPU) | استعمال GPU وذاكرتها، طول الدفعة، زمن الصفحة |
+| المراحل على مستوى الصفحة (STG‑02، STG‑04..07، STG‑09) | `cg.electrical.pages` | نسخ `worker-electrical/pages` + نسخ `ele-parse` | عمر أقدم مدخل، CPU لـ`ele-parse`، زمن الصفحة (ومنه التعرّف على السطور) |
+| OCR (STG‑03) | `cg.electrical.ocr` | نسخ `worker-electrical/ocr` ونسخ `ele-parse`، ونسخ `ocr` على GPU إن أُضيف (INC‑3) | عمر أقدم مدخل، وCPU لـ`ele-parse`، وزمن الصفحة، واستعمال GPU وذاكرتها إن أُضيف |
 | النموذج الموحّد (STG‑12) | `cg.electrical.model` | نسخ `worker-electrical/model` | زمن البناء لكل وثيقة، CPU، زمن معاملات Postgres |
 | الفهرسة (STG‑13) | `cg.electrical.index` | نسخ `worker-electrical/index` + نسخ `embedding` | إنتاجية التضمين، زمن upsert في Qdrant |
 | الطلبات التفاعلية | — | نسخ `app` | زمن الطلب والقبول، ورفض `429` |
@@ -352,12 +355,12 @@ graph TD
 
 | الجانب | المضيف المحلي (WSL، ~13 GB) | خادم GPU (`docs/deploy-server.md`) |
 |---|---|---|
-| الإقلاع | `docker compose` بملف `electrical`، وعملية عامل واحدة بكل الأدوار، ونسخة `ele-parse` واحدة | `docker compose` نفسه بملفّي `electrical` و`electrical-ocr` مع `docker-compose.gpu.yml`، وخدمة لكل دور بعدد نسخها. والصور صور إصدار تُسحب بالبصمة، والحجم حجم الخادم (`deploy/release/`، `deploy/sizes/`؛ `PLT‑17`) |
-| GPU | لا يُفترض توفرها؛ الفرع النقطي معطّل والصفحات المعنية تحمل `ocr_unavailable` | كرت تتقاسمه Ollama والتضمين (وهما عليه في خطة الخادم، `docs/server-gpu-plan.md` §0) وOCR، بميزانية VRAM لكل منها (DEC‑07) |
+| الإقلاع | `docker compose` بملف `electrical`، وعملية عامل واحدة بكل الأدوار، ونسخة `ele-parse` واحدة | `docker compose` نفسه بملف `electrical` (ومعه `electrical-ocr` إن بُني فرع GPU في INC‑3) مع `docker-compose.gpu.yml`، وخدمة لكل دور بعدد نسخها. والصور صور إصدار تُسحب بالبصمة، والحجم حجم الخادم (`deploy/release/`، `deploy/sizes/`؛ `PLT‑17`) |
+| GPU | لا يُفترض توفرها؛ والنص المرسوم خطوطاً يُقرأ على CPU، والصفحات النقطية وحدها تحمل `ocr_unavailable` ما لم يُبنَ فرع GPU (INC‑3) | كرت تتقاسمه Ollama والتضمين (وهما عليه في خطة الخادم، `docs/server-gpu-plan.md` §0)، وOCR إن أُضيف فرع GPU في INC‑3، بميزانية VRAM لكل منها (DEC‑07؛ وحصة OCR صفر في R1) |
 | النموذج اللغوي | نموذج صغير لاختبارات الدخان فقط | النموذج المحلي المختار (DEC‑07) |
 | العزل | `ele-parse` على شبكة Docker داخلية (DEC‑04) | الشبكة الداخلية نفسها. لها سابقة على الخادم: الشبكة `gpu-metrics` بـ`internal: true` في `docker-compose.gpu.yml`. وحدّ Docker Engine الأدنى (26.0.0)، الذي يفرضه `deploy/gpu-preflight.sh`، يحمي الشبكات الداخلية (CVE‑2024‑29018، `docs/deploy-server.md` §1.4) |
 | المراقبة | Prometheus وGrafana وLoki قائمة | مفعّلة افتراضياً (`COMPOSE_PROFILES=local-llm,monitoring`)، ومعها مصدّر الكرت `nvidia-gpu-exporter` (`docs/deploy-server.md` §2). فقياسات الإشباع تُؤخذ هناك، إلا على خادم صغير شُغّل دون المراقبة |
-| القياس | **كل القياس هنا (✅ DEC‑14، SRS D-27)** بأحجام تناسب المضيف: المسار المتجهي، والاستعلامات، وأهداف GPU (NFR-PERF-05) على كرت RTX 4060 Laptop (8 GB)، والوكيل بالنموذج المحلي، والتوسّع حتى أكبر مضاعف يتسع له، والتقييم المستقل | لا قياس عليه (✅ DEC‑14) |
+| القياس | **كل القياس هنا (✅ DEC‑14، SRS D-27)** بأحجام تناسب المضيف: المسار المتجهي، والاستعلامات، وNFR-PERF-05 على CPU المضيف للنص المرسوم خطوطاً، وعلى كرت RTX 4060 Laptop (8 GB) للصفحات النقطية إن أُضيف فرع GPU، والوكيل بالنموذج المحلي، والتوسّع حتى أكبر مضاعف يتسع له، والتقييم المستقل | لا قياس عليه (✅ DEC‑14) |
 
 **قيد الذاكرة المحلي حاكم.** المكدّس محجّم لمضيف 64 GB، والمضيف المحلي 13 GB. لذلك يبقى ملف `electrical` معطّلاً افتراضياً على المكدّس الحي إلى أن يُقبل R1، ويُفعَّل عند العمل عليه فقط (RSK‑01).
 
@@ -373,8 +376,8 @@ graph TD
 | CMP‑04 | `diagnostics` | قسم في الوحدة `electrical` | `src/app/modules/electrical/diagnostics/` | جلسات المساعد والتشخيص، والفرضيات، واختيار القياس، وبوابة الإسناد |
 | CMP‑05 | `wiretwin_agent` | وكيل إضافة («WireTwin Agent») | `src/app/agents/wiretwin_agent/` | فهم البلاغ، واختيار الأدوات، وكتابة حقول الشرح، والبثّ |
 | CMP‑06 | `shared` | نواة مشتركة نقية داخل الوحدة | `src/app/modules/electrical/shared/` | محلّل المعرّفات الموحّد، والتطبيع، والكميات والوحدات، والتصنيف الدلالي |
-| CMP‑07 | `ele-parse` | deployable معزول | `services/ele-parse/` | تحليل PDF وتصييره بلا شبكة خارجية |
-| CMP‑08 | `ocr` + `OcrProvider` | deployable + منفذ إطار | `services/ocr/`، `framework/ports/` | OCR على GPU، تشترك فيه `drawings` و`knowledge` |
+| CMP‑07 | `ele-parse` | deployable معزول | `services/ele-parse/` | تحليل PDF وتصييره بلا شبكة خارجية، واسترجاع النص المرسوم خطوطاً على CPU (DEC‑19) |
+| CMP‑08 | `ocr` + `OcrProvider` | deployable ومنفذ إطار، شرطيان (INC‑3) | `services/ocr/`، `framework/ports/` | OCR على GPU للصفحات النقطية والنص الصيني إن لم يكفِ CPU، تشترك فيه `drawings` و`knowledge` (DEC‑07) |
 | CMP‑09 | `worker-electrical` | عملية عامل بأدوار | `src/app/workers/` | جذر تركيب للعملية ومستهلكو المجاري لكل مرحلة |
 | CMP‑10 | موجّهات `/electrical` | محوّل قيادة | `src/app/api/` | REST وDTO وحرّاس RBAC، بلا منطق أعمال |
 | CMP‑11 | مقاعد المنصة | خدمات تنسيق عند جذر التركيب | `src/app/framework/di/`، `framework/agent_runtime/` | تسلسلات الحذف العابرة للوحدات، ومقاعد الوكيل البنيوية |
@@ -412,7 +415,7 @@ src/app/modules/electrical/
 | مجالات FR المملوكة | FR-ING (01..06، 08، 10، 12)، FR-VEC (كلها)، FR-LAY (01..04، 06)، FR-ID-02 وتحقق المعرّفات على مستوى الصفحة، FR-SYM (01..08، 10، 13)، FR-CON على مستوى الصفحة (01..04، 06، 08..11)، FR-XREF (01..05)، FR-REP (كلها)، FR-XV (01..04)، FR-QA (كلها)، FR-RAS-01 (تنسيقه) وFR-RAS-04 (قيداً)، FR-SRC-07، FR-HIL (01..03)، FR-IDX-03 (الفهرس المكاني على حقائق الصفحة)، FR-API-04، FR-EVAL-14، تخزين تسميات FR-EVAL-02 |
 | البيانات المملوكة | جداول `electrical.drawings_*`: المشاريع، وإصدارات ملفات الإعداد، والوثائق (مرجع منطقي إلى `files.files.id`، ووثيقة حية واحدة لكل ملف)، والمهام، وحالات (صفحة، مرحلة)، وسجلات الصفحات، وحقائق الصفحات (ظهورات المعرّفات، ومثيلات الرموز، وقطع الأسلاك، وقرارات الوصل، والمراجع، ونقاط الانقطاع، وسجلات التقارير)، وسجلات الأدلة، والاختلافات، ومؤشرات الجودة، والتصحيحات، ومكتبات الرموز، وتقارير التوصيف، والتسميات الذهبية، وسجل تدقيقها. وفي MinIO: مشتقات الصفحات (§8.3) |
 | المنافذ الواردة | `ProjectCatalog` (المشاريع ووثائقها الحية، وحلّ `file_id` إلى وثيقته) · `IngestionControl` (تسجيل وثيقة، ومعاينة الاستبدال، وتأكيد ملف الإعداد، إعادة معالجة صفحات، إلغاء، استئناف، حالة المهمة وأحداثها بعد `seq`) · `PageViews` (بيانات الصفحة، ومراجع المربعات، وهندسة التظليل، والبحث المكاني) · `EvidenceLookup` (حلّ معرّفات الأدلة إلى موضعها وهندستها وطريقتها ونسختها) · `ExtractionFacts` (حقائق وثيقة أو صفحات لمن يبني النموذج) · `QualityReports` (ملخص الجودة، وطابور المراجعة، والاختلافات وحكم المهندس عليها) · `Corrections` · `SymbolTeaching` (FR-SYM-03) · `DrawingFileOwnership` (هل الملف وثيقة مخطط؟) · `DrawingsContentPurge` (منفذ تطهير القسم بمرحلتيه: وسم الوثيقة ثم كنسها، يدخل مشارك الحذف المركّب `electrical`، §8.8) |
-| المنافذ الصادرة | `DrawingFiles` (يُربط بـ`FilesQuery`) · `OlderNamesakes` (يُربط بحالة الاستعمال `FindNamesakes` في `files`، `PLT‑24`، §8.11) · `PdfExtraction` و`PageRendering` (منفذان للقسم، ومحوّلاهما عميلان لـ`ele-parse`) · `OcrProvider` (إطار) · `ArtifactStore` (فوق `StorageProvider`) · `GeometryKernel` (منفذ للقسم) · المستودعات · `UnitOfWork` · `EventOutbox` |
+| المنافذ الصادرة | `DrawingFiles` (يُربط بـ`FilesQuery`) · `OlderNamesakes` (يُربط بحالة الاستعمال `FindNamesakes` في `files`، `PLT‑24`، §8.11) · `PdfExtraction` و`PageRendering` (منفذان للقسم، ومحوّلاهما عميلان لـ`ele-parse`) · منفذ قسم لاسترجاع النص يربطه عميل `ele-parse` (اسمه في LLD الزيادة INC‑2، DEC‑19) · `OcrProvider` (إطار، INC‑3 إن أُضيف) · `ArtifactStore` (فوق `StorageProvider`) · `GeometryKernel` (منفذ للقسم) · المستودعات · `UnitOfWork` · `EventOutbox` |
 | الأحداث | تُنتج أحداث المجاميع `document` و`page_batch` و`corrections` و`job` (`electrical.<aggregate>.*`، §7.8)، ومنها `electrical.document.purged.v1` من مشارك الحذف. وتستهلك `electrical.model.built.v1` و`electrical.model.build_failed.v1` و`electrical.index.updated.v1` و`electrical.index.failed.v1` لتقدّم المهمة واكتمالها، و`electrical.document.purged.v1` لكنس صفوفها ومشتقاتها (§8.8) |
 
 #### CMP‑02 `circuits`: النموذج الموحّد والمحاكاة
@@ -574,14 +577,14 @@ graph LR
 | PLT‑07 | توسيع `RetrievedChunk` و`KnowledgeRetrieval` بالبيانات الوصفية والترشيح | FR-INT-14 (S) | `knowledge/ports/*`، و`deps_ports.RetrievedChunkView`، و`RetrievedChunkOut` في `openapi.yaml`، و`tests/unit/test_retrieved_chunk_contract.py` | نعم | R2 |
 | PLT‑08 | مستهلك لأحداث المعرفة | FR-INT-11 (S) | مجموعة جديدة على `stream.knowledge` في `STATIC_CONSUMER_TOPOLOGY` | إضافة | R2 |
 | PLT‑09 | مقعد الوكيل | SRS AC-09، FR-AGT-* | حقل اختياري واحد `electrical` في `AgentDependencies` (على سابقة `knowledge: KnowledgeAccess`، حقل لكل وحدة)، ببروتوكول بنيوي جديد في `framework/agent_runtime/deps_ports.py` يجمع منافذ الأقسام التي يحتاجها الوكيل؛ و`agents/orchestrator.py` يملؤه، وجذر التركيب يربطه | إضافة (✅ DEC‑12) | INC‑6 (منافذ `circuits`)، INC‑10 (البقية) |
-| PLT‑10 | منفذ `OcrProvider` وخدمة `ocr` | FR-RAS-01، FR-VEC-08، FR-INT-15 | `framework/ports/`، ومحوّل في `infrastructure/ai_providers/`، و`services/ocr/`، وCompose وتراكب GPU، وصورة إصدار جديدة (`PLT‑17`) | منفذ جديد (DEC‑07، ✅ DEC‑12) | INC‑3 |
+| PLT‑10 | منفذ `OcrProvider` وخدمة `ocr` (شرطيان) | FR-RAS-01، FR-INT-15 | `framework/ports/`، ومحوّل في `infrastructure/ai_providers/`، و`services/ocr/`، وCompose وتراكب GPU، وصورة إصدار جديدة (`PLT‑17`). والنص المرسوم خطوطاً لا يحتاجه: يقرؤه `ele-parse` خلف منفذ قسم (DEC‑19) | منفذ جديد (✅ DEC‑07، ✅ DEC‑12)، مؤجّل إلى أول مستهلك ثانٍ أو خدمة GPU | INC‑3 إن أثبت القياس الحاجة إلى GPU، أو INC‑8P إن احتاجته `knowledge` أولاً |
 | PLT‑11 | الطوبولوجيا والإشعارات ومخططات الأحداث | §7.8 | `framework/events/topology.py`: مجرى واحد `stream.electrical` في `PUBLISHED_STREAMS`، وخمس روابط (مجموعة لكل دور) في `STATIC_CONSUMER_TOPOLOGY` بأنواع أحداثها؛ ومفتاح واحد في `_NOTIFY_STREAMS` في جذر التركيب؛ وملف JSON Schema لكل نوع في `docs/design/events/schemas/`؛ والجدولان §2 و§4 في `04-event-catalog.md`؛ و`tests/unit/test_stream_topology.py`. ومراقبة `stream.electrical.dlq` (ت‑6) يفعّلها دور واحد فقط، لأن الأدوار الخمسة تقرأ المجرى نفسه (`infrastructure/messaging/consumers/engine.py`) | إضافة | INC‑1 فصاعداً |
 | PLT‑12 | أنواع رسائل WebSocket جديدة بحقل `seq` | FR-API-02، FR-API-03 | `03-api-spec.md` §3.2، وطبقة WS في `api/` | إضافة (✅ DEC‑12) | INC‑10 |
 | PLT‑13 | صلاحيات RBAC جديدة، بلا أدوار جديدة | FR-ADM-01 | كتالوج الصلاحيات في `access` (صفوف `electrical:*` على الأدوار القائمة)، و`05-rbac-config-secrets.md` §1.3 | نعم (✅ DEC‑11) | INC‑1 |
 | PLT‑14 | التجهيز والمنح | SRS AC-09 | هجرة في سلسلة `platform` تنشئ schema `electrical` (سابقة `migrations/versions/platform/0004_spaces_schema.py`: السلسلة لا تنشئ schema جدول نسخها)؛ وسطر `migrations/versions/electrical` في `version_locations` في `alembic.ini`؛ ومدخل واحد في `MIGRATION_CHAINS` وفي `_MODULE_SCHEMAS`، وجداول الأقسام المستأجَرة في `_TENANT_TABLES` (`app/ops/provision.py`)؛ ومنح `app_rw` تأتي منها؛ ومنح `workspace_purger` في `PURGE_GRANTS`؛ ومنح `retention_sweeper` على جداول البيانات التقنية المؤقتة وحدها (المهام المنتهية وسجلات الصادرات)، ولا منح له على جداول بيانات المستخدم (§8.8، ✅ DEC‑16)؛ ولا منح لـ`backup_operator`؛ ولا دور جديد في `10-roles.sh`؛ وامتداد `pg_trgm` إن اختير (`deploy/postgres/initdb/20-extensions.sh`) | إعداد نشر (DEC‑13)؛ والكنس التقني (✅ DEC‑16) | INC‑1، والكنس التقني في INC‑11 |
 | PLT‑15 | رموز أخطاء `electrical.*` | FR-API-08 | `ERROR_CATALOG` في `framework/errors.py`، و`03-api-spec.md` §4 | إضافة | كل زيادة |
 | PLT‑16 | عقود import-linter | SRS AC-07 | `.importlinter` (§5.6): مدخل في `modules-independent`، وتوسيع `domain-purity` و`application-boundaries`، وعقد `electrical-contexts`، ومدخل في `agents-independent`، وعقد `wiretwin-agent-via-ports`؛ مع هيكل الوحدة الفارغ؛ ثم تحديث عدد العقود (8 ← 10) حيث يُذكر (`PLT‑23`) | نعم (DEC‑01، محسوم) | INC‑0 (العقود 1..4)، INC‑10 (5، 6) |
-| PLT‑17 | النشر | SRS AC-06، NFR-DEP-01 | على هدفَي Compose (§4.4): `docker-compose.yml` (خدمات، وملفات تشغيل، وشبكة داخلية، وحجم مؤقت)، و`docker-compose.gpu.yml`، ودفتر الموارد، وأحجام الخادم (`deploy/sizes/`). وخط صور الإصدار: صورتا `ele-parse` و`ocr` في `deploy/release/build-push.sh` و`.github/workflows/release.yml`، وفي `deploy/release/bundle.sh` الذي يقبل اليوم ثلاث صور فقط (`app` و`embedding` و`embedding-cuda`)، وبصمتاهما في `VERSION` (`docs/deploy-server.md` §3) | إعداد نشر وCI (DEC‑04، DEC‑07) | INC‑1، INC‑3 |
+| PLT‑17 | النشر | SRS AC-06، NFR-DEP-01 | على هدفَي Compose (§4.4): `docker-compose.yml` (خدمات، وملفات تشغيل، وشبكة داخلية، وحجم مؤقت)، و`docker-compose.gpu.yml`، ودفتر الموارد، وأحجام الخادم (`deploy/sizes/`). وخط صور الإصدار: صورة `ele-parse` بمحرك التعرّف ونماذجه المثبّتة بالبصمة (INC‑2)، وصورة `ocr` إن أُضيفت (INC‑3)، في `deploy/release/build-push.sh` و`.github/workflows/release.yml`، وفي `deploy/release/bundle.sh` الذي يقبل اليوم ثلاث صور فقط (`app` و`embedding` و`embedding-cuda`)، وبصمتاهما في `VERSION` (`docs/deploy-server.md` §3) | إعداد نشر وCI (DEC‑04، DEC‑07) | INC‑1، INC‑2، INC‑3 (شرطي) |
 | PLT‑18 | المراقبة | NFR-OBS-01..03 | مقاييس، وقواعد تنبيه بأقسامها في `docs/runbooks/alerts.md` وحالات `promtool` (ومنها تنبيه DLQ واحد لـ`stream.electrical.dlq`)، ولوحة Grafana، والتتبّع (DEC‑08) | إضافة | كل زيادة، وINC‑11 |
 | PLT‑19 | التراخيص والسلسلة البرمجية | NFR-LIC-02، NFR-LIC-06، NFR-LIC-07، NFR-SEC-04 | SBOM وفحص التراخيص والثغرات في `.github/workflows/ci.yml`. ولا يُمسّ `license` في `pyproject.toml` (يبقى `Proprietary`)، ولا ملف `LICENSE`، ولا مسار عرض الشيفرة (DEC‑10، تذكير للمالك) | نعم (DEC‑09، DEC‑10) | INC‑0 |
 | PLT‑20 | توجيه النماذج | FR-AGT-07، FR-AGT-14 | `PROVIDER_ROUTING` (مفتاح القدرة `wiretwin_agent`)، و`LLM_FALLBACK_ROUTE`، و`LLM_PRICES`، و`ollama-pull` | إعداد (DEC‑07) | INC‑10 |
@@ -620,8 +623,8 @@ graph LR
 | الاعتماد (SRS AC-03) | القرار | المستوى | المحوّلات المرشحة | الترخيص |
 |---|---|---|---|---|
 | تحليل PDF | **منفذ جديد** `PdfExtraction`: بدائيات، وأحرف وكلمات، وطبقات OCG، وXObjects، وروابط، وإشارات مرجعية، وبيانات وصفية، وإشارات تصنيف الصفحة | قسم (`drawings`) | عميل لـ`ele-parse` الذي يشغّل PyMuPDF؛ ومحوّل وهمي من ملفات مثبّتة | PyMuPDF AGPL-3.0 (مستعمل اليوم في `knowledge/adapters/parsers/pdf_text.py`)؛ بديل احتياطي pypdfium2 (Apache-2.0/BSD-3) |
-| التصيير إلى صور | **منفذ جديد** `PageRendering`: مستويات تكبير ومربعات، وتصيير منطقة للـOCR | قسم (`drawings`) | الخدمة نفسها `ele-parse` (PyMuPDF)، بخطوط CJK بديلة | AGPL-3.0؛ الخطوط OFL-1.1 (✅ DEC‑13، SRS D-26) |
-| OCR | **منفذ إطار جديد** `OcrProvider`: التعرّف على مناطق بلغات محددة، بدفعات، مع الثقة والصناديق والزاوية | إطار، لأن `drawings` و`knowledge` تستعملانه (FR-INT-15) | `ExternalOcrProvider` إلى `ocr-lb` ثم نسخ `ocr`: نماذج PP-OCRv5 عبر PaddlePaddle أو RapidOCR/ONNX Runtime؛ وخط أساس Tesseract `chi_sim+eng` على CPU | Apache-2.0 (PaddleOCR وPaddlePaddle وRapidOCR وTesseract)، MIT (ONNX Runtime). الاختيار بالقياس (M-29، M-30، L-06؛ DEC‑07) |
+| التصيير إلى صور | **منفذ جديد** `PageRendering`: مستويات تكبير ومربعات للعرض. وتصيير سطور النص والمناطق للتعرّف يجري داخل `ele-parse` ولا يخرج منه (DEC‑19) | قسم (`drawings`) | الخدمة نفسها `ele-parse` (PyMuPDF)، بخطوط CJK بديلة | AGPL-3.0؛ الخطوط OFL-1.1 (✅ DEC‑13، SRS D-26) |
+| OCR | **منفذ قسم** في `drawings` لاسترجاع النص (اسمه في LLD الزيادة INC‑2)، ومحوّله عميل `ele-parse` نفسه: عزل السطور والتعرّف عليها والمسح الاحتياطي في الابن المحدود، مع الثقة والصناديق والزاوية. و**منفذ الإطار** `OcrProvider` يُؤجَّل إلى أول زيادة لها مستهلك ثانٍ أو خدمة GPU (INC‑3 أو INC‑8P) | قسم (`drawings`) في R1؛ وإطار حين تحتاجه `knowledge` (FR-INT-15) | RapidOCR على ONNX Runtime على CPU، بنماذج PP-OCR (v4 أو v5 أو v6) يختارها قياس القبول `F1‑MS‑1` في INC‑2؛ وفرع GPU شرطي في INC‑3. واستُبعد Tesseract بقياس P1 | Apache-2.0 (RapidOCR ونماذج PP-OCR)، MIT (ONNX Runtime)؛ والتوابع وإشعارات الثنائيات المضمَّنة تُراجع عند البناء (§13.8). الاختيار بالقياس (M-30، L-06؛ ✅ DEC‑07) |
 | كاشف الرموز النقطي | **منفذ إطار جديد** `SymbolDetector` في R2 (FR-RAS-02)؛ لا شيء في R1 | إطار (R2) | RF-DETR مع SAHI؛ أو Ultralytics YOLO | Apache-2.0، MIT؛ أو AGPL-3.0 (مقبول) |
 | النموذج اللغوي (محلي وسحابي) | **إعادة استعمال** `LLMProvider` و`ProviderResolver` و`LlmFallback` و`LlmPricing` وطبقات المُنسِّق (`_MeteredLLM`، `_BilledRoute`) | إطار (قائم) | `OllamaLLM` محلياً (افتراضي)، و`OpenAILLM` سحابياً بالإعداد. محوّلات Claude وGemini وOpenRouter ملفات فارغة اليوم (`docs/architecture.md` §15) | — |
 | النموذج البصري | **منفذ إطار جديد** `VisionLanguageProvider` في R2 (FR-RAS-04 بصفته مدققاً، وFR-NLU-06)، أو توسيع رسائل `LLMProvider` بأجزاء صور، وهذا تغيير عقد | إطار (R2) | نموذج رؤية محلي عبر Ollama؛ أو OpenAI | يُحدَّد ترخيص النموذج حجماً بحجم (NFR-LIC-04) |
@@ -652,8 +655,8 @@ graph LR
 |---|---|---|---|---|---|
 | STG‑00 | تسجيل الوثيقة | وثيقة | `drawings` في `app` | وثيقة لملف واحد (1:1 مع `file_id`) ومهمة، بعد التحقق من أن الملف جاهز في فضاء المشروع، وليس وثيقة أصلاً، ولا سميَّ أقدم حياً له (§8.11) | FR-ING-03، DATA-03 |
 | STG‑01 | الفحص والتصنيف واقتراح ملف الإعداد | وثيقة (يُجزَّأ عند الكبر) | `document` + `ele-parse` | بصمة SHA-256 تُحسب من البايتات المتدفقة، ورفض تكرارها في وثيقة حية من المشروع: `FileView` لا يحمل بصمة (`files/ports/inbound.py`)، وبصمة العميل عند الإتمام اختيارية. ثم عدد الصفحات، وCreator/Producer، وتصنيف كل صفحة (متجهية بنص، أو SHX أو منحنيات، أو نص مشوّه الترميز، أو نقطية، أو مختلطة)، واقتراح ملف إعداد بثقة، وبيانات تقرير التوصيف | FR-ING-02، FR-ING-06..08، FR-ING-12، FR-EVAL-14 |
-| STG‑02 | الاستخراج المتجهي | دفعة صفحات | `pages` + `ele-parse` | البدائيات بعد CTM والدوران والقص، وخصائص الرسم، والنص على مستوى الحرف والكلمة، والروابط، وإعادة استعمال الكتل، ومعرّفات حتمية، وكشف النص المشوّه وتعليم مناطقه للـOCR، وتصيير المربعات | FR-VEC-01..07، FR-VEC-09..11 |
-| STG‑03 | فرع OCR | منطقة أو صفحة | `ocr` + `OcrProvider` | نص بمصدر `OCR` وثقة أدنى للمناطق الموسومة والصفحات النقطية؛ ثم يُعاد تشغيل STG‑04..07 لتلك الصفحة | FR-VEC-08، FR-VEC-11، FR-RAS-01، FR-RAS-05 (R2) |
+| STG‑02 | الاستخراج المتجهي | دفعة صفحات | `pages` + `ele-parse` | البدائيات بعد CTM والدوران والقص، وخصائص الرسم، والنص على مستوى الحرف والكلمة، والروابط، وإعادة استعمال الكتل، ومعرّفات حتمية، وكشف النص المشوّه وتعليم مناطقه للـOCR، وتصيير المربعات. واسترجاع النص المرسوم خطوطاً بالهندسة أولاً: عزل سطور النص من البدائيات، والتعرّف عليها سطراً سطراً في `ele-parse` بمصدر OCR وطريقة «سطر معزول» وثقة، وربط كل سطر ببدائياته وتعليمها نصاً، وتعليم ما لم يُغطَّ للمسح (DEC‑19) | FR-VEC-01..11 |
+| STG‑03 | المسح الاحتياطي والمسار النقطي | منطقة أو صفحة | `ocr` + `ele-parse` (CPU)؛ و`OcrProvider` على GPU للصفحات النقطية إن أُضيف (INC‑3) | نص بمصدر `OCR` وطريقة «مسح» وثقة أدنى لما لم تغطّه السطور ولكتلة العنوان (INC‑2)، وللصفحات النقطية والمناطق المشوّهة (INC‑3)؛ ثم يُعاد تشغيل STG‑04..07 لتلك الصفحة، أو تنتظر الصفحة اكتمال مسحها (يحسمه LLD الزيادة INC‑2) | FR-VEC-08، FR-VEC-11 (INC‑3)، FR-RAS-01، FR-RAS-05 (R2) |
 | STG‑04 | التخطيط | صفحة | `pages` | نوع الصفحة، وكتلة العنوان وحقولها، وشبكة الإحداثيات وتحويلها، والمناطق، والربط بين رقم الصفحة الظاهري والفعلي | FR-LAY-01..04، FR-LAY-06 |
 | STG‑05 | المعرّفات | صفحة | `pages` + CMP‑06 | ظهورات المعرّفات بأشكالها الثلاثة (أصلي، مطبّع، كامل)، ودمج البنية الموروثة، ووسم غير الصالح | FR-ID-01..10، FR-ID-13 |
 | STG‑06 | الرموز | صفحة | `pages` + `GeometryKernel` | مثيلات الرموز بفئاتها الدلالية ومواضع أقطابها، وربط النص بالرمز بمطابقة مثلى، والصناديق والربط الميكانيكي، والرموز المجهولة | FR-SYM-01..08، FR-SYM-10، FR-SYM-13 |
@@ -675,8 +678,8 @@ flowchart TD
     B -->|ثقة < العتبة| C{"تأكيد المستخدم<br/>(UC-10)"}
     B -->|ثقة ≥ العتبة أو مؤكد| D
     C --> D["تقسيم إلى دفعات صفحات"]
-    D --> E["STG‑02 الاستخراج المتجهي<br/>+ تصيير المربعات"]
-    E -->|منطقة مشوّهة أو SHX أو صفحة نقطية| O["STG‑03 OCR<br/>GPU · مصدر = OCR"]
+    D --> E["STG‑02 الاستخراج المتجهي<br/>+ سطور النص بالهندسة + تصيير المربعات"]
+    E -->|ما لم تغطّه السطور، أو صفحة نقطية، أو منطقة مشوّهة| O["STG‑03 المسح الاحتياطي<br/>CPU عبر ele-parse · وGPU للنقطي (INC‑3)"]
     O --> F
     E --> F["STG‑04 التخطيط → STG‑05 المعرّفات<br/>→ STG‑06 الرموز → STG‑07 الاتصال المحلي<br/>+ صفوف التقارير"]
     F --> G{"آخر دفعة؟<br/>(قفل صفّ المهمة)"}
@@ -690,7 +693,7 @@ flowchart TD
 
 *الشكل 4. خط الاستيعاب.*
 
-الفرع النقطي احتياط (P-05): لا يدخل الـOCR إلا ما وسمه STG‑01 أو STG‑02 بأنه يحتاجه. وكل نص من هذا الفرع يحمل مصدره وثقته (FR-VEC-08، DATA-01). ولا يكون النموذج البصري مصدراً وحيداً لحقيقة اتصال (FR-RAS-04)؛ وفي R1 لا نموذج بصرياً في الخط أصلاً.
+الفرع الاحتياطي احتياط (P-05): لا يدخل المسح إلا ما وسمه STG‑01 أو STG‑02 بأنه يحتاجه. وسطور النص التي عزلتها الهندسة تُقرأ في STG‑02 نفسه (DEC‑19). وكل نص بـOCR يحمل مصدره وطريقته وثقته (FR-VEC-08، DATA-01). ولا يكون النموذج البصري مصدراً وحيداً لحقيقة اتصال (FR-RAS-04)؛ وفي R1 لا نموذج بصرياً في الخط أصلاً.
 
 ### 7.3 التوزيع والتجميع (fan-out / fan-in)
 
@@ -704,8 +707,8 @@ flowchart TD
 - **المعرّفات الحتمية.** معرّف البدائية وكتلة النص مشتق من (الملف `file_id`، الصفحة، موضع العنصر في تدفق المحتوى) بـuuid5 (FR-VEC-07). ومعرّفات الحقائق والأدلة مشتقة من مدخلاتها. فإعادة التشغيل تكتب الصفوف نفسها لا نسخاً منها. أما الملف البديل بالاسم نفسه فمعرّفه جديد، فلا يصادف أيٌّ من معرّفاته معرّفاً من الملف المحذوف (FR-KG-03، §8.7).
 - **مفتاح المخرَج.** كل مخرج مفتاحه (الوثيقة، الصفحة، المرحلة، `pipeline_version`، بصمة الإعداد). وإعادة التشغيل تستبدل مخرج المفتاح نفسه ذرّياً.
 - **التسليم.** at-least-once مع مطالبة `processed_events` في معاملة الأثر، ثم DLQ بعد خمس محاولات (arch D‑19).
-- **الحتمية (FR-ING-05، NFR-REP-02).** المراحل STG‑02 وSTG‑04..13 حتمية للمدخلات والإصدارات نفسها. أما STG‑03 فحتمي بإصدار النموذج ووزنه المثبّتين وإعداد تشغيله. وكل ما فيه عشوائية (الترتيب، التعادلات) يُحسم بترتيب ثابت.
-- **بصمة الإصدار (NFR-REP-01).** على كل حقيقة: إصدار خط المعالجة، وإصدار `shared`، وإصدار مكتبة الرموز، وبصمة ملف الإعداد، وإصدار نموذج OCR إن وُجد.
+- **الحتمية (FR-ING-05، NFR-REP-02).** المراحل STG‑04..13 حتمية للمدخلات والإصدارات نفسها. أما STG‑02 (ومعه التعرّف على السطور) وSTG‑03 فحتميان بإصدار النموذج وبصمته، وإصدار ONNX Runtime، وعدد خيوطه المثبّت، وإعداد تشغيله (DEC‑19، RSK‑25). وكل ما فيه عشوائية (الترتيب، التعادلات) يُحسم بترتيب ثابت.
+- **بصمة الإصدار (NFR-REP-01).** على كل حقيقة: إصدار خط المعالجة، وإصدار `shared`، وإصدار مكتبة الرموز، وبصمة ملف الإعداد، وإصدار محرك التعرّف ونموذجه وبصمته إن كان النص من OCR.
 
 ### 7.5 إعادة المعالجة التزايدية
 
@@ -746,7 +749,7 @@ flowchart TD
 | `electrical.document.registered.v1` | `drawings` (API) ← `drawings` (`document`) | `cg.electrical.document` | document_id | `document_id`، `project_id`، `file_id`، `job_id` |
 | `electrical.document.profile_proposed.v1` | `drawings` ← الإشعار | `cg.notify.*` | document_id | `job_id`، `confidence`، `needs_confirmation`، `mixed_standards` |
 | `electrical.page_batch.requested.v1` | `drawings` ← `drawings` (`pages`) | `cg.electrical.pages` | job_id | `job_id`، `document_id`، `pages[]`، `attempt` |
-| `electrical.page_batch.ocr_requested.v1` | `drawings` (`pages`) ← `drawings` (`ocr`) | `cg.electrical.ocr` | job_id | `job_id`، `document_id`، `page`، `region_refs[]` |
+| `electrical.page_batch.ocr_requested.v1` | `drawings` (`pages`) ← `drawings` (`ocr`، CPU، منذ INC‑2) | `cg.electrical.ocr` | job_id | `job_id`، `document_id`، `page`، `region_refs[]` |
 | `electrical.document.pages_completed.v1` | `drawings` (`pages`/`ocr`) ← `drawings` (`document`) | `cg.electrical.document` | document_id | `job_id`، `counts` حسب الحالة |
 | `electrical.document.extracted.v1` | `drawings` (`document`) ← `circuits` (`model`) | `cg.electrical.model` | document_id | `job_id`، `pipeline_version`، `changed_pages?` |
 | `electrical.document.extraction_failed.v1` | `drawings` ← الإشعار | `cg.notify.*` | document_id | `job_id`، `reason` |
@@ -770,8 +773,8 @@ flowchart TD
   - `cg.electrical.index`: `model.built`، و`model.updated`، و`document.purged`.
 - `_NOTIFY_STREAMS`: مفتاح واحد `stream.electrical` بأنواع الإشعار (`document.profile_proposed`، و`document.extraction_failed`، و`job.progressed`، و`job.completed`، و`model.build_failed`، و`index.updated`، و`index.failed`).
 - كانت في الإصدار 0.1 ثلاثة مجارٍ وسبع روابط وثلاثة طوابير موتى وثلاثة مفاتيح إشعار؛ وصارت مجرى واحداً وخمس روابط وطابوراً واحداً ومفتاحاً واحداً.
-- **كل رابطة تدخل الجدول في الزيادة التي تشحن مستهلكها، لا قبلها:** `document` في INC‑1، و`pages` في INC‑2، و`ocr` في INC‑3، و`model` في INC‑6، و`index` في INC‑8. فالمُرحِّل ينشئ كل مجموعة في الجدول قبل أول نشر (`workers/bootstrap.py`)، ومجموعة بلا مستهلك تحبس القصّ (البند التالي).
-- **مجموعة بلا مستهلك تحبس قصّ المجرى كله.** القصّ الدوري (`XTRIM MINID ~`، `04` §2، خطة السعة `5.5`) لا يتجاوز أبطأ مجموعة، ولا يميّز عاملاً متوقفاً من مجموعة مهجورة (`app/ops/stream_trim.py`). فإذا لم يعمل دور `ocr` (ملف `electrical-ocr` معطّل، وهو الافتراضي محلياً، §4.2) بقيت `cg.electrical.ocr` بلا مستهلك، ولم يُقصّ `stream.electrical` حتى حدّ `MAXLEN` الاحتياطي. كانت المشكلة نفسها في الإصدار 0.1 على `stream.drawings`، ويكبر أثرها حين صار المجرى واحداً. المعالجة (RSK‑14): حين يكون الـOCR معطّلاً بالإعداد، يشترك العامل على CPU في `cg.electrical.ocr` بمعالج يسجّل الصفحة `needs_review` بسبب `ocr_unavailable`، وهو السلوك المعلن أصلاً في §4.2؛ فلا تبقى المجموعة بلا مستهلك أبداً. ويُحسم التفصيل في LLD الزيادة INC‑3.
+- **كل رابطة تدخل الجدول في الزيادة التي تشحن مستهلكها، لا قبلها:** `document` في INC‑1، و`pages` في INC‑2، و`ocr` في INC‑2 (دور CPU للمسح الاحتياطي، DEC‑19)، و`model` في INC‑6، و`index` في INC‑8. فالمُرحِّل ينشئ كل مجموعة في الجدول قبل أول نشر (`workers/bootstrap.py`)، ومجموعة بلا مستهلك تحبس القصّ (البند التالي).
+- **مجموعة بلا مستهلك تحبس قصّ المجرى كله.** القصّ الدوري (`XTRIM MINID ~`، `04` §2، خطة السعة `5.5`) لا يتجاوز أبطأ مجموعة، ولا يميّز عاملاً متوقفاً من مجموعة مهجورة (`app/ops/stream_trim.py`). فلو بقيت `cg.electrical.ocr` بلا مستهلك، لم يُقصّ `stream.electrical` حتى حدّ `MAXLEN` الاحتياطي. كانت المشكلة نفسها في الإصدار 0.1 على `stream.drawings`، ويكبر أثرها حين صار المجرى واحداً. المعالجة (RSK‑14): المجموعة `cg.electrical.ocr` يستهلكها دور على CPU في ملف `electrical` منذ INC‑2، فلا يتوقف وجوده على ملف `electrical-ocr` (DEC‑19، §4.2). وإن أضاف INC‑3 فرع GPU، بقي العامل على CPU مستهلكها: يمرّر الصفحات النقطية إلى `OcrProvider` حين يتوفر، ويسجّلها `needs_review` بسبب `ocr_unavailable` حين لا يتوفر؛ فلا تبقى المجموعة بلا مستهلك أبداً. ويُحسم تفصيل المسح في LLD الزيادة INC‑2، وتفصيل فرع GPU في LLD الزيادة INC‑3.
 
 **الحذف ليس حدثاً، والكنس حدث.** على سابقة `file_deletion.py` و`space_deletion.py`: إخراج الوثيقة من كل قراءة تسلسل متزامن مثالي عند جذر التركيب، لا حدث غير متزامن يترك نافذة يبقى فيها المحذوف قابلاً للبحث أو الاستشهاد. أما `electrical.document.purged.v1` فيُلحق في معاملة الوسم نفسها، ولا يكنس إلا صفوفاً صارت غير مرئية أصلاً (§8.8). ورابطته في كل مجموعة تدخل مع منفذ تطهير قسمها: `document` في INC‑1، و`model` في INC‑6، و`index` في INC‑8.
 
@@ -804,7 +807,7 @@ flowchart TD
 ### 8.3 MinIO: المشتقات
 
 - كل مشتق تحت بادئة مساحة العمل: `<workspace_id>/ele/<document_id>/…`، فتطهير الوثيقة يمحو بادئتها (§8.8). وهي البادئة نفسها التي يمحوها `app/ops/purge.py` (`INV-F1`)، فيلحقها تطهير مساحة العمل دون منطق جديد.
-- **المحتوى:** حزمة بدائيات ونص لكل صفحة (صيغة ثنائية بإصدار، ADR‑05)، ومخرجات OCR، ومربعات التصيير بمستوياتها، وصادرات المشروع (NFR-PRIV-03). والصادرات وحدها بيانات تقنية مؤقتة، تُكنس بعد انتهاء رابطها (NFR-PRIV-04)؛ وبقية المشتقات تبقى ما بقيت وثيقتها.
+- **المحتوى:** حزمة بدائيات ونص لكل صفحة (صيغة ثنائية بإصدار، ADR‑05)، ومخرجات OCR (سطور ومسح)، ومربعات التصيير بمستوياتها، وصادرات المشروع (NFR-PRIV-03). والصادرات وحدها بيانات تقنية مؤقتة، تُكنس بعد انتهاء رابطها (NFR-PRIV-04)؛ وبقية المشتقات تبقى ما بقيت وثيقتها.
 - **ليست نسخة من الملف.** المشتقات ليست الملف الأصلي، فلا تخالف FR-INT-07. أما النسخة المؤقتة التي يقرأ منها `ele-parse` فتعيش في حجم مؤقت مدة المهمة، وتمحوها مهمة دورية (`PLT‑22`).
 
 ### 8.4 Qdrant
@@ -828,7 +831,7 @@ flowchart TD
 ### 8.6 الدليل والإسناد (P-03، DATA-01)
 
 - **المالك.** سجل الدليل كيان في `drawings`، ويحمل حقول DATA-01: الوثيقة (الملف المرفوع، SRS D-22)، ورقم الصفحة الفعلي والظاهري، والموقع (صفحة، عمود، صف)، والإحداثيات، ومعرّفات البدائيات أو كتل النص أو صف الجدول، والطريقة، والإصدار، والثقة، والزمن.
-- **طرق الاستخراج** تعداد ثابت: هندسة متجهية، ونص متجهي، وجدول تقرير، ورابط داخلي، وOCR، ونموذج بصري (R2)، وإدخال بشري، ومصدر مستورد (W)، ومقطع من النظام القائم.
+- **طرق الاستخراج** تعداد ثابت: هندسة متجهية، ونص متجهي، وجدول تقرير، ورابط داخلي، وOCR بطريقتين (سطر عزلته الهندسة، أو مسح احتياطي؛ DEC‑19)، ونموذج بصري (R2)، وإدخال بشري، ومصدر مستورد (W)، ومقطع من النظام القائم.
 - **الإشارة إليه.** كل حقيقة في `drawings` وكل كيان وعلاقة في `circuits` يحمل معرّف دليل واحداً على الأقل (FR-KG-02، FR-CON-10). وتشير إليه `circuits` و`search` و`diagnostics` بالمعرّف، ويُحلّ عبر `EvidenceLookup`.
 - **مسار «افتح على الصفحة» (FR-GRD-06، FR-API-04).** معرّف الدليل يقود إلى الصفحة والمربعات، ثم إلى طبقة التظليل: صناديق ومسارات في إحداثيات الصفحة، مع تحويلها إلى إحداثيات الصورة.
 - **استشهاد المخطط ثابت بالبناء.** يشير إلى (وثيقة، دليل)، فيبقى صالحاً ما دام ملف الوثيقة قائماً. وبعد حذفه أو استبداله يُحلّ إلى «مصدر محذوف» ولا يُفتح (FR-INT-13). وفي الجلسة والتقرير تُحفظ معه لقطة استشهاد دنيا: المعرّف كما طُبع، ووسم الصفحة، واسم الملف، ونص قصير (✅ DEC‑18، SRS D-31).
@@ -1192,7 +1195,7 @@ flowchart LR
 - **في حلقة الأدوات** قد يحدث تعطل السحابة بعد بدء البثّ، فلا تحويل حينها بل قطع، وهذه سياسة المنصة (arch D‑16). ولذلك يحسم الوكيل اختيار الأدوات بنداءات غير مبثوثة، ولا يبثّ إلا الشرح النهائي (RSK‑07).
 - **الحصص.** يحجز المُنسِّق ويشحن عبر `usage`، والميزانية النافدة توقف المحلي والسحابي معاً (`docs/architecture.md` §07).
 - **كلفة الجلسة (NFR-CST-02).** تُجمع من أدوارها في `diagnostics`، ولها سقف من الإعداد. ميزانية المشروع والتوجيه لكل مهمة في R2 (FR-AGT-08).
-- **النموذج المحلي.** الافتراضي اليوم `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات. اختار المالك عائلة Qwen (DEC‑07)، ويُختار الحجم بالقياس على المضيف المحلي (DEC‑14)، فالمرشح ما يتسع له كرته (8 GB) بجانب التضمين وOCR، أو يُقاس منفرداً، ويُفعَّل بعد اجتياز بوابات التقييم (FR-EVAL-12).
+- **النموذج المحلي.** الافتراضي اليوم `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات. اختار المالك عائلة Qwen (DEC‑07)، ويُختار الحجم بالقياس على المضيف المحلي (DEC‑14)، فالمرشح ما يتسع له كرته (8 GB) بجانب التضمين (وOCR إن أضاف INC‑3 فرع GPU)، أو يُقاس منفرداً، ويُفعَّل بعد اجتياز بوابات التقييم (FR-EVAL-12).
 
 ### 11.7 مقاومة حقن التعليمات (FR-AGT-13، NFR-SEC-05)
 
@@ -1215,7 +1218,7 @@ flowchart LR
 | مزوّد النموذج | كل الأدوات الحتمية عبر REST: البحث، والرسم، والتتبّع، والمحاكاة، والجودة. وحلقة التشخيص كاملة بحقول الحقيقة دون شرح (`/electrical/diagnosis-sessions/*`) |
 | مزوّد التضمين | الساق الحرفية وحدها مع إعلام (FR-IDX-10) |
 | `knowledge` | ساق المخططات مع إعلان المصدر غير المتاح (FR-INT-09) |
-| خدمة OCR | الصفحات المعنية `needs_review` بسبب `ocr_unavailable`، وتُعاد معالجتها لاحقاً |
+| خدمة OCR على GPU (INC‑3، إن أُضيفت) | الصفحات النقطية `needs_review` بسبب `ocr_unavailable`، وتُعاد معالجتها لاحقاً. ولا أثر على النص المرسوم خطوطاً، لأنه على CPU في `ele-parse` (DEC‑19) |
 | السحابة | التحويل إلى المحلي (FR-AGT-14) |
 
 ### 11.10 MCP (FR-API-05، R2)
@@ -1352,7 +1355,7 @@ flowchart LR
   |---|---|
   | الاستيعاب | زمن كل مرحلة لكل صفحة، والصفحات حسب الحالة والسبب، ومدة المهمة، والمهام في الطابور |
   | المجموعات | عمر أقدم مدخل لكل مجموعة من المجموعات الخمس على `stream.electrical` (من مقاييس المجاري القائمة) |
-  | OCR | زمن الصفحة، وطول الدفعة، والأخطاء |
+  | OCR | زمن التعرّف لكل صفحة (سطور ومسح)، وعدد السطور، ونسبة التغطية، وطول الدفعة، والأخطاء |
   | المعزول | أعطال `ele-parse` وتجاوزاته للحدود |
   | الاسترجاع | زمن كل ساق، وتجاوز مهلة `knowledge` |
   | التشخيص | زمن الحساب، وبلوغ الحدّ الزمني، ورفض `429` |
@@ -1363,7 +1366,7 @@ flowchart LR
 - **التنبيهات.** تنبيه لكل مما يلي، ولكلٍّ قسم في `docs/runbooks/alerts.md` وحالتا `promtool` (تُشعله وتُصمته)، على قاعدة المنصة:
   - عمر الطابور فوق عتبة لكل مرحلة.
   - مهمة عالقة.
-  - خدمة OCR ساقطة.
+  - خدمة OCR على GPU ساقطة (INC‑3، إن أُضيفت).
   - معدل أعطال المعزول.
   - تجاوز SLO بحث المعرّف أو التشخيص.
   - DLQ المجرى الجديد (`stream.electrical.dlq`).
@@ -1378,7 +1381,7 @@ flowchart LR
 | NFR-PERF-01 | دور `pages` + `ele-parse` على المضيف المحلي | توازي الصفحات (§7.3) | أداة دفعات على مجموعة 500 صفحة (على نهج `deploy/load/backlog.js`) |
 | NFR-PERF-02 | مشروع اصطناعي بأكبر حجم يتسع له المضيف، نحو NFR-SCAL-01 | §9.7، §8.5 | k6 (`--profile load`) على مسارات البحث والرسم |
 | NFR-PERF-03، NFR-PERF-06 | دور واحد للوكيل | §11.2، §9.2 | قياس زمن أول حدث وأزمنة السوق |
-| NFR-PERF-05 | كرت المضيف (RTX 4060 Laptop، 8 GB) | §7.1 (STG‑03) | مجموعة صفحات SHX ونقطية |
+| NFR-PERF-05 | CPU المضيف المحلي (10 أنوية) للنص المرسوم خطوطاً، وكرت المضيف (RTX 4060 Laptop، 8 GB) للصفحات النقطية إن أُضيف فرع GPU (INC‑3) | §7.1 (STG‑02، STG‑03) | قياس القبول `F1‑MS‑1`، ثم مجموعة صفحات من المورد الأول |
 | NFR-PERF-07 | عملية `app` واحدة | §10.11 | معيار حقن الأعطال |
 | NFR-SCAL-02 | أكبر عدد يتسع له المضيف، نحو 200 مشروع و50 جلسة متزامنة | تزامن مقيّد ونسخ | k6 |
 | NFR-SCAL-03 (كفاءة ≥ 0.8) | من 1× حتى أكبر مضاعف يتسع له المضيف، نسخاً للمرحلة المختنقة | §4.3 | المضيف المحلي (✅ DEC‑14) |
@@ -1413,7 +1416,8 @@ flowchart LR
 
 | العنصر | التصميم |
 |---|---|
-| تقرير التوصيف (FR-EVAL-14) | ناتج STG‑01، مع تجميع بعد STG‑02 وSTG‑03، لكل مجموعة وثائق. يُشغَّل على العيّنات **أولاً** (INC‑1)، فيحدّد توزيع المجموعة الذهبية وترتيب مكتبات الرموز |
+| تقرير التوصيف (FR-EVAL-14) | ناتج STG‑01، مع تجميع بعد STG‑02 وSTG‑03، لكل مجموعة وثائق. يُشغَّل على العيّنات **أولاً**: أُجري على عيّنات المالك في P1 بعد دمج INC‑1 (`../inc-1/characterization.md`)، وحدّد مسار استرجاع النص (DEC‑19). وما بقي منه، أي توزيع المجموعة الذهبية وترتيب مكتبات الرموز، ينتظر قواعد F2 وعيّنات أوسع |
+| قياس القبول لمحرك التعرّف (`F1‑MS‑1`) | في INC‑2، بعد بناء عملية السطور في `ele-parse` وقبل تثبيت النموذج، على المضيف المحلي وحده بحاوية مؤقتة بلا شبكة. يُضبط عزل السطور على صفحات P1 الثلاث موسومة كاملة، ويُحكم على مجموعة محجوزة من المورد نفسه (20 صفحة وألف معرّف على الأقل، F3). المرشحون: نماذج PP-OCRv4 وv5 وv6 عبر RapidOCR المثبّت. والمقاييس: تطابق المعرّفات، والصيغ الخاطئة، ودقة الأحرف، والتغطية، وزمن الصفحة على CPU بخيوط مثبّتة، وأقصى ذاكرة للابن. والعتبات: لا يُختار جيل أحدث من v4 إلا إن لم ينقص تطابقه ولم تزد صيغه الخاطئة؛ ومتوسط الصفحة ≤ 15 ث؛ والذاكرة ضمن سقف LLD؛ ويُفعَّل المسح الاحتياطي افتراضياً فقط إن زاد التطابق دون أن تزيد الصيغ الخاطئة على مسار السطور. والمواصفة كاملة في `../inc-1/f1/design.md` §4.6 (✅ DEC‑07) |
 | المجموعة الذهبية (FR-EVAL-02، §8.3) | الملفات في مساحة عمل وفضاء مخصّصين للتقييم. والتسميات طبقة «ذهبية» في `drawings` بالشكل نفسه للتصحيحات (رمز، تاغ، اتصال، مرجع، حقل كتلة عنوان، نوع صفحة)، تُحرَّر بالواجهات نفسها بصلاحية `electrical:eval`. وتُصدَّر لقطة بإصدار وبصمة. والتسميات الحية تتبع وثيقتها: استبدال ملف ذهبي بالاسم يطهّرها (SRS D-22)، والمعاينة تعدّها قبل الإتمام (§8.11). ولقطاتها المصدَّرة تبقى سجلاً ببصمتها، ولا تُشغَّل إلا ما دام ملفها ببصمته موجوداً، ويذكر تقرير التقييم ما استُبعد منها (✅ DEC‑18) |
 | الحقيقة شبه الآلية (FR-EVAL-03، R2) | السجلات المتفق عليها من مصدرين في STG‑10 تُقترح تسميات تنتظر اعتماداً بشرياً |
 | حقن أخطاء التوثيق (FR-EVAL-04) | محوّل على مستوى الحقائق: حذف سلك، وتبديل مرجع، وتغيير رقم طرف، وحذف صف تقرير. يقيس STG‑10 وM-13 |
@@ -1441,6 +1445,7 @@ flowchart LR
 - **ما لا يدخل الشيفرة المتاحة.** الأسرار والبيانات خارجها أصلاً: ملفات `deploy/load/*.json` وشهادات `deploy/nginx/certs/` في `.gitignore`.
 - **الأنماط بلا ترخيص.** لا شيفرة من مستودعات بلا ترخيص (PanelPilot، CircuitDiagOCR، PIDCon): أنماط فقط (NFR-LIC-03).
 - **النماذج والبيانات.** يُوثَّق ترخيص كل نموذج (OCR، LLM، تضمين) وكل مجموعة بيانات منفصلاً (NFR-LIC-04).
+- **اعتماديات OCR في صورة `ele-parse` (✅ DEC‑07، DEC‑13).** RapidOCR وONNX Runtime وتوابعهما، ونماذج PP-OCR مخبوزة في الصورة بالبصمة، ولا يُستدعى منزّل النماذج. والتراخيص المعلنة كلها في القائمة (`../inc-1/f1/design.md` §4.3). و**مراجعة إشعارات الثنائيات المضمَّنة إلزامية عند البناء**، على سابقة SRS D-33: إشعارات ONNX Runtime (ومنها Intel MKL بترخيص Intel Simplified Software License)، والمكتبات المبنية في عجلة OpenCV (FFmpeg، وOpenSSL 1.1، و`libgfortran`). وما خرج عن NFR-LIC-01 يعود إلى المالك قراراً جديداً في SRS.
 - **مكتبات رموز المصنّعين وصورها** لا تُضمَّن قبل التحقق من حق الاستعمال (NFR-LIC-05). فمجموعة `covaga` مثلاً أصل حقوقها غير واضح (`01-catalog.md` #2).
 - **ترخيص خارج القائمة** يحتاج قرار مالك. وقد أُقرّ OFL-1.1 للخطوط وحدها (✅ DEC‑13، SRS D-26)، فيقبله فحص التراخيص في CI لملفات الخطوط فقط، ويرفضه لأي حزمة شيفرة.
 
@@ -1465,8 +1470,7 @@ sequenceDiagram
     participant WD as worker (document)
     participant SB as ele-parse
     participant WP as worker (pages) × N
-    participant WO as worker (ocr)
-    participant OCR as ocr (GPU)
+    participant WO as worker (ocr) · CPU
     participant WM as worker (model) · circuits
     participant WI as worker (index) · search
     participant N as جسر الإشعارات (WS)
@@ -1488,12 +1492,12 @@ sequenceDiagram
     end
     par دفعات متوازية
         OB->>WP: page_batch.requested
-        WP->>SB: STG‑02 بدائيات ونص وتصيير المربعات
+        WP->>SB: STG‑02 بدائيات ونص، وسطور النص بالهندسة وتعرّفها (DEC‑19)، وتصيير المربعات
         WP->>WP: STG‑04..07 + صفوف التقارير (نطاق نقي)
-        alt منطقة SHX أو نص مشوّه أو صفحة نقطية
+        alt ما لم تغطّه السطور، أو كتلة العنوان (وفي INC‑3 صفحة نقطية أو نص مشوّه)
             WP->>OB: page_batch.ocr_requested
             OB->>WO: ocr_requested
-            WO->>OCR: تعرّف (مناطق، zh+en)
+            WO->>SB: مسح المناطق على CPU (وللنقطي `OcrProvider` على GPU إن أُضيف)
             WO->>WO: نص بمصدر OCR ثم إعادة STG‑04..07 للصفحة
         end
         WP->>DRW: حقائق الصفحة + حالة كل مرحلة (معاملة، قفل المهمة)
@@ -1662,8 +1666,8 @@ sequenceDiagram
 | ADR‑06 | النوى الحسابية الهندسية | FR-CON-02، FR-SYM-05، NFR-PERF-01 | خلف منفذ `GeometryKernel`: بايثون نقي أولاً، ثم Shapely وSciPy وNumPy إن أثبت القياس | NumPy كاملاً من البداية | BSD-3 | ✅ DEC‑13 (مُقَرّة، وتُضاف إن أثبت القياس) |
 | ADR‑07 | ربط النص بالرمز | FR-SYM-05، T-08 | مطابقة مثلى (Hungarian) بدالة كلفة وسقف | جشعة (مرفوضة في SRS) | BSD-3 أو تنفيذ نقي | لا |
 | ADR‑08 | التعرّف المتجهي على الرموز | FR-SYM-01..04، FR-SYM-13 | مطابقة قوالب على بدائيات بعد التطبيع (دوران، انعكاس، تحجيم)، ومكتبة لكل معيار تبدأ بـIEC 60617 وGB/T 4728، و«علّم مرة» بالتكافؤ الهندسي | مصنّف متجهي مدرَّب (FR-SYM-09، R2)؛ تضمين صور (R3) | — | لا |
-| ADR‑09 | محرك OCR | FR-RAS-01، M-29، M-30، L-06 | نماذج PP-OCRv5 (عبر RapidOCR/ONNX Runtime أو PaddlePaddle) على GPU، وTesseract `chi_sim+eng` خط أساس | EasyOCR؛ docTR؛ OCR سحابي (مرفوض: كلفة، والمسار يجب أن يعمل محلياً) | Apache-2.0، MIT | ⚠️ DEC‑07 |
-| ADR‑10 | نشر OCR | NFR-SCAL-04، SRS AC-10 | deployable منفصل خلف موازن، على سابقة التضمين (انحراف arch D‑14) | داخل صورة التطبيق (يُدخل أطر GPU في رسم الاستيراد) | — | ⚠️ DEC‑07 |
+| ADR‑09 | محرك OCR | FR-RAS-01، M-29، M-30، L-06 | **المختار:** RapidOCR على ONNX Runtime على CPU، ونموذج PP-OCR (v4 أو v5 أو v6) يختاره قياس القبول `F1‑MS‑1` في INC‑2؛ والحزمة والنماذج مثبّتة بالبصمة. واستُبعد Tesseract بقياس P1 | PaddleOCR على PaddlePaddle؛ EasyOCR؛ docTR؛ OCR سحابي (مرفوض: كلفة، والمسار يجب أن يعمل محلياً) | Apache-2.0 (RapidOCR والنماذج)، MIT (ONNX Runtime)؛ وإشعارات الثنائيات المضمَّنة تُراجع عند البناء (§13.8) | ✅ DEC‑07 (2026-11-08) |
+| ADR‑10 | نشر OCR | NFR-SCAL-04، SRS AC-10 | **المختار:** داخل الابن المحدود في `ele-parse` في R1 (DEC‑04 باقٍ)؛ وخدمة `ocr` على GPU خلف موازن، على سابقة التضمين (انحراف arch D‑14)، شرطية في INC‑3 إن لم يكفِ CPU | داخل `worker-electrical` (صورة التطبيق)؛ خدمة CPU جديدة؛ خدمة GPU من البداية | — | ✅ DEC‑07 (2026-11-08) |
 | ADR‑11 | مخزن الرسم | FR-KG-01..04، NFR-PERF-02، NFR-SCAL-01 | جداول Postgres تحت RLS، وإسقاط توصيل، واستعلامات تكرارية مقيّدة، ودائرة وظيفية في الذاكرة | Apache AGE؛ Neo4j Community؛ مسرّع داخل العملية | PostgreSQL؛ Apache-2.0؛ GPL-3.0 (خارج القائمة) | ✅ DEC‑05 (أ) |
 | ADR‑12 | مسرّع التتبّع (شرطي) | NFR-PERF-02 | لقطة مضغوطة لكل جيل في `redis-cache` يتتبّعها rustworkx، فقط إن قصّر القياس | NetworkX (أبطأ) | Apache-2.0؛ BSD-3 | ✅ DEC‑13 (rustworkx مُقَرّ، ويُضاف إن قصّر القياس) |
 | ADR‑13 | صيغة المحاكاة | FR-KG-05، FR-KG-10 | منطق Kleene ثلاثي القيم على رسم توصيل، ونقطة ثابتة بحدّ تكرار، وتنفيذ نقي | محاكي دوائر عددي (خارج النطاق؛ لا قيم مكوّنات) | — | لا |
@@ -1692,6 +1696,7 @@ sequenceDiagram
 | ADR‑36 | خادم MCP (R2) | FR-API-05 | خادم HTTP/SSE للقراءة فقط بالصلاحيات نفسها | — | — | يُقرَّر في R2 |
 | ADR‑37 | دقة أحداث التقدّم | FR-ING-04، arch §10 | لقطات مجمّعة مقيّدة المعدّل لكل مهمة، والتفصيل لكل صفحة عبر REST | حدث لكل (صفحة، مرحلة)، وهو عبء على كل عملية API تقرأ المجرى | — | لا |
 | ADR‑38 | معايرة الثقة | NFR-ACC-02، M-14 | دوال معايرة رتيبة (isotonic) لكل نوع حقيقة تُلائَم على المجموعة الذهبية وتُصدَر بإصدار | Platt؛ بلا معايرة (يخالف NFR-ACC-02) | stdlib أو BSD-3 | لا |
+| ADR‑39 | استرجاع النص المرسوم خطوطاً | FR-VEC-08، FR-RAS-01، M-30، R-02 | **المختار:** الهندسة أولاً: عزل سطور النص من البدائيات في `ele-parse`، ثم OCR لكل سطر، ثم مسح احتياطي مقصور على ما لم يُغطَّ وعلى كتلة العنوان، وتصويت الأشكال معطّل افتراضياً | مسح الصفحة كاملة بمربعات (R0)؛ قاموس أشكال وحده (V3)؛ نموذج بصري (مرفوض في R1، FR-RAS-04) | — (المحرك في ADR‑09) | ✅ DEC‑19 (2026-11-08، SRS D-35) |
 
 ## 16. خارطة التسليم
 
@@ -1710,14 +1715,14 @@ sequenceDiagram
 |---|---|---|---|---|---|
 | INC‑0 | تمهيد المنصة | `PLT‑01`، `PLT‑13`، `PLT‑16` (العقود 1..4 مع هيكل الوحدة `electrical` الفارغ)، وفي `PLT‑19` SBOM وفحص التراخيص دون تغيير نص الترخيص (DEC‑10) (و`PLT‑02` أُزيل في الإصدار 0.3). يغطي جانب المنصة من FR-ING-02، وFR-ADM-01، وNFR-LIC-02 وNFR-LIC-07، وSRS AC-07 | — | — | — |
 | INC‑1 | النواة والتسجيل والفحص والتوصيف | CMP‑06 `shared` (FR-ID-01، 03..10، 12، 13)؛ `drawings`: المشاريع وملفات الإعداد والوثائق والمهام وحالة الصفحة (FR-ING-01..06، 08، 10، 12)؛ الاستبدال بالاسم: مشارك الحذف ومنفذ `drawings` فيه بمرحلتيه، وحارس التسجيل، والمعاينة، والوثيقة المستبعدة (FR-ING-03، §8.11)؛ `ele-parse` وSTG‑00 وSTG‑01؛ FR-EVAL-14 على العيّنات؛ هيكل إطار التقييم (FR-EVAL-01)؛ `PLT‑03`، `PLT‑04` (المشارك المركّب `electrical` ومنفذ `drawings` فيه)، `PLT‑11`، `PLT‑14`، `PLT‑17` (ملف `electrical`)، `PLT‑21`، `PLT‑24`؛ وقراءة الوسوم وكتابتها في الوثيقة (FR-ING-13) | INC‑0، و`PLT‑26` في المنصة | — | M-04 (اختبارات النواة)، M-32، تقرير التوصيف |
-| INC‑2 | الاستخراج المتجهي والتخطيط والعرض | STG‑02 وSTG‑04 وSTG‑05؛ نموذج الدليل (DATA-01..06)؛ FR-VEC-01..07، 09..11؛ FR-LAY-01..04، 06؛ FR-ID-02؛ FR-API-04؛ FR-IDX-03؛ NFR-I18N-03، 04؛ طبقة التسميات الذهبية (FR-EVAL-02) | INC‑1 | — | M-01..M-05، والجزء المتجهي من M-29، وجزء من NFR-PERF-01 |
-| INC‑3 | OCR والنص الصيني المرسوم | `PLT‑10`، وSTG‑03 (FR-VEC-08، FR-VEC-11، FR-RAS-01)، وNFR-PERF-05 | INC‑2 | DEC‑07 (محرك OCR) | M-29 (الكشف)، M-30 |
-| INC‑4 | الرموز والاتصال | مكتبات IEC 60617 وGB/T 4728 بترتيب تقرير التوصيف؛ STG‑06 وSTG‑07 (FR-SYM-01..08، 10، 13؛ FR-CON-01..04، 06، 08..11)؛ «علّم مرة» (FR-SYM-03)؛ `GeometryKernel` | INC‑2 (بالتوازي مع INC‑3) | — | M-06..M-09 |
-| INC‑5 | المراجع والتقارير والتحقق المتبادل والجودة والتصحيحات | STG‑08..11 (FR-XREF-01..05، FR-REP-01..05، FR-XV-01..04، FR-QA-01..04، FR-SRC-07)؛ FR-HIL-01..03؛ UC-06؛ FR-EVAL-04؛ `PLT‑22` (كشف المهام العالقة والوثائق المستبعدة وبقايا الكنس) | INC‑4 (ويستفيد من INC‑3) | — | M-10..M-13، خط أساس M-14 |
+| INC‑2 | الاستخراج المتجهي واسترجاع النص والتخطيط والعرض | STG‑02: الاستخراج المتجهي (FR-VEC-01..07، 09..11)، ومعه استرجاع النص المرسوم خطوطاً بالهندسة أولاً: عزل سطور النص من البدائيات والتعرّف عليها سطراً سطراً داخل `ele-parse` على CPU (FR-VEC-08 بصيغة SRS D-35، ✅ DEC‑19). وSTG‑03 بفرعه الاحتياطي على CPU: مسح ما لم تغطّه السطور، ومنه كتلة العنوان، بدور `ocr` ورابطة `cg.electrical.ocr` (FR-RAS-01 للنص المرسوم خطوطاً، `PLT‑11`). وSTG‑04 وSTG‑05. ونموذج الدليل (DATA-01..06) بطريقتي OCR (§8.6). وFR-LAY-01..04، 06؛ FR-ID-02؛ FR-API-04؛ FR-IDX-03؛ NFR-I18N-03، 04؛ وطبقة التسميات الذهبية (FR-EVAL-02). وصورة `ele-parse` بمحرك التعرّف ونماذجه المثبّتة (`PLT‑17`). وقياس القبول `F1‑MS‑1` قبل تثبيت النموذج (§13.7). ويجوز تقسيم بنائها إلى PRs في LLD | INC‑1؛ والحقيقة المرجعية من F3 لقياس القبول؛ وقواعد F2 لقبول STG‑05 على عيّنات المورد الأول | قرار F2 للمالك (قواعد KKS وANSI)، وهو يحجب قبول STG‑05 على عيّنات المورد الأول لا بدء البناء. وDEC‑19 وDEC‑07 (2) محسومان | M-01..M-05، والجزء المتجهي من M-29، وM-30 للنص المرسوم خطوطاً بالإنجليزية، وجزء من NFR-PERF-01، وNFR-PERF-05 على CPU |
+| INC‑3 | المسار النقطي والنص الصيني المرسوم | STG‑03 للصفحات النقطية (FR-RAS-01 للنقطي)، ولمناطق النص الصيني المشوّه الترميز التي يوجّهها STG‑02 (FR-VEC-11). والنص الصيني المرسوم خطوطاً بنموذج صيني يُقاس (D-04). ومنفذ الإطار `OcrProvider` وخدمة `ocr` على GPU خلف `ocr-lb`، إن أثبت القياس أن CPU لا يكفي (`PLT‑10`، ADR‑10)، ومعهما ملف `electrical-ocr` ومعالج `ocr_unavailable` حين يُعطَّل فرع GPU. وNFR-PERF-05 للصفحات النقطية | INC‑2؛ وعيّنات فيها صفحات نقطية أو نص صيني (F3) | — (فرع GPU يقرره قياس هذه الزيادة، ✅ DEC‑07) | M-29 (الكشف والتوجيه)، وM-30 للنص الصيني والصفحات النقطية |
+| INC‑4 | الرموز والاتصال | مكتبات IEC 60617 وGB/T 4728 بترتيب تقرير التوصيف؛ STG‑06 وSTG‑07 (FR-SYM-01..08، 10، 13؛ FR-CON-01..04، 06، 08..11)؛ «علّم مرة» (FR-SYM-03)؛ `GeometryKernel`. والبدائيات التي عُلّمت نصاً في STG‑02 لا تدخل الرموز والاتصال رسماً إلا بدليل (DEC‑19). ودمج المقاطع الدقيقة قبل التعرّف على الرموز والأسلاك ملاحظة لـLLD (`../inc-1/characterization.md` §7) | INC‑2، ومنه تعليم بدائيات النص (DEC‑19)؛ بالتوازي مع INC‑3 | — | M-06..M-09 |
+| INC‑5 | المراجع والتقارير والتحقق المتبادل والجودة والتصحيحات | STG‑08..11 (FR-XREF-01..05، FR-REP-01..05، FR-XV-01..04، FR-QA-01..04، FR-SRC-07)؛ FR-HIL-01..03؛ UC-06؛ FR-EVAL-04؛ `PLT‑22` (كشف المهام العالقة والوثائق المستبعدة وبقايا الكنس) | INC‑4 (ويستفيد من INC‑3 للصفحات النقطية) | — | M-10..M-13، خط أساس M-14 |
 | INC‑6 | النموذج الموحّد واستعلاماته | `circuits`: STG‑12؛ FR-KG-01..04، 09؛ FR-SYM-06؛ FR-CON-05، 07؛ FR-XREF-04؛ أجيال المشروع، وإخراج قسم الوثيقة المطهَّرة وإعادة ربط الباقية (FR-ING-03، §8.8)؛ API الرسم (UC-03)؛ منفذ تطهير `circuits` في المشارك المركّب (`PLT‑04`)؛ منافذ `circuits` في مقعد الوكيل (`PLT‑09`) | INC‑5 | — | تتبّع NFR-PERF-02، وNFR-SCAL-01 على مشروع اصطناعي |
 | INC‑7 | المحاكاة وحقن الأعطال | FR-KG-05، 06، 10، 11؛ API المحاكاة والأثر؛ مولّد سيناريوهات FR-EVAL-15 | INC‑6 | — | جانب المحاكاة من M-33 |
 | INC‑8 | الفهرسة والاسترجاع الموحّد | `search`: STG‑13؛ FR-IDX-01، 02، 04..08، 10، 14، 15؛ FR-INT-01..10، 12، 13، 16؛ FR-MAN-03، 05؛ FR-NLU-02 (الحتمي)، 03، 04، 08، 09؛ `PLT‑06`؛ منفذ تطهير `search` في المشارك المركّب (`PLT‑04`)؛ جانب البحث من UC-02 وUC-05 وUC-09 | INC‑6 (بالتوازي مع INC‑7) | — | M-15، خط أساس M-16، M-21، M-31، بحث المعرّف في NFR-PERF-02، NFR-PERF-06 |
-| INC‑8P | دعم الصينية في وحدة المعرفة (تسليم منصة) | `PLT‑05` (FR-INT-15) | INC‑0؛ ويعيد استعمال `OcrProvider` إن سبقه INC‑3 | DEC‑07 (ترقية التضمين) | M-21 وM-31 لساق المعرفة |
+| INC‑8P | دعم الصينية في وحدة المعرفة (تسليم منصة) | `PLT‑05` (FR-INT-15)؛ وOCR الصيني لـ`knowledge` بـ`chi_sim` في محوّل tesseract القائم، أو بـ`OcrProvider` إن بُني (`PLT‑10`). ولا يعيد استعمال التعرّف داخل `ele-parse`، لأنه مقصور على وثائق WireTwin المرحّلة إليه | INC‑0؛ ويعيد استعمال `OcrProvider` إن بُني في INC‑3 | DEC‑07 (ترقية التضمين) | M-21 وM-31 لساق المعرفة |
 | INC‑9 | التشخيص | `diagnostics`: FR-DIAG-01..08، 10، 11، 13، 14؛ FR-AGT-09، FR-AGT-11؛ نواة `AnswerGate`؛ REST الجلسات | INC‑7، INC‑8 | — | M-22، M-23، M-33، M-34، NFR-PERF-07 |
 | INC‑10 | الوكيل | `wiretwin_agent`: FR-AGT-01..03، 05..07، 10، 12..15 (جانب WireTwin من الاستدعاء، §11.11)؛ FR-GRD-01..04، 06..08؛ FR-NLU-01..09؛ FR-SAF-04، FR-SAF-09؛ FR-API-02، 03؛ `PLT‑09`، `PLT‑12`، `PLT‑16` (العقدان 5 و6)، `PLT‑20`؛ UC-02 وUC-04 وUC-05 وUC-08 وUC-09 كاملة | INC‑8، INC‑9 | — | M-17..M-19، M-25، M-26، M-35، NFR-PERF-03 |
 | INC‑11 | التقييم الكامل والتشغيل والقبول | توحيد FR-EVAL-01..08، 11..13 ومهمة التقييم المستقلة؛ NFR-OBS (التنبيهات واللوحات والتتبّع)؛ NFR-PRIV-01 وNFR-PRIV-03 وNFR-PRIV-04 (لا حذف تلقائي لبيانات المستخدم، والتصدير، وحذف المشروع عند الطلب، وكنس البيانات التقنية المؤقتة)؛ تمرين NFR-REL-03؛ إكمال FR-ADM-03 وFR-ADM-04؛ قياسات GPU على كرت المضيف المحلي؛ NFR-SCAL-03 حتى أكبر مضاعف يتسع له المضيف (DEC‑14) | كل ما سبق | — | M-27، M-28، وكل المقاييس على المجموعة الذهبية الكاملة (قبول R1، NFR-ACC-01) |
@@ -1725,8 +1730,8 @@ sequenceDiagram
 ```mermaid
 graph LR
     I0["INC‑0<br/>تمهيد المنصة"] --> I1["INC‑1<br/>النواة · التسجيل · التوصيف"]
-    I1 --> I2["INC‑2<br/>المتجهي · التخطيط · العرض"]
-    I2 --> I3["INC‑3<br/>OCR"]
+    I1 --> I2["INC‑2<br/>المتجهي · استرجاع النص · التخطيط · العرض"]
+    I2 --> I3["INC‑3<br/>النقطي · الصيني المرسوم"]
     I2 --> I4["INC‑4<br/>الرموز · الاتصال"]
     I4 --> I5["INC‑5<br/>المراجع · التقارير · XV · الجودة"]
     I3 -.-> I5
@@ -1734,6 +1739,7 @@ graph LR
     I6 --> I7["INC‑7<br/>المحاكاة · حقن الأعطال"]
     I6 --> I8["INC‑8<br/>الفهرسة · الاسترجاع الموحّد"]
     I0 --> I8P["INC‑8P<br/>الصينية في knowledge"]
+    I3 -.-> I8P
     I8P -.-> I8
     I7 --> I9["INC‑9<br/>التشخيص"]
     I8 --> I9
@@ -1742,14 +1748,15 @@ graph LR
     I10 --> I11["INC‑11<br/>التقييم · التشغيل · القبول"]
 ```
 
-*الشكل 10. الزيادات. المتقطع تبعية تحسين لا حجب.*
+*الشكل 10. الزيادات. المتقطع تبعية تحسين لا حجب. وF2 وF3 دورتا خطة لا زيادتان، فلا تدخلان الشكل.*
 
 **التوازي:**
 - INC‑3 مع INC‑4.
 - INC‑7 مع INC‑8.
 - INC‑8P مع أي زيادة بعد INC‑0.
 - إطار التقييم يتراكم في كل زيادة.
-- **وأول نتيجة عملية:** تقرير التوصيف على عيّنات المالك في نهاية INC‑1. هو يحسم توزيع المجموعة الذهبية وترتيب مكتبات الرموز (FR-EVAL-14، SRS §8.3)، وقد يضيف أسئلة إلى SRS §11.2.
+- **وأول نتيجة عملية:** تقرير التوصيف على عيّنات المالك. صدر في P1 بعد دمج INC‑1 (`../inc-1/characterization.md`)، وحدّد مسار استرجاع النص (DEC‑19). وما بقي منه، أي توزيع المجموعة الذهبية وترتيب مكتبات الرموز وM-32، ينتظر قواعد F2 وعيّنات أوسع (FR-EVAL-14، SRS §8.3)، وقد يضيف أسئلة إلى SRS §11.2.
+- **وأول نتيجة مفيدة على مخططات المالك** في نهاية INC‑2: معرّفات كل صفحة بنصها وموضعها ودليلها، معروضة على الصفحة (FR-API-04) وقابلة للبحث المكاني (FR-IDX-03)، ومنها صفحات النص المرسوم خطوطاً. وكانت هذه الصفحات قبل DEC‑19 تنتظر INC‑3. وشرطها قواعد F2، والبحث بالمعرّف عبر المشروع يبقى في INC‑8.
 
 ## 17. التتبّع
 
@@ -1758,7 +1765,7 @@ graph LR
 | المجال | المكوّن المالك | مكوّنات مساندة | الزيادة |
 |---|---|---|---|
 | FR-ING | `drawings` | `ele-parse`، `files` (`PLT‑01`، `PLT‑24`، `PLT‑26`)، و`framework/di` (FR-ING-03 عبر مشارك الحذف، `PLT‑04`) | INC‑0، INC‑1 |
-| FR-VEC | `drawings` | `ele-parse`، `OcrProvider` | INC‑2، INC‑3 |
+| FR-VEC | `drawings` | `ele-parse` (ومعه التعرّف على السطور، DEC‑19)، و`OcrProvider` للمناطق المشوّهة إن بُني | INC‑2، وFR-VEC-11 (التوجيه) في INC‑3 |
 | FR-LAY | `drawings` | — | INC‑2 |
 | FR-ID | CMP‑06 (القواعد)، و`drawings` (البنية الموروثة والتحقق في الصفحة) | `search`، `diagnostics` | INC‑1، INC‑2 |
 | FR-SYM | `drawings` (الصفحة)، و`circuits` (FR-SYM-06) | CMP‑06 (التصنيف) | INC‑4، INC‑6 |
@@ -1767,7 +1774,7 @@ graph LR
 | FR-REP | `drawings` | — | INC‑5 |
 | FR-XV | `drawings` | — | INC‑5 |
 | FR-QA | `drawings` | `circuits` (الوسم)، والوكيل (الإفصاح) | INC‑5 |
-| FR-RAS | `drawings` (STG‑03) | `ocr`؛ و`SymbolDetector` و`VisionLanguageProvider` في R2 | INC‑3 |
+| FR-RAS | `drawings` (STG‑03) | `ele-parse` على CPU، و`ocr` على GPU شرطياً؛ و`SymbolDetector` و`VisionLanguageProvider` في R2 | INC‑2 (FR-RAS-01 للنص المرسوم خطوطاً)، INC‑3 (للصفحات النقطية) |
 | FR-SRC | `drawings` (FR-SRC-07)؛ والباقي W | — | INC‑5 |
 | FR-KG | `circuits` | `drawings` (الأدلة) | INC‑6، INC‑7 |
 | FR-IDX | `search` (وFR-IDX-03 في `drawings`) | CMP‑06، Qdrant، التضمين | INC‑8 |
@@ -1793,7 +1800,7 @@ graph LR
 | NFR-PERF-02 | جدول الأشكال، وإسقاط التوصيل، ومسرّع شرطي | §8.5، §9.7 |
 | NFR-PERF-03، NFR-PERF-06 | حدث مبكر، وسوق متوازية بمهلة | §11.2، §9.2 |
 | NFR-PERF-04، NFR-SCAL-03..05 | مجموعة استهلاك لكل مرحلة، ونسخ من الإعداد، واصطفاف الاستيعاب، و`429` للتفاعلي | §4.3 |
-| NFR-PERF-05 | OCR للمناطق، ودفعات، وطابور مستقل | §7.1، DEC‑07 |
+| NFR-PERF-05 | الهندسة أولاً على CPU، والمسح لما لم يُغطَّ، وطابور مستقل | §7.1، DEC‑19، DEC‑07 |
 | NFR-PERF-07 | الدائرة الوظيفية، ومحاكاة تزايدية، وتخبئة | §10.11 |
 | NFR-SCAL-01، 02 | أقسام الرسم، وتزامن مقيّد | §8.5، §10.11 |
 | NFR-REL-01..04 | عزل الصفحة، ومجارٍ دائمة، وإعادة النشر، والتدهور، والنسخ الاحتياطي | §7.6، §7.7، §8.10، §11.9 |
@@ -1830,7 +1837,7 @@ graph LR
 | الخطر | المعالجة في التصميم |
 |---|---|
 | R-01 تباين الموردين | اقتراح ملف الإعداد في STG‑01، وقواعد ومكتبات بيانات بإصدارات (NFR-MNT-04)، وتفصيل المقاييس حسب المورّد (§13.7) |
-| R-02 نص نقطي أو SHX | تصنيف الصفحة في STG‑01، وفرع OCR في STG‑03، ووسم المصدر وثقة أدنى، ونسبة الحاجة في تقرير التوصيف |
+| R-02 نص نقطي أو SHX | تصنيف الصفحة في STG‑01، واسترجاع النص بالهندسة أولاً في STG‑02، والمسح الاحتياطي في STG‑03 (DEC‑19)، ووسم المصدر والطريقة وثقة أدنى، ونسبة الحاجة في تقرير التوصيف (74 من 76 صفحة عند المورد الأول)، والصيغ الخاطئة في M-30 (RSK‑23) |
 | R-03 مخالفة AGPL | فحص التراخيص وSBOM في CI (DEC‑09). ولا مسار لعرض الشيفرة: الترخيص يبقى `Proprietary` حتى يقرر المالك تغييره أو استبدال المكتبات، والتذكير قبل الإطلاق في الإنتاج (DEC‑10، SRS D-24) |
 | R-04 غياب بيانات تقييم عامة | المجموعة الذهبية وطبقتها، والتحقق المتبادل مؤشراً تقديرياً، وحقن الأخطاء (§13.7) |
 | R-05 هلوسة النموذج | حقول الحقيقة من `diagnostics`، والبوابة، وM-35 بنموذج مزيّف (§10.10) |
@@ -1842,7 +1849,7 @@ graph LR
 | R-11 تعدد المعايير | ملف إعداد لكل وثيقة، وتصنيف دلالي محايد في CMP‑06، ومكتبة لكل معيار، وتفصيل المقاييس |
 | R-12 انحراف التوثيق عن الواقع | نتيجة «الملاحظات تناقض المخطط» بدل فرض فرضية (§10.5)، وتمييز التناقض الحقيقي في التحقق المتبادل، والمخطط المحدّث المرفوع بالاسم نفسه يحلّ محل القديم (§8.11) |
 | R-13 المعرفة بلا بيانات وصفية | طبقة البيانات الوصفية وإعادة الترتيب (§9.4)، و`PLT‑07` في R2 |
-| R-14 فك ترميز الصينية | كشف النص المشوّه في STG‑02 وتوجيهه إلى OCR، وخطوط CJK (§13.4)، وM-29 |
+| R-14 فك ترميز الصينية | كشف النص المشوّه في STG‑02 وتوجيهه إلى المسار النقطي في INC‑3، وخطوط CJK (§13.4)، وM-29 |
 | R-15 ترجمة المصطلحات | المسرد أولاً، والأصل مع الترجمة الموسومة (§11.5) |
 | R-16 إرسال إلى السحابة دون قصد | المحلي افتراضي لكل قدرة، والسحابة بمسار صريح، والتدقيق و`usage` (§11.6) |
 | R-17 المعرفة لا تدعم الصينية | `PLT‑05` تسليماً مستقلاً (INC‑8P)، وقياس M-21 وM-31 |
@@ -1858,8 +1865,8 @@ graph LR
 
 | المعرّف | الخطر | الأثر | المعالجة |
 |---|---|---|---|
-| RSK‑01 | المضيف المحلي 13 GB، والمكدّس محجّم لـ64 GB | لا يتسع لعمّال WireTwin وخدماته بجانب المكدّس الحي | ملف `electrical` معطّل افتراضياً، وعامل واحد بكل الأدوار في التطوير، ومسار GPU على خادم وفق `docs/deploy-server.md` (§4.4). والقياس كله محلياً (DEC‑14)، فحملات القياس تُحجَّم لتناسب المضيف، وقد تحتاج إيقاف خدمات لا تُقاس مؤقتاً |
-| RSK‑02 | تزاحم الكرت على خادم GPU بين Ollama وOCR والتضمين | نفاد الذاكرة أو زمن أعلى من NFR-PERF-05 | ميزانيات VRAM وطوابير مستقلة، واختيار الـGPU في DEC‑07 |
+| RSK‑01 | المضيف المحلي 13 GB، والمكدّس محجّم لـ64 GB | لا يتسع لعمّال WireTwin وخدماته بجانب المكدّس الحي | ملف `electrical` معطّل افتراضياً، وعامل واحد بكل الأدوار في التطوير، ومسار GPU على خادم وفق `docs/deploy-server.md` (§4.4). والقياس كله محلياً (DEC‑14)، فحملات القياس تُحجَّم لتناسب المضيف، وقد تحتاج إيقاف خدمات لا تُقاس مؤقتاً. وصورة `ele-parse` بمحرك التعرّف أكبر ذاكرةً، ويقيس `F1‑MS‑1` أقصى ذاكرة للابن، وعدد الأبناء من الإعداد (DEC‑19) |
+| RSK‑02 | تزاحم الكرت على خادم GPU بين Ollama وOCR والتضمين | نفاد الذاكرة أو زمن أعلى من NFR-PERF-05 | ميزانيات VRAM وطوابير مستقلة، واختيار الـGPU في DEC‑07. وفي R1 لا OCR على الكرت (حصته صفر)، ويبقى الخطر لفرع GPU الشرطي في INC‑3 |
 | RSK‑03 | ذاكرة Qdrant، وهي اليوم أكبر مستهلك على المضيف | صناديق `ele-` تضغطها أكثر | فهرسة النصوص الوصفية ذات المعنى فقط لا كل كتلة، وتخزين على القرص أو تكميم بالإعداد، وقياس الحجم في INC‑8 |
 | RSK‑04 | تتبّع على مليون نقطة في Postgres | تجاوز NFR-PERF-02 | الإسقاط على مستوى الشبكة، والقياس مبكراً في INC‑6، والمسرّع الشرطي (DEC‑05) |
 | RSK‑05 | حجم الأحداث على مُرحِّل واحد وجسر إشعارات في كل عملية | تأخر النشر، وعبء على `app` | دفعات بحجم من الإعداد، وتقدّم مقيّد المعدّل، وتنبيه زمن دورة Outbox القائم |
@@ -1871,17 +1878,24 @@ graph LR
 | RSK‑11 | جهد وسم المجموعة الذهبية (300 صفحة باتصال كامل) | تأخر القبول | أدوات الوسم في INC‑2، والحقيقة شبه الآلية في R2، والبدء بتقرير التوصيف |
 | RSK‑12 | الحساب الثقيل داخل عمليات `app` | يزاحم حلقة الأحداث ويرفع زمن بقية المسارات | سقف تزامن و`429`، والقياس، والانتقال إلى خدمة حساب إن لزم (DEC‑06) |
 | RSK‑13 | ملفات حتى 1 GB تُقرأ كاملة في الذاكرة | نفاد ذاكرة العامل | قراءة متدفقة إلى الحجم المؤقت (`PLT‑03`)، وحدود ذاكرة لكل صفحة في `ele-parse` |
-| RSK‑14 | مجموعة استهلاك بلا مستهلك على المجرى الواحد (أبرزها `cg.electrical.ocr` حين يكون ملف `electrical-ocr` معطّلاً) | القصّ لا يتجاوز أبطأ مجموعة (`04` §2، `app/ops/stream_trim.py`)، فيكبر `stream.electrical` حتى حدّ `MAXLEN` الاحتياطي في `redis-stream` (`noeviction`)، ويحبس أحداث الأقسام كلها لا OCR وحده | كل رابطة تدخل الطوبولوجيا مع مستهلكها؛ والعامل على CPU يستهلك `cg.electrical.ocr` حين يكون الـOCR معطّلاً فيسجّل `ocr_unavailable` (§7.8)؛ وتنبيه `AizzakStreamBackstopHigh` القائم و`python -m app.ops.stream_trim status` للتشخيص |
+| RSK‑14 | مجموعة استهلاك بلا مستهلك على المجرى الواحد (وكانت أبرزها `cg.electrical.ocr` حين يكون ملف `electrical-ocr` معطّلاً، قبل DEC‑19) | القصّ لا يتجاوز أبطأ مجموعة (`04` §2، `app/ops/stream_trim.py`)، فيكبر `stream.electrical` حتى حدّ `MAXLEN` الاحتياطي في `redis-stream` (`noeviction`)، ويحبس أحداث الأقسام كلها لا OCR وحده | كل رابطة تدخل الطوبولوجيا مع مستهلكها؛ و`cg.electrical.ocr` يستهلكها دور على CPU في ملف `electrical` منذ INC‑2 (DEC‑19)، وإن أضاف INC‑3 فرع GPU بقي هذا الدور مستهلكها، فيسجّل الصفحات النقطية `ocr_unavailable` حين يكون الفرع معطّلاً (§7.8)؛ وتنبيه `AizzakStreamBackstopHigh` القائم و`python -m app.ops.stream_trim status` للتشخيص |
 | RSK‑15 | قاعدة «كل قسم يقرأ جداوله ويكتبها وحده» في schema واحد لا يفحصها import-linter | استعلام من قسم إلى جداول قسم آخر يكسر الحدود بصمت، ويُفشل فصل القسم لاحقاً (SRS AC-02) | بادئة اسم القسم على كل جدول، ولا FK بين البادئات، والاستعراض، واختبارات المستودعات، واختبار معماري مقترح على أسماء جداول ORM لكل قسم (§5.2) |
 | RSK‑16 | `knowledge` لا تستطيع استيراد `shared` | تتباعد قواعد حماية المعرّفات اللاتينية في التقطيع الصيني بين `search` و`knowledge` (`PLT‑05`) | مجموعة حالات اختبار مشتركة البيانات (ملف حالات يقرؤه اختباران) تُشغَّل على المقسّمين؛ وإعادة النظر في الموضع بقرار جديد إن احتاجت وحدة ثالثة المحلّل (§5.4) |
 | RSK‑17 | التطهير يجري داخل طلب `completeFile` أو `renameFile`، لأن كنس المنصة متزامن (`framework/di/file_replacement.py`) | تطهير وثيقة من 5,000 صفحة صفاً صفاً يطيل الطلب أو يتجاوز مهلته، فيصير كنساً فاشلاً | المرحلتان (§8.8): المتزامنة وسمٌ وجيل جديد وحذف نقاط بمرشّح في Qdrant، والكنس بحدث. ويُقاس زمن المرحلة المتزامنة على وثيقة بحجم NFR-SCAL-01 في INC‑1 (`drawings`) وINC‑8 (Qdrant) |
 | RSK‑18 | كنس فاشل يترك ملفين بالاسم نفسه، أو وثيقةً ملفها محذوف (`file_replacement.py` يسجّل الفشل ولا يُفشل الرفع) | تتعايش وثيقتان باسم واحد، خلافاً لـFR-INT-13 | حارس التسجيل (`409`)؛ واستبعاد الوثيقة الأقدم أو اليتيمة من كل قراءة حين تُكشف (عند التسجيل، وبناء الجيل، والمهمة الدورية)، مع تنبيه؛ وإكمال الحذف بـ`DELETE /files/{id}`، مسار المنصة نفسه (§8.11). ويبقى بين الفشل والكشف وقت أقصاه دورة المهمة الدورية |
 | RSK‑19 | المساعد الذكي يستدعي `wiretwin_agent` (SRS FR-AGT-15) | يسقط استشهاداً أو تحذير سلامة حين ينقل الإجابة، أو يرى المستخدم عبره ما لا يملكه | صلاحيات المستخدم الأصلي تُفحص في كل استدعاء (§11.11)؛ والإجابة منظمة بعد `AnswerGate` وتُنقل كما هي؛ واختبار عقد بين الوكيلين يتحقق من بقاء الاستشهادات والتحذيرات، ويُضاف إلى التقييم المستقل (M-25) |
 | RSK‑20 | الاستبدال مشروط بتطابق الوسوم (DEC‑17، SRS R-25) | مخطط محدَّث يُرفع بوسم خاطئ لا يحل محل القديم، فتبقى الوثيقتان حيّتين ويُستشهد بالقديمة | المعاينة تعرض السميّين بوسوم مختلفة قبل الإتمام (§8.11)؛ وإعادة الوسم تكنس كإعادة التسمية (`PLT‑26`)؛ والحذف بيد المستخدم |
+| RSK‑21 | أرقام P1 متفائلة: ضُبط النموذج الأولي على الصفحات الثلاث نفسها، والحقيقة المرجعية من قارئ واحد، ولم يُسجَّل عدد الخيوط ولا المعالج (F1‑R‑1) | يُختار مسار أو نموذج بمكسب لا يتكرر، ويُقدَّر الزمن خطأً | مجموعة محجوزة في `F1‑MS‑1` والحكم عليها وحدها، وتسجيل الخيوط والمعالج (§13.7) |
+| RSK‑22 | مورد واحد: ارتفاع السطر والزاويتان 0° و90° وإحصاء المقاطع خصائص هذا المورد (F1‑R‑2) | مورد آخر بخط أو زوايا أخرى أو حروف مملوءة يكسر عزل السطور | العتبات في ملف الإعداد (NFR-CFG-01)، والمسح الاحتياطي، ومورد ثانٍ قبل التعميم (F3)، والتفصيل حسب المورّد (FR-EVAL-13). ويتصل بـ`INC1‑R‑3`: العتبات بلا قياس واسع، وM-32 مؤجّل حتى F2 |
+| RSK‑23 | الصيغ الخاطئة ليست صفراً (3..6 في 184 بأفضل المسارات)، والمسح الاحتياطي يزيدها (F1‑R‑3، F1‑R‑4) | معرّف لجهاز غير موجود | قواعد F2 والتصحيح الموضعي، والثقة تحت العتبة إلى `needs_review` (P-02)، وحدّ الصيغ الخاطئة في M-30 (SRS D-35)، وقصر المسح وتفعيله بعتبة `F1‑MS‑1`، والتحقق المتبادل في INC‑5 |
+| RSK‑24 | سقوف `ele-parse` لا تناسب ONNX Runtime كما هي: `RLIMIT_AS` بـ1024 MB، و10 ث للصفحة، و64 عملية للحاوية تُعدّ فيها الخيوط، و`RLIMIT_FSIZE = 0`، و`/tmp` بـ64 MB، وتحميل النموذج في كل ابن جديد؛ و`get_cdrawings()` ينهار عند نفاد ذاكرة الابن (متابعة F0، S‑2) (F1‑R‑5) | فشل أو `504` أو `507` على صفحات كثيفة | خيوط ONNX Runtime مثبّتة بالعدد، والنماذج من مسار للقراءة فقط في الصورة، ولا منزّل، وسقوف لكل عملية يحددها LLD الزيادة INC‑2 بنتيجة `F1‑MS‑1`، واختبار تحت الحدود نفسها. ولا تُمسّ الشبكة الداخلية ولا غياب الأسرار (DEC‑04) |
+| RSK‑25 | ناتج ONNX Runtime على CPU قد يتغيّر بعدد الخيوط وبتعليمات المعالج (F1‑R‑6) | إعادة المعالجة تعطي نصاً آخر، خلافاً لـNFR-REP-02 | خيوط مثبّتة، وبصمة النموذج وإصدار المحرك في بصمة الإصدار (§7.4)، واختبار حتمية على المضيف |
+| RSK‑26 | سلسلة التوريد: ثنائيات مضمَّنة في ONNX Runtime وOpenCV بتراخيص خارج القائمة أو بمكوّنات قديمة (OpenSSL 1.1)، ونموذج RapidOCR الافتراضي تغيّر في إصدار فرعي (من v4 إلى v6 في 3.9.0) (F1‑R‑7) | مخالفة NFR-LIC-07، أو تغيّر صامت في الناتج عند الترقية | مراجعة الإشعارات الإلزامية عند البناء (§13.8)، وتثبيت الحزمة والنماذج بالبصمة ومساراتها صراحةً، وفحص `scan.sh` |
+| RSK‑27 | الجزء الصيني من SRS D-04 لا يُقاس: لا نص صينياً عند المورد الأول إلا توقيعات جدول العنوان (F1‑R‑9) | يُقبل R1 دون دليل على الصينية، أو يتأخر INC‑3 بلا نهاية | طلب عيّنات صينية ونقطية في F3، وINC‑3 يعتمد عليها، وM-29 وM-30 مفصّلان حسب اللغة |
 
 ### 18.3 القرارات ⚠️ (تحتاج إنساناً)
 
-كل قرار ⚠️ هنا يحجب الزيادات المذكورة فيه حتى يُحسم. والتوصية رأي المعماري، لا قرار. وقد حسم المالك كل القرارات (✅) عدا بقية DEC‑07، وتبقى المحسومة هنا سجلاً.
+كل قرار ⚠️ هنا يحجب الزيادات المذكورة فيه حتى يُحسم. والتوصية رأي المعماري، لا قرار. وقد حسم المالك كل القرارات (✅) عدا ترقية التضمين في DEC‑07 (البند 3)، وتبقى المحسومة هنا سجلاً.
 
 **✅ DEC‑01: تفكيك الوحدات والنواة المشتركة (حسمه المالك في 2026-10-28)**
 - **المصادر:** `.importlinter` (`modules-independent` و`domain-purity` و`application-boundaries`)؛ و`docs/architecture.md` §14 («إبقاء Framework نحيفاً»)؛ وFR-ID-12؛ وSRS AC-02.
@@ -1957,20 +1971,20 @@ graph LR
   - (ج) عبر المجاري، فيضيف زمن دورة Outbox ويكسر هدف الثانيتين.
 - **يحجب:** لا شيء بعد الحسم.
 
-**◐ DEC‑07: النماذج وخدمات GPU وتحجيمها (حسمه المالك جزئياً في 2026-10-29)**
+**◐ DEC‑07: النماذج وخدمات GPU وتحجيمها (حسمه المالك جزئياً في 2026-10-29، ومحرك OCR في 2026-11-08)**
 - **المصادر:** FR-AGT-07 (يعمل كاملاً بالمحلي)، وFR-RAS-01، وNFR-PERF-05، وFR-INT-15، وNFR-DEP-03، وSRS D-09، وSRS D-16.
 - **الواقع اليوم:** النموذج المحلي الافتراضي `gemma3:1b` (`docker-compose.yml`)، ولا يكفي لاختيار الأدوات بثلاث لغات.
 - **ما يُقرَّر، وما حُسم منه:**
   1. ✅ النموذج المحلي: **عائلة Qwen** بدل `gemma3:1b` (المرشح Qwen3 بين 8B و32B، Apache-2.0). ويُختار الحجم بالقياس على المجموعة الذهبية (FR-EVAL-12)، ويُتحقق من ترخيص كل حجم (NFR-LIC-04). ويُفعَّل بعد اجتياز بوابات التقييم.
-  2. ⚠️ محرك OCR وخدمته المنفصلة (ADR‑09، ADR‑10). لم يُحسم.
+  2. ✅ محرك OCR وموضعه (ADR‑09، ADR‑10)، حسمه المالك في 2026-11-08 بالتوصية (`../inc-1/f1/design.md` §11.1، القراران 3 و4، SRS D-35): RapidOCR على ONNX Runtime على CPU داخل الابن المحدود في `ele-parse` (DEC‑19). ويختار قياس القبول `F1‑MS‑1` في INC‑2 النموذج بين PP-OCRv4 وPP-OCRv5 وPP-OCRv6 (§13.7). وخدمة `ocr` على GPU خلف `ocr-lb` ومنفذ الإطار `OcrProvider` شرطيان في INC‑3، يُبنيان إن أثبت القياس أن CPU لا يكفي للصفحات النقطية أو للنص الصيني. وحصة OCR في ميزانية VRAM صفر في R1 ما لم يُبنَ ذلك الفرع. ومراجعة إشعارات ثنائيات ONNX Runtime وOpenCV إلزامية عند البناء (§13.8، القرار 5). والخيارات المرفوضة للموضع: داخل `worker-electrical`، وخدمة CPU جديدة.
   3. ⚠️ ترقية التضمين إن قصّر في M-21 (ADR‑17)، وهي تعيد تضمين صناديق المعرفة القائمة عبر `embedding_migration`. لم يُحسم.
-  4. ✅ فئة الكرت على خادم GPU (`docs/deploy-server.md` §1): **الخيار (أ)**، كرت واحد أكبر تتقاسمه الخدمات (النموذج اللغوي والتضمين وOCR) بميزانيات VRAM.
+  4. ✅ فئة الكرت على خادم GPU (`docs/deploy-server.md` §1): **الخيار (أ)**، كرت واحد أكبر تتقاسمه الخدمات (النموذج اللغوي والتضمين، وOCR إن أُضيف فرع GPU في INC‑3) بميزانيات VRAM.
 - **خيارات الـGPU المرفوضة:**
   - (ب) كرت ثانٍ للنموذج اللغوي، أو خادم منفصل له.
   - (ج) نموذج سحابي للوكيل بالإعداد. يجيزه SRS D-13، لكنه لا يعفي من العمل محلياً.
 - **ما ترتّب عليه:** ميزانيات VRAM وطوابير مستقلة على الكرت الواحد (RSK‑02)، وتغيير النموذج في `PROVIDER_ROUTING` و`ollama-pull` (`PLT‑20`)، وADR‑21 (§15).
-- **الأثر:** كلفة وأداء وخدمة جديدة، وصورة إصدار جديدة لـ`ocr` (`PLT‑17`).
-- **يحجب:** INC‑3 (محرك OCR) وINC‑8P (ترقية التضمين). ولم يعد يحجب INC‑10.
+- **الأثر:** لا خدمة جديدة في R1 للنص المرسوم خطوطاً؛ وصورة `ele-parse` أكبر بمحرك التعرّف ونماذجه (`PLT‑17`)، وسقوفها تتغيّر في INC‑2 (RSK‑24). وصورة إصدار لـ`ocr` إن أُضيف فرع GPU في INC‑3.
+- **يحجب:** INC‑8P (ترقية التضمين) وحده. وفرع GPU في INC‑3 يقرره قياس تلك الزيادة، لا قرار معلّق. ولم يعد يحجب INC‑3 ولا INC‑10.
 
 **✅ DEC‑08: التتبّع الموزّع ومُصدِّر GPU (حسمه المالك في 2026-10-29)**
 - **المصادر:** NFR-OBS-02 وNFR-OBS-03. وفي المقابل `docs/design/07-nfr-slo.md` §7: «لا تتبّعٌ موزَّع».
@@ -2061,7 +2075,7 @@ graph LR
   - `pg_trgm` (تغيير في إعداد النشر).
   - msgpack وzstandard.
   - Shapely وNumPy وSciPy، إن احتاجها القياس.
-  - بيئة OCR في صورة منفصلة: PaddlePaddle، أو RapidOCR مع ONNX Runtime.
+  - بيئة OCR في صورة منفصلة: PaddlePaddle، أو RapidOCR مع ONNX Runtime. (وعدّل المالك موضعها في 2026-11-08: صورة `ele-parse`، DEC‑07.)
   - jieba (اختياري)، وrustworkx (شرطي).
   - **خطوط Noto CJK بترخيص OFL-1.1، وهو خارج القائمة المسموحة.**
 - **القرار:** إقرار القائمة، وإقرار OFL-1.1 للخطوط صراحةً، وهي توصية المعماري. الخطوط بيانات تصيير لا شيفرة مربوطة، وتوزيعها بجانب AGPL جائز. سُجّل في SRS قراراً D-26، وأُضيف OFL-1.1 إلى NFR-LIC-01 مقصوراً على الخطوط.
@@ -2069,7 +2083,7 @@ graph LR
   - البنود الشرطية (Shapely وNumPy وSciPy، وjieba، وrustworkx) مُقَرّة مسبقاً، ولا تُضاف إلا إن أثبت القياس الحاجة كما في ADR‑06 وADR‑12 وADR‑16.
   - `pg_trgm` يُضاف إلى `deploy/postgres/initdb/20-extensions.sh` في INC‑8.
   - فحص التراخيص في CI يقبل OFL-1.1 لملفات الخطوط وحدها (§13.8).
-  - بيئة OCR (PaddlePaddle، أو RapidOCR مع ONNX Runtime) مُقَرّة ترخيصاً، واختيار المحرك نفسه باقٍ في DEC‑07.
+  - بيئة OCR (PaddlePaddle، أو RapidOCR مع ONNX Runtime) مُقَرّة ترخيصاً. واختار المالك في 2026-11-08 RapidOCR مع ONNX Runtime، في صورة `ele-parse` لا في صورة منفصلة (✅ DEC‑07)، بشرط مراجعة إشعارات ثنائياتها المضمَّنة عند البناء على سابقة SRS D-33 (§13.8).
   - أي اعتمادية خارج هذه القائمة تعود إلى المالك.
   - خرج DEC‑13 من حواجز INC‑1 وINC‑4 وINC‑8.
 - **يحجب:** لا شيء بعد الحسم.
@@ -2089,7 +2103,7 @@ graph LR
 - **ما ترتّب عليه:**
   - SRS 0.12: صار المضيف المحلي بيئة القياس (§5.2). وأُعيدت كتابة NFR-SCAL-03 وM-27: كفاءة ≥ 0.8 من 1× حتى أكبر مضاعف يتسع له المضيف، ولا يُقاس ما بعده. وتُقاس NFR-SCAL-01 وNFR-SCAL-02 بأكبر حجم يتسع له، ويذكر التقرير الحجم المقيس. ويجري التقييم المستقل محلياً (FR-EVAL-08). وأُضيف R-23.
   - لا قياس على خادم GPU (§4.4). وقياسات GPU في INC‑11 على كرت المضيف، ومُصدِّر الكرت يُشغَّل محلياً لحملات القياس (§13.2).
-  - حجم Qwen يُختار بما يتسع له كرت 8 GB بجانب التضمين وOCR، أو يُقاس منفرداً (§11.6). والمرشحون الأكبر (حتى 32B) لا يُقاسون محلياً.
+  - حجم Qwen يُختار بما يتسع له كرت 8 GB بجانب التضمين (وOCR إن أضاف INC‑3 فرع GPU)، أو يُقاس منفرداً (§11.6). والمرشحون الأكبر (حتى 32B) لا يُقاسون محلياً.
   - المكدّس الحي على المضيف نفسه، فتتبع حملات القياس نظافة التشغيل (تفريغ الطابور، والإحماء)، وقد تحتاج إيقاف خدمات لا تُقاس مؤقتاً (RSK‑01).
   - خرج DEC‑14 من حواجز INC‑11.
 - **الخيارات المرفوضة:** (أ) مضيف أكبر مؤقت، وكانت توصية المعماري؛ و(ب) خادم GPU؛ و(ج) القياس على 1× و2× والاستقراء إلى 4×.
@@ -2179,6 +2193,28 @@ graph LR
   - حذف المشروع كله (NFR-PRIV-03) يحذف هذه أيضاً، لأنها ملك المشروع.
 - **الخيارات المرفوضة:** (ب) الحدّ الواسع.
 - **يحجب:** لا شيء بعد الحسم.
+
+**✅ DEC‑19: استرجاع النص المرسوم خطوطاً بالهندسة أولاً (جديد في الإصدار 0.18، حسمه المالك في 2026-11-08)**
+- **المصادر:** FR-VEC-08، وFR-VEC-10، وFR-RAS-01، وFR-ING-08، وM-30، وR-02، وP-05؛ و`../inc-1/characterization.md` §4 و§7؛ و`../inc-1/p1-fix-path.md` §2..§4؛ و`../inc-1/f1/design.md` §3.
+- **المشكلة:** صُمّم STG‑03 فرعاً احتياطياً يمسح «مناطق موسومة» بـOCR على GPU. وعند المورد الأول النص كله تقريباً خط SHX بلا طبقة نص (74 من 76 صفحة بلا حرف)، فصار المسح طريق القراءة الرئيسي. والمسح بطيء على CPU (33..40 ث للصفحة)، ومربعاته تقطع الأسطر، ويقرأ دائرة الطرف حرف `Q` فيلصقه بالمعرّف. وأعطى 12 صيغة خاطئة في 184 معرّفاً، و«الصيغة الخاطئة» تسمّي جهازاً غير موجود.
+- **الخيارات** (الأرقام من `p1-fix-path.md` §3، على 184 معرّفاً، وهي متفائلة: ثلاث صفحات لمورد واحد، وضُبط النموذج الأولي عليها):
+  - **(أ) الهندسة أولاً.** تُعزل سطور النص المرشحة من البدائيات، ثم يُصيَّر كل سطر وحده ويتعرّف عليه OCR، وما لم تغطّه السطور يُمسح احتياطياً. V1: 163 مطابقة و4 صيغ خاطئة ونحو 5 ث للصفحة. وV2 (مع تصويت الأشكال): 164 و3. وF (V2 ثم المسح): 171 و6.
+  - (ب) مسح الصفحة كاملة، كما في الإصدار 0.17: 159 و12 و33..40 ث للصفحة، ويحتاج GPU ليبلغ NFR-PERF-05.
+  - (ج) قاموس أشكال وحده، بلا OCR: 154 و13، ويحتاج قاموساً لكل خط ولكل مورد.
+  - (د) نموذج بصري لغوي يقرأ الصفحة: مرفوض في R1 (FR-RAS-04، §7.2).
+- **القرار: (أ)**، وهو توصية المعماري، ومعه ثلاثة شروط:
+  1. تصويت الأشكال اختياري ومعطّل افتراضياً، ويُفعَّل بإعداد إن أثبت قياس أوسع أنه يستحق تعقيده.
+  2. المسح الاحتياطي مقصور على ما لم تغطّه السطور، وعلى كتلة العنوان. ويُفعَّل افتراضياً فقط إن اجتاز عتبة `F1‑MS‑1` (§13.7).
+  3. البدائيات التي كوّنت سطراً تُعلَّم نصاً، فلا تدخل الرموز والاتصال رسماً إلا بدليل (INC‑4).
+  سُجّل في SRS قراراً D-35 (SRS 0.19).
+- **ما ترتّب عليه:**
+  - SRS 0.19: أُعيدت كتابة FR-VEC-08 وFR-VEC-10 وFR-RAS-01 وNFR-PERF-05 (على CPU، وحدّ المشروع في NFR-PERF-01 يشملها) وNFR-SCAL-04 وM-30 (صيغ خاطئة ≤ 0.005 في R1، و0 نهائياً) وR-02 و§3.2 و§3.4. ويبقى SRS D-04: الصينية متطلب.
+  - استرجاع النص المرسوم خطوطاً في STG‑02، والمسح الاحتياطي في STG‑03 على CPU، كلاهما في INC‑2، ومعهما رابطة `cg.electrical.ocr` (§7.1، §7.8، §16). وبقي في INC‑3 المسار النقطي والنص الصيني وفرع GPU.
+  - طريقتان لـOCR في سجل الدليل: «سطر عزلته الهندسة» و«مسح احتياطي» (§8.6). وطريقة «OCR» في DATA-01 كما هي.
+  - المحرك وموضعه في DEC‑07 (البند 2)، وADR‑39 (§15)، وRSK‑21..RSK‑27 (§18.2).
+  - لا يتغيّر تصنيف الصفحة (FR-ING-08)، ولا قاعدة F0.
+- **الخيارات المرفوضة:** (ب) و(ج) و(د).
+- **يحجب:** لا شيء بعد الحسم. ويعتمد قبول STG‑05 على عيّنات المورد الأول على قواعد F2.
 
 ### 18.4 التعارضات بين SRS والوثائق الحاكمة
 
