@@ -35,5 +35,6 @@ def _selection(**changes: Any) -> RuleSelection:
         "wire_number_patterns": (),
         "cross_reference_format": None,
         "extra_voltage_labels": (),
+        "extra_ansi_suffixes": (),
     }
     return RuleSelection(**{**base, **changes})
