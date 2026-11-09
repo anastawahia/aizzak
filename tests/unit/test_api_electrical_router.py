@@ -41,6 +41,11 @@ from app.framework.workflows import InMemoryWorkflowRegistry
 from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
 from app.modules.electrical.drawings.domain.document import DocumentStatus, ExclusionReason
 from app.modules.electrical.drawings.domain.pages import StageReason
+from app.modules.electrical.drawings.domain.profile import (
+    _TOP_KEYS,
+    DeviceFunctionNumbers,
+    PlantDesignation,
+)
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import build_conversations
 from tests.unit.support_credentials import build_credentials
@@ -386,6 +391,17 @@ def test_the_project_profile_is_replaced_by_a_new_version(env: Env) -> None:
     assert env.put("/projects/nope/profile", {"body": {"schema": 1}}).status_code == 404
 
 
+def test_a_supply_voltage_label_is_saved(env: Env) -> None:
+    """Review 2: `24V` is a voltage label on master and stays one."""
+    created = env.project()
+    saved = env.put(
+        f"/projects/{created['id']}/profile",
+        {"body": {"schema": 1, "voltage_labels": ["24V"]}},
+    )
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    assert saved.json()["body"]["voltage_labels"] == ["24V"]
+
+
 def test_an_invalid_profile_is_a_422_that_names_the_field_and_never_echoes_the_client(
     env: Env,
 ) -> None:
@@ -412,6 +428,51 @@ def test_an_invalid_profile_is_a_422_that_names_the_field_and_never_echoes_the_c
         "/projects", {"space_id": SPACE, "name": "Y", "profile": {"schema": 1, _HOSTILE: 1}}
     )
     assert created_with_bad.status_code == 422 and "evil" not in created_with_bad.text
+
+
+def test_f2_ac_16_the_new_fields_are_saved_validated_and_defaulted(env: Env) -> None:
+    created = env.project()
+    path = f"/projects/{created['id']}/profile"
+    saved = env.put(
+        path,
+        {
+            "body": {
+                "schema": 1,
+                "plant_designation": "kks",
+                "device_function_numbers": "ansi",
+                "ansi_suffixes": ["qz", "AB"],
+            }
+        },
+    )
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    body = saved.json()["body"]
+    assert body["plant_designation"] == "kks" and body["device_function_numbers"] == "ansi"
+    assert body["ansi_suffixes"] == ["AB", "QZ"]
+    assert env.get(path).json()["body"] == body
+    # a body that does not use them is stored and returned without the three keys
+    plain = env.put(path, {"body": {"schema": 1}})
+    assert plain.status_code == 200 and plain.json()["version"] == 3
+    assert not {"plant_designation", "device_function_numbers", "ansi_suffixes"} & set(
+        plain.json()["body"]
+    )
+    for bad, field in [
+        ({"plant_designation": _HOSTILE}, "plant_designation"),
+        ({"device_function_numbers": "iec_81346"}, "device_function_numbers"),
+        ({"identifier_convention": "kks"}, "identifier_convention"),
+        ({"identifier_convention": "ansi"}, "identifier_convention"),
+        ({"ansi_suffixes": [".*"]}, "ansi_suffixes[0]"),
+        ({"ansi_suffixes": ["("]}, "ansi_suffixes[0]"),
+        ({"ansi_suffixes": ["ABCD"]}, "ansi_suffixes[0]"),
+        ({"ansi_suffixes": [_HOSTILE]}, "ansi_suffixes[0]"),
+        ({"ansi_suffixes": ["A"] * 65}, "ansi_suffixes"),
+    ]:
+        response = env.put(path, {"body": {"schema": 1, **bad}})
+        assert response.status_code == 422, bad
+        assert _code(response) == "electrical.invalid_profile"
+        assert response.json()["detail"].startswith(f"{field}: "), response.json()["detail"]
+        for leaked in ("evil", _RLO, _ZWSP, "<script>", ".*", "ABCD"):
+            assert leaked not in response.text
+    assert env.get(path).json()["version"] == 3  # none of the refused bodies was stored
 
 
 # ======================================================================= registration (AC-6)
@@ -609,6 +670,8 @@ async def test_after_stg01_the_job_awaits_confirmation_and_the_proposal_carries_
         "cross_reference_format",
         "plc_families",
         "languages",
+        "plant_designation",  # D-36: proposed beside the device convention
+        "device_function_numbers",
     }
     assert proposal["field_confidence"]["symbol_standard"] == pytest.approx(0.8)
     assert "tokens" in proposal["basis"] and "producer" in proposal["basis"]
@@ -935,12 +998,18 @@ def test_a_member_reads_and_previews_but_neither_registers_nor_changes_a_profile
     for response in (
         env.register(project["id"], "f1"),
         env.put(f"/projects/{project['id']}/profile", {"body": {"schema": 1}}),
+        env.put(
+            f"/projects/{project['id']}/profile",
+            {"body": {"schema": 1, "plant_designation": "kks"}},  # F2-AC-17
+        ),
         env.post("/projects", {"space_id": SPACE, "name": "x"}),
         env.post("/ingestion-jobs/x/cancel"),
     ):
         assert response.status_code == 403 and _code(response) == "authz.forbidden"
         assert response.json()["detail"] == "missing permission: electrical:manage"
     assert env.stack.documents.rows == {}
+    env.as_role("owner")
+    assert env.get(f"/projects/{project['id']}/profile").json()["version"] == 1  # S-5
 
 
 def test_a_viewer_reads_and_nothing_more(env: Env) -> None:
@@ -950,6 +1019,12 @@ def test_a_viewer_reads_and_nothing_more(env: Env) -> None:
     assert env.get(f"/projects?space_id={SPACE}").status_code == 200
     denied = env.patch(f"/projects/{project['id']}", {"name": "x"})
     assert denied.status_code == 403
+    kks = env.put(
+        f"/projects/{project['id']}/profile", {"body": {"schema": 1, "plant_designation": "kks"}}
+    )
+    assert kks.status_code == 403 and _code(kks) == "authz.forbidden"  # F2-AC-17
+    env.as_role("owner")
+    assert env.get(f"/projects/{project['id']}/profile").json()["version"] == 1
 
 
 # ======================================================================== the contract
@@ -959,6 +1034,23 @@ _SPEC = yaml.safe_load(
     .joinpath("docs/design/openapi.yaml")
     .read_text(encoding="utf-8")
 )
+
+
+def test_the_profile_body_description_names_every_profile_field() -> None:
+    """F2-AC-18: a field added to the profile without its description in ``openapi.yaml`` fails
+    here, so the contract cannot lag the code."""
+    description = _SPEC["components"]["schemas"]["DrawingProfileIn"]["properties"]["body"][
+        "description"
+    ]
+    for key in _TOP_KEYS:
+        if key != "schema":
+            assert key in description, f"{key} is a profile field and not in the description"
+    for value in (*PlantDesignation, *DeviceFunctionNumbers):
+        assert value.value in description
+    proposal = _SPEC["components"]["schemas"]["ProfileProposalOut"]["properties"]
+    for key in ("plant_designation", "device_function_numbers"):
+        assert key in proposal["field_confidence"]["description"]
+    assert "systems" in proposal["basis"]["description"]
 
 
 def test_every_electrical_schema_has_the_published_properties_and_required_set() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.modules.electrical.shared.kinds import IdentifierKind, ParsedIdentifier
+from app.modules.electrical.shared.kinds import Convention, IdentifierKind, ParsedIdentifier
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.rules import RuleSelection
 from tests.eval.electrical.m04_identifiers import load_rules
@@ -35,5 +35,13 @@ def _selection(**changes: Any) -> RuleSelection:
         "wire_number_patterns": (),
         "cross_reference_format": None,
         "extra_voltage_labels": (),
+        "extra_ansi_suffixes": (),
     }
     return RuleSelection(**{**base, **changes})
+
+
+def parser_for(*conventions: Convention, **changes: Any) -> IdentifierParser:
+    """A parser over the packaged rules narrowed to these conventions (by name, D-36)."""
+    return IdentifierParser(
+        load_rules().narrowed(_selection(conventions=frozenset(conventions), **changes))
+    )

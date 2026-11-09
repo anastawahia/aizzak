@@ -2,6 +2,10 @@
 # same forms in other spellings and the malformed forms that must be FLAGGED, not dropped.
 # `source`: appendix-a | vendor-c (FR-ID-14, not claimed) | extra | invalid | invalid-or-prose.
 # `kind = "none"` means "no identifier at all". Absent optional fields mean none/empty.
+# `select` (D-36, optional) is a table of RuleSelection field names (`conventions`,
+# `cross_reference_format`, `extra_ansi_suffixes`): the case is parsed with the rules narrowed
+# by it. A case without `select` is parsed with the packaged, unnarrowed rules. The cases from
+# c193 on are F2 (KKS, ANSI, digits-first terminals), all with invented examples.
 
 [[case]]
 id = "c001"
@@ -2186,3 +2190,552 @@ text = "继电器"
 source = "extra"
 script = "cjk"
 kind = "none"
+
+[[case]]
+id = "c193"
+text = "1X-25"
+select = { conventions = ["iec_81346"] }
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c194"
+text = "1X-25"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c195"
+text = "1X-25"
+select = { conventions = ["gbt_5094"] }
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "gbt_5094"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c196"
+text = "1X-25"
+select = { conventions = ["nfpa_jic"] }
+source = "extra"
+kind = "none"
+
+[[case]]
+id = "c197"
+text = "1XT-5"
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "none"
+
+
+[[case]]
+id = "c198"
+text = "20XYZ10"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "system", class = "system", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }] }
+canonical = "20XYZ10"
+search_keys = ["20XYZ10"]
+
+[[case]]
+id = "c199"
+text = "20XYZ10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c200"
+text = "20XYZ10AB123CD45"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "component", class = "component", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "component", level = 3, text = "CD45", runs = ["CD", "45"] }] }
+canonical = "20XYZ10AB123CD45"
+search_keys = ["20XYZ10AB123CD45"]
+
+[[case]]
+id = "c201"
+text = "20XYZ10AB1234567"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment_cable", class = "cable", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "cable", text = "4567", runs = ["4567"] }] }
+canonical = "20XYZ10AB1234567"
+search_keys = ["20XYZ10AB1234567"]
+
+[[case]]
+id = "c202"
+text = "20XYZ104567"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "system_cable", class = "cable", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "cable", text = "4567", runs = ["4567"] }] }
+canonical = "20XYZ104567"
+search_keys = ["20XYZ104567"]
+
+[[case]]
+id = "c203"
+text = "=20XYZ10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", prefix = "=", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+alternatives = ["reference_designation"]
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123", "20XYZ10AB123"]
+
+[[case]]
+id = "c204"
+text = "20XYZ10AB123C"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123C", runs = ["AB", "123", "C"] }] }
+canonical = "20XYZ10AB123C"
+search_keys = ["20XYZ10AB123C"]
+
+[[case]]
+id = "c205"
+text = "20 xyz10 ab123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c206"
+text = "２０ＸＹＺ１０ＡＢ１２３"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+script = "fullwidth"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c207"
+text = "=20XYZ10AB123"
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=20XYZ10AB123"]
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123"]
+
+[[case]]
+id = "c208"
+text = "=20XYZ10AB12"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=20XYZ10AB12"]
+canonical = "=20XYZ10AB12"
+search_keys = ["=20XYZ10AB12"]
+
+[[case]]
+id = "c209"
+text = "=20XYZ10AB123"
+select = { conventions = ["kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", prefix = "=", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123", "20XYZ10AB123"]
+
+[[case]]
+id = "c210"
+text = "20XY10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.malformed"]
+canonical = "20XY10AB123"
+search_keys = ["20XY10AB123"]
+
+[[case]]
+id = "c211"
+text = "20XYZ10AB12"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.malformed"]
+canonical = "20XYZ10AB12"
+search_keys = ["20XYZ10AB12"]
+
+[[case]]
+id = "c212"
+text = "2OXYZ1OAB12O"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.letter_in_digit_position"]
+canonical = "2OXYZ1OAB12O"
+search_keys = ["2OXYZ1OAB12O"]
+
+[[case]]
+id = "c213"
+text = "7XY123"
+select = { conventions = ["iec_81346", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c214"
+text = "20XYZ10AB123"
+source = "invalid-or-prose"
+kind = "none"
+
+
+[[case]]
+id = "c215"
+text = "87T"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "differential_protection"
+ansi = { functions = [{ number = 87, suffix = "T", class = "differential_protection" }] }
+canonical = "87T"
+search_keys = ["87T"]
+
+[[case]]
+id = "c216"
+text = "50BF"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "overcurrent_protection"
+ansi = { functions = [{ number = 50, suffix = "BF", class = "overcurrent_protection" }] }
+canonical = "50BF"
+search_keys = ["50BF"]
+
+[[case]]
+id = "c217"
+text = "51N"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "overcurrent_protection"
+ansi = { functions = [{ number = 51, suffix = "N", class = "overcurrent_protection" }] }
+canonical = "51N"
+search_keys = ["51N"]
+
+[[case]]
+id = "c218"
+text = "27-1"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "voltage_protection"
+ansi = { functions = [{ number = 27, suffix = "", class = "voltage_protection" }], instance = 1 }
+canonical = "27-1"
+search_keys = ["27-1"]
+
+[[case]]
+id = "c219"
+text = "52"
+hint = "ansi_device"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "circuit_breaker"
+ansi = { functions = [{ number = 52, suffix = "", class = "circuit_breaker" }] }
+canonical = "52"
+search_keys = ["52"]
+
+[[case]]
+id = "c220"
+text = "86"
+hint = "ansi_device"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "lockout_relay"
+ansi = { functions = [{ number = 86, suffix = "", class = "lockout_relay" }] }
+canonical = "86"
+search_keys = ["86"]
+
+[[case]]
+id = "c221"
+text = "50/51"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+ansi = { functions = [{ number = 50, suffix = "", class = "overcurrent_protection" }, { number = 51, suffix = "", class = "overcurrent_protection" }] }
+alternatives = ["cross_reference"]
+canonical = "50/51"
+search_keys = ["50/51", "50", "51"]
+
+[[case]]
+id = "c222"
+text = "52"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+alternatives = ["ansi_device"]
+canonical = "52"
+search_keys = ["52"]
+
+[[case]]
+id = "c223"
+text = "87t"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "differential_protection"
+ansi = { functions = [{ number = 87, suffix = "T", class = "differential_protection" }] }
+canonical = "87T"
+search_keys = ["87T"]
+
+[[case]]
+id = "c224"
+text = "87 T"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "differential_protection"
+ansi = { functions = [{ number = 87, suffix = "T", class = "differential_protection" }] }
+canonical = "87T"
+search_keys = ["87T"]
+
+[[case]]
+id = "c225"
+text = "50BF/51N"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+ansi = { functions = [{ number = 50, suffix = "BF", class = "overcurrent_protection" }, { number = 51, suffix = "N", class = "overcurrent_protection" }] }
+canonical = "50BF/51N"
+search_keys = ["50BF/51N", "50BF", "51N"]
+
+[[case]]
+id = "c226"
+text = "12/3"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+ansi = { functions = [{ number = 12, suffix = "" }, { number = 3, suffix = "" }] }
+alternatives = ["cross_reference"]
+canonical = "12/3"
+search_keys = ["12/3", "12", "3"]
+
+[[case]]
+id = "c227"
+text = "50/51"
+select = { conventions = ["iec_81346", "ansi"], cross_reference_format = "page_slash_column" }
+source = "extra"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "page_slash_column"
+alternatives = ["ansi_device"]
+canonical = "50/51"
+search_keys = ["50/51"]
+
+[[case]]
+id = "c228"
+text = "50/51"
+select = { conventions = ["iec_81346", "ansi"], cross_reference_format = "slash_page_dot_column" }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+ansi = { functions = [{ number = 50, suffix = "", class = "overcurrent_protection" }, { number = 51, suffix = "", class = "overcurrent_protection" }] }
+canonical = "50/51"
+search_keys = ["50/51", "50", "51"]
+
+[[case]]
+id = "c229"
+text = "87QZ"
+select = { conventions = ["iec_81346", "ansi"], extra_ansi_suffixes = ["QZ"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+convention = "ansi"
+aspects = []
+device_class = "differential_protection"
+ansi = { functions = [{ number = 87, suffix = "QZ", class = "differential_protection" }] }
+canonical = "87QZ"
+search_keys = ["87QZ"]
+
+[[case]]
+id = "c230"
+text = "50/51"
+source = "extra"
+kind = "cross_reference"
+valid = true
+aspects = []
+variant = "page_slash_column"
+canonical = "50/51"
+search_keys = ["50/51"]
+
+[[case]]
+id = "c231"
+text = "87QZ"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid"
+kind = "ansi_device"
+valid = false
+convention = "ansi"
+aspects = []
+device_class = "differential_protection"
+issues = ["ansi.unknown_suffix"]
+ansi = { functions = [{ number = 87, suffix = "QZ", class = "differential_protection" }] }
+canonical = "87QZ"
+search_keys = ["87QZ"]
+
+[[case]]
+id = "c232"
+text = "100T"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c233"
+text = "00"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "00"
+search_keys = ["00", "0"]
+
+[[case]]
+id = "c234"
+text = "05"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "wire_number"
+valid = true
+aspects = []
+variant = "sequential"
+canonical = "05"
+search_keys = ["05", "5"]
+
+[[case]]
+id = "c235"
+text = "87T"
+source = "invalid-or-prose"
+kind = "none"
+
+
+[[case]]
+id = "c236"
+text = "2OXYZ10A0123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.letter_in_digit_position", "kks.digit_in_letter_position"]
+canonical = "2OXYZ10A0123"
+search_keys = ["2OXYZ10A0123"]

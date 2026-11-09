@@ -25,5 +25,8 @@ at least 0.995). The vector-text part of M-04 arrives with INC-2.
 A case lists `text` (and `hint` when the caller knows the kind), then the expected
 `kind` (`"none"` = no identifier at all), `valid`, `convention`, `aspects`,
 `connection_point`, `device_class`, `pole_role`, `variant`, `issues`, `plc`, and the
-`canonical` form and `search_keys`. An absent optional field means none. When the rules
+`canonical` form and `search_keys` (and, for F2, `kks`, `ansi` and `alternatives`). An absent
+optional field means none. `select` (optional) names the `RuleSelection` fields the case is
+parsed under (`conventions`, `cross_reference_format`, `extra_ansi_suffixes`); a case without
+it is parsed with the packaged rules as they are. When the rules
 change, bump `version` in `shared/rules/identifiers.toml` and `SHARED_VERSION`.

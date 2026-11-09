@@ -17,10 +17,29 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
-from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
+from app.modules.electrical.shared.ansi import is_ansi_evidence
+from app.modules.electrical.shared.kinds import (
+    ADDITIVE_CONVENTIONS,
+    DEVICE_CONVENTIONS,
+    Convention,
+    IdentifierKind,
+    PlcFamily,
+)
 from app.modules.electrical.shared.normalization import canonical_form, text_issues
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.patterns import compiled
+from app.modules.electrical.shared.rules.errors import RuleError
+from app.modules.electrical.shared.rules.systems import (
+    AnsiRules,
+    KksRules,
+    ansi_from_mapping,
+    checked_ansi_suffixes,
+    confusables_from_mapping,
+    digits_first_from_mapping,
+    kks_from_mapping,
+)
+
+__all__ = ["IdentifierRules", "RuleError", "RuleSelection"]
 
 _ASPECT_CHARS = frozenset("=+-&#")
 MAX_EXTRA_VOLTAGE_LABELS = 64  # LLD 3.3.6: DrawingProfile.voltage_labels <= 64
@@ -33,10 +52,6 @@ _RAIL_CODE = {
     "-": re.compile(r"\d{1,4}V?", re.ASCII),
     "+": re.compile(r"\d{1,4}V", re.ASCII),
 }
-
-
-class RuleError(ValueError):
-    """The rules mapping has the wrong shape, or a rule does not compile."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +68,7 @@ class RuleSelection:
     wire_number_patterns: tuple[str, ...]
     cross_reference_format: str | None  # None = detect the dominant one
     extra_voltage_labels: tuple[str, ...]
+    extra_ansi_suffixes: tuple[str, ...] = ()  # D-36: added to the packaged suffixes
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +85,16 @@ class IdentifierRules:
     cross_reference_formats: Mapping[str, str]  # name -> regex
     connection_point_roles: Mapping[str, str]
     voltage_labels: tuple[str, ...]
-    # Additive to the LLD shape: what `narrowed` restricts, and the TOML's separator.
-    conventions: frozenset[Convention] = field(default_factory=lambda: frozenset(Convention))
+    kks: KksRules  # FR-ID-15, D-36
+    ansi: AnsiRules  # FR-ID-16, D-36
+    confusables: tuple[tuple[str, str], ...]  # (("0", "O"),): FR-ID-18
+    terminal_digits_first: Mapping[str, tuple[Convention, ...]]  # prefix -> conventions (A-5)
+    # Additive to the LLD shape: what `narrowed` restricts, and the TOML's separator. The
+    # default is the DEVICE conventions: KKS and ANSI are read only when named (D-36).
+    conventions: frozenset[Convention] = field(default_factory=lambda: DEVICE_CONVENTIONS)
     plc_families: frozenset[PlcFamily] = field(default_factory=lambda: frozenset(PlcFamily))
     connection_point_separator: str = ":"
+    cross_reference_pinned: bool = False  # the profile chose ONE cross-reference format
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> IdentifierRules:
@@ -99,13 +121,14 @@ class IdentifierRules:
             except re.error as exc:
                 raise RuleError(f"rule {name!r} is not a valid regular expression: {exc}") from exc
 
+        terminal_prefixes = _strings(terminals, "prefixes", "terminals")
         return cls(
             version=_text(data, "version"),
             aspects=aspects,
             extra_aspects=extras,
             cn_letter_codes=_codes(_table(data, "cn_letter_codes"), "cn_letter_codes"),
             nfpa_codes=_codes(_table(data, "nfpa_codes"), "nfpa_codes"),
-            terminal_prefixes=_strings(terminals, "prefixes", "terminals"),
+            terminal_prefixes=terminal_prefixes,
             wire_number_patterns=MappingProxyType(wire),
             cross_reference_formats=MappingProxyType(xref),
             connection_point_roles=MappingProxyType(
@@ -120,14 +143,23 @@ class IdentifierRules:
                 canonical_form(label)
                 for label in _strings(_table(data, "voltages"), "labels", "voltages")
             ),
+            kks=kks_from_mapping(_table(data, "kks")),
+            ansi=ansi_from_mapping(_table(data, "ansi")),
+            confusables=confusables_from_mapping(_table(data, "confusables")),
+            terminal_digits_first=digits_first_from_mapping(terminals, terminal_prefixes),
             connection_point_separator=separator,
         )
 
     def narrowed(self, profile: RuleSelection) -> IdentifierRules:
-        """The subset a document's profile selects (conventions, PLC families,
-        patterns by NAME, extra voltage labels). A profile never carries a regex."""
+        """The subset a document's profile selects (device conventions, PLC families, patterns by
+        NAME, extra voltage labels); KKS and ANSI are enabled by NAME. With conventions named,
+        the result is ``(self.conventions | ADDITIVE_CONVENTIONS) & profile.conventions``, so it
+        may enable KKS or ANSI the receiver lacked: narrowing narrowed rules is not idempotent,
+        and no caller chains it. A profile never carries a regex."""
         conventions = (
-            self.conventions & profile.conventions if profile.conventions else self.conventions
+            (self.conventions | ADDITIVE_CONVENTIONS) & profile.conventions
+            if profile.conventions
+            else self.conventions
         )
         plc_families = (
             self.plc_families & profile.plc_families if profile.plc_families else self.plc_families
@@ -164,11 +196,23 @@ class IdentifierRules:
             extra_aspects=extra_aspects,
             wire_number_patterns=wire,
             cross_reference_formats=xref,
+            ansi=replace(
+                self.ansi,
+                suffixes=self.ansi.suffixes
+                | frozenset(checked_ansi_suffixes(profile.extra_ansi_suffixes)),
+            ),
+            cross_reference_pinned=(
+                self.cross_reference_pinned or profile.cross_reference_format is not None
+            ),
         )
         extras = narrowed._checked_voltage_labels(profile.extra_voltage_labels)
         return replace(
             narrowed, voltage_labels=tuple(dict.fromkeys((*self.voltage_labels, *extras)))
         )
+
+    def with_additive(self) -> IdentifierRules:
+        """The same rules with KKS and ANSI enabled too (the tally's probe, FR-ING-12)."""
+        return replace(self, conventions=self.conventions | ADDITIVE_CONVENTIONS)
 
     def _checked_voltage_labels(self, labels: tuple[str, ...]) -> tuple[str, ...]:
         """Normalise the profile's extra voltage labels and reject any that is empty, too
@@ -176,7 +220,8 @@ class IdentifierRules:
         kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``). A rail
         such as ``-48V`` is allowed: only a VALID single-aspect designation with prefix ``-`` and
         a code of 1..4 digits and an optional ``V`` (so a bare ``-12`` too), or prefix ``+`` and
-        1..4 digits and a ``V`` (INC1-Q-5). A label that is made of ``+`` / ``-`` only, or holds
+        1..4 digits and a ``V`` (INC1-Q-5). An ANSI reading that is no evidence (``24V``,
+        ``12VDC``) is allowed too (D-36). A label that is made of ``+`` / ``-`` only, or holds
         a hidden character, is rejected (R2-2)."""
         if len(labels) > MAX_EXTRA_VOLTAGE_LABELS:
             raise RuleError(f"at most {MAX_EXTRA_VOLTAGE_LABELS} extra voltage labels")
@@ -207,10 +252,14 @@ class IdentifierRules:
     def _other_kind(self, label: str) -> IdentifierKind | None:
         """The kind a label would be read as if it were not a voltage, or None. A rail such
         as ``-48V`` or ``+24V`` is allowed: a VALID single-aspect designation whose prefix is
-        ``-`` and whose code matches ``\\d{1,4}V?``, or ``+`` and ``\\d{1,4}V``."""
+        ``-`` and whose code matches ``\\d{1,4}V?``, or ``+`` and ``\\d{1,4}V``. An ANSI reading
+        that is no evidence (``24V``, ``12VDC``: a number without a class, or a rating) hides no
+        device either, and is allowed (D-36); ``87T`` or ``27-1`` is refused."""
         found = IdentifierParser(self).parse(label)
         if found is None or found.kind is IdentifierKind.VOLTAGE:
             return None
+        if found.kind is IdentifierKind.ANSI_DEVICE and not is_ansi_evidence(found, self):
+            return None  # D-36: 24V or 12VDC hide no device the product reads by its function
         if (
             found.kind is IdentifierKind.REFERENCE_DESIGNATION
             and found.valid

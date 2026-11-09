@@ -166,7 +166,7 @@ def test_an_invalid_profile_never_echoes_what_the_client_sent(raw: dict[str, Any
         assert "evil" not in text
         assert "\u202e" not in text
         assert "<script>" not in text
-        assert len(text) < 300
+        assert len(text) < 400  # the list of known fields grows (D-36: 17 names now)
 
 
 def test_from_body_rejects_a_body_that_is_not_an_object() -> None:

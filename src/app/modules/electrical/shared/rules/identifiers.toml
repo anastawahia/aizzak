@@ -1,7 +1,7 @@
 # Identifier rules (FR-ID-01, 03..08, 13). DATA, not code (INC1-D-19): any change bumps
 # `version`. Regular expressions are written and reviewed here; a document's profile
 # selects them by NAME and never carries one.
-version = "1.0.0"
+version = "1.1.0"
 
 [reference_designation]
 aspects = ["=", "+", "-"]
@@ -33,6 +33,96 @@ TB = "terminal_block"
 
 [terminals]
 prefixes = ["X", "XT", "TB"]
+
+# FR-ID-03, D-36 (A-5): the device conventions a digits-first strip (`1XT-5`, `1X-25`) reads
+# under; the first one the profile enables wins. A prefix not listed reads under
+# cn_letter_codes only (the INC-1 behaviour).
+[terminals.digits_first]
+X = ["cn_letter_codes", "iec_81346", "gbt_5094"]
+XT = ["cn_letter_codes"]
+TB = ["cn_letter_codes"]
+
+# FR-ID-18, D-36: digit/letter pairs OCR confuses, as two-character strings (digit, letter).
+# INC-1 uses them only to NAME why a KKS tag is invalid; the correction itself is INC-2.
+[confusables]
+pairs = ["0O"]
+
+# KKS (FR-ID-15, D-36): the STRUCTURE only, never a key catalogue and never a meaning
+# (NFR-LIC-05). A mask has one character per position: N a digit, A a letter, then
+# optional trailing positions: n an optional digit, a an optional letter.
+[kks]
+excluded_letters = []  # A-3: letters KKS never uses in a letter position; empty until verified
+# D-36: the shallowest level the tally counts as evidence of KKS (2 = an equipment tag).
+# A system-level shape alone (two digits, three letters, two digits) also fits other text.
+evidence_min_level = 2
+
+[kks.prefixes]  # the identification types, when a tag is written with one (A-8)
+process = "="
+installation = "+"
+location = "++"
+
+[kks.parts]
+system = { level = 1, mask = "NNAAANN" }
+equipment = { level = 2, mask = "AANNNa" }
+component = { level = 3, mask = "AANN" }
+cable = { mask = "NNNN" }  # A-2: four digits after a system or equipment tag
+
+# First full match in file order wins.
+[[kks.forms]]
+name = "component"
+parts = ["system", "equipment", "component"]
+class = "component"
+
+[[kks.forms]]
+name = "equipment_cable"
+parts = ["system", "equipment", "cable"]
+class = "cable"
+
+[[kks.forms]]
+name = "equipment"
+parts = ["system", "equipment"]
+class = "equipment"
+
+[[kks.forms]]
+name = "system_cable"
+parts = ["system", "cable"]
+class = "cable"
+
+[[kks.forms]]
+name = "system"
+parts = ["system"]
+class = "system"
+
+# ANSI/IEEE C37.2 device function numbers (FR-ID-16, D-36): the numbers, the suffix letters
+# and OUR class names only, never the standard's text (NFR-LIC-05). A class may serve
+# several numbers; a number without a class is still a valid number (function_class None).
+[ansi]
+max_compound = 3
+suffixes = ["A", "B", "BF", "C", "D", "G", "GS", "L", "N", "P", "Q", "R", "S", "T", "TN", "U", "V", "X", "Y", "Z"]
+# D-36: suffix letters that also write a rating (A: amperes, as in a breaker's 32A). A reading
+# with one is still an ANSI device when ANSI is enabled; it is no evidence for the tally.
+non_evidence_suffixes = ["A"]
+
+[ansi.functions]
+21 = "distance_protection"
+25 = "synchronizing"
+27 = "voltage_protection"
+32 = "power_protection"
+46 = "unbalance_protection"
+47 = "unbalance_protection"
+49 = "thermal_protection"
+50 = "overcurrent_protection"
+51 = "overcurrent_protection"
+52 = "circuit_breaker"
+59 = "voltage_protection"
+64 = "earth_fault_protection"
+67 = "overcurrent_protection"
+79 = "reclosing"
+81 = "frequency_protection"
+86 = "lockout_relay"
+87 = "differential_protection"
+89 = "disconnect_switch"
+94 = "trip_relay"
 
 # Selected by NAME in the profile. First match in file order wins.
 [wire_numbers]

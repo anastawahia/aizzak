@@ -21,9 +21,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from app.modules.electrical.shared.kinds import IdentifierKind, ParsedIdentifier
+from app.modules.electrical.shared.kinds import Convention, IdentifierKind, ParsedIdentifier
 from app.modules.electrical.shared.parser import IdentifierParser
-from app.modules.electrical.shared.rules import IdentifierRules
+from app.modules.electrical.shared.rules import IdentifierRules, RuleSelection
 from app.modules.electrical.shared.version import SHARED_VERSION
 from tests.eval.electrical.framework import (
     EvalReport,
@@ -60,6 +60,39 @@ def hint_of(case: Case) -> IdentifierKind | None:
     return IdentifierKind(case["hint"]) if "hint" in case else None
 
 
+def selection_of(case: Case) -> RuleSelection | None:
+    """The case's ``select`` table (D-36): RuleSelection field names, by NAME only."""
+    chosen = case.get("select")
+    if chosen is None:
+        return None
+    return RuleSelection(
+        conventions=frozenset(Convention(name) for name in chosen.get("conventions", ())),
+        plc_families=frozenset(),
+        extra_aspects=(),
+        wire_number_patterns=(),
+        cross_reference_format=chosen.get("cross_reference_format"),
+        extra_voltage_labels=(),
+        extra_ansi_suffixes=tuple(chosen.get("extra_ansi_suffixes", ())),
+    )
+
+
+_NARROWED: dict[tuple[int, str], tuple[IdentifierRules, IdentifierParser]] = {}
+
+
+def parse_case(parser: IdentifierParser, case: Case) -> ParsedIdentifier | None:
+    """Parse the case's text the way the case says: with the rules narrowed by its ``select``
+    (one parser per rules object and selection, cached), or with ``parser`` itself."""
+    selection = selection_of(case)
+    if selection is not None:
+        key = (id(parser.rules), repr(selection))
+        cached = _NARROWED.get(key)
+        if cached is None or cached[0] is not parser.rules:
+            cached = (parser.rules, IdentifierParser(parser.rules.narrowed(selection)))
+            _NARROWED[key] = cached
+        parser = cached[1]
+    return parser.parse(case["text"], hint=hint_of(case))
+
+
 def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
     """The comparable shape of a parse result, in the case file's own vocabulary."""
     if parsed is None:
@@ -71,6 +104,7 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
         "search_keys": list(parsed.forms.search_keys),
         "aspects": [a.prefix + a.code for a in parsed.aspects],
     }
+    kks, ansi = parsed.kks, parsed.ansi
     optional: dict[str, Any] = {
         "convention": parsed.convention.value if parsed.convention else None,
         "connection_point": parsed.connection_point,
@@ -78,6 +112,40 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
         "pole_role": parsed.pole_role,
         "variant": parsed.variant,
         "issues": list(parsed.issues) or None,
+        "kks": (
+            {
+                "form": kks.form,
+                "class": kks.kks_class.value,
+                **({"prefix": kks.prefix} if kks.prefix is not None else {}),
+                "parts": [
+                    {
+                        "name": p.name,
+                        **({"level": p.level} if p.level is not None else {}),
+                        "text": p.text,
+                        "runs": list(p.runs),
+                    }
+                    for p in kks.parts
+                ],
+            }
+            if kks
+            else None
+        ),
+        "ansi": (
+            {
+                "functions": [
+                    {
+                        "number": f.number,
+                        "suffix": f.suffix,
+                        **({"class": f.function_class} if f.function_class is not None else {}),
+                    }
+                    for f in ansi.functions
+                ],
+                **({"instance": ansi.instance} if ansi.instance is not None else {}),
+            }
+            if ansi
+            else None
+        ),
+        "alternatives": [k.value for k in parsed.alternatives] or None,
         "plc": (
             {
                 "family": parsed.plc.family.value,
@@ -97,7 +165,7 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
 
 EXPECTED_KEYS = (
     "kind", "valid", "canonical", "search_keys", "aspects", "convention", "connection_point",
-    "device_class", "pole_role", "variant", "issues", "plc",
+    "device_class", "pole_role", "variant", "issues", "plc", "kks", "ansi", "alternatives",
 )  # fmt: skip
 
 
@@ -112,7 +180,7 @@ def expected_shape(case: Case) -> dict[str, Any]:
 
 
 def matches(parser: IdentifierParser, case: Case) -> bool:
-    return observed(parser.parse(case["text"], hint=hint_of(case))) == expected_shape(case)
+    return observed(parse_case(parser, case)) == expected_shape(case)
 
 
 def _case_hash(case: Case) -> str:
