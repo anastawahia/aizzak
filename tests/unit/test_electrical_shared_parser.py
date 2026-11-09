@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from dataclasses import replace
 
 import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
+from app.modules.electrical.shared.parser import IdentifierParser
 from tests.eval.electrical.m04_identifiers import (
     compute_m04,
     expected_shape,
@@ -39,6 +41,13 @@ _APPENDIX_A = {
     IdentifierKind.VOLTAGE: ["L1", "L2", "L3", "N", "PE", "L+", "M", "+24V", "0V", "24VDC"],
 }  # fmt: skip
 _CONNECTION_POINT_EXAMPLES = ["-K5:A1", "-K5:13", "-Q1:2", "KM1:A1"]
+# The F2 examples (FR-ID-15, FR-ID-16, D-36), invented; read with KKS and ANSI enabled.
+_APPENDIX_A_F2 = {
+    IdentifierKind.KKS_TAG: [
+        "20XYZ10", "20XYZ10AB123", "20XYZ10AB123CD45", "20XYZ10AB1234567", "20XYZ104567",
+        "=20XYZ10AB123",
+    ],
+}  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -51,6 +60,15 @@ def test_every_appendix_a_example_parses_to_its_kind(kind: IdentifierKind, text:
     assert found.forms.canonical and found.forms.search_keys
 
 
+@pytest.mark.parametrize(
+    ("kind", "text"), [(k, t) for k, texts in _APPENDIX_A_F2.items() for t in texts]
+)
+def test_every_f2_appendix_a_example_parses_to_its_kind(kind: IdentifierKind, text: str) -> None:
+    found = _with(Convention.KKS, Convention.ANSI).parse(text)
+    assert found is not None and found.kind is kind and found.valid and not found.issues
+    assert found.forms.original == text
+
+
 @pytest.mark.parametrize("text", _CONNECTION_POINT_EXAMPLES)
 def test_appendix_a_connection_points_carry_label_and_role(text: str) -> None:
     found = parse(text)
@@ -60,7 +78,8 @@ def test_appendix_a_connection_points_carry_label_and_role(text: str) -> None:
 
 def test_every_appendix_a_example_is_in_the_case_set() -> None:
     texts = {c["text"] for c in _CASES}
-    needed = {t for group in _APPENDIX_A.values() for t in group} | set(_CONNECTION_POINT_EXAMPLES)
+    needed = {t for group in (*_APPENDIX_A.values(), *_APPENDIX_A_F2.values()) for t in group}
+    needed |= set(_CONNECTION_POINT_EXAMPLES)
     assert needed <= texts
 
 
@@ -144,3 +163,25 @@ def test_the_kernel_imports_only_an_allowlist_of_pure_modules_and_itself() -> No
                     assert func.id not in _FORBIDDEN_CALLS, f"{path.name} calls {func.id}"
                 if isinstance(func, ast.Attribute):
                     assert func.attr not in _FORBIDDEN_ATTRIBUTES, f"{path.name} calls .{func.attr}"
+
+
+# --- F2-AC-7 (D-36): KKS and ANSI are additive, and change no existing case -------------
+
+_PRE_F2 = [c for c in _CASES if int(str(c["id"])[1:]) <= 192 and "select" not in c]
+
+
+def _with(*extra: Convention) -> IdentifierParser:
+    rules = PARSER.rules
+    return IdentifierParser(replace(rules, conventions=rules.conventions | frozenset(extra)))
+
+
+def test_f2_ac_7_kks_on_or_off_changes_no_existing_case() -> None:
+    assert len(_PRE_F2) == 192
+    kks_on = _with(Convention.KKS)
+    for case in _PRE_F2:
+        assert observed(parse_case(kks_on, case)) == observed(parse_case(PARSER, case)), case["id"]
+    # the invented tags are read only when KKS is on
+    for text in ("20XYZ10", "20XYZ10AB123", "20XYZ10AB123CD45"):
+        assert PARSER.parse(text) is None
+        found = kks_on.parse(text)
+        assert found is not None and found.kind is IdentifierKind.KKS_TAG

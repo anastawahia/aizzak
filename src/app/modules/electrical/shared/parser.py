@@ -41,6 +41,7 @@ from app.modules.electrical.shared.kinds import (
     ParsedIdentifier,
     PlcFamily,
 )
+from app.modules.electrical.shared.kks import parse_kks_tag
 from app.modules.electrical.shared.letter_codes import parse_letter_code
 from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
@@ -69,11 +70,27 @@ _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
     (IdentifierKind.VOLTAGE, parse_voltage),
     (IdentifierKind.BRIDGE, parse_bridge),
     (IdentifierKind.TERMINAL, parse_terminal),
+    (IdentifierKind.KKS_TAG, parse_kks_tag),  # before IEC, for =20XYZ10AB123 (D-36)
     (IdentifierKind.REFERENCE_DESIGNATION, parse_reference_designation),
     (IdentifierKind.LETTER_CODE, parse_letter_code),
     (IdentifierKind.WIRE_NUMBER, parse_wire_number),
     (IdentifierKind.CONNECTION_POINT, parse_connection_point),
 )
+
+
+def _alternatives(
+    found: ParsedIdentifier, forms: NormalizedForms, rules: IdentifierRules
+) -> tuple[IdentifierKind, ...]:
+    """The other kinds the SAME text reads as under the enabled rules, for the F2 pairs only
+    (D-36): a KKS tag with a prefix against an IEC designation."""
+    if (
+        found.kind is IdentifierKind.KKS_TAG
+        and found.kks is not None
+        and found.kks.prefix
+        and parse_reference_designation(forms.canonical, forms, rules) is not None
+    ):
+        return (IdentifierKind.REFERENCE_DESIGNATION,)
+    return ()
 
 
 def _flag_text(found: ParsedIdentifier, issues: tuple[str, ...]) -> ParsedIdentifier:
@@ -113,6 +130,8 @@ class IdentifierParser:
                 continue
             found = parse(forms.canonical, forms, self._rules)
             if found is not None:
+                if hint is None and (alternatives := _alternatives(found, forms, self._rules)):
+                    found = replace(found, alternatives=alternatives)
                 return _flag_text(found, text_issues(text))
         return None
 

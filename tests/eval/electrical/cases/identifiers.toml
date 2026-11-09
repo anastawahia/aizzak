@@ -2246,3 +2246,211 @@ select = { conventions = ["iec_81346"] }
 source = "extra"
 kind = "none"
 
+
+[[case]]
+id = "c198"
+text = "20XYZ10"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "system", class = "system", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }] }
+canonical = "20XYZ10"
+search_keys = ["20XYZ10"]
+
+[[case]]
+id = "c199"
+text = "20XYZ10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c200"
+text = "20XYZ10AB123CD45"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "component", class = "component", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "component", level = 3, text = "CD45", runs = ["CD", "45"] }] }
+canonical = "20XYZ10AB123CD45"
+search_keys = ["20XYZ10AB123CD45"]
+
+[[case]]
+id = "c201"
+text = "20XYZ10AB1234567"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment_cable", class = "cable", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "cable", text = "4567", runs = ["4567"] }] }
+canonical = "20XYZ10AB1234567"
+search_keys = ["20XYZ10AB1234567"]
+
+[[case]]
+id = "c202"
+text = "20XYZ104567"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "system_cable", class = "cable", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "cable", text = "4567", runs = ["4567"] }] }
+canonical = "20XYZ104567"
+search_keys = ["20XYZ104567"]
+
+[[case]]
+id = "c203"
+text = "=20XYZ10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", prefix = "=", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+alternatives = ["reference_designation"]
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123", "20XYZ10AB123"]
+
+[[case]]
+id = "c204"
+text = "20XYZ10AB123C"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123C", runs = ["AB", "123", "C"] }] }
+canonical = "20XYZ10AB123C"
+search_keys = ["20XYZ10AB123C"]
+
+[[case]]
+id = "c205"
+text = "20 xyz10 ab123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c206"
+text = "２０ＸＹＺ１０ＡＢ１２３"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+script = "fullwidth"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "20XYZ10AB123"
+search_keys = ["20XYZ10AB123"]
+
+[[case]]
+id = "c207"
+text = "=20XYZ10AB123"
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=20XYZ10AB123"]
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123"]
+
+[[case]]
+id = "c208"
+text = "=20XYZ10AB12"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "reference_designation"
+valid = true
+convention = "iec_81346"
+aspects = ["=20XYZ10AB12"]
+canonical = "=20XYZ10AB12"
+search_keys = ["=20XYZ10AB12"]
+
+[[case]]
+id = "c209"
+text = "=20XYZ10AB123"
+select = { conventions = ["kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+convention = "kks"
+aspects = []
+kks = { form = "equipment", class = "equipment", prefix = "=", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+canonical = "=20XYZ10AB123"
+search_keys = ["=20XYZ10AB123", "20XYZ10AB123"]
+
+[[case]]
+id = "c210"
+text = "20XY10AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.malformed"]
+canonical = "20XY10AB123"
+search_keys = ["20XY10AB123"]
+
+[[case]]
+id = "c211"
+text = "20XYZ10AB12"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.malformed"]
+canonical = "20XYZ10AB12"
+search_keys = ["20XYZ10AB12"]
+
+[[case]]
+id = "c212"
+text = "2OXYZ1OAB12O"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.letter_in_digit_position"]
+canonical = "2OXYZ1OAB12O"
+search_keys = ["2OXYZ1OAB12O"]
+
+[[case]]
+id = "c213"
+text = "7XY123"
+select = { conventions = ["iec_81346", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c214"
+text = "20XYZ10AB123"
+source = "invalid-or-prose"
+kind = "none"
+
