@@ -2,7 +2,9 @@
 
 Terminal forms: ``-X1:14`` / ``=A1+P2-X1:14`` (aspect chain whose product is a terminal
 strip, then the terminal), ``X1.14``, ``X1-14``, ``XT1:5`` (strip, separator, terminal)
-and ``1XT-5`` (digits-first Chinese strip code). Whatever the form, the search keys
+and ``1XT-5`` / ``1X-25`` (digits-first strip code: the conventions it reads under are the
+rules', ``terminals.digits_first``; the Chinese letter codes by default, IEC 81346 for
+``X`` at this vendor, A-5). Whatever the form, the search keys
 include the unified ``STRIP:TERMINAL`` key, so ``X1.14`` and ``-X1:14`` meet.
 
 Bridges are not in the SRS appendix. This kernel reads ``<terminal>~<terminal>`` (the
@@ -96,7 +98,12 @@ def _split(canonical: str, rules: IdentifierRules) -> _Terminal | None:
         return None
     strip = match["strip"]
     prefix = _prefix_of(strip, rules)
-    if number_first or prefix == "XT":
+    if number_first:
+        # A-5: the conventions a digits-first strip reads under are the rules' (data), by prefix
+        convention = pick_convention(
+            rules, *rules.terminal_digits_first.get(prefix, (Convention.CN_LETTER_CODES,))
+        )
+    elif prefix == "XT":
         convention = pick_convention(rules, Convention.CN_LETTER_CODES)
     elif prefix == "TB":
         convention = pick_convention(rules, Convention.NFPA_JIC)

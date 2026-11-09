@@ -225,6 +225,12 @@ def test_f2_ac_43_digits_first_conventions_are_data() -> None:
     bare = IdentifierRules.from_mapping(_mutated(drop))
     assert bare.terminal_digits_first == {}
     assert parser.rules.terminal_digits_first["X"]
+    # changing the table alone changes the reading, with no code change
+    only_iec = IdentifierRules.from_mapping(
+        _mutated(lambda d: d["terminals"]["digits_first"].update(X=["iec_81346"]))
+    )
+    read = IdentifierParser(only_iec).parse("1X-25")
+    assert read is not None and read.convention is Convention.IEC_81346
     for mutate in (
         lambda d: d["terminals"]["digits_first"].update(ZZ=["iec_81346"]),
         lambda d: d["terminals"]["digits_first"].update(X=["nope"]),

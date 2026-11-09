@@ -2,6 +2,10 @@
 # same forms in other spellings and the malformed forms that must be FLAGGED, not dropped.
 # `source`: appendix-a | vendor-c (FR-ID-14, not claimed) | extra | invalid | invalid-or-prose.
 # `kind = "none"` means "no identifier at all". Absent optional fields mean none/empty.
+# `select` (D-36, optional) is a table of RuleSelection field names (`conventions`,
+# `cross_reference_format`, `extra_ansi_suffixes`): the case is parsed with the rules narrowed
+# by it. A case without `select` is parsed with the packaged, unnarrowed rules. The cases from
+# c193 on are F2 (KKS, ANSI, digits-first terminals), all with invented examples.
 
 [[case]]
 id = "c001"
@@ -2186,3 +2190,59 @@ text = "继电器"
 source = "extra"
 script = "cjk"
 kind = "none"
+
+[[case]]
+id = "c193"
+text = "1X-25"
+select = { conventions = ["iec_81346"] }
+source = "appendix-a"
+kind = "terminal"
+valid = true
+convention = "iec_81346"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c194"
+text = "1X-25"
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "cn_letter_codes"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c195"
+text = "1X-25"
+select = { conventions = ["gbt_5094"] }
+source = "extra"
+kind = "terminal"
+valid = true
+convention = "gbt_5094"
+aspects = []
+connection_point = "25"
+device_class = "terminal_strip"
+canonical = "1X-25"
+search_keys = ["1X-25", "1X:25"]
+
+[[case]]
+id = "c196"
+text = "1X-25"
+select = { conventions = ["nfpa_jic"] }
+source = "extra"
+kind = "none"
+
+[[case]]
+id = "c197"
+text = "1XT-5"
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "none"
+

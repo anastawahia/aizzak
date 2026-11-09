@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind
-from tests.unit.support_electrical_shared import PARSER, aspects, parse
+from tests.unit.support_electrical_shared import PARSER, aspects, parse, parser_for
 
 _TERMINAL = IdentifierKind.TERMINAL
 
@@ -125,3 +125,31 @@ def test_voltage_labels(text: str) -> None:
 
 def test_voltage_wins_over_the_aspect_reading_of_plus_24v() -> None:
     assert parse("+24V").kind is IdentifierKind.VOLTAGE
+
+
+# --- F2 (D-36, A-5): digits-first strips read under the rules' conventions --------------
+
+
+def test_f2_ac_41_a_digits_first_x_strip_reads_under_iec_and_gbt() -> None:
+    iec = parser_for(Convention.IEC_81346).parse("1X-25")
+    assert iec is not None and iec.kind is _TERMINAL and iec.valid
+    assert iec.convention is Convention.IEC_81346
+    assert iec.connection_point == "25" and iec.device_class == "terminal_strip"
+    assert iec.forms.search_keys == ("1X-25", "1X:25")
+    gbt = parser_for(Convention.GBT_5094).parse("1X-25")
+    assert gbt is not None and gbt.convention is Convention.GBT_5094
+    both = parser_for(Convention.IEC_81346, Convention.GBT_5094).parse("1X-25")
+    assert both is not None and both.convention is Convention.IEC_81346  # the table's order
+
+
+def test_f2_ac_42_the_chinese_reading_and_the_xt_rule_stay() -> None:
+    plain = parse("1X-25")  # no narrowing: cn_letter_codes is first, as on master
+    assert plain.kind is _TERMINAL and plain.convention is Convention.CN_LETTER_CODES
+    assert parse("1XT-5").convention is Convention.CN_LETTER_CODES
+    assert parser_for(Convention.IEC_81346).parse("1XT-5") is None  # XT stays Chinese-only
+    assert parser_for(Convention.NFPA_JIC).parse("1X-25") is None
+    assert (
+        parser_for(Convention.IEC_81346).parse("X1-14") is not None
+    )  # the first form is unchanged
+    chinese = parser_for(Convention.CN_LETTER_CODES, Convention.IEC_81346).parse("1X-25")
+    assert chinese is not None and chinese.convention is Convention.CN_LETTER_CODES

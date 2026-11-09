@@ -11,9 +11,9 @@ from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcF
 from tests.eval.electrical.m04_identifiers import (
     compute_m04,
     expected_shape,
-    hint_of,
     load_cases,
     observed,
+    parse_case,
 )
 from tests.unit.support_electrical_shared import PARSER, fw, parse
 
@@ -27,7 +27,8 @@ _APPENDIX_A = {
         fw("KM1"), "CR1", "M1", "PB1", "LT1", "TB1",
     ],
     IdentifierKind.TERMINAL: [
-        "-X1:14", "X1.14", "X1-14", "=A1+P2-X1:14", "XT1:5", "1XT-5", "XT1" + chr(0xFF1A) + "5",
+        "-X1:14", "X1.14", "X1-14", "=A1+P2-X1:14", "XT1:5", "1XT-5", "1X-25",
+        "XT1" + chr(0xFF1A) + "5",
     ],
     IdentifierKind.WIRE_NUMBER: ["123", "W123", "12.3-1", "L1-5", "U11", "V11", "W11"],
     IdentifierKind.PLC_ADDRESS: [
@@ -65,7 +66,7 @@ def test_every_appendix_a_example_is_in_the_case_set() -> None:
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])
 def test_the_parser_returns_exactly_what_each_case_says(case: dict[str, object]) -> None:
-    got = observed(PARSER.parse(str(case["text"]), hint=hint_of(case)))
+    got = observed(parse_case(PARSER, case))
     assert got == expected_shape(case)
 
 
@@ -83,7 +84,7 @@ def test_invalid_input_is_flagged_never_dropped() -> None:
     flagged = [c for c in _CASES if c["source"] == "invalid"]
     assert len(flagged) >= 15
     for case in flagged:
-        found = PARSER.parse(case["text"])
+        found = parse_case(PARSER, case)
         assert found is not None and found.valid is False and found.issues
 
 
