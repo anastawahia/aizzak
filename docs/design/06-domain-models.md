@@ -313,7 +313,8 @@ Entity    ProfileVersion     { id, project_id, document_id?, version, source: de
                                fingerprint, confidence?, mixed_standards, detection? }                  # إلحاقي: لا يُعدَّل إصدار
 VO        DrawingProfile     { symbol_standard, vendor_library?, identifier_convention, extra_aspects, cross_reference_format, junction_convention,
                                plc_vendor, plc_families, languages, wire_number_patterns (أسماء لا تعابير)، voltage_labels,
-                               auto_accept_confidence 0.5..1.0 (0.90), classification: ClassificationThresholds }
+                               auto_accept_confidence 0.5..1.0 (0.90), classification: ClassificationThresholds,
+                               plant_designation (none|kks)، device_function_numbers (none|ansi)، ansi_suffixes ≤ 64 }
 Entity    Characterization   { document_id, producer_family?, text_kinds, page_languages, conventions, symbol_standard_guess + basis,
                                plc_families, ocr_needed_pages, pipeline/shared/rules versions, mixed_standards }   # سجلّ FR‑EVAL‑14 لكل وثيقة
 Events    DocumentRegistered · JobRequested · DocumentProfileProposed · JobProgressed · JobCompleted · DocumentPurged   # 04 §4

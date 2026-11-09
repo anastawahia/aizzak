@@ -1732,7 +1732,7 @@ components:
         body:
           type: object
           additionalProperties: true
-          description: "Strict: `schema` must be 1; an unknown field, a wrong type, a bad enumeration value or an out-of-range number is 422 `electrical.invalid_profile` naming the field path. An absent key takes its default. Fields: symbol_standard (iec_60617, gbt_4728, nfpa_jic, vendor), vendor_library (only with `vendor`), identifier_convention (iec_81346, gbt_5094, cn_letter_codes, nfpa_jic), extra_aspects, cross_reference_format, junction_convention, plc_vendor, plc_families, languages (en, zh), wire_number_patterns (NAMES of packaged patterns, never regular expressions), voltage_labels, auto_accept_confidence (0.5..1.0, default 0.90), classification (thresholds). The error never echoes an unknown name or value the client sent."
+          description: "Strict: `schema` must be 1; an unknown field, a wrong type, a bad enumeration value or an out-of-range number is 422 `electrical.invalid_profile` naming the field path. An absent key takes its default. Fields: symbol_standard (iec_60617, gbt_4728, nfpa_jic, vendor), vendor_library (only with `vendor`), identifier_convention (iec_81346, gbt_5094, cn_letter_codes, nfpa_jic), plant_designation (none, kks; default none) and device_function_numbers (none, ansi; default none), chosen independently of identifier_convention: KKS tags or ANSI device numbers beside one device convention are not mixed (SRS D-36); ansi_suffixes (extra ANSI suffix letters, at most 64, each 1..3 letters A-Z; default empty). A returned body omits these three while they hold their defaults. Other fields: extra_aspects, cross_reference_format, junction_convention, plc_vendor, plc_families, languages (en, zh), wire_number_patterns (NAMES of packaged patterns, never regular expressions), voltage_labels, auto_accept_confidence (0.5..1.0, default 0.90), classification (thresholds). The error never echoes an unknown name or value the client sent."
     DrawingProfileOut:
       type: object
       required: [version, source, fingerprint, body, created_at]
@@ -1747,9 +1747,9 @@ components:
       required: [confidence, field_confidence, mixed_standards, basis, body]
       properties:
         confidence: { type: number, description: "The lowest field confidence." }
-        field_confidence: { type: object, additionalProperties: { type: number }, description: "Per detected field (identifier_convention, symbol_standard, cross_reference_format, plc_families, languages); empty for a version that stored none." }
+        field_confidence: { type: object, additionalProperties: { type: number }, description: "Per detected field (identifier_convention, symbol_standard, cross_reference_format, plc_families, languages, plant_designation, device_function_numbers); empty for a version that stored none." }
         mixed_standards: { type: boolean }
-        basis: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Why: tokens, producer, language, symbol; empty for a version that stored none." }
+        basis: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Why: tokens, producer, language, symbol, systems (KKS and ANSI, when seen); empty for a version that stored none." }
         body: { type: object, additionalProperties: true }
     EffectiveProfileOut:
       type: object
@@ -1853,7 +1853,7 @@ components:
         text_kinds: { type: object, additionalProperties: { type: integer } }
         page_languages: { type: object, additionalProperties: { type: integer } }
         document_language: { type: string, enum: [en, zh, bilingual, none] }
-        conventions: { type: object, additionalProperties: { type: integer } }
+        conventions: { type: object, additionalProperties: { type: integer }, description: "Identifiers per convention; kks and ansi count the unambiguous KKS tags and ANSI device numbers." }
         symbol_standard_guess: { type: string, nullable: true, description: "Null when no identifier convention was seen in the document's text." }
         symbol_standard_basis: { type: array, items: { type: string } }
         plc_families: { type: object, additionalProperties: { type: integer } }
@@ -1876,7 +1876,7 @@ components:
         producers: { type: object, additionalProperties: { type: integer }, description: "Documents per producer family (`unknown` when none matches)." }
         text_kinds: { type: object, additionalProperties: { type: integer }, description: "Pages per kind." }
         document_languages: { type: object, additionalProperties: { type: integer } }
-        conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed convention." }
+        conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed convention; for kks and ansi, the documents with at least 20 such identifiers." }
         symbol_standards: { type: object, additionalProperties: { type: integer }, description: "Documents per symbol standard; `unknown` when no convention was seen." }
         plc_families: { type: object, additionalProperties: { type: integer } }
         ocr_needed_ratio: { type: number }

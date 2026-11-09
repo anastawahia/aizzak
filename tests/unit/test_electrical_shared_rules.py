@@ -258,3 +258,30 @@ def test_a_pinned_cross_reference_format_is_remembered() -> None:
     assert not load_rules().narrowed(_selection()).cross_reference_pinned
     pinned = load_rules().narrowed(_selection(cross_reference_format="page_slash_column"))
     assert pinned.cross_reference_pinned
+
+
+def test_nfr_f2_2_a_new_kks_form_and_a_new_suffix_need_no_code() -> None:
+    def extend(data: dict[str, Any]) -> None:
+        data["kks"]["forms"].append(
+            {"name": "system_component", "parts": ["system", "component"], "class": "component"}
+        )
+        data["ansi"]["suffixes"].append("QQ")
+
+    rules = IdentifierRules.from_mapping(_mutated(extend)).narrowed(
+        _selection(conventions=frozenset({Convention.IEC_81346, Convention.KKS, Convention.ANSI}))
+    )
+    parser = IdentifierParser(rules)
+    tag = parser.parse("20XYZ10AB12")
+    assert tag is not None and tag.kind is IdentifierKind.KKS_TAG and tag.valid
+    assert tag.kks is not None and tag.kks.form == "system_component"
+    device = parser.parse("87QQ")
+    assert device is not None and device.kind is IdentifierKind.ANSI_DEVICE and device.valid
+    stock = IdentifierParser(
+        load_rules().narrowed(
+            _selection(conventions=frozenset({Convention.IEC_81346, Convention.KKS}))
+        )
+    )
+    stale = stock.parse("20XYZ10AB12")
+    assert (
+        stale is not None and not stale.valid
+    )  # malformed in the packaged file  # the packaged file has no such form

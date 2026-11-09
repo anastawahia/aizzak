@@ -308,3 +308,12 @@ def test_a_voltage_label_may_not_hide_an_ansi_number_or_a_kks_tag() -> None:
         with pytest.raises(AppError):
             parse_profile(_Rules(), {"schema": 1, "voltage_labels": [label]})
     assert parse_profile(_Rules(), {"schema": 1, "voltage_labels": ["-48V"]}).voltage_labels
+
+
+def test_an_old_body_without_the_new_fields_reads_with_their_defaults() -> None:
+    old = {"schema": 1, "identifier_convention": "gbt_5094", "languages": ["zh"]}
+    profile = DrawingProfile.from_body(old, known_patterns=KNOWN)
+    assert profile.plant_designation is PlantDesignation.NONE
+    assert profile.device_function_numbers is DeviceFunctionNumbers.NONE
+    assert profile.ansi_suffixes == ()
+    assert profile.rule_selection().conventions == {Convention.GBT_5094}

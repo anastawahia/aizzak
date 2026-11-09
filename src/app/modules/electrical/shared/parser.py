@@ -55,6 +55,7 @@ from app.modules.electrical.shared.letter_codes import parse_letter_code
 from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
     NON_INVALIDATING_ISSUES,
+    canonical_form,
     normalize,
     text_issues,
 )
@@ -73,6 +74,7 @@ MAX_TEXT_CHARS = 200
 
 _Parse = Callable[[str, NormalizedForms, "IdentifierRules"], ParsedIdentifier | None]
 
+_KKS_LEADS = ("=", "+")
 _BARE_KINDS = frozenset({IdentifierKind.WIRE_NUMBER, IdentifierKind.CONNECTION_POINT})
 
 _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
@@ -213,7 +215,7 @@ class IdentifierParser:
                 parsed += 1
                 if ISSUE_NON_ASCII not in found.issues:
                     self._count(found, conventions, families, formats)
-            if probe is not None:
+            if probe is not None and _may_be_additive(token):
                 extra = probe.parse(token)
                 if (
                     extra is not None
@@ -246,6 +248,13 @@ class IdentifierParser:
             families[found.plc.family] += 1
         if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
             formats[found.variant] += 1
+
+
+def _may_be_additive(token: str) -> bool:
+    """KKS and ANSI start with a digit, or with a KKS prefix (``=`` ``+``): the probe skips the
+    rest, which keeps its cost to the tokens that can matter (NFR-F2-4)."""
+    lead = canonical_form(token)[:1]
+    return lead.isdigit() or lead in _KKS_LEADS
 
 
 def _is_evidence(found: ParsedIdentifier) -> bool:
