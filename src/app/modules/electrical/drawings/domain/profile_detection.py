@@ -17,9 +17,9 @@
   least ``MIXED_MIN_IDENTIFIERS`` of them.
 * **KKS and ANSI** (D-36) add to the ONE device convention and never compete with it: the
   convention, the symbol standard and ``mixed_standards`` look at the DEVICE conventions only.
-  ``plant_designation`` / ``device_function_numbers`` are proposed when the tally holds any
-  such identifier, with the sample factor as their confidence (zero under ``MIN_IDENTIFIERS``,
-  so never accepted automatically); with none, the base profile's value stays at 1.0.
+  ``plant_designation`` / ``device_function_numbers`` are proposed from ``MIN_IDENTIFIERS``
+  evidence identifiers on, with the sample factor as their confidence; under that (and at zero)
+  the base profile's value stays at 1.0, so a stray token never holds the proposal back.
 
 Same inputs, same proposal: no clock, no randomness, ties by enum order.
 """
@@ -184,20 +184,24 @@ def _symbol(
 def _systems(
     base: DrawingProfile, tally: ConventionTally
 ) -> tuple[PlantDesignation, DeviceFunctionNumbers, float, float, tuple[str, ...]]:
-    """KKS and ANSI (D-36): proposed when seen, confidence by the sample size; unchanged, at 1.0,
-    when not seen."""
+    """KKS and ANSI (D-36): proposed from MIN_IDENTIFIERS evidence identifiers on, at the
+    sample factor. Under that, and at zero, the base profile's value stays at 1.0 and the
+    field is not in basis["systems"], so a stray token never holds the proposal back."""
     kks = tally.conventions.get(Convention.KKS, 0)
     ansi = tally.conventions.get(Convention.ANSI, 0)
-    plant = PlantDesignation.KKS if kks > 0 else base.plant_designation
-    functions = DeviceFunctionNumbers.ANSI if ansi > 0 else base.device_function_numbers
+    kks_seen, ansi_seen = kks >= MIN_IDENTIFIERS, ansi >= MIN_IDENTIFIERS
+    plant = PlantDesignation.KKS if kks_seen else base.plant_designation
+    functions = DeviceFunctionNumbers.ANSI if ansi_seen else base.device_function_numbers
     basis = tuple(
-        f"{c.value}:{n}" for c, n in ((Convention.KKS, kks), (Convention.ANSI, ansi)) if n
+        f"{c.value}:{n}"
+        for c, n, seen in ((Convention.KKS, kks, kks_seen), (Convention.ANSI, ansi, ansi_seen))
+        if seen
     )
     return (
         plant,
         functions,
-        _sample_factor(kks) if kks > 0 else 1.0,
-        _sample_factor(ansi) if ansi > 0 else 1.0,
+        _sample_factor(kks) if kks_seen else 1.0,
+        _sample_factor(ansi) if ansi_seen else 1.0,
         basis,
     )
 

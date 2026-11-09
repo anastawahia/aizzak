@@ -21,6 +21,7 @@ from app.modules.electrical.shared.kks import (
     ISSUE_DIGIT_IN_LETTER,
     ISSUE_LETTER_IN_DIGIT,
     ISSUE_MALFORMED,
+    is_kks_evidence,
 )
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.rules import IdentifierRules
@@ -101,9 +102,7 @@ def test_a_zero_in_a_letter_position_is_named_too() -> None:
     found = _kks("20XYZ10A0123")
     assert not found.valid and found.issues == (ISSUE_DIGIT_IN_LETTER,)
     assert found.forms.canonical == "20XYZ10A0123"
-    # each reason is its own trial (design 3.5 step 6): a text that needs both swaps at once
-    # matches neither trial and stays malformed
-    assert _kks("2OXYZ10A0123").issues == (ISSUE_MALFORMED,)
+    # a text that needs both swaps at once is the next test (design 11.4)
 
 
 def test_f2_ac_6_a_prefixed_tag_is_kks_only_when_enabled_and_complete() -> None:
@@ -175,3 +174,30 @@ def test_nfr_f2_1_every_f2_case_parses_twice_the_same() -> None:
         first = IdentifierParser(load_rules())
         second = IdentifierParser(load_rules())
         assert observed(parse_case(first, case)) == observed(parse_case(second, case)), case["id"]
+
+
+@pytest.mark.parametrize(
+    ("text", "reasons"),
+    [
+        ("2OXYZ10A0123", (ISSUE_LETTER_IN_DIGIT, ISSUE_DIGIT_IN_LETTER)),
+        ("2OX0Z1OAB12O", (ISSUE_LETTER_IN_DIGIT, ISSUE_DIGIT_IN_LETTER)),
+        ("2OXYZ1OAB12O", (ISSUE_LETTER_IN_DIGIT,)),
+        ("20XYZ10A0123", (ISSUE_DIGIT_IN_LETTER,)),
+        ("20XY10AB123", (ISSUE_MALFORMED,)),
+        ("20XYZ10AB12", (ISSUE_MALFORMED,)),
+    ],
+)
+def test_f2_ac_5_both_confusions_together_name_both_reasons(
+    text: str, reasons: tuple[str, ...]
+) -> None:
+    found = _kks(text)
+    assert not found.valid and found.issues == reasons
+    assert found.forms.canonical == text  # named, never corrected
+
+
+def test_the_kks_evidence_rule() -> None:
+    rules = KKS.rules
+    for text in ("20XYZ10AB123", "20XYZ10AB123CD45", "20XYZ10AB1234567"):
+        assert is_kks_evidence(_kks(text), rules), text
+    for text in ("20XYZ10", "20XYZ104567", "20XY10AB123"):  # level 1, level 1, invalid
+        assert not is_kks_evidence(_kks(text), rules), text

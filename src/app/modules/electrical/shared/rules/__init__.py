@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
+from app.modules.electrical.shared.ansi import is_ansi_evidence
 from app.modules.electrical.shared.kinds import (
     ADDITIVE_CONVENTIONS,
     DEVICE_CONVENTIONS,
@@ -150,8 +151,11 @@ class IdentifierRules:
         )
 
     def narrowed(self, profile: RuleSelection) -> IdentifierRules:
-        """The subset a document's profile selects (conventions, PLC families,
-        patterns by NAME, extra voltage labels). A profile never carries a regex."""
+        """The subset a document's profile selects (device conventions, PLC families, patterns by
+        NAME, extra voltage labels); KKS and ANSI are enabled by NAME. With conventions named,
+        the result is ``(self.conventions | ADDITIVE_CONVENTIONS) & profile.conventions``, so it
+        may enable KKS or ANSI the receiver lacked: narrowing narrowed rules is not idempotent,
+        and no caller chains it. A profile never carries a regex."""
         conventions = (
             (self.conventions | ADDITIVE_CONVENTIONS) & profile.conventions
             if profile.conventions
@@ -216,7 +220,8 @@ class IdentifierRules:
         kind of identifier (a label must not hide ``-K5``, ``KM1`` or ``X1:14``). A rail
         such as ``-48V`` is allowed: only a VALID single-aspect designation with prefix ``-`` and
         a code of 1..4 digits and an optional ``V`` (so a bare ``-12`` too), or prefix ``+`` and
-        1..4 digits and a ``V`` (INC1-Q-5). A label that is made of ``+`` / ``-`` only, or holds
+        1..4 digits and a ``V`` (INC1-Q-5). An ANSI reading that is no evidence (``24V``,
+        ``12VDC``) is allowed too (D-36). A label that is made of ``+`` / ``-`` only, or holds
         a hidden character, is rejected (R2-2)."""
         if len(labels) > MAX_EXTRA_VOLTAGE_LABELS:
             raise RuleError(f"at most {MAX_EXTRA_VOLTAGE_LABELS} extra voltage labels")
@@ -247,10 +252,14 @@ class IdentifierRules:
     def _other_kind(self, label: str) -> IdentifierKind | None:
         """The kind a label would be read as if it were not a voltage, or None. A rail such
         as ``-48V`` or ``+24V`` is allowed: a VALID single-aspect designation whose prefix is
-        ``-`` and whose code matches ``\\d{1,4}V?``, or ``+`` and ``\\d{1,4}V``."""
+        ``-`` and whose code matches ``\\d{1,4}V?``, or ``+`` and ``\\d{1,4}V``. An ANSI reading
+        that is no evidence (``24V``, ``12VDC``: a number without a class, or a rating) hides no
+        device either, and is allowed (D-36); ``87T`` or ``27-1`` is refused."""
         found = IdentifierParser(self).parse(label)
         if found is None or found.kind is IdentifierKind.VOLTAGE:
             return None
+        if found.kind is IdentifierKind.ANSI_DEVICE and not is_ansi_evidence(found, self):
+            return None  # D-36: 24V or 12VDC hide no device the product reads by its function
         if (
             found.kind is IdentifierKind.REFERENCE_DESIGNATION
             and found.valid

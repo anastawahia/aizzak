@@ -45,6 +45,24 @@ def is_bare_ansi_number(canonical: str) -> bool:
     return _BARE.fullmatch(canonical) is not None
 
 
+def is_ansi_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
+    """D-36: a reading that proves a document uses ANSI device numbers. VALID, one function
+    and no other reading (a bare number or a compound proves nothing), a number with a class
+    in [ansi.functions], and a suffix outside [ansi] non_evidence_suffixes (a rating letter,
+    as in a breaker's 32A) or else an instance (27-1). The tally counts these, and a voltage
+    label may not hide one."""
+    if found.ansi is None or not found.valid or found.alternatives:
+        return False
+    if len(found.ansi.functions) != 1:
+        return False
+    function = found.ansi.functions[0]
+    if function.function_class is None:
+        return False
+    if function.suffix:
+        return function.suffix not in rules.ansi.non_evidence_suffixes
+    return found.ansi.instance is not None
+
+
 def _function(number: str, suffix: str, rules: IdentifierRules) -> AnsiFunction:
     value = int(number)
     return AnsiFunction(value, suffix, rules.ansi.functions.get(value))

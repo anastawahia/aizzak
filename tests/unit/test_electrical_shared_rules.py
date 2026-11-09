@@ -285,3 +285,67 @@ def test_nfr_f2_2_a_new_kks_form_and_a_new_suffix_need_no_code() -> None:
     assert (
         stale is not None and not stale.valid
     )  # malformed in the packaged file  # the packaged file has no such form
+
+
+def test_the_evidence_rules_are_data() -> None:
+    """NFR-F2-2, D-36: what counts as evidence is the rules file's, not code."""
+    both = frozenset({Convention.IEC_81346, Convention.KKS, Convention.ANSI})
+    stock = IdentifierParser(
+        load_rules().narrowed(_selection(conventions=frozenset({Convention.IEC_81346})))
+    )
+    assert stock.tally(["32A", "20XYZ10"]).conventions.get(Convention.ANSI) is None
+    assert stock.tally(["32A", "20XYZ10"]).conventions.get(Convention.KKS) is None
+
+    def no_rating_letters(d: dict[str, Any]) -> None:
+        d["ansi"]["non_evidence_suffixes"] = []
+
+    def any_level(d: dict[str, Any]) -> None:
+        d["kks"]["evidence_min_level"] = 1
+
+    rated = IdentifierParser(IdentifierRules.from_mapping(_mutated(no_rating_letters)))
+    assert rated.tally(["32A"]).conventions.get(Convention.ANSI) == 1
+    shallow = IdentifierParser(IdentifierRules.from_mapping(_mutated(any_level)))
+    assert shallow.tally(["20XYZ10"]).conventions.get(Convention.KKS) == 1
+    assert both  # the selection above is by name only
+
+    for mutate in (
+        lambda d: d["kks"].pop("evidence_min_level"),
+        lambda d: d["ansi"].pop("non_evidence_suffixes"),
+        lambda d: d["kks"].update(evidence_min_level=0),
+        lambda d: d["kks"].update(evidence_min_level=4),
+        lambda d: d["kks"].update(evidence_min_level=True),
+        lambda d: d["kks"].update(evidence_min_level="2"),
+        lambda d: d["ansi"].update(non_evidence_suffixes=["ZZ"]),
+        lambda d: d["ansi"].update(non_evidence_suffixes=["A", "A"]),
+        lambda d: d["ansi"].update(non_evidence_suffixes="A"),
+    ):
+        with pytest.raises(RuleError):
+            IdentifierRules.from_mapping(_mutated(mutate))
+
+
+def test_s1_optional_positions_are_capped() -> None:
+    """S-1: a mask or a form may not multiply the patterns the parser builds."""
+    with pytest.raises(RuleError, match="optional"):
+        IdentifierRules.from_mapping(
+            _mutated(lambda d: d["kks"]["parts"]["system"].update(mask="NNnnn"))
+        )
+
+    def three_parts(d: dict[str, Any]) -> None:
+        parts = d["kks"]["parts"]
+        parts["pa"], parts["pb"], parts["pc"] = (
+            {"mask": "Nnn"},
+            {"mask": "Ann"},
+            {"mask": "Nnn"},
+        )
+        d["kks"]["forms"].append({"name": "wide", "parts": ["pa", "pb", "pc"], "class": "system"})
+
+    with pytest.raises(RuleError, match="optional"):
+        IdentifierRules.from_mapping(_mutated(three_parts))
+
+    def at_the_limit(d: dict[str, Any]) -> None:
+        parts = d["kks"]["parts"]
+        parts["pa"], parts["pb"] = {"mask": "Nnn"}, {"mask": "Ann"}
+        d["kks"]["forms"].append({"name": "wide", "parts": ["pa", "pb"], "class": "system"})
+
+    assert IdentifierRules.from_mapping(_mutated(at_the_limit)).kks.forms[-1].name == "wide"
+    assert load_rules().kks.forms  # the packaged rules are inside the limits

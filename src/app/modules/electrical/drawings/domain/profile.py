@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -35,8 +34,8 @@ from typing import Any, Final
 from app.modules.electrical.drawings.domain.errors import InvalidProfile
 from app.modules.electrical.drawings.domain.pages import ClassificationThresholds
 from app.modules.electrical.shared.kinds import DEVICE_CONVENTIONS, Convention, PlcFamily
-from app.modules.electrical.shared.normalization import canonical_form
-from app.modules.electrical.shared.rules import RuleSelection
+from app.modules.electrical.shared.rules import RuleError, RuleSelection
+from app.modules.electrical.shared.rules.systems import checked_ansi_suffixes
 
 PROFILE_SCHEMA: Final = 1
 MAX_EXTRA_ASPECTS: Final = 8
@@ -44,9 +43,7 @@ MAX_ASPECT_CHARS: Final = 4
 MAX_VOLTAGE_LABELS: Final = 64  # the same bounds `shared` enforces when it narrows
 MAX_VOLTAGE_LABEL_CHARS: Final = 16
 MAX_VENDOR_LIBRARY_CHARS: Final = 100
-MAX_ANSI_SUFFIX_RAW_CHARS: Final = 64  # checked before normalisation (NFKC can expand)
 MAX_ANSI_SUFFIXES: Final = 64  # the bound `shared` enforces when it narrows
-_ANSI_SUFFIX: Final = re.compile(r"[A-Z]{1,3}", re.ASCII)
 PLC_VENDORS: Final = frozenset({"siemens"})  # FR-ID-14 is C: one vendor in R1
 LANGUAGES: Final = frozenset({"en", "zh"})
 _ASPECT_CHARS: Final = frozenset("=+-&#")
@@ -370,15 +367,11 @@ def _ansi_suffixes(body: Mapping[str, Any]) -> tuple[str, ...]:
         raise InvalidProfile("ansi_suffixes", f"at most {MAX_ANSI_SUFFIXES}")
     checked: set[str] = set()
     for i, raw in enumerate(suffixes):
-        canonical = (
-            ""
-            if len(raw) > MAX_ANSI_SUFFIX_RAW_CHARS
-            or any(unicodedata.category(c) in _FORBIDDEN_TEXT_CATEGORIES for c in raw)
-            else canonical_form(raw)
-        )
-        if _ANSI_SUFFIX.fullmatch(canonical) is None:
+        try:
+            (canonical,) = checked_ansi_suffixes((raw,))
+        except RuleError:
             # S-8: the value is not echoed
-            raise InvalidProfile(f"ansi_suffixes[{i}]", "must be 1..3 letters A-Z")
+            raise InvalidProfile(f"ansi_suffixes[{i}]", "must be 1..3 letters A-Z") from None
         checked.add(canonical)
     return tuple(sorted(checked))
 

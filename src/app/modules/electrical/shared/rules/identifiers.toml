@@ -52,6 +52,9 @@ pairs = ["0O"]
 # optional trailing positions: n an optional digit, a an optional letter.
 [kks]
 excluded_letters = []  # A-3: letters KKS never uses in a letter position; empty until verified
+# D-36: the shallowest level the tally counts as evidence of KKS (2 = an equipment tag).
+# A system-level shape alone (two digits, three letters, two digits) also fits other text.
+evidence_min_level = 2
 
 [kks.prefixes]  # the identification types, when a tag is written with one (A-8)
 process = "="
@@ -96,6 +99,9 @@ class = "system"
 [ansi]
 max_compound = 3
 suffixes = ["A", "B", "BF", "C", "D", "G", "GS", "L", "N", "P", "Q", "R", "S", "T", "TN", "U", "V", "X", "Y", "Z"]
+# D-36: suffix letters that also write a rating (A: amperes, as in a breaker's 32A). A reading
+# with one is still an ANSI device when ANSI is enabled; it is no evidence for the tally.
+non_evidence_suffixes = ["A"]
 
 [ansi.functions]
 21 = "distance_protection"

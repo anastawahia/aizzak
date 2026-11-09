@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, PlcFamily
-from app.modules.electrical.shared.parser import IdentifierParser
+from app.modules.electrical.shared.parser import MAX_TEXT_CHARS, IdentifierParser, _may_be_additive
 from tests.eval.electrical.m04_identifiers import (
     compute_m04,
     expected_shape,
@@ -206,3 +206,10 @@ def test_f2_ac_7_ansi_on_changes_only_the_listed_ambiguities() -> None:
         assert found is not None and found.kind is IdentifierKind.LETTER_CODE
     compound = ansi_on.parse("12/3")
     assert compound is not None and compound.alternatives == (IdentifierKind.CROSS_REFERENCE,)
+
+
+def test_the_probe_filter_checks_the_length_first() -> None:
+    """S-4: parse refuses long text before normalising, so does the probe's filter."""
+    assert _may_be_additive("1" * MAX_TEXT_CHARS)
+    assert not _may_be_additive("1" * (MAX_TEXT_CHARS + 1))
+    assert not _may_be_additive("\ufdfa" * 1000)

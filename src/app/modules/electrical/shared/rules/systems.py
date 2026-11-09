@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
@@ -23,8 +23,11 @@ from app.modules.electrical.shared.rules.errors import RuleError
 
 MAX_KKS_PARTS: Final = 8
 MAX_KKS_FORMS: Final = 16
+MAX_KKS_LEVEL: Final = 3
 MAX_PARTS_PER_FORM: Final = 4
 MAX_MASK_CHARS: Final = 8
+MAX_OPTIONAL_PER_PART: Final = 2  # S-1: optional (n / a) positions in one mask
+MAX_OPTIONAL_PER_FORM: Final = 4  # ... and across the parts of one form: at most 2**4 patterns
 MAX_ANSI_SUFFIX_CHARS: Final = 3
 MAX_ANSI_COMPOUND: Final = 3
 MAX_EXTRA_ANSI_SUFFIXES: Final = 64
@@ -39,8 +42,11 @@ _NAME: Final = re.compile(r"[a-z][a-z_]{0,31}", re.ASCII)
 _MASK: Final = re.compile(r"[NA]+[na]*", re.ASCII)
 _SUFFIX: Final = re.compile(r"[A-Z]{1,3}", re.ASCII)
 _PREFIX_CHARS: Final = frozenset("=+")
-_KKS_KEYS: Final = frozenset({"excluded_letters", "prefixes", "parts", "forms"})
-_ANSI_KEYS: Final = frozenset({"max_compound", "suffixes", "functions"})
+_KKS_KEYS: Final = frozenset(
+    {"excluded_letters", "evidence_min_level", "prefixes", "parts", "forms"}
+)
+_ANSI_KEYS: Final = frozenset({"max_compound", "suffixes", "non_evidence_suffixes", "functions"})
+_OPTIONAL: Final = frozenset("na")
 _PART_KEYS: Final = frozenset({"level", "mask"})
 _FORM_KEYS: Final = frozenset({"name", "parts", "class"})
 
@@ -59,12 +65,29 @@ class KksForm:
     kks_class: KksClass
 
 
+# One form as a hashable spec: (form name, ((part name, mask), ...)).
+KksSpec = tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
+
+
 @dataclass(frozen=True, slots=True)
 class KksRules:
     prefixes: Mapping[str, str]  # kind name -> symbol, e.g. "process" -> "="
     parts: Mapping[str, KksPartRule]
     forms: tuple[KksForm, ...]  # file order: the first full match wins
     excluded_letters: frozenset[str]
+    evidence_min_level: int = 2  # D-36: the shallowest level the tally counts as KKS evidence
+    # derived once from ``parts`` and ``forms``, so the parser never rebuilds them per token
+    spec: KksSpec = field(init=False, repr=False, compare=False)
+    shortest: int = field(init=False, repr=False, compare=False)  # fewest characters of a form
+
+    def __post_init__(self) -> None:
+        spec = tuple((f.name, tuple((p, self.parts[p].mask) for p in f.parts)) for f in self.forms)
+        shortest = min(
+            sum(sum(1 for c in self.parts[p].mask if c in "NA") for p in f.parts)
+            for f in self.forms
+        )
+        object.__setattr__(self, "spec", spec)
+        object.__setattr__(self, "shortest", shortest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +95,7 @@ class AnsiRules:
     suffixes: frozenset[str]  # the packaged ones, plus the profile's after narrowing
     functions: Mapping[int, str]  # number -> our class name
     max_compound: int  # 2..3
+    non_evidence_suffixes: frozenset[str] = frozenset()  # D-36: a rating's letter (32A)
 
 
 def _table(data: Mapping[str, object], key: str, where: str) -> Mapping[str, object]:
@@ -123,6 +147,10 @@ def _kks_parts(data: Mapping[str, object]) -> Mapping[str, KksPartRule]:
             or _MASK.fullmatch(mask) is None
         ):
             raise RuleError(f"[kks.parts.{name}] mask must match {_MASK.pattern}, 1..8 characters")
+        if sum(1 for c in mask if c in _OPTIONAL) > MAX_OPTIONAL_PER_PART:
+            raise RuleError(
+                f"[kks.parts.{name}] at most {MAX_OPTIONAL_PER_PART} optional positions"
+            )
         level = entry.get("level")
         parts[name] = KksPartRule(
             name, None if level is None else _int(level, f"kks.parts.{name}.level", 1, 3), mask
@@ -151,6 +179,13 @@ def _kks_forms(data: Mapping[str, object], parts: Mapping[str, KksPartRule]) -> 
             kks_class = KksClass(str(entry.get("class")))
         except ValueError:
             raise RuleError(f"[kks.forms.{name}] class must be a KksClass") from None
+        if (
+            sum(1 for n in names for c in parts[str(n)].mask if c in _OPTIONAL)
+            > MAX_OPTIONAL_PER_FORM
+        ):
+            raise RuleError(
+                f"[[kks.forms]] {name!r}: at most {MAX_OPTIONAL_PER_FORM} optional positions"
+            )
         forms.append(KksForm(name, tuple(str(n) for n in names), kks_class))
     if len({f.name for f in forms}) != len(forms):
         raise RuleError("[kks.forms] form names must be unique")
@@ -184,6 +219,9 @@ def kks_from_mapping(data: Mapping[str, object]) -> KksRules:
         parts=parts,
         forms=_kks_forms(data, parts),
         excluded_letters=frozenset(str(x) for x in excluded_raw),
+        evidence_min_level=_int(
+            data.get("evidence_min_level"), "kks.evidence_min_level", 1, MAX_KKS_LEVEL
+        ),
     )
 
 
@@ -197,6 +235,11 @@ def ansi_from_mapping(data: Mapping[str, object]) -> AnsiRules:
         suffixes.append(suffix)
     if len(set(suffixes)) != len(suffixes):
         raise RuleError("[ansi] suffixes must be unique")
+    non_evidence = _list(data, "non_evidence_suffixes", "ansi")
+    if not all(isinstance(x, str) and x in suffixes for x in non_evidence):
+        raise RuleError("[ansi] non_evidence_suffixes must be listed in suffixes")
+    if len(set(non_evidence)) != len(non_evidence):
+        raise RuleError("[ansi] non_evidence_suffixes must be unique")
     functions: dict[int, str] = {}
     for key, name in _table(data, "functions", "ansi").items():
         if not isinstance(key, str) or not key.isascii() or not key.isdigit():
@@ -207,6 +250,7 @@ def ansi_from_mapping(data: Mapping[str, object]) -> AnsiRules:
         functions[number] = name
     return AnsiRules(
         suffixes=frozenset(suffixes),
+        non_evidence_suffixes=frozenset(str(x) for x in non_evidence),
         functions=MappingProxyType(functions),
         max_compound=_int(data.get("max_compound"), "ansi.max_compound", 2, MAX_ANSI_COMPOUND),
     )

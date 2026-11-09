@@ -73,8 +73,11 @@ def kks_tags(n: int) -> list[str]:
     return [f"20XYZ10AB{i:03d}" for i in range(1, n + 1)]
 
 
+_ANSI_EVIDENCE = ("87T", "50BF", "51N", "27-1")  # each one a class, no rating letter (D-36)
+
+
 def ansi_numbers(n: int) -> list[str]:
-    return [f"{50 + i % 40}{'TNBG'[i % 4]}" for i in range(n)]
+    return [_ANSI_EVIDENCE[i % len(_ANSI_EVIDENCE)] for i in range(n)]
 
 
 def propose(tokens: Sequence[str]) -> ProfileProposal:
@@ -221,12 +224,46 @@ def test_f2_ac_14_iec_and_chinese_stay_mixed() -> None:
     ]
 
 
-def test_f2_ac_15_under_twenty_tags_kks_has_zero_confidence() -> None:
+def test_f2_ac_15_under_twenty_tags_kks_is_not_proposed() -> None:
     found = propose(iec(100) + kks_tags(19))
-    assert found.profile.plant_designation is PlantDesignation.KKS
-    assert found.field_confidence["plant_designation"] == 0.0
-    assert found.confidence == 0.0  # so it is never accepted automatically
-    assert found.field_confidence["device_function_numbers"] == 1.0  # none seen: no change
+    plain = propose(iec(100))
+    assert found.profile.plant_designation is PlantDesignation.NONE
+    assert found.field_confidence["plant_designation"] == 1.0
+    assert found.confidence == plain.confidence
+    assert "systems" not in found.basis
+    twenty = propose(iec(100) + kks_tags(20))
+    assert twenty.profile.plant_designation is PlantDesignation.KKS
+    assert twenty.field_confidence["plant_designation"] == pytest.approx(0.2)
+
+
+_RATINGS = ["16A", "32A", "4P", "2P", "1N"]
+
+
+@pytest.mark.parametrize("times", [1, 30])
+def test_rating_and_pole_tokens_leave_an_iec_proposal_as_it_was(times: int) -> None:
+    """Review 1: a current rating or a pole count is no ANSI evidence."""
+    noisy = iec(120) + _RATINGS * times
+    assert Convention.ANSI not in PARSER.tally(noisy).conventions
+    found = propose(noisy)
+    assert found == propose(iec(120))
+    assert found.field_confidence["device_function_numbers"] == 1.0
+    assert found.profile.device_function_numbers is DeviceFunctionNumbers.NONE
+    assert found.profile.plant_designation is PlantDesignation.NONE
+    assert "systems" not in found.basis
+
+
+def test_system_level_shapes_are_no_kks_evidence() -> None:
+    noisy = iec(120) + ["20XYZ10"] * 30 + ["20XYZ104567"] * 30
+    assert Convention.KKS not in PARSER.tally(noisy).conventions
+    assert propose(noisy) == propose(iec(120))
+
+
+def test_under_twenty_evidence_identifiers_nothing_is_proposed() -> None:
+    assert propose(iec(120) + ansi_numbers(19)) == propose(iec(120))
+    found = propose(iec(120) + ansi_numbers(20))
+    assert found.profile.device_function_numbers is DeviceFunctionNumbers.ANSI
+    assert found.field_confidence["device_function_numbers"] == pytest.approx(0.2)
+    assert found.basis["systems"] == ("ansi:20",)
 
 
 def test_without_kks_or_ansi_the_proposal_is_what_it_was() -> None:
@@ -302,12 +339,70 @@ class _Rules:
         return RULES
 
 
-def test_a_voltage_label_may_not_hide_an_ansi_number_or_a_kks_tag() -> None:
-    """projects.py checks labels under EVERY convention, KKS and ANSI included."""
-    for label in ("87T", "20XYZ10AB123"):
-        with pytest.raises(AppError):
-            parse_profile(_Rules(), {"schema": 1, "voltage_labels": [label]})
+_SUPPLY_LABELS = ["24V", "48V", "12VDC"]
+_DEVICE_LABELS = ["87T", "50BF", "27-1"]
+
+
+def test_voltage_labels_with_ansi_off_are_accepted_as_on_master() -> None:
+    for label in (*_SUPPLY_LABELS, *_DEVICE_LABELS):
+        profile = parse_profile(_Rules(), {"schema": 1, "voltage_labels": [label]})
+        assert profile.voltage_labels == (label,)  # stored canonical
+
+
+def test_with_ansi_on_a_label_that_hides_an_ansi_device_is_refused() -> None:
+    for label in _DEVICE_LABELS:
+        with pytest.raises(AppError) as caught:
+            parse_profile(
+                _Rules(),
+                {"schema": 1, "voltage_labels": [label], "device_function_numbers": "ansi"},
+            )
+        detail = str(caught.value.detail)
+        assert detail.startswith("voltage_labels") and label not in detail
+
+
+def test_with_ansi_on_a_supply_label_is_accepted_and_read_as_a_voltage() -> None:
+    for label in _SUPPLY_LABELS:
+        profile = parse_profile(
+            _Rules(),
+            {"schema": 1, "voltage_labels": [label], "device_function_numbers": "ansi"},
+        )
+        parser = IdentifierParser(RULES.narrowed(profile.rule_selection()))
+        read_back = parser.parse(label)
+        assert read_back is not None and read_back.kind is IdentifierKind.VOLTAGE
+
+
+def test_with_kks_on_a_kks_shaped_label_is_refused() -> None:
+    with pytest.raises(AppError):
+        parse_profile(
+            _Rules(),
+            {"schema": 1, "voltage_labels": ["20XYZ10AB123"], "plant_designation": "kks"},
+        )
     assert parse_profile(_Rules(), {"schema": 1, "voltage_labels": ["-48V"]}).voltage_labels
+
+
+def test_detection_can_enable_ansi_over_a_stored_label_and_the_next_edit_names_it() -> None:
+    base = parse_profile(_Rules(), {"schema": 1, "voltage_labels": ["87T"]})
+    found = detect_profile(
+        base=base,
+        summary=make_summary(),
+        pages=pages(),
+        tally=PARSER.tally(iec(120) + ansi_numbers(22)),
+        producers=(),
+    )
+    assert found.profile.device_function_numbers is DeviceFunctionNumbers.ANSI
+    assert found.profile.voltage_labels == ("87T",)
+    with pytest.raises(AppError) as caught:
+        parse_profile(_Rules(), found.profile.to_body())
+    assert str(caught.value.detail).startswith("voltage_labels")
+    kept = parse_profile(_Rules(), {"schema": 1, "voltage_labels": ["24V"]})
+    again = detect_profile(
+        base=kept,
+        summary=make_summary(),
+        pages=pages(),
+        tally=PARSER.tally(iec(120) + ansi_numbers(22)),
+        producers=(),
+    )
+    assert parse_profile(_Rules(), again.profile.to_body()).voltage_labels == ("24V",)
 
 
 def test_an_old_body_without_the_new_fields_reads_with_their_defaults() -> None:

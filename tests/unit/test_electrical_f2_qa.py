@@ -342,10 +342,12 @@ _HIDDEN = [
     "Q\u00adZ",  # soft hyphen
     "Q\u200dZ",  # zero-width joiner
     "Q\u2060Z",  # word joiner
-    "Q\tZ",
-    "QZ\n",
     "Q\x00Z",
     "Q\u202aZ",
+    "Q\ufe0fZ",  # variation selector (design 11.6 item 7: refused, no longer folded)
+    "Q\u034fZ",
+    "Q\u3164Z",
+    "Q\u2800Z",
 ]
 
 
@@ -463,7 +465,7 @@ def _kks(n: int) -> list[str]:
 
 
 def _ansi(n: int) -> list[str]:
-    return [f"{50 + i % 40}{'TNBG'[i % 4]}" for i in range(n)]
+    return [("87T", "50BF", "51N", "27-1")[i % 4] for i in range(n)]  # D-36 evidence
 
 
 def _propose(tokens: Sequence[str]) -> ProfileProposal:
@@ -601,9 +603,10 @@ def test_a_hint_of_kks_reads_only_kks() -> None:
     assert on.parse("87T", hint=IdentifierKind.KKS_TAG) is None
 
 
-def test_a_variation_selector_in_a_suffix_is_dropped_and_the_stored_value_is_clean() -> None:
-    """QA note: U+FE0F is a default-ignorable mark, not a forbidden category, so it is
-    normalised away instead of refused. What is stored is the clean ASCII suffix."""
-    profile = _profile(ansi_suffixes=["Q\ufe0fZ"])
+@pytest.mark.parametrize("raw", ["Q Z", "Q\tZ", "QZ\n", "\uff31Z"])
+def test_whitespace_and_full_width_letters_fold_to_the_clean_suffix(raw: str) -> None:
+    """Design 11.6 item 7: one rule with `shared` (`checked_ansi_suffixes`). Whitespace and the
+    full-width spelling fold, as in the packaged normaliser; the stored value is clean ASCII."""
+    profile = _profile(ansi_suffixes=[raw])
     assert profile.ansi_suffixes == ("QZ",)
     assert profile.to_body()["ansi_suffixes"] == ["QZ"]

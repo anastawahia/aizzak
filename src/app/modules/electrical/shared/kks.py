@@ -30,7 +30,7 @@ from app.modules.electrical.shared.normalization import with_keys
 
 if TYPE_CHECKING:
     from app.modules.electrical.shared.rules import IdentifierRules
-    from app.modules.electrical.shared.rules.systems import KksRules
+    from app.modules.electrical.shared.rules.systems import KksRules, KksSpec
 
 ISSUE_MALFORMED: Final = "kks.malformed"
 ISSUE_LETTER_IN_DIGIT: Final = "kks.letter_in_digit_position"
@@ -40,9 +40,6 @@ _CHARSET: Final = re.compile(r"[=+]{0,2}[0-9A-Z]+", re.ASCII)
 # The outer shape of a near-miss: digits, letters, digits, then letter/digit groups.
 _OUTER: Final = re.compile(r"\d{1,3}[A-Z]{1,4}\d{1,3}(?:[A-Z]{1,3}\d{1,4}[A-Z]?){0,3}", re.ASCII)
 _RUN: Final = re.compile(r"[0-9]+|[A-Z]+", re.ASCII)
-
-# One form as a hashable spec: (form name, ((part name, mask), ...)).
-_Spec = tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
 
 
 def _digit_class(extra: str) -> str:
@@ -54,7 +51,7 @@ def _letter_class(extra: str) -> str:
 
 
 @lru_cache(maxsize=32)
-def _patterns(spec: _Spec, digit_extra: str, letter_extra: str) -> tuple[re.Pattern[str], ...]:
+def _patterns(spec: KksSpec, digit_extra: str, letter_extra: str) -> tuple[re.Pattern[str], ...]:
     """One pattern per form, built from the masks alone. ``digit_extra`` / ``letter_extra`` are
     the confusable characters a digit / letter position also takes (the reason probe only)."""
     digit, letter = _digit_class(digit_extra), _letter_class(letter_extra)
@@ -66,17 +63,6 @@ def _patterns(spec: _Spec, digit_extra: str, letter_extra: str) -> tuple[re.Patt
         )
         out.append(re.compile("".join(groups), re.ASCII))
     return tuple(out)
-
-
-def _spec(kks: KksRules) -> _Spec:
-    return tuple((f.name, tuple((p, kks.parts[p].mask) for p in f.parts)) for f in kks.forms)
-
-
-def _shortest(kks: KksRules) -> int:
-    """The fewest characters any form needs (mandatory positions only)."""
-    return min(
-        sum(sum(1 for c in kks.parts[p].mask if c in "NA") for p in f.parts) for f in kks.forms
-    )
 
 
 def _split_prefix(canonical: str, kks: KksRules) -> tuple[str | None, str | None, str]:
@@ -103,21 +89,37 @@ def _tag(
 
 
 def _near_miss_reasons(rest: str, rules: IdentifierRules) -> tuple[str, ...]:
-    """Why a tag-shaped text misses the structure: a confusable letter where a digit belongs,
-    a confusable digit where a letter belongs (both may hold), or neither (malformed)."""
-    spec = _spec(rules.kks)
+    """Why a tag-shaped text misses the structure. A confusable letter where a digit belongs,
+    a confusable digit where a letter belongs, both (each trial alone fits, or only the two
+    swaps together fit: then both happened), or neither (malformed)."""
+    spec = rules.kks.spec
     digits = "".join(digit for digit, _ in rules.confusables)
     letters = "".join(letter for _, letter in rules.confusables)
-    reasons: list[str] = []
-    for issue, d_extra, l_extra in (
-        (ISSUE_LETTER_IN_DIGIT, letters, ""),
-        (ISSUE_DIGIT_IN_LETTER, "", digits),
-    ):
-        if (d_extra or l_extra) and any(
-            p.fullmatch(rest) for p in _patterns(spec, d_extra, l_extra)
-        ):
-            reasons.append(issue)
+    if not digits:
+        return (ISSUE_MALFORMED,)
+
+    def fits(digit_extra: str, letter_extra: str) -> bool:
+        return any(p.fullmatch(rest) for p in _patterns(spec, digit_extra, letter_extra))
+
+    letter_in_digit = fits(letters, "")
+    digit_in_letter = fits("", digits)
+    if not (letter_in_digit or digit_in_letter) and fits(letters, digits):
+        letter_in_digit = digit_in_letter = True  # only the two swaps together fit
+    reasons = [
+        issue
+        for issue, held in (
+            (ISSUE_LETTER_IN_DIGIT, letter_in_digit),
+            (ISSUE_DIGIT_IN_LETTER, digit_in_letter),
+        )
+        if held
+    ]
     return tuple(reasons) or (ISSUE_MALFORMED,)
+
+
+def is_kks_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
+    """D-36: a VALID tag at [kks] evidence_min_level or deeper (an equipment tag by default).
+    A system-level shape alone also fits other text (a date, a rating with its unit)."""
+    return found.valid and found.kks is not None and found.kks.level >= rules.kks.evidence_min_level
 
 
 def parse_kks_tag(
@@ -129,7 +131,7 @@ def parse_kks_tag(
     prefix, prefix_kind, rest = _split_prefix(canonical, kks)
     if not rest[:1].isdigit():
         return None
-    for index, pattern in enumerate(_patterns(_spec(kks), "", "")):
+    for index, pattern in enumerate(_patterns(kks.spec, "", "")):
         match = pattern.fullmatch(rest)
         if match is not None:
             tag = _tag(index, match, kks, prefix, prefix_kind)
@@ -144,7 +146,7 @@ def parse_kks_tag(
                 issues=(ISSUE_EXCLUDED_LETTER,) if excluded else (),
                 kks=tag,
             )
-    if prefix is not None or _OUTER.fullmatch(rest) is None or len(rest) < _shortest(kks):
+    if prefix is not None or _OUTER.fullmatch(rest) is None or len(rest) < kks.shortest:
         return None
     return ParsedIdentifier(
         kind=IdentifierKind.KKS_TAG,

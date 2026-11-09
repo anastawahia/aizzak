@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.modules.electrical.shared.ansi import ISSUE_UNKNOWN_SUFFIX, is_bare_ansi_number
+from app.modules.electrical.shared.ansi import (
+    ISSUE_UNKNOWN_SUFFIX,
+    is_ansi_evidence,
+    is_bare_ansi_number,
+)
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, ParsedIdentifier
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.rules.systems import CLASS_NAME
@@ -146,3 +150,29 @@ def test_f2_ac_12_every_ansi_class_is_a_class_name() -> None:
     assert rules.ansi.functions
     assert all(CLASS_NAME.fullmatch(name) for name in rules.ansi.functions.values())
     assert all(name.islower() for name in rules.ansi.functions.values())
+
+
+@pytest.mark.parametrize(
+    ("text", "hint", "evidence"),
+    [
+        ("87T", None, True),
+        ("50BF", None, True),
+        ("51N", None, True),
+        ("27-1", None, True),
+        ("32A", None, False),  # the rating letter
+        ("25A", None, False),
+        ("50A", None, False),
+        ("16A", None, False),  # no class for 16
+        ("4P", None, False),
+        ("2P", None, False),
+        ("1N", None, False),
+        ("24V", None, False),
+        ("52", IdentifierKind.ANSI_DEVICE, False),  # a bare number proves nothing
+        ("50/51", None, False),  # a compound proves nothing
+        ("87QZ", None, False),  # invalid: an unknown suffix
+    ],
+)
+def test_the_ansi_evidence_rule(text: str, hint: IdentifierKind | None, evidence: bool) -> None:
+    found = _ansi(text, hint=hint)
+    assert found.kind is _DEVICE
+    assert is_ansi_evidence(found, ANSI.rules) is evidence

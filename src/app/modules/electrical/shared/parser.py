@@ -32,6 +32,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.ansi import (
+    is_ansi_evidence,
     is_bare_ansi_number,
     parse_ansi_compound,
     parse_ansi_compound_in_context,
@@ -50,7 +51,7 @@ from app.modules.electrical.shared.kinds import (
     ParsedIdentifier,
     PlcFamily,
 )
-from app.modules.electrical.shared.kks import parse_kks_tag
+from app.modules.electrical.shared.kks import is_kks_evidence, parse_kks_tag
 from app.modules.electrical.shared.letter_codes import parse_letter_code
 from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
@@ -221,7 +222,7 @@ class IdentifierParser:
                     extra is not None
                     and extra.convention in ADDITIVE_CONVENTIONS
                     and extra.convention not in enabled
-                    and _is_evidence(extra)
+                    and _is_evidence(extra, self._rules)
                 ):
                     conventions[extra.convention] += 1
         return ConventionTally(
@@ -232,8 +233,8 @@ class IdentifierParser:
             tokens=seen,
         )
 
-    @staticmethod
     def _count(
+        self,
         found: ParsedIdentifier,
         conventions: Counter[Convention],
         families: Counter[PlcFamily],
@@ -241,7 +242,7 @@ class IdentifierParser:
     ) -> None:
         # lookalike / mixed-script text (text.non_ascii) is no evidence: the caller skips it
         if found.convention is not None and (
-            found.convention not in ADDITIVE_CONVENTIONS or _is_evidence(found)
+            found.convention not in ADDITIVE_CONVENTIONS or _is_evidence(found, self._rules)
         ):
             conventions[found.convention] += 1
         if found.plc is not None:
@@ -252,17 +253,22 @@ class IdentifierParser:
 
 def _may_be_additive(token: str) -> bool:
     """KKS and ANSI start with a digit, or with a KKS prefix (``=`` ``+``): the probe skips the
-    rest, which keeps its cost to the tokens that can matter (NFR-F2-4)."""
+    rest, which keeps its cost to the tokens that can matter (NFR-F2-4). The length is checked
+    first: parse refuses it before normalising, so does the probe (S-4)."""
+    if len(token) > MAX_TEXT_CHARS:
+        return False
     lead = canonical_form(token)[:1]
     return lead.isdigit() or lead in _KKS_LEADS
 
 
-def _is_evidence(found: ParsedIdentifier) -> bool:
-    """Does a KKS or ANSI reading count as evidence of that convention? A VALID reading
-    without ``text.non_ascii``. For ANSI also one function with a suffix or an instance and no
-    other reading (a bare number or a compound is ambiguous: it proves nothing)."""
+def _is_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
+    """Does a KKS or ANSI reading count as evidence of that convention (D-36)? A VALID reading
+    without ``text.non_ascii``, then the convention's own rule: ``is_ansi_evidence`` (a function
+    with a class, not a rating) or ``is_kks_evidence`` (an equipment tag or deeper)."""
     if not found.valid or ISSUE_NON_ASCII in found.issues:
         return False
     if found.convention is Convention.ANSI:
-        return found.ansi is not None and len(found.ansi.functions) == 1 and not found.alternatives
+        return is_ansi_evidence(found, rules)
+    if found.convention is Convention.KKS:
+        return is_kks_evidence(found, rules)
     return True

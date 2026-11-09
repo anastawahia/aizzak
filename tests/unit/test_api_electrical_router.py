@@ -391,6 +391,17 @@ def test_the_project_profile_is_replaced_by_a_new_version(env: Env) -> None:
     assert env.put("/projects/nope/profile", {"body": {"schema": 1}}).status_code == 404
 
 
+def test_a_supply_voltage_label_is_saved(env: Env) -> None:
+    """Review 2: `24V` is a voltage label on master and stays one."""
+    created = env.project()
+    saved = env.put(
+        f"/projects/{created['id']}/profile",
+        {"body": {"schema": 1, "voltage_labels": ["24V"]}},
+    )
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    assert saved.json()["body"]["voltage_labels"] == ["24V"]
+
+
 def test_an_invalid_profile_is_a_422_that_names_the_field_and_never_echoes_the_client(
     env: Env,
 ) -> None:
@@ -997,6 +1008,8 @@ def test_a_member_reads_and_previews_but_neither_registers_nor_changes_a_profile
         assert response.status_code == 403 and _code(response) == "authz.forbidden"
         assert response.json()["detail"] == "missing permission: electrical:manage"
     assert env.stack.documents.rows == {}
+    env.as_role("owner")
+    assert env.get(f"/projects/{project['id']}/profile").json()["version"] == 1  # S-5
 
 
 def test_a_viewer_reads_and_nothing_more(env: Env) -> None:

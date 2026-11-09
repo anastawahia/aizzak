@@ -2726,3 +2726,16 @@ text = "87T"
 source = "invalid-or-prose"
 kind = "none"
 
+
+[[case]]
+id = "c236"
+text = "2OXYZ10A0123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "invalid"
+kind = "kks_tag"
+valid = false
+convention = "kks"
+aspects = []
+issues = ["kks.letter_in_digit_position", "kks.digit_in_letter_position"]
+canonical = "2OXYZ10A0123"
+search_keys = ["2OXYZ10A0123"]
