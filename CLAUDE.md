@@ -8,7 +8,7 @@
 
 ## Repos
 - `/home/AIZZAK`: this repo, the backend and the whole stack. Remote: `github.com/anastawahia/aizzak`.
-- TODO(human): no related repo (frontend or mobile) was given or found. Add its absolute path here if one exists.
+- `C:\Users\anast\Desktop\aizzak-android` (from WSL: `/mnt/c/Users/anast/Desktop/aizzak-android`): the Android client. Its delivery docs are in `docs/delivery/tasks/<slug>/`. Backend contract requests from it are answered there in `backend-reply.md`. Open backend gaps are tracked here in `docs/delivery/data-search-android/gaps.md`.
 
 ## Branches
 - Main branch: `master`. CI runs on push to `master` and on every PR (`.github/workflows/ci.yml`).
