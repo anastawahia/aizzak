@@ -8,26 +8,34 @@ turns it into what ``shared`` narrows its packaged rules with.
 or an out-of-range number raises ``InvalidProfile`` naming the field path. An ABSENT key takes
 its default, so a body is a replacement that need only state what differs.
 
-``rule_selection`` restricts the identifier conventions to the profile's own one. The worker
-that PROPOSES a profile must therefore tally a document's tokens with the unnarrowed packaged
-rules, not with the project's (default) selection, or a Chinese drawing would show no
-convention at all.
+``rule_selection`` restricts the identifier conventions to the profile's own DEVICE convention,
+plus KKS and ANSI when ``plant_designation`` / ``device_function_numbers`` name them (D-36: they
+add to the one device convention and never compete with it). The worker that PROPOSES a profile
+must therefore tally a document's tokens with the unnarrowed packaged rules, not with the
+project's (default) selection, or a Chinese drawing would show no convention at all.
+
+The three D-36 fields (``plant_designation``, ``device_function_numbers``, ``ansi_suffixes``) are
+omitted from ``to_body`` while they hold their defaults, so a profile that does not use them keeps
+its body, and its fingerprint, byte for byte.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Final
 
 from app.modules.electrical.drawings.domain.errors import InvalidProfile
 from app.modules.electrical.drawings.domain.pages import ClassificationThresholds
-from app.modules.electrical.shared.kinds import Convention, PlcFamily
+from app.modules.electrical.shared.kinds import DEVICE_CONVENTIONS, Convention, PlcFamily
+from app.modules.electrical.shared.normalization import canonical_form
 from app.modules.electrical.shared.rules import RuleSelection
 
 PROFILE_SCHEMA: Final = 1
@@ -36,6 +44,9 @@ MAX_ASPECT_CHARS: Final = 4
 MAX_VOLTAGE_LABELS: Final = 64  # the same bounds `shared` enforces when it narrows
 MAX_VOLTAGE_LABEL_CHARS: Final = 16
 MAX_VENDOR_LIBRARY_CHARS: Final = 100
+MAX_ANSI_SUFFIX_RAW_CHARS: Final = 64  # checked before normalisation (NFKC can expand)
+MAX_ANSI_SUFFIXES: Final = 64  # the bound `shared` enforces when it narrows
+_ANSI_SUFFIX: Final = re.compile(r"[A-Z]{1,3}", re.ASCII)
 PLC_VENDORS: Final = frozenset({"siemens"})  # FR-ID-14 is C: one vendor in R1
 LANGUAGES: Final = frozenset({"en", "zh"})
 _ASPECT_CHARS: Final = frozenset("=+-&#")
@@ -50,6 +61,16 @@ class SymbolStandard(StrEnum):
     GBT_4728 = "gbt_4728"
     NFPA_JIC = "nfpa_jic"
     VENDOR = "vendor"
+
+
+class PlantDesignation(StrEnum):  # D-36
+    NONE = "none"
+    KKS = "kks"
+
+
+class DeviceFunctionNumbers(StrEnum):  # D-36
+    NONE = "none"
+    ANSI = "ansi"
 
 
 class CrossReferenceFormat(StrEnum):
@@ -87,7 +108,13 @@ _TOP_KEYS: Final = (
     "schema", "symbol_standard", "vendor_library", "identifier_convention", "extra_aspects",
     "cross_reference_format", "junction_convention", "plc_vendor", "plc_families", "languages",
     "wire_number_patterns", "voltage_labels", "auto_accept_confidence", "classification",
+    "plant_designation", "device_function_numbers", "ansi_suffixes",
 )  # fmt: skip
+
+# Omitted from `to_body` while they hold these values (old bodies, fingerprints, rollback).
+_F2_DEFAULTS: Final[Mapping[str, object]] = MappingProxyType(
+    {"plant_designation": "none", "device_function_numbers": "none", "ansi_suffixes": []}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +134,10 @@ class DrawingProfile:
     voltage_labels: tuple[str, ...]  # extra labels, <= 64, each <= 16 chars
     auto_accept_confidence: float  # 0.5..1.0; default 0.90, M-32's R1 target
     classification: ClassificationThresholds
+    # D-36, last and defaulted: KKS tags and ANSI numbers beside the ONE device convention
+    plant_designation: PlantDesignation = PlantDesignation.NONE
+    device_function_numbers: DeviceFunctionNumbers = DeviceFunctionNumbers.NONE
+    ansi_suffixes: tuple[str, ...] = ()  # canonical, sorted, unique; <= 64, each 1..3 of A-Z
 
     @classmethod
     def default(cls) -> DrawingProfile:
@@ -146,7 +177,7 @@ class DrawingProfile:
 
         symbol = _enum(body, "symbol_standard", SymbolStandard, base.symbol_standard)
         vendor = _vendor_library(body, symbol)
-        convention = _enum(body, "identifier_convention", Convention, base.identifier_convention)
+        convention = _device_convention(body, base.identifier_convention)
         xref = _enum(
             body, "cross_reference_format", CrossReferenceFormat, base.cross_reference_format
         )
@@ -159,6 +190,11 @@ class DrawingProfile:
         patterns = _names(body, "wire_number_patterns", known_patterns)
         aspects = _aspects(body)
         labels = _voltage_labels(body)
+        plant = _enum(body, "plant_designation", PlantDesignation, base.plant_designation)
+        functions = _enum(
+            body, "device_function_numbers", DeviceFunctionNumbers, base.device_function_numbers
+        )
+        suffixes = _ansi_suffixes(body)
         accept = _number(
             body.get("auto_accept_confidence", base.auto_accept_confidence),
             "auto_accept_confidence",
@@ -180,12 +216,16 @@ class DrawingProfile:
             voltage_labels=labels,
             auto_accept_confidence=float(accept),
             classification=_thresholds(body.get("classification"), base.classification),
+            plant_designation=plant,
+            device_function_numbers=functions,
+            ansi_suffixes=suffixes,
         )
 
     def to_body(self) -> dict[str, object]:
-        """The canonical body: every field, sets sorted, with ``"schema": 1``."""
+        """The canonical body: every field, sets sorted, with ``"schema": 1``. The three D-36
+        fields appear only while they differ from their defaults."""
         t = self.classification
-        return {
+        body: dict[str, object] = {
             "schema": PROFILE_SCHEMA,
             "symbol_standard": self.symbol_standard.value,
             "vendor_library": self.vendor_library,
@@ -209,6 +249,13 @@ class DrawingProfile:
                 "script_mix_share": t.script_mix_share,
             },
         }
+        f2: dict[str, object] = {
+            "plant_designation": self.plant_designation.value,
+            "device_function_numbers": self.device_function_numbers.value,
+            "ansi_suffixes": list(self.ansi_suffixes),
+        }
+        body.update({k: v for k, v in f2.items() if v != _F2_DEFAULTS[k]})
+        return body
 
     def fingerprint(self) -> str:
         """sha256 of the canonical JSON (sorted keys): equal profiles, equal fingerprints."""
@@ -216,8 +263,14 @@ class DrawingProfile:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def rule_selection(self) -> RuleSelection:
+        """The device convention, with KKS and ANSI beside it when the profile names them."""
+        conventions = {self.identifier_convention}
+        if self.plant_designation is PlantDesignation.KKS:
+            conventions.add(Convention.KKS)
+        if self.device_function_numbers is DeviceFunctionNumbers.ANSI:
+            conventions.add(Convention.ANSI)
         return RuleSelection(
-            conventions=frozenset({self.identifier_convention}),
+            conventions=frozenset(conventions),
             plc_families=self.plc_families,
             extra_aspects=self.extra_aspects,
             wire_number_patterns=self.wire_number_patterns,
@@ -227,6 +280,7 @@ class DrawingProfile:
                 else self.cross_reference_format.value
             ),
             extra_voltage_labels=self.voltage_labels,
+            extra_ansi_suffixes=self.ansi_suffixes,
         )
 
     def with_detected(
@@ -237,6 +291,8 @@ class DrawingProfile:
         cross_reference_format: CrossReferenceFormat,
         plc_families: frozenset[PlcFamily],
         languages: frozenset[str],
+        plant_designation: PlantDesignation,
+        device_function_numbers: DeviceFunctionNumbers,
     ) -> DrawingProfile:
         """The same profile with the fields STG-01 can detect replaced. ``vendor_library``
         is dropped unless the standard is still ``VENDOR`` (it is valid only with it)."""
@@ -250,6 +306,8 @@ class DrawingProfile:
             cross_reference_format=cross_reference_format,
             plc_families=plc_families,
             languages=languages,
+            plant_designation=plant_designation,
+            device_function_numbers=device_function_numbers,
         )
 
 
@@ -288,6 +346,41 @@ def _to_enum[E: StrEnum](value: object, path: str, kind: type[E]) -> E:
     except ValueError:
         allowed = ", ".join(m.value for m in kind)
         raise InvalidProfile(path, f"must be one of: {allowed}") from None
+
+
+def _device_convention(body: Mapping[str, Any], default: Convention) -> Convention:
+    """``identifier_convention`` names a DEVICE convention; KKS and ANSI have their own fields."""
+    if "identifier_convention" not in body:
+        return default
+    value = body["identifier_convention"]
+    allowed = [m for m in Convention if m in DEVICE_CONVENTIONS]
+    if not isinstance(value, str) or value not in {m.value for m in allowed}:
+        raise InvalidProfile(
+            "identifier_convention", f"must be one of: {', '.join(m.value for m in allowed)}"
+        )
+    return Convention(value)
+
+
+def _ansi_suffixes(body: Mapping[str, Any]) -> tuple[str, ...]:
+    items = _list(body, "ansi_suffixes")
+    if items is None:
+        return ()
+    suffixes = _strings(items, "ansi_suffixes")
+    if len(suffixes) > MAX_ANSI_SUFFIXES:
+        raise InvalidProfile("ansi_suffixes", f"at most {MAX_ANSI_SUFFIXES}")
+    checked: set[str] = set()
+    for i, raw in enumerate(suffixes):
+        canonical = (
+            ""
+            if len(raw) > MAX_ANSI_SUFFIX_RAW_CHARS
+            or any(unicodedata.category(c) in _FORBIDDEN_TEXT_CATEGORIES for c in raw)
+            else canonical_form(raw)
+        )
+        if _ANSI_SUFFIX.fullmatch(canonical) is None:
+            # S-8: the value is not echoed
+            raise InvalidProfile(f"ansi_suffixes[{i}]", "must be 1..3 letters A-Z")
+        checked.add(canonical)
+    return tuple(sorted(checked))
 
 
 def _list(body: Mapping[str, Any], key: str) -> list[object] | None:

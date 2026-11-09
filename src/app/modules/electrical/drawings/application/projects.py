@@ -43,6 +43,7 @@ from app.modules.electrical.drawings.domain.project import (
 from app.modules.electrical.drawings.ports.repository import ProfileRepository, ProjectRepository
 from app.modules.electrical.drawings.ports.rules import RuleSource
 from app.modules.electrical.drawings.ports.spaces import ActiveSpaces
+from app.modules.electrical.shared.kinds import Convention
 from app.modules.electrical.shared.normalization import canonical_form
 from app.modules.electrical.shared.rules import RuleError
 
@@ -79,7 +80,7 @@ def parse_profile(rules: RuleSource, body: Mapping[str, object]) -> DrawingProfi
     try:
         # under EVERY convention (a label must not hide `KM1` in a Chinese drawing either), and
         # under the profile's own, the way a document is parsed with it
-        packaged.narrowed(replace(selection, conventions=frozenset()))
+        packaged.narrowed(replace(selection, conventions=frozenset(Convention)))
         packaged.narrowed(selection)
     except RuleError:
         raise invalid_profile(InvalidProfile("voltage_labels", _VOLTAGE_LABEL_TEXT)) from None

@@ -24,12 +24,19 @@ from app.modules.electrical.drawings.domain.pages import (
 from app.modules.electrical.drawings.domain.pipeline import PIPELINE_VERSION
 from app.modules.electrical.drawings.domain.profile import SymbolStandard
 from app.modules.electrical.drawings.domain.profile_detection import (
+    MIN_IDENTIFIERS,
     ProducerSignature,
     ProfileProposal,
     producer_family,
     ranked_conventions,
+    ranked_device_conventions,
 )
-from app.modules.electrical.shared.kinds import Convention, ConventionTally, PlcFamily
+from app.modules.electrical.shared.kinds import (
+    ADDITIVE_CONVENTIONS,
+    Convention,
+    ConventionTally,
+    PlcFamily,
+)
 from app.modules.electrical.shared.version import SHARED_VERSION
 
 UNKNOWN_PRODUCER: Final = "unknown"
@@ -48,7 +55,7 @@ class Characterization:
     page_languages: Mapping[PageLanguage, int]
     document_language: str  # en | zh | bilingual | none
     conventions: Mapping[Convention, int]
-    symbol_standard_guess: SymbolStandard | None  # None: no convention was seen
+    symbol_standard_guess: SymbolStandard | None  # None: no DEVICE convention was seen
     symbol_standard_basis: tuple[str, ...]
     plc_families: Mapping[PlcFamily, int]
     cross_reference_formats: Mapping[str, int]
@@ -76,7 +83,9 @@ class CharacterizationReport:  # a project's, or the offline tool's
     producers: Mapping[str, int]  # documents per producer family
     text_kinds: Mapping[PageKind, int]  # pages
     document_languages: Mapping[str, int]
-    conventions: Mapping[Convention, int]  # documents by proposed convention
+    # documents by proposed DEVICE convention; for kks and ansi, the documents with at least
+    # MIN_IDENTIFIERS such identifiers (D-36: they add to a device convention, never replace it)
+    conventions: Mapping[Convention, int]
     symbol_standards: Mapping[str, int]  # enum order, then UNKNOWN_SYMBOL_STANDARD
     plc_families: Mapping[PlcFamily, int]  # documents that use the family
     ocr_needed_ratio: float
@@ -133,7 +142,11 @@ def characterize(
         page_languages=languages,
         document_language=document_language(languages),
         conventions=dict(ranked),
-        symbol_standard_guess=proposal.profile.symbol_standard if ranked else None,
+        symbol_standard_guess=(
+            proposal.profile.symbol_standard
+            if ranked_device_conventions(tally.conventions)
+            else None
+        ),
         symbol_standard_basis=proposal.basis.get("symbol", ()),
         plc_families={f: n for f, n in sorted(tally.plc_families.items()) if n > 0},
         cross_reference_formats=dict(sorted(tally.cross_reference_formats.items())),
@@ -162,9 +175,12 @@ def aggregate(items: Sequence[Characterization]) -> CharacterizationReport:
     for item in items:
         text_kinds.update(item.text_kinds)
         plc.update(f for f, n in item.plc_families.items() if n > 0)
-        ranked = ranked_conventions(item.conventions)
+        ranked = ranked_device_conventions(item.conventions)
         if ranked:
             conventions[ranked[0][0]] += 1
+        conventions.update(
+            c for c in ADDITIVE_CONVENTIONS if item.conventions.get(c, 0) >= MIN_IDENTIFIERS
+        )
     pages = sum(i.page_count for i in items)
     ocr = sum(i.ocr_needed_pages for i in items)
     return CharacterizationReport(

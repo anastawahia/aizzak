@@ -609,6 +609,8 @@ async def test_after_stg01_the_job_awaits_confirmation_and_the_proposal_carries_
         "cross_reference_format",
         "plc_families",
         "languages",
+        "plant_designation",  # D-36: proposed beside the device convention
+        "device_function_numbers",
     }
     assert proposal["field_confidence"]["symbol_standard"] == pytest.approx(0.8)
     assert "tokens" in proposal["basis"] and "producer" in proposal["basis"]

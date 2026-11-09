@@ -13,8 +13,13 @@
   = those on more than ``LANGUAGE_PAGE_SHARE`` of the pages. A field with no evidence keeps the
   base profile's value at confidence 1.0 (nothing contradicts it); only the convention can hold
   the proposal back for want of evidence.
-* ``mixed_standards`` when the second convention holds a quarter of the identifiers and at least
-  ``MIXED_MIN_IDENTIFIERS`` of them.
+* ``mixed_standards`` when the second DEVICE convention holds a quarter of the identifiers and at
+  least ``MIXED_MIN_IDENTIFIERS`` of them.
+* **KKS and ANSI** (D-36) add to the ONE device convention and never compete with it: the
+  convention, the symbol standard and ``mixed_standards`` look at the DEVICE conventions only.
+  ``plant_designation`` / ``device_function_numbers`` are proposed when the tally holds any
+  such identifier, with the sample factor as their confidence (zero under ``MIN_IDENTIFIERS``,
+  so never accepted automatically); with none, the base profile's value stays at 1.0.
 
 Same inputs, same proposal: no clock, no randomness, ties by enum order.
 """
@@ -33,10 +38,16 @@ from app.modules.electrical.drawings.domain.pages import (
 )
 from app.modules.electrical.drawings.domain.profile import (
     CrossReferenceFormat,
+    DeviceFunctionNumbers,
     DrawingProfile,
+    PlantDesignation,
     SymbolStandard,
 )
-from app.modules.electrical.shared.kinds import Convention, ConventionTally
+from app.modules.electrical.shared.kinds import (
+    DEVICE_CONVENTIONS,
+    Convention,
+    ConventionTally,
+)
 
 _TWO: Final = 2  # the first and the second convention
 MIN_IDENTIFIERS: Final = 20
@@ -70,7 +81,8 @@ class ProfileProposal:
     confidence: float  # min of the field confidences
     field_confidence: Mapping[str, float]
     mixed_standards: bool  # FR-ING-12
-    basis: Mapping[str, tuple[str, ...]]  # why: "tokens", "producer", "language", "symbol"
+    # why: "tokens", "producer", "language", "symbol", and "systems" (KKS / ANSI, when seen)
+    basis: Mapping[str, tuple[str, ...]]
 
 
 def matching_producers(
@@ -95,9 +107,17 @@ def ranked_conventions(conventions: Mapping[Convention, int]) -> list[tuple[Conv
     return sorted(present, key=lambda item: (-item[1], order[item[0]]))
 
 
+def ranked_device_conventions(
+    conventions: Mapping[Convention, int],
+) -> list[tuple[Convention, int]]:
+    """``ranked_conventions`` restricted to DEVICE_CONVENTIONS (KKS and ANSI never compete)."""
+    return [(c, n) for c, n in ranked_conventions(conventions) if c in DEVICE_CONVENTIONS]
+
+
 def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
-    """FR-ING-12: the second convention holds a quarter of the identifiers, and 20 at least."""
-    ranked = ranked_conventions(conventions)
+    """FR-ING-12 after D-36: the second DEVICE convention holds a quarter of the identifiers,
+    and 20 at least. KKS and ANSI beside one device convention are not mixed."""
+    ranked = ranked_device_conventions(conventions)
     if len(ranked) < _TWO or identifiers <= 0:
         return False
     second = ranked[1][1]
@@ -130,7 +150,7 @@ def _language_shares(pages: Sequence[PageClassification]) -> tuple[float, float]
 def _convention(
     base: DrawingProfile, tally: ConventionTally
 ) -> tuple[Convention, float, tuple[str, ...]]:
-    ranked = ranked_conventions(tally.conventions)
+    ranked = ranked_device_conventions(tally.conventions)
     if not ranked:
         return base.identifier_convention, 0.0, ()
     confidence = _margin([n for _, n in ranked]) * _sample_factor(tally.identifiers)
@@ -161,6 +181,27 @@ def _symbol(
     return chosen, convention_confidence * SYMBOL_CONFIDENCE_FACTOR * share, tuple(basis)
 
 
+def _systems(
+    base: DrawingProfile, tally: ConventionTally
+) -> tuple[PlantDesignation, DeviceFunctionNumbers, float, float, tuple[str, ...]]:
+    """KKS and ANSI (D-36): proposed when seen, confidence by the sample size; unchanged, at 1.0,
+    when not seen."""
+    kks = tally.conventions.get(Convention.KKS, 0)
+    ansi = tally.conventions.get(Convention.ANSI, 0)
+    plant = PlantDesignation.KKS if kks > 0 else base.plant_designation
+    functions = DeviceFunctionNumbers.ANSI if ansi > 0 else base.device_function_numbers
+    basis = tuple(
+        f"{c.value}:{n}" for c, n in ((Convention.KKS, kks), (Convention.ANSI, ansi)) if n
+    )
+    return (
+        plant,
+        functions,
+        _sample_factor(kks) if kks > 0 else 1.0,
+        _sample_factor(ansi) if ansi > 0 else 1.0,
+        basis,
+    )
+
+
 def detect_profile(
     *,
     base: DrawingProfile,
@@ -175,6 +216,8 @@ def detect_profile(
     symbol, symbol_confidence, symbol_basis = _symbol(
         convention, convention_confidence, hits, zh_share, observed=bool(token_basis)
     )
+
+    plant, functions, plant_confidence, functions_confidence, systems_basis = _systems(base, tally)
 
     xref_counts = sorted(
         ((n, name) for name, n in tally.cross_reference_formats.items() if n > 0),
@@ -205,6 +248,8 @@ def detect_profile(
         "cross_reference_format": xref_confidence,
         "plc_families": 1.0,
         "languages": 1.0,
+        "plant_designation": plant_confidence,
+        "device_function_numbers": functions_confidence,
     }
     profile = base.with_detected(
         symbol_standard=symbol,
@@ -212,6 +257,8 @@ def detect_profile(
         cross_reference_format=xref,
         plc_families=families,
         languages=languages,
+        plant_designation=plant,
+        device_function_numbers=functions,
     )
     return ProfileProposal(
         profile=profile,
@@ -223,5 +270,6 @@ def detect_profile(
             "producer": tuple(hit.family for hit in hits),
             "language": (f"en:{en_share:.2f}", f"zh:{zh_share:.2f}"),
             "symbol": symbol_basis,
+            **({"systems": systems_basis} if systems_basis else {}),
         },
     )
