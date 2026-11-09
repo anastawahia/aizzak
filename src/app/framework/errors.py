@@ -115,7 +115,7 @@ ERROR_CATALOG: Final[Mapping[str, ProblemSpec]] = MappingProxyType(
         # `upload_incomplete` a completion with a missing or wrong-sized part;
         # `upload_expired` an upload storage has already swept.
         "files.multipart_required": ProblemSpec(413, "File needs a multipart upload"),
-        "files.upload_incomplete": ProblemSpec(409, "Multipart upload is incomplete"),
+        "files.upload_incomplete": ProblemSpec(409, "Upload is incomplete"),
         "files.upload_expired": ProblemSpec(409, "Multipart upload no longer exists"),
         # -- electrical (WireTwin, electrical-drawings INC-1, LLD 3.3.13) ---- #
         # Each code is here because some code emits it (the catalog mirrors behaviour). The

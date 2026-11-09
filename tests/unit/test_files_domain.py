@@ -82,7 +82,34 @@ def test_content_type_accepts_valid_syntax(value: str) -> None:
     assert ContentType(value).value == value.strip().lower()
 
 
-@pytest.mark.parametrize("value", ["", "text", "text/", "/plain", "text plain/x", "a//b"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("text/plain; charset=utf-8", "text/plain"),
+        ("Text/Plain;Charset=UTF-8", "text/plain"),
+        ('text/csv; charset="utf-8"; header=present', "text/csv"),
+    ],
+)
+def test_content_type_drops_wellformed_parameters(value: str, expected: str) -> None:
+    assert ContentType(value).value == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "text",
+        "text/",
+        "/plain",
+        "text plain/x",
+        "a//b",
+        "text/plain;",
+        "text/plain; charset",
+        "text/plain; =utf-8",
+        "text/plain; charset=utf 8",
+        "; charset=utf-8",
+    ],
+)
 def test_content_type_rejects_invalid_syntax(value: str) -> None:
     with pytest.raises(InvalidFileInput):
         ContentType(value)

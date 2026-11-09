@@ -25,6 +25,9 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 # *allowed* types is a configurable business limit, checked by the application,
 # not here.
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
+# One RFC 9110 media-type parameter: ``token=token`` or ``token="quoted"``.
+_MIME_TOKEN = r"[a-z0-9!#$%&'*+.^_`|~-]+"
+_MIME_PARAM_RE = re.compile(rf'^{_MIME_TOKEN}=(?:{_MIME_TOKEN}|"[^"\\]*")$')
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_UPLOAD_ID_LEN = 1024
 
@@ -94,13 +97,20 @@ class ContentType:
     Only structural MIME syntax is validated here; whether the type is on the
     configured whitelist is a business limit enforced by the application
     (``RegisterUpload`` against ``Limits.allowed_mime``).
+
+    Well-formed parameters (``text/plain; charset=utf-8``) are accepted and
+    dropped: the stored value is the bare ``type/subtype`` the whitelist and
+    every reader compare against.
     """
 
     value: str
 
     def __post_init__(self) -> None:
-        normalized = self.value.strip().lower()
-        if not _MIME_RE.match(normalized):
+        essence, *params = self.value.strip().lower().split(";")
+        normalized = essence.strip()
+        if not _MIME_RE.match(normalized) or not all(
+            _MIME_PARAM_RE.match(param.strip()) for param in params
+        ):
             raise InvalidFileInput(f"invalid content type: {self.value!r}")
         object.__setattr__(self, "value", normalized)
 

@@ -207,6 +207,41 @@ def test_create_conversation_returns_201_and_a_bare_resource() -> None:
     assert "version" not in body
 
 
+def test_create_conversation_with_the_same_idempotency_key_replays_the_first_thread() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    headers = {**_auth(), "Idempotency-Key": "create-1"}
+    body = {"space_id": _SPACE, "agent_key": "echo", "title": "First"}
+
+    first = client.post("/api/v1/conversations", headers=headers, json=body)
+    second = client.post("/api/v1/conversations", headers=headers, json=body)
+
+    assert (first.status_code, second.status_code) == (201, 201)
+    assert second.json() == first.json()
+    listed = client.get(
+        "/api/v1/conversations",
+        headers=_auth(),
+        params={"agent_key": "echo", "space_id": _SPACE},
+    ).json()["data"]
+    assert [c["id"] for c in listed] == [first.json()["id"]]
+
+
+def test_create_conversation_reusing_a_key_with_another_body_is_409() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    headers = {**_auth(), "Idempotency-Key": "create-1"}
+    client.post(
+        "/api/v1/conversations", headers=headers, json={"space_id": _SPACE, "agent_key": "echo"}
+    )
+    response = client.post(
+        "/api/v1/conversations",
+        headers=headers,
+        json={"space_id": _SPACE, "agent_key": "echo", "title": "Other"},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "common.conflict"
+
+
 def test_create_conversation_rejects_a_blank_agent_key() -> None:
     app, _ = _make_app()
     client = TestClient(app)

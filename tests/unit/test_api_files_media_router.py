@@ -302,6 +302,26 @@ def test_complete_answers_the_ready_file_with_its_download_url() -> None:
     assert stored.value == _SHA
 
 
+def test_complete_before_the_bytes_landed_is_409_and_the_file_stays_uploaded() -> None:
+    """Data Search gap ث-9: ``complete`` without the client's PUT used to mark
+    the file ``ready``. Now the object must exist at the declared size."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    file_id = _register(client)["file_id"]
+    stack.multipart_storage.single_puts_land = False
+
+    early = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+
+    assert (early.status_code, early.json()["code"]) == (409, "files.upload_incomplete")
+    assert stack.file_repository.rows[str(file_id)].status.value == "uploaded"
+    assert stack.outbox.calls == []
+
+    stack.multipart_storage.single_puts_land = True
+    done = client.post(f"/api/v1/files/{file_id}/complete", headers=_auth())
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "ready"
+
+
 def test_complete_accepts_an_absent_body() -> None:
     """openapi.yaml: the complete requestBody is `required: false` — a client
     that cannot hash its upload completes with no body at all, and the file is

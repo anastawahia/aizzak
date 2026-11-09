@@ -319,9 +319,16 @@ class FakeMultipartStorage:
     ``put_part`` plays the client's presigned ``PUT``. ``expire`` plays
     MinIO's stale-upload sweep. Joining checks what S3 checks: each listed part
     exists with the listed ETag.
+
+    A SINGLE-PUT upload is played by ``files``: given the repository, a key no
+    join produced answers the registered file's declared size, i.e. the
+    well-behaved client already PUT its bytes. ``single_puts_land = False``
+    plays the client that calls ``complete`` without having uploaded.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, files: InMemoryFileRepository | None = None) -> None:
+        self.files = files
+        self.single_puts_land = True
         self.uploads: dict[str, dict[int, tuple[int, str]]] = {}
         self.keys: dict[str, str] = {}
         self.objects: dict[str, int] = {}
@@ -363,7 +370,14 @@ class FakeMultipartStorage:
         del self.uploads[upload_id]
 
     async def object_size(self, key: str) -> int | None:
-        return self.objects.get(key)
+        if key in self.objects:
+            return self.objects[key]
+        if self.files is None or not self.single_puts_land:
+            return None
+        for row in self.files.rows.values():
+            if row.storage_key.value == key and row.multipart is None:
+                return row.size_bytes
+        return None
 
     def put_part(self, upload_id: str, part_number: int, size: int) -> None:
         self.uploads[upload_id][part_number] = (size, f"etag-{part_number}-{size}")
@@ -494,7 +508,7 @@ def build_files_media(
     storage = RecordingStorage()
     outbox = RecordingOutbox()
     uow = NoopUnitOfWork()
-    multipart_storage = FakeMultipartStorage()
+    multipart_storage = FakeMultipartStorage(files_repo)
     register = RegisterUpload(files_repo, limits, spaces, multipart=multipart_storage)
     multipart = MultipartUploadService(
         files_repo, multipart_storage, put_ttl_s=minio.presign_put_ttl_s

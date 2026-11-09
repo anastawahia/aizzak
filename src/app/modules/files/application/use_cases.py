@@ -822,20 +822,30 @@ class MultipartUploadService:
         )
 
     async def assemble(self, ctx: ExecutionContext, file_id: Uuid) -> None:
-        """Verify the parts and have storage join them. Returns at once for a
-        single-PUT or already-complete file (``CompleteUpload`` judges those).
-        Repeating it after a successful join is safe.
+        """Verify the parts and have storage join them. Returns at once for an
+        unknown, deleted or already-complete file (``CompleteUpload`` judges
+        those). Repeating it after a successful join is safe.
+
+        A single-PUT file is not joined, but its bytes are still PROVEN: the
+        object must exist at exactly the declared size (INV-F5) before
+        ``CompleteUpload`` may mark it ``ready``. Without this a client that
+        called ``complete`` before (or instead of) its PUT got a ``ready`` file
+        whose indexing then failed. The checksum is still only recorded:
+        comparing it would mean reading the whole object back.
 
         A multipart upload registered by another member is a 404 HERE, not a
         silent return: returning would let ``CompleteUpload`` mark the file
         ``ready`` with no assembled object behind it (SR-1)."""
         file = await self._files.get(ctx, file_id)
-        if (
-            file is None
-            or file.deleted_at is not None
-            or file.multipart is None
-            or file.status is not FileStatus.UPLOADED
-        ):
+        if file is None or file.deleted_at is not None or file.status is not FileStatus.UPLOADED:
+            return
+        if file.multipart is None:
+            if await self._storage.object_size(file.storage_key.value) != file.size_bytes:
+                raise ConflictError(
+                    "storage does not hold the uploaded bytes at the declared size; "
+                    "PUT the file to its upload_url and complete again",
+                    code="files.upload_incomplete",
+                )
             return
         if not _registered_by_caller(ctx, file):
             raise NotFoundError("file not found")

@@ -71,6 +71,7 @@ _W1 = "018f0000-0000-7000-8000-0000000000w1"
 _SPACE = "018f0000-0000-7000-8000-0000000000sp"
 _U1 = "018f0000-0000-7000-8000-0000000000u1"
 _GOOD = "good"
+_VIEWER = "viewer"
 
 _ECHO_METADATA = AgentMetadata(
     key="echo",
@@ -123,6 +124,8 @@ class _FakeResolver:
 
 class _FakeAuth:
     async def authenticate(self, token: str) -> Principal:
+        if token == _VIEWER:
+            return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset({"viewer"}))
         if token != _GOOD:
             raise UnauthorizedError("bad token", code="auth.invalid_token")
         return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset({"member"}))
@@ -209,6 +212,22 @@ def test_list_agents_empty_registry_is_empty_page() -> None:
     response = client.get("/api/v1/agents", headers=_auth())
     assert response.status_code == 200
     assert response.json() == {"data": [], "meta": {"next_cursor": None, "limit": 0}}
+
+
+def test_list_agents_hides_agents_the_caller_cannot_invoke() -> None:
+    # A viewer holds `agents:read` (the route guard passes) but not
+    # `agents:invoke`, which the echo manifest requires -- so it is not listed.
+    client = TestClient(_make_app())
+    response = client.get("/api/v1/agents", headers=_auth(_VIEWER))
+    assert response.status_code == 200
+    assert response.json() == {"data": [], "meta": {"next_cursor": None, "limit": 0}}
+
+
+def test_get_agent_stays_readable_to_a_caller_who_cannot_invoke_it() -> None:
+    client = TestClient(_make_app())
+    response = client.get("/api/v1/agents/echo", headers=_auth(_VIEWER))
+    assert response.status_code == 200
+    assert response.json()["key"] == "echo"
 
 
 def test_list_agents_requires_auth() -> None:
