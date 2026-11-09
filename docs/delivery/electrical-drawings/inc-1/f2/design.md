@@ -6,7 +6,8 @@
 - **الفرع:** `docs/electrical-drawings-f2` من `master` = `ab4da7f`. وهذه الجولة وثائق فقط. والبند 1 يُبنى بعد دمجها، على فرع شيفرة جديد من `master`.
 - **المرجع:** `inc-1/f2/requirements.md` (§3.1 و§3.2 و§4 و§5 و§6، وA‑5)، و`inc-1/f2/stories.md` (US‑1..4 وUS‑10 وUS‑9)، و`docs/requirements.md` 0.20 (D‑36)، و`docs/hld.md` 0.19 (DEC‑20)، و`inc-1/f1/design.md` قالباً للشكل.
 - **الحالة:** ✅ قرارات المالك في 2026-11-08: Q1..Q9 بالتوصية، وA‑5 بخلاف اقتراح المحلّل (أطراف `9A-99` في البند 1). وطُبّقت S1..S19 وH‑1..H‑12 في هذه الجولة (§10)، ونتائج التحقق في §10.4.
-- **المستودع عام:** أنماط مجردة وأمثلة مخترعة فقط (`20XYZ10AB123`، `87T`، `1X-25`). لا وسم ولا اسم من العيّنات.
+- **الإعادة 1 (2026-11-09):** ردّ على مراجعة الشيفرة (`inc-1/f2/review.md`، FAIL) وعلى المراجعة الأمنية (`inc-1/f2/security-review.md`). وثائق فقط، بلا شيفرة. كل موضع تغيّر معلَّم «(عُدّل في الإعادة 1)»، والتفصيل وقائمة الإصلاح في §11.
+- **المستودع عام:** أنماط مجردة وأمثلة مخترعة فقط (`20XYZ10AB123`، `87T`، `1X-25`). لا وسم ولا اسم من العيّنات. و`1X-25` استثناء مكتوب بقرار المالك (§11.5).
 - **اصطلاح المعرّفات:** في هذه الوثيقة كل معرّف بالشرطة غير المنكسرة (`FR‑ID‑15`، `D‑36`، `F2‑AC‑1`)، كما طلب المنسّق. وأسماء الشيفرة بالإنجليزية كما هي، وتعليقات الشيفرة بالشرطة العادية كما في المستودع.
 - **المسارات:** `src/...` و`tests/...` و`docs/design/...` نسبةً إلى جذر المستودع. و`docs/...` و`inc-1/...` نسبةً إلى `docs/delivery/electrical-drawings/`.
 
@@ -336,6 +337,12 @@ def checked_ansi_suffixes(raw: tuple[str, ...]) -> tuple[str, ...]: ...  # canon
 - كل زوج في `pairs` حرفان: رقم ثم حرف لاتيني كبير.
 - `[terminals.digits_first]` اختياري. مفاتيحه من `prefixes`، وقيمه قوائم غير فارغة من اصطلاحات الأجهزة بلا تكرار. والرمز الغائب يُقرأ تحت `cn_letter_codes` وحده (`F2‑AC‑43`).
 
+**(عُدّل في الإعادة 1)** في الجداول والأنواع ثلاث إضافات، وتفصيلها في §11:
+- **مفتاحان لقاعدة الدليل (§11.1):** `[kks] evidence_min_level = 2` و`[ansi] non_evidence_suffixes = ["A"]`. كلاهما لازم، ويُضاف إلى `_KKS_KEYS` و`_ANSI_KEYS`. ومعهما حقلان: `KksRules.evidence_min_level: int` و`AnsiRules.non_evidence_suffixes: frozenset[str]`.
+- **حدّ المواضع الاختيارية (S‑1، §11.6):** `MAX_OPTIONAL_PER_PART = 2` و`MAX_OPTIONAL_PER_FORM = 4`.
+- **حقلان محسوبان في `KksRules` (الملاحظة 9):** `spec` و`shortest`، يُحسبان مرة واحدة عند البناء.
+- **الإصداران لا يتغيّران:** `version = "1.1.0"` و`SHARED_VERSION = "1.3.0"` جديدان على هذا الفرع ولم يُدمجا بعد، فتدخل الإضافات فيهما.
+
 **`IdentifierRules` و`RuleSelection` (`shared/rules/__init__.py`):**
 
 ```python
@@ -412,7 +419,11 @@ _HINTED: Mapping[IdentifierKind, tuple[_Parse, ...]] = MappingProxyType(
 **`tally(tokens)`، عدّ الاصطلاحات:**
 - العدّ الأساسي كما هو حرفاً: `found = self.parse(token)`، ثم `conventions[found.convention] += 1`، والأسر، والصيغ، و`identifiers`، و`tokens`. ويُستثنى من عدّ `conventions` اصطلاح إضافي لا تجعله القاعدة التالية دليلاً.
 - **مسبار الاصطلاحين الإضافيين:** إن لم تكن KKS وANSI كلاهما في `self.rules.conventions`، يبني المحلّل مرة واحدة `IdentifierParser(self.rules.with_additive())`، ويحلّل به كل رمز. ويعدّ منه ما لم تفعّله قواعده هو. وبهذا يرى الاكتشاف KKS وANSI بالقواعد المعبّأة نفسها (`inspection.py:254`)، دون أن يتغيّر عدّ اصطلاحات الأجهزة ولا الصيغ.
-- **ما يُعدّ دليلاً على اصطلاح إضافي:** قراءة صالحة بلا `text.non_ascii`. ولـANSI قراءة بلا `alternatives`: لاحقة أو مثيل، لا رقم مجرد ولا مركّب. ولـKKS أي قراءة صالحة، ولو ببادئة (`=20XYZ10AB123` يُعدّ KKS في المسبار، ويبقى IEC في العدّ الأساسي، §7 خ‑7).
+- **ما يُعدّ دليلاً على اصطلاح إضافي (عُدّل في الإعادة 1، §11.1):** قراءة صالحة بلا `text.non_ascii`، ثم:
+  - **لـANSI:** وظيفة واحدة بلا `alternatives`، أي لا رقم مجرد ولا مركّب. ويجب أن يكون للرقم فئة في `[ansi.functions]`، وأن تكون لاحقته فارغة مع مثيل، أو خارج `[ansi] non_evidence_suffixes`.
+  - **لـKKS:** مستوى الوسم `>= [kks] evidence_min_level`، أي وسم معدّة فما أعمق. ولو كان ببادئة (`=20XYZ10AB123` يُعدّ KKS في المسبار، ويبقى IEC في العدّ الأساسي، §7 خ‑7).
+  - والشرطان في `is_ansi_evidence` و`is_kks_evidence`، و`_is_evidence(found, rules)` يستدعيهما.
+- **مرشح المسبار (عُدّل في الإعادة 1، S‑4):** `_may_be_additive` يرفض أولاً الرمز الأطول من `MAX_TEXT_CHARS`، قبل `canonical_form`، كما يفعل `parse`.
 - `identifiers` يبقى عدد ما قرأه العدّ الأساسي، فلا يتغيّر عامل العيّنة لاصطلاح الأجهزة ولا مقام `is_mixed`.
 - `ConventionTally` لا يتغيّر شكله: `conventions` تحمل `Convention.KKS` و`Convention.ANSI` حين تُرى.
 
@@ -442,6 +453,7 @@ def parse_kks_tag(
 6. **لا صيغة تطابق، والنص بلا بادئة، ويطابق `_OUTER`، وطوله لا يقلّ عن أقصر صيغة (7 بالقواعد المعبّأة):** وسم KKS غير صالح، والسبب كما يلي. ولا يتغيّر الشكل القانوني (`F2‑AC‑5`):
    - إن طابق صيغةً بعد إبدال كل حرف ملتبس في موضع رقم برقمه، من `rules.confusables`: `kks.letter_in_digit_position`.
    - وإن طابق بعد إبدال كل رقم ملتبس في موضع حرف بحرفه: `kks.digit_in_letter_position`. وقد يجتمع السببان.
+   - **(عُدّل في الإعادة 1، الملاحظة 4)** وإن لم تطابق أيٌّ من التجربتين، فتجربة ثالثة بالإبدالين معاً. فإن طابقت، فالسببان معاً بهذا الترتيب، لأن كل إبدال منهما لازم. والتفصيل في §11.4.
    - وإلا: `kks.malformed`.
    - والإبدال تجربة على نسخة لاختيار السبب فقط، ولا يُعاد النص المبدَّل. والتصحيح نفسه خطوة مستقلة في INC‑2 (`FR‑ID‑18`).
 7. **وإلا:** `None`. فالنص الأقصر من أقصر صيغة، مثل `7XY123`، ليس معرّفاً (§3.2 في `requirements.md`).
@@ -461,6 +473,7 @@ def parse_kks_tag(
 | `=20XYZ10AB123` | KKS ببادئة `process`، والبديل `reference_designation` | IEC بجانب واحد، كما اليوم |
 | `20XY10AB123`، `20XYZ10AB12` | غير صالح، `kks.malformed` | لا معرّف |
 | `2OXYZ1OAB12O` | غير صالح، `kks.letter_in_digit_position`، والشكل القانوني كما ورد | لا معرّف |
+| `2OXYZ10A0123` (عُدّل في الإعادة 1) | غير صالح، `kks.letter_in_digit_position` ثم `kks.digit_in_letter_position` | لا معرّف |
 | `7XY123` | لا معرّف | لا معرّف |
 
 ### 3.6 أطراف المورد الأول (`shared/terminals.py`، A‑5)
@@ -572,7 +585,11 @@ def rule_selection(self) -> RuleSelection:
 
 فيُحلَّل النص باصطلاح الأجهزة ومعه ما فُعّل من KKS وANSI معاً (`F2‑AC‑13`).
 
-**`application/projects.py:82`:** يصير الفحص «تحت كل الاصطلاحات» `replace(selection, conventions=frozenset(Convention))`، لا `frozenset()`. فقبل F2 كان الفارغ يعني الكل. وبعده يعني اصطلاحات الأجهزة وحدها، فلو بقي لقبلت تسمية جهد مثل `87T` تُخفي جهاز ANSI. ولا تغيير غيره في `projects.py`.
+**`application/projects.py:83` (عُدّل في الإعادة 1، الملاحظة 2، §11.2):**
+- **الفحص الأول:** تحت `DEVICE_CONVENTIONS | selection.conventions`، لا تحت `frozenset(Convention)`. فتبقى اصطلاحات الأجهزة الأربعة كلها، كما كان قبل F2، ومعها KKS أو ANSI حين يفعّلهما الملف وحده.
+- **الفحص الثاني** `packaged.narrowed(selection)`: كما هو.
+- **وفي `IdentifierRules._other_kind`** استثناء واحد: قراءة ANSI لا تجعلها `is_ansi_evidence` دليلاً لا تُعدّ جهازاً تخفيه التسمية. فتُقبل `24V` ولو فُعّل ANSI، وتُرفض `87T`.
+- **وكان النص قبل الإعادة:** «تحت كل الاصطلاحات» `frozenset(Convention)`. فرفض `24V` و`12VDC` بـ422 في كل مشروع، ولو لم يفعّل ANSI.
 
 ### 3.9 قواعد الالتباس
 
@@ -590,11 +607,19 @@ def rule_selection(self) -> RuleSelection:
 | `=20XYZ10AB12` | KKS مفعّل، والبنية لا تكتمل | IEC بجانب واحد، كما اليوم | — |
 | `20XYZ10AB12` | KKS مفعّل | KKS غير صالح، `kks.malformed` | — |
 | `2OXYZ1OAB12O` | KKS مفعّل | KKS غير صالح، `kks.letter_in_digit_position`، والأصل كما ورد | — |
+| `2OXYZ10A0123` (عُدّل في الإعادة 1) | KKS مفعّل | KKS غير صالح بالسببين: `kks.letter_in_digit_position` ثم `kks.digit_in_letter_position` (§11.4) | — |
+| `16A`، `32A`، `4P`، `2P`، `1N` (عُدّل في الإعادة 1) | ANSI مفعّل | أجهزة ANSI كما في §3.7، فلا يتغيّر التحليل | — |
+| الرموز نفسها (عُدّل في الإعادة 1) | ANSI معطّل، وفي عدّ `tally` | لا معرّف، ولا دليل على ANSI (§11.1) | — |
 | `7XY123` | أيّ | لا معرّف | — |
 | `1X-25` | IEC 81346 وحده | طرف IEC (A‑5) | — |
 
 - **البدائل لهذه الأزواج وحدها، وبلا `hint` فقط.** والالتباسات القديمة التي يحسمها الترتيب (`12.3` مرجع أو سلك، و`13` سلك أو نقطة اتصال) لا تحمل بدائل، فلا يتغيّر شكل أي حالة قائمة.
 - **حساب البدائل** في `IdentifierParser._alternatives(found, forms)`. وهو يستدعي `is_bare_ansi_number` و`read_compound` و`parse_cross_reference` و`parse_reference_designation` على النص نفسه، ولا يقرأ إلا ما تفعّله القواعد.
+- **(عُدّل في الإعادة 1) التحليل والدليل أمران منفصلان:**
+  - قاعدة الدليل في §11.1 لا تغيّر ما يقرؤه المحلّل. فـ`32A` وANSI مفعّل يبقى جهاز ANSI صالحاً، وحالات M‑04 كما هي.
+  - إنما تقرّر القاعدة ما يعدّه `tally` دليلاً على الاصطلاح.
+  - وتقرّر ما يُعدّ جهازاً تخفيه تسمية جهد (§11.2).
+  - وضجيج القراءة نفسها حين يُفعَّل ANSI (`24V`، `1NC`، `3PH`) يُقاس في F3 (§7 خ‑12).
 
 **ما ينتظر سياق STG‑05 في INC‑2:**
 - الرقم المجرد جهاز ANSI بدليل من الصفحة: داخل فقاعة رمز، أو في تسمية مكدّسة، أو ملاصقاً لرمز جهاز. فيمرّر STG‑05 `hint=ANSI_DEVICE`.
@@ -616,11 +641,15 @@ def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
 ```
 
 - `_convention` يرتّب `ranked_device_conventions`. فلا يُقترح `kks` ولا `ansi` في `identifier_convention` أبداً.
-- **الحقلان الجديدان،** لكل منهما `n = tally.conventions.get(c, 0)`:
-  - `n > 0`: يُقترح المفعَّل (`kks` أو `ansi`)، وثقته `_sample_factor(n)`. فهي صفر تحت 20، فلا قبول آلي (`F2‑AC‑15`، على قاعدة `MIN_IDENTIFIERS`، `profile_detection.py:42`).
-  - `n = 0`: يبقى ما في ملف الإعداد الأساسي، بثقة 1.0، كبقية الحقول بلا بيّنة (`profile_detection.py:13-15`).
-- `field_confidence` يحمل `"plant_designation"` و`"device_function_numbers"`. و`confidence` أدناها كما اليوم. فوثيقة بلا KKS ولا ANSI لا تتغيّر ثقة اقتراحها.
-- `basis["systems"]`: مثل `("kks:25", "ansi:22")`، للموجود منهما وحده. ويبقى `basis["tokens"]` لاصطلاحات الأجهزة.
+- **الحقلان الجديدان (عُدّل في الإعادة 1، §11.1).** لكل منهما `n = tally.conventions.get(c, 0)`، وهو عدد ما تعدّه قاعدة الدليل وحده:
+  - `n >= MIN_IDENTIFIERS` (20): يُقترح المفعَّل (`kks` أو `ansi`)، وثقته `_sample_factor(n)`، أي من 0.2 إلى 1.0.
+  - `n < MIN_IDENTIFIERS`، ومنه الصفر: يبقى ما في ملف الإعداد الأساسي، بثقة 1.0، كبقية الحقول بلا بيّنة (`profile_detection.py:13-15`). فلا يُقترح KKS ولا ANSI من عيّنة صغيرة، ولا يُقبل آلياً (`F2‑AC‑15` بقراءته في §11.1).
+  - **وكان قبل الإعادة:** `n > 0` يكفي ليُقترح الحقل بثقة صفر تحت 20. فأسقط رمزٌ واحد ثقة الاقتراح كله إلى صفر (الملاحظة 1).
+- `field_confidence` يحمل `"plant_designation"` و`"device_function_numbers"`. و`confidence` أدناها كما اليوم.
+  - **فوثيقة بلا KKS ولا ANSI تأخذ اقتراحها على `master` نفسه، ولو كان فيها ما يشبههما من رموز التيار والأقطاب:** الثقة نفسها، و`none` في الحقلين، ولا مفتاح `systems`.
+  - والفرق الوحيد عن `master` مفتاحا `field_confidence` الجديدان بقيمة 1.0 (§3.12).
+- `basis["systems"]`: مثل `("kks:25", "ansi:22")`، **للمقترَح منهما وحده (عُدّل في الإعادة 1)**. والعدد تحت الحدّ يُرى في `conventions` بسجلّ التوصيف، لا في الاقتراح. ويبقى `basis["tokens"]` لاصطلاحات الأجهزة.
+- **(عُدّل في الإعادة 1) لا يقرأ الاكتشاف تسميات الجهد.** ملف إعداد أساسي فيه تسمية `87T`، والاكتشاف يقترح ANSI: يبقى الاقتراح كما هو، والتسمية فيه. وما يحدث بعدها في §11.2.
 - **`_SYMBOL_OF` لا يتغيّر:** أربعة مداخل لاصطلاحات الأجهزة، ولا يُستنتج معيار رموز من KKS ولا ANSI. ويُضاف اختبار يثبّت أن مفاتيحه `DEVICE_CONVENTIONS`.
 
 ### 3.11 تقرير التوصيف (`drawings/domain/characterization.py`)
@@ -634,8 +663,9 @@ def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
 
 **`docs/design/openapi.yaml`، الأوصاف وحدها:**
 - `DrawingProfileIn.body` (`openapi.yaml:1735`): بعد `identifier_convention (...)` يُضاف: «plant_designation (none, kks; default none) and device_function_numbers (none, ansi; default none), chosen independently of identifier_convention: KKS tags or ANSI device numbers beside one device convention are not mixed (SRS D-36); ansi_suffixes (extra ANSI suffix letters, at most 64, each 1..3 letters A-Z; default empty). A returned body omits these three while they hold their defaults.»
-- `ProfileProposalOut.field_confidence` (`openapi.yaml:1750`): يُضاف `plant_designation` و`device_function_numbers` إلى القائمة. و`basis`: يُضاف `systems`.
-- `CharacterizationOut.conventions` (`openapi.yaml:1856`): وصف جديد: «Identifiers per convention; kks and ansi count the unambiguous KKS tags and ANSI device numbers.»
+- `ProfileProposalOut.field_confidence` (`openapi.yaml:1750`): يُضاف `plant_designation` و`device_function_numbers` إلى القائمة. و`basis`: يُضاف `systems`، **وفي الإعادة 1:** «systems (kks / ansi, only when proposed: 20 evidence identifiers at least)».
+- `CharacterizationOut.conventions` (`openapi.yaml:1856`): وصف جديد. **(عُدّل في الإعادة 1)** نصّه: «Identifiers per convention; kks and ansi count only the identifiers that are evidence of them (SRS D-36): a KKS tag at equipment level or deeper, and one ANSI function that has a class, with a suffix that is not a rating letter or an instance.»
+- **(عُدّل في الإعادة 1، الملاحظة 10)** `CharacterizationOut.symbol_standard_guess` (`openapi.yaml:1857`): «Null when no device convention (iec_81346, gbt_5094, cn_letter_codes, nfpa_jic) was seen in the document's text; KKS and ANSI imply no symbol standard.»
 - `CharacterizationReportOut.conventions` (`openapi.yaml:1879`): «Documents by proposed device convention; for kks and ansi, the documents with at least 20 such identifiers.»
 - ولا تتغيّر خاصية ولا `required`. فاختبار العقد القائم `test_every_electrical_schema_has_the_published_properties_and_required_set` ينجح كما هو.
 
@@ -661,7 +691,69 @@ def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
 - **`detection` في الاقتراح:** مفتاحان جديدان في `field_confidence` ومفتاح في `basis`. يُكتب كما هو ويُقرأ كما هو.
 - **البصمات (NFR‑REP‑01):** كل سجلّ توصيف بعد البند 1 يحمل `shared_version` = `1.3.0` و`rules_version` = `1.1.0`. فتتغيّر «بصمة الإصدار» لأي وثيقة بملف الإعداد نفسه، وإن بقيت بصمة ملف الإعداد نفسه (`F2‑AC‑18`).
 - **إعادة المعالجة:** لا حقائق معرّفات مخزّنة بعد (STG‑05 في INC‑2)، فلا شيء يبطل. لكن عدّ الصفحات المخزَّن قبل البند 1 لا يحمل KKS ولا ANSI، والاستئناف والتأكيد يقرآن المخزَّن (`inspection.py:34-37`). فوثائق المورد الأول التي استُوعبت قبله تحتاج إعادة معالجة كاملة (`POST /api/v1/electrical/documents/{id}/reprocessing`) ليقترح الاكتشاف KKS وANSI. ولا إعادة معالجة آلية: البيانات على المكدّس المحلي وحده، والموجة 8 مؤجّلة.
-- **التوافق:** غير كاسر للأمام. و**الرجوع** بإلغاء الـPR. قبل الرجوع يُلحق لكل مشروع أو وثيقة فعّل KKS أو ANSI أو لواحق ANSI إصدارٌ جديد لملف إعداده بلا هذه الحقول (`PUT …/profile`)، لأن الشيفرة القديمة ترفض جسداً فيه مفتاح لا تعرفه (`profile.py:137-141`). وما سواه يبقى مقروءاً، لأن جسده لا يحمل الحقول.
+- **التوافق (عُدّل في الإعادة 1، الملاحظة 3 وS‑2):** غير كاسر للأمام. لكن الرجوع إلى الصورة القديمة، والنشر المتدرّج إليها، **ليسا بلا إجراء**:
+  - `from_body` على `master` يرفض كل مفتاح لا يعرفه (`profile.py:137-141` هناك).
+  - والاكتشاف يكتب الحقلين في إصدار `DETECTED` دون فعل بشري، حين تبلغ وثيقةٌ الحدّ في §11.1.
+  - فالإصدارات المعنية تُعرَف **بمفاتيح الجسد نفسها**، لا بـ«ما فعّله المستخدم».
+  - والإجراء في §4.1.
+  - **وكان النص قبل الإعادة:** «يُلحق لكل مشروع أو وثيقة فعّل KKS أو ANSI إصدار بلا الحقول». وهذا لا يرى ما كتبه الاكتشاف.
+
+### 4.1 إجراء النشر المتدرّج والرجوع (عُدّل في الإعادة 1، يُنسخ إلى جسد الـPR كما هو)
+
+**الاختيار: إجراء مكتوب، لا مفتاح يطفئ الاكتشاف.** وسببه:
+- قاعدة §11.1 تقصر الكتابة الآلية على وثائق فيها 20 دليلاً على الأقل، لكن هذه هي وثائق المورد الأول نفسها، فلا تكفي وحدها.
+- ومفتاح تشغيل جديد إعداد نشر جديد، ولا حاجة إليه، لأن ترتيب الاستبدال يغلق النافذة:
+  - الاكتشاف يجري في `worker-electrical` وحده: `InspectDocument` في `inspection.py:734`، ويُبنى في `workers/electrical_bootstrap.py:204`.
+  - والذي يقرأ جسد ملف الإعداد `app` و`worker-electrical` وحدهما، فهما وحدهما يبنيان `SqlProfileRepository`: `app` في `framework/di/composition_root.py:1268`، والعامل في `workers/electrical_bootstrap.py`.
+  - ويتحقق المطوّر من ذلك عند كتابة الـPR بـ`grep -rn "SqlProfileRepository" src/app`. فإن ظهرت خدمة ثالثة تقرأ الجسد، استُبدلت قبل `worker-electrical` أيضاً.
+  - والقراءة كلها من `latest` (`sql_repository.py:476-494`)، فالإصدار الأحدث لكل مالك هو وحده ما يُقرأ.
+
+**أ. النشر إلى الصورة الجديدة:**
+1. يُستبدل `app` أولاً بكل نسخه: `deploy/rolling-deploy.sh --service app`. ثم `worker-electrical`: `deploy/rolling-deploy.sh --service worker-electrical`.
+2. فلا يكتب الاكتشاف جسداً جديداً إلا بعد أن تصير كل نسخ `app` جديدة. فلا يبقى قارئ قديم.
+3. **من أول نسخة `app` جديدة إلى آخر نسخة `worker-electrical`:** لا يرسل أحد `plant_designation` ولا `device_function_numbers` ولا `ansi_suffixes` في `PUT …/profile` ولا في `profile-confirmation`. فالمكدّس محلي، والنشر قرار إنسان يعلنه.
+4. لا حاجة لإطفاء الاكتشاف بعدها.
+
+**ب. قبل الرجوع إلى الصورة القديمة**، والصورة الجديدة ما زالت تعمل:
+1. **التجميد:** يُعلَن ألّا يُعدَّل ملف إعداد ولا يؤكَّد اقتراح حتى ينتهي الرجوع.
+2. **حصر المعنيّين** (للقراءة فقط). يُشغَّل بدور يتجاوز RLS وله `SELECT` على الجدول، كالمستخدم الأعلى أو `backup_operator`، لأن الجداول تحت `FORCE ROW LEVEL SECURITY`. ولا يُطبع الجسد:
+
+   ```sql
+   BEGIN READ ONLY;
+   SELECT workspace_id, project_id, document_id, version, source
+   FROM (
+     SELECT DISTINCT ON (workspace_id, project_id, document_id)
+            workspace_id, project_id, document_id, version, source, body
+     FROM electrical.drawings_profile_versions
+     ORDER BY workspace_id, project_id, document_id, version DESC
+   ) AS latest
+   WHERE latest.body ?| ARRAY['plant_designation', 'device_function_numbers', 'ansi_suffixes']
+   ORDER BY workspace_id, project_id, document_id;
+   ROLLBACK;
+   ```
+
+3. **المعالجة لكل صف**، عبر الواجهة على الصورة الجديدة، بمستخدم له `electrical:manage` في تلك المساحة. والجسد في كل حالة هو الجسد الحالي بعد حذف المفاتيح الثلاثة منه:
+
+   | الصف | ما يُرسَل |
+   |---|---|
+   | `document_id` فارغ (ملف المشروع) | `GET /api/v1/electrical/projects/{project_id}/profile`، ثم `PUT` على المسار نفسه بـ`{"body": …}` |
+   | وثيقة، ولها مهمة `awaiting_confirmation` | الجسد من `proposal` في `GET /api/v1/electrical/documents/{document_id}/profile`، ثم `POST /api/v1/electrical/documents/{document_id}/profile-confirmation` بـ`{"body": …}`. وهذا تأكيد يجريه المشغّل نيابةً عن صاحب الوثيقة، فيُسجَّل في سجل الرجوع |
+   | وثيقة بلا مهمة تنتظر التأكيد | الجسد من `effective` في الجواب نفسه، ثم `PUT /api/v1/electrical/documents/{document_id}/profile` بـ`{"body": …}`. فتصير الوثيقة `confirmed` بإصدار `user` |
+
+4. **التحقق:** يُعاد استعلام الخطوة 2، ويجب أن يعطي 0 صفوف. ثم يُنتظر حتى لا تبقى مهمة `queued` ولا `running`:
+
+   ```sql
+   SELECT count(*) FROM electrical.drawings_jobs WHERE status IN ('queued', 'running');
+   ```
+
+5. **الرجوع:** `worker-electrical` أولاً، فيقف الاكتشاف الجديد. ثم يُعاد استعلام الخطوة 2، فإن ظهر صف جديد عولج بالخطوة 3. ثم `app`.
+6. **ما لا يحتاج شيئاً:**
+   - الإصدارات الأقدم التي فيها المفاتيح: لا يقرؤها شيء.
+   - مفاتيح `kks` و`ansi` في العدّ المخزَّن وفي سجلّ التوصيف: تتجاهلها الشيفرة القديمة (`_by_enum`).
+   - مفاتيح `detection` الجديدة: تُقرأ كما هي.
+7. **السجل:** تُحفظ قائمة المعرّفات التي عولجت، بلا جسد، في سجل الرجوع. وبعد العودة إلى الصورة الجديدة يعيد أصحابها تفعيل الحقول.
+
+**للمستقبل (مؤجَّل إلى LLD الزيادة INC‑2، §8):** قارئ الجسد المخزَّن يتسامح مع المفاتيح التي لا يعرفها، ويبقى `from_body` صارماً على مدخل العميل. فـINC‑2 يضيف حقولاً أخرى إلى ملف الإعداد (الأسطورة، ومفتاح التصحيح)، فتتكرر المشكلة نفسها. لكن هذا لا ينفع رجوعاً إلى `master`، لأن قارئه القديم صارم.
 
 ## 5. خطة الاختبار لكل معيار قبول
 
@@ -685,7 +777,7 @@ def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
 | `F2‑AC‑12` | وحدة | `…::test_f2_ac_12_every_ansi_class_is_a_class_name` (`CLASS_NAME` على كل قيمة)، و`test_electrical_shared_rules.py::test_the_kks_and_ansi_tables_refuse_unknown_keys` (لا يدخل الملفَ كتالوج ولا وصف) |
 | `F2‑AC‑13` | وحدة | `test_electrical_f2_profile.py::test_f2_ac_13_one_profile_reads_iec_kks_and_ansi_together`: `DrawingProfile` بالحقلين، ثم `packaged.narrowed(profile.rule_selection())` |
 | `F2‑AC‑14` | وحدة | `…::test_f2_ac_14_kks_and_ansi_are_proposed_and_not_mixed` (كيس اصطناعي: 25 وسم KKS، و22 رقم ANSI بلاحقة، و30 طرف IEC، عبر `IdentifierParser.tally` بالقواعد المعبّأة كما يفعل `inspection.py:626`)، و`…::test_f2_ac_14_iec_and_chinese_stay_mixed` (السابقة كما هي) |
-| `F2‑AC‑15` | وحدة | `…::test_f2_ac_15_under_twenty_tags_kks_has_zero_confidence` (19 وسماً: الحقل `kks` بثقة 0، والاقتراح بثقة 0) |
+| `F2‑AC‑15` | وحدة | `…::test_f2_ac_15_under_twenty_tags_kks_is_not_proposed` (عُدّل في الإعادة 1: 19 وسماً، فالحقل على الأساس بثقة 1.0 ولا يُقترح KKS؛ و20 وسماً تقترحه) |
 | `F2‑AC‑16` | وحدة على الموجّه | `test_api_electrical_router.py::test_f2_ac_16_the_new_fields_are_saved_validated_and_defaulted`: PUT بقيم صحيحة إصدار جديد؛ وقيمة مجهولة لكل حقل، و`identifier_convention: "kks"`، و`ansi_suffixes: [".*"]`، و`["("]`، و`["ABCD"]`، و65 لاحقة: 422 `electrical.invalid_profile` يبدأ `detail` فيه باسم الحقل، ولا يرد فيه ما أُرسل؛ وجسد قديم بلا الحقول: GET يعيد جسداً بلا المفاتيح الثلاثة، و`from_body` عليه يعطي `none` و`none` و`()`. ومعه في `test_electrical_f2_profile.py` اختبار نطاق: جسد افتراضي وبصمته بايتاً ببايت كما على `master` (ثابت مثبّت في الاختبار) |
 | `F2‑AC‑17` | وحدة | `test_api_electrical_router.py::test_a_member_reads_and_previews_but_neither_registers_nor_changes_a_profile` و`…::test_a_viewer_reads_and_nothing_more`: يُضاف إلى كلٍّ PUT بجسد فيه `plant_designation: "kks"`، والجواب 403 ولا إصدار جديد. وصفوف `EXPECTED` في `test_api_rbac.py` لا تتغيّر، لأن المسارات لم تتغيّر |
 | `F2‑AC‑18` | وحدة وعقد | اختبار العقد القائم كما هو؛ و`test_the_profile_body_description_names_every_profile_field` (§3.12)؛ و`test_electrical_shared_rules.py::test_the_rules_file_is_packaged_and_versioned` بـ`1.1.0` و`1.3.0`؛ و`test_electrical_f2_profile.py::test_f2_ac_18_the_release_fingerprint_moves_with_the_versions` (سجلّ `characterize` يحمل الإصدارين الجديدين، وبصمة ملف الإعداد نفسه لا تتغيّر) |
@@ -694,6 +786,8 @@ def is_mixed(conventions: Mapping[Convention, int], identifiers: int) -> bool:
 | `F2‑AC‑41` | وحدة | `test_electrical_shared_terminals_wires.py::test_f2_ac_41_a_digits_first_x_strip_reads_under_iec_and_gbt` |
 | `F2‑AC‑42` | وحدة | `…::test_f2_ac_42_the_chinese_reading_and_the_xt_rule_stay` (دون تضييق، وIEC وحده، وNFPA وحده) |
 | `F2‑AC‑43` | وحدة | `test_electrical_shared_rules.py::test_f2_ac_43_digits_first_conventions_are_data` (بلا الجدول: صيني وحده؛ ورمز مجهول، واصطلاح مجهول، وقائمة فارغة: `RuleError`؛ وتعديل الجدول وحده يغيّر القراءة) |
+
+**(عُدّل في الإعادة 1)** تتغيّر صفوف `F2‑AC‑5` و`F2‑AC‑14` و`F2‑AC‑15` و`F2‑AC‑16` و`F2‑AC‑17` و`F2‑AC‑20`، وتُضاف اختبارات تراجع. والقائمة كاملة في §11.7.
 
 **المتطلبات غير الوظيفية:**
 - **NFR‑F2‑1 (الحتمية):** `test_electrical_shared_kks.py::test_nfr_f2_1_every_f2_case_parses_twice_the_same` يحلّل حالات F2 كلها مرتين بمحلّلين مستقلين، ويقارن `observed` حرفاً.
@@ -757,20 +851,23 @@ PR شيفرة واحد من `master` بعد دمج PR الوثائق هذا. و�
 
 ## 7. المخاطر والقرارات
 
-**لا قرار ⚠️ في هذا التصميم.** حسم المالك القرارات كلها (Q1..Q9 وA‑5). ولا يمسّ التصميم الأمن ولا المصادقة ولا العزل بين المستأجرين ولا النشر ولا CI، ولا يضيف اعتمادية. فما يلي اختيارات تصميم ومخاطر بمعالجتها:
+**لا قرار ⚠️ في هذا التصميم، ولا في الإعادة 1 (§11.9).** حسم المالك القرارات كلها (Q1..Q9 وA‑5، واستثناء `1X-25` في 2026-11-09). ولا يمسّ التصميم الأمن ولا المصادقة ولا العزل بين المستأجرين ولا النشر ولا CI، ولا يضيف اعتمادية. فما يلي اختيارات تصميم ومخاطر بمعالجتها:
 
 | # | الخطر أو الاختيار | المعالجة |
 |---|---|---|
 | خ‑1 | تغيير الترتيب يغيّر ناتجاً قائماً بصمت | KKS وANSI لا يقرآن شيئاً إلا بالاختيار. و`F2‑AC‑7` يقارن كل حالة قائمة بهما مفعّلين ومعطّلين، ويسرد ما يتغيّر بـANSI بالاسم |
-| خ‑2 | الرجوع، والنشر المتدرّج (`deploy/rolling-deploy.sh`): نسخة قديمة تقرأ جسد ملف إعداد كتبته الجديدة | `to_body` يحذف الحقول الافتراضية (§3.8)، فلا ترى القديمة مفتاحاً جديداً إلا في ملف فعّل KKS أو ANSI. وقبل الرجوع يُلحق لهذه الملفات إصدار بلا الحقول (§4). وفي النشر المتدرّج لا يُفعَّل KKS ولا ANSI حتى تكتمل النسخ |
-| خ‑3 | المسبار يضاعف التحليل في `tally` | التحليل في `tally` على رموز الصفحة المأخوذة عيّنةً، لا على كل نص. ويُقاس مع NFR‑F2‑4 ويُسجَّل. وإن تجاوز الحدّ يقصر المسبار على الرموز التي تبدأ برقم، فـKKS وANSI لا يبدآن إلا به |
-| خ‑4 | رموز قليلة بشكل KKS أو ANSI تُبقي الاقتراح بثقة 0 | على قاعدة `MIN_IDENTIFIERS` نفسها (`F2‑AC‑15`). وكل وثيقة اليوم تنتظر تأكيد إنسان أصلاً (INV‑E5). ويُضبط العامل مع العتبات بعد F3 (`INC1‑R‑15`) |
+| خ‑2 | الرجوع، والنشر المتدرّج (`deploy/rolling-deploy.sh`): نسخة قديمة تقرأ جسد ملف إعداد كتبته الجديدة | **(عُدّل في الإعادة 1)** `to_body` يحذف الحقول الافتراضية (§3.8). لكن الاكتشاف يكتب الحقلين آلياً في إصدار `DETECTED` حين تبلغ الوثيقة حدّ §11.1، فـ«ملف فعّل KKS أو ANSI» لا يكفي لحصر المعنيّين. والعلاج إجراء §4.1: `app` قبل `worker-electrical` في النشر، والحصر بمفاتيح الجسد قبل الرجوع || خ‑3 | المسبار يضاعف التحليل في `tally` | التحليل في `tally` على رموز الصفحة المأخوذة عيّنةً، لا على كل نص. ويُقاس مع NFR‑F2‑4 ويُسجَّل. وإن تجاوز الحدّ يقصر المسبار على الرموز التي تبدأ برقم، فـKKS وANSI لا يبدآن إلا به |
+| خ‑4 | رموز قليلة بشكل KKS أو ANSI تُبقي الاقتراح بثقة 0 | **(عُدّل في الإعادة 1)** هذا ما وقع فعلاً (الملاحظة 1): رمز `16A` واحد أسقط ثقة اقتراح وثيقة IEC إلى صفر. والعلاج في §11.1: قاعدة دليل أضيق، وحدّ `MIN_IDENTIFIERS` قبل الاقتراح. وتحت الحدّ يبقى الحقل على ملف الإعداد الأساسي بثقة 1.0. ويُضبط الحدّ والعامل مع العتبات بعد F3 (`INC1‑R‑15`) |
 | خ‑5 | رموز البادئات والحروف المستثناة ومعنى الخانات الأربع لم يُتحقق منها من نص الإرشادات (A‑2، A‑3، وA‑8 أدناه، RSK‑28) | كلها بيانات في الملف. ويُتحقق منها في F3 على الحقيقة المرجعية، وتُعدَّل بالملف وحده |
 | خ‑6 | جدول ANSI يقترب من نص المعيار | فئات عامة بأسمائنا، وأكثر من رقم في فئة، ولا وصف. ويحرسه `F2‑AC‑12` وتحقق المفاتيح، ويراجعه المراجع (NFR‑LIC‑05) |
 | خ‑7 | الوسم ببادئة `=` يُعدّ IEC في العدّ الأساسي وKKS في المسبار | لا يغيّر الخلط ولا اصطلاح الأجهزة إلا في وثيقة تكثر فيها الوسوم ببادئة. ويُرى في M‑32 بعد F3. ولو ظهر، يُستثنى ما عدّه المسبار KKS من عدّ IEC |
 | خ‑8 | اختيار: حقل ثالث `ansi_suffixes` في ملف الإعداد، وQ3 ذكر حقلين | يطلبه نص `FR‑ID‑16` («تُقبل لواحق إضافية للمشروع من ملف الإعداد») و`F2‑AC‑11`، وكلاهما أقرّه المالك. وهو المكان الذي تكتب فيه الأسطورة المؤكَّدة لواحقها في INC‑2. والاختيار إضافي ومحدود (64) ولا يُترجَم إلى تعبير |
 | خ‑9 | اختيار: مفاتيح بحث KKS بلا حذف للأصفار البادئة | المواضع ثابتة العدد، فالحذف يجمع وسمين مختلفين في مفتاح. والمفتاح للاسترجاع وحده (S‑6)، ويعيد INC‑8 النظر فيه إن قاسه |
 | خ‑10 | اختيار: `[confusables]` في ملف القواعد الآن، وFR‑ID‑18 في INC‑2 | يسمّي سبب عدم الصلاحية في `F2‑AC‑5` دون أن يصحّح شيئاً. ويقرؤه التصحيح في INC‑2، فتبقى قائمة الأزواج واحدة |
+| خ‑11 | (جديد في الإعادة 1) قاعدة الدليل تُسقط دليلاً حقيقياً. أمثلته: `25A`، والوسم بمستوى النظام وحده، ورقم ANSI حقيقي لا فئة له بعد في الجدول | الرمز يبقى يُقرأ ANSI أو KKS حين يُفعَّل الاصطلاح، وإنما لا يُعدّ دليلاً. والوثيقة الحقيقية فيها أشكال أخرى كثيرة، مثل `87T` و`50BF` و`51N` و`27-1` ووسوم المعدّات. والقاعدة كلها بيانات، فتُضبط بالملف وحده بعد قياس M‑32 في F3 |
+| خ‑12 | (جديد في الإعادة 1، الملاحظة 11) حين يُفعَّل IEC وANSI معاً، يصير `1NC` و`3PH` و`1KM` و`1XT-5` أجهزة ANSI غير صالحة، وتصير `24V` و`5V` أجهزة ANSI صالحة بلا فئة | **مؤجَّل إلى F3.** يُقاس مع M‑30 على صفحات المورد الأول، ويُذكر في مخاطر LLD الزيادة INC‑2 (§8). وهو مقصود في التصميم (`87QZ`)، ولا يمسّ الاكتشاف بعد §11.1، ولا وثيقة لم تفعّل ANSI. والعلاج المتاح للمستخدم الآن تسمية الجهد (§11.2) |
+| خ‑13 | (جديد في الإعادة 1، الملاحظة 8) `_OUTER` في `kks.py:41` ثابت في الشيفرة | **مؤجَّل إلى INC‑2، مع حدّ موثَّق هنا.** الصيغة الصالحة الجديدة تُقرأ من الملف وحده (NFR‑F2‑2 محقَّق). أما الوسم شبه الصحيح لصيغة خارج `\d{1,3}[A-Z]{1,4}\d{1,3}(?:[A-Z]{1,3}\d{1,4}[A-Z]?){0,3}` فيعود بلا معرّف، لا غير صالح. ولاحقة الكابل بطول خاطئ (ملاحظة QA 1) من هذا الحدّ. وحين تُضاف أول صيغة مورد خارج الشكل، يُشتق الشكل الخارجي من الأقنعة |
+| خ‑14 | (جديد في الإعادة 1) الاكتشاف يقترح ANSI فوق تسمية جهد مخزَّنة يجعلها ANSI جهازاً (§11.2) | في INC‑1 لا يضيّق شيء ملف الإعداد عند التحليل إلا `parse_profile`، فلا ينكسر قارئ. وأول تعديل يحمل التسمية يعطي 422 باسم `voltage_labels`. **ويُحسم في INC‑2 مع STG‑05** (§8) |
 
 **A‑8 (افتراض جديد، بلا ⚠️):** رموز البادئات في الملف `=` للعملية و`+` لموضع التركيب و`++` للمكان، من المعرفة العامة لا من نص الإرشادات. ولم يُرَ في العيّنات إلا الوسم بلا بادئة. وهي بيانات تُصحَّح بالملف إن خالفها المعيار أو المورد. ويُتحقق منها مع A‑3.
 
@@ -785,6 +882,10 @@ PR شيفرة واحد من `master` بعد دمج PR الوثائق هذا. و�
 4. **البند 2، الأسطورة (US‑7، `F2‑AC‑32..37`):** نوع الصفحة (FR‑LAY‑01) وفصل الجداول (FR‑LAY‑04) في STG‑04، وحقل المدخلات المؤكَّدة في ملف الإعداد بحدود NFR‑F2‑5، ومسار الاقتراح والتأكيد (HLD §13.5). وتكتب لواحقها في `ansi_suffixes`.
 5. **سياق ANSI في STG‑05** (§3.9): الرقم المجرد بدليل، والمكدّس في فقاعة، والمعرّف الكامل من KKS المحيط أو الجزء الثاني أو البنية الموروثة (FR‑ID‑02).
 6. **القياس (US‑8، `F2‑AC‑38..40`):** على الحقيقة المرجعية من F3. وM‑32 بالحقلين في `m32_profile_detection.py` (ومعه حصر `identifier_convention` في اصطلاحات الأجهزة في ملف التسميات).
+7. **(عُدّل في الإعادة 1) ما نقلته الإعادة 1 إلى LLD الزيادة INC‑2:**
+   - **قارئ الجسد المخزَّن:** يتسامح مع المفاتيح التي لا يعرفها، ويبقى `from_body` صارماً على مدخل العميل (S‑2، §4.1).
+   - **التسمية فوق ANSI المكتشَف (خ‑14):** حين يضيّق STG‑05 ملف الإعداد عند التحليل، يرفع `narrowed` خطأ `RuleError` على تسمية تخفي جهاز ANSI. فيُتحقق من الاقتراح كما يفعل `parse_profile` في موضعين: التأكيد بلا جسد (`documents.py:353-380`) والقبول الآلي (`inspection.py:817`). وعند التعارض يعطي التأكيد 422 باسم `voltage_labels`، ولا يقع القبول الآلي. ولا يرفع العامل خطأً لوثيقة.
+   - **الضجيج والشكل الخارجي:** خ‑12 وخ‑13 في المخاطر. ومعهما ضبط قاعدة الدليل بالملف بعد M‑32 (خ‑11).
 
 ## 9. ما لم أتحقق منه
 
@@ -866,5 +967,383 @@ PR شيفرة واحد من `master` بعد دمج PR الوثائق هذا. و�
 | RTL | ✅ | `hld.md` وهذه الوثيقة و`requirements.md` و`stories.md` في `inc-1/f2/` تبدأ بـ`<div dir="rtl">` وتنتهي بـ`</div>`. و`docs/requirements.md` (SRS) لم يكن ملفوفاً، وبقي كذلك على عادته |
 | الشرطة | ✅ | في `hld.md` لا معرّف HLD بشرطة عادية في الأسطر المضافة (`DEC-`، `RSK-`، `INC-`، `STG-`: 0)، ومعرّفات SRS فيه بالشرطة العادية كعادته. وفي SRS معرّفاته بالشرطة العادية، و`INC‑2` في صفّ D‑36 بالشرطة غير المنكسرة كما `INC‑0` في صفّ D‑32 |
 | لا ⚠️ جديد | ✅ | `DEC‑20` ✅. وفي الأسطر المضافة إلى `hld.md` وSRS علامة ⚠️ واحدة، هي عبارة الحالة القائمة «لا قرار ⚠️ معلّقاً كاملاً» في سطر الرأس المعدَّل |
+
+## 11. الإعادة 1 (2026-11-09)
+
+- **المدخلات:**
+  - `inc-1/f2/review.md`: FAIL. الملاحظتان الحاجبتان #1 و#2، والمهمّة #3..#5، والتحسين #6..#11.
+  - `inc-1/f2/security-review.md`: PASS، بملاحظات S‑1..S‑5.
+  - تأكيد المنسّق للملاحظة 1 بالتشغيل: `tally` بمحلّل IEC وحده على `-K1..-K120` يعطي `{iec_81346: 120}`، وبإضافة `16A` واحد `{ansi: 1, iec_81346: 120}`.
+- **ما شغّلتُه:** المحلّل والمسبار ودوال `kks.py` على الفرع (`bd05ee8`) في `.venv`، بأمثلة مخترعة، للقراءة فقط. ولم أكتب ملفاً غير هذه الوثيقة و`stories.md`، ولم أشغّل شيئاً على المكدّس.
+- **ما لا يتغيّر:** لا API جديد، ولا جدول، ولا ترحيل، ولا اعتمادية، ولا إعداد نشر. والمنفّذ كله `backend-developer`.
+
+### 11.1 قاعدة الدليل (الملاحظة 1، حاجبة)
+
+**ما قِسته.** القواعد المعبّأة كاملة، كما يستعملها `tally` (`inspection.py:254`)، والمسبار `with_additive()`. والنتيجة واحدة بمحلّل IEC وحده:
+
+| الرموز | القراءة الأساسية | دليل على ANSI اليوم | للرقم فئة في `[ansi.functions]` |
+|---|---|---|---|
+| `16A`، `4P`، `2P`، `1N`، `24V`، `48V`، `12V` | لا معرّف | نعم | لا |
+| `25A`، `32A`، `50A` | لا معرّف | نعم | نعم (25، 32، 50) |
+| كل رقم بلا فئة تتبعه لاحقة معروفة (خانة واحدة ثم حرف من الجدول) | لا معرّف | نعم | لا |
+| `87T`، `50BF`، `51N`، `27-1` | لا معرّف | نعم | نعم |
+| `52`، `50/51` | رقم سلك، مرجع متقاطع | لا (ملتبس) | — |
+
+**ولـKKS ضعف مشابه:**
+- شكل مستوى النظام وحده (`NNAAANN`، رقمان ثم ثلاثة أحرف ثم رقمان) يطابق نصاً آخر يُقرأ وسماً صالحاً.
+- منه تاريخ بصيغة يوم ثم ثلاثة أحرف للشهر ثم سنة من رقمين، وقيمة ثم وحدة من ثلاثة أحرف ثم رقمان.
+- فكتلة العنوان وحدها، وفيها التاريخ نفسه في كل صفحة، تبلغ أي حدّ عددي في وثيقة طويلة.
+- أما وسم المعدّة (`NNAAANN` ثم `AANNN`، 12 حرفاً بمواضع ثابتة) فلا يطابقه نص عارض عملياً.
+
+**الخيارات:**
+
+| الخيار | ما يحلّه | ما يبقى | الحكم |
+|---|---|---|---|
+| (أ) استثناء لواحق الوحدة والقطب (`A`، `P`، `N`، `V`) | `16A`، `4P`، `1N`، `24V` | يُسقط `50N` و`51N` الحقيقيين، فهما للتعادل. ويبقى كل رقم بلا فئة بلاحقة أخرى | لا يكفي وحده |
+| (ب) حدّ أدنى للعدد وللحصة | الرمز الواحد | **العدد وحده لا يكفي:** لوحة توزيع فيها ثلاثون قاطعاً بالتسمية نفسها تبلغه. **والحصة بلا مقام ثابت:** `identifiers` يعدّ قراءات الأجهزة وحدها، فمقام وثيقة KKS خالصة قريب من الصفر، وحصة ANSI الحقيقي في وثيقة IEC كبيرة صغيرة | العدد نعم، والحصة لا |
+| (د) رقم له فئة ولاحقة معروفة | كل رقم بلا فئة: `16A`، `4P`، `2P`، `1N`، `24V` | `25A` و`32A` و`50A`، لأن أرقامها في الجدول | لا يكفي وحده |
+| (ج) الجمع | — | — | **المختار، بالصيغة أدناه** |
+
+**القاعدة المختارة: (د)، ومعها استثناء لاحقة واحدة بالبيانات، ثم (ب) بالعدد وحده.** وتنطبق على KKS بشرط المستوى.
+
+1. **دليل ANSI** (`shared/ansi.py`، دالة عامة جديدة):
+
+   ```python
+   def is_ansi_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
+       """D-36: a reading that proves a document uses ANSI device numbers. VALID, one function
+       and no other reading (a bare number or a compound proves nothing), a number with a class
+       in [ansi.functions], and a suffix outside [ansi] non_evidence_suffixes (a rating letter,
+       as in a breaker's 32A) or else an instance (27-1). The tally counts these, and a voltage
+       label may not hide one."""
+       if found.ansi is None or not found.valid or found.alternatives:
+           return False
+       if len(found.ansi.functions) != 1:
+           return False
+       function = found.ansi.functions[0]
+       if function.function_class is None:
+           return False
+       if function.suffix:
+           return function.suffix not in rules.ansi.non_evidence_suffixes
+       return found.ansi.instance is not None
+   ```
+
+2. **دليل KKS** (`shared/kks.py`، دالة عامة جديدة):
+
+   ```python
+   def is_kks_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
+       """D-36: a VALID tag at [kks] evidence_min_level or deeper (an equipment tag by default).
+       A system-level shape alone also fits other text (a date, a rating with its unit)."""
+       return (
+           found.valid
+           and found.kks is not None
+           and found.kks.level >= rules.kks.evidence_min_level
+       )
+   ```
+
+3. **`shared/parser.py`:** يصير `_is_evidence(found, rules)`:
+   - يرفض غير الصالح وما فيه `text.non_ascii`، كما اليوم.
+   - ثم يستدعي `is_ansi_evidence` لـ`Convention.ANSI` و`is_kks_evidence` لـ`Convention.KKS`.
+   - ويُعيد `True` لغيرهما.
+   - ويُستدعى بـ`self._rules` في `_count` وفي فرع المسبار. وجداول المسبار هي نفسها، لأن `with_additive` لا يغيّر إلا `conventions`.
+
+4. **البيانات** (`identifiers.toml`، NFR‑F2‑2). الإصدار يبقى `1.1.0` (§3.3):
+
+   ```toml
+   [kks]
+   excluded_letters = []
+   # D-36: the shallowest level the tally counts as evidence of KKS (2 = an equipment tag).
+   # A system-level shape alone (two digits, three letters, two digits) also fits other text.
+   evidence_min_level = 2
+
+   [ansi]
+   max_compound = 3
+   suffixes = [...]  # unchanged
+   # D-36: suffix letters that also write a rating (A: amperes, as in a breaker's 32A). A reading
+   # with one is still an ANSI device when ANSI is enabled; it is no evidence for the tally.
+   non_evidence_suffixes = ["A"]
+   ```
+
+   - `evidence_min_level` لازم، ويُقرأ بـ`_int(..., "kks.evidence_min_level", 1, 3)`، فيرفض `bool` والنص.
+   - `non_evidence_suffixes` لازم، قائمة قد تكون فارغة. كل عنصر فيها من `suffixes`، ولا يتكرر. والرسائل ثابتة لا تعيد القيمة.
+   - الحقلان: `KksRules.evidence_min_level: int` و`AnsiRules.non_evidence_suffixes: frozenset[str]`.
+
+5. **الحدّ** (`drawings/domain/profile_detection.py`، `_systems`):
+
+   ```python
+   def _systems(
+       base: DrawingProfile, tally: ConventionTally
+   ) -> tuple[PlantDesignation, DeviceFunctionNumbers, float, float, tuple[str, ...]]:
+       """KKS and ANSI (D-36): proposed from MIN_IDENTIFIERS evidence identifiers on, at the
+       sample factor. Under that, and at zero, the base profile's value stays at 1.0 and the
+       field is not in basis["systems"], so a stray token never holds the proposal back."""
+       kks = tally.conventions.get(Convention.KKS, 0)
+       ansi = tally.conventions.get(Convention.ANSI, 0)
+       kks_seen, ansi_seen = kks >= MIN_IDENTIFIERS, ansi >= MIN_IDENTIFIERS
+       plant = PlantDesignation.KKS if kks_seen else base.plant_designation
+       functions = DeviceFunctionNumbers.ANSI if ansi_seen else base.device_function_numbers
+       basis = tuple(
+           f"{c.value}:{n}"
+           for c, n, seen in ((Convention.KKS, kks, kks_seen), (Convention.ANSI, ansi, ansi_seen))
+           if seen
+       )
+       return (
+           plant,
+           functions,
+           _sample_factor(kks) if kks_seen else 1.0,
+           _sample_factor(ansi) if ansi_seen else 1.0,
+           basis,
+       )
+   ```
+
+   وتُصحَّح الوثيقة النصية للوحدة (`profile_detection.py:18-22`): «proposed from ``MIN_IDENTIFIERS`` evidence identifiers».
+
+**أين تعيش القاعدة:**
+- **في البيانات:** جدول الفئات، و`non_evidence_suffixes`، و`evidence_min_level`. فإضافة رقم إلى `[ansi.functions]` تجعله دليلاً، وتعديل المستوى أو اللواحق بالملف وحده (NFR‑F2‑2).
+- **في الشيفرة:** الحدّ `MIN_IDENTIFIERS`. فهو ثابت الاكتشاف نفسه الذي يحكم اصطلاح الأجهزة اليوم (`profile_detection.py:53`)، وليس قاعدة تعريف. وNFR‑F2‑2 يخصّ الصيغ واللواحق.
+
+**لماذا هذه الصيغة:**
+- **الضجيج المقيس يسقط كله:** الرقم بلا فئة يسقط بالشرط (د)، و`25A`/`32A`/`50A` تسقط باللاحقة `A`.
+- **الأشكال الحقيقية الملتبسة تبقى:** `50N` و`51N` (للرقم فئة، و`N` ليست مستثناة)، ومعها `87T` و`50BF` و`27-1`.
+- **الحدّ يمنع ما يبقى من أن يسقط الاقتراح:** وسم عارض، أو `87T` واحد في ملاحظة مراجعة. وهذا أصل التراجع، فرمز واحد كان يكفي.
+- **ما يُفقد مقبول ومسجَّل (§7 خ‑11):** `25A` الحقيقي، ووسوم مستوى النظام وحدها، ورقم ANSI حقيقي لم يدخل الجدول بعد. فالوثيقة الحقيقية فيها أشكال أخرى كثيرة.
+
+**الأثر على ما بُني:**
+- **التحليل نفسه لا يتغيّر:** حالات M‑04، و`F2‑AC‑7..11`، وكل ما يقرؤه المحلّل حين يُفعَّل ANSI أو KKS.
+- **كيس `F2‑AC‑14`:** `ansi_numbers` اليوم يولّد أرقاماً من 50 إلى 71، وأكثرها بلا فئة، فلا يُعدّ منها إلا 6 من 22. فيصير يدور على `("87T", "50BF", "51N", "27-1")`، وكلها في الفرق منذ الجولة الأولى وقد فحصها `F2‑AC‑20`. والتأكيدات كما هي.
+- **`F2‑AC‑15`:**
+  - 19 وسماً: لا يُقترح KKS، والحقل على الأساس بثقة 1.0، فلا قبول آلي لـKKS.
+  - والمعيار يقول «ثقة KKS صفر، ولا يُقبل آلياً». فالقراءة المعتمدة هنا: لا يُقترح KKS، فلا يُقبل آلياً. وقصده محقَّق وأقوى.
+  - وتعديل نصّه في `stories.md` للمنسّق (§11.9).
+- **سجلّ التوصيف:** `conventions` لكل وثيقة يعدّ الدليل وحده، والمجمّع يعدّ الوثائق التي فيها 20 منه على الأقل (§3.11). ووصفهما في §3.12.
+
+**الاختبارات (وحدة):**
+1. `test_electrical_f2_profile.py::test_rating_and_pole_tokens_leave_an_iec_proposal_as_it_was`:
+   - `propose(iec(120) + ["16A", "32A", "4P", "2P", "1N"]) == propose(iec(120))`، مقارنة `ProfileProposal` كاملاً.
+   - و`Convention.ANSI not in PARSER.tally(...).conventions`.
+   - ثم الرموز الخمسة مكرّرة 30 مرة (150 رمزاً): الاقتراح نفسه. فهذا يثبت قاعدة الدليل، لا الحدّ.
+   - ويؤكد على الاقتراح: الثقة نفسها، و`none` في الحقلين، و`"systems" not in basis`.
+2. `…::test_system_level_shapes_are_no_kks_evidence`: `iec(120) + ["20XYZ10"] * 30 + ["20XYZ104567"] * 30` يعطي الاقتراح نفسه، ولا مفتاح `kks` في العدّ.
+3. `…::test_under_twenty_evidence_identifiers_nothing_is_proposed`:
+   - `iec(120) + ansi_numbers(19)` يعطي `propose(iec(120))` نفسه.
+   - و`ansi_numbers(20)`: يُقترح `ansi`، والحقل بثقة 0.2، و`basis["systems"] == ("ansi:20",)`.
+4. `…::test_f2_ac_15_under_twenty_tags_kks_is_not_proposed` (يحلّ محل `test_f2_ac_15_under_twenty_tags_kks_has_zero_confidence`):
+   - `iec(100) + kks_tags(19)`: `plant_designation` على `none` بثقة 1.0، و`confidence == propose(iec(100)).confidence`، ولا `systems`.
+   - و`kks_tags(20)`: يُقترح `kks` بثقة 0.2.
+5. `…::test_f2_ac_14_*`: بالكيس الجديد، والتأكيدات كما هي.
+6. `test_electrical_shared_ansi.py::test_the_ansi_evidence_rule`، مُعلَّم بالحالات:
+   - **دليل:** `87T` و`50BF` و`51N` و`27-1`.
+   - **ليس دليلاً:** `32A` و`25A` و`50A` (اللاحقة `A`)، و`16A` و`4P` و`2P` و`1N` و`24V` (بلا فئة)، و`52` مع `hint` و`50/51` (ملتبسان)، و`87QZ` (غير صالح).
+7. `test_electrical_shared_kks.py::test_the_kks_evidence_rule`:
+   - **دليل:** `20XYZ10AB123` و`20XYZ10AB123CD45` و`20XYZ10AB1234567`.
+   - **ليس دليلاً:** `20XYZ10` و`20XYZ104567` (المستوى 1)، و`20XY10AB123` (غير صالح).
+8. `test_electrical_shared_rules.py::test_the_evidence_rules_are_data` (NFR‑F2‑2):
+   - خريطة القواعد المعبّأة مع `non_evidence_suffixes = []` تجعل `32A` يُعدّ في `tally`.
+   - ومع `evidence_min_level = 1` يُعدّ `20XYZ10`.
+   - **والطفرات تعطي `RuleError`:** غياب أي من المفتاحين؛ و`evidence_min_level` بقيمة 0 أو 4 أو `true` أو `"2"`؛ ولاحقة ليست في `suffixes`؛ وتكرار؛ وقيمة ليست قائمة.
+
+### 11.2 فحص تسميات الجهد (الملاحظة 2، حاجبة)
+
+**أؤكد إصلاح المراجع، وأضيف إليه استثناءً واحداً لـANSI.**
+
+```python
+# application/projects.py, parse_profile
+    try:
+        # under every DEVICE convention (a label must not hide `KM1` in a Chinese drawing
+        # either) and the KKS / ANSI this profile enables, then under the profile's own
+        packaged.narrowed(
+            replace(selection, conventions=DEVICE_CONVENTIONS | selection.conventions)
+        )
+        packaged.narrowed(selection)
+    except RuleError:
+        raise invalid_profile(InvalidProfile("voltage_labels", _VOLTAGE_LABEL_TEXT)) from None
+```
+
+```python
+# shared/rules/__init__.py, IdentifierRules._other_kind
+        found = IdentifierParser(self).parse(label)
+        if found is None or found.kind is IdentifierKind.VOLTAGE:
+            return None
+        if found.kind is IdentifierKind.ANSI_DEVICE and not is_ansi_evidence(found, self):
+            return None  # D-36: 24V or 12VDC hide no device the product reads by its function
+        ...  # the rail exception, unchanged
+```
+
+وتُحدَّث الوثيقة النصية لـ`_other_kind` و`_checked_voltage_labels` بالجملة نفسها.
+
+**ما الصحيح في `24V` حين يُفعَّل ANSI؟**
+- **القراءة:** `24V` يُقرأ فعلاً جهاز ANSI **صالحاً** تحت ذلك الملف: الرقم 24، واللاحقة `V` من الجدول. لكن الرقم 24 لا فئة له، فليس دليلاً بقاعدة §11.1. **فالصحيح أن يُقبل.**
+- **السبب الأول:** حكم واحد لـ«هذا ANSI حقاً» في الاكتشاف وفي التحقق.
+- **السبب الثاني:** في مشروع فعّل ANSI، التسمية هي طريق المستخدم الوحيد ليقول إن `24V` هنا جهد تغذية. فبدونها يُقرأ `24V` جهاز ANSI (§7 خ‑12)، ورفضها يمنع العلاج حيث يلزم.
+- **ما يبقى مرفوضاً:** `87T` و`50BF` و`27-1` ما دام ANSI مفعّلاً. فهذه ما يحرسه `INC1‑Q‑5`: تسمية تخفي جهازاً.
+- **وANSI معطّل:** تُقبل `87T` كما على `master`. فالملف لا يقرأ ANSI، ولا شيء يُخفى.
+- **الحدّ:** إن أخذ الرقم 24 فئة في الجدول يوماً، صارت `24V` مرفوضة في أول تعديل وANSI مفعّل. فالإصدار يتغيّر، كما يقع اليوم حين تنمو أي قاعدة.
+- **KKS بلا استثناء:** كل قراءة KKS، صالحة أو شبه صحيحة، ترفض التسمية ما دام KKS مفعّلاً. فتسمية جهد بشكل وسم KKS لا تقع عملياً.
+
+**ما يحدث حين يفعّل الاكتشاف ANSI فوق تسمية مخزَّنة:**
+1. ملف مشروع فيه التسمية `87T`، وANSI معطّل: مقبول.
+2. وثيقة فيها 20 دليلاً على الأقل: يقترح الاكتشاف ANSI، و`with_detected` يُبقي التسمية، فالاكتشاف لا يقرأ التسميات.
+3. **التأكيد بلا جسد** يخزّن الاقتراح `CONFIRMED` كما هو دون `parse_profile` (`documents.py:353-380`). وكذلك القبول الآلي (`inspection.py:817`).
+4. **في INC‑1 لا ينكسر شيء:**
+   - `narrowed` لا يستدعيه إلا `parse_profile` (`projects.py:73`، `:83-84`).
+   - ولا يُحلَّل نص وثيقة بملف إعدادها المضيَّق بعد، فذلك STG‑05 في INC‑2.
+5. **أول تعديل يحمل التسمية** (`PUT` أو تأكيد بجسد) يعطي 422 باسم `voltage_labels` برسالته الثابتة. فيحذف المستخدم التسمية أو يعطّل ANSI.
+6. **في INC‑2:** يُتحقق من الاقتراح قبل تخزينه في الموضعين (§8 البند 7، §7 خ‑14).
+7. **وفي الحالة الشائعة لا تعارض:** تسمية `24V` مع ANSI مكتشَف تبقى، لأنها ليست دليلاً.
+
+**الاختبارات (وحدة):**
+1. `test_electrical_f2_profile.py::test_voltage_labels_with_ansi_off_are_accepted_as_on_master`، مُعلَّم بـ`24V` و`48V` و`12VDC` و`87T`: `parse_profile` يقبلها، وتُخزَّن قانونية.
+2. `test_api_electrical_router.py::test_a_supply_voltage_label_is_saved`: `PUT /projects/{id}/profile` بـ`{"body": {"schema": 1, "voltage_labels": ["24V"]}}` يعطي 200 وإصداراً جديداً.
+3. `test_electrical_f2_profile.py::test_with_ansi_on_a_label_that_hides_an_ansi_device_is_refused`، مُعلَّم بـ`87T` و`50BF` و`27-1`، ومعها `"device_function_numbers": "ansi"` في الجسد نفسه: 422، و`detail` يبدأ بـ`voltage_labels`، ولا يرد فيه ما أُرسل.
+4. `…::test_with_ansi_on_a_supply_label_is_accepted_and_read_as_a_voltage`، مُعلَّم بـ`24V` و`48V` و`12VDC`:
+   - مقبول مع ANSI.
+   - و`IdentifierParser(packaged.narrowed(profile.rule_selection())).parse("24V").kind is IdentifierKind.VOLTAGE`.
+5. `…::test_with_kks_on_a_kks_shaped_label_is_refused`: `"plant_designation": "kks"` مع التسمية `20XYZ10AB123` يعطي 422.
+6. `…::test_detection_can_enable_ansi_over_a_stored_label_and_the_next_edit_names_it`:
+   - **المعطيات:** ملف أساسي من `parse_profile` بالتسمية `87T`، ثم `detect_profile` على `iec(120) + ansi_numbers(22)`.
+   - **المتوقَّع:** الاقتراح ANSI، والتسمية فيه.
+   - و`parse_profile(..., proposal.profile.to_body())` يرفع 422 باسم `voltage_labels`.
+   - وبالتسمية `24V` بدلها: لا خطأ.
+7. **اختبارات تسميات الجهد القائمة:** كما هي، بلا تعديل.
+
+### 11.3 الرجوع والنشر المتدرّج (الملاحظة 3، وS‑2)
+
+**الاختيار: الإجراء المكتوب في §4.1، ومعه قاعدة §11.1 وترتيب الاستبدال. ولا يُطفأ الاكتشاف.**
+- **قاعدة §11.1 تقلّل المعنيّين** إلى وثائق فيها 20 دليلاً على الأقل. لكنها وثائق المورد الأول نفسها، فلا تكفي وحدها.
+- **ترتيب الاستبدال يغلق نافذة النشر المتدرّج بلا مفتاح:**
+  - `app` أولاً، ثم `worker-electrical`. فالاكتشاف لا يجري إلا في `worker-electrical`.
+  - وبعد اكتمال `app` لا يبقى قارئ قديم.
+  - ومفتاح يطفئ الاكتشاف إعداد نشر جديد لا يلزم.
+- **قبل الرجوع:** المعنيّون يُعرَفون بمفاتيح الجسد في الإصدار الأحدث لكل مالك، ثم يُلحق لكلٍّ إصدار بلا المفاتيح، ثم تُستبدل الخدمتان بالترتيب العكسي.
+- **جسد الـPR:** ينسخ §4.1 كما هو، ومعه رقما NFR‑F2‑4.
+
+### 11.4 الالتباسان معاً (الملاحظة 4)
+
+```python
+def _near_miss_reasons(rest: str, rules: IdentifierRules) -> tuple[str, ...]:
+    """Why a tag-shaped text misses the structure. A confusable letter where a digit belongs,
+    a confusable digit where a letter belongs, both (each trial alone fits, or only the two
+    swaps together fit: then both happened), or neither (malformed)."""
+    spec = rules.kks.spec
+    digits = "".join(digit for digit, _ in rules.confusables)
+    letters = "".join(letter for _, letter in rules.confusables)
+    if not digits:
+        return (ISSUE_MALFORMED,)
+
+    def fits(digit_extra: str, letter_extra: str) -> bool:
+        return any(p.fullmatch(rest) for p in _patterns(spec, digit_extra, letter_extra))
+
+    letter_in_digit = fits(letters, "")
+    digit_in_letter = fits("", digits)
+    if not (letter_in_digit or digit_in_letter) and fits(letters, digits):
+        letter_in_digit = digit_in_letter = True  # only the two swaps together fit
+    reasons = [
+        issue
+        for issue, held in (
+            (ISSUE_LETTER_IN_DIGIT, letter_in_digit),
+            (ISSUE_DIGIT_IN_LETTER, digit_in_letter),
+        )
+        if held
+    ]
+    return tuple(reasons) or (ISSUE_MALFORMED,)
+```
+
+- **لماذا تكون التجربة الثالثة شرطاً على فشل الأوليين:** إن كفى إبدال واحد، فالآخر لم يلزم، فلا يُذكر سببه.
+- **قِستُ القاعدة على الفرع:**
+  - `2OXYZ10A0123` و`2OX0Z1OAB12O`: السببان.
+  - `2OXYZ1OAB12O`: الحرف في موضع الرقم وحده، كما اليوم.
+  - `20XYZ10A0123`: الرقم في موضع الحرف وحده.
+  - `20XY10AB123` و`20XYZ10AB12`: `kks.malformed`، كما اليوم.
+- **الكلفة:** تجربة ثالثة على الوسم شبه الصحيح وحده، و`_patterns` مخبّأ.
+
+**الاختبارات:**
+- `test_electrical_shared_kks.py::test_f2_ac_5_both_confusions_together_name_both_reasons`: الحالات الست أعلاه بأسبابها وترتيبها، والشكل القانوني كما ورد.
+- حالة M‑04 جديدة بمصدر `invalid`: `2OXYZ10A0123` مع `select.conventions = ["iec_81346", "kks"]`، والسببان.
+
+### 11.5 `1X-25` (الملاحظة 5): استثناء مكتوب من `F2‑AC‑20`
+
+- **القرار:** قرار المالك في 2026-11-09. المثال المخترع `1X-25` يبقى كما هو، في الشيفرة والحالات والاختبارات والوثائق وSRS ملحق أ، وعلى `master`.
+- **السبب:** وسم طرف عام: الشريط `1X`، والطرف 25. لا يدل على مشروع ولا على مورد.
+- **وثبت في `inc-1/f2/stories.md`:** `F2‑AC‑20` يسمّي الاستثناء الآن.
+- **حدّه:** هذا الوسم وحده. وأي تطابق آخر في فرق الـPR فشل، ولو كان رمزاً عاماً، ويُعرض على المالك كما عُرض هذا.
+- **توسيعه (قرار المالك، 2026-11-09، ر‑1 في إعادة المراجعة 1):** صار الاستثناء يشمل أيضاً خمسة أصناف من الرموز القياسية العامة، منها أمثلة هذا القسم (`16A` و`4P` و`24V` وغيرها). والنص الملزم في `stories.md` تحت `F2‑AC‑20`.
+- **في هذه الإعادة:** لم أُدخل رمزاً حرفياً جديداً إلا ما في المهمة أو في `review.md` أصلاً (`16A`، `32A`، `25A`، `50A`، `4P`، `2P`، `1N`، `24V`، `48V`، `12V`، `12VDC`، `2OXYZ10A0123`، `2OX0Z1OAB12O`). وكيس `F2‑AC‑14` الجديد يعيد استعمال أربعة رموز فحصها `F2‑AC‑20`. وما سواها وصفتُه بنمطه، لا برموز.
+
+### 11.6 الملاحظات الصغرى والأمنية
+
+| # | القرار | التغيير الدقيق |
+|---|---|---|
+| 6 | يُصلَح الآن | الوثيقة النصية لـ`IdentifierRules.narrowed` (`rules/__init__.py:152-154`): «The subset a document's profile selects (device conventions, PLC families, patterns by NAME, extra voltage labels); KKS and ANSI are enabled by NAME. With conventions named, the result is ``(self.conventions \| ADDITIVE_CONVENTIONS) & profile.conventions``, so it may enable KKS or ANSI the receiver lacked: narrowing narrowed rules is not idempotent, and no caller chains it. A profile never carries a regex.» |
+| 7 | يُصلَح الآن | `profile.py:364-383` (`_ansi_suffixes`): يبقى فحص العدد (`at most 64`). ثم لكل عنصر `(canonical,) = checked_ansi_suffixes((raw,))`، ويُحوَّل `RuleError` إلى `InvalidProfile(f"ansi_suffixes[{i}]", "must be 1..3 letters A-Z")` بـ`from None`. ويُحذف من `profile.py` ما لا يبقى له مستعمِل (`_ANSI_SUFFIX`، `MAX_ANSI_SUFFIX_RAW_CHARS`). **الأثر:** U+FE0F وU+034F وU+3164 وU+2800 صارت 422 بعد أن كانت تُطوى. ويبقى العرض الكامل والمسافة الداخلية يُطويان (`ＱZ` و`Q Z` → `QZ`، قِستُه). وتُطوى كذلك الجدولة وفاصل السطر (`\t\n\r\v\f`)، لأن `canonical_form` يعدّها مسافات (ر‑4 في `review.md`، إعادة المراجعة 1). والمخزَّن دائماً `[A-Z]{1,3}`. فتُحسم ملاحظة QA 2 وS‑3 بقاعدة واحدة، وتُعدَّل حالاتها في `tests/unit/test_electrical_f2_qa.py` إلى 422 |
+| 8 | يؤجَّل إلى INC‑2 | §7 خ‑13: الحدّ موثَّق، ويُشتق الشكل الخارجي من الأقنعة مع أول صيغة مورد خارجه |
+| 9 | يُصلَح الآن | `KksRules` يضيف `spec` و`shortest` بـ`field(init=False, repr=False, compare=False)`، ويحسبهما `__post_init__` بـ`object.__setattr__`. فلا يتغيّر من يبني `KksRules`. وينتقل الاسم المستعار `_Spec` إلى `systems.py` باسم `KksSpec`، ويستورده `kks.py` تحت `TYPE_CHECKING`. ويقرأ `kks.py` `rules.kks.spec` و`rules.kks.shortest` بدل `_spec()` و`_shortest()` المحذوفتين، ويبقى `_patterns` مخبّأً على `spec`. ثم يُعاد قياس NFR‑F2‑4 (`parse` و`tally`)، ويُسجَّل في جسد الـPR |
+| 10 | يُصلَح الآن | `openapi.yaml:1857`، ومعه وصفا `basis` و`conventions`، كما في §3.12. والاختبار القائم لا يتغيّر |
+| 11 | يؤجَّل إلى F3 | §7 خ‑12: يُقاس مع M‑30، ويُذكر في مخاطر INC‑2 (§8 البند 7) |
+| S‑1 | يُصلَح الآن | `systems.py`: `MAX_OPTIONAL_PER_PART: Final = 2` و`MAX_OPTIONAL_PER_FORM: Final = 4`. في `_kks_parts`: عدد `n` و`a` في القناع ≤ 2، وإلا `RuleError(f"[kks.parts.{name}] at most {MAX_OPTIONAL_PER_PART} optional positions")`. وفي `_kks_forms`: مجموعها في أجزاء الصيغة ≤ 4، وإلا `RuleError(f"[[kks.forms]] {name!r}: at most {MAX_OPTIONAL_PER_FORM} optional positions")`. فأسوأ حالة 2⁴ = 16 توزيعاً، وقِيس 16 موضعاً كاملاً بـ0.9 ms. والقناع المعبّأ فيه موضع واحد. **اختبار الطفرة** `test_electrical_shared_rules.py::test_s1_optional_positions_are_capped`: `mask = "NNnnn"` يعطي `RuleError`؛ وصيغة من ثلاثة أجزاء `Nnn` و`Ann` و`Nnn` (ستة مواضع) تعطي `RuleError`؛ وعند الحدّ تماماً (2 لكل جزء، و4 للصيغة) يُقبل؛ والمعبّأ يُقبل |
+| S‑2 | يُصلَح الآن، وجزء يؤجَّل | الإجراء في §4.1 وفي جسد الـPR. والقارئ المتسامح لـINC‑2 (§8 البند 7) |
+| S‑3 | يُحسم بالملاحظة 7 | قاعدة واحدة: الرفض |
+| S‑4 | يُصلَح الآن | `parser.py`، أول `_may_be_additive`: `if len(token) > MAX_TEXT_CHARS: return False`، وتعليقه: «parse refuses it before normalising, so does the probe (S-4)». **الاختبار** `test_electrical_shared_parser.py::test_the_probe_filter_checks_the_length_first`: `_may_be_additive("1" * MAX_TEXT_CHARS)` صادق، و`"1" * (MAX_TEXT_CHARS + 1)` كاذب، ورمز من ألف حرف U+FDFA كاذب. ولا اختبار زمن |
+| S‑5 | يُصلَح الآن | `test_api_electrical_router.py::test_a_member_reads_and_previews_but_neither_registers_nor_changes_a_profile`: بعد PUT `member` بـ`plant_designation`، يعود إلى `owner` ويؤكد `env.get(f"/projects/{project['id']}/profile").json()["version"] == 1`، كما في اختبار `viewer` (`:1013-1014`) |
+
+### 11.7 قائمة الإعادة للمطوّر (`backend-developer`)
+
+على الفرع نفسه `feat/electrical-drawings-f2-rules`، وإيداع لكل بند أو بندين، والبوابات الست خضراء بعد كل إيداع. والترتيب: 1→2→3 متتابعة، و4..12 مستقلة بعدها.
+
+1. **بيانات قاعدة الدليل وحدّ المواضع الاختيارية** (`identifiers.toml`، `rules/systems.py`):
+   - `[kks] evidence_min_level = 2` و`[ansi] non_evidence_suffixes = ["A"]` بتعليقيهما.
+   - الحقلان في `KksRules` و`AnsiRules`، والمفتاحان في `_KKS_KEYS` و`_ANSI_KEYS`، والتحقق.
+   - و`MAX_OPTIONAL_PER_PART`/`MAX_OPTIONAL_PER_FORM` (S‑1).
+   - والحقلان المحسوبان `spec` و`shortest` (الملاحظة 9).
+   - الاختبارات: §11.1 البند 8، و§11.6 S‑1.
+2. **دالتا الدليل والمسبار** (`ansi.py`، `kks.py`، `parser.py`):
+   - `is_ansi_evidence` و`is_kks_evidence`، و`_is_evidence(found, rules)` في الموضعين.
+   - وفحص الطول أول `_may_be_additive` (S‑4).
+   - و`kks.py` يقرأ `spec` و`shortest`.
+   - الاختبارات: §11.1 البندان 6 و7، و§11.6 S‑4.
+3. **الحدّ في الاكتشاف** (`profile_detection.py`):
+   - `_systems` كما في §11.1، والوثيقة النصية للوحدة.
+   - الاختبارات: §11.1 البنود 1..5، ومعها كيس `F2‑AC‑14` الجديد واستبدال اختبار `F2‑AC‑15`.
+4. **فحص تسميات الجهد** (`projects.py:83`، و`rules/__init__.py` في `_other_kind`):
+   - كما في §11.2.
+   - الاختبارات: §11.2 البنود 1..6.
+5. **الالتباسان معاً** (`kks.py`، `_near_miss_reasons`):
+   - كما في §11.4.
+   - والاختبار، وحالة M‑04 الجديدة في `cases/identifiers.toml`.
+6. **`_ansi_suffixes` بـ`checked_ansi_suffixes`** (`profile.py`):
+   - الملاحظة 7.
+   - وتعديل حالات `test_electrical_f2_qa.py` المعنية إلى 422.
+7. **الوثيقة النصية لـ`narrowed`** (الملاحظة 6).
+8. **أوصاف `openapi.yaml`** (الملاحظة 10، و§3.12).
+9. **تأكيد الإصدار في اختبار `member`** (S‑5).
+10. **إعادة قياس NFR‑F2‑4** بعد البنود 1..3 و5، بالسكربت نفسه خارج المستودع: `parse` بالقواعد المعبّأة وبالتفعيل، و`tally` على 1,000 رمز. ويُسجَّل الرقمان في جسد الـPR.
+11. **جسد الـPR:**
+    - §4.1 كما هو.
+    - ورقما NFR‑F2‑4.
+    - وسطر يذكر استثناء `1X-25` (§11.5).
+    - وسطر يذكر أن `F2‑AC‑15` يُقرأ «لا يُقترح KKS» (§11.1).
+12. **لا تغيير** في `.importlinter` ولا `tests/architecture/` ولا `inspection.py` ولا `documents.py` ولا `sql_repository.py`، ولا إعداد نشر.
+
+### 11.8 ما أُجّل وأين سُجّل
+
+| البند | إلى | أين سُجّل |
+|---|---|---|
+| الملاحظة 8 (`_OUTER` ثابت) | INC‑2، مع أول صيغة مورد خارج الشكل | §7 خ‑13 |
+| الملاحظة 11 (`1NC` و`3PH` و`24V` أجهزة ANSI حين يُفعَّل) | F3، مع قياس M‑30 | §7 خ‑12، و§8 البند 7 |
+| ضبط قاعدة الدليل (`evidence_min_level`، `non_evidence_suffixes`، جدول الفئات) | F3، بعد M‑32 | §7 خ‑11 |
+| قارئ متسامح للجسد المخزَّن (S‑2) | LLD الزيادة INC‑2 | §4.1، و§8 البند 7 |
+| التحقق من الاقتراح عند التأكيد بلا جسد والقبول الآلي | INC‑2 مع STG‑05 | §7 خ‑14، و§8 البند 7 |
+| نسخ §4.1 إلى `docs/deploy-server.md` أو دليل التشغيل (S‑2) | أول نشر خادم، وهو قرار إنسان | هنا. ولا تعديل في `deploy-server.md` في هذا الـPR، لأنه لا نشر خادم الآن |
+
+### 11.9 ما لم أحسمه، وملاحظات للمنسّق
+
+- **لا ⚠️.**
+  - لا شيء هنا يمسّ المصادقة ولا العزل ولا الأسرار ولا النشر ولا CI، ولا يضيف اعتمادية.
+  - والاستثناء في `_other_kind` لا يرخي الرفض إلا لقراءة ANSI ليست دليلاً. ويبقى الرفض لكل ما يحرسه `INC1‑Q‑5` في اصطلاحات الأجهزة. وهو قاعدة صحة تسمية، لا ضابط أمن: القيمة المخزَّنة بالحروف المسموحة نفسها، ولا تُترجَم إلى تعبير.
+  - والإجراء في §4.1 تشغيلي، يجريه إنسان عند نشر أو رجوع يقرّره إنسان.
+- **نص `F2‑AC‑15` في `stories.md`:** لم أعدّله، لأن المهمة حصرت التعديل في `F2‑AC‑20`. والمقترح أن يصير: «… إذن لا يُقترح KKS، ويبقى الحقل على ملف الإعداد الأساسي، فلا يُقبل آلياً».
+- **`F2‑AC‑20` على فرق الإعادة:** يُعاد الفحص بالقائمة نفسها. والرموز العامة الجديدة في §11.5 ليست في الاستثناء، فإن طابق أحدها صفحةً حقيقية فهو حالة `1X-25` نفسها، وتُعرض على المالك.
+- **لم أتحقق منه:**
+  - الزمن بعد التغييرات: يُقاس في البند 10 من §11.7.
+  - استعلاما §4.1: لم أشغّلهما على قاعدة البيانات، وصحّتهما من نص الترحيل (`0001_electrical_drawings.py:255-285`، و`:164`، و`:190`).
+  - سلوك `rolling-deploy.sh --service`: من رأس السكربت وخياراته وحدها.
 
 </div>
