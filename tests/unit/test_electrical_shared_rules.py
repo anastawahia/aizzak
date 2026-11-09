@@ -289,7 +289,6 @@ def test_nfr_f2_2_a_new_kks_form_and_a_new_suffix_need_no_code() -> None:
 
 def test_the_evidence_rules_are_data() -> None:
     """NFR-F2-2, D-36: what counts as evidence is the rules file's, not code."""
-    both = frozenset({Convention.IEC_81346, Convention.KKS, Convention.ANSI})
     stock = IdentifierParser(
         load_rules().narrowed(_selection(conventions=frozenset({Convention.IEC_81346})))
     )
@@ -306,7 +305,6 @@ def test_the_evidence_rules_are_data() -> None:
     assert rated.tally(["32A"]).conventions.get(Convention.ANSI) == 1
     shallow = IdentifierParser(IdentifierRules.from_mapping(_mutated(any_level)))
     assert shallow.tally(["20XYZ10"]).conventions.get(Convention.KKS) == 1
-    assert both  # the selection above is by name only
 
     for mutate in (
         lambda d: d["kks"].pop("evidence_min_level"),

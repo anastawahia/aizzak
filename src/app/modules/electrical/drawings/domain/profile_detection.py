@@ -81,7 +81,7 @@ class ProfileProposal:
     confidence: float  # min of the field confidences
     field_confidence: Mapping[str, float]
     mixed_standards: bool  # FR-ING-12
-    # why: "tokens", "producer", "language", "symbol", and "systems" (KKS / ANSI, when seen)
+    # why: "tokens", "producer", "language", "symbol", and "systems" (KKS / ANSI, when proposed)
     basis: Mapping[str, tuple[str, ...]]
 
 
