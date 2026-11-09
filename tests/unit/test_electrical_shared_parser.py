@@ -47,6 +47,7 @@ _APPENDIX_A_F2 = {
         "20XYZ10", "20XYZ10AB123", "20XYZ10AB123CD45", "20XYZ10AB1234567", "20XYZ104567",
         "=20XYZ10AB123",
     ],
+    IdentifierKind.ANSI_DEVICE: ["87T", "50BF", "51N", "27-1", "50/51"],
 }  # fmt: skip
 
 
@@ -185,3 +186,23 @@ def test_f2_ac_7_kks_on_or_off_changes_no_existing_case() -> None:
         assert PARSER.parse(text) is None
         found = kks_on.parse(text)
         assert found is not None and found.kind is IdentifierKind.KKS_TAG
+
+
+def test_f2_ac_7_ansi_on_changes_only_the_listed_ambiguities() -> None:
+    ansi_on = _with(Convention.ANSI)
+    changed: dict[str, str] = {}
+    for case in _PRE_F2:
+        before, after = observed(parse_case(PARSER, case)), observed(parse_case(ansi_on, case))
+        if before == after:
+            continue
+        changed[str(case["text"])] = str(after["kind"])
+        if after["kind"] == before["kind"]:  # a bare number: only the alternative is added
+            assert {k: v for k, v in after.items() if k != "alternatives"} == before
+            assert after["alternatives"] == ["ansi_device"]
+    # the compound against the cross-reference, and nothing else; 1KM and 2QF stay letter codes
+    assert {text for text, kind in changed.items() if kind == "ansi_device"} == {"12/3"}
+    for text in ("1KM", "2QF"):
+        found = ansi_on.parse(text)
+        assert found is not None and found.kind is IdentifierKind.LETTER_CODE
+    compound = ansi_on.parse("12/3")
+    assert compound is not None and compound.alternatives == (IdentifierKind.CROSS_REFERENCE,)

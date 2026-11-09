@@ -26,14 +26,23 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from app.modules.electrical.shared.ansi import (
+    is_bare_ansi_number,
+    parse_ansi_compound,
+    parse_ansi_compound_in_context,
+    parse_ansi_device,
+    parse_ansi_device_in_context,
+    read_compound,
+)
 from app.modules.electrical.shared.connection_points import parse_connection_point
 from app.modules.electrical.shared.cross_references import parse_cross_reference
 from app.modules.electrical.shared.kinds import (
+    ADDITIVE_CONVENTIONS,
     Convention,
     ConventionTally,
     IdentifierKind,
@@ -64,8 +73,11 @@ MAX_TEXT_CHARS = 200
 
 _Parse = Callable[[str, NormalizedForms, "IdentifierRules"], ParsedIdentifier | None]
 
+_BARE_KINDS = frozenset({IdentifierKind.WIRE_NUMBER, IdentifierKind.CONNECTION_POINT})
+
 _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
     (IdentifierKind.PLC_ADDRESS, parse_plc_address),
+    (IdentifierKind.ANSI_DEVICE, parse_ansi_compound),  # 50/51 before 12/3 (D-36)
     (IdentifierKind.CROSS_REFERENCE, parse_cross_reference),
     (IdentifierKind.VOLTAGE, parse_voltage),
     (IdentifierKind.BRIDGE, parse_bridge),
@@ -73,8 +85,14 @@ _ORDER: tuple[tuple[IdentifierKind, _Parse], ...] = (
     (IdentifierKind.KKS_TAG, parse_kks_tag),  # before IEC, for =20XYZ10AB123 (D-36)
     (IdentifierKind.REFERENCE_DESIGNATION, parse_reference_designation),
     (IdentifierKind.LETTER_CODE, parse_letter_code),
+    (IdentifierKind.ANSI_DEVICE, parse_ansi_device),  # 87T 50BF 27-1, never a bare number
     (IdentifierKind.WIRE_NUMBER, parse_wire_number),
     (IdentifierKind.CONNECTION_POINT, parse_connection_point),
+)
+
+# With a hint the caller has the context (STG-05: a bubble, a stacked label, a device symbol).
+_HINTED: Mapping[IdentifierKind, tuple[_Parse, ...]] = MappingProxyType(
+    {IdentifierKind.ANSI_DEVICE: (parse_ansi_compound_in_context, parse_ansi_device_in_context)}
 )
 
 
@@ -82,7 +100,20 @@ def _alternatives(
     found: ParsedIdentifier, forms: NormalizedForms, rules: IdentifierRules
 ) -> tuple[IdentifierKind, ...]:
     """The other kinds the SAME text reads as under the enabled rules, for the F2 pairs only
-    (D-36): a KKS tag with a prefix against an IEC designation."""
+    (D-36): a bare number against an ANSI function number, an ANSI compound against a
+    cross-reference (either way round), a KKS tag with a prefix against an IEC designation."""
+    canonical = forms.canonical
+    if Convention.ANSI in rules.conventions:
+        if found.kind in _BARE_KINDS and is_bare_ansi_number(canonical):
+            return (IdentifierKind.ANSI_DEVICE,)
+        if found.kind is IdentifierKind.ANSI_DEVICE and found.ansi is not None:
+            if (
+                len(found.ansi.functions) > 1
+                and parse_cross_reference(canonical, forms, rules) is not None
+            ):
+                return (IdentifierKind.CROSS_REFERENCE,)
+        elif found.kind is IdentifierKind.CROSS_REFERENCE and read_compound(canonical, rules):
+            return (IdentifierKind.ANSI_DEVICE,)
     if (
         found.kind is IdentifierKind.KKS_TAG
         and found.kks is not None
@@ -125,9 +156,12 @@ class IdentifierParser:
     def _first(
         self, forms: NormalizedForms, hint: IdentifierKind | None, text: str
     ) -> ParsedIdentifier | None:
-        for kind, parse in _ORDER:
-            if hint is not None and kind is not hint:
-                continue
+        candidates: Iterable[_Parse] = (
+            _HINTED[hint]
+            if hint is not None and hint in _HINTED
+            else (p for k, p in _ORDER if hint is None or k is hint)
+        )
+        for parse in candidates:
             found = parse(forms.canonical, forms, self._rules)
             if found is not None:
                 if hint is None and (alternatives := _alternatives(found, forms, self._rules)):
@@ -158,24 +192,36 @@ class IdentifierParser:
         )
 
     def tally(self, tokens: Iterable[str]) -> ConventionTally:
+        """What a bag of tokens says about the conventions (FR-ING-12). The device conventions,
+        the PLC families and the formats come from this parser's own rules, as always. KKS and
+        ANSI (D-36) are seen even when these rules did not enable them: a probe parser with
+        both enabled reads the same tokens, so the profile proposal can suggest them."""
         conventions: Counter[Convention] = Counter()
         families: Counter[PlcFamily] = Counter()
         formats: Counter[str] = Counter()
+        enabled = self._rules.conventions
+        probe = (
+            None
+            if enabled >= ADDITIVE_CONVENTIONS
+            else IdentifierParser(self._rules.with_additive())
+        )
         seen = parsed = 0
         for token in tokens:
             seen += 1
             found = self.parse(token)
-            if found is None:
-                continue
-            parsed += 1
-            if ISSUE_NON_ASCII in found.issues:
-                continue  # lookalike / mixed-script text is no evidence of a convention
-            if found.convention is not None:
-                conventions[found.convention] += 1
-            if found.plc is not None:
-                families[found.plc.family] += 1
-            if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
-                formats[found.variant] += 1
+            if found is not None:
+                parsed += 1
+                if ISSUE_NON_ASCII not in found.issues:
+                    self._count(found, conventions, families, formats)
+            if probe is not None:
+                extra = probe.parse(token)
+                if (
+                    extra is not None
+                    and extra.convention in ADDITIVE_CONVENTIONS
+                    and extra.convention not in enabled
+                    and _is_evidence(extra)
+                ):
+                    conventions[extra.convention] += 1
         return ConventionTally(
             conventions=MappingProxyType(dict(sorted(conventions.items()))),
             plc_families=MappingProxyType(dict(sorted(families.items()))),
@@ -183,3 +229,31 @@ class IdentifierParser:
             identifiers=parsed,
             tokens=seen,
         )
+
+    @staticmethod
+    def _count(
+        found: ParsedIdentifier,
+        conventions: Counter[Convention],
+        families: Counter[PlcFamily],
+        formats: Counter[str],
+    ) -> None:
+        # lookalike / mixed-script text (text.non_ascii) is no evidence: the caller skips it
+        if found.convention is not None and (
+            found.convention not in ADDITIVE_CONVENTIONS or _is_evidence(found)
+        ):
+            conventions[found.convention] += 1
+        if found.plc is not None:
+            families[found.plc.family] += 1
+        if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
+            formats[found.variant] += 1
+
+
+def _is_evidence(found: ParsedIdentifier) -> bool:
+    """Does a KKS or ANSI reading count as evidence of that convention? A VALID reading
+    without ``text.non_ascii``. For ANSI also one function with a suffix or an instance and no
+    other reading (a bare number or a compound is ambiguous: it proves nothing)."""
+    if not found.valid or ISSUE_NON_ASCII in found.issues:
+        return False
+    if found.convention is Convention.ANSI:
+        return found.ansi is not None and len(found.ansi.functions) == 1 and not found.alternatives
+    return True
