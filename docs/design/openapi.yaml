@@ -1749,7 +1749,7 @@ components:
         confidence: { type: number, description: "The lowest field confidence." }
         field_confidence: { type: object, additionalProperties: { type: number }, description: "Per detected field (identifier_convention, symbol_standard, cross_reference_format, plc_families, languages, plant_designation, device_function_numbers); empty for a version that stored none." }
         mixed_standards: { type: boolean }
-        basis: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Why: tokens, producer, language, symbol, systems (KKS and ANSI, when seen); empty for a version that stored none." }
+        basis: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Why: tokens, producer, language, symbol, systems (kks / ansi, only when proposed: 20 evidence identifiers at least); empty for a version that stored none." }
         body: { type: object, additionalProperties: true }
     EffectiveProfileOut:
       type: object
@@ -1853,8 +1853,8 @@ components:
         text_kinds: { type: object, additionalProperties: { type: integer } }
         page_languages: { type: object, additionalProperties: { type: integer } }
         document_language: { type: string, enum: [en, zh, bilingual, none] }
-        conventions: { type: object, additionalProperties: { type: integer }, description: "Identifiers per convention; kks and ansi count the unambiguous KKS tags and ANSI device numbers." }
-        symbol_standard_guess: { type: string, nullable: true, description: "Null when no identifier convention was seen in the document's text." }
+        conventions: { type: object, additionalProperties: { type: integer }, description: "Identifiers per convention; kks and ansi count only the identifiers that are evidence of them (SRS D-36): a KKS tag at equipment level or deeper, and one ANSI function that has a class, with a suffix that is not a rating letter or an instance." }
+        symbol_standard_guess: { type: string, nullable: true, description: "Null when no device convention (iec_81346, gbt_5094, cn_letter_codes, nfpa_jic) was seen in the document's text; KKS and ANSI imply no symbol standard." }
         symbol_standard_basis: { type: array, items: { type: string } }
         plc_families: { type: object, additionalProperties: { type: integer } }
         cross_reference_formats: { type: object, additionalProperties: { type: integer } }
@@ -1876,7 +1876,7 @@ components:
         producers: { type: object, additionalProperties: { type: integer }, description: "Documents per producer family (`unknown` when none matches)." }
         text_kinds: { type: object, additionalProperties: { type: integer }, description: "Pages per kind." }
         document_languages: { type: object, additionalProperties: { type: integer } }
-        conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed convention; for kks and ansi, the documents with at least 20 such identifiers." }
+        conventions: { type: object, additionalProperties: { type: integer }, description: "Documents by proposed device convention; for kks and ansi, the documents with at least 20 such identifiers." }
         symbol_standards: { type: object, additionalProperties: { type: integer }, description: "Documents per symbol standard; `unknown` when no convention was seen." }
         plc_families: { type: object, additionalProperties: { type: integer } }
         ocr_needed_ratio: { type: number }
