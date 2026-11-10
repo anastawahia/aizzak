@@ -61,7 +61,8 @@ _INSERT_MESSAGE = (
     "INSERT INTO conversations.messages "
     "(id, conversation_id, workspace_id, role, content, seq{extra_cols}) "
     "VALUES (:id, :cid, :ws, 'assistant', "
-    'CAST(\'{"text": "t", "attachments": []}\' AS jsonb), :seq{extra_vals})'
+    # Rendered with ``str.format``: the JSON literal's braces MUST be doubled.
+    'CAST(\'{{"text": "t", "attachments": []}}\' AS jsonb), :seq{extra_vals})'
 )
 
 
@@ -182,14 +183,20 @@ def test_downgrade_then_upgrade_round_trips_and_an_old_row_survives(live_db: Liv
         _insert_message(owner, ws, cid, 2, status="partial")
         _insert_message(owner, ws, cid, 3, status="complete")
     finally:
-        _move(owner, "head", down=False)
-        asyncio.run(
-            _run(
-                owner,
-                [
-                    ("DELETE FROM conversations.messages WHERE conversation_id = :c", {"c": cid}),
-                    ("DELETE FROM conversations.conversations WHERE id = :c", {"c": cid}),
-                ],
-                workspace_id=ws,
+        # Restore head first; the row cleanup still runs if that step fails.
+        try:
+            _move(owner, "head", down=False)
+        finally:
+            asyncio.run(
+                _run(
+                    owner,
+                    [
+                        (
+                            "DELETE FROM conversations.messages WHERE conversation_id = :c",
+                            {"c": cid},
+                        ),
+                        ("DELETE FROM conversations.conversations WHERE id = :c", {"c": cid}),
+                    ],
+                    workspace_id=ws,
+                )
             )
-        )
