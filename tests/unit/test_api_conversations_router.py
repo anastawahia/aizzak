@@ -1259,7 +1259,7 @@ def test_a_malformed_citation_list_never_fails_the_turn(
     assert response.json()["citations"] is None  # type: ignore[attr-defined]
 
 
-def test_a_deleted_assistant_message_leaves_history_with_its_citations(
+def test_a_deleted_assistant_message_leaves_history_and_takes_its_citations_with_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
@@ -1275,6 +1275,10 @@ def test_a_deleted_assistant_message_leaves_history_with_its_citations(
     assert deleted.status_code == 204
     ids = [m["id"] for m in _messages(client, conversation_id)["data"]]  # type: ignore[attr-defined]
     assert reply["id"] not in ids
+    # AC-2.8: neither the message nor any of its sources is still readable
+    raw = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=_auth()).text
+    assert _ARABIC_NAME not in raw
+    assert all(m["role"] == "user" for m in _messages(client, conversation_id)["data"])  # type: ignore[attr-defined]
 
 
 def test_an_unknown_thread_is_a_404_problem_without_citations() -> None:

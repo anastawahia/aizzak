@@ -563,6 +563,31 @@ def test_the_platform_admin_reaches_no_tenant_content(client: TestClient) -> Non
     assert client.get("/api/v1/files", headers=headers).status_code == 403
 
 
+def test_the_message_history_needs_conversations_read_and_a_refusal_leaks_no_citations(
+    client: TestClient,
+) -> None:
+    """th-1 / AC-5.3: ``GET /conversations/{id}/messages`` is where citations are
+    read back, so the permission is proved on THIS route on the wire, not only
+    in the map. The thread does not exist: a role that holds the permission
+    reaches the lookup and gets a 404, the one that does not is stopped before
+    it (a 403 for an unknown id would be an existence oracle's mirror image)."""
+    path = "/api/v1/conversations/018f0000-0000-7000-8000-00000000c002/messages"
+    headers = {"Authorization": "Bearer t"}
+
+    _as(RoleName.PLATFORM_ADMIN)
+    refused = client.get(path, headers=headers)
+    assert refused.status_code == 403
+    body = refused.json()
+    assert body["code"] == "authz.forbidden"
+    assert body["detail"] == "missing permission: conversations:read"
+    assert "citations" not in body
+    assert "data" not in body
+
+    for role in (RoleName.VIEWER, RoleName.MEMBER):
+        _as(role)
+        assert client.get(path, headers=headers).status_code == 404
+
+
 @pytest.mark.parametrize("role", list(RoleName))
 def test_every_role_can_reach_something_and_no_role_can_reach_everything(role: RoleName) -> None:
     """A sanity check on the matrix itself rather than on the guards: a role
