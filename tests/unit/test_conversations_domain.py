@@ -475,3 +475,34 @@ def test_inv_cv5_a_fallback_needs_a_status() -> None:
             fallback=_fallback(),
         )
     assert conv.message_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# reply_to (th-3) and INV-CV6                                                  #
+# --------------------------------------------------------------------------- #
+_Q = "0190eeee-0000-7000-8000-0000000000a1"
+
+
+def test_message_has_no_reply_to_by_default() -> None:
+    message = _conversation().append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now()
+    )
+
+    assert message.reply_to is None
+
+
+def test_an_assistant_message_carries_reply_to() -> None:
+    message = _conversation().append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now(), reply_to=_Q
+    )
+
+    assert message.reply_to == _Q
+
+
+@pytest.mark.parametrize("role", [MessageRole.USER, MessageRole.SYSTEM, MessageRole.TOOL])
+def test_inv_cv6_only_assistant_messages_reply_to_a_message(role: MessageRole) -> None:
+    conv = _conversation()
+
+    with pytest.raises(InvalidConversationInput):
+        conv.append_message("m1", role, MessageContent(text="a"), None, utc_now(), reply_to=_Q)
+    assert conv.message_count == 0

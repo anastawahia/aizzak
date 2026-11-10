@@ -20,6 +20,7 @@ from app.modules.conversations.application.use_cases import (
     ConversationService,
     ExpectClarification,
     GetConversation,
+    GetMessage,
     ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
@@ -44,7 +45,11 @@ from app.modules.conversations.domain.value_objects import (
     ConversationKind,
 )
 from app.modules.conversations.ports.inbound import CitationRef, FallbackRef
-from tests.unit.support_conversations import StubModelCatalog
+from tests.unit.support_conversations import (
+    InMemoryConversationRepository,
+    StubModelCatalog,
+    build_conversations,
+)
 
 # The space every thread here is opened in, and the space a ready file is in
 # unless a test says otherwise. A literal rather than a UUID: this module never
@@ -1207,3 +1212,140 @@ async def test_a_malformed_fallback_is_dropped_and_the_message_is_still_saved(
     assert message.fallback is None
     assert message.status is not None
     assert message.content.text == "the answer"
+
+
+# --------------------------------------------------------------------------- #
+# reply_to / GetMessage (th-3)                                                 #
+# --------------------------------------------------------------------------- #
+_Q = "0190EEEE-0000-7000-8000-0000000000A1"
+
+
+async def test_the_service_round_trips_reply_to_in_canonical_form() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    service = _threads(conversations)
+
+    appended = await service.append(
+        _ctx(), conversation.id, role="assistant", text="a", reply_to=_Q
+    )
+
+    assert appended.reply_to == _Q.lower()
+    assert conversations.messages[conversation.id][0].reply_to == _Q.lower()
+
+
+async def test_no_reply_to_stays_none() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    appended = await _threads(conversations).append(
+        _ctx(), conversation.id, role="assistant", text="a"
+    )
+
+    assert appended.reply_to is None
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-uuid", "123"])
+async def test_a_reply_to_that_is_not_an_id_is_a_validation_error_before_any_read(
+    bad: str,
+) -> None:
+    conversations = _FakeConversations()
+    reads: list[str] = []
+    original_get = conversations.get
+
+    async def spying_get(ctx: ExecutionContext, conversation_id: str) -> Conversation | None:
+        reads.append(conversation_id)
+        return await original_get(ctx, conversation_id)
+
+    conversations.get = spying_get  # type: ignore[method-assign]
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="assistant", text="a", reply_to=bad
+        )
+
+    assert reads == []
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+async def test_a_reply_to_on_a_user_message_is_a_validation_error_before_any_read() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="user", text="q", reply_to=_Q
+        )
+
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+async def test_a_reply_to_naming_another_threads_or_an_assistant_message_stores_no_row() -> None:
+    stack = build_conversations()
+    ctx = _ctx()
+    one = await stack.service.start(
+        ctx, space_id=None, agent_key="rag-agent", kind="agent", title=None
+    )
+    two = await stack.service.start(
+        ctx, space_id=None, agent_key="rag-agent", kind="agent", title=None
+    )
+    q_two = await stack.service.append(ctx, two.id, role="user", text="q")
+    a_one = await stack.service.append(ctx, one.id, role="assistant", text="a")
+
+    for target in (q_two.id, a_one.id):
+        with pytest.raises(ValidationError):
+            await stack.service.append(ctx, one.id, role="assistant", text="x", reply_to=target)
+
+    assert [m.id for m in stack.repository.messages[one.id]] == [a_one.id]
+
+
+async def test_a_reply_to_naming_a_user_message_of_this_thread_is_stored() -> None:
+    stack = build_conversations()
+    ctx = _ctx()
+    started = await stack.service.start(
+        ctx, space_id=None, agent_key="rag-agent", kind="agent", title=None
+    )
+    question = await stack.service.append(ctx, started.id, role="user", text="q")
+
+    answer = await stack.service.append(
+        ctx, started.id, role="assistant", text="a", reply_to=question.id
+    )
+
+    assert answer.reply_to == question.id
+    assert [m.reply_to for m in stack.repository.messages[started.id]] == [None, question.id]
+
+
+async def _stack_with_message() -> tuple[InMemoryConversationRepository, str, str]:
+    stack = build_conversations()
+    ctx = _ctx()
+    started = await stack.service.start(
+        ctx, space_id=None, agent_key="rag-agent", kind="agent", title=None
+    )
+    appended = await stack.service.append(ctx, started.id, role="assistant", text="a")
+    return stack.repository, started.id, appended.id
+
+
+async def test_get_message_returns_a_live_message() -> None:
+    repository, conversation_id, message_id = await _stack_with_message()
+
+    message = await GetMessage(repository).execute(_ctx(), conversation_id, message_id)
+
+    assert message.id == message_id
+    assert message.content.text == "a"
+
+
+async def test_get_message_of_another_thread_or_unknown_is_a_404() -> None:
+    repository, conversation_id, message_id = await _stack_with_message()
+
+    with pytest.raises(NotFoundError):
+        await GetMessage(repository).execute(_ctx(), "other-thread", message_id)
+    with pytest.raises(NotFoundError):
+        await GetMessage(repository).execute(_ctx(), conversation_id, "unknown")
+
+
+async def test_get_message_never_returns_a_soft_deleted_message() -> None:
+    repository, conversation_id, message_id = await _stack_with_message()
+    repository.messages[conversation_id][0].soft_delete(utc_now())
+
+    with pytest.raises(NotFoundError, match="message not found"):
+        await GetMessage(repository).execute(_ctx(), conversation_id, message_id)

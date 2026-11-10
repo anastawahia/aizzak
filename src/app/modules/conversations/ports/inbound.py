@@ -103,6 +103,8 @@ class AppendedMessage:
     # was sent (the module dropped it as malformed). Last and defaulted.
     status: str | None = None
     fallback: FallbackRef | None = None
+    # th-3 -- what was STORED: the user message this one answers, or None.
+    reply_to: Uuid | None = None
 
 
 class ConversationThreads(Protocol):
@@ -153,6 +155,7 @@ class ConversationThreads(Protocol):
         citations: tuple[CitationRef, ...] | None = None,
         status: str | None = None,
         fallback: FallbackRef | None = None,
+        reply_to: Uuid | None = None,
     ) -> AppendedMessage: ...
 
     async def routed_model(self, ctx: ExecutionContext, conversation_id: Uuid) -> str | None:

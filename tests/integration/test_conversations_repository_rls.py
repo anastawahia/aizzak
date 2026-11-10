@@ -1419,3 +1419,197 @@ async def test_status_and_fallback_are_invisible_to_another_tenant(
     [row] = await _fetch_status_as_owner(live_db.owner, ws_a, message.id)
     assert row["status"] == "partial"
     assert row["fallback_is_null"] is False
+
+
+# --------------------------------------------------------------------------- #
+# reply_to (ث-3): the question an answer belongs to                            #
+# --------------------------------------------------------------------------- #
+async def _fetch_reply_to_as_owner(
+    owner_dsn: str, workspace_id: str, message_id: str
+) -> list[RowMapping]:
+    """``SELECT reply_to`` as the owner under ``workspace_id``'s GUC. Zero rows
+    means RLS hid the message (or it does not exist)."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text(
+                    "SELECT reply_to, reply_to IS NULL AS is_null "
+                    "FROM conversations.messages WHERE id = :id"
+                ),
+                {"id": message_id},
+            )
+            return list(result.mappings().all())
+    finally:
+        await engine.dispose()
+
+
+async def _add_user_message(
+    repo: SqlConversationRepository, ctx: ExecutionContext, conversation: Conversation, body: str
+) -> str:
+    message = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text=body), None, utc_now()
+    )
+    await repo.append_message(ctx, message)
+    return message.id
+
+
+async def test_reply_to_round_trips_and_a_user_message_holds_null(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    question_id = await _add_user_message(repo_conversations, ctx, conversation, "q")
+    answer = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        reply_to=question_id,
+    )
+    await repo_conversations.append_message(ctx, answer)
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.reply_to for m in page.data] == [None, question_id]
+    [raw] = await _fetch_reply_to_as_owner(live_db.owner, ws, answer.id)
+    assert str(raw["reply_to"]) == question_id
+
+
+async def test_a_message_written_without_reply_to_reads_back_null(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """The shape of every row that predates the column: NULL, "not recorded"."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    await _add_user_message(repo_conversations, ctx, conversation, "q")
+    old_style = conversation.append_message(
+        new_uuid7(), MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now()
+    )
+    await repo_conversations.append_message(ctx, old_style)
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.reply_to for m in page.data] == [None, None]
+    [raw] = await _fetch_reply_to_as_owner(live_db.owner, ws, old_style.id)
+    assert raw["is_null"] is True
+
+
+async def test_reply_to_naming_another_conversations_question_is_refused(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    mine = _conversation(workspace_id=ws)
+    other = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, mine)
+    await repo_conversations.add(ctx, other)
+    foreign_question = await _add_user_message(repo_conversations, ctx, other, "elsewhere")
+    await _add_user_message(repo_conversations, ctx, mine, "q")
+    answer = mine.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        reply_to=foreign_question,
+    )
+
+    with pytest.raises(ValidationError):
+        await repo_conversations.append_message(ctx, answer)
+
+    rows = await _fetch_message_rows_as_owner(live_db.owner, ws, mine.id)
+    assert [r["role"] for r in rows] == ["user"]  # no new row
+
+
+async def test_reply_to_naming_an_assistant_message_is_refused(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    question_id = await _add_user_message(repo_conversations, ctx, conversation, "q")
+    first = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        reply_to=question_id,
+    )
+    await repo_conversations.append_message(ctx, first)
+    second = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="b"),
+        None,
+        utc_now(),
+        reply_to=first.id,
+    )
+
+    with pytest.raises(ValidationError):
+        await repo_conversations.append_message(ctx, second)
+
+    rows = await _fetch_message_rows_as_owner(live_db.owner, ws, conversation.id)
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+
+
+async def test_reply_to_naming_another_tenants_question_is_refused(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """RLS also applies to the guarded insert's sub-select: tenant A cannot see
+    tenant B's question, so the EXISTS is false and nothing is written."""
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a, ctx_b = _ctx(ws_a), _ctx(ws_b)
+    conv_a = _conversation(workspace_id=ws_a)
+    conv_b = _conversation(workspace_id=ws_b)
+    await repo_conversations.add(ctx_a, conv_a)
+    await repo_conversations.add(ctx_b, conv_b)
+    b_question = await _add_user_message(repo_conversations, ctx_b, conv_b, "b's question")
+    await _add_user_message(repo_conversations, ctx_a, conv_a, "q")
+    answer = conv_a.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        reply_to=b_question,
+    )
+
+    with pytest.raises(ValidationError):
+        await repo_conversations.append_message(ctx_a, answer)
+
+    rows = await _fetch_message_rows_as_owner(live_db.owner, ws_a, conv_a.id)
+    assert [r["role"] for r in rows] == ["user"]
+
+
+async def test_reply_to_is_invisible_to_another_tenant(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a, ctx_b = _ctx(ws_a), _ctx(ws_b)
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, conversation)
+    question_id = await _add_user_message(repo_conversations, ctx_a, conversation, "q")
+    answer = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        reply_to=question_id,
+    )
+    await repo_conversations.append_message(ctx_a, answer)
+
+    page = await repo_conversations.list_messages(ctx_b, conversation.id, limit=10, cursor=None)
+    assert page.data == []
+    assert await _fetch_reply_to_as_owner(live_db.owner, ws_b, answer.id) == []
+    [row] = await _fetch_reply_to_as_owner(live_db.owner, ws_a, answer.id)
+    assert str(row["reply_to"]) == question_id

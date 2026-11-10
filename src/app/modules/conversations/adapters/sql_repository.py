@@ -70,10 +70,13 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    bindparam,
     delete,
+    exists,
     func,
     insert,
     literal,
+    literal_column,
     select,
     update,
 )
@@ -82,9 +85,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import Insert
 
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import AppError, ConflictError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.pagination import (
     Page,
     decode_id_cursor,
@@ -164,6 +168,10 @@ messages = Table(
     Column("status", Text, nullable=True),
     # none_as_null=True is LOAD-BEARING, for citations' reason exactly.
     Column("fallback", JSONB(none_as_null=True), nullable=True),
+    # `migrations/versions/conversations/0009_message_reply_to.py` (th-3).
+    # No FK and no index: integrity is checked by the guarded INSERT in
+    # `_insert_message`.
+    Column("reply_to", _uuid_col, nullable=True),
     schema="conversations",
 )
 
@@ -362,20 +370,7 @@ class SqlConversationRepository:
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None:
         # The aggregate's OWN workspace_id is written (not ctx.workspace_id)
         # -- same forged-write guard as `add` (media precedent).
-        insert_stmt = insert(messages).values(
-            id=message.id,
-            conversation_id=message.conversation_id,
-            workspace_id=message.workspace_id,
-            role=message.role.value,
-            content=_content_to_json(message.content),
-            token_count=message.token_count,
-            seq=message.seq,
-            created_at=message.created_at,
-            deleted_at=message.deleted_at,
-            citations=_citations_to_json(message.citations),
-            status=None if message.status is None else message.status.value,
-            fallback=_fallback_to_json(message.fallback),
-        )
+        insert_stmt = _insert_message(message)
         # Unconditional bump (no WHERE version=:expected): the concurrency
         # guard for INV-CV1 is `UNIQUE(conversation_id, seq)` on the INSERT
         # above, not a version precondition here (see class docstring).
@@ -390,7 +385,13 @@ class SqlConversationRepository:
         )
         try:
             async with self._tenant_session(ctx) as session:
-                await session.execute(insert_stmt)
+                inserted = (await session.execute(insert_stmt)).first()
+                if message.reply_to is not None and inserted is None:
+                    # th-3: the guarded INSERT wrote nothing, so the question is
+                    # not a user message of THIS conversation (or not visible to
+                    # this tenant). Raised BEFORE the version UPDATE: the
+                    # transaction rolls back and nothing is stored.
+                    raise ValidationError("reply_to names no user message of this conversation")
                 row = (await session.execute(update_stmt)).first()
         except DBAPIError as exc:
             raise _translate(exc) from exc
@@ -766,6 +767,65 @@ def _hydrate_conversation(row: RowMapping) -> Conversation:
     )
 
 
+def _message_values(message: Message) -> dict[str, object]:
+    """The column -> value map ``append_message`` writes (the twelve columns
+    of th-2 plus ``reply_to``). The aggregate's OWN workspace_id is written --
+    same forged-write guard as ``add`` (media precedent)."""
+    return {
+        "id": message.id,
+        "conversation_id": message.conversation_id,
+        "workspace_id": message.workspace_id,
+        "role": message.role.value,
+        "content": _content_to_json(message.content),
+        "token_count": message.token_count,
+        "seq": message.seq,
+        "created_at": message.created_at,
+        "deleted_at": message.deleted_at,
+        "citations": _citations_to_json(message.citations),
+        "status": None if message.status is None else message.status.value,
+        "fallback": _fallback_to_json(message.fallback),
+        "reply_to": message.reply_to,
+    }
+
+
+def _insert_message(message: Message) -> Insert:
+    """``reply_to`` is None -> exactly today's ``INSERT ... VALUES`` (the user
+    message, steps, summaries).
+
+    ``reply_to`` set -> ONE guarded statement, so the write count does not
+    change (th-3 NFR-1)::
+
+        INSERT INTO conversations.messages (<cols>)
+        SELECT <one typed bind per col>
+        WHERE EXISTS (SELECT 1 FROM conversations.messages
+                      WHERE id = :reply_to AND conversation_id = :conversation_id
+                        AND workspace_id = :workspace_id AND role = 'user')
+        RETURNING conversations.messages.id
+
+    No FK can say this (a FK check bypasses RLS and knows neither the thread
+    nor the role); the sub-select runs under RLS, so another tenant's row is
+    invisible to it. An empty RETURNING is the refusal.
+    """
+    values = _message_values(message)
+    if message.reply_to is None:
+        return insert(messages).values(**values)
+    names = list(values)
+    question = (
+        select(literal_column("1", Integer))
+        .select_from(messages)
+        .where(
+            messages.c.id == message.reply_to,
+            messages.c.conversation_id == message.conversation_id,
+            messages.c.workspace_id == message.workspace_id,
+            messages.c.role == MessageRole.USER.value,
+        )
+    )
+    guarded = select(*(bindparam(n, values[n], type_=messages.c[n].type) for n in names)).where(
+        exists(question)
+    )
+    return insert(messages).from_select(names, guarded).returning(messages.c.id)
+
+
 def _hydrate_message(row: RowMapping) -> Message:
     # `content` round-trips through the exact shape `_content_to_json` writes,
     # so the value object is rebuilt (and re-validated) rather than trusted.
@@ -783,6 +843,7 @@ def _hydrate_message(row: RowMapping) -> Message:
         citations=_citations_from_json(row["citations"]),
         status=_status_from_row(row["status"]),
         fallback=_fallback_from_json(row["fallback"]),
+        reply_to=row["reply_to"],
     )
 
 

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import ValidationError
 from app.framework.pagination import (
     Page,
     decode_id_cursor,
@@ -37,6 +38,7 @@ from app.modules.conversations.application.use_cases import (
     CountConversationsBySpace,
     ExpectClarification,
     GetConversation,
+    GetMessage,
     ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
@@ -49,6 +51,7 @@ from app.modules.conversations.application.use_cases import (
     UnpinConversationFile,
 )
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
+from app.modules.conversations.domain.value_objects import MessageRole
 from app.modules.conversations.ports.files import ReadableFile
 
 
@@ -108,6 +111,22 @@ class InMemoryConversationRepository:
         return Page(data=page, next_cursor=next_cursor, limit=limit)
 
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None:
+        if message.reply_to is not None:
+            # The adapter's guarded INSERT ... WHERE EXISTS, mirrored (th-3): the
+            # question must be a USER message of THIS conversation and workspace,
+            # else nothing is written.
+            question = next(
+                (
+                    m
+                    for m in self.messages.get(message.conversation_id, [])
+                    if m.id == message.reply_to
+                    and m.workspace_id == message.workspace_id
+                    and m.role is MessageRole.USER
+                ),
+                None,
+            )
+            if question is None:
+                raise ValidationError("reply_to names no user message of this conversation")
         self.messages.setdefault(message.conversation_id, []).append(message)
 
     async def get_message(
@@ -324,6 +343,7 @@ def build_conversations(
             pin_file=PinConversationFile(repository, readable),
             unpin_file=UnpinConversationFile(repository),
             space_counts=CountConversationsBySpace(repository),
+            get_message=GetMessage(repository),
         ),
         service=ConversationService(
             StartConversation(repository, live_spaces),

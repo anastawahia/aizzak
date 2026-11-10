@@ -15,9 +15,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from sqlalchemy import Uuid
 from sqlalchemy.dialects.postgresql import asyncpg
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import ValidationError
 from app.modules.conversations.adapters import sql_repository
 from app.modules.conversations.adapters.sql_repository import (
     SqlConversationRepository,
@@ -75,6 +77,7 @@ def _message(
     citations: tuple[Citation, ...] | None,
     status: MessageStatus | None = None,
     fallback: MessageFallback | None = None,
+    reply_to: str | None = None,
 ) -> Message:
     return Message(
         id="0190eeee-0000-7000-8000-000000000001",
@@ -89,6 +92,7 @@ def _message(
         citations=citations,
         status=status,
         fallback=fallback,
+        reply_to=reply_to,
     )
 
 
@@ -107,21 +111,31 @@ class _Result:
 
 
 class _RecordingSession:
-    def __init__(self, sink: list[Any], rows: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, sink: list[Any], rows: list[dict[str, Any]], per_call: list[list[dict[str, Any]]]
+    ) -> None:
         self._sink = sink
         self._rows = rows
+        self._per_call = per_call
 
     async def execute(self, statement: Any) -> _Result:
         self._sink.append(statement)
+        if self._per_call:
+            return _Result(self._per_call.pop(0))
         return _Result(self._rows)
 
 
 def _repository(
-    sink: list[Any], rows: list[dict[str, Any]] | None = None
+    sink: list[Any],
+    rows: list[dict[str, Any]] | None = None,
+    *,
+    per_call: list[list[dict[str, Any]]] | None = None,
 ) -> SqlConversationRepository:
     @asynccontextmanager
     async def tenant_session(_ctx: ExecutionContext) -> AsyncIterator[_RecordingSession]:
-        yield _RecordingSession(sink, [{"version": 2}] if rows is None else rows)
+        yield _RecordingSession(
+            sink, [{"version": 2}] if rows is None else rows, list(per_call or [])
+        )
 
     return SqlConversationRepository(tenant_session)  # type: ignore[arg-type]
 
@@ -240,7 +254,12 @@ async def test_list_messages_is_one_select_on_messages_alone_that_includes_citat
 # --------------------------------------------------------------------------- #
 # hydration                                                                    #
 # --------------------------------------------------------------------------- #
-def _row(citations: object, status: object = None, fallback: object = None) -> Any:
+def _row(
+    citations: object,
+    status: object = None,
+    fallback: object = None,
+    reply_to: object = None,
+) -> Any:
     return {
         "id": "0190eeee-0000-7000-8000-000000000001",
         "conversation_id": _CONVERSATION,
@@ -254,6 +273,7 @@ def _row(citations: object, status: object = None, fallback: object = None) -> A
         "citations": citations,
         "status": status,
         "fallback": fallback,
+        "reply_to": reply_to,
     }
 
 
@@ -387,3 +407,96 @@ def test_a_row_with_status_and_fallback_hydrates() -> None:
 def test_a_row_with_an_unknown_status_is_a_read_error_not_an_invented_value() -> None:
     with pytest.raises(ValueError):
         _hydrate_message(_row(None, "error"))
+
+
+# --------------------------------------------------------------------------- #
+# reply_to (th-3)                                                              #
+# --------------------------------------------------------------------------- #
+_QUESTION = "0190eeee-0000-7000-8000-0000000000a1"
+
+
+def test_reply_to_is_a_nullable_uuid_column_with_no_default() -> None:
+    column = messages.c["reply_to"]
+
+    assert column.nullable is True
+    assert column.server_default is None
+    assert isinstance(column.type, Uuid)
+
+
+async def test_append_without_reply_to_is_todays_plain_insert_then_update() -> None:
+    statements: list[Any] = []
+
+    await _repository(statements).append_message(_ctx(), _message(None))
+
+    assert len(statements) == 2
+    insert_sql = _sql(statements[0])
+    assert insert_sql.startswith("INSERT INTO conversations.messages")
+    assert "VALUES" in insert_sql
+    assert "SELECT" not in insert_sql
+    assert "RETURNING" not in insert_sql
+    assert statements[0].compile(dialect=_PG).params["reply_to"] is None
+
+
+async def test_append_with_reply_to_is_one_guarded_insert_then_the_version_update() -> None:
+    statements: list[Any] = []
+
+    await _repository(statements, per_call=[[{"id": "x"}], [{"version": 2}]]).append_message(
+        _ctx(), _message(None, reply_to=_QUESTION)
+    )
+
+    assert len(statements) == 2
+    insert_sql, update_sql = (" ".join(_sql(s).split()) for s in statements)
+    assert insert_sql.startswith("INSERT INTO conversations.messages")
+    assert "INSERT INTO conversations.messages (id," in insert_sql
+    assert "reply_to" in insert_sql.split("SELECT", 1)[0]
+    assert "WHERE EXISTS (SELECT 1" in insert_sql
+    assert "role =" in insert_sql
+    assert "RETURNING conversations.messages.id" in insert_sql
+    assert "VALUES" not in insert_sql
+    assert update_sql.startswith("UPDATE conversations.conversations")
+    assert not any(_sql(s).startswith("UPDATE conversations.messages") for s in statements)
+    params = statements[0].compile(dialect=_PG).params
+    assert _QUESTION in params.values()
+    assert "user" in params.values()
+    assert _CONVERSATION in params.values()
+
+
+async def test_a_refused_reply_to_raises_before_any_update() -> None:
+    statements: list[Any] = []
+
+    with pytest.raises(ValidationError, match="reply_to"):
+        await _repository(statements, per_call=[[]]).append_message(
+            _ctx(), _message(None, reply_to=_QUESTION)
+        )
+
+    assert len(statements) == 1
+    assert _sql(statements[0]).startswith("INSERT INTO conversations.messages")
+
+
+async def test_a_guarded_insert_keeps_citations_status_and_fallback_binds() -> None:
+    statements: list[Any] = []
+
+    await _repository(statements, per_call=[[{"id": "x"}], [{"version": 2}]]).append_message(
+        _ctx(),
+        _message(_citations(), MessageStatus.PARTIAL, _fb(), reply_to=_QUESTION),
+    )
+
+    params = statements[0].compile(dialect=_PG).params
+    assert params["citations"] == _citations_to_json(_citations())
+    assert params["status"] == "partial"
+    assert params["fallback"] == _fallback_to_json(_fb())
+
+
+def test_a_row_hydrates_reply_to() -> None:
+    assert _hydrate_message(_row(None)).reply_to is None
+    assert _hydrate_message(_row(None, reply_to=_QUESTION)).reply_to == _QUESTION
+
+
+async def test_list_messages_selects_reply_to_from_messages_alone() -> None:
+    statements: list[Any] = []
+
+    await _repository(statements, rows=[]).list_messages(
+        _ctx(), _CONVERSATION, limit=10, cursor=None
+    )
+
+    assert "messages.reply_to" in _sql(statements[0])

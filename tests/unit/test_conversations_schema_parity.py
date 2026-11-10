@@ -234,3 +234,40 @@ def test_the_status_migration_continues_the_chain() -> None:
 
     assert 'revision = "0008_message_status"' in source
     assert 'down_revision = "0007_message_citations"' in source
+
+
+# --------------------------------------------------------------------------- #
+# conversations.messages reply_to (ث-3)                                        #
+# --------------------------------------------------------------------------- #
+def _message_reply_to_migration() -> str:
+    return (_CHAIN / "0009_message_reply_to.py").read_text(encoding="utf-8")
+
+
+def test_the_reply_to_column_is_spelled_the_same_everywhere() -> None:
+    doc = _DATA_MODEL.read_text(encoding="utf-8")
+
+    assert "reply_to" in {column.name for column in messages.columns}
+    assert "ALTER TABLE conversations.messages ADD COLUMN reply_to uuid NULL" in _chain_sql()
+    assert "reply_to        uuid NULL" in doc
+
+
+def test_reply_to_is_nullable_without_a_default() -> None:
+    """NULL is "not recorded" -- the meaning of every row that predates 0009 --
+    so there is no DEFAULT that could invent a question for an old answer."""
+    column = messages.columns["reply_to"]
+
+    assert column.nullable
+    assert column.server_default is None
+
+
+def test_the_reply_to_migration_downgrade_drops_the_column() -> None:
+    downgrade = _message_reply_to_migration().split("def downgrade()", 1)[1]
+
+    assert "DROP COLUMN IF EXISTS reply_to" in downgrade
+
+
+def test_the_reply_to_migration_continues_the_chain() -> None:
+    source = _message_reply_to_migration()
+
+    assert 'revision = "0009_message_reply_to"' in source
+    assert 'down_revision = "0008_message_status"' in source
