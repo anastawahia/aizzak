@@ -20,7 +20,7 @@
 | AC‑1.8 | وحدة | `QA::test_a_confidence_gate_apology_is_complete_and_not_a_fallback` (أُضيف) | ✅ |
 | AC‑1.9 | وحدة | `ORCH::test_a_media_agents_queued_job_is_stored_complete_and_its_frame_keeps_its_status` | ✅ |
 | AC‑1.10 | وحدة | `SQL::test_append_writes_status_and_fallback_in_the_same_insert`، `SQL::test_append_without_status_binds_none_for_both` (عبارتان: INSERT ثم UPDATE للمحادثة، بلا UPDATE على الرسائل) | ✅ |
-| AC‑1.11 | وحدة | `ORCH::test_a_partial_reply_states_its_status_once` | ✅ |
+| AC‑1.11 | وحدة | `test_message_status_qa.py::test_a_machinery_failure_after_tokens_is_stored_partial` (يثبت `[None, "partial"]`، أي كتابة جزئية واحدة رغم استدعاء `_settle_cut` ثانيةً في `finally`). الاختبار السابق `ORCH::test_a_partial_reply_states_its_status_once` حُذف في `812bf9f` (ملاحظة المراجعة 4) | ✅ |
 | AC‑1.12 | وحدة | `ROUTER::test_a_client_sent_status_or_fallback_in_content_is_not_stored`، `ORCH::test_the_user_turn_states_neither_status_nor_fallback` | ✅ |
 | AC‑1.13 | وحدة | `UC::test_an_unknown_status_is_a_validation_error_and_writes_no_row`، `UC::test_a_status_on_a_user_message_is_a_validation_error`، `UC::test_a_fallback_without_a_status_is_a_validation_error`، `DOM::test_inv_cv5_only_assistant_messages_carry_status`، `DOM::test_inv_cv5_a_fallback_needs_a_status` | ✅ |
 | AC‑1.14 | وحدة | `tests/unit/test_workflow_orchestration.py::test_a_completed_step_output_is_stored_complete_with_no_fallback` | ✅ |
