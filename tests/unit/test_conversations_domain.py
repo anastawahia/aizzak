@@ -3,6 +3,8 @@ invariants. Pure: no infrastructure, no ports."""
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from app.framework.clock import utc_now
@@ -17,7 +19,9 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     ConversationKind,
     MessageContent,
+    MessageFallback,
     MessageRole,
+    MessageStatus,
 )
 
 
@@ -370,3 +374,104 @@ def test_inv_cv4_caps_citations_at_the_maximum() -> None:
             utc_now(),
             citations=(*at_cap, _citation(rank=51)),
         )
+
+
+# --------------------------------------------------------------------------- #
+# MessageStatus / MessageFallback (th-2) and INV-CV5                           #
+# --------------------------------------------------------------------------- #
+def _fallback(**overrides: str) -> MessageFallback:
+    values = {
+        "from_provider": "openai",
+        "from_model": "gpt-4.1-mini",
+        "to_provider": "ollama",
+        "to_model": "gemma3:1b",
+    }
+    values.update(overrides)
+    return MessageFallback(**values)
+
+
+def test_message_status_is_the_closed_pair() -> None:
+    assert {s.value for s in MessageStatus} == {"complete", "partial"}
+    with pytest.raises(ValueError):
+        MessageStatus("error")
+
+
+def test_a_fallback_holds_exactly_four_names() -> None:
+    assert {f.name for f in fields(MessageFallback)} == {
+        "from_provider",
+        "from_model",
+        "to_provider",
+        "to_model",
+    }
+
+
+def test_a_fallback_keeps_its_values_verbatim() -> None:
+    fb = _fallback(from_model=" GPT ")
+
+    assert fb.from_model == " GPT "
+
+
+@pytest.mark.parametrize("name", ["from_provider", "from_model", "to_provider", "to_model"])
+@pytest.mark.parametrize("bad", ["", "a" * 256])
+def test_a_fallback_rejects_an_empty_or_overlong_name(name: str, bad: str) -> None:
+    with pytest.raises(InvalidConversationInput):
+        _fallback(**{name: bad})
+
+
+def test_a_fallback_accepts_the_longest_name() -> None:
+    assert len(_fallback(to_model="a" * 255).to_model) == 255
+
+
+def test_a_fallback_rejects_a_non_string() -> None:
+    with pytest.raises(InvalidConversationInput):
+        _fallback(to_model=5)  # type: ignore[arg-type]
+
+
+def test_message_has_no_status_or_fallback_by_default() -> None:
+    message = _conversation().append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now()
+    )
+
+    assert message.status is None
+    assert message.fallback is None
+
+
+def test_assistant_message_carries_status_and_fallback() -> None:
+    message = _conversation().append_message(
+        "m1",
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        status=MessageStatus.PARTIAL,
+        fallback=_fallback(),
+    )
+
+    assert message.status is MessageStatus.PARTIAL
+    assert message.fallback == _fallback()
+
+
+@pytest.mark.parametrize("role", [MessageRole.USER, MessageRole.SYSTEM, MessageRole.TOOL])
+def test_inv_cv5_only_assistant_messages_carry_status(role: MessageRole) -> None:
+    conv = _conversation()
+
+    with pytest.raises(InvalidConversationInput):
+        conv.append_message(
+            "m1", role, MessageContent(text="a"), None, utc_now(), status=MessageStatus.COMPLETE
+        )
+    assert conv.message_count == 0
+
+
+def test_inv_cv5_a_fallback_needs_a_status() -> None:
+    conv = _conversation()
+
+    with pytest.raises(InvalidConversationInput):
+        conv.append_message(
+            "m1",
+            MessageRole.ASSISTANT,
+            MessageContent(text="a"),
+            None,
+            utc_now(),
+            fallback=_fallback(),
+        )
+    assert conv.message_count == 0

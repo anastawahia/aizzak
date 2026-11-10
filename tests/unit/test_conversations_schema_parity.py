@@ -167,3 +167,70 @@ def test_the_citations_migration_downgrade_drops_the_column() -> None:
     downgrade = source.split("def downgrade()", 1)[1]
 
     assert "DROP COLUMN IF EXISTS citations" in downgrade
+
+
+# --------------------------------------------------------------------------- #
+# conversations.messages status / fallback (ث-2)                               #
+# --------------------------------------------------------------------------- #
+def _message_status_migration() -> str:
+    return (_CHAIN / "0008_message_status.py").read_text(encoding="utf-8")
+
+
+def test_the_status_and_fallback_columns_are_spelled_the_same_everywhere() -> None:
+    names = {column.name for column in messages.columns}
+    doc = _DATA_MODEL.read_text(encoding="utf-8")
+
+    assert {"status", "fallback"} <= names
+    assert "ALTER TABLE conversations.messages ADD COLUMN status text NULL" in _chain_sql()
+    assert "ALTER TABLE conversations.messages ADD COLUMN fallback jsonb NULL" in _chain_sql()
+    assert "status          text NULL" in doc
+    assert "fallback        jsonb NULL" in doc
+    assert "ck_messages_status" in doc
+
+
+def test_status_and_fallback_are_nullable_without_a_default() -> None:
+    """NULL is "not recorded" -- the meaning of every row that predates 0008 --
+    so there is no DEFAULT that could call an old message complete."""
+    for name in ("status", "fallback"):
+        column = messages.columns[name]
+
+        assert column.nullable
+        assert column.server_default is None
+
+
+def test_fallback_writes_sql_null_for_none() -> None:
+    """``none_as_null`` keeps Python ``None`` from being stored as the JSON
+    literal ``null``, a second spelling of "not recorded"."""
+    assert messages.columns["fallback"].type.none_as_null is True  # type: ignore[attr-defined]
+
+
+def test_the_status_check_is_added_not_valid_and_never_validated() -> None:
+    """Deliberate: every existing row is NULL by construction, so a VALIDATE
+    would be a full scan of the largest table under ACCESS EXCLUSIVE that
+    proves nothing (see the migration docstring)."""
+    source = _message_status_migration()
+    upgrade = source.split("def upgrade()", 1)[1].split("def downgrade()", 1)[0]
+
+    assert "ck_messages_status" in upgrade
+    assert "CHECK (status IN ('complete', 'partial')) NOT VALID" in upgrade
+    code = "\n".join(line for line in upgrade.splitlines() if not line.strip().startswith("#"))
+    assert "VALIDATE" not in code
+    # one ALTER per column: the sweeps above read "ADD COLUMN <name>" per statement
+    assert code.count("ADD COLUMN") == 2
+
+
+def test_the_status_migration_downgrade_drops_the_constraint_and_both_columns() -> None:
+    downgrade = _message_status_migration().split("def downgrade()", 1)[1]
+
+    assert "DROP CONSTRAINT IF EXISTS ck_messages_status" in downgrade
+    assert "DROP COLUMN IF EXISTS status" in downgrade
+    assert "DROP COLUMN IF EXISTS fallback" in downgrade
+    # the constraint goes before the column it constrains
+    assert downgrade.index("ck_messages_status") < downgrade.index("DROP COLUMN")
+
+
+def test_the_status_migration_continues_the_chain() -> None:
+    source = _message_status_migration()
+
+    assert 'revision = "0008_message_status"' in source
+    assert 'down_revision = "0007_message_citations"' in source

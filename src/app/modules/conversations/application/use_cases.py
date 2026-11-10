@@ -46,12 +46,15 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     ConversationKind,
     MessageContent,
+    MessageFallback,
     MessageRole,
+    MessageStatus,
 )
 from app.modules.conversations.ports.files import ReadableFiles
 from app.modules.conversations.ports.inbound import (
     AppendedMessage,
     CitationRef,
+    FallbackRef,
     StartedConversation,
 )
 from app.modules.conversations.ports.repository import ConversationRepository
@@ -163,6 +166,56 @@ def _recordable_citations(
         return None
 
 
+def _recordable_status(role: MessageRole, status: str | None) -> MessageStatus | None:
+    """th-2 / NFR-4 -- the status this message will store. STRICT, unlike
+    citations: every writer passes a constant, so a bad value is a caller bug.
+
+    - status is None                 -> None
+    - role is not ASSISTANT          -> raise ValidationError
+    - MessageStatus(status) fails    -> raise ValidationError
+    - otherwise                      -> the enum member
+    """
+    if status is None:
+        return None
+    if role is not MessageRole.ASSISTANT:
+        raise ValidationError("only assistant messages carry a status")
+    try:
+        return MessageStatus(status)
+    except ValueError as exc:
+        raise ValidationError(f"invalid message status: {status!r}") from exc
+
+
+def _recordable_fallback(
+    role: MessageRole, status: MessageStatus | None, ref: FallbackRef | None
+) -> MessageFallback | None:
+    """th-2 -- the fallback this message will store.
+
+    - ref is None                    -> None
+    - role is not ASSISTANT          -> raise ValidationError   (a caller bug, loud)
+    - status is None                 -> raise ValidationError   (a caller bug, loud)
+    - MessageFallback(...) raises    -> None  (dropped, the append goes on)
+    - otherwise                      -> MessageFallback with the four values verbatim
+
+    Dropping a bad VALUE and not raising is _recordable_citations' rule: the
+    text is the turn, and the fallback annotates it.
+    """
+    if ref is None:
+        return None
+    if role is not MessageRole.ASSISTANT:
+        raise ValidationError("only assistant messages carry a fallback")
+    if status is None:
+        raise ValidationError("a fallback needs a status")
+    try:
+        return MessageFallback(
+            from_provider=ref.from_provider,
+            from_model=ref.from_model,
+            to_provider=ref.to_provider,
+            to_model=ref.to_model,
+        )
+    except ConversationError:
+        return None
+
+
 class AppendMessage:
     """Append a message to an existing, non-deleted conversation (INV-CV1/CV3)."""
 
@@ -179,6 +232,8 @@ class AppendMessage:
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
         citations: Sequence[CitationRef] | None = None,
+        status: str | None = None,
+        fallback: FallbackRef | None = None,
     ) -> tuple[Message, tuple[ConversationEvent, ...]]:
         try:
             role_enum = MessageRole(role)
@@ -189,6 +244,8 @@ class AppendMessage:
         except ConversationError as exc:
             raise ValidationError(str(exc)) from exc
         recorded = _recordable_citations(role_enum, citations)
+        recorded_status = _recordable_status(role_enum, status)
+        recorded_fallback = _recordable_fallback(role_enum, recorded_status, fallback)
 
         conversation = await self._conversations.get(ctx, conversation_id)
         if conversation is None:
@@ -197,10 +254,19 @@ class AppendMessage:
         now = utc_now()
         try:
             message = conversation.append_message(
-                new_uuid7(), role_enum, content, token_count, now, citations=recorded
+                new_uuid7(),
+                role_enum,
+                content,
+                token_count,
+                now,
+                citations=recorded,
+                status=recorded_status,
+                fallback=recorded_fallback,
             )
         except ConversationDeletedError as exc:
             raise ConflictError(str(exc)) from exc
+        except ConversationError as exc:
+            raise ValidationError(str(exc)) from exc
 
         await self._conversations.append_message(ctx, message)
         event = MessageAppended(message.id, conversation.id, role_enum.value, message.seq, now)
@@ -856,6 +922,8 @@ class ConversationService:
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
         citations: tuple[CitationRef, ...] | None = None,
+        status: str | None = None,
+        fallback: FallbackRef | None = None,
     ) -> AppendedMessage:
         message, _events = await self._append.execute(
             ctx,
@@ -865,6 +933,8 @@ class ConversationService:
             attachments=attachments,
             token_count=token_count,
             citations=citations,
+            status=status,
+            fallback=fallback,
         )
         return AppendedMessage(
             id=message.id,
@@ -887,6 +957,17 @@ class ConversationService:
                         rank=c.rank,
                     )
                     for c in message.citations
+                )
+            ),
+            status=None if message.status is None else message.status.value,
+            fallback=(
+                None
+                if message.fallback is None
+                else FallbackRef(
+                    from_provider=message.fallback.from_provider,
+                    from_model=message.fallback.from_model,
+                    to_provider=message.fallback.to_provider,
+                    to_model=message.fallback.to_model,
                 )
             ),
         )

@@ -28,7 +28,9 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     ConversationKind,
     MessageContent,
+    MessageFallback,
     MessageRole,
+    MessageStatus,
 )
 
 
@@ -184,12 +186,17 @@ class Conversation:
         now: datetime,
         *,
         citations: tuple[Citation, ...] | None = None,
+        status: MessageStatus | None = None,
+        fallback: MessageFallback | None = None,
     ) -> Message:
         """Append a new message, assigning the next gap-free ``seq`` (INV-CV1).
 
         Rejected once the conversation is soft-deleted (INV-CV3). INV-CV4:
         citations are carried by ASSISTANT messages only, and at most
         ``MAX_CITATIONS`` of them; otherwise ``InvalidConversationInput``.
+        INV-CV5 (th-2): ``status`` and ``fallback`` are carried by ASSISTANT
+        messages only, and a ``fallback`` needs a ``status``; otherwise
+        ``InvalidConversationInput``.
         """
         self._guard_not_deleted()
         if citations is not None:
@@ -197,6 +204,10 @@ class Conversation:
                 raise InvalidConversationInput("only assistant messages carry citations")
             if len(citations) > MAX_CITATIONS:
                 raise InvalidConversationInput(f"at most {MAX_CITATIONS} citations per message")
+        if (status is not None or fallback is not None) and role is not MessageRole.ASSISTANT:
+            raise InvalidConversationInput("only assistant messages carry status or fallback")
+        if fallback is not None and status is None:
+            raise InvalidConversationInput("a fallback needs a status")
         self.message_count += 1
         seq = self.message_count
         self.updated_at = now
@@ -211,6 +222,8 @@ class Conversation:
             created_at=now,
             deleted_at=None,
             citations=citations,
+            status=status,
+            fallback=fallback,
         )
 
     def _guard_not_deleted(self) -> None:
@@ -234,6 +247,11 @@ class Message:
     # th-1 -- LAST and defaulted, so every existing constructor call stays valid.
     # None = not recorded; () = the agent stated there are no sources.
     citations: tuple[Citation, ...] | None = None
+    # th-2 -- LAST and defaulted, for citations' reason. None = not recorded
+    # (user messages, rows that predate the column).
+    status: MessageStatus | None = None
+    # th-2 -- None = the primary model answered, or not recorded.
+    fallback: MessageFallback | None = None
 
     def soft_delete(self, now: datetime) -> None:
         """Soft-delete the message. Idempotent: a second call is a no-op."""

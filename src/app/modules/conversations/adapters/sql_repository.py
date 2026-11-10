@@ -100,7 +100,9 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     ConversationKind,
     MessageContent,
+    MessageFallback,
     MessageRole,
+    MessageStatus,
 )
 
 _metadata = MetaData()
@@ -156,6 +158,12 @@ messages = Table(
     # JSON literal 'null', not SQL NULL, and "not recorded" must have exactly
     # one spelling in the table: SQL NULL.
     Column("citations", JSONB(none_as_null=True), nullable=True),
+    # `migrations/versions/conversations/0008_message_status.py` (th-2).
+    # Text, not an enum type: the closed set is ck_messages_status plus
+    # domain.MessageStatus, and an ALTER TYPE is a heavier migration later.
+    Column("status", Text, nullable=True),
+    # none_as_null=True is LOAD-BEARING, for citations' reason exactly.
+    Column("fallback", JSONB(none_as_null=True), nullable=True),
     schema="conversations",
 )
 
@@ -365,6 +373,8 @@ class SqlConversationRepository:
             created_at=message.created_at,
             deleted_at=message.deleted_at,
             citations=_citations_to_json(message.citations),
+            status=None if message.status is None else message.status.value,
+            fallback=_fallback_to_json(message.fallback),
         )
         # Unconditional bump (no WHERE version=:expected): the concurrency
         # guard for INV-CV1 is `UNIQUE(conversation_id, seq)` on the INSERT
@@ -662,6 +672,41 @@ def _citations_from_json(raw: object) -> tuple[Citation, ...] | None:
     )
 
 
+def _fallback_to_json(fallback: MessageFallback | None) -> Json | None:
+    """th-2 -- None -> None (SQL NULL); else exactly final.fallback's shape."""
+    if fallback is None:
+        return None
+    return {
+        "from": {"provider": fallback.from_provider, "model": fallback.from_model},
+        "to": {"provider": fallback.to_provider, "model": fallback.to_model},
+    }
+
+
+def _fallback_from_json(raw: object) -> MessageFallback | None:
+    """th-2 -- NULL -> None; an object -> MessageFallback re-validated, like
+    ``_citations_from_json``. A malformed row raises (an explicit read error)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("messages.fallback must be a JSON object or NULL")
+    return MessageFallback(
+        from_provider=raw["from"]["provider"],
+        from_model=raw["from"]["model"],
+        to_provider=raw["to"]["provider"],
+        to_model=raw["to"]["model"],
+    )
+
+
+def _status_from_row(raw: object) -> MessageStatus | None:
+    """th-2 -- NULL -> None; else MessageStatus(raw). An unknown value raises
+    ValueError: an explicit read error, never an invented value."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError("messages.status must be text or NULL")
+    return MessageStatus(raw)
+
+
 def _pending_to_json(options: tuple[str, ...]) -> list[str] | None:
     """ب-9 -- the pending candidates as the column holds them: a JSON array,
     or NULL when there is nothing pending.
@@ -736,6 +781,8 @@ def _hydrate_message(row: RowMapping) -> Message:
         created_at=row["created_at"],
         deleted_at=row["deleted_at"],
         citations=_citations_from_json(row["citations"]),
+        status=_status_from_row(row["status"]),
+        fallback=_fallback_from_json(row["fallback"]),
     )
 
 
